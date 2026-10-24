@@ -12,8 +12,11 @@ import type {
   SearchResponseDto,
   SessionDto,
   SessionEventDto,
-  TaskDto
+  TaskDto,
+  WorkerInfoDto
 } from '@agent-hub/contract';
+
+export type { WorkerInfoDto };
 
 export interface ApiError {
   readonly code: string;
@@ -42,7 +45,7 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
   call<T>(path, { method: 'POST', body: JSON.stringify(body) });
 
 export const api = {
-  workers: () => call<unknown[]>('/api/workers'),
+  workers: () => call<WorkerInfoDto[]>('/api/workers'),
   projects: () => call<ProjectDto[]>('/api/projects'),
   createProject: (input: { name: string; rootPath: string }) => post<ProjectDto>('/api/projects', input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),

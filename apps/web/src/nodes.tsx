@@ -2,7 +2,10 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import type { SessionDto, TaskDto } from './api.ts';
 import type { LiveSession } from './live.ts';
 
-export type TaskNode = Node<{ task: TaskDto; sessionCount: number }, 'task'>;
+export type TaskNode = Node<
+  { task: TaskDto; sessionCount: number; onStatus: (status: TaskDto['status']) => void },
+  'task'
+>;
 export type SessionNode = Node<{ session: SessionDto; live: LiveSession | undefined; agentLabel: string }, 'session'>;
 
 const STATUS: Record<SessionDto['status'], { label: string; dot: string; shape: string }> = {
@@ -100,12 +103,22 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   );
 }
 
-export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
-  const { task, sessionCount } = data;
+export function TaskCard({ data }: NodeProps<TaskNode>) {
+  const { task, sessionCount, onStatus } = data;
   const muted = task.status === 'abandoned';
+  // 「试过是死路」和「还在试」必须能区分（S4.2），所以收尾与放弃是两个动作，重开也留着。
+  // 动作挂在 hover 上而不是「选中后显示」：React Flow 的 onClick 里改 state 会让
+  // 双击事件被两段渲染切开，任务卡的派生就再也点不出来了。
+  const actions: readonly { label: string; next: TaskDto['status'] }[] =
+    task.status === 'open'
+      ? [
+          { label: '收尾', next: 'done' },
+          { label: '放弃', next: 'abandoned' }
+        ]
+      : [{ label: '重开', next: 'open' }];
   return (
     <div
-      className={`w-[220px] rounded-md border bg-panel px-3 py-2 ${selected ? 'border-accent' : 'border-strong'} ${
+      className={`group w-[220px] rounded-md border bg-panel px-3 py-2 hover:border-accent ${
         muted ? 'opacity-60' : ''
       }`}
     >
@@ -116,6 +129,20 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
       <p className={`text-body ${muted ? 'text-tertiary line-through' : 'text-primary'}`}>{task.title}</p>
       {task.goal ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{task.goal}</p> : null}
       <p className="mt-1.5 font-mono text-meta text-tertiary">{sessionCount} 个会话</p>
+      <div className="nodrag mt-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        {actions.map((action) => (
+          <button
+            key={action.next}
+            className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
+            onClick={(event) => {
+              event.stopPropagation();
+              onStatus(action.next);
+            }}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
       <Handle type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
     </div>
   );

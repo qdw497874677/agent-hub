@@ -10,7 +10,8 @@ import {
   forkSessionRequest,
   promptRequest,
   saveLayoutRequest,
-  setTaskStatusRequest
+  setTaskStatusRequest,
+  workerInfoSchema
 } from '@agent-hub/contract';
 import type { Deps, DomainError, SessionId, TaskStatus, WorkerStatus } from '@agent-hub/domain';
 import {
@@ -72,7 +73,7 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/health', (c) => c.json({ ok: true }));
-  app.get('/api/workers', (c) => c.json(options.workers()));
+  app.get('/api/workers', (c) => c.json(workerInfoSchema.array().parse(options.workers())));
 
   app.get('/api/projects', async (c) => {
     const result = await listProjects(deps);

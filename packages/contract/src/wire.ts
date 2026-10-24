@@ -229,6 +229,15 @@ export const workerAgentSessionSchema = z.object({
   agentSessionRef: id
 });
 
+/** `/api/workers` 的响应：UI 靠它区分「它挂了」和「我改坏了配置」（S1.2）。 */
+export const workerInfoSchema = z.object({
+  workerId: z.string(),
+  label: z.string(),
+  origin: z.enum(['local', 'remote']),
+  state: z.enum(['online', 'offline']),
+  reason: z.string().optional()
+});
+
 export const workerStatusSchema = z.object({
   type: z.literal('status'),
   sessionId: id,
@@ -274,6 +283,7 @@ export type SessionEventDto = z.infer<typeof sessionEventSchema>;
 export type JournalEntryDto = z.infer<typeof journalEntrySchema>;
 export type SearchHitDto = z.infer<typeof searchHitSchema>;
 export type SearchResponseDto = z.infer<typeof searchResponseSchema>;
+export type WorkerInfoDto = z.infer<typeof workerInfoSchema>;
 export type CreateProjectRequest = z.infer<typeof createProjectRequest>;
 export type CreateTaskRequest = z.infer<typeof createTaskRequest>;
 export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;

@@ -8,7 +8,7 @@ import {
   type NodeTypes,
   type ReactFlowInstance
 } from '@xyflow/react';
-import type { CanvasDto } from './api.ts';
+import type { CanvasDto, TaskDto } from './api.ts';
 import { resolveLive, type LiveMap } from './live.ts';
 import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
 
@@ -22,6 +22,7 @@ interface Props {
   readonly onSelect: (sessionId: string) => void;
   readonly onDerive: (taskId: string) => void;
   readonly onLayoutChange: (positions: Record<string, Point>) => void;
+  readonly onTaskStatus: (taskId: string, status: TaskDto['status']) => void;
   /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
   readonly focus: { readonly id: string; readonly nonce: number } | null;
 }
@@ -43,7 +44,7 @@ function defaults(canvas: CanvasDto): Record<string, Point> {
   return placed;
 }
 
-export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, focus }: Props) {
+export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, onTaskStatus, focus }: Props) {
   const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
   const [positions, setPositions] = useState<Record<string, Point>>(initial);
   // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
@@ -68,7 +69,11 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, f
       id: task.id,
       type: 'task',
       position: positions[task.id] ?? { x: 0, y: 0 },
-      data: { task, sessionCount: canvas.sessions.filter((s) => s.taskId === task.id).length }
+      data: {
+        task,
+        sessionCount: canvas.sessions.filter((s) => s.taskId === task.id).length,
+        onStatus: (status: TaskDto['status']) => onTaskStatus(task.id, status)
+      }
     }));
     const sessionNodes: SessionNode[] = canvas.sessions.map((session) => ({
       id: session.id,
@@ -81,7 +86,7 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, f
       }
     }));
     return [...taskNodes, ...sessionNodes];
-  }, [canvas.tasks, canvas.sessions, canvas.previews, positions, live, agentLabel]);
+  }, [canvas.tasks, canvas.sessions, canvas.previews, positions, live, agentLabel, onTaskStatus]);
 
   const edges = useMemo(() => {
     const derived: Edge[] = canvas.edges

@@ -6,6 +6,7 @@ import { useLiveStream } from './live.ts';
 import { CanvasView } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
 import { ListView, SearchPalette } from './views.tsx';
+import { WorkersBadge } from './workers.tsx';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
@@ -266,6 +267,13 @@ export function App() {
     return () => clearTimeout(timer);
   }, [live, refresh]);
 
+  const setTaskStatus = useCallback(
+    (taskId: string, status: 'open' | 'done' | 'abandoned') => {
+      void api.setTaskStatus(taskId, status).then(refresh, () => undefined);
+    },
+    [refresh]
+  );
+
   const saveLayout = useMemo(
     () => (positions: Record<string, { x: number; y: number }>) => {
       if (!project) return;
@@ -350,6 +358,7 @@ export function App() {
               </button>
             ))}
           </div>
+          <WorkersBadge />
           <button
             className="rounded-sm border border-hair px-2.5 py-1 text-meta text-tertiary hover:border-accent hover:text-accent"
             onClick={() => setSearch(true)}
@@ -382,6 +391,7 @@ export function App() {
               onSelect={setSelected}
               onDerive={setDeriveFor}
               onLayoutChange={saveLayout}
+              onTaskStatus={setTaskStatus}
               focus={focus}
             />
           ) : (

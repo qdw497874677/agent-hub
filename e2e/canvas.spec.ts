@@ -98,3 +98,24 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await expect(page.getByRole('button', { name: '画布' })).toBeVisible();
   await expect(page.locator('.react-flow__node-session')).toHaveCount(1);
 });
+
+test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await expect(sessionNode(page)).toHaveCount(1);
+
+  // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以节点状态是常驻可查的
+  await page.getByRole('button', { name: /节点$/ }).click();
+  await expect(page.getByText('本机')).toBeVisible();
+  await expect(page.getByText('在线')).toBeVisible();
+  await page.getByRole('button', { name: /节点$/ }).click();
+
+  // S4.2：收尾不是放弃。先收尾，卡片改口，再重开回到进行中
+  await taskNode(page, TASK_TITLE).hover();
+  await taskNode(page, TASK_TITLE).getByRole('button', { name: '收尾' }).click();
+  await expect(taskNode(page, TASK_TITLE)).toContainText('已收尾');
+
+  await taskNode(page, TASK_TITLE).hover();
+  await taskNode(page, TASK_TITLE).getByRole('button', { name: '重开' }).click();
+  await expect(taskNode(page, TASK_TITLE)).toContainText('进行中');
+});
