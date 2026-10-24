@@ -10,11 +10,13 @@ import type {
   Task
 } from '@agent-hub/domain';
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
+import { createSearch } from './search.ts';
 import { SCHEMA } from './schema.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
 export interface SqliteStore extends RepositorySet {
+  readonly search: ReturnType<typeof createSearch>;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -66,8 +68,16 @@ export function openSqliteStore(file: string): SqliteStore {
   const appendJournal = db.prepare(
     'INSERT OR IGNORE INTO journal(session_id, seq, type, payload, at) VALUES (?, ?, ?, ?, ?)'
   );
+  // 文本投影跟着 append 走：搜索读的是「这个会话说过的话」，不是单条 delta。
+  const appendSessionText = db.prepare(
+    'INSERT INTO session_text(session_id, text, updated_at) VALUES (?, ?, ?) ' +
+      'ON CONFLICT(session_id) DO UPDATE SET text = session_text.text || excluded.text, updated_at = excluded.updated_at'
+  );
   const updateSessionCursor = db.prepare(
     'UPDATE sessions SET last_seq = ?, status = ?, updated_at = ? WHERE id = ?'
+  );
+  const selectEventsTail = db.prepare(
+    'SELECT seq, payload, at FROM journal WHERE session_id = ? ORDER BY seq DESC LIMIT ?'
   );
   const selectEventsAfter = db.prepare(
     'SELECT seq, payload, at FROM journal WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
@@ -189,12 +199,23 @@ export function openSqliteStore(file: string): SqliteStore {
           JSON.stringify(event),
           at
         );
+        if (event.kind === 'text') appendSessionText.run(session.id, event.delta, at);
         updateSessionCursor.run(session.lastSeq, session.status, session.updatedAt, session.id);
       });
     },
     async eventsAfter(sessionId: Parameters<typeof asSessionId>[0], seq: Seq): Promise<JournalEntry[]> {
       return selectEventsAfter
         .all(sessionId, seq)
+        .map((row) => toJournalEntry(row as never));
+    },
+    async tail(
+      sessionId: Parameters<typeof asSessionId>[0],
+      limit: number
+    ): Promise<JournalEntry[]> {
+      // DESC 取尾部再翻回来：正序切片要先数完整个会话，会话越长越慢。
+      return selectEventsTail
+        .all(sessionId, limit)
+        .reverse()
         .map((row) => toJournalEntry(row as never));
     },
     async linkEntry(sessionId: Parameters<typeof asSessionId>[0], seq: Seq, entryId: string): Promise<void> {
@@ -247,6 +268,7 @@ export function openSqliteStore(file: string): SqliteStore {
     sessions,
     artifacts,
     layout,
+    search: createSearch(db),
     db,
     close(): void {
       db.close();

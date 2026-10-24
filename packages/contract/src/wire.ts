@@ -115,7 +115,9 @@ export const canvasSchema = z.object({
   artifacts: z.array(artifactSchema),
   edges: z.array(lineageEdgeSchema),
   layout: layoutSchema,
-  agents: z.array(agentSchema)
+  agents: z.array(agentSchema),
+  // 用 lazy 引用：canvasSchema 在 journalEntrySchema 之前定义，直接引会撞 TDZ
+  previews: z.record(z.string(), z.array(z.lazy(() => journalEntrySchema)))
 });
 
 /** 归一化事件过网时的形状：与 domain 的 SessionEvent 一一对应。 */
@@ -140,6 +142,16 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     text: z.string()
   })
 ]);
+
+export const searchHitSchema = z.object({
+  kind: z.enum(['task', 'session']),
+  taskId: z.string(),
+  sessionId: z.string().nullable(),
+  title: z.string(),
+  snippet: z.string()
+});
+
+export const searchResponseSchema = z.object({ hits: z.array(searchHitSchema) });
 
 export const journalEntrySchema = z.object({
   seq: z.number().int().positive(),
@@ -260,6 +272,8 @@ export type LayoutDto = z.infer<typeof layoutSchema>;
 export type CanvasDto = z.infer<typeof canvasSchema>;
 export type SessionEventDto = z.infer<typeof sessionEventSchema>;
 export type JournalEntryDto = z.infer<typeof journalEntrySchema>;
+export type SearchHitDto = z.infer<typeof searchHitSchema>;
+export type SearchResponseDto = z.infer<typeof searchResponseSchema>;
 export type CreateProjectRequest = z.infer<typeof createProjectRequest>;
 export type CreateTaskRequest = z.infer<typeof createTaskRequest>;
 export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;

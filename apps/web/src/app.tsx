@@ -5,6 +5,7 @@ import { api } from './api.ts';
 import { useLiveStream } from './live.ts';
 import { CanvasView } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
+import { ListView, SearchPalette } from './views.tsx';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
@@ -226,6 +227,13 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
+  const [view, setView] = useState<'canvas' | 'list'>('canvas');
+  const [search, setSearch] = useState(false);
+  // 草稿存在 App 层而不是 Inspector 里：S6.4 要求切视图不丢草稿，
+  // 组件一卸载 useState 就没了，所以它必须活在两者之上。
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 跳到某个节点：nonce 让「同一条命中点第二次」也能重新居中。
+  const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
   const live = useLiveStream();
   const queryClient = useQueryClient();
 
@@ -271,6 +279,24 @@ export function App() {
     [canvas.data, selected]
   );
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearch((open) => !open);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const jump = useCallback((taskId: string, sessionId: string | null) => {
+    setSearch(false);
+    setView('canvas');
+    setSelected(sessionId);
+    setFocus({ id: sessionId ?? taskId, nonce: Date.now() });
+  }, []);
+
   if (project === null) {
     return (
       <Setup
@@ -291,10 +317,46 @@ export function App() {
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-hair px-3">
         <div className="flex items-baseline gap-3">
-          <span className="text-head text-primary">{project.name}</span>
+          <select
+            className="cursor-pointer appearance-none bg-transparent text-head text-primary outline-none"
+            value={project.id}
+            onChange={(event) => {
+              const picked = (projects.data ?? []).find((candidate) => candidate.id === event.target.value);
+              if (!picked) return;
+              localStorage.setItem(LAST_PROJECT, picked.id);
+              setProject(picked);
+              setSelected(null);
+              setDrafts({});
+            }}
+            title="切换项目"
+          >
+            {(projects.data ?? [project]).map((candidate) => (
+              <option key={candidate.id} value={candidate.id} className="bg-panel text-body">
+                {candidate.name}
+              </option>
+            ))}
+          </select>
           <span className="font-mono text-meta text-tertiary">{project.rootPath}</span>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex overflow-hidden rounded-sm border border-hair">
+            {(['canvas', 'list'] as const).map((mode) => (
+              <button
+                key={mode}
+                className={`px-2.5 py-1 text-meta ${view === mode ? 'bg-card text-primary' : 'text-tertiary hover:text-secondary'}`}
+                onClick={() => setView(mode)}
+              >
+                {mode === 'canvas' ? '画布' : '列表'}
+              </button>
+            ))}
+          </div>
+          <button
+            className="rounded-sm border border-hair px-2.5 py-1 text-meta text-tertiary hover:border-accent hover:text-accent"
+            onClick={() => setSearch(true)}
+            title="搜索任务与会话（⌘K）"
+          >
+            搜索 ⌘K
+          </button>
           <button
             className="rounded-sm border border-hair px-2.5 py-1 text-meta text-secondary hover:border-accent hover:text-accent"
             onClick={() => setNewTask(true)}
@@ -306,20 +368,30 @@ export function App() {
 
       <div className="flex min-h-0 flex-1">
         <div className="relative flex-1">
-          {canvas.data ? (
+          {canvas.data && view === 'list' ? (
+            <ListView
+              canvas={canvas.data}
+              live={live}
+              onOpen={(sessionId) => jump(canvas.data.sessions.find((s) => s.id === sessionId)?.taskId ?? '', sessionId)}
+              onDerive={setDeriveFor}
+            />
+          ) : canvas.data ? (
             <CanvasView
               canvas={{ ...canvas.data, layout: canvas.data.layout }}
               live={live}
               onSelect={setSelected}
               onDerive={setDeriveFor}
               onLayoutChange={saveLayout}
+              focus={focus}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-meta text-tertiary">
               {canvas.isError ? (canvas.error as Error).message : '载入中…'}
             </div>
           )}
-          <div className="pointer-events-none absolute bottom-3 left-3 space-y-1 text-meta text-tertiary">
+          <div
+            className={`pointer-events-none absolute bottom-3 left-3 space-y-1 text-meta text-tertiary ${view === 'canvas' ? '' : 'hidden'}`}
+          >
             <p>
               <span className="mr-2 inline-block h-px w-6 bg-strong align-middle" />
               派生
@@ -333,15 +405,35 @@ export function App() {
 
         {selectedSession ? (
           <Inspector
-            canvas={canvas.data ?? { project, tasks: [], sessions: [], artifacts: [], edges: [], layout: { projectId: project.id, positions: {}, updatedAt: 0 }, agents: [] }}
+            canvas={
+              canvas.data ?? {
+                project,
+                tasks: [],
+                sessions: [],
+                artifacts: [],
+                edges: [],
+                layout: { projectId: project.id, positions: {}, updatedAt: 0 },
+                agents: [],
+                previews: {}
+              }
+            }
             session={selectedSession}
             artifacts={(canvas.data?.artifacts ?? []).filter((artifact) => artifact.sessionId === selectedSession.id)}
             onClose={() => setSelected(null)}
             onChanged={refresh}
+            draft={drafts[selectedSession.id] ?? ''}
+            onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           />
         ) : null}
       </div>
 
+      {search ? (
+        <SearchPalette
+          projectId={project.id}
+          onJump={(hit) => jump(hit.taskId, hit.sessionId)}
+          onClose={() => setSearch(false)}
+        />
+      ) : null}
       {newTask ? <NewTaskDialog projectId={project.id} onDone={() => setNewTask(false)} /> : null}
       {deriveFor && canvas.data ? (
         <DeriveDialog canvas={canvas.data} taskId={deriveFor} onDone={() => setDeriveFor(null)} />

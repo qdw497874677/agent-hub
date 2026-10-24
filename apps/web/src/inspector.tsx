@@ -35,10 +35,13 @@ interface Props {
   readonly artifacts: readonly ArtifactDto[];
   readonly onClose: () => void;
   readonly onChanged: () => void;
+  /** 草稿由 App 持有：切视图 / 切会话回来时它还在（S6.4）。 */
+  readonly draft: string;
+  readonly onDraftChange: (text: string) => void;
 }
 
-export function Inspector({ canvas, session, artifacts, onClose, onChanged }: Props) {
-  const [draft, setDraft] = useState('');
+export function Inspector({ canvas, session, artifacts, onClose, onChanged, draft, onDraftChange }: Props) {
+  const setDraft = onDraftChange;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showJournal, setShowJournal] = useState(false);
@@ -49,10 +52,15 @@ export function Inspector({ canvas, session, artifacts, onClose, onChanged }: Pr
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
 
   useEffect(() => {
-    setDraft('');
     setError(null);
-    setForkAt(String(session.lastSeq));
-  }, [session.id, session.lastSeq]);
+  }, [session.id]);
+
+  // 分叉点默认停在最新一条；会话继续长出新事件时跟着走，但用户手动改过就不再抢。
+  useEffect(() => {
+    setForkAt((current) =>
+      current === '' || Number(current) >= session.lastSeq - 1 ? String(session.lastSeq) : current
+    );
+  }, [session.lastSeq]);
 
   useEffect(() => {
     if (!showJournal) return;

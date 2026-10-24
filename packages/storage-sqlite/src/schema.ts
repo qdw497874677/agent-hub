@@ -62,6 +62,14 @@ CREATE TABLE IF NOT EXISTS journal (
 );
 
 -- 双权威的桥：平台的 seq 与 agent 自己的 entry id。Pi 的 fork 单位是 entry id。
+-- 会话文本投影：搜索的单位是「这个会话说过的话」，不是单条 delta。
+-- 流式回复把一句话拆成几十行 journal，按行 LIKE 永远搜不到跨行的词。
+CREATE TABLE IF NOT EXISTS session_text (
+  session_id TEXT PRIMARY KEY,
+  text       TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS entry_map (
   session_id TEXT NOT NULL,
   seq        INTEGER NOT NULL,

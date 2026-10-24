@@ -22,9 +22,11 @@ export type { NodeGateway, WorkerCommand } from './ports/node-gateway.ts';
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { WorkspaceFS } from './ports/workspace-fs.ts';
+export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
 export * from './use-cases/deps.ts';
 export * from './use-cases/projects.ts';
 export * from './use-cases/tasks.ts';
 export * from './use-cases/sessions.ts';
 export * from './use-cases/canvas.ts';
+export * from './use-cases/search.ts';

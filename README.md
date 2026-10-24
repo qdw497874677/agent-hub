@@ -75,6 +75,13 @@ packages/storage-sqlite、node-gateway、adapters/{pi,opencode}
 
 L1（把 agent 的原生 TUI 嵌进来，走 tmux 控制模式）是 T2：降级规则已经定好——不能 fork、不能作为血缘端点、不能结构化检索。它不进 MVP 的原因不是难，是它会稀释「画布上看见血缘」这条主线。
 
+## 界面
+
+- **画布**：任务与会话自由排布，`派生` 实线与 `分叉` 虚线区分两种血缘；节点可拖动，布局持久化。
+- **列表**：画布的低成本降级形态，一行一个会话；不做看板。
+- **搜索（⌘K / Ctrl+K）**：搜任务标题与会话正文，回车跳到画布上那个节点。
+- **检查器**：能力矩阵三态（可用 / 受限 / 无权限，都带原因）、产出物、分叉点、事件流。
+
 ## 开发
 
 ```bash
@@ -96,4 +103,4 @@ npm run e2e    # Playwright：真浏览器 + 真 agent，从建项目到模型�
 | [`docs/plan/mvp-plan.md`](docs/plan/mvp-plan.md) | 六个纵切 milestone 与端口契约 |
 | [`docs/architecture/tech-stack.md`](docs/architecture/tech-stack.md) | 选型与理由 |
 | [`docs/design/visual-direction.md`](docs/design/visual-direction.md) | 深色控制室：色板、线型语义、状态位 |
-| [`docs/adr/`](docs/adr) | 三个不可轻易回退的决定：重写与四聚合、TS 全栈、模型列表来自 agent |
+| [`docs/adr/`](docs/adr) | 五个不可轻易回退的决定：重写与四聚合、TS 全栈、模型列表来自 agent、事件串行落盘、搜索查文本投影 |

@@ -26,6 +26,7 @@ import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createLocalFs } from './local-fs.ts';
+import { createSessionQueue } from './session-queue.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -77,6 +78,7 @@ const catalog = createLiveCatalog();
 const live = new Set<SessionId>();
 
 let serverGateway: ServerGateway | null = null;
+const events = createSessionQueue();
 
 const deps: Deps = {
   projects: store.projects,
@@ -94,6 +96,7 @@ const deps: Deps = {
   fs: createLocalFs(),
   capacity,
   provisioner,
+  search: store.search,
   now: () => Date.now(),
   newId: () => crypto.randomUUID()
 };
@@ -122,11 +125,12 @@ serverGateway = createServerGateway({
     log(`worker 上线：${worker.label}（${worker.workerId}），提供 ${agents.map((a) => a.label).join('、')}`);
   },
   onEvent(sessionId, event) {
-    void (async () => {
+    // 同一会话的事件必须串行：recordEvent 是读改写，并发会算出同一个 seq 而被静默丢弃。
+    void events.run(sessionId, async () => {
       const enriched = await withBytes(event, await workspaceOf(sessionId));
       const result = await recordEvent(deps, { sessionId, event: enriched });
       if (!result.ok) log(`落盘事件失败：${result.error.message}`);
-    })();
+    });
   },
   onAgentSession(sessionId, agentSessionRef) {
     void (async () => {

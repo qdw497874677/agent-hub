@@ -12,6 +12,8 @@ export interface SessionRepository {
   /** 原子追加：journal 行与 session 的 lastSeq / status 在同一事务里落盘。 */
   append(session: Session, event: SessionEvent, at: number): Promise<void>;
   eventsAfter(sessionId: SessionId, afterSeq: Seq): Promise<JournalEntry[]>;
+  /** 最近 N 条事件（时间正序）。画布重开时要靠它把卡片填回来，不能只有实时帧。 */
+  tail(sessionId: SessionId, limit: number): Promise<JournalEntry[]>;
   /** 双权威对齐：把平台的 seq 映射到 agent 自己的会话条目 id。 */
   linkEntry(sessionId: SessionId, seq: Seq, agentEntryId: string): Promise<void>;
   entryIdAt(sessionId: SessionId, seq: Seq): Promise<string | null>;

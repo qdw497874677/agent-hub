@@ -5,6 +5,7 @@ import type { Artifact } from '../artifact.ts';
 import type { AgentDescriptor } from '../agent.ts';
 import type { CanvasLayout, LineageEdge } from '../canvas.ts';
 import type { Project } from '../project.ts';
+import type { JournalEntry } from '../event.ts';
 import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
@@ -15,6 +16,7 @@ import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { WorkspaceFS } from '../ports/workspace-fs.ts';
 import type { CapacityPolicy } from '../ports/capacity-policy.ts';
 import type { NodeProvisioner } from '../ports/node-provisioner.ts';
+import type { SearchGateway } from '../ports/search-gateway.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -40,6 +42,7 @@ export interface Deps {
   readonly fs: WorkspaceFS;
   readonly capacity: CapacityPolicy;
   readonly provisioner: NodeProvisioner;
+  readonly search: SearchGateway;
   readonly now: () => number;
   readonly newId: () => string;
 }
@@ -52,4 +55,6 @@ export interface CanvasProjection {
   readonly edges: readonly LineageEdge[];
   readonly layout: CanvasLayout;
   readonly agents: readonly AgentDescriptor[];
+  /** 每个会话最近的一段事件：关掉浏览器再打开，卡片里得还是那句话。 */
+  readonly previews: Readonly<Record<string, readonly JournalEntry[]>>;
 }

@@ -4,6 +4,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { streamSSE } from 'hono/streaming';
 import {
   createProjectRequest,
+  searchResponseSchema,
   createTaskRequest,
   deriveSessionRequest,
   forkSessionRequest,
@@ -14,6 +15,7 @@ import {
 import type { Deps, DomainError, SessionId, TaskStatus, WorkerStatus } from '@agent-hub/domain';
 import {
   asSessionId,
+  searchUseCase,
   createProjectUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
@@ -87,6 +89,16 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/projects/:projectId/canvas', async (c) => {
     const result = await loadCanvas(deps, c.req.param('projectId'));
     return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  /** 列表视图与 Cmd+K 的同一个后端：按任务标题/目标 + 会话里说过的话搜。 */
+  app.get('/api/search', async (c) => {
+    const result = await searchUseCase(deps, {
+      projectId: c.req.query('projectId') ?? '',
+      query: c.req.query('q') ?? ''
+    });
+    if (!result.ok) return fail(c, result.error);
+    return c.json(searchResponseSchema.parse({ hits: result.value }));
   });
 
   app.post('/api/tasks', async (c) => {

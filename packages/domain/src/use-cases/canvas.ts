@@ -2,6 +2,7 @@ import { buildLineage, emptyLayout } from '../canvas.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
+import type { JournalEntry } from '../event.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
 
 export async function loadCanvas(
@@ -15,6 +16,14 @@ export async function loadCanvas(
   const sessions = await deps.sessions.listByProject(project.id);
   const layout = (await deps.layout.load(project.id)) ?? emptyLayout(project.id, deps.now());
 
+  const PREVIEW_EVENTS = 24;
+  const previews: Record<string, readonly JournalEntry[]> = {};
+  await Promise.all(
+    sessions.map(async (session) => {
+      previews[session.id] = await deps.sessions.tail(session.id, PREVIEW_EVENTS);
+    })
+  );
+
   const artifacts = (
     await Promise.all(tasks.map((task) => deps.artifacts.byTask(task.id)))
   ).flat();
@@ -26,6 +35,7 @@ export async function loadCanvas(
     artifacts,
     edges: buildLineage(tasks, sessions),
     layout,
-    agents: deps.agents.list()
+    agents: deps.agents.list(),
+    previews
   });
 }

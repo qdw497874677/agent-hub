@@ -94,6 +94,9 @@ function fakeSessions(tasks: Map<string, Task>): SessionRepository & { journal: 
     async eventsAfter(sessionId, afterSeq) {
       return (journal.get(sessionId) ?? []).filter((entry) => entry.seq > afterSeq);
     },
+    async tail(sessionId, limit) {
+      return (journal.get(sessionId) ?? []).slice(-limit);
+    },
     async linkEntry() {},
     async entryIdAt() {
       return null;
@@ -186,6 +189,21 @@ function harness() {
       install: async () => ok(undefined),
       upgrade: async () => ok(undefined),
       revoke: async () => ok(undefined)
+    },
+    search: {
+      // 搜索的 SQL 在 storage-sqlite 里单独测；这里只需要证明路由把参数接对了。
+      async search(query) {
+        return [...tasks.rows.values()]
+          .filter((task) => task.projectId === query.projectId)
+          .filter((task) => task.title.includes(query.query))
+          .map((task) => ({
+            kind: 'task' as const,
+            taskId: task.id,
+            sessionId: null,
+            title: task.title,
+            snippet: task.goal ?? ''
+          }));
+      }
     },
     now: () => 1_700_000_000_000,
     newId: () => crypto.randomUUID()

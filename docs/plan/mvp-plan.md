@@ -174,12 +174,17 @@ Gate：在一台干净的同版本机器上，从 `git clone` 到画出第一个
 | `fork` 能力全 available | 两个 agent 都标 `limited`，但平台血缘仍精确 | Pi 与 ACP 都没有「按 entry 分叉」的接口；血缘是平台自己的账，不依赖它们 |
 | Playwright 预清理数据目录 | 不清理，用例用带时间戳的项目名自我隔离 | Playwright 会在 worker 进程里再求值一次 config，`rmSync` 会把 server 正在写的目录删成 unlinked fd——数据看着有、`sqlite3` 查不到 |
 | — | Pi 的 stderr 与退出码进 `ended.reason`，卡片上显示原因一行 | 没有它，「失败」是个无法追问的状态 |
+| 卡片的内容只来自实时帧 | 画布投影带每个会话最后 24 条事件，重开浏览器后卡片仍是那句话 | 只靠 SSE 意味着「昨天那条思路走到哪」在刷新后消失——定位 §8 的成功判据当场失效 |
+| 事件按到达顺序各自落盘 | 同一会话串行、不同会话并行 | 读改写撞同一个 `seq`，`INSERT OR IGNORE` 静默丢事件。见 [ADR 0004](../adr/0004-serialize-events-per-session.md) |
+| 搜索按 journal 行匹配 | 新增 `session_text` 投影表，搜索查它 | 流式回复把一句话拆成几十行 delta，按行 LIKE 对自然语言失效。见 [ADR 0005](../adr/0005-search-the-session-text-not-events.md) |
 
 M6 的实际验收方式（可复跑）：
 
 ```bash
-npm run ci     # 三层架构约束 + typecheck + 35 条单测
+npm run ci     # 三层架构约束 + typecheck + 43 条单测
 npm run e2e    # 真浏览器 + 真 Pi：建项目 → 建任务 → 派生 → 模型吐出带 run id 的字符串
 ```
+
+M6 之后补的三件 M3/M4 遗留（列表视图、搜索、项目切换）见 `apps/web/src/views.tsx`；它们不是新故事，是 S6.4「画布 / 专注对话 / 列表之间连续切换」的实现。
 
 `npm run e2e` 里那条断言是刻意收窄的：只认落在 `.react-flow__node-session` 里的文本。收窄之前它一度「通过」——匹配的是检查器里 textarea 的值。

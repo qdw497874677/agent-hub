@@ -1,7 +1,15 @@
-import { useCallback, useMemo, useState } from 'react';
-import { Background, BackgroundVariant, Controls, ReactFlow, type Edge, type NodeTypes } from '@xyflow/react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Background,
+  BackgroundVariant,
+  Controls,
+  ReactFlow,
+  type Edge,
+  type NodeTypes,
+  type ReactFlowInstance
+} from '@xyflow/react';
 import type { CanvasDto } from './api.ts';
-import type { LiveMap } from './live.ts';
+import { resolveLive, type LiveMap } from './live.ts';
 import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
@@ -14,6 +22,8 @@ interface Props {
   readonly onSelect: (sessionId: string) => void;
   readonly onDerive: (taskId: string) => void;
   readonly onLayoutChange: (positions: Record<string, Point>) => void;
+  /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
+  readonly focus: { readonly id: string; readonly nonce: number } | null;
 }
 
 function defaults(canvas: CanvasDto): Record<string, Point> {
@@ -33,9 +43,20 @@ function defaults(canvas: CanvasDto): Record<string, Point> {
   return placed;
 }
 
-export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange }: Props) {
+export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, focus }: Props) {
   const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
   const [positions, setPositions] = useState<Record<string, Point>>(initial);
+  // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
+  const flow = useRef<Pick<ReactFlowInstance<TaskNode | SessionNode, Edge>, 'setCenter'> | null>(null);
+
+  // 画布可能比节点先渲染完，所以居中放在这里而不是点击时——点击时 flow 还不存在。
+  useEffect(() => {
+    if (!focus) return;
+    const point = positions[focus.id];
+    if (!point || !flow.current) return;
+    const width = canvas.sessions.some((session) => session.id === focus.id) ? 320 : 220;
+    flow.current.setCenter(point.x + width / 2, point.y + 120, { zoom: 1, duration: 400 });
+  }, [focus, positions, canvas.sessions]);
 
   const agentLabel = useCallback(
     (agentId: string) => canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId,
@@ -53,10 +74,14 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange }:
       id: session.id,
       type: 'session',
       position: positions[session.id] ?? { x: 0, y: 0 },
-      data: { session, live: live[session.id], agentLabel: agentLabel(session.agentId) }
+      data: {
+        session,
+        live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
+        agentLabel: agentLabel(session.agentId)
+      }
     }));
     return [...taskNodes, ...sessionNodes];
-  }, [canvas.tasks, canvas.sessions, positions, live, agentLabel]);
+  }, [canvas.tasks, canvas.sessions, canvas.previews, positions, live, agentLabel]);
 
   const edges = useMemo(() => {
     const derived: Edge[] = canvas.edges
@@ -91,6 +116,9 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange }:
         nodeTypes={nodeTypes}
         fitView
         proOptions={{ hideAttribution: true }}
+        onInit={(instance) => {
+          flow.current = instance;
+        }}
         onNodeClick={(_, node) => {
           if (node.type === 'session') onSelect(node.id);
         }}

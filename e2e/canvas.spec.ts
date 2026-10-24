@@ -68,3 +68,33 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
   expect(after?.x).toBeCloseTo(before?.x ?? -1, 0);
   expect(after?.y).toBeCloseTo(before?.y ?? -1, 0);
 });
+
+test('搜索能搜到会话里说过的话，列表能给画布降级', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await expect(sessionNode(page)).toHaveCount(1);
+
+  // S6.4 的前半截：切视图不丢草稿
+  await sessionNode(page).click();
+  const composer = page.getByPlaceholder('接着这条思路说下去…');
+  await composer.fill('这段草稿要活过视图切换');
+  await page.getByRole('button', { name: '列表' }).click();
+  await expect(page.getByRole('columnheader', { name: '任务' })).toBeVisible();
+  await page.getByRole('button', { name: '画布' }).click();
+  await expect(composer).toHaveValue('这段草稿要活过视图切换');
+
+  // 搜索：用会话正文里的词命中，回车跳到那个节点
+  await page.getByRole('button', { name: /搜索/ }).click();
+  const palette = page.getByPlaceholder('搜任务标题，或者你记得的那句话');
+  await palette.fill(ECHO);
+  await expect(page.getByRole('button', { name: new RegExp(ECHO) }).first()).toBeVisible();
+  await palette.press('Enter');
+  await expect(sessionNode(page)).toHaveCount(1);
+  await expect(page.locator('.react-flow__node-session').getByText(ECHO)).toBeVisible();
+
+  // 列表视图：一行一个会话，点一行回到画布并打开检查器
+  await page.getByRole('button', { name: '列表' }).click();
+  await page.getByRole('cell', { name: TASK_TITLE }).click();
+  await expect(page.getByRole('button', { name: '画布' })).toBeVisible();
+  await expect(page.locator('.react-flow__node-session')).toHaveCount(1);
+});

@@ -8,6 +8,8 @@ import type {
   JournalEntryDto,
   LayoutDto,
   ProjectDto,
+  SearchHitDto,
+  SearchResponseDto,
   SessionDto,
   SessionEventDto,
   TaskDto
@@ -52,6 +54,8 @@ export const api = {
   prompt: (sessionId: string, text: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/prompt`, { text }),
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   events: (sessionId: string) => call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events`),
+  search: (projectId: string, q: string) =>
+    call<SearchResponseDto>(`/api/search?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(q)}`),
   saveLayout: (projectId: string, layout: LayoutDto['positions']) =>
     call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify({ positions: layout }) })
 };
@@ -62,6 +66,7 @@ export type {
   CanvasDto,
   JournalEntryDto,
   ProjectDto,
+  SearchHitDto,
   SessionDto,
   SessionEventDto,
   TaskDto
