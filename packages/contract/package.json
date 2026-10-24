@@ -1,0 +1,13 @@
+{
+  "name": "@agent-hub/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@agent-hub/domain": "*",
+    "zod": "^4.1.12"
+  }
+}

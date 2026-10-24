@@ -26,10 +26,10 @@ export async function deriveSessionUseCase(
   if (!project) return err({ code: 'not_found', message: '项目不存在' });
 
   const agentId = asAgentId(command.agentId);
-  const runtime = deps.agents.runtime(agentId);
-  if (!runtime) return err(conflict(`未安装的 agent：${command.agentId}`));
-  if (runtime.descriptor.capabilities.prompt.state === 'denied') {
-    return err(conflict(runtime.descriptor.capabilities.prompt.reason ?? '该 agent 不可发送消息'));
+  const descriptor = deps.agents.descriptor(agentId);
+  if (!descriptor) return err(conflict(`没有在线节点提供 ${command.agentId}`));
+  if (descriptor.capabilities.prompt.state === 'denied') {
+    return err(conflict(descriptor.capabilities.prompt.reason ?? '该 agent 不可发送消息'));
   }
 
   const created = deriveSession({
@@ -75,8 +75,8 @@ export async function forkSessionUseCase(
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
   if (!source) return err(notFound('来源会话不存在'));
 
-  const sourceRuntime = deps.agents.runtime(source.agentId);
-  const forkCap = sourceRuntime?.descriptor.capabilities.fork;
+  const sourceDescriptor = deps.agents.descriptor(source.agentId);
+  const forkCap = sourceDescriptor?.capabilities.fork;
   if (!forkCap || forkCap.state === 'denied') {
     return err(conflict(forkCap?.reason ?? '该 agent 不支持会话分叉，所以不能作为血缘起点'));
   }
@@ -87,8 +87,9 @@ export async function forkSessionUseCase(
   if (!project) return err(notFound('项目不存在'));
 
   const agentId = asAgentId(command.agentId);
-  const runtime = deps.agents.runtime(agentId);
-  if (!runtime) return err(conflict(`未安装的 agent：${command.agentId}`));
+  if (!deps.agents.descriptor(agentId)) {
+    return err(conflict(`没有在线节点提供 ${command.agentId}`));
+  }
 
   const created = forkSession({
     source,

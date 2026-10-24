@@ -1,0 +1,16 @@
+{
+  "name": "@agent-hub/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "dependencies": {
+    "@agent-hub/adapter-opencode": "*",
+    "@agent-hub/adapter-pi": "*",
+    "@agent-hub/contract": "*",
+    "@agent-hub/domain": "*",
+    "@agent-hub/node-gateway": "*"
+  }
+}

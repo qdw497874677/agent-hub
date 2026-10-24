@@ -12,15 +12,20 @@ import type { ArtifactRepository } from '../ports/artifact-repository.ts';
 import type { LayoutStore } from '../ports/layout-store.ts';
 import type { SessionEventStream } from '../ports/event-stream.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
-import type { AgentRuntime } from '../ports/agent-runtime.ts';
 import type { WorkspaceFS } from '../ports/workspace-fs.ts';
 import type { CapacityPolicy } from '../ports/capacity-policy.ts';
 import type { NodeProvisioner } from '../ports/node-provisioner.ts';
 
-/** 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。 */
+/**
+ * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
+ *
+ * 注意这里**只暴露描述，不暴露运行时**：运行时属于 worker 进程，
+ * server 手上永远没有 `AgentRuntime`——它只有 `NodeGateway`。
+ * 早期版本在这里放过 `runtime()`，那等于让内核去摸别人的进程，是层次错位。
+ */
 export interface AgentCatalog {
   list(): readonly AgentDescriptor[];
-  runtime(id: AgentId): AgentRuntime | null;
+  descriptor(id: AgentId): AgentDescriptor | null;
 }
 
 export interface Deps {

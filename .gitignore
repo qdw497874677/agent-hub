@@ -7,3 +7,5 @@ dist/
 hub-data/
 apps/web/dist/
 .DS_Store
+test-results/
+playwright-report/

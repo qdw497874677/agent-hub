@@ -1,0 +1,255 @@
+import { DatabaseSync } from 'node:sqlite';
+import type {
+  Artifact,
+  CanvasLayout,
+  JournalEntry,
+  Project,
+  Seq,
+  Session,
+  SessionEvent,
+  Task
+} from '@agent-hub/domain';
+import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
+import { SCHEMA } from './schema.ts';
+import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
+import type { RepositorySet } from './mappers.ts';
+
+export interface SqliteStore extends RepositorySet {
+  /** 只给测试与 ops 用；内核永远拿不到它。 */
+  readonly db: DatabaseSync;
+  close(): void;
+}
+
+/**
+ * 一个 store 实例 = 一个写者进程（server）。worker 不碰这个库，
+ * 它只通过网关把事件送上来，序号由 server 分配。
+ */
+export function openSqliteStore(file: string): SqliteStore {
+  const db = new DatabaseSync(file);
+  db.exec(SCHEMA);
+
+  const insertProject = db.prepare(
+    'INSERT INTO projects(id, name, root_path, created_at) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, root_path = excluded.root_path'
+  );
+  const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
+  const selectProjects = db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
+
+  const upsertTask = db.prepare(
+    'INSERT INTO tasks(id, project_id, title, goal, status, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET title = excluded.title, goal = excluded.goal, ' +
+      'status = excluded.status, updated_at = excluded.updated_at'
+  );
+  const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
+  const selectTasksByProject = db.prepare(
+    'SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC'
+  );
+
+  const upsertSession = db.prepare(
+    'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
+      'status, last_seq, agent_session, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
+      'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
+      'updated_at = excluded.updated_at'
+  );
+  const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
+  const selectSessionsByTask = db.prepare(
+    'SELECT * FROM sessions WHERE task_id = ? ORDER BY created_at ASC'
+  );
+  const selectSessionsByProject = db.prepare(
+    'SELECT s.* FROM sessions s JOIN tasks t ON t.id = s.task_id ' +
+      'WHERE t.project_id = ? ORDER BY s.created_at ASC'
+  );
+  const selectAllSessions = db.prepare('SELECT * FROM sessions ORDER BY created_at ASC');
+  const appendJournal = db.prepare(
+    'INSERT OR IGNORE INTO journal(session_id, seq, type, payload, at) VALUES (?, ?, ?, ?, ?)'
+  );
+  const updateSessionCursor = db.prepare(
+    'UPDATE sessions SET last_seq = ?, status = ?, updated_at = ? WHERE id = ?'
+  );
+  const selectEventsAfter = db.prepare(
+    'SELECT seq, payload, at FROM journal WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
+  );
+  const insertEntryMap = db.prepare(
+    'INSERT OR REPLACE INTO entry_map(session_id, seq, entry_id) VALUES (?, ?, ?)'
+  );
+  const selectEntryId = db.prepare(
+    'SELECT entry_id FROM entry_map WHERE session_id = ? AND seq = ?'
+  );
+
+  const upsertArtifact = db.prepare(
+    'INSERT INTO artifacts(id, session_id, task_id, path, bytes, label, created_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING'
+  );
+  const selectArtifactsBySession = db.prepare(
+    'SELECT * FROM artifacts WHERE session_id = ? ORDER BY created_at ASC'
+  );
+  const selectArtifactsByTask = db.prepare(
+    'SELECT * FROM artifacts WHERE task_id = ? ORDER BY created_at ASC'
+  );
+
+  const upsertLayout = db.prepare(
+    'INSERT INTO layout(project_id, positions, updated_at) VALUES (?, ?, ?) ' +
+      'ON CONFLICT(project_id) DO UPDATE SET positions = excluded.positions, ' +
+      'updated_at = excluded.updated_at'
+  );
+  const selectLayout = db.prepare('SELECT * FROM layout WHERE project_id = ?');
+
+  function transaction(work: () => void): void {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      work();
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  function originColumns(session: Session): [string, string | null, number | null] {
+    return session.origin.kind === 'fork'
+      ? ['fork', session.origin.fromSessionId, session.origin.atSeq]
+      : ['derive', null, null];
+  }
+
+  const projects = {
+    async save(project: Project): Promise<void> {
+      insertProject.run(project.id, project.name, project.rootPath, project.createdAt);
+    },
+    async byId(id: Parameters<typeof asProjectId>[0]): Promise<Project | null> {
+      const row = selectProject.get(id);
+      return row ? toProject(row as never) : null;
+    },
+    async list(): Promise<Project[]> {
+      return selectProjects.all().map((row) => toProject(row as never));
+    }
+  };
+
+  const tasks = {
+    async save(task: Task): Promise<void> {
+      upsertTask.run(
+        task.id,
+        task.projectId,
+        task.title,
+        task.goal ?? null,
+        task.status,
+        task.createdAt,
+        task.updatedAt
+      );
+    },
+    async byId(id: Parameters<typeof asTaskId>[0]): Promise<Task | null> {
+      const row = selectTask.get(id);
+      return row ? toTask(row as never) : null;
+    },
+    async listByProject(projectId: Parameters<typeof asProjectId>[0]): Promise<Task[]> {
+      return selectTasksByProject.all(projectId).map((row) => toTask(row as never));
+    }
+  };
+
+  const sessions = {
+    async save(session: Session): Promise<void> {
+      const [kind, from, seq] = originColumns(session);
+      upsertSession.run(
+        session.id,
+        session.taskId,
+        session.agentId,
+        session.model,
+        kind,
+        from,
+        seq,
+        session.status,
+        session.lastSeq,
+        session.agentSessionRef,
+        session.createdAt,
+        session.updatedAt
+      );
+    },
+    async byId(id: Parameters<typeof asSessionId>[0]): Promise<Session | null> {
+      const row = selectSession.get(id);
+      return row ? toSession(row as never) : null;
+    },
+    async listByTask(taskId: Parameters<typeof asTaskId>[0]): Promise<Session[]> {
+      return selectSessionsByTask.all(taskId).map((row) => toSession(row as never));
+    },
+    async listByProject(projectId: Parameters<typeof asProjectId>[0]): Promise<Session[]> {
+      return selectSessionsByProject.all(projectId).map((row) => toSession(row as never));
+    },
+    async listAll(): Promise<Session[]> {
+      return selectAllSessions.all().map((row) => toSession(row as never));
+    },
+    /** 事件与游标必须同一次提交，否则崩溃会留下"库里多了事件但 seq 没动"。 */
+    async append(session: Session, event: SessionEvent, at: number): Promise<void> {
+      transaction(() => {
+        appendJournal.run(
+          session.id,
+          session.lastSeq,
+          event.kind,
+          JSON.stringify(event),
+          at
+        );
+        updateSessionCursor.run(session.lastSeq, session.status, session.updatedAt, session.id);
+      });
+    },
+    async eventsAfter(sessionId: Parameters<typeof asSessionId>[0], seq: Seq): Promise<JournalEntry[]> {
+      return selectEventsAfter
+        .all(sessionId, seq)
+        .map((row) => toJournalEntry(row as never));
+    },
+    async linkEntry(sessionId: Parameters<typeof asSessionId>[0], seq: Seq, entryId: string): Promise<void> {
+      insertEntryMap.run(sessionId, seq, entryId);
+    },
+    async entryIdAt(sessionId: Parameters<typeof asSessionId>[0], seq: Seq): Promise<string | null> {
+      const row = selectEntryId.get(sessionId, seq) as { entry_id?: string } | undefined;
+      return row?.entry_id ?? null;
+    }
+  };
+
+  const artifacts = {
+    async save(artifact: Artifact): Promise<void> {
+      upsertArtifact.run(
+        artifact.id,
+        artifact.sessionId,
+        artifact.taskId,
+        artifact.path,
+        artifact.bytes,
+        artifact.label,
+        artifact.createdAt
+      );
+    },
+    async bySession(sessionId: Parameters<typeof asSessionId>[0]): Promise<Artifact[]> {
+      return selectArtifactsBySession.all(sessionId).map((row) => toArtifact(row as never));
+    },
+    async byTask(taskId: Parameters<typeof asTaskId>[0]): Promise<Artifact[]> {
+      return selectArtifactsByTask.all(taskId).map((row) => toArtifact(row as never));
+    }
+  };
+
+  const layout = {
+    async load(projectId: Parameters<typeof asProjectId>[0]): Promise<CanvasLayout | null> {
+      const row = selectLayout.get(projectId) as { positions?: string; updated_at?: number } | undefined;
+      if (!row?.positions) return null;
+      return {
+        projectId: asProjectId(projectId),
+        positions: JSON.parse(row.positions) as CanvasLayout['positions'],
+        updatedAt: row.updated_at ?? 0
+      };
+    },
+    async save(value: CanvasLayout): Promise<void> {
+      upsertLayout.run(value.projectId, JSON.stringify(value.positions), value.updatedAt);
+    }
+  };
+
+  return {
+    projects,
+    tasks,
+    sessions,
+    artifacts,
+    layout,
+    db,
+    close(): void {
+      db.close();
+    }
+  };
+}

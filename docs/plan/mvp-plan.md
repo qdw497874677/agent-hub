@@ -159,3 +159,27 @@ Gate：在一台干净的同版本机器上，从 `git clone` 到画出第一个
 - **M2 是最高风险的一步**：`SessionEvent` 的六个变体要一次错对，因为它决定了每个后续 adapter 的映射成本。宁可 M2 拖长两天，也不要先随便定事件类型。
 - **M4 是第二高风险**：双权威历史（平台 journal 管血缘与可检索，agent 会话文件管送给模型的上下文）在这里第一次被真正使用。`adopt(cursor)` 若在这里发现不成立，M3 的 fork 要重做。
 - **M5 是体检**：它不改产品能力，只证明前四步的架构没走歪。这就是为什么它排在被验证的东西全部到位之后，而不是更早。
+
+## 7 落地记录（M1–M6 全部实现后回填）
+
+六个 milestone 的顺序按原计划执行，没有重排。以下是实施中与计划不同的地方——**计划的价值在于偏差可被记录**，不在它一开始就写对：
+
+| 计划 | 实际 | 原因 |
+|---|---|---|
+| `AgentDescriptor` 里的模型清单由适配器写死 | 由 worker 启动时问 agent 自己（Pi 的 `get_available_models`），取不到就报空 | 裸模型名 `glm-5.3` 在多个 provider 已认证时被 Pi 拒绝（`ambiguous across providers`），平台补不出前缀。见 [ADR 0003](../adr/0003-model-list-comes-from-the-agent.md) |
+| 派生会话必须带 model | 空 model 合法，等于「用 agent 自己的默认」 | 同上；强制选择只会逼用户面对一张不可信的表 |
+| `Deps.agents` 是 `AgentCatalog{list(), runtime(id)}` | `{list(), descriptor(id)}` | 前者是把 worker 的进程塞进内核手里。server 只该有 `NodeGateway` |
+| 画布首次加载即可派生 | agent 列表为空时画布 2 秒轮询，派生对话框如实显示「还没有节点上线」 | worker hello 比页面晚到（远程节点、模型探测都要时间） |
+| `artifacts` 能力 Pi / OpenCode 都算 available | OpenCode 标 `limited`（ACP 工具结果无权威文件路径） | 只有 `rawOutput` 带绝对路径时才归档；假装能做会让产出物列表悄悄丢东西 |
+| `fork` 能力全 available | 两个 agent 都标 `limited`，但平台血缘仍精确 | Pi 与 ACP 都没有「按 entry 分叉」的接口；血缘是平台自己的账，不依赖它们 |
+| Playwright 预清理数据目录 | 不清理，用例用带时间戳的项目名自我隔离 | Playwright 会在 worker 进程里再求值一次 config，`rmSync` 会把 server 正在写的目录删成 unlinked fd——数据看着有、`sqlite3` 查不到 |
+| — | Pi 的 stderr 与退出码进 `ended.reason`，卡片上显示原因一行 | 没有它，「失败」是个无法追问的状态 |
+
+M6 的实际验收方式（可复跑）：
+
+```bash
+npm run ci     # 三层架构约束 + typecheck + 35 条单测
+npm run e2e    # 真浏览器 + 真 Pi：建项目 → 建任务 → 派生 → 模型吐出带 run id 的字符串
+```
+
+`npm run e2e` 里那条断言是刻意收窄的：只认落在 `.react-flow__node-session` 里的文本。收窄之前它一度「通过」——匹配的是检查器里 textarea 的值。

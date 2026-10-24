@@ -3,8 +3,14 @@
   "private": true,
   "type": "module",
   "version": "0.0.0",
-  "engines": { "node": ">=26" },
-  "workspaces": ["packages/*", "packages/adapters/*", "apps/*"],
+  "engines": {
+    "node": ">=26"
+  },
+  "workspaces": [
+    "packages/*",
+    "packages/adapters/*",
+    "apps/*"
+  ],
   "scripts": {
     "up": "node apps/server/src/main.ts",
     "web": "vite",
@@ -16,9 +22,12 @@
     "check:domain": "node scripts/check-domain-purity.mjs",
     "check:boundaries": "node scripts/check-import-boundaries.mjs",
     "check:ports": "node scripts/check-port-signature.mjs",
-    "ci": "npm run check && npm run typecheck && npm test"
+    "ci": "npm run check && npm run typecheck && npm run typecheck:web && npm test",
+    "build": "npm run build --workspace @agent-hub/web",
+    "e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
   }

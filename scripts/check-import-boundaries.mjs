@@ -14,7 +14,7 @@ const ALLOWED = new Map([
   ['@agent-hub/adapter-pi', ['@agent-hub/domain', '@agent-hub/contract']],
   ['@agent-hub/adapter-opencode', ['@agent-hub/domain', '@agent-hub/contract']],
   ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway']],
-  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-pi', '@agent-hub/adapter-opencode']],
+  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-opencode']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
 
@@ -62,7 +62,7 @@ for (const dir of ['packages', 'apps']) {
     for (const file of await walk(join(pkgDir, 'src'))) {
       const source = await readFile(file, 'utf8');
       for (const m of source.matchAll(SPECIFIER)) {
-        const spec = m[1].replace(/\/.*$/, '');
+        const spec = m[1].split('/').slice(0, 2).join('/');
         if (allowed.includes(spec)) continue;
         const isApp = new RegExp(`^(${APP_PREFIX})$`).test(spec);
         failures.push(

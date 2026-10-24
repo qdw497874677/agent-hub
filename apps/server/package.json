@@ -1,0 +1,17 @@
+{
+  "name": "@agent-hub/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/main.ts"
+  },
+  "dependencies": {
+    "@agent-hub/contract": "*",
+    "@agent-hub/domain": "*",
+    "@agent-hub/node-gateway": "*",
+    "@agent-hub/storage-sqlite": "*",
+    "@hono/node-server": "^1.19.5",
+    "hono": "^4.9.12"
+  }
+}

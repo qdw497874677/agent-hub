@@ -42,8 +42,9 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
   if (input.task.status === 'abandoned') {
     return err(conflict('不能从已放弃的任务派生新会话——死路不该再长出分支'));
   }
+  // 空 model 是合法值：意思是「用这个 agent 自己的默认模型」。
+  // 平台不该假装知道每个 agent 有哪些模型（见 packages/adapters/*/descriptor.ts）。
   const model = input.model.trim();
-  if (!model) return err(invalid('必须选择一个模型'));
   return ok({
     id: input.id ?? newSessionId(),
     taskId: input.task.id,
@@ -75,7 +76,6 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     return err(conflict(`分叉点 ${input.atSeq} 超出该会话已有事件（${input.source.lastSeq}）`));
   }
   const model = input.model.trim();
-  if (!model) return err(invalid('必须选择一个模型'));
   return ok({
     id: input.id ?? newSessionId(),
     taskId: input.source.taskId,

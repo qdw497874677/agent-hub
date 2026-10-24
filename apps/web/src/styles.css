@@ -1,0 +1,63 @@
+@import 'tailwindcss';
+@import '@xyflow/react/dist/style.css';
+
+/*
+ * 深色控制室。令牌名字与 docs/design/visual-direction.md §2 一一对应，
+ * 改这里就是改设计；组件里不写十六进制。
+ */
+@theme {
+  --color-canvas: #14181a;
+  --color-panel: #1b2022;
+  --color-card: #1f2528;
+  --color-card-raised: #242b2e;
+  --color-hair: #2e3639;
+  --color-strong: #3c4649;
+  --color-primary: #e8e3d9;
+  --color-secondary: #9aa39e;
+  --color-tertiary: #6b7570;
+  --color-accent: #d9a05b;
+  --color-accent-dim: #8a6a3d;
+  --color-sage: #6e8c80;
+  --color-rust: #8c6a55;
+
+  --font-sans: 'Noto Sans SC', 'Inter Tight', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+  --text-meta: 11px;
+  --text-meta--line-height: 1.4;
+  --text-body: 13px;
+  --text-body--line-height: 1.55;
+  --text-sub: 12px;
+  --text-sub--line-height: 1.5;
+  --text-head: 15px;
+  --text-head--line-height: 1.4;
+  --text-title: 20px;
+  --text-title--line-height: 1.3;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  background: var(--color-canvas);
+  color: var(--color-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+}
+
+/* React Flow 默认的浅色变量在这一层被覆盖 */
+.react-flow {
+  --xy-background-color: var(--color-canvas);
+  --xy-edge-stroke: var(--color-strong);
+  --xy-edge-stroke-selected: var(--color-accent);
+  --xy-attribution-background-color: transparent;
+}
+
+.react-flow__background {
+  opacity: 0.55;
+}
+
+.react-flow__attribution {
+  display: none;
+}
