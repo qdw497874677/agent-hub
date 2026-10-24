@@ -18,7 +18,7 @@ More than one matching provider is authenticated. Use --provider or provider/mod
 
 ## 决定
 
-1. **模型清单只能从 agent 自己那里取。** Pi 适配器在 worker 启动时发一次 `get_available_models`（RPC 命令，见 Pi 文档 `docs/rpc-commands.md`），把 `{provider, id}` 组成 `provider/id` 作为模型字符串。取不到就报**空列表**。
+1. **模型清单只能从 agent 自己那里取。** Pi 适配器在 worker 启动时发一次 `get_available_models` 与一次 `get_state`（RPC 命令，见 Pi 文档 `docs/rpc-commands.md`），把 `{provider, id}` 组成 `provider/id` 作为模型字符串。默认值取 `get_state` 里 Pi **此刻真在用的**那个，而不是「第一个同名模型」——`glm-5.3` 能在七个 provider 下同名，挑错一个不报错，只会跑到别的计费账号上。取不到就报**空列表**。
 2. **空 model 是合法值，意思是「用 agent 自己的默认」。** 领域层不校验 model 非空（`packages/domain/src/session.ts`），契约里 `model: z.string()` 而不是 `min(1)`。画布上显示「默认模型」。
 3. **UI 不隐藏做不到的事。** 模型列表为空时，派生对话框显示「用 agent 自己的默认」并禁用选择器；能力做不到时同理（`limited(reason)` / `denied(reason)`）。
 4. OpenCode 走 ACP，`session/new` 没有稳定的模型字段，所以它的 `models` 恒为 `[]`——这不是缺陷，是如实上报。

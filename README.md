@@ -55,7 +55,7 @@ apps/web      ── 画布
 
 packages/domain       零依赖。四个聚合 + 11 个端口 + 用例
 packages/contract     Zod 定边界，z.infer 出类型
-packages/storage-sqlite、node-gateway、adapters/{pi,opencode,l1}
+packages/storage-sqlite、node-gateway、adapters/{pi,opencode}
 ```
 
 四个聚合是 `Task / Session / Agent / Artifact`。**Server 与 Worker 不是领域概念**，它们是适配器：内核里没有「进程」「节点」「连接」这些词。`packages/domain` 的 `dependencies` 为空，由 `npm run check:domain` 强制。
@@ -72,6 +72,8 @@ packages/storage-sqlite、node-gateway、adapters/{pi,opencode,l1}
 4. 在 `apps/worker/src/main.ts` 的 runtimes 里挂上。
 
 完成的标志：`npm test` 绿，且 `git diff --stat` 显示 `packages/domain` 与 `apps/web` **零改动**。OpenCode 就是这样加进来的。
+
+L1（把 agent 的原生 TUI 嵌进来，走 tmux 控制模式）是 T2：降级规则已经定好——不能 fork、不能作为血缘端点、不能结构化检索。它不进 MVP 的原因不是难，是它会稀释「画布上看见血缘」这条主线。
 
 ## 开发
 
