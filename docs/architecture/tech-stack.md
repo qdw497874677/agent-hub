@@ -67,7 +67,18 @@ TypeScript 的两个优势，权重更高：
 
 **结论**：TS。Go 的优势集中在"分发"这一件事上，而这件事被 `NodeProvisioner` 端口隔离了——将来真被分发卡住，重写 worker 为 Go 不触碰领域层，这正是端口的价值。
 
-### 4.2 与 wemux-lite 的三处刻意差异
+### 4.2 复核：为什么不是 DuckDB
+
+用 DuckDB 的直觉是对的——agent 产生的数据看起来是分析型的。但它落在错的一层。四条理由，前两条是硬的：
+
+1. **并发模型对不上进程拓扑。** DuckDB 官方文档只给两种 in-process 模式：*一个*进程读写，或多个进程**只读**。官方 discussion #4899 说得更直接：「多个进程对同一个 DuckDB 文件的并发写不受支持，且未来也不太可能支持——它们会争同一份 WAL、同一批 block。」而我们必然是 server + worker 两个进程，且开发期每天都在服务运行时用 CLI 看一眼库——这在 SQLite WAL 下是免费的，在 DuckDB 下是硬冲突。
+2. **依赖代价把我们刚解决掉的问题装回来。** `node:sqlite` 是 Node 26 内置；DuckDB 要 `@duckdb/node-api` 原生绑定，这正是砍掉 `better-sqlite3` 时去掉的那类麻烦。
+3. **负载形状是 OLTP。** 点查（`session by id`）、游标范围扫（`seq > cursor`）、小事务 upsert（状态位、画布布局、`last_acked_seq`）——DuckDB 是列存，最擅长的是大范围聚合，最不擅长的是单行更新与逐条小事务提交。
+4. **数据量差两个数量级。** 重度用户一年约 10^6 量级事件行；DuckDB 的优势门槛在 10^7–10^8。
+
+**但两者不是竞争关系，是分工关系**：控制面用行存（SQLite），分析面用列存（DuckDB）。DuckDB 的 `sqlite` 扩展可以 `ATTACH 'agent-hub.db' (TYPE SQLITE)` 直接查现有库，所以选 SQLite **不锁死** DuckDB。T2 的用量统计（token / 时长 / 工具分布）就是它的位置——那时是只读、独立进程、离线聚合，刚好绕开单写者限制。
+
+### 4.3 与 wemux-lite 的三处刻意差异
 
 | 维度 | wemux-lite | agent-hub | 理由 |
 |---|---|---|---|
@@ -75,7 +86,7 @@ TypeScript 的两个优势，权重更高：
 | SQLite | `better-sqlite3`（原生模块，需编译） | **`node:sqlite`**（内置 `DatabaseSync`） | 去掉原生编译，装起来不再依赖编译器 |
 | HTTP | 裸 `node:http` + `ws`（依赖表里只有 jose/ws，说明路由是手写的） | **Hono + ws** | 手写路由是单人项目里最不产生价值的那类代码 |
 
-### 4.3 事件日志：fork 的地基
+### 4.4 事件日志：fork 的地基
 
 Fork 要求"固定的事件游标"（用户故事 S6.2），所以日志必须是**追加式且每 Session 单调递增**：
 
@@ -91,7 +102,7 @@ journal(session_id TEXT, seq INTEGER, type TEXT, payload JSON, at INTEGER,
 
 Artifact 存文件系统（按 Session 分目录），SQLite 只存元数据与路径。**不把二进制塞进 SQLite**——备份策略因此变成"拷一个 .db + 拷一个目录"。
 
-### 4.4 协议版本
+### 4.5 协议版本
 
 WebSocket 帧与 HTTP API 各带一个整数版本，握手时协商。v1 只需要"版本不一致就拒绝并给出人话原因"，不需要兼容矩阵——那是 T2 的 `NodeGateway` 里的事。
 
