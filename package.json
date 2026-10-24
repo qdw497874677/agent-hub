@@ -1,0 +1,25 @@
+{
+  "name": "agent-hub",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "engines": { "node": ">=26" },
+  "workspaces": ["packages/*", "packages/adapters/*", "apps/*"],
+  "scripts": {
+    "up": "node apps/server/src/main.ts",
+    "web": "vite",
+    "dev": "node scripts/dev.mjs",
+    "test": "node --test \"packages/**/*.test.ts\" \"apps/server/**/*.test.ts\" \"apps/worker/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json",
+    "typecheck:web": "tsc -p apps/web/tsconfig.json",
+    "check": "npm run check:domain && npm run check:boundaries && npm run check:ports",
+    "check:domain": "node scripts/check-domain-purity.mjs",
+    "check:boundaries": "node scripts/check-import-boundaries.mjs",
+    "check:ports": "node scripts/check-port-signature.mjs",
+    "ci": "npm run check && npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
