@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { JournalEntryDto, SessionDto, SessionEventDto } from './api.ts';
+import { streamUrl, type JournalEntryDto, type SessionDto, type SessionEventDto } from './api.ts';
 
 export type Block =
   | { readonly kind: 'text'; readonly text: string }
@@ -103,7 +103,7 @@ export function useLiveStream(): LiveMap {
   const source = useRef<EventSource | null>(null);
 
   useEffect(() => {
-    const events = new EventSource('/api/stream');
+    const events = new EventSource(streamUrl());
     source.current = events;
     events.addEventListener('frame', (message) => {
       const frame = JSON.parse((message as MessageEvent<string>).data) as {

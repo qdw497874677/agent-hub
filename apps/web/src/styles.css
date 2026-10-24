@@ -61,3 +61,31 @@ body,
 .react-flow__attribution {
   display: none;
 }
+
+/* 控件默认是浅色按钮，深底上像两块糊上去的白纸 */
+.react-flow__controls {
+  box-shadow: none;
+}
+
+.react-flow__controls-button {
+  background: var(--color-panel);
+  border-bottom: 1px solid var(--color-hair);
+  color: var(--color-secondary);
+  width: 24px;
+  height: 24px;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--color-card-raised);
+}
+
+.react-flow__controls-button svg {
+  fill: var(--color-secondary);
+  max-width: 10px;
+  max-height: 10px;
+}
+
+.react-flow__controls-button:disabled svg {
+  fill: var(--color-tertiary);
+  opacity: 0.5;
+}

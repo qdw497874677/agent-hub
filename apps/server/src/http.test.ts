@@ -164,7 +164,7 @@ const descriptor: AgentDescriptor = {
   defaultModel: 'fake-1'
 };
 
-function harness() {
+function harness(token: string | null = null) {
   const dispatched: WorkerCommand[] = [];
   const tasks = fakeTasks();
   const sessions = fakeSessions(tasks.rows);
@@ -216,7 +216,7 @@ function harness() {
     hub,
     workers: () => [],
     live: { has: (id) => live.has(id), add: (id) => void live.add(id), drop: (id) => void live.delete(id) },
-    token: null
+    token
   });
 
   const call = async (path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> => {
@@ -442,4 +442,21 @@ test('event 落盘后能从 /events 读回，seq 单调', async () => {
     [1, 2]
   );
   assert.equal(sessions.journal.get(sessionId)?.length, 2);
+});
+
+test('绑非 loopback 时 token 可从请求头或查询串带（SSE 设不了请求头）', async () => {
+  const { call } = harness('s3cret');
+
+  assert.equal((await call('/api/health')).status, 401);
+  assert.equal((await call('/api/health?token=wrong')).status, 401);
+  assert.equal((await call('/api/health?token=s3cret')).status, 200);
+  assert.equal(
+    (await call('/api/health', { headers: { authorization: 'Bearer s3cret' } })).status,
+    200
+  );
+  // 请求头优先：带对了就放行，查询串里的错值不参与判定
+  assert.equal(
+    (await call('/api/health?token=wrong', { headers: { authorization: 'Bearer s3cret' } })).status,
+    200
+  );
 });

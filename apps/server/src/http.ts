@@ -66,7 +66,11 @@ export function createApp(options: AppOptions): Hono {
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
   app.use('/api/*', async (c, next) => {
     if (options.token === null) return next();
-    if ((c.req.header('authorization') ?? '') !== `Bearer ${options.token}`) {
+    // header 优先；SSE（EventSource）设不了请求头，所以也接受查询串。
+    const offered = (c.req.header('authorization') ?? '') === `Bearer ${options.token}`
+      ? options.token
+      : (c.req.query('token') ?? '');
+    if (offered !== options.token) {
       return c.json({ error: { code: 'unauthorized', message: '缺少或错误的 token' } }, 401);
     }
     return next();

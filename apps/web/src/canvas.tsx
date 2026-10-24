@@ -139,7 +139,8 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, o
         maxZoom={1.4}
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="var(--color-hair)" />
-        <Controls showInteractive={false} className="!bg-panel !border-hair" />
+        {/* 图例在左下角，控件放右下角：两者曾经叠在一起，图例被压成两行看不清的字 */}
+        <Controls showInteractive={false} position="bottom-right" />
       </ReactFlow>
     </div>
   );

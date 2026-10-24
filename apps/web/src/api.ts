@@ -29,10 +29,39 @@ export class RequestFailed extends Error {
   }
 }
 
+const TOKEN_KEY = 'agent-hub:token';
+
+/**
+ * 绑非 loopback 时服务端会要求 token，而浏览器没办法像 curl 那样带 `-H`。
+ * 所以 token 从 URL 进来一次（`?token=…`），存下来、从地址栏抹掉，
+ * 之后由 fetch 带 Authorization。SSE 不能设请求头，所以它走 query 参数。
+ */
+function bootstrapToken(): string | null {
+  const url = new URL(window.location.href);
+  const fromUrl = url.searchParams.get('token');
+  if (fromUrl) {
+    localStorage.setItem(TOKEN_KEY, fromUrl);
+    url.searchParams.delete('token');
+    window.history.replaceState(null, '', url.toString());
+    return fromUrl;
+  }
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+const token = typeof window === 'undefined' ? null : bootstrapToken();
+
+/** SSE 用：EventSource 设不了请求头，只能把 token 放查询串。 */
+export const streamUrl = (): string =>
+  token === null ? '/api/stream' : `/api/stream?token=${encodeURIComponent(token)}`;
+
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) }
+    headers: {
+      'content-type': 'application/json',
+      ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+      ...(init?.headers ?? {})
+    }
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: ApiError } | null;

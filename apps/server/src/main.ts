@@ -177,9 +177,11 @@ server.on('upgrade', (request, socket, head) => {
 
 const spawnWorker = readEnv('HUB_SPAWN_WORKER') ?? '1';
 if (spawnWorker === '1') {
+  // 绑 0.0.0.0 时本机 worker 仍该连回环地址：0.0.0.0 是「监听所有网卡」，不是可连的地址。
+  const loopback = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
   const child = spawn(process.execPath, [join(repoRoot, 'apps', 'worker', 'src', 'main.ts')], {
     stdio: 'inherit',
-    env: { ...process.env, HUB_URL: `ws://${host}:${port}/worker`, HUB_TOKEN: token ?? '' }
+    env: { ...process.env, HUB_URL: `ws://${loopback}:${port}/worker`, HUB_TOKEN: token ?? '' }
   });
   child.on('exit', (code) => log(`本地 worker 退出（code ${code}）`));
   const shutdown = () => {
