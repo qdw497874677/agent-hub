@@ -12,7 +12,7 @@ import type {
 } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
 import { piDescriptorFor } from './descriptor.ts';
-import { mapPiEvent } from './map-event.ts';
+import { createPiEventMapper } from './map-event.ts';
 
 /**
  * 事件队列：把 child process 的推送转成 domain 要的 `AsyncIterable<SessionEvent>`。
@@ -58,6 +58,7 @@ class PiSession implements RuntimeSession {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly queue = new EventQueue();
   private readonly pending = new Map<string, Pending>();
+  private readonly mapper = createPiEventMapper();
   private counter = 0;
   private disposed = false;
   /** Pi 的失败原因几乎都在 stderr 上（比如模型名有歧义），丢掉它等于把可诊断性丢了。 */
@@ -96,7 +97,7 @@ class PiSession implements RuntimeSession {
           }
           continue;
         }
-        for (const event of mapPiEvent(record)) this.queue.push(event);
+        for (const event of this.mapper.map(record)) this.queue.push(event);
       }
     } catch (error) {
       this.queue.push({

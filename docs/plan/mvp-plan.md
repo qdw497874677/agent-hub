@@ -178,12 +178,13 @@ Gate：在一台干净的同版本机器上，从 `git clone` 到画出第一个
 | 事件按到达顺序各自落盘 | 同一会话串行、不同会话并行 | 读改写撞同一个 `seq`，`INSERT OR IGNORE` 静默丢事件。见 [ADR 0004](../adr/0004-serialize-events-per-session.md) |
 | 任务状态改在检查器里 | 改在任务卡上（hover 出现「收尾 / 放弃 / 重开」） | 状态是任务的事，检查器是会话的事；而且它离「这条是死路」这个判断最近的地方就是画布 |
 | 节点状态只在 `/api/workers` 里 | 顶栏常驻「N/M 节点」徽章与节点清单 | S1.2 要的是「它挂了」和「我改坏了配置」能分辨，那得看得见 |
+| 产出物从 `tool_execution_end` 的入参取路径 | 按 `toolCallId` 在 `tool_execution_start` 记住路径，成功结束后才发 `artifact` | Pi 的 end 事件**不带 args**（只有 `toolCallId`/`result`/`isError`/`durationMs`），按 end 找路径永远找不到——产出物一直是空的，而 conformance fixture 因为把 args 塞进了 end，全绿。fixture 已改成真实录制形状 |
 | 搜索按 journal 行匹配 | 新增 `session_text` 投影表，搜索查它 | 流式回复把一句话拆成几十行 delta，按行 LIKE 对自然语言失效。见 [ADR 0005](../adr/0005-search-the-session-text-not-events.md) |
 
 M6 的实际验收方式（可复跑）：
 
 ```bash
-npm run ci     # 三层架构约束 + typecheck + 43 条单测
+npm run ci     # 三层架构约束 + typecheck + 47 条单测
 npm run e2e    # 真浏览器 + 真 Pi：建项目 → 建任务 → 派生 → 模型吐出带 run id 的字符串
 ```
 
