@@ -7,6 +7,7 @@
     ".": "./src/main.ts"
   },
   "dependencies": {
+    "@agent-hub/adapter-grok": "*",
     "@agent-hub/adapter-opencode": "*",
     "@agent-hub/adapter-pi": "*",
     "@agent-hub/contract": "*",
