@@ -7,7 +7,7 @@ import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase, setTaskStatusUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { appendWorkLogUseCase, editWorkLogUseCase } from './work-log.ts';
-import { summaryFromHandoff } from '../work-log.ts';
+import { summaryFromBody } from '../work-log.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -43,8 +43,8 @@ test('追加日志：seq 单调递增，任务 logSeq 跟进', async () => {
   const w = await world();
   assert.equal(w.task.status, 'todo');
   assert.equal(w.task.ownerId, 'u1');
-  const a = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, kind: 'note', body: '第一条' });
-  const b = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, kind: 'decision', body: '用 SDK' });
+  const a = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, body: '第一条' });
+  const b = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, body: '用 SDK' });
   assert.ok(a.ok && b.ok);
   assert.equal(a.value.entry.seq, 1);
   assert.equal(b.value.entry.seq, 2);
@@ -54,29 +54,34 @@ test('追加日志：seq 单调递增，任务 logSeq 跟进', async () => {
   assert.deepEqual((await w.deps.workLog.list(w.task.id, { limit: 10, beforeSeq: 2 })).map((e) => e.seq), [1]);
 });
 
-test('handoff 刷新任务 summary；系统类日志不能手写；空/超长被拒', async () => {
+test('任何人/agent 写的日志都刷新「当前进展」，系统条目不刷；空/超长被拒', async () => {
   const w = await world();
-  const handoff = await appendWorkLogUseCase(w.deps, {
+  const note = await appendWorkLogUseCase(w.deps, {
     taskId: w.task.id,
     author: user,
-    kind: 'handoff',
     body: '## 已完成\n- 迁移和接口都好了\n\n## 下一步\n- UI'
   });
-  assert.ok(handoff.ok);
-  assert.equal(handoff.value.task.summary, '迁移和接口都好了');
-  assert.equal((await w.deps.workLog.latestHandoff(w.task.id))?.id, handoff.value.entry.id);
+  assert.ok(note.ok);
+  assert.equal(note.value.task.summary, '迁移和接口都好了');
+  const agent = { kind: 'agent', sessionId: 's', agentId: 'fake', model: 'm1' } as const;
+  const byAgent = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: agent, body: '接好了 MCP' });
+  assert.ok(byAgent.ok);
+  assert.equal(byAgent.value.task.summary, '接好了 MCP');
+  const system = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: { kind: 'system' }, body: '会话结束' });
+  assert.ok(system.ok);
+  assert.equal(system.value.task.summary, '接好了 MCP');
+  assert.equal((await w.deps.workLog.latestNote(w.task.id))?.id, byAgent.value.entry.id);
+  assert.deepEqual((await w.deps.workLog.list(w.task.id, { limit: 10, excludeSystem: true })).map((e) => e.seq), [2, 1]);
 
-  const forged = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, kind: 'status_change', body: 'x' });
-  assert.ok(!forged.ok);
-  const empty = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, kind: 'note', body: '  ' });
+  const empty = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, body: '  ' });
   assert.ok(!empty.ok);
-  const huge = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, kind: 'note', body: 'x'.repeat(33 * 1024) });
+  const huge = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, body: 'x'.repeat(33 * 1024) });
   assert.ok(!huge.ok);
 });
 
 test('修订 = 追加新版本；旧版 supersededBy 指向新版，默认列表只见新版', async () => {
   const w = await world();
-  const first = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, kind: 'note', body: '错字' });
+  const first = await appendWorkLogUseCase(w.deps, { taskId: w.task.id, author: user, body: '错字' });
   assert.ok(first.ok);
   const edited = await editWorkLogUseCase(w.deps, { entryId: first.value.entry.id, body: '正字', author: user });
   assert.ok(edited.ok);
@@ -90,26 +95,26 @@ test('修订 = 追加新版本；旧版 supersededBy 指向新版，默认列表
   assert.ok(!(await editWorkLogUseCase(w.deps, { entryId: first.value.entry.id, body: 'x', author: user })).ok);
 });
 
-test('开会话：todo → in_progress，并记一条 session_event；改状态记 status_change', async () => {
+test('开会话：todo → in_progress，并记一条系统日志；改状态也记系统日志', async () => {
   const w = await world();
   const session = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: 'm1' });
   assert.ok(session.ok);
   const task = await w.deps.tasks.byId(w.task.id);
   assert.equal(task?.status, 'in_progress');
   const [event] = await w.deps.workLog.list(w.task.id, { limit: 10 });
-  assert.equal(event?.kind, 'session_event');
+  assert.equal(event?.author.kind, 'system');
   assert.equal(event?.sessionId, session.value.id);
 
   const blocked = await setTaskStatusUseCase(w.deps, w.task.id, 'blocked', 'agent', '等 key');
   assert.ok(blocked.ok);
   assert.equal(blocked.value.logSeq, 2);
   const [change] = await w.deps.workLog.list(w.task.id, { limit: 1 });
-  assert.equal(change?.kind, 'status_change');
+  assert.equal(change?.author.kind, 'system');
   assert.match(change?.body ?? '', /改为「受阻」：等 key/);
   assert.ok(!(await setTaskStatusUseCase(w.deps, w.task.id, 'done', 'agent')).ok);
 });
 
-test('summaryFromHandoff 跳过模板小标题、截断长行', () => {
-  assert.equal(summaryFromHandoff('## 已完成\n- A 好了'), 'A 好了');
-  assert.equal(summaryFromHandoff('x'.repeat(300)).length, 200);
+test('summaryFromBody 跳过模板小标题、截断长行', () => {
+  assert.equal(summaryFromBody('## 已完成\n- A 好了'), 'A 好了');
+  assert.equal(summaryFromBody('x'.repeat(300)).length, 200);
 });

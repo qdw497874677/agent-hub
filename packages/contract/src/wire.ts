@@ -248,11 +248,10 @@ export const createTaskRequest = z.object({
   goal: z.string().max(2000).optional()
 });
 
+export const setTaskSummaryRequest = z.object({ summary: z.string().max(2000) });
 export const setTaskStatusRequest = z.object({ status: taskStatusSchema, note: z.string().max(2000).optional() });
 
 // ── 工作日志（tasks-and-capabilities.md §2.2）──────────────────
-export const logKindSchema = z.enum(['note', 'progress', 'decision', 'blocker', 'handoff', 'status_change', 'session_event']);
-export const writableLogKindSchema = z.enum(['note', 'progress', 'decision', 'blocker', 'handoff']);
 export const logLinkSchema = z.object({
   kind: z.enum(['session', 'artifact', 'file', 'commit', 'pr', 'url']),
   ref: z.string().min(1).max(2000),
@@ -268,7 +267,6 @@ export const workLogEntrySchema = z.object({
   taskId: id,
   seq: z.number().int().positive(),
   author: logAuthorSchema,
-  kind: logKindSchema,
   body: z.string(),
   links: z.array(logLinkSchema),
   attachments: z.array(z.string()),
@@ -278,7 +276,7 @@ export const workLogEntrySchema = z.object({
   supersededBy: z.string().nullable()
 });
 export const appendLogRequest = z.object({
-  kind: writableLogKindSchema,
+  // 日志没有种类了：旧客户端带的 kind 会被 zod 默认剥掉
   body: z.string().min(1).max(32 * 1024),
   links: z.array(logLinkSchema).max(20).optional(),
   sessionId: z.string().min(1).optional()

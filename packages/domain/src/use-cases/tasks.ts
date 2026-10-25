@@ -47,7 +47,21 @@ export async function setTaskStatusUseCase(
   if (changed.value === task) return ok(task);
   await deps.tasks.save(changed.value);
   const who = actor === 'agent' ? 'agent' : actor === 'system' ? '系统' : '人';
-  await recordSystemLog(deps, taskId, 'status_change', `${who}把状态从「${TASK_STATUS_LABEL[task.status]}」改为「${TASK_STATUS_LABEL[status]}」${note ? `：${note}` : ''}`);
+  await recordSystemLog(deps, taskId, `${who}把状态从「${TASK_STATUS_LABEL[task.status]}」改为「${TASK_STATUS_LABEL[status]}」${note ? `：${note}` : ''}`);
   // 系统日志会推进 logSeq：返回最新的任务
   return ok((await deps.tasks.byId(taskId)) ?? changed.value);
+}
+
+/** 手动改「当前进展」那一行（之后再有人/agent 写日志仍会自动刷新它）。空串 = 清空。 */
+export async function setTaskSummaryUseCase(
+  deps: Pick<Deps, 'now' | 'tasks'>,
+  taskId: TaskId,
+  summary: string
+): Promise<Result<Task, DomainError>> {
+  const task = await deps.tasks.byId(taskId);
+  if (!task) return err(notFound('任务不存在'));
+  const text = summary.trim().slice(0, 500);
+  const next: Task = { ...task, summary: text || null, updatedAt: deps.now() };
+  await deps.tasks.save(next);
+  return ok(next);
 }

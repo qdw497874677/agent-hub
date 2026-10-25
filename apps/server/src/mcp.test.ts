@@ -78,7 +78,7 @@ test('/mcp：官方 SDK 客户端用工具令牌列工具、读任务、写交�
   assert.deepEqual(listed.tools.map((t) => t.name).sort(), ['task_get', 'task_log_append', 'task_log_list', 'task_update_status']);
   const got = await client.callTool({ name: 'task_get', arguments: {} });
   assert.match(JSON.stringify(got.content), /接通能力层/);
-  const appended = await client.callTool({ name: 'task_log_append', arguments: { kind: 'handoff', body: '做完了一半，下一步接 UI' } });
+  const appended = await client.callTool({ name: 'task_log_append', arguments: { body: '做完了一半，下一步接 UI' } });
   assert.notEqual(appended.isError, true);
   const again = await client.callTool({ name: 'task_get', arguments: {} });
   assert.match(JSON.stringify(again.structuredContent), /下一步接 UI/);

@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { LogAuthor, LogKind, LogLink, TaskId, WorkLogDraft, WorkLogEntry, WorkLogQuery, WorkLogRepository } from '@agent-hub/domain';
+import type { LogAuthor, LogLink, TaskId, WorkLogDraft, WorkLogEntry, WorkLogQuery, WorkLogRepository } from '@agent-hub/domain';
 import { asSessionId, asTaskId } from '@agent-hub/domain';
 
 type Row = Record<string, unknown>;
@@ -35,7 +35,6 @@ function toEntry(row: Row): WorkLogEntry {
     taskId: asTaskId(row.task_id as string),
     seq: row.seq as number,
     author: parseJson<LogAuthor>(row.author, { kind: 'system' }),
-    kind: row.kind as LogKind,
     body: row.body as string,
     links: parseJson<LogLink[]>(row.links, []),
     attachments: parseJson<string[]>(row.attachments, []),
@@ -64,7 +63,7 @@ export function createWorkLogRepository(db: DatabaseSync): WorkLogRepository {
           draft.taskId,
           draft.taskId,
           JSON.stringify(draft.author),
-          draft.kind,
+          'entry', // 旧版的 kind 列：不再有种类，只为兼容旧库保留，读时忽略
           draft.body,
           JSON.stringify(draft.links),
           JSON.stringify(draft.attachments),
@@ -92,16 +91,13 @@ export function createWorkLogRepository(db: DatabaseSync): WorkLogRepository {
         where.push('seq < ?');
         params.push(query.beforeSeq);
       }
-      if (query.kinds && query.kinds.length > 0) {
-        where.push(`kind IN (${query.kinds.map(() => '?').join(', ')})`);
-        params.push(...query.kinds);
-      }
+      if (query.excludeSystem) where.push("json_extract(author, '$.kind') <> 'system'");
       params.push(Math.max(1, Math.min(query.limit, 200)));
       const rows = db.prepare(`SELECT * FROM task_log_entries WHERE ${where.join(' AND ')} ORDER BY seq DESC LIMIT ?`).all(...params);
       return (rows as Row[]).map(toEntry);
     },
-    async latestHandoff(taskId: TaskId): Promise<WorkLogEntry | null> {
-      return (await this.list(taskId, { limit: 1, kinds: ['handoff'] }))[0] ?? null;
+    async latestNote(taskId: TaskId): Promise<WorkLogEntry | null> {
+      return (await this.list(taskId, { limit: 1, excludeSystem: true }))[0] ?? null;
     }
   };
 }

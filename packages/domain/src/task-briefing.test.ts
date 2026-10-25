@@ -13,14 +13,23 @@ import type { Task } from './task.ts';
 
 const task = (over: Partial<Task> = {}) => ({ id: 't', title: '接 MCP', goal: null, summary: null, ...over }) as Task;
 
-test('taskBriefing：没内容不垫；有交接带上；超长截到 4KB 内', () => {
-  assert.equal(taskBriefing(task(), null), null);
-  const b = taskBriefing(task({ goal: '让 agent 写日志' }), { seq: 3, body: '## 下一步\n- 接 UI' } as never);
-  assert.match(b ?? '', /目标：让 agent 写日志/);
-  assert.match(b ?? '', /最近交接（#3）/);
-  const long = taskBriefing(task({ summary: '摘'.repeat(5000) }), { seq: 9, body: '交'.repeat(5000) } as never) ?? '';
+const entry = (seq: number, body: string, author: object = { kind: 'agent', agentId: 'grok', model: 'g', sessionId: 's' }) =>
+  ({ seq, body, author }) as never;
+
+test('taskBriefing：没内容不垫；最新人/agent 日志放全文，系统和更早的压成一行；超长截到 4KB 内', () => {
+  assert.equal(taskBriefing(task(), []), null);
+  const b = taskBriefing(task({ goal: '让 agent 写日志' }), [
+    entry(5, '会话结束', { kind: 'system' }),
+    entry(4, '## 下一步\n- 接 UI'),
+    entry(2, '先看了代码', { kind: 'user', userId: 'u', name: 'David' })
+  ]) ?? '';
+  assert.match(b, /目标：让 agent 写日志/);
+  assert.match(b, /最新日志（#4，grok·g）：\n## 下一步/);
+  assert.match(b, /- #2 David：先看了代码\n- #5 系统：会话结束/);
+  assert.doesNotMatch(b, /kind=/);
+  const long = taskBriefing(task({ summary: '摘'.repeat(5000) }), [entry(9, '交'.repeat(5000)), entry(8, '早'.repeat(5000))]) ?? '';
   assert.ok(new TextEncoder().encode(long).length <= BRIEFING_MAX_BYTES, `got ${long.length}`);
-  assert.match(long, /最近交接/);
+  assert.match(long, /最新日志/);
 });
 
 test('新会话第一句给 agent 垫背景，journal 里仍是原话；第二句不垫', async () => {
@@ -30,7 +39,7 @@ test('新会话第一句给 agent 垫背景，journal 里仍是原话；第二�
   assert.ok(project.ok);
   const t = await createTaskUseCase(w.deps, { projectId: project.value.id, title: '接 MCP', goal: '写交接', ownerId: 'u' });
   assert.ok(t.ok);
-  await appendWorkLogUseCase(w.deps, { taskId: t.value.id, kind: 'handoff', body: '上一位：做完 P2', author: { kind: 'user', userId: 'u' } } as never);
+  await appendWorkLogUseCase(w.deps, { taskId: t.value.id, body: '上一位：做完 P2', author: { kind: 'user', userId: 'u' } } as never);
   const s = await deriveSessionUseCase(w.deps, { taskId: t.value.id, agentId: 'fake', model: 'm' });
   assert.ok(s.ok);
   assert.ok((await promptSessionUseCase(w.deps, { sessionId: s.value.id, text: '开工' })).ok);

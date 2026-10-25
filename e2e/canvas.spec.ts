@@ -183,7 +183,7 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await expect(taskNode(page, TASK_TITLE)).toContainText('进行中');
 });
 
-test('任务详情：工作日志时间线、写交接刷新当前进展、改状态留痕', async ({ page }) => {
+test('任务详情：日志按作者区分、写日志刷新当前进展、可手改、改状态留痕', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
   await taskNode(page, TASK_TITLE).hover();
@@ -194,18 +194,29 @@ test('任务详情：工作日志时间线、写交接刷新当前进展、改�
   await expect(drawer.getByTestId('work-log')).toContainText('开了');
   await expect(drawer.getByTestId('work-log')).toContainText('改为「已收尾」');
 
-  await drawer.getByRole('button', { name: '决定', exact: true }).click();
+  // 系统条目署名「系统」；日志没有种类标签
+  await expect(drawer.locator('[data-author="system"]').first().getByTestId('log-author')).toHaveText('系统');
+  await expect(drawer.getByRole('button', { name: '决定', exact: true })).toHaveCount(0);
+
   await drawer.getByLabel('写日志').fill(`用官方 SDK-${RUN}`);
   await drawer.getByRole('button', { name: '记录' }).click();
   await expect(drawer.getByTestId('work-log')).toContainText(`用官方 SDK-${RUN}`);
+  // 任何一条人写的日志都刷新当前进展
+  await expect(drawer.getByTestId('task-summary')).toContainText(`用官方 SDK-${RUN}`);
+  await expect(drawer.locator('[data-author="user"]').first().getByTestId('log-author')).not.toHaveText('系统');
 
-  await drawer.getByRole('button', { name: '写交接', exact: true }).click();
-  await expect(drawer.getByRole('button', { name: '交接', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await drawer.getByRole('button', { name: '插入交接模板' }).click();
   await expect(drawer.getByLabel('写日志')).toBeFocused();
   await expect(drawer.getByLabel('写日志')).toHaveValue(/## 已完成/);
   await drawer.getByLabel('写日志').fill(`## 已完成\n- 交接-${RUN}\n\n## 下一步\n- 接 MCP`);
   await drawer.getByRole('button', { name: '记录' }).click();
   await expect(drawer.getByTestId('task-summary')).toContainText(`交接-${RUN}`);
+
+  // 当前进展可以手改
+  await drawer.getByTestId('task-summary').getByRole('button', { name: '改' }).click();
+  await drawer.getByLabel('当前进展').fill(`手改进展-${RUN}`);
+  await drawer.getByRole('button', { name: '保存' }).click();
+  await expect(drawer.getByTestId('task-summary')).toContainText(`手改进展-${RUN}`);
 
   await drawer.getByRole('button', { name: '受阻' }).click();
   await expect(drawer.getByTestId('task-status')).toHaveText('受阻');
@@ -214,7 +225,7 @@ test('任务详情：工作日志时间线、写交接刷新当前进展、改�
   await expect(drawer.getByTestId('task-status')).toHaveText('进行中');
   await page.keyboard.press('Escape');
   await expect(drawer).toBeHidden();
-  await expect(taskNode(page, TASK_TITLE).getByTestId('task-card-summary')).toContainText(`交接-${RUN}`);
+  await expect(taskNode(page, TASK_TITLE).getByTestId('task-card-summary')).toContainText(`手改进展-${RUN}`);
 });
 
 /**

@@ -32,7 +32,7 @@ interface Task {
   status: TaskStatus;
   ownerId: UserId | null;       // 负责人（人）；agent 不当 owner，它是会话
   branch: string | null;        // workspaces.md：agent-hub/<task-slug>
-  summary: string | null;       // 「当前进展」一句话，由最近一条 handoff 自动刷新，也可手改
+  summary: string | null;       // 「当前进展」一句话，由最近一条人/agent 写的日志（非系统条目）自动刷新，也可手改（`PATCH /api/tasks/:id/summary`）
   logSeq: number;               // 日志最大序号，乐观并发用
   createdAt; updatedAt;
 }
@@ -69,13 +69,10 @@ type LogAuthor =
   | { kind: 'agent'; sessionId; agentId; model }   // 通过能力层写入
   | { kind: 'system' };                            // 平台自动：会话开始/结束、状态变化、PR 链接
 
-type LogKind = 'note' | 'progress' | 'decision' | 'blocker' | 'handoff' | 'status_change' | 'session_event';
-
 interface WorkLogEntry {
   id; taskId;
   seq: number;                  // 任务内单调递增，分页游标 & 乐观并发
-  author: LogAuthor;
-  kind: LogKind;
+  author: LogAuthor;             // 唯一的区分维度：人 / 哪个 agent / 系统
   body: string;                 // markdown，内容不限，上限 32 KB
   links: { kind: 'session' | 'artifact' | 'file' | 'commit' | 'pr' | 'url'; ref: string; label?: string }[];
   attachments: AttachmentId[];  // 复用现有 attachment 存储
@@ -87,15 +84,17 @@ interface WorkLogEntry {
 ```
 
 - **只追加**：日志是事实记录。「编辑」= 追加一条新版本，旧版 `supersededBy` 指向新版；默认只显示最新版，可展开历史。删除 = 追加 tombstone（仅作者本人 / 项目 owner）。agent **不能**编辑或删除，只能追加。
-- **handoff（交接）** 是 `kind='handoff'` 的结构化约定，body 用固定小节：`## 已完成`、`## 进行中`、`## 下一步`、`## 风险/待决`、`## 关键文件`。写入 handoff 时自动刷新 `Task.summary`。新会话启动时，平台把「任务目标 + summary + 最近一条 handoff」放进首条提示的上下文（可关闭），完整日志则让 agent 按需用工具读——避免把整本日志塞进上下文。
+- **日志没有种类（kind）**：一条日志 = 作者 + 时间 + 自由 markdown 正文（+ 可选链接）。早期设计里的 `note/progress/decision/blocker/handoff/status_change/session_event` 已整体删除——分类既让人犹豫又没被用来做任何事；真正需要区分的只有「谁写的」：人显示用户名，agent 显示「运行时 · 模型」并链接到写它的会话，系统条目显示「系统」。
+- **交接不再是一种类型**：任何一条人/agent 写的日志都会刷新 `Task.summary`（取第一行有意义的文字，≤200 字；系统条目不刷）；`summary` 仍可手改。`## 已完成 / ## 进行中 / ## 下一步 / ## 风险/待决 / ## 关键文件` 只是一个可选的「插入交接模板」按钮。新会话启动时，平台把「任务目标 + summary + 最近日志」放进首条提示（最新一条人/agent 日志全文，其余至多 5 条压成一行，总共 ≤4 KB；可关闭），完整日志让 agent 按需用 `task.log.list` 读。
+- **迁移**：sqlite 的 `task_log_entries.kind` 列为兼容旧库保留，新行写 `'entry'`，读取时忽略；HTTP/MCP 收到旧客户端带的 `kind` 一律忽略。
 - system 条目自动产生：会话开始/结束（含状态、模型、机器·分支）、状态变化、PR 打开/合并。这样即便 agent 什么也没写，日志也有骨架。
 
 ### 2.3 UI
 
 - **任务卡片（画布）**：标题、状态徽章、负责人头像、「机器 · 分支」、`summary` 一行（截断）、最近日志的相对时间与作者图标（人/agent/系统），运行中会话的脉冲点。
-- **任务详情（桌面）**：右侧抽屉，两栏——左「概览」（目标 markdown、状态、负责人、分支/PR、会话列表）；右「工作日志」时间线（倒序，按 kind 着色，handoff 置顶卡片样式，作者为 agent 时可点进对应会话的那一刻 `sessionId + seq`）。底部输入框：markdown + 附件 + kind 选择（默认 note）。
+- **任务详情（桌面）**：右侧抽屉，两栏——左「概览」（目标 markdown、状态、负责人、分支/PR、会话列表）；右「工作日志」时间线（倒序，按作者着色：人 / agent / 系统（淡色），作者为 agent 时可点进对应会话）。底部输入框：markdown + 附件 + 「插入交接模板」按钮，没有种类选择。
 - **移动端**：详情全屏，顶部 Tab「概览 / 日志 / 会话」；日志时间线单列，输入框吸底；卡片上 summary 折成两行。
-- 会话视图里加一个「任务」侧栏：显示目标与最近 handoff，按钮「写交接」（人写）或在会话结束时提示「让 agent 写交接」（发送一条预设提示）。
+- 会话视图里加一个「任务」侧栏：显示目标与最近日志，按钮「插入交接模板」（人写）或在会话结束时提示「让 agent 写交接」（发送一条预设提示）。
 
 ## 3. 能力接入层：调研
 
@@ -162,9 +161,9 @@ MCP 只是 `ToolProvider` 集合的一个**传输适配器**（`node-gateway`/`a
 
 | 工具 | scope | 说明 |
 | --- | --- | --- |
-| `task.get` | `task:read` | 当前任务：标题、目标、状态、summary、分支、会话列表 |
-| `task.log.list` | `task:read` | 参数 `{ beforeSeq?, limit≤50, kinds? }`，倒序分页 |
-| `task.log.append` | `task:log:write` | `{ kind: note\|progress\|decision\|blocker\|handoff, body, links? }`；可带 `expectedSeq` 防并发覆盖语义 |
+| `task.get` | `task:read` | 当前任务：标题、目标、状态、summary、分支、会话列表、`latestEntry`（最新一条人/agent 日志） |
+| `task.log.list` | `task:read` | 参数 `{ beforeSeq?, limit≤50 }`，倒序分页 |
+| `task.log.append` | `task:log:write` | `{ body, links? }`，作者由令牌决定（运行时 + 模型 + 会话）；可带 `expectedSeq` 防并发覆盖语义 |
 | `task.update_status` | `task:status:write` | 只允许 §2.1 中 agent 可走的迁移 |
 
 后续：`workspace.files.read/list`（Worker 侧实现）、`artifact.publish`、`task.create_subtask`、`session.spawn`（需要人确认）。
@@ -205,12 +204,12 @@ sequenceDiagram
   participant Hub
   participant UI as 用户
   participant A2 as 会话 2 的 agent
-  A1->>Hub: task.log.append{kind:progress, body}
-  A1->>Hub: task.log.append{kind:handoff, body:已完成/下一步/风险}
+  A1->>Hub: task.log.append{body}
+  A1->>Hub: task.log.append{body:已完成/下一步/风险}
   Hub->>Hub: 刷新 Task.summary；审计 tool.call
   Hub-->>UI: 卡片 summary 更新（事件流）
   UI->>Hub: 换模型/换机器 → 新会话
-  Hub->>A2: 首条提示附「目标 + summary + 最新 handoff」
+  Hub->>A2: 首条提示附「目标 + summary + 最近日志」
   A2->>Hub: task.log.list{limit:20}
   A2->>Hub: task.get
   Note over A2: 接着干
@@ -231,12 +230,12 @@ sequenceDiagram
 | --- | --- | --- |
 | P1 日志 | domain `work-log.ts` + `WorkLogRepository` 端口 + sqlite 实现；Task 新字段与状态机；REST `GET/POST /api/tasks/:id/log`；system 自动条目；任务详情抽屉（桌面+移动） | 人能写/读日志，会话起停自动出条目 |
 | P2 能力层 | `ToolProvider` 端口、`ToolGateway` 用例、`ToolGrant` 签发/吊销、`/mcp` Streamable HTTP 适配器、`TaskToolProvider` 四个工具；wire `start_session.tools`；ACP 适配器把 `sessionParams` 的 `mcpServers` 换成注入值（按 `mcpCapabilities.http` 判断） | OpenCode、Grok 会话里能调 `task.*` |
-| P3 Pi + 交接体验 | Worker 启动时确保 `~/.pi/agent/mcp.json` 有 `agent-hub` 条目，spawn 时注入 env；新会话首条提示附带 handoff；「写交接」按钮 | 三个运行时都能完成 §4.4 |
+| P3 Pi + 交接体验 | Worker 启动时确保 `~/.pi/agent/mcp.json` 有 `agent-hub` 条目，spawn 时注入 env；新会话首条提示附带最近日志；「插入交接模板」按钮 | 三个运行时都能完成 §4.4 |
 | P4 兜底与扩展 | stdio shim + `tool.call` 帧；限流/审计面板；`workspace.*`、`artifact.*` provider；CLI `agent-hub task log` | 只有 WS 出站的 Worker 也能用 |
 
 ## 6. 迁移
 
-1. sqlite 迁移：`tasks` 加 `owner_id, branch, summary, log_seq`；状态 `open` → 有会话则 `in_progress`、否则 `todo`。新表 `task_log_entries(id, task_id, seq, author_json, kind, body, links_json, attachments_json, session_id, created_at, edited_at, superseded_by)`，`UNIQUE(task_id, seq)`；`tool_grants(id, token_hash, task_id, session_id, worker_id, scopes, expires_at, revoked_at)`。
+1. sqlite 迁移：`tasks` 加 `owner_id, branch, summary, log_seq`；状态 `open` → 有会话则 `in_progress`、否则 `todo`。新表 `task_log_entries(id, task_id, seq, author_json, kind（已废弃，保留兼容）, body, links_json, attachments_json, session_id, created_at, edited_at, superseded_by)`，`UNIQUE(task_id, seq)`；`tool_grants(id, token_hash, task_id, session_id, worker_id, scopes, expires_at, revoked_at)`。
 2. 回填：为每个已有会话生成一条 `system/session_event`（开始时间、模型、最终状态），让老任务的时间线不是空的。
 3. contract：`taskSchema` 新字段一律可选读、带默认值；旧前端忽略未知字段；`start_session.tools` 可选——旧 Worker 收不到就当没有能力层，行为与现在一致。
 4. 回滚：新表与新字段只增不删，回滚代码即可。
@@ -246,7 +245,7 @@ sequenceDiagram
 | # | 问题 | 决定 |
 | --- | --- | --- |
 | 1 | 日志允许编辑吗？ | 允许人「编辑 = 追加新版本」，保留历史；agent 只追加 |
-| 2 | 新会话自动注入多少上下文？ | 只注入目标 + summary + 最新 handoff（≤4 KB），其余用 `task.log.list` 按需取；项目可关 |
+| 2 | 新会话自动注入多少上下文？ | 只注入目标 + summary + 最近日志（≤4 KB），其余用 `task.log.list` 按需取；项目可关 |
 | 3 | agent 能否把任务设为 done？ | 不能；最多 `in_review`，done 由人确认 |
 | 4 | 主路径是 HTTP 还是 stdio shim？ | HTTP（三个运行时都原生支持，实现最少）；shim 只为网络受限的 Worker |
 | 5 | 令牌放 URL 还是 header？ | header（`Authorization: Bearer`）；URL 会进访问日志 |

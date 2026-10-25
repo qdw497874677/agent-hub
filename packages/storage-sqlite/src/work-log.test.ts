@@ -42,7 +42,7 @@ test('老库迁移：补 v2 列；open 按有无会话回填成 in_progress / to
   }
 });
 
-test('工作日志往返：seq 原子分配、修订链、分页与按种类过滤', async () => {
+test('工作日志往返：seq 原子分配、修订链、分页与排除系统条目', async () => {
   const store = openSqliteStore(':memory:');
   const project = createProject({ name: 'demo', rootPath: '/tmp/demo', directoryExists: true, now });
   assert.ok(project.ok);
@@ -55,12 +55,11 @@ test('工作日志往返：seq 原子分配、修订链、分页与按种类过�
   assert.equal(back?.logSeq, 3);
   assert.equal(back?.branch, 'agent-hub/t');
 
-  const draft = (id: string, kind: 'note' | 'handoff', body: string, supersedes: string | null = null) => {
+  const draft = (id: string, system: boolean, body: string, supersedes: string | null = null) => {
     const d = draftLogEntry({
       id,
       taskId: asTaskId(task.value.id),
-      author: { kind: 'agent', sessionId: 's1', agentId: 'grok', model: 'm' },
-      kind,
+      author: system ? { kind: 'system' } : { kind: 'agent', sessionId: 's1', agentId: 'grok', model: 'm' },
       body,
       links: [{ kind: 'commit', ref: 'abc123' }],
       supersedes,
@@ -69,9 +68,9 @@ test('工作日志往返：seq 原子分配、修订链、分页与按种类过�
     assert.ok(d.ok);
     return d.value;
   };
-  const one = await Promise.all([store.workLog.append(draft('a', 'note', '一')), store.workLog.append(draft('b', 'handoff', '二'))]);
+  const one = await Promise.all([store.workLog.append(draft('a', false, '一')), store.workLog.append(draft('b', false, '二'))]);
   assert.deepEqual(one.map((e) => e.seq).sort(), [1, 2]);
-  const c = await store.workLog.append(draft('c', 'note', '三', 'a'));
+  const c = await store.workLog.append(draft('c', false, '三', 'a'));
   assert.equal(c.seq, 3);
   assert.equal((await store.workLog.byId('a'))?.supersededBy, 'c');
   assert.deepEqual(c.author, { kind: 'agent', sessionId: 's1', agentId: 'grok', model: 'm' });
@@ -80,7 +79,10 @@ test('工作日志往返：seq 原子分配、修订链、分页与按种类过�
   assert.deepEqual((await store.workLog.list(task.value.id, { limit: 10 })).map((e) => e.id), ['c', 'b']);
   assert.deepEqual((await store.workLog.list(task.value.id, { limit: 10, includeSuperseded: true })).map((e) => e.id), ['c', 'b', 'a']);
   assert.deepEqual((await store.workLog.list(task.value.id, { limit: 1, beforeSeq: 3 })).map((e) => e.id), ['b']);
-  assert.equal((await store.workLog.latestHandoff(task.value.id))?.id, 'b');
+  assert.equal((await store.workLog.latestNote(task.value.id))?.id, 'c');
+  await store.workLog.append(draft('d', true, '会话结束'));
+  assert.equal((await store.workLog.latestNote(task.value.id))?.id, 'c');
+  assert.deepEqual((await store.workLog.list(task.value.id, { limit: 10, excludeSystem: true })).map((e) => e.id), ['c', 'b']);
   // 任务保存不会让 logSeq 倒退（并发追加时以大者为准）
   await store.tasks.save({ ...task.value, logSeq: 1 });
   assert.equal((await store.tasks.byId(task.value.id))?.logSeq, 3);

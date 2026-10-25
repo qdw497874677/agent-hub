@@ -21,18 +21,18 @@ import {
   promptRequest,
   saveLayoutRequest,
   setTaskStatusRequest,
+  setTaskSummaryRequest,
   appendLogRequest,
   editLogRequest,
   workLogPage,
   workerInfoSchema
 } from '@agent-hub/contract';
-import type { Deps, LogAuthor, LogKind, Principal, TaskStatus } from '@agent-hub/domain';
+import type { Deps, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
 import {
   ATTACHMENT_LIMITS,
   asProjectId,
   asSessionId,
   asTaskId,
-  LOG_KINDS,
   appendWorkLogUseCase,
   editWorkLogUseCase,
   changeSessionOption,
@@ -54,7 +54,8 @@ import {
   readSessionAttachment,
   saveLayoutUseCase,
   searchUseCase,
-  setTaskStatusUseCase
+  setTaskStatusUseCase,
+  setTaskSummaryUseCase
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
 import { installAuth } from './auth.ts';
@@ -240,11 +241,9 @@ export function createApp(options: AppOptions): Hono {
     if (!(await deps.tasks.byId(taskId))) return fail(c, { code: 'not_found', message: '任务不存在' });
     const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 50) || 50, 1), 200);
     const before = c.req.query('beforeSeq');
-    const kinds = c.req.query('kinds')?.split(',').filter((kind): kind is LogKind => (LOG_KINDS as readonly string[]).includes(kind));
     const entries = await deps.workLog.list(taskId, {
       limit,
       beforeSeq: before ? Number(before) : undefined,
-      kinds: kinds && kinds.length > 0 ? kinds : undefined,
       includeSuperseded: c.req.query('history') === '1'
     });
     const last = entries.at(-1);
@@ -257,7 +256,6 @@ export function createApp(options: AppOptions): Hono {
     const result = await appendWorkLogUseCase(deps, {
       taskId: asTaskId(c.req.param('taskId')),
       author: userAuthor(c),
-      kind: input.value.kind,
       body: input.value.body,
       links: input.value.links,
       sessionId: input.value.sessionId ? asSessionId(input.value.sessionId) : null
@@ -269,6 +267,13 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, editLogRequest);
     if (!input.ok) return input.response;
     const result = await editWorkLogUseCase(deps, { entryId: c.req.param('entryId'), body: input.value.body, author: userAuthor(c) });
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  app.patch('/api/tasks/:taskId/summary', async (c) => {
+    const input = await body(c, setTaskSummaryRequest);
+    if (!input.ok) return input.response;
+    const result = await setTaskSummaryUseCase(deps, asTaskId(c.req.param('taskId')), input.value.summary);
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 

@@ -68,7 +68,7 @@ export async function deriveSessionUseCase(
   return ok(session);
 }
 
-/** 会话开跑：todo 推到 in_progress，并记一条 session_event。 */
+/** 会话开跑：todo 推到 in_progress，并记一条系统日志。 */
 async function noteSessionStarted(
   deps: Pick<Deps, 'now' | 'tasks' | 'workLog'>,
   session: Session,
@@ -79,7 +79,7 @@ async function noteSessionStarted(
     const started = markStarted(task, deps.now());
     if (started !== task) await deps.tasks.save(started);
   }
-  await recordSystemLog(deps, session.taskId, 'session_event', body, session.id);
+  await recordSystemLog(deps, session.taskId, body, session.id);
 }
 
 export interface ForkCommand {
