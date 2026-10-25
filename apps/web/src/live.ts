@@ -160,7 +160,8 @@ export function useLiveStream(): LiveStream {
       setLive((current) => {
         const previous = current[frame.sessionId];
         // 播种过的会话，旧帧说明它已经在历史里了——重复上屏比丢一帧难看得多。
-        if (previous && frame.seq <= previous.lastSeq) return current;
+        // 状态帧（event 为 null）共用同一条事件的 seq，不能按这个规则丢。
+        if (previous && frame.event !== null && frame.seq <= previous.lastSeq) return current;
         const blocks = previous?.blocks ?? [];
         const reason =
           frame.event?.kind === 'ended' && frame.event.reason !== undefined
@@ -169,7 +170,9 @@ export function useLiveStream(): LiveStream {
         const next: LiveSession = {
           blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
           status: frame.status,
-          lastSeq: frame.seq,
+          // 只有带事件的帧才推进游标：状态帧和它旁边那条事件共用同一个 seq，
+          // 推进了就会把那条事件当成「旧帧」丢掉——提问气泡曾整条消失过。
+          lastSeq: frame.event ? frame.seq : previous?.lastSeq ?? 0,
           reason
         };
         return { ...current, [frame.sessionId]: next };

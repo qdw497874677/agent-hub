@@ -104,7 +104,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (pendingStart) await pendingStart;
     const session = sessions.get(sessionId);
     if (!session) {
+      // server 以为这条会话还活着（它只在收到 ended 时才忘掉）。
+      // 主动告诉它「已经不在了」，它下一次点击就会重新拉起，而不是又一次撞空。
       options.onLog?.(`未知会话：${sessionId}`);
+      send({ type: 'status', sessionId, status: 'gone' });
       return;
     }
     if (command.kind === 'prompt') {
@@ -165,11 +168,18 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     });
 
     void (async () => {
-      for await (const event of session.events()) {
-        send({ type: 'event', sessionId: command.sessionId, event });
-        if (event.kind === 'ended') break;
+      try {
+        for await (const event of session.events()) {
+          send({ type: 'event', sessionId: command.sessionId, event });
+          if (event.kind === 'ended') break;
+        }
+      } finally {
+        sessions.delete(command.sessionId);
+        // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
+        // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
+        send({ type: 'status', sessionId: command.sessionId, status: 'ended' });
+        await session.dispose();
       }
-      sessions.delete(command.sessionId);
     })();
   }
 

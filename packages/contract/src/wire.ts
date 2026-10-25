@@ -279,10 +279,14 @@ export const workerInfoSchema = z.object({
   reason: z.string().optional()
 });
 
+/**
+ * worker 关于「这条会话还在不在我这儿」的汇报。
+ * `running` / `ended` / `gone` 说的是**托管状态**，不是领域状态——领域状态由事件决定。
+ */
 export const workerStatusSchema = z.object({
   type: z.literal('status'),
   sessionId: id,
-  status: z.enum(['running', 'stopped', 'done', 'interrupted', 'failed']),
+  status: z.enum(['running', 'ended', 'gone']),
   reason: z.string().optional()
 });
 

@@ -140,7 +140,7 @@ serverGateway = createServerGateway({
     })();
   },
   onStatus(sessionId, status) {
-    if (status === 'ended') live.delete(sessionId);
+    if (status === 'ended' || status === 'gone') live.delete(sessionId);
     // 状态也要推：从「发出提问」到「agent 说出第一个字」之间可能十几秒，
     // 界面不能在这段时间里还挂着上一次的「完成」。
     void (async () => {
