@@ -2,7 +2,7 @@ import type { SessionEvent } from '@agent-hub/domain';
 
 /**
  * ACP（Agent Client Protocol）→ 平台归一化事件。
- * 纯函数，与 mapPiEvent 形状对称：两个 agent 说两种协议，但归一到同一组事件。
+ * 纯函数，与 mapPiEvent 形状对称：所有 ACP agent（OpenCode、Grok……）共用这一份映射。
  */
 export function mapAcpUpdate(
   update: unknown,
@@ -34,8 +34,9 @@ export function mapAcpUpdate(
       const events: SessionEvent[] = [
         { kind: 'tool_result', name, ok: status === 'completed', durationMs: 0 }
       ];
+      if (status === 'completed') events.push(...diffArtifacts(u['content']));
       const artifact = artifactOf(u['rawOutput']);
-      if (artifact) events.push(artifact);
+      if (artifact && !events.some((e) => e.kind === 'artifact' && e.path === artifact.path)) events.push(artifact);
       return events;
     }
     default:
@@ -43,8 +44,25 @@ export function mapAcpUpdate(
   }
 }
 
+/**
+ * ACP 的 write/edit 工具在完成时可以带 `content: [{ type: 'diff', path, newText }]`（ACP 标准的 diff 内容块；Grok 1.0.70 实测会带），
+ * 这是权威的文件路径；bytes 取 newText 的 UTF-8 长度。
+ */
+function diffArtifacts(content: unknown): (SessionEvent & { kind: 'artifact' })[] {
+  if (!Array.isArray(content)) return [];
+  const out: (SessionEvent & { kind: 'artifact' })[] = [];
+  for (const item of content) {
+    const c = item as Record<string, unknown> | null;
+    if (c?.['type'] !== 'diff' || typeof c['path'] !== 'string' || !c['path'].startsWith('/')) continue;
+    if (out.some((a) => a.path === c['path'])) continue;
+    const text = typeof c['newText'] === 'string' ? c['newText'] : '';
+    out.push({ kind: 'artifact', path: c['path'], bytes: Buffer.byteLength(text, 'utf8') });
+  }
+  return out;
+}
+
 /** 只认写文件类工具的输出，且必须带绝对路径。 */
-function artifactOf(rawOutput: unknown): SessionEvent | null {
+function artifactOf(rawOutput: unknown): (SessionEvent & { kind: 'artifact' }) | null {
   if (typeof rawOutput !== 'object' || rawOutput === null) return null;
   const path = (rawOutput as Record<string, unknown>)['path'];
   if (typeof path !== 'string' || !path.startsWith('/')) return null;

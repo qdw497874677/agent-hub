@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { jsonlRecords } from '@agent-hub/contract';
+import { GROK_ARGS } from './grok-runtime.ts';
 
 export interface GrokModelCatalog {
   readonly models: string[];
@@ -32,7 +33,7 @@ export async function discoverGrokModels(
   const empty: GrokModelCatalog = { models: [], defaultModel: '' };
   let child;
   try {
-    child = spawn(command, ['--no-auto-update', 'agent', 'stdio'], { stdio: ['pipe', 'pipe', 'pipe'] });
+    child = spawn(command, [...GROK_ARGS], { stdio: ['pipe', 'pipe', 'pipe'] });
   } catch {
     return empty;
   }
