@@ -26,7 +26,7 @@ function harness(hubToken: { value: string; until: number } | null = null) {
     }
     return { status: response.status, body: (await response.json().catch(() => null)) as any, cookies: response.headers.getSetCookie() };
   };
-  return { call, accounts, jar, tick: (ms: number) => (clock += ms) };
+  return { app, call, accounts, jar, tick: (ms: number) => (clock += ms) };
 }
 
 test('没登录：API 401，健康检查和账号接口放行', async () => {
@@ -78,10 +78,16 @@ test('登录：错密码与不存在的邮箱同一句话；停用账号拒绝�
 });
 
 test('旧 HUB_TOKEN：过渡期内 Bearer 放行、能换 Owner 登录；过期后两者都不行', async () => {
-  const { call, accounts, jar, tick } = harness({ value: 's3cret', until: 1_000_000 + 30 * DAY });
+  const { app, call, accounts, jar, tick } = harness({ value: 's3cret', until: 1_000_000 + 30 * DAY });
   await seedAccount(accounts, { email: 'o@x.co', password: 'owner password', role: 'owner', displayName: 'o' });
   assert.equal((await call('/api/projects', { headers: { authorization: 'Bearer s3cret' } })).status, 200);
-  assert.equal((await call('/api/projects?token=s3cret')).status, 200);
+  // 查询串只给 SSE：别的接口带 ?token= 一律 401（令牌会进日志、历史和 Referer）
+  assert.equal((await call('/api/projects?token=s3cret')).status, 401);
+  const abort = new AbortController();
+  const stream = await app.fetch(new Request('http://hub/api/stream?token=s3cret', { signal: abort.signal }));
+  assert.equal(stream.status, 200);
+  await stream.body?.cancel();
+  abort.abort();
   assert.equal((await call('/api/projects', { headers: { authorization: 'Bearer wrong' } })).status, 401);
   assert.equal((await call('/api/auth/token-login', { method: 'POST', body: JSON.stringify({ token: 'wrong' }) })).status, 401);
   const exchanged = await call('/api/auth/token-login', { method: 'POST', body: JSON.stringify({ token: 's3cret' }) });

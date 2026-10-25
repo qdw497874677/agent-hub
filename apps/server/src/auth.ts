@@ -24,6 +24,8 @@ export interface AuthOptions {
 }
 
 export const CSRF_HEADER = 'x-hub-csrf';
+/** 唯一允许 `?token=` 的路由（EventSource 设不了 Authorization）。 */
+export const SSE_PATH = '/api/stream';
 const LOGIN = 'hub_login';
 const CSRF = 'hub_csrf';
 const OPEN = ['/api/health', '/api/auth/'];
@@ -115,7 +117,8 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
     }
     // 过渡期：脚本仍可用 Bearer（或 SSE 用 ?token=）带旧 HUB_TOKEN。
     const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer /, '');
-    if (tokenValid(bearer) || tokenValid(c.req.query('token') ?? '')) return next();
+    // 查询串里的令牌会进访问日志、浏览器历史和 Referer，只给设不了请求头的 SSE 用。
+    if (tokenValid(bearer) || (path === SSE_PATH && tokenValid(c.req.query('token') ?? ''))) return next();
     return unauthorized(c);
   });
 

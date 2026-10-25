@@ -58,7 +58,7 @@ import {
   setTaskSummaryUseCase
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
-import { installAuth } from './auth.ts';
+import { installAuth, SSE_PATH } from './auth.ts';
 import { installMcp } from './mcp.ts';
 import type { ToolGateway } from '@agent-hub/domain';
 import { installAdmin } from './admin.ts';
@@ -144,7 +144,9 @@ export function createApp(options: AppOptions): Hono {
     // header 优先；SSE（EventSource）设不了请求头，所以也接受查询串。
     const offered = (c.req.header('authorization') ?? '') === `Bearer ${options.token}`
       ? options.token
-      : (c.req.query('token') ?? '');
+      : c.req.path === SSE_PATH
+        ? (c.req.query('token') ?? '')
+        : '';
     if (!sameSecret(offered, options.token)) {
       return c.json({ error: { code: 'unauthorized', message: '缺少或错误的 token' } }, 401); // 不是领域错误，所以不走 fail()
     }
