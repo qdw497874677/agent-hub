@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
-import { ACP_AGENT_DEFAULTS, createAcpRuntime, type AcpAgentConfig } from '@agent-hub/adapter-acp';
+import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
 import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
 import { connectWorkerLink } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
@@ -81,7 +81,10 @@ function acpAgents(): readonly AcpAgentConfig[] {
         id: candidate.id,
         label: typeof candidate.label === 'string' ? candidate.label : candidate.id,
         command: candidate.command,
-        args: Array.isArray(candidate.args) ? candidate.args.filter((arg) => typeof arg === 'string') : []
+        args: Array.isArray(candidate.args) ? candidate.args.filter((arg) => typeof arg === 'string') : [],
+        ...(Array.isArray(candidate.listModelsArgs)
+          ? { listModelsArgs: candidate.listModelsArgs.filter((arg) => typeof arg === 'string') }
+          : {})
       });
     }
     return agents.length > 0 ? agents : ACP_AGENT_DEFAULTS;
@@ -90,6 +93,13 @@ function acpAgents(): readonly AcpAgentConfig[] {
     return ACP_AGENT_DEFAULTS;
   }
 }
+
+// OPENCODE_COMMAND 是给单机安装留的后门：PATH 里那版 opencode 不对时改一条环境变量就够。
+const acpConfigs = acpAgents().map((config) =>
+  config.id === 'opencode' && env['OPENCODE_COMMAND'] ? { ...config, command: env['OPENCODE_COMMAND'] } : config
+);
+// ACP 只在开了会话之后才报模型；启动时先问一次，派生对话框才有得选。
+const acpModels = await Promise.all(acpConfigs.map((config) => discoverAcpModels(config)));
 
 // 先接住 adapter 的回调，等 link 就绪后转给它——adapter 在构造时就要拿到这个函数。
 let notifyAgentSessionRef: (sessionId: string, ref: string) => void = () => undefined;
@@ -104,17 +114,12 @@ const runtimes: AgentRuntime[] = [
     onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
     onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
   }),
-  ...acpAgents().map((config) =>
-    createAcpRuntime(
-      // OPENCODE_COMMAND 是给单机安装留的后门：PATH 里那版 opencode 不对时改一条环境变量就够。
-      config.id === 'opencode' && env['OPENCODE_COMMAND']
-        ? { ...config, command: env['OPENCODE_COMMAND'] }
-        : config,
-      {
-        onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
-        onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
-      }
-    )
+  ...acpConfigs.map((config, index) =>
+    createAcpRuntime(config, {
+      descriptor: acpDescriptor(config, [], acpModels[index] ?? []),
+      onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
+      onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
+    })
   ),
   createGrokRuntime({
     command: grokCommand,
@@ -126,6 +131,7 @@ const runtimes: AgentRuntime[] = [
 ];
 
 log(`Grok 认得 ${grokCatalog.models.length} 个模型（默认 ${grokCatalog.defaultModel || 'Grok 自己的默认'}）`);
+acpConfigs.forEach((config, index) => log(`${config.label} 认得 ${acpModels[index]?.length ?? 0} 个模型`));
 log(`Pi 认得 ${piModels.length} 个模型（默认 ${discovered.defaultModel || 'Pi 自己的默认'}）`);
 
 const link = connectWorkerLink({

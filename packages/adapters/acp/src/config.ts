@@ -23,10 +23,15 @@ export interface AcpAgentConfig {
   readonly authenticate?: (authMethods: readonly string[]) => { methodId: string; _meta?: Record<string, unknown> } | null;
   /** session/new 与 session/load 附带的 `_meta`（ACP 的扩展口子，例如 Grok 的 yoloMode）。 */
   readonly sessionMeta?: Readonly<Record<string, unknown>>;
+  /**
+   * 可选：列模型的命令行参数（同一个 command，每行输出一个模型 id）。
+   * ACP 只在 session/new 之后才报模型选项，没有它派生对话框里的模型清单就是空的。
+   */
+  readonly listModelsArgs?: readonly string[];
 }
 
 export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [
-  { id: 'opencode', label: 'OpenCode', command: 'opencode', args: ['acp'] }
+  { id: 'opencode', label: 'OpenCode', command: 'opencode', args: ['acp'], listModelsArgs: ['models'] }
 ];
 
 /**
@@ -36,9 +41,13 @@ export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [
  * 平台血缘仍然精确——降级的只是「agent 那边也真的从那一刻起重来」这半件事。
  * `artifacts` 标 limited：ACP 的 tool_call_update 没有权威文件路径字段。
  */
-export function acpDescriptor(config: AcpAgentConfig, options: readonly RuntimeOption[] = []): AgentDescriptor {
+export function acpDescriptor(
+  config: AcpAgentConfig,
+  options: readonly RuntimeOption[] = [],
+  discovered: readonly string[] = []
+): AgentDescriptor {
   const model = options.find((option) => option.category === 'model');
-  const models = model === undefined ? [] : [...new Set(choicesOf(model))];
+  const models = model === undefined ? [...new Set(discovered)] : [...new Set(choicesOf(model))];
   return {
     id: asAgentId(config.id),
     label: config.label,
