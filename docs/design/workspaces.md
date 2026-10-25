@@ -207,12 +207,12 @@ Session                id, taskId, checkoutId（必填、不可变）, workerId�
 
 **已定（采纳上一轮的建议）**：用 Worker 本机的 git 凭据；托管目录名在首次创建时固定，冲突追加 `-2`；归档目录只有 Owner 能释放；linked 目录的 remote 和项目 repo 不一致时只警告；无仓库的新托管目录默认 `git init`；会话只用一个目录；删除项目不删目录；成员默认只能用托管目录。
 
-**待定（括号里是建议）**：
+**第三轮已定**：
 
-1. **没有 remote 时怎么换机器继续**：经 hub 中转 `git bundle`？（先不做，只提示限制；需求多了再做）
-2. **任务分支的命名**：`agent-hub/<task-slug>` 还是带 id？（`agent-hub/<slug>-<短 id>`，避免重名）
-3. **worktree 放在哪**：`<root>/../.worktrees/<project>/<task>` 还是 `<root>/.worktrees`？（放在仓库外面的兄弟目录，避免污染 git status，也避免 agent 误读）
-4. **非 git 工作空间的并发**：排队还是允许并发但警告？（默认排队，可以手动「仍然运行」）
-5. **WIP 提交在合并时要不要 squash**？（合并时默认 squash；PR 由用户在平台上决定）
-6. **自动清理的天数**（14 天，只清理已推送或已合并的）
-7. **自动创建 PR**（P5 之后，接 GitHub 连接器或 gh CLI，可选）
+1. 没有 remote 时**不做** hub 中转 git bundle，只提示限制。
+2. 任务分支命名为 `agent-hub/<slug>-<短 id>`。
+3. worktree 放在仓库旁边的 `.worktrees` 目录（仓库外的兄弟目录）。
+4. 合并时默认 squash。
+5. 自动创建 PR 是可选能力，以后再做。
+
+目前没有待定问题。
