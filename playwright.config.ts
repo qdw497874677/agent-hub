@@ -32,7 +32,9 @@ export default defineConfig({
       ...process.env,
       HUB_PORT: String(port),
       HUB_DATA_DIR: '/tmp/agent-hub-e2e-data',
-      HUB_SPAWN_WORKER: '1'
+      HUB_SPAWN_WORKER: '1',
+      // 测试账号的密码文件放进 e2e 数据目录，不碰真实的 ~/.config/agent-hub
+      HUB_TEST_ACCOUNT_FILE: '/tmp/agent-hub-e2e-data/test-account'
     }
   }
 });

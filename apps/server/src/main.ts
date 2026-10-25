@@ -30,6 +30,9 @@ import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
+import { createLogSender, createResendSender, createScryptHasher, createTokenIssuer } from '@agent-hub/adapter-accounts';
+import type { AccountDeps } from '@agent-hub/domain';
+import { hubTokenWindow, seedTestAccount } from './account-setup.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -100,6 +103,32 @@ const deps: Deps = {
 
 const log = (message: string) => console.log(`[hub] ${message}`);
 
+// 账号体系是独立的限界上下文：不塞进 Deps。
+const resendKey = readEnv('RESEND_API_KEY');
+const accounts: AccountDeps = {
+  users: store.users,
+  logins: store.logins,
+  hasher: createScryptHasher(),
+  tokens: createTokenIssuer(),
+  mail: resendKey
+    ? createResendSender({ apiKey: resendKey, from: readEnv('HUB_MAIL_FROM') ?? 'agent-hub <onboarding@resend.dev>' })
+    : createLogSender(log),
+  now: () => Date.now()
+};
+const testAccount = readEnv('HUB_TEST_ACCOUNT') ?? 'test@agent-hub.local';
+if (testAccount !== 'off') {
+  await seedTestAccount(
+    accounts,
+    {
+      email: testAccount,
+      passwordFile: readEnv('HUB_TEST_ACCOUNT_FILE') ?? join(homedir(), '.config', 'agent-hub', 'test-account')
+    },
+    log
+  );
+}
+const hubToken = await hubTokenWindow(dataDir, token, Number(readEnv('HUB_TOKEN_SUNSET_DAYS') ?? 30), Date.now());
+if (token !== null && hubToken === null) log('HUB_TOKEN 已过 30 天过渡期：不再能登录或调 API（worker 通道仍用它）');
+
 /**
  * Worker 发来的会话帧先过领域的落点核对，再交给 ingest*。
  * 核对是异步的（要查库），串成一条链才能保证 ingest 的调用顺序和帧到达的顺序一致。
@@ -160,7 +189,7 @@ serverGateway = createServerGateway({
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard });
+const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, auth: { accounts, hubToken } });
 
 app.use('/*', serveStatic({ root: webDist }));
 app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));

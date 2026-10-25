@@ -1,6 +1,6 @@
 # 0008. 账号体系：单 Workspace、Owner + 成员、按机器签发接入凭据
 
-Status: proposed（草案，待评审）
+Status: accepted（2026-10-25 定稿；P1 已实现）
 日期: 2026-10-25
 
 ## 背景
@@ -18,8 +18,9 @@ Status: proposed（草案，待评审）
 5. 所有令牌只存 SHA-256；密码默认 scrypt（端口允许换 argon2id）。
 6. Google 用 OIDC 授权码 + PKCE + state + nonce，基于 `openid-client`；回调地址只来自 `HUB_PUBLIC_URL`。只有「双方邮箱都已验证」才自动关联。
 7. Worker 改为**按用户签发的一次性 Pairing Token → 兑换长期 Worker 凭据**，workerId 由凭据决定，可单独吊销；本机 Worker 保留 `localSecret`。`HUB_TOKEN` 进入过渡期后删除。
-8. 首启由 setup code（或 loopback / 旧 `HUB_TOKEN`）认领第一个 Owner；已有数据归它。
-9. 默认**仅邀请注册**。
+8. 首启：内置测试账号（Owner，密码写在 mode 600 文件里）或第一个注册的人成为 Owner；旧 `HUB_TOKEN` 30 天过渡期内可换成 Owner 登录。已有数据归 Owner。
+9. **开放注册**；成员全部可见、可添加机器；可停用账号；运营后台（用户、停用/启用、角色、机器）排在 P2。
+10. 发信用 Resend，未配置时只打日志；Google 登录本期只留端口；http 下允许无 `Secure` 的 cookie 以便测试；登录态滑动 30 天。
 
 ## 被否决的方案
 

@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { currentRun } from './run-id.ts';
+import { loginByApi } from './login.ts';
 
 /**
  * 闭环的那条线：一个干净的浏览器，从零到「会话在卡片里真的跑起来了」。
@@ -19,6 +20,10 @@ const taskNode = (page: Page, title: string) => page.locator('.react-flow__node-
 
 test.beforeAll(() => {
   mkdirSync(PROJECT_DIR, { recursive: true });
+});
+
+test.beforeEach(async ({ page }) => {
+  await loginByApi(page);
 });
 
 test('从建项目到会话跑出第一段文字', async ({ page }) => {

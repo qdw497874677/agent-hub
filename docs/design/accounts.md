@@ -301,26 +301,29 @@ ALTER TABLE sessions ADD COLUMN created_by TEXT;
 
 ## 16. 分期与工作量
 
-| 阶段 | 内容 | 估时 |
+> 2026-10-25 按 §17 的决定重排。P1 已实现（见下）。
+
+| 阶段 | 内容 | 状态 |
 |---|---|---|
-| **P1 地基** | domain：User/Identity/Login/OneTimeToken、端口、`can()`；sqlite 迁移；scrypt、TokenIssuer、console 发信；bootstrap + 邮箱密码登录/登出；cookie + CSRF；前端登录页、首启页、路由守卫；`authenticate` 接入所有 API 与浏览器 WS | 4–5 天 |
-| **P2 邮件流程** | 验证、重发、忘记/重置密码、邀请、SMTP 与 Resend 适配器；限流；设置页（账号、登录设备、成员） | 3 天 |
-| **P3 Google** | openid-client 适配器、start/callback、关联规则与单测、设置里关联/解除、`HUB_PUBLIC_URL` 与 tailscale serve 文档 | 2 天 |
-| **P4 Worker 接入** | Pairing Token、凭据兑换与存储、hello 改造、吊销即断开、HUB_TOKEN 过渡模式与迁移 UI、install-worker.sh 更新 | 3 天 |
-| **P5 收尾** | 个人令牌、删除 `?token=`、e2e（注册→验证→登录→配对机器→吊销）、文档 | 2 天 |
+| **P1 地基** | domain：User / Login、端口、用例（注册/登录/登出/认证/HUB_TOKEN 换登录/种子账号）；sqlite `users`、`logins` 两表；`adapter-accounts`（scrypt、令牌签发、Resend + 日志发信）；server `/api/auth/*`、守门中间件、cookie + 双提交 CSRF、登录/注册/HUB_TOKEN 限流；HUB_TOKEN 30 天过渡（Bearer 与换登录）；内置测试账号；前端登录/注册页（移动优先）、登录闸门、账号菜单与退出；e2e 登录 | ✅ 已完成 |
+| **P2 运营后台** | `/admin`（仅 Owner）：用户列表（邮箱、角色、注册时间、最近登录、状态）、停用/启用（停用即删其全部登录态）、改角色（至少保留一个 Owner）、机器列表（label、在线状态、谁加的、最近心跳）。界面同 visual-direction.md：一列卡片，手机上每行可点开操作，不做表格横滑 | 待做 |
+| **P3 邮件流程** | 邮箱验证、重发、忘记/重置密码、登录设备列表与踢下线；Resend 已就绪，未配 `RESEND_API_KEY` 时只打日志 | 待做 |
+| **P4 Worker 接入** | Pairing Token、凭据兑换与存储、hello 改造、吊销即断开；成员也能添加机器；30 天后 HUB_TOKEN 只剩 worker 通道用，P4 后彻底移除 | 待做 |
+| **P5 Google** | `OAuthProvider` 端口已留桩；openid-client 适配器、start/callback、关联规则、`HUB_PUBLIC_URL` 与 tailscale serve（需要 https） | 待做 |
+| **P6 收尾** | 个人令牌、删除 `?token=`、所有权转让 / 删除账号 | 待做 |
 | 候选 | Passkey / TOTP、更多 OAuth 提供方 | — |
 
 每阶段一个 PR，ci 与 e2e 全绿后合并。
 
-## 17. 待你决定
+## 17. 已决定（2026-10-25）
 
-1. 注册策略默认 **仅邀请**，可接受吗？还是要支持公开注册？
-2. 成员之间**全部互相可见**（不做按项目隔离），是否符合你的使用场景？
-3. Member 能否自己添加机器？（默认能，可关）
-4. 密码哈希选 **scrypt（零依赖）** 还是 **argon2id（多一个原生包）**？
-5. 发信用哪个：SMTP（自有邮箱）、Resend，还是先只做 console（链接打日志）？
-6. 你打算用 `tailscale serve` 给 hub 一个 https 域名吗？没有 https 就不能用 Google 登录。
-7. http 下 cookie 不能带 `Secure`：tailnet 裸 IP 访问时接受降级，还是强制 https？
-8. 旧 `HUB_TOKEN` 的过渡期多长？下个版本直接删，还是保留一个开关？
-9. 需要「Owner 转让」与「删除账号」吗？（v1 计划只做禁用）
-10. 登录态时效（滑动 30 天 / 绝对 90 天）合适吗？手机上希望更长？
+1. **开放注册**。另内置一个测试账号：邮箱由 `HUB_TEST_ACCOUNT` 配置（默认 `test@agent-hub.local`，设为 `off` 关闭），角色 Owner；密码首次启动随机生成，写进 `~/.config/agent-hub/test-account`（mode 600，可用 `HUB_TEST_ACCOUNT_FILE` 改路径），绝不打日志。因为它是 Owner，之后注册的人都是成员；没有任何 Owner 时第一个注册的人成为 Owner。
+2. 成员之间**全部互相可见**。
+3. **成员能添加机器**（P4 落地）。
+4. 密码哈希用 **scrypt**（node:crypto，零原生依赖；N=2^17、r=8、p=1，参数编码进哈希串，以后可调）。
+5. 发信用 **Resend**（直接 fetch 其 HTTP API，不引 SDK）；没配 `RESEND_API_KEY` 时退化为只打日志。发件人 `HUB_MAIL_FROM`。
+6. **Google OAuth 保留设计，后面再接**：本期只有端口桩。
+7. **允许 http 测试**：cookie 只在 https（或 `X-Forwarded-Proto: https`）下加 `Secure` 与 `__Host-` 前缀。
+8. 旧 `HUB_TOKEN` **保留 30 天**：从账号版第一次启动起算（起点记在数据目录 `hub-token-since`，重启不续命，`HUB_TOKEN_SUNSET_DAYS` 可调）。期内 Bearer / `?token=` 照常调 API，也能在登录页「HUB_TOKEN」页签换成最早那个 Owner 的登录；旧链接 `?token=…` 自动兑换。worker 通道在 P4 之前仍用它。
+9. **支持停用账号**（停用即拒绝登录、已有登录态失效），并提供**运营后台**（P2，见 §16）。
+10. 登录态**滑动 30 天**（每小时最多续一次）。

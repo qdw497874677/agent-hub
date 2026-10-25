@@ -24,10 +24,12 @@ import type {
   SessionDto,
   SessionEventDto,
   TaskDto,
-  WorkerInfoDto
+  WorkerInfoDto,
+  AccountDto,
+  AuthState
 } from '@agent-hub/contract';
 
-export type { SaveLayoutRequest, WorkerInfoDto };
+export type { SaveLayoutRequest, WorkerInfoDto, AccountDto, AuthState };
 
 export interface ApiError {
   readonly code: string;
@@ -40,42 +42,37 @@ export class RequestFailed extends Error {
   }
 }
 
-const TOKEN_KEY = 'agent-hub:token';
-
 /**
- * 绑非 loopback 时服务端会要求 token，而浏览器没办法像 curl 那样带 `-H`。
- * 所以 token 从 URL 进来一次（`?token=…`），存下来、从地址栏抹掉，
- * 之后由 fetch 带 Authorization。SSE 不能设请求头，所以它走 query 参数。
+ * 身份靠服务端下发的 httpOnly cookie，前端碰不到登录令牌。
+ * 会改东西的请求要带 X-Hub-CSRF（双提交：值从非 httpOnly 的 hub_csrf cookie 读）。
  */
-function bootstrapToken(): string | null {
-  const url = new URL(window.location.href);
-  const fromUrl = url.searchParams.get('token');
-  if (fromUrl) {
-    localStorage.setItem(TOKEN_KEY, fromUrl);
-    url.searchParams.delete('token');
-    window.history.replaceState(null, '', url.toString());
-    return fromUrl;
-  }
-  return localStorage.getItem(TOKEN_KEY);
+function csrfToken(): string {
+  if (typeof document === 'undefined') return '';
+  const match = document.cookie.match(/(?:^|;\s*)hub_csrf=([^;]*)/);
+  return match ? decodeURIComponent(match[1] ?? '') : '';
 }
 
-const token = typeof window === 'undefined' ? null : bootstrapToken();
+/** 任何接口回 401 都广播出去，登录闸门据此回到登录页。 */
+export const UNAUTHORIZED_EVENT = 'agent-hub:unauthorized';
 
-/** SSE 用：EventSource 设不了请求头，只能把 token 放查询串。 */
-export const streamUrl = (): string =>
-  token === null ? '/api/stream' : `/api/stream?token=${encodeURIComponent(token)}`;
+export const streamUrl = (): string => '/api/stream';
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = init?.method ?? 'GET';
   const response = await fetch(path, {
     ...init,
+    credentials: 'same-origin',
     headers: {
       'content-type': 'application/json',
-      ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+      ...(method === 'GET' ? {} : { 'x-hub-csrf': csrfToken() }),
       ...(init?.headers ?? {})
     }
   });
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { error?: ApiError } | null;
+    if (response.status === 401 && !path.startsWith('/api/auth/') && typeof window !== 'undefined') {
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
+    }
     throw new RequestFailed(response.status, body?.error ?? { code: 'http', message: response.statusText });
   }
   return (await response.json()) as T;
@@ -118,11 +115,17 @@ export const api = {
     call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(patch) })
 };
 
-/** `<img src>` 带不了请求头，token 同 SSE 一样走查询串。 */
 export const attachmentUrl = (sessionId: string, path: string): string =>
-  `/api/sessions/${sessionId}/attachment?path=${encodeURIComponent(path)}${
-    token === null ? '' : `&token=${encodeURIComponent(token)}`
-  }`;
+  `/api/sessions/${sessionId}/attachment?path=${encodeURIComponent(path)}`;
+
+export const authApi = {
+  state: () => call<AuthState>('/api/auth/state'),
+  login: (email: string, password: string) => post<{ user: AccountDto }>('/api/auth/login', { email, password }),
+  register: (email: string, password: string, displayName?: string) =>
+    post<{ user: AccountDto }>('/api/auth/register', { email, password, displayName }),
+  tokenLogin: (token: string) => post<{ user: AccountDto }>('/api/auth/token-login', { token }),
+  logout: () => post<{ ok: true }>('/api/auth/logout', {})
+};
 
 export type {
   AgentDto,

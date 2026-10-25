@@ -18,7 +18,11 @@ import type {
   Task,
   TaskRepository,
   WorkerCommand,
-  WorkspaceFS
+  WorkspaceFS,
+  AccountDeps,
+  Login,
+  OutgoingEmail,
+  User
 } from '../index.ts';
 import { ok } from '../index.ts';
 
@@ -242,4 +246,56 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
     ...overrides
   } as InMemoryDeps;
   return { deps, dispatched, frames, agents, workers };
+}
+
+// ---- 账号 ----
+
+/** 账号用例的内存假件。哈希用可读的假格式，测试一眼能看出存的不是明文。 */
+export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps & {
+  readonly sent: OutgoingEmail[];
+  readonly loginRows: Map<string, Login>;
+} {
+  const users = new Map<string, User>();
+  const loginRows = new Map<string, Login>();
+  const sent: OutgoingEmail[] = [];
+  let counter = 0;
+  return {
+    sent,
+    loginRows,
+    now,
+    users: {
+      save: async (user) => void users.set(user.id, user),
+      byId: async (id) => users.get(id) ?? null,
+      byEmail: async (email) => [...users.values()].find((u) => u.email === email) ?? null,
+      firstWithRole: async (role) =>
+        [...users.values()]
+          .filter((u) => u.role === role && u.disabledAt === null)
+          .sort((a, b) => a.createdAt - b.createdAt)[0] ?? null,
+      list: async () => [...users.values()]
+    },
+    logins: {
+      save: async (login) => void loginRows.set(login.id, login),
+      byTokenHash: async (hash) => [...loginRows.values()].find((l) => l.tokenHash === hash) ?? null,
+      touch: async (id, lastSeenAt, expiresAt) => {
+        const row = loginRows.get(id);
+        if (row) loginRows.set(id, { ...row, lastSeenAt, expiresAt });
+      },
+      remove: async (id) => void loginRows.delete(id),
+      removeForUser: async (userId) => {
+        for (const [id, row] of loginRows) if (row.userId === userId) loginRows.delete(id);
+      }
+    },
+    hasher: {
+      hash: async (password) => `fake$${[...password].reverse().join('')}`,
+      verify: async (password, hash) => hash === `fake$${[...password].reverse().join('')}`
+    },
+    tokens: {
+      issue: () => {
+        const token = `tok-${++counter}`;
+        return { token, hash: `h(${token})` };
+      },
+      hashOf: (token) => `h(${token})`
+    },
+    mail: { send: async (email) => void sent.push(email) }
+  };
 }
