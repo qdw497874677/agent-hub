@@ -84,6 +84,7 @@ export function plainInline(text: string): string {
   return text
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/(\*\*|__|~~)(.+?)\1/g, '$2')
+    .replace(/\*\*|~~/g, '') // 落单的记号（老版本截首行时吃掉了另一半）
     .replace(/`([^`]*)`/g, '$1')
     .replace(/(^|[^\w*])\*([^*\s][^*]*?)\*(?!\w)/g, '$1$2')
     .trim();
