@@ -51,10 +51,11 @@ export function App() {
         remembered ? { page: 'project', projectId: remembered.id, view: homeView, sessionId: null } : { page: 'home' },
         'replace'
       );
-    } else if (projectRoute && !project) {
+    } else if (projectRoute && !project && !projects.isFetching) {
+      // 刚建好的项目可能还没进缓存：等这轮拉取结束再判「不存在」，否则会被踢回首页。
       navigate({ page: 'home' }, 'replace');
     }
-  }, [route, projectRoute, project, projects.data, navigate, homeView]);
+  }, [route, projectRoute, project, projects.data, projects.isFetching, navigate, homeView]);
 
   const goProject = useCallback(
     (picked: ProjectDto, next: View, sessionId: string | null) => {
@@ -320,7 +321,16 @@ export function App() {
       ) : null}
       {newTask ? <NewTaskDialog projectId={project.id} onDone={() => setNewTask(false)} /> : null}
       {deriveFor && canvas.data ? (
-        <DeriveDialog canvas={canvas.data} taskId={deriveFor} onDone={() => setDeriveFor(null)} />
+        <DeriveDialog
+          canvas={canvas.data}
+          taskId={deriveFor}
+          onDone={() => setDeriveFor(null)}
+          onDerived={(session) => {
+            // 刚开的会话直接选中：右栏就是它，不用再去画布上找那张新卡。
+            setDeriveFor(null);
+            setSelected(session.id);
+          }}
+        />
       ) : null}
     </div>
   );

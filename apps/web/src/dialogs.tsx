@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type CanvasDto } from './api.ts';
+import { api, type CanvasDto, type SessionDto } from './api.ts';
 
 /**
  * 两个对话框共用的壳：遮罩点一下或按 Esc 就关；窄屏上贴底（拇指够得着），宽屏居中。
@@ -94,11 +94,14 @@ export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone
 export function DeriveDialog({
   canvas,
   taskId,
-  onDone
+  onDone,
+  onDerived
 }: {
   canvas: CanvasDto;
   taskId: string;
   onDone: () => void;
+  /** 派生成功后调用；不传就和取消一样只关掉。 */
+  onDerived?: (session: SessionDto) => void;
 }) {
   const [agentId, setAgentId] = useState(canvas.agents[0]?.id ?? '');
   const agent = canvas.agents.find((candidate) => candidate.id === agentId);
@@ -106,9 +109,10 @@ export function DeriveDialog({
   const queryClient = useQueryClient();
   const derive = useMutation({
     mutationFn: () => api.derive({ taskId, agentId, model }),
-    onSuccess: async () => {
+    onSuccess: async (session) => {
       await queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] });
-      onDone();
+      if (onDerived) onDerived(session);
+      else onDone();
     }
   });
 

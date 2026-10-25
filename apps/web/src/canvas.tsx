@@ -14,6 +14,7 @@ import { resolveLive, type LiveMap } from './live.ts';
 import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
 import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
 import { panIntoView } from './viewport.ts';
+import { fillMissing } from './layout.ts';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
 
@@ -92,6 +93,8 @@ export function CanvasView({
 }: Props) {
   const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
   const [positions, setPositions] = useState<Record<string, Point>>(initial);
+  // 挂载之后才出现的任务/会话（派生、分叉、新建）也要有位置，否则全叠在原点。
+  useEffect(() => setPositions((current) => fillMissing(current, initial)), [initial]);
   const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
   // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -273,12 +276,6 @@ export function CanvasView({
           revealing.current = { id: node.id, until: Date.now() + 800 };
           onSelect(node.id);
           requestAnimationFrame(() => reveal(node.id));
-        }}
-        onNodeDoubleClick={(_, node) => {
-          // 双击任务 = 再开一条会话；双击会话 = 进去说话。
-          // 单击只做「选中」——在 onClick 里改 state 会把双击切成两段渲染。
-          if (node.type === 'task') onDerive(node.id);
-          if (node.type === 'session') onOpen(node.id);
         }}
         onNodesChange={onNodesChange}
         onNodeDragStop={(_, node) => {

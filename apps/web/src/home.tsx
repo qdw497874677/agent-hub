@@ -193,7 +193,11 @@ function CreateProjectPanel({
   const create = useMutation({
     mutationFn: () => api.createProject({ name: name.trim(), rootPath: rootPath.trim() }),
     onSuccess: async (created) => {
-      await queryClient.invalidateQueries({ queryKey: ['home'] });
+      // 路由靠 ['projects'] 认项目；只刷 ['home'] 会让新项目在跳过去时「查无此项」。
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['home'] }),
+        queryClient.invalidateQueries({ queryKey: ['projects'] })
+      ]);
       onCreated(created);
     },
     onError: (failure) => setError((failure as Error).message)

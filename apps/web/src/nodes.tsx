@@ -212,6 +212,8 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
       : [{ label: '重开', next: 'open' }];
   return (
     <div
+      // 和会话卡一样把双击挂在卡片自己身上：React Flow 的 onNodeDoubleClick 在选中重渲染后会丢。
+      onDoubleClick={() => onDerive()}
       className={`group h-full w-full overflow-hidden rounded-md border bg-panel px-3 py-2 hover:border-accent ${
         selected ? 'border-accent' : 'border-hair'
       } ${muted ? 'opacity-60' : ''}`}

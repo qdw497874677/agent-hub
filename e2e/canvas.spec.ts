@@ -27,7 +27,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // 首页是门厅：左栏是「在哪儿干」，右栏是「接着干哪条」
   const nav = page.getByRole('navigation');
   await expect(nav.getByText('agent-hub')).toBeVisible();
-  await expect(nav.getByText('项目')).toBeVisible();
+  await expect(nav.getByText('项目', { exact: true })).toBeVisible();
 
   // M1：指一个本地目录（打字也行，点选也行——点选见下一条用例）
   await nav.getByTitle('新建项目').click();
@@ -41,12 +41,12 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 
   // M1：建任务
   await page.getByRole('button', { name: '新建任务' }).click();
-  await page.getByPlaceholder('任务标题').fill(TASK_TITLE);
-  await page.getByRole('button', { name: '建', exact: true }).click();
+  await page.getByRole('dialog', { name: '新建任务' }).getByLabel('标题').fill(TASK_TITLE);
+  await page.getByRole('button', { name: '创建任务' }).click();
   await expect(taskNode(page, TASK_TITLE)).toContainText('0 个会话');
 
-  // M2：双击任务派生会话
-  await taskNode(page, TASK_TITLE).dblclick();
+  // M2：从任务派生会话（任务卡上的「＋ 会话」；双击在自动化的零间隔点击下会落到重渲染的空档里）
+  await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
   await expect(page.getByText('会话从任务派生', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: '开一条会话' }).click();
 
@@ -71,10 +71,10 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await sessionNode(page).getByRole('button', { name: '对话' }).click();
   // 收窄到对话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
   await expect(page.getByRole('log', { name: '对话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
-  await expect(page.getByRole('button', { name: '← 画布' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '← 返回' })).toBeVisible();
   // 专注对话里画布不在了：整屏只有这一条会话
   await expect(page.locator('.react-flow__node-session')).toHaveCount(0);
-  await page.getByRole('button', { name: '← 画布' }).click();
+  await page.getByRole('button', { name: '← 返回' }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 });
 
@@ -121,7 +121,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await expect(composer).toBeVisible();
 
   // S6.4 的前半截：切视图不丢草稿
-  // 专注对话里也有一个「← 画布」，所以按精确名收窄到顶栏那个
+  // 专注对话里也有一个「← 返回」，所以按精确名收窄到顶栏那个
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
   await sessionNode(page).click();
@@ -129,7 +129,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();
   await expect(page.getByRole('columnheader', { name: '任务' })).toBeVisible();
-  // 专注对话里也有一个「← 画布」，所以按精确名收窄到顶栏那个
+  // 专注对话里也有一个「← 返回」，所以按精确名收窄到顶栏那个
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(composer).toHaveValue('这段草稿要活过视图切换');
 
