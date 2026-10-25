@@ -7,6 +7,7 @@ import type {
   ForkSessionRequest,
   JournalEntryDto,
   LayoutDto,
+  SaveLayoutRequest,
   DirectoryListingDto,
   OptionValueDto,
   HomeDto,
@@ -22,7 +23,7 @@ import type {
   WorkerInfoDto
 } from '@agent-hub/contract';
 
-export type { WorkerInfoDto };
+export type { SaveLayoutRequest, WorkerInfoDto };
 
 export interface ApiError {
   readonly code: string;
@@ -100,8 +101,8 @@ export const api = {
     call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>
     call<SearchResponseDto>(`/api/search?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(q)}`),
-  saveLayout: (projectId: string, layout: LayoutDto['positions']) =>
-    call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify({ positions: layout }) })
+  saveLayout: (projectId: string, patch: SaveLayoutRequest) =>
+    call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(patch) })
 };
 
 export type {

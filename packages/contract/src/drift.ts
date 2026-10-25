@@ -12,6 +12,7 @@
 import type {
   Artifact,
   AgentDescriptor,
+  CanvasLayout,
   CapabilityState,
   HomeView,
   JournalEntry,
@@ -32,6 +33,7 @@ import type {
   AgentDto,
   HomeDto,
   JournalEntryDto,
+  LayoutDto,
   ProjectDto,
   RuntimeOptionDto,
   SearchHitDto,
@@ -67,6 +69,7 @@ export type ContractDrift = [
   Assert<Extends<SearchHit, SearchHitDto>>,
   Assert<Extends<WorkerStatus, WorkerInfoDto>>,
   Assert<Extends<HomeView, HomeDto>>,
+  Assert<Extends<CanvasLayout, LayoutDto>>,
   Assert<Same<TaskStatus, z.infer<typeof taskStatusSchema>>>,
   Assert<Same<SessionStatus, z.infer<typeof sessionStatusSchema>>>,
   Assert<Same<CapabilityState, z.infer<typeof capabilityStateSchema>>>,

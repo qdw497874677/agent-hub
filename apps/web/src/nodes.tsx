@@ -1,9 +1,16 @@
-import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
+import { Handle, NodeResizer, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useState } from 'react';
 import type { SessionDto, TaskDto } from './api.ts';
 import { CardComposer } from './composer.tsx';
 import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
+import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
+
+/** 两种卡片共有：拖过的尺寸（没有 = 宽度默认、高度随内容），以及拖完后的回调。 */
+type Resizable = {
+  size: Size | undefined;
+  onResized: (box: Size & { x: number; y: number }) => void;
+};
 
 export type TaskNode = Node<
   {
@@ -12,7 +19,7 @@ export type TaskNode = Node<
     onStatus: (status: TaskDto['status']) => void;
     /** 开一条新会话（领域里叫派生：会话是从任务派生出来的）。 */
     onDerive: () => void;
-  },
+  } & Resizable,
   'task'
 >;
 export type SessionNode = Node<
@@ -27,7 +34,7 @@ export type SessionNode = Node<
     onSend: (text: string) => Promise<void>;
     onInterrupt: () => Promise<void>;
     onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
-  },
+  } & Resizable,
   'session'
 >;
 
@@ -44,6 +51,26 @@ const TASK_STATUS_LABEL: Record<TaskDto['status'], string> = {
   done: '已收尾',
   abandoned: '已放弃'
 };
+
+/**
+ * React Flow 自带的缩放把手，只在选中时出现，免得平时挡住卡片上的按钮。
+ * 触屏上把手放大到手指点得中（styles.css 的 pointer: coarse 规则）。
+ */
+function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: boolean; onResized: Resizable['onResized'] }) {
+  const limits = CARD_LIMITS[kind];
+  return (
+    <NodeResizer
+      isVisible={selected}
+      minWidth={limits.minWidth}
+      minHeight={limits.minHeight}
+      maxWidth={limits.maxWidth}
+      maxHeight={limits.maxHeight}
+      color="var(--color-accent)"
+      handleClassName="card-resize-handle"
+      onResizeEnd={(_, box) => onResized(box)}
+    />
+  );
+}
 
 function StatusPill({ status, reason }: { status: SessionDto['status']; reason?: string | null }) {
   const style = STATUS[status];
@@ -83,7 +110,7 @@ function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption } =
+  const { session, live, agentLabel, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
     data;
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
@@ -111,10 +138,12 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       // 双击整张卡进专注对话。不能只靠 React Flow 的 onNodeDoubleClick：
       // 卡片中段被输入框盖住了，而它会把表单控件上的双击事件当成「用户在编辑」而忽略。
       onDoubleClick={() => onOpen()}
-      className={`group w-[320px] rounded-md border bg-card px-3 py-3 transition-colors ${
+      // 宽高由 React Flow 节点本身决定（node.width/height），卡片只铺满；输出区吃掉剩余高度。
+      className={`group flex h-full w-full flex-col rounded-md border bg-card px-3 py-3 transition-colors ${
         selected ? 'border-accent' : 'border-hair'
       } ${dimmed ? 'opacity-70' : ''}`}
     >
+      <CardResizer kind="session" selected={selected} onResized={onResized} />
       <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-baseline gap-2 overflow-hidden">
@@ -153,7 +182,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </div>
       )}
 
-      <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
+      <div className={`min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1 ${size ? '' : 'max-h-[320px]'}`}>
         {failureReason ? (
           <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
         ) : null}
@@ -185,8 +214,8 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   );
 }
 
-export function TaskCard({ data }: NodeProps<TaskNode>) {
-  const { task, sessionCount, onStatus, onDerive } = data;
+export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
+  const { task, sessionCount, onStatus, onDerive, onResized } = data;
   const muted = task.status === 'abandoned';
   // 「试过是死路」和「还在试」必须能区分（S4.2），所以收尾与放弃是两个动作，重开也留着。
   // 动作挂在 hover 上而不是「选中后显示」：React Flow 的 onClick 里改 state 会让
@@ -200,10 +229,11 @@ export function TaskCard({ data }: NodeProps<TaskNode>) {
       : [{ label: '重开', next: 'open' }];
   return (
     <div
-      className={`group w-[220px] rounded-md border bg-panel px-3 py-2 hover:border-accent ${
-        muted ? 'opacity-60' : ''
-      }`}
+      className={`group h-full w-full overflow-hidden rounded-md border bg-panel px-3 py-2 hover:border-accent ${
+        selected ? 'border-accent' : 'border-hair'
+      } ${muted ? 'opacity-60' : ''}`}
     >
+      <CardResizer kind="task" selected={selected} onResized={onResized} />
       <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-meta text-tertiary">任务</span>
         <span className="text-meta text-secondary">{TASK_STATUS_LABEL[task.status]}</span>

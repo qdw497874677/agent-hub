@@ -129,9 +129,12 @@ export const artifactSchema = z.object({
 
 export const pointSchema = z.object({ x: z.number(), y: z.number() });
 
+export const sizeSchema = z.object({ width: z.number().positive(), height: z.number().positive() });
+
 export const layoutSchema = z.object({
   projectId: id,
   positions: z.record(id, pointSchema),
+  sizes: z.record(id, sizeSchema),
   updatedAt: epochMs
 });
 
@@ -229,7 +232,10 @@ export const forkSessionRequest = z.object({
 
 export const promptRequest = z.object({ text: z.string().min(1) });
 
-export const saveLayoutRequest = z.object({ positions: z.record(id, pointSchema) });
+export const saveLayoutRequest = z.object({
+  positions: z.record(id, pointSchema).optional(),
+  sizes: z.record(id, sizeSchema).optional()
+});
 
 // ---- 响应 ----
 

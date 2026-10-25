@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS entry_map (
 CREATE TABLE IF NOT EXISTS layout (
   project_id TEXT PRIMARY KEY,
   positions  TEXT NOT NULL,
+  sizes      TEXT NOT NULL DEFAULT '{}',
   updated_at INTEGER NOT NULL
 );
 `;
