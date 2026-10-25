@@ -154,7 +154,7 @@ export function useLiveStream(): LiveStream {
       const frame = JSON.parse((message as MessageEvent<string>).data) as {
         sessionId: string;
         seq: number;
-        event: SessionEventDto;
+        event: SessionEventDto | null;
         status: SessionDto['status'];
       };
       setLive((current) => {
@@ -163,11 +163,11 @@ export function useLiveStream(): LiveStream {
         if (previous && frame.seq <= previous.lastSeq) return current;
         const blocks = previous?.blocks ?? [];
         const reason =
-          frame.event.kind === 'ended' && frame.event.reason !== undefined
+          frame.event?.kind === 'ended' && frame.event.reason !== undefined
             ? frame.event.reason
             : (previous?.reason ?? null);
         const next: LiveSession = {
-          blocks: applyBlocks(blocks, frame.event, frame.seq),
+          blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
           status: frame.status,
           lastSeq: frame.seq,
           reason

@@ -141,6 +141,15 @@ serverGateway = createServerGateway({
   },
   onStatus(sessionId, status) {
     if (status === 'ended') live.delete(sessionId);
+    // 状态也要推：从「发出提问」到「agent 说出第一个字」之间可能十几秒，
+    // 界面不能在这段时间里还挂着上一次的「完成」。
+    void (async () => {
+      const session = await deps.sessions.byId(sessionId);
+      if (!session) return;
+      // worker 只说 running / ended；除了 running，其余以库里已落盘的状态为准。
+      const next = status === 'running' ? 'running' : session.status;
+      hub.stream.publish({ sessionId, seq: session.lastSeq, event: null, status: next });
+    })();
   },
   onWorkerGone(workerId) {
     catalog.removeWorker(workerId);
