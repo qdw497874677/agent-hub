@@ -397,7 +397,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       taskId: command.taskId as StartSpec['taskId'],
       workspaceRoot: command.workspaceRoot,
       resume: command.resume,
-      options: command.options
+      options: command.options,
+      ...(command.tools ? { tools: command.tools } : {})
     };
 
     const started = await runtime.start(spec);

@@ -12,9 +12,10 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AuditLog, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
+import type { AuditLog, ToolGrantRepository, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
+import { createToolGrantRepository } from './tool-grants.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
@@ -24,6 +25,8 @@ export interface SqliteStore extends RepositorySet {
   readonly logins: LoginRepository;
   readonly settings: SettingsRepository;
   readonly audit: AuditLog;
+  /** 能力层：工具授权（只存令牌 hash）与调用审计。 */
+  readonly toolGrants: ToolGrantRepository;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -308,6 +311,7 @@ export function openSqliteStore(file: string): SqliteStore {
     projects,
     tasks,
     workLog: createWorkLogRepository(db),
+    toolGrants: createToolGrantRepository(db),
     sessions,
     artifacts,
     layout,

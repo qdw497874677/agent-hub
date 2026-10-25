@@ -39,3 +39,15 @@ test('acp prompt：没声明能力时按基线降级，图片明确拒绝而不�
   assert.ok(noImage.ok);
   assert.deepEqual(noImage.value.map((block) => block['type']), ['text', 'resource_link', 'resource_link', 'resource_link']);
 });
+
+test('mcpServersFor：http 走 Authorization 头；agent 没声明 http 就不给；没工具就空', async () => {
+  const { mcpServersFor, readMcpCapabilities } = await import('./map-acp.ts');
+  const tools = { transport: 'http' as const, url: 'http://hub/mcp', token: 't0k' };
+  assert.deepEqual(mcpServersFor(undefined, { http: true }), []);
+  assert.deepEqual(mcpServersFor(tools, { http: false }), []);
+  assert.deepEqual(mcpServersFor(tools, readMcpCapabilities({ agentCapabilities: { mcpCapabilities: { http: true } } })), [
+    { type: 'http', name: 'agent-hub', url: 'http://hub/mcp', headers: [{ name: 'Authorization', value: 'Bearer t0k' }] }
+  ]);
+  const shim = mcpServersFor({ ...tools, transport: 'stdio-shim' }, { http: false }, { command: 'node', args: ['shim.ts'] });
+  assert.equal(shim[0]?.['command'], 'node');
+});

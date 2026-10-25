@@ -17,7 +17,7 @@ import type {
 } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
 import { acpDescriptor, type AcpAgentConfig } from './config.ts';
-import { endedFromStopReason, mapAcpUpdate, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
+import { endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
 import type { AcpPromptCapabilities } from './map-acp.ts';
 import { mapAcpOptions } from './map-options.ts';
 
@@ -103,6 +103,9 @@ class AcpSession implements RuntimeSession {
 
   /** 官方 SDK 按 schema 给出了强类型；平台扩展字段（_meta）和宽松读取走这个口子。 */
   private promptCaps: AcpPromptCapabilities = { image: false, embeddedContext: false };
+  private mcpCaps = { http: false, sse: false };
+  /** hub 能力层；握手后按 agent 声明的 mcpCapabilities 决定能不能注入。 */
+  tools: StartSpec['tools'] = undefined;
 
   private request(method: string, params: Json): Promise<Json> {
     return this.connection.agent.request<Json, Json>(method, params);
@@ -111,6 +114,7 @@ class AcpSession implements RuntimeSession {
   private async handshake(): Promise<void> {
     const init = await this.request('initialize', { protocolVersion: 1, clientCapabilities: CLIENT_CAPABILITIES });
     this.promptCaps = readPromptCapabilities(init);
+    this.mcpCaps = readMcpCapabilities(init);
     const methods = ((init['authMethods'] as { id?: unknown }[] | undefined) ?? []).flatMap((method) =>
       typeof method.id === 'string' ? [method.id] : []
     );
@@ -119,7 +123,7 @@ class AcpSession implements RuntimeSession {
   }
 
   private sessionParams(cwd: string): Json {
-    return { cwd, mcpServers: [], ...(this.config.sessionMeta ? { _meta: this.config.sessionMeta } : {}) };
+    return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps), ...(this.config.sessionMeta ? { _meta: this.config.sessionMeta } : {}) };
   }
 
   async open(cwd: string, agentSessionRef: string | null): Promise<void> {
@@ -231,6 +235,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
       const session = new AcpSession(spec.sessionId, child, config, (reported) => {
         options.onOptions?.(spec.sessionId, reported);
       });
+      session.tools = spec.tools;
       const ref = spec.resume?.agentSessionRef ?? null;
       try {
         await session.open(spec.workspaceRoot, ref);

@@ -463,7 +463,8 @@ function toWire(command: WorkerCommand): Exclude<ServerToWorker, { kind: 'list_d
         workspaceRoot: command.workspaceRoot,
         origin: command.origin,
         resume: command.resume,
-        options: command.options
+        options: command.options,
+        ...(command.tools ? { tools: command.tools } : {})
       };
     case 'prompt':
       return { kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts] };
