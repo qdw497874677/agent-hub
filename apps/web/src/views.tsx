@@ -21,12 +21,14 @@ export function ListView({
   canvas,
   live,
   onOpen,
-  onDerive
+  onDerive,
+  onTaskDetail
 }: {
   canvas: CanvasDto;
   live: LiveMap;
   onOpen: (sessionId: string) => void;
   onDerive: (taskId: string) => void;
+  onTaskDetail: (taskId: string) => void;
 }) {
   const taskTitle = useMemo(
     () => new Map(canvas.tasks.map((task) => [task.id, task.title])),
@@ -92,15 +94,23 @@ export function ListView({
         ) : null}
         <div className="flex flex-wrap gap-2">
           {canvas.tasks.map((task) => (
-            <button
-              key={task.id}
-              className="rounded-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-accent hover:text-accent"
-              onClick={() => onDerive(task.id)}
-              title="从这个任务派生一条会话"
-            >
-              {task.title}
-              {task.status === 'abandoned' ? '（已放弃）' : ''}
-            </button>
+            <span key={task.id} className="inline-flex items-stretch">
+              <button
+                className="rounded-l-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-accent hover:text-accent"
+                onClick={() => onDerive(task.id)}
+                title="从这个任务派生一条会话"
+              >
+                {task.title}
+                {task.status === 'abandoned' ? '（已放弃）' : ''}
+              </button>
+              <button
+                className="rounded-r-sm border border-l-0 border-hair px-2 text-meta text-tertiary hover:border-accent hover:text-accent"
+                onClick={() => onTaskDetail(task.id)}
+                aria-label={`${task.title} 的日志`}
+              >
+                日志
+              </button>
+            </span>
           ))}
         </div>
       </div>

@@ -6,6 +6,8 @@ import { CardComposer } from './composer.tsx';
 import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
+import { NEXT_STATUS } from './task-status.ts';
+import { TaskBadge } from './task-detail.tsx';
 import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
 
 /** 两种卡片共有：拖过的尺寸（没有 = 宽度默认、高度随内容），以及拖完后的回调。 */
@@ -19,6 +21,8 @@ export type TaskNode = Node<
     task: TaskDto;
     sessionCount: number;
     onStatus: (status: TaskDto['status']) => void;
+    /** 打开任务详情（状态、当前进展、工作日志）。 */
+    onDetail: () => void;
     /** 开一条新会话（领域里叫派生：会话是从任务派生出来的）。 */
     onDerive: () => void;
   } & Resizable,
@@ -42,11 +46,6 @@ export type SessionNode = Node<
   'session'
 >;
 
-const TASK_STATUS_LABEL: Record<TaskDto['status'], string> = {
-  open: '进行中',
-  done: '已收尾',
-  abandoned: '已放弃'
-};
 
 /**
  * React Flow 自带的缩放把手，只在选中时出现，免得平时挡住卡片上的按钮。
@@ -202,18 +201,16 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
 }
 
 export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
-  const { task, sessionCount, onStatus, onDerive, onResized } = data;
+  const { task, sessionCount, onStatus, onDetail, onDerive, onResized } = data;
   const muted = task.status === 'abandoned';
   // 「试过是死路」和「还在试」必须能区分（S4.2），所以收尾与放弃是两个动作，重开也留着。
   // 动作挂在 hover 上而不是「选中后显示」：React Flow 的 onClick 里改 state 会让
   // 双击事件被两段渲染切开，任务卡的派生就再也点不出来了。
-  const actions: readonly { label: string; next: TaskDto['status'] }[] =
-    task.status === 'open'
-      ? [
-          { label: '收尾', next: 'done' },
-          { label: '放弃', next: 'abandoned' }
-        ]
-      : [{ label: '重开', next: 'open' }];
+  // 卡片上只放两个下一步（进行中时仍是「收尾 / 放弃」这对 S4.2 的动作）；完整的在详情抽屉里。
+  const actions =
+    task.status === 'in_progress'
+      ? NEXT_STATUS.in_progress.filter((action) => action.next === 'done' || action.next === 'abandoned')
+      : NEXT_STATUS[task.status].slice(0, 2);
   return (
     <div
       // 和会话卡一样把双击挂在卡片自己身上：React Flow 的 onNodeDoubleClick 在选中重渲染后会丢。
@@ -225,12 +222,17 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
       <CardResizer kind="task" selected={selected} onResized={onResized} />
       <div className="mb-1 flex items-center justify-between gap-2">
         <span className="text-meta text-tertiary">任务</span>
-        <span className="text-meta text-secondary">{TASK_STATUS_LABEL[task.status]}</span>
+        <TaskBadge status={task.status} />
       </div>
       <p className={`text-body ${muted ? 'text-tertiary line-through' : 'text-primary'}`}>{task.title}</p>
       {task.goal ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{task.goal}</p> : null}
+      {task.summary ? (
+        <p className="mt-1 line-clamp-2 text-meta text-secondary" data-testid="task-card-summary">
+          <span className="text-accent">▸</span> {task.summary}
+        </p>
+      ) : null}
       <p className="mt-1.5 font-mono text-meta text-tertiary">
-        {sessionCount} 个会话
+        {sessionCount} 个会话{task.logSeq > 0 ? ` · ${task.logSeq} 条日志` : ''}
         {sessionCount === 0 ? <span className="ml-1 text-tertiary/70">· 点「＋ 会话」开一条</span> : null}
       </p>
       <div className="nodrag mt-1.5 flex gap-1 transition-opacity focus-within:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100">
@@ -242,6 +244,15 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
           }}
         >
           ＋ 会话
+        </button>
+        <button
+          className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDetail();
+          }}
+        >
+          日志
         </button>
         {actions.map((action) => (
           <button

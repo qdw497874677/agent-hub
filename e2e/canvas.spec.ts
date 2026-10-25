@@ -183,6 +183,38 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await expect(taskNode(page, TASK_TITLE)).toContainText('进行中');
 });
 
+test('任务详情：工作日志时间线、写交接刷新当前进展、改状态留痕', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await taskNode(page, TASK_TITLE).hover();
+  await taskNode(page, TASK_TITLE).getByRole('button', { name: '日志' }).click();
+  const drawer = page.getByTestId('task-detail');
+  await expect(drawer).toBeVisible();
+  // 开过会话、改过状态：系统日志已经在时间线上
+  await expect(drawer.getByTestId('work-log')).toContainText('开了');
+  await expect(drawer.getByTestId('work-log')).toContainText('改为 done');
+
+  await drawer.getByRole('button', { name: '决定', exact: true }).click();
+  await drawer.getByLabel('写日志').fill(`用官方 SDK-${RUN}`);
+  await drawer.getByRole('button', { name: '记录' }).click();
+  await expect(drawer.getByTestId('work-log')).toContainText(`用官方 SDK-${RUN}`);
+
+  await drawer.getByRole('button', { name: '交接', exact: true }).click();
+  await expect(drawer.getByLabel('写日志')).toHaveValue(/## 已完成/);
+  await drawer.getByLabel('写日志').fill(`## 已完成\n- 交接-${RUN}\n\n## 下一步\n- 接 MCP`);
+  await drawer.getByRole('button', { name: '记录' }).click();
+  await expect(drawer.getByTestId('task-summary')).toContainText(`交接-${RUN}`);
+
+  await drawer.getByRole('button', { name: '受阻' }).click();
+  await expect(drawer.getByTestId('task-status')).toHaveText('受阻');
+  await expect(drawer.getByTestId('work-log')).toContainText('改为 blocked');
+  await drawer.getByRole('button', { name: '继续' }).click();
+  await expect(drawer.getByTestId('task-status')).toHaveText('进行中');
+  await page.keyboard.press('Escape');
+  await expect(drawer).toBeHidden();
+  await expect(taskNode(page, TASK_TITLE).getByTestId('task-card-summary')).toContainText(`交接-${RUN}`);
+});
+
 /**
  * 可调项：模型与思考强度都来自 agent 自己的回报（ADR 0007）。
  * 这条只验证「卡片上真的有得选，且改完不会回弹」——

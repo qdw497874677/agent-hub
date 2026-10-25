@@ -21,14 +21,20 @@ import {
   promptRequest,
   saveLayoutRequest,
   setTaskStatusRequest,
+  appendLogRequest,
+  editLogRequest,
+  workLogPage,
   workerInfoSchema
 } from '@agent-hub/contract';
-import type { Deps, TaskStatus } from '@agent-hub/domain';
+import type { Deps, LogAuthor, LogKind, Principal, TaskStatus } from '@agent-hub/domain';
 import {
   ATTACHMENT_LIMITS,
   asProjectId,
   asSessionId,
   asTaskId,
+  LOG_KINDS,
+  appendWorkLogUseCase,
+  editWorkLogUseCase,
   changeSessionOption,
   browseDirectories,
   createDirectory,
@@ -122,8 +128,9 @@ export function createApp(options: AppOptions): Hono {
   });
 
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
+  let principalOf: (c: Context) => Principal | null = () => null;
   if (options.auth) {
-    const principalOf = installAuth(app, options.auth);
+    principalOf = installAuth(app, options.auth);
     if (options.admin) installAdmin(app, options.admin, principalOf);
   }
   app.use('/api/*', async (c, next) => {
@@ -213,15 +220,58 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/tasks', async (c) => {
     const input = await body(c, createTaskRequest);
     if (!input.ok) return input.response;
-    const result = await createTaskUseCase(deps, input.value);
+    const result = await createTaskUseCase(deps, { ...input.value, ownerId: principalOf(c)?.user.id ?? null });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+
+  // 工作日志：倒序分页；人写的 author 由服务端按登录身份填，客户端不能冒名。
+  const userAuthor = (c: Context): LogAuthor => {
+    const principal = principalOf(c);
+    return { kind: 'user', userId: principal?.user.id ?? null, name: principal?.user.displayName ?? null };
+  };
+
+  app.get('/api/tasks/:taskId/log', async (c) => {
+    const taskId = asTaskId(c.req.param('taskId'));
+    if (!(await deps.tasks.byId(taskId))) return fail(c, { code: 'not_found', message: '任务不存在' });
+    const limit = Math.min(Math.max(Number(c.req.query('limit') ?? 50) || 50, 1), 200);
+    const before = c.req.query('beforeSeq');
+    const kinds = c.req.query('kinds')?.split(',').filter((kind): kind is LogKind => (LOG_KINDS as readonly string[]).includes(kind));
+    const entries = await deps.workLog.list(taskId, {
+      limit,
+      beforeSeq: before ? Number(before) : undefined,
+      kinds: kinds && kinds.length > 0 ? kinds : undefined,
+      includeSuperseded: c.req.query('history') === '1'
+    });
+    const last = entries.at(-1);
+    return c.json(workLogPage.parse({ entries, nextBeforeSeq: entries.length === limit && last ? last.seq : null }));
+  });
+
+  app.post('/api/tasks/:taskId/log', async (c) => {
+    const input = await body(c, appendLogRequest);
+    if (!input.ok) return input.response;
+    const result = await appendWorkLogUseCase(deps, {
+      taskId: asTaskId(c.req.param('taskId')),
+      author: userAuthor(c),
+      kind: input.value.kind,
+      body: input.value.body,
+      links: input.value.links,
+      sessionId: input.value.sessionId ? asSessionId(input.value.sessionId) : null
+    });
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+
+  app.patch('/api/tasks/:taskId/log/:entryId', async (c) => {
+    const input = await body(c, editLogRequest);
+    if (!input.ok) return input.response;
+    const result = await editWorkLogUseCase(deps, { entryId: c.req.param('entryId'), body: input.value.body, author: userAuthor(c) });
+    return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
   app.patch('/api/tasks/:taskId/status', async (c) => {
     const input = await body(c, setTaskStatusRequest);
     if (!input.ok) return input.response;
     const status: TaskStatus = input.value.status;
-    const result = await setTaskStatusUseCase(deps, asTaskId(c.req.param('taskId')), status);
+    const result = await setTaskStatusUseCase(deps, asTaskId(c.req.param('taskId')), status, 'user', input.value.note);
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 

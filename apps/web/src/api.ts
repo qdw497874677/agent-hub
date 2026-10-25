@@ -24,6 +24,7 @@ import type {
   SessionDto,
   SessionEventDto,
   TaskDto,
+  WorkLogEntryDto,
   WorkerInfoDto,
   AccountDto,
   AuthState,
@@ -103,8 +104,14 @@ export const api = {
   createProject: (input: { name: string; rootPath: string; workerId?: string | null }) => post<ProjectDto>('/api/projects', input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
-  setTaskStatus: (taskId: string, status: TaskDto['status']) =>
-    call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
+  setTaskStatus: (taskId: string, status: TaskDto['status'], note?: string) =>
+    call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status, note }) }),
+  taskLog: (taskId: string, beforeSeq?: number) =>
+    call<{ entries: WorkLogEntryDto[]; nextBeforeSeq: number | null }>(
+      `/api/tasks/${taskId}/log?limit=50${beforeSeq ? `&beforeSeq=${beforeSeq}` : ''}`
+    ),
+  appendTaskLog: (taskId: string, input: { kind: WorkLogEntryDto['kind']; body: string }) =>
+    post<{ entry: WorkLogEntryDto; task: TaskDto }>(`/api/tasks/${taskId}/log`, input),
   derive: (input: DeriveSessionRequest) => post<SessionDto>('/api/sessions/derive', input),
   fork: (input: ForkSessionRequest) => post<SessionDto>('/api/sessions/fork', input),
   continueElsewhere: (sessionId: string, workerId: string, directory: string | null) =>
@@ -159,6 +166,7 @@ export const adminApi = {
 };
 
 export type {
+  WorkLogEntryDto,
   AdminOverviewDto,
   AdminUserDto,
   AdminWorkerDto,

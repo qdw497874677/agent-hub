@@ -14,6 +14,7 @@ import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
 import type { AuditLog, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
+import { createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
@@ -54,6 +55,7 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'directories')) {
     db.exec("ALTER TABLE projects ADD COLUMN directories TEXT NOT NULL DEFAULT '{}'");
   }
+  migrateTasksV2(db);
   const layoutColumns = db.prepare('PRAGMA table_info(layout)').all() as { name: string }[];
   if (!layoutColumns.some((column) => column.name === 'sizes')) {
     db.exec("ALTER TABLE layout ADD COLUMN sizes TEXT NOT NULL DEFAULT '{}'");
@@ -68,10 +70,11 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectProjects = db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
 
   const upsertTask = db.prepare(
-    'INSERT INTO tasks(id, project_id, title, goal, status, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, summary, log_seq, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET title = excluded.title, goal = excluded.goal, ' +
-      'status = excluded.status, updated_at = excluded.updated_at'
+      'status = excluded.status, owner_id = excluded.owner_id, branch = excluded.branch, summary = excluded.summary, ' +
+      'log_seq = MAX(tasks.log_seq, excluded.log_seq), updated_at = excluded.updated_at'
   );
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
   const selectTasksByProject = db.prepare(
@@ -176,6 +179,10 @@ export function openSqliteStore(file: string): SqliteStore {
         task.title,
         task.goal ?? null,
         task.status,
+        task.ownerId,
+        task.branch,
+        task.summary,
+        task.logSeq,
         task.createdAt,
         task.updatedAt
       );
@@ -300,6 +307,7 @@ export function openSqliteStore(file: string): SqliteStore {
   return {
     projects,
     tasks,
+    workLog: createWorkLogRepository(db),
     sessions,
     artifacts,
     layout,

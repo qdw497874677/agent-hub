@@ -11,6 +11,8 @@ import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, startCommand } from './hosting.ts';
 import { placeSession } from '../worker.ts';
+import { markStarted } from '../task.ts';
+import { recordSystemLog } from './work-log.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
@@ -22,7 +24,7 @@ export interface DeriveCommand {
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
 export async function deriveSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
   const task = await deps.tasks.byId(asTaskId(command.taskId));
@@ -62,7 +64,22 @@ export async function deriveSessionUseCase(
     return err(dispatched.error);
   }
   deps.hosting.add(session.id, session.workerId);
+  await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话（${session.model}）`);
   return ok(session);
+}
+
+/** 会话开跑：todo 推到 in_progress，并记一条 session_event。 */
+async function noteSessionStarted(
+  deps: Pick<Deps, 'now' | 'tasks' | 'workLog'>,
+  session: Session,
+  body: string
+): Promise<void> {
+  const task = await deps.tasks.byId(session.taskId);
+  if (task) {
+    const started = markStarted(task, deps.now());
+    if (started !== task) await deps.tasks.save(started);
+  }
+  await recordSystemLog(deps, session.taskId, 'session_event', body, session.id);
 }
 
 export interface ForkCommand {
@@ -73,7 +90,7 @@ export interface ForkCommand {
 }
 
 export async function forkSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog'>,
   command: ForkCommand
 ): Promise<Result<Session, DomainError>> {
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -124,6 +141,7 @@ export async function forkSessionUseCase(
     return err(dispatched.error);
   }
   deps.hosting.add(session.id, session.workerId);
+  await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的第 ${command.atSeq} 步分叉出 ${session.agentId} 会话`);
   return ok(session);
 }
 

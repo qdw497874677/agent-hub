@@ -22,10 +22,31 @@ CREATE TABLE IF NOT EXISTS tasks (
   title      TEXT NOT NULL,
   goal       TEXT,
   status     TEXT NOT NULL,
+  owner_id   TEXT,
+  branch     TEXT,
+  summary    TEXT,
+  log_seq    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS tasks_by_project ON tasks(project_id);
+
+-- 任务工作日志：只追加。修订 = 新行 + 旧行 superseded_by 指向它。
+CREATE TABLE IF NOT EXISTS task_log_entries (
+  id            TEXT PRIMARY KEY,
+  task_id       TEXT NOT NULL REFERENCES tasks(id),
+  seq           INTEGER NOT NULL,
+  author        TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  body          TEXT NOT NULL,
+  links         TEXT NOT NULL DEFAULT '[]',
+  attachments   TEXT NOT NULL DEFAULT '[]',
+  session_id    TEXT,
+  created_at    INTEGER NOT NULL,
+  supersedes    TEXT,
+  superseded_by TEXT,
+  UNIQUE(task_id, seq)
+);
 
 CREATE TABLE IF NOT EXISTS sessions (
   id               TEXT PRIMARY KEY,

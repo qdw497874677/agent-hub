@@ -1,3 +1,5 @@
+import type { WorkLogRepository } from '../ports/work-log-repository.ts';
+import type { WorkLogEntry } from '../work-log.ts';
 import type {
   WorkerStatus,
   BuildInfo,
@@ -68,6 +70,38 @@ export function taskOps(rows: Map<string, Task>): TaskRepository {
     },
     async listByProject(projectId) {
       return [...rows.values()].filter((task) => task.projectId === projectId);
+    }
+  };
+}
+
+export function fakeWorkLog(): WorkLogRepository & { rows: WorkLogEntry[] } {
+  const rows: WorkLogEntry[] = [];
+  return {
+    rows,
+    async append(draft) {
+      const seq = rows.filter((row) => row.taskId === draft.taskId).reduce((max, row) => Math.max(max, row.seq), 0) + 1;
+      const entry: WorkLogEntry = { ...draft, seq, supersededBy: null };
+      rows.push(entry);
+      if (draft.supersedes) {
+        const index = rows.findIndex((row) => row.id === draft.supersedes);
+        if (index >= 0) rows[index] = { ...rows[index]!, supersededBy: entry.id };
+      }
+      return entry;
+    },
+    async byId(id) {
+      return rows.find((row) => row.id === id) ?? null;
+    },
+    async list(taskId, query) {
+      return rows
+        .filter((row) => row.taskId === taskId)
+        .filter((row) => query.includeSuperseded || !row.supersededBy)
+        .filter((row) => query.beforeSeq === undefined || row.seq < query.beforeSeq)
+        .filter((row) => !query.kinds || query.kinds.includes(row.kind))
+        .sort((a, b) => b.seq - a.seq)
+        .slice(0, query.limit);
+    },
+    async latestHandoff(taskId) {
+      return (await this.list(taskId, { limit: 1, kinds: ['handoff'] }))[0] ?? null;
     }
   };
 }
@@ -238,6 +272,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   const deps = {
     projects: fakeProjects(),
     tasks,
+    workLog: fakeWorkLog(),
     sessions: fakeSessions(tasks.rows),
     artifacts: fakeArtifacts(),
     layout: fakeLayout(),

@@ -1,4 +1,5 @@
 import type {
+  WorkLogRepository,
   Artifact,
   ArtifactRepository,
   CanvasLayout,
@@ -58,6 +59,10 @@ export function toTask(row: Row): Task {
     title: str(row, 'title'),
     goal: nullableStr(row, 'goal'),
     status: str(row, 'status') as Task['status'],
+    ownerId: nullableStr(row, 'owner_id'),
+    branch: nullableStr(row, 'branch'),
+    summary: nullableStr(row, 'summary'),
+    logSeq: nullableNum(row, 'log_seq') ?? 0,
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };
@@ -133,6 +138,7 @@ export function toJournalEntry(row: Row): JournalEntry {
 export interface RepositorySet {
   projects: ProjectRepository;
   tasks: TaskRepository;
+  workLog: WorkLogRepository;
   sessions: SessionRepository;
   artifacts: ArtifactRepository;
   layout: LayoutStore;

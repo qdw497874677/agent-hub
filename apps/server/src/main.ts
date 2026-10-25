@@ -78,6 +78,7 @@ const optionWaiters = createOptionWaiters();
 const deps: Deps = {
   projects: store.projects,
   tasks: store.tasks,
+  workLog: store.workLog,
   sessions: store.sessions,
   artifacts: store.artifacts,
   layout: store.layout,

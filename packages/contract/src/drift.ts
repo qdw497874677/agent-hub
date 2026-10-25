@@ -25,6 +25,8 @@ import type {
   SessionStatus,
   Task,
   TaskStatus,
+  WorkLogEntry,
+  LogKind,
   WorkerStatus
 } from '@agent-hub/domain';
 import type { z } from 'zod';
@@ -44,7 +46,9 @@ import type {
   capabilityStateSchema,
   optionCategorySchema,
   sessionStatusSchema,
-  taskStatusSchema
+  taskStatusSchema,
+  logKindSchema,
+  WorkLogEntryDto
 } from './wire.ts';
 
 /** zod 推出的数组是可变的，domain 一律 readonly；比较前把 DTO 拉平成只读，只比形状。 */
@@ -60,6 +64,8 @@ type Assert<T extends true> = T;
 export type ContractDrift = [
   Assert<Extends<Project, ProjectDto>>,
   Assert<Extends<Task, TaskDto>>,
+  Assert<Extends<WorkLogEntry, WorkLogEntryDto>>,
+  Assert<Same<LogKind, z.infer<typeof logKindSchema>>>,
   Assert<Extends<Session, SessionDto>>,
   Assert<Extends<Artifact, ArtifactDto>>,
   Assert<Extends<SessionEvent, SessionEventDto>>,
