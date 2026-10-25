@@ -1,3 +1,4 @@
+import { AccountMenu } from './auth.tsx';
 import type { ProjectDto } from './api.ts';
 import type { StreamState } from './live.ts';
 import type { View } from './route.ts';
@@ -95,6 +96,7 @@ export function ProjectHeader(props: Props) {
           <span className="md:hidden">＋</span>
           <span className="hidden md:inline">新建任务</span>
         </button>
+        <AccountMenu />
       </div>
     </header>
   );

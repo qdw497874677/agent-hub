@@ -50,11 +50,15 @@ import {
   setTaskStatusUseCase
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
+import { installAuth } from './auth.ts';
+import type { AuthOptions } from './auth.ts';
 
 export interface AppOptions {
   readonly deps: Deps;
   readonly hub: StreamHub;
   readonly token: string | null;
+  /** 账号体系；给了就用登录态守 /api/*，不给退回只认共享 token（单测、旧部署）。 */
+  readonly auth?: AuthOptions;
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
   readonly guard?: RequestGuard;
   /**
@@ -125,8 +129,9 @@ export function createApp(options: AppOptions): Hono {
   });
 
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
+  if (options.auth) installAuth(app, options.auth);
   app.use('/api/*', async (c, next) => {
-    if (options.token === null) return next();
+    if (options.auth || options.token === null) return next();
     // header 优先；SSE（EventSource）设不了请求头，所以也接受查询串。
     const offered = (c.req.header('authorization') ?? '') === `Bearer ${options.token}`
       ? options.token

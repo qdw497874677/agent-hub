@@ -1,3 +1,4 @@
+import { AccountMenu } from './auth.tsx';
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from './api.ts';
@@ -48,9 +49,12 @@ export function HomePage({
   return (
     <div className="flex h-full flex-col md:flex-row">
       <nav className="flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto border-b border-hair px-3 py-4 md:max-h-none md:w-[220px] md:border-b-0 md:border-r">
-        <div className="mb-4">
-          <p className="text-head text-primary">agent-hub</p>
-          <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
+        <div className="mb-4 flex items-start justify-between gap-2">
+          <div>
+            <p className="text-head text-primary">agent-hub</p>
+            <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
+          </div>
+          <AccountMenu />
         </div>
 
         <div className="mb-1 flex items-baseline justify-between">

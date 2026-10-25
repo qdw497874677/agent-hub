@@ -16,6 +16,7 @@ import {
   type SessionEvent
 } from '@agent-hub/domain';
 import { openSqliteStore, type SqliteStore } from './store.ts';
+import { asLoginId, asUserId } from '@agent-hub/domain';
 
 /**
  * 仓储往返测试：domain 对象存进去、读出来必须一模一样。
@@ -164,5 +165,29 @@ test('journal：带附件的用户提问原样往返（只存元数据）', asyn
   await store.sessions.append(applyEvent(session, prompt, now), prompt, now);
   const [entry] = await store.sessions.eventsAfter(session.id, 0);
   assert.deepEqual(entry?.event, prompt);
+  store.close();
+});
+
+test('账号：用户按邮箱找回、登录态按哈希找回、停用的人不算 Owner、删人连带删登录态', async () => {
+  const store = openSqliteStore(':memory:');
+  const owner = {
+    id: asUserId('u1'), email: 'a@b.co', displayName: 'a', role: 'owner' as const,
+    passwordHash: 'scrypt$x', emailVerifiedAt: null, disabledAt: null, createdAt: 1
+  };
+  await store.users.save(owner);
+  await store.users.save({ ...owner, id: asUserId('u2'), email: 'c@d.co', createdAt: 2 });
+  assert.equal((await store.users.byEmail('a@b.co'))?.id, 'u1');
+  assert.equal((await store.users.firstWithRole('owner'))?.id, 'u1');
+  await store.users.save({ ...owner, disabledAt: 9 });
+  assert.equal((await store.users.firstWithRole('owner'))?.id, 'u2');
+
+  await store.logins.save({
+    id: asLoginId('l1'), userId: asUserId('u1'), tokenHash: 'h1', method: 'password',
+    userAgent: null, createdAt: 10, lastSeenAt: 10, expiresAt: 100
+  });
+  await store.logins.touch(asLoginId('l1'), 50, 500);
+  assert.equal((await store.logins.byTokenHash('h1'))?.expiresAt, 500);
+  await store.logins.removeForUser(asUserId('u1'));
+  assert.equal(await store.logins.byTokenHash('h1'), null);
   store.close();
 });

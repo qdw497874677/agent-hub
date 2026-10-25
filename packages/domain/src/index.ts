@@ -41,3 +41,12 @@ export * from './use-cases/home.ts';
 export * from './use-cases/workers.ts';
 export * from './use-cases/continue-elsewhere.ts';
 export * from './use-cases/attachments.ts';
+
+export * from './account.ts';
+export type { UserRepository } from './ports/user-repository.ts';
+export type { LoginRepository } from './ports/login-repository.ts';
+export type { PasswordHasher } from './ports/password-hasher.ts';
+export type { TokenIssuer } from './ports/token-issuer.ts';
+export type { EmailSender, OutgoingEmail } from './ports/email-sender.ts';
+export type { OAuthProvider, OAuthProfile, OAuthStart } from './ports/oauth-provider.ts';
+export * from './use-cases/accounts.ts';
