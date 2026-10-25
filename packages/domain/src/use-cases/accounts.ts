@@ -166,6 +166,8 @@ export interface SeedAccount {
   readonly password: string;
   readonly role: Role;
   readonly displayName: string;
+  /** 运维显式指定的密码（如 HUB_TEST_ACCOUNT_PASSWORD）：不过强度规则，只要非空。 */
+  readonly operatorChosen?: boolean;
 }
 
 /**
@@ -177,7 +179,9 @@ export async function seedAccount(
   seed: SeedAccount
 ): Promise<Result<User, DomainError>> {
   const email = normalizeEmail(seed.email);
-  const problem = emailProblem(email) ?? passwordProblem(seed.password);
+  const problem =
+    emailProblem(email) ??
+    (seed.operatorChosen ? (seed.password.length === 0 ? '密码不能为空' : null) : passwordProblem(seed.password));
   if (problem) return err(invalid(`内置账号配置不对：${problem}`));
   const existing = await deps.users.byEmail(email);
   if (existing && existing.passwordHash !== null && (await deps.hasher.verify(seed.password, existing.passwordHash))) {

@@ -317,7 +317,7 @@ ALTER TABLE sessions ADD COLUMN created_by TEXT;
 
 ## 17. 已决定（2026-10-25）
 
-1. **开放注册**。另内置一个测试账号：邮箱由 `HUB_TEST_ACCOUNT` 配置（默认 `test@agent-hub.local`，设为 `off` 关闭），角色 Owner；密码首次启动随机生成，写进 `~/.config/agent-hub/test-account`（mode 600，可用 `HUB_TEST_ACCOUNT_FILE` 改路径），绝不打日志。因为它是 Owner，之后注册的人都是成员；没有任何 Owner 时第一个注册的人成为 Owner。
+1. **开放注册**。另内置一个测试账号：邮箱由 `HUB_TEST_ACCOUNT` 配置（默认 `test@agent-hub.local`，设为 `off` 关闭），角色 Owner；密码首次启动随机生成，写进 `~/.config/agent-hub/test-account`（mode 600，可用 `HUB_TEST_ACCOUNT_FILE` 改路径），绝不打日志；设置 `HUB_TEST_ACCOUNT_PASSWORD` 时改用该密码（不受强度规则限制），每次启动把账号和密码文件对齐到它。因为它是 Owner，之后注册的人都是成员；没有任何 Owner 时第一个注册的人成为 Owner。
 2. 成员之间**全部互相可见**。
 3. **成员能添加机器**（P4 落地）。
 4. 密码哈希用 **scrypt**（node:crypto，零原生依赖；N=2^17、r=8、p=1，参数编码进哈希串，以后可调）。
