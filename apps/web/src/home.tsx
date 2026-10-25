@@ -195,7 +195,8 @@ function CreateProjectPanel({
   const workers = useWorkers();
   const [workerId, setWorkerId] = useState<string | null>(null);
   const chosen = workerId ?? resolveWorker(workers.list, null)?.workerId ?? null;
-  const [browsing, setBrowsing] = useState(true);
+  // 手机上选择器是全屏的：先让人看见表单（填名字），点「浏览…」再盖上来
+  const [browsing, setBrowsing] = useState(() => !window.matchMedia('(max-width: 767px)').matches);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -269,6 +270,8 @@ function CreateProjectPanel({
         <div className="mb-3">
           <DirectoryPicker
             workerId={chosen}
+            project={name}
+            onCancel={() => setBrowsing(false)}
             onPick={(picked) => {
               setRootPath(picked);
               setBrowsing(false);

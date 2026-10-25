@@ -97,7 +97,12 @@ export function ContinueElsewhere({
       {picking && target !== null ? (
         <div className="mt-2">
           <p className="mb-1 text-meta text-secondary">在「{workers.byId(target)?.label ?? target}」上选这个项目的目录</p>
-          <DirectoryPicker workerId={target} onPick={(path) => void go(target, path)} />
+          <DirectoryPicker
+            workerId={target}
+            project={project.name}
+            onCancel={() => setPicking(false)}
+            onPick={(path) => void go(target, path)}
+          />
         </div>
       ) : null}
       {error ? <p className="mt-1 text-meta text-rust">{error}</p> : null}

@@ -88,6 +88,8 @@ const deps: Deps = {
       serverGateway
         ? serverGateway.gateway.listDirectories(workerId, path)
         : err(unavailable('worker 通道尚未就绪')),
+    makeDirectory: async (workerId, parent, name) =>
+      serverGateway ? serverGateway.gateway.makeDirectory(workerId, parent, name) : err(unavailable('worker 通道尚未就绪')),
     listFiles: async (workerId, root, limit) =>
       serverGateway ? serverGateway.gateway.listFiles(workerId, root, limit) : err(unavailable('worker 通道尚未就绪')),
     readFile: async (workerId, path, maxBytes) =>

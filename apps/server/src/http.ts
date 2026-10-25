@@ -10,6 +10,7 @@ import {
   changeOptionRequest,
   createProjectRequest,
   directoryListingSchema,
+  makeDirectoryRequest,
   homeSchema,
   searchResponseSchema,
   createTaskRequest,
@@ -30,6 +31,7 @@ import {
   asTaskId,
   changeSessionOption,
   browseDirectories,
+  createDirectory,
   createProjectUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
@@ -148,9 +150,18 @@ export function createApp(options: AppOptions): Hono {
     const result = await browseDirectories(deps, {
       workerId: workerId === '' ? null : workerId,
       path: requested === '' ? '' : requested.startsWith('/') ? requested : resolve(requested),
-      home: homedir()
+      home: homedir(),
+      project: c.req.query('project') ?? ''
     });
     return result.ok ? c.json(directoryListingSchema.parse(result.value)) : fail(c, result.error);
+  });
+
+  // 目录选择器里的「新建文件夹」：只建一层，只能建在那台机器的 roots 里（realpath 校验，软链接逃逸算外面）。
+  app.post('/api/fs/directories', async (c) => {
+    const input = await body(c, makeDirectoryRequest);
+    if (!input.ok) return input.response;
+    const result = await createDirectory(deps, { ...input.value, home: homedir() });
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
   // `@` 引用选择器：项目里的文件，按名字模糊匹配。

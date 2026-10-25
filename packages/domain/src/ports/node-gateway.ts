@@ -57,6 +57,8 @@ export interface NodeGateway {
   ): Promise<
     Result<{ readonly path: string; readonly exists: boolean; readonly entries: readonly DirectoryEntry[] }, DomainError>
   >;
+  /** 在那台 Worker 上 parent 下建一层文件夹（受它的 WORKER_ROOTS 约束）。返回新目录绝对路径。 */
+  makeDirectory(workerId: string, parent: string, name: string): Promise<Result<{ readonly path: string }, DomainError>>;
   /**
    * 项目里的文件（相对 root），给 `@` 引用选择器。由项目所在的那台 Worker 扫——
    * Server 不读 Worker 机器上的路径。

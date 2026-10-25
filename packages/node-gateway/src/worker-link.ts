@@ -61,7 +61,7 @@ export interface WorkerLink {
  * worker 侧。它只会做三件事：托管 agent 进程、把事件推上去、接受下行指令。
  * 它不知道任务、不知道画布、不知道权限——那些在 server 的内核里。
  */
-type SessionCommand = Exclude<ServerToWorker, { kind: 'list_directories' | 'list_files' | 'read_file' }>;
+type SessionCommand = Exclude<ServerToWorker, { kind: 'list_directories' | 'make_directory' | 'list_files' | 'read_file' }>;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const sessions = new Map<string, RuntimeSession>();
@@ -184,6 +184,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       }
       const command = parsed.data as ServerToWorker;
       if (command.kind === 'list_directories') void listDirectories(command.requestId, command.path);
+      else if (command.kind === 'make_directory') void makeDirectory(command.requestId, command.parent, command.name);
       else if (command.kind === 'list_files') void listFiles(command.requestId, command.root, command.limit);
       else if (command.kind === 'read_file') void readFile(command.requestId, command.path, command.maxBytes);
       else void handle(command);
@@ -191,6 +192,15 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   }
 
   const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+  async function makeDirectory(requestId: string, parent: string, name: string): Promise<void> {
+    if (!options.files) return send({ type: 'made_directory', requestId, path: '', error: '这台 Worker 不支持新建文件夹' });
+    try {
+      send({ type: 'made_directory', requestId, path: await options.files.makeDirectory(parent, name) });
+    } catch (error) {
+      send({ type: 'made_directory', requestId, path: '', error: message(error) });
+    }
+  }
 
   async function listFiles(requestId: string, root: string, limit: number): Promise<void> {
     if (!options.files) return send({ type: 'files', requestId, files: [], truncated: false, error: '这台 Worker 不支持列文件' });

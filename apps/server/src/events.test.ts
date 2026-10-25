@@ -50,6 +50,7 @@ function harness() {
       status: async () => [],
       dispatch: async () => ({ ok: true, value: undefined }),
       listDirectories: async () => ({ ok: true, value: { path: '/', exists: false, entries: [] } }),
+      makeDirectory: async () => ({ ok: true, value: { path: '/' } }),
       listFiles: async () => ({ ok: true, value: { files: [], truncated: false } }),
       readFile: async () => ({ ok: true, value: null })
     },

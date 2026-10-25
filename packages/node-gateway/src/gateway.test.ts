@@ -341,12 +341,22 @@ test('目录浏览走 worker：从 roots 起步；roots 外的目录拒并说明
   await rec.until(() => rec.hellos.length === 1);
   assert.deepEqual(rec.hellos[0]?.worker.roots, [root]);
   const top = await gateway.gateway.listDirectories('w1', '');
-  assert.deepEqual(top, { ok: true, value: { path: root, exists: true, entries: [{ name: 'app', path: join(root, 'app') }] } });
+  assert.ok(top.ok);
+  assert.equal(top.value.path, root);
+  assert.deepEqual(top.value.entries.map((e) => [e.name, e.path, e.isGit]), [['app', join(root, 'app'), false]]);
+  assert.equal(typeof top.value.entries[0]?.modifiedAt, 'number');
   const missing = await gateway.gateway.listDirectories('w1', join(root, 'nope'));
   assert.ok(missing.ok && !missing.value.exists);
   const outside = await gateway.gateway.listDirectories('w1', base);
   assert.ok(!outside.ok && /WORKER_ROOTS/.test(outside.error.message) && /worker\.env/.test(outside.error.message));
   assert.equal((await gateway.gateway.listDirectories('ghost', '/')).ok, false);
+  // 新建文件夹走同一条通道：在 roots 里能建，roots 外和带斜杠的名字都拒
+  const made = await gateway.gateway.makeDirectory('w1', root, 'fresh');
+  assert.deepEqual(made, { ok: true, value: { path: join(root, 'fresh') } });
+  const escaped = await gateway.gateway.makeDirectory('w1', base, 'evil');
+  assert.ok(!escaped.ok && /不在允许/.test(escaped.error.message));
+  const nested = await gateway.gateway.makeDirectory('w1', root, 'a/b');
+  assert.ok(!nested.ok && /斜杠/.test(nested.error.message));
   await stop(link);
   await rm(base, { recursive: true, force: true });
 });

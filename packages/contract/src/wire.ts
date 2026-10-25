@@ -319,7 +319,17 @@ export const workerDirectoriesSchema = z.object({
   requestId: z.string(),
   path: z.string(),
   exists: z.boolean(),
-  entries: z.array(z.object({ name: z.string(), path: z.string() })),
+  entries: z.array(
+    z.object({ name: z.string(), path: z.string(), isGit: z.boolean().optional(), modifiedAt: z.number().optional() })
+  ),
+  error: z.string().optional()
+});
+
+/** 新建文件夹的回复：成功给新目录的绝对路径，失败给 error。 */
+export const workerMadeDirectorySchema = z.object({
+  type: z.literal('made_directory'),
+  requestId: z.string(),
+  path: z.string(),
   error: z.string().optional()
 });
 
@@ -392,13 +402,28 @@ export const homeSchema = z.object({
 });
 
 /** 目录选择器：只列子目录。`parent` 为 null 表示已经在根。 */
-export const directoryEntrySchema = z.object({ name: z.string(), path: z.string() });
+export const directoryEntrySchema = z.object({
+  name: z.string(),
+  path: z.string(),
+  isGit: z.boolean().default(false),
+  modifiedAt: z.number().default(0)
+});
 export const directoryListingSchema = z.object({
   path: z.string(),
   parent: z.string().nullable(),
   entries: z.array(directoryEntrySchema),
   /** 在哪台 Worker 上浏览的；null = Server 本机。 */
-  workerId: z.string().nullable().default(null)
+  workerId: z.string().nullable().default(null),
+  /** 这台机器允许浏览的根：面包屑从这里开始，不能再往上。 */
+  roots: z.array(z.string()).default([]),
+  /** 项目托管目录 `<roots[0]>/agent-hub/<slug>`（请求带了项目名才有，不一定已存在）。 */
+  managed: z.string().nullable().default(null)
+});
+
+export const makeDirectoryRequest = z.object({
+  workerId: z.string().nullable().default(null),
+  parent: z.string().min(1),
+  name: z.string().min(1).max(255)
 });
 
 /** `/api/workers` 的响应：UI 靠它区分「它挂了」和「我改坏了配置」（S1.2）。 */
@@ -434,6 +459,7 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerOptionsSchema,
   workerStatusSchema,
   workerDirectoriesSchema,
+  workerMadeDirectorySchema,
   workerFilesSchema,
   workerFileSchema
 ]);
@@ -460,6 +486,14 @@ export const listDirectoriesCommandSchema = z.object({
   path: z.string()
 });
 
+/** 在 parent 下建一层文件夹 name（目录选择器里的「新建文件夹」）。Worker 用 realpath 校验仍在 WORKER_ROOTS 里。 */
+export const makeDirectoryCommandSchema = z.object({
+  kind: z.literal('make_directory'),
+  requestId: z.string(),
+  parent: z.string(),
+  name: z.string()
+});
+
 /** 列项目里的文件（`@` 引用）。`root` 是那台机器上的项目目录。 */
 export const listFilesCommandSchema = z.object({
   kind: z.literal('list_files'),
@@ -478,6 +512,7 @@ export const readFileCommandSchema = z.object({
 
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   listDirectoriesCommandSchema,
+  makeDirectoryCommandSchema,
   listFilesCommandSchema,
   readFileCommandSchema,
   startSessionCommandSchema,

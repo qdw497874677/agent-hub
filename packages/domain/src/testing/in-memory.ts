@@ -147,6 +147,9 @@ export function fakeFs(): WorkspaceFS & { files: Map<string, Uint8Array> } {
     async listDirectories() {
       return [{ name: 'demo', path: '/tmp/demo' }];
     },
+    async makeDirectory(parent, name) {
+      return ok(`${parent.replace(/\/+$/, '')}/${name}`);
+    },
     artifactDir(workspaceRoot, sessionId) {
       return `${workspaceRoot}/.agent-hub/artifacts/${sessionId}`;
     },
@@ -221,6 +224,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   const gateway: NodeGateway = {
     status: async () => workers,
     listDirectories: async (_workerId, path) => ok({ path: path || '/home/remote', exists: true, entries: [] }),
+    makeDirectory: async (_workerId, parent, name) => ok({ path: `${parent}/${name}` }),
     // 远程机器上的文件：经网关问那台 Worker（测试里固定一份清单）
     listFiles: async (workerId) => ok({ files: [`on-${workerId}.ts`, 'src/remote.ts'], truncated: false }),
     readFile: async (workerId, path) => ok(path.includes('/.agent-hub/attachments/') ? new TextEncoder().encode(`${workerId}:${path}`) : null),

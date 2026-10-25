@@ -15,7 +15,7 @@ import type {
   WorkerCommand,
   WorkerStatus
 } from '@agent-hub/domain';
-import { unavailable } from '@agent-hub/domain';
+import { invalid, unavailable } from '@agent-hub/domain';
 
 export interface GatewayHooks {
   readonly token: string | null;
@@ -83,7 +83,7 @@ interface PendingRequest {
   readonly timer: NodeJS.Timeout;
 }
 
-type ReplyFrame = Extract<WorkerToServer, { type: 'directories' | 'files' | 'file' }>;
+type ReplyFrame = Extract<WorkerToServer, { type: 'directories' | 'made_directory' | 'files' | 'file' }>;
 
 
 export interface ServerGateway {
@@ -232,7 +232,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (!entry || entry.socket !== socket) return; // 没 hello 过的连接说什么都不算
       entry.lastSeenAt = now();
 
-      if (frame.type === 'directories' || frame.type === 'files' || frame.type === 'file') {
+      if (frame.type === 'directories' || frame.type === 'made_directory' || frame.type === 'files' || frame.type === 'file') {
         const request = pending.get(frame.requestId);
         if (!request || request.workerId !== entry.workerId) return;
         clearTimeout(request.timer);
@@ -352,6 +352,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (frame.type !== 'directories') return { ok: false, error: unavailable('Worker 回错了帧') };
       if (frame.error !== undefined) return { ok: false, error: unavailable(frame.error) };
       return { ok: true, value: { path: frame.path, exists: frame.exists, entries: frame.entries } };
+    },
+    async makeDirectory(workerId: string, parent: string, name: string) {
+      const reply = await request(workerId, '新建文件夹', (requestId) => ({ kind: 'make_directory', requestId, parent, name }));
+      if (!reply.ok) return reply;
+      const frame = reply.value;
+      if (frame.type !== 'made_directory') return { ok: false, error: unavailable('Worker 回错了帧') };
+      if (frame.error !== undefined) return { ok: false, error: invalid(frame.error) };
+      return { ok: true, value: { path: frame.path } };
     },
     async listFiles(workerId: string, root: string, limit: number) {
       const reply = await request(workerId, '文件清单', (requestId) => ({ kind: 'list_files', requestId, root, limit }));
