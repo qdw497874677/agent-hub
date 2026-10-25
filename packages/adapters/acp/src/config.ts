@@ -16,6 +16,13 @@ export interface AcpAgentConfig {
   readonly args: readonly string[];
   /** 可选：这个 agent 认得的额外启动参数以外的东西，暂时只用于日志。 */
   readonly note?: string;
+  /**
+   * 钩子：initialize 之后要不要 authenticate、用哪种方式。
+   * 参数是 agent 声明的 authMethods id；返回 null 表示用 agent 自己缓存的凭据。
+   */
+  readonly authenticate?: (authMethods: readonly string[]) => { methodId: string; _meta?: Record<string, unknown> } | null;
+  /** session/new 与 session/load 附带的 `_meta`（ACP 的扩展口子，例如 Grok 的 yoloMode）。 */
+  readonly sessionMeta?: Readonly<Record<string, unknown>>;
 }
 
 export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [

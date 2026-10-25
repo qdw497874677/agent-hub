@@ -1,7 +1,11 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { jsonlRecords } from '@agent-hub/contract';
+import { Readable, Writable } from 'node:stream';
+import { client, ndJsonStream } from '@agentclientprotocol/sdk';
+import type { ClientConnection } from '@agentclientprotocol/sdk';
+import { AsyncQueue } from '@agent-hub/contract';
 import type {
+  AgentDescriptor,
   AgentRuntime,
   DomainError,
   Result,
@@ -15,65 +19,77 @@ import { acpDescriptor, type AcpAgentConfig } from './config.ts';
 import { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
 import { mapAcpOptions } from './map-options.ts';
 
-class EventQueue implements AsyncIterable<SessionEvent> {
-  private readonly items: SessionEvent[] = [];
-  private readonly waiters: ((result: IteratorResult<SessionEvent>) => void)[] = [];
-  private closed = false;
+type Json = Record<string, unknown>;
 
-  push(event: SessionEvent): void {
-    if (this.closed) return;
-    const waiter = this.waiters.shift();
-    if (waiter) waiter({ value: event, done: false });
-    else this.items.push(event);
-  }
+const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false }, terminal: false };
 
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
-    return {
-      next: (): Promise<IteratorResult<SessionEvent>> => {
-        const item = this.items.shift();
-        if (item !== undefined) return Promise.resolve({ value: item, done: false });
-        if (this.closed) return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve) => this.waiters.push(resolve));
-      }
-    };
-  }
-}
-
-interface Pending {
-  resolve: (value: Record<string, unknown>) => void;
-  reject: (error: Error) => void;
-}
-
+/**
+ * 一条 ACP 会话 = 一个子进程 + 一条官方 SDK 的 JSON-RPC 连接。
+ *
+ * JSON-RPC 的编号、配对、反向请求的「方法不存在」应答都交给
+ * `@agentclientprotocol/sdk`；这里只剩平台自己的规则：
+ * 事件归一、回放去重、可调项全量上报、dispose 记 stopped。
+ */
 class AcpSession implements RuntimeSession {
   readonly sessionId: RuntimeSession['sessionId'];
-  private readonly child: ChildProcessWithoutNullStreams;
-  private readonly queue = new EventQueue();
-  private readonly pending = new Map<string, Pending>();
+  private readonly queue = new AsyncQueue<SessionEvent>();
   private readonly toolNames = new Map<string, string>();
-  private current: readonly RuntimeOption[] = [];
-  private counter = 0;
+  private readonly connection: ClientConnection;
   private agentSessionId = '';
+  /** session/load 时 agent 会用 session/update 回放历史；平台已有这些事件，回放期间丢掉。 */
+  private replaying = false;
+  /** 主动 dispose 导致的进程退出记 stopped，不是 failed。 */
+  private disposed = false;
+  private current: readonly RuntimeOption[] = [];
+
+  private readonly child: ChildProcessWithoutNullStreams;
+  private readonly config: AcpAgentConfig;
   private readonly onOptions: (options: readonly RuntimeOption[]) => void;
 
   constructor(
     sessionId: RuntimeSession['sessionId'],
     child: ChildProcessWithoutNullStreams,
+    config: AcpAgentConfig,
     onOptions: (options: readonly RuntimeOption[]) => void
   ) {
     this.sessionId = sessionId;
     this.child = child;
+    this.config = config;
     this.onOptions = onOptions;
-    void this.pump();
+    const app = client()
+      .onNotification('session/update', ({ params }) => this.onUpdate(params.update as unknown as Json))
+      // 平台替用户放行工具调用（与 yolo 模式一致）；agent 自己的 deny 规则仍生效。
+      .onRequest('session/request_permission', ({ params }) => {
+        const allow = params.options.find((option) => option.kind.startsWith('allow')) ?? params.options[0];
+        return allow
+          ? { outcome: { outcome: 'selected' as const, optionId: allow.optionId } }
+          : { outcome: { outcome: 'cancelled' as const } };
+      });
+    this.connection = app.connect(
+      ndJsonStream(
+        Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+        Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>
+      )
+    );
+    child.once('exit', () => this.finish());
+    void this.connection.closed.catch((error: unknown) => {
+      this.queue.push({ kind: 'diagnostic', level: 'error', text: `ACP 事件流中断：${(error as Error).message}` });
+    }).finally(() => this.finish());
   }
 
-  setAgentSessionId(id: string): void {
-    this.agentSessionId = id;
+  private finish(): void {
+    this.queue.push({ kind: 'ended', outcome: this.disposed ? 'stopped' : 'failed' });
+    this.queue.close();
+  }
+
+  private onUpdate(update: Json): void {
+    // agent 自己也会推全量配置（比如换模型后思考强度的可选值跟着变）。
+    if (update['sessionUpdate'] === 'config_option_update') {
+      this.setOptions(update['configOptions']);
+      return;
+    }
+    if (this.replaying) return;
+    for (const event of mapAcpUpdate(update, this.toolNames)) this.queue.push(event);
   }
 
   private setOptions(raw: unknown): void {
@@ -83,117 +99,44 @@ class AcpSession implements RuntimeSession {
     this.onOptions(options);
   }
 
-  private async pump(): Promise<void> {
-    try {
-      for await (const line of jsonlRecords(this.child.stdout)) {
-        let record: Record<string, unknown>;
-        try {
-          record = JSON.parse(line) as Record<string, unknown>;
-        } catch {
-          this.queue.push({ kind: 'diagnostic', level: 'warn', text: '无法解析的 ACP 记录' });
-          continue;
-        }
-
-        const id = record['id'];
-        if (record['method'] !== undefined && id !== undefined) {
-          this.answerAcpRequest(record);
-          continue;
-        }
-        if (id !== undefined && this.pending.has(String(id))) {
-          const pending = this.pending.get(String(id));
-          this.pending.delete(String(id));
-          if (record['error']) {
-            pending?.reject(new Error(String((record['error'] as Record<string, unknown>)['message'])));
-          } else {
-            pending?.resolve((record['result'] as Record<string, unknown>) ?? {});
-          }
-          continue;
-        }
-        const params = record['params'] as Record<string, unknown> | undefined;
-        if (record['method'] === 'session/update' && params) {
-          const update = params['update'] as Record<string, unknown> | undefined;
-          // agent 自己也能改配置（比如限流后换模型），它推的是全量状态。
-          if (update?.['sessionUpdate'] === 'config_option_update') {
-            this.setOptions(update['configOptions']);
-            continue;
-          }
-          for (const event of mapAcpUpdate(params['update'], this.toolNames)) this.queue.push(event);
-        }
-      }
-    } catch (error) {
-      this.queue.push({
-        kind: 'diagnostic',
-        level: 'error',
-        text: `ACP 事件流中断：${(error as Error).message}`
-      });
-    } finally {
-      this.queue.push({ kind: 'ended', outcome: 'failed' });
-      this.queue.close();
-    }
+  /** 官方 SDK 按 schema 给出了强类型；平台扩展字段（_meta）和宽松读取走这个口子。 */
+  private request(method: string, params: Json): Promise<Json> {
+    return this.connection.agent.request<Json, Json>(method, params);
   }
 
-  /** ACP 允许 agent 反向请求客户端。不答就会卡住，所以每个请求都要有回音。 */
-  private answerAcpRequest(record: Record<string, unknown>): void {
-    const id = record['id'] as string | number;
-    const method = String(record['method']);
+  private async handshake(): Promise<void> {
+    const init = await this.request('initialize', { protocolVersion: 1, clientCapabilities: CLIENT_CAPABILITIES });
+    const methods = ((init['authMethods'] as { id?: unknown }[] | undefined) ?? []).flatMap((method) =>
+      typeof method.id === 'string' ? [method.id] : []
+    );
+    const auth = this.config.authenticate?.(methods);
+    if (auth) await this.request('authenticate', { ...auth });
+  }
 
-    if (method === 'session/request_permission') {
-      const params = record['params'] as Record<string, unknown> | undefined;
-      const options = (params?.['options'] as { optionId?: string; kind?: string }[] | undefined) ?? [];
-      const allow = options.find((option) => option.kind?.startsWith('allow')) ?? options[0];
-      this.write({
-        jsonrpc: '2.0',
-        id,
-        result: allow?.optionId
-          ? { outcome: { outcome: 'selected', optionId: allow.optionId } }
-          : { outcome: { outcome: 'cancelled' } }
-      });
+  private sessionParams(cwd: string): Json {
+    return { cwd, mcpServers: [], ...(this.config.sessionMeta ? { _meta: this.config.sessionMeta } : {}) };
+  }
+
+  async open(cwd: string, agentSessionRef: string | null): Promise<void> {
+    await this.handshake();
+    if (agentSessionRef === null) {
+      const session = await this.request('session/new', this.sessionParams(cwd));
+      if (typeof session['sessionId'] === 'string') this.agentSessionId = session['sessionId'];
+      this.setOptions(session['configOptions']);
       return;
     }
-
-    this.write({
-      jsonrpc: '2.0',
-      id,
-      error: { code: -32601, message: `agent-hub v1 未实现 ${method}` }
-    });
-  }
-
-  private write(payload: Record<string, unknown>): void {
-    this.child.stdin.write(`${JSON.stringify(payload)}\n`);
-  }
-
-  private request(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    this.counter += 1;
-    const id = this.counter;
-    return new Promise<Record<string, unknown>>((resolve, reject) => {
-      this.pending.set(String(id), { resolve, reject });
-      this.write({ jsonrpc: '2.0', id, method, params });
-    });
-  }
-
-  async initialize(cwd: string): Promise<void> {
-    await this.request('initialize', {
-      protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
-    });
-    const session = await this.request('session/new', { cwd, mcpServers: [] });
-    const id = session['sessionId'];
-    if (typeof id === 'string') this.agentSessionId = id;
-    this.setOptions(session['configOptions']);
-  }
-
-  async load(cwd: string, agentSessionRef: string): Promise<void> {
-    await this.request('initialize', {
-      protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
-    });
-    const session = await this.request('session/load', {
-      sessionId: agentSessionRef,
-      cwd,
-      mcpServers: []
-    });
+    this.replaying = true;
+    try {
+      const session = await this.request('session/load', { sessionId: agentSessionRef, ...this.sessionParams(cwd) });
+      this.setOptions(session['configOptions']);
+    } finally {
+      this.replaying = false;
+    }
     this.agentSessionId = agentSessionRef;
-    this.setOptions(session['configOptions']);
+  }
+
+  get agentRef(): string {
+    return this.agentSessionId;
   }
 
   options(): readonly RuntimeOption[] {
@@ -210,7 +153,7 @@ class AcpSession implements RuntimeSession {
       });
       // 响应是全量状态：换模型会连带改变别的项的可选值，所以整份换掉。
       this.setOptions(result['configOptions']);
-      if (this.current.length === 0) return { ok: false, error: unavailable('agent 没有回报配置项') };
+      if (this.current.length === 0) return { ok: false, error: unavailable(`${this.config.label} 没有回报配置项`) };
       return { ok: true, value: this.current };
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) };
@@ -219,11 +162,11 @@ class AcpSession implements RuntimeSession {
 
   async prompt(text: string): Promise<Result<void, DomainError>> {
     try {
-      const result = await this.request('session/prompt', {
+      const result = await this.connection.agent.request('session/prompt', {
         sessionId: this.agentSessionId,
         prompt: [{ type: 'text', text }]
       });
-      this.queue.push(endedFromStopReason(result['stopReason']));
+      this.queue.push(endedFromStopReason(result.stopReason));
       return { ok: true, value: undefined };
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) };
@@ -231,11 +174,7 @@ class AcpSession implements RuntimeSession {
   }
 
   async interrupt(): Promise<void> {
-    this.write({
-      jsonrpc: '2.0',
-      method: 'session/cancel',
-      params: { sessionId: this.agentSessionId }
-    });
+    await this.connection.agent.notify('session/cancel', { sessionId: this.agentSessionId });
   }
 
   events(): AsyncIterable<SessionEvent> {
@@ -247,6 +186,9 @@ class AcpSession implements RuntimeSession {
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.connection.close();
     this.child.stdin.end();
     const timer = setTimeout(() => this.child.kill('SIGKILL'), 3000);
     this.child.once('exit', () => clearTimeout(timer));
@@ -254,56 +196,54 @@ class AcpSession implements RuntimeSession {
 }
 
 export interface AcpRuntimeOptions {
+  /** 覆盖默认能力矩阵（例如 Grok 的模型清单在启动前就问得出来）。 */
+  readonly descriptor?: AgentDescriptor;
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** agent 报上来的可调项（含当前值），worker 用它告诉 server。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
 
 /**
- * 一个 ACP agent = 一条命令 + 一套协议。
+ * 一个 ACP agent = 一条命令 + 一套协议 + 少量握手钩子。
  * 换 agent 只换 `config`，不改这里——这就是「通用」在这一层的全部含义。
  */
 export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOptions = {}): AgentRuntime {
   return {
-    descriptor: acpDescriptor(config),
+    descriptor: options.descriptor ?? acpDescriptor(config),
 
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
       let child: ChildProcessWithoutNullStreams;
       try {
-        child = spawn(config.command, [...config.args], {
-          cwd: spec.workspaceRoot,
-          stdio: ['pipe', 'pipe', 'pipe']
-        });
+        child = spawn(config.command, [...config.args], { cwd: spec.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
       } catch (error) {
         return { ok: false, error: unavailable(`无法启动 ${config.label}：${(error as Error).message}`) };
       }
-      child.on('error', () => {
-        /* 见 Pi 适配器的同名处理：避免未处理的 error 事件崩进程 */
-      });
+      // 命令不存在时 spawn 会异步抛 error；不接住就会崩掉整个 worker。
+      child.on('error', () => {});
 
-      // 每一项可调项都是 agent 自己报的；平台只转手，不改写。
-      const session = new AcpSession(spec.sessionId, child, (reported) => {
+      const session = new AcpSession(spec.sessionId, child, config, (reported) => {
         options.onOptions?.(spec.sessionId, reported);
       });
       const ref = spec.resume?.agentSessionRef ?? null;
       try {
-        if (ref) await session.load(spec.workspaceRoot, ref);
-        else await session.initialize(spec.workspaceRoot);
+        await session.open(spec.workspaceRoot, ref);
       } catch (error) {
         await session.dispose();
         return { ok: false, error: unavailable(`${config.label} 握手失败：${(error as Error).message}`) };
       }
 
-      // 开跑前用户已经选好的项（派生时选的模型），交给 agent 去落实。
-      for (const [id, value] of Object.entries(spec.options)) {
+      // 开跑前用户已经选好的项（派生时选的模型、思考强度），交给 agent 去落实。
+      // 模型也是一个配置项（ACP 的 category: model），与其余选项走同一条 set_config_option。
+      const wanted = { ...(spec.model ? { model: spec.model } : {}), ...spec.options };
+      for (const [id, value] of Object.entries(wanted)) {
         const changed = await session.changeOption(id, value);
         if (!changed.ok) {
           await session.dispose();
-          return { ok: false, error: changed.error };
+          return changed;
         }
       }
 
-      options.onAgentSessionRef?.(spec.sessionId, ref ?? 'pending');
+      options.onAgentSessionRef?.(spec.sessionId, session.agentRef || ref || 'pending');
       return { ok: true, value: session };
     }
   } satisfies AgentRuntime;

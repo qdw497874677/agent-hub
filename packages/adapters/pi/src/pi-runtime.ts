@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { jsonlRecords } from '@agent-hub/contract';
+import { AsyncQueue, jsonlRecords } from '@agent-hub/contract';
 import type {
   AgentDescriptor,
   AgentRuntime,
@@ -16,40 +16,6 @@ import { unavailable } from '@agent-hub/domain';
 import { piDescriptorFor } from './descriptor.ts';
 import { createPiEventMapper } from './map-event.ts';
 
-/**
- * 事件队列：把 child process 的推送转成 domain 要的 `AsyncIterable<SessionEvent>`。
- * 关闭后仍在排队的消费者会被正常结束，不会挂住。
- */
-class EventQueue implements AsyncIterable<SessionEvent> {
-  private readonly items: SessionEvent[] = [];
-  private readonly waiters: ((result: IteratorResult<SessionEvent>) => void)[] = [];
-  private closed = false;
-
-  push(event: SessionEvent): void {
-    if (this.closed) return;
-    const waiter = this.waiters.shift();
-    if (waiter) waiter({ value: event, done: false });
-    else this.items.push(event);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    for (const waiter of this.waiters.splice(0)) waiter({ value: undefined, done: true });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
-    return {
-      next: (): Promise<IteratorResult<SessionEvent>> => {
-        const item = this.items.shift();
-        if (item !== undefined) return Promise.resolve({ value: item, done: false });
-        if (this.closed) return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve) => this.waiters.push(resolve));
-      }
-    };
-  }
-}
-
 interface Pending {
   resolve: (value: Record<string, unknown>) => void;
   reject: (error: Error) => void;
@@ -58,7 +24,7 @@ interface Pending {
 class PiSession implements RuntimeSession {
   readonly sessionId: RuntimeSession['sessionId'];
   private readonly child: ChildProcessWithoutNullStreams;
-  private readonly queue = new EventQueue();
+  private readonly queue = new AsyncQueue<SessionEvent>();
   private readonly pending = new Map<string, Pending>();
   private readonly mapper = createPiEventMapper();
   private counter = 0;

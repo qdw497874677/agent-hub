@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
+import { endedFromStopReason, mapAcpUpdate } from '@agent-hub/adapter-acp';
 import { modelsFromInitialize } from './discover-models.ts';
 import { grokDescriptor } from './descriptor.ts';
 

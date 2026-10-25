@@ -22,7 +22,9 @@ interface AcpGroup {
 }
 
 interface AcpConfigOption {
-  readonly configId: string;
+  /** ACP 现行 schema（官方 SDK 2.x）用 `id`；早期草案用 `configId`，两种都认。 */
+  readonly id?: string;
+  readonly configId?: string;
   readonly name: string;
   readonly description?: string;
   readonly category?: string;
@@ -45,7 +47,8 @@ export function mapAcpOptions(raw: unknown): readonly RuntimeOption[] {
   if (!Array.isArray(raw)) return [];
   const options: RuntimeOption[] = [];
   for (const entry of raw as AcpConfigOption[]) {
-    if (typeof entry?.configId !== 'string') continue;
+    const configId = entry?.id ?? entry?.configId;
+    if (typeof configId !== 'string') continue;
     const choices: OptionValueOrGroup[] = [];
     for (const item of entry.options ?? []) {
       if (isGroup(item)) {
@@ -70,7 +73,7 @@ export function mapAcpOptions(raw: unknown): readonly RuntimeOption[] {
       }
     }
     options.push({
-      id: entry.configId,
+      id: configId,
       label: entry.name,
       ...(entry.description === undefined ? {} : { description: entry.description }),
       category: categoryOf(entry.category),
