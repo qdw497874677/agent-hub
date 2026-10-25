@@ -15,7 +15,7 @@
     "up": "node apps/server/src/main.ts",
     "web": "vite",
     "dev": "node scripts/dev.mjs",
-    "test": "node --test \"packages/**/*.test.ts\" \"apps/server/**/*.test.ts\" \"apps/worker/**/*.test.ts\"",
+    "test": "node --test \"packages/**/*.test.ts\" \"apps/server/**/*.test.ts\" \"apps/worker/**/*.test.ts\" \"apps/web/src/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:web": "tsc -p apps/web/tsconfig.json",
     "check": "npm run check:domain && npm run check:boundaries && npm run check:ports",

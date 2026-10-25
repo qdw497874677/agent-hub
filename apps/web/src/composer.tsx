@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionDto } from './api.ts';
 import { OptionControls } from './options.tsx';
+import { coarsePointer } from './device.ts';
 
 interface Props {
   readonly session: SessionDto;
@@ -124,7 +125,7 @@ export function Composer({
           className={`w-full resize-none bg-transparent text-body text-primary outline-none placeholder:text-tertiary ${
             large ? 'min-h-[52px] max-h-56' : 'min-h-[44px] max-h-40'
           }`}
-          placeholder="接着说…（⌘↵ 发送）"
+          placeholder={coarsePointer() ? '接着说…' : '接着说…（⌘↵ 发送）'}
           ref={area}
           defaultValue={draft}
           onChange={(event) => {

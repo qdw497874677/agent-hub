@@ -24,6 +24,7 @@
   "include": [
     "packages/**/*.ts",
     "apps/server/src/**/*.ts",
-    "apps/worker/src/**/*.ts"
+    "apps/worker/src/**/*.ts",
+    "apps/web/src/**/*.test.ts"
   ]
 }

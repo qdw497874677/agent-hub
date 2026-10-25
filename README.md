@@ -147,5 +147,6 @@ npm run e2e    # Playwright：真浏览器 + 真 agent，从建项目到模型�
 | [`docs/product/user-stories.md`](docs/product/user-stories.md) | 22 条用户故事，顺序即优先级 |
 | [`docs/plan/mvp-plan.md`](docs/plan/mvp-plan.md) | 六个纵切 milestone 与端口契约 |
 | [`docs/architecture/tech-stack.md`](docs/architecture/tech-stack.md) | 选型与理由 |
+| [`docs/remote-access.md`](docs/remote-access.md) | 从手机 / 另一台电脑安全访问：Tailscale、HUB_TOKEN、PWA |
 | [`docs/design/visual-direction.md`](docs/design/visual-direction.md) | 深色控制室：色板、线型语义、状态位 |
 | [`docs/adr/`](docs/adr) | 六个不可轻易回退的决定：重写与四聚合、TS 全栈、模型列表来自 agent、事件串行落盘、搜索查文本投影、用户的提问也是事件 |

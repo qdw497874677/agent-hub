@@ -4,6 +4,7 @@ import type { ProjectDto, RecentSessionDto } from './api.ts';
 import { api } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkersBadge } from './workers.tsx';
+import { coarsePointer } from './device.ts';
 
 /**
  * 首页。
@@ -44,8 +45,8 @@ export function HomePage({
   }
 
   return (
-    <div className="flex h-full">
-      <nav className="flex w-[220px] shrink-0 flex-col border-r border-hair px-3 py-4">
+    <div className="flex h-full flex-col md:flex-row">
+      <nav className="flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto border-b border-hair px-3 py-4 md:max-h-none md:w-[220px] md:border-b-0 md:border-r">
         <div className="mb-4">
           <p className="text-head text-primary">agent-hub</p>
           <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
@@ -89,7 +90,7 @@ export function HomePage({
       </nav>
 
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <div className="mx-auto w-full max-w-[760px] px-8 py-6">
+        <div className="mx-auto w-full max-w-[760px] px-4 py-6 md:px-8">
           {creating ? (
             <CreateProjectPanel
               onCancel={() => setCreating(false)}
@@ -153,7 +154,9 @@ export function HomePage({
           ) : null}
 
           <p className="mt-8 text-meta text-tertiary">
-            画布上双击任务即派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在
+            {coarsePointer()
+              ? '点任务卡上的「＋ 会话」派生会话 · 关掉浏览器，会话历史还在'
+              : '画布上双击任务即派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在'}
           </p>
         </div>
       </main>
