@@ -5,16 +5,21 @@ import {
   Controls,
   ReactFlow,
   type Edge,
+  type NodeChange,
   type NodeTypes,
   type ReactFlowInstance
 } from '@xyflow/react';
-import type { CanvasDto, TaskDto } from './api.ts';
+import type { CanvasDto, SaveLayoutRequest, TaskDto } from './api.ts';
 import { resolveLive, type LiveMap } from './live.ts';
 import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
+import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
 
 type Point = { x: number; y: number };
+
+/** 一次布局变更，只带变了的节点；服务端按节点合并。 */
+export type LayoutPatch = SaveLayoutRequest;
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -30,7 +35,7 @@ interface Props {
   readonly onInterrupt: (sessionId: string) => Promise<void>;
   /** 改 agent 的可调项（模型、思考强度…）：清单由 agent 报，我们只转发。 */
   readonly onChangeOption: (sessionId: string, optionId: string, value: string | boolean) => Promise<void>;
-  readonly onLayoutChange: (positions: Record<string, Point>) => void;
+  readonly onLayoutChange: (patch: LayoutPatch) => void;
   readonly onTaskStatus: (taskId: string, status: TaskDto['status']) => void;
   /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
   readonly focus: { readonly id: string; readonly nonce: number } | null;
@@ -86,6 +91,9 @@ export function CanvasView({
 }: Props) {
   const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
   const [positions, setPositions] = useState<Record<string, Point>>(initial);
+  const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
+  // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
   const flow = useRef<Pick<ReactFlowInstance<TaskNode | SessionNode, Edge>, 'setCenter'> | null>(null);
 
@@ -94,22 +102,57 @@ export function CanvasView({
     if (!focus) return;
     const point = positions[focus.id];
     if (!point || !flow.current) return;
-    const width = canvas.sessions.some((session) => session.id === focus.id) ? 320 : 220;
+    const width = cardWidth(canvas.sessions.some((session) => session.id === focus.id) ? 'session' : 'task', sizes[focus.id]);
     flow.current.setCenter(point.x + width / 2, point.y + 120, { zoom: 1, duration: 400 });
-  }, [focus, positions, canvas.sessions]);
+  }, [focus, positions, sizes, canvas.sessions]);
 
   const agentLabel = useCallback(
     (agentId: string) => canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId,
     [canvas.agents]
   );
 
+  /** 缩放结束：左/上边的把手会同时挪原点，所以位置和尺寸一起存。 */
+  const resized = useCallback(
+    (kind: 'task' | 'session', nodeId: string) =>
+      ({ x, y, width, height }: Size & Point) => {
+        const point = { x, y };
+        const size = clampSize(kind, { width, height });
+        setPositions((current) => ({ ...current, [nodeId]: point }));
+        setSizes((current) => ({ ...current, [nodeId]: size }));
+        onLayoutChange({ positions: { [nodeId]: point }, sizes: { [nodeId]: size } });
+      },
+    [onLayoutChange]
+  );
+
+  /** 只吃我们关心的三种变化：选中、拖动中的位置、缩放中的尺寸。其余（测量等）交给 React Flow 自己。 */
+  const onNodesChange = useCallback((changes: NodeChange<TaskNode | SessionNode>[]) => {
+    for (const change of changes) {
+      if (change.type === 'select') {
+        setSelectedId((current) => (change.selected ? change.id : current === change.id ? null : current));
+      } else if (change.type === 'position' && change.position) {
+        const point = change.position;
+        setPositions((current) => ({ ...current, [change.id]: point }));
+      } else if (change.type === 'dimensions' && change.resizing && change.dimensions) {
+        const size = change.dimensions;
+        setSizes((current) => ({ ...current, [change.id]: size }));
+      }
+    }
+  }, []);
+
   const nodes = useMemo(() => {
+    const box = (kind: 'task' | 'session', nodeId: string) => {
+      const size = sizes[nodeId];
+      return { width: size?.width ?? CARD_LIMITS[kind].defaultWidth, height: size?.height, selected: nodeId === selectedId };
+    };
     const taskNodes: TaskNode[] = canvas.tasks.map((task) => ({
       id: task.id,
       type: 'task',
       position: positions[task.id] ?? { x: 0, y: 0 },
+      ...box('task', task.id),
       data: {
         task,
+        size: sizes[task.id],
+        onResized: resized('task', task.id),
         sessionCount: canvas.sessions.filter((s) => s.taskId === task.id).length,
         onStatus: (status: TaskDto['status']) => onTaskStatus(task.id, status),
         onDerive: () => onDerive(task.id)
@@ -119,8 +162,11 @@ export function CanvasView({
       id: session.id,
       type: 'session',
       position: positions[session.id] ?? { x: 0, y: 0 },
+      ...box('session', session.id),
       data: {
         session,
+        size: sizes[session.id],
+        onResized: resized('session', session.id),
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
         agentLabel: agentLabel(session.agentId),
         onOpen: () => onOpen(session.id),
@@ -137,6 +183,9 @@ export function CanvasView({
     canvas.sessions,
     canvas.previews,
     positions,
+    sizes,
+    selectedId,
+    resized,
     live,
     drafts,
     agentLabel,
@@ -193,10 +242,11 @@ export function CanvasView({
           if (node.type === 'task') onDerive(node.id);
           if (node.type === 'session') onOpen(node.id);
         }}
+        onNodesChange={onNodesChange}
         onNodeDragStop={(_, node) => {
-          const next = { ...positions, [node.id]: { x: node.position.x, y: node.position.y } };
-          setPositions(next);
-          onLayoutChange(next);
+          const point = { x: node.position.x, y: node.position.y };
+          setPositions((current) => ({ ...current, [node.id]: point }));
+          onLayoutChange({ positions: { [node.id]: point } });
         }}
         minZoom={0.35}
         maxZoom={1.4}

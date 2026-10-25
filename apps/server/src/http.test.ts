@@ -240,6 +240,23 @@ test('布局保存后能读回来，坐标按节点 id 记住', async () => {
   const canvas = await call(`/api/projects/${projectId}/canvas`);
   const payload = canvas.body as { layout: { positions: Record<string, { x: number; y: number }> } };
   assert.deepEqual(payload.layout.positions['session-1'], { x: 12, y: 34 });
+
+  const resized = await call(`/api/projects/${projectId}/layout`, {
+    method: 'PUT',
+    body: JSON.stringify({ sizes: { 'session-1': { width: 420, height: 360 } } })
+  });
+  assert.equal(resized.status, 200);
+  const after = (await call(`/api/projects/${projectId}/canvas`)).body as {
+    layout: { positions: Record<string, unknown>; sizes: Record<string, unknown> };
+  };
+  assert.deepEqual(after.layout.sizes['session-1'], { width: 420, height: 360 });
+  assert.deepEqual(after.layout.positions['session-1'], { x: 12, y: 34 });
+
+  const invalid = await call(`/api/projects/${projectId}/layout`, {
+    method: 'PUT',
+    body: JSON.stringify({ sizes: { 'session-1': { width: -1, height: 10 } } })
+  });
+  assert.equal(invalid.status, 400);
 });
 
 test('项目目录不存在的请求返回 400 而不是 500', async () => {

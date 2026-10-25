@@ -1,5 +1,5 @@
-import { buildLineage, emptyLayout, place } from '../canvas.ts';
-import type { CanvasLayout, Point } from '../canvas.ts';
+import { applyLayoutPatch, buildLineage, emptyLayout } from '../canvas.ts';
+import type { CanvasLayout, LayoutPatch } from '../canvas.ts';
 import { asProjectId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { DomainError } from '../errors.ts';
@@ -42,15 +42,15 @@ export async function loadCanvas(
   });
 }
 
-/** 用户拖完节点：只记位置，不碰血缘。没存过布局的项目从空布局开始。 */
+/** 用户拖完或改完卡片大小：只记位置与尺寸，不碰血缘。没存过布局的项目从空布局开始。 */
 export async function saveLayoutUseCase(
   deps: Pick<Deps, 'layout' | 'now'>,
   projectId: string,
-  positions: Readonly<Record<string, Point>>
+  patch: LayoutPatch
 ): Promise<CanvasLayout> {
   const id = asProjectId(projectId);
-  let next = (await deps.layout.load(id)) ?? emptyLayout(id, deps.now());
-  for (const [nodeId, point] of Object.entries(positions)) next = place(next, nodeId, point, deps.now());
+  const current = (await deps.layout.load(id)) ?? emptyLayout(id, deps.now());
+  const next = applyLayoutPatch(current, patch, deps.now());
   await deps.layout.save(next);
   return next;
 }

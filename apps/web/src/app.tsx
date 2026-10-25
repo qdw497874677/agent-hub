@@ -4,7 +4,7 @@ import type { ProjectDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from './home.tsx';
 import { resolveLive, useLiveStream } from './live.ts';
-import { CanvasView } from './canvas.tsx';
+import { CanvasView, type LayoutPatch } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
 import { ListView, SearchPalette } from './views.tsx';
 import { FocusView } from './focus.tsx';
@@ -151,9 +151,9 @@ export function App() {
   );
 
   const saveLayout = useMemo(
-    () => (positions: Record<string, { x: number; y: number }>) => {
+    () => (patch: LayoutPatch) => {
       if (!project) return;
-      void api.saveLayout(project.id, positions);
+      void api.saveLayout(project.id, patch);
     },
     [project]
   );
@@ -292,7 +292,7 @@ export function App() {
                 sessions: [],
                 artifacts: [],
                 edges: [],
-                layout: { projectId: project.id, positions: {}, updatedAt: 0 },
+                layout: { projectId: project.id, positions: {}, sizes: {}, updatedAt: 0 },
                 agents: [],
                 previews: {}
               }

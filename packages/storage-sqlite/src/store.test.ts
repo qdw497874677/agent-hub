@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import {
   applyEvent,
   asAgentId,
+  asProjectId,
   createArtifact,
   createProject,
   createTask,
@@ -102,7 +104,12 @@ test('artifact 与画布布局往返', async () => {
   assert.deepEqual(await store.artifacts.byTask(task.id), [artifact.value]);
 
   assert.equal(await store.layout.load(project.id), null);
-  const layout = { projectId: project.id, positions: { [task.id]: { x: 10, y: -4 } }, updatedAt: now };
+  const layout = {
+    projectId: project.id,
+    positions: { [task.id]: { x: 10, y: -4 } },
+    sizes: { [task.id]: { width: 320, height: 180 } },
+    updatedAt: now
+  };
   await store.layout.save(layout);
   assert.deepEqual(await store.layout.load(project.id), layout);
   store.close();
@@ -118,6 +125,26 @@ test('数据落在文件里：关掉重开还在', async () => {
     const second = openSqliteStore(file);
     assert.deepEqual(await second.sessions.byId(session.id), session);
     second.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('老库迁移：layout 表没有 sizes 列时自动补上，旧布局读出来 sizes 为空', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-hub-store-'));
+  try {
+    const file = join(dir, 'hub.db');
+    const legacy = new DatabaseSync(file);
+    legacy.exec('CREATE TABLE layout (project_id TEXT PRIMARY KEY, positions TEXT NOT NULL, updated_at INTEGER NOT NULL)');
+    legacy.prepare('INSERT INTO layout VALUES (?, ?, ?)').run('p-old', JSON.stringify({ t: { x: 1, y: 2 } }), 7);
+    legacy.close();
+
+    const store = openSqliteStore(file);
+    const loaded = await store.layout.load(asProjectId('p-old'));
+    assert.deepEqual(loaded, { projectId: 'p-old', positions: { t: { x: 1, y: 2 } }, sizes: {}, updatedAt: 7 });
+    await store.layout.save({ ...loaded!, sizes: { t: { width: 300, height: 200 } } });
+    assert.deepEqual((await store.layout.load(asProjectId('p-old')))?.sizes, { t: { width: 300, height: 200 } });
+    store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

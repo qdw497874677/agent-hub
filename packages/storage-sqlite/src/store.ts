@@ -37,6 +37,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'option_spec')) {
     db.exec("ALTER TABLE sessions ADD COLUMN option_spec TEXT NOT NULL DEFAULT '[]'");
   }
+  const layoutColumns = db.prepare('PRAGMA table_info(layout)').all() as { name: string }[];
+  if (!layoutColumns.some((column) => column.name === 'sizes')) {
+    db.exec("ALTER TABLE layout ADD COLUMN sizes TEXT NOT NULL DEFAULT '{}'");
+  }
 
   const insertProject = db.prepare(
     'INSERT INTO projects(id, name, root_path, created_at) VALUES (?, ?, ?, ?) ' +
@@ -110,8 +114,8 @@ export function openSqliteStore(file: string): SqliteStore {
   );
 
   const upsertLayout = db.prepare(
-    'INSERT INTO layout(project_id, positions, updated_at) VALUES (?, ?, ?) ' +
-      'ON CONFLICT(project_id) DO UPDATE SET positions = excluded.positions, ' +
+    'INSERT INTO layout(project_id, positions, sizes, updated_at) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(project_id) DO UPDATE SET positions = excluded.positions, sizes = excluded.sizes, ' +
       'updated_at = excluded.updated_at'
   );
   const selectLayout = db.prepare('SELECT * FROM layout WHERE project_id = ?');
@@ -260,16 +264,17 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const layout = {
     async load(projectId: Parameters<typeof asProjectId>[0]): Promise<CanvasLayout | null> {
-      const row = selectLayout.get(projectId) as { positions?: string; updated_at?: number } | undefined;
+      const row = selectLayout.get(projectId) as { positions?: string; sizes?: string; updated_at?: number } | undefined;
       if (!row?.positions) return null;
       return {
         projectId: asProjectId(projectId),
         positions: JSON.parse(row.positions) as CanvasLayout['positions'],
+        sizes: JSON.parse(row.sizes ?? '{}') as CanvasLayout['sizes'],
         updatedAt: row.updated_at ?? 0
       };
     },
     async save(value: CanvasLayout): Promise<void> {
-      upsertLayout.run(value.projectId, JSON.stringify(value.positions), value.updatedAt);
+      upsertLayout.run(value.projectId, JSON.stringify(value.positions), JSON.stringify(value.sizes), value.updatedAt);
     }
   };
 

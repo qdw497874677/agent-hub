@@ -133,7 +133,7 @@ export function createApp(options: AppOptions): Hono {
   app.put('/api/projects/:projectId/layout', async (c) => {
     const input = await body(c, saveLayoutRequest);
     if (!input.ok) return input.response;
-    return c.json(await saveLayoutUseCase(deps, c.req.param('projectId'), input.value.positions));
+    return c.json(await saveLayoutUseCase(deps, c.req.param('projectId'), input.value));
   });
 
   /** 列表视图与 Cmd+K 的同一个后端：按任务标题/目标 + 会话里说过的话搜。 */

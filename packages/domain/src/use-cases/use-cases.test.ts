@@ -215,9 +215,22 @@ test('首页：最近会话按时间倒序、受条数限制、项目按活跃�
 
 test('保存布局：从空布局开始，逐个放置', async () => {
   const w = await world();
-  const layout = await saveLayoutUseCase(w.deps, w.project.id, { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } });
+  const layout = await saveLayoutUseCase(w.deps, w.project.id, { positions: { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } } });
   assert.deepEqual(layout.positions, { a: { x: 1, y: 2 }, b: { x: 3, y: 4 } });
+  assert.deepEqual(layout.sizes, {});
   assert.deepEqual((await w.deps.layout.load(w.project.id))?.positions, layout.positions);
+});
+
+test('保存尺寸：与位置合并，只拖位置不会冲掉已存的尺寸，无效尺寸被忽略', async () => {
+  const w = await world();
+  await saveLayoutUseCase(w.deps, w.project.id, {
+    positions: { a: { x: 0, y: 0 } },
+    sizes: { a: { width: 400, height: 300 }, bad: { width: 0, height: 10 }, nan: { width: Number.NaN, height: 5 } }
+  });
+  const moved = await saveLayoutUseCase(w.deps, w.project.id, { positions: { a: { x: 9, y: 9 } } });
+  assert.deepEqual(moved.positions, { a: { x: 9, y: 9 } });
+  assert.deepEqual(moved.sizes, { a: { width: 400, height: 300 } });
+  assert.deepEqual((await w.deps.layout.load(w.project.id))?.sizes, { a: { width: 400, height: 300 } });
 });
 
 test('节点列表来自网关端口', async () => {
