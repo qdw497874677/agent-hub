@@ -18,6 +18,14 @@ export interface WorkerLinkOptions {
   readonly origin?: 'local' | 'remote';
   readonly runtimes: readonly AgentRuntime[];
   readonly onLog?: (message: string) => void;
+  /**
+   * 连接断了。
+   *
+   * worker 不自带重连：它的两个监工（server 的 spawn、systemd）都比它更清楚该不该重开。
+   * 之前不退出，server 被杀之后会留下孤儿 worker 连着新 server——
+   * 界面上就出现「2/2 节点」，其中一台是上一代进程。
+   */
+  readonly onClose?: () => void;
   /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
@@ -63,6 +71,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
   socket.on('close', () => {
     options.onLog?.('与 server 断开');
+    options.onClose?.();
   });
 
   socket.on('error', (error: Error) => {

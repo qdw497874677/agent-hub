@@ -211,6 +211,14 @@ app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));
 const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
   log(`控制台：http://${host}:${info.port}`);
 });
+// 端口被占是最常见的一种「起不来」，不该打一坨堆栈了事
+server.on('error', (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`端口 ${port} 已被占用：先停掉上一个 agent-hub（或者换 HUB_PORT）`);
+    process.exit(1);
+  }
+  throw error;
+});
 server.on('upgrade', (request, socket, head) => {
   serverGateway?.handleUpgrade(request, socket, head);
 });

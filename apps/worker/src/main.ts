@@ -122,7 +122,12 @@ const link = connectWorkerLink({
   label,
   origin,
   runtimes,
-  onLog: log
+  onLog: log,
+  // 断开就退出：让监工决定要不要重开，而不是悄悄留下一个没人管的孤儿进程。
+  onClose: () => {
+    log('与 server 断开，退出');
+    process.exit(0);
+  }
 });
 
 notifyAgentSessionRef = (sessionId, ref) => link.notifyAgentSessionRef(sessionId, ref);
