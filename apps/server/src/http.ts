@@ -5,6 +5,8 @@ import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
+import { sameSecret } from './request-guard.ts';
+import type { RequestGuard } from './request-guard.ts';
 import {
   changeOptionRequest,
   createProjectRequest,
@@ -53,6 +55,8 @@ export interface AppOptions {
   readonly deps: Deps;
   readonly hub: StreamHub;
   readonly token: string | null;
+  /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
+  readonly guard?: RequestGuard;
   /**
    * 等 agent 回报它改完之后的可调项。
    *
@@ -106,6 +110,20 @@ export function createApp(options: AppOptions): Hono {
   const { deps, hub } = options;
   const app = new Hono();
 
+  // 先于一切路由（包括静态页）：DNS 重绑定来的页面连 index.html 都不该拿到。
+  // 只读请求不查 Origin（<img> 等跨站嵌入无害），会改东西的请求必须同站。
+  app.use('*', async (c, next) => {
+    const guard = options.guard;
+    if (!guard) return next();
+    const host = c.req.header('host');
+    if (!guard.hostAllowed(host)) return c.text('Host 不在允许列表里（见 HUB_ALLOWED_HOSTS）', 403);
+    const method = c.req.method;
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && !guard.originAllowed(c.req.header('origin'), host)) {
+      return c.json({ error: { code: 'forbidden', message: '跨站请求被拒绝' } }, 403);
+    }
+    return next();
+  });
+
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
   app.use('/api/*', async (c, next) => {
     if (options.token === null) return next();
@@ -113,7 +131,7 @@ export function createApp(options: AppOptions): Hono {
     const offered = (c.req.header('authorization') ?? '') === `Bearer ${options.token}`
       ? options.token
       : (c.req.query('token') ?? '');
-    if (offered !== options.token) {
+    if (!sameSecret(offered, options.token)) {
       return c.json({ error: { code: 'unauthorized', message: '缺少或错误的 token' } }, 401); // 不是领域错误，所以不走 fail()
     }
     return next();

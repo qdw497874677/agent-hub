@@ -74,7 +74,7 @@ export async function ensureHosted(
     startCommand(placed, project, { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq })
   );
   if (!resumed.ok) return resumed;
-  deps.hosting.add(session.id);
+  deps.hosting.add(session.id, placed.workerId);
   return ok(undefined);
 }
 

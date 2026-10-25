@@ -94,10 +94,10 @@ function recorder(token: string | null): Recorder {
         r.hellos.push({ worker, agents });
         r.helloSessions.push(sessions);
       },
-      onEvent: (_id, event) => r.events.push(event),
-      onAgentSession: (_id, ref) => r.refs.push(ref),
+      onEvent: (_worker, _id, event) => r.events.push(event),
+      onAgentSession: (_worker, _id, ref) => r.refs.push(ref),
       onOptions: () => {},
-      onStatus: (_id, status) => r.statuses.push(status),
+      onStatus: (_worker, _id, status) => r.statuses.push(status),
       onWorkerGone: (id, reason) => {
         r.gone.push(id);
         r.goneReasons.push(reason);
@@ -283,6 +283,9 @@ test('断线重连：worker 自动重连、重新 hello、报上还活着的会�
   assert.deepEqual(rec.helloSessions.at(-1), ['live']);
   await rec.until(() => rec.events.some((event) => event.kind === 'text'));
   assert.equal(gateway.workers()[0]?.state, 'online');
+  // hello 报的清单不直接改路由：领域核对过落点后才 adopt
+  assert.equal((await gateway.gateway.dispatch({ kind: 'interrupt', sessionId: asSessionId('live') })).ok, false);
+  gateway.adopt('w1', ['live']);
   // 接回的会话可以直接收指令，不需要再 start 一次
   assert.ok((await gateway.gateway.dispatch({ kind: 'interrupt', sessionId: asSessionId('live') })).ok);
   await link.close();
@@ -388,5 +391,78 @@ test('还没托管的会话：dispatch 返回 unavailable 而不是抛错或乱�
   const { gateway, stop } = await harness(null);
   const result = await gateway.gateway.dispatch({ kind: 'interrupt', sessionId: asSessionId('s') });
   assert.equal(result.ok, false);
+  await stop();
+});
+
+/** 直接用裸 WebSocket 说 hello，等它被接受或被关掉。 */
+async function rawHello(url: string, hello: Record<string, unknown>): Promise<{ socket: WebSocket; closed: Promise<number> }> {
+  const socket = new WebSocket(url);
+  const closed = new Promise<number>((resolve) => socket.once('close', (code) => resolve(code)));
+  await new Promise((resolve) => socket.once('open', resolve));
+  socket.send(JSON.stringify({ type: 'hello', label: 'x', agents: [], ...hello }));
+  return { socket, closed };
+}
+
+test('本机身份要凭口令：自称 local 答不上口令按 remote；在线的本机 id 不能被别人顶掉', async () => {
+  const rec = recorder(null);
+  const gateway = createServerGateway({ ...rec.hooks, localSecret: 's3cret' });
+  const server: Server = createServer();
+  server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  const real = await rawHello(url, { workerId: 'local-1', origin: 'local', localSecret: 's3cret' });
+  await rec.until(() => rec.hellos.length === 1);
+  assert.equal(rec.hellos[0]?.worker.origin, 'local');
+
+  const spoof = await rawHello(url, { workerId: 'other', origin: 'local' });
+  await rec.until(() => rec.hellos.length === 2);
+  assert.equal(rec.hellos[1]?.worker.origin, 'remote');
+
+  const hijack = await rawHello(url, { workerId: 'local-1', origin: 'local', localSecret: 'guess' });
+  assert.equal(await hijack.closed, 4409);
+  assert.equal(gateway.workers().find((w) => w.workerId === 'local-1')?.state, 'online');
+
+  // 真本机重连（新连接先于旧 close 到达）照样能顶掉旧连接
+  const again = await rawHello(url, { workerId: 'local-1', origin: 'local', localSecret: 's3cret' });
+  await rec.until(() => rec.hellos.length === 3);
+  assert.equal(await real.closed, 1006);
+
+  for (const s of [spoof.socket, again.socket]) s.terminate();
+  gateway.close();
+  server.closeAllConnections?.();
+  await new Promise((resolve) => server.close(resolve));
+});
+
+test('路由只由 start / adopt 建立：别的 Worker 报 running 改不了道，帧带着发送方', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const seen: string[] = [];
+  const a = await rawHello(url, { workerId: 'a', origin: 'remote' });
+  const b = await rawHello(url, { workerId: 'b', origin: 'remote' });
+  await rec.until(() => rec.hellos.length === 2);
+  const commands: string[] = [];
+  a.socket.on('message', (raw) => commands.push(`a:${JSON.parse(raw.toString()).kind}`));
+  b.socket.on('message', (raw) => commands.push(`b:${JSON.parse(raw.toString()).kind}`));
+  assert.ok((await gateway.gateway.dispatch(start('s1', 'a'))).ok);
+  rec.hooks.onStatus = (worker, id, status) => seen.push(`${worker}:${id}:${status}`);
+  b.socket.send(JSON.stringify({ type: 'status', sessionId: 's1', status: 'running' }));
+  await rec.until(() => seen.length === 1);
+  assert.equal(seen[0], 'b:s1:running');
+  // b 也不能报「结束」把 a 的路由划掉
+  b.socket.send(JSON.stringify({ type: 'status', sessionId: 's1', status: 'ended' }));
+  await rec.until(() => seen.length === 2);
+  assert.ok((await gateway.gateway.dispatch({ kind: 'interrupt', sessionId: asSessionId('s1') })).ok);
+  await rec.until(() => commands.includes('a:interrupt'));
+  assert.ok(!commands.some((c) => c.startsWith('b:')));
+  a.socket.terminate();
+  b.socket.terminate();
+  await stop();
+});
+
+test('连上不说 hello 的连接会被关掉', async () => {
+  const { url, stop } = await harness(null, { helloTimeoutMs: 50 });
+  const socket = new WebSocket(url);
+  const code = await new Promise<number>((resolve) => socket.once('close', (c) => resolve(c)));
+  assert.equal(code, 4408);
   await stop();
 });

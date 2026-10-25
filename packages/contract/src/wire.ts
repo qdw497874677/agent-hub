@@ -301,6 +301,8 @@ export const workerHelloSchema = z.object({
   label: z.string(),
   origin: z.enum(['local', 'remote']),
   token: z.string().optional(),
+  /** 只有 server 自己拉起的本机 worker 知道：证明「我真是本机」。 */
+  localSecret: z.string().optional(),
   /** worker 报上它装了哪些 agent——server 从不自己猜 agent 列表。 */
   agents: z.array(agentSchema),
   /** 机器信息：管理视图里让人认出「这是哪台」。 */

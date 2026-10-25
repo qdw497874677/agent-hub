@@ -1,5 +1,6 @@
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
+import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import { workerToServerSchema } from '@agent-hub/contract';
@@ -18,12 +19,22 @@ import { unavailable } from '@agent-hub/domain';
 
 export interface GatewayHooks {
   readonly token: string | null;
-  /** `sessions`：Worker 重连时报上的、它手上还活着的会话。 */
+  /**
+   * 只发给 server 自己拉起的那个子进程 worker 的口令。
+   * 自称 `origin: 'local'` 却答不上它的连接一律按 remote 处理——
+   * 「本机」会优先接新项目、新会话，不能谁报一句就当。null = 没有本机子进程。
+   */
+  readonly localSecret?: string | null;
+  /**
+   * `sessions`：Worker 重连时报上的、它手上还活着的会话。
+   * 网关**不**凭这句话改路由：组合根让领域核对落点后，再用 `adopt()` 把核对过的那些接回来。
+   */
   onHello(worker: WorkerStatus, agents: AgentDto[], sessions: readonly string[]): void;
-  onEvent(sessionId: SessionId, event: SessionEvent): void;
-  onAgentSession(sessionId: SessionId, agentSessionRef: string): void;
-  onOptions(sessionId: SessionId, options: readonly RuntimeOption[]): void;
-  onStatus(sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
+  // 以下回调都带上「是哪台 Worker 说的」：会话归不归它，由领域按库里的落点判断。
+  onEvent(workerId: string, sessionId: SessionId, event: SessionEvent): void;
+  onAgentSession(workerId: string, sessionId: SessionId, agentSessionRef: string): void;
+  onOptions(workerId: string, sessionId: SessionId, options: readonly RuntimeOption[]): void;
+  onStatus(workerId: string, sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
   onWorkerGone(workerId: string, reason: string): void;
   onLog?(message: string): void;
 }
@@ -33,7 +44,19 @@ export interface GatewayOptions {
   readonly heartbeatMs?: number;
   /** 目录浏览这类请求-回复的超时。 */
   readonly requestTimeoutMs?: number;
+  /** 连上之后多久内必须 hello；不说话的连接不该一直占着。 */
+  readonly helloTimeoutMs?: number;
   readonly now?: () => number;
+}
+
+/** 单帧上限：读文件的回复是 base64，附件上限之上留余量；再大就是有人在灌。 */
+const MAX_FRAME_BYTES = 32 * 1024 * 1024;
+
+/** 常量时间比较：逐字节 `!==` 会从响应时间里漏出「前几个字符对了」。 */
+export function sameSecret(offered: string | undefined, expected: string): boolean {
+  const a = Buffer.from(offered ?? '');
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 interface Registered {
@@ -42,6 +65,8 @@ interface Registered {
   origin: WorkerStatus['origin'];
   /** null = 离线。离线的 Worker 留在登记表里：管理视图要能显示「上次见到是什么时候」。 */
   socket: WebSocket | null;
+  /** 这条连接的对端地址：同一台机器换连接（重连先于旧 close 到达）时用来认人。 */
+  address: string | undefined;
   agents: AgentDto[];
   host: { hostname: string; platform: string; arch: string } | null;
   roots: string[];
@@ -64,6 +89,8 @@ type ReplyFrame = Extract<WorkerToServer, { type: 'directories' | 'files' | 'fil
 export interface ServerGateway {
   readonly gateway: NodeGateway;
   workers(): WorkerStatus[];
+  /** 把领域核对过落点的会话接回这台 Worker 的路由（重连后不必再 resume）。 */
+  adopt(workerId: string, sessionIds: readonly string[]): void;
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   close(): void;
 }
@@ -79,9 +106,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   const registry = new Map<string, Registered>();
   const placement = new Map<string, string>();
   const pending = new Map<string, PendingRequest>();
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
   const now = options.now ?? Date.now;
   const heartbeatMs = options.heartbeatMs ?? 10_000;
+  const helloTimeoutMs = options.helloTimeoutMs ?? 10_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
   let requestSeq = 0;
 
@@ -129,9 +157,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     hooks.onWorkerGone(entry.workerId, reason);
   }
 
-  wss.on('connection', (socket: WebSocket) => {
+  wss.on('connection', (socket: WebSocket, request?: IncomingMessage) => {
+    const address = request?.socket.remoteAddress;
     let entry: Registered | null = null;
     let closeReason = '连接断开';
+    const helloTimer = setTimeout(() => {
+      if (!entry) socket.close(4408, '没有及时 hello');
+    }, helloTimeoutMs);
+    helloTimer.unref();
 
     socket.on('pong', () => {
       if (entry && entry.socket === socket) {
@@ -156,22 +189,33 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const frame = parsed.data as WorkerToServer;
 
       if (frame.type === 'hello') {
-        if (hooks.token !== null && frame.token !== hooks.token) {
+        if (hooks.token !== null && !sameSecret(frame.token, hooks.token)) {
           socket.close(4401, 'token 不匹配');
           return;
         }
+        const secret = hooks.localSecret ?? null;
+        const provenLocal = secret !== null && sameSecret(frame.localSecret, secret);
         const previous = registry.get(frame.workerId);
         if (previous?.socket && previous.socket !== socket) {
-          // 同一台机器换了条连接（重连比旧连接的 close 先到）：新的说了算。
+          // 同一个 workerId 已经有条活连接：重连比旧连接的 close 先到是常事，但只认
+          // 「答得上本机口令」或「从同一个地址来」的新连接（本机那台只认口令：经代理进来的也是回环地址）。其他人报同一个 id 一律拒——
+          // 否则谁知道 id 谁就能把那台机器的会话和文件请求劫走。
+          // 真断了的旧连接会在一个心跳内被判离线，到时候合法的重连自然能进来。
+          if (!provenLocal && (previous.origin === 'local' || previous.address !== address)) {
+            socket.close(4409, '这个 workerId 已经在线');
+            return;
+          }
           const stale = previous.socket;
           previous.socket = null;
           stale.terminate();
         }
+        clearTimeout(helloTimer);
         entry = {
           workerId: frame.workerId,
           label: frame.label,
-          origin: frame.origin,
+          origin: frame.origin === 'local' && provenLocal ? 'local' : 'remote',
           socket,
+          address,
           agents: frame.agents,
           host: frame.host ?? null,
           roots: frame.roots,
@@ -179,7 +223,6 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           alive: true
         };
         registry.set(frame.workerId, entry);
-        for (const sessionId of frame.sessions) placement.set(sessionId, frame.workerId);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         return;
       }
@@ -195,19 +238,22 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         request.settle(frame);
         return;
       }
-      if (frame.type === 'event') hooks.onEvent(frame.sessionId as SessionId, frame.event);
+      const from = entry.workerId;
+      if (frame.type === 'event') hooks.onEvent(from, frame.sessionId as SessionId, frame.event);
       else if (frame.type === 'agent_session') {
-        hooks.onAgentSession(frame.sessionId as SessionId, frame.agentSessionRef);
+        hooks.onAgentSession(from, frame.sessionId as SessionId, frame.agentSessionRef);
       } else if (frame.type === 'options') {
-        hooks.onOptions(frame.sessionId as SessionId, frame.options);
+        hooks.onOptions(from, frame.sessionId as SessionId, frame.options);
       } else if (frame.type === 'status') {
-        if (frame.status !== 'running') placement.delete(frame.sessionId);
-        else placement.set(frame.sessionId, entry.workerId);
-        hooks.onStatus(frame.sessionId as SessionId, frame.status, frame.reason);
+        // 路由只由 start_session / adopt 建立；一台 Worker 报「running」不能把别人的会话改道到自己身上，
+        // 报「结束」也只能划掉确实路由到它的那条。
+        if (frame.status !== 'running' && placement.get(frame.sessionId) === from) placement.delete(frame.sessionId);
+        hooks.onStatus(from, frame.sessionId as SessionId, frame.status, frame.reason);
       }
     });
 
     socket.on('close', () => {
+      clearTimeout(helloTimer);
       if (entry) markOffline(entry, socket, closeReason);
     });
 
@@ -324,6 +370,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     gateway,
     workers(): WorkerStatus[] {
       return statuses();
+    },
+    adopt(workerId: string, sessionIds: readonly string[]): void {
+      if (!online(workerId)) return;
+      for (const sessionId of sessionIds) placement.set(sessionId, workerId);
     },
     handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
       wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));

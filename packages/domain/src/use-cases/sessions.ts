@@ -61,7 +61,7 @@ export async function deriveSessionUseCase(
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
   }
-  deps.hosting.add(session.id);
+  deps.hosting.add(session.id, session.workerId);
   return ok(session);
 }
 
@@ -123,7 +123,7 @@ export async function forkSessionUseCase(
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
   }
-  deps.hosting.add(session.id);
+  deps.hosting.add(session.id, session.workerId);
   return ok(session);
 }
 

@@ -168,37 +168,48 @@ export async function ingestRuntimeStatus(
 }
 
 /**
+ * 一台 Worker 发来的会话帧算不算数：会话必须落在它身上。
+ * 落点为 null 的老会话（多机之前建的）照旧收——它们只可能在原来那台唯一的机器上。
+ * 不核对的话，任何连上来的 Worker 都能往别人的会话里写输出、改状态、换 agent 会话引用。
+ */
+export async function frameAccepted(
+  deps: Pick<Deps, 'sessions'>,
+  workerId: string,
+  sessionId: SessionId
+): Promise<boolean> {
+  const session = await deps.sessions.byId(sessionId);
+  return session !== null && (session.workerId === null || session.workerId === workerId);
+}
+
+/**
  * 某台 Worker 掉线：只有**它**手上的会话不再有人托管。
  * 其它机器上的会话照跑——多机之前这里是 `clear()`，一台掉线全体失联。
  * 落点为 null 的老会话按「在唯一那台上」处理，一并划掉。
+ *
+ * 必须同步划：以前先 await 一次 listAll 再逐条 drop，Worker 秒重连时
+ * `workerAttached` 刚接回的会话会被这次迟到的掉线清掉，下一句话又 resume 出第二个 agent 进程。
  */
-export async function workerGone(deps: Pick<Deps, 'hosting' | 'sessions'>, workerId: string): Promise<number> {
-  let dropped = 0;
-  for (const session of await deps.sessions.listAll()) {
-    if (!deps.hosting.has(session.id)) continue;
-    if (session.workerId !== null && session.workerId !== workerId) continue;
-    deps.hosting.drop(session.id);
-    dropped += 1;
-  }
-  return dropped;
+export function workerGone(deps: Pick<Deps, 'hosting'>, workerId: string): number {
+  return deps.hosting.dropWorker(workerId);
 }
 
 /**
  * Worker 断线重连后报上「我手上还活着的会话」：重新登记托管，免得下一句话又去 resume 一遍
  * （resume 会再拉起一个 agent 进程，和还活着的那个抢同一份会话文件）。
  * 只认落点就是它的会话：别的机器的会话不该被一台重连的 Worker 认领。
+ * 返回核对过的那些，组合根据此让网关恢复路由（网关自己不信 hello 里报的清单）。
  */
 export async function workerAttached(
   deps: Pick<Deps, 'hosting' | 'sessions'>,
   workerId: string,
   sessionIds: readonly string[]
-): Promise<number> {
-  let attached = 0;
+): Promise<string[]> {
+  const attached: string[] = [];
   for (const id of sessionIds) {
     const session = await deps.sessions.byId(id as SessionId);
     if (!session || (session.workerId !== null && session.workerId !== workerId)) continue;
-    deps.hosting.add(session.id);
-    attached += 1;
+    deps.hosting.add(session.id, workerId);
+    attached.push(session.id);
   }
   return attached;
 }

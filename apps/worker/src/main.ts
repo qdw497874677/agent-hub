@@ -18,6 +18,9 @@ const env = process.env;
 
 const hubUrl = env['HUB_URL'] ?? 'ws://127.0.0.1:7878/worker';
 const token = env['HUB_TOKEN'] ?? '';
+// 本机口令只属于这个进程：读完就从环境里抹掉，免得被它拉起的 agent（和 agent 跑的命令）继承走。
+const localSecret = env['HUB_LOCAL_SECRET'] ?? '';
+delete env['HUB_LOCAL_SECRET'];
 const origin = env['WORKER_ORIGIN'] === 'remote' ? 'remote' : 'local';
 const label = env['WORKER_LABEL'] ?? (origin === 'local' ? '本机' : hostname());
 const workerId = env['WORKER_ID'] ?? stableWorkerId();
@@ -175,6 +178,7 @@ log(`Pi 认得 ${piModels.length} 个模型（默认 ${discovered.defaultModel |
 const link = connectWorkerLink({
   url: hubUrl,
   token,
+  ...(localSecret ? { localSecret } : {}),
   workerId,
   label,
   origin,
