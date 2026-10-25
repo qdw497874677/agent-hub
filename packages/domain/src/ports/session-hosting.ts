@@ -8,7 +8,10 @@ import type { SessionId } from '../ids.ts';
  */
 export interface SessionHosting {
   has(sessionId: SessionId): boolean;
-  add(sessionId: SessionId): void;
+  /** `workerId`：托管在哪台上。null 只出现在多机之前的老数据里。 */
+  add(sessionId: SessionId, workerId: string | null): void;
   drop(sessionId: SessionId): void;
+  /** 一台 Worker 掉线：同步划掉托管在它（以及 null 落点）上的会话，返回划掉几条。 */
+  dropWorker(workerId: string): number;
   clear(): void;
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentDescriptor } from '../agent.ts';
 import type { Session } from '../session.ts';
-import { asAgentId } from '../ids.ts';
+import { asAgentId, asSessionId } from '../ids.ts';
 import { unavailable } from '../errors.ts';
 import { err, ok } from '../result.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
@@ -16,7 +16,8 @@ import {
   ingestWorkerEvent,
   promptSessionUseCase,
   workerAttached,
-  workerGone
+  workerGone,
+  frameAccepted
 } from './conversation.ts';
 import { placeSession } from '../worker.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
@@ -216,7 +217,7 @@ test('worker 掉线：只有它名下的会话不再算托管', async () => {
   assert.ok(there.ok);
   assert.equal(here.workerId, 'local');
   assert.equal(there.value.workerId, 'remote-1');
-  assert.equal(await workerGone(w.deps, 'remote-1'), 1);
+  assert.equal(workerGone(w.deps, 'remote-1'), 1);
   assert.ok(w.deps.hosting.has(here.id));
   assert.ok(!w.deps.hosting.has(there.value.id));
 });
@@ -226,9 +227,30 @@ test('worker 重连报上的会话重新算托管；别的机器的会话它认�
   w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
   const here = await derived(w);
   w.deps.hosting.clear();
-  assert.equal(await workerAttached(w.deps, 'remote-1', [here.id]), 0);
-  assert.equal(await workerAttached(w.deps, 'local', [here.id]), 1);
+  assert.deepEqual(await workerAttached(w.deps, 'remote-1', [here.id]), []);
+  assert.deepEqual(await workerAttached(w.deps, 'local', [here.id]), [here.id]);
   assert.ok(w.deps.hosting.has(here.id));
+});
+
+test('Worker 秒重连：先接回、后到的掉线不会把刚接回的会话划掉', async () => {
+  const w = await world();
+  const here = await derived(w);
+  w.deps.hosting.clear();
+  // 旧连接的掉线和新连接的 hello 交错：掉线是同步的，接回发生在它之后就留得住
+  workerGone(w.deps, 'local');
+  await workerAttached(w.deps, 'local', [here.id]);
+  assert.ok(w.deps.hosting.has(here.id));
+});
+
+test('Worker 发来的会话帧只在会话落在它身上时算数', async () => {
+  const w = await world();
+  w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
+  const here = await derived(w);
+  assert.equal(await frameAccepted(w.deps, 'local', here.id), true);
+  assert.equal(await frameAccepted(w.deps, 'remote-1', here.id), false);
+  assert.equal(await frameAccepted(w.deps, 'local', asSessionId('nope')), false);
+  await w.deps.sessions.save({ ...here, workerId: null });
+  assert.equal(await frameAccepted(w.deps, 'remote-1', here.id), true);
 });
 
 test('落点：start_session 带着 workerId；resume 回到原来那台，那台离线就报不可用', async () => {

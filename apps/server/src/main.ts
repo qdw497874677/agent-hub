@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,12 +8,13 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { Deps } from '@agent-hub/domain';
+import type { Deps, SessionId } from '@agent-hub/domain';
 import {
   err,
   ingestAgentSessionRef,
   ingestRuntimeStatus,
   ingestWorkerEvent,
+  frameAccepted,
   ingestWorkerOptions,
   reconcileInterrupted,
   unavailable,
@@ -27,6 +29,7 @@ import { createLocalFs } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
+import { createRequestGuard } from './request-guard.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -42,6 +45,11 @@ const host = readEnv('HUB_HOST') ?? '127.0.0.1';
 const port = Number(readEnv('HUB_PORT') ?? 7878);
 const token = readEnv('HUB_TOKEN');
 const webDist = join(repoRoot, 'apps', 'web', 'dist');
+// 浏览器从哪些主机名访问：IP 字面量和 localhost 总是放行，用域名访问（如 MagicDNS）就配在这里，逗号分隔。
+const guard = createRequestGuard([host, ...(readEnv('HUB_ALLOWED_HOSTS') ?? '').split(',')]);
+// 只给自己拉起的本机 worker：它凭这个证明 origin: 'local' 不是自封的。每次启动换一个。
+const localSecret = randomBytes(32).toString('hex');
+const spawnWorker = readEnv('HUB_SPAWN_WORKER') ?? '1';
 
 if (!LOOPBACKS.has(host) && token === null) {
   console.error(
@@ -92,36 +100,58 @@ const deps: Deps = {
 
 const log = (message: string) => console.log(`[hub] ${message}`);
 
+/**
+ * Worker 发来的会话帧先过领域的落点核对，再交给 ingest*。
+ * 核对是异步的（要查库），串成一条链才能保证 ingest 的调用顺序和帧到达的顺序一致。
+ */
+let inbound: Promise<unknown> = Promise.resolve();
+function fromWorker(workerId: string, sessionId: SessionId, ingest: () => void): void {
+  inbound = inbound
+    .then(async () => {
+      if (await frameAccepted(deps, workerId, sessionId)) ingest();
+      else log(`忽略 ${workerId} 发来的会话帧：会话 ${sessionId} 不在它身上`);
+    })
+    .catch((failure: unknown) => log(`处理 worker 帧失败：${(failure as Error).message}`));
+}
+
 serverGateway = createServerGateway({
   token,
+  localSecret: spawnWorker === '1' ? localSecret : null,
   onHello(worker, agents, sessions) {
     catalog.upsert(worker.workerId, agents);
     log(`worker 上线：${worker.label}（${worker.workerId}），提供 ${agents.map((a) => a.label).join('、')}`);
     if (sessions.length > 0) {
-      void workerAttached(deps, worker.workerId, sessions).then((count) => log(`接回 ${count} 个还在跑的会话`));
+      void workerAttached(deps, worker.workerId, sessions).then((ids) => {
+        serverGateway?.adopt(worker.workerId, ids);
+        log(`接回 ${ids.length} 个还在跑的会话`);
+      });
     }
   },
-  // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 的 ingest* 里。
-  onEvent(sessionId, event) {
-    void ingestWorkerEvent(deps, sessionId, event).then((result) => {
-      if (!result.ok) log(`落盘事件失败：${result.error.message}`);
-    });
+  // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 里。
+  onEvent(workerId, sessionId, event) {
+    fromWorker(workerId, sessionId, () =>
+      void ingestWorkerEvent(deps, sessionId, event).then((result) => {
+        if (!result.ok) log(`落盘事件失败：${result.error.message}`);
+      })
+    );
   },
-  onOptions(sessionId, options) {
-    void ingestWorkerOptions(deps, sessionId, options).then((result) => {
-      if (!result.ok) log(`记录可调项失败：${result.error.message}`);
-      optionWaiters.resolve(sessionId);
-    });
+  onOptions(workerId, sessionId, options) {
+    fromWorker(workerId, sessionId, () =>
+      void ingestWorkerOptions(deps, sessionId, options).then((result) => {
+        if (!result.ok) log(`记录可调项失败：${result.error.message}`);
+        optionWaiters.resolve(sessionId);
+      })
+    );
   },
-  onAgentSession(sessionId, agentSessionRef) {
-    void ingestAgentSessionRef(deps, sessionId, agentSessionRef);
+  onAgentSession(workerId, sessionId, agentSessionRef) {
+    fromWorker(workerId, sessionId, () => void ingestAgentSessionRef(deps, sessionId, agentSessionRef));
   },
-  onStatus(sessionId, status) {
-    void ingestRuntimeStatus(deps, sessionId, status);
+  onStatus(workerId, sessionId, status) {
+    fromWorker(workerId, sessionId, () => void ingestRuntimeStatus(deps, sessionId, status));
   },
   onWorkerGone(workerId, reason) {
     catalog.removeWorker(workerId);
-    void workerGone(deps, workerId);
+    workerGone(deps, workerId);
     log(`worker 离线：${workerId}（${reason}）`);
   },
   onLog: log
@@ -130,7 +160,7 @@ serverGateway = createServerGateway({
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait });
+const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard });
 
 app.use('/*', serveStatic({ root: webDist }));
 app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));
@@ -147,10 +177,16 @@ server.on('error', (error: NodeJS.ErrnoException) => {
   throw error;
 });
 server.on('upgrade', (request, socket, head) => {
+  // 只有 worker 通道走 WebSocket；浏览器发起的（带 Origin 的跨站请求）和重绑定来的一律不升级。
+  const path = (request.url ?? '').split('?')[0];
+  const hostHeader = request.headers.host;
+  if (path !== '/worker' || !guard.hostAllowed(hostHeader) || !guard.originAllowed(request.headers.origin, hostHeader)) {
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
   serverGateway?.handleUpgrade(request, socket, head);
 });
 
-const spawnWorker = readEnv('HUB_SPAWN_WORKER') ?? '1';
 if (spawnWorker === '1') {
   // 绑 0.0.0.0 时本机 worker 仍该连回环地址：0.0.0.0 是「监听所有网卡」，不是可连的地址。
   const loopback = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
@@ -160,6 +196,7 @@ if (spawnWorker === '1') {
       ...process.env,
       HUB_URL: `ws://${loopback}:${port}/worker`,
       HUB_TOKEN: token ?? '',
+      HUB_LOCAL_SECRET: localSecret,
       HUB_PARENT_PID: String(process.pid)
     }
   });

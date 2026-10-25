@@ -18,6 +18,8 @@ export interface WorkerLinkOptions {
   readonly workerId: string;
   readonly label: string;
   readonly origin?: 'local' | 'remote';
+  /** server 拉起本机 worker 时给的口令（HUB_LOCAL_SECRET），证明 origin: 'local' 不是自封的。 */
+  readonly localSecret?: string;
   readonly runtimes: readonly AgentRuntime[];
   readonly onLog?: (message: string) => void;
   /**
@@ -123,6 +125,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           label: options.label,
           origin: options.origin ?? 'local',
           token: options.token,
+          ...(options.localSecret ? { localSecret: options.localSecret } : {}),
           agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor)),
           ...(options.host ? { host: options.host } : {}),
           roots: [...(options.files?.roots ?? options.roots ?? [])],

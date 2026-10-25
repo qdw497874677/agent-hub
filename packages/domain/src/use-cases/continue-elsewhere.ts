@@ -87,7 +87,7 @@ export async function continueElsewhereUseCase(
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(started.error);
   }
-  deps.hosting.add(session.id);
+  deps.hosting.add(session.id, session.workerId);
 
   const label = (id: string | null) => workers.find((w) => w.workerId === id)?.label ?? id ?? '原来的机器';
   const journal = await deps.sessions.eventsAfter(source.id, 0 as never);

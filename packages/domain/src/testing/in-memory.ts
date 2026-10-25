@@ -160,15 +160,26 @@ export function fakeFs(): WorkspaceFS & { files: Map<string, Uint8Array> } {
 }
 
 
-export function fakeHosting(): SessionHosting & { live: Set<string> } {
-  const live = new Set<string>();
+export function fakeHosting(): SessionHosting & { live: Map<string, string | null> } {
+  return (() => {
+  const live = new Map<string, string | null>();
   return {
     live,
-    has: (id) => live.has(id),
-    add: (id) => void live.add(id),
-    drop: (id) => void live.delete(id),
+    has: (id: string) => live.has(id),
+    add: (id: string, workerId: string | null) => void live.set(id, workerId),
+    drop: (id: string) => void live.delete(id),
+    dropWorker: (workerId: string) => {
+      let dropped = 0;
+      for (const [id, owner] of live) {
+        if (owner !== null && owner !== workerId) continue;
+        live.delete(id);
+        dropped += 1;
+      }
+      return dropped;
+    },
     clear: () => live.clear()
   };
+})();
 }
 
 /** 测试里的队列：直接跑。串行性由 server 的真实实现单独测。 */
@@ -177,7 +188,7 @@ export const immediateQueue: SessionQueue = { run: (_id, work) => work() };
 export interface InMemoryDeps extends Deps {
   readonly tasks: TaskRepository & { rows: Map<string, Task> };
   readonly sessions: SessionRepository & { journal: Map<string, JournalEntry[]> };
-  readonly hosting: SessionHosting & { live: Set<string> };
+  readonly hosting: SessionHosting & { live: Map<string, string | null> };
 }
 
 export interface InMemoryWorld {
