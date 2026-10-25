@@ -1,13 +1,15 @@
 # 工作空间（Workspace）设计
 
-> 状态：提案，待评审。只是设计，不含代码改动。
+> 状态：提案（已按评审决定修订）。只是设计，不含代码改动。
+>
+> 已定：①一条会话只用一个工作空间；②项目可以绑定 git 仓库；③删除项目不删目录；④一个目录只属于一个项目；⑤成员默认只能用托管目录；⑥项目不绑定 Worker，执行任务时才选 Worker。
 
 ## 1. 问题
 
 现在一个 Project 绑着一个 `rootPath`（外加一个 `workerId`），目录是在创建项目时用 DirectoryPicker 选的。用户的诉求有两条：
 
 1. **选目录要收敛**：默认在「这个项目专属的目录」里选，并且能直接新建文件夹。
-2. **抽象出工作空间**：项目和工作空间解耦、多对多。一个项目可以用多个工作空间（不同机器上的仓库或目录），一个工作空间也可以被多个项目共用。
+2. **抽象出工作空间**：项目和目录解耦。项目是逻辑上的东西，目录只在执行时落到某台 Worker 上。（最初设想过多对多，评审后定为一对多。）
 
 ## 2. 现状梳理（读代码得出）
 
@@ -48,111 +50,140 @@
 | **Zed（remote/ssh）** | 项目 = 一台机器上的若干 worktree；远程项目绑定 ssh host | 「机器 + 若干目录」是一个整体 |
 | **JetBrains Gateway** | 连接 = 主机 + 项目目录，IDE 后端跑在远端 | 选目录发生在「选主机之后」，并且有最近使用列表 |
 
-**共识**：执行位置（机器 + 目录）是一等实体，可复用、可管理；会话总是落在一个具体的位置上；多根是「一个主根 + 附加根」，而不是平等的多根；归属和权限挂在这个实体上。
+**共识**：执行位置（机器 + 目录）是一等实体，按需创建；会话总是落在一个具体的位置上；仓库或环境作为「怎么把代码放到那台机器上」的配方挂在项目上（Codex environment、Codespaces、Coder template）。
 
 ## 4. 推荐领域模型
+
+### 核心思路
+
+**项目是逻辑的，Worker 是执行时才选的。** 项目只回答「做什么」：名称、可选的 git 仓库、画布、任务和会话。真正动手时才回答「在哪做」：先选 Worker，再在那台机器上解析出这个项目的工作空间。
 
 ### 实体
 
 ```
-Workspace（工作空间）     一台机器上的一个目录，是一等聚合
-  id, name, workerId (非 null), root (绝对路径), kind: 'managed' | 'linked'
-  ownerId, createdAt, archivedAt?
-
-Project（项目）           目标、任务、画布的作用域容器，不再持有路径
+Project（项目，聚合根）       不绑定 Worker，不持有路径
   id, name, ownerId, createdAt
+  repo?: { url, defaultBranch }        可选的 git 仓库
 
-ProjectWorkspace（关联）   多对多
-  projectId, workspaceId, isDefault, addedAt
-  （label 可选；不同机器上的同一仓库可以用同一个 label 标成「同一份代码」）
+Workspace（工作空间）         某个项目在某台 Worker 上的目录；一对多属于 Project
+  id, projectId, workerId, root (绝对路径)
+  kind: 'managed'               hub 托管目录 <roots[0]>/agent-hub/<slug>，hub 创建（有 repo 就 clone）
+      | 'linked'                用户在 WORKER_ROOTS 内选的已有目录
+  createdAt, archivedAt?
 
-Session                   增加 workspaceId（必填，创建时定下，不可变）
-  workerId 由 workspace.workerId 决定
+Session                        增加 workspaceId（必填，创建时确定，不可变）
+  workerId = workspace.workerId
 ```
 
-- `managed`：hub 托管的项目专属目录，位于 `<WORKER_ROOTS[0]>/agent-hub/<project-slug>/`，由 hub 新建。
-- `linked`：用户指向的一个已有目录，比如已有的仓库。
+关系：`Project 1 —— N Workspace`；`Workspace 1 —— N Session`。没有关联表。
 
 ### 不变量（domain 强制执行）
 
-1. `workspace.root` 必须是绝对路径，并且落在该 Worker 的 WORKER_ROOTS 之内。校验通过端口 `WorkspaceFS`（Worker 侧）完成，领域层不做 I/O。
-2. 同一个 `(workerId, normalize(root))` 只能有一个 Workspace，所以共享是共享同一个实体，而不是复制一份。
-3. 一个项目至少有一个 Workspace，并且恰好有一个默认的。
-4. Session 的 `(projectId 经 task, workspaceId)` 必须在关联表里；会话一旦创建，workspace 不可变。
-5. **换机器继续 = fork 到另一个 Workspace**（该项目里在目标机器上的那个 workspace；没有就当场新建或关联一个），不再改项目的副作用字段。
-6. 不能删除还有活跃会话的 Workspace，只能归档；解除关联时，该项目在这个 workspace 上的历史会话仍保留（只读）。
-7. 权限：能在某个 Workspace 上开会话 ⇔ 是该 workspace 的所有者或被授权的成员，并且是项目成员；Owner 拥有全部权限。
+1. **一个目录只属于一个项目**：`(workerId, normalize(root))` 全局唯一。另外，不能出现一个工作空间的目录嵌套在另一个工作空间里（祖先或后代）。
+2. **每个项目在每台 Worker 上最多一个活跃工作空间**：`(projectId, workerId)` 在未归档的记录中唯一，所以「项目 + Worker → 目录」是确定的。
+3. `root` 是绝对路径，并且落在那台 Worker 的 WORKER_ROOTS 之内。校验经 `WorkspaceFS` 端口在 Worker 侧完成，领域层不做 I/O。
+4. **一条会话只用一个工作空间**，创建后不可变；会话的 worker = workspace.workerId。
+5. **删除项目不删目录**：项目删除或归档后，它的工作空间只做归档标记，磁盘上的目录原样保留；目录不能直接被别的项目接管，需要 Owner 在运营后台显式「释放」。
+6. 有运行中会话的工作空间不能归档。
+7. 项目绑定了 repo 时，在新机器上自动创建的托管工作空间等于 `git clone --branch <defaultBranch> <url> <managedDir>`；linked 工作空间不强制和 repo 一致，只做提示（remote 不匹配时给出警告）。
+8. 权限（P5）：成员默认只能用托管目录（新建或 clone）；linked（选已有目录）需要 Owner，或者开启「成员可关联目录」设置。
+
+### 解析工作空间：`resolveWorkspace(project, workerId)`
+
+纯领域决策加端口执行，返回三种结果之一：
+
+1. **已有**：该项目在这台 Worker 上有活跃工作空间，直接用。
+2. **可自动创建**：没有工作空间，就提议托管目录 `<roots[0]>/agent-hub/<slug>`。有 repo 就 clone，否则 mkdir（可选 `git init`）。需要用户确认一次（显示目标路径）。
+3. **用户选择**：用户改为「选已有目录」，在 WORKER_ROOTS 内选择，并通过不变量 1 的校验。
+
+在 hub 里，clone 是一个**准备中的状态**：Workspace 有 `state: 'preparing' | 'ready' | 'failed'`，会话等它进入 ready 后才启动，clone 的进度在会话卡片上显示。
 
 ### 和其它能力的关系
 
 | 能力 | 新规则 |
 |---|---|
-| 多 Worker | 会话的 worker = workspace.workerId；placement 只在「该项目的、所在机器在线的 workspace」里选 |
-| WORKER_ROOTS | 是 workspace.root 的硬边界；managed 目录默认建在 roots[0] 下 |
-| 换机器继续 | 选目标 workspace（列出该项目在目标机器上的 workspace，加「在那台机器上新建或关联」） |
-| `@file` 引用 | 以会话的 workspace 为根；以后若支持附加目录，用 `名字:路径` 的写法区分 |
-| 附件 | 移出用户仓库：Worker 侧 `<roots[0]>/agent-hub/.attachments/<session>/`（或 hub 的数据目录），经 `resource_link` 传给 agent |
-| 画布 | 仍按项目；会话卡片显示 `机器 · 工作空间名` 的徽标，可按 workspace 过滤 |
-| 账号 | workspace.ownerId；创建 linked workspace 受「成员可添加机器 / 目录」的设置约束；运营后台里增加工作空间页 |
+| 多 Worker | 选 Worker 在开会话或开任务时发生；默认是该项目上次用的 Worker，没有就用本机 |
+| WORKER_ROOTS | 是 root 的硬边界；托管目录建在 roots[0]/agent-hub 下（可用 `WORKER_MANAGED_DIR` 覆盖） |
+| 换机器继续 | 同一个项目，换一台 Worker：resolveWorkspace（已有 / 托管 + clone / 选目录），然后在新工作空间上 fork 会话。项目本身没有副作用 |
+| `@file` | 以会话的工作空间为根 |
+| 附件 | 移出用户仓库：`<roots[0]>/agent-hub/.attachments/<session>/` |
+| 画布 | 按项目；会话卡片显示「机器 · 目录名」的徽标 |
+| 账号 | 项目 ownerId；工作空间的权限沿用项目的权限，并受成员规则（不变量 8）约束 |
+| git 凭据 | clone 用 Worker 本机的 git 凭据（ssh-agent / credential helper），hub 不保存仓库凭据 |
 
 ### 六边形落地
 
-- **domain**：`workspace.ts`（实体和 `createWorkspace`、`linkWorkspace`）；端口 `WorkspaceRepository`、`ProjectWorkspaceRepository`；`WorkspaceFS` 扩展 `mkdir`（受 roots 约束）。
-- 删掉 `project.rootPath / workerId / directories` 和 `workspaceFor`。
-- **contract**：`workspaceSchema`、`createWorkspaceRequest {projectId?, workerId, mode:'managed'|'link', path?|name?}`、`mkdirCommand`（wire）。
-- **storage**：表 `workspaces`、`project_workspaces`；`sessions.workspace_id`。
-- **worker**：新增 `mkdir` 命令，路径必须在 roots 内，不允许 `..`，只建一层。
+- **domain**：`workspace.ts`（实体、`resolveWorkspace`、校验）；端口 `WorkspaceRepository`；`WorkspaceFS` 扩展 `mkdir`、`clone`、`gitRemote`（都受 roots 约束）。
+- Project 删掉 `rootPath / workerId / directories` 和 `workspaceFor`，加上 `repo?`。
+- **contract**：`projectSchema` 加 `repo?`；`workspaceSchema`；`startSessionRequest` 加 `{workerId, workspace: {mode:'auto'} | {mode:'existing', id} | {mode:'link', path}}`；wire 加 `mkdir`、`clone` 命令（clone 用流式进度帧）。
+- **storage**：新表 `workspaces(id, project_id, worker_id, root, kind, state, created_at, archived_at)`，加唯一索引 `(worker_id, root)` 和部分唯一索引 `(project_id, worker_id) WHERE archived_at IS NULL`；`projects` 加 `repo_url`、`repo_branch`；`sessions` 加 `workspace_id`。
+- **worker**：实现 `mkdir` 和 `clone`（`git` 子进程，路径必须在 roots 内，禁止 `..`）。
 
-## 5. 目录选择器重做
+## 5. 交互流程
 
-### 原则：默认不选目录，要选也只在边界内选
+### 新建项目（不需要选机器）
 
-新建项目的流程（桌面和手机一致，单列）：
+1. 项目名称（必填）。
+2. git 仓库（可选，折叠项）：URL 和默认分支（默认 main）。
+3. 「创建」。到这里不碰任何目录。
 
-1. 填项目名称（必填）。
-2. 选「在哪台机器」：默认本机或上次用的那台，用分段控件或下拉。
-3. 选「目录」，三个选项卡片，默认是第一个：
-   - **新建专属目录（推荐）**：显示预览 `~/agent-hub/<slug>`，不需要浏览。
-   - **用已有工作空间**：列出该机器上已有的 workspace（可共享的），点一下即选。
-   - **选择已有目录**：打开浏览器。
-4. 「创建」。
+### 新建会话或任务
 
-浏览器（只在需要时打开）：
-- 顶部用**面包屑**代替可编辑输入框（「手动输入路径」收进一个次要的 ⋯ 菜单）；根节点就是 WORKER_ROOTS，不能越界。
-- 列表**单击进入**；底部固定一个主按钮「选择 <当前目录名>」，不再用双击。
+1. 选 Agent 和模型（同现在）。
+2. **在哪台机器**：默认是该项目上次用的那台，没有就用本机；离线的机器置灰。
+3. **目录**（自动解析，一行摘要，可以展开修改）：
+   - 已有：`本机 · ~/agent-hub/foo`。
+   - 没有，项目有 repo：`将 clone 到 ~/agent-hub/foo`。
+   - 没有，项目没有 repo：`将新建 ~/agent-hub/foo`。
+   - 展开后可以「选已有目录…」，打开目录选择器。
+4. 「开始」。
+
+### 目录选择器（只在「选已有目录」时打开）
+
+- **起点是该项目的托管目录**（不存在就是 roots[0]/agent-hub），不再是 $HOME。
+- 顶部是**面包屑**，根就是 WORKER_ROOTS，不能越界；手动输入路径收进 ⋯ 菜单。
+- **单击进入**；底部固定主按钮「使用 <当前目录名>」，没有双击。
 - 「＋ 新建文件夹」用行内输入，回车创建并进入。
-- 标出 git 仓库（⎇ 图标），按最近使用排序置顶；隐藏目录用一个开关显示。
+- 已被其他项目占用的目录置灰，标出属于哪个项目（不变量 1）；git 仓库标 ⎇；隐藏目录用开关显示。
 - 手机：全屏 sheet，行高 ≥ 44px，主按钮固定在底部的安全区之上。
 
-换机器继续时复用同一个组件，模式为「选目标工作空间」。
+### 换机器继续
+
+「换台机器继续」→ 选目标 Worker → 同样一行显示目录解析的结果（已有 / clone / 新建 / 选目录）→ 「继续」。
+
+### 项目设置
+
+在「工作空间」列表里按机器列出各自的目录、状态，并能归档；可以编辑 repo。
 
 ## 6. 数据迁移
 
 一次性、幂等的迁移，启动时在 storage 层完成：
 
-1. 每个项目：用 `(project.workerId ?? 本机 workerId, rootPath)` 查找或创建一个 Workspace（kind=`linked`，owner = 第一个 Owner），作为该项目的默认关联。
-   - 老数据里 `workerId = null` 的，解析为当时的本机 Worker id（在 worker 首次上线时补齐；补齐之前，用占位值 `local` 解析）。
-2. 每个 `directories[w] = p`：查找或创建 Workspace(w, p) 并加入关联（非默认）。
-3. 每个 session：先按 `session.workerId` 匹配该项目的 workspace，匹配不到就用默认的；写入 `workspace_id`。
-4. 旧列保留一个版本（只读，作为回滚依据），下个版本再删。
-5. 附件：新附件走新位置，老附件保持原地（链接仍然有效）。
+1. 每个项目：`(project.workerId ?? 本机 workerId, rootPath)` 转成一个 Workspace（kind=`linked`，state=`ready`）。
+   - 老数据里 `workerId = null` 的，等本机 Worker 首次上线后补成它的 id；补齐之前用占位值 `local` 解析。
+2. 每个 `directories[w] = p` 转成 Workspace(project, w, p, linked)。
+3. **冲突**（同一个 (worker, root) 被多个项目用了，或者有目录嵌套）：先迁移的项目拿到它；其余项目的这条记录跳过，在运营后台标记「需要处理」，不删除任何数据。
+4. 每个 session：用 `(project, session.workerId)` 找到对应的工作空间，写入 `workspace_id`；找不到的就挂在该项目的第一个工作空间上，并标记。
+5. repo：如果某个目录是 git 仓库，就读出 `origin` 的 URL，作为 `project.repo` 的**建议值**，在项目设置里提示「是否绑定」，不自动绑定。
+6. 旧列保留一个版本（只读，作为回滚依据），下个版本再删。
 
 ## 7. 分阶段实施
 
-| 阶段 | 内容 | 可独立上线 |
-|---|---|---|
-| P1 | Worker `mkdir` 命令和边界校验；选择器重做（面包屑、新建文件夹、单击进入 + 底部按钮、手机 sheet）；建项目默认「新建专属目录」 | ✅ 不动模型，最先回应用户 |
-| P2 | 领域引入 Workspace 实体、表和迁移；Project 去掉路径字段；session.workspaceId；API 兼容层（旧字段从默认 workspace 推导） | ✅ |
-| P3 | 多对多 UI：项目设置里的「工作空间」列表（添加、关联已有、设为默认、解除）；新建会话时选 workspace；会话卡片徽标 | ✅ |
-| P4 | 换机器继续改为选目标 workspace；附件迁出仓库 | ✅ |
-| P5 | 权限：workspace owner 和授权；运营后台加工作空间页；和「成员可添加机器」联动 | 和账号第四阶段一起 |
+| 阶段 | 内容 |
+|---|---|
+| P1 | Worker `mkdir` 命令和边界校验；目录选择器重做（面包屑、新建文件夹、单击进入 + 底部按钮、手机 sheet） |
+| P2 | Workspace 实体、表和迁移；Project 去掉路径和 Worker；session.workspaceId；`resolveWorkspace`（已有 / 新建托管目录 / 选目录） |
+| P3 | 新流程：新建项目不选机器；新建会话时选机器并解析目录；项目设置里的工作空间列表 |
+| P4 | 项目 repo：Worker `clone` 命令和进度；准备中的状态；迁移时给出 repo 建议 |
+| P5 | 换机器继续改为走 resolveWorkspace；附件迁出仓库 |
+| P6 | 权限：成员只能用托管目录；运营后台显示工作空间和冲突、释放目录（和账号第四阶段一起） |
 
 ## 8. 待定问题与建议
 
-1. **一条会话能不能跨多个 workspace（多根）？** 建议**先不支持**：一条会话只有一个 workspace。以后需要时，再给 session 加 `extraWorkspaceIds`（必须在同一台 Worker 上），对应 Claude 的 `--add-dir`。
-2. **专属目录放在哪？** 建议 `<roots[0]>/agent-hub/<slug>`，并且可以按 Worker 配置（`WORKER_MANAGED_DIR`）；slug 冲突时追加 `-2`。
-3. **新建的专属目录要不要 `git init`？** 建议提供一个选项，默认勾选，因为 agent 的 diff 和回滚依赖 git。
-4. **删除项目时要不要删 managed 目录？** 建议默认不删，只解除关联；在运营后台里单独提供「清理无主工作空间」。
-5. **共享 workspace 的并发冲突**（两个项目的 agent 同时写同一个目录）：建议在会话启动时提示「该工作空间上已有 N 个运行中的会话」；以后再考虑 git worktree 隔离（每条会话一个 worktree，类似 Codex/Devin）。
-6. **「同一份代码在不同机器上」怎么表达？** 建议先用关联上的 label，不建模「仓库」实体；以后如果做 git 同步，再引入 Repo。
-7. **成员能不能关联任意目录？** 建议受 WORKER_ROOTS 和设置开关约束；成员默认只能新建 managed 目录。
+1. **私有仓库的凭据**：建议只用 Worker 本机已有的 git 凭据（ssh key 或 credential helper），clone 失败时提示去那台机器上配置；hub 不保存 token。
+2. **clone 之后是否自动切分支或建 worktree**？建议先只 clone 默认分支，不自动建分支；按会话建 worktree 以后再说。
+3. **托管目录的 slug 冲突或项目改名**：建议 slug 在首次创建时固定，改名不搬目录；冲突时追加 `-2`。
+4. **项目删除后目录的「释放」**：建议只有 Owner 能在运营后台释放归档的工作空间，让另一个项目可以使用该目录。
+5. **一个项目在一台机器上需要两个目录**（比如两个分支）？按不变量 2 不支持；以后需要时用 worktree，作为同一个工作空间的子概念。
+6. **linked 目录的 remote 和项目 repo 不一致时**，只警告还是拒绝？建议只警告。
+7. **新建托管目录（无 repo）时是否默认 `git init`**？建议默认勾选。
