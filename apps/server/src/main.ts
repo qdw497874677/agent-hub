@@ -129,6 +129,13 @@ toolGateway = createToolGateway({
   providers: [createTaskToolProvider(deps)]
 });
 
+// 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。
+{
+  const running = (await store.sessions.listAll()).filter((session) => session.status === 'running').map((session) => session.id);
+  const revoked = await toolGateway.revokeAllExcept(running);
+  if (revoked > 0) log(`作废了 ${revoked} 条陈旧的工具授权`);
+}
+
 // 账号体系是独立的限界上下文：不塞进 Deps。
 const resendKey = readEnv('RESEND_API_KEY');
 const accounts: AccountDeps = {
@@ -204,7 +211,11 @@ serverGateway = createServerGateway({
     fromWorker(workerId, sessionId, () => void ingestAgentSessionRef(deps, sessionId, agentSessionRef));
   },
   onStatus(workerId, sessionId, status) {
-    fromWorker(workerId, sessionId, () => void ingestRuntimeStatus(deps, sessionId, status));
+    fromWorker(workerId, sessionId, () => {
+      void ingestRuntimeStatus(deps, sessionId, status);
+      // 会话跑完 / 进程没了：它的工具令牌立刻作废（再说话会重新托管、换新令牌）
+      if (status !== 'running' && toolGateway) void toolGateway.revoke({ id: sessionId }).catch(() => undefined);
+    });
   },
   onWorkerGone(workerId, reason) {
     catalog.removeWorker(workerId);

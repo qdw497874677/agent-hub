@@ -64,7 +64,7 @@ export async function deriveSessionUseCase(
     return err(dispatched.error);
   }
   deps.hosting.add(session.id, session.workerId);
-  await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话（${session.model}）`);
+  await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
   return ok(session);
 }
 

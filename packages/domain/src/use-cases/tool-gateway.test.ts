@@ -71,6 +71,37 @@ test('签发授权：令牌换得到授权；重新签发作废旧的；作废/�
   assert.equal(await w.gateway.authenticate(''), null);
 });
 
+test('授权短期滑动续期：闲置 1 小时过期；一直在用就续，但签发后最多 12 小时', async () => {
+  const w = await world();
+  const idle = await w.gateway.issue(w.session);
+  w.tick(61 * 60 * 1000);
+  assert.equal(await w.gateway.authenticate(idle.token), null, '闲置超过 1 小时即失效');
+
+  const busy = await w.gateway.issue(w.session);
+  for (let hour = 0; hour < 11; hour += 1) {
+    w.tick(40 * 60 * 1000);
+    assert.ok(await w.gateway.authenticate(busy.token), `第 ${hour} 次续期`);
+  }
+  // 已经过了 7 小时多；再一直用也活不过签发后 12 小时
+  for (let i = 0; i < 12; i += 1) {
+    w.tick(40 * 60 * 1000);
+    await w.gateway.authenticate(busy.token);
+  }
+  assert.equal(await w.gateway.authenticate(busy.token), null, '超过最长寿命');
+});
+
+test('revokeAllExcept：只保留运行中会话的授权（hub 启动时）；传空 = 全部作废', async () => {
+  const w = await world();
+  const kept = await w.gateway.issue(w.session);
+  const other = { ...w.session, id: 'other-session' as typeof w.session.id };
+  const stale = await w.gateway.issue(other);
+  assert.equal(await w.gateway.revokeAllExcept([w.session.id]), 1);
+  assert.ok(await w.gateway.authenticate(kept.token));
+  assert.equal(await w.gateway.authenticate(stale.token), null);
+  assert.equal(await w.gateway.revokeAllExcept([]), 1);
+  assert.equal(await w.gateway.authenticate(kept.token), null);
+});
+
 test('task.get / task.log.append / task.log.list：隐式绑定当前任务，agent 署名，写日志刷新 summary', async () => {
   const w = await world();
   const { grant } = await w.gateway.issue(w.session);

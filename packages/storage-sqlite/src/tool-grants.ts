@@ -66,6 +66,8 @@ export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository
   );
   const byHash = db.prepare('SELECT * FROM tool_grants WHERE token_hash = ?');
   const revoke = db.prepare('UPDATE tool_grants SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL');
+  const activeRows = db.prepare('SELECT id, session_id FROM tool_grants WHERE revoked_at IS NULL');
+  const revokeOne = db.prepare('UPDATE tool_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL');
   const insertCall = db.prepare(
     `INSERT INTO tool_calls (id, grant_id, task_id, session_id, tool, version, ok, detail, latency_ms, at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -89,6 +91,16 @@ export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository
     async byTokenHash(hash) {
       const row = byHash.get(hash) as Row | undefined;
       return row ? toGrant(row) : null;
+    },
+    async revokeAllExcept(keep, now) {
+      // keep 一般只有几条运行中的会话；整表扫一遍有效授权即可
+      const active = activeRows.all() as Row[];
+      let count = 0;
+      for (const row of active) {
+        if (keep.includes(row.session_id as SessionId)) continue;
+        count += Number(revokeOne.run(now, row.id as string).changes);
+      }
+      return count;
     },
     async revokeSession(sessionId: SessionId, now: number) {
       return Number(revoke.run(now, sessionId).changes);
