@@ -111,7 +111,8 @@ export type AuditAction =
   | 'user.role'
   | 'user.revoke_logins'
   | 'settings.update'
-  | 'worker.disconnect';
+  | 'worker.disconnect'
+  | 'worker.update';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {

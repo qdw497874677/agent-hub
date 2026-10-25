@@ -1,9 +1,10 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, serverToWorkerSchema } from '@agent-hub/contract';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type {
   AgentRuntime,
+  BuildInfo,
   RuntimeOption,
   RuntimeSession,
   SessionEvent,
@@ -11,6 +12,7 @@ import type {
 } from '@agent-hub/domain';
 import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
+import type { UpdateReport } from './updater.ts';
 
 export interface WorkerLinkOptions {
   readonly url: string;
@@ -47,6 +49,13 @@ export interface WorkerLinkOptions {
   readonly onOpen?: () => void;
   /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
+  /** 这台跑的代码版本，hello 时报上去。 */
+  readonly build?: BuildInfo;
+  /**
+   * hub 让它更新到某个提交。`report` 把进度回给 hub。不给就一律回「不支持远程更新」。
+   * 同一时间只跑一次：正在更新时再来的指令直接拒绝。
+   */
+  readonly onUpdate?: (commit: string, report: (status: UpdateReport) => void) => Promise<void>;
 }
 
 export interface WorkerLink {
@@ -61,7 +70,10 @@ export interface WorkerLink {
  * worker 侧。它只会做三件事：托管 agent 进程、把事件推上去、接受下行指令。
  * 它不知道任务、不知道画布、不知道权限——那些在 server 的内核里。
  */
-type SessionCommand = Exclude<ServerToWorker, { kind: 'list_directories' | 'make_directory' | 'list_files' | 'read_file' }>;
+type SessionCommand = Exclude<
+  ServerToWorker,
+  { kind: 'list_directories' | 'make_directory' | 'list_files' | 'read_file' | 'update' }
+>;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const sessions = new Map<string, RuntimeSession>();
@@ -86,6 +98,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const outbox: WorkerToServer[] = [];
   const OUTBOX_LIMIT = 5_000;
   let dropped = 0;
+  let updating = false;
 
   const send = (frame: WorkerToServer): void => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -129,7 +142,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor)),
           ...(options.host ? { host: options.host } : {}),
           roots: [...(options.files?.roots ?? options.roots ?? [])],
-          sessions: [...sessions.keys()]
+          sessions: [...sessions.keys()],
+          ...(options.build ? { build: options.build } : {})
         } satisfies WorkerToServer)
       );
       options.onLog?.(`已连上 ${options.url}${sessions.size > 0 ? `，接回 ${sessions.size} 个会话` : ''}`);
@@ -142,9 +156,16 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
     current.on('ping', () => armWatchdog(current));
 
-    current.on('close', (code: number) => {
+    current.on('close', (code: number, reason: Buffer) => {
       if (watchdog) clearTimeout(watchdog);
       if (socket === current) socket = null;
+      if (code === PROTOCOL_MISMATCH_CLOSE) {
+        // 协议对不上：重连也没用，把 hub 给的原因原样打出来，告诉人怎么修。
+        options.onLog?.(`${reason.toString() || '与 hub 的协议版本不兼容'}。不再重连`);
+        closed = true;
+        options.onClose?.();
+        return;
+      }
       if (code === 4401 || code === 4403) {
         // token 错了、或管理员把这台机器断开了：重连多少次都一样，直接停，别刷屏。
         options.onLog?.(code === 4401 ? 'server 拒绝了 token，不再重连' : '被管理员断开，不再重连');
@@ -187,11 +208,26 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       else if (command.kind === 'make_directory') void makeDirectory(command.requestId, command.parent, command.name);
       else if (command.kind === 'list_files') void listFiles(command.requestId, command.root, command.limit);
       else if (command.kind === 'read_file') void readFile(command.requestId, command.path, command.maxBytes);
+      else if (command.kind === 'update') void update(command.commit);
       else void handle(command);
     });
   }
 
   const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+  async function update(commit: string): Promise<void> {
+    const report = (status: UpdateReport): void => send({ type: 'update_status', ...status });
+    if (!options.onUpdate) return report({ state: 'refused', message: '这台 Worker 不支持远程更新', logTail: '' });
+    if (updating) return report({ state: 'refused', message: '已经在更新了', logTail: '' });
+    updating = true;
+    try {
+      await options.onUpdate(commit, report);
+    } catch (error) {
+      report({ state: 'failed', message: `更新出错：${message(error)}`, logTail: '' });
+    } finally {
+      updating = false;
+    }
+  }
 
   async function makeDirectory(requestId: string, parent: string, name: string): Promise<void> {
     if (!options.files) return send({ type: 'made_directory', requestId, path: '', error: '这台 Worker 不支持新建文件夹' });

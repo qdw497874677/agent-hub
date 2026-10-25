@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -25,7 +25,7 @@ import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
-import { createLocalFs } from '@agent-hub/node-gateway';
+import { createLocalFs, readBuildInfo } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
@@ -43,6 +43,8 @@ function readEnv(name: string): string | null {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
+/** hub 自己的版本：机器列表里「过期」的参照，也是远程更新的目标。 */
+const hubBuild = readBuildInfo(repoRoot);
 const dataDir = readEnv('HUB_DATA_DIR') ?? join(homedir(), '.local', 'share', 'agent-hub');
 const host = readEnv('HUB_HOST') ?? '127.0.0.1';
 const port = Number(readEnv('HUB_PORT') ?? 7878);
@@ -187,6 +189,9 @@ serverGateway = createServerGateway({
     workerGone(deps, workerId);
     log(`worker 离线：${workerId}（${reason}）`);
   },
+  onUpdateStatus(workerId, update) {
+    log(`worker ${workerId} 更新：${update.state} ${update.message}`);
+  },
   onLog: log
 });
 
@@ -205,7 +210,9 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
       sessions: store.sessions,
       workers: {
         list: async () => serverGateway?.workers() ?? [],
-        disconnect: async (workerId) => serverGateway?.disconnect(workerId) ?? false
+        disconnect: async (workerId) => serverGateway?.disconnect(workerId) ?? false,
+        hubBuild: () => hubBuild,
+        update: async (workerId, commit) => serverGateway?.requestUpdate(workerId, commit) ?? false
       }
     }
   }
@@ -239,18 +246,42 @@ server.on('upgrade', (request, socket, head) => {
 if (spawnWorker === '1') {
   // 绑 0.0.0.0 时本机 worker 仍该连回环地址：0.0.0.0 是「监听所有网卡」，不是可连的地址。
   const loopback = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-  const child = spawn(process.execPath, [join(repoRoot, 'apps', 'worker', 'src', 'main.ts')], {
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      HUB_URL: `ws://${loopback}:${port}/worker`,
-      HUB_TOKEN: token ?? '',
-      HUB_LOCAL_SECRET: localSecret,
-      HUB_PARENT_PID: String(process.pid)
-    }
-  });
-  child.on('exit', (code) => log(`本地 worker 退出（code ${code}）`));
+  /**
+   * 本机 Worker 意外退出（崩溃、或更新后以 75 退出要求重启）时由 hub 重新拉起；
+   * 一分钟内退出超过 5 次就不再拉，免得刷屏。hub 自己关停时不拉。
+   */
+  let stopping = false;
+  const exits: number[] = [];
+  const startLocalWorker = (): ChildProcess => {
+    const next = spawn(process.execPath, [join(repoRoot, 'apps', 'worker', 'src', 'main.ts')], {
+      stdio: 'inherit',
+      env: {
+        ...process.env,
+        HUB_URL: `ws://${loopback}:${port}/worker`,
+        HUB_TOKEN: token ?? '',
+        HUB_LOCAL_SECRET: localSecret,
+        HUB_PARENT_PID: String(process.pid)
+      }
+    });
+    next.on('exit', (code) => {
+      log(`本地 worker 退出（code ${code}）`);
+      if (stopping) return;
+      const at = Date.now();
+      exits.push(at);
+      while (exits.length > 0 && at - (exits[0] ?? at) > 60_000) exits.shift();
+      if (exits.length > 5) {
+        log('本地 worker 一分钟内退出太多次，不再自动拉起');
+        return;
+      }
+      setTimeout(() => {
+        if (!stopping) child = startLocalWorker();
+      }, 2_000).unref();
+    });
+    return next;
+  };
+  let child = startLocalWorker();
   const shutdown = () => {
+    stopping = true;
     child.kill('SIGTERM');
     serverGateway?.close();
     store.close();

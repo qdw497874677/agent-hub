@@ -11,8 +11,11 @@ import {
   revokeUserLogins,
   setUserDisabled,
   setUserRole,
-  updateSettings
+  updateSettings,
+  updateOutdatedWorkers,
+  updateWorker
 } from './admin.ts';
+import { isOutdated } from '../worker.ts';
 
 const PASSWORD = 'correct horse battery';
 
@@ -122,4 +125,31 @@ test('断开机器：本机不能断；不在线报冲突；在线的远程机�
   assert.ok((await disconnectWorker(deps, owner.principal, 'w2')).ok);
   assert.deepEqual(disconnected, ['w2']);
   assert.equal(entries[0]?.action, 'worker.disconnect');
+});
+
+test('更新机器：只发 hub 的提交、记审计；离线/不存在报错；「更新全部过期」只动在线且过期的', async () => {
+  const { deps, workerList, updates, owner, entries } = await setup();
+  const hub = deps.workers.hubBuild();
+  workerList.push(
+    { ...worker('local', 'local', 'online'), build: hub },
+    { ...worker('w2', 'remote', 'online'), build: { ...hub, commit: 'b'.repeat(40) } },
+    worker('w3', 'remote', 'online'),
+    worker('w4', 'remote', 'offline')
+  );
+  assert.equal(isOutdated(workerList[0]!, hub), false);
+  assert.equal(isOutdated(workerList[1]!, hub), true);
+  assert.equal(isOutdated(workerList[2]!, hub), true, '没报版本的算过期');
+  assert.equal((await updateWorker(deps, owner.principal, 'w4')).ok, false);
+  assert.equal((await updateWorker(deps, owner.principal, 'nope')).ok, false);
+  assert.ok((await updateWorker(deps, owner.principal, 'local')).ok, '已是最新也能发：演练');
+  assert.equal(entries[0]?.action, 'worker.update');
+  assert.match(entries[0]?.detail ?? '', /aaaaaaa → aaaaaaa/);
+  updates.length = 0;
+  const all = await updateOutdatedWorkers(deps, owner.principal);
+  assert.ok(all.ok);
+  assert.deepEqual(
+    updates.map((u) => u.id),
+    ['w2', 'w3']
+  );
+  assert.ok(updates.every((u) => u.commit === hub.commit));
 });

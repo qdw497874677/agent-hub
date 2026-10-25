@@ -30,6 +30,7 @@ import type {
   AdminOverviewDto,
   AdminUserDto,
   AdminWorkerDto,
+  AdminWorkersDto,
   AuditEntryDto,
   EnrollInfoDto,
   SettingsDto
@@ -144,7 +145,10 @@ export const adminApi = {
   enable: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/enable`, {}),
   setRole: (id: string, role: 'owner' | 'member') => post<AdminUserDto>(`/api/admin/users/${id}/role`, { role }),
   revokeLogins: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/revoke-logins`, {}),
-  workers: () => call<AdminWorkerDto[]>('/api/admin/workers'),
+  workers: () => call<AdminWorkersDto>('/api/admin/workers'),
+  updateWorker: (workerId: string) =>
+    post<AdminWorkerDto>(`/api/admin/workers/${encodeURIComponent(workerId)}/update`, {}),
+  updateOutdated: () => post<AdminWorkerDto[]>('/api/admin/workers/update-outdated', {}),
   disconnect: (workerId: string) =>
     post<AdminWorkerDto>(`/api/admin/workers/${encodeURIComponent(workerId)}/disconnect`, {}),
   settings: () => call<SettingsDto>('/api/admin/settings'),

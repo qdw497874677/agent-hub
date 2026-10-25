@@ -21,6 +21,39 @@ export interface WorkerStatus {
   readonly lastSeenAt?: number;
   /** 此刻托管在它上面的会话数。 */
   readonly sessionCount?: number;
+  /** 它跑的代码版本（hello 时报上来）；老 Worker 不报。 */
+  readonly build?: BuildInfo;
+  /** 最近一次远程更新的进度。 */
+  readonly update?: WorkerUpdate;
+}
+
+/** 一份代码的身份：package 版本 + git 提交 + Worker 通道协议版本。 */
+export interface BuildInfo {
+  readonly version: string;
+  /** 40 位提交号；不在 git 仓库里就是 null。 */
+  readonly commit: string | null;
+  readonly protocol: number;
+}
+
+export type WorkerUpdateState = 'updating' | 'succeeded' | 'failed' | 'refused';
+
+export interface WorkerUpdate {
+  readonly state: WorkerUpdateState;
+  readonly message: string;
+  readonly logTail: string;
+  readonly at: number;
+}
+
+/**
+ * 这台 Worker 是否落后于 hub：两边都有提交号就比提交号（同一个 package 版本也可能差好几个提交），
+ * 否则比 package 版本；没报版本的老 Worker 一律算过期。
+ */
+export function isOutdated(worker: Pick<WorkerStatus, 'build'>, hub: BuildInfo): boolean {
+  const build = worker.build;
+  if (!build) return true;
+  if (build.protocol !== hub.protocol) return true;
+  if (build.commit && hub.commit) return build.commit !== hub.commit;
+  return build.version !== hub.version;
 }
 
 export interface PlacementRequest {
