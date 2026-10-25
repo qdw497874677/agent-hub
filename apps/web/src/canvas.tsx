@@ -23,6 +23,11 @@ interface Props {
   readonly onDerive: (taskId: string) => void;
   /** 打开专注对话：一条会话，整屏看。 */
   readonly onOpen: (sessionId: string) => void;
+  /** 卡片上的输入行：草稿存在 App 层，切视图不丢（S6.4）。 */
+  readonly drafts: Readonly<Record<string, string>>;
+  readonly onDraftChange: (sessionId: string, text: string) => void;
+  readonly onSend: (sessionId: string, text: string) => Promise<void>;
+  readonly onInterrupt: (sessionId: string) => Promise<void>;
   readonly onLayoutChange: (positions: Record<string, Point>) => void;
   readonly onTaskStatus: (taskId: string, status: TaskDto['status']) => void;
   /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
@@ -70,7 +75,11 @@ export function CanvasView({
   onOpen,
   onLayoutChange,
   onTaskStatus,
-  focus
+  focus,
+  drafts,
+  onDraftChange,
+  onSend,
+  onInterrupt
 }: Props) {
   const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
   const [positions, setPositions] = useState<Record<string, Point>>(initial);
@@ -111,11 +120,29 @@ export function CanvasView({
         session,
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
         agentLabel: agentLabel(session.agentId),
-        onOpen: () => onOpen(session.id)
+        onOpen: () => onOpen(session.id),
+        draft: drafts[session.id] ?? '',
+        onDraftChange: (text: string) => onDraftChange(session.id, text),
+        onSend: (text: string) => onSend(session.id, text),
+        onInterrupt: () => onInterrupt(session.id)
       }
     }));
     return [...taskNodes, ...sessionNodes];
-  }, [canvas.tasks, canvas.sessions, canvas.previews, positions, live, agentLabel, onTaskStatus, onDerive, onOpen]);
+  }, [
+    canvas.tasks,
+    canvas.sessions,
+    canvas.previews,
+    positions,
+    live,
+    drafts,
+    agentLabel,
+    onTaskStatus,
+    onDerive,
+    onOpen,
+    onDraftChange,
+    onSend,
+    onInterrupt
+  ]);
 
   const edges = useMemo(() => {
     const derived: Edge[] = canvas.edges

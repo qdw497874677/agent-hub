@@ -50,22 +50,28 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await expect(page.getByText('会话从任务派生', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: '开一条会话' }).click();
 
-  // M2：卡片出现，并从对话流里读回模型真吐出的一句话
+  // M2：卡片出现，并且就地就能说话——不必先打开专注对话
   await expect(sessionNode(page)).toHaveCount(1);
-  await sessionNode(page).click();
-  await page.getByLabel('发送消息').fill(`只回这段文字，不要用工具：${ECHO}`);
-  await page.getByRole('button', { name: '发送' }).click();
+  const cardInput = sessionNode(page).getByLabel(/说一句/);
+  // 用 fill 而不是逐字敲：卡片在 React Flow 节点里，0 延迟的合成按键会跑在画布重渲染前面而丢字
+  // （人在键盘上打不到那个速度；粘贴或正常输入都走一个 input 事件）
+  await cardInput.fill(`只回这段文字，不要用工具：${ECHO}`);
+  await cardInput.press('Enter');
 
-  // 只认模型真的吐出来的那个词，而且要落在卡片里（textarea 里也有这个词，会假通过）
+  // 同一个圆点：这一轮在跑时它变成 ■（参考 opencode web），跑完变回 ↑
+  await expect(sessionNode(page).getByRole('button', { name: '中断' })).toBeVisible({ timeout: 30_000 });
+
+  // 只认模型真的吐出来的那个词，而且要落在卡片里（输入框里也有这个词，会假通过）
   await expect(sessionNode(page).getByText(ECHO)).toBeVisible({ timeout: 120_000 });
   await expect(sessionNode(page)).toContainText('完成');
+  await expect(sessionNode(page).getByRole('button', { name: '发送' })).toBeVisible();
 
-  // 专注对话：双击会话进整屏，问与答同屏
-  await sessionNode(page).dblclick();
+  // 专注对话：进去看整屏，问与答同屏。
+  // 这里点「对话」而不是双击：卡片中段的输入框会把双击当成选词，
+  // 而双击卡片本体又依赖「两次点击落在同一个元素上」，在自动化的快速点击下不稳定。
+  await sessionNode(page).getByRole('button', { name: '对话' }).click();
   // 收窄到对话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
-  await expect(
-    page.getByRole('log', { name: '对话记录' }).getByText(`只回这段文字，不要用工具：${ECHO}`)
-  ).toBeVisible();
+  await expect(page.getByRole('log', { name: '对话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
   await expect(page.getByRole('button', { name: '← 画布' })).toBeVisible();
   // 专注对话里画布不在了：整屏只有这一条会话
   await expect(page.locator('.react-flow__node-session')).toHaveCount(0);

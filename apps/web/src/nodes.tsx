@@ -1,5 +1,7 @@
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
+import { useState } from 'react';
 import type { SessionDto, TaskDto } from './api.ts';
+import { CardComposer } from './composer.tsx';
 import type { LiveSession } from './live.ts';
 
 export type TaskNode = Node<
@@ -13,7 +15,17 @@ export type TaskNode = Node<
   'task'
 >;
 export type SessionNode = Node<
-  { session: SessionDto; live: LiveSession | undefined; agentLabel: string; onOpen: () => void },
+  {
+    session: SessionDto;
+    live: LiveSession | undefined;
+    agentLabel: string;
+    onOpen: () => void;
+    /** 卡片上就地说话：不必先打开专注对话。 */
+    draft: string;
+    onDraftChange: (text: string) => void;
+    onSend: (text: string) => Promise<void>;
+    onInterrupt: () => Promise<void>;
+  },
   'session'
 >;
 
@@ -69,7 +81,22 @@ function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, onOpen } = data;
+  const { session, live, agentLabel, onOpen, draft, onDraftChange, onSend, onInterrupt } = data;
+  // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(action: () => Promise<void>): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   const status = live?.status ?? session.status;
   const failed = status === 'failed' || status === 'interrupted';
   const failureReason = failed ? (live?.reason ?? null) : null;
@@ -78,6 +105,9 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
 
   return (
     <div
+      // 双击整张卡进专注对话。不能只靠 React Flow 的 onNodeDoubleClick：
+      // 卡片中段被输入框盖住了，而它会把表单控件上的双击事件当成「用户在编辑」而忽略。
+      onDoubleClick={() => onOpen()}
       className={`group w-[320px] rounded-md border bg-card px-3 py-3 transition-colors ${
         selected ? 'border-accent' : 'border-hair'
       } ${dimmed ? 'opacity-70' : ''}`}
@@ -115,6 +145,17 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           blocks.map((block, index) => <BlockView key={index} block={block} />)
         )}
       </div>
+
+      <CardComposer
+        session={{ ...session, status }}
+        awaiting={live?.awaiting ?? false}
+        draft={draft}
+        onDraftChange={onDraftChange}
+        onSend={(text) => void run(() => onSend(text))}
+        onInterrupt={() => void run(onInterrupt)}
+        busy={busy}
+        error={error}
+      />
 
       <footer className="mt-2 flex items-center justify-between border-t border-hair pt-1.5 text-meta text-tertiary">
         <span className="font-mono">#{live?.lastSeq ?? session.lastSeq}</span>

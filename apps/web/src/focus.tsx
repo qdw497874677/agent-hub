@@ -152,6 +152,7 @@ export function FocusView({ canvas, session, live, draft, onDraftChange, onBack,
             onInterrupt={() => void run(() => api.interrupt(session.id))}
             busy={busy}
             error={error}
+            awaiting={live?.awaiting ?? false}
           />
         </div>
       </div>

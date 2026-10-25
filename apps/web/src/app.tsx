@@ -202,6 +202,24 @@ export function App() {
     seedRef.current(data.sessions, data.previews ?? {});
   });
 
+  // 画布卡片上就地说话：发完清掉这张卡的草稿，不走「先选中再进对话」那条路。
+  const sendPrompt = useCallback(
+    async (sessionId: string, text: string) => {
+      await api.prompt(sessionId, text);
+      setDrafts((current) => ({ ...current, [sessionId]: '' }));
+      refresh();
+    },
+    // refresh 在下面定义，这里用函数式引用避免顺序问题
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+
+  const interruptSession = useCallback(async (sessionId: string) => {
+    await api.interrupt(sessionId);
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const refresh = useCallback(() => {
     if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
   }, [project, queryClient]);
@@ -374,6 +392,12 @@ export function App() {
               onLayoutChange={saveLayout}
               onTaskStatus={setTaskStatus}
               focus={focus}
+              drafts={drafts}
+              onDraftChange={(sessionId, text) =>
+                setDrafts((current) => ({ ...current, [sessionId]: text }))
+              }
+              onSend={sendPrompt}
+              onInterrupt={interruptSession}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-meta text-tertiary">
@@ -415,6 +439,7 @@ export function App() {
             onChanged={refresh}
             draft={drafts[selectedSession.id] ?? ''}
             onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
+            live={resolveLive(selectedSession, canvas.data?.previews[selectedSession.id] ?? [], live[selectedSession.id])}
           />
         ) : null}
       </div>

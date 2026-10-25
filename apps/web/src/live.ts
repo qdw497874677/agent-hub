@@ -26,6 +26,14 @@ export interface LiveSession {
   readonly lastSeq: number;
   /** ended 事件里带的原因。失败必须能说出为什么（visual-direction §7：失败=方块+原因）。 */
   readonly reason: string | null;
+  /**
+   * 「这一轮还在跑吗」。
+   *
+   * 它和 `status === 'running'` 不是一件事：会话派生出来就进入 running，
+   * 但只要用户还没开口，agent 只是干等着。用它来换按钮的样子，
+   * 才不会出现「刚开一条会话，发送按钮就变成停止按钮」。
+   */
+  readonly awaiting: boolean;
 }
 
 export type LiveMap = Readonly<Record<string, LiveSession>>;
@@ -105,11 +113,13 @@ export function resolveLive(
   if (current) return current;
   const history = blocksFromEntries(preview);
   if (history.length === 0 && preview.length === 0) return null;
+  const last = preview[preview.length - 1];
   return {
     blocks: history,
     status: session.status,
     lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
-    reason: reasonFromEntries(preview)
+    reason: reasonFromEntries(preview),
+    awaiting: last !== undefined && last.event.kind !== 'ended'
   };
 }
 
@@ -133,11 +143,13 @@ export function useLiveStream(): LiveStream {
           if (next[session.id]) continue;
           const preview = previews[session.id] ?? [];
           if (preview.length === 0) continue;
+          const last = preview[preview.length - 1];
           next[session.id] = {
             blocks: blocksFromEntries(preview),
             status: session.status,
             lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
-            reason: reasonFromEntries(preview)
+            reason: reasonFromEntries(preview),
+            awaiting: last !== undefined && last.event.kind !== 'ended'
           };
           changed = true;
         }
@@ -167,9 +179,16 @@ export function useLiveStream(): LiveStream {
           frame.event?.kind === 'ended' && frame.event.reason !== undefined
             ? frame.event.reason
             : (previous?.reason ?? null);
+        const awaiting =
+          frame.event === null
+            ? (previous?.awaiting ?? false)
+            : frame.event.kind === 'ended'
+              ? false
+              : true;
         const next: LiveSession = {
           blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
           status: frame.status,
+          awaiting,
           // 只有带事件的帧才推进游标：状态帧和它旁边那条事件共用同一个 seq，
           // 推进了就会把那条事件当成「旧帧」丢掉——提问气泡曾整条消失过。
           lastSeq: frame.event ? frame.seq : previous?.lastSeq ?? 0,

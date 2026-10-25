@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { Composer } from './composer.tsx';
+import type { LiveSession } from './live.ts';
 
 const CAPABILITY_LABEL: Record<string, string> = {
   prompt: '发消息',
@@ -45,9 +46,20 @@ interface Props {
   /** 草稿由 App 持有：切视图 / 切会话回来时它还在（S6.4）。 */
   readonly draft: string;
   readonly onDraftChange: (text: string) => void;
+  readonly live: LiveSession | null;
 }
 
-export function Inspector({ canvas, session, artifacts, onClose, onFocus, onChanged, draft, onDraftChange }: Props) {
+export function Inspector({
+  canvas,
+  session,
+  artifacts,
+  onClose,
+  onFocus,
+  onChanged,
+  draft,
+  onDraftChange,
+  live
+}: Props) {
   const setDraft = onDraftChange;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -203,6 +215,7 @@ export function Inspector({ canvas, session, artifacts, onClose, onFocus, onChan
           onInterrupt={() => void run(() => api.interrupt(session.id))}
           busy={busy}
           error={error}
+          awaiting={live?.awaiting ?? false}
         />
       </footer>
     </aside>
