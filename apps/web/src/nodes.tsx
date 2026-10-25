@@ -128,7 +128,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
           <button
-            className="nodrag rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary opacity-0 transition-opacity hover:border-accent hover:text-accent group-hover:opacity-100 focus:opacity-100"
+            className="nodrag rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary transition-opacity hover:border-accent hover:text-accent focus:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100"
             title="打开专注对话"
             onClick={(event) => {
               event.stopPropagation();
@@ -212,9 +212,9 @@ export function TaskCard({ data }: NodeProps<TaskNode>) {
       {task.goal ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{task.goal}</p> : null}
       <p className="mt-1.5 font-mono text-meta text-tertiary">
         {sessionCount} 个会话
-        {sessionCount === 0 ? <span className="ml-1 text-tertiary/70">· 双击开一条</span> : null}
+        {sessionCount === 0 ? <span className="ml-1 text-tertiary/70">· 点「＋ 会话」开一条</span> : null}
       </p>
-      <div className="nodrag mt-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+      <div className="nodrag mt-1.5 flex gap-1 transition-opacity focus-within:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100">
         <button
           className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
           onClick={(event) => {

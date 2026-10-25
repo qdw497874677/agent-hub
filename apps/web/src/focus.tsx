@@ -109,11 +109,11 @@ export function FocusView({
     <div className="flex h-full flex-col bg-canvas">
       <header className="flex h-11 shrink-0 items-center gap-3 border-b border-hair px-3">
         <button className="text-meta text-tertiary hover:text-primary" onClick={onBack}>
-          ← 画布
+          ← 返回
         </button>
         <span className="h-3 w-px bg-hair" />
         <p className="min-w-0 truncate text-body text-primary">{task?.title ?? session.taskId}</p>
-        <span className="shrink-0 font-mono text-meta text-tertiary">
+        <span className="hidden shrink-0 font-mono text-meta text-tertiary sm:inline">
           {agent?.label ?? session.agentId} · {session.model === '' ? '默认模型' : session.model}
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-3 text-meta text-tertiary">
@@ -145,7 +145,7 @@ export function FocusView({
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-hair px-4 py-3">
+      <div className="shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4">
         <div className="mx-auto max-w-[760px]">
           <Composer
             large

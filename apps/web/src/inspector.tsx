@@ -103,7 +103,7 @@ export function Inspector({
   }
 
   return (
-    <aside className="flex h-full w-[320px] shrink-0 flex-col border-l border-hair bg-panel">
+    <aside className="fixed inset-0 z-40 flex w-full flex-col bg-panel pb-[env(safe-area-inset-bottom)] md:static md:z-auto md:h-full md:w-[320px] md:shrink-0 md:border-l md:border-hair md:pb-0">
       <header className="flex items-center justify-between border-b border-hair px-3 py-2">
         <div>
           <p className="text-head text-primary">{agent?.label ?? session.agentId}</p>

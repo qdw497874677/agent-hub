@@ -1,0 +1,11 @@
+{
+  "name": "agent-hub",
+  "short_name": "agent-hub",
+  "description": "自带机器与 agent 的工作台",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#14181a",
+  "theme_color": "#14181a",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

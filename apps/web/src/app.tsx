@@ -1,190 +1,82 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CanvasDto, ProjectDto } from './api.ts';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { ProjectDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from './home.tsx';
-import { useLiveStream } from './live.ts';
+import { resolveLive, useLiveStream } from './live.ts';
 import { CanvasView } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
 import { ListView, SearchPalette } from './views.tsx';
 import { FocusView } from './focus.tsx';
-import { resolveLive } from './live.ts';
-import { WorkersBadge } from './workers.tsx';
+import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
+import { ProjectHeader } from './header.tsx';
+import { useRoute } from './use-route.ts';
+import { useNarrow } from './device.ts';
+import type { View } from './route.ts';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
-function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
-  const [title, setTitle] = useState('');
-  const [goal, setGoal] = useState('');
-  const queryClient = useQueryClient();
-  const create = useMutation({
-    mutationFn: () => api.createTask({ projectId, title: title.trim(), goal: goal.trim() || undefined }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['canvas', projectId] });
-      onDone();
-    }
-  });
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/70">
-      <div className="w-[420px] rounded-md border border-strong bg-panel p-4">
-        <p className="mb-3 text-head text-primary">新建任务</p>
-        <input
-          autoFocus
-          className="mb-2 w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
-          placeholder="任务标题"
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-        />
-        <textarea
-          className="mb-3 h-20 w-full resize-none rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
-          placeholder="想要达成什么（可留空）"
-          value={goal}
-          onChange={(event) => setGoal(event.target.value)}
-        />
-        {create.error ? <p className="mb-2 text-meta text-rust">{(create.error as Error).message}</p> : null}
-        <div className="flex justify-end gap-2">
-          <button className="rounded-sm border border-hair px-3 py-1 text-meta text-secondary" onClick={onDone}>
-            取消
-          </button>
-          <button
-            className="rounded-sm bg-accent px-3 py-1 text-meta text-canvas disabled:opacity-40"
-            disabled={title.trim().length === 0 || create.isPending}
-            onClick={() => create.mutate()}
-          >
-            建
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DeriveDialog({
-  canvas,
-  taskId,
-  onDone
-}: {
-  canvas: CanvasDto;
-  taskId: string;
-  onDone: () => void;
-}) {
-  const [agentId, setAgentId] = useState(canvas.agents[0]?.id ?? '');
-  const agent = canvas.agents.find((candidate) => candidate.id === agentId);
-  const [model, setModel] = useState(agent?.defaultModel ?? '');
-  const queryClient = useQueryClient();
-  const derive = useMutation({
-    mutationFn: () => api.derive({ taskId, agentId, model }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] });
-      onDone();
-    }
-  });
-
-  useEffect(() => {
-    if (agent) setModel(agent.defaultModel);
-  }, [agent]);
-
-  // worker 可能比页面晚到（远程节点、或者本机 Pi 还在报模型列表）。不要空着让人点不动。
-  useEffect(() => {
-    if (agentId === '' && canvas.agents.length > 0) setAgentId(canvas.agents[0]?.id ?? '');
-  }, [agentId, canvas.agents]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/70">
-      <div className="w-[420px] rounded-md border border-strong bg-panel p-4">
-        <p className="mb-1 text-head text-primary">开一条会话</p>
-        <p className="mb-3 text-meta text-secondary">
-          会话从任务派生：任务说清要达成什么，每条会话是一次尝试。同一个任务可以开很多条，
-          它们并排跑在画布上，血缘线把每条都连回这个任务。
-        </p>
-        {canvas.agents.length === 0 ? (
-          <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
-            还没有节点上线。worker 起来后，这里会出现它装了的 agent。
-            <button
-              className="ml-2 text-accent underline-offset-2 hover:underline"
-              onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
-            >
-              重新检查
-            </button>
-          </p>
-        ) : null}
-        <label className="mb-1 block text-meta text-tertiary">agent</label>
-        <select
-          className="mb-2 w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none"
-          value={agentId}
-          onChange={(event) => setAgentId(event.target.value)}
-        >
-          {canvas.agents.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
-              {candidate.label}
-            </option>
-          ))}
-        </select>
-        <label className="mb-1 block text-meta text-tertiary">模型</label>
-        <select
-          className="mb-3 w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none disabled:text-tertiary"
-          value={model}
-          disabled={(agent?.models ?? []).length === 0}
-          onChange={(event) => setModel(event.target.value)}
-        >
-          {(agent?.models ?? []).length === 0 ? (
-            <option value="">用 agent 自己的默认</option>
-          ) : (
-            (agent?.models ?? []).map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {candidate}
-              </option>
-            ))
-          )}
-        </select>
-        {derive.error ? <p className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}
-        <div className="flex justify-end gap-2">
-          <button className="rounded-sm border border-hair px-3 py-1 text-meta text-secondary" onClick={onDone}>
-            取消
-          </button>
-          <button
-            className="rounded-sm bg-accent px-3 py-1 text-meta text-canvas disabled:opacity-40"
-            disabled={agentId === '' || derive.isPending}
-            onClick={() => derive.mutate()}
-          >
-            开一条会话
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export function App() {
-  const [project, setProject] = useState<ProjectDto | null>(null);
-  // 点了「首页」之后别再自动跳回去：localStorage 记的是「上次那个项目」，
-  // 不是「必须打开的那个项目」，否则首页按钮会把自己立刻弹掉。
-  const [atHome, setAtHome] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [route, navigate] = useRoute();
+  // 手机上画布没法用手指精确拖拽，默认进列表；桌面默认进画布。
+  const narrow = useNarrow();
+  const homeView: View = narrow ? 'list' : 'canvas';
   const [newTask, setNewTask] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
-  // 三种视图是同一份数据的三层分辨率（S6.4）：画布看关系，列表看清单，专注对话看内容。
-  const [view, setView] = useState<'canvas' | 'list' | 'focus'>('canvas');
   const [search, setSearch] = useState(false);
   // 草稿存在 App 层而不是 Inspector 里：S6.4 要求切视图不丢草稿，
   // 组件一卸载 useState 就没了，所以它必须活在两者之上。
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   // 跳到某个节点：nonce 让「同一条命中点第二次」也能重新居中。
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
-  // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧。
-  const { live, seed } = useLiveStream();
   const queryClient = useQueryClient();
 
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
+  const projectRoute = route?.page === 'project' ? route : null;
+  const project = useMemo(
+    () => (projectRoute ? (projects.data ?? []).find((candidate) => candidate.id === projectRoute.projectId) ?? null : null),
+    [projectRoute, projects.data]
+  );
+  // 三种视图是同一份数据的三层分辨率（S6.4）：画布看关系，列表看清单，专注对话看内容。
+  // 视图和选中的会话都住在地址栏里（route.ts），刷新、返回手势都不丢。
+  const view: View = projectRoute?.view ?? homeView;
+  const selected = projectRoute?.sessionId ?? null;
 
   useEffect(() => {
-    if (project || atHome || !projects.data) return;
-    // 只认「上次打开的那个」。没有就停在选择页——不替用户挑一个看起来像的项目。
-    const remembered = localStorage.getItem(LAST_PROJECT);
-    const found = projects.data.find((candidate) => candidate.id === remembered);
-    if (found) setProject(found);
-  }, [project, atHome, projects.data]);
+    if (!projects.data) return;
+    if (route === null) {
+      // 只认「上次打开的那个」。没有就停在首页——不替用户挑一个看起来像的项目。
+      const remembered = projects.data.find((candidate) => candidate.id === localStorage.getItem(LAST_PROJECT));
+      navigate(
+        remembered ? { page: 'project', projectId: remembered.id, view: homeView, sessionId: null } : { page: 'home' },
+        'replace'
+      );
+    } else if (projectRoute && !project) {
+      navigate({ page: 'home' }, 'replace');
+    }
+  }, [route, projectRoute, project, projects.data, navigate, homeView]);
+
+  const goProject = useCallback(
+    (picked: ProjectDto, next: View, sessionId: string | null) => {
+      localStorage.setItem(LAST_PROJECT, picked.id);
+      navigate({ page: 'project', projectId: picked.id, view: next, sessionId });
+    },
+    [navigate]
+  );
+
+  const setSelected = useCallback(
+    (sessionId: string | null) => {
+      if (projectRoute) navigate({ ...projectRoute, sessionId }, 'replace');
+    },
+    [projectRoute, navigate]
+  );
+
+  const setView = useCallback(
+    (next: View) => {
+      if (projectRoute) navigate({ ...projectRoute, view: next });
+    },
+    [projectRoute, navigate]
+  );
 
   const canvas = useQuery({
     queryKey: ['canvas', project?.id],
@@ -194,6 +86,13 @@ export function App() {
     refetchInterval: (query) => ((query.state.data?.agents.length ?? 0) === 0 ? 2000 : false)
   });
 
+  const refresh = useCallback(() => {
+    if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
+  }, [project, queryClient]);
+
+  // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧；断线重连后补帧并刷新画布。
+  const { live, seed, state: stream } = useLiveStream(refresh);
+
   const seedRef = useRef(seed);
   seedRef.current = seed;
   useEffect(() => {
@@ -201,10 +100,6 @@ export function App() {
     if (!data) return;
     seedRef.current(data.sessions, data.previews ?? {});
   });
-
-  const refresh = useCallback(() => {
-    if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
-  }, [project, queryClient]);
 
   // 画布卡片上就地说话：发完清掉这张卡的草稿，不走「先选中再进对话」那条路。
   const sendPrompt = useCallback(
@@ -240,11 +135,13 @@ export function App() {
     return () => clearTimeout(timer);
   }, [live, refresh]);
 
-  /** 进会话说话。画布上双击会话卡、列表里点行、首页点最近会话，都走这里。 */
-  const openSession = useCallback((sessionId: string) => {
-    setSelected(sessionId);
-    setView('focus');
-  }, []);
+  /** 进会话说话。画布卡上的「对话」/双击、列表里点行、首页点最近会话，都走这里。 */
+  const openSession = useCallback(
+    (sessionId: string) => {
+      if (projectRoute) navigate({ ...projectRoute, view: 'focus', sessionId });
+    },
+    [projectRoute, navigate]
+  );
 
   const setTaskStatus = useCallback(
     (taskId: string, status: 'open' | 'done' | 'abandoned') => {
@@ -277,23 +174,28 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  const jump = useCallback((taskId: string, sessionId: string | null) => {
-    setSearch(false);
-    setView('canvas');
-    setSelected(sessionId);
-    setFocus({ id: sessionId ?? taskId, nonce: Date.now() });
-  }, []);
+  const jump = useCallback(
+    (taskId: string, sessionId: string | null) => {
+      setSearch(false);
+      if (!projectRoute) return;
+      // 窄屏没有可用的画布，命中会话就直接进对话。
+      const next: View = narrow ? (sessionId ? 'focus' : 'list') : 'canvas';
+      navigate({ ...projectRoute, view: next, sessionId });
+      setFocus({ id: sessionId ?? taskId, nonce: Date.now() });
+    },
+    [projectRoute, navigate, narrow]
+  );
+
+  if (projectRoute && !project) {
+    return <div className="flex h-full items-center justify-center text-meta text-tertiary">载入中…</div>;
+  }
 
   if (project === null) {
     return (
       <HomePage
         onOpen={(picked, sessionId) => {
-          localStorage.setItem(LAST_PROJECT, picked.id);
-          setAtHome(false);
-          setProject(picked);
-          setSelected(sessionId ?? null);
           // 「接着干」= 直接进那条会话说话，不是先看画布再自己找。
-          setView(sessionId ? 'focus' : 'canvas');
+          goProject(picked, sessionId ? 'focus' : homeView, sessionId ?? null);
           if (sessionId) setFocus({ id: sessionId, nonce: Date.now() });
         }}
       />
@@ -302,74 +204,24 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-12 shrink-0 items-center justify-between border-b border-hair px-3">
-        <div className="flex items-baseline gap-3">
-          <button
-            className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-secondary hover:border-strong"
-            title="回到首页"
-            onClick={() => {
-              setAtHome(true);
-              setProject(null);
-              setSelected(null);
-              setDrafts({});
-            }}
-          >
-            ⌂
-          </button>
-          <select
-            className="cursor-pointer appearance-none bg-transparent text-head text-primary outline-none"
-            value={project.id}
-            onChange={(event) => {
-              const picked = (projects.data ?? []).find((candidate) => candidate.id === event.target.value);
-              if (!picked) return;
-              localStorage.setItem(LAST_PROJECT, picked.id);
-              setProject(picked);
-              setSelected(null);
-              setDrafts({});
-            }}
-            title="切换项目"
-          >
-            {(projects.data ?? [project]).map((candidate) => (
-              <option key={candidate.id} value={candidate.id} className="bg-panel text-body">
-                {candidate.name}
-              </option>
-            ))}
-          </select>
-          <span className="font-mono text-meta text-tertiary">{project.rootPath}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="flex overflow-hidden rounded-sm border border-hair">
-            {(['canvas', 'list', 'focus'] as const).map((mode) => (
-              <button
-                key={mode}
-                className={`px-2.5 py-1 text-meta ${view === mode ? 'bg-card text-primary' : 'text-tertiary hover:text-secondary'}`}
-                // 没有选中会话时「对话」不知道要显示谁，所以不给点。
-                disabled={mode === 'focus' && selectedSession === null}
-                title={
-                  mode === 'focus' && selectedSession === null ? '先在画布上双击一条会话' : undefined
-                }
-                onClick={() => setView(mode)}
-              >
-                {mode === 'canvas' ? '画布' : mode === 'list' ? '列表' : '对话'}
-              </button>
-            ))}
-          </div>
-          <WorkersBadge />
-          <button
-            className="rounded-sm border border-hair px-2.5 py-1 text-meta text-tertiary hover:border-accent hover:text-accent"
-            onClick={() => setSearch(true)}
-            title="搜索任务与会话（⌘K）"
-          >
-            搜索 ⌘K
-          </button>
-          <button
-            className="rounded-sm border border-hair px-2.5 py-1 text-meta text-secondary hover:border-accent hover:text-accent"
-            onClick={() => setNewTask(true)}
-          >
-            新建任务
-          </button>
-        </div>
-      </header>
+      <ProjectHeader
+        project={project}
+        projects={projects.data ?? []}
+        view={view}
+        canFocus={selectedSession !== null}
+        stream={stream}
+        onHome={() => {
+          setDrafts({});
+          navigate({ page: 'home' });
+        }}
+        onSwitchProject={(picked) => {
+          setDrafts({});
+          goProject(picked, view === 'focus' ? homeView : view, null);
+        }}
+        onView={setView}
+        onSearch={() => setSearch(true)}
+        onNewTask={() => setNewTask(true)}
+      />
 
       {canvas.data && view === 'focus' && selectedSession ? (
         <FocusView
@@ -378,7 +230,7 @@ export function App() {
           live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}
           draft={drafts[selectedSession.id] ?? ''}
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
-          onBack={() => setView('canvas')}
+          onBack={() => setView(homeView)}
           onChanged={refresh}
           onChangeOption={(optionId, value) =>
             changeOption(selectedSession.id, optionId, value)

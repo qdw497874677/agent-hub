@@ -40,23 +40,23 @@ export function ListView({
   );
 
   return (
-    <div className="h-full overflow-y-auto px-6 py-4">
+    <div className="h-full overflow-y-auto px-3 py-4 md:px-6">
       <table className="w-full border-collapse text-body">
         <thead>
           <tr className="border-b border-hair text-left text-meta text-tertiary">
             <th className="py-2 font-normal">任务</th>
             <th className="py-2 font-normal">agent</th>
-            <th className="py-2 font-normal">模型</th>
-            <th className="py-2 font-normal">来源</th>
+            <th className="hidden py-2 font-normal md:table-cell">模型</th>
+            <th className="hidden py-2 font-normal md:table-cell">来源</th>
             <th className="py-2 font-normal">状态</th>
-            <th className="py-2 font-normal">事件</th>
+            <th className="hidden py-2 font-normal md:table-cell">事件</th>
           </tr>
         </thead>
         <tbody>
           {canvas.sessions.length === 0 ? (
             <tr>
               <td className="py-6 text-meta text-tertiary" colSpan={6}>
-                还没有会话。双击画布上的任务就能派生一条。
+                还没有会话。点下面的任务（或画布上任务卡的「＋ 会话」）就能派生一条。
               </td>
             </tr>
           ) : null}
@@ -69,16 +69,16 @@ export function ListView({
                 className="cursor-pointer border-b border-hair/60 hover:bg-card"
                 onClick={() => onOpen(session.id)}
               >
-                <td className="max-w-[280px] truncate py-2 text-primary">{taskTitle.get(session.taskId) ?? '—'}</td>
+                <td className="max-w-[140px] truncate py-3 text-primary md:max-w-[280px] md:py-2">{taskTitle.get(session.taskId) ?? '—'}</td>
                 <td className="py-2 text-secondary">
                   {canvas.agents.find((agent) => agent.id === session.agentId)?.label ?? session.agentId}
                 </td>
-                <td className="py-2 font-mono text-meta text-tertiary">{session.model === '' ? '默认模型' : session.model}</td>
-                <td className="py-2 font-mono text-meta text-tertiary">
+                <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">{session.model === '' ? '默认模型' : session.model}</td>
+                <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">
                   {session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生'}
                 </td>
                 <td className="py-2 text-meta">{STATUS_LABEL[status]}</td>
-                <td className="py-2 font-mono text-meta text-tertiary">#{seq}</td>
+                <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">#{seq}</td>
               </tr>
             );
           })}
@@ -136,9 +136,9 @@ export function SearchPalette({
   const hits = results.data?.hits ?? [];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-canvas/80 pt-24" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-canvas/80 px-3 pt-16 md:pt-24" onClick={onClose}>
       <div
-        className="w-[560px] rounded-md border border-strong bg-panel shadow-lg"
+        className="w-full max-w-[560px] rounded-md border border-strong bg-panel shadow-lg"
         onClick={(event) => event.stopPropagation()}
       >
         <input

@@ -39,11 +39,24 @@ html,
 body,
 #root {
   height: 100%;
+  /* 手机浏览器的地址栏会伸缩：dvh 跟着可见区域走，100vh 会把输入框压到屏幕外 */
+  height: 100dvh;
   margin: 0;
   background: var(--color-canvas);
   color: var(--color-primary);
   font-family: var(--font-sans);
   font-size: var(--text-body);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* iOS 上小于 16px 的输入框获得焦点会强制放大页面，触屏设备统一抬到 16px */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
 }
 
 /* React Flow 默认的浅色变量在这一层被覆盖 */

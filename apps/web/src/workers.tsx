@@ -39,7 +39,7 @@ export function WorkersBadge() {
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-9 z-20 w-[280px] rounded-md border border-strong bg-panel p-2 shadow-lg">
+        <div className="absolute right-0 top-9 z-20 w-[min(280px,calc(100vw-1.5rem))] rounded-md border border-strong bg-panel p-2 shadow-lg">
           {list.length === 0 ? (
             <p className="text-meta text-tertiary">
               还没有节点连上。worker 起来后会自己报到——如果你刚启动，等几秒。

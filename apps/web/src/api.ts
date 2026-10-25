@@ -96,7 +96,8 @@ export const api = {
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
-  events: (sessionId: string) => call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events`),
+  events: (sessionId: string, after = 0) =>
+    call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>
     call<SearchResponseDto>(`/api/search?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(q)}`),
   saveLayout: (projectId: string, layout: LayoutDto['positions']) =>
