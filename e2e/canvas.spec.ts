@@ -192,7 +192,7 @@ test('任务详情：工作日志时间线、写交接刷新当前进展、改�
   await expect(drawer).toBeVisible();
   // 开过会话、改过状态：系统日志已经在时间线上
   await expect(drawer.getByTestId('work-log')).toContainText('开了');
-  await expect(drawer.getByTestId('work-log')).toContainText('改为 done');
+  await expect(drawer.getByTestId('work-log')).toContainText('改为「已收尾」');
 
   await drawer.getByRole('button', { name: '决定', exact: true }).click();
   await drawer.getByLabel('写日志').fill(`用官方 SDK-${RUN}`);
@@ -207,7 +207,7 @@ test('任务详情：工作日志时间线、写交接刷新当前进展、改�
 
   await drawer.getByRole('button', { name: '受阻' }).click();
   await expect(drawer.getByTestId('task-status')).toHaveText('受阻');
-  await expect(drawer.getByTestId('work-log')).toContainText('改为 blocked');
+  await expect(drawer.getByTestId('work-log')).toContainText('改为「受阻」');
   await drawer.getByRole('button', { name: '继续' }).click();
   await expect(drawer.getByTestId('task-status')).toHaveText('进行中');
   await page.keyboard.press('Escape');

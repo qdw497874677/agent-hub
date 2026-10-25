@@ -12,7 +12,8 @@
     "apps/*"
   ],
   "scripts": {
-    "up": "node apps/server/src/main.ts",
+    "up": "npm run build && node apps/server/src/main.ts",
+    "serve": "node apps/server/src/main.ts",
     "web": "vite",
     "dev": "node scripts/dev.mjs",
     "test": "node --test \"packages/**/*.test.ts\" \"apps/server/**/*.test.ts\" \"apps/worker/**/*.test.ts\" \"apps/web/src/**/*.test.ts\"",

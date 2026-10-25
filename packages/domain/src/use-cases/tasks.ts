@@ -1,4 +1,4 @@
-import { createTask, setTaskStatus, type StatusActor } from '../task.ts';
+import { createTask, setTaskStatus, TASK_STATUS_LABEL, type StatusActor } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
 import type { Task, TaskStatus } from '../task.ts';
 import type { TaskId } from '../ids.ts';
@@ -47,7 +47,7 @@ export async function setTaskStatusUseCase(
   if (changed.value === task) return ok(task);
   await deps.tasks.save(changed.value);
   const who = actor === 'agent' ? 'agent' : actor === 'system' ? '系统' : '人';
-  await recordSystemLog(deps, taskId, 'status_change', `${who}把状态从 ${task.status} 改为 ${status}${note ? `：${note}` : ''}`);
+  await recordSystemLog(deps, taskId, 'status_change', `${who}把状态从「${TASK_STATUS_LABEL[task.status]}」改为「${TASK_STATUS_LABEL[status]}」${note ? `：${note}` : ''}`);
   // 系统日志会推进 logSeq：返回最新的任务
   return ok((await deps.tasks.byId(taskId)) ?? changed.value);
 }

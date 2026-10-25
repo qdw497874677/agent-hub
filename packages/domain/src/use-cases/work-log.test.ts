@@ -105,7 +105,7 @@ test('开会话：todo → in_progress，并记一条 session_event；改状态�
   assert.equal(blocked.value.logSeq, 2);
   const [change] = await w.deps.workLog.list(w.task.id, { limit: 1 });
   assert.equal(change?.kind, 'status_change');
-  assert.match(change?.body ?? '', /blocked.*等 key/);
+  assert.match(change?.body ?? '', /改为「受阻」：等 key/);
   assert.ok(!(await setTaskStatusUseCase(w.deps, w.task.id, 'done', 'agent')).ok);
 });
 
