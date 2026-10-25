@@ -303,6 +303,8 @@ export interface PiRuntimeOptions {
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
   /** mcp.json 位置；null = 不碰（测试）。默认 ~/.pi/agent/mcp.json。 */
   readonly mcpConfigPath?: string | null;
+  /** worker 的 stdio MCP 垫片；不给就不写 mcp.json（Pi 拿不到工具）。 */
+  readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
 }
 
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
@@ -323,9 +325,9 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       if (ref) args.push('--session-id', ref);
 
       // 能力层：Pi 只认 mcp.json，所以先确保里面有 agent-hub 这条（只含变量引用），令牌走 env。
-      // stdio-shim 模式下 URL 已被 worker 换成本机 relay（同样是 Streamable HTTP），Pi 照常直连。
-      if (spec.tools && options.mcpConfigPath !== null) {
-        await ensurePiMcpConfig(options.mcpConfigPath).catch(() => false);
+      // 条目是 stdio 垫片（见 pi-mcp.ts：Pi 不展开 url 里的变量）；垫片连 tools.url——hub 的 /mcp 或本机 relay。
+      if (spec.tools && options.toolShim && options.mcpConfigPath !== null) {
+        await ensurePiMcpConfig(options.toolShim, options.mcpConfigPath).catch(() => false);
       }
       let child: ChildProcessWithoutNullStreams;
       try {
