@@ -299,12 +299,12 @@ test('event 落盘后能从 /events 读回，seq 单调', async () => {
   assert.equal(sessions.journal.get(sessionId)?.length, 2);
 });
 
-test('绑非 loopback 时 token 可从请求头或查询串带（SSE 设不了请求头）', async () => {
+test('绑非 loopback 时 token 走请求头；查询串只给 SSE（EventSource 设不了请求头）', async () => {
   const { call } = harness('s3cret');
 
   assert.equal((await call('/api/health')).status, 401);
   assert.equal((await call('/api/health?token=wrong')).status, 401);
-  assert.equal((await call('/api/health?token=s3cret')).status, 200);
+  assert.equal((await call('/api/health?token=s3cret')).status, 401);
   assert.equal(
     (await call('/api/health', { headers: { authorization: 'Bearer s3cret' } })).status,
     200
