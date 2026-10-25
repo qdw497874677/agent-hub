@@ -28,6 +28,19 @@ export function resolveWorker(workers: readonly WorkerInfoDto[], id: string | nu
   return workers.find((worker) => worker.origin === 'local');
 }
 
+/**
+ * 这条会话所在的机器此刻不在线时，给一句人话；在线（或还没拿到列表）返回 null。
+ * 单机也要提示：本机 worker 掉了，发出去的话只会换来一个「不可用」。
+ */
+export function useOfflineNotice(workerId: string | null | undefined): string | null {
+  const { list } = useWorkers();
+  if (list.length === 0) return null;
+  const worker = resolveWorker(list, workerId);
+  if (worker?.state === 'online') return null;
+  const name = worker?.label ?? '这台机器';
+  return `${name} 离线${worker?.reason ? `（${worker.reason}）` : ''}，回来之后再发`;
+}
+
 export function relativeTime(at: number | undefined, now = Date.now()): string {
   if (at === undefined) return '—';
   const seconds = Math.max(0, Math.round((now - at) / 1000));

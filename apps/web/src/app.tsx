@@ -105,8 +105,15 @@ export function App() {
   // 画布卡片上就地说话：发完清掉这张卡的草稿，不走「先选中再进对话」那条路。
   const sendPrompt = useCallback(
     async (sessionId: string, text: string) => {
-      await api.prompt(sessionId, text);
+      // 先清草稿再等回复：等的这段时间卡片若被画布重新挂载，不该把刚发出去的话又填回输入框
+      // （e2e 偶发失败就是它：模型慢时输入框里又出现了原话，看着像没发出去）。没发出去再放回来。
       setDrafts((current) => ({ ...current, [sessionId]: '' }));
+      try {
+        await api.prompt(sessionId, text);
+      } catch (failure) {
+        setDrafts((current) => ({ ...current, [sessionId]: current[sessionId] || text }));
+        throw failure;
+      }
       refresh();
     },
     [refresh]
