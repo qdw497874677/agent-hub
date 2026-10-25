@@ -21,7 +21,7 @@ export interface Task {
   readonly ownerId: string | null;
   /** git 项目的任务分支（workspaces.md）；首次运行时定下。 */
   readonly branch: string | null;
-  /** 「当前进展」一句话：最近一条 handoff 自动刷新，也可手改。 */
+  /** 「当前进展」一句话：最近一条人或 agent 写的日志自动刷新，也可手改。 */
   readonly summary: string | null;
   /** 工作日志当前最大序号；追加日志时 +1。 */
   readonly logSeq: number;

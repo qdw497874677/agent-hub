@@ -96,12 +96,12 @@ export function fakeWorkLog(): WorkLogRepository & { rows: WorkLogEntry[] } {
         .filter((row) => row.taskId === taskId)
         .filter((row) => query.includeSuperseded || !row.supersededBy)
         .filter((row) => query.beforeSeq === undefined || row.seq < query.beforeSeq)
-        .filter((row) => !query.kinds || query.kinds.includes(row.kind))
+        .filter((row) => !query.excludeSystem || row.author.kind !== 'system')
         .sort((a, b) => b.seq - a.seq)
         .slice(0, query.limit);
     },
-    async latestHandoff(taskId) {
-      return (await this.list(taskId, { limit: 1, kinds: ['handoff'] }))[0] ?? null;
+    async latestNote(taskId) {
+      return (await this.list(taskId, { limit: 1, excludeSystem: true }))[0] ?? null;
     }
   };
 }

@@ -26,7 +26,6 @@ import type {
   Task,
   TaskStatus,
   WorkLogEntry,
-  LogKind,
   WorkerStatus
 } from '@agent-hub/domain';
 import type { z } from 'zod';
@@ -47,7 +46,6 @@ import type {
   optionCategorySchema,
   sessionStatusSchema,
   taskStatusSchema,
-  logKindSchema,
   WorkLogEntryDto
 } from './wire.ts';
 
@@ -65,7 +63,6 @@ export type ContractDrift = [
   Assert<Extends<Project, ProjectDto>>,
   Assert<Extends<Task, TaskDto>>,
   Assert<Extends<WorkLogEntry, WorkLogEntryDto>>,
-  Assert<Same<LogKind, z.infer<typeof logKindSchema>>>,
   Assert<Extends<Session, SessionDto>>,
   Assert<Extends<Artifact, ArtifactDto>>,
   Assert<Extends<SessionEvent, SessionEventDto>>,

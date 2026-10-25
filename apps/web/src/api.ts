@@ -106,11 +106,13 @@ export const api = {
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
   setTaskStatus: (taskId: string, status: TaskDto['status'], note?: string) =>
     call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status, note }) }),
+  setTaskSummary: (taskId: string, summary: string) =>
+    call<TaskDto>(`/api/tasks/${taskId}/summary`, { method: 'PATCH', body: JSON.stringify({ summary }) }),
   taskLog: (taskId: string, beforeSeq?: number) =>
     call<{ entries: WorkLogEntryDto[]; nextBeforeSeq: number | null }>(
       `/api/tasks/${taskId}/log?limit=50${beforeSeq ? `&beforeSeq=${beforeSeq}` : ''}`
     ),
-  appendTaskLog: (taskId: string, input: { kind: WorkLogEntryDto['kind']; body: string }) =>
+  appendTaskLog: (taskId: string, input: { body: string }) =>
     post<{ entry: WorkLogEntryDto; task: TaskDto }>(`/api/tasks/${taskId}/log`, input),
   derive: (input: DeriveSessionRequest) => post<SessionDto>('/api/sessions/derive', input),
   fork: (input: ForkSessionRequest) => post<SessionDto>('/api/sessions/fork', input),

@@ -1,6 +1,6 @@
 import { invalid, notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
-import { LOG_KINDS, WRITABLE_LOG_KINDS, type LogKind, type LogLink } from '../work-log.ts';
+import { type LogLink } from '../work-log.ts';
 import type { TaskStatus } from '../task.ts';
 import type { ToolContext, ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import { appendWorkLogUseCase } from '../use-cases/work-log.ts';
@@ -16,7 +16,7 @@ export const TASK_TOOLS: readonly ToolDescriptor[] = [
     version: 1,
     scope: 'task:read',
     description:
-      'Get the agent-hub task this session belongs to: title, goal, status, current summary, branch, sessions, and the latest handoff note. Call this first when you start working.',
+      'Get the agent-hub task this session belongs to: title, goal, status, current progress line, branch, sessions, and the latest work-log entry written by a person or agent. Call this first when you start working.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -28,8 +28,7 @@ export const TASK_TOOLS: readonly ToolDescriptor[] = [
       type: 'object',
       properties: {
         limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 },
-        beforeSeq: { type: 'integer', minimum: 1 },
-        kinds: { type: 'array', items: { type: 'string', enum: LOG_KINDS } }
+        beforeSeq: { type: 'integer', minimum: 1 }
       },
       additionalProperties: false
     }
@@ -40,11 +39,10 @@ export const TASK_TOOLS: readonly ToolDescriptor[] = [
     scope: 'task:log:write',
     perMinute: 10,
     description:
-      'Append an entry to the current task work log. kind=handoff should summarise: done / in progress / next steps / risks / key files; it becomes the task summary for the next session.',
+      'Append a free-form markdown entry to the current task work log, signed as you (runtime, model, session). Your latest entry becomes the task\'s current-progress line and the context for the next session, so before you stop, write one that covers: done / in progress / next steps / risks / key files.',
     inputSchema: {
       type: 'object',
       properties: {
-        kind: { type: 'string', enum: WRITABLE_LOG_KINDS },
         body: { type: 'string', minLength: 1, maxLength: 32768 },
         links: {
           type: 'array',
@@ -56,7 +54,7 @@ export const TASK_TOOLS: readonly ToolDescriptor[] = [
           }
         }
       },
-      required: ['kind', 'body'],
+      required: ['body'],
       additionalProperties: false
     }
   },
@@ -127,7 +125,7 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
             status: session.status,
             current: session.id === ctx.grant.sessionId
           }));
-          const handoff = await deps.workLog.latestHandoff(taskId);
+          const latest = await deps.workLog.latestNote(taskId);
           return ok({
             id: task.id,
             title: task.title,
@@ -137,21 +135,18 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
             branch: task.branch,
             logSeq: task.logSeq,
             sessions,
-            latestHandoff: handoff ? { seq: handoff.seq, at: handoff.createdAt, author: handoff.author, body: handoff.body } : null
+            latestEntry: latest ? { seq: latest.seq, at: latest.createdAt, author: latest.author, body: latest.body } : null
           });
         }
         case 'task.log.list': {
-          const kinds = Array.isArray(args['kinds']) ? (args['kinds'].filter((kind) => LOG_KINDS.includes(kind as LogKind)) as LogKind[]) : undefined;
           const beforeSeq = intIn(args['beforeSeq'], 1, Number.MAX_SAFE_INTEGER);
           const entries = await deps.workLog.list(taskId, {
             limit: intIn(args['limit'], 1, 50) ?? 20,
-            ...(beforeSeq !== undefined ? { beforeSeq } : {}),
-            ...(kinds && kinds.length > 0 ? { kinds } : {})
+            ...(beforeSeq !== undefined ? { beforeSeq } : {})
           });
           return ok({
             entries: entries.map((entry) => ({
               seq: entry.seq,
-              kind: entry.kind,
               author: entry.author,
               body: entry.body,
               links: entry.links,
@@ -160,17 +155,12 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
           });
         }
         case 'task.log.append': {
-          const kind = args['kind'];
-          if (typeof kind !== 'string' || !WRITABLE_LOG_KINDS.includes(kind as LogKind)) {
-            return err(invalid(`kind 只能是 ${WRITABLE_LOG_KINDS.join(' / ')}`));
-          }
           if (typeof args['body'] !== 'string') return err(invalid('body 必须是字符串'));
           const links = parseLinks(args['links']);
           if (!links.ok) return links;
           const appended = await appendWorkLogUseCase(deps, {
             taskId,
             author: await author(ctx),
-            kind: kind as LogKind,
             body: args['body'],
             links: links.value,
             sessionId: ctx.grant.sessionId

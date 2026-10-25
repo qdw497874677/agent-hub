@@ -71,39 +71,40 @@ test('签发授权：令牌换得到授权；重新签发作废旧的；作废/�
   assert.equal(await w.gateway.authenticate(''), null);
 });
 
-test('task.get / task.log.append / task.log.list：隐式绑定当前任务，agent 署名，handoff 刷新 summary', async () => {
+test('task.get / task.log.append / task.log.list：隐式绑定当前任务，agent 署名，写日志刷新 summary', async () => {
   const w = await world();
   const { grant } = await w.gateway.issue(w.session);
   assert.deepEqual(
     w.gateway.list(grant).map((tool) => tool.name),
     ['task.get', 'task.log.list', 'task.log.append', 'task.update_status']
   );
-  const appended = await w.gateway.call(grant, 'task.log.append', { kind: 'handoff', body: '## 已完成\n- 接好 MCP\n\n## 下一步\n- 写测试' });
+  const appended = await w.gateway.call(grant, 'task.log.append', { body: '## 已完成\n- 接好 MCP\n\n## 下一步\n- 写测试' });
   assert.ok(appended.ok);
   const got = await w.gateway.call(grant, 'task.get', {});
   assert.ok(got.ok);
-  const task = got.value as { title: string; summary: string; latestHandoff: { author: { kind: string } }; sessions: { current: boolean }[] };
+  const task = got.value as { title: string; summary: string; latestEntry: { author: { kind: string; agentId: string } }; sessions: { current: boolean }[] };
   assert.equal(task.title, '接通能力层');
   assert.match(task.summary, /接好 MCP/);
-  assert.equal(task.latestHandoff.author.kind, 'agent');
+  assert.equal(task.latestEntry.author.kind, 'agent');
+  assert.equal(task.latestEntry.author.agentId, 'fake');
   assert.equal(task.sessions[0]?.current, true);
-  const listed = await w.gateway.call(grant, 'task.log.list', { limit: 5, kinds: ['handoff'] });
+  const listed = await w.gateway.call(grant, 'task.log.list', { limit: 5 });
   assert.ok(listed.ok);
-  assert.equal((listed.value as { entries: unknown[] }).entries.length, 1);
+  assert.ok((listed.value as { entries: { author: { kind: string } }[] }).entries.some((e) => e.author.kind === 'agent'));
   // 审计：每次调用一条，正文只记长度
   assert.equal(w.toolGrants.calls.length, 3);
   assert.match(w.toolGrants.calls[0]?.detail ?? '', /body=<\d+ 字>/);
 });
 
-test('权限、校验与限流：系统种类不能写；agent 不能收尾；超频返回错误不断开', async () => {
+test('权限、校验与限流：body 必须是字符串；旧版的 kind 参数被忽略；agent 不能收尾；超频返回错误不断开', async () => {
   const w = await world();
   const { grant } = await w.gateway.issue(w.session, ['task:read']);
-  const denied = await w.gateway.call(grant, 'task.log.append', { kind: 'note', body: 'x' });
+  const denied = await w.gateway.call(grant, 'task.log.append', { body: 'x' });
   assert.equal(denied.ok ? null : denied.error.code, 'forbidden');
   assert.equal(w.gateway.list(grant).length, 2);
 
   const full = (await w.gateway.issue(w.session)).grant;
-  const system = await w.gateway.call(full, 'task.log.append', { kind: 'status_change', body: 'x' });
+  const system = await w.gateway.call(full, 'task.log.append', { body: 42 });
   assert.equal(system.ok ? null : system.error.code, 'invalid');
   const done = await w.gateway.call(full, 'task.update_status', { status: 'done' });
   assert.equal(done.ok, false);
@@ -111,10 +112,11 @@ test('权限、校验与限流：系统种类不能写；agent 不能收尾；�
   assert.ok(review.ok);
   assert.equal((await w.deps.tasks.byId(w.task.id))?.status, 'in_review');
 
-  // 上面那次被拒的 status_change 也算一次 append：再来 9 次刚好用满 10 次/分钟
-  for (let i = 0; i < 9; i += 1) assert.ok((await w.gateway.call(full, 'task.log.append', { kind: 'note', body: `n${i}` })).ok);
-  const limited = await w.gateway.call(full, 'task.log.append', { kind: 'note', body: 'too many' });
+  // 上面那次被拒的 append 也算一次 append：再来 9 次刚好用满 10 次/分钟
+  assert.ok((await w.gateway.call(full, 'task.log.append', { kind: 'handoff', body: '旧客户端带 kind' })).ok);
+  for (let i = 0; i < 8; i += 1) assert.ok((await w.gateway.call(full, 'task.log.append', { body: `n${i}` })).ok);
+  const limited = await w.gateway.call(full, 'task.log.append', { body: 'too many' });
   assert.match(limited.ok ? '' : limited.error.message, /太频繁/);
   w.tick(61_000);
-  assert.ok((await w.gateway.call(full, 'task.log.append', { kind: 'note', body: 'ok again' })).ok);
+  assert.ok((await w.gateway.call(full, 'task.log.append', { body: 'ok again' })).ok);
 });

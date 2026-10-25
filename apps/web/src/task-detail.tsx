@@ -3,26 +3,23 @@ import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-q
 import { api, type CanvasDto, type TaskDto, type WorkLogEntryDto } from './api.ts';
 import { NEXT_STATUS, TASK_STATUS_LABEL, TASK_STATUS_TONE } from './task-status.ts';
 
-/** handoff 模板：与 domain 的 HANDOFF_TEMPLATE 同文（web 不依赖 domain，抄一份）。 */
+/** 可选的交接模板（只是一段可插入的文字，不是日志类型）：与 domain 的 HANDOFF_TEMPLATE 同文（web 不依赖 domain，抄一份）。 */
 const HANDOFF_TEMPLATE = '## 已完成\n- \n\n## 进行中\n- \n\n## 下一步\n- \n\n## 风险/待决\n- \n\n## 关键文件\n- ';
 
-const KIND_LABEL: Record<WorkLogEntryDto['kind'], string> = {
-  note: '笔记',
-  progress: '进展',
-  decision: '决定',
-  blocker: '阻塞',
-  handoff: '交接',
-  status_change: '状态',
-  session_event: '会话'
-};
-const WRITABLE: readonly WorkLogEntryDto['kind'][] = ['note', 'progress', 'decision', 'blocker', 'handoff'];
+type Author = WorkLogEntryDto['author'];
 
-function authorLabel(entry: WorkLogEntryDto): string {
-  const author = entry.author;
-  if (author.kind === 'user') return author.name ?? '人';
+/** 谁写的：人 = 名字；agent = 运行时 · 模型（会话另给链接）；系统 = 系统。日志没有种类，作者就是唯一的区分。 */
+function authorLabel(author: Author): string {
+  if (author.kind === 'user') return author.name ?? '我';
   if (author.kind === 'agent') return `${author.agentId}${author.model ? ` · ${author.model}` : ''}`;
   return '系统';
 }
+
+const AUTHOR_TONE: Record<Author['kind'], string> = {
+  user: 'text-primary',
+  agent: 'text-accent',
+  system: 'text-tertiary'
+};
 
 function when(ms: number): string {
   const date = new Date(ms);
@@ -56,8 +53,8 @@ export function TaskDetail({
   const client = useQueryClient();
   const task = canvas.tasks.find((t) => t.id === taskId);
   const sessions = canvas.sessions.filter((s) => s.taskId === taskId);
-  const [kind, setKind] = useState<WorkLogEntryDto['kind']>('note');
   const [body, setBody] = useState('');
+  const [editingSummary, setEditingSummary] = useState<string | null>(null);
   const composer = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -80,13 +77,23 @@ export function TaskDetail({
     void client.invalidateQueries({ queryKey: ['task-log', taskId] });
   };
   const append = useMutation({
-    mutationFn: () => api.appendTaskLog(taskId, { kind, body }),
+    mutationFn: () => api.appendTaskLog(taskId, { body }),
     onSuccess: () => {
       setBody('');
-      setKind('note');
       refresh();
     }
   });
+  const summary = useMutation({
+    mutationFn: (text: string) => api.setTaskSummary(taskId, text),
+    onSuccess: () => {
+      setEditingSummary(null);
+      refresh();
+    }
+  });
+  const insertTemplate = () => {
+    setBody((current) => (current.trim() ? `${current.trimEnd()}\n\n${HANDOFF_TEMPLATE}` : HANDOFF_TEMPLATE));
+    requestAnimationFrame(() => composer.current?.focus());
+  };
   const status = useMutation({
     mutationFn: (next: TaskDto['status']) => api.setTaskStatus(taskId, next),
     onSuccess: refresh
@@ -124,23 +131,43 @@ export function TaskDetail({
                 {action.label}
               </button>
             ))}
-            <button
-              type="button"
-              className="rounded-sm border border-accent-dim px-1.5 py-px text-meta text-accent hover:border-accent"
-              onClick={() => {
-                setKind('handoff');
-                if (!body.trim()) setBody(HANDOFF_TEMPLATE);
-                requestAnimationFrame(() => composer.current?.focus());
-              }}
-            >
-              写交接
-            </button>
             {task.branch ? <span className="font-mono text-meta text-tertiary">⎇ {task.branch}</span> : null}
           </div>
-          <p className="mt-2 text-sub text-secondary" data-testid="task-summary">
-            <span className="text-tertiary">当前进展：</span>
-            {task.summary ?? '还没有交接记录'}
-          </p>
+          {editingSummary === null ? (
+            <p className="mt-2 text-sub text-secondary" data-testid="task-summary">
+              <span className="text-tertiary">当前进展：</span>
+              {task.summary ?? '还没有人写日志'}
+              <button
+                type="button"
+                className="ml-1.5 text-meta text-tertiary hover:text-accent"
+                onClick={() => setEditingSummary(task.summary ?? '')}
+              >
+                改
+              </button>
+            </p>
+          ) : (
+            <form
+              className="mt-2 flex gap-1.5"
+              onSubmit={(event) => {
+                event.preventDefault();
+                summary.mutate(editingSummary);
+              }}
+            >
+              <input
+                aria-label="当前进展"
+                autoFocus
+                className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1 text-sub text-primary outline-none focus:border-accent"
+                value={editingSummary}
+                onChange={(event) => setEditingSummary(event.target.value)}
+              />
+              <button type="submit" disabled={summary.isPending} className="rounded-sm border border-accent px-2 text-meta text-accent">
+                保存
+              </button>
+              <button type="button" className="text-meta text-tertiary" onClick={() => setEditingSummary(null)}>
+                取消
+              </button>
+            </form>
+          )}
           {sessions.length > 0 ? (
             <div className="mt-2 flex flex-wrap gap-1">
               {sessions.map((session) => (
@@ -159,16 +186,29 @@ export function TaskDetail({
         <ol className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3" data-testid="work-log">
           {entries.length === 0 && !log.isLoading ? <li className="text-meta text-tertiary">还没有日志。</li> : null}
           {entries.map((entry) => (
-            <li key={entry.id} className={`rounded-sm border px-2.5 py-2 ${entry.kind === 'handoff' ? 'border-accent-dim bg-card-raised' : 'border-hair bg-card'}`}>
+            <li
+              key={entry.id}
+              data-testid="log-entry"
+              data-author={entry.author.kind}
+              className={`rounded-sm border px-2.5 py-2 ${entry.author.kind === 'system' ? 'border-hair bg-transparent' : entry.author.kind === 'agent' ? 'border-accent-dim bg-card-raised' : 'border-hair bg-card'}`}
+            >
               <div className="mb-1 flex items-center gap-1.5 text-meta text-tertiary">
-                <span className={entry.kind === 'blocker' ? 'text-rust' : entry.kind === 'handoff' ? 'text-accent' : 'text-secondary'}>
-                  {KIND_LABEL[entry.kind]}
+                <span className={`truncate ${AUTHOR_TONE[entry.author.kind]}`} data-testid="log-author">
+                  {authorLabel(entry.author)}
                 </span>
-                <span>·</span>
-                <span className="truncate">{authorLabel(entry)}</span>
+                {entry.author.kind === 'agent' ? (
+                  <button
+                    type="button"
+                    className="shrink-0 font-mono text-tertiary underline decoration-dotted hover:text-accent"
+                    onClick={() => onOpenSession((entry.author as Extract<Author, { kind: 'agent' }>).sessionId)}
+                    title="打开写这条日志的会话"
+                  >
+                    会话 {entry.author.sessionId.slice(0, 6)}
+                  </button>
+                ) : null}
                 <span className="ml-auto shrink-0 font-mono">#{entry.seq} · {when(entry.createdAt)}</span>
               </div>
-              <p className="whitespace-pre-wrap break-words text-sub text-primary">{entry.body}</p>
+              <p className={`whitespace-pre-wrap break-words text-sub ${entry.author.kind === 'system' ? 'text-tertiary' : 'text-primary'}`}>{entry.body}</p>
             </li>
           ))}
           {log.hasNextPage ? (
@@ -187,27 +227,16 @@ export function TaskDetail({
             if (body.trim()) append.mutate();
           }}
         >
-          <div className="mb-1.5 flex flex-wrap gap-1">
-            {WRITABLE.map((option) => (
-              <button
-                type="button"
-                key={option}
-                aria-pressed={kind === option}
-                className={`rounded-sm border px-1.5 py-px text-meta ${kind === option ? 'border-accent text-accent' : 'border-hair text-tertiary'}`}
-                onClick={() => {
-                  setKind(option);
-                  if (option === 'handoff' && !body.trim()) setBody(HANDOFF_TEMPLATE);
-                }}
-              >
-                {KIND_LABEL[option]}
-              </button>
-            ))}
+          <div className="mb-1.5 flex justify-end">
+            <button type="button" className="text-meta text-tertiary hover:text-accent" onClick={insertTemplate}>
+              插入交接模板
+            </button>
           </div>
           <textarea
             ref={composer}
             aria-label="写日志"
             className="h-24 w-full resize-none rounded-sm border border-hair bg-card px-2.5 py-2 text-sub text-primary outline-none placeholder:text-tertiary focus:border-accent"
-            placeholder="记一笔：做了什么、决定了什么、卡在哪里"
+            placeholder="记一笔（markdown）：做了什么、决定了什么、卡在哪里、下一步"
             value={body}
             onChange={(event) => setBody(event.target.value)}
           />

@@ -100,7 +100,7 @@ async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workL
   if (!session.taskId || !deps.workLog) return null;
   const task = await deps.tasks.byId(session.taskId);
   if (!task) return null;
-  return taskBriefing(task, await deps.workLog.latestHandoff(task.id));
+  return taskBriefing(task, await deps.workLog.list(task.id, { limit: 6 }));
 }
 
 /**

@@ -5,9 +5,8 @@ import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import {
   draftLogEntry,
-  summaryFromHandoff,
+  summaryFromBody,
   type LogAuthor,
-  type LogKind,
   type LogLink,
   type WorkLogEntry
 } from '../work-log.ts';
@@ -16,7 +15,6 @@ import type { Deps } from './deps.ts';
 export interface AppendLogCommand {
   readonly taskId: TaskId;
   readonly author: LogAuthor;
-  readonly kind: LogKind;
   readonly body: string;
   readonly links?: readonly LogLink[];
   readonly sessionId?: SessionId | null;
@@ -28,7 +26,7 @@ export interface AppendLogResult {
   readonly task: Task;
 }
 
-/** 追加一条日志：仓储分配 seq；任务 logSeq 跟进；handoff 顺带刷新 summary。 */
+/** 追加一条日志：仓储分配 seq；任务 logSeq 跟进；人/agent 写的顺带刷新「当前进展」（系统条目不刷）。 */
 export async function appendWorkLogUseCase(
   deps: Pick<Deps, 'now' | 'tasks' | 'workLog'>,
   command: AppendLogCommand
@@ -43,7 +41,7 @@ export async function appendWorkLogUseCase(
   const updated: Task = {
     ...fresh,
     logSeq: Math.max(fresh.logSeq, entry.seq),
-    summary: entry.kind === 'handoff' ? summaryFromHandoff(entry.body) || fresh.summary : fresh.summary,
+    summary: entry.author.kind !== 'system' ? summaryFromBody(entry.body) || fresh.summary : fresh.summary,
     updatedAt: now
   };
   await deps.tasks.save(updated);
@@ -63,7 +61,6 @@ export async function editWorkLogUseCase(
   return appendWorkLogUseCase(deps, {
     taskId: previous.taskId,
     author: command.author,
-    kind: previous.kind,
     body: command.body,
     links: previous.links,
     sessionId: previous.sessionId,
@@ -75,12 +72,11 @@ export async function editWorkLogUseCase(
 export async function recordSystemLog(
   deps: Pick<Deps, 'now' | 'tasks' | 'workLog'>,
   taskId: TaskId,
-  kind: 'status_change' | 'session_event',
   body: string,
   sessionId: SessionId | null = null
 ): Promise<void> {
   try {
-    await appendWorkLogUseCase(deps, { taskId, author: { kind: 'system' }, kind, body, sessionId });
+    await appendWorkLogUseCase(deps, { taskId, author: { kind: 'system' }, body, sessionId });
   } catch {
     // 日志写失败不阻断状态迁移/会话启动
   }
