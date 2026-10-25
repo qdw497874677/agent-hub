@@ -1,7 +1,13 @@
 import { WebSocket } from 'ws';
 import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import { serverToWorkerSchema } from '@agent-hub/contract';
-import type { AgentRuntime, RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
+import type {
+  AgentRuntime,
+  RuntimeOption,
+  RuntimeSession,
+  SessionEvent,
+  StartSpec
+} from '@agent-hub/domain';
 import { asSessionId } from '@agent-hub/domain';
 
 export interface WorkerLinkOptions {
@@ -12,11 +18,15 @@ export interface WorkerLinkOptions {
   readonly origin?: 'local' | 'remote';
   readonly runtimes: readonly AgentRuntime[];
   readonly onLog?: (message: string) => void;
+  /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
+  readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
 
 export interface WorkerLink {
   /** 双权威的桥：agent 自己的会话 id 要送回 server 存进 agentSessionRef。 */
   notifyAgentSessionRef(sessionId: string, agentSessionRef: string): void;
+  /** agent 报上来的可调项当前值（模型、思考强度……）。 */
+  notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void;
   close(): Promise<void>;
 }
 
@@ -125,6 +135,19 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await session.interrupt();
       return;
     }
+    if (command.kind === 'set_option') {
+      const changed = await session.changeOption(command.optionId, command.value);
+      if (!changed.ok) {
+        send({
+          type: 'event',
+          sessionId,
+          event: { kind: 'diagnostic', level: 'error', text: changed.error.message }
+        });
+        return;
+      }
+      send({ type: 'options', sessionId, options: [...changed.value] });
+      return;
+    }
     await session.dispose();
     sessions.delete(sessionId);
   }
@@ -145,7 +168,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       taskId: command.taskId as StartSpec['taskId'],
       workspaceRoot: command.workspaceRoot,
       model: command.model,
-      resume: command.resume
+      resume: command.resume,
+      options: command.options
     };
 
     const started = await runtime.start(spec);
@@ -186,6 +210,9 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   return {
     notifyAgentSessionRef(sessionId: string, agentSessionRef: string): void {
       send({ type: 'agent_session', sessionId, agentSessionRef });
+    },
+    notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void {
+      send({ type: 'options', sessionId, options: [...options] });
     },
     async close(): Promise<void> {
       if (closed) return;

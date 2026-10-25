@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   status           TEXT NOT NULL,
   last_seq         INTEGER NOT NULL,
   agent_session    TEXT,
+  options          TEXT NOT NULL DEFAULT '{}',
+  option_spec      TEXT NOT NULL DEFAULT '[]',
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );

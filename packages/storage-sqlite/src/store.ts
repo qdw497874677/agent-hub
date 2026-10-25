@@ -29,6 +29,14 @@ export interface SqliteStore extends RepositorySet {
 export function openSqliteStore(file: string): SqliteStore {
   const db = new DatabaseSync(file);
   db.exec(SCHEMA);
+  // 老库补列：`CREATE TABLE IF NOT EXISTS` 不会给已有表加字段。
+  const columns = db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+  if (!columns.some((column) => column.name === 'options')) {
+    db.exec("ALTER TABLE sessions ADD COLUMN options TEXT NOT NULL DEFAULT '{}'");
+  }
+  if (!columns.some((column) => column.name === 'option_spec')) {
+    db.exec("ALTER TABLE sessions ADD COLUMN option_spec TEXT NOT NULL DEFAULT '[]'");
+  }
 
   const insertProject = db.prepare(
     'INSERT INTO projects(id, name, root_path, created_at) VALUES (?, ?, ?, ?) ' +
@@ -50,10 +58,11 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
       'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
+      'options = excluded.options, option_spec = excluded.option_spec, ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -172,6 +181,8 @@ export function openSqliteStore(file: string): SqliteStore {
         session.status,
         session.lastSeq,
         session.agentSessionRef,
+        JSON.stringify(session.options),
+        JSON.stringify(session.optionSpec),
         session.createdAt,
         session.updatedAt
       );

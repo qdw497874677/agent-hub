@@ -1,0 +1,57 @@
+import { asAgentId, available, capabilityMatrix, limited } from '@agent-hub/domain';
+import type { AgentDescriptor, RuntimeOption } from '@agent-hub/domain';
+
+/**
+ * 一个 ACP agent 的全部可配置项。
+ *
+ * 关键决定：**它是配置，不是代码**。opencode 之所以不再有专属适配器包，
+ * 是因为它跟 claude-code、gemini、zed 的 agent 说的是同一种协议——
+ * 换一个 agent 只是换一个命令行，不该要求重编译。
+ */
+export interface AcpAgentConfig {
+  /** agent id，会出现在画布的卡片和血缘里，最好和命令行名字一致。 */
+  readonly id: string;
+  readonly label: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  /** 可选：这个 agent 认得的额外启动参数以外的东西，暂时只用于日志。 */
+  readonly note?: string;
+}
+
+export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [
+  { id: 'opencode', label: 'OpenCode', command: 'opencode', args: ['acp'] }
+];
+
+/**
+ * 能力矩阵。
+ *
+ * `fork` 标 limited：ACP 没有「从某条消息分叉」的通用方法，v1 复用来源会话的完整上下文，
+ * 平台血缘仍然精确——降级的只是「agent 那边也真的从那一刻起重来」这半件事。
+ * `artifacts` 标 limited：ACP 的 tool_call_update 没有权威文件路径字段。
+ */
+export function acpDescriptor(config: AcpAgentConfig, options: readonly RuntimeOption[] = []): AgentDescriptor {
+  const model = options.find((option) => option.category === 'model');
+  const models = model === undefined ? [] : [...new Set(choicesOf(model))];
+  return {
+    id: asAgentId(config.id),
+    label: config.label,
+    capabilities: capabilityMatrix({
+      prompt: available,
+      interrupt: available,
+      fork: limited('ACP 未暴露按 entry 分叉，v1 复用来源会话的完整上下文；平台血缘仍精确'),
+      resume: available,
+      tool_calls: available,
+      artifacts: limited('ACP 工具结果无权威文件路径，只在 rawOutput 带绝对路径时归档'),
+      structured_events: available
+    }),
+    models,
+    defaultModel: typeof model?.current === 'string' ? model.current : '',
+    options
+  };
+}
+
+function choicesOf(option: RuntimeOption): string[] {
+  return option.choices.flatMap((choice) =>
+    choice.kind === 'value' ? [choice.value.value] : choice.values.map((value) => value.value)
+  );
+}

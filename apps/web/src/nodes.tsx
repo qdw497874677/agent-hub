@@ -2,6 +2,7 @@ import { Handle, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useState } from 'react';
 import type { SessionDto, TaskDto } from './api.ts';
 import { CardComposer } from './composer.tsx';
+import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
 
 export type TaskNode = Node<
@@ -25,6 +26,7 @@ export type SessionNode = Node<
     onDraftChange: (text: string) => void;
     onSend: (text: string) => Promise<void>;
     onInterrupt: () => Promise<void>;
+    onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
   },
   'session'
 >;
@@ -81,7 +83,8 @@ function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, onOpen, draft, onDraftChange, onSend, onInterrupt } = data;
+  const { session, live, agentLabel, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption } =
+    data;
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,10 +118,13 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-baseline gap-2 overflow-hidden">
-          <span className="text-head text-primary">{agentLabel}</span>
-          <span className="truncate font-mono text-meta text-tertiary">
-            {session.model === '' ? '默认模型' : session.model}
-          </span>
+          <span className="shrink-0 text-head text-primary">{agentLabel}</span>
+          {/* 没有可调项清单（老会话还没人报过）时退回显示模型名 */}
+          {session.optionSpec.length === 0 ? (
+            <span className="truncate font-mono text-meta text-tertiary">
+              {session.model === '' ? '默认模型' : session.model}
+            </span>
+          ) : null}
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
           <button
@@ -134,6 +140,18 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <StatusPill status={status} reason={failureReason} />
         </span>
       </header>
+
+      {/* 可调项自己占一行：卡片只有 320px，和 agent 名、状态位挤在一行会把模型名截成三个字 */}
+      {session.optionSpec.length === 0 ? null : (
+        <div className="nodrag mb-2">
+          <OptionControls
+            options={session.optionSpec}
+            values={session.options}
+            onChange={(optionId, value) => void run(() => onChangeOption(optionId, value))}
+            compact
+          />
+        </div>
+      )}
 
       <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
         {failureReason ? (

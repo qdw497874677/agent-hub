@@ -12,9 +12,9 @@ const ALLOWED = new Map([
   ['@agent-hub/storage-sqlite', ['@agent-hub/domain']],
   ['@agent-hub/node-gateway', ['@agent-hub/domain', '@agent-hub/contract']],
   ['@agent-hub/adapter-pi', ['@agent-hub/domain', '@agent-hub/contract']],
-  ['@agent-hub/adapter-opencode', ['@agent-hub/domain', '@agent-hub/contract']],
+  ['@agent-hub/adapter-acp', ['@agent-hub/domain', '@agent-hub/contract']],
   ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway']],
-  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-opencode']],
+  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
 

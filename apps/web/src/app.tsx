@@ -202,6 +202,10 @@ export function App() {
     seedRef.current(data.sessions, data.previews ?? {});
   });
 
+  const refresh = useCallback(() => {
+    if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
+  }, [project, queryClient]);
+
   // 画布卡片上就地说话：发完清掉这张卡的草稿，不走「先选中再进对话」那条路。
   const sendPrompt = useCallback(
     async (sessionId: string, text: string) => {
@@ -209,20 +213,25 @@ export function App() {
       setDrafts((current) => ({ ...current, [sessionId]: '' }));
       refresh();
     },
-    // refresh 在下面定义，这里用函数式引用避免顺序问题
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    []
+    [refresh]
   );
 
-  const interruptSession = useCallback(async (sessionId: string) => {
-    await api.interrupt(sessionId);
-    refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // 改可调项：候选清单是 agent 报的，服务端把新值交给 agent 后才落库。
+  const changeOption = useCallback(
+    async (sessionId: string, optionId: string, value: string | boolean) => {
+      await api.changeOption(sessionId, optionId, value);
+      refresh();
+    },
+    [refresh]
+  );
 
-  const refresh = useCallback(() => {
-    if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
-  }, [project, queryClient]);
+  const interruptSession = useCallback(
+    async (sessionId: string) => {
+      await api.interrupt(sessionId);
+      refresh();
+    },
+    [refresh]
+  );
 
   // 会话状态变化时刷新画布：卡片状态位由 canvas 数据 + live 帧共同决定。
   useEffect(() => {
@@ -371,6 +380,9 @@ export function App() {
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           onBack={() => setView('canvas')}
           onChanged={refresh}
+          onChangeOption={(optionId, value) =>
+            changeOption(selectedSession.id, optionId, value)
+          }
         />
       ) : (
       <div className="flex min-h-0 flex-1">
@@ -398,6 +410,7 @@ export function App() {
               }
               onSend={sendPrompt}
               onInterrupt={interruptSession}
+              onChangeOption={changeOption}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-meta text-tertiary">
@@ -437,6 +450,7 @@ export function App() {
             onClose={() => setSelected(null)}
             onFocus={() => selectedSession && openSession(selectedSession.id)}
             onChanged={refresh}
+            onChangeOption={(optionId, value) => changeOption(selectedSession.id, optionId, value)}
             draft={drafts[selectedSession.id] ?? ''}
             onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
             live={resolveLive(selectedSession, canvas.data?.previews[selectedSession.id] ?? [], live[selectedSession.id])}

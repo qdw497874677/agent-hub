@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { Composer } from './composer.tsx';
+import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -42,6 +43,7 @@ interface Props {
   readonly onClose: () => void;
   /** 去专注对话：右栏太窄，说不清楚的话得整屏说。 */
   readonly onFocus: () => void;
+  readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
   readonly onChanged: () => void;
   /** 草稿由 App 持有：切视图 / 切会话回来时它还在（S6.4）。 */
   readonly draft: string;
@@ -56,6 +58,7 @@ export function Inspector({
   onClose,
   onFocus,
   onChanged,
+  onChangeOption,
   draft,
   onDraftChange,
   live
@@ -216,6 +219,7 @@ export function Inspector({
           busy={busy}
           error={error}
           awaiting={live?.awaiting ?? false}
+          onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
         />
       </footer>
     </aside>

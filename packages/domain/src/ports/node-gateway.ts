@@ -18,6 +18,14 @@ export type WorkerCommand =
       readonly workspaceRoot: string;
       readonly origin: SessionOrigin;
       readonly resume: { readonly agentSessionRef: string | null; readonly cursor: number } | null;
+      /** 开跑前就定下的可调项（键是 option id）；空对象 = 全用 agent 默认。 */
+      readonly options: Readonly<Record<string, string | boolean>>;
+    }
+  | {
+      readonly kind: 'set_option';
+      readonly sessionId: SessionId;
+      readonly optionId: string;
+      readonly value: string | boolean;
     }
   | { readonly kind: 'prompt'; readonly sessionId: SessionId; readonly text: string }
   | { readonly kind: 'interrupt'; readonly sessionId: SessionId }

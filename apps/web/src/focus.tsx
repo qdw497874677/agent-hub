@@ -12,6 +12,7 @@ interface Props {
   readonly onDraftChange: (text: string) => void;
   readonly onBack: () => void;
   readonly onChanged: () => void;
+  readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
 }
 
 const STATUS_LABEL: Record<SessionDto['status'], string> = {
@@ -68,7 +69,16 @@ function BlockView({ block, agentLabel }: { block: Block; agentLabel: string }) 
  * 画布回答「这些思路之间是什么关系」，这里回答「它到底说了什么」。
  * 两者不能合并——把对话塞进 320px 的右栏，人只能在里面翻跟头。
  */
-export function FocusView({ canvas, session, live, draft, onDraftChange, onBack, onChanged }: Props) {
+export function FocusView({
+  canvas,
+  session,
+  live,
+  draft,
+  onDraftChange,
+  onBack,
+  onChanged,
+  onChangeOption
+}: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const tail = useRef<HTMLDivElement | null>(null);
@@ -153,6 +163,7 @@ export function FocusView({ canvas, session, live, draft, onDraftChange, onBack,
             busy={busy}
             error={error}
             awaiting={live?.awaiting ?? false}
+            onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
           />
         </div>
       </div>

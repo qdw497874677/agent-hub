@@ -111,7 +111,7 @@ WebSocket 帧与 HTTP API 各带一个整数版本，握手时协商。v1 只需
 | 端口（定位 §7） | v1 实现 | T2 时的第二个实现 |
 |---|---|---|
 | `TaskRepository` / `SessionRepository` / `ArtifactRepository` | SQLite | Postgres |
-| `AgentRuntime` | `adapter-pi`（RPC JSONL）、`adapter-opencode`（ACP） | `adapter-l1`（tmux + xterm） |
+| `AgentRuntime` | `adapter-pi`（RPC JSONL）、`adapter-acp`（通用 ACP，OpenCode 只是它的一条配置） | `adapter-l1`（tmux + xterm） |
 | `SessionEventStream` | WS 广播 + journal 回放 | 更多事件类型 |
 | `NodeGateway` | ws：Worker 主动出站连 Server | 能力协商、远程升级 |
 | `NodeProvisioner` | **空实现（抛「未实现」）** | 下发安装包 + 校验 |

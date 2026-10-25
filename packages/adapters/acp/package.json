@@ -1,5 +1,5 @@
 {
-  "name": "@agent-hub/adapter-opencode",
+  "name": "@agent-hub/adapter-acp",
   "version": "0.0.0",
   "private": true,
   "type": "module",

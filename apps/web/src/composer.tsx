@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { SessionDto } from './api.ts';
+import { OptionControls } from './options.tsx';
 
 interface Props {
   readonly session: SessionDto;
@@ -14,6 +15,8 @@ interface Props {
   readonly awaiting: boolean;
   /** 专注对话里盒子更大、能长高；画布右栏里它受限于 320px 宽。 */
   readonly large?: boolean;
+  /** agent 自己报上来的可调项（模型、思考强度、模式…），原样渲染。 */
+  readonly onChangeOption: (optionId: string, value: string | boolean) => void;
 }
 
 /**
@@ -77,7 +80,8 @@ export function Composer({
   busy,
   error,
   awaiting,
-  large = false
+  large = false,
+  onChangeOption
 }: Props) {
   // 卡片活在 React Flow 的节点里，而 React Flow 的节点数据是「非紧急」渲染的：
   // 受控 textarea 在快速连打时会被一次落后的渲染写回旧值，实测 "abcdef" 会变成 "aef"。
@@ -135,9 +139,15 @@ export function Composer({
           }}
         />
         <div className="mt-1 flex items-center justify-between gap-2">
-          <span className="truncate text-meta text-tertiary">
-            {agentLabel} · {session.model === '' ? '默认模型' : session.model}
-          </span>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className="shrink-0 text-meta text-tertiary">{agentLabel}</span>
+            <OptionControls
+              options={session.optionSpec}
+              values={session.options}
+              onChange={onChangeOption}
+              compact
+            />
+          </div>
           <ActionDot
             running={running}
             canSend={canSend}
@@ -210,7 +220,8 @@ export function CardComposer({
     // 输入框里的双击是选词，不该顺带把整张卡切到专注对话
     <div className="nodrag nowheel mt-2" onDoubleClick={(event) => event.stopPropagation()}>
       {error ? <p className="mb-1 truncate text-meta text-rust" title={error}>{error}</p> : null}
-      <div className="flex items-end gap-1.5 rounded-md border border-hair bg-canvas/40 px-2 py-1.5 focus-within:border-strong">
+      {/* 可调项不放在这里：卡片头部已经有一份，重复一份只会让人兑不明哪个是真的 */}
+      <div className="mt-1 flex items-end gap-1.5 rounded-md border border-hair bg-canvas/40 px-2 py-1.5 focus-within:border-strong">
         <textarea
           aria-label={`对 ${session.id.slice(0, 4)} 说一句`}
           rows={1}

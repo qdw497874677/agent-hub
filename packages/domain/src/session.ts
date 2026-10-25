@@ -4,6 +4,7 @@ import { conflict, invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
 import type { SessionEvent } from './event.ts';
 import type { Task } from './task.ts';
+import type { RuntimeOption } from './option.ts';
 
 /**
  * 会话状态。`stopped`（人按的停止）与 `interrupted`（进程没了）必须分开：
@@ -26,6 +27,17 @@ export interface Session {
   readonly lastSeq: Seq;
   /** 双权威：平台 journal 管血缘与检索，agent 自己的会话文件管送给模型的上下文。 */
   readonly agentSessionRef: string | null;
+  /**
+   * 这条会话的可调项当前值（模型、思考强度……）。
+   * 唯一权威在 agent 那边：平台只是记住「上次我们知道的是什么」，
+   * 好让重开浏览器后选择器不会空着。
+   */
+  readonly options: Readonly<Record<string, string | boolean>>;
+  /**
+   * agent 报上来的**完整**可调项清单（含候选值）。
+   * 只存当前值不够：选择器要列出候选，而候选只有 agent 知道。
+   */
+  readonly optionSpec: readonly RuntimeOption[];
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -54,6 +66,8 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     status: 'running',
     lastSeq: 0,
     agentSessionRef: null,
+    options: {},
+    optionSpec: [],
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -85,6 +99,8 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     status: 'running',
     lastSeq: 0,
     agentSessionRef: null,
+    options: {},
+    optionSpec: [],
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -117,4 +133,18 @@ export function markInterrupted(session: Session, now: number): Session {
   return session.status === 'running'
     ? { ...session, status: 'interrupted', updatedAt: now }
     : session;
+}
+
+/**
+ * 记下 agent 报上来的可调项当前值。
+ *
+ * 不校验值合不合法——判断权在 agent 那边（它可能因为限流把模型换掉了）。
+ * 平台只负责如实保存，好让界面重开后仍然显示「上次是什么」。
+ */
+export function withOptions(
+  session: Session,
+  values: Readonly<Record<string, string | boolean>>,
+  now: number
+): Session {
+  return { ...session, options: { ...session.options, ...values }, updatedAt: now };
 }

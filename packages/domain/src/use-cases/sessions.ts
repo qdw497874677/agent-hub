@@ -1,5 +1,6 @@
-import { applyEvent, deriveSession, forkSession, markInterrupted } from '../session.ts';
+import { applyEvent, deriveSession, forkSession, markInterrupted, withOptions } from '../session.ts';
 import type { Session } from '../session.ts';
+import type { RuntimeOption } from '../option.ts';
 import type { Seq, SessionId } from '../ids.ts';
 import { asAgentId, asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
@@ -51,7 +52,8 @@ export async function deriveSessionUseCase(
     model: session.model,
     workspaceRoot: project.rootPath,
     origin: session.origin,
-    resume: null
+    resume: null,
+    options: session.model === '' ? {} : { model: session.model }
   });
   if (!dispatched.ok) {
     const failed: Session = { ...session, status: 'failed', updatedAt: deps.now() };
@@ -111,7 +113,8 @@ export async function forkSessionUseCase(
     model: session.model,
     workspaceRoot: project.rootPath,
     origin: session.origin,
-    resume: { agentSessionRef: source.agentSessionRef, cursor: command.atSeq }
+    resume: { agentSessionRef: source.agentSessionRef, cursor: command.atSeq },
+    options: { ...source.options, ...(session.model === '' ? {} : { model: session.model }) }
   });
   if (!dispatched.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
@@ -168,4 +171,65 @@ export async function reconcileInterrupted(deps: Deps): Promise<number> {
     changed += 1;
   }
   return changed;
+}
+
+export interface SessionOptionsCommand {
+  readonly sessionId: string;
+  /** agent 报上来的全量清单（含候选值）。 */
+  readonly options: readonly RuntimeOption[];
+}
+
+/** agent 报上来的可调项当前值落库。它不是事件，所以不进 journal——不进就不占 seq。 */
+export async function recordSessionOptions(
+  deps: Deps,
+  command: SessionOptionsCommand
+): Promise<Result<Session, DomainError>> {
+  const session = await deps.sessions.byId(asSessionId(command.sessionId));
+  if (!session) return err(notFound('会话不存在'));
+  const values: Record<string, string | boolean> = {};
+  for (const option of command.options) values[option.id] = option.current;
+  // 模型多存一列：重开会话时要拿它传 --model。它同样只能由 agent 的回报来定，
+  // 平台自己改的「当前模型」和 agent 真在用的模型会悄悄分叉。
+  const reported = values['model'];
+  const model = typeof reported === 'string' && reported !== '' ? reported : session.model;
+  const next = {
+    ...withOptions({ ...session, model }, values, deps.now()),
+    optionSpec: command.options
+  };
+  await deps.sessions.save(next);
+  return ok(next);
+}
+
+export interface ChangeOptionCommand {
+  readonly sessionId: string;
+  readonly id: string;
+  readonly value: string | boolean;
+}
+
+/**
+ * 改一项可调项。
+ *
+ * 顺序不能反：先让 agent 改，再拿它回的全量状态落库。反过来的话，
+ * agent 拒绝了这个值（比如那个模型不在它的清单里），库里就会留下一个
+ * 「平台以为在跑 A、其实跑的是 B」的谎话。
+ */
+export async function changeSessionOption(
+  deps: Deps,
+  command: ChangeOptionCommand
+): Promise<Result<Session, DomainError>> {
+  const session = await deps.sessions.byId(asSessionId(command.sessionId));
+  if (!session) return err(notFound('会话不存在'));
+
+  const changed = await deps.gateway.dispatch({
+    kind: 'set_option',
+    sessionId: session.id,
+    optionId: command.id,
+    value: command.value
+  });
+  if (!changed.ok) return err(changed.error);
+
+  // 这里**不**自己往库里写一个乐观值：换模型会连带改变思考档位的可选值，
+  // 只有 agent 知道换完之后整体长什么样。落库交给它的回报（recordSessionOptions），
+  // 那一步走 per-session 串行队列，所以不会和我们抢。
+  return ok((await deps.sessions.byId(session.id)) ?? session);
 }

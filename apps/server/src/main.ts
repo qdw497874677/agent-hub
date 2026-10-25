@@ -18,7 +18,8 @@ import {
   notImplemented,
   ok,
   reconcileInterrupted,
-  recordEvent
+  recordEvent,
+  recordSessionOptions
 } from '@agent-hub/domain';
 import { err, unavailable } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
@@ -79,6 +80,8 @@ const live = new Set<SessionId>();
 
 let serverGateway: ServerGateway | null = null;
 const events = createSessionQueue();
+/** 等某条会话的下一次可调项回报（用户改完模型/档位的那一次）。 */
+const optionWaiters = new Map<string, () => void>();
 
 const deps: Deps = {
   projects: store.projects,
@@ -132,6 +135,16 @@ serverGateway = createServerGateway({
       if (!result.ok) log(`落盘事件失败：${result.error.message}`);
     });
   },
+  onOptions(sessionId, options) {
+    // 可调项不是事件：不进 journal、不占 seq，只更新会话那一行。
+    // 走同一条串行队列，这样「改动请求」和「agent 的回报」不会互相覆盖。
+    void events.run(sessionId, async () => {
+      const result = await recordSessionOptions(deps, { sessionId, options });
+      if (!result.ok) log(`记录可调项失败：${result.error.message}`);
+      optionWaiters.get(sessionId)?.();
+      optionWaiters.delete(sessionId);
+    });
+  },
   onAgentSession(sessionId, agentSessionRef) {
     void (async () => {
       const session = await deps.sessions.byId(sessionId);
@@ -166,6 +179,18 @@ const app = createApp({
   deps,
   hub,
   // 所有事件落盘都走同一个队列：agent 的推送和用户发的 prompt 也会撞 seq。
+  waitOptions: (sessionId) =>
+    new Promise<void>((resolve) => {
+      // agent 不回就等 8 秒：宁可让界面显示「没变」，也不要挂住一个请求。
+      const timer = setTimeout(() => {
+        optionWaiters.delete(sessionId);
+        resolve();
+      }, 8000);
+      optionWaiters.set(sessionId, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    }),
   record: (sessionId, event) =>
     events.run(sessionId, async () => {
       const result = await recordEvent(deps, { sessionId, event });
