@@ -18,6 +18,14 @@ test('工具授权往返：按 hash 查、按会话作废；调用审计倒序',
     assert.equal(await store.toolGrants.revokeSession(asSessionId('s'), 5), 1);
     assert.equal((await store.toolGrants.byTokenHash('h1'))?.revokedAt, 5);
     assert.equal((await store.toolGrants.byTokenHash('h2'))?.revokedAt, null);
+    await store.toolGrants.save({ ...base, id: 'g3', tokenHash: 'h3', sessionId: asSessionId('running') });
+    assert.equal(await store.toolGrants.revokeAllExcept([asSessionId('running')], 7), 1, '只作废 other（s 已作废）');
+    assert.equal((await store.toolGrants.byTokenHash('h2'))?.revokedAt, 7);
+    assert.equal((await store.toolGrants.byTokenHash('h3'))?.revokedAt, null);
+    assert.equal(await store.toolGrants.revokeAllExcept([], 8), 1);
+    // 续期写回 expires_at
+    await store.toolGrants.save({ ...base, id: 'g1', tokenHash: 'h1', expiresAt: 500, revokedAt: 5 });
+    assert.equal((await store.toolGrants.byTokenHash('h1'))?.expiresAt, 500);
     const call = { grantId: 'g1', taskId: asTaskId('t'), sessionId: asSessionId('s'), tool: 'task.get', version: 1, detail: '', latencyMs: 2 };
     await store.toolGrants.recordCall({ ...call, id: 'c1', ok: true, at: 10 });
     await store.toolGrants.recordCall({ ...call, id: 'c2', ok: false, at: 20 });

@@ -11,8 +11,13 @@ export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write',
 /** 默认授权：读任务 + 写日志 + 改状态（agent 只能走到 进行中/受阻/待验收，done 仍由人确认）。 */
 export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write'];
 
-/** 授权默认 12 小时；会话每次重新托管都会换新的并作废旧的。 */
-export const TOOL_GRANT_TTL_MS = 12 * 60 * 60 * 1000;
+/**
+ * 授权是短期的滑动有效期：签发后 1 小时内没有用就过期；每次认证成功续到「现在 + 1 小时」，
+ * 但从签发起最长 12 小时（到点必须靠重新托管换新令牌）。
+ * 另外：会话跑完（worker 报 ended/gone）立刻作废；hub 启动时作废所有不在运行中的会话的授权。
+ */
+export const TOOL_GRANT_TTL_MS = 60 * 60 * 1000;
+export const TOOL_GRANT_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 
 /** 一次授权：令牌本身只交给 agent 一次，库里只存 hash。 */
 export interface ToolGrant {

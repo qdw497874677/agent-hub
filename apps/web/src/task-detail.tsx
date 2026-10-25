@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type TaskDto, type WorkLogEntryDto } from './api.ts';
+import { LogMarkdown } from './log-markdown.tsx';
 import { NEXT_STATUS, TASK_STATUS_LABEL, TASK_STATUS_TONE } from './task-status.ts';
 
 /** 可选的交接模板（只是一段可插入的文字，不是日志类型）：与 domain 的 HANDOFF_TEMPLATE 同文（web 不依赖 domain，抄一份）。 */
@@ -208,7 +209,7 @@ export function TaskDetail({
                 ) : null}
                 <span className="ml-auto shrink-0 font-mono">#{entry.seq} · {when(entry.createdAt)}</span>
               </div>
-              <p className={`whitespace-pre-wrap break-words text-sub ${entry.author.kind === 'system' ? 'text-tertiary' : 'text-primary'}`}>{entry.body}</p>
+              <LogMarkdown body={entry.body} className={`text-sub ${entry.author.kind === 'system' ? 'text-tertiary' : 'text-primary'}`} />
             </li>
           ))}
           {log.hasNextPage ? (

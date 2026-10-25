@@ -417,6 +417,16 @@ export function fakeToolGrants(): import('../ports/tool-grant-repository.ts').To
     async byTokenHash(hash) {
       return grants.find((row) => row.tokenHash === hash) ?? null;
     },
+    async revokeAllExcept(keep, now) {
+      let count = 0;
+      grants.forEach((row, index) => {
+        if (!keep.includes(row.sessionId) && row.revokedAt === null) {
+          grants[index] = { ...row, revokedAt: now };
+          count += 1;
+        }
+      });
+      return count;
+    },
     async revokeSession(sessionId, now) {
       let count = 0;
       grants.forEach((row, index) => {

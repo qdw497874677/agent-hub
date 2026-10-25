@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Session } from '../session.ts';
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, type Result } from '../result.ts';
-import { DEFAULT_TOOL_SCOPES, TOOL_GRANT_TTL_MS, grantActive, type ToolGrant, type ToolScope } from '../tool.ts';
+import { DEFAULT_TOOL_SCOPES, TOOL_GRANT_MAX_LIFETIME_MS, TOOL_GRANT_TTL_MS, grantActive, type ToolGrant, type ToolScope } from '../tool.ts';
 import type { ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import type { ToolGrantRepository } from '../ports/tool-grant-repository.ts';
 import type { TokenIssuer } from '../ports/token-issuer.ts';
@@ -28,6 +28,8 @@ export interface ToolGateway {
   /** 给一条会话签新授权，同时作废它旧的授权（每次重新托管换一把）。 */
   issue(session: Pick<Session, 'id' | 'taskId' | 'workerId'>, scopes?: readonly ToolScope[]): Promise<IssuedGrant>;
   revoke(session: Pick<Session, 'id'>): Promise<void>;
+  /** 作废所有不属于 `running` 这些会话的授权（hub 启动时、或运维一键全作废时传空）。返回作废条数。 */
+  revokeAllExcept(running: readonly Session['id'][]): Promise<number>;
   /** 令牌 → 有效授权；过期、作废、不认识都是 null。 */
   authenticate(token: string): Promise<ToolGrant | null>;
   /** 这个授权能看到的工具（按 scope 过滤）。 */
@@ -50,6 +52,8 @@ const summarize = (input: unknown): string => {
  */
 export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
   const defaultPerMinute = deps.perMinute ?? 60;
+  // 限流窗口只在内存里：hub 重启会清零。可以接受——授权本身是短期的、重启时只保留运行中会话的授权，
+  // 最坏情况是一条运行中的会话在重启那一分钟里多拿一个窗口的配额（见 tasks-and-capabilities.md）。
   const windows = new Map<string, number[]>();
   const byName = new Map<string, { provider: ToolProvider; tool: ToolDescriptor }>();
   for (const provider of deps.providers) {
@@ -92,10 +96,23 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
       await deps.toolGrants.revokeSession(session.id, deps.now());
     },
 
+    async revokeAllExcept(running) {
+      return deps.toolGrants.revokeAllExcept(running, deps.now());
+    },
+
     async authenticate(token) {
       if (token === '') return null;
       const grant = await deps.toolGrants.byTokenHash(deps.tokens.hashOf(token));
-      return grant && grantActive(grant, deps.now()) ? grant : null;
+      const now = deps.now();
+      if (!grant || !grantActive(grant, now)) return null;
+      // 滑动续期：用过一半有效期就续到 now + TTL，但不超过签发后的最长寿命
+      const renewed = Math.min(now + TOOL_GRANT_TTL_MS, grant.createdAt + TOOL_GRANT_MAX_LIFETIME_MS);
+      if (renewed - grant.expiresAt > TOOL_GRANT_TTL_MS / 2) {
+        const next = { ...grant, expiresAt: renewed };
+        await deps.toolGrants.save(next);
+        return next;
+      }
+      return grant;
     },
 
     list(grant) {

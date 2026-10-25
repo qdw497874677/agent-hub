@@ -191,7 +191,7 @@ sequenceDiagram
   Hub-->>A: 按 grant.scopes 过滤后的工具
 ```
 
-- **短期 + 绑定**：令牌 = `{taskId, sessionId, workerId, scopes, exp}` 的不透明句柄，库里只存 hash；默认 TTL 12h，会话每次 resume 由 hub 重新签发并作废旧的；会话 `stopped/done/failed` 立即吊销。
+- **短期 + 绑定**：令牌 = `{taskId, sessionId, workerId, scopes, exp}` 的不透明句柄，库里只存 hash；滑动 TTL 1h（每次认证成功续到 now+1h），签发后最长 12h；会话每次 resume 由 hub 重新签发并作废旧的；worker 报会话 `ended/gone`（跑完、停止、失败、进程退出）立即吊销；hub 启动时吊销所有「库里不是运行中」的会话的授权（运行中的可能被重连的 worker 接回，交给 TTL 兜底）。
 - **最小权限**：默认 grant = `task:read + task:log:write`；`task:status:write` 由项目设置开启；以后的高危工具（写文件、开会话）走「需要人确认」的 grant。
 - **不落盘、不进日志**：令牌只存在于 wire 帧（WS 已鉴权）和 agent 进程内存/环境变量里；Worker 日志与事件流对 `tools.token` 做脱敏；Pi 的 mcp.json 里只有 `${AGENT_HUB_TOOL_TOKEN}` 占位符。
 - 若 Worker 访问不到 hub 的 HTTP（只有 WS 出站），`HUB_TOOLS_TRANSPORT=stdio-shim`（**已实现**）：
@@ -226,7 +226,7 @@ sequenceDiagram
 - **插件**：`ToolProvider` 在 server 启动时注册（`registerToolProvider(provider)`）；每个 provider 声明自己的 scopes。项目设置里按 provider 勾选开启，形成 grant 模板。
 - **版本**：工具名稳定，`version` 字段 + MCP `tools/list` 只暴露每个工具的最新版本；破坏性变更用新名（`task.log.append.v2`）并存一个发布周期。
 - **审计**：沿用 `use-cases/admin.ts` 的 `record()`：每次调用写 `{actor: session, tool, version, args 摘要(不含 body 全文), result, latencyMs}`。
-- **限流**：按 grant 的令牌桶（默认 60 次/分钟，`task.log.append` 10 次/分钟、单条 32 KB），超限返回 MCP tool error（`isError: true` + 中文原因），不断开连接。
+- **限流**：按 grant 的令牌桶（默认 60 次/分钟，`task.log.append` 10 次/分钟、单条 32 KB），超限返回 MCP tool error（`isError: true` + 中文原因），不断开连接。限流窗口只在 hub 内存里，重启清零（已知取舍：授权短期且重启时只保留运行中会话，最坏是一条运行中的会话在重启那一分钟多拿一个窗口的配额；需要时可改为从 `tool_calls` 审计表回放最近 60 秒）。
 - **可观测**：会话事件流里把能力调用渲染成普通 tool_call 卡片（agent 侧本来就会上报 tool_call 帧），用户能看到 agent 读了/写了什么日志。
 
 ## 5. 分阶段计划
