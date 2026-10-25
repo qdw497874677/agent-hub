@@ -49,7 +49,8 @@ export function acpDescriptor(config: AcpAgentConfig, options: readonly RuntimeO
       resume: available,
       tool_calls: available,
       artifacts: limited('ACP 工具结果无权威文件路径，只在 rawOutput 带绝对路径时归档'),
-      structured_events: available
+      structured_events: available,
+      attachments: limited('图片与内嵌文件取决于 agent 声明的 promptCapabilities，不支持时发送会明确报错；@ 引用以 resource_link 传递')
     }),
     models,
     defaultModel: typeof model?.current === 'string' ? model.current : '',

@@ -36,7 +36,8 @@ const fake: AgentDescriptor = {
     resume: { state: 'available' },
     tool_calls: { state: 'available' },
     artifacts: { state: 'available' },
-    structured_events: { state: 'available' }
+    structured_events: { state: 'available' },
+  attachments: { state: 'available' }
   },
   models: ['m1'],
   defaultModel: 'm1',

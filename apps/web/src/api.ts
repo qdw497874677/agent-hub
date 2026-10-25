@@ -1,5 +1,9 @@
 import type {
   AgentDto,
+  AttachmentInputDto,
+  CapabilityDto,
+  ProjectFilesDto,
+  StoredAttachmentDto,
   ArtifactDto,
   CanvasDto,
   CreateTaskRequest,
@@ -93,7 +97,10 @@ export const api = {
     call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   derive: (input: DeriveSessionRequest) => post<SessionDto>('/api/sessions/derive', input),
   fork: (input: ForkSessionRequest) => post<SessionDto>('/api/sessions/fork', input),
-  prompt: (sessionId: string, text: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/prompt`, { text }),
+  prompt: (sessionId: string, text: string, attachments: readonly AttachmentInputDto[] = []) =>
+    post<{ ok: true }>(`/api/sessions/${sessionId}/prompt`, { text, attachments }),
+  projectFiles: (projectId: string, q: string) =>
+    call<ProjectFilesDto>(`/api/projects/${projectId}/files?q=${encodeURIComponent(q)}`),
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
@@ -105,8 +112,17 @@ export const api = {
     call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(patch) })
 };
 
+/** `<img src>` 带不了请求头，token 同 SSE 一样走查询串。 */
+export const attachmentUrl = (sessionId: string, path: string): string =>
+  `/api/sessions/${sessionId}/attachment?path=${encodeURIComponent(path)}${
+    token === null ? '' : `&token=${encodeURIComponent(token)}`
+  }`;
+
 export type {
   AgentDto,
+  AttachmentInputDto,
+  CapabilityDto,
+  StoredAttachmentDto,
   ArtifactDto,
   CanvasDto,
   JournalEntryDto,

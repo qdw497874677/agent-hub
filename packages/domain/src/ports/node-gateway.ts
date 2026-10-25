@@ -3,6 +3,7 @@ import type { SessionOrigin } from '../session.ts';
 import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 import type { WorkerStatus } from '../worker.ts';
+import type { PromptPart } from '../attachment.ts';
 
 /**
  * Server → Worker 指令。从第一天就是双向的：只够回传执行事件的通道，
@@ -29,7 +30,12 @@ export type WorkerCommand =
       readonly optionId: string;
       readonly value: string | boolean;
     }
-  | { readonly kind: 'prompt'; readonly sessionId: SessionId; readonly text: string }
+  | {
+      readonly kind: 'prompt';
+      readonly sessionId: SessionId;
+      readonly text: string;
+      readonly parts: readonly PromptPart[];
+    }
   | { readonly kind: 'interrupt'; readonly sessionId: SessionId }
   | { readonly kind: 'dispose'; readonly sessionId: SessionId };
 

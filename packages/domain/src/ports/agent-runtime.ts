@@ -4,6 +4,7 @@ import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 import type { AgentDescriptor } from '../agent.ts';
 import type { RuntimeOption } from '../option.ts';
+import type { PromptInput } from '../attachment.ts';
 
 export interface StartSpec {
   readonly sessionId: SessionId;
@@ -17,7 +18,8 @@ export interface StartSpec {
 
 export interface RuntimeSession {
   readonly sessionId: SessionId;
-  prompt(text: string): Promise<Result<void, DomainError>>;
+  /** 文本 + 附件。附件不认识的 agent 要返回带原因的错误，不许静默丢掉。 */
+  prompt(input: PromptInput): Promise<Result<void, DomainError>>;
   interrupt(): Promise<void>;
   events(): AsyncIterable<SessionEvent>;
   adopt(cursor: Seq): Promise<void>;

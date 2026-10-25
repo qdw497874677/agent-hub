@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { applyFrame, catchUp, type LiveMap } from './live-core.ts';
 
 const base: LiveMap = {
-  s1: { blocks: [{ kind: 'prompt', text: '嗨', seq: 1 }], status: 'running', lastSeq: 1, reason: null, awaiting: true }
+  s1: { blocks: [{ kind: 'prompt', text: '嗨', attachments: [], seq: 1 }], status: 'running', lastSeq: 1, reason: null, awaiting: true }
 };
 
 test('旧帧被丢弃，新帧追加并推进游标', () => {
@@ -37,4 +37,15 @@ test('断线补帧：after=lastSeq 的历史被重放，与重连后的实时帧
 
 test('没播种过的会话不补帧（画布刷新会带回它）', () => {
   assert.equal(catchUp(base, 'zz', [{ seq: 1, at: 0, event: { kind: 'text', delta: 'x' } }]), base);
+});
+
+test('带附件的提问：附件元数据跟着 prompt 块走', () => {
+  const attachments = [{ kind: 'image' as const, name: 'a.png', path: '.agent-hub/attachments/s1/a.png' }];
+  const next = applyFrame(base, {
+    sessionId: 's1',
+    seq: 2,
+    event: { kind: 'prompt', text: '', attachments },
+    status: 'running'
+  });
+  assert.deepEqual(next.s1?.blocks.at(-1), { kind: 'prompt', text: '', attachments, seq: 2 });
 });

@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import type { ServerToWorker, WorkerToServer } from '@agent-hub/contract';
+import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
 import { serverToWorkerSchema } from '@agent-hub/contract';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type {
@@ -131,7 +131,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return;
     }
     if (command.kind === 'prompt') {
-      const result = await session.prompt(command.text);
+      const result = await session.prompt({ text: command.text, parts: command.parts });
       if (!result.ok) {
         send({
           type: 'event',
@@ -203,7 +203,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     void (async () => {
       try {
         for await (const event of session.events()) {
-          send({ type: 'event', sessionId: command.sessionId, event });
+          send({ type: 'event', sessionId: command.sessionId, event: event as SessionEventDto });
           if (event.kind === 'ended') break;
         }
       } finally {

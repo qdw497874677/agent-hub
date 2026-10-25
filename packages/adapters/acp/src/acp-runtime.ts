@@ -9,6 +9,7 @@ import type {
   AgentRuntime,
   DomainError,
   Result,
+  PromptInput,
   RuntimeOption,
   RuntimeSession,
   SessionEvent,
@@ -16,7 +17,8 @@ import type {
 } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
 import { acpDescriptor, type AcpAgentConfig } from './config.ts';
-import { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
+import { endedFromStopReason, mapAcpUpdate, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
+import type { AcpPromptCapabilities } from './map-acp.ts';
 import { mapAcpOptions } from './map-options.ts';
 
 type Json = Record<string, unknown>;
@@ -100,12 +102,15 @@ class AcpSession implements RuntimeSession {
   }
 
   /** 官方 SDK 按 schema 给出了强类型；平台扩展字段（_meta）和宽松读取走这个口子。 */
+  private promptCaps: AcpPromptCapabilities = { image: false, embeddedContext: false };
+
   private request(method: string, params: Json): Promise<Json> {
     return this.connection.agent.request<Json, Json>(method, params);
   }
 
   private async handshake(): Promise<void> {
     const init = await this.request('initialize', { protocolVersion: 1, clientCapabilities: CLIENT_CAPABILITIES });
+    this.promptCaps = readPromptCapabilities(init);
     const methods = ((init['authMethods'] as { id?: unknown }[] | undefined) ?? []).flatMap((method) =>
       typeof method.id === 'string' ? [method.id] : []
     );
@@ -160,13 +165,15 @@ class AcpSession implements RuntimeSession {
     }
   }
 
-  async prompt(text: string): Promise<Result<void, DomainError>> {
+  async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
+    const blocks = toAcpPrompt(input, this.promptCaps, this.config.label);
+    if (!blocks.ok) return blocks;
     try {
-      const result = await this.connection.agent.request('session/prompt', {
+      const result = await this.request('session/prompt', {
         sessionId: this.agentSessionId,
-        prompt: [{ type: 'text', text }]
+        prompt: blocks.value
       });
-      this.queue.push(endedFromStopReason(result.stopReason));
+      this.queue.push(endedFromStopReason(result['stopReason'] as string | undefined));
       return { ok: true, value: undefined };
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) };

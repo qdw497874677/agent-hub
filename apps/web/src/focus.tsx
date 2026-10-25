@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CanvasDto, SessionDto } from './api.ts';
-import { api } from './api.ts';
+import { api, attachmentUrl } from './api.ts';
 import { Composer } from './composer.tsx';
+import { attachmentsCapability } from './attachments.ts';
+import { sessionCommands } from './commands.ts';
 import type { Block, LiveSession } from './live.ts';
 
 interface Props {
@@ -23,13 +25,45 @@ const STATUS_LABEL: Record<SessionDto['status'], string> = {
   failed: '失败'
 };
 
-function BlockView({ block, agentLabel }: { block: Block; agentLabel: string }) {
+function BlockView({ block, agentLabel, sessionId }: { block: Block; agentLabel: string; sessionId: string }) {
   if (block.kind === 'prompt') {
+    const images = block.attachments.filter((item) => item.kind === 'image');
+    const others = block.attachments.filter((item) => item.kind !== 'image');
     return (
-      <div className="flex justify-end">
-        <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-3 py-2 text-body text-primary">
-          {block.text}
-        </p>
+      <div className="flex flex-col items-end gap-1.5">
+        {images.length > 0 ? (
+          <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
+            {images.map((item) => (
+              <a key={item.path} href={attachmentUrl(sessionId, item.path)} target="_blank" rel="noreferrer">
+                <img
+                  src={attachmentUrl(sessionId, item.path)}
+                  alt={item.name}
+                  loading="lazy"
+                  className="max-h-40 max-w-[240px] rounded-md border border-hair object-cover"
+                />
+              </a>
+            ))}
+          </div>
+        ) : null}
+        {others.length > 0 ? (
+          <ul aria-label="附带的文件" className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
+            {others.map((item) => (
+              <li
+                key={item.path}
+                title={item.path}
+                className="max-w-[260px] truncate rounded-sm border border-hair px-1.5 py-0.5 font-mono text-meta text-secondary"
+              >
+                {item.kind === 'mention' ? '@' : '▤ '}
+                {item.kind === 'mention' ? item.path : item.name}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {block.text !== '' ? (
+          <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-3 py-2 text-body text-primary">
+            {block.text}
+          </p>
+        ) : null}
       </div>
     );
   }
@@ -92,14 +126,16 @@ export function FocusView({
     tail.current?.scrollIntoView({ block: 'end' });
   }, [blocks.length, session.id]);
 
-  async function run(action: () => Promise<unknown>): Promise<void> {
+  async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
       await action();
       onChanged();
+      return true;
     } catch (failure) {
       setError((failure as Error).message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -133,7 +169,7 @@ export function FocusView({
             </p>
           ) : (
             blocks.map((block, index) => (
-              <BlockView key={index} block={block} agentLabel={agent?.label ?? session.agentId} />
+              <BlockView key={index} block={block} agentLabel={agent?.label ?? session.agentId} sessionId={session.id} />
             ))
           )}
           {status === 'running' ? (
@@ -153,9 +189,9 @@ export function FocusView({
             agentLabel={agent?.label ?? session.agentId}
             draft={draft}
             onDraftChange={onDraftChange}
-            onSend={(text) =>
-              void run(async () => {
-                await api.prompt(session.id, text);
+            onSend={(text, attachments) =>
+              run(async () => {
+                await api.prompt(session.id, text, attachments);
                 onDraftChange('');
               })
             }
@@ -164,6 +200,9 @@ export function FocusView({
             error={error}
             awaiting={live?.awaiting ?? false}
             onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
+            capability={attachmentsCapability(agent?.capabilities)}
+            commands={sessionCommands(session)}
+            projectId={canvas.project.id}
           />
         </div>
       </div>

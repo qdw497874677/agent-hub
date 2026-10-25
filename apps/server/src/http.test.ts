@@ -23,7 +23,8 @@ const descriptor: AgentDescriptor = {
     resume: { state: 'available' },
     tool_calls: { state: 'available' },
     artifacts: { state: 'available' },
-    structured_events: { state: 'available' }
+    structured_events: { state: 'available' },
+  attachments: { state: 'available' }
   },
   models: ['fake-1'],
   defaultModel: 'fake-1',
@@ -313,4 +314,56 @@ test('绑非 loopback 时 token 可从请求头或查询串带（SSE 设不了�
     (await call('/api/health?token=wrong', { headers: { authorization: 'Bearer s3cret' } })).status,
     200
   );
+});
+
+test('附件：发图 + @ 引用走通；缩略图可回取且只放行本会话；@ 选择器列项目文件；超限 400', async () => {
+  const { deps, app, call, dispatched } = harness();
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'demo', rootPath: '/tmp/demo' }) });
+  const projectId = (project.body as { id: string }).id;
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId, title: 't' }) });
+  const taskId = (task.body as { id: string }).id;
+  const derived = await call('/api/sessions/derive', {
+    method: 'POST',
+    body: JSON.stringify({ taskId, agentId: 'fake', model: 'fake-1' })
+  });
+  const sessionId = (derived.body as { id: string }).id;
+
+  const data = Buffer.from('png!').toString('base64');
+  const prompted = await call(`/api/sessions/${sessionId}/prompt`, {
+    method: 'POST',
+    body: JSON.stringify({
+      text: '',
+      attachments: [
+        { kind: 'image', name: 'a.png', mimeType: 'image/png', data },
+        { kind: 'mention', path: 'src/main.ts' }
+      ]
+    })
+  });
+  assert.equal(prompted.status, 200, JSON.stringify(prompted.body));
+  const sent = dispatched.at(-1);
+  assert.equal(sent?.kind === 'prompt' ? sent.parts.length : 0, 2);
+
+  const entries = (await call(`/api/sessions/${sessionId}/events`)).body as JournalEntry[];
+  const last = entries.at(-1)?.event;
+  assert.ok(last?.kind === 'prompt' && last.attachments?.[0]);
+  const imagePath = last.attachments[0].path;
+  const image = await app.fetch(new Request(`http://hub/api/sessions/${sessionId}/attachment?path=${encodeURIComponent(imagePath)}`));
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/png');
+  assert.equal(Buffer.from(await image.arrayBuffer()).toString(), 'png!');
+  const escape = await call(`/api/sessions/${sessionId}/attachment?path=${encodeURIComponent('.env')}`);
+  assert.equal(escape.status, 400);
+
+  const files = await call(`/api/projects/${projectId}/files?q=a.png`);
+  assert.equal(files.status, 200);
+  assert.deepEqual((files.body as { files: string[] }).files, [imagePath]);
+
+  const empty = await call(`/api/sessions/${sessionId}/prompt`, { method: 'POST', body: JSON.stringify({ text: ' ' }) });
+  assert.equal(empty.status, 400);
+  const svg = await call(`/api/sessions/${sessionId}/prompt`, {
+    method: 'POST',
+    body: JSON.stringify({ text: 'x', attachments: [{ kind: 'image', name: 'a.svg', mimeType: 'image/svg+xml', data }] })
+  });
+  assert.equal(svg.status, 400);
 });

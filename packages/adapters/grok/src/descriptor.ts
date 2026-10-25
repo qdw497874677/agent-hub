@@ -24,7 +24,9 @@ export function grokDescriptorFor(
       resume: available,
       tool_calls: available,
       artifacts: limited('只归档 write/edit 工具 diff 里的绝对路径；shell 命令写出的文件认不出'),
-      structured_events: available
+      structured_events: available,
+      // initialize 声明了 promptCapabilities.image / embeddedContext（grok 1.0.70 实测）
+      attachments: available
     }),
     // 模型列表由 worker 从 initialize 的 _meta.modelState 里问出来——这里不许猜。
     models,

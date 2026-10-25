@@ -16,4 +16,11 @@ export interface WorkspaceFS {
   artifactDir(workspaceRoot: string, sessionId: string): string;
   writeFile(path: string, content: Uint8Array): Promise<Result<number, DomainError>>;
   stat(path: string): Promise<number | null>;
+  /** 读一个文件；不存在或读不了返回 null。 */
+  readFile(path: string): Promise<Uint8Array | null>;
+  /**
+   * 项目里的文件（相对 root 的路径），给 `@` 引用选择器用。
+   * 跳过点目录、node_modules 之类的大目录；最多 limit 条，多了标 truncated。
+   */
+  listFiles(root: string, limit: number): Promise<{ readonly files: readonly string[]; readonly truncated: boolean }>;
 }

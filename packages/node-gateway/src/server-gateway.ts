@@ -155,7 +155,7 @@ function toWire(command: WorkerCommand): ServerToWorker {
         options: command.options
       };
     case 'prompt':
-      return { kind: 'prompt', sessionId: command.sessionId, text: command.text };
+      return { kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts] };
     case 'interrupt':
       return { kind: 'interrupt', sessionId: command.sessionId };
     case 'dispose':
