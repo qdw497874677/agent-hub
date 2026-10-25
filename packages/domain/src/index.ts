@@ -25,9 +25,16 @@ export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.t
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
+export type { SessionHosting } from './ports/session-hosting.ts';
+export type { SessionQueue } from './ports/session-queue.ts';
+
 export * from './use-cases/deps.ts';
 export * from './use-cases/projects.ts';
 export * from './use-cases/tasks.ts';
 export * from './use-cases/sessions.ts';
 export * from './use-cases/canvas.ts';
 export * from './use-cases/search.ts';
+export * from './use-cases/hosting.ts';
+export * from './use-cases/conversation.ts';
+export * from './use-cases/home.ts';
+export * from './use-cases/workers.ts';

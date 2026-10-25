@@ -1,28 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentDto } from '@agent-hub/contract';
-import type {
-  AgentDescriptor,
-  Artifact,
-  ArtifactRepository,
-  CanvasLayout,
-  Deps,
-  DomainError,
-  JournalEntry,
-  LayoutStore,
-  NodeGateway,
-  ProjectRepository,
-  Result,
-  Session,
-  SessionEvent,
-  SessionId,
-  SessionRepository,
-  Task,
-  TaskRepository,
-  WorkspaceFS,
-  WorkerCommand
-} from '@agent-hub/domain';
-import { asAgentId, asSessionId, err, ok, recordEvent } from '@agent-hub/domain';
+import type { AgentDescriptor, JournalEntry, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
+import { asAgentId, asSessionId, recordEvent } from '@agent-hub/domain';
+import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
@@ -31,126 +12,6 @@ import { createLiveCatalog } from './agent-catalog.ts';
  * HTTP 层的合同测试：用内存假件把整个 server 跑起来，
  * 证明路由、状态码、S7.1 的 resume 路径都是真的，而不是文档里的承诺。
  */
-
-function fakeProjects(): ProjectRepository {
-  const rows = new Map<string, { id: string; name: string; rootPath: string; createdAt: number }>();
-  return {
-    async save(project) {
-      rows.set(project.id, project as never);
-    },
-    async byId(id) {
-      return (rows.get(id) ?? null) as never;
-    },
-    async list() {
-      return [...rows.values()] as never;
-    }
-  };
-}
-
-function fakeTasks(shared: Map<string, Task> = new Map()): TaskRepository & { rows: Map<string, Task> } {
-  const rows = shared;
-  return { rows, ...taskOps(rows) };
-}
-
-function taskOps(rows: Map<string, Task>): TaskRepository {
-  return {
-    async save(task) {
-      rows.set(task.id, task);
-    },
-    async byId(id) {
-      return rows.get(id) ?? null;
-    },
-    async listByProject(projectId) {
-      return [...rows.values()].filter((task) => task.projectId === projectId);
-    }
-  };
-}
-
-function fakeSessions(tasks: Map<string, Task>): SessionRepository & { journal: Map<string, JournalEntry[]> } {
-  const rows = new Map<string, Session>();
-  const journal = new Map<string, JournalEntry[]>();
-  return {
-    journal,
-    async save(session) {
-      rows.set(session.id, session);
-    },
-    async byId(id) {
-      return rows.get(id) ?? null;
-    },
-    async listByTask(taskId) {
-      return [...rows.values()].filter((session) => session.taskId === taskId);
-    },
-    async listByProject(projectId) {
-      return [...rows.values()].filter((session) => tasks.get(session.taskId)?.projectId === projectId);
-    },
-    async listAll() {
-      return [...rows.values()];
-    },
-    async append(session, event, at) {
-      rows.set(session.id, session);
-      const entries = journal.get(session.id) ?? [];
-      entries.push({ seq: session.lastSeq, event, at });
-      journal.set(session.id, entries);
-    },
-    async eventsAfter(sessionId, afterSeq) {
-      return (journal.get(sessionId) ?? []).filter((entry) => entry.seq > afterSeq);
-    },
-    async tail(sessionId, limit) {
-      return (journal.get(sessionId) ?? []).slice(-limit);
-    },
-    async linkEntry() {},
-    async entryIdAt() {
-      return null;
-    }
-  };
-}
-
-function fakeArtifacts(): ArtifactRepository {
-  const rows: Artifact[] = [];
-  return {
-    async save(artifact) {
-      rows.push(artifact);
-    },
-    async bySession(sessionId) {
-      return rows.filter((artifact) => artifact.sessionId === sessionId);
-    },
-    async byTask(taskId) {
-      return rows.filter((artifact) => artifact.taskId === taskId);
-    }
-  };
-}
-
-function fakeLayout(): LayoutStore {
-  const rows = new Map<string, CanvasLayout>();
-  return {
-    async load(projectId) {
-      return rows.get(projectId) ?? null;
-    },
-    async save(layout) {
-      rows.set(layout.projectId, layout);
-    }
-  };
-}
-
-function fakeFs(): WorkspaceFS {
-  return {
-    async directoryExists() {
-      return true;
-    },
-    async listDirectories() {
-      return [{ name: 'demo', path: '/tmp/demo' }];
-    },
-    artifactDir(workspaceRoot, sessionId) {
-      return `${workspaceRoot}/.agent-hub/artifacts/${sessionId}`;
-    },
-    async writeFile(_path, content) {
-      return ok(content.byteLength);
-    },
-    async stat() {
-      return 128;
-    }
-  };
-}
 
 const descriptor: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -193,31 +54,16 @@ const descriptor: AgentDescriptor = {
 };
 
 function harness(token: string | null = null) {
-  const dispatched: WorkerCommand[] = [];
   const tasks = fakeTasks();
   const sessions = fakeSessions(tasks.rows);
-  const deps: Deps = {
-    projects: fakeProjects(),
+  const hosting = fakeHosting();
+  const world = inMemoryDeps({
     tasks,
     sessions,
-    artifacts: fakeArtifacts(),
-    layout: fakeLayout(),
+    hosting,
     stream: createStreamHub().stream,
-    gateway: {
-      status: async () => [],
-      dispatch: async (command): Promise<Result<void, DomainError>> => {
-        dispatched.push(command);
-        return ok(undefined);
-      }
-    },
     agents: createLiveCatalog(),
-    fs: fakeFs(),
-    capacity: { admit: async () => ok(undefined), release: async () => ok(undefined) },
-    provisioner: {
-      install: async () => ok(undefined),
-      upgrade: async () => ok(undefined),
-      revoke: async () => ok(undefined)
-    },
+    now: () => 1_700_000_000_000,
     search: {
       // 搜索的 SQL 在 storage-sqlite 里单独测；这里只需要证明路由把参数接对了。
       async search(query) {
@@ -232,24 +78,12 @@ function harness(token: string | null = null) {
             snippet: task.goal ?? ''
           }));
       }
-    },
-    now: () => 1_700_000_000_000,
-    newId: () => crypto.randomUUID()
-  };
-
-  const hub = createStreamHub();
-  const live = new Set<SessionId>();
-  const app = createApp({
-    deps,
-    hub,
-    record: async (sessionId, event) => {
-      const result = await recordEvent(deps, { sessionId, event });
-      return result.ok ? ok(undefined) : err(result.error);
-    },
-    workers: () => [],
-    live: { has: (id) => live.has(id), add: (id) => void live.add(id), drop: (id) => void live.delete(id) },
-    token
+    }
   });
+  const { deps, dispatched } = world;
+  const hub = createStreamHub();
+  const live = hosting.live;
+  const app = createApp({ deps, hub, token });
 
   const call = async (path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> => {
     const response = await app.fetch(

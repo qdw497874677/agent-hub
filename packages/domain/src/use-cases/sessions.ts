@@ -2,13 +2,14 @@ import { applyEvent, deriveSession, forkSession, markInterrupted, withOptions } 
 import type { Session } from '../session.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { Seq, SessionId } from '../ids.ts';
-import { asAgentId, asSessionId } from '../ids.ts';
+import { asAgentId, asSessionId, asTaskId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
+import { ensureHosted, startCommand } from './hosting.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
@@ -21,10 +22,10 @@ export async function deriveSessionUseCase(
   deps: Deps,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
-  const task = await deps.tasks.byId(command.taskId as never);
-  if (!task) return err({ code: 'not_found', message: '任务不存在' });
+  const task = await deps.tasks.byId(asTaskId(command.taskId));
+  if (!task) return err(notFound('任务不存在'));
   const project = await deps.projects.byId(task.projectId);
-  if (!project) return err({ code: 'not_found', message: '项目不存在' });
+  if (!project) return err(notFound('项目不存在'));
 
   const agentId = asAgentId(command.agentId);
   const descriptor = deps.agents.descriptor(agentId);
@@ -44,22 +45,12 @@ export async function deriveSessionUseCase(
   const session = created.value;
   await deps.sessions.save(session);
 
-  const dispatched = await deps.gateway.dispatch({
-    kind: 'start_session',
-    sessionId: session.id,
-    taskId: session.taskId,
-    agentId: session.agentId,
-    model: session.model,
-    workspaceRoot: project.rootPath,
-    origin: session.origin,
-    resume: null,
-    options: session.model === '' ? {} : { model: session.model }
-  });
+  const dispatched = await deps.gateway.dispatch(startCommand(session, project, null, {}));
   if (!dispatched.ok) {
-    const failed: Session = { ...session, status: 'failed', updatedAt: deps.now() };
-    await deps.sessions.save(failed);
+    await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
   }
+  deps.hosting.add(session.id);
   return ok(session);
 }
 
@@ -105,21 +96,14 @@ export async function forkSessionUseCase(
   const session = created.value;
   await deps.sessions.save(session);
 
-  const dispatched = await deps.gateway.dispatch({
-    kind: 'start_session',
-    sessionId: session.id,
-    taskId: session.taskId,
-    agentId: session.agentId,
-    model: session.model,
-    workspaceRoot: project.rootPath,
-    origin: session.origin,
-    resume: { agentSessionRef: source.agentSessionRef, cursor: command.atSeq },
-    options: { ...source.options, ...(session.model === '' ? {} : { model: session.model }) }
-  });
+  const dispatched = await deps.gateway.dispatch(
+    startCommand(session, project, { agentSessionRef: source.agentSessionRef, cursor: command.atSeq }, source.options)
+  );
   if (!dispatched.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
   }
+  deps.hosting.add(session.id);
   return ok(session);
 }
 
@@ -134,7 +118,7 @@ export async function recordEvent(
   command: RecordEventCommand
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(command.sessionId);
-  if (!session) return err({ code: 'not_found', message: '会话不存在' });
+  if (!session) return err(notFound('会话不存在'));
 
   const now = deps.now();
   const next = applyEvent(session, command.event, now);
@@ -219,6 +203,10 @@ export async function changeSessionOption(
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(asSessionId(command.sessionId));
   if (!session) return err(notFound('会话不存在'));
+
+  // 改模型也是在改一条会话的运行状态；它没在跑就先拉起来，否则指令会打空。
+  const hosted = await ensureHosted(deps, session);
+  if (!hosted.ok) return hosted;
 
   const changed = await deps.gateway.dispatch({
     kind: 'set_option',

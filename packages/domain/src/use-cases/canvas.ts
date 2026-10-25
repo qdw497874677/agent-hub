@@ -1,4 +1,6 @@
-import { buildLineage, emptyLayout } from '../canvas.ts';
+import { buildLineage, emptyLayout, place } from '../canvas.ts';
+import type { CanvasLayout, Point } from '../canvas.ts';
+import { asProjectId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
@@ -9,7 +11,7 @@ export async function loadCanvas(
   deps: Deps,
   projectId: string
 ): Promise<Result<CanvasProjection, DomainError>> {
-  const project = await deps.projects.byId(projectId as never);
+  const project = await deps.projects.byId(asProjectId(projectId));
   if (!project) return err(notFound('项目不存在'));
 
   const tasks = await deps.tasks.listByProject(project.id);
@@ -38,4 +40,17 @@ export async function loadCanvas(
     agents: deps.agents.list(),
     previews
   });
+}
+
+/** 用户拖完节点：只记位置，不碰血缘。没存过布局的项目从空布局开始。 */
+export async function saveLayoutUseCase(
+  deps: Pick<Deps, 'layout' | 'now'>,
+  projectId: string,
+  positions: Readonly<Record<string, Point>>
+): Promise<CanvasLayout> {
+  const id = asProjectId(projectId);
+  let next = (await deps.layout.load(id)) ?? emptyLayout(id, deps.now());
+  for (const [nodeId, point] of Object.entries(positions)) next = place(next, nodeId, point, deps.now());
+  await deps.layout.save(next);
+  return next;
 }

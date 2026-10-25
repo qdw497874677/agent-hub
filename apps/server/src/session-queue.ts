@@ -1,6 +1,4 @@
-export interface SessionQueue {
-  run<T>(sessionId: string, work: () => Promise<T>): Promise<T>;
-}
+import type { SessionQueue } from '@agent-hub/domain';
 
 /**
  * 同一个会话的事件必须排队落盘。
