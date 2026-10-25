@@ -95,7 +95,7 @@ export async function continueElsewhereUseCase(
     journal.map((entry) => entry.event),
     { from: label(source.workerId), to: label(placed.value), root: workspaceFor(project, placed.value).root }
   );
-  const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief });
+  const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief, briefing: false });
   if (!seeded.ok) return err(seeded.error.code === 'unavailable' ? unavailable(seeded.error.message) : seeded.error);
   return ok((await deps.sessions.byId(session.id)) ?? session);
 }

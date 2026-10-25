@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { ensurePiMcpConfig, piToolEnv } from './pi-mcp.ts';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { AsyncQueue, jsonlRecords } from '@agent-hub/contract';
 import type {
@@ -300,6 +301,8 @@ export interface PiRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** 可调项当前值上报（模型、思考强度）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
+  /** mcp.json 位置；null = 不碰（测试）。默认 ~/.pi/agent/mcp.json。 */
+  readonly mcpConfigPath?: string | null;
 }
 
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
@@ -319,9 +322,17 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       const ref = spec.resume?.agentSessionRef ?? null;
       if (ref) args.push('--session-id', ref);
 
+      // 能力层：Pi 只认 mcp.json，所以先确保里面有 agent-hub 这条（只含变量引用），令牌走 env。
+      if (spec.tools && spec.tools.transport === 'http' && options.mcpConfigPath !== null) {
+        await ensurePiMcpConfig(options.mcpConfigPath).catch(() => false);
+      }
       let child: ChildProcessWithoutNullStreams;
       try {
-        child = spawn(command, args, { cwd: spec.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+        child = spawn(command, args, {
+          cwd: spec.workspaceRoot,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          ...(spec.tools ? { env: { ...process.env, ...piToolEnv(spec.tools) } } : {})
+        });
       } catch (error) {
         return { ok: false, error: unavailable(`无法启动 Pi：${(error as Error).message}`) };
       }
