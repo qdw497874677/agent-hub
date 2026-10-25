@@ -1,5 +1,6 @@
 import type {
   WorkerStatus,
+  BuildInfo,
   AgentDescriptor,
   Artifact,
   ArtifactRepository,
@@ -332,6 +333,8 @@ export function inMemoryAdmin(now: () => number = () => 1_000) {
   const entries: AuditEntry[] = [];
   const workerList: WorkerStatus[] = [];
   const disconnected: string[] = [];
+  const updates: { id: string; commit: string }[] = [];
+  const hubBuild: BuildInfo = { version: '0.0.0', commit: 'a'.repeat(40), protocol: 1 };
   const sessionList: Session[] = [];
   const deps: AdminDeps = {
     users: accounts.users,
@@ -348,9 +351,15 @@ export function inMemoryAdmin(now: () => number = () => 1_000) {
         const worker = workerList.find((w) => w.workerId === id && w.state === 'online');
         if (worker) disconnected.push(id);
         return worker !== undefined;
+      },
+      hubBuild: () => hubBuild,
+      update: async (id, commit) => {
+        const worker = workerList.find((w) => w.workerId === id && w.state === 'online');
+        if (worker) updates.push({ id, commit });
+        return worker !== undefined;
       }
     },
     sessions: { listAll: async () => sessionList }
   };
-  return { accounts, deps, entries, workerList, disconnected, sessionList };
+  return { accounts, deps, entries, workerList, disconnected, updates, sessionList };
 }

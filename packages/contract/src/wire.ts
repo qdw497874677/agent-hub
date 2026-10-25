@@ -295,6 +295,34 @@ export const sessionStreamFrameSchema = z.object({
   status: sessionStatusSchema
 });
 
+/**
+ * Worker 通道的协议版本。帧格式有不兼容的改动才加一；hub 只接受同一个协议版本的 Worker，
+ * 不一致时用关闭码 4426 拒绝并说明原因（Worker 收到后停止重连，提示手动更新）。
+ */
+export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_MISMATCH_CLOSE = 4426;
+
+/** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
+export const buildInfoSchema = z.object({
+  version: z.string().max(64),
+  commit: z.string().regex(/^[0-9a-f]{40}$/).nullable(),
+  protocol: z.number().int().nonnegative()
+});
+
+/** git 完整提交号：更新指令唯一的参数，不接受任何其他形式的输入。 */
+export const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
+
+export const updateStateSchema = z.enum(['updating', 'succeeded', 'failed', 'refused']);
+
+/** Worker 执行更新时的进度回报。 */
+export const workerUpdateStatusSchema = z.object({
+  type: z.literal('update_status'),
+  state: updateStateSchema,
+  message: z.string().max(500),
+  /** 最后一段命令输出（git / npm），失败时给人排查用。 */
+  logTail: z.string().max(4000).default('')
+});
+
 export const workerHelloSchema = z.object({
   type: z.literal('hello'),
   workerId: id,
@@ -310,7 +338,9 @@ export const workerHelloSchema = z.object({
   /** 目录选择器的起点（通常是 $HOME 和 WORKER_ROOTS 里配的目录）。 */
   roots: z.array(z.string()).default([]),
   /** 断线重连时：我手上还活着的会话。server 据此重新登记托管，而不是再 resume 一遍。 */
-  sessions: z.array(id).default([])
+  sessions: z.array(id).default([]),
+  /** 这台 Worker 跑的代码版本；老 Worker 不报，按「过期」显示。 */
+  build: buildInfoSchema.optional()
 });
 
 /** 目录浏览的回复：按 requestId 对上 server 的那次请求。 */
@@ -461,7 +491,8 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerDirectoriesSchema,
   workerMadeDirectorySchema,
   workerFilesSchema,
-  workerFileSchema
+  workerFileSchema,
+  workerUpdateStatusSchema
 ]);
 
 export const startSessionCommandSchema = z.object({
@@ -518,6 +549,8 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
+  /** 让 Worker 把自己更新到 hub 的这个提交。只有提交号，没有任何可拼进命令的自由文本。 */
+  z.object({ kind: z.literal('update'), commit: commitShaSchema }),
   z.object({ kind: z.literal('dispose'), sessionId: id }),
   z.object({
     kind: z.literal('set_option'),

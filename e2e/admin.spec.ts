@@ -73,6 +73,13 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
     await expect(page.getByTestId("admin-worker").first()).toContainText(
       "本机",
     );
+    // 版本：本机和 hub 同一份代码，不显示过期；点「更新」是一次演练，回「无需更新」
+    const local = page.getByTestId("admin-worker").filter({ hasText: "本机" });
+    await expect(page.getByTestId("hub-version")).toContainText(/hub v\S+ · [0-9a-f]{7}/);
+    await expect(local.getByTestId("worker-version")).toContainText(/v\S+ · [0-9a-f]{7}/);
+    await expect(local.getByTestId("worker-outdated")).toHaveCount(0);
+    await local.getByRole("button", { name: "更新" }).click();
+    await expect(local.getByTestId("worker-update")).toContainText("无需更新");
 
     // 设置：关注册 → 新人注册被服务端拒；再打开
     await page.getByRole("link", { name: "设置" }).click();
@@ -94,6 +101,9 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
     await page.getByRole("link", { name: "审计" }).click();
     const audit = page.getByTestId("audit-entry");
     await expect(audit.first()).toContainText("改设置");
+    await expect(
+      page.getByTestId("audit-entry").filter({ hasText: "更新机器" }),
+    ).not.toHaveCount(0);
     await expect(
       page.getByTestId("audit-entry").filter({ hasText: "停用用户" }),
     ).not.toHaveCount(0);

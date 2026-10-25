@@ -3,8 +3,9 @@ import type { Duplex } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
-import { workerToServerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, PROTOCOL_VERSION, workerToServerSchema } from '@agent-hub/contract';
 import type {
+  BuildInfo,
   DomainError,
   NodeGateway,
   Result,
@@ -13,7 +14,8 @@ import type {
   SessionEvent,
   SessionId,
   WorkerCommand,
-  WorkerStatus
+  WorkerStatus,
+  WorkerUpdate
 } from '@agent-hub/domain';
 import { invalid, unavailable } from '@agent-hub/domain';
 
@@ -36,6 +38,8 @@ export interface GatewayHooks {
   onOptions(workerId: string, sessionId: SessionId, options: readonly RuntimeOption[]): void;
   onStatus(workerId: string, sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
   onWorkerGone(workerId: string, reason: string): void;
+  /** Worker 报来更新进度（给日志用；状态本身网关会记着，出现在 workers() 里）。 */
+  onUpdateStatus?(workerId: string, update: WorkerUpdate): void;
   onLog?(message: string): void;
 }
 
@@ -74,6 +78,10 @@ interface Registered {
   /** 心跳：发 ping 前置 false，收到 pong 置 true；下一轮还是 false 就是失联。 */
   alive: boolean;
   reason?: string;
+  build: BuildInfo | null;
+  update: WorkerUpdate | null;
+  /** 最近一次更新的目标提交：它重启后用新版本 hello 上来时，据此判定「更新完成」。 */
+  updateTarget: string | null;
 }
 
 /** 一次请求-回复（目录、文件清单、读文件）：按 requestId 对上，超时或断线都要给答复。 */
@@ -94,6 +102,8 @@ export interface ServerGateway {
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /** 管理员断开一台在线 Worker（关闭码 4403，Worker 收到后不再重连）。不在线返回 false。 */
   disconnect(workerId: string): boolean;
+  /** 让在线的 Worker 更新到这个提交（只发提交号）。不在线返回 false。 */
+  requestUpdate(workerId: string, commit: string): boolean;
   close(): void;
 }
 
@@ -195,6 +205,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           socket.close(4401, 'token 不匹配');
           return;
         }
+        if (frame.build && frame.build.protocol !== PROTOCOL_VERSION) {
+          socket.close(
+            PROTOCOL_MISMATCH_CLOSE,
+            `协议版本不兼容：worker v${frame.build.protocol}，hub v${PROTOCOL_VERSION}，请在 worker 上运行 scripts/update-worker.sh`
+          );
+          return;
+        }
         const secret = hooks.localSecret ?? null;
         const provenLocal = secret !== null && sameSecret(frame.localSecret, secret);
         const previous = registry.get(frame.workerId);
@@ -212,6 +229,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           stale.terminate();
         }
         clearTimeout(helloTimer);
+        const build = frame.build ?? null;
+        const target = previous?.updateTarget ?? null;
+        // 更新成功后 Worker 会退出重启：用目标版本重新 hello 上来，才算真正完成。
+        const update: WorkerUpdate | null =
+          target !== null && build?.commit === target
+            ? { state: 'succeeded', message: `已重启到 ${target.slice(0, 7)}`, logTail: previous?.update?.logTail ?? '', at: now() }
+            : (previous?.update ?? null);
         entry = {
           workerId: frame.workerId,
           label: frame.label,
@@ -222,7 +246,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           host: frame.host ?? null,
           roots: frame.roots,
           lastSeenAt: now(),
-          alive: true
+          alive: true,
+          build,
+          update,
+          updateTarget: target !== null && build?.commit === target ? null : target
         };
         registry.set(frame.workerId, entry);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
@@ -238,6 +265,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         clearTimeout(request.timer);
         pending.delete(frame.requestId);
         request.settle(frame);
+        return;
+      }
+      if (frame.type === 'update_status') {
+        entry.update = { state: frame.state, message: frame.message, logTail: frame.logTail, at: now() };
+        if (frame.state === 'failed' || frame.state === 'refused') entry.updateTarget = null;
+        hooks.onUpdateStatus?.(entry.workerId, entry.update);
         return;
       }
       const from = entry.workerId;
@@ -304,7 +337,9 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       lastSeenAt: entry.lastSeenAt,
       sessionCount,
       ...(entry.host ? { hostname: entry.host.hostname, platform: `${entry.host.platform}/${entry.host.arch}` } : {}),
-      ...(entry.socket === null && entry.reason !== undefined ? { reason: entry.reason } : {})
+      ...(entry.socket === null && entry.reason !== undefined ? { reason: entry.reason } : {}),
+      ...(entry.build ? { build: entry.build } : {}),
+      ...(entry.update ? { update: entry.update } : {})
     };
     return status;
   }
@@ -396,6 +431,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (!socket) return false;
       (socket as WebSocket & { markKicked?: () => void }).markKicked?.();
       socket.close(4403, '管理员断开');
+      return true;
+    },
+    requestUpdate(workerId: string, commit: string): boolean {
+      const entry = online(workerId);
+      if (!entry?.socket) return false;
+      entry.socket.send(JSON.stringify({ kind: 'update', commit } satisfies ServerToWorker));
+      entry.updateTarget = commit;
+      entry.update = { state: 'updating', message: `已发出更新指令 → ${commit.slice(0, 7)}`, logTail: '', at: now() };
       return true;
     },
     close(): void {

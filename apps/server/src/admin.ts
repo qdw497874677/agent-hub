@@ -1,18 +1,21 @@
 import type { Context, Hono } from 'hono';
 import { roleRequest, settingsPatchRequest } from '@agent-hub/contract';
-import type { AdminOverviewDto, AdminUserDto, AdminWorkerDto, AuditEntryDto, EnrollInfoDto } from '@agent-hub/contract';
-import type { AdminDeps, DomainError, Principal, Result, User, WorkerStatus } from '@agent-hub/domain';
+import type { AdminOverviewDto, AdminUserDto, AdminWorkerDto, AdminWorkersDto, AuditEntryDto, EnrollInfoDto } from '@agent-hub/contract';
+import type { AdminDeps, BuildInfo, DomainError, Principal, Result, User, WorkerStatus } from '@agent-hub/domain';
 import {
   adminOverview,
   adminUsers,
   asUserId,
   canAddMachines,
   disconnectWorker,
+  isOutdated,
   requireOwner,
   revokeUserLogins,
   setUserDisabled,
   setUserRole,
-  updateSettings
+  updateOutdatedWorkers,
+  updateSettings,
+  updateWorker
 } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
@@ -36,7 +39,7 @@ const userDto = (user: User, lastSeenAt: number | null, activeLogins: number): A
   activeLogins
 });
 
-const workerDto = (worker: WorkerStatus): AdminWorkerDto => ({
+const workerDto = (worker: WorkerStatus, hub: BuildInfo): AdminWorkerDto => ({
   workerId: worker.workerId,
   label: worker.label,
   origin: worker.origin,
@@ -46,7 +49,10 @@ const workerDto = (worker: WorkerStatus): AdminWorkerDto => ({
   platform: worker.platform ?? null,
   lastSeenAt: worker.lastSeenAt ?? null,
   sessionCount: worker.sessionCount ?? 0,
-  enrolledBy: worker.origin === 'local' ? '本机（随 hub 启动）' : 'HUB_TOKEN 接入'
+  enrolledBy: worker.origin === 'local' ? '本机（随 hub 启动）' : 'HUB_TOKEN 接入',
+  build: worker.build ?? null,
+  outdated: isOutdated(worker, hub),
+  update: worker.update ?? null
 });
 
 export function installAdmin(app: Hono, options: AdminOptions, principalOf: PrincipalOf): void {
@@ -112,10 +118,24 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
     return userResult(c, setUserRole(deps, owner(c), asUserId(c.req.param('id')), parsed.data.role));
   });
 
-  app.get('/api/admin/workers', async (c) => c.json((await deps.workers.list()).map(workerDto)));
+  app.get('/api/admin/workers', async (c) => {
+    const hub = deps.workers.hubBuild();
+    const body: AdminWorkersDto = { hub, workers: (await deps.workers.list()).map((worker) => workerDto(worker, hub)) };
+    return c.json(body);
+  });
   app.post('/api/admin/workers/:id/disconnect', async (c) => {
     const result = await disconnectWorker(deps, owner(c), c.req.param('id'));
-    return result.ok ? c.json(workerDto(result.value)) : fail(c, result.error);
+    return result.ok ? c.json(workerDto(result.value, deps.workers.hubBuild())) : fail(c, result.error);
+  });
+  // 更新：不收请求体——目标永远是 hub 自己的提交（见 domain updateWorker）。
+  app.post('/api/admin/workers/update-outdated', async (c) => {
+    const result = await updateOutdatedWorkers(deps, owner(c));
+    const hub = deps.workers.hubBuild();
+    return result.ok ? c.json(result.value.map((worker) => workerDto(worker, hub))) : fail(c, result.error);
+  });
+  app.post('/api/admin/workers/:id/update', async (c) => {
+    const result = await updateWorker(deps, owner(c), c.req.param('id'));
+    return result.ok ? c.json(workerDto(result.value, deps.workers.hubBuild()), 202) : fail(c, result.error);
   });
 
   app.get('/api/admin/settings', async (c) => c.json(await deps.settings.get()));

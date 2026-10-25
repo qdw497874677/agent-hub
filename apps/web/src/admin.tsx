@@ -125,7 +125,10 @@ function Overview() {
           {data?.recentUsers.length ? (
             <ul>
               {data.recentUsers.map((user) => (
-                <li key={user.email} className="flex items-baseline gap-2 border-b border-hair px-3 py-2 last:border-b-0">
+                <li
+                  key={user.email}
+                  className="flex items-baseline gap-2 border-b border-hair px-3 py-2 last:border-b-0"
+                >
                   <span className="min-w-0 flex-1 truncate text-body text-primary">{user.email}</span>
                   <span className="shrink-0 text-meta text-tertiary">
                     {user.role === 'owner' ? '主人' : '成员'} · {at(user.createdAt)}
@@ -176,13 +179,15 @@ function Users() {
   const me = useAccount();
   const [q, setQ] = useState('');
   const users = useQuery({ queryKey: ['admin', 'users', q], queryFn: () => adminApi.users(q) });
-  const action = useAdminAction(({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke'; user: AdminUserDto }) => {
-    if (kind === 'disable') return adminApi.disable(user.id);
-    if (kind === 'enable') return adminApi.enable(user.id);
-    if (kind === 'promote') return adminApi.setRole(user.id, 'owner');
-    if (kind === 'demote') return adminApi.setRole(user.id, 'member');
-    return adminApi.revokeLogins(user.id);
-  });
+  const action = useAdminAction(
+    ({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke'; user: AdminUserDto }) => {
+      if (kind === 'disable') return adminApi.disable(user.id);
+      if (kind === 'enable') return adminApi.enable(user.id);
+      if (kind === 'promote') return adminApi.setRole(user.id, 'owner');
+      if (kind === 'demote') return adminApi.setRole(user.id, 'member');
+      return adminApi.revokeLogins(user.id);
+    }
+  );
   return (
     <Section title="用户" aside={<span className="text-meta text-tertiary">{users.data?.length ?? 0} 人</span>}>
       <input
@@ -192,7 +197,11 @@ function Users() {
         value={q}
         onChange={(event) => setQ(event.target.value)}
       />
-      {action.error ? <p role="alert" className="mb-2 text-meta text-rust">{errorText(action.error)}</p> : null}
+      {action.error ? (
+        <p role="alert" className="mb-2 text-meta text-rust">
+          {errorText(action.error)}
+        </p>
+      ) : null}
       <Panel>
         {users.data?.length ? (
           <ul>
@@ -201,7 +210,9 @@ function Users() {
               return (
                 <li key={user.id} data-testid="admin-user" className="border-b border-hair px-3 py-2.5 last:border-b-0">
                   <div className="flex flex-wrap items-baseline gap-x-2">
-                    <span className={`min-w-0 truncate text-body ${user.disabled ? 'text-tertiary line-through' : 'text-primary'}`}>
+                    <span
+                      className={`min-w-0 truncate text-body ${user.disabled ? 'text-tertiary line-through' : 'text-primary'}`}
+                    >
                       {user.email}
                     </span>
                     <span className="text-meta text-tertiary">
@@ -211,23 +222,40 @@ function Users() {
                     </span>
                   </div>
                   <p className="text-meta text-tertiary">
-                    最近活跃 {user.lastSeenAt ? at(user.lastSeenAt) : '从未'} · {user.activeLogins} 个有效登录 · 注册于 {at(user.createdAt)}
+                    最近活跃 {user.lastSeenAt ? at(user.lastSeenAt) : '从未'} · {user.activeLogins} 个有效登录 · 注册于{' '}
+                    {at(user.createdAt)}
                   </p>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
                     {user.role === 'member' ? (
-                      <button className={SMALL} disabled={action.isPending} onClick={() => action.mutate({ kind: 'promote', user })}>
+                      <button
+                        className={SMALL}
+                        disabled={action.isPending}
+                        onClick={() => action.mutate({ kind: 'promote', user })}
+                      >
                         设为主人
                       </button>
                     ) : (
-                      <button className={SMALL} disabled={action.isPending} onClick={() => action.mutate({ kind: 'demote', user })}>
+                      <button
+                        className={SMALL}
+                        disabled={action.isPending}
+                        onClick={() => action.mutate({ kind: 'demote', user })}
+                      >
                         降为成员
                       </button>
                     )}
-                    <button className={SMALL} disabled={action.isPending} onClick={() => action.mutate({ kind: 'revoke', user })}>
+                    <button
+                      className={SMALL}
+                      disabled={action.isPending}
+                      onClick={() => action.mutate({ kind: 'revoke', user })}
+                    >
                       {self ? '退出其他设备' : '踢下线'}
                     </button>
                     {user.disabled ? (
-                      <button className={SMALL} disabled={action.isPending} onClick={() => action.mutate({ kind: 'enable', user })}>
+                      <button
+                        className={SMALL}
+                        disabled={action.isPending}
+                        onClick={() => action.mutate({ kind: 'enable', user })}
+                      >
                         启用
                       </button>
                     ) : self ? null : (
@@ -235,7 +263,8 @@ function Users() {
                         className={DANGER}
                         disabled={action.isPending}
                         onClick={() => {
-                          if (window.confirm(`停用 ${user.email}？对方会立刻掉线，不能再登录。`)) action.mutate({ kind: 'disable', user });
+                          if (window.confirm(`停用 ${user.email}？对方会立刻掉线，不能再登录。`))
+                            action.mutate({ kind: 'disable', user });
                         }}
                       >
                         停用
@@ -254,28 +283,98 @@ function Users() {
   );
 }
 
+const UPDATE_TEXT: Record<string, string> = {
+  updating: '更新中',
+  succeeded: '更新成功',
+  failed: '更新失败',
+  refused: '拒绝更新'
+};
+
+const shortCommit = (commit: string | null | undefined): string => (commit ? commit.slice(0, 7) : '无提交号');
+const buildText = (build: AdminWorkerDto['build']): string =>
+  build ? `v${build.version} · ${shortCommit(build.commit)}` : '版本未知（旧版 Worker）';
+
 function Workers() {
-  const workers = useQuery({ queryKey: ['admin', 'workers'], queryFn: adminApi.workers, refetchInterval: 10_000 });
-  const action = useAdminAction((worker: AdminWorkerDto) => adminApi.disconnect(worker.workerId));
+  const workers = useQuery({
+    queryKey: ['admin', 'workers'],
+    queryFn: adminApi.workers,
+    // 有机器在更新时快一点刷新，进度才跟得上
+    refetchInterval: (query) =>
+      query.state.data?.workers.some((worker) => worker.update?.state === 'updating') ? 2_000 : 10_000
+  });
+  const action = useAdminAction(({ kind, worker }: { kind: 'disconnect' | 'update'; worker: AdminWorkerDto }) =>
+    kind === 'update' ? adminApi.updateWorker(worker.workerId) : adminApi.disconnect(worker.workerId)
+  );
+  const updateAll = useAdminAction(() => adminApi.updateOutdated());
+  const list = workers.data?.workers ?? [];
+  const hub = workers.data?.hub;
+  const outdatedOnline = list.filter((worker) => worker.outdated && worker.state === 'online');
+  const error = action.error ?? updateAll.error;
   return (
-    <Section title="机器" aside={<span className="text-meta text-tertiary">{workers.data?.length ?? 0} 台</span>}>
-      {action.error ? <p role="alert" className="mb-2 text-meta text-rust">{errorText(action.error)}</p> : null}
+    <Section title="机器" aside={<span className="text-meta text-tertiary">{list.length} 台</span>}>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <span data-testid="hub-version" className="text-meta text-tertiary">
+          hub {hub ? buildText(hub) : '…'}
+        </span>
+        <span className="flex-1" />
+        <button
+          className={SMALL}
+          disabled={updateAll.isPending || outdatedOnline.length === 0}
+          onClick={() => {
+            if (window.confirm(`把 ${outdatedOnline.length} 台过期的在线机器更新到 hub 的版本？`))
+              updateAll.mutate(undefined);
+          }}
+        >
+          更新全部过期{outdatedOnline.length ? `（${outdatedOnline.length}）` : ''}
+        </button>
+      </div>
+      {error ? (
+        <p role="alert" className="mb-2 text-meta text-rust">
+          {errorText(error)}
+        </p>
+      ) : null}
       <Panel>
-        {workers.data?.length ? (
+        {list.length ? (
           <ul>
-            {workers.data.map((worker) => {
+            {list.map((worker) => {
               const online = worker.state === 'online';
+              const updating = worker.update?.state === 'updating';
               return (
-                <li key={worker.workerId} data-testid="admin-worker" className="border-b border-hair px-3 py-2.5 last:border-b-0">
+                <li
+                  key={worker.workerId}
+                  data-testid="admin-worker"
+                  className="border-b border-hair px-3 py-2.5 last:border-b-0"
+                >
                   <div className="flex items-center gap-2">
-                    <span className={`h-2 w-2 shrink-0 rounded-full ${online ? 'bg-accent' : 'bg-card-raised border border-strong'}`} />
+                    <span
+                      className={`h-2 w-2 shrink-0 rounded-full ${online ? 'bg-accent' : 'bg-card-raised border border-strong'}`}
+                    />
                     <span className="min-w-0 flex-1 truncate text-body text-primary">{worker.label}</span>
+                    {worker.outdated ? (
+                      <span
+                        data-testid="worker-outdated"
+                        className="rounded border border-rust px-1.5 text-meta text-rust"
+                      >
+                        过期
+                      </span>
+                    ) : null}
+                    {online ? (
+                      <button
+                        className={SMALL}
+                        disabled={action.isPending || updating}
+                        title={worker.outdated ? '更新到 hub 的版本' : '已是最新：只做一次演练，不会重启'}
+                        onClick={() => action.mutate({ kind: 'update', worker })}
+                      >
+                        {updating ? '更新中…' : '更新'}
+                      </button>
+                    ) : null}
                     {online && worker.origin === 'remote' ? (
                       <button
                         className={DANGER}
                         disabled={action.isPending}
                         onClick={() => {
-                          if (window.confirm(`断开「${worker.label}」？它不会自动重连，要在那台机器上重启 Worker。`)) action.mutate(worker);
+                          if (window.confirm(`断开「${worker.label}」？它不会自动重连，要在那台机器上重启 Worker。`))
+                            action.mutate({ kind: 'disconnect', worker });
                         }}
                       >
                         断开
@@ -283,11 +382,40 @@ function Workers() {
                     ) : null}
                   </div>
                   <p className="pl-4 text-meta text-tertiary">
-                    {online ? `在线 · ${worker.sessionCount} 条会话` : `离线${worker.reason ? `（${worker.reason}）` : ''}`} · 最近 {at(worker.lastSeenAt)}
+                    {online
+                      ? `在线 · ${worker.sessionCount} 条会话`
+                      : `离线${worker.reason ? `（${worker.reason}）` : ''}`}{' '}
+                    · 最近 {at(worker.lastSeenAt)}
                   </p>
                   <p className="truncate pl-4 text-meta text-tertiary">
-                    {[worker.hostname, worker.platform].filter(Boolean).join(' · ') || worker.workerId} · {worker.enrolledBy}
+                    {[worker.hostname, worker.platform].filter(Boolean).join(' · ') || worker.workerId} ·{' '}
+                    {worker.enrolledBy}
                   </p>
+                  <p data-testid="worker-version" className="truncate pl-4 text-meta text-tertiary">
+                    {buildText(worker.build)}
+                  </p>
+                  {worker.update ? (
+                    <div data-testid="worker-update" className="pl-4 text-meta">
+                      <span
+                        className={
+                          worker.update.state === 'failed' || worker.update.state === 'refused'
+                            ? 'text-rust'
+                            : 'text-secondary'
+                        }
+                      >
+                        {UPDATE_TEXT[worker.update.state] ?? worker.update.state}：{worker.update.message} ·{' '}
+                        {at(worker.update.at)}
+                      </span>
+                      {worker.update.logTail ? (
+                        <details>
+                          <summary className="cursor-pointer text-tertiary">日志</summary>
+                          <pre className="mt-1 max-h-[200px] overflow-auto whitespace-pre-wrap rounded bg-card-raised p-2 text-tertiary">
+                            {worker.update.logTail}
+                          </pre>
+                        </details>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </li>
               );
             })}
@@ -300,7 +428,13 @@ function Workers() {
   );
 }
 
-function Toggle({ label, hint, checked, onChange, disabled }: {
+function Toggle({
+  label,
+  hint,
+  checked,
+  onChange,
+  disabled
+}: {
   label: string;
   hint: string;
   checked: boolean;
@@ -331,7 +465,11 @@ function Settings() {
   const data = settings.data;
   return (
     <Section title="设置">
-      {save.error ? <p role="alert" className="mb-2 text-meta text-rust">{errorText(save.error)}</p> : null}
+      {save.error ? (
+        <p role="alert" className="mb-2 text-meta text-rust">
+          {errorText(save.error)}
+        </p>
+      ) : null}
       <Panel>
         {data ? (
           <>
@@ -364,7 +502,8 @@ const ACTION_LABEL: Record<string, string> = {
   'user.role': '改角色',
   'user.revoke_logins': '踢下线',
   'settings.update': '改设置',
-  'worker.disconnect': '断开机器'
+  'worker.disconnect': '断开机器',
+  'worker.update': '更新机器'
 };
 
 function Audit() {

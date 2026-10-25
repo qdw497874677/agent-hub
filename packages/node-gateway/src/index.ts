@@ -5,3 +5,6 @@ export type { WorkerLink, WorkerLinkOptions } from './worker-link.ts';
 export { createLocalFs } from './local-fs.ts';
 export { createWorkerFiles, boundaryHint, OutsideRootsError } from './worker-files.ts';
 export type { WorkerFiles } from './worker-files.ts';
+export { readBuildInfo } from './build-info.ts';
+export { runSelfUpdate, execRunner } from './updater.ts';
+export type { CommandRunner, UpdateReport, UpdateOptions } from './updater.ts';

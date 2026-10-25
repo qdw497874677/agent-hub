@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
 import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
 import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
-import { connectWorkerLink, createWorkerFiles } from '@agent-hub/node-gateway';
+import { connectWorkerLink, createWorkerFiles, readBuildInfo, runSelfUpdate } from '@agent-hub/node-gateway';
+import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
 /**
@@ -175,6 +177,36 @@ log(`Grok 认得 ${grokCatalog.models.length} 个模型（默认 ${grokCatalog.d
 acpConfigs.forEach((config, index) => log(`${config.label} 认得 ${acpModels[index]?.length ?? 0} 个模型`));
 log(`Pi 认得 ${piModels.length} 个模型（默认 ${discovered.defaultModel || 'Pi 自己的默认'}）`);
 
+/** 代码所在的仓库：远程更新就在这里 git fetch / npm ci。 */
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const build = readBuildInfo(repoRoot);
+log(`版本 ${build.version}（${build.commit ? build.commit.slice(0, 7) : '非 git 仓库'}，协议 v${build.protocol}）`);
+
+/** 更新成功后用这个退出码退出：systemd（Restart=always）或拉起它的 hub 会把新代码跑起来。 */
+const RESTART_EXIT_CODE = 75;
+
+async function onUpdate(commit: string, report: (status: UpdateReport) => void): Promise<void> {
+  if (origin === 'local') {
+    // 本机 Worker 和 hub 是同一份代码：在这里 git/npm 会把 hub 自己的依赖也换掉。
+    // 版本一致就回「无需更新」（演练），不一致只可能是 hub 换了代码却没重启。
+    if (commit === build.commit) report({ state: 'succeeded', message: `已是目标版本 ${commit.slice(0, 7)}，无需更新`, logTail: '' });
+    else report({ state: 'refused', message: '本机 Worker 与 hub 共用代码：请在 hub 上 git pull 后重启 hub', logTail: '' });
+    return;
+  }
+  const changed = await runSelfUpdate({
+    repoDir: repoRoot,
+    commit,
+    report: (status) => {
+      log(`更新：${status.message}`);
+      report(status);
+    }
+  });
+  if (changed) {
+    // 给最后一帧进度一点时间发出去，再退出重启
+    setTimeout(() => void link.close().finally(() => process.exit(RESTART_EXIT_CODE)), 500);
+  }
+}
+
 const link = connectWorkerLink({
   url: hubUrl,
   token,
@@ -185,6 +217,8 @@ const link = connectWorkerLink({
   runtimes,
   host: { hostname: hostname(), platform: platform(), arch: arch() },
   files,
+  build,
+  onUpdate,
   onLog: log,
   // 断线会自己重连；走到这里只有两种情况：token 被拒、被管理员断开、或者自己 close() 了。
   onClose: () => {

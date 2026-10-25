@@ -105,10 +105,20 @@ test('机器：列出状态与来路；断开在线的远程机器，本机不�
   const status = (workerId: string, origin: 'local' | 'remote') =>
     ({ workerId, label: workerId, origin, state: 'online', lastSeenAt: 5 }) as WorkerStatus;
   h.workerList.push(status('local', 'local'), status('lap', 'remote'));
-  const list = (await owner('/api/admin/workers')).body as { workerId: string; enrolledBy: string }[];
+  const body = (await owner('/api/admin/workers')).body as {
+    hub: { commit: string };
+    workers: { workerId: string; enrolledBy: string; outdated: boolean }[];
+  };
+  const list = body.workers;
   assert.equal(list.length, 2);
   assert.match(list[1]!.enrolledBy, /HUB_TOKEN/);
+  assert.equal(list[1]!.outdated, true, '没报版本的算过期');
   assert.equal((await owner('/api/admin/workers/local/disconnect', { method: 'POST' })).status, 409);
   assert.equal((await owner('/api/admin/workers/lap/disconnect', { method: 'POST' })).status, 200);
   assert.deepEqual(h.disconnected, ['lap']);
+  // 更新：不收参数，目标就是 hub 的提交
+  assert.equal((await owner('/api/admin/workers/lap/update', { method: 'POST' })).status, 202);
+  assert.deepEqual(h.updates, [{ id: 'lap', commit: body.hub.commit }]);
+  assert.equal((await owner('/api/admin/workers/update-outdated', { method: 'POST' })).status, 200);
+  assert.equal((await owner('/api/admin/workers/nope/update', { method: 'POST' })).status, 404);
 });

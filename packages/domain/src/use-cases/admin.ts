@@ -7,6 +7,7 @@ import type { Result } from '../result.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { WorkerControl } from '../ports/worker-control.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
+import { isOutdated } from '../worker.ts';
 import type { WorkerStatus } from '../worker.ts';
 import type { AccountDeps } from './accounts.ts';
 
@@ -184,4 +185,46 @@ export async function disconnectWorker(
   if (!(await deps.workers.disconnect(workerId))) return err(conflict('这台机器已经不在线'));
   await record(deps, actor, 'worker.disconnect', `${worker.label}（${workerId}）`, '');
   return ok(worker);
+}
+
+const short = (commit: string): string => commit.slice(0, 7);
+
+/**
+ * 让一台 Worker 更新到 hub 的提交。目标只能是 hub 自己的提交——不收任何外部输入，
+ * 所以这条路径不可能变成「在远程机器上跑任意命令」。已是最新的也照发：Worker 会回「无需更新」，
+ * 等于一次演练（验证通道和权限都通）。
+ */
+export async function updateWorker(
+  deps: AdminDeps,
+  actor: Principal,
+  workerId: string
+): Promise<Result<WorkerStatus, DomainError>> {
+  const commit = deps.workers.hubBuild().commit;
+  if (!commit) return err(conflict('hub 不是从 git 仓库启动的，不知道该更新到哪个版本'));
+  const worker = (await deps.workers.list()).find((candidate) => candidate.workerId === workerId);
+  if (!worker) return err(notFound('没有这台机器'));
+  if (worker.state !== 'online') return err(conflict('这台机器不在线'));
+  if (worker.update?.state === 'updating') return err(conflict('这台机器正在更新'));
+  if (!(await deps.workers.update(workerId, commit))) return err(conflict('这台机器已经不在线'));
+  const from = worker.build?.commit ? short(worker.build.commit) : '未知版本';
+  await record(deps, actor, 'worker.update', `${worker.label}（${workerId}）`, `${from} → ${short(commit)}`);
+  return ok(worker);
+}
+
+/** 「更新全部过期」：只动在线且过期、没在更新中的；返回发出了更新的那些。 */
+export async function updateOutdatedWorkers(
+  deps: AdminDeps,
+  actor: Principal
+): Promise<Result<WorkerStatus[], DomainError>> {
+  const hub = deps.workers.hubBuild();
+  if (!hub.commit) return err(conflict('hub 不是从 git 仓库启动的，不知道该更新到哪个版本'));
+  const targets = (await deps.workers.list()).filter(
+    (worker) => worker.state === 'online' && worker.update?.state !== 'updating' && isOutdated(worker, hub)
+  );
+  const started: WorkerStatus[] = [];
+  for (const worker of targets) {
+    const result = await updateWorker(deps, actor, worker.workerId);
+    if (result.ok) started.push(result.value);
+  }
+  return ok(started);
 }

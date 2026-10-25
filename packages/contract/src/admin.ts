@@ -26,9 +26,21 @@ export const adminWorkerSchema = z.object({
   lastSeenAt: z.number().nullable(),
   sessionCount: z.number(),
   /** 谁加的这台机器。目前只区分本机与凭 HUB_TOKEN 接入的远程机器（按人登记在下一期）。 */
-  enrolledBy: z.string()
+  enrolledBy: z.string(),
+  build: z.object({ version: z.string(), commit: z.string().nullable(), protocol: z.number() }).nullable(),
+  /** 和 hub 的版本不一致（或没报版本）。 */
+  outdated: z.boolean(),
+  update: z
+    .object({ state: z.string(), message: z.string(), logTail: z.string(), at: z.number() })
+    .nullable()
 });
 export type AdminWorkerDto = z.infer<typeof adminWorkerSchema>;
+
+export const adminWorkersSchema = z.object({
+  hub: z.object({ version: z.string(), commit: z.string().nullable(), protocol: z.number() }),
+  workers: z.array(adminWorkerSchema)
+});
+export type AdminWorkersDto = z.infer<typeof adminWorkersSchema>;
 
 export const auditEntrySchema = z.object({
   id: z.string(),

@@ -59,6 +59,12 @@ HUB_URL=ws://100.x.y.z:7878/worker HUB_TOKEN=… WORKER_LABEL=工作站 scripts/
 目录选择器浏览的就是那台的文件系统；项目里开的会话都跑在那台。断线会自动重连并接回还在跑的会话，
 心跳超时的 Worker 标为离线。细节见 [docs/remote-access.md](docs/remote-access.md#多台机器)。
 
+**更新 Worker**：运营后台「机器」页显示每台的版本（package 版本 + 提交号），和 hub 不一致的标「过期」。
+主人可以点单台的「更新」或「更新全部过期」：hub 只下发自己的提交号，Worker 检查工作区干净 → `git fetch` →
+快进到该提交 → `npm ci --omit=dev` → 退出由 systemd 重启；失败自动回滚到原提交，进度和日志尾巴回到页面上，操作进审计。
+本机 Worker 与 hub 共用代码，更新 hub（`git pull` 后重启）即可；点它的「更新」只做演练。
+协议版本不兼容的 Worker 会被拒绝并提示在那台机器上手动运行 `scripts/update-worker.sh [提交号]`。
+
 ## 架构：内核不认识进程
 
 ```
