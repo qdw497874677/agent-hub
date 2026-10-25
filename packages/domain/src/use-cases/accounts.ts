@@ -19,6 +19,7 @@ import type { LoginRepository } from '../ports/login-repository.ts';
 import type { PasswordHasher } from '../ports/password-hasher.ts';
 import type { TokenIssuer } from '../ports/token-issuer.ts';
 import type { EmailSender } from '../ports/email-sender.ts';
+import type { SettingsRepository } from '../ports/settings-repository.ts';
 
 /**
  * 账号是独立的一块，不进对话那套 Deps：会话用例不需要知道谁在登录。
@@ -30,6 +31,7 @@ export interface AccountDeps {
   readonly hasher: PasswordHasher;
   readonly tokens: TokenIssuer;
   readonly mail: EmailSender;
+  readonly settings: SettingsRepository;
   readonly now: () => number;
 }
 
@@ -84,6 +86,10 @@ export async function registerUser(
   if (await deps.users.byEmail(email)) return err(conflict('这个邮箱已经注册过了，直接登录吧'));
 
   const role: Role = (await deps.users.firstWithRole('owner')) === null ? 'owner' : 'member';
+  // 关闭开放注册后，仍允许「还没有主人」时认领第一个账号，否则 hub 进不去了。
+  if (role === 'member' && !(await deps.settings.get()).openRegistration) {
+    return err(conflict('这个 hub 暂不开放注册，请联系管理员'));
+  }
   const user: User = {
     id: newUserId(),
     email,

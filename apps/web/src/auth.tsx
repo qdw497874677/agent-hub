@@ -197,6 +197,15 @@ export function AccountMenu() {
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
           <p className="mt-1 text-tertiary">{account.role === 'owner' ? '主人' : '成员'}</p>
+          {account.role === 'owner' ? (
+            <a
+              href="#/admin/overview"
+              className="mt-3 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
+              onClick={() => setOpen(false)}
+            >
+              运营后台
+            </a>
+          ) : null}
           <button
             className="mt-3 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-rust hover:text-rust"
             onClick={() => leave.mutate()}

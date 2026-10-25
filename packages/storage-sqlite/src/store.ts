@@ -12,7 +12,7 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { LoginRepository, UserRepository } from '@agent-hub/domain';
+import type { AuditLog, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
@@ -21,6 +21,8 @@ export interface SqliteStore extends RepositorySet {
   readonly search: ReturnType<typeof createSearch>;
   readonly users: UserRepository;
   readonly logins: LoginRepository;
+  readonly settings: SettingsRepository;
+  readonly audit: AuditLog;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;

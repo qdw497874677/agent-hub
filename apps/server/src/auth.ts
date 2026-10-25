@@ -55,7 +55,10 @@ function unauthorized(c: Context, message = '请先登录'): Response {
   return c.json({ error: { code: 'unauthorized', message } }, 401);
 }
 
-export function installAuth(app: Hono, options: AuthOptions): void {
+/** 守门中间件认出的身份；Bearer 旧令牌放行的请求没有身份（null）。 */
+export type PrincipalOf = (c: Context) => Principal | null;
+
+export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
   const { accounts } = options;
   // 守门中间件认出的身份，路由里直接取，不再查一遍库。
   const principals = new WeakMap<Request, Principal | null>();
@@ -114,12 +117,14 @@ export function installAuth(app: Hono, options: AuthOptions): void {
     return unauthorized(c);
   });
 
-  app.get('/api/auth/state', (c) => {
+  app.get('/api/auth/state', async (c) => {
     const principal = principals.get(c.req.raw) ?? null;
     const state: AuthState = {
       user: principal ? toDto(principal.user) : null,
       tokenLogin: options.hubToken !== null && accounts.now() < options.hubToken.until,
-      registration: true
+      // 还没有主人时总能注册（认领第一个账号），否则看开关。
+      registration:
+        (await accounts.settings.get()).openRegistration || (await accounts.users.firstWithRole('owner')) === null
     };
     return c.json(state);
   });
@@ -154,4 +159,6 @@ export function installAuth(app: Hono, options: AuthOptions): void {
     clearCookies(c);
     return c.json({ ok: true });
   });
+
+  return (c) => principals.get(c.req.raw) ?? null;
 }

@@ -1,0 +1,125 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { inMemoryAdmin } from '../testing/in-memory.ts';
+import type { Principal, WorkerStatus } from '../index.ts';
+import { authenticate, loginWithPassword, registerUser } from './accounts.ts';
+import {
+  adminOverview,
+  adminUsers,
+  disconnectWorker,
+  requireOwner,
+  revokeUserLogins,
+  setUserDisabled,
+  setUserRole,
+  updateSettings
+} from './admin.ts';
+
+const PASSWORD = 'correct horse battery';
+
+async function setup() {
+  const admin = inMemoryAdmin();
+  const sign = async (email: string): Promise<{ principal: Principal; token: string }> => {
+    const made = await registerUser(admin.accounts, { email, password: PASSWORD });
+    assert.ok(made.ok, email);
+    const principal = await authenticate(admin.accounts, made.value.token);
+    assert.ok(principal);
+    return { principal, token: made.value.token };
+  };
+  const owner = await sign('owner@b.co');
+  const member = await sign('member@b.co');
+  return { ...admin, owner, member, sign };
+}
+
+const worker = (workerId: string, origin: 'local' | 'remote', state: 'online' | 'offline'): WorkerStatus =>
+  ({ workerId, label: workerId, origin, state, reason: null, hostname: 'h', platform: 'linux', lastSeenAt: 1, sessionCount: 0 }) as unknown as WorkerStatus;
+
+test('只有在用的主人能进后台', async () => {
+  const { owner, member } = await setup();
+  assert.ok(requireOwner(owner.principal).ok);
+  const denied = requireOwner(member.principal);
+  assert.ok(!denied.ok && denied.error.code === 'forbidden');
+  assert.equal(requireOwner(null).ok, false);
+});
+
+test('概览：人数、在线机器、运行中会话、最近注册与登录', async () => {
+  const { deps, workerList, owner } = await setup();
+  workerList.push(worker('local', 'local', 'online'), worker('w2', 'remote', 'offline'));
+  const overview = await adminOverview(deps);
+  assert.equal(overview.users, 2);
+  assert.equal(overview.onlineWorkers, 1);
+  assert.equal(overview.workers, 2);
+  assert.equal(overview.runningSessions, 0);
+  assert.equal(overview.recentLogins.length, 2);
+  assert.ok(overview.recentLogins.some((row) => row.email === owner.principal.user.email));
+});
+
+test('用户列表：按邮箱搜索，带最近活跃与有效登录数', async () => {
+  const { deps } = await setup();
+  assert.equal((await adminUsers(deps)).length, 2);
+  const [only] = await adminUsers(deps, 'MEMBER');
+  assert.equal(only?.user.email, 'member@b.co');
+  assert.equal(only?.activeLogins, 1);
+  assert.ok(only?.lastSeenAt !== null);
+});
+
+test('停用：不能停自己；停用后对方登录态全没；再启用；都记审计', async () => {
+  const { deps, accounts, owner, member, entries } = await setup();
+  const self = await setUserDisabled(deps, owner.principal, owner.principal.user.id, true);
+  assert.ok(!self.ok && self.error.code === 'conflict');
+  const off = await setUserDisabled(deps, owner.principal, member.principal.user.id, true);
+  assert.ok(off.ok && off.value.disabledAt !== null);
+  assert.equal(await authenticate(accounts, member.token), null);
+  const on = await setUserDisabled(deps, owner.principal, member.principal.user.id, false);
+  assert.ok(on.ok && on.value.disabledAt === null);
+  assert.deepEqual(
+    entries.map((entry) => entry.action),
+    ['user.enable', 'user.disable']
+  );
+});
+
+test('角色：最后一个主人不能降级也不能被停用；有第二个主人后可以', async () => {
+  const { deps, owner, member } = await setup();
+  const demote = await setUserRole(deps, owner.principal, owner.principal.user.id, 'member');
+  assert.ok(!demote.ok && demote.error.code === 'conflict');
+  assert.ok((await setUserRole(deps, owner.principal, member.principal.user.id, 'owner')).ok);
+  // 新主人停用原主人：原主人不是最后一个了，可以
+  const other = { ...member.principal, user: { ...member.principal.user, role: 'owner' as const } };
+  assert.ok((await setUserDisabled(deps, other, owner.principal.user.id, true)).ok);
+  // 现在 other 是唯一可用的主人
+  const last = await setUserRole(deps, owner.principal, member.principal.user.id, 'member');
+  assert.ok(!last.ok);
+});
+
+test('踢下线：对别人删光；对自己保留当前这台', async () => {
+  const { deps, accounts, owner, member } = await setup();
+  const again = await loginWithPassword(accounts, { email: 'owner@b.co', password: PASSWORD });
+  assert.ok(again.ok);
+  assert.ok((await revokeUserLogins(deps, owner.principal, member.principal.user.id)).ok);
+  assert.equal(await authenticate(accounts, member.token), null);
+  assert.ok((await revokeUserLogins(deps, owner.principal, owner.principal.user.id)).ok);
+  assert.ok(await authenticate(accounts, owner.token), '当前设备留着');
+  const rows = [...accounts.loginRows.values()].filter((row) => row.userId === owner.principal.user.id);
+  assert.equal(rows.length, 1);
+});
+
+test('设置：只记真正变了的项；关闭开放注册后成员注册被拒', async () => {
+  const { deps, accounts, owner, entries } = await setup();
+  await updateSettings(deps, owner.principal, { openRegistration: true });
+  assert.equal(entries.length, 0);
+  const next = await updateSettings(deps, owner.principal, { openRegistration: false });
+  assert.equal(next.openRegistration, false);
+  assert.equal(entries[0]?.detail, 'openRegistration=false');
+  const blocked = await registerUser(accounts, { email: 'late@b.co', password: PASSWORD });
+  assert.ok(!blocked.ok && blocked.error.code === 'conflict');
+});
+
+test('断开机器：本机不能断；不在线报冲突；在线的远程机器断开并记审计', async () => {
+  const { deps, workerList, disconnected, owner, entries } = await setup();
+  workerList.push(worker('local', 'local', 'online'), worker('w2', 'remote', 'online'), worker('w3', 'remote', 'offline'));
+  assert.equal((await disconnectWorker(deps, owner.principal, 'local')).ok, false);
+  assert.equal((await disconnectWorker(deps, owner.principal, 'w3')).ok, false);
+  assert.equal((await disconnectWorker(deps, owner.principal, 'nope')).ok, false);
+  assert.ok((await disconnectWorker(deps, owner.principal, 'w2')).ok);
+  assert.deepEqual(disconnected, ['w2']);
+  assert.equal(entries[0]?.action, 'worker.disconnect');
+});

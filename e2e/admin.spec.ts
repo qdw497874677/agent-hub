@@ -1,0 +1,120 @@
+import {
+  test,
+  expect,
+  request as apiRequest,
+  type Page,
+} from "@playwright/test";
+import { TEST_EMAIL, loginByApi } from "./login.ts";
+import { currentRun } from "./run-id.ts";
+
+/** 把设置恢复成默认（e2e 数据目录跨 run 保留，上次失败可能留下关着的注册）。 */
+async function resetSettings(page: Page): Promise<void> {
+  const csrf =
+    (await page.context().cookies()).find(
+      (cookie) => cookie.name === "hub_csrf",
+    )?.value ?? "";
+  const response = await page.request.put("/api/admin/settings", {
+    headers: { "x-hub-csrf": csrf },
+    data: { openRegistration: true, membersCanAddMachines: true },
+  });
+  expect(response.ok()).toBe(true);
+}
+
+/** 运营后台：主人从账号菜单进入，管用户、看机器、改设置，每一步都进审计。 */
+test("主人在后台停用并启用一个成员、关开注册，审计里都有记录", async ({
+  page,
+  baseURL,
+}) => {
+  await loginByApi(page);
+  await resetSettings(page);
+  const memberEmail = `admin-e2e-${currentRun()}@example.com`;
+  const member = await apiRequest.newContext({ baseURL });
+  expect(
+    (
+      await member.post("/api/auth/register", {
+        data: { email: memberEmail, password: "e2e password 123" },
+      })
+    ).ok(),
+  ).toBe(true);
+
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "账号" }).click();
+    await page.getByRole("link", { name: "运营后台" }).click();
+    await expect(page.getByRole("heading", { name: "概览" })).toBeVisible();
+    await expect(page.getByText("在线机器")).toBeVisible();
+
+    // 用户：搜到新成员，停用后他的会话立刻失效
+    await page
+      .getByRole("navigation", { name: "后台分页" })
+      .getByRole("link", { name: "用户" })
+      .click();
+    await page.getByLabel("搜索用户").fill(memberEmail);
+    const row = page.getByTestId("admin-user").filter({ hasText: memberEmail });
+    await expect(row).toContainText("成员");
+    page.once("dialog", (dialog) => void dialog.accept());
+    await row.getByRole("button", { name: "停用" }).click();
+    await expect(row).toContainText("已停用");
+    expect((await member.get("/api/projects")).status()).toBe(401);
+    await row.getByRole("button", { name: "启用" }).click();
+    await expect(row).not.toContainText("已停用");
+
+    // 自己那行没有「停用」
+    await page.getByLabel("搜索用户").fill(TEST_EMAIL);
+    await expect(
+      page
+        .getByTestId("admin-user")
+        .filter({ hasText: TEST_EMAIL })
+        .getByRole("button", { name: "停用" }),
+    ).toHaveCount(0);
+
+    // 机器：本机在列
+    await page.getByRole("link", { name: "机器" }).click();
+    await expect(page.getByTestId("admin-worker").first()).toContainText(
+      "本机",
+    );
+
+    // 设置：关注册 → 新人注册被服务端拒；再打开
+    await page.getByRole("link", { name: "设置" }).click();
+    const open = page.getByRole("switch", { name: /开放注册/ });
+    await expect(open).toBeChecked();
+    await open.click();
+    await expect(open).not.toBeChecked();
+    const stranger = await apiRequest.newContext({ baseURL });
+    const refused = await stranger.post("/api/auth/register", {
+      data: {
+        email: `late-${currentRun()}@example.com`,
+        password: "e2e password 123",
+      },
+    });
+    expect(refused.status()).toBe(409);
+    await open.click();
+    await expect(open).toBeChecked();
+
+    await page.getByRole("link", { name: "审计" }).click();
+    const audit = page.getByTestId("audit-entry");
+    await expect(audit.first()).toContainText("改设置");
+    await expect(
+      page.getByTestId("audit-entry").filter({ hasText: "停用用户" }),
+    ).not.toHaveCount(0);
+    await stranger.dispose();
+  } finally {
+    await resetSettings(page);
+    await member.dispose();
+  }
+});
+
+test("成员进不了后台：页面提示、接口 403", async ({ page, baseURL }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const email = `member-e2e-${currentRun()}@example.com`;
+  expect(
+    (
+      await page.request.post("/api/auth/register", {
+        data: { email, password: "e2e password 123" },
+      })
+    ).ok(),
+  ).toBe(true);
+  expect((await page.request.get("/api/admin/overview")).status()).toBe(403);
+  await page.goto(`${baseURL}/#/admin/users`);
+  await expect(page.getByText("只有主人能进运营后台")).toBeVisible();
+});

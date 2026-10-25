@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api, type WorkerInfoDto } from './api.ts';
+import { adminApi, api, type WorkerInfoDto } from './api.ts';
 
 /**
  * Worker：一台登记进 hub、真正跑 agent 的机器。
@@ -192,11 +192,7 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
               ))}
             </ul>
           )}
-          <footer className="border-t border-hair px-3 py-2 text-meta text-tertiary">
-            加一台机器：在那台机器上运行
-            <code className="mx-1 font-mono text-secondary">scripts/install-worker.sh</code>
-            ，见 docs/remote-access.md
-          </footer>
+          <EnrollFooter />
         </div>
         </div>
       ) : null}
@@ -243,5 +239,24 @@ export function WorkerPicker({
         {workers.map((worker) => option(worker.workerId, worker.label, worker.state === 'online', worker.state !== 'online'))}
       </div>
     </div>
+  );
+}
+
+/** 「加一台机器」的说明。主人关掉「成员可以加机器」后，成员看不到（服务端判定）。 */
+function EnrollFooter() {
+  const info = useQuery({ queryKey: ['enroll-info'], queryFn: adminApi.enrollInfo, staleTime: 60_000 });
+  if (!info.data) return null;
+  return (
+    <footer className="border-t border-hair px-3 py-2 text-meta text-tertiary">
+      {info.data.allowed ? (
+        <>
+          加一台机器：在那台机器上运行
+          <code className="mx-1 font-mono text-secondary">scripts/install-worker.sh</code>
+          ，见 docs/remote-access.md
+        </>
+      ) : (
+        '要加机器请联系主人'
+      )}
+    </footer>
   );
 }

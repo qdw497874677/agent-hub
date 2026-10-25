@@ -26,7 +26,13 @@ import type {
   TaskDto,
   WorkerInfoDto,
   AccountDto,
-  AuthState
+  AuthState,
+  AdminOverviewDto,
+  AdminUserDto,
+  AdminWorkerDto,
+  AuditEntryDto,
+  EnrollInfoDto,
+  SettingsDto
 } from '@agent-hub/contract';
 
 export type { SaveLayoutRequest, WorkerInfoDto, AccountDto, AuthState };
@@ -127,7 +133,30 @@ export const authApi = {
   logout: () => post<{ ok: true }>('/api/auth/logout', {})
 };
 
+export const adminApi = {
+  overview: () => call<AdminOverviewDto>('/api/admin/overview'),
+  users: (q: string) => call<AdminUserDto[]>(`/api/admin/users?q=${encodeURIComponent(q)}`),
+  disable: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/disable`, {}),
+  enable: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/enable`, {}),
+  setRole: (id: string, role: 'owner' | 'member') => post<AdminUserDto>(`/api/admin/users/${id}/role`, { role }),
+  revokeLogins: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/revoke-logins`, {}),
+  workers: () => call<AdminWorkerDto[]>('/api/admin/workers'),
+  disconnect: (workerId: string) =>
+    post<AdminWorkerDto>(`/api/admin/workers/${encodeURIComponent(workerId)}/disconnect`, {}),
+  settings: () => call<SettingsDto>('/api/admin/settings'),
+  saveSettings: (patch: Partial<SettingsDto>) =>
+    call<SettingsDto>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(patch) }),
+  audit: () => call<AuditEntryDto[]>('/api/admin/audit'),
+  enrollInfo: () => call<EnrollInfoDto>('/api/workers/enroll-info')
+};
+
 export type {
+  AdminOverviewDto,
+  AdminUserDto,
+  AdminWorkerDto,
+  AuditEntryDto,
+  EnrollInfoDto,
+  SettingsDto,
   AgentDto,
   AttachmentInputDto,
   CapabilityDto,

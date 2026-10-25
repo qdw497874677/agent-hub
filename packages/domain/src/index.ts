@@ -49,4 +49,8 @@ export type { PasswordHasher } from './ports/password-hasher.ts';
 export type { TokenIssuer } from './ports/token-issuer.ts';
 export type { EmailSender, OutgoingEmail } from './ports/email-sender.ts';
 export type { OAuthProvider, OAuthProfile, OAuthStart } from './ports/oauth-provider.ts';
+export type { SettingsRepository } from './ports/settings-repository.ts';
+export type { AuditLog } from './ports/audit-log.ts';
+export type { WorkerControl } from './ports/worker-control.ts';
+export * from './use-cases/admin.ts';
 export * from './use-cases/accounts.ts';
