@@ -122,4 +122,5 @@ test('summaryFromBody 跳过模板小标题、截断长行', () => {
 test('进展行是纯文本：去掉粗体、代码、链接等行内 markdown', () => {
   assert.equal(summaryFromBody('## 已完成\n- **接好了** `task_get`，见 [PR](https://x/1)'), '接好了 task_get，见 PR');
   assert.equal(plainInline('~~旧~~ __新__ *斜* a*b'), '旧 新 斜 a*b');
+  assert.equal(plainInline('授权吊销**：会话结束'), '授权吊销：会话结束');
 });
