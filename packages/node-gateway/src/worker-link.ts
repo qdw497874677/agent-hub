@@ -449,6 +449,15 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       ...(command.tools ? { tools: await toolAccess(command.tools) } : {})
     };
 
+    // 同一会话又来一次 start（比如断线后 server 重新托管）：先收掉旧的那份 agent。
+    // 否则旧进程成了孤儿，它结束时还会把新会话的托管和工具令牌一起带走。
+    const previous = sessions.get(command.sessionId);
+    if (previous) {
+      sessions.delete(command.sessionId);
+      workspaces.delete(command.sessionId);
+      await previous.dispose().catch(() => {});
+    }
+
     const started = await runtime.start(spec);
     if (!started.ok) {
       options.onLog?.(`${command.agentId} 启动失败：${started.error.message}`);
@@ -477,12 +486,16 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           if (event.kind === 'ended') break;
         }
       } finally {
-        sessions.delete(command.sessionId);
-        workspaces.delete(command.sessionId);
-        // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
-        // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
-        send({ type: 'status', sessionId: command.sessionId, status: 'ended' });
-        await session.dispose();
+        // 已被同 id 的新 start 顶掉：新的那份才是这条会话，旧的不许再报 ended
+        // （否则 server 会撤掉新会话的托管和刚签的工具令牌）；dispose 由顶替方做过了。
+        if (sessions.get(command.sessionId) === session) {
+          sessions.delete(command.sessionId);
+          workspaces.delete(command.sessionId);
+          // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
+          // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
+          send({ type: 'status', sessionId: command.sessionId, status: 'ended' });
+          await session.dispose();
+        }
       }
     })();
   }

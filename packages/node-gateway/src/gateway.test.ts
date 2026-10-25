@@ -500,3 +500,53 @@ test('连上不说 hello 的连接会被关掉', async () => {
   assert.equal(code, 4408);
   await stop();
 });
+
+test('同一会话重复 start：旧 agent 被收掉，旧的结束不会把新会话报成 ended', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const disposed: string[] = [];
+  const all = Object.fromEntries(CAPABILITY_NAMES.map((name) => [name, available])) as Record<CapabilityName, Capability>;
+  let generation = 0;
+  const runtime: AgentRuntime = {
+    descriptor: { id: asAgentId('echo'), label: 'Echo', capabilities: capabilityMatrix(all), models: [], defaultModel: '', options: [] },
+    async start(spec) {
+      const name = `g${++generation}`;
+      const queue = new AsyncQueue<SessionEvent>();
+      return {
+        ok: true,
+        value: {
+          sessionId: spec.sessionId,
+          async prompt({ text }) {
+            queue.push({ kind: 'text', delta: `${name}:${text}` });
+            return { ok: true, value: undefined };
+          },
+          async interrupt() {},
+          events: () => queue,
+          async adopt() {},
+          options: () => [],
+          async changeOption() {
+            return { ok: true, value: [] };
+          },
+          async dispose() {
+            disposed.push(name);
+            queue.close(); // 旧 agent 的事件流随之结束，走到 finally
+          }
+        }
+      };
+    }
+  };
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [runtime] });
+  await rec.until(() => rec.hellos.length === 1);
+
+  await gateway.gateway.dispatch(start('s1', 'w1'));
+  await rec.until(() => rec.statuses.length === 1);
+  await gateway.gateway.dispatch(start('s1', 'w1'));
+  await rec.until(() => rec.statuses.length === 2);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '在吗' });
+  await rec.until(() => rec.events.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.deepEqual(disposed, ['g1']);
+  assert.deepEqual(rec.statuses, ['running', 'running']);
+  assert.deepEqual(rec.events, [{ kind: 'text', delta: 'g2:在吗' }]);
+  await stop(link);
+});
