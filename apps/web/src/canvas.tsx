@@ -13,6 +13,7 @@ import type { CanvasDto, SaveLayoutRequest, TaskDto } from './api.ts';
 import { resolveLive, type LiveMap } from './live.ts';
 import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
 import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
+import { panIntoView } from './viewport.ts';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
 
@@ -95,7 +96,40 @@ export function CanvasView({
   // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
-  const flow = useRef<Pick<ReactFlowInstance<TaskNode | SessionNode, Edge>, 'setCenter'> | null>(null);
+  const flow = useRef<Pick<
+    ReactFlowInstance<TaskNode | SessionNode, Edge>,
+    'setCenter' | 'getViewport' | 'setViewport' | 'getNode'
+  > | null>(null);
+  const container = useRef<HTMLDivElement | null>(null);
+  // 刚点选的卡：右栏展开会把画布挤窄，挤完之后再把它整个挪进视口。
+  const revealing = useRef<{ id: string; until: number } | null>(null);
+
+  const reveal = useCallback((nodeId: string) => {
+    const instance = flow.current;
+    const element = container.current;
+    const node = instance?.getNode(nodeId);
+    if (!instance || !element || !node) return;
+    const rect = {
+      x: node.position.x,
+      y: node.position.y,
+      width: node.measured?.width ?? node.width ?? 320,
+      height: node.measured?.height ?? node.height ?? 240
+    };
+    const current = instance.getViewport();
+    const next = panIntoView(current, rect, { width: element.clientWidth, height: element.clientHeight });
+    if (next !== current) void instance.setViewport(next, { duration: 200 });
+  }, []);
+
+  useEffect(() => {
+    const element = container.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      const pending = revealing.current;
+      if (pending && Date.now() < pending.until) reveal(pending.id);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [reveal]);
 
   // 画布可能比节点先渲染完，所以居中放在这里而不是点击时——点击时 flow 还不存在。
   useEffect(() => {
@@ -223,18 +257,22 @@ export function CanvasView({
   }, [canvas.edges]);
 
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full" ref={container}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
+        fitViewOptions={{ padding: 0.12, minZoom: 0.55, maxZoom: 1 }}
         proOptions={{ hideAttribution: true }}
         onInit={(instance) => {
           flow.current = instance;
         }}
         onNodeClick={(_, node) => {
-          if (node.type === 'session') onSelect(node.id);
+          if (node.type !== 'session') return;
+          revealing.current = { id: node.id, until: Date.now() + 800 };
+          onSelect(node.id);
+          requestAnimationFrame(() => reveal(node.id));
         }}
         onNodeDoubleClick={(_, node) => {
           // 双击任务 = 再开一条会话；双击会话 = 进去说话。

@@ -118,3 +118,13 @@ body,
     border-radius: 6px;
   }
 }
+
+/*
+ * 键盘焦点：鼠标点击不出框（:focus-visible），Tab 过来一定看得见。
+ * 一根 1px 琥珀线——它是「此刻在这里」，正好是强调色该说的话（visual-direction §1）。
+ */
+:where(button, a, select, summary, [tabindex]):focus-visible {
+  outline: 1px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}

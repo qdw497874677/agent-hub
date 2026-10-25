@@ -2,6 +2,7 @@ import { Handle, NodeResizer, Position, type NodeProps, type Node } from '@xyflo
 import { useState } from 'react';
 import type { SessionDto, TaskDto } from './api.ts';
 import { CardComposer } from './composer.tsx';
+import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
 import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
@@ -38,14 +39,6 @@ export type SessionNode = Node<
   'session'
 >;
 
-const STATUS: Record<SessionDto['status'], { label: string; dot: string; shape: string }> = {
-  running: { label: '运行中', dot: 'bg-accent', shape: 'rounded-full' },
-  done: { label: '完成', dot: 'border border-sage', shape: 'rounded-full' },
-  stopped: { label: '已停止', dot: 'border border-tertiary', shape: 'rounded-sm' },
-  interrupted: { label: '中断', dot: 'bg-rust', shape: 'rounded-sm' },
-  failed: { label: '失败', dot: 'bg-rust', shape: 'rounded-sm' }
-};
-
 const TASK_STATUS_LABEL: Record<TaskDto['status'], string> = {
   open: '进行中',
   done: '已收尾',
@@ -69,16 +62,6 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
       handleClassName="card-resize-handle"
       onResizeEnd={(_, box) => onResized(box)}
     />
-  );
-}
-
-function StatusPill({ status, reason }: { status: SessionDto['status']; reason?: string | null }) {
-  const style = STATUS[status];
-  return (
-    <span className="flex items-center gap-1.5 text-meta text-secondary" title={reason ?? style.label}>
-      <span className={`block size-[7px] ${style.dot} ${style.shape}`} />
-      {style.label}
-    </span>
   );
 }
 

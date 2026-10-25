@@ -3,14 +3,8 @@ import { useQuery } from '@tanstack/react-query';
 import type { CanvasDto, SearchHitDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import type { LiveMap } from './live.ts';
+import { StatusPill } from './status.tsx';
 
-const STATUS_LABEL: Record<SessionDto['status'], string> = {
-  running: '运行中',
-  done: '完成',
-  stopped: '已停止',
-  interrupted: '中断',
-  failed: '失败'
-};
 
 function statusOf(session: SessionDto, live: LiveMap): SessionDto['status'] {
   return live[session.id]?.status ?? session.status;
@@ -66,7 +60,11 @@ export function ListView({
             return (
               <tr
                 key={session.id}
-                className="cursor-pointer border-b border-hair/60 hover:bg-card"
+                className="cursor-pointer border-b border-hair/60 hover:bg-card focus-visible:bg-card"
+                tabIndex={0}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') onOpen(session.id);
+                }}
                 onClick={() => onOpen(session.id)}
               >
                 <td className="max-w-[140px] truncate py-3 text-primary md:max-w-[280px] md:py-2">{taskTitle.get(session.taskId) ?? '—'}</td>
@@ -77,7 +75,9 @@ export function ListView({
                 <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">
                   {session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生'}
                 </td>
-                <td className="py-2 text-meta">{STATUS_LABEL[status]}</td>
+                <td className="py-2">
+                  <StatusPill status={status} reason={live[session.id]?.reason} />
+                </td>
                 <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">#{seq}</td>
               </tr>
             );
@@ -86,12 +86,15 @@ export function ListView({
       </table>
 
       <div className="mt-6 border-t border-hair pt-3">
-        <p className="mb-2 text-meta text-tertiary">任务</p>
+        <p className="mb-2 text-meta text-secondary">任务 · 点一下从它再开一条会话</p>
+        {canvas.tasks.length === 0 ? (
+          <p className="text-meta text-tertiary">还没有任务。右上角「新建任务」写下想做的事。</p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           {canvas.tasks.map((task) => (
             <button
               key={task.id}
-              className="rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent"
+              className="rounded-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-accent hover:text-accent"
               onClick={() => onDerive(task.id)}
               title="从这个任务派生一条会话"
             >

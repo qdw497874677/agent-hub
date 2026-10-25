@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { CanvasDto, SessionDto } from './api.ts';
 import { api, attachmentUrl } from './api.ts';
 import { Composer } from './composer.tsx';
+import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { sessionCommands } from './commands.ts';
 import type { Block, LiveSession } from './live.ts';
@@ -16,14 +17,6 @@ interface Props {
   readonly onChanged: () => void;
   readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
 }
-
-const STATUS_LABEL: Record<SessionDto['status'], string> = {
-  running: '运行中',
-  done: '完成',
-  stopped: '已停止',
-  interrupted: '中断',
-  failed: '失败'
-};
 
 function BlockView({ block, agentLabel, sessionId }: { block: Block; agentLabel: string; sessionId: string }) {
   if (block.kind === 'prompt') {
@@ -154,9 +147,7 @@ export function FocusView({
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-3 text-meta text-tertiary">
           {session.origin.kind === 'fork' ? <span>分叉自 #{session.origin.atSeq}</span> : null}
-          <span className={status === 'failed' || status === 'interrupted' ? 'text-rust' : ''}>
-            {STATUS_LABEL[status]}
-          </span>
+          <StatusPill status={status} reason={reason} />
         </span>
       </header>
 
