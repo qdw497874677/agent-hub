@@ -27,12 +27,47 @@ export const capabilityNameSchema = z.enum([
 
 export const capabilityMatrixSchema = z.record(capabilityNameSchema, capabilitySchema);
 
+/**
+ * 可调项：形状照 ACP 的 ConfigOption。agent 报什么，界面就渲染什么——
+ * 所以这层只负责搬运，不解释哪个选项叫什么名字。
+ */
+export const optionValueSchema = z.object({
+  value: z.string(),
+  label: z.string(),
+  description: z.string().optional()
+});
+
+export const optionChoiceSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('value'), value: optionValueSchema }),
+  z.object({
+    kind: z.literal('group'),
+    label: z.string(),
+    values: z.array(optionValueSchema).readonly()
+  })
+]);
+
+export const optionCategorySchema = z.enum(['model', 'mode', 'model_config', 'thought_level', 'custom']);
+
+export const runtimeOptionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().optional(),
+  category: optionCategorySchema,
+  kind: z.enum(['select', 'boolean']),
+  current: z.union([z.string(), z.boolean()]),
+  // readonly：领域里的选项是只读的，这里不加的话每次跨界都要一次无意义的复制
+  choices: z.array(optionChoiceSchema).readonly()
+});
+
+export const optionValuesSchema = z.record(z.string(), z.union([z.string(), z.boolean()]));
+
 export const agentSchema = z.object({
   id,
   label: z.string(),
   capabilities: capabilityMatrixSchema,
   models: z.array(z.string()).readonly(),
-  defaultModel: z.string()
+  defaultModel: z.string(),
+  options: z.array(runtimeOptionSchema)
 });
 
 export const projectSchema = z.object({
@@ -76,6 +111,8 @@ export const sessionSchema = z.object({
   status: sessionStatusSchema,
   lastSeq: z.number().int().nonnegative(),
   agentSessionRef: z.string().nullable(),
+  options: optionValuesSchema,
+  optionSpec: z.array(runtimeOptionSchema),
   createdAt: epochMs,
   updatedAt: epochMs
 });
@@ -230,6 +267,13 @@ export const workerAgentSessionSchema = z.object({
   agentSessionRef: id
 });
 
+/** worker 把 agent 报上来的可调项当前值交回 server，好让重开浏览器时选择器不空着。 */
+export const workerOptionsSchema = z.object({
+  type: z.literal('options'),
+  sessionId: id,
+  options: z.array(runtimeOptionSchema)
+});
+
 /**
  * 首页要的东西：项目 + 有多少活在里面。
  * 单独的 DTO 而不是让前端逐个项目拉 canvas：首页不该为了显示「3 个任务」去解 30 个会话。
@@ -294,6 +338,7 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerHelloSchema,
   workerEventSchema,
   workerAgentSessionSchema,
+  workerOptionsSchema,
   workerStatusSchema
 ]);
 
@@ -307,17 +352,33 @@ export const startSessionCommandSchema = z.object({
   origin: sessionOriginSchema,
   resume: z
     .object({ agentSessionRef: z.string().nullable(), cursor: z.number().int().nonnegative() })
-    .nullable()
+    .nullable(),
+  /** 开跑前就定下的可调项；空对象表示全用 agent 默认。 */
+  options: optionValuesSchema
 });
 
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string() }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
-  z.object({ kind: z.literal('dispose'), sessionId: id })
+  z.object({ kind: z.literal('dispose'), sessionId: id }),
+  z.object({
+    kind: z.literal('set_option'),
+    sessionId: id,
+    optionId: z.string(),
+    value: z.union([z.string(), z.boolean()])
+  })
 ]);
 
+/** 改一项可调项：值可以是模型串、也可以是思考强度的档位名。 */
+export const changeOptionRequest = z.object({
+  optionId: z.string().min(1),
+  value: z.union([z.string(), z.boolean()])
+});
+
 export type AgentDto = z.infer<typeof agentSchema>;
+export type RuntimeOptionDto = z.infer<typeof runtimeOptionSchema>;
+export type OptionValueDto = z.infer<typeof optionValueSchema>;
 export type ProjectDto = z.infer<typeof projectSchema>;
 export type TaskDto = z.infer<typeof taskSchema>;
 export type SessionDto = z.infer<typeof sessionSchema>;

@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import type { AgentDto } from '@agent-hub/contract';
 import type {
   AgentDescriptor,
   Artifact,
@@ -164,7 +165,31 @@ const descriptor: AgentDescriptor = {
     structured_events: { state: 'available' }
   },
   models: ['fake-1'],
-  defaultModel: 'fake-1'
+  defaultModel: 'fake-1',
+  options: [
+    {
+      id: 'model',
+      label: '模型',
+      category: 'model',
+      kind: 'select',
+      current: 'fake-1',
+      choices: [
+        { kind: 'value', value: { value: 'fake-1', label: 'fake-1' } },
+        { kind: 'value', value: { value: 'fake-2', label: 'fake-2' } }
+      ]
+    },
+    {
+      id: 'thinking',
+      label: '思考强度',
+      category: 'thought_level',
+      kind: 'select',
+      current: 'low',
+      choices: [
+        { kind: 'value', value: { value: 'off', label: 'off' } },
+        { kind: 'value', value: { value: 'low', label: 'low' } }
+      ]
+    }
+  ]
 };
 
 function harness(token: string | null = null) {
@@ -270,7 +295,9 @@ test('建项目 → 建任务 → 派生会话，整条纵切走通', async () =
       label: descriptor.label,
       capabilities: descriptor.capabilities as never,
       models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel
+      defaultModel: descriptor.defaultModel,
+      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
+      options: descriptor.options as unknown as AgentDto['options']
     }
   ]);
 
@@ -302,7 +329,9 @@ test('会话不在 worker 手上时，prompt 先 resume 再发（S7.1）', async
       label: descriptor.label,
       capabilities: descriptor.capabilities as never,
       models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel
+      defaultModel: descriptor.defaultModel,
+      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
+      options: descriptor.options as unknown as AgentDto['options']
     }
   ]);
 
@@ -355,7 +384,9 @@ test('分叉一个不存在的会话返回 404，分叉点超出历史返回 409
       label: descriptor.label,
       capabilities: descriptor.capabilities as never,
       models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel
+      defaultModel: descriptor.defaultModel,
+      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
+      options: descriptor.options as unknown as AgentDto['options']
     }
   ]);
 
@@ -424,7 +455,9 @@ test('event 落盘后能从 /events 读回，seq 单调', async () => {
       label: descriptor.label,
       capabilities: descriptor.capabilities as never,
       models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel
+      defaultModel: descriptor.defaultModel,
+      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
+      options: descriptor.options as unknown as AgentDto['options']
     }
   ]);
   const project = await call('/api/projects', {

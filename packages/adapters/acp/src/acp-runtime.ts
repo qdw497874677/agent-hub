@@ -5,13 +5,15 @@ import type {
   AgentRuntime,
   DomainError,
   Result,
+  RuntimeOption,
   RuntimeSession,
   SessionEvent,
   StartSpec
 } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
-import { openCodeDescriptor } from './descriptor.ts';
+import { acpDescriptor, type AcpAgentConfig } from './config.ts';
 import { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
+import { mapAcpOptions } from './map-options.ts';
 
 class EventQueue implements AsyncIterable<SessionEvent> {
   private readonly items: SessionEvent[] = [];
@@ -54,17 +56,31 @@ class AcpSession implements RuntimeSession {
   private readonly queue = new EventQueue();
   private readonly pending = new Map<string, Pending>();
   private readonly toolNames = new Map<string, string>();
+  private current: readonly RuntimeOption[] = [];
   private counter = 0;
   private agentSessionId = '';
+  private readonly onOptions: (options: readonly RuntimeOption[]) => void;
 
-  constructor(sessionId: RuntimeSession['sessionId'], child: ChildProcessWithoutNullStreams) {
+  constructor(
+    sessionId: RuntimeSession['sessionId'],
+    child: ChildProcessWithoutNullStreams,
+    onOptions: (options: readonly RuntimeOption[]) => void
+  ) {
     this.sessionId = sessionId;
     this.child = child;
+    this.onOptions = onOptions;
     void this.pump();
   }
 
   setAgentSessionId(id: string): void {
     this.agentSessionId = id;
+  }
+
+  private setOptions(raw: unknown): void {
+    const options = mapAcpOptions(raw);
+    if (options.length === 0) return;
+    this.current = options;
+    this.onOptions(options);
   }
 
   private async pump(): Promise<void> {
@@ -95,6 +111,12 @@ class AcpSession implements RuntimeSession {
         }
         const params = record['params'] as Record<string, unknown> | undefined;
         if (record['method'] === 'session/update' && params) {
+          const update = params['update'] as Record<string, unknown> | undefined;
+          // agent 自己也能改配置（比如限流后换模型），它推的是全量状态。
+          if (update?.['sessionUpdate'] === 'config_option_update') {
+            this.setOptions(update['configOptions']);
+            continue;
+          }
           for (const event of mapAcpUpdate(params['update'], this.toolNames)) this.queue.push(event);
         }
       }
@@ -122,7 +144,9 @@ class AcpSession implements RuntimeSession {
       this.write({
         jsonrpc: '2.0',
         id,
-        result: allow?.optionId ? { outcome: { outcome: 'selected', optionId: allow.optionId } } : { outcome: { outcome: 'cancelled' } }
+        result: allow?.optionId
+          ? { outcome: { outcome: 'selected', optionId: allow.optionId } }
+          : { outcome: { outcome: 'cancelled' } }
       });
       return;
     }
@@ -155,6 +179,7 @@ class AcpSession implements RuntimeSession {
     const session = await this.request('session/new', { cwd, mcpServers: [] });
     const id = session['sessionId'];
     if (typeof id === 'string') this.agentSessionId = id;
+    this.setOptions(session['configOptions']);
   }
 
   async load(cwd: string, agentSessionRef: string): Promise<void> {
@@ -162,12 +187,34 @@ class AcpSession implements RuntimeSession {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
     });
-    await this.request('session/load', {
+    const session = await this.request('session/load', {
       sessionId: agentSessionRef,
       cwd,
       mcpServers: []
     });
     this.agentSessionId = agentSessionRef;
+    this.setOptions(session['configOptions']);
+  }
+
+  options(): readonly RuntimeOption[] {
+    return this.current;
+  }
+
+  async changeOption(id: string, value: string | boolean): Promise<Result<readonly RuntimeOption[], DomainError>> {
+    try {
+      const result = await this.request('session/set_config_option', {
+        sessionId: this.agentSessionId,
+        configId: id,
+        type: typeof value === 'boolean' ? 'boolean' : 'id',
+        value
+      });
+      // 响应是全量状态：换模型会连带改变别的项的可选值，所以整份换掉。
+      this.setOptions(result['configOptions']);
+      if (this.current.length === 0) return { ok: false, error: unavailable('agent 没有回报配置项') };
+      return { ok: true, value: this.current };
+    } catch (error) {
+      return { ok: false, error: unavailable((error as Error).message) };
+    }
   }
 
   async prompt(text: string): Promise<Result<void, DomainError>> {
@@ -179,7 +226,7 @@ class AcpSession implements RuntimeSession {
       this.queue.push(endedFromStopReason(result['stopReason']));
       return { ok: true, value: undefined };
     } catch (error) {
-      return { ok: false, error: unavailable((error as Error).message) as DomainError };
+      return { ok: false, error: unavailable((error as Error).message) };
     }
   }
 
@@ -206,39 +253,54 @@ class AcpSession implements RuntimeSession {
   }
 }
 
-export interface OpenCodeRuntimeOptions {
-  readonly command?: string;
+export interface AcpRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
+  /** agent 报上来的可调项（含当前值），worker 用它告诉 server。 */
+  readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
 
-export function createOpenCodeRuntime(options: OpenCodeRuntimeOptions = {}): AgentRuntime {
-  const command = options.command ?? 'opencode';
-
+/**
+ * 一个 ACP agent = 一条命令 + 一套协议。
+ * 换 agent 只换 `config`，不改这里——这就是「通用」在这一层的全部含义。
+ */
+export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOptions = {}): AgentRuntime {
   return {
-    descriptor: openCodeDescriptor,
+    descriptor: acpDescriptor(config),
 
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
       let child: ChildProcessWithoutNullStreams;
       try {
-        child = spawn(command, ['acp'], {
+        child = spawn(config.command, [...config.args], {
           cwd: spec.workspaceRoot,
           stdio: ['pipe', 'pipe', 'pipe']
         });
       } catch (error) {
-        return { ok: false, error: unavailable(`无法启动 OpenCode：${(error as Error).message}`) };
+        return { ok: false, error: unavailable(`无法启动 ${config.label}：${(error as Error).message}`) };
       }
       child.on('error', () => {
         /* 见 Pi 适配器的同名处理：避免未处理的 error 事件崩进程 */
       });
 
-      const session = new AcpSession(spec.sessionId, child);
+      // 每一项可调项都是 agent 自己报的；平台只转手，不改写。
+      const session = new AcpSession(spec.sessionId, child, (reported) => {
+        options.onOptions?.(spec.sessionId, reported);
+      });
       const ref = spec.resume?.agentSessionRef ?? null;
       try {
         if (ref) await session.load(spec.workspaceRoot, ref);
         else await session.initialize(spec.workspaceRoot);
       } catch (error) {
         await session.dispose();
-        return { ok: false, error: unavailable(`OpenCode 握手失败：${(error as Error).message}`) };
+        return { ok: false, error: unavailable(`${config.label} 握手失败：${(error as Error).message}`) };
+      }
+
+      // 开跑前用户已经选好的项（派生时选的模型），交给 agent 去落实。
+      for (const [id, value] of Object.entries(spec.options)) {
+        const changed = await session.changeOption(id, value);
+        if (!changed.ok) {
+          await session.dispose();
+          return { ok: false, error: changed.error };
+        }
       }
 
       options.onAgentSessionRef?.(spec.sessionId, ref ?? 'pending');

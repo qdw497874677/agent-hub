@@ -8,6 +8,7 @@ import type {
   DomainError,
   NodeGateway,
   Result,
+  RuntimeOption,
   SessionEvent,
   SessionId,
   WorkerCommand,
@@ -20,6 +21,7 @@ export interface GatewayHooks {
   onHello(worker: WorkerStatus, agents: AgentDto[]): void;
   onEvent(sessionId: SessionId, event: SessionEvent): void;
   onAgentSession(sessionId: SessionId, agentSessionRef: string): void;
+  onOptions(sessionId: SessionId, options: readonly RuntimeOption[]): void;
   onStatus(sessionId: SessionId, status: string, reason?: string): void;
   onWorkerGone(workerId: string): void;
   onLog?(message: string): void;
@@ -92,6 +94,8 @@ export function createServerGateway(hooks: GatewayHooks): ServerGateway {
       if (frame.type === 'event') hooks.onEvent(frame.sessionId as SessionId, frame.event);
       else if (frame.type === 'agent_session') {
         hooks.onAgentSession(frame.sessionId as SessionId, frame.agentSessionRef);
+      } else if (frame.type === 'options') {
+        hooks.onOptions(frame.sessionId as SessionId, frame.options);
       } else if (frame.type === 'status') hooks.onStatus(frame.sessionId as SessionId, frame.status, frame.reason);
     });
 
@@ -146,7 +150,8 @@ function toWire(command: WorkerCommand): ServerToWorker {
         model: command.model,
         workspaceRoot: command.workspaceRoot,
         origin: command.origin,
-        resume: command.resume
+        resume: command.resume,
+        options: command.options
       };
     case 'prompt':
       return { kind: 'prompt', sessionId: command.sessionId, text: command.text };
@@ -154,6 +159,13 @@ function toWire(command: WorkerCommand): ServerToWorker {
       return { kind: 'interrupt', sessionId: command.sessionId };
     case 'dispose':
       return { kind: 'dispose', sessionId: command.sessionId };
+    case 'set_option':
+      return {
+        kind: 'set_option',
+        sessionId: command.sessionId,
+        optionId: command.optionId,
+        value: command.value
+      };
   }
 }
 
@@ -164,6 +176,7 @@ export function toDescriptor(dto: AgentDto): AgentDescriptor {
     label: dto.label,
     capabilities: dto.capabilities as AgentDescriptor['capabilities'],
     models: dto.models,
-    defaultModel: dto.defaultModel
+    defaultModel: dto.defaultModel,
+    options: dto.options as AgentDescriptor['options']
   };
 }

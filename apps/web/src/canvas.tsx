@@ -28,6 +28,8 @@ interface Props {
   readonly onDraftChange: (sessionId: string, text: string) => void;
   readonly onSend: (sessionId: string, text: string) => Promise<void>;
   readonly onInterrupt: (sessionId: string) => Promise<void>;
+  /** 改 agent 的可调项（模型、思考强度…）：清单由 agent 报，我们只转发。 */
+  readonly onChangeOption: (sessionId: string, optionId: string, value: string | boolean) => Promise<void>;
   readonly onLayoutChange: (positions: Record<string, Point>) => void;
   readonly onTaskStatus: (taskId: string, status: TaskDto['status']) => void;
   /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
@@ -79,7 +81,8 @@ export function CanvasView({
   drafts,
   onDraftChange,
   onSend,
-  onInterrupt
+  onInterrupt,
+  onChangeOption
 }: Props) {
   const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
   const [positions, setPositions] = useState<Record<string, Point>>(initial);
@@ -124,7 +127,8 @@ export function CanvasView({
         draft: drafts[session.id] ?? '',
         onDraftChange: (text: string) => onDraftChange(session.id, text),
         onSend: (text: string) => onSend(session.id, text),
-        onInterrupt: () => onInterrupt(session.id)
+        onInterrupt: () => onInterrupt(session.id),
+        onChangeOption: (optionId: string, value: string | boolean) => onChangeOption(session.id, optionId, value)
       }
     }));
     return [...taskNodes, ...sessionNodes];

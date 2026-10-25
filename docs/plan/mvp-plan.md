@@ -241,3 +241,23 @@ M6 之后补的三件 M3/M4 遗留（列表视图、搜索、项目切换）见 
 
 `npm run e2e` 里那条输入用 `fill` 而不是逐字敲，原因同上：0 延迟的合成按键会跑在画布重渲染前面。
 
+
+## 12 可调项：模型与思考强度（第五次验收反馈）+ ACP 适配器
+
+需求原话：「会话应该需要可以选择模型，思考强度等等，参考 opencode web 不过我们这个是通用的，要能适配不同的 agent 运行时」。
+
+| 决定 | 做法 | 为什么 |
+| --- | --- | --- |
+| 扩展方式从「每个 agent 一个包」改成「协议一包、agent 一条配置」 | `packages/adapters/opencode` → `packages/adapters/acp`（通用），OpenCode 变成 `ACP_AGENTS` 里的一条 JSON | 说 ACP 的 agent 有几十个，它们之间没有区别；按 agent 建包会得到 N 份同样的握手代码。Pi 没有 ACP，所以它仍然独占一个包 |
+| 可调项清单 | `RuntimeOption[]`，形状照抄 ACP 的 `ConfigOption`；`category` 只用于摆放 | 见 ADR 0007。UI 里没有任何硬编码的选项名 |
+| 会话存两份 | `options`（当前值）+ `optionSpec`（整份清单，含候选） | 只存值的话，选择器不知道该列什么；而候选只有 agent 知道，且换模型后候选会变 |
+| 改选项后的「真相」 | 用户点选后平台**不**回显，等 agent 回报全量状态再落库，HTTP 响应最多等 8 秒 | 「换模型成功了」只有换完还愿意回答的 agent 有资格说。乐观回显会和真实状态分叉，而分叉的界面比慢一点的界面危险得多 |
+| 改选项前先拉起 agent | `ensureHosted()`：会话不在 live 集合里就先 `start_session` + resume，和「接着说一句」同一条路径 | 第一次实测就撞上了：跑完的会话已被 worker dispose，`set_option` 打在一个不存在的会话上，日志只有「未知会话」，而接口返回 200 |
+| 模型值同时写进 `Session.model` | 由 agent 回报驱动，不由用户点选驱动 | `--model` 是重启参数，它必须等于 agent 真正在用的那个 |
+
+真机验证（Pi）：`optionSpec` 报回 `model`（46 个候选，默认 `zai-coding-cn/glm-5.3`）与 `thinking`（`off/minimal/low/medium/high`，当前 `high`）；改成 `low` 后值与清单同步更新；换成 `opencode-go/glm-5.3` 后 `session.model` 跟着变，紧接着发一句「回两个字：收到」，journal 里出现 `prompt` → `text 收到` → `ended done`。
+
+落地时又踩到两个（都不是可调项本身的问题，但都由它照出来）：
+
+1. **改完不回弹，界面却是旧的。** `app.tsx` 里 `changeOption` 用 `useCallback(..., [])` 并注释「refresh 在下面定义，用函数式引用避免顺序问题」——那不是避免顺序问题，那是把 `refresh` 的闭包钉在首渲染上：首渲染时 `project` 还是 `null`，于是 `if (project)` 永远不进，画布从不失效重建。改用 `[refresh]` 并把它提到这些回调之前。同一个坑 `sendPrompt`、`interruptSession` 也已中过一次（它们被 900ms 后的定时刷新救了，所以一直没暴露）。
+2. **e2e 断言了一个转瞬即逝的状态。** 「跑的时候圆点变 ■」在快模型上只存在几百毫秒，`toBeVisible` 的轮询会正好错过——测试失败而功能完全正常。改成断言**终态**（跑完必须回到 ↑，停在 ■ 上才是真 bug）。教训：断言稳态，不要断言过程。

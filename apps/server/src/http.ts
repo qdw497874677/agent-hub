@@ -5,6 +5,7 @@ import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { streamSSE } from 'hono/streaming';
 import {
+  changeOptionRequest,
   createProjectRequest,
   directoryListingSchema,
   homeSchema,
@@ -21,6 +22,7 @@ import type {
   Deps,
   DomainError,
   Result,
+  Session,
   SessionEvent,
   SessionId,
   TaskStatus,
@@ -28,14 +30,18 @@ import type {
 } from '@agent-hub/domain';
 import {
   asSessionId,
+  changeSessionOption,
   searchUseCase,
   createProjectUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
   emptyLayout,
+  err,
   forkSessionUseCase,
   loadCanvas,
   listProjects,
+  notFound,
+  ok,
   place,
   setTaskStatusUseCase
 } from '@agent-hub/domain';
@@ -58,6 +64,13 @@ export interface AppOptions {
    * 同一会话的落盘要串行（ADR 0004），而串行队列属于运行组合根。
    */
   readonly record: (sessionId: SessionId, event: SessionEvent) => Promise<Result<void, DomainError>>;
+  /**
+   * 等 agent 回报它改完之后的可调项。
+   *
+   * 换模型会连带改变别的项，所以「改成功了」这句话只有 agent 有资格说；
+   * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
+   */
+  readonly waitOptions?: (sessionId: SessionId) => Promise<void>;
 }
 
 /** 首页只列最近这么多条会话：多到能认出「昨天那条」，少到不用滚。 */
@@ -230,6 +243,31 @@ export function createApp(options: AppOptions): Hono {
    * 发消息。会话不在 worker 手上时（server 重启过、worker 崩过）先补一次
    * start_session + resume，再发消息——这就是 S7.1「重开浏览器还能接着干活」。
    */
+  /**
+   * 会话跑完就没人托管它了（worker 那边已经 dispose）。
+   * 想再对它做任何事（说话、改模型），都得先把 agent 按上次的位置重新拉起来。
+   */
+  async function ensureHosted(session: Session): Promise<Result<void, DomainError>> {
+    if (live.has(session.id)) return ok(undefined);
+    const task = await deps.tasks.byId(session.taskId);
+    const project = task ? await deps.projects.byId(task.projectId) : null;
+    if (!task || !project) return err(notFound('会话所属任务或项目不存在'));
+    const resumed = await deps.gateway.dispatch({
+      kind: 'start_session',
+      sessionId: session.id,
+      taskId: session.taskId,
+      agentId: session.agentId,
+      model: session.model,
+      workspaceRoot: project.rootPath,
+      origin: session.origin,
+      resume: { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq },
+      options: session.options
+    });
+    if (!resumed.ok) return err(resumed.error);
+    live.add(session.id);
+    return ok(undefined);
+  }
+
   app.post('/api/sessions/:sessionId/prompt', async (c) => {
     const parsed = promptRequest.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return badRequest(c);
@@ -243,28 +281,36 @@ export function createApp(options: AppOptions): Hono {
     const logged = await options.record(sessionId, { kind: 'prompt', text: parsed.data.text });
     if (!logged.ok) return fail(c, logged.error);
 
-    if (!live.has(sessionId)) {
-      const task = await deps.tasks.byId(session.taskId);
-      const project = task ? await deps.projects.byId(task.projectId) : null;
-      if (!task || !project) {
-        return c.json({ error: { code: 'not_found', message: '会话所属任务或项目不存在' } }, 404);
-      }
-      const resumed = await deps.gateway.dispatch({
-        kind: 'start_session',
-        sessionId,
-        taskId: session.taskId,
-        agentId: session.agentId,
-        model: session.model,
-        workspaceRoot: project.rootPath,
-        origin: session.origin,
-        resume: { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq }
-      });
-      if (!resumed.ok) return fail(c, resumed.error);
-      live.add(sessionId);
-    }
+    const hosted = await ensureHosted(session);
+    if (!hosted.ok) return fail(c, hosted.error);
 
     const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: parsed.data.text });
     return sent.ok ? c.json({ ok: true }) : fail(c, sent.error);
+  });
+
+  /**
+   * 改一项可调项（模型、思考强度……）。
+   * 选项清单来自 agent，所以这里不校验 id 是否眼熟——只校验形状，
+   * 真正认不认由 agent 说了算，它不认就会在下面这步报错，然后我们什么都不写。
+   */
+  app.post('/api/sessions/:sessionId/options', async (c) => {
+    const parsed = changeOptionRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return badRequest(c);
+    const sessionId = c.req.param('sessionId');
+    const existing = await deps.sessions.byId(asSessionId(sessionId));
+    if (!existing) return c.json({ error: { code: 'not_found', message: '会话不存在' } }, 404);
+    // 改模型也是在改一条会话的运行状态；它没在跑就先拉起来，否则指令会打空。
+    const hosted = await ensureHosted(existing);
+    if (!hosted.ok) return fail(c, hosted.error);
+    const changed = await changeSessionOption(deps, {
+      sessionId,
+      id: parsed.data.optionId,
+      value: parsed.data.value
+    });
+    if (!changed.ok) return fail(c, changed.error);
+    await options.waitOptions?.(asSessionId(sessionId));
+    const fresh = await deps.sessions.byId(asSessionId(sessionId));
+    return c.json(fresh ?? changed.value);
   });
 
   app.post('/api/sessions/:sessionId/interrupt', async (c) => {

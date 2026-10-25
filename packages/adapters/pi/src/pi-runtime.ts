@@ -5,7 +5,9 @@ import type {
   AgentDescriptor,
   AgentRuntime,
   DomainError,
+  OptionValue,
   Result,
+  RuntimeOption,
   RuntimeSession,
   SessionEvent,
   StartSpec
@@ -61,12 +63,27 @@ class PiSession implements RuntimeSession {
   private readonly mapper = createPiEventMapper();
   private counter = 0;
   private disposed = false;
+  /**
+   * Pi 的可调项不是一次问完的：模型清单在本机探测时就已知，
+   * 但思考档位取决于**当前模型**（不支持的模型只给 `['off']`），
+   * 所以换模型之后必须重新问一次，否则会给用户一个按下去就报错的档位。
+   */
+  private readonly modelChoices: readonly string[];
+  private current: readonly RuntimeOption[] = [];
+  private readonly onOptions: ((options: readonly RuntimeOption[]) => void) | undefined;
   /** Pi 的失败原因几乎都在 stderr 上（比如模型名有歧义），丢掉它等于把可诊断性丢了。 */
   private lastStderr = '';
 
-  constructor(sessionId: RuntimeSession['sessionId'], child: ChildProcessWithoutNullStreams) {
+  constructor(
+    sessionId: RuntimeSession['sessionId'],
+    child: ChildProcessWithoutNullStreams,
+    modelChoices: readonly string[],
+    onOptions?: (options: readonly RuntimeOption[]) => void
+  ) {
     this.sessionId = sessionId;
     this.child = child;
+    this.modelChoices = modelChoices;
+    this.onOptions = onOptions;
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => {
       const text = chunk.trim();
@@ -172,6 +189,102 @@ class PiSession implements RuntimeSession {
     }
   }
 
+  private async modelOption(): Promise<RuntimeOption | null> {
+    if (this.modelChoices.length === 0) return null;
+    let current = this.modelChoices[0] ?? '';
+    try {
+      const response = await this.send({ type: 'get_state' });
+      const data = response['data'] as Record<string, unknown> | undefined;
+      const model = data?.['model'] as { id?: unknown; provider?: unknown } | undefined;
+      if (typeof model?.id === 'string' && typeof model.provider === 'string') {
+        current = `${model.provider}/${model.id}`;
+      }
+    } catch {
+      /* 问不到就用第一个：至少选择器不是空的 */
+    }
+    return {
+      id: 'model',
+      label: '模型',
+      category: 'model',
+      kind: 'select',
+      current,
+      choices: this.modelChoices.map<{ kind: 'value'; value: OptionValue }>((model) => ({
+        kind: 'value',
+        value: { value: model, label: model }
+      }))
+    };
+  }
+
+  private async thinkingOption(): Promise<RuntimeOption | null> {
+    try {
+      const response = await this.send({ type: 'get_available_thinking_levels' });
+      const data = response['data'] as Record<string, unknown> | undefined;
+      const raw = data?.['levels'] ?? data?.['thinkingLevels'];
+      const levels = Array.isArray(raw) ? raw.filter((level): level is string => typeof level === 'string') : [];
+      if (levels.length === 0) return null;
+      const state = await this.send({ type: 'get_state' });
+      const stateData = state['data'] as Record<string, unknown> | undefined;
+      const current = typeof stateData?.['thinkingLevel'] === 'string' ? stateData['thinkingLevel'] : levels[0];
+      return {
+        id: 'thinking',
+        label: '思考强度',
+        category: 'thought_level',
+        kind: 'select',
+        current: current ?? levels[0] ?? 'off',
+        choices: levels.map<{ kind: 'value'; value: OptionValue }>((level) => ({
+          kind: 'value',
+          value: { value: level, label: level }
+        }))
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 问 Pi 一遍：模型 + 思考档位。两次往返换来一个「不撒谎」的选择器，值得。 */
+  async loadOptions(): Promise<readonly RuntimeOption[]> {
+    const options: RuntimeOption[] = [];
+    const model = await this.modelOption();
+    if (model) options.push(model);
+    const thinking = await this.thinkingOption();
+    if (thinking) options.push(thinking);
+    this.current = options;
+    if (options.length === 0) return options;
+    this.onOptions?.(options);
+    return options;
+  }
+
+  options(): readonly RuntimeOption[] {
+    return this.current;
+  }
+
+  async changeOption(
+    id: string,
+    value: string | boolean
+  ): Promise<Result<readonly RuntimeOption[], DomainError>> {
+    try {
+      if (id === 'model') {
+        if (typeof value !== 'string') return { ok: false, error: unavailable('模型必须是一个字符串') };
+        const slash = value.indexOf('/');
+        if (slash <= 0) return { ok: false, error: unavailable(`模型名要写成 provider/model：${value}`) };
+        await this.send({
+          type: 'set_model',
+          provider: value.slice(0, slash),
+          modelId: value.slice(slash + 1)
+        });
+      } else if (id === 'thinking') {
+        if (typeof value !== 'string') return { ok: false, error: unavailable('思考档位必须是一个字符串') };
+        await this.send({ type: 'set_thinking_level', level: value });
+      } else {
+        return { ok: false, error: unavailable(`Pi 没有可调项 ${id}`) };
+      }
+      // 换模型会连带改变可用档位，所以整份重新问一遍。
+      return { ok: true, value: await this.loadOptions() };
+    } catch (error) {
+      return { ok: false, error: unavailable((error as Error).message) };
+    }
+  }
+
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
@@ -188,13 +301,18 @@ export interface PiRuntimeOptions {
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
+  /** 可调项当前值上报（模型、思考强度）。 */
+  readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
 
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
   const command = options.command ?? 'pi';
 
   return {
-    descriptor: piDescriptorFor(options.models ?? [], options.defaultModel ?? '') satisfies AgentDescriptor,
+    descriptor: piDescriptorFor(
+      options.models ?? [],
+      options.defaultModel ?? ''
+    ) satisfies AgentDescriptor,
 
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
       // 空 model 意味着「用 Pi 自己的默认」，不要硬塞一个可能不存在的模型名。
@@ -214,12 +332,15 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
         /* 启动失败由 exit 事件与事件流共同反映，这里只避免未处理的 error 崩进程 */
       });
 
-      const session = new PiSession(spec.sessionId, child);
+      const session = new PiSession(spec.sessionId, child, options.models ?? [], (reported) =>
+        options.onOptions?.(spec.sessionId, reported)
+      );
 
       child.once('spawn', () => {
         void session.identify().then((ref) => {
           if (ref) options.onAgentSessionRef?.(spec.sessionId, ref);
         });
+        void session.loadOptions();
       });
 
       return { ok: true, value: session };

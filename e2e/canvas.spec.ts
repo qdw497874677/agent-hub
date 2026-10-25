@@ -58,13 +58,12 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await cardInput.fill(`只回这段文字，不要用工具：${ECHO}`);
   await cardInput.press('Enter');
 
-  // 同一个圆点：这一轮在跑时它变成 ■（参考 opencode web），跑完变回 ↑
-  await expect(sessionNode(page).getByRole('button', { name: '中断' })).toBeVisible({ timeout: 30_000 });
-
+  // 这里**不**断言「■ 出现过」：那一轮可能几百毫秒就跑完，而 toBeVisible 的轮询会正好错过它。
+  // 圆点的两种身份由下面这条覆盖：跑完必须回到 ↑（停在 ■ 上才是真 bug）。
   // 只认模型真的吐出来的那个词，而且要落在卡片里（输入框里也有这个词，会假通过）
   await expect(sessionNode(page).getByText(ECHO)).toBeVisible({ timeout: 120_000 });
   await expect(sessionNode(page)).toContainText('完成');
-  await expect(sessionNode(page).getByRole('button', { name: '发送' })).toBeVisible();
+  await expect(sessionNode(page).getByRole('button', { name: '发送' })).toBeVisible({ timeout: 120_000 });
 
   // 专注对话：进去看整屏，问与答同屏。
   // 这里点「对话」而不是双击：卡片中段的输入框会把双击当成选词，
@@ -169,4 +168,36 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await taskNode(page, TASK_TITLE).hover();
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '重开' }).click();
   await expect(taskNode(page, TASK_TITLE)).toContainText('进行中');
+});
+
+/**
+ * 可调项：模型与思考强度都来自 agent 自己的回报（ADR 0007）。
+ * 这条只验证「卡片上真的有得选，且改完不会回弹」——
+ * 具体有哪些模型是 Pi 那边的事，测试不该写死一个模型名。
+ */
+test('会话卡片能改模型与思考强度，改完不回弹', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await expect(sessionNode(page)).toHaveCount(1);
+
+  const card = sessionNode(page);
+  const model = card.getByLabel('模型');
+  await expect(model).toBeVisible();
+  // 清单是 agent 报的，所以它必须至少有一个候选
+  expect(await model.locator('option').count()).toBeGreaterThan(0);
+
+  const thinking = card.getByLabel('思考强度');
+  if (await thinking.count()) {
+    const before = await thinking.inputValue();
+    const choices = await thinking.locator('option').evaluateAll((els) => els.map((el) => (el as HTMLOptionElement).value));
+    const next = choices.find((value) => value !== before);
+    if (next !== undefined) {
+      await thinking.selectOption(next);
+      // 回弹是这个功能最容易出的毛病：界面上写着新值，库里还是旧值
+      await expect(thinking).toHaveValue(next as string, { timeout: 20_000 });
+      await page.waitForTimeout(1500);
+      await expect(thinking).toHaveValue(next as string);
+    }
+  }
 });

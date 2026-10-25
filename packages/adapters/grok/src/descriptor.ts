@@ -1,5 +1,5 @@
 import { asAgentId, available, capabilityMatrix, limited } from '@agent-hub/domain';
-import type { AgentDescriptor } from '@agent-hub/domain';
+import type { AgentDescriptor, OptionValue } from '@agent-hub/domain';
 
 /**
  * Grok Build（xAI 官方 `grok` CLI）走 `grok agent stdio`，即 ACP over stdio。
@@ -28,7 +28,25 @@ export function grokDescriptorFor(
     }),
     // 模型列表由 worker 从 initialize 的 _meta.modelState 里问出来——这里不许猜。
     models,
-    defaultModel
+    defaultModel,
+    // 模型清单在这里就能报（id 'model' 与 Grok 的 configOptions 一致）；
+    // reasoning_effort 取决于当前模型，要等会话开起来由 Grok 自己报。
+    options:
+      models.length === 0
+        ? []
+        : [
+            {
+              id: 'model',
+              label: '模型',
+              category: 'model',
+              kind: 'select',
+              current: defaultModel === '' ? (models[0] ?? '') : defaultModel,
+              choices: models.map<{ kind: 'value'; value: OptionValue }>((model) => ({
+                kind: 'value',
+                value: { value: model, label: model }
+              }))
+            }
+          ]
   };
 }
 

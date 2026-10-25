@@ -3,6 +3,7 @@ import type { SessionEvent } from '../event.ts';
 import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 import type { AgentDescriptor } from '../agent.ts';
+import type { RuntimeOption } from '../option.ts';
 
 export interface StartSpec {
   readonly sessionId: SessionId;
@@ -11,6 +12,8 @@ export interface StartSpec {
   readonly model: string;
   /** 双权威：知道 agent 自己的会话 id 和平台已确认的游标，才能接着聊。 */
   readonly resume: { readonly agentSessionRef: string | null; readonly cursor: Seq } | null;
+  /** 开跑前就要定下的可调项（键是 option id）。空对象 = 全部用 agent 的默认。 */
+  readonly options: Readonly<Record<string, string | boolean>>;
 }
 
 export interface RuntimeSession {
@@ -19,6 +22,10 @@ export interface RuntimeSession {
   interrupt(): Promise<void>;
   events(): AsyncIterable<SessionEvent>;
   adopt(cursor: Seq): Promise<void>;
+  /** agent 报上来的可调项（含当前值）。agent 不给就返回空数组，界面就不显示选择器。 */
+  options(): readonly RuntimeOption[];
+  /** 改一项，返回**改完之后的全量清单**——换模型会连带改变别的项的可选值。 */
+  changeOption(id: string, value: string | boolean): Promise<Result<readonly RuntimeOption[], DomainError>>;
   dispose(): Promise<void>;
 }
 

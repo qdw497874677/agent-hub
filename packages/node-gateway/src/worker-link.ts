@@ -1,7 +1,13 @@
 import { WebSocket } from 'ws';
 import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import { serverToWorkerSchema } from '@agent-hub/contract';
-import type { AgentRuntime, RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
+import type {
+  AgentRuntime,
+  RuntimeOption,
+  RuntimeSession,
+  SessionEvent,
+  StartSpec
+} from '@agent-hub/domain';
 import { asSessionId } from '@agent-hub/domain';
 
 export interface WorkerLinkOptions {
@@ -12,11 +18,23 @@ export interface WorkerLinkOptions {
   readonly origin?: 'local' | 'remote';
   readonly runtimes: readonly AgentRuntime[];
   readonly onLog?: (message: string) => void;
+  /**
+   * 连接断了。
+   *
+   * worker 不自带重连：它的两个监工（server 的 spawn、systemd）都比它更清楚该不该重开。
+   * 之前不退出，server 被杀之后会留下孤儿 worker 连着新 server——
+   * 界面上就出现「2/2 节点」，其中一台是上一代进程。
+   */
+  readonly onClose?: () => void;
+  /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
+  readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
 
 export interface WorkerLink {
   /** 双权威的桥：agent 自己的会话 id 要送回 server 存进 agentSessionRef。 */
   notifyAgentSessionRef(sessionId: string, agentSessionRef: string): void;
+  /** agent 报上来的可调项当前值（模型、思考强度……）。 */
+  notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void;
   close(): Promise<void>;
 }
 
@@ -53,6 +71,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
   socket.on('close', () => {
     options.onLog?.('与 server 断开');
+    options.onClose?.();
   });
 
   socket.on('error', (error: Error) => {
@@ -125,6 +144,19 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await session.interrupt();
       return;
     }
+    if (command.kind === 'set_option') {
+      const changed = await session.changeOption(command.optionId, command.value);
+      if (!changed.ok) {
+        send({
+          type: 'event',
+          sessionId,
+          event: { kind: 'diagnostic', level: 'error', text: changed.error.message }
+        });
+        return;
+      }
+      send({ type: 'options', sessionId, options: [...changed.value] });
+      return;
+    }
     await session.dispose();
     sessions.delete(sessionId);
   }
@@ -145,7 +177,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       taskId: command.taskId as StartSpec['taskId'],
       workspaceRoot: command.workspaceRoot,
       model: command.model,
-      resume: command.resume
+      resume: command.resume,
+      options: command.options
     };
 
     const started = await runtime.start(spec);
@@ -186,6 +219,9 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   return {
     notifyAgentSessionRef(sessionId: string, agentSessionRef: string): void {
       send({ type: 'agent_session', sessionId, agentSessionRef });
+    },
+    notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void {
+      send({ type: 'options', sessionId, options: [...options] });
     },
     async close(): Promise<void> {
       if (closed) return;

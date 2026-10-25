@@ -5,6 +5,7 @@ import type {
   AgentRuntime,
   DomainError,
   Result,
+  RuntimeOption,
   RuntimeSession,
   SessionEvent,
   StartSpec
@@ -12,6 +13,7 @@ import type {
 import { unavailable } from '@agent-hub/domain';
 import { grokDescriptor, grokDescriptorFor } from './descriptor.ts';
 import { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
+import { mapAcpOptions } from './map-options.ts';
 
 class EventQueue implements AsyncIterable<SessionEvent> {
   private readonly items: SessionEvent[] = [];
@@ -61,10 +63,25 @@ class AcpSession implements RuntimeSession {
   /** 与 Pi 适配器一致：主动 dispose 导致的进程退出记 stopped，不是 failed。 */
   private disposed = false;
 
-  constructor(sessionId: RuntimeSession['sessionId'], child: ChildProcessWithoutNullStreams) {
+  private current: readonly RuntimeOption[] = [];
+  private readonly onOptions: (options: readonly RuntimeOption[]) => void;
+
+  constructor(
+    sessionId: RuntimeSession['sessionId'],
+    child: ChildProcessWithoutNullStreams,
+    onOptions: (options: readonly RuntimeOption[]) => void
+  ) {
     this.sessionId = sessionId;
     this.child = child;
+    this.onOptions = onOptions;
     void this.pump();
+  }
+
+  private setOptions(raw: unknown): void {
+    const options = mapAcpOptions(raw);
+    if (options.length === 0) return;
+    this.current = options;
+    this.onOptions(options);
   }
 
   setAgentSessionId(id: string): void {
@@ -98,6 +115,14 @@ class AcpSession implements RuntimeSession {
           continue;
         }
         const params = record['params'] as Record<string, unknown> | undefined;
+        if (record['method'] === 'session/update' && params) {
+          const update = params['update'] as Record<string, unknown> | undefined;
+          // Grok 自己也会推全量配置（比如换模型后思考强度的可选值跟着变）。
+          if (update?.['sessionUpdate'] === 'config_option_update') {
+            this.setOptions(update['configOptions']);
+            continue;
+          }
+        }
         if (record['method'] === 'session/update' && params && !this.replaying) {
           for (const event of mapAcpUpdate(params['update'], this.toolNames)) this.queue.push(event);
         }
@@ -169,6 +194,7 @@ class AcpSession implements RuntimeSession {
     const session = await this.request('session/new', { cwd, mcpServers: [], _meta: { yoloMode: true } });
     const id = session['sessionId'];
     if (typeof id === 'string') this.agentSessionId = id;
+    this.setOptions(session['configOptions']);
     if (model) await this.request('session/set_model', { sessionId: this.agentSessionId, modelId: model });
   }
 
@@ -176,16 +202,38 @@ class AcpSession implements RuntimeSession {
     await this.handshake();
     this.replaying = true;
     try {
-      await this.request('session/load', {
+      const session = await this.request('session/load', {
         sessionId: agentSessionRef,
         cwd,
         mcpServers: [],
         _meta: { yoloMode: true }
       });
+      this.setOptions(session['configOptions']);
     } finally {
       this.replaying = false;
     }
     this.agentSessionId = agentSessionRef;
+  }
+
+  options(): readonly RuntimeOption[] {
+    return this.current;
+  }
+
+  async changeOption(id: string, value: string | boolean): Promise<Result<readonly RuntimeOption[], DomainError>> {
+    try {
+      const result = await this.request('session/set_config_option', {
+        sessionId: this.agentSessionId,
+        configId: id,
+        type: typeof value === 'boolean' ? 'boolean' : 'id',
+        value
+      });
+      // 响应是全量状态：Grok 换模型会连带改变 reasoning_effort 的可选值。
+      this.setOptions(result['configOptions']);
+      if (this.current.length === 0) return { ok: false, error: unavailable('Grok 没有回报配置项') };
+      return { ok: true, value: this.current };
+    } catch (error) {
+      return { ok: false, error: unavailable((error as Error).message) };
+    }
   }
 
   get agentRef(): string {
@@ -235,6 +283,8 @@ export interface GrokRuntimeOptions {
   readonly models?: readonly string[];
   readonly defaultModel?: string;
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
+  /** Grok 报上来的可调项（含当前值），worker 用它告诉 server。 */
+  readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
 
 export function createGrokRuntime(options: GrokRuntimeOptions = {}): AgentRuntime {
@@ -261,14 +311,26 @@ export function createGrokRuntime(options: GrokRuntimeOptions = {}): AgentRuntim
         /* 见 Pi 适配器的同名处理：避免未处理的 error 事件崩进程 */
       });
 
-      const session = new AcpSession(spec.sessionId, child);
+      const session = new AcpSession(spec.sessionId, child, (reported) => {
+        options.onOptions?.(spec.sessionId, reported);
+      });
       const ref = spec.resume?.agentSessionRef ?? null;
       try {
         if (ref) await session.load(spec.workspaceRoot, ref);
-        else await session.initialize(spec.workspaceRoot, spec.model);
+        // 模型若已在 spec.options 里，交给下面统一落实，避免设两次。
+        else await session.initialize(spec.workspaceRoot, 'model' in spec.options ? '' : spec.model);
       } catch (error) {
         await session.dispose();
         return { ok: false, error: unavailable(`Grok 握手失败：${(error as Error).message}`) };
+      }
+
+      // 开跑前用户已经选好的项（派生时选的模型、思考强度），交给 Grok 去落实。
+      for (const [id, value] of Object.entries(spec.options)) {
+        const changed = await session.changeOption(id, value);
+        if (!changed.ok) {
+          await session.dispose();
+          return { ok: false, error: changed.error };
+        }
       }
 
       // 和 OpenCode 不同，Grok 的 session/new 直接给出会话 id，可以立刻报真 ref。

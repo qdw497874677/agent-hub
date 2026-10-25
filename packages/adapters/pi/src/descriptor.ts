@@ -1,6 +1,5 @@
-import type { SessionEvent } from '@agent-hub/domain';
 import { asAgentId, available, capabilityMatrix, limited } from '@agent-hub/domain';
-import type { AgentDescriptor } from '@agent-hub/domain';
+import type { AgentDescriptor, OptionValue, RuntimeOption } from '@agent-hub/domain';
 
 /**
  * Pi 的能力矩阵。
@@ -28,7 +27,24 @@ export function piDescriptorFor(
   }),
   // 模型列表由 worker 从本机 Pi 配置里读出来报上去——这里不许猜。
   models,
-  defaultModel
+  defaultModel,
+  // 模型清单在这里就能报；思考档位取决于当前模型，要等会话开起来问 Pi 才知道。
+  options:
+    models.length === 0
+      ? []
+      : [
+          {
+            id: 'model',
+            label: '模型',
+            category: 'model',
+            kind: 'select',
+            current: defaultModel === '' ? (models[0] ?? '') : defaultModel,
+            choices: models.map<{ kind: 'value'; value: OptionValue }>((model) => ({
+              kind: 'value',
+              value: { value: model, label: model }
+            }))
+          } satisfies RuntimeOption
+        ]
   };
 }
 

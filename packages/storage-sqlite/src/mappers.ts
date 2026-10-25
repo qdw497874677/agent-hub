@@ -51,6 +51,30 @@ export function toTask(row: Row): Task {
   };
 }
 
+/** 坏 JSON 不该让整个画布打不开：读不出来就当「还不知道」。 */
+function parseOptions(raw: string | null): Readonly<Record<string, string | boolean>> {
+  if (raw === null || raw === '') return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null
+      ? (parsed as Record<string, string | boolean>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+/** 可调项清单同样是 agent 报的 JSON；读不出来就当还没人报过。 */
+function parseOptionSpec(raw: string | null): Session['optionSpec'] {
+  if (raw === null || raw === '') return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Session['optionSpec']) : [];
+  } catch {
+    return [];
+  }
+}
+
 export function toSession(row: Row): Session {
   const originSession = nullableStr(row, 'origin_session');
   const originSeq = nullableNum(row, 'origin_seq');
@@ -66,6 +90,8 @@ export function toSession(row: Row): Session {
     status: str(row, 'status') as Session['status'],
     lastSeq: num(row, 'last_seq'),
     agentSessionRef: nullableStr(row, 'agent_session'),
+    options: parseOptions(nullableStr(row, 'options')),
+    optionSpec: parseOptionSpec(nullableStr(row, 'option_spec')),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };
