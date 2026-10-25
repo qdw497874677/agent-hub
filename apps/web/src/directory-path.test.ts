@@ -16,3 +16,22 @@ test('不被路径前缀骗；不在 roots 里就从 / 开始', () => {
   assert.deepEqual(breadcrumbs('/', []), [{ label: '/', path: '/' }]);
   assert.deepEqual(breadcrumbs('/tmp/a', ['/tmp']).map((c) => c.label), ['tmp', 'a']);
 });
+
+import { filterEntries, fuzzyScore, splitInput, withSlash } from './directory-path.ts';
+
+test('输入拆成目录 + 筛选片段', () => {
+  assert.deepEqual(splitInput('/home/u/pro'), { dir: '/home/u', filter: 'pro' });
+  assert.deepEqual(splitInput('/home/u/'), { dir: '/home/u', filter: '' });
+  assert.deepEqual(splitInput('/tm'), { dir: '/', filter: 'tm' });
+  assert.equal(withSlash('/a'), '/a/');
+  assert.equal(withSlash('/'), '/');
+});
+
+test('模糊筛选：前缀优先，子序列也能命中，不匹配的去掉', () => {
+  assert.ok((fuzzyScore('agent-hub', 'age') ?? 0) > (fuzzyScore('my-agent', 'age') ?? 0));
+  assert.notEqual(fuzzyScore('agent-hub', 'ahb'), null);
+  assert.equal(fuzzyScore('docs', 'xyz'), null);
+  const names = filterEntries([{ name: 'my-agent' }, { name: 'docs' }, { name: 'agent-hub' }], 'agent').map((e) => e.name);
+  assert.deepEqual(names, ['agent-hub', 'my-agent']);
+  assert.deepEqual(filterEntries([{ name: 'b' }, { name: 'a' }], '').map((e) => e.name), ['b', 'a']);
+});

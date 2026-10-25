@@ -92,14 +92,14 @@ test('目录可以点选，不必手打路径', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('navigation').getByTitle('新建项目').click();
 
-  // 打开就在这台机器的 root 里，面包屑在顶上
+  // 一个路径输入框：直接打路径，Enter 进入选中的文件夹
   const picker = page.getByLabel('目录选择器');
-  await expect(picker.getByLabel('路径').getByRole('button').first()).toBeVisible();
-  // 收窄到选择器里点：首页的项目行按钮，可访问名字里也带着这个路径字符串
-  await picker.getByRole('button', { name: '输入路径' }).click();
-  await picker.getByLabel('当前目录').fill('/tmp');
-  await picker.getByLabel('当前目录').press('Enter');
-  await picker.getByRole('button', { name: `agent-hub-e2e-project-${RUN}` }).click();
+  const input = picker.getByRole('combobox', { name: '路径' });
+  await expect(input).toHaveValue(/\/$/);
+  await input.fill(`/tmp/agent-hub-e2e-project-${RUN}`);
+  await expect(picker.getByRole('option').filter({ hasText: `agent-hub-e2e-project-${RUN}` }).first()).toHaveAttribute('data-selected', 'true');
+  await input.press('Enter');
+  await expect(input).toHaveValue(`${PROJECT_DIR}/`);
 
   await picker.getByRole('button', { name: '使用', exact: true }).click();
   const panel = page.getByLabel('新建项目');
