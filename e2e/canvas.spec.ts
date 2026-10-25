@@ -71,7 +71,11 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // 这里**不**断言「■ 出现过」：那一轮可能几百毫秒就跑完，而 toBeVisible 的轮询会正好错过它。
   // 圆点的两种身份由下面这条覆盖：跑完必须回到 ↑（停在 ■ 上才是真 bug）。
   // 只认模型真的吐出来的那个词，而且要落在卡片里（输入框里也有这个词，会假通过）
-  await expect(sessionNode(page).getByText(ECHO)).toBeVisible({ timeout: 120_000 });
+  // 用 toContainText 而不是 getByText().toBeVisible()：卡片正文是可滚动的定高区域，
+  // 流式输出时那行字可能刚好在滚动区外，被判成 hidden（偶发失败的来源）。
+  await expect(sessionNode(page)).toContainText(ECHO, { timeout: 120_000 });
+  await sessionNode(page).getByText(ECHO).first().scrollIntoViewIfNeeded();
+  await expect(sessionNode(page).getByText(ECHO).first()).toBeVisible();
   await expect(sessionNode(page)).toContainText('完成');
   await expect(sessionNode(page).getByRole('button', { name: '发送' })).toBeVisible({ timeout: 120_000 });
 
