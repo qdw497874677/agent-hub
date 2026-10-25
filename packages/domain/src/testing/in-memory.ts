@@ -398,3 +398,40 @@ export function inMemoryAdmin(now: () => number = () => 1_000) {
   };
   return { accounts, deps, entries, workerList, disconnected, updates, sessionList };
 }
+
+export function fakeToolGrants(): import('../ports/tool-grant-repository.ts').ToolGrantRepository & {
+  grants: import('../tool.ts').ToolGrant[];
+  calls: import('../tool.ts').ToolCallRecord[];
+} {
+  type Grant = import('../tool.ts').ToolGrant;
+  const grants: Grant[] = [];
+  const calls: import('../tool.ts').ToolCallRecord[] = [];
+  return {
+    grants,
+    calls,
+    async save(grant) {
+      const at = grants.findIndex((row) => row.id === grant.id);
+      if (at >= 0) grants[at] = grant;
+      else grants.push(grant);
+    },
+    async byTokenHash(hash) {
+      return grants.find((row) => row.tokenHash === hash) ?? null;
+    },
+    async revokeSession(sessionId, now) {
+      let count = 0;
+      grants.forEach((row, index) => {
+        if (row.sessionId === sessionId && row.revokedAt === null) {
+          grants[index] = { ...row, revokedAt: now };
+          count += 1;
+        }
+      });
+      return count;
+    },
+    async recordCall(record) {
+      calls.push(record);
+    },
+    async recentCalls(limit, sessionId) {
+      return calls.filter((row) => !sessionId || row.sessionId === sessionId).slice(-limit).reverse();
+    }
+  };
+}

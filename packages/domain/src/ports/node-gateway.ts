@@ -5,6 +5,7 @@ import type { Result } from '../result.ts';
 import type { WorkerStatus } from '../worker.ts';
 import type { PromptPart } from '../attachment.ts';
 import type { DirectoryEntry } from './workspace-fs.ts';
+import type { ToolAccess } from '../tool.ts';
 
 /**
  * Server → Worker 指令。从第一天就是双向的：只够回传执行事件的通道，
@@ -26,6 +27,8 @@ export type WorkerCommand =
        * 模型也在这里（`options.model`）——它就是一个 category 为 model 的可调项，不再单开字段。
        */
       readonly options: Readonly<Record<string, string | boolean>>;
+      /** 能力层：agent 用它连 hub 的工具（MCP）。没有 = 这次不给工具，行为同旧版。令牌不进日志。 */
+      readonly tools?: ToolAccess;
     }
   | {
       readonly kind: 'set_option';

@@ -536,6 +536,12 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerUpdateStatusSchema
 ]);
 
+export const toolAccessSchema = z.object({
+  transport: z.enum(['http', 'stdio-shim']),
+  url: z.string().min(1),
+  token: z.string().min(1)
+});
+
 export const startSessionCommandSchema = z.object({
   kind: z.literal('start_session'),
   sessionId: id,
@@ -547,7 +553,9 @@ export const startSessionCommandSchema = z.object({
     .object({ agentSessionRef: z.string().nullable(), cursor: z.number().int().nonnegative() })
     .nullable(),
   /** 开跑前就定下的可调项；空对象表示全用 agent 默认。 */
-  options: optionValuesSchema
+  options: optionValuesSchema,
+  /** 能力层（可选）：旧 worker 收不到就当没有工具。token 不许进日志。 */
+  tools: toolAccessSchema.optional()
 });
 
 /** 不属于任何会话的请求（目录浏览）。和会话指令分开，免得 worker 把它当成「未知会话」。 */

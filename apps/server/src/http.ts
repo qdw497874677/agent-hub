@@ -58,6 +58,8 @@ import {
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
 import { installAuth } from './auth.ts';
+import { installMcp } from './mcp.ts';
+import type { ToolGateway } from '@agent-hub/domain';
 import { installAdmin } from './admin.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
@@ -80,6 +82,8 @@ export interface AppOptions {
    * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
+  /** 能力层：给了就挂 /mcp（工具令牌鉴权，不走登录态）。 */
+  readonly tools?: ToolGateway;
 }
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; response: Response };
@@ -129,6 +133,7 @@ export function createApp(options: AppOptions): Hono {
 
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
   let principalOf: (c: Context) => Principal | null = () => null;
+  if (options.tools) installMcp(app, options.tools);
   if (options.auth) {
     principalOf = installAuth(app, options.auth);
     if (options.admin) installAdmin(app, options.admin, principalOf);

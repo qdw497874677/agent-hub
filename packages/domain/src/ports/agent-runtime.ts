@@ -5,6 +5,7 @@ import type { Result } from '../result.ts';
 import type { AgentDescriptor } from '../agent.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { PromptInput } from '../attachment.ts';
+import type { ToolAccess } from '../tool.ts';
 
 export interface StartSpec {
   readonly sessionId: SessionId;
@@ -14,6 +15,8 @@ export interface StartSpec {
   readonly resume: { readonly agentSessionRef: string | null; readonly cursor: Seq } | null;
   /** 开跑前就要定下的可调项（键是 option id）。空对象 = 全部用 agent 的默认。 */
   readonly options: Readonly<Record<string, string | boolean>>;
+  /** hub 能力层（MCP）。运行时按自己的方式注入：ACP 走 session/new.mcpServers，Pi 走环境变量。 */
+  readonly tools?: ToolAccess;
 }
 
 export interface RuntimeSession {

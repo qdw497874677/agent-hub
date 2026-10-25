@@ -97,6 +97,48 @@ export function readPromptCapabilities(init: Record<string, unknown>): AcpPrompt
   return { image: prompt['image'] === true, embeddedContext: prompt['embeddedContext'] === true };
 }
 
+/** agent 在 initialize 里声明能接哪些 MCP 传输（stdio 是 ACP 必选，不用声明）。 */
+export function readMcpCapabilities(init: Record<string, unknown>): { http: boolean; sse: boolean } {
+  const agent = (init['agentCapabilities'] ?? {}) as Record<string, unknown>;
+  const mcp = (agent['mcpCapabilities'] ?? {}) as Record<string, unknown>;
+  return { http: mcp['http'] === true, sse: mcp['sse'] === true };
+}
+
+/** MCP 服务器名：agent 会拿它给工具加前缀（如 agent-hub__task_get）。 */
+export const HUB_MCP_SERVER = 'agent-hub';
+
+/**
+ * session/new|load 的 mcpServers：hub 能力层。
+ * http：agent 直连 hub，令牌放 Authorization 头（不放 URL，免得进访问日志）。
+ * stdio-shim：worker 起本地 stdio 进程转发（P4），令牌走环境变量。
+ * agent 没声明 http 能力就不给——宁可没有工具，也不让握手失败。
+ */
+export function mcpServersFor(
+  tools: { transport: 'http' | 'stdio-shim'; url: string; token: string } | undefined,
+  caps: { http: boolean },
+  shim?: { command: string; args: readonly string[] }
+): Record<string, unknown>[] {
+  if (!tools) return [];
+  if (tools.transport === 'stdio-shim') {
+    if (!shim) return [];
+    return [
+      {
+        name: HUB_MCP_SERVER,
+        command: shim.command,
+        args: [...shim.args],
+        env: [
+          { name: 'AGENT_HUB_TOOL_URL', value: tools.url },
+          { name: 'AGENT_HUB_TOOL_TOKEN', value: tools.token }
+        ]
+      }
+    ];
+  }
+  if (!caps.http) return [];
+  return [
+    { type: 'http', name: HUB_MCP_SERVER, url: tools.url, headers: [{ name: 'Authorization', value: `Bearer ${tools.token}` }] }
+  ];
+}
+
 const TEXT_MIME = /^(text\/|application\/(json|xml|javascript|typescript|x-yaml|yaml|toml|x-sh|sql))/;
 const TEXT_EXT = /\.(md|txt|json|ya?ml|toml|csv|tsv|log|xml|html?|css|[cm]?[jt]sx?|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|sh|sql|ini|conf|env)$/i;
 

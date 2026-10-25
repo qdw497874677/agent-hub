@@ -8,7 +8,8 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { Deps, SessionId } from '@agent-hub/domain';
+import type { Deps, SessionId, ToolGateway } from '@agent-hub/domain';
+import { createTaskToolProvider, createToolGateway, withToolAccess } from '@agent-hub/domain';
 import {
   err,
   ingestAgentSessionRef,
@@ -41,6 +42,7 @@ function readEnv(name: string): string | null {
   return value === undefined || value === '' ? null : value;
 }
 
+let toolGateway: ToolGateway | null = null;
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 /** hub 自己的版本：机器列表里「过期」的参照，也是远程更新的目标。 */
@@ -85,8 +87,11 @@ const deps: Deps = {
   stream: hub.stream,
   gateway: {
     status: async () => serverGateway?.workers() ?? [],
+    // 发给 worker 前给 start_session 配上工具令牌（换新、旧的作废），dispose 时作废。
     dispatch: async (command) =>
-      serverGateway ? serverGateway.gateway.dispatch(command) : err(unavailable('worker 通道尚未就绪')),
+      serverGateway
+        ? serverGateway.gateway.dispatch(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, command) : command)
+        : err(unavailable('worker 通道尚未就绪')),
     listDirectories: async (workerId, path) =>
       serverGateway
         ? serverGateway.gateway.listDirectories(workerId, path)
@@ -107,6 +112,21 @@ const deps: Deps = {
 };
 
 const log = (message: string) => console.log(`[hub] ${message}`);
+
+// 能力层：agent 经 MCP 回调 hub 的工具。HUB_TOOLS=0 关掉；HUB_TOOLS_URL 给 worker 不在本机时用。
+const toolEndpoint =
+  readEnv('HUB_TOOLS') === '0'
+    ? null
+    : {
+        url: readEnv('HUB_TOOLS_URL') ?? `http://127.0.0.1:${port}/mcp`,
+        transport: readEnv('HUB_TOOLS_TRANSPORT') === 'stdio-shim' ? ('stdio-shim' as const) : ('http' as const)
+      };
+toolGateway = createToolGateway({
+  now: deps.now,
+  toolGrants: store.toolGrants,
+  tokens: createTokenIssuer(),
+  providers: [createTaskToolProvider(deps)]
+});
 
 // 账号体系是独立的限界上下文：不塞进 Deps。
 const resendKey = readEnv('RESEND_API_KEY');
@@ -199,7 +219,7 @@ serverGateway = createServerGateway({
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard,
+const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, tools: toolGateway,
   auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },
   admin: {
     deps: {
