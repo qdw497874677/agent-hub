@@ -1,5 +1,5 @@
 import type { Session } from '../session.ts';
-import type { Project } from '../project.ts';
+import { workspaceFor, type Project } from '../project.ts';
 import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
@@ -28,7 +28,7 @@ export function startCommand(
     workerId: session.workerId,
     taskId: session.taskId,
     agentId: session.agentId,
-    workspaceRoot: project.rootPath,
+    workspaceRoot: workspaceFor(project, session.workerId).root,
     origin: session.origin,
     resume,
     options

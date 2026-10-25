@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS projects (
   name       TEXT NOT NULL,
   root_path  TEXT NOT NULL,
   worker_id  TEXT,
+  directories TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL
 );
 
