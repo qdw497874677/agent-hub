@@ -7,15 +7,13 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { CapacityPolicy, Deps, NodeProvisioner } from '@agent-hub/domain';
+import type { Deps } from '@agent-hub/domain';
 import {
   err,
   ingestAgentSessionRef,
   ingestRuntimeStatus,
   ingestWorkerEvent,
   ingestWorkerOptions,
-  notImplemented,
-  ok,
   reconcileInterrupted,
   unavailable,
   workerGone
@@ -35,22 +33,6 @@ function readEnv(name: string): string | null {
   const value = process.env[name];
   return value === undefined || value === '' ? null : value;
 }
-
-/** 空实现，但签名是真的：将来换调度器只换这个文件。 */
-const capacity: CapacityPolicy = {
-  async admit() {
-    return ok(undefined);
-  },
-  async release() {
-    return ok(undefined);
-  }
-};
-
-const provisioner: NodeProvisioner = {
-  install: async () => err(notImplemented('自动下发安装')),
-  upgrade: async () => err(notImplemented('自动下发升级')),
-  revoke: async () => err(notImplemented('撤销节点'))
-};
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -93,13 +75,10 @@ const deps: Deps = {
   },
   agents: catalog,
   fs: createLocalFs(),
-  capacity,
-  provisioner,
   search: store.search,
   hosting: createMemoryHosting(),
   queue: createSessionQueue(),
   now: () => Date.now(),
-  newId: () => crypto.randomUUID()
 };
 
 const log = (message: string) => console.log(`[hub] ${message}`);

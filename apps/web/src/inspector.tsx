@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { Composer } from './composer.tsx';
-import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -89,14 +88,6 @@ export function Inspector({
     void api.events(session.id).then(setJournal);
   }, [showJournal, session.id, session.lastSeq]);
 
-  function send(): void {
-    const text = draft.trim();
-    if (text === '' || busy) return;
-    void run(async () => {
-      await api.prompt(session.id, text);
-      setDraft('');
-    });
-  }
 
   async function run(action: () => Promise<unknown>): Promise<void> {
     setBusy(true);

@@ -21,7 +21,6 @@ function spec(overrides: Partial<StartSpec> = {}): StartSpec {
   return {
     sessionId: asSessionId('hub-1'),
     taskId: asTaskId('task-1'),
-    model: '',
     workspaceRoot: process.cwd(),
     resume: null,
     options: {},

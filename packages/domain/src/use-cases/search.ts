@@ -13,7 +13,7 @@ const DEFAULT_LIMIT = 20;
  * 这是「画布为主、列表为辅」里列表存在的第一个理由。
  */
 export async function searchUseCase(
-  deps: Deps,
+  deps: Pick<Deps, 'projects' | 'search'>,
   input: { readonly projectId: string; readonly query: string }
 ): Promise<Result<readonly SearchHit[], DomainError>> {
   const query = input.query.trim();

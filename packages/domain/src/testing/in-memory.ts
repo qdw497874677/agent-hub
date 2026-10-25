@@ -206,17 +206,10 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
       descriptor: (id: string) => agents.find((agent) => agent.id === id) ?? null
     },
     fs: fakeFs(),
-    capacity: { admit: async () => ok(undefined), release: async () => ok(undefined) },
-    provisioner: {
-      install: async () => ok(undefined),
-      upgrade: async () => ok(undefined),
-      revoke: async () => ok(undefined)
-    },
     search: { search: async () => [] },
     hosting: fakeHosting(),
     queue: immediateQueue,
     now: () => (clock += 1),
-    newId: () => crypto.randomUUID(),
     ...overrides
   } as InMemoryDeps;
   return { deps, dispatched, frames, agents };

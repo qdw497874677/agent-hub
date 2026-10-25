@@ -14,7 +14,7 @@ export interface CreateTaskCommand {
 }
 
 export async function createTaskUseCase(
-  deps: Deps,
+  deps: Pick<Deps, 'now' | 'projects' | 'tasks'>,
   command: CreateTaskCommand
 ): Promise<Result<Task, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
@@ -31,7 +31,7 @@ export async function createTaskUseCase(
 }
 
 export async function setTaskStatusUseCase(
-  deps: Deps,
+  deps: Pick<Deps, 'now' | 'tasks'>,
   taskId: TaskId,
   status: TaskStatus
 ): Promise<Result<Task, DomainError>> {

@@ -22,7 +22,7 @@ export interface PromptCommand {
 
 /** 发消息：先记下「用户说了什么」，再确保有人托管，最后才叫 agent。 */
 export async function promptSessionUseCase(
-  deps: Deps,
+  deps: Pick<Deps, 'artifacts' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'>,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -61,7 +61,7 @@ async function withBytes(
 
 /** worker 推上来一条事件：补字节数，然后按会话串行落盘（并发会撞 seq，见 ADR 0004）。 */
 export function ingestWorkerEvent(
-  deps: Deps,
+  deps: Pick<Deps, 'artifacts' | 'fs' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<Result<Session, DomainError>> {
@@ -75,7 +75,7 @@ export function ingestWorkerEvent(
  * 走同一条串行队列，这样「改动请求」和「agent 的回报」不会互相覆盖。
  */
 export function ingestWorkerOptions(
-  deps: Deps,
+  deps: Pick<Deps, 'now' | 'queue' | 'sessions'>,
   sessionId: SessionId,
   options: readonly RuntimeOption[]
 ): Promise<Result<Session, DomainError>> {

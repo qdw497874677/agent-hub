@@ -19,7 +19,7 @@ export interface DeriveCommand {
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
 export async function deriveSessionUseCase(
-  deps: Deps,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
   const task = await deps.tasks.byId(asTaskId(command.taskId));
@@ -62,7 +62,7 @@ export interface ForkCommand {
 }
 
 export async function forkSessionUseCase(
-  deps: Deps,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks'>,
   command: ForkCommand
 ): Promise<Result<Session, DomainError>> {
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -114,7 +114,7 @@ export interface RecordEventCommand {
 
 /** 事件落盘 + 广播。seq 由平台分配，worker 不参与编号。 */
 export async function recordEvent(
-  deps: Deps,
+  deps: Pick<Deps, 'artifacts' | 'now' | 'sessions' | 'stream'>,
   command: RecordEventCommand
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(command.sessionId);
@@ -145,7 +145,7 @@ export async function recordEvent(
 }
 
 /** 启动对账：仍在 running 的会话一律降级为 interrupted（S7.1）。 */
-export async function reconcileInterrupted(deps: Deps): Promise<number> {
+export async function reconcileInterrupted(deps: Pick<Deps, 'now' | 'sessions'>): Promise<number> {
   const all = await deps.sessions.listAll();
   let changed = 0;
   for (const session of all) {
@@ -165,7 +165,7 @@ export interface SessionOptionsCommand {
 
 /** agent 报上来的可调项当前值落库。它不是事件，所以不进 journal——不进就不占 seq。 */
 export async function recordSessionOptions(
-  deps: Deps,
+  deps: Pick<Deps, 'now' | 'sessions'>,
   command: SessionOptionsCommand
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -198,7 +198,7 @@ export interface ChangeOptionCommand {
  * 「平台以为在跑 A、其实跑的是 B」的谎话。
  */
 export async function changeSessionOption(
-  deps: Deps,
+  deps: Pick<Deps, 'gateway' | 'hosting' | 'projects' | 'sessions' | 'tasks'>,
   command: ChangeOptionCommand
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(asSessionId(command.sessionId));

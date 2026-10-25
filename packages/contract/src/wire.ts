@@ -347,7 +347,6 @@ export const startSessionCommandSchema = z.object({
   sessionId: id,
   taskId: id,
   agentId: id,
-  model: z.string(),
   workspaceRoot: z.string(),
   origin: sessionOriginSchema,
   resume: z

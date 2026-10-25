@@ -8,7 +8,7 @@ import type { JournalEntry } from '../event.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
 
 export async function loadCanvas(
-  deps: Deps,
+  deps: Pick<Deps, 'agents' | 'artifacts' | 'layout' | 'now' | 'projects' | 'sessions' | 'tasks'>,
   projectId: string
 ): Promise<Result<CanvasProjection, DomainError>> {
   const project = await deps.projects.byId(asProjectId(projectId));
