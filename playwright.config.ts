@@ -20,7 +20,7 @@ export default defineConfig({
   use: {
     baseURL: `http://127.0.0.1:${port}`,
     // 用系统 chromium，不额外下 200MB 的浏览器包
-    launchOptions: { executablePath: '/usr/bin/chromium' },
+    launchOptions: { executablePath: process.env['E2E_CHROME'] ?? '/usr/bin/chromium' },
     trace: 'off'
   },
   webServer: {
