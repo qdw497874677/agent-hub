@@ -22,6 +22,23 @@ test('测试账号：密码写进 600 文件、日志里没有密码、重启沿
   rmSync(dir, { recursive: true });
 });
 
+test('HUB_TEST_ACCOUNT_PASSWORD：启动时把账号和密码文件对齐到指定密码，简单密码也行', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-acct-'));
+  const file = join(dir, 'test-account');
+  const accounts = inMemoryAccounts();
+  const lines: string[] = [];
+  await seedTestAccount(accounts, { email: 'test@agent-hub.local', passwordFile: file }, () => undefined);
+  await seedTestAccount(accounts, { email: 'test@agent-hub.local', passwordFile: file, password: '123456' }, (l) =>
+    lines.push(l)
+  );
+  assert.equal(readFileSync(file, 'utf8').trim(), '123456');
+  assert.equal(statSync(file).mode & 0o777, 0o600);
+  assert.ok(lines.every((l) => !l.includes('123456') && !l.includes('没建成')));
+  const user = await accounts.users.byEmail('test@agent-hub.local');
+  assert.ok(user?.passwordHash && (await accounts.hasher.verify('123456', user.passwordHash)));
+  rmSync(dir, { recursive: true });
+});
+
 test('HUB_TOKEN 过渡期：起点落盘，重启不续命，过期返回 null', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hub-tok-'));
   const day = 86_400_000;

@@ -122,7 +122,8 @@ if (testAccount !== 'off') {
     accounts,
     {
       email: testAccount,
-      passwordFile: readEnv('HUB_TEST_ACCOUNT_FILE') ?? join(homedir(), '.config', 'agent-hub', 'test-account')
+      passwordFile: readEnv('HUB_TEST_ACCOUNT_FILE') ?? join(homedir(), '.config', 'agent-hub', 'test-account'),
+      password: readEnv('HUB_TEST_ACCOUNT_PASSWORD') ?? undefined
     },
     log
   );
