@@ -77,6 +77,8 @@ export const projectSchema = z.object({
   rootPath: z.string(),
   /** 目录在哪台 Worker 上；null = 和 Server 同机。 */
   workerId: z.string().nullable().default(null),
+  /** 「换台机器继续」登记过的别的 Worker 上的目录：workerId → 绝对路径。 */
+  directories: z.record(z.string(), z.string()).default({}),
   createdAt: epochMs
 });
 
@@ -259,6 +261,12 @@ export const forkSessionRequest = z.object({
   agentId: id,
   // 空字符串 = 用 agent 自己的默认模型（见 apps/web 的派生对话框）
   model: z.string()
+});
+
+/** 换台机器继续：目标 Worker；那台还没登记目录时带上 directory。 */
+export const continueElsewhereRequest = z.object({
+  workerId: id,
+  directory: z.string().nullable().optional()
 });
 
 export const promptRequest = z
@@ -512,6 +520,7 @@ export type CreateProjectRequest = z.infer<typeof createProjectRequest>;
 export type CreateTaskRequest = z.infer<typeof createTaskRequest>;
 export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;
 export type ForkSessionRequest = z.infer<typeof forkSessionRequest>;
+export type ContinueElsewhereRequest = z.infer<typeof continueElsewhereRequest>;
 export type SaveLayoutRequest = z.infer<typeof saveLayoutRequest>;
 export type AttachmentInputDto = z.infer<typeof attachmentInputSchema>;
 export type StoredAttachmentDto = z.infer<typeof storedAttachmentSchema>;

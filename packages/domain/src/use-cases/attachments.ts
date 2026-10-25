@@ -5,6 +5,7 @@ import { err, ok, type Result } from '../result.ts';
 import { ATTACHMENT_LIMITS, isSafeRelativePath } from '../attachment.ts';
 import type { Deps } from './deps.ts';
 import { projectOf } from './hosting.ts';
+import { workspaceFor } from '../project.ts';
 
 /** 遍历上限：再大的仓库也只扫这么多，选择器要的是「快」，不是「全」。 */
 const SCAN_LIMIT = 5000;
@@ -28,18 +29,21 @@ function rank(path: string, query: string): number {
 
 /** `@` 引用选择器：项目里按名字模糊匹配的文件，相对项目根。 */
 export async function listProjectFiles(
-  deps: Pick<Deps, 'fs' | 'gateway' | 'projects'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions'>,
   projectId: ProjectId,
-  query: string
+  query: string,
+  /** 在哪条会话里 @：会话换过机器时要列那台机器上的目录。 */
+  sessionId?: SessionId
 ): Promise<Result<{ files: string[]; truncated: boolean }, DomainError>> {
   const project = await deps.projects.byId(projectId);
   if (!project) return err(notFound('项目不存在'));
-  const root = project.rootPath.replace(/\/+$/, '');
+  const session = sessionId ? await deps.sessions.byId(sessionId) : null;
+  const { workerId, root } = workspaceFor(project, session?.workerId ?? null);
   // 目录在哪台机器上就问哪台：Server 不读别的机器上的路径。
   let scanned: { readonly files: readonly string[]; readonly truncated: boolean };
-  if (project.workerId === null) scanned = await deps.fs.listFiles(root, SCAN_LIMIT);
+  if (workerId === null) scanned = await deps.fs.listFiles(root, SCAN_LIMIT);
   else {
-    const listed = await deps.gateway.listFiles(project.workerId, root, SCAN_LIMIT);
+    const listed = await deps.gateway.listFiles(workerId, root, SCAN_LIMIT);
     if (!listed.ok) return listed;
     scanned = listed.value;
   }
@@ -70,11 +74,12 @@ export async function readSessionAttachment(
   if (!session) return err(notFound('会话不存在'));
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
-  const absolute = `${project.rootPath.replace(/\/+$/, '')}/${path}`;
+  const { workerId, root } = workspaceFor(project, session.workerId);
+  const absolute = `${root}/${path}`;
   let bytes: Uint8Array | null;
-  if (project.workerId === null) bytes = await deps.fs.readFile(absolute);
+  if (workerId === null) bytes = await deps.fs.readFile(absolute);
   else {
-    const read = await deps.gateway.readFile(project.workerId, absolute, ATTACHMENT_LIMITS.imageBytes);
+    const read = await deps.gateway.readFile(workerId, absolute, ATTACHMENT_LIMITS.imageBytes);
     if (!read.ok) return read;
     bytes = read.value;
   }

@@ -1,3 +1,4 @@
+import { workspaceFor } from '../project.ts';
 import type { Session } from '../session.ts';
 import type { SessionEvent } from '../event.ts';
 import type { RuntimeOption } from '../option.ts';
@@ -42,7 +43,7 @@ async function prepareAttachments(
   if (capability?.state === 'denied') return err(invalid(capability.reason ?? '这个 agent 不接收附件'));
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
-  const root = project.rootPath.replace(/\/+$/, '');
+  const root = workspaceFor(project, session.workerId).root;
   const at = deps.now();
   const stored: StoredAttachment[] = [];
   const parts: PromptPart[] = [];
@@ -101,8 +102,10 @@ async function withBytes(
   if (event.kind !== 'artifact') return event;
   const session = await deps.sessions.byId(sessionId);
   const project = session ? await projectOf(deps, session) : null;
-  if (!project || project.workerId !== null) return event;
-  const absolute = event.path.startsWith('/') ? event.path : `${project.rootPath.replace(/\/+$/, '')}/${event.path}`;
+  if (!project || !session) return event;
+  const workspace = workspaceFor(project, session.workerId);
+  if (workspace.workerId !== null) return event;
+  const absolute = event.path.startsWith('/') ? event.path : `${workspace.root}/${event.path}`;
   const bytes = await deps.fs.stat(absolute);
   return bytes === null ? event : { ...event, bytes };
 }

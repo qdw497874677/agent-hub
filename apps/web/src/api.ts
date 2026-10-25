@@ -99,10 +99,14 @@ export const api = {
     call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status }) }),
   derive: (input: DeriveSessionRequest) => post<SessionDto>('/api/sessions/derive', input),
   fork: (input: ForkSessionRequest) => post<SessionDto>('/api/sessions/fork', input),
+  continueElsewhere: (sessionId: string, workerId: string, directory: string | null) =>
+    post<SessionDto>(`/api/sessions/${sessionId}/continue`, { workerId, directory }),
   prompt: (sessionId: string, text: string, attachments: readonly AttachmentInputDto[] = []) =>
     post<{ ok: true }>(`/api/sessions/${sessionId}/prompt`, { text, attachments }),
-  projectFiles: (projectId: string, q: string) =>
-    call<ProjectFilesDto>(`/api/projects/${projectId}/files?q=${encodeURIComponent(q)}`),
+  projectFiles: (projectId: string, q: string, sessionId?: string) =>
+    call<ProjectFilesDto>(
+      `/api/projects/${projectId}/files?q=${encodeURIComponent(q)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ''}`
+    ),
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),

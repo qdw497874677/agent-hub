@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { Composer } from './composer.tsx';
+import { ContinueElsewhere } from './continue-elsewhere.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { sessionCommands } from './commands.ts';
 import type { LiveSession } from './live.ts';
@@ -186,6 +187,8 @@ export function Inspector({
             </button>
           </div>
         </section>
+
+        <ContinueElsewhere project={canvas.project} session={session} onDone={() => onChanged()} />
 
         <section>
           <button className="mb-1 text-meta text-tertiary hover:text-primary" onClick={() => setShowJournal(!showJournal)}>

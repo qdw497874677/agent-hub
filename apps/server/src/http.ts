@@ -14,6 +14,7 @@ import {
   createTaskRequest,
   deriveSessionRequest,
   forkSessionRequest,
+  continueElsewhereRequest,
   projectFilesSchema,
   promptRequest,
   saveLayoutRequest,
@@ -32,6 +33,7 @@ import {
   createTaskUseCase,
   deriveSessionUseCase,
   forkSessionUseCase,
+  continueElsewhereUseCase,
   interruptSessionUseCase,
   listProjectFiles,
   listProjects,
@@ -136,7 +138,13 @@ export function createApp(options: AppOptions): Hono {
 
   // `@` 引用选择器：项目里的文件，按名字模糊匹配。
   app.get('/api/projects/:projectId/files', async (c) => {
-    const result = await listProjectFiles(deps, asProjectId(c.req.param('projectId')), c.req.query('q') ?? '');
+    const sessionId = c.req.query('sessionId');
+    const result = await listProjectFiles(
+      deps,
+      asProjectId(c.req.param('projectId')),
+      c.req.query('q') ?? '',
+      sessionId ? asSessionId(sessionId) : undefined
+    );
     return result.ok ? c.json(projectFilesSchema.parse(result.value)) : fail(c, result.error);
   });
 
@@ -200,6 +208,14 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, forkSessionRequest);
     if (!input.ok) return input.response;
     const result = await forkSessionUseCase(deps, input.value);
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+
+  // 换台机器继续：在目标 Worker 上开一条带交接摘要的分叉会话
+  app.post('/api/sessions/:sessionId/continue', async (c) => {
+    const input = await body(c, continueElsewhereRequest);
+    if (!input.ok) return input.response;
+    const result = await continueElsewhereUseCase(deps, { sessionId: c.req.param('sessionId'), ...input.value });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 

@@ -144,7 +144,7 @@ export function Composer({
     let stale = false;
     const timer = setTimeout(() => {
       api
-        .projectFiles(projectId, mentionQuery)
+        .projectFiles(projectId, mentionQuery, session.id)
         .then((result) => {
           if (!stale) setFiles(result.files);
         })
