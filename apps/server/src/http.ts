@@ -17,7 +17,15 @@ import {
   setTaskStatusRequest,
   workerInfoSchema
 } from '@agent-hub/contract';
-import type { Deps, DomainError, SessionId, TaskStatus, WorkerStatus } from '@agent-hub/domain';
+import type {
+  Deps,
+  DomainError,
+  Result,
+  SessionEvent,
+  SessionId,
+  TaskStatus,
+  WorkerStatus
+} from '@agent-hub/domain';
 import {
   asSessionId,
   searchUseCase,
@@ -45,6 +53,11 @@ export interface AppOptions {
   readonly workers: () => WorkerStatus[];
   readonly live: LiveSessions;
   readonly token: string | null;
+  /**
+   * 落盘一条事件。必须由外面注入而不是这里直接 recordEvent：
+   * 同一会话的落盘要串行（ADR 0004），而串行队列属于运行组合根。
+   */
+  readonly record: (sessionId: SessionId, event: SessionEvent) => Promise<Result<void, DomainError>>;
 }
 
 /** 首页只列最近这么多条会话：多到能认出「昨天那条」，少到不用滚。 */
@@ -224,6 +237,11 @@ export function createApp(options: AppOptions): Hono {
     const sessionId = asSessionId(c.req.param('sessionId'));
     const session = await deps.sessions.byId(sessionId);
     if (!session) return c.json({ error: { code: 'not_found', message: '会话不存在' } }, 404);
+
+    // 先把「用户说了什么」记进 journal，再去叫 agent。反过来的话，agent 起不来时
+    // 用户那句问话就凭空消失了——专注对话里会是一条没有提问的回答。
+    const logged = await options.record(sessionId, { kind: 'prompt', text: parsed.data.text });
+    if (!logged.ok) return fail(c, logged.error);
 
     if (!live.has(sessionId)) {
       const task = await deps.tasks.byId(session.taskId);

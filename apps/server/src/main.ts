@@ -156,6 +156,12 @@ if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「�
 const app = createApp({
   deps,
   hub,
+  // 所有事件落盘都走同一个队列：agent 的推送和用户发的 prompt 也会撞 seq。
+  record: (sessionId, event) =>
+    events.run(sessionId, async () => {
+      const result = await recordEvent(deps, { sessionId, event });
+      return result.ok ? ok(undefined) : err(result.error);
+    }),
   workers: () => serverGateway?.workers() ?? [],
   live: {
     has: (sessionId) => live.has(sessionId),

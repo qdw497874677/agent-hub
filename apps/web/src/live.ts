@@ -1,10 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { streamUrl, type JournalEntryDto, type SessionDto, type SessionEventDto } from './api.ts';
 
-export type Block =
-  | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'tool'; readonly name: string; readonly input: string; readonly result: ToolResult | null }
-  | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number };
+/** 每个块都带着它的 seq：历史和实时会在同一条事件上碰头，去重要靠它。 */
+interface Sequenced {
+  readonly seq: number;
+}
+
+export type Block = Sequenced &
+  (
+    /** 用户自己说的话。它来自平台（server 收到 prompt 时先记一条），不是 agent 推来的。 */
+    | { readonly kind: 'prompt'; readonly text: string }
+    | { readonly kind: 'text'; readonly text: string }
+    | { readonly kind: 'tool'; readonly name: string; readonly input: string; readonly result: ToolResult | null }
+    | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number }
+  );
 
 interface ToolResult {
   readonly ok: boolean;
@@ -22,15 +31,19 @@ export interface LiveSession {
 export type LiveMap = Readonly<Record<string, LiveSession>>;
 
 /** 会话卡只渲染对话流；diagnostic 与 ended 不进卡片（见 visual-direction §5）。 */
-export function applyBlocks(blocks: readonly Block[], event: SessionEventDto): readonly Block[] {
+export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   switch (event.kind) {
+    case 'prompt':
+      return [...blocks, { kind: 'prompt', text: event.text, seq }];
     case 'text': {
       const last = blocks[blocks.length - 1];
-      if (last?.kind === 'text') return [...blocks.slice(0, -1), { kind: 'text', text: last.text + event.delta }];
-      return [...blocks, { kind: 'text', text: event.delta }];
+      if (last?.kind === 'text') {
+        return [...blocks.slice(0, -1), { kind: 'text', text: last.text + event.delta, seq }];
+      }
+      return [...blocks, { kind: 'text', text: event.delta, seq }];
     }
     case 'tool_call':
-      return [...blocks, { kind: 'tool', name: event.name, input: event.input, result: null }];
+      return [...blocks, { kind: 'tool', name: event.name, input: event.input, result: null, seq }];
     case 'tool_result': {
       for (let index = blocks.length - 1; index >= 0; index -= 1) {
         const block = blocks[index];
@@ -42,7 +55,7 @@ export function applyBlocks(blocks: readonly Block[], event: SessionEventDto): r
       return blocks;
     }
     case 'artifact':
-      return [...blocks, { kind: 'artifact', path: event.path, bytes: event.bytes }];
+      return [...blocks, { kind: 'artifact', path: event.path, bytes: event.bytes, seq }];
     default:
       return blocks;
   }
@@ -55,18 +68,19 @@ export function applyBlocks(blocks: readonly Block[], event: SessionEventDto): r
  * 过任何一条，只有 journal 知道昨天说过什么——「认出昨天哪条思路走到哪」靠的是它。
  */
 export function blocksFromEntries(entries: readonly JournalEntryDto[]): readonly Block[] {
-  return entries.reduce<readonly Block[]>((blocks, entry) => applyBlocks(blocks, entry.event), []);
+  return entries.reduce<readonly Block[]>((blocks, entry) => applyBlocks(blocks, entry.event, entry.seq), []);
 }
 
-/** 历史块 + 实时块接起来；两块都是 text 时合并，否则卡片会出现两个断开的段落。 */
+/**
+ * 历史块 + 实时块接起来。
+ *
+ * 只在「内存里还没这条会话」时才需要接：正常路径是先用历史**播种**（`seed`），
+ * 之后每条帧按 seq 单调追加，历史与实时就不会各说一遍。
+ */
 export function mergeBlocks(history: readonly Block[], live: readonly Block[]): readonly Block[] {
   if (live.length === 0) return history;
-  const last = history[history.length - 1];
-  const first = live[0];
-  if (last?.kind === 'text' && first?.kind === 'text') {
-    return [...history.slice(0, -1), { kind: 'text', text: last.text + first.text }, ...live.slice(1)];
-  }
-  return [...history, ...live];
+  if (history.length === 0) return live;
+  return live;
 }
 
 /** 历史里最后一条 ended 决定「上次是怎么结束的」——failed 的原因也要能重开后读到。 */
@@ -87,20 +101,51 @@ export function resolveLive(
   preview: readonly JournalEntryDto[],
   current: LiveSession | undefined
 ): LiveSession | null {
+  // 播种过就以内存里的为准：它从历史第一帧开始，一直是 seq 单调累加的。
+  if (current) return current;
   const history = blocksFromEntries(preview);
-  if (!current && history.length === 0 && preview.length === 0) return null;
+  if (history.length === 0 && preview.length === 0) return null;
   return {
-    blocks: mergeBlocks(history, current?.blocks ?? []),
-    status: current?.status ?? session.status,
-    lastSeq: current?.lastSeq ?? session.lastSeq,
-    reason: current?.reason ?? reasonFromEntries(preview)
+    blocks: history,
+    status: session.status,
+    lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
+    reason: reasonFromEntries(preview)
   };
 }
 
+export interface LiveStream {
+  readonly live: LiveMap;
+  /** 用画布投影里的历史给内存播种：一条会话只播一次，之后只吃比它新的帧。 */
+  readonly seed: (sessions: readonly SessionDto[], previews: Readonly<Record<string, readonly JournalEntryDto[]>>) => void;
+}
+
 /** SSE 一条连接推所有会话；前端按 sessionId 分流。 */
-export function useLiveStream(): LiveMap {
+export function useLiveStream(): LiveStream {
   const [live, setLive] = useState<LiveMap>({});
   const source = useRef<EventSource | null>(null);
+
+  const seed = useCallback(
+    (sessions: readonly SessionDto[], previews: Readonly<Record<string, readonly JournalEntryDto[]>>) => {
+      setLive((current) => {
+        let changed = false;
+        const next: Record<string, LiveSession> = { ...current };
+        for (const session of sessions) {
+          if (next[session.id]) continue;
+          const preview = previews[session.id] ?? [];
+          if (preview.length === 0) continue;
+          next[session.id] = {
+            blocks: blocksFromEntries(preview),
+            status: session.status,
+            lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
+            reason: reasonFromEntries(preview)
+          };
+          changed = true;
+        }
+        return changed ? next : current;
+      });
+    },
+    []
+  );
 
   useEffect(() => {
     const events = new EventSource(streamUrl());
@@ -114,13 +159,15 @@ export function useLiveStream(): LiveMap {
       };
       setLive((current) => {
         const previous = current[frame.sessionId];
+        // 播种过的会话，旧帧说明它已经在历史里了——重复上屏比丢一帧难看得多。
+        if (previous && frame.seq <= previous.lastSeq) return current;
         const blocks = previous?.blocks ?? [];
         const reason =
           frame.event.kind === 'ended' && frame.event.reason !== undefined
             ? frame.event.reason
             : (previous?.reason ?? null);
         const next: LiveSession = {
-          blocks: applyBlocks(blocks, frame.event),
+          blocks: applyBlocks(blocks, frame.event, frame.seq),
           status: frame.status,
           lastSeq: frame.seq,
           reason
@@ -134,5 +181,5 @@ export function useLiveStream(): LiveMap {
     };
   }, []);
 
-  return live;
+  return { live, seed };
 }

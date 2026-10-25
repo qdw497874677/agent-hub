@@ -3,10 +3,19 @@ import type { SessionDto, TaskDto } from './api.ts';
 import type { LiveSession } from './live.ts';
 
 export type TaskNode = Node<
-  { task: TaskDto; sessionCount: number; onStatus: (status: TaskDto['status']) => void },
+  {
+    task: TaskDto;
+    sessionCount: number;
+    onStatus: (status: TaskDto['status']) => void;
+    /** 开一条新会话（领域里叫派生：会话是从任务派生出来的）。 */
+    onDerive: () => void;
+  },
   'task'
 >;
-export type SessionNode = Node<{ session: SessionDto; live: LiveSession | undefined; agentLabel: string }, 'session'>;
+export type SessionNode = Node<
+  { session: SessionDto; live: LiveSession | undefined; agentLabel: string; onOpen: () => void },
+  'session'
+>;
 
 const STATUS: Record<SessionDto['status'], { label: string; dot: string; shape: string }> = {
   running: { label: '运行中', dot: 'bg-accent', shape: 'rounded-full' },
@@ -33,6 +42,8 @@ function StatusPill({ status, reason }: { status: SessionDto['status']; reason?:
 }
 
 function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
+  // 卡片只放 agent 说的话。用户自己的提问在专注对话里看，卡片上占地方。
+  if (block.kind === 'prompt') return null;
   if (block.kind === 'text') {
     return <p className="whitespace-pre-wrap text-body text-primary/90">{block.text}</p>;
   }
@@ -58,7 +69,7 @@ function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel } = data;
+  const { session, live, agentLabel, onOpen } = data;
   const status = live?.status ?? session.status;
   const failed = status === 'failed' || status === 'interrupted';
   const failureReason = failed ? (live?.reason ?? null) : null;
@@ -67,7 +78,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
 
   return (
     <div
-      className={`w-[320px] rounded-md border bg-card px-3 py-3 transition-colors ${
+      className={`group w-[320px] rounded-md border bg-card px-3 py-3 transition-colors ${
         selected ? 'border-accent' : 'border-hair'
       } ${dimmed ? 'opacity-70' : ''}`}
     >
@@ -79,7 +90,19 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             {session.model === '' ? '默认模型' : session.model}
           </span>
         </div>
-        <StatusPill status={status} reason={failureReason} />
+        <span className="flex shrink-0 items-center gap-1.5">
+          <button
+            className="nodrag rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary opacity-0 transition-opacity hover:border-accent hover:text-accent group-hover:opacity-100 focus:opacity-100"
+            title="打开专注对话"
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpen();
+            }}
+          >
+            对话
+          </button>
+          <StatusPill status={status} reason={failureReason} />
+        </span>
       </header>
 
       <div className="max-h-[320px] space-y-1.5 overflow-y-auto pr-1">
@@ -95,7 +118,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
 
       <footer className="mt-2 flex items-center justify-between border-t border-hair pt-1.5 text-meta text-tertiary">
         <span className="font-mono">#{live?.lastSeq ?? session.lastSeq}</span>
-        <span>{session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生'}</span>
+        <span>{session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '从任务派生'}</span>
       </footer>
 
       <Handle type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
@@ -104,7 +127,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
 }
 
 export function TaskCard({ data }: NodeProps<TaskNode>) {
-  const { task, sessionCount, onStatus } = data;
+  const { task, sessionCount, onStatus, onDerive } = data;
   const muted = task.status === 'abandoned';
   // 「试过是死路」和「还在试」必须能区分（S4.2），所以收尾与放弃是两个动作，重开也留着。
   // 动作挂在 hover 上而不是「选中后显示」：React Flow 的 onClick 里改 state 会让
@@ -128,8 +151,20 @@ export function TaskCard({ data }: NodeProps<TaskNode>) {
       </div>
       <p className={`text-body ${muted ? 'text-tertiary line-through' : 'text-primary'}`}>{task.title}</p>
       {task.goal ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{task.goal}</p> : null}
-      <p className="mt-1.5 font-mono text-meta text-tertiary">{sessionCount} 个会话</p>
+      <p className="mt-1.5 font-mono text-meta text-tertiary">
+        {sessionCount} 个会话
+        {sessionCount === 0 ? <span className="ml-1 text-tertiary/70">· 双击开一条</span> : null}
+      </p>
       <div className="nodrag mt-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+        <button
+          className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDerive();
+          }}
+        >
+          ＋ 会话
+        </button>
         {actions.map((action) => (
           <button
             key={action.next}

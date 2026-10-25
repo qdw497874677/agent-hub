@@ -47,8 +47,8 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 
   // M2：双击任务派生会话
   await taskNode(page, TASK_TITLE).dblclick();
-  await expect(page.getByText('从任务派生会话')).toBeVisible();
-  await page.getByRole('button', { name: '派生' }).click();
+  await expect(page.getByText('会话从任务派生', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: '开一条会话' }).click();
 
   // M2：卡片出现，并从对话流里读回模型真吐出的一句话
   await expect(sessionNode(page)).toHaveCount(1);
@@ -59,6 +59,18 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // 只认模型真的吐出来的那个词，而且要落在卡片里（textarea 里也有这个词，会假通过）
   await expect(sessionNode(page).getByText(ECHO)).toBeVisible({ timeout: 120_000 });
   await expect(sessionNode(page)).toContainText('完成');
+
+  // 专注对话：双击会话进整屏，问与答同屏
+  await sessionNode(page).dblclick();
+  // 收窄到对话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
+  await expect(
+    page.getByRole('log', { name: '对话记录' }).getByText(`只回这段文字，不要用工具：${ECHO}`)
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: '← 画布' })).toBeVisible();
+  // 专注对话里画布不在了：整屏只有这一条会话
+  await expect(page.locator('.react-flow__node-session')).toHaveCount(0);
+  await page.getByRole('button', { name: '← 画布' }).click();
+  await expect(sessionNode(page)).toHaveCount(1);
 });
 
 test('目录可以点选，不必手打路径', async ({ page }) => {
@@ -98,17 +110,22 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
 test('搜索能搜到会话里说过的话，列表能给画布降级', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
-  // 首页右栏直接列最近会话：点一条回到它所在的画布（这比先进项目再找会话少两跳）
+  // 首页右栏直接列最近会话：点一条就进那条会话说话（「接着干」不是「先看画布」）
   await page.getByRole('button', { name: new RegExp(TASK_TITLE) }).first().click();
-  await expect(sessionNode(page)).toHaveCount(1);
+  const composer = page.getByLabel('发送消息');
+  await expect(composer).toBeVisible();
 
   // S6.4 的前半截：切视图不丢草稿
+  // 专注对话里也有一个「← 画布」，所以按精确名收窄到顶栏那个
+  await page.getByRole('button', { name: '画布', exact: true }).click();
+  await expect(sessionNode(page)).toHaveCount(1);
   await sessionNode(page).click();
-  const composer = page.getByLabel('发送消息');
+  await expect(composer).toBeVisible();
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();
   await expect(page.getByRole('columnheader', { name: '任务' })).toBeVisible();
-  await page.getByRole('button', { name: '画布' }).click();
+  // 专注对话里也有一个「← 画布」，所以按精确名收窄到顶栏那个
+  await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(composer).toHaveValue('这段草稿要活过视图切换');
 
   // 搜索：用会话正文里的词命中，回车跳到那个节点
@@ -120,11 +137,10 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await expect(sessionNode(page)).toHaveCount(1);
   await expect(page.locator('.react-flow__node-session').getByText(ECHO)).toBeVisible();
 
-  // 列表视图：一行一个会话，点一行回到画布并打开检查器
+  // 列表视图：一行一个会话，点一行进那条会话
   await page.getByRole('button', { name: '列表' }).click();
   await page.getByRole('cell', { name: TASK_TITLE }).click();
-  await expect(page.getByRole('button', { name: '画布' })).toBeVisible();
-  await expect(page.locator('.react-flow__node-session')).toHaveCount(1);
+  await expect(page.getByLabel('发送消息')).toBeVisible();
 });
 
 test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page }) => {

@@ -1,10 +1,15 @@
 import type { Seq } from './ids.ts';
 
 /**
- * 归一化事件。六个变体，加变体要改这份文件并过 ADR：
+ * 归一化事件。加变体要改这份文件并过 ADR：
  * 变体数就是新 agent 的映射成本，它直接决定「新增 agent 零内核改动」的成本。
+ *
+ * 七个变体，其中六个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
+ * 用户说了什么必须留在 journal 里，否则重开浏览器后一半对话是空的。
+ * 见 ADR 0006。
  */
 export const SESSION_EVENT_KINDS = [
+  'prompt',
   'text',
   'tool_call',
   'tool_result',
@@ -14,6 +19,7 @@ export const SESSION_EVENT_KINDS = [
 ] as const;
 
 export type SessionEvent =
+  | { readonly kind: 'prompt'; readonly text: string }
   | { readonly kind: 'text'; readonly delta: string }
   | { readonly kind: 'tool_call'; readonly name: string; readonly input: string }
   | {
@@ -30,11 +36,11 @@ export type SessionEvent =
     }
   | { readonly kind: 'diagnostic'; readonly level: 'info' | 'warn' | 'error'; readonly text: string };
 
-/** 画布卡片默认渲染的事件。diagnostic 只进事件流抽屉。 */
+/** 画布卡片默认渲染的事件。diagnostic 只进事件流抽屉，prompt 只在专注对话里露脸。 */
 export const CARD_EVENT_KINDS = ['text', 'tool_call', 'tool_result', 'artifact'] as const;
 
 export function showsOnCard(event: SessionEvent): boolean {
-  return event.kind !== 'diagnostic' && event.kind !== 'ended';
+  return event.kind !== 'diagnostic' && event.kind !== 'ended' && event.kind !== 'prompt';
 }
 
 export interface JournalEntry {

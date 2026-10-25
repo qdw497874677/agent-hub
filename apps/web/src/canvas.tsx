@@ -21,6 +21,8 @@ interface Props {
   readonly live: LiveMap;
   readonly onSelect: (sessionId: string) => void;
   readonly onDerive: (taskId: string) => void;
+  /** 打开专注对话：一条会话，整屏看。 */
+  readonly onOpen: (sessionId: string) => void;
   readonly onLayoutChange: (positions: Record<string, Point>) => void;
   readonly onTaskStatus: (taskId: string, status: TaskDto['status']) => void;
   /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
@@ -60,7 +62,16 @@ function defaults(canvas: CanvasDto): Record<string, Point> {
   return placed;
 }
 
-export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, onTaskStatus, focus }: Props) {
+export function CanvasView({
+  canvas,
+  live,
+  onSelect,
+  onDerive,
+  onOpen,
+  onLayoutChange,
+  onTaskStatus,
+  focus
+}: Props) {
   const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
   const [positions, setPositions] = useState<Record<string, Point>>(initial);
   // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
@@ -88,7 +99,8 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, o
       data: {
         task,
         sessionCount: canvas.sessions.filter((s) => s.taskId === task.id).length,
-        onStatus: (status: TaskDto['status']) => onTaskStatus(task.id, status)
+        onStatus: (status: TaskDto['status']) => onTaskStatus(task.id, status),
+        onDerive: () => onDerive(task.id)
       }
     }));
     const sessionNodes: SessionNode[] = canvas.sessions.map((session) => ({
@@ -98,11 +110,12 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, o
       data: {
         session,
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
-        agentLabel: agentLabel(session.agentId)
+        agentLabel: agentLabel(session.agentId),
+        onOpen: () => onOpen(session.id)
       }
     }));
     return [...taskNodes, ...sessionNodes];
-  }, [canvas.tasks, canvas.sessions, canvas.previews, positions, live, agentLabel, onTaskStatus]);
+  }, [canvas.tasks, canvas.sessions, canvas.previews, positions, live, agentLabel, onTaskStatus, onDerive, onOpen]);
 
   const edges = useMemo(() => {
     const derived: Edge[] = canvas.edges
@@ -144,7 +157,10 @@ export function CanvasView({ canvas, live, onSelect, onDerive, onLayoutChange, o
           if (node.type === 'session') onSelect(node.id);
         }}
         onNodeDoubleClick={(_, node) => {
+          // 双击任务 = 再开一条会话；双击会话 = 进去说话。
+          // 单击只做「选中」——在 onClick 里改 state 会把双击切成两段渲染。
           if (node.type === 'task') onDerive(node.id);
+          if (node.type === 'session') onOpen(node.id);
         }}
         onNodeDragStop={(_, node) => {
           const next = { ...positions, [node.id]: { x: node.position.x, y: node.position.y } };

@@ -122,6 +122,7 @@ export const canvasSchema = z.object({
 
 /** 归一化事件过网时的形状：与 domain 的 SessionEvent 一一对应。 */
 export const sessionEventSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('prompt'), text: z.string() }),
   z.object({ kind: z.literal('text'), delta: z.string() }),
   z.object({ kind: z.literal('tool_call'), name: z.string(), input: z.string() }),
   z.object({

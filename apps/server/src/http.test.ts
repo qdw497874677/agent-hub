@@ -21,7 +21,7 @@ import type {
   WorkspaceFS,
   WorkerCommand
 } from '@agent-hub/domain';
-import { asAgentId, asSessionId, ok } from '@agent-hub/domain';
+import { asAgentId, asSessionId, err, ok, recordEvent } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
@@ -217,6 +217,10 @@ function harness(token: string | null = null) {
   const app = createApp({
     deps,
     hub,
+    record: async (sessionId, event) => {
+      const result = await recordEvent(deps, { sessionId, event });
+      return result.ok ? ok(undefined) : err(result.error);
+    },
     workers: () => [],
     live: { has: (id) => live.has(id), add: (id) => void live.add(id), drop: (id) => void live.delete(id) },
     token
@@ -337,6 +341,10 @@ test('会话不在 worker 手上时，prompt 先 resume 再发（S7.1）', async
     assert.equal(start.resume?.cursor, 0);
     assert.equal(start.workspaceRoot, '/tmp/demo');
   }
+
+  // 用户说了什么必须留在 journal 里：专注对话重开后要能看到自己问过什么。
+  const entries = (await call(`/api/sessions/${sessionId}/events`)).body as JournalEntry[];
+  assert.deepEqual(entries.at(-1)?.event, { kind: 'prompt', text: '接着说' });
 });
 
 test('分叉一个不存在的会话返回 404，分叉点超出历史返回 409', async () => {
@@ -432,7 +440,6 @@ test('event 落盘后能从 /events 读回，seq 单调', async () => {
   });
   const sessionId = asSessionId((derived.body as { id: string }).id);
 
-  const { recordEvent } = await import('@agent-hub/domain');
   const event: SessionEvent = { kind: 'text', delta: '你好' };
   await recordEvent(deps, { sessionId, event });
   await recordEvent(deps, { sessionId, event: { kind: 'text', delta: '世界' } });

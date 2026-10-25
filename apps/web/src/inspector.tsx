@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
+import { Composer } from './composer.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
   prompt: '发消息',
@@ -38,13 +39,15 @@ interface Props {
   readonly session: SessionDto;
   readonly artifacts: readonly ArtifactDto[];
   readonly onClose: () => void;
+  /** 去专注对话：右栏太窄，说不清楚的话得整屏说。 */
+  readonly onFocus: () => void;
   readonly onChanged: () => void;
   /** 草稿由 App 持有：切视图 / 切会话回来时它还在（S6.4）。 */
   readonly draft: string;
   readonly onDraftChange: (text: string) => void;
 }
 
-export function Inspector({ canvas, session, artifacts, onClose, onChanged, draft, onDraftChange }: Props) {
+export function Inspector({ canvas, session, artifacts, onClose, onFocus, onChanged, draft, onDraftChange }: Props) {
   const setDraft = onDraftChange;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,9 +103,17 @@ export function Inspector({ canvas, session, artifacts, onClose, onChanged, draf
           <p className="text-head text-primary">{agent?.label ?? session.agentId}</p>
           <p className="font-mono text-meta text-tertiary">{session.model}</p>
         </div>
-        <button className="text-meta text-tertiary hover:text-primary" onClick={onClose}>
-          收起
-        </button>
+        <span className="flex items-center gap-2">
+          <button
+            className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
+            onClick={onFocus}
+          >
+            对话
+          </button>
+          <button className="text-meta text-tertiary hover:text-primary" onClick={onClose}>
+            收起
+          </button>
+        </span>
       </header>
 
       <div className="flex-1 overflow-y-auto px-3 py-3">
@@ -178,52 +189,21 @@ export function Inspector({ canvas, session, artifacts, onClose, onChanged, draf
       </div>
 
       <footer className="border-t border-hair px-3 py-2">
-        {error ? <p className="mb-1 text-meta text-rust">{error}</p> : null}
-        {/* 一个盒子装下「写什么」和「怎么发」：输入框与发送按钮本来就是一回事，
-            分成两个带边框的控件会让眼睛多搬一次家。 */}
-        <div className="rounded-md border border-hair bg-card px-2.5 py-2 focus-within:border-strong">
-          <textarea
-            aria-label="发送消息"
-            className="max-h-40 min-h-[44px] w-full resize-none bg-transparent text-body text-primary outline-none placeholder:text-tertiary"
-            placeholder="接着说…（⌘↵ 发送）"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                event.preventDefault();
-                send();
-              }
-            }}
-          />
-          <div className="mt-1 flex items-center justify-between gap-2">
-            <span className="truncate text-meta text-tertiary">
-              {agent?.label ?? session.agentId} · {session.model === '' ? '默认模型' : session.model}
-            </span>
-            <div className="flex shrink-0 items-center gap-1.5">
-              {session.status === 'running' ? (
-                <button
-                  className="grid size-6 place-items-center rounded-full border border-hair text-meta text-rust hover:border-rust disabled:opacity-40"
-                  title="中断"
-                  aria-label="中断"
-                  disabled={busy}
-                  onClick={() => run(() => api.interrupt(session.id))}
-                >
-                  ■
-                </button>
-              ) : null}
-              <button
-                className="grid size-6 place-items-center rounded-full text-meta text-canvas disabled:opacity-30"
-                style={{ background: 'var(--color-accent)' }}
-                title="发送（⌘↵）"
-                aria-label="发送"
-                disabled={busy || draft.trim().length === 0}
-                onClick={send}
-              >
-                ↑
-              </button>
-            </div>
-          </div>
-        </div>
+        <Composer
+          session={session}
+          agentLabel={agent?.label ?? session.agentId}
+          draft={draft}
+          onDraftChange={setDraft}
+          onSend={(text) =>
+            void run(async () => {
+              await api.prompt(session.id, text);
+              setDraft('');
+            })
+          }
+          onInterrupt={() => void run(() => api.interrupt(session.id))}
+          busy={busy}
+          error={error}
+        />
       </footer>
     </aside>
   );

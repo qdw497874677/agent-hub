@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CanvasDto, ProjectDto } from './api.ts';
 import { api } from './api.ts';
@@ -7,6 +7,8 @@ import { useLiveStream } from './live.ts';
 import { CanvasView } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
 import { ListView, SearchPalette } from './views.tsx';
+import { FocusView } from './focus.tsx';
+import { resolveLive } from './live.ts';
 import { WorkersBadge } from './workers.tsx';
 
 const LAST_PROJECT = 'agent-hub:last-project';
@@ -91,7 +93,11 @@ function DeriveDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/70">
       <div className="w-[420px] rounded-md border border-strong bg-panel p-4">
-        <p className="mb-3 text-head text-primary">从任务派生会话</p>
+        <p className="mb-1 text-head text-primary">开一条会话</p>
+        <p className="mb-3 text-meta text-secondary">
+          会话从任务派生：任务说清要达成什么，每条会话是一次尝试。同一个任务可以开很多条，
+          它们并排跑在画布上，血缘线把每条都连回这个任务。
+        </p>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
             还没有节点上线。worker 起来后，这里会出现它装了的 agent。
@@ -142,7 +148,7 @@ function DeriveDialog({
             disabled={agentId === '' || derive.isPending}
             onClick={() => derive.mutate()}
           >
-            派生
+            开一条会话
           </button>
         </div>
       </div>
@@ -158,14 +164,16 @@ export function App() {
   const [selected, setSelected] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
-  const [view, setView] = useState<'canvas' | 'list'>('canvas');
+  // 三种视图是同一份数据的三层分辨率（S6.4）：画布看关系，列表看清单，专注对话看内容。
+  const [view, setView] = useState<'canvas' | 'list' | 'focus'>('canvas');
   const [search, setSearch] = useState(false);
   // 草稿存在 App 层而不是 Inspector 里：S6.4 要求切视图不丢草稿，
   // 组件一卸载 useState 就没了，所以它必须活在两者之上。
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   // 跳到某个节点：nonce 让「同一条命中点第二次」也能重新居中。
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
-  const live = useLiveStream();
+  // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧。
+  const { live, seed } = useLiveStream();
   const queryClient = useQueryClient();
 
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
@@ -186,6 +194,14 @@ export function App() {
     refetchInterval: (query) => ((query.state.data?.agents.length ?? 0) === 0 ? 2000 : false)
   });
 
+  const seedRef = useRef(seed);
+  seedRef.current = seed;
+  useEffect(() => {
+    const data = canvas.data;
+    if (!data) return;
+    seedRef.current(data.sessions, data.previews ?? {});
+  });
+
   const refresh = useCallback(() => {
     if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
   }, [project, queryClient]);
@@ -196,6 +212,12 @@ export function App() {
     const timer = setTimeout(refresh, 900);
     return () => clearTimeout(timer);
   }, [live, refresh]);
+
+  /** 进会话说话。画布上双击会话卡、列表里点行、首页点最近会话，都走这里。 */
+  const openSession = useCallback((sessionId: string) => {
+    setSelected(sessionId);
+    setView('focus');
+  }, []);
 
   const setTaskStatus = useCallback(
     (taskId: string, status: 'open' | 'done' | 'abandoned') => {
@@ -243,6 +265,8 @@ export function App() {
           setAtHome(false);
           setProject(picked);
           setSelected(sessionId ?? null);
+          // 「接着干」= 直接进那条会话说话，不是先看画布再自己找。
+          setView(sessionId ? 'focus' : 'canvas');
           if (sessionId) setFocus({ id: sessionId, nonce: Date.now() });
         }}
       />
@@ -288,13 +312,18 @@ export function App() {
         </div>
         <div className="flex items-center gap-2">
           <div className="flex overflow-hidden rounded-sm border border-hair">
-            {(['canvas', 'list'] as const).map((mode) => (
+            {(['canvas', 'list', 'focus'] as const).map((mode) => (
               <button
                 key={mode}
                 className={`px-2.5 py-1 text-meta ${view === mode ? 'bg-card text-primary' : 'text-tertiary hover:text-secondary'}`}
+                // 没有选中会话时「对话」不知道要显示谁，所以不给点。
+                disabled={mode === 'focus' && selectedSession === null}
+                title={
+                  mode === 'focus' && selectedSession === null ? '先在画布上双击一条会话' : undefined
+                }
                 onClick={() => setView(mode)}
               >
-                {mode === 'canvas' ? '画布' : '列表'}
+                {mode === 'canvas' ? '画布' : mode === 'list' ? '列表' : '对话'}
               </button>
             ))}
           </div>
@@ -315,13 +344,24 @@ export function App() {
         </div>
       </header>
 
+      {canvas.data && view === 'focus' && selectedSession ? (
+        <FocusView
+          canvas={canvas.data}
+          session={selectedSession}
+          live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}
+          draft={drafts[selectedSession.id] ?? ''}
+          onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
+          onBack={() => setView('canvas')}
+          onChanged={refresh}
+        />
+      ) : (
       <div className="flex min-h-0 flex-1">
         <div className="relative flex-1">
           {canvas.data && view === 'list' ? (
             <ListView
               canvas={canvas.data}
               live={live}
-              onOpen={(sessionId) => jump(canvas.data.sessions.find((s) => s.id === sessionId)?.taskId ?? '', sessionId)}
+              onOpen={openSession}
               onDerive={setDeriveFor}
             />
           ) : canvas.data ? (
@@ -330,6 +370,7 @@ export function App() {
               live={live}
               onSelect={setSelected}
               onDerive={setDeriveFor}
+              onOpen={openSession}
               onLayoutChange={saveLayout}
               onTaskStatus={setTaskStatus}
               focus={focus}
@@ -370,12 +411,14 @@ export function App() {
             session={selectedSession}
             artifacts={(canvas.data?.artifacts ?? []).filter((artifact) => artifact.sessionId === selectedSession.id)}
             onClose={() => setSelected(null)}
+            onFocus={() => selectedSession && openSession(selectedSession.id)}
             onChanged={refresh}
             draft={drafts[selectedSession.id] ?? ''}
             onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           />
         ) : null}
       </div>
+      )}
 
       {search ? (
         <SearchPalette

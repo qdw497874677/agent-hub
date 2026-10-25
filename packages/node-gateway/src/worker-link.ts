@@ -68,10 +68,29 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     void handle(parsed.data as ServerToWorker);
   });
 
+  /**
+   * 一条指令失败不能静默。之前 `runtime.start` 抛错时异常沉进未处理的 Promise，
+   * 日志里只留下「未知会话」——真正的错误被吞掉了，排障只能靠猜。
+   */
   async function handle(command: ServerToWorker): Promise<void> {
+    try {
+      await run(command);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      options.onLog?.(`${command.kind} 指令失败：${reason}`);
+      send({
+        type: 'event',
+        sessionId: command.sessionId,
+        event: { kind: 'ended', outcome: 'failed', reason: `${command.kind} 失败：${reason}` }
+      });
+      sessions.delete(command.sessionId);
+    }
+  }
+
+  async function run(command: ServerToWorker): Promise<void> {
     if (command.kind === 'start_session') {
       const started = startSession(command);
-      starting.set(command.sessionId, started);
+      starting.set(command.sessionId, started.catch(() => undefined));
       try {
         await started;
       } finally {
