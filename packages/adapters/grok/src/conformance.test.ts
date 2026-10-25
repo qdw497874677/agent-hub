@@ -6,7 +6,7 @@ import { grokDescriptor } from './descriptor.ts';
 
 const toolNames = new Map<string, string>();
 
-/** 形状取自 grok 1.0.70 `grok agent stdio` 的真实输出。 */
+/** 形状取自 grok 1.0.70 `grok agent stdio` 登录后真实录制的输出（字段有删减）。 */
 const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
   {
     given: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '先读文件' } },
@@ -21,16 +21,43 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
     expect: []
   },
   {
-    given: { sessionUpdate: 'tool_call', toolCallId: 'g1', title: 'read_file', kind: 'read', rawInput: { path: 'src/a.ts' } },
-    expect: [{ kind: 'tool_call', name: 'read_file', input: '{"path":"src/a.ts"}' }]
+    given: { sessionUpdate: 'tool_call', toolCallId: 'g1', title: 'read_file', rawInput: { target_file: '/tmp/gs/a.txt' }, _meta: { 'x.ai/tool': { name: 'read_file', kind: 'read' } } },
+    expect: [{ kind: 'tool_call', name: 'read_file', input: '{"target_file":"/tmp/gs/a.txt"}' }]
   },
   {
-    given: { sessionUpdate: 'tool_call_update', toolCallId: 'g1', status: 'in_progress' },
+    // 执行前的补充更新：没有 status，不产出事件
+    given: { sessionUpdate: 'tool_call_update', toolCallId: 'g1', kind: 'read', title: 'Read `/tmp/gs/a.txt`', locations: [{ path: '/tmp/gs/a.txt' }] },
     expect: []
   },
   {
-    given: { sessionUpdate: 'tool_call_update', toolCallId: 'g1', status: 'completed' },
+    given: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'g1',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: '1→hello\n' } }],
+      rawOutput: { type: 'ReadFile', FileContent: { content: '1→hello\n' } }
+    },
     expect: [{ kind: 'tool_result', name: 'read_file', ok: true, durationMs: 0 }]
+  },
+  {
+    given: { sessionUpdate: 'tool_call', toolCallId: 'g3', title: 'write', rawInput: { file_path: '/tmp/gs/b.txt', content: 'bye' } },
+    expect: [{ kind: 'tool_call', name: 'write', input: '{"file_path":"/tmp/gs/b.txt","content":"bye"}' }]
+  },
+  {
+    given: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'g3',
+      status: 'completed',
+      content: [{ type: 'diff', path: '/tmp/gs/b.txt', oldText: '', newText: 'bye' }]
+    },
+    expect: [
+      { kind: 'tool_result', name: 'write', ok: true, durationMs: 0 },
+      { kind: 'artifact', path: '/tmp/gs/b.txt', bytes: 3 }
+    ]
+  },
+  {
+    given: { sessionUpdate: 'session_info_update', title: 'Create b.txt file containing bye' },
+    expect: []
   },
   {
     given: { sessionUpdate: 'tool_call_update', toolCallId: 'g2', status: 'failed', rawOutput: { path: '/tmp/out.md' } },

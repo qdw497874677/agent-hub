@@ -7,7 +7,8 @@ import type { AgentDescriptor } from '@agent-hub/domain';
  *
  * - `fork` limited：ACP 的 sessionCapabilities 只有 list/resume/close，没有按 entry 分叉；
  *   headless 的 `--fork-session` 只能整段复制，v1 复用来源会话完整上下文，平台血缘仍精确。
- * - `artifacts` limited：ACP 工具结果无权威文件路径，只在 rawOutput 带绝对路径时归档。
+ * - `artifacts` limited：write/edit 完成时的 diff 内容带绝对路径，据此归档；shell 写出的文件认不出。
+ * - 思考（agent_thought_chunk）不进平台事件，与 OpenCode 一致。
  */
 export function grokDescriptorFor(
   models: readonly string[] = [],
@@ -22,7 +23,7 @@ export function grokDescriptorFor(
       fork: limited('Grok ACP 未暴露按 entry 分叉，v1 复用来源会话的完整上下文；平台血缘仍精确'),
       resume: available,
       tool_calls: available,
-      artifacts: limited('ACP 工具结果无权威文件路径，只在 rawOutput 带绝对路径时归档'),
+      artifacts: limited('只归档 write/edit 工具 diff 里的绝对路径；shell 命令写出的文件认不出'),
       structured_events: available
     }),
     // 模型列表由 worker 从 initialize 的 _meta.modelState 里问出来——这里不许猜。

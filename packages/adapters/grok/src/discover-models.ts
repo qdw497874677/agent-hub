@@ -37,6 +37,7 @@ export async function discoverGrokModels(
     return empty;
   }
   child.on('error', () => undefined);
+  child.stdin.on('error', () => undefined);
   const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
   try {
     child.stdin.write(

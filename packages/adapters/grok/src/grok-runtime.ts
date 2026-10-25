@@ -58,6 +58,8 @@ class AcpSession implements RuntimeSession {
   private agentSessionId = '';
   /** session/load 时 Grok 会用 session/update 回放历史；平台已有这些事件，回放期间丢掉。 */
   private replaying = false;
+  /** 与 Pi 适配器一致：主动 dispose 导致的进程退出记 stopped，不是 failed。 */
+  private disposed = false;
 
   constructor(sessionId: RuntimeSession['sessionId'], child: ChildProcessWithoutNullStreams) {
     this.sessionId = sessionId;
@@ -107,7 +109,7 @@ class AcpSession implements RuntimeSession {
         text: `ACP 事件流中断：${(error as Error).message}`
       });
     } finally {
-      this.queue.push({ kind: 'ended', outcome: 'failed' });
+      this.queue.push({ kind: 'ended', outcome: this.disposed ? 'stopped' : 'failed' });
       this.queue.close();
     }
   }
@@ -220,6 +222,8 @@ class AcpSession implements RuntimeSession {
   }
 
   async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
     this.child.stdin.end();
     const timer = setTimeout(() => this.child.kill('SIGKILL'), 3000);
     this.child.once('exit', () => clearTimeout(timer));
