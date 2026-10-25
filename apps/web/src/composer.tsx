@@ -14,6 +14,7 @@ import {
 import { readDraft } from './commands.ts';
 import { OptionControls } from './options.tsx';
 import { coarsePointer } from './device.ts';
+import { useOfflineNotice } from './workers.tsx';
 
 interface Props {
   readonly session: SessionDto;
@@ -173,7 +174,8 @@ export function Composer({
           : files.map((path) => ({ key: path, label: path, hint: '', pick: () => pickFile(path) }));
 
   const running = awaiting;
-  const canSend = (filled || items.length > 0) && !busy;
+  const offline = useOfflineNotice(session.workerId);
+  const canSend = (filled || items.length > 0) && !busy && offline === null;
 
   function refreshTrigger(): void {
     const element = area.current;
@@ -238,7 +240,7 @@ export function Composer({
   async function send(): Promise<void> {
     const element = area.current;
     const value = element?.value.trim() ?? '';
-    if ((value === '' && items.length === 0) || busy) return;
+    if ((value === '' && items.length === 0) || busy || offline !== null) return;
     if (element) element.value = '';
     setFilled(false);
     setTrigger(null);
@@ -274,6 +276,7 @@ export function Composer({
   return (
     <div className="relative">
       {error ? <p className="mb-1 text-meta text-rust">{error}</p> : null}
+      <OfflineNotice text={offline} />
       {options.length > 0 ? (
         <ul
           role="listbox"
@@ -447,6 +450,17 @@ export function Composer({
   );
 }
 
+/** 机器离线时压在输入框上方的一行：说清楚为什么发不了，而不是让圆点默默变灰。 */
+function OfflineNotice({ text, compact = false }: { text: string | null; compact?: boolean }) {
+  if (text === null) return null;
+  return (
+    <p role="status" className={`mb-1 flex items-center gap-1.5 text-meta text-rust ${compact ? 'truncate' : ''}`} title={text}>
+      <span aria-hidden className="block size-[7px] shrink-0 rounded-full bg-rust" />
+      <span className={compact ? 'truncate' : ''}>{text}</span>
+    </p>
+  );
+}
+
 /**
  * 画布卡片里的输入行：不等你进专注对话，就地能说一句。
  *
@@ -489,12 +503,13 @@ export function CardComposer({
   }, [draft]);
 
   const running = awaiting;
-  const canSend = filled && !busy;
+  const offline = useOfflineNotice(session.workerId);
+  const canSend = filled && !busy && offline === null;
 
   function send(): void {
     const element = area.current;
     const value = element?.value.trim() ?? '';
-    if (value === '' || busy) return;
+    if (value === '' || busy || offline !== null) return;
     if (element) element.value = '';
     setFilled(false);
     onSend(value);
@@ -506,6 +521,7 @@ export function CardComposer({
     // 输入框里的双击是选词，不该顺带把整张卡切到专注对话
     <div className="nodrag nowheel mt-2" onDoubleClick={(event) => event.stopPropagation()}>
       {error ? <p className="mb-1 truncate text-meta text-rust" title={error}>{error}</p> : null}
+      <OfflineNotice text={offline} compact />
       {/* 可调项不放在这里：卡片头部已经有一份，重复一份只会让人兑不明哪个是真的 */}
       <div className="mt-1 flex items-end gap-1.5 rounded-md border border-hair bg-canvas/40 px-2 py-1.5 focus-within:border-strong">
         <textarea

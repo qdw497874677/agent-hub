@@ -56,7 +56,12 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // 用 fill 而不是逐字敲：卡片在 React Flow 节点里，0 延迟的合成按键会跑在画布重渲染前面而丢字
   // （人在键盘上打不到那个速度；粘贴或正常输入都走一个 input 事件）
   await cardInput.fill(`只回这段文字，不要用工具：${ECHO}`);
-  await cardInput.press('Enter');
+  // 冷启动时卡片会在「填好」和「按回车」之间被画布重新挂载一次：回车落在已卸下的旧输入框上就丢了，
+  // 新输入框又按草稿把原话填回来（这就是偶发的「一直没输出」）。发出去的标志是输入框清空，没清空就再按一次。
+  await expect(async () => {
+    await cardInput.press('Enter');
+    await expect(cardInput).toHaveValue('', { timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
 
   // 这里**不**断言「■ 出现过」：那一轮可能几百毫秒就跑完，而 toBeVisible 的轮询会正好错过它。
   // 圆点的两种身份由下面这条覆盖：跑完必须回到 ↑（停在 ■ 上才是真 bug）。

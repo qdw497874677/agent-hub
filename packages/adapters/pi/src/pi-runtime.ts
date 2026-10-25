@@ -13,7 +13,7 @@ import type {
   SessionEvent,
   StartSpec
 } from '@agent-hub/domain';
-import { unavailable } from '@agent-hub/domain';
+import { invalid, unavailable } from '@agent-hub/domain';
 import { piDescriptorFor } from './descriptor.ts';
 import { createPiEventMapper } from './map-event.ts';
 
@@ -120,6 +120,13 @@ class PiSession implements RuntimeSession {
 
   async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
     try {
+      const image = input.parts.find((part) => part.kind === 'image');
+      if (image) {
+        // 纯文本模型会把图默默丢掉，用户还以为 agent 看过了：先问一句当前模型收不收图。
+        const state = await this.send({ type: 'get_state' });
+        const refused = imageRefusal(state['data'], image.name);
+        if (refused) return { ok: false, error: invalid(refused) };
+      }
       await this.send(toPiPrompt(input));
       return { ok: true, value: undefined };
     } catch (error) {
@@ -259,6 +266,16 @@ class PiSession implements RuntimeSession {
     const timer = setTimeout(() => this.child.kill('SIGKILL'), 3000);
     this.child.once('exit', () => clearTimeout(timer));
   }
+}
+
+/**
+ * 当前模型不收图时给出拒绝理由；Pi 没报 `input` 清单（老版本）就当它收，交给模型自己说。
+ */
+export function imageRefusal(state: unknown, imageName: string): string | null {
+  const model = (state as { model?: { id?: unknown; provider?: unknown; input?: unknown } } | undefined)?.model;
+  if (!Array.isArray(model?.input) || model.input.includes('image')) return null;
+  const name = typeof model.provider === 'string' && typeof model.id === 'string' ? `${model.provider}/${model.id}` : '当前模型';
+  return `${name} 只收文字，这张图发不过去：${imageName}。换一个支持图片的模型再发。`;
 }
 
 /**
