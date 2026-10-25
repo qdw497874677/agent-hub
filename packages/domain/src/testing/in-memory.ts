@@ -22,9 +22,13 @@ import type {
   AccountDeps,
   Login,
   OutgoingEmail,
-  User
+  User,
+  AdminDeps,
+  AuditEntry,
+  HubSettings,
+  LoginActivity
 } from '../index.ts';
-import { ok } from '../index.ts';
+import { DEFAULT_SETTINGS, ok } from '../index.ts';
 
 /**
  * 用例测试与 HTTP 合同测试共用的内存假件。
@@ -258,6 +262,7 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
   const users = new Map<string, User>();
   const loginRows = new Map<string, Login>();
   const sent: OutgoingEmail[] = [];
+  let settings: HubSettings = DEFAULT_SETTINGS;
   let counter = 0;
   return {
     sent,
@@ -281,8 +286,21 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
         if (row) loginRows.set(id, { ...row, lastSeenAt, expiresAt });
       },
       remove: async (id) => void loginRows.delete(id),
-      removeForUser: async (userId) => {
-        for (const [id, row] of loginRows) if (row.userId === userId) loginRows.delete(id);
+      removeForUser: async (userId, keep) => {
+        for (const [id, row] of loginRows) if (row.userId === userId && id !== keep) loginRows.delete(id);
+      },
+      recent: async (limit) => [...loginRows.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit),
+      activity: async (at) => {
+        const rows = new Map<string, LoginActivity>();
+        for (const login of loginRows.values()) {
+          const row = rows.get(login.userId);
+          rows.set(login.userId, {
+            userId: login.userId,
+            lastSeenAt: Math.max(row?.lastSeenAt ?? 0, login.lastSeenAt),
+            active: (row?.active ?? 0) + (login.expiresAt > at ? 1 : 0)
+          });
+        }
+        return [...rows.values()];
       }
     },
     hasher: {
@@ -296,6 +314,39 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
       },
       hashOf: (token) => `h(${token})`
     },
-    mail: { send: async (email) => void sent.push(email) }
+    mail: { send: async (email) => void sent.push(email) },
+    settings: {
+      get: async () => settings,
+      save: async (next) => void (settings = next)
+    }
   };
+}
+
+/** 运营后台用：账号 + 审计 + 可控的机器列表。 */
+export function inMemoryAdmin(now: () => number = () => 1_000) {
+  const accounts = inMemoryAccounts(now);
+  const entries: AuditEntry[] = [];
+  const workerList: WorkerStatus[] = [];
+  const disconnected: string[] = [];
+  const sessionList: Session[] = [];
+  const deps: AdminDeps = {
+    users: accounts.users,
+    logins: accounts.logins,
+    settings: accounts.settings,
+    now,
+    audit: {
+      append: async (entry) => void entries.unshift(entry),
+      recent: async (limit) => entries.slice(0, limit)
+    },
+    workers: {
+      list: async () => workerList,
+      disconnect: async (id) => {
+        const worker = workerList.find((w) => w.workerId === id && w.state === 'online');
+        if (worker) disconnected.push(id);
+        return worker !== undefined;
+      }
+    },
+    sessions: { listAll: async () => sessionList }
+  };
+  return { accounts, deps, entries, workerList, disconnected, sessionList };
 }

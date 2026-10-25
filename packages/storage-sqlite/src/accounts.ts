@@ -1,6 +1,18 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { Login, LoginRepository, Role, User, UserRepository } from '@agent-hub/domain';
-import { asLoginId, asUserId } from '@agent-hub/domain';
+import type {
+  AuditAction,
+  AuditEntry,
+  AuditLog,
+  HubSettings,
+  Login,
+  LoginActivity,
+  LoginRepository,
+  Role,
+  SettingsRepository,
+  User,
+  UserRepository
+} from '@agent-hub/domain';
+import { DEFAULT_SETTINGS, asLoginId, asUserId } from '@agent-hub/domain';
 
 /** 账号两张表。邮箱唯一；登录态只存令牌哈希（docs/design/accounts.md §13）。 */
 export const ACCOUNT_SCHEMA = `
@@ -26,6 +38,22 @@ CREATE TABLE IF NOT EXISTS logins (
   expires_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS logins_by_user ON logins(user_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id          TEXT PRIMARY KEY,
+  actor_id    TEXT NOT NULL,
+  actor_email TEXT NOT NULL,
+  action      TEXT NOT NULL,
+  target      TEXT NOT NULL,
+  detail      TEXT NOT NULL,
+  at          INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS audit_by_time ON audit_log(at DESC);
 `;
 
 interface UserRow {
@@ -72,7 +100,14 @@ const toLogin = (row: LoginRow): Login => ({
   expiresAt: row.expires_at
 });
 
-export function createAccountRepositories(db: DatabaseSync): { users: UserRepository; logins: LoginRepository } {
+export interface AccountRepositories {
+  readonly users: UserRepository;
+  readonly logins: LoginRepository;
+  readonly settings: SettingsRepository;
+  readonly audit: AuditLog;
+}
+
+export function createAccountRepositories(db: DatabaseSync): AccountRepositories {
   db.exec(ACCOUNT_SCHEMA);
 
   const upsertUser = db.prepare(
@@ -96,6 +131,20 @@ export function createAccountRepositories(db: DatabaseSync): { users: UserReposi
   const touchLogin = db.prepare('UPDATE logins SET last_seen_at = ?, expires_at = ? WHERE id = ?');
   const deleteLogin = db.prepare('DELETE FROM logins WHERE id = ?');
   const deleteLoginsOf = db.prepare('DELETE FROM logins WHERE user_id = ?');
+  const deleteLoginsOfExcept = db.prepare('DELETE FROM logins WHERE user_id = ? AND id <> ?');
+  const recentLogins = db.prepare('SELECT * FROM logins ORDER BY created_at DESC LIMIT ?');
+  const loginActivity = db.prepare(
+    'SELECT user_id, MAX(last_seen_at) AS last_seen_at, SUM(CASE WHEN expires_at > ? THEN 1 ELSE 0 END) AS active ' +
+      'FROM logins GROUP BY user_id'
+  );
+  const getSetting = db.prepare("SELECT value FROM settings WHERE key = 'hub'");
+  const putSetting = db.prepare(
+    "INSERT INTO settings(key, value) VALUES ('hub', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  );
+  const insertAudit = db.prepare(
+    'INSERT INTO audit_log(id, actor_id, actor_email, action, target, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+  const recentAudit = db.prepare('SELECT * FROM audit_log ORDER BY at DESC, rowid DESC LIMIT ?');
   const deleteExpired = db.prepare('DELETE FROM logins WHERE expires_at < ?');
 
   const users: UserRepository = {
@@ -153,10 +202,59 @@ export function createAccountRepositories(db: DatabaseSync): { users: UserReposi
     async remove(id) {
       deleteLogin.run(id);
     },
-    async removeForUser(userId) {
-      deleteLoginsOf.run(userId);
+    async removeForUser(userId, keep) {
+      if (keep) deleteLoginsOfExcept.run(userId, keep);
+      else deleteLoginsOf.run(userId);
+    },
+    async recent(limit) {
+      return (recentLogins.all(limit) as unknown as LoginRow[]).map(toLogin);
+    },
+    async activity(now) {
+      const rows = loginActivity.all(now) as unknown as { user_id: string; last_seen_at: number; active: number }[];
+      return rows.map(
+        (row): LoginActivity => ({ userId: asUserId(row.user_id), lastSeenAt: row.last_seen_at, active: row.active })
+      );
     }
   };
 
-  return { users, logins };
+  const settings: SettingsRepository = {
+    async get() {
+      const row = getSetting.get() as { value: string } | undefined;
+      // 合并默认值：以后加新开关，老库读出来也是完整的。
+      return row ? { ...DEFAULT_SETTINGS, ...(JSON.parse(row.value) as Partial<HubSettings>) } : DEFAULT_SETTINGS;
+    },
+    async save(next) {
+      putSetting.run(JSON.stringify(next));
+    }
+  };
+
+  const audit: AuditLog = {
+    async append(entry) {
+      insertAudit.run(entry.id, entry.actorId, entry.actorEmail, entry.action, entry.target, entry.detail, entry.at);
+    },
+    async recent(limit) {
+      const rows = recentAudit.all(limit) as unknown as {
+        id: string;
+        actor_id: string;
+        actor_email: string;
+        action: string;
+        target: string;
+        detail: string;
+        at: number;
+      }[];
+      return rows.map(
+        (row): AuditEntry => ({
+          id: row.id,
+          actorId: asUserId(row.actor_id),
+          actorEmail: row.actor_email,
+          action: row.action as AuditAction,
+          target: row.target,
+          detail: row.detail,
+          at: row.at
+        })
+      );
+    }
+  };
+
+  return { users, logins, settings, audit };
 }

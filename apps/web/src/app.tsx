@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from './home.tsx';
+import { AdminPage } from './admin.tsx';
 import { resolveLive, useLiveStream } from './live.ts';
 import { CanvasView, type LayoutPatch } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
@@ -16,7 +17,13 @@ import type { View } from './route.ts';
 
 const LAST_PROJECT = 'agent-hub:last-project';
 
+/** 运营后台与工作台互不相干：分开渲染，各自的数据各自拉。 */
 export function App() {
+  const [route] = useRoute();
+  return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace />;
+}
+
+function Workspace() {
   const [route, navigate] = useRoute();
   // 手机上画布没法用手指精确拖拽，默认进列表；桌面默认进画布。
   const narrow = useNarrow();

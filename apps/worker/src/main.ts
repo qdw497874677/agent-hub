@@ -186,7 +186,7 @@ const link = connectWorkerLink({
   host: { hostname: hostname(), platform: platform(), arch: arch() },
   files,
   onLog: log,
-  // 断线会自己重连；走到这里只有两种情况：token 被拒、或者自己 close() 了。
+  // 断线会自己重连；走到这里只有两种情况：token 被拒、被管理员断开、或者自己 close() 了。
   onClose: () => {
     log('连接关闭，退出');
     process.exit(0);

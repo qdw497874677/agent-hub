@@ -2,7 +2,6 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { sameSecret } from './request-guard.ts';
@@ -23,7 +22,7 @@ import {
   setTaskStatusRequest,
   workerInfoSchema
 } from '@agent-hub/contract';
-import type { Deps, DomainError, TaskStatus } from '@agent-hub/domain';
+import type { Deps, TaskStatus } from '@agent-hub/domain';
 import {
   ATTACHMENT_LIMITS,
   asProjectId,
@@ -51,6 +50,9 @@ import {
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
 import { installAuth } from './auth.ts';
+import { installAdmin } from './admin.ts';
+import type { AdminOptions } from './admin.ts';
+import { fail } from './http-error.ts';
 import type { AuthOptions } from './auth.ts';
 
 export interface AppOptions {
@@ -59,6 +61,8 @@ export interface AppOptions {
   readonly token: string | null;
   /** 账号体系；给了就用登录态守 /api/*，不给退回只认共享 token（单测、旧部署）。 */
   readonly auth?: AuthOptions;
+  /** 运营后台；只在有账号体系时装（要靠登录态认出主人）。 */
+  readonly admin?: AdminOptions;
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
   readonly guard?: RequestGuard;
   /**
@@ -68,19 +72,6 @@ export interface AppOptions {
    * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
-}
-
-const STATUS_OF: Record<DomainError['code'], ContentfulStatusCode> = {
-  invalid: 400,
-  not_found: 404,
-  conflict: 409,
-  unavailable: 503,
-  not_implemented: 501
-};
-
-/** 所有错误响应都长一个样：{ error: { code, message } }。 */
-function fail(c: Context, error: DomainError): Response {
-  return c.json({ error: { code: error.code, message: error.message } }, STATUS_OF[error.code]);
 }
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; response: Response };
@@ -129,7 +120,10 @@ export function createApp(options: AppOptions): Hono {
   });
 
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
-  if (options.auth) installAuth(app, options.auth);
+  if (options.auth) {
+    const principalOf = installAuth(app, options.auth);
+    if (options.admin) installAdmin(app, options.admin, principalOf);
+  }
   app.use('/api/*', async (c, next) => {
     if (options.auth || options.token === null) return next();
     // header 优先；SSE（EventSource）设不了请求头，所以也接受查询串。

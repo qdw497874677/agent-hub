@@ -108,6 +108,7 @@ const resendKey = readEnv('RESEND_API_KEY');
 const accounts: AccountDeps = {
   users: store.users,
   logins: store.logins,
+  settings: store.settings,
   hasher: createScryptHasher(),
   tokens: createTokenIssuer(),
   mail: resendKey
@@ -189,7 +190,23 @@ serverGateway = createServerGateway({
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, auth: { accounts, hubToken } });
+const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard,
+  auth: { accounts, hubToken },
+  admin: {
+    deps: {
+      users: store.users,
+      logins: store.logins,
+      settings: store.settings,
+      audit: store.audit,
+      now: () => Date.now(),
+      sessions: store.sessions,
+      workers: {
+        list: async () => serverGateway?.workers() ?? [],
+        disconnect: async (workerId) => serverGateway?.disconnect(workerId) ?? false
+      }
+    }
+  }
+});
 
 app.use('/*', serveStatic({ root: webDist }));
 app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));

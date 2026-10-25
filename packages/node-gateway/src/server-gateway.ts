@@ -92,6 +92,8 @@ export interface ServerGateway {
   /** 把领域核对过落点的会话接回这台 Worker 的路由（重连后不必再 resume）。 */
   adopt(workerId: string, sessionIds: readonly string[]): void;
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
+  /** 管理员断开一台在线 Worker（关闭码 4403，Worker 收到后不再重连）。不在线返回 false。 */
+  disconnect(workerId: string): boolean;
   close(): void;
 }
 
@@ -265,6 +267,9 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     (socket as WebSocket & { markTimeout?: () => void }).markTimeout = () => {
       closeReason = '心跳超时';
     };
+    (socket as WebSocket & { markKicked?: () => void }).markKicked = () => {
+      closeReason = '管理员断开';
+    };
   });
 
   const heartbeat = setInterval(() => {
@@ -377,6 +382,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
       wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
+    },
+    disconnect(workerId: string): boolean {
+      const socket = registry.get(workerId)?.socket;
+      if (!socket) return false;
+      (socket as WebSocket & { markKicked?: () => void }).markKicked?.();
+      socket.close(4403, '管理员断开');
+      return true;
     },
     close(): void {
       clearInterval(heartbeat);

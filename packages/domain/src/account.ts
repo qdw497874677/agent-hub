@@ -84,3 +84,43 @@ export function defaultDisplayName(email: string): string {
 export function loginUsable(login: Login, user: User | null, now: number): user is User {
   return user !== null && user.disabledAt === null && login.expiresAt > now;
 }
+
+/** hub 级开关，运营后台里改（docs/design/accounts.md §16 P2）。 */
+export interface HubSettings {
+  /** 关掉后只有「还没有 Owner」时的首个注册能成功。 */
+  readonly openRegistration: boolean;
+  /** 成员能否给 hub 加机器；Owner 总是能。 */
+  readonly membersCanAddMachines: boolean;
+}
+export const DEFAULT_SETTINGS: HubSettings = { openRegistration: true, membersCanAddMachines: true };
+
+export const canAddMachines = (user: User, settings: HubSettings): boolean =>
+  user.role === 'owner' || settings.membersCanAddMachines;
+
+/** 每个人最近的登录活动，运营后台的用户列表用。 */
+export interface LoginActivity {
+  readonly userId: UserId;
+  readonly lastSeenAt: number;
+  /** 未过期的登录态个数（≈ 登着的设备数）。 */
+  readonly active: number;
+}
+
+export type AuditAction =
+  | 'user.disable'
+  | 'user.enable'
+  | 'user.role'
+  | 'user.revoke_logins'
+  | 'settings.update'
+  | 'worker.disconnect';
+
+/** 运营后台的每个写操作留一条；只增不改。 */
+export interface AuditEntry {
+  readonly id: string;
+  readonly actorId: UserId;
+  readonly actorEmail: string;
+  readonly action: AuditAction;
+  /** 被操作的对象：用户邮箱、workerId，或 'settings'。 */
+  readonly target: string;
+  readonly detail: string;
+  readonly at: number;
+}

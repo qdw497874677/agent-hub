@@ -145,9 +145,9 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     current.on('close', (code: number) => {
       if (watchdog) clearTimeout(watchdog);
       if (socket === current) socket = null;
-      if (code === 4401) {
-        // token 错了，重连多少次都一样：直接停，别刷屏。
-        options.onLog?.('server 拒绝了 token，不再重连');
+      if (code === 4401 || code === 4403) {
+        // token 错了、或管理员把这台机器断开了：重连多少次都一样，直接停，别刷屏。
+        options.onLog?.(code === 4401 ? 'server 拒绝了 token，不再重连' : '被管理员断开，不再重连');
         closed = true;
         options.onClose?.();
         return;

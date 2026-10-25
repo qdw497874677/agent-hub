@@ -191,3 +191,33 @@ test('账号：用户按邮箱找回、登录态按哈希找回、停用的人�
   assert.equal(await store.logins.byTokenHash('h1'), null);
   store.close();
 });
+
+test('运营后台：登录活跃度、保留当前登录的踢下线、设置与审计往返', async () => {
+  const store = openSqliteStore(':memory:');
+  const user = {
+    id: asUserId('u1'), email: 'a@b.co', displayName: 'a', role: 'owner' as const,
+    passwordHash: null, emailVerifiedAt: null, disabledAt: null, createdAt: 1
+  };
+  await store.users.save(user);
+  const login = (id: string, createdAt: number, expiresAt: number) => ({
+    id: asLoginId(id), userId: user.id, tokenHash: `h-${id}`, method: 'password' as const,
+    userAgent: null, createdAt, lastSeenAt: createdAt, expiresAt
+  });
+  await store.logins.save(login('l1', 10, 1_000));
+  await store.logins.save(login('l2', 20, 1_000));
+  assert.deepEqual((await store.logins.recent(1)).map((row) => row.id), ['l2']);
+  assert.deepEqual(await store.logins.activity(15), [{ userId: 'u1', lastSeenAt: 20, active: 2 }]);
+  await store.logins.removeForUser(user.id, asLoginId('l2'));
+  assert.deepEqual((await store.logins.recent(5)).map((row) => row.id), ['l2']);
+
+  assert.deepEqual(await store.settings.get(), { openRegistration: true, membersCanAddMachines: true });
+  await store.settings.save({ openRegistration: false, membersCanAddMachines: true });
+  assert.equal((await store.settings.get()).openRegistration, false);
+
+  const entry = { id: 'a1', actorId: user.id, actorEmail: 'a@b.co', action: 'user.disable' as const, target: 'x', detail: '', at: 5 };
+  await store.audit.append(entry);
+  await store.audit.append({ ...entry, id: 'a2', at: 6 });
+  assert.deepEqual((await store.audit.recent(10)).map((row) => row.id), ['a2', 'a1']);
+  assert.deepEqual((await store.audit.recent(10))[1], entry);
+  store.close();
+});
