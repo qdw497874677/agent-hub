@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { LogAuthor, LogLink, TaskId, WorkLogDraft, WorkLogEntry, WorkLogQuery, WorkLogRepository } from '@agent-hub/domain';
-import { asSessionId, asTaskId } from '@agent-hub/domain';
+import { asSessionId, asTaskId, plainInline } from '@agent-hub/domain';
 
 type Row = Record<string, unknown>;
 
@@ -100,4 +100,20 @@ export function createWorkLogRepository(db: DatabaseSync): WorkLogRepository {
       return (await this.list(taskId, { limit: 1, excludeSystem: true }))[0] ?? null;
     }
   };
+}
+
+/**
+ * 老数据清理（幂等）：早期系统日志在没有模型时写成「开了 x 会话（）」；
+ * 早期进展行直接截了 markdown 首行，带着 `**` 之类的记号。
+ */
+export function cleanLegacyLogText(db: DatabaseSync): void {
+  db.exec("UPDATE task_log_entries SET body = replace(body, '会话（）', '会话') WHERE body LIKE '%会话（）%'");
+  const rows = db
+    .prepare("SELECT id, summary FROM tasks WHERE summary LIKE '%**%' OR summary LIKE '%`%' OR summary LIKE '%](%' OR summary LIKE '%~~%' OR summary LIKE '%\\_\\_%' ESCAPE '\\'")
+    .all() as { id: string; summary: string }[];
+  const update = db.prepare('UPDATE tasks SET summary = ? WHERE id = ?');
+  for (const row of rows) {
+    const plain = plainInline(row.summary);
+    if (plain !== row.summary) update.run(plain || null, row.id);
+  }
 }

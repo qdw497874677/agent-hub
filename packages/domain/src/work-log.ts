@@ -79,8 +79,18 @@ export function draftLogEntry(input: DraftInput): Result<WorkLogDraft, DomainErr
 }
 
 /** 最新一条人/agent 写的日志的第一行有意义文字作为任务「当前进展」（去掉 markdown 标题符号，截到 200 字）。 */
+/** 去掉行内 markdown 记号（粗体、斜体、代码、删除线、链接），给只显示纯文本的进展行用。 */
+export function plainInline(text: string): string {
+  return text
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__|~~)(.+?)\1/g, '$2')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/(^|[^\w*])\*([^*\s][^*]*?)\*(?!\w)/g, '$1$2')
+    .trim();
+}
+
 export function summaryFromBody(body: string): string {
-  const lines = body.split('\n').map((line) => line.replace(/^[#>*\-\s]+/, '').trim()).filter(Boolean);
+  const lines = body.split('\n').map((line) => plainInline(line.trim().replace(/^(?:#+\s*|>\s*|[-*+]\s+|\d+\.\s+)+/, ''))).filter(Boolean);
   const meaningful = lines.find((line) => !/^(已完成|进行中|下一步|风险\/?待决|关键文件|done|next)\s*[:：]?$/i.test(line)) ?? lines[0] ?? '';
   return meaningful.length > 200 ? `${meaningful.slice(0, 199)}…` : meaningful;
 }

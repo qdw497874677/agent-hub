@@ -7,7 +7,7 @@ import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase, setTaskStatusUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { appendWorkLogUseCase, editWorkLogUseCase } from './work-log.ts';
-import { summaryFromBody } from '../work-log.ts';
+import { plainInline, summaryFromBody } from '../work-log.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -117,4 +117,9 @@ test('开会话：todo → in_progress，并记一条系统日志；改状态也
 test('summaryFromBody 跳过模板小标题、截断长行', () => {
   assert.equal(summaryFromBody('## 已完成\n- A 好了'), 'A 好了');
   assert.equal(summaryFromBody('x'.repeat(300)).length, 200);
+});
+
+test('进展行是纯文本：去掉粗体、代码、链接等行内 markdown', () => {
+  assert.equal(summaryFromBody('## 已完成\n- **接好了** `task_get`，见 [PR](https://x/1)'), '接好了 task_get，见 PR');
+  assert.equal(plainInline('~~旧~~ __新__ *斜* a*b'), '旧 新 斜 a*b');
 });
