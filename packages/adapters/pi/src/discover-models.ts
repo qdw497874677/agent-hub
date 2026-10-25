@@ -31,6 +31,9 @@ export async function discoverPiModels(
   const child = spawn(command, ['--mode', 'rpc', '--no-session'], {
     stdio: ['pipe', 'pipe', 'pipe']
   });
+  // 没装 pi 时 spawn 会异步抛 ENOENT；不接住会把整个 worker 崩掉（其它 agent 也跟着下线）。
+  child.on('error', () => undefined);
+  child.stdin.on('error', () => undefined);
 
   const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
 

@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
 import { ACP_AGENT_DEFAULTS, createAcpRuntime, type AcpAgentConfig } from '@agent-hub/adapter-acp';
+import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
 import { connectWorkerLink } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -52,6 +53,10 @@ const discovered =
     : await discoverPiModels(env['PI_COMMAND'] ?? 'pi', piPreferredModel());
 
 const piModels = discovered.models;
+
+const grokCommand = env['GROK_COMMAND'] ?? 'grok';
+// 没装 grok 时返回空目录，Grok 用自己的默认模型；真正启动会话时再报不可用。
+const grokCatalog = await discoverGrokModels(grokCommand);
 
 const log = (message: string): void => {
   process.stdout.write(`[worker] ${message}\n`);
@@ -110,9 +115,17 @@ const runtimes: AgentRuntime[] = [
         onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
       }
     )
-  )
+  ),
+  createGrokRuntime({
+    command: grokCommand,
+    models: grokCatalog.models,
+    defaultModel: grokCatalog.defaultModel,
+    onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
+    onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
+  })
 ];
 
+log(`Grok 认得 ${grokCatalog.models.length} 个模型（默认 ${grokCatalog.defaultModel || 'Grok 自己的默认'}）`);
 log(`Pi 认得 ${piModels.length} 个模型（默认 ${discovered.defaultModel || 'Pi 自己的默认'}）`);
 
 const link = connectWorkerLink({

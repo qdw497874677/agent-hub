@@ -44,6 +44,7 @@ scripts/install.sh --no-systemd   # 只装依赖与构建
 | `PI_COMMAND` / `PI_SESSION_DIR` | `pi` / Pi 自己的 | 换一个 Pi 可执行文件或会话目录 |
 | `PI_DEFAULT_MODEL` | 空 | 强制指定模型（`provider/model,provider/model`）；留空则问 Pi 自己 |
 | `OPENCODE_COMMAND` | `opencode` | OpenCode 可执行文件 |
+| `GROK_COMMAND` | `grok` | Grok Build（xAI 官方 CLI）可执行文件；需先 `grok login` 或设 `XAI_API_KEY` |
 | `WORKER_ID` / `WORKER_LABEL` / `WORKER_ORIGIN` | 随机 / `本机` / `local` | 远程机器上部署 worker 时用 |
 
 ## 架构：内核不认识进程
@@ -55,7 +56,7 @@ apps/web      ── 画布
 
 packages/domain       零依赖。四个聚合 + 11 个端口 + 用例
 packages/contract     Zod 定边界，z.infer 出类型
-packages/storage-sqlite、node-gateway、adapters/{acp,pi}
+packages/storage-sqlite、node-gateway、adapters/{acp,pi,grok}
 ```
 
 四个聚合是 `Task / Session / Agent / Artifact`。**Server 与 Worker 不是领域概念**，它们是适配器：内核里没有「进程」「节点」「连接」这些词。`packages/domain` 的 `dependencies` 为空，由 `npm run check:domain` 强制。
