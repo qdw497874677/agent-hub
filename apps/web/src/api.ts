@@ -7,7 +7,10 @@ import type {
   ForkSessionRequest,
   JournalEntryDto,
   LayoutDto,
+  DirectoryListingDto,
+  HomeDto,
   ProjectDto,
+  ProjectSummaryDto,
   SearchHitDto,
   SearchResponseDto,
   SessionDto,
@@ -75,7 +78,10 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
 
 export const api = {
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
+  home: () => call<HomeDto>('/api/home'),
   projects: () => call<ProjectDto[]>('/api/projects'),
+  listDirectories: (path: string) =>
+    call<DirectoryListingDto>(`/api/fs/directories?path=${encodeURIComponent(path)}`),
   createProject: (input: { name: string; rootPath: string }) => post<ProjectDto>('/api/projects', input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
@@ -97,7 +103,10 @@ export type {
   ArtifactDto,
   CanvasDto,
   JournalEntryDto,
+  DirectoryListingDto,
+  HomeDto,
   ProjectDto,
+  ProjectSummaryDto,
   SearchHitDto,
   SessionDto,
   SessionEventDto,

@@ -136,6 +136,9 @@ function fakeFs(): WorkspaceFS {
     async directoryExists() {
       return true;
     },
+    async listDirectories() {
+      return [{ name: 'demo', path: '/tmp/demo' }];
+    },
     artifactDir(workspaceRoot, sessionId) {
       return `${workspaceRoot}/.agent-hub/artifacts/${sessionId}`;
     },

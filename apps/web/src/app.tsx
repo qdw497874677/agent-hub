@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CanvasDto, ProjectDto } from './api.ts';
 import { api } from './api.ts';
+import { HomePage } from './home.tsx';
 import { useLiveStream } from './live.ts';
 import { CanvasView } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
@@ -9,80 +10,6 @@ import { ListView, SearchPalette } from './views.tsx';
 import { WorkersBadge } from './workers.tsx';
 
 const LAST_PROJECT = 'agent-hub:last-project';
-
-function Setup({
-  existing,
-  onPick,
-  onReady
-}: {
-  existing: readonly ProjectDto[];
-  onPick: (project: ProjectDto) => void;
-  onReady: (project: ProjectDto) => void;
-}) {
-  const [name, setName] = useState('');
-  const [rootPath, setRootPath] = useState('');
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(): Promise<void> {
-    setBusy(true);
-    setError(null);
-    try {
-      onReady(await api.createProject({ name: name.trim(), rootPath: rootPath.trim() }));
-    } catch (failure) {
-      setError((failure as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <main className="flex h-full items-center justify-center">
-      <div className="w-[420px] rounded-md border border-hair bg-panel p-5">
-        <h1 className="mb-1 text-title text-primary">agent-hub</h1>
-        <p className="mb-4 text-body text-secondary">
-          {existing.length === 0 ? '先指一个本地目录，任务就活在它里面。' : '回到一个已有的项目，或者开一个新的。'}
-        </p>
-        {existing.length > 0 ? (
-          <div className="mb-4 space-y-1 border-b border-hair pb-3">
-            {existing.map((project) => (
-              <button
-                key={project.id}
-                className="flex w-full items-baseline justify-between rounded-sm px-2 py-1 text-left hover:bg-card"
-                onClick={() => onPick(project)}
-              >
-                <span className="text-body text-primary">{project.name}</span>
-                <span className="font-mono text-meta text-tertiary">{project.rootPath}</span>
-              </button>
-            ))}
-          </div>
-        ) : null}
-        <label className="mb-1 block text-meta text-tertiary">项目名</label>
-        <input
-          className="mb-3 w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="比如 agent-hub"
-        />
-        <label className="mb-1 block text-meta text-tertiary">目录绝对路径</label>
-        <input
-          className="mb-4 w-full rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
-          value={rootPath}
-          onChange={(event) => setRootPath(event.target.value)}
-          placeholder="/home/you/Projects/agent-hub"
-        />
-        {error ? <p className="mb-2 text-meta text-rust">{error}</p> : null}
-        <button
-          className="w-full rounded-sm bg-accent py-1.5 text-body text-canvas disabled:opacity-40"
-          disabled={busy || name.trim().length === 0 || !rootPath.trim().startsWith('/')}
-          onClick={submit}
-        >
-          开始
-        </button>
-      </div>
-    </main>
-  );
-}
 
 function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
   const [title, setTitle] = useState('');
@@ -225,6 +152,9 @@ function DeriveDialog({
 
 export function App() {
   const [project, setProject] = useState<ProjectDto | null>(null);
+  // 点了「首页」之后别再自动跳回去：localStorage 记的是「上次那个项目」，
+  // 不是「必须打开的那个项目」，否则首页按钮会把自己立刻弹掉。
+  const [atHome, setAtHome] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [newTask, setNewTask] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
@@ -241,12 +171,12 @@ export function App() {
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
 
   useEffect(() => {
-    if (project || !projects.data) return;
+    if (project || atHome || !projects.data) return;
     // 只认「上次打开的那个」。没有就停在选择页——不替用户挑一个看起来像的项目。
     const remembered = localStorage.getItem(LAST_PROJECT);
     const found = projects.data.find((candidate) => candidate.id === remembered);
     if (found) setProject(found);
-  }, [project, projects.data]);
+  }, [project, atHome, projects.data]);
 
   const canvas = useQuery({
     queryKey: ['canvas', project?.id],
@@ -307,15 +237,13 @@ export function App() {
 
   if (project === null) {
     return (
-      <Setup
-        existing={projects.data ?? []}
-        onPick={(picked) => {
+      <HomePage
+        onOpen={(picked) => {
           localStorage.setItem(LAST_PROJECT, picked.id);
+          setAtHome(false);
           setProject(picked);
-        }}
-        onReady={(created) => {
-          localStorage.setItem(LAST_PROJECT, created.id);
-          setProject(created);
+          setSelected(null);
+          setDrafts({});
         }}
       />
     );
@@ -325,6 +253,18 @@ export function App() {
     <div className="flex h-full flex-col">
       <header className="flex h-12 shrink-0 items-center justify-between border-b border-hair px-3">
         <div className="flex items-baseline gap-3">
+          <button
+            className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-secondary hover:border-strong"
+            title="回到首页"
+            onClick={() => {
+              setAtHome(true);
+              setProject(null);
+              setSelected(null);
+              setDrafts({});
+            }}
+          >
+            ⌂
+          </button>
           <select
             className="cursor-pointer appearance-none bg-transparent text-head text-primary outline-none"
             value={project.id}

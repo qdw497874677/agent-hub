@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
+import { currentRun } from './run-id.ts';
 
 /**
  * 闭环的那条线：一个干净的浏览器，从零到「会话在卡片里真的跑起来了」。
@@ -7,7 +8,7 @@ import { mkdirSync } from 'node:fs';
  *
  * 用例不假设库里是空的：每次跑用带时间戳的项目名，断言只落在自己造出来的节点上。
  */
-const RUN = Date.now().toString(36);
+const RUN = currentRun();
 const PROJECT_NAME = `e2e-${RUN}`;
 const PROJECT_DIR = `/tmp/agent-hub-e2e-project-${RUN}`;
 const TASK_TITLE = `第一条任务-${RUN}`;
@@ -23,10 +24,14 @@ test.beforeAll(() => {
 test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await page.goto('/');
 
-  // M1：指一个本地目录
-  await expect(page.getByText(/先指一个本地目录|回到一个已有的项目/)).toBeVisible();
-  await page.getByPlaceholder('比如 agent-hub').fill(PROJECT_NAME);
-  await page.getByPlaceholder('/home/you/Projects/agent-hub').fill(PROJECT_DIR);
+  // 首页是门厅，不是一上来就一个输入框
+  await expect(page.getByRole('heading', { name: 'agent-hub' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '项目' })).toBeVisible();
+
+  // M1：指一个本地目录（打字也行，点选也行——点选见下一条用例）
+  await page.getByRole('button', { name: '新建项目' }).click();
+  await page.getByPlaceholder('选一个目录，或者直接打绝对路径').fill(PROJECT_DIR);
+  await page.getByPlaceholder('选目录后自动取最后一段，可改').fill(PROJECT_NAME);
   await page.getByRole('button', { name: '开始' }).click();
 
   // M1：画布出现
@@ -54,6 +59,26 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await expect(sessionNode(page)).toContainText('完成');
 });
 
+test('目录可以点选，不必手打路径', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '新建项目' }).click();
+
+  // 打开就在家目录，往上走一级，再进 /tmp 找我们自己的目录
+  await expect(page.getByRole('button', { name: '↑' })).toBeVisible();
+  // 收窄到选择器里点：首页的项目行按钮，可访问名字里也带着这个路径字符串
+  const picker = page.getByLabel('目录选择器');
+  await picker.getByLabel('当前目录').fill('/tmp');
+  await picker.getByRole('button', { name: `agent-hub-e2e-project-${RUN}` }).click();
+
+  await picker.getByRole('button', { name: '用这个目录' }).click();
+  await expect(page.getByPlaceholder('选一个目录，或者直接打绝对路径')).toHaveValue(PROJECT_DIR);
+  // 选完目录，项目名自动取最后一段
+  await expect(page.getByPlaceholder('选目录后自动取最后一段，可改')).toHaveValue(
+    `agent-hub-e2e-project-${RUN}`
+  );
+  await page.getByRole('button', { name: '取消' }).click();
+});
+
 test('刷新之后画布还在，布局被记住', async ({ page }) => {
   await page.goto('/');
   // 新浏览器没有 localStorage：从选择页回到自己刚建的那个项目
@@ -71,6 +96,7 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
 
 test('搜索能搜到会话里说过的话，列表能给画布降级', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: '项目' })).toBeVisible();
   await page.getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 
@@ -101,6 +127,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
 
 test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page }) => {
   await page.goto('/');
+  await expect(page.getByRole('heading', { name: '项目' })).toBeVisible();
   await page.getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 

@@ -229,6 +229,25 @@ export const workerAgentSessionSchema = z.object({
   agentSessionRef: id
 });
 
+/**
+ * 首页要的东西：项目 + 有多少活在里面。
+ * 单独的 DTO 而不是让前端逐个项目拉 canvas：首页不该为了显示「3 个任务」去解 30 个会话。
+ */
+export const projectSummarySchema = projectSchema.extend({
+  taskCount: z.number().int().nonnegative(),
+  sessionCount: z.number().int().nonnegative(),
+  lastActivityAt: epochMs.nullable()
+});
+export const homeSchema = z.object({ projects: z.array(projectSummarySchema) });
+
+/** 目录选择器：只列子目录。`parent` 为 null 表示已经在根。 */
+export const directoryEntrySchema = z.object({ name: z.string(), path: z.string() });
+export const directoryListingSchema = z.object({
+  path: z.string(),
+  parent: z.string().nullable(),
+  entries: z.array(directoryEntrySchema)
+});
+
 /** `/api/workers` 的响应：UI 靠它区分「它挂了」和「我改坏了配置」（S1.2）。 */
 export const workerInfoSchema = z.object({
   workerId: z.string(),
@@ -284,6 +303,10 @@ export type JournalEntryDto = z.infer<typeof journalEntrySchema>;
 export type SearchHitDto = z.infer<typeof searchHitSchema>;
 export type SearchResponseDto = z.infer<typeof searchResponseSchema>;
 export type WorkerInfoDto = z.infer<typeof workerInfoSchema>;
+export type ProjectSummaryDto = z.infer<typeof projectSummarySchema>;
+export type HomeDto = z.infer<typeof homeSchema>;
+export type DirectoryEntryDto = z.infer<typeof directoryEntrySchema>;
+export type DirectoryListingDto = z.infer<typeof directoryListingSchema>;
 export type CreateProjectRequest = z.infer<typeof createProjectRequest>;
 export type CreateTaskRequest = z.infer<typeof createTaskRequest>;
 export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;

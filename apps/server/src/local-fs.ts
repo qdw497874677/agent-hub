@@ -1,6 +1,6 @@
-import { mkdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { DomainError, Result, WorkspaceFS } from '@agent-hub/domain';
+import type { DirectoryEntry, DomainError, Result, WorkspaceFS } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
 
 /**
@@ -16,6 +16,15 @@ export function createLocalFs(): WorkspaceFS {
       } catch {
         return false;
       }
+    },
+    async listDirectories(path: string): Promise<readonly DirectoryEntry[]> {
+      // 只看目录：用户挑的是「任务活在哪」，不是挑文件。点开头的默认藏起来，
+      // 但 `~/.config` 这种真要用的人知道自己在找什么，会自己打进去。
+      const entries = await readdir(path, { withFileTypes: true });
+      return entries
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+        .map((entry) => ({ name: entry.name, path: join(path, entry.name) }))
+        .sort((left, right) => left.name.localeCompare(right.name));
     },
     artifactDir(workspaceRoot: string, sessionId: string): string {
       return join(workspaceRoot, '.agent-hub', 'artifacts', sessionId);

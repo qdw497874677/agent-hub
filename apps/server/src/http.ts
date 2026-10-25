@@ -1,9 +1,13 @@
+import { homedir } from 'node:os';
+import { dirname, resolve } from 'node:path';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { streamSSE } from 'hono/streaming';
 import {
   createProjectRequest,
+  directoryListingSchema,
+  homeSchema,
   searchResponseSchema,
   createTaskRequest,
   deriveSessionRequest,
@@ -77,6 +81,43 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/health', (c) => c.json({ ok: true }));
+  // 目录选择器（S2.1）：让人从真实目录里挑，而不是手打一个可能会错的路径。
+  // 首页：项目 + 每个项目里有多少活。看板不做，但这个摘要不违反「不做看板」——
+  // 它是入口，不是用卡片列表示意进度。
+  app.get('/api/home', async (c) => {
+    const listed = await listProjects(deps);
+    if (!listed.ok) return fail(c, listed.error);
+    const projects = listed.value;
+    const summaries = await Promise.all(
+      projects.map(async (project) => {
+        const tasks = await deps.tasks.listByProject(project.id);
+        const sessions = await deps.sessions.listByProject(project.id);
+        const touched = [...tasks.map((task) => task.updatedAt), ...sessions.map((session) => session.updatedAt)];
+        return {
+          ...project,
+          taskCount: tasks.length,
+          sessionCount: sessions.length,
+          lastActivityAt: touched.length === 0 ? null : Math.max(...touched)
+        };
+      })
+    );
+    summaries.sort((left, right) => (right.lastActivityAt ?? right.createdAt) - (left.lastActivityAt ?? left.createdAt));
+    return c.json(homeSchema.parse({ projects: summaries }));
+  });
+
+  app.get('/api/fs/directories', async (c) => {
+    const requested = c.req.query('path') ?? '';
+    const path = requested === '' ? homedir() : resolve(requested);
+    if (!(await deps.fs.directoryExists(path))) {
+      return c.json({ error: { code: 'not_found', message: `没有这个目录：${path}` } }, 404);
+    }
+    const entries = await deps.fs.listDirectories(path);
+    const parent = dirname(path);
+    return c.json(
+      directoryListingSchema.parse({ path, parent: parent === path ? null : parent, entries })
+    );
+  });
+
   app.get('/api/workers', (c) => c.json(workerInfoSchema.array().parse(options.workers())));
 
   app.get('/api/projects', async (c) => {
