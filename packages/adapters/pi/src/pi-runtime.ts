@@ -323,7 +323,8 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       if (ref) args.push('--session-id', ref);
 
       // 能力层：Pi 只认 mcp.json，所以先确保里面有 agent-hub 这条（只含变量引用），令牌走 env。
-      if (spec.tools && spec.tools.transport === 'http' && options.mcpConfigPath !== null) {
+      // stdio-shim 模式下 URL 已被 worker 换成本机 relay（同样是 Streamable HTTP），Pi 照常直连。
+      if (spec.tools && options.mcpConfigPath !== null) {
         await ensurePiMcpConfig(options.mcpConfigPath).catch(() => false);
       }
       let child: ChildProcessWithoutNullStreams;

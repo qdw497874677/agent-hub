@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
+import type { AgentDto, ServerToWorker, ToolRequestFrame, ToolResponseCommand, WorkerToServer } from '@agent-hub/contract';
 import { PROTOCOL_MISMATCH_CLOSE, PROTOCOL_VERSION, workerToServerSchema } from '@agent-hub/contract';
 import type {
   BuildInfo,
@@ -41,6 +41,11 @@ export interface GatewayHooks {
   /** Worker 报来更新进度（给日志用；状态本身网关会记着，出现在 workers() 里）。 */
   onUpdateStatus?(workerId: string, update: WorkerUpdate): void;
   onLog?(message: string): void;
+  /**
+   * Worker 转发来的工具调用（stdio-shim 模式）。不给就一律回「hub 没开工具」。
+   * 令牌在 request 里，实现方按令牌认人，并核对授权是否属于这台 Worker；不许打日志。
+   */
+  onToolRequest?(workerId: string, request: ToolRequestFrame): Promise<Omit<ToolResponseCommand, 'kind' | 'requestId'>>;
 }
 
 export interface GatewayOptions {
@@ -265,6 +270,22 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         clearTimeout(request.timer);
         pending.delete(frame.requestId);
         request.settle(frame);
+        return;
+      }
+      if (frame.type === 'tool_request') {
+        const current = socket;
+        const reply = (body: Omit<ToolResponseCommand, 'kind' | 'requestId'>): void => {
+          if (current.readyState === WebSocket.OPEN) {
+            current.send(JSON.stringify({ kind: 'tool_response', requestId: frame.requestId, ...body } satisfies ToolResponseCommand));
+          }
+        };
+        const handler = hooks.onToolRequest;
+        if (!handler) reply({ ok: false, error: 'hub 没开工具' });
+        else {
+          handler(entry.workerId, frame).then(reply, (error: unknown) =>
+            reply({ ok: false, error: error instanceof Error ? error.message : String(error) })
+          );
+        }
         return;
       }
       if (frame.type === 'update_status') {

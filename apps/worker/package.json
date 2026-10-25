@@ -12,6 +12,7 @@
     "@agent-hub/adapter-pi": "*",
     "@agent-hub/contract": "*",
     "@agent-hub/domain": "*",
-    "@agent-hub/node-gateway": "*"
+    "@agent-hub/node-gateway": "*",
+    "@modelcontextprotocol/sdk": "^1.32.2"
   }
 }

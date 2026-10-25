@@ -119,24 +119,26 @@ export function mcpServersFor(
   shim?: { command: string; args: readonly string[] }
 ): Record<string, unknown>[] {
   if (!tools) return [];
-  if (tools.transport === 'stdio-shim') {
-    if (!shim) return [];
-    return [
-      {
-        name: HUB_MCP_SERVER,
-        command: shim.command,
-        args: [...shim.args],
-        env: [
-          { name: 'AGENT_HUB_TOOL_URL', value: tools.url },
-          { name: 'AGENT_HUB_TOOL_TOKEN', value: tools.token }
-        ]
-      }
-    ];
-  }
-  if (!caps.http) return [];
-  return [
+  const http = [
     { type: 'http', name: HUB_MCP_SERVER, url: tools.url, headers: [{ name: 'Authorization', value: `Bearer ${tools.token}` }] }
   ];
+  const stdio = shim
+    ? [
+        {
+          name: HUB_MCP_SERVER,
+          command: shim.command,
+          args: [...shim.args],
+          env: [
+            { name: 'AGENT_HUB_TOOL_URL', value: tools.url },
+            { name: 'AGENT_HUB_TOOL_TOKEN', value: tools.token }
+          ]
+        }
+      ]
+    : [];
+  // stdio-shim：优先垫片；没垫片但 agent 会 HTTP，就直连 worker 本地 relay（URL 已被换成它）。
+  if (tools.transport === 'stdio-shim') return stdio.length > 0 ? stdio : caps.http ? http : [];
+  // http：agent 没声明 http 能力时，有垫片就退到垫片（stdio 是 ACP 必须支持的）。
+  return caps.http ? http : stdio;
 }
 
 const TEXT_MIME = /^(text\/|application\/(json|xml|javascript|typescript|x-yaml|yaml|toml|x-sh|sql))/;

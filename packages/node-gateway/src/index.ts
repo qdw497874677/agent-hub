@@ -8,3 +8,5 @@ export type { WorkerFiles } from './worker-files.ts';
 export { readBuildInfo } from './build-info.ts';
 export { runSelfUpdate, execRunner } from './updater.ts';
 export type { CommandRunner, UpdateReport, UpdateOptions } from './updater.ts';
+export { createToolRelay } from './tool-relay.ts';
+export type { ToolRelay, ToolRelayReply, ToolRelayRequest } from './tool-relay.ts';

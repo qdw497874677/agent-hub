@@ -32,6 +32,7 @@ export interface GrokRuntimeOptions {
   readonly defaultModel?: string;
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
+  readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
 }
 
 export function createGrokRuntime(options: GrokRuntimeOptions = {}): AgentRuntime {
@@ -40,6 +41,7 @@ export function createGrokRuntime(options: GrokRuntimeOptions = {}): AgentRuntim
   return createAcpRuntime(grokAcpConfig(options.command), {
     descriptor,
     ...(options.onAgentSessionRef ? { onAgentSessionRef: options.onAgentSessionRef } : {}),
-    ...(options.onOptions ? { onOptions: options.onOptions } : {})
+    ...(options.onOptions ? { onOptions: options.onOptions } : {}),
+    ...(options.toolShim ? { toolShim: options.toolShim } : {})
   });
 }

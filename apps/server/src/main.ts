@@ -7,6 +7,7 @@ import { mkdir } from 'node:fs/promises';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
+import { answerToolRequest } from './tool-relay.ts';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { Deps, SessionId, ToolGateway } from '@agent-hub/domain';
 import { createTaskToolProvider, createToolGateway, withToolAccess } from '@agent-hub/domain';
@@ -209,6 +210,10 @@ serverGateway = createServerGateway({
     catalog.removeWorker(workerId);
     workerGone(deps, workerId);
     log(`worker 离线：${workerId}（${reason}）`);
+  },
+  onToolRequest(workerId, request) {
+    if (!toolGateway) return Promise.resolve({ ok: false, error: 'hub 没开工具（HUB_TOOLS=0）' });
+    return answerToolRequest(toolGateway, workerId, request);
   },
   onUpdateStatus(workerId, update) {
     log(`worker ${workerId} 更新：${update.state} ${update.message}`);

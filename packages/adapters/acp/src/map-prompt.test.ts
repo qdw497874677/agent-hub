@@ -50,4 +50,13 @@ test('mcpServersFor：http 走 Authorization 头；agent 没声明 http 就不�
   ]);
   const shim = mcpServersFor({ ...tools, transport: 'stdio-shim' }, { http: false }, { command: 'node', args: ['shim.ts'] });
   assert.equal(shim[0]?.['command'], 'node');
+  assert.deepEqual(shim[0]?.['env'], [
+    { name: 'AGENT_HUB_TOOL_URL', value: 'http://hub/mcp' },
+    { name: 'AGENT_HUB_TOOL_TOKEN', value: 't0k' }
+  ]);
+  // agent 不会 HTTP MCP：有垫片就退到垫片
+  assert.equal(mcpServersFor(tools, { http: false }, { command: 'node', args: ['shim.ts'] })[0]?.['command'], 'node');
+  // stdio-shim 但没垫片：agent 会 HTTP 就直连本地 relay，不会就不给
+  assert.equal(mcpServersFor({ ...tools, transport: 'stdio-shim' }, { http: true })[0]?.['type'], 'http');
+  assert.deepEqual(mcpServersFor({ ...tools, transport: 'stdio-shim' }, { http: false }), []);
 });

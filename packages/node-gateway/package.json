@@ -9,6 +9,7 @@
   "dependencies": {
     "@agent-hub/contract": "*",
     "@agent-hub/domain": "*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "ws": "^8.18.3"
   },
   "devDependencies": {
