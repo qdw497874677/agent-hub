@@ -1,11 +1,12 @@
 import { createProject } from '../project.ts';
 import type { Project } from '../project.ts';
 import type { DomainError } from '../errors.ts';
-import { notFound } from '../errors.ts';
+import { invalid, notFound } from '../errors.ts';
 import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
+import { folderNameProblem, insideRoots, managedDirectory, projectSlug } from '../directories.ts';
 
 export interface CreateProjectCommand {
   readonly name: string;
@@ -73,6 +74,10 @@ export interface DirectoryListing {
   readonly parent: string | null;
   readonly entries: readonly DirectoryEntry[];
   readonly workerId: string | null;
+  /** 这台机器允许浏览的根（面包屑的起点，不能往上越过）。 */
+  readonly roots: readonly string[];
+  /** 当前项目的托管目录 `<roots[0]>/agent-hub/<slug>`（给了项目名才有）；不一定已存在。 */
+  readonly managed: string | null;
 }
 
 /**
@@ -81,23 +86,95 @@ export interface DirectoryListing {
  */
 export async function browseDirectories(
   deps: Pick<Deps, 'fs' | 'gateway'>,
-  input: { readonly workerId: string | null; readonly path: string; readonly home: string }
+  input: { readonly workerId: string | null; readonly path: string; readonly home: string; readonly project?: string }
 ): Promise<Result<DirectoryListing, DomainError>> {
   const owner = await directoryOwner(deps, input.workerId);
   if (!owner.ok) return owner;
-  if (owner.value === null) {
-    const path = input.path === '' ? input.home : normalize(input.path);
-    if (!(await deps.fs.directoryExists(path))) return err(notFound(`没有这个目录：${path}`));
-    return ok({ path, parent: parentOf(path), entries: await deps.fs.listDirectories(path), workerId: null });
+  const roots = await rootsOf(deps, owner.value, input.workerId, input.home);
+  const slug = input.project ? projectSlug(input.project) : null;
+  const managed = slug === null ? null : managedDirectory(roots, slug);
+  // 没指定路径：优先从项目托管目录开始，没有就退到 <root>/agent-hub，再退到 root
+  const candidates =
+    input.path !== ''
+      ? [normalize(input.path)]
+      : [...(managed ? [managed, parentOf(managed) ?? ''] : []), roots[0] ?? ''].filter((c) => c !== '');
+  if (candidates.length === 0) candidates.push('');
+  let lastError: DomainError | null = null;
+  for (const candidate of candidates) {
+    const listed = await listOn(deps, owner.value, candidate);
+    if (!listed.ok) {
+      lastError = listed.error;
+      continue;
+    }
+    if (listed.value === null) continue;
+    const path = listed.value.path;
+    const atRoot = roots.some((root) => normalize(root) === path) || path === '/';
+    return ok({
+      path,
+      parent: atRoot ? null : parentOf(path),
+      entries: sortRecentFirst(listed.value.entries),
+      workerId: owner.value,
+      roots,
+      managed
+    });
   }
-  const listed = await deps.gateway.listDirectories(owner.value, input.path === '' ? '' : normalize(input.path));
+  if (lastError) return err(lastError);
+  return err(notFound(`没有这个目录：${input.path || candidates[candidates.length - 1]}`));
+}
+
+/** 在 parent 下新建一层文件夹，返回新目录。名字只允许一段；边界和软链接由适配器用 realpath 把关。 */
+export async function createDirectory(
+  deps: Pick<Deps, 'fs' | 'gateway'>,
+  input: { readonly workerId: string | null; readonly parent: string; readonly name: string; readonly home: string }
+): Promise<Result<{ readonly path: string }, DomainError>> {
+  const problem = folderNameProblem(input.name);
+  if (problem !== null) return err(invalid(problem));
+  if (!input.parent.startsWith('/') || input.parent.split('/').includes('..')) return err(invalid('父目录必须是绝对路径'));
+  const owner = await directoryOwner(deps, input.workerId);
+  if (!owner.ok) return owner;
+  const parent = normalize(input.parent);
+  if (owner.value !== null) return deps.gateway.makeDirectory(owner.value, parent, input.name);
+  const roots = await rootsOf(deps, null, input.workerId, input.home);
+  if (!insideRoots(parent, roots)) return err(invalid(`「${parent}」不在允许新建文件夹的目录里（${roots.join(':')}）`));
+  const made = await deps.fs.makeDirectory(parent, input.name, roots);
+  return made.ok ? ok({ path: made.value }) : made;
+}
+
+/** 本机（null）用本机 Worker 报上来的 roots，没有就是 home；remote 用它自己的 roots。 */
+async function rootsOf(
+  deps: Pick<Deps, 'gateway'>,
+  owner: string | null,
+  requested: string | null,
+  home: string
+): Promise<readonly string[]> {
+  const workers = await deps.gateway.status();
+  const worker =
+    owner !== null
+      ? workers.find((w) => w.workerId === owner)
+      : workers.find((w) => w.workerId === requested) ?? workers.find((w) => w.origin === 'local');
+  const roots = (worker?.roots ?? []).map(normalize);
+  return roots.length > 0 ? roots : [normalize(home)];
+}
+
+async function listOn(
+  deps: Pick<Deps, 'fs' | 'gateway'>,
+  owner: string | null,
+  path: string
+): Promise<Result<{ path: string; entries: readonly DirectoryEntry[] } | null, DomainError>> {
+  if (owner === null) {
+    if (!(await deps.fs.directoryExists(path))) return ok(null);
+    return ok({ path, entries: await deps.fs.listDirectories(path) });
+  }
+  const listed = await deps.gateway.listDirectories(owner, path);
   if (!listed.ok) return listed;
-  if (!listed.value.exists) return err(notFound(`那台 Worker 上没有这个目录：${input.path}`));
-  const path = listed.value.path;
-  // 到了那台 Worker 的 WORKER_ROOTS 边界就不再给「上一级」：往上走只会撞到拒绝
-  const worker = (await deps.gateway.status()).find((w) => w.workerId === owner.value);
-  const atRoot = (worker?.roots ?? []).some((root) => normalize(root) === path);
-  return ok({ path, parent: atRoot ? null : parentOf(path), entries: listed.value.entries, workerId: owner.value });
+  return listed.value.exists ? ok({ path: listed.value.path, entries: listed.value.entries }) : ok(null);
+}
+
+/** 最近改过的排前面（时间相同按名字）：刚建的、刚用过的项目目录最可能是要找的。 */
+function sortRecentFirst(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
+  return [...entries].sort(
+    (left, right) => (right.modifiedAt ?? 0) - (left.modifiedAt ?? 0) || left.name.localeCompare(right.name)
+  );
 }
 
 /** 纯字符串的 POSIX 规范化：领域层不碰 node:path。 */

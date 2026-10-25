@@ -2,6 +2,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { DirectoryEntry, DomainError, Result, WorkspaceFS } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
+import { makeDirectoryWithin } from './make-directory.ts';
 
 /**
  * 真实文件系统。端口把它挡在外面，所以测试里可以换成内存实现。
@@ -24,10 +25,18 @@ export function createLocalFs(): WorkspaceFS {
       // 只看目录：用户挑的是「任务活在哪」，不是挑文件。点开头的默认藏起来，
       // 但 `~/.config` 这种真要用的人知道自己在找什么，会自己打进去。
       const entries = await readdir(path, { withFileTypes: true });
-      return entries
-        .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-        .map((entry) => ({ name: entry.name, path: join(path, entry.name) }))
-        .sort((left, right) => left.name.localeCompare(right.name));
+      const dirs = entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'));
+      const described = await Promise.all(
+        dirs.map(async (entry) => {
+          const full = join(path, entry.name);
+          const [info, git] = await Promise.all([stat(full).catch(() => null), stat(join(full, '.git')).catch(() => null)]);
+          return { name: entry.name, path: full, isGit: git !== null, modifiedAt: info?.mtimeMs ?? 0 };
+        })
+      );
+      return described.sort((left, right) => left.name.localeCompare(right.name));
+    },
+    makeDirectory(parent: string, name: string, roots: readonly string[]) {
+      return makeDirectoryWithin(parent, name, roots);
     },
     artifactDir(workspaceRoot: string, sessionId: string): string {
       return join(workspaceRoot, '.agent-hub', 'artifacts', sessionId);

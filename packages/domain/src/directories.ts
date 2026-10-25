@@ -1,0 +1,46 @@
+/**
+ * 目录选择器的纯规则：新建文件夹的名字、项目托管目录、路径在不在边界里。
+ * 只做字符串运算，不碰文件系统——真正落盘和 realpath 校验在适配器（Worker / 本机 fs）里。
+ */
+
+/** 新建文件夹只允许「一段名字」：不能带斜杠、不能是 . / ..、不能有控制字符。返回问题描述，没问题返回 null。 */
+export function folderNameProblem(name: string): string | null {
+  if (name.trim() === '') return '文件夹名不能为空';
+  if (name !== name.trim()) return '文件夹名首尾不能有空格';
+  if (name === '.' || name === '..') return '文件夹名不能是 . 或 ..';
+  if (name.includes('/') || name.includes('\\')) return '文件夹名不能包含斜杠，只能建一层';
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(name)) return '文件夹名不能包含控制字符';
+  if (new TextEncoder().encode(name).byteLength > 255) return '文件夹名太长';
+  return null;
+}
+
+/** 项目名 → 目录名：小写、非字母数字（含中文以外的符号）换成 -，去掉首尾 -。空了就给 null。 */
+export function projectSlug(name: string): string | null {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return slug === '' ? null : slug;
+}
+
+/** 项目托管目录：`<roots[0]>/agent-hub/<slug>`（设计文档 §5）。 */
+export function managedDirectory(roots: readonly string[], slug: string): string | null {
+  const root = roots[0];
+  if (root === undefined) return null;
+  return `${trimSlash(root)}/agent-hub/${slug}`;
+}
+
+/** `path` 是否在某个 root 里（含 root 本身）。纯字符串判断，调用方先规范化。 */
+export function insideRoots(path: string, roots: readonly string[]): boolean {
+  return roots.some((root) => {
+    const base = trimSlash(root);
+    return path === base || path.startsWith(base === '' ? '/' : `${base}/`) || base === '';
+  });
+}
+
+function trimSlash(path: string): string {
+  return path.length > 1 ? path.replace(/\/+$/, '') : path === '/' ? '' : path;
+}

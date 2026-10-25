@@ -2,6 +2,7 @@ import { realpath } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import type { DirectoryEntry } from '@agent-hub/domain';
 import { createLocalFs } from './local-fs.ts';
+import { makeDirectoryWithin } from './make-directory.ts';
 
 /**
  * Worker 这一侧的文件操作，全部过 WORKER_ROOTS 这道边界。
@@ -21,6 +22,8 @@ export interface WorkerFiles {
   readFile(path: string, maxBytes: number): Promise<Uint8Array | null>;
   writeFile(path: string, content: Uint8Array): Promise<void>;
   stat(path: string): Promise<number | null>;
+  /** 在 parent 下建一层文件夹。不管 enforced 与否都只允许在 roots 里建（hub 远程建目录是新能力，默认收紧）。 */
+  makeDirectory(parent: string, name: string): Promise<string>;
 }
 
 export class OutsideRootsError extends Error {}
@@ -93,6 +96,11 @@ export function createWorkerFiles(options: { readonly roots: readonly string[]; 
       await guard(path);
       const written = await fs.writeFile(path, content);
       if (!written.ok) throw new Error(written.error.message);
+    },
+    async makeDirectory(parent, name) {
+      const made = await makeDirectoryWithin(parent, name, roots);
+      if (!made.ok) throw new Error(made.error.message);
+      return made.value;
     },
     async stat(path) {
       if ((await check(path)) !== null) return null;

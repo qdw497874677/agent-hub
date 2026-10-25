@@ -12,6 +12,7 @@ export * from './session.ts';
 export * from './artifact.ts';
 export * from './canvas.ts';
 export * from './worker.ts';
+export * from './directories.ts';
 
 export type { TaskRepository } from './ports/task-repository.ts';
 export type { ProjectRepository } from './ports/project-repository.ts';

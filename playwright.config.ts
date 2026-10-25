@@ -33,6 +33,8 @@ export default defineConfig({
       HUB_PORT: String(port),
       HUB_DATA_DIR: '/tmp/agent-hub-e2e-data',
       HUB_SPAWN_WORKER: '1',
+      // 本机 Worker 只放开 /tmp：目录选择器的新建文件夹、托管目录都落在这里，不碰真实家目录
+      WORKER_ROOTS: '/tmp',
       // 测试账号的密码文件放进 e2e 数据目录，不碰真实的 ~/.config/agent-hub
       HUB_TEST_ACCOUNT_FILE: '/tmp/agent-hub-e2e-data/test-account'
     }

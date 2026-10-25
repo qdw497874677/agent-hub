@@ -92,14 +92,16 @@ test('目录可以点选，不必手打路径', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('navigation').getByTitle('新建项目').click();
 
-  // 打开就在家目录
+  // 打开就在这台机器的 root 里，面包屑在顶上
   const picker = page.getByLabel('目录选择器');
-  await expect(picker.getByRole('button', { name: '↑' })).toBeVisible();
+  await expect(picker.getByLabel('路径').getByRole('button').first()).toBeVisible();
   // 收窄到选择器里点：首页的项目行按钮，可访问名字里也带着这个路径字符串
+  await picker.getByRole('button', { name: '输入路径' }).click();
   await picker.getByLabel('当前目录').fill('/tmp');
+  await picker.getByLabel('当前目录').press('Enter');
   await picker.getByRole('button', { name: `agent-hub-e2e-project-${RUN}` }).click();
 
-  await picker.getByRole('button', { name: '用这个目录' }).click();
+  await picker.getByRole('button', { name: '使用', exact: true }).click();
   const panel = page.getByLabel('新建项目');
   await expect(panel.getByLabel('目录', { exact: true })).toHaveValue(PROJECT_DIR);
   // 选完目录，项目名自动取最后一段
