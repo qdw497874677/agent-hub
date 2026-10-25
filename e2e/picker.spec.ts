@@ -20,44 +20,43 @@ async function openPickerFor(page: Page, name: string) {
 }
 
 // 三段放在一条用例里只登录一次：登录接口有频率限制，整套 e2e 已经登录很多次了
-test("目录选择器：托管目录、新建文件夹、单击进入、git 标记、手机全屏", async ({
+test("目录选择器：路径框 + 键盘、模糊筛、就地新建、git 标记、手机全屏", async ({
   page,
 }) => {
   await loginByApi(page);
-  await test.step("一键建托管目录、就地新建文件夹、单击进入、底部「使用」", () =>
+  await test.step("一键建托管目录；打名字出现「新建文件夹」；Enter 进入、Backspace 回上一级、⌘↵ 使用", () =>
     managedAndCreate(page));
-  await test.step("托管目录已存在就从那里开始；git 仓库带标记；面包屑止于 root", () =>
+  await test.step("托管目录已存在就从那里开始；模糊筛；Tab 补全；git 标记；止于 root", () =>
     startsInManaged(page));
-  await test.step("手机上全屏", () => mobileFullScreen(page));
+  await test.step("手机上全屏、能点", () => mobileFullScreen(page));
 });
+
+const pathBox = (picker: ReturnType<Page["getByLabel"]>) =>
+  picker.getByRole("combobox", { name: "路径" });
 
 async function managedAndCreate(page: Page) {
   const { panel, picker } = await openPickerFor(page, NAME);
-  // 托管目录还不存在：给一键创建
+  const input = pathBox(picker);
   await picker
-    .getByRole("button", { name: `创建项目目录 agent-hub/${NAME}` })
+    .getByRole("option", { name: `创建项目目录 agent-hub/${NAME}` })
     .click();
-  await expect(picker.getByLabel("路径").getByRole("button").last()).toHaveText(
-    NAME,
-  );
+  await expect(input).toHaveValue(`${MANAGED}/`);
   expect(existsSync(MANAGED)).toBe(true);
 
-  // 名字带斜杠：拒，并说明
-  await picker.getByRole("button", { name: "＋ 新建文件夹" }).click();
-  await picker.getByLabel("新文件夹名").fill("a/b");
-  await picker.getByRole("button", { name: "创建", exact: true }).click();
-  await expect(picker).toContainText("斜杠");
-  await picker.getByLabel("新文件夹名").fill("sub");
-  await picker.getByRole("button", { name: "创建", exact: true }).click();
-  await expect(picker.getByLabel("路径").getByRole("button").last()).toHaveText(
-    "sub",
-  );
+  // 名字带斜杠打不出来（斜杠就是进下一层）；打个不存在的名字 → 新建
+  await input.pressSequentially("sub");
+  await expect(picker.getByRole("option", { name: "新建文件夹 “sub”" })).toHaveAttribute("data-selected", "true");
+  await input.press("Enter");
+  await expect(input).toHaveValue(`${MANAGED}/sub/`);
   expect(existsSync(`${MANAGED}/sub`)).toBe(true);
 
-  // 面包屑回到上一层，单击进入（不是双击），底部「使用」
-  await picker.getByLabel("路径").getByRole("button", { name: NAME }).click();
-  await picker.getByRole("button", { name: /^▸\s*sub/ }).click();
-  await picker.getByRole("button", { name: "使用", exact: true }).click();
+  // 空片段 Backspace 回上一级；Enter 进入选中的文件夹
+  await input.press("Backspace");
+  await expect(input).toHaveValue(`${MANAGED}/`);
+  await input.pressSequentially("su");
+  await input.press("Enter");
+  await expect(input).toHaveValue(`${MANAGED}/sub/`);
+  await input.press("Control+Enter");
   await expect(panel.getByLabel("目录", { exact: true })).toHaveValue(
     `${MANAGED}/sub`,
   );
@@ -69,22 +68,24 @@ async function startsInManaged(page: Page) {
   mkdirSync(`${SCRATCH}/plain`, { recursive: true });
   mkdirSync(MANAGED, { recursive: true });
   const { panel, picker } = await openPickerFor(page, NAME);
-  await expect(picker.getByLabel("路径").getByRole("button").last()).toHaveText(
-    NAME,
-  );
-  // 面包屑的第一节就是 root（/tmp），没有更上面
-  await expect(
-    picker.getByLabel("路径").getByRole("button").first(),
-  ).toHaveText("tmp");
+  const input = pathBox(picker);
+  await expect(input).toHaveValue(`${MANAGED}/`);
 
-  await picker.getByRole("button", { name: "输入路径" }).click();
-  await picker.getByLabel("当前目录").fill(SCRATCH);
-  await picker.getByLabel("当前目录").press("Enter");
-  await expect(picker.getByRole("button", { name: /repo/ })).toContainText("⎇");
-  await expect(picker.getByRole("button", { name: /plain/ })).not.toContainText(
-    "⎇",
-  );
+  await input.fill(`${SCRATCH}/`);
+  await expect(picker.getByRole("option", { name: /repo/ })).toContainText("⎇");
+  await expect(picker.getByRole("option", { name: /plain/ })).not.toContainText("⎇");
+  // 模糊筛：pln 命中 plain，repo 被筛掉；Tab 补全进入
+  await input.pressSequentially("pln");
+  await expect(picker.getByRole("option", { name: /repo/ })).toHaveCount(0);
+  await input.press("Tab");
+  await expect(input).toHaveValue(`${SCRATCH}/plain/`);
 
+  // 一路 Backspace 到 root（/tmp）就停住，没有「上一级」
+  await input.fill("/tmp/");
+  await expect(picker.getByRole("option", { name: /使用 \/tmp\b/ })).toBeVisible();
+  await expect(picker.getByRole("option", { name: "上一级" })).toHaveCount(0);
+  await input.press("Backspace");
+  await expect(input).toHaveValue("/tmp/");
   await panel.getByRole("button", { name: "取消" }).click();
 }
 
@@ -94,7 +95,6 @@ async function mobileFullScreen(page: Page) {
   await page.getByRole("navigation").getByTitle("新建项目").click();
   const panel = page.getByLabel("新建项目");
   const picker = page.getByLabel("目录选择器");
-  // 手机上先看到表单，点「浏览…」选择器才全屏盖上来
   await expect(picker).toHaveCount(0);
   await panel.getByLabel("项目名").fill(NAME);
   await panel.getByRole("button", { name: "浏览…" }).click();
@@ -102,9 +102,10 @@ async function mobileFullScreen(page: Page) {
   expect(box).not.toBeNull();
   expect(Math.round(box!.width)).toBe(390);
   expect(Math.round(box!.height)).toBe(844);
-  await expect(picker.getByLabel("路径").getByRole("button").last()).toHaveText(
-    NAME,
-  );
+  await expect(pathBox(picker)).toHaveValue(`${MANAGED}/`);
+  // 行高够手指点
+  const row = await picker.getByRole("option").first().boundingBox();
+  expect(row!.height).toBeGreaterThanOrEqual(44);
   await expect(
     picker.getByRole("button", { name: "使用", exact: true }),
   ).toBeInViewport();
