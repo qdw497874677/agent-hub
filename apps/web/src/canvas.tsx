@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
   BackgroundVariant,
+  ControlButton,
   Controls,
   ReactFlow,
   type Edge,
@@ -14,7 +15,7 @@ import { resolveLive, type LiveMap } from './live.ts';
 import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
 import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
 import { panIntoView } from './viewport.ts';
-import { fillMissing } from './layout.ts';
+import { arrange, placeMissing } from './layout.ts';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
 
@@ -43,38 +44,8 @@ interface Props {
   readonly focus: { readonly id: string; readonly nonce: number } | null;
 }
 
-/**
- * 初始布局：任务一列往下排，每个任务的会话排在它右边、纵向堆叠。
- *
- * 之前是「任务两列 + 会话压在任务上方 130px 处」，卡片直接叠在一起——
- * 血缘线被卡片盖住，看图的人只能凭猜测。这里的取舍是：宁可画布很长要拖，
- * 也不要两张卡互相压着。
- */
-const TASK_X = 80;
-const TASK_WIDTH = 220;
-const TASK_GAP = 80;
-const SESSION_OFFSET_X = TASK_WIDTH + 96;
-const SESSION_GAP_Y = 420;
-const SESSION_COLUMN_WIDTH = 360;
-const EMPTY_TASK_HEIGHT = 240;
-
-function defaults(canvas: CanvasDto): Record<string, Point> {
-  const placed: Record<string, Point> = {};
-  let cursorY = 80;
-  for (const task of canvas.tasks) {
-    placed[task.id] = { x: TASK_X, y: cursorY };
-    const sessions = canvas.sessions.filter((session) => session.taskId === task.id);
-    sessions.forEach((session, index) => {
-      placed[session.id] = {
-        x: TASK_X + SESSION_OFFSET_X + (index % 2) * SESSION_COLUMN_WIDTH,
-        y: cursorY + Math.floor(index / 2) * SESSION_GAP_Y
-      };
-    });
-    const rows = Math.ceil(sessions.length / 2);
-    cursorY += Math.max(EMPTY_TASK_HEIGHT, rows * SESSION_GAP_Y) + TASK_GAP;
-  }
-  return placed;
-}
+/** 没量到、没拖过的卡按上限估高度：宁可留白，也不压到邻居（会话卡未拖时输出区最高 320px）。 */
+const ESTIMATE: Record<'task' | 'session', number> = { task: 160, session: 480 };
 
 export function CanvasView({
   canvas,
@@ -91,18 +62,42 @@ export function CanvasView({
   onInterrupt,
   onChangeOption
 }: Props) {
-  const initial = useMemo(() => ({ ...defaults(canvas), ...canvas.layout.positions }), [canvas]);
-  const [positions, setPositions] = useState<Record<string, Point>>(initial);
-  // 挂载之后才出现的任务/会话（派生、分叉、新建）也要有位置，否则全叠在原点。
-  useEffect(() => setPositions((current) => fillMissing(current, initial)), [initial]);
-  const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
-  // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
   const flow = useRef<Pick<
     ReactFlowInstance<TaskNode | SessionNode, Edge>,
-    'setCenter' | 'getViewport' | 'setViewport' | 'getNode'
+    'setCenter' | 'getViewport' | 'setViewport' | 'getNode' | 'getInternalNode'
   > | null>(null);
+  const flowFit = useRef<ReactFlowInstance<TaskNode | SessionNode, Edge>['fitView'] | null>(null);
+  const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
+  const sizesRef = useRef(sizes);
+  sizesRef.current = sizes;
+  // 卡片尺寸：拖过的 > 量到的 > 按上限估。排布全靠它，不再用固定格子。
+  const sizeOf = useCallback(
+    (id: string): Size => {
+      const kind = canvas.tasks.some((task) => task.id === id) ? 'task' : 'session';
+      const saved = sizesRef.current[id];
+      const measured = flow.current?.getInternalNode(id)?.measured;
+      return {
+        width: saved?.width ?? measured?.width ?? CARD_LIMITS[kind].defaultWidth,
+        height: saved?.height ?? measured?.height ?? ESTIMATE[kind]
+      };
+    },
+    [canvas.tasks]
+  );
+  // 存过的位置原样用；其余（没拖过的、后来才出现的派生/分叉/新任务）按树形排布放，压到别人就往下挪。
+  const [positions, setPositions] = useState<Record<string, Point>>(() =>
+    placeMissing(canvas.layout.positions, arrange(canvas, sizeOf), sizeOf)
+  );
+  useEffect(() => setPositions((current) => placeMissing(current, arrange(canvas, sizeOf), sizeOf)), [canvas, sizeOf]);
+  // 「整理布局」：唯一会动用户拖过的位置的入口，按真实尺寸整体重排并存库。
+  const tidy = useCallback(() => {
+    const next = arrange(canvas, sizeOf);
+    setPositions(next);
+    onLayoutChange({ positions: next });
+    requestAnimationFrame(() => void flowFit.current?.({ duration: 300 }));
+  }, [canvas, sizeOf, onLayoutChange]);
+  // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const container = useRef<HTMLDivElement | null>(null);
   // 刚点选的卡：右栏展开会把画布挤窄，挤完之后再把它整个挪进视口。
   const revealing = useRef<{ id: string; until: number } | null>(null);
@@ -270,6 +265,7 @@ export function CanvasView({
         proOptions={{ hideAttribution: true }}
         onInit={(instance) => {
           flow.current = instance;
+          flowFit.current = instance.fitView;
         }}
         onNodeClick={(_, node) => {
           if (node.type !== 'session') return;
@@ -288,10 +284,13 @@ export function CanvasView({
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="var(--color-hair)" />
         {/* 图例在左下角，控件放右下角：两者曾经叠在一起，图例被压成两行看不清的字 */}
-        <Controls showInteractive={false} position="bottom-right" />
+        <Controls showInteractive={false} position="bottom-right">
+          <ControlButton onClick={tidy} title="整理布局" aria-label="整理布局">
+            ⊞
+          </ControlButton>
+        </Controls>
       </ReactFlow>
     </div>
   );
 }
 
-export { defaults as defaultPositions };
