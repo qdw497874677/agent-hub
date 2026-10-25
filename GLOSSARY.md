@@ -75,6 +75,11 @@ _Avoid_: 后端、主节点、控制面
 agent 进程实际运行的一台机器及其守护进程，通过主动出站连接加入 Server。**适配器，不是领域概念**。
 _Avoid_: 节点、Node、客户端、Executor、Runner
 
+**落点（Placement）**：
+一条会话、一个项目被绑定在哪台 Worker 上（`workerId`）。会话一旦开始就不换落点，续聊、分叉都回到同一台；
+项目的落点就是它目录所在的机器，项目里开的会话都落在那台。`null` 表示 hub 所在这台。
+_Avoid_: 调度到节点、分配 Runner
+
 **Pairing Token**：
 允许一个 Worker 加入某个 Server 的一次性凭据。
 _Avoid_: API Key、密钥、token（单独使用）

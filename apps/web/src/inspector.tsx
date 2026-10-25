@@ -5,6 +5,7 @@ import { Composer } from './composer.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { sessionCommands } from './commands.ts';
 import type { LiveSession } from './live.ts';
+import { WorkerChip, resolveWorker, useWorkers } from './workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
   prompt: '发消息',
@@ -73,6 +74,7 @@ export function Inspector({
   const [forkAt, setForkAt] = useState(String(session.lastSeq));
 
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
+  const workers = useWorkers();
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
 
   useEffect(() => {
@@ -112,7 +114,10 @@ export function Inspector({
       <header className="flex items-center justify-between border-b border-hair px-3 py-2">
         <div>
           <p className="text-head text-primary">{agent?.label ?? session.agentId}</p>
-          <p className="font-mono text-meta text-tertiary">{session.model}</p>
+          <p className="flex items-center gap-1.5 font-mono text-meta text-tertiary">
+            <span className="truncate">{session.model}</span>
+            {workers.multi ? <WorkerChip worker={resolveWorker(workers.list, session.workerId)} /> : null}
+          </p>
         </div>
         <span className="flex items-center gap-2">
           <button

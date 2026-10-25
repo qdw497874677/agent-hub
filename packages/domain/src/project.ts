@@ -8,6 +8,8 @@ export interface Project {
   readonly id: ProjectId;
   readonly name: string;
   readonly rootPath: string;
+  /** 目录在哪台 Worker 的文件系统上。null = 和 Server 同机（多机之前的老项目都是）。 */
+  readonly workerId: string | null;
   readonly createdAt: number;
 }
 
@@ -18,6 +20,7 @@ export interface CreateProjectInput {
   readonly directoryExists: boolean;
   readonly now: number;
   readonly id?: ProjectId;
+  readonly workerId?: string | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
@@ -29,6 +32,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     id: input.id ?? newProjectId(),
     name,
     rootPath: input.rootPath,
+    workerId: input.workerId ?? null,
     createdAt: input.now
   });
 }

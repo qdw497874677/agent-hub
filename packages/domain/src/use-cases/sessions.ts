@@ -10,11 +10,14 @@ import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, startCommand } from './hosting.ts';
+import { placeSession } from '../worker.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
   readonly agentId: string;
   readonly model: string;
+  /** 人在对话框里点名的 Worker；不点名就由落点规则挑。 */
+  readonly workerId?: string | null;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -34,15 +37,23 @@ export async function deriveSessionUseCase(
     return err(conflict(descriptor.capabilities.prompt.reason ?? '该 agent 不可发送消息'));
   }
 
+  const placed = placeSession(await deps.gateway.status(), {
+    agentId,
+    requested: command.workerId ?? null,
+    projectWorker: project.workerId
+  });
+  if (!placed.ok) return placed;
+
   const created = deriveSession({
     task,
     agentId,
     model: command.model,
-    now: deps.now()
+    now: deps.now(),
+    workerId: placed.value
   });
   if (!created.ok) return created;
 
-  const session = created.value;
+  const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
 
   const dispatched = await deps.gateway.dispatch(startCommand(session, project, null, {}));
@@ -84,16 +95,25 @@ export async function forkSessionUseCase(
     return err(conflict(`没有在线节点提供 ${command.agentId}`));
   }
 
+  // 分叉要读来源会话的 agent 会话文件，那份文件只在来源的那台机器上：钉死在它上面。
+  const placed = placeSession(await deps.gateway.status(), {
+    agentId,
+    requested: source.workerId,
+    projectWorker: project.workerId
+  });
+  if (!placed.ok) return placed;
+
   const created = forkSession({
     source,
     atSeq: command.atSeq,
     agentId,
     model: command.model,
-    now: deps.now()
+    now: deps.now(),
+    workerId: placed.value
   });
   if (!created.ok) return created;
 
-  const session = created.value;
+  const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
 
   const dispatched = await deps.gateway.dispatch(

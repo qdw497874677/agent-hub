@@ -171,7 +171,38 @@ export async function ingestRuntimeStatus(
   deps.stream.publish({ sessionId, seq: session.lastSeq, event: null, status: next });
 }
 
-/** worker 掉线：它手上的会话都不再有人托管。 */
-export function workerGone(deps: Pick<Deps, 'hosting'>): void {
-  deps.hosting.clear();
+/**
+ * 某台 Worker 掉线：只有**它**手上的会话不再有人托管。
+ * 其它机器上的会话照跑——多机之前这里是 `clear()`，一台掉线全体失联。
+ * 落点为 null 的老会话按「在唯一那台上」处理，一并划掉。
+ */
+export async function workerGone(deps: Pick<Deps, 'hosting' | 'sessions'>, workerId: string): Promise<number> {
+  let dropped = 0;
+  for (const session of await deps.sessions.listAll()) {
+    if (!deps.hosting.has(session.id)) continue;
+    if (session.workerId !== null && session.workerId !== workerId) continue;
+    deps.hosting.drop(session.id);
+    dropped += 1;
+  }
+  return dropped;
+}
+
+/**
+ * Worker 断线重连后报上「我手上还活着的会话」：重新登记托管，免得下一句话又去 resume 一遍
+ * （resume 会再拉起一个 agent 进程，和还活着的那个抢同一份会话文件）。
+ * 只认落点就是它的会话：别的机器的会话不该被一台重连的 Worker 认领。
+ */
+export async function workerAttached(
+  deps: Pick<Deps, 'hosting' | 'sessions'>,
+  workerId: string,
+  sessionIds: readonly string[]
+): Promise<number> {
+  let attached = 0;
+  for (const id of sessionIds) {
+    const session = await deps.sessions.byId(id as SessionId);
+    if (!session || (session.workerId !== null && session.workerId !== workerId)) continue;
+    deps.hosting.add(session.id);
+    attached += 1;
+  }
+  return attached;
 }

@@ -38,6 +38,11 @@ export interface Session {
    * 只存当前值不够：选择器要列出候选，而候选只有 agent 知道。
    */
   readonly optionSpec: readonly RuntimeOption[];
+  /**
+   * 落点：这条会话绑在哪台 Worker 上（不透明 id）。agent 自己的会话文件只在那台机器上，
+   * 所以 resume / 分叉都必须回到它。null = 多机之前的老会话，下次托管时再落一次点。
+   */
+  readonly workerId: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -48,6 +53,7 @@ export interface DeriveSessionInput {
   readonly model: string;
   readonly now: number;
   readonly id?: SessionId;
+  readonly workerId?: string | null;
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
@@ -68,6 +74,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     agentSessionRef: null,
     options: {},
     optionSpec: [],
+    workerId: input.workerId ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -80,6 +87,7 @@ export interface ForkSessionInput {
   readonly model: string;
   readonly now: number;
   readonly id?: SessionId;
+  readonly workerId?: string | null;
 }
 
 export function forkSession(input: ForkSessionInput): Result<Session, DomainError> {
@@ -101,6 +109,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     agentSessionRef: null,
     options: {},
     optionSpec: [],
+    workerId: input.workerId ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });

@@ -45,7 +45,19 @@ scripts/install.sh --no-systemd   # 只装依赖与构建
 | `PI_DEFAULT_MODEL` | 空 | 强制指定模型（`provider/model,provider/model`）；留空则问 Pi 自己 |
 | `OPENCODE_COMMAND` | `opencode` | OpenCode 可执行文件 |
 | `GROK_COMMAND` | `grok` | Grok Build（xAI 官方 CLI）可执行文件；需先 `grok login` 或设 `XAI_API_KEY` |
-| `WORKER_ID` / `WORKER_LABEL` / `WORKER_ORIGIN` | 随机 / `本机` / `local` | 远程机器上部署 worker 时用 |
+| `WORKER_ID` / `WORKER_LABEL` / `WORKER_ORIGIN` | 首次生成后固定 / `本机`（远程为主机名） / `local` | Worker 的身份、显示名、来源；id 存在 `~/.config/agent-hub/worker-id` |
+| `WORKER_ROOTS` | `$HOME` | 目录选择器在这台 Worker 上的起点，冒号分隔 |
+
+### 多台机器：任何机器都可以登记成 Worker
+
+```bash
+# 在另一台机器上（能连到 hub 的 tailnet 地址）
+HUB_URL=ws://100.x.y.z:7878/worker HUB_TOKEN=… WORKER_LABEL=工作站 scripts/install-worker.sh
+```
+
+它会出现在顶栏的 Worker 面板里（在线/离线、最后在线、agent、会话数、主机、目录）。新建项目时选「目录在哪台机器上」，
+目录选择器浏览的就是那台的文件系统；项目里开的会话都跑在那台。断线会自动重连并接回还在跑的会话，
+心跳超时的 Worker 标为离线。细节见 [docs/remote-access.md](docs/remote-access.md#多台机器)。
 
 ## 架构：内核不认识进程
 

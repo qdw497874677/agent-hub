@@ -1,7 +1,7 @@
 import type { ProjectDto } from './api.ts';
 import type { StreamState } from './live.ts';
 import type { View } from './route.ts';
-import { WorkersBadge } from './workers.tsx';
+import { WorkerChip, WorkersBadge, useWorkers } from './workers.tsx';
 
 const VIEW_LABEL: Record<View, string> = { canvas: '画布', list: '列表', focus: '对话' };
 
@@ -21,6 +21,7 @@ interface Props {
 /** 项目页顶栏。窄屏下收起路径与文字标签，只留图标，44px 高、点击区不小于 28px。 */
 export function ProjectHeader(props: Props) {
   const { project, projects, view } = props;
+  const workers = useWorkers();
   return (
     <header className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-hair px-2 pt-[env(safe-area-inset-top)] md:px-3">
       <div className="flex min-w-0 items-baseline gap-2 md:gap-3">
@@ -47,6 +48,11 @@ export function ProjectHeader(props: Props) {
             </option>
           ))}
         </select>
+        {workers.multi && project.workerId ? (
+          <span className="hidden self-center md:inline-flex">
+            <WorkerChip worker={workers.byId(project.workerId)} fallback={project.workerId} />
+          </span>
+        ) : null}
         <span className="hidden font-mono text-meta text-tertiary md:inline">{project.rootPath}</span>
         {props.stream === 'reconnecting' ? (
           <span className="shrink-0 text-meta text-rust" role="status">

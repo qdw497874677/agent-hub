@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from './api.ts';
 import { api } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
-import { WorkersBadge } from './workers.tsx';
+import { WorkerPicker, WorkersBadge, resolveWorker, useWorkers } from './workers.tsx';
 import { coarsePointer } from './device.ts';
 
 /**
@@ -20,6 +20,7 @@ export function HomePage({
 }: {
   onOpen: (project: ProjectDto, sessionId?: string) => void;
 }) {
+  const workers = useWorkers();
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState('');
   const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
@@ -74,6 +75,7 @@ export function HomePage({
                 <span className="block truncate text-body text-secondary">{project.name}</span>
                 <span className="block text-meta text-tertiary">
                   {project.taskCount} 任务 · {ago(project.lastActivityAt)}
+                  {workers.multi && project.workerId ? ` · ${workers.byId(project.workerId)?.label ?? '未知机器'}` : ''}
                 </span>
               </button>
             </li>
@@ -85,7 +87,7 @@ export function HomePage({
         </ul>
 
         <div className="mt-auto border-t border-hair pt-3">
-          <WorkersBadge />
+          <WorkersBadge placement="up" />
         </div>
       </nav>
 
@@ -186,12 +188,15 @@ function CreateProjectPanel({
 }) {
   const [name, setName] = useState('');
   const [rootPath, setRootPath] = useState('');
+  const workers = useWorkers();
+  const [workerId, setWorkerId] = useState<string | null>(null);
+  const chosen = workerId ?? resolveWorker(workers.list, null)?.workerId ?? null;
   const [browsing, setBrowsing] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
   const create = useMutation({
-    mutationFn: () => api.createProject({ name: name.trim(), rootPath: rootPath.trim() }),
+    mutationFn: () => api.createProject({ name: name.trim(), rootPath: rootPath.trim(), workerId: chosen }),
     onSuccess: async (created) => {
       // 路由靠 ['projects'] 认项目；只刷 ['home'] 会让新项目在跳过去时「查无此项」。
       await Promise.all([
@@ -207,9 +212,19 @@ function CreateProjectPanel({
     <section aria-label="新建项目" className="mb-6 rounded-md border border-hair bg-panel p-4">
       <p className="mb-1 text-head text-primary">新建项目</p>
       <p className="mb-3 text-meta text-secondary">
-        项目 = 一个本地目录。agent 就在这个目录里干活，产出物落在
+        项目 = 某台机器上的一个目录。agent 就在这个目录里干活，产出物落在
         <span className="font-mono text-tertiary"> .agent-hub/</span> 下。
       </p>
+
+      <WorkerPicker
+        label="目录在哪台机器上"
+        workers={workers.list}
+        value={chosen}
+        onChange={(id) => {
+          setWorkerId(id);
+          setRootPath('');
+        }}
+      />
 
       {/* 行与选择器同时在：想打字就打，想点就点，不必先关掉一个再打开另一个。 */}
       <div className="mb-3 flex gap-2">
@@ -249,6 +264,7 @@ function CreateProjectPanel({
       {browsing ? (
         <div className="mb-3">
           <DirectoryPicker
+            workerId={chosen}
             onPick={(picked) => {
               setRootPath(picked);
               setBrowsing(false);

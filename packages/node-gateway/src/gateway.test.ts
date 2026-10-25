@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { WebSocket } from 'ws';
 import { AsyncQueue } from '@agent-hub/contract';
 import type { AgentDto } from '@agent-hub/contract';
 import {
@@ -69,6 +70,8 @@ interface Recorder {
   statuses: RuntimeStatus[];
   refs: string[];
   gone: string[];
+  goneReasons: string[];
+  helloSessions: (readonly string[])[];
   until(predicate: () => boolean): Promise<void>;
 }
 
@@ -79,14 +82,22 @@ function recorder(token: string | null): Recorder {
     statuses: [],
     refs: [],
     gone: [],
+    goneReasons: [],
+    helloSessions: [],
     hooks: {
       token,
-      onHello: (worker, agents) => r.hellos.push({ worker, agents }),
+      onHello: (worker, agents, sessions) => {
+        r.hellos.push({ worker, agents });
+        r.helloSessions.push(sessions);
+      },
       onEvent: (_id, event) => r.events.push(event),
       onAgentSession: (_id, ref) => r.refs.push(ref),
       onOptions: () => {},
       onStatus: (_id, status) => r.statuses.push(status),
-      onWorkerGone: (id) => r.gone.push(id)
+      onWorkerGone: (id, reason) => {
+        r.gone.push(id);
+        r.goneReasons.push(reason);
+      }
     },
     async until(predicate) {
       const deadline = Date.now() + 3000;
@@ -99,34 +110,64 @@ function recorder(token: string | null): Recorder {
   return r;
 }
 
-async function harness(token: string | null) {
+async function harness(token: string | null, options: Parameters<typeof createServerGateway>[1] = {}) {
   const rec = recorder(token);
-  const gateway = createServerGateway(rec.hooks);
+  const gateway = createServerGateway(rec.hooks, options);
   const server: Server = createServer();
   server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const stop = async (link?: WorkerLink) => {
-    await link?.close();
+  const stop = async (...links: (WorkerLink | undefined)[]) => {
+    for (const link of links) await link?.close();
     gateway.close();
+    server.closeAllConnections?.();
     await new Promise((resolve) => server.close(resolve));
   };
-  return { rec, gateway, url, stop };
+  return { rec, gateway, url, server, stop };
 }
 
-test('握手：worker 带着 agent 清单与 origin 上线，断开时 server 收到 gone', async () => {
+const start = (sessionId: string, workerId: string) =>
+  ({
+    kind: 'start_session',
+    sessionId: asSessionId(sessionId),
+    workerId,
+    taskId: asTaskId('t1'),
+    agentId: 'echo',
+    workspaceRoot: '/tmp',
+    origin: { kind: 'derive' },
+    resume: null,
+    options: { model: 'm-1' }
+  }) as const;
+
+const brief = (workers: WorkerStatus[]) => workers.map((w) => `${w.workerId}:${w.state}`);
+
+test('握手：worker 带着 agent 清单、机器信息上线；断开后留在列表里标离线', async () => {
   const { rec, gateway, url, stop } = await harness('t0k');
-  const link = connectWorkerLink({ url, token: 't0k', workerId: 'w1', label: '笔记本', origin: 'remote', runtimes: [echoRuntime([])] });
+  const link = connectWorkerLink({
+    url,
+    token: 't0k',
+    workerId: 'w1',
+    label: '笔记本',
+    origin: 'remote',
+    reconnect: false,
+    host: { hostname: 'box', platform: 'linux', arch: 'x64' },
+    roots: ['/home/me'],
+    runtimes: [echoRuntime([])]
+  });
   await rec.until(() => rec.hellos.length === 1);
   assert.equal(rec.hellos[0]?.agents[0]?.id, 'echo');
-  assert.deepEqual(await gateway.gateway.status(), [{ workerId: 'w1', label: '笔记本', origin: 'remote', state: 'online' }]);
+  const [status] = await gateway.gateway.status();
+  assert.equal(status?.state, 'online');
+  assert.equal(status?.hostname, 'box');
+  assert.deepEqual(status?.agentIds, ['echo']);
+  assert.deepEqual(status?.roots, ['/home/me']);
   await link.close();
   await rec.until(() => rec.gone.length === 1);
-  assert.deepEqual(gateway.workers(), []);
+  assert.deepEqual(brief(gateway.workers()), ['w1:offline']);
   await stop();
 });
 
-test('token 不对的 worker 被拒，不会出现在节点列表里', async () => {
+test('token 不对的 worker 被拒、不重连，也不会出现在列表里', async () => {
   const { rec, gateway, url, stop } = await harness('right');
   let closed = false;
   const link = connectWorkerLink({ url, token: 'wrong', workerId: 'w1', label: 'x', runtimes: [], onClose: () => (closed = true) });
@@ -143,17 +184,7 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
   await rec.until(() => rec.hellos.length === 1);
 
   const sessionId = asSessionId('s1');
-  const started = await gateway.gateway.dispatch({
-    kind: 'start_session',
-    sessionId,
-    taskId: asTaskId('t1'),
-    agentId: 'echo',
-    workspaceRoot: '/tmp',
-    origin: { kind: 'derive' },
-    resume: null,
-    options: { model: 'm-1' }
-  });
-  assert.equal(started.ok, true);
+  assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
   await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '你好' });
 
   await rec.until(() => rec.statuses.includes('ended'));
@@ -170,16 +201,119 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
   await stop(link);
 });
 
-test('发给不存在的会话：worker 回 gone，让 server 下次重新拉起', async () => {
+test('两台 worker：会话按落点路由，后续指令跟着会话走，不是发给第一台', async () => {
   const { rec, gateway, url, stop } = await harness(null);
-  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [] });
+  const seenA: StartSpec[] = [];
+  const seenB: StartSpec[] = [];
+  const a = connectWorkerLink({ url, token: '', workerId: 'A', label: 'A', runtimes: [echoRuntime(seenA)] });
   await rec.until(() => rec.hellos.length === 1);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('nope'), text: 'hi' });
-  await rec.until(() => rec.statuses.includes('gone'));
+  const b = connectWorkerLink({ url, token: '', workerId: 'B', label: 'B', origin: 'remote', runtimes: [echoRuntime(seenB)] });
+  await rec.until(() => rec.hellos.length === 2);
+
+  assert.ok((await gateway.gateway.dispatch(start('on-b', 'B'))).ok);
+  assert.ok((await gateway.gateway.dispatch(start('on-a', 'A'))).ok);
+  await rec.until(() => rec.statuses.filter((s) => s === 'running').length === 2);
+  assert.deepEqual(seenB.map((spec) => spec.sessionId), ['on-b']);
+  assert.deepEqual(seenA.map((spec) => spec.sessionId), ['on-a']);
+  assert.equal(gateway.workers().find((w) => w.workerId === 'B')?.sessionCount, 1);
+
+  // 落点不存在 / 不在线 → 明确报错，而不是悄悄换一台
+  const nowhere = await gateway.gateway.dispatch(start('x', 'C'));
+  assert.equal(nowhere.ok, false);
+
+  // B 掉线：A 上的会话照常收指令，B 上的报不可用
+  await b.close();
+  await rec.until(() => rec.gone.includes('B'));
+  assert.ok((await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('on-a'), text: 'hi' })).ok);
+  const toGone = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('on-b'), text: 'hi' });
+  assert.equal(toGone.ok, false);
+  assert.deepEqual(brief(gateway.workers()), ['A:online', 'B:offline']);
+  await stop(a);
+});
+
+test('断线重连：worker 自动重连、重新 hello、报上还活着的会话，期间的事件补发', async () => {
+  const rec = recorder(null);
+  const server: Server = createServer();
+  let gateway = createServerGateway(rec.hooks);
+  server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  let opens = 0;
+  // 只说话不结束的 agent：会话要在断线期间一直活着，重连时才有东西可「接回」。
+  const queue = new AsyncQueue<SessionEvent>();
+  const notify = (text: string) => queue.push({ kind: 'text', delta: text });
+  const runtime = echoRuntime([]);
+  runtime.start = async (spec) => {
+    const started = await echoRuntime([]).start(spec);
+    if (!started.ok) return started;
+    return { ok: true, value: { ...started.value, events: () => queue, dispose: async () => queue.close() } };
+  };
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    initialBackoffMs: 20,
+    runtimes: [runtime],
+    onOpen: () => (opens += 1)
+  });
+  await rec.until(() => rec.hellos.length === 1);
+  assert.ok((await gateway.gateway.dispatch(start('live', 'w1'))).ok);
+  await rec.until(() => rec.statuses.includes('running'));
+
+  // server 重启：旧网关全断，换一个新的
+  gateway.close();
+  await rec.until(() => rec.gone.length === 1);
+  gateway = createServerGateway(rec.hooks);
+  notify('断线期间说的话'); // worker 这时还没连上：事件先攒着
+  await rec.until(() => opens === 2 && rec.hellos.length === 2);
+  assert.deepEqual(rec.helloSessions.at(-1), ['live']);
+  await rec.until(() => rec.events.some((event) => event.kind === 'text'));
+  assert.equal(gateway.workers()[0]?.state, 'online');
+  // 接回的会话可以直接收指令，不需要再 start 一次
+  assert.ok((await gateway.gateway.dispatch({ kind: 'interrupt', sessionId: asSessionId('live') })).ok);
+  await link.close();
+  gateway.close();
+  server.closeAllConnections?.();
+  await new Promise((resolve) => server.close(resolve));
+});
+
+test('心跳：worker 不回 pong 就被判离线', async () => {
+  const { rec, gateway, url, stop } = await harness(null, { heartbeatMs: 40 });
+  // 半开连接：TCP 还在、对面已经不响应了。autoPong:false 就是「不回 pong」。
+  const mute = new WebSocket(url, { autoPong: false });
+  await new Promise((resolve) => mute.once('open', resolve));
+  mute.send(JSON.stringify({ type: 'hello', workerId: 'mute', label: 'x', origin: 'remote', agents: [] }));
+  await rec.until(() => rec.hellos.length === 1);
+  await rec.until(() => rec.gone.includes('mute'));
+  assert.match(rec.goneReasons.at(-1) ?? '', /心跳/);
+  assert.equal(gateway.workers()[0]?.state, 'offline');
+  mute.terminate();
+  await stop();
+});
+
+test('目录浏览走 worker：返回那台机器上的目录；不在线时报不可用', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    roots: ['/srv'],
+    runtimes: [],
+    listDirectories: async (path) => ({ path, exists: path === '/srv', entries: path === '/srv' ? [{ name: 'app', path: '/srv/app' }] : [] })
+  });
+  await rec.until(() => rec.hellos.length === 1);
+  const root = await gateway.gateway.listDirectories('w1', '');
+  assert.deepEqual(root, { ok: true, value: { path: '/srv', exists: true, entries: [{ name: 'app', path: '/srv/app' }] } });
+  const missing = await gateway.gateway.listDirectories('w1', '/nope');
+  assert.ok(missing.ok && !missing.value.exists);
+  assert.equal((await gateway.gateway.listDirectories('ghost', '/')).ok, false);
   await stop(link);
 });
 
-test('没有在线 worker 时 dispatch 返回 unavailable 而不是抛错', async () => {
+test('还没托管的会话：dispatch 返回 unavailable 而不是抛错或乱发', async () => {
   const { gateway, stop } = await harness(null);
   const result = await gateway.gateway.dispatch({ kind: 'interrupt', sessionId: asSessionId('s') });
   assert.equal(result.ok, false);

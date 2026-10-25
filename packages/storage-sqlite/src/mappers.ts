@@ -35,6 +35,7 @@ export function toProject(row: Row): Project {
     id: asProjectId(str(row, 'id')),
     name: str(row, 'name'),
     rootPath: str(row, 'root_path'),
+    workerId: nullableStr(row, 'worker_id'),
     createdAt: num(row, 'created_at')
   };
 }
@@ -92,6 +93,7 @@ export function toSession(row: Row): Session {
     agentSessionRef: nullableStr(row, 'agent_session'),
     options: parseOptions(nullableStr(row, 'options')),
     optionSpec: parseOptionSpec(nullableStr(row, 'option_spec')),
+    workerId: nullableStr(row, 'worker_id'),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };

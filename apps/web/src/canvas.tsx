@@ -16,6 +16,7 @@ import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.
 import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
 import { panIntoView } from './viewport.ts';
 import { arrange, placeMissing } from './layout.ts';
+import { resolveWorker, useWorkers } from './workers.tsx';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
 
@@ -138,6 +139,12 @@ export function CanvasView({
     flow.current.setCenter(point.x + width / 2, point.y + 120, { zoom: 1, duration: 400 });
   }, [focus, positions, sizes, canvas.sessions]);
 
+  const workers = useWorkers();
+  const workerOf = useCallback(
+    (workerId: string | null) => (workers.multi ? resolveWorker(workers.list, workerId) : undefined),
+    [workers.multi, workers.list]
+  );
+
   const agentLabel = useCallback(
     (agentId: string) => canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId,
     [canvas.agents]
@@ -201,6 +208,7 @@ export function CanvasView({
         onResized: resized('session', session.id),
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
         agentLabel: agentLabel(session.agentId),
+        worker: workerOf(session.workerId),
         onOpen: () => onOpen(session.id),
         draft: drafts[session.id] ?? '',
         onDraftChange: (text: string) => onDraftChange(session.id, text),
@@ -221,6 +229,7 @@ export function CanvasView({
     live,
     drafts,
     agentLabel,
+    workerOf,
     onTaskStatus,
     onDerive,
     onOpen,

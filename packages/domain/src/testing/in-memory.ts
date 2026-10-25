@@ -1,4 +1,5 @@
 import type {
+  WorkerStatus,
   AgentDescriptor,
   Artifact,
   ArtifactRepository,
@@ -187,6 +188,8 @@ export interface InMemoryWorld {
   readonly frames: SessionStreamFrame[];
   /** 当前在线的 agent；改它就等于 worker 上下线。 */
   readonly agents: AgentDescriptor[];
+  /** 网关报的 Worker 列表；改它就等于 Worker 上下线。默认一台装了全部 agent 的本机。 */
+  readonly workers: WorkerStatus[];
 }
 
 /** 一整套内存 Deps。`overrides` 用来替换某个端口（例如让网关失败）。 */
@@ -194,9 +197,11 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   const dispatched: WorkerCommand[] = [];
   const frames: SessionStreamFrame[] = [];
   const agents: AgentDescriptor[] = [];
+  const workers: WorkerStatus[] = [{ workerId: 'local', label: '本机', origin: 'local', state: 'online' }];
   const tasks = fakeTasks();
   const gateway: NodeGateway = {
-    status: async () => [],
+    status: async () => workers,
+    listDirectories: async (_workerId, path) => ok({ path: path || '/home/remote', exists: true, entries: [] }),
     dispatch: async (command) => {
       dispatched.push(command);
       return ok(undefined);
@@ -222,5 +227,5 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
     now: () => (clock += 1),
     ...overrides
   } as InMemoryDeps;
-  return { deps, dispatched, frames, agents };
+  return { deps, dispatched, frames, agents, workers };
 }

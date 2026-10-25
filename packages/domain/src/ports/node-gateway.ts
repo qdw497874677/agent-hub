@@ -4,6 +4,7 @@ import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 import type { WorkerStatus } from '../worker.ts';
 import type { PromptPart } from '../attachment.ts';
+import type { DirectoryEntry } from './workspace-fs.ts';
 
 /**
  * Server → Worker 指令。从第一天就是双向的：只够回传执行事件的通道，
@@ -13,6 +14,8 @@ export type WorkerCommand =
   | {
       readonly kind: 'start_session';
       readonly sessionId: SessionId;
+      /** 落点：交给哪台 Worker。后续 prompt / interrupt 都按会话跟着它走。 */
+      readonly workerId: string;
       readonly taskId: TaskId;
       readonly agentId: string;
       readonly workspaceRoot: string;
@@ -42,4 +45,16 @@ export type WorkerCommand =
 export interface NodeGateway {
   status(): Promise<WorkerStatus[]>;
   dispatch(command: WorkerCommand): Promise<Result<void, DomainError>>;
+  /**
+   * 浏览某台 Worker 上的目录（只列子目录）。项目目录在哪台机器上，就得问那台机器——
+   * Server 自己的文件系统只对和它同机的 Worker 有意义。
+   * 返回的 `path` 是 Worker 解析后的绝对路径（请求空串时就是它的起点）。
+   * 目录不存在返回 `exists: false`，而不是错误：那是用户输错了，不是通道坏了。
+   */
+  listDirectories(
+    workerId: string,
+    path: string
+  ): Promise<
+    Result<{ readonly path: string; readonly exists: boolean; readonly entries: readonly DirectoryEntry[] }, DomainError>
+  >;
 }

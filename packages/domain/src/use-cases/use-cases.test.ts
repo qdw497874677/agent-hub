@@ -15,8 +15,11 @@ import {
   ingestRuntimeStatus,
   ingestWorkerEvent,
   promptSessionUseCase,
+  workerAttached,
   workerGone
 } from './conversation.ts';
+import { placeSession } from '../worker.ts';
+import type { NodeGateway } from '../ports/node-gateway.ts';
 import { loadHome } from './home.ts';
 import { saveLayoutUseCase } from './canvas.ts';
 import { listWorkers } from './workers.ts';
@@ -42,6 +45,13 @@ const fake: AgentDescriptor = {
   models: ['m1'],
   defaultModel: 'm1',
   options: []
+};
+
+/** 一台装了全部 agent 的本机 Worker：大多数用例只需要「有地方跑」。 */
+const localGateway: NodeGateway = {
+  status: async () => [{ workerId: 'local', label: '本机', origin: 'local', state: 'online' }],
+  dispatch: async () => ok(undefined),
+  listDirectories: async (_id, path) => ok({ path, exists: true, entries: [] })
 };
 
 async function world(overrides: Parameters<typeof inMemoryDeps>[0] = {}) {
@@ -71,7 +81,7 @@ test('派生：模型只走 options.model 一条路，并登记为托管中', as
 });
 
 test('派生：网关失败时会话记为 failed，且不算托管', async () => {
-  const w = await world({ gateway: { status: async () => [], dispatch: async () => err(unavailable('没有 worker')) } });
+  const w = await world({ gateway: { ...localGateway, dispatch: async () => err(unavailable('没有 worker')) } });
   const result = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: '' });
   assert.equal(result.ok, false);
   const [stored] = await w.deps.sessions.listAll();
@@ -119,7 +129,7 @@ test('发消息：已托管就不重复拉起', async () => {
 test('发消息：agent 起不来时提问仍然留在 journal 里', async () => {
   let fail = false;
   const w = await world({
-    gateway: { status: async () => [], dispatch: async () => (fail ? err(unavailable('worker 掉了')) : ok(undefined)) }
+    gateway: { ...localGateway, dispatch: async () => (fail ? err(unavailable('worker 掉了')) : ok(undefined)) }
   });
   const session = await derived(w);
   w.deps.hosting.clear();
@@ -194,12 +204,82 @@ test('agent 会话号落库，resume 时原样带回', async () => {
   assert.equal(start.resume?.agentSessionRef, 'agent-123');
 });
 
-test('worker 掉线：所有会话都不再算托管', async () => {
+test('worker 掉线：只有它名下的会话不再算托管', async () => {
   const w = await world();
-  await derived(w);
-  await derived(w);
-  workerGone(w.deps);
-  assert.equal(w.deps.hosting.live.size, 0);
+  w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
+  const here = await derived(w);
+  // 同一个任务的后续会话改到远程机器上的项目目录里跑
+  await w.deps.projects.save({ ...w.project, workerId: 'remote-1' });
+  const there = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: '' });
+  assert.ok(there.ok);
+  assert.equal(here.workerId, 'local');
+  assert.equal(there.value.workerId, 'remote-1');
+  assert.equal(await workerGone(w.deps, 'remote-1'), 1);
+  assert.ok(w.deps.hosting.has(here.id));
+  assert.ok(!w.deps.hosting.has(there.value.id));
+});
+
+test('worker 重连报上的会话重新算托管；别的机器的会话它认领不了', async () => {
+  const w = await world();
+  w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
+  const here = await derived(w);
+  w.deps.hosting.clear();
+  assert.equal(await workerAttached(w.deps, 'remote-1', [here.id]), 0);
+  assert.equal(await workerAttached(w.deps, 'local', [here.id]), 1);
+  assert.ok(w.deps.hosting.has(here.id));
+});
+
+test('落点：start_session 带着 workerId；resume 回到原来那台，那台离线就报不可用', async () => {
+  const w = await world();
+  w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
+  await w.deps.projects.save({ ...w.project, workerId: 'remote-1' });
+  const made = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: '', workerId: 'remote-1' });
+  assert.ok(made.ok);
+  const start = w.dispatched.at(-1);
+  assert.ok(start?.kind === 'start_session' && start.workerId === 'remote-1');
+  w.deps.hosting.clear();
+  w.workers.splice(1, 1, { workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'offline' });
+  const fresh = await w.deps.sessions.byId(made.value.id);
+  assert.ok(fresh);
+  const resumed = await ensureHosted(w.deps, fresh);
+  // 网关替身不知道离线，所以这里只验证指令仍然指向原来那台，而不是被悄悄挪到本机
+  assert.ok(resumed.ok);
+  const again = w.dispatched.at(-1);
+  assert.ok(again?.kind === 'start_session' && again.workerId === 'remote-1');
+});
+
+test('落点：老会话没有 workerId，托管时补落一次并记下', async () => {
+  const w = await world();
+  const made = await derived(w);
+  await w.deps.sessions.save({ ...made, workerId: null });
+  w.deps.hosting.clear();
+  const legacy = await w.deps.sessions.byId(made.id);
+  assert.ok(legacy && legacy.workerId === null);
+  assert.ok((await ensureHosted(w.deps, legacy)).ok);
+  assert.equal((await w.deps.sessions.byId(made.id))?.workerId, 'local');
+});
+
+test('落点规则：项目绑定（未绑定 = 本机）> 点名 > 任意；没装 agent / 离线 / 冲突都说清楚', () => {
+  const workers = [
+    { workerId: 'r1', label: 'A', origin: 'remote' as const, state: 'online' as const, agentIds: ['pi'] },
+    { workerId: 'l1', label: '本机', origin: 'local' as const, state: 'online' as const, agentIds: ['pi', 'grok'] },
+    { workerId: 'r2', label: 'B', origin: 'remote' as const, state: 'offline' as const, agentIds: ['pi'] }
+  ];
+  const pick = (agentId: string, requested: string | null, projectWorker: string | null) =>
+    placeSession(workers, { agentId, requested, projectWorker });
+  assert.deepEqual(pick('pi', null, null), ok('l1'));
+  // 未绑定项目的目录在本机：点名远程机器是冲突，不是悄悄去一个没有这个目录的地方
+  assert.equal(pick('pi', 'r1', null).ok, false);
+  assert.deepEqual(pick('pi', 'l1', null), ok('l1'));
+  assert.deepEqual(pick('pi', null, 'r1'), ok('r1'));
+  // 没有本机 Worker（全靠远程）：才轮到点名 / 任意一台
+  const remoteOnly = workers.filter((worker) => worker.origin === 'remote');
+  assert.deepEqual(placeSession(remoteOnly, { agentId: 'pi', requested: 'r1', projectWorker: null }), ok('r1'));
+  assert.deepEqual(placeSession(remoteOnly, { agentId: 'pi', requested: null, projectWorker: null }), ok('r1'));
+  assert.equal(pick('pi', 'l1', 'r1').ok, false);
+  assert.equal(pick('grok', 'r1', null).ok, false);
+  assert.equal(placeSession(remoteOnly, { agentId: 'pi', requested: 'r2', projectWorker: null }).ok, false);
+  assert.equal(pick('codex', null, null).ok, false);
 });
 
 test('首页：最近会话按时间倒序、受条数限制、项目按活跃度排序', async () => {
@@ -237,6 +317,7 @@ test('保存尺寸：与位置合并，只拖位置不会冲掉已存的尺寸�
 test('节点列表来自网关端口', async () => {
   const w = await world({
     gateway: {
+      ...localGateway,
       status: async () => [{ workerId: 'w1', label: '本机', origin: 'local', state: 'online' }],
       dispatch: async () => ok(undefined)
     }

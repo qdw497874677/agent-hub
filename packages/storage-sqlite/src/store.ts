@@ -37,14 +37,22 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'option_spec')) {
     db.exec("ALTER TABLE sessions ADD COLUMN option_spec TEXT NOT NULL DEFAULT '[]'");
   }
+  // 多机：会话绑在哪台 worker、项目目录在哪台机器上。老数据为 NULL = 「当初就在唯一那台上」。
+  if (!columns.some((column) => column.name === 'worker_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN worker_id TEXT');
+  }
+  const projectColumns = db.prepare('PRAGMA table_info(projects)').all() as { name: string }[];
+  if (!projectColumns.some((column) => column.name === 'worker_id')) {
+    db.exec('ALTER TABLE projects ADD COLUMN worker_id TEXT');
+  }
   const layoutColumns = db.prepare('PRAGMA table_info(layout)').all() as { name: string }[];
   if (!layoutColumns.some((column) => column.name === 'sizes')) {
     db.exec("ALTER TABLE layout ADD COLUMN sizes TEXT NOT NULL DEFAULT '{}'");
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, created_at) VALUES (?, ?, ?, ?) ' +
-      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, root_path = excluded.root_path'
+    'INSERT INTO projects(id, name, root_path, worker_id, created_at) VALUES (?, ?, ?, ?, ?) ' +
+      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, root_path = excluded.root_path, worker_id = excluded.worker_id'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
   const selectProjects = db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
@@ -62,11 +70,11 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, worker_id, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
       'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
-      'options = excluded.options, option_spec = excluded.option_spec, ' +
+      'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -139,7 +147,7 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const projects = {
     async save(project: Project): Promise<void> {
-      insertProject.run(project.id, project.name, project.rootPath, project.createdAt);
+      insertProject.run(project.id, project.name, project.rootPath, project.workerId, project.createdAt);
     },
     async byId(id: Parameters<typeof asProjectId>[0]): Promise<Project | null> {
       const row = selectProject.get(id);
@@ -187,6 +195,7 @@ export function openSqliteStore(file: string): SqliteStore {
         session.agentSessionRef,
         JSON.stringify(session.options),
         JSON.stringify(session.optionSpec),
+        session.workerId,
         session.createdAt,
         session.updatedAt
       );

@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type SessionDto } from './api.ts';
+import { WorkerChip, WorkerPicker, resolveWorker, useWorkers } from './workers.tsx';
 
 /**
  * 两个对话框共用的壳：遮罩点一下或按 Esc 就关；窄屏上贴底（拇指够得着），宽屏居中。
@@ -106,9 +107,15 @@ export function DeriveDialog({
   const [agentId, setAgentId] = useState(canvas.agents[0]?.id ?? '');
   const agent = canvas.agents.find((candidate) => candidate.id === agentId);
   const [model, setModel] = useState(agent?.defaultModel ?? '');
+  const workers = useWorkers();
+  // 项目绑了机器（目录在那台上）：会话只能去那台，不给选；否则可选，默认交给 hub 安排。
+  // 没绑定的项目 = 目录在 hub 本机，有本机 Worker 时就是它；只有全靠远程机器时才让人选。
+  const bound = resolveWorker(workers.list, canvas.project.workerId);
+  const candidates = workers.list.filter((worker) => (worker.agentIds ?? [agentId]).includes(agentId));
+  const [workerId, setWorkerId] = useState<string | null>(null);
   const queryClient = useQueryClient();
   const derive = useMutation({
-    mutationFn: () => api.derive({ taskId, agentId, model }),
+    mutationFn: () => api.derive({ taskId, agentId, model, ...(workerId && !bound ? { workerId } : {}) }),
     onSuccess: async (session) => {
       await queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] });
       if (onDerived) onDerived(session);
@@ -120,7 +127,7 @@ export function DeriveDialog({
     if (agent) setModel(agent.defaultModel);
   }, [agent]);
 
-  // worker 可能比页面晚到（远程节点、或者本机 Pi 还在报模型列表）。不要空着让人点不动。
+  // worker 可能比页面晚到（远程机器、或者本机 Pi 还在报模型列表）。不要空着让人点不动。
   useEffect(() => {
     if (agentId === '' && canvas.agents.length > 0) setAgentId(canvas.agents[0]?.id ?? '');
   }, [agentId, canvas.agents]);
@@ -134,7 +141,7 @@ export function DeriveDialog({
         </p>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
-            还没有节点上线。worker 起来后，这里会出现它装了的 agent。
+            还没有 Worker 上线。它起来后，这里会出现它装了的 agent。
             <button
               className="ml-2 text-accent underline-offset-2 hover:underline"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
@@ -156,6 +163,13 @@ export function DeriveDialog({
             </option>
           ))}
         </select>
+        {bound && workers.multi ? (
+          <p className="mb-3 flex items-center gap-2 text-meta text-secondary">
+            跑在 <WorkerChip worker={bound} /> 上——项目目录在那台机器。
+          </p>
+        ) : bound ? null : (
+          <WorkerPicker workers={candidates} value={workerId} onChange={setWorkerId} allowAuto />
+        )}
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-model">模型</label>
         <select
           id="derive-model"

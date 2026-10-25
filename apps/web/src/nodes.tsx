@@ -1,6 +1,7 @@
 import { Handle, NodeResizer, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useState } from 'react';
-import type { SessionDto, TaskDto } from './api.ts';
+import type { SessionDto, TaskDto, WorkerInfoDto } from './api.ts';
+import { WorkerChip } from './workers.tsx';
 import { CardComposer } from './composer.tsx';
 import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
@@ -28,6 +29,8 @@ export type SessionNode = Node<
     session: SessionDto;
     live: LiveSession | undefined;
     agentLabel: string;
+    /** 多台 Worker 时才有：会话跑在哪台。 */
+    worker?: WorkerInfoDto | undefined;
     onOpen: () => void;
     /** 卡片上就地说话：不必先打开专注对话。 */
     draft: string;
@@ -93,7 +96,7 @@ function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
+  const { session, live, agentLabel, worker, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
     data;
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
@@ -137,6 +140,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
               {session.model === '' ? '默认模型' : session.model}
             </span>
           ) : null}
+          {worker ? <WorkerChip worker={worker} /> : null}
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
           <button

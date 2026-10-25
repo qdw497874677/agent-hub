@@ -48,7 +48,8 @@ function harness() {
     stream: hub.stream,
     gateway: {
       status: async () => [],
-      dispatch: async () => ({ ok: true, value: undefined })
+      dispatch: async () => ({ ok: true, value: undefined }),
+      listDirectories: async () => ({ ok: true, value: { path: '/', exists: false, entries: [] } })
     },
     agents: createLiveCatalog(),
     fs: createLocalFs(),
