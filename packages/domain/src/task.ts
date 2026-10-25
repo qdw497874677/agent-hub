@@ -94,3 +94,8 @@ export function markStarted(task: Task, now: number): Task {
 export function isAbandoned(task: Task): boolean {
   return task.status === 'abandoned';
 }
+
+/** 给人看的状态名：日志正文里写中文，不写枚举值。 */
+export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
+  todo: '待开始', in_progress: '进行中', blocked: '受阻', in_review: '待验收', done: '已收尾', abandoned: '已放弃'
+};

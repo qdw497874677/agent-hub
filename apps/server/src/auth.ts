@@ -19,6 +19,8 @@ export interface AuthOptions {
   readonly accounts: AccountDeps;
   /** 旧共享令牌；null = 没配或过渡期已过。 */
   readonly hubToken: { readonly value: string; readonly until: number } | null;
+  /** 登录限流：15 分钟内每个来源最多几次，默认 10；e2e 用 HUB_LOGIN_RATE_MAX 放宽。 */
+  readonly loginRateMax?: number;
 }
 
 export const CSRF_HEADER = 'x-hub-csrf';
@@ -62,7 +64,7 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
   const { accounts } = options;
   // 守门中间件认出的身份，路由里直接取，不再查一遍库。
   const principals = new WeakMap<Request, Principal | null>();
-  const limiter = createRateLimiter({ max: 10, windowMs: 15 * 60 * 1000, now: accounts.now });
+  const limiter = createRateLimiter({ max: options.loginRateMax ?? 10, windowMs: 15 * 60 * 1000, now: accounts.now });
 
   const tokenValid = (offered: string): boolean => {
     const hub = options.hubToken;

@@ -200,7 +200,7 @@ const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard,
-  auth: { accounts, hubToken },
+  auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },
   admin: {
     deps: {
       users: store.users,

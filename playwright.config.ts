@@ -24,7 +24,8 @@ export default defineConfig({
     trace: 'off'
   },
   webServer: {
-    command: `node apps/server/src/main.ts`,
+    // 先构建前端：e2e 打的是 dist，旧包会让新界面的用例假失败
+    command: `npm run build && node apps/server/src/main.ts`,
     url: `http://127.0.0.1:${port}/api/health`,
     reuseExistingServer: false,
     timeout: 60_000,
@@ -33,6 +34,8 @@ export default defineConfig({
       HUB_PORT: String(port),
       HUB_DATA_DIR: '/tmp/agent-hub-e2e-data',
       HUB_SPAWN_WORKER: '1',
+      // 整套 e2e 在一个服务里登录十几次，放宽登录限流，免得后面的用例吃 429
+      HUB_LOGIN_RATE_MAX: '1000',
       // 本机 Worker 只放开 /tmp：目录选择器的新建文件夹、托管目录都落在这里，不碰真实家目录
       WORKER_ROOTS: '/tmp',
       // 测试账号的密码文件放进 e2e 数据目录，不碰真实的 ~/.config/agent-hub
