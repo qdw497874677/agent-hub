@@ -163,6 +163,7 @@ const runtimes: AgentRuntime[] = [
     ...(env['PI_SESSION_DIR'] ? { sessionDir: env['PI_SESSION_DIR'] } : {}),
     models: piModels,
     defaultModel: discovered.defaultModel,
+    toolShim,
     onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
     onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
   }),
