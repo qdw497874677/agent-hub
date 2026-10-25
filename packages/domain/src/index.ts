@@ -9,6 +9,7 @@ export * from './attachment.ts';
 export * from './project.ts';
 export * from './task.ts';
 export * from './work-log.ts';
+export * from './task-briefing.ts';
 export * from './session.ts';
 export * from './artifact.ts';
 export * from './canvas.ts';

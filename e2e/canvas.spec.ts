@@ -199,7 +199,9 @@ test('任务详情：工作日志时间线、写交接刷新当前进展、改�
   await drawer.getByRole('button', { name: '记录' }).click();
   await expect(drawer.getByTestId('work-log')).toContainText(`用官方 SDK-${RUN}`);
 
-  await drawer.getByRole('button', { name: '交接', exact: true }).click();
+  await drawer.getByRole('button', { name: '写交接', exact: true }).click();
+  await expect(drawer.getByRole('button', { name: '交接', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(drawer.getByLabel('写日志')).toBeFocused();
   await expect(drawer.getByLabel('写日志')).toHaveValue(/## 已完成/);
   await drawer.getByLabel('写日志').fill(`## 已完成\n- 交接-${RUN}\n\n## 下一步\n- 接 MCP`);
   await drawer.getByRole('button', { name: '记录' }).click();

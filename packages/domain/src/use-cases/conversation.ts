@@ -12,6 +12,7 @@ import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, projectOf } from './hosting.ts';
 import { recordEvent, recordSessionOptions } from './sessions.ts';
+import { taskBriefing } from '../task-briefing.ts';
 
 /*
  * 「会话在跑」这一侧的用例：用户发话，以及 worker 回报的一切。
@@ -22,6 +23,8 @@ export interface PromptCommand {
   readonly sessionId: string;
   readonly text: string;
   readonly attachments?: readonly AttachmentInput[];
+  /** false = 不垫任务背景（调用方已经自己写了交接简报，如换机继续）。 */
+  readonly briefing?: boolean;
 }
 
 /**
@@ -66,7 +69,7 @@ export async function promptSessionUseCase(
   deps: Pick<
     Deps,
     'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'
-  >,
+  > & Partial<Pick<Deps, 'workLog'>>,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -77,6 +80,8 @@ export async function promptSessionUseCase(
   const prepared = await prepareAttachments(deps, session, attachments);
   if (!prepared.ok) return prepared;
   const { stored, parts } = prepared.value;
+  // 新会话第一句：给 agent 垫上任务背景（目标、摘要、最近交接）。用户看到的仍是原话。
+  const briefing = session.lastSeq === 0 && command.briefing !== false ? await briefingFor(deps, session) : null;
 
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——
   // 专注对话里会是一条没有提问的回答。
@@ -87,7 +92,15 @@ export async function promptSessionUseCase(
 
   const hosted = await ensureHosted(deps, session);
   if (!hosted.ok) return hosted;
-  return deps.gateway.dispatch({ kind: 'prompt', sessionId, text: command.text, parts });
+  const text = briefing ? `${briefing}\n\n${command.text}` : command.text;
+  return deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
+}
+
+async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog'>>, session: Session): Promise<string | null> {
+  if (!session.taskId || !deps.workLog) return null;
+  const task = await deps.tasks.byId(session.taskId);
+  if (!task) return null;
+  return taskBriefing(task, await deps.workLog.latestHandoff(task.id));
 }
 
 /**

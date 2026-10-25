@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type TaskDto, type WorkLogEntryDto } from './api.ts';
 import { NEXT_STATUS, TASK_STATUS_LABEL, TASK_STATUS_TONE } from './task-status.ts';
@@ -58,6 +58,7 @@ export function TaskDetail({
   const sessions = canvas.sessions.filter((s) => s.taskId === taskId);
   const [kind, setKind] = useState<WorkLogEntryDto['kind']>('note');
   const [body, setBody] = useState('');
+  const composer = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -123,6 +124,17 @@ export function TaskDetail({
                 {action.label}
               </button>
             ))}
+            <button
+              type="button"
+              className="rounded-sm border border-accent-dim px-1.5 py-px text-meta text-accent hover:border-accent"
+              onClick={() => {
+                setKind('handoff');
+                if (!body.trim()) setBody(HANDOFF_TEMPLATE);
+                requestAnimationFrame(() => composer.current?.focus());
+              }}
+            >
+              写交接
+            </button>
             {task.branch ? <span className="font-mono text-meta text-tertiary">⎇ {task.branch}</span> : null}
           </div>
           <p className="mt-2 text-sub text-secondary" data-testid="task-summary">
@@ -192,6 +204,7 @@ export function TaskDetail({
             ))}
           </div>
           <textarea
+            ref={composer}
             aria-label="写日志"
             className="h-24 w-full resize-none rounded-sm border border-hair bg-card px-2.5 py-2 text-sub text-primary outline-none placeholder:text-tertiary focus:border-accent"
             placeholder="记一笔：做了什么、决定了什么、卡在哪里"
