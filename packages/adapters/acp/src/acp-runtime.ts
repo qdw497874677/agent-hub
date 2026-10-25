@@ -106,6 +106,8 @@ class AcpSession implements RuntimeSession {
   private mcpCaps = { http: false, sse: false };
   /** hub 能力层；握手后按 agent 声明的 mcpCapabilities 决定能不能注入。 */
   tools: StartSpec['tools'] = undefined;
+  /** 本机的 stdio MCP 垫片命令（worker 给）；agent 不会 HTTP MCP 时靠它。 */
+  toolShim: { command: string; args: readonly string[] } | undefined = undefined;
 
   private request(method: string, params: Json): Promise<Json> {
     return this.connection.agent.request<Json, Json>(method, params);
@@ -123,7 +125,7 @@ class AcpSession implements RuntimeSession {
   }
 
   private sessionParams(cwd: string): Json {
-    return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps), ...(this.config.sessionMeta ? { _meta: this.config.sessionMeta } : {}) };
+    return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps, this.toolShim), ...(this.config.sessionMeta ? { _meta: this.config.sessionMeta } : {}) };
   }
 
   async open(cwd: string, agentSessionRef: string | null): Promise<void> {
@@ -212,6 +214,8 @@ export interface AcpRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** agent 报上来的可调项（含当前值），worker 用它告诉 server。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
+  /** stdio MCP 垫片（`node mcp-shim.ts`）：stdio-shim 模式、或 agent 不会 HTTP MCP 时用。 */
+  readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
 }
 
 /**
@@ -236,6 +240,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
         options.onOptions?.(spec.sessionId, reported);
       });
       session.tools = spec.tools;
+      session.toolShim = options.toolShim;
       const ref = spec.resume?.agentSessionRef ?? null;
       try {
         await session.open(spec.workspaceRoot, ref);

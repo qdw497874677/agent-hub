@@ -194,7 +194,12 @@ sequenceDiagram
 - **短期 + 绑定**：令牌 = `{taskId, sessionId, workerId, scopes, exp}` 的不透明句柄，库里只存 hash；默认 TTL 12h，会话每次 resume 由 hub 重新签发并作废旧的；会话 `stopped/done/failed` 立即吊销。
 - **最小权限**：默认 grant = `task:read + task:log:write`；`task:status:write` 由项目设置开启；以后的高危工具（写文件、开会话）走「需要人确认」的 grant。
 - **不落盘、不进日志**：令牌只存在于 wire 帧（WS 已鉴权）和 agent 进程内存/环境变量里；Worker 日志与事件流对 `tools.token` 做脱敏；Pi 的 mcp.json 里只有 `${AGENT_HUB_TOOL_TOKEN}` 占位符。
-- 若 Worker 访问不到 hub 的 HTTP（只有 WS 出站），`transport='stdio-shim'`：Worker 把 `agent-hub-worker mcp-shim` 作为 stdio MCP server 传给 agent，shim 把调用经已有 WS 链路转成 `tool.call` 帧，令牌留在 Worker 内存。
+- 若 Worker 访问不到 hub 的 HTTP（只有 WS 出站），`HUB_TOOLS_TRANSPORT=stdio-shim`（**已实现**）：
+  - Worker 在 127.0.0.1 随机端口起一个本地 MCP relay（Streamable HTTP），把会话的工具 URL 换成它；令牌不变、只在内存和 env 里。
+  - relay 不懂任何工具：list / call 经已有 WS 链路转成 `tool_request {requestId, token, op, name?, args?}` 帧，hub 回 `tool_response {requestId, ok, tools|value|error}`。hub 端与 `/mcp` 共用 ToolGateway，另核对「授权绑定的 Worker = 转发的这台」。
+  - 会 HTTP MCP 的 agent（Pi、声明了 http 的 ACP agent）直连 relay；只会 stdio 的 ACP agent 拿到 `node apps/worker/src/mcp-shim.ts` 垫片（stdio ⇄ Streamable HTTP），URL/令牌走 `AGENT_HUB_TOOL_URL/TOKEN`。
+  - `http` 模式下 ACP agent 没声明 http 能力时，也退到同一个垫片（直连 hub 的 `/mcp`），不再是「没有工具」。
+  - 断线时在途调用立即失败（不进补发队列）；调用超时 60 秒。
 
 ### 4.4 一次交接的完整流程
 
@@ -231,7 +236,7 @@ sequenceDiagram
 | P1 日志 | domain `work-log.ts` + `WorkLogRepository` 端口 + sqlite 实现；Task 新字段与状态机；REST `GET/POST /api/tasks/:id/log`；system 自动条目；任务详情抽屉（桌面+移动） | 人能写/读日志，会话起停自动出条目 |
 | P2 能力层 | `ToolProvider` 端口、`ToolGateway` 用例、`ToolGrant` 签发/吊销、`/mcp` Streamable HTTP 适配器、`TaskToolProvider` 四个工具；wire `start_session.tools`；ACP 适配器把 `sessionParams` 的 `mcpServers` 换成注入值（按 `mcpCapabilities.http` 判断） | OpenCode、Grok 会话里能调 `task.*` |
 | P3 Pi + 交接体验 | Worker 启动时确保 `~/.pi/agent/mcp.json` 有 `agent-hub` 条目，spawn 时注入 env；新会话首条提示附带最近日志；「插入交接模板」按钮 | 三个运行时都能完成 §4.4 |
-| P4 兜底与扩展 | stdio shim + `tool.call` 帧；限流/审计面板；`workspace.*`、`artifact.*` provider；CLI `agent-hub task log` | 只有 WS 出站的 Worker 也能用 |
+| P4 兜底与扩展 | stdio shim + `tool_request/tool_response` 帧（**已完成**）；限流/审计面板；`workspace.*`、`artifact.*` provider；CLI `agent-hub task log` | 只有 WS 出站的 Worker 也能用 |
 
 ## 6. 迁移
 

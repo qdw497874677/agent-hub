@@ -148,6 +148,15 @@ const acpModels = await Promise.all(acpConfigs.map((config) => discoverAcpModels
 let notifyAgentSessionRef: (sessionId: string, ref: string) => void = () => undefined;
 let notifyOptions: (sessionId: string, options: readonly RuntimeOption[]) => void = () => undefined;
 
+/**
+ * stdio MCP 垫片：和 worker 同一个 node、同样的启动参数（.ts 直接跑），
+ * 给 stdio-shim 模式、以及不会 HTTP MCP 的 ACP agent 用。
+ */
+const toolShim = {
+  command: process.execPath,
+  args: [...process.execArgv, join(dirname(fileURLToPath(import.meta.url)), 'mcp-shim.ts')]
+};
+
 const runtimes: AgentRuntime[] = [
   createPiRuntime({
     ...(env['PI_COMMAND'] ? { command: env['PI_COMMAND'] } : {}),
@@ -160,6 +169,7 @@ const runtimes: AgentRuntime[] = [
   ...acpConfigs.map((config, index) =>
     createAcpRuntime(config, {
       descriptor: acpDescriptor(config, [], acpModels[index] ?? []),
+      toolShim,
       onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
       onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
     })
@@ -168,6 +178,7 @@ const runtimes: AgentRuntime[] = [
     command: grokCommand,
     models: grokCatalog.models,
     defaultModel: grokCatalog.defaultModel,
+    toolShim,
     onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
     onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
   })

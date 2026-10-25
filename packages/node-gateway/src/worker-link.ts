@@ -13,6 +13,7 @@ import type {
 import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
 import type { UpdateReport } from './updater.ts';
+import { createToolRelay, type ToolRelayReply } from './tool-relay.ts';
 
 export interface WorkerLinkOptions {
   readonly url: string;
@@ -55,6 +56,8 @@ export interface WorkerLinkOptions {
    * hub 让它更新到某个提交。`report` 把进度回给 hub。不给就一律回「不支持远程更新」。
    * 同一时间只跑一次：正在更新时再来的指令直接拒绝。
    */
+  /** 经链路转发的工具调用等 hub 答复的上限（stdio-shim 模式）。 */
+  readonly toolTimeoutMs?: number;
   readonly onUpdate?: (commit: string, report: (status: UpdateReport) => void) => Promise<void>;
 }
 
@@ -72,7 +75,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'list_directories' | 'make_directory' | 'list_files' | 'read_file' | 'update' }
+  { kind: 'list_directories' | 'make_directory' | 'list_files' | 'read_file' | 'update' | 'tool_response' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -99,6 +102,32 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const OUTBOX_LIMIT = 5_000;
   let dropped = 0;
   let updating = false;
+
+  /**
+   * stdio-shim 模式的工具中转：agent 调本地 relay，relay 经这条 WebSocket 问 hub。
+   * 不进 outbox：断线时直接失败，比连回来后补发一个早已超时的调用诚实。
+   */
+  const toolCalls = new Map<string, { resolve: (reply: ToolRelayReply) => void; timer: NodeJS.Timeout }>();
+  let toolSeq = 0;
+  const TOOL_TIMEOUT_MS = options.toolTimeoutMs ?? 60_000;
+  const relay = createToolRelay(
+    (request) =>
+      new Promise<ToolRelayReply>((resolve) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) {
+          resolve({ ok: false, error: '与 hub 断开了，工具暂不可用' });
+          return;
+        }
+        toolSeq += 1;
+        const requestId = `t${toolSeq}`;
+        const timer = setTimeout(() => {
+          toolCalls.delete(requestId);
+          resolve({ ok: false, error: '工具调用超时' });
+        }, TOOL_TIMEOUT_MS);
+        timer.unref?.();
+        toolCalls.set(requestId, { resolve, timer });
+        socket.send(JSON.stringify({ type: 'tool_request', requestId, ...request } satisfies WorkerToServer));
+      })
+  );
 
   const send = (frame: WorkerToServer): void => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -159,6 +188,11 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     current.on('close', (code: number, reason: Buffer) => {
       if (watchdog) clearTimeout(watchdog);
       if (socket === current) socket = null;
+      for (const waiting of toolCalls.values()) {
+        clearTimeout(waiting.timer);
+        waiting.resolve({ ok: false, error: '与 hub 断开了，工具调用没有完成' });
+      }
+      toolCalls.clear();
       if (code === PROTOCOL_MISMATCH_CLOSE) {
         // 协议对不上：重连也没用，把 hub 给的原因原样打出来，告诉人怎么修。
         options.onLog?.(`${reason.toString() || '与 hub 的协议版本不兼容'}。不再重连`);
@@ -209,6 +243,14 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       else if (command.kind === 'list_files') void listFiles(command.requestId, command.root, command.limit);
       else if (command.kind === 'read_file') void readFile(command.requestId, command.path, command.maxBytes);
       else if (command.kind === 'update') void update(command.commit);
+      else if (command.kind === 'tool_response') {
+        const waiting = toolCalls.get(command.requestId);
+        if (!waiting) return;
+        clearTimeout(waiting.timer);
+        toolCalls.delete(command.requestId);
+        const { kind: _kind, requestId: _id, ...reply } = command;
+        waiting.resolve(reply);
+      }
       else void handle(command);
     });
   }
@@ -375,6 +417,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     sessions.delete(sessionId);
   }
 
+  /** stdio-shim：把 URL 换成本机 relay（hub 的 HTTP 对 agent 可能不可达），令牌不变。 */
+  async function toolAccess(tools: NonNullable<StartSpec['tools']>): Promise<NonNullable<StartSpec['tools']>> {
+    if (tools.transport !== 'stdio-shim') return tools;
+    return { ...tools, url: await relay.url() };
+  }
+
   async function startSession(command: Extract<ServerToWorker, { kind: 'start_session' }>): Promise<void> {
     const runtime = options.runtimes.find((candidate) => candidate.descriptor.id === command.agentId);
     if (!runtime) {
@@ -398,7 +446,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       workspaceRoot: command.workspaceRoot,
       resume: command.resume,
       options: command.options,
-      ...(command.tools ? { tools: command.tools } : {})
+      ...(command.tools ? { tools: await toolAccess(command.tools) } : {})
     };
 
     const started = await runtime.start(spec);
@@ -451,6 +499,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (watchdog) clearTimeout(watchdog);
+      for (const waiting of toolCalls.values()) {
+        clearTimeout(waiting.timer);
+        waiting.resolve({ ok: false, error: 'worker 正在退出' });
+      }
+      toolCalls.clear();
+      await relay.close();
       for (const session of sessions.values()) await session.dispose();
       sessions.clear();
       if (socket) socket.close();

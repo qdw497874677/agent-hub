@@ -521,7 +521,22 @@ export const workerStatusSchema = z.object({
   reason: z.string().optional()
 });
 
+/**
+ * 工具调用经 worker 链路转发（stdio-shim 模式，P4）：agent 连不到 hub 的 HTTP 时，
+ * 它调 worker 本地的 MCP 入口，worker 把调用塞进这条已有的 WebSocket 发给 hub。
+ * 令牌随帧走（hub 按令牌认人），两边都不打日志。工具名是线上名（task_get）。
+ */
+export const workerToolRequestSchema = z.object({
+  type: z.literal('tool_request'),
+  requestId: z.string().min(1),
+  token: z.string().min(1),
+  op: z.enum(['list', 'call']),
+  name: z.string().optional(),
+  args: z.record(z.string(), z.unknown()).optional()
+});
+
 export const workerToServerSchema = z.discriminatedUnion('type', [
+  workerToolRequestSchema,
   workerHelloSchema,
   workerEventSchema,
   workerAgentSessionSchema,
@@ -588,7 +603,20 @@ export const readFileCommandSchema = z.object({
   maxBytes: z.number().int().positive()
 });
 
+/** hub 对 tool_request 的答复：list 给 tools，call 给 value（JSON），失败给 error。 */
+export const toolResponseCommandSchema = z.object({
+  kind: z.literal('tool_response'),
+  requestId: z.string(),
+  ok: z.boolean(),
+  tools: z
+    .array(z.object({ name: z.string(), description: z.string(), inputSchema: z.record(z.string(), z.unknown()) }))
+    .optional(),
+  value: z.unknown().optional(),
+  error: z.string().optional()
+});
+
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
+  toolResponseCommandSchema,
   listDirectoriesCommandSchema,
   makeDirectoryCommandSchema,
   listFilesCommandSchema,
@@ -645,3 +673,6 @@ export type ProjectFilesDto = z.infer<typeof projectFilesSchema>;
 export type SessionStreamFrame = z.infer<typeof sessionStreamFrameSchema>;
 export type WorkerToServer = z.infer<typeof workerToServerSchema>;
 export type ServerToWorker = z.infer<typeof serverToWorkerSchema>;
+
+export type ToolRequestFrame = z.infer<typeof workerToolRequestSchema>;
+export type ToolResponseCommand = z.infer<typeof toolResponseCommandSchema>;
