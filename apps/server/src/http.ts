@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
@@ -27,6 +27,7 @@ import {
   asSessionId,
   asTaskId,
   changeSessionOption,
+  browseDirectories,
   createProjectUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
@@ -38,7 +39,6 @@ import {
   loadCanvas,
   loadHome,
   invalid,
-  notFound,
   promptSessionUseCase,
   readSessionAttachment,
   saveLayoutUseCase,
@@ -122,13 +122,16 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/home', async (c) => c.json(homeSchema.parse(await loadHome(deps))));
 
   // 目录选择器（S2.1）：让人从真实目录里挑，而不是手打一个可能会错的路径。
+  // 多机：带 workerId 就去那台 Worker 上浏览（经 WebSocket 问它），不带就是 Server 本机。
   app.get('/api/fs/directories', async (c) => {
     const requested = c.req.query('path') ?? '';
-    const path = requested === '' ? homedir() : resolve(requested);
-    if (!(await deps.fs.directoryExists(path))) return fail(c, notFound(`没有这个目录：${path}`));
-    const entries = await deps.fs.listDirectories(path);
-    const parent = dirname(path);
-    return c.json(directoryListingSchema.parse({ path, parent: parent === path ? null : parent, entries }));
+    const workerId = c.req.query('workerId') ?? '';
+    const result = await browseDirectories(deps, {
+      workerId: workerId === '' ? null : workerId,
+      path: requested === '' ? '' : requested.startsWith('/') ? requested : resolve(requested),
+      home: homedir()
+    });
+    return result.ok ? c.json(directoryListingSchema.parse(result.value)) : fail(c, result.error);
   });
 
   // `@` 引用选择器：项目里的文件，按名字模糊匹配。

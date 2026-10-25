@@ -148,3 +148,9 @@
 ```
 
 React Flow 的边样式不要用内置曲线，走 `step` 类型 + 自定义 `style: { stroke, strokeDasharray }`，颜色与线型从上表取。
+
+## 多台 Worker（2026-10）
+
+见 [multi-worker-research.md](multi-worker-research.md)。要点：机器只用状态色（sage 在线 / rust 离线），不分配身份色；
+「在哪台」以 chip（点 + 名字，`text-meta`、1px hair 边框）出现在会话卡 header 与检查器，只在多于一台时渲染；
+选择用分段 pill，离线项禁用但可见。

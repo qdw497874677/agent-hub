@@ -88,9 +88,11 @@ export const api = {
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
   home: () => call<HomeDto>('/api/home'),
   projects: () => call<ProjectDto[]>('/api/projects'),
-  listDirectories: (path: string) =>
-    call<DirectoryListingDto>(`/api/fs/directories?path=${encodeURIComponent(path)}`),
-  createProject: (input: { name: string; rootPath: string }) => post<ProjectDto>('/api/projects', input),
+  listDirectories: (path: string, workerId: string | null = null) =>
+    call<DirectoryListingDto>(
+      `/api/fs/directories?path=${encodeURIComponent(path)}${workerId ? `&workerId=${encodeURIComponent(workerId)}` : ''}`
+    ),
+  createProject: (input: { name: string; rootPath: string; workerId?: string | null }) => post<ProjectDto>('/api/projects', input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
   setTaskStatus: (taskId: string, status: TaskDto['status']) =>

@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
   root_path  TEXT NOT NULL,
+  worker_id  TEXT,
   created_at INTEGER NOT NULL
 );
 
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   agent_session    TEXT,
   options          TEXT NOT NULL DEFAULT '{}',
   option_spec      TEXT NOT NULL DEFAULT '[]',
+  worker_id        TEXT,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );

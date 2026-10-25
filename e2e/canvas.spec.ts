@@ -155,10 +155,11 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await expect(sessionNode(page)).toHaveCount(1);
 
   // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以节点状态是常驻可查的
-  await page.getByRole('button', { name: /节点$/ }).click();
-  await expect(page.getByText('本机')).toBeVisible();
-  await expect(page.getByText('在线')).toBeVisible();
-  await page.getByRole('button', { name: /节点$/ }).click();
+  const badge = page.getByRole('button', { name: /^Worker：/ }).first();
+  await badge.click();
+  await expect(page.getByText(/\d+ 在线/)).toBeVisible();
+  await expect(page.getByRole('listitem').filter({ hasText: '本机' }).first()).toBeVisible();
+  await badge.click();
 
   // S4.2：收尾不是放弃。先收尾，卡片改口，再重开回到进行中
   await taskNode(page, TASK_TITLE).hover();

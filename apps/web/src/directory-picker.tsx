@@ -9,12 +9,22 @@ import { api } from './api.ts';
  * 它不是一个「弹框」而是一块嵌在页面里的面板：创建项目本身是页面上的
  * 一段流程（指目录 → 命名 → 开始），不是打断式的对话框。
  */
-export function DirectoryPicker({ onPick }: { onPick: (path: string) => void }) {
+export function DirectoryPicker({
+  onPick,
+  workerId = null
+}: {
+  onPick: (path: string) => void;
+  /** 浏览哪台 Worker 的文件系统；null = hub 所在这台。 */
+  workerId?: string | null;
+}) {
   const [path, setPath] = useState('');
   const listing = useQuery({
-    queryKey: ['directories', path],
-    queryFn: () => api.listDirectories(path)
+    queryKey: ['directories', workerId, path],
+    queryFn: () => api.listDirectories(path, workerId)
   });
+
+  // 换了机器：回到那台机器的起点，而不是拿上一台的路径去问它。
+  useEffect(() => setPath(''), [workerId]);
 
   // 第一次打开落在用户家目录：`?path=` 留空由服务端解释成 home。
   useEffect(() => {

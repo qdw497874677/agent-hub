@@ -75,6 +75,8 @@ export const projectSchema = z.object({
   id,
   name: z.string(),
   rootPath: z.string(),
+  /** 目录在哪台 Worker 上；null = 和 Server 同机。 */
+  workerId: z.string().nullable().default(null),
   createdAt: epochMs
 });
 
@@ -114,6 +116,8 @@ export const sessionSchema = z.object({
   agentSessionRef: z.string().nullable(),
   options: optionValuesSchema,
   optionSpec: z.array(runtimeOptionSchema),
+  /** 落点：会话绑在哪台 Worker 上。null = 多机之前的老会话。 */
+  workerId: z.string().nullable().default(null),
   createdAt: epochMs,
   updatedAt: epochMs
 });
@@ -228,7 +232,8 @@ export const journalEntrySchema = z.object({
 
 export const createProjectRequest = z.object({
   name: z.string().min(1).max(80),
-  rootPath: z.string().min(1)
+  rootPath: z.string().min(1),
+  workerId: z.string().min(1).nullable().optional()
 });
 
 export const createTaskRequest = z.object({
@@ -243,7 +248,9 @@ export const deriveSessionRequest = z.object({
   taskId: id,
   agentId: id,
   // 空字符串 = 用 agent 自己的默认模型（见 apps/web 的派生对话框）
-  model: z.string()
+  model: z.string(),
+  /** 点名交给哪台 Worker；不给就按落点规则挑。 */
+  workerId: z.string().min(1).nullable().optional()
 });
 
 export const forkSessionRequest = z.object({
@@ -287,7 +294,23 @@ export const workerHelloSchema = z.object({
   origin: z.enum(['local', 'remote']),
   token: z.string().optional(),
   /** worker 报上它装了哪些 agent——server 从不自己猜 agent 列表。 */
-  agents: z.array(agentSchema)
+  agents: z.array(agentSchema),
+  /** 机器信息：管理视图里让人认出「这是哪台」。 */
+  host: z.object({ hostname: z.string(), platform: z.string(), arch: z.string() }).optional(),
+  /** 目录选择器的起点（通常是 $HOME 和 WORKER_ROOTS 里配的目录）。 */
+  roots: z.array(z.string()).default([]),
+  /** 断线重连时：我手上还活着的会话。server 据此重新登记托管，而不是再 resume 一遍。 */
+  sessions: z.array(id).default([])
+});
+
+/** 目录浏览的回复：按 requestId 对上 server 的那次请求。 */
+export const workerDirectoriesSchema = z.object({
+  type: z.literal('directories'),
+  requestId: z.string(),
+  path: z.string(),
+  exists: z.boolean(),
+  entries: z.array(z.object({ name: z.string(), path: z.string() })),
+  error: z.string().optional()
 });
 
 export const workerEventSchema = z.object({
@@ -346,7 +369,9 @@ export const directoryEntrySchema = z.object({ name: z.string(), path: z.string(
 export const directoryListingSchema = z.object({
   path: z.string(),
   parent: z.string().nullable(),
-  entries: z.array(directoryEntrySchema)
+  entries: z.array(directoryEntrySchema),
+  /** 在哪台 Worker 上浏览的；null = Server 本机。 */
+  workerId: z.string().nullable().default(null)
 });
 
 /** `/api/workers` 的响应：UI 靠它区分「它挂了」和「我改坏了配置」（S1.2）。 */
@@ -355,7 +380,13 @@ export const workerInfoSchema = z.object({
   label: z.string(),
   origin: z.enum(['local', 'remote']),
   state: z.enum(['online', 'offline']),
-  reason: z.string().optional()
+  reason: z.string().optional(),
+  agentIds: z.array(z.string()).optional(),
+  hostname: z.string().optional(),
+  platform: z.string().optional(),
+  roots: z.array(z.string()).optional(),
+  lastSeenAt: epochMs.optional(),
+  sessionCount: z.number().int().nonnegative().optional()
 });
 
 /**
@@ -374,7 +405,8 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerEventSchema,
   workerAgentSessionSchema,
   workerOptionsSchema,
-  workerStatusSchema
+  workerStatusSchema,
+  workerDirectoriesSchema
 ]);
 
 export const startSessionCommandSchema = z.object({
@@ -391,7 +423,16 @@ export const startSessionCommandSchema = z.object({
   options: optionValuesSchema
 });
 
+/** 不属于任何会话的请求（目录浏览）。和会话指令分开，免得 worker 把它当成「未知会话」。 */
+export const listDirectoriesCommandSchema = z.object({
+  kind: z.literal('list_directories'),
+  requestId: z.string(),
+  /** 空串 = 这台机器的默认起点（roots[0]）。 */
+  path: z.string()
+});
+
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
+  listDirectoriesCommandSchema,
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),

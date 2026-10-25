@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { arch, homedir, hostname, platform } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
 import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
 import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
@@ -18,9 +19,57 @@ const env = process.env;
 
 const hubUrl = env['HUB_URL'] ?? 'ws://127.0.0.1:7878/worker';
 const token = env['HUB_TOKEN'] ?? '';
-const workerId = env['WORKER_ID'] ?? `local-${randomUUID().slice(0, 8)}`;
-const label = env['WORKER_LABEL'] ?? '本机';
 const origin = env['WORKER_ORIGIN'] === 'remote' ? 'remote' : 'local';
+const label = env['WORKER_LABEL'] ?? (origin === 'local' ? '本机' : hostname());
+const workerId = env['WORKER_ID'] ?? stableWorkerId();
+
+/**
+ * Worker 的身份要稳定：会话的落点存的就是它。每次启动换一个随机 id 的话，
+ * 重启一次 Worker，它名下所有会话都「找不到原来那台」了。
+ * 所以第一次启动时生成一个，存在 `$WORKER_STATE_DIR/worker-id`（默认 ~/.config/agent-hub/）。
+ */
+function stableWorkerId(): string {
+  const file = join(env['WORKER_STATE_DIR'] ?? join(homedir(), '.config', 'agent-hub'), `worker-id${origin === 'local' ? '' : '.remote'}`);
+  try {
+    const existing = readFileSync(file, 'utf8').trim();
+    if (existing !== '') return existing;
+  } catch {
+    // 第一次启动
+  }
+  const fresh = `${origin}-${randomUUID().slice(0, 8)}`;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, `${fresh}\n`);
+  } catch {
+    // 写不了就用一次性的：能跑，只是重启后会换身份
+  }
+  return fresh;
+}
+
+/** 目录选择器的起点：`WORKER_ROOTS=/srv/code:/data`，默认 $HOME。 */
+const roots = (env['WORKER_ROOTS'] ?? homedir())
+  .split(':')
+  .map((root) => root.trim())
+  .filter((root) => root !== '')
+  .map((root) => resolve(root));
+
+async function listDirectories(path: string): Promise<{ path: string; exists: boolean; entries: { name: string; path: string }[] }> {
+  const absolute = resolve(path);
+  try {
+    if (!(await stat(absolute)).isDirectory()) return { path: absolute, exists: false, entries: [] };
+  } catch {
+    return { path: absolute, exists: false, entries: [] };
+  }
+  const entries = await readdir(absolute, { withFileTypes: true });
+  return {
+    path: absolute,
+    exists: true,
+    entries: entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => ({ name: entry.name, path: join(absolute, entry.name) }))
+      .sort((left, right) => left.name.localeCompare(right.name))
+  };
+}
 
 /**
  * 显式覆盖：`PI_DEFAULT_MODEL=a,b`。除此之外一律问 Pi 自己（见 discoverPiModels），
@@ -141,13 +190,33 @@ const link = connectWorkerLink({
   label,
   origin,
   runtimes,
+  host: { hostname: hostname(), platform: platform(), arch: arch() },
+  roots,
+  listDirectories,
   onLog: log,
-  // 断开就退出：让监工决定要不要重开，而不是悄悄留下一个没人管的孤儿进程。
+  // 断线会自己重连；走到这里只有两种情况：token 被拒、或者自己 close() 了。
   onClose: () => {
-    log('与 server 断开，退出');
+    log('连接关闭，退出');
     process.exit(0);
   }
 });
+
+/**
+ * 由 server 拉起的本机 Worker 跟着 server 走：server 没了它也退出。
+ * 否则它会一直重连，下一代 server 起来时又拉起一个——界面上就是两台「本机」。
+ * 独立部署的 Worker（systemd、远程机器）不设这个变量，断了就重连。
+ */
+const parentPid = Number(env['HUB_PARENT_PID'] ?? 0);
+if (parentPid > 0) {
+  setInterval(() => {
+    try {
+      process.kill(parentPid, 0);
+    } catch {
+      log('server 进程已退出，跟着退出');
+      void link.close().finally(() => process.exit(0));
+    }
+  }, 2_000).unref();
+}
 
 notifyAgentSessionRef = (sessionId, ref) => link.notifyAgentSessionRef(sessionId, ref);
 notifyOptions = (sessionId, reported) => link.notifyOptions(sessionId, reported);

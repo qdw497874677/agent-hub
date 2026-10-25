@@ -20,13 +20,25 @@ export interface WorkerLinkOptions {
   readonly runtimes: readonly AgentRuntime[];
   readonly onLog?: (message: string) => void;
   /**
-   * 连接断了。
-   *
-   * worker 不自带重连：它的两个监工（server 的 spawn、systemd）都比它更清楚该不该重开。
-   * 之前不退出，server 被杀之后会留下孤儿 worker 连着新 server——
-   * 界面上就出现「2/2 节点」，其中一台是上一代进程。
+   * 断线后自动重连（指数退避，封顶 `maxBackoffMs`）。默认开：
+   * 一台远程机器不该因为 hub 重启一次就永久掉队，得有人 ssh 上去重开。
+   * 重连后重新 hello，并报上手上还活着的会话，server 据此接回托管。
+   * 关掉（`false`）时断线即调 `onClose`——给测试和一次性脚本用。
    */
+  readonly reconnect?: boolean;
+  readonly initialBackoffMs?: number;
+  readonly maxBackoffMs?: number;
+  /** 多久没收到 server 的 ping 就认为连接已死（半开连接不会触发 close）。0 = 不检测。 */
+  readonly heartbeatTimeoutMs?: number;
+  /** 机器信息与目录起点，出现在管理视图和目录选择器里。 */
+  readonly host?: { readonly hostname: string; readonly platform: string; readonly arch: string };
+  readonly roots?: readonly string[];
+  /** 浏览目录（目录选择器经 server 转过来）。不给就回「这台不支持浏览」。 */
+  readonly listDirectories?: (path: string) => Promise<{ path: string; exists: boolean; entries: { name: string; path: string }[] }>;
+  /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
   readonly onClose?: () => void;
+  /** 每次连上（含重连）。 */
+  readonly onOpen?: () => void;
   /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
 }
@@ -51,48 +63,148 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
    * 撞上「未知会话」。这是真发生过的失败，不是理论问题。
    */
   const starting = new Map<string, Promise<void>>();
-  const socket = new WebSocket(options.url);
+  let socket: WebSocket | null = null;
   let closed = false;
+  let attempt = 0;
+  let reconnectTimer: NodeJS.Timeout | null = null;
+  let watchdog: NodeJS.Timeout | null = null;
+  /**
+   * 断线期间产生的帧先攒着，连回来按顺序补发。agent 不会因为网络抖一下就停：
+   * 不攒的话那段输出就永远丢了（server 那边 journal 有幂等保护，补发不会写两遍）。
+   * 有上限：断太久就丢最旧的，并在补发时说一声。
+   */
+  const outbox: WorkerToServer[] = [];
+  const OUTBOX_LIMIT = 5_000;
+  let dropped = 0;
 
   const send = (frame: WorkerToServer): void => {
-    if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
-  };
-
-  socket.on('open', () => {
-    send({
-      type: 'hello',
-      workerId: options.workerId,
-      label: options.label,
-      origin: options.origin ?? 'local',
-      token: options.token,
-      agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor))
-    });
-    options.onLog?.(`已连上 ${options.url}`);
-  });
-
-  socket.on('close', () => {
-    options.onLog?.('与 server 断开');
-    options.onClose?.();
-  });
-
-  socket.on('error', (error: Error) => {
-    options.onLog?.(`连接错误：${error.message}`);
-  });
-
-  socket.on('message', (raw: Buffer) => {
-    const parsed = serverToWorkerSchema.safeParse(JSON.parse(raw.toString()));
-    if (!parsed.success) {
-      options.onLog?.(`server 发来无法解析的帧：${parsed.error.message}`);
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify(frame));
       return;
     }
-    void handle(parsed.data as ServerToWorker);
-  });
+    if (closed) return;
+    outbox.push(frame);
+    if (outbox.length > OUTBOX_LIMIT) {
+      outbox.shift();
+      dropped += 1;
+    }
+  };
+
+  const armWatchdog = (current: WebSocket): void => {
+    const timeout = options.heartbeatTimeoutMs ?? 30_000;
+    if (timeout <= 0) return;
+    if (watchdog) clearTimeout(watchdog);
+    watchdog = setTimeout(() => {
+      options.onLog?.(`${Math.round(timeout / 1000)} 秒没收到 server 心跳，断开重连`);
+      current.terminate();
+    }, timeout);
+    watchdog.unref?.();
+  };
+
+  function connect(): void {
+    const current = new WebSocket(options.url);
+    socket = current;
+
+    current.on('open', () => {
+      attempt = 0;
+      // hello 必须是第一帧：先于补发的积压事件，server 才知道这些事件是谁的。
+      current.send(
+        JSON.stringify({
+          type: 'hello',
+          workerId: options.workerId,
+          label: options.label,
+          origin: options.origin ?? 'local',
+          token: options.token,
+          agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor)),
+          ...(options.host ? { host: options.host } : {}),
+          roots: [...(options.roots ?? [])],
+          sessions: [...sessions.keys()]
+        } satisfies WorkerToServer)
+      );
+      options.onLog?.(`已连上 ${options.url}${sessions.size > 0 ? `，接回 ${sessions.size} 个会话` : ''}`);
+      if (dropped > 0) options.onLog?.(`断线太久，丢了 ${dropped} 帧最旧的输出`);
+      dropped = 0;
+      for (const frame of outbox.splice(0)) current.send(JSON.stringify(frame));
+      armWatchdog(current);
+      options.onOpen?.();
+    });
+
+    current.on('ping', () => armWatchdog(current));
+
+    current.on('close', (code: number) => {
+      if (watchdog) clearTimeout(watchdog);
+      if (socket === current) socket = null;
+      if (code === 4401) {
+        // token 错了，重连多少次都一样：直接停，别刷屏。
+        options.onLog?.('server 拒绝了 token，不再重连');
+        closed = true;
+        options.onClose?.();
+        return;
+      }
+      if (closed || options.reconnect === false) {
+        options.onLog?.('与 server 断开');
+        options.onClose?.();
+        return;
+      }
+      const base = options.initialBackoffMs ?? 500;
+      const cap = options.maxBackoffMs ?? 15_000;
+      const delay = Math.min(cap, base * 2 ** attempt) * (0.8 + Math.random() * 0.4);
+      attempt += 1;
+      options.onLog?.(`与 server 断开，${(delay / 1000).toFixed(1)} 秒后重连（第 ${attempt} 次）`);
+      reconnectTimer = setTimeout(connect, delay);
+    });
+
+    current.on('error', (error: Error) => {
+      options.onLog?.(`连接错误：${error.message}`);
+    });
+
+    current.on('message', (raw: Buffer) => {
+      let json: unknown;
+      try {
+        json = JSON.parse(raw.toString());
+      } catch {
+        options.onLog?.('server 发来的不是 JSON');
+        return;
+      }
+      const parsed = serverToWorkerSchema.safeParse(json);
+      if (!parsed.success) {
+        options.onLog?.(`server 发来无法解析的帧：${parsed.error.message}`);
+        return;
+      }
+      const command = parsed.data as ServerToWorker;
+      if (command.kind === 'list_directories') void listDirectories(command.requestId, command.path);
+      else void handle(command);
+    });
+  }
+
+  async function listDirectories(requestId: string, path: string): Promise<void> {
+    const target = path === '' ? (options.roots?.[0] ?? '/') : path;
+    if (!options.listDirectories) {
+      send({ type: 'directories', requestId, path: target, exists: false, entries: [], error: '这台 Worker 不支持浏览目录' });
+      return;
+    }
+    try {
+      const listed = await options.listDirectories(target);
+      send({ type: 'directories', requestId, ...listed });
+    } catch (error) {
+      send({
+        type: 'directories',
+        requestId,
+        path: target,
+        exists: false,
+        entries: [],
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  connect();
 
   /**
    * 一条指令失败不能静默。之前 `runtime.start` 抛错时异常沉进未处理的 Promise，
    * 日志里只留下「未知会话」——真正的错误被吞掉了，排障只能靠猜。
    */
-  async function handle(command: ServerToWorker): Promise<void> {
+  async function handle(command: Exclude<ServerToWorker, { kind: 'list_directories' }>): Promise<void> {
     try {
       await run(command);
     } catch (error) {
@@ -107,7 +219,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   }
 
-  async function run(command: ServerToWorker): Promise<void> {
+  async function run(command: Exclude<ServerToWorker, { kind: 'list_directories' }>): Promise<void> {
     if (command.kind === 'start_session') {
       const started = startSession(command);
       starting.set(command.sessionId, started.catch(() => undefined));
@@ -226,9 +338,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (watchdog) clearTimeout(watchdog);
       for (const session of sessions.values()) await session.dispose();
       sessions.clear();
-      socket.close();
+      if (socket) socket.close();
+      else options.onClose?.();
     }
   };
 }

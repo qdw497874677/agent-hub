@@ -16,6 +16,7 @@ import {
   ingestWorkerOptions,
   reconcileInterrupted,
   unavailable,
+  workerAttached,
   workerGone
 } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
@@ -71,7 +72,11 @@ const deps: Deps = {
   gateway: {
     status: async () => serverGateway?.workers() ?? [],
     dispatch: async (command) =>
-      serverGateway ? serverGateway.gateway.dispatch(command) : err(unavailable('worker 通道尚未就绪'))
+      serverGateway ? serverGateway.gateway.dispatch(command) : err(unavailable('worker 通道尚未就绪')),
+    listDirectories: async (workerId, path) =>
+      serverGateway
+        ? serverGateway.gateway.listDirectories(workerId, path)
+        : err(unavailable('worker 通道尚未就绪'))
   },
   agents: catalog,
   fs: createLocalFs(),
@@ -85,9 +90,12 @@ const log = (message: string) => console.log(`[hub] ${message}`);
 
 serverGateway = createServerGateway({
   token,
-  onHello(worker, agents) {
+  onHello(worker, agents, sessions) {
     catalog.upsert(worker.workerId, agents);
     log(`worker 上线：${worker.label}（${worker.workerId}），提供 ${agents.map((a) => a.label).join('、')}`);
+    if (sessions.length > 0) {
+      void workerAttached(deps, worker.workerId, sessions).then((count) => log(`接回 ${count} 个还在跑的会话`));
+    }
   },
   // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 的 ingest* 里。
   onEvent(sessionId, event) {
@@ -107,10 +115,10 @@ serverGateway = createServerGateway({
   onStatus(sessionId, status) {
     void ingestRuntimeStatus(deps, sessionId, status);
   },
-  onWorkerGone(workerId) {
+  onWorkerGone(workerId, reason) {
     catalog.removeWorker(workerId);
-    workerGone(deps);
-    log(`worker 离线：${workerId}`);
+    void workerGone(deps, workerId);
+    log(`worker 离线：${workerId}（${reason}）`);
   },
   onLog: log
 });
@@ -144,7 +152,12 @@ if (spawnWorker === '1') {
   const loopback = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
   const child = spawn(process.execPath, [join(repoRoot, 'apps', 'worker', 'src', 'main.ts')], {
     stdio: 'inherit',
-    env: { ...process.env, HUB_URL: `ws://${loopback}:${port}/worker`, HUB_TOKEN: token ?? '' }
+    env: {
+      ...process.env,
+      HUB_URL: `ws://${loopback}:${port}/worker`,
+      HUB_TOKEN: token ?? '',
+      HUB_PARENT_PID: String(process.pid)
+    }
   });
   child.on('exit', (code) => log(`本地 worker 退出（code ${code}）`));
   const shutdown = () => {

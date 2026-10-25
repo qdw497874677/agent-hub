@@ -5,6 +5,7 @@ import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
+import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
 
 type StartCommand = Extract<WorkerCommand, { kind: 'start_session' }>;
@@ -15,7 +16,7 @@ type StartCommand = Extract<WorkerCommand, { kind: 'start_session' }>;
  * 会话的 model 总会并进 options.model，worker 只认 options。
  */
 export function startCommand(
-  session: Session,
+  session: Session & { readonly workerId: string },
   project: Project,
   resume: StartCommand['resume'],
   inherited: Readonly<Record<string, string | boolean>> = session.options
@@ -24,6 +25,7 @@ export function startCommand(
   return {
     kind: 'start_session',
     sessionId: session.id,
+    workerId: session.workerId,
     taskId: session.taskId,
     agentId: session.agentId,
     workspaceRoot: project.rootPath,
@@ -47,14 +49,29 @@ export async function projectOf(
  * 这就是 S7.1「重开浏览器还能接着干活」。
  */
 export async function ensureHosted(
-  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway'>,
+  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions'>,
   session: Session
 ): Promise<Result<void, DomainError>> {
   if (deps.hosting.has(session.id)) return ok(undefined);
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属任务或项目不存在'));
+  // resume 必须回到原来那台：agent 的会话文件只在那台机器上。
+  // 老会话（多机之前建的）没有落点，这里补落一次并记下来，以后就钉在那台上了。
+  let placed: Session & { readonly workerId: string };
+  if (session.workerId !== null) {
+    placed = { ...session, workerId: session.workerId };
+  } else {
+    const chosen = placeSession(await deps.gateway.status(), {
+      agentId: session.agentId,
+      requested: null,
+      projectWorker: project.workerId
+    });
+    if (!chosen.ok) return chosen;
+    placed = { ...session, workerId: chosen.value };
+    await deps.sessions.save(placed);
+  }
   const resumed = await deps.gateway.dispatch(
-    startCommand(session, project, { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq })
+    startCommand(placed, project, { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq })
   );
   if (!resumed.ok) return resumed;
   deps.hosting.add(session.id);

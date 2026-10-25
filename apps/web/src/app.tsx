@@ -83,7 +83,7 @@ export function App() {
     queryKey: ['canvas', project?.id],
     queryFn: () => api.canvas(project?.id ?? ''),
     enabled: project !== null,
-    // 节点还没上线时自己轮询：别让「等 worker」变成用户要记住的手动刷新
+    // Worker 还没上线时自己轮询：别让「等 worker」变成用户要记住的手动刷新
     refetchInterval: (query) => ((query.state.data?.agents.length ?? 0) === 0 ? 2000 : false)
   });
 
