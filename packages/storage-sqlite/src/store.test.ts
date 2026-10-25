@@ -149,3 +149,20 @@ test('老库迁移：layout 表没有 sizes 列时自动补上，旧布局读出
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('journal：带附件的用户提问原样往返（只存元数据）', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  const prompt: SessionEvent = {
+    kind: 'prompt',
+    text: '看图',
+    attachments: [
+      { kind: 'image', name: 'a.png', path: '.agent-hub/attachments/s/1-0-a.png', mimeType: 'image/png', bytes: 4 },
+      { kind: 'mention', name: 'main.ts', path: 'src/main.ts' }
+    ]
+  };
+  await store.sessions.append(applyEvent(session, prompt, now), prompt, now);
+  const [entry] = await store.sessions.eventsAfter(session.id, 0);
+  assert.deepEqual(entry?.event, prompt);
+  store.close();
+});

@@ -22,7 +22,8 @@ export const capabilityNameSchema = z.enum([
   'resume',
   'tool_calls',
   'artifacts',
-  'structured_events'
+  'structured_events',
+  'attachments'
 ]);
 
 export const capabilityMatrixSchema = z.record(capabilityNameSchema, capabilitySchema);
@@ -160,9 +161,32 @@ export const canvasSchema = z.object({
   previews: z.record(z.string(), z.array(z.lazy(() => journalEntrySchema)))
 });
 
+/** journal 里的附件元数据（没有字节）。 */
+export const storedAttachmentSchema = z.object({
+  kind: z.enum(['image', 'file', 'mention']),
+  name: z.string(),
+  path: z.string(),
+  mimeType: z.string().optional(),
+  bytes: z.number().int().nonnegative().optional()
+});
+
+/** 浏览器发来的附件：上传的带 base64，引用的只带项目内相对路径。大小在 domain 校验。 */
+export const attachmentInputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('image'), name: z.string().min(1), mimeType: z.string().min(1), data: z.string().min(1) }),
+  z.object({ kind: z.literal('file'), name: z.string().min(1), mimeType: z.string(), data: z.string().min(1) }),
+  z.object({ kind: z.literal('mention'), path: z.string().min(1) })
+]);
+
+/** server → worker 的内容块。 */
+export const promptPartSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('image'), name: z.string(), mimeType: z.string(), data: z.string(), path: z.string() }),
+  z.object({ kind: z.literal('file'), name: z.string(), mimeType: z.string(), data: z.string(), path: z.string() }),
+  z.object({ kind: z.literal('mention'), name: z.string(), path: z.string() })
+]);
+
 /** 归一化事件过网时的形状：与 domain 的 SessionEvent 一一对应。 */
 export const sessionEventSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('prompt'), text: z.string() }),
+  z.object({ kind: z.literal('prompt'), text: z.string(), attachments: z.array(storedAttachmentSchema).optional() }),
   z.object({ kind: z.literal('text'), delta: z.string() }),
   z.object({ kind: z.literal('tool_call'), name: z.string(), input: z.string() }),
   z.object({
@@ -230,7 +254,12 @@ export const forkSessionRequest = z.object({
   model: z.string()
 });
 
-export const promptRequest = z.object({ text: z.string().min(1) });
+export const promptRequest = z
+  .object({ text: z.string(), attachments: z.array(attachmentInputSchema).default([]) })
+  .refine((value) => value.text.trim() !== '' || value.attachments.length > 0, { message: '消息不能为空' });
+
+/** `@` 引用选择器：项目内文件的相对路径。 */
+export const projectFilesSchema = z.object({ files: z.array(z.string()), truncated: z.boolean() });
 
 export const saveLayoutRequest = z.object({
   positions: z.record(id, pointSchema).optional(),
@@ -364,7 +393,7 @@ export const startSessionCommandSchema = z.object({
 
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   startSessionCommandSchema,
-  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string() }),
+  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
   z.object({ kind: z.literal('dispose'), sessionId: id }),
   z.object({
@@ -381,6 +410,7 @@ export const changeOptionRequest = z.object({
   value: z.union([z.string(), z.boolean()])
 });
 
+export type CapabilityDto = z.infer<typeof capabilitySchema>;
 export type AgentDto = z.infer<typeof agentSchema>;
 export type RuntimeOptionDto = z.infer<typeof runtimeOptionSchema>;
 export type OptionValueDto = z.infer<typeof optionValueSchema>;
@@ -405,6 +435,9 @@ export type CreateTaskRequest = z.infer<typeof createTaskRequest>;
 export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;
 export type ForkSessionRequest = z.infer<typeof forkSessionRequest>;
 export type SaveLayoutRequest = z.infer<typeof saveLayoutRequest>;
+export type AttachmentInputDto = z.infer<typeof attachmentInputSchema>;
+export type StoredAttachmentDto = z.infer<typeof storedAttachmentSchema>;
+export type ProjectFilesDto = z.infer<typeof projectFilesSchema>;
 export type SessionStreamFrame = z.infer<typeof sessionStreamFrameSchema>;
 export type WorkerToServer = z.infer<typeof workerToServerSchema>;
 export type ServerToWorker = z.infer<typeof serverToWorkerSchema>;

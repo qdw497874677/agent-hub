@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { Composer } from './composer.tsx';
+import { attachmentsCapability } from './attachments.ts';
+import { sessionCommands } from './commands.ts';
 import type { LiveSession } from './live.ts';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -89,14 +91,16 @@ export function Inspector({
   }, [showJournal, session.id, session.lastSeq]);
 
 
-  async function run(action: () => Promise<unknown>): Promise<void> {
+  async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     setError(null);
     try {
       await action();
       onChanged();
+      return true;
     } catch (failure) {
       setError((failure as Error).message);
+      return false;
     } finally {
       setBusy(false);
     }
@@ -200,9 +204,9 @@ export function Inspector({
           agentLabel={agent?.label ?? session.agentId}
           draft={draft}
           onDraftChange={setDraft}
-          onSend={(text) =>
-            void run(async () => {
-              await api.prompt(session.id, text);
+          onSend={(text, attachments) =>
+            run(async () => {
+              await api.prompt(session.id, text, attachments);
               setDraft('');
             })
           }
@@ -211,6 +215,9 @@ export function Inspector({
           error={error}
           awaiting={live?.awaiting ?? false}
           onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
+          capability={attachmentsCapability(agent?.capabilities)}
+          commands={sessionCommands(session)}
+          projectId={canvas.project.id}
         />
       </footer>
     </aside>

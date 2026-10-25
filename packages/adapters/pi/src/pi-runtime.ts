@@ -6,6 +6,7 @@ import type {
   AgentRuntime,
   DomainError,
   OptionValue,
+  PromptInput,
   Result,
   RuntimeOption,
   RuntimeSession,
@@ -117,9 +118,9 @@ class PiSession implements RuntimeSession {
     });
   }
 
-  async prompt(text: string): Promise<Result<void, DomainError>> {
+  async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
     try {
-      await this.send({ type: 'prompt', message: text });
+      await this.send(toPiPrompt(input));
       return { ok: true, value: undefined };
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) as DomainError };
@@ -258,6 +259,19 @@ class PiSession implements RuntimeSession {
     const timer = setTimeout(() => this.child.kill('SIGKILL'), 3000);
     this.child.once('exit', () => clearTimeout(timer));
   }
+}
+
+/**
+ * Pi RPC 的 prompt 只有 message + images 两个口子：图片原样给 images，
+ * 文件和 @ 引用没有对应的块，就把绝对路径写进消息，由 Pi 用自己的 read 工具去读。
+ */
+export function toPiPrompt(input: PromptInput): Record<string, unknown> {
+  const images = input.parts.flatMap((part) =>
+    part.kind === 'image' ? [{ type: 'image', data: part.data, mimeType: part.mimeType }] : []
+  );
+  const files = input.parts.flatMap((part) => (part.kind === 'image' ? [] : [`- ${part.path}`]));
+  const message = files.length === 0 ? input.text : `${input.text}\n\n附带文件（请按需读取）：\n${files.join('\n')}`.trim();
+  return { type: 'prompt', message, ...(images.length > 0 ? { images } : {}) };
 }
 
 export interface PiRuntimeOptions {

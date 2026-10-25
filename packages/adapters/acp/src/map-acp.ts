@@ -1,4 +1,5 @@
-import type { SessionEvent } from '@agent-hub/domain';
+import type { DomainError, PromptInput, Result, SessionEvent } from '@agent-hub/domain';
+import { invalid } from '@agent-hub/domain';
 
 /**
  * ACP（Agent Client Protocol）→ 平台归一化事件。
@@ -82,4 +83,71 @@ function safeJson(value: unknown): string {
   } catch {
     return '{}';
   }
+}
+
+/** agent 在 initialize 里声明的 promptCapabilities；没声明就按 ACP 基线（只收 text / resource_link）。 */
+export interface AcpPromptCapabilities {
+  readonly image: boolean;
+  readonly embeddedContext: boolean;
+}
+
+export function readPromptCapabilities(init: Record<string, unknown>): AcpPromptCapabilities {
+  const agent = (init['agentCapabilities'] ?? {}) as Record<string, unknown>;
+  const prompt = (agent['promptCapabilities'] ?? {}) as Record<string, unknown>;
+  return { image: prompt['image'] === true, embeddedContext: prompt['embeddedContext'] === true };
+}
+
+const TEXT_MIME = /^(text\/|application\/(json|xml|javascript|typescript|x-yaml|yaml|toml|x-sh|sql))/;
+const TEXT_EXT = /\.(md|txt|json|ya?ml|toml|csv|tsv|log|xml|html?|css|[cm]?[jt]sx?|py|rb|go|rs|java|kt|swift|c|cc|cpp|h|hpp|sh|sql|ini|conf|env)$/i;
+
+function fileUri(path: string): string {
+  return `file://${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+/** 解码成文本；不是合法 UTF-8 就返回 null（二进制文件只给链接）。 */
+function decodeText(data: string): string | null {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(data, 'base64'));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 平台的 PromptInput → ACP content blocks。
+ * 图片要 agent 声明 image 能力，否则拒绝并说明原因——静默丢图会让用户以为 agent 看过了。
+ * 文本文件在 embeddedContext 可用时内嵌，否则（以及二进制文件、@ 引用）一律给 resource_link，
+ * 那是 ACP 规定所有 agent 都必须接收的基线。
+ */
+export function toAcpPrompt(
+  input: PromptInput,
+  caps: AcpPromptCapabilities,
+  label: string
+): Result<Record<string, unknown>[], DomainError> {
+  const blocks: Record<string, unknown>[] = [];
+  if (input.text.trim() !== '') blocks.push({ type: 'text', text: input.text });
+  for (const part of input.parts) {
+    if (part.kind === 'image') {
+      if (!caps.image) return { ok: false, error: invalid(`${label} 没有声明图片输入能力，这张图发不过去：${part.name}`) };
+      blocks.push({ type: 'image', mimeType: part.mimeType, data: part.data, uri: fileUri(part.path) });
+      continue;
+    }
+    if (part.kind === 'file' && caps.embeddedContext && (TEXT_MIME.test(part.mimeType) || TEXT_EXT.test(part.name))) {
+      const text = decodeText(part.data);
+      if (text !== null) {
+        blocks.push({
+          type: 'resource',
+          resource: { uri: fileUri(part.path), mimeType: part.mimeType || 'text/plain', text }
+        });
+        continue;
+      }
+    }
+    blocks.push({
+      type: 'resource_link',
+      uri: fileUri(part.path),
+      name: part.name,
+      ...(part.kind === 'file' && part.mimeType ? { mimeType: part.mimeType } : {})
+    });
+  }
+  return { ok: true, value: blocks };
 }

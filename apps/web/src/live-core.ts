@@ -1,4 +1,4 @@
-import type { JournalEntryDto, SessionDto, SessionEventDto } from '@agent-hub/contract';
+import type { JournalEntryDto, SessionDto, SessionEventDto, StoredAttachmentDto } from '@agent-hub/contract';
 
 /**
  * 会话流的纯逻辑：块折叠、历史/实时合并、帧去重。
@@ -12,7 +12,7 @@ interface Sequenced {
 export type Block = Sequenced &
   (
     /** 用户自己说的话。它来自平台（server 收到 prompt 时先记一条），不是 agent 推来的。 */
-    | { readonly kind: 'prompt'; readonly text: string }
+    | { readonly kind: 'prompt'; readonly text: string; readonly attachments: readonly StoredAttachmentDto[] }
     | { readonly kind: 'text'; readonly text: string }
     | { readonly kind: 'tool'; readonly name: string; readonly input: string; readonly result: ToolResult | null }
     | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number }
@@ -45,7 +45,7 @@ export type LiveMap = Readonly<Record<string, LiveSession>>;
 export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   switch (event.kind) {
     case 'prompt':
-      return [...blocks, { kind: 'prompt', text: event.text, seq }];
+      return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], seq }];
     case 'text': {
       const last = blocks[blocks.length - 1];
       if (last?.kind === 'text') {

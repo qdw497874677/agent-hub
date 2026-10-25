@@ -4,7 +4,9 @@ import type { RuntimeOption } from '../option.ts';
 import type { SessionId } from '../ids.ts';
 import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
-import { notFound } from '../errors.ts';
+import { invalid, notFound } from '../errors.ts';
+import type { AttachmentInput, PromptPart, StoredAttachment } from '../attachment.ts';
+import { attachmentPath, validateAttachments } from '../attachment.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, projectOf } from './hosting.ts';
@@ -18,27 +20,80 @@ import { recordEvent, recordSessionOptions } from './sessions.ts';
 export interface PromptCommand {
   readonly sessionId: string;
   readonly text: string;
+  readonly attachments?: readonly AttachmentInput[];
+}
+
+function decodeBase64(data: string): Uint8Array {
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+/**
+ * 附件落盘并拆成两份：journal 里的元数据，和发给 worker 的内容块。
+ * 能力矩阵里 attachments 为 denied 的 agent 直接拒，原因原样给用户看。
+ */
+async function prepareAttachments(
+  deps: Pick<Deps, 'agents' | 'fs' | 'now' | 'projects' | 'tasks'>,
+  session: Session,
+  inputs: readonly AttachmentInput[]
+): Promise<Result<{ stored: StoredAttachment[]; parts: PromptPart[] }, DomainError>> {
+  if (inputs.length === 0) return ok({ stored: [], parts: [] });
+  const valid = validateAttachments(inputs);
+  if (!valid.ok) return valid;
+  const descriptor = deps.agents.descriptor(session.agentId);
+  const capability = descriptor?.capabilities.attachments;
+  if (capability?.state === 'denied') return err(invalid(capability.reason ?? '这个 agent 不接收附件'));
+  const project = await projectOf(deps, session);
+  if (!project) return err(notFound('会话所属项目不存在'));
+  const root = project.rootPath.replace(/\/+$/, '');
+  const at = deps.now();
+  const stored: StoredAttachment[] = [];
+  const parts: PromptPart[] = [];
+  for (const [index, input] of inputs.entries()) {
+    if (input.kind === 'mention') {
+      const name = input.path.split('/').pop() ?? input.path;
+      stored.push({ kind: 'mention', name, path: input.path });
+      parts.push({ kind: 'mention', name, path: `${root}/${input.path}` });
+      continue;
+    }
+    const path = attachmentPath(session.id, index, at, input.name);
+    const written = await deps.fs.writeFile(`${root}/${path}`, decodeBase64(input.data));
+    if (!written.ok) return written;
+    stored.push({ kind: input.kind, name: input.name, path, mimeType: input.mimeType, bytes: written.value });
+    parts.push({ ...input, path: `${root}/${path}` });
+  }
+  return ok({ stored, parts });
 }
 
 /** 发消息：先记下「用户说了什么」，再确保有人托管，最后才叫 agent。 */
 export async function promptSessionUseCase(
-  deps: Pick<Deps, 'artifacts' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'>,
+  deps: Pick<
+    Deps,
+    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'
+  >,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
   const session = await deps.sessions.byId(sessionId);
   if (!session) return err(notFound('会话不存在'));
+  const attachments = command.attachments ?? [];
+  if (command.text.trim() === '' && attachments.length === 0) return err(invalid('消息不能为空'));
+  const prepared = await prepareAttachments(deps, session, attachments);
+  if (!prepared.ok) return prepared;
+  const { stored, parts } = prepared.value;
 
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——
   // 专注对话里会是一条没有提问的回答。
   const logged = await deps.queue.run(sessionId, () =>
-    recordEvent(deps, { sessionId, event: { kind: 'prompt', text: command.text } })
+    recordEvent(deps, { sessionId, event: { kind: 'prompt', text: command.text, ...(stored.length > 0 ? { attachments: stored } : {}) } })
   );
   if (!logged.ok) return logged;
 
   const hosted = await ensureHosted(deps, session);
   if (!hosted.ok) return hosted;
-  return deps.gateway.dispatch({ kind: 'prompt', sessionId, text: command.text });
+  return deps.gateway.dispatch({ kind: 'prompt', sessionId, text: command.text, parts });
 }
 
 /** 字节数由 server 补：adapter 只知道路径，只有能摸到磁盘的一侧才 stat 得到真实大小。 */

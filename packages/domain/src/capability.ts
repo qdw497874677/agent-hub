@@ -16,7 +16,8 @@ export type CapabilityName =
   | 'resume'
   | 'tool_calls'
   | 'artifacts'
-  | 'structured_events';
+  | 'structured_events'
+  | 'attachments';
 
 export const CAPABILITY_NAMES: readonly CapabilityName[] = [
   'prompt',
@@ -25,7 +26,8 @@ export const CAPABILITY_NAMES: readonly CapabilityName[] = [
   'resume',
   'tool_calls',
   'artifacts',
-  'structured_events'
+  'structured_events',
+  'attachments'
 ];
 
 export const CAPABILITY_LABELS: Readonly<Record<CapabilityName, string>> = {
@@ -35,7 +37,8 @@ export const CAPABILITY_LABELS: Readonly<Record<CapabilityName, string>> = {
   resume: '崩溃后继续',
   tool_calls: '工具调用可见',
   artifacts: '产出物归档',
-  structured_events: '结构化事件'
+  structured_events: '结构化事件',
+  attachments: '附件与 @ 引用'
 };
 
 export type CapabilityMatrix = Readonly<Record<CapabilityName, Capability>>;

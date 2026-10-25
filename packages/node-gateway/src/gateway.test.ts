@@ -41,7 +41,7 @@ function echoRuntime(seen: StartSpec[]): AgentRuntime {
         ok: true,
         value: {
           sessionId: spec.sessionId,
-          async prompt(text) {
+          async prompt({ text }) {
             queue.push({ kind: 'text', delta: text });
             queue.push({ kind: 'ended', outcome: 'done' });
             return { ok: true, value: undefined };
@@ -154,7 +154,7 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
     options: { model: 'm-1' }
   });
   assert.equal(started.ok, true);
-  await gateway.gateway.dispatch({ kind: 'prompt', sessionId, text: '你好' });
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '你好' });
 
   await rec.until(() => rec.statuses.includes('ended'));
   assert.deepEqual(seen[0]?.options, { model: 'm-1' });
@@ -174,7 +174,7 @@ test('发给不存在的会话：worker 回 gone，让 server 下次重新拉起
   const { rec, gateway, url, stop } = await harness(null);
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [] });
   await rec.until(() => rec.hellos.length === 1);
-  await gateway.gateway.dispatch({ kind: 'prompt', sessionId: asSessionId('nope'), text: 'hi' });
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('nope'), text: 'hi' });
   await rec.until(() => rec.statuses.includes('gone'));
   await stop(link);
 });

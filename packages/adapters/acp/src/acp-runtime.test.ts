@@ -52,7 +52,7 @@ test('acp runtime: 认证钩子、_meta、开跑前选项都按顺序落到 agen
   assert.ok(reported.includes('b'));
 
   const events = collectUntilEnded(session);
-  assert.ok((await session.prompt('hi')).ok);
+  assert.ok((await session.prompt({ text: 'hi', parts: [] })).ok);
   const seen = await events;
   assert.deepEqual(seen.at(-1), { kind: 'ended', outcome: 'done' });
   const text = seen.find((event) => event.kind === 'text');
@@ -68,7 +68,7 @@ test('acp runtime: 恢复时丢掉回放、权限请求自动选 allow、dispose
   const session = started.value;
 
   const turn = collectUntilEnded(session);
-  assert.ok((await session.prompt('ask')).ok);
+  assert.ok((await session.prompt({ text: 'ask', parts: [] })).ok);
   const texts = (await turn).flatMap((event) => (event.kind === 'text' ? [event.delta] : []));
   assert.ok(!texts.includes('replayed history'), '回放的历史不该再出现');
   assert.ok(texts.includes('perm:yes'));

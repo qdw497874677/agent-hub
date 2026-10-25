@@ -128,8 +128,10 @@ export function fakeLayout(): LayoutStore {
   };
 }
 
-export function fakeFs(): WorkspaceFS {
+export function fakeFs(): WorkspaceFS & { files: Map<string, Uint8Array> } {
+  const files = new Map<string, Uint8Array>();
   return {
+    files,
     async directoryExists() {
       return true;
     },
@@ -139,11 +141,19 @@ export function fakeFs(): WorkspaceFS {
     artifactDir(workspaceRoot, sessionId) {
       return `${workspaceRoot}/.agent-hub/artifacts/${sessionId}`;
     },
-    async writeFile(_path, content) {
+    async writeFile(path, content) {
+      files.set(path, content);
       return ok(content.byteLength);
     },
     async stat() {
       return 128;
+    },
+    async readFile(path) {
+      return files.get(path) ?? null;
+    },
+    async listFiles(root, limit) {
+      const all = [...files.keys()].filter((path) => path.startsWith(`${root}/`)).map((path) => path.slice(root.length + 1));
+      return { files: all.slice(0, limit), truncated: all.length > limit };
     }
   };
 }

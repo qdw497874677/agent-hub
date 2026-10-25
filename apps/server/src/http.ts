@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import { streamSSE } from 'hono/streaming';
+import { bodyLimit } from 'hono/body-limit';
 import {
   changeOptionRequest,
   createProjectRequest,
@@ -13,6 +14,7 @@ import {
   createTaskRequest,
   deriveSessionRequest,
   forkSessionRequest,
+  projectFilesSchema,
   promptRequest,
   saveLayoutRequest,
   setTaskStatusRequest,
@@ -20,6 +22,8 @@ import {
 } from '@agent-hub/contract';
 import type { Deps, DomainError, TaskStatus } from '@agent-hub/domain';
 import {
+  ATTACHMENT_LIMITS,
+  asProjectId,
   asSessionId,
   asTaskId,
   changeSessionOption,
@@ -28,12 +32,15 @@ import {
   deriveSessionUseCase,
   forkSessionUseCase,
   interruptSessionUseCase,
+  listProjectFiles,
   listProjects,
   listWorkers,
   loadCanvas,
   loadHome,
+  invalid,
   notFound,
   promptSessionUseCase,
+  readSessionAttachment,
   saveLayoutUseCase,
   searchUseCase,
   setTaskStatusUseCase
@@ -80,6 +87,19 @@ async function body<T>(c: Context, schema: Schema<T>): Promise<Parsed<T>> {
     : { ok: false, response: fail(c, { code: 'invalid', message: '请求体不合法' }) };
 }
 
+const MIME_BY_EXT: Readonly<Record<string, string>> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp'
+};
+
+/** 附件只按扩展名认图片，其余一律当下载：不让上传的 html 在本站源下被渲染。 */
+function mimeOf(path: string): string {
+  return MIME_BY_EXT[path.slice(path.lastIndexOf('.') + 1).toLowerCase()] ?? 'application/octet-stream';
+}
+
 export function createApp(options: AppOptions): Hono {
   const { deps, hub } = options;
   const app = new Hono();
@@ -109,6 +129,12 @@ export function createApp(options: AppOptions): Hono {
     const entries = await deps.fs.listDirectories(path);
     const parent = dirname(path);
     return c.json(directoryListingSchema.parse({ path, parent: parent === path ? null : parent, entries }));
+  });
+
+  // `@` 引用选择器：项目里的文件，按名字模糊匹配。
+  app.get('/api/projects/:projectId/files', async (c) => {
+    const result = await listProjectFiles(deps, asProjectId(c.req.param('projectId')), c.req.query('q') ?? '');
+    return result.ok ? c.json(projectFilesSchema.parse(result.value)) : fail(c, result.error);
   });
 
   app.get('/api/workers', async (c) => c.json(workerInfoSchema.array().parse(await listWorkers(deps))));
@@ -174,11 +200,38 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
-  app.post('/api/sessions/:sessionId/prompt', async (c) => {
+  app.post(
+    '/api/sessions/:sessionId/prompt',
+    // base64 比原始字节大三分之一，再留一点给 JSON 外壳。真正的逐项校验在 domain。
+    bodyLimit({
+      maxSize: Math.ceil((ATTACHMENT_LIMITS.totalBytes * 4) / 3) + 256 * 1024,
+      onError: (c) => fail(c, invalid('附件合计太大')) as never
+    }),
+    async (c) => {
     const input = await body(c, promptRequest);
     if (!input.ok) return input.response;
-    const result = await promptSessionUseCase(deps, { sessionId: c.req.param('sessionId'), text: input.value.text });
+    const result = await promptSessionUseCase(deps, {
+      sessionId: c.req.param('sessionId'),
+      text: input.value.text,
+      attachments: input.value.attachments
+    });
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+  }
+  );
+
+  // 专注对话里的附件缩略图：只放行这条会话自己的附件目录。
+  app.get('/api/sessions/:sessionId/attachment', async (c) => {
+    const path = c.req.query('path') ?? '';
+    const result = await readSessionAttachment(deps, asSessionId(c.req.param('sessionId')), path);
+    if (!result.ok) return fail(c, result.error);
+    return new Response(result.value, {
+      headers: {
+        'content-type': mimeOf(path),
+        'cache-control': 'private, max-age=31536000, immutable',
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
+      }
+    });
   });
 
   /**

@@ -1,4 +1,5 @@
 import type { Seq } from './ids.ts';
+import type { StoredAttachment } from './attachment.ts';
 
 /**
  * 归一化事件。加变体要改这份文件并过 ADR：
@@ -19,7 +20,12 @@ export const SESSION_EVENT_KINDS = [
 ] as const;
 
 export type SessionEvent =
-  | { readonly kind: 'prompt'; readonly text: string }
+  | {
+      readonly kind: 'prompt';
+      readonly text: string;
+      /** 附件只留元数据；没带附件的老事件没有这个字段。 */
+      readonly attachments?: readonly StoredAttachment[];
+    }
   | { readonly kind: 'text'; readonly delta: string }
   | { readonly kind: 'tool_call'; readonly name: string; readonly input: string }
   | {
