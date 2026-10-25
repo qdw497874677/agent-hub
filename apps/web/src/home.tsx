@@ -116,8 +116,21 @@ export function HomePage({
             </div>
           )}
 
-          {home.isPending ? <p className="text-meta text-tertiary">读取中…</p> : null}
-          {home.error ? <p className="text-meta text-rust">{(home.error as Error).message}</p> : null}
+          {home.isPending ? (
+            <div aria-label="读取中" className="mb-5 space-y-2">
+              {[0, 1, 2].map((row) => (
+                <div key={row} className="h-7 animate-pulse rounded-sm bg-card" />
+              ))}
+            </div>
+          ) : null}
+          {home.error ? (
+            <p className="mb-4 border-l border-rust pl-2 text-meta text-secondary">
+              读不到会话：{(home.error as Error).message}
+              <button className="ml-2 text-accent hover:underline" onClick={() => void home.refetch()}>
+                重试
+              </button>
+            </p>
+          ) : null}
 
           {groups.map(([label, sessions]) => (
             <section key={label} className="mb-5">
@@ -145,7 +158,7 @@ export function HomePage({
             </section>
           ))}
 
-          {!home.isPending && shown.length === 0 ? (
+          {!home.isPending && !home.error && shown.length === 0 ? (
             <p className="rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary">
               {needle === ''
                 ? '还没有会话。选一个项目，建一条任务，双击任务就派生第一条会话。'

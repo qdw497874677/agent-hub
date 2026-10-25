@@ -13,7 +13,8 @@ const CAPABILITY_LABEL: Record<string, string> = {
   resume: '恢复',
   tool_calls: '工具调用',
   artifacts: '产出物',
-  structured_events: '结构化事件'
+  structured_events: '结构化事件',
+  attachments: '附件与 @ 引用'
 };
 
 type CapabilityName = keyof AgentDto['capabilities'];

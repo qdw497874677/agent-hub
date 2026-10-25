@@ -1,6 +1,42 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto } from './api.ts';
+
+/**
+ * 两个对话框共用的壳：遮罩点一下或按 Esc 就关；窄屏上贴底（拇指够得着），宽屏居中。
+ * role=dialog + aria-modal，读屏能知道背后的画布暂时不可操作。
+ */
+function DialogShell({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-end justify-center bg-canvas/75 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:pb-0"
+      onClick={onClose}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        className="w-full max-w-[420px] rounded-md border border-strong bg-panel p-4"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
+
+const INPUT =
+  'w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent disabled:text-tertiary';
+const SECONDARY_BUTTON =
+  'rounded-sm border border-hair px-3 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary';
+const PRIMARY_BUTTON = 'rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -16,37 +52,42 @@ export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone
   });
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/70 px-3">
-      <div className="w-full max-w-[420px] rounded-md border border-strong bg-panel p-4">
+    <DialogShell title="新建任务" onClose={onDone}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (title.trim() !== '' && !create.isPending) create.mutate();
+        }}
+      >
         <p className="mb-3 text-head text-primary">新建任务</p>
+        <label className="mb-1 block text-meta text-secondary" htmlFor="task-title">标题</label>
         <input
+          id="task-title"
           autoFocus
-          className="mb-2 w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
-          placeholder="任务标题"
+          className={`mb-3 ${INPUT}`}
+          placeholder="比如：给登录页加上验证码"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
+        <label className="mb-1 block text-meta text-secondary" htmlFor="task-goal">目标（可留空）</label>
         <textarea
-          className="mb-3 h-20 w-full resize-none rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
-          placeholder="想要达成什么（可留空）"
+          id="task-goal"
+          className={`mb-4 h-20 resize-none ${INPUT}`}
+          placeholder="想要达成什么、怎样算做完"
           value={goal}
           onChange={(event) => setGoal(event.target.value)}
         />
         {create.error ? <p className="mb-2 text-meta text-rust">{(create.error as Error).message}</p> : null}
         <div className="flex justify-end gap-2">
-          <button className="rounded-sm border border-hair px-3 py-1 text-meta text-secondary" onClick={onDone}>
+          <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
             取消
           </button>
-          <button
-            className="rounded-sm bg-accent px-3 py-1 text-meta text-canvas disabled:opacity-40"
-            disabled={title.trim().length === 0 || create.isPending}
-            onClick={() => create.mutate()}
-          >
-            建
+          <button type="submit" className={PRIMARY_BUTTON} disabled={title.trim().length === 0 || create.isPending}>
+            {create.isPending ? '创建中…' : '创建任务'}
           </button>
         </div>
-      </div>
-    </div>
+      </form>
+    </DialogShell>
   );
 }
 
@@ -81,8 +122,7 @@ export function DeriveDialog({
   }, [agentId, canvas.agents]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/70 px-3">
-      <div className="w-full max-w-[420px] rounded-md border border-strong bg-panel p-4">
+    <DialogShell title="开一条会话" onClose={onDone}>
         <p className="mb-1 text-head text-primary">开一条会话</p>
         <p className="mb-3 text-meta text-secondary">
           会话从任务派生：任务说清要达成什么，每条会话是一次尝试。同一个任务可以开很多条，
@@ -99,9 +139,10 @@ export function DeriveDialog({
             </button>
           </p>
         ) : null}
-        <label className="mb-1 block text-meta text-tertiary">agent</label>
+        <label className="mb-1 block text-meta text-secondary" htmlFor="derive-agent">agent</label>
         <select
-          className="mb-2 w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none"
+          id="derive-agent"
+          className={`mb-3 ${INPUT}`}
           value={agentId}
           onChange={(event) => setAgentId(event.target.value)}
         >
@@ -111,9 +152,10 @@ export function DeriveDialog({
             </option>
           ))}
         </select>
-        <label className="mb-1 block text-meta text-tertiary">模型</label>
+        <label className="mb-1 block text-meta text-secondary" htmlFor="derive-model">模型</label>
         <select
-          className="mb-3 w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none disabled:text-tertiary"
+          id="derive-model"
+          className={`mb-4 ${INPUT}`}
           value={model}
           disabled={(agent?.models ?? []).length === 0}
           onChange={(event) => setModel(event.target.value)}
@@ -130,18 +172,18 @@ export function DeriveDialog({
         </select>
         {derive.error ? <p className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}
         <div className="flex justify-end gap-2">
-          <button className="rounded-sm border border-hair px-3 py-1 text-meta text-secondary" onClick={onDone}>
+          <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
             取消
           </button>
           <button
-            className="rounded-sm bg-accent px-3 py-1 text-meta text-canvas disabled:opacity-40"
+            type="button"
+            className={PRIMARY_BUTTON}
             disabled={agentId === '' || derive.isPending}
             onClick={() => derive.mutate()}
           >
-            开一条会话
+            {derive.isPending ? '启动中…' : '开一条会话'}
           </button>
         </div>
-      </div>
-    </div>
+    </DialogShell>
   );
 }
