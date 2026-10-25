@@ -23,7 +23,7 @@ import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
-import { createLocalFs } from './local-fs.ts';
+import { createLocalFs } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
@@ -76,7 +76,11 @@ const deps: Deps = {
     listDirectories: async (workerId, path) =>
       serverGateway
         ? serverGateway.gateway.listDirectories(workerId, path)
-        : err(unavailable('worker 通道尚未就绪'))
+        : err(unavailable('worker 通道尚未就绪')),
+    listFiles: async (workerId, root, limit) =>
+      serverGateway ? serverGateway.gateway.listFiles(workerId, root, limit) : err(unavailable('worker 通道尚未就绪')),
+    readFile: async (workerId, path, maxBytes) =>
+      serverGateway ? serverGateway.gateway.readFile(workerId, path, maxBytes) : err(unavailable('worker 通道尚未就绪'))
   },
   agents: catalog,
   fs: createLocalFs(),

@@ -83,11 +83,13 @@ test('发消息带附件：上传落进项目目录，journal 只留元数据，
   assert.equal(image?.bytes, Buffer.from('fake-png-bytes').byteLength);
   assert.ok(!('data' in (image ?? {})), 'journal 里不存字节');
   assert.deepEqual(mention, { kind: 'mention', name: 'main.ts', path: 'src/main.ts' });
-  assert.ok(w.fs.files.has(`/tmp/demo/${image?.path}`), '图片写进了项目目录');
+  assert.ok(!w.fs.files.has(`/tmp/demo/${image?.path}`), 'hub 不替 worker 写文件');
 
   const command = w.dispatched.find((entry) => entry.kind === 'prompt');
   assert.ok(command?.kind === 'prompt');
   assert.equal(command.parts[0]?.kind === 'image' ? command.parts[0].data : null, PNG);
+  assert.equal(command.parts[0]?.path, `/tmp/demo/${image?.path}`, 'worker 照这个路径落盘');
+  await w.fs.writeFile(`/tmp/demo/${image?.path}`, Buffer.from('fake-png-bytes'));
   assert.equal(command.parts[1]?.path, '/tmp/demo/src/main.ts');
 
   const back = await readSessionAttachment(w.deps, w.session.id, image?.path ?? '');
@@ -145,4 +147,16 @@ test('@ 引用选择器：名字前缀优先、再包含、再路径、再模糊
   const all = await listProjectFiles(w.deps, w.project.id, '');
   assert.ok(all.ok);
   assert.deepEqual(all.value.files.slice(0, 2), ['main.ts', 'README.md']);
+});
+
+test('远程项目：@ 清单与附件回取都问那台 Worker，不读 hub 本机', async () => {
+  const w = await world();
+  await w.deps.projects.save({ ...w.project, workerId: 'remote-1' });
+  const listed = await listProjectFiles(w.deps, w.project.id, '');
+  assert.ok(listed.ok);
+  assert.ok(listed.value.files.includes('on-remote-1.ts'));
+  const path = `.agent-hub/attachments/${w.session.id}/1-0-a.png`;
+  const back = await readSessionAttachment(w.deps, w.session.id, path);
+  assert.ok(back.ok);
+  assert.equal(Buffer.from(back.value).toString(), `remote-1:/tmp/demo/${path}`);
 });

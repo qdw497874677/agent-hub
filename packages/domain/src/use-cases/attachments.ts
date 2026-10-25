@@ -2,7 +2,7 @@ import type { ProjectId, SessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
-import { isSafeRelativePath } from '../attachment.ts';
+import { ATTACHMENT_LIMITS, isSafeRelativePath } from '../attachment.ts';
 import type { Deps } from './deps.ts';
 import { projectOf } from './hosting.ts';
 
@@ -28,13 +28,21 @@ function rank(path: string, query: string): number {
 
 /** `@` 引用选择器：项目里按名字模糊匹配的文件，相对项目根。 */
 export async function listProjectFiles(
-  deps: Pick<Deps, 'fs' | 'projects'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'projects'>,
   projectId: ProjectId,
   query: string
 ): Promise<Result<{ files: string[]; truncated: boolean }, DomainError>> {
   const project = await deps.projects.byId(projectId);
   if (!project) return err(notFound('项目不存在'));
-  const scanned = await deps.fs.listFiles(project.rootPath.replace(/\/+$/, ''), SCAN_LIMIT);
+  const root = project.rootPath.replace(/\/+$/, '');
+  // 目录在哪台机器上就问哪台：Server 不读别的机器上的路径。
+  let scanned: { readonly files: readonly string[]; readonly truncated: boolean };
+  if (project.workerId === null) scanned = await deps.fs.listFiles(root, SCAN_LIMIT);
+  else {
+    const listed = await deps.gateway.listFiles(project.workerId, root, SCAN_LIMIT);
+    if (!listed.ok) return listed;
+    scanned = listed.value;
+  }
   const needle = query.trim().toLowerCase();
   const matched = scanned.files
     .map((path) => ({ path, score: needle === '' ? path.split('/').length : rank(path, needle) }))
@@ -51,7 +59,7 @@ export async function listProjectFiles(
  * 只放行这条会话自己的附件目录，别的路径一律拒——这不是通用文件服务器。
  */
 export async function readSessionAttachment(
-  deps: Pick<Deps, 'fs' | 'projects' | 'sessions' | 'tasks'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions' | 'tasks'>,
   sessionId: SessionId,
   path: string
 ): Promise<Result<Uint8Array, DomainError>> {
@@ -62,6 +70,13 @@ export async function readSessionAttachment(
   if (!session) return err(notFound('会话不存在'));
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
-  const bytes = await deps.fs.readFile(`${project.rootPath.replace(/\/+$/, '')}/${path}`);
+  const absolute = `${project.rootPath.replace(/\/+$/, '')}/${path}`;
+  let bytes: Uint8Array | null;
+  if (project.workerId === null) bytes = await deps.fs.readFile(absolute);
+  else {
+    const read = await deps.gateway.readFile(project.workerId, absolute, ATTACHMENT_LIMITS.imageBytes);
+    if (!read.ok) return read;
+    bytes = read.value;
+  }
   return bytes === null ? err(notFound('附件不存在')) : ok(bytes);
 }

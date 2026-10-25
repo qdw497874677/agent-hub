@@ -202,6 +202,9 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   const gateway: NodeGateway = {
     status: async () => workers,
     listDirectories: async (_workerId, path) => ok({ path: path || '/home/remote', exists: true, entries: [] }),
+    // 远程机器上的文件：经网关问那台 Worker（测试里固定一份清单）
+    listFiles: async (workerId) => ok({ files: [`on-${workerId}.ts`, 'src/remote.ts'], truncated: false }),
+    readFile: async (workerId, path) => ok(path.includes('/.agent-hub/attachments/') ? new TextEncoder().encode(`${workerId}:${path}`) : null),
     dispatch: async (command) => {
       dispatched.push(command);
       return ok(undefined);

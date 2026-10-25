@@ -10,6 +10,7 @@ import type {
   StartSpec
 } from '@agent-hub/domain';
 import { asSessionId } from '@agent-hub/domain';
+import type { WorkerFiles } from './worker-files.ts';
 
 export interface WorkerLinkOptions {
   readonly url: string;
@@ -33,8 +34,11 @@ export interface WorkerLinkOptions {
   /** 机器信息与目录起点，出现在管理视图和目录选择器里。 */
   readonly host?: { readonly hostname: string; readonly platform: string; readonly arch: string };
   readonly roots?: readonly string[];
-  /** 浏览目录（目录选择器经 server 转过来）。不给就回「这台不支持浏览」。 */
-  readonly listDirectories?: (path: string) => Promise<{ path: string; exists: boolean; entries: { name: string; path: string }[] }>;
+  /**
+   * 这台机器上的文件操作（目录浏览、`@` 文件清单、附件落盘与回读、产出物大小），
+   * 都过 WORKER_ROOTS 边界。不给就回「这台不支持」，附件也不落盘。
+   */
+  readonly files?: WorkerFiles;
   /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
   readonly onClose?: () => void;
   /** 每次连上（含重连）。 */
@@ -55,8 +59,12 @@ export interface WorkerLink {
  * worker 侧。它只会做三件事：托管 agent 进程、把事件推上去、接受下行指令。
  * 它不知道任务、不知道画布、不知道权限——那些在 server 的内核里。
  */
+type SessionCommand = Exclude<ServerToWorker, { kind: 'list_directories' | 'list_files' | 'read_file' }>;
+
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const sessions = new Map<string, RuntimeSession>();
+  /** 会话的工作目录：解析产出物的相对路径用。 */
+  const workspaces = new Map<string, string>();
   /**
    * 每条会话一条串行队列。server 会连着发 start_session + prompt，
    * 而 start 是异步的（要拉起 agent 进程）——不排队的话 prompt 会先到，
@@ -117,7 +125,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           token: options.token,
           agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor)),
           ...(options.host ? { host: options.host } : {}),
-          roots: [...(options.roots ?? [])],
+          roots: [...(options.files?.roots ?? options.roots ?? [])],
           sessions: [...sessions.keys()]
         } satisfies WorkerToServer)
       );
@@ -173,18 +181,61 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       }
       const command = parsed.data as ServerToWorker;
       if (command.kind === 'list_directories') void listDirectories(command.requestId, command.path);
+      else if (command.kind === 'list_files') void listFiles(command.requestId, command.root, command.limit);
+      else if (command.kind === 'read_file') void readFile(command.requestId, command.path, command.maxBytes);
       else void handle(command);
     });
   }
 
+  const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+  async function listFiles(requestId: string, root: string, limit: number): Promise<void> {
+    if (!options.files) return send({ type: 'files', requestId, files: [], truncated: false, error: '这台 Worker 不支持列文件' });
+    try {
+      send({ type: 'files', requestId, ...(await options.files.listFiles(root, limit)) });
+    } catch (error) {
+      send({ type: 'files', requestId, files: [], truncated: false, error: message(error) });
+    }
+  }
+
+  async function readFile(requestId: string, path: string, maxBytes: number): Promise<void> {
+    if (!options.files) return send({ type: 'file', requestId, data: null, error: '这台 Worker 不支持读文件' });
+    try {
+      const bytes = await options.files.readFile(path, maxBytes);
+      send({ type: 'file', requestId, data: bytes === null ? null : Buffer.from(bytes).toString('base64') });
+    } catch (error) {
+      send({ type: 'file', requestId, data: null, error: message(error) });
+    }
+  }
+
+  /** 上传的附件由 hub 随 prompt 发来（base64），在 agent 读它之前落进这台机器的项目目录。 */
+  async function persistParts(parts: Extract<ServerToWorker, { kind: 'prompt' }>['parts']): Promise<void> {
+    for (const part of parts) {
+      if (part.kind === 'mention') continue;
+      if (!part.path.includes('/.agent-hub/attachments/')) throw new Error(`附件路径不对：${part.path}`);
+      if (!options.files) throw new Error('这台 Worker 不支持接收附件');
+      await options.files.writeFile(part.path, new Uint8Array(Buffer.from(part.data, 'base64')));
+    }
+  }
+
+  /** 产出物大小只有这台机器量得到：相对路径按会话的工作目录解析。 */
+  async function withBytes(sessionId: string, event: SessionEvent): Promise<SessionEvent> {
+    if (event.kind !== 'artifact' || !options.files) return event;
+    const root = workspaces.get(sessionId);
+    const absolute = event.path.startsWith('/') ? event.path : root ? `${root.replace(/\/+$/, '')}/${event.path}` : null;
+    if (absolute === null) return event;
+    const bytes = await options.files.stat(absolute);
+    return bytes === null ? event : { ...event, bytes };
+  }
+
   async function listDirectories(requestId: string, path: string): Promise<void> {
-    const target = path === '' ? (options.roots?.[0] ?? '/') : path;
-    if (!options.listDirectories) {
+    const target = path === '' ? (options.files?.roots[0] ?? options.roots?.[0] ?? '/') : path;
+    if (!options.files) {
       send({ type: 'directories', requestId, path: target, exists: false, entries: [], error: '这台 Worker 不支持浏览目录' });
       return;
     }
     try {
-      const listed = await options.listDirectories(target);
+      const listed = await options.files.listDirectories(target);
       send({ type: 'directories', requestId, ...listed });
     } catch (error) {
       send({
@@ -204,7 +255,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
    * 一条指令失败不能静默。之前 `runtime.start` 抛错时异常沉进未处理的 Promise，
    * 日志里只留下「未知会话」——真正的错误被吞掉了，排障只能靠猜。
    */
-  async function handle(command: Exclude<ServerToWorker, { kind: 'list_directories' }>): Promise<void> {
+  async function handle(command: SessionCommand): Promise<void> {
     try {
       await run(command);
     } catch (error) {
@@ -219,7 +270,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   }
 
-  async function run(command: Exclude<ServerToWorker, { kind: 'list_directories' }>): Promise<void> {
+  async function run(command: SessionCommand): Promise<void> {
     if (command.kind === 'start_session') {
       const started = startSession(command);
       starting.set(command.sessionId, started.catch(() => undefined));
@@ -243,6 +294,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return;
     }
     if (command.kind === 'prompt') {
+      await persistParts(command.parts);
       const result = await session.prompt({ text: command.text, parts: command.parts });
       if (!result.ok) {
         send({
@@ -285,6 +337,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return;
     }
 
+    const outside = options.files ? await options.files.check(command.workspaceRoot) : null;
+    if (outside !== null) {
+      send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason: outside } });
+      return;
+    }
+
     const spec: StartSpec = {
       sessionId: asSessionId(command.sessionId),
       taskId: command.taskId as StartSpec['taskId'],
@@ -306,6 +364,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
     const session = started.value;
     sessions.set(command.sessionId, session);
+    workspaces.set(command.sessionId, command.workspaceRoot);
     send({
       type: 'status',
       sessionId: command.sessionId,
@@ -315,11 +374,13 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     void (async () => {
       try {
         for await (const event of session.events()) {
-          send({ type: 'event', sessionId: command.sessionId, event: event as SessionEventDto });
+          const enriched = await withBytes(command.sessionId, event);
+          send({ type: 'event', sessionId: command.sessionId, event: enriched as SessionEventDto });
           if (event.kind === 'ended') break;
         }
       } finally {
         sessions.delete(command.sessionId);
+        workspaces.delete(command.sessionId);
         // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
         // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
         send({ type: 'status', sessionId: command.sessionId, status: 'ended' });

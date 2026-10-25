@@ -2,6 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { AsyncQueue } from '@agent-hub/contract';
 import type { AgentDto } from '@agent-hub/contract';
@@ -22,6 +25,7 @@ import {
 } from '@agent-hub/domain';
 import { createServerGateway, type GatewayHooks } from './server-gateway.ts';
 import { connectWorkerLink, type WorkerLink } from './worker-link.ts';
+import { createWorkerFiles } from './worker-files.ts';
 
 /** 一个只会把 prompt 回声成 text 再结束的 agent：够验证指令下行、事件上行。 */
 function echoRuntime(seen: StartSpec[]): AgentRuntime {
@@ -138,6 +142,14 @@ const start = (sessionId: string, workerId: string) =>
     resume: null,
     options: { model: 'm-1' }
   }) as const;
+
+async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
+  const deadline = Date.now() + 3000;
+  while (!(await predicate())) {
+    if (Date.now() > deadline) throw new Error('等待超时');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 const brief = (workers: WorkerStatus[]) => workers.map((w) => `${w.workerId}:${w.state}`);
 
@@ -293,24 +305,83 @@ test('心跳：worker 不回 pong 就被判离线', async () => {
   await stop();
 });
 
-test('目录浏览走 worker：返回那台机器上的目录；不在线时报不可用', async () => {
+test('目录浏览走 worker：从 roots 起步；roots 外的目录拒并说明怎么放开；不在线时报不可用', async () => {
   const { rec, gateway, url, stop } = await harness(null);
+  const base = await mkdtemp(join(tmpdir(), 'wf-'));
+  await mkdir(join(base, 'root', 'app'), { recursive: true });
+  const root = join(base, 'root');
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [], files: createWorkerFiles({ roots: [root], enforced: true }) });
+  await rec.until(() => rec.hellos.length === 1);
+  assert.deepEqual(rec.hellos[0]?.worker.roots, [root]);
+  const top = await gateway.gateway.listDirectories('w1', '');
+  assert.deepEqual(top, { ok: true, value: { path: root, exists: true, entries: [{ name: 'app', path: join(root, 'app') }] } });
+  const missing = await gateway.gateway.listDirectories('w1', join(root, 'nope'));
+  assert.ok(missing.ok && !missing.value.exists);
+  const outside = await gateway.gateway.listDirectories('w1', base);
+  assert.ok(!outside.ok && /WORKER_ROOTS/.test(outside.error.message) && /worker\.env/.test(outside.error.message));
+  assert.equal((await gateway.gateway.listDirectories('ghost', '/')).ok, false);
+  await stop(link);
+  await rm(base, { recursive: true, force: true });
+});
+
+test('文件走 worker：@ 清单、附件落盘与回读都在那台机器上；软链接逃不出 roots', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const base = await mkdtemp(join(tmpdir(), 'wf-'));
+  const root = join(base, 'proj');
+  await mkdir(join(root, 'src'), { recursive: true });
+  await writeFile(join(root, 'README.md'), 'hi');
+  await writeFile(join(root, 'src', 'a.ts'), 'x');
+  await writeFile(join(base, 'secret.txt'), 'no');
+  await symlink(join(base, 'secret.txt'), join(root, 'leak.txt'));
   const link = connectWorkerLink({
     url,
     token: '',
     workerId: 'w1',
     label: 'x',
-    roots: ['/srv'],
-    runtimes: [],
-    listDirectories: async (path) => ({ path, exists: path === '/srv', entries: path === '/srv' ? [{ name: 'app', path: '/srv/app' }] : [] })
+    runtimes: [echoRuntime([])],
+    files: createWorkerFiles({ roots: [root], enforced: true })
   });
   await rec.until(() => rec.hellos.length === 1);
-  const root = await gateway.gateway.listDirectories('w1', '');
-  assert.deepEqual(root, { ok: true, value: { path: '/srv', exists: true, entries: [{ name: 'app', path: '/srv/app' }] } });
-  const missing = await gateway.gateway.listDirectories('w1', '/nope');
-  assert.ok(missing.ok && !missing.value.exists);
-  assert.equal((await gateway.gateway.listDirectories('ghost', '/')).ok, false);
+  const listed = await gateway.gateway.listFiles('w1', root, 100);
+  assert.ok(listed.ok);
+  assert.ok(listed.value.files.includes('README.md') && listed.value.files.includes('src/a.ts'));
+  assert.equal((await gateway.gateway.listFiles('w1', base, 100)).ok, false);
+  const leak = await gateway.gateway.readFile('w1', join(root, 'leak.txt'), 1000);
+  assert.ok(!leak.ok, '软链接指向 roots 外');
+
+  // 附件：随 prompt 发到 worker，worker 先落盘再交给 agent
+  assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), workspaceRoot: root })).ok);
+  await rec.until(() => rec.statuses.includes('running'));
+  const attachment = join(root, '.agent-hub', 'attachments', 's1', '1-0-note.txt');
+  await gateway.gateway.dispatch({
+    kind: 'prompt', sessionId: asSessionId('s1'), text: 'hi',
+    parts: [{ kind: 'file', name: 'note.txt', mimeType: 'text/plain', data: Buffer.from('hello').toString('base64'), path: attachment }]
+  });
+  await waitFor(async () => (await readFile(attachment, 'utf8').catch(() => '')) === 'hello');
+  const back = await gateway.gateway.readFile('w1', attachment, 1000);
+  assert.ok(back.ok && back.value !== null && Buffer.from(back.value).toString() === 'hello');
+  const tooBig = await gateway.gateway.readFile('w1', attachment, 2);
+  assert.ok(!tooBig.ok);
+  const gone = await gateway.gateway.readFile('w1', join(root, 'none.txt'), 1000);
+  assert.deepEqual(gone, { ok: true, value: null });
   await stop(link);
+  await rm(base, { recursive: true, force: true });
+});
+
+test('roots 外的目录不能开会话：worker 直接以失败结束并说明原因', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const base = await mkdtemp(join(tmpdir(), 'wf-'));
+  const link = connectWorkerLink({
+    url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime([])],
+    files: createWorkerFiles({ roots: [join(base, 'only')], enforced: true })
+  });
+  await rec.until(() => rec.hellos.length === 1);
+  await gateway.gateway.dispatch({ ...start('s2', 'w1'), workspaceRoot: '/etc' });
+  await rec.until(() => rec.events.some((event) => event.kind === 'ended'));
+  const ended = rec.events.find((event) => event.kind === 'ended');
+  assert.ok(ended?.kind === 'ended' && /WORKER_ROOTS/.test(ended.reason ?? ''));
+  await stop(link);
+  await rm(base, { recursive: true, force: true });
 });
 
 test('还没托管的会话：dispatch 返回 unavailable 而不是抛错或乱发', async () => {
