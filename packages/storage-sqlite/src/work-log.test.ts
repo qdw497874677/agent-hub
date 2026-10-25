@@ -88,3 +88,23 @@ test('工作日志往返：seq 原子分配、修订链、分页与排除系统�
   assert.equal((await store.tasks.byId(task.value.id))?.logSeq, 3);
   store.close();
 });
+
+test('老数据清理：系统条目里的空「（）」和进展行里的 markdown 记号', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-clean-'));
+  const file = join(dir, 'hub.db');
+  try {
+    const first = openSqliteStore(file);
+    first.db.exec(`INSERT INTO projects(id, name, root_path, created_at) VALUES ('p', 'demo', '/tmp', 1);
+      INSERT INTO tasks(id, project_id, title, status, created_at, updated_at, summary) VALUES ('t', 'p', 't', 'todo', 1, 1, '**接好了** \`mcp\`');
+      INSERT INTO task_log_entries(id, task_id, seq, author, kind, body, created_at) VALUES ('e', 't', 1, '{"kind":"system"}', 'note', '开了 grok 会话（）', 1);`);
+    first.close();
+    const store = openSqliteStore(file);
+    const body = (store.db.prepare("SELECT body FROM task_log_entries WHERE id = 'e'").get() as { body: string }).body;
+    const summary = (store.db.prepare("SELECT summary FROM tasks WHERE id = 't'").get() as { summary: string }).summary;
+    assert.equal(body, '开了 grok 会话');
+    assert.equal(summary, '接好了 mcp');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
