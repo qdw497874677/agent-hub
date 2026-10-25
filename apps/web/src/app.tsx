@@ -238,12 +238,12 @@ export function App() {
   if (project === null) {
     return (
       <HomePage
-        onOpen={(picked) => {
+        onOpen={(picked, sessionId) => {
           localStorage.setItem(LAST_PROJECT, picked.id);
           setAtHome(false);
           setProject(picked);
-          setSelected(null);
-          setDrafts({});
+          setSelected(sessionId ?? null);
+          if (sessionId) setFocus({ id: sessionId, nonce: Date.now() });
         }}
       />
     );

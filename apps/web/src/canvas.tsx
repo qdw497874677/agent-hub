@@ -27,20 +27,36 @@ interface Props {
   readonly focus: { readonly id: string; readonly nonce: number } | null;
 }
 
+/**
+ * 初始布局：任务一列往下排，每个任务的会话排在它右边、纵向堆叠。
+ *
+ * 之前是「任务两列 + 会话压在任务上方 130px 处」，卡片直接叠在一起——
+ * 血缘线被卡片盖住，看图的人只能凭猜测。这里的取舍是：宁可画布很长要拖，
+ * 也不要两张卡互相压着。
+ */
+const TASK_X = 80;
+const TASK_WIDTH = 220;
+const TASK_GAP = 80;
+const SESSION_OFFSET_X = TASK_WIDTH + 96;
+const SESSION_GAP_Y = 420;
+const SESSION_COLUMN_WIDTH = 360;
+const EMPTY_TASK_HEIGHT = 240;
+
 function defaults(canvas: CanvasDto): Record<string, Point> {
   const placed: Record<string, Point> = {};
-  canvas.tasks.forEach((task, taskIndex) => {
-    const row = Math.floor(taskIndex / 2);
-    const column = taskIndex % 2;
-    const originX = 80 + column * 760;
-    const originY = 80 + row * 560;
-    placed[task.id] = { x: originX, y: originY };
-    canvas.sessions
-      .filter((session) => session.taskId === task.id)
-      .forEach((session, index) => {
-        placed[session.id] = { x: originX + 40 + (index % 2) * 340, y: originY + 130 + Math.floor(index / 2) * 260 };
-      });
-  });
+  let cursorY = 80;
+  for (const task of canvas.tasks) {
+    placed[task.id] = { x: TASK_X, y: cursorY };
+    const sessions = canvas.sessions.filter((session) => session.taskId === task.id);
+    sessions.forEach((session, index) => {
+      placed[session.id] = {
+        x: TASK_X + SESSION_OFFSET_X + (index % 2) * SESSION_COLUMN_WIDTH,
+        y: cursorY + Math.floor(index / 2) * SESSION_GAP_Y
+      };
+    });
+    const rows = Math.ceil(sessions.length / 2);
+    cursorY += Math.max(EMPTY_TASK_HEIGHT, rows * SESSION_GAP_Y) + TASK_GAP;
+  }
   return placed;
 }
 

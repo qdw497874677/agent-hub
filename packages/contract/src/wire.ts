@@ -238,7 +238,28 @@ export const projectSummarySchema = projectSchema.extend({
   sessionCount: z.number().int().nonnegative(),
   lastActivityAt: epochMs.nullable()
 });
-export const homeSchema = z.object({ projects: z.array(projectSummarySchema) });
+/**
+ * 首页第二栏：最近的会话，跨项目。
+ *
+ * 重度用户回到工作台时想的是「昨天那条跑到哪了」，不是「我有几个项目」。
+ * 所以首页得能直接列出会话，点一下回到它所在的画布。
+ */
+export const recentSessionSchema = z.object({
+  sessionId: id,
+  taskId: id,
+  taskTitle: z.string(),
+  projectId: id,
+  projectName: z.string(),
+  agentId: id,
+  status: sessionStatusSchema,
+  lastSeq: z.number().int().nonnegative(),
+  updatedAt: epochMs
+});
+
+export const homeSchema = z.object({
+  projects: z.array(projectSummarySchema),
+  recentSessions: z.array(recentSessionSchema)
+});
 
 /** 目录选择器：只列子目录。`parent` 为 null 表示已经在根。 */
 export const directoryEntrySchema = z.object({ name: z.string(), path: z.string() });
@@ -305,6 +326,7 @@ export type SearchResponseDto = z.infer<typeof searchResponseSchema>;
 export type WorkerInfoDto = z.infer<typeof workerInfoSchema>;
 export type ProjectSummaryDto = z.infer<typeof projectSummarySchema>;
 export type HomeDto = z.infer<typeof homeSchema>;
+export type RecentSessionDto = z.infer<typeof recentSessionSchema>;
 export type DirectoryEntryDto = z.infer<typeof directoryEntrySchema>;
 export type DirectoryListingDto = z.infer<typeof directoryListingSchema>;
 export type CreateProjectRequest = z.infer<typeof createProjectRequest>;

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProjectDto, ProjectSummaryDto } from './api.ts';
+import type { ProjectDto, RecentSessionDto } from './api.ts';
 import { api } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkersBadge } from './workers.tsx';
@@ -8,89 +8,156 @@ import { WorkersBadge } from './workers.tsx';
 /**
  * 首页。
  *
- * 它不是「登录后弹一个表单」，而是这个产品的门厅：有哪些项目、里面有多少活、
- * 节点在不在线，然后才谈「从哪开始」。指目录这件事是页面里的一段流程，
- * 不是打断式对话框——第一屏就丢给用户一个输入框，等于让他先猜你的规矩。
+ * 结构照 OpenCode 的 web 端：左窄栏放「在哪儿干」（项目 + 节点），右宽栏放
+ * 「接着干哪条」（最近的会话 + 搜索）。之前的版本把项目当主角，用户回来还得
+ * 先进项目、再看画布、才找得到昨天那条——多跳了两层。
+ *
+ * 仍然不做看板：这里是清单，不是按状态分列的卡片墙。
  */
-export function HomePage({ onOpen }: { onOpen: (project: ProjectDto) => void }) {
+export function HomePage({
+  onOpen
+}: {
+  onOpen: (project: ProjectDto, sessionId?: string) => void;
+}) {
   const [creating, setCreating] = useState(false);
+  const [filter, setFilter] = useState('');
   const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
 
   const projects = home.data?.projects ?? [];
+  const recent = home.data?.recentSessions ?? [];
+  const needle = filter.trim().toLowerCase();
+  const shown = useMemo(
+    () =>
+      needle === ''
+        ? recent
+        : recent.filter((session) =>
+            `${session.taskTitle} ${session.projectName}`.toLowerCase().includes(needle)
+          ),
+    [recent, needle]
+  );
+  const groups = useMemo(() => groupByDay(shown), [shown]);
+  const projectById = useMemo(() => new Map(projects.map((project) => [project.id, project])), [projects]);
+
+  function open(session: RecentSessionDto): void {
+    const project = projectById.get(session.projectId);
+    if (project) onOpen(project, session.sessionId);
+  }
 
   return (
-    <main className="mx-auto flex h-full w-full max-w-[880px] flex-col px-6 py-10">
-      <header className="mb-8 flex items-start justify-between">
-        <div>
-          <h1 className="text-title text-primary">agent-hub</h1>
-          <p className="mt-1 max-w-[520px] text-body text-secondary">
-            你自带机器和 agent。它把任务拆成多个可并行的会话，并把派生与血缘变成可见、可恢复的东西。
+    <div className="flex h-full">
+      <nav className="flex w-[220px] shrink-0 flex-col border-r border-hair px-3 py-4">
+        <div className="mb-4">
+          <p className="text-head text-primary">agent-hub</p>
+          <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
+        </div>
+
+        <div className="mb-1 flex items-baseline justify-between">
+          <p className="text-meta text-tertiary">项目</p>
+          <button
+            className="text-meta text-secondary hover:text-accent"
+            onClick={() => setCreating((open) => !open)}
+            title="新建项目"
+          >
+            ＋
+          </button>
+        </div>
+
+        <ul className="mb-4 space-y-0.5">
+          {projects.map((project) => (
+            <li key={project.id}>
+              <button
+                className="w-full rounded-sm px-2 py-1 text-left hover:bg-card"
+                onClick={() => onOpen(project)}
+                title={project.rootPath}
+              >
+                <span className="block truncate text-body text-secondary">{project.name}</span>
+                <span className="block text-meta text-tertiary">
+                  {project.taskCount} 任务 · {ago(project.lastActivityAt)}
+                </span>
+              </button>
+            </li>
+          ))}
+          {/* 数据还没到就说「还没有项目」是在撒谎，所以等它到 */}
+          {home.data !== undefined && projects.length === 0 ? (
+            <li className="px-2 text-meta text-tertiary">还没有项目</li>
+          ) : null}
+        </ul>
+
+        <div className="mt-auto border-t border-hair pt-3">
+          <WorkersBadge />
+        </div>
+      </nav>
+
+      <main className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[760px] px-8 py-6">
+          {creating ? (
+            <CreateProjectPanel
+              onCancel={() => setCreating(false)}
+              onCreated={(created) => {
+                setCreating(false);
+                onOpen(created);
+              }}
+            />
+          ) : (
+            <div className="mb-5 flex items-center gap-2 rounded-md border border-hair bg-card px-3 py-2">
+              <span className="text-tertiary">⌕</span>
+              <input
+                className="w-full bg-transparent text-body text-primary outline-none placeholder:text-tertiary"
+                placeholder="搜会话、任务或项目"
+                value={filter}
+                onChange={(event) => setFilter(event.target.value)}
+              />
+              {filter === '' ? null : (
+                <button className="text-meta text-tertiary hover:text-secondary" onClick={() => setFilter('')}>
+                  清除
+                </button>
+              )}
+            </div>
+          )}
+
+          {home.isPending ? <p className="text-meta text-tertiary">读取中…</p> : null}
+          {home.error ? <p className="text-meta text-rust">{(home.error as Error).message}</p> : null}
+
+          {groups.map(([label, sessions]) => (
+            <section key={label} className="mb-5">
+              <h2 className="mb-1 px-1 text-meta text-tertiary">{label}</h2>
+              <ul>
+                {sessions.map((session) => (
+                  <li key={session.sessionId}>
+                    <button
+                      className="flex w-full items-center gap-2.5 rounded-sm px-1 py-1.5 text-left hover:bg-card"
+                      onClick={() => open(session)}
+                    >
+                      <span className={`size-1.5 shrink-0 rounded-full ${dotClass(session.status)}`} />
+                      <span className="min-w-0 flex-1 truncate text-body text-primary">
+                        {session.taskTitle}
+                      </span>
+                      <span className="shrink-0 text-meta text-secondary">{session.agentId}</span>
+                      <span className="shrink-0 text-meta text-tertiary">{session.projectName}</span>
+                      <span className="w-16 shrink-0 text-right text-meta text-tertiary">
+                        {ago(session.updatedAt)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+
+          {!home.isPending && shown.length === 0 ? (
+            <p className="rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary">
+              {needle === ''
+                ? '还没有会话。选一个项目，建一条任务，双击任务就派生第一条会话。'
+                : `没有匹配「${filter}」的会话。`}
+            </p>
+          ) : null}
+
+          <p className="mt-8 text-meta text-tertiary">
+            画布上双击任务即派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在
           </p>
         </div>
-        <WorkersBadge />
-      </header>
-
-      {creating ? (
-        <CreateProjectPanel
-          onCancel={() => setCreating(false)}
-          onCreated={(created) => {
-            setCreating(false);
-            onOpen(created);
-          }}
-        />
-      ) : (
-        <button
-          className="mb-6 self-start rounded-sm bg-accent px-3 py-1.5 text-meta text-canvas"
-          onClick={() => setCreating(true)}
-        >
-          新建项目
-        </button>
-      )}
-
-      <div className="mb-3 flex items-baseline justify-between">
-        <h2 className="text-head text-primary">项目</h2>
-        <span className="text-meta text-tertiary">
-          {projects.length === 0 ? '' : `${projects.length} 个`}
-        </span>
-      </div>
-
-      {home.isPending ? <p className="text-meta text-tertiary">读取中…</p> : null}
-      {home.error ? <p className="text-meta text-rust">{(home.error as Error).message}</p> : null}
-
-      {projects.length === 0 && !home.isPending ? (
-        <p className="rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary">
-          还没有项目。指一个本地目录，任务就活在它里面——目录不会被复制，也不会被搬走。
-        </p>
-      ) : null}
-
-      <ul className="space-y-2">
-        {projects.map((project) => (
-          <li key={project.id}>
-            <button
-              className="flex w-full items-baseline justify-between gap-4 rounded-md border border-hair bg-panel px-4 py-3 text-left hover:border-strong hover:bg-card"
-              onClick={() => onOpen(project)}
-            >
-              <span className="min-w-0">
-                <span className="block text-head text-primary">{project.name}</span>
-                <span className="mt-0.5 block truncate font-mono text-meta text-tertiary">
-                  {project.rootPath}
-                </span>
-              </span>
-              <span className="shrink-0 text-right">
-                <span className="block text-meta text-secondary">
-                  {project.taskCount} 个任务 · {project.sessionCount} 个会话
-                </span>
-                <span className="block text-meta text-tertiary">{ago(project.lastActivityAt)}</span>
-              </span>
-            </button>
-          </li>
-        ))}
-      </ul>
-
-      <footer className="mt-auto pt-8 text-meta text-tertiary">
-        画布上双击任务即派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在
-      </footer>
-    </main>
+      </main>
+    </div>
   );
 }
 
@@ -117,35 +184,46 @@ function CreateProjectPanel({
   });
 
   return (
-    <section className="mb-6 rounded-md border border-strong bg-panel p-4">
+    <section aria-label="新建项目" className="mb-6 rounded-md border border-hair bg-panel p-4">
       <p className="mb-1 text-head text-primary">新建项目</p>
-      <p className="mb-4 text-meta text-secondary">
-        项目 = 一个本地目录。它不会被复制：agent 就在这个目录里干活，产出物落在
-        <span className="font-mono text-tertiary"> .agent-hub/ </span>下。
+      <p className="mb-3 text-meta text-secondary">
+        项目 = 一个本地目录。agent 就在这个目录里干活，产出物落在
+        <span className="font-mono text-tertiary"> .agent-hub/</span> 下。
       </p>
 
+      {/* 行与选择器同时在：想打字就打，想点就点，不必先关掉一个再打开另一个。 */}
       <div className="mb-3 flex gap-2">
-        <div className="flex-1">
-          <label className="mb-1 block text-meta text-tertiary">目录</label>
-          <input
-            className="w-full rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
-            value={rootPath}
-            placeholder="选一个目录，或者直接打绝对路径"
-            spellCheck={false}
-            onChange={(event) => {
-              setRootPath(event.target.value);
-              setBrowsing(false);
-            }}
-          />
-        </div>
-        <div className="flex items-end">
-          <button
-            className="rounded-sm border border-hair px-3 py-1.5 text-meta text-secondary hover:border-strong"
-            onClick={() => setBrowsing((open) => !open)}
-          >
-            {browsing ? '收起' : '浏览…'}
-          </button>
-        </div>
+        <input
+          aria-label="目录"
+          className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
+          value={rootPath}
+          placeholder="/绝对路径"
+          spellCheck={false}
+          onChange={(event) => setRootPath(event.target.value)}
+        />
+        <button
+          className="shrink-0 rounded-sm border border-hair px-3 py-1.5 text-meta text-secondary hover:border-strong"
+          onClick={() => setBrowsing((open) => !open)}
+        >
+          {browsing ? '收起' : '浏览…'}
+        </button>
+        <input
+          aria-label="项目名"
+          className="w-[160px] shrink-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
+          value={name}
+          placeholder="项目名"
+          onChange={(event) => setName(event.target.value)}
+        />
+        <button
+          className="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-meta text-canvas disabled:opacity-40"
+          disabled={name.trim() === '' || rootPath.trim() === '' || create.isPending}
+          onClick={() => {
+            setError(null);
+            create.mutate();
+          }}
+        >
+          开始
+        </button>
       </div>
 
       {browsing ? (
@@ -160,54 +238,51 @@ function CreateProjectPanel({
         </div>
       ) : null}
 
-      <div className="mb-3">
-        <label className="mb-1 block text-meta text-tertiary">项目名</label>
-        <input
-          className="w-full rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
-          value={name}
-          placeholder="选目录后自动取最后一段，可改"
-          onChange={(event) => setName(event.target.value)}
-        />
-      </div>
-
       {error ? <p className="mb-2 text-meta text-rust">{error}</p> : null}
 
-      <div className="flex justify-end gap-2">
-        <button
-          className="rounded-sm border border-hair px-3 py-1 text-meta text-secondary hover:border-strong"
-          onClick={onCancel}
-        >
-          取消
-        </button>
-        <button
-          className="rounded-sm bg-accent px-3 py-1 text-meta text-canvas disabled:opacity-40"
-          disabled={name.trim() === '' || rootPath.trim() === '' || create.isPending}
-          onClick={() => {
-            setError(null);
-            create.mutate();
-          }}
-        >
-          开始
-        </button>
-      </div>
+      <button className="text-meta text-tertiary hover:text-secondary" onClick={onCancel}>
+        取消
+      </button>
     </section>
   );
 }
 
-/** 「3 分钟前」比「2026-10-25 07:52」更有用：用户记的是刚刚干了什么。 */
+const DAY = 24 * 60 * 60 * 1000;
+
+/** 「今天 / 昨天 / 更早」比一串日期好看，也正好对上「昨天那条跑完没有」这个问法。 */
+function groupByDay(sessions: readonly RecentSessionDto[]): Array<[string, RecentSessionDto[]]> {
+  const today = new Date();
+  const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const buckets: Array<[string, RecentSessionDto[]]> = [
+    ['今天', []],
+    ['昨天', []],
+    ['更早', []]
+  ];
+  for (const session of sessions) {
+    if (session.updatedAt >= startOfToday) buckets[0]?.[1].push(session);
+    else if (session.updatedAt >= startOfToday - DAY) buckets[1]?.[1].push(session);
+    else buckets[2]?.[1].push(session);
+  }
+  return buckets.filter(([, items]) => items.length > 0);
+}
+
+/** 与画布卡片同一套颜色：运行中琥珀、完成 sage、已停止灰、中断/失败 rust。 */
+function dotClass(status: RecentSessionDto['status']): string {
+  if (status === 'running') return 'bg-accent';
+  if (status === 'done') return 'bg-sage';
+  if (status === 'stopped') return 'bg-tertiary';
+  return 'bg-rust';
+}
+
 function ago(at: number | null): string {
   if (at === null) return '还没有活动';
   const delta = Date.now() - at;
   const minute = 60_000;
   const hour = 60 * minute;
-  const day = 24 * hour;
   if (delta < minute) return '刚刚';
   if (delta < hour) return `${Math.floor(delta / minute)} 分钟前`;
-  if (delta < day) return `${Math.floor(delta / hour)} 小时前`;
-  if (delta < 2 * day) return '昨天';
-  if (delta < 30 * day) return `${Math.floor(delta / day)} 天前`;
+  if (delta < DAY) return `${Math.floor(delta / hour)} 小时前`;
+  if (delta < 2 * DAY) return '昨天';
+  if (delta < 30 * DAY) return `${Math.floor(delta / DAY)} 天前`;
   return new Date(at).toLocaleDateString('zh-CN');
 }
-
-/** 首页用不到，但把类型放在这里省得别处再写一遍。 */
-export type { ProjectSummaryDto };

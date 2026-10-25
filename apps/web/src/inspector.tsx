@@ -22,7 +22,11 @@ function CapabilityRow({ name, capability }: { name: CapabilityName; capability:
     <div className="flex items-start justify-between gap-2 py-0.5">
       <span className="text-meta text-secondary">{CAPABILITY_LABEL[name] ?? name}</span>
       <span className="flex items-baseline gap-1.5 text-right">
-        {capability.reason ? <span className="max-w-[150px] text-meta text-tertiary">{capability.reason}</span> : null}
+        {capability.reason ? (
+          <span className="max-w-[150px] truncate text-meta text-tertiary" title={capability.reason}>
+            {capability.reason}
+          </span>
+        ) : null}
         <span className={`font-mono text-meta ${colour}`}>{mark}</span>
       </span>
     </div>
@@ -66,6 +70,15 @@ export function Inspector({ canvas, session, artifacts, onClose, onChanged, draf
     if (!showJournal) return;
     void api.events(session.id).then(setJournal);
   }, [showJournal, session.id, session.lastSeq]);
+
+  function send(): void {
+    const text = draft.trim();
+    if (text === '' || busy) return;
+    void run(async () => {
+      await api.prompt(session.id, text);
+      setDraft('');
+    });
+  }
 
   async function run(action: () => Promise<unknown>): Promise<void> {
     setBusy(true);
@@ -166,32 +179,50 @@ export function Inspector({ canvas, session, artifacts, onClose, onChanged, draf
 
       <footer className="border-t border-hair px-3 py-2">
         {error ? <p className="mb-1 text-meta text-rust">{error}</p> : null}
-        <textarea
-          className="h-20 w-full resize-none rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
-          placeholder="接着这条思路说下去…"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-        />
-        <div className="mt-2 flex items-center justify-between">
-          <button
-            className="rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-rust hover:text-rust disabled:opacity-40"
-            disabled={busy || session.status !== 'running'}
-            onClick={() => run(() => api.interrupt(session.id))}
-          >
-            中断
-          </button>
-          <button
-            className="rounded-sm bg-accent px-3 py-1 text-meta text-canvas disabled:opacity-40"
-            disabled={busy || draft.trim().length === 0}
-            onClick={() =>
-              run(async () => {
-                await api.prompt(session.id, draft.trim());
-                setDraft('');
-              })
-            }
-          >
-            发送
-          </button>
+        {/* 一个盒子装下「写什么」和「怎么发」：输入框与发送按钮本来就是一回事，
+            分成两个带边框的控件会让眼睛多搬一次家。 */}
+        <div className="rounded-md border border-hair bg-card px-2.5 py-2 focus-within:border-strong">
+          <textarea
+            aria-label="发送消息"
+            className="max-h-40 min-h-[44px] w-full resize-none bg-transparent text-body text-primary outline-none placeholder:text-tertiary"
+            placeholder="接着说…（⌘↵ 发送）"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                event.preventDefault();
+                send();
+              }
+            }}
+          />
+          <div className="mt-1 flex items-center justify-between gap-2">
+            <span className="truncate text-meta text-tertiary">
+              {agent?.label ?? session.agentId} · {session.model === '' ? '默认模型' : session.model}
+            </span>
+            <div className="flex shrink-0 items-center gap-1.5">
+              {session.status === 'running' ? (
+                <button
+                  className="grid size-6 place-items-center rounded-full border border-hair text-meta text-rust hover:border-rust disabled:opacity-40"
+                  title="中断"
+                  aria-label="中断"
+                  disabled={busy}
+                  onClick={() => run(() => api.interrupt(session.id))}
+                >
+                  ■
+                </button>
+              ) : null}
+              <button
+                className="grid size-6 place-items-center rounded-full text-meta text-canvas disabled:opacity-30"
+                style={{ background: 'var(--color-accent)' }}
+                title="发送（⌘↵）"
+                aria-label="发送"
+                disabled={busy || draft.trim().length === 0}
+                onClick={send}
+              >
+                ↑
+              </button>
+            </div>
+          </div>
         </div>
       </footer>
     </aside>

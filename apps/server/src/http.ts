@@ -47,6 +47,9 @@ export interface AppOptions {
   readonly token: string | null;
 }
 
+/** 首页只列最近这么多条会话：多到能认出「昨天那条」，少到不用滚。 */
+const RECENT_LIMIT = 24;
+
 const STATUS_OF: Record<DomainError['code'], ContentfulStatusCode> = {
   invalid: 400,
   not_found: 404,
@@ -88,10 +91,15 @@ export function createApp(options: AppOptions): Hono {
     const listed = await listProjects(deps);
     if (!listed.ok) return fail(c, listed.error);
     const projects = listed.value;
+
+    const owners = new Map<string, { title: string; projectId: string; projectName: string }>();
     const summaries = await Promise.all(
       projects.map(async (project) => {
         const tasks = await deps.tasks.listByProject(project.id);
         const sessions = await deps.sessions.listByProject(project.id);
+        for (const task of tasks) {
+          owners.set(task.id, { title: task.title, projectId: project.id, projectName: project.name });
+        }
         const touched = [...tasks.map((task) => task.updatedAt), ...sessions.map((session) => session.updatedAt)];
         return {
           ...project,
@@ -102,7 +110,29 @@ export function createApp(options: AppOptions): Hono {
       })
     );
     summaries.sort((left, right) => (right.lastActivityAt ?? right.createdAt) - (left.lastActivityAt ?? left.createdAt));
-    return c.json(homeSchema.parse({ projects: summaries }));
+
+    // 最近会话是首页的主角：它回答「接着干哪条」，项目列表只回答「在哪儿干」。
+    const recentSessions = (await deps.sessions.listAll())
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .flatMap((session) => {
+        const owner = owners.get(session.taskId);
+        if (!owner) return [];
+        return [
+          {
+            sessionId: session.id,
+            taskId: session.taskId,
+            taskTitle: owner.title,
+            projectId: owner.projectId,
+            projectName: owner.projectName,
+            agentId: session.agentId,
+            status: session.status,
+            lastSeq: session.lastSeq,
+            updatedAt: session.updatedAt
+          }
+        ];
+      })
+      .slice(0, RECENT_LIMIT);
+    return c.json(homeSchema.parse({ projects: summaries, recentSessions }));
   });
 
   app.get('/api/fs/directories', async (c) => {

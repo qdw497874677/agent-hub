@@ -24,15 +24,17 @@ test.beforeAll(() => {
 test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await page.goto('/');
 
-  // 首页是门厅，不是一上来就一个输入框
-  await expect(page.getByRole('heading', { name: 'agent-hub' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: '项目' })).toBeVisible();
+  // 首页是门厅：左栏是「在哪儿干」，右栏是「接着干哪条」
+  const nav = page.getByRole('navigation');
+  await expect(nav.getByText('agent-hub')).toBeVisible();
+  await expect(nav.getByText('项目')).toBeVisible();
 
   // M1：指一个本地目录（打字也行，点选也行——点选见下一条用例）
-  await page.getByRole('button', { name: '新建项目' }).click();
-  await page.getByPlaceholder('选一个目录，或者直接打绝对路径').fill(PROJECT_DIR);
-  await page.getByPlaceholder('选目录后自动取最后一段，可改').fill(PROJECT_NAME);
-  await page.getByRole('button', { name: '开始' }).click();
+  await nav.getByTitle('新建项目').click();
+  const panel = page.getByLabel('新建项目');
+  await panel.getByLabel('目录', { exact: true }).fill(PROJECT_DIR);
+  await panel.getByLabel('项目名').fill(PROJECT_NAME);
+  await panel.getByRole('button', { name: '开始' }).click();
 
   // M1：画布出现
   await expect(page.getByRole('button', { name: '新建任务' })).toBeVisible();
@@ -51,7 +53,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // M2：卡片出现，并从对话流里读回模型真吐出的一句话
   await expect(sessionNode(page)).toHaveCount(1);
   await sessionNode(page).click();
-  await page.getByPlaceholder('接着这条思路说下去…').fill(`只回这段文字，不要用工具：${ECHO}`);
+  await page.getByLabel('发送消息').fill(`只回这段文字，不要用工具：${ECHO}`);
   await page.getByRole('button', { name: '发送' }).click();
 
   // 只认模型真的吐出来的那个词，而且要落在卡片里（textarea 里也有这个词，会假通过）
@@ -61,28 +63,27 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 
 test('目录可以点选，不必手打路径', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('button', { name: '新建项目' }).click();
+  await page.getByRole('navigation').getByTitle('新建项目').click();
 
-  // 打开就在家目录，往上走一级，再进 /tmp 找我们自己的目录
-  await expect(page.getByRole('button', { name: '↑' })).toBeVisible();
-  // 收窄到选择器里点：首页的项目行按钮，可访问名字里也带着这个路径字符串
+  // 打开就在家目录
   const picker = page.getByLabel('目录选择器');
+  await expect(picker.getByRole('button', { name: '↑' })).toBeVisible();
+  // 收窄到选择器里点：首页的项目行按钮，可访问名字里也带着这个路径字符串
   await picker.getByLabel('当前目录').fill('/tmp');
   await picker.getByRole('button', { name: `agent-hub-e2e-project-${RUN}` }).click();
 
   await picker.getByRole('button', { name: '用这个目录' }).click();
-  await expect(page.getByPlaceholder('选一个目录，或者直接打绝对路径')).toHaveValue(PROJECT_DIR);
+  const panel = page.getByLabel('新建项目');
+  await expect(panel.getByLabel('目录', { exact: true })).toHaveValue(PROJECT_DIR);
   // 选完目录，项目名自动取最后一段
-  await expect(page.getByPlaceholder('选目录后自动取最后一段，可改')).toHaveValue(
-    `agent-hub-e2e-project-${RUN}`
-  );
-  await page.getByRole('button', { name: '取消' }).click();
+  await expect(panel.getByLabel('项目名')).toHaveValue(`agent-hub-e2e-project-${RUN}`);
+  await panel.getByRole('button', { name: '取消' }).click();
 });
 
 test('刷新之后画布还在，布局被记住', async ({ page }) => {
   await page.goto('/');
-  // 新浏览器没有 localStorage：从选择页回到自己刚建的那个项目
-  await page.getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  // 新浏览器没有 localStorage：从左栏回到自己刚建的那个项目
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
   await expect(sessionNode(page)).toHaveCount(1);
   await expect(taskNode(page, TASK_TITLE)).toContainText('1 个会话');
 
@@ -96,13 +97,14 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
 
 test('搜索能搜到会话里说过的话，列表能给画布降级', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '项目' })).toBeVisible();
-  await page.getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
+  // 首页右栏直接列最近会话：点一条回到它所在的画布（这比先进项目再找会话少两跳）
+  await page.getByRole('button', { name: new RegExp(TASK_TITLE) }).first().click();
   await expect(sessionNode(page)).toHaveCount(1);
 
   // S6.4 的前半截：切视图不丢草稿
   await sessionNode(page).click();
-  const composer = page.getByPlaceholder('接着这条思路说下去…');
+  const composer = page.getByLabel('发送消息');
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();
   await expect(page.getByRole('columnheader', { name: '任务' })).toBeVisible();
@@ -127,8 +129,8 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
 
 test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: '项目' })).toBeVisible();
-  await page.getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 
   // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以节点状态是常驻可查的
