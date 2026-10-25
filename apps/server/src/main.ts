@@ -7,27 +7,27 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type {
-  CapacityPolicy,
-  Deps,
-  NodeProvisioner,
-  SessionEvent,
-  SessionId
-} from '@agent-hub/domain';
+import type { CapacityPolicy, Deps, NodeProvisioner } from '@agent-hub/domain';
 import {
+  err,
+  ingestAgentSessionRef,
+  ingestRuntimeStatus,
+  ingestWorkerEvent,
+  ingestWorkerOptions,
   notImplemented,
   ok,
   reconcileInterrupted,
-  recordEvent,
-  recordSessionOptions
+  unavailable,
+  workerGone
 } from '@agent-hub/domain';
-import { err, unavailable } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createLocalFs } from './local-fs.ts';
 import { createSessionQueue } from './session-queue.ts';
+import { createMemoryHosting } from './session-hosting.ts';
+import { createOptionWaiters } from './option-waiters.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -76,12 +76,8 @@ console.log(`[hub] 数据目录：${dataDir}`);
 const store = openSqliteStore(join(dataDir, 'hub.db'));
 const hub = createStreamHub();
 const catalog = createLiveCatalog();
-const live = new Set<SessionId>();
-
 let serverGateway: ServerGateway | null = null;
-const events = createSessionQueue();
-/** 等某条会话的下一次可调项回报（用户改完模型/档位的那一次）。 */
-const optionWaiters = new Map<string, () => void>();
+const optionWaiters = createOptionWaiters();
 
 const deps: Deps = {
   projects: store.projects,
@@ -100,26 +96,13 @@ const deps: Deps = {
   capacity,
   provisioner,
   search: store.search,
+  hosting: createMemoryHosting(),
+  queue: createSessionQueue(),
   now: () => Date.now(),
   newId: () => crypto.randomUUID()
 };
 
 const log = (message: string) => console.log(`[hub] ${message}`);
-
-/** 字节数由 server 补：adapter 只知道路径，只有这里能 stat 到真实大小。 */
-async function withBytes(event: SessionEvent, workspaceRoot: string): Promise<SessionEvent> {
-  if (event.kind !== 'artifact') return event;
-  const absolute = event.path.startsWith('/') ? event.path : join(workspaceRoot, event.path);
-  const bytes = await deps.fs.stat(absolute);
-  return bytes === null ? event : { ...event, bytes };
-}
-
-async function workspaceOf(sessionId: SessionId): Promise<string> {
-  const session = await deps.sessions.byId(sessionId);
-  const task = session ? await deps.tasks.byId(session.taskId) : null;
-  const project = task ? await deps.projects.byId(task.projectId) : null;
-  return project?.rootPath ?? process.cwd();
-}
 
 serverGateway = createServerGateway({
   token,
@@ -127,46 +110,27 @@ serverGateway = createServerGateway({
     catalog.upsert(worker.workerId, agents);
     log(`worker 上线：${worker.label}（${worker.workerId}），提供 ${agents.map((a) => a.label).join('、')}`);
   },
+  // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 的 ingest* 里。
   onEvent(sessionId, event) {
-    // 同一会话的事件必须串行：recordEvent 是读改写，并发会算出同一个 seq 而被静默丢弃。
-    void events.run(sessionId, async () => {
-      const enriched = await withBytes(event, await workspaceOf(sessionId));
-      const result = await recordEvent(deps, { sessionId, event: enriched });
+    void ingestWorkerEvent(deps, sessionId, event).then((result) => {
       if (!result.ok) log(`落盘事件失败：${result.error.message}`);
     });
   },
   onOptions(sessionId, options) {
-    // 可调项不是事件：不进 journal、不占 seq，只更新会话那一行。
-    // 走同一条串行队列，这样「改动请求」和「agent 的回报」不会互相覆盖。
-    void events.run(sessionId, async () => {
-      const result = await recordSessionOptions(deps, { sessionId, options });
+    void ingestWorkerOptions(deps, sessionId, options).then((result) => {
       if (!result.ok) log(`记录可调项失败：${result.error.message}`);
-      optionWaiters.get(sessionId)?.();
-      optionWaiters.delete(sessionId);
+      optionWaiters.resolve(sessionId);
     });
   },
   onAgentSession(sessionId, agentSessionRef) {
-    void (async () => {
-      const session = await deps.sessions.byId(sessionId);
-      if (!session) return;
-      await deps.sessions.save({ ...session, agentSessionRef, updatedAt: deps.now() });
-    })();
+    void ingestAgentSessionRef(deps, sessionId, agentSessionRef);
   },
   onStatus(sessionId, status) {
-    if (status === 'ended' || status === 'gone') live.delete(sessionId);
-    // 状态也要推：从「发出提问」到「agent 说出第一个字」之间可能十几秒，
-    // 界面不能在这段时间里还挂着上一次的「完成」。
-    void (async () => {
-      const session = await deps.sessions.byId(sessionId);
-      if (!session) return;
-      // worker 只说 running / ended；除了 running，其余以库里已落盘的状态为准。
-      const next = status === 'running' ? 'running' : session.status;
-      hub.stream.publish({ sessionId, seq: session.lastSeq, event: null, status: next });
-    })();
+    void ingestRuntimeStatus(deps, sessionId, status);
   },
   onWorkerGone(workerId) {
     catalog.removeWorker(workerId);
-    live.clear();
+    workerGone(deps);
     log(`worker 离线：${workerId}`);
   },
   onLog: log
@@ -175,35 +139,7 @@ serverGateway = createServerGateway({
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-const app = createApp({
-  deps,
-  hub,
-  // 所有事件落盘都走同一个队列：agent 的推送和用户发的 prompt 也会撞 seq。
-  waitOptions: (sessionId) =>
-    new Promise<void>((resolve) => {
-      // agent 不回就等 8 秒：宁可让界面显示「没变」，也不要挂住一个请求。
-      const timer = setTimeout(() => {
-        optionWaiters.delete(sessionId);
-        resolve();
-      }, 8000);
-      optionWaiters.set(sessionId, () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    }),
-  record: (sessionId, event) =>
-    events.run(sessionId, async () => {
-      const result = await recordEvent(deps, { sessionId, event });
-      return result.ok ? ok(undefined) : err(result.error);
-    }),
-  workers: () => serverGateway?.workers() ?? [],
-  live: {
-    has: (sessionId) => live.has(sessionId),
-    add: (sessionId) => void live.add(sessionId),
-    drop: (sessionId) => void live.delete(sessionId)
-  },
-  token
-});
+const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait });
 
 app.use('/*', serveStatic({ root: webDist }));
 app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));

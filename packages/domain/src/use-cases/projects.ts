@@ -1,6 +1,7 @@
 import { createProject } from '../project.ts';
 import type { Project } from '../project.ts';
 import type { DomainError } from '../errors.ts';
+import { notFound } from '../errors.ts';
 import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
@@ -35,5 +36,5 @@ export async function loadProject(
   projectId: Project['id']
 ): Promise<Result<Project, DomainError>> {
   const project = await deps.projects.byId(projectId);
-  return project ? ok(project) : err({ code: 'not_found', message: '项目不存在' });
+  return project ? ok(project) : err(notFound('项目不存在'));
 }

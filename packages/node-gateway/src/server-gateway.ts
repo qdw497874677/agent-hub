@@ -9,6 +9,7 @@ import type {
   NodeGateway,
   Result,
   RuntimeOption,
+  RuntimeStatus,
   SessionEvent,
   SessionId,
   WorkerCommand,
@@ -22,7 +23,7 @@ export interface GatewayHooks {
   onEvent(sessionId: SessionId, event: SessionEvent): void;
   onAgentSession(sessionId: SessionId, agentSessionRef: string): void;
   onOptions(sessionId: SessionId, options: readonly RuntimeOption[]): void;
-  onStatus(sessionId: SessionId, status: string, reason?: string): void;
+  onStatus(sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
   onWorkerGone(workerId: string): void;
   onLog?(message: string): void;
 }

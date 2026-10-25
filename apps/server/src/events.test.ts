@@ -11,6 +11,7 @@ import { openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createLocalFs } from './local-fs.ts';
 import { createSessionQueue } from './session-queue.ts';
+import { createMemoryHosting } from './session-hosting.ts';
 import { createStreamHub } from './stream-hub.ts';
 
 /**
@@ -57,6 +58,8 @@ function harness() {
       revoke: async () => ({ ok: true, value: undefined })
     },
     search: store.search,
+    hosting: createMemoryHosting(),
+    queue: createSessionQueue(),
     now: () => 1_700_000_000_000,
     newId: () => crypto.randomUUID()
   };

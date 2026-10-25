@@ -18,63 +18,40 @@ import {
   setTaskStatusRequest,
   workerInfoSchema
 } from '@agent-hub/contract';
-import type {
-  Deps,
-  DomainError,
-  Result,
-  Session,
-  SessionEvent,
-  SessionId,
-  TaskStatus,
-  WorkerStatus
-} from '@agent-hub/domain';
+import type { Deps, DomainError, TaskStatus } from '@agent-hub/domain';
 import {
   asSessionId,
+  asTaskId,
   changeSessionOption,
-  searchUseCase,
   createProjectUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
-  emptyLayout,
-  err,
   forkSessionUseCase,
-  loadCanvas,
+  interruptSessionUseCase,
   listProjects,
+  listWorkers,
+  loadCanvas,
+  loadHome,
   notFound,
-  ok,
-  place,
+  promptSessionUseCase,
+  saveLayoutUseCase,
+  searchUseCase,
   setTaskStatusUseCase
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
 
-export interface LiveSessions {
-  has(sessionId: SessionId): boolean;
-  add(sessionId: SessionId): void;
-  drop(sessionId: SessionId): void;
-}
-
 export interface AppOptions {
   readonly deps: Deps;
   readonly hub: StreamHub;
-  readonly workers: () => WorkerStatus[];
-  readonly live: LiveSessions;
   readonly token: string | null;
-  /**
-   * 落盘一条事件。必须由外面注入而不是这里直接 recordEvent：
-   * 同一会话的落盘要串行（ADR 0004），而串行队列属于运行组合根。
-   */
-  readonly record: (sessionId: SessionId, event: SessionEvent) => Promise<Result<void, DomainError>>;
   /**
    * 等 agent 回报它改完之后的可调项。
    *
    * 换模型会连带改变别的项，所以「改成功了」这句话只有 agent 有资格说；
    * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
    */
-  readonly waitOptions?: (sessionId: SessionId) => Promise<void>;
+  readonly waitOptions?: (sessionId: string) => Promise<void>;
 }
-
-/** 首页只列最近这么多条会话：多到能认出「昨天那条」，少到不用滚。 */
-const RECENT_LIMIT = 24;
 
 const STATUS_OF: Record<DomainError['code'], ContentfulStatusCode> = {
   invalid: 400,
@@ -84,16 +61,27 @@ const STATUS_OF: Record<DomainError['code'], ContentfulStatusCode> = {
   not_implemented: 501
 };
 
+/** 所有错误响应都长一个样：{ error: { code, message } }。 */
 function fail(c: Context, error: DomainError): Response {
   return c.json({ error: { code: error.code, message: error.message } }, STATUS_OF[error.code]);
 }
 
-function badRequest(c: Context): Response {
-  return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
+type Parsed<T> = { ok: true; value: T } | { ok: false; response: Response };
+/** 契约里的 zod schema 只用到这一点点形状；server 不必直接依赖 zod。 */
+interface Schema<T> {
+  safeParse(value: unknown): { success: true; data: T } | { success: false };
+}
+
+/** 读请求体并按契约校验；不合法时直接给出统一的 400。 */
+async function body<T>(c: Context, schema: Schema<T>): Promise<Parsed<T>> {
+  const parsed = schema.safeParse(await c.req.json().catch(() => null));
+  return parsed.success
+    ? { ok: true, value: parsed.data }
+    : { ok: false, response: fail(c, { code: 'invalid', message: '请求体不合法' }) };
 }
 
 export function createApp(options: AppOptions): Hono {
-  const { deps, hub, live } = options;
+  const { deps, hub } = options;
   const app = new Hono();
 
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
@@ -104,77 +92,26 @@ export function createApp(options: AppOptions): Hono {
       ? options.token
       : (c.req.query('token') ?? '');
     if (offered !== options.token) {
-      return c.json({ error: { code: 'unauthorized', message: '缺少或错误的 token' } }, 401);
+      return c.json({ error: { code: 'unauthorized', message: '缺少或错误的 token' } }, 401); // 不是领域错误，所以不走 fail()
     }
     return next();
   });
 
   app.get('/api/health', (c) => c.json({ ok: true }));
+
+  app.get('/api/home', async (c) => c.json(homeSchema.parse(await loadHome(deps))));
+
   // 目录选择器（S2.1）：让人从真实目录里挑，而不是手打一个可能会错的路径。
-  // 首页：项目 + 每个项目里有多少活。看板不做，但这个摘要不违反「不做看板」——
-  // 它是入口，不是用卡片列表示意进度。
-  app.get('/api/home', async (c) => {
-    const listed = await listProjects(deps);
-    if (!listed.ok) return fail(c, listed.error);
-    const projects = listed.value;
-
-    const owners = new Map<string, { title: string; projectId: string; projectName: string }>();
-    const summaries = await Promise.all(
-      projects.map(async (project) => {
-        const tasks = await deps.tasks.listByProject(project.id);
-        const sessions = await deps.sessions.listByProject(project.id);
-        for (const task of tasks) {
-          owners.set(task.id, { title: task.title, projectId: project.id, projectName: project.name });
-        }
-        const touched = [...tasks.map((task) => task.updatedAt), ...sessions.map((session) => session.updatedAt)];
-        return {
-          ...project,
-          taskCount: tasks.length,
-          sessionCount: sessions.length,
-          lastActivityAt: touched.length === 0 ? null : Math.max(...touched)
-        };
-      })
-    );
-    summaries.sort((left, right) => (right.lastActivityAt ?? right.createdAt) - (left.lastActivityAt ?? left.createdAt));
-
-    // 最近会话是首页的主角：它回答「接着干哪条」，项目列表只回答「在哪儿干」。
-    const recentSessions = (await deps.sessions.listAll())
-      .sort((left, right) => right.updatedAt - left.updatedAt)
-      .flatMap((session) => {
-        const owner = owners.get(session.taskId);
-        if (!owner) return [];
-        return [
-          {
-            sessionId: session.id,
-            taskId: session.taskId,
-            taskTitle: owner.title,
-            projectId: owner.projectId,
-            projectName: owner.projectName,
-            agentId: session.agentId,
-            status: session.status,
-            lastSeq: session.lastSeq,
-            updatedAt: session.updatedAt
-          }
-        ];
-      })
-      .slice(0, RECENT_LIMIT);
-    return c.json(homeSchema.parse({ projects: summaries, recentSessions }));
-  });
-
   app.get('/api/fs/directories', async (c) => {
     const requested = c.req.query('path') ?? '';
     const path = requested === '' ? homedir() : resolve(requested);
-    if (!(await deps.fs.directoryExists(path))) {
-      return c.json({ error: { code: 'not_found', message: `没有这个目录：${path}` } }, 404);
-    }
+    if (!(await deps.fs.directoryExists(path))) return fail(c, notFound(`没有这个目录：${path}`));
     const entries = await deps.fs.listDirectories(path);
     const parent = dirname(path);
-    return c.json(
-      directoryListingSchema.parse({ path, parent: parent === path ? null : parent, entries })
-    );
+    return c.json(directoryListingSchema.parse({ path, parent: parent === path ? null : parent, entries }));
   });
 
-  app.get('/api/workers', (c) => c.json(workerInfoSchema.array().parse(options.workers())));
+  app.get('/api/workers', async (c) => c.json(workerInfoSchema.array().parse(await listWorkers(deps))));
 
   app.get('/api/projects', async (c) => {
     const result = await listProjects(deps);
@@ -182,9 +119,9 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.post('/api/projects', async (c) => {
-    const parsed = createProjectRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
-    const result = await createProjectUseCase(deps, parsed.data);
+    const input = await body(c, createProjectRequest);
+    if (!input.ok) return input.response;
+    const result = await createProjectUseCase(deps, input.value);
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
@@ -193,148 +130,85 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
+  app.put('/api/projects/:projectId/layout', async (c) => {
+    const input = await body(c, saveLayoutRequest);
+    if (!input.ok) return input.response;
+    return c.json(await saveLayoutUseCase(deps, c.req.param('projectId'), input.value.positions));
+  });
+
   /** 列表视图与 Cmd+K 的同一个后端：按任务标题/目标 + 会话里说过的话搜。 */
   app.get('/api/search', async (c) => {
     const result = await searchUseCase(deps, {
       projectId: c.req.query('projectId') ?? '',
       query: c.req.query('q') ?? ''
     });
-    if (!result.ok) return fail(c, result.error);
-    return c.json(searchResponseSchema.parse({ hits: result.value }));
+    return result.ok ? c.json(searchResponseSchema.parse({ hits: result.value })) : fail(c, result.error);
   });
 
   app.post('/api/tasks', async (c) => {
-    const parsed = createTaskRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
-    const result = await createTaskUseCase(deps, parsed.data);
+    const input = await body(c, createTaskRequest);
+    if (!input.ok) return input.response;
+    const result = await createTaskUseCase(deps, input.value);
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
   app.patch('/api/tasks/:taskId/status', async (c) => {
-    const parsed = setTaskStatusRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
-    const result = await setTaskStatusUseCase(
-      deps,
-      c.req.param('taskId') as never,
-      parsed.data.status as TaskStatus
-    );
+    const input = await body(c, setTaskStatusRequest);
+    if (!input.ok) return input.response;
+    const status: TaskStatus = input.value.status;
+    const result = await setTaskStatusUseCase(deps, asTaskId(c.req.param('taskId')), status);
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
   app.post('/api/sessions/derive', async (c) => {
-    const parsed = deriveSessionRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
-    const result = await deriveSessionUseCase(deps, parsed.data);
-    if (!result.ok) return fail(c, result.error);
-    live.add(result.value.id);
-    return c.json(result.value, 201);
+    const input = await body(c, deriveSessionRequest);
+    if (!input.ok) return input.response;
+    const result = await deriveSessionUseCase(deps, input.value);
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
   app.post('/api/sessions/fork', async (c) => {
-    const parsed = forkSessionRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
-    const result = await forkSessionUseCase(deps, parsed.data);
-    if (!result.ok) return fail(c, result.error);
-    live.add(result.value.id);
-    return c.json(result.value, 201);
+    const input = await body(c, forkSessionRequest);
+    if (!input.ok) return input.response;
+    const result = await forkSessionUseCase(deps, input.value);
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
-  /**
-   * 发消息。会话不在 worker 手上时（server 重启过、worker 崩过）先补一次
-   * start_session + resume，再发消息——这就是 S7.1「重开浏览器还能接着干活」。
-   */
-  /**
-   * 会话跑完就没人托管它了（worker 那边已经 dispose）。
-   * 想再对它做任何事（说话、改模型），都得先把 agent 按上次的位置重新拉起来。
-   */
-  async function ensureHosted(session: Session): Promise<Result<void, DomainError>> {
-    if (live.has(session.id)) return ok(undefined);
-    const task = await deps.tasks.byId(session.taskId);
-    const project = task ? await deps.projects.byId(task.projectId) : null;
-    if (!task || !project) return err(notFound('会话所属任务或项目不存在'));
-    const resumed = await deps.gateway.dispatch({
-      kind: 'start_session',
-      sessionId: session.id,
-      taskId: session.taskId,
-      agentId: session.agentId,
-      model: session.model,
-      workspaceRoot: project.rootPath,
-      origin: session.origin,
-      resume: { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq },
-      options: session.options
-    });
-    if (!resumed.ok) return err(resumed.error);
-    live.add(session.id);
-    return ok(undefined);
-  }
-
   app.post('/api/sessions/:sessionId/prompt', async (c) => {
-    const parsed = promptRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
-
-    const sessionId = asSessionId(c.req.param('sessionId'));
-    const session = await deps.sessions.byId(sessionId);
-    if (!session) return c.json({ error: { code: 'not_found', message: '会话不存在' } }, 404);
-
-    // 先把「用户说了什么」记进 journal，再去叫 agent。反过来的话，agent 起不来时
-    // 用户那句问话就凭空消失了——专注对话里会是一条没有提问的回答。
-    const logged = await options.record(sessionId, { kind: 'prompt', text: parsed.data.text });
-    if (!logged.ok) return fail(c, logged.error);
-
-    const hosted = await ensureHosted(session);
-    if (!hosted.ok) return fail(c, hosted.error);
-
-    const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text: parsed.data.text });
-    return sent.ok ? c.json({ ok: true }) : fail(c, sent.error);
+    const input = await body(c, promptRequest);
+    if (!input.ok) return input.response;
+    const result = await promptSessionUseCase(deps, { sessionId: c.req.param('sessionId'), text: input.value.text });
+    return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   });
 
   /**
    * 改一项可调项（模型、思考强度……）。
    * 选项清单来自 agent，所以这里不校验 id 是否眼熟——只校验形状，
-   * 真正认不认由 agent 说了算，它不认就会在下面这步报错，然后我们什么都不写。
+   * 真正认不认由 agent 说了算，它不认就会报错，然后我们什么都不写。
    */
   app.post('/api/sessions/:sessionId/options', async (c) => {
-    const parsed = changeOptionRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
+    const input = await body(c, changeOptionRequest);
+    if (!input.ok) return input.response;
     const sessionId = c.req.param('sessionId');
-    const existing = await deps.sessions.byId(asSessionId(sessionId));
-    if (!existing) return c.json({ error: { code: 'not_found', message: '会话不存在' } }, 404);
-    // 改模型也是在改一条会话的运行状态；它没在跑就先拉起来，否则指令会打空。
-    const hosted = await ensureHosted(existing);
-    if (!hosted.ok) return fail(c, hosted.error);
     const changed = await changeSessionOption(deps, {
       sessionId,
-      id: parsed.data.optionId,
-      value: parsed.data.value
+      id: input.value.optionId,
+      value: input.value.value
     });
     if (!changed.ok) return fail(c, changed.error);
-    await options.waitOptions?.(asSessionId(sessionId));
-    const fresh = await deps.sessions.byId(asSessionId(sessionId));
-    return c.json(fresh ?? changed.value);
+    await options.waitOptions?.(sessionId);
+    return c.json((await deps.sessions.byId(asSessionId(sessionId))) ?? changed.value);
   });
 
   app.post('/api/sessions/:sessionId/interrupt', async (c) => {
-    const sessionId = asSessionId(c.req.param('sessionId'));
-    const result = await deps.gateway.dispatch({ kind: 'interrupt', sessionId });
+    const result = await interruptSessionUseCase(deps, c.req.param('sessionId'));
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   });
 
   app.get('/api/sessions/:sessionId/events', async (c) => {
+    const after = Number(c.req.query('after') ?? 0);
     const sessionId = asSessionId(c.req.param('sessionId'));
-    return c.json(await deps.sessions.eventsAfter(sessionId, 0));
-  });
-
-  app.put('/api/projects/:projectId/layout', async (c) => {
-    const parsed = saveLayoutRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return badRequest(c);
-    const projectId = c.req.param('projectId') as never;
-    const current = (await deps.layout.load(projectId)) ?? emptyLayout(projectId, deps.now());
-    let next = current;
-    for (const [nodeId, point] of Object.entries(parsed.data.positions)) {
-      next = place(next, nodeId, point, deps.now());
-    }
-    await deps.layout.save(next);
-    return c.json(next);
+    return c.json(await deps.sessions.eventsAfter(sessionId, Number.isFinite(after) ? after : 0));
   });
 
   /** SSE：一条连接推所有会话的事件，前端按 sessionId 分流。 */
