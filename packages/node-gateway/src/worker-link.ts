@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
-import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
+import type { ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import { serverToWorkerSchema } from '@agent-hub/contract';
+import { agentToDto } from '@agent-hub/contract/codec';
 import type {
   AgentRuntime,
   RuntimeOption,
@@ -64,7 +65,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       label: options.label,
       origin: options.origin ?? 'local',
       token: options.token,
-      agents: options.runtimes.map((runtime) => runtime.descriptor as unknown as AgentDto)
+      agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor))
     });
     options.onLog?.(`已连上 ${options.url}`);
   });
@@ -176,7 +177,6 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       sessionId: asSessionId(command.sessionId),
       taskId: command.taskId as StartSpec['taskId'],
       workspaceRoot: command.workspaceRoot,
-      model: command.model,
       resume: command.resume,
       options: command.options
     };

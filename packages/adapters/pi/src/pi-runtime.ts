@@ -281,8 +281,9 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
     ) satisfies AgentDescriptor,
 
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
-      // 空 model 意味着「用 Pi 自己的默认」，不要硬塞一个可能不存在的模型名。
-      const args = ['--mode', 'rpc', ...(spec.model === '' ? [] : ['--model', spec.model])];
+      // 没选模型意味着「用 Pi 自己的默认」，不要硬塞一个可能不存在的模型名。
+      const model = spec.options['model'];
+      const args = ['--mode', 'rpc', ...(typeof model === 'string' && model !== '' ? ['--model', model] : [])];
       if (options.sessionDir) args.push('--session-dir', options.sessionDir);
       const ref = spec.resume?.agentSessionRef ?? null;
       if (ref) args.push('--session-id', ref);

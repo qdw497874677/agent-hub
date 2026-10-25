@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  asAgentId,
   createProject,
   createTask,
   deriveSession,
@@ -27,7 +28,7 @@ async function seed(deps: Deps, store: ReturnType<typeof openSqliteStore>) {
   assert.ok(project.ok);
   const task = createTask({ projectId: project.value.id, title: '并发落盘', now: 1 });
   assert.ok(task.ok);
-  const session = deriveSession({ task: task.value, agentId: 'pi' as never, model: '', now: 1 });
+  const session = deriveSession({ task: task.value, agentId: asAgentId('pi'), model: '', now: 1 });
   assert.ok(session.ok);
   await deps.projects.save(project.value);
   await deps.tasks.save(task.value);
@@ -51,17 +52,10 @@ function harness() {
     },
     agents: createLiveCatalog(),
     fs: createLocalFs(),
-    capacity: { admit: async () => ({ ok: true, value: undefined }), release: async () => ({ ok: true, value: undefined }) },
-    provisioner: {
-      install: async () => ({ ok: true, value: undefined }),
-      upgrade: async () => ({ ok: true, value: undefined }),
-      revoke: async () => ({ ok: true, value: undefined })
-    },
     search: store.search,
     hosting: createMemoryHosting(),
     queue: createSessionQueue(),
-    now: () => 1_700_000_000_000,
-    newId: () => crypto.randomUUID()
+    now: () => 1_700_000_000_000
   };
   return { deps, store };
 }

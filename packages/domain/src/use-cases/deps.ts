@@ -14,8 +14,6 @@ import type { LayoutStore } from '../ports/layout-store.ts';
 import type { SessionEventStream } from '../ports/event-stream.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { WorkspaceFS } from '../ports/workspace-fs.ts';
-import type { CapacityPolicy } from '../ports/capacity-policy.ts';
-import type { NodeProvisioner } from '../ports/node-provisioner.ts';
 import type { SearchGateway } from '../ports/search-gateway.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
@@ -32,6 +30,13 @@ export interface AgentCatalog {
   descriptor(id: AgentId): AgentDescriptor | null;
 }
 
+/**
+ * 用例能碰到的全部端口。**用例签名一律写 `Pick<Deps, …>`**，只声明自己真用到的那几个，
+ * 依赖一眼可见、测试替身也只需造这几个。全量 `Deps` 只出现在组合根（server/main.ts）。
+ *
+ * CapacityPolicy / NodeProvisioner 仍是已定义的端口（见 ports/），但当前没有用例消费它们，
+ * 所以不进 Deps——等调度/下发真的落地时再接进来，不提前养空实现。
+ */
 export interface Deps {
   readonly projects: ProjectRepository;
   readonly tasks: TaskRepository;
@@ -42,15 +47,12 @@ export interface Deps {
   readonly gateway: NodeGateway;
   readonly agents: AgentCatalog;
   readonly fs: WorkspaceFS;
-  readonly capacity: CapacityPolicy;
-  readonly provisioner: NodeProvisioner;
   readonly search: SearchGateway;
   /** 哪些会话此刻有 worker 托管；不在就得先 resume 再说话。 */
   readonly hosting: SessionHosting;
   /** 同一会话的写入串行（ADR 0004）。 */
   readonly queue: SessionQueue;
   readonly now: () => number;
-  readonly newId: () => string;
 }
 
 export interface CanvasProjection {

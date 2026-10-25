@@ -9,7 +9,6 @@ export interface StartSpec {
   readonly sessionId: SessionId;
   readonly taskId: TaskId;
   readonly workspaceRoot: string;
-  readonly model: string;
   /** 双权威：知道 agent 自己的会话 id 和平台已确认的游标，才能接着聊。 */
   readonly resume: { readonly agentSessionRef: string | null; readonly cursor: Seq } | null;
   /** 开跑前就要定下的可调项（键是 option id）。空对象 = 全部用 agent 的默认。 */

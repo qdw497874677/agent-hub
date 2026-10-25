@@ -234,8 +234,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
 
       // 开跑前用户已经选好的项（派生时选的模型、思考强度），交给 agent 去落实。
       // 模型也是一个配置项（ACP 的 category: model），与其余选项走同一条 set_config_option。
-      const wanted = { ...(spec.model ? { model: spec.model } : {}), ...spec.options };
-      for (const [id, value] of Object.entries(wanted)) {
+      for (const [id, value] of Object.entries(spec.options)) {
         const changed = await session.changeOption(id, value);
         if (!changed.ok) {
           await session.dispose();

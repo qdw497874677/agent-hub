@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AgentDto } from '@agent-hub/contract';
+import { agentToDto } from '@agent-hub/contract/codec';
 import type { AgentDescriptor, JournalEntry, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
 import { asAgentId, asSessionId, recordEvent } from '@agent-hub/domain';
 import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeps } from '@agent-hub/domain/testing';
@@ -123,17 +123,7 @@ test('建项目 → 建任务 → 派生会话，整条纵切走通', async () =
   assert.equal(denied.status, 409);
   assert.match((denied.body as { error: { message: string } }).error.message, /没有在线节点/);
 
-  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [
-    {
-      id: descriptor.id,
-      label: descriptor.label,
-      capabilities: descriptor.capabilities as never,
-      models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel,
-      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
-      options: descriptor.options as unknown as AgentDto['options']
-    }
-  ]);
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
 
   const derived = await call('/api/sessions/derive', {
     method: 'POST',
@@ -157,17 +147,7 @@ test('建项目 → 建任务 → 派生会话，整条纵切走通', async () =
 
 test('会话不在 worker 手上时，prompt 先 resume 再发（S7.1）', async () => {
   const { deps, call, dispatched, live } = harness();
-  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [
-    {
-      id: descriptor.id,
-      label: descriptor.label,
-      capabilities: descriptor.capabilities as never,
-      models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel,
-      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
-      options: descriptor.options as unknown as AgentDto['options']
-    }
-  ]);
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
 
   const project = await call('/api/projects', {
     method: 'POST',
@@ -212,17 +192,7 @@ test('会话不在 worker 手上时，prompt 先 resume 再发（S7.1）', async
 
 test('分叉一个不存在的会话返回 404，分叉点超出历史返回 409', async () => {
   const { deps, call } = harness();
-  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [
-    {
-      id: descriptor.id,
-      label: descriptor.label,
-      capabilities: descriptor.capabilities as never,
-      models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel,
-      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
-      options: descriptor.options as unknown as AgentDto['options']
-    }
-  ]);
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
 
   const missing = await call('/api/sessions/fork', {
     method: 'POST',
@@ -283,17 +253,7 @@ test('项目目录不存在的请求返回 400 而不是 500', async () => {
 
 test('event 落盘后能从 /events 读回，seq 单调', async () => {
   const { deps, call, sessions } = harness();
-  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [
-    {
-      id: descriptor.id,
-      label: descriptor.label,
-      capabilities: descriptor.capabilities as never,
-      models: [...descriptor.models],
-      defaultModel: descriptor.defaultModel,
-      // 测试替身：wire 的数组是可变的，领域的是只读的，这里只是搬运
-      options: descriptor.options as unknown as AgentDto['options']
-    }
-  ]);
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
   const project = await call('/api/projects', {
     method: 'POST',
     body: JSON.stringify({ name: 'demo', rootPath: '/tmp/demo' })

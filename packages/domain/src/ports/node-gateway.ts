@@ -14,11 +14,13 @@ export type WorkerCommand =
       readonly sessionId: SessionId;
       readonly taskId: TaskId;
       readonly agentId: string;
-      readonly model: string;
       readonly workspaceRoot: string;
       readonly origin: SessionOrigin;
       readonly resume: { readonly agentSessionRef: string | null; readonly cursor: number } | null;
-      /** 开跑前就定下的可调项（键是 option id）；空对象 = 全用 agent 默认。 */
+      /**
+       * 开跑前就定下的可调项（键是 option id）；空对象 = 全用 agent 默认。
+       * 模型也在这里（`options.model`）——它就是一个 category 为 model 的可调项，不再单开字段。
+       */
       readonly options: Readonly<Record<string, string | boolean>>;
     }
   | {

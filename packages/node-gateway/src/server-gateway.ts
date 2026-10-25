@@ -2,9 +2,8 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
-import { serverToWorkerSchema, workerToServerSchema } from '@agent-hub/contract';
+import { workerToServerSchema } from '@agent-hub/contract';
 import type {
-  AgentDescriptor,
   DomainError,
   NodeGateway,
   Result,
@@ -31,6 +30,7 @@ export interface GatewayHooks {
 interface Connected {
   readonly workerId: string;
   readonly label: string;
+  readonly origin: WorkerStatus['origin'];
   readonly socket: WebSocket;
   readonly agents: AgentDto[];
 }
@@ -77,6 +77,7 @@ export function createServerGateway(hooks: GatewayHooks): ServerGateway {
         connected.set(workerId, {
           workerId,
           label: frame.label,
+          origin: frame.origin,
           socket,
           agents: frame.agents
         });
@@ -109,9 +110,9 @@ export function createServerGateway(hooks: GatewayHooks): ServerGateway {
 
   const statuses = (): WorkerStatus[] =>
     [...connected.values()].map((entry) => ({
-        workerId: entry.workerId,
-        label: entry.label,
-      origin: 'local' as const,
+      workerId: entry.workerId,
+      label: entry.label,
+      origin: entry.origin,
       state: 'online' as const
     }));
 
@@ -148,7 +149,6 @@ function toWire(command: WorkerCommand): ServerToWorker {
         sessionId: command.sessionId,
         taskId: command.taskId,
         agentId: command.agentId,
-        model: command.model,
         workspaceRoot: command.workspaceRoot,
         origin: command.origin,
         resume: command.resume,
@@ -168,16 +168,4 @@ function toWire(command: WorkerCommand): ServerToWorker {
         value: command.value
       };
   }
-}
-
-/** 让 server 侧也能把 worker 报上来的 AgentDto 还原成领域描述。 */
-export function toDescriptor(dto: AgentDto): AgentDescriptor {
-  return {
-    id: dto.id as AgentDescriptor['id'],
-    label: dto.label,
-    capabilities: dto.capabilities as AgentDescriptor['capabilities'],
-    models: dto.models,
-    defaultModel: dto.defaultModel,
-    options: dto.options as AgentDescriptor['options']
-  };
 }

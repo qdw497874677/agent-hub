@@ -139,10 +139,10 @@ export function openSqliteStore(file: string): SqliteStore {
     },
     async byId(id: Parameters<typeof asProjectId>[0]): Promise<Project | null> {
       const row = selectProject.get(id);
-      return row ? toProject(row as never) : null;
+      return row ? toProject(row) : null;
     },
     async list(): Promise<Project[]> {
-      return selectProjects.all().map((row) => toProject(row as never));
+      return selectProjects.all().map((row) => toProject(row));
     }
   };
 
@@ -160,10 +160,10 @@ export function openSqliteStore(file: string): SqliteStore {
     },
     async byId(id: Parameters<typeof asTaskId>[0]): Promise<Task | null> {
       const row = selectTask.get(id);
-      return row ? toTask(row as never) : null;
+      return row ? toTask(row) : null;
     },
     async listByProject(projectId: Parameters<typeof asProjectId>[0]): Promise<Task[]> {
-      return selectTasksByProject.all(projectId).map((row) => toTask(row as never));
+      return selectTasksByProject.all(projectId).map((row) => toTask(row));
     }
   };
 
@@ -189,16 +189,16 @@ export function openSqliteStore(file: string): SqliteStore {
     },
     async byId(id: Parameters<typeof asSessionId>[0]): Promise<Session | null> {
       const row = selectSession.get(id);
-      return row ? toSession(row as never) : null;
+      return row ? toSession(row) : null;
     },
     async listByTask(taskId: Parameters<typeof asTaskId>[0]): Promise<Session[]> {
-      return selectSessionsByTask.all(taskId).map((row) => toSession(row as never));
+      return selectSessionsByTask.all(taskId).map((row) => toSession(row));
     },
     async listByProject(projectId: Parameters<typeof asProjectId>[0]): Promise<Session[]> {
-      return selectSessionsByProject.all(projectId).map((row) => toSession(row as never));
+      return selectSessionsByProject.all(projectId).map((row) => toSession(row));
     },
     async listAll(): Promise<Session[]> {
-      return selectAllSessions.all().map((row) => toSession(row as never));
+      return selectAllSessions.all().map((row) => toSession(row));
     },
     /** 事件与游标必须同一次提交，否则崩溃会留下"库里多了事件但 seq 没动"。 */
     async append(session: Session, event: SessionEvent, at: number): Promise<void> {
@@ -217,7 +217,7 @@ export function openSqliteStore(file: string): SqliteStore {
     async eventsAfter(sessionId: Parameters<typeof asSessionId>[0], seq: Seq): Promise<JournalEntry[]> {
       return selectEventsAfter
         .all(sessionId, seq)
-        .map((row) => toJournalEntry(row as never));
+        .map((row) => toJournalEntry(row));
     },
     async tail(
       sessionId: Parameters<typeof asSessionId>[0],
@@ -227,7 +227,7 @@ export function openSqliteStore(file: string): SqliteStore {
       return selectEventsTail
         .all(sessionId, limit)
         .reverse()
-        .map((row) => toJournalEntry(row as never));
+        .map((row) => toJournalEntry(row));
     },
     async linkEntry(sessionId: Parameters<typeof asSessionId>[0], seq: Seq, entryId: string): Promise<void> {
       insertEntryMap.run(sessionId, seq, entryId);
@@ -251,10 +251,10 @@ export function openSqliteStore(file: string): SqliteStore {
       );
     },
     async bySession(sessionId: Parameters<typeof asSessionId>[0]): Promise<Artifact[]> {
-      return selectArtifactsBySession.all(sessionId).map((row) => toArtifact(row as never));
+      return selectArtifactsBySession.all(sessionId).map((row) => toArtifact(row));
     },
     async byTask(taskId: Parameters<typeof asTaskId>[0]): Promise<Artifact[]> {
-      return selectArtifactsByTask.all(taskId).map((row) => toArtifact(row as never));
+      return selectArtifactsByTask.all(taskId).map((row) => toArtifact(row));
     }
   };
 

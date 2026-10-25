@@ -12,7 +12,7 @@ export interface CreateProjectCommand {
 }
 
 export async function createProjectUseCase(
-  deps: Deps,
+  deps: Pick<Deps, 'fs' | 'now' | 'projects'>,
   command: CreateProjectCommand
 ): Promise<Result<Project, DomainError>> {
   const directoryExists = await deps.fs.directoryExists(command.rootPath);
@@ -27,12 +27,12 @@ export async function createProjectUseCase(
   return ok(created.value);
 }
 
-export async function listProjects(deps: Deps): Promise<Result<Project[], DomainError>> {
+export async function listProjects(deps: Pick<Deps, 'projects'>): Promise<Result<Project[], DomainError>> {
   return ok(await deps.projects.list());
 }
 
 export async function loadProject(
-  deps: Deps,
+  deps: Pick<Deps, 'projects'>,
   projectId: Project['id']
 ): Promise<Result<Project, DomainError>> {
   const project = await deps.projects.byId(projectId);

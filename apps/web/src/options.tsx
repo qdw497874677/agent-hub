@@ -19,11 +19,6 @@ export function currentOf(
   return values[option.id] ?? option.current ?? options.length === 0;
 }
 
-/** 分组与单值在 ACP 里是两种形状，这里只做判别，不改写内容。 */
-function isGroup(choice: RuntimeOptionDto['choices'][number]): boolean {
-  return choice.kind === 'group';
-}
-
 /**
  * 可调项不是我们发明的清单，是 agent 报上来的清单（ACP 的 config options）。
  *

@@ -1,5 +1,5 @@
 import type { AgentCatalog, AgentDescriptor, AgentId } from '@agent-hub/domain';
-import { toDescriptor } from '@agent-hub/node-gateway';
+import { agentFromDto } from '@agent-hub/contract/codec';
 import type { AgentDto } from '@agent-hub/contract';
 
 export interface LiveCatalog extends AgentCatalog {
@@ -34,7 +34,7 @@ export function createLiveCatalog(): LiveCatalog {
       return all().find((descriptor) => descriptor.id === id) ?? null;
     },
     upsert(workerId: string, agents: readonly AgentDto[]): void {
-      byWorker.set(workerId, agents.map((agent) => toDescriptor(agent)));
+      byWorker.set(workerId, agents.map((agent) => agentFromDto(agent)));
     },
     removeWorker(workerId: string): void {
       byWorker.delete(workerId);

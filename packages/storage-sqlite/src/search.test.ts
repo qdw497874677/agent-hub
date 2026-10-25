@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, createProject, createTask, deriveSession, type Session } from '@agent-hub/domain';
+import { applyEvent, asAgentId, createProject, createTask, deriveSession, type Session } from '@agent-hub/domain';
 import { openSqliteStore } from './store.ts';
 
 /**
@@ -37,7 +37,7 @@ async function seed() {
   });
   assert.ok(other.ok);
 
-  const derived = deriveSession({ task: task.value, agentId: 'pi' as never, model: '', now });
+  const derived = deriveSession({ task: task.value, agentId: asAgentId('pi'), model: '', now });
   assert.ok(derived.ok);
   let session: Session = derived.value;
   await store.projects.save(project.value);
@@ -110,7 +110,7 @@ test('LIKE 的通配符被转义：搜 100% 不会匹配一切', async () => {
 });
 
 test('按项目隔离：别的项目里的东西搜不到', async () => {
-  const { store, project } = await seed();
+  const { store } = await seed();
   const other = createProject({
     name: '别的',
     rootPath: '/tmp/other',

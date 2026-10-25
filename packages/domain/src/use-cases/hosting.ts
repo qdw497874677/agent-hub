@@ -26,7 +26,6 @@ export function startCommand(
     sessionId: session.id,
     taskId: session.taskId,
     agentId: session.agentId,
-    model: session.model,
     workspaceRoot: project.rootPath,
     origin: session.origin,
     resume,
