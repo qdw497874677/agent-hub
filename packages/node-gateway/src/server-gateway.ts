@@ -4,7 +4,6 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { AgentDto, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import { workerToServerSchema } from '@agent-hub/contract';
 import type {
-  DirectoryEntry,
   DomainError,
   NodeGateway,
   Result,
@@ -52,13 +51,15 @@ interface Registered {
   reason?: string;
 }
 
-interface PendingListing {
+/** 一次请求-回复（目录、文件清单、读文件）：按 requestId 对上，超时或断线都要给答复。 */
+interface PendingRequest {
   readonly workerId: string;
-  readonly resolve: (result: Result<DirectoryListing, DomainError>) => void;
+  readonly settle: (reply: ReplyFrame | DomainError) => void;
   readonly timer: NodeJS.Timeout;
 }
 
-type DirectoryListing = { path: string; exists: boolean; entries: DirectoryEntry[] };
+type ReplyFrame = Extract<WorkerToServer, { type: 'directories' | 'files' | 'file' }>;
+
 
 export interface ServerGateway {
   readonly gateway: NodeGateway;
@@ -77,7 +78,7 @@ export interface ServerGateway {
 export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions = {}): ServerGateway {
   const registry = new Map<string, Registered>();
   const placement = new Map<string, string>();
-  const pending = new Map<string, PendingListing>();
+  const pending = new Map<string, PendingRequest>();
   const wss = new WebSocketServer({ noServer: true });
   const now = options.now ?? Date.now;
   const heartbeatMs = options.heartbeatMs ?? 10_000;
@@ -123,7 +124,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (request.workerId !== entry.workerId) continue;
       clearTimeout(request.timer);
       pending.delete(requestId);
-      request.resolve({ ok: false, error: unavailable(`Worker「${entry.label}」断开了`) });
+      request.settle(unavailable(`Worker「${entry.label}」断开了`));
     }
     hooks.onWorkerGone(entry.workerId, reason);
   }
@@ -186,16 +187,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (!entry || entry.socket !== socket) return; // 没 hello 过的连接说什么都不算
       entry.lastSeenAt = now();
 
-      if (frame.type === 'directories') {
+      if (frame.type === 'directories' || frame.type === 'files' || frame.type === 'file') {
         const request = pending.get(frame.requestId);
-        if (!request) return;
+        if (!request || request.workerId !== entry.workerId) return;
         clearTimeout(request.timer);
         pending.delete(frame.requestId);
-        request.resolve(
-          frame.error !== undefined
-            ? { ok: false, error: unavailable(frame.error) }
-            : { ok: true, value: { path: frame.path, exists: frame.exists, entries: frame.entries } }
-        );
+        request.settle(frame);
         return;
       }
       if (frame.type === 'event') hooks.onEvent(frame.sessionId as SessionId, frame.event);
@@ -266,6 +263,30 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   const statuses = (): WorkerStatus[] =>
     [...registry.values()].map(describe).sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));
 
+  function request(
+    workerId: string,
+    what: string,
+    build: (requestId: string) => ServerToWorker
+  ): Promise<Result<ReplyFrame, DomainError>> {
+    return new Promise((resolve) => {
+      requestSeq += 1;
+      const requestId = `req-${requestSeq}`;
+      const settle = (reply: ReplyFrame | DomainError): void =>
+        resolve('type' in reply ? { ok: true, value: reply } : { ok: false, error: reply });
+      const timer = setTimeout(() => {
+        pending.delete(requestId);
+        settle(unavailable(`Worker「${labelOf(workerId)}」没有及时回复${what}`));
+      }, requestTimeoutMs);
+      pending.set(requestId, { workerId, settle, timer });
+      const sent = sendTo(workerId, build(requestId));
+      if (!sent.ok) {
+        clearTimeout(timer);
+        pending.delete(requestId);
+        resolve(sent);
+      }
+    });
+  }
+
   const gateway: NodeGateway = {
     async status(): Promise<WorkerStatus[]> {
       return statuses();
@@ -273,22 +294,29 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     async dispatch(command: WorkerCommand): Promise<Result<void, DomainError>> {
       return dispatchTo(command);
     },
-    listDirectories(workerId: string, path: string) {
-      return new Promise<Result<DirectoryListing, DomainError>>((resolve) => {
-        requestSeq += 1;
-        const requestId = `dir-${requestSeq}`;
-        const timer = setTimeout(() => {
-          pending.delete(requestId);
-          resolve({ ok: false, error: unavailable(`Worker「${labelOf(workerId)}」没有及时回复目录列表`) });
-        }, requestTimeoutMs);
-        pending.set(requestId, { workerId, resolve, timer });
-        const sent = sendTo(workerId, { kind: 'list_directories', requestId, path });
-        if (!sent.ok) {
-          clearTimeout(timer);
-          pending.delete(requestId);
-          resolve(sent);
-        }
-      });
+    async listDirectories(workerId: string, path: string) {
+      const reply = await request(workerId, '目录列表', (requestId) => ({ kind: 'list_directories', requestId, path }));
+      if (!reply.ok) return reply;
+      const frame = reply.value;
+      if (frame.type !== 'directories') return { ok: false, error: unavailable('Worker 回错了帧') };
+      if (frame.error !== undefined) return { ok: false, error: unavailable(frame.error) };
+      return { ok: true, value: { path: frame.path, exists: frame.exists, entries: frame.entries } };
+    },
+    async listFiles(workerId: string, root: string, limit: number) {
+      const reply = await request(workerId, '文件清单', (requestId) => ({ kind: 'list_files', requestId, root, limit }));
+      if (!reply.ok) return reply;
+      const frame = reply.value;
+      if (frame.type !== 'files') return { ok: false, error: unavailable('Worker 回错了帧') };
+      if (frame.error !== undefined) return { ok: false, error: unavailable(frame.error) };
+      return { ok: true, value: { files: frame.files, truncated: frame.truncated } };
+    },
+    async readFile(workerId: string, path: string, maxBytes: number) {
+      const reply = await request(workerId, '文件', (requestId) => ({ kind: 'read_file', requestId, path, maxBytes }));
+      if (!reply.ok) return reply;
+      const frame = reply.value;
+      if (frame.type !== 'file') return { ok: false, error: unavailable('Worker 回错了帧') };
+      if (frame.error !== undefined) return { ok: false, error: unavailable(frame.error) };
+      return { ok: true, value: frame.data === null ? null : new Uint8Array(Buffer.from(frame.data, 'base64')) };
     }
   };
 
@@ -311,7 +339,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   };
 }
 
-function toWire(command: WorkerCommand): Exclude<ServerToWorker, { kind: 'list_directories' }> {
+function toWire(command: WorkerCommand): Exclude<ServerToWorker, { kind: 'list_directories' | 'list_files' | 'read_file' }> {
   switch (command.kind) {
     case 'start_session':
       return {

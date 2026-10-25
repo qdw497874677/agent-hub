@@ -6,7 +6,7 @@ import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { invalid, notFound } from '../errors.ts';
 import type { AttachmentInput, PromptPart, StoredAttachment } from '../attachment.ts';
-import { attachmentPath, validateAttachments } from '../attachment.ts';
+import { attachmentPath, base64Bytes, validateAttachments } from '../attachment.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, projectOf } from './hosting.ts';
@@ -23,19 +23,14 @@ export interface PromptCommand {
   readonly attachments?: readonly AttachmentInput[];
 }
 
-function decodeBase64(data: string): Uint8Array {
-  const binary = atob(data);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return bytes;
-}
-
 /**
- * 附件落盘并拆成两份：journal 里的元数据，和发给 worker 的内容块。
+ * 附件拆成两份：journal 里的元数据，和发给 worker 的内容块。
+ * 落盘由会话所在的 Worker 做（它收到 prompt 时先写进项目目录再交给 agent）：
+ * 项目目录可能在别的机器上，Server 不往那里写。
  * 能力矩阵里 attachments 为 denied 的 agent 直接拒，原因原样给用户看。
  */
 async function prepareAttachments(
-  deps: Pick<Deps, 'agents' | 'fs' | 'now' | 'projects' | 'tasks'>,
+  deps: Pick<Deps, 'agents' | 'now' | 'projects' | 'tasks'>,
   session: Session,
   inputs: readonly AttachmentInput[]
 ): Promise<Result<{ stored: StoredAttachment[]; parts: PromptPart[] }, DomainError>> {
@@ -59,9 +54,7 @@ async function prepareAttachments(
       continue;
     }
     const path = attachmentPath(session.id, index, at, input.name);
-    const written = await deps.fs.writeFile(`${root}/${path}`, decodeBase64(input.data));
-    if (!written.ok) return written;
-    stored.push({ kind: input.kind, name: input.name, path, mimeType: input.mimeType, bytes: written.value });
+    stored.push({ kind: input.kind, name: input.name, path, mimeType: input.mimeType, bytes: base64Bytes(input.data) });
     parts.push({ ...input, path: `${root}/${path}` });
   }
   return ok({ stored, parts });
@@ -96,20 +89,20 @@ export async function promptSessionUseCase(
   return deps.gateway.dispatch({ kind: 'prompt', sessionId, text: command.text, parts });
 }
 
-/** 字节数由 server 补：adapter 只知道路径，只有能摸到磁盘的一侧才 stat 得到真实大小。 */
+/**
+ * 字节数要能摸到磁盘的一侧来量。远程项目由 Worker 量好了再报上来；
+ * 只有目录在 Server 本机的项目才由 Server 自己 stat。
+ */
 async function withBytes(
   deps: Pick<Deps, 'fs' | 'sessions' | 'tasks' | 'projects'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<SessionEvent> {
   if (event.kind !== 'artifact') return event;
-  let absolute = event.path;
-  if (!absolute.startsWith('/')) {
-    const session = await deps.sessions.byId(sessionId);
-    const project = session ? await projectOf(deps, session) : null;
-    if (!project) return event;
-    absolute = `${project.rootPath.replace(/\/+$/, '')}/${event.path}`;
-  }
+  const session = await deps.sessions.byId(sessionId);
+  const project = session ? await projectOf(deps, session) : null;
+  if (!project || project.workerId !== null) return event;
+  const absolute = event.path.startsWith('/') ? event.path : `${project.rootPath.replace(/\/+$/, '')}/${event.path}`;
   const bytes = await deps.fs.stat(absolute);
   return bytes === null ? event : { ...event, bytes };
 }

@@ -51,7 +51,9 @@ const fake: AgentDescriptor = {
 const localGateway: NodeGateway = {
   status: async () => [{ workerId: 'local', label: '本机', origin: 'local', state: 'online' }],
   dispatch: async () => ok(undefined),
-  listDirectories: async (_id, path) => ok({ path, exists: true, entries: [] })
+  listDirectories: async (_id, path) => ok({ path, exists: true, entries: [] }),
+  listFiles: async () => ok({ files: [], truncated: false }),
+  readFile: async () => ok(null)
 };
 
 async function world(overrides: Parameters<typeof inMemoryDeps>[0] = {}) {

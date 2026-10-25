@@ -57,4 +57,15 @@ export interface NodeGateway {
   ): Promise<
     Result<{ readonly path: string; readonly exists: boolean; readonly entries: readonly DirectoryEntry[] }, DomainError>
   >;
+  /**
+   * 项目里的文件（相对 root），给 `@` 引用选择器。由项目所在的那台 Worker 扫——
+   * Server 不读 Worker 机器上的路径。
+   */
+  listFiles(
+    workerId: string,
+    root: string,
+    limit: number
+  ): Promise<Result<{ readonly files: readonly string[]; readonly truncated: boolean }, DomainError>>;
+  /** 读那台 Worker 上的一个文件（只用于会话自己的附件）。不存在 = null；超过 maxBytes 报错。 */
+  readFile(workerId: string, path: string, maxBytes: number): Promise<Result<Uint8Array | null, DomainError>>;
 }

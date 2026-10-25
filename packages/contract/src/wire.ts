@@ -313,6 +313,23 @@ export const workerDirectoriesSchema = z.object({
   error: z.string().optional()
 });
 
+/** `@` 引用选择器要的文件清单（相对项目根），由项目所在的那台 Worker 扫。 */
+export const workerFilesSchema = z.object({
+  type: z.literal('files'),
+  requestId: z.string(),
+  files: z.array(z.string()).default([]),
+  truncated: z.boolean().default(false),
+  error: z.string().optional()
+});
+
+/** 读一个文件的回复（附件缩略图）。`data` 为 null = 文件不存在。 */
+export const workerFileSchema = z.object({
+  type: z.literal('file'),
+  requestId: z.string(),
+  data: z.string().nullable().default(null),
+  error: z.string().optional()
+});
+
 export const workerEventSchema = z.object({
   type: z.literal('event'),
   sessionId: id,
@@ -406,7 +423,9 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerAgentSessionSchema,
   workerOptionsSchema,
   workerStatusSchema,
-  workerDirectoriesSchema
+  workerDirectoriesSchema,
+  workerFilesSchema,
+  workerFileSchema
 ]);
 
 export const startSessionCommandSchema = z.object({
@@ -431,8 +450,26 @@ export const listDirectoriesCommandSchema = z.object({
   path: z.string()
 });
 
+/** 列项目里的文件（`@` 引用）。`root` 是那台机器上的项目目录。 */
+export const listFilesCommandSchema = z.object({
+  kind: z.literal('list_files'),
+  requestId: z.string(),
+  root: z.string(),
+  limit: z.number().int().positive()
+});
+
+/** 读一个文件（只用于这条会话自己的附件），超过 maxBytes 由 Worker 拒。 */
+export const readFileCommandSchema = z.object({
+  kind: z.literal('read_file'),
+  requestId: z.string(),
+  path: z.string(),
+  maxBytes: z.number().int().positive()
+});
+
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   listDirectoriesCommandSchema,
+  listFilesCommandSchema,
+  readFileCommandSchema,
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),

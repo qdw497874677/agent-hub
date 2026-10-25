@@ -343,6 +343,10 @@ test('附件：发图 + @ 引用走通；缩略图可回取且只放行本会话
   assert.equal(prompted.status, 200, JSON.stringify(prompted.body));
   const sent = dispatched.at(-1);
   assert.equal(sent?.kind === 'prompt' ? sent.parts.length : 0, 2);
+  // 附件由会话所在的 Worker 落盘（hub 不碰那台机器的文件系统）：这里替 worker 写一下
+  const part = sent?.kind === 'prompt' ? sent.parts[0] : undefined;
+  assert.ok(part?.path?.startsWith('/tmp/demo/.agent-hub/attachments/'));
+  await deps.fs.writeFile(part?.path ?? '', Buffer.from('png!'));
 
   const entries = (await call(`/api/sessions/${sessionId}/events`)).body as JournalEntry[];
   const last = entries.at(-1)?.event;

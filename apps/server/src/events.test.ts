@@ -10,7 +10,7 @@ import {
 } from '@agent-hub/domain';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createLiveCatalog } from './agent-catalog.ts';
-import { createLocalFs } from './local-fs.ts';
+import { createLocalFs } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -49,7 +49,9 @@ function harness() {
     gateway: {
       status: async () => [],
       dispatch: async () => ({ ok: true, value: undefined }),
-      listDirectories: async () => ({ ok: true, value: { path: '/', exists: false, entries: [] } })
+      listDirectories: async () => ({ ok: true, value: { path: '/', exists: false, entries: [] } }),
+      listFiles: async () => ({ ok: true, value: { files: [], truncated: false } }),
+      readFile: async () => ({ ok: true, value: null })
     },
     agents: createLiveCatalog(),
     fs: createLocalFs(),

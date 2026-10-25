@@ -1,12 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
 import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
 import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
-import { connectWorkerLink } from '@agent-hub/node-gateway';
+import { connectWorkerLink, createWorkerFiles } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
 /**
@@ -53,23 +52,12 @@ const roots = (env['WORKER_ROOTS'] ?? homedir())
   .filter((root) => root !== '')
   .map((root) => resolve(root));
 
-async function listDirectories(path: string): Promise<{ path: string; exists: boolean; entries: { name: string; path: string }[] }> {
-  const absolute = resolve(path);
-  try {
-    if (!(await stat(absolute)).isDirectory()) return { path: absolute, exists: false, entries: [] };
-  } catch {
-    return { path: absolute, exists: false, entries: [] };
-  }
-  const entries = await readdir(absolute, { withFileTypes: true });
-  return {
-    path: absolute,
-    exists: true,
-    entries: entries
-      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-      .map((entry) => ({ name: entry.name, path: join(absolute, entry.name) }))
-      .sort((left, right) => left.name.localeCompare(right.name))
-  };
-}
+/**
+ * WORKER_ROOTS 是边界，不只是起点：hub 只能经这台 Worker 摸到 roots 里面的文件、
+ * 只能在 roots 里开会话。远程 Worker 一律设防；hub 自己拉起的本机 Worker
+ * 和 hub 同机，只有显式配了 WORKER_ROOTS 才设防。
+ */
+const files = createWorkerFiles({ roots, enforced: origin === 'remote' || env['WORKER_ROOTS'] !== undefined });
 
 /**
  * 显式覆盖：`PI_DEFAULT_MODEL=a,b`。除此之外一律问 Pi 自己（见 discoverPiModels），
@@ -110,6 +98,7 @@ const grokCatalog = await discoverGrokModels(grokCommand);
 const log = (message: string): void => {
   process.stdout.write(`[worker] ${message}\n`);
 };
+if (files.enforced) log(`允许访问的目录（WORKER_ROOTS）：${roots.join(':')}`);
 
 /**
  * ACP agent 是配置，不是代码。
@@ -191,8 +180,7 @@ const link = connectWorkerLink({
   origin,
   runtimes,
   host: { hostname: hostname(), platform: platform(), arch: arch() },
-  roots,
-  listDirectories,
+  files,
   onLog: log,
   // 断线会自己重连；走到这里只有两种情况：token 被拒、或者自己 close() 了。
   onClose: () => {

@@ -94,7 +94,10 @@ export async function browseDirectories(
   if (!listed.ok) return listed;
   if (!listed.value.exists) return err(notFound(`那台 Worker 上没有这个目录：${input.path}`));
   const path = listed.value.path;
-  return ok({ path, parent: parentOf(path), entries: listed.value.entries, workerId: owner.value });
+  // 到了那台 Worker 的 WORKER_ROOTS 边界就不再给「上一级」：往上走只会撞到拒绝
+  const worker = (await deps.gateway.status()).find((w) => w.workerId === owner.value);
+  const atRoot = (worker?.roots ?? []).some((root) => normalize(root) === path);
+  return ok({ path, parent: atRoot ? null : parentOf(path), entries: listed.value.entries, workerId: owner.value });
 }
 
 /** 纯字符串的 POSIX 规范化：领域层不碰 node:path。 */

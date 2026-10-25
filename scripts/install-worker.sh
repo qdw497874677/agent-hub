@@ -24,6 +24,13 @@ if [[ -z "$node_bin" ]]; then
   exit 1
 fi
 
+# WORKER_ROOTS 是安全边界：hub 只能在这些目录里浏览、读写附件、开会话。
+if [[ -z "${WORKER_ROOTS:-}" && -t 0 ]]; then
+  read -r -p "允许 hub 访问的目录（冒号分隔，回车用 $HOME）：" WORKER_ROOTS || true
+fi
+WORKER_ROOTS="${WORKER_ROOTS:-$HOME}"
+echo "==> WORKER_ROOTS=$WORKER_ROOTS（之后改 $env_file 再 systemctl --user restart agent-hub-worker）"
+
 echo "==> 安装依赖"
 cd "$here"
 npm install --no-fund --no-audit --omit=dev
@@ -37,7 +44,7 @@ umask 077
   echo "WORKER_ORIGIN=remote"
   echo "WORKER_LABEL=${WORKER_LABEL:-$(hostname)}"
   [[ -n "${WORKER_ID:-}" ]] && echo "WORKER_ID=$WORKER_ID"
-  [[ -n "${WORKER_ROOTS:-}" ]] && echo "WORKER_ROOTS=$WORKER_ROOTS"
+  echo "WORKER_ROOTS=$WORKER_ROOTS"
   echo "WORKER_STATE_DIR=$config_dir"
 } > "$env_file"
 chmod 600 "$env_file"
