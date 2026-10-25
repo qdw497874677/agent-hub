@@ -17,6 +17,7 @@ import type { WorkspaceFS } from '../ports/workspace-fs.ts';
 import type { SearchGateway } from '../ports/search-gateway.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
+import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -40,6 +41,8 @@ export interface AgentCatalog {
 export interface Deps {
   readonly projects: ProjectRepository;
   readonly tasks: TaskRepository;
+  /** 任务工作日志（只追加）。 */
+  readonly workLog: WorkLogRepository;
   readonly sessions: SessionRepository;
   readonly artifacts: ArtifactRepository;
   readonly layout: LayoutStore;

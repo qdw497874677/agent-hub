@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProjectDto } from './api.ts';
+import type { ProjectDto, TaskDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from './home.tsx';
 import { AdminPage } from './admin.tsx';
@@ -13,6 +13,7 @@ import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
 import { ProjectHeader } from './header.tsx';
 import { useRoute } from './use-route.ts';
 import { useNarrow } from './device.ts';
+import { TaskDetail } from './task-detail.tsx';
 import type { View } from './route.ts';
 
 const LAST_PROJECT = 'agent-hub:last-project';
@@ -30,6 +31,7 @@ function Workspace() {
   const homeView: View = narrow ? 'list' : 'canvas';
   const [newTask, setNewTask] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
+  const [taskDetail, setTaskDetail] = useState<string | null>(null);
   const [search, setSearch] = useState(false);
   // 草稿存在 App 层而不是 Inspector 里：S6.4 要求切视图不丢草稿，
   // 组件一卸载 useState 就没了，所以它必须活在两者之上。
@@ -159,7 +161,7 @@ function Workspace() {
   );
 
   const setTaskStatus = useCallback(
-    (taskId: string, status: 'open' | 'done' | 'abandoned') => {
+    (taskId: string, status: TaskDto['status']) => {
       void api.setTaskStatus(taskId, status).then(refresh, () => undefined);
     },
     [refresh]
@@ -260,6 +262,7 @@ function Workspace() {
               live={live}
               onOpen={openSession}
               onDerive={setDeriveFor}
+              onTaskDetail={setTaskDetail}
             />
           ) : canvas.data ? (
             <CanvasView
@@ -270,6 +273,7 @@ function Workspace() {
               onOpen={openSession}
               onLayoutChange={saveLayout}
               onTaskStatus={setTaskStatus}
+              onTaskDetail={setTaskDetail}
               focus={focus}
               drafts={drafts}
               onDraftChange={(sessionId, text) =>
@@ -334,6 +338,17 @@ function Workspace() {
         />
       ) : null}
       {newTask ? <NewTaskDialog projectId={project.id} onDone={() => setNewTask(false)} /> : null}
+      {taskDetail && canvas.data ? (
+        <TaskDetail
+          canvas={canvas.data}
+          taskId={taskDetail}
+          onClose={() => setTaskDetail(null)}
+          onOpenSession={(sessionId) => {
+            setTaskDetail(null);
+            openSession(sessionId);
+          }}
+        />
+      ) : null}
       {deriveFor && canvas.data ? (
         <DeriveDialog
           canvas={canvas.data}

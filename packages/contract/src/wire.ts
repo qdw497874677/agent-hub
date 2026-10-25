@@ -82,7 +82,7 @@ export const projectSchema = z.object({
   createdAt: epochMs
 });
 
-export const taskStatusSchema = z.enum(['open', 'done', 'abandoned']);
+export const taskStatusSchema = z.enum(['todo', 'in_progress', 'blocked', 'in_review', 'done', 'abandoned']);
 
 export const taskSchema = z.object({
   id,
@@ -90,6 +90,10 @@ export const taskSchema = z.object({
   title: z.string(),
   goal: z.string().nullable(),
   status: taskStatusSchema,
+  ownerId: z.string().nullable(),
+  branch: z.string().nullable(),
+  summary: z.string().nullable(),
+  logSeq: z.number().int().nonnegative(),
   createdAt: epochMs,
   updatedAt: epochMs
 });
@@ -244,7 +248,44 @@ export const createTaskRequest = z.object({
   goal: z.string().max(2000).optional()
 });
 
-export const setTaskStatusRequest = z.object({ status: taskStatusSchema });
+export const setTaskStatusRequest = z.object({ status: taskStatusSchema, note: z.string().max(2000).optional() });
+
+// ── 工作日志（tasks-and-capabilities.md §2.2）──────────────────
+export const logKindSchema = z.enum(['note', 'progress', 'decision', 'blocker', 'handoff', 'status_change', 'session_event']);
+export const writableLogKindSchema = z.enum(['note', 'progress', 'decision', 'blocker', 'handoff']);
+export const logLinkSchema = z.object({
+  kind: z.enum(['session', 'artifact', 'file', 'commit', 'pr', 'url']),
+  ref: z.string().min(1).max(2000),
+  label: z.string().max(200).optional()
+});
+export const logAuthorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('user'), userId: z.string().nullable(), name: z.string().nullable() }),
+  z.object({ kind: z.literal('agent'), sessionId: z.string(), agentId: z.string(), model: z.string() }),
+  z.object({ kind: z.literal('system') })
+]);
+export const workLogEntrySchema = z.object({
+  id,
+  taskId: id,
+  seq: z.number().int().positive(),
+  author: logAuthorSchema,
+  kind: logKindSchema,
+  body: z.string(),
+  links: z.array(logLinkSchema),
+  attachments: z.array(z.string()),
+  sessionId: z.string().nullable(),
+  createdAt: epochMs,
+  supersedes: z.string().nullable(),
+  supersededBy: z.string().nullable()
+});
+export const appendLogRequest = z.object({
+  kind: writableLogKindSchema,
+  body: z.string().min(1).max(32 * 1024),
+  links: z.array(logLinkSchema).max(20).optional(),
+  sessionId: z.string().min(1).optional()
+});
+export const editLogRequest = z.object({ body: z.string().min(1).max(32 * 1024) });
+export const workLogPage = z.object({ entries: z.array(workLogEntrySchema), nextBeforeSeq: z.number().int().nullable() });
+export type WorkLogEntryDto = z.infer<typeof workLogEntrySchema>;
 
 export const deriveSessionRequest = z.object({
   taskId: id,

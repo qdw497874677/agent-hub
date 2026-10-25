@@ -41,6 +41,7 @@ interface Props {
   readonly onChangeOption: (sessionId: string, optionId: string, value: string | boolean) => Promise<void>;
   readonly onLayoutChange: (patch: LayoutPatch) => void;
   readonly onTaskStatus: (taskId: string, status: TaskDto['status']) => void;
+  readonly onTaskDetail: (taskId: string) => void;
   /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
   readonly focus: { readonly id: string; readonly nonce: number } | null;
 }
@@ -56,6 +57,7 @@ export function CanvasView({
   onOpen,
   onLayoutChange,
   onTaskStatus,
+  onTaskDetail,
   focus,
   drafts,
   onDraftChange,
@@ -194,6 +196,7 @@ export function CanvasView({
         onResized: resized('task', task.id),
         sessionCount: canvas.sessions.filter((s) => s.taskId === task.id).length,
         onStatus: (status: TaskDto['status']) => onTaskStatus(task.id, status),
+        onDetail: () => onTaskDetail(task.id),
         onDerive: () => onDerive(task.id)
       }
     }));
@@ -231,6 +234,7 @@ export function CanvasView({
     agentLabel,
     workerOf,
     onTaskStatus,
+    onTaskDetail,
     onDerive,
     onOpen,
     onDraftChange,
