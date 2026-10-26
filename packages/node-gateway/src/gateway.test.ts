@@ -550,3 +550,45 @@ test('同一会话重复 start：旧 agent 被收掉，旧的结束不会把新�
   assert.deepEqual(rec.events, [{ kind: 'text', delta: 'g2:在吗' }]);
   await stop(link);
 });
+
+test('专属凭据：hello 带上凭据交给 authenticate 判；吊销后收到 4401、不重连、从列表里消失', async () => {
+  const rec = recorder('shared');
+  const seen: { workerId: string; credential?: string | undefined; sharedTokenOk: boolean }[] = [];
+  let revoked = false;
+  const gateway = createServerGateway({
+    ...rec.hooks,
+    authenticate: async (hello) => {
+      seen.push(hello);
+      await new Promise((resolve) => setTimeout(resolve, 5)); // 真实实现要查库：异步
+      if (revoked) return { ok: false, reason: '这台机器已被吊销' };
+      return hello.credential === 'ahw_good' ? { ok: true } : { ok: false, reason: '机器凭据无效' };
+    }
+  });
+  const server: Server = createServer();
+  server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  let badClosed = false;
+  const bad = connectWorkerLink({ url, token: '', credential: 'ahw_bad', workerId: 'w-bad', label: 'x', runtimes: [], initialBackoffMs: 10, onClose: () => (badClosed = true) });
+  await rec.until(() => badClosed);
+  assert.equal(rec.hellos.length, 0);
+
+  let closed = false;
+  const link = connectWorkerLink({ url, token: '', credential: 'ahw_good', workerId: 'w1', label: 'x', runtimes: [], initialBackoffMs: 10, onClose: () => (closed = true) });
+  await rec.until(() => rec.hellos.length === 1);
+  assert.deepEqual(seen.at(-1), { workerId: 'w1', credential: 'ahw_good', sharedTokenOk: false });
+
+  revoked = true;
+  assert.equal(gateway.disconnect('w1', 'revoked'), true);
+  await rec.until(() => closed);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(rec.hellos.length, 1, '不该重连');
+  assert.deepEqual(gateway.workers(), [], '吊销的机器不留在列表里');
+
+  await bad.close();
+  await link.close();
+  gateway.close();
+  server.closeAllConnections?.();
+  await new Promise((resolve) => server.close(resolve));
+});

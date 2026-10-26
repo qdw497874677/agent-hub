@@ -20,6 +20,9 @@ const env = process.env;
 
 const hubUrl = env['HUB_URL'] ?? 'ws://127.0.0.1:7878/worker';
 const token = env['HUB_TOKEN'] ?? '';
+// 单台机器接入换来的专属凭据（install-worker.sh 写进 worker.env）；同样不留给子进程。
+const credential = env['HUB_WORKER_CREDENTIAL'] ?? '';
+delete env['HUB_WORKER_CREDENTIAL'];
 // 本机口令只属于这个进程：读完就从环境里抹掉，免得被它拉起的 agent（和 agent 跑的命令）继承走。
 const localSecret = env['HUB_LOCAL_SECRET'] ?? '';
 delete env['HUB_LOCAL_SECRET'];
@@ -223,6 +226,7 @@ const link = connectWorkerLink({
   url: hubUrl,
   token,
   ...(localSecret ? { localSecret } : {}),
+  ...(credential ? { credential } : {}),
   workerId,
   label,
   origin,

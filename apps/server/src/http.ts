@@ -62,6 +62,8 @@ import { installAuth, SSE_PATH } from './auth.ts';
 import { installMcp } from './mcp.ts';
 import type { ToolGateway } from '@agent-hub/domain';
 import { installAdmin } from './admin.ts';
+import { installEnrollment } from './enrollment.ts';
+import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
 import type { AuthOptions } from './auth.ts';
@@ -74,6 +76,8 @@ export interface AppOptions {
   readonly auth?: AuthOptions;
   /** 运营后台；只在有账号体系时装（要靠登录态认出主人）。 */
   readonly admin?: AdminOptions;
+  /** 单台机器接入（接入码、专属凭据、吊销、引导脚本）；同样只在有账号体系时装。 */
+  readonly enrollment?: EnrollmentOptions;
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
   readonly guard?: RequestGuard;
   /**
@@ -138,6 +142,7 @@ export function createApp(options: AppOptions): Hono {
   if (options.auth) {
     principalOf = installAuth(app, options.auth);
     if (options.admin) installAdmin(app, options.admin, principalOf);
+    if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
   }
   app.use('/api/*', async (c, next) => {
     if (options.auth || options.token === null) return next();

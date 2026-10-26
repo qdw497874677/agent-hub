@@ -368,6 +368,8 @@ export const workerHelloSchema = z.object({
   label: z.string(),
   origin: z.enum(['local', 'remote']),
   token: z.string().optional(),
+  /** 单台机器接入换来的专属凭据（`ahw_…`）；有它就不需要共享 HUB_TOKEN。 */
+  credential: z.string().optional(),
   /** 只有 server 自己拉起的本机 worker 知道：证明「我真是本机」。 */
   localSecret: z.string().optional(),
   /** worker 报上它装了哪些 agent——server 从不自己猜 agent 列表。 */

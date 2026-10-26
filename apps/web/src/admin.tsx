@@ -302,8 +302,13 @@ function Workers() {
     refetchInterval: (query) =>
       query.state.data?.workers.some((worker) => worker.update?.state === 'updating') ? 2_000 : 10_000
   });
-  const action = useAdminAction(({ kind, worker }: { kind: 'disconnect' | 'update'; worker: AdminWorkerDto }) =>
-    kind === 'update' ? adminApi.updateWorker(worker.workerId) : adminApi.disconnect(worker.workerId)
+  const action = useAdminAction(
+    ({ kind, worker }: { kind: 'disconnect' | 'update' | 'revoke'; worker: AdminWorkerDto }): Promise<unknown> =>
+      kind === 'update'
+        ? adminApi.updateWorker(worker.workerId)
+        : kind === 'revoke'
+          ? adminApi.revokeWorker(worker.workerId)
+          : adminApi.disconnect(worker.workerId)
   );
   const updateAll = useAdminAction(() => adminApi.updateOutdated());
   const list = workers.data?.workers ?? [];
@@ -378,6 +383,19 @@ function Workers() {
                         }}
                       >
                         断开
+                      </button>
+                    ) : null}
+                    {worker.origin === 'remote' ? (
+                      <button
+                        className={DANGER}
+                        disabled={action.isPending}
+                        title="作废这台机器的凭据并断开；要重新「添加机器」才能回来"
+                        onClick={() => {
+                          if (window.confirm(`吊销「${worker.label}」？它会立刻断开，凭据作废，要重新添加才能回来。`))
+                            action.mutate({ kind: 'revoke', worker });
+                        }}
+                      >
+                        吊销
                       </button>
                     ) : null}
                   </div>
@@ -503,7 +521,10 @@ const ACTION_LABEL: Record<string, string> = {
   'user.revoke_logins': '踢下线',
   'settings.update': '改设置',
   'worker.disconnect': '断开机器',
-  'worker.update': '更新机器'
+  'worker.update': '更新机器',
+  'worker.pair': '签发接入码',
+  'worker.enroll': '接入机器',
+  'worker.revoke': '吊销机器'
 };
 
 function Audit() {
