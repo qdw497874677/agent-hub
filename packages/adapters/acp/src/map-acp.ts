@@ -110,11 +110,11 @@ export const HUB_MCP_SERVER = 'agent-hub';
 /**
  * session/new|load 的 mcpServers：hub 能力层。
  * relay（默认）：URL 已被 worker 换成它本机的 MCP 入口；会 HTTP MCP 的 agent 直连它，否则给 stdio 垫片。
- * http（已弃用）：agent 直连 hub，令牌放 Authorization 头（不放 URL，免得进访问日志）。
+ * 令牌放 Authorization 头（不放 URL，免得进访问日志）。
  * agent 没声明 http 能力就不给——宁可没有工具，也不让握手失败。
  */
 export function mcpServersFor(
-  tools: { transport: 'relay' | 'http'; url: string; token: string } | undefined,
+  tools: { transport: 'relay'; url: string; token: string } | undefined,
   caps: { http: boolean },
   shim?: { command: string; args: readonly string[] }
 ): Record<string, unknown>[] {

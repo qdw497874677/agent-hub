@@ -116,16 +116,9 @@ const deps: Deps = {
 const log = (message: string) => console.log(`[hub] ${message}`);
 
 // 能力层：agent 经 MCP 回调 hub 的工具。HUB_TOOLS=0 关掉。
-// 默认 relay：agent 连 worker 本机的入口，经 /worker 长连接到 hub，hub 不开 HTTP /mcp。
-// HUB_TOOLS_TRANSPORT=http（已弃用）才挂 /mcp 让 agent 直连；HUB_TOOLS_URL 给那种模式下 worker 不在本机时用。
-const directMcp = readEnv('HUB_TOOLS_TRANSPORT') === 'http';
-const toolEndpoint =
-  readEnv('HUB_TOOLS') === '0'
-    ? null
-    : directMcp
-      ? { url: readEnv('HUB_TOOLS_URL') ?? `http://127.0.0.1:${port}/mcp`, transport: 'http' as const }
-      : { url: '', transport: 'relay' as const };
-if (directMcp) log('HUB_TOOLS_TRANSPORT=http 已弃用：agent 将直连 /mcp，而不是经 worker 长连接');
+// 唯一的传输是 relay：agent 连 worker 本机的入口，经 /worker 长连接到 hub，hub 不开 HTTP /mcp。
+const toolEndpoint = readEnv('HUB_TOOLS') === '0' ? null : { url: '', transport: 'relay' as const };
+if (readEnv('HUB_TOOLS_TRANSPORT') === 'http') log('HUB_TOOLS_TRANSPORT=http 已移除，忽略：工具一律经 worker 长连接中转');
 toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
@@ -259,7 +252,7 @@ serverGateway = createServerGateway({
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, tools: directMcp ? toolGateway : null,
+const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
   auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },
   admin: {
     deps: {

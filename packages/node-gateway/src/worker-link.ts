@@ -351,9 +351,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     sessions.delete(sessionId);
   }
 
-  /** relay（默认）：URL 填成本机 MCP 入口，令牌不变；http（已弃用）原样给 agent 直连 hub。 */
+  /** relay：URL 填成本机 MCP 入口，令牌不变。 */
   async function toolAccess(tools: NonNullable<StartSpec['tools']>): Promise<NonNullable<StartSpec['tools']>> {
-    if (tools.transport !== 'relay') return tools;
     return { ...tools, url: await mcpEndpoint.url() };
   }
 

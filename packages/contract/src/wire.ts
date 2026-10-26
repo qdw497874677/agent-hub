@@ -517,11 +517,10 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
 ]);
 
 /**
- * relay（默认）：agent 连 worker 本机的 MCP 入口，worker 经 /worker 长连接的 RPC 通道转给 hub，url 由 worker 填。
- * http（HUB_TOOLS_TRANSPORT=http，已弃用）：agent 直连 hub 的 /mcp。
+ * relay（唯一传输）：agent 连 worker 本机的 MCP 入口，worker 经 /worker 长连接的 RPC 通道转给 hub，url 由 worker 填。
  */
 export const toolAccessSchema = z.object({
-  transport: z.enum(['relay', 'http']),
+  transport: z.literal('relay'),
   url: z.string().default(''),
   token: z.string().min(1)
 });

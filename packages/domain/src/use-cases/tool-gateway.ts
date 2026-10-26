@@ -161,7 +161,7 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
  */
 export async function withToolAccess(
   gateway: ToolGateway,
-  endpoint: { readonly url: string; readonly transport: 'relay' | 'http' } | null,
+  endpoint: { readonly url: string; readonly transport: 'relay' } | null,
   command: WorkerCommand
 ): Promise<WorkerCommand> {
   if (endpoint === null) return command;
