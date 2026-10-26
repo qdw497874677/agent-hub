@@ -79,13 +79,20 @@ export const deriveSessionRequest = z.object({
   workspaceId: z.string().min(1).nullable().optional()
 });
 
-/** 新建持久工作空间：在那台机器上新建托管目录，或关联一个已有目录。 */
-export const createWorkspaceRequest = z.object({
-  workerId: z.string().min(1).nullable().default(null),
-  kind: z.literal('long_lived'),
-  mode: z.enum(['create', 'link']),
-  path: z.string().optional()
-});
+/** 新建工作空间：持久的（新建托管目录 / 关联已有目录）或临时的（为某个任务开 worktree / 临时目录）。 */
+export const createWorkspaceRequest = z.discriminatedUnion('kind', [
+  z.object({
+    workerId: z.string().min(1).nullable().default(null),
+    kind: z.literal('long_lived'),
+    mode: z.enum(['create', 'link']),
+    path: z.string().optional()
+  }),
+  z.object({
+    workerId: z.string().min(1).nullable().default(null),
+    kind: z.literal('temporary'),
+    taskId: id
+  })
+]);
 
 export const forkSessionRequest = z.object({
   sessionId: id,

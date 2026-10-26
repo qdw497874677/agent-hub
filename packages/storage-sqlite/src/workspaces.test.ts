@@ -75,3 +75,22 @@ test('工作空间往返；临时的必须有任务；同一目录不重复登�
   assert.equal(await store.workspaces.byId(temp.value.id), null);
   store.close();
 });
+
+test('项目仓库字段往返：保存、读回、清空；onMachine 只给这台机器上没删的', async () => {
+  const { createProject } = await import('@agent-hub/domain');
+  const store = openSqliteStore(':memory:');
+  const made = createProject({ name: 'repo', rootPath: '', directoryExists: true, now, workerId: null, repo: { url: 'git@github.com:me/x.git', defaultBranch: 'dev' } });
+  assert.ok(made.ok);
+  await store.projects.save(made.value);
+  assert.deepEqual((await store.projects.byId(made.value.id))?.repo, { url: 'git@github.com:me/x.git', defaultBranch: 'dev' });
+  await store.projects.save({ ...made.value, repo: null });
+  assert.equal((await store.projects.byId(made.value.id))?.repo, null);
+
+  const a = newWorkspace({ projectId: made.value.id, workerId: 'w1', path: '/a', kind: 'long_lived', source: 'linked', now });
+  const b = newWorkspace({ projectId: made.value.id, workerId: null, path: '/b', kind: 'long_lived', source: 'linked', now });
+  assert.ok(a.ok && b.ok);
+  await store.workspaces.save(a.value);
+  await store.workspaces.save(b.value);
+  assert.deepEqual((await store.workspaces.onMachine('w1')).map((w) => w.path), ['/a']);
+  assert.deepEqual((await store.workspaces.onMachine(null)).map((w) => w.path), ['/b']);
+});

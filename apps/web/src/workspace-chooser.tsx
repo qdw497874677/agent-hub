@@ -7,13 +7,14 @@ import { WorkerChip, WorkerPicker, resolveWorker } from './workers.tsx';
 /**
  * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作空间干活？」
  * - 第一行选机器（只有一台在线就直接用它）；
- * - 下面单选：已有的工作空间 / 新建持久工作空间（W4 起还有临时）。
+ * - 下面单选：已有的工作空间 / 新建持久工作空间 / 新建临时工作空间。
  * - 不预选：持久和临时之间没有默认，也不记上次；没选之前「开始」是灰的。
  */
 export type WorkspaceChoice =
   | { readonly type: 'existing'; readonly workspaceId: string }
   | { readonly type: 'new_long_lived'; readonly mode: 'create' }
-  | { readonly type: 'new_long_lived'; readonly mode: 'link'; readonly path: string | null };
+  | { readonly type: 'new_long_lived'; readonly mode: 'link'; readonly path: string | null }
+  | { readonly type: 'new_temporary' };
 
 /** 选完了没有：「选已有目录」还没点目录不算。 */
 export function choiceReady(choice: WorkspaceChoice | null): boolean {
@@ -111,6 +112,15 @@ export function WorkspaceChooser({
     if (choice?.type === 'existing' && !here.some(({ workspace }) => workspace.id === choice.workspaceId)) onChoice(null);
   }, [choice, here, onChoice]);
 
+  // 这台机器上能不能开 worktree：有 git 的持久工作空间，或者项目绑了仓库（会先下载）
+  const sameMachine = (views.data ?? []).filter(({ workspace }) => machine !== null && hostOf(workspace) === machine);
+  const gitHere =
+    canvas.project.repo !== null ||
+    sameMachine.some(({ workspace }) => workspace.kind === 'long_lived' && workspace.isGit === true && workspace.state !== 'removed');
+  const temporariesHere = sameMachine.filter(
+    ({ workspace }) => workspace.kind === 'temporary' && workspace.ownerTaskId === taskId && workspace.state !== 'removed'
+  ).length;
+
   const machineName = machines.find((worker) => worker.workerId === machine)?.label ?? '这台机器';
 
   return (
@@ -173,6 +183,15 @@ export function WorkspaceChooser({
                 </button>
               );
             })}
+            <NewTemporary
+              canvas={canvas}
+              taskId={taskId}
+              machineName={machineName}
+              gitHere={gitHere}
+              existing={temporariesHere}
+              selected={choice?.type === 'new_temporary'}
+              onSelect={() => onChoice({ type: 'new_temporary' })}
+            />
             <NewLongLived
               canvas={canvas}
               machine={machine}
@@ -295,6 +314,57 @@ function NewLongLived({
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** 和服务端 branchSlug 同一规则，只用来预告分支名（短 id 建好才知道）。 */
+export function branchPreview(title: string): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
+  return `agent-hub/${slug === '' ? 'task' : slug}-…`;
+}
+
+function NewTemporary({
+  canvas,
+  taskId,
+  machineName,
+  gitHere,
+  existing,
+  selected,
+  onSelect
+}: {
+  canvas: CanvasDto;
+  taskId: string;
+  machineName: string;
+  gitHere: boolean;
+  existing: number;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const title = canvas.tasks.find((task) => task.id === taskId)?.title ?? '';
+  return (
+    <button type="button" role="radio" aria-checked={selected} className={rowClass(selected)} onClick={onSelect}>
+      <Radio on={selected} />
+      <span className="min-w-0 flex-1">
+        <span className="block text-body text-primary">新建临时工作空间</span>
+        <span className="block text-meta text-tertiary">为这个任务单独开一份，用完自动清理；有未保存的改动会保留并提醒</span>
+        {gitHere ? <span className="block text-meta text-tertiary">git 项目常用：每个任务一个分支，互不干扰</span> : null}
+        {existing > 0 ? <span className="mt-0.5 block text-meta text-rust">这个任务已经有 {existing} 个临时工作空间</span> : null}
+        {selected ? (
+          <span className="mt-1 block text-meta text-secondary">
+            {gitHere ? (
+              <>
+                将为这个任务新开分支 <span className="font-mono">{branchPreview(title)}</span>
+                （在 {machineName} 上）
+              </>
+            ) : (
+              <>
+                将在 {machineName} 的 <span className="font-mono">~/agent-hub/.tmp/</span> 下新建一个空目录
+              </>
+            )}
+          </span>
+        ) : null}
+      </span>
+    </button>
   );
 }
 

@@ -101,6 +101,31 @@ export function markRemoved(workspace: Workspace, now: number): Result<Workspace
   return ok({ ...workspace, state: 'removed', keptReason: null, updatedAt: now });
 }
 
+/** a 是 b 本身或在 b 里面（都已规范化）。 */
+function within(a: string, b: string): boolean {
+  return a === b || b === '/' || a.startsWith(`${b}/`);
+}
+
+/**
+ * 不变量「一个目录最多属于一个项目」（§10 已定，含嵌套）：同一台机器上别的项目登记过同一个目录、
+ * 它的上级或下级目录，就返回占用的那条。同项目的不算（一台机器上可以有多个同项目工作空间）。
+ */
+export function claimedByOther(
+  place: Pick<Workspace, 'projectId' | 'workerId' | 'path'>,
+  registered: readonly Workspace[]
+): Workspace | null {
+  const path = normalizePath(place.path);
+  return (
+    registered.find(
+      (other) =>
+        other.state !== 'removed' &&
+        other.projectId !== place.projectId &&
+        other.workerId === place.workerId &&
+        (within(path, normalizePath(other.path)) || within(normalizePath(other.path), path))
+    ) ?? null
+  );
+}
+
 /** 同一个目录在同一台机器上只登记一次（removed 的不算）。 */
 export function samePlace(a: Pick<Workspace, 'workerId' | 'path'>, b: Pick<Workspace, 'workerId' | 'path'>): boolean {
   return a.workerId === b.workerId && normalizePath(a.path) === normalizePath(b.path);

@@ -8,7 +8,7 @@ import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
 import { linkedWorkspaceFor } from './workspaces.ts';
-import { directoryOwner, listOn, normalize, parentOf, remoteExists, rootsOf } from './machine-dirs.ts';
+import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, rootsOf } from './machine-dirs.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
 import { managedDirectory, projectSlug } from '../directories.ts';
@@ -48,6 +48,10 @@ export async function createProjectUseCase(
     repo: repo.value
   });
   if (!created.ok) return created;
+  if (rootPath !== '') {
+    const taken = await claimOf(deps, { projectId: created.value.id, workerId: where.value, path: rootPath });
+    if (!taken.ok) return taken;
+  }
   await deps.projects.save(created.value);
   // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
   if (rootPath !== '') await linkedWorkspaceFor(deps, created.value, where.value);

@@ -87,12 +87,17 @@ export function DeriveDialog({
       if (choice.type === 'existing') workspaceId = choice.workspaceId;
       else {
         setPhase('preparing');
-        const made = await api.createWorkspace(projectId, {
-          workerId: machine,
-          kind: 'long_lived',
-          mode: choice.mode,
-          ...(choice.mode === 'link' && choice.path ? { path: choice.path } : {})
-        });
+        const made = await api.createWorkspace(
+          projectId,
+          choice.type === 'new_temporary'
+            ? { workerId: machine, kind: 'temporary', taskId }
+            : {
+                workerId: machine,
+                kind: 'long_lived',
+                mode: choice.mode,
+                ...(choice.mode === 'link' && choice.path ? { path: choice.path } : {})
+              }
+        );
         workspaceId = made.id;
         // 建好了就记成「已有的」：重试时不再新建第二个
         setChoice({ type: 'existing', workspaceId });
