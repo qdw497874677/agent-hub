@@ -2,7 +2,7 @@ import { Handle, NodeResizer, Position, type NodeProps, type Node } from '@xyflo
 import { useState } from 'react';
 import type { SessionDto, TaskDto, WorkerInfoDto } from './api.ts';
 import { WorkerChip } from './workers.tsx';
-import { CardComposer } from './composer.tsx';
+import { CardComposer } from './card-composer.tsx';
 import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
