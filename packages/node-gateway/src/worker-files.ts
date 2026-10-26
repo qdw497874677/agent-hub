@@ -1,4 +1,5 @@
-import { realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { mkdir, open, realpath, stat, type FileHandle } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import type { DirectoryEntry } from '@agent-hub/domain';
 import { createLocalFs } from './local-fs.ts';
@@ -70,6 +71,31 @@ export function createWorkerFiles(options: { readonly roots: readonly string[]; 
     if (problem !== null) throw new OutsideRootsError(problem);
   }
 
+  /**
+   * 先查后开之间，路径上的某一段可能被换成软链接（TOCTOU）。做法：
+   * 1. 先把路径解析成真实路径并检查边界（合法的库内软链接照常能用）；
+   * 2. 用 O_NOFOLLOW 打开这个真实路径：最后一段此刻若变成软链接就直接失败；
+   * 3. 打开后再解析一次，必须还是同一个路径，且指向手里这个 fd（dev+ino 相同），
+   *    中间某级目录被换掉也能发现。
+   */
+  async function openGuarded(path: string, flags: number): Promise<FileHandle> {
+    const target = await real(path);
+    await guard(target);
+    const handle = await open(target, flags | constants.O_NOFOLLOW, 0o644);
+    try {
+      const opened = await handle.stat();
+      const again = await realpath(target);
+      const now = await stat(again);
+      if (again !== target || now.dev !== opened.dev || now.ino !== opened.ino) {
+        throw new OutsideRootsError(`「${resolve(path)}」在检查期间被替换，已拒绝`);
+      }
+      return handle;
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  }
+
   return {
     roots,
     enforced: options.enforced,
@@ -86,16 +112,32 @@ export function createWorkerFiles(options: { readonly roots: readonly string[]; 
       return { files: [...listed.files], truncated: listed.truncated };
     },
     async readFile(path, maxBytes) {
-      await guard(path);
-      const size = await fs.stat(path);
-      if (size === null) return null;
-      if (size > maxBytes) throw new Error(`文件太大（${size} 字节，上限 ${maxBytes}）`);
-      return fs.readFile(path);
+      let handle: FileHandle;
+      try {
+        handle = await openGuarded(path, constants.O_RDONLY);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+        throw error;
+      }
+      try {
+        const info = await handle.stat();
+        if (!info.isFile()) return null;
+        if (info.size > maxBytes) throw new Error(`文件太大（${info.size} 字节，上限 ${maxBytes}）`);
+        return new Uint8Array(await handle.readFile());
+      } finally {
+        await handle.close();
+      }
     },
     async writeFile(path, content) {
       await guard(path);
-      const written = await fs.writeFile(path, content);
-      if (!written.ok) throw new Error(written.error.message);
+      await mkdir(dirname(await real(path)), { recursive: true });
+      const handle = await openGuarded(path, constants.O_WRONLY | constants.O_CREAT);
+      try {
+        await handle.truncate(0);
+        await handle.writeFile(content);
+      } finally {
+        await handle.close();
+      }
     },
     async makeDirectory(parent, name) {
       const made = await makeDirectoryWithin(parent, name, roots);
