@@ -545,6 +545,8 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('rpc'), frame: rpcFrameSchema }),
   /** 配对码换到的专属凭据：只出现在 enroll 握手的那条连接上，发完就关。 */
   z.object({ kind: z.literal('enrolled'), workerId: id, credential: z.string().min(1) }),
+  /** hello 被接受了。worker 等到它才补发积压的帧：在这之前发的帧 server 一律不认（见 server-gateway）。 */
+  z.object({ kind: z.literal('welcome') }),
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),

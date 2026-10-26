@@ -35,6 +35,8 @@ export interface WorkerLinkOptions {
    * 关掉（`false`）时断线即调 `onClose`——给测试和一次性脚本用。
    */
   readonly reconnect?: boolean;
+  /** 等 server welcome 的最长时间，过了就照旧补发（兼容不发 welcome 的老 hub）。默认 5 秒。 */
+  readonly welcomeFallbackMs?: number;
   readonly initialBackoffMs?: number;
   readonly maxBackoffMs?: number;
   /** 多久没收到 server 的 ping 就认为连接已死（半开连接不会触发 close）。0 = 不检测。 */
@@ -78,7 +80,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'rpc' | 'enrolled' }
+  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -104,6 +106,11 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const outbox: WorkerToServer[] = [];
   const OUTBOX_LIMIT = 5_000;
   let dropped = 0;
+  /** server 认了这条连接（收到 welcome）才算能发：被 4409 顶回去的连接上发的帧会整段丢掉。 */
+  let accepted = false;
+  let welcomeTimer: NodeJS.Timeout | null = null;
+  /** 老 hub 不发 welcome：等这么久没等到就照旧补发，别把输出永远憋在本地。 */
+  const WELCOME_FALLBACK_MS = options.welcomeFallbackMs ?? 5_000;
   let updating = false;
 
   /**
@@ -114,7 +121,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     idPrefix: 'w',
     timeoutMs: options.toolTimeoutMs ?? 60_000,
     send: (frame) => {
-      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      if (!socket || socket.readyState !== WebSocket.OPEN || !accepted) return false;
       socket.send(JSON.stringify({ type: 'rpc', frame } satisfies WorkerToServer));
       return true;
     }
@@ -124,7 +131,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const mcpEndpoint = createMcpEndpoint(channel);
 
   const send = (frame: WorkerToServer): void => {
-    if (socket && socket.readyState === WebSocket.OPEN) {
+    if (socket && socket.readyState === WebSocket.OPEN && accepted) {
       socket.send(JSON.stringify(frame));
       return;
     }
@@ -146,6 +153,17 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }, timeout);
     watchdog.unref?.();
   };
+
+  /** 连接被 server 接受：先报丢帧，再按原顺序补发断线期间攒下的帧。 */
+  function flush(current: WebSocket): void {
+    if (welcomeTimer) clearTimeout(welcomeTimer);
+    welcomeTimer = null;
+    if (accepted || socket !== current || current.readyState !== WebSocket.OPEN) return;
+    accepted = true;
+    if (dropped > 0) options.onLog?.(`断线太久，丢了 ${dropped} 帧最旧的输出`);
+    dropped = 0;
+    for (const frame of outbox.splice(0)) current.send(JSON.stringify(frame));
+  }
 
   function connect(): void {
     const current = new WebSocket(options.url);
@@ -171,9 +189,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         } satisfies WorkerToServer)
       );
       options.onLog?.(`已连上 ${options.url}${sessions.size > 0 ? `，接回 ${sessions.size} 个会话` : ''}`);
-      if (dropped > 0) options.onLog?.(`断线太久，丢了 ${dropped} 帧最旧的输出`);
-      dropped = 0;
-      for (const frame of outbox.splice(0)) current.send(JSON.stringify(frame));
+      accepted = false;
+      if (welcomeTimer) clearTimeout(welcomeTimer);
+      welcomeTimer = setTimeout(() => flush(current), WELCOME_FALLBACK_MS);
+      welcomeTimer.unref?.();
       armWatchdog(current);
       options.onOpen?.();
     });
@@ -182,7 +201,11 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
     current.on('close', (code: number, reason: Buffer) => {
       if (watchdog) clearTimeout(watchdog);
-      if (socket === current) socket = null;
+      if (socket === current) {
+        socket = null;
+        accepted = false;
+        if (welcomeTimer) clearTimeout(welcomeTimer);
+      }
       if (socket === null) channel.close('与 hub 断开了，调用没有完成');
       if (code === PROTOCOL_MISMATCH_CLOSE) {
         // 协议对不上：重连也没用，把 hub 给的原因原样打出来，告诉人怎么修。
@@ -233,6 +256,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       const command = parsed.data as ServerToWorker;
       if (command.kind === 'rpc') channel.receive(command.frame);
       else if (command.kind === 'update') void update(command.commit);
+      else if (command.kind === 'welcome') flush(current);
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
       else void handle(command);
     });

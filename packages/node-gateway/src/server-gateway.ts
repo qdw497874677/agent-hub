@@ -325,6 +325,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         });
         hooks.serve?.(frame.workerId, entry.channel);
         registry.set(frame.workerId, entry);
+        socket.send(JSON.stringify({ kind: 'welcome' } satisfies ServerToWorker));
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         return;
       }
