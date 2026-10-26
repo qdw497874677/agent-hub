@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, TaskDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from './home.tsx';
-import { AdminPage } from './admin.tsx';
+import { AdminPage } from './admin/page.tsx';
 import { resolveLive, useLiveStream } from './live.ts';
 import { CanvasView, type LayoutPatch } from './canvas.tsx';
 import { Inspector } from './inspector.tsx';
