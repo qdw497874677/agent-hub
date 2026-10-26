@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | `Task` | `packages/domain/src/task.ts` | `id, projectId, title, goal \| null, status, createdAt, updatedAt` | 状态 `open → done/abandoned`，`done/abandoned → open`（`TRANSITIONS`）；用例只有 `createTaskUseCase`、`setTaskStatusUseCase`（`use-cases/tasks.ts`） |
 | `Session` | `session.ts` | `id, taskId, agentId, model, origin(derive/fork), status(running/stopped/done/interrupted/failed), lastSeq, agentSessionRef, options, optionSpec, workerId` | 会话**必须**挂在任务下；fork 记录 `fromSessionId + atSeq` |
-| `Project` | `project.ts` | `rootPath, workerId, directories` | workspaces.md（第三版）拆出 `Workspace`（长期 / 临时，一台 Worker 可有多个），任务 worktree 并入临时工作空间；Task 加 `lastWorkerId / lastWorkspaceId` |
+| `Project` | `project.ts` | `rootPath, workerId, directories` | workspaces.md（第三版）拆出 `Workspace`（长期 / 临时，一台 Worker 可有多个），任务 worktree 并入临时工作空间；Task 不记住上次的机器或工作空间 |
 | 画布 | `canvas.ts` | `CanvasLayout`；`buildLineage(tasks, sessions)`、`nodesOf` | 卡片 = 任务，会话以血缘边挂在卡片下 |
 | 端口 | `ports/task-repository.ts`、`token-issuer.ts`、`audit-log.ts` | — | `TokenIssuer` 已是「高熵令牌只存 hash」，可直接复用 |
 | wire | `contract/src/wire.ts` `start_session` | `sessionId, taskId, agentId, workspaceRoot, origin, resume, options` | Worker 已经知道 taskId，但**没有任何能力通道** |

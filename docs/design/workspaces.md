@@ -1,6 +1,6 @@
 # 工作空间（Workspace）设计 · 第三版
 
-> 状态：**提案，待评审**。只是设计，不含代码改动。
+> 状态：**已评审通过（2026-10-26）**。只是设计，不含代码改动。
 >
 > 这一版按 2026-10-26 的修订重写：同一台 Worker 上可以有**多个**同项目的工作空间（取消「每台最多一个」）；工作空间分**长期**和**临时**两类；原来单独的「任务 worktree（TaskCheckout）」并入临时工作空间；多个任务**可以**共用一个工作空间，并发时给警告。
 >
@@ -48,8 +48,6 @@ erDiagram
     string id
     string projectId
     string status
-    string lastWorkerId "remembered default"
-    string lastWorkspaceId "remembered default"
   }
   SESSION {
     string id
@@ -68,8 +66,8 @@ Workspace          id, projectId, workerId, path, kind: long_lived | temporary,
                    baseWorkspaceId?（worktree 的主仓库工作空间）, branch?, ownerTaskId?（只有临时的有）,
                    label?, isGit, state: preparing | ready | failed | kept | removed, keptReason?, createdAt, removedAt?
 
-Task               id, projectId, title, goal, status, lastWorkerId?, lastWorkspaceId?
-                   不绑定 Worker；last* 只用来给「运行」预填默认值。
+Task               id, projectId, title, goal, status
+                   不绑定 Worker；不记住上次的机器或工作空间（评审决定：不做隐式默认）。
 
 Session            id, taskId, workerId, workspaceId（创建后不可变）, agent, model, status…
                    换工作空间 / 换机器 = 同一任务下的新会话，经工作日志交接。
@@ -95,7 +93,7 @@ Session            id, taskId, workerId, workspaceId（创建后不可变）, ag
   - 用例：`listRunTargets(project, worker)`、`prepareWorkspace(task, worker, choice)`、`runTask`（改：要先拿到 ready 的工作空间）、`continueElsewhere`（重写：目标是一个工作空间，不再改项目）、`sweepTemporaryWorkspaces(now)`、`removeWorkspace`。
   - Project 删掉 `rootPath / workerId / directories / workspaceFor`。
 - **contract**：`workspaceSchema`、`runTargetsSchema`、`prepareWorkspaceRequest`；`worker-methods.ts` 新增 §3 的方法。
-- **storage-sqlite**：表 `workspaces`；`tasks.last_worker_id / last_workspace_id`；`sessions.workspace_id`；`projects.repo_url / repo_default_branch`。
+- **storage-sqlite**：表 `workspaces`；`sessions.workspace_id`；`projects.repo_url / repo_default_branch`。
 - **worker**：`git` 子进程适配器（`execFile`，不经 shell），所有路径都校验在 roots 内。
 - **web**：运行面板里的「位置」选择、项目设置里的工作空间列表。
 
@@ -125,15 +123,15 @@ Session            id, taskId, workerId, workspaceId（创建后不可变）, ag
 卡片「运行」打开运行面板（手机上是底部 sheet，行高 ≥ 44px）：
 
 1. Agent 和模型。
-2. **机器**：默认 `task.lastWorkerId`，否则项目上次用的，否则本机；离线的置灰。
-3. **工作空间**：列出这个项目在这台机器上的工作空间，默认 `task.lastWorkspaceId`，否则最近用的长期工作空间。
+2. **机器**：列出在线机器，离线的置灰；只有一台在线时直接选中它（这不是隐式记忆）。
+3. **工作空间**：列出这个项目在这台机器上的工作空间（最近使用的在前），**不预选**，由用户每次选择。
    - 每行：标签或目录名 · 长期/临时 · 分支 · 「2 个会话运行中」（有就给黄色警告）。
    - 底部「＋ 新建…」展开三个选项：
-     - **临时（推荐，git 项目）**：在主仓库旁 `.worktrees/` 下建 worktree，新分支 `agent-hub/<slug>-<短 id>`；这台机器上还没有主仓库时先 clone。
+     - **临时（git 项目）**：在主仓库旁 `.worktrees/` 下建 worktree，新分支 `agent-hub/<slug>-<短 id>`；这台机器上还没有主仓库时先 clone。
      - **长期**：托管目录 `<roots[0]>/agent-hub/<project-slug>[-2]`；有 repo 就 clone，没有就 mkdir（可选 `git init`）；或者「选已有目录…」（目录选择器，Owner 才能选托管目录以外的）。
-     - **临时（非 git）**：新建空目录 `<roots[0]>/agent-hub/.tmp/<slug>-<短 id>`。
-   - 这台机器上一个工作空间都没有时，直接展开「新建」，默认：有 repo → 长期 clone；没 repo → 长期托管目录。
-4. 「运行」。准备中的进度显示在卡片上，ready 后启动会话，并记住 `lastWorkerId / lastWorkspaceId`。
+     - **临时（非 git 项目也可选）**：新建空目录 `<roots[0]>/agent-hub/.tmp/<slug>-<短 id>`。
+   - 这台机器上一个工作空间都没有时，直接展开「新建」，仍不预选。
+4. 「运行」。准备中的进度显示在卡片上，ready 后启动会话。
 
 卡片上显示「机器 · 工作空间 · 分支」。
 
@@ -185,8 +183,6 @@ CREATE TABLE workspaces (
 CREATE UNIQUE INDEX workspaces_live_path ON workspaces(worker_id, path) WHERE state <> 'removed';
 CREATE INDEX workspaces_by_project ON workspaces(project_id, worker_id);
 ALTER TABLE sessions ADD COLUMN workspace_id TEXT REFERENCES workspaces(id);
-ALTER TABLE tasks ADD COLUMN last_worker_id TEXT;
-ALTER TABLE tasks ADD COLUMN last_workspace_id TEXT;
 ALTER TABLE projects ADD COLUMN repo_url TEXT;
 ALTER TABLE projects ADD COLUMN repo_default_branch TEXT;
 ```
@@ -245,11 +241,11 @@ ALTER TABLE projects ADD COLUMN repo_default_branch TEXT;
 | **工作空间** | 机器上的一个文件夹，agent 在里面干活 | Workspace | 保留这个词 |
 | **持久工作空间** | 一直保留，下次还能接着用 | `kind = long_lived` | |
 | **临时工作空间** | 为这个任务单独开一份，用完自动清理；有未保存的改动会保留并提醒 | `kind = temporary` | git 项目里「未保存」= 未提交、未推送或未合并 |
-| **对话** | 和 agent 的一次来回 | Session | 见 9.2 |
+| **会话** | 和 agent 的一次来回 | Session | 保留现有用词，见 9.2 |
 
-### 9.2 会话 → 对话
+### 9.2 保留「会话」
 
-现在界面里「会话」出现约 90 处，「对话」约 30 处（多是「对话记录」）。建议统一成**对话**：更口语，也不会和登录态（账号设计里刻意不叫 Session）混淆。这是纯文案改动，放在 W2 一起做，一个 PR 全量替换，e2e 里按文字找元素的地方同步改。若评审决定不换，就保留「会话」，本节其余用词不受影响（见 §10 待定 6）。
+评审决定：界面继续叫**会话**（现有约 90 处），不改成「对话」。本文其余文案里凡指 Session 的一律用「会话」。
 
 ### 9.3 开始一个任务：只问一个问题
 
@@ -261,8 +257,10 @@ ALTER TABLE projects ADD COLUMN repo_default_branch TEXT;
 - 下面是选项（单选，大行，手机上整行可点）：
   1. **用已有的工作空间**：每行「文件夹名 · 持久/临时 · 分支」，有别的任务正在用时加一行小字「另一个任务也在这里干活，改动可能互相影响」。
   2. **新建持久工作空间**：副标题「一直保留，下次还能接着用」。
-  3. **新建临时工作空间**：副标题「为这个任务单独开一份，用完自动清理；有未保存的改动会保留并提醒」；git 项目在这一项上挂「推荐」标签并默认选中（除非 §10 待定 1 另有决定）。
+  3. **新建临时工作空间**（git 与非 git 项目都可选）：副标题「为这个任务单独开一份，用完自动清理；有未保存的改动会保留并提醒」；git 项目在这一项旁写一行小字「git 项目常用：每个任务一个分支，互不干扰」，但**不预选**。
 - 选中新建时，下方一行灰字说明将发生什么：「将在 本机 的 ~/agent-hub/foo 下新建」「将把 github.com/me/foo 下载到这台机器」「将为这个任务新开分支 agent-hub/fix-login-3f2a」。
+- **不预选**：持久和临时之间没有默认项，每次由用户选；也不隐式记住上次的选择（已有工作空间列表按最近使用排序，但同样不预选）。没选之前「开始」是灰的。
+- 同一任务已有一个以上临时工作空间时，在「新建临时工作空间」下加一行提示「这个任务已经有 N 个临时工作空间」，不阻止。
 - 主按钮「开始」；准备中显示「正在准备工作空间…」，失败时把原因写在按钮上方，按钮变成「重试」。
 
 ### 9.4 第一次使用的说明卡
@@ -271,10 +269,10 @@ ALTER TABLE projects ADD COLUMN repo_default_branch TEXT;
 
 > **三个词就够了**
 >
-> **项目** → **任务** → **对话**
+> **项目** → **任务** → **会话**
 >
-> 项目是你在做的东西；任务是其中要完成的一件事；对话是你和 agent 一起做这件事。
-> 每段对话都在某台**机器**上的一个**工作空间**（一个文件夹）里进行。
+> 项目是你在做的东西；任务是其中要完成的一件事；会话是你和 agent 一起做这件事。
+> 每个会话都在某台**机器**上的一个**工作空间**（一个文件夹）里进行。
 >
 > 〔新建项目〕　〔知道了〕
 
@@ -284,7 +282,7 @@ ALTER TABLE projects ADD COLUMN repo_default_branch TEXT;
 |---|---|---|
 | 首页，没有项目 | 还没有项目。先建一个，告诉 agent 你在做什么。 | 新建项目 |
 | 项目画布，没有任务 | 这个项目还没有任务。写下第一件要做的事。 | 新建任务 |
-| 任务，没有对话 | 还没开始。选一台机器和一个工作空间就能开始。 | 开始 |
+| 任务，没有会话 | 还没开始。选一台机器和一个工作空间就能开始。 | 开始 |
 | 运行面板，这台机器上没有工作空间 | 这台机器上还没有这个项目的工作空间，新建一个吧。 | （直接展开两个「新建」选项） |
 | 项目设置 · 工作空间，空 | 还没有工作空间。开始第一个任务时会让你选或新建。 | — |
 | 没有在线的机器 | 现在没有在线的机器。打开一台已接入的机器，或者接入一台新的。 | 接入机器 |
@@ -299,8 +297,8 @@ ALTER TABLE projects ADD COLUMN repo_default_branch TEXT;
 | 临时徽标 | 临时：任务结束后自动清理；有未保存的改动会保留并提醒你。 |
 | 「已保留」徽标（临时、被 kept） | 还有没保存的改动（未提交 / 未推送），所以没有清理。点开处理。 |
 | 并发警告图标 | 另一个任务也在这个工作空间里干活，改动可能互相影响。 |
-| 「进度记录」 | agent 每做完一步就记一笔；换机器或换工作空间继续时，新对话会先读它。 |
-| 「换个地方继续」 | 在另一台机器或另一个工作空间里开一段新对话，接着这份进度记录做。 |
+| 「进度记录」 | agent 每做完一步就记一笔；换机器或换工作空间继续时，新会话会先读它。 |
+| 「换个地方继续」 | 在另一台机器或另一个工作空间里开一个新会话，接着这份进度记录做。 |
 | 分支名 | 这个任务的改动都在这个分支上，不会碰到主分支。 |
 
 ### 9.7 手机布局
@@ -315,11 +313,13 @@ ALTER TABLE projects ADD COLUMN repo_default_branch TEXT;
 
 **已定**：项目不绑 Worker；删除项目不删目录；一个目录最多属于一个项目；一台 Worker 上可以有多个同项目工作空间；长期 / 临时两类，临时满足条件才自动删；多任务可共用工作空间并给并发警告；会话经工作日志换地方继续；用 Worker 本机 git 凭据；任务分支 `agent-hub/<slug>-<短 id>`；worktree 放在仓库外的 `.worktrees/`；合并默认 squash；没有 remote 时不做 git bundle 中转。
 
-**待定（请评审）**：
+**第四轮已定（2026-10-26 评审）**：
 
-1. git 项目「运行」的默认值：临时 worktree，还是复用最近的长期工作空间？（建议：有长期工作空间且没有别的任务在跑时复用，否则临时。）
-2. 临时工作空间被 `kept` 多久后再提醒或升级处理？（建议：只提醒，不设期限。）
-3. 长期工作空间「移除登记」时是否提供「同时删除目录」？（建议：只对 hub 新建的 `created/cloned` 提供，且要二次确认。）
-4. 非 git 临时目录是否需要？（建议：保留，但默认不选。）
-5. 一个任务能否同时拥有多个临时工作空间（比如在两台机器上各一个）？（建议：允许，每台机器最多一个。）
-6. 界面上「会话」统一改叫「对话」？（建议：改，见 §9.2；只改文案。）
+1. 持久 / 临时**没有默认**，每次由用户选择；不隐式记住上次的机器或工作空间。
+2. `kept` 的临时工作空间只提醒，不设期限。
+3. 移除持久工作空间时，只对 hub 新建或 clone 的（`created / cloned`）提供「同时删除目录」，并二次确认。
+4. 非 git 项目也可以选临时工作空间（新建空目录，清理规则相同：非空且有改动的判断见 §5）。
+5. 每个任务、每台机器的临时工作空间数量不限，有多个时给提示。
+6. 界面保留「会话」，不改「对话」。
+
+目前没有待定问题。
