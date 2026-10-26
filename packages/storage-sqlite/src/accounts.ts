@@ -121,6 +121,11 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
   const firstWithRole = db.prepare(
     'SELECT * FROM users WHERE role = ? AND disabled_at IS NULL ORDER BY created_at ASC LIMIT 1'
   );
+  const claimOwner = db.prepare(
+    'INSERT INTO users(id, email, display_name, role, password_hash, email_verified_at, disabled_at, created_at) ' +
+      "SELECT ?, ?, ?, 'owner', ?, ?, ?, ? " +
+      "WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'owner' AND disabled_at IS NULL)"
+  );
   const allUsers = db.prepare('SELECT * FROM users ORDER BY created_at ASC');
 
   const insertLogin = db.prepare(
@@ -171,6 +176,18 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     async firstWithRole(role) {
       const row = firstWithRole.get(role) as UserRow | undefined;
       return row ? toUser(row) : null;
+    },
+    async claimFirstOwner(user) {
+      const result = claimOwner.run(
+        user.id,
+        user.email,
+        user.displayName,
+        user.passwordHash,
+        user.emailVerifiedAt,
+        user.disabledAt,
+        user.createdAt
+      );
+      return Number(result.changes) === 1;
     },
     async list() {
       return (allUsers.all() as unknown as UserRow[]).map(toUser);

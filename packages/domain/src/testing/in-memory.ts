@@ -319,6 +319,11 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
         [...users.values()]
           .filter((u) => u.role === role && u.disabledAt === null)
           .sort((a, b) => a.createdAt - b.createdAt)[0] ?? null,
+      claimFirstOwner: async (user) => {
+        if ([...users.values()].some((u) => u.role === 'owner' && u.disabledAt === null)) return false;
+        users.set(user.id, { ...user, role: 'owner' });
+        return true;
+      },
       list: async () => [...users.values()]
     },
     logins: {
