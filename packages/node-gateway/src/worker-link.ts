@@ -47,7 +47,7 @@ export interface WorkerLinkOptions {
    */
   readonly files?: WorkerFiles;
   /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
-  readonly onClose?: () => void;
+  readonly onClose?: (why?: { readonly code: number }) => void;
   /** 每次连上（含重连）。 */
   readonly onOpen?: () => void;
   /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
@@ -209,7 +209,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           code === 4401 ? `hub 拒绝了这台机器（${reason.toString() || 'token 不匹配'}），不再重连` : '被管理员断开，不再重连'
         );
         closed = true;
-        options.onClose?.();
+        options.onClose?.({ code });
         return;
       }
       if (closed || options.reconnect === false) {

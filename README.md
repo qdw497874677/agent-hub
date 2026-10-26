@@ -50,10 +50,14 @@ scripts/install.sh --no-systemd   # 只装依赖与构建
 
 ### 多台机器：任何机器都可以登记成 Worker
 
+在 Worker 面板点「＋ 添加机器」，把弹出的一行命令拿到新机器上跑（只需要 git 和 curl，配对码 15 分钟、一次性）：
+
 ```bash
-# 在另一台机器上（能连到 hub 的 tailnet 地址）
-HUB_URL=ws://100.x.y.z:7878/worker HUB_TOKEN=… WORKER_LABEL=工作站 scripts/install-worker.sh
+curl -fsSL http://100.x.y.z:7878/install-worker.sh | HUB_PAIR=ahw_pair_… bash
 ```
+
+每台机器拿到自己的凭据，可以单独吊销。老方式（共享 `HUB_TOKEN`）仍可用：
+`HUB_URL=ws://100.x.y.z:7878/worker HUB_TOKEN=… WORKER_LABEL=工作站 scripts/install-worker.sh`。
 
 它会出现在顶栏的 Worker 面板里（在线/离线、最后在线、agent、会话数、主机、目录）。新建项目时选「目录在哪台机器上」，
 目录选择器浏览的就是那台的文件系统；项目里开的会话都跑在那台。断线会自动重连并接回还在跑的会话，

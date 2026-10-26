@@ -110,6 +110,8 @@ ExecStart=$node_bin $here/apps/worker/src/main.ts
 # Worker 自己会断线重连；进程级崩溃交给 systemd。
 Restart=always
 RestartSec=3
+# 78：hub 拒绝了这台机器（凭据无效或已吊销），重启也没用
+RestartPreventExitStatus=78
 
 [Install]
 WantedBy=$wanted_by

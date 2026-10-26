@@ -197,6 +197,9 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '.
 const build = readBuildInfo(repoRoot);
 log(`版本 ${build.version}（${build.commit ? build.commit.slice(0, 7) : '非 git 仓库'}，协议 v${build.protocol}）`);
 
+/** 被 hub 拒绝时的退出码（EX_CONFIG）：重启也没用，要重新接入。 */
+const REJECTED_EXIT_CODE = 78;
+
 /** 更新成功后用这个退出码退出：systemd（Restart=always）或拉起它的 hub 会把新代码跑起来。 */
 const RESTART_EXIT_CODE = 75;
 
@@ -237,9 +240,10 @@ const link = connectWorkerLink({
   onUpdate,
   onLog: log,
   // 断线会自己重连；走到这里只有两种情况：token 被拒、被管理员断开、或者自己 close() 了。
-  onClose: () => {
+  onClose: (why) => {
     log('连接关闭，退出');
-    process.exit(0);
+    // 被 hub 拒绝（凭据无效 / 已吊销）：用专门的退出码，systemd unit 据此不再拉起（RestartPreventExitStatus）。
+    process.exit(why?.code === 4401 ? REJECTED_EXIT_CODE : 0);
   }
 });
 
