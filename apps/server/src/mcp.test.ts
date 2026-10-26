@@ -62,7 +62,7 @@ async function connect(fetchApp: typeof fetch, token: string) {
 
 test('/mcp：官方 SDK 客户端用工具令牌列工具、读任务、写交接', async () => {
   const s = await setup();
-  const command = await withToolAccess(s.gateway, { url: 'http://127.0.0.1/mcp' }, {
+  const command = await withToolAccess(s.gateway, { url: 'http://127.0.0.1/mcp', transport: 'http' }, {
     kind: 'start_session',
     sessionId: s.session.id,
     taskId: s.task.id,
@@ -85,7 +85,7 @@ test('/mcp：官方 SDK 客户端用工具令牌列工具、读任务、写交�
   await client.close();
 
   // dispose 作废令牌
-  await withToolAccess(s.gateway, { url: 'x' }, { kind: 'dispose', sessionId: s.session.id, workerId: 'local' } as never);
+  await withToolAccess(s.gateway, { url: 'x', transport: 'http' }, { kind: 'dispose', sessionId: s.session.id, workerId: 'local' } as never);
   const res = await s.fetchApp('http://127.0.0.1/mcp', {
     method: 'POST',
     headers: { Authorization: `Bearer ${tools.token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },

@@ -153,7 +153,7 @@ let notifyOptions: (sessionId: string, options: readonly RuntimeOption[]) => voi
 
 /**
  * stdio MCP 垫片：和 worker 同一个 node、同样的启动参数（.ts 直接跑），
- * 给 stdio-shim 模式、以及不会 HTTP MCP 的 ACP agent 用。
+ * 给 Pi、以及不会 HTTP MCP 的 ACP agent 用；它连的是本机 MCP 入口，最终都经长连接到 hub。
  */
 const toolShim = {
   command: process.execPath,

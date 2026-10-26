@@ -183,23 +183,43 @@ sequenceDiagram
   Note over Hub: TokenIssuer：只存 hash
   Hub->>W: start_session{..., tools:{url, token, transport}}
   alt ACP（OpenCode / Grok）
-    W->>A: session/new{cwd, mcpServers:[{type:http,name:agent-hub,url,headers:[Authorization: Bearer token]}]}
+    W->>A: session/new{cwd, mcpServers:[{type:http,name:agent-hub,url=本机入口,headers:[Authorization: Bearer token]}]}
   else Pi（RPC）
     W->>A: spawn pi，env AGENT_HUB_TOOL_TOKEN=token<br/>（~/.pi/agent/mcp.json 里静态条目引用 ${AGENT_HUB_TOOL_TOKEN}）
   end
-  A->>Hub: MCP initialize / tools/list（Bearer）
-  Hub-->>A: 按 grant.scopes 过滤后的工具
+  A->>W: MCP initialize / tools/list（Bearer，连 worker 本机入口）
+  W->>Hub: /worker 长连接上的 rpc 帧 mcp.message{token, message}
+  Hub-->>W: 按 grant.scopes 过滤后的工具
+  W-->>A: 原样回给 agent
 ```
 
 - **短期 + 绑定**：令牌 = `{taskId, sessionId, workerId, scopes, exp}` 的不透明句柄，库里只存 hash；滑动 TTL 1h（每次认证成功续到 now+1h），签发后最长 12h；会话每次 resume 由 hub 重新签发并作废旧的；worker 报会话 `ended/gone`（跑完、停止、失败、进程退出）立即吊销；hub 启动时吊销所有「库里不是运行中」的会话的授权（运行中的可能被重连的 worker 接回，交给 TTL 兜底）。
 - **最小权限**：默认 grant = `task:read + task:log:write`；`task:status:write` 由项目设置开启；以后的高危工具（写文件、开会话）走「需要人确认」的 grant。
 - **不落盘、不进日志**：令牌只存在于 wire 帧（WS 已鉴权）和 agent 进程内存/环境变量里；Worker 日志与事件流对 `tools.token` 做脱敏；Pi 的 mcp.json 里只有 `${AGENT_HUB_TOOL_TOKEN}` 占位符。
-- 若 Worker 访问不到 hub 的 HTTP（只有 WS 出站），`HUB_TOOLS_TRANSPORT=stdio-shim`（**已实现**）：
-  - Worker 在 127.0.0.1 随机端口起一个本地 MCP relay（Streamable HTTP），把会话的工具 URL 换成它；令牌不变、只在内存和 env 里。
-  - relay 不懂任何工具：list / call 经已有 WS 链路转成 `tool_request {requestId, token, op, name?, args?}` 帧，hub 回 `tool_response {requestId, ok, tools|value|error}`。hub 端与 `/mcp` 共用 ToolGateway，另核对「授权绑定的 Worker = 转发的这台」。
-  - 会 HTTP MCP 的 agent（Pi、声明了 http 的 ACP agent）直连 relay；只会 stdio 的 ACP agent 拿到 `node apps/worker/src/mcp-shim.ts` 垫片（stdio ⇄ Streamable HTTP），URL/令牌走 `AGENT_HUB_TOOL_URL/TOKEN`。
-  - `http` 模式下 ACP agent 没声明 http 能力时，也退到同一个垫片（直连 hub 的 `/mcp`），不再是「没有工具」。
-  - 断线时在途调用立即失败（不进补发队列）；调用超时 60 秒。
+- **全部走长连接（默认 `relay`）**：worker ↔ hub 只有一条 `/worker` WebSocket，agent 的 MCP 也在上面。
+  - Worker 在 127.0.0.1 随机端口起本机 MCP 入口（`node-gateway/mcp-endpoint.ts`，SDK 的 Streamable HTTP 传输当管道用），把会话的工具 URL 换成它；令牌不变、只在内存和 env 里。
+  - 入口不懂任何工具：每条 JSON-RPC 请求原样经 RPC 端口发 `mcp.message {token, message}`，hub 端（`apps/server/mcp-relay.ts`）经 SDK 的 `InMemoryTransport` 交给与 `/mcp` 同一个 MCP 服务端（`mcp-server.ts`）→ 领域 ToolGateway。
+  - hub 每条消息都核对：令牌有效；授权绑定的 Worker = 转发的这台；会话此刻确实托管在这台（网关路由表 `hostOf`）。任一不符 `forbidden`。会话结束授权立即吊销。
+  - Pi：`~/.pi/agent/mcp.json` 里是 stdio 垫片（`apps/worker/src/mcp-shim.ts`）→ 本机入口；OpenCode / Grok：ACP `mcpServers` 里给本机入口的 http 条目，没声明 http 的退到同一个垫片。
+  - 断线时在途调用立即以 `closed` 失败（不进补发队列）；调用超时 60 秒，超时 / agent 断开会发 `cancel`。
+  - 直连 `HUB_TOOLS_TRANSPORT=http`（**已弃用**）：只有显式打开时 hub 才挂 `/mcp`，agent 直连 hub。
+- 协议：`PROTOCOL_VERSION = 2`（旧的 `tool_request` / `directories` 等专用帧都换成了通用 `rpc` 帧）；版本不一致 hub 关 4426，worker 提示跑 `scripts/update-worker.sh`。
+
+#### 4.3.1 分层（端口与适配器）
+
+```
+domain（ToolGateway、enrollWorker 用例；不认识任何传输）
+   ▲
+contract/rpc —— 端口 RpcPort + 纯逻辑通道 createRpcChannel（关联 id、超时、取消、zod 校验）+ 方法表 worker-methods
+   ▲            （只 import zod 和相对路径：CI 的 check:boundaries 文件级规则保证）
+node-gateway —— WS 适配器：server-gateway（hub）/ worker-link（worker）只把 rpc 帧搬进搬出通道；worker-enroll（接入握手）
+             —— 只依赖端口的适配器：mcp-endpoint（本机 MCP 入口 → 端口）、worker-fs-rpc（端口 → WorkerFiles）；不得 import ws
+   ▲
+apps/server —— mcp-relay（端口 → MCP 服务端 → ToolGateway）、mcp-server、worker-enroll（限流 → enrollWorker）、main（组合根）
+apps/worker —— mcp-shim（stdio ⇄ 本机入口）、enroll.ts（接入 CLI）、main（组合根）
+```
+
+同一个通道承载三类调用：`mcp.message`（worker→hub）、`fs.*`（hub→worker，目录浏览 / 建目录 / 列文件 / 读附件）；接入握手是连接上的第一帧，成功即关，不经通道。换传输（比如以后 HTTP/2 或 QUIC）只需要再写一个把帧搬进 `receive()`、`send()` 搬出去的适配器。
 
 ### 4.4 一次交接的完整流程
 
@@ -236,7 +256,7 @@ sequenceDiagram
 | P1 日志 | domain `work-log.ts` + `WorkLogRepository` 端口 + sqlite 实现；Task 新字段与状态机；REST `GET/POST /api/tasks/:id/log`；system 自动条目；任务详情抽屉（桌面+移动） | 人能写/读日志，会话起停自动出条目 |
 | P2 能力层 | `ToolProvider` 端口、`ToolGateway` 用例、`ToolGrant` 签发/吊销、`/mcp` Streamable HTTP 适配器、`TaskToolProvider` 四个工具；wire `start_session.tools`；ACP 适配器把 `sessionParams` 的 `mcpServers` 换成注入值（按 `mcpCapabilities.http` 判断） | OpenCode、Grok 会话里能调 `task.*` |
 | P3 Pi + 交接体验 | Worker 启动时确保 `~/.pi/agent/mcp.json` 有 `agent-hub` 条目，spawn 时注入 env；新会话首条提示附带最近日志；「插入交接模板」按钮 | 三个运行时都能完成 §4.4 |
-| P4 兜底与扩展 | stdio shim + `tool_request/tool_response` 帧（**已完成**）；限流/审计面板；`workspace.*`、`artifact.*` provider；CLI `agent-hub task log` | 只有 WS 出站的 Worker 也能用 |
+| P4 兜底与扩展 | stdio shim + MCP 经长连接中转（`rpc` 帧 + `mcp.message`，**已完成，默认**）；限流/审计面板；`workspace.*`、`artifact.*` provider；CLI `agent-hub task log` | 只有 WS 出站的 Worker 也能用 |
 
 ## 6. 迁移
 

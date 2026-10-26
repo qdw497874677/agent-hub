@@ -9,7 +9,7 @@ import { dirname, join } from 'node:path';
  * 写 `"url": "${AGENT_HUB_TOOL_URL}"` 会让整条配置被判非法，Pi 根本不加载这些工具
  * （之前的线上验证里 Pi 是自己用 curl 调的端点，不是走 MCP 工具）。
  * 所以这条写成 stdio：拉起 worker 的 MCP 垫片，URL 和令牌都写成 env 引用，真值由 worker 在 spawn 时给。
- * 文件里永远没有令牌；http / stdio-shim 两种模式是同一条配置（垫片两种 URL 都能连）。
+ * 文件里永远没有令牌；relay / http 两种模式是同一条配置（垫片连 worker 本机入口或 hub 都行）。
  * 用户自己开的 pi（没有这两个变量）只会让这一条解析失败、被跳过。
  */
 export function piMcpEntry(shim: { readonly command: string; readonly args: readonly string[] }) {

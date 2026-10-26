@@ -48,7 +48,7 @@ curl -fsSL http://100.x.y.z:7878/install-worker.sh | HUB_PAIR=ahw_pair_… bash
 # 可选：WORKER_LABEL=工作站 WORKER_ROOTS=$HOME/code 放在 bash 前面；不要 systemd 就 bash -s -- --no-systemd
 ```
 
-- 只需要 `git` 和 `curl`；脚本会装 Node 26（校验 sha256）、把代码 clone 到 `~/agent-hub` 并对齐 hub 的提交，然后用配对码换一个**这台机器专属的凭据**，再装 systemd 服务。
+- 只需要 `git` 和 `curl`；脚本会装 Node 26（校验 sha256）、把代码 clone 到 `~/agent-hub` 并对齐 hub 的提交，然后经 `/worker` 长连接用配对码换一个**这台机器专属的凭据**（enroll 握手，不再走 HTTP 接口），再装 systemd 服务。
 - 配对码 15 分钟有效、只能用一次；弹窗里有倒计时，过期了点「重新生成」。机器连上后弹窗会显示「✓ 已连上」。
 - 不要的机器在 Worker 面板或后台点「吊销」：凭据作废、立刻断开、不再重连，操作进审计。设计见 [design/worker-enrollment.md](design/worker-enrollment.md)。
 
@@ -77,6 +77,8 @@ scripts/install-worker.sh            # --no-systemd：只写配置，前台自�
 | 断线 | Worker 指数退避重连（0.5s 起，最多 15s），重新 hello，并报上手上还活着的会话，hub 把它们接回；断线期间的输出攒在本地补发 |
 | 半开连接 | hub 每 10s ping 一次，一个周期没有 pong 就判离线（原因「心跳超时」）；Worker 30s 收不到 ping 也会主动断开重连 |
 | token / 凭据不对、已吊销 | 连接被拒（4401），Worker 以退出码 78 退出，systemd 不再拉起，不刷屏 |
+| 协议版本不一致 | hub 关 4426 并说明两边版本；在 worker 上跑 `scripts/update-worker.sh` |
+| agent 调 hub 的工具（MCP） | agent 只连 worker 本机 `127.0.0.1` 上的 MCP 入口，worker 经同一条 `/worker` 长连接中转给 hub；hub 默认**不开** HTTP `/mcp`。所以 Worker 只要能出站连 WS 就行，不需要能访问 hub 的 HTTP |
 
 ### 已知限制
 

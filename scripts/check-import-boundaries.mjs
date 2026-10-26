@@ -3,7 +3,8 @@
 // 另外三条：
 //   1. 相对路径不得逃出本包（`../../other-pkg/src` 绕过了上面这张表）；
 //   2. 每个非 node: 的 import 都得在本包 package.json 里声明（不靠根 node_modules 的提升碰巧能用）；
-//   3. 包内文件之间不得有运行时循环 import（`import type` 会被擦除，不算）。
+//   3. 包内文件之间不得有运行时循环 import（`import type` 会被擦除，不算）；
+//   4. 文件级端口 / 适配器规则（FILE_RULES）：RPC 端口与通道核心不碰任何传输，只依赖端口的适配器不得 import 传输库。
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
@@ -24,6 +25,31 @@ const ALLOWED = new Map([
   ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
+
+// 文件级规则：路径（相对仓库根，正则）→ 只许 import 的模块（正则）或禁止 import 的模块。
+// RPC 是端口（contract/src/rpc），WebSocket 只是一个适配器（server-gateway / worker-link / worker-enroll）。
+const FILE_RULES = [
+  {
+    files: /^packages\/contract\/src\/rpc\/(?!.*\.test\.ts$)/,
+    only: /^(\.|zod$)/,
+    why: 'RPC 端口与通道核心与传输无关：只许相对路径和 zod'
+  },
+  {
+    files: /^packages\/node-gateway\/src\/(mcp-endpoint|worker-fs-rpc)\.ts$/,
+    forbid: /^(ws|@agent-hub\/node-gateway)$|server-gateway|worker-link/,
+    why: '只依赖 RpcPort 的适配器，不得碰 WebSocket'
+  },
+  {
+    files: /^apps\/server\/src\/(mcp-relay|mcp-server|worker-enroll)\.ts$/,
+    forbid: /^(ws|hono|@agent-hub\/node-gateway|@agent-hub\/storage-sqlite)$/,
+    why: 'hub 侧中转 / 接入只依赖端口和领域用例，不得碰传输或存储'
+  },
+  {
+    files: /^packages\/domain\/src\//,
+    forbid: /^(ws|zod|hono|@modelcontextprotocol\/sdk)$/,
+    why: '领域与传输无关'
+  }
+];
 
 const APP_PREFIX = '@agent-hub/worker|@agent-hub/server|@agent-hub/web';
 
@@ -125,6 +151,13 @@ for (const pkgDir of dirs) {
     graph.set(file, edges);
 
     for (const { spec, typeOnly } of importsOf(source)) {
+      for (const rule of FILE_RULES) {
+        if (!rule.files.test(where)) continue;
+        const bare = spec.startsWith('.') ? spec : packageOf(spec);
+        if ((rule.only && !rule.only.test(bare)) || (rule.forbid && (rule.forbid.test(bare) || rule.forbid.test(spec)))) {
+          failures.push(`${where}: 不得 import "${spec}"（${rule.why}）`);
+        }
+      }
       if (spec.startsWith('node:')) continue;
 
       if (spec.startsWith('.')) {
@@ -159,4 +192,4 @@ if (failures.length > 0) {
   console.error('✗ import boundaries 失败：\n' + failures.map((f) => '  - ' + f).join('\n'));
   process.exit(1);
 }
-console.log('✓ import boundaries（层间表 / 相对路径 / package.json 声明 / 循环）');
+console.log('✓ import boundaries（层间表 / 相对路径 / package.json 声明 / 循环 / 端口-适配器文件规则）');

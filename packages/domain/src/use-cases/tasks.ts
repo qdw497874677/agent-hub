@@ -49,7 +49,7 @@ export async function setTaskStatusUseCase(
   if (changed.value === task) return ok(task);
   await deps.tasks.save(changed.value);
   const role = actor === 'agent' ? 'agent' : actor === 'system' ? '系统' : '人';
-  const who = by?.label ? (actor === 'agent' ? `agent ${by.label} ` : `${by.label} `) : role;
+  const who = by?.label ? (actor === 'agent' ? `agent ${by.label}` : by.label) : role;
   await recordSystemLog(
     deps,
     taskId,
