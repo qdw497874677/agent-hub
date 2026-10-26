@@ -88,12 +88,25 @@ test('换个地方继续：先提交 WIP 并推送，目标新开临时工作空
   const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
   assert.ok(moved.ok, JSON.stringify(moved));
   assert.ok(w.git.calls.some((c) => c.startsWith('local:save_wip:/tmp/demo:WIP')));
-  assert.ok(w.git.calls.some((c) => c.startsWith('studio:worktree:') && c.endsWith('@feat/dark:existing')));
+  assert.ok(w.git.calls.some((c) => c.startsWith('studio:worktree:') && c.includes('@feat/dark:existing')));
   const target = await w.deps.workspaces.byId(moved.value.workspaceId!);
   assert.equal(target?.kind, 'temporary');
   assert.equal(target?.branch, 'feat/dark');
   const prompt = w.dispatched.at(-1);
   assert.ok(prompt?.kind === 'prompt' && /推送到分支 feat\/dark，这里检出的就是这个分支/.test(prompt.text));
+});
+
+test('换个地方继续：同一台机器推送 WIP 后，新临时工作空间开新分支、从 WIP 分支长出来', async () => {
+  const w = await world();
+  const [source] = await w.deps.workspaces.byProject(w.project.id);
+  await w.deps.workspaces.save({ ...source!, isGit: true, branch: 'feat/dark' });
+  w.git.statuses.set('/tmp/demo', { dirty: true, untracked: 0, unpushed: 0, branch: 'feat/dark', upstream: null });
+  const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: null }, saveWip: true, home: '/home/me' });
+  assert.ok(moved.ok, JSON.stringify(moved));
+  const call = w.git.calls.find((c) => c.startsWith('local:worktree:'));
+  assert.ok(call && !call.includes(':existing') && call.endsWith('<feat/dark'), call);
+  const prompt = w.dispatched.at(-1);
+  assert.ok(prompt?.kind === 'prompt' && /推送到分支 feat\/dark，这里的新分支 agent-hub\/.+ 就是从它长出来的/.test(prompt.text));
 });
 
 test('换个地方继续：非 git 项目新开临时目录；同一个工作空间、离线、空会话都说清楚', async () => {

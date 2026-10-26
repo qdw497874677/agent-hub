@@ -33,6 +33,8 @@ export interface PrepareTemporaryCommand {
   readonly home: string;
   /** 沿用这个已有分支（换个地方继续），不新开 `agent-hub/…`。只对 git 项目有意义。 */
   readonly branch?: string | null;
+  /** 新分支从哪儿长（换个地方继续到同一台机器：从刚推送的 WIP 分支长）。 */
+  readonly base?: string | null;
 }
 
 /**
@@ -67,7 +69,7 @@ export async function prepareTemporaryWorkspaceUseCase(
       repoPath: base.value.path,
       path: `${repoParent === '/' ? '' : repoParent}/.worktrees/${repoName}/${name}`,
       branch: command.branch ?? taskBranch(task.title, id),
-      base: project.repo?.defaultBranch ?? base.value.branch,
+      base: command.base ?? project.repo?.defaultBranch ?? base.value.branch,
       ...(command.branch ? { existing: true } : {})
     });
     if (!made.ok) return made;

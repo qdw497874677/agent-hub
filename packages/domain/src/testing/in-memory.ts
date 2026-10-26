@@ -326,7 +326,7 @@ export function fakeGit(): FakeGit {
           return ok({ path: `${input.parent}/${input.name}`, branch: input.branch ?? 'main' });
         },
         addWorktree: async (input) => {
-          calls.push(`${machine}:worktree:${input.repoPath}->${input.path}@${input.branch}${input.existing ? ':existing' : ''}`);
+          calls.push(`${machine}:worktree:${input.repoPath}->${input.path}@${input.branch}${input.existing ? ':existing' : ''}${input.base ? `<${input.base}` : ''}`);
           const reason = fail();
           if (reason) return err(unavailable(reason));
           return ok({ path: input.path, branch: input.branch });
