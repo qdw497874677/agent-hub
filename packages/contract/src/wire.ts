@@ -237,6 +237,9 @@ export const journalEntrySchema = z.object({
 
 // ---- 请求 ----
 
+/** 删除项目：项目名得一字不差地再输一遍。 */
+export const deleteProjectRequest = z.object({ confirmName: z.string().min(1).max(500) });
+
 export const createProjectRequest = z.object({
   name: z.string().min(1).max(80),
   rootPath: z.string().min(1),

@@ -35,6 +35,7 @@ export type { SessionQueue } from './ports/session-queue.ts';
 
 export * from './use-cases/deps.ts';
 export * from './use-cases/projects.ts';
+export * from './use-cases/delete-project.ts';
 export * from './use-cases/tasks.ts';
 export * from './use-cases/work-log.ts';
 export * from './use-cases/sessions.ts';

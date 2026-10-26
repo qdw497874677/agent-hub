@@ -51,6 +51,9 @@ export function fakeProjects(): ProjectRepository {
     },
     async list() {
       return [...rows.values()];
+    },
+    async remove(id) {
+      rows.delete(id);
     }
   };
 }

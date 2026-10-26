@@ -102,6 +102,8 @@ export const api = {
     ),
   makeDirectory: (input: { workerId: string | null; parent: string; name: string }) =>
     post<{ path: string }>('/api/fs/directories', input),
+  deleteProject: (projectId: string, confirmName: string) =>
+    call<{ id: string; deleted: true }>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE', body: JSON.stringify({ confirmName }) }),
   createProject: (input: { name: string; rootPath: string; workerId?: string | null }) => post<ProjectDto>('/api/projects', input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
