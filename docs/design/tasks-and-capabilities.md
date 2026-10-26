@@ -1,6 +1,6 @@
 # 任务模型 v2 与 Agent 能力接入层（设计稿）
 
-> 状态：**已评审通过（2026-10-25）**，§7 八个问题全部按建议定案；按 P1–P4 分阶段实施。前置文档：[workspaces.md](./workspaces.md)（Task 是一等实体，画布卡片 = 任务；git 项目每个任务一个 worktree 和分支）。
+> 状态：**已评审通过（2026-10-25）**，§7 八个问题全部按建议定案；按 P1–P4 分阶段实施。前置文档：[workspaces.md](./workspaces.md)（Task 是一等实体，画布卡片 = 任务；git 项目的任务分支放在临时工作空间里；第三版见该文）。
 >
 > 目标：①把任务做成「有进度记忆」的实体——自带**工作日志**；②让**挂在任务下的 agent 会话**用一种通用、可扩展的方式接入平台能力，第一个场景是「新会话读任务和日志，干完写日志交接」。
 
@@ -10,7 +10,7 @@
 | --- | --- | --- | --- |
 | `Task` | `packages/domain/src/task.ts` | `id, projectId, title, goal \| null, status, createdAt, updatedAt` | 状态 `open → done/abandoned`，`done/abandoned → open`（`TRANSITIONS`）；用例只有 `createTaskUseCase`、`setTaskStatusUseCase`（`use-cases/tasks.ts`） |
 | `Session` | `session.ts` | `id, taskId, agentId, model, origin(derive/fork), status(running/stopped/done/interrupted/failed), lastSeq, agentSessionRef, options, optionSpec, workerId` | 会话**必须**挂在任务下；fork 记录 `fromSessionId + atSeq` |
-| `Project` | `project.ts` | `rootPath, workerId, directories` | workspaces.md 计划拆出 `Workspace`/`TaskCheckout`，Task 加 `branch?` |
+| `Project` | `project.ts` | `rootPath, workerId, directories` | workspaces.md（第三版）拆出 `Workspace`（长期 / 临时，一台 Worker 可有多个），任务 worktree 并入临时工作空间；Task 加 `lastWorkerId / lastWorkspaceId` |
 | 画布 | `canvas.ts` | `CanvasLayout`；`buildLineage(tasks, sessions)`、`nodesOf` | 卡片 = 任务，会话以血缘边挂在卡片下 |
 | 端口 | `ports/task-repository.ts`、`token-issuer.ts`、`audit-log.ts` | — | `TokenIssuer` 已是「高熵令牌只存 hash」，可直接复用 |
 | wire | `contract/src/wire.ts` `start_session` | `sessionId, taskId, agentId, workspaceRoot, origin, resume, options` | Worker 已经知道 taskId，但**没有任何能力通道** |
@@ -31,7 +31,7 @@ interface Task {
   goal: string | null;          // markdown，任务说明 / 验收标准
   status: TaskStatus;
   ownerId: UserId | null;       // 负责人（人）；agent 不当 owner，它是会话
-  branch: string | null;        // workspaces.md：agent-hub/<task-slug>
+  // 分支归工作空间：临时工作空间的 branch = agent-hub/<slug>-<短 id>（workspaces.md 第三版）
   summary: string | null;       // 「当前进展」一句话，由最近一条人/agent 写的日志（非系统条目）自动刷新，也可手改（`PATCH /api/tasks/:id/summary`）
   logSeq: number;               // 日志最大序号，乐观并发用
   createdAt; updatedAt;
@@ -59,7 +59,7 @@ stateDiagram-v2
 
 - 迁移映射：`open → todo`（有过会话的 `open → in_progress`），`done/abandoned` 不变。
 - **agent 能改的状态有限**：`in_progress ↔ blocked`、`→ in_review`；`done/abandoned` 只有人能设（最小权限，见 §4.4）。
-- 关系不变：`Project 1─N Task 1─N Session`；`Task 1─N TaskCheckout`（workspaces.md）；新增 `Task 1─N WorkLogEntry`。
+- 关系不变：`Project 1─N Task 1─N Session`；`Project 1─N Workspace`、`Session N─1 Workspace`（workspaces.md 第三版）；新增 `Task 1─N WorkLogEntry`。
 
 ### 2.2 WorkLogEntry（工作日志）
 
