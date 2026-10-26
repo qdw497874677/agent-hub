@@ -5,7 +5,7 @@ import { err, ok, type Result } from '../result.ts';
 import { ATTACHMENT_LIMITS, isSafeRelativePath } from '../attachment.ts';
 import type { Deps } from './deps.ts';
 import { projectOf } from './hosting.ts';
-import { workspaceFor } from '../project.ts';
+import { locationOf } from './workspaces.ts';
 
 /** 遍历上限：再大的仓库也只扫这么多，选择器要的是「快」，不是「全」。 */
 const SCAN_LIMIT = 5000;
@@ -29,7 +29,7 @@ function rank(path: string, query: string): number {
 
 /** `@` 引用选择器：项目里按名字模糊匹配的文件，相对项目根。 */
 export async function listProjectFiles(
-  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions' | 'workspaces'>,
   projectId: ProjectId,
   query: string,
   /** 在哪条会话里 @：会话换过机器时要列那台机器上的目录。 */
@@ -38,7 +38,7 @@ export async function listProjectFiles(
   const project = await deps.projects.byId(projectId);
   if (!project) return err(notFound('项目不存在'));
   const session = sessionId ? await deps.sessions.byId(sessionId) : null;
-  const { workerId, root } = workspaceFor(project, session?.workerId ?? null);
+  const { workerId, root } = await locationOf(deps, project, session);
   // 目录在哪台机器上就问哪台：Server 不读别的机器上的路径。
   let scanned: { readonly files: readonly string[]; readonly truncated: boolean };
   if (workerId === null) scanned = await deps.fs.listFiles(root, SCAN_LIMIT);
@@ -63,7 +63,7 @@ export async function listProjectFiles(
  * 只放行这条会话自己的附件目录，别的路径一律拒——这不是通用文件服务器。
  */
 export async function readSessionAttachment(
-  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions' | 'tasks'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions' | 'tasks' | 'workspaces'>,
   sessionId: SessionId,
   path: string
 ): Promise<Result<Uint8Array, DomainError>> {
@@ -74,7 +74,7 @@ export async function readSessionAttachment(
   if (!session) return err(notFound('会话不存在'));
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
-  const { workerId, root } = workspaceFor(project, session.workerId);
+  const { workerId, root } = await locationOf(deps, project, session);
   const absolute = `${root}/${path}`;
   let bytes: Uint8Array | null;
   if (workerId === null) bytes = await deps.fs.readFile(absolute);

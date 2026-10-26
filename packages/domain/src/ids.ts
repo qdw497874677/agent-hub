@@ -25,3 +25,6 @@ export const asTaskId = (value: string): TaskId => value as TaskId;
 export const asSessionId = (value: string): SessionId => value as SessionId;
 export const asArtifactId = (value: string): ArtifactId => value as ArtifactId;
 export const asAgentId = (value: string): AgentId => value as AgentId;
+export type WorkspaceId = string & { readonly __brand: 'WorkspaceId' };
+export const newWorkspaceId = (): WorkspaceId => newId() as WorkspaceId;
+export const asWorkspaceId = (value: string): WorkspaceId => value as WorkspaceId;

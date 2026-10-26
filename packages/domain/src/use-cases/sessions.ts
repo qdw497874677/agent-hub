@@ -13,6 +13,7 @@ import { ensureHosted, startCommand } from './hosting.ts';
 import { placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
+import { linkedWorkspaceFor, locationOf } from './workspaces.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
@@ -24,7 +25,7 @@ export interface DeriveCommand {
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
 export async function deriveSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
   const task = await deps.tasks.byId(asTaskId(command.taskId));
@@ -46,19 +47,22 @@ export async function deriveSessionUseCase(
   });
   if (!placed.ok) return placed;
 
+  const workspace = await linkedWorkspaceFor(deps, project, placed.value);
+  if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个目录干活'));
   const created = deriveSession({
     task,
     agentId,
     model: command.model,
     now: deps.now(),
-    workerId: placed.value
+    workerId: placed.value,
+    workspaceId: workspace.id
   });
   if (!created.ok) return created;
 
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
 
-  const dispatched = await deps.gateway.dispatch(startCommand(session, project, null, {}));
+  const dispatched = await deps.gateway.dispatch(startCommand(session, workspace.path, null, {}));
   if (!dispatched.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
@@ -90,7 +94,7 @@ export interface ForkCommand {
 }
 
 export async function forkSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces'>,
   command: ForkCommand
 ): Promise<Result<Session, DomainError>> {
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -133,8 +137,9 @@ export async function forkSessionUseCase(
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
 
+  const { root } = await locationOf(deps, project, session);
   const dispatched = await deps.gateway.dispatch(
-    startCommand(session, project, { agentSessionRef: source.agentSessionRef, cursor: command.atSeq }, source.options)
+    startCommand(session, root, { agentSessionRef: source.agentSessionRef, cursor: command.atSeq }, source.options)
   );
   if (!dispatched.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
@@ -236,7 +241,7 @@ export interface ChangeOptionCommand {
  * 「平台以为在跑 A、其实跑的是 B」的谎话。
  */
 export async function changeSessionOption(
-  deps: Pick<Deps, 'gateway' | 'hosting' | 'projects' | 'sessions' | 'tasks'>,
+  deps: Pick<Deps, 'gateway' | 'hosting' | 'projects' | 'sessions' | 'tasks' | 'workspaces' | 'now'>,
   command: ChangeOptionCommand
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(asSessionId(command.sessionId));

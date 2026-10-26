@@ -124,7 +124,10 @@ test('数据落在文件里：关掉重开还在', async () => {
     const { session } = await seeded(first);
     first.close();
     const second = openSqliteStore(file);
-    assert.deepEqual(await second.sessions.byId(session.id), session);
+    const reopened = await second.sessions.byId(session.id);
+    // 重开时迁移把老会话补到了项目目录对应的长期工作空间上
+    assert.ok(reopened?.workspaceId);
+    assert.deepEqual(reopened, { ...session, workspaceId: reopened.workspaceId });
     second.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

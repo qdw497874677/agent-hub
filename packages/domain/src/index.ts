@@ -15,9 +15,11 @@ export * from './artifact.ts';
 export * from './canvas.ts';
 export * from './worker.ts';
 export * from './directories.ts';
+export * from './workspace.ts';
 
 export type { TaskRepository } from './ports/task-repository.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
+export type { WorkspaceRepository } from './ports/workspace-repository.ts';
 export type { ProjectRepository } from './ports/project-repository.ts';
 export type { SessionRepository } from './ports/session-repository.ts';
 export type { ArtifactRepository } from './ports/artifact-repository.ts';
@@ -48,6 +50,7 @@ export * from './use-cases/home.ts';
 export * from './use-cases/workers.ts';
 export * from './use-cases/continue-elsewhere.ts';
 export * from './use-cases/attachments.ts';
+export * from './use-cases/workspaces.ts';
 
 export * from './account.ts';
 export type { UserRepository } from './ports/user-repository.ts';

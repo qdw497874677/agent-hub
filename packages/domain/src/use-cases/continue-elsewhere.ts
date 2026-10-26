@@ -5,7 +5,7 @@ import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound, unavailable } from '../errors.ts';
 import { asSessionId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
-import { workspaceFor } from '../project.ts';
+import { linkedWorkspaceFor } from './workspaces.ts';
 import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
 import { startCommand } from './hosting.ts';
@@ -32,7 +32,7 @@ export const NEEDS_DIRECTORY = '需要选这个项目在那台 Worker 上的目�
 export async function continueElsewhereUseCase(
   deps: Pick<
     Deps,
-    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'
+    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
   >,
   command: ContinueElsewhereCommand
 ): Promise<Result<Session, DomainError>> {
@@ -69,20 +69,23 @@ export async function continueElsewhereUseCase(
     await deps.projects.save(project);
   }
 
+  const target = await linkedWorkspaceFor(deps, project, placed.value);
+  if (!target) return err(invalid(NEEDS_DIRECTORY));
   const created = forkSession({
     source,
     atSeq: source.lastSeq,
     agentId: source.agentId,
     model: source.model,
     now: deps.now(),
-    workerId: placed.value
+    workerId: placed.value,
+    workspaceId: target.id
   });
   if (!created.ok) return created;
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
 
   // resume = null：目标机器上没有原来的 agent 会话文件，只能新开
-  const started = await deps.gateway.dispatch(startCommand(session, project, null, source.options));
+  const started = await deps.gateway.dispatch(startCommand(session, target.path, null, source.options));
   if (!started.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(started.error);
@@ -93,7 +96,7 @@ export async function continueElsewhereUseCase(
   const journal = await deps.sessions.eventsAfter(source.id, 0 as never);
   const brief = handoffBrief(
     journal.map((entry) => entry.event),
-    { from: label(source.workerId), to: label(placed.value), root: workspaceFor(project, placed.value).root }
+    { from: label(source.workerId), to: label(placed.value), root: target.path }
   );
   const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief, briefing: false });
   if (!seeded.ok) return err(seeded.error.code === 'unavailable' ? unavailable(seeded.error.message) : seeded.error);

@@ -16,7 +16,8 @@ import type {
   ProjectId,
   SessionId,
   TaskId,
-  TaskRepository
+  TaskRepository,
+  WorkspaceRepository
 } from '@agent-hub/domain';
 import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId } from '@agent-hub/domain';
 
@@ -110,6 +111,7 @@ export function toSession(row: Row): Session {
     options: parseOptions(nullableStr(row, 'options')),
     optionSpec: parseOptionSpec(nullableStr(row, 'option_spec')),
     workerId: nullableStr(row, 'worker_id'),
+    workspaceId: nullableStr(row, 'workspace_id') as Session['workspaceId'],
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };
@@ -142,6 +144,7 @@ export interface RepositorySet {
   sessions: SessionRepository;
   artifacts: ArtifactRepository;
   layout: LayoutStore;
+  workspaces: WorkspaceRepository;
 }
 
 export type { ArtifactId, ProjectId, Seq, SessionId, TaskId, CanvasLayout };

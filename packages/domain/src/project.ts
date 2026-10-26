@@ -19,13 +19,13 @@ export interface Project {
 }
 
 /** 一条会话真正干活的地方：哪台机器（null = Server 本机的文件系统）+ 哪个目录。 */
-export interface Workspace {
+export interface Location {
   readonly workerId: string | null;
   readonly root: string;
 }
 
 /** 会话落在映射过的那台 Worker 上就用那台的目录，否则用项目自己的目录。 */
-export function workspaceFor(project: Project, sessionWorker: string | null): Workspace {
+export function workspaceFor(project: Project, sessionWorker: string | null): Location {
   const mapped = sessionWorker !== null && sessionWorker !== project.workerId ? project.directories[sessionWorker] : undefined;
   const ws = mapped !== undefined ? { workerId: sessionWorker, root: mapped } : { workerId: project.workerId, root: project.rootPath };
   return { workerId: ws.workerId, root: ws.root.replace(/\/+$/, '') || '/' };

@@ -18,6 +18,7 @@ import type { SearchGateway } from '../ports/search-gateway.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
+import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -44,6 +45,8 @@ export interface Deps {
   /** 任务工作日志（只追加）。 */
   readonly workLog: WorkLogRepository;
   readonly sessions: SessionRepository;
+  /** 工作空间登记（workspaces.md）。 */
+  readonly workspaces: WorkspaceRepository;
   readonly artifacts: ArtifactRepository;
   readonly layout: LayoutStore;
   readonly stream: SessionEventStream;

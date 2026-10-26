@@ -17,6 +17,7 @@ import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
+import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateWorkspaces } from './workspaces.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
@@ -61,7 +62,12 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'directories')) {
     db.exec("ALTER TABLE projects ADD COLUMN directories TEXT NOT NULL DEFAULT '{}'");
   }
+  if (!columns.some((column) => column.name === 'workspace_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
+  }
+  db.exec(WORKSPACE_SCHEMA);
   migrateTasksV2(db);
+  migrateWorkspaces(db);
   cleanLegacyLogText(db);
   const layoutColumns = db.prepare('PRAGMA table_info(layout)').all() as { name: string }[];
   if (!layoutColumns.some((column) => column.name === 'sizes')) {
@@ -90,11 +96,11 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, worker_id, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
       'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
-      'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, ' +
+      'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -158,6 +164,7 @@ export function openSqliteStore(file: string): SqliteStore {
     'DELETE FROM task_log_entries WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)',
     'DELETE FROM tasks WHERE project_id = ?',
     'DELETE FROM layout WHERE project_id = ?',
+    'DELETE FROM workspaces WHERE project_id = ?',
     'DELETE FROM projects WHERE id = ?'
   ].map((sql) => db.prepare(sql));
 
@@ -239,6 +246,7 @@ export function openSqliteStore(file: string): SqliteStore {
         JSON.stringify(session.options),
         JSON.stringify(session.optionSpec),
         session.workerId,
+        session.workspaceId,
         session.createdAt,
         session.updatedAt
       );
@@ -335,6 +343,7 @@ export function openSqliteStore(file: string): SqliteStore {
     tasks,
     workLog: createWorkLogRepository(db),
     toolGrants: createToolGrantRepository(db),
+    workspaces: createWorkspaceRepository(db),
     enrollment: createEnrollmentRepository(db),
     sessions,
     artifacts,
