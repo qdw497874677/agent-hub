@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type SessionDto } from './api.ts';
-import { WorkerChip, WorkerPicker, resolveWorker, useWorkers } from './workers.tsx';
+import { useWorkers } from './workers.tsx';
+import { WorkspaceChooser, choiceReady, type WorkspaceChoice } from './workspace-chooser.tsx';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -73,16 +74,39 @@ export function DeriveDialog({
   const agent = canvas.agents.find((candidate) => candidate.id === agentId);
   const [model, setModel] = useState(agent?.defaultModel ?? '');
   const workers = useWorkers();
-  // 项目绑了机器（目录在那台上）：会话只能去那台，不给选；否则可选，默认交给 hub 安排。
-  // 没绑定的项目 = 目录在 hub 本机，有本机 Worker 时就是它；只有全靠远程机器时才让人选。
-  const bound = resolveWorker(workers.list, canvas.project.workerId);
-  const candidates = workers.list.filter((worker) => (worker.agentIds ?? [agentId]).includes(agentId));
-  const [workerId, setWorkerId] = useState<string | null>(null);
+  // 运行面板（workspaces.md §9.3）：先选机器，再选工作空间；不预选，没选之前「开始」是灰的
+  const [machine, setMachine] = useState<string | null>(null);
+  const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
+  const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
   const queryClient = useQueryClient();
+  const projectId = canvas.project.id;
   const derive = useMutation({
-    mutationFn: () => api.derive({ taskId, agentId, model, ...(workerId && !bound ? { workerId } : {}) }),
+    mutationFn: async () => {
+      if (!choice || machine === null) throw new Error('先选机器和工作空间');
+      let workspaceId: string;
+      if (choice.type === 'existing') workspaceId = choice.workspaceId;
+      else {
+        setPhase('preparing');
+        const made = await api.createWorkspace(projectId, {
+          workerId: machine,
+          kind: 'long_lived',
+          mode: choice.mode,
+          ...(choice.mode === 'link' && choice.path ? { path: choice.path } : {})
+        });
+        workspaceId = made.id;
+        // 建好了就记成「已有的」：重试时不再新建第二个
+        setChoice({ type: 'existing', workspaceId });
+        await queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] });
+      }
+      setPhase('starting');
+      return api.derive({ taskId, agentId, model, workspaceId });
+    },
+    onSettled: () => setPhase('idle'),
     onSuccess: async (session) => {
-      await queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['canvas', projectId] }),
+        queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] })
+      ]);
       if (onDerived) onDerived(session);
       else onDone();
     }
@@ -98,15 +122,11 @@ export function DeriveDialog({
   }, [agentId, canvas.agents]);
 
   return (
-    <DialogShell title="开一条会话" onClose={onDone}>
-        <p className="mb-1 text-head text-primary">开一条会话</p>
-        <p className="mb-3 text-meta text-secondary">
-          会话从任务派生：任务说清要达成什么，每条会话是一次尝试。同一个任务可以开很多条，
-          它们并排跑在画布上，血缘线把每条都连回这个任务。
-        </p>
+    <DialogShell title="在哪台机器、哪个工作空间干活？" onClose={onDone}>
+        <p className="mb-3 text-head text-primary">在哪台机器、哪个工作空间干活？</p>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
-            还没有 Worker 上线。它起来后，这里会出现它装了的 agent。
+            还没有机器上线。它起来后，这里会出现它装了的 agent。
             <button
               className="ml-2 text-accent underline-offset-2 hover:underline"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
@@ -115,6 +135,18 @@ export function DeriveDialog({
             </button>
           </p>
         ) : null}
+        <WorkspaceChooser
+          canvas={canvas}
+          taskId={taskId}
+          agentId={agentId}
+          workers={workers.list}
+          machine={machine}
+          onMachine={setMachine}
+          choice={choice}
+          onChoice={setChoice}
+        />
+        <div className="mb-4 grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+        <div>
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-agent">agent</label>
         <select
           id="derive-agent"
@@ -128,17 +160,12 @@ export function DeriveDialog({
             </option>
           ))}
         </select>
-        {bound && workers.multi ? (
-          <p className="mb-3 flex items-center gap-2 text-meta text-secondary">
-            跑在 <WorkerChip worker={bound} /> 上——项目目录在那台机器。
-          </p>
-        ) : bound ? null : (
-          <WorkerPicker workers={candidates} value={workerId} onChange={setWorkerId} allowAuto />
-        )}
+        </div>
+        <div>
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-model">模型</label>
         <select
           id="derive-model"
-          className={`mb-4 ${INPUT}`}
+          className={`mb-3 ${INPUT}`}
           value={model}
           disabled={(agent?.models ?? []).length === 0}
           onChange={(event) => setModel(event.target.value)}
@@ -153,18 +180,20 @@ export function DeriveDialog({
             ))
           )}
         </select>
+        </div>
+        </div>
         {derive.error ? <p className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}
-        <div className="flex justify-end gap-2">
+        <div className="sticky bottom-0 -mx-1 flex justify-end gap-2 bg-panel px-1 pb-[env(safe-area-inset-bottom)] pt-2">
           <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
             取消
           </button>
           <button
             type="button"
             className={PRIMARY_BUTTON}
-            disabled={agentId === '' || derive.isPending}
+            disabled={agentId === '' || machine === null || !choiceReady(choice) || derive.isPending}
             onClick={() => derive.mutate()}
           >
-            {derive.isPending ? '启动中…' : '开一条会话'}
+            {phase === 'preparing' ? '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
           </button>
         </div>
     </DialogShell>

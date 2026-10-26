@@ -212,7 +212,8 @@ function CreateProjectPanel({
   const queryClient = useQueryClient();
 
   const create = useMutation({
-    mutationFn: () => api.createProject({ name: name.trim(), rootPath: rootPath.trim(), workerId: chosen }),
+    mutationFn: () =>
+      api.createProject(rootPath.trim() === '' ? { name: name.trim() } : { name: name.trim(), rootPath: rootPath.trim(), workerId: chosen }),
     onSuccess: async (created) => {
       // 路由靠 ['projects'] 认项目；只刷 ['home'] 会让新项目在跳过去时「查无此项」。
       await Promise.all([
@@ -228,12 +229,12 @@ function CreateProjectPanel({
     <section aria-label="新建项目" className="mb-6 rounded-md border border-hair bg-panel p-4">
       <p className="mb-1 text-head text-primary">新建项目</p>
       <p className="mb-3 text-meta text-secondary">
-        项目 = 某台机器上的一个目录。agent 就在这个目录里干活，产出物落在
-        <span className="font-mono text-tertiary"> .agent-hub/</span> 下。
+        项目是你在做的东西。目录可以先不选：开始任务时再选在哪台机器、哪个工作空间干活；
+        选了的话，它就是这个项目的第一个持久工作空间。
       </p>
 
       <WorkerPicker
-        label="目录在哪台机器上"
+        label="目录在哪台机器上（可选）"
         workers={workers.list}
         value={chosen}
         onChange={(id) => {
@@ -248,7 +249,7 @@ function CreateProjectPanel({
           aria-label="目录"
           className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
           value={rootPath}
-          placeholder="/绝对路径"
+          placeholder="目录（可选，/绝对路径）"
           spellCheck={false}
           onChange={(event) => setRootPath(event.target.value)}
         />
@@ -267,7 +268,7 @@ function CreateProjectPanel({
         />
         <button
           className="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-meta text-canvas disabled:opacity-40"
-          disabled={name.trim() === '' || rootPath.trim() === '' || create.isPending}
+          disabled={name.trim() === '' || create.isPending}
           onClick={() => {
             setError(null);
             create.mutate();

@@ -11,7 +11,8 @@ export const deleteProjectRequest = z.object({ confirmName: z.string().min(1).ma
 
 export const createProjectRequest = z.object({
   name: z.string().min(1).max(80),
-  rootPath: z.string().min(1),
+  /** 不给 / 空串 = 先不选目录：开始任务时再选机器和工作空间。 */
+  rootPath: z.string().optional(),
   workerId: z.string().min(1).nullable().optional()
 });
 
@@ -64,7 +65,17 @@ export const deriveSessionRequest = z.object({
   // 空字符串 = 用 agent 自己的默认模型（见 apps/web 的派生对话框）
   model: z.string(),
   /** 点名交给哪台 Worker；不给就按落点规则挑。 */
-  workerId: z.string().min(1).nullable().optional()
+  workerId: z.string().min(1).nullable().optional(),
+  /** 运行面板里选的工作空间；会话跟着它落到那台机器、那个目录。 */
+  workspaceId: z.string().min(1).nullable().optional()
+});
+
+/** 新建持久工作空间：在那台机器上新建托管目录，或关联一个已有目录。 */
+export const createWorkspaceRequest = z.object({
+  workerId: z.string().min(1).nullable().default(null),
+  kind: z.literal('long_lived'),
+  mode: z.enum(['create', 'link']),
+  path: z.string().optional()
 });
 
 export const forkSessionRequest = z.object({

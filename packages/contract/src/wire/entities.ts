@@ -77,6 +77,32 @@ export const projectSchema = z.object({
   createdAt: epochMs
 });
 
+/** 工作空间（docs/design/workspaces.md §2）：某台机器上的一个目录，会话在里面干活。 */
+export const workspaceSchema = z.object({
+  id,
+  projectId: id,
+  /** null = 和 Server 同机。 */
+  workerId: z.string().nullable(),
+  path: z.string(),
+  kind: z.enum(['long_lived', 'temporary']),
+  source: z.enum(['linked', 'created', 'cloned', 'worktree']),
+  baseWorkspaceId: z.string().nullable(),
+  branch: z.string().nullable(),
+  ownerTaskId: z.string().nullable(),
+  label: z.string().nullable(),
+  isGit: z.boolean().nullable(),
+  state: z.enum(['preparing', 'ready', 'failed', 'kept', 'removed']),
+  keptReason: z.string().nullable(),
+  createdAt: epochMs,
+  updatedAt: epochMs
+});
+
+/** 运行面板的一行：工作空间 + 正在里面跑会话的任务（并发警告）。 */
+export const workspaceViewSchema = z.object({
+  workspace: workspaceSchema,
+  runningTaskIds: z.array(z.string())
+});
+
 export const taskStatusSchema = z.enum(['todo', 'in_progress', 'blocked', 'in_review', 'done', 'abandoned']);
 
 export const taskSchema = z.object({
@@ -119,6 +145,8 @@ export const sessionSchema = z.object({
   optionSpec: z.array(runtimeOptionSchema),
   /** 落点：会话绑在哪台 Worker 上。null = 多机之前的老会话。 */
   workerId: z.string().nullable().default(null),
+  /** 在哪个工作空间里干活；null = 迁移前的老会话。 */
+  workspaceId: z.string().nullable().default(null),
   createdAt: epochMs,
   updatedAt: epochMs
 });
@@ -156,6 +184,8 @@ export const lineageEdgeSchema = z.discriminatedUnion('kind', [
 
 export const canvasSchema = z.object({
   project: projectSchema,
+  /** 项目名下还在的工作空间：卡片上显示「机器 · 工作空间 · 分支」。 */
+  workspaces: z.array(workspaceSchema).default([]),
   tasks: z.array(taskSchema),
   sessions: z.array(sessionSchema),
   artifacts: z.array(artifactSchema),

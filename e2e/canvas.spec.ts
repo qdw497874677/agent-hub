@@ -52,8 +52,11 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 
   // M2：从任务派生会话（任务卡上的「＋ 会话」；双击在自动化的零间隔点击下会落到重渲染的空档里）
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  await expect(page.getByText('会话从任务派生', { exact: false })).toBeVisible();
-  await page.getByRole('button', { name: '开一条会话' }).click();
+  // 运行面板：先选工作空间（不预选，没选「开始」是灰的）。建项目时给的目录就是第一个持久工作空间。
+  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
+  await expect(run.getByRole('button', { name: '开始' })).toBeDisabled();
+  await run.getByRole('radio', { name: new RegExp(`agent-hub-e2e-project-${RUN}.*持久`) }).click();
+  await run.getByRole('button', { name: '开始' }).click();
 
   // M2：卡片出现，并且就地就能说话——不必先打开专注对话
   await expect(sessionNode(page)).toHaveCount(1);

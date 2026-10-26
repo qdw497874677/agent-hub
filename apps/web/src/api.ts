@@ -26,6 +26,9 @@ import type {
   TaskDto,
   WorkLogEntryDto,
   WorkerInfoDto,
+  WorkspaceDto,
+  WorkspaceViewDto,
+  CreateWorkspaceRequest,
   AccountDto,
   AuthState,
   AdminOverviewDto,
@@ -38,7 +41,7 @@ import type {
   SettingsDto
 } from '@agent-hub/contract';
 
-export type { SaveLayoutRequest, WorkerInfoDto, AccountDto, AuthState };
+export type { SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState };
 
 export interface ApiError {
   readonly code: string;
@@ -104,7 +107,10 @@ export const api = {
     post<{ path: string }>('/api/fs/directories', input),
   deleteProject: (projectId: string, confirmName: string) =>
     call<{ id: string; deleted: true }>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE', body: JSON.stringify({ confirmName }) }),
-  createProject: (input: { name: string; rootPath: string; workerId?: string | null }) => post<ProjectDto>('/api/projects', input),
+  createProject: (input: { name: string; rootPath?: string; workerId?: string | null }) => post<ProjectDto>('/api/projects', input),
+  workspaces: (projectId: string) => call<WorkspaceViewDto[]>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`),
+  createWorkspace: (projectId: string, input: CreateWorkspaceRequest) =>
+    post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`, input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
   setTaskStatus: (taskId: string, status: TaskDto['status'], note?: string) =>

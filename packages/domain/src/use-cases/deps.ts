@@ -1,3 +1,4 @@
+import type { Workspace } from '../workspace.ts';
 import type { AgentId } from '../ids.ts';
 import type { Task } from '../task.ts';
 import type { Session } from '../session.ts';
@@ -63,6 +64,7 @@ export interface Deps {
 
 export interface CanvasProjection {
   readonly project: Project;
+  readonly workspaces: readonly Workspace[];
   readonly tasks: readonly Task[];
   readonly sessions: readonly Session[];
   readonly artifacts: readonly Artifact[];

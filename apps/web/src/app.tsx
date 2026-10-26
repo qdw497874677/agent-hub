@@ -307,6 +307,7 @@ function Workspace() {
             canvas={
               canvas.data ?? {
                 project,
+                workspaces: [],
                 tasks: [],
                 sessions: [],
                 artifacts: [],

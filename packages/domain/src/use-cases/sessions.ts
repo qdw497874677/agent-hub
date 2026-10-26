@@ -2,7 +2,8 @@ import { applyEvent, deriveSession, forkSession, markInterrupted, withOptions } 
 import type { Session } from '../session.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { Seq, SessionId } from '../ids.ts';
-import { asAgentId, asSessionId, asTaskId } from '../ids.ts';
+import { asAgentId, asSessionId, asTaskId, asWorkspaceId } from '../ids.ts';
+import { isUsable } from '../workspace.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -21,6 +22,8 @@ export interface DeriveCommand {
   readonly model: string;
   /** 人在对话框里点名的 Worker；不点名就由落点规则挑。 */
   readonly workerId?: string | null;
+  /** 运行面板里选定的工作空间：会话就落在它所在的机器、在它的目录里干活。 */
+  readonly workspaceId?: string | null;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -40,15 +43,22 @@ export async function deriveSessionUseCase(
     return err(conflict(descriptor.capabilities.prompt.reason ?? '该 agent 不可发送消息'));
   }
 
+  const chosen = command.workspaceId ? await deps.workspaces.byId(asWorkspaceId(command.workspaceId)) : null;
+  if (command.workspaceId) {
+    if (!chosen || chosen.projectId !== project.id) return err(notFound('工作空间不存在'));
+    if (!isUsable(chosen)) return err(conflict('这个工作空间现在用不了（准备中、失败或已删除）'));
+    if (chosen.kind === 'temporary' && chosen.ownerTaskId !== task.id) return err(conflict('这个临时工作空间属于别的任务'));
+  }
+  // 选了工作空间：机器跟着工作空间走（null = Server 本机）；没选：老规则（项目目录所在的机器）
   const placed = placeSession(await deps.gateway.status(), {
     agentId,
-    requested: command.workerId ?? null,
-    projectWorker: project.workerId
+    requested: chosen ? chosen.workerId : (command.workerId ?? null),
+    projectWorker: chosen ? chosen.workerId : project.workerId
   });
   if (!placed.ok) return placed;
 
-  const workspace = await linkedWorkspaceFor(deps, project, placed.value);
-  if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个目录干活'));
+  const workspace = chosen ?? (await linkedWorkspaceFor(deps, project, placed.value));
+  if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
   const created = deriveSession({
     task,
     agentId,
