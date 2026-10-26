@@ -97,6 +97,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$here
 EnvironmentFile=$env_file
+# 自更新后新版本连续起不来就回滚到原提交（见脚本注释）；前面的 - 表示守卫失败也照常启动。
+ExecStartPre=-/usr/bin/env bash $here/scripts/worker-boot-guard.sh
 ExecStart=$node_bin $here/apps/worker/src/main.ts
 # Worker 自己会断线重连；进程级崩溃交给 systemd。
 Restart=always

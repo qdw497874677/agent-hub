@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
 import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
 import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
-import { connectWorkerLink, createWorkerFiles, readBuildInfo, runSelfUpdate } from '@agent-hub/node-gateway';
+import { clearBootMarker, connectWorkerLink, createWorkerFiles, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -192,6 +192,19 @@ log(`Grok 认得 ${grokCatalog.models.length} 个模型（默认 ${grokCatalog.d
 acpConfigs.forEach((config, index) => log(`${config.label} 认得 ${acpModels[index]?.length ?? 0} 个模型`));
 log(`Pi 认得 ${piModels.length} 个模型（默认 ${discovered.defaultModel || 'Pi 自己的默认'}）`);
 
+/** 自更新标记所在目录（和 worker-id 同一处）。 */
+const stateDir = process.env['WORKER_STATE_DIR'] ?? join(homedir(), '.config', 'agent-hub');
+/** 连上 hub 后稳定这么久，才算新版本健康。 */
+const HEALTHY_AFTER_MS = 15_000;
+let healthTimer: NodeJS.Timeout | null = null;
+function markHealthySoon(): void {
+  if (healthTimer) return;
+  healthTimer = setTimeout(() => {
+    if (clearBootMarker(stateDir)) log(`新版本 ${build.commit?.slice(0, 7) ?? ''} 启动正常，已确认更新`);
+  }, HEALTHY_AFTER_MS);
+  healthTimer.unref();
+}
+
 /** 代码所在的仓库：远程更新就在这里 git fetch / npm ci。 */
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const build = readBuildInfo(repoRoot);
@@ -220,6 +233,8 @@ async function onUpdate(commit: string, report: (status: UpdateReport) => void):
     }
   });
   if (changed) {
+    // 待验证标记：新版本健康后自己删；起不来的话 scripts/worker-boot-guard.sh 会回滚到原提交。
+    if (build.commit) writeBootMarker(stateDir, build.commit, commit);
     // 给最后一帧进度一点时间发出去，再退出重启
     setTimeout(() => void link.close().finally(() => process.exit(RESTART_EXIT_CODE)), 500);
   }
@@ -238,6 +253,7 @@ const link = connectWorkerLink({
   files,
   build,
   onUpdate,
+  onAccepted: markHealthySoon,
   onLog: log,
   // 断线会自己重连；走到这里只有两种情况：token 被拒、被管理员断开、或者自己 close() 了。
   onClose: (why) => {

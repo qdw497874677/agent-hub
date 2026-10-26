@@ -53,6 +53,8 @@ export interface WorkerLinkOptions {
   readonly onClose?: (why?: { readonly code: number }) => void;
   /** 每次连上（含重连）。 */
   readonly onOpen?: () => void;
+  /** server 接受了这条连接（收到 welcome，或老 hub 下等满兜底时间）。 */
+  readonly onAccepted?: () => void;
   /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
   /** 这台跑的代码版本，hello 时报上去。 */
@@ -163,6 +165,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (dropped > 0) options.onLog?.(`断线太久，丢了 ${dropped} 帧最旧的输出`);
     dropped = 0;
     for (const frame of outbox.splice(0)) current.send(JSON.stringify(frame));
+    options.onAccepted?.();
   }
 
   function connect(): void {

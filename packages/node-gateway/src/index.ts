@@ -7,6 +7,7 @@ export { createWorkerFiles, boundaryHint, OutsideRootsError } from './worker-fil
 export type { WorkerFiles } from './worker-files.ts';
 export { readBuildInfo } from './build-info.ts';
 export { runSelfUpdate, execRunner } from './updater.ts';
+export { writeBootMarker, clearBootMarker, bootMarkerPath } from './boot-marker.ts';
 export type { CommandRunner, UpdateReport, UpdateOptions } from './updater.ts';
 export { createMcpEndpoint } from './mcp-endpoint.ts';
 export type { McpEndpoint } from './mcp-endpoint.ts';

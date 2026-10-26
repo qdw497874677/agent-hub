@@ -67,6 +67,7 @@ curl -fsSL http://100.x.y.z:7878/install-worker.sh | HUB_PAIR=ahw_pair_… bash
 **更新 Worker**：运营后台「机器」页显示每台的版本（package 版本 + 提交号），和 hub 不一致的标「过期」。
 主人可以点单台的「更新」或「更新全部过期」：hub 只下发自己的提交号，Worker 检查工作区干净 → `git fetch` →
 快进到该提交 → `npm ci --omit=dev` → 退出由 systemd 重启；失败自动回滚到原提交，进度和日志尾巴回到页面上，操作进审计。
+新版本**起不来**也会回滚：退出重启前 Worker 写下 `~/.config/agent-hub/update-pending`（原提交、目标提交、启动次数），连上 hub 稳定 15 秒后自己删掉；systemd 的 `ExecStartPre` 跑 `scripts/worker-boot-guard.sh`，连续 2 次启动（`WORKER_BOOT_ATTEMPTS`）都没删掉就回到原提交、重装依赖再启动。守卫是纯 bash，不依赖新代码。老的安装重跑一次 `scripts/install-worker.sh` 才会带上这一行。
 本机 Worker 与 hub 共用代码，更新 hub（`git pull` 后重启）即可；点它的「更新」只做演练。
 协议版本不兼容的 Worker 会被拒绝并提示在那台机器上手动运行 `scripts/update-worker.sh [提交号]`。
 
