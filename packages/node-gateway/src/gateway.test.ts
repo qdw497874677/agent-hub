@@ -592,3 +592,42 @@ test('专属凭据：hello 带上凭据交给 authenticate 判；吊销后收到
   server.closeAllConnections?.();
   await new Promise((resolve) => server.close(resolve));
 });
+
+test('4409 顶回：没被 server 接受的连接上不发帧，换条连接被接受后按序补发', async () => {
+  const { WebSocketServer } = await import('ws');
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise<void>((resolve) => wss.once('listening', () => resolve()));
+  const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+  let connections = 0;
+  const before: unknown[] = [];
+  const after: { type: string; event?: SessionEvent }[] = [];
+  wss.on('connection', (socket) => {
+    connections += 1;
+    const first = connections === 1;
+    socket.on('message', (raw: Buffer) => {
+      const frame = JSON.parse(raw.toString()) as { type: string; event?: SessionEvent };
+      if (frame.type === 'hello') {
+        if (first) {
+          // 还没 welcome 就下指令：agent 跑出来的输出只能先攒着
+          socket.send(JSON.stringify(start('s1', 'w1')));
+          socket.send(JSON.stringify({ kind: 'prompt', sessionId: 's1', text: '你好', parts: [] }));
+          setTimeout(() => socket.close(4409, '这个 workerId 已经在线'), 80);
+        } else socket.send(JSON.stringify({ kind: 'welcome' }));
+        return;
+      }
+      (first ? before : after).push(frame);
+    });
+  });
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', initialBackoffMs: 20, runtimes: [echoRuntime([])] });
+  const deadline = Date.now() + 3_000;
+  while (!after.some((frame) => frame.event?.kind === 'ended') && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  assert.deepEqual(before, [], '被顶回的连接上一帧都没发');
+  const texts = after.filter((frame) => frame.event?.kind === 'text').map((frame) => (frame.event as { delta: string }).delta);
+  assert.deepEqual(texts, ['你好']);
+  assert.ok(after.some((frame) => frame.event?.kind === 'ended'));
+  await link.close();
+  for (const client of wss.clients) client.terminate();
+  await new Promise((resolve) => wss.close(resolve));
+});
