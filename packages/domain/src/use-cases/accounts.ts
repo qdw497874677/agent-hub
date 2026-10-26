@@ -85,22 +85,25 @@ export async function registerUser(
   if (problem) return err(invalid(problem));
   if (await deps.users.byEmail(email)) return err(conflict('这个邮箱已经注册过了，直接登录吧'));
 
-  const role: Role = (await deps.users.firstWithRole('owner')) === null ? 'owner' : 'member';
-  // 关闭开放注册后，仍允许「还没有主人」时认领第一个账号，否则 hub 进不去了。
-  if (role === 'member' && !(await deps.settings.get()).openRegistration) {
-    return err(conflict('这个 hub 暂不开放注册，请联系管理员'));
-  }
-  const user: User = {
+  const draft: Omit<User, 'role'> = {
     id: newUserId(),
     email,
     displayName: command.displayName?.trim() || defaultDisplayName(email),
-    role,
     passwordHash: await deps.hasher.hash(command.password),
     emailVerifiedAt: null,
     disabledAt: null,
     createdAt: deps.now()
   };
-  await deps.users.save(user);
+  // 首启认领交给存储原子完成：并发注册时只有一个人成为 Owner，其余人按成员处理。
+  let user: User = { ...draft, role: 'owner' };
+  if (!(await deps.users.claimFirstOwner(user))) {
+    // 关闭开放注册后，仍允许「还没有主人」时认领第一个账号，否则 hub 进不去了。
+    if (!(await deps.settings.get()).openRegistration) {
+      return err(conflict('这个 hub 暂不开放注册，请联系管理员'));
+    }
+    user = { ...draft, role: 'member' };
+    await deps.users.save(user);
+  }
   // 欢迎信是锦上添花：发不出去不该让注册失败。
   void deps.mail
     .send({ to: email, subject: '欢迎使用 agent-hub', text: `${user.displayName}，你的 agent-hub 账号已经建好了。` })

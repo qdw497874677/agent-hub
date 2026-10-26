@@ -94,3 +94,13 @@ test('内置账号幂等：重复调用不重建，换了密码就对齐', async
   assert.ok((await loginWithPassword(deps, { email: seed.email, password: 'another long password' })).ok);
   assert.equal((await loginWithPassword(deps, { email: seed.email, password: PASSWORD })).ok, false);
 });
+
+test('并发注册只产生一个 Owner', async () => {
+  const deps = inMemoryAccounts();
+  const made = await Promise.all(
+    ['a', 'b', 'c', 'd'].map((name) => registerUser(deps, { email: `${name}@b.co`, password: PASSWORD }))
+  );
+  assert.ok(made.every((result) => result.ok));
+  const owners = (await deps.users.list()).filter((user) => user.role === 'owner');
+  assert.equal(owners.length, 1);
+});
