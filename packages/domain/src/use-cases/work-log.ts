@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../ids.ts';
 import type { TaskId, SessionId } from '../ids.ts';
 import type { Task } from '../task.ts';
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
@@ -34,7 +34,7 @@ export async function appendWorkLogUseCase(
   const task = await deps.tasks.byId(command.taskId);
   if (!task) return err(notFound('任务不存在'));
   const now = deps.now();
-  const draft = draftLogEntry({ id: randomUUID(), now, ...command });
+  const draft = draftLogEntry({ id: newId(), now, ...command });
   if (!draft.ok) return draft;
   const entry = await deps.workLog.append(draft.value);
   const fresh = (await deps.tasks.byId(command.taskId)) ?? task;

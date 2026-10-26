@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../ids.ts';
 import type { AuditAction, AuditEntry, HubSettings, Login, Principal, Role, User, UserId } from '../account.ts';
 import { forbidden, conflict, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
@@ -51,7 +51,7 @@ async function record(
   detail: string
 ): Promise<void> {
   const entry: AuditEntry = {
-    id: randomUUID(),
+    id: newId(),
     actorId: actor.user.id,
     actorEmail: actor.user.email,
     action,

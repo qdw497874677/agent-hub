@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from './ids.ts';
 
 /**
  * 账号（docs/design/accounts.md）。一个 hub 是一个隐式 Workspace：
@@ -7,8 +7,8 @@ import { randomUUID } from 'node:crypto';
 export type UserId = string & { readonly __brand: 'UserId' };
 export type LoginId = string & { readonly __brand: 'LoginId' };
 
-export const newUserId = (): UserId => randomUUID() as UserId;
-export const newLoginId = (): LoginId => randomUUID() as LoginId;
+export const newUserId = (): UserId => newId() as UserId;
+export const newLoginId = (): LoginId => newId() as LoginId;
 export const asUserId = (value: string): UserId => value as UserId;
 export const asLoginId = (value: string): LoginId => value as LoginId;
 

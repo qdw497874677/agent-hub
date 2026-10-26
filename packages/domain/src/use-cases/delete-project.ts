@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../ids.ts';
 import type { Principal } from '../account.ts';
 import type { ProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
@@ -42,7 +42,7 @@ export async function deleteProjectUseCase(
   for (const session of sessions) await deps.toolGrants.revokeSession(session.id, now);
   await deps.projects.remove(project.id);
   await deps.audit.append({
-    id: randomUUID(),
+    id: newId(),
     actorId: actor.user.id,
     actorEmail: actor.user.email,
     action: 'project.delete',

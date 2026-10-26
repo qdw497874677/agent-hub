@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../ids.ts';
 import type { Session } from '../session.ts';
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, type Result } from '../result.ts';
@@ -78,7 +78,7 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
       await deps.toolGrants.revokeSession(session.id, now);
       const { token, hash } = deps.tokens.issue();
       const grant: ToolGrant = {
-        id: randomUUID(),
+        id: newId(),
         tokenHash: hash,
         taskId: session.taskId,
         sessionId: session.id,
@@ -138,7 +138,7 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
       const detail = result.ok ? summarize(input) : result.error.message.slice(0, 200);
       await deps.toolGrants
         .recordCall({
-          id: randomUUID(),
+          id: newId(),
           grantId: grant.id,
           taskId: grant.taskId,
           sessionId: grant.sessionId,
