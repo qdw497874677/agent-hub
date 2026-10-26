@@ -63,6 +63,8 @@ import { installMcp } from './mcp.ts';
 import type { ToolGateway } from '@agent-hub/domain';
 import { installAdmin } from './admin.ts';
 import { installEnrollment } from './enrollment.ts';
+import { installProjectDeletion } from './project-delete.ts';
+import type { DeleteProjectDeps } from '@agent-hub/domain';
 import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
@@ -78,6 +80,8 @@ export interface AppOptions {
   readonly admin?: AdminOptions;
   /** 单台机器接入（接入码、专属凭据、吊销、引导脚本）；同样只在有账号体系时装。 */
   readonly enrollment?: EnrollmentOptions;
+  /** 删除项目（要登录态记审计，所以同样只在有账号体系时装）。 */
+  readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'>;
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
   readonly guard?: RequestGuard;
   /**
@@ -143,6 +147,7 @@ export function createApp(options: AppOptions): Hono {
     principalOf = installAuth(app, options.auth);
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
+    if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf);
   }
   app.use('/api/*', async (c, next) => {
     if (options.auth || options.token === null) return next();

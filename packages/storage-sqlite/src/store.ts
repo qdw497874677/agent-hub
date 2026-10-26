@@ -148,6 +148,19 @@ export function openSqliteStore(file: string): SqliteStore {
   );
   const selectLayout = db.prepare('SELECT * FROM layout WHERE project_id = ?');
 
+  const sessionsOf = 'SELECT s.id FROM sessions s JOIN tasks t ON t.id = s.task_id WHERE t.project_id = ?';
+  const removeProjectStatements = [
+    `DELETE FROM entry_map WHERE session_id IN (${sessionsOf})`,
+    `DELETE FROM session_text WHERE session_id IN (${sessionsOf})`,
+    `DELETE FROM journal WHERE session_id IN (${sessionsOf})`,
+    `DELETE FROM artifacts WHERE session_id IN (${sessionsOf})`,
+    'DELETE FROM sessions WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)',
+    'DELETE FROM task_log_entries WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)',
+    'DELETE FROM tasks WHERE project_id = ?',
+    'DELETE FROM layout WHERE project_id = ?',
+    'DELETE FROM projects WHERE id = ?'
+  ].map((sql) => db.prepare(sql));
+
   function transaction(work: () => void): void {
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -175,6 +188,12 @@ export function openSqliteStore(file: string): SqliteStore {
     },
     async list(): Promise<Project[]> {
       return selectProjects.all().map((row) => toProject(row));
+    },
+    /** 子表先删（外键）；同一次提交，删一半不会留下孤儿。 */
+    async remove(id: Parameters<typeof asProjectId>[0]): Promise<void> {
+      transaction(() => {
+        for (const statement of removeProjectStatements) statement.run(id);
+      });
     }
   };
 

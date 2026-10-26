@@ -6,6 +6,7 @@ import { api } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkerPicker, WorkersBadge, resolveWorker, useWorkers } from './workers.tsx';
 import { coarsePointer } from './device.ts';
+import { DeleteProjectDialog } from './delete-project.tsx';
 
 /**
  * 首页。
@@ -24,6 +25,7 @@ export function HomePage({
   const workers = useWorkers();
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState('');
+  const [deleting, setDeleting] = useState<ProjectDto | null>(null);
   const home = useQuery({ queryKey: ['home'], queryFn: api.home, refetchInterval: 10_000 });
 
   const projects = home.data?.projects ?? [];
@@ -70,9 +72,9 @@ export function HomePage({
 
         <ul className="mb-4 space-y-0.5">
           {projects.map((project) => (
-            <li key={project.id}>
+            <li key={project.id} className="group flex items-start">
               <button
-                className="w-full rounded-sm px-2 py-1 text-left hover:bg-card"
+                className="min-w-0 flex-1 rounded-sm px-2 py-1 text-left hover:bg-card"
                 onClick={() => onOpen(project)}
                 title={project.rootPath}
               >
@@ -82,6 +84,14 @@ export function HomePage({
                   {workers.multi && project.workerId ? ` · ${workers.byId(project.workerId)?.label ?? '未知机器'}` : ''}
                 </span>
               </button>
+              <button
+                className="shrink-0 rounded-sm px-2 py-1 text-meta text-tertiary hover:text-rust sm:opacity-0 sm:group-hover:opacity-100 sm:focus:opacity-100"
+                onClick={() => setDeleting(project)}
+                title="删除项目"
+                aria-label={`删除项目 ${project.name}`}
+              >
+                删除
+              </button>
             </li>
           ))}
           {/* 数据还没到就说「还没有项目」是在撒谎，所以等它到 */}
@@ -90,6 +100,7 @@ export function HomePage({
           ) : null}
         </ul>
 
+        {deleting ? <DeleteProjectDialog project={deleting} onClose={() => setDeleting(null)} /> : null}
         <div className="mt-auto border-t border-hair pt-3">
           <WorkersBadge placement="up" />
         </div>

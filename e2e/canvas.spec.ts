@@ -116,7 +116,7 @@ test('目录可以点选，不必手打路径', async ({ page }) => {
 test('刷新之后画布还在，布局被记住', async ({ page }) => {
   await page.goto('/');
   // 新浏览器没有 localStorage：从左栏回到自己刚建的那个项目
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).click();
   await expect(sessionNode(page)).toHaveCount(1);
   await expect(taskNode(page, TASK_TITLE)).toContainText('1 个会话');
 
@@ -167,7 +167,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
 test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 
   // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以节点状态是常驻可查的
@@ -189,7 +189,7 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
 
 test('任务详情：日志按作者区分、写日志刷新当前进展、可手改、改状态留痕', async ({ page }) => {
   await page.goto('/');
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).click();
   await taskNode(page, TASK_TITLE).hover();
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '日志' }).click();
   const drawer = page.getByTestId('task-detail');
@@ -240,7 +240,7 @@ test('任务详情：日志按作者区分、写日志刷新当前进展、可�
 test('会话卡片能改模型与思考强度，改完不回弹', async ({ page }) => {
   await page.goto('/');
   await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(PROJECT_NAME) }).click();
+  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 
   const card = sessionNode(page);

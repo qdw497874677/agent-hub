@@ -273,6 +273,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
     },
     enrollment: enrollmentDeps
   },
+  projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   enrollment: {
     deps: enrollmentDeps,
     bootstrapScript: join(repoRoot, 'scripts', 'bootstrap-worker.sh'),

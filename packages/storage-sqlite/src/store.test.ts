@@ -221,3 +221,19 @@ test('运营后台：登录活跃度、保留当前登录的踢下线、设置�
   assert.deepEqual((await store.audit.recent(10))[1], entry);
   store.close();
 });
+
+test('projects.remove 一次提交删掉项目名下所有记录，别的项目不受影响', async () => {
+  const store = openSqliteStore(':memory:');
+  const { project, task, session } = await seeded(store);
+  const other = await seeded(store);
+  await store.sessions.append({ ...session, lastSeq: session.lastSeq + 1 }, { kind: 'text', delta: 'hi' } as SessionEvent, now);
+  await store.layout.save({ projectId: project.id, positions: {}, sizes: {}, updatedAt: now });
+  await store.projects.remove(project.id);
+  assert.equal(await store.projects.byId(project.id), null);
+  assert.equal(await store.tasks.byId(task.id), null);
+  assert.equal(await store.sessions.byId(session.id), null);
+  assert.equal(await store.layout.load(project.id), null);
+  assert.deepEqual(await store.projects.list(), [other.project]);
+  assert.ok(await store.sessions.byId(other.session.id));
+  store.close();
+});
