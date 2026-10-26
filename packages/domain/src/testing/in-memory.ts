@@ -80,6 +80,9 @@ export function fakeWorkspaces(): WorkspaceRepository & { rows: Map<string, Work
     },
     async temporaries() {
       return all().filter((w) => w.kind === 'temporary' && w.state !== 'removed');
+    },
+    async onMachine(workerId) {
+      return all().filter((w) => w.workerId === workerId && w.state !== 'removed');
     }
   };
 }

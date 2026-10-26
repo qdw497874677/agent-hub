@@ -17,6 +17,7 @@ import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
 import { openingViewport, panIntoView } from './viewport.ts';
 import { arrange, placeMissing } from './layout.ts';
 import { resolveWorker, useWorkers } from './workers.tsx';
+import { workspaceName } from './workspace-chooser.tsx';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
 
@@ -165,6 +166,21 @@ export function CanvasView({
   }, [focus, positions, sizes, canvas.sessions]);
 
   const workers = useWorkers();
+  const placeOf = useCallback(
+    (workspaceId: string | null | undefined, workerId: string | null) => {
+      const workspace = workspaceId ? canvas.workspaces.find((item) => item.id === workspaceId) : undefined;
+      if (!workspace) return undefined;
+      const machine = resolveWorker(workers.list, workspace.workerId ?? workerId)?.label ?? '本机';
+      return {
+        machine,
+        workspace: workspaceName(workspace),
+        path: workspace.path,
+        branch: workspace.branch,
+        kept: workspace.state === 'kept' ? (workspace.keptReason ?? '有未保存的改动') : null
+      };
+    },
+    [canvas.workspaces, workers.list]
+  );
   const workerOf = useCallback(
     (workerId: string | null) => (workers.multi ? resolveWorker(workers.list, workerId) : undefined),
     [workers.multi, workers.list]
@@ -235,6 +251,7 @@ export function CanvasView({
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
         agentLabel: agentLabel(session.agentId),
         worker: workerOf(session.workerId),
+        place: placeOf(session.workspaceId, session.workerId),
         onOpen: () => onOpen(session.id),
         draft: drafts[session.id] ?? '',
         onDraftChange: (text: string) => onDraftChange(session.id, text),
@@ -256,6 +273,7 @@ export function CanvasView({
     drafts,
     agentLabel,
     workerOf,
+    placeOf,
     onTaskStatus,
     onTaskDetail,
     onDerive,

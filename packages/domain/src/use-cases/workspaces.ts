@@ -2,7 +2,7 @@ import { workspaceFor, type Location, type Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
 import { projectSlug } from '../directories.ts';
-import { createDirectory, directoryOwner, gitOn, listOn, rootsOf } from './machine-dirs.ts';
+import { claimOf, createDirectory, directoryOwner, gitOn, listOn, rootsOf } from './machine-dirs.ts';
 import type { ProjectId } from '../ids.ts';
 import { asProjectId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
@@ -132,6 +132,8 @@ export async function prepareLongLivedWorkspaceUseCase(
     if (listed.value === null) return err(invalid(`目录不存在：${command.plan.path}`));
     path = listed.value.path;
     source = 'linked';
+    const taken = await claimOf(deps, { projectId: project.id, workerId: owner.value, path });
+    if (!taken.ok) return taken;
     // 探测只是为了卡片上显示分支；失败（老 Worker 不认 ws.*）不挡关联
     const inspected = await git.inspect(path);
     if (inspected.ok) {

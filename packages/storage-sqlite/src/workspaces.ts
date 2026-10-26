@@ -70,6 +70,7 @@ export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository
   const byProject = db.prepare('SELECT * FROM workspaces WHERE project_id = ? ORDER BY created_at ASC');
   const byTask = db.prepare('SELECT * FROM workspaces WHERE owner_task_id = ? ORDER BY created_at ASC');
   const temporaries = db.prepare("SELECT * FROM workspaces WHERE kind = 'temporary' AND state <> 'removed' ORDER BY created_at ASC");
+  const onMachine = db.prepare("SELECT * FROM workspaces WHERE worker_id IS ? AND state <> 'removed' ORDER BY created_at ASC");
   return {
     async save(w) {
       upsert.run(
@@ -89,6 +90,9 @@ export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository
     },
     async temporaries() {
       return (temporaries.all() as Row[]).map(toWorkspace);
+    },
+    async onMachine(workerId) {
+      return (onMachine.all(workerId) as Row[]).map(toWorkspace);
     }
   };
 }

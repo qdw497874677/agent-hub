@@ -47,6 +47,7 @@ import {
   createTaskUseCase,
   deriveSessionUseCase,
   prepareLongLivedWorkspaceUseCase,
+  prepareTemporaryWorkspaceUseCase,
   workspaceViewsUseCase,
   forkSessionUseCase,
   continueElsewhereUseCase,
@@ -235,13 +236,21 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/projects/:projectId/workspaces', async (c) => {
     const input = await body(c, createWorkspaceRequest);
     if (!input.ok) return input.response;
-    const { workerId, mode, path } = input.value;
-    const result = await prepareLongLivedWorkspaceUseCase(deps, {
-      projectId: c.req.param('projectId'),
-      workerId,
-      plan: mode === 'link' ? { mode, path: path ?? '' } : { mode },
-      home: homedir()
-    });
+    const request = input.value;
+    const result =
+      request.kind === 'temporary'
+        ? await prepareTemporaryWorkspaceUseCase(deps, {
+            projectId: c.req.param('projectId'),
+            taskId: request.taskId,
+            workerId: request.workerId,
+            home: homedir()
+          })
+        : await prepareLongLivedWorkspaceUseCase(deps, {
+            projectId: c.req.param('projectId'),
+            workerId: request.workerId,
+            plan: request.mode === 'link' ? { mode: 'link', path: request.path ?? '' } : { mode: 'create' },
+            home: homedir()
+          });
     return result.ok ? c.json(workspaceSchema.parse(result.value), 201) : fail(c, result.error);
   });
 

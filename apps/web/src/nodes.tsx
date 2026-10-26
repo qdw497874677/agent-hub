@@ -35,6 +35,8 @@ export type SessionNode = Node<
     agentLabel: string;
     /** 多台 Worker 时才有：会话跑在哪台。 */
     worker?: WorkerInfoDto | undefined;
+    /** 「机器 · 工作空间 · 分支」（§4，卡片上）；老会话没有工作空间时不显示。 */
+    place?: { readonly machine: string; readonly workspace: string; readonly path: string; readonly branch: string | null; readonly kept: string | null } | undefined;
     onOpen: () => void;
     /** 卡片上就地说话：不必先打开专注对话。 */
     draft: string;
@@ -102,7 +104,7 @@ function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, worker, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
+  const { session, live, agentLabel, worker, place, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
     data;
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
@@ -162,6 +164,27 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <StatusPill status={status} reason={failureReason} />
         </span>
       </header>
+
+      {place ? (
+        <p className="mb-2 flex flex-wrap gap-x-1 text-meta text-tertiary" title={place.path}>
+          <span>{place.machine}</span>
+          <span>·</span>
+          <span className="max-w-[12rem] truncate">{place.workspace}</span>
+          {place.branch ? (
+            <>
+              <span>·</span>
+              <span className="max-w-[14rem] truncate font-mono" title="这个任务的改动都在这个分支上，不会碰到主分支。">
+                {place.branch}
+              </span>
+            </>
+          ) : null}
+          {place.kept ? (
+            <span className="text-rust" title={`还有没保存的改动（${place.kept}），所以没有清理。点开处理。`}>
+              · 已保留
+            </span>
+          ) : null}
+        </p>
+      ) : null}
 
       {/* 可调项自己占一行：卡片只有 320px，和 agent 名、状态位挤在一行会把模型名截成三个字 */}
       {session.optionSpec.length === 0 ? null : (
