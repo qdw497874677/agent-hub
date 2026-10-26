@@ -62,6 +62,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'directories')) {
     db.exec("ALTER TABLE projects ADD COLUMN directories TEXT NOT NULL DEFAULT '{}'");
   }
+  if (!projectColumns.some((column) => column.name === 'repo_url')) {
+    db.exec('ALTER TABLE projects ADD COLUMN repo_url TEXT');
+    db.exec('ALTER TABLE projects ADD COLUMN repo_default_branch TEXT');
+  }
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
@@ -75,9 +79,10 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, created_at) VALUES (?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, created_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET name = excluded.name, root_path = excluded.root_path, worker_id = excluded.worker_id, ' +
-      'directories = excluded.directories'
+      'directories = excluded.directories, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
   const selectProjects = db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
@@ -187,7 +192,16 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const projects = {
     async save(project: Project): Promise<void> {
-      insertProject.run(project.id, project.name, project.rootPath, project.workerId, JSON.stringify(project.directories), project.createdAt);
+      insertProject.run(
+        project.id,
+        project.name,
+        project.rootPath,
+        project.workerId,
+        JSON.stringify(project.directories),
+        project.repo?.url ?? null,
+        project.repo?.defaultBranch ?? null,
+        project.createdAt
+      );
     },
     async byId(id: Parameters<typeof asProjectId>[0]): Promise<Project | null> {
       const row = selectProject.get(id);

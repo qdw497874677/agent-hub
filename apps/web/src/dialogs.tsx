@@ -193,7 +193,10 @@ export function DeriveDialog({
             disabled={agentId === '' || machine === null || !choiceReady(choice) || derive.isPending}
             onClick={() => derive.mutate()}
           >
-            {phase === 'preparing' ? '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
+            {phase === 'preparing'
+              ? choice?.type === 'new_long_lived' && choice.mode === 'create' && canvas.project.repo
+                ? '正在下载仓库…'
+                : '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
           </button>
         </div>
     </DialogShell>

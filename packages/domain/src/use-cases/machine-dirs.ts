@@ -4,6 +4,7 @@ import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
+import type { WorkspaceGit } from '../ports/workspace-git.ts';
 import { folderNameProblem, insideRoots } from '../directories.ts';
 
 /** 「某台机器上的目录」这一层：本机走 Server 的 fs，remote 走网关。项目和工作空间用例共用。 */
@@ -91,4 +92,9 @@ export function parentOf(path: string): string | null {
   if (path === '/') return null;
   const index = path.lastIndexOf('/');
   return index <= 0 ? '/' : path.slice(0, index);
+}
+
+/** 目录主人（directoryOwner 的结果）那台机器上的 git 操作。 */
+export function gitOn(deps: Pick<Deps, 'git' | 'gateway'>, owner: string | null): WorkspaceGit {
+  return owner === null ? deps.git : deps.gateway.git(owner);
 }

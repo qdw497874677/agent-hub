@@ -228,7 +228,7 @@ function NewLongLived({
           <div className="mb-1.5 flex flex-wrap gap-1.5" role="radiogroup" aria-label="怎么新建">
             {(
               [
-                ['create', '新建文件夹'],
+                ['create', canvas.project.repo ? '下载仓库' : '新建文件夹'],
                 ['link', '选已有目录']
               ] as const
             ).map(([mode, text]) => (
@@ -252,7 +252,13 @@ function NewLongLived({
               </button>
             ))}
           </div>
-          {choice.mode === 'create' ? (
+          {choice.mode === 'create' && canvas.project.repo ? (
+            <p className="text-meta text-tertiary">
+              将把 <span className="font-mono">{repoName(canvas.project.repo.url)}</span> 下载到 {machineName} 的{' '}
+              <span className="font-mono">{managed.data?.managed ? shortPath(managed.data.managed) : '~/agent-hub/…'}</span>
+              （用这台机器自己的 git 凭据）
+            </p>
+          ) : choice.mode === 'create' ? (
             <p className="text-meta text-tertiary">
               将在 {machineName} 的 <span className="font-mono">{managed.data?.managed ? shortPath(managed.data.managed) : '~/agent-hub/…'}</span> 下新建
               {managed.data?.managed ? '（名字被占就自动加 -2）' : ''}
@@ -290,4 +296,13 @@ function NewLongLived({
       ) : null}
     </div>
   );
+}
+
+/** github.com/me/foo：去掉协议、凭据和 .git，给人看。 */
+export function repoName(url: string): string {
+  return url
+    .replace(/^[a-z+]+:\/\//, '')
+    .replace(/^[^@/]+@/, '')
+    .replace(/:(?!\d)/, '/')
+    .replace(/\.git$/, '');
 }

@@ -15,7 +15,27 @@ export interface Project {
    * 只有「换台机器继续」时才会登记；会话落在哪台就用哪台的目录。
    */
   readonly directories: Readonly<Record<string, string>>;
+  /** 项目的 git 仓库（可选）：新建持久工作空间时 clone 它，临时工作空间据此开分支。 */
+  readonly repo: ProjectRepo | null;
   readonly createdAt: number;
+}
+
+export interface ProjectRepo {
+  readonly url: string;
+  /** 省略 = 仓库自己的默认分支。 */
+  readonly defaultBranch: string | null;
+}
+
+/** 认得出的仓库地址：https / ssh / git@host:path / file:// / 本机绝对路径。只做形状检查，能不能拉由那台机器的 git 说了算。 */
+export function parseRepo(url: string | null | undefined, branch?: string | null): Result<ProjectRepo | null, DomainError> {
+  const trimmed = url?.trim() ?? '';
+  if (trimmed === '') return ok(null);
+  if (!/^(https?:\/\/|ssh:\/\/|git:\/\/|file:\/\/|[\w.-]+@[\w.-]+:|\/)/.test(trimmed) || /\s/.test(trimmed)) {
+    return err(invalid('仓库地址看起来不对：用 https://…、git@host:… 或本机绝对路径'));
+  }
+  const name = branch?.trim() || null;
+  if (name !== null && !/^[\w./-]+$/.test(name)) return err(invalid('分支名只能有字母、数字和 . _ / -'));
+  return ok({ url: trimmed, defaultBranch: name });
 }
 
 /** 一条会话真正干活的地方：哪台机器（null = Server 本机的文件系统）+ 哪个目录。 */
@@ -41,6 +61,7 @@ export interface CreateProjectInput {
   readonly now: number;
   readonly id?: ProjectId;
   readonly workerId?: string | null;
+  readonly repo?: ProjectRepo | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
@@ -55,6 +76,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     rootPath: input.rootPath,
     workerId: input.workerId ?? null,
     directories: {},
+    repo: input.repo ?? null,
     createdAt: input.now
   });
 }

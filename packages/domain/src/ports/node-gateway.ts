@@ -6,6 +6,7 @@ import type { WorkerStatus } from '../worker.ts';
 import type { PromptPart } from '../attachment.ts';
 import type { DirectoryEntry } from './workspace-fs.ts';
 import type { ToolAccess } from '../tool.ts';
+import type { WorkspaceGit } from './workspace-git.ts';
 
 /**
  * Server → Worker 指令。从第一天就是双向的：只够回传执行事件的通道，
@@ -73,4 +74,6 @@ export interface NodeGateway {
   ): Promise<Result<{ readonly files: readonly string[]; readonly truncated: boolean }, DomainError>>;
   /** 读那台 Worker 上的一个文件（只用于会话自己的附件）。不存在 = null；超过 maxBytes 报错。 */
   readFile(workerId: string, path: string, maxBytes: number): Promise<Result<Uint8Array | null, DomainError>>;
+  /** 那台 Worker 上的工作空间 git / 目录操作（ws.*）。 */
+  git(workerId: string): WorkspaceGit;
 }

@@ -90,7 +90,7 @@ test('换台机器继续：离线、同一台、空会话都说清楚', async ()
 });
 
 test('workspaceFor：会话在登记过的机器上用那台的目录，否则用项目目录', () => {
-  const project = { id: 'p' as never, name: 'p', rootPath: '/a/', workerId: null, directories: { w2: '/b' }, createdAt: 0 };
+  const project = { id: 'p' as never, name: 'p', rootPath: '/a/', workerId: null, directories: { w2: '/b' }, repo: null, createdAt: 0 };
   assert.deepEqual(workspaceFor(project, 'w2'), { workerId: 'w2', root: '/b' });
   assert.deepEqual(workspaceFor(project, 'local'), { workerId: null, root: '/a' });
   assert.deepEqual(workspaceFor(project, null), { workerId: null, root: '/a' });

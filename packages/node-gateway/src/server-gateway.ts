@@ -11,7 +11,12 @@ import {
   fsListFiles,
   fsMakeDirectory,
   fsReadFile,
-  workerToServerSchema
+  workerToServerSchema,
+  wsAddWorktree,
+  wsClone,
+  wsInspect,
+  wsRemove,
+  wsStatus
 } from '@agent-hub/contract';
 import type {
   BuildInfo,
@@ -24,9 +29,10 @@ import type {
   SessionId,
   WorkerCommand,
   WorkerStatus,
-  WorkerUpdate
+  WorkerUpdate,
+  WorkspaceGit
 } from '@agent-hub/domain';
-import { invalid, unavailable } from '@agent-hub/domain';
+import { conflict, invalid, unavailable } from '@agent-hub/domain';
 
 export interface GatewayHooks {
   readonly token: string | null;
@@ -428,6 +434,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (outcome.ok) return outcome;
     const { code, message } = outcome.error;
     if (code === 'invalid') return { ok: false, error: invalid(message) };
+    if (code === 'conflict') return { ok: false, error: conflict(message) };
     if (code === 'timeout') return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」没有及时回复${what}`) };
     return { ok: false, error: unavailable(message) };
   }
@@ -460,6 +467,22 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const read = toDomain(await channel.request(fsReadFile, { path, maxBytes }), '文件', workerId);
       if (!read.ok) return read;
       return { ok: true, value: read.value.data === null ? null : new Uint8Array(Buffer.from(read.value.data, 'base64')) };
+    },
+    git(workerId: string): WorkspaceGit {
+      const call = async <T>(run: (channel: RpcChannel) => Promise<RpcOutcome<T>>, what: string): Promise<Result<T, DomainError>> => {
+        const channel = channelOf(workerId);
+        if (!channel) return offline(workerId);
+        return toDomain(await run(channel), what, workerId);
+      };
+      // clone / fetch 走网络，给足时间；其余是本地 git，默认超时就够
+      const slow = { timeoutMs: 10 * 60_000 };
+      return {
+        inspect: (path) => call((c) => c.request(wsInspect, { path }), '目录探测'),
+        clone: (input) => call((c) => c.request(wsClone, { ...input, branch: input.branch ?? null }, slow), '下载仓库'),
+        addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null }, slow), '新开分支'),
+        status: (path) => call((c) => c.request(wsStatus, { path }), '检查改动'),
+        remove: (path, kind) => call((c) => c.request(wsRemove, { path, kind }, { timeoutMs: 120_000 }), '删除工作空间')
+      };
     }
   };
 

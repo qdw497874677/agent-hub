@@ -5,7 +5,7 @@ import type { Session } from '../session.ts';
 import { asAgentId, asSessionId } from '../ids.ts';
 import { unavailable } from '../errors.ts';
 import { err, ok } from '../result.ts';
-import { inMemoryDeps } from '../testing/in-memory.ts';
+import { fakeGit, inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { changeSessionOption, deriveSessionUseCase, forkSessionUseCase, recordEvent } from './sessions.ts';
@@ -55,7 +55,8 @@ const localGateway: NodeGateway = {
   listDirectories: async (_id, path) => ok({ path, exists: true, entries: [] }),
   makeDirectory: async (_id, parent, name) => ok({ path: `${parent}/${name}` }),
   listFiles: async () => ok({ files: [], truncated: false }),
-  readFile: async () => ok(null)
+  readFile: async () => ok(null),
+  git: () => fakeGit().on('remote')
 };
 
 async function world(overrides: Parameters<typeof inMemoryDeps>[0] = {}) {

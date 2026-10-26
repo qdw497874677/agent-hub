@@ -1,4 +1,5 @@
-import { createProject } from '../project.ts';
+import { createProject, parseRepo } from '../project.ts';
+import { asProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
@@ -18,12 +19,17 @@ export interface CreateProjectCommand {
   readonly rootPath?: string;
   /** 目录在哪台 Worker 上。不给 / 给的是本机 Worker = 和 Server 同机。 */
   readonly workerId?: string | null;
+  /** 可选的 git 仓库。 */
+  readonly repoUrl?: string | null;
+  readonly defaultBranch?: string | null;
 }
 
 export async function createProjectUseCase(
   deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces'>,
   command: CreateProjectCommand
 ): Promise<Result<Project, DomainError>> {
+  const repo = parseRepo(command.repoUrl, command.defaultBranch);
+  if (!repo.ok) return repo;
   const rootPath = command.rootPath?.trim() ?? '';
   const where = rootPath === '' ? ok(null) : await directoryOwner(deps, command.workerId ?? null);
   if (!where.ok) return where;
@@ -38,7 +44,8 @@ export async function createProjectUseCase(
     rootPath,
     directoryExists,
     now: deps.now(),
-    workerId: where.value
+    workerId: where.value,
+    repo: repo.value
   });
   if (!created.ok) return created;
   await deps.projects.save(created.value);
@@ -125,3 +132,17 @@ function sortRecentFirst(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
 }
 
 
+
+/** 绑定 / 改 / 解除项目仓库（url 为空 = 解除）。只影响以后新建的工作空间，已有的不动。 */
+export async function setProjectRepoUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly repoUrl: string | null; readonly defaultBranch?: string | null }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const repo = parseRepo(command.repoUrl, command.defaultBranch);
+  if (!repo.ok) return repo;
+  const next: Project = { ...project, repo: repo.value };
+  await deps.projects.save(next);
+  return ok(next);
+}

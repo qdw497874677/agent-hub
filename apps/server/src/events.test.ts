@@ -10,7 +10,7 @@ import {
 } from '@agent-hub/domain';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createLiveCatalog } from './agent-catalog.ts';
-import { createLocalFs } from '@agent-hub/node-gateway';
+import { createGitWorkspace, createLocalFs } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -54,10 +54,12 @@ function harness() {
       listDirectories: async () => ({ ok: true, value: { path: '/', exists: false, entries: [] } }),
       makeDirectory: async () => ({ ok: true, value: { path: '/' } }),
       listFiles: async () => ({ ok: true, value: { files: [], truncated: false } }),
-      readFile: async () => ({ ok: true, value: null })
+      readFile: async () => ({ ok: true, value: null }),
+      git: () => createGitWorkspace(async () => '测试里没有 Worker')
     },
     agents: createLiveCatalog(),
     fs: createLocalFs(),
+    git: createGitWorkspace(),
     search: store.search,
     hosting: createMemoryHosting(),
     queue: createSessionQueue(),

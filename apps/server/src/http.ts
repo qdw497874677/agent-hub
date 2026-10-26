@@ -11,6 +11,7 @@ import {
   createProjectRequest,
   directoryListingSchema,
   makeDirectoryRequest,
+  setProjectRepoRequest,
   homeSchema,
   searchResponseSchema,
   createTaskRequest,
@@ -42,6 +43,7 @@ import {
   browseDirectories,
   createDirectory,
   createProjectUseCase,
+  setProjectRepoUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
   prepareLongLivedWorkspaceUseCase,
@@ -213,6 +215,14 @@ export function createApp(options: AppOptions): Hono {
     if (!input.ok) return input.response;
     const result = await createProjectUseCase(deps, input.value);
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+
+  // 绑定 / 改 / 解除项目仓库：只影响以后新建的工作空间。
+  app.put('/api/projects/:projectId/repo', async (c) => {
+    const input = await body(c, setProjectRepoRequest);
+    if (!input.ok) return input.response;
+    const result = await setProjectRepoUseCase(deps, { projectId: c.req.param('projectId'), ...input.value });
+    return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
   // 运行面板：项目名下的工作空间 + 谁正在里面跑（并发警告）。

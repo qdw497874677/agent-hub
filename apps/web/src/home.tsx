@@ -203,6 +203,8 @@ function CreateProjectPanel({
 }) {
   const [name, setName] = useState('');
   const [rootPath, setRootPath] = useState('');
+  const [repoUrl, setRepoUrl] = useState('');
+  const [defaultBranch, setDefaultBranch] = useState('');
   const workers = useWorkers();
   const [workerId, setWorkerId] = useState<string | null>(null);
   const chosen = workerId ?? resolveWorker(workers.list, null)?.workerId ?? null;
@@ -213,7 +215,11 @@ function CreateProjectPanel({
 
   const create = useMutation({
     mutationFn: () =>
-      api.createProject(rootPath.trim() === '' ? { name: name.trim() } : { name: name.trim(), rootPath: rootPath.trim(), workerId: chosen }),
+      api.createProject({
+        name: name.trim(),
+        ...(rootPath.trim() === '' ? {} : { rootPath: rootPath.trim(), workerId: chosen }),
+        ...(repoUrl.trim() === '' ? {} : { repoUrl: repoUrl.trim(), defaultBranch: defaultBranch.trim() || null })
+      }),
     onSuccess: async (created) => {
       // 路由靠 ['projects'] 认项目；只刷 ['home'] 会让新项目在跳过去时「查无此项」。
       await Promise.all([
@@ -230,7 +236,7 @@ function CreateProjectPanel({
       <p className="mb-1 text-head text-primary">新建项目</p>
       <p className="mb-3 text-meta text-secondary">
         项目是你在做的东西。目录可以先不选：开始任务时再选在哪台机器、哪个工作空间干活；
-        选了的话，它就是这个项目的第一个持久工作空间。
+        选了的话，它就是这个项目的第一个持久工作空间。填了 git 仓库，新建工作空间时会把它下载到那台机器。
       </p>
 
       <WorkerPicker
@@ -276,6 +282,28 @@ function CreateProjectPanel({
         >
           开始
         </button>
+      </div>
+
+      <div className="mb-3 flex flex-wrap gap-2">
+        <input
+          aria-label="git 仓库"
+          className="min-w-0 flex-[3_1_220px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
+          value={repoUrl}
+          placeholder="git 仓库（可选，https://… 或 git@…）"
+          spellCheck={false}
+          autoCapitalize="off"
+          onChange={(event) => setRepoUrl(event.target.value)}
+        />
+        <input
+          aria-label="默认分支"
+          className="min-w-0 flex-[1_1_120px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent disabled:opacity-40"
+          value={defaultBranch}
+          placeholder="默认分支（可选）"
+          spellCheck={false}
+          autoCapitalize="off"
+          disabled={repoUrl.trim() === ''}
+          onChange={(event) => setDefaultBranch(event.target.value)}
+        />
       </div>
 
       {browsing ? (

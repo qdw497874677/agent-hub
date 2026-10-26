@@ -107,7 +107,13 @@ export const api = {
     post<{ path: string }>('/api/fs/directories', input),
   deleteProject: (projectId: string, confirmName: string) =>
     call<{ id: string; deleted: true }>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE', body: JSON.stringify({ confirmName }) }),
-  createProject: (input: { name: string; rootPath?: string; workerId?: string | null }) => post<ProjectDto>('/api/projects', input),
+  createProject: (input: {
+    name: string;
+    rootPath?: string;
+    workerId?: string | null;
+    repoUrl?: string | null;
+    defaultBranch?: string | null;
+  }) => post<ProjectDto>('/api/projects', input),
   workspaces: (projectId: string) => call<WorkspaceViewDto[]>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`),
   createWorkspace: (projectId: string, input: CreateWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`, input),
