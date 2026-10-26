@@ -288,7 +288,9 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, setTaskStatusRequest);
     if (!input.ok) return input.response;
     const status: TaskStatus = input.value.status;
-    const result = await setTaskStatusUseCase(deps, asTaskId(c.req.param('taskId')), status, 'user', input.value.note);
+    const result = await setTaskStatusUseCase(deps, asTaskId(c.req.param('taskId')), status, 'user', input.value.note, {
+      label: principalOf(c)?.user.displayName ?? ''
+    });
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 

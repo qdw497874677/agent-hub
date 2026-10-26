@@ -174,9 +174,18 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
             return err(invalid(`status 只能是 ${AGENT_STATUSES.join(' / ')}`));
           }
           const note = typeof args['note'] === 'string' ? args['note'].slice(0, 500) : undefined;
-          const changed = await setTaskStatusUseCase(deps, taskId, status as TaskStatus, 'agent', note);
+          const before = await deps.tasks.byId(taskId);
+          const me = await author(ctx);
+          const label = me.model ? `${me.agentId}（${me.model}）` : me.agentId;
+          const changed = await setTaskStatusUseCase(deps, taskId, status as TaskStatus, 'agent', note, {
+            label,
+            sessionId: ctx.grant.sessionId
+          });
           if (!changed.ok) return changed;
-          return ok({ status: changed.value.status });
+          // 没变也明确说出来：否则模型会以为没生效、反复重试
+          return before?.status === changed.value.status
+            ? ok({ status: changed.value.status, changed: false, message: `任务已经是 ${status}，不用再改` })
+            : ok({ status: changed.value.status, changed: true });
         }
         default:
           return err(notFound(`没有这个工具：${name}`));
