@@ -16,6 +16,7 @@ const CREATE = '__create__';
  * - 输入框就是路径：`/home/u/` 后面接着打字 = 在这一层里模糊筛
  * - ↑↓ 选，Enter/Tab 进入文件夹，空片段时 Backspace 回上一级，⌘/Ctrl+Enter 直接用当前目录
  * - 打的名字不存在 → 列表里出现「新建文件夹 "x"」
+ * - 顶栏常驻「新建文件夹」按钮（照 iOS 文件 / VS Code）：点开就地输入名字，↵ 建好并进入，Esc 取消
  * - 最近改过的排前面，git 仓库标 ⎇；给了项目名就从托管目录起步，没有就一键创建
  * - 手机上全屏、行高够手指点；桌面嵌在表单里
  */
@@ -111,6 +112,42 @@ export function DirectoryPicker({
   });
   const mutationError = (make.error ?? createManaged.error) as Error | null;
 
+  // 常驻「新建文件夹」：null = 收起；字符串 = 正在输入的名字
+  const [naming, setNaming] = useState<string | null>(null);
+  const nameProblem = (name: string): string | null => {
+    const trimmed = name.trim();
+    if (trimmed === '') return '名字不能为空';
+    if (trimmed.includes('/') || trimmed.includes('\\')) return '名字里不能有斜杠';
+    if (trimmed === '.' || trimmed === '..') return '不能用 . 或 ..';
+    if (current?.entries.some((entry) => entry.name === trimmed)) return '这里已经有同名文件夹';
+    return null;
+  };
+  const [nameError, setNameError] = useState<string | null>(null);
+  const closeNaming = () => {
+    setNaming(null);
+    setNameError(null);
+    inputRef.current?.focus();
+  };
+  const makeNamed = useMutation({
+    mutationFn: async (input: { parent: string; name: string }) => api.makeDirectory({ workerId, ...input }),
+    onSuccess: (dir) => {
+      setNaming(null);
+      setNameError(null);
+      made(dir.path);
+    },
+    onError: (error) => setNameError((error as Error).message)
+  });
+  const submitName = () => {
+    if (!current || naming === null) return;
+    const problem = nameProblem(naming);
+    if (problem) return setNameError(problem);
+    makeNamed.mutate({ parent: current.path, name: naming.trim() });
+  };
+  useEffect(() => {
+    setNaming(null);
+    setNameError(null);
+  }, [current?.path]);
+
   const choose = (value: string) => {
     if (!current) return;
     if (value === USE) onPick(current.path);
@@ -189,7 +226,74 @@ export function DirectoryPicker({
             className="min-w-0 flex-1 bg-transparent py-3 font-mono text-body text-primary outline-none placeholder:text-tertiary md:py-2.5"
           />
           {listing.isFetching ? <span className="shrink-0 text-meta text-tertiary">…</span> : null}
+          <button
+            type="button"
+            className="-mr-1 flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-sm px-2.5 text-meta text-accent hover:bg-card-raised disabled:opacity-40 md:min-h-0 md:py-1.5"
+            disabled={current === undefined}
+            aria-expanded={naming !== null}
+            onClick={() => (naming === null ? setNaming('') : closeNaming())}
+          >
+            <span aria-hidden className="text-body">＋</span>
+            新建文件夹
+          </button>
         </div>
+
+        {naming !== null && current ? (
+          <div className="border-b border-hair px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span aria-hidden className="w-4 text-center text-tertiary">▸</span>
+              <input
+                aria-label="新文件夹名"
+                autoFocus
+                value={naming}
+                onChange={(event) => {
+                  setNaming(event.target.value);
+                  setNameError(null);
+                }}
+                onKeyDown={(event) => {
+                  // 不让 cmdk 的 ↵/Esc/⌫ 接管
+                  event.stopPropagation();
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    submitName();
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeNaming();
+                  }
+                }}
+                placeholder="文件夹名"
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                aria-invalid={nameError !== null}
+                aria-describedby={nameError ? 'new-folder-error' : undefined}
+                className="min-h-[44px] min-w-0 flex-1 rounded-sm border border-hair bg-canvas px-2 font-mono text-body text-primary outline-none focus:border-accent md:min-h-0 md:py-1.5"
+              />
+              <button
+                type="button"
+                className="min-h-[44px] shrink-0 rounded-sm bg-accent px-4 text-meta text-canvas disabled:opacity-40 md:min-h-0 md:py-1.5"
+                disabled={makeNamed.isPending}
+                onClick={submitName}
+              >
+                创建
+              </button>
+              <button
+                type="button"
+                className="min-h-[44px] shrink-0 rounded-sm px-2 text-meta text-secondary hover:bg-card-raised md:min-h-0 md:py-1.5"
+                onClick={closeNaming}
+              >
+                取消
+              </button>
+            </div>
+            {nameError ? (
+              <p id="new-folder-error" role="alert" className="mt-1 pl-6 text-meta text-rust">
+                {nameError}
+              </p>
+            ) : (
+              <p className="mt-1 hidden pl-6 text-meta text-tertiary md:block">建在 {current.path} 下 · ↵ 创建 · Esc 取消</p>
+            )}
+          </div>
+        ) : null}
 
         <Command.List className="min-h-0 flex-1 overflow-y-auto p-1.5 [scroll-padding-block:6px]">
           {listing.error && !current ? (
