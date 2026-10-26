@@ -94,6 +94,23 @@ export const createWorkspaceRequest = z.discriminatedUnion('kind', [
   })
 ]);
 
+/** 移除工作空间：只移除登记，或连目录一起删（force = 二次确认过，有改动也删）。 */
+export const removeWorkspaceRequest = z.object({
+  deleteDirectory: z.boolean().default(false),
+  force: z.boolean().default(false)
+});
+
+export const workspaceChangesSchema = z.object({
+  status: z.object({
+    dirty: z.boolean().nullable(),
+    untracked: z.number(),
+    unpushed: z.number(),
+    branch: z.string().nullable(),
+    upstream: z.string().nullable()
+  }),
+  reason: z.string().nullable()
+});
+
 export const forkSessionRequest = z.object({
   sessionId: id,
   atSeq: z.number().int().positive(),

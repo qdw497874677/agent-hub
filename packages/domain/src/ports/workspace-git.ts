@@ -39,6 +39,11 @@ export interface WorktreeInput {
 
 export type RemoveKind = 'worktree' | 'directory';
 
+/** force：人已经二次确认过会丢掉的东西，不再检查改动。 */
+export interface RemoveOptions {
+  readonly force?: boolean;
+}
+
 /** 删除的结果：被拒（有改动）不是错误，原因写在 reason 里，hub 据此标 kept。 */
 export type RemoveOutcome = { readonly removed: true } | { readonly removed: false; readonly reason: string };
 
@@ -53,5 +58,5 @@ export interface WorkspaceGit {
   addWorktree(input: WorktreeInput): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
   status(path: string): Promise<Result<GitStatus, DomainError>>;
   /** worktree 用 `git worktree remove`（不 --force，分支保留）；directory 只删平台建的临时目录。删之前再查一次。 */
-  remove(path: string, kind: RemoveKind): Promise<Result<RemoveOutcome, DomainError>>;
+  remove(path: string, kind: RemoveKind, options?: RemoveOptions): Promise<Result<RemoveOutcome, DomainError>>;
 }

@@ -2,7 +2,7 @@ import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import type { DomainError, GitStatus, Result, WorkspaceGit } from '@agent-hub/domain';
-import { conflict, folderNameProblem, invalid, unavailable } from '@agent-hub/domain';
+import { conflict, folderNameProblem, invalid, unavailable, unsavedReason } from '@agent-hub/domain';
 
 /**
  * WorkspaceGit 的 git 实现（simple-git，跑这台机器上的 git 和它自己的凭据）。
@@ -86,10 +86,21 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
     },
 
-    async remove(path, kind) {
+    async remove(path, kind, options) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
       if (!(await exists(path))) return { ok: true, value: { removed: true } }; // 已经没了：登记可以收掉
+      if (options?.force) {
+        // 人二次确认过「这些改动不要了」：worktree 用 --force 摘掉（分支和已提交的仍在主仓库里），目录整个删
+        try {
+          const common = kind === 'worktree' ? (await simpleGit(path).raw(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim() : null;
+          if (common) await simpleGit(dirname(common)).raw(['worktree', 'remove', '--force', path]);
+          else await rm(path, { recursive: true, force: true });
+        } catch (error) {
+          return failed('删除工作空间', error);
+        }
+        return { ok: true, value: { removed: true } };
+      }
       let status: GitStatus;
       try {
         status = await statusOf(path);
@@ -135,14 +146,8 @@ function networkGit(baseDir: string): SimpleGit {
   return simpleGit({ baseDir, allowEnvironment: CREDENTIAL_ENV }).env(env);
 }
 
-/** 有什么会丢就说什么；都没有返回 null。 */
-export function keepReason(status: GitStatus): string | null {
-  const parts: string[] = [];
-  if (status.dirty) parts.push('有未提交的改动');
-  if (status.untracked > 0) parts.push(`有 ${status.untracked} 个未跟踪的文件`);
-  if (status.unpushed > 0) parts.push(`有 ${status.unpushed} 个提交还没推送或合并`);
-  return parts.length > 0 ? parts.join('，') : null;
-}
+/** 有什么会丢就说什么；都没有返回 null（规则在领域里，和自动清理同一套）。 */
+export const keepReason = unsavedReason;
 
 async function statusOf(path: string): Promise<GitStatus> {
   const git = simpleGit(path);

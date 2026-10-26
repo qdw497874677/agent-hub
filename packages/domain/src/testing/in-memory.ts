@@ -333,10 +333,13 @@ export function fakeGit(): FakeGit {
         },
         status: async (path) => {
           calls.push(`${machine}:status:${path}`);
+          const reason = fail();
+          if (reason) return err(unavailable(reason));
           return ok(statusOf(path));
         },
-        remove: async (path, kind) => {
-          calls.push(`${machine}:remove:${kind}:${path}`);
+        remove: async (path, kind, options) => {
+          calls.push(`${machine}:remove:${kind}:${path}${options?.force ? ':force' : ''}`);
+          if (options?.force) return ok({ removed: true });
           const status = statusOf(path);
           if (status.dirty || status.untracked > 0 || status.unpushed > 0) return ok({ removed: false, reason: '有未保存的改动' });
           return ok({ removed: true });

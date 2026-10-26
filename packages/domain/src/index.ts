@@ -30,7 +30,7 @@ export type { NodeGateway, WorkerCommand } from './ports/node-gateway.ts';
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
-export type { CloneInput, GitInspection, GitStatus, RemoveKind, RemoveOutcome, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
+export type { CloneInput, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
 export type { SessionHosting } from './ports/session-hosting.ts';
@@ -53,6 +53,7 @@ export * from './use-cases/continue-elsewhere.ts';
 export * from './use-cases/attachments.ts';
 export * from './use-cases/workspaces.ts';
 export * from './use-cases/temporary-workspaces.ts';
+export * from './use-cases/workspace-cleanup.ts';
 
 export * from './account.ts';
 export type { UserRepository } from './ports/user-repository.ts';

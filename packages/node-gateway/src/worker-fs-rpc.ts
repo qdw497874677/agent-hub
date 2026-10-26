@@ -60,5 +60,5 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined): void 
   port.handle(wsClone, async (input) => unwrap(await need().clone(input)));
   port.handle(wsAddWorktree, async (input) => unwrap(await need().addWorktree(input)));
   port.handle(wsStatus, async ({ path }) => unwrap(await need().status(path)));
-  port.handle(wsRemove, async ({ path, kind }) => unwrap(await need().remove(path, kind)));
+  port.handle(wsRemove, async ({ path, kind, force }) => unwrap(await need().remove(path, kind, { force: force === true })));
 }
