@@ -39,6 +39,7 @@ export function toProject(row: Row): Project {
     rootPath: str(row, 'root_path'),
     workerId: nullableStr(row, 'worker_id'),
     directories: parseDirectories(row['directories']),
+    repo: nullableStr(row, 'repo_url') === null ? null : { url: str(row, 'repo_url'), defaultBranch: nullableStr(row, 'repo_default_branch') },
     createdAt: num(row, 'created_at')
   };
 }

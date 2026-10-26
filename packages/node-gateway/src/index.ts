@@ -13,3 +13,4 @@ export { createMcpEndpoint } from './mcp-endpoint.ts';
 export type { McpEndpoint } from './mcp-endpoint.ts';
 export { serveWorkerFiles } from './worker-fs-rpc.ts';
 export { enrollOverLink, type EnrollOutcome } from './worker-enroll.ts';
+export { createGitWorkspace, keepReason } from './git-workspace.ts';

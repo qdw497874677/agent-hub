@@ -14,6 +14,7 @@ import type { ArtifactRepository } from '../ports/artifact-repository.ts';
 import type { LayoutStore } from '../ports/layout-store.ts';
 import type { SessionEventStream } from '../ports/event-stream.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
+import type { WorkspaceGit } from '../ports/workspace-git.ts';
 import type { WorkspaceFS } from '../ports/workspace-fs.ts';
 import type { SearchGateway } from '../ports/search-gateway.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
@@ -54,6 +55,8 @@ export interface Deps {
   readonly gateway: NodeGateway;
   readonly agents: AgentCatalog;
   readonly fs: WorkspaceFS;
+  /** Server 本机上的工作空间 git / 目录操作；远端的走 gateway.git(workerId)。 */
+  readonly git: WorkspaceGit;
   readonly search: SearchGateway;
   /** 哪些会话此刻有 worker 托管；不在就得先 resume 再说话。 */
   readonly hosting: SessionHosting;

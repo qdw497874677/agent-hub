@@ -74,6 +74,8 @@ export const projectSchema = z.object({
   workerId: z.string().nullable().default(null),
   /** 「换台机器继续」登记过的别的 Worker 上的目录：workerId → 绝对路径。 */
   directories: z.record(z.string(), z.string()).default({}),
+  /** 项目的 git 仓库；没有是 null。 */
+  repo: z.object({ url: z.string(), defaultBranch: z.string().nullable() }).nullable().default(null),
   createdAt: epochMs
 });
 

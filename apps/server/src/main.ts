@@ -30,7 +30,7 @@ import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
-import { createLocalFs, readBuildInfo } from '@agent-hub/node-gateway';
+import { createGitWorkspace, createLocalFs, readBuildInfo } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
@@ -106,10 +106,12 @@ const deps: Deps = {
     listFiles: async (workerId, root, limit) =>
       serverGateway ? serverGateway.gateway.listFiles(workerId, root, limit) : err(unavailable('worker 通道尚未就绪')),
     readFile: async (workerId, path, maxBytes) =>
-      serverGateway ? serverGateway.gateway.readFile(workerId, path, maxBytes) : err(unavailable('worker 通道尚未就绪'))
+      serverGateway ? serverGateway.gateway.readFile(workerId, path, maxBytes) : err(unavailable('worker 通道尚未就绪')),
+    git: (workerId) => (serverGateway ? serverGateway.gateway.git(workerId) : createGitWorkspace(async () => 'worker 通道尚未就绪'))
   },
   agents: catalog,
   fs: createLocalFs(),
+  git: createGitWorkspace(),
   search: store.search,
   hosting: createMemoryHosting(),
   queue: createSessionQueue(),

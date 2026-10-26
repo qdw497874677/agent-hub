@@ -33,7 +33,8 @@ import type {
   HubSettings,
   LoginActivity
 } from '../index.ts';
-import { DEFAULT_SETTINGS, ok } from '../index.ts';
+import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
+import type { GitStatus, WorkspaceGit } from '../index.ts';
 
 /**
  * 用例测试与 HTTP 合同测试共用的内存假件。
@@ -275,6 +276,72 @@ export interface InMemoryWorld {
   readonly agents: AgentDescriptor[];
   /** 网关报的 Worker 列表；改它就等于 Worker 上下线。默认一台装了全部 agent 的本机。 */
   readonly workers: WorkerStatus[];
+  /** 假 git：记下调用，状态可改（清理测试用）。本机和远端共用一份，调用里带上是哪台。 */
+  readonly git: FakeGit;
+}
+
+export interface FakeGit {
+  /** 「机器:动作:路径」，机器 local = Server 本机。 */
+  readonly calls: string[];
+  /** 路径 → 状态；没登记的当成干净的 git 目录。 */
+  readonly statuses: Map<string, GitStatus>;
+  /** 这些路径 inspect 出来是 git 仓库（带 origin）。 */
+  readonly repos: Set<string>;
+  /** 下一次 clone / addWorktree 失败的原因。 */
+  failNext: string | null;
+  on(machine: string): WorkspaceGit;
+}
+
+export function fakeGit(): FakeGit {
+  const calls: string[] = [];
+  const statuses = new Map<string, GitStatus>();
+  const repos = new Set<string>();
+  const state: FakeGit = {
+    calls,
+    statuses,
+    repos,
+    failNext: null,
+    on(machine) {
+      const fail = () => {
+        const reason = state.failNext;
+        state.failNext = null;
+        return reason;
+      };
+      const statusOf = (path: string): GitStatus =>
+        statuses.get(path) ?? { dirty: false, untracked: 0, unpushed: 0, branch: 'main', upstream: null };
+      return {
+        inspect: async (path) => {
+          calls.push(`${machine}:inspect:${path}`);
+          const isGit = repos.has(path);
+          return ok({ exists: true, isGit, remoteUrl: isGit ? 'https://example.com/demo.git' : null, branch: isGit ? 'main' : null });
+        },
+        clone: async (input) => {
+          calls.push(`${machine}:clone:${input.repoUrl}->${input.parent}/${input.name}`);
+          const reason = fail();
+          if (reason) return err(unavailable(reason));
+          repos.add(`${input.parent}/${input.name}`);
+          return ok({ path: `${input.parent}/${input.name}`, branch: input.branch ?? 'main' });
+        },
+        addWorktree: async (input) => {
+          calls.push(`${machine}:worktree:${input.repoPath}->${input.path}@${input.branch}`);
+          const reason = fail();
+          if (reason) return err(unavailable(reason));
+          return ok({ path: input.path, branch: input.branch });
+        },
+        status: async (path) => {
+          calls.push(`${machine}:status:${path}`);
+          return ok(statusOf(path));
+        },
+        remove: async (path, kind) => {
+          calls.push(`${machine}:remove:${kind}:${path}`);
+          const status = statusOf(path);
+          if (status.dirty || status.untracked > 0 || status.unpushed > 0) return ok({ removed: false, reason: '有未保存的改动' });
+          return ok({ removed: true });
+        }
+      };
+    }
+  };
+  return state;
 }
 
 /** 一整套内存 Deps。`overrides` 用来替换某个端口（例如让网关失败）。 */
@@ -284,7 +351,9 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   const agents: AgentDescriptor[] = [];
   const workers: WorkerStatus[] = [{ workerId: 'local', label: '本机', origin: 'local', state: 'online' }];
   const tasks = fakeTasks();
+  const git = fakeGit();
   const gateway: NodeGateway = {
+    git: (workerId) => git.on(workerId),
     status: async () => workers,
     listDirectories: async (_workerId, path) => ok({ path: path || '/home/remote', exists: true, entries: [] }),
     makeDirectory: async (_workerId, parent, name) => ok({ path: `${parent}/${name}` }),
@@ -312,13 +381,14 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
       descriptor: (id: string) => agents.find((agent) => agent.id === id) ?? null
     },
     fs: fakeFs(),
+    git: git.on('local'),
     search: { search: async () => [] },
     hosting: fakeHosting(),
     queue: immediateQueue,
     now: () => (clock += 1),
     ...overrides
   } as InMemoryDeps;
-  return { deps, dispatched, frames, agents, workers };
+  return { deps, dispatched, frames, agents, workers, git };
 }
 
 // ---- 账号 ----

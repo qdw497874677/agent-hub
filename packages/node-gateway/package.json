@@ -10,6 +10,7 @@
     "@agent-hub/contract": "*",
     "@agent-hub/domain": "*",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "simple-git": "^4.0.2",
     "ws": "^8.18.3"
   },
   "devDependencies": {

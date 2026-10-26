@@ -2,7 +2,7 @@ import { workspaceFor, type Location, type Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
 import { projectSlug } from '../directories.ts';
-import { createDirectory, directoryOwner, listOn, rootsOf } from './machine-dirs.ts';
+import { createDirectory, directoryOwner, gitOn, listOn, rootsOf } from './machine-dirs.ts';
 import type { ProjectId } from '../ids.ts';
 import { asProjectId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
@@ -96,6 +96,7 @@ export async function workspaceViewsUseCase(
 /**
  * 新建持久工作空间（§4.1）：
  * - `create`：在那台机器的 `<roots[0]>/agent-hub/<项目 slug>` 新建（名字被占就 -2、-3……），平台建的；
+ *   项目绑了仓库就 clone 到那里（cloned），没绑就是空目录（created）；
  * - `link`：选一个已有目录，人的目录，平台永不删。
  * 同一台机器同一个目录已经登记过就直接返回那一条（幂等）。
  */
@@ -111,7 +112,7 @@ export interface PrepareLongLivedCommand {
 }
 
 export async function prepareLongLivedWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'gateway' | 'now' | 'projects' | 'workspaces'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces'>,
   command: PrepareLongLivedCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
@@ -119,8 +120,11 @@ export async function prepareLongLivedWorkspaceUseCase(
   const owner = await directoryOwner(deps, command.workerId);
   if (!owner.ok) return owner;
 
+  const git = gitOn(deps, owner.value);
   let path: string;
   let source: Workspace['source'];
+  let branch: string | null = null;
+  let isGit: boolean | null = null;
   if (command.plan.mode === 'link') {
     if (!command.plan.path.startsWith('/')) return err(invalid('目录必须是绝对路径'));
     const listed = await listOn(deps, owner.value, normalizePath(command.plan.path));
@@ -128,30 +132,58 @@ export async function prepareLongLivedWorkspaceUseCase(
     if (listed.value === null) return err(invalid(`目录不存在：${command.plan.path}`));
     path = listed.value.path;
     source = 'linked';
+    // 探测只是为了卡片上显示分支；失败（老 Worker 不认 ws.*）不挡关联
+    const inspected = await git.inspect(path);
+    if (inspected.ok) {
+      isGit = inspected.value.isGit;
+      branch = inspected.value.branch;
+    }
   } else {
-    const made = await makeManagedDirectory(deps, project, owner.value, command);
-    if (!made.ok) return made;
-    path = made.value;
-    source = 'created';
+    const place = await managedPlace(deps, project, owner.value, command);
+    if (!place.ok) return place;
+    if (project.repo) {
+      // 有仓库：把它下载到托管目录（用那台机器自己的 git 凭据）
+      const cloned = await git.clone({ repoUrl: project.repo.url, parent: place.value.parent, name: place.value.name, branch: project.repo.defaultBranch });
+      if (!cloned.ok) return cloned;
+      path = cloned.value.path;
+      branch = cloned.value.branch;
+      isGit = true;
+      source = 'cloned';
+    } else {
+      const made = await createDirectory(deps, { workerId: owner.value, parent: place.value.parent, name: place.value.name, home: command.home });
+      if (!made.ok) return made;
+      path = made.value.path;
+      isGit = false;
+      source = 'created';
+    }
   }
 
   const existing = (await deps.workspaces.byProject(project.id)).find(
     (workspace) => workspace.state !== 'removed' && samePlace(workspace, { workerId: owner.value, path })
   );
   if (existing) return ok(existing);
-  const created = newWorkspace({ projectId: project.id, workerId: owner.value, path, kind: 'long_lived', source, now: deps.now() });
+  const created = newWorkspace({
+    projectId: project.id,
+    workerId: owner.value,
+    path,
+    kind: 'long_lived',
+    source,
+    branch,
+    isGit,
+    now: deps.now()
+  });
   if (!created.ok) return created;
   await deps.workspaces.save(created.value);
   return ok(created.value);
 }
 
-/** `<roots[0]>/agent-hub/<slug>`：先确保 agent-hub 这层在，再挑一个磁盘上还没有的名字。 */
-async function makeManagedDirectory(
+/** `<roots[0]>/agent-hub/<slug>`：先确保 agent-hub 这层在，再挑一个磁盘上还没有的名字（还没建）。 */
+async function managedPlace(
   deps: Pick<Deps, 'fs' | 'gateway'>,
   project: Project,
   owner: string | null,
-  command: PrepareLongLivedCommand
-): Promise<Result<string, DomainError>> {
+  command: Pick<PrepareLongLivedCommand, 'workerId' | 'home'>
+): Promise<Result<{ readonly parent: string; readonly name: string }, DomainError>> {
   const roots = await rootsOf(deps, owner, command.workerId, command.home);
   const root = roots[0];
   if (root === undefined) return err(invalid('这台机器没有可以新建目录的位置'));
@@ -161,9 +193,7 @@ async function makeManagedDirectory(
   if (!listed.ok) return listed;
   const taken = new Set((listed.value?.entries ?? []).map((entry) => entry.name));
   const slug = projectSlug(project.name) ?? 'project';
-  const name = freeName(slug, taken);
-  const made = await createDirectory(deps, { workerId: owner, parent: base.value.path, name, home: command.home });
-  return made.ok ? ok(made.value.path) : made;
+  return ok({ parent: base.value.path, name: freeName(slug, taken) });
 }
 
 /** slug、slug-2、slug-3……第一个没被占的（§7 托管目录名冲突）。 */

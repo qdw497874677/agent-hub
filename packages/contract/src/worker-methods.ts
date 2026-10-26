@@ -49,3 +49,43 @@ export const mcpMessage = method(
   z.object({ token: z.string().min(1), message: z.record(z.string(), z.unknown()) }),
   z.object({ message: z.record(z.string(), z.unknown()).nullable() })
 );
+
+/* ── 工作空间（docs/design/workspaces.md §3）：在目录所在的那台机器上跑 git。Worker 侧都过 WORKER_ROOTS。 ── */
+
+export const wsInspect = method(
+  'ws.inspect',
+  z.object({ path: z.string() }),
+  z.object({ exists: z.boolean(), isGit: z.boolean(), remoteUrl: z.string().nullable(), branch: z.string().nullable() })
+);
+
+/** 用 Worker 本机的 git 凭据；hub 不存 token。 */
+export const wsClone = method(
+  'ws.clone',
+  z.object({ repoUrl: z.string().min(1), parent: z.string(), name: z.string(), branch: z.string().nullable().optional() }),
+  z.object({ path: z.string(), branch: z.string().nullable() })
+);
+
+export const wsAddWorktree = method(
+  'ws.add_worktree',
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional() }),
+  z.object({ path: z.string(), branch: z.string() })
+);
+
+export const wsStatus = method(
+  'ws.status',
+  z.object({ path: z.string() }),
+  z.object({
+    dirty: z.boolean().nullable(),
+    untracked: z.number().int(),
+    unpushed: z.number().int(),
+    branch: z.string().nullable(),
+    upstream: z.string().nullable()
+  })
+);
+
+/** Worker 删之前会再查一次；有改动就回 removed:false + 原因（不是错误）。 */
+export const wsRemove = method(
+  'ws.remove',
+  z.object({ path: z.string(), kind: z.enum(['worktree', 'directory']) }),
+  z.union([z.object({ removed: z.literal(true) }), z.object({ removed: z.literal(false), reason: z.string() })])
+);
