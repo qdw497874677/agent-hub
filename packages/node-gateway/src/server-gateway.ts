@@ -31,6 +31,15 @@ export interface GatewayHooks {
    * `sessions`：Worker 重连时报上的、它手上还活着的会话。
    * 网关**不**凭这句话改路由：组合根让领域核对落点后，再用 `adopt()` 把核对过的那些接回来。
    */
+  /**
+   * 认 hello：专属凭据，或退回共享 HUB_TOKEN（`sharedTokenOk` 由网关算好）。
+   * 不给就只看共享令牌（老行为）。拒绝时 reason 原样放进关闭码 4401 的原因里。
+   */
+  authenticate?(hello: {
+    readonly workerId: string;
+    readonly credential?: string | undefined;
+    readonly sharedTokenOk: boolean;
+  }): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
   onHello(worker: WorkerStatus, agents: AgentDto[], sessions: readonly string[]): void;
   // 以下回调都带上「是哪台 Worker 说的」：会话归不归它，由领域按库里的落点判断。
   onEvent(workerId: string, sessionId: SessionId, event: SessionEvent): void;
@@ -105,8 +114,11 @@ export interface ServerGateway {
   /** 把领域核对过落点的会话接回这台 Worker 的路由（重连后不必再 resume）。 */
   adopt(workerId: string, sessionIds: readonly string[]): void;
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
-  /** 管理员断开一台在线 Worker（关闭码 4403，Worker 收到后不再重连）。不在线返回 false。 */
-  disconnect(workerId: string): boolean;
+  /**
+   * 管理员断开一台在线 Worker（关闭码 4403，Worker 收到后不再重连）。不在线返回 false。
+   * `revoked`：凭据已作废——用 4401 断开，并把它从登记表里拿掉。
+   */
+  disconnect(workerId: string, why?: 'admin' | 'revoked'): boolean;
   /** 让在线的 Worker 更新到这个提交（只发提交号）。不在线返回 false。 */
   requestUpdate(workerId: string, commit: string): boolean;
   close(): void;
@@ -190,7 +202,15 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       }
     });
 
+    // 认 hello 要查库（异步）：帧按到达顺序串行处理，hello 后紧跟的补发帧才不会先于登记被丢掉。
+    let inbox: Promise<void> = Promise.resolve();
     socket.on('message', (raw: Buffer) => {
+      inbox = inbox.then(() => handle(raw)).catch((error: unknown) => {
+        hooks.onLog?.(`处理 worker 帧失败：${error instanceof Error ? error.message : String(error)}`);
+      });
+    });
+
+    const handle = async (raw: Buffer): Promise<void> => {
       let json: unknown;
       try {
         json = JSON.parse(raw.toString());
@@ -206,10 +226,17 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const frame = parsed.data as WorkerToServer;
 
       if (frame.type === 'hello') {
-        if (hooks.token !== null && !sameSecret(frame.token, hooks.token)) {
-          socket.close(4401, 'token 不匹配');
+        const sharedTokenOk = hooks.token === null || sameSecret(frame.token, hooks.token);
+        const verdict = hooks.authenticate
+          ? await hooks.authenticate({ workerId: frame.workerId, credential: frame.credential, sharedTokenOk })
+          : sharedTokenOk
+            ? ({ ok: true } as const)
+            : ({ ok: false, reason: 'token 不匹配' } as const);
+        if (!verdict.ok) {
+          socket.close(4401, verdict.reason);
           return;
         }
+        if (socket.readyState !== WebSocket.OPEN) return;
         if (frame.build && frame.build.protocol !== PROTOCOL_VERSION) {
           socket.close(
             PROTOCOL_MISMATCH_CLOSE,
@@ -306,7 +333,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         if (frame.status !== 'running' && placement.get(frame.sessionId) === from) placement.delete(frame.sessionId);
         hooks.onStatus(from, frame.sessionId as SessionId, frame.status, frame.reason);
       }
-    });
+    };
 
     socket.on('close', () => {
       clearTimeout(helloTimer);
@@ -321,8 +348,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     (socket as WebSocket & { markTimeout?: () => void }).markTimeout = () => {
       closeReason = '心跳超时';
     };
-    (socket as WebSocket & { markKicked?: () => void }).markKicked = () => {
-      closeReason = '管理员断开';
+    (socket as WebSocket & { markKicked?: (reason: string) => void }).markKicked = (reason: string) => {
+      closeReason = reason;
     };
   });
 
@@ -447,11 +474,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
       wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
     },
-    disconnect(workerId: string): boolean {
+    disconnect(workerId: string, why: 'admin' | 'revoked' = 'admin'): boolean {
       const socket = registry.get(workerId)?.socket;
+      if (why === 'revoked') registry.delete(workerId); // 吊销了就不再列在机器里
       if (!socket) return false;
-      (socket as WebSocket & { markKicked?: () => void }).markKicked?.();
-      socket.close(4403, '管理员断开');
+      const reason = why === 'revoked' ? '机器已被吊销' : '管理员断开';
+      (socket as WebSocket & { markKicked?: (reason: string) => void }).markKicked?.(reason);
+      socket.close(why === 'revoked' ? 4401 : 4403, reason);
       return true;
     },
     requestUpdate(workerId: string, commit: string): boolean {

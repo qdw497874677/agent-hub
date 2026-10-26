@@ -41,7 +41,18 @@ tailscale serve --bg 7878          # https://<机器名>.<tailnet>.ts.net → 12
 
 ### 加一台
 
-hub 那边按上面的方式绑在 tailnet IP 上并设好 `HUB_TOKEN`。然后在新机器上：
+**推荐：在界面里加。** 顶栏 Worker 面板（或运营后台「机器」页）点「＋ 添加机器」，复制弹出的那行命令，在新机器上运行：
+
+```bash
+curl -fsSL http://100.x.y.z:7878/install-worker.sh | HUB_PAIR=ahw_pair_… bash
+# 可选：WORKER_LABEL=工作站 WORKER_ROOTS=$HOME/code 放在 bash 前面；不要 systemd 就 bash -s -- --no-systemd
+```
+
+- 只需要 `git` 和 `curl`；脚本会装 Node 26（校验 sha256）、把代码 clone 到 `~/agent-hub` 并对齐 hub 的提交，然后用配对码换一个**这台机器专属的凭据**，再装 systemd 服务。
+- 配对码 15 分钟有效、只能用一次；弹窗里有倒计时，过期了点「重新生成」。机器连上后弹窗会显示「✓ 已连上」。
+- 不要的机器在 Worker 面板或后台点「吊销」：凭据作废、立刻断开、不再重连，操作进审计。设计见 [design/worker-enrollment.md](design/worker-enrollment.md)。
+
+**兜底：共享 `HUB_TOKEN`**（老方式，仍可用）：
 
 ```bash
 git clone <agent-hub 仓库> && cd agent-hub
@@ -52,9 +63,9 @@ WORKER_ROOTS=$HOME/code \
 scripts/install-worker.sh            # --no-systemd：只写配置，前台自己跑
 ```
 
-- 配置写进 `~/.config/agent-hub/worker.env`（权限 600）；systemd user unit 名为 `agent-hub-worker`，用 `EnvironmentFile` 读它，token 不会出现在 unit 文件和进程参数里。
-- **身份稳定**：第一次启动生成 `WORKER_ID` 存到 `~/.config/agent-hub/worker-id.remote`，重启、重装都不变。会话记住的就是这个 id。想手动指定就设 `WORKER_ID`。
-- 退出登录后还要跑：`loginctl enable-linger $USER`。
+- 配置写进 `~/.config/agent-hub/worker.env`（权限 600）；systemd unit 名为 `agent-hub-worker`，用 `EnvironmentFile` 读它，凭据/token 不会出现在 unit 文件和进程参数里。
+- **身份稳定**：专属凭据绑定 `WORKER_ID`（写在 worker.env）；共享 token 方式第一次启动生成 `WORKER_ID` 存到 `~/.config/agent-hub/worker-id.remote`。重启、重装都不变。
+- 普通用户安装时脚本会尝试 `loginctl enable-linger $USER`，让退出登录后服务继续跑。
 
 ### 它怎么工作
 
@@ -65,7 +76,7 @@ scripts/install-worker.sh            # --no-systemd：只写配置，前台自�
 | 续聊 / 分叉 | 回到会话原来那台。那台离线时明确报「不可用」，不会悄悄换一台（另一台上没有它的上下文）；要换就用「换台机器继续」 |
 | 断线 | Worker 指数退避重连（0.5s 起，最多 15s），重新 hello，并报上手上还活着的会话，hub 把它们接回；断线期间的输出攒在本地补发 |
 | 半开连接 | hub 每 10s ping 一次，一个周期没有 pong 就判离线（原因「心跳超时」）；Worker 30s 收不到 ping 也会主动断开重连 |
-| token 不对 | 连接被拒（4401），Worker 不再重试，不刷屏 |
+| token / 凭据不对、已吊销 | 连接被拒（4401），Worker 以退出码 78 退出，systemd 不再拉起，不刷屏 |
 
 ### 已知限制
 

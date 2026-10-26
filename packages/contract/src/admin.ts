@@ -25,8 +25,10 @@ export const adminWorkerSchema = z.object({
   platform: z.string().nullable(),
   lastSeenAt: z.number().nullable(),
   sessionCount: z.number(),
-  /** 谁加的这台机器。目前只区分本机与凭 HUB_TOKEN 接入的远程机器（按人登记在下一期）。 */
+  /** 谁加的这台机器：本机、某人凭接入码加的（邮箱），或凭共享 HUB_TOKEN 接入的老机器。 */
   enrolledBy: z.string(),
+  /** 有没有专属凭据（凭接入码加的）。 */
+  dedicated: z.boolean().default(false),
   build: z.object({ version: z.string(), commit: z.string().nullable(), protocol: z.number() }).nullable(),
   /** 和 hub 的版本不一致（或没报版本）。 */
   outdated: z.boolean(),
@@ -66,3 +68,18 @@ export type AdminOverviewDto = z.infer<typeof adminOverviewSchema>;
 /** 「加一台机器」：成员能不能加由设置决定；只给说明，不给 token。 */
 export const enrollInfoSchema = z.object({ allowed: z.boolean(), hubUrl: z.string() });
 export type EnrollInfoDto = z.infer<typeof enrollInfoSchema>;
+
+/** 「添加机器」签发的一次性接入码与一行安装命令。码只在这次响应里出现。 */
+export const pairingSchema = z.object({
+  code: z.string(),
+  expiresAt: z.number(),
+  /** 在新机器上粘贴运行的一行命令（curl 安装脚本 | HUB_PAIR=… bash）。 */
+  command: z.string(),
+  hubUrl: z.string()
+});
+export type PairingDto = z.infer<typeof pairingSchema>;
+
+/** Worker 拿接入码换专属凭据（install-worker.sh 调用，不走登录态）。 */
+export const enrollRequest = z.object({ code: z.string().min(1).max(200), label: z.string().max(200).optional() });
+export const enrolledSchema = z.object({ workerId: z.string(), credential: z.string() });
+export type EnrolledDto = z.infer<typeof enrolledSchema>;

@@ -112,7 +112,10 @@ export type AuditAction =
   | 'user.revoke_logins'
   | 'settings.update'
   | 'worker.disconnect'
-  | 'worker.update';
+  | 'worker.update'
+  | 'worker.pair'
+  | 'worker.enroll'
+  | 'worker.revoke';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {

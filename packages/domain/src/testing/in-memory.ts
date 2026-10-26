@@ -445,3 +445,41 @@ export function fakeToolGrants(): import('../ports/tool-grant-repository.ts').To
     }
   };
 }
+
+/** 单台机器接入的内存实现：和 inMemoryAdmin 共用用户、设置、审计和机器列表。 */
+export function inMemoryEnrollment(admin: ReturnType<typeof inMemoryAdmin>, now: () => number = () => 1_000) {
+  type PairingCode = import('../enrollment.ts').PairingCode;
+  type WorkerCredential = import('../enrollment.ts').WorkerCredential;
+  const pairings = new Map<string, PairingCode>();
+  const credentials = new Map<string, WorkerCredential>();
+  let seq = 0;
+  const enrollment: import('../ports/enrollment-repository.ts').EnrollmentRepository = {
+    savePairing: async (code) => void pairings.set(code.hash, code),
+    pairingByHash: async (hash) => pairings.get(hash) ?? null,
+    consumePairing: async (hash, workerId, at) => {
+      const code = pairings.get(hash);
+      if (!code || code.usedAt !== null) return false;
+      pairings.set(hash, { ...code, usedAt: at, workerId });
+      return true;
+    },
+    saveCredential: async (credential) => void credentials.set(credential.workerId, credential),
+    credentialByHash: async (hash) => [...credentials.values()].find((c) => c.tokenHash === hash) ?? null,
+    credentialFor: async (workerId) => credentials.get(workerId) ?? null,
+    listCredentials: async () => [...credentials.values()],
+    revoke: async (workerId, at) => {
+      const found = credentials.get(workerId);
+      if (found && found.revokedAt === null) credentials.set(workerId, { ...found, revokedAt: at });
+    }
+  };
+  const deps: import('../use-cases/enrollment.ts').EnrollmentDeps = {
+    enrollment,
+    tokens: admin.accounts.tokens,
+    settings: admin.deps.settings,
+    users: admin.deps.users,
+    audit: admin.deps.audit,
+    workers: admin.deps.workers,
+    now,
+    newWorkerId: () => `remote-${++seq}`
+  };
+  return { deps, pairings, credentials };
+}

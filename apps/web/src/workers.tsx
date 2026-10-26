@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi, api, type WorkerInfoDto } from './api.ts';
+import { AddMachineDialog } from './add-machine.tsx';
 
 /**
  * Worker：一台登记进 hub、真正跑 agent 的机器。
@@ -127,9 +128,45 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
               </dd>
             </>
           ) : null}
+          {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
         </dl>
       ) : null}
     </li>
+  );
+}
+
+/** 吊销：点一次变成「确认吊销」，再点才真做——这是不可撤销的（那台要重新接入）。 */
+function RevokeButton({ worker }: { worker: WorkerInfoDto }) {
+  const queryClient = useQueryClient();
+  const [armed, setArmed] = useState(false);
+  const revoke = useMutation({
+    mutationFn: () => adminApi.revokeWorker(worker.workerId),
+    onSettled: () => {
+      setArmed(false);
+      void queryClient.invalidateQueries({ queryKey: ['workers'] });
+      void queryClient.invalidateQueries({ queryKey: ['admin'] });
+    }
+  });
+  useEffect(() => {
+    if (!armed) return;
+    const timer = setTimeout(() => setArmed(false), 4000);
+    return () => clearTimeout(timer);
+  }, [armed]);
+  return (
+    <dd className="col-span-2 mt-1.5 flex items-center justify-between gap-2">
+      <span className="min-w-0 text-xs text-rust" role={revoke.isError ? 'alert' : undefined}>
+        {revoke.isError ? (revoke.error as Error).message : armed ? '它会立刻断开，要重新接入才能回来' : ''}
+      </span>
+      <button
+        className={`shrink-0 rounded-sm border px-2.5 py-1 text-meta ${
+          armed ? 'border-rust bg-rust text-canvas' : 'border-hair text-secondary hover:border-rust hover:text-rust'
+        }`}
+        disabled={revoke.isPending}
+        onClick={() => (armed ? revoke.mutate() : setArmed(true))}
+      >
+        {revoke.isPending ? '吊销中…' : armed ? '确认吊销' : '吊销这台机器'}
+      </button>
+    </dd>
   );
 }
 
@@ -139,6 +176,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
  */
 export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up' }) {
   const [open, setOpen] = useState(false);
+  const [adding, setAdding] = useState(false);
   const { list, online } = useWorkers();
   const box = useRef<HTMLDivElement>(null);
 
@@ -192,10 +230,11 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
               ))}
             </ul>
           )}
-          <EnrollFooter />
+          <EnrollFooter onAdd={() => { setOpen(false); setAdding(true); }} />
         </div>
         </div>
       ) : null}
+      {adding ? <AddMachineDialog workers={list} onClose={() => setAdding(false)} /> : null}
     </div>
   );
 }
@@ -242,20 +281,21 @@ export function WorkerPicker({
   );
 }
 
-/** 「加一台机器」的说明。主人关掉「成员可以加机器」后，成员看不到（服务端判定）。 */
-function EnrollFooter() {
+/** 面板底部的「添加机器」。主人关掉「成员可以加机器」后，成员只看到一句说明（服务端也会拒绝签码）。 */
+function EnrollFooter({ onAdd }: { onAdd: () => void }) {
   const info = useQuery({ queryKey: ['enroll-info'], queryFn: adminApi.enrollInfo, staleTime: 60_000 });
   if (!info.data) return null;
   return (
-    <footer className="border-t border-hair px-3 py-2 text-meta text-tertiary">
+    <footer className="border-t border-hair px-3 py-2">
       {info.data.allowed ? (
-        <>
-          加一台机器：在那台机器上运行
-          <code className="mx-1 font-mono text-secondary">scripts/install-worker.sh</code>
-          ，见 docs/remote-access.md
-        </>
+        <button
+          className="flex min-h-9 w-full items-center justify-center gap-1.5 rounded-sm border border-dashed border-strong text-sub text-secondary hover:border-accent hover:text-accent"
+          onClick={onAdd}
+        >
+          <span aria-hidden>＋</span> 添加机器
+        </button>
       ) : (
-        '要加机器请联系主人'
+        <p className="text-meta text-tertiary">要加机器请联系主人</p>
       )}
     </footer>
   );

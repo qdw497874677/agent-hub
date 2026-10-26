@@ -59,6 +59,9 @@ export type { AuditLog } from './ports/audit-log.ts';
 export type { WorkerControl } from './ports/worker-control.ts';
 export * from './use-cases/admin.ts';
 export * from './use-cases/accounts.ts';
+export * from './enrollment.ts';
+export type { EnrollmentRepository } from './ports/enrollment-repository.ts';
+export * from './use-cases/enrollment.ts';
 
 export * from './tool.ts';
 export type { ToolDescriptor, ToolProvider, ToolContext, JsonSchema } from './ports/tool-provider.ts';

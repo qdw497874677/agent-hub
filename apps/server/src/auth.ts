@@ -28,7 +28,8 @@ export const CSRF_HEADER = 'x-hub-csrf';
 export const SSE_PATH = '/api/stream';
 const LOGIN = 'hub_login';
 const CSRF = 'hub_csrf';
-const OPEN = ['/api/health', '/api/auth/'];
+// 新机器兑换接入码时还没有任何身份：接入码本身就是凭证（domain 校验，按 IP 限流）。
+const OPEN = ['/api/health', '/api/auth/', '/api/workers/enroll'];
 
 
 function isHttps(c: Context): boolean {

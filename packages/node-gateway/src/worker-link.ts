@@ -23,6 +23,8 @@ export interface WorkerLinkOptions {
   readonly origin?: 'local' | 'remote';
   /** server 拉起本机 worker 时给的口令（HUB_LOCAL_SECRET），证明 origin: 'local' 不是自封的。 */
   readonly localSecret?: string;
+  /** 单台机器接入换来的专属凭据；有它时 hub 不看共享 token。 */
+  readonly credential?: string;
   readonly runtimes: readonly AgentRuntime[];
   readonly onLog?: (message: string) => void;
   /**
@@ -45,7 +47,7 @@ export interface WorkerLinkOptions {
    */
   readonly files?: WorkerFiles;
   /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
-  readonly onClose?: () => void;
+  readonly onClose?: (why?: { readonly code: number }) => void;
   /** 每次连上（含重连）。 */
   readonly onOpen?: () => void;
   /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
@@ -168,6 +170,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           origin: options.origin ?? 'local',
           token: options.token,
           ...(options.localSecret ? { localSecret: options.localSecret } : {}),
+          ...(options.credential ? { credential: options.credential } : {}),
           agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor)),
           ...(options.host ? { host: options.host } : {}),
           roots: [...(options.files?.roots ?? options.roots ?? [])],
@@ -202,9 +205,11 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       }
       if (code === 4401 || code === 4403) {
         // token 错了、或管理员把这台机器断开了：重连多少次都一样，直接停，别刷屏。
-        options.onLog?.(code === 4401 ? 'server 拒绝了 token，不再重连' : '被管理员断开，不再重连');
+        options.onLog?.(
+          code === 4401 ? `hub 拒绝了这台机器（${reason.toString() || 'token 不匹配'}），不再重连` : '被管理员断开，不再重连'
+        );
         closed = true;
-        options.onClose?.();
+        options.onClose?.({ code });
         return;
       }
       if (closed || options.reconnect === false) {

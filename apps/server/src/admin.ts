@@ -1,7 +1,7 @@
 import type { Context, Hono } from 'hono';
 import { roleRequest, settingsPatchRequest } from '@agent-hub/contract';
 import type { AdminOverviewDto, AdminUserDto, AdminWorkerDto, AdminWorkersDto, AuditEntryDto, EnrollInfoDto } from '@agent-hub/contract';
-import type { AdminDeps, BuildInfo, DomainError, Principal, Result, User, WorkerStatus } from '@agent-hub/domain';
+import type { AdminDeps, BuildInfo, EnrollmentDeps, DomainError, Principal, Result, User, WorkerStatus } from '@agent-hub/domain';
 import {
   adminOverview,
   adminUsers,
@@ -15,7 +15,8 @@ import {
   setUserRole,
   updateOutdatedWorkers,
   updateSettings,
-  updateWorker
+  updateWorker,
+  workerCredentials
 } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
@@ -26,6 +27,13 @@ import { fail } from './http-error.ts';
  */
 export interface AdminOptions {
   readonly deps: AdminDeps;
+  /** 有了就在机器列表上标出「谁接入的」、有没有专属凭据。 */
+  readonly enrollment?: Pick<EnrollmentDeps, 'enrollment'>;
+}
+
+interface Enrolment {
+  readonly by: string;
+  readonly dedicated: boolean;
 }
 
 const userDto = (user: User, lastSeenAt: number | null, activeLogins: number): AdminUserDto => ({
@@ -39,7 +47,7 @@ const userDto = (user: User, lastSeenAt: number | null, activeLogins: number): A
   activeLogins
 });
 
-const workerDto = (worker: WorkerStatus, hub: BuildInfo): AdminWorkerDto => ({
+const workerDto = (worker: WorkerStatus, hub: BuildInfo, enrolment?: Enrolment): AdminWorkerDto => ({
   workerId: worker.workerId,
   label: worker.label,
   origin: worker.origin,
@@ -49,7 +57,8 @@ const workerDto = (worker: WorkerStatus, hub: BuildInfo): AdminWorkerDto => ({
   platform: worker.platform ?? null,
   lastSeenAt: worker.lastSeenAt ?? null,
   sessionCount: worker.sessionCount ?? 0,
-  enrolledBy: worker.origin === 'local' ? '本机（随 hub 启动）' : 'HUB_TOKEN 接入',
+  enrolledBy: worker.origin === 'local' ? '本机（随 hub 启动）' : (enrolment?.by ?? '共享 HUB_TOKEN 接入'),
+  dedicated: enrolment?.dedicated ?? false,
   build: worker.build ?? null,
   outdated: isOutdated(worker, hub),
   update: worker.update ?? null
@@ -118,9 +127,26 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
     return userResult(c, setUserRole(deps, owner(c), asUserId(c.req.param('id')), parsed.data.role));
   });
 
+  /** workerId → 谁接入的。凭接入码加的才有记录；吊销了的不会出现在在线列表里。 */
+  const enrolments = async (): Promise<Map<string, Enrolment>> => {
+    if (!options.enrollment) return new Map();
+    const [credentials, users] = await Promise.all([workerCredentials(options.enrollment), deps.users.list()]);
+    const emailOf = new Map(users.map((user) => [user.id, user.email]));
+    const out = new Map<string, Enrolment>();
+    for (const [workerId, credential] of credentials) {
+      if (credential.revokedAt !== null) continue;
+      out.set(workerId, { by: emailOf.get(credential.enrolledBy) ?? '（已删除的用户）', dedicated: true });
+    }
+    return out;
+  };
+
   app.get('/api/admin/workers', async (c) => {
     const hub = deps.workers.hubBuild();
-    const body: AdminWorkersDto = { hub, workers: (await deps.workers.list()).map((worker) => workerDto(worker, hub)) };
+    const known = await enrolments();
+    const body: AdminWorkersDto = {
+      hub,
+      workers: (await deps.workers.list()).map((worker) => workerDto(worker, hub, known.get(worker.workerId)))
+    };
     return c.json(body);
   });
   app.post('/api/admin/workers/:id/disconnect', async (c) => {

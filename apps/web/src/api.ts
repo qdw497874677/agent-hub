@@ -34,6 +34,7 @@ import type {
   AdminWorkersDto,
   AuditEntryDto,
   EnrollInfoDto,
+  PairingDto,
   SettingsDto
 } from '@agent-hub/contract';
 
@@ -164,7 +165,12 @@ export const adminApi = {
   saveSettings: (patch: Partial<SettingsDto>) =>
     call<SettingsDto>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(patch) }),
   audit: () => call<AuditEntryDto[]>('/api/admin/audit'),
-  enrollInfo: () => call<EnrollInfoDto>('/api/workers/enroll-info')
+  enrollInfo: () => call<EnrollInfoDto>('/api/workers/enroll-info'),
+  /** 签发一次性接入码（15 分钟、用一次），连同在新机器上运行的一行命令。 */
+  pairing: () => post<PairingDto>('/api/workers/pairing', {}),
+  /** 吊销一台机器：作废它的凭据并立刻断开，它不会再重连。 */
+  revokeWorker: (workerId: string) =>
+    call<{ workerId: string; revokedAt: number }>(`/api/workers/${encodeURIComponent(workerId)}`, { method: 'DELETE' })
 };
 
 export type {
@@ -174,6 +180,7 @@ export type {
   AdminWorkerDto,
   AuditEntryDto,
   EnrollInfoDto,
+  PairingDto,
   SettingsDto,
   AgentDto,
   AttachmentInputDto,

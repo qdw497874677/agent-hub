@@ -9,8 +9,8 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { answerToolRequest } from './tool-relay.ts';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { Deps, SessionId, ToolGateway } from '@agent-hub/domain';
-import { createTaskToolProvider, createToolGateway, withToolAccess } from '@agent-hub/domain';
+import type { Deps, EnrollmentDeps, SessionId, ToolGateway } from '@agent-hub/domain';
+import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess } from '@agent-hub/domain';
 import {
   err,
   ingestAgentSessionRef,
@@ -178,8 +178,26 @@ function fromWorker(workerId: string, sessionId: SessionId, ingest: () => void):
     .catch((failure: unknown) => log(`处理 worker 帧失败：${(failure as Error).message}`));
 }
 
+// 单台机器接入：接入码换专属凭据，hello 时按凭据认机器（docs/design/worker-enrollment.md）。
+const workerControl = {
+  list: async () => serverGateway?.workers() ?? [],
+  disconnect: async (workerId: string, why?: 'admin' | 'revoked') => serverGateway?.disconnect(workerId, why) ?? false,
+  hubBuild: () => hubBuild,
+  update: async (workerId: string, commit: string) => serverGateway?.requestUpdate(workerId, commit) ?? false
+};
+const enrollmentDeps: EnrollmentDeps = {
+  enrollment: store.enrollment,
+  tokens: createTokenIssuer(),
+  settings: store.settings,
+  users: store.users,
+  audit: store.audit,
+  workers: workerControl,
+  now: () => Date.now()
+};
+
 serverGateway = createServerGateway({
   token,
+  authenticate: (hello) => authenticateWorker(enrollmentDeps, hello),
   localSecret: spawnWorker === '1' ? localSecret : null,
   onHello(worker, agents, sessions) {
     catalog.upsert(worker.workerId, agents);
@@ -245,13 +263,14 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
       audit: store.audit,
       now: () => Date.now(),
       sessions: store.sessions,
-      workers: {
-        list: async () => serverGateway?.workers() ?? [],
-        disconnect: async (workerId) => serverGateway?.disconnect(workerId) ?? false,
-        hubBuild: () => hubBuild,
-        update: async (workerId, commit) => serverGateway?.requestUpdate(workerId, commit) ?? false
-      }
-    }
+      workers: workerControl
+    },
+    enrollment: enrollmentDeps
+  },
+  enrollment: {
+    deps: enrollmentDeps,
+    bootstrapScript: join(repoRoot, 'scripts', 'bootstrap-worker.sh'),
+    commit: hubBuild.commit
   }
 });
 
