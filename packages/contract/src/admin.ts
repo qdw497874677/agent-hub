@@ -79,7 +79,3 @@ export const pairingSchema = z.object({
 });
 export type PairingDto = z.infer<typeof pairingSchema>;
 
-/** Worker 拿接入码换专属凭据（install-worker.sh 调用，不走登录态）。 */
-export const enrollRequest = z.object({ code: z.string().min(1).max(200), label: z.string().max(200).optional() });
-export const enrolledSchema = z.object({ workerId: z.string(), credential: z.string() });
-export type EnrolledDto = z.infer<typeof enrolledSchema>;
