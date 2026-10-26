@@ -1,3 +1,4 @@
+import { STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -17,6 +18,7 @@ import {
   ingestAgentSessionRef,
   ingestRuntimeStatus,
   ingestWorkerEvent,
+  flagStalledSessions,
   frameAccepted,
   ingestWorkerOptions,
   reconcileInterrupted,
@@ -251,6 +253,19 @@ serverGateway = createServerGateway({
 
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
+
+// 卡顿巡检：一轮跑着却长时间没新事件，记一条 warn 诊断（卡片上显示提醒，可一键中断）并写日志。
+const stallMs = Number(readEnv('HUB_STALL_MS') ?? 5 * 60_000);
+if (stallMs > 0) {
+  const timer = setInterval(() => {
+    flagStalledSessions(deps, { idleMs: stallMs, marker: STALL_NOTICE_MARKER })
+      .then((ids) => {
+        for (const id of ids) log(`会话 ${id} 已 ${Math.round(stallMs / 60_000)} 分钟以上没有新输出，可能卡住了`);
+      })
+      .catch((failure: unknown) => log(`卡顿巡检失败：${(failure as Error).message}`));
+  }, Math.min(30_000, stallMs));
+  timer.unref();
+}
 
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
   auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },

@@ -39,6 +39,7 @@ export * from './use-cases/delete-project.ts';
 export * from './use-cases/tasks.ts';
 export * from './use-cases/work-log.ts';
 export * from './use-cases/sessions.ts';
+export * from './use-cases/stall.ts';
 export * from './use-cases/canvas.ts';
 export * from './use-cases/search.ts';
 export * from './use-cases/hosting.ts';

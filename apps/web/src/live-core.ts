@@ -1,3 +1,4 @@
+import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 import type { JournalEntryDto, SessionDto, SessionEventDto, StoredAttachmentDto } from '@agent-hub/contract';
 
 /**
@@ -16,6 +17,8 @@ export type Block = Sequenced &
     | { readonly kind: 'text'; readonly text: string }
     | { readonly kind: 'tool'; readonly name: string; readonly input: string; readonly result: ToolResult | null }
     | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number }
+    /** server 卡顿巡检记的提醒；一有新输出就撤掉（见 applyBlocks）。 */
+    | { readonly kind: 'stall'; readonly text: string }
   );
 
 interface ToolResult {
@@ -41,8 +44,24 @@ export interface LiveSession {
 
 export type LiveMap = Readonly<Record<string, LiveSession>>;
 
-/** 会话卡只渲染对话流；diagnostic 与 ended 不进卡片（见 visual-direction §5）。 */
+/**
+ * 会话卡只渲染对话流；diagnostic 与 ended 不进卡片（见 visual-direction §5）。
+ * 例外是卡顿提醒：它挂在末尾提示「可以中断」，之后来了任何事件就撤掉——卡顿已经过去了。
+ */
 export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
+  if (event.kind === 'diagnostic') {
+    return event.text.startsWith(STALL_NOTICE_MARKER)
+      ? [...withoutStall(blocks), { kind: 'stall', text: event.text, seq }]
+      : blocks;
+  }
+  return foldBlocks(withoutStall(blocks), event, seq);
+}
+
+function withoutStall(blocks: readonly Block[]): readonly Block[] {
+  return blocks[blocks.length - 1]?.kind === 'stall' ? blocks.slice(0, -1) : blocks;
+}
+
+function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   switch (event.kind) {
     case 'prompt':
       return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], seq }];
