@@ -142,6 +142,15 @@ test('权限、校验与限流：body 必须是字符串；旧版的 kind 参数
   const review = await w.gateway.call(full, 'task.update_status', { status: 'in_review', note: '可以验收' });
   assert.ok(review.ok);
   assert.equal((await w.deps.tasks.byId(w.task.id))?.status, 'in_review');
+  assert.equal((review.value as { changed: boolean }).changed, true);
+  // 系统日志点名是哪个 agent 改的，并挂在它的会话上
+  const logged = (await w.deps.workLog.list(w.task.id, { limit: 5 })).find((e) => /待验收/.test(e.body));
+  assert.match(logged?.body ?? '', /^agent fake/);
+  assert.equal(logged?.sessionId, w.session.id);
+  // 重复设同一个状态：明确告诉模型「没变」，免得它反复重试
+  const again = await w.gateway.call(full, 'task.update_status', { status: 'in_review' });
+  assert.ok(again.ok);
+  assert.equal((again.value as { changed: boolean }).changed, false);
 
   // 上面那次被拒的 append 也算一次 append：再来 9 次刚好用满 10 次/分钟
   assert.ok((await w.gateway.call(full, 'task.log.append', { kind: 'handoff', body: '旧客户端带 kind' })).ok);
