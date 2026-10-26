@@ -5,6 +5,7 @@ import { inMemoryAdmin, inMemoryDeps, inMemoryEnrollment } from '@agent-hub/doma
 import type { WorkerStatus } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
+import { createWorkerEnroll } from './worker-enroll.ts';
 
 const bootstrapScript = fileURLToPath(new URL('../../../scripts/bootstrap-worker.sh', import.meta.url));
 
@@ -18,7 +19,7 @@ function harness() {
     token: null,
     auth: { accounts: admin.accounts, hubToken: null },
     admin: { deps: admin.deps, enrollment: enrollment.deps },
-    enrollment: { deps: enrollment.deps, bootstrapScript, commit: 'abc1234', enrollRateMax: 3 }
+    enrollment: { deps: enrollment.deps, bootstrapScript, commit: 'abc1234' }
   });
   const raw = (path: string, init: RequestInit = {}) => app.fetch(new Request(`http://hub:7878${path}`, init));
   const browser = () => {
@@ -35,13 +36,12 @@ function harness() {
       return { status: response.status, body: (await response.json().catch(() => null)) as any };
     };
   };
+  // 兑换走 /worker 长连接的 enroll 握手；这里直接测组合根给网关的那个 hook（握手本身见 node-gateway 测试）。
+  const wsEnroll = createWorkerEnroll(enrollment.deps, { rateMax: 3 });
   const enroll = async (code: string) => {
-    const response = await raw('/api/workers/enroll', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ code, label: '书房' })
-    });
-    return { status: response.status, body: (await response.json()) as any };
+    const result = await wsEnroll({ code, label: '书房', address: '10.0.0.9' });
+    if (result.ok) return { status: 200, body: result as any };
+    return { status: /频繁/.test(result.reason) ? 429 : 400, body: result as any };
   };
   return { admin, enrollment, raw, browser, enroll };
 }
@@ -68,6 +68,9 @@ test('添加机器：登录的人拿到一行命令；新机器不登录也能�
   assert.equal(enrolled.status, 200);
   assert.match(enrolled.body.credential, /^ahw_/);
   assert.equal((await h.enroll(pairing.body.code)).status, 400);
+  // 旧的 HTTP 兑换口已经拿掉：不登录访问就是 401，不再是开放入口
+  const legacy = await h.raw('/api/workers/enroll', { method: 'POST', body: '{}', headers: { 'content-type': 'application/json' } });
+  assert.notEqual(legacy.status, 200);
 });
 
 test('兑换按 IP 限流；乱写的码 400', async () => {

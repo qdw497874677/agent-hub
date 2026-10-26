@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +8,7 @@ import { loginByApi } from './login.ts';
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 
 /**
- * 添加机器的整条路：控制台签码 → 新机器凭码换凭据 → 用专属凭据连上（对话框里显示已连上）
+ * 添加机器的整条路：控制台签码 → 新机器经 /worker 长连接凭码换凭据 → 用专属凭据连上（对话框里显示已连上）
  * → 在机器面板里吊销 → 那台立刻断开、不再重连、码也不能再用。
  */
 test('添加机器：一行命令、倒计时、凭码接入、吊销后断开', async ({ page, baseURL }) => {
@@ -28,12 +28,23 @@ test('添加机器：一行命令、倒计时、凭码接入、吊销后断开',
   const script = await page.request.get('/install-worker.sh');
   expect(await script.text()).toContain(`HUB_HTTP="\${HUB_HTTP:-${baseURL}}"`);
 
-  // 新机器那一侧：不带任何登录态，凭码换凭据
+  // 新机器那一侧：不带任何登录态，跑安装脚本用的同一个 CLI，经 /worker 长连接凭码换凭据
+  const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
+  const enroll = (pair: string) =>
+    spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], {
+      env: { PATH: process.env['PATH'] ?? '', HUB_URL: hubUrl, HUB_PAIR: pair, WORKER_LABEL: 'e2e 新机器' },
+      encoding: 'utf8'
+    });
+  const enrolled = enroll(code);
+  expect(enrolled.status).toBe(0);
+  const [workerId = '', credential = ''] = enrolled.stdout.trim().split('\n');
+  expect(credential).toMatch(/^ahw_/);
+  const reused = enroll(code);
+  expect(reused.status).toBe(1);
+  expect(reused.stdout).toBe('');
+  // 旧的 HTTP 兑换口已拿掉
   const machine = await apiRequest.newContext({ baseURL });
-  const enrolled = await machine.post('/api/workers/enroll', { data: { code, label: 'e2e 新机器' } });
-  expect(enrolled.ok()).toBe(true);
-  const { workerId, credential } = (await enrolled.json()) as { workerId: string; credential: string };
-  expect((await machine.post('/api/workers/enroll', { data: { code } })).status()).toBe(400);
+  expect((await machine.post('/api/workers/enroll', { data: { code, label: 'x' } })).ok()).toBe(false);
 
   const state = mkdtempSync(join(tmpdir(), 'hub-e2e-worker-'));
   let worker: ChildProcess | null = null;
@@ -42,7 +53,7 @@ test('添加机器：一行命令、倒计时、凭码接入、吊销后断开',
       env: {
         PATH: process.env['PATH'] ?? '',
         HOME: state,
-        HUB_URL: `${baseURL!.replace(/^http/, 'ws')}/worker`,
+        HUB_URL: hubUrl,
         HUB_WORKER_CREDENTIAL: credential,
         WORKER_ID: workerId,
         WORKER_ORIGIN: 'remote',

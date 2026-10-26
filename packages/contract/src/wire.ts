@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { rpcFrameSchema } from './rpc/frames.ts';
 
 /**
  * 线上格式。Zod 定义边界，`z.infer` 出类型——只有一份真源。
@@ -338,7 +339,7 @@ export const sessionStreamFrameSchema = z.object({
  * Worker 通道的协议版本。帧格式有不兼容的改动才加一；hub 只接受同一个协议版本的 Worker，
  * 不一致时用关闭码 4426 拒绝并说明原因（Worker 收到后停止重连，提示手动更新）。
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
@@ -382,43 +383,6 @@ export const workerHelloSchema = z.object({
   sessions: z.array(id).default([]),
   /** 这台 Worker 跑的代码版本；老 Worker 不报，按「过期」显示。 */
   build: buildInfoSchema.optional()
-});
-
-/** 目录浏览的回复：按 requestId 对上 server 的那次请求。 */
-export const workerDirectoriesSchema = z.object({
-  type: z.literal('directories'),
-  requestId: z.string(),
-  path: z.string(),
-  exists: z.boolean(),
-  entries: z.array(
-    z.object({ name: z.string(), path: z.string(), isGit: z.boolean().optional(), modifiedAt: z.number().optional() })
-  ),
-  error: z.string().optional()
-});
-
-/** 新建文件夹的回复：成功给新目录的绝对路径，失败给 error。 */
-export const workerMadeDirectorySchema = z.object({
-  type: z.literal('made_directory'),
-  requestId: z.string(),
-  path: z.string(),
-  error: z.string().optional()
-});
-
-/** `@` 引用选择器要的文件清单（相对项目根），由项目所在的那台 Worker 扫。 */
-export const workerFilesSchema = z.object({
-  type: z.literal('files'),
-  requestId: z.string(),
-  files: z.array(z.string()).default([]),
-  truncated: z.boolean().default(false),
-  error: z.string().optional()
-});
-
-/** 读一个文件的回复（附件缩略图）。`data` 为 null = 文件不存在。 */
-export const workerFileSchema = z.object({
-  type: z.literal('file'),
-  requestId: z.string(),
-  data: z.string().nullable().default(null),
-  error: z.string().optional()
 });
 
 export const workerEventSchema = z.object({
@@ -523,37 +487,39 @@ export const workerStatusSchema = z.object({
   reason: z.string().optional()
 });
 
+/** 承载 RPC 通道的信封（见 rpc/）：MCP 中转、目录 / 文件这类请求-回复都走它，不再各自造帧。 */
+export const workerRpcSchema = z.object({ type: z.literal('rpc'), frame: rpcFrameSchema });
+
 /**
- * 工具调用经 worker 链路转发（stdio-shim 模式，P4）：agent 连不到 hub 的 HTTP 时，
- * 它调 worker 本地的 MCP 入口，worker 把调用塞进这条已有的 WebSocket 发给 hub。
- * 令牌随帧走（hub 按令牌认人），两边都不打日志。工具名是线上名（task_get）。
+ * 接入握手：新机器连上 /worker 的第一帧不是 hello 而是 enroll，拿一次性配对码换专属凭据。
+ * hub 回 `enrolled` 后关闭这条连接；worker 存好凭据再用 hello 正式连。
  */
-export const workerToolRequestSchema = z.object({
-  type: z.literal('tool_request'),
-  requestId: z.string().min(1),
-  token: z.string().min(1),
-  op: z.enum(['list', 'call']),
-  name: z.string().optional(),
-  args: z.record(z.string(), z.unknown()).optional()
+export const workerEnrollSchema = z.object({
+  type: z.literal('enroll'),
+  code: z.string().min(1),
+  label: z.string().min(1).max(80),
+  host: z.object({ hostname: z.string(), platform: z.string(), arch: z.string() }).optional(),
+  protocol: z.number().int().optional()
 });
 
 export const workerToServerSchema = z.discriminatedUnion('type', [
-  workerToolRequestSchema,
   workerHelloSchema,
+  workerEnrollSchema,
+  workerRpcSchema,
   workerEventSchema,
   workerAgentSessionSchema,
   workerOptionsSchema,
   workerStatusSchema,
-  workerDirectoriesSchema,
-  workerMadeDirectorySchema,
-  workerFilesSchema,
-  workerFileSchema,
   workerUpdateStatusSchema
 ]);
 
+/**
+ * relay（默认）：agent 连 worker 本机的 MCP 入口，worker 经 /worker 长连接的 RPC 通道转给 hub，url 由 worker 填。
+ * http（HUB_TOOLS_TRANSPORT=http，已弃用）：agent 直连 hub 的 /mcp。
+ */
 export const toolAccessSchema = z.object({
-  transport: z.enum(['http', 'stdio-shim']),
-  url: z.string().min(1),
+  transport: z.enum(['relay', 'http']),
+  url: z.string().default(''),
   token: z.string().min(1)
 });
 
@@ -573,56 +539,10 @@ export const startSessionCommandSchema = z.object({
   tools: toolAccessSchema.optional()
 });
 
-/** 不属于任何会话的请求（目录浏览）。和会话指令分开，免得 worker 把它当成「未知会话」。 */
-export const listDirectoriesCommandSchema = z.object({
-  kind: z.literal('list_directories'),
-  requestId: z.string(),
-  /** 空串 = 这台机器的默认起点（roots[0]）。 */
-  path: z.string()
-});
-
-/** 在 parent 下建一层文件夹 name（目录选择器里的「新建文件夹」）。Worker 用 realpath 校验仍在 WORKER_ROOTS 里。 */
-export const makeDirectoryCommandSchema = z.object({
-  kind: z.literal('make_directory'),
-  requestId: z.string(),
-  parent: z.string(),
-  name: z.string()
-});
-
-/** 列项目里的文件（`@` 引用）。`root` 是那台机器上的项目目录。 */
-export const listFilesCommandSchema = z.object({
-  kind: z.literal('list_files'),
-  requestId: z.string(),
-  root: z.string(),
-  limit: z.number().int().positive()
-});
-
-/** 读一个文件（只用于这条会话自己的附件），超过 maxBytes 由 Worker 拒。 */
-export const readFileCommandSchema = z.object({
-  kind: z.literal('read_file'),
-  requestId: z.string(),
-  path: z.string(),
-  maxBytes: z.number().int().positive()
-});
-
-/** hub 对 tool_request 的答复：list 给 tools，call 给 value（JSON），失败给 error。 */
-export const toolResponseCommandSchema = z.object({
-  kind: z.literal('tool_response'),
-  requestId: z.string(),
-  ok: z.boolean(),
-  tools: z
-    .array(z.object({ name: z.string(), description: z.string(), inputSchema: z.record(z.string(), z.unknown()) }))
-    .optional(),
-  value: z.unknown().optional(),
-  error: z.string().optional()
-});
-
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
-  toolResponseCommandSchema,
-  listDirectoriesCommandSchema,
-  makeDirectoryCommandSchema,
-  listFilesCommandSchema,
-  readFileCommandSchema,
+  z.object({ kind: z.literal('rpc'), frame: rpcFrameSchema }),
+  /** 配对码换到的专属凭据：只出现在 enroll 握手的那条连接上，发完就关。 */
+  z.object({ kind: z.literal('enrolled'), workerId: id, credential: z.string().min(1) }),
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
@@ -676,5 +596,3 @@ export type SessionStreamFrame = z.infer<typeof sessionStreamFrameSchema>;
 export type WorkerToServer = z.infer<typeof workerToServerSchema>;
 export type ServerToWorker = z.infer<typeof serverToWorkerSchema>;
 
-export type ToolRequestFrame = z.infer<typeof workerToolRequestSchema>;
-export type ToolResponseCommand = z.infer<typeof toolResponseCommandSchema>;

@@ -109,12 +109,12 @@ export const HUB_MCP_SERVER = 'agent-hub';
 
 /**
  * session/new|load 的 mcpServers：hub 能力层。
- * http：agent 直连 hub，令牌放 Authorization 头（不放 URL，免得进访问日志）。
- * stdio-shim：worker 起本地 stdio 进程转发（P4），令牌走环境变量。
+ * relay（默认）：URL 已被 worker 换成它本机的 MCP 入口；会 HTTP MCP 的 agent 直连它，否则给 stdio 垫片。
+ * http（已弃用）：agent 直连 hub，令牌放 Authorization 头（不放 URL，免得进访问日志）。
  * agent 没声明 http 能力就不给——宁可没有工具，也不让握手失败。
  */
 export function mcpServersFor(
-  tools: { transport: 'http' | 'stdio-shim'; url: string; token: string } | undefined,
+  tools: { transport: 'relay' | 'http'; url: string; token: string } | undefined,
   caps: { http: boolean },
   shim?: { command: string; args: readonly string[] }
 ): Record<string, unknown>[] {
@@ -135,9 +135,7 @@ export function mcpServersFor(
         }
       ]
     : [];
-  // stdio-shim：优先垫片；没垫片但 agent 会 HTTP，就直连 worker 本地 relay（URL 已被换成它）。
-  if (tools.transport === 'stdio-shim') return stdio.length > 0 ? stdio : caps.http ? http : [];
-  // http：agent 没声明 http 能力时，有垫片就退到垫片（stdio 是 ACP 必须支持的）。
+  // 两种模式同一条规则：会 HTTP MCP 就直连（少一个进程），否则退到垫片（stdio 是 ACP 必须支持的）。
   return caps.http ? http : stdio;
 }
 

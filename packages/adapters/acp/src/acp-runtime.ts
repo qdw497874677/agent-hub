@@ -214,7 +214,7 @@ export interface AcpRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** agent 报上来的可调项（含当前值），worker 用它告诉 server。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
-  /** stdio MCP 垫片（`node mcp-shim.ts`）：stdio-shim 模式、或 agent 不会 HTTP MCP 时用。 */
+  /** stdio MCP 垫片（`node mcp-shim.ts`）：Pi 一直用；ACP agent 不会 HTTP MCP 时用。 */
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
 }
 

@@ -7,7 +7,8 @@ import { mkdir } from 'node:fs/promises';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
-import { answerToolRequest } from './tool-relay.ts';
+import { serveMcpRelay } from './mcp-relay.ts';
+import { createWorkerEnroll } from './worker-enroll.ts';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { Deps, EnrollmentDeps, SessionId, ToolGateway } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess } from '@agent-hub/domain';
@@ -114,14 +115,17 @@ const deps: Deps = {
 
 const log = (message: string) => console.log(`[hub] ${message}`);
 
-// 能力层：agent 经 MCP 回调 hub 的工具。HUB_TOOLS=0 关掉；HUB_TOOLS_URL 给 worker 不在本机时用。
+// 能力层：agent 经 MCP 回调 hub 的工具。HUB_TOOLS=0 关掉。
+// 默认 relay：agent 连 worker 本机的入口，经 /worker 长连接到 hub，hub 不开 HTTP /mcp。
+// HUB_TOOLS_TRANSPORT=http（已弃用）才挂 /mcp 让 agent 直连；HUB_TOOLS_URL 给那种模式下 worker 不在本机时用。
+const directMcp = readEnv('HUB_TOOLS_TRANSPORT') === 'http';
 const toolEndpoint =
   readEnv('HUB_TOOLS') === '0'
     ? null
-    : {
-        url: readEnv('HUB_TOOLS_URL') ?? `http://127.0.0.1:${port}/mcp`,
-        transport: readEnv('HUB_TOOLS_TRANSPORT') === 'stdio-shim' ? ('stdio-shim' as const) : ('http' as const)
-      };
+    : directMcp
+      ? { url: readEnv('HUB_TOOLS_URL') ?? `http://127.0.0.1:${port}/mcp`, transport: 'http' as const }
+      : { url: '', transport: 'relay' as const };
+if (directMcp) log('HUB_TOOLS_TRANSPORT=http 已弃用：agent 将直连 /mcp，而不是经 worker 长连接');
 toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
@@ -240,10 +244,12 @@ serverGateway = createServerGateway({
     workerGone(deps, workerId);
     log(`worker 离线：${workerId}（${reason}）`);
   },
-  onToolRequest(workerId, request) {
-    if (!toolGateway) return Promise.resolve({ ok: false, error: 'hub 没开工具（HUB_TOOLS=0）' });
-    return answerToolRequest(toolGateway, workerId, request);
+  // 每条认证过的长连接：挂上 MCP 中转（RPC 端口 → MCP 服务端 → ToolGateway），绑定这台 Worker。
+  serve(workerId, channel) {
+    if (!toolGateway) return;
+    serveMcpRelay(channel, workerId, { gateway: toolGateway, hostOf: (sessionId) => serverGateway?.hostOf(sessionId) ?? null });
   },
+  enroll: createWorkerEnroll(enrollmentDeps, { rateMax: Number(readEnv('HUB_ENROLL_RATE_MAX') ?? 10) }),
   onUpdateStatus(workerId, update) {
     log(`worker ${workerId} 更新：${update.state} ${update.message}`);
   },
@@ -253,7 +259,7 @@ serverGateway = createServerGateway({
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
 
-const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, tools: toolGateway,
+const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, tools: directMcp ? toolGateway : null,
   auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },
   admin: {
     deps: {

@@ -161,14 +161,14 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
  */
 export async function withToolAccess(
   gateway: ToolGateway,
-  endpoint: { readonly url: string; readonly transport?: 'http' | 'stdio-shim' } | null,
+  endpoint: { readonly url: string; readonly transport: 'relay' | 'http' } | null,
   command: WorkerCommand
 ): Promise<WorkerCommand> {
   if (endpoint === null) return command;
   try {
     if (command.kind === 'start_session') {
       const { token } = await gateway.issue({ id: command.sessionId, taskId: asTaskId(command.taskId), workerId: command.workerId });
-      return { ...command, tools: { transport: endpoint.transport ?? 'http', url: endpoint.url, token } };
+      return { ...command, tools: { transport: endpoint.transport, url: endpoint.url, token } };
     }
     if (command.kind === 'dispose') await gateway.revoke({ id: command.sessionId });
   } catch {

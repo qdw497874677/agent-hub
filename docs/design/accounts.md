@@ -149,7 +149,7 @@ HTTP 层（apps/server）只做：解析 cookie / header → 调 `authenticate` 
 - `SameSite=Lax` + Origin + 双提交，三层。
 
 ### 7.4 Worker 接入重做（取代共享 `HUB_TOKEN`）
-> 已实现，落地细节见 [worker-enrollment.md](worker-enrollment.md)。与下面草案的差异：配对码改为走 HTTP `POST /api/workers/enroll` 兑换（而不是 hello 里带 `pairToken`），命令改为 `curl …/install-worker.sh | HUB_PAIR=… bash`；共享 `HUB_TOKEN` 保留为兜底。
+> 已实现，落地细节见 [worker-enrollment.md](worker-enrollment.md)。与下面草案的差异：配对码经 `/worker` 长连接的 `enroll` 握手帧兑换（不是 hello 里带 `pairToken`；早期的 HTTP `POST /api/workers/enroll` 已拿掉），命令改为 `curl …/install-worker.sh | HUB_PAIR=… bash`；共享 `HUB_TOKEN` 保留为兜底。
 
 现状：所有 Worker 和浏览器共用一个 `HUB_TOKEN`，泄露一次全部失守、无法单独吊销。
 

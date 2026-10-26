@@ -37,11 +37,12 @@ export function grantActive(grant: ToolGrant, now: number): boolean {
 }
 
 /**
- * 交给 worker / agent 的连接方式。http = agent 直连 hub 的 Streamable HTTP MCP；
- * stdio-shim = worker 起一个 stdio MCP 进程，经 WS 链路转发（P4 兜底）。
+ * 交给 worker / agent 的连接方式（只是个值，领域不认识任何传输）。
+ * relay（默认）= agent 连 worker 本机的 MCP 入口，由 worker 经它与 hub 的长连接中转；url 由 worker 填。
+ * http（已弃用，需显式开）= agent 直连 hub 的 Streamable HTTP MCP。
  */
 export interface ToolAccess {
-  readonly transport: 'http' | 'stdio-shim';
+  readonly transport: 'relay' | 'http';
   readonly url: string;
   readonly token: string;
 }

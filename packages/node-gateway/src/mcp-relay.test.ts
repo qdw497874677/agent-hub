@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { AsyncQueue, type ToolRequestFrame } from '@agent-hub/contract';
+import { AsyncQueue, RpcFailure, mcpMessage } from '@agent-hub/contract';
 import {
   CAPABILITY_NAMES,
   available,
@@ -51,6 +51,23 @@ function idleRuntime(seen: StartSpec[]): AgentRuntime {
   };
 }
 
+/** 假的 hub 侧 MCP 服务：只认 grant-1，回 initialize / tools/list / tools/call。 */
+function fakeMcp(message: Record<string, unknown>): Record<string, unknown> | null {
+  const id = message['id'];
+  if (id === undefined) return null;
+  const params = (message['params'] ?? {}) as Record<string, unknown>;
+  switch (message['method']) {
+    case 'initialize':
+      return { jsonrpc: '2.0', id, result: { protocolVersion: params['protocolVersion'], capabilities: { tools: {} }, serverInfo: { name: 'fake', version: '1' } } };
+    case 'tools/list':
+      return { jsonrpc: '2.0', id, result: { tools: [{ name: 'task_get', description: '读任务', inputSchema: { type: 'object', properties: {} } }] } };
+    case 'tools/call':
+      return { jsonrpc: '2.0', id, result: { content: [], structuredContent: { echoed: params['name'], args: params['arguments'] } } };
+    default:
+      return { jsonrpc: '2.0', id, error: { code: -32601, message: 'no' } };
+  }
+}
+
 async function until(predicate: () => boolean): Promise<void> {
   const deadline = Date.now() + 3000;
   while (!predicate()) {
@@ -59,8 +76,8 @@ async function until(predicate: () => boolean): Promise<void> {
   }
 }
 
-test('stdio-shim：URL 换成 worker 本地 relay；MCP list/call 经 WebSocket 到 hub，按令牌认人', async () => {
-  const requests: { workerId: string; request: ToolRequestFrame }[] = [];
+test('relay：URL 换成 worker 本地入口；MCP 消息经 /worker 长连接上的 RPC 通道到 hub，按令牌认人', async () => {
+  const requests: { workerId: string; token: string }[] = [];
   let online = false;
   const gateway = createServerGateway({
     token: 't0k',
@@ -70,13 +87,12 @@ test('stdio-shim：URL 换成 worker 本地 relay；MCP list/call 经 WebSocket 
     onOptions: () => {},
     onStatus: () => {},
     onWorkerGone: () => {},
-    async onToolRequest(workerId, request) {
-      requests.push({ workerId, request });
-      if (request.token !== 'grant-1') return { ok: false, error: '工具令牌无效或已过期' };
-      if (request.op === 'list') {
-        return { ok: true, tools: [{ name: 'task_get', description: '读任务', inputSchema: { type: 'object', properties: {} } }] };
-      }
-      return { ok: true, value: { echoed: request.name, args: request.args } };
+    serve(workerId, channel) {
+      channel.handle(mcpMessage, async ({ token, message }) => {
+        requests.push({ workerId, token });
+        if (token !== 'grant-1') throw new RpcFailure('forbidden', '工具令牌无效或已过期');
+        return { message: fakeMcp(message) };
+      });
     }
   });
   const http = createServer();
@@ -102,11 +118,11 @@ test('stdio-shim：URL 换成 worker 本地 relay；MCP list/call 经 WebSocket 
     origin: { kind: 'derive' },
     resume: null,
     options: {},
-    tools: { transport: 'stdio-shim', url: 'http://unreachable-hub/mcp', token: 'grant-1' }
+    tools: { transport: 'relay', url: '', token: 'grant-1' }
   } as Parameters<typeof gateway.gateway.dispatch>[0]);
   await until(() => seen.length === 1);
   const tools = seen[0]?.tools;
-  assert.equal(tools?.transport, 'stdio-shim');
+  assert.equal(tools?.transport, 'relay');
   assert.match(tools?.url ?? '', /^http:\/\/127\.0\.0\.1:\d+\/mcp$/);
   assert.equal(tools?.token, 'grant-1');
 
@@ -122,11 +138,11 @@ test('stdio-shim：URL 换成 worker 本地 relay；MCP list/call 经 WebSocket 
   assert.ok(requests.every((entry) => entry.workerId === 'w1'));
 
   const intruder = new Client({ name: 'test', version: '1' });
-  await intruder.connect(
-    new StreamableHTTPClientTransport(new URL(tools?.url ?? ''), { requestInit: { headers: { Authorization: 'Bearer nope' } } })
+  await assert.rejects(
+    intruder.connect(
+      new StreamableHTTPClientTransport(new URL(tools?.url ?? ''), { requestInit: { headers: { Authorization: 'Bearer nope' } } })
+    )
   );
-  const denied = await intruder.callTool({ name: 'task_get', arguments: {} });
-  assert.equal(denied.isError, true);
   await intruder.close();
 
   const anonymous = await fetch(tools?.url ?? '', { method: 'POST', body: '{}' });

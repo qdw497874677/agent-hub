@@ -88,7 +88,7 @@ export interface AppOptions {
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
   /** 能力层：给了就挂 /mcp（工具令牌鉴权，不走登录态）。 */
-  readonly tools?: ToolGateway;
+  readonly tools?: ToolGateway | null;
 }
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; response: Response };

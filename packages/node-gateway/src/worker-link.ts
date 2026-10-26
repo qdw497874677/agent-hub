@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, createRpcChannel, serverToWorkerSchema } from '@agent-hub/contract';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type {
   AgentRuntime,
@@ -13,7 +13,8 @@ import type {
 import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
 import type { UpdateReport } from './updater.ts';
-import { createToolRelay, type ToolRelayReply } from './tool-relay.ts';
+import { createMcpEndpoint } from './mcp-endpoint.ts';
+import { serveWorkerFiles } from './worker-fs-rpc.ts';
 
 export interface WorkerLinkOptions {
   readonly url: string;
@@ -58,7 +59,7 @@ export interface WorkerLinkOptions {
    * hub 让它更新到某个提交。`report` 把进度回给 hub。不给就一律回「不支持远程更新」。
    * 同一时间只跑一次：正在更新时再来的指令直接拒绝。
    */
-  /** 经链路转发的工具调用等 hub 答复的上限（stdio-shim 模式）。 */
+  /** 经长连接中转的工具调用等 hub 答复的上限。 */
   readonly toolTimeoutMs?: number;
   readonly onUpdate?: (commit: string, report: (status: UpdateReport) => void) => Promise<void>;
 }
@@ -77,7 +78,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'list_directories' | 'make_directory' | 'list_files' | 'read_file' | 'update' | 'tool_response' }
+  { kind: 'update' | 'rpc' | 'enrolled' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -106,30 +107,21 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   let updating = false;
 
   /**
-   * stdio-shim 模式的工具中转：agent 调本地 relay，relay 经这条 WebSocket 问 hub。
-   * 不进 outbox：断线时直接失败，比连回来后补发一个早已超时的调用诚实。
+   * 这条长连接上的 RPC 通道（端口的实现）。hub→worker 的 fs.*、worker→hub 的 mcp.message 都走它。
+   * 不进 outbox：断线时在途调用直接以 closed 结束，比连回来后补发一个早已超时的调用诚实。
    */
-  const toolCalls = new Map<string, { resolve: (reply: ToolRelayReply) => void; timer: NodeJS.Timeout }>();
-  let toolSeq = 0;
-  const TOOL_TIMEOUT_MS = options.toolTimeoutMs ?? 60_000;
-  const relay = createToolRelay(
-    (request) =>
-      new Promise<ToolRelayReply>((resolve) => {
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
-          resolve({ ok: false, error: '与 hub 断开了，工具暂不可用' });
-          return;
-        }
-        toolSeq += 1;
-        const requestId = `t${toolSeq}`;
-        const timer = setTimeout(() => {
-          toolCalls.delete(requestId);
-          resolve({ ok: false, error: '工具调用超时' });
-        }, TOOL_TIMEOUT_MS);
-        timer.unref?.();
-        toolCalls.set(requestId, { resolve, timer });
-        socket.send(JSON.stringify({ type: 'tool_request', requestId, ...request } satisfies WorkerToServer));
-      })
-  );
+  const channel = createRpcChannel({
+    idPrefix: 'w',
+    timeoutMs: options.toolTimeoutMs ?? 60_000,
+    send: (frame) => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+      socket.send(JSON.stringify({ type: 'rpc', frame } satisfies WorkerToServer));
+      return true;
+    }
+  });
+  serveWorkerFiles(channel, options.files, options.roots ?? []);
+  /** agent 连的本机 MCP 入口：薄适配器，只把 JSON-RPC 经通道交给 hub。 */
+  const mcpEndpoint = createMcpEndpoint(channel);
 
   const send = (frame: WorkerToServer): void => {
     if (socket && socket.readyState === WebSocket.OPEN) {
@@ -191,11 +183,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     current.on('close', (code: number, reason: Buffer) => {
       if (watchdog) clearTimeout(watchdog);
       if (socket === current) socket = null;
-      for (const waiting of toolCalls.values()) {
-        clearTimeout(waiting.timer);
-        waiting.resolve({ ok: false, error: '与 hub 断开了，工具调用没有完成' });
-      }
-      toolCalls.clear();
+      if (socket === null) channel.close('与 hub 断开了，调用没有完成');
       if (code === PROTOCOL_MISMATCH_CLOSE) {
         // 协议对不上：重连也没用，把 hub 给的原因原样打出来，告诉人怎么修。
         options.onLog?.(`${reason.toString() || '与 hub 的协议版本不兼容'}。不再重连`);
@@ -243,19 +231,9 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         return;
       }
       const command = parsed.data as ServerToWorker;
-      if (command.kind === 'list_directories') void listDirectories(command.requestId, command.path);
-      else if (command.kind === 'make_directory') void makeDirectory(command.requestId, command.parent, command.name);
-      else if (command.kind === 'list_files') void listFiles(command.requestId, command.root, command.limit);
-      else if (command.kind === 'read_file') void readFile(command.requestId, command.path, command.maxBytes);
+      if (command.kind === 'rpc') channel.receive(command.frame);
       else if (command.kind === 'update') void update(command.commit);
-      else if (command.kind === 'tool_response') {
-        const waiting = toolCalls.get(command.requestId);
-        if (!waiting) return;
-        clearTimeout(waiting.timer);
-        toolCalls.delete(command.requestId);
-        const { kind: _kind, requestId: _id, ...reply } = command;
-        waiting.resolve(reply);
-      }
+      else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
       else void handle(command);
     });
   }
@@ -273,34 +251,6 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       report({ state: 'failed', message: `更新出错：${message(error)}`, logTail: '' });
     } finally {
       updating = false;
-    }
-  }
-
-  async function makeDirectory(requestId: string, parent: string, name: string): Promise<void> {
-    if (!options.files) return send({ type: 'made_directory', requestId, path: '', error: '这台 Worker 不支持新建文件夹' });
-    try {
-      send({ type: 'made_directory', requestId, path: await options.files.makeDirectory(parent, name) });
-    } catch (error) {
-      send({ type: 'made_directory', requestId, path: '', error: message(error) });
-    }
-  }
-
-  async function listFiles(requestId: string, root: string, limit: number): Promise<void> {
-    if (!options.files) return send({ type: 'files', requestId, files: [], truncated: false, error: '这台 Worker 不支持列文件' });
-    try {
-      send({ type: 'files', requestId, ...(await options.files.listFiles(root, limit)) });
-    } catch (error) {
-      send({ type: 'files', requestId, files: [], truncated: false, error: message(error) });
-    }
-  }
-
-  async function readFile(requestId: string, path: string, maxBytes: number): Promise<void> {
-    if (!options.files) return send({ type: 'file', requestId, data: null, error: '这台 Worker 不支持读文件' });
-    try {
-      const bytes = await options.files.readFile(path, maxBytes);
-      send({ type: 'file', requestId, data: bytes === null ? null : Buffer.from(bytes).toString('base64') });
-    } catch (error) {
-      send({ type: 'file', requestId, data: null, error: message(error) });
     }
   }
 
@@ -322,27 +272,6 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (absolute === null) return event;
     const bytes = await options.files.stat(absolute);
     return bytes === null ? event : { ...event, bytes };
-  }
-
-  async function listDirectories(requestId: string, path: string): Promise<void> {
-    const target = path === '' ? (options.files?.roots[0] ?? options.roots?.[0] ?? '/') : path;
-    if (!options.files) {
-      send({ type: 'directories', requestId, path: target, exists: false, entries: [], error: '这台 Worker 不支持浏览目录' });
-      return;
-    }
-    try {
-      const listed = await options.files.listDirectories(target);
-      send({ type: 'directories', requestId, ...listed });
-    } catch (error) {
-      send({
-        type: 'directories',
-        requestId,
-        path: target,
-        exists: false,
-        entries: [],
-        error: error instanceof Error ? error.message : String(error)
-      });
-    }
   }
 
   connect();
@@ -422,10 +351,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     sessions.delete(sessionId);
   }
 
-  /** stdio-shim：把 URL 换成本机 relay（hub 的 HTTP 对 agent 可能不可达），令牌不变。 */
+  /** relay（默认）：URL 填成本机 MCP 入口，令牌不变；http（已弃用）原样给 agent 直连 hub。 */
   async function toolAccess(tools: NonNullable<StartSpec['tools']>): Promise<NonNullable<StartSpec['tools']>> {
-    if (tools.transport !== 'stdio-shim') return tools;
-    return { ...tools, url: await relay.url() };
+    if (tools.transport !== 'relay') return tools;
+    return { ...tools, url: await mcpEndpoint.url() };
   }
 
   async function startSession(command: Extract<ServerToWorker, { kind: 'start_session' }>): Promise<void> {
@@ -517,12 +446,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (watchdog) clearTimeout(watchdog);
-      for (const waiting of toolCalls.values()) {
-        clearTimeout(waiting.timer);
-        waiting.resolve({ ok: false, error: 'worker 正在退出' });
-      }
-      toolCalls.clear();
-      await relay.close();
+      channel.close('worker 正在退出');
+      await mcpEndpoint.close();
       for (const session of sessions.values()) await session.dispose();
       sessions.clear();
       if (socket) socket.close();

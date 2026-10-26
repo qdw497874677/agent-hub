@@ -55,18 +55,9 @@ npm install --no-fund --no-audit --omit=dev
 label="${WORKER_LABEL:-$(hostname)}"
 credential=""
 if [[ -n "${HUB_PAIR:-}" ]]; then
-  echo "==> 用接入码向 $HUB_HTTP 换专属凭据"
-  # 走 node 的 fetch：不依赖 jq；码和凭据都只经环境变量 / 管道，不出现在命令行和日志里。
-  enrolled="$(HUB_HTTP="$HUB_HTTP" HUB_PAIR="$HUB_PAIR" WORKER_LABEL="$label" "$node_bin" --input-type=module -e '
-    const res = await fetch(`${process.env.HUB_HTTP}/api/workers/enroll`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: process.env.HUB_PAIR, label: process.env.WORKER_LABEL })
-    }).catch((e) => { console.error(`连不上 hub：${e.message}`); process.exit(1); });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) { console.error(body?.error?.message ?? `hub 返回 ${res.status}`); process.exit(1); }
-    console.log(`${body.workerId}\n${body.credential}`);
-  ')"
+  echo "==> 用接入码经长连接 $HUB_URL 换专属凭据"
+  # 走 /worker 长连接的 enroll 握手；码和凭据都只经环境变量 / 管道，不出现在命令行和日志里。
+  enrolled="$(HUB_URL="$HUB_URL" HUB_PAIR="$HUB_PAIR" WORKER_LABEL="$label" "$node_bin" "$here/apps/worker/src/enroll.ts")"
   WORKER_ID="$(sed -n 1p <<<"$enrolled")"
   credential="$(sed -n 2p <<<"$enrolled")"
   unset enrolled HUB_PAIR

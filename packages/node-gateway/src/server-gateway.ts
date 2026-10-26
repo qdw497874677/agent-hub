@@ -2,8 +2,17 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { AgentDto, ServerToWorker, ToolRequestFrame, ToolResponseCommand, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, PROTOCOL_VERSION, workerToServerSchema } from '@agent-hub/contract';
+import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
+import {
+  PROTOCOL_MISMATCH_CLOSE,
+  PROTOCOL_VERSION,
+  createRpcChannel,
+  fsListDirectories,
+  fsListFiles,
+  fsMakeDirectory,
+  fsReadFile,
+  workerToServerSchema
+} from '@agent-hub/contract';
 import type {
   BuildInfo,
   DomainError,
@@ -51,10 +60,21 @@ export interface GatewayHooks {
   onUpdateStatus?(workerId: string, update: WorkerUpdate): void;
   onLog?(message: string): void;
   /**
-   * Worker 转发来的工具调用（stdio-shim 模式）。不给就一律回「hub 没开工具」。
-   * 令牌在 request 里，实现方按令牌认人，并核对授权是否属于这台 Worker；不许打日志。
+   * 每条通过认证的连接一条 RPC 通道（端口）：组合根在这里挂 worker→hub 的方法（如 mcp.message），
+   * 并绑定「是哪台 Worker」。网关只负责搬帧，不认识任何方法。
    */
-  onToolRequest?(workerId: string, request: ToolRequestFrame): Promise<Omit<ToolResponseCommand, 'kind' | 'requestId'>>;
+  serve?(workerId: string, channel: RpcPort): void;
+  /**
+   * 接入握手：连接的第一帧是 enroll（配对码）时调用。成功后网关回 `enrolled` 并关闭这条连接。
+   * 不给 = 不支持 WS 接入。
+   */
+  enroll?(request: {
+    readonly code: string;
+    readonly label: string;
+    readonly host?: { hostname: string; platform: string; arch: string } | undefined;
+    /** 对端地址：限流用。 */
+    readonly address?: string | undefined;
+  }): Promise<{ readonly ok: true; readonly workerId: string; readonly credential: string } | { readonly ok: false; readonly reason: string }>;
 }
 
 export interface GatewayOptions {
@@ -96,23 +116,17 @@ interface Registered {
   update: WorkerUpdate | null;
   /** 最近一次更新的目标提交：它重启后用新版本 hello 上来时，据此判定「更新完成」。 */
   updateTarget: string | null;
+  /** 这条连接上的 RPC 通道；离线时为 null。 */
+  channel: RpcChannel | null;
 }
-
-/** 一次请求-回复（目录、文件清单、读文件）：按 requestId 对上，超时或断线都要给答复。 */
-interface PendingRequest {
-  readonly workerId: string;
-  readonly settle: (reply: ReplyFrame | DomainError) => void;
-  readonly timer: NodeJS.Timeout;
-}
-
-type ReplyFrame = Extract<WorkerToServer, { type: 'directories' | 'made_directory' | 'files' | 'file' }>;
-
 
 export interface ServerGateway {
   readonly gateway: NodeGateway;
   workers(): WorkerStatus[];
   /** 把领域核对过落点的会话接回这台 Worker 的路由（重连后不必再 resume）。 */
   adopt(workerId: string, sessionIds: readonly string[]): void;
+  /** 这条会话此刻托管在哪台 Worker 上（null = 没有）。工具授权据此核对来源。 */
+  hostOf(sessionId: string): string | null;
   handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void;
   /**
    * 管理员断开一台在线 Worker（关闭码 4403，Worker 收到后不再重连）。不在线返回 false。
@@ -134,13 +148,11 @@ export interface ServerGateway {
 export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions = {}): ServerGateway {
   const registry = new Map<string, Registered>();
   const placement = new Map<string, string>();
-  const pending = new Map<string, PendingRequest>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
   const now = options.now ?? Date.now;
   const heartbeatMs = options.heartbeatMs ?? 10_000;
   const helloTimeoutMs = options.helloTimeoutMs ?? 10_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
-  let requestSeq = 0;
 
   const online = (workerId: string): Registered | null => {
     const entry = registry.get(workerId);
@@ -177,12 +189,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     for (const [sessionId, workerId] of placement) {
       if (workerId === entry.workerId) placement.delete(sessionId);
     }
-    for (const [requestId, request] of pending) {
-      if (request.workerId !== entry.workerId) continue;
-      clearTimeout(request.timer);
-      pending.delete(requestId);
-      request.settle(unavailable(`Worker「${entry.label}」断开了`));
-    }
+    entry.channel?.close(`Worker「${entry.label}」断开了`);
+    entry.channel = null;
     hooks.onWorkerGone(entry.workerId, reason);
   }
 
@@ -224,6 +232,26 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         return;
       }
       const frame = parsed.data as WorkerToServer;
+
+      if (frame.type === 'enroll') {
+        if (entry) return;
+        clearTimeout(helloTimer);
+        if (frame.protocol !== undefined && frame.protocol !== PROTOCOL_VERSION) {
+          socket.close(PROTOCOL_MISMATCH_CLOSE, `协议版本不兼容：worker v${frame.protocol}，hub v${PROTOCOL_VERSION}`);
+          return;
+        }
+        const result = hooks.enroll
+          ? await hooks.enroll({ code: frame.code, label: frame.label, host: frame.host, address })
+          : ({ ok: false, reason: '这个 hub 不支持经长连接接入' } as const);
+        if (!result.ok) {
+          socket.close(4401, result.reason);
+          return;
+        }
+        if (socket.readyState !== WebSocket.OPEN) return;
+        socket.send(JSON.stringify({ kind: 'enrolled', workerId: result.workerId, credential: result.credential } satisfies ServerToWorker));
+        socket.close(1000, '已接入');
+        return;
+      }
 
       if (frame.type === 'hello') {
         const sharedTokenOk = hooks.token === null || sameSecret(frame.token, hooks.token);
@@ -281,8 +309,21 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           alive: true,
           build,
           update,
-          updateTarget: target !== null && build?.commit === target ? null : target
+          updateTarget: target !== null && build?.commit === target ? null : target,
+          channel: null
         };
+        previous?.channel?.close('被同一台机器的新连接顶替');
+        const current = socket;
+        entry.channel = createRpcChannel({
+          idPrefix: 'h',
+          timeoutMs: requestTimeoutMs,
+          send: (rpc) => {
+            if (current.readyState !== WebSocket.OPEN) return false;
+            current.send(JSON.stringify({ kind: 'rpc', frame: rpc } satisfies ServerToWorker));
+            return true;
+          }
+        });
+        hooks.serve?.(frame.workerId, entry.channel);
         registry.set(frame.workerId, entry);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         return;
@@ -291,28 +332,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (!entry || entry.socket !== socket) return; // 没 hello 过的连接说什么都不算
       entry.lastSeenAt = now();
 
-      if (frame.type === 'directories' || frame.type === 'made_directory' || frame.type === 'files' || frame.type === 'file') {
-        const request = pending.get(frame.requestId);
-        if (!request || request.workerId !== entry.workerId) return;
-        clearTimeout(request.timer);
-        pending.delete(frame.requestId);
-        request.settle(frame);
-        return;
-      }
-      if (frame.type === 'tool_request') {
-        const current = socket;
-        const reply = (body: Omit<ToolResponseCommand, 'kind' | 'requestId'>): void => {
-          if (current.readyState === WebSocket.OPEN) {
-            current.send(JSON.stringify({ kind: 'tool_response', requestId: frame.requestId, ...body } satisfies ToolResponseCommand));
-          }
-        };
-        const handler = hooks.onToolRequest;
-        if (!handler) reply({ ok: false, error: 'hub 没开工具' });
-        else {
-          handler(entry.workerId, frame).then(reply, (error: unknown) =>
-            reply({ ok: false, error: error instanceof Error ? error.message : String(error) })
-          );
-        }
+      if (frame.type === 'rpc') {
+        entry.channel?.receive(frame.frame);
         return;
       }
       if (frame.type === 'update_status') {
@@ -397,28 +418,17 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   const statuses = (): WorkerStatus[] =>
     [...registry.values()].map(describe).sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label));
 
-  function request(
-    workerId: string,
-    what: string,
-    build: (requestId: string) => ServerToWorker
-  ): Promise<Result<ReplyFrame, DomainError>> {
-    return new Promise((resolve) => {
-      requestSeq += 1;
-      const requestId = `req-${requestSeq}`;
-      const settle = (reply: ReplyFrame | DomainError): void =>
-        resolve('type' in reply ? { ok: true, value: reply } : { ok: false, error: reply });
-      const timer = setTimeout(() => {
-        pending.delete(requestId);
-        settle(unavailable(`Worker「${labelOf(workerId)}」没有及时回复${what}`));
-      }, requestTimeoutMs);
-      pending.set(requestId, { workerId, settle, timer });
-      const sent = sendTo(workerId, build(requestId));
-      if (!sent.ok) {
-        clearTimeout(timer);
-        pending.delete(requestId);
-        resolve(sent);
-      }
-    });
+  /** fs.* 请求：经这台的 RPC 通道问，断线 / 超时 / 对端报错都折成领域错误。 */
+  function channelOf(workerId: string): RpcChannel | null {
+    return online(workerId)?.channel ?? null;
+  }
+  const offline = (workerId: string) => ({ ok: false as const, error: unavailable(`Worker「${labelOf(workerId)}」不在线`) });
+  function toDomain<T>(outcome: RpcOutcome<T>, what: string, workerId: string): Result<T, DomainError> {
+    if (outcome.ok) return outcome;
+    const { code, message } = outcome.error;
+    if (code === 'invalid') return { ok: false, error: invalid(message) };
+    if (code === 'timeout') return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」没有及时回复${what}`) };
+    return { ok: false, error: unavailable(message) };
   }
 
   const gateway: NodeGateway = {
@@ -429,36 +439,26 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return dispatchTo(command);
     },
     async listDirectories(workerId: string, path: string) {
-      const reply = await request(workerId, '目录列表', (requestId) => ({ kind: 'list_directories', requestId, path }));
-      if (!reply.ok) return reply;
-      const frame = reply.value;
-      if (frame.type !== 'directories') return { ok: false, error: unavailable('Worker 回错了帧') };
-      if (frame.error !== undefined) return { ok: false, error: unavailable(frame.error) };
-      return { ok: true, value: { path: frame.path, exists: frame.exists, entries: frame.entries } };
+      const channel = channelOf(workerId);
+      if (!channel) return offline(workerId);
+      return toDomain(await channel.request(fsListDirectories, { path }), '目录列表', workerId);
     },
     async makeDirectory(workerId: string, parent: string, name: string) {
-      const reply = await request(workerId, '新建文件夹', (requestId) => ({ kind: 'make_directory', requestId, parent, name }));
-      if (!reply.ok) return reply;
-      const frame = reply.value;
-      if (frame.type !== 'made_directory') return { ok: false, error: unavailable('Worker 回错了帧') };
-      if (frame.error !== undefined) return { ok: false, error: invalid(frame.error) };
-      return { ok: true, value: { path: frame.path } };
+      const channel = channelOf(workerId);
+      if (!channel) return offline(workerId);
+      return toDomain(await channel.request(fsMakeDirectory, { parent, name }), '新建文件夹', workerId);
     },
     async listFiles(workerId: string, root: string, limit: number) {
-      const reply = await request(workerId, '文件清单', (requestId) => ({ kind: 'list_files', requestId, root, limit }));
-      if (!reply.ok) return reply;
-      const frame = reply.value;
-      if (frame.type !== 'files') return { ok: false, error: unavailable('Worker 回错了帧') };
-      if (frame.error !== undefined) return { ok: false, error: unavailable(frame.error) };
-      return { ok: true, value: { files: frame.files, truncated: frame.truncated } };
+      const channel = channelOf(workerId);
+      if (!channel) return offline(workerId);
+      return toDomain(await channel.request(fsListFiles, { root, limit }), '文件清单', workerId);
     },
     async readFile(workerId: string, path: string, maxBytes: number) {
-      const reply = await request(workerId, '文件', (requestId) => ({ kind: 'read_file', requestId, path, maxBytes }));
-      if (!reply.ok) return reply;
-      const frame = reply.value;
-      if (frame.type !== 'file') return { ok: false, error: unavailable('Worker 回错了帧') };
-      if (frame.error !== undefined) return { ok: false, error: unavailable(frame.error) };
-      return { ok: true, value: frame.data === null ? null : new Uint8Array(Buffer.from(frame.data, 'base64')) };
+      const channel = channelOf(workerId);
+      if (!channel) return offline(workerId);
+      const read = toDomain(await channel.request(fsReadFile, { path, maxBytes }), '文件', workerId);
+      if (!read.ok) return read;
+      return { ok: true, value: read.value.data === null ? null : new Uint8Array(Buffer.from(read.value.data, 'base64')) };
     }
   };
 
@@ -470,6 +470,9 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     adopt(workerId: string, sessionIds: readonly string[]): void {
       if (!online(workerId)) return;
       for (const sessionId of sessionIds) placement.set(sessionId, workerId);
+    },
+    hostOf(sessionId: string): string | null {
+      return placement.get(sessionId) ?? null;
     },
     handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
       wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
@@ -493,8 +496,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     close(): void {
       clearInterval(heartbeat);
-      for (const request of pending.values()) clearTimeout(request.timer);
-      pending.clear();
+      for (const entry of registry.values()) entry.channel?.close('hub 正在关闭');
       for (const entry of registry.values()) entry.socket?.terminate();
       registry.clear();
       wss.close();
@@ -502,7 +504,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   };
 }
 
-function toWire(command: WorkerCommand): Exclude<ServerToWorker, { kind: 'list_directories' | 'list_files' | 'read_file' }> {
+function toWire(command: WorkerCommand): ServerToWorker {
   switch (command.kind) {
     case 'start_session':
       return {
