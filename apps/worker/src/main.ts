@@ -62,10 +62,10 @@ const roots = (env['WORKER_ROOTS'] ?? homedir())
 
 /**
  * WORKER_ROOTS 是边界，不只是起点：hub 只能经这台 Worker 摸到 roots 里面的文件、
- * 只能在 roots 里开会话。远程 Worker 一律设防；hub 自己拉起的本机 Worker
- * 和 hub 同机，只有显式配了 WORKER_ROOTS 才设防。
+ * 只能在 roots 里开会话。远程 Worker 和 hub 自己拉起的本机 Worker 一律设防：
+ * hub 上的成员不该借本机 Worker 翻遍整台机器。没配时默认只放开 $HOME。
  */
-const files = createWorkerFiles({ roots, enforced: origin === 'remote' || env['WORKER_ROOTS'] !== undefined });
+const files = createWorkerFiles({ roots, enforced: true });
 
 /**
  * 显式覆盖：`PI_DEFAULT_MODEL=a,b`。除此之外一律问 Pi 自己（见 discoverPiModels），
@@ -106,7 +106,7 @@ const grokCatalog = await discoverGrokModels(grokCommand);
 const log = (message: string): void => {
   process.stdout.write(`[worker] ${message}\n`);
 };
-if (files.enforced) log(`允许访问的目录（WORKER_ROOTS）：${roots.join(':')}`);
+log(`允许访问的目录（WORKER_ROOTS${env['WORKER_ROOTS'] === undefined ? '，未配置，默认 $HOME' : ''}）：${roots.join(':')}`);
 
 /**
  * ACP agent 是配置，不是代码。
