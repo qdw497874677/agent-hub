@@ -16,7 +16,7 @@ export const TASK_TOOLS: readonly ToolDescriptor[] = [
     version: 1,
     scope: 'task:read',
     description:
-      'Get the agent-hub task this session belongs to: title, goal, status, current progress line, branch, sessions, and the latest work-log entry written by a person or agent. Call this first when you start working.',
+      'Get the agent-hub task this session belongs to: title, goal, status, current progress line, branch, sessions, the latest work-log entry written by a person or agent, and its project (name, git repo if bound, and the free-form markdown project description, which may mention repos, conventions or how to deploy). Call this first when you start working.',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
@@ -97,7 +97,7 @@ function parseLinks(raw: unknown): Result<LogLink[], DomainError> {
 }
 
 /** 首批四个任务工具（§4.2）。都隐式绑定 grant.taskId。 */
-export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workLog' | 'sessions'>): ToolProvider {
+export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workLog' | 'sessions' | 'projects'>): ToolProvider {
   const author = async (ctx: ToolContext) => {
     const session = await deps.sessions.byId(ctx.grant.sessionId);
     return {
@@ -126,6 +126,7 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
             current: session.id === ctx.grant.sessionId
           }));
           const latest = await deps.workLog.latestNote(taskId);
+          const project = await deps.projects.byId(task.projectId);
           return ok({
             id: task.id,
             title: task.title,
@@ -135,7 +136,10 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
             branch: task.branch,
             logSeq: task.logSeq,
             sessions,
-            latestEntry: latest ? { seq: latest.seq, at: latest.createdAt, author: latest.author, body: latest.body } : null
+            latestEntry: latest ? { seq: latest.seq, at: latest.createdAt, author: latest.author, body: latest.body } : null,
+            project: project
+              ? { id: project.id, name: project.name, repo: project.repo, description: project.description }
+              : null
           });
         }
         case 'task.log.list': {

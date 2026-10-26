@@ -41,7 +41,7 @@ const tokens = {
 async function world() {
   const w = inMemoryDeps();
   w.agents.push(fake);
-  const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo' });
+  const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo', description: '仓库：git@example.com:me/demo.git' });
   assert.ok(project.ok);
   const task = await createTaskUseCase(w.deps, { projectId: project.value.id, title: '接通能力层', ownerId: 'u1' });
   assert.ok(task.ok);
@@ -119,6 +119,7 @@ test('task.get / task.log.append / task.log.list：隐式绑定当前任务，ag
   assert.equal(task.latestEntry.author.kind, 'agent');
   assert.equal(task.latestEntry.author.agentId, 'fake');
   assert.equal(task.sessions[0]?.current, true);
+  assert.equal((got.value as { project: { description: string } }).project.description, '仓库：git@example.com:me/demo.git');
   const listed = await w.gateway.call(grant, 'task.log.list', { limit: 5 });
   assert.ok(listed.ok);
   assert.ok((listed.value as { entries: { author: { kind: string } }[] }).entries.some((e) => e.author.kind === 'agent'));

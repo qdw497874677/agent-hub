@@ -49,3 +49,13 @@ test('新会话第一句给 agent 垫背景，journal 里仍是原话；第二�
   assert.ok((await promptSessionUseCase(w.deps, { sessionId: s.value.id, text: '继续' })).ok);
   assert.equal((w.dispatched.filter((c) => c.kind === 'prompt').at(-1) as { text: string }).text, '继续');
 });
+
+test('taskBriefing：项目说明和仓库原样交给 agent（没 git 仓库也照样有说明）', () => {
+  const withDoc = taskBriefing(task(), [], { name: 'Demo', repoUrl: null, description: '代码在 git@example.com:me/demo.git，部署用 make deploy' }) ?? '';
+  assert.match(withDoc, /项目：Demo/);
+  assert.match(withDoc, /git@example\.com:me\/demo\.git/);
+  assert.doesNotMatch(withDoc, /仓库：/);
+  const withRepo = taskBriefing(task(), [], { name: 'Demo', repoUrl: 'https://x/y.git', description: null }) ?? '';
+  assert.match(withRepo, /仓库：https:\/\/x\/y\.git/);
+  assert.equal(taskBriefing(task(), [], { name: 'Demo', repoUrl: null, description: null }), null);
+});

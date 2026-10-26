@@ -17,7 +17,19 @@ export interface Project {
   readonly directories: Readonly<Record<string, string>>;
   /** 项目的 git 仓库（可选）：新建持久工作空间时 clone 它，临时工作空间据此开分支。 */
   readonly repo: ProjectRepo | null;
+  /** 自由格式的项目说明（markdown）：给人看，也原样交给 agent（task.get / 任务背景）。没写是 null。 */
+  readonly description: string | null;
   readonly createdAt: number;
+}
+
+/** 说明的长度上限：会进 agent 的上下文，太长没意义。 */
+export const PROJECT_DESCRIPTION_MAX = 8000;
+
+/** 空白 = 没写。 */
+export function normalizeDescription(text: string | null | undefined): Result<string | null, DomainError> {
+  const trimmed = text?.trim() ?? '';
+  if (trimmed.length > PROJECT_DESCRIPTION_MAX) return err(invalid(`项目说明太长了（最多 ${PROJECT_DESCRIPTION_MAX} 字）`));
+  return ok(trimmed === '' ? null : trimmed);
 }
 
 export interface ProjectRepo {
@@ -62,6 +74,7 @@ export interface CreateProjectInput {
   readonly id?: ProjectId;
   readonly workerId?: string | null;
   readonly repo?: ProjectRepo | null;
+  readonly description?: string | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
@@ -77,6 +90,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     workerId: input.workerId ?? null,
     directories: {},
     repo: input.repo ?? null,
+    description: input.description ?? null,
     createdAt: input.now
   });
 }

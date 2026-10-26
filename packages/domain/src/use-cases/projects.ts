@@ -1,4 +1,4 @@
-import { createProject, parseRepo } from '../project.ts';
+import { createProject, normalizeDescription, parseRepo } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
 import type { DomainError } from '../errors.ts';
@@ -22,6 +22,8 @@ export interface CreateProjectCommand {
   /** 可选的 git 仓库。 */
   readonly repoUrl?: string | null;
   readonly defaultBranch?: string | null;
+  /** 可选的项目说明（markdown）。 */
+  readonly description?: string | null;
 }
 
 export async function createProjectUseCase(
@@ -30,6 +32,8 @@ export async function createProjectUseCase(
 ): Promise<Result<Project, DomainError>> {
   const repo = parseRepo(command.repoUrl, command.defaultBranch);
   if (!repo.ok) return repo;
+  const description = normalizeDescription(command.description);
+  if (!description.ok) return description;
   const rootPath = command.rootPath?.trim() ?? '';
   const where = rootPath === '' ? ok(null) : await directoryOwner(deps, command.workerId ?? null);
   if (!where.ok) return where;
@@ -45,7 +49,8 @@ export async function createProjectUseCase(
     directoryExists,
     now: deps.now(),
     workerId: where.value,
-    repo: repo.value
+    repo: repo.value,
+    description: description.value
   });
   if (!created.ok) return created;
   if (rootPath !== '') {
@@ -147,6 +152,20 @@ export async function setProjectRepoUseCase(
   const repo = parseRepo(command.repoUrl, command.defaultBranch);
   if (!repo.ok) return repo;
   const next: Project = { ...project, repo: repo.value };
+  await deps.projects.save(next);
+  return ok(next);
+}
+
+/** 改项目说明（空 = 清掉）。 */
+export async function setProjectDescriptionUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly description: string | null }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const description = normalizeDescription(command.description);
+  if (!description.ok) return description;
+  const next: Project = { ...project, description: description.value };
   await deps.projects.save(next);
   return ok(next);
 }

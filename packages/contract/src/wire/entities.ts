@@ -76,6 +76,8 @@ export const projectSchema = z.object({
   directories: z.record(z.string(), z.string()).default({}),
   /** 项目的 git 仓库；没有是 null。 */
   repo: z.object({ url: z.string(), defaultBranch: z.string().nullable() }).nullable().default(null),
+  /** 项目说明（markdown）。 */
+  description: z.string().nullable().default(null),
   createdAt: epochMs
 });
 

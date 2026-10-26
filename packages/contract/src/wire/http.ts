@@ -16,8 +16,13 @@ export const createProjectRequest = z.object({
   workerId: z.string().min(1).nullable().optional(),
   /** 可选的 git 仓库：以后新建工作空间时 clone 它。 */
   repoUrl: z.string().max(500).nullable().optional(),
-  defaultBranch: z.string().max(200).nullable().optional()
+  defaultBranch: z.string().max(200).nullable().optional(),
+  /** 可选的项目说明（markdown），会交给 agent。 */
+  description: z.string().max(8000).nullable().optional()
 });
+
+/** 改项目说明：null 或空串 = 清掉。 */
+export const setProjectDescriptionRequest = z.object({ description: z.string().max(8000).nullable() });
 
 /** 绑定 / 改 / 解除项目仓库：repoUrl 为 null 或空串 = 解除。 */
 export const setProjectRepoRequest = z.object({

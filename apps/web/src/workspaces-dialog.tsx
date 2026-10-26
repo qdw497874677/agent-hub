@@ -21,8 +21,10 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
     groups.set(key, [...(groups.get(key) ?? []), view]);
   }
   return (
-    <DialogShell title="工作空间" onClose={onClose}>
-      <h2 className="mb-1 text-body text-primary">工作空间 · {project.name}</h2>
+    <DialogShell title="项目设置" onClose={onClose}>
+      <h2 className="mb-3 text-body text-primary">项目设置 · {project.name}</h2>
+      <DescriptionEditor project={project} />
+      <h3 className="mb-1 text-sub text-primary">工作空间</h3>
       <p className="mb-3 text-meta text-tertiary">任务做完或放弃后，临时工作空间会自动删除；有没保存的改动的会保留下来，等你决定。</p>
       {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
       {list.data && groups.size === 0 ? <p className="text-meta text-tertiary">还没有工作空间。</p> : null}
@@ -118,5 +120,40 @@ function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; proje
         </button>
       </div>
     </div>
+  );
+}
+
+/** 项目说明（markdown，自由格式）：agent 开工时在任务背景和 task_get 里读到。 */
+function DescriptionEditor({ project }: { project: ProjectDto }) {
+  const queryClient = useQueryClient();
+  const [text, setText] = useState(project.description ?? '');
+  const save = useMutation({
+    mutationFn: () => api.setProjectDescription(project.id, text),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['projects'] }),
+        queryClient.invalidateQueries({ queryKey: ['home'] })
+      ]);
+    }
+  });
+  const changed = text.trim() !== (project.description ?? '');
+  return (
+    <section className="mb-4">
+      <label className="mb-1 block text-sub text-primary" htmlFor="project-description">项目说明</label>
+      <p className="mb-1 text-meta text-tertiary">支持 markdown。写这是什么、仓库在哪、有什么约定；agent 开工时会读到。</p>
+      <textarea
+        id="project-description"
+        className="block min-h-[120px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-accent"
+        value={text}
+        onChange={(event) => setText(event.target.value)}
+      />
+      {save.error ? <p className="mt-1 text-meta text-rust">{save.error.message}</p> : null}
+      <div className="mt-2 flex items-center justify-end gap-2">
+        {save.isSuccess && !changed ? <span className="text-meta text-tertiary">已保存</span> : null}
+        <button className="rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas disabled:opacity-40" disabled={!changed || save.isPending} onClick={() => save.mutate()}>
+          {save.isPending ? '保存中…' : '保存'}
+        </button>
+      </div>
+    </section>
   );
 }

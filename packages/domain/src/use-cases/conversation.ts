@@ -96,11 +96,16 @@ export async function promptSessionUseCase(
   return deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
 }
 
-async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog'>>, session: Session): Promise<string | null> {
+async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects'>>, session: Session): Promise<string | null> {
   if (!session.taskId || !deps.workLog) return null;
   const task = await deps.tasks.byId(session.taskId);
   if (!task) return null;
-  return taskBriefing(task, await deps.workLog.list(task.id, { limit: 6 }));
+  const project = deps.projects ? await deps.projects.byId(task.projectId) : null;
+  return taskBriefing(
+    task,
+    await deps.workLog.list(task.id, { limit: 6 }),
+    project ? { name: project.name, repoUrl: project.repo?.url ?? null, description: project.description } : null
+  );
 }
 
 /**
