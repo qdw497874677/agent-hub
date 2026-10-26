@@ -15,6 +15,9 @@ import {
   searchResponseSchema,
   createTaskRequest,
   deriveSessionRequest,
+  createWorkspaceRequest,
+  workspaceSchema,
+  workspaceViewSchema,
   forkSessionRequest,
   continueElsewhereRequest,
   projectFilesSchema,
@@ -41,6 +44,8 @@ import {
   createProjectUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
+  prepareLongLivedWorkspaceUseCase,
+  workspaceViewsUseCase,
   forkSessionUseCase,
   continueElsewhereUseCase,
   interruptSessionUseCase,
@@ -208,6 +213,26 @@ export function createApp(options: AppOptions): Hono {
     if (!input.ok) return input.response;
     const result = await createProjectUseCase(deps, input.value);
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+
+  // 运行面板：项目名下的工作空间 + 谁正在里面跑（并发警告）。
+  app.get('/api/projects/:projectId/workspaces', async (c) => {
+    const result = await workspaceViewsUseCase(deps, c.req.param('projectId'));
+    return result.ok ? c.json(workspaceViewSchema.array().parse(result.value)) : fail(c, result.error);
+  });
+
+  // 新建持久工作空间：新建托管目录（create）或关联已有目录（link）。
+  app.post('/api/projects/:projectId/workspaces', async (c) => {
+    const input = await body(c, createWorkspaceRequest);
+    if (!input.ok) return input.response;
+    const { workerId, mode, path } = input.value;
+    const result = await prepareLongLivedWorkspaceUseCase(deps, {
+      projectId: c.req.param('projectId'),
+      workerId,
+      plan: mode === 'link' ? { mode, path: path ?? '' } : { mode },
+      home: homedir()
+    });
+    return result.ok ? c.json(workspaceSchema.parse(result.value), 201) : fail(c, result.error);
   });
 
   app.get('/api/projects/:projectId/canvas', async (c) => {

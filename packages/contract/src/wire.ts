@@ -1,6 +1,6 @@
 import type { z } from 'zod';
-import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema } from './wire/entities.ts';
-import type { continueElsewhereRequest, createProjectRequest, createTaskRequest, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
+import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
+import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTaskRequest, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
 
 /**
@@ -19,6 +19,9 @@ export type AgentDto = z.infer<typeof agentSchema>;
 export type RuntimeOptionDto = z.infer<typeof runtimeOptionSchema>;
 export type OptionValueDto = z.infer<typeof optionValueSchema>;
 export type ProjectDto = z.infer<typeof projectSchema>;
+export type WorkspaceDto = z.infer<typeof workspaceSchema>;
+export type WorkspaceViewDto = z.infer<typeof workspaceViewSchema>;
+export type CreateWorkspaceRequest = z.input<typeof createWorkspaceRequest>;
 export type TaskDto = z.infer<typeof taskSchema>;
 export type SessionDto = z.infer<typeof sessionSchema>;
 export type ArtifactDto = z.infer<typeof artifactSchema>;

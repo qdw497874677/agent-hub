@@ -8,7 +8,7 @@ import type { JournalEntry } from '../event.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
 
 export async function loadCanvas(
-  deps: Pick<Deps, 'agents' | 'artifacts' | 'layout' | 'now' | 'projects' | 'sessions' | 'tasks'>,
+  deps: Pick<Deps, 'agents' | 'artifacts' | 'layout' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workspaces'>,
   projectId: string
 ): Promise<Result<CanvasProjection, DomainError>> {
   const project = await deps.projects.byId(asProjectId(projectId));
@@ -30,8 +30,11 @@ export async function loadCanvas(
     await Promise.all(tasks.map((task) => deps.artifacts.byTask(task.id)))
   ).flat();
 
+  const workspaces = (await deps.workspaces.byProject(project.id)).filter((workspace) => workspace.state !== 'removed');
+
   return ok({
     project,
+    workspaces,
     tasks,
     sessions,
     artifacts,

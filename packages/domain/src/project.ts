@@ -28,6 +28,8 @@ export interface Location {
 export function workspaceFor(project: Project, sessionWorker: string | null): Location {
   const mapped = sessionWorker !== null && sessionWorker !== project.workerId ? project.directories[sessionWorker] : undefined;
   const ws = mapped !== undefined ? { workerId: sessionWorker, root: mapped } : { workerId: project.workerId, root: project.rootPath };
+  // 没有目录的项目（W2 起允许）：root 为空串，调用方必须改走工作空间，不能把它当成 /
+  if (ws.root === '') return { workerId: ws.workerId, root: '' };
   return { workerId: ws.workerId, root: ws.root.replace(/\/+$/, '') || '/' };
 }
 
@@ -44,8 +46,9 @@ export interface CreateProjectInput {
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
   const name = input.name.trim();
   if (!name) return err(invalid('项目名称不能为空'));
-  if (!input.rootPath.startsWith('/')) return err(invalid('目录必须是绝对路径'));
-  if (!input.directoryExists) return err(invalid(`目录不存在：${input.rootPath}`));
+  // 目录可以不给：项目只是「你在做的东西」，开始任务时再选机器和工作空间
+  if (input.rootPath !== '' && !input.rootPath.startsWith('/')) return err(invalid('目录必须是绝对路径'));
+  if (input.rootPath !== '' && !input.directoryExists) return err(invalid(`目录不存在：${input.rootPath}`));
   return ok({
     id: input.id ?? newProjectId(),
     name,

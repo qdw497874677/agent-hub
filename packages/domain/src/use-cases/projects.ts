@@ -1,39 +1,49 @@
 import { createProject } from '../project.ts';
 import type { Project } from '../project.ts';
 import type { DomainError } from '../errors.ts';
-import { invalid, notFound } from '../errors.ts';
+import { notFound } from '../errors.ts';
 import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
-import { folderNameProblem, insideRoots, managedDirectory, projectSlug } from '../directories.ts';
+import { linkedWorkspaceFor } from './workspaces.ts';
+import { directoryOwner, listOn, normalize, parentOf, remoteExists, rootsOf } from './machine-dirs.ts';
+
+export { createDirectory, directoryOwner } from './machine-dirs.ts';
+import { managedDirectory, projectSlug } from '../directories.ts';
 
 export interface CreateProjectCommand {
   readonly name: string;
-  readonly rootPath: string;
+  /** 空串 / 不给 = 先不选目录（开始任务时再选工作空间）。 */
+  readonly rootPath?: string;
   /** 目录在哪台 Worker 上。不给 / 给的是本机 Worker = 和 Server 同机。 */
   readonly workerId?: string | null;
 }
 
 export async function createProjectUseCase(
-  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway'>,
+  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces'>,
   command: CreateProjectCommand
 ): Promise<Result<Project, DomainError>> {
-  const where = await directoryOwner(deps, command.workerId ?? null);
+  const rootPath = command.rootPath?.trim() ?? '';
+  const where = rootPath === '' ? ok(null) : await directoryOwner(deps, command.workerId ?? null);
   if (!where.ok) return where;
   const directoryExists =
-    where.value === null
-      ? await deps.fs.directoryExists(command.rootPath)
-      : await remoteExists(deps, where.value, command.rootPath);
+    rootPath === ''
+      ? true
+      : where.value === null
+        ? await deps.fs.directoryExists(rootPath)
+        : await remoteExists(deps, where.value, rootPath);
   const created = createProject({
     name: command.name,
-    rootPath: command.rootPath,
+    rootPath,
     directoryExists,
     now: deps.now(),
     workerId: where.value
   });
   if (!created.ok) return created;
   await deps.projects.save(created.value);
+  // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
+  if (rootPath !== '') await linkedWorkspaceFor(deps, created.value, where.value);
   return ok(created.value);
 }
 
@@ -49,25 +59,7 @@ export async function loadProject(
   return project ? ok(project) : err(notFound('项目不存在'));
 }
 
-/**
- * 目录属于谁：null = Server 自己的文件系统（同机的 local Worker 也算这里），
- * 否则是那台 remote Worker。之所以把 local Worker 折叠成 null：
- * 本机 Worker 每次重启可能换 id，老项目不该因此「搬家」。
- */
-export async function directoryOwner(
-  deps: Pick<Deps, 'gateway'>,
-  workerId: string | null
-): Promise<Result<string | null, DomainError>> {
-  if (workerId === null) return ok(null);
-  const worker = (await deps.gateway.status()).find((candidate) => candidate.workerId === workerId);
-  if (!worker) return err(notFound(`没有这台 Worker：${workerId}`));
-  return ok(worker.origin === 'local' ? null : worker.workerId);
-}
 
-async function remoteExists(deps: Pick<Deps, 'gateway'>, workerId: string, path: string): Promise<boolean> {
-  const listed = await deps.gateway.listDirectories(workerId, path);
-  return listed.ok && listed.value.exists;
-}
 
 export interface DirectoryListing {
   readonly path: string;
@@ -122,53 +114,8 @@ export async function browseDirectories(
   return err(notFound(`没有这个目录：${input.path || candidates[candidates.length - 1]}`));
 }
 
-/** 在 parent 下新建一层文件夹，返回新目录。名字只允许一段；边界和软链接由适配器用 realpath 把关。 */
-export async function createDirectory(
-  deps: Pick<Deps, 'fs' | 'gateway'>,
-  input: { readonly workerId: string | null; readonly parent: string; readonly name: string; readonly home: string }
-): Promise<Result<{ readonly path: string }, DomainError>> {
-  const problem = folderNameProblem(input.name);
-  if (problem !== null) return err(invalid(problem));
-  if (!input.parent.startsWith('/') || input.parent.split('/').includes('..')) return err(invalid('父目录必须是绝对路径'));
-  const owner = await directoryOwner(deps, input.workerId);
-  if (!owner.ok) return owner;
-  const parent = normalize(input.parent);
-  if (owner.value !== null) return deps.gateway.makeDirectory(owner.value, parent, input.name);
-  const roots = await rootsOf(deps, null, input.workerId, input.home);
-  if (!insideRoots(parent, roots)) return err(invalid(`「${parent}」不在允许新建文件夹的目录里（${roots.join(':')}）`));
-  const made = await deps.fs.makeDirectory(parent, input.name, roots);
-  return made.ok ? ok({ path: made.value }) : made;
-}
 
-/** 本机（null）用本机 Worker 报上来的 roots，没有就是 home；remote 用它自己的 roots。 */
-async function rootsOf(
-  deps: Pick<Deps, 'gateway'>,
-  owner: string | null,
-  requested: string | null,
-  home: string
-): Promise<readonly string[]> {
-  const workers = await deps.gateway.status();
-  const worker =
-    owner !== null
-      ? workers.find((w) => w.workerId === owner)
-      : workers.find((w) => w.workerId === requested) ?? workers.find((w) => w.origin === 'local');
-  const roots = (worker?.roots ?? []).map(normalize);
-  return roots.length > 0 ? roots : [normalize(home)];
-}
 
-async function listOn(
-  deps: Pick<Deps, 'fs' | 'gateway'>,
-  owner: string | null,
-  path: string
-): Promise<Result<{ path: string; entries: readonly DirectoryEntry[] } | null, DomainError>> {
-  if (owner === null) {
-    if (!(await deps.fs.directoryExists(path))) return ok(null);
-    return ok({ path, entries: await deps.fs.listDirectories(path) });
-  }
-  const listed = await deps.gateway.listDirectories(owner, path);
-  if (!listed.ok) return listed;
-  return listed.value.exists ? ok({ path: listed.value.path, entries: listed.value.entries }) : ok(null);
-}
 
 /** 最近改过的排前面（时间相同按名字）：刚建的、刚用过的项目目录最可能是要找的。 */
 function sortRecentFirst(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
@@ -177,19 +124,4 @@ function sortRecentFirst(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
   );
 }
 
-/** 纯字符串的 POSIX 规范化：领域层不碰 node:path。 */
-function normalize(path: string): string {
-  const parts: string[] = [];
-  for (const part of path.split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') parts.pop();
-    else parts.push(part);
-  }
-  return `/${parts.join('/')}`;
-}
 
-function parentOf(path: string): string | null {
-  if (path === '/') return null;
-  const index = path.lastIndexOf('/');
-  return index <= 0 ? '/' : path.slice(0, index);
-}
