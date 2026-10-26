@@ -77,13 +77,15 @@ export async function continueElsewhereUseCase(
   }
 
   if (!chosen) {
+    // 同一台机器上原分支还被原工作空间检出着（git 不许检出两次）：新开分支，从 WIP 分支长出来
     const branch = wip?.pushed ? wip.branch : null;
+    const sameMachine = from !== null && from.workerId === owner.value;
     const made = await prepareTemporaryWorkspaceUseCase(deps, {
       projectId: project.id,
       taskId: task.id,
       workerId: targetWorker,
       home: command.home,
-      ...(branch ? { branch } : {})
+      ...(branch ? (sameMachine ? { base: branch } : { branch }) : {})
     });
     if (!made.ok) return made;
     chosen = made.value;
@@ -128,7 +130,12 @@ const placedLocal = (workers: readonly { workerId: string; origin: string }[]) =
 export function codeNote(from: Workspace | null, target: Workspace, wip: SaveWipOutcome | null): string {
   if (wip?.pushed) {
     const same = target.branch === wip.branch;
-    return `原工作空间的改动已${wip.committed ? '提交成 WIP 并' : ''}推送到分支 ${wip.branch}${same ? '，这里检出的就是这个分支' : '，需要的话自己 fetch 并切过去'}。`;
+    const here = same
+      ? '，这里检出的就是这个分支'
+      : target.branch
+        ? `，这里的新分支 ${target.branch} 就是从它长出来的`
+        : '，需要的话自己 fetch 并切过去';
+    return `原工作空间的改动已${wip.committed ? '提交成 WIP 并' : ''}推送到分支 ${wip.branch}${here}。`;
   }
   if (wip) return `尝试提交 WIP 但没推上去（${wip.reason ?? '原因不明'}）：代码改动留在原机器上${from ? `的 ${from.path}` : ''}。`;
   if (!from) return '代码改动留在原机器上。';
