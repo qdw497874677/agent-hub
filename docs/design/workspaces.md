@@ -20,7 +20,7 @@
 | `use-cases/continue-elsewhere.ts` | 换机器继续时，如果目标机器没有登记目录，就要求人来选，然后把选的目录写进 `project.directories[workerId]` |
 | `apps/web/src/directory-picker.tsx` | 嵌入式面板：一个路径输入框、↑、子目录列表；双击选中，或点「用这个目录」；不能新建；隐藏以点开头的目录 |
 | `apps/web/src/home.tsx` | 建项目的流程是先选 Worker，再浏览选目录，再自动取名 |
-| `apps/worker/src/main.ts` | `WORKER_ROOTS` 既是起点又是边界（remote 机器强制） |
+| `apps/worker/src/main.ts` | `WORKER_ROOTS` 既是起点又是边界（本机和远程 Worker 都强制，未设置时默认 `$HOME`） |
 | storage | `projects` 表里有 root_path、worker_id、directories(JSON)；sessions.worker_id；layout 按 project_id 存；附件落在 `<项目目录>/.agent-hub/attachments/<session>/` |
 | 账号 | 项目还没有归属人或成员的概念 |
 
