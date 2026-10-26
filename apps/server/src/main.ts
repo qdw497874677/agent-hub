@@ -12,7 +12,9 @@ import { serveMcpRelay } from './mcp-relay.ts';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { Deps, EnrollmentDeps, SessionId, ToolGateway } from '@agent-hub/domain';
-import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess } from '@agent-hub/domain';
+import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
+  sweepTemporaryWorkspacesUseCase
+} from '@agent-hub/domain';
 import {
   err,
   ingestAgentSessionRef,
@@ -269,6 +271,18 @@ if (stallMs > 0) {
   }, Math.min(30_000, stallMs));
   timer.unref();
 }
+
+// 临时工作空间清理（workspaces.md §5）：启动后一会儿（等 Worker 连上）跑一次，之后每小时一次
+const sweep = (why: string) =>
+  sweepTemporaryWorkspacesUseCase(deps)
+    .then((report) => {
+      if (report.removed.length + report.kept.length > 0) {
+        log(`临时工作空间清理（${why}）：删了 ${report.removed.length} 个，保留 ${report.kept.length} 个（有未保存的改动）`);
+      }
+    })
+    .catch((failure: unknown) => log(`临时工作空间清理失败：${(failure as Error).message}`));
+setTimeout(() => void sweep('启动'), 60_000).unref();
+setInterval(() => void sweep('每小时'), 60 * 60_000).unref();
 
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
   auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },

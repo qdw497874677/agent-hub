@@ -29,6 +29,8 @@ import type {
   WorkspaceDto,
   WorkspaceViewDto,
   CreateWorkspaceRequest,
+  RemoveWorkspaceRequest,
+  WorkspaceChangesDto,
   AccountDto,
   AuthState,
   AdminOverviewDto,
@@ -41,7 +43,7 @@ import type {
   SettingsDto
 } from '@agent-hub/contract';
 
-export type { SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState };
+export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState };
 
 export interface ApiError {
   readonly code: string;
@@ -117,6 +119,9 @@ export const api = {
   workspaces: (projectId: string) => call<WorkspaceViewDto[]>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`),
   createWorkspace: (projectId: string, input: CreateWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`, input),
+  workspaceChanges: (workspaceId: string) => call<WorkspaceChangesDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/changes`),
+  removeWorkspace: (workspaceId: string, input: RemoveWorkspaceRequest) =>
+    post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/remove`, input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
   setTaskStatus: (taskId: string, status: TaskDto['status'], note?: string) =>

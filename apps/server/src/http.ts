@@ -17,6 +17,8 @@ import {
   createTaskRequest,
   deriveSessionRequest,
   createWorkspaceRequest,
+  removeWorkspaceRequest,
+  workspaceChangesSchema,
   workspaceSchema,
   workspaceViewSchema,
   forkSessionRequest,
@@ -48,6 +50,9 @@ import {
   deriveSessionUseCase,
   prepareLongLivedWorkspaceUseCase,
   prepareTemporaryWorkspaceUseCase,
+  removeWorkspaceUseCase,
+  sweepTemporaryWorkspacesUseCase,
+  workspaceChangesUseCase,
   workspaceViewsUseCase,
   forkSessionUseCase,
   continueElsewhereUseCase,
@@ -254,6 +259,23 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(workspaceSchema.parse(result.value), 201) : fail(c, result.error);
   });
 
+  // 删之前看看会丢什么（强制删除的二次确认里列出来）
+  app.get('/api/workspaces/:workspaceId/changes', async (c) => {
+    const result = await workspaceChangesUseCase(deps, c.req.param('workspaceId'));
+    return result.ok ? c.json(workspaceChangesSchema.parse(result.value)) : fail(c, result.error);
+  });
+
+  // 移除工作空间：只移除登记 / 连目录一起删（平台建的才行）/ 强制删除
+  app.post('/api/workspaces/:workspaceId/remove', async (c) => {
+    const input = await body(c, removeWorkspaceRequest);
+    if (!input.ok) return input.response;
+    const result = await removeWorkspaceUseCase(deps, { workspaceId: c.req.param('workspaceId'), ...input.value });
+    return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
+  });
+
+  // 立刻清理一次（项目设置里「重新检查」）
+  app.post('/api/workspaces/sweep', async (c) => c.json(await sweepTemporaryWorkspacesUseCase(deps)));
+
   app.get('/api/projects/:projectId/canvas', async (c) => {
     const result = await loadCanvas(deps, c.req.param('projectId'));
     return result.ok ? c.json(result.value) : fail(c, result.error);
@@ -335,6 +357,10 @@ export function createApp(options: AppOptions): Hono {
     const result = await setTaskStatusUseCase(deps, asTaskId(c.req.param('taskId')), status, 'user', input.value.note, {
       label: principalOf(c)?.user.displayName ?? ''
     });
+    // 任务结束：顺手清理它的临时工作空间（不等结果；有改动的会标「已保留」）
+    if (result.ok && (status === 'done' || status === 'abandoned')) {
+      void sweepTemporaryWorkspacesUseCase(deps, { taskId: result.value.id }).catch(() => undefined);
+    }
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 

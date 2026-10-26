@@ -86,6 +86,6 @@ export const wsStatus = method(
 /** Worker 删之前会再查一次；有改动就回 removed:false + 原因（不是错误）。 */
 export const wsRemove = method(
   'ws.remove',
-  z.object({ path: z.string(), kind: z.enum(['worktree', 'directory']) }),
+  z.object({ path: z.string(), kind: z.enum(['worktree', 'directory']), force: z.boolean().optional() }),
   z.union([z.object({ removed: z.literal(true) }), z.object({ removed: z.literal(false), reason: z.string() })])
 );

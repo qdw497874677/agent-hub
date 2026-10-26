@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { AccountMenu } from './auth.tsx';
 import type { ProjectDto } from './api.ts';
 import type { StreamState } from './live.ts';
@@ -21,6 +23,7 @@ interface Props {
 
 /** 项目页顶栏。窄屏下收起路径与文字标签，只留图标，44px 高、点击区不小于 28px。 */
 export function ProjectHeader(props: Props) {
+  const [settings, setSettings] = useState(false);
   const { project, projects, view } = props;
   const workers = useWorkers();
   return (
@@ -96,6 +99,15 @@ export function ProjectHeader(props: Props) {
           <span className="md:hidden">＋</span>
           <span className="hidden md:inline">新建任务</span>
         </button>
+        <button
+          className="rounded-sm border border-hair px-2 py-1 text-meta text-tertiary hover:border-accent hover:text-accent md:px-2.5"
+          onClick={() => setSettings(true)}
+          title="项目设置"
+          aria-label="项目设置"
+        >
+          ⚙
+        </button>
+        {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
         <AccountMenu />
       </div>
     </header>

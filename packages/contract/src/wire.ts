@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
-import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTaskRequest, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
+import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
 
 /**
@@ -49,3 +49,6 @@ export type ProjectFilesDto = z.infer<typeof projectFilesSchema>;
 export type SessionStreamFrame = z.infer<typeof sessionStreamFrameSchema>;
 export type WorkerToServer = z.infer<typeof workerToServerSchema>;
 export type ServerToWorker = z.infer<typeof serverToWorkerSchema>;
+
+export type RemoveWorkspaceRequest = z.input<typeof removeWorkspaceRequest>;
+export type WorkspaceChangesDto = z.infer<typeof workspaceChangesSchema>;
