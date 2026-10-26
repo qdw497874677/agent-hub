@@ -42,7 +42,7 @@ test('acp prompt：没声明能力时按基线降级，图片明确拒绝而不�
 
 test('mcpServersFor：http 走 Authorization 头；agent 没声明 http 就不给；没工具就空', async () => {
   const { mcpServersFor, readMcpCapabilities } = await import('./map-acp.ts');
-  const tools = { transport: 'http' as const, url: 'http://hub/mcp', token: 't0k' };
+  const tools = { transport: 'relay' as const, url: 'http://hub/mcp', token: 't0k' };
   assert.deepEqual(mcpServersFor(undefined, { http: true }), []);
   assert.deepEqual(mcpServersFor(tools, { http: false }), []);
   assert.deepEqual(mcpServersFor(tools, readMcpCapabilities({ agentCapabilities: { mcpCapabilities: { http: true } } })), [

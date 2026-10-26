@@ -9,7 +9,7 @@ export const toWireName = (name: string): string => name.replaceAll('.', '_');
 
 /**
  * 能力层的 MCP 服务端：一个授权 → 一个 SDK Server，背后是领域的 ToolGateway。
- * 不认识任何传输——HTTP 入口（mcp.ts）和长连接中转（mcp-relay.ts）各自把它接到自己的 SDK 传输上。
+ * 不认识任何传输——长连接中转（mcp-relay.ts）把它接到 SDK 传输上。
  */
 export function createMcpServer(gateway: ToolGateway, grant: ToolGrant): Server {
   const server = new Server({ name: 'agent-hub', version: '1.0.0' }, { capabilities: { tools: {} } });

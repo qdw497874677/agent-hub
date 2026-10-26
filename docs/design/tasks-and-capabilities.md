@@ -202,7 +202,7 @@ sequenceDiagram
   - hub 每条消息都核对：令牌有效；授权绑定的 Worker = 转发的这台；会话此刻确实托管在这台（网关路由表 `hostOf`）。任一不符 `forbidden`。会话结束授权立即吊销。
   - Pi：`~/.pi/agent/mcp.json` 里是 stdio 垫片（`apps/worker/src/mcp-shim.ts`）→ 本机入口；OpenCode / Grok：ACP `mcpServers` 里给本机入口的 http 条目，没声明 http 的退到同一个垫片。
   - 断线时在途调用立即以 `closed` 失败（不进补发队列）；调用超时 60 秒，超时 / agent 断开会发 `cancel`。
-  - 直连 `HUB_TOOLS_TRANSPORT=http`（**已弃用**）：只有显式打开时 hub 才挂 `/mcp`，agent 直连 hub。
+  - 直连 HTTP（`HUB_TOOLS_TRANSPORT=http`）已移除：relay 线上验证后删掉了 `/mcp` 入口，配置会被忽略并打日志。
 - 协议：`PROTOCOL_VERSION = 2`（旧的 `tool_request` / `directories` 等专用帧都换成了通用 `rpc` 帧）；版本不一致 hub 关 4426，worker 提示跑 `scripts/update-worker.sh`。
 
 #### 4.3.1 分层（端口与适配器）
