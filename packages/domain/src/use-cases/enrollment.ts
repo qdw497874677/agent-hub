@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../ids.ts';
 import type { AuditEntry, HubSettings, Principal } from '../account.ts';
 import { canAddMachines } from '../account.ts';
 import { CREDENTIAL_PREFIX, PAIRING_PREFIX, PAIRING_TTL_MS } from '../enrollment.ts';
@@ -48,7 +48,7 @@ async function audit(
   detail: string
 ): Promise<void> {
   await deps.audit.append({
-    id: randomUUID(),
+    id: newId(),
     actorId: actor.id as AuditEntry['actorId'],
     actorEmail: actor.email,
     action,
@@ -105,7 +105,7 @@ export async function enrollWorker(
   const creator = await deps.users.byId(pairing.createdBy);
   if (!creator || creator.disabledAt !== null) return rejected;
 
-  const workerId = deps.newWorkerId?.() ?? `remote-${randomUUID().slice(0, 8)}`;
+  const workerId = deps.newWorkerId?.() ?? `remote-${newId().slice(0, 8)}`;
   if (!(await deps.enrollment.consumePairing(hash, workerId, now))) return rejected;
 
   const { token } = deps.tokens.issue();
