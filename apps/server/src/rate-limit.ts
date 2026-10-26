@@ -1,4 +1,4 @@
-/** 固定窗口计数：防撞库/刷注册够用，单进程内存即可（多实例时再换）。 */
+/** 固定窗口计数：防撞库/刷注册够用。只放内存是有意的（单实例；取舍见 docs/design/accounts.md §9）。 */
 export function createRateLimiter(options: { max: number; windowMs: number; now: () => number }) {
   const hits = new Map<string, { count: number; resetAt: number }>();
   return {
