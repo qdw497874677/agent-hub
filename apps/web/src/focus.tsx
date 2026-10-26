@@ -60,6 +60,13 @@ function BlockView({ block, agentLabel, sessionId }: { block: Block; agentLabel:
       </div>
     );
   }
+  if (block.kind === 'stall') {
+    return (
+      <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
+        {block.text}
+      </p>
+    );
+  }
   if (block.kind === 'text') {
     return <p className="whitespace-pre-wrap text-body leading-relaxed text-primary/90">{block.text}</p>;
   }

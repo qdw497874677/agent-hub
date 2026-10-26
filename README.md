@@ -47,6 +47,7 @@ scripts/install.sh --no-systemd   # 只装依赖与构建
 | `GROK_COMMAND` | `grok` | Grok Build（xAI 官方 CLI）可执行文件；需先 `grok login` 或设 `XAI_API_KEY` |
 | `WORKER_ID` / `WORKER_LABEL` / `WORKER_ORIGIN` | 首次生成后固定 / `本机`（远程为主机名） / `local` | Worker 的身份、显示名、来源；id 存在 `~/.config/agent-hub/worker-id` |
 | `WORKER_ROOTS` | `$HOME` | 这台 Worker 允许 hub 访问的目录（冒号分隔）：目录浏览、`@` 文件、附件、开会话都只在这里面。远程 Worker 和本机 Worker 都强制；没设置时只放开 `$HOME` |
+| `HUB_STALL_MS` | `300000` | 一轮跑着却这么久（毫秒）没有新输出，就在卡片上提醒「可能卡住了，可以中断」并写日志；设 0 关掉巡检 |
 
 ### 多台机器：任何机器都可以登记成 Worker
 

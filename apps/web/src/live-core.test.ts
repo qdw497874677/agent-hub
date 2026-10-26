@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyFrame, catchUp, type LiveMap } from './live-core.ts';
+import { applyBlocks, applyFrame, catchUp, type LiveMap } from './live-core.ts';
+import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
   s1: { blocks: [{ kind: 'prompt', text: '嗨', attachments: [], seq: 1 }], status: 'running', lastSeq: 1, reason: null, awaiting: true }
@@ -48,4 +49,17 @@ test('带附件的提问：附件元数据跟着 prompt 块走', () => {
     status: 'running'
   });
   assert.deepEqual(next.s1?.blocks.at(-1), { kind: 'prompt', text: '', attachments, seq: 2 });
+});
+
+test('卡顿提醒挂在末尾，来了新输出就撤掉', () => {
+  const stalled = applyBlocks(
+    [{ kind: 'text', text: '在想', seq: 1 }],
+    { kind: 'diagnostic', level: 'warn', text: `${STALL_NOTICE_MARKER}：已经 5 分钟没有新输出` },
+    2
+  );
+  assert.equal(stalled[stalled.length - 1]?.kind, 'stall');
+  const resumed = applyBlocks(stalled, { kind: 'text', delta: '……好了' }, 3);
+  assert.deepEqual(resumed, [{ kind: 'text', text: '在想……好了', seq: 3 }]);
+  const other = applyBlocks(resumed, { kind: 'diagnostic', level: 'info', text: '别的诊断' }, 4);
+  assert.equal(other, resumed);
 });
