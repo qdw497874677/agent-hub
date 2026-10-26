@@ -28,6 +28,8 @@ test("目录选择器：路径框 + 键盘、模糊筛、就地新建、git 标�
     managedAndCreate(page));
   await test.step("托管目录已存在就从那里开始；模糊筛；Tab 补全；git 标记；止于 root", () =>
     startsInManaged(page));
+  await test.step("常驻「新建文件夹」按钮：桌面 1280", () => newFolderButton(page, 1280, "desktop"));
+  await test.step("常驻「新建文件夹」按钮：手机 390", () => newFolderButton(page, 390, "mobile"));
   await test.step("手机上全屏、能点", () => mobileFullScreen(page));
 });
 
@@ -111,4 +113,52 @@ async function mobileFullScreen(page: Page) {
   ).toBeInViewport();
   await picker.getByRole("button", { name: "关闭" }).click();
   await expect(picker).toHaveCount(0);
+}
+
+async function newFolderButton(page: Page, width: number, tag: string) {
+  await page.setViewportSize({ width, height: 844 });
+  mkdirSync(`${MANAGED}/sub`, { recursive: true });
+  let panel, picker;
+  if (width < 768) {
+    // 手机上选择器默认收起，直接点「浏览…」
+    await page.goto("/");
+    await page.getByRole("navigation").getByTitle("新建项目").click();
+    panel = page.getByLabel("新建项目");
+    picker = page.getByLabel("目录选择器");
+    await panel.getByLabel("项目名").fill(NAME);
+    await panel.getByRole("button", { name: "浏览…" }).click();
+  } else ({ panel, picker } = await openPickerFor(page, NAME));
+  const input = pathBox(picker);
+  await expect(input).toHaveValue(`${MANAGED}/`);
+  const button = picker.getByRole("button", { name: "新建文件夹" });
+  await expect(button).toBeInViewport();
+  if (width < 768) expect((await button.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+
+  // Esc 取消
+  await button.click();
+  const name = picker.getByLabel("新文件夹名");
+  await expect(name).toBeFocused();
+  await name.press("Escape");
+  await expect(name).toHaveCount(0);
+  await expect(picker).toBeVisible();
+
+  // 同名 / 空名：就地报错
+  await button.click();
+  await name.fill("sub");
+  await name.press("Enter");
+  await expect(picker.getByRole("alert")).toHaveText("这里已经有同名文件夹");
+  await name.fill("");
+  await name.press("Enter");
+  await expect(picker.getByRole("alert")).toHaveText("名字不能为空");
+
+  // ↵ 建好、进入、「使用」选中它
+  const folder = `new-${tag}`;
+  await name.fill(folder);
+  await page.screenshot({ path: `/workspace/screenshots/picker-new-folder-${tag}.png` });
+  await name.press("Enter");
+  await expect(input).toHaveValue(`${MANAGED}/${folder}/`);
+  expect(existsSync(`${MANAGED}/${folder}`)).toBe(true);
+  await expect(picker.getByRole("option", { name: new RegExp(`使用 .*${folder}`) })).toHaveAttribute("data-selected", "true");
+  if (width < 768) await picker.getByRole("button", { name: "关闭" }).click();
+  else await panel.getByRole("button", { name: "取消" }).click();
 }
