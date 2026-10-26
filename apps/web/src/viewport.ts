@@ -34,3 +34,29 @@ export function panIntoView(viewport: Viewport, node: Rect, screen: { width: num
   if (dx === 0 && dy === 0) return viewport;
   return { x: viewport.x + dx, y: viewport.y + dy, zoom: viewport.zoom };
 }
+
+/**
+ * 打开画布时的视口：放得下就整体居中适配（同 React Flow 的 fitView）；
+ * 放不下（手机上桌面排开的宽布局）就按可读的最小缩放把整棵树的左上角对齐到屏幕左上。
+ * 以前一律居中，手机上树的开头会落到屏幕左边外面，一打开就看不到卡片。
+ */
+export function openingViewport(
+  bounds: Rect,
+  screen: { width: number; height: number },
+  limits: { padding: number; minZoom: number; maxZoom: number }
+): Viewport {
+  const fit = Math.min(
+    screen.width / (bounds.width * (1 + limits.padding * 2)),
+    screen.height / (bounds.height * (1 + limits.padding * 2))
+  );
+  if (fit >= limits.minZoom) {
+    const zoom = Math.min(fit, limits.maxZoom);
+    return {
+      x: screen.width / 2 - (bounds.x + bounds.width / 2) * zoom,
+      y: screen.height / 2 - (bounds.y + bounds.height / 2) * zoom,
+      zoom
+    };
+  }
+  const zoom = limits.minZoom;
+  return { x: MARGIN - bounds.x * zoom, y: MARGIN - bounds.y * zoom, zoom };
+}

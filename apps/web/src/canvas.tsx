@@ -14,7 +14,7 @@ import type { CanvasDto, SaveLayoutRequest, TaskDto } from './api.ts';
 import { resolveLive, type LiveMap } from './live.ts';
 import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
 import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
-import { panIntoView } from './viewport.ts';
+import { openingViewport, panIntoView } from './viewport.ts';
 import { arrange, placeMissing } from './layout.ts';
 import { resolveWorker, useWorkers } from './workers.tsx';
 
@@ -48,6 +48,29 @@ interface Props {
 
 /** 没量到、没拖过的卡按上限估高度：宁可留白，也不压到邻居（会话卡未拖时输出区最高 320px）。 */
 const ESTIMATE: Record<'task' | 'session', number> = { task: 160, session: 480 };
+
+
+const FIT = { padding: 0.12, minZoom: 0.55, maxZoom: 1 };
+
+/**
+ * 打开时适配视口。要等卡片量出真实尺寸再算（最多等约半秒），
+ * 规则见 openingViewport：手机上放不下就左上对齐，不再居中把开头推到屏幕外。
+ */
+function fitOnOpen(
+  instance: Pick<ReactFlowInstance<TaskNode | SessionNode, Edge>, 'getNodes' | 'getNodesBounds' | 'setViewport'>,
+  element: HTMLElement | null,
+  frames = 30
+): void {
+  const nodes = instance.getNodes();
+  const measured = nodes.length > 0 && nodes.every((node) => node.measured?.width);
+  if (!measured && frames > 0) {
+    requestAnimationFrame(() => fitOnOpen(instance, element, frames - 1));
+    return;
+  }
+  if (!element || nodes.length === 0) return;
+  const screen = { width: element.clientWidth, height: element.clientHeight };
+  void instance.setViewport(openingViewport(instance.getNodesBounds(nodes), screen, FIT));
+}
 
 export function CanvasView({
   canvas,
@@ -273,12 +296,12 @@ export function CanvasView({
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.12, minZoom: 0.55, maxZoom: 1 }}
+        fitViewOptions={FIT}
         proOptions={{ hideAttribution: true }}
         onInit={(instance) => {
           flow.current = instance;
           flowFit.current = instance.fitView;
+          fitOnOpen(instance, container.current);
         }}
         onNodeClick={(_, node) => {
           if (node.type !== 'session') return;
