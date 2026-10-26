@@ -44,7 +44,7 @@ test('老库迁移：补 v2 列；open 按有无会话回填成 in_progress / to
 
 test('工作日志往返：seq 原子分配、修订链、分页与排除系统条目', async () => {
   const store = openSqliteStore(':memory:');
-  const project = createProject({ name: 'demo', rootPath: '/tmp/demo', directoryExists: true, now });
+  const project = createProject({ name: 'demo', now });
   assert.ok(project.ok);
   await store.projects.save(project.value);
   const task = createTask({ projectId: project.value.id, title: 't', now });

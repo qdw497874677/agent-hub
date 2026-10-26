@@ -151,7 +151,6 @@ test('@ 引用选择器：名字前缀优先、再包含、再路径、再模糊
 
 test('远程项目：@ 清单与附件回取都问那台 Worker，不读 hub 本机', async () => {
   const w = await world();
-  await w.deps.projects.save({ ...w.project, workerId: 'remote-1' });
   // 会话的工作空间才是权威：它在哪台机器，就问哪台。
   for (const workspace of await w.deps.workspaces.byProject(w.project.id)) {
     await w.deps.workspaces.save({ ...workspace, workerId: 'remote-1' });

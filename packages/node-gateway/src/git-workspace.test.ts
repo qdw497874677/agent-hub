@@ -105,3 +105,38 @@ test('clone 失败：不留半截目录，报错里不带凭据', async () => {
   assert.doesNotMatch(failed.ok ? '' : failed.error.message, /secret/);
   assert.equal(existsSync(join(root, 'x')), false);
 });
+
+test('saveWip：提交全部改动并推送分支；另一份克隆按已有分支检出 worktree', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const a = await git.clone({ repoUrl: url, parent: join(root, 'a'), name: 'demo' });
+  assert.ok(a.ok);
+  const tree = join(root, 'a', '.worktrees', 'demo-wip');
+  assert.ok((await git.addWorktree({ repoPath: a.value.path, path: tree, branch: 'agent-hub/wip-1' })).ok);
+  await writeFile(join(tree, 'new.txt'), 'x');
+  const saved = await git.saveWip(tree, 'WIP: 测试');
+  assert.ok(saved.ok, saved.ok ? '' : saved.error.message);
+  assert.deepEqual(saved.value, { committed: true, pushed: true, branch: 'agent-hub/wip-1', reason: null });
+  const after = await git.status(tree);
+  assert.ok(after.ok && after.value.dirty === false && after.value.unpushed === 0);
+
+  const b = await git.clone({ repoUrl: url, parent: join(root, 'b'), name: 'demo' });
+  assert.ok(b.ok);
+  const there = join(root, 'b', '.worktrees', 'demo-wip');
+  const checked = await git.addWorktree({ repoPath: b.value.path, path: there, branch: 'agent-hub/wip-1', existing: true });
+  assert.ok(checked.ok, checked.ok ? '' : checked.error.message);
+  assert.ok(existsSync(join(there, 'new.txt')));
+
+  // 没有 origin：提交了，但明说没推
+  const lone = join(root, 'lone');
+  await mkdir(lone);
+  sh(lone, 'init', '-q', '-b', 'main');
+  await writeFile(join(lone, 'f.txt'), 'y');
+  const local = await git.saveWip(lone, 'WIP');
+  assert.ok(local.ok && local.value.committed && !local.value.pushed && /origin/.test(local.value.reason ?? ''));
+  // 非 git 目录：什么都不做
+  const plain = join(root, 'plain');
+  await mkdir(plain);
+  const none = await git.saveWip(plain, 'WIP');
+  assert.ok(none.ok && !none.value.committed && none.value.reason === '不是 git 仓库');
+});

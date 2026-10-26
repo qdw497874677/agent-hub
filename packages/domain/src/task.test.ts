@@ -6,23 +6,11 @@ import { asProjectId } from './ids.ts';
 
 const now = 1_700_000_000_000;
 
-test('项目必须绑一个存在的绝对路径', () => {
-  const missing = createProject({
-    name: 'agent-hub',
-    rootPath: '/nope',
-    directoryExists: false,
-    now
-  });
-  assert.ok(!missing.ok);
-  assert.equal(missing.error.code, 'invalid');
-
-  const relative = createProject({
-    name: 'agent-hub',
-    rootPath: 'agent-hub',
-    directoryExists: true,
-    now
-  });
-  assert.ok(!relative.ok);
+test('项目名称不能为空；不需要目录', () => {
+  const blank = createProject({ name: '  ', now });
+  assert.ok(!blank.ok);
+  assert.equal(blank.error.code, 'invalid');
+  assert.ok(createProject({ name: 'agent-hub', now }).ok);
 });
 
 test('任务状态机只允许登记过的迁移', () => {

@@ -27,7 +27,7 @@ export function DeleteProjectDialog({ project, onClose, onDeleted }: { project: 
         会删掉它的全部任务、工作日志、会话记录和画布布局，删了找不回来。还在运行的会话要先停止。
       </p>
       <p className="mb-3 text-sub text-secondary">
-        磁盘上的文件不会动：<span className="break-all font-mono text-meta">{project.rootPath}</span> 会原样保留。
+        磁盘上的文件不会动：工作空间的目录都原样保留（要清理临时工作空间，到项目设置里删）。
       </p>
       <label className="mb-1 block text-meta text-tertiary" htmlFor="delete-project-name">
         输入项目名 <span className="font-mono text-secondary">{project.name}</span> 确认

@@ -12,7 +12,7 @@ const actor = { user: { id: 'u1', email: 'm@b.co', role: 'member', disabledAt: n
 
 async function world(status: 'running' | 'stopped' = 'stopped') {
   const { deps } = inMemoryDeps();
-  const project = createProject({ name: 'demo', rootPath: '/tmp/demo', directoryExists: true, now: 1, id: undefined });
+  const project = createProject({ name: 'demo', now: 1, id: undefined });
   assert.ok(project.ok);
   const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1, id: undefined });
   assert.ok(task.ok);

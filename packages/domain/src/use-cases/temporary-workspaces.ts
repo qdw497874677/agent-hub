@@ -31,6 +31,8 @@ export interface PrepareTemporaryCommand {
   readonly taskId: string;
   readonly workerId: string | null;
   readonly home: string;
+  /** 沿用这个已有分支（换个地方继续），不新开 `agent-hub/…`。只对 git 项目有意义。 */
+  readonly branch?: string | null;
 }
 
 /**
@@ -64,8 +66,9 @@ export async function prepareTemporaryWorkspaceUseCase(
     const made = await gitOn(deps, owner.value).addWorktree({
       repoPath: base.value.path,
       path: `${repoParent === '/' ? '' : repoParent}/.worktrees/${repoName}/${name}`,
-      branch: taskBranch(task.title, id),
-      base: project.repo?.defaultBranch ?? base.value.branch
+      branch: command.branch ?? taskBranch(task.title, id),
+      base: project.repo?.defaultBranch ?? base.value.branch,
+      ...(command.branch ? { existing: true } : {})
     });
     if (!made.ok) return made;
     path = made.value.path;

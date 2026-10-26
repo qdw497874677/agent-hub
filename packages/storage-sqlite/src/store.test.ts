@@ -25,7 +25,7 @@ import { asLoginId, asUserId } from '@agent-hub/domain';
 const now = 1_700_000_000_000;
 
 function world() {
-  const project = createProject({ name: 'demo', rootPath: '/tmp/demo', directoryExists: true, now, id: undefined });
+  const project = createProject({ name: 'demo', now, id: undefined });
   assert.ok(project.ok);
   const task = createTask({ projectId: project.value.id, title: '往返', goal: '一字不差', now, id: undefined });
   assert.ok(task.ok);
@@ -125,9 +125,8 @@ test('数据落在文件里：关掉重开还在', async () => {
     first.close();
     const second = openSqliteStore(file);
     const reopened = await second.sessions.byId(session.id);
-    // 重开时迁移把老会话补到了项目目录对应的长期工作空间上
-    assert.ok(reopened?.workspaceId);
-    assert.deepEqual(reopened, { ...session, workspaceId: reopened.workspaceId });
+    // 新写的项目不再有旧的 root_path：重开时迁移什么都不补
+    assert.deepEqual(reopened, session);
     second.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

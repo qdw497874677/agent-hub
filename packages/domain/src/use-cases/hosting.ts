@@ -1,6 +1,6 @@
 import type { Session } from '../session.ts';
 import type { Project } from '../project.ts';
-import { linkedWorkspaceFor, locationOf } from './workspaces.ts';
+import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
 import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
@@ -62,10 +62,11 @@ export async function ensureHosted(
   if (session.workerId !== null) {
     placed = { ...session, workerId: session.workerId };
   } else {
+    const where = await locationOf(deps, project, session);
     const chosen = placeSession(await deps.gateway.status(), {
       agentId: session.agentId,
       requested: null,
-      projectWorker: project.workerId
+      projectWorker: where.workerId
     });
     if (!chosen.ok) return chosen;
     placed = { ...session, workerId: chosen.value };
@@ -73,7 +74,7 @@ export async function ensureHosted(
   }
   // 迁移前的老会话：补上它一直在用的那个工作空间（同一个目录），以后就按工作空间走。
   if (placed.workspaceId === null) {
-    const linked = await linkedWorkspaceFor(deps, project, placed.workerId);
+    const linked = await defaultWorkspaceFor(deps, project.id);
     if (linked) {
       placed = { ...placed, workspaceId: linked.id };
       await deps.sessions.save(placed);

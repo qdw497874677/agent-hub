@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import type { AgentDescriptor } from '../agent.ts';
 import { asAgentId } from '../ids.ts';
 import { available, capabilityMatrix } from '../capability.ts';
-import { workspaceFor } from '../project.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase } from './projects.ts';
+import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { ingestWorkerEvent, promptSessionUseCase } from './conversation.ts';
 import { listProjectFiles } from './attachments.ts';
-import { HANDOFF_LIMIT, NEEDS_DIRECTORY, continueElsewhereUseCase, handoffBrief } from './continue-elsewhere.ts';
+import { HANDOFF_LIMIT, continueElsewhereUseCase, handoffBrief } from './continue-elsewhere.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -47,21 +47,19 @@ async function world() {
   return { ...w, project: project.value, session: session.value };
 }
 
-test('换台机器继续：目标机器没登记目录时先要目录；给了就登记到项目上', async () => {
+test('换个地方继续：到另一台机器的已有工作空间，项目不变，交接带工作日志背景', async () => {
   const w = await world();
-  const missing = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, workerId: 'studio' });
-  assert.ok(!missing.ok && missing.error.message === NEEDS_DIRECTORY);
-  const relative = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, workerId: 'studio', directory: 'srv/demo' });
-  assert.ok(!relative.ok);
-
-  const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, workerId: 'studio', directory: '/srv/demo' });
+  const there = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'studio', plan: { mode: 'link', path: '/srv/demo' }, home: '/home/me' });
+  assert.ok(there.ok, JSON.stringify(there));
+  const before = await w.deps.projects.byId(w.project.id);
+  const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'workspace', workspaceId: there.value.id }, home: '/home/me' });
   assert.ok(moved.ok, JSON.stringify(moved));
-  const project = await w.deps.projects.byId(w.project.id);
-  assert.deepEqual(project?.directories, { studio: '/srv/demo' });
+  assert.deepEqual(await w.deps.projects.byId(w.project.id), before);
   assert.equal(moved.value.workerId, 'studio');
+  assert.equal(moved.value.workspaceId, there.value.id);
   assert.deepEqual(moved.value.origin, { kind: 'fork', fromSessionId: w.session.id, atSeq: w.session.lastSeq + 4 });
 
-  // 新开（不 resume），目录用那台的；第一条消息是交接摘要
+  // 新开（不 resume），目录用目标工作空间的；第一条消息是任务背景 + 交接摘要
   const start = w.dispatched.filter((c) => c.kind === 'start_session').at(-1);
   assert.ok(start?.kind === 'start_session');
   assert.equal(start.workerId, 'studio');
@@ -72,28 +70,48 @@ test('换台机器继续：目标机器没登记目录时先要目录；给了�
   assert.match(prompt.text, /把登录页改成暗色/);
   assert.match(prompt.text, /好的，改了 login\.css/);
   assert.match(prompt.text, /无法带过来/);
+  assert.match(prompt.text, /代码改动留在原机器上的 \/tmp\/demo/);
+  assert.match(prompt.text, /任务/);
 
-  // 第二次去同一台不用再选目录；在新会话里 @ 列的是那台机器上的目录
-  const again = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, workerId: 'studio' });
-  assert.ok(again.ok);
   const files = await listProjectFiles(w.deps, w.project.id, '', moved.value.id);
   assert.ok(files.ok && files.value.files.includes('on-studio.ts'));
 });
 
-test('换台机器继续：离线、同一台、空会话都说清楚', async () => {
+test('换个地方继续：先提交 WIP 并推送，目标新开临时工作空间沿用同一分支', async () => {
   const w = await world();
-  const same = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, workerId: 'local' });
-  assert.ok(!same.ok && /已经在这台/.test(same.error.message));
-  w.workers[1] = { ...w.workers[1]!, state: 'offline' };
-  const offline = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, workerId: 'studio', directory: '/srv/demo' });
-  assert.ok(!offline.ok && offline.error.code === 'unavailable');
+  await w.deps.projects.save({ ...w.project, repo: { url: 'git@example.com:me/demo.git', defaultBranch: 'main' } });
+  const [source] = await w.deps.workspaces.byProject(w.project.id);
+  assert.ok(source);
+  await w.deps.workspaces.save({ ...source, isGit: true, branch: 'feat/dark' });
+  w.git.statuses.set('/tmp/demo', { dirty: true, untracked: 1, unpushed: 0, branch: 'feat/dark', upstream: null });
+
+  const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
+  assert.ok(moved.ok, JSON.stringify(moved));
+  assert.ok(w.git.calls.some((c) => c.startsWith('local:save_wip:/tmp/demo:WIP')));
+  assert.ok(w.git.calls.some((c) => c.startsWith('studio:worktree:') && c.endsWith('@feat/dark:existing')));
+  const target = await w.deps.workspaces.byId(moved.value.workspaceId!);
+  assert.equal(target?.kind, 'temporary');
+  assert.equal(target?.branch, 'feat/dark');
+  const prompt = w.dispatched.at(-1);
+  assert.ok(prompt?.kind === 'prompt' && /推送到分支 feat\/dark，这里检出的就是这个分支/.test(prompt.text));
 });
 
-test('workspaceFor：会话在登记过的机器上用那台的目录，否则用项目目录', () => {
-  const project = { id: 'p' as never, name: 'p', rootPath: '/a/', workerId: null, directories: { w2: '/b' }, repo: null, description: null, createdAt: 0 };
-  assert.deepEqual(workspaceFor(project, 'w2'), { workerId: 'w2', root: '/b' });
-  assert.deepEqual(workspaceFor(project, 'local'), { workerId: null, root: '/a' });
-  assert.deepEqual(workspaceFor(project, null), { workerId: null, root: '/a' });
+test('换个地方继续：非 git 项目新开临时目录；同一个工作空间、离线、空会话都说清楚', async () => {
+  const w = await world();
+  const [source] = await w.deps.workspaces.byProject(w.project.id);
+  const same = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'workspace', workspaceId: source!.id }, home: '/home/me' });
+  assert.ok(!same.ok && /已经在这个工作空间/.test(same.error.message));
+
+  const plain = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, saveWip: true, home: '/home/me' });
+  assert.ok(plain.ok, JSON.stringify(plain));
+  const target = await w.deps.workspaces.byId(plain.value.workspaceId!);
+  assert.equal(target?.source, 'created');
+  assert.match(target!.path, /^\/srv\/agent-hub\/\.tmp\//);
+  assert.ok(!w.git.calls.some((c) => c.includes('save_wip')));
+
+  w.workers[1] = { ...w.workers[1]!, state: 'offline' };
+  const offline = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'temporary', workerId: 'studio' }, home: '/home/me' });
+  assert.ok(!offline.ok && offline.error.code === 'unavailable');
 });
 
 test('交接摘要：太长时保留开头和最近，并说明省略了多少', () => {

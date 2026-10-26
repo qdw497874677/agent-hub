@@ -3,18 +3,10 @@ import { newProjectId } from './ids.ts';
 import { invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
 
-/** Project 是作用域容器：绑定一个本地目录，没有领域行为。见 GLOSSARY。 */
+/** Project 是「你在做的东西」：不绑机器也不绑目录，在哪干活看工作空间（docs/design/workspaces.md）。 */
 export interface Project {
   readonly id: ProjectId;
   readonly name: string;
-  readonly rootPath: string;
-  /** 目录在哪台 Worker 的文件系统上。null = 和 Server 同机（多机之前的老项目都是）。 */
-  readonly workerId: string | null;
-  /**
-   * 同一份代码在别的 Worker 上的目录（workerId → 绝对路径）。
-   * 只有「换台机器继续」时才会登记；会话落在哪台就用哪台的目录。
-   */
-  readonly directories: Readonly<Record<string, string>>;
   /** 项目的 git 仓库（可选）：新建持久工作空间时 clone 它，临时工作空间据此开分支。 */
   readonly repo: ProjectRepo | null;
   /** 自由格式的项目说明（markdown）：给人看，也原样交给 agent（task.get / 任务背景）。没写是 null。 */
@@ -56,23 +48,10 @@ export interface Location {
   readonly root: string;
 }
 
-/** 会话落在映射过的那台 Worker 上就用那台的目录，否则用项目自己的目录。 */
-export function workspaceFor(project: Project, sessionWorker: string | null): Location {
-  const mapped = sessionWorker !== null && sessionWorker !== project.workerId ? project.directories[sessionWorker] : undefined;
-  const ws = mapped !== undefined ? { workerId: sessionWorker, root: mapped } : { workerId: project.workerId, root: project.rootPath };
-  // 没有目录的项目（W2 起允许）：root 为空串，调用方必须改走工作空间，不能把它当成 /
-  if (ws.root === '') return { workerId: ws.workerId, root: '' };
-  return { workerId: ws.workerId, root: ws.root.replace(/\/+$/, '') || '/' };
-}
-
 export interface CreateProjectInput {
   readonly name: string;
-  readonly rootPath: string;
-  /** 由 WorkspaceFS 提供：目录是否存在。领域层不做 I/O。 */
-  readonly directoryExists: boolean;
   readonly now: number;
   readonly id?: ProjectId;
-  readonly workerId?: string | null;
   readonly repo?: ProjectRepo | null;
   readonly description?: string | null;
 }
@@ -80,15 +59,9 @@ export interface CreateProjectInput {
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
   const name = input.name.trim();
   if (!name) return err(invalid('项目名称不能为空'));
-  // 目录可以不给：项目只是「你在做的东西」，开始任务时再选机器和工作空间
-  if (input.rootPath !== '' && !input.rootPath.startsWith('/')) return err(invalid('目录必须是绝对路径'));
-  if (input.rootPath !== '' && !input.directoryExists) return err(invalid(`目录不存在：${input.rootPath}`));
   return ok({
     id: input.id ?? newProjectId(),
     name,
-    rootPath: input.rootPath,
-    workerId: input.workerId ?? null,
-    directories: {},
     repo: input.repo ?? null,
     description: input.description ?? null,
     createdAt: input.now

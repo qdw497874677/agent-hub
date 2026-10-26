@@ -1,4 +1,4 @@
-import { workspaceFor, type Location, type Project } from '../project.ts';
+import type { Location, Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
 import { projectSlug } from '../directories.ts';
@@ -11,8 +11,8 @@ import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 
 /**
- * 一条会话（或「还没有会话」时的项目本身）实际在哪个目录干活。
- * 有工作空间就听工作空间的；迁移前的老会话没有，就按项目目录推算（与以前完全一样）。
+ * 一条会话实际在哪个目录干活：听它的工作空间。没有工作空间（或已删除）时退回项目的默认工作空间；
+ * 都没有 root 为空串，调用方必须拒绝，不能把它当成 /。
  */
 export async function locationOf(
   deps: Pick<Deps, 'workspaces'>,
@@ -23,35 +23,23 @@ export async function locationOf(
     const workspace = await deps.workspaces.byId(session.workspaceId);
     if (workspace && workspace.state !== 'removed') return { workerId: workspace.workerId, root: workspace.path };
   }
-  return workspaceFor(project, session?.workerId ?? null);
+  const fallback = await defaultWorkspaceFor(deps, project.id);
+  return fallback ? { workerId: fallback.workerId, root: fallback.path } : { workerId: session?.workerId ?? null, root: '' };
 }
 
 /**
- * 「项目目录」对应的长期工作空间：落到哪台机器就用哪台登记过的目录。
- * 迁移会把老数据全登记好；这里兜底，碰到没登记的（迁移后才映射的目录）就补登一条 linked。
+ * 没指定工作空间时用哪个：项目最早登记的、还能用的长期工作空间（迁移来的老项目就是原来的项目目录）。
+ * 给了 workerId（null = Server 本机）就只在那台机器上找。没有返回 null：让人在运行面板里选。
  */
-export async function linkedWorkspaceFor(
-  deps: Pick<Deps, 'workspaces' | 'now'>,
-  project: Project,
-  workerId: string | null
+export async function defaultWorkspaceFor(
+  deps: Pick<Deps, 'workspaces'>,
+  projectId: ProjectId,
+  workerId?: string | null
 ): Promise<Workspace | null> {
-  const place = workspaceFor(project, workerId);
-  if (!place.root.startsWith('/')) return null; // 没有目录的新项目：只能在运行面板里选工作空间
-  const existing = (await deps.workspaces.byProject(project.id)).find(
-    (workspace) => workspace.kind === 'long_lived' && isUsable(workspace) && samePlace(workspace, { workerId: place.workerId, path: place.root })
-  );
-  if (existing) return existing;
-  const created = newWorkspace({
-    projectId: project.id,
-    workerId: place.workerId,
-    path: place.root,
-    kind: 'long_lived',
-    source: 'linked',
-    now: deps.now()
-  });
-  if (!created.ok) return null;
-  await deps.workspaces.save(created.value);
-  return created.value;
+  const candidates = (await deps.workspaces.byProject(projectId))
+    .filter((workspace) => workspace.kind === 'long_lived' && isUsable(workspace) && (workerId === undefined || workspace.workerId === workerId))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  return candidates[0] ?? null;
 }
 
 /** 项目名下还在的工作空间（不含已删除的），长期在前、临时在后，各自按新旧排。 */

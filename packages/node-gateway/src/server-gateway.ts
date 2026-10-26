@@ -16,6 +16,7 @@ import {
   wsClone,
   wsInspect,
   wsRemove,
+  wsSaveWip,
   wsStatus
 } from '@agent-hub/contract';
 import type {
@@ -481,6 +482,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         clone: (input) => call((c) => c.request(wsClone, { ...input, branch: input.branch ?? null }, slow), '下载仓库'),
         addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null }, slow), '新开分支'),
         status: (path) => call((c) => c.request(wsStatus, { path }), '检查改动'),
+        saveWip: (path, message) => call((c) => c.request(wsSaveWip, { path, message }, slow), '提交并推送'),
         remove: (path, kind, options) => call((c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}) }, { timeoutMs: 120_000 }), '删除工作空间')
       };
     }

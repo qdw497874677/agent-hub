@@ -36,24 +36,12 @@ export function toProject(row: Row): Project {
   return {
     id: asProjectId(str(row, 'id')),
     name: str(row, 'name'),
-    rootPath: str(row, 'root_path'),
-    workerId: nullableStr(row, 'worker_id'),
-    directories: parseDirectories(row['directories']),
     repo: nullableStr(row, 'repo_url') === null ? null : { url: str(row, 'repo_url'), defaultBranch: nullableStr(row, 'repo_default_branch') },
     description: nullableStr(row, 'description'),
     createdAt: num(row, 'created_at')
   };
 }
 
-function parseDirectories(raw: unknown): Record<string, string> {
-  try {
-    const value = JSON.parse(typeof raw === 'string' ? raw : '{}') as unknown;
-    if (!value || typeof value !== 'object') return {};
-    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-  } catch {
-    return {};
-  }
-}
 
 export function toTask(row: Row): Task {
   return {

@@ -241,7 +241,9 @@ test('worker 掉线：只有它名下的会话不再算托管', async () => {
   w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
   const here = await derived(w);
   // 同一个任务的后续会话改到远程机器上的项目目录里跑
-  await w.deps.projects.save({ ...w.project, workerId: 'remote-1' });
+  for (const workspace of await w.deps.workspaces.byProject(w.project.id)) {
+    await w.deps.workspaces.save({ ...workspace, workerId: 'remote-1' });
+  }
   const there = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: '' });
   assert.ok(there.ok);
   assert.equal(here.workerId, 'local');
@@ -285,7 +287,9 @@ test('Worker 发来的会话帧只在会话落在它身上时算数', async () =
 test('落点：start_session 带着 workerId；resume 回到原来那台，那台离线就报不可用', async () => {
   const w = await world();
   w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
-  await w.deps.projects.save({ ...w.project, workerId: 'remote-1' });
+  for (const workspace of await w.deps.workspaces.byProject(w.project.id)) {
+    await w.deps.workspaces.save({ ...workspace, workerId: 'remote-1' });
+  }
   const made = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: '', workerId: 'remote-1' });
   assert.ok(made.ok);
   const start = w.dispatched.at(-1);
