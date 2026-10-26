@@ -2,12 +2,12 @@ import { createProject, normalizeDescription, parseRepo } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
 import type { DomainError } from '../errors.ts';
-import { notFound } from '../errors.ts';
+import { invalid, notFound } from '../errors.ts';
 import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
-import { linkedWorkspaceFor } from './workspaces.ts';
+import { newWorkspace, type Workspace } from '../workspace.ts';
 import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, rootsOf } from './machine-dirs.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
@@ -37,29 +37,24 @@ export async function createProjectUseCase(
   const rootPath = command.rootPath?.trim() ?? '';
   const where = rootPath === '' ? ok(null) : await directoryOwner(deps, command.workerId ?? null);
   if (!where.ok) return where;
-  const directoryExists =
-    rootPath === ''
-      ? true
-      : where.value === null
-        ? await deps.fs.directoryExists(rootPath)
-        : await remoteExists(deps, where.value, rootPath);
-  const created = createProject({
-    name: command.name,
-    rootPath,
-    directoryExists,
-    now: deps.now(),
-    workerId: where.value,
-    repo: repo.value,
-    description: description.value
-  });
+  if (rootPath !== '') {
+    if (!rootPath.startsWith('/')) return err(invalid('目录必须是绝对路径'));
+    const exists = where.value === null ? await deps.fs.directoryExists(rootPath) : await remoteExists(deps, where.value, rootPath);
+    if (!exists) return err(invalid(`目录不存在：${rootPath}`));
+  }
+  const created = createProject({ name: command.name, now: deps.now(), repo: repo.value, description: description.value });
   if (!created.ok) return created;
+  let first: Workspace | null = null;
   if (rootPath !== '') {
     const taken = await claimOf(deps, { projectId: created.value.id, workerId: where.value, path: rootPath });
     if (!taken.ok) return taken;
+    // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
+    const linked = newWorkspace({ projectId: created.value.id, workerId: where.value, path: rootPath, kind: 'long_lived', source: 'linked', now: deps.now() });
+    if (!linked.ok) return linked;
+    first = linked.value;
   }
   await deps.projects.save(created.value);
-  // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
-  if (rootPath !== '') await linkedWorkspaceFor(deps, created.value, where.value);
+  if (first) await deps.workspaces.save(first);
   return ok(created.value);
 }
 

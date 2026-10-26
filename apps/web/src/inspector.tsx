@@ -188,7 +188,7 @@ export function Inspector({
           </div>
         </section>
 
-        <ContinueElsewhere project={canvas.project} session={session} onDone={() => onChanged()} />
+        <ContinueElsewhere canvas={canvas} session={session} onDone={() => onChanged()} />
 
         <section>
           <button className="mb-1 text-meta text-tertiary hover:text-primary" onClick={() => setShowJournal(!showJournal)}>

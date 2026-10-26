@@ -51,7 +51,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       return { ok: true, value: { path: target, branch: await currentBranch(simpleGit(target)) } };
     },
 
-    async addWorktree({ repoPath, path, branch, base }) {
+    async addWorktree({ repoPath, path, branch, base, existing }) {
       for (const place of [repoPath, dirname(path)]) {
         const blocked = await guard(place);
         if (blocked) return { ok: false, error: blocked };
@@ -63,6 +63,18 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       const hasOrigin = remotes.some((remote) => remote.name === 'origin');
       if (hasOrigin) await git.fetch('origin').catch(() => undefined); // 离线也能开分支，只是基于本地的
       const local = await git.raw(['branch', '--list', branch]).catch(() => '');
+      if (existing) {
+        // 沿用原分支：本地有就直接检出（它不能正被别的 worktree 占着，git 会拒）；只有远端有就建跟踪分支
+        const remoteOnly = local.trim() === '' && hasOrigin;
+        try {
+          await mkdir(dirname(path), { recursive: true });
+          if (remoteOnly) await git.raw(['worktree', 'add', '--track', '-b', branch, path, `origin/${branch}`]);
+          else await git.raw(['worktree', 'add', path, branch]);
+        } catch (error) {
+          return failed('检出分支', error);
+        }
+        return { ok: true, value: { path, branch } };
+      }
       if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
       const remoteHas = hasOrigin && (await git.raw(['branch', '-r', '--list', `origin/${branch}`]).catch(() => '')).trim() !== '';
       const from = remoteHas ? `origin/${branch}` : base || 'HEAD';
@@ -83,6 +95,32 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         return { ok: true, value: await statusOf(path) };
       } catch (error) {
         return failed('检查改动', error);
+      }
+    },
+
+    async saveWip(path, message) {
+      const blocked = await guard(path);
+      if (blocked) return { ok: false, error: blocked };
+      if (!(await exists(path))) return { ok: false, error: unavailable(`目录不存在：${path}`) };
+      const git = networkGit(path);
+      if (!(await git.checkIsRepo().catch(() => false))) return { ok: true, value: { committed: false, pushed: false, branch: null, reason: '不是 git 仓库' } };
+      try {
+        // symbolic-ref 在还没有提交的新仓库上也能用；detached HEAD 时失败
+        const branch = (await git.raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim();
+        if (branch === '') return { ok: true, value: { committed: false, pushed: false, branch: null, reason: '当前不在任何分支上（detached HEAD）' } };
+        await git.raw(['add', '-A']);
+        const staged = (await git.raw(['diff', '--cached', '--name-only'])).trim() !== '';
+        if (staged) await git.raw(['-c', 'user.name=Agent Hub', '-c', 'user.email=agent-hub@localhost', 'commit', '--no-verify', '-m', message]);
+        const remotes = await git.getRemotes().catch(() => []);
+        if (!remotes.some((remote) => remote.name === 'origin')) return { ok: true, value: { committed: staged, pushed: false, branch, reason: '没有 origin 远端' } };
+        try {
+          await git.raw(['push', '-u', 'origin', branch]);
+        } catch (error) {
+          return { ok: true, value: { committed: staged, pushed: false, branch, reason: `推送失败：${String((error as Error).message ?? error).split('\n')[0]}` } };
+        }
+        return { ok: true, value: { committed: staged, pushed: true, branch, reason: null } };
+      } catch (error) {
+        return failed('提交 WIP', error);
       }
     },
 

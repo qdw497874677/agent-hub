@@ -8,6 +8,7 @@ import {
   wsClone,
   wsInspect,
   wsRemove,
+  wsSaveWip,
   wsStatus,
   type RpcPort
 } from '@agent-hub/contract';
@@ -60,5 +61,6 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined): void 
   port.handle(wsClone, async (input) => unwrap(await need().clone(input)));
   port.handle(wsAddWorktree, async (input) => unwrap(await need().addWorktree(input)));
   port.handle(wsStatus, async ({ path }) => unwrap(await need().status(path)));
+  port.handle(wsSaveWip, async ({ path, message }) => unwrap(await need().saveWip(path, message)));
   port.handle(wsRemove, async ({ path, kind, force }) => unwrap(await need().remove(path, kind, { force: force === true })));
 }

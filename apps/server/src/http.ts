@@ -392,7 +392,7 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/:sessionId/continue', async (c) => {
     const input = await body(c, continueElsewhereRequest);
     if (!input.ok) return input.response;
-    const result = await continueElsewhereUseCase(deps, { sessionId: c.req.param('sessionId'), ...input.value });
+    const result = await continueElsewhereUseCase(deps, { sessionId: c.req.param('sessionId'), ...input.value, home: homedir() });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 

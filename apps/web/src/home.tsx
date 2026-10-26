@@ -22,7 +22,6 @@ export function HomePage({
 }: {
   onOpen: (project: ProjectDto, sessionId?: string) => void;
 }) {
-  const workers = useWorkers();
   const [creating, setCreating] = useState(false);
   const [filter, setFilter] = useState('');
   const [deleting, setDeleting] = useState<ProjectDto | null>(null);
@@ -76,12 +75,10 @@ export function HomePage({
               <button
                 className="min-w-0 flex-1 rounded-sm px-2 py-1 text-left hover:bg-card"
                 onClick={() => onOpen(project)}
-                title={project.rootPath}
               >
                 <span className="block truncate text-body text-secondary">{project.name}</span>
                 <span className="block text-meta text-tertiary">
                   {project.taskCount} 任务 · {ago(project.lastActivityAt)}
-                  {workers.multi && project.workerId ? ` · ${workers.byId(project.workerId)?.label ?? '未知机器'}` : ''}
                 </span>
               </button>
               <button

@@ -47,7 +47,7 @@ export async function deleteProjectUseCase(
     actorEmail: actor.user.email,
     action: 'project.delete',
     target: project.id,
-    detail: `${project.name}（${sessions.length} 个会话；磁盘目录 ${project.rootPath} 保留）`,
+    detail: `${project.name}（${sessions.length} 个会话；工作空间的目录都保留）`,
     at: now
   });
   return ok(project);

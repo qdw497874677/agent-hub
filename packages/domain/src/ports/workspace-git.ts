@@ -35,6 +35,16 @@ export interface WorktreeInput {
   readonly branch: string;
   /** 新分支从哪儿长出来；省略 = 主仓库当前 HEAD。远端已有同名分支时一律基于 origin/<branch>。 */
   readonly base?: string | null;
+  /** true = 分支已经有了（换个地方继续沿用原分支）：直接检出它，不新开。 */
+  readonly existing?: boolean;
+}
+
+/** 「先提交 WIP 并推送分支」的结果。没推上去不是错误：reason 说明为什么（没有 origin、推送被拒…）。 */
+export interface SaveWipOutcome {
+  readonly committed: boolean;
+  readonly pushed: boolean;
+  readonly branch: string | null;
+  readonly reason: string | null;
 }
 
 export type RemoveKind = 'worktree' | 'directory';
@@ -57,6 +67,8 @@ export interface WorkspaceGit {
   clone(input: CloneInput): Promise<Result<{ readonly path: string; readonly branch: string | null }, DomainError>>;
   addWorktree(input: WorktreeInput): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
   status(path: string): Promise<Result<GitStatus, DomainError>>;
+  /** 把所有改动（含未跟踪）提交成一个 WIP 提交，再 `push -u origin <当前分支>`。 */
+  saveWip(path: string, message: string): Promise<Result<SaveWipOutcome, DomainError>>;
   /** worktree 用 `git worktree remove`（不 --force，分支保留）；directory 只删平台建的临时目录。删之前再查一次。 */
   remove(path: string, kind: RemoveKind, options?: RemoveOptions): Promise<Result<RemoveOutcome, DomainError>>;
 }

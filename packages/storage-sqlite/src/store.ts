@@ -84,8 +84,8 @@ export function openSqliteStore(file: string): SqliteStore {
   const insertProject = db.prepare(
     'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, description, created_at) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, root_path = excluded.root_path, worker_id = excluded.worker_id, ' +
-      'directories = excluded.directories, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, description = excluded.description'
+      // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
+      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, description = excluded.description'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
   const selectProjects = db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
@@ -198,9 +198,9 @@ export function openSqliteStore(file: string): SqliteStore {
       insertProject.run(
         project.id,
         project.name,
-        project.rootPath,
-        project.workerId,
-        JSON.stringify(project.directories),
+        '',
+        null,
+        '{}',
         project.repo?.url ?? null,
         project.repo?.defaultBranch ?? null,
         project.description,

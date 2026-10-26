@@ -24,7 +24,7 @@ import { createStreamHub } from './stream-hub.ts';
  * 而 `session_text` 投影里是完整的——两个副本自己打架。
  */
 async function seed(deps: Deps, store: ReturnType<typeof openSqliteStore>) {
-  const project = createProject({ name: 'demo', rootPath: '/tmp/demo', directoryExists: true, now: 1 });
+  const project = createProject({ name: 'demo', now: 1 });
   assert.ok(project.ok);
   const task = createTask({ projectId: project.value.id, title: '并发落盘', now: 1 });
   assert.ok(task.ok);

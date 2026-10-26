@@ -124,10 +124,13 @@ export const forkSessionRequest = z.object({
   model: z.string()
 });
 
-/** 换台机器继续：目标 Worker；那台还没登记目录时带上 directory。 */
+/** 换个地方继续：已有工作空间，或在某台机器上新开临时工作空间；可选先提交 WIP 并推送分支。 */
 export const continueElsewhereRequest = z.object({
-  workerId: id,
-  directory: z.string().nullable().optional()
+  target: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('workspace'), workspaceId: id }),
+    z.object({ kind: z.literal('temporary'), workerId: z.string().min(1).nullable().default(null) })
+  ]),
+  saveWip: z.boolean().default(false)
 });
 
 export const promptRequest = z

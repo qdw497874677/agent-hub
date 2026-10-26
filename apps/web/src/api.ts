@@ -6,6 +6,7 @@ import type {
   StoredAttachmentDto,
   ArtifactDto,
   CanvasDto,
+  ContinueElsewhereRequest,
   CreateTaskRequest,
   DeriveSessionRequest,
   ForkSessionRequest,
@@ -139,8 +140,8 @@ export const api = {
     post<{ entry: WorkLogEntryDto; task: TaskDto }>(`/api/tasks/${taskId}/log`, input),
   derive: (input: DeriveSessionRequest) => post<SessionDto>('/api/sessions/derive', input),
   fork: (input: ForkSessionRequest) => post<SessionDto>('/api/sessions/fork', input),
-  continueElsewhere: (sessionId: string, workerId: string, directory: string | null) =>
-    post<SessionDto>(`/api/sessions/${sessionId}/continue`, { workerId, directory }),
+  continueElsewhere: (sessionId: string, input: ContinueElsewhereRequest) =>
+    post<SessionDto>(`/api/sessions/${sessionId}/continue`, input),
   prompt: (sessionId: string, text: string, attachments: readonly AttachmentInputDto[] = []) =>
     post<{ ok: true }>(`/api/sessions/${sessionId}/prompt`, { text, attachments }),
   projectFiles: (projectId: string, q: string, sessionId?: string) =>

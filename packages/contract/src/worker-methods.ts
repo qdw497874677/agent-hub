@@ -67,7 +67,7 @@ export const wsClone = method(
 
 export const wsAddWorktree = method(
   'ws.add_worktree',
-  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional() }),
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), existing: z.boolean().optional() }),
   z.object({ path: z.string(), branch: z.string() })
 );
 
@@ -81,6 +81,12 @@ export const wsStatus = method(
     branch: z.string().nullable(),
     upstream: z.string().nullable()
   })
+);
+
+export const wsSaveWip = method(
+  'ws.save_wip',
+  z.object({ path: z.string(), message: z.string().min(1) }),
+  z.object({ committed: z.boolean(), pushed: z.boolean(), branch: z.string().nullable(), reason: z.string().nullable() })
 );
 
 /** Worker 删之前会再查一次；有改动就回 removed:false + 原因（不是错误）。 */

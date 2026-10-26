@@ -14,7 +14,7 @@ import { ensureHosted, startCommand } from './hosting.ts';
 import { placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
-import { linkedWorkspaceFor, locationOf } from './workspaces.ts';
+import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
@@ -49,16 +49,15 @@ export async function deriveSessionUseCase(
     if (!isUsable(chosen)) return err(conflict('这个工作空间现在用不了（准备中、失败或已删除）'));
     if (chosen.kind === 'temporary' && chosen.ownerTaskId !== task.id) return err(conflict('这个临时工作空间属于别的任务'));
   }
-  // 选了工作空间：机器跟着工作空间走（null = Server 本机）；没选：老规则（项目目录所在的机器）
+  // 机器跟着工作空间走（null = Server 本机）；没选就用项目的默认工作空间
+  const workspace = chosen ?? (await defaultWorkspaceFor(deps, project.id));
+  if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
   const placed = placeSession(await deps.gateway.status(), {
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
-    projectWorker: chosen ? chosen.workerId : project.workerId
+    projectWorker: workspace.workerId
   });
   if (!placed.ok) return placed;
-
-  const workspace = chosen ?? (await linkedWorkspaceFor(deps, project, placed.value));
-  if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
   const created = deriveSession({
     task,
     agentId,
@@ -130,7 +129,7 @@ export async function forkSessionUseCase(
   const placed = placeSession(await deps.gateway.status(), {
     agentId,
     requested: source.workerId,
-    projectWorker: project.workerId
+    projectWorker: source.workerId
   });
   if (!placed.ok) return placed;
 

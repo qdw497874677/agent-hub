@@ -326,7 +326,7 @@ export function fakeGit(): FakeGit {
           return ok({ path: `${input.parent}/${input.name}`, branch: input.branch ?? 'main' });
         },
         addWorktree: async (input) => {
-          calls.push(`${machine}:worktree:${input.repoPath}->${input.path}@${input.branch}`);
+          calls.push(`${machine}:worktree:${input.repoPath}->${input.path}@${input.branch}${input.existing ? ':existing' : ''}`);
           const reason = fail();
           if (reason) return err(unavailable(reason));
           return ok({ path: input.path, branch: input.branch });
@@ -336,6 +336,15 @@ export function fakeGit(): FakeGit {
           const reason = fail();
           if (reason) return err(unavailable(reason));
           return ok(statusOf(path));
+        },
+        saveWip: async (path, message) => {
+          calls.push(`${machine}:save_wip:${path}:${message}`);
+          const reason = fail();
+          if (reason) return err(unavailable(reason));
+          const status = statusOf(path);
+          const committed = Boolean(status.dirty) || status.untracked > 0;
+          statuses.set(path, { ...status, dirty: false, untracked: 0, unpushed: 0, upstream: `origin/${status.branch}` });
+          return ok({ committed, pushed: true, branch: status.branch, reason: null });
         },
         remove: async (path, kind, options) => {
           calls.push(`${machine}:remove:${kind}:${path}${options?.force ? ':force' : ''}`);

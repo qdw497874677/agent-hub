@@ -13,8 +13,6 @@ async function seed() {
 
   const project = createProject({
     name: 'demo',
-    rootPath: '/tmp/demo',
-    directoryExists: true,
     now,
     id: undefined
   });
@@ -113,8 +111,6 @@ test('按项目隔离：别的项目里的东西搜不到', async () => {
   const { store } = await seed();
   const other = createProject({
     name: '别的',
-    rootPath: '/tmp/other',
-    directoryExists: true,
     now: 1,
     id: undefined
   });

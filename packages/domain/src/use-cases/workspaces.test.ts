@@ -40,7 +40,6 @@ async function folderless() {
 
 test('新建项目可以不选目录：没有工作空间，派生时要求先选', async () => {
   const w = await folderless();
-  assert.equal(w.project.rootPath, '');
   assert.equal((await w.deps.workspaces.byProject(w.project.id)).length, 0);
   const derived = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: '' });
   assert.equal(derived.ok, false);
