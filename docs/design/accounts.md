@@ -186,6 +186,13 @@ HTTP 层（apps/server）只做：解析 cookie / header → 调 `authenticate` 
 
 IP 取 socket 地址；只有设置 `HUB_TRUST_PROXY=1` 时才看 `X-Forwarded-For`（tailscale serve 场景）。
 
+**计数只放进程内存，不落 SQLite（有意的取舍，第四轮审查复核过）。** 实现在 `apps/server/src/rate-limit.ts`，是固定窗口计数，超过 1 万个键时顺手清理过期的。
+- hub 是单进程、单实例，内存计数已经覆盖全部流量。
+- 重启会清零计数，但攻击者不能从外部触发重启；最坏多拿一个窗口的配额（登录 10 次/15 分钟，兑换 10 次/10 分钟）。
+- 密码用 scrypt，令牌是高熵随机串，这点配额不足以撞库。
+- 落库的代价是每次登录尝试都要多一次写库，还要另外清理过期行。
+- 什么时候改：多实例部署，或者出现能被外部触发的重启时。届时把 `createRateLimiter` 抽成端口，SQLite 用 `INSERT … ON CONFLICT DO UPDATE` 实现，调用方不用改。
+
 ## 10. 安全清单
 
 - 防邮箱枚举：登录、忘记密码、注册（邮箱已存在时也回「请查收邮件」，并给原邮箱发一封「有人尝试用你的邮箱注册」）响应一致、耗时一致。
