@@ -205,6 +205,7 @@ function CreateProjectPanel({
   const [rootPath, setRootPath] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('');
+  const [description, setDescription] = useState('');
   const workers = useWorkers();
   const [workerId, setWorkerId] = useState<string | null>(null);
   const chosen = workerId ?? resolveWorker(workers.list, null)?.workerId ?? null;
@@ -218,7 +219,8 @@ function CreateProjectPanel({
       api.createProject({
         name: name.trim(),
         ...(rootPath.trim() === '' ? {} : { rootPath: rootPath.trim(), workerId: chosen }),
-        ...(repoUrl.trim() === '' ? {} : { repoUrl: repoUrl.trim(), defaultBranch: defaultBranch.trim() || null })
+        ...(repoUrl.trim() === '' ? {} : { repoUrl: repoUrl.trim(), defaultBranch: defaultBranch.trim() || null }),
+        ...(description.trim() === '' ? {} : { description })
       }),
     onSuccess: async (created) => {
       // 路由靠 ['projects'] 认项目；只刷 ['home'] 会让新项目在跳过去时「查无此项」。
@@ -305,6 +307,14 @@ function CreateProjectPanel({
           onChange={(event) => setDefaultBranch(event.target.value)}
         />
       </div>
+
+      <textarea
+        aria-label="项目说明"
+        className="mb-3 block min-h-[72px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-accent"
+        value={description}
+        placeholder="项目说明（可选，支持 markdown）：这是什么、仓库在哪、有什么约定。agent 开工时会读到。"
+        onChange={(event) => setDescription(event.target.value)}
+      />
 
       {browsing ? (
         <div className="mb-3">

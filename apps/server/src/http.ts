@@ -12,6 +12,7 @@ import {
   directoryListingSchema,
   makeDirectoryRequest,
   setProjectRepoRequest,
+  setProjectDescriptionRequest,
   homeSchema,
   searchResponseSchema,
   createTaskRequest,
@@ -46,6 +47,7 @@ import {
   createDirectory,
   createProjectUseCase,
   setProjectRepoUseCase,
+  setProjectDescriptionUseCase,
   createTaskUseCase,
   deriveSessionUseCase,
   prepareLongLivedWorkspaceUseCase,
@@ -228,6 +230,14 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, setProjectRepoRequest);
     if (!input.ok) return input.response;
     const result = await setProjectRepoUseCase(deps, { projectId: c.req.param('projectId'), ...input.value });
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  // 改项目说明（项目设置）
+  app.put('/api/projects/:projectId/description', async (c) => {
+    const input = await body(c, setProjectDescriptionRequest);
+    if (!input.ok) return input.response;
+    const result = await setProjectDescriptionUseCase(deps, { projectId: c.req.param('projectId'), ...input.value });
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 

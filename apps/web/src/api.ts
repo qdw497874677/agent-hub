@@ -115,7 +115,10 @@ export const api = {
     workerId?: string | null;
     repoUrl?: string | null;
     defaultBranch?: string | null;
+    description?: string | null;
   }) => post<ProjectDto>('/api/projects', input),
+  setProjectDescription: (projectId: string, description: string | null) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}/description`, { method: 'PUT', body: JSON.stringify({ description }) }),
   workspaces: (projectId: string) => call<WorkspaceViewDto[]>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`),
   createWorkspace: (projectId: string, input: CreateWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`, input),

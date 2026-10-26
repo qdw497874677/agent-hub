@@ -13,6 +13,24 @@ function clip(text: string, maxBytes: number): string {
   return `${out}\n…`;
 }
 
+/** 背景里要带的项目信息（说明原样给；提到 git 仓库的话 agent 自己会用 git）。 */
+export interface ProjectContext {
+  readonly name: string;
+  readonly repoUrl: string | null;
+  readonly description: string | null;
+}
+
+/** 项目说明在背景里最多占这么多，全文用 task_get 读。 */
+const PROJECT_MAX_BYTES = 1500;
+
+function projectPart(project: ProjectContext | null | undefined): string | null {
+  if (!project || (!project.description && !project.repoUrl)) return null;
+  const lines = [`项目：${project.name}`];
+  if (project.repoUrl) lines.push(`仓库：${project.repoUrl}`);
+  if (project.description) lines.push(`项目说明：\n${clip(project.description, PROJECT_MAX_BYTES)}`);
+  return lines.join('\n');
+}
+
 /** 背景里最多带几条较早的日志（每条压成一行）。 */
 const OLDER_ENTRIES = 5;
 
@@ -33,10 +51,11 @@ const oneLine = (text: string): string => {
  * 只在有内容可说时生成（光有标题不值得占上下文）；超过 4KB 先截正文、再截进展。
  * 不写进 journal——用户在对话里看到的仍是自己那句话。
  */
-export function taskBriefing(task: Task, entries: readonly WorkLogEntry[]): string | null {
+export function taskBriefing(task: Task, entries: readonly WorkLogEntry[], project?: ProjectContext | null): string | null {
   const latest = entries.find((entry) => entry.author.kind !== 'system') ?? null;
-  if (!task.goal && !task.summary && entries.length === 0) return null;
-  const head = [`[agent-hub 任务背景] 任务：${task.title}`, task.goal ? `目标：${task.goal}` : null].filter(Boolean).join('\n');
+  const about = projectPart(project);
+  if (!task.goal && !task.summary && entries.length === 0 && !about) return null;
+  const head = [`[agent-hub 任务背景] 任务：${task.title}`, task.goal ? `目标：${task.goal}` : null, about].filter(Boolean).join('\n');
   const tail = '（可用 agent-hub 的 MCP 工具 task_get / task_log_list / task_log_append 读写任务日志；收尾前请写一条日志：做完了什么 / 进行中 / 下一步 / 风险 / 关键文件。）\n[/任务背景]';
   const summaryText = task.summary && (!latest || !latest.body.includes(task.summary)) ? task.summary : null;
   const older = entries
