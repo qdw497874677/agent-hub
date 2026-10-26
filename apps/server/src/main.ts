@@ -86,6 +86,7 @@ const deps: Deps = {
   tasks: store.tasks,
   workLog: store.workLog,
   sessions: store.sessions,
+  workspaces: store.workspaces,
   artifacts: store.artifacts,
   layout: store.layout,
   stream: hub.stream,

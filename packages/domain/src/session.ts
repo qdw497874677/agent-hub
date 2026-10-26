@@ -1,4 +1,4 @@
-import type { AgentId, Seq, SessionId, TaskId } from './ids.ts';
+import type { AgentId, Seq, SessionId, TaskId, WorkspaceId } from './ids.ts';
 import { newSessionId } from './ids.ts';
 import { conflict, invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
@@ -43,6 +43,8 @@ export interface Session {
    * 所以 resume / 分叉都必须回到它。null = 多机之前的老会话，下次托管时再落一次点。
    */
   readonly workerId: string | null;
+  /** 在哪个工作空间里干活（workspaces.md）。null = 迁移前的老会话，按项目目录推算。 */
+  readonly workspaceId: WorkspaceId | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -54,6 +56,7 @@ export interface DeriveSessionInput {
   readonly now: number;
   readonly id?: SessionId;
   readonly workerId?: string | null;
+  readonly workspaceId?: WorkspaceId | null;
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
@@ -75,6 +78,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     options: {},
     optionSpec: [],
     workerId: input.workerId ?? null,
+    workspaceId: input.workspaceId ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -88,6 +92,7 @@ export interface ForkSessionInput {
   readonly now: number;
   readonly id?: SessionId;
   readonly workerId?: string | null;
+  readonly workspaceId?: WorkspaceId | null;
 }
 
 export function forkSession(input: ForkSessionInput): Result<Session, DomainError> {
@@ -110,6 +115,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     options: {},
     optionSpec: [],
     workerId: input.workerId ?? null,
+    workspaceId: input.workspaceId === undefined ? input.source.workspaceId : input.workspaceId,
     createdAt: input.now,
     updatedAt: input.now
   });

@@ -1,4 +1,4 @@
-import { workspaceFor } from '../project.ts';
+import { locationOf } from './workspaces.ts';
 import type { Session } from '../session.ts';
 import type { SessionEvent } from '../event.ts';
 import type { RuntimeOption } from '../option.ts';
@@ -34,7 +34,7 @@ export interface PromptCommand {
  * 能力矩阵里 attachments 为 denied 的 agent 直接拒，原因原样给用户看。
  */
 async function prepareAttachments(
-  deps: Pick<Deps, 'agents' | 'now' | 'projects' | 'tasks'>,
+  deps: Pick<Deps, 'agents' | 'now' | 'projects' | 'tasks' | 'workspaces'>,
   session: Session,
   inputs: readonly AttachmentInput[]
 ): Promise<Result<{ stored: StoredAttachment[]; parts: PromptPart[] }, DomainError>> {
@@ -46,7 +46,7 @@ async function prepareAttachments(
   if (capability?.state === 'denied') return err(invalid(capability.reason ?? '这个 agent 不接收附件'));
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
-  const root = workspaceFor(project, session.workerId).root;
+  const { root } = await locationOf(deps, project, session);
   const at = deps.now();
   const stored: StoredAttachment[] = [];
   const parts: PromptPart[] = [];
@@ -68,7 +68,7 @@ async function prepareAttachments(
 export async function promptSessionUseCase(
   deps: Pick<
     Deps,
-    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'
+    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
   > & Partial<Pick<Deps, 'workLog'>>,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
@@ -108,7 +108,7 @@ async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workL
  * 只有目录在 Server 本机的项目才由 Server 自己 stat。
  */
 async function withBytes(
-  deps: Pick<Deps, 'fs' | 'sessions' | 'tasks' | 'projects'>,
+  deps: Pick<Deps, 'fs' | 'sessions' | 'tasks' | 'projects' | 'workspaces'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<SessionEvent> {
@@ -116,7 +116,7 @@ async function withBytes(
   const session = await deps.sessions.byId(sessionId);
   const project = session ? await projectOf(deps, session) : null;
   if (!project || !session) return event;
-  const workspace = workspaceFor(project, session.workerId);
+  const workspace = await locationOf(deps, project, session);
   if (workspace.workerId !== null) return event;
   const absolute = event.path.startsWith('/') ? event.path : `${workspace.root}/${event.path}`;
   const bytes = await deps.fs.stat(absolute);
@@ -125,7 +125,7 @@ async function withBytes(
 
 /** worker 推上来一条事件：补字节数，然后按会话串行落盘（并发会撞 seq，见 ADR 0004）。 */
 export function ingestWorkerEvent(
-  deps: Pick<Deps, 'artifacts' | 'fs' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks'>,
+  deps: Pick<Deps, 'artifacts' | 'fs' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<Result<Session, DomainError>> {

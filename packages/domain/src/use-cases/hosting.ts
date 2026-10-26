@@ -1,5 +1,6 @@
 import type { Session } from '../session.ts';
-import { workspaceFor, type Project } from '../project.ts';
+import type { Project } from '../project.ts';
+import { linkedWorkspaceFor, locationOf } from './workspaces.ts';
 import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
@@ -17,7 +18,7 @@ type StartCommand = Extract<WorkerCommand, { kind: 'start_session' }>;
  */
 export function startCommand(
   session: Session & { readonly workerId: string },
-  project: Project,
+  workspaceRoot: string,
   resume: StartCommand['resume'],
   inherited: Readonly<Record<string, string | boolean>> = session.options
 ): StartCommand {
@@ -28,7 +29,7 @@ export function startCommand(
     workerId: session.workerId,
     taskId: session.taskId,
     agentId: session.agentId,
-    workspaceRoot: workspaceFor(project, session.workerId).root,
+    workspaceRoot,
     origin: session.origin,
     resume,
     options
@@ -49,7 +50,7 @@ export async function projectOf(
  * 这就是 S7.1「重开浏览器还能接着干活」。
  */
 export async function ensureHosted(
-  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions'>,
+  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'now'>,
   session: Session
 ): Promise<Result<void, DomainError>> {
   if (deps.hosting.has(session.id)) return ok(undefined);
@@ -70,8 +71,17 @@ export async function ensureHosted(
     placed = { ...session, workerId: chosen.value };
     await deps.sessions.save(placed);
   }
+  // 迁移前的老会话：补上它一直在用的那个工作空间（同一个目录），以后就按工作空间走。
+  if (placed.workspaceId === null) {
+    const linked = await linkedWorkspaceFor(deps, project, placed.workerId);
+    if (linked) {
+      placed = { ...placed, workspaceId: linked.id };
+      await deps.sessions.save(placed);
+    }
+  }
+  const { root } = await locationOf(deps, project, placed);
   const resumed = await deps.gateway.dispatch(
-    startCommand(placed, project, { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq })
+    startCommand(placed, root, { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq })
   );
   if (!resumed.ok) return resumed;
   deps.hosting.add(session.id, placed.workerId);

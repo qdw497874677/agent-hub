@@ -22,6 +22,8 @@ import type {
   TaskRepository,
   WorkerCommand,
   WorkspaceFS,
+  Workspace,
+  WorkspaceRepository,
   AccountDeps,
   Login,
   OutgoingEmail,
@@ -54,6 +56,29 @@ export function fakeProjects(): ProjectRepository {
     },
     async remove(id) {
       rows.delete(id);
+    }
+  };
+}
+
+export function fakeWorkspaces(): WorkspaceRepository & { rows: Map<string, Workspace> } {
+  const rows = new Map<string, Workspace>();
+  const all = () => [...rows.values()].sort((a, b) => a.createdAt - b.createdAt);
+  return {
+    rows,
+    async save(workspace) {
+      rows.set(workspace.id, workspace);
+    },
+    async byId(id) {
+      return rows.get(id) ?? null;
+    },
+    async byProject(projectId) {
+      return all().filter((w) => w.projectId === projectId);
+    },
+    async byTask(taskId) {
+      return all().filter((w) => w.ownerTaskId === taskId);
+    },
+    async temporaries() {
+      return all().filter((w) => w.kind === 'temporary' && w.state !== 'removed');
     }
   };
 }
@@ -277,6 +302,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
     tasks,
     workLog: fakeWorkLog(),
     sessions: fakeSessions(tasks.rows),
+    workspaces: fakeWorkspaces(),
     artifacts: fakeArtifacts(),
     layout: fakeLayout(),
     stream: { publish: (frame: SessionStreamFrame) => void frames.push(frame), subscribe: () => () => {} },

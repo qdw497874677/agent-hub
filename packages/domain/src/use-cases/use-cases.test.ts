@@ -84,6 +84,33 @@ test('派生：模型只走 options.model 一条路，并登记为托管中', as
   assert.ok(w.deps.hosting.has(session.id));
 });
 
+test('派生：会话记下它在哪个工作空间干活；分叉沿用同一个；同一目录只登记一次', async () => {
+  const w = await world();
+  const first = await derived(w);
+  const second = await derived(w);
+  assert.ok(first.workspaceId);
+  assert.equal(second.workspaceId, first.workspaceId);
+  const workspace = await w.deps.workspaces.byId(first.workspaceId);
+  assert.equal(workspace?.path, '/tmp/demo');
+  assert.equal(workspace?.kind, 'long_lived');
+  assert.equal(workspace?.source, 'linked');
+  await recordEvent(w.deps, { sessionId: first.id, event: { kind: 'text', delta: 'hi' } });
+  const forked = await forkSessionUseCase(w.deps, { sessionId: first.id, atSeq: 1, agentId: 'fake', model: '' });
+  assert.ok(forked.ok);
+  assert.equal(forked.value.workspaceId, first.workspaceId);
+  assert.equal((await w.deps.workspaces.byProject(w.project.id)).length, 1);
+});
+
+test('老会话（没有工作空间）重新托管时补上它一直在用的目录', async () => {
+  const w = await world();
+  const session = await derived(w);
+  await w.deps.sessions.save({ ...session, workspaceId: null, status: 'done' });
+  w.deps.hosting.drop(session.id);
+  const hosted = await ensureHosted(w.deps, { ...session, workspaceId: null });
+  assert.ok(hosted.ok);
+  assert.equal((await w.deps.sessions.byId(session.id))?.workspaceId, session.workspaceId);
+});
+
 test('派生：网关失败时会话记为 failed，且不算托管', async () => {
   const w = await world({ gateway: { ...localGateway, dispatch: async () => err(unavailable('没有 worker')) } });
   const result = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: '' });
