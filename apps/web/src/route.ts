@@ -7,8 +7,8 @@
  */
 export type View = 'canvas' | 'list' | 'focus';
 
-export type AdminTab = 'overview' | 'users' | 'workers' | 'settings' | 'audit';
-export const ADMIN_TABS: readonly AdminTab[] = ['overview', 'users', 'workers', 'settings', 'audit'];
+export type AdminTab = 'overview' | 'users' | 'workers' | 'assets' | 'settings' | 'audit';
+export const ADMIN_TABS: readonly AdminTab[] = ['overview', 'users', 'workers', 'assets', 'settings', 'audit'];
 
 export type Route =
   | { readonly page: 'home' }
