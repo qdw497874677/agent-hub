@@ -4,7 +4,18 @@ import { useEffect, type ReactNode } from 'react';
  * 对话框共用的壳：遮罩点一下或按 Esc 就关；窄屏上贴底（拇指够得着），宽屏居中。
  * role=dialog + aria-modal，读屏能知道背后的画布暂时不可操作。
  */
-export function DialogShell({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function DialogShell({
+  title,
+  onClose,
+  children,
+  wide = false
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  /** 放 diff、文件这类宽内容：更宽，且内容区自己滚动。 */
+  wide?: boolean;
+}) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
@@ -21,7 +32,7 @@ export function DialogShell({ title, onClose, children }: { title: string; onClo
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="w-full max-w-[420px] rounded-md border border-strong bg-panel p-4"
+        className={`w-full rounded-md border border-strong bg-panel p-4 ${wide ? 'flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-w-[420px]'}`}
         onClick={(event) => event.stopPropagation()}
       >
         {children}

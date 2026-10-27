@@ -41,7 +41,11 @@ import type {
   AuditEntryDto,
   EnrollInfoDto,
   PairingDto,
-  SettingsDto
+  SettingsDto,
+  AssetsOverviewDto,
+  AssetRevisionDto,
+  AssetDiffDto,
+  GitScanDto
 } from '@agent-hub/contract';
 
 export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest };
@@ -196,7 +200,37 @@ export const adminApi = {
     call<{ workerId: string; revokedAt: number }>(`/api/workers/${encodeURIComponent(workerId)}`, { method: 'DELETE' })
 };
 
+/** 资产中心（docs/design/asset-hub.md）：技能与指令，按机器安装。文件内容一律 base64。 */
+export type AssetUploadFile = { readonly path: string; readonly data: string };
+const assetPath = (id: string) => `/api/admin/assets/${encodeURIComponent(id)}`;
+export const assetsApi = {
+  overview: () => call<AssetsOverviewDto>('/api/admin/assets'),
+  upload: (input: { kind: 'skill' | 'instruction'; name?: string; files: AssetUploadFile[] }) =>
+    post<{ id: string }>('/api/admin/assets/upload', input),
+  scanGit: (url: string, ref: string) => post<GitScanDto>('/api/admin/assets/git/scan', { url, ref: ref || null }),
+  importGit: (input: { url: string; ref: string; kind: 'skill' | 'instruction'; path: string }) =>
+    post<{ id: string }>('/api/admin/assets/git/import', { ...input, ref: input.ref || null }),
+  revisions: (id: string) => call<AssetRevisionDto[]>(`${assetPath(id)}/revisions`),
+  file: (id: string, digest: string, path: string) =>
+    call<{ text: string }>(`${assetPath(id)}/file?digest=${digest}&path=${encodeURIComponent(path)}`),
+  diff: (id: string, from: string, to: string) => call<AssetDiffDto>(`${assetPath(id)}/diff?from=${from}&to=${to}`),
+  uploadRevision: (id: string, files: AssetUploadFile[]) =>
+    post<{ changed: boolean; latest: string }>(`${assetPath(id)}/revisions`, { files }),
+  check: (id: string) => post<{ changed: boolean; latest: string }>(`${assetPath(id)}/check`, {}),
+  pin: (id: string, digest: string) => post<{ ok: true }>(`${assetPath(id)}/pin`, { digest }),
+  remove: (id: string) => call<{ ok: true }>(assetPath(id), { method: 'DELETE' }),
+  install: (id: string, workerId: string, installed: boolean) =>
+    call<{ ok: true }>(`${assetPath(id)}/workers/${encodeURIComponent(workerId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ installed })
+    })
+};
+
 export type {
+  AssetsOverviewDto,
+  AssetRevisionDto,
+  AssetDiffDto,
+  GitScanDto,
   WorkLogEntryDto,
   AdminOverviewDto,
   AdminUserDto,

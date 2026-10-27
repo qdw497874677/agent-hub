@@ -5,6 +5,7 @@ import { Users } from './users.tsx';
 import { Workers } from './workers.tsx';
 import { Settings } from './settings.tsx';
 import { Audit } from './audit.tsx';
+import { Assets } from './assets.tsx';
 
 /**
  * 运营后台（#/admin/<分页>），只有主人能进；服务端对 /api/admin/* 同样只认主人。
@@ -14,6 +15,7 @@ const TABS: readonly { readonly id: AdminTab; readonly label: string }[] = [
   { id: 'overview', label: '概览' },
   { id: 'users', label: '用户' },
   { id: 'workers', label: '机器' },
+  { id: 'assets', label: '资产' },
   { id: 'settings', label: '设置' },
   { id: 'audit', label: '审计' }
 ];
@@ -59,10 +61,11 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
         </ul>
       </nav>
       <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
-        <div className="mx-auto max-w-[880px]">
+        <div className="mx-auto max-w-[880px] min-w-0">
           {tab === 'overview' && <Overview />}
           {tab === 'users' && <Users />}
           {tab === 'workers' && <Workers />}
+          {tab === 'assets' && <Assets />}
           {tab === 'settings' && <Settings />}
           {tab === 'audit' && <Audit />}
         </div>
