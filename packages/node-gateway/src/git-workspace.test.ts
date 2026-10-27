@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -139,4 +139,23 @@ test('saveWip：提交全部改动并推送分支；另一份克隆按已有分�
   await mkdir(plain);
   const none = await git.saveWip(plain, 'WIP');
   assert.ok(none.ok && !none.value.committed && none.value.reason === '不是 git 仓库');
+});
+
+test('clone 进空目录可以（目录选择器里刚新建的）；有东西的目录拒绝；失败了还原成空目录', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  await mkdir(join(root, 'picked'));
+  const cloned = await git.clone({ repoUrl: url, parent: root, name: 'picked' });
+  assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
+  assert.equal(cloned.value.path, join(root, 'picked'));
+  assert.equal(cloned.value.branch, 'main');
+
+  const again = await git.clone({ repoUrl: url, parent: root, name: 'picked' });
+  assert.equal(again.ok, false);
+  assert.equal(again.ok ? '' : again.error.code, 'conflict');
+
+  await mkdir(join(root, 'empty'));
+  const broken = await git.clone({ repoUrl: join(root, 'nope.git'), parent: root, name: 'empty' });
+  assert.equal(broken.ok, false);
+  assert.deepEqual(await readdir(join(root, 'empty')), []);
 });

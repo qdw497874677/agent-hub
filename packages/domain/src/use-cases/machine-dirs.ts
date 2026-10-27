@@ -110,6 +110,21 @@ export async function listOn(
   return listed.value.exists ? ok({ path: listed.value.path, entries: listed.value.entries }) : ok(null);
 }
 
+/**
+ * 目录是不是空的（没有子文件夹、没有文件）：人在目录选择器里刚「新建文件夹」出来的那种。
+ * 只看人能看到的东西（隐藏文件不算）；真要往里 clone，git 适配器会再严格查一次。
+ */
+export async function isEmptyDirectory(
+  deps: Pick<Deps, 'fs' | 'gateway'>,
+  route: string | null,
+  listed: { readonly path: string; readonly entries: readonly DirectoryEntry[] }
+): Promise<Result<boolean, DomainError>> {
+  if (listed.entries.length > 0) return ok(false);
+  if (route === null) return ok((await deps.fs.listFiles(listed.path, 1)).files.length === 0);
+  const files = await deps.gateway.listFiles(route, listed.path, 1);
+  return files.ok ? ok(files.value.files.length === 0) : files;
+}
+
 /** 纯字符串的 POSIX 规范化：领域层不碰 node:path。 */
 export function normalize(path: string): string {
   const parts: string[] = [];

@@ -203,8 +203,28 @@ test('仓库地址校验；改仓库可以清空', async () => {
   assert.equal(cleared.value.repo, null);
 });
 
+/** 一块小磁盘：哪些目录在、里面有什么（本机走 fs，remote-1 走网关）。 */
+function disk(w: Awaited<ReturnType<typeof folderless>>) {
+  const dirs = new Set(['/home/me', '/home/me/code', '/home/me/code/demo', '/home/me/code/demo/src', '/home/me/code/fresh', '/srv/work', '/srv/work/fresh', '/srv/work/full']);
+  const files = new Set(['/srv/work/full/README.md', '/home/me/code/notes/a.txt']);
+  dirs.add('/home/me/code/notes');
+  const children = (path: string) =>
+    [...dirs].filter((dir) => dir.startsWith(`${path}/`) && !dir.slice(path.length + 1).includes('/')).map((dir) => ({ name: dir.split('/').at(-1) ?? '', path: dir }));
+  const filesUnder = (path: string) => [...files].filter((file) => file.startsWith(`${path}/`));
+  Object.assign(w.deps.fs, {
+    directoryExists: async (path: string) => dirs.has(path),
+    listDirectories: async (path: string) => children(path),
+    listFiles: async (root: string) => ({ files: filesUnder(root), truncated: false })
+  });
+  Object.assign(w.deps.gateway, {
+    listDirectories: async (_workerId: string, path: string) => ({ ok: true, value: { path, exists: dirs.has(path), entries: children(path) } }),
+    listFiles: async (_workerId: string, root: string) => ({ ok: true, value: { files: filesUnder(root), truncated: false } })
+  });
+}
+
 test('新建持久工作空间可以指定目录：校验后建在那里；不合法的路径一律拒', async () => {
   const w = await folderless();
+  disk(w);
   const create = (workerId: string | null, path: string) =>
     prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId, plan: { mode: 'create', path }, home: '/home/me' });
 
@@ -224,15 +244,42 @@ test('新建持久工作空间可以指定目录：校验后建在那里；不�
     ['/home/me/../etc/x', 'invalid'],
     ['/', 'invalid'],
     ['/etc/evil', 'invalid'], // 本机：不在允许的根目录里
-    ['/home/me/code/demo', 'conflict'] // 已经存在 → 该走「关联已有目录」
+    ['/home/me/code/demo', 'conflict'], // 有子目录 → 该走「选已有目录」
+    ['/home/me/code/notes', 'conflict'], // 有文件
+    ['/home/me/nope/x', 'invalid'] // 父目录不存在
   ];
   for (const [path, kind] of rejected) {
     const result = await create(null, path);
     assert.equal(result.ok, false, path);
     assert.equal(!result.ok && result.error.code, kind, path);
   }
+  const remoteFull = await create('remote-1', '/srv/work/full');
+  assert.equal(!remoteFull.ok && remoteFull.error.code, 'conflict');
   const before = (await w.deps.workspaces.byProject(w.project.id)).length;
   assert.equal(before, 2, '被拒的不登记');
+});
+
+test('新建持久工作空间选到空目录（目录选择器里刚「新建文件夹」的）：直接用它；有仓库就 clone 进去', async () => {
+  const w = await folderless();
+  disk(w);
+  const create = (workerId: string | null, path: string) =>
+    prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId, plan: { mode: 'create', path }, home: '/home/me' });
+
+  const local = await create(null, '/home/me/code/fresh');
+  assert.ok(local.ok, local.ok ? '' : local.error.message);
+  assert.equal(local.value.path, '/home/me/code/fresh');
+  assert.equal(local.value.source, 'created');
+
+  const remote = await create('remote-1', '/srv/work/fresh');
+  assert.ok(remote.ok, remote.ok ? '' : remote.error.message);
+  assert.equal(remote.value.path, '/srv/work/fresh');
+
+  const repo = await setProjectRepoUseCase(w.deps, { projectId: w.project.id, repoUrl: 'https://x/demo.git' });
+  assert.ok(repo.ok);
+  const cloned = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: null, plan: { mode: 'create', path: '/home/me/code/clone-here' }, home: '/home/me' });
+  assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
+  assert.equal(cloned.value.source, 'cloned');
+  assert.equal(cloned.value.path, '/home/me/code/clone-here');
 });
 
 test('老数据迁移：本机 Worker 上线把 workerId=null 的工作空间改记成它的 id；remote 上线不碰；幂等', async () => {

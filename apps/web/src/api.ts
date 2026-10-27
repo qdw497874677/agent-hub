@@ -44,7 +44,7 @@ import type {
   SettingsDto
 } from '@agent-hub/contract';
 
-export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState };
+export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest };
 
 export interface ApiError {
   readonly code: string;

@@ -39,13 +39,18 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       const blocked = await guard(parent);
       if (blocked) return { ok: false, error: blocked };
       const target = join(resolve(parent), name);
-      if (await lstat(target).catch(() => null)) return { ok: false, error: conflict(`「${target}」已经存在`) };
+      // 目标可以是空目录（人在目录选择器里刚「新建文件夹」的），git 本来就能 clone 进空目录
+      const before = await lstat(target).catch(() => null);
+      const emptyDir = before?.isDirectory() === true && (await readdir(target).catch(() => ['?'])).length === 0;
+      if (before && !emptyDir) return { ok: false, error: conflict(`「${target}」已经存在且不是空目录`) };
       try {
         await mkdir(parent, { recursive: true });
         // 不让 git 弹交互式密码提示把进程挂住：没凭据就直接失败，原因回给人看
         await networkGit(parent).clone(repoUrl, name, branch ? ['--branch', branch] : []);
       } catch (error) {
+        // 失败要还原：本来没有就删掉，本来是空目录就清回空目录
         await rm(target, { recursive: true, force: true }).catch(() => undefined);
+        if (emptyDir) await mkdir(target, { recursive: true }).catch(() => undefined);
         return failed('下载仓库', error);
       }
       return { ok: true, value: { path: target, branch: await currentBranch(simpleGit(target)) } };

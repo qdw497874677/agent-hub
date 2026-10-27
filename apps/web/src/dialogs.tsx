@@ -3,7 +3,7 @@ import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-s
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type SessionDto } from './api.ts';
 import { useWorkers } from './workers.tsx';
-import { WorkspaceChooser, choiceReady, type WorkspaceChoice } from './workspace-chooser.tsx';
+import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -91,12 +91,7 @@ export function DeriveDialog({
           projectId,
           choice.type === 'new_temporary'
             ? { workerId: machine, kind: 'temporary', taskId }
-            : {
-                workerId: machine,
-                kind: 'long_lived',
-                mode: choice.mode,
-                ...(choice.mode === 'link' && choice.path ? { path: choice.path } : {})
-              }
+            : longLivedRequest(machine, choice)
         );
         workspaceId = made.id;
         // 建好了就记成「已有的」：重试时不再新建第二个
