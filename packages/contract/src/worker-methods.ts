@@ -95,3 +95,30 @@ export const wsRemove = method(
   z.object({ path: z.string(), kind: z.enum(['worktree', 'directory']), force: z.boolean().optional() }),
   z.union([z.object({ removed: z.literal(true) }), z.object({ removed: z.literal(false), reason: z.string() })])
 );
+
+/* ── 资产中心（docs/design/asset-hub.md）：hub 推清单，Worker 按哈希来取内容，落到自己的资产目录 ── */
+
+const sha = z.string().regex(/^[0-9a-f]{64}$/);
+const assetEntry = z.object({
+  assetId: z.string(),
+  kind: z.enum(['skill', 'instruction']),
+  name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+  description: z.string(),
+  digest: sha,
+  files: z.array(z.object({ path: z.string(), sha256: sha, size: z.number().int().nonnegative() })).max(200)
+});
+export type AssetManifestEntryWire = z.infer<typeof assetEntry>;
+
+/** hub→worker：这台机器该有的全部资产（不在清单里的就删）。回报落地后的目录与版本。 */
+export const assetsSync = method(
+  'assets.sync',
+  z.object({ entries: z.array(assetEntry).max(500) }),
+  z.object({ root: z.string(), installed: z.record(z.string(), sha) })
+);
+
+/** worker→hub：按 sha256 取内容（base64）。hub 只给这台机器清单里有的。 */
+export const assetsFetch = method(
+  'assets.fetch',
+  z.object({ hashes: z.array(sha).min(1).max(200) }),
+  z.object({ blobs: z.array(z.object({ sha256: sha, data: z.string() })) })
+);

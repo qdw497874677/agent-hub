@@ -12,11 +12,12 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
+import { createAssetRepository } from './assets.ts';
 import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateWorkspaces } from './workspaces.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
@@ -31,6 +32,8 @@ export interface SqliteStore extends RepositorySet {
   readonly toolGrants: ToolGrantRepository;
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
   readonly enrollment: EnrollmentRepository;
+  /** 资产中心：技能 / 指令、不可变版本、内容 blob、Worker 安装关系。 */
+  readonly assets: AssetRepository;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -363,6 +366,7 @@ export function openSqliteStore(file: string): SqliteStore {
     toolGrants: createToolGrantRepository(db),
     workspaces: createWorkspaceRepository(db),
     enrollment: createEnrollmentRepository(db),
+    assets: createAssetRepository(db),
     sessions,
     artifacts,
     layout,

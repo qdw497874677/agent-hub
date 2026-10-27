@@ -76,3 +76,9 @@ export type { ToolDescriptor, ToolProvider, ToolContext, JsonSchema } from './po
 export type { ToolGrantRepository } from './ports/tool-grant-repository.ts';
 export * from './use-cases/tool-gateway.ts';
 export * from './tools/task-tools.ts';
+
+export * from './asset.ts';
+export type { AssetRepository } from './ports/asset-repository.ts';
+export type { AssetReader, AssetMetadata, GitCandidate, GitCheckout } from './ports/asset-reader.ts';
+export type { AssetDelivery, AssetSyncBoard, DeliveryReport } from './ports/asset-delivery.ts';
+export * from './use-cases/assets.ts';

@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "@agent-hub/adapter-accounts": "*",
+    "@agent-hub/adapter-assets": "*",
     "@agent-hub/contract": "*",
     "@agent-hub/domain": "*",
     "@agent-hub/node-gateway": "*",

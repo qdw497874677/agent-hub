@@ -21,7 +21,8 @@ const ALLOWED = new Map([
   ['@agent-hub/adapter-grok', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-acp']],
   ['@agent-hub/adapter-acp', ['@agent-hub/domain', '@agent-hub/contract']],
   ['@agent-hub/adapter-accounts', ['@agent-hub/domain']],
-  ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts']],
+  ['@agent-hub/adapter-assets', ['@agent-hub/domain']],
+  ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts', '@agent-hub/adapter-assets']],
   ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
@@ -40,7 +41,7 @@ const FILE_RULES = [
     why: '只依赖 RpcPort 的适配器，不得碰 WebSocket'
   },
   {
-    files: /^apps\/server\/src\/(mcp-relay|mcp-server|worker-enroll)\.ts$/,
+    files: /^apps\/server\/src\/(mcp-relay|mcp-server|worker-enroll|asset-relay)\.ts$/,
     forbid: /^(ws|hono|@agent-hub\/node-gateway|@agent-hub\/storage-sqlite)$/,
     why: 'hub 侧中转 / 接入只依赖端口和领域用例，不得碰传输或存储'
   },
