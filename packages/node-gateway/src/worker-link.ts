@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, createRpcChannel, serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, RpcFailure, assetsFetch, assetsSync, createRpcChannel, serverToWorkerSchema } from '@agent-hub/contract';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type {
   AgentRuntime,
@@ -12,6 +12,7 @@ import type {
 } from '@agent-hub/domain';
 import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
+import type { WorkerAssets } from './worker-assets.ts';
 import type { UpdateReport } from './updater.ts';
 import { createMcpEndpoint } from './mcp-endpoint.ts';
 import { serveWorkerFiles } from './worker-fs-rpc.ts';
@@ -49,6 +50,8 @@ export interface WorkerLinkOptions {
    * 都过 WORKER_ROOTS 边界。不给就回「这台不支持」，附件也不落盘。
    */
   readonly files?: WorkerFiles;
+  /** hub 下发的技能与指令落在这里（专属目录）。不给就回「这台不支持」，会话也不带资产。 */
+  readonly assets?: WorkerAssets;
   /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
   readonly onClose?: (why?: { readonly code: number }) => void;
   /** 每次连上（含重连）。 */
@@ -129,6 +132,21 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   });
   serveWorkerFiles(channel, options.files, options.roots ?? []);
+  channel.handle(assetsSync, async ({ entries }) => {
+    if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');
+    const fetchBlobs = async (hashes: readonly string[]) => {
+      const got = await channel.request(assetsFetch, { hashes: [...hashes] }, { timeoutMs: 120_000 });
+      if (!got.ok) throw new Error(`取资产内容失败：${got.error.message}`);
+      return got.value.blobs;
+    };
+    try {
+      const report = await options.assets.sync(entries, fetchBlobs);
+      options.onLog?.(`资产已同步：${entries.length} 项 → ${report.root}`);
+      return report;
+    } catch (error) {
+      throw new RpcFailure('failed', error instanceof Error ? error.message : String(error));
+    }
+  });
   /** agent 连的本机 MCP 入口：薄适配器，只把 JSON-RPC 经通道交给 hub。 */
   const mcpEndpoint = createMcpEndpoint(channel);
 
@@ -400,7 +418,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return;
     }
 
-    const spec: StartSpec = {
+    let spec: StartSpec = {
       sessionId: asSessionId(command.sessionId),
       taskId: command.taskId as StartSpec['taskId'],
       workspaceRoot: command.workspaceRoot,
@@ -408,6 +426,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       options: command.options,
       ...(command.tools ? { tools: await toolAccess(command.tools) } : {})
     };
+    const assets = await options.assets?.current().catch(() => undefined);
+    if (assets) spec = { ...spec, assets };
 
     // 同一会话又来一次 start（比如断线后 server 重新托管）：先收掉旧的那份 agent。
     // 否则旧进程成了孤儿，它结束时还会把新会话的托管和工具令牌一起带走。

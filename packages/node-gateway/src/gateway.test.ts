@@ -6,7 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
-import { AsyncQueue } from '@agent-hub/contract';
+import { AsyncQueue, assetsFetch } from '@agent-hub/contract';
 import type { AgentDto } from '@agent-hub/contract';
 import {
   CAPABILITY_NAMES,
@@ -26,6 +26,8 @@ import {
 import { createServerGateway, type GatewayHooks } from './server-gateway.ts';
 import { connectWorkerLink, type WorkerLink } from './worker-link.ts';
 import { createWorkerFiles } from './worker-files.ts';
+import { createWorkerAssets } from './worker-assets.ts';
+import { createHash } from 'node:crypto';
 
 /** 一个只会把 prompt 回声成 text 再结束的 agent：够验证指令下行、事件上行。 */
 function echoRuntime(seen: StartSpec[]): AgentRuntime {
@@ -630,4 +632,59 @@ test('4409 顶回：没被 server 接受的连接上不发帧，换条连接被�
   await link.close();
   for (const client of wss.clients) client.terminate();
   await new Promise((resolve) => wss.close(resolve));
+});
+
+test('资产经长连接下发：hub 推清单，Worker 按哈希回取、落进专属目录；之后开的会话带上资产', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'assets-link-'));
+  const rec = recorder(null);
+  const text = Buffer.from('---\nname: greeter\ndescription: Greets\n---\nSay PINEAPPLE.\n');
+  const sha = createHash('sha256').update(text).digest('hex');
+  const asked: string[][] = [];
+  const gateway = createServerGateway({
+    ...rec.hooks,
+    serve: (_workerId, port) =>
+      port.handle(assetsFetch, async ({ hashes }) => {
+        asked.push(hashes);
+        return { blobs: hashes.filter((h) => h === sha).map((sha256) => ({ sha256, data: text.toString('base64') })) };
+      })
+  });
+  const server: Server = createServer();
+  server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    runtimes: [echoRuntime(seen)],
+    assets: createWorkerAssets({ root })
+  });
+  try {
+    await rec.until(() => rec.hellos.length === 1);
+    const entry = {
+      assetId: 'a1',
+      kind: 'skill' as const,
+      name: 'greeter',
+      description: 'Greets',
+      digest: 'd'.repeat(64),
+      files: [{ path: 'SKILL.md', sha256: sha, size: text.length }]
+    };
+    const pushed = await gateway.assets.push('w1', [entry]);
+    assert.deepEqual(pushed, { ok: true, value: { root, installed: { a1: 'd'.repeat(64) } } });
+    assert.deepEqual(asked, [[sha]]);
+    assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /PINEAPPLE/);
+
+    assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
+    await rec.until(() => seen.length === 1);
+    assert.equal(seen[0]?.assets?.skills[0]?.path, join(root, 'skills/greeter/SKILL.md'));
+    assert.equal((await gateway.assets.push('nobody', [])).ok, false, '不在线的机器推不了');
+  } finally {
+    await link.close();
+    gateway.close();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
 });

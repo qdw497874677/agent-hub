@@ -17,6 +17,18 @@ export interface StartSpec {
   readonly options: Readonly<Record<string, string | boolean>>;
   /** hub 能力层（MCP）。运行时按自己的方式注入：ACP 走 session/new.mcpServers，Pi 走环境变量。 */
   readonly tools?: ToolAccess;
+  /** hub 下发到这台 Worker 的技能与指令（专属目录里的绝对路径）。运行时按自己的启动参数指过去，不碰全局目录。 */
+  readonly assets?: SessionAssets;
+}
+
+/** Worker 专属资产目录里此刻装着的东西。 */
+export interface SessionAssets {
+  readonly root: string;
+  /** 放所有技能子目录的那一层；没有技能时为 null。 */
+  readonly skillsDir: string | null;
+  readonly skills: readonly { readonly name: string; readonly description: string; readonly path: string }[];
+  /** path 是 markdown 文件的绝对路径。 */
+  readonly instructions: readonly { readonly name: string; readonly path: string }[];
 }
 
 export interface RuntimeSession {

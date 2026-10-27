@@ -1,4 +1,4 @@
-export { createPiRuntime } from './pi-runtime.ts';
+export { createPiRuntime, piAssetArgs } from './pi-runtime.ts';
 export type { PiRuntimeOptions } from './pi-runtime.ts';
 export { piDescriptor, piDescriptorFor } from './descriptor.ts';
 export { createPiEventMapper, mapPiEvent, type PiEventMapper } from './map-event.ts';
