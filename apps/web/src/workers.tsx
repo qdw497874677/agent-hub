@@ -23,7 +23,7 @@ export function useWorkers() {
   };
 }
 
-/** 本机 worker 的项目 / 会话里 workerId 记作 null：解析成「本机那台」。 */
+/** 老数据里本机 worker 的 workerId 记作 null（新数据记真实 id）：null 解析成「本机那台」。 */
 export function resolveWorker(workers: readonly WorkerInfoDto[], id: string | null | undefined) {
   if (id) return workers.find((worker) => worker.workerId === id);
   return workers.find((worker) => worker.origin === 'local');

@@ -26,6 +26,37 @@ export async function directoryOwner(
   return ok(worker.origin === 'local' ? null : worker.workerId);
 }
 
+/**
+ * 一台机器的两种身份，别混用：
+ * - `workerId`：记账用的真实 Worker id（本机也记它自己的 id；没有本机 Worker 时才是 null）；
+ * - `route`：干活走哪条路——null = Server 自己的 fs / git（本机 Worker 同机，直接做），否则走网关。
+ */
+export interface Machine {
+  readonly workerId: string | null;
+  readonly route: string | null;
+}
+
+/** 人选的机器（null = 本机）→ 记账 id + 干活通道。不认识的 id 报 notFound。 */
+export async function resolveMachine(deps: Pick<Deps, 'gateway'>, requested: string | null): Promise<Result<Machine, DomainError>> {
+  const workers = await deps.gateway.status();
+  if (requested === null) return ok({ workerId: workers.find((worker) => worker.origin === 'local')?.workerId ?? null, route: null });
+  const worker = workers.find((candidate) => candidate.workerId === requested);
+  if (!worker) return err(notFound(`没有这台 Worker：${requested}`));
+  return ok({ workerId: worker.workerId, route: worker.origin === 'local' ? null : worker.workerId });
+}
+
+/** 已记下的 workerId → 干活通道。本机（或老数据的 null）走 Server 自己；不在线的 remote 照样给 id，由网关报错。 */
+export async function routeOf(deps: Pick<Deps, 'gateway'>, workerId: string | null): Promise<string | null> {
+  if (workerId === null) return null;
+  const worker = (await deps.gateway.status()).find((candidate) => candidate.workerId === workerId);
+  return worker?.origin === 'local' ? null : workerId;
+}
+
+/** 已记下的 workerId 那台机器上的 git 操作。 */
+export async function gitFor(deps: Pick<Deps, 'git' | 'gateway'>, workerId: string | null): Promise<WorkspaceGit> {
+  return gitOn(deps, await routeOf(deps, workerId));
+}
+
 export async function remoteExists(deps: Pick<Deps, 'gateway'>, workerId: string, path: string): Promise<boolean> {
   const listed = await deps.gateway.listDirectories(workerId, path);
   return listed.ok && listed.value.exists;

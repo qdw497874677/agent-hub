@@ -5,7 +5,7 @@ import type { DomainError } from '../errors.ts';
 import { invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
-import { createDirectory, directoryOwner, gitOn, parentOf, rootsOf } from './machine-dirs.ts';
+import { createDirectory, gitOn, parentOf, resolveMachine, rootsOf, type Machine } from './machine-dirs.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 
 /** 分支和目录名里用的短 slug：只留 ascii 字母数字，中文标题退回 task。 */
@@ -52,12 +52,13 @@ export async function prepareTemporaryWorkspaceUseCase(
   if (!project) return err(notFound('项目不存在'));
   const task = await deps.tasks.byId(asTaskId(command.taskId));
   if (!task || task.projectId !== project.id) return err(notFound('任务不存在'));
-  const owner = await directoryOwner(deps, command.workerId);
-  if (!owner.ok) return owner;
+  const resolved = await resolveMachine(deps, command.workerId);
+  if (!resolved.ok) return resolved;
+  const machine = resolved.value;
 
   const id = shortId();
   const name = `${branchSlug(task.title)}-${id}`;
-  const base = await gitBase(deps, project, owner.value, command);
+  const base = await gitBase(deps, project, machine, command);
   if (!base.ok) return base;
 
   let path: string;
@@ -65,7 +66,7 @@ export async function prepareTemporaryWorkspaceUseCase(
   if (base.value) {
     const repoParent = parentOf(base.value.path) ?? '/';
     const repoName = base.value.path.split('/').filter(Boolean).at(-1) ?? 'repo';
-    const made = await gitOn(deps, owner.value).addWorktree({
+    const made = await gitOn(deps, machine.route).addWorktree({
       repoPath: base.value.path,
       path: `${repoParent === '/' ? '' : repoParent}/.worktrees/${repoName}/${name}`,
       branch: command.branch ?? taskBranch(task.title, id),
@@ -76,23 +77,23 @@ export async function prepareTemporaryWorkspaceUseCase(
     path = made.value.path;
     branch = made.value.branch;
   } else {
-    const roots = await rootsOf(deps, owner.value, command.workerId, command.home);
+    const roots = await rootsOf(deps, machine.route, command.workerId, command.home);
     const root = roots[0];
     if (root === undefined) return err(invalid('这台机器没有可以新建目录的位置'));
     let parent = root;
     for (const segment of ['agent-hub', '.tmp']) {
-      const made = await createDirectory(deps, { workerId: owner.value, parent, name: segment, home: command.home });
+      const made = await createDirectory(deps, { workerId: machine.workerId, parent, name: segment, home: command.home });
       if (!made.ok) return made;
       parent = made.value.path;
     }
-    const made = await createDirectory(deps, { workerId: owner.value, parent, name, home: command.home });
+    const made = await createDirectory(deps, { workerId: machine.workerId, parent, name, home: command.home });
     if (!made.ok) return made;
     path = made.value.path;
   }
 
   const created = newWorkspace({
     projectId: project.id,
-    workerId: owner.value,
+    workerId: machine.workerId,
     path,
     kind: 'temporary',
     source: base.value ? 'worktree' : 'created',
@@ -111,16 +112,16 @@ export async function prepareTemporaryWorkspaceUseCase(
 async function gitBase(
   deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces'>,
   project: Project,
-  owner: string | null,
+  machine: Machine,
   command: PrepareTemporaryCommand
 ): Promise<Result<Workspace | null, DomainError>> {
   const candidates = (await deps.workspaces.byProject(project.id))
-    .filter((workspace) => workspace.kind === 'long_lived' && isUsable(workspace) && workspace.workerId === owner)
+    .filter((workspace) => workspace.kind === 'long_lived' && isUsable(workspace) && workspace.workerId === machine.workerId)
     .sort((a, b) => b.createdAt - a.createdAt);
   const known = candidates.find((workspace) => workspace.isGit === true);
   if (known) return ok(known);
   // 老登记没探测过：现在问一下
-  const git = gitOn(deps, owner);
+  const git = gitOn(deps, machine.route);
   for (const workspace of candidates.filter((candidate) => candidate.isGit === null)) {
     const inspected = await git.inspect(workspace.path);
     if (!inspected.ok || !inspected.value.isGit) continue;

@@ -6,6 +6,7 @@ import { ATTACHMENT_LIMITS, isSafeRelativePath } from '../attachment.ts';
 import type { Deps } from './deps.ts';
 import { projectOf } from './hosting.ts';
 import { locationOf } from './workspaces.ts';
+import { routeOf } from './machine-dirs.ts';
 
 /** 遍历上限：再大的仓库也只扫这么多，选择器要的是「快」，不是「全」。 */
 const SCAN_LIMIT = 5000;
@@ -38,8 +39,10 @@ export async function listProjectFiles(
   const project = await deps.projects.byId(projectId);
   if (!project) return err(notFound('项目不存在'));
   const session = sessionId ? await deps.sessions.byId(sessionId) : null;
-  const { workerId, root } = await locationOf(deps, project, session);
-  // 目录在哪台机器上就问哪台：Server 不读别的机器上的路径。
+  const location = await locationOf(deps, project, session);
+  const { root } = location;
+  const workerId = await routeOf(deps, location.workerId);
+  // 目录在哪台机器上就问哪台：Server 不读别的机器上的路径（本机 Worker 和 Server 同机，直接读）。
   let scanned: { readonly files: readonly string[]; readonly truncated: boolean };
   if (workerId === null) scanned = await deps.fs.listFiles(root, SCAN_LIMIT);
   else {
@@ -74,7 +77,9 @@ export async function readSessionAttachment(
   if (!session) return err(notFound('会话不存在'));
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
-  const { workerId, root } = await locationOf(deps, project, session);
+  const location = await locationOf(deps, project, session);
+  const { root } = location;
+  const workerId = await routeOf(deps, location.workerId);
   const absolute = `${root}/${path}`;
   let bytes: Uint8Array | null;
   if (workerId === null) bytes = await deps.fs.readFile(absolute);
