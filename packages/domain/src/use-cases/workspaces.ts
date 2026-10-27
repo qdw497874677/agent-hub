@@ -3,7 +3,7 @@ import type { Session } from '../session.ts';
 import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
-import { claimOf, createDirectory, gitOn, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
+import { claimOf, createDirectory, gitOn, isEmptyDirectory, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
 import type { ProjectId } from '../ids.ts';
 import { asProjectId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
@@ -137,13 +137,18 @@ export async function prepareLongLivedWorkspaceUseCase(
       : await managedPlace(deps, project, machine.route, command);
     if (!place.ok) return place;
     if (project.repo) {
-      // 有仓库：把它下载到托管目录（用那台机器自己的 git 凭据）
+      // 有仓库：把它下载到选的目录 / 托管目录（用那台机器自己的 git 凭据；空目录也能直接 clone 进去）
       const cloned = await git.clone({ repoUrl: project.repo.url, parent: place.value.parent, name: place.value.name, branch: project.repo.defaultBranch });
       if (!cloned.ok) return cloned;
       path = cloned.value.path;
       branch = cloned.value.branch;
       isGit = true;
       source = 'cloned';
+    } else if (place.value.exists) {
+      // 人在目录选择器里刚建好的空文件夹：直接用
+      path = `${place.value.parent === '/' ? '' : place.value.parent}/${place.value.name}`;
+      isGit = false;
+      source = 'created';
     } else {
       const made = await createDirectory(deps, { workerId: machine.workerId, parent: place.value.parent, name: place.value.name, home: command.home });
       if (!made.ok) return made;
@@ -178,7 +183,7 @@ async function managedPlace(
   project: Project,
   owner: string | null,
   command: Pick<PrepareLongLivedCommand, 'workerId' | 'home'>
-): Promise<Result<{ readonly parent: string; readonly name: string }, DomainError>> {
+): Promise<Result<{ readonly parent: string; readonly name: string; readonly exists: boolean }, DomainError>> {
   const roots = await rootsOf(deps, owner, command.workerId, command.home);
   const root = roots[0];
   if (root === undefined) return err(invalid('这台机器没有可以新建目录的位置'));
@@ -188,17 +193,21 @@ async function managedPlace(
   if (!listed.ok) return listed;
   const taken = new Set((listed.value?.entries ?? []).map((entry) => entry.name));
   const slug = projectSlug(project.name) ?? 'project';
-  return ok({ parent: base.value.path, name: freeName(slug, taken) });
+  return ok({ parent: base.value.path, name: freeName(slug, taken), exists: false });
 }
 
-/** 人指定的新目录：校验完拆成 parent + name，真正创建（mkdir / clone）留给调用方。 */
+/**
+ * 人指定的新目录：校验完拆成 parent + name，真正创建（mkdir / clone）留给调用方。
+ * 目录可以还不存在（父目录得在），也可以是个空目录（目录选择器里「新建文件夹」刚建的）；
+ * 已经有东西的目录不行——那是「选已有目录」。
+ */
 async function chosenPlace(
   deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'workspaces'>,
   project: Project,
   machine: Machine,
   raw: string,
   home: string
-): Promise<Result<{ readonly parent: string; readonly name: string }, DomainError>> {
+): Promise<Result<{ readonly parent: string; readonly name: string; readonly exists: boolean }, DomainError>> {
   const trimmed = raw.trim();
   if (!trimmed.startsWith('/')) return err(invalid('目录必须是绝对路径'));
   if (trimmed.split('/').includes('..')) return err(invalid('目录里不能有 ..'));
@@ -215,12 +224,16 @@ async function chosenPlace(
   const parentListed = await listOn(deps, machine.route, parent);
   if (!parentListed.ok) return parentListed;
   if (parentListed.value === null) return err(invalid(`父目录不存在：${parent}`));
-  if (parentListed.value.entries.some((entry) => entry.name === name)) {
-    return err(conflict(`「${path}」已经存在；要用已有目录请选「关联已有目录」`));
+  const target = await listOn(deps, machine.route, path);
+  if (!target.ok) return target;
+  if (target.value !== null) {
+    const empty = await isEmptyDirectory(deps, machine.route, target.value);
+    if (!empty.ok) return empty;
+    if (!empty.value) return err(conflict(`「${path}」里已经有东西了；选一个空文件夹，或者改用「选已有目录」`));
   }
   const taken = await claimOf(deps, { projectId: project.id, workerId: machine.workerId, path });
   if (!taken.ok) return taken;
-  return ok({ parent: parentListed.value.path, name });
+  return ok({ parent: parentListed.value.path, name, exists: target.value !== null });
 }
 
 /** slug、slug-2、slug-3……第一个没被占的（§7 托管目录名冲突）。 */

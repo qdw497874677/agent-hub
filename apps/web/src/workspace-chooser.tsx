@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { api, type CanvasDto, type WorkerInfoDto, type WorkspaceDto, type WorkspaceViewDto } from './api.ts';
+import { api, type CanvasDto, type CreateWorkspaceRequest, type WorkerInfoDto, type WorkspaceDto, type WorkspaceViewDto } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkerChip, WorkerPicker, resolveWorker } from './workers.tsx';
 
@@ -12,14 +12,22 @@ import { WorkerChip, WorkerPicker, resolveWorker } from './workers.tsx';
  */
 export type WorkspaceChoice =
   | { readonly type: 'existing'; readonly workspaceId: string }
-  | { readonly type: 'new_long_lived'; readonly mode: 'create' }
-  | { readonly type: 'new_long_lived'; readonly mode: 'link'; readonly path: string | null }
+  | { readonly type: 'new_long_lived'; readonly mode: 'create' | 'link'; readonly path: string | null }
   | { readonly type: 'new_temporary' };
 
 /** 选完了没有：「选已有目录」还没点目录不算。 */
 export function choiceReady(choice: WorkspaceChoice | null): boolean {
   if (choice === null) return false;
-  return !(choice.type === 'new_long_lived' && choice.mode === 'link' && !choice.path);
+  // 新建持久工作空间两种方式都得先选好目录（新建 = 选一个空文件夹 / 放仓库的地方；关联 = 已有目录）
+  return !(choice.type === 'new_long_lived' && !choice.path);
+}
+
+/** 新建持久工作空间的请求体：派生对话框和「换个地方继续」共用。 */
+export function longLivedRequest(
+  machine: string,
+  choice: Extract<WorkspaceChoice, { type: 'new_long_lived' }>
+): CreateWorkspaceRequest {
+  return { workerId: machine, kind: 'long_lived', mode: choice.mode, ...(choice.path ? { path: choice.path } : {}) };
 }
 
 export function useWorkspaceViews(projectId: string) {
@@ -221,12 +229,6 @@ function NewLongLived({
 }) {
   const selected = choice?.type === 'new_long_lived';
   const [picking, setPicking] = useState(false);
-  // 托管目录在哪：问那台机器（它的 roots[0]/agent-hub/<slug>）
-  const managed = useQuery({
-    queryKey: ['managed-dir', machine, canvas.project.name],
-    queryFn: () => api.listDirectories('', machine, canvas.project.name),
-    enabled: selected
-  });
   return (
     <div className={`${rowClass(selected)} flex-col`}>
       <button
@@ -234,7 +236,11 @@ function NewLongLived({
         role="radio"
         aria-checked={selected}
         className="flex w-full items-start gap-2 text-left"
-        onClick={() => onChoice({ type: 'new_long_lived', mode: 'create' })}
+        onClick={() => {
+          if (selected) return;
+          onChoice({ type: 'new_long_lived', mode: 'create', path: null });
+          setPicking(true);
+        }}
       >
         <Radio on={selected} />
         <span className="min-w-0 flex-1">
@@ -247,7 +253,7 @@ function NewLongLived({
           <div className="mb-1.5 flex flex-wrap gap-1.5" role="radiogroup" aria-label="怎么新建">
             {(
               [
-                ['create', canvas.project.repo ? '下载仓库' : '新建文件夹'],
+                ['create', canvas.project.repo ? '下载仓库' : '新建空目录'],
                 ['link', '选已有目录']
               ] as const
             ).map(([mode, text]) => (
@@ -260,57 +266,58 @@ function NewLongLived({
                   choice.mode === mode ? 'border-accent text-primary' : 'border-hair text-secondary hover:border-strong'
                 }`}
                 onClick={() => {
-                  if (mode === 'create') onChoice({ type: 'new_long_lived', mode });
-                  else {
-                    onChoice({ type: 'new_long_lived', mode, path: null });
-                    setPicking(true);
-                  }
+                  if (choice.mode === mode) return;
+                  onChoice({ type: 'new_long_lived', mode, path: null });
+                  setPicking(true);
                 }}
               >
                 {text}
               </button>
             ))}
           </div>
-          {choice.mode === 'create' && canvas.project.repo ? (
-            <p className="text-meta text-tertiary">
-              将把 <span className="font-mono">{repoName(canvas.project.repo.url)}</span> 下载到 {machineName} 的{' '}
-              <span className="font-mono">{managed.data?.managed ? shortPath(managed.data.managed) : '~/agent-hub/…'}</span>
-              （用这台机器自己的 git 凭据）
-            </p>
-          ) : choice.mode === 'create' ? (
-            <p className="text-meta text-tertiary">
-              将在 {machineName} 的 <span className="font-mono">{managed.data?.managed ? shortPath(managed.data.managed) : '~/agent-hub/…'}</span> 下新建
-              {managed.data?.managed ? '（名字被占就自动加 -2）' : ''}
-            </p>
-          ) : (
-            <>
-              <p className="text-meta text-tertiary">
-                {choice.path ? (
-                  <>
-                    将把 <span className="font-mono">{shortPath(choice.path)}</span> 登记成持久工作空间（不会删它）
-                  </>
-                ) : (
-                  '选一个这台机器上已有的目录'
-                )}
-                <button type="button" className="ml-2 text-accent hover:underline" onClick={() => setPicking((open) => !open)}>
-                  {picking ? '收起' : choice.path ? '换一个' : '浏览…'}
-                </button>
-              </p>
-              {picking ? (
-                <div className="mt-2">
-                  <DirectoryPicker
-                    workerId={machine}
-                    project={canvas.project.name}
-                    onCancel={() => setPicking(false)}
-                    onPick={(path) => {
-                      onChoice({ type: 'new_long_lived', mode: 'link', path });
-                      setPicking(false);
-                    }}
-                  />
-                </div>
-              ) : null}
-            </>
-          )}
+          <p className="text-meta text-tertiary">
+            {choice.path === null ? (
+              choice.mode === 'link' ? (
+                '选一个这台机器上已有的目录'
+              ) : canvas.project.repo ? (
+                <>
+                  选一个空文件夹放 <span className="font-mono">{repoName(canvas.project.repo.url)}</span>（可以就地「新建文件夹」）
+                </>
+              ) : (
+                '选一个空文件夹（可以就地「新建文件夹」）'
+              )
+            ) : choice.mode === 'link' ? (
+              <>
+                将把 <span className="font-mono">{shortPath(choice.path)}</span> 登记成持久工作空间（不会删它）
+              </>
+            ) : canvas.project.repo ? (
+              <>
+                将把 <span className="font-mono">{repoName(canvas.project.repo.url)}</span> 下载到 {machineName} 的{' '}
+                <span className="font-mono">{shortPath(choice.path)}</span>（用这台机器自己的 git 凭据）
+              </>
+            ) : (
+              <>
+                将在 {machineName} 的 <span className="font-mono">{shortPath(choice.path)}</span> 新建持久工作空间
+              </>
+            )}
+            <button type="button" className="ml-2 text-accent hover:underline" onClick={() => setPicking((open) => !open)}>
+              {picking ? '收起' : choice.path ? '换一个' : '浏览…'}
+            </button>
+          </p>
+          {picking ? (
+            <div className="mt-2">
+              {/* 和建项目选目录同一个选择器：从托管目录起步、能就地「新建文件夹」、手机全屏 */}
+              <DirectoryPicker
+                workerId={machine}
+                project={canvas.project.name}
+                onCancel={() => setPicking(false)}
+                onPick={(path) => {
+                  onChoice({ type: 'new_long_lived', mode: choice.mode, path });
+                  setPicking(false);
+                }}
+              />
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

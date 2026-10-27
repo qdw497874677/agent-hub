@@ -4,7 +4,7 @@ import type { CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useWorkers } from './workers.tsx';
-import { WorkspaceChooser, choiceReady, useWorkspaceViews, type WorkspaceChoice } from './workspace-chooser.tsx';
+import { WorkspaceChooser, choiceReady, longLivedRequest, useWorkspaceViews, type WorkspaceChoice } from './workspace-chooser.tsx';
 
 /**
  * 换个地方继续（docs/design/workspaces.md §7）。说法要诚实：agent 自己的会话状态搬不走，
@@ -85,12 +85,7 @@ export function ContinueDialog({
       if (choice.type === 'existing') target = { kind: 'workspace', workspaceId: choice.workspaceId };
       else if (choice.type === 'new_temporary') target = { kind: 'temporary', workerId: machine };
       else {
-        const made = await api.createWorkspace(canvas.project.id, {
-          workerId: machine,
-          kind: 'long_lived',
-          mode: choice.mode,
-          ...(choice.mode === 'link' && choice.path ? { path: choice.path } : {})
-        });
+        const made = await api.createWorkspace(canvas.project.id, longLivedRequest(machine, choice));
         setChoice({ type: 'existing', workspaceId: made.id });
         target = { kind: 'workspace', workspaceId: made.id };
       }
