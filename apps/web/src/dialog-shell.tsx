@@ -32,9 +32,18 @@ export function DialogShell({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`w-full rounded-md border border-strong bg-panel p-4 ${wide ? 'flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-w-[420px]'}`}
+        className={`w-full rounded-md border border-strong bg-panel p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-w-[420px]'}`}
         onClick={(event) => event.stopPropagation()}
       >
+        {wide ? (
+          <button
+            aria-label="关闭"
+            className="absolute right-2 top-2 rounded-sm px-2 py-1 text-body text-tertiary hover:text-primary"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        ) : null}
         {children}
       </div>
     </div>
