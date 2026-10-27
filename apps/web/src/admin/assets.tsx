@@ -250,7 +250,7 @@ function Tabs<T extends string>({ value, options, onChange }: { value: T; option
           key={id}
           role="tab"
           aria-selected={value === id}
-          className={`flex-1 rounded-sm px-2 py-1 text-sub ${value === id ? 'bg-card-raised text-primary' : 'text-tertiary hover:text-secondary'}`}
+          className={`flex-1 whitespace-nowrap rounded-sm px-2 py-1 text-sub ${value === id ? 'bg-card-raised text-primary' : 'text-tertiary hover:text-secondary'}`}
           onClick={() => onChange(id)}
         >
           {label}
@@ -436,7 +436,7 @@ function GitForm({ onDone }: { onDone: () => void }) {
         />
         <button
           data-testid="asset-git-scan"
-          className={SECONDARY_BUTTON}
+          className={`${SECONDARY_BUTTON} shrink-0 whitespace-nowrap`}
           disabled={!url.trim() || scanning.isPending}
           onClick={() => scanning.mutate(undefined)}
         >
@@ -463,7 +463,7 @@ function GitForm({ onDone }: { onDone: () => void }) {
                     </span>
                     <span className="block truncate text-meta text-tertiary">{candidate.path || '（仓库根目录）'}</span>
                     {candidate.description ? (
-                      <span className="line-clamp-2 block text-meta text-secondary">{candidate.description}</span>
+                      <span className="line-clamp-2 text-meta text-secondary">{candidate.description}</span>
                     ) : null}
                   </span>
                 </label>
@@ -498,7 +498,11 @@ function GitForm({ onDone }: { onDone: () => void }) {
 function Patch({ patch }: { patch: string }) {
   return (
     <pre className="overflow-x-auto whitespace-pre font-mono text-[12px] leading-[1.45]">
-      {patch.split('\n').map((line, index) => (
+      {patch
+        .split('\n')
+        // 文件名已经在标题里了：去掉 Index / ==== / ---+++ 这几行头
+        .filter((line) => !/^(Index: |={10,}$|--- |\+\+\+ )/.test(line))
+        .map((line, index) => (
         <div
           key={index}
           className={
@@ -597,7 +601,7 @@ function VersionsDialog({ asset, onClose }: { asset: Asset; onClose: () => void 
         {list.map((revision) => (
           <button
             key={revision.digest}
-            className={`shrink-0 rounded-sm border px-2 py-1 text-left text-meta ${
+            className={`shrink-0 whitespace-nowrap rounded-sm border px-2 py-1 text-left text-meta ${
               revision.digest === digest ? 'border-accent text-primary' : 'border-hair text-tertiary hover:border-strong'
             }`}
             onClick={() => {
@@ -613,16 +617,14 @@ function VersionsDialog({ asset, onClose }: { asset: Asset; onClose: () => void 
       </div>
       {current ? (
         <>
-          <div className="mb-2 flex flex-wrap items-center gap-2">
-            <Tabs
-              value={view}
-              onChange={setView}
-              options={[
-                ['files', '文件'],
-                ['diff', previous ? `与上一版 ${short(previous.digest)} 的差异` : '差异']
-              ]}
-            />
-          </div>
+          <Tabs
+            value={view}
+            onChange={setView}
+            options={[
+              ['files', '文件'],
+              ['diff', '与上一版的差异']
+            ]}
+          />
           <p className="mb-2 break-all text-meta text-tertiary">
             {current.commit ? `提交 ${current.commit.slice(0, 10)} · ` : ''}
             {current.files.length} 个文件
