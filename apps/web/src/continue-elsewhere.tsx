@@ -25,8 +25,8 @@ export function ContinueElsewhere({
     <section className="mb-3" aria-label="换个地方继续">
       <button
         className="rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-sage hover:text-sage disabled:opacity-40"
-        disabled={session.lastSeq === 0}
-        title={session.lastSeq === 0 ? '这条会话还没有内容' : undefined}
+        disabled={!canContinueElsewhere(session)}
+        title={canContinueElsewhere(session) ? undefined : CONTINUE_DISABLED_HINT}
         onClick={() => setOpen(true)}
       >
         换个地方继续…
@@ -46,7 +46,14 @@ export function ContinueElsewhere({
   );
 }
 
-function ContinueDialog({
+/** 没说过话的会话没有可搬的上下文。 */
+export function canContinueElsewhere(session: Pick<SessionDto, 'lastSeq'>): boolean {
+  return session.lastSeq > 0;
+}
+export const CONTINUE_DISABLED_HINT = '这条会话还没有内容';
+
+/** 对话框本体：检查器里的按钮、专注对话头部的「⋯」菜单都打开它。 */
+export function ContinueDialog({
   canvas,
   session,
   onClose,

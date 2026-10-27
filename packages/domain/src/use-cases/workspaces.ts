@@ -200,7 +200,8 @@ async function chosenPlace(
   home: string
 ): Promise<Result<{ readonly parent: string; readonly name: string }, DomainError>> {
   const trimmed = raw.trim();
-  if (!trimmed.startsWith('/') || trimmed.split('/').includes('..')) return err(invalid('目录必须是绝对路径'));
+  if (!trimmed.startsWith('/')) return err(invalid('目录必须是绝对路径'));
+  if (trimmed.split('/').includes('..')) return err(invalid('目录里不能有 ..'));
   const path = normalize(trimmed);
   const parent = parentOf(path);
   const name = path.split('/').at(-1) ?? '';

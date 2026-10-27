@@ -249,6 +249,7 @@ function Workspace() {
           onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
           onBack={() => setView(homeView)}
           onChanged={refresh}
+          onOpenSession={openSession}
           onChangeOption={(optionId, value) =>
             changeOption(selectedSession.id, optionId, value)
           }
