@@ -141,6 +141,19 @@ export function isTerminal(session: Session): boolean {
 }
 
 /**
+ * 还没收到过任何一句话的会话（lastSeq = 0）：进程起来了，但从没开过一轮。
+ * 提问会先同步落一条 prompt 事件，所以「发过话」一定有 lastSeq > 0。
+ */
+export function isNeverPrompted(session: Session): boolean {
+  return session.lastSeq === 0;
+}
+
+/** 真在干活：状态是 running，且至少开过一轮。从没发过话的空会话不算。 */
+export function isBusy(session: Session): boolean {
+  return session.status === 'running' && !isNeverPrompted(session);
+}
+
+/**
  * 进程消失后的判定：仍在 running 的会话一律降级为 interrupted。
  * 不保留"运行中"这个错觉，是 S7.1 的全部要点。
  */

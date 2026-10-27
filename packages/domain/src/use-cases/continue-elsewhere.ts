@@ -11,7 +11,8 @@ import { directoryOwner, gitOn } from './machine-dirs.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
-import { interruptSessionUseCase, startCommand } from './hosting.ts';
+import { startCommand } from './hosting.ts';
+import { interruptSessionUseCase } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
 
 /**

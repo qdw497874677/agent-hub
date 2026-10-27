@@ -2,6 +2,7 @@ import { newId } from '../ids.ts';
 import type { Principal } from '../account.ts';
 import type { ProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
+import { isBusy } from '../session.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, forbidden, invalid, notFound } from '../errors.ts';
 import type { Result } from '../result.ts';
@@ -36,7 +37,7 @@ export async function deleteProjectUseCase(
   if (!project) return err(notFound('项目不存在'));
   if (command.confirmName !== project.name) return err(invalid('输入的项目名不对'));
   const sessions = await deps.sessions.listByProject(project.id);
-  const running = sessions.filter((session) => session.status === 'running');
+  const running = sessions.filter(isBusy);
   if (running.length > 0) return err(conflict(`还有 ${running.length} 个会话在运行，先停止再删除`));
   const now = deps.now();
   for (const session of sessions) await deps.toolGrants.revokeSession(session.id, now);

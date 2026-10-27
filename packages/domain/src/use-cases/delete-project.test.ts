@@ -10,7 +10,7 @@ import { deleteProjectUseCase } from './delete-project.ts';
 
 const actor = { user: { id: 'u1', email: 'm@b.co', role: 'member', disabledAt: null }, loginId: 'l1' } as unknown as Principal;
 
-async function world(status: 'running' | 'stopped' = 'stopped') {
+async function world(status: 'running' | 'stopped' = 'stopped', lastSeq = 0) {
   const { deps } = inMemoryDeps();
   const project = createProject({ name: 'demo', now: 1, id: undefined });
   assert.ok(project.ok);
@@ -20,7 +20,7 @@ async function world(status: 'running' | 'stopped' = 'stopped') {
   assert.ok(session.ok);
   await deps.projects.save(project.value);
   await deps.tasks.save(task.value);
-  await deps.sessions.save({ ...session.value, status });
+  await deps.sessions.save({ ...session.value, status, lastSeq });
   const revoked: string[] = [];
   const audit: AuditEntry[] = [];
   const all = {
@@ -43,7 +43,7 @@ test('删除项目：吊销会话令牌、删记录、记审计，并写明目�
 });
 
 test('名字对不上、未登录、还有会话在跑都拒绝，且什么都不删', async () => {
-  const w = await world('running');
+  const w = await world('running', 3);
   const wrong = await deleteProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'dem' });
   assert.equal(!wrong.ok && wrong.error.code, 'invalid');
   const anon = await deleteProjectUseCase(w.deps, null, { projectId: w.project.id, confirmName: 'demo' });
@@ -53,4 +53,11 @@ test('名字对不上、未登录、还有会话在跑都拒绝，且什么都�
   assert.ok(await w.deps.projects.byId(w.project.id));
   assert.deepEqual(w.revoked, []);
   assert.equal(w.audit.length, 0);
+});
+
+test('从没发过话、只是挂着 running 的会话不挡删除', async () => {
+  const w = await world('running', 0);
+  const result = await deleteProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'demo' });
+  assert.ok(result.ok);
+  assert.equal(await w.deps.projects.byId(w.project.id), null);
 });

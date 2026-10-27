@@ -1,7 +1,6 @@
 import type { Session } from '../session.ts';
 import type { Project } from '../project.ts';
 import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
-import { asSessionId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -89,10 +88,4 @@ export async function ensureHosted(
   return ok(undefined);
 }
 
-export async function interruptSessionUseCase(
-  deps: Pick<Deps, 'gateway'>,
-  sessionId: string
-): Promise<Result<void, DomainError>> {
-  return deps.gateway.dispatch({ kind: 'interrupt', sessionId: asSessionId(sessionId) });
-}
 

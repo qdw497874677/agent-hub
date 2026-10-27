@@ -1,4 +1,4 @@
-import { applyEvent, deriveSession, forkSession, markInterrupted, withOptions } from '../session.ts';
+import { applyEvent, deriveSession, forkSession, isNeverPrompted, markInterrupted, withOptions } from '../session.ts';
 import type { Session } from '../session.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { Seq, SessionId } from '../ids.ts';
@@ -272,4 +272,27 @@ export async function changeSessionOption(
   // 只有 agent 知道换完之后整体长什么样。落库交给它的回报（recordSessionOptions），
   // 那一步走 per-session 串行队列，所以不会和我们抢。
   return ok((await deps.sessions.byId(session.id)) ?? session);
+}
+
+/**
+ * 中断 / 停止。正在跑的一轮交给 agent 去停，它会发 ended 收尾。
+ * 但从没发过话的会话没有「这一轮」可停，agent 不会发 ended——
+ * 那就由平台记一条 ended(stopped)，让它离开 running（否则它会永远挡着删项目）。
+ */
+export async function interruptSessionUseCase(
+  deps: Pick<Deps, 'artifacts' | 'gateway' | 'now' | 'queue' | 'sessions' | 'stream'>,
+  sessionId: string
+): Promise<Result<void, DomainError>> {
+  const id = asSessionId(sessionId);
+  const session = await deps.sessions.byId(id);
+  if (!session) return err(notFound('会话不存在'));
+  if (session.status === 'running' && isNeverPrompted(session)) {
+    // 进程可能根本没托管着（比如 hub 重启过）：停不掉也照样收尾。
+    await deps.gateway.dispatch({ kind: 'interrupt', sessionId: id });
+    const ended = await deps.queue.run(id, () =>
+      recordEvent(deps, { sessionId: id, event: { kind: 'ended', outcome: 'stopped', reason: '还没开始就停止了' } })
+    );
+    return ended.ok ? ok(undefined) : ended;
+  }
+  return deps.gateway.dispatch({ kind: 'interrupt', sessionId: id });
 }
