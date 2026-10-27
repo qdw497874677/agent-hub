@@ -77,6 +77,36 @@ test('换个地方继续：到另一台机器的已有工作空间，项目不�
   assert.ok(files.ok && files.value.files.includes('on-studio.ts'));
 });
 
+test('换个地方继续：原模型目标机器上没有，就用目标机器上这个 agent 的默认模型', async () => {
+  const w = await world();
+  w.workers[1] = { ...w.workers[1]!, agentModels: [{ agentId: 'fake', models: ['far-a', 'far-b'], defaultModel: 'far-b' }] };
+  const there = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'studio', plan: { mode: 'link', path: '/srv/demo' }, home: '/home/me' });
+  assert.ok(there.ok, JSON.stringify(there));
+  const moved = await continueElsewhereUseCase(w.deps, { sessionId: w.session.id, target: { kind: 'workspace', workspaceId: there.value.id }, home: '/home/me' });
+  assert.ok(moved.ok, JSON.stringify(moved));
+  assert.equal(moved.value.model, 'far-b');
+  const start = w.dispatched.filter((c) => c.kind === 'start_session').at(-1);
+  assert.ok(start?.kind === 'start_session' && start.options.model === 'far-b');
+});
+
+test('派生会话：点名的模型落点机器上没有，直接拒绝，不发一条注定失败的会话', async () => {
+  const w = await world();
+  w.workers[1] = { ...w.workers[1]!, agentModels: [{ agentId: 'fake', models: ['far-a'], defaultModel: 'far-a' }] };
+  const there = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'studio', plan: { mode: 'link', path: '/srv/demo' }, home: '/home/me' });
+  assert.ok(there.ok, JSON.stringify(there));
+  const before = w.dispatched.length;
+  const denied = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId, agentId: 'fake', model: 'm1', workspaceId: there.value.id });
+  assert.ok(!denied.ok && denied.error.code === 'conflict');
+  assert.match(denied.error.message, /工作站.*没有模型 m1/);
+  assert.equal(w.dispatched.length, before);
+  const fine = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId, agentId: 'fake', model: 'far-a', workspaceId: there.value.id });
+  assert.ok(fine.ok, JSON.stringify(fine));
+  assert.equal(fine.value.workerId, 'studio');
+  // 空串 = 用 agent 自己的默认，总是放行
+  const blank = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId, agentId: 'fake', model: '', workspaceId: there.value.id });
+  assert.ok(blank.ok, JSON.stringify(blank));
+});
+
 test('换个地方继续：先提交 WIP 并推送，目标新开临时工作空间沿用同一分支', async () => {
   const w = await world();
   await w.deps.projects.save({ ...w.project, repo: { url: 'git@example.com:me/demo.git', defaultBranch: 'main' } });
