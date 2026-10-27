@@ -9,7 +9,7 @@ import { isUsable, type Workspace } from '../workspace.ts';
 import type { SaveWipOutcome } from '../ports/workspace-git.ts';
 import { gitFor, resolveMachine } from './machine-dirs.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
-import { placeSession } from '../worker.ts';
+import { carryModelTo, placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
 import { startCommand } from './hosting.ts';
 import { interruptSessionUseCase } from './sessions.ts';
@@ -97,7 +97,7 @@ export async function continueElsewhereUseCase(
     source,
     atSeq: source.lastSeq,
     agentId: source.agentId,
-    model: source.model,
+    model: carryModelTo(workers, placed.value, source.agentId, source.model),
     now: deps.now(),
     workerId: placed.value,
     workspaceId: target.id

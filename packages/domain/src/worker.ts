@@ -13,6 +13,8 @@ export interface WorkerStatus {
   readonly reason?: string;
   /** 这台 Worker 报上来的 agent id。落点只能选「装了这个 agent」的那台。 */
   readonly agentIds?: readonly string[];
+  /** 每个 agent 在这台机器上能用的模型（不同机器的 Pi 配的 provider 不一样）。老 Worker 不报。 */
+  readonly agentModels?: readonly AgentModels[];
   readonly hostname?: string;
   readonly platform?: string;
   /** 目录选择器的起点（通常是那台机器的 $HOME）。 */
@@ -25,6 +27,13 @@ export interface WorkerStatus {
   readonly build?: BuildInfo;
   /** 最近一次远程更新的进度。 */
   readonly update?: WorkerUpdate;
+}
+
+/** 某个 agent 在某台机器上的模型清单。 */
+export interface AgentModels {
+  readonly agentId: string;
+  readonly models: readonly string[];
+  readonly defaultModel: string;
 }
 
 /** 一份代码的身份：package 版本 + git 提交 + Worker 通道协议版本。 */
@@ -100,4 +109,34 @@ export function placeSession(
     online.find((worker) => worker.origin === 'local' && offers(worker)) ?? online.find(offers);
   if (!candidate) return err(unavailable(`没有在线的 Worker 提供 ${request.agentId}`));
   return ok(candidate.workerId);
+}
+
+function modelsOn(workers: readonly WorkerStatus[], workerId: string, agentId: string): AgentModels | null {
+  const entry = workers.find((worker) => worker.workerId === workerId)?.agentModels?.find((item) => item.agentId === agentId);
+  // 没报清单、或 agent 自己不列模型：没法判断，就不拦
+  return entry && entry.models.length > 0 ? entry : null;
+}
+
+/**
+ * 派生会话时点名的模型，落点那台机器上得真有：模型清单是按机器报的，
+ * A 机 Pi 的 provider 在 B 机上可能根本没配，硬发过去只会得到一条秒失败的会话。
+ * 空串 = 用 agent 自己的默认，总是放行。
+ */
+export function checkModelOn(
+  workers: readonly WorkerStatus[],
+  workerId: string,
+  agentId: string,
+  model: string
+): Result<string, DomainError> {
+  const entry = modelsOn(workers, workerId, agentId);
+  if (model === '' || !entry || entry.models.includes(model)) return ok(model);
+  const label = workers.find((worker) => worker.workerId === workerId)?.label ?? workerId;
+  return err(conflict(`「${label}」上的 ${agentId} 没有模型 ${model}，换一个它有的模型`));
+}
+
+/** 换个地方继续：原会话的模型目标机器上没有，就改用目标机器上这个 agent 的默认模型。 */
+export function carryModelTo(workers: readonly WorkerStatus[], workerId: string, agentId: string, model: string): string {
+  const entry = modelsOn(workers, workerId, agentId);
+  if (model === '' || !entry || entry.models.includes(model)) return model;
+  return entry.defaultModel;
 }

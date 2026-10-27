@@ -11,7 +11,7 @@ import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, startCommand } from './hosting.ts';
-import { placeSession } from '../worker.ts';
+import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
 import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
@@ -52,16 +52,19 @@ export async function deriveSessionUseCase(
   // 机器跟着工作空间走（null = Server 本机）；没选就用项目的默认工作空间
   const workspace = chosen ?? (await defaultWorkspaceFor(deps, project.id));
   if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
-  const placed = placeSession(await deps.gateway.status(), {
+  const workers = await deps.gateway.status();
+  const placed = placeSession(workers, {
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
     projectWorker: workspace.workerId
   });
   if (!placed.ok) return placed;
+  const model = checkModelOn(workers, placed.value, agentId, command.model);
+  if (!model.ok) return model;
   const created = deriveSession({
     task,
     agentId,
-    model: command.model,
+    model: model.value,
     now: deps.now(),
     workerId: placed.value,
     workspaceId: workspace.id
@@ -126,18 +129,21 @@ export async function forkSessionUseCase(
   }
 
   // 分叉要读来源会话的 agent 会话文件，那份文件只在来源的那台机器上：钉死在它上面。
-  const placed = placeSession(await deps.gateway.status(), {
+  const workers = await deps.gateway.status();
+  const placed = placeSession(workers, {
     agentId,
     requested: source.workerId,
     projectWorker: source.workerId
   });
   if (!placed.ok) return placed;
+  const model = checkModelOn(workers, placed.value, agentId, command.model);
+  if (!model.ok) return model;
 
   const created = forkSession({
     source,
     atSeq: command.atSeq,
     agentId,
-    model: command.model,
+    model: model.value,
     now: deps.now(),
     workerId: placed.value
   });

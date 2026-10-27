@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type CanvasDto, type SessionDto } from './api.ts';
+import { api, type CanvasDto, type SessionDto, type WorkerInfoDto } from './api.ts';
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
 
@@ -58,6 +58,16 @@ export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone
   );
 }
 
+/** 选中的那台机器上这个 agent 的模型清单；没选机器或老 Worker 没报，返回 null（退回全局清单）。 */
+export function modelsFor(
+  workers: readonly WorkerInfoDto[],
+  machine: string | null,
+  agentId: string
+): { models: readonly string[]; defaultModel: string } | null {
+  if (machine === null) return null;
+  return workers.find((worker) => worker.workerId === machine)?.agentModels?.find((entry) => entry.agentId === agentId) ?? null;
+}
+
 export function DeriveDialog({
   canvas,
   taskId,
@@ -76,6 +86,8 @@ export function DeriveDialog({
   const workers = useWorkers();
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作空间；不预选，没选之前「开始」是灰的
   const [machine, setMachine] = useState<string | null>(null);
+  // 模型清单按机器来：两台机器的 Pi 配的 provider 可能完全不同
+  const offered = modelsFor(workers.list, machine, agentId) ?? { models: agent?.models ?? [], defaultModel: agent?.defaultModel ?? '' };
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
   const queryClient = useQueryClient();
@@ -112,9 +124,11 @@ export function DeriveDialog({
     }
   });
 
+  const offeredKey = `${offered.defaultModel}\n${offered.models.join('\n')}`;
   useEffect(() => {
-    if (agent) setModel(agent.defaultModel);
-  }, [agent]);
+    // 换了 agent 或机器：当前模型那边没有就换成那边的默认
+    setModel((current) => (offered.models.includes(current) ? current : offered.defaultModel));
+  }, [offeredKey]);
 
   // worker 可能比页面晚到（远程机器、或者本机 Pi 还在报模型列表）。不要空着让人点不动。
   useEffect(() => {
@@ -167,13 +181,13 @@ export function DeriveDialog({
           id="derive-model"
           className={`mb-3 ${INPUT}`}
           value={model}
-          disabled={(agent?.models ?? []).length === 0}
+          disabled={offered.models.length === 0}
           onChange={(event) => setModel(event.target.value)}
         >
-          {(agent?.models ?? []).length === 0 ? (
+          {offered.models.length === 0 ? (
             <option value="">用 agent 自己的默认</option>
           ) : (
-            (agent?.models ?? []).map((candidate) => (
+            offered.models.map((candidate) => (
               <option key={candidate} value={candidate}>
                 {candidate}
               </option>

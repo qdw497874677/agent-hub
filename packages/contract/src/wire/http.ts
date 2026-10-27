@@ -224,6 +224,8 @@ export const workerInfoSchema = z.object({
   state: z.enum(['online', 'offline']),
   reason: z.string().optional(),
   agentIds: z.array(z.string()).optional(),
+  /** 每个 agent 在这台机器上的模型清单：派生对话框按选中的机器列模型。 */
+  agentModels: z.array(z.object({ agentId: z.string(), models: z.array(z.string()), defaultModel: z.string() })).optional(),
   hostname: z.string().optional(),
   platform: z.string().optional(),
   roots: z.array(z.string()).optional(),

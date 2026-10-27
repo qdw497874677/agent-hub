@@ -410,6 +410,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       origin: entry.origin,
       state: entry.socket ? 'online' : 'offline',
       agentIds: entry.agents.map((agent) => agent.id),
+      agentModels: entry.agents.map((agent) => ({ agentId: agent.id, models: agent.models, defaultModel: agent.defaultModel })),
       roots: entry.roots,
       lastSeenAt: entry.lastSeenAt,
       sessionCount,
