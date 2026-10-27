@@ -151,17 +151,21 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
   });
   app.post('/api/admin/workers/:id/disconnect', async (c) => {
     const result = await disconnectWorker(deps, owner(c), c.req.param('id'));
-    return result.ok ? c.json(workerDto(result.value, deps.workers.hubBuild())) : fail(c, result.error);
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workerDto(result.value, deps.workers.hubBuild(), (await enrolments()).get(result.value.workerId)));
   });
   // 更新：不收请求体——目标永远是 hub 自己的提交（见 domain updateWorker）。
   app.post('/api/admin/workers/update-outdated', async (c) => {
     const result = await updateOutdatedWorkers(deps, owner(c));
+    if (!result.ok) return fail(c, result.error);
     const hub = deps.workers.hubBuild();
-    return result.ok ? c.json(result.value.map((worker) => workerDto(worker, hub))) : fail(c, result.error);
+    const known = await enrolments();
+    return c.json(result.value.map((worker) => workerDto(worker, hub, known.get(worker.workerId))));
   });
   app.post('/api/admin/workers/:id/update', async (c) => {
     const result = await updateWorker(deps, owner(c), c.req.param('id'));
-    return result.ok ? c.json(workerDto(result.value, deps.workers.hubBuild()), 202) : fail(c, result.error);
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workerDto(result.value, deps.workers.hubBuild(), (await enrolments()).get(result.value.workerId)), 202);
   });
 
   app.get('/api/admin/settings', async (c) => c.json(await deps.settings.get()));

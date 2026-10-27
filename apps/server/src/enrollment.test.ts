@@ -90,12 +90,19 @@ test('机器列表标出谁接入的；成员不能吊销别人的机器，主�
 
   const listed = (await owner('/api/admin/workers')).body.workers as { workerId: string; enrolledBy: string; dedicated: boolean }[];
   assert.deepEqual(listed.map((w) => [w.workerId, w.enrolledBy, w.dedicated]), [[workerId, 'm@b.co', true]]);
+  // 更新、断开回的那台机器也带着接入信息，界面不会把它闪成「共享令牌」
+  const updated = (await owner(`/api/admin/workers/${workerId}/update`, { method: 'POST' })).body as { enrolledBy: string; dedicated: boolean };
+  assert.deepEqual([updated.enrolledBy, updated.dedicated], ['m@b.co', true]);
+  const batch = (await owner('/api/admin/workers/update-outdated', { method: 'POST' })).body as { enrolledBy: string }[];
+  assert.ok(batch.every((w) => w.enrolledBy === 'm@b.co'));
+  const cut = (await owner(`/api/admin/workers/${workerId}/disconnect`, { method: 'POST' })).body as { enrolledBy: string; dedicated: boolean };
+  assert.deepEqual([cut.enrolledBy, cut.dedicated], ['m@b.co', true]);
 
   const pairing2 = await owner('/api/workers/pairing', { method: 'POST' });
   const second = (await h.enroll(pairing2.body.code)).body.workerId as string;
   assert.equal((await member(`/api/workers/${second}`, { method: 'DELETE' })).status, 403);
   assert.equal((await member(`/api/workers/${workerId}`, { method: 'DELETE' })).status, 200);
-  assert.deepEqual(h.admin.disconnected, [workerId]);
+  assert.deepEqual(h.admin.disconnected, [workerId, workerId], '上面手动断开一次，吊销再断一次');
   const audit = (await owner('/api/admin/audit')).body as { action: string }[];
   assert.equal(audit[0]?.action, 'worker.revoke');
   assert.ok(audit.some((a) => a.action === 'worker.enroll'));
