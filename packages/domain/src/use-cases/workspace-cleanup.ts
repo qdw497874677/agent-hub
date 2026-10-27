@@ -5,7 +5,7 @@ import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
-import { gitOn } from './machine-dirs.ts';
+import { gitFor } from './machine-dirs.ts';
 
 type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'>;
 
@@ -58,7 +58,7 @@ export async function sweepTemporaryWorkspacesUseCase(
       skipped.push(workspace.id);
       continue;
     }
-    const git = gitOn(deps, workspace.workerId);
+    const git = await gitFor(deps, workspace.workerId);
     const status = await git.status(workspace.path);
     if (!status.ok) {
       skipped.push(workspace.id); // 多半是机器离线：上线后再查
@@ -95,7 +95,7 @@ export async function workspaceChangesUseCase(
 ): Promise<Result<{ readonly status: GitStatus; readonly reason: string | null }, DomainError>> {
   const workspace = await deps.workspaces.byId(asWorkspaceId(workspaceId));
   if (!workspace || workspace.state === 'removed') return err(notFound('工作空间不存在'));
-  const status = await gitOn(deps, workspace.workerId).status(workspace.path);
+  const status = await (await gitFor(deps, workspace.workerId)).status(workspace.path);
   if (!status.ok) return status;
   return ok({ status: status.value, reason: unsavedReason(status.value) });
 }
@@ -132,7 +132,7 @@ export async function removeWorkspaceUseCase(
       );
       if (children.length > 0) return err(conflict(`还有 ${children.length} 个临时工作空间是从它开出来的，先处理它们`));
     }
-    const outcome = await gitOn(deps, workspace.workerId).remove(workspace.path, removeKind(workspace), { force: command.force === true });
+    const outcome = await (await gitFor(deps, workspace.workerId)).remove(workspace.path, removeKind(workspace), { force: command.force === true });
     if (!outcome.ok) return outcome;
     if (!outcome.value.removed) {
       const keptOne = workspace.kind === 'temporary' ? markKept(workspace, outcome.value.reason, deps.now()) : workspace;

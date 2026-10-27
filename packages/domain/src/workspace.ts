@@ -17,6 +17,7 @@ export interface Workspace {
   readonly id: WorkspaceId;
   readonly projectId: ProjectId;
   /** 哪台 Worker 的文件系统。null = 和 Server 同机（多机之前迁移过来的老目录）。 */
+  /** 在哪台 Worker 上（本机也记真实 id）。null 只出现在老数据 / 没有本机 Worker 时，按 Server 本机处理。 */
   readonly workerId: string | null;
   readonly path: string;
   readonly kind: WorkspaceKind;

@@ -7,7 +7,8 @@ import { createProjectUseCase, setProjectRepoUseCase } from './projects.ts';
 import { parseRepo } from '../project.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
-import { freeName, prepareLongLivedWorkspaceUseCase, workspaceViewsUseCase } from './workspaces.ts';
+import { adoptLocalWorkspacesUseCase, freeName, prepareLongLivedWorkspaceUseCase, workspaceViewsUseCase } from './workspaces.ts';
+import { newWorkspace } from '../workspace.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -78,7 +79,7 @@ test('新建持久工作空间：托管目录 <root>/agent-hub/<slug>，被占�
     home: '/home/me'
   });
   assert.ok(local.ok);
-  assert.equal(local.value.workerId, null, '本机 Worker 折叠成 null（和 Server 同机）');
+  assert.equal(local.value.workerId, 'local', '本机也记真实 Worker id（干活仍走 Server 自己的 fs）');
   assert.equal(local.value.path, '/home/me/agent-hub/demo-2');
 
   const linked = await prepareLongLivedWorkspaceUseCase(w.deps, {
@@ -200,4 +201,51 @@ test('仓库地址校验；改仓库可以清空', async () => {
   const cleared = await setProjectRepoUseCase(w.deps, { projectId: project.value.id, repoUrl: null });
   assert.ok(cleared.ok);
   assert.equal(cleared.value.repo, null);
+});
+
+test('新建持久工作空间可以指定目录：校验后建在那里；不合法的路径一律拒', async () => {
+  const w = await folderless();
+  const create = (workerId: string | null, path: string) =>
+    prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId, plan: { mode: 'create', path }, home: '/home/me' });
+
+  const chosen = await create(null, '/home/me/code/my-app/');
+  assert.ok(chosen.ok, chosen.ok ? '' : chosen.error.message);
+  assert.equal(chosen.value.path, '/home/me/code/my-app');
+  assert.equal(chosen.value.source, 'created');
+  assert.equal(chosen.value.workerId, 'local');
+
+  const remote = await create('remote-1', '/srv/work/custom');
+  assert.ok(remote.ok, remote.ok ? '' : remote.error.message);
+  assert.equal(remote.value.path, '/srv/work/custom');
+  assert.equal(remote.value.workerId, 'remote-1');
+
+  const rejected: Array<[string, string]> = [
+    ['relative/path', 'invalid'],
+    ['/home/me/../etc/x', 'invalid'],
+    ['/', 'invalid'],
+    ['/etc/evil', 'invalid'], // 本机：不在允许的根目录里
+    ['/home/me/code/demo', 'conflict'] // 已经存在 → 该走「关联已有目录」
+  ];
+  for (const [path, kind] of rejected) {
+    const result = await create(null, path);
+    assert.equal(result.ok, false, path);
+    assert.equal(!result.ok && result.error.code, kind, path);
+  }
+  const before = (await w.deps.workspaces.byProject(w.project.id)).length;
+  assert.equal(before, 2, '被拒的不登记');
+});
+
+test('老数据迁移：本机 Worker 上线把 workerId=null 的工作空间改记成它的 id；remote 上线不碰；幂等', async () => {
+  const w = await folderless();
+  const made = newWorkspace({ projectId: w.project.id, workerId: null, path: '/tmp/old', kind: 'long_lived', source: 'linked', now: w.deps.now() });
+  assert.ok(made.ok);
+  const legacy = made.value;
+  await w.deps.workspaces.save(legacy);
+
+  assert.equal(await adoptLocalWorkspacesUseCase(w.deps, { workerId: 'remote-1', origin: 'remote' }), 0);
+  assert.equal((await w.deps.workspaces.byId(legacy.id))?.workerId, null);
+
+  assert.equal(await adoptLocalWorkspacesUseCase(w.deps, { workerId: 'local', origin: 'local' }), 1);
+  assert.equal((await w.deps.workspaces.byId(legacy.id))?.workerId, 'local');
+  assert.equal(await adoptLocalWorkspacesUseCase(w.deps, { workerId: 'local', origin: 'local' }), 0, '再来一次不重复');
 });

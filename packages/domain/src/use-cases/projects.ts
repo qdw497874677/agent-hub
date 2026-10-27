@@ -8,7 +8,7 @@ import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
 import { newWorkspace, type Workspace } from '../workspace.ts';
-import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, rootsOf } from './machine-dirs.ts';
+import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, resolveMachine, rootsOf } from './machine-dirs.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
 import { managedDirectory, projectSlug } from '../directories.ts';
@@ -35,21 +35,22 @@ export async function createProjectUseCase(
   const description = normalizeDescription(command.description);
   if (!description.ok) return description;
   const rootPath = command.rootPath?.trim() ?? '';
-  const where = rootPath === '' ? ok(null) : await directoryOwner(deps, command.workerId ?? null);
+  const where = await resolveMachine(deps, command.workerId ?? null);
   if (!where.ok) return where;
   if (rootPath !== '') {
     if (!rootPath.startsWith('/')) return err(invalid('目录必须是绝对路径'));
-    const exists = where.value === null ? await deps.fs.directoryExists(rootPath) : await remoteExists(deps, where.value, rootPath);
+    const route = where.value.route;
+    const exists = route === null ? await deps.fs.directoryExists(rootPath) : await remoteExists(deps, route, rootPath);
     if (!exists) return err(invalid(`目录不存在：${rootPath}`));
   }
   const created = createProject({ name: command.name, now: deps.now(), repo: repo.value, description: description.value });
   if (!created.ok) return created;
   let first: Workspace | null = null;
   if (rootPath !== '') {
-    const taken = await claimOf(deps, { projectId: created.value.id, workerId: where.value, path: rootPath });
+    const taken = await claimOf(deps, { projectId: created.value.id, workerId: where.value.workerId, path: rootPath });
     if (!taken.ok) return taken;
     // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
-    const linked = newWorkspace({ projectId: created.value.id, workerId: where.value, path: rootPath, kind: 'long_lived', source: 'linked', now: deps.now() });
+    const linked = newWorkspace({ projectId: created.value.id, workerId: where.value.workerId, path: rootPath, kind: 'long_lived', source: 'linked', now: deps.now() });
     if (!linked.ok) return linked;
     first = linked.value;
   }

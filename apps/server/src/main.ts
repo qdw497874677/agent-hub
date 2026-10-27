@@ -13,7 +13,8 @@ import { createWorkerEnroll } from './worker-enroll.ts';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
 import type { Deps, EnrollmentDeps, SessionId, ToolGateway } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
-  sweepTemporaryWorkspacesUseCase
+  sweepTemporaryWorkspacesUseCase,
+  adoptLocalWorkspacesUseCase
 } from '@agent-hub/domain';
 import {
   err,
@@ -206,6 +207,11 @@ serverGateway = createServerGateway({
   onHello(worker, agents, sessions) {
     catalog.upsert(worker.workerId, agents);
     log(`worker 上线：${worker.label}（${worker.workerId}），提供 ${agents.map((a) => a.label).join('、')}`);
+    void adoptLocalWorkspacesUseCase(deps, worker)
+      .then((count) => {
+        if (count > 0) log(`${count} 个本机工作空间改记为 Worker ${worker.workerId}`);
+      })
+      .catch((failure: unknown) => log(`迁移本机工作空间失败：${(failure as Error).message}`));
     if (sessions.length > 0) {
       void workerAttached(deps, worker.workerId, sessions).then((ids) => {
         serverGateway?.adopt(worker.workerId, ids);

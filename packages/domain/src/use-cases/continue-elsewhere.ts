@@ -7,7 +7,7 @@ import { asSessionId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isUsable, type Workspace } from '../workspace.ts';
 import type { SaveWipOutcome } from '../ports/workspace-git.ts';
-import { directoryOwner, gitOn } from './machine-dirs.ts';
+import { gitFor, resolveMachine } from './machine-dirs.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
@@ -61,10 +61,10 @@ export async function continueElsewhereUseCase(
     if (chosen.id === source.workspaceId) return err(conflict('会话已经在这个工作空间里了'));
   }
   const targetWorker = chosen ? chosen.workerId : command.target.kind === 'temporary' ? command.target.workerId : null;
-  const owner = await directoryOwner(deps, targetWorker);
-  if (!owner.ok) return owner;
+  const machine = await resolveMachine(deps, targetWorker);
+  if (!machine.ok) return machine;
   const workers = await deps.gateway.status();
-  const placed = placeSession(workers, { agentId: source.agentId, requested: owner.value, projectWorker: owner.value });
+  const placed = placeSession(workers, { agentId: source.agentId, requested: machine.value.workerId, projectWorker: machine.value.workerId });
   if (!placed.ok) return placed;
 
   // 原会话还在跑就先停下，免得两边同时改
@@ -72,7 +72,7 @@ export async function continueElsewhereUseCase(
 
   let wip: SaveWipOutcome | null = null;
   if (command.saveWip && from?.isGit) {
-    const saved = await gitOn(deps, from.workerId).saveWip(from.path, `WIP: ${task.title}（换个地方继续）`);
+    const saved = await (await gitFor(deps, from.workerId)).saveWip(from.path, `WIP: ${task.title}（换个地方继续）`);
     if (!saved.ok) return saved;
     wip = saved.value;
   }
@@ -80,7 +80,7 @@ export async function continueElsewhereUseCase(
   if (!chosen) {
     // 同一台机器上原分支还被原工作空间检出着（git 不许检出两次）：新开分支，从 WIP 分支长出来
     const branch = wip?.pushed ? wip.branch : null;
-    const sameMachine = from !== null && from.workerId === owner.value;
+    const sameMachine = from !== null && from.workerId === machine.value.workerId;
     const made = await prepareTemporaryWorkspaceUseCase(deps, {
       projectId: project.id,
       taskId: task.id,

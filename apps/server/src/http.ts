@@ -263,7 +263,7 @@ export function createApp(options: AppOptions): Hono {
         : await prepareLongLivedWorkspaceUseCase(deps, {
             projectId: c.req.param('projectId'),
             workerId: request.workerId,
-            plan: request.mode === 'link' ? { mode: 'link', path: request.path ?? '' } : { mode: 'create' },
+            plan: request.mode === 'link' ? { mode: 'link', path: request.path ?? '' } : request.path?.trim() ? { mode: 'create', path: request.path } : { mode: 'create' },
             home: homedir()
           });
     return result.ok ? c.json(workspaceSchema.parse(result.value), 201) : fail(c, result.error);

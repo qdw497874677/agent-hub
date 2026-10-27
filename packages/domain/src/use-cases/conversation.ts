@@ -1,4 +1,5 @@
 import { locationOf } from './workspaces.ts';
+import { routeOf } from './machine-dirs.ts';
 import type { Session } from '../session.ts';
 import type { SessionEvent } from '../event.ts';
 import type { RuntimeOption } from '../option.ts';
@@ -113,7 +114,7 @@ async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workL
  * 只有目录在 Server 本机的项目才由 Server 自己 stat。
  */
 async function withBytes(
-  deps: Pick<Deps, 'fs' | 'sessions' | 'tasks' | 'projects' | 'workspaces'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'sessions' | 'tasks' | 'projects' | 'workspaces'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<SessionEvent> {
@@ -122,7 +123,7 @@ async function withBytes(
   const project = session ? await projectOf(deps, session) : null;
   if (!project || !session) return event;
   const workspace = await locationOf(deps, project, session);
-  if (workspace.workerId !== null) return event;
+  if ((await routeOf(deps, workspace.workerId)) !== null) return event;
   const absolute = event.path.startsWith('/') ? event.path : `${workspace.root}/${event.path}`;
   const bytes = await deps.fs.stat(absolute);
   return bytes === null ? event : { ...event, bytes };
@@ -130,7 +131,7 @@ async function withBytes(
 
 /** worker 推上来一条事件：补字节数，然后按会话串行落盘（并发会撞 seq，见 ADR 0004）。 */
 export function ingestWorkerEvent(
-  deps: Pick<Deps, 'artifacts' | 'fs' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'>,
+  deps: Pick<Deps, 'artifacts' | 'fs' | 'gateway' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<Result<Session, DomainError>> {
