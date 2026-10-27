@@ -24,7 +24,7 @@ export type { ProjectRepository } from './ports/project-repository.ts';
 export type { SessionRepository } from './ports/session-repository.ts';
 export type { ArtifactRepository } from './ports/artifact-repository.ts';
 export type { LayoutStore } from './ports/layout-store.ts';
-export type { AgentRuntime, RuntimeSession, StartSpec } from './ports/agent-runtime.ts';
+export type { AgentRuntime, RuntimeSession, SessionAssets, StartSpec } from './ports/agent-runtime.ts';
 export type { SessionEventStream, SessionStreamFrame } from './ports/event-stream.ts';
 export type { NodeGateway, WorkerCommand } from './ports/node-gateway.ts';
 export type { NodeProvisioner } from './ports/node-provisioner.ts';

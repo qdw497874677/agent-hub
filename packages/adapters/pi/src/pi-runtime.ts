@@ -292,6 +292,18 @@ export function toPiPrompt(input: PromptInput): Record<string, unknown> {
   return { type: 'prompt', message, ...(images.length > 0 ? { images } : {}) };
 }
 
+/**
+ * hub 下发的资产（docs/design/asset-hub.md）：每个技能目录一次 `--skill`，每条指令一次 `--append-system-prompt`。
+ * 都是这次启动的参数，不改 Pi 的全局目录。
+ */
+export function piAssetArgs(assets: StartSpec['assets']): string[] {
+  if (!assets) return [];
+  const args: string[] = [];
+  for (const skill of assets.skills) args.push('--skill', skill.path.replace(/\/SKILL\.md$/, ''));
+  for (const instruction of assets.instructions) args.push('--append-system-prompt', instruction.path);
+  return args;
+}
+
 export interface PiRuntimeOptions {
   readonly command?: string;
   readonly sessionDir?: string;
@@ -323,6 +335,7 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       if (options.sessionDir) args.push('--session-dir', options.sessionDir);
       const ref = spec.resume?.agentSessionRef ?? null;
       if (ref) args.push('--session-id', ref);
+      args.push(...piAssetArgs(spec.assets));
 
       // 能力层：Pi 只认 mcp.json，所以先确保里面有 agent-hub 这条（只含变量引用），令牌走 env。
       // 条目是 stdio 垫片（见 pi-mcp.ts：Pi 不展开 url 里的变量）；垫片连 tools.url——hub 的 /mcp 或本机 relay。

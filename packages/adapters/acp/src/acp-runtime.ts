@@ -229,7 +229,12 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
       let child: ChildProcessWithoutNullStreams;
       try {
-        child = spawn(config.command, [...config.args], { cwd: spec.workspaceRoot, stdio: ['pipe', 'pipe', 'pipe'] });
+        const launch = spec.assets && config.launch ? await config.launch(spec.assets) : {};
+        child = spawn(config.command, [...(launch.args ?? config.args)], {
+          cwd: spec.workspaceRoot,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          ...(launch.env ? { env: { ...process.env, ...launch.env } } : {})
+        });
       } catch (error) {
         return { ok: false, error: unavailable(`无法启动 ${config.label}：${(error as Error).message}`) };
       }

@@ -1,5 +1,5 @@
 import { asAgentId, available, capabilityMatrix, limited } from '@agent-hub/domain';
-import type { AgentDescriptor, RuntimeOption } from '@agent-hub/domain';
+import type { AgentDescriptor, RuntimeOption, SessionAssets } from '@agent-hub/domain';
 
 /**
  * 一个 ACP agent 的全部可配置项。
@@ -28,10 +28,31 @@ export interface AcpAgentConfig {
    * ACP 只在 session/new 之后才报模型选项，没有它派生对话框里的模型清单就是空的。
    */
   readonly listModelsArgs?: readonly string[];
+  /**
+   * 可选：hub 下发了技能 / 指令时怎么告诉这个 agent（docs/design/asset-hub.md）。
+   * `args` 整体替换 `config.args`，`env` 叠加到子进程环境。都只作用于这一次启动，不改全局配置。
+   */
+  readonly launch?: (assets: SessionAssets) => Promise<AcpLaunch> | AcpLaunch;
+}
+
+export interface AcpLaunch {
+  readonly args?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+/**
+ * OpenCode：`OPENCODE_CONFIG_CONTENT` 是叠加在用户配置之上的一段内联配置，
+ * `skills.paths` 加一个技能目录，`instructions` 加指令文件。
+ */
+export function opencodeLaunch(assets: SessionAssets): AcpLaunch {
+  const content: Record<string, unknown> = {};
+  if (assets.skillsDir) content['skills'] = { paths: [assets.skillsDir] };
+  if (assets.instructions.length > 0) content['instructions'] = assets.instructions.map((item) => item.path);
+  return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(content) } };
 }
 
 export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [
-  { id: 'opencode', label: 'OpenCode', command: 'opencode', args: ['acp'], listModelsArgs: ['models'] }
+  { id: 'opencode', label: 'OpenCode', command: 'opencode', args: ['acp'], listModelsArgs: ['models'], launch: opencodeLaunch }
 ];
 
 /**

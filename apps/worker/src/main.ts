@@ -4,9 +4,9 @@ import { arch, homedir, hostname, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
-import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
+import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, opencodeLaunch, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
 import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
-import { clearBootMarker, connectWorkerLink, createWorkerFiles, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, connectWorkerLink, createWorkerAssets, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -66,6 +66,9 @@ const roots = (env['WORKER_ROOTS'] ?? homedir())
  * hub 上的成员不该借本机 Worker 翻遍整台机器。没配时默认只放开 $HOME。
  */
 const files = createWorkerFiles({ roots, enforced: true });
+
+/** hub 下发的技能与指令：只落在这台机器的专属目录（WORKER_ASSETS_DIR，默认 ~/.agent-hub/assets），不碰全局目录。 */
+const assets = createWorkerAssets({ root: defaultAssetsRoot(env) });
 
 /**
  * 显式覆盖：`PI_DEFAULT_MODEL=a,b`。除此之外一律问 Pi 自己（见 discoverPiModels），
@@ -141,9 +144,11 @@ function acpAgents(): readonly AcpAgentConfig[] {
 }
 
 // OPENCODE_COMMAND 是给单机安装留的后门：PATH 里那版 opencode 不对时改一条环境变量就够。
-const acpConfigs = acpAgents().map((config) =>
-  config.id === 'opencode' && env['OPENCODE_COMMAND'] ? { ...config, command: env['OPENCODE_COMMAND'] } : config
-);
+const acpConfigs = acpAgents().map((config) => {
+  if (config.id !== 'opencode') return config;
+  // 用 ACP_AGENTS 自己写的 opencode 条目也照样认 hub 下发的资产
+  return { launch: opencodeLaunch, ...config, ...(env['OPENCODE_COMMAND'] ? { command: env['OPENCODE_COMMAND'] } : {}) };
+});
 // ACP 只在开了会话之后才报模型；启动时先问一次，派生对话框才有得选。
 const acpModels = await Promise.all(acpConfigs.map((config) => discoverAcpModels(config)));
 
@@ -251,6 +256,7 @@ const link = connectWorkerLink({
   runtimes,
   host: { hostname: hostname(), platform: platform(), arch: arch() },
   files,
+  assets,
   build,
   onUpdate,
   onAccepted: markHealthySoon,
