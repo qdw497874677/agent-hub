@@ -9,9 +9,11 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { serveMcpRelay } from './mcp-relay.ts';
+import { serveAssetFetch } from './asset-relay.ts';
+import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { Deps, EnrollmentDeps, SessionId, ToolGateway } from '@agent-hub/domain';
+import type { AssetDeps, Deps, EnrollmentDeps, SessionId, ToolGateway, WorkerAssetSync } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase
@@ -25,6 +27,7 @@ import {
   frameAccepted,
   ingestWorkerOptions,
   reconcileInterrupted,
+  syncWorkerAssets,
   unavailable,
   workerAttached,
   workerGone
@@ -200,12 +203,30 @@ const enrollmentDeps: EnrollmentDeps = {
   now: () => Date.now()
 };
 
+// 资产中心（docs/design/asset-hub.md）：技能 / 指令按 Worker 安装，经长连接下发。同步状态只在内存里：Worker 每次上线都会再同步。
+const assetBoard = new Map<string, WorkerAssetSync>();
+const assetDeps: AssetDeps = {
+  assets: store.assets,
+  reader: createAssetReader(),
+  delivery: { push: async (workerId, manifest) => (serverGateway ? serverGateway.assets.push(workerId, manifest) : err(unavailable('worker 通道尚未就绪'))) },
+  board: { get: (id) => assetBoard.get(id) ?? null, set: (status) => void assetBoard.set(status.workerId, status), all: () => [...assetBoard.values()] },
+  workers: workerControl,
+  now: () => Date.now()
+};
+const syncAssets = (workerId: string) =>
+  void syncWorkerAssets(assetDeps, workerId)
+    .then((status) => {
+      if (status.state === 'failed') log(`资产同步失败（${workerId}）：${status.error}`);
+    })
+    .catch((failure: unknown) => log(`资产同步失败（${workerId}）：${(failure as Error).message}`));
+
 serverGateway = createServerGateway({
   token,
   authenticate: (hello) => authenticateWorker(enrollmentDeps, hello),
   localSecret: spawnWorker === '1' ? localSecret : null,
   onHello(worker, agents, sessions) {
     catalog.upsert(worker.workerId, agents);
+    syncAssets(worker.workerId);
     log(`worker 上线：${worker.label}（${worker.workerId}），提供 ${agents.map((a) => a.label).join('、')}`);
     void adoptLocalWorkspacesUseCase(deps, worker)
       .then((count) => {
@@ -252,6 +273,7 @@ serverGateway = createServerGateway({
   },
   // 每条认证过的长连接：挂上 MCP 中转（RPC 端口 → MCP 服务端 → ToolGateway），绑定这台 Worker。
   serve(workerId, channel) {
+    serveAssetFetch(channel, workerId, assetDeps);
     if (!toolGateway) return;
     serveMcpRelay(channel, workerId, { gateway: toolGateway, hostOf: (sessionId) => serverGateway?.hostOf(sessionId) ?? null });
   },
@@ -304,6 +326,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
     },
     enrollment: enrollmentDeps
   },
+  assets: { deps: assetDeps, audit: store.audit },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   enrollment: {
     deps: enrollmentDeps,

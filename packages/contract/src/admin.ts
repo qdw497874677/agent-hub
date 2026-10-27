@@ -79,3 +79,91 @@ export const pairingSchema = z.object({
 });
 export type PairingDto = z.infer<typeof pairingSchema>;
 
+
+/* ── 资产中心（docs/design/asset-hub.md）：技能 / 指令，按 Worker 安装 ── */
+
+export const assetKindSchema = z.enum(['skill', 'instruction']);
+export const assetSourceSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('upload') }),
+  z.object({ type: z.literal('git'), url: z.string(), ref: z.string().nullable(), path: z.string() })
+]);
+export const assetFileSchema = z.object({ path: z.string(), sha256: z.string(), size: z.number() });
+
+export const assetSchema = z.object({
+  id: z.string(),
+  kind: assetKindSchema,
+  name: z.string(),
+  description: z.string(),
+  source: assetSourceSchema,
+  pinned: z.string(),
+  latest: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+  workerIds: z.array(z.string()),
+  files: z.number(),
+  bytes: z.number()
+});
+export type AssetDto = z.infer<typeof assetSchema>;
+
+export const workerAssetSyncSchema = z.object({
+  workerId: z.string(),
+  state: z.enum(['pending', 'syncing', 'synced', 'failed']),
+  root: z.string().nullable(),
+  installed: z.record(z.string(), z.string()),
+  error: z.string().nullable(),
+  at: z.number()
+});
+export type WorkerAssetSyncDto = z.infer<typeof workerAssetSyncSchema>;
+
+export const assetsOverviewSchema = z.object({
+  assets: z.array(assetSchema),
+  workers: z.array(
+    z.object({
+      workerId: z.string(),
+      label: z.string(),
+      state: z.string(),
+      assetIds: z.array(z.string()),
+      sync: workerAssetSyncSchema.nullable()
+    })
+  )
+});
+export type AssetsOverviewDto = z.infer<typeof assetsOverviewSchema>;
+
+export const assetRevisionSchema = z.object({
+  assetId: z.string(),
+  digest: z.string(),
+  name: z.string(),
+  description: z.string(),
+  files: z.array(assetFileSchema),
+  commit: z.string().nullable(),
+  createdAt: z.number()
+});
+export type AssetRevisionDto = z.infer<typeof assetRevisionSchema>;
+
+/** 上传：文件内容 base64。总量上限见 domain ASSET_LIMITS。 */
+export const assetUploadFileSchema = z.object({ path: z.string().min(1).max(512), data: z.string() });
+export const assetUploadRequest = z.object({
+  kind: assetKindSchema,
+  name: z.string().max(64).nullable().optional(),
+  files: z.array(assetUploadFileSchema).min(1).max(200)
+});
+export type AssetUploadRequest = z.infer<typeof assetUploadRequest>;
+export const assetRevisionUploadRequest = z.object({ files: z.array(assetUploadFileSchema).min(1).max(200) });
+
+export const gitScanRequest = z.object({ url: z.string().min(1).max(2048), ref: z.string().max(256).nullable().optional() });
+export const gitCandidateSchema = z.object({ kind: assetKindSchema, path: z.string(), name: z.string(), description: z.string() });
+export const gitScanSchema = z.object({ commit: z.string(), candidates: z.array(gitCandidateSchema) });
+export type GitScanDto = z.infer<typeof gitScanSchema>;
+export type GitCandidateDto = z.infer<typeof gitCandidateSchema>;
+export const gitImportRequest = gitScanRequest.extend({
+  kind: assetKindSchema,
+  path: z.string().max(1024),
+  name: z.string().max(64).nullable().optional()
+});
+
+export const assetDiffSchema = z.object({
+  files: z.array(z.object({ path: z.string(), change: z.enum(['added', 'removed', 'modified', 'unchanged']), patch: z.string().nullable() }))
+});
+export type AssetDiffDto = z.infer<typeof assetDiffSchema>;
+export const assetPinRequest = z.object({ digest: z.string().regex(/^[0-9a-f]{64}$/) });
+export const assetInstallRequest = z.object({ installed: z.boolean() });

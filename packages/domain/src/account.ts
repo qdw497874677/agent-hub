@@ -116,7 +116,13 @@ export type AuditAction =
   | 'worker.pair'
   | 'worker.enroll'
   | 'worker.revoke'
-  | 'project.delete';
+  | 'project.delete'
+  | 'asset.create'
+  | 'asset.revision'
+  | 'asset.pin'
+  | 'asset.delete'
+  | 'asset.install'
+  | 'asset.uninstall';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {

@@ -602,3 +602,75 @@ export function inMemoryEnrollment(admin: ReturnType<typeof inMemoryAdmin>, now:
   };
   return { deps, pairings, credentials };
 }
+
+/** 资产中心的内存实现：仓库、同步看板、可编程的投递和读取器。 */
+export function inMemoryAssets(now: () => number = () => 1_000) {
+  type A = import('../asset.ts').Asset;
+  type R = import('../asset.ts').AssetRevision;
+  const assets = new Map<string, A>();
+  const revisions = new Map<string, R[]>();
+  const blobs = new Map<string, Uint8Array>();
+  const installs: { workerId: string; assetId: string }[] = [];
+  const repo: import('../ports/asset-repository.ts').AssetRepository = {
+    list: async () => [...assets.values()],
+    get: async (id) => assets.get(id) ?? null,
+    byName: async (kind, name) => [...assets.values()].find((a) => a.kind === kind && a.name === name) ?? null,
+    create: async (asset, revision, data) => {
+      assets.set(asset.id, asset);
+      revisions.set(asset.id, [revision]);
+      for (const [k, v] of data) blobs.set(k, v);
+    },
+    addRevision: async (revision, data) => {
+      const list = revisions.get(revision.assetId) ?? [];
+      if (!list.some((r) => r.digest === revision.digest)) revisions.set(revision.assetId, [revision, ...list]);
+      for (const [k, v] of data) blobs.set(k, v);
+    },
+    revisions: async (id) => revisions.get(id) ?? [],
+    revision: async (id, digest) => (revisions.get(id) ?? []).find((r) => r.digest === digest) ?? null,
+    update: async (asset) => void assets.set(asset.id, asset),
+    remove: async (id) => {
+      assets.delete(id);
+      revisions.delete(id);
+      for (let i = installs.length - 1; i >= 0; i--) if (installs[i]?.assetId === id) installs.splice(i, 1);
+    },
+    blob: async (sha) => blobs.get(sha) ?? null,
+    installations: async () => [...installs],
+    install: async (workerId, assetId) => {
+      if (!installs.some((row) => row.workerId === workerId && row.assetId === assetId)) installs.push({ workerId, assetId });
+    },
+    uninstall: async (workerId, assetId) => {
+      const at = installs.findIndex((row) => row.workerId === workerId && row.assetId === assetId);
+      if (at >= 0) installs.splice(at, 1);
+    }
+  };
+  const board = new Map<string, import('../asset.ts').WorkerAssetSync>();
+  const pushes: { workerId: string; manifest: readonly import('../asset.ts').AssetManifestEntry[] }[] = [];
+  const workers: WorkerStatus[] = [{ workerId: 'w1', label: 'local', origin: 'local', state: 'online' }];
+  const git = { commit: 'c1', files: [] as import('../asset.ts').IncomingFile[] };
+  const decode = (data: Uint8Array): string => new TextDecoder().decode(data);
+  const deps: import('../use-cases/assets.ts').AssetDeps = {
+    assets: repo,
+    now,
+    board: { get: (id) => board.get(id) ?? null, set: (s) => void board.set(s.workerId, s), all: () => [...board.values()] },
+    workers: { list: async () => workers },
+    delivery: {
+      push: async (workerId, manifest) => {
+        pushes.push({ workerId, manifest });
+        return { ok: true, value: { root: '/home/x/.agent-hub/assets', installed: Object.fromEntries(manifest.map((m) => [m.assetId, m.digest])) } };
+      }
+    },
+    reader: {
+      // 极简 frontmatter：只认 `name:` / `description:` 两行。
+      describe: (kind, files) => {
+        const main = kind === 'skill' ? files.find((f) => f.path === 'SKILL.md') : files[0];
+        const text = main ? decode(main.data) : '';
+        const field = (key: string) => new RegExp(`^${key}:\\s*(.+)$`, 'm').exec(text)?.[1]?.trim() ?? null;
+        return { ok: true, value: { name: kind === 'skill' ? field('name') : null, description: field('description') ?? '' } };
+      },
+      scanGit: async () => ({ ok: true, value: { commit: git.commit, candidates: [] } }),
+      readGit: async () => ({ ok: true, value: { commit: git.commit, files: git.files } }),
+      diffText: (path, before, after) => `--- ${path}\n-${before}\n+${after}`
+    }
+  };
+  return { deps, board, pushes, workers, git, installs, blobs };
+}

@@ -6,6 +6,7 @@ import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, WorkerT
 import {
   PROTOCOL_MISMATCH_CLOSE,
   PROTOCOL_VERSION,
+  assetsSync,
   createRpcChannel,
   fsListDirectories,
   fsListFiles,
@@ -20,6 +21,7 @@ import {
   wsStatus
 } from '@agent-hub/contract';
 import type {
+  AssetDelivery,
   BuildInfo,
   DomainError,
   NodeGateway,
@@ -142,6 +144,8 @@ export interface ServerGateway {
   disconnect(workerId: string, why?: 'admin' | 'revoked'): boolean;
   /** 让在线的 Worker 更新到这个提交（只发提交号）。不在线返回 false。 */
   requestUpdate(workerId: string, commit: string): boolean;
+  /** 资产中心的投递端口：把清单推下去（assets.sync），Worker 回头经 assets.fetch 取内容。 */
+  readonly assets: AssetDelivery;
   close(): void;
 }
 
@@ -489,8 +493,19 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     }
   };
 
+  const assets: AssetDelivery = {
+    async push(workerId, manifest) {
+      const channel = channelOf(workerId);
+      if (!channel) return offline(workerId);
+      const entries = manifest.map((entry) => ({ ...entry, files: [...entry.files] }));
+      // 首次同步要把内容一批批取回来，给足时间
+      return toDomain(await channel.request(assetsSync, { entries }, { timeoutMs: 5 * 60_000 }), '资产同步', workerId);
+    }
+  };
+
   return {
     gateway,
+    assets,
     workers(): WorkerStatus[] {
       return statuses();
     },

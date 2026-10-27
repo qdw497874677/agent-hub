@@ -1,0 +1,54 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { packAsset, type Asset } from '@agent-hub/domain';
+import { openSqliteStore } from './store.ts';
+
+const enc = (text: string) => new TextEncoder().encode(text);
+
+test('资产：建 / 加版本 / 安装 / 删（只清没人引用的 blob），跨重开保留', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-assets-'));
+  try {
+    const path = join(dir, 'hub.db');
+    let store = openSqliteStore(path);
+    const v1 = await packAsset('skill', [{ path: 'SKILL.md', data: enc('one') }, { path: 'shared.txt', data: enc('same') }]);
+    const v2 = await packAsset('skill', [{ path: 'SKILL.md', data: enc('two') }, { path: 'shared.txt', data: enc('same') }]);
+    assert.ok(v1.ok && v2.ok);
+    const asset: Asset = {
+      id: 'a1', kind: 'skill', name: 'greeter', description: 'd', source: { type: 'git', url: 'https://x/y.git', ref: 'main', path: 's' },
+      pinned: v1.value.digest, latest: v1.value.digest, createdAt: 1, updatedAt: 1
+    };
+    const rev = (packed: typeof v1.value, at: number) => ({ assetId: 'a1', digest: packed.digest, name: 'greeter', description: 'd', files: packed.files, commit: 'c', createdAt: at });
+    await store.assets.create(asset, rev(v1.value, 1), v1.value.blobs);
+    await store.assets.addRevision(rev(v2.value, 2), v2.value.blobs);
+    await store.assets.addRevision(rev(v2.value, 3), v2.value.blobs);
+    await store.assets.update({ ...asset, latest: v2.value.digest, updatedAt: 2 });
+    await store.assets.install('w1', 'a1', 5);
+    await store.assets.install('w1', 'a1', 6);
+    store.close();
+
+    store = openSqliteStore(path);
+    assert.deepEqual((await store.assets.byName('skill', 'greeter'))?.source, asset.source);
+    assert.equal((await store.assets.get('a1'))?.latest, v2.value.digest);
+    assert.deepEqual((await store.assets.revisions('a1')).map((r) => r.digest), [v2.value.digest, v1.value.digest]);
+    assert.deepEqual(await store.assets.installations(), [{ workerId: 'w1', assetId: 'a1' }]);
+    const file = v1.value.files[0]!;
+    assert.equal(new TextDecoder().decode((await store.assets.blob(file.sha256))!), 'one');
+
+    // 另一个资产共享 shared.txt：删 a1 后它的 blob 要留着
+    const other = await packAsset('skill', [{ path: 'SKILL.md', data: enc('other') }, { path: 'shared.txt', data: enc('same') }]);
+    assert.ok(other.ok);
+    await store.assets.create({ ...asset, id: 'a2', name: 'other', pinned: other.value.digest, latest: other.value.digest }, { ...rev(other.value, 4), assetId: 'a2' }, other.value.blobs);
+    await store.assets.remove('a1');
+    assert.equal(await store.assets.get('a1'), null);
+    assert.deepEqual(await store.assets.installations(), []);
+    assert.equal(await store.assets.blob(file.sha256), null);
+    const shared = other.value.files.find((f) => f.path === 'shared.txt')!;
+    assert.ok(await store.assets.blob(shared.sha256));
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

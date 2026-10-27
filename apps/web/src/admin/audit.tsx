@@ -12,7 +12,13 @@ const ACTION_LABEL: Record<string, string> = {
   'worker.update': '更新机器',
   'worker.pair': '签发接入码',
   'worker.enroll': '接入机器',
-  'worker.revoke': '吊销机器'
+  'worker.revoke': '吊销机器',
+  'asset.create': '添加资产',
+  'asset.revision': '资产新版本',
+  'asset.pin': '升级资产',
+  'asset.delete': '删除资产',
+  'asset.install': '装资产',
+  'asset.uninstall': '卸资产'
 };
 
 export function Audit() {

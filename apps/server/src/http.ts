@@ -75,6 +75,7 @@ import {
 import type { StreamHub } from './stream-hub.ts';
 import { installAuth, SSE_PATH } from './auth.ts';
 import { installAdmin } from './admin.ts';
+import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
 import { installEnrollment } from './enrollment.ts';
 import { installProjectDeletion } from './project-delete.ts';
 import type { DeleteProjectDeps } from '@agent-hub/domain';
@@ -91,6 +92,8 @@ export interface AppOptions {
   readonly auth?: AuthOptions;
   /** 运营后台；只在有账号体系时装（要靠登录态认出主人）。 */
   readonly admin?: AdminOptions;
+  /** 资产中心（/api/admin/assets/*，主人专用）；要有 admin 才装。 */
+  readonly assets?: AssetRouteOptions;
   /** 单台机器接入（接入码、专属凭据、吊销、引导脚本）；同样只在有账号体系时装。 */
   readonly enrollment?: EnrollmentOptions;
   /** 删除项目（要登录态记审计，所以同样只在有账号体系时装）。 */
@@ -156,6 +159,7 @@ export function createApp(options: AppOptions): Hono {
   if (options.auth) {
     principalOf = installAuth(app, options.auth);
     if (options.admin) installAdmin(app, options.admin, principalOf);
+    if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
     if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf);
   }
