@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { CanvasDto, SessionDto } from './api.ts';
 import { api, attachmentUrl } from './api.ts';
 import { Composer } from './composer.tsx';
+import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { sessionCommands } from './commands.ts';
@@ -15,6 +16,8 @@ interface Props {
   readonly onDraftChange: (text: string) => void;
   readonly onBack: () => void;
   readonly onChanged: () => void;
+  /** 换个地方继续之后跳到新会话。 */
+  readonly onOpenSession: (sessionId: string) => void;
   readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
 }
 
@@ -98,6 +101,62 @@ function BlockView({ block, agentLabel, sessionId }: { block: Block; agentLabel:
 }
 
 /**
+ * 头部的「⋯」：手机上专注对话是唯一的入口（检查器只在画布里），会话级的动作收在这里。
+ * 点外面或按 Esc 收起；触控区 44px。
+ */
+function SessionMenu({ session, onContinueElsewhere }: { session: SessionDto; onContinueElsewhere: () => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => {
+      if (!root.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('pointerdown', onPointer);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', onPointer);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  const allowed = canContinueElsewhere(session);
+  return (
+    <div ref={root} className="relative -mr-2">
+      <button
+        className="flex h-11 w-11 items-center justify-center rounded-sm text-body text-tertiary hover:text-primary"
+        aria-label="会话操作"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
+        ⋯
+      </button>
+      {open ? (
+        <div role="menu" className="absolute right-0 z-20 mt-1 w-56 rounded-sm border border-hair bg-panel py-1 shadow">
+          <button
+            role="menuitem"
+            className="block w-full px-3 py-2.5 text-left text-sub text-secondary hover:text-primary disabled:opacity-40"
+            disabled={!allowed}
+            onClick={() => {
+              setOpen(false);
+              onContinueElsewhere();
+            }}
+          >
+            换个地方继续…
+            <span className="mt-0.5 block text-meta text-tertiary">
+              {allowed ? '换台机器或工作空间，带着对话摘要接着做' : CONTINUE_DISABLED_HINT}
+            </span>
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * 专注对话：一条会话，整屏看。
  *
  * 画布回答「这些思路之间是什么关系」，这里回答「它到底说了什么」。
@@ -111,9 +170,11 @@ export function FocusView({
   onDraftChange,
   onBack,
   onChanged,
+  onOpenSession,
   onChangeOption
 }: Props) {
   const [busy, setBusy] = useState(false);
+  const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const tail = useRef<HTMLDivElement | null>(null);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
@@ -155,8 +216,21 @@ export function FocusView({
         <span className="ml-auto flex shrink-0 items-center gap-3 text-meta text-tertiary">
           {session.origin.kind === 'fork' ? <span>分叉自 #{session.origin.atSeq}</span> : null}
           <StatusPill status={status} reason={reason} />
+          <SessionMenu session={session} onContinueElsewhere={() => setContinuing(true)} />
         </span>
       </header>
+      {continuing ? (
+        <ContinueDialog
+          canvas={canvas}
+          session={session}
+          onClose={() => setContinuing(false)}
+          onDone={(created) => {
+            setContinuing(false);
+            onChanged();
+            onOpenSession(created.id);
+          }}
+        />
+      ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div role="log" aria-label="对话记录" className="mx-auto flex max-w-[760px] flex-col gap-4 px-4 py-6">
