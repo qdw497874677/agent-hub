@@ -42,7 +42,30 @@ export interface AgentModels {
  * 某个 harness 在某台机器上的就绪状态：装了不等于能用（没登录、没配模型）。
  * `reason` 是给人看的中文短句，例如「未登录」「未配置模型」「未安装」。
  */
-export type AgentReadiness = { readonly state: 'ready' } | { readonly state: 'unavailable'; readonly reason: string };
+export type AgentReadiness =
+  | { readonly state: 'ready'; readonly lacks?: string[] }
+  | { readonly state: 'unavailable'; readonly reason: string };
+
+/** Pi 的 MCP 走 pi-mcp-adapter 扩展：没装时 Pi 看不到任何 MCP 工具。 */
+export const MCP_ADAPTER = 'mcp-adapter';
+export const MCP_ADAPTER_MISSING = '缺少 MCP 适配器';
+
+/**
+ * 按资产需要收紧就绪：装了 MCP 资产的机器上，缺 MCP 适配器的 harness 判为不可用
+ * （它起得来，但 hub 的 MCP 工具一个都用不上，比直接报不可用更难排查）。
+ * 没装 MCP 资产的机器不受影响。
+ */
+export function withAssetNeeds(workers: readonly WorkerStatus[], needsMcp: ReadonlySet<string>): WorkerStatus[] {
+  return workers.map((worker) => {
+    if (!needsMcp.has(worker.workerId) || !worker.agentModels) return worker;
+    const agentModels = worker.agentModels.map((entry) =>
+      entry.readiness?.state === 'ready' && entry.readiness.lacks?.includes(MCP_ADAPTER)
+        ? { ...entry, readiness: { state: 'unavailable' as const, reason: MCP_ADAPTER_MISSING } }
+        : entry
+    );
+    return { ...worker, agentModels };
+  });
+}
 
 /** 这台机器上这个 agent 不能用的原因；能用或没报（老 Worker）都是 null。 */
 export function harnessUnavailableReason(worker: WorkerStatus, agentId: string): string | null {

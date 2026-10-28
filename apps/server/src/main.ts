@@ -31,6 +31,7 @@ import {
   sessionMcpLaunch,
   remoteMcpTarget,
   sessionAssetPlan,
+  withAssetNeeds,
   unavailable,
   workerAttached,
   workerGone
@@ -100,7 +101,7 @@ const deps: Deps = {
   layout: store.layout,
   stream: hub.stream,
   gateway: {
-    status: async () => serverGateway?.workers() ?? [],
+    status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
     probe: async (workerId) => serverGateway?.gateway.probe?.(workerId) ?? false,
     // 发给 worker 前给 start_session 配上工具令牌（换新、旧的作废），dispose 时作废。
     dispatch: async (command) =>
@@ -190,9 +191,21 @@ function fromWorker(workerId: string, sessionId: SessionId, ingest: () => void):
     .catch((failure: unknown) => log(`处理 worker 帧失败：${(failure as Error).message}`));
 }
 
+/** 装了 MCP 资产的机器：这些机器上缺 MCP 适配器的 harness（Pi）判为不可用。 */
+async function mcpWorkers(): Promise<Set<string>> {
+  const rows = await store.assets.installations();
+  const kinds = new Map<string, string>();
+  const out = new Set<string>();
+  for (const { workerId, assetId } of rows) {
+    if (!kinds.has(assetId)) kinds.set(assetId, (await store.assets.get(assetId))?.kind ?? '');
+    if (kinds.get(assetId) === 'mcp') out.add(workerId);
+  }
+  return out;
+}
+
 // 单台机器接入：接入码换专属凭据，hello 时按凭据认机器（docs/design/worker-enrollment.md）。
 const workerControl = {
-  list: async () => serverGateway?.workers() ?? [],
+  list: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
   disconnect: async (workerId: string, why?: 'admin' | 'revoked') => serverGateway?.disconnect(workerId, why) ?? false,
   hubBuild: () => hubBuild,
   update: async (workerId: string, commit: string) => serverGateway?.requestUpdate(workerId, commit) ?? false

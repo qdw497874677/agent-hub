@@ -53,7 +53,7 @@ export function createHarnessRegistry(
 /** 两次探测的就绪状态是否一样（决定要不要再报一次 agent 清单）。 */
 export function sameReadiness(a: ReadonlyMap<string, HarnessProbe>, b: ReadonlyMap<string, HarnessProbe>): boolean {
   if (a.size !== b.size) return false;
-  const key = (r: AgentReadiness | undefined): string => (r ? (r.state === 'ready' ? 'ready' : `x:${r.reason}`) : '');
+  const key = (r: AgentReadiness | undefined): string => (r ? (r.state === 'ready' ? `ready:${(r.lacks ?? []).join(',')}` : `x:${r.reason}`) : '');
   for (const [id, probe] of a) if (key(probe.readiness) !== key(b.get(id)?.readiness)) return false;
   return true;
 }
