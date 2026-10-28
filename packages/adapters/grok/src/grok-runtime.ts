@@ -9,8 +9,9 @@ export const GROK_ARGS = ['--no-auto-update', 'agent', 'stdio'] as const;
 
 /**
  * hub 下发的资产（docs/design/asset-hub.md）：Grok 不从我们的专属目录发现技能，
- * 所以用 `--rules` 一次带上——指令全文 + 技能索引（名字、描述、SKILL.md 绝对路径，相关时先读）。
- * 只作用于这次启动，不写 Grok 的全局目录。
+ * 所以用 rules 一次带上——指令全文 + 技能索引（名字、描述、SKILL.md 绝对路径，相关时先读）。
+ * `grok agent stdio` 不认命令行的 `--rules`（只有 `-p`/交互模式认），ACP 下要放在 session/new 的 `_meta.rules`。
+ * 只作用于这个会话，不写 Grok 的全局目录。
  */
 export async function grokRules(assets: SessionAssets): Promise<string> {
   const parts: string[] = [];
@@ -33,8 +34,7 @@ export async function grokRules(assets: SessionAssets): Promise<string> {
 export async function grokLaunch(assets: SessionAssets): Promise<AcpLaunch> {
   const rules = await grokRules(assets);
   if (!rules) return {};
-  const [flag, ...rest] = GROK_ARGS;
-  return { args: [flag, '--rules', rules, ...rest] };
+  return { sessionMeta: { rules } };
 }
 
 /**

@@ -83,3 +83,17 @@ test('acp runtime: 命令不存在时返回 unavailable，不崩', async () => {
   const started = await runtime.start(spec());
   assert.equal(started.ok, false);
 });
+
+test('acp runtime: launch 给的 sessionMeta 叠加到 session/new 的 _meta 上（Grok 的 rules 走这里）', async () => {
+  const assets = { root: '/x', skillsDir: '/x/skills', skills: [], instructions: [] };
+  const runtime = createAcpRuntime({ ...config, launch: () => ({ sessionMeta: { rules: 'R' } }) });
+  const started = await runtime.start(spec({ assets }));
+  assert.ok(started.ok);
+  const session = started.value;
+  const turn = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'methods', parts: [] })).ok);
+  const text = (await turn).find((event) => event.kind === 'text');
+  assert.ok(text && text.kind === 'text');
+  assert.match(text.delta, /session\/new\{"yoloMode":true,"rules":"R"\}/);
+  await session.dispose();
+});

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { opencodeLaunch } from '@agent-hub/adapter-acp';
 import { GROK_ARGS, grokLaunch } from './grok-runtime.ts';
 
-test('资产注入：Grok 用 --rules（指令全文 + 技能索引，放在 agent stdio 前）；OpenCode 用内联配置', async () => {
+test('资产注入：Grok 用 session/new 的 _meta.rules（指令全文 + 技能索引；agent stdio 不认 --rules）；OpenCode 用内联配置', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'ga-'));
   try {
     const rule = join(dir, 'r.md');
@@ -18,9 +18,8 @@ test('资产注入：Grok 用 --rules（指令全文 + 技能索引，放在 age
       instructions: [{ name: 'r', path: rule }]
     };
     const launch = await grokLaunch(assets);
-    assert.deepEqual(launch.args?.slice(0, 2), ['--no-auto-update', '--rules']);
-    assert.deepEqual(launch.args?.slice(3), ['agent', 'stdio']);
-    assert.match(launch.args![2]!, /Always answer in haiku\.[\s\S]*- greeter: Greets people \(.*SKILL\.md\)/);
+    assert.equal(launch.args, undefined);
+    assert.match(String(launch.sessionMeta?.['rules']), /Always answer in haiku\.[\s\S]*- greeter: Greets people \(.*SKILL\.md\)/);
     assert.deepEqual(await grokLaunch({ ...assets, skills: [], instructions: [] }), {});
     assert.equal(GROK_ARGS.length, 3);
 

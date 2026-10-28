@@ -49,6 +49,6 @@ hub 统一管理「会话能用的能力」，按 **Worker** 安装，经已有�
 | --- | --- | --- | --- |
 | Pi | `--skill <skills 目录>` | `--append-system-prompt <文件>`（每条一次） | spike + 线上 |
 | OpenCode（ACP） | `OPENCODE_CONFIG_CONTENT`：`skills.paths` 加目录；机器上已有这个变量时深合并（用户的值保留，数组追加去重） | `instructions` 加文件，同左 | 线上 |
-| Grok（ACP） | `--rules`：技能索引（名字、描述、SKILL.md 绝对路径，「相关时先读」） | 同一段 `--rules` 里附指令全文 | 只验证了参数被接受；远端 Grok 未登录，未做线上会话 |
+| Grok（ACP） | session/new 的 `_meta.rules`：技能索引（名字、描述、SKILL.md 绝对路径，「相关时先读」）。`grok agent stdio` 不认命令行 `--rules` | 同一段 rules 里附指令全文 | 本机线上会话已验证（技能 + 指令都生效）；远端 Grok 未登录 |
 
 其他运行时没有注入口时，退回 MCP 工具方案（以后再做）。
