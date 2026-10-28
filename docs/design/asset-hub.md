@@ -82,7 +82,7 @@ hub 定时（`checkAllAssetUpdates`）逐个查 Git 来源：启动后约 2 分�
 | OpenCode（ACP） | `OPENCODE_CONFIG_CONTENT`：`skills.paths` 加目录；机器上已有这个变量时深合并（用户的值保留，数组追加去重） | `instructions` 加文件，同左 | 线上 |
 | Grok（ACP） | session/new 的 `_meta.rules`：技能索引（名字、描述、SKILL.md 绝对路径，「相关时先读」）。`grok agent stdio` 不认命令行 `--rules` | 同一段 rules 里附指令全文 | 本机线上会话已验证（技能 + 指令都生效）；远端 Grok 未登录 |
 
-Pi 的 MCP 依赖 Pi 扩展 `pi-mcp-adapter`：Worker 用 `pi list` 探测，没装时报 `lacks: ['mcp-adapter']`；只有给这台机器装了 MCP 资产时，Pi 才标「缺少 MCP 适配器」不可用，否则照常可用。
+Pi 0.99+ 自带 MCP，不需要适配器；更老的 Pi 的 MCP 依赖 Pi 扩展 `pi-mcp-adapter`：Worker 用 `pi list` 探测，没装时报 `lacks: ['mcp-adapter']`；只有给这台机器装了 MCP 资产时，Pi 才标「缺少 MCP 适配器」不可用，否则照常可用。
 
 其他运行时没有注入口时，退回 MCP 工具方案（以后再做）。
 
