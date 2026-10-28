@@ -204,9 +204,19 @@ export function CanvasView({
     [onLayoutChange]
   );
 
-  /** 只吃我们关心的三种变化：选中、拖动中的位置、缩放中的尺寸。其余（测量等）交给 React Flow 自己。 */
+  // React Flow 量到的尺寸。受控节点每次重建都是新对象，不带 measured 的话 React Flow 会把它当「没量过」、
+  // 给节点挂 visibility:hidden，要等 ResizeObserver 再报一次——尺寸没变就永远不报，卡片整张隐身
+  // （流式输出时一次重渲染落在最后一次测量之后就会这样；e2e 偶发的「hidden」就是它）。所以量到的要记下来、喂回去。
+  const [measured, setMeasured] = useState<Record<string, { width: number; height: number }>>({});
+  /** 只吃我们关心的变化：选中、拖动中的位置、缩放中的尺寸，以及测量结果（喂回节点，见上）。 */
   const onNodesChange = useCallback((changes: NodeChange<TaskNode | SessionNode>[]) => {
     for (const change of changes) {
+      if (change.type === 'dimensions' && change.dimensions) {
+        const { width, height } = change.dimensions;
+        setMeasured((current) =>
+          current[change.id]?.width === width && current[change.id]?.height === height ? current : { ...current, [change.id]: { width, height } }
+        );
+      }
       if (change.type === 'select') {
         setSelectedId((current) => (change.selected ? change.id : current === change.id ? null : current));
       } else if (change.type === 'position' && change.position) {
@@ -222,7 +232,13 @@ export function CanvasView({
   const nodes = useMemo(() => {
     const box = (kind: 'task' | 'session', nodeId: string) => {
       const size = sizes[nodeId];
-      return { width: size?.width ?? CARD_LIMITS[kind].defaultWidth, height: size?.height, selected: nodeId === selectedId };
+      const seen = measured[nodeId];
+      return {
+        width: size?.width ?? CARD_LIMITS[kind].defaultWidth,
+        height: size?.height,
+        selected: nodeId === selectedId,
+        ...(seen ? { measured: seen } : {})
+      };
     };
     const taskNodes: TaskNode[] = canvas.tasks.map((task) => ({
       id: task.id,
@@ -267,6 +283,7 @@ export function CanvasView({
     canvas.previews,
     positions,
     sizes,
+    measured,
     selectedId,
     resized,
     live,
