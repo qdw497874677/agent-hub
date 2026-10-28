@@ -92,9 +92,25 @@ export async function promptSessionUseCase(
   if (!logged.ok) return logged;
 
   const hosted = await ensureHosted(deps, session);
-  if (!hosted.ok) return hosted;
+  if (!hosted.ok) return failTurn(deps, sessionId, hosted.error);
   const text = briefing ? `${briefing}\n\n${command.text}` : command.text;
-  return deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
+  const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
+  return sent.ok ? sent : failTurn(deps, sessionId, sent.error);
+}
+
+/**
+ * 问话已经落盘、却没送到 agent：补一条 ended(failed) 把这一轮收掉。
+ * 不收的话会话停在「运行中」，界面一直转圈，停滞检测也会误报。
+ */
+async function failTurn(
+  deps: Pick<Deps, 'artifacts' | 'now' | 'queue' | 'sessions' | 'stream'>,
+  sessionId: SessionId,
+  error: DomainError
+): Promise<Result<void, DomainError>> {
+  await deps.queue.run(sessionId, () =>
+    recordEvent(deps, { sessionId, event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${error.message}` } })
+  );
+  return err(error);
 }
 
 async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects'>>, session: Session): Promise<string | null> {
