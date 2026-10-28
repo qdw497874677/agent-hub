@@ -38,6 +38,8 @@ export interface AcpAgentConfig {
 export interface AcpLaunch {
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
+  /** 叠加到 session/new|load 的 `_meta` 上（在 config.sessionMeta 之后）；有的 agent 只在这里认会话级参数。 */
+  readonly sessionMeta?: Readonly<Record<string, unknown>>;
 }
 
 /**

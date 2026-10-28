@@ -16,7 +16,7 @@ import type {
   StartSpec
 } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
-import { acpDescriptor, type AcpAgentConfig } from './config.ts';
+import { acpDescriptor, type AcpAgentConfig, type AcpLaunch } from './config.ts';
 import { endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
 import type { AcpPromptCapabilities } from './map-acp.ts';
 import { mapAcpOptions } from './map-options.ts';
@@ -124,8 +124,12 @@ class AcpSession implements RuntimeSession {
     if (auth) await this.request('authenticate', { ...auth });
   }
 
+  /** 这次启动额外的 `_meta`（例如 hub 资产给 Grok 的 rules）。 */
+  launchMeta: Readonly<Record<string, unknown>> | undefined = undefined;
+
   private sessionParams(cwd: string): Json {
-    return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps, this.toolShim), ...(this.config.sessionMeta ? { _meta: this.config.sessionMeta } : {}) };
+    const meta = this.config.sessionMeta || this.launchMeta ? { ...this.config.sessionMeta, ...this.launchMeta } : undefined;
+    return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps, this.toolShim), ...(meta ? { _meta: meta } : {}) };
   }
 
   async open(cwd: string, agentSessionRef: string | null): Promise<void> {
@@ -228,8 +232,9 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
 
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
       let child: ChildProcessWithoutNullStreams;
+      let launch: AcpLaunch = {};
       try {
-        const launch = spec.assets && config.launch ? await config.launch(spec.assets) : {};
+        launch = spec.assets && config.launch ? await config.launch(spec.assets) : {};
         child = spawn(config.command, [...(launch.args ?? config.args)], {
           cwd: spec.workspaceRoot,
           stdio: ['pipe', 'pipe', 'pipe'],
@@ -246,6 +251,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
       });
       session.tools = spec.tools;
       session.toolShim = options.toolShim;
+      session.launchMeta = launch.sessionMeta;
       const ref = spec.resume?.agentSessionRef ?? null;
       try {
         await session.open(spec.workspaceRoot, ref);
