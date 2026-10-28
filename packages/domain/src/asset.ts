@@ -169,6 +169,21 @@ export function checkAssetName(name: string): Result<string, DomainError> {
 /** skill 里不收的目录：hooks / bin 是插件机制，MVP 明确不做（会话里不能有 hub 下发的可执行钩子）。 */
 const FORBIDDEN_TOP = new Set(['hooks', 'bin', '.git']);
 
+/** 任何一层都不收的目录名：插件钩子 / 插件清单（会话里不能有 hub 下发的自动执行机制）。 */
+const FORBIDDEN_ANY = new Set(['hooks', '.claude-plugin']);
+
+/** 可执行程序的扩展名（Windows 可执行 / 动态库 / 安装包）。脚本（.py / .sh）是技能的正常内容，不在此列。 */
+const EXECUTABLE_EXT = /\.(exe|dll|so|dylib|msi|bat|cmd|com|scr|app|apk|jar|deb|rpm)$/i;
+
+/** 文件头魔数：ELF、PE（MZ）、Mach-O（含通用二进制）。 */
+function isNativeBinary(data: Uint8Array): boolean {
+  const b = (i: number) => data[i] ?? -1;
+  if (b(0) === 0x7f && b(1) === 0x45 && b(2) === 0x4c && b(3) === 0x46) return true; // \x7fELF
+  if (b(0) === 0x4d && b(1) === 0x5a) return true; // MZ
+  const magic = ((b(0) << 24) | (b(1) << 16) | (b(2) << 8) | b(3)) >>> 0;
+  return [0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca].includes(magic);
+}
+
 /** 规范化路径：拒绝绝对路径、`..`、反斜杠和空段。 */
 export function normalizeAssetPath(raw: string): Result<string, DomainError> {
   const path = raw.replace(/^\.\/+/, '');
@@ -222,7 +237,11 @@ export async function packAsset(kind: AssetKind, incoming: readonly IncomingFile
     if (kind === 'skill' && FORBIDDEN_TOP.has(top)) {
       return err(invalid(`技能里不能带 ${top}/（钩子和可执行目录不在资产中心的范围内）`));
     }
-    if (file.data.byteLength > ASSET_LIMITS.maxFileBytes) return err(invalid(`文件太大：${path.value}`));
+    const hook = path.value.split('/').slice(0, -1).find((part) => FORBIDDEN_ANY.has(part));
+    if (hook !== undefined) return err(invalid(`不能带 ${hook}/ 目录：${path.value}（钩子 / 插件机制不在资产中心的范围内）`));
+    if (EXECUTABLE_EXT.test(path.value)) return err(invalid(`不收可执行文件：${path.value}`));
+    if (isNativeBinary(file.data)) return err(invalid(`不收可执行文件：${path.value}（是编译好的二进制程序）`));
+    if (file.data.byteLength > ASSET_LIMITS.maxFileBytes) return err(invalid(`文件太大：${path.value}（单个文件上限 1 MB）`));
     total += file.data.byteLength;
     if (total > ASSET_LIMITS.maxTotalBytes) return err(invalid('文件总大小超过 4 MB'));
     const hash = await sha256Hex(file.data);
