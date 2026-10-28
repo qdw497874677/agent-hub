@@ -12,12 +12,12 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AssetRepository, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
-import { createAssetRepository } from './assets.ts';
+import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateWorkspaces } from './workspaces.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
@@ -34,6 +34,8 @@ export interface SqliteStore extends RepositorySet {
   readonly enrollment: EnrollmentRepository;
   /** 资产中心：技能 / 指令、不可变版本、内容 blob、Worker 安装关系。 */
   readonly assets: AssetRepository;
+  /** 每台 Worker 的资产同步状态（跨 hub 重启保留）。 */
+  readonly assetSync: AssetSyncBoard;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -367,6 +369,7 @@ export function openSqliteStore(file: string): SqliteStore {
     workspaces: createWorkspaceRepository(db),
     enrollment: createEnrollmentRepository(db),
     assets: createAssetRepository(db),
+    assetSync: createAssetSyncBoard(db),
     sessions,
     artifacts,
     layout,

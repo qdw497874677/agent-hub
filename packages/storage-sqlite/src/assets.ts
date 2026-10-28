@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { Asset, AssetFile, AssetKind, AssetRepository, AssetRevision, AssetSource } from '@agent-hub/domain';
+import type { Asset, AssetFile, AssetKind, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, WorkerAssetSync } from '@agent-hub/domain';
 
 /**
  * 资产中心（docs/design/asset-hub.md）：资产、不可变的版本、按 sha256 寻址的内容、Worker 安装关系。
@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS asset_installs (
   asset_id   TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
   created_at INTEGER NOT NULL,
   PRIMARY KEY (worker_id, asset_id)
+);
+CREATE TABLE IF NOT EXISTS asset_sync (
+  worker_id TEXT PRIMARY KEY,
+  status    TEXT NOT NULL
 );
 `;
 
@@ -173,5 +177,30 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     uninstall: async (workerId, assetId) => {
       uninstall.run(workerId, assetId);
     }
+  };
+}
+
+/**
+ * 每台 Worker 最近一次同步的情况，落库以便 hub 重启后照样显示。
+ * 重启前还在「同步中」的，重启后那次推送已经断了，读出来记成「待同步」（Worker 重连时会再推）。
+ */
+export function createAssetSyncBoard(db: DatabaseSync): AssetSyncBoard {
+  db.exec(ASSET_SCHEMA);
+  const read = (row: Row): WorkerAssetSync => {
+    const status = JSON.parse(String(row['status'])) as WorkerAssetSync;
+    return status.state === 'syncing' ? { ...status, state: 'pending' } : status;
+  };
+  const one = db.prepare('SELECT status FROM asset_sync WHERE worker_id = ?');
+  const every = db.prepare('SELECT status FROM asset_sync ORDER BY worker_id');
+  const put = db.prepare('INSERT INTO asset_sync (worker_id, status) VALUES (?, ?) ON CONFLICT(worker_id) DO UPDATE SET status = excluded.status');
+  return {
+    get(workerId) {
+      const row = one.get(workerId) as Row | undefined;
+      return row ? read(row) : null;
+    },
+    set(status) {
+      put.run(status.workerId, JSON.stringify(status));
+    },
+    all: () => (every.all() as Row[]).map(read)
   };
 }
