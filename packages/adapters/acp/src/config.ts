@@ -43,12 +43,46 @@ export interface AcpLaunch {
 /**
  * OpenCode：`OPENCODE_CONFIG_CONTENT` 是叠加在用户配置之上的一段内联配置，
  * `skills.paths` 加一个技能目录，`instructions` 加指令文件。
+ * 机器上已经设置了这个变量时做深合并：用户的值全部保留，数组追加 hub 的条目（去重）；
+ * 原值不是 JSON 对象就没法合并，只用 hub 这一段（OpenCode 本来也读不了它）。
  */
-export function opencodeLaunch(assets: SessionAssets): AcpLaunch {
+export function opencodeLaunch(assets: SessionAssets, existing: string | undefined = process.env['OPENCODE_CONFIG_CONTENT']): AcpLaunch {
   const content: Record<string, unknown> = {};
   if (assets.skillsDir) content['skills'] = { paths: [assets.skillsDir] };
   if (assets.instructions.length > 0) content['instructions'] = assets.instructions.map((item) => item.path);
-  return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(content) } };
+  const base = parseObject(existing);
+  return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(base ? mergeConfig(base, content) : content) } };
+}
+
+type Json = Record<string, unknown>;
+
+function isObject(value: unknown): value is Json {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseObject(text: string | undefined): Json | null {
+  if (!text?.trim()) return null;
+  try {
+    const value: unknown = JSON.parse(text);
+    return isObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 深合并：对象逐键递归，数组用户在前、hub 追加并去重，标量以用户为准。 */
+export function mergeConfig(user: Json, hub: Json): Json {
+  const out: Json = { ...user };
+  for (const [key, value] of Object.entries(hub)) {
+    const mine = out[key];
+    if (mine === undefined) out[key] = value;
+    else if (isObject(mine) && isObject(value)) out[key] = mergeConfig(mine, value);
+    else if (Array.isArray(mine) && Array.isArray(value)) {
+      const seen = new Set(mine.map((item) => JSON.stringify(item)));
+      out[key] = [...mine, ...value.filter((item) => !seen.has(JSON.stringify(item)))];
+    }
+  }
+  return out;
 }
 
 export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [
