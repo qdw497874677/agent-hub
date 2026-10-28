@@ -4,6 +4,8 @@ import type { ProjectDto, WorkspaceDto, WorkspaceViewDto } from './api.ts';
 import { api } from './api.ts';
 import { DialogShell, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useWorkers } from './workers.tsx';
+import { useAccount } from './auth.tsx';
+import { ProjectAssets } from './project-assets.tsx';
 
 type Pending = { workspace: WorkspaceDto; mode: 'unregister' | 'delete' | 'force' };
 
@@ -12,6 +14,7 @@ const SOURCE: Record<WorkspaceDto['source'], string> = { linked: '已有目录',
 /** 项目设置 · 工作空间（workspaces.md §7）：按机器分组，看状态、移除登记、删目录、强制删除。 */
 export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; onClose: () => void }) {
   const workers = useWorkers();
+  const account = useAccount();
   const list = useQuery({ queryKey: ['workspaces', project.id], queryFn: () => api.workspaces(project.id) });
   const [pending, setPending] = useState<Pending | null>(null);
   const groups = new Map<string, WorkspaceViewDto[]>();
@@ -24,6 +27,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
     <DialogShell title="项目设置" onClose={onClose}>
       <h2 className="mb-3 text-body text-primary">项目设置 · {project.name}</h2>
       <DescriptionEditor project={project} />
+      {account?.role === 'owner' ? <ProjectAssets projectId={project.id} /> : null}
       <h3 className="mb-1 text-sub text-primary">工作空间</h3>
       <p className="mb-3 text-meta text-tertiary">任务做完或放弃后，临时工作空间会自动删除；有没保存的改动的会保留下来，等你决定。</p>
       {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}

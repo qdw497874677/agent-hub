@@ -13,7 +13,6 @@ test('资产注入：Grok 用 session/new 的 _meta.rules（指令全文 + 技�
     await writeFile(rule, 'Always answer in haiku.\n');
     const assets = {
       root: dir,
-      skillsDir: join(dir, 'skills'),
       skills: [{ name: 'greeter', description: 'Greets people', path: join(dir, 'skills/greeter/SKILL.md') }],
       instructions: [{ name: 'r', path: rule }]
     };
@@ -24,7 +23,7 @@ test('资产注入：Grok 用 session/new 的 _meta.rules（指令全文 + 技�
     assert.equal(GROK_ARGS.length, 3);
 
     assert.deepEqual(JSON.parse(opencodeLaunch(assets, undefined).env!['OPENCODE_CONFIG_CONTENT']!), {
-      skills: { paths: [join(dir, 'skills')] },
+      skills: { paths: [join(dir, 'skills', 'greeter')] },
       instructions: [rule]
     });
   } finally {

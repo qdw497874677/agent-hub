@@ -7,7 +7,6 @@ test('Pi 资产参数：每个技能一次 --skill，每条指令一次 --append
   assert.deepEqual(
     piAssetArgs({
       root: '/h/.agent-hub/assets',
-      skillsDir: '/h/.agent-hub/assets/skills',
       skills: [
         { name: 'a', description: '', path: '/h/.agent-hub/assets/skills/a/SKILL.md' },
         { name: 'b', description: '', path: '/h/.agent-hub/assets/skills/b/SKILL.md' }

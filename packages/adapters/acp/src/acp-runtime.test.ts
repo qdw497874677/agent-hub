@@ -85,7 +85,7 @@ test('acp runtime: 命令不存在时返回 unavailable，不崩', async () => {
 });
 
 test('acp runtime: launch 给的 sessionMeta 叠加到 session/new 的 _meta 上（Grok 的 rules 走这里）', async () => {
-  const assets = { root: '/x', skillsDir: '/x/skills', skills: [], instructions: [] };
+  const assets = { root: '/x', skills: [], instructions: [] };
   const runtime = createAcpRuntime({ ...config, launch: () => ({ sessionMeta: { rules: 'R' } }) });
   const started = await runtime.start(spec({ assets }));
   assert.ok(started.ok);

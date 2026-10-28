@@ -23,7 +23,7 @@ export interface WorkerAssets {
   /** 让目录与清单一致；缺的内容用 fetch 按哈希取（每批 ≤ 200 个）。 */
   sync(entries: readonly AssetManifestEntryWire[], fetch: FetchBlobs): Promise<{ root: string; installed: Record<string, string> }>;
   /** 此刻装着的东西；什么都没装时返回 undefined（会话照旧启动，不加任何参数）。 */
-  current(): Promise<SessionAssets | undefined>;
+  current(only?: ReadonlySet<string>): Promise<SessionAssets | undefined>;
 }
 
 export type FetchBlobs = (hashes: readonly string[]) => Promise<readonly { sha256: string; data: string }[]>;
@@ -37,12 +37,19 @@ export function defaultAssetsRoot(env: NodeJS.ProcessEnv = process.env): string 
 
 const exists = (path: string): Promise<boolean> => stat(path).then(() => true, () => false);
 
+/** 落地名：全局 = name；项目级 = name--<id8>。 */
+const slotOf = (entry: Pick<AssetManifestEntryWire, 'name' | 'slot'>): string => entry.slot ?? entry.name;
+const scopeOf = (entry: Pick<AssetManifestEntryWire, 'name' | 'slot'>): string | null => {
+  const slot = slotOf(entry);
+  return slot === entry.name ? null : slot.slice(slot.lastIndexOf('--') + 2);
+};
+
 function validate(entries: readonly AssetManifestEntryWire[]): void {
   const seen = new Set<string>();
   for (const entry of entries) {
     const name = checkAssetName(entry.name);
     if (!name.ok) throw new Error(name.error.message);
-    const key = `${entry.kind}:${entry.name}`;
+    const key = `${entry.kind}:${slotOf(entry)}`;
     if (seen.has(key)) throw new Error(`清单里「${entry.name}」重复了`);
     seen.add(key);
     if (entry.kind === 'instruction' && entry.files.length !== 1) throw new Error(`指令「${entry.name}」必须正好一个文件`);
@@ -63,8 +70,12 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
   const manifestPath = join(root, '.manifest.json');
   let queue: Promise<unknown> = Promise.resolve();
 
-  const target = (entry: Pick<AssetManifestEntryWire, 'kind' | 'name'>): string =>
-    entry.kind === 'skill' ? join(root, 'skills', entry.name) : join(root, 'instructions', `${entry.name}.md`);
+  // 项目级技能放 project-skills/<id8>/<name>：目录名仍等于技能名（Agent Skills 要求），同名也不撞全局的。
+  const target = (entry: Pick<AssetManifestEntryWire, 'kind' | 'name' | 'slot'>): string => {
+    const scope = scopeOf(entry);
+    if (entry.kind === 'instruction') return join(root, 'instructions', `${slotOf(entry)}.md`);
+    return scope === null ? join(root, 'skills', entry.name) : join(root, 'project-skills', scope, entry.name);
+  };
 
   async function readManifest(): Promise<AssetManifestEntryWire[]> {
     try {
@@ -137,13 +148,21 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
     await mkdir(root, { recursive: true });
     await rm(staging, { recursive: true, force: true });
     await ensureBlobs(entries, fetch);
-    const before = new Map((await readManifest()).map((entry) => [`${entry.kind}:${entry.name}`, entry.digest]));
+    const before = new Map((await readManifest()).map((entry) => [`${entry.kind}:${slotOf(entry)}`, entry.digest]));
     for (const entry of entries) {
-      const same = before.get(`${entry.kind}:${entry.name}`) === entry.digest && (await exists(target(entry)));
+      const same = before.get(`${entry.kind}:${slotOf(entry)}`) === entry.digest && (await exists(target(entry)));
       if (!same) await place(entry);
     }
-    await prune(join(root, 'skills'), new Set(entries.filter((e) => e.kind === 'skill').map((e) => e.name)));
-    await prune(join(root, 'instructions'), new Set(entries.filter((e) => e.kind === 'instruction').map((e) => `${e.name}.md`)));
+    const skills = entries.filter((e) => e.kind === 'skill');
+    await prune(join(root, 'skills'), new Set(skills.filter((e) => scopeOf(e) === null).map((e) => e.name)));
+    const scoped = new Map<string, Set<string>>();
+    for (const e of skills) {
+      const scope = scopeOf(e);
+      if (scope !== null) scoped.set(scope, (scoped.get(scope) ?? new Set()).add(e.name));
+    }
+    await prune(join(root, 'project-skills'), new Set(scoped.keys()));
+    for (const [scope, names] of scoped) await prune(join(root, 'project-skills', scope), names);
+    await prune(join(root, 'instructions'), new Set(entries.filter((e) => e.kind === 'instruction').map((e) => `${slotOf(e)}.md`)));
     await prune(blobs, new Set(entries.flatMap((entry) => entry.files.map((file) => file.sha256))));
     await writeAtomic(manifestPath, JSON.stringify({ entries }, null, 2));
     await rm(staging, { recursive: true, force: true });
@@ -157,9 +176,9 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
       queue = run.catch(() => {});
       return run;
     },
-    async current() {
+    async current(only) {
       await queue;
-      const entries = await readManifest();
+      const entries = (await readManifest()).filter((entry) => !only || only.has(entry.assetId));
       if (entries.length === 0) return undefined;
       const skills = entries
         .filter((entry) => entry.kind === 'skill')
@@ -167,7 +186,7 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
       const instructions = entries
         .filter((entry) => entry.kind === 'instruction')
         .map((entry) => ({ name: entry.name, path: target(entry) }));
-      return { root, skillsDir: skills.length > 0 ? join(root, 'skills') : null, skills, instructions };
+      return { root, skills, instructions };
     }
   };
 }

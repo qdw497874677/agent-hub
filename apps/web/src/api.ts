@@ -43,6 +43,7 @@ import type {
   PairingDto,
   SettingsDto,
   AssetsOverviewDto,
+  ProjectAssetsDto,
   AssetRevisionDto,
   AssetDiffDto,
   GitScanDto,
@@ -207,10 +208,10 @@ export type AssetUploadFile = { readonly path: string; readonly data: string };
 const assetPath = (id: string) => `/api/admin/assets/${encodeURIComponent(id)}`;
 export const assetsApi = {
   overview: () => call<AssetsOverviewDto>('/api/admin/assets'),
-  upload: (input: { kind: 'skill' | 'instruction' | 'mcp'; name?: string; files: AssetUploadFile[] }) =>
+  upload: (input: { kind: 'skill' | 'instruction' | 'mcp'; name?: string; projectId?: string | null; files: AssetUploadFile[] }) =>
     post<{ id: string }>('/api/admin/assets/upload', input),
   scanGit: (url: string, ref: string) => post<GitScanDto>('/api/admin/assets/git/scan', { url, ref: ref || null }),
-  importGit: (input: { url: string; ref: string; kind: 'skill' | 'instruction' | 'mcp'; path: string }) =>
+  importGit: (input: { url: string; ref: string; kind: 'skill' | 'instruction' | 'mcp'; path: string; projectId?: string | null }) =>
     post<{ id: string }>('/api/admin/assets/git/import', { ...input, ref: input.ref || null }),
   revisions: (id: string) => call<AssetRevisionDto[]>(`${assetPath(id)}/revisions`),
   file: (id: string, digest: string, path: string) =>
@@ -226,6 +227,13 @@ export const assetsApi = {
       method: 'PUT',
       body: JSON.stringify({ installed })
     }),
+  /** 项目级作用域：这个项目看得见的资产与开关；enabled=null 恢复默认。 */
+  project: (projectId: string) => call<ProjectAssetsDto>(`/api/admin/assets/projects/${encodeURIComponent(projectId)}`),
+  setProject: (projectId: string, assetId: string, enabled: boolean | null) =>
+    call<{ ok: true }>(`/api/admin/assets/projects/${encodeURIComponent(projectId)}/${encodeURIComponent(assetId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled })
+    }),
   /** MCP 密钥：只有名字进出界面，值写进去就再也读不回来。 */
   secrets: () => call<SecretsOverviewDto>('/api/admin/assets/secrets'),
   setSecret: (name: string, value: string) =>
@@ -236,6 +244,7 @@ export const assetsApi = {
 export type {
   SecretsOverviewDto,
   AssetsOverviewDto,
+  ProjectAssetsDto,
   AssetRevisionDto,
   AssetDiffDto,
   GitScanDto,

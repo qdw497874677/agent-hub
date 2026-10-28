@@ -19,8 +19,12 @@ import {
   remoteMcpTarget,
   listSecrets,
   setSecret,
-  deleteSecret
+  deleteSecret,
+  projectAssets,
+  setProjectAsset,
+  sessionAssetPlan
 } from './assets.ts';
+import { assetSlot } from '../asset.ts';
 
 const enc = (text: string) => new TextEncoder().encode(text);
 const skill = (body = 'say hi', name = 'greeter') => [
@@ -187,4 +191,50 @@ test('MCP 资产：不进文件清单；会话启动时 stdio 展开密钥，htt
   assert.doesNotMatch(JSON.stringify(view), /fs-value|remote-value/);
   assert.ok((await deleteSecret(deps, 'FS_TOKEN')).ok);
   assert.equal((await deleteSecret(deps, 'FS_TOKEN')).ok, false);
+});
+
+test('项目级作用域：同名项目资产盖过全局，项目开关、别的项目看不见，会话清单 = 生效 ∩ 已落地', async () => {
+  const { deps, projectList } = inMemoryAssets();
+  projectList.set('p2', { id: 'p2', name: 'other' });
+  const global = await uploadAsset(deps, { kind: 'skill', files: skill('global') });
+  const local = await uploadAsset(deps, { kind: 'skill', files: skill('local'), projectId: 'p1' });
+  const rules = await uploadAsset(deps, { kind: 'instruction', name: 'house-rules', files: [{ path: 'r.md', data: enc('x') }] });
+  const foreign = await uploadAsset(deps, { kind: 'instruction', name: 'secret-rules', files: [{ path: 'r.md', data: enc('y') }], projectId: 'p2' });
+  assert.ok(global.ok && local.ok && rules.ok && foreign.ok);
+  // 同一作用域同名冲突；不存在的项目拒绝
+  const dup = await uploadAsset(deps, { kind: 'skill', files: skill('again'), projectId: 'p1' });
+  assert.equal(dup.ok || dup.error.code, 'conflict');
+  assert.match(dup.ok ? '' : dup.error.message, /这个项目/);
+  assert.equal((await uploadAsset(deps, { kind: 'skill', files: skill(), projectId: 'nope' })).ok, false);
+  assert.equal(assetSlot(global.value), 'greeter');
+  assert.match(assetSlot(local.value), /^greeter--[a-z0-9]{1,8}$/);
+
+  const view = await projectAssets(deps, 'p1');
+  assert.ok(view.ok);
+  const byId = new Map(view.value.choices.map((c) => [c.assetId, c]));
+  assert.equal(byId.has(foreign.value.id), false);
+  assert.equal(byId.get(global.value.id)?.shadowedBy, local.value.id);
+  assert.equal(byId.get(local.value.id)?.scope, 'project');
+  assert.equal((await setProjectAsset(deps, { projectId: 'p1', assetId: foreign.value.id, enabled: true })).ok, false);
+
+  for (const id of [global.value.id, local.value.id, rules.value.id, foreign.value.id]) await deps.assets.install('w1', id, 1);
+  const landed = Object.fromEntries([global, local, rules, foreign].map((a) => [a.value.id, a.value.pinned]));
+  deps.board.set({ workerId: 'w1', state: 'synced', root: '/r', installed: landed, error: null, at: 1 });
+  const plan = await sessionAssetPlan(deps, 'w1', 'p1');
+  assert.deepEqual(new Set(plan.assetIds), new Set([local.value.id, rules.value.id]));
+  assert.equal(plan.entries.find((e) => e.assetId === local.value.id)?.scope, 'project');
+  // 关掉本项目的那个 → 全局的回来
+  assert.ok((await setProjectAsset(deps, { projectId: 'p1', assetId: local.value.id, enabled: false })).ok);
+  assert.deepEqual(new Set((await sessionAssetPlan(deps, 'w1', 'p1')).assetIds), new Set([global.value.id, rules.value.id]));
+  assert.ok((await setProjectAsset(deps, { projectId: 'p1', assetId: rules.value.id, enabled: false })).ok);
+  assert.deepEqual((await sessionAssetPlan(deps, 'w1', 'p1')).assetIds, [global.value.id]);
+  assert.ok((await setProjectAsset(deps, { projectId: 'p1', assetId: rules.value.id, enabled: null })).ok);
+  // 没有项目（找不到任务）只给全局的；还没落地的不给
+  assert.deepEqual(new Set((await sessionAssetPlan(deps, 'w1', null)).assetIds), new Set([global.value.id, rules.value.id]));
+  deps.board.set({ workerId: 'w1', state: 'synced', root: '/r', installed: {}, error: null, at: 2 });
+  assert.deepEqual((await sessionAssetPlan(deps, 'w1', null)).assetIds, []);
+  // 清单里带落地名：项目级的同名不撞
+  const manifest = await workerAssetManifest(deps, 'w1');
+  assert.equal(new Set(manifest.map((e) => `${e.kind}:${e.slot}`)).size, manifest.length);
+  assert.equal(manifest.filter((e) => e.name === 'greeter').length, 2);
 });

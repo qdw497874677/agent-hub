@@ -11,6 +11,8 @@ import {
   gitImportRequest,
   gitScanRequest,
   gitScanSchema,
+  projectAssetRequest,
+  projectAssetsSchema,
   secretPutRequest,
   secretsOverviewSchema
 } from '@agent-hub/contract';
@@ -29,6 +31,8 @@ import {
   importGitAsset,
   invalid,
   pinAssetRevision,
+  projectAssets,
+  setProjectAsset,
   recordAssetAudit,
   scanGitSource,
   setAssetInstalled,
@@ -99,10 +103,32 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
     return c.json({ ok: true });
   });
 
+  // 项目设置里的资产开关（主人专用，同 /api/admin/*）：enabled=null 恢复默认。
+  app.get('/api/admin/assets/projects/:projectId', async (c) => {
+    const result = await projectAssets(deps, c.req.param('projectId'));
+    return result.ok ? c.json(projectAssetsSchema.parse(result.value)) : fail(c, result.error);
+  });
+  app.put('/api/admin/assets/projects/:projectId/:assetId', async (c) => {
+    const input = await parse(c, projectAssetRequest);
+    if (!input.ok) return input.response;
+    const { projectId, assetId } = c.req.param();
+    const result = await setProjectAsset(deps, { projectId, assetId, enabled: input.value.enabled });
+    if (!result.ok) return fail(c, result.error);
+    const asset = await deps.assets.get(assetId);
+    const state = input.value.enabled === null ? '恢复默认' : input.value.enabled ? '启用' : '停用';
+    await audit(c, 'asset.project', asset?.name ?? assetId, `项目 ${projectId}：${state}`);
+    return c.json({ ok: true });
+  });
+
   app.post('/api/admin/assets/upload', uploadLimit, async (c) => {
     const input = await parse(c, assetUploadRequest);
     if (!input.ok) return input.response;
-    const made = await uploadAsset(deps, { kind: input.value.kind, name: input.value.name ?? null, files: decodeFiles(input.value.files) });
+    const made = await uploadAsset(deps, {
+      kind: input.value.kind,
+      name: input.value.name ?? null,
+      projectId: input.value.projectId ?? null,
+      files: decodeFiles(input.value.files)
+    });
     if (!made.ok) return fail(c, made.error);
     await audit(c, 'asset.create', made.value.name, `上传${made.value.kind === 'skill' ? '技能' : '指令'} ${made.value.pinned.slice(0, 12)}`);
     return c.json({ id: made.value.id }, 201);
@@ -123,7 +149,8 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
       url: input.value.url.trim(),
       ref: input.value.ref?.trim() || null,
       path: input.value.path,
-      name: input.value.name ?? null
+      name: input.value.name ?? null,
+      projectId: input.value.projectId ?? null
     });
     if (!made.ok) return fail(c, made.error);
     await audit(c, 'asset.create', made.value.name, `从 git 导入 ${input.value.url.trim()} ${input.value.path}`);

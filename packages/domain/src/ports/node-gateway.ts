@@ -33,6 +33,8 @@ export type WorkerCommand =
       readonly tools?: ToolAccess;
       /** MCP 资产（hub 在发出前才填，见 sessionMcpLaunch）。stdio 的 env 含密钥明文：不落库、不进日志。 */
       readonly mcp?: readonly McpLaunch[];
+      /** 这次会话生效的资产 id（项目作用域，见 sessionAssetPlan）；没有 = 机器上装着的全给。 */
+      readonly assetIds?: readonly string[];
     }
   | {
       readonly kind: 'set_option';

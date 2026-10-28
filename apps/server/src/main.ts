@@ -13,7 +13,7 @@ import { serveAssetFetch } from './asset-relay.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { createSecretVault, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { AssetDeps, Deps, EnrollmentDeps, SessionId, ToolGateway, WorkerCommand } from '@agent-hub/domain';
+import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, SessionId, ToolGateway, WorkerCommand } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase
@@ -30,6 +30,7 @@ import {
   syncWorkerAssets,
   sessionMcpLaunch,
   remoteMcpTarget,
+  sessionAssetPlan,
   unavailable,
   workerAttached,
   workerGone
@@ -104,7 +105,7 @@ const deps: Deps = {
     // 发给 worker 前给 start_session 配上工具令牌（换新、旧的作废），dispose 时作废。
     dispatch: async (command) =>
       serverGateway
-        ? serverGateway.gateway.dispatch(await withMcpAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, command) : command))
+        ? serverGateway.gateway.dispatch(await withSessionAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, command) : command))
         : err(unavailable('worker 通道尚未就绪')),
     listDirectories: async (workerId, path) =>
       serverGateway
@@ -213,6 +214,7 @@ const assetDeps: AssetDeps = {
   delivery: { push: async (workerId, manifest) => (serverGateway ? serverGateway.assets.push(workerId, manifest) : err(unavailable('worker 通道尚未就绪'))) },
   board: store.assetSync,
   workers: workerControl,
+  projects: { byId: (id) => store.projects.byId(id as ProjectId) },
   secrets: createSecretVault(store.db, await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') })),
   now: () => Date.now()
 };
@@ -222,14 +224,21 @@ const remoteMcpClients = createRemoteClients();
  * 有工具令牌的 start_session 才带 MCP 资产（远端那些要凭令牌走中转）。stdio 的密钥此刻才展开，
  * 随这条指令直接发给 Worker，不落库、不进日志；缺密钥的只记名字。
  */
-async function withMcpAssets(command: WorkerCommand): Promise<WorkerCommand> {
-  if (command.kind !== 'start_session' || !command.tools) return command;
+async function withSessionAssets(command: WorkerCommand): Promise<WorkerCommand> {
+  if (command.kind !== 'start_session') return command;
   try {
-    const { launch, skipped } = await sessionMcpLaunch(assetDeps, command.workerId);
-    for (const item of skipped) log(`MCP「${item.name}」这次没给会话 ${command.sessionId}：${item.reason}`);
-    return launch.length > 0 ? { ...command, mcp: launch } : command;
+    // 项目作用域（就近优先 + 项目开关）∩ 这台机器装了的；找不到任务就只给全局的。
+    const task = await store.tasks.byId(command.taskId);
+    const plan = await sessionAssetPlan(assetDeps, command.workerId, task?.projectId ?? null);
+    let next: WorkerCommand = { ...command, assetIds: plan.assetIds };
+    if (command.tools) {
+      const { launch, skipped } = await sessionMcpLaunch(assetDeps, command.workerId, new Set(plan.assetIds));
+      for (const item of skipped) log(`MCP「${item.name}」这次没给会话 ${command.sessionId}：${item.reason}`);
+      if (launch.length > 0) next = { ...next, mcp: launch };
+    }
+    return next;
   } catch (failure) {
-    log(`MCP 资产展开失败：${(failure as Error).message}`);
+    log(`会话资产展开失败：${(failure as Error).message}`);
     return command;
   }
 }

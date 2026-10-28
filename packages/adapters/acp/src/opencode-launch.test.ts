@@ -4,14 +4,13 @@ import { mergeConfig, opencodeLaunch } from './config.ts';
 
 const assets = {
   root: '/a',
-  skillsDir: '/a/skills',
   skills: [{ name: 's', description: 'd', path: '/a/skills/s/SKILL.md' }],
   instructions: [{ name: 'r', path: '/a/instructions/r.md' }]
 };
 const read = (existing: string | undefined) => JSON.parse(opencodeLaunch(assets, existing).env!['OPENCODE_CONFIG_CONTENT']!);
 
 test('OpenCode 内联配置：没有原值时只放 hub 的技能和指令', () => {
-  assert.deepEqual(read(undefined), { skills: { paths: ['/a/skills'] }, instructions: ['/a/instructions/r.md'] });
+  assert.deepEqual(read(undefined), { skills: { paths: ['/a/skills/s'] }, instructions: ['/a/instructions/r.md'] });
   assert.deepEqual(read('  '), read(undefined));
 });
 
@@ -19,7 +18,7 @@ test('OpenCode 内联配置：与用户已有的值深合并，用户的值全�
   const user = { model: 'x/y', skills: { paths: ['/mine'], other: true }, instructions: ['/mine.md', '/a/instructions/r.md'], mcp: { m: { type: 'local' } } };
   assert.deepEqual(read(JSON.stringify(user)), {
     model: 'x/y',
-    skills: { paths: ['/mine', '/a/skills'], other: true },
+    skills: { paths: ['/mine', '/a/skills/s'], other: true },
     instructions: ['/mine.md', '/a/instructions/r.md'],
     mcp: { m: { type: 'local' } }
   });

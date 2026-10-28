@@ -20,6 +20,7 @@ const ACTION_LABEL: Record<string, string> = {
   'asset.install': '装资产',
   'asset.secret.set': '设置密钥',
   'asset.secret.delete': '删除密钥',
+  'asset.project': '项目资产开关',
   'asset.uninstall': '卸资产'
 };
 

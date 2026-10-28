@@ -30,8 +30,7 @@ export interface StartSpec {
 /** Worker 专属资产目录里此刻装着的东西。 */
 export interface SessionAssets {
   readonly root: string;
-  /** 放所有技能子目录的那一层；没有技能时为 null。 */
-  readonly skillsDir: string | null;
+  /** path 是各技能 SKILL.md 的绝对路径（只含这次会话生效的）。 */
   readonly skills: readonly { readonly name: string; readonly description: string; readonly path: string }[];
   /** path 是 markdown 文件的绝对路径。 */
   readonly instructions: readonly { readonly name: string; readonly path: string }[];

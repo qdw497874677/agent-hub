@@ -50,7 +50,6 @@ test('Worker 资产目录：落地、只取缺的、升级换整份、清单外�
     assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /v1/);
     assert.equal(await readFile(join(root, 'instructions/house-rules.md'), 'utf8'), 'Always answer in haiku.');
     const now = await assets.current();
-    assert.equal(now?.skillsDir, join(root, 'skills'));
     assert.deepEqual(now?.skills.map((s) => s.path), [join(root, 'skills/greeter/SKILL.md')]);
     assert.deepEqual(now?.instructions.map((s) => s.path), [join(root, 'instructions/house-rules.md')]);
 
@@ -83,6 +82,26 @@ test('Worker 资产目录：路径越界、哈希不对都拒绝，旧的一版�
     const lying: FetchBlobs = async (hashes) => hashes.map((sha256) => ({ sha256, data: Buffer.from('nope').toString('base64') }));
     await assert.rejects(assets.sync([skill('greeter', 'v3', 'd'.repeat(64))], lying), /哈希不对/);
     assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /v1/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Worker 资产目录：项目级同名技能落到 project-skills/<id8>/<name>，current 只给这次会话生效的', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-scope-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    const global = skill('greeter', 'global', 'a'.repeat(64));
+    const local = { ...skill('greeter', 'local', 'b'.repeat(64)), assetId: 'a-local', slot: 'greeter--abcd1234' };
+    await assets.sync([global, local, rule], fetch);
+    assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /global/);
+    assert.match(await readFile(join(root, 'project-skills/abcd1234/greeter/SKILL.md'), 'utf8'), /local/);
+    const only = await assets.current(new Set(['a-local', 'a-rules']));
+    assert.deepEqual(only?.skills.map((s) => s.path), [join(root, 'project-skills/abcd1234/greeter/SKILL.md')]);
+    assert.equal(only?.instructions.length, 1);
+    assert.equal((await assets.current())?.skills.length, 2);
+    await assets.sync([global], fetch);
+    assert.deepEqual(await readdir(join(root, 'project-skills')), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
