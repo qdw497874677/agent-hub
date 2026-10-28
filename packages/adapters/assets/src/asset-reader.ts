@@ -41,6 +41,12 @@ export function parseSkillFrontmatter(text: string): Result<{ name: string | nul
   }
   if (data === null || typeof data !== 'object' || Array.isArray(data)) return err(invalid('SKILL.md 的 frontmatter 应是键值对'));
   const record = data as Record<string, unknown>;
+  if (record['name'] !== undefined && record['name'] !== null && typeof record['name'] !== 'string') {
+    return err(invalid('SKILL.md 的 frontmatter 里 name 必须是一行文字'));
+  }
+  if (record['description'] !== undefined && record['description'] !== null && typeof record['description'] !== 'string') {
+    return err(invalid('SKILL.md 的 frontmatter 里 description 必须是文字'));
+  }
   const name = typeof record['name'] === 'string' ? record['name'].trim() : null;
   const description = typeof record['description'] === 'string' ? record['description'].trim() : '';
   return ok({ name, description });
@@ -181,15 +187,26 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
 
   return {
     describe(kind: AssetKind, files: readonly IncomingFile[]): Result<AssetMetadata, DomainError> {
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder('utf-8', { fatal: true });
+      const text = (data: Uint8Array): string | null => {
+        try {
+          return decoder.decode(data);
+        } catch {
+          return null;
+        }
+      };
       if (kind === 'skill') {
         const main = files.find((file) => file.path.replace(/^\.\//, '') === 'SKILL.md');
         if (!main) return err(invalid('技能目录的根上必须有 SKILL.md'));
-        return parseSkillFrontmatter(decoder.decode(main.data));
+        const body = text(main.data);
+        if (body === null) return err(invalid('SKILL.md 不是 UTF-8 文本'));
+        return parseSkillFrontmatter(body);
       }
       const only = files[0];
       if (kind === 'mcp') return ok({ name: null, description: '' }); // 名字和说明由领域层解析 mcp.json 得出
-      return ok({ name: null, description: only ? instructionSummary(decoder.decode(only.data)) : '' });
+      const body = only ? text(only.data) : '';
+      if (body === null) return err(invalid('指令文件不是 UTF-8 文本'));
+      return ok({ name: null, description: instructionSummary(body) });
     },
 
     async scanGit(url, ref) {

@@ -59,3 +59,13 @@ test('git：扫描候选、读技能目录（跳过符号链接）、读指令�
   assert.equal((await reader.readGit(url, '--upload-pack=x', '', 'skill')).ok, false);
   assert.match(reader.diffText('SKILL.md', 'a\n', 'b\n'), /-a\n\+b/);
 });
+
+test('frontmatter：name / description 类型不对、SKILL.md 不是 UTF-8，给出中文原因', () => {
+  const bad = parseSkillFrontmatter('---\nname: [a, b]\ndescription: x\n---\n');
+  assert.equal(!bad.ok && bad.error.message, 'SKILL.md 的 frontmatter 里 name 必须是一行文字');
+  const badDesc = parseSkillFrontmatter('---\nname: a\ndescription: { x: 1 }\n---\n');
+  assert.equal(!badDesc.ok && badDesc.error.message, 'SKILL.md 的 frontmatter 里 description 必须是文字');
+  const reader = createAssetReader();
+  const latin = reader.describe('skill', [{ path: 'SKILL.md', data: new Uint8Array([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0xfe]) }]);
+  assert.equal(!latin.ok && latin.error.message, 'SKILL.md 不是 UTF-8 文本');
+});
