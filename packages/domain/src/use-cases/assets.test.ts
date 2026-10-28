@@ -14,7 +14,12 @@ import {
   syncWorkerAssets,
   uploadAsset,
   uploadAssetRevision,
-  workerAssetManifest
+  workerAssetManifest,
+  sessionMcpLaunch,
+  remoteMcpTarget,
+  listSecrets,
+  setSecret,
+  deleteSecret
 } from './assets.ts';
 
 const enc = (text: string) => new TextEncoder().encode(text);
@@ -139,4 +144,47 @@ test('投递失败记 failed，带原因', async () => {
   const status = await syncWorkerAssets(deps, 'w1');
   assert.equal(status.state, 'failed');
   assert.equal(status.error, '磁盘满了');
+});
+
+test('MCP 资产：不进文件清单；会话启动时 stdio 展开密钥，http 只给名字；hub 代连只认装在本机的 http', async () => {
+  const { deps, pushes } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const local = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'local-fs', command: 'node', args: ['srv.js'], env: { FS_TOKEN: '${secret:FS_TOKEN}' } }) });
+  const remote = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'remote', url: 'https://e/mcp', headers: { Authorization: 'Bearer ${secret:REMOTE_TOKEN}' } }) });
+  assert.ok(local.ok && remote.ok);
+  assert.equal((await uploadAsset(deps, { kind: 'mcp', files: [{ path: 'other.json', data: enc('{}') }] })).ok, false);
+  await setAssetInstalled(deps, { workerId: 'w1', assetId: local.value.id, installed: true });
+  await setAssetInstalled(deps, { workerId: 'w1', assetId: remote.value.id, installed: true });
+  await flush();
+  assert.deepEqual(await workerAssetManifest(deps, 'w1'), []);
+  assert.ok(pushes.every((push) => push.manifest.length === 0));
+
+  // 没设密钥：stdio 那项被跳过（只报名字），http 照给
+  let started = await sessionMcpLaunch(deps, 'w1');
+  assert.deepEqual(started.launch.map((entry) => entry.name), ['remote']);
+  assert.deepEqual(started.skipped.map((entry) => entry.name), ['local-fs']);
+  assert.ok((await listSecrets(deps)).missing.some((row) => row.name === 'FS_TOKEN' && row.usedBy.includes('local-fs')));
+
+  assert.equal((await setSecret(deps, 'bad name', 'x')).ok, false);
+  assert.equal((await setSecret(deps, 'FS_TOKEN', 'a\nb')).ok, false);
+  assert.ok((await setSecret(deps, 'FS_TOKEN', 'fs-value')).ok);
+  assert.ok((await setSecret(deps, 'REMOTE_TOKEN', 'remote-value')).ok);
+  started = await sessionMcpLaunch(deps, 'w1');
+  const stdio = started.launch.find((entry) => entry.name === 'local-fs');
+  assert.ok(stdio && stdio.transport === 'stdio');
+  assert.equal(stdio.env['FS_TOKEN'], 'fs-value');
+  // http 的密钥不下发
+  assert.doesNotMatch(JSON.stringify(started.launch), /remote-value/);
+
+  const target = await remoteMcpTarget(deps, 'w1', 'remote');
+  assert.ok(target.ok);
+  assert.equal(target.value.headers['Authorization'], 'Bearer remote-value');
+  assert.equal((await remoteMcpTarget(deps, 'w2', 'remote')).ok, false);
+  assert.equal((await remoteMcpTarget(deps, 'w1', 'local-fs')).ok, false);
+
+  const view = await listSecrets(deps);
+  assert.deepEqual(view.missing, []);
+  assert.doesNotMatch(JSON.stringify(view), /fs-value|remote-value/);
+  assert.ok((await deleteSecret(deps, 'FS_TOKEN')).ok);
+  assert.equal((await deleteSecret(deps, 'FS_TOKEN')).ok, false);
 });

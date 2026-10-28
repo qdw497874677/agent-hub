@@ -7,8 +7,9 @@ hub 统一管理「会话能用的能力」，按 **Worker** 安装，经已有�
 | 做 | 不做（MVP） |
 | --- | --- |
 | **技能**：Agent Skills 标准目录（根上 `SKILL.md`，frontmatter `name` / `description`） | hooks / bin / 可执行钩子（skill 里出现 `hooks/`、`bin/` 直接拒收） |
-| **指令**：一份 markdown，追加到系统提示 | MCP 配置与密钥 |
-| 来源：上传（文件 / 文件夹 / zip / 粘贴）、Git（URL + ref + 仓库内路径） | agent 自己写的技能 |
+| **指令**：一份 markdown，追加到系统提示 | 明文密钥（MCP 配置里只认 `${secret:NAME}`） |
+| **MCP 服务器**：一份 `mcp.json`（stdio 或远端 http），密钥另存 | agent 自己写的技能 |
+| 来源：上传（文件 / 文件夹 / zip / 粘贴）、Git（URL + ref + 仓库内路径） | |
 | 版本：不可变、按内容寻址（文件清单的 sha256）、钉住；来源有新版本只标「可升级」，看 diff 确认后才换钉 | 碰机器上已有的技能（`~/.agents`、`~/.claude`、`~/.pi` 等全局目录一律不写） |
 | 按 Worker 安装；每台的同步状态 | 按项目 / 按用户安装（以后再说） |
 
@@ -52,3 +53,37 @@ hub 统一管理「会话能用的能力」，按 **Worker** 安装，经已有�
 | Grok（ACP） | session/new 的 `_meta.rules`：技能索引（名字、描述、SKILL.md 绝对路径，「相关时先读」）。`grok agent stdio` 不认命令行 `--rules` | 同一段 rules 里附指令全文 | 本机线上会话已验证（技能 + 指令都生效）；远端 Grok 未登录 |
 
 其他运行时没有注入口时，退回 MCP 工具方案（以后再做）。
+
+## MCP 服务器与密钥
+
+**资产形态**：kind `mcp`，内容就是一份 `mcp.json`（Git 里可以叫 `xxx.mcp.json`）：
+
+```json
+{ "name": "github", "description": "…", "transport": "stdio", "command": "npx", "args": ["-y", "…"], "env": { "TOKEN": "${secret:GITHUB_TOKEN}" } }
+{ "name": "docs", "transport": "http", "url": "https://…/mcp", "headers": { "Authorization": "Bearer ${secret:DOCS_TOKEN}" } }
+```
+
+- 校验：`env` / `headers` 里像密钥的键（TOKEN、KEY、SECRET、PASSWORD、Authorization…）必须写 `${secret:NAME}`，写明文直接拒收（中文报错）；密钥名只能大写字母、数字、下划线。
+- MCP 资产**不当文件同步**到 Worker，只在开会话时按需下发。
+
+**密钥库**（端口 `SecretVault`，适配器 `storage-sqlite/secrets.ts`）：AES-256-GCM 加密落库，AAD = 密钥名；主密钥取 `HUB_SECRET_KEY`，没有就在数据目录生成 `secret.key`（0600）。管理页「密钥」一栏只显示名字、是否已设、被哪些资产引用，**从不回显值**；审计只记名字（`asset.secret.set` / `asset.secret.delete`）。
+
+**会话启动**（`sessionMcpLaunch`，只在会话带 hub 工具时）：
+
+| 传输 | 做法 | 密钥在哪 |
+| --- | --- | --- |
+| stdio | hub 展开 `${secret:…}`，随 `start_session` 下发；运行时拉起子进程 | 只在那个子进程的 env 里，不落盘、不打日志 |
+| http | 只下发名字；Worker 指向本机中转 `/mcp/<名字>`，经 Worker 长连接由 **hub 代连远端** | 只在 hub 内存里（客户端按地址+头的哈希复用）；Worker、agent 都拿不到 |
+
+缺密钥或配置坏的条目跳过（日志只记资产名和原因），会话照常开。
+
+**运行时适配**：
+
+| 运行时 | 做法 |
+| --- | --- |
+| OpenCode / Grok（ACP） | 标准 `session/new.mcpServers`：stdio 原样，http 指向本机中转并带会话令牌；agent 不会 HTTP MCP 时套 stdio 垫片 |
+| Pi | 垫片 `mcp-shim.ts`：`AGENT_HUB_MCP`（JSON）告诉它要聚合哪些，读完即从 env 删掉；工具名 `资产名__工具名` |
+
+没走「改 OpenCode 配置 / Grok `_meta`」：两家 ACP 都认标准 `mcpServers`，一条路径更少出错，也不碰用户配置。
+
+本机线上验证（2026-10-28）：Grok、OpenCode、Pi 三家会话都调到了 stdio（`stdio-ok token_len=16`）和远端（`pong-remote-auth-ok`）测试服务器；hub 日志、远端服务器日志、事件流、数据库里都搜不到密钥原文。

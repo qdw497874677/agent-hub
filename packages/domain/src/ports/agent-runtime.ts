@@ -6,6 +6,7 @@ import type { AgentDescriptor } from '../agent.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { PromptInput } from '../attachment.ts';
 import type { ToolAccess } from '../tool.ts';
+import type { McpLaunch } from '../mcp.ts';
 
 export interface StartSpec {
   readonly sessionId: SessionId;
@@ -19,6 +20,11 @@ export interface StartSpec {
   readonly tools?: ToolAccess;
   /** hub 下发到这台 Worker 的技能与指令（专属目录里的绝对路径）。运行时按自己的启动参数指过去，不碰全局目录。 */
   readonly assets?: SessionAssets;
+  /**
+   * hub 下发的 MCP 资产（只在有 tools 时给）。stdio 的 env 里是已展开的密钥：只许进 agent 拉起的那个进程，不许落盘、不许进日志；
+   * http 的 url 是 Worker 本机中转入口（凭 tools.token 访问，hub 代连远端）。
+   */
+  readonly mcp?: readonly McpLaunch[];
 }
 
 /** Worker 专属资产目录里此刻装着的东西。 */

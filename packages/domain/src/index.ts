@@ -79,6 +79,8 @@ export * from './use-cases/tool-gateway.ts';
 export * from './tools/task-tools.ts';
 
 export * from './asset.ts';
+export * from './mcp.ts';
+export type { SecretVault, SecretInfo } from './ports/secret-vault.ts';
 export type { AssetRepository } from './ports/asset-repository.ts';
 export type { AssetReader, AssetMetadata, GitCandidate, GitCheckout } from './ports/asset-reader.ts';
 export type { AssetDelivery, AssetSyncBoard, DeliveryReport } from './ports/asset-delivery.ts';

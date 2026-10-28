@@ -347,7 +347,7 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
         child = spawn(command, args, {
           cwd: spec.workspaceRoot,
           stdio: ['pipe', 'pipe', 'pipe'],
-          ...(spec.tools ? { env: { ...process.env, ...piToolEnv(spec.tools) } } : {})
+          ...(spec.tools ? { env: { ...process.env, ...piToolEnv(spec.tools, spec.mcp) } } : {})
         });
       } catch (error) {
         return { ok: false, error: unavailable(`无法启动 Pi：${(error as Error).message}`) };

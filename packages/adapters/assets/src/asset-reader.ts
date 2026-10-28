@@ -150,6 +150,17 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
           const meta = parseSkillFrontmatter(await readFile(join(root, relPath), 'utf8'));
           const name = meta.ok && meta.value.name ? meta.value.name : basename(relDir || 'skill');
           found.push({ kind: 'skill', path: relDir, name, description: meta.ok ? meta.value.description : '' });
+        } else if (entry.isFile() && /^(mcp|.+\.mcp)\.json$/i.test(entry.name)) {
+          let name = slug(entry.name.replace(/\.json$/i, '').replace(/\.mcp$/i, '') || 'mcp');
+          let description = '';
+          try {
+            const parsed = JSON.parse(await readFile(join(root, relPath), 'utf8')) as { name?: unknown; description?: unknown };
+            if (typeof parsed.name === 'string') name = parsed.name;
+            if (typeof parsed.description === 'string') description = parsed.description;
+          } catch {
+            // 坏 JSON 也列出来：导入时会给出清楚的错误
+          }
+          found.push({ kind: 'mcp', path: relPath, name, description });
         } else if (entry.isFile() && INSTRUCTION_FILES.test(entry.name)) {
           const text = await readFile(join(root, relPath), 'utf8');
           const stem = /^(AGENTS|CLAUDE|GEMINI)\.md$/i.test(entry.name) ? (relDir ? basename(relDir) : entry.name) : entry.name.replace(/\.instructions\.md$/i, '');
@@ -177,6 +188,7 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
         return parseSkillFrontmatter(decoder.decode(main.data));
       }
       const only = files[0];
+      if (kind === 'mcp') return ok({ name: null, description: '' }); // 名字和说明由领域层解析 mcp.json 得出
       return ok({ name: null, description: only ? instructionSummary(decoder.decode(only.data)) : '' });
     },
 
@@ -198,11 +210,12 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
       try {
         const target = join(got.value.dir, rel.value);
         const info = await lstat(target).catch(() => null);
-        if (kind === 'instruction') {
+        if (kind === 'instruction' || kind === 'mcp') {
           if (!info?.isFile()) return err(invalid(`仓库里没有这个文件：${rel.value || '(根)'}`));
           if (info.size > ASSET_LIMITS.maxFileBytes) return err(invalid('文件太大'));
           const data = new Uint8Array(await readFile(target));
-          return ok({ commit: got.value.commit, files: [{ path: basename(rel.value), data }] });
+          // MCP 资产在 hub 里统一叫 mcp.json（仓库里可以叫 xxx.mcp.json）
+          return ok({ commit: got.value.commit, files: [{ path: kind === 'mcp' ? 'mcp.json' : basename(rel.value), data }] });
         }
         if (!info?.isDirectory()) return err(invalid(`仓库里没有这个目录：${rel.value || '(根)'}`));
         const files = await collect(target);

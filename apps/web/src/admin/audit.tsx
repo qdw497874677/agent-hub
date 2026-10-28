@@ -18,6 +18,8 @@ const ACTION_LABEL: Record<string, string> = {
   'asset.pin': '升级资产',
   'asset.delete': '删除资产',
   'asset.install': '装资产',
+  'asset.secret.set': '设置密钥',
+  'asset.secret.delete': '删除密钥',
   'asset.uninstall': '卸资产'
 };
 

@@ -649,9 +649,16 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
   const workers: WorkerStatus[] = [{ workerId: 'w1', label: 'local', origin: 'local', state: 'online' }];
   const git = { commit: 'c1', files: [] as import('../asset.ts').IncomingFile[] };
   const decode = (data: Uint8Array): string => new TextDecoder().decode(data);
+  const secretStore = new Map<string, { value: string; at: number }>();
   const deps: import('../use-cases/assets.ts').AssetDeps = {
     assets: repo,
     now,
+    secrets: {
+      list: async () => [...secretStore.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, { at }]) => ({ name, updatedAt: at })),
+      put: async (name, value, at) => void secretStore.set(name, { value, at }),
+      remove: async (name) => secretStore.delete(name),
+      reveal: async (names) => Object.fromEntries(names.flatMap((name) => (secretStore.has(name) ? [[name, secretStore.get(name)!.value]] : [])))
+    },
     board: { get: (id) => board.get(id) ?? null, set: (s) => void board.set(s.workerId, s), all: () => [...board.values()] },
     workers: { list: async () => workers },
     delivery: {

@@ -6,13 +6,18 @@ import { err, ok, type Result } from './result.ts';
  *
  * MVP 只有两类：
  * - skill：一个目录，根上一份 SKILL.md（Agent Skills 开放标准，frontmatter 里 name / description）；
- * - instruction：一份 markdown，追加到会话的系统提示里。
+ * - instruction：一份 markdown，追加到会话的系统提示里；
+ * - mcp：一份 mcp.json，描述一个 MCP 服务器（密钥只写引用，见 mcp.ts）。
  *
  * 版本不可变、按内容寻址：同样的文件 → 同一个 digest。资产「钉」在一个版本上，
  * 来源有新版本时只记成「可升级」，看过 diff 并确认后才换钉。
  */
-export type AssetKind = 'skill' | 'instruction';
-export const ASSET_KINDS: readonly AssetKind[] = ['skill', 'instruction'];
+export type AssetKind = 'skill' | 'instruction' | 'mcp';
+export const ASSET_KINDS: readonly AssetKind[] = ['skill', 'instruction', 'mcp'];
+/** 落成文件下发到 Worker 的那几类；mcp 不落盘（会话启动时按需展开，见 mcp.ts）。 */
+export type FileAssetKind = Exclude<AssetKind, 'mcp'>;
+export const FILE_ASSET_KINDS: readonly FileAssetKind[] = ['skill', 'instruction'];
+export const isFileAssetKind = (kind: AssetKind): kind is FileAssetKind => kind !== 'mcp';
 
 export type AssetSource =
   | { readonly type: 'upload' }
@@ -56,7 +61,7 @@ export interface Asset {
 /** 下发给一台 Worker 的一项：它该装什么、装成什么名字、由哪些文件组成。 */
 export interface AssetManifestEntry {
   readonly assetId: string;
-  readonly kind: AssetKind;
+  readonly kind: FileAssetKind;
   readonly name: string;
   readonly description: string;
   readonly digest: string;
@@ -166,6 +171,9 @@ export async function packAsset(kind: AssetKind, incoming: readonly IncomingFile
   if (kind === 'skill' && !seen.has('SKILL.md')) return err(invalid('技能目录的根上必须有 SKILL.md'));
   if (kind === 'instruction' && (files.length !== 1 || !/\.md$/i.test(files[0]?.path ?? ''))) {
     return err(invalid('指令只能是一份 markdown 文件'));
+  }
+  if (kind === 'mcp' && (files.length !== 1 || files[0]?.path !== 'mcp.json')) {
+    return err(invalid('MCP 资产只能是一份 mcp.json'));
   }
   files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   return ok({ files, blobs, digest: await revisionDigest(files) });

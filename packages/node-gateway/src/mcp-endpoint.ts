@@ -34,10 +34,13 @@ export function createMcpEndpoint(port: RpcPort, options: { readonly timeoutMs?:
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-    if (url.pathname !== '/mcp') {
+    // /mcp = hub 自己的工具；/mcp/<名字> = 一个远端 MCP 资产（hub 代连，密钥不下发）
+    const matched = /^\/mcp(?:\/([a-z0-9-]{1,64}))?$/.exec(url.pathname);
+    if (!matched) {
       response.writeHead(404).end();
       return;
     }
+    const server = matched[1];
     const token = bearer(request);
     if (token === '') {
       response.writeHead(401, { 'content-type': 'application/json' });
@@ -55,7 +58,7 @@ export function createMcpEndpoint(port: RpcPort, options: { readonly timeoutMs?:
       void (async () => {
         const reply = await port.request(
           mcpMessage,
-          { token, message: message as unknown as Record<string, unknown> },
+          { token, ...(server ? { server } : {}), message: message as unknown as Record<string, unknown> },
           { signal: abort.signal, ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) }
         );
         const out = reply.ok

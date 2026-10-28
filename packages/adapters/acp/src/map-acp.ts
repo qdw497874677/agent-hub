@@ -1,4 +1,4 @@
-import type { DomainError, PromptInput, Result, SessionEvent } from '@agent-hub/domain';
+import type { DomainError, PromptInput, Result, SessionEvent, StartSpec } from '@agent-hub/domain';
 import { invalid } from '@agent-hub/domain';
 
 /**
@@ -116,9 +116,38 @@ export const HUB_MCP_SERVER = 'agent-hub';
 export function mcpServersFor(
   tools: { transport: 'relay'; url: string; token: string } | undefined,
   caps: { http: boolean },
-  shim?: { command: string; args: readonly string[] }
+  shim?: { command: string; args: readonly string[] },
+  assets: StartSpec['mcp'] = []
 ): Record<string, unknown>[] {
   if (!tools) return [];
+  return [...hubServers(tools, caps, shim), ...assetServers(tools, caps, shim, assets ?? [])];
+}
+
+/**
+ * hub 下发的 MCP 资产，走 ACP 标准的 session/new.mcpServers（Grok、OpenCode 都认）：
+ * - stdio：agent 自己拉起；env 里是已展开的密钥，只进那个子进程；
+ * - http：指向 worker 本机中转（hub 代连远端），凭同一把会话令牌；agent 不会 HTTP MCP 就套 stdio 垫片。
+ */
+function assetServers(
+  tools: { url: string; token: string },
+  caps: { http: boolean },
+  shim: { command: string; args: readonly string[] } | undefined,
+  assets: NonNullable<StartSpec['mcp']>
+): Record<string, unknown>[] {
+  return assets.flatMap((entry): Record<string, unknown>[] => {
+    if (entry.transport === 'stdio') {
+      return [{ name: entry.name, command: entry.command, args: [...entry.args], env: Object.entries(entry.env).map(([name, value]) => ({ name, value })) }];
+    }
+    if (caps.http) return [{ type: 'http', name: entry.name, url: entry.url, headers: [{ name: 'Authorization', value: `Bearer ${tools.token}` }] }];
+    return shim ? hubServers({ url: entry.url, token: tools.token }, caps, shim).map((server) => ({ ...server, name: entry.name })) : [];
+  });
+}
+
+function hubServers(
+  tools: { url: string; token: string },
+  caps: { http: boolean },
+  shim?: { command: string; args: readonly string[] }
+): Record<string, unknown>[] {
   const http = [
     { type: 'http', name: HUB_MCP_SERVER, url: tools.url, headers: [{ name: 'Authorization', value: `Bearer ${tools.token}` }] }
   ];

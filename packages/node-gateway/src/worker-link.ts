@@ -439,6 +439,14 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     return { ...tools, url: await mcpEndpoint.url() };
   }
 
+  /** MCP 资产：http 的那些指向本机中转入口的 `/mcp/<名字>`（hub 代连远端）；stdio 原样交给运行时拉起。 */
+  async function mcpAccess(entries: NonNullable<Extract<ServerToWorker, { kind: 'start_session' }>['mcp']>): Promise<NonNullable<StartSpec['mcp']>> {
+    const base = await mcpEndpoint.url();
+    return entries.map((entry) =>
+      entry.transport === 'http' ? { transport: 'http', name: entry.name, url: `${base}/${encodeURIComponent(entry.name)}` } : entry
+    );
+  }
+
   async function startSession(command: Extract<ServerToWorker, { kind: 'start_session' }>): Promise<void> {
     const runtime = options.runtimes.find((candidate) => candidate.descriptor.id === command.agentId);
     if (!runtime) {
@@ -462,7 +470,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       workspaceRoot: command.workspaceRoot,
       resume: command.resume,
       options: command.options,
-      ...(command.tools ? { tools: await toolAccess(command.tools) } : {})
+      ...(command.tools ? { tools: await toolAccess(command.tools) } : {}),
+      ...(command.tools && command.mcp && command.mcp.length > 0 ? { mcp: await mcpAccess(command.mcp) } : {})
     };
     const assets = await options.assets?.current().catch(() => undefined);
     if (assets) spec = { ...spec, assets };

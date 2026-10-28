@@ -16,7 +16,12 @@ export function piMcpEntry(shim: { readonly command: string; readonly args: read
   return {
     command: shim.command,
     args: [...shim.args],
-    env: { AGENT_HUB_TOOL_URL: '${AGENT_HUB_TOOL_URL}', AGENT_HUB_TOOL_TOKEN: '${AGENT_HUB_TOOL_TOKEN}' },
+    // AGENT_HUB_MCP：hub 下发的 MCP 资产（JSON）；垫片把它们聚合进这一个服务器，工具名加「资产名__」前缀
+    env: {
+      AGENT_HUB_TOOL_URL: '${AGENT_HUB_TOOL_URL}',
+      AGENT_HUB_TOOL_TOKEN: '${AGENT_HUB_TOOL_TOKEN}',
+      AGENT_HUB_MCP: '${AGENT_HUB_MCP}'
+    },
     // direct：工具像内置工具一样直接声明给模型（只有 4 个，不必走 codemode / tool_search）
     exposure: 'direct',
     description: 'agent-hub：读取当前任务、读写任务工作日志（写交接）、更新任务状态'
@@ -49,7 +54,10 @@ export async function ensurePiMcpConfig(
   return true;
 }
 
-/** spawn 时追加的环境变量；没工具就不加。 */
-export function piToolEnv(tools: { url: string; token: string } | undefined): Record<string, string> {
-  return tools ? { AGENT_HUB_TOOL_URL: tools.url, AGENT_HUB_TOOL_TOKEN: tools.token } : {};
+/**
+ * spawn 时追加的环境变量；没工具就不加。有工具时 AGENT_HUB_MCP 总是给（空就是 []），否则 Pi 展开不了这条配置。
+ * stdio 资产的密钥已展开在里面：只进 Pi 进程环境，垫片读完就删掉，再只传给对应的 MCP 子进程。
+ */
+export function piToolEnv(tools: { url: string; token: string } | undefined, mcp: readonly unknown[] = []): Record<string, string> {
+  return tools ? { AGENT_HUB_TOOL_URL: tools.url, AGENT_HUB_TOOL_TOKEN: tools.token, AGENT_HUB_MCP: JSON.stringify(mcp) } : {};
 }

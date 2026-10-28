@@ -60,3 +60,24 @@ test('mcpServersFor：http 走 Authorization 头；agent 没声明 http 就不�
   // agent 不会 HTTP MCP：有垫片就退到垫片
   assert.equal(mcpServersFor(tools, { http: false }, { command: 'node', args: ['shim.ts'] })[0]?.['command'], 'node');
 });
+
+test('mcpServersFor：MCP 资产——stdio 带 env 数组，http 指向本机中转并带会话令牌；不会 http 就套垫片', async () => {
+  const { mcpServersFor } = await import('./map-acp.ts');
+  const tools = { transport: 'relay' as const, url: 'http://127.0.0.1:9/mcp', token: 'tok' };
+  const assets = [
+    { transport: 'stdio' as const, name: 'fs', command: 'node', args: ['s.js'], env: { K: 'v' } },
+    { transport: 'http' as const, name: 'remote', url: 'http://127.0.0.1:9/mcp/remote' }
+  ];
+  const withHttp = mcpServersFor(tools, { http: true }, undefined, assets);
+  assert.deepEqual(withHttp.slice(1), [
+    { name: 'fs', command: 'node', args: ['s.js'], env: [{ name: 'K', value: 'v' }] },
+    { type: 'http', name: 'remote', url: 'http://127.0.0.1:9/mcp/remote', headers: [{ name: 'Authorization', value: 'Bearer tok' }] }
+  ]);
+  const shim = { command: '/usr/bin/node', args: ['/w/mcp-shim.ts'] };
+  const viaShim = mcpServersFor(tools, { http: false }, shim, assets);
+  const remote = viaShim.find((server) => server['name'] === 'remote');
+  assert.ok(remote);
+  assert.equal(remote['command'], '/usr/bin/node');
+  assert.match(JSON.stringify(remote), /mcp\/remote/);
+  assert.deepEqual(mcpServersFor(undefined, { http: true }, undefined, assets), []);
+});
