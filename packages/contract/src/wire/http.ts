@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { id, epochMs } from './common.ts';
-import { attachmentInputSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
+import { agentReadinessSchema, attachmentInputSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
 
 /** HTTP API 的请求与响应。 */
 
@@ -225,7 +225,9 @@ export const workerInfoSchema = z.object({
   reason: z.string().optional(),
   agentIds: z.array(z.string()).optional(),
   /** 每个 agent 在这台机器上的模型清单：派生对话框按选中的机器列模型。 */
-  agentModels: z.array(z.object({ agentId: z.string(), models: z.array(z.string()), defaultModel: z.string() })).optional(),
+  agentModels: z
+    .array(z.object({ agentId: z.string(), models: z.array(z.string()), defaultModel: z.string(), readiness: agentReadinessSchema.optional() }))
+    .optional(),
   hostname: z.string().optional(),
   platform: z.string().optional(),
   roots: z.array(z.string()).optional(),

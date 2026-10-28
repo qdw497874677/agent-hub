@@ -57,13 +57,20 @@ export const runtimeOptionSchema = z.object({
 
 export const optionValuesSchema = z.record(z.string(), z.union([z.string(), z.boolean()]));
 
+export const agentReadinessSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('ready') }),
+  z.object({ state: z.literal('unavailable'), reason: z.string() })
+]);
+
 export const agentSchema = z.object({
   id,
   label: z.string(),
   capabilities: capabilityMatrixSchema,
   models: z.array(z.string()).readonly(),
   defaultModel: z.string(),
-  options: z.array(runtimeOptionSchema)
+  options: z.array(runtimeOptionSchema),
+  /** worker 探测的就绪状态。老 worker 不报 = 当作 ready。 */
+  readiness: agentReadinessSchema.optional()
 });
 
 export const projectSchema = z.object({

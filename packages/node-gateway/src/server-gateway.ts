@@ -59,6 +59,8 @@ export interface GatewayHooks {
     readonly sharedTokenOk: boolean;
   }): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
   onHello(worker: WorkerStatus, agents: AgentDto[], sessions: readonly string[]): void;
+  /** Worker 重新探测后报来新的 agent 清单（就绪状态变了，或是「重新检测」的结果）。 */
+  onAgents?(worker: WorkerStatus, agents: AgentDto[]): void;
   // 以下回调都带上「是哪台 Worker 说的」：会话归不归它，由领域按库里的落点判断。
   onEvent(workerId: string, sessionId: SessionId, event: SessionEvent): void;
   onAgentSession(workerId: string, sessionId: SessionId, agentSessionRef: string): void;
@@ -144,6 +146,8 @@ export interface ServerGateway {
   disconnect(workerId: string, why?: 'admin' | 'revoked'): boolean;
   /** 让在线的 Worker 更新到这个提交（只发提交号）。不在线返回 false。 */
   requestUpdate(workerId: string, commit: string): boolean;
+  /** 让在线的 Worker 立刻重新探测各 harness 是否可用。不在线返回 false；老 Worker 收到会忽略。 */
+  requestProbe(workerId: string): boolean;
   /** 资产中心的投递端口：把清单推下去（assets.sync），Worker 回头经 assets.fetch 取内容。 */
   readonly assets: AssetDelivery;
   close(): void;
@@ -348,6 +352,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         entry.channel?.receive(frame.frame);
         return;
       }
+      if (frame.type === 'agents') {
+        entry.agents = frame.agents;
+        hooks.onAgents?.(describe(entry), frame.agents);
+        return;
+      }
       if (frame.type === 'update_status') {
         entry.update = { state: frame.state, message: frame.message, logTail: frame.logTail, at: now() };
         if (frame.state === 'failed' || frame.state === 'refused') entry.updateTarget = null;
@@ -414,7 +423,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       origin: entry.origin,
       state: entry.socket ? 'online' : 'offline',
       agentIds: entry.agents.map((agent) => agent.id),
-      agentModels: entry.agents.map((agent) => ({ agentId: agent.id, models: agent.models, defaultModel: agent.defaultModel })),
+      agentModels: entry.agents.map((agent) => ({
+        agentId: agent.id,
+        models: agent.models,
+        defaultModel: agent.defaultModel,
+        ...(agent.readiness ? { readiness: agent.readiness } : {})
+      })),
       roots: entry.roots,
       lastSeenAt: entry.lastSeenAt,
       sessionCount,
@@ -445,9 +459,19 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     return { ok: false, error: unavailable(message) };
   }
 
+  function requestProbe(workerId: string): boolean {
+    const entry = online(workerId);
+    if (!entry?.socket) return false;
+    entry.socket.send(JSON.stringify({ kind: 'probe' } satisfies ServerToWorker));
+    return true;
+  }
+
   const gateway: NodeGateway = {
     async status(): Promise<WorkerStatus[]> {
       return statuses();
+    },
+    async probe(workerId: string): Promise<boolean> {
+      return requestProbe(workerId);
     },
     async dispatch(command: WorkerCommand): Promise<Result<void, DomainError>> {
       return dispatchTo(command);
@@ -536,6 +560,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       entry.update = { state: 'updating', message: `已发出更新指令 → ${commit.slice(0, 7)}`, logTail: '', at: now() };
       return true;
     },
+    requestProbe,
     close(): void {
       clearInterval(heartbeat);
       for (const entry of registry.values()) entry.channel?.close('hub 正在关闭');

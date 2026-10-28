@@ -61,7 +61,11 @@ const workerDto = (worker: WorkerStatus, hub: BuildInfo, enrolment?: Enrolment):
   dedicated: enrolment?.dedicated ?? false,
   build: worker.build ?? null,
   outdated: isOutdated(worker, hub),
-  update: worker.update ?? null
+  update: worker.update ?? null,
+  harnesses: (worker.agentModels ?? []).map((entry) => ({
+    agentId: entry.agentId,
+    ...(entry.readiness ? { readiness: entry.readiness } : {})
+  }))
 });
 
 export function installAdmin(app: Hono, options: AdminOptions, principalOf: PrincipalOf): void {

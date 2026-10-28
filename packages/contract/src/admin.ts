@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { accountSchema } from './auth.ts';
+import { agentReadinessSchema } from './wire/entities.ts';
 
 /** 运营后台（/api/admin/*，只有主人能调）的请求与响应形状。 */
 export const roleRequest = z.object({ role: z.enum(['owner', 'member']) });
@@ -34,7 +35,9 @@ export const adminWorkerSchema = z.object({
   outdated: z.boolean(),
   update: z
     .object({ state: z.string(), message: z.string(), logTail: z.string(), at: z.number() })
-    .nullable()
+    .nullable(),
+  /** 各 harness 在这台上能不能用（Worker 探测的）；readiness 缺省 = 老 Worker 没报，当作能用。 */
+  harnesses: z.array(z.object({ agentId: z.string(), readiness: agentReadinessSchema.optional() })).default([])
 });
 export type AdminWorkerDto = z.infer<typeof adminWorkerSchema>;
 

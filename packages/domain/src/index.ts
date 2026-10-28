@@ -20,6 +20,7 @@ export * from './workspace.ts';
 export type { TaskRepository } from './ports/task-repository.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
 export type { WorkspaceRepository } from './ports/workspace-repository.ts';
+export type { HarnessProbe, HarnessReadiness } from './ports/harness-readiness.ts';
 export type { ProjectRepository } from './ports/project-repository.ts';
 export type { SessionRepository } from './ports/session-repository.ts';
 export type { ArtifactRepository } from './ports/artifact-repository.ts';

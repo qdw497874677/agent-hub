@@ -3,10 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createPiRuntime, discoverPiModels } from '@agent-hub/adapter-pi';
-import { ACP_AGENT_DEFAULTS, acpDescriptor, createAcpRuntime, opencodeLaunch, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
-import { createGrokRuntime, discoverGrokModels } from '@agent-hub/adapter-grok';
-import { clearBootMarker, connectWorkerLink, createWorkerAssets, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { createPiRuntime, discoverPiModels, piReadiness } from '@agent-hub/adapter-pi';
+import { ACP_AGENT_DEFAULTS, acpDescriptor, acpReadiness, createAcpRuntime, opencodeLaunch, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
+import { createGrokRuntime, discoverGrokModels, grokReadiness } from '@agent-hub/adapter-grok';
+import { clearBootMarker, connectWorkerLink, createHarnessRegistry, createWorkerAssets, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -193,6 +193,17 @@ const runtimes: AgentRuntime[] = [
   })
 ];
 
+/**
+ * 各 harness 的就绪探测：一个 runtime 一个适配器，用和 runtime 同一条命令。
+ * 组合在这里（组合根）；加一个 harness = 在 runtimes 和这里各加一行。
+ */
+const readiness = createHarnessRegistry([
+  piReadiness(env['PI_COMMAND'] ?? 'pi', discovered.defaultModel),
+  ...acpConfigs.map((config) => acpReadiness(config)),
+  grokReadiness(grokCommand, env)
+]);
+const probeIntervalMs = Number(env['HARNESS_PROBE_INTERVAL_MS'] ?? '') || undefined;
+
 log(`Grok 认得 ${grokCatalog.models.length} 个模型（默认 ${grokCatalog.defaultModel || 'Grok 自己的默认'}）`);
 acpConfigs.forEach((config, index) => log(`${config.label} 认得 ${acpModels[index]?.length ?? 0} 个模型`));
 log(`Pi 认得 ${piModels.length} 个模型（默认 ${discovered.defaultModel || 'Pi 自己的默认'}）`);
@@ -254,6 +265,8 @@ const link = connectWorkerLink({
   label,
   origin,
   runtimes,
+  readiness,
+  ...(probeIntervalMs !== undefined ? { probeIntervalMs } : {}),
   host: { hostname: hostname(), platform: platform(), arch: arch() },
   files,
   assets,
