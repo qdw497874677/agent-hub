@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { ensurePiMcpConfig, piToolEnv } from './pi-mcp.ts';
+import { ensurePiMcpConfig, piHasBuiltinMcp, piToolEnv } from './pi-mcp.ts';
+import { execProbe } from './exec-probe.ts';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { AsyncQueue, jsonlRecords } from '@agent-hub/contract';
 import type {
@@ -313,14 +314,18 @@ export interface PiRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** 可调项当前值上报（模型、思考强度）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
-  /** mcp.json 位置；null = 不碰（测试）。默认 ~/.pi/agent/mcp.json。 */
-  readonly mcpConfigPath?: string | null;
+  /** Pi 的 agent 目录（放 MCP 配置）；null = 不碰（测试）。默认 PI_CODING_AGENT_DIR 或 ~/.pi/agent。 */
+  readonly piAgentDir?: string | null;
   /** worker 的 stdio MCP 垫片；不给就不写 mcp.json（Pi 拿不到工具）。 */
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
 }
 
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
   const command = options.command ?? 'pi';
+  // Pi 自带 MCP 与否决定 agent-hub 写进哪个文件；问一次 `pi --version` 就缓存
+  let builtinMcp: Promise<boolean> | null = null;
+  const hasBuiltinMcp = () =>
+    (builtinMcp ??= execProbe(command, ['--version'], 15_000).then((r) => r.kind === 'ok' && piHasBuiltinMcp(r.stdout)));
 
   return {
     descriptor: piDescriptorFor(
@@ -337,10 +342,11 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       if (ref) args.push('--session-id', ref);
       args.push(...piAssetArgs(spec.assets));
 
-      // 能力层：Pi 只认 mcp.json，所以先确保里面有 agent-hub 这条（只含变量引用），令牌走 env。
+      // 能力层：先确保用户全局 MCP 配置里有 agent-hub 这条（只含变量引用；文件按 Pi 版本选，见 piMcpPath），令牌走 env。
       // 条目是 stdio 垫片（见 pi-mcp.ts：Pi 不展开 url 里的变量）；垫片连 tools.url——hub 的 /mcp 或本机 relay。
-      if (spec.tools && options.toolShim && options.mcpConfigPath !== null) {
-        await ensurePiMcpConfig(options.toolShim, options.mcpConfigPath).catch(() => false);
+      if (spec.tools && options.toolShim && options.piAgentDir !== null) {
+        const builtin = await hasBuiltinMcp();
+        await ensurePiMcpConfig(options.toolShim, { ...(options.piAgentDir ? { dir: options.piAgentDir } : {}), builtin }).catch(() => false);
       }
       let child: ChildProcessWithoutNullStreams;
       try {

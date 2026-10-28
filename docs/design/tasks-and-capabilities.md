@@ -200,7 +200,7 @@ sequenceDiagram
   - Worker 在 127.0.0.1 随机端口起本机 MCP 入口（`node-gateway/mcp-endpoint.ts`，SDK 的 Streamable HTTP 传输当管道用），把会话的工具 URL 换成它；令牌不变、只在内存和 env 里。
   - 入口不懂任何工具：每条 JSON-RPC 请求原样经 RPC 端口发 `mcp.message {token, message}`，hub 端（`apps/server/mcp-relay.ts`）经 SDK 的 `InMemoryTransport` 交给与 `/mcp` 同一个 MCP 服务端（`mcp-server.ts`）→ 领域 ToolGateway。
   - hub 每条消息都核对：令牌有效；授权绑定的 Worker = 转发的这台；会话此刻确实托管在这台（网关路由表 `hostOf`）。任一不符 `forbidden`。会话结束授权立即吊销。
-  - Pi：`~/.pi/agent/mcp.json` 里是 stdio 垫片（`apps/worker/src/mcp-shim.ts`）→ 本机入口；OpenCode / Grok：ACP `mcpServers` 里给本机入口的 http 条目，没声明 http 的退到同一个垫片。
+  - Pi：用户全局 MCP 配置（Pi 0.99+ 为 `~/.pi/agent/mcp.json`，老 Pi + pi-mcp-adapter 为 `mcp-adapter.json`）里是 stdio 垫片（`apps/worker/src/mcp-shim.ts`）→ 本机入口；OpenCode / Grok：ACP `mcpServers` 里给本机入口的 http 条目，没声明 http 的退到同一个垫片。
   - 断线时在途调用立即以 `closed` 失败（不进补发队列）；调用超时 60 秒，超时 / agent 断开会发 `cancel`。
   - 直连 HTTP（`HUB_TOOLS_TRANSPORT=http`）已移除：relay 线上验证后删掉了 `/mcp` 入口，配置会被忽略并打日志。
 - 协议：`PROTOCOL_VERSION = 2`（旧的 `tool_request` / `directories` 等专用帧都换成了通用 `rpc` 帧）；版本不一致 hub 关 4426，worker 提示跑 `scripts/update-worker.sh`。
