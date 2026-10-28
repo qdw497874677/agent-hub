@@ -24,7 +24,7 @@ test('资产注入：Grok 用 --rules（指令全文 + 技能索引，放在 age
     assert.deepEqual(await grokLaunch({ ...assets, skills: [], instructions: [] }), {});
     assert.equal(GROK_ARGS.length, 3);
 
-    assert.deepEqual(JSON.parse(opencodeLaunch(assets).env!['OPENCODE_CONFIG_CONTENT']!), {
+    assert.deepEqual(JSON.parse(opencodeLaunch(assets, undefined).env!['OPENCODE_CONFIG_CONTENT']!), {
       skills: { paths: [join(dir, 'skills')] },
       instructions: [rule]
     });
