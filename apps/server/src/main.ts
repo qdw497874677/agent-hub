@@ -98,6 +98,7 @@ const deps: Deps = {
   stream: hub.stream,
   gateway: {
     status: async () => serverGateway?.workers() ?? [],
+    probe: async (workerId) => serverGateway?.gateway.probe?.(workerId) ?? false,
     // 发给 worker 前给 start_session 配上工具令牌（换新、旧的作废），dispose 时作废。
     dispatch: async (command) =>
       serverGateway

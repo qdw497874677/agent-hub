@@ -50,6 +50,7 @@ const fake: AgentDescriptor = {
 
 /** 一台装了全部 agent 的本机 Worker：大多数用例只需要「有地方跑」。 */
 const localGateway: NodeGateway = {
+  probe: async () => true,
   status: async () => [{ workerId: 'local', label: '本机', origin: 'local', state: 'online' }],
   dispatch: async () => ok(undefined),
   listDirectories: async (_id, path) => ok({ path, exists: true, entries: [] }),

@@ -12,6 +12,6 @@ export function listWorkers(deps: Pick<Deps, 'gateway'>): Promise<WorkerStatus[]
 export async function probeWorker(deps: Pick<Deps, 'gateway'>, workerId: string): Promise<Result<void, DomainError>> {
   const worker = (await deps.gateway.status()).find((candidate) => candidate.workerId === workerId);
   if (!worker) return err(notFound('没有这台 Worker'));
-  if (worker.state !== 'online' || !deps.gateway.probe) return err(unavailable(`「${worker.label}」不在线`));
+  if (worker.state !== 'online') return err(unavailable(`「${worker.label}」不在线`));
   return (await deps.gateway.probe(workerId)) ? ok(undefined) : err(unavailable(`「${worker.label}」不在线`));
 }

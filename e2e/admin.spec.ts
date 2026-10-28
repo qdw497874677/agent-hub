@@ -81,6 +81,14 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
     await local.getByRole("button", { name: "更新" }).click();
     await expect(local.getByTestId("worker-update")).toContainText("无需更新");
 
+    // harness 就绪：本机列出各 harness；「重新检测」真的发到 Worker（202），不报「不在线」
+    await expect(local.getByTestId("worker-harnesses")).toContainText("pi");
+    const probed = page.waitForResponse((r) => /\/api\/workers\/[^/]+\/probe$/.test(r.url()));
+    await local.getByTestId("harness-recheck").click();
+    expect((await probed).status()).toBe(202);
+    await expect(local.getByTestId("harness-recheck")).toBeEnabled({ timeout: 10_000 });
+    await expect(local.getByTestId("worker-harnesses")).not.toContainText("不在线");
+
     // 设置：关注册 → 新人注册被服务端拒；再打开
     await page.getByRole("link", { name: "设置" }).click();
     const open = page.getByRole("switch", { name: /开放注册/ });

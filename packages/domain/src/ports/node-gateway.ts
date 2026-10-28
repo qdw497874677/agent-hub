@@ -80,5 +80,5 @@ export interface NodeGateway {
    * 「重新检测」：让那台 Worker 立刻重新探测各 harness 是否可用，结果异步经它的 agent 清单回来。
    * 不在线返回 false。可选：不支持的网关 = 无从检测。
    */
-  probe?(workerId: string): Promise<boolean>;
+  probe(workerId: string): Promise<boolean>;
 }

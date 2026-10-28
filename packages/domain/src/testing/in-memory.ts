@@ -370,6 +370,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
   const gateway: NodeGateway = {
     git: (workerId) => git.on(workerId),
     status: async () => workers,
+    probe: async (workerId) => workers.some((worker) => worker.workerId === workerId && worker.state === 'online'),
     listDirectories: async (_workerId, path) => ok({ path: path || '/home/remote', exists: true, entries: [] }),
     makeDirectory: async (_workerId, parent, name) => ok({ path: `${parent}/${name}` }),
     // 远程机器上的文件：经网关问那台 Worker（测试里固定一份清单）
