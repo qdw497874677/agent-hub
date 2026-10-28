@@ -40,6 +40,12 @@ const TONE: Record<string, string> = {
   idle: 'bg-card-raised border border-strong'
 };
 
+/** 后台导航上的小红点：有几个资产的来源出了新版本（服务端定时检查，见 HUB_ASSET_CHECK_MS）。 */
+export function useUpgradableCount(enabled: boolean): number {
+  const overview = useQuery({ queryKey: ['admin', 'assets'], queryFn: assetsApi.overview, enabled, refetchInterval: 60_000 });
+  return (overview.data?.assets ?? []).filter((asset) => asset.latest !== asset.pinned).length;
+}
+
 export function Assets() {
   const overview = useQuery({
     queryKey: ['admin', 'assets'],
@@ -67,6 +73,22 @@ export function Assets() {
         <p className="mb-3 text-meta text-tertiary">
           技能、指令和 MCP 服务器按机器安装：技能和指令落进那台机器的 <code>~/.agent-hub/assets</code>，MCP 在会话启动时接上（远端的经 hub 代连，密钥不出 hub）。可以是全局的，也可以只属于某个项目（同名时项目的优先，在项目设置里开关）。只对之后新开的会话生效；版本不可变，升级前先看差异。
         </p>
+        {assets.some((asset) => asset.latest !== asset.pinned) ? (
+          <div data-testid="asset-update-notice" role="status" className="mb-3 rounded-sm border border-accent px-3 py-2 text-sub text-primary">
+            有新版本：
+            {assets
+              .filter((asset) => asset.latest !== asset.pinned)
+              .map((asset, index) => (
+                <span key={asset.id}>
+                  {index > 0 ? '、' : ''}
+                  <button className="text-accent underline-offset-2 hover:underline" onClick={() => setDiffing(asset)}>
+                    {asset.name}
+                  </button>
+                </span>
+              ))}
+            。看过差异、确认后才会升级；已装的机器随后自动同步。
+          </div>
+        ) : null}
         <Panel>
           {assets.length ? (
             <ul>

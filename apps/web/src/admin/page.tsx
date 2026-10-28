@@ -5,7 +5,7 @@ import { Users } from './users.tsx';
 import { Workers } from './workers.tsx';
 import { Settings } from './settings.tsx';
 import { Audit } from './audit.tsx';
-import { Assets } from './assets.tsx';
+import { Assets, useUpgradableCount } from './assets.tsx';
 
 /**
  * 运营后台（#/admin/<分页>），只有主人能进；服务端对 /api/admin/* 同样只认主人。
@@ -22,6 +22,7 @@ const TABS: readonly { readonly id: AdminTab; readonly label: string }[] = [
 
 export function AdminPage({ tab }: { tab: AdminTab }) {
   const account = useAccount();
+  const upgradable = useUpgradableCount(account?.role === 'owner');
   if (account?.role !== 'owner') {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
@@ -55,6 +56,15 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
                 }`}
               >
                 {item.label}
+                {item.id === 'assets' && upgradable > 0 ? (
+                  <span
+                    data-testid="asset-update-badge"
+                    title={`${upgradable} 个资产有新版本`}
+                    className="ml-1.5 rounded-full bg-accent px-1.5 text-meta text-canvas"
+                  >
+                    {upgradable}
+                  </span>
+                ) : null}
               </a>
             </li>
           ))}

@@ -16,7 +16,8 @@ import { createSecretVault, loadSecretKey, openSqliteStore } from '@agent-hub/st
 import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, SessionId, ToolGateway, WorkerCommand } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
-  adoptLocalWorkspacesUseCase
+  adoptLocalWorkspacesUseCase,
+  checkAllAssetUpdates
 } from '@agent-hub/domain';
 import {
   err,
@@ -367,6 +368,27 @@ const sweep = (why: string) =>
     .catch((failure: unknown) => log(`临时工作空间清理失败：${(failure as Error).message}`));
 setTimeout(() => void sweep('启动'), 60_000).unref();
 setInterval(() => void sweep('每小时'), 60 * 60_000).unref();
+
+// 资产更新提醒：定时去 Git 来源看有没有新版本（默认每 6 小时；HUB_ASSET_CHECK_MS=0 关掉）。只记「有新版本」，升级仍要主人看对比后确认。
+const assetCheckMs = Number(readEnv('HUB_ASSET_CHECK_MS') ?? 6 * 60 * 60_000);
+let assetCheckRunning = false; // 上一轮没跑完就跳过，免得同一个新版本记两遍
+const checkAssets = (why: string) => {
+  if (assetCheckRunning) return Promise.resolve();
+  assetCheckRunning = true;
+  return checkAllAssetUpdates({ ...assetDeps, audit: store.audit })
+    .then((report) => {
+      if (report.changed.length > 0) log(`资产更新检查（${why}）：${report.changed.map((asset) => asset.name).join('、')} 有新版本，待确认升级`);
+      for (const failure of report.failed) log(`资产更新检查（${why}）：${failure.asset.name} 查不了：${failure.message}`);
+    })
+    .catch((failure: unknown) => log(`资产更新检查失败：${(failure as Error).message}`))
+    .finally(() => {
+      assetCheckRunning = false;
+    });
+};
+if (assetCheckMs > 0) {
+  setTimeout(() => void checkAssets('启动'), Math.min(120_000, assetCheckMs)).unref();
+  setInterval(() => void checkAssets('定时'), assetCheckMs).unref();
+}
 
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
   auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },
