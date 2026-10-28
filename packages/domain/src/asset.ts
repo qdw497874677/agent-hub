@@ -46,8 +46,10 @@ export interface AssetRevision {
 export interface Asset {
   readonly id: string;
   readonly kind: AssetKind;
-  /** 落到 Worker 上的目录名 / 文件名；同一类里唯一。 */
+  /** 落到 Worker 上的目录名 / 文件名；同一类、同一作用域里唯一（项目级可以和全局同名：就近优先）。 */
   readonly name: string;
+  /** 作用域：null = 全局（所有项目可用）；否则只属于这个项目。 */
+  readonly projectId: string | null;
   readonly description: string;
   readonly source: AssetSource;
   /** 钉住的版本：下发给 Worker 的就是它。 */
@@ -63,9 +65,51 @@ export interface AssetManifestEntry {
   readonly assetId: string;
   readonly kind: FileAssetKind;
   readonly name: string;
+  /** Worker 上的目录 / 文件名（见 assetSlot）：全局就是 name，项目级带上 id，同名也不撞。 */
+  readonly slot: string;
   readonly description: string;
   readonly digest: string;
   readonly files: readonly AssetFile[];
+}
+
+export type AssetScope = 'global' | 'project';
+export const assetScope = (asset: Pick<Asset, 'projectId'>): AssetScope => (asset.projectId === null ? 'global' : 'project');
+
+/** Worker 上落地用的名字：全局资产 = name（兼容旧目录）；项目级 = name--<id 前 8 位>。 */
+export const assetSlot = (asset: Pick<Asset, 'id' | 'name' | 'projectId'>): string =>
+  asset.projectId === null ? asset.name : `${asset.name}--${asset.id.replace(/[^a-z0-9]/gi, '').slice(0, 8).toLowerCase()}`;
+
+/**
+ * 一个项目的资产开关（项目设置里改）：assetId → 开 / 关。没写的取默认：
+ * 全局资产默认开、本项目的项目级资产默认开；别的项目的项目级资产永远不给。
+ */
+export type ProjectAssetSettings = Readonly<Record<string, boolean>>;
+
+export interface ProjectAssetChoice {
+  readonly asset: Asset;
+  readonly enabled: boolean;
+  /** 被同名的项目级资产盖住了（就近优先）。 */
+  readonly shadowedBy: string | null;
+}
+
+/**
+ * 就近优先：同类同名时项目级盖过全局。返回这个项目看得见的每个资产及其最终是否生效；
+ * effective 里是真正给会话的那些。
+ */
+export function resolveProjectAssets(
+  assets: readonly Asset[],
+  projectId: string,
+  settings: ProjectAssetSettings
+): { choices: ProjectAssetChoice[]; effective: Asset[] } {
+  const visible = assets.filter((asset) => asset.projectId === null || asset.projectId === projectId);
+  const on = (asset: Asset) => settings[asset.id] ?? true;
+  const local = new Map<string, Asset>();
+  for (const asset of visible) if (asset.projectId !== null && on(asset)) local.set(`${asset.kind}:${asset.name}`, asset);
+  const choices = visible.map((asset) => {
+    const nearer = asset.projectId === null ? local.get(`${asset.kind}:${asset.name}`) : undefined;
+    return { asset, enabled: on(asset), shadowedBy: nearer ? nearer.id : null };
+  });
+  return { choices, effective: choices.filter((choice) => choice.enabled && choice.shadowedBy === null).map((choice) => choice.asset) };
 }
 
 export type AssetSyncState = 'pending' | 'syncing' | 'synced' | 'failed';

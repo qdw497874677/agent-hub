@@ -612,10 +612,13 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
   const revisions = new Map<string, R[]>();
   const blobs = new Map<string, Uint8Array>();
   const installs: { workerId: string; assetId: string }[] = [];
+  const projectSettings = new Map<string, Record<string, boolean>>();
+  const projectList = new Map<string, { id: string; name: string }>([['p1', { id: 'p1', name: 'demo' }]]);
   const repo: import('../ports/asset-repository.ts').AssetRepository = {
     list: async () => [...assets.values()],
     get: async (id) => assets.get(id) ?? null,
-    byName: async (kind, name) => [...assets.values()].find((a) => a.kind === kind && a.name === name) ?? null,
+    byName: async (kind, name, projectId) =>
+      [...assets.values()].find((a) => a.kind === kind && a.name === name && a.projectId === projectId) ?? null,
     create: async (asset, revision, data) => {
       assets.set(asset.id, asset);
       revisions.set(asset.id, [revision]);
@@ -642,6 +645,13 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     uninstall: async (workerId, assetId) => {
       const at = installs.findIndex((row) => row.workerId === workerId && row.assetId === assetId);
       if (at >= 0) installs.splice(at, 1);
+    },
+    projectSettings: async (projectId) => ({ ...(projectSettings.get(projectId) ?? {}) }),
+    setProjectSetting: async (projectId, assetId, enabled) => {
+      const next = { ...(projectSettings.get(projectId) ?? {}) };
+      if (enabled === null) delete next[assetId];
+      else next[assetId] = enabled;
+      projectSettings.set(projectId, next);
     }
   };
   const board = new Map<string, import('../asset.ts').WorkerAssetSync>();
@@ -661,6 +671,7 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     },
     board: { get: (id) => board.get(id) ?? null, set: (s) => void board.set(s.workerId, s), all: () => [...board.values()] },
     workers: { list: async () => workers },
+    projects: { byId: async (id) => projectList.get(id) ?? null },
     delivery: {
       push: async (workerId, manifest) => {
         pushes.push({ workerId, manifest });
@@ -680,5 +691,5 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
       diffText: (path, before, after) => `--- ${path}\n-${before}\n+${after}`
     }
   };
-  return { deps, board, pushes, workers, git, installs, blobs };
+  return { deps, board, pushes, workers, git, installs, blobs, projectList };
 }

@@ -1,6 +1,9 @@
 import {
   isFileAssetKind,
+  assetScope,
+  assetSlot,
   checkAssetName,
+  resolveProjectAssets,
   compareFiles,
   packAsset,
   type Asset,
@@ -11,6 +14,8 @@ import {
   type FileDiff,
   type IncomingFile,
   type PackedAsset,
+  type ProjectAssetChoice,
+  type AssetScope,
   type WorkerAssetSync
 } from '../asset.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
@@ -34,6 +39,8 @@ export interface AssetDeps {
   readonly workers: { list(): Promise<WorkerStatus[]> };
   /** MCP 资产引用的密钥（加密存放）。 */
   readonly secrets: SecretVault;
+  /** 项目级资产要认项目（只读）。 */
+  readonly projects: { byId(id: string): Promise<{ readonly id: string; readonly name: string } | null> };
   readonly now: () => number;
 }
 
@@ -127,31 +134,47 @@ const revisionOf = (
   at: number
 ): AssetRevision => ({ assetId, digest: packed.digest, name, description, files: packed.files, commit, createdAt: at });
 
+type CreateDeps = Pick<AssetDeps, 'assets' | 'reader' | 'now'> & Partial<Pick<AssetDeps, 'projects'>>;
+
 async function createAsset(
-  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now'>,
+  deps: CreateDeps,
   kind: AssetKind,
   source: AssetSource,
   files: readonly IncomingFile[],
   givenName: string | null,
-  commit: string | null
+  commit: string | null,
+  projectId: string | null
 ): Promise<Result<Asset, DomainError>> {
+  if (projectId !== null && !(await deps.projects?.byId(projectId))) return err(notFound('没有这个项目'));
   const described = await describePacked(deps, kind, files, givenName);
   if (!described.ok) return described;
   const { name, description, packed } = described.value;
-  if (await deps.assets.byName(kind, name)) {
-    return err(conflict(`已经有叫「${name}」的${ASSET_KIND_LABEL[kind]}了：到它那里传新版本`));
+  if (await deps.assets.byName(kind, name, projectId)) {
+    const where = projectId === null ? '全局' : '这个项目里';
+    return err(conflict(`${where}已经有叫「${name}」的${ASSET_KIND_LABEL[kind]}了：到它那里传新版本`));
   }
   const at = deps.now();
-  const asset: Asset = { id: newId(), kind, name, description, source, pinned: packed.digest, latest: packed.digest, createdAt: at, updatedAt: at };
+  const asset: Asset = {
+    id: newId(),
+    kind,
+    name,
+    projectId,
+    description,
+    source,
+    pinned: packed.digest,
+    latest: packed.digest,
+    createdAt: at,
+    updatedAt: at
+  };
   await deps.assets.create(asset, revisionOf(asset.id, name, description, packed, commit, at), packed.blobs);
   return ok(asset);
 }
 
 export function uploadAsset(
-  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now'>,
-  input: { kind: AssetKind; name?: string | null; files: readonly IncomingFile[] }
+  deps: CreateDeps,
+  input: { kind: AssetKind; name?: string | null; files: readonly IncomingFile[]; projectId?: string | null }
 ): Promise<Result<Asset, DomainError>> {
-  return createAsset(deps, input.kind, { type: 'upload' }, input.files, input.name ?? null, null);
+  return createAsset(deps, input.kind, { type: 'upload' }, input.files, input.name ?? null, null, input.projectId ?? null);
 }
 
 const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[^\s]+$/;
@@ -166,14 +189,14 @@ export async function scanGitSource(
 }
 
 export async function importGitAsset(
-  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now'>,
-  input: { kind: AssetKind; url: string; ref: string | null; path: string; name?: string | null }
+  deps: CreateDeps,
+  input: { kind: AssetKind; url: string; ref: string | null; path: string; name?: string | null; projectId?: string | null }
 ): Promise<Result<Asset, DomainError>> {
   if (!GIT_URL.test(input.url)) return err(invalid('只支持 https://、ssh:// 或 git@ 开头的仓库地址'));
   const checkout = await deps.reader.readGit(input.url, input.ref, input.path, input.kind);
   if (!checkout.ok) return checkout;
   const source: AssetSource = { type: 'git', url: input.url, ref: input.ref, path: input.path };
-  return createAsset(deps, input.kind, source, checkout.value.files, input.name ?? null, checkout.value.commit);
+  return createAsset(deps, input.kind, source, checkout.value.files, input.name ?? null, checkout.value.commit, input.projectId ?? null);
 }
 
 /** 新版本只记成「最新」，不换钉：要看过 diff 再 `pinAssetRevision`。名字不能变（Worker 上的目录名）。 */
@@ -313,9 +336,17 @@ export async function workerAssetManifest(
     if (!isFileAssetKind(kind)) continue;
     const revision = await deps.assets.revision(assetId, asset.pinned);
     if (!revision) continue;
-    entries.push({ assetId, kind, name: asset.name, description: revision.description, digest: revision.digest, files: revision.files });
+    entries.push({
+      assetId,
+      kind,
+      name: asset.name,
+      slot: assetSlot(asset),
+      description: revision.description,
+      digest: revision.digest,
+      files: revision.files
+    });
   }
-  return entries.sort((a, b) => a.name.localeCompare(b.name));
+  return entries.sort((a, b) => a.slot.localeCompare(b.slot));
 }
 
 /**
@@ -397,9 +428,10 @@ export async function recordAssetAudit(
 /** 一台 Worker 上生效的 MCP 资产（钉住的版本解析好的配置）。坏配置跳过（导入时已校验过，这里只防御）。 */
 export async function workerMcpConfigs(
   deps: Pick<AssetDeps, 'assets'>,
-  workerId: string
+  workerId: string,
+  only?: ReadonlySet<string>
 ): Promise<{ asset: Asset; digest: string; config: McpConfig }[]> {
-  const mine = (await deps.assets.installations()).filter((row) => row.workerId === workerId);
+  const mine = (await deps.assets.installations()).filter((row) => row.workerId === workerId && (!only || only.has(row.assetId)));
   const out: { asset: Asset; digest: string; config: McpConfig }[] = [];
   for (const { assetId } of mine) {
     const asset = await deps.assets.get(assetId);
@@ -420,9 +452,10 @@ export async function workerMcpConfigs(
  */
 export async function sessionMcpLaunch(
   deps: Pick<AssetDeps, 'assets' | 'secrets'>,
-  workerId: string
+  workerId: string,
+  only?: ReadonlySet<string>
 ): Promise<{ launch: McpLaunch[]; skipped: { name: string; reason: string }[] }> {
-  const configs = await workerMcpConfigs(deps, workerId);
+  const configs = await workerMcpConfigs(deps, workerId, only);
   const wanted = [...new Set(configs.filter(({ config }) => config.transport === 'stdio').flatMap(({ config }) => mcpSecretRefs(config)))];
   const secrets = wanted.length > 0 ? await deps.secrets.reveal(wanted) : {};
   const launch: McpLaunch[] = [];
@@ -454,9 +487,12 @@ export async function sessionMcpLaunch(
 export async function remoteMcpTarget(
   deps: Pick<AssetDeps, 'assets' | 'secrets'>,
   workerId: string,
-  name: string
+  name: string,
+  /** 会话的生效集合（见 sessionAssetPlan）；给了就只在里面找，否则同名时全局优先。 */
+  only?: ReadonlySet<string>
 ): Promise<Result<{ assetId: string; digest: string; url: string; headers: Record<string, string> }, DomainError>> {
-  const found = (await workerMcpConfigs(deps, workerId)).find((entry) => entry.asset.name === name);
+  const candidates = (await workerMcpConfigs(deps, workerId, only)).filter((entry) => entry.asset.name === name);
+  const found = candidates.find((entry) => entry.asset.projectId === null) ?? candidates[0];
   if (!found) return err(notFound(`这台机器没装 MCP「${name}」`));
   if (found.config.transport !== 'http') return err(invalid(`「${name}」是本机 stdio 服务器，不经 hub 代连`));
   const secrets = await deps.secrets.reveal(mcpSecretRefs(found.config));
@@ -507,4 +543,76 @@ export async function setSecret(deps: Pick<AssetDeps, 'secrets' | 'now'>, name: 
 export async function deleteSecret(deps: Pick<AssetDeps, 'secrets'>, name: string): Promise<Result<void, DomainError>> {
   if (!(await deps.secrets.remove(name))) return err(notFound('没有这个密钥'));
   return ok(undefined);
+}
+
+/* ── 项目级作用域与会话资产清单 ── */
+
+/** 会话清单里的一项（会话界面展示：用了哪些资产、哪个版本、从哪一级来的）。 */
+export interface SessionAssetEntry {
+  readonly assetId: string;
+  readonly kind: AssetKind;
+  readonly name: string;
+  readonly digest: string;
+  readonly scope: AssetScope;
+}
+
+export interface ProjectAssetsView {
+  readonly projectId: string;
+  readonly choices: readonly (Omit<ProjectAssetChoice, 'asset'> & { readonly assetId: string; readonly scope: AssetScope; readonly overridden: boolean })[];
+}
+
+/** 项目设置里的资产页：这个项目看得见的资产、开关、谁被就近盖住。 */
+export async function projectAssets(deps: Pick<AssetDeps, 'assets' | 'projects'>, projectId: string): Promise<Result<ProjectAssetsView, DomainError>> {
+  if (!(await deps.projects.byId(projectId))) return err(notFound('没有这个项目'));
+  const settings = await deps.assets.projectSettings(projectId);
+  const { choices } = resolveProjectAssets(await deps.assets.list(), projectId, settings);
+  return ok({
+    projectId,
+    choices: choices.map(({ asset, enabled, shadowedBy }) => ({
+      assetId: asset.id,
+      scope: assetScope(asset),
+      enabled,
+      shadowedBy,
+      overridden: asset.id in settings
+    }))
+  });
+}
+
+export async function setProjectAsset(
+  deps: Pick<AssetDeps, 'assets' | 'projects'>,
+  input: { projectId: string; assetId: string; enabled: boolean | null }
+): Promise<Result<void, DomainError>> {
+  if (!(await deps.projects.byId(input.projectId))) return err(notFound('没有这个项目'));
+  const asset = await deps.assets.get(input.assetId);
+  if (!asset) return err(notFound('没有这个资产'));
+  if (asset.projectId !== null && asset.projectId !== input.projectId) return err(invalid('这是别的项目的项目级资产，不能在这里开'));
+  await deps.assets.setProjectSetting(input.projectId, input.assetId, input.enabled);
+  return ok(undefined);
+}
+
+/**
+ * 一次会话该用哪些资产：这个项目生效的（就近优先），再与这台 Worker 装了的取交集；
+ * 文件类还得已经同步落地（以 Worker 回报的版本为准）。projectId = null（找不到任务）时只给全局的。
+ */
+export async function sessionAssetPlan(
+  deps: Pick<AssetDeps, 'assets' | 'board'>,
+  workerId: string,
+  projectId: string | null
+): Promise<{ assetIds: string[]; entries: SessionAssetEntry[] }> {
+  const all = await deps.assets.list();
+  const effective =
+    projectId === null
+      ? all.filter((asset) => asset.projectId === null)
+      : resolveProjectAssets(all, projectId, await deps.assets.projectSettings(projectId)).effective;
+  const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === workerId).map((row) => row.assetId));
+  const landed = deps.board.get(workerId)?.installed ?? {};
+  const entries: SessionAssetEntry[] = [];
+  for (const asset of effective) {
+    if (!installed.has(asset.id)) continue;
+    const digest = isFileAssetKind(asset.kind) ? landed[asset.id] : asset.pinned;
+    if (digest === undefined) continue;
+    entries.push({ assetId: asset.id, kind: asset.kind, name: asset.name, digest, scope: assetScope(asset) });
+  }
+  entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
+  return { assetIds: entries.map((entry) => entry.assetId), entries };
 }

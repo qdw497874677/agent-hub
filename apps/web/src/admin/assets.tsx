@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { assetsApi } from '../api.ts';
+import { api, assetsApi } from '../api.ts';
 import type { AssetsOverviewDto, GitScanDto } from '../api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../dialog-shell.tsx';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAction } from './shared.tsx';
@@ -65,7 +65,7 @@ export function Assets() {
         }
       >
         <p className="mb-3 text-meta text-tertiary">
-          技能和指令按机器安装，装进那台机器的 <code>~/.agent-hub/assets</code>，之后新开的会话就能用。版本不可变，升级前先看差异。
+          技能、指令和 MCP 服务器按机器安装：技能和指令落进那台机器的 <code>~/.agent-hub/assets</code>，MCP 在会话启动时接上（远端的经 hub 代连，密钥不出 hub）。可以是全局的，也可以只属于某个项目（同名时项目的优先，在项目设置里开关）。只对之后新开的会话生效；版本不可变，升级前先看差异。
         </p>
         <Panel>
           {assets.length ? (
@@ -151,6 +151,7 @@ function AssetItem({
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded border border-strong px-1.5 text-meta text-secondary">{KIND_TEXT[asset.kind]}</span>
         <span className="min-w-0 truncate text-body font-medium text-primary">{asset.name}</span>
+        <ScopeBadge projectId={asset.projectId} />
         {upgradable ? (
           <button
             data-testid="asset-upgrade"
@@ -264,6 +265,36 @@ function Tabs<T extends string>({ value, options, onChange }: { value: T; option
   );
 }
 
+/** 作用域标记：全局，或只属于某个项目。 */
+function ScopeBadge({ projectId }: { projectId: string | null }) {
+  const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects, enabled: projectId !== null });
+  if (projectId === null) return <span data-testid="asset-scope" className="text-meta text-tertiary">全局</span>;
+  const name = projects.data?.find((project) => project.id === projectId)?.name ?? '项目';
+  return (
+    <span data-testid="asset-scope" className="rounded border border-accent/60 px-1.5 text-meta text-accent">
+      仅项目 · {name}
+    </span>
+  );
+}
+
+/** 添加时选作用域：全局（所有项目默认可用）或只给一个项目。 */
+function ScopePicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
+  return (
+    <label className="flex items-center gap-2 text-meta text-secondary">
+      作用域
+      <select data-testid="asset-scope-pick" className={`${INPUT} w-auto`} value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">全局（所有项目）</option>
+        {(projects.data ?? []).map((project) => (
+          <option key={project.id} value={project.id}>
+            仅项目：{project.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function AddDialog({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<'upload' | 'git'>('upload');
   return (
@@ -284,6 +315,7 @@ function AddDialog({ onClose }: { onClose: () => void }) {
 
 function UploadForm({ onDone }: { onDone: () => void }) {
   const [kind, setKind] = useState<Kind>('skill');
+  const [scope, setScope] = useState('');
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [name, setName] = useState('');
   const [text, setText] = useState('');
@@ -297,7 +329,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
         : kind === 'instruction' && text.trim()
           ? [{ path: `${name || 'instruction'}.md`, bytes: new TextEncoder().encode(text) }]
           : files;
-    return assetsApi.upload({ kind, name: name.trim() || undefined, files: encodeFiles(picked) });
+    return assetsApi.upload({ kind, name: name.trim() || undefined, projectId: scope || null, files: encodeFiles(picked) });
   });
   const pick = async (list: FileList | null) => {
     setReadError(null);
@@ -329,6 +361,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
           ['mcp', 'MCP 服务器']
         ]}
       />
+      <ScopePicker value={scope} onChange={setScope} />
       {kind !== 'skill' ? (
         <>
           {kind === 'mcp' ? null : (
@@ -420,6 +453,7 @@ function GitForm({ onDone }: { onDone: () => void }) {
   const [ref, setRef] = useState('');
   const [scan, setScan] = useState<GitScanDto | null>(null);
   const [choice, setChoice] = useState<number>(0);
+  const [scope, setScope] = useState('');
   const scanning = useAdminAction(async () => {
     const result = await assetsApi.scanGit(url.trim(), ref.trim());
     setScan(result);
@@ -428,11 +462,12 @@ function GitForm({ onDone }: { onDone: () => void }) {
   });
   const importing = useAdminAction(() => {
     const candidate = scan!.candidates[choice]!;
-    return assetsApi.importGit({ url: url.trim(), ref: ref.trim(), kind: candidate.kind, path: candidate.path });
+    return assetsApi.importGit({ url: url.trim(), ref: ref.trim(), kind: candidate.kind, path: candidate.path, projectId: scope || null });
   });
   const error = scanning.error ?? importing.error;
   return (
     <div className="space-y-3">
+      <ScopePicker value={scope} onChange={setScope} />
       <input
         data-testid="asset-git-url"
         className={INPUT}

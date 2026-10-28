@@ -102,6 +102,8 @@ export const assetSchema = z.object({
   latest: z.string(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  /** null = 全局；否则只属于这个项目（就近优先，盖过同名的全局资产）。 */
+  projectId: z.string().nullable().default(null),
   workerIds: z.array(z.string()),
   files: z.number(),
   bytes: z.number()
@@ -148,6 +150,7 @@ export const assetUploadFileSchema = z.object({ path: z.string().min(1).max(512)
 export const assetUploadRequest = z.object({
   kind: assetKindSchema,
   name: z.string().max(64).nullable().optional(),
+  projectId: z.string().nullable().optional(),
   files: z.array(assetUploadFileSchema).min(1).max(200)
 });
 export type AssetUploadRequest = z.infer<typeof assetUploadRequest>;
@@ -161,8 +164,25 @@ export type GitCandidateDto = z.infer<typeof gitCandidateSchema>;
 export const gitImportRequest = gitScanRequest.extend({
   kind: assetKindSchema,
   path: z.string().max(1024),
-  name: z.string().max(64).nullable().optional()
+  name: z.string().max(64).nullable().optional(),
+  projectId: z.string().nullable().optional()
 });
+
+/* ── 项目级作用域：项目设置里的资产开关 ── */
+export const projectAssetsSchema = z.object({
+  projectId: z.string(),
+  choices: z.array(
+    z.object({
+      assetId: z.string(),
+      scope: z.enum(['global', 'project']),
+      enabled: z.boolean(),
+      shadowedBy: z.string().nullable(),
+      overridden: z.boolean()
+    })
+  )
+});
+export type ProjectAssetsDto = z.infer<typeof projectAssetsSchema>;
+export const projectAssetRequest = z.object({ enabled: z.boolean().nullable() });
 
 export const assetDiffSchema = z.object({
   files: z.array(z.object({ path: z.string(), change: z.enum(['added', 'removed', 'modified', 'unchanged']), patch: z.string().nullable() }))

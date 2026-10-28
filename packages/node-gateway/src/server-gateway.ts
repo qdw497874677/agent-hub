@@ -586,7 +586,8 @@ function toWire(command: WorkerCommand): ServerToWorker {
         ...(command.tools ? { tools: command.tools } : {}),
         ...(command.mcp && command.mcp.length > 0
           ? { mcp: command.mcp.map((entry) => (entry.transport === 'stdio' ? { ...entry, args: [...entry.args], env: { ...entry.env } } : { ...entry })) }
-          : {})
+          : {}),
+        ...(command.assetIds ? { assetIds: [...command.assetIds] } : {})
       };
     case 'prompt':
       return { kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts] };

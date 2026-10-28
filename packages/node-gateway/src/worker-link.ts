@@ -473,7 +473,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       ...(command.tools ? { tools: await toolAccess(command.tools) } : {}),
       ...(command.tools && command.mcp && command.mcp.length > 0 ? { mcp: await mcpAccess(command.mcp) } : {})
     };
-    const assets = await options.assets?.current().catch(() => undefined);
+    const assets = await options.assets?.current(command.assetIds ? new Set(command.assetIds) : undefined).catch(() => undefined);
     if (assets) spec = { ...spec, assets };
 
     // 同一会话又来一次 start（比如断线后 server 重新托管）：先收掉旧的那份 agent。

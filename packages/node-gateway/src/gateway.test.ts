@@ -667,6 +667,7 @@ test('资产经长连接下发：hub 推清单，Worker 按哈希回取、落进
       assetId: 'a1',
       kind: 'skill' as const,
       name: 'greeter',
+      slot: 'greeter',
       description: 'Greets',
       digest: 'd'.repeat(64),
       files: [{ path: 'SKILL.md', sha256: sha, size: text.length }]

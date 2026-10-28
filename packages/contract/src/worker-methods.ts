@@ -104,6 +104,8 @@ const assetEntry = z.object({
   assetId: z.string(),
   kind: z.enum(['skill', 'instruction']),
   name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(64),
+  /** 落地名（项目级 = name--<id 前 8 位>）；旧 hub 不发，按 name。 */
+  slot: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*(?:--[a-z0-9]{1,8})?$/).max(74).optional(),
   description: z.string(),
   digest: sha,
   files: z.array(z.object({ path: z.string(), sha256: sha, size: z.number().int().nonnegative() })).max(200)

@@ -153,7 +153,9 @@ export const startSessionCommandSchema = z.object({
   /** 能力层（可选）：旧 worker 收不到就当没有工具。token 不许进日志。 */
   tools: toolAccessSchema.optional(),
   /** MCP 资产（旧 worker 忽略）。stdio 的 env 含密钥明文：只进 agent 进程，不落盘、不进日志。 */
-  mcp: z.array(mcpLaunchSchema).max(50).optional()
+  mcp: z.array(mcpLaunchSchema).max(50).optional(),
+  /** 这次会话生效的资产（项目作用域算好的）；没有 = 旧 hub，机器上装着的全给。 */
+  assetIds: z.array(z.string()).max(500).optional()
 });
 
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [

@@ -16,7 +16,9 @@ CREATE TABLE IF NOT EXISTS assets (
   latest      TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
-  UNIQUE(kind, name)
+  -- 作用域：'' = 全局，否则是项目 id（见 migrateAssetScope）
+  project_id  TEXT NOT NULL DEFAULT '',
+  UNIQUE(kind, name, project_id)
 );
 CREATE TABLE IF NOT EXISTS asset_revisions (
   asset_id    TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -38,6 +40,12 @@ CREATE TABLE IF NOT EXISTS asset_installs (
   created_at INTEGER NOT NULL,
   PRIMARY KEY (worker_id, asset_id)
 );
+CREATE TABLE IF NOT EXISTS asset_project_settings (
+  project_id TEXT NOT NULL,
+  asset_id   TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+  enabled    INTEGER NOT NULL,
+  PRIMARY KEY (project_id, asset_id)
+);
 CREATE TABLE IF NOT EXISTS asset_sync (
   worker_id TEXT PRIMARY KEY,
   status    TEXT NOT NULL
@@ -45,6 +53,45 @@ CREATE TABLE IF NOT EXISTS asset_sync (
 `;
 
 type Row = Record<string, unknown>;
+
+/**
+ * 旧库的 assets 表是 UNIQUE(kind, name)、没有作用域列：重建一张（SQLite 改不了约束）。
+ * 先关外键再换表，不然 DROP 会级联删掉版本和安装关系；换完再打开。
+ */
+function migrateAssetScope(db: DatabaseSync): void {
+  const columns = db.prepare("SELECT name FROM pragma_table_info('assets')").all() as Row[];
+  if (columns.length === 0 || columns.some((column) => column['name'] === 'project_id')) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(`
+CREATE TABLE assets_scoped (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  pinned      TEXT NOT NULL,
+  latest      TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  project_id  TEXT NOT NULL DEFAULT '',
+  UNIQUE(kind, name, project_id)
+);
+INSERT INTO assets_scoped(id, kind, name, description, source, pinned, latest, created_at, updated_at)
+  SELECT id, kind, name, description, source, pinned, latest, created_at, updated_at FROM assets;
+DROP TABLE assets;
+ALTER TABLE assets_scoped RENAME TO assets;`);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
 
 const toAsset = (row: Row): Asset => ({
   id: String(row['id']),
@@ -54,6 +101,7 @@ const toAsset = (row: Row): Asset => ({
   source: JSON.parse(String(row['source'])) as AssetSource,
   pinned: String(row['pinned']),
   latest: String(row['latest']),
+  projectId: row['project_id'] ? String(row['project_id']) : null,
   createdAt: Number(row['created_at']),
   updatedAt: Number(row['updated_at'])
 });
@@ -69,12 +117,13 @@ const toRevision = (row: Row): AssetRevision => ({
 });
 
 export function createAssetRepository(db: DatabaseSync): AssetRepository {
+  migrateAssetScope(db);
   db.exec(ASSET_SCHEMA);
   const all = db.prepare('SELECT * FROM assets ORDER BY kind, name');
   const byId = db.prepare('SELECT * FROM assets WHERE id = ?');
-  const byName = db.prepare('SELECT * FROM assets WHERE kind = ? AND name = ?');
+  const byName = db.prepare('SELECT * FROM assets WHERE kind = ? AND name = ? AND project_id = ?');
   const insertAsset = db.prepare(
-    'INSERT INTO assets(id, kind, name, description, source, pinned, latest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO assets(id, kind, name, description, source, pinned, latest, created_at, updated_at, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   const updateAsset = db.prepare('UPDATE assets SET description = ?, source = ?, pinned = ?, latest = ?, updated_at = ? WHERE id = ?');
   const insertRevision = db.prepare(
@@ -93,6 +142,12 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
   const installs = db.prepare('SELECT worker_id, asset_id FROM asset_installs ORDER BY created_at');
   const install = db.prepare('INSERT OR IGNORE INTO asset_installs(worker_id, asset_id, created_at) VALUES (?, ?, ?)');
   const uninstall = db.prepare('DELETE FROM asset_installs WHERE worker_id = ? AND asset_id = ?');
+  const settingsOf = db.prepare('SELECT asset_id, enabled FROM asset_project_settings WHERE project_id = ?');
+  const putSetting = db.prepare(
+    'INSERT INTO asset_project_settings(project_id, asset_id, enabled) VALUES (?, ?, ?) ON CONFLICT(project_id, asset_id) DO UPDATE SET enabled = excluded.enabled'
+  );
+  const clearSetting = db.prepare('DELETE FROM asset_project_settings WHERE project_id = ? AND asset_id = ?');
+  const deleteSettings = db.prepare('DELETE FROM asset_project_settings WHERE asset_id = ?');
 
   const transaction = (work: () => void): void => {
     db.exec('BEGIN IMMEDIATE');
@@ -123,8 +178,8 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
       const row = byId.get(id) as Row | undefined;
       return row ? toAsset(row) : null;
     },
-    byName: async (kind, name) => {
-      const row = byName.get(kind, name) as Row | undefined;
+    byName: async (kind, name, projectId) => {
+      const row = byName.get(kind, name, projectId ?? '') as Row | undefined;
       return row ? toAsset(row) : null;
     },
     create: async (asset, revision, blobs) =>
@@ -138,7 +193,8 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
           asset.pinned,
           asset.latest,
           asset.createdAt,
-          asset.updatedAt
+          asset.updatedAt,
+          asset.projectId ?? ''
         );
         putRevision(revision, blobs);
       }),
@@ -154,6 +210,7 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     remove: async (id) =>
       transaction(() => {
         deleteInstalls.run(id);
+        deleteSettings.run(id);
         deleteRevisions.run(id);
         deleteAsset.run(id);
         const live = new Set<string>();
@@ -176,6 +233,12 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     },
     uninstall: async (workerId, assetId) => {
       uninstall.run(workerId, assetId);
+    },
+    projectSettings: async (projectId) =>
+      Object.fromEntries((settingsOf.all(projectId) as Row[]).map((row) => [String(row['asset_id']), Number(row['enabled']) === 1])),
+    setProjectSetting: async (projectId, assetId, enabled) => {
+      if (enabled === null) clearSetting.run(projectId, assetId);
+      else putSetting.run(projectId, assetId, enabled ? 1 : 0);
     }
   };
 }

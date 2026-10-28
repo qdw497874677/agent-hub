@@ -50,7 +50,8 @@ export interface AcpLaunch {
  */
 export function opencodeLaunch(assets: SessionAssets, existing: string | undefined = process.env['OPENCODE_CONFIG_CONTENT']): AcpLaunch {
   const content: Record<string, unknown> = {};
-  if (assets.skillsDir) content['skills'] = { paths: [assets.skillsDir] };
+  // 每个技能目录单独给（OpenCode 在每个 path 下找 **/SKILL.md）：会话只看得见这次生效的那些。
+  if (assets.skills.length > 0) content['skills'] = { paths: assets.skills.map((skill) => skill.path.replace(/\/SKILL\.md$/, '')) };
   if (assets.instructions.length > 0) content['instructions'] = assets.instructions.map((item) => item.path);
   const base = parseObject(existing);
   return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(base ? mergeConfig(base, content) : content) } };
