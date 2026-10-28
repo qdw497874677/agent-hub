@@ -118,6 +118,6 @@ Pi 的 MCP 依赖 Pi 扩展 `pi-mcp-adapter`：Worker 用 `pi list` 探测，没
 
 没走「改 OpenCode 配置 / Grok `_meta`」：两家 ACP 都认标准 `mcpServers`，一条路径更少出错，也不碰用户配置。
 
-已知问题：远端 Pi 会话里，`pi-mcp-adapter` 对写在项目级的服务器提示「project server approval required」，模型改用 bash/curl 才调到测试服务器；原生 MCP 工具调用可能要把服务器配成全局 / 已批准，未修。
+Pi 的项目级资产不落进项目目录：和全局资产一样由垫片聚合进用户全局配置里的 `agent-hub` 一条（Pi 0.99+ 写 `~/.pi/agent/mcp.json`，更老的 Pi 靠 pi-mcp-adapter 7.x，写 `mcp-adapter.json`；都认 `PI_CODING_AGENT_DIR`），不经项目审批，也不改用户的 `projectServers` 等信任设置。之前远端出现的「project server approval required」是因为 hub 只写了 mcp.json、适配器 7.x 在老 Pi 上不读它，模型看到提示后自己写了项目 `.mcp.json`。
 
 本机线上验证（2026-10-28）：Grok、OpenCode、Pi 三家会话都调到了 stdio（`stdio-ok token_len=16`）和远端（`pong-remote-auth-ok`）测试服务器；hub 日志、远端服务器日志、事件流、数据库里都搜不到密钥原文。

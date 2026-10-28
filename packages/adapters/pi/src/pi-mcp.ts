@@ -1,9 +1,14 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 /**
- * Pi 的 MCP 走它自己的 `~/.pi/agent/mcp.json`（只支持 stdio 和 Streamable HTTP，不支持 SSE）。
+ * Pi 的 MCP 由 pi-mcp-adapter 提供。7.x 起它**不再读** `~/.pi/agent/mcp.json`（那是 Pi 0.99+ 内置 MCP 的文件，
+ * 老 Pi 上只会得到「no longer reads … mcp.json」提示、0 个服务器），只认自己的全局配置
+ * `~/.pi/agent/mcp-adapter.json`（或 `$PI_CODING_AGENT_DIR/mcp-adapter.json`）。
+ * Pi 0.99+ 自带 MCP，读的才是 mcp.json。所以按 Pi 版本选文件（见 piMcpPath），老 Pi 写进 mcp-adapter.json。两者都是**用户全局**来源，不经项目信任 / 项目服务器审批；
+ * 项目级 hub 资产也不落进项目目录，而是由垫片聚合进这一条（见 AGENT_HUB_MCP），和全局资产走同一条受信路径。
+ * 我们不碰 settings.projectServers 之类的信任设置。
  *
  * 注意：Pi 只对 `headers` 和 stdio 的 `env` 做 `${VAR}` 展开，**`url` 按字面校验**——
  * 写 `"url": "${AGENT_HUB_TOOL_URL}"` 会让整条配置被判非法，Pi 根本不加载这些工具
@@ -28,29 +33,92 @@ export function piMcpEntry(shim: { readonly command: string; readonly args: read
   };
 }
 
-export function piMcpPath(home = homedir()): string {
-  return join(home, '.pi', 'agent', 'mcp.json');
+/** Pi 的 agent 目录：和 Pi / pi-mcp-adapter 一样认 PI_CODING_AGENT_DIR。 */
+export function piAgentDir(env: NodeJS.ProcessEnv = process.env, home = homedir()): string {
+  const configured = env['PI_CODING_AGENT_DIR']?.trim();
+  if (!configured) return join(home, '.pi', 'agent');
+  if (configured === '~') return home;
+  if (configured.startsWith('~/')) return resolve(home, configured.slice(2));
+  return resolve(configured);
 }
 
-/** 合并进已有配置；已经一样就不写。返回是否改了文件。 */
-export async function ensurePiMcpConfig(
-  shim: { readonly command: string; readonly args: readonly string[] },
-  path = piMcpPath()
-): Promise<boolean> {
-  const entry = piMcpEntry(shim);
-  let config: { mcpServers?: Record<string, unknown> } & Record<string, unknown> = {};
+/**
+ * agent-hub 这条该写的用户全局文件：Pi 0.99+ 自带 MCP，读 `mcp.json`（装了适配器也会导入它）；
+ * 更老的 Pi 只能靠 pi-mcp-adapter，7.x 只认 `mcp-adapter.json`。两者都是全局来源，不经项目审批。
+ */
+export function piMcpPath(env: NodeJS.ProcessEnv = process.env, home = homedir(), builtin = false): string {
+  return join(piAgentDir(env, home), builtin ? 'mcp.json' : 'mcp-adapter.json');
+}
+
+/** `pi --version` 输出 → 是否自带 MCP（0.99 起有 registerMcpServer）。认不出就按老版本处理。 */
+export function piHasBuiltinMcp(version: string): boolean {
+  const match = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(version);
+  if (!match) return false;
+  const major = Number(match[1]);
+  const minor = Number(match[2]);
+  return major > 0 || minor >= 99;
+}
+
+type McpFile = { mcpServers?: Record<string, unknown> } & Record<string, unknown>;
+
+/** 读 JSON 配置：不存在 = {}；坏文件 = null（不动它）。 */
+async function readConfig(path: string): Promise<McpFile | null> {
   try {
-    config = JSON.parse(await readFile(path, 'utf8')) as typeof config;
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as McpFile) : null;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false; // 坏文件不动，宁可没工具
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? {} : null;
   }
-  const servers = { ...(config.mcpServers ?? {}) };
-  if (JSON.stringify(servers['agent-hub']) === JSON.stringify(entry)) return false;
-  servers['agent-hub'] = entry;
+}
+
+async function writeConfig(path: string, config: McpFile): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, `${JSON.stringify({ ...config, mcpServers: servers }, null, 2)}\n`, { mode: 0o600 });
+  await writeFile(tmp, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
   await rename(tmp, path);
+}
+
+/** 是不是 hub 以前写进 mcp.json 的那条（stdio 垫片 + 我们的变量引用）。 */
+function isOurEntry(value: unknown): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  const env = (value as { env?: Record<string, unknown> }).env;
+  return !!env && env['AGENT_HUB_TOOL_TOKEN'] === '${AGENT_HUB_TOOL_TOKEN}';
+}
+
+/**
+ * 另一个文件里我们写过的 agent-hub 条目要拿掉：老 Pi 上适配器不读 mcp.json，还会提示「请合并后删除」，
+ * 模型看到会自己动手改配置（线上真发生过）；新 Pi 上两边都有会重复注册。
+ * 只删我们那一条；文件只剩空壳时整个删掉（本来就是我们建的），有用户自己的服务器 / 设置就原样留着。
+ */
+async function dropOurEntry(path: string): Promise<boolean> {
+  const config = await readConfig(path);
+  if (!config || !isOurEntry(config.mcpServers?.['agent-hub'])) return false;
+  const { ['agent-hub']: _ours, ...rest } = config.mcpServers ?? {};
+  const others = Object.keys(config).filter((key) => key !== 'mcpServers');
+  if (Object.keys(rest).length === 0 && others.length === 0) await unlink(path).catch(() => undefined);
+  else await writeConfig(path, { ...config, mcpServers: rest });
+  return true;
+}
+
+/**
+ * 把 agent-hub 合并进该写的那个全局文件（保留用户已有的服务器和设置），并从另一个文件里拿掉我们的旧条目。
+ * 已经一样就不写。返回是否改了文件。
+ */
+export async function ensurePiMcpConfig(
+  shim: { readonly command: string; readonly args: readonly string[] },
+  options: { readonly dir?: string; readonly builtin?: boolean } = {}
+): Promise<boolean> {
+  const dir = options.dir ?? piAgentDir();
+  const builtin = options.builtin ?? false;
+  const path = join(dir, builtin ? 'mcp.json' : 'mcp-adapter.json');
+  const dropped = await dropOurEntry(join(dir, builtin ? 'mcp-adapter.json' : 'mcp.json')).catch(() => false);
+  const entry = piMcpEntry(shim);
+  const config = await readConfig(path);
+  if (!config) return dropped; // 坏文件不动，宁可没工具
+  const servers = { ...(config.mcpServers ?? {}) };
+  if (JSON.stringify(servers['agent-hub']) === JSON.stringify(entry)) return dropped;
+  servers['agent-hub'] = entry;
+  await writeConfig(path, { ...config, mcpServers: servers });
   return true;
 }
 
