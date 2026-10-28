@@ -6,6 +6,7 @@ import {
   assetBlobsForWorker,
   assetsOverview,
   checkAssetUpdate,
+  checkAllAssetUpdates,
   deleteAsset,
   diffAssetRevisions,
   importGitAsset,
@@ -237,4 +238,26 @@ test('项目级作用域：同名项目资产盖过全局，项目开关、别�
   const manifest = await workerAssetManifest(deps, 'w1');
   assert.equal(new Set(manifest.map((e) => `${e.kind}:${e.slot}`)).size, manifest.length);
   assert.equal(manifest.filter((e) => e.name === 'greeter').length, 2);
+});
+
+test('定时检查更新：只查 Git 来源，记新版本和审计，不自动升级；查不了的单列', async () => {
+  const { deps, git } = inMemoryAssets();
+  git.files = skill();
+  const fromGit = await importGitAsset(deps, { kind: 'skill', url: 'https://github.com/x/y.git', ref: null, path: 'skills/greeter' });
+  const uploaded = await uploadAsset(deps, { kind: 'skill', files: skill('x', 'local-tool') });
+  assert.ok(fromGit.ok && uploaded.ok);
+  const entries: { action: string; target: string; actorEmail: string }[] = [];
+  const audit = { append: async (entry: { action: string; target: string; actorEmail: string }) => void entries.push(entry), recent: async () => [] };
+  const quiet = await checkAllAssetUpdates({ ...deps, audit: audit as never });
+  assert.deepEqual([quiet.checked, quiet.changed.length, quiet.failed.length], [1, 0, 0]);
+  git.files = skill('v2');
+  git.commit = 'c2';
+  const report = await checkAllAssetUpdates({ ...deps, audit: audit as never });
+  assert.deepEqual(report.changed.map((asset) => asset.name), ['greeter']);
+  const after = await deps.assets.get(fromGit.value.id);
+  assert.ok(after && after.latest !== after.pinned, '只记成最新版本，钉住的不变');
+  assert.deepEqual(entries.map((e) => [e.action, e.target, e.actorEmail]), [['asset.revision', 'greeter', '自动检查']]);
+  git.files = [{ path: 'README.md', data: enc('no skill') }];
+  const broken = await checkAllAssetUpdates(deps);
+  assert.equal(broken.failed[0]?.asset.name, 'greeter');
 });

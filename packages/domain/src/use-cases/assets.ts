@@ -23,7 +23,7 @@ import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { WorkerStatus } from '../worker.ts';
-import type { AuditAction, Principal } from '../account.ts';
+import type { AuditAction, Principal, UserId } from '../account.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { AssetRepository } from '../ports/asset-repository.ts';
 import type { AssetReader, GitCandidate } from '../ports/asset-reader.ts';
@@ -241,6 +241,40 @@ export async function checkAssetUpdate(
   const checkout = await deps.reader.readGit(asset.source.url, asset.source.ref, asset.source.path, asset.kind);
   if (!checkout.ok) return checkout;
   return offerRevision(deps, asset, checkout.value.files, checkout.value.commit);
+}
+
+/** 定时巡检：逐个去 Git 来源看有没有新版本。只记成「最新版本」，不自动升级——升级仍要主人看过对比后确认。 */
+export interface AssetUpdateSweep {
+  readonly checked: number;
+  readonly changed: readonly Asset[];
+  readonly failed: readonly { readonly asset: Asset; readonly message: string }[];
+}
+
+export async function checkAllAssetUpdates(
+  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now'> & { readonly audit?: AuditLog }
+): Promise<AssetUpdateSweep> {
+  const changed: Asset[] = [];
+  const failed: { asset: Asset; message: string }[] = [];
+  const gitAssets = (await deps.assets.list()).filter((asset) => asset.source.type === 'git');
+  for (const asset of gitAssets) {
+    const result = await checkAssetUpdate(deps, asset.id).catch((error: unknown) => err(invalid((error as Error).message)));
+    if (!result.ok) {
+      failed.push({ asset, message: result.error.message });
+      continue;
+    }
+    if (!result.value.changed) continue;
+    changed.push(result.value.asset);
+    await deps.audit?.append({
+      id: newId(),
+      actorId: 'system' as UserId,
+      actorEmail: '自动检查',
+      action: 'asset.revision',
+      target: result.value.asset.name,
+      detail: `来源有新版本 ${result.value.asset.latest.slice(0, 12)}（待确认升级）`,
+      at: deps.now()
+    });
+  }
+  return { checked: gitAssets.length, changed, failed };
 }
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
