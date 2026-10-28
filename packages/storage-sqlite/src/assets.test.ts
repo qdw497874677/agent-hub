@@ -52,3 +52,23 @@ test('资产：建 / 加版本 / 安装 / 删（只清没人引用的 blob），
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('资产同步状态：跨重开保留；重开前「同步中」的读出来是「待同步」', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-sync-'));
+  try {
+    const path = join(dir, 'hub.db');
+    let store = openSqliteStore(path);
+    assert.equal(store.assetSync.get('w1'), null);
+    store.assetSync.set({ workerId: 'w1', state: 'synced', root: '/r', installed: { a1: 'd1' }, error: null, at: 1 });
+    store.assetSync.set({ workerId: 'w2', state: 'syncing', root: null, installed: {}, error: null, at: 2 });
+    store.assetSync.set({ workerId: 'w1', state: 'synced', root: '/r', installed: { a1: 'd2' }, error: null, at: 3 });
+    store.close();
+
+    store = openSqliteStore(path);
+    assert.deepEqual(store.assetSync.get('w1'), { workerId: 'w1', state: 'synced', root: '/r', installed: { a1: 'd2' }, error: null, at: 3 });
+    assert.deepEqual(store.assetSync.all().map((s) => [s.workerId, s.state]), [['w1', 'synced'], ['w2', 'pending']]);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

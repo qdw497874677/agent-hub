@@ -13,7 +13,7 @@ import { serveAssetFetch } from './asset-relay.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { AssetDeps, Deps, EnrollmentDeps, SessionId, ToolGateway, WorkerAssetSync } from '@agent-hub/domain';
+import type { AssetDeps, Deps, EnrollmentDeps, SessionId, ToolGateway } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase
@@ -203,13 +203,12 @@ const enrollmentDeps: EnrollmentDeps = {
   now: () => Date.now()
 };
 
-// 资产中心（docs/design/asset-hub.md）：技能 / 指令按 Worker 安装，经长连接下发。同步状态只在内存里：Worker 每次上线都会再同步。
-const assetBoard = new Map<string, WorkerAssetSync>();
+// 资产中心（docs/design/asset-hub.md）：技能 / 指令按 Worker 安装，经长连接下发。同步状态落库，hub 重启后照样显示；Worker 每次上线都会再同步。
 const assetDeps: AssetDeps = {
   assets: store.assets,
   reader: createAssetReader(),
   delivery: { push: async (workerId, manifest) => (serverGateway ? serverGateway.assets.push(workerId, manifest) : err(unavailable('worker 通道尚未就绪'))) },
-  board: { get: (id) => assetBoard.get(id) ?? null, set: (status) => void assetBoard.set(status.workerId, status), all: () => [...assetBoard.values()] },
+  board: store.assetSync,
   workers: workerControl,
   now: () => Date.now()
 };

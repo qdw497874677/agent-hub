@@ -27,7 +27,7 @@ hub 统一管理「会话能用的能力」，按 **Worker** 安装，经已有�
 1. Worker 上线（hello）或安装 / 升级 / 删除后，hub 算出这台的清单（装给它的资产各取钉住版本），发 `assets.sync { entries }`。
 2. Worker 对比本地 `.blobs/`，缺的按 sha256 批量 `assets.fetch`（每批 ≤ 200 个、≤ 8 MB）；hub 只给这台清单里有的。
 3. Worker 校验哈希，分阶段写到临时目录再原子改名；清单外的条目删掉，blob 回收；回报 `{ root, installed }`。
-4. hub 记同步状态（pending / syncing / synced / failed）；离线的记 pending，下次上线自动补。
+4. hub 记同步状态（pending / syncing / synced / failed），落库（`asset_sync` 表），hub 重启后照样显示；离线的记 pending，下次上线自动补。
 
 ## Worker 上的目录
 

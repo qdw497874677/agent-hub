@@ -65,7 +65,7 @@ export interface AssetManifestEntry {
 
 export type AssetSyncState = 'pending' | 'syncing' | 'synced' | 'failed';
 
-/** 一台 Worker 的同步情况（hub 内存里记着；Worker 重连会再同步一次）。 */
+/** 一台 Worker 的同步情况（hub 落库记着；Worker 重连会再同步一次）。 */
 export interface WorkerAssetSync {
   readonly workerId: string;
   readonly state: AssetSyncState;
