@@ -112,6 +112,23 @@ export function resolveProjectAssets(
   return { choices, effective: choices.filter((choice) => choice.enabled && choice.shadowedBy === null).map((choice) => choice.asset) };
 }
 
+/** 会话清单里的一项（会话界面展示：用了哪些资产、哪个版本、从哪一级来的）。 */
+export interface SessionAssetEntry {
+  readonly assetId: string;
+  readonly kind: AssetKind;
+  readonly name: string;
+  readonly digest: string;
+  readonly scope: AssetScope;
+}
+
+/** 一次会话启动时实际给出的资产清单（落库，会话界面展示；之后改资产不影响已记下的）。 */
+export interface SessionAssetManifest {
+  readonly sessionId: string;
+  readonly workerId: string;
+  readonly entries: readonly SessionAssetEntry[];
+  readonly at: number;
+}
+
 export type AssetSyncState = 'pending' | 'syncing' | 'synced' | 'failed';
 
 /** 一台 Worker 的同步情况（hub 落库记着；Worker 重连会再同步一次）。 */

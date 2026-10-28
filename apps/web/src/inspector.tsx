@@ -6,6 +6,7 @@ import { ContinueElsewhere } from './continue-elsewhere.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { sessionCommands } from './commands.ts';
 import type { LiveSession } from './live.ts';
+import { SessionAssets } from './session-assets.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from './workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -138,6 +139,8 @@ export function Inspector({
           <p className="mb-1 text-meta text-tertiary">属于任务</p>
           <p className="text-body text-secondary">{task?.title ?? session.taskId}</p>
         </section>
+
+        <SessionAssets sessionId={session.id} />
 
         <section className="mb-3">
           <p className="mb-1 text-meta text-tertiary">能力矩阵</p>

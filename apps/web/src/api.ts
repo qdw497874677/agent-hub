@@ -158,6 +158,7 @@ export const api = {
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
+  sessionAssets: (sessionId: string) => call<SessionAssetsDto>(`/api/sessions/${sessionId}/assets`),
   events: (sessionId: string, after = 0) =>
     call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>
@@ -165,6 +166,14 @@ export const api = {
   saveLayout: (projectId: string, patch: SaveLayoutRequest) =>
     call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(patch) })
 };
+
+/** 会话启动时实际给出的资产清单（见 asset-hub.md「会话资产清单」）。 */
+export interface SessionAssetsDto {
+  readonly sessionId: string;
+  readonly workerId: string | null;
+  readonly entries: readonly { assetId: string; kind: 'skill' | 'instruction' | 'mcp'; name: string; digest: string; scope: 'global' | 'project' }[];
+  readonly at: number | null;
+}
 
 export const attachmentUrl = (sessionId: string, path: string): string =>
   `/api/sessions/${sessionId}/attachment?path=${encodeURIComponent(path)}`;

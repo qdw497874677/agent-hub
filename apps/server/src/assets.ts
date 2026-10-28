@@ -82,6 +82,12 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
   const audit = (c: Context, action: Parameters<typeof recordAssetAudit>[2], target: string, detail: string) =>
     recordAssetAudit({ audit: options.audit, now: deps.now }, actor(c), action, target, detail);
 
+  // 会话用了哪些资产（启动那一刻记下的清单）：成员也能看，只读。
+  app.get('/api/sessions/:sessionId/assets', async (c) => {
+    const manifest = await deps.assets.sessionAssets(c.req.param('sessionId'));
+    return c.json(manifest ?? { sessionId: c.req.param('sessionId'), workerId: null, entries: [], at: null });
+  });
+
   app.get('/api/admin/assets', async (c) => c.json(assetsOverviewSchema.parse(await assetsOverview(deps))));
 
   // 密钥：值只进不出（PUT 写入后界面再也看不到它）；审计只记名字。
