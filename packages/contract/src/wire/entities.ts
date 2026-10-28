@@ -58,7 +58,8 @@ export const runtimeOptionSchema = z.object({
 export const optionValuesSchema = z.record(z.string(), z.union([z.string(), z.boolean()]));
 
 export const agentReadinessSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('ready') }),
+  /** lacks：能用，但缺某个可选部件（如 Pi 的 MCP 适配器）；hub 视资产决定是否降为不可用。 */
+  z.object({ state: z.literal('ready'), lacks: z.array(z.string().max(64)).max(16).optional() }),
   z.object({ state: z.literal('unavailable'), reason: z.string() })
 ]);
 
