@@ -244,11 +244,16 @@ async function withSessionAssets(command: WorkerCommand): Promise<WorkerCommand>
     const task = await store.tasks.byId(command.taskId);
     const plan = await sessionAssetPlan(assetDeps, command.workerId, task?.projectId ?? null);
     let next: WorkerCommand = { ...command, assetIds: plan.assetIds };
+    const launched = new Set<string>();
     if (command.tools) {
       const { launch, skipped } = await sessionMcpLaunch(assetDeps, command.workerId, new Set(plan.assetIds));
       for (const item of skipped) log(`MCP「${item.name}」这次没给会话 ${command.sessionId}：${item.reason}`);
+      for (const item of launch) launched.add(item.name);
       if (launch.length > 0) next = { ...next, mcp: launch };
     }
+    // 会话资产清单：实际给出去的那些（MCP 只算真的启动了的），会话界面展示用
+    const entries = plan.entries.filter((entry) => entry.kind !== 'mcp' || launched.has(entry.name));
+    await store.assets.recordSessionAssets({ sessionId: command.sessionId, workerId: command.workerId, entries, at: Date.now() });
     return next;
   } catch (failure) {
     log(`会话资产展开失败：${(failure as Error).message}`);

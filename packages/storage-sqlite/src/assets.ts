@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { Asset, AssetFile, AssetKind, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, WorkerAssetSync } from '@agent-hub/domain';
+import type { Asset, AssetFile, AssetKind, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, SessionAssetManifest, WorkerAssetSync } from '@agent-hub/domain';
 
 /**
  * 资产中心（docs/design/asset-hub.md）：资产、不可变的版本、按 sha256 寻址的内容、Worker 安装关系。
@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS asset_project_settings (
   asset_id   TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
   enabled    INTEGER NOT NULL,
   PRIMARY KEY (project_id, asset_id)
+);
+CREATE TABLE IF NOT EXISTS session_assets (
+  session_id TEXT PRIMARY KEY,
+  manifest   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS asset_sync (
   worker_id TEXT PRIMARY KEY,
@@ -121,6 +125,10 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
   db.exec(ASSET_SCHEMA);
   const all = db.prepare('SELECT * FROM assets ORDER BY kind, name');
   const byId = db.prepare('SELECT * FROM assets WHERE id = ?');
+  const putSessionAssets = db.prepare(
+    'INSERT INTO session_assets (session_id, manifest) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET manifest = excluded.manifest'
+  );
+  const sessionAssetsOf = db.prepare('SELECT manifest FROM session_assets WHERE session_id = ?');
   const byName = db.prepare('SELECT * FROM assets WHERE kind = ? AND name = ? AND project_id = ?');
   const insertAsset = db.prepare(
     'INSERT INTO assets(id, kind, name, description, source, pinned, latest, created_at, updated_at, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -239,6 +247,13 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     setProjectSetting: async (projectId, assetId, enabled) => {
       if (enabled === null) clearSetting.run(projectId, assetId);
       else putSetting.run(projectId, assetId, enabled ? 1 : 0);
+    },
+    recordSessionAssets: async (manifest) => {
+      putSessionAssets.run(manifest.sessionId, JSON.stringify(manifest));
+    },
+    sessionAssets: async (sessionId) => {
+      const row = sessionAssetsOf.get(sessionId) as Row | undefined;
+      return row ? (JSON.parse(String(row['manifest'])) as SessionAssetManifest) : null;
     }
   };
 }

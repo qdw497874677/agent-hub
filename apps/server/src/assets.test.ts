@@ -84,3 +84,19 @@ test('资产 API：主人上传 → 装到机器 → 传新版本看 diff → �
   const actions = (await owner('/api/admin/audit')).body.map((entry: { action: string }) => entry.action);
   for (const action of ['asset.create', 'asset.install', 'asset.revision', 'asset.pin', 'asset.delete']) assert.ok(actions.includes(action), action);
 });
+
+test('会话资产清单 API：成员也能读（只读）；没记过的返回空清单', async () => {
+  const h = harness();
+  const owner = h.browser();
+  const member = h.browser();
+  const register = (email: string) => ({ method: 'POST', body: JSON.stringify({ email, password: PASSWORD }) });
+  assert.equal((await owner('/api/auth/register', register('boss@b.co'))).status, 200);
+  assert.equal((await member('/api/auth/register', register('m@b.co'))).status, 200);
+  const empty = await member('/api/sessions/s1/assets');
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, { sessionId: 's1', workerId: null, entries: [], at: null });
+  const entry = { assetId: 'a1', kind: 'skill' as const, name: 'greeter', digest: 'd1', scope: 'global' as const };
+  await h.assets.deps.assets.recordSessionAssets({ sessionId: 's1', workerId: 'w1', entries: [entry], at: 5 });
+  assert.deepEqual((await member('/api/sessions/s1/assets')).body.entries, [entry]);
+  assert.equal((await h.browser()('/api/sessions/s1/assets')).status, 401);
+});

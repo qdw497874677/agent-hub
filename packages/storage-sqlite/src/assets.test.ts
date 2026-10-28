@@ -101,3 +101,21 @@ test('资产作用域：旧库迁移后原有资产成全局；同名可分属�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('会话资产清单：按会话记下，再启动覆盖成最新一次，跨重开保留', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-session-assets-'));
+  try {
+    const path = join(dir, 'hub.db');
+    let store = openSqliteStore(path);
+    assert.equal(await store.assets.sessionAssets('s1'), null);
+    const entry = { assetId: 'a1', kind: 'skill' as const, name: 'greeter', digest: 'd1', scope: 'project' as const };
+    await store.assets.recordSessionAssets({ sessionId: 's1', workerId: 'w1', entries: [entry], at: 1 });
+    await store.assets.recordSessionAssets({ sessionId: 's1', workerId: 'w2', entries: [{ ...entry, digest: 'd2' }], at: 2 });
+    store.close();
+    store = openSqliteStore(path);
+    assert.deepEqual(await store.assets.sessionAssets('s1'), { sessionId: 's1', workerId: 'w2', entries: [{ ...entry, digest: 'd2' }], at: 2 });
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

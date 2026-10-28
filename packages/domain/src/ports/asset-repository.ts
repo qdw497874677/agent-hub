@@ -1,4 +1,4 @@
-import type { Asset, AssetKind, AssetRevision, ProjectAssetSettings } from '../asset.ts';
+import type { Asset, AssetKind, AssetRevision, ProjectAssetSettings, SessionAssetManifest } from '../asset.ts';
 
 /** 资产 + 版本 + 内容 blob + 「哪台 Worker 装了哪些」。blob 按 sha256 寻址，写入幂等。 */
 export interface AssetRepository {
@@ -25,4 +25,7 @@ export interface AssetRepository {
   projectSettings(projectId: string): Promise<ProjectAssetSettings>;
   /** enabled = null 表示回到默认。 */
   setProjectSetting(projectId: string, assetId: string, enabled: boolean | null): Promise<void>;
+  /** 记下一次会话启动时给出的资产清单（同一会话再启动 = 覆盖成最新那次）。 */
+  recordSessionAssets(manifest: SessionAssetManifest): Promise<void>;
+  sessionAssets(sessionId: string): Promise<SessionAssetManifest | null>;
 }

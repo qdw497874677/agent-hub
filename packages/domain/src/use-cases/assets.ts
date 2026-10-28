@@ -16,7 +16,8 @@ import {
   type PackedAsset,
   type ProjectAssetChoice,
   type AssetScope,
-  type WorkerAssetSync
+  type WorkerAssetSync,
+  type SessionAssetEntry
 } from '../asset.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
@@ -546,15 +547,6 @@ export async function deleteSecret(deps: Pick<AssetDeps, 'secrets'>, name: strin
 }
 
 /* ── 项目级作用域与会话资产清单 ── */
-
-/** 会话清单里的一项（会话界面展示：用了哪些资产、哪个版本、从哪一级来的）。 */
-export interface SessionAssetEntry {
-  readonly assetId: string;
-  readonly kind: AssetKind;
-  readonly name: string;
-  readonly digest: string;
-  readonly scope: AssetScope;
-}
 
 export interface ProjectAssetsView {
   readonly projectId: string;
