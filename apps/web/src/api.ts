@@ -45,7 +45,8 @@ import type {
   AssetsOverviewDto,
   AssetRevisionDto,
   AssetDiffDto,
-  GitScanDto
+  GitScanDto,
+  SecretsOverviewDto
 } from '@agent-hub/contract';
 
 export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest };
@@ -206,10 +207,10 @@ export type AssetUploadFile = { readonly path: string; readonly data: string };
 const assetPath = (id: string) => `/api/admin/assets/${encodeURIComponent(id)}`;
 export const assetsApi = {
   overview: () => call<AssetsOverviewDto>('/api/admin/assets'),
-  upload: (input: { kind: 'skill' | 'instruction'; name?: string; files: AssetUploadFile[] }) =>
+  upload: (input: { kind: 'skill' | 'instruction' | 'mcp'; name?: string; files: AssetUploadFile[] }) =>
     post<{ id: string }>('/api/admin/assets/upload', input),
   scanGit: (url: string, ref: string) => post<GitScanDto>('/api/admin/assets/git/scan', { url, ref: ref || null }),
-  importGit: (input: { url: string; ref: string; kind: 'skill' | 'instruction'; path: string }) =>
+  importGit: (input: { url: string; ref: string; kind: 'skill' | 'instruction' | 'mcp'; path: string }) =>
     post<{ id: string }>('/api/admin/assets/git/import', { ...input, ref: input.ref || null }),
   revisions: (id: string) => call<AssetRevisionDto[]>(`${assetPath(id)}/revisions`),
   file: (id: string, digest: string, path: string) =>
@@ -224,10 +225,16 @@ export const assetsApi = {
     call<{ ok: true }>(`${assetPath(id)}/workers/${encodeURIComponent(workerId)}`, {
       method: 'PUT',
       body: JSON.stringify({ installed })
-    })
+    }),
+  /** MCP 密钥：只有名字进出界面，值写进去就再也读不回来。 */
+  secrets: () => call<SecretsOverviewDto>('/api/admin/assets/secrets'),
+  setSecret: (name: string, value: string) =>
+    call<{ ok: true }>(`/api/admin/assets/secrets/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  removeSecret: (name: string) => call<{ ok: true }>(`/api/admin/assets/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' })
 };
 
 export type {
+  SecretsOverviewDto,
   AssetsOverviewDto,
   AssetRevisionDto,
   AssetDiffDto,

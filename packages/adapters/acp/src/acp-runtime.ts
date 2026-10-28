@@ -106,6 +106,8 @@ class AcpSession implements RuntimeSession {
   private mcpCaps = { http: false, sse: false };
   /** hub 能力层；握手后按 agent 声明的 mcpCapabilities 决定能不能注入。 */
   tools: StartSpec['tools'] = undefined;
+  /** hub 下发的 MCP 资产（stdio 的 env 含密钥：只交给 agent，不打日志）。 */
+  mcp: StartSpec['mcp'] = undefined;
   /** 本机的 stdio MCP 垫片命令（worker 给）；agent 不会 HTTP MCP 时靠它。 */
   toolShim: { command: string; args: readonly string[] } | undefined = undefined;
 
@@ -129,7 +131,7 @@ class AcpSession implements RuntimeSession {
 
   private sessionParams(cwd: string): Json {
     const meta = this.config.sessionMeta || this.launchMeta ? { ...this.config.sessionMeta, ...this.launchMeta } : undefined;
-    return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps, this.toolShim), ...(meta ? { _meta: meta } : {}) };
+    return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps, this.toolShim, this.mcp), ...(meta ? { _meta: meta } : {}) };
   }
 
   async open(cwd: string, agentSessionRef: string | null): Promise<void> {
@@ -250,6 +252,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
         options.onOptions?.(spec.sessionId, reported);
       });
       session.tools = spec.tools;
+      session.mcp = spec.mcp;
       session.toolShim = options.toolShim;
       session.launchMeta = launch.sessionMeta;
       const ref = spec.resume?.agentSessionRef ?? null;

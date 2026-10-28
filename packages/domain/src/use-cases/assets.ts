@@ -1,4 +1,5 @@
 import {
+  isFileAssetKind,
   checkAssetName,
   compareFiles,
   packAsset,
@@ -21,6 +22,8 @@ import type { AuditLog } from '../ports/audit-log.ts';
 import type { AssetRepository } from '../ports/asset-repository.ts';
 import type { AssetReader, GitCandidate } from '../ports/asset-reader.ts';
 import type { AssetDelivery, AssetSyncBoard } from '../ports/asset-delivery.ts';
+import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
+import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpConfig, type McpConfig, type McpLaunch } from '../mcp.ts';
 
 /** 资产中心是独立的限界上下文：不塞进 Deps。 */
 export interface AssetDeps {
@@ -29,8 +32,12 @@ export interface AssetDeps {
   readonly delivery: AssetDelivery;
   readonly board: AssetSyncBoard;
   readonly workers: { list(): Promise<WorkerStatus[]> };
+  /** MCP 资产引用的密钥（加密存放）。 */
+  readonly secrets: SecretVault;
   readonly now: () => number;
 }
+
+export const ASSET_KIND_LABEL: Readonly<Record<AssetKind, string>> = { skill: '技能', instruction: '指令', mcp: 'MCP 服务器' };
 
 export interface AssetView extends Asset {
   /** 装在哪些 Worker 上。 */
@@ -92,6 +99,14 @@ async function describePacked(
 ): Promise<Result<{ name: string; description: string; packed: PackedAsset }, DomainError>> {
   const packed = await packAsset(kind, files);
   if (!packed.ok) return packed;
+  if (kind === 'mcp') {
+    const config = parseMcpConfig(new TextDecoder().decode(files[0]?.data ?? new Uint8Array()));
+    if (!config.ok) return config;
+    const checked = checkAssetName(config.value.name);
+    if (!checked.ok) return checked;
+    if (config.value.description.length > MAX_DESCRIPTION) return err(invalid('description 超过 1024 个字符'));
+    return ok({ name: config.value.name, description: config.value.description.trim(), packed: packed.value });
+  }
   const meta = deps.reader.describe(kind, files);
   if (!meta.ok) return meta;
   const name = kind === 'skill' ? meta.value.name : (givenName ?? meta.value.name);
@@ -124,7 +139,7 @@ async function createAsset(
   if (!described.ok) return described;
   const { name, description, packed } = described.value;
   if (await deps.assets.byName(kind, name)) {
-    return err(conflict(`已经有叫「${name}」的${kind === 'skill' ? '技能' : '指令'}了：到它那里传新版本`));
+    return err(conflict(`已经有叫「${name}」的${ASSET_KIND_LABEL[kind]}了：到它那里传新版本`));
   }
   const at = deps.now();
   const asset: Asset = { id: newId(), kind, name, description, source, pinned: packed.digest, latest: packed.digest, createdAt: at, updatedAt: at };
@@ -294,9 +309,11 @@ export async function workerAssetManifest(
   for (const { assetId } of mine) {
     const asset = await deps.assets.get(assetId);
     if (!asset) continue;
+    const kind = asset.kind;
+    if (!isFileAssetKind(kind)) continue;
     const revision = await deps.assets.revision(assetId, asset.pinned);
     if (!revision) continue;
-    entries.push({ assetId, kind: asset.kind, name: asset.name, description: revision.description, digest: revision.digest, files: revision.files });
+    entries.push({ assetId, kind, name: asset.name, description: revision.description, digest: revision.digest, files: revision.files });
   }
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -373,4 +390,121 @@ export async function recordAssetAudit(
   detail: string
 ): Promise<void> {
   await deps.audit.append({ id: newId(), actorId: actor.user.id, actorEmail: actor.user.email, action, target, detail, at: deps.now() });
+}
+
+/* ── MCP 资产与密钥 ── */
+
+/** 一台 Worker 上生效的 MCP 资产（钉住的版本解析好的配置）。坏配置跳过（导入时已校验过，这里只防御）。 */
+export async function workerMcpConfigs(
+  deps: Pick<AssetDeps, 'assets'>,
+  workerId: string
+): Promise<{ asset: Asset; digest: string; config: McpConfig }[]> {
+  const mine = (await deps.assets.installations()).filter((row) => row.workerId === workerId);
+  const out: { asset: Asset; digest: string; config: McpConfig }[] = [];
+  for (const { assetId } of mine) {
+    const asset = await deps.assets.get(assetId);
+    if (!asset || asset.kind !== 'mcp') continue;
+    const revision = await deps.assets.revision(assetId, asset.pinned);
+    const file = revision?.files.find((candidate) => candidate.path === MCP_CONFIG_FILE);
+    const data = file ? await deps.assets.blob(file.sha256) : null;
+    if (!data) continue;
+    const config = parseMcpConfig(new TextDecoder().decode(data));
+    if (config.ok) out.push({ asset, digest: asset.pinned, config: config.value });
+  }
+  return out.sort((a, b) => a.asset.name.localeCompare(b.asset.name));
+}
+
+/**
+ * 会话启动时给 Worker 的 MCP 清单：stdio 的密钥此刻才展开（只进那个进程的环境变量）；
+ * http 只给名字（Worker 填本机中转地址），密钥留在 hub。缺密钥的那项跳过并报名字，不拦会话。
+ */
+export async function sessionMcpLaunch(
+  deps: Pick<AssetDeps, 'assets' | 'secrets'>,
+  workerId: string
+): Promise<{ launch: McpLaunch[]; skipped: { name: string; reason: string }[] }> {
+  const configs = await workerMcpConfigs(deps, workerId);
+  const wanted = [...new Set(configs.filter(({ config }) => config.transport === 'stdio').flatMap(({ config }) => mcpSecretRefs(config)))];
+  const secrets = wanted.length > 0 ? await deps.secrets.reveal(wanted) : {};
+  const launch: McpLaunch[] = [];
+  const skipped: { name: string; reason: string }[] = [];
+  for (const { asset, config } of configs) {
+    if (config.transport === 'http') {
+      launch.push({ transport: 'http', name: asset.name, url: '' });
+      continue;
+    }
+    const env = expandRecord(config.env, secrets);
+    const args = config.args.map((arg) => expandSecrets(arg, secrets));
+    const bad = !env.ok ? env : args.find((arg) => !arg.ok);
+    if (bad && !bad.ok) {
+      skipped.push({ name: asset.name, reason: bad.error.message });
+      continue;
+    }
+    launch.push({
+      transport: 'stdio',
+      name: asset.name,
+      command: config.command,
+      args: args.map((arg) => (arg.ok ? arg.value : '')),
+      env: env.ok ? env.value : {}
+    });
+  }
+  return { launch, skipped };
+}
+
+/** hub 代连远端 MCP：只认装在这台 Worker 上的 http 资产；密钥在这里展开进请求头。 */
+export async function remoteMcpTarget(
+  deps: Pick<AssetDeps, 'assets' | 'secrets'>,
+  workerId: string,
+  name: string
+): Promise<Result<{ assetId: string; digest: string; url: string; headers: Record<string, string> }, DomainError>> {
+  const found = (await workerMcpConfigs(deps, workerId)).find((entry) => entry.asset.name === name);
+  if (!found) return err(notFound(`这台机器没装 MCP「${name}」`));
+  if (found.config.transport !== 'http') return err(invalid(`「${name}」是本机 stdio 服务器，不经 hub 代连`));
+  const secrets = await deps.secrets.reveal(mcpSecretRefs(found.config));
+  const url = expandSecrets(found.config.url, secrets);
+  if (!url.ok) return url;
+  const headers = expandRecord(found.config.headers, secrets);
+  if (!headers.ok) return headers;
+  return ok({ assetId: found.asset.id, digest: found.digest, url: url.value, headers: headers.value });
+}
+
+export interface SecretView extends SecretInfo {
+  /** 引用它的 MCP 资产名。 */
+  readonly usedBy: readonly string[];
+}
+
+/** 密钥清单：只有名字、更新时间和谁在用；另附「被引用但还没设置」的名字。 */
+export async function listSecrets(deps: Pick<AssetDeps, 'assets' | 'secrets'>): Promise<{ secrets: SecretView[]; missing: SecretView[] }> {
+  const usedBy = new Map<string, string[]>();
+  for (const asset of await deps.assets.list()) {
+    if (asset.kind !== 'mcp') continue;
+    const revision = await deps.assets.revision(asset.id, asset.pinned);
+    const file = revision?.files.find((candidate) => candidate.path === MCP_CONFIG_FILE);
+    const data = file ? await deps.assets.blob(file.sha256) : null;
+    const config = data ? parseMcpConfig(new TextDecoder().decode(data)) : null;
+    if (!config?.ok) continue;
+    for (const ref of mcpSecretRefs(config.value)) usedBy.set(ref, [...(usedBy.get(ref) ?? []), asset.name]);
+  }
+  const stored = await deps.secrets.list();
+  const names = new Set(stored.map((secret) => secret.name));
+  return {
+    secrets: stored.map((secret) => ({ ...secret, usedBy: usedBy.get(secret.name) ?? [] })),
+    missing: [...usedBy.entries()].filter(([name]) => !names.has(name)).map(([name, users]) => ({ name, updatedAt: 0, usedBy: users }))
+  };
+}
+
+const MAX_SECRET_BYTES = 16 * 1024;
+
+export async function setSecret(deps: Pick<AssetDeps, 'secrets' | 'now'>, name: string, value: string): Promise<Result<void, DomainError>> {
+  const checked = checkSecretName(name);
+  if (!checked.ok) return checked;
+  if (value === '') return err(invalid('密钥值不能为空'));
+  if (new TextEncoder().encode(value).byteLength > MAX_SECRET_BYTES) return err(invalid('密钥值太长（上限 16 KB）'));
+  if (/[\r\n\0]/.test(value)) return err(invalid('密钥值里不能有换行或空字符'));
+  await deps.secrets.put(name, value, deps.now());
+  return ok(undefined);
+}
+
+export async function deleteSecret(deps: Pick<AssetDeps, 'secrets'>, name: string): Promise<Result<void, DomainError>> {
+  if (!(await deps.secrets.remove(name))) return err(notFound('没有这个密钥'));
+  return ok(undefined);
 }

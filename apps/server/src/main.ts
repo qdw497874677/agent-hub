@@ -8,12 +8,12 @@ import { mkdir } from 'node:fs/promises';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
-import { serveMcpRelay } from './mcp-relay.ts';
+import { createRemoteClients, serveMcpRelay } from './mcp-relay.ts';
 import { serveAssetFetch } from './asset-relay.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
-import { openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { AssetDeps, Deps, EnrollmentDeps, SessionId, ToolGateway } from '@agent-hub/domain';
+import { createSecretVault, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import type { AssetDeps, Deps, EnrollmentDeps, SessionId, ToolGateway, WorkerCommand } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase
@@ -28,6 +28,8 @@ import {
   ingestWorkerOptions,
   reconcileInterrupted,
   syncWorkerAssets,
+  sessionMcpLaunch,
+  remoteMcpTarget,
   unavailable,
   workerAttached,
   workerGone
@@ -102,7 +104,7 @@ const deps: Deps = {
     // 发给 worker 前给 start_session 配上工具令牌（换新、旧的作废），dispose 时作废。
     dispatch: async (command) =>
       serverGateway
-        ? serverGateway.gateway.dispatch(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, command) : command)
+        ? serverGateway.gateway.dispatch(await withMcpAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, command) : command))
         : err(unavailable('worker 通道尚未就绪')),
     listDirectories: async (workerId, path) =>
       serverGateway
@@ -211,8 +213,26 @@ const assetDeps: AssetDeps = {
   delivery: { push: async (workerId, manifest) => (serverGateway ? serverGateway.assets.push(workerId, manifest) : err(unavailable('worker 通道尚未就绪'))) },
   board: store.assetSync,
   workers: workerControl,
+  secrets: createSecretVault(store.db, await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') })),
   now: () => Date.now()
 };
+const remoteMcpClients = createRemoteClients();
+
+/**
+ * 有工具令牌的 start_session 才带 MCP 资产（远端那些要凭令牌走中转）。stdio 的密钥此刻才展开，
+ * 随这条指令直接发给 Worker，不落库、不进日志；缺密钥的只记名字。
+ */
+async function withMcpAssets(command: WorkerCommand): Promise<WorkerCommand> {
+  if (command.kind !== 'start_session' || !command.tools) return command;
+  try {
+    const { launch, skipped } = await sessionMcpLaunch(assetDeps, command.workerId);
+    for (const item of skipped) log(`MCP「${item.name}」这次没给会话 ${command.sessionId}：${item.reason}`);
+    return launch.length > 0 ? { ...command, mcp: launch } : command;
+  } catch (failure) {
+    log(`MCP 资产展开失败：${(failure as Error).message}`);
+    return command;
+  }
+}
 const syncAssets = (workerId: string) =>
   void syncWorkerAssets(assetDeps, workerId)
     .then((status) => {
@@ -279,7 +299,12 @@ serverGateway = createServerGateway({
   serve(workerId, channel) {
     serveAssetFetch(channel, workerId, assetDeps);
     if (!toolGateway) return;
-    serveMcpRelay(channel, workerId, { gateway: toolGateway, hostOf: (sessionId) => serverGateway?.hostOf(sessionId) ?? null });
+    serveMcpRelay(channel, workerId, {
+      gateway: toolGateway,
+      hostOf: (sessionId) => serverGateway?.hostOf(sessionId) ?? null,
+      remote: (worker, server) => remoteMcpTarget(assetDeps, worker, server),
+      remoteClients: remoteMcpClients
+    });
   },
   enroll: createWorkerEnroll(enrollmentDeps, { rateMax: Number(readEnv('HUB_ENROLL_RATE_MAX') ?? 10) }),
   onUpdateStatus(workerId, update) {

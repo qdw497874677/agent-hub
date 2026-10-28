@@ -20,6 +20,10 @@ test('mcp.json：保留用户已有的服务器，补上 agent-hub（只有变�
   assert.equal('url' in saved.mcpServers['agent-hub'], false);
   assert.equal(saved.mcpServers['agent-hub'].env.AGENT_HUB_TOOL_TOKEN, '${AGENT_HUB_TOOL_TOKEN}');
   assert.doesNotMatch(JSON.stringify(saved), /secret-token/);
-  assert.deepEqual(piToolEnv({ url: 'http://h/mcp', token: 'secret-token' }), { AGENT_HUB_TOOL_URL: 'http://h/mcp', AGENT_HUB_TOOL_TOKEN: 'secret-token' });
+  assert.deepEqual(piToolEnv({ url: 'http://h/mcp', token: 'secret-token' }), {
+    AGENT_HUB_TOOL_URL: 'http://h/mcp',
+    AGENT_HUB_TOOL_TOKEN: 'secret-token',
+    AGENT_HUB_MCP: '[]'
+  });
   assert.deepEqual(piToolEnv(undefined), {});
 });

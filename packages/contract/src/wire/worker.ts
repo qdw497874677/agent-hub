@@ -127,6 +127,17 @@ export const toolAccessSchema = z.object({
   token: z.string().min(1)
 });
 
+export const mcpLaunchSchema = z.discriminatedUnion('transport', [
+  z.object({
+    transport: z.literal('stdio'),
+    name: z.string().min(1),
+    command: z.string().min(1),
+    args: z.array(z.string()),
+    env: z.record(z.string(), z.string())
+  }),
+  z.object({ transport: z.literal('http'), name: z.string().min(1), url: z.string().default('') })
+]);
+
 export const startSessionCommandSchema = z.object({
   kind: z.literal('start_session'),
   sessionId: id,
@@ -140,7 +151,9 @@ export const startSessionCommandSchema = z.object({
   /** 开跑前就定下的可调项；空对象表示全用 agent 默认。 */
   options: optionValuesSchema,
   /** 能力层（可选）：旧 worker 收不到就当没有工具。token 不许进日志。 */
-  tools: toolAccessSchema.optional()
+  tools: toolAccessSchema.optional(),
+  /** MCP 资产（旧 worker 忽略）。stdio 的 env 含密钥明文：只进 agent 进程，不落盘、不进日志。 */
+  mcp: z.array(mcpLaunchSchema).max(50).optional()
 });
 
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [

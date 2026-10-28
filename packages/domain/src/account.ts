@@ -122,7 +122,9 @@ export type AuditAction =
   | 'asset.pin'
   | 'asset.delete'
   | 'asset.install'
-  | 'asset.uninstall';
+  | 'asset.uninstall'
+  | 'asset.secret.set'
+  | 'asset.secret.delete';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {

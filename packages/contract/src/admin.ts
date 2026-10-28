@@ -85,7 +85,7 @@ export type PairingDto = z.infer<typeof pairingSchema>;
 
 /* ── 资产中心（docs/design/asset-hub.md）：技能 / 指令，按 Worker 安装 ── */
 
-export const assetKindSchema = z.enum(['skill', 'instruction']);
+export const assetKindSchema = z.enum(['skill', 'instruction', 'mcp']);
 export const assetSourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('upload') }),
   z.object({ type: z.literal('git'), url: z.string(), ref: z.string().nullable(), path: z.string() })
@@ -170,3 +170,9 @@ export const assetDiffSchema = z.object({
 export type AssetDiffDto = z.infer<typeof assetDiffSchema>;
 export const assetPinRequest = z.object({ digest: z.string().regex(/^[0-9a-f]{64}$/) });
 export const assetInstallRequest = z.object({ installed: z.boolean() });
+
+/* ── MCP 资产的密钥：界面只见名字、时间、谁在用，从不回显值 ── */
+const secretViewSchema = z.object({ name: z.string(), updatedAt: z.number(), usedBy: z.array(z.string()) });
+export const secretsOverviewSchema = z.object({ secrets: z.array(secretViewSchema), missing: z.array(secretViewSchema) });
+export type SecretsOverviewDto = z.infer<typeof secretsOverviewSchema>;
+export const secretPutRequest = z.object({ value: z.string().min(1).max(16 * 1024) });

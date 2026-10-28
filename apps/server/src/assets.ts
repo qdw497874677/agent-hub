@@ -10,7 +10,9 @@ import {
   assetsOverviewSchema,
   gitImportRequest,
   gitScanRequest,
-  gitScanSchema
+  gitScanSchema,
+  secretPutRequest,
+  secretsOverviewSchema
 } from '@agent-hub/contract';
 import type { AssetDeps, AuditLog, IncomingFile, Principal } from '@agent-hub/domain';
 import {
@@ -20,6 +22,9 @@ import {
   assetsOverview,
   checkAssetUpdate,
   deleteAsset,
+  deleteSecret,
+  listSecrets,
+  setSecret,
   diffAssetRevisions,
   importGitAsset,
   invalid,
@@ -74,6 +79,25 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
     recordAssetAudit({ audit: options.audit, now: deps.now }, actor(c), action, target, detail);
 
   app.get('/api/admin/assets', async (c) => c.json(assetsOverviewSchema.parse(await assetsOverview(deps))));
+
+  // 密钥：值只进不出（PUT 写入后界面再也看不到它）；审计只记名字。
+  app.get('/api/admin/assets/secrets', async (c) => c.json(secretsOverviewSchema.parse(await listSecrets(deps))));
+  app.put('/api/admin/assets/secrets/:name', async (c) => {
+    const input = await parse(c, secretPutRequest);
+    if (!input.ok) return input.response;
+    const name = c.req.param('name');
+    const result = await setSecret(deps, name, input.value.value);
+    if (!result.ok) return fail(c, result.error);
+    await audit(c, 'asset.secret.set', name, '设置密钥（值不记录）');
+    return c.json({ ok: true });
+  });
+  app.delete('/api/admin/assets/secrets/:name', async (c) => {
+    const name = c.req.param('name');
+    const result = await deleteSecret(deps, name);
+    if (!result.ok) return fail(c, result.error);
+    await audit(c, 'asset.secret.delete', name, '删除密钥');
+    return c.json({ ok: true });
+  });
 
   app.post('/api/admin/assets/upload', uploadLimit, async (c) => {
     const input = await parse(c, assetUploadRequest);

@@ -6,6 +6,7 @@ import type { WorkerStatus } from '../worker.ts';
 import type { PromptPart } from '../attachment.ts';
 import type { DirectoryEntry } from './workspace-fs.ts';
 import type { ToolAccess } from '../tool.ts';
+import type { McpLaunch } from '../mcp.ts';
 import type { WorkspaceGit } from './workspace-git.ts';
 
 /**
@@ -30,6 +31,8 @@ export type WorkerCommand =
       readonly options: Readonly<Record<string, string | boolean>>;
       /** 能力层：agent 用它连 hub 的工具（MCP）。没有 = 这次不给工具，行为同旧版。令牌不进日志。 */
       readonly tools?: ToolAccess;
+      /** MCP 资产（hub 在发出前才填，见 sessionMcpLaunch）。stdio 的 env 含密钥明文：不落库、不进日志。 */
+      readonly mcp?: readonly McpLaunch[];
     }
   | {
       readonly kind: 'set_option';

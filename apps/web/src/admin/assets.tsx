@@ -7,14 +7,16 @@ import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAct
 import { encodeFiles, formatBytes, readPicked, type PickedFile } from './asset-files.ts';
 
 /**
- * 资产中心：技能（SKILL.md）和指令，钉在不可变版本上，按机器安装。
+ * 资产中心：技能（SKILL.md）、指令和 MCP 服务器配置，钉在不可变版本上，按机器安装。
+ * MCP 的密钥单独加密存，配置里只写 ${secret:NAME}；界面从不显示密钥值。
  * 机器把它们同步进自己的 ~/.agent-hub/assets，只对之后新开的会话生效；从不碰机器上原有的技能目录。
  */
 type Asset = AssetsOverviewDto['assets'][number];
 type WorkerRow = AssetsOverviewDto['workers'][number];
-type Kind = 'skill' | 'instruction';
+type Kind = 'skill' | 'instruction' | 'mcp';
 
-const KIND_TEXT: Record<Kind, string> = { skill: '技能', instruction: '指令' };
+const KIND_TEXT: Record<Kind, string> = { skill: '技能', instruction: '指令', mcp: 'MCP' };
+const MCP_PLACEHOLDER = `{\n  "name": "example",\n  "description": "做什么用的",\n  "transport": "http",\n  "url": "https://example.com/mcp",\n  "headers": { "Authorization": "Bearer \${secret:EXAMPLE_TOKEN}" }\n}`;
 const short = (digest: string) => digest.slice(0, 8);
 const sourceText = (asset: Asset) =>
   asset.source.type === 'git'
@@ -83,6 +85,7 @@ export function Assets() {
           )}
         </Panel>
       </Section>
+      <Secrets />
       <Section title="机器同步" aside={<span className="text-meta text-tertiary">{workers.length} 台</span>}>
         <Panel>
           {workers.length ? (
@@ -135,7 +138,8 @@ function AssetItem({
     assetsApi.install(asset.id, input.workerId, input.installed)
   );
   const refresh = useAdminAction(async (files?: PickedFile[]) => {
-    const result = files ? await assetsApi.uploadRevision(asset.id, encodeFiles(files)) : await assetsApi.check(asset.id);
+    const picked = files && asset.kind === 'mcp' ? files.slice(0, 1).map((file) => ({ ...file, path: 'mcp.json' })) : files;
+    const result = picked ? await assetsApi.uploadRevision(asset.id, encodeFiles(picked)) : await assetsApi.check(asset.id);
     setNote(result.changed ? '有新版本，确认后才会升级' : '没有变化');
     return result;
   });
@@ -210,7 +214,7 @@ function AssetItem({
               type="file"
               multiple
               hidden
-              accept={asset.kind === 'instruction' ? '.md,.markdown,.txt' : undefined}
+              accept={asset.kind === 'instruction' ? '.md,.markdown,.txt' : asset.kind === 'mcp' ? '.json' : undefined}
               onChange={async (event) => {
                 const list = event.target.files;
                 if (list?.length) refresh.mutate(await readPicked(list));
@@ -288,9 +292,11 @@ function UploadForm({ onDone }: { onDone: () => void }) {
   const folderInput = useRef<HTMLInputElement>(null);
   const create = useAdminAction(() => {
     const picked =
-      kind === 'instruction' && text.trim()
-        ? [{ path: `${name || 'instruction'}.md`, bytes: new TextEncoder().encode(text) }]
-        : files;
+      kind === 'mcp'
+        ? [{ path: 'mcp.json', bytes: text.trim() ? new TextEncoder().encode(text) : (files[0]?.bytes ?? new Uint8Array()) }]
+        : kind === 'instruction' && text.trim()
+          ? [{ path: `${name || 'instruction'}.md`, bytes: new TextEncoder().encode(text) }]
+          : files;
     return assetsApi.upload({ kind, name: name.trim() || undefined, files: encodeFiles(picked) });
   });
   const pick = async (list: FileList | null) => {
@@ -304,7 +310,11 @@ function UploadForm({ onDone }: { onDone: () => void }) {
   };
   const hasSkillMd = files.some((file) => file.path === 'SKILL.md');
   const ready =
-    kind === 'skill' ? files.length > 0 && hasSkillMd : /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name) && (text.trim() !== '' || files.length === 1);
+    kind === 'skill'
+      ? files.length > 0 && hasSkillMd
+      : kind === 'mcp'
+        ? text.trim() !== '' || files.length === 1
+        : /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name) && (text.trim() !== '' || files.length === 1);
   return (
     <div className="space-y-3">
       <Tabs
@@ -315,31 +325,40 @@ function UploadForm({ onDone }: { onDone: () => void }) {
         }}
         options={[
           ['skill', '技能（SKILL.md）'],
-          ['instruction', '指令（一段 Markdown）']
+          ['instruction', '指令（一段 Markdown）'],
+          ['mcp', 'MCP 服务器']
         ]}
       />
-      {kind === 'instruction' ? (
+      {kind !== 'skill' ? (
         <>
+          {kind === 'mcp' ? null : (
           <input
             className={INPUT}
             placeholder="名字：小写字母、数字、-，如 house-rules"
             value={name}
             onChange={(event) => setName(event.target.value.trim().toLowerCase())}
           />
+          )}
           <textarea
             data-testid="asset-text"
             className={`${INPUT} min-h-[140px] font-mono text-meta`}
-            placeholder="直接粘贴指令内容，或在下面选一个 .md 文件"
+            placeholder={kind === 'mcp' ? MCP_PLACEHOLDER : '直接粘贴指令内容，或在下面选一个 .md 文件'}
             value={text}
             onChange={(event) => setText(event.target.value)}
           />
+          {kind === 'mcp' ? (
+            <p className="text-meta text-tertiary">
+              名字写在 name（小写字母、数字、-；工具名会以「名字__」开头）。stdio（command / args / env）或 http（url / headers）。令牌等敏感值写成 <code>{'${secret:NAME}'}</code>
+              ，在下方「密钥」里设置。http 服务器由 hub 代连，密钥不出 hub；stdio 服务器在机器上起，密钥只进它的进程环境。
+            </p>
+          ) : null}
         </>
       ) : (
         <p className="text-meta text-tertiary">选整个技能文件夹，或它的 zip，或多选文件；根目录要有 SKILL.md（name / description 写在 frontmatter）。</p>
       )}
       <div className="flex flex-wrap gap-2">
         <button className={SECONDARY_BUTTON} onClick={() => filesInput.current?.click()}>
-          {kind === 'skill' ? '选文件 / zip' : '选 .md 文件'}
+          {kind === 'skill' ? '选文件 / zip' : kind === 'mcp' ? '选 .json 文件' : '选 .md 文件'}
         </button>
         {kind === 'skill' ? (
           <button className={SECONDARY_BUTTON} onClick={() => folderInput.current?.click()}>
@@ -352,7 +371,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
           type="file"
           hidden
           multiple={kind === 'skill'}
-          accept={kind === 'instruction' ? '.md,.markdown,.txt' : undefined}
+          accept={kind === 'instruction' ? '.md,.markdown,.txt' : kind === 'mcp' ? '.json' : undefined}
           onChange={(event) => void pick(event.target.files)}
         />
         <input
@@ -699,3 +718,95 @@ function FileView({ asset, digest, path }: { asset: Asset; digest: string; path:
   );
 }
 
+
+/* ── 密钥：MCP 配置里 ${secret:NAME} 引用的值。只进不出：这里只显示名字、谁在用、更新时间 ── */
+
+function Secrets() {
+  const secrets = useQuery({ queryKey: ['admin', 'assets', 'secrets'], queryFn: assetsApi.secrets });
+  const [name, setName] = useState('');
+  const [value, setValue] = useState('');
+  const save = useAdminAction((input: { name: string; value: string }) => assetsApi.setSecret(input.name, input.value));
+  const remove = useAdminAction((target: string) => assetsApi.removeSecret(target));
+  const rows = [
+    ...(secrets.data?.missing ?? []).map((row) => ({ ...row, missing: true })),
+    ...(secrets.data?.secrets ?? []).map((row) => ({ ...row, missing: false }))
+  ];
+  const error = save.error ?? remove.error;
+  const submit = () =>
+    save.mutate(
+      { name, value },
+      {
+        onSuccess: () => {
+          setName('');
+          setValue('');
+        }
+      }
+    );
+  return (
+    <Section title="密钥" aside={<span className="text-meta text-tertiary">加密保存 · 不回显</span>}>
+      <Panel>
+        {rows.length ? (
+          <ul>
+            {rows.map((row) => (
+              <li
+                key={row.name}
+                data-testid="asset-secret"
+                data-name={row.name}
+                className="flex flex-wrap items-center gap-2 border-b border-hair px-3 py-2.5 last:border-b-0"
+              >
+                <code className="text-body text-primary">{row.name}</code>
+                <span className={`text-meta ${row.missing ? 'text-rust' : 'text-tertiary'}`}>
+                  {row.missing ? '未设置' : `已设置 · ${at(row.updatedAt)}`}
+                  {row.usedBy.length ? ` · 用于 ${row.usedBy.join('、')}` : ' · 没有资产在用'}
+                </span>
+                <span className="flex-1" />
+                <button className={SMALL} onClick={() => setName(row.name)}>
+                  {row.missing ? '设置' : '替换'}
+                </button>
+                {row.missing ? null : (
+                  <button
+                    className={DANGER}
+                    disabled={remove.isPending}
+                    onClick={() => {
+                      if (window.confirm(`删除密钥 ${row.name}？用到它的 MCP 服务器在新会话里会被跳过。`)) remove.mutate(row.name);
+                    }}
+                  >
+                    删除
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <Empty text={secrets.isLoading ? '载入中…' : '还没有密钥。MCP 配置里引用 ${secret:NAME} 后，在这里设置它的值。'} />
+        )}
+        <div className="flex flex-wrap gap-2 border-t border-hair px-3 py-2.5">
+          <input
+            data-testid="secret-name"
+            className={`${INPUT} w-48 font-mono`}
+            placeholder="名字，如 GITHUB_TOKEN"
+            value={name}
+            onChange={(event) => setName(event.target.value.trim().toUpperCase())}
+          />
+          <input
+            data-testid="secret-value"
+            type="password"
+            autoComplete="new-password"
+            className={`${INPUT} min-w-0 flex-1`}
+            placeholder="值（保存后不再显示）"
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          />
+          <button data-testid="secret-save" className={PRIMARY_BUTTON} disabled={!name || !value || save.isPending} onClick={submit}>
+            保存
+          </button>
+        </div>
+        {error ? (
+          <p role="alert" className="px-3 pb-2 text-meta text-rust">
+            {errorText(error)}
+          </p>
+        ) : null}
+      </Panel>
+    </Section>
+  );
+}

@@ -46,7 +46,8 @@ export const fsReadFile = method(
  */
 export const mcpMessage = method(
   'mcp.message',
-  z.object({ token: z.string().min(1), message: z.record(z.string(), z.unknown()) }),
+  /** server：MCP 资产名（远端 http 服务器，hub 代连）；不填 = hub 自己的工具。 */
+  z.object({ token: z.string().min(1), server: z.string().min(1).max(64).optional(), message: z.record(z.string(), z.unknown()) }),
   z.object({ message: z.record(z.string(), z.unknown()).nullable() })
 );
 
