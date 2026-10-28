@@ -50,6 +50,7 @@ function harness() {
     stream: hub.stream,
     gateway: {
       status: async () => [],
+      probe: async () => false,
       dispatch: async () => ({ ok: true, value: undefined }),
       listDirectories: async () => ({ ok: true, value: { path: '/', exists: false, entries: [] } }),
       makeDirectory: async () => ({ ok: true, value: { path: '/' } }),
