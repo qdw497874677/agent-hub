@@ -169,7 +169,22 @@ test('发消息：agent 起不来时提问仍然留在 journal 里', async () =>
   fail = true;
   const sent = await promptSessionUseCase(w.deps, { sessionId: session.id, text: '还在吗' });
   assert.equal(sent.ok, false);
-  assert.equal((w.deps.sessions.journal.get(session.id) ?? []).length, 1);
+  const journal = (w.deps.sessions.journal.get(session.id) ?? []).map((entry) => entry.event);
+  assert.deepEqual(journal[0], { kind: 'prompt', text: '还在吗' });
+  // 这一轮收尾成失败，界面不会一直挂着「运行中」
+  assert.deepEqual(journal[1], { kind: 'ended', outcome: 'failed', reason: '发送失败：worker 掉了' });
+  assert.equal((await w.deps.sessions.byId(session.id))?.status, 'failed');
+});
+
+test('发消息：已托管但 prompt 送不出去，也收尾成失败', async () => {
+  let fail = false;
+  const w = await world({
+    gateway: { ...localGateway, dispatch: async () => (fail ? err(unavailable('连接断了')) : ok(undefined)) }
+  });
+  const session = await derived(w);
+  fail = true;
+  assert.equal((await promptSessionUseCase(w.deps, { sessionId: session.id, text: 'hi' })).ok, false);
+  assert.equal((await w.deps.sessions.byId(session.id))?.status, 'failed');
 });
 
 test('发消息：会话不存在是 not_found', async () => {

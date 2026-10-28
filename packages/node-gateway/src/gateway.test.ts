@@ -239,6 +239,29 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
   await stop(link);
 });
 
+test('prompt 被 agent 拒掉：除了错误诊断还补一条 ended(failed)，会话不会一直挂在运行中', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const base = echoRuntime([]);
+  const rejecting: AgentRuntime = {
+    ...base,
+    async start(spec) {
+      const started = await base.start(spec);
+      if (!started.ok) return started;
+      return { ok: true, value: { ...started.value, prompt: async () => ({ ok: false, error: { code: 'unavailable', message: 'agent 没响应' } }) } } as never;
+    }
+  };
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [rejecting] });
+  await rec.until(() => rec.hellos.length === 1);
+  assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '你好' });
+  await rec.until(() => rec.events.some((event) => event.kind === 'ended'));
+  assert.deepEqual(rec.events, [
+    { kind: 'diagnostic', level: 'error', text: 'agent 没响应' },
+    { kind: 'ended', outcome: 'failed', reason: '发送失败：agent 没响应' }
+  ]);
+  await stop(link);
+});
+
 test('两台 worker：会话按落点路由，后续指令跟着会话走，不是发给第一台', async () => {
   const { rec, gateway, url, stop } = await harness(null);
   const seenA: StartSpec[] = [];

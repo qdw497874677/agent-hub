@@ -410,6 +410,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           sessionId,
           event: { kind: 'diagnostic', level: 'error', text: result.error.message }
         });
+        // 只报诊断的话这一轮永远不收尾：界面一直挂着「运行中」。补一条 ended，进程留着，下一句照常能发。
+        send({
+          type: 'event',
+          sessionId,
+          event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` }
+        });
       }
       return;
     }
