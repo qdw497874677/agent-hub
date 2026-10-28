@@ -6,18 +6,48 @@ hub 统一管理「会话能用的能力」，按 **Worker** 安装，经已有�
 
 | 做 | 不做（MVP） |
 | --- | --- |
-| **技能**：Agent Skills 标准目录（根上 `SKILL.md`，frontmatter `name` / `description`） | hooks / bin / 可执行钩子（skill 里出现 `hooks/`、`bin/` 直接拒收） |
+| **技能**：Agent Skills 标准目录（根上 `SKILL.md`，frontmatter `name` / `description`） | hooks / bin / 可执行程序（见下文「校验」） |
 | **指令**：一份 markdown，追加到系统提示 | 明文密钥（MCP 配置里只认 `${secret:NAME}`） |
 | **MCP 服务器**：一份 `mcp.json`（stdio 或远端 http），密钥另存 | agent 自己写的技能 |
 | 来源：上传（文件 / 文件夹 / zip / 粘贴）、Git（URL + ref + 仓库内路径） | |
-| 版本：不可变、按内容寻址（文件清单的 sha256）、钉住；来源有新版本只标「可升级」，看 diff 确认后才换钉 | 碰机器上已有的技能（`~/.agents`、`~/.claude`、`~/.pi` 等全局目录一律不写） |
-| 按 Worker 安装；每台的同步状态 | 按项目 / 按用户安装（以后再说） |
+| 版本：不可变、按内容寻址（文件清单的 sha256）、钉住；来源有新版本只标「可升级」（hub 定时检查），看 diff 确认后才换钉 | 碰机器上已有的技能（`~/.agents`、`~/.claude`、`~/.pi` 等全局目录一律不写） |
+| 按 Worker 安装；每台的同步状态；全局或只属于某个项目 | 按用户安装（以后再说） |
 
 ## 分层（六边形）
 
 - **domain**（`asset.ts`、`use-cases/assets.ts`）：名字 / 路径 / 大小规则、打包与 digest（Web Crypto）、版本与钉住、diff 编排、安装关系、同步编排、「Worker 只能取自己清单里的 blob」。
 - **端口**：`AssetRepository`（资产 / 版本 / blob / 安装）、`AssetReader`（frontmatter、git、文本 diff）、`AssetDelivery`（推清单）、`AssetSyncBoard`（同步状态）。
 - **适配器**：`storage-sqlite/assets.ts`；`adapter-assets`（`yaml` 解析 frontmatter、系统 `git` 浅取、`diff` 生成统一补丁）；`node-gateway` 的 `assets.sync` / `assets.fetch` RPC；`apps/server/assets.ts`（`/api/admin/assets/*`，主人专用）。
+
+## 作用域
+
+资产可以是**全局**的，也可以**只属于某个项目**（`projectId`）。开会话时取「全局 + 本项目」的资产；同名时项目的优先（项目设置里可开关）。别的项目的资产不会出现在会话里。
+
+## 权限
+
+| 角色 | 能做 |
+| --- | --- |
+| 主人 | 增、删、改（上传新版本、检查更新、换钉）、分配到机器、管密钥——`/api/admin/assets*` 全部只认主人（未登录 401，成员 403） |
+| 成员 | 只能「用」：自己的会话自动带上分配好的资产；能读会话资产清单 `GET /api/sessions/:id/assets`；界面上看不到运营后台和项目资产设置 |
+
+每个接口的权限都锁在 `apps/server/src/assets.test.ts`「资产权限」一条测试里。
+
+## 校验
+
+上传和 Git 导入都走 `packAsset`，同一套规则，报错都是中文、带文件路径：
+
+- 技能根上必须有 `SKILL.md`，开头是 `---` 包起来的 YAML frontmatter；`name` 必须是一行文字（并符合名字规则：小写字母数字和 `-`，≤ 64），`description` 必须是文字、≤ 1024 字；`SKILL.md` / 指令文件必须是 UTF-8。
+- 大小：≤ 200 个文件，单个 ≤ 1 MB，总共 ≤ 4 MB。
+- 路径：不能是绝对路径、`..`、反斜杠；根上不能有 `hooks/`、`bin/`、`.git/`；任何一层都不能有 `hooks/`、`.claude-plugin/`。
+- 不收可执行程序：扩展名（`.exe .dll .so .dylib .msi .bat .cmd .com .scr .app .apk .jar .deb .rpm`）或文件头魔数（ELF、PE `MZ`、Mach-O / 通用二进制）。`.py`、`.sh` 这类脚本照收。
+
+## 更新提醒
+
+hub 定时（`checkAllAssetUpdates`）逐个查 Git 来源：启动后约 2 分钟一次，之后默认每 6 小时（`HUB_ASSET_CHECK_MS`，0 = 关）。有新内容只记成「最新版本」并写一条审计（操作人「自动检查」），**不自动升级**；资产页顶部提示「有新版本：…」，后台导航「资产」旁显示待升级数，点进去看差异、确认后才换钉并同步到已装的机器。查不了的（网络、来源被改坏）只写日志。
+
+## 会话资产清单
+
+会话启动时 hub 记下这次实际给出的资产（`session_assets` 表）：资产 id、种类、名字、钉住的 digest、作用域（全局 / 项目）。MCP 只记真正接上的。会话检查器里「本会话的资产」一栏展示，成员也能看。
 
 ## Git 来源的安全措施
 
@@ -52,6 +82,8 @@ hub 统一管理「会话能用的能力」，按 **Worker** 安装，经已有�
 | OpenCode（ACP） | `OPENCODE_CONFIG_CONTENT`：`skills.paths` 加目录；机器上已有这个变量时深合并（用户的值保留，数组追加去重） | `instructions` 加文件，同左 | 线上 |
 | Grok（ACP） | session/new 的 `_meta.rules`：技能索引（名字、描述、SKILL.md 绝对路径，「相关时先读」）。`grok agent stdio` 不认命令行 `--rules` | 同一段 rules 里附指令全文 | 本机线上会话已验证（技能 + 指令都生效）；远端 Grok 未登录 |
 
+Pi 的 MCP 依赖 Pi 扩展 `pi-mcp-adapter`：Worker 用 `pi list` 探测，没装时报 `lacks: ['mcp-adapter']`；只有给这台机器装了 MCP 资产时，Pi 才标「缺少 MCP 适配器」不可用，否则照常可用。
+
 其他运行时没有注入口时，退回 MCP 工具方案（以后再做）。
 
 ## MCP 服务器与密钥
@@ -85,5 +117,7 @@ hub 统一管理「会话能用的能力」，按 **Worker** 安装，经已有�
 | Pi | 垫片 `mcp-shim.ts`：`AGENT_HUB_MCP`（JSON）告诉它要聚合哪些，读完即从 env 删掉；工具名 `资产名__工具名` |
 
 没走「改 OpenCode 配置 / Grok `_meta`」：两家 ACP 都认标准 `mcpServers`，一条路径更少出错，也不碰用户配置。
+
+已知问题：远端 Pi 会话里，`pi-mcp-adapter` 对写在项目级的服务器提示「project server approval required」，模型改用 bash/curl 才调到测试服务器；原生 MCP 工具调用可能要把服务器配成全局 / 已批准，未修。
 
 本机线上验证（2026-10-28）：Grok、OpenCode、Pi 三家会话都调到了 stdio（`stdio-ok token_len=16`）和远端（`pong-remote-auth-ok`）测试服务器；hub 日志、远端服务器日志、事件流、数据库里都搜不到密钥原文。
