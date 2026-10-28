@@ -11,7 +11,7 @@ import type { WorkerStatus } from '@agent-hub/domain';
 import { createServerGateway } from './server-gateway.ts';
 import { connectWorkerLink } from './worker-link.ts';
 import { readBuildInfo } from './build-info.ts';
-import { runSelfUpdate, type CommandRunner, type UpdateReport } from './updater.ts';
+import { fetchFailureReason, runSelfUpdate, type CommandRunner, type UpdateReport } from './updater.ts';
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -233,4 +233,33 @@ test('updater：真实 git 仓库里快进到目标提交并报成功', async ()
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('updater：git fetch 偶发失败会重试，成功就继续；一直失败报清楚原因', async () => {
+  const outputs = [
+    { code: 128, output: "fatal: unable to access 'https://github.com/x/y.git/': TLS connect error: error:0A000126:SSL routines\n" },
+    { code: 0, output: '' }
+  ];
+  const calls: string[] = [];
+  const reports: UpdateReport[] = [];
+  const base = fakeRunner({ 'git rev-parse': { code: 0, output: `${A}\n` }, 'git status': { code: 0, output: '' } }, calls);
+  const run: CommandRunner = async (command, args, cwd) =>
+    command === 'git' && args[0] === 'fetch' ? (calls.push('git fetch'), outputs.shift() ?? { code: 0, output: '' }) : base(command, args, cwd);
+  await runSelfUpdate({ repoDir: '/x', commit: B, report: (r) => reports.push(r), run, fetchRetryDelaysMs: [0, 0] });
+  assert.equal(calls.filter((c) => c.startsWith('git fetch')).length, 2);
+  assert.ok(reports.some((r) => /TLS 连接被中断.*第 2 次/.test(r.message)));
+  assert.ok(calls.some((c) => c.startsWith('git cat-file')), '重试成功后照常往下走');
+
+  calls.length = 0;
+  reports.length = 0;
+  const failing: CommandRunner = async (command, args, cwd) =>
+    command === 'git' && args[0] === 'fetch'
+      ? (calls.push('git fetch'), { code: 128, output: 'fatal: unable to access: Could not resolve host: github.com' })
+      : base(command, args, cwd);
+  assert.equal(await runSelfUpdate({ repoDir: '/x', commit: B, report: (r) => reports.push(r), run: failing, fetchRetryDelaysMs: [0, 0] }), false);
+  assert.equal(calls.filter((c) => c.startsWith('git fetch')).length, 3);
+  assert.equal(reports.at(-1)?.state, 'failed');
+  assert.match(reports.at(-1)?.message ?? '', /失败 3 次（域名解析失败（DNS））/);
+  assert.equal(fetchFailureReason('remote: Repository not found.'), '没有权限（认证失败或仓库不可见）');
+  assert.ok(!fetchFailureReason("unable to access 'https://tok@github.com/'").includes('github'));
 });
