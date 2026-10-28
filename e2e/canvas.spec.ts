@@ -126,9 +126,13 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
   const before = await sessionNode(page).boundingBox();
   await page.mouse.move(0, 0);
   await page.goto('/');
-  const after = await sessionNode(page).boundingBox();
-  expect(after?.x).toBeCloseTo(before?.x ?? -1, 0);
-  expect(after?.y).toBeCloseTo(before?.y ?? -1, 0);
+  // 打开时视口要等卡片量完尺寸才落定（fitOnOpen），刚 goto 完读到的是落定前的位置：轮询到稳定为止
+  await expect
+    .poll(async () => {
+      const after = await sessionNode(page).boundingBox();
+      return after ? [Math.round(after.x), Math.round(after.y)] : null;
+    })
+    .toEqual([Math.round(before?.x ?? -1), Math.round(before?.y ?? -1)]);
 });
 
 test('搜索能搜到会话里说过的话，列表能给画布降级', async ({ page }) => {
