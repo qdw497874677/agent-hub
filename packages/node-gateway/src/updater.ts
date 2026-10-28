@@ -18,6 +18,23 @@ export interface UpdateOptions {
   readonly run?: CommandRunner;
   /** 装依赖的命令参数；默认 `npm ci --omit=dev`，与 install-worker.sh 一致。 */
   readonly installArgs?: readonly string[];
+  /** git fetch 失败后的重试间隔（毫秒）；默认 [2000, 5000]，即最多试 3 次。测试里传 [0, 0]。 */
+  readonly fetchRetryDelaysMs?: readonly number[];
+}
+
+/**
+ * 把 git fetch 的报错归成一句人话（不带 URL / 输出原文，避免把凭据或路径带进状态消息；原文在日志尾巴里）。
+ * 真实案例：omarchy 到 github.com 的 TLS 握手约 1/6 概率被掐断（`TLS connect error` / `SSL_ERROR_SYSCALL`），偶发而非配置问题。
+ */
+export function fetchFailureReason(output: string): string {
+  const text = output.toLowerCase();
+  if (/could not resolve host|name or service not known|temporary failure in name resolution/.test(text)) return '域名解析失败（DNS）';
+  if (/tls|ssl|gnutls|handshake/.test(text)) return 'TLS 连接被中断（网络不稳或被干扰）';
+  if (/timed out|timeout/.test(text)) return '连接超时';
+  if (/connection refused|failed to connect|couldn't connect|network is unreachable|connection reset|early eof|unexpected disconnect/.test(text)) return '连不上远端（网络）';
+  if (/proxy/.test(text)) return '代理出错';
+  if (/authentication failed|could not read username|permission denied|403|401|repository not found/.test(text)) return '没有权限（认证失败或仓库不可见）';
+  return '原因见日志';
 }
 
 const LOG_LIMIT = 4000;
@@ -82,8 +99,16 @@ export async function runSelfUpdate(options: UpdateOptions): Promise<boolean> {
     report('failed', `${why}；${reset.code === 0 && reinstall.code === 0 ? '已回滚到原版本' : '回滚也失败了，请手动处理'}`);
     return false;
   };
-  if ((await step('git', ['fetch', '--quiet', 'origin'])).code !== 0) {
-    report('failed', 'git fetch 失败（网络或权限），没有改动任何东西');
+  // 网络偶发失败很常见（见 fetchFailureReason 注释），fetch 不改工作区，重试是安全的
+  const delays = options.fetchRetryDelaysMs ?? [2000, 5000];
+  let fetched = await step('git', ['fetch', '--quiet', 'origin']);
+  for (let attempt = 0; fetched.code !== 0 && attempt < delays.length; attempt += 1) {
+    report('updating', `git fetch 失败（${fetchFailureReason(fetched.output)}），正在第 ${attempt + 2} 次尝试`);
+    await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+    fetched = await step('git', ['fetch', '--quiet', 'origin']);
+  }
+  if (fetched.code !== 0) {
+    report('failed', `git fetch 失败 ${delays.length + 1} 次（${fetchFailureReason(fetched.output)}），没有改动任何东西`);
     return false;
   }
   if ((await step('git', ['cat-file', '-e', `${target}^{commit}`])).code !== 0) {
