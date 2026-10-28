@@ -100,8 +100,15 @@ export const workerEnrollSchema = z.object({
   protocol: z.number().int().optional()
 });
 
+/** 重新探测后 agent 清单（就绪状态 / 模型）变了：整份替换 hello 里报的那份。老 hub 不认，只记一条日志。 */
+export const workerAgentsSchema = z.object({
+  type: z.literal('agents'),
+  agents: z.array(agentSchema)
+});
+
 export const workerToServerSchema = z.discriminatedUnion('type', [
   workerHelloSchema,
+  workerAgentsSchema,
   workerEnrollSchema,
   workerRpcSchema,
   workerEventSchema,
@@ -148,6 +155,8 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   /** 让 Worker 把自己更新到 hub 的这个提交。只有提交号，没有任何可拼进命令的自由文本。 */
   z.object({ kind: z.literal('update'), commit: commitShaSchema }),
   z.object({ kind: z.literal('dispose'), sessionId: id }),
+  /** 「重新检测」：让 worker 立刻重新探测各 harness 是否可用。老 worker 不认，只记一条日志。 */
+  z.object({ kind: z.literal('probe') }),
   z.object({
     kind: z.literal('set_option'),
     sessionId: id,

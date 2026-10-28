@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../api.ts';
 import type { AdminWorkerDto } from '../api.ts';
+import { HarnessBadges, RecheckButton } from '../harness.tsx';
 import { SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAction } from './shared.tsx';
 
 const UPDATE_TEXT: Record<string, string> = {
@@ -129,6 +130,12 @@ export function Workers() {
                     {[worker.hostname, worker.platform].filter(Boolean).join(' · ') || worker.workerId} ·{' '}
                     {worker.enrolledBy}
                   </p>
+ {online && worker.harnesses.length > 0 ? (
+                    <div data-testid="worker-harnesses" className="flex flex-wrap items-center gap-1.5 pl-4 pt-0.5">
+                      <HarnessBadges harnesses={worker.harnesses} />
+                      <RecheckButton workerId={worker.workerId} />
+                    </div>
+                  ) : null}
                   <p data-testid="worker-version" className="truncate pl-4 text-meta text-tertiary">
                     {buildText(worker.build)}
                   </p>

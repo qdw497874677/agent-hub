@@ -34,6 +34,20 @@ export interface AgentModels {
   readonly agentId: string;
   readonly models: readonly string[];
   readonly defaultModel: string;
+  /** 这台机器上它此刻能不能用（Worker 探测的）；老 Worker 不报，按能用处理。 */
+  readonly readiness?: AgentReadiness;
+}
+
+/**
+ * 某个 harness 在某台机器上的就绪状态：装了不等于能用（没登录、没配模型）。
+ * `reason` 是给人看的中文短句，例如「未登录」「未配置模型」「未安装」。
+ */
+export type AgentReadiness = { readonly state: 'ready' } | { readonly state: 'unavailable'; readonly reason: string };
+
+/** 这台机器上这个 agent 不能用的原因；能用或没报（老 Worker）都是 null。 */
+export function harnessUnavailableReason(worker: WorkerStatus, agentId: string): string | null {
+  const readiness = worker.agentModels?.find((entry) => entry.agentId === agentId)?.readiness;
+  return readiness?.state === 'unavailable' ? readiness.reason : null;
 }
 
 /** 一份代码的身份：package 版本 + git 提交 + Worker 通道协议版本。 */
@@ -103,11 +117,20 @@ export function placeSession(
       return err(unavailable(`Worker「${worker?.label ?? pinned}」不在线`));
     }
     if (!offers(worker)) return err(conflict(`Worker「${worker.label}」没装 ${request.agentId}`));
+    const reason = harnessUnavailableReason(worker, request.agentId);
+    if (reason !== null) return err(unavailable(`「${worker.label}」上的 ${request.agentId} 暂不可用：${reason}`));
     return ok(worker.workerId);
   }
+  const usable = (worker: WorkerStatus): boolean => offers(worker) && harnessUnavailableReason(worker, request.agentId) === null;
   const candidate =
-    online.find((worker) => worker.origin === 'local' && offers(worker)) ?? online.find(offers);
-  if (!candidate) return err(unavailable(`没有在线的 Worker 提供 ${request.agentId}`));
+    online.find((worker) => worker.origin === 'local' && usable(worker)) ?? online.find(usable);
+  if (!candidate) {
+    const reasons = online.flatMap((worker) => {
+      const reason = offers(worker) ? harnessUnavailableReason(worker, request.agentId) : null;
+      return reason === null ? [] : [`「${worker.label}」${reason}`];
+    });
+    return err(unavailable(`没有在线的 Worker 能用 ${request.agentId}${reasons.length > 0 ? `（${reasons.join('，')}）` : ''}`));
+  }
   return ok(candidate.workerId);
 }
 

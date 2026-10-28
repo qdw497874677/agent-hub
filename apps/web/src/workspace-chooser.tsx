@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, type CanvasDto, type CreateWorkspaceRequest, type WorkerInfoDto, type WorkspaceDto, type WorkspaceViewDto } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkerChip, WorkerPicker, resolveWorker } from './workers.tsx';
+import { RecheckButton, harnessReason } from './harness.tsx';
 
 /**
  * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作空间干活？」
@@ -86,10 +87,14 @@ export function WorkspaceChooser({
   onChoice: (choice: WorkspaceChoice | null) => void;
 }) {
   const views = useWorkspaceViews(canvas.project.id);
+  const agentLabel = canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
   const local = resolveWorker(workers, null);
   const offers = (worker: WorkerInfoDto) => (worker.agentIds ?? [agentId]).includes(agentId);
   const machines = workers.filter(offers);
-  const usable = machines.filter((worker) => worker.state === 'online');
+  const online = machines.filter((worker) => worker.state === 'online');
+  // 装了不等于能用：没登录 / 没配模型的那台变灰、不能选（老 Worker 不报，当能用）
+  const blocked = online.filter((worker) => harnessReason(worker, agentId) !== null);
+  const usable = online.filter((worker) => harnessReason(worker, agentId) === null);
 
   // 只有一台能用的机器：直接用它（不是「默认」，是没得选）
   useEffect(() => {
@@ -136,17 +141,35 @@ export function WorkspaceChooser({
       {machines.length < 2 || usable.length === 0 ? (
         <p className="mb-1 text-meta text-secondary" title="干活的那台电脑。agent 在它上面读写文件、执行命令。">机器</p>
       ) : null}
-      {usable.length === 0 ? (
+      {online.length === 0 ? (
         <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
           现在没有在线的机器。打开一台已接入的机器，或者接入一台新的。
         </p>
-      ) : machines.length < 2 ? (
+      ) : machines.length < 2 && usable.length > 0 ? (
         <p className="mb-3">
           <WorkerChip worker={machines[0]} />
         </p>
-      ) : (
-        <WorkerPicker label="机器" workers={machines} value={machine} onChange={onMachine} />
-      )}
+      ) : machines.length >= 2 ? (
+        <WorkerPicker
+          label="机器"
+          workers={machines}
+          value={machine}
+          onChange={onMachine}
+          unavailable={(worker) => harnessReason(worker, agentId)}
+        />
+      ) : null}
+      {blocked.length > 0 ? (
+        <div data-testid="harness-unavailable" className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
+          {blocked.map((worker) => (
+            <p key={worker.workerId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="min-w-0">
+                「{worker.label}」上的 {agentLabel} 暂不可用：<span className="text-rust">{harnessReason(worker, agentId)}</span>
+              </span>
+              <RecheckButton workerId={worker.workerId} />
+            </p>
+          ))}
+        </div>
+      ) : null}
 
       {machine === null ? null : (
         <>

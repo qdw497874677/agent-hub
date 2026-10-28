@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type SessionDto, type WorkerInfoDto } from './api.ts';
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
+import { harnessReason } from './harness.tsx';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -168,11 +169,15 @@ export function DeriveDialog({
           value={agentId}
           onChange={(event) => setAgentId(event.target.value)}
         >
-          {canvas.agents.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
-              {candidate.label}
-            </option>
-          ))}
+          {canvas.agents.map((candidate) => {
+            // 选了机器：那台上不能用的 agent 变灰并写明原因（没选机器时由下面的机器列表说明）
+            const why = machine === null ? null : harnessReason(workers.byId(machine), candidate.id);
+            return (
+              <option key={candidate.id} value={candidate.id} disabled={why !== null}>
+                {why ? `${candidate.label}（${why}）` : candidate.label}
+              </option>
+            );
+          })}
         </select>
         </div>
         <div>
@@ -204,7 +209,7 @@ export function DeriveDialog({
           <button
             type="button"
             className={PRIMARY_BUTTON}
-            disabled={agentId === '' || machine === null || !choiceReady(choice) || derive.isPending}
+            disabled={agentId === '' || machine === null || harnessReason(workers.byId(machine), agentId) !== null || !choiceReady(choice) || derive.isPending}
             onClick={() => derive.mutate()}
           >
             {phase === 'preparing'

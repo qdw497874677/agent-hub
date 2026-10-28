@@ -339,6 +339,21 @@ test('落点规则：项目绑定（未绑定 = 本机）> 点名 > 任意；没
   assert.equal(pick('codex', null, null).ok, false);
 });
 
+test('落点：装了但不可用（未登录）的 harness 不选；老 Worker 不报就绪状态按能用', () => {
+  const grokDown = { agentId: 'grok', models: [], defaultModel: '', readiness: { state: 'unavailable' as const, reason: '未登录' } };
+  const workers = [
+    { workerId: 'r1', label: 'omarchy', origin: 'remote' as const, state: 'online' as const, agentIds: ['pi', 'grok'], agentModels: [grokDown] },
+    { workerId: 'r2', label: 'old', origin: 'remote' as const, state: 'online' as const, agentIds: ['grok'] }
+  ];
+  const pinned = placeSession(workers, { agentId: 'grok', requested: 'r1', projectWorker: null });
+  assert.equal(pinned.ok, false);
+  assert.match(pinned.ok ? '' : pinned.error.message, /omarchy.*未登录/);
+  assert.deepEqual(placeSession(workers, { agentId: 'grok', requested: null, projectWorker: null }), ok('r2'));
+  assert.deepEqual(placeSession(workers, { agentId: 'pi', requested: 'r1', projectWorker: null }), ok('r1'));
+  const none = placeSession([workers[0]!], { agentId: 'grok', requested: null, projectWorker: null });
+  assert.match(none.ok ? '' : none.error.message, /「omarchy」未登录/);
+});
+
 test('首页：最近会话按时间倒序、受条数限制、项目按活跃度排序', async () => {
   const w = await world();
   const first = await derived(w);

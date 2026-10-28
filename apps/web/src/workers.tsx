@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi, api, type WorkerInfoDto } from './api.ts';
 import { AddMachineDialog } from './add-machine.tsx';
+import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
 
 /**
  * Worker：一台登记进 hub、真正跑 agent 的机器。
@@ -95,7 +96,10 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
           </span>
           <span className="block truncate text-meta text-tertiary">
             {online
-              ? `${worker.sessionCount ?? 0} 条会话在跑 · ${(worker.agentIds ?? []).join(' / ') || '没有 agent'}`
+              ? `${worker.sessionCount ?? 0} 条会话在跑 · ${
+                  (worker.agentIds ?? []).map((id) => (harnessReason(worker, id) ? `${id}（${harnessReason(worker, id)}）` : id)).join(' / ') ||
+                  '没有 agent'
+                }`
               : `离线 · ${relativeTime(worker.lastSeenAt)}${worker.reason ? ` · ${worker.reason}` : ''}`}
           </span>
         </span>
@@ -125,6 +129,15 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
                 <span className="mt-1 block font-sans text-xs text-tertiary" title="在那台机器的 ~/.config/agent-hub/worker.env 里改 WORKER_ROOTS（冒号分隔），再 systemctl --user restart agent-hub-worker">
                   hub 只能访问这些目录；要放开改那台的 WORKER_ROOTS
                 </span>
+              </dd>
+            </>
+          ) : null}
+          {online && (worker.agentModels ?? []).length > 0 ? (
+            <>
+              <dt className="text-tertiary">agent</dt>
+              <dd className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <HarnessBadges harnesses={worker.agentModels ?? []} />
+                <RecheckButton workerId={worker.workerId} />
               </dd>
             </>
           ) : null}
@@ -245,16 +258,19 @@ export function WorkerPicker({
   onChange,
   workers,
   allowAuto,
-  label = '在哪台跑'
+  label = '在哪台跑',
+  unavailable = () => null
 }: {
   value: string | null;
   onChange: (id: string | null) => void;
   workers: readonly WorkerInfoDto[];
   allowAuto?: boolean;
   label?: string;
+  /** 这台上要用的 harness 不可用的原因（变灰、不能选）；null = 能用。 */
+  unavailable?: (worker: WorkerInfoDto) => string | null;
 }) {
   if (workers.length < 2) return null;
-  const option = (id: string | null, text: string, online: boolean, disabled = false) => (
+  const option = (id: string | null, text: string, online: boolean, disabled = false, why: string | null = null) => (
     <button
       key={id ?? 'auto'}
       type="button"
@@ -262,12 +278,14 @@ export function WorkerPicker({
       aria-checked={value === id}
       disabled={disabled}
       onClick={() => onChange(id)}
-      className={`flex min-w-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-meta disabled:opacity-40 ${
+      title={why ? `${text}：${why}` : undefined}
+      className={`flex min-h-[32px] min-w-0 items-center gap-1.5 rounded-sm border px-2 py-1 text-meta disabled:opacity-40 ${
         value === id ? 'border-accent text-primary' : 'border-hair text-secondary hover:border-strong'
       }`}
     >
       {id === null ? null : <Dot online={online} />}
       <span className="truncate">{text}</span>
+      {why ? <span className="shrink-0 text-rust">{why}</span> : null}
     </button>
   );
   return (
@@ -275,7 +293,10 @@ export function WorkerPicker({
       <p className="mb-1 text-meta text-secondary">{label}</p>
       <div role="radiogroup" aria-label={label} className="flex flex-wrap gap-1.5">
         {allowAuto ? option(null, '自动', true) : null}
-        {workers.map((worker) => option(worker.workerId, worker.label, worker.state === 'online', worker.state !== 'online'))}
+        {workers.map((worker) => {
+          const why = worker.state === 'online' ? unavailable(worker) : null;
+          return option(worker.workerId, worker.label, worker.state === 'online', worker.state !== 'online' || why !== null, why);
+        })}
       </div>
     </div>
   );

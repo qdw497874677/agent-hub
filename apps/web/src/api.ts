@@ -102,6 +102,7 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
 
 export const api = {
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
+  probeWorker: (workerId: string) => post<{ ok: true }>(`/api/workers/${encodeURIComponent(workerId)}/probe`, {}),
   home: () => call<HomeDto>('/api/home'),
   projects: () => call<ProjectDto[]>('/api/projects'),
   listDirectories: (path: string, workerId: string | null = null, project = '') =>

@@ -46,6 +46,16 @@ const FILE_RULES = [
     why: 'hub 侧中转 / 接入只依赖端口和领域用例，不得碰传输或存储'
   },
   {
+    files: /^packages\/node-gateway\/src\/harness-registry\.ts$/,
+    only: /^(\.|@agent-hub\/domain$)/,
+    why: 'harness 就绪注册表只组合 HarnessReadiness 端口，不认识任何具体 harness 或传输'
+  },
+  {
+    files: /^packages\/adapters\/[^/]+\/src\/readiness\.ts$/,
+    forbid: /^(ws|hono|@agent-hub\/node-gateway)$/,
+    why: 'harness 就绪探测适配器只实现端口，不碰传输'
+  },
+  {
     files: /^packages\/domain\/src\//,
     forbid: /^(ws|zod|hono|@modelcontextprotocol\/sdk)$/,
     why: '领域与传输无关'

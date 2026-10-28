@@ -223,6 +223,10 @@ serverGateway = createServerGateway({
   token,
   authenticate: (hello) => authenticateWorker(enrollmentDeps, hello),
   localSecret: spawnWorker === '1' ? localSecret : null,
+  onAgents(worker, agents) {
+    // 重新探测的结果：只换清单，不重跑上线流程（同步资产、接回会话）。
+    catalog.upsert(worker.workerId, agents);
+  },
   onHello(worker, agents, sessions) {
     catalog.upsert(worker.workerId, agents);
     syncAssets(worker.workerId);

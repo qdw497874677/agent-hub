@@ -15,6 +15,7 @@ import type { WorkerFiles } from './worker-files.ts';
 import type { WorkerAssets } from './worker-assets.ts';
 import type { UpdateReport } from './updater.ts';
 import { createMcpEndpoint } from './mcp-endpoint.ts';
+import { sameReadiness, type HarnessRegistry } from './harness-registry.ts';
 import { serveWorkerFiles } from './worker-fs-rpc.ts';
 
 export interface WorkerLinkOptions {
@@ -28,6 +29,13 @@ export interface WorkerLinkOptions {
   /** 单台机器接入换来的专属凭据；有它时 hub 不看共享 token。 */
   readonly credential?: string;
   readonly runtimes: readonly AgentRuntime[];
+  /**
+   * 各 harness 的就绪探测（端口适配器的组合）。连上后、每 `probeIntervalMs`、收到 hub 的 probe 指令时各跑一次，
+   * 结果叠在 agent 清单上报给 hub。不给 = 不探测，hub 一律当 ready（和老 worker 一样）。
+   */
+  readonly readiness?: HarnessRegistry;
+  /** 定时重新探测的间隔。默认 5 分钟；0 = 不定时。 */
+  readonly probeIntervalMs?: number;
   readonly onLog?: (message: string) => void;
   /**
    * 断线后自动重连（指数退避，封顶 `maxBackoffMs`）。默认开：
@@ -85,7 +93,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' }
+  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' | 'probe' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -117,6 +125,33 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   /** 老 hub 不发 welcome：等这么久没等到就照旧补发，别把输出永远憋在本地。 */
   const WELCOME_FALLBACK_MS = options.welcomeFallbackMs ?? 5_000;
   let updating = false;
+
+  /** agent 清单 = runtime 的描述 + 最近一次探测的就绪状态。hub 只消费统一的 readiness，不认识具体 harness。 */
+  const agentDtos = () => {
+    const probed = options.readiness?.latest() ?? new Map();
+    return options.runtimes.map((runtime) => {
+      const dto = agentToDto(runtime.descriptor);
+      const readiness = probed.get(runtime.descriptor.id)?.readiness;
+      return readiness ? { ...dto, readiness } : dto;
+    });
+  };
+  /** 跑一次探测；`always` 时无论变没变都报（「重新检测」要让界面看到刷新）。 */
+  async function probe(always: boolean): Promise<void> {
+    if (!options.readiness || closed) return;
+    const before = options.readiness.latest();
+    try {
+      const after = await options.readiness.probeAll();
+      for (const [agentId, result] of after) {
+        if (result.readiness.state === 'unavailable') options.onLog?.(`${agentId} 暂不可用：${result.readiness.reason}`);
+      }
+      if (always || !sameReadiness(before, after)) send({ type: 'agents', agents: agentDtos() });
+    } catch (error) {
+      options.onLog?.(`探测 harness 失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const probeInterval = options.probeIntervalMs ?? 5 * 60_000;
+  const probeTimer = options.readiness && probeInterval > 0 ? setInterval(() => void probe(false), probeInterval) : null;
+  probeTimer?.unref?.();
 
   /**
    * 这条长连接上的 RPC 通道（端口的实现）。hub→worker 的 fs.*、worker→hub 的 mcp.message 都走它。
@@ -184,6 +219,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     dropped = 0;
     for (const frame of outbox.splice(0)) current.send(JSON.stringify(frame));
     options.onAccepted?.();
+    // 每次连上都重新探测一次：机器上的登录状态可能在断线期间变了。
+    void probe(true);
   }
 
   function connect(): void {
@@ -202,7 +239,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           token: options.token,
           ...(options.localSecret ? { localSecret: options.localSecret } : {}),
           ...(options.credential ? { credential: options.credential } : {}),
-          agents: options.runtimes.map((runtime) => agentToDto(runtime.descriptor)),
+          agents: agentDtos(),
           ...(options.host ? { host: options.host } : {}),
           roots: [...(options.files?.roots ?? options.roots ?? [])],
           sessions: [...sessions.keys()],
@@ -278,6 +315,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       if (command.kind === 'rpc') channel.receive(command.frame);
       else if (command.kind === 'update') void update(command.commit);
       else if (command.kind === 'welcome') flush(current);
+      else if (command.kind === 'probe') void probe(true);
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
       else void handle(command);
     });
@@ -491,6 +529,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       if (closed) return;
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
+      if (probeTimer) clearInterval(probeTimer);
       if (watchdog) clearTimeout(watchdog);
       channel.close('worker 正在退出');
       await mcpEndpoint.close();

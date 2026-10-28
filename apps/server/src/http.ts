@@ -62,6 +62,7 @@ import {
   listProjectFiles,
   listProjects,
   listWorkers,
+  probeWorker,
   loadCanvas,
   loadHome,
   invalid,
@@ -216,6 +217,11 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/workers', async (c) => c.json(workerInfoSchema.array().parse(await listWorkers(deps))));
+  // 「重新检测」：只发指令，结果经 Worker 的 agent 清单异步回来，界面过一会儿再拉 /api/workers。
+  app.post('/api/workers/:id/probe', async (c) => {
+    const result = await probeWorker(deps, c.req.param('id'));
+    return result.ok ? c.json({ ok: true }, 202) : fail(c, result.error);
+  });
 
   app.get('/api/projects', async (c) => {
     const result = await listProjects(deps);
