@@ -149,7 +149,7 @@ test('换个地方继续：非 git 项目新开临时目录；同一个工作空
   assert.ok(plain.ok, JSON.stringify(plain));
   const target = await w.deps.workspaces.byId(plain.value.workspaceId!);
   assert.equal(target?.source, 'created');
-  assert.match(target!.path, /^\/srv\/agent-hub\/\.tmp\//);
+  assert.match(target!.path, /^\/srv\/agent-hub-workspaces\/\.tmp\//);
   assert.ok(!w.git.calls.some((c) => c.includes('save_wip')));
 
   w.workers[1] = { ...w.workers[1]!, state: 'offline' };

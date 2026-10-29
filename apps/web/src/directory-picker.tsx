@@ -104,7 +104,7 @@ export function DirectoryPicker({
       await api.makeDirectory({
         workerId,
         parent: current.roots[0] ?? '',
-        name: 'agent-hub'
+        name: managedParent.slice(managedParent.lastIndexOf('/') + 1)
       });
       return api.makeDirectory({
         workerId,
@@ -327,7 +327,7 @@ export function DirectoryPicker({
                 <Command.Item value={MANAGED} onSelect={choose} className={`${row} text-accent`}>
                   <span className="w-4 text-center">＋</span>
                   <span className="min-w-0 flex-1 truncate">
-                    创建项目目录 agent-hub/
+                    创建项目目录 agent-hub-workspaces/
                     {managed?.slice((managedParent?.length ?? 0) + 1)}
                   </span>
                 </Command.Item>

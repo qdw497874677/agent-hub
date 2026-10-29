@@ -65,6 +65,7 @@ scripts/install-worker.sh            # --no-systemd：只写配置，前台自�
 
 - 配置写进 `~/.config/agent-hub/worker.env`（权限 600）；systemd unit 名为 `agent-hub-worker`，用 `EnvironmentFile` 读它，凭据/token 不会出现在 unit 文件和进程参数里。
 - **身份稳定**：专属凭据绑定 `WORKER_ID`（写在 worker.env）；共享 token 方式第一次启动生成 `WORKER_ID` 存到 `~/.config/agent-hub/worker-id.remote`。重启、重装都不变。
+- **同一台机器装第二台 Worker**：加 `WORKER_INSTANCE=<名字>`（引导命令里放在 `bash` 前；手动装就在另一份 clone 里跑 `WORKER_INSTANCE=<名字> scripts/install-worker.sh`）。代码 `~/agent-hub-<名字>`、配置 `~/.config/agent-hub-<名字>/worker.env`、资产 `~/.agent-hub/assets-<名字>`、服务 `agent-hub-worker-<名字>`，各自独立。
 - 普通用户安装时脚本会尝试 `loginctl enable-linger $USER`，让退出登录后服务继续跑。
 
 ### 它怎么工作

@@ -56,7 +56,7 @@ test('给了目录的新项目：目录登记成第一个持久工作空间（li
   assert.equal(workspace?.kind, 'long_lived');
 });
 
-test('新建持久工作空间：托管目录 <root>/agent-hub/<slug>，被占就 -2；再选已有目录是 linked', async () => {
+test('新建持久工作空间：托管目录 <root>/agent-hub-workspaces/<slug>，被占就 -2；再选已有目录是 linked', async () => {
   const w = await folderless();
   const created = await prepareLongLivedWorkspaceUseCase(w.deps, {
     projectId: w.project.id,
@@ -65,7 +65,7 @@ test('新建持久工作空间：托管目录 <root>/agent-hub/<slug>，被占�
     home: '/home/me'
   });
   assert.ok(created.ok);
-  assert.equal(created.value.path, '/srv/work/agent-hub/demo-app');
+  assert.equal(created.value.path, '/srv/work/agent-hub-workspaces/demo-app');
   assert.equal(created.value.workerId, 'remote-1');
   assert.equal(created.value.source, 'created');
 
@@ -80,7 +80,7 @@ test('新建持久工作空间：托管目录 <root>/agent-hub/<slug>，被占�
   });
   assert.ok(local.ok);
   assert.equal(local.value.workerId, 'local', '本机也记真实 Worker id（干活仍走 Server 自己的 fs）');
-  assert.equal(local.value.path, '/home/me/agent-hub/demo-2');
+  assert.equal(local.value.path, '/home/me/agent-hub-workspaces/demo-2');
 
   const linked = await prepareLongLivedWorkspaceUseCase(w.deps, {
     projectId: w.project.id,
@@ -120,7 +120,7 @@ test('派生到选定的工作空间：会话跟着它去那台机器、那个�
   assert.equal(session.value.workerId, 'remote-1');
   assert.equal(session.value.workspaceId, workspace.value.id);
   const start = w.dispatched.at(-1);
-  assert.equal(start?.kind === 'start_session' && start.workspaceRoot, '/srv/work/agent-hub/demo-app');
+  assert.equal(start?.kind === 'start_session' && start.workspaceRoot, '/srv/work/agent-hub-workspaces/demo-app');
 
   const views = await workspaceViewsUseCase(w.deps, w.project.id);
   assert.ok(views.ok);
@@ -156,7 +156,7 @@ test('项目带仓库：新建持久工作空间在那台机器上 clone，来�
   });
   assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
   assert.equal(cloned.value.source, 'cloned');
-  assert.ok(w.git.calls.includes('remote-1:clone:git@github.com:me/demo.git->/srv/work/agent-hub/demo-app'));
+  assert.ok(w.git.calls.includes('remote-1:clone:git@github.com:me/demo.git->/srv/work/agent-hub-workspaces/demo-app'));
 
   w.git.repos.add('/srv/work/old');
   const linked = await prepareLongLivedWorkspaceUseCase(w.deps, {

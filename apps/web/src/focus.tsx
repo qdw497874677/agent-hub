@@ -215,7 +215,7 @@ export function FocusView({
         </span>
         <span className="ml-auto flex shrink-0 items-center gap-3 text-meta text-tertiary">
           {session.origin.kind === 'fork' ? <span>分叉自 #{session.origin.atSeq}</span> : null}
-          <StatusPill status={status} reason={reason} />
+          <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
           <SessionMenu session={session} onContinueElsewhere={() => setContinuing(true)} />
         </span>
       </header>

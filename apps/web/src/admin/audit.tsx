@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../api.ts';
+import { localizeInstants } from '../local-time.ts';
 import { at, Section, Panel, Empty } from './shared.tsx';
 
 const ACTION_LABEL: Record<string, string> = {
@@ -40,7 +41,7 @@ export function Audit() {
                 </div>
                 <p className="truncate text-meta text-tertiary">
                   {entry.actorEmail}
-                  {entry.detail ? ` · ${entry.detail}` : ''}
+                  {entry.detail ? ` · ${localizeInstants(entry.detail)}` : ''}
                 </p>
               </li>
             ))}

@@ -83,7 +83,7 @@ Session            id, taskId, workerId, workspaceId（创建后不可变）, ag
 6. 多个任务可以共用一个工作空间；同一工作空间里同时有两个以上运行中的会话时，界面给警告，不阻止。
 7. **长期工作空间从不自动删除**；只能由人「移除登记」（默认不删目录，删目录需要二次确认，且只对 `created/cloned` 的开放）。
 8. **临时工作空间只有在满足清理条件时才自动删**（§5）；否则标为 `kept` 并提示用户。
-9. 成员默认只能用托管目录（`<roots[0]>/agent-hub/...`）；关联已有目录需要 Owner（沿用账号设计）。
+9. 成员默认只能用托管目录（`<roots[0]>/agent-hub-workspaces/...`）；关联已有目录需要 Owner（沿用账号设计）。
 
 ### 六边形落地
 
@@ -128,8 +128,8 @@ Session            id, taskId, workerId, workspaceId（创建后不可变）, ag
    - 每行：标签或目录名 · 长期/临时 · 分支 · 「2 个会话运行中」（有就给黄色警告）。
    - 底部「＋ 新建…」展开三个选项：
      - **临时（git 项目）**：在主仓库旁 `.worktrees/` 下建 worktree，新分支 `agent-hub/<slug>-<短 id>`；这台机器上还没有主仓库时先 clone。
-     - **长期**：托管目录 `<roots[0]>/agent-hub/<project-slug>[-2]`；有 repo 就 clone，没有就 mkdir（可选 `git init`）；或者「选已有目录…」（目录选择器，Owner 才能选托管目录以外的）。
-     - **临时（非 git 项目也可选）**：新建空目录 `<roots[0]>/agent-hub/.tmp/<slug>-<短 id>`。
+     - **长期**：托管目录 `<roots[0]>/agent-hub-workspaces/<project-slug>[-2]`（早先是 `agent-hub/`，和 Worker 默认安装目录 `~/agent-hub` 撞了，改名；老记录是绝对路径，照旧可用）；有 repo 就 clone，没有就 mkdir（可选 `git init`）；或者「选已有目录…」（目录选择器，Owner 才能选托管目录以外的）。
+     - **临时（非 git 项目也可选）**：新建空目录 `<roots[0]>/agent-hub-workspaces/.tmp/<slug>-<短 id>`。
    - 这台机器上一个工作空间都没有时，直接展开「新建」，仍不预选。
 4. 「运行」。准备中的进度显示在卡片上，ready 后启动会话。
 

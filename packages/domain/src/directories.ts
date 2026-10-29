@@ -26,11 +26,18 @@ export function projectSlug(name: string): string | null {
   return slug === '' ? null : slug;
 }
 
-/** 项目托管目录：`<roots[0]>/agent-hub/<slug>`（设计文档 §5）。 */
+/**
+ * hub 托管的目录都放在 `<roots[0]>/agent-hub-workspaces/` 下（项目目录、临时工作空间 `.tmp/`）。
+ * 早先叫 `agent-hub/`，和 Worker 默认安装目录 `~/agent-hub` 撞在一起，托管目录就落进了 agent-hub 自己的 git 仓库。
+ * 老数据记的是绝对路径，照旧可用，不搬。
+ */
+export const MANAGED_DIR = 'agent-hub-workspaces';
+
+/** 项目托管目录：`<roots[0]>/agent-hub-workspaces/<slug>`（设计文档 §5）。 */
 export function managedDirectory(roots: readonly string[], slug: string): string | null {
   const root = roots[0];
   if (root === undefined) return null;
-  return `${trimSlash(root)}/agent-hub/${slug}`;
+  return `${trimSlash(root)}/${MANAGED_DIR}/${slug}`;
 }
 
 /** `path` 是否在某个 root 里（含 root 本身）。纯字符串判断，调用方先规范化。 */

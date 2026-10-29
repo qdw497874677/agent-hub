@@ -1,7 +1,7 @@
 import type { Location, Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
-import { folderNameProblem, insideRoots, projectSlug } from '../directories.ts';
+import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
 import { claimOf, createDirectory, gitOn, isEmptyDirectory, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
 import type { ProjectId } from '../ids.ts';
@@ -177,7 +177,7 @@ export async function prepareLongLivedWorkspaceUseCase(
   return ok(created.value);
 }
 
-/** `<roots[0]>/agent-hub/<slug>`：先确保 agent-hub 这层在，再挑一个磁盘上还没有的名字（还没建）。 */
+/** `<roots[0]>/agent-hub-workspaces/<slug>`：先确保托管这层在，再挑一个磁盘上还没有的名字（还没建）。 */
 async function managedPlace(
   deps: Pick<Deps, 'fs' | 'gateway'>,
   project: Project,
@@ -187,7 +187,7 @@ async function managedPlace(
   const roots = await rootsOf(deps, owner, command.workerId, command.home);
   const root = roots[0];
   if (root === undefined) return err(invalid('这台机器没有可以新建目录的位置'));
-  const base = await createDirectory(deps, { workerId: owner, parent: root, name: 'agent-hub', home: command.home });
+  const base = await createDirectory(deps, { workerId: owner, parent: root, name: MANAGED_DIR, home: command.home });
   if (!base.ok) return base;
   const listed = await listOn(deps, owner, base.value.path);
   if (!listed.ok) return listed;

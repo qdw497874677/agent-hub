@@ -161,7 +161,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           >
             对话
           </button>
-          <StatusPill status={status} reason={failureReason} />
+          <StatusPill status={status} reason={failureReason} lastSeq={live?.lastSeq ?? session.lastSeq} />
         </span>
       </header>
 
@@ -203,7 +203,13 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
         ) : null}
         {blocks.length === 0 ? (
-          <p className="text-meta text-tertiary">尚无输出</p>
+          <p className="text-meta text-tertiary">
+            {status === 'running' && (live?.lastSeq ?? session.lastSeq) === 0
+              ? session.origin.kind === 'fork'
+                ? `已从 #${session.origin.atSeq} 分叉，带着之前的上下文，发一句话接着聊`
+                : '就绪，发一句话开始'
+              : '尚无输出'}
+          </p>
         ) : (
           blocks.map((block, index) => <BlockView key={index} block={block} />)
         )}

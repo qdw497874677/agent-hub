@@ -207,7 +207,7 @@ export const directoryListingSchema = z.object({
   workerId: z.string().nullable().default(null),
   /** 这台机器允许浏览的根：面包屑从这里开始，不能再往上。 */
   roots: z.array(z.string()).default([]),
-  /** 项目托管目录 `<roots[0]>/agent-hub/<slug>`（请求带了项目名才有，不一定已存在）。 */
+  /** 项目托管目录 `<roots[0]>/agent-hub-workspaces/<slug>`（请求带了项目名才有，不一定已存在）。 */
   managed: z.string().nullable().default(null)
 });
 

@@ -53,7 +53,7 @@ export function AddMachineDialog({ workers, onClose }: { workers: readonly Worke
         </div>
       ) : (
         <>
-          <p className="mb-2 text-meta text-secondary">在要加入的 Linux 机器上运行（需要 git 和 curl；Node 会自动装）：</p>
+          <p className="mb-2 text-meta text-secondary">在要加入的 Linux 机器上运行（需要 git 和 curl；没有 Node 26 会自动装，这时还要 tar 和 xz）：</p>
           {issue.isError ? (
             <p className="mb-2 text-meta text-rust" role="alert">
               {(issue.error as Error).message}
@@ -83,6 +83,10 @@ export function AddMachineDialog({ workers, onClose }: { workers: readonly Worke
               <li>用接入码换一个这台机器专属的凭据，存进 ~/.config/agent-hub/worker.env（权限 600）</li>
               <li>装成 systemd 服务，开机自启、断线重连</li>
             </ul>
+            <p className="mt-1.5">
+              这台机器上已经有一台 Worker、想再装一台：在命令的 <span className="font-mono">bash</span> 前加{' '}
+              <span className="font-mono">WORKER_INSTANCE=第二台的名字</span>，代码、配置、资产和服务都会单独一份。
+            </p>
             <p className="mt-1.5">之后随时可以在这里吊销这台机器，它会立刻断开。</p>
           </details>
         </>

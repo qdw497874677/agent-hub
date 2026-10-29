@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { makeDirectoryWithin } from './make-directory.ts';
+import { INSTALL_DIR, makeDirectoryWithin } from './make-directory.ts';
 import { createLocalFs } from './local-fs.ts';
 
 async function sandbox() {
@@ -63,4 +63,21 @@ test('本机目录列表：标出 git 仓库，带修改时间，点目录标 hi
   );
   assert.ok(entries.every((e) => typeof e.modifiedAt === 'number' && e.modifiedAt > 0));
   await box.done();
+});
+
+test('新建文件夹：不在 agent-hub 安装目录里建（安装目录本身也不行），旁边可以', async () => {
+  const box = await sandbox();
+  const install = join(box.root, 'agent-hub');
+  await mkdir(install);
+  const inside = await makeDirectoryWithin(install, 'proj', [box.root], [install]);
+  assert.equal(inside.ok, false);
+  const itself = await makeDirectoryWithin(box.root, 'agent-hub', [box.root], [install]);
+  assert.equal(itself.ok, false);
+  const beside = await makeDirectoryWithin(box.root, 'agent-hub-workspaces', [box.root], [install]);
+  assert.equal(beside.ok, true);
+  await box.done();
+});
+
+test('安装目录默认是这份代码的根目录', async () => {
+  assert.ok((await stat(join(INSTALL_DIR, 'scripts', 'install-worker.sh'))).isFile());
 });
