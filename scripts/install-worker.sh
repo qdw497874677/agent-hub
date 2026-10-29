@@ -57,7 +57,7 @@ if [[ -z "${WORKER_ROOTS:-}" && -t 0 ]]; then
   read -r -p "允许 hub 访问的目录（冒号分隔，回车用 $HOME）：" WORKER_ROOTS || true
 fi
 WORKER_ROOTS="${WORKER_ROOTS:-$HOME}"
-echo "==> WORKER_ROOTS=$WORKER_ROOTS（之后改 $env_file 再 systemctl --user restart $service）"
+echo "==> WORKER_ROOTS=$WORKER_ROOTS（之后改 $env_file 再 ${sysctl[*]} restart $service）"
 
 echo "==> 安装依赖"
 cd "$here"
