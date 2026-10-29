@@ -26,7 +26,8 @@ import type {
   WorkspaceRepository,
   AccountDeps,
   Login,
-  OutgoingEmail,
+  AccountMail,
+  OneTimeToken,
   User,
   AdminDeps,
   AuditEntry,
@@ -411,18 +412,36 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
 
 /** 账号用例的内存假件。哈希用可读的假格式，测试一眼能看出存的不是明文。 */
 export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps & {
-  readonly sent: OutgoingEmail[];
+  readonly sent: AccountMail[];
   readonly loginRows: Map<string, Login>;
+  readonly oneTimeRows: Map<string, OneTimeToken>;
 } {
   const users = new Map<string, User>();
   const loginRows = new Map<string, Login>();
-  const sent: OutgoingEmail[] = [];
+  const sent: AccountMail[] = [];
+  const oneTimeRows = new Map<string, OneTimeToken>();
   let settings: HubSettings = DEFAULT_SETTINGS;
   let counter = 0;
   return {
     sent,
     loginRows,
+    oneTimeRows,
     now,
+    oneTimeTokens: {
+      save: async (token) => void oneTimeRows.set(token.tokenHash, token),
+      consume: async (hash, purpose, at) => {
+        const row = oneTimeRows.get(hash);
+        if (!row || row.purpose !== purpose || row.usedAt !== null || row.expiresAt <= at) return null;
+        const used = { ...row, usedAt: at };
+        oneTimeRows.set(hash, used);
+        return used;
+      },
+      revokeForUser: async (userId, purpose, at) => {
+        for (const [hash, row] of oneTimeRows) {
+          if (row.userId === userId && row.purpose === purpose && row.usedAt === null) oneTimeRows.set(hash, { ...row, usedAt: at });
+        }
+      }
+    },
     users: {
       save: async (user) => void users.set(user.id, user),
       byId: async (id) => users.get(id) ?? null,
@@ -449,6 +468,8 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
       removeForUser: async (userId, keep) => {
         for (const [id, row] of loginRows) if (row.userId === userId && id !== keep) loginRows.delete(id);
       },
+      forUser: async (userId) =>
+        [...loginRows.values()].filter((l) => l.userId === userId).sort((a, b) => b.lastSeenAt - a.lastSeenAt),
       recent: async (limit) => [...loginRows.values()].sort((a, b) => b.createdAt - a.createdAt).slice(0, limit),
       activity: async (at) => {
         const rows = new Map<string, LoginActivity>();
@@ -697,4 +718,11 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     }
   };
   return { deps, board, pushes, workers, git, installs, blobs, projectList };
+}
+
+/** 测试用：从「已发出的信」里取某人最新的验证 / 重置令牌（相当于去邮箱点链接）。 */
+export function mailedToken(accounts: { readonly sent: readonly AccountMail[] }, email: string, kind: 'verify-email' | 'reset-password' = 'verify-email'): string {
+  const mail = [...accounts.sent].reverse().find((m) => m.to === email && m.kind === kind);
+  if (!mail || !('token' in mail)) throw new Error(`没给 ${email} 发过 ${kind}`);
+  return mail.token;
 }

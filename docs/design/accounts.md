@@ -1,6 +1,6 @@
 # 账号体系设计（邮箱注册 + Google 登录）
 
-状态：设计稿，待评审，**本轮不实现**
+状态：P1 / P2 / P3 已实现（见 §16），P4 起待做
 日期：2026-10-25 · 配套 ADR：[0008](../adr/0008-accounts.md)
 
 ## 0. 一句话
@@ -316,7 +316,7 @@ ALTER TABLE sessions ADD COLUMN created_by TEXT;
 |---|---|---|
 | **P1 地基** | domain：User / Login、端口、用例（注册/登录/登出/认证/HUB_TOKEN 换登录/种子账号）；sqlite `users`、`logins` 两表；`adapter-accounts`（scrypt、令牌签发、Resend + 日志发信）；server `/api/auth/*`、守门中间件、cookie + 双提交 CSRF、登录/注册/HUB_TOKEN 限流；HUB_TOKEN 30 天过渡（Bearer 与换登录）；内置测试账号；前端登录/注册页（移动优先）、登录闸门、账号菜单与退出；e2e 登录 | ✅ 已完成 |
 | **P2 运营后台** | `/admin`（仅 Owner）：用户列表（邮箱、角色、注册时间、最近登录、状态）、停用/启用（停用即删其全部登录态）、改角色（至少保留一个 Owner）、机器列表（label、在线状态、谁加的、最近心跳）。界面同 visual-direction.md：一列卡片，手机上每行可点开操作，不做表格横滑 | 待做 |
-| **P3 邮件流程** | 邮箱验证、重发、忘记/重置密码、登录设备列表与踢下线；Resend 已就绪，未配 `RESEND_API_KEY` 时只打日志 | 待做 |
+| **P3 邮件流程** | 邮箱验证（未验证只能看「去验证邮箱」页，API 一律 403 `email_unverified`；第一位主人、种子账号、迁移前的老账号算已验证；主人可在后台「标记已验证」）、重发（60 秒冷却）；忘记/重置密码（有没有这个邮箱回应一样 204；每 IP / 每邮箱每小时 5 次；重置即删该用户全部登录、作废其他重置链接、发「密码已修改」通知）；我的登录设备列表、逐台登出、登出其他所有设备。令牌 32 字节随机，只存哈希，30 分钟、一次性；链接用 `HUB_PUBLIC_URL` 拼成 `#/verify?token=` / `#/reset?token=`（令牌不进服务端日志与 Referer），不设就日志模式。发信适配器：SMTP（nodemailer）/ Resend / 日志，`HUB_MAIL_PROVIDER` 显式选或自动挑。另加 `HUB_MAX_USERS` 注册名额上限 | ✅ 已完成 |
 | **P4 Worker 接入** | Pairing Token、凭据兑换与存储、hello 改造、吊销即断开；成员也能添加机器；30 天后 HUB_TOKEN 只剩 worker 通道用，P4 后彻底移除 | 待做 |
 | **P5 Google** | `OAuthProvider` 端口已留桩；openid-client 适配器、start/callback、关联规则、`HUB_PUBLIC_URL` 与 tailscale serve（需要 https） | 待做 |
 | **P6 收尾** | 个人令牌、删除 `?token=`、所有权转让 / 删除账号 | 待做 |
@@ -330,9 +330,15 @@ ALTER TABLE sessions ADD COLUMN created_by TEXT;
 2. 成员之间**全部互相可见**。
 3. **成员能添加机器**（P4 落地）。
 4. 密码哈希用 **scrypt**（node:crypto，零原生依赖；N=2^17、r=8、p=1，参数编码进哈希串，以后可调）。
-5. 发信用 **Resend**（直接 fetch 其 HTTP API，不引 SDK）；没配 `RESEND_API_KEY` 时退化为只打日志。发件人 `HUB_MAIL_FROM`。
+5. 发信：**SMTP**（nodemailer，适合 QQ/163 授权码、阿里云邮件推送）与 **Resend**（直接 fetch HTTP API）并存，`HUB_MAIL_PROVIDER=smtp|resend|log` 显式选；不设时 SMTP > Resend > 日志。SMTP 发件人默认 `SMTP_USER`（QQ 要求一致），可用 `HUB_MAIL_FROM` 覆盖。没设 `HUB_PUBLIC_URL` 一律日志模式（启动时打一行提示）。
 6. **Google OAuth 保留设计，后面再接**：本期只有端口桩。
 7. **允许 http 测试**：cookie 只在 https（或 `X-Forwarded-Proto: https`）下加 `Secure` 与 `__Host-` 前缀。
 8. 旧 `HUB_TOKEN` **保留 30 天**：从账号版第一次启动起算（起点记在数据目录 `hub-token-since`，重启不续命，`HUB_TOKEN_SUNSET_DAYS` 可调）。期内 Bearer / `?token=` 照常调 API，也能在登录页「HUB_TOKEN」页签换成最早那个 Owner 的登录；旧链接 `?token=…` 自动兑换。worker 通道在 P4 之前仍用它。
 9. **支持停用账号**（停用即拒绝登录、已有登录态失效），并提供**运营后台**（P2，见 §16）。
 10. 登录态**滑动 30 天**（每小时最多续一次）。
+
+## 18. 注册名额与邀请（P3 补充）
+
+- `HUB_MAX_USERS`：库里账号总数（含停用）达到上限后，自助注册在 domain 用例里被拒（「这个 hub 的注册名额已满，请联系管理员」），`/api/auth/state.registration` 变 `false`，登录页隐藏「注册」页签并提示暂不开放。不设或 0 = 不限。
+- **第一位主人认领不受限**：库里没有主人时第一个注册的人照常成为主人（先抢主人位，抢不到才查名额）。内置测试账号是启动时种的，也不占自助注册的判断路径。
+- **邀请**：目前没有邀请系统。以后加邀请时，持邀请注册的人视为已验证邮箱，并且是否受 `HUB_MAX_USERS` 约束由邀请决定（主人主动发的邀请默认可越过上限）。在那之前，名额满了想再加人：主人删掉 / 调大上限，或在「设置」里临时关注册后手动处理。

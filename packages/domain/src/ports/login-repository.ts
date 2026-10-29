@@ -7,6 +7,8 @@ export interface LoginRepository {
   remove(id: LoginId): Promise<void>;
   /** 删掉这个人的全部登录态；`keep` 留下一条（踢掉自己其他设备时留住当前这台）。 */
   removeForUser(userId: UserId, keep?: LoginId): Promise<void>;
+  /** 这个人的全部登录（含已过期的；调用方自己按 expiresAt 过滤），最近用过的在前。 */
+  forUser(userId: UserId): Promise<Login[]>;
   /** 最近创建的 N 条登录（新的在前）。 */
   recent(limit: number): Promise<Login[]>;
   /** 每个人的最近活动；`now` 用来判断哪些还没过期。 */

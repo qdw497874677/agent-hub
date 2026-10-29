@@ -4,6 +4,7 @@ import {
   LOGIN_TTL_MS,
   defaultDisplayName,
   emailProblem,
+  isEmailVerified,
   loginUsable,
   newLoginId,
   newUserId,
@@ -19,7 +20,9 @@ import type { LoginRepository } from '../ports/login-repository.ts';
 import type { PasswordHasher } from '../ports/password-hasher.ts';
 import type { TokenIssuer } from '../ports/token-issuer.ts';
 import type { EmailSender } from '../ports/email-sender.ts';
+import { sendVerification } from './account-mail.ts';
 import type { SettingsRepository } from '../ports/settings-repository.ts';
+import type { OneTimeTokenRepository } from '../ports/one-time-token-repository.ts';
 
 /**
  * 账号是独立的一块，不进对话那套 Deps：会话用例不需要知道谁在登录。
@@ -32,6 +35,13 @@ export interface AccountDeps {
   readonly tokens: TokenIssuer;
   readonly mail: EmailSender;
   readonly settings: SettingsRepository;
+  /** 验证邮箱、重置密码用的一次性令牌。 */
+  readonly oneTimeTokens: OneTimeTokenRepository;
+  /**
+   * 自助注册的人数上限（HUB_MAX_USERS）；没有或 0 = 不限。按库里全部账号算（停用的也占名额，
+   * 删号以后才腾出来），首个主人认领不受限。
+   */
+  readonly maxUsers?: number;
   readonly now: () => number;
 }
 
@@ -52,16 +62,22 @@ const DISABLED = conflict('这个账号已被停用');
  */
 let decoy: Promise<string> | null = null;
 
-async function issueLogin(
+/** 来访设备的描述：UA 与来源 IP，都可能没有。 */
+export interface ClientInfo {
+  readonly userAgent?: string | null;
+  readonly ip?: string | null;
+}
+
+export async function issueLogin(
   deps: Pick<AccountDeps, 'logins' | 'tokens' | 'now'>,
   user: User,
   method: Login['method'],
-  userAgent: string | null
+  client: ClientInfo
 ): Promise<IssuedLogin> {
   const { token, hash } = deps.tokens.issue();
   const now = deps.now();
   const expiresAt = now + LOGIN_TTL_MS;
-  await deps.logins.save({ id: newLoginId(), userId: user.id, tokenHash: hash, method, userAgent, createdAt: now, lastSeenAt: now, expiresAt });
+  await deps.logins.save({ id: newLoginId(), userId: user.id, tokenHash: hash, method, userAgent: client.userAgent ?? null, ip: client.ip ?? null, createdAt: now, lastSeenAt: now, expiresAt });
   return { token, user, expiresAt };
 }
 
@@ -70,11 +86,13 @@ export interface RegisterCommand {
   readonly password: string;
   readonly displayName?: string;
   readonly userAgent?: string | null;
+  readonly ip?: string | null;
 }
 
 /**
  * 开放注册。还没有 Owner 时第一个注册的人就是 Owner（首启认领）；之后注册的都是成员。
- * 邮箱验证在下一期（见设计 §16），这期先不卡登录。
+ * 第一个人（主人）直接算已验证——没人能替他验证；成员要点邮件里的链接（设计 §6.2），
+ * 没验证前能登录，但只能看到「去验证邮箱」。
  */
 export async function registerUser(
   deps: AccountDeps,
@@ -95,26 +113,34 @@ export async function registerUser(
     createdAt: deps.now()
   };
   // 首启认领交给存储原子完成：并发注册时只有一个人成为 Owner，其余人按成员处理。
-  let user: User = { ...draft, role: 'owner' };
+  let user: User = { ...draft, role: 'owner', emailVerifiedAt: draft.createdAt };
   if (!(await deps.users.claimFirstOwner(user))) {
     // 关闭开放注册后，仍允许「还没有主人」时认领第一个账号，否则 hub 进不去了。
     if (!(await deps.settings.get()).openRegistration) {
       return err(conflict('这个 hub 暂不开放注册，请联系管理员'));
     }
+    if (await registrationFull(deps)) return err(conflict(FULL_MESSAGE));
     user = { ...draft, role: 'member' };
     await deps.users.save(user);
   }
-  // 欢迎信是锦上添花：发不出去不该让注册失败。
-  void deps.mail
-    .send({ to: email, subject: '欢迎使用 agent-hub', text: `${user.displayName}，你的 agent-hub 账号已经建好了。` })
-    .catch(() => undefined);
-  return ok(await issueLogin(deps, user, 'password', command.userAgent ?? null));
+  // 验证信发不出去不该让注册失败：页面上能重发，主人也能在后台手动标记。
+  if (!isEmailVerified(user)) await sendVerification(deps, user);
+  return ok(await issueLogin(deps, user, 'password', command));
+}
+
+export const FULL_MESSAGE = '这个 hub 的注册名额已满，请联系管理员';
+
+/** 名额满了没有（首个主人认领除外）。 */
+export async function registrationFull(deps: Pick<AccountDeps, 'users' | 'maxUsers'>): Promise<boolean> {
+  const max = deps.maxUsers ?? 0;
+  return max > 0 && (await deps.users.list()).length >= max;
 }
 
 export interface PasswordLoginCommand {
   readonly email: string;
   readonly password: string;
   readonly userAgent?: string | null;
+  readonly ip?: string | null;
 }
 
 export async function loginWithPassword(
@@ -129,7 +155,7 @@ export async function loginWithPassword(
   }
   if (!(await deps.hasher.verify(command.password, user.passwordHash))) return err(BAD_CREDENTIALS);
   if (user.disabledAt !== null) return err(DISABLED);
-  return ok(await issueLogin(deps, user, 'password', command.userAgent ?? null));
+  return ok(await issueLogin(deps, user, 'password', command));
 }
 
 /**
@@ -138,11 +164,11 @@ export async function loginWithPassword(
  */
 export async function loginAsFirstOwner(
   deps: Pick<AccountDeps, 'users' | 'logins' | 'tokens' | 'now'>,
-  userAgent: string | null
+  client: ClientInfo | string | null
 ): Promise<Result<IssuedLogin, DomainError>> {
   const owner = await deps.users.firstWithRole('owner');
   if (!owner) return err(conflict('还没有任何账号：先注册一个，第一个注册的人就是主人'));
-  return ok(await issueLogin(deps, owner, 'hub-token', userAgent));
+  return ok(await issueLogin(deps, owner, 'hub-token', typeof client === 'object' && client !== null ? client : { userAgent: client }));
 }
 
 /** 凭令牌认人。有效就顺手续期（每小时最多写一次库）。 */

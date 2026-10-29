@@ -33,6 +33,7 @@ import type {
   RemoveWorkspaceRequest,
   WorkspaceChangesDto,
   AccountDto,
+  LoginDeviceDto,
   AuthState,
   AdminOverviewDto,
   AdminUserDto,
@@ -50,7 +51,7 @@ import type {
   SecretsOverviewDto
 } from '@agent-hub/contract';
 
-export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest };
+export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
 
 export interface ApiError {
   readonly code: string;
@@ -96,6 +97,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new RequestFailed(response.status, body?.error ?? { code: 'http', message: response.statusText });
   }
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -184,7 +186,14 @@ export const authApi = {
   register: (email: string, password: string, displayName?: string) =>
     post<{ user: AccountDto }>('/api/auth/register', { email, password, displayName }),
   tokenLogin: (token: string) => post<{ user: AccountDto }>('/api/auth/token-login', { token }),
-  logout: () => post<{ ok: true }>('/api/auth/logout', {})
+  logout: () => post<{ ok: true }>('/api/auth/logout', {}),
+  verifyEmail: (token: string) => post<{ user: AccountDto }>('/api/auth/verify-email', { token }),
+  resendVerification: () => post<{ alreadyVerified: boolean }>('/api/auth/resend-verification', {}),
+  forgotPassword: (email: string) => post<void>('/api/auth/password/forgot', { email }),
+  resetPassword: (token: string, password: string) => post<{ user: AccountDto }>('/api/auth/password/reset', { token, password }),
+  logins: () => call<LoginDeviceDto[]>('/api/auth/logins'),
+  revokeLogin: (id: string) => call<{ current: boolean }>(`/api/auth/logins/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  revokeOtherLogins: () => post<{ ok: true }>('/api/auth/logins/revoke-others', {})
 };
 
 export const adminApi = {
@@ -193,6 +202,7 @@ export const adminApi = {
   disable: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/disable`, {}),
   enable: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/enable`, {}),
   setRole: (id: string, role: 'owner' | 'member') => post<AdminUserDto>(`/api/admin/users/${id}/role`, { role }),
+  markVerified: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/verify`, {}),
   revokeLogins: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/revoke-logins`, {}),
   workers: () => call<AdminWorkersDto>('/api/admin/workers'),
   updateWorker: (workerId: string) =>

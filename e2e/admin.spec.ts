@@ -4,7 +4,7 @@ import {
   request as apiRequest,
   type Page,
 } from "@playwright/test";
-import { TEST_EMAIL, loginByApi } from "./login.ts";
+import { TEST_EMAIL, loginByApi, verifyByApi } from "./login.ts";
 import { currentRun } from "./run-id.ts";
 
 /** 把设置恢复成默认（e2e 数据目录跨 run 保留，上次失败可能留下关着的注册）。 */
@@ -52,6 +52,12 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
     await page.getByLabel("搜索用户").fill(memberEmail);
     const row = page.getByTestId("admin-user").filter({ hasText: memberEmail });
     await expect(row).toContainText("成员");
+    // 新成员还没验证邮箱：主人可以手动标记
+    await expect(row).toContainText("未验证邮箱");
+    expect((await member.get("/api/projects")).status()).toBe(403);
+    await row.getByRole("button", { name: "标记已验证" }).click();
+    await expect(row).not.toContainText("未验证邮箱");
+    expect((await member.get("/api/projects")).status()).toBe(200);
     page.once("dialog", (dialog) => void dialog.accept());
     await row.getByRole("button", { name: "停用" }).click();
     await expect(row).toContainText("已停用");
@@ -132,6 +138,7 @@ test("成员进不了后台：页面提示、接口 403", async ({ page, baseURL
       })
     ).ok(),
   ).toBe(true);
+  await verifyByApi(page.request, email);
   expect((await page.request.get("/api/admin/overview")).status()).toBe(403);
   await page.goto(`${baseURL}/#/admin/users`);
   await expect(page.getByText("只有主人能进运营后台")).toBeVisible();

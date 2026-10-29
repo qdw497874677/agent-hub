@@ -7,6 +7,9 @@ import type {
   Login,
   LoginActivity,
   LoginRepository,
+  OneTimePurpose,
+  OneTimeToken,
+  OneTimeTokenRepository,
   Role,
   SettingsRepository,
   User,
@@ -56,6 +59,45 @@ CREATE TABLE IF NOT EXISTS audit_log (
 CREATE INDEX IF NOT EXISTS audit_by_time ON audit_log(at DESC);
 `;
 
+/** 一次性令牌（验证邮箱、重置密码）：只存哈希，用过记 used_at（§13）。 */
+const ONE_TIME_SCHEMA = `
+CREATE TABLE IF NOT EXISTS one_time_tokens (
+  token_hash TEXT PRIMARY KEY,
+  purpose    TEXT NOT NULL CHECK (purpose IN ('verify-email','reset-password')),
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email      TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  used_at    INTEGER
+);
+CREATE INDEX IF NOT EXISTS one_time_by_user ON one_time_tokens(user_id, purpose);
+`;
+
+const tableExists = (db: DatabaseSync, name: string): boolean =>
+  db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined;
+
+/**
+ * 账号 P3 的迁移，幂等：
+ * - logins 加 ip 列；
+ * - 第一次建 one_time_tokens 表时（= 第一次跑上带邮箱验证的版本），把已有账号都标为已验证，
+ *   免得升级后老用户被「去验证邮箱」挡在门外。之后注册的人照常走验证。
+ */
+export function migrateAccountsP3(db: DatabaseSync): { markedVerified: number } {
+  const loginColumns = new Set((db.prepare('PRAGMA table_info(logins)').all() as { name: string }[]).map((c) => c.name));
+  if (!loginColumns.has('ip')) db.exec('ALTER TABLE logins ADD COLUMN ip TEXT');
+  if (tableExists(db, 'one_time_tokens')) return { markedVerified: 0 };
+  db.exec('BEGIN');
+  try {
+    db.exec(ONE_TIME_SCHEMA);
+    const result = db.prepare('UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL').run();
+    db.exec('COMMIT');
+    return { markedVerified: Number(result.changes) };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 interface UserRow {
   id: string;
   email: string;
@@ -73,6 +115,7 @@ interface LoginRow {
   token_hash: string;
   method: string;
   user_agent: string | null;
+  ip: string | null;
   created_at: number;
   last_seen_at: number;
   expires_at: number;
@@ -95,6 +138,7 @@ const toLogin = (row: LoginRow): Login => ({
   tokenHash: row.token_hash,
   method: row.method as Login['method'],
   userAgent: row.user_agent,
+  ip: row.ip ?? null,
   createdAt: row.created_at,
   lastSeenAt: row.last_seen_at,
   expiresAt: row.expires_at
@@ -105,10 +149,12 @@ export interface AccountRepositories {
   readonly logins: LoginRepository;
   readonly settings: SettingsRepository;
   readonly audit: AuditLog;
+  readonly oneTimeTokens: OneTimeTokenRepository;
 }
 
 export function createAccountRepositories(db: DatabaseSync): AccountRepositories {
   db.exec(ACCOUNT_SCHEMA);
+  migrateAccountsP3(db);
 
   const upsertUser = db.prepare(
     'INSERT INTO users(id, email, display_name, role, password_hash, email_verified_at, disabled_at, created_at) ' +
@@ -129,14 +175,26 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
   const allUsers = db.prepare('SELECT * FROM users ORDER BY created_at ASC');
 
   const insertLogin = db.prepare(
-    'INSERT INTO logins(id, user_id, token_hash, method, user_agent, created_at, last_seen_at, expires_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO logins(id, user_id, token_hash, method, user_agent, ip, created_at, last_seen_at, expires_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   const loginByHash = db.prepare('SELECT * FROM logins WHERE token_hash = ?');
   const touchLogin = db.prepare('UPDATE logins SET last_seen_at = ?, expires_at = ? WHERE id = ?');
   const deleteLogin = db.prepare('DELETE FROM logins WHERE id = ?');
   const deleteLoginsOf = db.prepare('DELETE FROM logins WHERE user_id = ?');
   const deleteLoginsOfExcept = db.prepare('DELETE FROM logins WHERE user_id = ? AND id <> ?');
+  const loginsOfUser = db.prepare('SELECT * FROM logins WHERE user_id = ? ORDER BY last_seen_at DESC');
+  const insertOneTime = db.prepare(
+    'INSERT INTO one_time_tokens(token_hash, purpose, user_id, email, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  );
+  // 一条 UPDATE … RETURNING 完成「检查 + 用掉」：并发点同一个链接只有一个能改到这一行。
+  const consumeOneTime = db.prepare(
+    'UPDATE one_time_tokens SET used_at = ? WHERE token_hash = ? AND purpose = ? AND used_at IS NULL AND expires_at > ? RETURNING *'
+  );
+  const revokeOneTime = db.prepare(
+    'UPDATE one_time_tokens SET used_at = ? WHERE user_id = ? AND purpose = ? AND used_at IS NULL'
+  );
+  const deleteStaleOneTime = db.prepare('DELETE FROM one_time_tokens WHERE expires_at < ?');
   const recentLogins = db.prepare('SELECT * FROM logins ORDER BY created_at DESC LIMIT ?');
   const loginActivity = db.prepare(
     'SELECT user_id, MAX(last_seen_at) AS last_seen_at, SUM(CASE WHEN expires_at > ? THEN 1 ELSE 0 END) AS active ' +
@@ -204,6 +262,7 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
         login.tokenHash,
         login.method,
         login.userAgent,
+        login.ip,
         login.createdAt,
         login.lastSeenAt,
         login.expiresAt
@@ -222,6 +281,9 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     async removeForUser(userId, keep) {
       if (keep) deleteLoginsOfExcept.run(userId, keep);
       else deleteLoginsOf.run(userId);
+    },
+    async forUser(userId) {
+      return (loginsOfUser.all(userId) as unknown as LoginRow[]).map(toLogin);
     },
     async recent(limit) {
       return (recentLogins.all(limit) as unknown as LoginRow[]).map(toLogin);
@@ -273,5 +335,32 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     }
   };
 
-  return { users, logins, settings, audit };
+  const oneTimeTokens: OneTimeTokenRepository = {
+    async save(token) {
+      // 过期一天以上的顺手清掉
+      deleteStaleOneTime.run(token.createdAt - 24 * 60 * 60 * 1000);
+      insertOneTime.run(token.tokenHash, token.purpose, token.userId, token.email, token.createdAt, token.expiresAt, token.usedAt);
+    },
+    async consume(hash, purpose, now) {
+      const row = consumeOneTime.get(now, hash, purpose, now) as
+        | { token_hash: string; purpose: string; user_id: string; email: string; created_at: number; expires_at: number; used_at: number }
+        | undefined;
+      if (!row) return null;
+      const token: OneTimeToken = {
+        tokenHash: row.token_hash,
+        purpose: row.purpose as OneTimePurpose,
+        userId: asUserId(row.user_id),
+        email: row.email,
+        createdAt: row.created_at,
+        expiresAt: row.expires_at,
+        usedAt: row.used_at
+      };
+      return token;
+    },
+    async revokeForUser(userId, purpose, now) {
+      revokeOneTime.run(now, userId, purpose);
+    }
+  };
+
+  return { users, logins, settings, audit, oneTimeTokens };
 }

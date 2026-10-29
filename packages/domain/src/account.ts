@@ -38,10 +38,31 @@ export interface Login {
   /** 怎么登进来的：密码，还是过渡期内用旧 HUB_TOKEN 换的。 */
   readonly method: 'password' | 'hub-token';
   readonly userAgent: string | null;
+  /** 登录时的来源 IP（设备列表里给人认自己的设备用）；老数据没有。 */
+  readonly ip: string | null;
   readonly createdAt: number;
   readonly lastSeenAt: number;
   readonly expiresAt: number;
 }
+
+/** 邮箱是否已验证。没验证的人能登录，但只能看到「去验证邮箱」（设计 §6.2）。 */
+export const isEmailVerified = (user: User): boolean => user.emailVerifiedAt !== null;
+
+/**
+ * 一次性令牌（验证邮箱、重置密码）。库里只存哈希；30 分钟内有效，用一次就作废。
+ * 设计 §13 的 one_time_tokens 表。
+ */
+export type OneTimePurpose = 'verify-email' | 'reset-password';
+export interface OneTimeToken {
+  readonly tokenHash: string;
+  readonly purpose: OneTimePurpose;
+  readonly userId: UserId;
+  readonly email: string;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly usedAt: number | null;
+}
+export const ONE_TIME_TOKEN_TTL_MS = 30 * 60 * 1000;
 
 /** 已认证的调用者。HTTP 层拿它去调用例，不再看 cookie / header。 */
 export interface Principal {
@@ -110,6 +131,7 @@ export type AuditAction =
   | 'user.enable'
   | 'user.role'
   | 'user.revoke_logins'
+  | 'user.verify'
   | 'settings.update'
   | 'worker.disconnect'
   | 'worker.update'

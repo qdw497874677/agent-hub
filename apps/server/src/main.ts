@@ -46,7 +46,7 @@ import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
-import { createLogSender, createResendSender, createScryptHasher, createTokenIssuer } from '@agent-hub/adapter-accounts';
+import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps } from '@agent-hub/domain';
 import { hubTokenWindow, seedTestAccount } from './account-setup.ts';
 
@@ -151,16 +151,19 @@ toolGateway = createToolGateway({
 }
 
 // 账号体系是独立的限界上下文：不塞进 Deps。
-const resendKey = readEnv('RESEND_API_KEY');
+const mailSetup = mailFromEnv({ env: readEnv, log, fallbackUrl: `http://127.0.0.1:${port}` });
+log(mailSetup.note);
+const maxUsers = Number(readEnv('HUB_MAX_USERS') ?? 0);
+if (maxUsers > 0) log(`注册名额上限 HUB_MAX_USERS=${maxUsers}（按全部账号算，停用的也占名额）`);
 const accounts: AccountDeps = {
   users: store.users,
   logins: store.logins,
   settings: store.settings,
   hasher: createScryptHasher(),
   tokens: createTokenIssuer(),
-  mail: resendKey
-    ? createResendSender({ apiKey: resendKey, from: readEnv('HUB_MAIL_FROM') ?? 'agent-hub <onboarding@resend.dev>' })
-    : createLogSender(log),
+  mail: mailSetup.sender,
+  oneTimeTokens: store.oneTimeTokens,
+  ...(Number.isFinite(maxUsers) && maxUsers > 0 ? { maxUsers } : {}),
   now: () => Date.now()
 };
 const testAccount = readEnv('HUB_TEST_ACCOUNT') ?? 'test@agent-hub.local';
@@ -391,7 +394,7 @@ if (assetCheckMs > 0) {
 }
 
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
-  auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10) },
+  auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {
       users: store.users,
