@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { api, type CanvasDto, type CreateWorkspaceRequest, type WorkerInfoDto, type WorkspaceDto, type WorkspaceViewDto } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkerChip, WorkerPicker, resolveWorker } from './workers.tsx';
-import { RecheckButton, harnessReason } from './harness.tsx';
+import { RecheckButton, harnessHint, harnessReason } from './harness.tsx';
 
 /**
  * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作空间干活？」
@@ -164,6 +164,7 @@ export function WorkspaceChooser({
             <p key={worker.workerId} className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span className="min-w-0">
                 「{worker.label}」上的 {agentLabel} 暂不可用：<span className="text-rust">{harnessReason(worker, agentId)}</span>
+                {harnessHint(worker, agentId) ? <span className="block text-tertiary">{harnessHint(worker, agentId)}</span> : null}
               </span>
               <RecheckButton workerId={worker.workerId} />
             </p>

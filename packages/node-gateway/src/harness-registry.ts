@@ -53,7 +53,23 @@ export function createHarnessRegistry(
 /** 两次探测的就绪状态是否一样（决定要不要再报一次 agent 清单）。 */
 export function sameReadiness(a: ReadonlyMap<string, HarnessProbe>, b: ReadonlyMap<string, HarnessProbe>): boolean {
   if (a.size !== b.size) return false;
-  const key = (r: AgentReadiness | undefined): string => (r ? (r.state === 'ready' ? `ready:${(r.lacks ?? []).join(',')}` : `x:${r.reason}`) : '');
+  const key = (r: AgentReadiness | undefined): string => (r ? (r.state === 'ready' ? `ready:${(r.lacks ?? []).join(',')}` : `x:${r.reason}:${r.hint ?? ''}`) : '');
   for (const [id, probe] of a) if (key(probe.readiness) !== key(b.get(id)?.readiness)) return false;
   return true;
+}
+
+/**
+ * 给「未安装」补一句怎么修：命令是组合根用 resolveCommand 找的，找不到时它知道该提示哪个环境变量。
+ * 只包一层，不碰具体 harness 的探测逻辑。
+ */
+export function withMissingHint(probe: HarnessReadiness, hint: string | null): HarnessReadiness {
+  if (hint === null) return probe;
+  return {
+    agentId: probe.agentId,
+    async probe() {
+      const result = await probe.probe();
+      const readiness = result.readiness;
+      return readiness.state === 'unavailable' && readiness.reason === '未安装' ? { ...result, readiness: { ...readiness, hint } } : result;
+    }
+  };
 }

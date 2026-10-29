@@ -75,6 +75,31 @@ if [[ -n "${HUB_PAIR:-}" ]]; then
   echo "==> 已接入，这台机器是 $WORKER_ID"
 fi
 
+# systemd 不读登录 shell 的配置：npm / nvm / 安装脚本装的 harness（pi、opencode、grok）在 Worker 里常常「找不到」。
+# 装的时候用登录 shell 问一次它们在哪，把目录写进 worker.env 的 PATH。
+# 合并顺序：harness 目录 → node 目录 → 旧 worker.env 里的 PATH（重装不丢手加的）→ 当前 PATH → 系统默认；去重。
+# Worker 运行时还有一层兜底（resolveCommand），不在运行时开登录 shell。
+harness_dirs() {
+  local sh
+  for sh in "${SHELL:-}" bash; do
+    [[ -n "$sh" ]] && command -v "$sh" >/dev/null || continue
+    timeout 20 "$sh" -lc 'for c in pi opencode grok; do command -v "$c"; done' </dev/null 2>/dev/null || true
+  done | while read -r found; do
+    [[ "$found" == /* ]] && dirname "$found"
+  done
+}
+old_path=""
+if [[ -f "$env_file" ]]; then old_path="$(sed -n 's/^PATH=//p' "$env_file" | tail -1)"; fi
+worker_path="$({
+  harness_dirs
+  dirname "$node_bin"
+  tr ':' '\n' <<<"$old_path"
+  tr ':' '\n' <<<"$PATH"
+  tr ':' '\n' <<<"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+} | awk 'NF && !seen[$0]++' | paste -sd: -)"
+found_harnesses="$(harness_dirs | sort -u | paste -sd' ' -)"
+echo "==> harness 所在目录：${found_harnesses:-（登录 shell 里没找到 pi / opencode / grok）}"
+
 echo "==> 写配置 $env_file"
 mkdir -p "$config_dir"
 umask 077
@@ -87,6 +112,7 @@ umask 077
   if [[ -n "${WORKER_ID:-}" ]]; then echo "WORKER_ID=$WORKER_ID"; fi
   echo "WORKER_ROOTS=$WORKER_ROOTS"
   echo "WORKER_STATE_DIR=$config_dir"
+  echo "PATH=$worker_path"
   if [[ -n "${WORKER_ASSETS_DIR:-}" ]]; then echo "WORKER_ASSETS_DIR=$WORKER_ASSETS_DIR"; fi
 } > "$env_file"
 chmod 600 "$env_file"
