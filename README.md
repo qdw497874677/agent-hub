@@ -14,7 +14,9 @@
 
 ## 快速开始
 
-需要 Node ≥ 26（直接用 `node` 跑 TypeScript，没有构建步骤）、`pi` 和/或 `opencode` 已经在 PATH 上、以及可用的模型凭据（`pi` 自己那套）。
+> 📖 **第一次用？看 [使用指南](docs/guide.md)**：从安装、加机器、建项目、派生会话到资产中心，一步一图。
+
+需要 Node ≥ 26（直接用 `node` 跑 TypeScript，没有构建步骤）、`pi`、`opencode`、`grok` 中至少一个已经在 PATH 上、以及可用的模型凭据（`pi` 自己那套）。
 
 ```bash
 npm install
@@ -22,7 +24,7 @@ npm run build        # 只构建前端；后端没有构建步骤
 npm run up           # 起 server，默认同时拉起本机 worker
 ```
 
-打开 <http://127.0.0.1:7878>。首次会让你指一个本地目录——任务就活在它里面。
+打开 <http://127.0.0.1:7878>，用邮箱注册或登录（第一个账号是这台 hub 的主人）；之后新建项目、建任务、派生会话，详见[使用指南](docs/guide.md)。
 
 开发时用 `npm run dev`（server + Vite 热更新并行跑）。
 
@@ -171,6 +173,25 @@ npm run e2e    # Playwright：真浏览器 + 真 agent，从建项目到模型�
 | [`docs/product/user-stories.md`](docs/product/user-stories.md) | 22 条用户故事，顺序即优先级 |
 | [`docs/plan/mvp-plan.md`](docs/plan/mvp-plan.md) | 六个纵切 milestone 与端口契约 |
 | [`docs/architecture/tech-stack.md`](docs/architecture/tech-stack.md) | 选型与理由 |
-| [`docs/remote-access.md`](docs/remote-access.md) | 从手机 / 另一台电脑安全访问：Tailscale、HUB_TOKEN、PWA |
+| [`docs/remote-access.md`](docs/remote-access.md) | 从手机 / 另一台电脑安全访问：Tailscale、HUB_TOKEN、PWA；多台机器 |
 | [`docs/design/visual-direction.md`](docs/design/visual-direction.md) | 深色控制室：色板、线型语义、状态位 |
-| [`docs/adr/`](docs/adr) | 六个不可轻易回退的决定：重写与四聚合、TS 全栈、模型列表来自 agent、事件串行落盘、搜索查文本投影、用户的提问也是事件 |
+| [`docs/guide.md`](docs/guide.md) | **使用指南**：安装、加机器、项目与任务、派生会话与工作空间、画布、资产中心、常见问题 |
+| [`docs/design/accounts.md`](docs/design/accounts.md) | 账号体系：邮箱注册、主人与成员、测试账号 |
+| [`docs/design/worker-enrollment.md`](docs/design/worker-enrollment.md) | Worker 接入：一次性配对码 + 每台机器专属凭据 |
+| [`docs/design/multi-worker-research.md`](docs/design/multi-worker-research.md) | 多台 Worker 的界面调研（截图在 `docs/design/multi-worker/`） |
+| [`docs/design/harness-readiness.md`](docs/design/harness-readiness.md) | Harness 就绪探测：装了不等于能用，变灰与原因 |
+| [`docs/design/workspaces.md`](docs/design/workspaces.md) | 工作空间：持久 / 临时、按机器、运行面板 |
+| [`docs/design/tasks-and-capabilities.md`](docs/design/tasks-and-capabilities.md) | 任务模型 v2（工作日志）与 agent 能力接入层 |
+| [`docs/design/asset-hub.md`](docs/design/asset-hub.md) | 资产中心：技能、指令、MCP、密钥、按机器下发 |
+| [`docs/adr/`](docs/adr) | 八个不可轻易回退的决定，见下表 |
+
+| ADR | 决定 |
+| --- | --- |
+| [0001](docs/adr/0001-rewrite-hexagonal-core-four-aggregates.md) | 重写：六边形内核与四个聚合 |
+| [0002](docs/adr/0002-typescript-node-everywhere.md) | TypeScript + Node 全栈 |
+| [0003](docs/adr/0003-model-list-comes-from-the-agent.md) | 模型列表来自 agent |
+| [0004](docs/adr/0004-serialize-events-per-session.md) | 每条会话的事件串行落盘 |
+| [0005](docs/adr/0005-search-the-session-text-not-events.md) | 搜索查文本投影，不查事件 |
+| [0006](docs/adr/0006-prompts-are-journal-events.md) | 用户的提问也是事件 |
+| [0007](docs/adr/0007-options-come-from-the-agent.md) | 可调项（思考强度等）来自 agent，不是来自平台 |
+| [0008](docs/adr/0008-accounts.md) | 账号体系：单 Workspace、主人 + 成员、按机器签发接入凭据 |
