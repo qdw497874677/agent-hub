@@ -6,6 +6,7 @@ import { HomePage } from './home.tsx';
 import { AdminPage } from './admin/page.tsx';
 import { resolveLive, useLiveStream } from './live.ts';
 import { CanvasView, type LayoutPatch } from './canvas.tsx';
+import { NoTasksHint } from './empty-tasks.tsx';
 import { Inspector } from './inspector.tsx';
 import { ListView, SearchPalette } from './views.tsx';
 import { FocusView } from './focus.tsx';
@@ -264,6 +265,7 @@ function Workspace() {
               onOpen={openSession}
               onDerive={setDeriveFor}
               onTaskDetail={setTaskDetail}
+              onNewTask={() => setNewTask(true)}
             />
           ) : canvas.data ? (
             <CanvasView
@@ -289,6 +291,9 @@ function Workspace() {
               {canvas.isError ? (canvas.error as Error).message : '载入中…'}
             </div>
           )}
+          {view === 'canvas' && canvas.data && canvas.data.tasks.length === 0 ? (
+            <NoTasksHint floating onNewTask={() => setNewTask(true)} />
+          ) : null}
           <div
             className={`pointer-events-none absolute bottom-3 left-3 space-y-1 text-meta text-tertiary ${view === 'canvas' ? '' : 'hidden'}`}
           >

@@ -1,4 +1,6 @@
 import type { RuntimeOptionDto } from './api.ts';
+import { ModelPicker, SEARCHABLE_AFTER } from './model-picker.tsx';
+import type { ModelItem } from './model-list.ts';
 
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
@@ -54,6 +56,21 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             </label>
           );
         }
+        const items = flatChoices(option);
+        if (option.category === 'model' && items.length > SEARCHABLE_AFTER) {
+          return (
+            <ModelPicker
+              key={option.id}
+              label={option.label}
+              scope={option.id}
+              items={items}
+              value={String(current)}
+              disabled={disabled}
+              onChange={(value) => onChange(option.id, value)}
+              className="max-w-[160px] rounded-sm border border-hair bg-card px-1 py-0.5 text-meta text-secondary outline-none hover:border-strong focus:border-accent"
+            />
+          );
+        }
         return (
           <select
             key={option.id}
@@ -87,5 +104,14 @@ export function OptionControls({ options, values, onChange, compact = false, dis
         );
       })}
     </div>
+  );
+}
+
+/** agent 报的候选项可能分了组也可能没分：摊平成一列，分组名带上，模型选择器按它分组。 */
+export function flatChoices(option: RuntimeOptionDto): ModelItem[] {
+  return option.choices.flatMap((choice) =>
+    choice.kind === 'group'
+      ? choice.values.map((value) => ({ value: value.value, label: value.label, group: choice.label }))
+      : [{ value: choice.value.value, label: choice.value.label }]
   );
 }

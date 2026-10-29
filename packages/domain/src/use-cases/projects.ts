@@ -11,7 +11,7 @@ import { newWorkspace, type Workspace } from '../workspace.ts';
 import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, resolveMachine, rootsOf } from './machine-dirs.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
-import { managedDirectory, projectSlug } from '../directories.ts';
+import { managedDirectory, projectSlug, sortDirectoryEntries } from '../directories.ts';
 
 export interface CreateProjectCommand {
   readonly name: string;
@@ -116,7 +116,7 @@ export async function browseDirectories(
     return ok({
       path,
       parent: atRoot ? null : parentOf(path),
-      entries: sortRecentFirst(listed.value.entries),
+      entries: sortDirectoryEntries(listed.value.entries),
       workerId: owner.value,
       roots,
       managed
@@ -129,12 +129,6 @@ export async function browseDirectories(
 
 
 
-/** 最近改过的排前面（时间相同按名字）：刚建的、刚用过的项目目录最可能是要找的。 */
-function sortRecentFirst(entries: readonly DirectoryEntry[]): DirectoryEntry[] {
-  return [...entries].sort(
-    (left, right) => (right.modifiedAt ?? 0) - (left.modifiedAt ?? 0) || left.name.localeCompare(right.name)
-  );
-}
 
 
 

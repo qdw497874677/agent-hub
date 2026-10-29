@@ -42,13 +42,26 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await panel.getByRole('button', { name: '开始' }).click();
 
   // M1：画布出现
-  await expect(page.getByRole('button', { name: '新建任务' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();
 
-  // M1：建任务
-  await page.getByRole('button', { name: '新建任务' }).click();
+  // 空画布不是一片黑：有一句提示和就近的「新建任务」
+  const hint = page.getByTestId('no-tasks');
+  await expect(hint).toContainText('还没有任务');
+  await expect(hint.getByRole('button', { name: '新建任务' })).toBeVisible();
+
+  // M1：建任务（从空画布的提示里点）
+  await hint.getByRole('button', { name: '新建任务' }).click();
   await page.getByRole('dialog', { name: '新建任务' }).getByLabel('标题').fill(TASK_TITLE);
   await page.getByRole('button', { name: '创建任务' }).click();
   await expect(taskNode(page, TASK_TITLE)).toContainText('0 个会话');
+  await expect(page.getByTestId('no-tasks')).toHaveCount(0);
+  // 「＋ 会话」「日志」不用悬停就看得见（鼠标先挪开）
+  await page.mouse.move(2, 2);
+  for (const name of ['＋ 会话', '日志']) {
+    const button = taskNode(page, TASK_TITLE).getByRole('button', { name });
+    await expect(button).toBeVisible();
+    expect(Number(await button.evaluate((el) => getComputedStyle(el).opacity))).toBeGreaterThan(0.5);
+  }
 
   // M2：从任务派生会话（任务卡上的「＋ 会话」；双击在自动化的零间隔点击下会落到重渲染的空档里）
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();

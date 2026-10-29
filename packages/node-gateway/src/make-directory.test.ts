@@ -51,13 +51,16 @@ test('新建文件夹：parent 在 roots 外、经软链接逃出去、目标是
   await box.done();
 });
 
-test('本机目录列表：标出 git 仓库，带修改时间，藏点目录', async () => {
+test('本机目录列表：标出 git 仓库，带修改时间，点目录标 hidden', async () => {
   const box = await sandbox();
   await mkdir(join(box.root, 'repo', '.git'), { recursive: true });
   await mkdir(join(box.root, 'plain'));
   await mkdir(join(box.root, '.hidden'));
   const entries = await createLocalFs().listDirectories(box.root);
-  assert.deepEqual(entries.map((e) => [e.name, e.isGit]), [['plain', false], ['repo', true]]);
+  assert.deepEqual(
+    entries.map((e) => [e.name, e.isGit, e.hidden]),
+    [['.hidden', false, true], ['plain', false, false], ['repo', true, false]]
+  );
   assert.ok(entries.every((e) => typeof e.modifiedAt === 'number' && e.modifiedAt > 0));
   await box.done();
 });

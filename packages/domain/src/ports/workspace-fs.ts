@@ -9,6 +9,8 @@ export interface DirectoryEntry {
   readonly isGit?: boolean;
   /** 最后修改时间（毫秒）：选择器按它把最近用过的排前面。 */
   readonly modifiedAt?: number;
+  /** 点开头的隐藏目录：照列出来，由选择器决定显不显示（默认收起，「显示隐藏」再展开）。 */
+  readonly hidden?: boolean;
 }
 
 export interface WorkspaceFS {

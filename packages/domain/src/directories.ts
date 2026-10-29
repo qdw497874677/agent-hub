@@ -41,6 +41,26 @@ export function insideRoots(path: string, roots: readonly string[]): boolean {
   });
 }
 
+/** 隐藏目录的规则和各家文件管理器一致：名字以 `.` 开头。不按名字猜「噪音」，猜错了人就找不到自己的目录。 */
+export function isHiddenName(name: string): boolean {
+  return name.startsWith('.');
+}
+
+/**
+ * 选择器里的顺序：可见的在前、隐藏的在后；同一组里最近修改的在前，时间相同按名字。
+ * 刚建的、刚用过的项目目录最可能是要找的。
+ */
+export function sortDirectoryEntries<T extends { readonly name: string; readonly modifiedAt?: number; readonly hidden?: boolean }>(
+  entries: readonly T[]
+): T[] {
+  return [...entries].sort(
+    (left, right) =>
+      Number(left.hidden === true) - Number(right.hidden === true) ||
+      (right.modifiedAt ?? 0) - (left.modifiedAt ?? 0) ||
+      left.name.localeCompare(right.name)
+  );
+}
+
 function trimSlash(path: string): string {
   return path.length > 1 ? path.replace(/\/+$/, '') : path === '/' ? '' : path;
 }

@@ -68,6 +68,7 @@ async function managedAndCreate(page: Page) {
 async function startsInManaged(page: Page) {
   mkdirSync(`${SCRATCH}/repo/.git`, { recursive: true });
   mkdirSync(`${SCRATCH}/plain`, { recursive: true });
+  mkdirSync(`${SCRATCH}/.cache`, { recursive: true });
   mkdirSync(MANAGED, { recursive: true });
   const { panel, picker } = await openPickerFor(page, NAME);
   const input = pathBox(picker);
@@ -76,6 +77,16 @@ async function startsInManaged(page: Page) {
   await input.fill(`${SCRATCH}/`);
   await expect(picker.getByRole("option", { name: /repo/ })).toContainText("⎇");
   await expect(picker.getByRole("option", { name: /plain/ })).not.toContainText("⎇");
+  // 隐藏文件夹默认收起，点一下才出来；打「.」开头也能直接筛到
+  await expect(picker.getByRole("option", { name: /\.cache/ })).toHaveCount(0);
+  const toggle = picker.getByRole("button", { name: /显示隐藏/ });
+  await toggle.click();
+  await expect(picker.getByRole("option", { name: /\.cache/ })).toBeVisible();
+  await picker.getByRole("button", { name: "收起隐藏" }).click();
+  await expect(picker.getByRole("option", { name: /\.cache/ })).toHaveCount(0);
+  await input.pressSequentially(".ca");
+  await expect(picker.getByRole("option", { name: /\.cache/ })).toBeVisible();
+  await input.fill(`${SCRATCH}/`);
   // 模糊筛：pln 命中 plain，repo 被筛掉；Tab 补全进入
   await input.pressSequentially("pln");
   await expect(picker.getByRole("option", { name: /repo/ })).toHaveCount(0);
