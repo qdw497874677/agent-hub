@@ -10,11 +10,12 @@ export function Users() {
   const [q, setQ] = useState('');
   const users = useQuery({ queryKey: ['admin', 'users', q], queryFn: () => adminApi.users(q) });
   const action = useAdminAction(
-    ({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke'; user: AdminUserDto }) => {
+    ({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke' | 'verify'; user: AdminUserDto }) => {
       if (kind === 'disable') return adminApi.disable(user.id);
       if (kind === 'enable') return adminApi.enable(user.id);
       if (kind === 'promote') return adminApi.setRole(user.id, 'owner');
       if (kind === 'demote') return adminApi.setRole(user.id, 'member');
+      if (kind === 'verify') return adminApi.markVerified(user.id);
       return adminApi.revokeLogins(user.id);
     }
   );
@@ -50,6 +51,9 @@ export function Users() {
                       {self ? ' · 你' : ''}
                       {user.disabled ? ' · 已停用' : ''}
                     </span>
+                    {!user.emailVerified && (
+                      <span className="rounded-sm border border-hair px-1.5 text-[11px] text-rust">未验证邮箱</span>
+                    )}
                   </div>
                   <p className="text-meta text-tertiary">
                     最近活跃 {user.lastSeenAt ? at(user.lastSeenAt) : '从未'} · {user.activeLogins} 个有效登录 · 注册于{' '}
@@ -71,6 +75,11 @@ export function Users() {
                         onClick={() => action.mutate({ kind: 'demote', user })}
                       >
                         降为成员
+                      </button>
+                    )}
+                    {!user.emailVerified && (
+                      <button className={SMALL} disabled={action.isPending} onClick={() => action.mutate({ kind: 'verify', user })}>
+                        标记已验证
                       </button>
                     )}
                     <button

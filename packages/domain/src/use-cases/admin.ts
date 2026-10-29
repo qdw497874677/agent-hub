@@ -148,6 +148,22 @@ export async function setUserRole(
   return ok(next);
 }
 
+/** 主人手动标记「邮箱已验证」：没配发信服务、或对方收不到信时用。 */
+export async function markUserVerified(
+  deps: AdminDeps,
+  actor: Principal,
+  userId: UserId
+): Promise<Result<User, DomainError>> {
+  const found = await target(deps, userId);
+  if (!found.ok) return found;
+  const user = found.value;
+  if (user.emailVerifiedAt !== null) return ok(user);
+  const next: User = { ...user, emailVerifiedAt: deps.now() };
+  await deps.users.save(next);
+  await record(deps, actor, 'user.verify', user.email, '主人手动标记');
+  return ok(next);
+}
+
 /** 踢下线：删掉这个人的全部登录态。对自己操作时保留当前这台。 */
 export async function revokeUserLogins(
   deps: AdminDeps,

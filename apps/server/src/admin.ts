@@ -9,6 +9,7 @@ import {
   canAddMachines,
   disconnectWorker,
   isOutdated,
+  markUserVerified,
   requireOwner,
   revokeUserLogins,
   setUserDisabled,
@@ -41,6 +42,7 @@ const userDto = (user: User, lastSeenAt: number | null, activeLogins: number): A
   email: user.email,
   displayName: user.displayName,
   role: user.role,
+  emailVerified: user.emailVerifiedAt !== null,
   disabled: user.disabledAt !== null,
   createdAt: user.createdAt,
   lastSeenAt,
@@ -121,6 +123,9 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
   );
   app.post('/api/admin/users/:id/enable', (c) =>
     userResult(c, setUserDisabled(deps, owner(c), asUserId(c.req.param('id')), false))
+  );
+  app.post('/api/admin/users/:id/verify', (c) =>
+    userResult(c, markUserVerified(deps, owner(c), asUserId(c.req.param('id'))))
   );
   app.post('/api/admin/users/:id/revoke-logins', (c) =>
     userResult(c, revokeUserLogins(deps, owner(c), asUserId(c.req.param('id'))))

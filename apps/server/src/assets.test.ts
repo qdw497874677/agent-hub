@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryAdmin, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
+import { inMemoryAdmin, inMemoryAssets, inMemoryDeps, mailedToken } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 
@@ -47,6 +47,7 @@ test('资产 API：主人上传 → 装到机器 → 传新版本看 diff → �
   const register = (email: string) => ({ method: 'POST', body: JSON.stringify({ email, password: PASSWORD }) });
   assert.equal((await owner('/api/auth/register', register('boss@b.co'))).status, 200);
   assert.equal((await member('/api/auth/register', register('m@b.co'))).status, 200);
+  await member('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token: mailedToken(h.admin.accounts, 'm@b.co') }) });
   assert.equal((await member('/api/admin/assets')).status, 403);
 
   const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
@@ -102,6 +103,7 @@ test('会话资产清单 API：成员也能读（只读）；没记过的返回�
   const register = (email: string) => ({ method: 'POST', body: JSON.stringify({ email, password: PASSWORD }) });
   assert.equal((await owner('/api/auth/register', register('boss@b.co'))).status, 200);
   assert.equal((await member('/api/auth/register', register('m@b.co'))).status, 200);
+  await member('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token: mailedToken(h.admin.accounts, 'm@b.co') }) });
   const empty = await member('/api/sessions/s1/assets');
   assert.equal(empty.status, 200);
   assert.deepEqual(empty.body, { sessionId: 's1', workerId: null, entries: [], at: null });
@@ -119,6 +121,7 @@ test('资产权限：主人能增删改、分配；成员只能用（所有 /api
   const register = (email: string) => ({ method: 'POST', body: JSON.stringify({ email, password: PASSWORD }) });
   assert.equal((await owner('/api/auth/register', register('boss@b.co'))).status, 200);
   assert.equal((await member('/api/auth/register', register('m@b.co'))).status, 200);
+  await member('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token: mailedToken(h.admin.accounts, 'm@b.co') }) });
   const made = await owner('/api/admin/assets/upload', { method: 'POST', body: JSON.stringify({ kind: 'skill', files: skillFiles('v1') }) });
   assert.equal(made.status, 201);
   const id = made.body.id as string;

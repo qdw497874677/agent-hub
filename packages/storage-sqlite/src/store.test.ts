@@ -185,7 +185,7 @@ test('账号：用户按邮箱找回、登录态按哈希找回、停用的人�
 
   await store.logins.save({
     id: asLoginId('l1'), userId: asUserId('u1'), tokenHash: 'h1', method: 'password',
-    userAgent: null, createdAt: 10, lastSeenAt: 10, expiresAt: 100
+    userAgent: null, ip: null, createdAt: 10, lastSeenAt: 10, expiresAt: 100
   });
   await store.logins.touch(asLoginId('l1'), 50, 500);
   assert.equal((await store.logins.byTokenHash('h1'))?.expiresAt, 500);
@@ -203,7 +203,7 @@ test('运营后台：登录活跃度、保留当前登录的踢下线、设置�
   await store.users.save(user);
   const login = (id: string, createdAt: number, expiresAt: number) => ({
     id: asLoginId(id), userId: user.id, tokenHash: `h-${id}`, method: 'password' as const,
-    userAgent: null, createdAt, lastSeenAt: createdAt, expiresAt
+    userAgent: null, ip: null, createdAt, lastSeenAt: createdAt, expiresAt
   });
   await store.logins.save(login('l1', 10, 1_000));
   await store.logins.save(login('l2', 20, 1_000));
@@ -238,4 +238,27 @@ test('projects.remove 一次提交删掉项目名下所有记录，别的项目�
   assert.deepEqual(await store.projects.list(), [other.project]);
   assert.ok(await store.sessions.byId(other.session.id));
   store.close();
+});
+
+test('账号 P3 迁移：老库的用户一次性记为已验证；一次性令牌只能用一次', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ahub-p3-'));
+  const file = join(dir, 'hub.db');
+  const first = openSqliteStore(file);
+  await first.users.save({
+    id: asUserId('u1'), email: 'a@b.co', displayName: 'a', role: 'member', passwordHash: 'x',
+    emailVerifiedAt: null, disabledAt: null, createdAt: 7, lastLoginAt: null
+  } as never);
+  first.close();
+  const raw = new DatabaseSync(file);
+  raw.exec('DROP TABLE one_time_tokens; UPDATE users SET email_verified_at = NULL');
+  raw.close();
+  const store = openSqliteStore(file);
+  assert.equal((await store.users.byEmail('a@b.co'))?.emailVerifiedAt, 7);
+  const token = { tokenHash: 'th', purpose: 'verify-email' as const, userId: asUserId('u1'), email: 'a@b.co', createdAt: 10, expiresAt: 100, usedAt: null };
+  await store.oneTimeTokens.save(token);
+  assert.equal(await store.oneTimeTokens.consume('th', 'reset-password', 20), null);
+  assert.equal((await store.oneTimeTokens.consume('th', 'verify-email', 20))?.userId, 'u1');
+  assert.equal(await store.oneTimeTokens.consume('th', 'verify-email', 21), null);
+  store.close();
+  rmSync(dir, { recursive: true, force: true });
 });

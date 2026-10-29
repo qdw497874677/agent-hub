@@ -33,7 +33,7 @@ test('没登录：API 401，健康检查和账号接口放行', async () => {
   const { call } = harness();
   assert.equal((await call('/api/projects')).status, 401);
   assert.equal((await call('/api/health')).status, 200);
-  assert.deepEqual((await call('/api/auth/state')).body, { user: null, tokenLogin: false, registration: true });
+  assert.deepEqual((await call('/api/auth/state')).body, { user: null, tokenLogin: false, registration: true, mailDelivery: false });
 });
 
 test('注册 → 有 cookie、能调 API；写请求要 CSRF 头；登出后 cookie 失效', async () => {

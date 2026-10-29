@@ -43,6 +43,35 @@ hub 默认只监听 `127.0.0.1`。要从手机或别的机器访问，见 [remot
 
 ![登录页](images/guide/01-login.png)
 
+### 验证邮箱、找回密码、登录设备
+
+- **新成员要先验证邮箱**：注册后只会看到「去验证邮箱」页，去邮箱点确认信里的链接（30 分钟内有效、只能用一次）即可进入；没收到可以「重新发送」（60 秒一次）。第一位主人、内置测试账号不用验证；主人也可以在「运营后台 · 用户」里给某人点「标记已验证」（hub 没配发信时就得这样）。
+- **忘记密码**：登录页「忘记密码？」，填邮箱后会收到重置链接；设好新密码后这台直接登录，**其他设备上的登录全部退出**，并会收到一封「密码已修改」通知。为防止被拿来试探谁注册过，不管邮箱存不存在页面都显示同样的提示；每个 IP、每个邮箱每小时最多 5 次。
+- **登录设备**：右上角头像 →「登录设备」，能看到每台设备（浏览器、系统、IP、最近活跃），可以逐台「登出」，或「登出其他所有设备」。
+- **注册名额**：部署时设了 `HUB_MAX_USERS` 的，账号数到了上限后登录页不再显示「注册」，提示联系管理员。
+
+### 配置发信（让上面的邮件真的寄出去）
+
+在 hub 的环境（如 `server.env`）里设 `HUB_PUBLIC_URL`（浏览器访问 hub 的地址，链接用它拼），再选一种发信方式，重启 hub。启动日志里有一行 `[mail]` 说明当前用的是哪种。
+
+**QQ 邮箱 / 163 邮箱（没有域名时最省事）**：邮箱网页版「设置 → 账户 → POP3/IMAP/SMTP 服务」开启 SMTP，按提示发短信拿到**授权码**。
+
+```
+HUB_PUBLIC_URL=http://你的地址:端口
+HUB_MAIL_PROVIDER=smtp
+SMTP_HOST=smtp.qq.com        # 163 用 smtp.163.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=你的号@qq.com
+SMTP_PASS=授权码
+```
+
+Gmail 同理：开两步验证后在「应用专用密码」生成 16 位密码，`SMTP_HOST=smtp.gmail.com`。阿里云「邮件推送 DirectMail」需要自己的域名，建好发信地址和 SMTP 密码后 `SMTP_HOST=smtpdm.aliyun.com`、`SMTP_PORT=465`。
+
+**Resend**：在 resend.com 注册并创建 API key，`RESEND_API_KEY=re_…`（可设 `HUB_MAIL_PROVIDER=resend`）。没验证自己的域名时只能用 `onboarding@resend.dev` 发给你注册 Resend 的那个邮箱，适合自测；要发给任何人得先在 Resend 里验证一个域名，再设 `HUB_MAIL_FROM=agent-hub <noreply@你的域名>`。
+
+什么都不配就是日志模式：信的内容（含链接）只打进 hub 日志，适合本机自用。
+
 登录后进入首页：左边是「项目」列表（右侧 ＋ 新建项目），下面是 Worker 面板；右边是最近的会话和搜索框。
 
 ![首页](images/guide/02-home.png)
@@ -263,7 +292,7 @@ Worker 会连 `ws://127.0.0.1:17878/worker`。隧道断开时 Worker 会自动�
 
 ![机器](images/guide/admin-workers.png)
 
-**设置**页：「开放注册」「成员可以加机器」。
+**设置**页：「开放注册」「成员可以加机器」。**用户**页里没验证邮箱的人带「未验证邮箱」标记，可以「标记已验证」。
 
 ![设置](images/guide/admin-settings.png)
 ![概览](images/guide/admin-overview.png)

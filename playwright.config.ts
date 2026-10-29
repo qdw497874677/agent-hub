@@ -36,6 +36,11 @@ export default defineConfig({
       HUB_SPAWN_WORKER: '1',
       // 整套 e2e 在一个服务里登录十几次，放宽登录限流，免得后面的用例吃 429
       HUB_LOGIN_RATE_MAX: '1000',
+      HUB_MAIL_RATE_MAX: '1000',
+      // 发信走日志模式，同时把信逐行写进 outbox：用例从这里拿验证 / 重置链接
+      HUB_MAIL_PROVIDER: 'log',
+      HUB_PUBLIC_URL: `http://127.0.0.1:${port}`,
+      HUB_MAIL_OUTBOX: '/tmp/agent-hub-e2e-data/outbox.jsonl',
       // 本机 Worker 只放开 /tmp：目录选择器的新建文件夹、托管目录都落在这里，不碰真实家目录
       WORKER_ROOTS: '/tmp',
       // 测试账号的密码文件放进 e2e 数据目录，不碰真实的 ~/.config/agent-hub

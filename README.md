@@ -50,6 +50,15 @@ scripts/install.sh --no-systemd   # 只装依赖与构建
 | `WORKER_ID` / `WORKER_LABEL` / `WORKER_ORIGIN` | 首次生成后固定 / `本机`（远程为主机名） / `local` | Worker 的身份、显示名、来源；id 存在 `~/.config/agent-hub/worker-id` |
 | `WORKER_ROOTS` | `$HOME` | 这台 Worker 允许 hub 访问的目录（冒号分隔）：目录浏览、`@` 文件、附件、开会话都只在这里面。远程 Worker 和本机 Worker 都强制；没设置时只放开 `$HOME` |
 | `HUB_STALL_MS` | `300000` | 一轮跑着却这么久（毫秒）没有新输出，就在卡片上提醒「可能卡住了，可以中断」并写日志；设 0 关掉巡检 |
+| `HUB_PUBLIC_URL` | 空 | 别人从浏览器访问 hub 的地址（如 `http://8.213.197.187:17900`），邮件里的验证 / 重置链接用它拼，**从不信任 Host 头**；不设就只把信打进日志 |
+| `HUB_MAIL_PROVIDER` | 自动 | `smtp` / `resend` / `log`。不设时：配了 `SMTP_HOST`/`SMTP_URL` 用 SMTP，否则配了 `RESEND_API_KEY` 用 Resend，否则只打日志 |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | 空 / `465` / 端口 465 时为 `true` | SMTP 服务器，如 QQ 邮箱 `smtp.qq.com` `465` `true`；也可整串写 `SMTP_URL=smtps://user:pass@host:465` |
+| `SMTP_USER` / `SMTP_PASS` | 空 | SMTP 账号与**授权码**（QQ/163 在邮箱设置里开 SMTP 后生成，不是登录密码） |
+| `RESEND_API_KEY` | 空 | 用 Resend 发信时的 API key |
+| `HUB_MAIL_FROM` | SMTP：`agent-hub <SMTP_USER>`；Resend：`agent-hub <onboarding@resend.dev>` | 发件人。QQ/163 要求发件人与登录账号一致，一般不用设 |
+| `HUB_MAIL_RATE_MAX` | `5` | 找回密码 / 重发验证信：每 IP、每邮箱每小时最多几次 |
+| `HUB_MAIL_OUTBOX` | 空 | 测试用：日志模式下把每封信追加成一行 JSON 写进这个文件 |
+| `HUB_MAX_USERS` | 空（不限） | 账号总数上限（停用的也算，删掉才腾出名额）。达到后自助注册被拒并提示「注册名额已满」，登录页不再显示注册；第一位主人认领、内置测试账号不受限 |
 
 ### 多台机器：任何机器都可以登记成 Worker
 
