@@ -18,6 +18,7 @@ import {
 } from '@agent-hub/contract';
 import type { AssetDeps, AuditLog, IncomingFile, Principal } from '@agent-hub/domain';
 import {
+  ASSET_KIND_LABEL,
   ASSET_LIMITS,
   assetFileText,
   assetRevisions,
@@ -136,7 +137,7 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
       files: decodeFiles(input.value.files)
     });
     if (!made.ok) return fail(c, made.error);
-    await audit(c, 'asset.create', made.value.name, `上传${made.value.kind === 'skill' ? '技能' : '指令'} ${made.value.pinned.slice(0, 12)}`);
+    await audit(c, 'asset.create', made.value.name, `上传${ASSET_KIND_LABEL[made.value.kind]} ${made.value.pinned.slice(0, 12)}`);
     return c.json({ id: made.value.id }, 201);
   });
 

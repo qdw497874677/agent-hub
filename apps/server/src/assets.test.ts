@@ -85,6 +85,16 @@ test('资产 API：主人上传 → 装到机器 → 传新版本看 diff → �
   for (const action of ['asset.create', 'asset.install', 'asset.revision', 'asset.pin', 'asset.delete']) assert.ok(actions.includes(action), action);
 });
 
+test('审计：上传 MCP 记成「上传MCP 服务器」，不是「上传指令」', async () => {
+  const h = harness();
+  const owner = h.browser();
+  assert.equal((await owner('/api/auth/register', { method: 'POST', body: JSON.stringify({ email: 'boss@b.co', password: PASSWORD }) })).status, 200);
+  const files = [{ path: 'mcp.json', data: b64(JSON.stringify({ name: 'docs', transport: 'http', url: 'https://e/mcp' })) }];
+  assert.equal((await owner('/api/admin/assets/upload', { method: 'POST', body: JSON.stringify({ kind: 'mcp', files }) })).status, 201);
+  const entry = (await owner('/api/admin/audit')).body.find((e: { action: string }) => e.action === 'asset.create');
+  assert.match(entry.detail, /^上传MCP 服务器 /);
+});
+
 test('会话资产清单 API：成员也能读（只读）；没记过的返回空清单', async () => {
   const h = harness();
   const owner = h.browser();

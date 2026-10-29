@@ -37,7 +37,9 @@ hub 默认只监听 `127.0.0.1`。要从手机或别的机器访问，见 [remot
 
 ## 2. 第一次打开
 
-打开后是登录页，有「登录 / 注册」两个标签。**第一个注册的账号自动成为主人**（管理员），之后的人能否自助注册由主人在「运营后台 · 设置」里决定。
+打开后是登录页，有「登录 / 注册」两个标签。**没有主人时，第一个注册的账号自动成为主人**（管理员），之后的人能否自助注册由主人在「运营后台 · 设置」里决定。
+
+> 注意内置测试账号：hub 默认会建一个主人角色的测试账号 `test@agent-hub.local`，密码随机生成在 `~/.config/agent-hub/test-account`（mode 600，不进日志）。有了它，之后自己注册的账号都只是**成员**。正式部署想让自己注册的第一个账号当主人，第一次启动前设 `HUB_TEST_ACCOUNT=off`；已经启动过的，用测试账号登录后在「运营后台 · 用户」里把自己设为主人。
 
 ![登录页](images/guide/01-login.png)
 
@@ -63,6 +65,8 @@ curl -fsSL http://<hub>:7878/install-worker.sh | HUB_PAIR=ahw_pair_… bash
 
 ![添加机器](images/guide/04-add-machine.png)
 
+- 弹窗里的地址取自你浏览器当前打开的 hub 地址；如果你是经 SSH 端口转发等方式打开的，先把它换成新机器能访问到的地址（`HUB_HTTP=…`，见下面的隧道一节）。
+- 代码默认拉到 `~/agent-hub`，而 hub 的托管目录（新建项目目录、非 git 项目的临时工作空间 `~/agent-hub/.tmp/…`）也在 `<WORKER_ROOTS 第一个>/agent-hub`。WORKER_ROOTS 用默认的 `$HOME` 时两者会落进同一个目录：建议把 `WORKER_ROOTS` 设成专门的工作目录（如 `$HOME/code`），或用 `AGENT_HUB_DIR=…` 把代码装到别处。
 - 新机器只需要 `git`、`curl`、`tar`；脚本会装 Node 26、把代码拉到 `~/agent-hub` 并对齐 hub 的提交，用配对码换一份**这台机器专属的凭据**，再装 systemd 服务 `agent-hub-worker`。
 - 配对码 **15 分钟有效、只能用一次**，弹窗里有倒计时；过期就点「重新生成」。弹窗会一直「等待新机器连上」，连上后提示已连上。「它会做什么」可以展开看脚本的每一步。
 - 配置写在新机器的 `~/.config/agent-hub/worker.env`（权限 600），凭据不会出现在 unit 文件和进程参数里。
@@ -206,6 +210,7 @@ Worker 会连 `ws://127.0.0.1:17878/worker`。隧道断开时 Worker 会自动�
 - **技能**（SKILL.md 目录）、**指令**（一段 Markdown）、**MCP 服务器**。
 - 按机器安装：技能和指令落进那台机器的 `~/.agent-hub/assets`（`skills/`、`instructions/`，外加 `.blobs`、`.manifest.json`）；MCP 在会话启动时接上，远端的 http MCP 经 hub 代连，**密钥不出 hub**。
 - 只对之后新开的会话生效。
+- http MCP 连不上时（比如下面示例里的 `example.com`），会话侧栏「资产」里仍会列出它，但 agent 拿不到它的工具，目前没有额外提示。
 
 ### 添加
 
