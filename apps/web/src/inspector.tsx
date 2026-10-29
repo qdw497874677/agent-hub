@@ -1,10 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
-import { Composer } from './composer.tsx';
-import { ContinueElsewhere } from './continue-elsewhere.tsx';
-import { attachmentsCapability } from './attachments.ts';
-import { sessionCommands } from './commands.ts';
+import { StatusPill } from './status.tsx';
 import type { LiveSession } from './live.ts';
 import { SessionAssets } from './session-assets.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from './workers.tsx';
@@ -45,193 +42,203 @@ interface Props {
   readonly canvas: CanvasDto;
   readonly session: SessionDto;
   readonly artifacts: readonly ArtifactDto[];
-  readonly onClose: () => void;
-  /** 去专注对话：右栏太窄，说不清楚的话得整屏说。 */
-  readonly onFocus: () => void;
-  readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
-  readonly onChanged: () => void;
-  /** 草稿由 App 持有：切视图 / 切会话回来时它还在（S6.4）。 */
-  readonly draft: string;
-  readonly onDraftChange: (text: string) => void;
   readonly live: LiveSession | null;
+  readonly onClose: () => void;
 }
 
-export function Inspector({
-  canvas,
-  session,
-  artifacts,
-  onClose,
-  onFocus,
-  onChanged,
-  onChangeOption,
-  draft,
-  onDraftChange,
-  live
-}: Props) {
-  const setDraft = onDraftChange;
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+/**
+ * 会话详情：对话页头上的「详情」打开。桌面是右侧抽屉，手机是底部抽屉。
+ *
+ * 这里只放「看」的东西——能力、资产、产出物、事件流。动作（分叉、换个地方继续）在对话页的「更多」
+ * 和每条消息的操作菜单里；说话在对话里说。点遮罩或按 Esc 关掉。
+ */
+export function SessionDetails({ canvas, session, artifacts, live, onClose }: Props) {
   const [showJournal, setShowJournal] = useState(false);
   const [journal, setJournal] = useState<readonly JournalEntryDto[]>([]);
-  const [forkAt, setForkAt] = useState(String(session.lastSeq));
-
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const workers = useWorkers();
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
-
-  useEffect(() => {
-    setError(null);
-  }, [session.id]);
-
-  // 分叉点默认停在最新一条；会话继续长出新事件时跟着走，但用户手动改过就不再抢。
-  useEffect(() => {
-    setForkAt((current) =>
-      current === '' || Number(current) >= session.lastSeq - 1 ? String(session.lastSeq) : current
-    );
-  }, [session.lastSeq]);
 
   useEffect(() => {
     if (!showJournal) return;
     void api.events(session.id).then(setJournal);
   }, [showJournal, session.id, session.lastSeq]);
 
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
-  async function run(action: () => Promise<unknown>): Promise<boolean> {
-    setBusy(true);
-    setError(null);
-    try {
-      await action();
-      onChanged();
-      return true;
-    } catch (failure) {
-      setError((failure as Error).message);
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  }
+  const status = live?.status ?? session.status;
+  const capabilityNames = agent ? (Object.keys(agent.capabilities) as CapabilityName[]) : [];
+  const limited = capabilityNames.filter((name) => agent!.capabilities[name].state !== 'available');
 
   return (
-    <aside className="fixed inset-0 z-40 flex w-full flex-col bg-panel pb-[env(safe-area-inset-bottom)] md:static md:z-auto md:h-full md:w-[320px] md:shrink-0 md:border-l md:border-hair md:pb-0">
-      <header className="flex items-center justify-between border-b border-hair px-3 py-2">
-        <div>
-          <p className="text-head text-primary">{agent?.label ?? session.agentId}</p>
-          <p className="flex items-center gap-1.5 font-mono text-meta text-tertiary">
-            <span className="truncate">{session.model}</span>
-            {workers.multi ? <WorkerChip worker={resolveWorker(workers.list, session.workerId)} /> : null}
-          </p>
-        </div>
-        <span className="flex items-center gap-2">
-          <button
-            className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
-            onClick={onFocus}
-          >
-            对话
-          </button>
-          <button className="text-meta text-tertiary hover:text-primary" onClick={onClose}>
-            收起
-          </button>
-        </span>
-      </header>
-
-      <div className="flex-1 overflow-y-auto px-3 py-3">
-        <section className="mb-3">
-          <p className="mb-1 text-meta text-tertiary">属于任务</p>
-          <p className="text-body text-secondary">{task?.title ?? session.taskId}</p>
-        </section>
-
-        <SessionAssets sessionId={session.id} />
-
-        <section className="mb-3">
-          <p className="mb-1 text-meta text-tertiary">能力矩阵</p>
-          {agent ? (
-            (Object.keys(agent.capabilities) as CapabilityName[]).map((name) => (
-              <CapabilityRow key={name} name={name} capability={agent.capabilities[name]} />
-            ))
-          ) : (
-            <p className="text-meta text-tertiary">该 agent 当前没有在线节点</p>
-          )}
-        </section>
-
-        {artifacts.length > 0 ? (
-          <section className="mb-3">
-            <p className="mb-1 text-meta text-tertiary">产出物</p>
-            {artifacts.map((artifact) => (
-              <p key={artifact.id} className="truncate font-mono text-meta text-secondary">
-                ◆ {artifact.path}
-              </p>
-            ))}
-          </section>
-        ) : null}
-
-        <section className="mb-3">
-          <p className="mb-1 text-meta text-tertiary">分叉点</p>
+    <div className="fixed inset-0 z-40 flex items-end bg-black/40 md:items-stretch md:justify-end" onClick={onClose}>
+      <aside
+        aria-label="会话详情"
+        className="flex max-h-[85vh] w-full flex-col rounded-t-md border-t border-hair bg-panel pb-[env(safe-area-inset-bottom)] md:h-full md:max-h-none md:w-[360px] md:rounded-none md:border-l md:border-t-0 md:pb-0"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <header className="border-b border-hair px-3 pb-2.5 pt-2">
           <div className="flex items-center gap-2">
-            <input
-              className="w-16 rounded-sm border border-hair bg-card px-2 py-1 font-mono text-meta text-primary"
-              value={forkAt}
-              onChange={(event) => setForkAt(event.target.value)}
-            />
-            <button
-              className="rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-sage hover:text-sage disabled:opacity-40"
-              disabled={busy}
-              onClick={() =>
-                run(() =>
-                  api.fork({
-                    sessionId: session.id,
-                    atSeq: Number(forkAt),
-                    agentId: session.agentId,
-                    model: session.model
-                  })
-                )
-              }
-            >
-              从这里分叉
+            <p className="text-head text-primary">会话详情</p>
+            <StatusPill status={status} reason={live?.reason ?? null} lastSeq={live?.lastSeq ?? session.lastSeq} />
+            <button className="ml-auto h-9 px-2 text-meta text-tertiary hover:text-primary" onClick={onClose}>
+              关闭
             </button>
           </div>
-        </section>
+          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-meta text-tertiary">
+            <span className="truncate">
+              {agent?.label ?? session.agentId} · {session.model === '' ? '默认模型' : session.model}
+            </span>
+            {workers.multi ? <WorkerChip worker={resolveWorker(workers.list, session.workerId)} /> : null}
+            {session.origin.kind === 'fork' ? <span className="shrink-0">· 分叉自 #{session.origin.atSeq}</span> : null}
+          </p>
+          <p className="mt-1.5 flex min-w-0 items-baseline gap-1.5 text-meta">
+            <span className="shrink-0 text-tertiary">任务</span>
+            <span className="truncate text-secondary" title={task?.title}>
+              {task?.title ?? session.taskId}
+            </span>
+          </p>
+        </header>
 
-        <ContinueElsewhere canvas={canvas} session={session} onDone={() => onChanged()} />
-
-        <section>
-          <button className="mb-1 text-meta text-tertiary hover:text-primary" onClick={() => setShowJournal(!showJournal)}>
-            {showJournal ? '收起事件流' : '查看事件流'}
-          </button>
-          {showJournal ? (
-            <div className="max-h-[220px] space-y-0.5 overflow-y-auto">
-              {journal.map((entry) => (
-                <p key={entry.seq} className="font-mono text-meta text-tertiary">
-                  #{entry.seq} {entry.event.kind}
+        <div className="flex-1 space-y-3 overflow-y-auto px-3 py-2.5">
+          {agent !== undefined && limited.length > 0 ? (
+            <p className="text-meta text-tertiary">
+              <span className="text-accent">●</span> {limited.map((name) => CAPABILITY_LABEL[name] ?? name).join('、')} 受限
+            </p>
+          ) : null}
+          <section>
+            <p className="mb-1 text-meta text-tertiary">能力</p>
+            {agent ? (
+              capabilityNames.map((name) => <CapabilityRow key={name} name={name} capability={agent.capabilities[name]} />)
+            ) : (
+              <p className="text-meta text-tertiary">该 agent 当前没有在线节点</p>
+            )}
+          </section>
+          <SessionAssets sessionId={session.id} detailed />
+          {artifacts.length > 0 ? (
+            <section>
+              <p className="mb-1 text-meta text-tertiary">产出物</p>
+              {artifacts.map((artifact) => (
+                <p key={artifact.id} className="truncate font-mono text-meta text-secondary">
+                  ◆ {artifact.path}
                 </p>
               ))}
-              {journal.length === 0 ? <p className="text-meta text-tertiary">没有记录</p> : null}
-            </div>
+            </section>
           ) : null}
-        </section>
-      </div>
-
-      <footer className="border-t border-hair px-3 py-2">
-        <Composer
-          session={session}
-          agentLabel={agent?.label ?? session.agentId}
-          draft={draft}
-          onDraftChange={setDraft}
-          onSend={(text, attachments) =>
-            run(async () => {
-              await api.prompt(session.id, text, attachments);
-              setDraft('');
-            })
-          }
-          onInterrupt={() => void run(() => api.interrupt(session.id))}
-          busy={busy}
-          error={error}
-          awaiting={live?.awaiting ?? false}
-          onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
-          capability={attachmentsCapability(agent?.capabilities)}
-          commands={sessionCommands(session)}
-          projectId={canvas.project.id}
-        />
-      </footer>
-    </aside>
+          <section>
+            <button className="mb-1 text-meta text-tertiary hover:text-primary" onClick={() => setShowJournal(!showJournal)}>
+              {showJournal ? '收起事件流' : '查看事件流'}
+            </button>
+            {showJournal ? (
+              <div className="max-h-[260px] space-y-0.5 overflow-y-auto">
+                {journal.map((entry) => (
+                  <p key={entry.seq} className="truncate text-meta text-secondary" title={eventLabel(entry.event)}>
+                    <span className="text-tertiary/70">#{entry.seq}</span> {eventLabel(entry.event)}
+                  </p>
+                ))}
+                {journal.length === 0 ? <p className="text-meta text-tertiary">没有记录</p> : null}
+              </div>
+            ) : null}
+          </section>
+        </div>
+      </aside>
+    </div>
   );
+}
+
+export function ForkDialog({
+  lastSeq,
+  value,
+  onChange,
+  busy,
+  error,
+  onClose,
+  onFork
+}: {
+  lastSeq: number;
+  value: string;
+  onChange: (value: string) => void;
+  busy: boolean;
+  error: string | null;
+  onClose: () => void;
+  onFork: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 md:items-center" onClick={onClose}>
+      <div
+        role="dialog"
+        aria-label="从某一步分叉"
+        className="w-full rounded-t-md border border-hair bg-panel p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] md:w-[340px] md:rounded-md md:pb-4"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p className="text-head text-primary">从某一步分叉</p>
+        <p className="mt-1 text-meta text-tertiary">带着第 1–{lastSeq} 步之前的上下文开一条新会话，画布上用虚线连起来。</p>
+        <label className="mt-3 flex items-center gap-2 text-meta text-secondary">
+          分叉点
+          <input
+            aria-label="分叉点"
+            inputMode="numeric"
+            className="w-20 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-body text-primary"
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          <span className="text-tertiary">/ {lastSeq}</span>
+        </label>
+        {error ? <p role="alert" className="mt-2 text-meta text-rust">{error}</p> : null}
+        <div className="mt-4 flex justify-end gap-2">
+          <button className="px-3 py-2 text-meta text-tertiary hover:text-primary" onClick={onClose}>
+            取消
+          </button>
+          <button
+            className="rounded-sm border border-sage px-3 py-2 text-meta text-sage hover:bg-sage/10 disabled:opacity-40"
+            disabled={busy || !Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > lastSeq}
+            onClick={onFork}
+          >
+            从这里分叉
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 事件流给人看：说「发生了什么」，不念内部类型名。 */
+export function eventLabel(event: JournalEntryDto['event']): string {
+  switch (event.kind) {
+    case 'prompt':
+      return `你发送了消息：${event.text.slice(0, 40)}`;
+    case 'text':
+      return '回复了一段文字';
+    case 'thinking':
+      return '想了一会儿';
+    case 'tool_call':
+      return `调用工具 ${event.name}`;
+    case 'tool_result':
+      return `工具 ${event.name} ${event.ok ? '完成' : '失败'}`;
+    case 'artifact':
+      return `写了文件 ${event.path}`;
+    case 'ended':
+      return event.outcome === 'done'
+        ? '回复完成'
+        : event.outcome === 'stopped'
+          ? '已停止'
+          : event.outcome === 'interrupted'
+            ? '中断了'
+            : `出错：${event.reason ?? '没有说原因'}`;
+    case 'diagnostic':
+      return `${event.level === 'error' ? '出错' : event.level === 'warn' ? '提醒' : '提示'}：${event.text}`;
+  }
 }

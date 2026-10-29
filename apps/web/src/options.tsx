@@ -35,7 +35,8 @@ export function OptionControls({ options, values, onChange, compact = false, dis
   if (visible.length === 0) return null;
 
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+    // compact（输入框底栏）不换行：模型名可以截断，思考强度固定宽度跟在后面——手机上折成两行很难看
+    <div className={`flex min-w-0 items-center gap-1.5 ${compact ? 'flex-nowrap' : 'flex-wrap'}`}>
       {visible.map((option) => {
         const current = currentOf(options, values, option);
         if (option.kind === 'boolean') {
@@ -67,7 +68,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
               value={String(current)}
               disabled={disabled}
               onChange={(value) => onChange(option.id, value)}
-              className="max-w-[160px] rounded-sm border border-hair bg-card px-1 py-0.5 text-meta text-secondary outline-none hover:border-strong focus:border-accent"
+              className={`${compact ? 'min-w-0 flex-1' : ''} max-w-[160px] rounded-sm border border-hair bg-card px-1 py-0.5 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             />
           );
         }
@@ -76,7 +77,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             key={option.id}
             aria-label={option.label}
             title={option.description ?? option.label}
-            className="max-w-[132px] truncate rounded-sm border border-hair bg-card px-1 py-0.5 text-meta text-secondary outline-none hover:border-strong focus:border-accent"
+            className={`${compact ? (option.category === 'model' ? 'min-w-0 flex-1' : 'shrink-0') : ''} max-w-[132px] truncate rounded-sm border border-hair bg-card px-1 py-0.5 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             value={String(current)}
             disabled={disabled}
             // 下拉里选东西不该顺手把卡片拖走

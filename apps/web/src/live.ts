@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, streamUrl, type JournalEntryDto, type SessionDto } from './api.ts';
-import { applyFrame, catchUp, seedLive, type Frame, type LiveMap } from './live-core.ts';
+import { applyFrame, catchUp, seedLive, withFullHistory, type Frame, type LiveMap } from './live-core.ts';
 
 export * from './live-core.ts';
 
@@ -12,6 +12,8 @@ export interface LiveStream {
   readonly state: StreamState;
   /** 用画布投影里的历史给内存播种：一条会话只播一次，之后只吃比它新的帧。 */
   readonly seed: (sessions: readonly SessionDto[], previews: Readonly<Record<string, readonly JournalEntryDto[]>>) => void;
+  /** 专注对话打开时拉整段历史（投影只有最后几十条）。 */
+  readonly loadHistory: (session: SessionDto) => Promise<void>;
 }
 
 const MAX_BACKOFF_MS = 15_000;
@@ -35,6 +37,11 @@ export function useLiveStream(onResync?: () => void): LiveStream {
     },
     []
   );
+
+  const loadHistory = useCallback(async (session: SessionDto) => {
+    const entries = await api.events(session.id).catch(() => null);
+    if (entries !== null) setLive((current) => withFullHistory(current, session, entries));
+  }, []);
 
   useEffect(() => {
     let source: EventSource | null = null;
@@ -95,5 +102,5 @@ export function useLiveStream(onResync?: () => void): LiveStream {
     };
   }, []);
 
-  return { live, state, seed };
+  return { live, state, seed, loadHistory };
 }

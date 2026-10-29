@@ -28,7 +28,7 @@ test('手机专注对话：⋯ 菜单里能换个地方继续；没说过话的�
   const session = (await derived.json()) as { id: string };
 
   await page.goto(`/#/p/${project.id}/focus/${session.id}`);
-  const menu = page.getByRole('button', { name: '会话操作' });
+  const menu = page.getByRole('button', { name: '更多' });
   await expect(menu).toBeVisible();
   await menu.click();
   await expect(page.getByRole('menuitem', { name: /换个地方继续/ }), '没说过话：没有可搬的东西').toBeDisabled();

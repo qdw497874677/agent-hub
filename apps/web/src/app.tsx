@@ -7,7 +7,6 @@ import { AdminPage } from './admin/page.tsx';
 import { resolveLive, useLiveStream } from './live.ts';
 import { CanvasView, type LayoutPatch } from './canvas.tsx';
 import { NoTasksHint } from './empty-tasks.tsx';
-import { Inspector } from './inspector.tsx';
 import { ListView, SearchPalette } from './views.tsx';
 import { FocusView } from './focus.tsx';
 import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
@@ -75,13 +74,6 @@ function Workspace() {
     [navigate]
   );
 
-  const setSelected = useCallback(
-    (sessionId: string | null) => {
-      if (projectRoute) navigate({ ...projectRoute, sessionId }, 'replace');
-    },
-    [projectRoute, navigate]
-  );
-
   const setView = useCallback(
     (next: View) => {
       if (projectRoute) navigate({ ...projectRoute, view: next });
@@ -102,7 +94,7 @@ function Workspace() {
   }, [project, queryClient]);
 
   // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧；断线重连后补帧并刷新画布。
-  const { live, seed, state: stream } = useLiveStream(refresh);
+  const { live, seed, loadHistory, state: stream } = useLiveStream(refresh);
 
   const seedRef = useRef(seed);
   seedRef.current = seed;
@@ -181,6 +173,15 @@ function Workspace() {
     [canvas.data, selected]
   );
 
+  // 专注对话要整段历史：投影只带最后几十条事件，长一点的思考就把正文挤出去了。
+  const focusedSession = view === 'focus' ? selectedSession : null;
+  const loadHistoryRef = useRef(loadHistory);
+  loadHistoryRef.current = loadHistory;
+  useEffect(() => {
+    if (focusedSession) void loadHistoryRef.current(focusedSession);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在换会话时拉一次，之后靠 SSE
+  }, [focusedSession?.id]);
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
@@ -251,6 +252,7 @@ function Workspace() {
           onBack={() => setView(homeView)}
           onChanged={refresh}
           onOpenSession={openSession}
+          artifacts={canvas.data.artifacts.filter((artifact) => artifact.sessionId === selectedSession.id)}
           onChangeOption={(optionId, value) =>
             changeOption(selectedSession.id, optionId, value)
           }
@@ -271,7 +273,7 @@ function Workspace() {
             <CanvasView
               canvas={{ ...canvas.data, layout: canvas.data.layout }}
               live={live}
-              onSelect={setSelected}
+              onSelect={openSession}
               onDerive={setDeriveFor}
               onOpen={openSession}
               onLayoutChange={saveLayout}
@@ -308,32 +310,6 @@ function Workspace() {
           </div>
         </div>
 
-        {selectedSession ? (
-          <Inspector
-            canvas={
-              canvas.data ?? {
-                project,
-                workspaces: [],
-                tasks: [],
-                sessions: [],
-                artifacts: [],
-                edges: [],
-                layout: { projectId: project.id, positions: {}, sizes: {}, updatedAt: 0 },
-                agents: [],
-                previews: {}
-              }
-            }
-            session={selectedSession}
-            artifacts={(canvas.data?.artifacts ?? []).filter((artifact) => artifact.sessionId === selectedSession.id)}
-            onClose={() => setSelected(null)}
-            onFocus={() => selectedSession && openSession(selectedSession.id)}
-            onChanged={refresh}
-            onChangeOption={(optionId, value) => changeOption(selectedSession.id, optionId, value)}
-            draft={drafts[selectedSession.id] ?? ''}
-            onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
-            live={resolveLive(selectedSession, canvas.data?.previews[selectedSession.id] ?? [], live[selectedSession.id])}
-          />
-        ) : null}
       </div>
       )}
 
@@ -362,9 +338,9 @@ function Workspace() {
           taskId={deriveFor}
           onDone={() => setDeriveFor(null)}
           onDerived={(session) => {
-            // 刚开的会话直接选中：右栏就是它，不用再去画布上找那张新卡。
+            // 刚开的会话直接进对话：开它就是为了说话。
             setDeriveFor(null);
-            setSelected(session.id);
+            openSession(session.id);
           }}
         />
       ) : null}

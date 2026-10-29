@@ -70,6 +70,9 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await expect(run.getByRole('button', { name: '开始' })).toBeDisabled();
   await run.getByRole('radio', { name: new RegExp(`agent-hub-e2e-project-${RUN}.*持久`) }).click();
   await run.getByRole('button', { name: '开始' }).click();
+  // 派生完直接进这条会话的对话；回画布看卡片
+  await expect(page.getByLabel('发送消息')).toBeVisible();
+  await page.getByRole('button', { name: '画布', exact: true }).click();
 
   // M2：卡片出现，并且就地就能说话——不必先打开专注对话
   await expect(sessionNode(page)).toHaveCount(1);
@@ -101,10 +104,10 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await sessionNode(page).getByRole('button', { name: '对话' }).click();
   // 收窄到对话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
   await expect(page.getByRole('log', { name: '对话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
-  await expect(page.getByRole('button', { name: '← 返回' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '返回' })).toBeVisible();
   // 专注对话里画布不在了：整屏只有这一条会话
   await expect(page.locator('.react-flow__node-session')).toHaveCount(0);
-  await page.getByRole('button', { name: '← 返回' }).click();
+  await page.getByRole('button', { name: '返回' }).click();
   await expect(sessionNode(page)).toHaveCount(1);
 });
 
@@ -160,13 +163,13 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   // 专注对话里也有一个「← 返回」，所以按精确名收窄到顶栏那个
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
+  // 点卡片就进对话
   await sessionNode(page).click();
   await expect(composer).toBeVisible();
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();
   await expect(page.getByRole('columnheader', { name: '任务' })).toBeVisible();
-  // 专注对话里也有一个「← 返回」，所以按精确名收窄到顶栏那个
-  await page.getByRole('button', { name: '画布', exact: true }).click();
+  await page.getByRole('button', { name: '对话', exact: true }).click();
   await expect(composer).toHaveValue('这段草稿要活过视图切换');
 
   // 搜索：用会话正文里的词命中，回车跳到那个节点

@@ -14,7 +14,7 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
   },
   {
     given: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '想一想' } },
-    expect: []
+    expect: [{ kind: 'thinking', delta: '想一想' }]
   },
   {
     given: { sessionUpdate: 'available_commands_update', availableCommands: [] },
@@ -37,7 +37,7 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
       content: [{ type: 'content', content: { type: 'text', text: '1→hello\n' } }],
       rawOutput: { type: 'ReadFile', FileContent: { content: '1→hello\n' } }
     },
-    expect: [{ kind: 'tool_result', name: 'read_file', ok: true, durationMs: 0 }]
+    expect: [{ kind: 'tool_result', name: 'read_file', ok: true, durationMs: 0, output: '1→hello' }]
   },
   {
     given: { sessionUpdate: 'tool_call', toolCallId: 'g3', title: 'write', rawInput: { file_path: '/tmp/gs/b.txt', content: 'bye' } },
@@ -51,7 +51,7 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
       content: [{ type: 'diff', path: '/tmp/gs/b.txt', oldText: '', newText: 'bye' }]
     },
     expect: [
-      { kind: 'tool_result', name: 'write', ok: true, durationMs: 0 },
+      { kind: 'tool_result', name: 'write', ok: true, durationMs: 0, output: '--- /tmp/gs/b.txt\n+++ /tmp/gs/b.txt\n+bye' },
       { kind: 'artifact', path: '/tmp/gs/b.txt', bytes: 3 }
     ]
   },
@@ -62,7 +62,7 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
   {
     given: { sessionUpdate: 'tool_call_update', toolCallId: 'g2', status: 'failed', rawOutput: { path: '/tmp/out.md' } },
     expect: [
-      { kind: 'tool_result', name: 'tool', ok: false, durationMs: 0 },
+      { kind: 'tool_result', name: 'tool', ok: false, durationMs: 0, output: '{"path":"/tmp/out.md"}' },
       { kind: 'artifact', path: '/tmp/out.md', bytes: 0 }
     ]
   }

@@ -11,41 +11,6 @@ import { WorkspaceChooser, choiceReady, longLivedRequest, useWorkspaceViews, typ
  * 搬过去的是平台记下的对话摘要和任务工作日志——在目标工作空间开一条新会话，挂成这条的分叉。
  * 代码不会自己过去：git 工作空间可以先提交 WIP 并推送分支，否则改动留在原处。
  */
-export function ContinueElsewhere({
-  canvas,
-  session,
-  onDone
-}: {
-  canvas: CanvasDto;
-  session: SessionDto;
-  onDone: (created: SessionDto) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  return (
-    <section className="mb-3" aria-label="换个地方继续">
-      <button
-        className="rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-sage hover:text-sage disabled:opacity-40"
-        disabled={!canContinueElsewhere(session)}
-        title={canContinueElsewhere(session) ? undefined : CONTINUE_DISABLED_HINT}
-        onClick={() => setOpen(true)}
-      >
-        换个地方继续…
-      </button>
-      {open ? (
-        <ContinueDialog
-          canvas={canvas}
-          session={session}
-          onClose={() => setOpen(false)}
-          onDone={(created) => {
-            setOpen(false);
-            onDone(created);
-          }}
-        />
-      ) : null}
-    </section>
-  );
-}
-
 /** 没说过话的会话没有可搬的上下文。 */
 export function canContinueElsewhere(session: Pick<SessionDto, 'lastSeq'>): boolean {
   return session.lastSeq > 0;
