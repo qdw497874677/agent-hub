@@ -1,5 +1,5 @@
 import type { DomainError, PromptInput, Result, SessionEvent, StartSpec } from '@agent-hub/domain';
-import { invalid } from '@agent-hub/domain';
+import { clipToolOutput, invalid } from '@agent-hub/domain';
 
 /**
  * ACP（Agent Client Protocol）→ 平台归一化事件。
@@ -20,6 +20,13 @@ export function mapAcpUpdate(
       }
       return [];
     }
+    case 'agent_thought_chunk': {
+      const content = u['content'] as Record<string, unknown> | undefined;
+      if (content?.['type'] === 'text' && typeof content['text'] === 'string' && content['text']) {
+        return [{ kind: 'thinking', delta: content['text'] }];
+      }
+      return [];
+    }
     case 'tool_call': {
       const id = String(u['toolCallId'] ?? '');
       const name = String(u['title'] ?? u['kind'] ?? 'tool');
@@ -33,7 +40,7 @@ export function mapAcpUpdate(
       if (status !== 'completed' && status !== 'failed') return [];
       const name = toolNames.get(id) ?? 'tool';
       const events: SessionEvent[] = [
-        { kind: 'tool_result', name, ok: status === 'completed', durationMs: 0 }
+        { kind: 'tool_result', name, ok: status === 'completed', durationMs: 0, ...acpOutput(u['content'], u['rawOutput']) }
       ];
       if (status === 'completed') events.push(...diffArtifacts(u['content']));
       const artifact = artifactOf(u['rawOutput']);
@@ -221,4 +228,40 @@ export function toAcpPrompt(
     });
   }
   return { ok: true, value: blocks };
+}
+
+/**
+ * ACP 工具输出：`content` 里的 text 块（`{ type: 'content', content: { type: 'text', text } }`）和 diff 块，
+ * 没有就退回 `rawOutput`（OpenCode 放 `{ output }`，也可能是字符串）。diff 写成统一 diff 的样子，界面按 diff 着色。
+ */
+function acpOutput(content: unknown, rawOutput: unknown): { output?: string } {
+  const parts: string[] = [];
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      const c = item as Record<string, unknown> | null;
+      if (c?.['type'] === 'content') {
+        const inner = c['content'] as Record<string, unknown> | undefined;
+        if (inner?.['type'] === 'text' && typeof inner['text'] === 'string') parts.push(inner['text']);
+      } else if (c?.['type'] === 'diff' && typeof c['path'] === 'string') {
+        parts.push(simpleDiff(c['path'], typeof c['oldText'] === 'string' ? c['oldText'] : '', typeof c['newText'] === 'string' ? c['newText'] : ''));
+      }
+    }
+  }
+  if (parts.length === 0) {
+    if (typeof rawOutput === 'string') parts.push(rawOutput);
+    else if (typeof rawOutput === 'object' && rawOutput !== null) {
+      const r = rawOutput as Record<string, unknown>;
+      const text = r['output'] ?? r['stdout'] ?? r['content'];
+      parts.push(typeof text === 'string' ? text : safeJson(rawOutput));
+    }
+  }
+  const text = parts.join('\n').trim();
+  return text === '' || text === '{}' ? {} : { output: clipToolOutput(text) };
+}
+
+/** 不做 LCS：旧文本全是「-」、新文本全是「+」。够看出改了什么，也不拖慢事件流。 */
+function simpleDiff(path: string, oldText: string, newText: string): string {
+  const minus = oldText === '' ? [] : oldText.split('\n').map((line) => `-${line}`);
+  const plus = newText.split('\n').map((line) => `+${line}`);
+  return [`--- ${path}`, `+++ ${path}`, ...minus, ...plus].join('\n');
 }

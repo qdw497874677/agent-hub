@@ -338,8 +338,10 @@ export function CanvasView({
           flowFit.current = instance.fitView;
           fitOnOpen(instance, container.current);
         }}
-        onNodeClick={(_, node) => {
+        onNodeClick={(event, node) => {
           if (node.type !== 'session') return;
+          // 卡片里的输入框、按钮、选择器、链接各有各的事；点它们不算「打开这条会话」。
+          if ((event.target as HTMLElement).closest('input, textarea, button, select, a, [role="menu"], [role="listbox"], .card-resize-handle')) return;
           revealing.current = { id: node.id, until: Date.now() + 800 };
           onSelect(node.id);
           requestAnimationFrame(() => reveal(node.id));

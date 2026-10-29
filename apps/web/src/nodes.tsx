@@ -71,7 +71,14 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
 
 function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
   // 卡片只放 agent 说的话。用户自己的提问在专注对话里看，卡片上占地方。
-  if (block.kind === 'prompt') return null;
+  if (block.kind === 'prompt' || block.kind === 'thinking') return null;
+  if (block.kind === 'error') {
+    return (
+      <p role="alert" className="whitespace-pre-wrap border-l-2 border-rust bg-rust/10 px-2 py-1 text-meta text-rust">
+        {block.text}
+      </p>
+    );
+  }
   if (block.kind === 'stall') {
     return (
       <p role="status" className="border-l border-rust pl-2 text-meta text-rust">

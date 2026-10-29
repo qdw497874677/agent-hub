@@ -15,15 +15,21 @@ export type Block = Sequenced &
     /** 用户自己说的话。它来自平台（server 收到 prompt 时先记一条），不是 agent 推来的。 */
     | { readonly kind: 'prompt'; readonly text: string; readonly attachments: readonly StoredAttachmentDto[] }
     | { readonly kind: 'text'; readonly text: string }
+    /** 模型的思考过程；专注对话按显示设置折叠或隐藏，卡片不显示。 */
+    | { readonly kind: 'thinking'; readonly text: string }
     | { readonly kind: 'tool'; readonly name: string; readonly input: string; readonly result: ToolResult | null }
     | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number }
     /** server 卡顿巡检记的提醒；一有新输出就撤掉（见 applyBlocks）。 */
     | { readonly kind: 'stall'; readonly text: string }
+    /** 这一轮失败了（ended · failed）：原因写进对话里，不只是状态点变红——否则看着就是「发了没回」。 */
+    | { readonly kind: 'error'; readonly text: string }
   );
 
 interface ToolResult {
   readonly ok: boolean;
   readonly durationMs: number;
+  /** 工具输出；老事件、不报输出的 agent 没有。 */
+  readonly output?: string;
 }
 
 export interface LiveSession {
@@ -72,13 +78,20 @@ function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: numbe
       }
       return [...blocks, { kind: 'text', text: event.delta, seq }];
     }
+    case 'thinking': {
+      const last = blocks[blocks.length - 1];
+      if (last?.kind === 'thinking') {
+        return [...blocks.slice(0, -1), { kind: 'thinking', text: last.text + event.delta, seq }];
+      }
+      return [...blocks, { kind: 'thinking', text: event.delta, seq }];
+    }
     case 'tool_call':
       return [...blocks, { kind: 'tool', name: event.name, input: event.input, result: null, seq }];
     case 'tool_result': {
       for (let index = blocks.length - 1; index >= 0; index -= 1) {
         const block = blocks[index];
         if (block?.kind === 'tool' && block.name === event.name && block.result === null) {
-          const patched: Block = { ...block, result: { ok: event.ok, durationMs: event.durationMs } };
+          const patched: Block = { ...block, result: { ok: event.ok, durationMs: event.durationMs, ...(event.output === undefined ? {} : { output: event.output }) } };
           return [...blocks.slice(0, index), patched, ...blocks.slice(index + 1)];
         }
       }
@@ -86,6 +99,8 @@ function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: numbe
     }
     case 'artifact':
       return [...blocks, { kind: 'artifact', path: event.path, bytes: event.bytes, seq }];
+    case 'ended':
+      return event.outcome === 'failed' ? [...blocks, { kind: 'error', text: event.reason ?? '这一轮失败了，agent 没有说原因', seq }] : blocks;
     default:
       return blocks;
   }
@@ -205,4 +220,27 @@ export function seedLive(
     changed = true;
   }
   return changed ? next : current;
+}
+
+/**
+ * 打开专注对话时换上整段历史。
+ *
+ * 画布投影只带最后 24 条事件（够卡片用），可一段思考就是上百个 delta——对话页只靠它会是空的。
+ * 拉取期间又来了更新的帧（内存比拿回来的历史还新），就保留内存里的，不倒退。
+ */
+export function withFullHistory(current: LiveMap, session: SessionDto, entries: readonly JournalEntryDto[]): LiveMap {
+  const previous = current[session.id];
+  const top = entries.reduce((highest, entry) => Math.max(highest, entry.seq), 0);
+  if (previous && previous.lastSeq > top) return current;
+  const last = entries[entries.length - 1];
+  return {
+    ...current,
+    [session.id]: {
+      blocks: blocksFromEntries(entries),
+      status: previous?.status ?? session.status,
+      lastSeq: Math.max(top, previous?.lastSeq ?? 0),
+      reason: reasonFromEntries(entries),
+      awaiting: previous?.awaiting ?? (last !== undefined && last.event.kind !== 'ended')
+    }
+  };
 }

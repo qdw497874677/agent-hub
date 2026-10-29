@@ -331,7 +331,7 @@ export function Composer({
         />
         {notice ? <p className="mt-1 text-meta text-rust">{notice}</p> : null}
         <div className="mt-1 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 items-center gap-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
             <button
               type="button"
               aria-label="添加附件"
@@ -376,7 +376,7 @@ export function Composer({
                 event.target.value = '';
               }}
             />
-            <span className="shrink-0 text-meta text-tertiary">{agentLabel}</span>
+            <span className="hidden shrink-0 text-meta text-tertiary sm:inline">{agentLabel}</span>
             <OptionControls
               options={session.optionSpec}
               values={session.options}

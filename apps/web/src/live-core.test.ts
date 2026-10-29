@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBlocks, applyFrame, catchUp, type LiveMap } from './live-core.ts';
+import { applyBlocks, applyFrame, catchUp, withFullHistory, type LiveMap } from './live-core.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
@@ -62,4 +62,30 @@ test('卡顿提醒挂在末尾，来了新输出就撤掉', () => {
   assert.deepEqual(resumed, [{ kind: 'text', text: '在想……好了', seq: 3 }]);
   const other = applyBlocks(resumed, { kind: 'diagnostic', level: 'info', text: '别的诊断' }, 4);
   assert.equal(other, resumed);
+});
+
+test('这一轮失败：原因作为一块进对话，完成/停止不进', () => {
+  const failed = applyBlocks([], { kind: 'ended', outcome: 'failed', reason: '模型调用失败：API key 已过期' }, 2);
+  assert.deepEqual(failed, [{ kind: 'error', text: '模型调用失败：API key 已过期', seq: 2 }]);
+  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'done' }, 2), []);
+  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'stopped' }, 2), []);
+});
+
+type SessionDto = Parameters<typeof withFullHistory>[1];
+type JournalEntryDto = Parameters<typeof withFullHistory>[2][number];
+
+test('打开对话换上整段历史：投影被思考 delta 挤满时正文也在；内存更新时不倒退', () => {
+  const session = { id: 's1', status: 'done', lastSeq: 40 } as unknown as SessionDto;
+  const entries: JournalEntryDto[] = [
+    { seq: 1, at: '', event: { kind: 'prompt', text: '只回复两个字' } },
+    ...Array.from({ length: 30 }, (_, i) => ({ seq: i + 2, at: '', event: { kind: 'thinking' as const, delta: 'x' } })),
+    { seq: 32, at: '', event: { kind: 'text', delta: '好的' } },
+    { seq: 33, at: '', event: { kind: 'ended', outcome: 'done' } }
+  ] as unknown as JournalEntryDto[];
+  const map = withFullHistory({}, session, entries);
+  const kinds = map['s1']?.blocks.map((block) => block.kind);
+  assert.deepEqual(kinds, ['prompt', 'thinking', 'text']);
+  assert.equal(map['s1']?.lastSeq, 33);
+  const newer = { s1: { blocks: [], status: 'running', lastSeq: 50, reason: null, awaiting: true } } as unknown as LiveMap;
+  assert.equal(withFullHistory(newer, session, entries), newer);
 });

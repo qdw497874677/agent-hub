@@ -230,12 +230,14 @@ export const promptPartSchema = z.discriminatedUnion('kind', [
 export const sessionEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('prompt'), text: z.string(), attachments: z.array(storedAttachmentSchema).optional() }),
   z.object({ kind: z.literal('text'), delta: z.string() }),
+  z.object({ kind: z.literal('thinking'), delta: z.string() }),
   z.object({ kind: z.literal('tool_call'), name: z.string(), input: z.string() }),
   z.object({
     kind: z.literal('tool_result'),
     name: z.string(),
     ok: z.boolean(),
-    durationMs: z.number().int().nonnegative()
+    durationMs: z.number().int().nonnegative(),
+    output: z.string().optional()
   }),
   z.object({ kind: z.literal('artifact'), path: z.string(), bytes: z.number().int().nonnegative() }),
   z.object({

@@ -1,4 +1,4 @@
-import type { SessionEvent } from '@agent-hub/domain';
+import { clipToolOutput, type SessionEvent } from '@agent-hub/domain';
 
 /**
  * Pi RPC 事件 → 平台归一化事件。
@@ -17,15 +17,24 @@ export interface PiEventMapper {
 
 export function createPiEventMapper(): PiEventMapper {
   const writePaths = new Map<string, string>();
-  return { map: (record) => mapRecord(record, writePaths) };
+  const turn: TurnState = { error: null };
+  return { map: (record) => mapRecord(record, writePaths, turn) };
 }
 
 /** 一次性映射（不跨事件）：看不到前面那条 start 的入参，因此永远不会产出 artifact。 */
 export function mapPiEvent(record: unknown): SessionEvent[] {
-  return mapRecord(record, new Map());
+  return mapRecord(record, new Map(), { error: null });
 }
 
-function mapRecord(record: unknown, writePaths: Map<string, string>): SessionEvent[] {
+/**
+ * 这一轮里模型调用失败的原因。Pi 把它放在 assistant 消息的 `stopReason: 'error'` + `errorMessage` 上，
+ * 最后照样发 `agent_settled`（没有 aborted）——只看 settled 就会把失败记成「完成」，用户看到的是发了没回。
+ */
+interface TurnState {
+  error: string | null;
+}
+
+function mapRecord(record: unknown, writePaths: Map<string, string>, turn: TurnState): SessionEvent[] {
   if (typeof record !== 'object' || record === null) return [];
   const r = record as Record<string, unknown>;
   const type = r['type'];
@@ -35,6 +44,9 @@ function mapRecord(record: unknown, writePaths: Map<string, string>): SessionEve
       const inner = r['assistantMessageEvent'] as Record<string, unknown> | undefined;
       if (inner?.['type'] === 'text_delta' && typeof inner['delta'] === 'string') {
         return inner['delta'] === '' ? [] : [{ kind: 'text', delta: inner['delta'] }];
+      }
+      if (inner?.['type'] === 'thinking_delta' && typeof inner['delta'] === 'string') {
+        return inner['delta'] === '' ? [] : [{ kind: 'thinking', delta: inner['delta'] }];
       }
       return [];
     }
@@ -55,7 +67,8 @@ function mapRecord(record: unknown, writePaths: Map<string, string>): SessionEve
           kind: 'tool_result',
           name: String(r['toolName'] ?? 'unknown'),
           ok: r['isError'] !== true,
-          durationMs: typeof r['durationMs'] === 'number' ? Math.max(0, Math.round(r['durationMs'])) : 0
+          durationMs: typeof r['durationMs'] === 'number' ? Math.max(0, Math.round(r['durationMs'])) : 0,
+          ...outputOf(r['result'])
         }
       ];
       const key = callKey(r);
@@ -65,8 +78,23 @@ function mapRecord(record: unknown, writePaths: Map<string, string>): SessionEve
       if (path && r['isError'] !== true) events.push({ kind: 'artifact', path, bytes: 0 });
       return events;
     }
-    case 'agent_settled':
-      return [{ kind: 'ended', outcome: r['aborted'] === true ? 'stopped' : 'done' }];
+    case 'agent_start':
+      turn.error = null;
+      return [];
+    case 'message_end': {
+      const message = r['message'] as Record<string, unknown> | undefined;
+      if (message?.['role'] === 'assistant' && message['stopReason'] === 'error') {
+        turn.error = typeof message['errorMessage'] === 'string' ? message['errorMessage'] : '';
+      }
+      return [];
+    }
+    case 'agent_settled': {
+      const error = turn.error;
+      turn.error = null;
+      if (r['aborted'] === true) return [{ kind: 'ended', outcome: 'stopped' }];
+      if (error !== null) return [{ kind: 'ended', outcome: 'failed', reason: modelFailure(error) }];
+      return [{ kind: 'ended', outcome: 'done' }];
+    }
     case 'session_info_changed':
       return [];
     case 'response': {
@@ -102,4 +130,45 @@ function safeJson(value: unknown): string {
   } catch {
     return '{}';
   }
+}
+
+/**
+ * 把 Pi 的 `errorMessage` 说成人话。它通常长这样：
+ * `OpenAI API error (401): {"type":"authentication_error","code":"api_key_expired","message":"…"}`。
+ * 认得的几种给出该做什么；其余原样带上服务商的 message，不吞。
+ */
+export function modelFailure(raw: string): string {
+  const status = /\((\d{3})\)/.exec(raw)?.[1];
+  let code = '';
+  let message = raw.trim();
+  const json = raw.indexOf('{');
+  if (json >= 0) {
+    try {
+      const body = JSON.parse(raw.slice(json)) as Record<string, unknown>;
+      const inner = (typeof body['error'] === 'object' && body['error'] !== null ? body['error'] : body) as Record<string, unknown>;
+      code = String(inner['code'] ?? inner['type'] ?? '');
+      if (typeof inner['message'] === 'string') message = inner['message'];
+    } catch {
+      // 不是 JSON：用原文
+    }
+  }
+  const head = '模型调用失败';
+  if (code === 'api_key_expired') return `${head}：API key 已过期。到服务商控制台新建一个 key，更新到这台机器上 Pi 的配置里再试。（${message}）`;
+  if (status === '401' || status === '403' || /authentication|unauthorized|invalid.?api.?key/i.test(code))
+    return `${head}：认证没通过（${status ?? code}），检查这台机器上 Pi 配的 API key。（${message}）`;
+  if (status === '429') return `${head}：被限流或额度用完（429），稍后再试或换个模型。（${message}）`;
+  if (message === '') return `${head}：服务商没有给出原因`;
+  return `${head}：${status ? `(${status}) ` : ''}${message}`;
+}
+
+/** Pi 的工具结果：`{ content: [{ type: 'text', text }], structuredContent? }`。只取文字，截断后进 journal。 */
+function outputOf(result: unknown): { output?: string } {
+  if (typeof result === 'string') return result === '' ? {} : { output: clipToolOutput(result) };
+  if (typeof result !== 'object' || result === null) return {};
+  const content = (result as Record<string, unknown>)['content'];
+  if (!Array.isArray(content)) return {};
+  const text = content
+    .map((part) => (typeof part === 'object' && part !== null && (part as Record<string, unknown>)['type'] === 'text' ? String((part as Record<string, unknown>)['text'] ?? '') : ''))
+    .join('');
+  return text === '' ? {} : { output: clipToolOutput(text) };
 }

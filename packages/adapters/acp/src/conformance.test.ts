@@ -13,7 +13,7 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
   },
   {
     given: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: '想一想' } },
-    expect: []
+    expect: [{ kind: 'thinking', delta: '想一想' }]
   },
   {
     given: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read src/a.ts', kind: 'read', rawInput: { path: 'src/a.ts' } },
@@ -35,7 +35,7 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
       rawOutput: { path: '/tmp/out.md' }
     },
     expect: [
-      { kind: 'tool_result', name: 'tool', ok: false, durationMs: 0 },
+      { kind: 'tool_result', name: 'tool', ok: false, durationMs: 0, output: '{"path":"/tmp/out.md"}' },
       { kind: 'artifact', path: '/tmp/out.md', bytes: 0 }
     ]
   }

@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import type { CanvasDto, SessionDto } from './api.ts';
-import { api, attachmentUrl } from './api.ts';
+import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
+import { api } from './api.ts';
+import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
 import { Composer } from './composer.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
+import { ForkDialog, SessionDetails } from './inspector.tsx';
 import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { sessionCommands } from './commands.ts';
-import type { Block, LiveSession } from './live.ts';
+import type { LiveSession } from './live.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -18,142 +20,8 @@ interface Props {
   readonly onChanged: () => void;
   /** 换个地方继续之后跳到新会话。 */
   readonly onOpenSession: (sessionId: string) => void;
+  readonly artifacts: readonly ArtifactDto[];
   readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
-}
-
-function BlockView({ block, agentLabel, sessionId }: { block: Block; agentLabel: string; sessionId: string }) {
-  if (block.kind === 'prompt') {
-    const images = block.attachments.filter((item) => item.kind === 'image');
-    const others = block.attachments.filter((item) => item.kind !== 'image');
-    return (
-      <div className="flex flex-col items-end gap-1.5">
-        {images.length > 0 ? (
-          <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
-            {images.map((item) => (
-              <a key={item.path} href={attachmentUrl(sessionId, item.path)} target="_blank" rel="noreferrer">
-                <img
-                  src={attachmentUrl(sessionId, item.path)}
-                  alt={item.name}
-                  loading="lazy"
-                  className="max-h-40 max-w-[240px] rounded-md border border-hair object-cover"
-                />
-              </a>
-            ))}
-          </div>
-        ) : null}
-        {others.length > 0 ? (
-          <ul aria-label="附带的文件" className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
-            {others.map((item) => (
-              <li
-                key={item.path}
-                title={item.path}
-                className="max-w-[260px] truncate rounded-sm border border-hair px-1.5 py-0.5 font-mono text-meta text-secondary"
-              >
-                {item.kind === 'mention' ? '@' : '▤ '}
-                {item.kind === 'mention' ? item.path : item.name}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        {block.text !== '' ? (
-          <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-3 py-2 text-body text-primary">
-            {block.text}
-          </p>
-        ) : null}
-      </div>
-    );
-  }
-  if (block.kind === 'stall') {
-    return (
-      <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
-        {block.text}
-      </p>
-    );
-  }
-  if (block.kind === 'text') {
-    return <p className="whitespace-pre-wrap text-body leading-relaxed text-primary/90">{block.text}</p>;
-  }
-  if (block.kind === 'tool') {
-    const mark = block.result === null ? '⋯' : block.result.ok ? '✓' : '✗';
-    const spent = block.result === null ? '' : `${block.result.durationMs}ms`;
-    return (
-      <details className="group border-l border-hair pl-3">
-        <summary className="flex cursor-pointer list-none items-baseline gap-2 text-meta text-secondary">
-          <span className="text-tertiary">{mark}</span>
-          <span className="font-mono text-sage">{block.name}</span>
-          <span className="truncate opacity-60">{block.input.slice(0, 120)}</span>
-          <span className="ml-auto shrink-0 text-tertiary">{spent}</span>
-        </summary>
-        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-meta text-tertiary">
-          {block.input}
-        </pre>
-      </details>
-    );
-  }
-  return (
-    <p className="flex items-baseline gap-2 text-meta">
-      <span className="text-accent-dim">◆</span>
-      <span className="font-mono text-secondary">{block.path}</span>
-      <span className="text-tertiary">{block.bytes > 0 ? `${block.bytes} 字节` : ''}</span>
-      <span className="ml-auto text-tertiary">{agentLabel}</span>
-    </p>
-  );
-}
-
-/**
- * 头部的「⋯」：手机上专注对话是唯一的入口（检查器只在画布里），会话级的动作收在这里。
- * 点外面或按 Esc 收起；触控区 44px。
- */
-function SessionMenu({ session, onContinueElsewhere }: { session: SessionDto; onContinueElsewhere: () => void }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: PointerEvent) => {
-      if (!root.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
-    };
-    window.addEventListener('pointerdown', onPointer);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('pointerdown', onPointer);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-  const allowed = canContinueElsewhere(session);
-  return (
-    <div ref={root} className="relative -mr-2">
-      <button
-        className="flex h-11 w-11 items-center justify-center rounded-sm text-body text-tertiary hover:text-primary"
-        aria-label="会话操作"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        ⋯
-      </button>
-      {open ? (
-        <div role="menu" className="absolute right-0 z-20 mt-1 w-56 rounded-sm border border-hair bg-panel py-1 shadow">
-          <button
-            role="menuitem"
-            className="block w-full px-3 py-2.5 text-left text-sub text-secondary hover:text-primary disabled:opacity-40"
-            disabled={!allowed}
-            onClick={() => {
-              setOpen(false);
-              onContinueElsewhere();
-            }}
-          >
-            换个地方继续…
-            <span className="mt-0.5 block text-meta text-tertiary">
-              {allowed ? '换台机器或工作空间，带着对话摘要接着做' : CONTINUE_DISABLED_HINT}
-            </span>
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
 }
 
 /**
@@ -171,21 +39,33 @@ export function FocusView({
   onBack,
   onChanged,
   onOpenSession,
+  artifacts,
   onChangeOption
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [details, setDetails] = useState(false);
+  const [forkAt, setForkAt] = useState<string | null>(null);
+  const [forkError, setForkError] = useState<string | null>(null);
+  const [settings, changeSettings] = useDisplaySettings();
   const tail = useRef<HTMLDivElement | null>(null);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const blocks = live?.blocks ?? [];
   const status = live?.status ?? session.status;
   const reason = live?.reason ?? null;
+  const agentLabel = agent?.label ?? session.agentId;
+  const lastSeq = live?.lastSeq ?? session.lastSeq;
+  const forkable = !busy && lastSeq > 0 && agent?.capabilities.fork.state !== 'denied';
+  function startFork(seq: number) {
+    setForkError(null);
+    setForkAt(String(seq));
+  }
 
   useEffect(() => {
     tail.current?.scrollIntoView({ block: 'end' });
-  }, [blocks.length, session.id]);
+  }, [blocks.length, blocks[blocks.length - 1]?.seq, session.id]);
 
   async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
@@ -204,21 +84,77 @@ export function FocusView({
 
   return (
     <div className="flex h-full flex-col bg-canvas">
-      <header className="flex h-11 shrink-0 items-center gap-3 border-b border-hair px-3">
-        <button className="text-meta text-tertiary hover:text-primary" onClick={onBack}>
-          ← 返回
+      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3">
+        <button className="flex h-11 shrink-0 items-center px-1 text-meta text-tertiary hover:text-primary md:h-9" onClick={onBack} aria-label="返回">
+          ←<span className="hidden sm:inline">&nbsp;返回</span>
         </button>
-        <span className="h-3 w-px bg-hair" />
-        <p className="min-w-0 truncate text-body text-primary">{task?.title ?? session.taskId}</p>
-        <span className="hidden shrink-0 font-mono text-meta text-tertiary sm:inline">
-          {agent?.label ?? session.agentId} · {session.model === '' ? '默认模型' : session.model}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-3 text-meta text-tertiary">
-          {session.origin.kind === 'fork' ? <span>分叉自 #{session.origin.atSeq}</span> : null}
-          <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
-          <SessionMenu session={session} onContinueElsewhere={() => setContinuing(true)} />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-body text-primary">{task?.title ?? session.taskId}</p>
+          <p className="truncate font-mono text-meta text-tertiary">
+            {agentLabel} · {session.model === '' ? '默认模型' : session.model}
+            {session.origin.kind === 'fork' ? ` · 分叉自 #${session.origin.atSeq}` : ''}
+          </p>
+        </div>
+        <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
+        <span className="flex shrink-0 items-center">
+          <button
+            className="flex h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:h-9"
+            onClick={() => setDetails(true)}
+          >
+            详情
+          </button>
+          <DisplayMenu settings={settings} onChange={changeSettings} />
+          <Dropdown label="更多" icon="⋯">
+            {(close) => (
+              <>
+                <MenuItem
+                  title="从某一步分叉…"
+                  hint={forkable ? '按事件序号开一条新会话，原会话不动' : '这条会话还没有内容'}
+                  disabled={!forkable}
+                  onClick={() => {
+                    close();
+                    startFork(lastSeq);
+                  }}
+                />
+                <MenuItem
+                  title="换个地方继续…"
+                  hint={canContinueElsewhere(session) ? '换台机器或工作空间，带着对话摘要接着做' : CONTINUE_DISABLED_HINT}
+                  disabled={!canContinueElsewhere(session)}
+                  onClick={() => {
+                    close();
+                    setContinuing(true);
+                  }}
+                />
+              </>
+            )}
+          </Dropdown>
         </span>
       </header>
+      {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} /> : null}
+      {forkAt !== null ? (
+        <ForkDialog
+          lastSeq={lastSeq}
+          value={forkAt}
+          onChange={setForkAt}
+          busy={busy}
+          error={forkError}
+          onClose={() => setForkAt(null)}
+          onFork={async () => {
+            setBusy(true);
+            setForkError(null);
+            try {
+              const created = await api.fork({ sessionId: session.id, atSeq: Number(forkAt), agentId: session.agentId, model: session.model });
+              setForkAt(null);
+              onChanged();
+              onOpenSession(created.id);
+            } catch (failure) {
+              setForkError((failure as Error).message);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      ) : null}
       {continuing ? (
         <ContinueDialog
           canvas={canvas}
@@ -233,20 +169,34 @@ export function FocusView({
       ) : null}
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div role="log" aria-label="对话记录" className="mx-auto flex max-w-[760px] flex-col gap-4 px-4 py-6">
-          {reason ? <p className="border-l border-rust pl-2 text-meta text-rust">{reason}</p> : null}
+        <div
+          role="log"
+          aria-label="对话记录"
+          data-compact={settings.compact ? 'true' : undefined}
+          className={`mx-auto flex max-w-[760px] flex-col ${settings.compact ? 'gap-2 px-3 py-3 text-[0.95em]' : 'gap-4 px-4 py-6'}`}
+        >
           {blocks.length === 0 ? (
-            <p className="text-meta text-tertiary">
-              这条会话还没有说话。在下面写一句，交给 {agent?.label ?? session.agentId}。
-            </p>
+            <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
           ) : (
             blocks.map((block, index) => (
-              <BlockView key={index} block={block} agentLabel={agent?.label ?? session.agentId} sessionId={session.id} />
+              <ChatBlock
+                key={index}
+                block={block}
+                agentLabel={agentLabel}
+                sessionId={session.id}
+                settings={settings}
+                last={index === blocks.length - 1}
+                running={status === 'running' && (live?.awaiting ?? false)}
+                onFork={forkable ? startFork : null}
+              />
             ))
           )}
-          {status === 'running' ? (
+          {reason && blocks[blocks.length - 1]?.kind !== 'error' ? (
+            <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
+          ) : null}
+          {status === 'running' && (live?.awaiting ?? false) ? (
             <p className="text-meta text-tertiary" aria-live="polite">
-              {agent?.label ?? session.agentId} 正在说…
+              {agentLabel} 正在回复…
             </p>
           ) : null}
           <div ref={tail} />
@@ -258,7 +208,7 @@ export function FocusView({
           <Composer
             large
             session={{ ...session, status }}
-            agentLabel={agent?.label ?? session.agentId}
+            agentLabel={agentLabel}
             draft={draft}
             onDraftChange={onDraftChange}
             onSend={(text, attachments) =>

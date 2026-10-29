@@ -13,15 +13,22 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
   },
   {
     given: { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: '嗯' } },
-    expect: []
+    expect: [{ kind: 'thinking', delta: '嗯' }]
   },
   {
     given: { type: 'tool_execution_start', toolCallId: 'c1', toolName: 'bash', args: { command: 'ls' } },
     expect: [{ kind: 'tool_call', name: 'bash', input: '{"command":"ls"}' }]
   },
   {
-    given: { type: 'tool_execution_end', toolCallId: 'c1', toolName: 'bash', isError: false, durationMs: 12.6 },
-    expect: [{ kind: 'tool_result', name: 'bash', ok: true, durationMs: 13 }]
+    given: {
+      type: 'tool_execution_end',
+      toolCallId: 'c1',
+      toolName: 'bash',
+      isError: false,
+      durationMs: 12.6,
+      result: { content: [{ type: 'text', text: 'hi\n' }], structuredContent: { output: 'hi\n', exit_code: 0 } }
+    },
+    expect: [{ kind: 'tool_result', name: 'bash', ok: true, durationMs: 13, output: 'hi\n' }]
   },
   {
     // 真实录制里 end 不带 args：路径只能从 start 那条记住。这条 fixture 曾经
@@ -52,6 +59,33 @@ const FIXTURE: { readonly given: unknown; readonly expect: unknown[] }[] = [
   },
   { given: { type: 'agent_settled', aborted: false }, expect: [{ kind: 'ended', outcome: 'done' }] },
   { given: { type: 'agent_settled', aborted: true }, expect: [{ kind: 'ended', outcome: 'stopped' }] },
+  // 模型调用失败：Pi 只在 assistant 消息上标 stopReason=error，settled 照样不带 aborted——不能记成「完成」
+  { given: { type: 'agent_start' }, expect: [] },
+  {
+    given: {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [],
+        stopReason: 'error',
+        errorMessage: 'OpenAI API error (401): {"type":"authentication_error","code":"api_key_expired","message":"This API key has expired."}'
+      }
+    },
+    expect: []
+  },
+  {
+    given: { type: 'agent_settled', aborted: false },
+    expect: [
+      {
+        kind: 'ended',
+        outcome: 'failed',
+        reason: '模型调用失败：API key 已过期。到服务商控制台新建一个 key，更新到这台机器上 Pi 的配置里再试。（This API key has expired.）'
+      }
+    ]
+  },
+  // 下一轮成功：上一轮的错误不能串过来
+  { given: { type: 'agent_start' }, expect: [] },
+  { given: { type: 'agent_settled', aborted: false }, expect: [{ kind: 'ended', outcome: 'done' }] },
   {
     given: { type: 'response', command: 'set_model', success: false, error: 'Model not found' },
     expect: [{ kind: 'diagnostic', level: 'error', text: 'set_model：Model not found' }]
