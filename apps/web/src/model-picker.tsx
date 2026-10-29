@@ -194,7 +194,10 @@ function ModelSheet({
                     <span aria-hidden className="w-4 shrink-0 text-center text-accent">
                       {item.value === value ? '✓' : ''}
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sub">{item.label}</span>
+                    <span className="min-w-0 flex-1 truncate font-mono text-sub" title={item.label}>
+                      {/* 组名已经是提供方了，行里不再重复前缀 */}
+                      {item.label.startsWith(`${group.heading}/`) ? item.label.slice(group.heading.length + 1) : item.label}
+                    </span>
                   </Command.Item>
                 ))}
               </Command.Group>
