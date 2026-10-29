@@ -5,7 +5,7 @@ import { loginByApi } from "./login.ts";
 
 const RUN = currentRun();
 const NAME = `picker-${RUN}`;
-const MANAGED = `/tmp/agent-hub/${NAME}`;
+const MANAGED = `/tmp/agent-hub-workspaces/${NAME}`;
 const SCRATCH = `/tmp/agent-hub-e2e-pick-${RUN}`;
 
 async function openPickerFor(page: Page, name: string) {
@@ -40,7 +40,7 @@ async function managedAndCreate(page: Page) {
   const { panel, picker } = await openPickerFor(page, NAME);
   const input = pathBox(picker);
   await picker
-    .getByRole("option", { name: `创建项目目录 agent-hub/${NAME}` })
+    .getByRole("option", { name: `创建项目目录 agent-hub-workspaces/${NAME}` })
     .click();
   await expect(input).toHaveValue(`${MANAGED}/`);
   expect(existsSync(MANAGED)).toBe(true);

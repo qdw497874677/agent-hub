@@ -6,6 +6,7 @@ import { invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { createDirectory, gitOn, parentOf, resolveMachine, rootsOf, type Machine } from './machine-dirs.ts';
+import { MANAGED_DIR } from '../directories.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 
 /** 分支和目录名里用的短 slug：只留 ascii 字母数字，中文标题退回 task。 */
@@ -41,7 +42,7 @@ export interface PrepareTemporaryCommand {
  * 新建临时工作空间（§4「临时」两项）：
  * - 这台机器上有这个项目的 git 长期工作空间（或项目绑了仓库，先 clone 一个）→ 在它旁边的 `.worktrees/` 下
  *   开 worktree，新分支 `agent-hub/<slug>-<短 id>`（source worktree）；
- * - 否则（非 git 项目）→ 新建空目录 `<roots[0]>/agent-hub/.tmp/<slug>-<短 id>`（source created）。
+ * - 否则（非 git 项目）→ 新建空目录 `<roots[0]>/agent-hub-workspaces/.tmp/<slug>-<短 id>`（source created）。
  * 数量不限（§10 第 5 条），提示由界面给。
  */
 export async function prepareTemporaryWorkspaceUseCase(
@@ -81,7 +82,7 @@ export async function prepareTemporaryWorkspaceUseCase(
     const root = roots[0];
     if (root === undefined) return err(invalid('这台机器没有可以新建目录的位置'));
     let parent = root;
-    for (const segment of ['agent-hub', '.tmp']) {
+    for (const segment of [MANAGED_DIR, '.tmp']) {
       const made = await createDirectory(deps, { workerId: machine.workerId, parent, name: segment, home: command.home });
       if (!made.ok) return made;
       parent = made.value.path;

@@ -66,10 +66,11 @@ curl -fsSL http://<hub>:7878/install-worker.sh | HUB_PAIR=ahw_pair_… bash
 ![添加机器](images/guide/04-add-machine.png)
 
 - 弹窗里的地址取自你浏览器当前打开的 hub 地址；如果你是经 SSH 端口转发等方式打开的，先把它换成新机器能访问到的地址（`HUB_HTTP=…`，见下面的隧道一节）。
-- 代码默认拉到 `~/agent-hub`，而 hub 的托管目录（新建项目目录、非 git 项目的临时工作空间 `~/agent-hub/.tmp/…`）也在 `<WORKER_ROOTS 第一个>/agent-hub`。WORKER_ROOTS 用默认的 `$HOME` 时两者会落进同一个目录：建议把 `WORKER_ROOTS` 设成专门的工作目录（如 `$HOME/code`），或用 `AGENT_HUB_DIR=…` 把代码装到别处。
-- 新机器只需要 `git`、`curl`、`tar`；脚本会装 Node 26、把代码拉到 `~/agent-hub` 并对齐 hub 的提交，用配对码换一份**这台机器专属的凭据**，再装 systemd 服务 `agent-hub-worker`。
+- 代码默认拉到 `~/agent-hub`；hub 托管的目录（新建项目目录、非 git 项目的临时工作空间 `.tmp/…`）放在 `<WORKER_ROOTS 第一个>/agent-hub-workspaces`，和代码分开。agent-hub 的安装目录里不允许新建文件夹，免得项目落进 agent-hub 自己的 git 仓库。老版本建在 `~/agent-hub/…` 下的工作空间照旧能用，不会被搬走。
+- 新机器需要 `git` 和 `curl`；没有 Node 26 时还要 `tar` 和 `xz`（用来解 Node 的安装包）；脚本会装 Node 26、把代码拉到 `~/agent-hub` 并对齐 hub 的提交，用配对码换一份**这台机器专属的凭据**，再装 systemd 服务 `agent-hub-worker`。
 - 配对码 **15 分钟有效、只能用一次**，弹窗里有倒计时；过期就点「重新生成」。弹窗会一直「等待新机器连上」，连上后提示已连上。「它会做什么」可以展开看脚本的每一步。
 - 配置写在新机器的 `~/.config/agent-hub/worker.env`（权限 600），凭据不会出现在 unit 文件和进程参数里。
+- **同一台机器再装一台 Worker**（比如给另一个账号、另一组目录用）：在命令的 `bash` 前加 `WORKER_INSTANCE=<名字>`，例如 `… | HUB_PAIR=ahw_pair_… WORKER_INSTANCE=second bash`。这一台的代码在 `~/agent-hub-second`、配置在 `~/.config/agent-hub-second/worker.env`、资产在 `~/.agent-hub/assets-second`、服务叫 `agent-hub-worker-second`，默认显示名 `<hostname>-second`，和原来那台互不影响。不用这个选项时，两台会共用配置、资产目录和服务名，后装的那台会覆盖前一台。
 - 不要的机器在面板或后台点「吊销」：凭据作废、立刻断开、不再重连。
 
 ### 兜底：共享 HUB_TOKEN
@@ -162,7 +163,7 @@ Worker 会连 `ws://127.0.0.1:17878/worker`。隧道断开时 Worker 会自动�
 2. **工作空间**：
    - 已有的工作空间，比如「guide-demo · 持久 ~/guide-demo」。
    - **新建临时工作空间**：为这个任务单独开一份，用完自动清理；有未保存的改动会保留并提醒。
-   - **新建持久工作空间**：一直保留，下次还能接着用。可以「新建空目录」或「选已有目录」（项目配了仓库时还有「下载仓库」）。选择器默认从托管目录 `~/agent-hub` 开始，并提供「创建项目目录 agent-hub/<项目名>」。以「.」开头的隐藏文件夹默认收起，点底部「显示隐藏 N」展开，或者直接打「.」开头的名字。
+   - **新建持久工作空间**：一直保留，下次还能接着用。可以「新建空目录」或「选已有目录」（项目配了仓库时还有「下载仓库」）。选择器默认从托管目录 `~/agent-hub-workspaces` 开始，并提供「创建项目目录 agent-hub-workspaces/<项目名>」。以「.」开头的隐藏文件夹默认收起，点底部「显示隐藏 N」展开，或者直接打「.」开头的名字。
 3. **agent** 和**模型**。模型多时（比如 Pi 接了几个提供方）点开是可搜索的列表：按提供方分组，最近用过的排在最前，打 `glm`、`deepseek` 或提供方名就能筛；手机上贴底展开。
 
 ![搜索模型](images/guide/10-derive-model.png)

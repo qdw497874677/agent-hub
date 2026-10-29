@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type TaskDto, type WorkLogEntryDto } from './api.ts';
 import { LogMarkdown } from './log-markdown.tsx';
+import { localTime } from './local-time.ts';
 import { NEXT_STATUS, TASK_STATUS_LABEL, TASK_STATUS_TONE } from './task-status.ts';
 
 /** 可选的交接模板（只是一段可插入的文字，不是日志类型）：与 domain 的 HANDOFF_TEMPLATE 同文（web 不依赖 domain，抄一份）。 */
@@ -22,11 +23,7 @@ const AUTHOR_TONE: Record<Author['kind'], string> = {
   system: 'text-tertiary'
 };
 
-function when(ms: number): string {
-  const date = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${date.getMonth() + 1}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
+const when = localTime;
 
 export function TaskBadge({ status }: { status: TaskDto['status'] }) {
   return (

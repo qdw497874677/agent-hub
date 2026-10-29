@@ -388,7 +388,7 @@ function NewTemporary({
               </>
             ) : (
               <>
-                将在 {machineName} 的 <span className="font-mono">~/agent-hub/.tmp/</span> 下新建一个空目录
+                将在 {machineName} 的 <span className="font-mono">~/agent-hub-workspaces/.tmp/</span> 下新建一个空目录
               </>
             )}
           </span>

@@ -43,7 +43,8 @@
 
 ## 安装脚本细节
 
-- 需要 `git`、`curl`、`bash`；Node 26 没有就装到 `~/.local/node26`（官方 tarball，校验 SHASUMS256）。
+- 需要 `git`、`curl`、`bash`；Node 26 没有就装到 `~/.local/node26`（官方 tarball，校验 SHASUMS256，这时还要 `tar`、`xz`）。
+- 同机多台：`WORKER_INSTANCE=<名字>` 让代码目录、配置目录、资产目录、systemd 服务都带 `-<名字>` 后缀。
 - 代码 clone 到 `AGENT_HUB_DIR`（默认 `~/agent-hub`，仓库可用 `AGENT_HUB_REPO` 换），checkout 到 hub 当前的提交（本地分支 `agent-hub-worker`），版本天然一致，之后用后台的「更新」跟进。
 - root 装 system unit（`/etc/systemd/system`），普通用户装 user unit 并尝试 `loginctl enable-linger`；没有 systemd 时退化成 `--no-systemd`（只写配置，打印前台启动命令）。
 - 参数透传：`curl … | HUB_PAIR=… bash -s -- --no-systemd`。

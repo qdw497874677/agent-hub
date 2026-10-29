@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryAdmin } from '../testing/in-memory.ts';
-import type { Principal, WorkerStatus } from '../index.ts';
+import type { Principal, Session, WorkerStatus } from '../index.ts';
 import { authenticate, loginWithPassword, registerUser } from './accounts.ts';
 import {
   adminOverview,
@@ -152,4 +152,11 @@ test('更新机器：只发 hub 的提交、记审计；离线/不存在报错�
     ['w2', 'w3']
   );
   assert.ok(updates.every((u) => u.commit === hub.commit));
+});
+
+test('概览：刚派生/刚分叉、还没发过话的会话是「就绪」，不算运行中', async () => {
+  const { deps, sessionList } = await setup();
+  const base = { status: 'running', lastSeq: 0 } as unknown as Session;
+  sessionList.push(base, { ...base, lastSeq: 3 }, { ...base, status: 'done', lastSeq: 5 } as Session);
+  assert.equal((await adminOverview(deps)).runningSessions, 1);
 });

@@ -8,6 +8,7 @@ import type { AuditLog } from '../ports/audit-log.ts';
 import type { WorkerControl } from '../ports/worker-control.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import { isOutdated } from '../worker.ts';
+import { isBusy } from '../session.ts';
 import type { WorkerStatus } from '../worker.ts';
 import type { AccountDeps } from './accounts.ts';
 
@@ -32,6 +33,7 @@ export interface AdminOverview {
   readonly disabledUsers: number;
   readonly onlineWorkers: number;
   readonly workers: number;
+  /** 真在干活的会话（isBusy）：刚派生/刚分叉、还没发过话的「就绪」会话不算。 */
   readonly runningSessions: number;
   readonly recentUsers: readonly User[];
   readonly recentLogins: readonly { readonly login: Login; readonly email: string }[];
@@ -80,7 +82,7 @@ export async function adminOverview(deps: AdminDeps): Promise<AdminOverview> {
     disabledUsers: users.filter((user) => user.disabledAt !== null).length,
     onlineWorkers: workers.filter((worker) => worker.state === 'online').length,
     workers: workers.length,
-    runningSessions: sessions.filter((session) => session.status === 'running').length,
+    runningSessions: sessions.filter(isBusy).length,
     recentUsers: [...users].sort((a, b) => b.createdAt - a.createdAt).slice(0, 5),
     recentLogins: logins.map((login) => ({ login, email: emailOf.get(login.userId) ?? '（已删除）' }))
   };

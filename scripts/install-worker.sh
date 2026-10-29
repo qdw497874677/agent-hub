@@ -7,11 +7,22 @@
 #   HUB_URL=ws://100.x.y.z:7878/worker HUB_TOKEN=… scripts/install-worker.sh        # 老办法：共享令牌
 #
 # 配置写进 ~/.config/agent-hub/worker.env（权限 600，凭据不进 unit 文件、不进日志）。
+#
+# 同一台机器装第二台 Worker：WORKER_INSTANCE=<名字>。配置目录 ~/.config/agent-hub-<名字>、
+# 资产目录 ~/.agent-hub/assets-<名字>、服务 agent-hub-worker-<名字>，默认名字 <hostname>-<名字>；
+# 代码目录由引导脚本放到 ~/agent-hub-<名字>（手动装就自己另 clone 一份，在那份里跑本脚本）。
 # 用接入码时 WORKER_ID 由 hub 分配并和专属凭据绑定；共享令牌时第一次启动生成并存下来。
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub"
+if [[ -n "${WORKER_INSTANCE:-}" && ! "$WORKER_INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]; then
+  echo "WORKER_INSTANCE 只能用小写字母、数字和 -（不超过 32 个字符）" >&2
+  exit 1
+fi
+suffix="${WORKER_INSTANCE:+-$WORKER_INSTANCE}"
+service="agent-hub-worker$suffix"
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub$suffix"
+if [[ -z "${WORKER_ASSETS_DIR:-}" && -n "$suffix" ]]; then WORKER_ASSETS_DIR="$HOME/.agent-hub/assets$suffix"; fi
 env_file="$config_dir/worker.env"
 
 # root 装成系统服务（新开的云主机常见），普通用户装 user unit。
@@ -46,13 +57,13 @@ if [[ -z "${WORKER_ROOTS:-}" && -t 0 ]]; then
   read -r -p "允许 hub 访问的目录（冒号分隔，回车用 $HOME）：" WORKER_ROOTS || true
 fi
 WORKER_ROOTS="${WORKER_ROOTS:-$HOME}"
-echo "==> WORKER_ROOTS=$WORKER_ROOTS（之后改 $env_file 再 systemctl --user restart agent-hub-worker）"
+echo "==> WORKER_ROOTS=$WORKER_ROOTS（之后改 $env_file 再 ${sysctl[*]} restart $service）"
 
 echo "==> 安装依赖"
 cd "$here"
 npm install --no-fund --no-audit --omit=dev
 
-label="${WORKER_LABEL:-$(hostname)}"
+label="${WORKER_LABEL:-$(hostname)$suffix}"
 credential=""
 if [[ -n "${HUB_PAIR:-}" ]]; then
   echo "==> 用接入码经长连接 $HUB_URL 换专属凭据"
@@ -76,6 +87,7 @@ umask 077
   if [[ -n "${WORKER_ID:-}" ]]; then echo "WORKER_ID=$WORKER_ID"; fi
   echo "WORKER_ROOTS=$WORKER_ROOTS"
   echo "WORKER_STATE_DIR=$config_dir"
+  if [[ -n "${WORKER_ASSETS_DIR:-}" ]]; then echo "WORKER_ASSETS_DIR=$WORKER_ASSETS_DIR"; fi
 } > "$env_file"
 chmod 600 "$env_file"
 
@@ -87,7 +99,7 @@ fi
 
 echo "==> 安装 systemd unit 到 $unit_dir"
 mkdir -p "$unit_dir"
-cat > "$unit_dir/agent-hub-worker.service" <<UNIT
+cat > "$unit_dir/$service.service" <<UNIT
 [Unit]
 Description=agent-hub Worker（$HUB_URL）
 After=network-online.target
@@ -115,6 +127,6 @@ if [[ $EUID -ne 0 ]]; then
   loginctl enable-linger "$USER" 2>/dev/null || echo "    提示：退出登录后要继续跑，请执行 sudo loginctl enable-linger $USER"
 fi
 "${sysctl[@]}" daemon-reload
-"${sysctl[@]}" enable agent-hub-worker.service
-"${sysctl[@]}" restart agent-hub-worker.service
-echo "==> 已启动。看日志：journalctl ${sysctl[1]:-} -u agent-hub-worker -f"
+"${sysctl[@]}" enable "$service.service"
+"${sysctl[@]}" restart "$service.service"
+echo "==> 已启动。看日志：journalctl ${sysctl[1]:-} -u $service -f"

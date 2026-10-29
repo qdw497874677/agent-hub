@@ -35,8 +35,8 @@ test('git 项目：从这台机器上的持久工作空间开 worktree，放在�
   assert.equal(made.value.ownerTaskId, w.task.id);
   assert.equal(made.value.baseWorkspaceId, long.value.id);
   assert.match(made.value.branch ?? '', /^agent-hub\/fix-login-[0-9a-f]{4}$/);
-  assert.match(made.value.path, /^\/srv\/work\/agent-hub\/\.worktrees\/demo-app\/fix-login-[0-9a-f]{4}$/);
-  assert.ok(w.git.calls.some((call) => call.startsWith('remote-1:worktree:/srv/work/agent-hub/demo-app->')));
+  assert.match(made.value.path, /^\/srv\/work\/agent-hub-workspaces\/\.worktrees\/demo-app\/fix-login-[0-9a-f]{4}$/);
+  assert.ok(w.git.calls.some((call) => call.startsWith('remote-1:worktree:/srv/work/agent-hub-workspaces/demo-app->')));
   // 不限数量：再开一个，分支不同
   const again = await w.temp();
   assert.ok(again.ok);
@@ -52,14 +52,14 @@ test('有仓库但这台机器上还没下载：先 clone 一个持久的，再�
   assert.equal(all.filter((ws) => ws.kind === 'long_lived' && ws.source === 'cloned').length, 1);
 });
 
-test('非 git 项目：新建空目录 <root>/agent-hub/.tmp/<slug>-<短 id>', async () => {
+test('非 git 项目：新建空目录 <root>/agent-hub-workspaces/.tmp/<slug>-<短 id>', async () => {
   const w = await world();
   const made = await w.temp();
   assert.ok(made.ok, made.ok ? '' : made.error.message);
   assert.equal(made.value.source, 'created');
   assert.equal(made.value.isGit, false);
   assert.equal(made.value.branch, null);
-  assert.match(made.value.path, /^\/srv\/work\/agent-hub\/\.tmp\/fix-login-[0-9a-f]{4}$/);
+  assert.match(made.value.path, /^\/srv\/work\/agent-hub-workspaces\/\.tmp\/fix-login-[0-9a-f]{4}$/);
 });
 
 test('worktree 失败（同名分支已在别处检出等）：不登记，原因带回去', async () => {

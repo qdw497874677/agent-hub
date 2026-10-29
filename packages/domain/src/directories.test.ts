@@ -10,11 +10,11 @@ test('文件夹名：只允许一段', () => {
   for (const bad of ['', '  ', '.', '..', 'a/b', 'a\\b', ' a', 'a\n', 'x'.repeat(256)]) assert.notEqual(folderNameProblem(bad), null, bad);
 });
 
-test('项目名 → slug；托管目录在 roots[0]/agent-hub/<slug>', () => {
+test('项目名 → slug；托管目录在 roots[0]/agent-hub-workspaces/<slug>', () => {
   assert.equal(projectSlug('My App!'), 'my-app');
   assert.equal(projectSlug('  多机 Hub  '), '多机-hub');
   assert.equal(projectSlug('!!!'), null);
-  assert.equal(managedDirectory(['/home/u/', '/srv'], 'my-app'), '/home/u/agent-hub/my-app');
+  assert.equal(managedDirectory(['/home/u/', '/srv'], 'my-app'), '/home/u/agent-hub-workspaces/my-app');
   assert.equal(managedDirectory([], 'x'), null);
 });
 
@@ -25,9 +25,9 @@ test('insideRoots：按路径段判断，不被前缀骗', () => {
   assert.ok(insideRoots('/anything', ['/']));
 });
 
-test('浏览：给了项目名就从托管目录开始，没有就退到 agent-hub、再退到 root；最近修改的排前面', async () => {
+test('浏览：给了项目名就从托管目录开始，没有就退到 agent-hub-workspaces、再退到 root；最近修改的排前面', async () => {
   const world = inMemoryDeps();
-  const existing = new Set(['/home/u', '/home/u/agent-hub']);
+  const existing = new Set(['/home/u', '/home/u/agent-hub-workspaces']);
   world.deps.gateway.status = async () => [{ workerId: 'local', label: '本机', origin: 'local', state: 'online', roots: ['/home/u'] }];
   world.deps.fs.directoryExists = async (path) => existing.has(path);
   world.deps.fs.listDirectories = async () => [
@@ -36,13 +36,13 @@ test('浏览：给了项目名就从托管目录开始，没有就退到 agent-h
   ];
   const first = await browseDirectories(world.deps, { workerId: 'local', path: '', home: '/home/u', project: 'My App' });
   assert.ok(first.ok);
-  assert.equal(first.value.path, '/home/u/agent-hub');
-  assert.equal(first.value.managed, '/home/u/agent-hub/my-app');
+  assert.equal(first.value.path, '/home/u/agent-hub-workspaces');
+  assert.equal(first.value.managed, '/home/u/agent-hub-workspaces/my-app');
   assert.deepEqual(first.value.roots, ['/home/u']);
   assert.deepEqual(first.value.entries.map((e) => e.name), ['new', 'old']);
-  existing.add('/home/u/agent-hub/my-app');
+  existing.add('/home/u/agent-hub-workspaces/my-app');
   const managed = await browseDirectories(world.deps, { workerId: 'local', path: '', home: '/home/u', project: 'My App' });
-  assert.ok(managed.ok && managed.value.path === '/home/u/agent-hub/my-app');
+  assert.ok(managed.ok && managed.value.path === '/home/u/agent-hub-workspaces/my-app');
   const root = await browseDirectories(world.deps, { workerId: 'local', path: '/home/u', home: '/home/u' });
   assert.ok(root.ok && root.value.parent === null && root.value.managed === null);
 });

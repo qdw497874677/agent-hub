@@ -81,7 +81,7 @@ export function ListView({
                   {session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生'}
                 </td>
                 <td className="py-2">
-                  <StatusPill status={status} reason={live[session.id]?.reason} />
+                  <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
                 </td>
                 <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">#{seq}</td>
               </tr>
