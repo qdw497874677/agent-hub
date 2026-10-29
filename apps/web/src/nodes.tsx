@@ -230,6 +230,9 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   );
 }
 
+const TASK_ACTION =
+  'rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary transition-opacity hover:border-accent hover:text-accent focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+
 export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
   const { task, sessionCount, onStatus, onDetail, onDerive, onResized } = data;
   const muted = task.status === 'abandoned';
@@ -265,9 +268,11 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
         {sessionCount} 个会话{task.logSeq > 0 ? ` · ${task.logSeq} 条日志` : ''}
         {sessionCount === 0 ? <span className="ml-1 text-tertiary/70">· 点「＋ 会话」开一条</span> : null}
       </p>
-      <div className="nodrag mt-1.5 flex gap-1 transition-opacity focus-within:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100">
+      {/* 「＋ 会话」「日志」常驻（桌面上淡一点，悬停/选中/键盘聚焦时变亮）——藏在悬停里太难发现；
+          状态动作是次要的，桌面上仍只在悬停/聚焦时出现，触屏一律常驻。 */}
+      <div className="nodrag mt-1.5 flex flex-wrap gap-1" data-testid="task-card-actions">
         <button
-          className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
+          className={`${TASK_ACTION} ${selected ? '' : 'pointer-fine:opacity-70 pointer-fine:group-hover:opacity-100'}`}
           onClick={(event) => {
             event.stopPropagation();
             onDerive();
@@ -276,7 +281,7 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
           ＋ 会话
         </button>
         <button
-          className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
+          className={`${TASK_ACTION} ${selected ? '' : 'pointer-fine:opacity-70 pointer-fine:group-hover:opacity-100'}`}
           onClick={(event) => {
             event.stopPropagation();
             onDetail();
@@ -287,7 +292,7 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
         {actions.map((action) => (
           <button
             key={action.next}
-            className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary hover:border-accent hover:text-accent"
+            className={`${TASK_ACTION} ${selected ? '' : 'pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'}`}
             onClick={(event) => {
               event.stopPropagation();
               onStatus(action.next);

@@ -4,6 +4,7 @@ import type { CanvasDto, SearchHitDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import type { LiveMap } from './live.ts';
 import { StatusPill } from './status.tsx';
+import { NoTasksHint } from './empty-tasks.tsx';
 
 
 function statusOf(session: SessionDto, live: LiveMap): SessionDto['status'] {
@@ -22,13 +23,15 @@ export function ListView({
   live,
   onOpen,
   onDerive,
-  onTaskDetail
+  onTaskDetail,
+  onNewTask
 }: {
   canvas: CanvasDto;
   live: LiveMap;
   onOpen: (sessionId: string) => void;
   onDerive: (taskId: string) => void;
   onTaskDetail: (taskId: string) => void;
+  onNewTask: () => void;
 }) {
   const taskTitle = useMemo(
     () => new Map(canvas.tasks.map((task) => [task.id, task.title])),
@@ -90,7 +93,7 @@ export function ListView({
       <div className="mt-6 border-t border-hair pt-3">
         <p className="mb-2 text-meta text-secondary">任务 · 点一下从它再开一条会话</p>
         {canvas.tasks.length === 0 ? (
-          <p className="text-meta text-tertiary">还没有任务。右上角「新建任务」写下想做的事。</p>
+          <NoTasksHint onNewTask={onNewTask} />
         ) : null}
         <div className="flex flex-wrap gap-2">
           {canvas.tasks.map((task) => (

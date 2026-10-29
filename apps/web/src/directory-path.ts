@@ -78,3 +78,8 @@ export function filterEntries<T extends { name: string }>(entries: readonly T[],
     .sort((a, b) => b.score - a.score)
     .map((x) => x.entry);
 }
+
+/** 隐藏目录（服务端标了 hidden）默认不显示；`showHidden` 时全给，顺序不动（服务端已把隐藏的排在后面）。 */
+export function visibleEntries<T extends { hidden?: boolean }>(entries: readonly T[], showHidden: boolean): T[] {
+  return showHidden ? [...entries] : entries.filter((entry) => entry.hidden !== true);
+}

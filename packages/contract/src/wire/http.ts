@@ -196,7 +196,8 @@ export const directoryEntrySchema = z.object({
   name: z.string(),
   path: z.string(),
   isGit: z.boolean().default(false),
-  modifiedAt: z.number().default(0)
+  modifiedAt: z.number().default(0),
+  hidden: z.boolean().default(false)
 });
 export const directoryListingSchema = z.object({
   path: z.string(),

@@ -5,6 +5,7 @@ import { api, type CanvasDto, type SessionDto, type WorkerInfoDto } from './api.
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
+import { ModelPicker, SEARCHABLE_AFTER } from './model-picker.tsx';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -182,23 +183,34 @@ export function DeriveDialog({
         </div>
         <div>
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-model">模型</label>
-        <select
-          id="derive-model"
-          className={`mb-3 ${INPUT}`}
-          value={model}
-          disabled={offered.models.length === 0}
-          onChange={(event) => setModel(event.target.value)}
-        >
-          {offered.models.length === 0 ? (
-            <option value="">用 agent 自己的默认</option>
-          ) : (
-            offered.models.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {candidate}
-              </option>
-            ))
-          )}
-        </select>
+        {offered.models.length > SEARCHABLE_AFTER ? (
+          <ModelPicker
+            id="derive-model"
+            className={`mb-3 ${INPUT}`}
+            scope={agentId}
+            value={model}
+            onChange={setModel}
+            items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
+          />
+        ) : (
+          <select
+            id="derive-model"
+            className={`mb-3 ${INPUT}`}
+            value={model}
+            disabled={offered.models.length === 0}
+            onChange={(event) => setModel(event.target.value)}
+          >
+            {offered.models.length === 0 ? (
+              <option value="">用 agent 自己的默认</option>
+            ) : (
+              offered.models.map((candidate) => (
+                <option key={candidate} value={candidate}>
+                  {candidate}
+                </option>
+              ))
+            )}
+          </select>
+        )}
         </div>
         </div>
         {derive.error ? <p className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}

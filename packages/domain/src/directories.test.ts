@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { folderNameProblem, insideRoots, managedDirectory, projectSlug } from './directories.ts';
+import { folderNameProblem, insideRoots, isHiddenName, managedDirectory, projectSlug, sortDirectoryEntries } from './directories.ts';
 import { inMemoryDeps } from './testing/in-memory.ts';
 import { browseDirectories, createDirectory } from './use-cases/projects.ts';
 
@@ -57,4 +57,21 @@ test('新建文件夹：名字和父目录先在领域层挡一遍，本机只�
   assert.equal((await createDirectory(world.deps, { workerId: 'local', parent: 'rel', name: 'b', home: '/home/u' })).ok, false);
   assert.equal((await createDirectory(world.deps, { workerId: 'local', parent: '/home/u', name: '../x', home: '/home/u' })).ok, false);
   assert.equal((await createDirectory(world.deps, { workerId: 'ghost', parent: '/home/u', name: 'x', home: '/home/u' })).ok, false);
+});
+
+test('隐藏目录：只认点开头，不按名字猜噪音', () => {
+  assert.equal(isHiddenName('.config'), true);
+  assert.equal(isHiddenName('chrome-profile'), false);
+  assert.equal(isHiddenName('node_modules'), false);
+});
+
+test('目录排序：可见在前、隐藏在后；组内最近修改在前，同时间按名字', () => {
+  const sorted = sortDirectoryEntries([
+    { name: '.cache', modifiedAt: 9, hidden: true },
+    { name: 'old', modifiedAt: 1 },
+    { name: 'b', modifiedAt: 5 },
+    { name: 'a', modifiedAt: 5 },
+    { name: '.git', modifiedAt: 2, hidden: true }
+  ]);
+  assert.deepEqual(sorted.map((e) => e.name), ['a', 'b', 'old', '.cache', '.git']);
 });

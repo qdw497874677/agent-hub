@@ -11,7 +11,7 @@ const method = <P extends z.ZodType, R extends z.ZodType>(name: string, params: 
   result
 });
 
-const entry = z.object({ name: z.string(), path: z.string(), isGit: z.boolean().optional(), modifiedAt: z.number().optional() });
+const entry = z.object({ name: z.string(), path: z.string(), isGit: z.boolean().optional(), modifiedAt: z.number().optional(), hidden: z.boolean().optional() });
 
 export const fsListDirectories = method(
   'fs.list_directories',

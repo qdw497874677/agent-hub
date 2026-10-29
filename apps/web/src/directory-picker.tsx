@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Command } from 'cmdk';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './api.ts';
-import { filterEntries, splitInput, withSlash } from './directory-path.ts';
+import { filterEntries, splitInput, visibleEntries, withSlash } from './directory-path.ts';
 
 const USE = '__use__';
 const UP = '__up__';
@@ -60,7 +60,11 @@ export function DirectoryPicker({
 
   const current =
     listing.data && listing.data.path === (dir === '' ? listing.data.path : dir) ? listing.data : undefined;
-  const entries = current ? filterEntries(current.entries, filter) : [];
+  // 隐藏目录（点开头）默认收起：点「显示隐藏」或者直接打 `.` 开头的名字才出来。纯显示层的筛选，服务端照列。
+  const [showHidden, setShowHidden] = useState(false);
+  const hiddenCount = current?.entries.filter((entry) => entry.hidden).length ?? 0;
+  const visible = current ? visibleEntries(current.entries, showHidden || filter.startsWith('.')) : [];
+  const entries = filterEntries(visible, filter);
   const exact = current?.entries.some((entry) => entry.name === filter) ?? false;
   const offerCreate = current !== undefined && filter.trim() !== '' && !exact;
 
@@ -354,8 +358,10 @@ export function DirectoryPicker({
                   <span className="min-w-0 flex-1 truncate">新建文件夹 “{filter.trim()}”</span>
                 </Command.Item>
               ) : null}
-              {current.entries.length === 0 && filter === '' ? (
-                <p className="px-3 py-3 text-meta text-tertiary">这里没有子文件夹。打个名字就能新建。</p>
+              {visible.length === 0 && filter === '' ? (
+                <p className="px-3 py-3 text-meta text-tertiary">
+                  {hiddenCount > 0 ? '这里只有隐藏文件夹。' : '这里没有子文件夹。打个名字就能新建。'}
+                </p>
               ) : null}
             </>
           ) : listing.isPending ? (
@@ -370,6 +376,19 @@ export function DirectoryPicker({
           <span className="min-w-0 flex-1 truncate font-mono text-meta text-tertiary md:hidden">
             {current?.path ?? ''}
           </span>
+          {hiddenCount > 0 ? (
+            <button
+              type="button"
+              aria-pressed={showHidden}
+              className="flex min-h-[44px] shrink-0 items-center rounded-sm px-2 text-meta text-secondary hover:bg-card-raised aria-pressed:text-accent md:min-h-0 md:py-1.5"
+              onClick={() => {
+                setShowHidden((value) => !value);
+                inputRef.current?.focus();
+              }}
+            >
+              {showHidden ? '收起隐藏' : `显示隐藏 ${hiddenCount}`}
+            </button>
+          ) : null}
           <button
             type="button"
             className="shrink-0 rounded-sm bg-accent px-5 py-2 text-meta text-canvas disabled:opacity-40 md:py-1.5"

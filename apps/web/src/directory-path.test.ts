@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { breadcrumbs } from './directory-path.ts';
+import { breadcrumbs, visibleEntries } from './directory-path.ts';
 
 test('面包屑从包含当前路径的 root 开始', () => {
   assert.deepEqual(breadcrumbs('/home/u/agent-hub/app', ['/home/u']), [
@@ -34,4 +34,10 @@ test('模糊筛选：前缀优先，子序列也能命中，不匹配的去掉',
   const names = filterEntries([{ name: 'my-agent' }, { name: 'docs' }, { name: 'agent-hub' }], 'agent').map((e) => e.name);
   assert.deepEqual(names, ['agent-hub', 'my-agent']);
   assert.deepEqual(filterEntries([{ name: 'b' }, { name: 'a' }], '').map((e) => e.name), ['b', 'a']);
+});
+
+test('隐藏目录默认收起，显示隐藏时全给', () => {
+  const entries = [{ name: 'app' }, { name: '.config', hidden: true }];
+  assert.deepEqual(visibleEntries(entries, false).map((e) => e.name), ['app']);
+  assert.deepEqual(visibleEntries(entries, true).map((e) => e.name), ['app', '.config']);
 });

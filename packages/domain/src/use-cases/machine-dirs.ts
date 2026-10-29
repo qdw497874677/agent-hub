@@ -119,7 +119,7 @@ export async function isEmptyDirectory(
   route: string | null,
   listed: { readonly path: string; readonly entries: readonly DirectoryEntry[] }
 ): Promise<Result<boolean, DomainError>> {
-  if (listed.entries.length > 0) return ok(false);
+  if (listed.entries.some((entry) => entry.hidden !== true)) return ok(false);
   if (route === null) return ok((await deps.fs.listFiles(listed.path, 1)).files.length === 0);
   const files = await deps.gateway.listFiles(route, listed.path, 1);
   return files.ok ? ok(files.value.files.length === 0) : files;
