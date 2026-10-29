@@ -44,7 +44,8 @@ export interface AgentModels {
  */
 export type AgentReadiness =
   | { readonly state: 'ready'; readonly lacks?: string[] }
-  | { readonly state: 'unavailable'; readonly reason: string };
+  /** hint：怎么修的一句话（如「PATH 里找不到 pi，可设 PI_COMMAND 指定路径」），界面跟在原因后面。 */
+  | { readonly state: 'unavailable'; readonly reason: string; readonly hint?: string };
 
 /** Pi 的 MCP 走 pi-mcp-adapter 扩展：没装时 Pi 看不到任何 MCP 工具。 */
 export const MCP_ADAPTER = 'mcp-adapter';

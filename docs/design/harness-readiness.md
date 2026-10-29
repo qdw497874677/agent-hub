@@ -22,7 +22,8 @@ adapters（每个 runtime 一个，和 runtime 放在一起，用同一条命令
   adapter-pi          readiness.ts   pi --version → 未安装；列不出模型 → 未配置模型
   adapter-acp         readiness.ts   命令不在 → 未安装；listModelsArgs 列不出 → 未配置模型（OpenCode 等）
   adapter-grok        readiness.ts   grok models → 首行判断是否登录；有 XAI_API_KEY 也算能用
-node-gateway          harness-registry.ts  组合任意多个 HarnessReadiness：各自超时 / 兜底、并发合并
+node-gateway          command-resolver.ts  解析 harness 命令：显式 X_COMMAND → PATH → 常见目录兜底 → missing（纯函数，不起登录 shell）
+                      harness-registry.ts  组合任意多个 HarnessReadiness：各自超时 / 兜底、并发合并；withMissingHint 给「未安装」附提示
                       worker-link.ts       连上 / 定时 / probe 指令时跑注册表，把 readiness 叠到 agent 清单上，
                                            经 `agents` 帧上报
                       server-gateway.ts    收 `agents` 帧后替换清单；requestProbe 下发 `probe`；不认识具体 harness
@@ -45,6 +46,17 @@ apps/web              harness.tsx：只读统一的 readiness（HarnessBadges / 
 - **便宜且无副作用。** 只用 `--version`、`models` 这类本地命令，不登录、不改配置、不开会话。
 - **超时与隔离。** 每个探测有自己的超时；注册表外层还有一道超时兜底。一个 harness 卡住不会拖累别的。
 - **不泄露信息。** 原因只取固定的中文短句，不带命令输出（输出里可能有 token 或路径）。
+
+## 命令解析
+
+worker 组合根对每个 harness 只解析一次命令，runtime 和 readiness 用同一个结果：
+
+1. 设了 `PI_COMMAND` / `OPENCODE_COMMAND` / `GROK_COMMAND` 就直接用。
+2. 否则在 PATH 里找。
+3. 还找不到就去常见目录兜底；命中时把那个目录补到进程 PATH 前面（让 `#!/usr/bin/env node` 和子进程也能用），并打一行日志。
+4. 都没有：readiness 为「未安装」，附 `hint`「PATH 里找不到 X，可设 X_COMMAND 指定路径」，界面显示在原因下面。
+
+运行时和探测时都不起登录 shell；登录 shell 只在 `install-worker.sh` 安装时跑一次，结果持久化到 worker.env 的 `PATH`。
 
 ## 兼容性
 

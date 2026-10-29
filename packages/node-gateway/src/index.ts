@@ -1,7 +1,9 @@
 export { createServerGateway } from './server-gateway.ts';
 export type { GatewayHooks, ServerGateway } from './server-gateway.ts';
 export { connectWorkerLink } from './worker-link.ts';
-export { createHarnessRegistry, sameReadiness } from './harness-registry.ts';
+export { createHarnessRegistry, sameReadiness, withMissingHint } from './harness-registry.ts';
+export { fallbackDirs, missingCommandHint, resolveCommand } from './command-resolver.ts';
+export type { CommandResolution } from './command-resolver.ts';
 export type { HarnessRegistry } from './harness-registry.ts';
 export type { WorkerLink, WorkerLinkOptions } from './worker-link.ts';
 export { createLocalFs } from './local-fs.ts';

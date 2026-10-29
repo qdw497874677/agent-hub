@@ -6,12 +6,18 @@ import { api, type WorkerInfoDto } from './api.ts';
  * harness 就绪状态的展示（docs/design/harness-readiness.md）。只读 Worker 报的统一 readiness，
  * 不认识任何具体 harness：没报（老 Worker）一律当能用。
  */
-export type Readiness = { readonly state: 'ready' } | { readonly state: 'unavailable'; readonly reason: string };
+export type Readiness = { readonly state: 'ready' } | { readonly state: 'unavailable'; readonly reason: string; readonly hint?: string | undefined };
 
 /** 这台机器上这个 agent 不能用的原因；能用或没报是 null。 */
 export function harnessReason(worker: WorkerInfoDto | undefined, agentId: string): string | null {
   const readiness = worker?.agentModels?.find((entry) => entry.agentId === agentId)?.readiness;
   return readiness?.state === 'unavailable' ? readiness.reason : null;
+}
+
+/** 不能用时怎么修的一句话（Worker 给的，比如该设哪个环境变量）；没有就是 null。 */
+export function harnessHint(worker: WorkerInfoDto | undefined, agentId: string): string | null {
+  const readiness = worker?.agentModels?.find((entry) => entry.agentId === agentId)?.readiness;
+  return readiness?.state === 'unavailable' ? (readiness.hint ?? null) : null;
 }
 
 /** 一排 harness 小标签：不可用的变灰并带上原因。窄屏自动折行。 */
@@ -32,7 +38,7 @@ export function HarnessBadges({
             key={agentId}
             data-testid="harness-badge"
             data-state={down ? 'unavailable' : 'ready'}
-            title={down ? `${labelOf(agentId)} 暂不可用：${readiness.reason}` : `${labelOf(agentId)} 可用`}
+            title={down ? `${labelOf(agentId)} 暂不可用：${readiness.reason}${readiness.hint ? `。${readiness.hint}` : ''}` : `${labelOf(agentId)} 可用`}
             className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-px text-meta ${
               down ? 'border-hair text-tertiary opacity-60' : 'border-hair text-secondary'
             }`}
@@ -42,6 +48,13 @@ export function HarnessBadges({
           </span>
         );
       })}
+      {harnesses.map(({ agentId, readiness }) =>
+        readiness?.state === 'unavailable' && readiness.hint ? (
+          <span key={`${agentId}-hint`} data-testid="harness-hint" className="w-full text-meta text-tertiary">
+            {labelOf(agentId)}：{readiness.hint}
+          </span>
+        ) : null
+      )}
     </span>
   );
 }

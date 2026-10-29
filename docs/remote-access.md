@@ -67,6 +67,7 @@ scripts/install-worker.sh            # --no-systemd：只写配置，前台自�
 - **身份稳定**：专属凭据绑定 `WORKER_ID`（写在 worker.env）；共享 token 方式第一次启动生成 `WORKER_ID` 存到 `~/.config/agent-hub/worker-id.remote`。重启、重装都不变。
 - **同一台机器装第二台 Worker**：加 `WORKER_INSTANCE=<名字>`（引导命令里放在 `bash` 前；手动装就在另一份 clone 里跑 `WORKER_INSTANCE=<名字> scripts/install-worker.sh`）。代码 `~/agent-hub-<名字>`、配置 `~/.config/agent-hub-<名字>/worker.env`、资产 `~/.agent-hub/assets-<名字>`、服务 `agent-hub-worker-<名字>`，各自独立。
 - 普通用户安装时脚本会尝试 `loginctl enable-linger $USER`，让退出登录后服务继续跑。
+- **agent 命令的 PATH**：systemd 不读 `~/.bashrc`，nvm / `npm -g` / pi 安装器装的命令常常不在它的 PATH 里。安装脚本会用登录 shell（`$SHELL -lc`、`bash -lc`）找一次 `pi` / `opencode` / `grok`，把所在目录连同原有 PATH 去重后写进 worker.env 的 `PATH=`；重装会保留已有的 PATH 条目。运行时如果还找不到，worker 会去常见目录兜底（`~/.npm-global/bin`、nvm、`~/.local/bin`、`~/.local/share/pi-node/*/bin`、`~/.bun/bin`、`~/.volta/bin`、`/usr/local/bin`），找到了会在日志里说用了哪个路径。都找不到时标「未安装」并提示「PATH 里找不到 X，可设 X_COMMAND 指定路径」——在 worker.env 里写 `PI_COMMAND=/绝对路径/pi`（或 `OPENCODE_COMMAND` / `GROK_COMMAND`）后重启服务即可。
 
 ### 它怎么工作
 

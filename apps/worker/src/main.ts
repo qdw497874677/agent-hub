@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { arch, homedir, hostname, platform } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPiRuntime, discoverPiModels, piReadiness } from '@agent-hub/adapter-pi';
 import { ACP_AGENT_DEFAULTS, acpDescriptor, acpReadiness, createAcpRuntime, opencodeLaunch, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
 import { createGrokRuntime, discoverGrokModels, grokReadiness } from '@agent-hub/adapter-grok';
-import { clearBootMarker, connectWorkerLink, createHarnessRegistry, createWorkerAssets, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, connectWorkerLink, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -94,15 +94,31 @@ function piPreferredModel(): string {
   }
 }
 
+/**
+ * harness 命令在哪：X_COMMAND 点名的原样用，否则 PATH，再否则常见安装位置（resolveCommand）。
+ * 在常见位置找到的，把那个目录补进本进程 PATH，子进程（含脚本里的 `#!/usr/bin/env node`）跟着找得到。
+ * 找不到就留原名：就绪探测照常报「未安装」，再带一句怎么修。
+ */
+function harnessCommand(name: string, envVar: string): { command: string; hint: string | null } {
+  const found = resolveCommand(name, { explicit: env[envVar], path: env['PATH'], home: homedir(), env });
+  if (found.source === 'fallback') {
+    env['PATH'] = [found.dir, ...(env['PATH'] ?? '').split(delimiter).filter(Boolean)].join(delimiter);
+    process.stdout.write(`[worker] PATH 里没有 ${name}，用 ${found.command}（已把 ${found.dir} 补进 PATH；可设 ${envVar} 固定）\n`);
+  }
+  return { command: found.command, hint: found.source === 'missing' ? missingCommandHint(name, envVar) : null };
+}
+const pi = harnessCommand('pi', 'PI_COMMAND');
+const grok = harnessCommand('grok', 'GROK_COMMAND');
+
 const explicitModels = explicitPiModels();
 const discovered =
   explicitModels.length > 0
     ? { models: explicitModels, defaultModel: explicitModels[0] ?? '' }
-    : await discoverPiModels(env['PI_COMMAND'] ?? 'pi', piPreferredModel());
+    : await discoverPiModels(pi.command, piPreferredModel());
 
 const piModels = discovered.models;
 
-const grokCommand = env['GROK_COMMAND'] ?? 'grok';
+const grokCommand = grok.command;
 // 没装 grok 时返回空目录，Grok 用自己的默认模型；真正启动会话时再报不可用。
 const grokCatalog = await discoverGrokModels(grokCommand);
 
@@ -149,6 +165,14 @@ const acpConfigs = acpAgents().map((config) => {
   // 用 ACP_AGENTS 自己写的 opencode 条目也照样认 hub 下发的资产
   return { launch: opencodeLaunch, ...config, ...(env['OPENCODE_COMMAND'] ? { command: env['OPENCODE_COMMAND'] } : {}) };
 });
+/** ACP agent 的命令同样走 resolveCommand；opencode 认 OPENCODE_COMMAND，其它按 id 推一个 X_COMMAND 名字用于提示。 */
+const acpHints = new Map<string, string | null>();
+for (const [index, config] of acpConfigs.entries()) {
+  const envVar = `${config.id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_COMMAND`;
+  const found = harnessCommand(config.command, envVar === 'OPENCODE_COMMAND' ? 'OPENCODE_COMMAND' : envVar);
+  acpConfigs[index] = { ...config, command: found.command };
+  acpHints.set(config.id, found.hint);
+}
 // ACP 只在开了会话之后才报模型；启动时先问一次，派生对话框才有得选。
 const acpModels = await Promise.all(acpConfigs.map((config) => discoverAcpModels(config)));
 
@@ -167,7 +191,7 @@ const toolShim = {
 
 const runtimes: AgentRuntime[] = [
   createPiRuntime({
-    ...(env['PI_COMMAND'] ? { command: env['PI_COMMAND'] } : {}),
+    command: pi.command,
     ...(env['PI_SESSION_DIR'] ? { sessionDir: env['PI_SESSION_DIR'] } : {}),
     models: piModels,
     defaultModel: discovered.defaultModel,
@@ -198,9 +222,9 @@ const runtimes: AgentRuntime[] = [
  * 组合在这里（组合根）；加一个 harness = 在 runtimes 和这里各加一行。
  */
 const readiness = createHarnessRegistry([
-  piReadiness(env['PI_COMMAND'] ?? 'pi', discovered.defaultModel),
-  ...acpConfigs.map((config) => acpReadiness(config)),
-  grokReadiness(grokCommand, env)
+  withMissingHint(piReadiness(pi.command, discovered.defaultModel), pi.hint),
+  ...acpConfigs.map((config) => withMissingHint(acpReadiness(config), acpHints.get(config.id) ?? null)),
+  withMissingHint(grokReadiness(grokCommand, env), grok.hint)
 ]);
 const probeIntervalMs = Number(env['HARNESS_PROBE_INTERVAL_MS'] ?? '') || undefined;
 
