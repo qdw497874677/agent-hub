@@ -33,9 +33,13 @@ import type {
   WorkerCommand,
   WorkerStatus,
   WorkerUpdate,
-  WorkspaceGit
+  WorkspaceGit,
+  RuntimeJob
 } from '@agent-hub/domain';
 import { conflict, invalid, unavailable } from '@agent-hub/domain';
+
+/** hub 留给每台机器的安装日志上限（字符，取末尾）。 */
+const RUNTIME_LOG_LIMIT = 16_000;
 
 export interface GatewayHooks {
   readonly token: string | null;
@@ -69,6 +73,8 @@ export interface GatewayHooks {
   onWorkerGone(workerId: string, reason: string): void;
   /** Worker 报来更新进度（给日志用；状态本身网关会记着，出现在 workers() 里）。 */
   onUpdateStatus?(workerId: string, update: WorkerUpdate): void;
+  /** 运行时任务结束（成功 / 失败 / 被拒）。 */
+  onRuntimeJob?(workerId: string, job: RuntimeJob): void;
   onLog?(message: string): void;
   /**
    * 每条通过认证的连接一条 RPC 通道（端口）：组合根在这里挂 worker→hub 的方法（如 mcp.message），
@@ -125,6 +131,8 @@ interface Registered {
   reason?: string;
   build: BuildInfo | null;
   update: WorkerUpdate | null;
+  /** 最近一次运行时安装 / 卸载任务（ADR 0010）。 */
+  runtimeJob: RuntimeJob | null;
   /** 最近一次更新的目标提交：它重启后用新版本 hello 上来时，据此判定「更新完成」。 */
   updateTarget: string | null;
   /** 这条连接上的 RPC 通道；离线时为 null。 */
@@ -148,6 +156,8 @@ export interface ServerGateway {
   requestUpdate(workerId: string, commit: string): boolean;
   /** 让在线的 Worker 立刻重新探测各 harness 是否可用。不在线返回 false；老 Worker 收到会忽略。 */
   requestProbe(workerId: string): boolean;
+  /** 下发运行时安装 / 卸载任务，记为 running。不在线返回 false；老 Worker 收到只记日志（界面上它不报 provision，根本不会发）。 */
+  requestRuntimeJob(workerId: string, job: RuntimeJob): boolean;
   /** 资产中心的投递端口：把清单推下去（assets.sync），Worker 回头经 assets.fetch 取内容。 */
   readonly assets: AssetDelivery;
   close(): void;
@@ -324,6 +334,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           alive: true,
           build,
           update,
+          runtimeJob: previous?.runtimeJob ?? null,
           updateTarget: target !== null && build?.commit === target ? null : target,
           channel: null
         };
@@ -357,6 +368,23 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         hooks.onAgents?.(describe(entry), frame.agents);
         return;
       }
+      if (frame.type === 'runtime_job_status') {
+        const job = entry.runtimeJob;
+        // 只认当前那个任务的进度：旧任务迟到的帧、别人编的 jobId 一律丢掉
+        if (!job || job.jobId !== frame.jobId) return;
+        const terminal = frame.state !== 'running';
+        const log = (job.log + frame.lines.map((line) => `${line}\n`).join('')).slice(-RUNTIME_LOG_LIMIT);
+        entry.runtimeJob = {
+          ...job,
+          state: frame.state,
+          message: frame.message || job.message,
+          log,
+          endedAt: terminal ? now() : null,
+          ...(frame.version !== undefined && frame.version !== null ? { version: frame.version } : {})
+        };
+        if (terminal) hooks.onRuntimeJob?.(entry.workerId, entry.runtimeJob);
+        return;
+      }
       if (frame.type === 'update_status') {
         entry.update = { state: frame.state, message: frame.message, logTail: frame.logTail, at: now() };
         if (frame.state === 'failed' || frame.state === 'refused') entry.updateTarget = null;
@@ -380,6 +408,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     socket.on('close', () => {
       clearTimeout(helloTimer);
       if (entry) markOffline(entry, socket, closeReason);
+      // 任务跑到一半断了：先记成失败，别让它永远「安装中」挡住下一个任务；同一个任务的进度帧之后若还能回来，照样认
+      if (entry?.runtimeJob?.state === 'running' && entry.socket === null) {
+        entry.runtimeJob = { ...entry.runtimeJob, state: 'failed', message: '连接断开，任务结果未知（连回来后看这台机器的状态）', endedAt: now() };
+      }
     });
 
     socket.on('error', () => {
@@ -427,7 +459,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         agentId: agent.id,
         models: agent.models,
         defaultModel: agent.defaultModel,
-        ...(agent.readiness ? { readiness: agent.readiness } : {})
+        ...(agent.readiness ? { readiness: agent.readiness } : {}),
+        ...(agent.provision ? { provision: agent.provision } : {})
       })),
       roots: entry.roots,
       lastSeenAt: entry.lastSeenAt,
@@ -435,7 +468,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       ...(entry.host ? { hostname: entry.host.hostname, platform: `${entry.host.platform}/${entry.host.arch}` } : {}),
       ...(entry.socket === null && entry.reason !== undefined ? { reason: entry.reason } : {}),
       ...(entry.build ? { build: entry.build } : {}),
-      ...(entry.update ? { update: entry.update } : {})
+      ...(entry.update ? { update: entry.update } : {}),
+      ...(entry.runtimeJob ? { runtimeJob: entry.runtimeJob } : {})
     };
     return status;
   }
@@ -561,6 +595,15 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return true;
     },
     requestProbe,
+    requestRuntimeJob(workerId: string, job: RuntimeJob): boolean {
+      const entry = online(workerId);
+      if (!entry?.socket) return false;
+      entry.socket.send(
+        JSON.stringify({ kind: 'runtime_job', jobId: job.jobId, agentId: job.agentId, action: job.action, version: job.version } satisfies ServerToWorker)
+      );
+      entry.runtimeJob = job;
+      return true;
+    },
     close(): void {
       clearInterval(heartbeat);
       for (const entry of registry.values()) entry.channel?.close('hub 正在关闭');

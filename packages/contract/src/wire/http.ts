@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { id, epochMs } from './common.ts';
-import { agentReadinessSchema, attachmentInputSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
+import { agentReadinessSchema, runtimeProvisionSchema, attachmentInputSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
 
 /** HTTP API 的请求与响应。 */
 
@@ -227,13 +227,45 @@ export const workerInfoSchema = z.object({
   agentIds: z.array(z.string()).optional(),
   /** 每个 agent 在这台机器上的模型清单：派生对话框按选中的机器列模型。 */
   agentModels: z
-    .array(z.object({ agentId: z.string(), models: z.array(z.string()), defaultModel: z.string(), readiness: agentReadinessSchema.optional() }))
+    .array(
+      z.object({
+        agentId: z.string(),
+        models: z.array(z.string()),
+        defaultModel: z.string(),
+        readiness: agentReadinessSchema.optional(),
+        provision: runtimeProvisionSchema.optional()
+      })
+    )
     .optional(),
   hostname: z.string().optional(),
   platform: z.string().optional(),
   roots: z.array(z.string()).optional(),
   lastSeenAt: epochMs.optional(),
-  sessionCount: z.number().int().nonnegative().optional()
+  sessionCount: z.number().int().nonnegative().optional(),
+  /** 最近一次运行时安装 / 卸载任务。 */
+  runtimeJob: z
+    .object({
+      jobId: z.string(),
+      agentId: z.string(),
+      action: z.enum(['install', 'uninstall']),
+      version: z.string().nullable(),
+      state: z.enum(['running', 'succeeded', 'failed', 'refused']),
+      message: z.string(),
+      log: z.string(),
+      startedAt: epochMs,
+      endedAt: epochMs.nullable(),
+      actorEmail: z.string()
+    })
+    .optional()
+});
+
+/** 在一台机器上装 / 卸 agent 运行时；version 不填 = 推荐版本。 */
+export const runtimeJobRequest = z.object({
+  action: z.enum(['install', 'uninstall']),
+  version: z
+    .string()
+    .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/)
+    .optional()
 });
 
 /** 改一项可调项：值可以是模型串、也可以是思考强度的档位名。 */

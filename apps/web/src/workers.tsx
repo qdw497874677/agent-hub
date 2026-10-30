@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi, api, type WorkerInfoDto } from './api.ts';
 import { AddMachineDialog } from './add-machine.tsx';
 import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
+import { RuntimeSection } from './runtimes.tsx';
 
 /**
  * Worker：一台登记进 hub、真正跑 agent 的机器。
@@ -13,7 +14,12 @@ import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
  */
 
 export function useWorkers() {
-  const query = useQuery({ queryKey: ['workers'], queryFn: api.workers, refetchInterval: 5000 });
+  // 有安装任务在跑时 1 秒刷一次看进度（ADR 0010：轮询，不另开推送通道）
+  const query = useQuery({
+    queryKey: ['workers'],
+    queryFn: api.workers,
+    refetchInterval: (current) => ((current.state.data ?? []).some((worker) => worker.runtimeJob?.state === 'running') ? 1000 : 5000)
+  });
   const list = query.data ?? [];
   return {
     list,
@@ -141,6 +147,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
               </dd>
             </>
           ) : null}
+          {online ? <RuntimeSection worker={worker} /> : null}
           {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
         </dl>
       ) : null}

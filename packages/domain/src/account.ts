@@ -138,6 +138,8 @@ export type AuditAction =
   | 'worker.pair'
   | 'worker.enroll'
   | 'worker.revoke'
+  | 'runtime.install'
+  | 'runtime.uninstall'
   | 'project.delete'
   | 'asset.create'
   | 'asset.revision'

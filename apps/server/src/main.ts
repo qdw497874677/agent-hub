@@ -13,7 +13,7 @@ import { serveAssetFetch } from './asset-relay.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { createSecretVault, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, SessionId, ToolGateway, WorkerCommand } from '@agent-hub/domain';
+import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, ToolGateway, WorkerCommand } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
@@ -212,7 +212,8 @@ const workerControl = {
   list: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
   disconnect: async (workerId: string, why?: 'admin' | 'revoked') => serverGateway?.disconnect(workerId, why) ?? false,
   hubBuild: () => hubBuild,
-  update: async (workerId: string, commit: string) => serverGateway?.requestUpdate(workerId, commit) ?? false
+  update: async (workerId: string, commit: string) => serverGateway?.requestUpdate(workerId, commit) ?? false,
+  runtimeJob: async (workerId: string, job: RuntimeJob) => serverGateway?.requestRuntimeJob(workerId, job) ?? false
 };
 const enrollmentDeps: EnrollmentDeps = {
   enrollment: store.enrollment,
@@ -408,6 +409,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
     enrollment: enrollmentDeps
   },
   assets: { deps: assetDeps, audit: store.audit },
+  runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now() },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   enrollment: {
     deps: enrollmentDeps,

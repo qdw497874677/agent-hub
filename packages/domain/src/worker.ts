@@ -1,5 +1,6 @@
 import { conflict, unavailable, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
+import type { RuntimeJob, RuntimeProvision } from './runtime-install.ts';
 
 /** Worker 的对外状态。Server / Worker 是适配器，但它得有地方被看见（S1.2）。 */
 export type WorkerState = 'online' | 'offline';
@@ -27,6 +28,8 @@ export interface WorkerStatus {
   readonly build?: BuildInfo;
   /** 最近一次远程更新的进度。 */
   readonly update?: WorkerUpdate;
+  /** 最近一次运行时安装 / 卸载任务（hub 内存里的，重启 hub 就没了）。 */
+  readonly runtimeJob?: RuntimeJob;
 }
 
 /** 某个 agent 在某台机器上的模型清单。 */
@@ -36,6 +39,8 @@ export interface AgentModels {
   readonly defaultModel: string;
   /** 这台机器上它此刻能不能用（Worker 探测的）；老 Worker 不报，按能用处理。 */
   readonly readiness?: AgentReadiness;
+  /** 它从哪来、能不能由 hub 安装；老 Worker 不报（= 不支持在线安装）。 */
+  readonly provision?: RuntimeProvision;
 }
 
 /**

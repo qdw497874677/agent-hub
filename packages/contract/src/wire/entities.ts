@@ -63,6 +63,14 @@ export const agentReadinessSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('unavailable'), reason: z.string(), hint: z.string().max(200).optional() })
 ]);
 
+/** 运行时从哪来（ADR 0010）：machine = 机器自带，以它为准；hub = hub 装的；missing = 没有。 */
+export const runtimeProvisionSchema = z.object({
+  source: z.enum(['machine', 'hub', 'missing']),
+  version: z.string().max(64).optional(),
+  recommended: z.string().max(64).optional(),
+  blocker: z.string().max(200).optional()
+});
+
 export const agentSchema = z.object({
   id,
   label: z.string(),
@@ -71,7 +79,9 @@ export const agentSchema = z.object({
   defaultModel: z.string(),
   options: z.array(runtimeOptionSchema),
   /** worker 探测的就绪状态。老 worker 不报 = 当作 ready。 */
-  readiness: agentReadinessSchema.optional()
+  readiness: agentReadinessSchema.optional(),
+  /** 运行时的来源与可否在线安装；老 worker 不报 = 不支持在线安装。 */
+  provision: runtimeProvisionSchema.optional()
 });
 
 export const projectSchema = z.object({

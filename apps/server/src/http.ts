@@ -78,6 +78,8 @@ import { installAuth, SSE_PATH } from './auth.ts';
 import { installAdmin } from './admin.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
 import { installEnrollment } from './enrollment.ts';
+import { installRuntimeInstall } from './runtime-install.ts';
+import type { RuntimeInstallDeps } from '@agent-hub/domain';
 import { installProjectDeletion } from './project-delete.ts';
 import type { DeleteProjectDeps } from '@agent-hub/domain';
 import type { EnrollmentOptions } from './enrollment.ts';
@@ -97,6 +99,8 @@ export interface AppOptions {
   readonly assets?: AssetRouteOptions;
   /** 单台机器接入（接入码、专属凭据、吊销、引导脚本）；同样只在有账号体系时装。 */
   readonly enrollment?: EnrollmentOptions;
+  /** 在机器上装 / 卸 agent 运行时（ADR 0010）；只在有账号体系时装。 */
+  readonly runtimeInstall?: RuntimeInstallDeps;
   /** 删除项目（要登录态记审计，所以同样只在有账号体系时装）。 */
   readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'>;
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
@@ -162,6 +166,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
+    if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);
     if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf);
   }
   app.use('/api/*', async (c, next) => {

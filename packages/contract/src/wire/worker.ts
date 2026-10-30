@@ -106,6 +106,23 @@ export const workerAgentsSchema = z.object({
   agents: z.array(agentSchema)
 });
 
+/** 版本号与 agent id 都会进命令参数和路径：只收固定形状（与 domain RUNTIME_VERSION / RUNTIME_AGENT_ID 同）。 */
+export const runtimeVersionSchema = z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/);
+export const runtimeAgentIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
+export const runtimeActionSchema = z.enum(['install', 'uninstall']);
+export const runtimeJobStateSchema = z.enum(['running', 'succeeded', 'failed', 'refused']);
+
+/** Worker 回报安装 / 卸载任务的进度：lines 是这一批新增的日志行（增量）。 */
+export const workerRuntimeJobStatusSchema = z.object({
+  type: z.literal('runtime_job_status'),
+  jobId: id,
+  state: runtimeJobStateSchema,
+  message: z.string().max(500),
+  lines: z.array(z.string().max(2000)).max(500).default([]),
+  /** 结束时装好的版本（卸载为 null）。 */
+  version: z.string().max(64).nullable().optional()
+});
+
 export const workerToServerSchema = z.discriminatedUnion('type', [
   workerHelloSchema,
   workerAgentsSchema,
@@ -115,7 +132,8 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerAgentSessionSchema,
   workerOptionsSchema,
   workerStatusSchema,
-  workerUpdateStatusSchema
+  workerUpdateStatusSchema,
+  workerRuntimeJobStatusSchema
 ]);
 
 /**
@@ -169,6 +187,14 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
   /** 让 Worker 把自己更新到 hub 的这个提交。只有提交号，没有任何可拼进命令的自由文本。 */
   z.object({ kind: z.literal('update'), commit: commitShaSchema }),
+  /** 装 / 卸一个 agent 运行时（ADR 0010）。安装器是 Worker 上的白名单适配器，这里只有 id 和版本号。老 worker 不认，只记一条日志。 */
+  z.object({
+    kind: z.literal('runtime_job'),
+    jobId: id,
+    agentId: runtimeAgentIdSchema,
+    action: runtimeActionSchema,
+    version: runtimeVersionSchema.nullable()
+  }),
   z.object({ kind: z.literal('dispose'), sessionId: id }),
   /** 「重新检测」：让 worker 立刻重新探测各 harness 是否可用。老 worker 不认，只记一条日志。 */
   z.object({ kind: z.literal('probe') }),

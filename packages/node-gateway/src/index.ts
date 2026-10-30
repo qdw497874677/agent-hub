@@ -19,3 +19,5 @@ export type { McpEndpoint } from './mcp-endpoint.ts';
 export { serveWorkerFiles } from './worker-fs-rpc.ts';
 export { enrollOverLink, type EnrollOutcome } from './worker-enroll.ts';
 export { createGitWorkspace, keepReason } from './git-workspace.ts';
+export { createRuntimeStore, defaultRuntimesRoot, readInstalledEntry, type RuntimeStore } from './runtime-store.ts';
+export { createRuntimeManager, installEnv, type RuntimeManager, type RuntimeJobCommand, type RuntimeJobReport } from './runtime-jobs.ts';
