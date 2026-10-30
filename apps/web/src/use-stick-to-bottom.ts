@@ -20,11 +20,17 @@ export function useStickToBottom<T extends HTMLElement>(resetKey: string) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
+    // 上一次贴底后的内容高度：内容变了再按「变之前」的高度判断用户是不是还在底部，
+    // 免得用户刚翻上去、scroll 事件还没派发，新消息就把他拽回去。
+    let lastHeight = el.scrollHeight;
     const onScroll = () => {
       stick.current = isNearBottom(el);
     };
     const follow = () => {
+      const { scrollTop, clientHeight } = el;
+      if (stick.current && !isNearBottom({ scrollTop, clientHeight, scrollHeight: lastHeight })) stick.current = false;
       if (stick.current) el.scrollTop = el.scrollHeight;
+      lastHeight = el.scrollHeight;
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     const observer = new MutationObserver(follow);

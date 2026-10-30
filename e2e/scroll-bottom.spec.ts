@@ -30,10 +30,26 @@ async function longSession(page: Page, baseURL: string) {
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '长对话' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true });
   const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
-  const say = (n: number) => page.request.post(`/api/sessions/${id}/prompt`, { data: { text: `第 ${n} 句：${'很长的一段话，'.repeat(12)}`, attachments: [] }, headers });
+  const ended = async () => {
+    const events = (await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ kind?: string; event?: { kind?: string } }>;
+    return events.filter((entry) => (entry.kind ?? entry.event?.kind) === 'ended').length;
+  };
+  // 一句一句来：等上一句的失败落地再问下一句，免得连发被合并或丢掉
+  const say = async (n: number) => {
+    const before = await ended();
+    await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: `第 ${n} 句：${'很长的一段话，'.repeat(12)}`, attachments: [] }, headers });
+    await expect.poll(ended, { message: `第 ${n} 句的失败落地`, timeout: 15_000 }).toBeGreaterThan(before);
+  };
   for (let n = 1; n <= 14; n++) await say(n);
   return { project, say };
 }
+
+// 卡片只渲染最近一段，数条数不可靠：改成盯 DOM 有没有变
+const watchChanges = (loc: Locator) => loc.evaluate((node) => {
+  (node as any).__changed = false;
+  new MutationObserver(() => ((node as any).__changed = true)).observe(node, { childList: true, subtree: true, characterData: true });
+});
+const changed = (loc: Locator) => loc.evaluate((node) => Boolean((node as any).__changed));
 
 test('长对话：画布卡片和专注对话默认在最后；翻上去时新消息不拽回', async ({ page, baseURL }) => {
   const { project, say } = await longSession(page, baseURL!);
@@ -41,27 +57,31 @@ test('长对话：画布卡片和专注对话默认在最后；翻上去时新�
   const card = page.locator('.react-flow__node-session');
   await expect(card).toHaveCount(1);
   const cardScroll = card.locator('div.overflow-y-auto').first();
-  await expect.poll(async () => ((await cardScroll.innerText()).match(/发送失败/g) ?? []).length, { message: '卡片里攒到第 14 条失败' }).toBeGreaterThanOrEqual(14);
-  expect(await scrollable(cardScroll), '卡片里内容确实超过一屏').toBe(true);
+  // 攒够两屏多，翻到顶后离底部才有足够距离可测
+  let n = 14;
+  while (n < 40 && (await cardScroll.evaluate((node) => node.scrollHeight < node.clientHeight * 2.5))) await say(++n);
+  await expect.poll(() => scrollable(cardScroll), { message: '卡片里内容确实超过一屏' }).toBe(true);
   await expect.poll(() => gap(cardScroll), { message: '画布卡片默认停在最后' }).toBeLessThan(4);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-desktop.png` });
 
   // 往上翻着看历史：来新消息不拽回
   await cardScroll.evaluate((node) => (node.scrollTop = 0));
-  await say(15);
-  await expect.poll(async () => ((await cardScroll.innerText()).match(/发送失败/g) ?? []).length, { message: '卡片里攒到第 15 条失败' }).toBeGreaterThanOrEqual(15);
+  await watchChanges(cardScroll);
+  await say(++n);
+  await expect.poll(() => changed(cardScroll), { message: '卡片收到下一句的新内容' }).toBe(true);
   await page.waitForTimeout(500);
-  expect(await cardScroll.evaluate((node) => node.scrollTop), '翻上去时不拽回底部').toBeLessThan(10);
+  expect(await gap(cardScroll), '翻上去时不拽回底部').toBeGreaterThan(100);
   // 回到底部附近：新消息跟着走
   await cardScroll.evaluate((node) => (node.scrollTop = node.scrollHeight));
-  await say(16);
-  await expect.poll(async () => ((await cardScroll.innerText()).match(/发送失败/g) ?? []).length, { message: '卡片里攒到第 16 条失败' }).toBeGreaterThanOrEqual(16);
+  await watchChanges(cardScroll);
+  await say(++n);
+  await expect.poll(() => changed(cardScroll), { message: '卡片收到再下一句的新内容' }).toBe(true);
   await expect.poll(() => gap(cardScroll), { message: '在底部时跟着新消息走' }).toBeLessThan(4);
 
   // 专注对话：打开就在最后
   await card.locator('header, p').first().click();
   const log = page.getByRole('log', { name: '对话记录' });
-  await expect(log).toContainText('第 16 句');
+  await expect(log).toContainText(`第 ${n} 句`);
   const chatScroll = log.locator('xpath=..');
   await expect.poll(() => gap(chatScroll), { message: '专注对话默认停在最后' }).toBeLessThan(4);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-desktop.png` });
@@ -69,12 +89,12 @@ test('长对话：画布卡片和专注对话默认在最后；翻上去时新�
   // 390 手机宽度
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  await expect(log).toContainText('第 16 句');
+  await expect(log).toContainText(`第 ${n} 句`);
   await expect.poll(() => gap(chatScroll), { message: '手机上专注对话也停在最后' }).toBeLessThan(4);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-390.png` });
   await page.goto(`/#/p/${project.id}/canvas`);
   await page.reload();
-  await expect.poll(async () => ((await cardScroll.innerText()).match(/发送失败/g) ?? []).length, { message: '手机上卡片有长内容' }).toBeGreaterThanOrEqual(8);
+  await expect.poll(() => scrollable(cardScroll), { message: '手机上卡片有长内容' }).toBe(true);
   await expect.poll(() => gap(cardScroll), { message: '手机上画布卡片也停在最后' }).toBeLessThan(4);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-390.png` });
 });
