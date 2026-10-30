@@ -12,14 +12,15 @@ import {
 } from '@xyflow/react';
 import type { CanvasDto, SaveLayoutRequest, TaskDto } from './api.ts';
 import { resolveLive, type LiveMap } from './live.ts';
-import { SessionCard, TaskCard, type SessionNode, type TaskNode } from './nodes.tsx';
+import { SessionCard, TaskCard, WorkerFrame, type FrameNode, type SessionNode, type TaskNode } from './nodes.tsx';
+type AnyNode = TaskNode | SessionNode | FrameNode;
 import { CARD_LIMITS, cardWidth, clampSize, type Size } from './card-size.ts';
 import { openingViewport, panIntoView } from './viewport.ts';
-import { arrange, placeMissing } from './layout.ts';
+import { arrange, frameGroups, frameRect, landsInForeignFrame, placeMissing, shiftFrame, type Rect } from './layout.ts';
 import { resolveWorker, useWorkers } from './workers.tsx';
 import { workspaceName } from './workspace-chooser.tsx';
 
-const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard };
+const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard, frame: WorkerFrame };
 
 type Point = { x: number; y: number };
 
@@ -57,7 +58,7 @@ const FIT = { padding: 0.12, minZoom: 0.55, maxZoom: 1 };
  * 规则见 openingViewport：手机上放不下就左上对齐，不再居中把开头推到屏幕外。
  */
 function fitOnOpen(
-  instance: Pick<ReactFlowInstance<TaskNode | SessionNode, Edge>, 'getNodes' | 'getNodesBounds' | 'setViewport'>,
+  instance: Pick<ReactFlowInstance<AnyNode, Edge>, 'getNodes' | 'getNodesBounds' | 'setViewport'>,
   element: HTMLElement | null,
   frames = 30
 ): void {
@@ -89,10 +90,10 @@ export function CanvasView({
 }: Props) {
   // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
   const flow = useRef<Pick<
-    ReactFlowInstance<TaskNode | SessionNode, Edge>,
+    ReactFlowInstance<AnyNode, Edge>,
     'setCenter' | 'getViewport' | 'setViewport' | 'getNode' | 'getInternalNode'
   > | null>(null);
-  const flowFit = useRef<ReactFlowInstance<TaskNode | SessionNode, Edge>['fitView'] | null>(null);
+  const flowFit = useRef<ReactFlowInstance<AnyNode, Edge>['fitView'] | null>(null);
   const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
   const sizesRef = useRef(sizes);
   sizesRef.current = sizes;
@@ -114,6 +115,20 @@ export function CanvasView({
     placeMissing(canvas.layout.positions, arrange(canvas, sizeOf), sizeOf)
   );
   useEffect(() => setPositions((current) => placeMissing(current, arrange(canvas, sizeOf), sizeOf)), [canvas, sizeOf]);
+  const positionsRef = useRef(positions);
+  positionsRef.current = positions;
+  // 同一台 worker 的会话一个框。框的位置由框里的卡推出来（卡的位置照常存库），所以框的位置天然跟着存。
+  const groups = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const [key, members] of frameGroups(canvas.sessions)) map.set(key, members.map((session) => session.id));
+    return map;
+  }, [canvas.sessions]);
+  const frameOfSession = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [key, ids] of groups) for (const id of ids) map.set(id, key);
+    return map;
+  }, [groups]);
+  const dragStart = useRef<{ id: string; point: Point } | null>(null);
   // 「整理布局」：唯一会动用户拖过的位置的入口，按真实尺寸整体重排并存库。
   const tidy = useCallback(() => {
     const next = arrange(canvas, sizeOf);
@@ -207,7 +222,7 @@ export function CanvasView({
   // （流式输出时一次重渲染落在最后一次测量之后就会这样；e2e 偶发的「hidden」就是它）。所以量到的要记下来、喂回去。
   const [measured, setMeasured] = useState<Record<string, { width: number; height: number }>>({});
   /** 只吃我们关心的变化：选中、拖动中的位置、缩放中的尺寸，以及测量结果（喂回节点，见上）。 */
-  const onNodesChange = useCallback((changes: NodeChange<TaskNode | SessionNode>[]) => {
+  const onNodesChange = useCallback((changes: NodeChange<AnyNode>[]) => {
     for (const change of changes) {
       if (change.type === 'dimensions' && change.dimensions) {
         const { width, height } = change.dimensions;
@@ -217,6 +232,14 @@ export function CanvasView({
       }
       if (change.type === 'select') {
         setSelectedId((current) => (change.selected ? change.id : current === change.id ? null : current));
+      } else if (change.type === 'position' && change.position && groups.has(change.id)) {
+        // 拖框：框里的卡一起平移
+        const point = change.position;
+        const ids = groups.get(change.id) ?? [];
+        setPositions((current) => {
+          const rect = frameRect(ids, current, sizeOf);
+          return rect ? shiftFrame(current, ids, { x: point.x - rect.x, y: point.y - rect.y }) : current;
+        });
       } else if (change.type === 'position' && change.position) {
         const point = change.position;
         setPositions((current) => ({ ...current, [change.id]: point }));
@@ -225,7 +248,7 @@ export function CanvasView({
         setSizes((current) => ({ ...current, [change.id]: size }));
       }
     }
-  }, []);
+  }, [groups, sizeOf]);
 
   const nodes = useMemo(() => {
     const box = (kind: 'task' | 'session', nodeId: string) => {
@@ -274,8 +297,32 @@ export function CanvasView({
         onChangeOption: (optionId: string, value: string | boolean) => onChangeOption(session.id, optionId, value)
       }
     }));
-    return [...taskNodes, ...sessionNodes];
+    const frameNodes: FrameNode[] = [...groups].flatMap(([key, ids]) => {
+      const rect = frameRect(ids, positions, sizeOf);
+      if (!rect) return [];
+      const raw = key.slice('frame:'.length);
+      const worker = resolveWorker(workers.list, raw === 'local' ? null : raw);
+      return [{
+        id: key,
+        type: 'frame',
+        position: { x: rect.x, y: rect.y },
+        width: rect.width,
+        height: rect.height,
+        // 尺寸是我们算出来的，直接当「量过」喂回去：不喂的话每次重建都被当成没量过、整框隐身（见上面 measured 的注释）
+        measured: { width: rect.width, height: rect.height },
+        style: { pointerEvents: 'none' },
+        zIndex: -1,
+        selectable: false,
+        dragHandle: '.frame-handle',
+        data: { label: worker?.label ?? (raw === 'local' ? '本机' : '未知机器'), online: worker ? worker.state === 'online' : null, count: ids.length }
+      }];
+    });
+    // 框垫在最下面，卡片和连线画在框上
+    return [...frameNodes, ...taskNodes, ...sessionNodes];
   }, [
+    groups,
+    sizeOf,
+    workers.list,
     canvas.tasks,
     canvas.sessions,
     canvas.previews,
@@ -346,8 +393,33 @@ export function CanvasView({
           requestAnimationFrame(() => reveal(node.id));
         }}
         onNodesChange={onNodesChange}
+        onNodeDragStart={(_, node) => {
+          const point = positionsRef.current[node.id];
+          dragStart.current = point ? { id: node.id, point } : null;
+        }}
         onNodeDragStop={(_, node) => {
+          if (node.type === 'frame') {
+            const ids = groups.get(node.id) ?? [];
+            const moved = Object.fromEntries(ids.flatMap((id) => (positionsRef.current[id] ? [[id, positionsRef.current[id]]] : [])));
+            onLayoutChange({ positions: moved });
+            return;
+          }
           const point = { x: node.position.x, y: node.position.y };
+          // worker 定死了：会话拖进别的 worker 的框就弹回原处
+          const own = frameOfSession.get(node.id);
+          if (own !== undefined) {
+            const foreign = [...groups]
+              .filter(([key]) => key !== own)
+              .flatMap(([, ids]) => {
+                const rect = frameRect(ids, positionsRef.current, sizeOf);
+                return rect ? [rect as Rect] : [];
+              });
+            const start = dragStart.current;
+            if (start?.id === node.id && landsInForeignFrame({ ...point, ...sizeOf(node.id) }, foreign)) {
+              setPositions((current) => ({ ...current, [node.id]: start.point }));
+              return;
+            }
+          }
           setPositions((current) => ({ ...current, [node.id]: point }));
           onLayoutChange({ positions: { [node.id]: point } });
         }}
