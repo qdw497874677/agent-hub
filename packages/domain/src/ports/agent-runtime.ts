@@ -1,3 +1,4 @@
+import type { ProviderLaunch } from '../provider.ts';
 import type { Seq, SessionId, TaskId } from '../ids.ts';
 import type { SessionEvent } from '../event.ts';
 import type { DomainError } from '../errors.ts';
@@ -25,6 +26,8 @@ export interface StartSpec {
    * http 的 url 是 Worker 本机中转入口（凭 tools.token 访问，hub 代连远端）。
    */
   readonly mcp?: readonly McpLaunch[];
+  /** hub 模型提供商（ADR 0013）：本机中继地址 + 中继令牌。运行时只把令牌放进 agent 的环境变量，不写进文件 / 参数。 */
+  readonly provider?: ProviderLaunch;
 }
 
 /** Worker 专属资产目录里此刻装着的东西。 */

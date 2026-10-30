@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import type { AcpAgentConfig, AcpLaunch } from '@agent-hub/adapter-acp';
 import type { AgentRuntime, RuntimeOption, SessionAssets } from '@agent-hub/domain';
 import { grokDescriptor, grokDescriptorFor } from './descriptor.ts';
+import { grokProviderLaunch } from './grok-provider.ts';
 
 /** `--no-auto-update`：worker 拉起的子进程不该顺手升级 grok 本体。 */
 export const GROK_ARGS = ['--no-auto-update', 'agent', 'stdio'] as const;
@@ -42,7 +43,7 @@ export async function grokLaunch(assets: SessionAssets): Promise<AcpLaunch> {
  * - 带了 XAI_API_KEY 且 agent 认 `xai.api_key` 时走无头认证，否则用 `grok login` 缓存的凭据；
  * - 会话开在 yolo 模式，工具调用不再逐个回问（平台本来也会自动放行）。
  */
-export function grokAcpConfig(command = 'grok'): AcpAgentConfig {
+export function grokAcpConfig(command = 'grok', grokHomes?: string): AcpAgentConfig {
   return {
     id: 'grok',
     label: 'Grok Build',
@@ -53,7 +54,9 @@ export function grokAcpConfig(command = 'grok'): AcpAgentConfig {
         ? { methodId: 'xai.api_key', _meta: { headless: true } }
         : null,
     sessionMeta: { yoloMode: true },
-    launch: grokLaunch
+    launch: grokLaunch,
+    providerProtocols: ['openai-chat', 'openai-responses', 'anthropic'],
+    providerLaunch: grokProviderLaunch(grokHomes)
   };
 }
 
@@ -65,12 +68,14 @@ export interface GrokRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
+  /** 选了 hub 模型的会话的私有 GROK_HOME 放哪；默认 ~/.local/state/agent-hub/grok-homes。 */
+  readonly grokHomes?: string;
 }
 
 export function createGrokRuntime(options: GrokRuntimeOptions = {}): AgentRuntime {
   const descriptor =
     options.models !== undefined ? grokDescriptorFor(options.models, options.defaultModel ?? '') : grokDescriptor;
-  return createAcpRuntime(grokAcpConfig(options.command), {
+  return createAcpRuntime(grokAcpConfig(options.command, options.grokHomes), {
     descriptor,
     ...(options.onAgentSessionRef ? { onAgentSessionRef: options.onAgentSessionRef } : {}),
     ...(options.onOptions ? { onOptions: options.onOptions } : {}),

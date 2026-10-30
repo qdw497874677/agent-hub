@@ -7,3 +7,4 @@ export type { PiModelCatalog } from './discover-models.ts';
 export { piReadiness } from './readiness.ts';
 export * from './installer.ts';
 export { piAdapter, explicitPiModels, piPreferredModel } from './adapter.ts';
+export { piProviderSource, piProviderLaunch } from './pi-provider.ts';

@@ -81,7 +81,9 @@ export const agentSchema = z.object({
   /** worker 探测的就绪状态。老 worker 不报 = 当作 ready。 */
   readiness: agentReadinessSchema.optional(),
   /** 运行时的来源与可否在线安装；老 worker 不报 = 不支持在线安装。 */
-  provision: runtimeProvisionSchema.optional()
+  provision: runtimeProvisionSchema.optional(),
+  /** 认得 hub 模型提供商的协议；老 worker 不报 = 不支持。 */
+  providers: z.array(z.enum(['openai-chat', 'openai-responses', 'anthropic'])).optional()
 });
 
 export const projectSchema = z.object({

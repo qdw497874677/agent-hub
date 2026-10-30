@@ -4,6 +4,7 @@ import { createAcpRuntime } from './acp-runtime.ts';
 import { discoverAcpModels } from './discover-models.ts';
 import { acpReadiness } from './readiness.ts';
 import { opencodeInstaller } from './installer.ts';
+import { opencodeProviderLaunch } from './opencode-provider.ts';
 
 /**
  * ACP agent 是配置，不是代码：
@@ -45,7 +46,14 @@ export function acpConfigsFor(ctx: Pick<RuntimeAdapterContext, 'env' | 'log'>): 
     if (config.id !== 'opencode') return config;
     // OPENCODE_COMMAND 是单机安装的后门；ACP_AGENTS 里自己写的 opencode 条目也照样认 hub 下发的资产
     const override = ctx.env['OPENCODE_COMMAND'];
-    return { launch: opencodeLaunch, ...config, ...(override ? { command: override } : {}) };
+    const command = override ?? config.command;
+    return {
+      launch: opencodeLaunch,
+      providerProtocols: ['openai-chat', 'openai-responses', 'anthropic'] as const,
+      providerLaunch: opencodeProviderLaunch(command),
+      ...config,
+      command
+    };
   });
 }
 

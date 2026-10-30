@@ -1,6 +1,8 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, RpcFailure, assetsFetch, assetsSync, createRpcChannel, serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, RpcFailure, assetsFetch, assetsSync, createRpcChannel, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
+import { createProviderRelay } from './provider-relay.ts';
+import { authHeaders } from './provider-proxy.ts';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type {
   AgentRuntime,
@@ -191,6 +193,37 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   });
   /** agent 连的本机 MCP 入口：薄适配器，只把 JSON-RPC 经通道交给 hub。 */
   const mcpEndpoint = createMcpEndpoint(channel);
+  /** 模型提供商的本机中继（ADR 0013）：只听 loopback，按会话发令牌。 */
+  const providerRelay = createProviderRelay();
+  /** 经 hub 中转时 hub 给的是路径：按自己连的 hub 地址补全（ws→http，去掉 /worker）。 */
+  const hubHttp = (() => {
+    try {
+      const url = new URL(options.url);
+      url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+      return `${url.protocol}//${url.host}${url.pathname.replace(/\/worker\/?$/, '').replace(/\/+$/, '')}`;
+    } catch {
+      return '';
+    }
+  })();
+  const upstreamUrl = (baseUrl: string): string => (baseUrl.startsWith('/') ? hubHttp + baseUrl : baseUrl);
+  channel.handle(providerTest, async ({ protocol, baseUrl, apiKey }) => {
+    const target = upstreamUrl(baseUrl).replace(/\/+$/, '') + '/models';
+    try {
+      const response = await fetch(target, { headers: { ...authHeaders(protocol, apiKey), accept: 'application/json', ...(protocol === 'anthropic' ? { 'anthropic-version': '2023-06-01' } : {}) }, signal: AbortSignal.timeout(20_000) });
+      const text = await response.text();
+      let models: string[] = [];
+      try {
+        const body = JSON.parse(text) as { data?: { id?: unknown }[] };
+        models = (body.data ?? []).flatMap((item) => (typeof item.id === 'string' ? [item.id] : [])).slice(0, 500);
+      } catch {
+        // 不是 JSON：只报状态
+      }
+      const message = response.ok ? `通了：${models.length} 个模型` : `HTTP ${response.status}${text ? '：' + text.slice(0, 200).replace(/\s+/g, ' ') : ''}`;
+      return { ok: response.ok, status: response.status, message, models };
+    } catch (failure) {
+      return { ok: false, status: 0, message: `连不上：${failure instanceof Error ? (failure.name === 'TimeoutError' ? '超时' : failure.message) : String(failure)}`, models: [] };
+    }
+  });
 
   const send = (frame: WorkerToServer): void => {
     if (socket && socket.readyState === WebSocket.OPEN && accepted) {
@@ -462,6 +495,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
     await session.dispose();
     sessions.delete(sessionId);
+    providerRelay.close(sessionId);
   }
 
   /** relay：URL 填成本机 MCP 入口，令牌不变。 */
@@ -503,6 +537,17 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       ...(command.tools ? { tools: await toolAccess(command.tools) } : {}),
       ...(command.tools && command.mcp && command.mcp.length > 0 ? { mcp: await mcpAccess(command.mcp) } : {})
     };
+    if (command.provider) {
+      const grant = command.provider;
+      if (!runtime.descriptor.providers?.includes(grant.protocol)) {
+        send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason: `${command.agentId} 不支持 ${grant.protocol} 协议的模型提供商` } });
+        return;
+      }
+      // 真密钥（direct）或中转令牌（via hub）只留在这个进程的中继里；agent 拿到的是本机地址 + 会话令牌
+      const relay = await providerRelay.open(command.sessionId, { baseUrl: upstreamUrl(grant.baseUrl), apiKey: grant.apiKey, protocol: grant.protocol });
+      spec = { ...spec, provider: { slug: grant.slug, name: grant.name, protocol: grant.protocol, models: grant.models, baseUrl: relay.baseUrl, token: relay.token } };
+      options.onLog?.(`会话 ${command.sessionId} 用 hub 模型提供商「${grant.slug}」（${grant.via === 'hub' ? '经 hub 中转' : '本机直连'}）`);
+    }
     const assets = await options.assets?.current(command.assetIds ? new Set(command.assetIds) : undefined).catch(() => undefined);
     if (assets) spec = { ...spec, assets };
 
@@ -517,6 +562,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
     const started = await runtime.start(spec);
     if (!started.ok) {
+      providerRelay.close(command.sessionId);
       options.onLog?.(`${command.agentId} 启动失败：${started.error.message}`);
       send({
         type: 'event',
@@ -551,6 +597,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
           // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
           send({ type: 'status', sessionId: command.sessionId, status: 'ended' });
+          providerRelay.close(command.sessionId);
           await session.dispose();
         }
       }
@@ -572,6 +619,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       if (watchdog) clearTimeout(watchdog);
       channel.close('worker 正在退出');
       await mcpEndpoint.close();
+      await providerRelay.stop();
       for (const session of sessions.values()) await session.dispose();
       sessions.clear();
       if (socket) socket.close();

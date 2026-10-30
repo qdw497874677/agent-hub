@@ -1,3 +1,5 @@
+import { parseHubModel } from './provider.ts';
+import type { ProviderProtocol } from './provider.ts';
 import { conflict, unavailable, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
 import type { RuntimeJob, RuntimeProvision } from './runtime-install.ts';
@@ -41,6 +43,8 @@ export interface AgentModels {
   readonly readiness?: AgentReadiness;
   /** 它从哪来、能不能由 hub 安装；老 Worker 不报（= 不支持在线安装）。 */
   readonly provision?: RuntimeProvision;
+  /** 认得 hub 模型提供商的协议（见 AgentDescriptor.providers）。 */
+  readonly providers?: readonly ProviderProtocol[];
 }
 
 /**
@@ -182,6 +186,11 @@ export function checkModelOn(
 ): Result<string, DomainError> {
   const entry = modelsOn(workers, workerId, agentId);
   if (model === '' || !entry || entry.models.includes(model)) return ok(model);
+  const label0 = workers.find((worker) => worker.workerId === workerId)?.label ?? workerId;
+  if (parseHubModel(model)) {
+    // hub 提供商的模型不在机器清单里：只要这个 agent 认得 hub 提供商就放行，具体授权在派生 / 启动时查
+    return supportsProviders(workers, workerId, agentId) ? ok(model) : err(conflict(`「${label0}」上的 ${agentId} 不支持 hub 模型提供商`));
+  }
   const label = workers.find((worker) => worker.workerId === workerId)?.label ?? workerId;
   return err(conflict(`「${label}」上的 ${agentId} 没有模型 ${model}，换一个它有的模型`));
 }
@@ -190,5 +199,12 @@ export function checkModelOn(
 export function carryModelTo(workers: readonly WorkerStatus[], workerId: string, agentId: string, model: string): string {
   const entry = modelsOn(workers, workerId, agentId);
   if (model === '' || !entry || entry.models.includes(model)) return model;
+  if (parseHubModel(model) && supportsProviders(workers, workerId, agentId)) return model;
   return entry.defaultModel;
+}
+
+/** 这台机器上的这个 agent 认不认 hub 下发的模型提供商。 */
+export function supportsProviders(workers: readonly WorkerStatus[], workerId: string, agentId: string): boolean {
+  const entry = workers.find((worker) => worker.workerId === workerId)?.agentModels?.find((item) => item.agentId === agentId);
+  return (entry?.providers?.length ?? 0) > 0;
 }

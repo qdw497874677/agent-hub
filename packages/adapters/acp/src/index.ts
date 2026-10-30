@@ -10,3 +10,4 @@ export { execFailureReason, execProbe } from './exec-probe.ts';
 export type { ExecProbe } from './exec-probe.ts';
 export * from './installer.ts';
 export { acpAdapter, acpAgents, acpConfigsFor, commandEnvVar } from './adapter.ts';
+export { opencodeProviderConfig, opencodeProviderLaunch, opencodeDialect, type OpencodeDialect } from './opencode-provider.ts';

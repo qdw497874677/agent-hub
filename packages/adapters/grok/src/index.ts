@@ -6,3 +6,4 @@ export type { GrokModelCatalog } from './discover-models.ts';
 export { grokReadiness, parseGrokModels } from './readiness.ts';
 export * from './installer.ts';
 export { grokAdapter } from './adapter.ts';
+export { grokProviderToml, grokProviderLaunch, defaultGrokHomes } from './grok-provider.ts';

@@ -125,3 +125,13 @@ export const assetsFetch = method(
   z.object({ hashes: z.array(sha).min(1).max(200) }),
   z.object({ blobs: z.array(z.object({ sha256: sha, data: z.string() })) })
 );
+
+/**
+ * hub→worker：从这台机器测一下模型提供商通不通（GET <baseUrl>/models）。
+ * baseUrl 以 / 开头 = 经 hub 中转（worker 按自己连的 hub 地址补全），apiKey 是一次性中转令牌。
+ */
+export const providerTest = method(
+  'provider.test',
+  z.object({ protocol: z.enum(['openai-chat', 'openai-responses', 'anthropic']), baseUrl: z.string().min(1).max(2000), apiKey: z.string().min(1).max(4096) }),
+  z.object({ ok: z.boolean(), status: z.number().int(), message: z.string(), models: z.array(z.string()).max(500) })
+);

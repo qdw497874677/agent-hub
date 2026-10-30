@@ -460,7 +460,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         models: agent.models,
         defaultModel: agent.defaultModel,
         ...(agent.readiness ? { readiness: agent.readiness } : {}),
-        ...(agent.provision ? { provision: agent.provision } : {})
+        ...(agent.provision ? { provision: agent.provision } : {}),
+        ...(agent.providers?.length ? { providers: agent.providers } : {})
       })),
       roots: entry.roots,
       lastSeenAt: entry.lastSeenAt,
@@ -630,7 +631,8 @@ function toWire(command: WorkerCommand): ServerToWorker {
         ...(command.mcp && command.mcp.length > 0
           ? { mcp: command.mcp.map((entry) => (entry.transport === 'stdio' ? { ...entry, args: [...entry.args], env: { ...entry.env } } : { ...entry })) }
           : {}),
-        ...(command.assetIds ? { assetIds: [...command.assetIds] } : {})
+        ...(command.assetIds ? { assetIds: [...command.assetIds] } : {}),
+        ...(command.provider ? { provider: { ...command.provider, models: command.provider.models.map((model) => ({ ...model })) } } : {})
       };
     case 'prompt':
       return { kind: 'prompt', sessionId: command.sessionId, text: command.text, parts: [...command.parts] };
