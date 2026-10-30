@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
@@ -7,6 +7,7 @@ import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './
 import { ForkDialog, SessionDetails } from './inspector.tsx';
 import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
+import { useStickToBottom } from './use-stick-to-bottom.ts';
 import { sessionCommands } from './commands.ts';
 import type { LiveSession } from './live.ts';
 
@@ -49,7 +50,7 @@ export function FocusView({
   const [forkAt, setForkAt] = useState<string | null>(null);
   const [forkError, setForkError] = useState<string | null>(null);
   const [settings, changeSettings] = useDisplaySettings();
-  const tail = useRef<HTMLDivElement | null>(null);
+  const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const blocks = live?.blocks ?? [];
@@ -62,10 +63,6 @@ export function FocusView({
     setForkError(null);
     setForkAt(String(seq));
   }
-
-  useEffect(() => {
-    tail.current?.scrollIntoView({ block: 'end' });
-  }, [blocks.length, blocks[blocks.length - 1]?.seq, session.id]);
 
   async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
@@ -168,7 +165,7 @@ export function FocusView({
         />
       ) : null}
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
         <div
           role="log"
           aria-label="对话记录"
@@ -199,7 +196,6 @@ export function FocusView({
               {agentLabel} 正在回复…
             </p>
           ) : null}
-          <div ref={tail} />
         </div>
       </div>
 
