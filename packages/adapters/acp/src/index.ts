@@ -9,3 +9,4 @@ export { acpReadiness } from './readiness.ts';
 export { execFailureReason, execProbe } from './exec-probe.ts';
 export type { ExecProbe } from './exec-probe.ts';
 export * from './installer.ts';
+export { acpAdapter, acpAgents, acpConfigsFor, commandEnvVar } from './adapter.ts';

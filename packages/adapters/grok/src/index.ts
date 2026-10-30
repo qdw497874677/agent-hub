@@ -5,3 +5,4 @@ export { discoverGrokModels, modelsFromInitialize } from './discover-models.ts';
 export type { GrokModelCatalog } from './discover-models.ts';
 export { grokReadiness, parseGrokModels } from './readiness.ts';
 export * from './installer.ts';
+export { grokAdapter } from './adapter.ts';
