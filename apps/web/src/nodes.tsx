@@ -1,5 +1,5 @@
 import { AuthorTag } from './author.tsx';
-import { Handle, NodeResizer, Position, type NodeProps, type Node } from '@xyflow/react';
+import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useState } from 'react';
 import type { SessionDto, TaskDto, WorkerInfoDto } from './api.ts';
 import { WorkerChip } from './workers.tsx';
@@ -58,16 +58,19 @@ export type SessionNode = Node<
 function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: boolean; onResized: Resizable['onResized'] }) {
   const limits = CARD_LIMITS[kind];
   return (
-    <NodeResizer
-      isVisible={selected}
-      minWidth={limits.minWidth}
-      minHeight={limits.minHeight}
-      maxWidth={limits.maxWidth}
-      maxHeight={limits.maxHeight}
-      color="var(--color-accent)"
-      handleClassName="card-resize-handle"
-      onResizeEnd={(_, box) => onResized(box)}
-    />
+    // 只留右下角一个缩放把手：四边/四角的把手（尤其触屏放大后）会盖住顶栏的拖动区，选中后一拖就变成了缩放。
+    selected ? (
+      <NodeResizeControl
+        position="bottom-right"
+        minWidth={limits.minWidth}
+        minHeight={limits.minHeight}
+        maxWidth={limits.maxWidth}
+        maxHeight={limits.maxHeight}
+        color="var(--color-accent)"
+        className="card-resize-handle"
+        onResizeEnd={(_, box) => onResized(box)}
+      />
+    ) : null
   );
 }
 
@@ -162,7 +165,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     >
       <CardResizer kind="session" selected={selected} onResized={onResized} />
       <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
-      <header className="mb-2 flex items-center justify-between gap-2">
+      <header className="card-drag-zone mb-2 flex cursor-grab touch-none select-none items-center justify-between gap-2">
         <div className="flex items-baseline gap-2 overflow-hidden">
           {/* 拖动把手：卡片里的对话区只管滚动，移动卡片按住顶栏（或这个把手）拖 */}
           <span aria-hidden title="按住顶栏拖动卡片" data-testid="card-drag-handle" className="shrink-0 cursor-grab select-none text-meta text-tertiary">
@@ -231,7 +234,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         ref={scroller}
         // nowheel/nopan/nodrag：滚轮、触摸滑动滚的是这段对话，不是拖动或缩放画布。
         data-testid="session-card-log"
-        className={`nowheel nopan nodrag min-h-0 flex-1 touch-pan-y space-y-1.5 overflow-y-auto overscroll-contain pr-1 ${size ? '' : 'max-h-[320px]'}`}>
+        className={`nowheel nopan nodrag min-h-0 flex-1 cursor-auto select-text touch-pan-y space-y-1.5 overflow-y-auto overscroll-contain pr-1 ${size ? '' : 'max-h-[320px]'}`}>
         {failureReason ? (
           <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
         ) : null}
@@ -276,8 +279,6 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
   const { task, sessionCount, onStatus, onDetail, onDerive, onResized } = data;
   const muted = task.status === 'abandoned';
   // 「试过是死路」和「还在试」必须能区分（S4.2），所以收尾与放弃是两个动作，重开也留着。
-  // 动作挂在 hover 上而不是「选中后显示」：React Flow 的 onClick 里改 state 会让
-  // 双击事件被两段渲染切开，任务卡的派生就再也点不出来了。
   // 卡片上只放两个下一步（进行中时仍是「收尾 / 放弃」这对 S4.2 的动作）；完整的在详情抽屉里。
   const actions =
     task.status === 'in_progress'
@@ -285,8 +286,7 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
       : NEXT_STATUS[task.status].slice(0, 2);
   return (
     <div
-      // 和会话卡一样把双击挂在卡片自己身上：React Flow 的 onNodeDoubleClick 在选中重渲染后会丢。
-      onDoubleClick={() => onDerive()}
+      // 派生会话只走「＋ 会话」按钮，不再有双击快捷方式（双击留给以后「放大到这个任务」）。
       className={`group h-full w-full overflow-hidden rounded-md border bg-panel px-3 py-2 hover:border-accent ${
         selected ? 'border-accent' : 'border-hair'
       } ${muted ? 'opacity-60' : ''}`}

@@ -220,6 +220,7 @@ export function CanvasView({
   // React Flow 量到的尺寸。受控节点每次重建都是新对象，不带 measured 的话 React Flow 会把它当「没量过」、
   // 给节点挂 visibility:hidden，要等 ResizeObserver 再报一次——尺寸没变就永远不报，卡片整张隐身
   // （流式输出时一次重渲染落在最后一次测量之后就会这样；e2e 偶发的「hidden」就是它）。所以量到的要记下来、喂回去。
+  const pressedAt = useRef<{ x: number; y: number } | null>(null);
   const [measured, setMeasured] = useState<Record<string, { width: number; height: number }>>({});
   /** 只吃我们关心的变化：选中、拖动中的位置、缩放中的尺寸，以及测量结果（喂回节点，见上）。 */
   const onNodesChange = useCallback((changes: NodeChange<AnyNode>[]) => {
@@ -280,6 +281,8 @@ export function CanvasView({
       id: session.id,
       type: 'session',
       position: positions[session.id] ?? { x: 0, y: 0 },
+      // 交互分区（docs/guide.md「画布交互」）：会话卡只能按住顶栏拖；对话区滚动、输入区打字，互不抢。
+      dragHandle: '.card-drag-zone',
       ...box('session', session.id),
       data: {
         session,
@@ -371,7 +374,13 @@ export function CanvasView({
   }, [canvas.edges]);
 
   return (
-    <div className="h-full w-full" ref={container}>
+    <div
+      className="h-full w-full"
+      ref={container}
+      onPointerDownCapture={(event) => {
+        pressedAt.current = { x: event.clientX, y: event.clientY };
+      }}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -385,6 +394,9 @@ export function CanvasView({
         }}
         onNodeClick={(event, node) => {
           if (node.type !== 'session') return;
+          // 按下后挪过（在对话区里划选文字、滑动）就不算单击，不要选中再把画布拉过去
+          const down = pressedAt.current;
+          if (down && Math.hypot(event.clientX - down.x, event.clientY - down.y) > 4) return;
           // 卡片里的输入框、按钮、选择器、链接各有各的事；点它们不算「打开这条会话」。
           if ((event.target as HTMLElement).closest('input, textarea, button, select, a, [role="menu"], [role="listbox"], .card-resize-handle')) return;
           // 单击只选中（边框高亮、拉进视野），不进会话：进会话要双击或点卡片上的「打开」。
