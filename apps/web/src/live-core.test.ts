@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBlocks, applyFrame, catchUp, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
+import { applyBlocks, applyFrame, catchUp, forkBlockedHint, inheritedBlocks, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
@@ -127,4 +127,21 @@ test('失败过的会话再问一句：库里状态仍是 failed，但 agent 在
   assert.equal(map['s']?.awaiting, true, '诊断不结束这一轮');
   map = applyFrame(map, { sessionId: 's', seq: 8, event: { kind: 'ended', outcome: 'done' }, status: 'done' } as never);
   assert.equal(map['s']?.awaiting, false);
+});
+
+test('分叉页：来源历史截到分叉点，之后来源说的不混进来', () => {
+  const entries = [
+    { seq: 1, event: { kind: 'prompt', text: '问' } },
+    { seq: 2, event: { kind: 'text', delta: '答' } },
+    { seq: 3, event: { kind: 'prompt', text: '分叉之后来源又问' } }
+  ] as unknown as Parameters<typeof inheritedBlocks>[0];
+  const blocks = inheritedBlocks(entries, 2);
+  assert.deepEqual(blocks.map((block) => block.kind), ['prompt', 'text']);
+});
+
+test('「分叉」：没内容、这一轮在跑、agent 不支持时点不了，并说明原因', () => {
+  assert.equal(forkBlockedHint({ lastSeq: 3, turnRunning: false, denied: false }), null);
+  assert.match(forkBlockedHint({ lastSeq: 0, turnRunning: false, denied: false }) ?? '', /还没有内容/);
+  assert.match(forkBlockedHint({ lastSeq: 3, turnRunning: true, denied: false }) ?? '', /还在进行/);
+  assert.match(forkBlockedHint({ lastSeq: 3, turnRunning: false, denied: true }) ?? '', /不支持/);
 });

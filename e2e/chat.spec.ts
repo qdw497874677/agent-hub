@@ -32,13 +32,15 @@ async function openFromCanvas(page: Page, baseURL: string, say?: string) {
   const node = page.locator('.react-flow__node-session');
   await expect(node).toHaveCount(1);
   await node.locator('header, p').first().click();
+  await expect(page.getByRole('log', { name: '对话记录' }), '单击卡片只选中，不进对话').toHaveCount(0);
+  await node.getByRole('button', { name: '打开' }).click();
   const log = page.getByRole('log', { name: '对话记录' });
-  await expect(log, '点卡片直接进对话').toBeVisible();
+  await expect(log, '点「打开」进对话').toBeVisible();
   return { log, headers, project, sessionId: id };
 }
 
 for (const width of [360, 430]) {
-  test(`${width}px 手机：点卡片进对话；详情抽屉、更多菜单、底栏一行`, async ({ page, baseURL }) => {
+  test(`${width}px 手机：单击选中、点「打开」进对话；详情抽屉、更多菜单、底栏一行`, async ({ page, baseURL }) => {
     await page.setViewportSize({ width, height: 800 });
     await openFromCanvas(page, baseURL!);
     await expect(page.getByRole('complementary', { name: '会话详情' }), '详情默认不占地方').toHaveCount(0);
@@ -52,7 +54,8 @@ for (const width of [360, 430]) {
     }
 
     await page.getByRole('button', { name: '更多' }).click();
-    await expect(page.getByRole('menuitem', { name: /从某一步分叉/ })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: /^分叉/ })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: /从某一步分叉/ })).toHaveCount(0);
     await expect(page.getByRole('menuitem', { name: /换个地方继续/ })).toBeVisible();
     await page.keyboard.press('Escape');
 
@@ -105,7 +108,7 @@ test('显示设置：每个选项都能切，刷新后还在', async ({ page, ba
   await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('agent-hub.display.')).forEach((k) => localStorage.removeItem(k)));
 });
 
-test('真回复：用户气泡 + markdown 回复；从消息菜单分叉进新会话；「更多」按序号分叉', async ({ page, baseURL }) => {
+test('真回复：用户气泡 + markdown 回复；「更多」→分叉进新会话，看到分叉前的对话和分界线', async ({ page, baseURL }) => {
   test.setTimeout(180_000);
   const { log, project } = await openFromCanvas(page, baseURL!, '只回复两个字：好的');
   await expect(log.getByTestId('msg-user')).toContainText('好的');
@@ -120,28 +123,26 @@ test('真回复：用户气泡 + markdown 回复；从消息菜单分叉进新�
     await page.keyboard.press('Escape');
   }
 
-  await reply.hover();
-  await reply.getByRole('button', { name: '消息操作' }).click();
+  await expect(reply.getByRole('button', { name: '消息操作' }), '不再有逐条消息的分叉').toHaveCount(0);
+  await page.getByRole('button', { name: '更多' }).click();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-fork-menu.png` });
-  await page.getByRole('menuitem', { name: '从这里分叉' }).click();
-  const form = page.getByRole('dialog', { name: '从某一步分叉' });
-  await expect(form.getByLabel('分叉点')).not.toHaveValue('');
-  await form.getByRole('button', { name: '从这里分叉' }).click();
-  await expect(form).toHaveCount(0);
+  await page.getByRole('menuitem', { name: /^分叉/ }).click();
   await expect.poll(() => page.url(), '分叉后进新会话').not.toBe(before);
-  await expect(page.getByText(/分叉自 #\d+/).first()).toBeVisible();
+  // 新会话先看到来源分叉前的对话（只读、变淡），再是分界线，分界线链回来源
+  const inherited = page.getByTestId('fork-inherited');
+  await expect(inherited.getByTestId('msg-user')).toContainText('好的');
+  await expect(inherited.getByTestId('msg-assistant').first()).toBeVisible();
+  const divider = page.getByTestId('fork-divider');
+  await expect(divider).toContainText(/从「.+」分叉 · \d+-\d{2} \d{2}:\d{2}/);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-forked.png` });
+  await divider.getByRole('button').click();
+  await expect.poll(() => page.url(), '分界线链回来源').toBe(before);
 
-  // 回原会话，按序号再分一次（新分出来的那条还没内容，没有可分的点）
-  await page.goto(before);
+  // 再从来源分一次（服务端不管传什么 atSeq 都从最新处分）
   await expect(log.getByTestId('msg-assistant').first()).toBeVisible();
   await page.getByRole('button', { name: '更多' }).click();
-  await page.getByRole('menuitem', { name: /从某一步分叉/ }).click();
-  const second = page.getByRole('dialog', { name: '从某一步分叉' });
-  await second.getByLabel('分叉点').fill('0');
-  await expect(second.getByRole('button', { name: '从这里分叉' })).toBeDisabled();
-  await second.getByLabel('分叉点').fill('1');
-  await second.getByRole('button', { name: '从这里分叉' }).click();
-  await expect(second).toHaveCount(0);
+  await page.getByRole('menuitem', { name: /^分叉/ }).click();
+  await expect.poll(() => page.url()).not.toBe(before);
 
   await page.goto(`/#/p/${project.id}/canvas`);
   await expect(page.locator('.react-flow__node-session')).toHaveCount(3);

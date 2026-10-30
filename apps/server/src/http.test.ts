@@ -191,7 +191,7 @@ test('会话不在 worker 手上时，prompt 先 resume 再发（S7.1）', async
   assert.deepEqual(entries.at(-1)?.event, { kind: 'prompt', text: '接着说' });
 });
 
-test('分叉一个不存在的会话返回 404，分叉点超出历史返回 409', async () => {
+test('分叉一个不存在的会话返回 404，还没内容的会话分叉返回 409', async () => {
   const { deps, call } = harness();
   (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
 
@@ -219,7 +219,7 @@ test('分叉一个不存在的会话返回 404，分叉点超出历史返回 409
     body: JSON.stringify({ sessionId, atSeq: 42, agentId: 'fake', model: 'fake-1' })
   });
   assert.equal(beyond.status, 409);
-  assert.match((beyond.body as { error: { message: string } }).error.message, /超出/);
+  assert.match((beyond.body as { error: { message: string } }).error.message, /还没有内容/);
 });
 
 test('布局保存后能读回来，坐标按节点 id 记住', async () => {

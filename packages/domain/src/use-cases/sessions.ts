@@ -106,7 +106,11 @@ async function noteSessionStarted(
 
 export interface ForkCommand {
   readonly sessionId: string;
-  readonly atSeq: Seq;
+  /**
+   * 只为兼容老客户端保留，已被忽略：分叉一律从来源的最新处（lastSeq）开。
+   * 原因见 docs/adr：底层 agent 都没有「按 entry 分叉」，挑中间某一步得到的上下文会和标记对不上。
+   */
+  readonly atSeq?: Seq;
   readonly agentId: string;
   readonly model: string;
   readonly actor?: Principal | null;
@@ -124,6 +128,9 @@ export async function forkSessionUseCase(
   if (!forkCap || forkCap.state === 'denied') {
     return err(conflict(forkCap?.reason ?? '该 agent 不支持会话分叉，所以不能作为血缘起点'));
   }
+
+  if (source.lastSeq < 1) return err(conflict('来源会话还没有内容，没有可以分叉的地方'));
+  const atSeq = source.lastSeq;
 
   const sourceTask = await deps.tasks.byId(source.taskId);
   if (!sourceTask) return err(notFound('来源会话所属的任务不存在'));
@@ -150,7 +157,7 @@ export async function forkSessionUseCase(
 
   const created = forkSession({
     source,
-    atSeq: command.atSeq,
+    atSeq,
     agentId,
     model: model.value,
     now: deps.now(),
@@ -163,14 +170,14 @@ export async function forkSessionUseCase(
 
   const { root } = await locationOf(deps, project, session);
   const dispatched = await deps.gateway.dispatch(
-    startCommand(session, root, { agentSessionRef: source.agentSessionRef, cursor: command.atSeq }, source.options)
+    startCommand(session, root, { agentSessionRef: source.agentSessionRef, cursor: atSeq }, source.options)
   );
   if (!dispatched.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
   }
   deps.hosting.add(session.id, session.workerId);
-  await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的第 ${command.atSeq} 步分叉出 ${session.agentId} 会话`);
+  await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的最新处（第 ${atSeq} 步）分叉出 ${session.agentId} 会话`);
   return ok(session);
 }
 

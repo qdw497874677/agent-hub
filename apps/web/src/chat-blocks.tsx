@@ -205,27 +205,6 @@ export function DisplayMenu({ settings, onChange }: { settings: DisplaySettings;
   );
 }
 
-/** 每条消息右上角的「⋯」：从这里分叉。 */
-function MessageActions({ seq, onFork }: { seq: number; onFork: ((seq: number) => void) | null }) {
-  if (onFork === null) return null;
-  return (
-    <span className="opacity-60 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100">
-      <Dropdown label="消息操作" icon="⋯" width="w-56">
-        {(close) => (
-          <MenuItem
-            title="从这里分叉"
-            hint={`带着到第 ${seq} 步为止的上下文开一条新会话`}
-            onClick={() => {
-              close();
-              onFork(seq);
-            }}
-          />
-        )}
-      </Dropdown>
-    </span>
-  );
-}
-
 function DiffView({ lines }: { lines: readonly DiffLine[] }) {
   const [all, setAll] = useState(false);
   const limit = 40;
@@ -335,8 +314,7 @@ export function ChatBlock({
   agentLabel,
   settings,
   last,
-  running,
-  onFork
+  running
 }: {
   block: Block;
   sessionId: string;
@@ -345,7 +323,6 @@ export function ChatBlock({
   /** 是不是最后一块：正在流的思考写「正在思考…」。 */
   last: boolean;
   running: boolean;
-  onFork: ((seq: number) => void) | null;
 }) {
   if (block.kind === 'prompt') {
     const images = block.attachments.filter((item) => item.kind === 'image');
@@ -394,11 +371,8 @@ export function ChatBlock({
   if (block.kind === 'thinking') return <ThinkingBlock text={block.text} settings={settings} live={last && running} />;
   if (block.kind === 'text') {
     return (
-      <div className="group/msg relative" data-testid="msg-assistant">
-        <div className="absolute -right-2 -top-2">
-          <MessageActions seq={block.seq} onFork={onFork} />
-        </div>
-        <LogMarkdown body={block.text} className="pr-8 text-body leading-relaxed text-primary/90" />
+      <div data-testid="msg-assistant">
+        <LogMarkdown body={block.text} className="text-body leading-relaxed text-primary/90" />
       </div>
     );
   }

@@ -20,7 +20,7 @@ export function grokDescriptorFor(
     capabilities: capabilityMatrix({
       prompt: available,
       interrupt: available,
-      fork: limited('Grok ACP 未暴露按 entry 分叉，v1 复用来源会话的完整上下文；平台血缘仍精确'),
+      fork: limited('只能从最新处分叉：新会话带着来源到此刻的完整上下文，不能挑中间某一步'),
       resume: available,
       tool_calls: available,
       artifacts: limited('只归档 write/edit 工具 diff 里的绝对路径；shell 命令写出的文件认不出'),

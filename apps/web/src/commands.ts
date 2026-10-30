@@ -3,7 +3,12 @@ import { api } from './api.ts';
 import { IMAGE_TYPES, nextId, type Draft, type SlashCommand } from './attachments.ts';
 
 /** `/` 命令：都是界面上已有的动作，只是给键盘一条近路。 */
-export function sessionCommands(session: SessionDto, extra: readonly SlashCommand[] = []): SlashCommand[] {
+export function sessionCommands(
+  session: SessionDto,
+  extra: readonly SlashCommand[] = [],
+  /** 「分叉」此刻为什么不能用（比如这一轮还在跑）；null = 能用。 */
+  forkBlocked: string | null = null
+): SlashCommand[] {
   const commands: SlashCommand[] = [
     { name: 'interrupt', hint: '中断这一轮', run: () => api.interrupt(session.id) },
     {
@@ -15,8 +20,8 @@ export function sessionCommands(session: SessionDto, extra: readonly SlashComman
   if (session.lastSeq > 0) {
     commands.push({
       name: 'fork',
-      hint: `从最新一条（#${session.lastSeq}）分叉`,
-      run: () => api.fork({ sessionId: session.id, atSeq: session.lastSeq, agentId: session.agentId, model: session.model })
+      hint: forkBlocked ?? '从最新处分叉，带着到此刻的上下文开一条新会话',
+      run: () => (forkBlocked !== null ? Promise.reject(new Error(forkBlocked)) : api.fork({ sessionId: session.id, agentId: session.agentId, model: session.model }))
     });
   }
   return [...commands, ...extra];
@@ -44,4 +49,3 @@ export async function readDraft(file: File): Promise<Draft> {
     ...(image ? { preview: url } : {})
   };
 }
-

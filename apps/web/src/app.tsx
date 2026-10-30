@@ -273,7 +273,6 @@ function Workspace() {
             <CanvasView
               canvas={{ ...canvas.data, layout: canvas.data.layout }}
               live={live}
-              onSelect={openSession}
               onDerive={setDeriveFor}
               onOpen={openSession}
               onLayoutChange={saveLayout}
