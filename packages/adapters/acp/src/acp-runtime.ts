@@ -237,6 +237,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
       let launch: AcpLaunch = {};
       try {
         launch = spec.assets && config.launch ? await config.launch(spec.assets) : {};
+        if (spec.provider && config.providerLaunch) launch = await config.providerLaunch(spec.sessionId, spec.provider, launch);
         child = spawn(config.command, [...(launch.args ?? config.args)], {
           cwd: spec.workspaceRoot,
           stdio: ['pipe', 'pipe', 'pipe'],

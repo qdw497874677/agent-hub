@@ -1,5 +1,5 @@
 import { asAgentId, available, capabilityMatrix, limited } from '@agent-hub/domain';
-import type { AgentDescriptor, RuntimeOption, SessionAssets } from '@agent-hub/domain';
+import type { AgentDescriptor, ProviderLaunch, ProviderProtocol, RuntimeOption, SessionAssets } from '@agent-hub/domain';
 
 /**
  * 一个 ACP agent 的全部可配置项。
@@ -33,6 +33,13 @@ export interface AcpAgentConfig {
    * `args` 整体替换 `config.args`，`env` 叠加到子进程环境。都只作用于这一次启动，不改全局配置。
    */
   readonly launch?: (assets: SessionAssets) => Promise<AcpLaunch> | AcpLaunch;
+  /** 认得的 hub 模型提供商协议（ADR 0013）；不给 = 不支持。 */
+  readonly providerProtocols?: readonly ProviderProtocol[];
+  /**
+   * 会话选了 hub 模型时怎么告诉 agent：在资产 launch 之上叠加（env 合并）。
+   * 渲染出来的配置只能引用令牌的环境变量名，令牌值只进 env。
+   */
+  readonly providerLaunch?: (sessionId: string, provider: ProviderLaunch, base: AcpLaunch) => Promise<AcpLaunch> | AcpLaunch;
 }
 
 export interface AcpLaunch {
@@ -121,7 +128,8 @@ export function acpDescriptor(
     }),
     models,
     defaultModel: typeof model?.current === 'string' ? model.current : '',
-    options
+    options,
+    ...(config.providerLaunch && config.providerProtocols?.length ? { providers: config.providerProtocols } : {})
   };
 }
 

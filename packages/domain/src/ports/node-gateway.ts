@@ -1,3 +1,4 @@
+import type { ProviderGrant } from '../provider.ts';
 import type { SessionId, TaskId } from '../ids.ts';
 import type { SessionOrigin } from '../session.ts';
 import type { DomainError } from '../errors.ts';
@@ -35,6 +36,8 @@ export type WorkerCommand =
       readonly mcp?: readonly McpLaunch[];
       /** 这次会话生效的资产 id（项目作用域，见 sessionAssetPlan）；没有 = 机器上装着的全给。 */
       readonly assetIds?: readonly string[];
+      /** hub 模型提供商（选了 hub-<slug>/… 模型时 hub 在发出前才填）。apiKey 不落库、不进日志。 */
+      readonly provider?: ProviderGrant;
     }
   | {
       readonly kind: 'set_option';

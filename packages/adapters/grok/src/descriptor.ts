@@ -33,6 +33,8 @@ export function grokDescriptorFor(
     defaultModel,
     // 模型清单在这里就能报（id 'model' 与 Grok 的 configOptions 一致）；
     // reasoning_effort 取决于当前模型，要等会话开起来由 Grok 自己报。
+    // hub 模型提供商：每会话私有 GROK_HOME（见 grok-provider.ts）
+    providers: ['openai-chat', 'openai-responses', 'anthropic'],
     options:
       models.length === 0
         ? []

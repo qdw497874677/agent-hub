@@ -29,6 +29,8 @@ export function piDescriptorFor(
   // 模型列表由 worker 从本机 Pi 配置里读出来报上去——这里不许猜。
   models,
   defaultModel,
+  // hub 模型提供商（ADR 0013）：经每会话的 -e 扩展注册，三种协议 Pi 都有实现
+  providers: ['openai-chat', 'openai-responses', 'anthropic'],
   // 模型清单在这里就能报；思考档位取决于当前模型，要等会话开起来问 Pi 才知道。
   options:
     models.length === 0

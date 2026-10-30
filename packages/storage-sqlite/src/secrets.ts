@@ -11,8 +11,8 @@ import type { SecretInfo, SecretVault } from '@agent-hub/domain';
  *   库和密钥分开备份 / 泄露，单拿一个都读不出明文。
  * - 明文只在 reveal 的返回值里出现；这个模块不打任何日志。
  */
-export const SECRET_SCHEMA = `
-CREATE TABLE IF NOT EXISTS asset_secrets (
+const schemaFor = (table: string) => `
+CREATE TABLE IF NOT EXISTS ${table} (
   name       TEXT PRIMARY KEY,
   iv         BLOB NOT NULL,
   tag        BLOB NOT NULL,
@@ -21,7 +21,10 @@ CREATE TABLE IF NOT EXISTS asset_secrets (
 );
 `;
 
+export const SECRET_SCHEMA = schemaFor('asset_secrets');
+
 const KEY_BYTES = 32;
+const TABLE = /^[a-z_]+$/;
 
 /** 读主密钥：环境变量优先，否则数据目录里的 secret.key（没有就生成）。返回值只交给 createSecretVault。 */
 export async function loadSecretKey(options: { readonly env?: string | undefined; readonly file: string }): Promise<Buffer> {
@@ -44,16 +47,18 @@ export async function loadSecretKey(options: { readonly env?: string | undefined
   return key;
 }
 
-export function createSecretVault(db: DatabaseSync, key: Uint8Array): SecretVault {
+/** table：不同用途分表（provider_secrets 不该出现在资产密钥列表里）；只接受字面量表名。 */
+export function createSecretVault(db: DatabaseSync, key: Uint8Array, table = 'asset_secrets'): SecretVault {
   if (key.byteLength !== KEY_BYTES) throw new Error('主密钥必须是 32 字节');
-  db.exec(SECRET_SCHEMA);
+  if (!TABLE.test(table)) throw new Error('表名不合法');
+  db.exec(schemaFor(table));
   const upsert = db.prepare(
-    `INSERT INTO asset_secrets (name, iv, tag, ciphertext, updated_at) VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO ${table} (name, iv, tag, ciphertext, updated_at) VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(name) DO UPDATE SET iv = excluded.iv, tag = excluded.tag, ciphertext = excluded.ciphertext, updated_at = excluded.updated_at`
   );
-  const list = db.prepare('SELECT name, updated_at FROM asset_secrets ORDER BY name');
-  const remove = db.prepare('DELETE FROM asset_secrets WHERE name = ?');
-  const one = db.prepare('SELECT iv, tag, ciphertext FROM asset_secrets WHERE name = ?');
+  const list = db.prepare(`SELECT name, updated_at FROM ${table} ORDER BY name`);
+  const remove = db.prepare(`DELETE FROM ${table} WHERE name = ?`);
+  const one = db.prepare(`SELECT iv, tag, ciphertext FROM ${table} WHERE name = ?`);
 
   return {
     async list(): Promise<SecretInfo[]> {

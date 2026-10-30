@@ -1,3 +1,4 @@
+import type { ProviderProtocol } from './provider.ts';
 import type { AgentId } from './ids.ts';
 import type { CapabilityMatrix } from './capability.ts';
 import type { RuntimeOption } from './option.ts';
@@ -16,4 +17,6 @@ export interface AgentDescriptor {
   readonly models: readonly string[];
   readonly defaultModel: string;
   readonly options: readonly RuntimeOption[];
+  /** 认得 hub 下发的模型提供商（ADR 0013）时报它支持的协议；不报 = 不支持。 */
+  readonly providers?: readonly ProviderProtocol[];
 }

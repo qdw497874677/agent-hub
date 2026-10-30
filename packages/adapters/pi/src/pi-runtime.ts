@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { piProviderLaunch } from './pi-provider.ts';
 import { ensurePiMcpConfig, piHasBuiltinMcp, piToolEnv } from './pi-mcp.ts';
 import { execProbe } from './exec-probe.ts';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -318,6 +319,8 @@ export interface PiRuntimeOptions {
   readonly piAgentDir?: string | null;
   /** worker 的 stdio MCP 垫片；不给就不写 mcp.json（Pi 拿不到工具）。 */
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
+  /** 每会话的提供商扩展文件放哪（测试用）；默认系统临时目录。 */
+  readonly providerDir?: string;
 }
 
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
@@ -348,12 +351,22 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
         const builtin = await hasBuiltinMcp();
         await ensurePiMcpConfig(options.toolShim, { ...(options.piAgentDir ? { dir: options.piAgentDir } : {}), builtin }).catch(() => false);
       }
+      let providerEnv: Record<string, string> | null = null;
+      if (spec.provider) {
+        try {
+          const launch = await piProviderLaunch(spec.sessionId, spec.provider, options.providerDir);
+          args.push(...launch.args);
+          providerEnv = launch.env;
+        } catch (error) {
+          return { ok: false, error: unavailable(`写不了模型提供商扩展：${(error as Error).message}`) };
+        }
+      }
       let child: ChildProcessWithoutNullStreams;
       try {
         child = spawn(command, args, {
           cwd: spec.workspaceRoot,
           stdio: ['pipe', 'pipe', 'pipe'],
-          ...(spec.tools ? { env: { ...process.env, ...piToolEnv(spec.tools, spec.mcp) } } : {})
+          ...(spec.tools || providerEnv ? { env: { ...process.env, ...(spec.tools ? piToolEnv(spec.tools, spec.mcp) : {}), ...providerEnv } } : {})
         });
       } catch (error) {
         return { ok: false, error: unavailable(`无法启动 Pi：${(error as Error).message}`) };

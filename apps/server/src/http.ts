@@ -84,6 +84,7 @@ import { installAuth, SSE_PATH } from './auth.ts';
 import { installAdmin } from './admin.ts';
 import { installTeam } from './team.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
+import { RELAY_PATH, type ProviderWiringApi } from './providers.ts';
 import { installEnrollment } from './enrollment.ts';
 import { installRuntimeInstall } from './runtime-install.ts';
 import type { RuntimeInstallDeps } from '@agent-hub/domain';
@@ -107,6 +108,8 @@ export interface AppOptions {
   readonly admin?: AdminOptions;
   /** 资产中心（/api/admin/assets/*，主人专用）；要有 admin 才装。 */
   readonly assets?: AssetRouteOptions;
+  /** 模型提供商（ADR 0013）：/api/providers 与经 hub 中转的 /provider-relay。 */
+  readonly providers?: ProviderWiringApi;
   /** 单台机器接入（接入码、专属凭据、吊销、引导脚本）；同样只在有账号体系时装。 */
   readonly enrollment?: EnrollmentOptions;
   /** 在机器上装 / 卸 agent 运行时（ADR 0010）；只在有账号体系时装。 */
@@ -177,6 +180,12 @@ export function createApp(options: AppOptions): Hono {
     return next();
   });
 
+  // 经 hub 中转的模型请求：不在 /api 下，凭句柄 + 令牌认（worker 发的请求不带 Origin）。
+  if (options.providers) {
+    const providers = options.providers;
+    app.all(`${RELAY_PATH}/:handle/*`, (c) => providers.relay(c));
+  }
+
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
   let principalOf: (c: Context) => Principal | null = () => null;
   if (options.auth) {
@@ -205,6 +214,7 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/health', (c) => c.json({ ok: true }));
+  options.providers?.install(app, principalOf);
 
   app.get('/api/home', async (c) =>
     c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, principalOf(c)))))
@@ -427,6 +437,8 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, deriveSessionRequest);
     if (!input.ok) return input.response;
     const actor = principalOf(c);
+    const allowed = await options.providers?.checkModel(actor, input.value.model, input.value.taskId);
+    if (allowed && !allowed.ok) return fail(c, allowed.error);
     const result = await deriveSessionUseCase(deps, { ...input.value, actor });
     if (result.ok) await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
@@ -509,6 +521,11 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, changeOptionRequest);
     if (!input.ok) return input.response;
     const sessionId = c.req.param('sessionId');
+    if (options.providers) {
+      const current = await deps.sessions.byId(asSessionId(sessionId));
+      const allowed = options.providers.optionAllowed(current?.model ?? '', input.value.optionId, input.value.value);
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
     const changed = await changeSessionOption(deps, {
       sessionId,
       id: input.value.optionId,

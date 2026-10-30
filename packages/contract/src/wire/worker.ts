@@ -173,7 +173,19 @@ export const startSessionCommandSchema = z.object({
   /** MCP 资产（旧 worker 忽略）。stdio 的 env 含密钥明文：只进 agent 进程，不落盘、不进日志。 */
   mcp: z.array(mcpLaunchSchema).max(50).optional(),
   /** 这次会话生效的资产（项目作用域算好的）；没有 = 旧 hub，机器上装着的全给。 */
-  assetIds: z.array(z.string()).max(500).optional()
+  assetIds: z.array(z.string()).max(500).optional(),
+  /** hub 模型提供商（旧 worker 忽略）。apiKey 只交给 worker 本机中继：不进 agent、不落盘、不进日志。 */
+  provider: z
+    .object({
+      slug: z.string().min(1).max(31),
+      name: z.string().max(80),
+      protocol: z.enum(['openai-chat', 'openai-responses', 'anthropic']),
+      baseUrl: z.string().min(1).max(2000),
+      apiKey: z.string().min(1).max(4096),
+      models: z.array(z.object({ id: z.string(), name: z.string().optional(), contextWindow: z.number().optional(), maxTokens: z.number().optional() })).max(100),
+      via: z.enum(['direct', 'hub'])
+    })
+    .optional()
 });
 
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [

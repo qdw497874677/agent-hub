@@ -22,7 +22,8 @@ export function agentToDto(descriptor: AgentDescriptor): AgentDto {
     capabilities: { ...descriptor.capabilities },
     models: [...descriptor.models],
     defaultModel: descriptor.defaultModel,
-    options: descriptor.options.map(optionToDto)
+    options: descriptor.options.map(optionToDto),
+    ...(descriptor.providers?.length ? { providers: [...descriptor.providers] } : {})
   };
 }
 
@@ -34,6 +35,7 @@ export function agentFromDto(dto: AgentDto): AgentDescriptor {
     capabilities: capabilityMatrix(dto.capabilities),
     models: dto.models,
     defaultModel: dto.defaultModel,
-    options: dto.options
+    options: dto.options,
+    ...(dto.providers?.length ? { providers: dto.providers } : {})
   };
 }

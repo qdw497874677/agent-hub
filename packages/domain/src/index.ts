@@ -98,3 +98,6 @@ export type { AssetRepository } from './ports/asset-repository.ts';
 export type { AssetReader, AssetMetadata, GitCandidate, GitCheckout } from './ports/asset-reader.ts';
 export type { AssetDelivery, AssetSyncBoard, DeliveryReport } from './ports/asset-delivery.ts';
 export * from './use-cases/assets.ts';
+export * from './provider.ts';
+export type { ProviderRepository } from './ports/provider-repository.ts';
+export * from './use-cases/providers.ts';

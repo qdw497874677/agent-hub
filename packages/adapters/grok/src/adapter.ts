@@ -3,6 +3,7 @@ import { createGrokRuntime } from './grok-runtime.ts';
 import { discoverGrokModels } from './discover-models.ts';
 import { grokReadiness } from './readiness.ts';
 import { grokInstaller } from './installer.ts';
+import { defaultGrokHomes } from './grok-provider.ts';
 
 export function grokAdapter(): RuntimeAdapter {
   return {
@@ -18,6 +19,7 @@ export function grokAdapter(): RuntimeAdapter {
             models: catalog.models,
             defaultModel: catalog.defaultModel,
             toolShim: ctx.toolShim,
+            grokHomes: defaultGrokHomes(ctx.home),
             onAgentSessionRef: (sessionId, ref) => ctx.onAgentSessionRef(sessionId, ref),
             onOptions: (sessionId, reported) => ctx.onOptions(sessionId, reported)
           }),

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { api, type CanvasDto, type SessionDto, type WorkerInfoDto } from './api.ts';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { api, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type WorkerInfoDto } from './api.ts';
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
@@ -70,6 +70,23 @@ export function modelsFor(
   return workers.find((worker) => worker.workerId === machine)?.agentModels?.find((entry) => entry.agentId === agentId) ?? null;
 }
 
+/**
+ * hub 模型提供商（ADR 0013）的模型接在后面：只给那台机器上这个 agent 认得那种协议的；没选机器不给。
+ * 模型 id 是 hub-<slug>/<model>，hub 开会话时才把提供商配给 agent。
+ */
+export function withHubModels(
+  offered: { models: readonly string[]; defaultModel: string },
+  workers: readonly WorkerInfoDto[],
+  machine: string | null,
+  agentId: string,
+  hub: readonly HubModelsDto[]
+): { models: readonly string[]; defaultModel: string } {
+  if (machine === null || hub.length === 0) return offered;
+  const protocols = workers.find((worker) => worker.workerId === machine)?.agentModels?.find((entry) => entry.agentId === agentId)?.providers ?? [];
+  const extra = hub.filter((provider) => protocols.includes(provider.protocol)).flatMap((provider) => provider.models.map((model) => model.id));
+  return extra.length === 0 ? offered : { models: [...offered.models, ...extra], defaultModel: offered.defaultModel };
+}
+
 export function DeriveDialog({
   canvas,
   taskId,
@@ -89,7 +106,14 @@ export function DeriveDialog({
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作空间；不预选，没选之前「开始」是灰的
   const [machine, setMachine] = useState<string | null>(null);
   // 模型清单按机器来：两台机器的 Pi 配的 provider 可能完全不同
-  const offered = modelsFor(workers.list, machine, agentId) ?? { models: agent?.models ?? [], defaultModel: agent?.defaultModel ?? '' };
+  const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.models(taskId), retry: false });
+  const offered = withHubModels(
+    modelsFor(workers.list, machine, agentId) ?? { models: agent?.models ?? [], defaultModel: agent?.defaultModel ?? '' },
+    workers.list,
+    machine,
+    agentId,
+    hubModels.data ?? []
+  );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
   const queryClient = useQueryClient();
