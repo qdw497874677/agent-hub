@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from './api.ts';
 import { api } from './api.ts';
 import { DialogShell, INPUT, SECONDARY_BUTTON } from './dialog-shell.tsx';
@@ -15,6 +15,7 @@ export function DeleteProjectDialog({ project, onClose, onDeleted }: { project: 
     mutationFn: () => api.deleteProject(project.id, typed),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['home'] });
+      await queryClient.invalidateQueries({ queryKey: ['trash'] });
       onDeleted?.();
       onClose();
     }
@@ -24,7 +25,7 @@ export function DeleteProjectDialog({ project, onClose, onDeleted }: { project: 
     <DialogShell title="删除项目" onClose={onClose}>
       <h2 className="mb-2 text-body text-primary">删除项目「{project.name}」</h2>
       <p className="mb-2 text-sub text-secondary">
-        会删掉它的全部任务、工作日志、会话记录和画布布局，删了找不回来。还在运行的会话要先停止。
+        项目会进回收站：从列表里消失，任务、会话记录都还在，随时能在首页「回收站」里还原；在回收站里「彻底删除」才会真的删掉。还在运行的会话要先停止。
       </p>
       <p className="mb-3 text-sub text-secondary">
         磁盘上的文件不会动：工作空间的目录都原样保留（要清理临时工作空间，到项目设置里删）。
@@ -53,9 +54,55 @@ export function DeleteProjectDialog({ project, onClose, onDeleted }: { project: 
           disabled={!matches || remove.isPending}
           onClick={() => remove.mutate()}
         >
-          {remove.isPending ? '删除中…' : '删除项目'}
+          {remove.isPending ? '删除中…' : '移到回收站'}
         </button>
       </div>
     </DialogShell>
+  );
+}
+
+/** 首页左栏的回收站：我能还原的已删除项目（团队 owner 看全团队，成员看自己建的）。 */
+export function TrashList() {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const trash = useQuery({ queryKey: ['trash'], queryFn: api.trash });
+  const refresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['trash'] });
+    await queryClient.invalidateQueries({ queryKey: ['home'] });
+  };
+  const restore = useMutation({ mutationFn: (id: string) => api.restoreProject(id), onSuccess: refresh });
+  const purge = useMutation({ mutationFn: ({ id, name }: { id: string; name: string }) => api.purgeProject(id, name), onSuccess: refresh });
+  const items = trash.data ?? [];
+  if (items.length === 0) return null;
+  const error = restore.error ?? purge.error;
+  return (
+    <div className="mb-4" data-testid="trash">
+      <button className="px-2 text-meta text-tertiary hover:text-secondary" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+        回收站（{items.length}）{open ? '▾' : '▸'}
+      </button>
+      {open ? (
+        <ul className="mt-1 space-y-0.5">
+          {items.map((item) => (
+            <li key={item.id} className="flex items-center gap-1 px-2 py-0.5">
+              <span className="min-w-0 flex-1 truncate text-sub text-tertiary line-through">{item.name}</span>
+              <button className="text-meta text-secondary hover:text-accent" disabled={restore.isPending} onClick={() => restore.mutate(item.id)}>
+                还原
+              </button>
+              <button
+                className="text-meta text-tertiary hover:text-rust"
+                disabled={purge.isPending}
+                onClick={() => {
+                  const typed = window.prompt(`彻底删除「${item.name}」？任务和会话记录都会删掉，找不回来。输入项目名确认：`);
+                  if (typed !== null) purge.mutate({ id: item.id, name: typed });
+                }}
+              >
+                彻底删除
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {error ? <p className="px-2 text-meta text-rust">{error.message}</p> : null}
+    </div>
   );
 }

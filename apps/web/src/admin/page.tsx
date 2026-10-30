@@ -22,11 +22,11 @@ const TABS: readonly { readonly id: AdminTab; readonly label: string }[] = [
 
 export function AdminPage({ tab }: { tab: AdminTab }) {
   const account = useAccount();
-  const upgradable = useUpgradableCount(account?.role === 'owner');
-  if (account?.role !== 'owner') {
+  const upgradable = useUpgradableCount(account?.hubAdmin === true);
+  if (account?.hubAdmin !== true) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-        <p className="text-head text-primary">只有主人能进运营后台</p>
+        <p className="text-head text-primary">只有 hub 管理员能进运营后台</p>
         <a className="text-meta text-accent" href={formatRoute({ page: 'home' })}>
           回首页
         </a>

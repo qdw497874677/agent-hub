@@ -1,4 +1,5 @@
 import { newId } from '../ids.ts';
+import { authorizeWorker, type AccessPolicy } from './authorization.ts';
 import type { AuditEntry, HubSettings, Principal } from '../account.ts';
 import { canAddMachines } from '../account.ts';
 import { CREDENTIAL_PREFIX, PAIRING_PREFIX, PAIRING_TTL_MS } from '../enrollment.ts';
@@ -28,6 +29,8 @@ export interface EnrollmentDeps {
   readonly now: () => number;
   /** 新机器的 workerId；默认 `remote-<8 位>`。 */
   readonly newWorkerId?: () => string;
+  /** 装了账号体系就走 can()（ADR 0011）。 */
+  readonly access?: AccessPolicy;
 }
 
 export interface IssuedPairing {
@@ -162,8 +165,10 @@ export async function revokeWorker(
   if (online?.origin === 'local') return err(conflict('本机 Worker 跟 hub 同生共死，不能吊销'));
   const existing = await deps.enrollment.credentialFor(workerId);
   if (!existing && !online) return err(notFound('没有这台机器'));
-  const isOwner = actor.user.role === 'owner';
-  if (!isOwner && existing?.enrolledBy !== actor.user.id) return err(forbidden('只能吊销你自己接入的机器'));
+  if (deps.access) {
+    const allowed = await authorizeWorker(deps.access, actor, workerId, 'worker.manage');
+    if (!allowed.ok) return err(forbidden('只能吊销你自己接入的机器'));
+  } else if (actor.user.role !== 'owner' && existing?.enrolledBy !== actor.user.id) return err(forbidden('只能吊销你自己接入的机器'));
   if (existing?.revokedAt != null) return err(conflict('这台机器已经吊销过了'));
 
   const now = deps.now();

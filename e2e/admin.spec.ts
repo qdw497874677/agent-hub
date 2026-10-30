@@ -4,7 +4,7 @@ import {
   request as apiRequest,
   type Page,
 } from "@playwright/test";
-import { TEST_EMAIL, loginByApi, verifyByApi } from "./login.ts";
+import { TEST_EMAIL, loginByApi, openRegistration, verifyByApi } from "./login.ts";
 import { currentRun } from "./run-id.ts";
 
 /** 把设置恢复成默认（e2e 数据目录跨 run 保留，上次失败可能留下关着的注册）。 */
@@ -29,13 +29,16 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
   await resetSettings(page);
   const memberEmail = `admin-e2e-${currentRun()}@example.com`;
   const member = await apiRequest.newContext({ baseURL });
+  // 自助注册（ADR 0011）：202 + 去邮箱；得到自己的空团队，不会自动登录
   expect(
     (
       await member.post("/api/auth/register", {
         data: { email: memberEmail, password: "e2e password 123" },
       })
-    ).ok(),
-  ).toBe(true);
+    ).status(),
+  ).toBe(202);
+  const memberLogin = () =>
+    member.post("/api/auth/login", { data: { email: memberEmail, password: "e2e password 123" } });
 
   try {
     await page.goto("/");
@@ -51,13 +54,18 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
       .click();
     await page.getByLabel("搜索用户").fill(memberEmail);
     const row = page.getByTestId("admin-user").filter({ hasText: memberEmail });
-    await expect(row).toContainText("成员");
-    // 新成员还没验证邮箱：主人可以手动标记
+    await expect(row).toContainText("其他团队");
+    // 别的团队的人不能被授权用 hub 本机
+    await expect(row.getByRole("button", { name: "允许使用本机" })).toHaveCount(0);
+    // 新人还没验证邮箱：hub 管理员可以手动标记
     await expect(row).toContainText("未验证邮箱");
-    expect((await member.get("/api/projects")).status()).toBe(403);
     await row.getByRole("button", { name: "标记已验证" }).click();
     await expect(row).not.toContainText("未验证邮箱");
-    expect((await member.get("/api/projects")).status()).toBe(200);
+    expect((await memberLogin()).ok()).toBe(true);
+    // 新团队是空的：看不到 hub 团队的项目，机器列表里也没有 hub 本机
+    expect(await (await member.get("/api/projects")).json()).toEqual([]);
+    expect(await (await member.get("/api/workers")).json()).toEqual([]);
+    expect((await member.get("/api/admin/overview")).status()).toBe(403);
     page.once("dialog", (dialog) => void dialog.accept());
     await row.getByRole("button", { name: "停用" }).click();
     await expect(row).toContainText("已停用");
@@ -128,7 +136,8 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
   }
 });
 
-test("成员进不了后台：页面提示、接口 403", async ({ page, baseURL }) => {
+test("自助注册的团队主人进不了后台：页面提示、接口 403", async ({ page, baseURL }) => {
+  await openRegistration(baseURL);
   await page.setViewportSize({ width: 390, height: 844 });
   const email = `member-e2e-${currentRun()}@example.com`;
   expect(
@@ -136,10 +145,13 @@ test("成员进不了后台：页面提示、接口 403", async ({ page, baseURL
       await page.request.post("/api/auth/register", {
         data: { email, password: "e2e password 123" },
       })
-    ).ok(),
-  ).toBe(true);
+    ).status(),
+  ).toBe(202);
   await verifyByApi(page.request, email);
+  expect(
+    (await page.request.post("/api/auth/login", { data: { email, password: "e2e password 123" } })).ok(),
+  ).toBe(true);
   expect((await page.request.get("/api/admin/overview")).status()).toBe(403);
   await page.goto(`${baseURL}/#/admin/users`);
-  await expect(page.getByText("只有主人能进运营后台")).toBeVisible();
+  await expect(page.getByText("只有 hub 管理员能进运营后台")).toBeVisible();
 });

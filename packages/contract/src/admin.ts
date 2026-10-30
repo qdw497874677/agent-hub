@@ -4,7 +4,12 @@ import { agentReadinessSchema } from './wire/entities.ts';
 
 /** 运营后台（/api/admin/*，只有主人能调）的请求与响应形状。 */
 export const roleRequest = z.object({ role: z.enum(['owner', 'member']) });
-export const settingsSchema = z.object({ openRegistration: z.boolean(), membersCanAddMachines: z.boolean() });
+export const settingsSchema = z.object({
+  openRegistration: z.boolean(),
+  membersCanAddMachines: z.boolean(),
+  /** 被单独授权使用 hub 本机 Worker 的用户 id（只对 hub 团队成员生效，ADR 0011）。 */
+  localWorkerGrants: z.array(z.string()).max(1000)
+});
 export type SettingsDto = z.infer<typeof settingsSchema>;
 export const settingsPatchRequest = settingsSchema.partial();
 
@@ -12,7 +17,12 @@ export const adminUserSchema = accountSchema.extend({
   disabled: z.boolean(),
   createdAt: z.number(),
   lastSeenAt: z.number().nullable(),
-  activeLogins: z.number()
+  activeLogins: z.number(),
+  /** ADR 0011：hub 管理员（bootstrap 用户）；所在团队。老 hub 返回的没有这两项。 */
+  hubAdmin: z.boolean().optional(),
+  teamId: z.string().nullable().optional(),
+  /** 和 hub 管理员同一个团队（只有这些人能被授权用 hub 本机）。 */
+  hubTeam: z.boolean().optional()
 });
 export type AdminUserDto = z.infer<typeof adminUserSchema>;
 

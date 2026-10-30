@@ -1,3 +1,4 @@
+import { seedAccount } from '../use-cases/accounts.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 import type { WorkLogEntry } from '../work-log.ts';
 import type {
@@ -32,6 +33,7 @@ import type {
   AdminDeps,
   AuditEntry,
   HubSettings,
+  Team,
   LoginActivity
 } from '../index.ts';
 import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
@@ -55,7 +57,10 @@ export function fakeProjects(): ProjectRepository {
       return rows.get(id) ?? null;
     },
     async list() {
-      return [...rows.values()];
+      return [...rows.values()].filter((p) => p.deletedAt === null);
+    },
+    async listDeleted() {
+      return [...rows.values()].filter((p) => p.deletedAt !== null);
     },
     async remove(id) {
       rows.delete(id);
@@ -416,11 +421,13 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
   readonly sent: AccountMail[];
   readonly loginRows: Map<string, Login>;
   readonly oneTimeRows: Map<string, OneTimeToken>;
+  readonly teamRows: Map<string, Team>;
 } {
   const users = new Map<string, User>();
   const loginRows = new Map<string, Login>();
   const sent: AccountMail[] = [];
   const oneTimeRows = new Map<string, OneTimeToken>();
+  const teamRows = new Map<string, Team>();
   let settings: HubSettings = DEFAULT_SETTINGS;
   let counter = 0;
   return {
@@ -428,6 +435,12 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
     loginRows,
     oneTimeRows,
     now,
+    teamRows,
+    teams: {
+      save: async (team) => void teamRows.set(team.id, team),
+      byId: async (id) => teamRows.get(id) ?? null,
+      list: async () => [...teamRows.values()]
+    },
     oneTimeTokens: {
       save: async (token) => void oneTimeRows.set(token.tokenHash, token),
       consume: async (hash, purpose, at) => {
@@ -452,10 +465,12 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
           .filter((u) => u.role === role && u.disabledAt === null)
           .sort((a, b) => a.createdAt - b.createdAt)[0] ?? null,
       claimFirstOwner: async (user) => {
-        if ([...users.values()].some((u) => u.role === 'owner' && u.disabledAt === null)) return false;
-        users.set(user.id, { ...user, role: 'owner' });
+        if ([...users.values()].some((u) => u.hubAdmin && u.disabledAt === null && u.deletedAt === null)) return false;
+        users.set(user.id, { ...user, role: 'owner', hubAdmin: true });
         return true;
       },
+      hubAdmin: async () =>
+        [...users.values()].filter((u) => u.hubAdmin && u.deletedAt === null).sort((a, b) => a.createdAt - b.createdAt)[0] ?? null,
       list: async () => [...users.values()]
     },
     logins: {
@@ -732,4 +747,18 @@ export function mailedToken(accounts: { readonly sent: readonly AccountMail[] },
   const mail = [...accounts.sent].reverse().find((m) => m.to === email && m.kind === kind);
   if (!mail || !('token' in mail)) throw new Error(`没给 ${email} 发过 ${kind}`);
   return mail.token;
+}
+
+/**
+ * 测试用：把一个人直接加进 hub 管理员的团队（已验证邮箱）。
+ * 开放注册默认关闭、自助注册的人拿的是自己的团队（ADR 0011），所以「同团队的成员」要这样造；邀请流程上线后也能走邀请。
+ */
+export async function addTeamMember(
+  accounts: Parameters<typeof seedAccount>[0],
+  email: string,
+  password: string,
+  role: 'owner' | 'member' = 'member'
+): Promise<void> {
+  const made = await seedAccount(accounts, { email, password, role, displayName: email.split('@')[0] ?? email });
+  if (!made.ok) throw new Error(made.error.message);
 }

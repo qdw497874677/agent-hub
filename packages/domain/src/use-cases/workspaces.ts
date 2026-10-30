@@ -3,6 +3,8 @@ import type { Session } from '../session.ts';
 import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
+import { authorizeWorker } from './authorization.ts';
+import type { Principal } from '../account.ts';
 import { claimOf, createDirectory, gitOn, isEmptyDirectory, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
 import type { ProjectId } from '../ids.ts';
 import { asProjectId } from '../ids.ts';
@@ -99,16 +101,19 @@ export interface PrepareLongLivedCommand {
   readonly plan: LongLivedPlan;
   /** Server 本机的起点（没有本机 Worker 报 roots 时兜底）。 */
   readonly home: string;
+  readonly actor?: Principal | null;
 }
 
 export async function prepareLongLivedWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access'>,
   command: PrepareLongLivedCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project) return err(notFound('项目不存在'));
   const resolved = await resolveMachine(deps, command.workerId);
   if (!resolved.ok) return resolved;
+  const allowed = await authorizeWorker(deps.access, command.actor ?? null, resolved.value.workerId);
+  if (!allowed.ok) return allowed;
   const machine = resolved.value;
 
   const git = gitOn(deps, machine.route);

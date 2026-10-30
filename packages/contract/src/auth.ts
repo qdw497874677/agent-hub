@@ -15,7 +15,9 @@ export const accountSchema = z.object({
   displayName: z.string(),
   role: z.enum(['owner', 'member']),
   /** 没验证邮箱的人只能看到「去验证邮箱」（设计 §6.2）。 */
-  emailVerified: z.boolean()
+  emailVerified: z.boolean(),
+  /** ADR 0011：hub 管理员（bootstrap 用户），只有他能进运营后台。老 hub 不返回。 */
+  hubAdmin: z.boolean().optional()
 });
 export type AccountDto = z.infer<typeof accountSchema>;
 

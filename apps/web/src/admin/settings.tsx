@@ -50,7 +50,7 @@ export function Settings() {
           <>
             <Toggle
               label="开放注册"
-              hint="关掉后只有已有账号能登录；新人注册会被服务端拒绝。"
+              hint="默认关闭。打开后任何人都能自助注册：验证邮箱后得到一个自己的空团队（仍受 HUB_MAX_USERS 限制），看不到别的团队，也用不了 hub 本机。"
               checked={data.openRegistration}
               disabled={save.isPending}
               onChange={(openRegistration) => save.mutate({ openRegistration })}

@@ -1,4 +1,5 @@
 import { newId } from '../ids.ts';
+import { can } from '../access.ts';
 import type { AuditAction, AuditEntry, HubSettings, Login, Principal, Role, User, UserId } from '../account.ts';
 import { forbidden, conflict, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
@@ -39,10 +40,11 @@ export interface AdminOverview {
   readonly recentLogins: readonly { readonly login: Login; readonly email: string }[];
 }
 
-const ONLY_OWNER = forbidden('只有主人能进运营后台');
+const ONLY_OWNER = forbidden('只有 hub 管理员能进运营后台');
 
+/** 运营后台管的是整个 hub（所有人、所有机器、hub 设置），所以只认 hub 管理员（ADR 0011）。团队内的成员管理另走团队页。 */
 export function requireOwner(principal: Principal | null): Result<Principal, DomainError> {
-  return principal && principal.user.role === 'owner' && principal.user.disabledAt === null ? ok(principal) : err(ONLY_OWNER);
+  return principal && can(principal, 'hub.users') ? ok(principal) : err(ONLY_OWNER);
 }
 
 async function record(
@@ -185,10 +187,10 @@ export async function updateSettings(
 ): Promise<HubSettings> {
   const current = await deps.settings.get();
   const next: HubSettings = { ...current, ...patch };
-  const changed = (Object.keys(next) as (keyof HubSettings)[]).filter((key) => next[key] !== current[key]);
+  const changed = (Object.keys(next) as (keyof HubSettings)[]).filter((key) => JSON.stringify(next[key]) !== JSON.stringify(current[key]));
   if (changed.length === 0) return current;
   await deps.settings.save(next);
-  await record(deps, actor, 'settings.update', 'settings', changed.map((key) => `${key}=${next[key]}`).join(', '));
+  await record(deps, actor, 'settings.update', 'settings', changed.map((key) => `${key}=${JSON.stringify(next[key])}`).join(', '));
   return next;
 }
 

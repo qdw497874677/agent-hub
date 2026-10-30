@@ -26,7 +26,7 @@ for (const viewport of [{ width: 1280, height: 800, tag: 'desktop' }, { width: 3
     await page.getByRole('button', { name: `删除项目 ${name}` }).click();
     const dialog = page.getByRole('dialog', { name: '删除项目' });
     await expect(dialog.getByText('磁盘上的文件不会动')).toBeVisible();
-    const confirm = dialog.getByRole('button', { name: '删除项目' });
+    const confirm = dialog.getByRole('button', { name: '移到回收站' });
     await expect(confirm).toBeDisabled();
     await dialog.getByLabel(/输入项目名/).fill(name);
     await expect(confirm).toBeEnabled();
@@ -35,6 +35,20 @@ for (const viewport of [{ width: 1280, height: 800, tag: 'desktop' }, { width: 3
     await expect(dialog).toBeHidden();
     await expect(page.getByRole('button', { name: `删除项目 ${name}` })).toHaveCount(0);
     expect((await page.request.get(`/api/projects/${project.id}/canvas`)).status()).toBe(404);
+    expect(existsSync(dir)).toBe(true);
+
+    // 回收站（ADR 0011）：能还原；彻底删除要再输一次项目名
+    const trash = page.getByTestId('trash');
+    await trash.getByRole('button', { name: /回收站/ }).click();
+    const item = trash.getByRole('listitem').filter({ hasText: name });
+    if (SHOTS) await page.screenshot({ path: join(SHOTS, `trash-${viewport.tag}.png`) });
+    await item.getByRole('button', { name: '还原' }).click();
+    await expect(page.getByRole('button', { name: `删除项目 ${name}` })).toBeVisible();
+    expect((await page.request.get(`/api/projects/${project.id}/canvas`)).status()).toBe(200);
+    expect((await page.request.delete(`/api/projects/${project.id}`, { data: { confirmName: name }, headers })).ok()).toBe(true);
+    const purged = await page.request.post(`/api/projects/${project.id}/purge`, { data: { confirmName: name }, headers });
+    expect(purged.ok(), await purged.text()).toBe(true);
+    expect((await page.request.get('/api/projects-trash').then((r) => r.json())).some((p: { id: string }) => p.id === project.id)).toBe(false);
     expect(existsSync(dir)).toBe(true);
     rmSync(dir, { recursive: true, force: true });
   });

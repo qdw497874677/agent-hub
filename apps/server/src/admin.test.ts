@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryAdmin, inMemoryDeps, mailedToken } from '@agent-hub/domain/testing';
+import { inMemoryAdmin, inMemoryDeps, addTeamMember } from '@agent-hub/domain/testing';
 import type { WorkerStatus } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -41,8 +41,8 @@ async function signedIn(h: ReturnType<typeof harness>) {
   const member = h.browser();
   const register = (email: string) => ({ method: 'POST', body: JSON.stringify({ email, password: PASSWORD }) });
   assert.equal((await owner('/api/auth/register', register('boss@b.co'))).status, 200);
-  assert.equal((await member('/api/auth/register', register('m@b.co'))).status, 200);
-  await member('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token: mailedToken(h.accounts, 'm@b.co') }) });
+  await addTeamMember(h.accounts, 'm@b.co', PASSWORD);
+  assert.equal((await member('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'm@b.co', password: PASSWORD }) })).status, 200);
   const users = (await owner('/api/admin/users')).body as { id: string; email: string }[];
   const id = (email: string) => users.find((u) => u.email === email)!.id;
   return { owner, member, ownerId: id('boss@b.co'), memberId: id('m@b.co') };
@@ -74,11 +74,13 @@ test('停用成员：对方立刻掉线；不能停自己；最后一个主人�
   assert.equal(audit[0]?.actorEmail, 'boss@b.co');
 });
 
-test('提拔成员为主人后，后台就对他开放；踢下线后他要重新登录', async () => {
+test('运营后台只给 hub 管理员：提拔成团队主人也进不去；踢下线后他要重新登录', async () => {
   const h = harness();
   const { owner, member, memberId } = await signedIn(h);
+  assert.equal((await member('/api/admin/overview')).status, 403);
   await owner(`/api/admin/users/${memberId}/role`, { method: 'POST', body: JSON.stringify({ role: 'owner' }) });
-  assert.equal((await member('/api/admin/overview')).status, 200);
+  assert.equal((await member('/api/admin/overview')).status, 403);
+  assert.equal((await member('/api/admin/settings', { method: 'PUT', body: '{"openRegistration":true}' })).status, 403);
   await owner(`/api/admin/users/${memberId}/revoke-logins`, { method: 'POST' });
   assert.equal((await member('/api/admin/overview')).status, 401);
 });
@@ -91,7 +93,7 @@ test('设置落库并在服务端生效：关注册后新人注册被拒；成�
     method: 'PUT',
     body: JSON.stringify({ openRegistration: false, membersCanAddMachines: false })
   });
-  assert.deepEqual(saved.body, { openRegistration: false, membersCanAddMachines: false });
+  assert.deepEqual(saved.body, { openRegistration: false, membersCanAddMachines: false, localWorkerGrants: [] });
   assert.equal((await h.browser()('/api/auth/state')).body.registration, false);
   const late = await h.browser()('/api/auth/register', { method: 'POST', body: JSON.stringify({ email: 'x@b.co', password: PASSWORD }) });
   assert.equal(late.status, 409);

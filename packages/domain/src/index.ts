@@ -58,7 +58,10 @@ export * from './use-cases/temporary-workspaces.ts';
 export * from './use-cases/workspace-cleanup.ts';
 
 export * from './account.ts';
+export * from './access.ts';
+export * from './use-cases/authorization.ts';
 export type { UserRepository } from './ports/user-repository.ts';
+export type { TeamRepository } from './ports/team-repository.ts';
 export type { LoginRepository } from './ports/login-repository.ts';
 export type { PasswordHasher } from './ports/password-hasher.ts';
 export type { TokenIssuer } from './ports/token-issuer.ts';

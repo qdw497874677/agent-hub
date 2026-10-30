@@ -12,7 +12,7 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AssetRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, SettingsRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
@@ -26,6 +26,7 @@ export interface SqliteStore extends RepositorySet {
   readonly search: ReturnType<typeof createSearch>;
   readonly users: UserRepository;
   readonly logins: LoginRepository;
+  readonly teams: TeamRepository;
   readonly settings: SettingsRepository;
   readonly audit: AuditLog;
   readonly oneTimeTokens: OneTimeTokenRepository;
@@ -72,6 +73,11 @@ export function openSqliteStore(file: string): SqliteStore {
     db.exec('ALTER TABLE projects ADD COLUMN repo_url TEXT');
     db.exec('ALTER TABLE projects ADD COLUMN repo_default_branch TEXT');
   }
+  // 团队与归属（ADR 0011）：只加列。NULL 的老数据在账号迁移后归到 hub 管理员的团队、算他建的。
+  if (!projectColumns.some((column) => column.name === 'team_id')) db.exec('ALTER TABLE projects ADD COLUMN team_id TEXT');
+  if (!projectColumns.some((column) => column.name === 'created_by')) db.exec('ALTER TABLE projects ADD COLUMN created_by TEXT');
+  if (!projectColumns.some((column) => column.name === 'members')) db.exec("ALTER TABLE projects ADD COLUMN members TEXT NOT NULL DEFAULT '[]'");
+  if (!projectColumns.some((column) => column.name === 'deleted_at')) db.exec('ALTER TABLE projects ADD COLUMN deleted_at INTEGER');
   if (!projectColumns.some((column) => column.name === 'description')) {
     db.exec('ALTER TABLE projects ADD COLUMN description TEXT');
   }
@@ -88,13 +94,15 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, description, created_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, description, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
-      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, description = excluded.description'
+      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, description = excluded.description, ' +
+      'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
-  const selectProjects = db.prepare('SELECT * FROM projects ORDER BY created_at DESC');
+  const selectProjects = db.prepare('SELECT * FROM projects WHERE deleted_at IS NULL ORDER BY created_at DESC');
+  const selectDeletedProjects = db.prepare('SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC');
 
   const upsertTask = db.prepare(
     'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, summary, log_seq, created_at, updated_at) ' +
@@ -210,8 +218,15 @@ export function openSqliteStore(file: string): SqliteStore {
         project.repo?.url ?? null,
         project.repo?.defaultBranch ?? null,
         project.description,
-        project.createdAt
+        project.createdAt,
+        project.teamId,
+        project.createdBy,
+        JSON.stringify(project.members),
+        project.deletedAt
       );
+    },
+    async listDeleted(): Promise<Project[]> {
+      return selectDeletedProjects.all().map((row) => toProject(row));
     },
     async byId(id: Parameters<typeof asProjectId>[0]): Promise<Project | null> {
       const row = selectProject.get(id);
@@ -362,6 +377,8 @@ export function openSqliteStore(file: string): SqliteStore {
     }
   };
 
+  const accountRepos = createAccountRepositories(db);
+  backfillProjectTeams(db);
   return {
     projects,
     tasks,
@@ -375,10 +392,20 @@ export function openSqliteStore(file: string): SqliteStore {
     artifacts,
     layout,
     search: createSearch(db),
-    ...createAccountRepositories(db),
+    ...accountRepos,
     db,
     close(): void {
       db.close();
     }
   };
+}
+
+/** 老项目（team_id 为 NULL）归 hub 管理员的团队、算 hub 管理员建的。幂等；还没有 hub 管理员时什么也不做。 */
+export function backfillProjectTeams(db: DatabaseSync): void {
+  const admin = db.prepare('SELECT id, team_id FROM users WHERE hub_admin = 1 AND team_id IS NOT NULL ORDER BY created_at ASC LIMIT 1').get() as
+    | { id: string; team_id: string }
+    | undefined;
+  if (!admin) return;
+  db.prepare('UPDATE projects SET team_id = ? WHERE team_id IS NULL').run(admin.team_id);
+  db.prepare('UPDATE projects SET created_by = ? WHERE created_by IS NULL').run(admin.id);
 }

@@ -174,7 +174,7 @@ test('账号：用户按邮箱找回、登录态按哈希找回、停用的人�
   const store = openSqliteStore(':memory:');
   const owner = {
     id: asUserId('u1'), email: 'a@b.co', displayName: 'a', role: 'owner' as const,
-    passwordHash: 'scrypt$x', emailVerifiedAt: null, disabledAt: null, createdAt: 1
+    passwordHash: 'scrypt$x', emailVerifiedAt: null, disabledAt: null, createdAt: 1, teamId: null, hubAdmin: false, deletedAt: null
   };
   await store.users.save(owner);
   await store.users.save({ ...owner, id: asUserId('u2'), email: 'c@d.co', createdAt: 2 });
@@ -198,7 +198,7 @@ test('运营后台：登录活跃度、保留当前登录的踢下线、设置�
   const store = openSqliteStore(':memory:');
   const user = {
     id: asUserId('u1'), email: 'a@b.co', displayName: 'a', role: 'owner' as const,
-    passwordHash: null, emailVerifiedAt: null, disabledAt: null, createdAt: 1
+    passwordHash: null, emailVerifiedAt: null, disabledAt: null, createdAt: 1, teamId: null, hubAdmin: false, deletedAt: null
   };
   await store.users.save(user);
   const login = (id: string, createdAt: number, expiresAt: number) => ({
@@ -212,9 +212,9 @@ test('运营后台：登录活跃度、保留当前登录的踢下线、设置�
   await store.logins.removeForUser(user.id, asLoginId('l2'));
   assert.deepEqual((await store.logins.recent(5)).map((row) => row.id), ['l2']);
 
-  assert.deepEqual(await store.settings.get(), { openRegistration: true, membersCanAddMachines: true });
-  await store.settings.save({ openRegistration: false, membersCanAddMachines: true });
-  assert.equal((await store.settings.get()).openRegistration, false);
+  assert.deepEqual(await store.settings.get(), { openRegistration: false, membersCanAddMachines: true, localWorkerGrants: [] });
+  await store.settings.save({ openRegistration: true, membersCanAddMachines: true, localWorkerGrants: ['u1'] });
+  assert.deepEqual(await store.settings.get(), { openRegistration: true, membersCanAddMachines: true, localWorkerGrants: ['u1'] });
 
   const entry = { id: 'a1', actorId: user.id, actorEmail: 'a@b.co', action: 'user.disable' as const, target: 'x', detail: '', at: 5 };
   await store.audit.append(entry);
@@ -260,5 +260,41 @@ test('账号 P3 迁移：老库的用户一次性记为已验证；一次性令�
   assert.equal((await store.oneTimeTokens.consume('th', 'verify-email', 20))?.userId, 'u1');
   assert.equal(await store.oneTimeTokens.consume('th', 'verify-email', 21), null);
   store.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('团队迁移（ADR 0011）：老库的人和项目都并进最早那位主人的团队，他成为 hub 管理员；重复打开不变', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ahub-teams-'));
+  const file = join(dir, 'hub.db');
+  const first = openSqliteStore(file);
+  const base = { passwordHash: 'x', emailVerifiedAt: 1, disabledAt: null, teamId: null, hubAdmin: false, deletedAt: null };
+  await first.users.save({ ...base, id: asUserId('m1'), email: 'm@b.co', displayName: 'm', role: 'member', createdAt: 1 });
+  await first.users.save({ ...base, id: asUserId('d1'), email: 'd@b.co', displayName: 'David', role: 'owner', createdAt: 2 });
+  const project = createProject({ name: 'old', now: 1 });
+  assert.ok(project.ok);
+  await first.projects.save(project.value);
+  first.close();
+  // 模拟老库：没有 teams 表，人和项目都没有团队
+  const raw = new DatabaseSync(file);
+  raw.exec('DROP TABLE teams; UPDATE users SET team_id = NULL, hub_admin = 0; UPDATE projects SET team_id = NULL, created_by = NULL');
+  raw.close();
+
+  for (let round = 0; round < 2; round++) {
+    const store = openSqliteStore(file);
+    const david = await store.users.byEmail('d@b.co');
+    const member = await store.users.byEmail('m@b.co');
+    assert.equal(david?.hubAdmin, true);
+    assert.equal(member?.hubAdmin, false);
+    assert.equal(david?.teamId, 'team-d1');
+    assert.equal(member?.teamId, 'team-d1');
+    assert.equal((await store.users.hubAdmin())?.id, 'd1');
+    assert.deepEqual((await store.teams.list()).map((team) => [team.id, team.ownerId]), [['team-d1', 'd1']]);
+    const migrated = await store.projects.byId(project.value.id);
+    assert.equal(migrated?.teamId, 'team-d1');
+    assert.equal(migrated?.createdBy, 'd1');
+    assert.equal(migrated?.deletedAt, null);
+    assert.deepEqual(migrated?.members, []);
+    store.close();
+  }
   rmSync(dir, { recursive: true, force: true });
 });

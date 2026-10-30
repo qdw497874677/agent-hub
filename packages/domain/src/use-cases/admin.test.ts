@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryAdmin } from '../testing/in-memory.ts';
 import type { Principal, Session, WorkerStatus } from '../index.ts';
-import { authenticate, loginWithPassword, registerUser } from './accounts.ts';
+import { authenticate, loginWithPassword, registerUser, seedAccount } from './accounts.ts';
 import {
   adminOverview,
   adminUsers,
@@ -22,11 +22,22 @@ const PASSWORD = 'correct horse battery';
 async function setup() {
   const admin = inMemoryAdmin();
   const sign = async (email: string): Promise<{ principal: Principal; token: string }> => {
-    const made = await registerUser(admin.accounts, { email, password: PASSWORD });
-    assert.ok(made.ok, email);
-    const principal = await authenticate(admin.accounts, made.value.token);
+    // 第一个人注册成 hub 管理员；之后的人按内置账号加进他的团队（开放注册默认关闭）
+    const first = (await admin.accounts.users.hubAdmin()) === null;
+    let token: string;
+    if (first) {
+      const made = await registerUser(admin.accounts, { email, password: PASSWORD });
+      assert.ok(made.ok && made.value.kind === 'login', email);
+      token = made.value.issued.token;
+    } else {
+      assert.ok((await seedAccount(admin.accounts, { email, password: PASSWORD, role: 'member', displayName: email })).ok);
+      const login = await loginWithPassword(admin.accounts, { email, password: PASSWORD });
+      assert.ok(login.ok, email);
+      token = login.value.token;
+    }
+    const principal = await authenticate(admin.accounts, token);
     assert.ok(principal);
-    return { principal, token: made.value.token };
+    return { principal, token };
   };
   const owner = await sign('owner@b.co');
   const member = await sign('member@b.co');
@@ -107,11 +118,13 @@ test('踢下线：对别人删光；对自己保留当前这台', async () => {
 
 test('设置：只记真正变了的项；关闭开放注册后成员注册被拒', async () => {
   const { deps, accounts, owner, entries } = await setup();
-  await updateSettings(deps, owner.principal, { openRegistration: true });
+  await updateSettings(deps, owner.principal, { openRegistration: false });
   assert.equal(entries.length, 0);
+  await updateSettings(deps, owner.principal, { openRegistration: true });
+  assert.deepEqual(entries.map((entry) => entry.detail).sort(), ['openRegistration=true']);
   const next = await updateSettings(deps, owner.principal, { openRegistration: false });
   assert.equal(next.openRegistration, false);
-  assert.equal(entries[0]?.detail, 'openRegistration=false');
+  assert.deepEqual(entries.map((entry) => entry.detail).sort(), ['openRegistration=false', 'openRegistration=true']);
   const blocked = await registerUser(accounts, { email: 'late@b.co', password: PASSWORD });
   assert.ok(!blocked.ok && blocked.error.code === 'conflict');
 });

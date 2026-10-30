@@ -8,6 +8,8 @@ import { err, ok, type Result } from '../result.ts';
 import { isUsable, type Workspace } from '../workspace.ts';
 import type { SaveWipOutcome } from '../ports/workspace-git.ts';
 import { gitFor, resolveMachine } from './machine-dirs.ts';
+import { authorizeWorker } from './authorization.ts';
+import type { Principal } from '../account.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { carryModelTo, placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
@@ -32,6 +34,7 @@ export interface ContinueElsewhereCommand {
   readonly saveWip?: boolean;
   /** 本机的 home 目录：新建临时目录时用。 */
   readonly home: string;
+  readonly actor?: Principal | null;
 }
 
 /** 摘要的字数上限：够交代来龙去脉，又不至于一开口就吃掉半个上下文窗口。 */
@@ -40,7 +43,7 @@ export const HANDOFF_LIMIT = 12_000;
 export async function continueElsewhereUseCase(
   deps: Pick<
     Deps,
-    'agents' | 'artifacts' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog'
+    'agents' | 'artifacts' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access'
   >,
   command: ContinueElsewhereCommand
 ): Promise<Result<Session, DomainError>> {
@@ -66,6 +69,8 @@ export async function continueElsewhereUseCase(
   const workers = await deps.gateway.status();
   const placed = placeSession(workers, { agentId: source.agentId, requested: machine.value.workerId, projectWorker: machine.value.workerId });
   if (!placed.ok) return placed;
+  const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
+  if (!allowed.ok) return allowed;
 
   // 原会话还在跑就先停下，免得两边同时改
   if (source.status === 'running') await interruptSessionUseCase(deps, source.id);

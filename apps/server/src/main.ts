@@ -48,6 +48,7 @@ import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps } from '@agent-hub/domain';
+import { createAccessPolicy } from '@agent-hub/domain';
 import { hubTokenWindow, seedTestAccount } from './account-setup.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -128,6 +129,13 @@ const deps: Deps = {
   hosting: createMemoryHosting(),
   queue: createSessionQueue(),
   now: () => Date.now(),
+  // 授权（ADR 0011）：can() 要的团队 / 本机授权从这里拿；机器状态延迟到调用时再读 deps.gateway。
+  access: createAccessPolicy({
+    users: store.users,
+    settings: store.settings,
+    enrollment: store.enrollment,
+    gateway: { status: () => deps.gateway.status() }
+  }),
 };
 
 const log = (message: string) => console.log(`[hub] ${message}`);
@@ -163,6 +171,7 @@ const accounts: AccountDeps = {
   tokens: createTokenIssuer(),
   mail: mailSetup.sender,
   oneTimeTokens: store.oneTimeTokens,
+  teams: store.teams,
   ...(Number.isFinite(maxUsers) && maxUsers > 0 ? { maxUsers } : {}),
   now: () => Date.now()
 };
@@ -222,7 +231,8 @@ const enrollmentDeps: EnrollmentDeps = {
   users: store.users,
   audit: store.audit,
   workers: workerControl,
-  now: () => Date.now()
+  now: () => Date.now(),
+  access: deps.access
 };
 
 // 资产中心（docs/design/asset-hub.md）：技能 / 指令按 Worker 安装，经长连接下发。同步状态落库，hub 重启后照样显示；Worker 每次上线都会再同步。
@@ -409,7 +419,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
     enrollment: enrollmentDeps
   },
   assets: { deps: assetDeps, audit: store.audit },
-  runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now() },
+  runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   enrollment: {
     deps: enrollmentDeps,

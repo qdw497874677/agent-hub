@@ -6,7 +6,7 @@ import { api } from './api.ts';
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkerPicker, WorkersBadge, resolveWorker, useWorkers } from './workers.tsx';
 import { coarsePointer } from './device.ts';
-import { DeleteProjectDialog } from './delete-project.tsx';
+import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
 
 /**
  * 首页。
@@ -97,6 +97,7 @@ export function HomePage({
           ) : null}
         </ul>
 
+        <TrashList />
         {deleting ? <DeleteProjectDialog project={deleting} onClose={() => setDeleting(null)} /> : null}
         <div className="mt-auto border-t border-hair pt-3">
           <WorkersBadge placement="up" />

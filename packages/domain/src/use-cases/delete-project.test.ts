@@ -6,9 +6,9 @@ import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
 import { asAgentId } from '../ids.ts';
 import type { AuditEntry, Principal } from '../account.ts';
-import { deleteProjectUseCase } from './delete-project.ts';
+import { deleteProjectUseCase, listTrashUseCase, purgeProjectUseCase, restoreProjectUseCase } from './delete-project.ts';
 
-const actor = { user: { id: 'u1', email: 'm@b.co', role: 'member', disabledAt: null }, loginId: 'l1' } as unknown as Principal;
+const actor = { user: { id: 'u1', email: 'm@b.co', role: 'member', disabledAt: null, deletedAt: null, teamId: 't1', hubAdmin: false }, loginId: 'l1' } as unknown as Principal;
 
 async function world(status: 'running' | 'stopped' = 'stopped', lastSeq = 0) {
   const { deps } = inMemoryDeps();
@@ -31,11 +31,13 @@ async function world(status: 'running' | 'stopped' = 'stopped', lastSeq = 0) {
   return { deps: all, project: project.value, session: session.value, revoked, audit };
 }
 
-test('删除项目：吊销会话令牌、删记录、记审计，并写明目录保留', async () => {
+test('删除项目：放进回收站、吊销会话令牌、记审计，并写明目录保留', async () => {
   const w = await world();
   const result = await deleteProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'demo' });
   assert.ok(result.ok);
-  assert.equal(await w.deps.projects.byId(w.project.id), null);
+  assert.ok((await w.deps.projects.byId(w.project.id))?.deletedAt);
+  assert.deepEqual((await w.deps.projects.list()).map((p) => p.id), []);
+  assert.deepEqual((await listTrashUseCase(w.deps, actor)).map((p) => p.id), [w.project.id]);
   assert.deepEqual(w.revoked, [w.session.id]);
   assert.equal(w.audit.length, 1);
   assert.equal(w.audit[0]?.action, 'project.delete');
@@ -59,5 +61,19 @@ test('从没发过话、只是挂着 running 的会话不挡删除', async () =>
   const w = await world('running', 0);
   const result = await deleteProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'demo' });
   assert.ok(result.ok);
+  assert.ok((await w.deps.projects.byId(w.project.id))?.deletedAt);
+});
+
+test('回收站：还原后回到列表；彻底删除要再输一次名字，之后真没了', async () => {
+  const w = await world();
+  assert.ok((await deleteProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'demo' })).ok);
+  assert.ok((await restoreProjectUseCase(w.deps, actor, w.project.id)).ok);
+  assert.deepEqual((await w.deps.projects.list()).map((p) => p.id), [w.project.id]);
+  // 没在回收站里的不能彻底删
+  assert.equal((await purgeProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'demo' })).ok, false);
+  assert.ok((await deleteProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'demo' })).ok);
+  assert.equal((await purgeProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'x' })).ok, false);
+  assert.ok((await purgeProjectUseCase(w.deps, actor, { projectId: w.project.id, confirmName: 'demo' })).ok);
   assert.equal(await w.deps.projects.byId(w.project.id), null);
+  assert.deepEqual(w.audit.map((e) => e.action), ['project.delete', 'project.restore', 'project.delete', 'project.purge']);
 });

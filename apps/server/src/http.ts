@@ -36,6 +36,12 @@ import {
 } from '@agent-hub/contract';
 import type { Deps, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
 import {
+  authorizeProject,
+  can,
+  forbidden,
+  projectOfRef,
+  projectReader,
+  workerReader,
   ATTACHMENT_LIMITS,
   asProjectId,
   asSessionId,
@@ -81,6 +87,7 @@ import { installEnrollment } from './enrollment.ts';
 import { installRuntimeInstall } from './runtime-install.ts';
 import type { RuntimeInstallDeps } from '@agent-hub/domain';
 import { installProjectDeletion } from './project-delete.ts';
+import { installAccess } from './access.ts';
 import type { DeleteProjectDeps } from '@agent-hub/domain';
 import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
@@ -163,6 +170,8 @@ export function createApp(options: AppOptions): Hono {
   let principalOf: (c: Context) => Principal | null = () => null;
   if (options.auth) {
     principalOf = installAuth(app, options.auth);
+    // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
+    installAccess(app, deps, principalOf);
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
@@ -185,7 +194,9 @@ export function createApp(options: AppOptions): Hono {
 
   app.get('/api/health', (c) => c.json({ ok: true }));
 
-  app.get('/api/home', async (c) => c.json(homeSchema.parse(await loadHome(deps))));
+  app.get('/api/home', async (c) =>
+    c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, principalOf(c)))))
+  );
 
   // 目录选择器（S2.1）：让人从真实目录里挑，而不是手打一个可能会错的路径。
   // 多机：带 workerId 就去那台 Worker 上浏览（经 WebSocket 问它），不带就是 Server 本机。
@@ -221,7 +232,12 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(projectFilesSchema.parse(result.value)) : fail(c, result.error);
   });
 
-  app.get('/api/workers', async (c) => c.json(workerInfoSchema.array().parse(await listWorkers(deps))));
+  app.get('/api/workers', async (c) => {
+    const readable = await workerReader(deps.access, principalOf(c));
+    const workers = [];
+    for (const worker of await listWorkers(deps)) if (await readable(worker.workerId)) workers.push(worker);
+    return c.json(workerInfoSchema.array().parse(workers));
+  });
   // 「重新检测」：只发指令，结果经 Worker 的 agent 清单异步回来，界面过一会儿再拉 /api/workers。
   app.post('/api/workers/:id/probe', async (c) => {
     const result = await probeWorker(deps, c.req.param('id'));
@@ -230,13 +246,16 @@ export function createApp(options: AppOptions): Hono {
 
   app.get('/api/projects', async (c) => {
     const result = await listProjects(deps);
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    const readable = await projectReader(deps.access, principalOf(c));
+    return result.ok ? c.json(result.value.filter(readable)) : fail(c, result.error);
   });
 
   app.post('/api/projects', async (c) => {
     const input = await body(c, createProjectRequest);
     if (!input.ok) return input.response;
-    const result = await createProjectUseCase(deps, input.value);
+    const actor = principalOf(c);
+    if (actor && !can(actor, 'project.create')) return fail(c, forbidden('你没有权限新建项目'));
+    const result = await createProjectUseCase(deps, { ...input.value, actor });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
@@ -273,13 +292,15 @@ export function createApp(options: AppOptions): Hono {
             projectId: c.req.param('projectId'),
             taskId: request.taskId,
             workerId: request.workerId,
-            home: homedir()
+            home: homedir(),
+            actor: principalOf(c)
           })
         : await prepareLongLivedWorkspaceUseCase(deps, {
             projectId: c.req.param('projectId'),
             workerId: request.workerId,
             plan: request.mode === 'link' ? { mode: 'link', path: request.path ?? '' } : request.path?.trim() ? { mode: 'create', path: request.path } : { mode: 'create' },
-            home: homedir()
+            home: homedir(),
+            actor: principalOf(c)
           });
     return result.ok ? c.json(workspaceSchema.parse(result.value), 201) : fail(c, result.error);
   });
@@ -392,14 +413,14 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/derive', async (c) => {
     const input = await body(c, deriveSessionRequest);
     if (!input.ok) return input.response;
-    const result = await deriveSessionUseCase(deps, input.value);
+    const result = await deriveSessionUseCase(deps, { ...input.value, actor: principalOf(c) });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
   app.post('/api/sessions/fork', async (c) => {
     const input = await body(c, forkSessionRequest);
     if (!input.ok) return input.response;
-    const result = await forkSessionUseCase(deps, input.value);
+    const result = await forkSessionUseCase(deps, { ...input.value, actor: principalOf(c) });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
@@ -407,7 +428,7 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/:sessionId/continue', async (c) => {
     const input = await body(c, continueElsewhereRequest);
     if (!input.ok) return input.response;
-    const result = await continueElsewhereUseCase(deps, { sessionId: c.req.param('sessionId'), ...input.value, home: homedir() });
+    const result = await continueElsewhereUseCase(deps, { sessionId: c.req.param('sessionId'), ...input.value, home: homedir(), actor: principalOf(c) });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
@@ -478,8 +499,24 @@ export function createApp(options: AppOptions): Hono {
   /** SSE：一条连接推所有会话的事件，前端按 sessionId 分流。 */
   app.get('/api/stream', (c) =>
     streamSSE(c, async (stream) => {
+      // 只推这个人看得见的会话（ADR 0011）。每条会话判一次就记住；看不见的帧直接丢。
+      const actor = principalOf(c);
+      const seen = new Map<string, Promise<boolean>>();
+      const visibleSession = (sessionId: string): Promise<boolean> => {
+        if (!deps.access || actor === null) return Promise.resolve(true);
+        let known = seen.get(sessionId);
+        if (!known) {
+          known = projectOfRef(deps, { kind: 'session', id: sessionId }).then(async ({ project }) =>
+            (await authorizeProject(deps.access, actor, project, 'session.read')).ok
+          );
+          seen.set(sessionId, known);
+        }
+        return known;
+      };
       const unsubscribe = hub.subscribe((frame) => {
-        void stream.writeSSE({ event: 'frame', data: JSON.stringify(frame) });
+        void visibleSession(frame.sessionId).then((ok) => {
+          if (ok) void stream.writeSSE({ event: 'frame', data: JSON.stringify(frame) });
+        });
       });
       await new Promise<void>((resolve) => {
         c.req.raw.signal.addEventListener('abort', () => resolve());

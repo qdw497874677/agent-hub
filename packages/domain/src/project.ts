@@ -12,7 +12,22 @@ export interface Project {
   /** 自由格式的项目说明（markdown）：给人看，也原样交给 agent（task.get / 任务背景）。没写是 null。 */
   readonly description: string | null;
   readonly createdAt: number;
+  /** 所属团队（ADR 0011）。null = 没装账号体系 / 迁移前的老数据。 */
+  readonly teamId: string | null;
+  /** 建的人；null = 无主（迁移前的老数据）。 */
+  readonly createdBy: string | null;
+  /** 共享给的团队成员（看得到、能在里面干活）。 */
+  readonly members: readonly string[];
+  /** 进了回收站的时间；null = 正常。 */
+  readonly deletedAt: number | null;
 }
+
+/** 项目当授权资源（access.ts）。 */
+export const projectResource = (project: Project) => ({
+  teamId: project.teamId,
+  createdBy: project.createdBy,
+  sharedWith: project.members
+});
 
 /** 说明的长度上限：会进 agent 的上下文，太长没意义。 */
 export const PROJECT_DESCRIPTION_MAX = 8000;
@@ -54,6 +69,8 @@ export interface CreateProjectInput {
   readonly id?: ProjectId;
   readonly repo?: ProjectRepo | null;
   readonly description?: string | null;
+  readonly teamId?: string | null;
+  readonly createdBy?: string | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
@@ -64,6 +81,10 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     name,
     repo: input.repo ?? null,
     description: input.description ?? null,
-    createdAt: input.now
+    createdAt: input.now,
+    teamId: input.teamId ?? null,
+    createdBy: input.createdBy ?? null,
+    members: [],
+    deletedAt: null
   });
 }

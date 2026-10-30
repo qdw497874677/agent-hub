@@ -35,9 +35,11 @@ export const RECENT_LIMIT = 24;
  */
 export async function loadHome(
   deps: Pick<Deps, 'projects' | 'tasks' | 'sessions'>,
-  limit: number = RECENT_LIMIT
+  limit: number = RECENT_LIMIT,
+  /** 只要这个人能看的项目（ADR 0011）；不给 = 全部。 */
+  include: (project: Project) => boolean = () => true
 ): Promise<HomeView> {
-  const projects = await deps.projects.list();
+  const projects = (await deps.projects.list()).filter(include);
   const owners = new Map<string, { title: string; project: Project }>();
 
   const summaries = await Promise.all(

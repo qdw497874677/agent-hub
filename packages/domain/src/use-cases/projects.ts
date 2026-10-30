@@ -9,6 +9,8 @@ import type { Deps } from './deps.ts';
 import type { DirectoryEntry } from '../ports/workspace-fs.ts';
 import { newWorkspace, type Workspace } from '../workspace.ts';
 import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, resolveMachine, rootsOf } from './machine-dirs.ts';
+import { authorizeWorker } from './authorization.ts';
+import type { Principal } from '../account.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
 import { managedDirectory, projectSlug, sortDirectoryEntries } from '../directories.ts';
@@ -24,10 +26,12 @@ export interface CreateProjectCommand {
   readonly defaultBranch?: string | null;
   /** 可选的项目说明（markdown）。 */
   readonly description?: string | null;
+  /** 谁建的：项目归他的团队、算他建的（ADR 0011）。 */
+  readonly actor?: Principal | null;
 }
 
 export async function createProjectUseCase(
-  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces'>,
+  deps: Pick<Deps, 'fs' | 'now' | 'projects' | 'gateway' | 'workspaces' | 'access'>,
   command: CreateProjectCommand
 ): Promise<Result<Project, DomainError>> {
   const repo = parseRepo(command.repoUrl, command.defaultBranch);
@@ -38,12 +42,21 @@ export async function createProjectUseCase(
   const where = await resolveMachine(deps, command.workerId ?? null);
   if (!where.ok) return where;
   if (rootPath !== '') {
+    const allowed = await authorizeWorker(deps.access, command.actor ?? null, where.value.workerId);
+    if (!allowed.ok) return allowed;
     if (!rootPath.startsWith('/')) return err(invalid('目录必须是绝对路径'));
     const route = where.value.route;
     const exists = route === null ? await deps.fs.directoryExists(rootPath) : await remoteExists(deps, route, rootPath);
     if (!exists) return err(invalid(`目录不存在：${rootPath}`));
   }
-  const created = createProject({ name: command.name, now: deps.now(), repo: repo.value, description: description.value });
+  const created = createProject({
+    name: command.name,
+    now: deps.now(),
+    repo: repo.value,
+    description: description.value,
+    teamId: command.actor?.user.teamId ?? null,
+    createdBy: command.actor?.user.id ?? null
+  });
   if (!created.ok) return created;
   let first: Workspace | null = null;
   if (rootPath !== '') {

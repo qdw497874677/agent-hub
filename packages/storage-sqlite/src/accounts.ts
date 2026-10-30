@@ -12,10 +12,12 @@ import type {
   OneTimeTokenRepository,
   Role,
   SettingsRepository,
+  Team,
+  TeamRepository,
   User,
   UserRepository
 } from '@agent-hub/domain';
-import { DEFAULT_SETTINGS, asLoginId, asUserId } from '@agent-hub/domain';
+import { DEFAULT_SETTINGS, asLoginId, asTeamId, asUserId } from '@agent-hub/domain';
 
 /** 账号两张表。邮箱唯一；登录态只存令牌哈希（docs/design/accounts.md §13）。 */
 export const ACCOUNT_SCHEMA = `
@@ -98,6 +100,50 @@ export function migrateAccountsP3(db: DatabaseSync): { markedVerified: number } 
   }
 }
 
+/**
+ * 团队（ADR 0011）的迁移，幂等、只加列不删列（老版本照样能读这个库）：
+ * - 建 teams 表；users 加 team_id / hub_admin / deleted_at；
+ * - 还没有 hub 管理员时，最早的未停用 Owner（没有就最早的账号）成为 hub 管理员；
+ * - hub 管理员没有团队就给他建一个；所有还没团队的账号并进 hub 管理员的团队（= 老数据都归 David 的团队）。
+ */
+export function migrateTeams(db: DatabaseSync, now: number = Date.now()): { hubTeamId: string | null } {
+  db.exec(`CREATE TABLE IF NOT EXISTS teams (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  owner_id   TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);`);
+  const columns = new Set((db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).map((c) => c.name));
+  if (!columns.has('team_id')) db.exec('ALTER TABLE users ADD COLUMN team_id TEXT');
+  if (!columns.has('hub_admin')) db.exec('ALTER TABLE users ADD COLUMN hub_admin INTEGER NOT NULL DEFAULT 0');
+  if (!columns.has('deleted_at')) db.exec('ALTER TABLE users ADD COLUMN deleted_at INTEGER');
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    type AdminRow = { id: string; team_id: string | null; display_name: string };
+    let admin = db.prepare('SELECT id, team_id, display_name FROM users WHERE hub_admin = 1 ORDER BY created_at ASC LIMIT 1').get() as
+      | AdminRow
+      | undefined;
+    if (!admin) {
+      admin = (db
+        .prepare("SELECT id, team_id, display_name FROM users WHERE role = 'owner' AND disabled_at IS NULL ORDER BY created_at ASC LIMIT 1")
+        .get() ?? db.prepare('SELECT id, team_id, display_name FROM users ORDER BY created_at ASC LIMIT 1').get()) as AdminRow | undefined;
+      if (admin) db.prepare('UPDATE users SET hub_admin = 1 WHERE id = ?').run(admin.id);
+    }
+    let hubTeamId: string | null = admin?.team_id ?? null;
+    if (admin && hubTeamId === null) {
+      hubTeamId = `team-${admin.id}`;
+      db.prepare('INSERT OR IGNORE INTO teams(id, name, owner_id, created_at) VALUES (?, ?, ?, ?)').run(hubTeamId, `${admin.display_name} 的团队`, admin.id, now);
+      db.prepare('UPDATE users SET team_id = ? WHERE id = ?').run(hubTeamId, admin.id);
+    }
+    if (hubTeamId !== null) db.prepare('UPDATE users SET team_id = ? WHERE team_id IS NULL').run(hubTeamId);
+    db.exec('COMMIT');
+    return { hubTeamId };
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
 interface UserRow {
   id: string;
   email: string;
@@ -107,6 +153,9 @@ interface UserRow {
   email_verified_at: number | null;
   disabled_at: number | null;
   created_at: number;
+  team_id: string | null;
+  hub_admin: number;
+  deleted_at: number | null;
 }
 
 interface LoginRow {
@@ -129,6 +178,16 @@ const toUser = (row: UserRow): User => ({
   passwordHash: row.password_hash,
   emailVerifiedAt: row.email_verified_at,
   disabledAt: row.disabled_at,
+  createdAt: row.created_at,
+  teamId: row.team_id === null ? null : asTeamId(row.team_id),
+  hubAdmin: row.hub_admin === 1,
+  deletedAt: row.deleted_at ?? null
+});
+
+const toTeam = (row: { id: string; name: string; owner_id: string; created_at: number }): Team => ({
+  id: asTeamId(row.id),
+  name: row.name,
+  ownerId: asUserId(row.owner_id),
   createdAt: row.created_at
 });
 
@@ -150,17 +209,20 @@ export interface AccountRepositories {
   readonly settings: SettingsRepository;
   readonly audit: AuditLog;
   readonly oneTimeTokens: OneTimeTokenRepository;
+  readonly teams: TeamRepository;
 }
 
 export function createAccountRepositories(db: DatabaseSync): AccountRepositories {
   db.exec(ACCOUNT_SCHEMA);
   migrateAccountsP3(db);
+  migrateTeams(db);
 
   const upsertUser = db.prepare(
-    'INSERT INTO users(id, email, display_name, role, password_hash, email_verified_at, disabled_at, created_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET email = excluded.email, ' +
+    'INSERT INTO users(id, email, display_name, role, password_hash, email_verified_at, disabled_at, created_at, team_id, hub_admin, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET email = excluded.email, ' +
       'display_name = excluded.display_name, role = excluded.role, password_hash = excluded.password_hash, ' +
-      'email_verified_at = excluded.email_verified_at, disabled_at = excluded.disabled_at'
+      'email_verified_at = excluded.email_verified_at, disabled_at = excluded.disabled_at, team_id = excluded.team_id, ' +
+      'hub_admin = excluded.hub_admin, deleted_at = excluded.deleted_at'
   );
   const userById = db.prepare('SELECT * FROM users WHERE id = ?');
   const userByEmail = db.prepare('SELECT * FROM users WHERE email = ?');
@@ -168,11 +230,15 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     'SELECT * FROM users WHERE role = ? AND disabled_at IS NULL ORDER BY created_at ASC LIMIT 1'
   );
   const claimOwner = db.prepare(
-    'INSERT INTO users(id, email, display_name, role, password_hash, email_verified_at, disabled_at, created_at) ' +
-      "SELECT ?, ?, ?, 'owner', ?, ?, ?, ? " +
-      "WHERE NOT EXISTS (SELECT 1 FROM users WHERE role = 'owner' AND disabled_at IS NULL)"
+    'INSERT INTO users(id, email, display_name, role, password_hash, email_verified_at, disabled_at, created_at, team_id, hub_admin) ' +
+      "SELECT ?, ?, ?, 'owner', ?, ?, ?, ?, ?, 1 " +
+      'WHERE NOT EXISTS (SELECT 1 FROM users WHERE hub_admin = 1 AND disabled_at IS NULL AND deleted_at IS NULL)'
   );
   const allUsers = db.prepare('SELECT * FROM users ORDER BY created_at ASC');
+  const hubAdminRow = db.prepare('SELECT * FROM users WHERE hub_admin = 1 AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1');
+  const insertTeam = db.prepare('INSERT INTO teams(id, name, owner_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, owner_id = excluded.owner_id');
+  const teamById = db.prepare('SELECT * FROM teams WHERE id = ?');
+  const allTeams = db.prepare('SELECT * FROM teams ORDER BY created_at ASC');
 
   const insertLogin = db.prepare(
     'INSERT INTO logins(id, user_id, token_hash, method, user_agent, ip, created_at, last_seen_at, expires_at) ' +
@@ -220,8 +286,15 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
         user.passwordHash,
         user.emailVerifiedAt,
         user.disabledAt,
-        user.createdAt
+        user.createdAt,
+        user.teamId ?? null,
+        user.hubAdmin ? 1 : 0,
+        user.deletedAt ?? null
       );
+    },
+    async hubAdmin() {
+      const row = hubAdminRow.get() as UserRow | undefined;
+      return row ? toUser(row) : null;
     },
     async byId(id) {
       const row = userById.get(id) as UserRow | undefined;
@@ -243,7 +316,8 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
         user.passwordHash,
         user.emailVerifiedAt,
         user.disabledAt,
-        user.createdAt
+        user.createdAt,
+        user.teamId ?? null
       );
       return Number(result.changes) === 1;
     },
@@ -362,5 +436,18 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     }
   };
 
-  return { users, logins, settings, audit, oneTimeTokens };
+  const teams: TeamRepository = {
+    async save(team) {
+      insertTeam.run(team.id, team.name, team.ownerId, team.createdAt);
+    },
+    async byId(id) {
+      const row = teamById.get(id) as { id: string; name: string; owner_id: string; created_at: number } | undefined;
+      return row ? toTeam(row) : null;
+    },
+    async list() {
+      return (allTeams.all() as unknown as { id: string; name: string; owner_id: string; created_at: number }[]).map(toTeam);
+    }
+  };
+
+  return { users, logins, settings, audit, oneTimeTokens, teams };
 }
