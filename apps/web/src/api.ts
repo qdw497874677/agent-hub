@@ -107,6 +107,9 @@ const post = <T>(path: string, body: unknown): Promise<T> =>
 export const api = {
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
   probeWorker: (workerId: string) => post<{ ok: true }>(`/api/workers/${encodeURIComponent(workerId)}/probe`, {}),
+  /** 在这台机器上装 / 升级 / 卸载一个 agent 运行时；只回「已下发」，进度看 workers 列表里的 runtimeJob。 */
+  runtimeJob: (workerId: string, agentId: string, body: { action: 'install' | 'uninstall'; version?: string }) =>
+    post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/runtimes/${encodeURIComponent(agentId)}`, body),
   home: () => call<HomeDto>('/api/home'),
   projects: () => call<ProjectDto[]>('/api/projects'),
   listDirectories: (path: string, workerId: string | null = null, project = '') =>
