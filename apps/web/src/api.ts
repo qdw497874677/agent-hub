@@ -350,3 +350,46 @@ export type {
   SessionEventDto,
   TaskDto
 };
+
+/** 模型提供商（ADR 0013）：密钥只写不读，界面只看得到「已配置」。 */
+export type ProviderProtocolDto = 'openai-chat' | 'openai-responses' | 'anthropic';
+export interface ProviderModelDto { readonly id: string; readonly name?: string; readonly contextWindow?: number; readonly maxTokens?: number }
+export interface ProviderDto {
+  readonly id: string;
+  readonly scope: 'personal' | 'team' | 'hub';
+  readonly ownerId: string | null;
+  readonly slug: string;
+  readonly name: string;
+  readonly protocol: ProviderProtocolDto;
+  readonly baseUrl: string;
+  readonly models: readonly ProviderModelDto[];
+  readonly routing: 'direct' | 'hub';
+  readonly enabled: boolean;
+  readonly hasKey: boolean;
+  readonly canManage: boolean;
+  readonly lastCheck: { ok: boolean; message: string; at: number; via: 'direct' | 'hub'; workerId: string } | null;
+  readonly usage: { requests: number; errors: number; bytesIn: number; bytesOut: number; sessions: number; lastUsedAt: number | null };
+}
+export interface ProviderInputDto {
+  slug: string;
+  name: string;
+  protocol: ProviderProtocolDto;
+  baseUrl: string;
+  models: ProviderModelDto[];
+  routing: 'direct' | 'hub';
+  enabled: boolean;
+}
+export interface HubModelsDto { readonly slug: string; readonly name: string; readonly protocol: ProviderProtocolDto; readonly models: readonly { id: string; label: string }[] }
+const providerPath = (id: string) => `/api/providers/${encodeURIComponent(id)}`;
+export const providersApi = {
+  list: () => call<{ providers: ProviderDto[]; workerRouting: Record<string, 'direct' | 'hub'> }>('/api/providers'),
+  models: (taskId?: string) => call<HubModelsDto[]>(`/api/providers/models${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`),
+  create: (input: ProviderInputDto & { scope: 'personal' | 'team' | 'hub'; apiKey?: string }) => post<ProviderDto>('/api/providers', input),
+  update: (id: string, input: ProviderInputDto) => call<ProviderDto>(providerPath(id), { method: 'PUT', body: JSON.stringify(input) }),
+  setKey: (id: string, apiKey: string) => call<{ ok: true }>(`${providerPath(id)}/key`, { method: 'PUT', body: JSON.stringify({ apiKey }) }),
+  remove: (id: string) => call<{ ok: true }>(providerPath(id), { method: 'DELETE' }),
+  test: (id: string, workerId: string) =>
+    post<{ ok: boolean; message: string; via: 'direct' | 'hub'; workerId: string; models: string[] }>(`${providerPath(id)}/test`, { workerId }),
+  setWorkerRouting: (workerId: string, routing: 'direct' | 'hub' | null) =>
+    call<{ ok: true }>(`/api/providers/routing/${encodeURIComponent(workerId)}`, { method: 'PUT', body: JSON.stringify({ routing }) })
+};

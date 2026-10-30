@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ProvidersDialog } from './providers-dialog.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authApi, teamApi, RequestFailed, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
 import { DialogShell } from './dialog-shell.tsx';
@@ -483,6 +484,7 @@ export function AccountMenu() {
   const [devices, setDevices] = useState(false);
   const [team, setTeam] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [providers, setProviders] = useState(false);
   const leave = useMutation({
     mutationFn: authApi.logout,
     onSettled: () => {
@@ -543,6 +545,15 @@ export function AccountMenu() {
             个人设置
           </button>
           <button
+            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
+            onClick={() => {
+              setOpen(false);
+              setProviders(true);
+            }}
+          >
+            模型提供商
+          </button>
+          <button
             className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-rust hover:text-rust"
             onClick={() => leave.mutate()}
             disabled={leave.isPending}
@@ -554,6 +565,7 @@ export function AccountMenu() {
       {devices && <DevicesDialog onClose={() => setDevices(false)} />}
       {team && <TeamDialog onClose={() => setTeam(false)} />}
       {settings && <SettingsDialog onClose={() => setSettings(false)} />}
+      {providers && <ProvidersDialog onClose={() => setProviders(false)} />}
     </div>
   );
 }

@@ -12,8 +12,9 @@ import { createRemoteClients, serveMcpRelay } from './mcp-relay.ts';
 import { serveAssetFetch } from './asset-relay.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
-import { createSecretVault, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
-import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, ToolGateway, WorkerCommand } from '@agent-hub/domain';
+import { createSecretVault, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createProviderWiring } from './providers.ts';
+import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
@@ -106,10 +107,14 @@ const deps: Deps = {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
     probe: async (workerId) => serverGateway?.gateway.probe?.(workerId) ?? false,
     // 发给 worker 前给 start_session 配上工具令牌（换新、旧的作废），dispose 时作废。
-    dispatch: async (command) =>
-      serverGateway
-        ? serverGateway.gateway.dispatch(await withSessionAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, command) : command))
-        : err(unavailable('worker 通道尚未就绪')),
+    dispatch: async (command) => {
+      if (!serverGateway) return err(unavailable('worker 通道尚未就绪'));
+      if (command.kind === 'dispose') providerWiring.revoke(command.sessionId);
+      // hub 模型提供商：只给选中的那一个（ADR 0013 D3）；不能用就让这次启动失败，不静默换模型
+      const granted = await providerWiring.grantFor(command);
+      if (!granted.ok) return granted;
+      return serverGateway.gateway.dispatch(await withSessionAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, granted.value) : granted.value));
+    },
     listDirectories: async (workerId, path) =>
       serverGateway
         ? serverGateway.gateway.listDirectories(workerId, path)
@@ -238,6 +243,18 @@ const enrollmentDeps: EnrollmentDeps = {
 };
 
 // 资产中心（docs/design/asset-hub.md）：技能 / 指令按 Worker 安装，经长连接下发。同步状态落库，hub 重启后照样显示；Worker 每次上线都会再同步。
+const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
+const providerWiring = createProviderWiring({
+  deps: { providers: createSqliteProviders(store.db, secretKey), audit: store.audit, now: () => Date.now() },
+  projectTeam: async (taskId) => {
+    const task = await store.tasks.byId(taskId as TaskId);
+    return task ? ((await store.projects.byId(task.projectId))?.teamId ?? null) : null;
+  },
+  userTeam: async (userId) => (await store.users.byId(userId as UserId))?.teamId ?? null,
+  hostOf: (sessionId) => serverGateway?.hostOf(sessionId as SessionId) ?? null,
+  testFromWorker: async (workerId, input) => (serverGateway ? serverGateway.testProvider(workerId, input) : err(unavailable('worker 通道尚未就绪'))),
+  log
+});
 const assetDeps: AssetDeps = {
   assets: store.assets,
   reader: createAssetReader(),
@@ -245,7 +262,7 @@ const assetDeps: AssetDeps = {
   board: store.assetSync,
   workers: workerControl,
   projects: { byId: (id) => store.projects.byId(id as ProjectId) },
-  secrets: createSecretVault(store.db, await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') })),
+  secrets: createSecretVault(store.db, secretKey),
   now: () => Date.now()
 };
 const remoteMcpClients = createRemoteClients();
@@ -331,6 +348,7 @@ serverGateway = createServerGateway({
     fromWorker(workerId, sessionId, () => {
       void ingestRuntimeStatus(deps, sessionId, status);
       // 会话跑完 / 进程没了：它的工具令牌立刻作废（再说话会重新托管、换新令牌）
+      if (status !== 'running') providerWiring.revoke(sessionId);
       if (status !== 'running' && toolGateway) void toolGateway.revoke({ id: sessionId }).catch(() => undefined);
     });
   },
@@ -421,6 +439,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
     enrollment: enrollmentDeps
   },
   assets: { deps: assetDeps, audit: store.audit },
+  providers: providerWiring,
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },
