@@ -5,6 +5,12 @@ import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
 
+/** 写操作要带 CSRF 头和同源 Origin（和界面一样）。 */
+async function writeHeaders(page: import('@playwright/test').Page, baseURL: string): Promise<Record<string, string>> {
+  const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+  return { origin: baseURL, 'x-hub-csrf': csrf };
+}
+
 const SHOTS = process.env['E2E_INSTALL_SHOTS'] ?? process.env['E2E_SCREENSHOTS'];
 
 /**
@@ -15,7 +21,8 @@ const SHOTS = process.env['E2E_INSTALL_SHOTS'] ?? process.env['E2E_SCREENSHOTS']
 test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async ({ page, baseURL }) => {
   test.setTimeout(300_000);
   await loginByApi(page);
-  const pairing = await page.request.post('/api/workers/pairing', { data: {} });
+  const headers = await writeHeaders(page, baseURL!);
+  const pairing = await page.request.post('/api/workers/pairing', { data: {}, headers });
   expect(pairing.ok()).toBe(true);
   const code = ((await pairing.json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
@@ -70,7 +77,7 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'install-03-installed.png') });
 
     // 正在装的时候再点会被拒；装完之后同版本也不让重装（按钮本来就没有）
-    const again = await page.request.post(`/api/workers/${encodeURIComponent(workerId)}/runtimes/pi`, { data: { action: 'install', version: '1.4.0' } });
+    const again = await page.request.post(`/api/workers/${encodeURIComponent(workerId)}/runtimes/pi`, { data: { action: 'install', version: '1.4.0' }, headers });
     expect(again.status()).toBe(409);
 
     await pi.getByTestId('runtime-pi-uninstall').click();
@@ -82,12 +89,15 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
     expect(audit.slice(0, 2).map((entry) => entry.action)).toEqual(['runtime.uninstall', 'runtime.install']);
   } finally {
     worker?.kill();
+    // 测完吊销，别在机器列表里留一台离线的
+    await page.request.delete(`/api/workers/${encodeURIComponent(workerId)}`, { headers }).catch(() => undefined);
     rmSync(state, { recursive: true, force: true });
   }
 });
 
-test('运行时安装：机器自带的不让装，坏请求被挡', async ({ page }) => {
+test('运行时安装：机器自带的不让装，坏请求被挡', async ({ page, baseURL }) => {
   await loginByApi(page);
+  const headers = await writeHeaders(page, baseURL!);
   const workers = (await (await page.request.get('/api/workers')).json()) as {
     workerId: string;
     origin?: string;
@@ -95,11 +105,11 @@ test('运行时安装：机器自带的不让装，坏请求被挡', async ({ pa
   }[];
   const local = workers.find((worker) => worker.origin === 'local');
   test.skip(!local, '没有本机 worker');
-  const bad = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/pi`, { data: { action: 'install', version: '1.0; rm -rf /' } });
+  const bad = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/pi`, { data: { action: 'install', version: '1.0; rm -rf /' }, headers });
   expect(bad.status()).toBe(400);
   const machine = local!.agentModels?.find((harness) => harness.provision?.source === 'machine');
   if (machine) {
-    const refused = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/${machine.agentId}`, { data: { action: 'install' } });
+    const refused = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/${machine.agentId}`, { data: { action: 'install' }, headers });
     expect(refused.status()).toBe(409);
     expect(((await refused.json()) as { error: { message: string } }).error.message).toContain('以机器上的为准');
   }
