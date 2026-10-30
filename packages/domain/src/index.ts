@@ -83,6 +83,7 @@ export type { EnrollmentRepository } from './ports/enrollment-repository.ts';
 export * from './use-cases/enrollment.ts';
 export * from './use-cases/runtime-install.ts';
 export type { HarnessInstaller, InstallRun, InstalledEntry } from './ports/harness-installer.ts';
+export type { PreparedRuntime, ResolvedCommand, RuntimeAdapter, RuntimeAdapterContext, ToolShimCommand } from './ports/runtime-adapter.ts';
 
 export * from './tool.ts';
 export type { ToolDescriptor, ToolProvider, ToolContext, JsonSchema } from './ports/tool-provider.ts';

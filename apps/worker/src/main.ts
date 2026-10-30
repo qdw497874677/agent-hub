@@ -3,12 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createPiRuntime, discoverPiModels, piInstaller, piReadiness } from '@agent-hub/adapter-pi';
-import { ACP_AGENT_DEFAULTS, acpDescriptor, acpReadiness, createAcpRuntime, opencodeLaunch, discoverAcpModels, opencodeInstaller, type AcpAgentConfig } from '@agent-hub/adapter-acp';
-import { createGrokRuntime, discoverGrokModels, grokInstaller, grokReadiness } from '@agent-hub/adapter-grok';
+import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { clearBootMarker, connectWorkerLink, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
-import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
+import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
 /**
  * worker 的组合根。单机安装时由 server 拉起（HUB_SPAWN_WORKER=1），
@@ -71,30 +69,6 @@ const files = createWorkerFiles({ roots, enforced: true });
 const assets = createWorkerAssets({ root: defaultAssetsRoot(env) });
 
 /**
- * 显式覆盖：`PI_DEFAULT_MODEL=a,b`。除此之外一律问 Pi 自己（见 discoverPiModels），
- * 因为裸模型名在多个 provider 都已认证时会被 Pi 拒绝启动，平台补不全。
- */
-function explicitPiModels(): string[] {
-  const explicit = env['PI_DEFAULT_MODEL'];
-  if (explicit === undefined || explicit === '') return [];
-  return explicit
-    .split(',')
-    .map((model) => model.trim())
-    .filter((model) => model !== '');
-}
-
-/** Pi settings 里的 defaultModel 只有 id，没有 provider——用它告诉发现流程「优先选哪个」。 */
-function piPreferredModel(): string {
-  try {
-    const raw = readFileSync(join(homedir(), '.pi', 'agent', 'settings.json'), 'utf8');
-    const settings = JSON.parse(raw) as { defaultModel?: unknown };
-    return typeof settings.defaultModel === 'string' ? settings.defaultModel : '';
-  } catch {
-    return '';
-  }
-}
-
-/**
  * harness 命令在哪：X_COMMAND 点名的原样用，否则 PATH，再否则常见安装位置（resolveCommand）。
  * 在常见位置找到的，把那个目录补进本进程 PATH，子进程（含脚本里的 `#!/usr/bin/env node`）跟着找得到。
  * 找不到就留原名：就绪探测照常报「未安装」，再带一句怎么修。
@@ -116,74 +90,10 @@ function harnessCommand(name: string, envVar: string, agentId: string = name): {
   }
   return { command: found.command, hint: null };
 }
-const pi = harnessCommand('pi', 'PI_COMMAND');
-const grok = harnessCommand('grok', 'GROK_COMMAND');
-
-const explicitModels = explicitPiModels();
-const discovered =
-  explicitModels.length > 0
-    ? { models: explicitModels, defaultModel: explicitModels[0] ?? '' }
-    : await discoverPiModels(pi.command, piPreferredModel());
-
-const piModels = discovered.models;
-
-const grokCommand = grok.command;
-// 没装 grok 时返回空目录，Grok 用自己的默认模型；真正启动会话时再报不可用。
-const grokCatalog = await discoverGrokModels(grokCommand);
-
 const log = (message: string): void => {
   process.stdout.write(`[worker] ${message}\n`);
 };
 log(`允许访问的目录（WORKER_ROOTS${env['WORKER_ROOTS'] === undefined ? '，未配置，默认 $HOME' : ''}）：${roots.join(':')}`);
-
-/**
- * ACP agent 是配置，不是代码。
- * `ACP_AGENTS='[{"id":"claude-code","label":"Claude Code","command":"claude-code-acp","args":[]}]'`
- * 就能多一个 agent——不改内核、不重新编译（README「新增第三个 agent」说的就是这条路）。
- */
-function acpAgents(): readonly AcpAgentConfig[] {
-  const raw = env['ACP_AGENTS'];
-  if (raw === undefined || raw === '') return ACP_AGENT_DEFAULTS;
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return ACP_AGENT_DEFAULTS;
-    const agents: AcpAgentConfig[] = [];
-    for (const entry of parsed) {
-      const candidate = entry as Partial<AcpAgentConfig>;
-      if (typeof candidate.id !== 'string' || typeof candidate.command !== 'string') continue;
-      agents.push({
-        id: candidate.id,
-        label: typeof candidate.label === 'string' ? candidate.label : candidate.id,
-        command: candidate.command,
-        args: Array.isArray(candidate.args) ? candidate.args.filter((arg) => typeof arg === 'string') : [],
-        ...(Array.isArray(candidate.listModelsArgs)
-          ? { listModelsArgs: candidate.listModelsArgs.filter((arg) => typeof arg === 'string') }
-          : {})
-      });
-    }
-    return agents.length > 0 ? agents : ACP_AGENT_DEFAULTS;
-  } catch {
-    log('ACP_AGENTS 不是合法 JSON，回退到默认的 OpenCode');
-    return ACP_AGENT_DEFAULTS;
-  }
-}
-
-// OPENCODE_COMMAND 是给单机安装留的后门：PATH 里那版 opencode 不对时改一条环境变量就够。
-const acpConfigs = acpAgents().map((config) => {
-  if (config.id !== 'opencode') return config;
-  // 用 ACP_AGENTS 自己写的 opencode 条目也照样认 hub 下发的资产
-  return { launch: opencodeLaunch, ...config, ...(env['OPENCODE_COMMAND'] ? { command: env['OPENCODE_COMMAND'] } : {}) };
-});
-/** ACP agent 的命令同样走 resolveCommand；opencode 认 OPENCODE_COMMAND，其它按 id 推一个 X_COMMAND 名字用于提示。 */
-const acpHints = new Map<string, string | null>();
-for (const [index, config] of acpConfigs.entries()) {
-  const envVar = `${config.id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_COMMAND`;
-  const found = harnessCommand(config.command, envVar === 'OPENCODE_COMMAND' ? 'OPENCODE_COMMAND' : envVar, config.id);
-  acpConfigs[index] = { ...config, command: found.command };
-  acpHints.set(config.id, found.hint);
-}
-// ACP 只在开了会话之后才报模型；启动时先问一次，派生对话框才有得选。
-const acpModels = await Promise.all(acpConfigs.map((config) => discoverAcpModels(config)));
 
 // 先接住 adapter 的回调，等 link 就绪后转给它——adapter 在构造时就要拿到这个函数。
 let notifyAgentSessionRef: (sessionId: string, ref: string) => void = () => undefined;
@@ -198,48 +108,25 @@ const toolShim = {
   args: [...process.execArgv, join(dirname(fileURLToPath(import.meta.url)), 'mcp-shim.ts')]
 };
 
-const runtimes: AgentRuntime[] = [
-  createPiRuntime({
-    command: pi.command,
-    ...(env['PI_SESSION_DIR'] ? { sessionDir: env['PI_SESSION_DIR'] } : {}),
-    models: piModels,
-    defaultModel: discovered.defaultModel,
-    toolShim,
-    onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
-    onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
-  }),
-  ...acpConfigs.map((config, index) =>
-    createAcpRuntime(config, {
-      descriptor: acpDescriptor(config, [], acpModels[index] ?? []),
+/** 统一运行时适配器（ADR 0013 D8）：组合根只遍历注册表，不认得具体 agent。 */
+const prepared: PreparedRuntime[] = [];
+for (const adapter of RUNTIME_ADAPTERS) {
+  prepared.push(
+    ...(await adapter.prepare({
+      env,
+      home: homedir(),
       toolShim,
+      command: harnessCommand,
+      log,
       onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
       onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
-    })
-  ),
-  createGrokRuntime({
-    command: grokCommand,
-    models: grokCatalog.models,
-    defaultModel: grokCatalog.defaultModel,
-    toolShim,
-    onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
-    onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
-  })
-];
-
-/**
- * 各 harness 的就绪探测：一个 runtime 一个适配器，用和 runtime 同一条命令。
- * 组合在这里（组合根）；加一个 harness = 在 runtimes 和这里各加一行。
- */
-const readiness = createHarnessRegistry([
-  withMissingHint(piReadiness(pi.command, discovered.defaultModel), pi.hint),
-  ...acpConfigs.map((config) => withMissingHint(acpReadiness(config), acpHints.get(config.id) ?? null)),
-  withMissingHint(grokReadiness(grokCommand, env), grok.hint)
-]);
+    }))
+  );
+}
+const runtimes: AgentRuntime[] = prepared.map((entry) => entry.runtime);
+const readiness = createHarnessRegistry(prepared.map((entry) => withMissingHint(entry.readiness, entry.hint)));
 const probeIntervalMs = Number(env['HARNESS_PROBE_INTERVAL_MS'] ?? '') || undefined;
-
-log(`Grok 认得 ${grokCatalog.models.length} 个模型（默认 ${grokCatalog.defaultModel || 'Grok 自己的默认'}）`);
-acpConfigs.forEach((config, index) => log(`${config.label} 认得 ${acpModels[index]?.length ?? 0} 个模型`));
-log(`Pi 认得 ${piModels.length} 个模型（默认 ${discovered.defaultModel || 'Pi 自己的默认'}）`);
+for (const entry of prepared) log(entry.summary);
 
 /** 自更新标记所在目录（和 worker-id 同一处）。 */
 const stateDir = process.env['WORKER_STATE_DIR'] ?? join(homedir(), '.config', 'agent-hub');
@@ -292,7 +179,7 @@ async function onUpdate(commit: string, report: (status: UpdateReport) => void):
 // 只给我们认得怎么装的那几个；ACP_AGENTS 里自定义的 agent 不在线安装
 const provisioner = await createRuntimeManager({
   store: runtimeStore,
-  installers: [piInstaller(), opencodeInstaller(), grokInstaller()].filter((installer) => machineProvided.has(installer.agentId)),
+  installers: prepared.flatMap((entry) => (entry.installer && machineProvided.has(entry.installer.agentId) ? [entry.installer] : [])),
   machineProvided
 });
 
