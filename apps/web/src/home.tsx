@@ -176,7 +176,7 @@ export function HomePage({
           {!home.isPending && !home.error && shown.length === 0 ? (
             <p className="rounded-md border border-hair bg-panel px-4 py-6 text-body text-secondary">
               {needle === ''
-                ? '还没有会话。选一个项目，建一条任务，双击任务就派生第一条会话。'
+                ? '还没有会话。选一个项目，建一条任务，点任务卡上的「＋ 会话」派生第一条会话。'
                 : `没有匹配「${filter}」的会话。`}
             </p>
           ) : null}
@@ -184,7 +184,7 @@ export function HomePage({
           <p className="mt-8 text-meta text-tertiary">
             {coarsePointer()
               ? '点任务卡上的「＋ 会话」派生会话 · 关掉浏览器，会话历史还在'
-              : '画布上双击任务即派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在'}
+              : '任务卡上点「＋ 会话」派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在'}
           </p>
         </div>
       </main>

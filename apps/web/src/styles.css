@@ -128,3 +128,10 @@ body,
   outline-offset: 2px;
   border-radius: 2px;
 }
+
+/* 画布交互分区：拖动区自己吃掉触摸手势，不让浏览器拿去滚页面/缩放（真机上否则一拖就被 pointercancel 打断） */
+.react-flow__node-task,
+.react-flow__node-session .card-drag-zone,
+.frame-handle {
+  touch-action: none;
+}
