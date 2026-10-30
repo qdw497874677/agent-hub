@@ -152,69 +152,6 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose }: Pr
   );
 }
 
-export function ForkDialog({
-  lastSeq,
-  value,
-  onChange,
-  busy,
-  error,
-  onClose,
-  onFork
-}: {
-  lastSeq: number;
-  value: string;
-  onChange: (value: string) => void;
-  busy: boolean;
-  error: string | null;
-  onClose: () => void;
-  onFork: () => void;
-}) {
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-  return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 md:items-center" onClick={onClose}>
-      <div
-        role="dialog"
-        aria-label="从某一步分叉"
-        className="w-full rounded-t-md border border-hair bg-panel p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] md:w-[340px] md:rounded-md md:pb-4"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <p className="text-head text-primary">从某一步分叉</p>
-        <p className="mt-1 text-meta text-tertiary">带着第 1–{lastSeq} 步之前的上下文开一条新会话，画布上用虚线连起来。</p>
-        <label className="mt-3 flex items-center gap-2 text-meta text-secondary">
-          分叉点
-          <input
-            aria-label="分叉点"
-            inputMode="numeric"
-            className="w-20 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-body text-primary"
-            value={value}
-            onChange={(event) => onChange(event.target.value)}
-          />
-          <span className="text-tertiary">/ {lastSeq}</span>
-        </label>
-        {error ? <p role="alert" className="mt-2 text-meta text-rust">{error}</p> : null}
-        <div className="mt-4 flex justify-end gap-2">
-          <button className="px-3 py-2 text-meta text-tertiary hover:text-primary" onClick={onClose}>
-            取消
-          </button>
-          <button
-            className="rounded-sm border border-sage px-3 py-2 text-meta text-sage hover:bg-sage/10 disabled:opacity-40"
-            disabled={busy || !Number.isInteger(Number(value)) || Number(value) < 1 || Number(value) > lastSeq}
-            onClick={onFork}
-          >
-            从这里分叉
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /** 事件流给人看：说「发生了什么」，不念内部类型名。 */
 export function eventLabel(event: JournalEntryDto['event']): string {
   switch (event.kind) {

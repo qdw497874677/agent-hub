@@ -161,14 +161,16 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
           <button
-            className="nodrag rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary transition-opacity hover:border-accent hover:text-accent focus:opacity-100 pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100"
-            title="打开专注对话"
+            className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-accent hover:text-accent focus:opacity-100 ${
+              selected ? 'border-accent text-accent' : 'border-hair text-tertiary pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'
+            }`}
+            title="打开专注对话（也可以双击卡片）"
             onClick={(event) => {
               event.stopPropagation();
               onOpen();
             }}
           >
-            对话
+            打开
           </button>
           <StatusPill status={status} reason={failureReason} lastSeq={live?.lastSeq ?? session.lastSeq} />
         </span>
@@ -207,7 +209,11 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </div>
       )}
 
-      <div ref={scroller} className={`min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1 ${size ? '' : 'max-h-[320px]'}`}>
+      <div
+        ref={scroller}
+        // nowheel/nopan/nodrag：滚轮、触摸滑动滚的是这段对话，不是拖动或缩放画布。
+        data-testid="session-card-log"
+        className={`nowheel nopan nodrag min-h-0 flex-1 touch-pan-y space-y-1.5 overflow-y-auto overscroll-contain pr-1 ${size ? '' : 'max-h-[320px]'}`}>
         {failureReason ? (
           <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
         ) : null}
@@ -215,7 +221,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <p className="text-meta text-tertiary">
             {status === 'running' && (live?.lastSeq ?? session.lastSeq) === 0
               ? session.origin.kind === 'fork'
-                ? `已从 #${session.origin.atSeq} 分叉，带着之前的上下文，发一句话接着聊`
+                ? '已从来源的最新处分叉，带着之前的上下文，发一句话接着聊'
                 : '就绪，发一句话开始'
               : '尚无输出'}
           </p>

@@ -267,3 +267,19 @@ export function withFullHistory(current: LiveMap, session: SessionDto, entries: 
     }
   };
 }
+
+/**
+ * 分叉出来的会话要先看到来源会话「分叉之前说了什么」：来源的历史截到分叉点再折成块。
+ * 分叉点之后来源又说的话不属于这条分叉，不能混进来。
+ */
+export function inheritedBlocks(entries: readonly JournalEntryDto[], atSeq: number): readonly Block[] {
+  return blocksFromEntries(entries.filter((entry) => entry.seq <= atSeq));
+}
+
+/** 「分叉」为什么点不了；null = 能点。 */
+export function forkBlockedHint({ lastSeq, turnRunning, denied }: { lastSeq: number; turnRunning: boolean; denied: boolean }): string | null {
+  if (denied) return '这个 agent 不支持分叉';
+  if (lastSeq < 1) return '这条会话还没有内容';
+  if (turnRunning) return '这一轮还在进行，等它结束再分叉';
+  return null;
+}

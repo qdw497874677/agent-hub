@@ -79,7 +79,7 @@ test('长对话：画布卡片和专注对话默认在最后；翻上去时新�
   await expect.poll(() => gap(cardScroll), { message: '在底部时跟着新消息走' }).toBeLessThan(4);
 
   // 专注对话：打开就在最后
-  await card.locator('header, p').first().click();
+  await card.getByRole('button', { name: '打开' }).click();
   const log = page.getByRole('log', { name: '对话记录' });
   await expect(log).toContainText(`第 ${n} 句`);
   const chatScroll = log.locator('xpath=..');
@@ -97,4 +97,60 @@ test('长对话：画布卡片和专注对话默认在最后；翻上去时新�
   await expect.poll(() => scrollable(cardScroll), { message: '手机上卡片有长内容' }).toBe(true);
   await expect.poll(() => gap(cardScroll), { message: '手机上画布卡片也停在最后' }).toBeLessThan(4);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-390.png` });
+});
+
+const viewportTransform = (page: Page) => page.locator('.react-flow__viewport').evaluate((node) => (node as HTMLElement).style.transform);
+
+test.describe('画布卡片里的对话', () => {
+  // 开触摸：既能用滚轮，又能用 CDP 合成手指滑动
+  test.use({ hasTouch: true });
+for (const width of [1280, 390]) {
+  test(`${width}px：卡片里的对话能滚，滚轮/手指滑动不拖动、不缩放画布；单击只选中，「打开」进对话`, async ({ page, baseURL }) => {
+    await page.setViewportSize({ width, height: 844 });
+    const { project, say } = await longSession(page, baseURL!);
+    await page.goto(`/#/p/${project.id}/canvas`);
+    const card = page.locator('.react-flow__node-session');
+    await expect(card).toHaveCount(1);
+    const log = card.getByTestId('session-card-log');
+    let n = 14;
+    while (n < 40 && (await log.evaluate((node) => node.scrollHeight < node.clientHeight * 2.5))) await say(++n);
+    await expect.poll(() => gap(log), { message: '默认停在最后' }).toBeLessThan(4);
+    await log.scrollIntoViewIfNeeded();
+
+    // 滚轮：滚的是对话
+    const before = await viewportTransform(page);
+    const box = (await log.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.wheel(0, -400);
+    await expect.poll(() => gap(log), { message: '滚轮往上翻了对话' }).toBeGreaterThan(100);
+    expect(await viewportTransform(page), '画布没被缩放或平移').toBe(before);
+
+    // 手指滑动（CDP 触摸手势）：同样只滚对话
+    const cdp = await page.context().newCDPSession(page);
+    const top = await log.evaluate((node) => node.scrollTop);
+    const x = Math.round(box.x + box.width / 2);
+    const y0 = Math.round(box.y + box.height * 0.75);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y: y0 }] });
+    for (let step = 1; step <= 10; step++) {
+      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x, y: y0 - step * 15 }] });
+    }
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await expect.poll(() => log.evaluate((node) => node.scrollTop), { message: '手指往下拖，对话继续往底部滚' }).toBeGreaterThan(top);
+    expect(await viewportTransform(page), '画布没被拖动').toBe(before);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-scroll-${width}.png` });
+
+    // 单击只选中：卡片描边变色、「打开」按钮露出来，但不进对话
+    await card.locator('header').click({ position: { x: 8, y: 8 } });
+    await expect(page.getByRole('log', { name: '对话记录' })).toHaveCount(0);
+    const open = card.getByRole('button', { name: '打开' });
+    await expect(open).toBeVisible();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-selected-${width}.png` });
+    if (width >= 1024) {
+      await card.locator('header').dblclick({ position: { x: 8, y: 8 } });
+    } else {
+      await open.click();
+    }
+    await expect(page.getByRole('log', { name: '对话记录' }), width >= 1024 ? '双击进对话' : '点「打开」进对话').toBeVisible();
+  });
+}
 });

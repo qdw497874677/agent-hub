@@ -1,15 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
 import { Composer } from './composer.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
-import { ForkDialog, SessionDetails } from './inspector.tsx';
+import { SessionDetails } from './inspector.tsx';
+import { localTime } from './local-time.ts';
 import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
 import { sessionCommands } from './commands.ts';
-import type { LiveSession } from './live.ts';
+import { forkBlockedHint, inheritedBlocks, type Block, type LiveSession } from './live.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -47,8 +48,6 @@ export function FocusView({
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
-  const [forkAt, setForkAt] = useState<string | null>(null);
-  const [forkError, setForkError] = useState<string | null>(null);
   const [settings, changeSettings] = useDisplaySettings();
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
@@ -58,10 +57,33 @@ export function FocusView({
   const reason = live?.reason ?? null;
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
-  const forkable = !busy && lastSeq > 0 && agent?.capabilities.fork.state !== 'denied';
-  function startFork(seq: number) {
-    setForkError(null);
-    setForkAt(String(seq));
+  const turnRunning = status === 'running' && (live?.awaiting ?? false);
+  const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
+  const forkable = !busy && forkHint === null;
+  const origin = session.origin;
+  const forkSource = origin.kind === 'fork' ? canvas.sessions.find((candidate) => candidate.id === origin.fromSessionId) ?? null : null;
+  const sourceName = forkSource ? sessionName(canvas, forkSource) : '来源会话';
+  const [inherited, setInherited] = useState<readonly Block[]>([]);
+  useEffect(() => {
+    setInherited([]);
+    if (origin.kind !== 'fork') return;
+    let cancelled = false;
+    void api
+      .events(origin.fromSessionId)
+      .then((entries) => {
+        if (!cancelled) setInherited(inheritedBlocks(entries, origin.atSeq));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [session.id, origin.kind, origin.kind === 'fork' ? origin.fromSessionId : '', origin.kind === 'fork' ? origin.atSeq : 0]);
+
+  function fork() {
+    void run(async () => {
+      const created = await api.fork({ sessionId: session.id, agentId: session.agentId, model: session.model });
+      onOpenSession(created.id);
+    });
   }
 
   async function run(action: () => Promise<unknown>): Promise<boolean> {
@@ -89,7 +111,7 @@ export function FocusView({
           <p className="truncate text-body text-primary">{task?.title ?? session.taskId}</p>
           <p className="truncate font-mono text-meta text-tertiary">
             {agentLabel} · {session.model === '' ? '默认模型' : session.model}
-            {session.origin.kind === 'fork' ? ` · 分叉自 #${session.origin.atSeq}` : ''}
+            {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
           </p>
         </div>
         <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
@@ -105,12 +127,12 @@ export function FocusView({
             {(close) => (
               <>
                 <MenuItem
-                  title="从某一步分叉…"
-                  hint={forkable ? '按事件序号开一条新会话，原会话不动' : '这条会话还没有内容'}
+                  title="分叉"
+                  hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
                   disabled={!forkable}
                   onClick={() => {
                     close();
-                    startFork(lastSeq);
+                    fork();
                   }}
                 />
                 <MenuItem
@@ -128,30 +150,6 @@ export function FocusView({
         </span>
       </header>
       {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} /> : null}
-      {forkAt !== null ? (
-        <ForkDialog
-          lastSeq={lastSeq}
-          value={forkAt}
-          onChange={setForkAt}
-          busy={busy}
-          error={forkError}
-          onClose={() => setForkAt(null)}
-          onFork={async () => {
-            setBusy(true);
-            setForkError(null);
-            try {
-              const created = await api.fork({ sessionId: session.id, atSeq: Number(forkAt), agentId: session.agentId, model: session.model });
-              setForkAt(null);
-              onChanged();
-              onOpenSession(created.id);
-            } catch (failure) {
-              setForkError((failure as Error).message);
-            } finally {
-              setBusy(false);
-            }
-          }}
-        />
-      ) : null}
       {continuing ? (
         <ContinueDialog
           canvas={canvas}
@@ -172,6 +170,26 @@ export function FocusView({
           data-compact={settings.compact ? 'true' : undefined}
           className={`mx-auto flex max-w-[760px] flex-col ${settings.compact ? 'gap-2 px-3 py-3 text-[0.95em]' : 'gap-4 px-4 py-6'}`}
         >
+          {origin.kind === 'fork' && inherited.length > 0 ? (
+            <section aria-label="分叉前的对话" className="flex flex-col gap-4 opacity-60" data-testid="fork-inherited">
+              {inherited.map((block, index) => (
+                <ChatBlock key={index} block={block} agentLabel={agentLabel} sessionId={origin.fromSessionId} settings={settings} last={false} running={false} />
+              ))}
+            </section>
+          ) : null}
+          {origin.kind === 'fork' ? (
+            <div role="separator" aria-label="分叉点" className="flex items-center gap-3 text-meta text-tertiary" data-testid="fork-divider">
+              <span className="h-px flex-1 border-t border-dashed border-sage" />
+              <span className="shrink-0">
+                从「
+                <button className="text-sage underline-offset-2 hover:underline" onClick={() => onOpenSession(origin.fromSessionId)}>
+                  {sourceName}
+                </button>
+                」分叉 · {localTime(session.createdAt)}
+              </span>
+              <span className="h-px flex-1 border-t border-dashed border-sage" />
+            </div>
+          ) : null}
           {blocks.length === 0 ? (
             <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
           ) : (
@@ -184,7 +202,6 @@ export function FocusView({
                 settings={settings}
                 last={index === blocks.length - 1}
                 running={status === 'running' && (live?.awaiting ?? false)}
-                onFork={forkable ? startFork : null}
               />
             ))
           )}
@@ -219,11 +236,18 @@ export function FocusView({
             awaiting={live?.awaiting ?? false}
             onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
             capability={attachmentsCapability(agent?.capabilities)}
-            commands={sessionCommands(session)}
+            commands={sessionCommands(session, [], forkHint)}
             projectId={canvas.project.id}
           />
         </div>
       </div>
     </div>
   );
+}
+
+/** 会话在界面上的名字：任务标题 · agent。 */
+function sessionName(canvas: CanvasDto, session: SessionDto): string {
+  const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
+  const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
+  return `${task?.title ?? session.taskId} · ${agent?.label ?? session.agentId}`;
 }

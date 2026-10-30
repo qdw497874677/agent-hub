@@ -98,10 +98,8 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await expect(sessionNode(page)).toContainText('完成');
   await expect(sessionNode(page).getByRole('button', { name: '发送' })).toBeVisible({ timeout: 120_000 });
 
-  // 专注对话：进去看整屏，问与答同屏。
-  // 这里点「对话」而不是双击：卡片中段的输入框会把双击当成选词，
-  // 而双击卡片本体又依赖「两次点击落在同一个元素上」，在自动化的快速点击下不稳定。
-  await sessionNode(page).getByRole('button', { name: '对话' }).click();
+  // 点卡片上的「打开」进专注对话（单击卡片只选中）。
+  await sessionNode(page).getByRole('button', { name: '打开' }).click();
   // 收窄到对话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
   await expect(page.getByRole('log', { name: '对话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
   await expect(page.getByRole('button', { name: '返回' })).toBeVisible();
@@ -163,8 +161,10 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   // 专注对话里也有一个「← 返回」，所以按精确名收窄到顶栏那个
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
-  // 点卡片就进对话
-  await sessionNode(page).click();
+  // 单击卡片只选中，不进对话；双击才进
+  await sessionNode(page).locator('header').click();
+  await expect(composer).toHaveCount(0);
+  await sessionNode(page).locator('header').dblclick();
   await expect(composer).toBeVisible();
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();

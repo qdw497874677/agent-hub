@@ -118,7 +118,8 @@ export const workspaceChangesSchema = z.object({
 
 export const forkSessionRequest = z.object({
   sessionId: id,
-  atSeq: z.number().int().positive(),
+  /** 已忽略：服务端一律从来源的最新处分叉。留着只为老客户端不报错。 */
+  atSeq: z.number().int().positive().optional(),
   agentId: id,
   // 空字符串 = 用 agent 自己的默认模型（见 apps/web 的派生对话框）
   model: z.string()

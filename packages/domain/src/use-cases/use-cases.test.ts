@@ -135,6 +135,23 @@ test('分叉：继承来源会话的可调项，再用新模型覆盖', async ()
   assert.deepEqual(start.resume, { agentSessionRef: null, cursor: 1 });
 });
 
+test('分叉一律从最新处：客户端传的 atSeq 被忽略，血缘记 lastSeq', async () => {
+  const w = await world();
+  const source = await derived(w);
+  for (const delta of ['a', 'b', 'c']) await recordEvent(w.deps, { sessionId: source.id, event: { kind: 'text', delta } });
+  const lastSeq = (await w.deps.sessions.byId(source.id))!.lastSeq;
+  assert.ok(lastSeq >= 3);
+  const forked = await forkSessionUseCase(w.deps, { sessionId: source.id, atSeq: 1, agentId: 'fake', model: '' });
+  assert.ok(forked.ok);
+  assert.deepEqual(forked.value.origin, { kind: 'fork', fromSessionId: source.id, atSeq: lastSeq });
+  const start = w.dispatched.at(-1);
+  assert.ok(start?.kind === 'start_session');
+  assert.equal(start.resume?.cursor, lastSeq);
+  const omitted = await forkSessionUseCase(w.deps, { sessionId: source.id, agentId: 'fake', model: '' });
+  assert.ok(omitted.ok);
+  assert.equal(omitted.value.origin.kind === 'fork' && omitted.value.origin.atSeq, lastSeq);
+});
+
 test('发消息：会话没人托管时，先记下提问、再 resume、最后发 prompt', async () => {
   const w = await world();
   const session = await derived(w);

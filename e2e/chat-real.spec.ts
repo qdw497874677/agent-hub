@@ -32,7 +32,7 @@ for (const agent of AGENTS) {
 
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`/#/p/${project.id}/canvas`);
-    await page.locator('.react-flow__node-session').locator('header, p').first().click();
+    await page.locator('.react-flow__node-session').getByRole('button', { name: '打开' }).click();
     const log = page.getByRole('log', { name: '对话记录' });
     await expect(log).toBeVisible();
     const composer = page.getByLabel('发送消息');

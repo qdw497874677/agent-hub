@@ -29,7 +29,6 @@ export type LayoutPatch = SaveLayoutRequest;
 interface Props {
   readonly canvas: CanvasDto;
   readonly live: LiveMap;
-  readonly onSelect: (sessionId: string) => void;
   readonly onDerive: (taskId: string) => void;
   /** 打开专注对话：一条会话，整屏看。 */
   readonly onOpen: (sessionId: string) => void;
@@ -76,7 +75,6 @@ function fitOnOpen(
 export function CanvasView({
   canvas,
   live,
-  onSelect,
   onDerive,
   onOpen,
   onLayoutChange,
@@ -342,8 +340,9 @@ export function CanvasView({
           if (node.type !== 'session') return;
           // 卡片里的输入框、按钮、选择器、链接各有各的事；点它们不算「打开这条会话」。
           if ((event.target as HTMLElement).closest('input, textarea, button, select, a, [role="menu"], [role="listbox"], .card-resize-handle')) return;
+          // 单击只选中（边框高亮、拉进视野），不进会话：进会话要双击或点卡片上的「打开」。
           revealing.current = { id: node.id, until: Date.now() + 800 };
-          onSelect(node.id);
+          setSelectedId(node.id);
           requestAnimationFrame(() => reveal(node.id));
         }}
         onNodesChange={onNodesChange}
