@@ -5,7 +5,7 @@ import { WorkerChip } from './workers.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
-import type { LiveSession } from './live.ts';
+import { cardBlocks, waitingForReply, type LiveSession } from './live.ts';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
@@ -71,8 +71,19 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
 }
 
 function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
-  // 卡片只放 agent 说的话。用户自己的提问在专注对话里看，卡片上占地方。
-  if (block.kind === 'prompt' || block.kind === 'thinking') return null;
+  if (block.kind === 'thinking') return null;
+  if (block.kind === 'prompt') {
+    // 和对话页一样：用户的话靠右的气泡，卡片上收紧一点。附件只列名字。
+    const names = block.attachments.map((item) => (item.kind === 'mention' ? `@${item.path}` : item.name));
+    return (
+      <div className="flex flex-col items-end gap-0.5" data-testid="card-msg-user">
+        {block.text !== '' ? (
+          <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary">{block.text}</p>
+        ) : null}
+        {names.length > 0 ? <p className="max-w-[85%] truncate font-mono text-meta text-tertiary">{names.join(' · ')}</p> : null}
+      </div>
+    );
+  }
   if (block.kind === 'error') {
     return (
       <p role="alert" className="whitespace-pre-wrap border-l-2 border-rust bg-rust/10 px-2 py-1 text-meta text-rust">
@@ -150,6 +161,10 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
       <header className="mb-2 flex items-center justify-between gap-2">
         <div className="flex items-baseline gap-2 overflow-hidden">
+          {/* 拖动把手：卡片里的对话区只管滚动，移动卡片按住顶栏（或这个把手）拖 */}
+          <span aria-hidden title="按住顶栏拖动卡片" data-testid="card-drag-handle" className="shrink-0 cursor-grab select-none text-meta text-tertiary">
+            ⠿
+          </span>
           <span className="shrink-0 text-head text-primary">{agentLabel}</span>
           {/* 没有可调项清单（老会话还没人报过）时退回显示模型名 */}
           {session.optionSpec.length === 0 ? (
@@ -226,13 +241,13 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
               : '尚无输出'}
           </p>
         ) : (
-          blocks.map((block, index) => <BlockView key={index} block={block} />)
+          cardBlocks(blocks).map((block, index) => <BlockView key={index} block={block} />)
         )}
       </div>
 
       <CardComposer
         session={{ ...session, status }}
-        awaiting={live?.awaiting ?? false}
+        awaiting={waitingForReply(live, status)}
         draft={draft}
         onDraftChange={onDraftChange}
         onSend={(text) => void run(() => onSend(text))}

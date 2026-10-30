@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBlocks, applyFrame, catchUp, forkBlockedHint, inheritedBlocks, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
+import { applyBlocks, applyFrame, cardBlocks, waitingForReply, catchUp, forkBlockedHint, inheritedBlocks, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
@@ -144,4 +144,23 @@ test('「分叉」：没内容、这一轮在跑、agent 不支持时点不了�
   assert.match(forkBlockedHint({ lastSeq: 0, turnRunning: false, denied: false }) ?? '', /还没有内容/);
   assert.match(forkBlockedHint({ lastSeq: 3, turnRunning: true, denied: false }) ?? '', /还在进行/);
   assert.match(forkBlockedHint({ lastSeq: 3, turnRunning: false, denied: true }) ?? '', /不支持/);
+});
+
+test('画布卡片：用户的话和 agent 的回复都显示，只省掉思考', () => {
+  const blocks = [
+    { kind: 'prompt', text: '你好', attachments: [], seq: 1 },
+    { kind: 'thinking', text: '想', seq: 2 },
+    { kind: 'text', text: '在', seq: 3 }
+  ] as unknown as Parameters<typeof cardBlocks>[0];
+  assert.deepEqual(cardBlocks(blocks).map((block) => block.kind), ['prompt', 'text']);
+});
+
+test('等回复：会话已经完成 / 停止 / 中断时不再挂「■ 停下」，失败后再问仍算在等', () => {
+  assert.equal(waitingForReply({ awaiting: true }, 'running'), true);
+  assert.equal(waitingForReply({ awaiting: true }, 'done'), false);
+  assert.equal(waitingForReply({ awaiting: true }, 'stopped'), false);
+  assert.equal(waitingForReply({ awaiting: true }, 'interrupted'), false);
+  assert.equal(waitingForReply({ awaiting: true }, 'failed'), true);
+  assert.equal(waitingForReply({ awaiting: false }, 'running'), false);
+  assert.equal(waitingForReply(null, 'running'), false);
 });
