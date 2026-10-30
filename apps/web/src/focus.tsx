@@ -10,7 +10,7 @@ import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
 import { sessionCommands } from './commands.ts';
-import { forkBlockedHint, inheritedBlocks, type Block, type LiveSession } from './live.ts';
+import { forkBlockedHint, inheritedBlocks, waitingForReply, type Block, type LiveSession } from './live.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -57,7 +57,7 @@ export function FocusView({
   const reason = live?.reason ?? null;
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
-  const turnRunning = status === 'running' && (live?.awaiting ?? false);
+  const turnRunning = waitingForReply(live, status);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   const forkable = !busy && forkHint === null;
   const origin = session.origin;
@@ -201,14 +201,14 @@ export function FocusView({
                 sessionId={session.id}
                 settings={settings}
                 last={index === blocks.length - 1}
-                running={status === 'running' && (live?.awaiting ?? false)}
+                running={turnRunning}
               />
             ))
           )}
           {reason && blocks[blocks.length - 1]?.kind !== 'error' ? (
             <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
           ) : null}
-          {status === 'running' && (live?.awaiting ?? false) ? (
+          {turnRunning ? (
             <p className="text-meta text-tertiary" aria-live="polite">
               {agentLabel} 正在回复…
             </p>
@@ -233,7 +233,7 @@ export function FocusView({
             onInterrupt={() => void run(() => api.interrupt(session.id))}
             busy={busy}
             error={error}
-            awaiting={live?.awaiting ?? false}
+            awaiting={turnRunning}
             onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
             capability={attachmentsCapability(agent?.capabilities)}
             commands={sessionCommands(session, [], forkHint)}

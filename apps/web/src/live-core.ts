@@ -283,3 +283,20 @@ export function forkBlockedHint({ lastSeq, turnRunning, denied }: { lastSeq: num
   if (turnRunning) return '这一轮还在进行，等它结束再分叉';
   return null;
 }
+
+/**
+ * 画布卡片上显示哪些块：和对话页同一套块（用户的话也在），只省掉思考过程——卡片太窄，思考在对话页看。
+ */
+export function cardBlocks(blocks: readonly Block[]): readonly Block[] {
+  return blocks.filter((block) => block.kind !== 'thinking');
+}
+
+/**
+ * 「这一轮还在等回复吗」——输入框是「■ 停下」还是「发送」、能不能分叉，对话页和画布卡片都用这一个判断。
+ * awaiting 是逐帧推出来的，漏了 ended（断线、ended 之后又补了一条事件）就会一直挂着；
+ * 会话状态已经是完成 / 停止 / 中断时以状态为准。failed 不算：失败过的会话再问一句，库里状态可能还是 failed，但确实在回。
+ */
+export function waitingForReply(live: Pick<LiveSession, 'awaiting'> | null | undefined, status: SessionDto['status']): boolean {
+  if (!live?.awaiting) return false;
+  return status !== 'done' && status !== 'stopped' && status !== 'interrupted';
+}

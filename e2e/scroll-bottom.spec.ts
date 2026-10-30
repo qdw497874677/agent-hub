@@ -116,6 +116,13 @@ for (const width of [1280, 390]) {
     while (n < 40 && (await log.evaluate((node) => node.scrollHeight < node.clientHeight * 2.5))) await say(++n);
     await expect.poll(() => gap(log), { message: '默认停在最后' }).toBeLessThan(4);
     await log.scrollIntoViewIfNeeded();
+    // 用户自己说的话也在卡片里（靠右的气泡），不是只有 agent 的输出
+    const mine = log.getByTestId('card-msg-user').last();
+    await expect(mine).toContainText(`第 ${n} 句`);
+    await expect(mine).toBeVisible();
+    const [bubble, area] = [(await mine.locator('p').first().boundingBox())!, (await log.boundingBox())!];
+    expect(bubble.x + bubble.width, '用户气泡靠右').toBeGreaterThan(area.x + area.width - 24);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-user-${width}.png` });
 
     // 滚轮：滚的是对话
     const before = await viewportTransform(page);
