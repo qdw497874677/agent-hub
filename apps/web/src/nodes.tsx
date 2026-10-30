@@ -8,6 +8,7 @@ import { OptionControls } from './options.tsx';
 import type { LiveSession } from './live.ts';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
+import { useStickToBottom } from './use-stick-to-bottom.ts';
 import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
 
 /** 两种卡片共有：拖过的尺寸（没有 = 宽度默认、高度随内容），以及拖完后的回调。 */
@@ -133,6 +134,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const failureReason = failed ? (live?.reason ?? null) : null;
   const blocks = live?.blocks ?? [];
   const dimmed = status === 'stopped';
+  const scroller = useStickToBottom<HTMLDivElement>(session.id);
 
   return (
     <div
@@ -205,7 +207,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </div>
       )}
 
-      <div className={`min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1 ${size ? '' : 'max-h-[320px]'}`}>
+      <div ref={scroller} className={`min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1 ${size ? '' : 'max-h-[320px]'}`}>
         {failureReason ? (
           <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
         ) : null}

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBlocks, applyFrame, catchUp, withFullHistory, type LiveMap } from './live-core.ts';
+import { applyBlocks, applyFrame, catchUp, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
@@ -88,4 +88,43 @@ test('打开对话换上整段历史：投影被思考 delta 挤满时正文也�
   assert.equal(map['s1']?.lastSeq, 33);
   const newer = { s1: { blocks: [], status: 'running', lastSeq: 50, reason: null, awaiting: true } } as unknown as LiveMap;
   assert.equal(withFullHistory(newer, session, entries), newer);
+});
+
+test('运行失败只来了诊断和状态帧（没有 ended）：不再等回复，输入框回到「发送」', () => {
+  let map: LiveMap = {};
+  map = applyFrame(map, { sessionId: 's', seq: 1, event: { kind: 'prompt', text: '你好' }, status: 'running' } as never);
+  assert.equal(map['s']?.awaiting, true);
+  map = applyFrame(map, { sessionId: 's', seq: 2, event: { kind: 'diagnostic', level: 'error', text: '不在允许的目录里' }, status: 'running' } as never);
+  assert.equal(map['s']?.awaiting, true);
+  map = applyFrame(map, { sessionId: 's', seq: 2, event: null, status: 'failed' });
+  assert.equal(map['s']?.awaiting, false);
+  assert.equal(map['s']?.status, 'failed');
+});
+
+test('ended(failed) 之后又补来一条诊断（进程退出）：仍不算在等回复，刷新后也一样', () => {
+  let map: LiveMap = {};
+  map = applyFrame(map, { sessionId: 's', seq: 1, event: { kind: 'prompt', text: '你好' }, status: 'running' } as never);
+  map = applyFrame(map, { sessionId: 's', seq: 2, event: { kind: 'ended', outcome: 'failed', reason: 'Pi 退出码 -2' }, status: 'failed' } as never);
+  map = applyFrame(map, { sessionId: 's', seq: 3, event: { kind: 'diagnostic', level: 'error', text: 'Pi 进程已退出' }, status: 'failed' } as never);
+  assert.equal(map['s']?.awaiting, false, '会话已失败，最后一条是诊断也不该再显示「中断」');
+
+  const entries = [
+    { seq: 1, at: 1, event: { kind: 'prompt', text: '你好' } },
+    { seq: 2, at: 2, event: { kind: 'ended', outcome: 'failed', reason: 'Pi 退出码 -2' } },
+    { seq: 3, at: 3, event: { kind: 'diagnostic', level: 'error', text: 'Pi 进程已退出' } }
+  ] as never;
+  const session = { id: 's', status: 'failed', lastSeq: 3 } as never;
+  assert.equal(resolveLive(session, entries, undefined)?.awaiting, false, '刷新页面后从历史播种');
+});
+
+test('失败过的会话再问一句：库里状态仍是 failed，但 agent 在回，输入框要显示「中断」', () => {
+  let map: LiveMap = {};
+  map = applyFrame(map, { sessionId: 's', seq: 5, event: { kind: 'ended', outcome: 'failed', reason: '上一轮失败' }, status: 'failed' } as never);
+  map = applyFrame(map, { sessionId: 's', seq: 6, event: { kind: 'prompt', text: '再试一次' }, status: 'failed' } as never);
+  assert.equal(map['s']?.awaiting, true);
+  map = applyFrame(map, { sessionId: 's', seq: 6, event: null, status: 'running' });
+  map = applyFrame(map, { sessionId: 's', seq: 7, event: { kind: 'diagnostic', level: 'info', text: '重新拉起 agent' }, status: 'running' } as never);
+  assert.equal(map['s']?.awaiting, true, '诊断不结束这一轮');
+  map = applyFrame(map, { sessionId: 's', seq: 8, event: { kind: 'ended', outcome: 'done' }, status: 'done' } as never);
+  assert.equal(map['s']?.awaiting, false);
 });
