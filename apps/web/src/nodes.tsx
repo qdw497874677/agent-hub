@@ -342,3 +342,40 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
     </div>
   );
 }
+
+/** 一台 worker 一个框：框住这个项目里跑在它上面的会话。只有标题栏能拖（拖框 = 框里的卡一起走），框身不挡平移。 */
+export type FrameNode = Node<
+  {
+    readonly label: string;
+    readonly online: boolean | null;
+    readonly count: number;
+  },
+  'frame'
+>;
+
+export function WorkerFrame({ data }: NodeProps<FrameNode>) {
+  const state = data.online === null ? '状态未知' : data.online ? '在线' : '离线';
+  return (
+    <div
+      data-testid="worker-frame"
+      className="pointer-events-none h-full w-full rounded-lg border border-dashed border-strong bg-card/20"
+    >
+      <div
+        data-testid="worker-frame-handle"
+        title="按住拖动整个框"
+        className="frame-handle pointer-events-auto flex h-9 cursor-grab select-none items-center gap-2 rounded-t-lg border-b border-dashed border-hair px-3"
+      >
+        <span aria-hidden className="text-meta text-tertiary">⠿</span>
+        <span className="truncate text-head text-primary">{data.label}</span>
+        <span
+          data-testid="worker-frame-state"
+          className={`flex shrink-0 items-center gap-1 text-meta ${data.online ? 'text-sage' : 'text-tertiary'}`}
+        >
+          <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${data.online ? 'bg-sage' : 'bg-tertiary'}`} />
+          {state}
+        </span>
+        <span className="ml-auto shrink-0 text-meta text-tertiary">{data.count} 个会话</span>
+      </div>
+    </div>
+  );
+}
