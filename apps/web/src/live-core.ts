@@ -141,6 +141,31 @@ export function reasonFromEntries(entries: readonly JournalEntryDto[]): string |
  * 一条会话此刻该显示什么：历史打底，实时覆盖。
  * 返回 undefined 表示「这个会话还什么都没有」，卡片据此显示空状态。
  */
+/**
+ * 实时帧之后还在不在「等回复」（决定输入框是「中断」还是「发送」）。
+ *
+ * 只看「这一帧是不是 ended」不够：ended(failed) 之后 worker 常会再补一条「进程已退出」的诊断，
+ * 派生失败、worker 拒绝这类失败也可能只留下诊断和一个状态帧——输入框就一直挂着「中断」。
+ * 所以：诊断不开启也不结束一轮；只有状态的帧报了终态（失败、停止、完成、中断）就收掉这一轮。
+ * 事件帧不看状态：失败过的会话再问一句，库里状态还是 failed，但 agent 确实在回。
+ */
+export function awaitingAfter(previous: boolean, event: SessionEventDto | null, status: SessionDto['status']): boolean {
+  if (event === null) return status === 'running' && previous;
+  if (event.kind === 'ended') return false;
+  if (event.kind === 'diagnostic') return previous;
+  return true;
+}
+
+/**
+ * 从历史播种（刷新页面、首次打开）：同样跳过诊断，并以会话状态兜底——
+ * 已经失败 / 中断的会话没有实时帧再来纠正，不能凭最后一条事件挂着「中断」。
+ */
+export function awaitingFromHistory(entries: readonly JournalEntryDto[], status: SessionDto['status']): boolean {
+  if (status !== 'running') return false;
+  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic');
+  return last !== undefined && last.event.kind !== 'ended';
+}
+
 export function resolveLive(
   session: SessionDto,
   preview: readonly JournalEntryDto[],
@@ -150,13 +175,12 @@ export function resolveLive(
   if (current) return current;
   const history = blocksFromEntries(preview);
   if (history.length === 0 && preview.length === 0) return null;
-  const last = preview[preview.length - 1];
   return {
     blocks: history,
     status: session.status,
     lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
     reason: reasonFromEntries(preview),
-    awaiting: last !== undefined && last.event.kind !== 'ended'
+    awaiting: awaitingFromHistory(preview, session.status)
   };
 }
 
@@ -178,7 +202,7 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
   const blocks = previous?.blocks ?? [];
   const reason =
     frame.event?.kind === 'ended' && frame.event.reason !== undefined ? frame.event.reason : (previous?.reason ?? null);
-  const awaiting = frame.event === null ? (previous?.awaiting ?? false) : frame.event.kind !== 'ended';
+  const awaiting = awaitingAfter(previous?.awaiting ?? false, frame.event, frame.status);
   const next: LiveSession = {
     blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
     status: frame.status,
@@ -232,7 +256,6 @@ export function withFullHistory(current: LiveMap, session: SessionDto, entries: 
   const previous = current[session.id];
   const top = entries.reduce((highest, entry) => Math.max(highest, entry.seq), 0);
   if (previous && previous.lastSeq > top) return current;
-  const last = entries[entries.length - 1];
   return {
     ...current,
     [session.id]: {
@@ -240,7 +263,7 @@ export function withFullHistory(current: LiveMap, session: SessionDto, entries: 
       status: previous?.status ?? session.status,
       lastSeq: Math.max(top, previous?.lastSeq ?? 0),
       reason: reasonFromEntries(entries),
-      awaiting: previous?.awaiting ?? (last !== undefined && last.event.kind !== 'ended')
+      awaiting: previous?.awaiting ?? awaitingFromHistory(entries, session.status)
     }
   };
 }
