@@ -1,3 +1,4 @@
+import { AuthorTag } from './author.tsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { attachmentUrl } from './api.ts';
 import { useAccount } from './auth.tsx';
@@ -314,7 +315,8 @@ export function ChatBlock({
   agentLabel,
   settings,
   last,
-  running
+  running,
+  showAuthor = false
 }: {
   block: Block;
   sessionId: string;
@@ -323,12 +325,15 @@ export function ChatBlock({
   /** 是不是最后一块：正在流的思考写「正在思考…」。 */
   last: boolean;
   running: boolean;
+  /** 不止一个人说过话时，用户气泡旁标出是谁。 */
+  showAuthor?: boolean;
 }) {
   if (block.kind === 'prompt') {
     const images = block.attachments.filter((item) => item.kind === 'image');
     const others = block.attachments.filter((item) => item.kind !== 'image');
     return (
       <div className="flex flex-col items-end gap-1.5" data-testid="msg-user">
+        {showAuthor ? <AuthorTag author={block.author} /> : null}
         {images.length > 0 ? (
           <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
             {images.map((item) => (

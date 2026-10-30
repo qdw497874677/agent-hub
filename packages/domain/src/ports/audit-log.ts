@@ -12,6 +12,8 @@ export interface AuditFilter {
   readonly until?: number;
   /** 只看这个团队；团队主人查询时服务端强制填自己的团队。 */
   readonly teamId?: string;
+  /** 被操作的对象，精确匹配（例如一条会话的 id）。 */
+  readonly target?: string;
   readonly limit: number;
 }
 
@@ -30,6 +32,7 @@ export function matchesAudit(entry: AuditEntry, filter: AuditFilter): boolean {
   if (filter.ip && !(entry.ip ?? '').startsWith(filter.ip)) return false;
   if (filter.since !== undefined && entry.at < filter.since) return false;
   if (filter.until !== undefined && entry.at > filter.until) return false;
+  if (filter.target !== undefined && entry.target !== filter.target) return false;
   if (filter.teamId !== undefined && (entry.teamId ?? null) !== filter.teamId) return false;
   return true;
 }

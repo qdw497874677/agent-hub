@@ -10,7 +10,7 @@ import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
 import { sessionCommands } from './commands.ts';
-import { forkBlockedHint, inheritedBlocks, waitingForReply, type Block, type LiveSession } from './live.ts';
+import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -64,6 +64,7 @@ export function FocusView({
   const forkSource = origin.kind === 'fork' ? canvas.sessions.find((candidate) => candidate.id === origin.fromSessionId) ?? null : null;
   const sourceName = forkSource ? sessionName(canvas, forkSource) : '来源会话';
   const [inherited, setInherited] = useState<readonly Block[]>([]);
+  const showAuthor = multipleAuthors([...inherited, ...blocks]);
   useEffect(() => {
     setInherited([]);
     if (origin.kind !== 'fork') return;
@@ -173,7 +174,7 @@ export function FocusView({
           {origin.kind === 'fork' && inherited.length > 0 ? (
             <section aria-label="分叉前的对话" className="flex flex-col gap-4 opacity-60" data-testid="fork-inherited">
               {inherited.map((block, index) => (
-                <ChatBlock key={index} block={block} agentLabel={agentLabel} sessionId={origin.fromSessionId} settings={settings} last={false} running={false} />
+                <ChatBlock key={index} block={block} agentLabel={agentLabel} sessionId={origin.fromSessionId} settings={settings} last={false} running={false} showAuthor={showAuthor} />
               ))}
             </section>
           ) : null}
@@ -202,6 +203,7 @@ export function FocusView({
                 settings={settings}
                 last={index === blocks.length - 1}
                 running={turnRunning}
+                showAuthor={showAuthor}
               />
             ))
           )}

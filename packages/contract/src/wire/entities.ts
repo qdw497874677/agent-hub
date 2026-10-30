@@ -238,7 +238,13 @@ export const promptPartSchema = z.discriminatedUnion('kind', [
 
 /** 归一化事件过网时的形状：与 domain 的 SessionEvent 一一对应。 */
 export const sessionEventSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('prompt'), text: z.string(), attachments: z.array(storedAttachmentSchema).optional() }),
+  z.object({
+    kind: z.literal('prompt'),
+    text: z.string(),
+    attachments: z.array(storedAttachmentSchema).optional(),
+    /** 谁说的（登录态下才有；老事件没有 = 不知道）。name 读出时按当前账号刷新，删掉的用户显示匿名名。 */
+    author: z.object({ id: z.string(), name: z.string() }).optional()
+  }),
   z.object({ kind: z.literal('text'), delta: z.string() }),
   z.object({ kind: z.literal('thinking'), delta: z.string() }),
   z.object({ kind: z.literal('tool_call'), name: z.string(), input: z.string() }),

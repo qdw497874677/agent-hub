@@ -26,6 +26,8 @@ export interface PromptCommand {
   readonly attachments?: readonly AttachmentInput[];
   /** false = 不垫任务背景（调用方已经自己写了交接简报，如换机继续）。 */
   readonly briefing?: boolean;
+  /** 发这句话的人（登录态下才有）。 */
+  readonly author?: { readonly id: string; readonly name: string };
 }
 
 /**
@@ -87,7 +89,12 @@ export async function promptSessionUseCase(
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——
   // 专注对话里会是一条没有提问的回答。
   const logged = await deps.queue.run(sessionId, () =>
-    recordEvent(deps, { sessionId, event: { kind: 'prompt', text: command.text, ...(stored.length > 0 ? { attachments: stored } : {}) } })
+    recordEvent(deps, { sessionId, event: {
+        kind: 'prompt',
+        text: command.text,
+        ...(stored.length > 0 ? { attachments: stored } : {}),
+        ...(command.author ? { author: { id: command.author.id, name: command.author.name } } : {})
+      } })
   );
   if (!logged.ok) return logged;
 

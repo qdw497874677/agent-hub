@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBlocks, applyFrame, cardBlocks, waitingForReply, catchUp, forkBlockedHint, inheritedBlocks, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
+import { applyBlocks, multipleAuthors, applyFrame, cardBlocks, waitingForReply, catchUp, forkBlockedHint, inheritedBlocks, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
@@ -163,4 +163,17 @@ test('等回复：会话已经完成 / 停止 / 中断时不再挂「■ 停下�
   assert.equal(waitingForReply({ awaiting: true }, 'failed'), true);
   assert.equal(waitingForReply({ awaiting: false }, 'running'), false);
   assert.equal(waitingForReply(null, 'running'), false);
+});
+
+test('prompt 带上作者；只有一个人说过话时不显示作者，老消息（不知道是谁）不算人头', () => {
+  const a = { id: 'u1', name: 'David' };
+  const b = { id: 'u2', name: 'Lin' };
+  let blocks = applyBlocks([], { kind: 'prompt', text: '老消息' }, 1);
+  blocks = applyBlocks(blocks, { kind: 'prompt', text: 'hi', author: a }, 2);
+  assert.deepEqual(blocks[1], { kind: 'prompt', text: 'hi', attachments: [], author: a, seq: 2 });
+  assert.equal(multipleAuthors(blocks), false);
+  blocks = applyBlocks(blocks, { kind: 'prompt', text: 'again', author: a }, 3);
+  assert.equal(multipleAuthors(blocks), false);
+  blocks = applyBlocks(blocks, { kind: 'prompt', text: 'me too', author: b }, 4);
+  assert.equal(multipleAuthors(blocks), true);
 });
