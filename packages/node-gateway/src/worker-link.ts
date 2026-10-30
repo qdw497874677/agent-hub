@@ -14,6 +14,7 @@ import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
 import type { WorkerAssets } from './worker-assets.ts';
 import type { UpdateReport } from './updater.ts';
+import type { RuntimeJobReport, RuntimeManager } from './runtime-jobs.ts';
 import { createMcpEndpoint } from './mcp-endpoint.ts';
 import { sameReadiness, type HarnessRegistry } from './harness-registry.ts';
 import { serveWorkerFiles } from './worker-fs-rpc.ts';
@@ -34,6 +35,8 @@ export interface WorkerLinkOptions {
    * 结果叠在 agent 清单上报给 hub。不给 = 不探测，hub 一律当 ready（和老 worker 一样）。
    */
   readonly readiness?: HarnessRegistry;
+  /** 运行时安装（ADR 0010）：每个 agent 的来源随清单上报，hub 的 runtime_job 指令交给它。不给 = 不支持在线安装。 */
+  readonly provisioner?: RuntimeManager;
   /** 定时重新探测的间隔。默认 5 分钟；0 = 不定时。 */
   readonly probeIntervalMs?: number;
   readonly onLog?: (message: string) => void;
@@ -93,7 +96,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' | 'probe' }
+  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -131,8 +134,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     const probed = options.readiness?.latest() ?? new Map();
     return options.runtimes.map((runtime) => {
       const dto = agentToDto(runtime.descriptor);
-      const readiness = probed.get(runtime.descriptor.id)?.readiness;
-      return readiness ? { ...dto, readiness } : dto;
+      const result = probed.get(runtime.descriptor.id);
+      const readiness = result?.readiness;
+      const provision = options.provisioner?.provisions().get(runtime.descriptor.id);
+      // 启动时没装、后来在线装上的：启动时问不到模型，用探测拿到的那份
+      const models = dto.models.length === 0 && result && result.models.length > 0 ? { models: [...result.models], defaultModel: result.defaultModel } : {};
+      return { ...dto, ...models, ...(readiness ? { readiness } : {}), ...(provision ? { provision } : {}) };
     });
   };
   /** 跑一次探测；`always` 时无论变没变都报（「重新检测」要让界面看到刷新）。 */
@@ -316,6 +323,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       else if (command.kind === 'update') void update(command.commit);
       else if (command.kind === 'welcome') flush(current);
       else if (command.kind === 'probe') void probe(true);
+      else if (command.kind === 'runtime_job') void runtimeJob(command);
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
       else void handle(command);
     });
@@ -334,6 +342,22 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       report({ state: 'failed', message: `更新出错：${message(error)}`, logTail: '' });
     } finally {
       updating = false;
+    }
+  }
+
+  async function runtimeJob(command: Extract<ServerToWorker, { kind: 'runtime_job' }>): Promise<void> {
+    const report = (status: RuntimeJobReport): void => send({ type: 'runtime_job_status', ...status });
+    if (!options.provisioner) return report({ jobId: command.jobId, state: 'refused', message: '这台 Worker 不支持在线安装', lines: [] });
+    options.onLog?.(`运行时任务：${command.action} ${command.agentId} ${command.version ?? ''}`);
+    try {
+      await options.provisioner.run(command, (status) => {
+        if (status.state !== 'running') options.onLog?.(`运行时任务 ${command.agentId}：${status.state} ${status.message}`);
+        report(status);
+        // 装好 / 卸掉：立刻重新探测，界面上的「未安装」跟着变
+        if (status.state === 'succeeded') void probe(true);
+      });
+    } catch (error) {
+      report({ jobId: command.jobId, state: 'failed', message: `安装出错：${message(error)}`, lines: [] });
     }
   }
 

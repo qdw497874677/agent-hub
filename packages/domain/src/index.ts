@@ -16,6 +16,7 @@ export * from './canvas.ts';
 export * from './worker.ts';
 export * from './directories.ts';
 export * from './workspace.ts';
+export * from './runtime-install.ts';
 
 export type { TaskRepository } from './ports/task-repository.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
@@ -73,6 +74,8 @@ export * from './use-cases/account-email.ts';
 export * from './enrollment.ts';
 export type { EnrollmentRepository } from './ports/enrollment-repository.ts';
 export * from './use-cases/enrollment.ts';
+export * from './use-cases/runtime-install.ts';
+export type { HarnessInstaller, InstallRun, InstalledEntry } from './ports/harness-installer.ts';
 
 export * from './tool.ts';
 export type { ToolDescriptor, ToolProvider, ToolContext, JsonSchema } from './ports/tool-provider.ts';

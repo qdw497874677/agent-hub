@@ -36,6 +36,7 @@ import type {
 } from '../index.ts';
 import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
 import type { GitStatus, WorkspaceGit } from '../index.ts';
+import type { RuntimeJob } from '../runtime-install.ts';
 
 /**
  * 用例测试与 HTTP 合同测试共用的内存假件。
@@ -510,6 +511,7 @@ export function inMemoryAdmin(now: () => number = () => 1_000) {
   const workerList: WorkerStatus[] = [];
   const disconnected: string[] = [];
   const updates: { id: string; commit: string }[] = [];
+  const runtimeJobs: { id: string; job: RuntimeJob }[] = [];
   const hubBuild: BuildInfo = { version: '0.0.0', commit: 'a'.repeat(40), protocol: 1 };
   const sessionList: Session[] = [];
   const deps: AdminDeps = {
@@ -533,11 +535,16 @@ export function inMemoryAdmin(now: () => number = () => 1_000) {
         const worker = workerList.find((w) => w.workerId === id && w.state === 'online');
         if (worker) updates.push({ id, commit });
         return worker !== undefined;
+      },
+      runtimeJob: async (id, job) => {
+        const worker = workerList.find((w) => w.workerId === id && w.state === 'online');
+        if (worker) runtimeJobs.push({ id, job });
+        return worker !== undefined;
       }
     },
     sessions: { listAll: async () => sessionList }
   };
-  return { accounts, deps, entries, workerList, disconnected, updates, sessionList };
+  return { accounts, deps, entries, workerList, disconnected, updates, runtimeJobs, sessionList };
 }
 
 export function fakeToolGrants(): import('../ports/tool-grant-repository.ts').ToolGrantRepository & {
