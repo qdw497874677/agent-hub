@@ -90,7 +90,9 @@ export async function forwardProvider(
   Object.assign(headers, authHeaders(upstream.protocol, upstream.apiKey));
   const abort = new AbortController();
   const total = setTimeout(() => abort.abort(new Error('总时长超限')), limits.totalTimeoutMs);
+  total.unref?.();
   const headerTimer = setTimeout(() => abort.abort(new Error('上游响应超时')), limits.headersTimeoutMs);
+  headerTimer.unref?.();
   const bytesIn = request.body.byteLength;
   let done = false;
   const finish = (status: number, bytesOut: number, ok: boolean) => {

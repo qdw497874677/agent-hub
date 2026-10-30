@@ -565,7 +565,7 @@ export function AccountMenu() {
       {devices && <DevicesDialog onClose={() => setDevices(false)} />}
       {team && <TeamDialog onClose={() => setTeam(false)} />}
       {settings && <SettingsDialog onClose={() => setSettings(false)} />}
-      {providers && <ProvidersDialog onClose={() => setProviders(false)} />}
+      {providers && <ProvidersDialog me={account} onClose={() => setProviders(false)} />}
     </div>
   );
 }

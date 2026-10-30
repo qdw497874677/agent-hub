@@ -1,8 +1,8 @@
+import type { AccountDto } from './api.ts';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { providersApi, type ProviderDto, type ProviderInputDto } from './api.ts';
-import { useAccount } from './auth.tsx';
 import { useWorkers } from './workers.tsx';
 
 /**
@@ -29,9 +29,8 @@ function errorText(error: unknown): string | null {
   return error ? (error instanceof Error ? error.message : String(error)) : null;
 }
 
-export function ProvidersDialog({ onClose }: { onClose: () => void }) {
+export function ProvidersDialog({ onClose, me }: { onClose: () => void; me: AccountDto | null }) {
   const queryClient = useQueryClient();
-  const me = useAccount();
   const list = useQuery({ queryKey: ['providers'], queryFn: providersApi.list });
   const refresh = () => Promise.all([queryClient.invalidateQueries({ queryKey: ['providers'] }), queryClient.invalidateQueries({ queryKey: ['hub-models'] })]);
   const [editing, setEditing] = useState<ProviderDto | 'new' | null>(null);

@@ -117,7 +117,10 @@ export function createProviderRelay(options: { readonly limits?: ProxyLimits; re
       const current = server;
       server = null;
       listening = null;
-      if (current) await new Promise<void>((resolve) => current.close(() => resolve()));
+      if (current) {
+        current.closeAllConnections();
+        await new Promise<void>((resolve) => current.close(() => resolve()));
+      }
     },
     address: () => base
   };
