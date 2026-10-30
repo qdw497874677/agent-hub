@@ -8,3 +8,4 @@ export { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
 export { acpReadiness } from './readiness.ts';
 export { execFailureReason, execProbe } from './exec-probe.ts';
 export type { ExecProbe } from './exec-probe.ts';
+export * from './installer.ts';

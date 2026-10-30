@@ -3,10 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createPiRuntime, discoverPiModels, piReadiness } from '@agent-hub/adapter-pi';
-import { ACP_AGENT_DEFAULTS, acpDescriptor, acpReadiness, createAcpRuntime, opencodeLaunch, discoverAcpModels, type AcpAgentConfig } from '@agent-hub/adapter-acp';
-import { createGrokRuntime, discoverGrokModels, grokReadiness } from '@agent-hub/adapter-grok';
-import { clearBootMarker, connectWorkerLink, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { createPiRuntime, discoverPiModels, piInstaller, piReadiness } from '@agent-hub/adapter-pi';
+import { ACP_AGENT_DEFAULTS, acpDescriptor, acpReadiness, createAcpRuntime, opencodeLaunch, discoverAcpModels, opencodeInstaller, type AcpAgentConfig } from '@agent-hub/adapter-acp';
+import { createGrokRuntime, discoverGrokModels, grokInstaller, grokReadiness } from '@agent-hub/adapter-grok';
+import { clearBootMarker, connectWorkerLink, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -99,13 +99,22 @@ function piPreferredModel(): string {
  * 在常见位置找到的，把那个目录补进本进程 PATH，子进程（含脚本里的 `#!/usr/bin/env node`）跟着找得到。
  * 找不到就留原名：就绪探测照常报「未安装」，再带一句怎么修。
  */
-function harnessCommand(name: string, envVar: string): { command: string; hint: string | null } {
+const runtimeStore = createRuntimeStore({ root: defaultRuntimesRoot(env) });
+/** 启动时每个 agent 是不是机器自己提供的（ADR 0010：机器自带的 hub 不装、不覆盖）。 */
+const machineProvided = new Map<string, boolean>();
+
+function harnessCommand(name: string, envVar: string, agentId: string = name): { command: string; hint: string | null } {
   const found = resolveCommand(name, { explicit: env[envVar], path: env['PATH'], home: homedir(), env });
+  machineProvided.set(agentId, found.source !== 'missing');
+  if (found.source === 'missing') {
+    // 机器上没有：指向 hub 管理的 shim。现在装没装都行——装好后探测立刻认得，不用重启 Worker
+    return { command: runtimeStore.shimPath(name), hint: runtimeStore.installed(agentId) ? null : missingCommandHint(name, envVar) };
+  }
   if (found.source === 'fallback') {
     env['PATH'] = [found.dir, ...(env['PATH'] ?? '').split(delimiter).filter(Boolean)].join(delimiter);
     process.stdout.write(`[worker] PATH 里没有 ${name}，用 ${found.command}（已把 ${found.dir} 补进 PATH；可设 ${envVar} 固定）\n`);
   }
-  return { command: found.command, hint: found.source === 'missing' ? missingCommandHint(name, envVar) : null };
+  return { command: found.command, hint: null };
 }
 const pi = harnessCommand('pi', 'PI_COMMAND');
 const grok = harnessCommand('grok', 'GROK_COMMAND');
@@ -169,7 +178,7 @@ const acpConfigs = acpAgents().map((config) => {
 const acpHints = new Map<string, string | null>();
 for (const [index, config] of acpConfigs.entries()) {
   const envVar = `${config.id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_COMMAND`;
-  const found = harnessCommand(config.command, envVar === 'OPENCODE_COMMAND' ? 'OPENCODE_COMMAND' : envVar);
+  const found = harnessCommand(config.command, envVar === 'OPENCODE_COMMAND' ? 'OPENCODE_COMMAND' : envVar, config.id);
   acpConfigs[index] = { ...config, command: found.command };
   acpHints.set(config.id, found.hint);
 }
@@ -280,6 +289,13 @@ async function onUpdate(commit: string, report: (status: UpdateReport) => void):
   }
 }
 
+// 只给我们认得怎么装的那几个；ACP_AGENTS 里自定义的 agent 不在线安装
+const provisioner = await createRuntimeManager({
+  store: runtimeStore,
+  installers: [piInstaller(), opencodeInstaller(), grokInstaller()].filter((installer) => machineProvided.has(installer.agentId)),
+  machineProvided
+});
+
 const link = connectWorkerLink({
   url: hubUrl,
   token,
@@ -296,6 +312,7 @@ const link = connectWorkerLink({
   assets,
   build,
   onUpdate,
+  provisioner,
   onAccepted: markHealthySoon,
   onLog: log,
   // 断线会自己重连；走到这里只有两种情况：token 被拒、被管理员断开、或者自己 close() 了。
