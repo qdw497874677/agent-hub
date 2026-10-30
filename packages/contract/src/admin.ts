@@ -63,8 +63,21 @@ export const auditEntrySchema = z.object({
   action: z.string(),
   target: z.string(),
   detail: z.string(),
-  at: z.number()
+  at: z.number(),
+  ip: z.string().nullable(),
+  teamId: z.string().nullable()
 });
+/** 审计过滤（query string）：action 前缀、操作人邮箱子串、IP 前缀、时间范围、团队（只有 hub 管理员能指定）。 */
+export const auditQuerySchema = z.object({
+  action: z.string().max(64).optional(),
+  actor: z.string().max(254).optional(),
+  ip: z.string().max(64).optional(),
+  since: z.coerce.number().int().nonnegative().optional(),
+  until: z.coerce.number().int().nonnegative().optional(),
+  teamId: z.string().max(64).optional(),
+  limit: z.coerce.number().int().min(1).max(500).optional()
+});
+export type AuditQuery = z.infer<typeof auditQuerySchema>;
 export type AuditEntryDto = z.infer<typeof auditEntrySchema>;
 
 export const adminOverviewSchema = z.object({

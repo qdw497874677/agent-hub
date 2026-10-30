@@ -19,6 +19,8 @@ import { err, ok } from '../result.ts';
 import type { Result } from '../result.ts';
 import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { InviteRepository } from '../ports/invite-repository.ts';
+import type { AuditFilter } from '../ports/audit-log.ts';
+import type { AuditEntry } from '../account.ts';
 import type { AccountDeps, ClientInfo, IssuedLogin } from './accounts.ts';
 import { issueLogin, seatsLeft } from './accounts.ts';
 import { post } from './account-mail.ts';
@@ -300,4 +302,20 @@ export async function deleteMember(
   // 审计里留原邮箱：谁删了谁要查得到（审计只有 hub 管理员 / 团队 owner 能看）。
   await securityEvent(deps, principal.user, 'user.delete', originalEmail, `项目转给团队 owner：${transferred} 个`, ip);
   return ok({ transferredProjects: transferred });
+}
+
+/**
+ * 团队主人看自己团队的安全审计（ADR 0011）：teamId 由服务端强制成自己的团队，
+ * 传进来的 teamId 一律忽略。hub 管理员看全 hub 走 /api/admin/audit。
+ */
+export async function teamAudit(
+  deps: TeamDeps,
+  principal: Principal,
+  filter: Omit<AuditFilter, 'teamId'>
+): Promise<Result<AuditEntry[], DomainError>> {
+  const found = await myTeam(deps, principal);
+  if (!found.ok) return found;
+  if (!can(principal, 'audit.read', { teamId: found.value.id })) return err(forbidden('只有团队主人能看团队审计'));
+  if (!deps.audit) return ok([]);
+  return ok(await deps.audit.query({ ...filter, teamId: found.value.id }));
 }

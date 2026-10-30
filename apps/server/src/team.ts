@@ -1,9 +1,10 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { inviteRequest, memberRoleRequest } from '@agent-hub/contract';
+import { auditQuerySchema, inviteRequest, memberRoleRequest } from '@agent-hub/contract';
+import { auditDto, auditFilterOf } from './admin.ts';
 import type { InviteDto, TeamDto } from '@agent-hub/contract';
 import type { Invite, TeamDeps } from '@agent-hub/domain';
-import { asInviteId, asUserId, deleteMember, inviteMember, revokeInvite, setMemberRole, viewTeam } from '@agent-hub/domain';
+import { asInviteId, asUserId, deleteMember, inviteMember, revokeInvite, setMemberRole, teamAudit, viewTeam } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -32,6 +33,16 @@ export function installTeam(app: Hono, deps: TeamDeps, principalOf: PrincipalOf)
   const who = (c: Context) => principalOf(c);
   const unauthorized = (c: Context) => c.json({ error: { code: 'unauthorized', message: '请先登录' } }, 401);
   const invalidBody = (c: Context) => c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
+
+  app.get('/api/team/audit', async (c) => {
+    const principal = who(c);
+    if (!principal) return unauthorized(c);
+    const parsed = auditQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return invalidBody(c);
+    const result = await teamAudit(deps, principal, auditFilterOf(parsed.data));
+    if (!result.ok) return fail(c, result.error);
+    return c.json(result.value.map(auditDto));
+  });
 
   app.get('/api/team', async (c) => {
     const principal = who(c);

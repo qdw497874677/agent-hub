@@ -314,10 +314,19 @@ function createInviteRepository(db: DatabaseSync): InviteRepository {
   };
 }
 
+/** 审计加 ip / team_id 两列（ADR 0011，PR3）；老记录两列都是 NULL。幂等、只加列。 */
+export function migrateAuditIp(db: DatabaseSync): void {
+  const columns = new Set((db.prepare('PRAGMA table_info(audit_log)').all() as { name: string }[]).map((c) => c.name));
+  if (!columns.has('ip')) db.exec('ALTER TABLE audit_log ADD COLUMN ip TEXT');
+  if (!columns.has('team_id')) db.exec('ALTER TABLE audit_log ADD COLUMN team_id TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS audit_by_team ON audit_log(team_id, at DESC)');
+}
+
 export function createAccountRepositories(db: DatabaseSync): AccountRepositories {
   db.exec(ACCOUNT_SCHEMA);
   migrateAccountsP3(db);
   migrateTeams(db);
+  migrateAuditIp(db);
 
   const upsertUser = db.prepare(
     'INSERT INTO users(id, email, display_name, role, password_hash, email_verified_at, disabled_at, created_at, team_id, hub_admin, deleted_at) ' +
@@ -373,7 +382,7 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     "INSERT INTO settings(key, value) VALUES ('hub', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   );
   const insertAudit = db.prepare(
-    'INSERT INTO audit_log(id, actor_id, actor_email, action, target, detail, at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO audit_log(id, actor_id, actor_email, action, target, detail, at, ip, team_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   const recentAudit = db.prepare('SELECT * FROM audit_log ORDER BY at DESC, rowid DESC LIMIT ?');
   const deleteExpired = db.prepare('DELETE FROM logins WHERE expires_at < ?');
@@ -483,33 +492,43 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     }
   };
 
+  type AuditRow = {
+    id: string; actor_id: string; actor_email: string; action: string; target: string; detail: string; at: number;
+    ip: string | null; team_id: string | null;
+  };
+  const toAudit = (row: AuditRow): AuditEntry => ({
+    id: row.id,
+    actorId: asUserId(row.actor_id),
+    actorEmail: row.actor_email,
+    action: row.action as AuditAction,
+    target: row.target,
+    detail: row.detail,
+    at: row.at,
+    ip: row.ip ?? null,
+    teamId: row.team_id ?? null
+  });
+  const escapeLike = (value: string) => value.replace(/[\\%_]/g, (ch) => `\\${ch}`);
   const audit: AuditLog = {
     async append(entry) {
-      insertAudit.run(entry.id, entry.actorId, entry.actorEmail, entry.action, entry.target, entry.detail, entry.at);
+      insertAudit.run(entry.id, entry.actorId, entry.actorEmail, entry.action, entry.target, entry.detail, entry.at, entry.ip ?? null, entry.teamId ?? null);
     },
     async recent(limit) {
-      const rows = recentAudit.all(limit) as unknown as {
-        id: string;
-        actor_id: string;
-        actor_email: string;
-        action: string;
-        target: string;
-        detail: string;
-        at: number;
-      }[];
-      return rows.map(
-        (row): AuditEntry => ({
-          id: row.id,
-          actorId: asUserId(row.actor_id),
-          actorEmail: row.actor_email,
-          action: row.action as AuditAction,
-          target: row.target,
-          detail: row.detail,
-          at: row.at
-        })
-      );
+      return (recentAudit.all(limit) as unknown as AuditRow[]).map(toAudit);
+    },
+    async query(filter) {
+      const where: string[] = [];
+      const params: (string | number)[] = [];
+      if (filter.action) { where.push("action LIKE ? ESCAPE '\\'"); params.push(`${escapeLike(filter.action)}%`); }
+      if (filter.actor) { where.push("lower(actor_email) LIKE ? ESCAPE '\\'"); params.push(`%${escapeLike(filter.actor.toLowerCase())}%`); }
+      if (filter.ip) { where.push("ip LIKE ? ESCAPE '\\'"); params.push(`${escapeLike(filter.ip)}%`); }
+      if (filter.since !== undefined) { where.push('at >= ?'); params.push(filter.since); }
+      if (filter.until !== undefined) { where.push('at <= ?'); params.push(filter.until); }
+      if (filter.teamId !== undefined) { where.push('team_id = ?'); params.push(filter.teamId); }
+      const sql = `SELECT * FROM audit_log${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY at DESC, rowid DESC LIMIT ?`;
+      return (db.prepare(sql).all(...params, filter.limit) as unknown as AuditRow[]).map(toAudit);
     }
   };
+
 
   const oneTimeTokens: OneTimeTokenRepository = {
     async save(token) {

@@ -87,3 +87,25 @@ test('登录退避：同一邮箱连错 5 次后 429 + Retry-After；测试账�
   expect(Number(blocked.headers()['retry-after'])).toBeGreaterThan(0);
   expect((await request.post('/api/auth/login', { data: { email: TEST_EMAIL, password: testPassword() } })).ok()).toBe(true);
 });
+
+test('审计带 IP，可按动作 / IP 过滤', async ({ page, request }) => {
+  const email = `audit-${currentRun()}@example.com`;
+  expect((await request.post('/api/auth/login', { data: { email, password: 'wrong password' } })).status()).toBe(400);
+  await loginByApi(page);
+  const api = (await (await page.request.get('/api/admin/audit?action=auth.login_failed')).json()) as { action: string; ip: string | null }[];
+  expect(api.length).toBeGreaterThan(0);
+  expect(api.every((entry) => entry.action === 'auth.login_failed')).toBe(true);
+  expect(api[0]!.ip).toBeTruthy();
+
+  await page.goto('/#/admin/audit');
+  await page.getByLabel('动作').selectOption('auth.login_failed');
+  const rows = page.getByTestId('audit-entry');
+  await expect(rows.first()).toContainText('登录失败');
+  await page.getByLabel('IP').fill('203.0.113.');
+  await page.getByRole('button', { name: '筛选' }).click();
+  await expect(page.getByText('没有符合条件的记录')).toBeVisible();
+  await page.getByRole('button', { name: '清空' }).click();
+  await page.getByLabel('动作').selectOption('auth.login_failed');
+  await expect(rows.first()).toContainText('登录失败');
+  await page.screenshot({ path: '/workspace/shots/users/audit-filter.png', fullPage: true });
+});

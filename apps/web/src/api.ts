@@ -214,9 +214,26 @@ export const authApi = {
     post<{ user: AccountDto }>('/api/auth/invite/accept', { token, password, displayName })
 };
 
+/** 审计过滤：空串 / undefined 不发。 */
+export interface AuditFilterInput {
+  readonly action?: string;
+  readonly actor?: string;
+  readonly ip?: string;
+  readonly since?: number;
+  readonly until?: number;
+  readonly teamId?: string;
+}
+export function auditQuery(filter: AuditFilterInput): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filter)) if (value !== undefined && value !== '') params.set(key, String(value));
+  const text = params.toString();
+  return text ? `?${text}` : '';
+}
+
 /** 团队（ADR 0011）：成员都能看，团队 owner / hub 管理员能邀请、改角色、删人。 */
 export const teamApi = {
   team: () => call<TeamDto>('/api/team'),
+  audit: (filter: AuditFilterInput = {}) => call<AuditEntryDto[]>(`/api/team/audit${auditQuery(filter)}`),
   invite: (email: string, role: 'owner' | 'member', allowOverLimit = false) =>
     post<InviteDto>('/api/team/invites', { email, role, allowOverLimit }),
   revokeInvite: (id: string) => call<InviteDto>(`/api/team/invites/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -243,7 +260,7 @@ export const adminApi = {
   settings: () => call<SettingsDto>('/api/admin/settings'),
   saveSettings: (patch: Partial<SettingsDto>) =>
     call<SettingsDto>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(patch) }),
-  audit: () => call<AuditEntryDto[]>('/api/admin/audit'),
+  audit: (filter: AuditFilterInput = {}) => call<AuditEntryDto[]>(`/api/admin/audit${auditQuery(filter)}`),
   enrollInfo: () => call<EnrollInfoDto>('/api/workers/enroll-info'),
   /** 签发一次性接入码（15 分钟、用一次），连同在新机器上运行的一行命令。 */
   pairing: () => post<PairingDto>('/api/workers/pairing', {}),

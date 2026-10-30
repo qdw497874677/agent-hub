@@ -46,3 +46,35 @@ test('邀请：按令牌 hash 查、accept 只成功一次、过期/撤销的不
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('审计：老库补 ip / team_id 列；按动作前缀、操作人、IP 前缀、时间、团队过滤', async () => {
+  const { DatabaseSync } = await import('node:sqlite');
+  const dir = mkdtempSync(join(tmpdir(), 'hub-audit-'));
+  try {
+    const path = join(dir, 'hub.db');
+    // 老版本的 audit_log：没有 ip / team_id
+    const old = new DatabaseSync(path);
+    old.exec("CREATE TABLE audit_log (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, actor_email TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, detail TEXT NOT NULL, at INTEGER NOT NULL)");
+    old.exec("INSERT INTO audit_log VALUES ('old', 'u', 'old@b.co', 'user.disable', 'x', '', 1)");
+    old.close();
+    const store = openSqliteStore(path);
+    const entry = (id: string, extra: Record<string, unknown>) =>
+      ({ id, actorId: 'u1', actorEmail: 'David@b.co', action: 'auth.login', target: 't', detail: '', at: 10, ip: null, teamId: null, ...extra }) as any;
+    await store.audit.append(entry('a', { ip: '10.0.0.1', teamId: 't1', at: 10 }));
+    await store.audit.append(entry('b', { action: 'auth.login_failed', ip: '192.168.1.2', teamId: 't1', at: 20 }));
+    await store.audit.append(entry('c', { actorEmail: 'mia@b.co', action: 'invite.create', teamId: 't2', at: 30 }));
+    const ids = async (filter: Record<string, unknown>) => (await store.audit.query({ limit: 50, ...filter })).map((e) => e.id);
+    assert.deepEqual(await ids({}), ['c', 'b', 'a', 'old']);
+    assert.deepEqual(await ids({ action: 'auth.' }), ['b', 'a']);
+    assert.deepEqual(await ids({ actor: 'david' }), ['b', 'a']);
+    assert.deepEqual(await ids({ ip: '10.0.' }), ['a']);
+    assert.deepEqual(await ids({ since: 15, until: 25 }), ['b']);
+    assert.deepEqual(await ids({ teamId: 't2' }), ['c']);
+    assert.deepEqual(await ids({ action: '%' }), []);
+    const [first] = await store.audit.query({ limit: 1, ip: '10.' });
+    assert.equal(first?.ip, '10.0.0.1');
+    assert.equal(first?.teamId, 't1');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
