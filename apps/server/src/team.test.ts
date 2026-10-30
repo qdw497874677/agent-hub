@@ -201,3 +201,23 @@ test('按 IP 限流：不分邮箱，换着邮箱试也会被挡', async () => {
   }
   assert.deepEqual(statuses, [400, 400, 400, 429]);
 });
+
+test('审计：团队主人只看自己团队的；成员看不了；hub 管理员能按条件筛全 hub', async () => {
+  const h = await withDavid();
+  const { guest } = await invited(h, 'mia@b.co');
+  await h.accounts.settings.save({ ...(await h.accounts.settings.get()), openRegistration: true });
+  const other = h.browser();
+  await other('/api/auth/register', post({ email: 'o@b.co', password: PASSWORD }));
+  await other('/api/auth/verify-email', post({ token: mailedToken(h.accounts, 'o@b.co') }));
+  assert.equal((await other('/api/auth/login', post({ email: 'o@b.co', password: PASSWORD }))).status, 200);
+  await other('/api/team/invites', post({ email: 'p@b.co', role: 'member' }));
+
+  const mine = (await other('/api/team/audit')).body as any[];
+  assert.ok(mine.length > 0);
+  assert.ok(mine.every((e) => e.actorEmail === 'o@b.co' || e.target === 'o@b.co' || e.target === 'p@b.co'), JSON.stringify(mine));
+  assert.ok(!mine.some((e) => e.target === 'mia@b.co'));
+  // 自己填别的 teamId 也没用
+  const davidTeam = (await h.david('/api/team')).body.id;
+  assert.ok(!((await other(`/api/team/audit?teamId=${davidTeam}`)).body as any[]).some((e) => e.target === 'mia@b.co'));
+  assert.equal((await guest('/api/team/audit')).status, 403);
+});

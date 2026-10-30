@@ -1,3 +1,4 @@
+import { matchesAudit } from '../ports/audit-log.ts';
 import { seedAccount } from '../use-cases/accounts.ts';
 import { invitePending } from '../account.ts';
 import type { Invite } from '../account.ts';
@@ -444,7 +445,8 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
     auditRows,
     audit: {
       append: async (entry) => void auditRows.unshift(entry),
-      recent: async (limit) => auditRows.slice(0, limit)
+      recent: async (limit) => auditRows.slice(0, limit),
+      query: async (filter) => auditRows.filter((row) => matchesAudit(row, filter)).slice(0, filter.limit)
     },
     invites: {
       save: async (invite) => void inviteRows.set(invite.id, invite),
@@ -564,7 +566,8 @@ export function inMemoryAdmin(now: () => number = () => 1_000) {
     now,
     audit: {
       append: async (entry) => void entries.unshift(entry),
-      recent: async (limit) => entries.slice(0, limit)
+      recent: async (limit) => entries.slice(0, limit),
+      query: async (filter) => entries.filter((row) => matchesAudit(row, filter)).slice(0, filter.limit)
     },
     workers: {
       list: async () => workerList,

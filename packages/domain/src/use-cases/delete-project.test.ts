@@ -26,7 +26,7 @@ async function world(status: 'running' | 'stopped' = 'stopped', lastSeq = 0) {
   const all = {
     ...deps,
     toolGrants: { revokeSession: async (id: string) => (revoked.push(id), 1) },
-    audit: { append: async (entry: AuditEntry) => void audit.push(entry), recent: async () => audit }
+    audit: { append: async (entry: AuditEntry) => void audit.push(entry), recent: async () => audit, query: async () => audit }
   };
   return { deps: all, project: project.value, session: session.value, revoked, audit };
 }

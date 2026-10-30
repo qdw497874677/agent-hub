@@ -220,7 +220,7 @@ test('运营后台：登录活跃度、保留当前登录的踢下线、设置�
   await store.audit.append(entry);
   await store.audit.append({ ...entry, id: 'a2', at: 6 });
   assert.deepEqual((await store.audit.recent(10)).map((row) => row.id), ['a2', 'a1']);
-  assert.deepEqual((await store.audit.recent(10))[1], entry);
+  assert.deepEqual((await store.audit.recent(10))[1], { ...entry, ip: null, teamId: null });
   store.close();
 });
 

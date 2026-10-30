@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authApi, teamApi, RequestFailed, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
 import { DialogShell } from './dialog-shell.tsx';
+import { AuditView } from './admin/audit.tsx';
 
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
@@ -698,6 +699,14 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
             </>
           )}
           {act.error && <p role="alert" className="mt-2 text-meta text-rust">{message(act.error)}</p>}
+          {data!.canManage && !me?.hubAdmin && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-meta text-secondary">团队安全审计</summary>
+              <div className="mt-2 max-h-[40dvh] overflow-y-auto">
+                <AuditView source="team" />
+              </div>
+            </details>
+          )}
         </>
       )}
     </DialogShell>

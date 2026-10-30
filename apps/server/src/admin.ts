@@ -1,7 +1,8 @@
 import type { Context, Hono } from 'hono';
-import { roleRequest, settingsPatchRequest } from '@agent-hub/contract';
+import { auditQuerySchema, roleRequest, settingsPatchRequest } from '@agent-hub/contract';
+import type { AuditQuery } from '@agent-hub/contract';
 import type { AdminOverviewDto, AdminUserDto, AdminWorkerDto, AdminWorkersDto, AuditEntryDto, EnrollInfoDto } from '@agent-hub/contract';
-import type { AdminDeps, BuildInfo, EnrollmentDeps, DomainError, Principal, Result, User, WorkerStatus } from '@agent-hub/domain';
+import type { AuditEntry, AuditFilter, AdminDeps, BuildInfo, EnrollmentDeps, DomainError, Principal, Result, User, WorkerStatus } from '@agent-hub/domain';
 import {
   adminOverview,
   adminUsers,
@@ -190,15 +191,36 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
   });
 
   app.get('/api/admin/audit', async (c) => {
-    const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') ?? 100) || 100));
-    const entries: AuditEntryDto[] = (await deps.audit.recent(limit)).map((entry) => ({
-      id: entry.id,
-      actorEmail: entry.actorEmail,
-      action: entry.action,
-      target: entry.target,
-      detail: entry.detail,
-      at: entry.at
-    }));
-    return c.json(entries);
+    const parsed = auditQuerySchema.safeParse(c.req.query());
+    if (!parsed.success) return fail(c, { code: 'invalid', message: '过滤条件不合法' });
+    const filter = auditFilterOf(parsed.data);
+    return c.json((await deps.audit.query({ ...filter, ...(parsed.data.teamId ? { teamId: parsed.data.teamId } : {}) })).map(auditDto));
   });
 }
+
+/** 审计查询的 query string → domain 的过滤（空串当没填）。 */
+export function auditFilterOf(query: AuditQuery): Omit<AuditFilter, 'teamId'> {
+  const text = (value: string | undefined) => (value && value.trim() ? value.trim() : undefined);
+  const action = text(query.action);
+  const actor = text(query.actor);
+  const ip = text(query.ip);
+  return {
+    limit: query.limit ?? 100,
+    ...(action ? { action } : {}),
+    ...(actor ? { actor } : {}),
+    ...(ip ? { ip } : {}),
+    ...(query.since !== undefined ? { since: query.since } : {}),
+    ...(query.until !== undefined ? { until: query.until } : {})
+  };
+}
+
+export const auditDto = (entry: AuditEntry): AuditEntryDto => ({
+  id: entry.id,
+  actorEmail: entry.actorEmail,
+  action: entry.action,
+  target: entry.target,
+  detail: entry.detail,
+  at: entry.at,
+  ip: entry.ip ?? null,
+  teamId: entry.teamId ?? null
+});

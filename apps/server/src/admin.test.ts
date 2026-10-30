@@ -72,6 +72,12 @@ test('停用成员：对方立刻掉线；不能停自己；最后一个主人�
   const audit = (await owner('/api/admin/audit')).body as { action: string; actorEmail: string }[];
   assert.deepEqual(audit.map((a) => a.action), ['user.enable', 'user.disable']);
   assert.equal(audit[0]?.actorEmail, 'boss@b.co');
+  assert.ok(audit.every((a) => 'ip' in a && 'teamId' in a));
+  const filtered = (await owner('/api/admin/audit?action=user.dis&actor=BOSS')).body as { action: string }[];
+  assert.deepEqual(filtered.map((a) => a.action), ['user.disable']);
+  assert.deepEqual((await owner('/api/admin/audit?actor=nobody')).body, []);
+  assert.deepEqual((await owner(`/api/admin/audit?until=0`)).body, []);
+  assert.equal((await owner('/api/admin/audit?since=abc')).status, 400);
 });
 
 test('运营后台只给 hub 管理员：提拔成团队主人也进不去；踢下线后他要重新登录', async () => {
