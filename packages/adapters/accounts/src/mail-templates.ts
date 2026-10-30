@@ -13,7 +13,7 @@ export interface RenderedMail {
  * 令牌不进 server 的访问日志，也不会随 Referer 带去别的网站。
  * `publicUrl` 只来自配置（HUB_PUBLIC_URL），从不取请求的 Host 头，免得被人伪造成钓鱼链接。
  */
-export function accountLink(publicUrl: string, kind: 'verify' | 'reset', token: string): string {
+export function accountLink(publicUrl: string, kind: 'verify' | 'reset' | 'invite', token: string): string {
   return `${publicUrl.replace(/\/+$/, '')}/#/${kind}?token=${encodeURIComponent(token)}`;
 }
 
@@ -81,6 +81,26 @@ export function renderAccountMail(mail: AccountMail, options: { publicUrl: strin
         subject: 'agent-hub 密码已修改',
         text: [greeting, '', ...lines].join('\n'),
         html: htmlOf(greeting, lines)
+      };
+    }
+    case 'already-registered': {
+      const lines = [
+        '有人刚用这个邮箱在 agent-hub 上注册，但它已经有账号了。',
+        '如果是你：直接登录就行，忘了密码可以用「忘记密码」。如果不是你，忽略这封信即可。'
+      ];
+      return { to: mail.to, subject: 'agent-hub：这个邮箱已经注册过', text: [greeting, '', ...lines].join('\n'), html: htmlOf(greeting, lines) };
+    }
+    case 'invite': {
+      const href = accountLink(options.publicUrl, 'invite', mail.token);
+      const lines = [
+        `${mail.inviterName} 邀请你加入 agent-hub 上的团队「${mail.teamName}」。点下面的链接设置密码并加入：`,
+        `链接 ${Math.max(1, Math.round((mail.expiresAt - now) / 3_600_000))} 小时内有效，只能用一次。`
+      ];
+      return {
+        to: mail.to,
+        subject: `加入 agent-hub 团队「${mail.teamName}」`,
+        text: [greeting, '', lines[0], href, '', lines[1]].join('\n'),
+        html: htmlOf(greeting, lines, { label: '接受邀请', href })
       };
     }
   }

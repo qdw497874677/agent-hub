@@ -15,6 +15,8 @@ import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
 import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
+import { authorizeWorker } from './authorization.ts';
+import type { Principal } from '../account.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
@@ -24,11 +26,13 @@ export interface DeriveCommand {
   readonly workerId?: string | null;
   /** 运行面板里选定的工作空间：会话就落在它所在的机器、在它的目录里干活。 */
   readonly workspaceId?: string | null;
+  /** 谁发起的：开跑前要过 authorizeWorker（本机 Worker 单独授权）。 */
+  readonly actor?: Principal | null;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
 export async function deriveSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
   const task = await deps.tasks.byId(asTaskId(command.taskId));
@@ -59,6 +63,8 @@ export async function deriveSessionUseCase(
     projectWorker: workspace.workerId
   });
   if (!placed.ok) return placed;
+  const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
+  if (!allowed.ok) return allowed;
   const model = checkModelOn(workers, placed.value, agentId, command.model);
   if (!model.ok) return model;
   const created = deriveSession({
@@ -103,10 +109,11 @@ export interface ForkCommand {
   readonly atSeq: Seq;
   readonly agentId: string;
   readonly model: string;
+  readonly actor?: Principal | null;
 }
 
 export async function forkSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access'>,
   command: ForkCommand
 ): Promise<Result<Session, DomainError>> {
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
@@ -136,6 +143,8 @@ export async function forkSessionUseCase(
     projectWorker: source.workerId
   });
   if (!placed.ok) return placed;
+  const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
+  if (!allowed.ok) return allowed;
   const model = checkModelOn(workers, placed.value, agentId, command.model);
   if (!model.ok) return model;
 

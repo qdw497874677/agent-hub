@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryAccounts, inMemoryAdmin, inMemoryDeps, mailedToken } from '@agent-hub/domain/testing';
+import { addTeamMember, inMemoryAccounts, inMemoryAdmin, inMemoryDeps, mailedToken } from '@agent-hub/domain/testing';
 import type { AccountDeps } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -33,14 +33,25 @@ function harness(extra: Partial<AccountDeps> = {}, mailRateMax = 5) {
 }
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
 
-test('第一位主人直接算已验证；新成员未验证只能看「去验证邮箱」，点信里链接后放行', async () => {
+/** 开放注册（默认关闭，ADR 0011）。 */
+async function openRegistration(h: ReturnType<typeof harness>): Promise<void> {
+  await h.accounts.settings.save({ ...(await h.accounts.settings.get()), openRegistration: true });
+}
+
+test('第一位主人直接算已验证；自助注册的人先「去查收邮件」，未验证只能看「去验证邮箱」，点信里链接后放行', async () => {
   const h = harness();
   const owner = h.browser();
   const member = h.browser();
   assert.equal((await owner('/api/auth/register', post({ email: 'boss@b.co', password: PASSWORD }))).body.user.emailVerified, true);
   assert.equal(h.accounts.sent.length, 0);
+  await openRegistration(h);
   const reg = await member('/api/auth/register', post({ email: 'm@b.co', password: PASSWORD }));
-  assert.equal(reg.body.user.emailVerified, false);
+  assert.deepEqual([reg.status, reg.body], [202, { checkEmail: true }]);
+  // 已注册的邮箱回应一模一样（防枚举），只是信不一样
+  const dup = await h.browser()('/api/auth/register', post({ email: 'boss@b.co', password: PASSWORD }));
+  assert.deepEqual([dup.status, dup.body], [reg.status, reg.body]);
+  assert.equal(h.accounts.sent.at(-1)?.kind, 'already-registered');
+  assert.equal((await member('/api/auth/login', post({ email: 'm@b.co', password: PASSWORD }))).status, 200);
   assert.equal((await member('/api/projects')).status, 403);
   assert.equal((await member('/api/projects')).body.error.code, 'email_unverified');
   assert.equal((await member('/api/auth/state')).body.user.emailVerified, false);
@@ -58,6 +69,7 @@ test('验证链接 30 分钟过期', async () => {
   const h = harness();
   await h.browser()('/api/auth/register', post({ email: 'boss@b.co', password: PASSWORD }));
   const member = h.browser();
+  await openRegistration(h);
   await member('/api/auth/register', post({ email: 'm@b.co', password: PASSWORD }));
   h.tick(31 * 60 * 1000);
   assert.equal((await member('/api/auth/verify-email', post({ token: mailedToken(h.accounts, 'm@b.co') }))).status, 400);
@@ -119,7 +131,11 @@ test('主人可以在后台手动把成员标记为已验证', async () => {
   const owner = h.browser();
   const member = h.browser();
   await owner('/api/auth/register', post({ email: 'boss@b.co', password: PASSWORD }));
-  await member('/api/auth/register', post({ email: 'm@b.co', password: PASSWORD }));
+  // 同团队未验证的成员：直接加进来再把验证时间清掉（邀请流程在 PR 2）
+  await addTeamMember(h.accounts, 'm@b.co', PASSWORD);
+  const raw = await h.accounts.users.byEmail('m@b.co');
+  await h.accounts.users.save({ ...raw!, emailVerifiedAt: null });
+  await member('/api/auth/login', post({ email: 'm@b.co', password: PASSWORD }));
   const users = (await owner('/api/admin/users')).body as { id: string; email: string; emailVerified: boolean }[];
   const m = users.find((u) => u.email === 'm@b.co')!;
   assert.equal(m.emailVerified, false);
@@ -131,8 +147,10 @@ test('主人可以在后台手动把成员标记为已验证', async () => {
 test('HUB_MAX_USERS：名额满了自助注册被拒，state 显示注册关闭；第一位主人不受限', async () => {
   const h = harness({ maxUsers: 2 });
   await h.browser()('/api/auth/register', post({ email: 'boss@b.co', password: PASSWORD }));
+  assert.equal((await h.browser()('/api/auth/state')).body.registration, false); // 默认不开放
+  await openRegistration(h);
   assert.equal((await h.browser()('/api/auth/state')).body.registration, true);
-  assert.equal((await h.browser()('/api/auth/register', post({ email: 'm@b.co', password: PASSWORD }))).status, 200);
+  assert.equal((await h.browser()('/api/auth/register', post({ email: 'm@b.co', password: PASSWORD }))).status, 202);
   const full = await h.browser()('/api/auth/register', post({ email: 'n@b.co', password: PASSWORD }));
   assert.notEqual(full.status, 200);
   assert.match(JSON.stringify(full.body), /名额已满/);

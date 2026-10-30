@@ -36,3 +36,21 @@ export async function verifyByApi(request: APIRequestContext, email: string): Pr
   const response = await request.post('/api/auth/verify-email', { data: { token } });
   if (!response.ok()) throw new Error(`验证邮箱失败：HTTP ${response.status()}`);
 }
+
+/**
+ * ADR 0011：开放注册默认关。要自助注册的用例先用测试账号（hub 管理员）把它打开。
+ * e2e 数据目录跨 run 保留，所以每个用到的文件都调一次，幂等。
+ */
+export async function openRegistration(baseURL: string | undefined): Promise<void> {
+  const { request } = await import('@playwright/test');
+  const admin = await request.newContext({ baseURL });
+  try {
+    const login = await admin.post('/api/auth/login', { data: { email: TEST_EMAIL, password: testPassword() } });
+    if (!login.ok()) throw new Error(`测试账号登录失败：HTTP ${login.status()}`);
+    const csrf = (await admin.storageState()).cookies.find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+    const saved = await admin.put('/api/admin/settings', { headers: { 'x-hub-csrf': csrf }, data: { openRegistration: true } });
+    if (!saved.ok()) throw new Error(`打开注册失败：HTTP ${saved.status()}`);
+  } finally {
+    await admin.dispose();
+  }
+}

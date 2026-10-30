@@ -1,3 +1,4 @@
+import type { AccessPolicy } from './authorization.ts';
 import type { Workspace } from '../workspace.ts';
 import type { AgentId } from '../ids.ts';
 import type { Task } from '../task.ts';
@@ -63,6 +64,8 @@ export interface Deps {
   /** 同一会话的写入串行（ADR 0004）。 */
   readonly queue: SessionQueue;
   readonly now: () => number;
+  /** 授权（ADR 0011）。不给 = 没装账号体系，一律放行（单测、单机开发）。 */
+  readonly access?: AccessPolicy;
 }
 
 export interface CanvasProjection {

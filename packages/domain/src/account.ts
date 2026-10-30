@@ -5,6 +5,9 @@ import { newId } from './ids.ts';
  * 账号只回答「你是谁」和「Owner 还是成员」，不做资源隔离（ADR 0008）。
  */
 export type UserId = string & { readonly __brand: 'UserId' };
+export type TeamId = string & { readonly __brand: 'TeamId' };
+export const newTeamId = (): TeamId => newId() as TeamId;
+export const asTeamId = (value: string): TeamId => value as TeamId;
 export type LoginId = string & { readonly __brand: 'LoginId' };
 
 export const newUserId = (): UserId => newId() as UserId;
@@ -24,6 +27,20 @@ export interface User {
   readonly passwordHash: string | null;
   readonly emailVerifiedAt: number | null;
   readonly disabledAt: number | null;
+  readonly createdAt: number;
+  /** 所属团队（ADR 0011）：一人一个团队。老库迁移前可能是 null。 */
+  readonly teamId: TeamId | null;
+  /** hub 级超级管理员（第一位主人）：管 hub 设置、本机 Worker、全站用户。 */
+  readonly hubAdmin: boolean;
+  /** 软删除（匿名化）的时间；删了的人不能登录，也不出现在列表里。 */
+  readonly deletedAt: number | null;
+}
+
+/** 团队 = 租户。自助注册的人建一个自己的团队并成为它的 owner（ADR 0011）。 */
+export interface Team {
+  readonly id: TeamId;
+  readonly name: string;
+  readonly ownerId: UserId;
   readonly createdAt: number;
 }
 
@@ -103,17 +120,19 @@ export function defaultDisplayName(email: string): string {
 
 /** 登录态是否还有效：没过期、人没被停用。 */
 export function loginUsable(login: Login, user: User | null, now: number): user is User {
-  return user !== null && user.disabledAt === null && login.expiresAt > now;
+  return user !== null && user.disabledAt === null && user.deletedAt === null && login.expiresAt > now;
 }
 
 /** hub 级开关，运营后台里改（docs/design/accounts.md §16 P2）。 */
 export interface HubSettings {
-  /** 关掉后只有「还没有 Owner」时的首个注册能成功。 */
+  /** 开放自助注册（默认关；主要靠团队邀请加人）。开着时自助注册的人得到一个自己的空团队。关掉后只有「还没有 hub 管理员」时的首个注册能成功。 */
   readonly openRegistration: boolean;
   /** 成员能否给 hub 加机器；Owner 总是能。 */
   readonly membersCanAddMachines: boolean;
+  /** 本机 Worker（hub 所在的机器）的单独授权：hub 管理员团队里的这些人能用。hub 管理员总能用，别的团队永远不能。 */
+  readonly localWorkerGrants: readonly string[];
 }
-export const DEFAULT_SETTINGS: HubSettings = { openRegistration: true, membersCanAddMachines: true };
+export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, localWorkerGrants: [] };
 
 export const canAddMachines = (user: User, settings: HubSettings): boolean =>
   user.role === 'owner' || settings.membersCanAddMachines;
@@ -149,7 +168,21 @@ export type AuditAction =
   | 'asset.uninstall'
   | 'asset.secret.set'
   | 'asset.secret.delete'
-  | 'asset.project';
+  | 'asset.project'
+  | 'project.create'
+  | 'project.restore'
+  | 'project.purge'
+  | 'project.share'
+  | 'user.delete'
+  | 'invite.create'
+  | 'invite.revoke'
+  | 'auth.register'
+  | 'auth.login'
+  | 'auth.login_failed'
+  | 'auth.logout'
+  | 'auth.password_reset'
+  | 'auth.password_change'
+  | 'auth.profile';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {
@@ -161,4 +194,8 @@ export interface AuditEntry {
   readonly target: string;
   readonly detail: string;
   readonly at: number;
+  /** 来源 IP（安全事件才有；老数据没有）。 */
+  readonly ip?: string | null;
+  /** 发生在哪个团队（团队 owner 只看得到自己团队的）；hub 级事件是 null。 */
+  readonly teamId?: string | null;
 }

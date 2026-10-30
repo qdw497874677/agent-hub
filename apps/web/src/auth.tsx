@@ -95,6 +95,7 @@ function LoginPage({ state }: { state: AuthState }) {
   const [token, setToken] = useState('');
 
   const [forgotSent, setForgotSent] = useState(false);
+  const [registerSent, setRegisterSent] = useState(false);
   const submit = useMutation({
     mutationFn: async () => {
       if (mode === 'forgot') {
@@ -102,14 +103,17 @@ function LoginPage({ state }: { state: AuthState }) {
         setForgotSent(true);
         return;
       }
-      return mode === 'login'
-        ? authApi.login(email, password)
-        : mode === 'register'
-          ? authApi.register(email, password, displayName.trim() || undefined)
-          : authApi.tokenLogin(token);
+      if (mode === 'register') {
+        const result = await authApi.register(email, password, displayName.trim() || undefined);
+        // 自助注册：不管邮箱是否已存在都是同一个回应，要去邮箱点链接后再登录
+        if ('checkEmail' in result) setRegisterSent(true);
+        return result;
+      }
+      return mode === 'login' ? authApi.login(email, password) : authApi.tokenLogin(token);
     },
-    onSuccess: async () => {
+    onSuccess: async (result) => {
       if (mode === 'forgot') return;
+      if (result && 'checkEmail' in result) return;
       queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'auth' });
       await queryClient.invalidateQueries({ queryKey: STATE_KEY });
     }
@@ -119,6 +123,7 @@ function LoginPage({ state }: { state: AuthState }) {
   const switchTo = (next: Mode) => {
     setMode(next);
     setForgotSent(false);
+    setRegisterSent(false);
     submit.reset();
   };
 
@@ -155,7 +160,17 @@ function LoginPage({ state }: { state: AuthState }) {
             这个 hub 暂不开放注册。想加入请联系管理员。
           </p>
         )}
-        {mode === 'forgot' && forgotSent ? (
+        {mode === 'register' && registerSent ? (
+          <div className="flex flex-col gap-3" role="status">
+            <p className="text-body text-primary">去邮箱看看</p>
+            <p className="text-meta text-secondary">
+              我们给 <span className="text-primary">{email.trim()}</span> 发了一封信，点里面的链接验证邮箱后就能登录。没收到的话看看垃圾箱。
+            </p>
+            <button type="button" className={`mt-2 ${PRIMARY}`} onClick={() => switchTo('login')}>
+              回到登录
+            </button>
+          </div>
+        ) : mode === 'forgot' && forgotSent ? (
           <div className="flex flex-col gap-3" role="status">
             <p className="text-body text-primary">去邮箱看看</p>
             <p className="text-meta text-secondary">
@@ -227,7 +242,7 @@ function LoginPage({ state }: { state: AuthState }) {
             </p>
           )}
           <button type="submit" className={`mt-2 ${PRIMARY}`} disabled={!ready || submit.isPending}>
-            {submit.isPending ? '请稍候…' : mode === 'register' ? '注册并进入' : mode === 'forgot' ? '发送重置邮件' : '登录'}
+            {submit.isPending ? '请稍候…' : mode === 'register' ? '注册' : mode === 'forgot' ? '发送重置邮件' : '登录'}
           </button>
           {mode === 'forgot' && (
             <button type="button" className="text-meta text-tertiary hover:text-accent" onClick={() => switchTo('login')}>
@@ -486,8 +501,8 @@ export function AccountMenu() {
         <div className="absolute right-0 top-9 z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta">
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
-          <p className="mt-1 text-tertiary">{account.role === 'owner' ? '主人' : '成员'}</p>
-          {account.role === 'owner' ? (
+          <p className="mt-1 text-tertiary">{account.hubAdmin ? 'hub 管理员' : account.role === 'owner' ? '主人' : '成员'}</p>
+          {account.hubAdmin ? (
             <a
               href="#/admin/overview"
               className="mt-3 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"

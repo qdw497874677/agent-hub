@@ -13,6 +13,7 @@ import {
 import type { AccountDto, AuthState, LoginDeviceDto } from '@agent-hub/contract';
 import type { AccountDeps, DomainError, IssuedLogin, Principal, Result, User } from '@agent-hub/domain';
 import {
+  ok,
   asLoginId,
   authenticate,
   isEmailVerified,
@@ -82,7 +83,8 @@ const toDto = (user: User): AccountDto => ({
   email: user.email,
   displayName: user.displayName,
   role: user.role,
-  emailVerified: isEmailVerified(user)
+  emailVerified: isEmailVerified(user),
+  hubAdmin: user.hubAdmin === true
 });
 
 function unauthorized(c: Context, message = '请先登录'): Response {
@@ -187,7 +189,7 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
       tokenLogin: options.hubToken !== null && accounts.now() < options.hubToken.until,
       // 还没有主人时总能注册（认领第一个账号），否则看开关。
       registration:
-        (await accounts.users.firstWithRole('owner')) === null ||
+        (await accounts.users.hubAdmin()) === null ||
         ((await accounts.settings.get()).openRegistration && !(await registrationFull(accounts))),
       mailDelivery: options.mailDelivery ?? false
     };
@@ -199,7 +201,11 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
     if (limited) return limited;
     const parsed = registerRequest.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
-    return respond(c, await registerUser(accounts, { ...parsed.data, ...client(c) }));
+    const result = await registerUser(accounts, { ...parsed.data, ...client(c) });
+    if (!result.ok) return respond(c, result);
+    // 防枚举：新邮箱、已注册的邮箱都是这一句，不发 cookie。
+    if (result.value.kind === 'check-email') return c.json({ checkEmail: true }, 202);
+    return respond(c, ok(result.value.issued));
   });
 
   app.post('/api/auth/login', async (c) => {

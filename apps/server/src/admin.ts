@@ -37,7 +37,7 @@ interface Enrolment {
   readonly dedicated: boolean;
 }
 
-const userDto = (user: User, lastSeenAt: number | null, activeLogins: number): AdminUserDto => ({
+const userDto = (user: User, lastSeenAt: number | null, activeLogins: number, hubTeamId: string | null = null): AdminUserDto => ({
   id: user.id,
   email: user.email,
   displayName: user.displayName,
@@ -46,7 +46,10 @@ const userDto = (user: User, lastSeenAt: number | null, activeLogins: number): A
   disabled: user.disabledAt !== null,
   createdAt: user.createdAt,
   lastSeenAt,
-  activeLogins
+  activeLogins,
+  hubAdmin: user.hubAdmin === true,
+  teamId: user.teamId ?? null,
+  hubTeam: hubTeamId !== null && user.teamId === hubTeamId
 });
 
 const workerDto = (worker: WorkerStatus, hub: BuildInfo, enrolment?: Enrolment): AdminWorkerDto => ({
@@ -110,7 +113,8 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
 
   app.get('/api/admin/users', async (c) => {
     const rows = await adminUsers(deps, c.req.query('q') ?? '');
-    return c.json(rows.map((row) => userDto(row.user, row.lastSeenAt, row.activeLogins)));
+    const hubTeamId = (await deps.users.hubAdmin())?.teamId ?? null;
+    return c.json(rows.map((row) => userDto(row.user, row.lastSeenAt, row.activeLogins, hubTeamId)));
   });
 
   const userResult = async (c: Context, run: Promise<Result<User, DomainError>>) => {

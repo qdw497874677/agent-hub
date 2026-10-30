@@ -1,12 +1,12 @@
-import type { Login, Principal, Role, User } from '../account.ts';
+import type { Login, Principal, Role, Team, User } from '../account.ts';
 import {
   LOGIN_TOUCH_INTERVAL_MS,
   LOGIN_TTL_MS,
   defaultDisplayName,
   emailProblem,
-  isEmailVerified,
   loginUsable,
   newLoginId,
+  newTeamId,
   newUserId,
   normalizeEmail,
   passwordProblem
@@ -20,7 +20,8 @@ import type { LoginRepository } from '../ports/login-repository.ts';
 import type { PasswordHasher } from '../ports/password-hasher.ts';
 import type { TokenIssuer } from '../ports/token-issuer.ts';
 import type { EmailSender } from '../ports/email-sender.ts';
-import { sendVerification } from './account-mail.ts';
+import { post, sendVerification } from './account-mail.ts';
+import type { TeamRepository } from '../ports/team-repository.ts';
 import type { SettingsRepository } from '../ports/settings-repository.ts';
 import type { OneTimeTokenRepository } from '../ports/one-time-token-repository.ts';
 
@@ -37,6 +38,8 @@ export interface AccountDeps {
   readonly settings: SettingsRepository;
   /** 验证邮箱、重置密码用的一次性令牌。 */
   readonly oneTimeTokens: OneTimeTokenRepository;
+  /** 团队（租户）。 */
+  readonly teams: TeamRepository;
   /**
    * 自助注册的人数上限（HUB_MAX_USERS）；没有或 0 = 不限。按库里全部账号算（停用的也占名额，
    * 删号以后才腾出来），首个主人认领不受限。
@@ -94,40 +97,79 @@ export interface RegisterCommand {
  * 第一个人（主人）直接算已验证——没人能替他验证；成员要点邮件里的链接（设计 §6.2），
  * 没验证前能登录，但只能看到「去验证邮箱」。
  */
+export type RegisterOutcome =
+  | { readonly kind: 'login'; readonly issued: IssuedLogin }
+  /** 防枚举：新邮箱和已注册的邮箱都只回这一句，区别只在邮件里。 */
+  | { readonly kind: 'check-email' };
+
+/** 给一个人建他自己的团队（他是 owner）。 */
+export function newTeamFor(user: Pick<User, 'id' | 'displayName'>, now: number): Team {
+  return { id: newTeamId(), name: `${user.displayName} 的团队`, ownerId: user.id, createdAt: now };
+}
+
+/**
+ * 自助注册（ADR 0011）：
+ * - 还没有 hub 管理员：第一个注册的人认领 hub 管理员（也是他自己团队的 owner），直接登录；
+ * - 否则要 hub 开着自助注册（默认关）且没满名额；这两条对谁都一样，不泄露邮箱在不在；
+ * - 然后无论邮箱在不在，都只回「去查收邮件」：新邮箱发验证信并建一个自己的空团队，
+ *   已注册的邮箱只给它发一封「有人拿你的邮箱注册」的提醒。
+ */
 export async function registerUser(
   deps: AccountDeps,
   command: RegisterCommand
-): Promise<Result<IssuedLogin, DomainError>> {
+): Promise<Result<RegisterOutcome, DomainError>> {
   const email = normalizeEmail(command.email);
   const problem = emailProblem(email) ?? passwordProblem(command.password);
   if (problem) return err(invalid(problem));
-  if (await deps.users.byEmail(email)) return err(conflict('这个邮箱已经注册过了，直接登录吧'));
-
-  const draft: Omit<User, 'role'> = {
+  const now = deps.now();
+  const displayName = command.displayName?.trim() || defaultDisplayName(email);
+  const base = {
     id: newUserId(),
     email,
-    displayName: command.displayName?.trim() || defaultDisplayName(email),
-    passwordHash: await deps.hasher.hash(command.password),
+    displayName,
+    passwordHash: '',
     emailVerifiedAt: null,
     disabledAt: null,
-    createdAt: deps.now()
+    createdAt: now,
+    deletedAt: null
   };
-  // 首启认领交给存储原子完成：并发注册时只有一个人成为 Owner，其余人按成员处理。
-  let user: User = { ...draft, role: 'owner', emailVerifiedAt: draft.createdAt };
-  if (!(await deps.users.claimFirstOwner(user))) {
-    // 关闭开放注册后，仍允许「还没有主人」时认领第一个账号，否则 hub 进不去了。
-    if (!(await deps.settings.get()).openRegistration) {
-      return err(conflict('这个 hub 暂不开放注册，请联系管理员'));
+
+  if ((await deps.users.hubAdmin()) === null && !(await deps.users.byEmail(email))) {
+    const team = newTeamFor(base, now);
+    // 首启认领交给存储原子完成：并发注册时只有一个人成为 hub 管理员。
+    const admin: User = {
+      ...base,
+      passwordHash: await deps.hasher.hash(command.password),
+      role: 'owner',
+      emailVerifiedAt: now,
+      teamId: team.id,
+      hubAdmin: true
+    };
+    if (await deps.users.claimFirstOwner(admin)) {
+      await deps.teams.save(team);
+      return ok({ kind: 'login', issued: await issueLogin(deps, admin, 'password', command) });
     }
-    if (await registrationFull(deps)) return err(conflict(FULL_MESSAGE));
-    user = { ...draft, role: 'member' };
-    await deps.users.save(user);
   }
-  // 验证信发不出去不该让注册失败：页面上能重发，主人也能在后台手动标记。
-  if (!isEmailVerified(user)) await sendVerification(deps, user);
-  return ok(await issueLogin(deps, user, 'password', command));
+  if (!(await deps.settings.get()).openRegistration) return err(conflict(CLOSED_MESSAGE));
+  if (await registrationFull(deps)) return err(conflict(FULL_MESSAGE));
+
+  const existing = await deps.users.byEmail(email);
+  if (existing) {
+    // 跑一次哈希，让两条路耗时差不多
+    await deps.hasher.hash(command.password);
+    if (existing.deletedAt === null) post(deps, { kind: 'already-registered', to: existing.email, displayName: existing.displayName });
+    return ok({ kind: 'check-email' });
+  }
+  const team = newTeamFor(base, now);
+  const user: User = { ...base, passwordHash: await deps.hasher.hash(command.password), role: 'owner', teamId: team.id, hubAdmin: false };
+  await deps.teams.save(team);
+  await deps.users.save(user);
+  // 验证信发不出去不该让注册失败：主人也能在后台手动标记。
+  await sendVerification(deps, user);
+  return ok({ kind: 'check-email' });
 }
 
+export const CLOSED_MESSAGE = '这个 hub 暂不开放注册，请向团队要一个邀请链接';
 export const FULL_MESSAGE = '这个 hub 的注册名额已满，请联系管理员';
 
 /** 名额满了没有（首个主人认领除外）。 */
@@ -148,7 +190,7 @@ export async function loginWithPassword(
   command: PasswordLoginCommand
 ): Promise<Result<IssuedLogin, DomainError>> {
   const user = await deps.users.byEmail(normalizeEmail(command.email));
-  if (!user || user.passwordHash === null) {
+  if (!user || user.passwordHash === null || user.deletedAt !== null) {
     decoy ??= deps.hasher.hash('decoy-password-for-timing');
     await deps.hasher.verify(command.password, await decoy);
     return err(BAD_CREDENTIALS);
@@ -166,7 +208,7 @@ export async function loginAsFirstOwner(
   deps: Pick<AccountDeps, 'users' | 'logins' | 'tokens' | 'now'>,
   client: ClientInfo | string | null
 ): Promise<Result<IssuedLogin, DomainError>> {
-  const owner = await deps.users.firstWithRole('owner');
+  const owner = (await deps.users.hubAdmin()) ?? (await deps.users.firstWithRole('owner'));
   if (!owner) return err(conflict('还没有任何账号：先注册一个，第一个注册的人就是主人'));
   return ok(await issueLogin(deps, owner, 'hub-token', typeof client === 'object' && client !== null ? client : { userAgent: client }));
 }
@@ -204,7 +246,7 @@ export interface SeedAccount {
  * 幂等，每次启动都可以调。
  */
 export async function seedAccount(
-  deps: Pick<AccountDeps, 'users' | 'hasher' | 'now'>,
+  deps: Pick<AccountDeps, 'users' | 'hasher' | 'now' | 'teams'>,
   seed: SeedAccount
 ): Promise<Result<User, DomainError>> {
   const email = normalizeEmail(seed.email);
@@ -218,18 +260,28 @@ export async function seedAccount(
   }
   const passwordHash = await deps.hasher.hash(seed.password);
   const now = deps.now();
-  const user: User = existing
-    ? { ...existing, passwordHash }
-    : {
-        id: newUserId(),
-        email,
-        displayName: seed.displayName,
-        role: seed.role,
-        passwordHash,
-        emailVerifiedAt: now,
-        disabledAt: null,
-        createdAt: now
-      };
+  let user: User;
+  if (existing) user = { ...existing, passwordHash };
+  else {
+    const id = newUserId();
+    // 还没有 hub 管理员：内置账号就是 hub 管理员，带一个自己的团队；否则并进 hub 管理员的团队。
+    const admin = await deps.users.hubAdmin();
+    const team = admin?.teamId ? null : newTeamFor({ id, displayName: seed.displayName }, now);
+    if (team) await deps.teams.save(team);
+    user = {
+      id,
+      email,
+      displayName: seed.displayName,
+      role: seed.role,
+      passwordHash,
+      emailVerifiedAt: now,
+      disabledAt: null,
+      createdAt: now,
+      teamId: team ? team.id : (admin?.teamId ?? null),
+      hubAdmin: team !== null,
+      deletedAt: null
+    };
+  }
   await deps.users.save(user);
   return ok(user);
 }

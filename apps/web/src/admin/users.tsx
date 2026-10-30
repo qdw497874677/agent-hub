@@ -9,6 +9,11 @@ export function Users() {
   const me = useAccount();
   const [q, setQ] = useState('');
   const users = useQuery({ queryKey: ['admin', 'users', q], queryFn: () => adminApi.users(q) });
+  const settings = useQuery({ queryKey: ['admin', 'settings'], queryFn: adminApi.settings });
+  const grants = settings.data?.localWorkerGrants ?? [];
+  const grant = useAdminAction(({ user, on }: { user: AdminUserDto; on: boolean }) =>
+    adminApi.saveSettings({ localWorkerGrants: on ? [...grants.filter((id) => id !== user.id), user.id] : grants.filter((id) => id !== user.id) })
+  );
   const action = useAdminAction(
     ({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke' | 'verify'; user: AdminUserDto }) => {
       if (kind === 'disable') return adminApi.disable(user.id);
@@ -47,7 +52,9 @@ export function Users() {
                       {user.email}
                     </span>
                     <span className="text-meta text-tertiary">
-                      {user.role === 'owner' ? '主人' : '成员'}
+                      {user.hubAdmin ? 'hub 管理员' : user.role === 'owner' ? '主人' : '成员'}
+                      {user.hubTeam === false ? ' · 其他团队' : ''}
+                      {grants.includes(user.id) ? ' · 可用本机' : ''}
                       {self ? ' · 你' : ''}
                       {user.disabled ? ' · 已停用' : ''}
                     </span>
@@ -77,6 +84,17 @@ export function Users() {
                         降为成员
                       </button>
                     )}
+                    {!user.hubAdmin && user.hubTeam === true && settings.data ? (
+                      <button
+                        className={SMALL}
+                        disabled={grant.isPending}
+                        aria-pressed={grants.includes(user.id)}
+                        title="hub 本机 Worker 默认只有 hub 管理员能用；hub 团队成员要单独授权，别的团队永远不能用。"
+                        onClick={() => grant.mutate({ user, on: !grants.includes(user.id) })}
+                      >
+                        {grants.includes(user.id) ? '收回本机使用权' : '允许使用本机'}
+                      </button>
+                    ) : null}
                     {!user.emailVerified && (
                       <button className={SMALL} disabled={action.isPending} onClick={() => action.mutate({ kind: 'verify', user })}>
                         标记已验证

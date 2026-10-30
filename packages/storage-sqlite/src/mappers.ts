@@ -32,12 +32,26 @@ const num = (row: Row, key: string): number => row[key] as number;
 const nullableStr = (row: Row, key: string): string | null => (row[key] as string | null) ?? null;
 const nullableNum = (row: Row, key: string): number | null => (row[key] as number | null) ?? null;
 
+function parseMembers(raw: string | null): string[] {
+  if (raw === null) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 export function toProject(row: Row): Project {
   return {
     id: asProjectId(str(row, 'id')),
     name: str(row, 'name'),
     repo: nullableStr(row, 'repo_url') === null ? null : { url: str(row, 'repo_url'), defaultBranch: nullableStr(row, 'repo_default_branch') },
     description: nullableStr(row, 'description'),
+    teamId: nullableStr(row, 'team_id'),
+    createdBy: nullableStr(row, 'created_by'),
+    members: parseMembers(nullableStr(row, 'members')),
+    deletedAt: nullableNum(row, 'deleted_at'),
     createdAt: num(row, 'created_at')
   };
 }

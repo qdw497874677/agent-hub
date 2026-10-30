@@ -5,7 +5,19 @@
 export type AccountMail =
   | { readonly kind: 'verify-email'; readonly to: string; readonly displayName: string; readonly token: string; readonly expiresAt: number }
   | { readonly kind: 'reset-password'; readonly to: string; readonly displayName: string; readonly token: string; readonly expiresAt: number }
-  | { readonly kind: 'password-changed'; readonly to: string; readonly displayName: string; readonly at: number };
+  | { readonly kind: 'password-changed'; readonly to: string; readonly displayName: string; readonly at: number }
+  /** 有人拿一个已注册的邮箱来注册（防枚举：页面上看不出区别，只告诉邮箱主人）。 */
+  | { readonly kind: 'already-registered'; readonly to: string; readonly displayName: string }
+  /** 团队邀请（ADR 0011）。 */
+  | {
+      readonly kind: 'invite';
+      readonly to: string;
+      readonly displayName: string;
+      readonly teamName: string;
+      readonly inviterName: string;
+      readonly token: string;
+      readonly expiresAt: number;
+    };
 
 /** 发信。没配发信服务时由「只打日志」的实现顶上。 */
 export interface EmailSender {

@@ -1,10 +1,11 @@
+import { authorizeWorker, type AccessPolicy } from './authorization.ts';
 import { newId } from '../ids.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { EnrollmentRepository } from '../ports/enrollment-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { WorkerControl } from '../ports/worker-control.ts';
 import type { Principal } from '../account.ts';
-import { conflict, type DomainError } from '../errors.ts';
+import { conflict, forbidden, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import { canManageRuntimes, planRuntimeJob, type RuntimeJob, type RuntimeRequest } from '../runtime-install.ts';
 import { isBusy } from '../session.ts';
@@ -16,6 +17,8 @@ export interface RuntimeInstallDeps {
   readonly audit: AuditLog;
   readonly now: () => number;
   readonly newJobId?: () => string;
+  /** 装了账号体系就走 can()（ADR 0011）；不给就用老规则 canManageRuntimes。 */
+  readonly access?: AccessPolicy;
 }
 
 /**
@@ -31,7 +34,13 @@ export async function startRuntimeJob(
   const worker = (await deps.workers.list()).find((candidate) => candidate.workerId === workerId);
   const credential = worker ? await deps.enrollment.credentialFor(workerId) : null;
   const allowed = canManageRuntimes(actor, worker ?? { origin: 'remote' }, credential);
-  if (!allowed.ok) return allowed;
+  if (deps.access) {
+    if (!actor) return err(forbidden('请先登录'));
+    const scoped = await authorizeWorker(deps.access, actor, worker?.origin === 'local' ? null : workerId, 'runtime.install');
+    if (!scoped.ok) return scoped;
+  } else if (!allowed.ok) return allowed;
+  const by = actor ?? (allowed.ok ? allowed.value : null);
+  if (!by) return err(forbidden('请先登录'));
   const busy = (await deps.sessions.listAll()).filter(
     (session) => session.workerId === workerId && session.agentId === request.agentId && isBusy(session)
   ).length;
@@ -48,7 +57,7 @@ export async function startRuntimeJob(
     log: '',
     startedAt: deps.now(),
     endedAt: null,
-    actorEmail: allowed.value.user.email
+    actorEmail: by.user.email
   };
   if (!(await deps.workers.runtimeJob(workerId, job))) return err(conflict('这台机器已经不在线'));
   const label = worker ? `${worker.label}（${workerId}）` : workerId;
@@ -58,8 +67,8 @@ export async function startRuntimeJob(
       : `${request.agentId} ${plan.value.from ? `${plan.value.from} → ` : ''}${job.version}`;
   await deps.audit.append({
     id: newId(),
-    actorId: allowed.value.user.id,
-    actorEmail: allowed.value.user.email,
+    actorId: by.user.id,
+    actorEmail: by.user.email,
     action: job.action === 'install' ? 'runtime.install' : 'runtime.uninstall',
     target: label,
     detail,

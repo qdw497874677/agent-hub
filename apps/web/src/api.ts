@@ -120,6 +120,11 @@ export const api = {
     ),
   makeDirectory: (input: { workerId: string | null; parent: string; name: string }) =>
     post<{ path: string }>('/api/fs/directories', input),
+  trash: () => call<{ id: string; name: string; deletedAt: number | null; createdBy: string | null }[]>('/api/projects-trash'),
+  restoreProject: (projectId: string) =>
+    call<{ id: string; restored: true }>(`/api/projects/${encodeURIComponent(projectId)}/restore`, { method: 'POST', body: '{}' }),
+  purgeProject: (projectId: string, confirmName: string) =>
+    call<{ id: string; purged: true }>(`/api/projects/${encodeURIComponent(projectId)}/purge`, { method: 'POST', body: JSON.stringify({ confirmName }) }),
   deleteProject: (projectId: string, confirmName: string) =>
     call<{ id: string; deleted: true }>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'DELETE', body: JSON.stringify({ confirmName }) }),
   createProject: (input: {
@@ -187,7 +192,7 @@ export const authApi = {
   state: () => call<AuthState>('/api/auth/state'),
   login: (email: string, password: string) => post<{ user: AccountDto }>('/api/auth/login', { email, password }),
   register: (email: string, password: string, displayName?: string) =>
-    post<{ user: AccountDto }>('/api/auth/register', { email, password, displayName }),
+    post<{ user: AccountDto } | { checkEmail: true }>('/api/auth/register', { email, password, displayName }),
   tokenLogin: (token: string) => post<{ user: AccountDto }>('/api/auth/token-login', { token }),
   logout: () => post<{ ok: true }>('/api/auth/logout', {}),
   verifyEmail: (token: string) => post<{ user: AccountDto }>('/api/auth/verify-email', { token }),

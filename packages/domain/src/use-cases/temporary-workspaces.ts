@@ -6,6 +6,8 @@ import { invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { createDirectory, gitOn, parentOf, resolveMachine, rootsOf, type Machine } from './machine-dirs.ts';
+import { authorizeWorker } from './authorization.ts';
+import type { Principal } from '../account.ts';
 import { MANAGED_DIR } from '../directories.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 
@@ -36,6 +38,7 @@ export interface PrepareTemporaryCommand {
   readonly branch?: string | null;
   /** 新分支从哪儿长（换个地方继续到同一台机器：从刚推送的 WIP 分支长）。 */
   readonly base?: string | null;
+  readonly actor?: Principal | null;
 }
 
 /**
@@ -46,7 +49,7 @@ export interface PrepareTemporaryCommand {
  * 数量不限（§10 第 5 条），提示由界面给。
  */
 export async function prepareTemporaryWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'tasks' | 'workspaces'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'tasks' | 'workspaces' | 'access'>,
   command: PrepareTemporaryCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
@@ -55,6 +58,8 @@ export async function prepareTemporaryWorkspaceUseCase(
   if (!task || task.projectId !== project.id) return err(notFound('任务不存在'));
   const resolved = await resolveMachine(deps, command.workerId);
   if (!resolved.ok) return resolved;
+  const allowed = await authorizeWorker(deps.access, command.actor ?? null, resolved.value.workerId);
+  if (!allowed.ok) return allowed;
   const machine = resolved.value;
 
   const id = shortId();

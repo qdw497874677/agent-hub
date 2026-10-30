@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
-import { inMemoryAdmin, inMemoryDeps, inMemoryEnrollment, mailedToken } from '@agent-hub/domain/testing';
+import { inMemoryAdmin, inMemoryDeps, inMemoryEnrollment, addTeamMember } from '@agent-hub/domain/testing';
 import type { WorkerStatus } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -51,8 +51,8 @@ async function signedIn(h: ReturnType<typeof harness>) {
   const member = h.browser();
   const register = (email: string) => ({ method: 'POST', body: JSON.stringify({ email, password: 'long enough pw' }) });
   await owner('/api/auth/register', register('boss@b.co'));
-  await member('/api/auth/register', register('m@b.co'));
-  await member('/api/auth/verify-email', { method: 'POST', body: JSON.stringify({ token: mailedToken(h.admin.accounts, 'm@b.co') }) });
+  await addTeamMember(h.admin.accounts, 'm@b.co', 'long enough pw');
+  await member('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'm@b.co', password: 'long enough pw' }) });
   return { owner, member };
 }
 

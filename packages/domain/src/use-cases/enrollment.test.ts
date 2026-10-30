@@ -19,7 +19,10 @@ async function setup() {
       passwordHash: null,
       emailVerifiedAt: null,
       disabledAt: null,
-      createdAt: 1
+      createdAt: 1,
+      teamId: null,
+      hubAdmin: false,
+      deletedAt: null
     };
     await admin.accounts.users.save(user);
     return { user, loginId: `login-${email}` } as unknown as Principal;

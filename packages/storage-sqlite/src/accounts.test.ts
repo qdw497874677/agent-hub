@@ -12,7 +12,7 @@ test('claimFirstOwner 原子：只有第一个能抢到，停用的 Owner 不算
     const store = openSqliteStore(join(dir, 'hub.db'));
     const user = (id: string): User => ({
       id: id as User['id'], email: `${id}@b.co`, displayName: id, role: 'owner', passwordHash: 'x',
-      emailVerifiedAt: null, disabledAt: null, createdAt: 1
+      emailVerifiedAt: null, disabledAt: null, createdAt: 1, teamId: null, hubAdmin: false, deletedAt: null
     });
     assert.equal(await store.users.claimFirstOwner(user('a')), true);
     assert.equal(await store.users.claimFirstOwner(user('b')), false);
