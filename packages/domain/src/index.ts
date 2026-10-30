@@ -70,6 +70,9 @@ export type { OneTimeTokenRepository } from './ports/one-time-token-repository.t
 export type { OAuthProvider, OAuthProfile, OAuthStart } from './ports/oauth-provider.ts';
 export type { SettingsRepository } from './ports/settings-repository.ts';
 export type { AuditLog } from './ports/audit-log.ts';
+export type { InviteRepository } from './ports/invite-repository.ts';
+export * from './use-cases/team.ts';
+export * from './use-cases/personal.ts';
 export type { WorkerControl } from './ports/worker-control.ts';
 export * from './use-cases/admin.ts';
 export * from './use-cases/accounts.ts';

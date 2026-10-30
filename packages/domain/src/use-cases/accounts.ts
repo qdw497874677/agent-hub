@@ -24,6 +24,8 @@ import { post, sendVerification } from './account-mail.ts';
 import type { TeamRepository } from '../ports/team-repository.ts';
 import type { SettingsRepository } from '../ports/settings-repository.ts';
 import type { OneTimeTokenRepository } from '../ports/one-time-token-repository.ts';
+import type { InviteRepository } from '../ports/invite-repository.ts';
+import type { AuditLog } from '../ports/audit-log.ts';
 
 /**
  * 账号是独立的一块，不进对话那套 Deps：会话用例不需要知道谁在登录。
@@ -45,6 +47,10 @@ export interface AccountDeps {
    * 删号以后才腾出来），首个主人认领不受限。
    */
   readonly maxUsers?: number;
+  /** 团队邀请；没装（单测）就没有邀请功能。 */
+  readonly invites?: InviteRepository;
+  /** 安全事件（登录、改密码、邀请、删人）写这里；没装就不记。 */
+  readonly audit?: AuditLog;
   readonly now: () => number;
 }
 
@@ -173,9 +179,21 @@ export const CLOSED_MESSAGE = '这个 hub 暂不开放注册，请向团队要�
 export const FULL_MESSAGE = '这个 hub 的注册名额已满，请联系管理员';
 
 /** 名额满了没有（首个主人认领除外）。 */
-export async function registrationFull(deps: Pick<AccountDeps, 'users' | 'maxUsers'>): Promise<boolean> {
+export async function registrationFull(deps: Pick<AccountDeps, 'users' | 'maxUsers' | 'invites' | 'now'>): Promise<boolean> {
+  return (await seatsLeft(deps)) <= 0;
+}
+
+/**
+ * 还剩几个名额（HUB_MAX_USERS）；不限 = Infinity。占名额的：没删的账号（停用的也算）+ 还没用的邀请。
+ * 软删的人腾出名额。
+ */
+export async function seatsLeft(deps: Pick<AccountDeps, 'users' | 'maxUsers' | 'invites' | 'now'>): Promise<number> {
   const max = deps.maxUsers ?? 0;
-  return max > 0 && (await deps.users.list()).length >= max;
+  if (max <= 0) return Infinity;
+  const users = (await deps.users.list()).filter((user) => user.deletedAt === null).length;
+  // 勾了「超出名额」的邀请不再占名额（它本来就是额外的）
+  const invites = deps.invites ? (await deps.invites.pending(deps.now())).filter((invite) => !invite.allowOverLimit).length : 0;
+  return max - users - invites;
 }
 
 export interface PasswordLoginCommand {

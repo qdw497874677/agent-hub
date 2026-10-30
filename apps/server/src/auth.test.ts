@@ -100,9 +100,9 @@ test('旧 HUB_TOKEN：过渡期内 Bearer 放行、能换 Owner 登录；过期�
   assert.equal((await call('/api/auth/token-login', { method: 'POST', body: JSON.stringify({ token: 's3cret' }) })).status, 401);
 });
 
-test('登录限流：同一邮箱连错 10 次后 429', async () => {
+test('登录退避：同一邮箱连错 5 次后 429', async () => {
   const { call } = harness();
   const attempt = () => call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'x@x.co', password: 'wrong wrong' }) });
-  for (let i = 0; i < 10; i += 1) assert.equal((await attempt()).status, 400);
+  for (let i = 0; i < 5; i += 1) assert.equal((await attempt()).status, 400);
   assert.equal((await attempt()).status, 429);
 });

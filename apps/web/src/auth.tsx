@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { authApi, RequestFailed, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
+import { authApi, teamApi, RequestFailed, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
 import { DialogShell } from './dialog-shell.tsx';
 
 /**
@@ -23,9 +23,9 @@ function takeUrlToken(): string | null {
 }
 
 /** 邮件里的链接是 `#/verify?token=…` / `#/reset?token=…`：令牌只在 hash 里，不进服务端日志和 Referer。 */
-type MailLink = { kind: 'verify' | 'reset'; token: string };
+type MailLink = { kind: 'verify' | 'reset' | 'invite'; token: string };
 function takeMailLink(): MailLink | null {
-  const match = /^#\/(verify|reset)\?(.*)$/.exec(window.location.hash);
+  const match = /^#\/(verify|reset|invite)\?(.*)$/.exec(window.location.hash);
   if (!match) return null;
   const token = new URLSearchParams(match[2]).get('token');
   window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/`);
@@ -68,6 +68,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, [queryClient]);
 
   if (mailLink?.kind === 'reset') return <ResetPasswordPage token={mailLink.token} onDone={() => setMailLink(null)} />;
+  if (mailLink?.kind === 'invite') return <AcceptInvitePage token={mailLink.token} onDone={() => setMailLink(null)} />;
   if (mailLink?.kind === 'verify') return <VerifyLinkPage token={mailLink.token} onDone={() => setMailLink(null)} />;
   if (exchanging || state.isPending) return <Splash text="正在确认身份…" />;
   if (state.isError) return <Splash text="连不上服务端，稍后刷新重试" />;
@@ -479,6 +480,8 @@ export function AccountMenu() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [devices, setDevices] = useState(false);
+  const [team, setTeam] = useState(false);
+  const [settings, setSettings] = useState(false);
   const leave = useMutation({
     mutationFn: authApi.logout,
     onSettled: () => {
@@ -521,6 +524,24 @@ export function AccountMenu() {
             登录设备
           </button>
           <button
+            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
+            onClick={() => {
+              setOpen(false);
+              setTeam(true);
+            }}
+          >
+            我的团队
+          </button>
+          <button
+            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
+            onClick={() => {
+              setOpen(false);
+              setSettings(true);
+            }}
+          >
+            个人设置
+          </button>
+          <button
             className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-rust hover:text-rust"
             onClick={() => leave.mutate()}
             disabled={leave.isPending}
@@ -530,6 +551,272 @@ export function AccountMenu() {
         </div>
       )}
       {devices && <DevicesDialog onClose={() => setDevices(false)} />}
+      {team && <TeamDialog onClose={() => setTeam(false)} />}
+      {settings && <SettingsDialog onClose={() => setSettings(false)} />}
     </div>
+  );
+}
+
+const roleLabel = (role: 'owner' | 'member') => (role === 'owner' ? '主人' : '成员');
+const SMALL_BTN = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+const SMALL_DANGER = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-rust hover:text-rust disabled:opacity-40';
+
+/** 我的团队：人人能看成员；团队 owner（和 hub 管理员）能邀请、撤销邀请、改角色、删人。 */
+function TeamDialog({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const me = useAccount();
+  const team = useQuery({ queryKey: ['team'], queryFn: teamApi.team });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['team'] });
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<'owner' | 'member'>('member');
+  const [overLimit, setOverLimit] = useState(false);
+  const invite = useMutation({
+    mutationFn: () => teamApi.invite(email.trim(), role, overLimit),
+    onSuccess: async () => {
+      setEmail('');
+      setOverLimit(false);
+      await refresh();
+    }
+  });
+  const act = useMutation({
+    mutationFn: async (input: { kind: 'revoke' | 'role' | 'remove'; id: string; role?: 'owner' | 'member' }) => {
+      if (input.kind === 'revoke') return teamApi.revokeInvite(input.id);
+      if (input.kind === 'role') return teamApi.setRole(input.id, input.role!);
+      return teamApi.remove(input.id);
+    },
+    onSuccess: refresh
+  });
+  const data = team.data;
+  const full = data?.seatsLeft !== null && data?.seatsLeft !== undefined && data.seatsLeft <= 0;
+  return (
+    <DialogShell title="我的团队" onClose={onClose}>
+      <p className="text-sub text-primary">{data?.name ?? '我的团队'}</p>
+      <p className="mt-1 text-meta text-tertiary">
+        成员能看到自己的项目和别人分享给他的；团队主人能看到团队里所有的项目。
+        {data?.seatsLeft !== null && data?.seatsLeft !== undefined ? ` 剩余名额 ${Math.max(0, data.seatsLeft)}。` : ''}
+      </p>
+      {team.isPending ? (
+        <p className="mt-4 text-meta text-tertiary">加载中…</p>
+      ) : team.isError ? (
+        <p role="alert" className="mt-4 text-meta text-rust">{message(team.error)}</p>
+      ) : (
+        <>
+          <ul className="mt-3 flex max-h-[40dvh] flex-col gap-2 overflow-y-auto">
+            {data!.members.map((member) => (
+              <li key={member.id} data-testid="team-member" className="flex items-center gap-2 rounded-sm border border-hair bg-card px-3 py-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-meta text-primary">
+                    {member.displayName}
+                    {member.id === me?.id && <span className="ml-2 text-[11px] text-tertiary">你</span>}
+                  </p>
+                  <p className="truncate text-[11px] text-tertiary">
+                    {member.email} · {member.teamOwner ? '团队主人' : roleLabel(member.role)}
+                    {member.disabled ? ' · 已停用' : ''}
+                  </p>
+                </div>
+                {data!.canManage && !member.teamOwner && member.id !== me?.id && (
+                  <>
+                    <button
+                      className={SMALL_BTN}
+                      disabled={act.isPending}
+                      onClick={() => act.mutate({ kind: 'role', id: member.id, role: member.role === 'owner' ? 'member' : 'owner' })}
+                    >
+                      {member.role === 'owner' ? '降为成员' : '设为主人'}
+                    </button>
+                    <button
+                      className={SMALL_DANGER}
+                      disabled={act.isPending}
+                      onClick={() => {
+                        if (window.confirm(`删除 ${member.email}？账号会被匿名化、立刻掉线，TA 的项目转给团队主人。不能撤销。`))
+                          act.mutate({ kind: 'remove', id: member.id });
+                      }}
+                    >
+                      删除
+                    </button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+          {data!.canManage && (
+            <>
+              {data!.invites.length > 0 && (
+                <>
+                  <p className="mt-4 text-meta text-secondary">待接受的邀请</p>
+                  <ul className="mt-2 flex flex-col gap-2">
+                    {data!.invites.map((pending) => (
+                      <li key={pending.id} data-testid="team-invite" className="flex items-center gap-2 rounded-sm border border-dashed border-hair px-3 py-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-meta text-primary">{pending.email}</p>
+                          <p className="truncate text-[11px] text-tertiary">
+                            {roleLabel(pending.role)} · {when(pending.expiresAt)} 前有效{pending.allowOverLimit ? ' · 超出名额' : ''}
+                          </p>
+                        </div>
+                        <button className={SMALL_DANGER} disabled={act.isPending} onClick={() => act.mutate({ kind: 'revoke', id: pending.id })}>
+                          撤销
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+              <form
+                className="mt-4 flex flex-col gap-2"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (email.trim() && !invite.isPending) invite.mutate();
+                }}
+              >
+                <label className="text-meta text-secondary" htmlFor="invite-email">邀请新成员（对方会收到一封邀请信，7 天内有效）</label>
+                <div className="flex gap-2">
+                  <input
+                    id="invite-email"
+                    type="email"
+                    autoCapitalize="none"
+                    className={INPUT}
+                    placeholder="name@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                  <select aria-label="角色" className="rounded-sm border border-hair bg-card px-2 text-meta text-primary" value={role} onChange={(e) => setRole(e.target.value as 'owner' | 'member')}>
+                    <option value="member">成员</option>
+                    <option value="owner">主人</option>
+                  </select>
+                </div>
+                {full && data!.isTeamOwner && (
+                  <label className="flex items-center gap-2 text-meta text-secondary">
+                    <input type="checkbox" checked={overLimit} onChange={(e) => setOverLimit(e.target.checked)} />
+                    名额已满，仍然邀请（超出 HUB_MAX_USERS）
+                  </label>
+                )}
+                {invite.isSuccess && <p role="status" className="text-meta text-secondary">邀请已发出。</p>}
+                {invite.error && <p role="alert" className="text-meta text-rust">{message(invite.error)}</p>}
+                <button type="submit" className={PRIMARY} disabled={!email.trim() || invite.isPending}>
+                  {invite.isPending ? '发送中…' : '发送邀请'}
+                </button>
+              </form>
+            </>
+          )}
+          {act.error && <p role="alert" className="mt-2 text-meta text-rust">{message(act.error)}</p>}
+        </>
+      )}
+    </DialogShell>
+  );
+}
+
+/** 个人设置：改显示名；改密码要原密码，改完其他设备都会退出。 */
+function SettingsDialog({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const me = useAccount();
+  const [name, setName] = useState(me?.displayName ?? '');
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [again, setAgain] = useState('');
+  const profile = useMutation({
+    mutationFn: () => authApi.updateProfile(name.trim()),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: STATE_KEY })
+  });
+  const password = useMutation({
+    mutationFn: () => authApi.changePassword(oldPassword, newPassword),
+    onSuccess: async () => {
+      setOldPassword('');
+      setNewPassword('');
+      setAgain('');
+      await queryClient.invalidateQueries({ queryKey: ['auth', 'logins'] });
+    }
+  });
+  const mismatch = again !== '' && again !== newPassword;
+  return (
+    <DialogShell title="个人设置" onClose={onClose}>
+      <p className="text-sub text-primary">个人设置</p>
+      <form
+        className="mt-3 flex flex-col gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (name.trim() && !profile.isPending) profile.mutate();
+        }}
+      >
+        <label className="text-meta text-secondary" htmlFor="settings-name">显示名</label>
+        <input id="settings-name" className={INPUT} maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
+        {profile.isSuccess && <p role="status" className="text-meta text-secondary">已保存。</p>}
+        {profile.error && <p role="alert" className="text-meta text-rust">{message(profile.error)}</p>}
+        <button type="submit" className={SECONDARY} disabled={!name.trim() || name.trim() === me?.displayName || profile.isPending}>
+          保存显示名
+        </button>
+      </form>
+      <form
+        className="mt-5 flex flex-col gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (oldPassword && newPassword && !mismatch && !password.isPending) password.mutate();
+        }}
+      >
+        <p className="text-meta text-secondary">修改密码（改完后其他设备都会退出，这台保持登录，并给你发一封通知信）</p>
+        <label className="text-meta text-secondary" htmlFor="settings-old">原密码</label>
+        <input id="settings-old" type="password" autoComplete="current-password" className={INPUT} value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
+        <label className="text-meta text-secondary" htmlFor="settings-new">新密码（至少 10 位）</label>
+        <input id="settings-new" type="password" autoComplete="new-password" className={INPUT} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
+        <label className="text-meta text-secondary" htmlFor="settings-again">再输一遍</label>
+        <input id="settings-again" type="password" autoComplete="new-password" className={INPUT} value={again} onChange={(e) => setAgain(e.target.value)} />
+        {mismatch && <p className="text-meta text-rust">两次输入不一样</p>}
+        {password.isSuccess && <p role="status" className="text-meta text-secondary">密码已修改，其他设备已退出。</p>}
+        {password.error && <p role="alert" className="text-meta text-rust">{message(password.error)}</p>}
+        <button type="submit" className={PRIMARY} disabled={!oldPassword || !newPassword || again !== newPassword || password.isPending}>
+          {password.isPending ? '请稍候…' : '修改密码'}
+        </button>
+      </form>
+    </DialogShell>
+  );
+}
+
+/** 打开邀请信里的链接：看是谁邀请、进哪个团队，设密码就加入（邮箱算已验证）。 */
+function AcceptInvitePage({ token, onDone }: { token: string; onDone: () => void }) {
+  const queryClient = useQueryClient();
+  const preview = useQuery({ queryKey: ['auth', 'invite', token], queryFn: () => authApi.previewInvite(token), retry: false });
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [again, setAgain] = useState('');
+  const accept = useMutation({
+    mutationFn: () => authApi.acceptInvite(token, password, name.trim() || undefined),
+    onSuccess: async () => {
+      queryClient.removeQueries({ predicate: (query) => query.queryKey[0] !== 'auth' });
+      await queryClient.invalidateQueries({ queryKey: STATE_KEY });
+      onDone();
+    }
+  });
+  const mismatch = again !== '' && again !== password;
+  if (preview.isPending) return <Splash text="正在打开邀请…" />;
+  if (preview.isError)
+    return (
+      <Card icon="⚠️" title="邀请用不了">
+        <p className="text-meta text-secondary">{message(preview.error)}</p>
+        <button className={PRIMARY} onClick={onDone}>回到 agent-hub</button>
+      </Card>
+    );
+  return (
+    <Card icon="👋" title={`加入「${preview.data.teamName}」`}>
+      <p className="text-meta text-secondary">
+        {preview.data.inviterName} 邀请 <span className="text-primary">{preview.data.email}</span> 以{roleLabel(preview.data.role)}身份加入。设个密码就能开始用。
+      </p>
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (password && !mismatch && !accept.isPending) accept.mutate();
+        }}
+      >
+        <label className="text-meta text-secondary" htmlFor="invite-name">名字（可留空）</label>
+        <input id="invite-name" autoComplete="nickname" className={INPUT} value={name} onChange={(e) => setName(e.target.value)} />
+        <label className="text-meta text-secondary" htmlFor="invite-password">密码（至少 10 位）</label>
+        <input id="invite-password" type="password" autoComplete="new-password" className={INPUT} value={password} onChange={(e) => setPassword(e.target.value)} />
+        <label className="text-meta text-secondary" htmlFor="invite-again">再输一遍</label>
+        <input id="invite-again" type="password" autoComplete="new-password" className={INPUT} value={again} onChange={(e) => setAgain(e.target.value)} />
+        {mismatch && <p className="text-meta text-rust">两次输入不一样</p>}
+        {accept.error && <p role="alert" className="text-meta text-rust">{message(accept.error)}</p>}
+        <button type="submit" className={`mt-2 ${PRIMARY}`} disabled={!password || again !== password || accept.isPending}>
+          {accept.isPending ? '请稍候…' : '加入并登录'}
+        </button>
+      </form>
+    </Card>
   );
 }

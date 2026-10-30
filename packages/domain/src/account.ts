@@ -199,3 +199,33 @@ export interface AuditEntry {
   /** 发生在哪个团队（团队 owner 只看得到自己团队的）；hub 级事件是 null。 */
   readonly teamId?: string | null;
 }
+
+/**
+ * 团队邀请（ADR 0011）：邀请人所在团队 + 一个角色。链接里的令牌库里只存哈希，7 天有效，用一次作废。
+ * 接受邀请 = 证明邮箱是他的，新账号直接算已验证。
+ */
+export type InviteId = string & { readonly __brand: 'InviteId' };
+export const newInviteId = (): InviteId => newId() as InviteId;
+export const asInviteId = (value: string): InviteId => value as InviteId;
+export interface Invite {
+  readonly id: InviteId;
+  readonly tokenHash: string;
+  readonly teamId: TeamId;
+  /** 规范化后的邮箱。 */
+  readonly email: string;
+  readonly role: Role;
+  readonly invitedBy: UserId;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly acceptedAt: number | null;
+  readonly revokedAt: number | null;
+  /** 团队 owner 明确选了「超出名额也邀请」（HUB_MAX_USERS）。 */
+  readonly allowOverLimit: boolean;
+}
+export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const invitePending = (invite: Invite, now: number): boolean =>
+  invite.acceptedAt === null && invite.revokedAt === null && invite.expiresAt > now;
+
+/** 删掉的人匿名化后的邮箱 / 名字（邮箱列唯一，所以带上 id）。 */
+export const anonymizedEmail = (id: UserId): string => `deleted-${id}@deleted.invalid`;
+export const ANONYMIZED_NAME = '已删除的用户';

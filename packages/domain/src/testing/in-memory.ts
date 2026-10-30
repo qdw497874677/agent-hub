@@ -1,4 +1,7 @@
 import { seedAccount } from '../use-cases/accounts.ts';
+import { invitePending } from '../account.ts';
+import type { Invite } from '../account.ts';
+import type { InviteRepository } from '../ports/invite-repository.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 import type { WorkLogEntry } from '../work-log.ts';
 import type {
@@ -422,6 +425,9 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
   readonly loginRows: Map<string, Login>;
   readonly oneTimeRows: Map<string, OneTimeToken>;
   readonly teamRows: Map<string, Team>;
+  readonly inviteRows: Map<string, Invite>;
+  readonly auditRows: AuditEntry[];
+  readonly invites: InviteRepository;
 } {
   const users = new Map<string, User>();
   const loginRows = new Map<string, Login>();
@@ -430,8 +436,30 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
   const teamRows = new Map<string, Team>();
   let settings: HubSettings = DEFAULT_SETTINGS;
   let counter = 0;
+  const inviteRows = new Map<string, Invite>();
+  const auditRows: AuditEntry[] = [];
   return {
     sent,
+    inviteRows,
+    auditRows,
+    audit: {
+      append: async (entry) => void auditRows.unshift(entry),
+      recent: async (limit) => auditRows.slice(0, limit)
+    },
+    invites: {
+      save: async (invite) => void inviteRows.set(invite.id, invite),
+      byId: async (id) => inviteRows.get(id) ?? null,
+      byTokenHash: async (hash) => [...inviteRows.values()].find((row) => row.tokenHash === hash) ?? null,
+      forTeam: async (teamId) => [...inviteRows.values()].filter((row) => row.teamId === teamId).sort((a, b) => b.createdAt - a.createdAt),
+      pending: async (at) => [...inviteRows.values()].filter((row) => invitePending(row, at)),
+      accept: async (hash, at) => {
+        const row = [...inviteRows.values()].find((candidate) => candidate.tokenHash === hash);
+        if (!row || !invitePending(row, at)) return null;
+        const used = { ...row, acceptedAt: at };
+        inviteRows.set(row.id, used);
+        return used;
+      }
+    },
     loginRows,
     oneTimeRows,
     now,
@@ -743,7 +771,7 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
 }
 
 /** 测试用：从「已发出的信」里取某人最新的验证 / 重置令牌（相当于去邮箱点链接）。 */
-export function mailedToken(accounts: { readonly sent: readonly AccountMail[] }, email: string, kind: 'verify-email' | 'reset-password' = 'verify-email'): string {
+export function mailedToken(accounts: { readonly sent: readonly AccountMail[] }, email: string, kind: 'verify-email' | 'reset-password' | 'invite' = 'verify-email'): string {
   const mail = [...accounts.sent].reverse().find((m) => m.to === email && m.kind === kind);
   if (!mail || !('token' in mail)) throw new Error(`没给 ${email} 发过 ${kind}`);
   return mail.token;

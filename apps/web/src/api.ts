@@ -48,9 +48,13 @@ import type {
   AssetRevisionDto,
   AssetDiffDto,
   GitScanDto,
-  SecretsOverviewDto
+  SecretsOverviewDto,
+  TeamDto,
+  InviteDto,
+  InvitePreviewDto
 } from '@agent-hub/contract';
 
+export type { TeamDto, InviteDto, InvitePreviewDto };
 export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
 
 export interface ApiError {
@@ -201,7 +205,25 @@ export const authApi = {
   resetPassword: (token: string, password: string) => post<{ user: AccountDto }>('/api/auth/password/reset', { token, password }),
   logins: () => call<LoginDeviceDto[]>('/api/auth/logins'),
   revokeLogin: (id: string) => call<{ current: boolean }>(`/api/auth/logins/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  revokeOtherLogins: () => post<{ ok: true }>('/api/auth/logins/revoke-others', {})
+  revokeOtherLogins: () => post<{ ok: true }>('/api/auth/logins/revoke-others', {}),
+  changePassword: (oldPassword: string, newPassword: string) => post<{ ok: true }>('/api/auth/password/change', { oldPassword, newPassword }),
+  updateProfile: (displayName: string) =>
+    call<{ user: AccountDto }>('/api/auth/profile', { method: 'PATCH', body: JSON.stringify({ displayName }) }),
+  previewInvite: (token: string) => post<InvitePreviewDto>('/api/auth/invite/preview', { token }),
+  acceptInvite: (token: string, password: string, displayName?: string) =>
+    post<{ user: AccountDto }>('/api/auth/invite/accept', { token, password, displayName })
+};
+
+/** 团队（ADR 0011）：成员都能看，团队 owner / hub 管理员能邀请、改角色、删人。 */
+export const teamApi = {
+  team: () => call<TeamDto>('/api/team'),
+  invite: (email: string, role: 'owner' | 'member', allowOverLimit = false) =>
+    post<InviteDto>('/api/team/invites', { email, role, allowOverLimit }),
+  revokeInvite: (id: string) => call<InviteDto>(`/api/team/invites/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  setRole: (id: string, role: 'owner' | 'member') =>
+    call<{ ok: true }>(`/api/team/members/${encodeURIComponent(id)}/role`, { method: 'PUT', body: JSON.stringify({ role }) }),
+  remove: (id: string) =>
+    call<{ transferredProjects: number }>(`/api/team/members/${encodeURIComponent(id)}`, { method: 'DELETE' })
 };
 
 export const adminApi = {

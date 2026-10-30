@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { adminApi } from '../api.ts';
+import { adminApi, teamApi } from '../api.ts';
 import type { AdminUserDto } from '../api.ts';
 import { useAccount } from '../auth.tsx';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAction } from './shared.tsx';
@@ -15,12 +15,13 @@ export function Users() {
     adminApi.saveSettings({ localWorkerGrants: on ? [...grants.filter((id) => id !== user.id), user.id] : grants.filter((id) => id !== user.id) })
   );
   const action = useAdminAction(
-    ({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke' | 'verify'; user: AdminUserDto }) => {
+    ({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke' | 'verify' | 'delete'; user: AdminUserDto }) => {
       if (kind === 'disable') return adminApi.disable(user.id);
       if (kind === 'enable') return adminApi.enable(user.id);
       if (kind === 'promote') return adminApi.setRole(user.id, 'owner');
       if (kind === 'demote') return adminApi.setRole(user.id, 'member');
       if (kind === 'verify') return adminApi.markVerified(user.id);
+      if (kind === 'delete') return teamApi.remove(user.id);
       return adminApi.revokeLogins(user.id);
     }
   );
@@ -127,6 +128,18 @@ export function Users() {
                         停用
                       </button>
                     )}
+                    {!self && !user.hubAdmin ? (
+                      <button
+                        className={DANGER}
+                        disabled={action.isPending}
+                        onClick={() => {
+                          if (window.confirm(`删除 ${user.email}？账号会被匿名化，项目转给 TA 的团队主人。不能撤销。`))
+                            action.mutate({ kind: 'delete', user });
+                        }}
+                      >
+                        删除
+                      </button>
+                    ) : null}
                   </div>
                 </li>
               );
