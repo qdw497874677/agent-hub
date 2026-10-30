@@ -423,6 +423,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   assets: { deps: assetDeps, audit: store.audit },
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
+  activity: { audit: store.audit, users: store.users },
   enrollment: {
     deps: enrollmentDeps,
     bootstrapScript: join(repoRoot, 'scripts', 'bootstrap-worker.sh'),

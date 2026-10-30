@@ -108,6 +108,14 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 const post = <T>(path: string, body: unknown): Promise<T> =>
   call<T>(path, { method: 'POST', body: JSON.stringify(body) });
 
+/** 会话详情里的「谁做了什么」。 */
+export interface SessionActivityDto {
+  readonly action: 'session.start' | 'session.fork' | 'session.interrupt' | 'session.continue';
+  readonly actor: { readonly id: string; readonly name: string };
+  readonly detail: string;
+  readonly at: number;
+}
+
 export const api = {
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
   probeWorker: (workerId: string) => post<{ ok: true }>(`/api/workers/${encodeURIComponent(workerId)}/probe`, {}),
@@ -173,6 +181,7 @@ export const api = {
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
   sessionAssets: (sessionId: string) => call<SessionAssetsDto>(`/api/sessions/${sessionId}/assets`),
+  activity: (sessionId: string) => call<SessionActivityDto[]>(`/api/sessions/${sessionId}/activity`),
   events: (sessionId: string, after = 0) =>
     call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>

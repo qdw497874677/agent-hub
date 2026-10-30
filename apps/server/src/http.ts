@@ -93,6 +93,8 @@ import type { DeleteProjectDeps } from '@agent-hub/domain';
 import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
+import { recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity } from './session-activity.ts';
+import type { SessionActivityOptions } from './session-activity.ts';
 import type { AuthOptions } from './auth.ts';
 
 export interface AppOptions {
@@ -113,6 +115,8 @@ export interface AppOptions {
   readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'>;
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
   readonly guard?: RequestGuard;
+  /** 会话里「谁做的」：操作审计 + 作者名刷新；只在有账号体系时装。 */
+  readonly activity?: SessionActivityOptions;
   /**
    * 等 agent 回报它改完之后的可调项。
    *
@@ -121,6 +125,12 @@ export interface AppOptions {
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
 }
+
+/** prompt 路由里 bodyLimit 之前认出的发送人。 */
+const senders = new WeakMap<Context, Principal | null>();
+
+const authorOf = (actor: Principal | null) =>
+  actor ? { author: { id: actor.user.id, name: actor.user.displayName } } : {};
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; response: Response };
 /** 契约里的 zod schema 只用到这一点点形状；server 不必直接依赖 zod。 */
@@ -326,7 +336,8 @@ export function createApp(options: AppOptions): Hono {
 
   app.get('/api/projects/:projectId/canvas', async (c) => {
     const result = await loadCanvas(deps, c.req.param('projectId'));
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    if (!result.ok) return fail(c, result.error);
+    return c.json({ ...result.value, previews: await refreshPreviewAuthors(options.activity, result.value.previews) });
   });
 
   app.put('/api/projects/:projectId/layout', async (c) => {
@@ -415,14 +426,23 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/derive', async (c) => {
     const input = await body(c, deriveSessionRequest);
     if (!input.ok) return input.response;
-    const result = await deriveSessionUseCase(deps, { ...input.value, actor: principalOf(c) });
+    const actor = principalOf(c);
+    const result = await deriveSessionUseCase(deps, { ...input.value, actor });
+    if (result.ok) await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
   app.post('/api/sessions/fork', async (c) => {
     const input = await body(c, forkSessionRequest);
     if (!input.ok) return input.response;
-    const result = await forkSessionUseCase(deps, { ...input.value, actor: principalOf(c) });
+    const actor = principalOf(c);
+    const result = await forkSessionUseCase(deps, { ...input.value, actor });
+    if (result.ok) {
+      const origin = result.value.origin;
+      const at = origin.kind === 'fork' ? ` #${origin.atSeq}` : '';
+      await recordSessionAction(deps, options.activity, c, actor, 'session.fork', result.value.id, `从 ${input.value.sessionId}${at} 分叉`);
+      await recordSessionAction(deps, options.activity, c, actor, 'session.fork', input.value.sessionId, `分叉出 ${result.value.id}`);
+    }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
@@ -430,12 +450,23 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/:sessionId/continue', async (c) => {
     const input = await body(c, continueElsewhereRequest);
     if (!input.ok) return input.response;
-    const result = await continueElsewhereUseCase(deps, { sessionId: c.req.param('sessionId'), ...input.value, home: homedir(), actor: principalOf(c) });
+    const actor = principalOf(c);
+    const from = c.req.param('sessionId');
+    const result = await continueElsewhereUseCase(deps, { sessionId: from, ...input.value, home: homedir(), actor });
+    if (result.ok) {
+      await recordSessionAction(deps, options.activity, c, actor, 'session.continue', result.value.id, `接着 ${from} 换机继续`);
+      await recordSessionAction(deps, options.activity, c, actor, 'session.continue', from, `换到 ${result.value.id} 继续`);
+    }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
   app.post(
     '/api/sessions/:sessionId/prompt',
+    // 登录态按原始 Request 记着；bodyLimit 会换掉 c.req.raw，所以先把发送人拿出来
+    async (c, next) => {
+      senders.set(c, principalOf(c));
+      await next();
+    },
     // base64 比原始字节大三分之一，再留一点给 JSON 外壳。真正的逐项校验在 domain。
     bodyLimit({
       maxSize: Math.ceil((ATTACHMENT_LIMITS.totalBytes * 4) / 3) + 256 * 1024,
@@ -447,7 +478,8 @@ export function createApp(options: AppOptions): Hono {
     const result = await promptSessionUseCase(deps, {
       sessionId: c.req.param('sessionId'),
       text: input.value.text,
-      attachments: input.value.attachments
+      attachments: input.value.attachments,
+      ...authorOf(senders.get(c) ?? null)
     });
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   }
@@ -489,14 +521,20 @@ export function createApp(options: AppOptions): Hono {
 
   app.post('/api/sessions/:sessionId/interrupt', async (c) => {
     const result = await interruptSessionUseCase(deps, c.req.param('sessionId'));
+    if (result.ok) await recordSessionAction(deps, options.activity, c, principalOf(c), 'session.interrupt', c.req.param('sessionId'), '');
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   });
 
   app.get('/api/sessions/:sessionId/events', async (c) => {
     const after = Number(c.req.query('after') ?? 0);
     const sessionId = asSessionId(c.req.param('sessionId'));
-    return c.json(await deps.sessions.eventsAfter(sessionId, Number.isFinite(after) ? after : 0));
+    return c.json(await refreshAuthors(options.activity, await deps.sessions.eventsAfter(sessionId, Number.isFinite(after) ? after : 0)));
   });
+
+  // 会话详情里的「谁做了什么」：开、分叉、停、换机继续
+  app.get('/api/sessions/:sessionId/activity', async (c) =>
+    c.json(options.activity ? await sessionActivity(options.activity, c.req.param('sessionId')) : [])
+  );
 
   /** SSE：一条连接推所有会话的事件，前端按 sessionId 分流。 */
   app.get('/api/stream', (c) =>

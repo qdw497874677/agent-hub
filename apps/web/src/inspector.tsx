@@ -1,5 +1,6 @@
+import { localTime } from './local-time.ts';
 import { useEffect, useState } from 'react';
-import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionDto } from './api.ts';
+import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionActivityDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { StatusPill } from './status.tsx';
 import type { LiveSession } from './live.ts';
@@ -52,12 +53,24 @@ interface Props {
  * 这里只放「看」的东西——能力、资产、产出物、事件流。动作（分叉、换个地方继续）在对话页的「更多」
  * 和每条消息的操作菜单里；说话在对话里说。点遮罩或按 Esc 关掉。
  */
+const ACTION_LABEL: Record<string, string> = {
+  'session.start': '开了会话',
+  'session.fork': '分叉',
+  'session.interrupt': '停下',
+  'session.continue': '换机继续'
+};
+
 export function SessionDetails({ canvas, session, artifacts, live, onClose }: Props) {
   const [showJournal, setShowJournal] = useState(false);
   const [journal, setJournal] = useState<readonly JournalEntryDto[]>([]);
+  const [activity, setActivity] = useState<readonly SessionActivityDto[]>([]);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const workers = useWorkers();
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
+
+  useEffect(() => {
+    void api.activity(session.id).then(setActivity, () => setActivity([]));
+  }, [session.id, session.status]);
 
   useEffect(() => {
     if (!showJournal) return;
@@ -118,6 +131,21 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose }: Pr
               capabilityNames.map((name) => <CapabilityRow key={name} name={name} capability={agent.capabilities[name]} />)
             ) : (
               <p className="text-meta text-tertiary">该 agent 当前没有在线节点</p>
+            )}
+          </section>
+          <section data-testid="session-activity">
+            <p className="mb-1 text-meta text-tertiary">谁做了什么</p>
+            {activity.length === 0 ? (
+              <p className="text-meta text-tertiary">没有记录（早于这项功能，或不是登录用户操作的）</p>
+            ) : (
+              [...activity].reverse().map((item, index) => (
+                <p key={index} className="flex min-w-0 items-baseline gap-1.5 text-meta" data-testid="activity-row">
+                  <span className="shrink-0 text-secondary">{item.actor.name}</span>
+                  <span className="shrink-0 text-primary">{ACTION_LABEL[item.action] ?? item.action}</span>
+                  <span className="truncate text-tertiary" title={item.detail}>{item.detail}</span>
+                  <span className="ml-auto shrink-0 font-mono text-tertiary">{localTime(item.at)}</span>
+                </p>
+              ))
             )}
           </section>
           <SessionAssets sessionId={session.id} detailed />

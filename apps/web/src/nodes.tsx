@@ -1,3 +1,4 @@
+import { AuthorTag } from './author.tsx';
 import { Handle, NodeResizer, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useState } from 'react';
 import type { SessionDto, TaskDto, WorkerInfoDto } from './api.ts';
@@ -5,7 +6,7 @@ import { WorkerChip } from './workers.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
-import { cardBlocks, waitingForReply, type LiveSession } from './live.ts';
+import { cardBlocks, multipleAuthors, waitingForReply, type LiveSession } from './live.ts';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
@@ -70,13 +71,14 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
   );
 }
 
-function BlockView({ block }: { block: LiveSession['blocks'][number] }) {
+function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]; showAuthor: boolean }) {
   if (block.kind === 'thinking') return null;
   if (block.kind === 'prompt') {
     // 和对话页一样：用户的话靠右的气泡，卡片上收紧一点。附件只列名字。
     const names = block.attachments.map((item) => (item.kind === 'mention' ? `@${item.path}` : item.name));
     return (
       <div className="flex flex-col items-end gap-0.5" data-testid="card-msg-user">
+        {showAuthor ? <AuthorTag author={block.author} size="sm" /> : null}
         {block.text !== '' ? (
           <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary">{block.text}</p>
         ) : null}
@@ -144,6 +146,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const failed = status === 'failed' || status === 'interrupted';
   const failureReason = failed ? (live?.reason ?? null) : null;
   const blocks = live?.blocks ?? [];
+  const showAuthor = multipleAuthors(blocks);
   const dimmed = status === 'stopped';
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
 
@@ -241,7 +244,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
               : '尚无输出'}
           </p>
         ) : (
-          cardBlocks(blocks).map((block, index) => <BlockView key={index} block={block} />)
+          cardBlocks(blocks).map((block, index) => <BlockView key={index} block={block} showAuthor={showAuthor} />)
         )}
       </div>
 

@@ -524,6 +524,7 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
       if (filter.since !== undefined) { where.push('at >= ?'); params.push(filter.since); }
       if (filter.until !== undefined) { where.push('at <= ?'); params.push(filter.until); }
       if (filter.teamId !== undefined) { where.push('team_id = ?'); params.push(filter.teamId); }
+      if (filter.target !== undefined) { where.push('target = ?'); params.push(filter.target); }
       const sql = `SELECT * FROM audit_log${where.length ? ` WHERE ${where.join(' AND ')}` : ''} ORDER BY at DESC, rowid DESC LIMIT ?`;
       return (db.prepare(sql).all(...params, filter.limit) as unknown as AuditRow[]).map(toAudit);
     }
