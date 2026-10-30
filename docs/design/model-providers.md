@@ -1,6 +1,6 @@
 # Hub 统一配置的模型提供商（Model Providers）
 
-> 状态：设计草案（未实现）· 2026-10-30 · 关联：ADR 0013（草案）、ADR 0003/0007/0010/0011、`runtime-adapter-contract.md`
+> 状态：已拍板（ADR 0013 accepted），实现中· 2026-10-30 · 关联：ADR 0013（草案）、ADR 0003/0007/0010/0011、`runtime-adapter-contract.md`
 > 一句话：**能做，三家（Pi 1.4.0、OpenCode 1.19.4 与 v2.2.2、Grok 1.0.70）都已在本机实测「每进程注入一个 OpenAI 兼容提供商 → 模型清单出现 → 真实回复 HUB-OK」，且全局配置零改动。** Grok 支持自定义提供商，但只能靠「每会话私有 GROK_HOME」注入，代价最大。
 
 ## 1. 结论与每个 runtime 的注入机制（实测）
@@ -123,7 +123,22 @@ env_key = "HUB_PROVIDER_1_KEY"
 3. 用户本机配置里若已有同名 `hub-*`：渲染跳过并告警，不覆盖。
 4. 团队可选「只允许 hub 提供商」（禁原生模型）——依赖各 runtime 是否能禁用原生：OpenCode v2 有 `policies`、Grok 有 `allowed_models`、Pi 有 `--models` 过滤；作为待决 D5，不进 v1。
 
-## 8. 待 David 决定
+## 8. 决定（2026-10-30 David 拍板）
+
+| # | 决定 |
+|---|---|
+| D1 | **从第一天就走本机中转**：worker 起 loopback 代理，每会话 token，代理注入真 key；agent 只见中转 URL + 会话 token |
+| D2 | 支持个人（用户级）自带 key 提供商，另有 team / hub 级 |
+| D3 | 只下发选中的那个提供商；换提供商 = 重启会话 |
+| D4 | 测试连接从 worker 发起 |
+| D5 | v1 不做「禁用原生模型」 |
+| D6 | Grok 支持（每会话私有 GROK_HOME，接受代价） |
+| D7 | OpenCode 以 v2 方言为准；v1 只在零成本时保留 |
+| D8 | 先做 runtime-adapter-contract M1–M4（行为不变），再做提供商 |
+
+中转安全要求：只绑 127.0.0.1；每会话随机 token（会话结束即失效）；key 不进 argv / 文件 / 日志；conformance 断言。§4 的方案 C 即为 v1 方案，方案 A 不再采用。
+
+### 原始待决项（存档）
 
 - **D1 密钥形态**：v1 env 注入（agent 的工具子进程能读到 key）还是直接上本机 relay（key 不进 agent）？建议：v1 env + 告知，v2 relay。
 - **D2 作用域**：提供商只允许 team 级 + hub 级？是否需要「个人提供商」（用户自带 key）？
