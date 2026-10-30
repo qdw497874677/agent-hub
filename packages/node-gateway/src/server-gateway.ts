@@ -7,6 +7,7 @@ import {
   PROTOCOL_MISMATCH_CLOSE,
   PROTOCOL_VERSION,
   assetsSync,
+  providerTest,
   createRpcChannel,
   fsListDirectories,
   fsListFiles,
@@ -34,7 +35,8 @@ import type {
   WorkerStatus,
   WorkerUpdate,
   WorkspaceGit,
-  RuntimeJob
+  RuntimeJob,
+  ProviderProtocol,
 } from '@agent-hub/domain';
 import { conflict, invalid, unavailable } from '@agent-hub/domain';
 
@@ -160,6 +162,8 @@ export interface ServerGateway {
   requestRuntimeJob(workerId: string, job: RuntimeJob): boolean;
   /** 资产中心的投递端口：把清单推下去（assets.sync），Worker 回头经 assets.fetch 取内容。 */
   readonly assets: AssetDelivery;
+  /** 让这台 Worker 测一个模型提供商（GET {baseUrl}/models）；经 hub 中转时 baseUrl 是 hub 上的临时中转路径。 */
+  testProvider(workerId: string, input: { protocol: ProviderProtocol; baseUrl: string; apiKey: string }): Promise<Result<{ ok: boolean; status: number; message: string; models: string[] }, DomainError>>;
   close(): void;
 }
 
@@ -565,6 +569,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   return {
     gateway,
     assets,
+    async testProvider(workerId, input) {
+      const channel = channelOf(workerId);
+      if (!channel) return offline(workerId);
+      return toDomain(await channel.request(providerTest, input, { timeoutMs: 30_000 }), '测试模型提供商', workerId);
+    },
     workers(): WorkerStatus[] {
       return statuses();
     },
