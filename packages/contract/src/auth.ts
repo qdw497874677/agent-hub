@@ -46,3 +46,47 @@ export const loginDeviceSchema = z.object({
   current: z.boolean()
 });
 export type LoginDeviceDto = z.infer<typeof loginDeviceSchema>;
+
+/** 个人设置（ADR 0011）。 */
+export const changePasswordRequest = z.object({ oldPassword: z.string().max(256), newPassword: z.string().max(256) });
+export const profileRequest = z.object({ displayName: z.string().max(60) });
+
+/** 团队与邀请（ADR 0011）。 */
+export const roleSchema = z.enum(['owner', 'member']);
+export const inviteRequest = z.object({ email: z.string().max(254), role: roleSchema, allowOverLimit: z.boolean().optional() });
+export const memberRoleRequest = z.object({ role: roleSchema });
+export const acceptInviteRequest = z.object({ token: z.string().max(512), password: z.string().max(256), displayName: z.string().max(60).optional() });
+
+export const teamMemberSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  displayName: z.string(),
+  role: roleSchema,
+  teamOwner: z.boolean(),
+  disabled: z.boolean(),
+  emailVerified: z.boolean(),
+  lastSeenAt: z.number().nullable()
+});
+export type TeamMemberDto = z.infer<typeof teamMemberSchema>;
+export const inviteSchema = z.object({
+  id: z.string(),
+  email: z.string(),
+  role: roleSchema,
+  createdAt: z.number(),
+  expiresAt: z.number(),
+  allowOverLimit: z.boolean()
+});
+export type InviteDto = z.infer<typeof inviteSchema>;
+export const teamSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  members: z.array(teamMemberSchema),
+  invites: z.array(inviteSchema),
+  seatsLeft: z.number().nullable(),
+  canManage: z.boolean(),
+  /** 当前这个人是不是团队 owner（只有他能「超出名额也邀请」）。 */
+  isTeamOwner: z.boolean()
+});
+export type TeamDto = z.infer<typeof teamSchema>;
+export const invitePreviewSchema = z.object({ email: z.string(), teamName: z.string(), inviterName: z.string(), role: roleSchema });
+export type InvitePreviewDto = z.infer<typeof invitePreviewSchema>;

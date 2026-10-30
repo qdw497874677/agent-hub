@@ -172,6 +172,8 @@ const accounts: AccountDeps = {
   mail: mailSetup.sender,
   oneTimeTokens: store.oneTimeTokens,
   teams: store.teams,
+  invites: store.invites,
+  audit: store.audit,
   ...(Number.isFinite(maxUsers) && maxUsers > 0 ? { maxUsers } : {}),
   now: () => Date.now()
 };
@@ -405,7 +407,7 @@ if (assetCheckMs > 0) {
 }
 
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
-  auth: { accounts, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 10), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
+  auth: { accounts, team: { ...accounts, invites: store.invites, projects: store.projects }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {
       users: store.users,

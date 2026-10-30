@@ -4,6 +4,8 @@ import type {
   AuditEntry,
   AuditLog,
   HubSettings,
+  Invite,
+  InviteRepository,
   Login,
   LoginActivity,
   LoginRepository,
@@ -17,7 +19,7 @@ import type {
   User,
   UserRepository
 } from '@agent-hub/domain';
-import { DEFAULT_SETTINGS, asLoginId, asTeamId, asUserId } from '@agent-hub/domain';
+import { DEFAULT_SETTINGS, asInviteId, asLoginId, asTeamId, asUserId } from '@agent-hub/domain';
 
 /** 账号两张表。邮箱唯一；登录态只存令牌哈希（docs/design/accounts.md §13）。 */
 export const ACCOUNT_SCHEMA = `
@@ -210,6 +212,106 @@ export interface AccountRepositories {
   readonly audit: AuditLog;
   readonly oneTimeTokens: OneTimeTokenRepository;
   readonly teams: TeamRepository;
+  readonly invites: InviteRepository;
+}
+
+/** 团队邀请（ADR 0011）：令牌只存哈希。 */
+const INVITE_SCHEMA = `
+CREATE TABLE IF NOT EXISTS invites (
+  id               TEXT PRIMARY KEY,
+  token_hash       TEXT NOT NULL UNIQUE,
+  team_id          TEXT NOT NULL,
+  email            TEXT NOT NULL,
+  role             TEXT NOT NULL,
+  invited_by       TEXT NOT NULL,
+  created_at       INTEGER NOT NULL,
+  expires_at       INTEGER NOT NULL,
+  accepted_at      INTEGER,
+  revoked_at       INTEGER,
+  allow_over_limit INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS invites_by_team ON invites(team_id, created_at DESC);
+`;
+
+interface InviteRow {
+  id: string;
+  token_hash: string;
+  team_id: string;
+  email: string;
+  role: string;
+  invited_by: string;
+  created_at: number;
+  expires_at: number;
+  accepted_at: number | null;
+  revoked_at: number | null;
+  allow_over_limit: number;
+}
+
+const toInvite = (row: InviteRow): Invite => ({
+  id: asInviteId(row.id),
+  tokenHash: row.token_hash,
+  teamId: asTeamId(row.team_id),
+  email: row.email,
+  role: row.role as Role,
+  invitedBy: asUserId(row.invited_by),
+  createdAt: row.created_at,
+  expiresAt: row.expires_at,
+  acceptedAt: row.accepted_at,
+  revokedAt: row.revoked_at,
+  allowOverLimit: row.allow_over_limit === 1
+});
+
+function createInviteRepository(db: DatabaseSync): InviteRepository {
+  db.exec(INVITE_SCHEMA);
+  const upsert = db.prepare(
+    'INSERT INTO invites(id, token_hash, team_id, email, role, invited_by, created_at, expires_at, accepted_at, revoked_at, allow_over_limit) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET accepted_at = excluded.accepted_at, ' +
+      'revoked_at = excluded.revoked_at, role = excluded.role'
+  );
+  const byId = db.prepare('SELECT * FROM invites WHERE id = ?');
+  const byHash = db.prepare('SELECT * FROM invites WHERE token_hash = ?');
+  const forTeam = db.prepare('SELECT * FROM invites WHERE team_id = ? ORDER BY created_at DESC');
+  const pending = db.prepare('SELECT * FROM invites WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?');
+  // 一条 UPDATE … RETURNING 完成「检查 + 用掉」：并发点同一个链接只有一个能成功。
+  const accept = db.prepare(
+    'UPDATE invites SET accepted_at = ? WHERE token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ? RETURNING *'
+  );
+  const rows = (value: unknown) => (value as InviteRow[]).map(toInvite);
+  return {
+    async save(invite) {
+      upsert.run(
+        invite.id,
+        invite.tokenHash,
+        invite.teamId,
+        invite.email,
+        invite.role,
+        invite.invitedBy,
+        invite.createdAt,
+        invite.expiresAt,
+        invite.acceptedAt,
+        invite.revokedAt,
+        invite.allowOverLimit ? 1 : 0
+      );
+    },
+    async byId(id) {
+      const row = byId.get(id) as InviteRow | undefined;
+      return row ? toInvite(row) : null;
+    },
+    async byTokenHash(hash) {
+      const row = byHash.get(hash) as InviteRow | undefined;
+      return row ? toInvite(row) : null;
+    },
+    async forTeam(teamId) {
+      return rows(forTeam.all(teamId));
+    },
+    async pending(now) {
+      return rows(pending.all(now));
+    },
+    async accept(hash, now) {
+      const row = accept.get(now, hash, now) as InviteRow | undefined;
+      return row ? toInvite(row) : null;
+    }
+  };
 }
 
 export function createAccountRepositories(db: DatabaseSync): AccountRepositories {
@@ -449,5 +551,5 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
     }
   };
 
-  return { users, logins, settings, audit, oneTimeTokens, teams };
+  return { users, logins, settings, audit, oneTimeTokens, teams, invites: createInviteRepository(db) };
 }

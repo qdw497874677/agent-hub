@@ -3,6 +3,9 @@ import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { randomBytes } from 'node:crypto';
 import {
+  acceptInviteRequest,
+  changePasswordRequest,
+  profileRequest,
   forgotPasswordRequest,
   loginRequest,
   registerRequest,
@@ -11,9 +14,14 @@ import {
   tokenRequest
 } from '@agent-hub/contract';
 import type { AccountDto, AuthState, LoginDeviceDto } from '@agent-hub/contract';
-import type { AccountDeps, DomainError, IssuedLogin, Principal, Result, User } from '@agent-hub/domain';
+import type { AccountDeps, DomainError, IssuedLogin, Principal, Result, TeamDeps, User, UserId } from '@agent-hub/domain';
 import {
   ok,
+  acceptInvite,
+  changePassword,
+  previewInvite,
+  securityEvent,
+  updateProfile,
   asLoginId,
   authenticate,
   isEmailVerified,
@@ -33,6 +41,7 @@ import {
 } from '@agent-hub/domain';
 import { sameSecret } from './request-guard.ts';
 import { createRateLimiter } from './rate-limit.ts';
+import { createLoginBackoff } from './login-backoff.ts';
 
 /**
  * 账号的 HTTP 外壳（docs/design/accounts.md §8–§10）：
@@ -42,9 +51,11 @@ import { createRateLimiter } from './rate-limit.ts';
  */
 export interface AuthOptions {
   readonly accounts: AccountDeps;
+  /** 邀请要用（接受邀请建账号）；没给就没有邀请接口。 */
+  readonly team?: TeamDeps;
   /** 旧共享令牌；null = 没配或过渡期已过。 */
   readonly hubToken: { readonly value: string; readonly until: number } | null;
-  /** 登录限流：15 分钟内每个来源最多几次，默认 10；e2e 用 HUB_LOGIN_RATE_MAX 放宽。 */
+  /** 限流：15 分钟内每个 IP 最多登录几次（不分邮箱），默认 30；e2e 用 HUB_LOGIN_RATE_MAX 放宽。另有按邮箱的退避（login-backoff.ts）。 */
   readonly loginRateMax?: number;
   /** 发信类接口（忘记密码、重发验证）每小时每 IP / 每邮箱最多几次，默认 5（设计 §9）。 */
   readonly mailRateMax?: number;
@@ -98,7 +109,8 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
   const { accounts } = options;
   // 守门中间件认出的身份，路由里直接取，不再查一遍库。
   const principals = new WeakMap<Request, Principal | null>();
-  const limiter = createRateLimiter({ max: options.loginRateMax ?? 10, windowMs: 15 * 60 * 1000, now: accounts.now });
+  const backoff = createLoginBackoff(accounts.now);
+  const limiter = createRateLimiter({ max: options.loginRateMax ?? 30, windowMs: 15 * 60 * 1000, now: accounts.now });
   const mailLimiter = createRateLimiter({ max: options.mailRateMax ?? 5, windowMs: 60 * 60 * 1000, now: accounts.now });
   const client = (c: Context) => ({ userAgent: c.req.header('user-agent') ?? null, ip: clientKey(c) === 'unknown' ? null : clientKey(c) });
 
@@ -205,15 +217,35 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
     if (!result.ok) return respond(c, result);
     // 防枚举：新邮箱、已注册的邮箱都是这一句，不发 cookie。
     if (result.value.kind === 'check-email') return c.json({ checkEmail: true }, 202);
+    await securityEvent(accounts, result.value.issued.user, 'auth.register', result.value.issued.user.email, '首个账号（hub 管理员）', client(c).ip);
     return respond(c, ok(result.value.issued));
   });
 
   app.post('/api/auth/login', async (c) => {
     const parsed = loginRequest.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
-    const limited = throttled(c, `login:${clientKey(c)}:${parsed.data.email.trim().toLowerCase()}`);
+    const email = normalizeEmail(parsed.data.email);
+    const limited = throttled(c, `login:${clientKey(c)}`);
     if (limited) return limited;
-    return respond(c, await loginWithPassword(accounts, { ...parsed.data, ...client(c) }));
+    // 按邮箱退避：跟邮箱存不存在无关，所以不泄露账号在不在。
+    const wait = backoff.wait(email);
+    if (wait > 0) {
+      const seconds = Math.ceil(wait / 1000);
+      c.header('Retry-After', String(seconds));
+      return c.json({ error: { code: 'rate_limited', message: `这个邮箱密码错了太多次，${seconds > 90 ? `${Math.ceil(seconds / 60)} 分钟` : `${seconds} 秒`}后再试` } }, 429);
+    }
+    const ip = client(c).ip;
+    const result = await loginWithPassword(accounts, { ...parsed.data, ...client(c) });
+    if (result.ok) {
+      backoff.succeed(email);
+      await securityEvent(accounts, result.value.user, 'auth.login', result.value.user.email, '', ip);
+    } else {
+      backoff.fail(email);
+      const known = await accounts.users.byEmail(email);
+      const actor = known && known.deletedAt === null ? known : { id: '' as UserId, email, teamId: null };
+      await securityEvent(accounts, actor, 'auth.login_failed', email, result.error.message, ip);
+    }
+    return respond(c, result);
   });
 
   app.post('/api/auth/token-login', async (c) => {
@@ -226,7 +258,10 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
 
   app.post('/api/auth/logout', async (c) => {
     const principal = principals.get(c.req.raw) ?? null;
-    if (principal) await logout(accounts, principal);
+    if (principal) {
+      await logout(accounts, principal);
+      await securityEvent(accounts, principal.user, 'auth.logout', principal.user.email, '', client(c).ip);
+    }
     clearCookies(c);
     return c.json({ ok: true });
   });
@@ -268,8 +303,54 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
     if (limited) return limited;
     const parsed = resetPasswordRequest.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
-    return respond(c, await resetPassword(accounts, { ...parsed.data, ...client(c) }));
+    const result = await resetPassword(accounts, { ...parsed.data, ...client(c) });
+    if (result.ok) await securityEvent(accounts, result.value.user, 'auth.password_reset', result.value.user.email, '', client(c).ip);
+    return respond(c, result);
   });
+
+  // —— 个人设置 ——
+  app.post('/api/auth/password/change', async (c) => {
+    const who = signedIn(c);
+    if (who instanceof Response) return who;
+    const limited = throttled(c, `change:${who.user.id}`);
+    if (limited) return limited;
+    const parsed = changePasswordRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
+    const result = await changePassword(accounts, who, { ...parsed.data, ip: client(c).ip });
+    if (!result.ok) return c.json({ error: { code: result.error.code, message: result.error.message } }, 400);
+    return c.json({ user: toDto(result.value) });
+  });
+
+  app.patch('/api/auth/profile', async (c) => {
+    const who = signedIn(c);
+    if (who instanceof Response) return who;
+    const parsed = profileRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
+    const result = await updateProfile(accounts, who, { displayName: parsed.data.displayName, ip: client(c).ip });
+    if (!result.ok) return c.json({ error: { code: result.error.code, message: result.error.message } }, 400);
+    return c.json({ user: toDto(result.value) });
+  });
+
+  // —— 接受邀请（不用登录：链接里的令牌就是凭证） ——
+  const team = options.team;
+  if (team) {
+    app.post('/api/auth/invite/preview', async (c) => {
+      const limited = throttled(c, `invite:${clientKey(c)}`);
+      if (limited) return limited;
+      const parsed = tokenRequest.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
+      const result = await previewInvite(team, parsed.data.token);
+      if (!result.ok) return c.json({ error: { code: result.error.code, message: result.error.message } }, 400);
+      return c.json(result.value);
+    });
+    app.post('/api/auth/invite/accept', async (c) => {
+      const limited = throttled(c, `invite:${clientKey(c)}`);
+      if (limited) return limited;
+      const parsed = acceptInviteRequest.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
+      return respond(c, await acceptInvite(team, { ...parsed.data, ...client(c) }));
+    });
+  }
 
   // —— 我的登录设备 ——
   app.get('/api/auth/logins', async (c) => {

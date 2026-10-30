@@ -82,6 +82,7 @@ import {
 import type { StreamHub } from './stream-hub.ts';
 import { installAuth, SSE_PATH } from './auth.ts';
 import { installAdmin } from './admin.ts';
+import { installTeam } from './team.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
 import { installEnrollment } from './enrollment.ts';
 import { installRuntimeInstall } from './runtime-install.ts';
@@ -173,6 +174,7 @@ export function createApp(options: AppOptions): Hono {
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
     installAccess(app, deps, principalOf);
     if (options.admin) installAdmin(app, options.admin, principalOf);
+    if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
     if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);

@@ -15,7 +15,7 @@ export async function loginByApi(page: Page): Promise<void> {
 const OUTBOX = '/tmp/agent-hub-e2e-data/outbox.jsonl';
 
 /** 从日志模式的 outbox 里取发给某人的最新一封信里的链接（等它落盘，最多 5 秒）。 */
-export async function mailedLink(email: string, kind: 'verify' | 'reset' = 'verify'): Promise<string> {
+export async function mailedLink(email: string, kind: 'verify' | 'reset' | 'invite' = 'verify'): Promise<string> {
   for (let i = 0; i < 50; i++) {
     if (existsSync(OUTBOX)) {
       const lines = readFileSync(OUTBOX, 'utf8').trim().split('\n').filter(Boolean).reverse();

@@ -12,7 +12,7 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AssetRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
@@ -30,6 +30,7 @@ export interface SqliteStore extends RepositorySet {
   readonly settings: SettingsRepository;
   readonly audit: AuditLog;
   readonly oneTimeTokens: OneTimeTokenRepository;
+  readonly invites: InviteRepository;
   /** 能力层：工具授权（只存令牌 hash）与调用审计。 */
   readonly toolGrants: ToolGrantRepository;
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
