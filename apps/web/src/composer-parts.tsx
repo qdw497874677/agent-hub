@@ -35,7 +35,7 @@ export function ActionDot({
   return (
     <button
       aria-label="发送"
-      className={`grid ${box} shrink-0 place-items-center rounded-full bg-accent text-canvas hover:brightness-110 disabled:opacity-30`}
+      className={`grid ${box} shrink-0 place-items-center rounded-full bg-accent text-canvas hover:brightness-110 disabled:bg-hair disabled:text-tertiary`}
       title="发送（⌘↵）"
       disabled={!canSend}
       onClick={onSend}

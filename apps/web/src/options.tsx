@@ -68,7 +68,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
               value={String(current)}
               disabled={disabled}
               onChange={(value) => onChange(option.id, value)}
-              className={`${compact ? 'min-w-0 flex-1' : ''} max-w-[160px] rounded-sm border border-hair bg-card px-1 py-0.5 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
+              className={`${compact ? 'min-w-0 flex-1' : ''} max-w-[160px] ${compact ? 'option-control' : 'py-0.5'} rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             />
           );
         }
@@ -77,7 +77,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             key={option.id}
             aria-label={option.label}
             title={option.description ?? option.label}
-            className={`${compact ? (option.category === 'model' ? 'min-w-0 flex-1' : 'shrink-0') : ''} max-w-[132px] truncate rounded-sm border border-hair bg-card px-1 py-0.5 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
+            className={`${compact ? (option.category === 'model' ? 'min-w-0 flex-1' : 'shrink-0') : ''} max-w-[132px] ${compact ? 'option-control' : 'py-0.5'} truncate rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             value={String(current)}
             disabled={disabled}
             // 下拉里选东西不该顺手把卡片拖走

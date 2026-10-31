@@ -337,7 +337,7 @@ export function Composer({
               aria-label="添加附件"
               title={attachTitle}
               disabled={denied}
-              className="grid size-9 md:size-6 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30"
+              className="grid size-9 md:size-7 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30"
               onClick={() => filePicker.current?.click()}
             >
               +
@@ -348,7 +348,7 @@ export function Composer({
                 aria-label="拍照"
                 title={attachTitle}
                 disabled={denied}
-                className="grid size-9 md:size-6 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30"
+                className="grid size-9 md:size-7 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30"
                 onClick={() => camera.current?.click()}
               >
                 ◉
