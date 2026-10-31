@@ -1,6 +1,6 @@
 # 设计：Agent 之间的通信（寻址 / 消息 / 原语 / 编排）
 
-- 状态：**accepted**（2026-10-31 David 拍板 §16 的 7 项；§3.4 会话类型、§12 IM 式界面为 proposed，待确认）。只有设计，没有代码
+- 状态：**accepted**（2026-10-30 David 拍板 §16 的 7 项；§3.4 会话类型、§12 IM 式界面为 proposed，待确认）。只有设计，没有代码
 - 日期：2026-10-30
 - 相关：ADR 0015（开放 API v1 + MCP）、ADR 0017（权限模型 / 集群管理员）、ADR 0006（提问是 journal 事件）、ADR 0004（按会话串行事件）、`docs/design/runtime-adapter-contract.md`；本设计对应 **ADR 0018**
 - 基线：origin/master `dbd9357`（含 #120 权限模型 97a2f2b、#121）
@@ -75,7 +75,7 @@
 5. **控制权转交（handoff）与调用后返回（agent-as-tool）是两种不同语义**（OpenAI SDK、LangGraph 都区分）；我们会话是长期存在的实体，默认是 agent-as-tool（ask），handoff 用「把任务交给别人 + 结束自己」组合出来。
 6. **信封字段**几家高度一致：FIPA（reply-with / in-reply-to / conversation-id / reply-by）、CloudEvents（id / source / type / 扩展）、A2A（messageId / contextId / taskId / referenceTaskIds）、NATS（Msg-Id 去重）、OTel（traceparent）。
 
-### 2.4 核实记录（2026-10-31 逐条打开原文核对）
+### 2.4 核实记录（2026-10-30 逐条打开原文核对）
 
 | 条目 | 核实结果 | 来源 |
 |---|---|---|
@@ -497,7 +497,7 @@ David 的方向：**agent 是联系人，点对点 = 私聊（DM），组 = 群�
 | MCP 2026-07 无状态改动影响现有中转 | 本设计只加工具，不依赖 MCP 会话；随现有 MCP 升级走 |
 | 权限组合复杂、误放行 | 所有入口都过 `MessageBus.accept()`，表驱动测试 + 「本机 Worker / 跨团队永不放行」不变量测试 |
 
-## 16. 已决（2026-10-31 David）
+## 16. 已决（2026-10-30 David）
 
 1. **A2A**：选 B，在第 3 期做双向 A2A 网关；内部仍用自有信封。
 2. **回复**：选 B，以 `agent_reply` 为主，轮次结束时取最后一段文本兜底（项目可关）。

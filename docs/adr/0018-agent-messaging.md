@@ -1,6 +1,6 @@
 # ADR 0018：Agent 之间的通信——地址 / 信封 / 点对点 + 组广播，对外兼容 A2A
 
-- 状态：accepted（2026-10-31，David 拍板设计稿 §16 的 7 项；会话类型与 IM 式界面为 proposed，见 §16.1）
+- 状态：accepted（2026-10-30，David 拍板设计稿 §16 的 7 项；会话类型与 IM 式界面为 proposed，见 §16.1）
 - 日期：2026-10-30
 - 关联：ADR 0006、0012、0015、0017；设计稿 `docs/design/agent-messaging.md`
 
@@ -31,7 +31,7 @@ David 希望 worker 上的内部会话、经 `/openapi/v1` 接入的外部 agent
 - 只做编排 DSL / 工作流引擎：先有原语，再观察使用决定。
 - ANP / DID：团队内单 hub 不需要去中心化身份。
 
-## David 的决定（2026-10-31）
+## David 的决定（2026-10-30）
 
 - 第 3 期做双向 A2A 网关。
 - 回复以 `agent_reply` 为主，轮次结束时取最后一段文本兜底。
@@ -41,7 +41,7 @@ David 希望 worker 上的内部会话、经 `/openapi/v1` 接入的外部 agent
 - 角色定义放在数据库和仓库文件里，冲突时以数据库为准。
 - 限额：深度 4、并发 8、扇出 10；项目最多可调到 2 倍。
 
-## 更正（2026-10-31 核实）
+## 更正（2026-10-30 核实）
 
 A2A v1.0 的操作名改为 `SendMessage / SendStreamingMessage / GetTask / ListTasks / CancelTask / SubscribeToTask`，状态是 `TASK_STATE_*` 枚举，Part 是 `text / raw / url / data` 四选一。初稿用的是 0.x 的旧名，现已更正，详见设计稿 §2.4。
 
