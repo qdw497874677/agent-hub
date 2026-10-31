@@ -161,10 +161,10 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   // 专注对话里也有一个「← 返回」，所以按精确名收窄到顶栏那个
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
-  // 单击卡片只选中，不进对话；双击才进
+  // 单击卡片只选中，不进对话；点「打开」才进（双击是在画布中展开）
   await sessionNode(page).locator('header').click();
   await expect(composer).toHaveCount(0);
-  await sessionNode(page).locator('header').dblclick();
+  await sessionNode(page).getByRole('button', { name: '打开', exact: true }).click();
   await expect(composer).toBeVisible();
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();

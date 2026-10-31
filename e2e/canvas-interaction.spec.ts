@@ -7,7 +7,8 @@ import { loginByApi } from './login.ts';
 /**
  * 画布交互分区矩阵（docs/guide.md「画布交互」）：每个区只做一件事，1280 / 390、鼠标 / 滚轮 / 单指 / 双指都过一遍，
  * 卡片都在 worker 框里。
- *   对话区＝只滚动；卡片顶栏＝拖卡；框标题栏＝拖整框；空白＝平移 + 缩放；单击＝选中；双击＝打开；卡内输入区＝正常输入。
+ *   对话区＝只滚动；卡片顶栏＝拖卡；框标题栏＝拖整框；空白＝平移 + 缩放；单击＝选中；双击＝在画布中展开；「打开」＝进会话页；卡内输入区＝正常输入。
+ *   展开的窗口：标题栏＝拖窗口；窗口对话区＝只滚动；都不动画布。
  */
 type Pt = { x: number; y: number };
 const viewport = (page: Page) => page.locator('.react-flow__viewport').evaluate((n) => (n as HTMLElement).style.transform);
@@ -183,12 +184,41 @@ test.describe('画布交互分区', () => {
         await expect.poll(() => scale(page), { message: `空白${how}缩放` }).not.toBe(s);
       }
 
-      // 单击只选中；双击打开
+      // 单击只选中；双击在画布中展开（不离开画布）；「打开」进会话页
       await other.locator('header').click({ position: { x: 60, y: 8 } });
       await expect(other).toHaveClass(/selected/);
       const url = page.url();
       await other.locator('header').dblclick({ position: { x: 60, y: 8 } });
-      await expect.poll(() => page.url(), { message: '双击打开会话' }).not.toBe(url);
+      const opened = page.getByTestId('canvas-window');
+      await expect(opened, '双击展开成窗口').toHaveCount(1);
+      expect(page.url(), '双击不离开画布').toBe(url);
+
+      if (width >= 768) {
+        // 窗口对话区：滚轮、鼠标拖都不动画布；标题栏拖窗口也不动画布
+        const vp = await viewport(page);
+        const s = await scale(page);
+        const log = opened.getByRole('log', { name: '对话记录' });
+        const at = await center(log);
+        await page.mouse.move(at.x, at.y);
+        await page.mouse.wheel(0, 200);
+        await mouseDrag(page, await center(log), 30, 20);
+        await page.waitForTimeout(300);
+        expect(await viewport(page), '窗口对话区不动画布').toBe(vp);
+        expect(await scale(page), '窗口里滚轮不缩放画布').toBe(s);
+        const before = (await opened.boundingBox())!;
+        await mouseDrag(page, await center(opened.getByTestId('window-titlebar').locator('p').first()), -40, 20);
+        await expect.poll(async () => (await opened.boundingBox())!.x, { message: '标题栏拖窗口' }).not.toBe(before.x);
+        expect(await viewport(page), '拖窗口不动画布').toBe(vp);
+        await opened.getByRole('button', { name: '关闭窗口' }).click();
+      } else {
+        // 手机：全屏；窗口里单指滑对话不动画布（画布被盖住），‹ 画布 回去
+        await touch(page, [await center(opened.getByRole('log', { name: '对话记录' }))], [{ x: 0, y: -60 }]);
+        await page.getByRole('button', { name: '关闭窗口' }).click();
+      }
+      await expect(opened).toHaveCount(0);
+      await other.locator('header').click({ position: { x: 60, y: 8 } });
+      await other.getByRole('button', { name: '打开', exact: true }).click();
+      await expect.poll(() => page.url(), { message: '「打开」进会话页' }).not.toBe(url);
     });
   }
 });

@@ -19,6 +19,8 @@ import { openingViewport, panIntoView } from './viewport.ts';
 import { arrange, frameGroups, frameRect, landsInForeignFrame, placeMissing, shiftFrame, type Rect } from './layout.ts';
 import { resolveWorker, useWorkers } from './workers.tsx';
 import { workspaceName } from './workspace-chooser.tsx';
+import { CanvasWindowLayer, useCanvasWindows } from './canvas-window-layer.tsx';
+import { useNarrow } from './device.ts';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard, frame: WorkerFrame };
 
@@ -33,6 +35,8 @@ interface Props {
   readonly onDerive: (taskId: string) => void;
   /** 打开专注对话：一条会话，整屏看。 */
   readonly onOpen: (sessionId: string) => void;
+  /** 窗口里发完消息、分叉后刷新画布。 */
+  readonly onChanged: () => void;
   /** 卡片上的输入行：草稿存在 App 层，切视图不丢（S6.4）。 */
   readonly drafts: Readonly<Record<string, string>>;
   readonly onDraftChange: (sessionId: string, text: string) => void;
@@ -78,6 +82,7 @@ export function CanvasView({
   live,
   onDerive,
   onOpen,
+  onChanged,
   onLayoutChange,
   onTaskStatus,
   onTaskDetail,
@@ -139,6 +144,10 @@ export function CanvasView({
   // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const container = useRef<HTMLDivElement | null>(null);
+  // 展开成画布窗口（双击会话卡 / ⤢ / 右键）：多个并排看，状态存在本机浏览器
+  const narrow = useNarrow();
+  const windows = useCanvasWindows(canvas, container, narrow);
+  const { expand, expanded } = windows;
   // 刚点选的卡：右栏展开会把画布挤窄，挤完之后再把它整个挪进视口。
   const revealing = useRef<{ id: string; until: number } | null>(null);
 
@@ -293,6 +302,8 @@ export function CanvasView({
         worker: workerOf(session.workerId),
         place: placeOf(session.workspaceId, session.workerId),
         onOpen: () => onOpen(session.id),
+        onExpand: () => expand(session.id),
+        expanded: expanded(session.id),
         draft: drafts[session.id] ?? '',
         onDraftChange: (text: string) => onDraftChange(session.id, text),
         onSend: (text: string) => onSend(session.id, text),
@@ -343,6 +354,8 @@ export function CanvasView({
     onTaskDetail,
     onDerive,
     onOpen,
+    expand,
+    expanded,
     onDraftChange,
     onSend,
     onInterrupt
@@ -375,7 +388,7 @@ export function CanvasView({
 
   return (
     <div
-      className="h-full w-full"
+      className="relative h-full w-full"
       ref={container}
       onPointerDownCapture={(event) => {
         pressedAt.current = { x: event.clientX, y: event.clientY };
@@ -444,8 +457,24 @@ export function CanvasView({
           <ControlButton onClick={tidy} title="整理布局" aria-label="整理布局">
             ⊞
           </ControlButton>
+          {windows.set.windows.length > 0 && !narrow ? (
+            <ControlButton onClick={windows.retile} title="重新平铺窗口" aria-label="重新平铺窗口">
+              ▦
+            </ControlButton>
+          ) : null}
         </Controls>
       </ReactFlow>
+      <CanvasWindowLayer
+        windows={windows}
+        narrow={narrow}
+        canvas={canvas}
+        live={live}
+        drafts={drafts}
+        onDraftChange={onDraftChange}
+        onChanged={onChanged}
+        onOpen={onOpen}
+        onChangeOption={onChangeOption}
+      />
     </div>
   );
 }
