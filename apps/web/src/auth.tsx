@@ -519,6 +519,14 @@ export function AccountMenu() {
             资产市场
           </a>
           <a
+            href="#/messages"
+            data-testid="menu-messages"
+            className="mt-2 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
+            onClick={() => setOpen(false)}
+          >
+            消息
+          </a>
+          <a
             href="#/memory"
             data-testid="menu-memory"
             className="mt-2 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"

@@ -18,6 +18,8 @@ import { createProviderWiring } from './providers.ts';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
+  interruptSessionUseCase,
+  createGroupChat,
   createMessageToolProvider,
   createMemoryService,
   createMemoryToolProvider,
@@ -191,6 +193,34 @@ hub.stream.subscribe((frame) => {
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
 
+// 群聊（ADR 0018 · 群组）：每个群每个角色一条常驻会话；主持人分派 / 竞价 / @ 直达；回合结束时收成员的回复。
+const groupChat = createGroupChat({
+  now: deps.now,
+  sessions: deps.sessions,
+  projects: deps.projects,
+  tasks: deps.tasks,
+  groups: store.groups,
+  policy: deps.access,
+  roles: async (projectId) => (await messageBus.config(projectId)).roles,
+  principalOf: async (userId) => {
+    const user = await store.users.byId(userId as UserId);
+    if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
+    return withAccess(store.access, { user, loginId: 'agent-group' as LoginId }, Date.now());
+  },
+  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
+  spawn: async ({ project, role, actor, title }) => {
+    const task = await createTaskUseCase(deps, { projectId: project.id, title, ownerId: actor.user.id });
+    if (!task.ok) return task;
+    return deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
+  },
+  interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId)
+});
+hub.stream.subscribe((frame) => {
+  if (frame.event?.kind !== 'ended') return;
+  void groupChat.turnEnded(frame.sessionId).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
+});
+setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
+
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
 const memoryService = createMemoryService({
   now: deps.now,
@@ -222,7 +252,7 @@ toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
   tokens: createTokenIssuer(),
-  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus), createMemoryToolProvider(memoryService)]
+  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService)]
 });
 
 // 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。
@@ -547,6 +577,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },
   messaging: { bus: messageBus, messages: store.messages },
+  groups: { groups: groupChat },
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,

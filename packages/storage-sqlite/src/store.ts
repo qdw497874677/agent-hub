@@ -12,13 +12,14 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
 import { createSqliteAccess } from './access.ts';
 import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createSqliteMessageStore } from './messages.ts';
+import { createSqliteGroupStore } from './groups.ts';
 import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemoryStore } from './memory.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
@@ -40,6 +41,7 @@ export interface SqliteStore extends RepositorySet {
   readonly toolGrants: ToolGrantRepository;
   /** agent 间通信（ADR 0018）：消息队列、派生记录、项目配置、审计。 */
   readonly messages: MessageStore;
+  readonly groups: GroupStore;
   readonly memory: { readonly store: MemoryStore; readonly index: MemoryIndex; readonly settings: MemorySettingsStore };
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
   readonly enrollment: EnrollmentRepository;
@@ -404,6 +406,7 @@ export function openSqliteStore(file: string): SqliteStore {
     workLog: createWorkLogRepository(db),
     toolGrants: createToolGrantRepository(db),
     messages: createSqliteMessageStore(db),
+    groups: createSqliteGroupStore(db),
     memory: { store: createSqliteMemoryStore(db), index: createSqliteMemoryIndex(db), settings: createSqliteMemorySettings(db) },
     workspaces: createWorkspaceRepository(db),
     enrollment: createEnrollmentRepository(db),

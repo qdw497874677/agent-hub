@@ -13,6 +13,7 @@ import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
 import { ProjectHeader } from './header.tsx';
 import { useRoute } from './use-route.ts';
 import { MemoryPage } from './memory.tsx';
+import { MessagesPage } from './messages.tsx';
 import { MarketPage } from './market/page.tsx';
 import { useNarrow } from './device.ts';
 import { TaskDetail } from './task-detail.tsx';
@@ -24,6 +25,7 @@ const LAST_PROJECT = 'agent-hub:last-project';
 export function App() {
   const [route] = useRoute();
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
+  if (route?.page === 'messages') return <MessagesPage projectId={route.projectId} groupId={route.groupId} />;
   if (route?.page === 'assets') return <MarketPage tab={route.tab} reviewId={route.reviewId} />;
   return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace />;
 }

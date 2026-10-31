@@ -554,3 +554,32 @@ export const memoryApi = {
   review: (id: string, approve: boolean) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/review`, { approve }),
   forget: (id: string, reason: string) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/forget`, { reason })
 };
+
+export interface GroupLimitsDto { maxRounds: number; maxMessages: number }
+export interface GroupDto {
+  id: string; projectId: string; name: string; members: string[]; hostRole: string | null;
+  speakingStrategy: 'host' | 'volunteer'; limits: Partial<GroupLimitsDto>; held: string[]; needsUser: boolean;
+  createdBy: string; createdAt: number; updatedAt: number;
+}
+export type GroupAuthorDto = { kind: 'user'; id: string; name: string } | { kind: 'agent'; role: string; sessionId: string } | { kind: 'system' };
+export interface GroupPostDto { id: string; seq: number; threadId: string | null; round: number; author: GroupAuthorDto; body: string; mentions: string[]; needsUser: boolean; createdAt: number }
+export interface GroupThreadDto { id: string; status: string; round: number; messages: number; createdAt: number; updatedAt: number }
+export interface GroupDeliveryDto { id: string; round: number; purpose: 'host' | 'member' | 'bid'; role: string; sessionId: string | null; status: string; result: string | null; score: number | null; note?: string | null; promptChars: number; createdAt?: number }
+export interface GroupViewDto { group: GroupDto; sessions: { role: string; sessionId: string; status: string }[]; running: GroupThreadDto[] }
+export interface MessagingRoleDto { name: string; description: string; agentId: string; model: string; reuse: 'sticky' | 'per-trace' | 'always-new' }
+export interface GroupInputDto { name: string; members: string[]; hostRole: string | null; speakingStrategy: 'host' | 'volunteer'; limits: Partial<GroupLimitsDto> }
+
+/** 群聊（ADR 0018 · 群组）。 */
+export const groupApi = {
+  list: (projectId: string) => call<{ groups: GroupDto[] }>(`/api/projects/${encodeURIComponent(projectId)}/groups`),
+  create: (projectId: string, input: GroupInputDto) => post<GroupDto>(`/api/projects/${encodeURIComponent(projectId)}/groups`, input),
+  view: (id: string) => call<GroupViewDto>(`/api/groups/${encodeURIComponent(id)}`),
+  update: (id: string, input: GroupInputDto) => call<GroupDto>(`/api/groups/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(input) }),
+  posts: (id: string) => call<{ posts: GroupPostDto[] }>(`/api/groups/${encodeURIComponent(id)}/posts?limit=200`),
+  post: (id: string, body: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/posts`, { body }),
+  stop: (id: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/stop`, {}),
+  chains: (id: string) => call<{ chains: { thread: GroupThreadDto; deliveries: GroupDeliveryDto[] }[] }>(`/api/groups/${encodeURIComponent(id)}/chains`),
+  roles: (projectId: string) => call<{ roles: MessagingRoleDto[]; limits: Record<string, number> }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`),
+  saveRoles: (projectId: string, roles: MessagingRoleDto[], limits: Record<string, number>) =>
+    call<unknown>(`/api/projects/${encodeURIComponent(projectId)}/messaging`, { method: 'PUT', body: JSON.stringify({ roles, limits }) })
+};
