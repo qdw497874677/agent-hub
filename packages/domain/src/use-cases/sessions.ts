@@ -1,3 +1,4 @@
+import { principalOfSubject, type Subject } from '../access.ts';
 import { applyEvent, deriveSession, forkSession, isNeverPrompted, markInterrupted, withOptions } from '../session.ts';
 import type { Session } from '../session.ts';
 import type { RuntimeOption } from '../option.ts';
@@ -16,7 +17,6 @@ import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
 import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
 import { authorizeWorker } from './authorization.ts';
-import type { Principal } from '../account.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
@@ -27,7 +27,7 @@ export interface DeriveCommand {
   /** 运行面板里选定的工作空间：会话就落在它所在的机器、在它的目录里干活。 */
   readonly workspaceId?: string | null;
   /** 谁发起的：开跑前要过 authorizeWorker（本机 Worker 单独授权）。 */
-  readonly actor?: Principal | null;
+  readonly actor?: Subject | null;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -73,7 +73,8 @@ export async function deriveSessionUseCase(
     model: model.value,
     now: deps.now(),
     workerId: placed.value,
-    workspaceId: workspace.id
+    workspaceId: workspace.id,
+    createdBy: principalOfSubject(command.actor)?.user.id ?? null
   });
   if (!created.ok) return created;
 
@@ -113,7 +114,7 @@ export interface ForkCommand {
   readonly atSeq?: Seq;
   readonly agentId: string;
   readonly model: string;
-  readonly actor?: Principal | null;
+  readonly actor?: Subject | null;
 }
 
 export async function forkSessionUseCase(
@@ -161,7 +162,8 @@ export async function forkSessionUseCase(
     agentId,
     model: model.value,
     now: deps.now(),
-    workerId: placed.value
+    workerId: placed.value,
+    createdBy: principalOfSubject(command.actor)?.user.id ?? null
   });
   if (!created.ok) return created;
 

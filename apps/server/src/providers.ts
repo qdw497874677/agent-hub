@@ -20,7 +20,7 @@ import {
   ok,
   type DomainError,
   type ModelProvider,
-  type Principal,
+  type Subject,
   type ProviderDeps,
   type ProviderGrant,
   type ProviderRouting,
@@ -163,7 +163,7 @@ export function createProviderWiring(wiring: ProviderWiring) {
   }
 
   /** 派生 / 分叉时核对选的 hub 模型。 */
-  async function checkModel(principal: Principal | null, model: string | undefined, taskId: string): Promise<Result<true, DomainError>> {
+  async function checkModel(principal: Subject | null, model: string | undefined, taskId: string): Promise<Result<true, DomainError>> {
     if (!parseHubModel(model)) return ok(true);
     const checked = await checkProviderModel(deps, principal, model ?? '', await wiring.projectTeam(taskId));
     return checked.ok ? ok(true) : checked;
@@ -178,7 +178,7 @@ export function createProviderWiring(wiring: ProviderWiring) {
     return err(invalid('换模型提供商需新开会话（hub 提供商的模型只能在开会话时选）'));
   }
 
-  function install(app: Hono, principalOf: (c: Context) => Principal | null): void {
+  function install(app: Hono, principalOf: (c: Context) => Subject | null): void {
     const read = async (c: Context): Promise<Record<string, unknown> | null> => {
       try {
         const value = (await c.req.json()) as unknown;

@@ -1,6 +1,8 @@
 import * as assetModule from '../asset.ts';
 import type { ApiToken } from '../api-token.ts';
 import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
+import type { AccessGrantRepository, TeamRoleRepository } from '../ports/access-repository.ts';
+import { accessGrantActive, type AccessGrant, type CustomRole } from '../access.ts';
 import { matchesAudit } from '../ports/audit-log.ts';
 import { seedAccount } from '../use-cases/accounts.ts';
 import { createAccessPolicy as createAccessPolicyForTests } from '../use-cases/authorization.ts';
@@ -499,12 +501,12 @@ export function inMemoryAccounts(now: () => number = () => 1_000): AccountDeps &
           .filter((u) => u.role === role && u.disabledAt === null)
           .sort((a, b) => a.createdAt - b.createdAt)[0] ?? null,
       claimFirstOwner: async (user) => {
-        if ([...users.values()].some((u) => u.hubAdmin && u.disabledAt === null && u.deletedAt === null)) return false;
-        users.set(user.id, { ...user, role: 'owner', hubAdmin: true });
+        if ([...users.values()].some((u) => u.clusterAdmin && u.disabledAt === null && u.deletedAt === null)) return false;
+        users.set(user.id, { ...user, role: 'owner', clusterAdmin: true });
         return true;
       },
-      hubAdmin: async () =>
-        [...users.values()].filter((u) => u.hubAdmin && u.deletedAt === null).sort((a, b) => a.createdAt - b.createdAt)[0] ?? null,
+      firstClusterAdmin: async () =>
+        [...users.values()].filter((u) => u.clusterAdmin && u.deletedAt === null).sort((a, b) => a.createdAt - b.createdAt)[0] ?? null,
       list: async () => [...users.values()]
     },
     logins: {
@@ -886,7 +888,7 @@ export function inMemoryAssetReviewDeps(
   return {
     deps: {
       ...assets.deps,
-      hubAdminId: async () => (await users.hubAdmin())?.id ?? null,
+      hubAdminId: async () => (await users.firstClusterAdmin())?.id ?? null,
       review,
       notifications,
       audit: admin.deps.audit,
@@ -895,5 +897,25 @@ export function inMemoryAssetReviewDeps(
       policy
     },
     notifications
+  };
+}
+
+/** 显式授权 + 自定义角色的内存仓库（ADR 0017）。 */
+export function inMemoryAccess(): { grants: AccessGrantRepository; roles: TeamRoleRepository } {
+  const grants = new Map<string, AccessGrant>();
+  const roles = new Map<string, CustomRole>();
+  return {
+    grants: {
+      save: async (g) => void grants.set(g.id, g),
+      byId: async (id) => grants.get(id) ?? null,
+      activeFor: async (userId, now) => [...grants.values()].filter((g) => g.userId === userId && accessGrantActive(g, now)),
+      listByTeam: async (teamId) => [...grants.values()].filter((g) => g.teamId === teamId).sort((a, b) => b.createdAt - a.createdAt)
+    },
+    roles: {
+      save: async (r) => void roles.set(r.id, r),
+      byId: async (id) => roles.get(id) ?? null,
+      listByTeam: async (teamId) => [...roles.values()].filter((r) => r.teamId === teamId).sort((a, b) => a.createdAt - b.createdAt),
+      delete: async (id) => void roles.delete(id)
+    }
   };
 }

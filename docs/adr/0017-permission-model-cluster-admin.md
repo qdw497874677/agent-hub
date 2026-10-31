@@ -1,0 +1,44 @@
+# ADR 0017：按资源类型的权限模型 + 集群管理员独占本机 Worker
+
+- 状态：accepted（2026-10-30，David 拍板：1A 2A 3A 4A 5A 6B）
+- 日期：2026-10-30
+- 关联：ADR 0010、0011、0013、0014、0015、0016；设计稿 `docs/design/permissions.md`
+
+## 背景
+
+ADR 0011 建立了「角色 = 权限集、一律走 `can()`」，但随着运行时安装、模型提供商、资源指标、开放 API、资产审核陆续加入，出现了：本机 Worker 权限挂在 `hubAdmin` 布尔和 `localWorkerGrants` 名单两条通路上；多处规则绕过 `can()`（`canManageRuntimes`、`canManageProvider`、`activeOwners` 等）；会话 / 任务没有独立资源，共享项目的成员能操控别人的会话；`session.control`、`task.write`、`worker.manage` 过粗。David 要求按资源类型把权限设计好，且「hub 主机上的 Worker 权限只对应一个角色，比如集群管理员」。
+
+## 决定
+
+1. 三层：hub 角色 `cluster_admin` → 团队角色 `owner / admin / member / viewer` → 资源关系（创建者、共享、接入人、显式授权）。
+2. **本机 Worker 的全部 `worker.*` / `runtime.*` 只授予 `cluster_admin`**，在 `can()` 中作为独立闸门、先于团队角色判断；删除 `localWorkerGrants`；令牌、显式授权、自定义角色都不能获得。
+3. 权限点按资源类型拆细（worker、project、task、session、provider、asset、token、audit、team、hub），矩阵见设计稿 §2.3。
+4. 唯一入口 `can(subject, action, resource)`，固定顺序：主体有效 → 令牌交集 → hub 级 → 本机 Worker → 团队边界 → 角色范围 → 资源关系 / 授权；返回带原因的决定。
+5. 角色定义为数据（`ROLE_DEFS`）；名单类授权（项目成员、资产审核人）统一进 `grants` 表；`project → task → session` 只继承 read。
+6. `NEVER_GRANTABLE` 扩展为：所有 `hub.*`、本机 Worker 权限、`provider.secret.read`、`asset.review`、`asset.publish_global`、`team.transfer/delete`。
+7. 表驱动矩阵测试 + 「除 cluster_admin 外无人能在本机 Worker 上得到任何权限」的枚举不变量测试。
+8. ADR 0016 的资产权限并入本模型：`asset.*` 进 `ROLE_DEFS`，`assetReviewers` 落到 `grants`。
+
+## David 的决定（2026-10-30）与落地差异
+
+- **1A** 收回 `localWorkerGrants`：启动迁移 `revokeLegacyLocalWorkerGrants` 给名单里每人写一条 `access.local_revoked` 审计，然后从设置里删掉该键（幂等）。
+- **2A** 集群管理员 ≥1、可多个：`User.clusterAdmin`；`PUT /api/admin/users/:id/cluster-admin`；最后一个不能撤、不能停用。
+- **3A** 新增 `admin`（= owner 去掉 `team.roles`、`project.purge`，且不能动 owner / 其他 admin）和 `viewer`（只读，含 `asset.read`）。
+- **4A** `session.prompt / interrupt / continue` 对 member 是 `own`：会话创建者（`Session.createdBy`）、team 范围的 owner/admin、或显式授权。被共享项目只给协作（读 / 建任务 / 改），不给别人会话的控制权，也不给共享 / 删除。
+- **5A** 集群管理员默认看不到别的团队；`POST /api/admin/visits` 临时只读进入（理由 4–200 字、≤24h、hub 和目标团队双审计），到期自动失效。
+- **6B** 本期就做团队自定义角色（`team_roles` 表，`User.role = custom:<id>`）：只能挑 `CUSTOM_ROLE_GRANTABLE`（去掉 hub.*、`team.roles`），范围不超过 admin；编辑器 + 矩阵视图（手机上是分组卡片）。
+- 与 ADR 0016（#119，先合并）的衔接：审核人沿用 #119 的 `access_grants` 表，本 ADR 在同一张表上补列（id、team_id、reason、created_by、expires_at、revoked_at）存显式授权，审核人行仍由审核设置整批维护；`asset.*` 进角色表（admin = owner，viewer = `asset.read`）；`asset.publish_global` 归 hub 级；令牌另拿不到 `asset.review/assign/retire/secret.use`（`TOKEN_NEVER_GRANTABLE`）。#119 里「hub 管理员是唯一合格审核人时可自审（审计标记）」改为对**集群管理员**成立，路由取第一位集群管理员。
+- 实现名与本文早期草稿的差异：`ROLE_DEFS` → `ROLE_PERMISSIONS`；`hub_roles` 没单独建表，用 `users.cluster_admin` 列；`provider.secret.read`、`team.transfer/delete` 本期没有对应接口，未加权限点。
+- `null` 主体不再代表放行：后台任务 / 无账号模式显式传 `systemSubject(reason)`。
+
+## 后果
+
+- 正面：本机执行权只有一条通路、可审计；所有规则可在一张矩阵里看到并被测试锁住；新增资源类型有固定套路。
+- 负面：权限点改名、拆分涉及较多调用方；`localWorkerGrants` 名单里的人会失去本机使用权（需提示）。
+- 中性：数据模型新增 `hub_roles`、`grants`，后续可选 `team_roles`。
+
+## 备选
+
+- 保留 `localWorkerGrants`：违背「只在一个角色上」，且是第二条授权通路。
+- 让团队 owner 也能用本机：本机 = hub 主机，权限过大，拒绝。
+- 引入通用 ABAC / 策略引擎（如 Casbin、OPA）：当前规模下一张角色表 + 少量关系即可，引擎带来的复杂度不值得；如果自定义角色和授权规模变大再评估。

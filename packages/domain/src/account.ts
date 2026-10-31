@@ -1,3 +1,4 @@
+import { can, type AccessGrant, type CustomRole } from './access.ts';
 import type { TokenVia } from './api-token.ts';
 import { newId } from './ids.ts';
 
@@ -16,7 +17,8 @@ export const newLoginId = (): LoginId => newId() as LoginId;
 export const asUserId = (value: string): UserId => value as UserId;
 export const asLoginId = (value: string): LoginId => value as LoginId;
 
-export type Role = 'owner' | 'member';
+/** 团队角色：内置四个，或团队自定义角色 `custom:<id>`（ADR 0017）。 */
+export type Role = 'owner' | 'admin' | 'member' | 'viewer' | `custom:${string}`;
 
 export interface User {
   readonly id: UserId;
@@ -32,7 +34,7 @@ export interface User {
   /** 所属团队（ADR 0011）：一人一个团队。老库迁移前可能是 null。 */
   readonly teamId: TeamId | null;
   /** hub 级超级管理员（第一位主人）：管 hub 设置、本机 Worker、全站用户。 */
-  readonly hubAdmin: boolean;
+  readonly clusterAdmin: boolean;
   /** 软删除（匿名化）的时间；删了的人不能登录，也不出现在列表里。 */
   readonly deletedAt: number | null;
 }
@@ -88,6 +90,10 @@ export interface Principal {
   readonly loginId: LoginId;
   /** 经开放 API 令牌来的请求（ADR 0015）；cookie 登录态没有。 */
   readonly via?: TokenVia;
+  /** role 是自定义角色时，认证时从 team_roles 解析好的定义。 */
+  readonly customRole?: CustomRole | null;
+  /** 认证时加载的、给这个人的有效显式授权（含集群管理员的临时进入）。 */
+  readonly grants?: readonly AccessGrant[];
 }
 
 /** 登录态时效：30 天，用着就续（每次续到「最后一次使用 + 30 天」）。 */
@@ -132,15 +138,19 @@ export interface HubSettings {
   readonly openRegistration: boolean;
   /** 成员能否给 hub 加机器；Owner 总是能。 */
   readonly membersCanAddMachines: boolean;
-  /** 本机 Worker（hub 所在的机器）的单独授权：hub 管理员团队里的这些人能用。hub 管理员总能用，别的团队永远不能。 */
-  readonly localWorkerGrants: readonly string[];
+  /**
+   * @deprecated ADR 0017 决定 1A：本机 Worker 只给集群管理员。老库里的名单只在启动迁移时读一次，
+   * 逐人写审计后清掉（revokeLegacyLocalWorkerGrants）。
+   */
+  readonly localWorkerGrants?: readonly string[];
   /** 开了「资源满了就拒绝新会话」的机器（ADR 0014，默认谁都不开）。 */
   readonly refuseWhenFull: readonly string[];
 }
-export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, localWorkerGrants: [], refuseWhenFull: [] };
+export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, refuseWhenFull: [] };
 
-export const canAddMachines = (user: User, settings: HubSettings): boolean =>
-  user.role === 'owner' || settings.membersCanAddMachines;
+/** 能不能加机器：走 can('worker.enroll')（角色要有这项；成员还受 hub 开关约束）。 */
+export const canAddMachines = (principal: Principal | null, settings: HubSettings): boolean =>
+  can(principal, 'worker.enroll', undefined, { hubTeamId: null, settings });
 
 /** 每个人最近的登录活动，运营后台的用户列表用。 */
 export interface LoginActivity {
@@ -214,7 +224,17 @@ export type AuditAction =
   | 'asset.install_request'
   | 'asset.install_decide'
   | 'asset.review_settings'
-  | 'asset.migrate';
+  | 'asset.migrate'
+  | 'user.cluster_admin'
+  | 'access.local_revoked'
+  | 'role.create'
+  | 'role.update'
+  | 'role.delete'
+  | 'grant.create'
+  | 'grant.revoke'
+  | 'team.visit'
+  | 'team.visit_end'
+  | 'session.prompt';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {

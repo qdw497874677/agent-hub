@@ -43,7 +43,7 @@ async function world() {
       disabledAt: null,
       createdAt: 1,
       teamId: team as TeamId,
-      hubAdmin,
+      clusterAdmin: hubAdmin,
       deletedAt: null
     };
     await admin.accounts.users.save(user);

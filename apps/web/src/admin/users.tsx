@@ -3,17 +3,15 @@ import { useQuery } from '@tanstack/react-query';
 import { adminApi, teamApi } from '../api.ts';
 import type { AdminUserDto } from '../api.ts';
 import { useAccount } from '../auth.tsx';
+import { VisitPanel } from '../team-roles.tsx';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAction } from './shared.tsx';
 
 export function Users() {
   const me = useAccount();
   const [q, setQ] = useState('');
   const users = useQuery({ queryKey: ['admin', 'users', q], queryFn: () => adminApi.users(q) });
-  const settings = useQuery({ queryKey: ['admin', 'settings'], queryFn: adminApi.settings });
-  const grants = settings.data?.localWorkerGrants ?? [];
-  const grant = useAdminAction(({ user, on }: { user: AdminUserDto; on: boolean }) =>
-    adminApi.saveSettings({ localWorkerGrants: on ? [...grants.filter((id) => id !== user.id), user.id] : grants.filter((id) => id !== user.id) })
-  );
+  const grant = useAdminAction(({ user, on }: { user: AdminUserDto; on: boolean }) => adminApi.setClusterAdmin(user.id, on));
+  const admins = users.data?.filter((user) => user.clusterAdmin && !user.disabled).length ?? 0;
   const action = useAdminAction(
     ({ kind, user }: { kind: 'disable' | 'enable' | 'promote' | 'demote' | 'revoke' | 'verify' | 'delete'; user: AdminUserDto }) => {
       if (kind === 'disable') return adminApi.disable(user.id);
@@ -27,6 +25,7 @@ export function Users() {
   );
   return (
     <Section title="用户" aside={<span className="text-meta text-tertiary">{users.data?.length ?? 0} 人</span>}>
+      <VisitPanel myTeamId={users.data?.find((user) => user.id === me?.id)?.teamId ?? null} />
       <input
         className={`${INPUT} mb-2`}
         placeholder="按邮箱或名字搜索"
@@ -53,9 +52,9 @@ export function Users() {
                       {user.email}
                     </span>
                     <span className="text-meta text-tertiary">
-                      {user.hubAdmin ? 'hub 管理员' : user.role === 'owner' ? '主人' : '成员'}
+                      {user.clusterAdmin ? '集群管理员 · ' : ''}
+                      {roleLabel(user.role)}
                       {user.hubTeam === false ? ' · 其他团队' : ''}
-                      {grants.includes(user.id) ? ' · 可用本机' : ''}
                       {self ? ' · 你' : ''}
                       {user.disabled ? ' · 已停用' : ''}
                     </span>
@@ -85,15 +84,23 @@ export function Users() {
                         降为成员
                       </button>
                     )}
-                    {!user.hubAdmin && user.hubTeam === true && settings.data ? (
+                    {!user.disabled ? (
                       <button
                         className={SMALL}
-                        disabled={grant.isPending}
-                        aria-pressed={grants.includes(user.id)}
-                        title="hub 本机 Worker 默认只有 hub 管理员能用；hub 团队成员要单独授权，别的团队永远不能用。"
-                        onClick={() => grant.mutate({ user, on: !grants.includes(user.id) })}
+                        data-testid="toggle-cluster-admin"
+                        disabled={grant.isPending || (user.clusterAdmin && admins <= 1)}
+                        aria-pressed={user.clusterAdmin}
+                        title={
+                          user.clusterAdmin && admins <= 1
+                            ? '至少要留一位集群管理员'
+                            : '集群管理员管整个 hub（用户、设置、hub 本机 Worker），但看不了别的团队的数据，除非临时进入'
+                        }
+                        onClick={() => {
+                          if (!user.clusterAdmin && !window.confirm(`把 ${user.email} 设为集群管理员？TA 将能使用 hub 本机 Worker、管理所有用户。`)) return;
+                          grant.mutate({ user, on: !user.clusterAdmin });
+                        }}
                       >
-                        {grants.includes(user.id) ? '收回本机使用权' : '允许使用本机'}
+                        {user.clusterAdmin ? '撤销集群管理员' : '设为集群管理员'}
                       </button>
                     ) : null}
                     {!user.emailVerified && (
@@ -128,7 +135,7 @@ export function Users() {
                         停用
                       </button>
                     )}
-                    {!self && !user.hubAdmin ? (
+                    {!self && !user.clusterAdmin ? (
                       <button
                         className={DANGER}
                         disabled={action.isPending}
@@ -151,4 +158,9 @@ export function Users() {
       </Panel>
     </Section>
   );
+}
+
+const ROLE_LABEL: Record<string, string> = { owner: '主人', admin: '管理员', member: '成员', viewer: '只读' };
+export function roleLabel(role: string): string {
+  return ROLE_LABEL[role] ?? (role.startsWith('custom:') ? '自定义角色' : role);
 }

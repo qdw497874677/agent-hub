@@ -1,4 +1,5 @@
-import { invalid, type DomainError } from './errors.ts';
+import { forbidden, invalid, type DomainError } from './errors.ts';
+import { can, isSystem, principalOfSubject, type Resource, type Subject } from './access.ts';
 import type { Result } from './result.ts';
 
 /**
@@ -115,27 +116,30 @@ export function validateProviderInput(input: ProviderInput): Result<ProviderInpu
   return { ok: true, value: { ...input, slug, name, baseUrl, models } };
 }
 
-/** 谁在看 / 用：用户 id、是否 hub 管理员、所在团队及角色。 */
-export interface ProviderActor {
-  readonly userId: string;
-  readonly hubAdmin: boolean;
-  readonly teams: ReadonlyMap<string, 'owner' | 'member'>;
+/** 谁在看 / 用：授权主体（登录的人、系统主体）。判断全走 can()（ADR 0017）。 */
+export type ProviderActor = Subject | null;
+
+/** 提供商当资源：全站 = hub 资源；团队 = 那个团队的（无主，只有 team 范围的角色能管）；个人 = 只看主人。 */
+export function providerAsResource(provider: Pick<ModelProvider, 'scope' | 'ownerId'> & { readonly id?: string }): Resource {
+  const id = provider.id;
+  if (provider.scope === 'hub') return { kind: 'provider', ...(id ? { id } : {}), teamId: null, hub: true };
+  if (provider.scope === 'team') return { kind: 'provider', ...(id ? { id } : {}), teamId: provider.ownerId, createdBy: null };
+  return { kind: 'provider', ...(id ? { id } : {}), teamId: null, personal: true, createdBy: provider.ownerId };
 }
 
 export function canManageProvider(actor: ProviderActor, provider: Pick<ModelProvider, 'scope' | 'ownerId'>): boolean {
-  if (provider.scope === 'hub') return actor.hubAdmin;
-  if (provider.scope === 'team') return provider.ownerId !== null && actor.teams.get(provider.ownerId) === 'owner';
-  return provider.ownerId === actor.userId;
+  if (provider.scope === 'hub') return can(actor, 'hub.providers');
+  if (provider.ownerId === null) return isSystem(actor);
+  return can(actor, 'provider.manage', providerAsResource(provider));
 }
 
 export function canSeeProvider(actor: ProviderActor, provider: Pick<ModelProvider, 'scope' | 'ownerId'>): boolean {
-  if (provider.scope === 'hub') return true;
-  if (provider.scope === 'team') return provider.ownerId !== null && actor.teams.has(provider.ownerId);
-  return provider.ownerId === actor.userId;
+  if (provider.scope !== 'hub' && provider.ownerId === null) return isSystem(actor);
+  return can(actor, 'provider.read', providerAsResource(provider));
 }
 
 /**
- * 能不能在某个项目的会话里用：先得看得见，再看作用域和项目团队对不对得上——
+ * 能不能在某个项目的会话里用：先得有 provider.use，再看作用域和项目团队对不对得上——
  * 团队提供商只给本团队项目；个人提供商只给本人所在团队的项目（不让个人密钥流进别的团队）。
  */
 export function canUseProvider(
@@ -145,11 +149,14 @@ export function canUseProvider(
 ): Result<true, DomainError> {
   if (!provider.enabled) return { ok: false, error: invalid('这个模型提供商已停用') };
   if (!provider.hasKey) return { ok: false, error: invalid('这个模型提供商还没有配置密钥') };
-  if (!canSeeProvider(actor, provider)) return { ok: false, error: invalid('无权使用这个模型提供商') };
+  if (!canSeeProvider(actor, provider) || !can(actor, 'provider.use', providerAsResource(provider))) {
+    return { ok: false, error: forbidden('无权使用这个模型提供商') };
+  }
   if (provider.scope === 'team' && projectTeamId !== null && provider.ownerId !== projectTeamId) {
     return { ok: false, error: invalid('团队模型提供商只能用在本团队的项目里') };
   }
-  if (provider.scope === 'personal' && projectTeamId !== null && !actor.teams.has(projectTeamId)) {
+  const principal = principalOfSubject(actor);
+  if (provider.scope === 'personal' && projectTeamId !== null && principal !== null && principal.user.teamId !== projectTeamId) {
     return { ok: false, error: invalid('个人模型提供商只能用在你所在团队的项目里') };
   }
   return { ok: true, value: true };

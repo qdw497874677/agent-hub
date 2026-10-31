@@ -4,7 +4,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Hono } from 'hono';
-import { createProvider, ok, type WorkerCommand } from '@agent-hub/domain';
+import { createProvider, ok, systemSubject, type WorkerCommand } from '@agent-hub/domain';
 import { createSqliteProviders } from '@agent-hub/storage-sqlite';
 import { createProviderRelay } from '@agent-hub/node-gateway';
 import { serve } from '@hono/node-server';
@@ -37,7 +37,7 @@ async function fakeUpstream() {
 async function setup(routing: 'direct' | 'hub', upstream: string) {
   const providers = createSqliteProviders(new DatabaseSync(':memory:'), randomBytes(32));
   const deps = { providers, audit: null, now: () => Date.now() };
-  const created = await createProvider(deps, null, { scope: 'hub', slug: 'gw', name: 'GW', protocol: 'openai-chat', baseUrl: upstream, models: [{ id: 'm-1' }], routing, enabled: true, apiKey: SECRET });
+  const created = await createProvider(deps, systemSubject('test'), { scope: 'hub', slug: 'gw', name: 'GW', protocol: 'openai-chat', baseUrl: upstream, models: [{ id: 'm-1' }], routing, enabled: true, apiKey: SECRET });
   assert.ok(created.ok);
   const host = new Map<string, string>([['s1', 'w1']]);
   const wiring = createProviderWiring({

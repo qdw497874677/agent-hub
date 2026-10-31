@@ -107,11 +107,14 @@ test('self-registered team owner cannot start session on hub-local worker（HTTP
   assert.equal(world.dispatched.length, 0);
 });
 
-test('hub 团队成员默认也不能用本机；hub 管理员单独授权后可以', async () => {
+test('hub 团队成员不能用本机（localWorkerGrants 已收回）；只有升为集群管理员才可以', async () => {
   const { member, accounts, world } = await setup();
   assert.equal((await member('/api/fs/directories?path=/')).status, 403);
   const user = await accounts.users.byEmail('m@b.co');
-  await accounts.settings.save({ ...(await accounts.settings.get()), localWorkerGrants: [user!.id] });
+  // 老设置里的名单不再生效
+  await accounts.settings.save({ ...(await accounts.settings.get()), localWorkerGrants: [user!.id] } as never);
+  assert.equal((await member('/api/fs/directories?path=/')).status, 403);
+  await accounts.users.save({ ...user!, clusterAdmin: true });
   assert.equal((await member('/api/fs/directories?path=/')).status, 200);
   assert.equal((await member('/api/workers')).body.length, world.workers.length);
 });

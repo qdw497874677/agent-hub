@@ -27,7 +27,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
     <DialogShell title="项目设置" onClose={onClose}>
       <h2 className="mb-3 text-body text-primary">项目设置 · {project.name}</h2>
       <DescriptionEditor project={project} />
-      {account?.hubAdmin ? <ProjectAssets projectId={project.id} /> : null}
+      {account?.clusterAdmin ? <ProjectAssets projectId={project.id} /> : null}
       <h3 className="mb-1 text-sub text-primary">工作空间</h3>
       <p className="mb-3 text-meta text-tertiary">任务做完或放弃后，临时工作空间会自动删除；有没保存的改动的会保留下来，等你决定。</p>
       {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}

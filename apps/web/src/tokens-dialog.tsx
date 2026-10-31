@@ -26,7 +26,7 @@ const BTN = 'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hov
 export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => void }) {
   const queryClient = useQueryClient();
   const list = useQuery({ queryKey: ['api-tokens'], queryFn: tokensApi.list });
-  const canService = me.role === 'owner' || me.hubAdmin;
+  const canService = me.role === 'owner' || me.clusterAdmin;
   const [name, setName] = useState('');
   const [kind, setKind] = useState<'personal' | 'service'>('personal');
   const [scopes, setScopes] = useState<ApiScopeDto[]>(['projects:read', 'sessions:read']);

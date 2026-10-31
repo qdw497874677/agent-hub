@@ -48,7 +48,7 @@ const userDto = (user: User, lastSeenAt: number | null, activeLogins: number, hu
   createdAt: user.createdAt,
   lastSeenAt,
   activeLogins,
-  hubAdmin: user.hubAdmin === true,
+  clusterAdmin: user.clusterAdmin === true,
   teamId: user.teamId ?? null,
   hubTeam: hubTeamId !== null && user.teamId === hubTeamId
 });
@@ -86,7 +86,7 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
   app.get('/api/workers/enroll-info', async (c) => {
     const principal = principalOf(c);
     const info: EnrollInfoDto = {
-      allowed: principal !== null && canAddMachines(principal.user, await deps.settings.get()),
+      allowed: canAddMachines(principal, await deps.settings.get()),
       hubUrl: new URL(c.req.url).origin
     };
     return c.json(info);
@@ -114,7 +114,7 @@ export function installAdmin(app: Hono, options: AdminOptions, principalOf: Prin
 
   app.get('/api/admin/users', async (c) => {
     const rows = await adminUsers(deps, c.req.query('q') ?? '');
-    const hubTeamId = (await deps.users.hubAdmin())?.teamId ?? null;
+    const hubTeamId = (await deps.users.firstClusterAdmin())?.teamId ?? null;
     return c.json(rows.map((row) => userDto(row.user, row.lastSeenAt, row.activeLogins, hubTeamId)));
   });
 

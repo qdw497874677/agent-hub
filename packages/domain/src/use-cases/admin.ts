@@ -2,7 +2,7 @@ import { isServiceAccount } from '../api-token.ts';
 import { newId } from '../ids.ts';
 import { can } from '../access.ts';
 import type { AuditAction, AuditEntry, HubSettings, Login, Principal, Role, User, UserId } from '../account.ts';
-import { forbidden, conflict, notFound } from '../errors.ts';
+import { forbidden, conflict, invalid, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
 import { err, ok } from '../result.ts';
 import type { Result } from '../result.ts';
@@ -67,9 +67,16 @@ async function record(
   await deps.audit.append(entry);
 }
 
-/** 还能登录的主人有几个：降级 / 停用前要保证至少剩一个。 */
-async function activeOwners(deps: Pick<AdminDeps, 'users'>): Promise<User[]> {
-  return (await deps.users.list()).filter((user) => user.role === 'owner' && user.disabledAt === null);
+/** 某个团队里还能登录的 owner 有几个：降级 / 停用前要保证每个团队至少剩一个。 */
+async function activeOwners(deps: Pick<AdminDeps, 'users'>, teamId: string | null | undefined): Promise<User[]> {
+  return (await deps.users.list()).filter(
+    (user) => user.role === 'owner' && user.disabledAt === null && user.deletedAt === null && (user.teamId ?? null) === (teamId ?? null)
+  );
+}
+
+/** 还能登录的集群管理员（决定 2A：至少一位）。 */
+async function activeAdmins(deps: Pick<AdminDeps, 'users'>): Promise<User[]> {
+  return (await deps.users.list()).filter((user) => user.clusterAdmin && user.disabledAt === null && user.deletedAt === null);
 }
 
 export async function adminOverview(deps: AdminDeps): Promise<AdminOverview> {
@@ -122,8 +129,10 @@ export async function setUserDisabled(
   if (!found.ok) return found;
   const user = found.value;
   if (disabled && user.id === actor.user.id) return err(conflict('不能停用你自己'));
-  if (disabled && user.role === 'owner' && user.disabledAt === null && (await activeOwners(deps)).length <= 1) {
-    return err(conflict('这是最后一个可用的主人，不能停用'));
+  // 停用是集群管理员的处置手段（比如自助注册的滥用账号，本身就是自己团队唯一的 owner），不按团队 owner 数拦；
+  // 只保证集群里至少留一位可用的集群管理员。
+  if (disabled && user.clusterAdmin && user.disabledAt === null && (await activeAdmins(deps)).length <= 1) {
+    return err(conflict('这是最后一位集群管理员，不能停用'));
   }
   if ((user.disabledAt !== null) === disabled) return ok(user);
   const next: User = { ...user, disabledAt: disabled ? deps.now() : null };
@@ -143,8 +152,10 @@ export async function setUserRole(
   if (!found.ok) return found;
   const user = found.value;
   if (user.role === role) return ok(user);
-  if (role === 'member' && user.disabledAt === null && (await activeOwners(deps)).length <= 1) {
-    return err(conflict('这是最后一个可用的主人，不能降为成员'));
+  // 自定义角色属于某个团队，只能在团队里分配（team.ts 校验角色归属）
+  if (role.startsWith('custom:')) return err(invalid('自定义角色请在团队设置里分配'));
+  if (user.role === 'owner' && role !== 'owner' && user.disabledAt === null && (await activeOwners(deps, user.teamId)).length <= 1) {
+    return err(conflict('这是团队最后一个可用的 owner，不能降级'));
   }
   const next: User = { ...user, role };
   await deps.users.save(next);

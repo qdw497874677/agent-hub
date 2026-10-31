@@ -141,7 +141,7 @@ export async function registerUser(
     deletedAt: null
   };
 
-  if ((await deps.users.hubAdmin()) === null && !(await deps.users.byEmail(email))) {
+  if ((await deps.users.firstClusterAdmin()) === null && !(await deps.users.byEmail(email))) {
     const team = newTeamFor(base, now);
     // 首启认领交给存储原子完成：并发注册时只有一个人成为 hub 管理员。
     const admin: User = {
@@ -150,7 +150,7 @@ export async function registerUser(
       role: 'owner',
       emailVerifiedAt: now,
       teamId: team.id,
-      hubAdmin: true
+      clusterAdmin: true
     };
     if (await deps.users.claimFirstOwner(admin)) {
       await deps.teams.save(team);
@@ -168,7 +168,7 @@ export async function registerUser(
     return ok({ kind: 'check-email' });
   }
   const team = newTeamFor(base, now);
-  const user: User = { ...base, passwordHash: await deps.hasher.hash(command.password), role: 'owner', teamId: team.id, hubAdmin: false };
+  const user: User = { ...base, passwordHash: await deps.hasher.hash(command.password), role: 'owner', teamId: team.id, clusterAdmin: false };
   await deps.teams.save(team);
   await deps.users.save(user);
   // 验证信发不出去不该让注册失败：主人也能在后台手动标记。
@@ -227,7 +227,7 @@ export async function loginAsFirstOwner(
   deps: Pick<AccountDeps, 'users' | 'logins' | 'tokens' | 'now'>,
   client: ClientInfo | string | null
 ): Promise<Result<IssuedLogin, DomainError>> {
-  const owner = (await deps.users.hubAdmin()) ?? (await deps.users.firstWithRole('owner'));
+  const owner = (await deps.users.firstClusterAdmin()) ?? (await deps.users.firstWithRole('owner'));
   if (!owner) return err(conflict('还没有任何账号：先注册一个，第一个注册的人就是主人'));
   return ok(await issueLogin(deps, owner, 'hub-token', typeof client === 'object' && client !== null ? client : { userAgent: client }));
 }
@@ -284,7 +284,7 @@ export async function seedAccount(
   else {
     const id = newUserId();
     // 还没有 hub 管理员：内置账号就是 hub 管理员，带一个自己的团队；否则并进 hub 管理员的团队。
-    const admin = await deps.users.hubAdmin();
+    const admin = await deps.users.firstClusterAdmin();
     const team = admin?.teamId ? null : newTeamFor({ id, displayName: seed.displayName }, now);
     if (team) await deps.teams.save(team);
     user = {
@@ -297,7 +297,7 @@ export async function seedAccount(
       disabledAt: null,
       createdAt: now,
       teamId: team ? team.id : (admin?.teamId ?? null),
-      hubAdmin: team !== null,
+      clusterAdmin: team !== null,
       deletedAt: null
     };
   }

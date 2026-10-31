@@ -116,6 +116,7 @@ export function toSession(row: Row): Session {
     optionSpec: parseOptionSpec(nullableStr(row, 'option_spec')),
     workerId: nullableStr(row, 'worker_id'),
     workspaceId: nullableStr(row, 'workspace_id') as Session['workspaceId'],
+    createdBy: nullableStr(row, 'created_by'),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };

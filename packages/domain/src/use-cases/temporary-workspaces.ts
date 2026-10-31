@@ -1,3 +1,4 @@
+import type { Subject } from '../access.ts';
 import type { Project } from '../project.ts';
 import { isUsable, newWorkspace, type Workspace } from '../workspace.ts';
 import { asProjectId, asTaskId, newId } from '../ids.ts';
@@ -7,7 +8,6 @@ import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { createDirectory, gitOn, parentOf, resolveMachine, rootsOf, type Machine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
-import type { Principal } from '../account.ts';
 import { MANAGED_DIR } from '../directories.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 
@@ -38,7 +38,7 @@ export interface PrepareTemporaryCommand {
   readonly branch?: string | null;
   /** 新分支从哪儿长（换个地方继续到同一台机器：从刚推送的 WIP 分支长）。 */
   readonly base?: string | null;
-  readonly actor?: Principal | null;
+  readonly actor?: Subject | null;
 }
 
 /**
@@ -137,6 +137,7 @@ async function gitBase(
   }
   if (!project.repo) return ok(null);
   const cloned = await prepareLongLivedWorkspaceUseCase(deps, {
+    actor: command.actor,
     projectId: project.id,
     workerId: command.workerId,
     plan: { mode: 'create' },

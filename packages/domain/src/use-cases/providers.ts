@@ -1,5 +1,5 @@
-import type { Principal } from '../account.ts';
-import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
+import { can, principalOfSubject, type Subject } from '../access.ts';
+import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { ProviderRepository } from '../ports/provider-repository.ts';
@@ -26,16 +26,11 @@ export interface ProviderDeps {
   readonly now: () => number;
 }
 
-/** principal 为 null（没装账号体系）= 本机唯一用户，当 hub 管理员。 */
-export function providerActor(principal: Principal | null): ProviderActor {
-  if (principal === null) return { userId: 'local', hubAdmin: true, teams: new Map() };
-  const { user } = principal;
-  const teams = new Map<string, 'owner' | 'member'>();
-  if (user.teamId) teams.set(user.teamId, user.role === 'owner' ? 'owner' : 'member');
-  return { userId: user.id, hubAdmin: user.hubAdmin, teams };
-}
+/** 授权主体就是 ProviderActor（判断全走 can()）。没装账号体系时调用方传系统主体，不再用 null 代表「hub 管理员」。 */
+export const providerActor = (subject: Subject | null): ProviderActor => subject;
 
-async function audit(deps: ProviderDeps, principal: Principal | null, action: 'provider.create' | 'provider.update' | 'provider.key' | 'provider.delete' | 'provider.test' | 'provider.routing', target: string, detail: string) {
+async function audit(deps: ProviderDeps, subject: Subject | null, action: 'provider.create' | 'provider.update' | 'provider.key' | 'provider.delete' | 'provider.test' | 'provider.routing', target: string, detail: string) {
+  const principal = principalOfSubject(subject);
   if (!deps.audit || !principal) return;
   await deps.audit.append({ id: newId(), actorId: principal.user.id, actorEmail: principal.user.email, action, target, detail, at: deps.now() });
 }
@@ -45,7 +40,7 @@ export interface ProviderView extends ModelProvider {
   readonly usage: ProviderUsage;
 }
 
-export async function listProviders(deps: ProviderDeps, principal: Principal | null): Promise<ProviderView[]> {
+export async function listProviders(deps: ProviderDeps, principal: Subject | null): Promise<ProviderView[]> {
   const actor = providerActor(principal);
   const out: ProviderView[] = [];
   for (const provider of await deps.providers.list()) {
@@ -60,17 +55,19 @@ export interface CreateProviderInput extends ProviderInput {
   readonly apiKey?: string;
 }
 
-export async function createProvider(deps: ProviderDeps, principal: Principal | null, input: CreateProviderInput): Promise<Result<ModelProvider, DomainError>> {
+export async function createProvider(deps: ProviderDeps, principal: Subject | null, input: CreateProviderInput): Promise<Result<ModelProvider, DomainError>> {
   const actor = providerActor(principal);
-  const ownerId = input.scope === 'hub' ? null : input.scope === 'team' ? ([...actor.teams.keys()][0] ?? null) : actor.userId;
+  const me = principalOfSubject(actor);
+  const ownerId = input.scope === 'hub' ? null : input.scope === 'team' ? (me?.user.teamId ?? null) : (me?.user.id ?? null);
   if (input.scope === 'team' && ownerId === null) return err(invalid('你不在任何团队里，建不了团队提供商'));
-  if (!canManageProvider(actor, { scope: input.scope, ownerId })) return err(invalid(input.scope === 'hub' ? '只有 hub 管理员能建全站提供商' : '只有团队所有者能建团队提供商'));
+  if (input.scope === 'personal' && ownerId === null) return err(invalid('个人提供商要登录后建'));
+  if (!canManageProvider(actor, { scope: input.scope, ownerId })) return err(forbidden(input.scope === 'hub' ? '只有集群管理员能建全站提供商' : '只有团队 owner / admin 能建团队提供商'));
   const valid = validateProviderInput(input);
   if (!valid.ok) return valid;
   if (await deps.providers.bySlug(valid.value.slug)) return err(conflict(`标识「${valid.value.slug}」已被占用`));
   const at = deps.now();
   const provider: Omit<ModelProvider, 'hasKey'> = {
-    id: newId(), scope: input.scope, ownerId, ...valid.value, lastCheck: null, createdBy: actor.userId, createdAt: at, updatedAt: at
+    id: newId(), scope: input.scope, ownerId, ...valid.value, lastCheck: null, createdBy: me?.user.id ?? 'system', createdAt: at, updatedAt: at
   };
   await deps.providers.save(provider);
   if (input.apiKey) await deps.providers.setKey(provider.id, input.apiKey, at);
@@ -78,14 +75,14 @@ export async function createProvider(deps: ProviderDeps, principal: Principal | 
   return ok({ ...provider, hasKey: Boolean(input.apiKey) });
 }
 
-async function managed(deps: ProviderDeps, principal: Principal | null, id: string): Promise<Result<ModelProvider, DomainError>> {
+async function managed(deps: ProviderDeps, principal: Subject | null, id: string): Promise<Result<ModelProvider, DomainError>> {
   const provider = await deps.providers.byId(id);
   if (!provider || !canSeeProvider(providerActor(principal), provider)) return err(notFound('没有这个模型提供商'));
-  if (!canManageProvider(providerActor(principal), provider)) return err(invalid('无权管理这个模型提供商'));
+  if (!canManageProvider(providerActor(principal), provider)) return err(forbidden('无权管理这个模型提供商'));
   return ok(provider);
 }
 
-export async function updateProvider(deps: ProviderDeps, principal: Principal | null, id: string, input: ProviderInput): Promise<Result<ModelProvider, DomainError>> {
+export async function updateProvider(deps: ProviderDeps, principal: Subject | null, id: string, input: ProviderInput): Promise<Result<ModelProvider, DomainError>> {
   const current = await managed(deps, principal, id);
   if (!current.ok) return current;
   const valid = validateProviderInput(input);
@@ -99,7 +96,7 @@ export async function updateProvider(deps: ProviderDeps, principal: Principal | 
 }
 
 /** 轮换密钥：只进不出；审计只记「换了」。 */
-export async function setProviderKey(deps: ProviderDeps, principal: Principal | null, id: string, apiKey: string): Promise<Result<void, DomainError>> {
+export async function setProviderKey(deps: ProviderDeps, principal: Subject | null, id: string, apiKey: string): Promise<Result<void, DomainError>> {
   const current = await managed(deps, principal, id);
   if (!current.ok) return current;
   if (!apiKey.trim() || apiKey.length > 4096) return err(invalid('密钥不能为空'));
@@ -108,7 +105,7 @@ export async function setProviderKey(deps: ProviderDeps, principal: Principal | 
   return ok(undefined);
 }
 
-export async function deleteProvider(deps: ProviderDeps, principal: Principal | null, id: string): Promise<Result<void, DomainError>> {
+export async function deleteProvider(deps: ProviderDeps, principal: Subject | null, id: string): Promise<Result<void, DomainError>> {
   const current = await managed(deps, principal, id);
   if (!current.ok) return current;
   await deps.providers.remove(id);
@@ -116,14 +113,14 @@ export async function deleteProvider(deps: ProviderDeps, principal: Principal | 
   return ok(undefined);
 }
 
-export async function setWorkerProviderRouting(deps: ProviderDeps, principal: Principal | null, workerId: string, routing: ProviderRouting | null): Promise<Result<void, DomainError>> {
-  if (!providerActor(principal).hubAdmin) return err(invalid('只有 hub 管理员能改机器的提供商路由'));
+export async function setWorkerProviderRouting(deps: ProviderDeps, principal: Subject | null, workerId: string, routing: ProviderRouting | null): Promise<Result<void, DomainError>> {
+  if (!can(principal, 'hub.providers')) return err(forbidden('只有集群管理员能改机器的提供商路由'));
   await deps.providers.setWorkerRouting(workerId, routing);
   await audit(deps, principal, 'provider.routing', workerId, routing ?? '跟随提供商');
   return ok(undefined);
 }
 
-export async function recordProviderCheck(deps: ProviderDeps, principal: Principal | null, provider: ModelProvider, check: ProviderCheck): Promise<void> {
+export async function recordProviderCheck(deps: ProviderDeps, principal: Subject | null, provider: ModelProvider, check: ProviderCheck): Promise<void> {
   await deps.providers.recordCheck(provider.id, check);
   await audit(deps, principal, 'provider.test', provider.slug, `${check.via} · ${check.workerId} · ${check.ok ? '通' : '不通'}：${check.message.slice(0, 160)}`);
 }
@@ -131,7 +128,7 @@ export async function recordProviderCheck(deps: ProviderDeps, principal: Princip
 /** 派生时：选了 hub 模型就核对这个人能不能在这个项目里用它。 */
 export async function checkProviderModel(
   deps: Pick<ProviderDeps, 'providers'>,
-  principal: Principal | null,
+  principal: Subject | null,
   model: string,
   projectTeamId: string | null
 ): Promise<Result<ModelProvider | null, DomainError>> {

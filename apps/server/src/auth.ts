@@ -14,7 +14,8 @@ import {
   tokenRequest
 } from '@agent-hub/contract';
 import type { AccountDto, AuthState, LoginDeviceDto } from '@agent-hub/contract';
-import type { AccountDeps, DomainError, IssuedLogin, Principal, Result, TeamDeps, User, UserId } from '@agent-hub/domain';
+import type { AccessAdminDeps, AccessRepos, AccountDeps, DomainError, IssuedLogin, Principal, Result, Subject, TeamDeps, User, UserId } from '@agent-hub/domain';
+import { systemSubject, withAccess } from '@agent-hub/domain';
 import {
   ok,
   acceptInvite,
@@ -53,6 +54,8 @@ export interface AuthOptions {
   readonly accounts: AccountDeps;
   /** 邀请要用（接受邀请建账号）；没给就没有邀请接口。 */
   readonly team?: TeamDeps;
+  /** ADR 0017：自定义角色、显式授权、临时进入、集群管理员。 */
+  readonly accessAdmin?: AccessAdminDeps;
   /** 旧共享令牌；null = 没配或过渡期已过。 */
   readonly hubToken: { readonly value: string; readonly until: number } | null;
   /** 限流：15 分钟内每个 IP 最多登录几次（不分邮箱），默认 30；e2e 用 HUB_LOGIN_RATE_MAX 放宽。另有按邮箱的退避（login-backoff.ts）。 */
@@ -61,6 +64,8 @@ export interface AuthOptions {
   readonly mailRateMax?: number;
   /** 真能发信（不是只记日志）。 */
   readonly mailDelivery?: boolean;
+  /** 自定义角色 + 显式授权（ADR 0017）：认证时挂到 Principal 上。 */
+  readonly access?: AccessRepos;
 }
 
 export const CSRF_HEADER = 'x-hub-csrf';
@@ -95,7 +100,7 @@ const toDto = (user: User): AccountDto => ({
   displayName: user.displayName,
   role: user.role,
   emailVerified: isEmailVerified(user),
-  hubAdmin: user.hubAdmin === true
+  clusterAdmin: user.clusterAdmin === true
 });
 
 function unauthorized(c: Context, message = '请先登录'): Response {
@@ -104,11 +109,18 @@ function unauthorized(c: Context, message = '请先登录'): Response {
 
 /** 守门中间件认出的身份；Bearer 旧令牌放行的请求没有身份（null）。 */
 export type PrincipalOf = (c: Context) => Principal | null;
+/**
+ * 授权用的主体：登录的人；旧共享 HUB_TOKEN 放行的请求是显式的系统主体（不再用 null 代表放行，ADR 0017）；
+ * 都不是就 null，can() 一律拒绝。
+ */
+export type SubjectOf = (c: Context) => Subject | null;
+const HUB_TOKEN_SUBJECT = systemSubject('hub-token');
 
-export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
+export function installAuth(app: Hono, options: AuthOptions): { principalOf: PrincipalOf; subjectOf: SubjectOf } {
   const { accounts } = options;
   // 守门中间件认出的身份，路由里直接取，不再查一遍库。
   const principals = new WeakMap<Request, Principal | null>();
+  const hubTokenRequests = new WeakSet<Request>();
   const backoff = createLoginBackoff(accounts.now);
   const limiter = createRateLimiter({ max: options.loginRateMax ?? 30, windowMs: 15 * 60 * 1000, now: accounts.now });
   const mailLimiter = createRateLimiter({ max: options.mailRateMax ?? 5, windowMs: 60 * 60 * 1000, now: accounts.now });
@@ -174,7 +186,7 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
   // 守门：除了健康检查和账号接口本身，/api/* 都要有身份。
   app.use('/api/*', async (c, next) => {
     const path = c.req.path;
-    const principal = await authenticate(accounts, readLoginCookie(c));
+    const principal = await withAccess(options.access, await authenticate(accounts, readLoginCookie(c)), accounts.now());
     principals.set(c.req.raw, principal);
     if (OPEN.some((open) => (open.endsWith('/') ? path.startsWith(open) : path === open))) return next();
 
@@ -190,7 +202,10 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
     // 过渡期：脚本仍可用 Bearer（或 SSE 用 ?token=）带旧 HUB_TOKEN。
     const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer /, '');
     // 查询串里的令牌会进访问日志、浏览器历史和 Referer，只给设不了请求头的 SSE 用。
-    if (tokenValid(bearer) || (path === SSE_PATH && tokenValid(c.req.query('token') ?? ''))) return next();
+    if (tokenValid(bearer) || (path === SSE_PATH && tokenValid(c.req.query('token') ?? ''))) {
+      hubTokenRequests.add(c.req.raw);
+      return next();
+    }
     return unauthorized(c);
   });
 
@@ -201,7 +216,7 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
       tokenLogin: options.hubToken !== null && accounts.now() < options.hubToken.until,
       // 还没有主人时总能注册（认领第一个账号），否则看开关。
       registration:
-        (await accounts.users.hubAdmin()) === null ||
+        (await accounts.users.firstClusterAdmin()) === null ||
         ((await accounts.settings.get()).openRegistration && !(await registrationFull(accounts))),
       mailDelivery: options.mailDelivery ?? false
     };
@@ -375,5 +390,7 @@ export function installAuth(app: Hono, options: AuthOptions): PrincipalOf {
     return c.json({ ok: true });
   });
 
-  return (c) => principals.get(c.req.raw) ?? null;
+  const principalOf: PrincipalOf = (c) => principals.get(c.req.raw) ?? null;
+  const subjectOf: SubjectOf = (c) => principalOf(c) ?? (hubTokenRequests.has(c.req.raw) ? HUB_TOKEN_SUBJECT : null);
+  return { principalOf, subjectOf };
 }

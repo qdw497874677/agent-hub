@@ -111,3 +111,5 @@ export * from './use-cases/assets.ts';
 export * from './provider.ts';
 export type { ProviderRepository } from './ports/provider-repository.ts';
 export * from './use-cases/providers.ts';
+export type { AccessGrantRepository, TeamRoleRepository } from './ports/access-repository.ts';
+export * from './use-cases/access-admin.ts';

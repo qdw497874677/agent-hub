@@ -21,7 +21,7 @@ async function setup() {
       disabledAt: null,
       createdAt: 1,
       teamId: null,
-      hubAdmin: false,
+      clusterAdmin: false,
       deletedAt: null
     };
     await admin.accounts.users.save(user);

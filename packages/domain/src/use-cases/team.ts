@@ -1,4 +1,5 @@
-import { can } from '../access.ts';
+import { can, customRoleId, isBuiltinRole } from '../access.ts';
+import type { TeamRoleRepository } from '../ports/access-repository.ts';
 import type { AuditAction, Invite, InviteId, Principal, Role, Team, User, UserId } from '../account.ts';
 import {
   ANONYMIZED_NAME,
@@ -34,7 +35,29 @@ export type TeamDeps = AccountDeps & {
   readonly invites: InviteRepository;
   /** 删人时把他建的项目转给团队 owner。 */
   readonly projects: Pick<ProjectRepository, 'list' | 'listDeleted' | 'save'>;
+  /** 团队自定义角色（ADR 0017）；没装就只能分配内置角色。 */
+  readonly roles?: Pick<TeamRoleRepository, 'byId'>;
 };
+
+/**
+ * 能不能把 `role` 分配给团队里的人（决定 3A / 6B）：
+ * - 自定义角色必须是本团队的；
+ * - owner 只有团队 owner 能给（hub.users 的集群管理员也行）；
+ * - admin 不能给别人 admin / owner，也不能改 owner / 其他 admin 的角色。
+ */
+async function roleChangeProblem(deps: TeamDeps, principal: Principal, teamId: string, role: Role, current: Role | null): Promise<string | null> {
+  if (!isBuiltinRole(role)) {
+    const id = customRoleId(role);
+    const found = id && deps.roles ? await deps.roles.byId(id) : null;
+    if (!found || found.teamId !== teamId) return '没有这个角色';
+  }
+  if (can(principal, 'hub.users')) return null;
+  const actor = principal.user.role;
+  if (actor === 'owner') return null;
+  if (role === 'owner' || role === 'admin') return '只有团队 owner 能分配 owner / admin';
+  if (current === 'owner' || current === 'admin') return '只有团队 owner 能改 owner / admin 的角色';
+  return null;
+}
 
 /** 记一条安全审计。没装审计（单测）就跳过。 */
 export async function securityEvent(
@@ -89,14 +112,14 @@ export async function viewTeam(deps: TeamDeps, principal: Principal): Promise<Re
   const team = found.value;
   const now = deps.now();
   const resource = { teamId: team.id };
-  const canManage = can(principal, 'member.manage', resource);
+  const canManage = can(principal, 'team.manage', resource);
   const [users, activity] = await Promise.all([deps.users.list(), deps.logins.activity(now)]);
   const seen = new Map(activity.map((row) => [row.userId, row.lastSeenAt]));
   const members = users
     .filter((user) => user.teamId === team.id && user.deletedAt === null && !isServiceAccount(user))
     .sort((a, b) => Number(b.id === team.ownerId) - Number(a.id === team.ownerId) || a.createdAt - b.createdAt)
     .map((user) => ({ user, isTeamOwner: user.id === team.ownerId, lastSeenAt: seen.get(user.id) ?? null }));
-  const invites = canManage && can(principal, 'member.invite', resource) ? (await deps.invites.forTeam(team.id)).filter((invite) => invitePending(invite, now)) : [];
+  const invites = canManage && can(principal, 'team.invite', resource) ? (await deps.invites.forTeam(team.id)).filter((invite) => invitePending(invite, now)) : [];
   const left = await seatsLeft(deps);
   return ok({ team, members, invites, seatsLeft: Number.isFinite(left) ? left : null, canManage });
 }
@@ -114,10 +137,12 @@ export async function inviteMember(deps: TeamDeps, principal: Principal, command
   const found = await myTeam(deps, principal);
   if (!found.ok) return found;
   const team = found.value;
-  if (!can(principal, 'member.invite', { teamId: team.id })) return err(forbidden('只有团队 owner 能邀请人'));
+  if (!can(principal, 'team.invite', { teamId: team.id })) return err(forbidden('只有团队 owner 能邀请人'));
   const email = normalizeEmail(command.email);
   const problem = emailProblem(email);
   if (problem) return err(invalid(problem));
+  const roleProblem = await roleChangeProblem(deps, principal, team.id, command.role, null);
+  if (roleProblem) return err(forbidden(roleProblem));
   const now = deps.now();
   const existing = await deps.users.byEmail(email);
   if (existing && existing.deletedAt === null) return err(conflict('这个邮箱已经有账号了'));
@@ -156,7 +181,7 @@ export async function inviteMember(deps: TeamDeps, principal: Principal, command
 
 export async function revokeInvite(deps: TeamDeps, principal: Principal, id: InviteId, ip: string | null = null): Promise<Result<Invite, DomainError>> {
   const invite = await deps.invites.byId(id);
-  if (!invite || !can(principal, 'member.invite', { teamId: invite.teamId })) return err(notFound('没有这个邀请'));
+  if (!invite || !can(principal, 'team.invite', { teamId: invite.teamId })) return err(notFound('没有这个邀请'));
   if (!invitePending(invite, deps.now())) return ok(invite);
   const next = { ...invite, revokedAt: deps.now() };
   await deps.invites.save(next);
@@ -219,7 +244,7 @@ export async function acceptInvite(deps: TeamDeps, command: AcceptInviteCommand)
     disabledAt: null,
     createdAt: now,
     teamId: team.id,
-    hubAdmin: false,
+    clusterAdmin: false,
     deletedAt: null
   };
   await deps.users.save(user);
@@ -236,7 +261,7 @@ async function teamMember(
   const team = user?.teamId ? await deps.teams.byId(user.teamId) : null;
   // hub 管理员能管全站用户（hub.users）；团队 owner 只能管自己团队（member.manage）。
   if (!user || user.deletedAt !== null || !team) return err(notFound('没有这个成员'));
-  if (!can(principal, 'hub.users') && !can(principal, 'member.manage', { teamId: team.id })) return err(notFound('没有这个成员'));
+  if (!can(principal, 'hub.users') && !can(principal, 'team.manage', { teamId: team.id })) return err(notFound('没有这个成员'));
   return ok({ user, team });
 }
 
@@ -253,6 +278,8 @@ export async function setMemberRole(
   const { user, team } = found.value;
   if (user.id === team.ownerId) return err(conflict('团队 owner 的角色不能改'));
   if (user.role === role) return ok(user);
+  const problem = await roleChangeProblem(deps, principal, team.id, role, user.role);
+  if (problem) return err(forbidden(problem));
   const next = { ...user, role };
   await deps.users.save(next);
   await securityEvent(deps, principal.user, 'user.role', user.email, `${user.role} → ${role}`, ip);
@@ -273,7 +300,7 @@ export async function deleteMember(
   if (!found.ok) return found;
   const { user, team } = found.value;
   if (user.id === principal.user.id) return err(conflict('不能删除你自己'));
-  if (user.hubAdmin) return err(conflict('不能删除 hub 管理员'));
+  if (user.clusterAdmin) return err(conflict('不能删除 hub 管理员'));
   if (user.id === team.ownerId) return err(conflict('不能删除团队 owner'));
   const now = deps.now();
   const originalEmail = user.email;

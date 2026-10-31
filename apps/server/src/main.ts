@@ -19,7 +19,8 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
-  sweepGitForReview
+  sweepGitForReview,
+  revokeLegacyLocalWorkerGrants
 } from '@agent-hub/domain';
 import {
   err,
@@ -195,6 +196,13 @@ if (testAccount !== 'off') {
     log
   );
 }
+// ADR 0017 决定 1A：老的「单独授权用本机 Worker」全部撤销（每人一条审计），幂等。
+{
+  const revoked = await revokeLegacyLocalWorkerGrants({ settings: store.settings, users: store.users, audit: store.audit, now: () => Date.now() });
+  if (revoked > 0) log(`撤销了 ${revoked} 条本机 Worker 单独授权（ADR 0017：hub 本机 Worker 只给集群管理员）`);
+  const admins = (await store.users.list()).filter((u) => u.clusterAdmin && u.deletedAt === null);
+  if (admins.length > 0) log(`集群管理员：${admins.map((u) => u.email).join(', ')}`);
+}
 const hubToken = await hubTokenWindow(dataDir, token, Number(readEnv('HUB_TOKEN_SUNSET_DAYS') ?? 30), Date.now());
 if (token !== null && hubToken === null) log('HUB_TOKEN 已过 30 天过渡期：不再能登录或调 API（worker 通道仍用它）');
 
@@ -263,7 +271,7 @@ const providerWiring = createProviderWiring({
 });
 const assetDeps: AssetReviewDeps = {
   assets: store.assets,
-  hubAdminId: async () => (await store.users.hubAdmin())?.id ?? null,
+  hubAdminId: async () => (await store.users.firstClusterAdmin())?.id ?? null,
   review: store.assetReview,
   notifications: store.notifications,
   audit: store.audit,
@@ -452,7 +460,7 @@ const envNumber = (name: string): number | undefined => {
 };
 
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
-  auth: { accounts, team: { ...accounts, invites: store.invites, projects: store.projects }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
+  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {
       users: store.users,

@@ -57,7 +57,7 @@ export interface AssetReviewDeps extends AssetDeps {
   readonly review: AssetReviewRepository;
   readonly notifications: NotificationRepository;
   readonly audit: AuditLog;
-  readonly users: Pick<UserRepository, 'byId' | 'hubAdmin'>;
+  readonly users: Pick<UserRepository, 'byId' | 'firstClusterAdmin'>;
   readonly teams: Pick<TeamRepository, 'byId'>;
   /** 机器当资源（本机 / 谁接入的）。 */
   readonly policy: Pick<AccessPolicy, 'context' | 'worker'>;
@@ -128,7 +128,7 @@ export async function reviewerContext(
   deps: Pick<AssetReviewDeps, 'review' | 'users' | 'teams'>,
   asset: Pick<Asset, 'teamId'>
 ): Promise<ReviewerContext> {
-  const admin = await deps.users.hubAdmin();
+  const admin = await deps.users.firstClusterAdmin();
   const team = asset.teamId ? await deps.teams.byId(asset.teamId as TeamId) : null;
   const settings = asset.teamId ? ((await deps.review.settings(asset.teamId)) ?? DEFAULT_REVIEW_SETTINGS) : DEFAULT_REVIEW_SETTINGS;
   const reviewers: string[] = [];
@@ -178,7 +178,7 @@ export async function buildReviewReport(
     const config = await mcpConfigAt(deps, asset.id, digest);
     if (config) {
       mcp = mcpRiskSummary(config, await mcpConfigAt(deps, asset.id, previous));
-      const admin = await deps.users.hubAdmin();
+      const admin = await deps.users.firstClusterAdmin();
       const stored = new Set((await deps.secrets.list()).map((secret) => secret.name));
       const scoped = { ...asset, scope: targetScope ?? asset.scope };
       secrets = mcpSecretRefs(config).map((name) => {
@@ -196,14 +196,14 @@ export async function buildReviewReport(
 export function canSeeAsset(actor: Principal, asset: Asset): boolean {
   if (asset.ownerId === actor.user.id) return true;
   if (!can(actor, 'asset.read')) return false;
-  if (asset.scope === 'global') return isPublished(asset) || actor.user.hubAdmin;
+  if (asset.scope === 'global') return isPublished(asset) || actor.user.clusterAdmin;
   if (asset.scope === 'personal') return false;
   return asset.teamId !== null && asset.teamId === actor.user.teamId;
 }
 
 /** 能不能给这个资产传新版本 / 撤回 / 提升：作者、同团队负责人（team 范围 asset.submit），全局资产还有 hub 管理员。 */
 function canMaintain(actor: Principal, asset: Asset, permission: 'asset.submit' | 'asset.retire'): boolean {
-  if (asset.scope === 'global' && actor.user.hubAdmin && !actor.via) return true;
+  if (asset.scope === 'global' && actor.user.clusterAdmin && !actor.via) return true;
   const resource: Resource = { teamId: asset.teamId, createdBy: asset.ownerId };
   if (asset.scope === 'personal') return asset.ownerId === actor.user.id && can(actor, permission);
   if (asset.scope === 'global') return asset.ownerId === actor.user.id && can(actor, permission);
@@ -312,7 +312,7 @@ export type SubmitAssetInput =
 
 /**
  * 上架一个新资产：建资产（未发布）+ 第一个提交。项目级的「能不能改这个项目」由调用方（路由）先查过。
- * 全局只有 hub 管理员能直接上架；成员要全局走「提升」。
+ * 全局只有集群管理员能直接上架；成员要全局走「提升」。
  */
 export async function submitNewAsset(
   deps: AssetReviewDeps,
@@ -320,7 +320,7 @@ export async function submitNewAsset(
   input: SubmitAssetInput
 ): Promise<Result<{ asset: Asset; submission: AssetSubmission }, DomainError>> {
   if (!can(actor, 'asset.submit')) return err(forbidden('你没有上架资产的权限'));
-  if (input.scope === 'global' && !can(actor, 'asset.publish_global')) return err(forbidden('全局资产只有 hub 管理员能直接上架：先上架到团队，再申请提升到全局'));
+  if (input.scope === 'global' && !can(actor, 'asset.publish_global')) return err(forbidden('全局资产只有集群管理员能直接上架：先上架到团队，再申请提升到全局'));
   if (input.scope !== 'global' && !actor.user.teamId) return err(invalid('你还没有团队'));
   const ownership = { scope: input.scope, ownerId: actor.user.id, teamId: actor.user.teamId, publish: false } as const;
   const made =
@@ -410,7 +410,7 @@ async function loadSubmission(deps: AssetReviewDeps, submissionId: string): Prom
   return ok({ submission, asset });
 }
 
-const reviewer = (actor: Principal) => ({ id: actor.user.id, hubAdmin: actor.user.hubAdmin });
+const reviewer = (actor: Principal) => ({ id: actor.user.id, hubAdmin: actor.user.clusterAdmin });
 
 /** 通过一票。高风险发现要显式确认（acknowledgeHigh）。票够了就发布。 */
 export async function approveSubmission(
@@ -583,7 +583,7 @@ export type InstallOutcome = { readonly kind: 'installed' } | { readonly kind: '
 
 /**
  * 装 / 卸资产：
- * - 本机 Worker 只有 hub 管理员能装（ADR 0011）。
+ * - 本机 Worker 只有集群管理员能装（ADR 0011）。
  * - 个人资产只能装到作者自己接入的机器（1A）。
  * - 能管这台机器（worker.manage）→ 直接装；同团队共享机器 → 提安装申请，团队负责人批（6B）。
  */
@@ -599,8 +599,8 @@ export async function setAssetOnWorker(
   if (!workers.some((worker) => worker.workerId === input.workerId)) return err(notFound('没有这台机器'));
   const ctx = await deps.policy.context();
   const resource = await deps.policy.worker(input.workerId);
-  if (!can(actor, 'worker.read', resource, ctx) && !(resource.local && actor.user.hubAdmin)) return err(notFound('没有这台机器'));
-  if (resource.local && !actor.user.hubAdmin) return err(forbidden('本机 Worker 只有 hub 管理员能装资产'));
+  if (!can(actor, 'worker.read', resource, ctx) && !(resource.local && actor.user.clusterAdmin)) return err(notFound('没有这台机器'));
+  if (resource.local && !actor.user.clusterAdmin) return err(forbidden('本机 Worker 只有集群管理员能装资产'));
   const manage = can(actor, 'worker.manage', resource, ctx) && can(actor, 'asset.assign', resource, ctx);
   if (!input.installed) {
     if (!manage && !(asset.scope === 'personal' && asset.ownerId === actor.user.id && resource.createdBy === actor.user.id)) {
@@ -657,7 +657,7 @@ export async function decideInstallRequest(
   const ctx = await deps.policy.context();
   const resource = await deps.policy.worker(request.workerId);
   if (!can(actor, 'worker.manage', resource, ctx)) return err(forbidden('只有能管理这台机器的人（团队负责人）能批'));
-  if (actor.user.id === request.requestedBy && !actor.user.hubAdmin) return err(forbidden('不能批自己的申请'));
+  if (actor.user.id === request.requestedBy && !actor.user.clusterAdmin) return err(forbidden('不能批自己的申请'));
   const asset = await deps.assets.get(request.assetId);
   if (!asset) return err(notFound('资产已经删了'));
   if (input.approve && !isPublished(asset)) return err(invalid('资产已下架，不能装'));
@@ -846,7 +846,7 @@ export async function installRequestsFor(
   return { toDecide, mine };
 }
 
-/** 资产市场能选的机器：我看得见的，标上「能直接装 / 要申请 / 只有 hub 管理员」。 */
+/** 资产市场能选的机器：我看得见的，标上「能直接装 / 要申请 / 只有集群管理员」。 */
 export async function marketWorkers(
   deps: AssetReviewDeps,
   actor: Principal
@@ -856,7 +856,7 @@ export async function marketWorkers(
   for (const worker of await deps.workers.list()) {
     const resource = await deps.policy.worker(worker.workerId);
     const local = resource.local === true;
-    if (local && !actor.user.hubAdmin) continue;
+    if (local && !actor.user.clusterAdmin) continue;
     if (!can(actor, 'worker.read', resource, ctx)) continue;
     const manage = can(actor, 'worker.manage', resource, ctx);
     out.push({ workerId: worker.workerId, label: worker.label, state: worker.state, local, mine: resource.createdBy === actor.user.id, mode: manage ? 'install' : 'request' });
@@ -873,7 +873,7 @@ export async function reviewSettingsFor(
   const teamId = actor.user.teamId;
   const team = teamId ? await deps.teams.byId(teamId) : null;
   const teamSettings = teamId ? ((await deps.review.settings(teamId)) ?? DEFAULT_REVIEW_SETTINGS) : null;
-  const hub = actor.user.hubAdmin ? ((await deps.review.settings(HUB_REVIEW_KEY)) ?? DEFAULT_REVIEW_SETTINGS) : null;
+  const hub = actor.user.clusterAdmin ? ((await deps.review.settings(HUB_REVIEW_KEY)) ?? DEFAULT_REVIEW_SETTINGS) : null;
   return {
     team: teamId && teamSettings ? { ...teamSettings, teamId, editable: team?.ownerId === actor.user.id } : null,
     hub: hub ? { ...hub, editable: true } : null
@@ -889,7 +889,7 @@ export async function setReviewSettings(
 ): Promise<Result<AssetReviewSettings, DomainError>> {
   if (actor.via) return err(forbidden('令牌不能改审核设置'));
   if (target === 'hub') {
-    if (!actor.user.hubAdmin) return err(forbidden('只有 hub 管理员能改全局资产的审核设置'));
+    if (!actor.user.clusterAdmin) return err(forbidden('只有集群管理员能改全局资产的审核设置'));
     // hub 级指定审核人：hub 管理员团队里的人（全局资产的第二位审核人从这里出）
     const hubReviewers: string[] = [];
     for (const id of new Set(input.reviewers)) {
@@ -983,7 +983,7 @@ export async function markNotificationsRead(deps: AssetReviewDeps, actor: Princi
  * 钉住的版本和安装关系不变，所以每台 Worker 的清单前后一致。
  */
 export async function migrateAssetOwnership(deps: AssetReviewDeps): Promise<{ migrated: number; pending: number }> {
-  const admin = await deps.users.hubAdmin();
+  const admin = await deps.users.firstClusterAdmin();
   if (!admin) return { migrated: 0, pending: 0 };
   let migrated = 0;
   let pending = 0;
@@ -1013,7 +1013,7 @@ export async function migrateAssetOwnership(deps: AssetReviewDeps): Promise<{ mi
 }
 
 /**
- * 运营后台（/api/admin/assets）的直接上架 / 钉版本：只有 hub 管理员走得到，等同 3A 允许的「hub 管理员自批全局资产」。
+ * 运营后台（/api/admin/assets）的直接上架 / 钉版本：只有集群管理员走得到，等同 3A 允许的「hub 管理员自批全局资产」。
  * 这里把同一版本上挂着的待审提交一并关掉（记成自批），并写一条带标记的审计。
  */
 export async function recordAdminPublish(deps: AssetReviewDeps, actor: Principal, asset: Asset, digest: string, how: string): Promise<void> {

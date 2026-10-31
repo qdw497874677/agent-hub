@@ -35,6 +35,8 @@ import {
   workerInfoSchema
 } from '@agent-hub/contract';
 import type { Deps, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
+import { systemSubject } from '@agent-hub/domain';
+const NO_AUTH_SUBJECT = systemSubject('no-auth');
 import {
   authorizeProject,
   can,
@@ -80,9 +82,10 @@ import {
   setTaskSummaryUseCase
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
-import { installAuth, SSE_PATH } from './auth.ts';
+import { installAuth, SSE_PATH, type SubjectOf } from './auth.ts';
 import { installAdmin } from './admin.ts';
 import { installTeam } from './team.ts';
+import { installAccessRoutes } from './access-routes.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
 import { installAssetMarket } from './asset-market.ts';
 import { RELAY_PATH, type ProviderWiringApi } from './providers.ts';
@@ -198,12 +201,15 @@ export function createApp(options: AppOptions): Hono {
 
   // token 只在绑非 loopback 时才是必需的；main.ts 保证那种情况下一旦没配就不启动。
   let principalOf: (c: Context) => Principal | null = () => null;
+  // 没装账号系统（单人 / 共享 token 模式）：所有请求都是显式的系统主体。
+  let subjectOf: SubjectOf = () => NO_AUTH_SUBJECT;
   if (options.auth) {
-    principalOf = installAuth(app, options.auth);
+    ({ principalOf, subjectOf } = installAuth(app, options.auth));
     // 授权中间件要先于下面所有路由注册（Hono 按注册顺序走）。
-    installAccess(app, deps, principalOf);
+    installAccess(app, deps, subjectOf);
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
+    if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.assets) installAssetMarket(app, options.assets.deps, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
@@ -238,10 +244,10 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/health', (c) => c.json({ ok: true }));
-  options.providers?.install(app, principalOf);
+  options.providers?.install(app, subjectOf);
 
   app.get('/api/home', async (c) =>
-    c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, principalOf(c)))))
+    c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, subjectOf(c)))))
   );
 
   // 目录选择器（S2.1）：让人从真实目录里挑，而不是手打一个可能会错的路径。
@@ -279,7 +285,7 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/workers', async (c) => {
-    const readable = await workerReader(deps.access, principalOf(c));
+    const readable = await workerReader(deps.access, subjectOf(c));
     const workers = [];
     for (const worker of await listWorkers(deps)) if (await readable(worker.workerId)) workers.push(worker);
     return c.json(workerInfoSchema.array().parse(workers));
@@ -292,15 +298,15 @@ export function createApp(options: AppOptions): Hono {
 
   app.get('/api/projects', async (c) => {
     const result = await listProjects(deps);
-    const readable = await projectReader(deps.access, principalOf(c));
+    const readable = await projectReader(deps.access, subjectOf(c));
     return result.ok ? c.json(result.value.filter(readable)) : fail(c, result.error);
   });
 
   app.post('/api/projects', async (c) => {
     const input = await body(c, createProjectRequest);
     if (!input.ok) return input.response;
-    const actor = principalOf(c);
-    if (actor && !can(actor, 'project.create')) return fail(c, forbidden('你没有权限新建项目'));
+    const actor = subjectOf(c);
+    if (!can(actor, 'project.create')) return fail(c, forbidden('你没有权限新建项目'));
     const result = await createProjectUseCase(deps, { ...input.value, actor });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
@@ -339,14 +345,14 @@ export function createApp(options: AppOptions): Hono {
             taskId: request.taskId,
             workerId: request.workerId,
             home: homedir(),
-            actor: principalOf(c)
+            actor: subjectOf(c)
           })
         : await prepareLongLivedWorkspaceUseCase(deps, {
             projectId: c.req.param('projectId'),
             workerId: request.workerId,
             plan: request.mode === 'link' ? { mode: 'link', path: request.path ?? '' } : request.path?.trim() ? { mode: 'create', path: request.path } : { mode: 'create' },
             home: homedir(),
-            actor: principalOf(c)
+            actor: subjectOf(c)
           });
     return result.ok ? c.json(workspaceSchema.parse(result.value), 201) : fail(c, result.error);
   });
@@ -460,7 +466,7 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/derive', async (c) => {
     const input = await body(c, deriveSessionRequest);
     if (!input.ok) return input.response;
-    const actor = principalOf(c);
+    const actor = subjectOf(c);
     const allowed = await options.providers?.checkModel(actor, input.value.model, input.value.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
     const result = await deriveSessionUseCase(deps, { ...input.value, actor });
@@ -471,7 +477,7 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/fork', async (c) => {
     const input = await body(c, forkSessionRequest);
     if (!input.ok) return input.response;
-    const actor = principalOf(c);
+    const actor = subjectOf(c);
     const result = await forkSessionUseCase(deps, { ...input.value, actor });
     if (result.ok) {
       const origin = result.value.origin;
@@ -486,7 +492,7 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/:sessionId/continue', async (c) => {
     const input = await body(c, continueElsewhereRequest);
     if (!input.ok) return input.response;
-    const actor = principalOf(c);
+    const actor = subjectOf(c);
     const from = c.req.param('sessionId');
     const result = await continueElsewhereUseCase(deps, { sessionId: from, ...input.value, home: homedir(), actor });
     if (result.ok) {
@@ -562,7 +568,7 @@ export function createApp(options: AppOptions): Hono {
 
   app.post('/api/sessions/:sessionId/interrupt', async (c) => {
     const result = await interruptSessionUseCase(deps, c.req.param('sessionId'));
-    if (result.ok) await recordSessionAction(deps, options.activity, c, principalOf(c), 'session.interrupt', c.req.param('sessionId'), '');
+    if (result.ok) await recordSessionAction(deps, options.activity, c, subjectOf(c), 'session.interrupt', c.req.param('sessionId'), '');
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   });
 
@@ -581,10 +587,10 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/stream', (c) =>
     streamSSE(c, async (stream) => {
       // 只推这个人看得见的会话（ADR 0011）。每条会话判一次就记住；看不见的帧直接丢。
-      const actor = principalOf(c);
+      const actor = subjectOf(c);
       const seen = new Map<string, Promise<boolean>>();
       const visibleSession = (sessionId: string): Promise<boolean> => {
-        if (!deps.access || actor === null) return Promise.resolve(true);
+        if (!deps.access) return Promise.resolve(true);
         let known = seen.get(sessionId);
         if (!known) {
           known = projectOfRef(deps, { kind: 'session', id: sessionId }).then(async ({ project }) =>

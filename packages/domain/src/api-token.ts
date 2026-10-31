@@ -1,4 +1,4 @@
-import type { Permission } from './access.ts';
+import { TOKEN_NEVER_GRANTABLE, type Permission } from './access.ts';
 import type { User } from './account.ts';
 
 /**
@@ -8,33 +8,21 @@ import type { User } from './account.ts';
 export type ApiScope = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | 'assets:submit';
 export const API_SCOPES: readonly ApiScope[] = ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read', 'assets:submit'];
 
-/** scope → 权限点。这里永远不出现 worker.use_local 和 hub.*：令牌拿不到本机 Worker。 */
+/** scope → 权限点。这里永远不出现 hub.*；本机 Worker 在 can() 里对令牌一律拒绝。 */
 export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>> = {
   'projects:read': ['project.read', 'task.read'],
-  'projects:write': ['project.read', 'task.read', 'project.create', 'project.update', 'project.delete', 'task.write'],
+  'projects:write': ['project.read', 'task.read', 'project.create', 'project.update', 'project.delete', 'task.create', 'task.update'],
   'sessions:read': ['session.read', 'task.read'],
-  'sessions:write': ['session.read', 'task.read', 'session.create', 'session.control', 'worker.use', 'worker.read'],
+  'sessions:write': ['session.read', 'task.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue', 'worker.use', 'worker.read'],
   'workers:read': ['worker.read'],
   // ADR 0016：令牌只能提交资产版本（进审核队列），审核 / 发布 / 分配 / 下架 / 用密钥都不行
   'assets:submit': ['asset.submit']
 };
 
-/** 任何令牌都不能拿到的权限（David：本机 Worker 只他本人在界面里用）。 */
-export const NEVER_GRANTABLE: ReadonlySet<Permission> = new Set<Permission>([
-  'worker.use_local',
-  'hub.settings',
-  'hub.users',
-  'hub.assets',
-  'asset.review',
-  'asset.assign',
-  'asset.retire',
-  'asset.secret.use',
-  'asset.publish_global'
-]);
 
 export function permissionsOf(scopes: readonly ApiScope[]): Permission[] {
   const out = new Set<Permission>();
-  for (const scope of scopes) for (const permission of SCOPE_PERMISSIONS[scope] ?? []) if (!NEVER_GRANTABLE.has(permission)) out.add(permission);
+  for (const scope of scopes) for (const permission of SCOPE_PERMISSIONS[scope] ?? []) if (!TOKEN_NEVER_GRANTABLE.has(permission)) out.add(permission);
   return [...out];
 }
 

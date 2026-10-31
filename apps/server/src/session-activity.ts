@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { asTaskId, newId } from '@agent-hub/domain';
-import type { AuditLog, Deps, JournalEntry, Principal, UserId, UserRepository } from '@agent-hub/domain';
+import { asTaskId, newId, principalOfSubject } from '@agent-hub/domain';
+import type { AuditLog, Deps, JournalEntry, Principal, Subject, UserId, UserRepository } from '@agent-hub/domain';
 
 /** 会话里「谁做了什么」：审计 + 读出时把作者名刷新成账号当前的名字。 */
 export interface SessionActivityOptions {
@@ -28,11 +28,12 @@ export async function recordSessionAction(
   deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'now'>,
   options: SessionActivityOptions | undefined,
   c: Context,
-  actor: Principal | null,
+  subject: Subject | null,
   action: SessionAction,
   sessionId: string,
   detail: string
 ): Promise<void> {
+  const actor = principalOfSubject(subject);
   if (!options || !actor) return;
   let teamId: string | null = actor.user.teamId ?? null;
   try {
