@@ -21,6 +21,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   interruptSessionUseCase,
   createGroupChat,
   createSessionLane,
+  createContextService,
   createMessageToolProvider,
   createMemoryService,
   createMemoryToolProvider,
@@ -227,6 +228,7 @@ hub.stream.subscribe((frame) => {
     await groupChat.turnEnded(frame.sessionId).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
   })();
 });
+const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit });
 setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
 
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
@@ -586,6 +588,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   activity: { audit: store.audit, users: store.users },
   messaging: { bus: messageBus, messages: store.messages },
   groups: { groups: groupChat },
+  context: contextService,
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,
