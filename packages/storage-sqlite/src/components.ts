@@ -43,7 +43,8 @@ export function createSqliteComponents(db: DatabaseSync): { catalog: ComponentCa
         return row ? (JSON.parse(row.body) as CatalogComponent) : null;
       },
       async save(item) {
-        put.run(item.id, JSON.stringify(item), Date.now());
+        // 主键是 id@version（catalogKey）：同一组件的各版本各占一行
+        put.run(`${item.id}@${item.version}`, JSON.stringify(item), Date.now());
       }
     },
     pins: {
