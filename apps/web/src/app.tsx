@@ -182,6 +182,18 @@ function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在换会话时拉一次，之后靠 SSE
   }, [focusedSession?.id]);
 
+  // 画布卡片与画布窗口也要整段历史（#105 说卡片能往上翻）：投影只带最后 24 条事件，
+  // 一段回复就是几十个 delta，只靠它刷新后卡片上只剩最后一句的半截、前面的提问全没了。
+  // 每条会话拉一次，之后靠 SSE；withFullHistory 不会让更新的内存倒退。
+  const fullLoaded = useRef(new Set<string>());
+  useEffect(() => {
+    for (const session of canvas.data?.sessions ?? []) {
+      if (fullLoaded.current.has(session.id)) continue;
+      fullLoaded.current.add(session.id);
+      void loadHistoryRef.current(session);
+    }
+  }, [canvas.data?.sessions]);
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
