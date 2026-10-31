@@ -1,6 +1,6 @@
 # ADR 0022：Hermes Agent 运行时适配器
 
-- 状态：proposed（2026-10-31）
+- 状态：accepted（2026-10-31 David，设计文档 §12 D1–D7 全部选 A）
 - 设计：`docs/design/hermes-adapter.md`
 - 相关：ADR 0013（统一运行时适配器 / 模型提供商）、0014（Worker 资源）、0019（记忆，PR #123）、0020（上下文策略，PR #123）、0021（运行时套件，PR #123）
 
@@ -8,7 +8,7 @@
 
 Hermes Agent 提供 API Server（OpenAI 兼容接口 + Runs API：幂等提交、SSE、stop、批准、澄清、结果未知处理、并发上限）和 ACP 两条集成路径（2026-10-31 核对原文）。
 
-## 决定（提议）
+## 决定
 
 1. 新增 `hermes` 运行时适配器，实现现有 `RuntimeAdapter` / `AgentRuntime` 契约，走 API Server 的 Runs API；P0 先用现有 acp 适配器冒烟。
 2. hub 只用自己建的 Hermes 会话；别的入口拥有的会话返回 409 `permission_denied`，不接管。

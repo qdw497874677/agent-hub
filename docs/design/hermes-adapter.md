@@ -1,6 +1,6 @@
-# Hermes Agent 运行时适配器（proposed，2026-10-31）
+# Hermes Agent 运行时适配器（accepted，2026-10-31）
 
-> 状态：**proposed**，待 David 确认 §12 的决定项。对应 ADR 0022。
+> 状态：**accepted**（2026-10-31 David 采纳 §12 全部推荐）。对应 ADR 0022。没有未决项。
 > 依据：[API Server 文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server)、[bot mode](https://hermes-agent.nousresearch.com/docs/user-guide/bot-mode)、[ACP](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp)、[Providers](https://hermes-agent.nousresearch.com/docs/integrations/providers)、[Installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation)，均于 2026-10-31 06:10 PDT 打开原文核对。文中标「**已核对**」的是原文写明的；标「**未核对**」的是推断或原文没写，实现前要实测。
 > 编号说明：ADR 0019–0021 在 PR #123 上（未合并），所以本 ADR 用 0022。
 
@@ -142,7 +142,7 @@ Hermes 对外有两条可编程的路：
   6. 工具预览已经过 Hermes 的强制脱敏（已核对），hub 仍然再过一遍自己的脱敏器；
   7. 事件里的文本一律当不可信内容处理（与其他运行时一致）。
 
-## 12. 决定项（推荐加粗）
+## 12. 决定（accepted，2026-10-31 David：全部选 A）
 
 - **D1 接口**：**A. P0 用现有 acp 适配器冒烟，P1 起专用适配器走 API Server**；B. 只用 ACP；C. 只用 API Server。
 - **D2 gateway 进程**：**A. 每个 Worker 一个 gateway，多会话共享（受 `max_concurrent_runs` 限制）**；B. 每个会话一个 gateway（隔离强，资源多）。
@@ -161,7 +161,7 @@ Hermes 对外有两条可编程的路：
 | **P2 bundle 与记忆** | ADR 0021 bundle；`X-Hermes-Session-Key` 作用域；原生记忆开关；hub MCP 工具接入 | 在干净 Worker 上一键安装；角色跨群共享 Hermes 记忆 |
 | **P3 群聊** | 作为群成员参与（agent-messaging §5.5–5.7）；`[SILENT]` 沉默标记交给 Hermes 角色提示词 | 群里 volunteer 策略能跑 |
 
-## 14. 未核对清单（实现前实测）
+## 14. P1 验证任务（原未核对项，P1 开工前实测；结果不影响已决方向，D7 已给出退路）
 
 1. 澄清请求的 SSE 事件名；
 2. 批准 `choice` 除 `once` / `deny` 外的取值；
