@@ -495,6 +495,222 @@
                           "endedAt",
                           "actorEmail"
                         ]
+                      },
+                      "resources": {
+                        "type": "object",
+                        "properties": {
+                          "sample": {
+                            "type": "object",
+                            "properties": {
+                              "at": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "machine": {
+                                "type": "object",
+                                "properties": {
+                                  "cpuPercent": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ],
+                                    "minimum": 0,
+                                    "maximum": 100
+                                  },
+                                  "cores": {
+                                    "type": "integer",
+                                    "minimum": 0
+                                  },
+                                  "load": {
+                                    "type": [
+                                      "array",
+                                      "null"
+                                    ],
+                                    "prefixItems": [
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      },
+                                      {
+                                        "type": "number"
+                                      }
+                                    ]
+                                  },
+                                  "memTotal": {
+                                    "type": "number",
+                                    "minimum": 0
+                                  },
+                                  "memAvailable": {
+                                    "type": "number",
+                                    "minimum": 0
+                                  },
+                                  "swapUsed": {
+                                    "type": [
+                                      "number",
+                                      "null"
+                                    ],
+                                    "minimum": 0
+                                  },
+                                  "disks": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "root": {
+                                          "type": "string",
+                                          "maxLength": 4096
+                                        },
+                                        "total": {
+                                          "type": "number",
+                                          "minimum": 0
+                                        },
+                                        "free": {
+                                          "type": "number",
+                                          "minimum": 0
+                                        }
+                                      },
+                                      "required": [
+                                        "root",
+                                        "total",
+                                        "free"
+                                      ]
+                                    },
+                                    "maxItems": 16
+                                  },
+                                  "gpus": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "properties": {
+                                        "name": {
+                                          "type": "string",
+                                          "maxLength": 200
+                                        },
+                                        "utilPercent": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ],
+                                          "minimum": 0,
+                                          "maximum": 100
+                                        },
+                                        "memTotal": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ],
+                                          "minimum": 0
+                                        },
+                                        "memUsed": {
+                                          "type": [
+                                            "number",
+                                            "null"
+                                          ],
+                                          "minimum": 0
+                                        }
+                                      },
+                                      "required": [
+                                        "name",
+                                        "utilPercent",
+                                        "memTotal",
+                                        "memUsed"
+                                      ]
+                                    },
+                                    "maxItems": 8
+                                  },
+                                  "uptimeSec": {
+                                    "type": "number",
+                                    "minimum": 0
+                                  }
+                                },
+                                "required": [
+                                  "cpuPercent",
+                                  "cores",
+                                  "load",
+                                  "memTotal",
+                                  "memAvailable",
+                                  "swapUsed",
+                                  "disks",
+                                  "uptimeSec"
+                                ]
+                              },
+                              "sessions": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "sessionId": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 200
+                                    },
+                                    "cpuPercent": {
+                                      "type": "number",
+                                      "minimum": 0
+                                    },
+                                    "rss": {
+                                      "type": "number",
+                                      "minimum": 0
+                                    },
+                                    "processes": {
+                                      "type": "integer",
+                                      "minimum": 0
+                                    }
+                                  },
+                                  "required": [
+                                    "sessionId",
+                                    "cpuPercent",
+                                    "rss",
+                                    "processes"
+                                  ]
+                                },
+                                "maxItems": 256
+                              }
+                            },
+                            "required": [
+                              "at",
+                              "machine",
+                              "sessions"
+                            ]
+                          },
+                          "pressure": {
+                            "type": "object",
+                            "properties": {
+                              "level": {
+                                "type": "string",
+                                "enum": [
+                                  "ok",
+                                  "warn",
+                                  "full"
+                                ]
+                              },
+                              "reasons": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              }
+                            },
+                            "required": [
+                              "level",
+                              "reasons"
+                            ]
+                          },
+                          "refusing": {
+                            "type": "boolean"
+                          },
+                          "refuseWhenFull": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "sample",
+                          "pressure",
+                          "refusing",
+                          "refuseWhenFull"
+                        ]
                       }
                     },
                     "required": [
