@@ -19,6 +19,10 @@ export function ipOf(c: Context): string | null {
   }
 }
 
+/** 经令牌的操作在审计里注明「via 令牌」（ADR 0015）。 */
+export const viaSuffix = (actor: Principal, detail: string): string =>
+  actor.via ? `${detail}${detail ? ' · ' : ''}via 令牌「${actor.via.name}」` : detail;
+
 /** 记一条会话操作审计（带 IP、团队）。没登录态（共享 token、单测）就不记——不知道是谁。 */
 export async function recordSessionAction(
   deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'now'>,
@@ -46,7 +50,7 @@ export async function recordSessionAction(
       actorEmail: actor.user.email,
       action,
       target: sessionId,
-      detail,
+      detail: viaSuffix(actor, detail),
       at: deps.now(),
       ip: ipOf(c),
       teamId

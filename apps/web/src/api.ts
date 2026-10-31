@@ -396,3 +396,13 @@ export const providersApi = {
   setWorkerRouting: (workerId: string, routing: 'direct' | 'hub' | null) =>
     call<{ ok: true }>(`/api/providers/routing/${encodeURIComponent(workerId)}`, { method: 'PUT', body: JSON.stringify({ routing }) })
 };
+
+/** 开放 API 访问令牌（ADR 0015）：明文只在创建时返回一次。 */
+export type ApiTokenDto = import('@agent-hub/contract').ApiTokenInfo;
+export type ApiScopeDto = ApiTokenDto['scopes'][number];
+export const tokensApi = {
+  list: () => call<ApiTokenDto[]>('/api/tokens'),
+  create: (input: { name: string; kind: 'personal' | 'service'; scopes: ApiScopeDto[]; expiresAt: number | null }) =>
+    post<{ token: string; info: ApiTokenDto }>('/api/tokens', input),
+  revoke: (id: string) => call<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' })
+};

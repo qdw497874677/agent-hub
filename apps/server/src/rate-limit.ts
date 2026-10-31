@@ -13,6 +13,11 @@ export function createRateLimiter(options: { max: number; windowMs: number; now:
       }
       entry.count += 1;
       return entry.count <= options.max;
+    },
+    /** 这个 key 还要等几秒才重新计数（给 Retry-After）。 */
+    retryAfter(key: string): number {
+      const entry = hits.get(key);
+      return entry ? Math.max(1, Math.ceil((entry.resetAt - options.now()) / 1000)) : 1;
     }
   };
 }

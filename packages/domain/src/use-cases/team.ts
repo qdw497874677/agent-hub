@@ -13,6 +13,7 @@ import {
   passwordProblem
 } from '../account.ts';
 import { newId } from '../ids.ts';
+import { isServiceAccount } from '../api-token.ts';
 import { conflict, forbidden, invalid, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
 import { err, ok } from '../result.ts';
@@ -92,7 +93,7 @@ export async function viewTeam(deps: TeamDeps, principal: Principal): Promise<Re
   const [users, activity] = await Promise.all([deps.users.list(), deps.logins.activity(now)]);
   const seen = new Map(activity.map((row) => [row.userId, row.lastSeenAt]));
   const members = users
-    .filter((user) => user.teamId === team.id && user.deletedAt === null)
+    .filter((user) => user.teamId === team.id && user.deletedAt === null && !isServiceAccount(user))
     .sort((a, b) => Number(b.id === team.ownerId) - Number(a.id === team.ownerId) || a.createdAt - b.createdAt)
     .map((user) => ({ user, isTeamOwner: user.id === team.ownerId, lastSeenAt: seen.get(user.id) ?? null }));
   const invites = canManage && can(principal, 'member.invite', resource) ? (await deps.invites.forTeam(team.id)).filter((invite) => invitePending(invite, now)) : [];

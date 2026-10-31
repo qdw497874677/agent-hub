@@ -62,6 +62,9 @@ export * from './use-cases/workspace-cleanup.ts';
 
 export * from './account.ts';
 export * from './access.ts';
+export * from './api-token.ts';
+export * from './use-cases/api-tokens.ts';
+export type { ApiTokenRepository } from './ports/api-token-repository.ts';
 export * from './use-cases/authorization.ts';
 export type { UserRepository } from './ports/user-repository.ts';
 export type { TeamRepository } from './ports/team-repository.ts';

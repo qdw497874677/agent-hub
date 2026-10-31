@@ -12,7 +12,7 @@ import { createRemoteClients, serveMcpRelay } from './mcp-relay.ts';
 import { serveAssetFetch } from './asset-relay.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
-import { createSecretVault, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteApiTokens, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createProviderWiring } from './providers.ts';
 import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
@@ -430,6 +430,13 @@ if (assetCheckMs > 0) {
   setInterval(() => void checkAssets('定时'), assetCheckMs).unref();
 }
 
+// 开放 API 令牌（ADR 0015）：只存哈希。
+const apiTokenDeps = { apiTokens: createSqliteApiTokens(store.db), users: store.users, tokens: createTokenIssuer(), audit: store.audit, now: () => Date.now() };
+const envNumber = (name: string): number | undefined => {
+  const value = readEnv(name);
+  return value === null || value === undefined ? undefined : Number(value);
+};
+
 const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
   auth: { accounts, team: { ...accounts, invites: store.invites, projects: store.projects }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
@@ -450,6 +457,11 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },
+  openApi: {
+    tokens: apiTokenDeps,
+    manage: apiTokenDeps,
+    rate: { general: envNumber('HUB_API_RATE_MAX'), prompt: envNumber('HUB_API_PROMPT_RATE_MAX'), streams: envNumber('HUB_API_STREAM_MAX') }
+  },
   enrollment: {
     deps: enrollmentDeps,
     bootstrapScript: join(repoRoot, 'scripts', 'bootstrap-worker.sh'),

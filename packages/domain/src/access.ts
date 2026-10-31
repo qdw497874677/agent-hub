@@ -1,3 +1,4 @@
+import { NEVER_GRANTABLE } from './api-token.ts';
 import type { HubSettings, Principal, Role } from './account.ts';
 
 /**
@@ -122,6 +123,11 @@ export function can(
   if (principal === null) return true;
   const { user } = principal;
   if (user.disabledAt !== null || user.deletedAt !== null) return false;
+  // 令牌：只在 scopes 打包的权限里取交集；本机 Worker 和 hub 级权限永远拿不到（ADR 0015）。
+  if (principal.via) {
+    if (NEVER_GRANTABLE.has(permission) || !principal.via.permissions.includes(permission)) return false;
+    if (resource?.local) return false;
+  }
   if (HUB_PERMISSIONS.has(permission)) return user.hubAdmin;
   const scope = ROLE_PERMISSIONS[user.role]?.[permission];
   if (!scope) return false;

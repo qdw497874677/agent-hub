@@ -1,3 +1,4 @@
+import { isServiceAccount } from '../api-token.ts';
 import type { Login, Principal, Role, Team, User } from '../account.ts';
 import {
   LOGIN_TOUCH_INTERVAL_MS,
@@ -190,7 +191,7 @@ export async function registrationFull(deps: Pick<AccountDeps, 'users' | 'maxUse
 export async function seatsLeft(deps: Pick<AccountDeps, 'users' | 'maxUsers' | 'invites' | 'now'>): Promise<number> {
   const max = deps.maxUsers ?? 0;
   if (max <= 0) return Infinity;
-  const users = (await deps.users.list()).filter((user) => user.deletedAt === null).length;
+  const users = (await deps.users.list()).filter((user) => user.deletedAt === null && !isServiceAccount(user)).length;
   // 勾了「超出名额」的邀请不再占名额（它本来就是额外的）
   const invites = deps.invites ? (await deps.invites.pending(deps.now())).filter((invite) => !invite.allowOverLimit).length : 0;
   return max - users - invites;

@@ -1,3 +1,5 @@
+import type { ApiToken } from '../api-token.ts';
+import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
 import { matchesAudit } from '../ports/audit-log.ts';
 import { seedAccount } from '../use-cases/accounts.ts';
 import { invitePending } from '../account.ts';
@@ -792,4 +794,20 @@ export async function addTeamMember(
 ): Promise<void> {
   const made = await seedAccount(accounts, { email, password, role, displayName: email.split('@')[0] ?? email });
   if (!made.ok) throw new Error(made.error.message);
+}
+
+/** 开放 API 令牌的内存仓库（ADR 0015）。 */
+export function inMemoryApiTokens(): ApiTokenRepository & { readonly rows: Map<string, ApiToken> } {
+  const rows = new Map<string, ApiToken>();
+  return {
+    rows,
+    save: async (token) => void rows.set(token.id, token),
+    byId: async (id) => rows.get(id) ?? null,
+    byHash: async (hash) => [...rows.values()].find((row) => row.tokenHash === hash) ?? null,
+    listByTeam: async (teamId) => [...rows.values()].filter((row) => row.teamId === teamId),
+    touch: async (id, at) => {
+      const row = rows.get(id);
+      if (row) rows.set(id, { ...row, lastUsedAt: at });
+    }
+  };
 }

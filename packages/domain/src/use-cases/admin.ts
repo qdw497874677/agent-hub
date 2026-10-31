@@ -1,3 +1,4 @@
+import { isServiceAccount } from '../api-token.ts';
 import { newId } from '../ids.ts';
 import { can } from '../access.ts';
 import type { AuditAction, AuditEntry, HubSettings, Login, Principal, Role, User, UserId } from '../account.ts';
@@ -96,7 +97,7 @@ export async function adminUsers(deps: AdminDeps, query = ''): Promise<AdminUser
   const [users, activity] = await Promise.all([deps.users.list(), deps.logins.activity(deps.now())]);
   const byUser = new Map(activity.map((row) => [row.userId, row]));
   return users
-    .filter((user) => user.deletedAt === null)
+    .filter((user) => user.deletedAt === null && !isServiceAccount(user))
     .filter((user) => needle === '' || user.email.includes(needle) || user.displayName.toLowerCase().includes(needle))
     .sort((a, b) => b.createdAt - a.createdAt)
     .map((user) => ({

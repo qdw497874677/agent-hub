@@ -27,7 +27,7 @@ export interface PromptCommand {
   /** false = 不垫任务背景（调用方已经自己写了交接简报，如换机继续）。 */
   readonly briefing?: boolean;
   /** 发这句话的人（登录态下才有）。 */
-  readonly author?: { readonly id: string; readonly name: string };
+  readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
 }
 
 /**
@@ -93,7 +93,7 @@ export async function promptSessionUseCase(
         kind: 'prompt',
         text: command.text,
         ...(stored.length > 0 ? { attachments: stored } : {}),
-        ...(command.author ? { author: { id: command.author.id, name: command.author.name } } : {})
+        ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {})
       } })
   );
   if (!logged.ok) return logged;

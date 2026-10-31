@@ -106,3 +106,42 @@ test('停用 / 删除的人什么都不能做；没装账号体系一律放行',
 test('加角色只改配置：每个角色都有权限表', () => {
   assert.deepEqual(Object.keys(ROLE_PERMISSIONS).sort(), ['member', 'owner']);
 });
+
+// —— 开放 API 令牌（ADR 0015）：令牌的权限 = 本人权限 ∩ scopes，且永远不含本机 Worker 和 hub 级权限 ——
+import { API_SCOPES, NEVER_GRANTABLE, apiTokenUsable, permissionsOf } from './api-token.ts';
+
+const viaToken = (who: Principal, scopes: Parameters<typeof permissionsOf>[0]): Principal =>
+  ({ ...who, via: { tokenId: 't1', name: 'bot', kind: 'personal', permissions: permissionsOf(scopes) } }) as Principal;
+
+test('令牌：权限是本人权限和 scopes 的交集', () => {
+  const read = viaToken(david, ['projects:read']);
+  assert.equal(can(read, 'project.read', hubProject('david'), ctx), true);
+  assert.equal(can(read, 'project.create', undefined, ctx), false);
+  // 成员的令牌就算给了写权限，也碰不到别人的项目
+  const member = viaToken(hubMember, ['projects:read', 'projects:write']);
+  assert.equal(can(member, 'project.read', hubProject('david'), ctx), false);
+  assert.equal(can(member, 'project.read', hubProject('m1'), ctx), true);
+});
+
+test('令牌：worker.use_local 和 hub 级权限永远授不出去，哪怕全部 scopes、哪怕 hub 管理员', () => {
+  const all = permissionsOf([...API_SCOPES]);
+  for (const permission of NEVER_GRANTABLE) assert.ok(!all.includes(permission), permission);
+  assert.ok(NEVER_GRANTABLE.has('worker.use_local'));
+  for (const who of [david, granted]) {
+    const token = viaToken(who, [...API_SCOPES]);
+    assert.equal(can(token, 'worker.use_local', local, ctx), false);
+    assert.equal(can(token, 'worker.use', local, ctx), false);
+    assert.equal(can(token, 'worker.use', hubRemote, ctx), true);
+  }
+  // 伪造一个带 worker.use_local 的 via 也不行
+  const forged = { ...david, via: { tokenId: 'x', name: 'x', kind: 'personal', permissions: ['worker.use_local', 'worker.use'] } } as unknown as Principal;
+  assert.equal(can(forged, 'worker.use_local', local, ctx), false);
+});
+
+test('令牌可用性：吊销、过期', () => {
+  const base = { revokedAt: null, expiresAt: null } as Parameters<typeof apiTokenUsable>[0];
+  assert.equal(apiTokenUsable(base, 10), true);
+  assert.equal(apiTokenUsable({ ...base, revokedAt: 5 }, 10), false);
+  assert.equal(apiTokenUsable({ ...base, expiresAt: 5 }, 10), false);
+  assert.equal(apiTokenUsable({ ...base, expiresAt: 50 }, 10), true);
+});
