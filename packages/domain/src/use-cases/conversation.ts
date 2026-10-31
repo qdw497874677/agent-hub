@@ -72,7 +72,7 @@ export async function promptSessionUseCase(
   deps: Pick<
     Deps,
     'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
-  > & Partial<Pick<Deps, 'workLog'>>,
+  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance'>>,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -100,7 +100,10 @@ export async function promptSessionUseCase(
 
   const hosted = await ensureHosted(deps, session);
   if (!hosted.ok) return failTurn(deps, sessionId, hosted.error);
-  const text = briefing ? `${briefing}\n\n${command.text}` : command.text;
+  // 记忆（ADR 0019）：第一轮只垫一行静态引导，内容靠 agent 自己 memory_search；垫了就记审计
+  const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
+  const text = [guidance?.text, briefing, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+  if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
   const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
   return sent.ok ? sent : failTurn(deps, sessionId, sent.error);
 }

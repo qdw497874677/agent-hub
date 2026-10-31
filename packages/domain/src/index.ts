@@ -98,9 +98,13 @@ export type { ToolGrantRepository } from './ports/tool-grant-repository.ts';
 export * from './use-cases/tool-gateway.ts';
 export * from './tools/task-tools.ts';
 export * from './tools/message-tools.ts';
+export * from './tools/memory-tools.ts';
 export * from './messaging.ts';
 export * from './use-cases/messaging.ts';
 export type { MessageStore } from './ports/message-store.ts';
+export * from './memory.ts';
+export type * from './ports/memory.ts';
+export * from './use-cases/memory.ts';
 
 export * from './asset.ts';
 export * from './mcp.ts';

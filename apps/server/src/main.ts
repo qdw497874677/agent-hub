@@ -10,6 +10,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { createServerGateway } from '@agent-hub/node-gateway';
 import { createRemoteClients, serveMcpRelay } from './mcp-relay.ts';
 import { serveAssetFetch } from './asset-relay.ts';
+import { createMemorySources } from './memory-sources.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { createSecretVault, createSqliteApiTokens, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
@@ -18,6 +19,12 @@ import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, Sess
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
   createMessageToolProvider,
+  createMemoryService,
+  createMemoryToolProvider,
+  createDefaultMemoryPolicy,
+  MEMORY_GUIDANCE,
+  MEMORY_GUIDANCE_VERSION,
+  type MemoryGuidance,
   createTaskUseCase,
   deriveSessionUseCase,
   promptSessionUseCase,
@@ -184,11 +191,38 @@ hub.stream.subscribe((frame) => {
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
 
+// 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
+const memoryService = createMemoryService({
+  now: deps.now,
+  sessions: deps.sessions,
+  projects: deps.projects,
+  tasks: deps.tasks,
+  ...store.memory,
+  sources: createMemorySources(deps),
+  policy: createDefaultMemoryPolicy(),
+  audit: store.audit,
+  access: deps.access,
+  principalOf: async (userId) => {
+    const user = await store.users.byId(userId as UserId);
+    if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
+    return withAccess(store.access, { user, loginId: 'agent-memory' as LoginId }, Date.now());
+  },
+  roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId))?.role ?? null,
+  sourceTtlMs: 5 * 60_000
+});
+if (toolEndpoint) {
+  (deps as { memoryGuidance?: MemoryGuidance }).memoryGuidance = {
+    text: MEMORY_GUIDANCE,
+    version: MEMORY_GUIDANCE_VERSION,
+    injected: (sessionId, version) => memoryService.guidanceInjected(sessionId, version)
+  };
+}
+
 toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
   tokens: createTokenIssuer(),
-  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus)]
+  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus), createMemoryToolProvider(memoryService)]
 });
 
 // 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。
@@ -513,6 +547,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },
   messaging: { bus: messageBus, messages: store.messages },
+  memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,
     manage: apiTokenDeps,

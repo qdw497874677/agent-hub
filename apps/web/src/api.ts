@@ -529,3 +529,28 @@ export const marketApi = {
   notifications: () => call<{ items: NotificationDto[]; unread: number }>('/api/notifications'),
   markRead: (ids: string[] | null) => post<{ ok: true }>('/api/notifications/read', { ids })
 };
+
+export interface MemoryEntryDto {
+  id: string;
+  scope: { kind: string } & Record<string, string>;
+  kind: 'semantic' | 'episodic' | 'procedural';
+  title: string;
+  body: string;
+  tags: string[];
+  status: 'active' | 'proposed' | 'rejected' | 'forgotten' | 'superseded' | 'expired' | 'invalidated';
+  trust: 'trusted' | 'untrusted';
+  stale: boolean;
+  provenance: { author: { kind: string; userId?: string; sessionId?: string }; via?: string };
+  updatedAt: number;
+}
+export interface MemoryScopeDto { key: string; label: string; canWrite: boolean; canReview: boolean }
+
+/** 记忆（ADR 0019）：界面只做列表、审核、忘掉、手写一条。 */
+export const memoryApi = {
+  scopes: () => call<{ scopes: MemoryScopeDto[] }>('/api/memory/scopes'),
+  list: (scope: string) => call<{ entries: MemoryEntryDto[] }>(`/api/memory?scope=${encodeURIComponent(scope)}&status=active&status=proposed`),
+  pending: () => call<{ entries: MemoryEntryDto[] }>('/api/memory/pending'),
+  write: (input: { scope: string; kind: MemoryEntryDto['kind']; title: string; body: string }) => post<MemoryEntryDto>('/api/memory', input),
+  review: (id: string, approve: boolean) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/review`, { approve }),
+  forget: (id: string, reason: string) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/forget`, { reason })
+};

@@ -161,6 +161,14 @@ export interface LoginActivity {
 }
 
 export type AuditAction =
+  | 'memory.write'
+  | 'memory.review'
+  | 'memory.forget'
+  | 'memory.purge'
+  | 'memory.export'
+  | 'memory.guidance'
+  | 'memory.reject'
+  | 'memory.settings'
   | 'user.disable'
   | 'user.enable'
   | 'user.role'
