@@ -57,6 +57,24 @@ body,
   select {
     font-size: 16px;
   }
+  /* 模型（按钮）和思考强度（原生下拉）一样大：触屏上下拉被抬到 16px，按钮也跟着抬，不然一高一低 */
+  .option-control {
+    font-size: 16px;
+  }
+}
+
+/* 输入框底栏的可调项：按钮和下拉统一盒子高度、垂直居中，和「+ / 发送」同高（手机 36px，md 以上 28px，和发送圆点一样） */
+.option-control {
+  box-sizing: border-box;
+  height: 2.25rem;
+  line-height: 1.25;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+@media (min-width: 768px) {
+  .option-control {
+    height: 1.75rem;
+  }
 }
 
 /* React Flow 默认的浅色变量在这一层被覆盖 */
