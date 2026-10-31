@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { Asset, AssetFile, AssetKind, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, SessionAssetManifest, WorkerAssetSync } from '@agent-hub/domain';
+import { assetScopeRef } from '@agent-hub/domain';
+import type { Asset, AssetFile, AssetKind, AssetScope, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, SessionAssetManifest, WorkerAssetSync } from '@agent-hub/domain';
 
 /**
  * 资产中心（docs/design/asset-hub.md）：资产、不可变的版本、按 sha256 寻址的内容、Worker 安装关系。
@@ -16,9 +17,14 @@ CREATE TABLE IF NOT EXISTS assets (
   latest      TEXT NOT NULL,
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,
-  -- 作用域：'' = 全局，否则是项目 id（见 migrateAssetScope）
+  -- 项目级资产的项目 id；其他作用域 ''（见 migrateAssetScope）
   project_id  TEXT NOT NULL DEFAULT '',
-  UNIQUE(kind, name, project_id)
+  -- ADR 0016：作用域、作者、团队；scope_ref = 同名唯一性的范围（项目 / 团队 / 作者 id，全局 ''）
+  scope       TEXT NOT NULL DEFAULT 'global',
+  owner_id    TEXT NOT NULL DEFAULT '',
+  team_id     TEXT NOT NULL DEFAULT '',
+  scope_ref   TEXT NOT NULL DEFAULT '',
+  UNIQUE(kind, name, scope, scope_ref)
 );
 CREATE TABLE IF NOT EXISTS asset_revisions (
   asset_id    TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
@@ -57,6 +63,52 @@ CREATE TABLE IF NOT EXISTS asset_sync (
 `;
 
 type Row = Record<string, unknown>;
+
+/**
+ * ADR 0016：给 assets 加作用域 / 作者 / 团队，唯一性改成 (kind, name, scope, scope_ref)。重建表（SQLite 改不了约束）。
+ * 老行：project_id = '' → global，否则 project；作者留空，由 migrateAssetOwnership 用例在启动时记成 hub 管理员。
+ * pinned / latest / 安装关系原样搬过去，所以 Worker 清单不变。
+ */
+function migrateAssetReview(db: DatabaseSync): void {
+  const columns = db.prepare("SELECT name FROM pragma_table_info('assets')").all() as Row[];
+  if (columns.length === 0 || columns.some((column) => column['name'] === 'scope')) return;
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(`
+CREATE TABLE assets_review (
+  id          TEXT PRIMARY KEY,
+  kind        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  description TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  pinned      TEXT NOT NULL,
+  latest      TEXT NOT NULL,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  project_id  TEXT NOT NULL DEFAULT '',
+  scope       TEXT NOT NULL DEFAULT 'global',
+  owner_id    TEXT NOT NULL DEFAULT '',
+  team_id     TEXT NOT NULL DEFAULT '',
+  scope_ref   TEXT NOT NULL DEFAULT '',
+  UNIQUE(kind, name, scope, scope_ref)
+);
+INSERT INTO assets_review(id, kind, name, description, source, pinned, latest, created_at, updated_at, project_id, scope, owner_id, team_id, scope_ref)
+  SELECT id, kind, name, description, source, pinned, latest, created_at, updated_at, project_id,
+         CASE WHEN project_id = '' THEN 'global' ELSE 'project' END, '', '', project_id
+  FROM assets;
+DROP TABLE assets;
+ALTER TABLE assets_review RENAME TO assets;`);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
 
 /**
  * 旧库的 assets 表是 UNIQUE(kind, name)、没有作用域列：重建一张（SQLite 改不了约束）。
@@ -106,6 +158,9 @@ const toAsset = (row: Row): Asset => ({
   pinned: String(row['pinned']),
   latest: String(row['latest']),
   projectId: row['project_id'] ? String(row['project_id']) : null,
+  scope: (row['scope'] ? String(row['scope']) : row['project_id'] ? 'project' : 'global') as AssetScope,
+  ownerId: row['owner_id'] ? String(row['owner_id']) : '',
+  teamId: row['team_id'] ? String(row['team_id']) : null,
   createdAt: Number(row['created_at']),
   updatedAt: Number(row['updated_at'])
 });
@@ -122,6 +177,7 @@ const toRevision = (row: Row): AssetRevision => ({
 
 export function createAssetRepository(db: DatabaseSync): AssetRepository {
   migrateAssetScope(db);
+  migrateAssetReview(db);
   db.exec(ASSET_SCHEMA);
   const all = db.prepare('SELECT * FROM assets ORDER BY kind, name');
   const byId = db.prepare('SELECT * FROM assets WHERE id = ?');
@@ -129,11 +185,14 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     'INSERT INTO session_assets (session_id, manifest) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET manifest = excluded.manifest'
   );
   const sessionAssetsOf = db.prepare('SELECT manifest FROM session_assets WHERE session_id = ?');
-  const byName = db.prepare('SELECT * FROM assets WHERE kind = ? AND name = ? AND project_id = ?');
+  const byName = db.prepare("SELECT * FROM assets WHERE kind = ? AND name = ? AND project_id = ? AND scope IN ('global', 'project')");
+  const inScope = db.prepare('SELECT * FROM assets WHERE kind = ? AND name = ? AND scope = ? AND scope_ref = ?');
   const insertAsset = db.prepare(
-    'INSERT INTO assets(id, kind, name, description, source, pinned, latest, created_at, updated_at, project_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT INTO assets(id, kind, name, description, source, pinned, latest, created_at, updated_at, project_id, scope, owner_id, team_id, scope_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
-  const updateAsset = db.prepare('UPDATE assets SET description = ?, source = ?, pinned = ?, latest = ?, updated_at = ? WHERE id = ?');
+  const updateAsset = db.prepare(
+    'UPDATE assets SET description = ?, source = ?, pinned = ?, latest = ?, updated_at = ?, project_id = ?, scope = ?, owner_id = ?, team_id = ?, scope_ref = ? WHERE id = ?'
+  );
   const insertRevision = db.prepare(
     'INSERT OR IGNORE INTO asset_revisions(asset_id, digest, name, description, files, git_commit, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
@@ -190,6 +249,10 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
       const row = byName.get(kind, name, projectId ?? '') as Row | undefined;
       return row ? toAsset(row) : null;
     },
+    findInScope: async (kind, name, scope, ref) => {
+      const row = inScope.get(kind, name, scope, ref) as Row | undefined;
+      return row ? toAsset(row) : null;
+    },
     create: async (asset, revision, blobs) =>
       transaction(() => {
         insertAsset.run(
@@ -202,7 +265,11 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
           asset.latest,
           asset.createdAt,
           asset.updatedAt,
-          asset.projectId ?? ''
+          asset.projectId ?? '',
+          asset.scope,
+          asset.ownerId,
+          asset.teamId ?? '',
+          assetScopeRef(asset)
         );
         putRevision(revision, blobs);
       }),
@@ -213,7 +280,19 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
       return row ? toRevision(row) : null;
     },
     update: async (asset) => {
-      updateAsset.run(asset.description, JSON.stringify(asset.source), asset.pinned, asset.latest, asset.updatedAt, asset.id);
+      updateAsset.run(
+        asset.description,
+        JSON.stringify(asset.source),
+        asset.pinned,
+        asset.latest,
+        asset.updatedAt,
+        asset.projectId ?? '',
+        asset.scope,
+        asset.ownerId,
+        asset.teamId ?? '',
+        assetScopeRef(asset),
+        asset.id
+      );
     },
     remove: async (id) =>
       transaction(() => {

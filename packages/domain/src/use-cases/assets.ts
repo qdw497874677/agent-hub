@@ -2,6 +2,7 @@ import {
   isFileAssetKind,
   assetScope,
   assetSlot,
+  assetScopeRef,
   checkAssetName,
   resolveProjectAssets,
   compareFiles,
@@ -15,6 +16,7 @@ import {
   type IncomingFile,
   type PackedAsset,
   type ProjectAssetChoice,
+  type AssetViewer,
   type AssetScope,
   type WorkerAssetSync,
   type SessionAssetEntry
@@ -29,6 +31,7 @@ import type { AssetRepository } from '../ports/asset-repository.ts';
 import type { AssetReader, GitCandidate } from '../ports/asset-reader.ts';
 import type { AssetDelivery, AssetSyncBoard } from '../ports/asset-delivery.ts';
 import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
+import { isHubSecretKey, secretLookupOrder } from '../asset-review.ts';
 import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpConfig, type McpConfig, type McpLaunch } from '../mcp.ts';
 
 /** 资产中心是独立的限界上下文：不塞进 Deps。 */
@@ -43,6 +46,8 @@ export interface AssetDeps {
   /** 项目级资产要认项目（只读）。 */
   readonly projects: { byId(id: string): Promise<{ readonly id: string; readonly name: string } | null> };
   readonly now: () => number;
+  /** hub 管理员是谁（决定资产能不能取 hub 级密钥，见 secretLookupOrder）。不给 = 单机 / 单测：老资产照旧取 hub 级。 */
+  readonly hubAdminId?: () => Promise<string | null>;
 }
 
 export const ASSET_KIND_LABEL: Readonly<Record<AssetKind, string>> = { skill: '技能', instruction: '指令', mcp: 'MCP 服务器' };
@@ -137,6 +142,17 @@ const revisionOf = (
 
 type CreateDeps = Pick<AssetDeps, 'assets' | 'reader' | 'now'> & Partial<Pick<AssetDeps, 'projects'>>;
 
+/** 谁上架、上架到哪个作用域、是否直接发布（hub 管理员后台 = 直接发布并打自审标记；成员上架 = 待审）。 */
+export interface AssetOwnership {
+  readonly scope?: AssetScope;
+  readonly ownerId?: string;
+  readonly teamId?: string | null;
+  /** false = 只建版本，pinned 留空，等审核通过才发布。默认 true（老的管理后台路径）。 */
+  readonly publish?: boolean;
+}
+
+const WHERE: Readonly<Record<AssetScope, string>> = { global: '全局', project: '这个项目里', team: '团队里', personal: '你的个人资产里' };
+
 async function createAsset(
   deps: CreateDeps,
   kind: AssetKind,
@@ -144,25 +160,37 @@ async function createAsset(
   files: readonly IncomingFile[],
   givenName: string | null,
   commit: string | null,
-  projectId: string | null
+  projectId: string | null,
+  ownership: AssetOwnership = {}
 ): Promise<Result<Asset, DomainError>> {
+  const scope: AssetScope = ownership.scope ?? (projectId === null ? 'global' : 'project');
+  if (scope === 'project' && projectId === null) return err(invalid('项目级资产要选项目'));
+  if (scope !== 'project') projectId = null;
   if (projectId !== null && !(await deps.projects?.byId(projectId))) return err(notFound('没有这个项目'));
+  const ownerId = ownership.ownerId ?? '';
+  const teamId = ownership.teamId ?? null;
+  if (scope === 'team' && !teamId) return err(invalid('团队资产要有团队'));
+  if (scope === 'personal' && !ownerId) return err(invalid('个人资产要有作者'));
   const described = await describePacked(deps, kind, files, givenName);
   if (!described.ok) return described;
   const { name, description, packed } = described.value;
-  if (await deps.assets.byName(kind, name, projectId)) {
-    const where = projectId === null ? '全局' : '这个项目里';
-    return err(conflict(`${where}已经有叫「${name}」的${ASSET_KIND_LABEL[kind]}了：到它那里传新版本`));
+  const ref = assetScopeRef({ scope, projectId, teamId, ownerId });
+  if (await deps.assets.findInScope(kind, name, scope, ref)) {
+    return err(conflict(`${WHERE[scope]}已经有叫「${name}」的${ASSET_KIND_LABEL[kind]}了：到它那里传新版本`));
   }
   const at = deps.now();
+  const publish = ownership.publish ?? true;
   const asset: Asset = {
     id: newId(),
     kind,
     name,
     projectId,
+    scope,
+    ownerId,
+    teamId,
     description,
     source,
-    pinned: packed.digest,
+    pinned: publish ? packed.digest : '',
     latest: packed.digest,
     createdAt: at,
     updatedAt: at
@@ -173,9 +201,9 @@ async function createAsset(
 
 export function uploadAsset(
   deps: CreateDeps,
-  input: { kind: AssetKind; name?: string | null; files: readonly IncomingFile[]; projectId?: string | null }
+  input: { kind: AssetKind; name?: string | null; files: readonly IncomingFile[]; projectId?: string | null } & AssetOwnership
 ): Promise<Result<Asset, DomainError>> {
-  return createAsset(deps, input.kind, { type: 'upload' }, input.files, input.name ?? null, null, input.projectId ?? null);
+  return createAsset(deps, input.kind, { type: 'upload' }, input.files, input.name ?? null, null, input.projectId ?? null, input);
 }
 
 const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[^\s]+$/;
@@ -191,13 +219,13 @@ export async function scanGitSource(
 
 export async function importGitAsset(
   deps: CreateDeps,
-  input: { kind: AssetKind; url: string; ref: string | null; path: string; name?: string | null; projectId?: string | null }
+  input: { kind: AssetKind; url: string; ref: string | null; path: string; name?: string | null; projectId?: string | null } & AssetOwnership
 ): Promise<Result<Asset, DomainError>> {
   if (!GIT_URL.test(input.url)) return err(invalid('只支持 https://、ssh:// 或 git@ 开头的仓库地址'));
   const checkout = await deps.reader.readGit(input.url, input.ref, input.path, input.kind);
   if (!checkout.ok) return checkout;
   const source: AssetSource = { type: 'git', url: input.url, ref: input.ref, path: input.path };
-  return createAsset(deps, input.kind, source, checkout.value.files, input.name ?? null, checkout.value.commit, input.projectId ?? null);
+  return createAsset(deps, input.kind, source, checkout.value.files, input.name ?? null, checkout.value.commit, input.projectId ?? null, input);
 }
 
 /** 新版本只记成「最新」，不换钉：要看过 diff 再 `pinAssetRevision`。名字不能变（Worker 上的目录名）。 */
@@ -485,14 +513,34 @@ export async function workerMcpConfigs(
  * 会话启动时给 Worker 的 MCP 清单：stdio 的密钥此刻才展开（只进那个进程的环境变量）；
  * http 只给名字（Worker 填本机中转地址），密钥留在 hub。缺密钥的那项跳过并报名字，不拦会话。
  */
+/**
+ * 按资产归属取它引用的密钥（ADR 0016 §密钥）：返回「引用名 → 值」，只含取到的。
+ * 成员上架的资产只能取到作者个人 / 作者团队的密钥，拿不到 hub 级的。
+ */
+export async function revealAssetSecrets(
+  deps: Pick<AssetDeps, 'secrets'> & Partial<Pick<AssetDeps, 'hubAdminId'>>,
+  asset: Pick<Asset, 'scope' | 'ownerId' | 'teamId'>,
+  names: readonly string[]
+): Promise<Record<string, string>> {
+  if (names.length === 0) return {};
+  const hubAdmin = deps.hubAdminId ? await deps.hubAdminId() : null;
+  const plans = names.map((name) => ({ name, order: secretLookupOrder(asset, name, hubAdmin) }));
+  const keys = [...new Set(plans.flatMap((plan) => plan.order.map((step) => step.key)))];
+  const found = await deps.secrets.reveal(keys);
+  const out: Record<string, string> = {};
+  for (const plan of plans) {
+    const hit = plan.order.find((step) => found[step.key] !== undefined);
+    if (hit) out[plan.name] = found[hit.key] as string;
+  }
+  return out;
+}
+
 export async function sessionMcpLaunch(
-  deps: Pick<AssetDeps, 'assets' | 'secrets'>,
+  deps: Pick<AssetDeps, 'assets' | 'secrets'> & Partial<Pick<AssetDeps, 'hubAdminId'>>,
   workerId: string,
   only?: ReadonlySet<string>
 ): Promise<{ launch: McpLaunch[]; skipped: { name: string; reason: string }[] }> {
   const configs = await workerMcpConfigs(deps, workerId, only);
-  const wanted = [...new Set(configs.filter(({ config }) => config.transport === 'stdio').flatMap(({ config }) => mcpSecretRefs(config)))];
-  const secrets = wanted.length > 0 ? await deps.secrets.reveal(wanted) : {};
   const launch: McpLaunch[] = [];
   const skipped: { name: string; reason: string }[] = [];
   for (const { asset, config } of configs) {
@@ -500,6 +548,7 @@ export async function sessionMcpLaunch(
       launch.push({ transport: 'http', name: asset.name, url: '' });
       continue;
     }
+    const secrets = await revealAssetSecrets(deps, asset, mcpSecretRefs(config));
     const env = expandRecord(config.env, secrets);
     const args = config.args.map((arg) => expandSecrets(arg, secrets));
     const bad = !env.ok ? env : args.find((arg) => !arg.ok);
@@ -520,17 +569,17 @@ export async function sessionMcpLaunch(
 
 /** hub 代连远端 MCP：只认装在这台 Worker 上的 http 资产；密钥在这里展开进请求头。 */
 export async function remoteMcpTarget(
-  deps: Pick<AssetDeps, 'assets' | 'secrets'>,
+  deps: Pick<AssetDeps, 'assets' | 'secrets'> & Partial<Pick<AssetDeps, 'hubAdminId'>>,
   workerId: string,
   name: string,
   /** 会话的生效集合（见 sessionAssetPlan）；给了就只在里面找，否则同名时全局优先。 */
   only?: ReadonlySet<string>
 ): Promise<Result<{ assetId: string; digest: string; url: string; headers: Record<string, string> }, DomainError>> {
   const candidates = (await workerMcpConfigs(deps, workerId, only)).filter((entry) => entry.asset.name === name);
-  const found = candidates.find((entry) => entry.asset.projectId === null) ?? candidates[0];
+  const found = candidates.find((entry) => entry.asset.scope === 'global') ?? candidates[0];
   if (!found) return err(notFound(`这台机器没装 MCP「${name}」`));
   if (found.config.transport !== 'http') return err(invalid(`「${name}」是本机 stdio 服务器，不经 hub 代连`));
-  const secrets = await deps.secrets.reveal(mcpSecretRefs(found.config));
+  const secrets = await revealAssetSecrets(deps, found.asset, mcpSecretRefs(found.config));
   const url = expandSecrets(found.config.url, secrets);
   if (!url.ok) return url;
   const headers = expandRecord(found.config.headers, secrets);
@@ -555,7 +604,8 @@ export async function listSecrets(deps: Pick<AssetDeps, 'assets' | 'secrets'>): 
     if (!config?.ok) continue;
     for (const ref of mcpSecretRefs(config.value)) usedBy.set(ref, [...(usedBy.get(ref) ?? []), asset.name]);
   }
-  const stored = await deps.secrets.list();
+  // 团队 / 个人命名空间的密钥不在 hub 级清单里（各自在资产市场里管）
+  const stored = (await deps.secrets.list()).filter((secret) => isHubSecretKey(secret.name));
   const names = new Set(stored.map((secret) => secret.name));
   return {
     secrets: stored.map((secret) => ({ ...secret, usedBy: usedBy.get(secret.name) ?? [] })),
@@ -588,10 +638,14 @@ export interface ProjectAssetsView {
 }
 
 /** 项目设置里的资产页：这个项目看得见的资产、开关、谁被就近盖住。 */
-export async function projectAssets(deps: Pick<AssetDeps, 'assets' | 'projects'>, projectId: string): Promise<Result<ProjectAssetsView, DomainError>> {
+export async function projectAssets(
+  deps: Pick<AssetDeps, 'assets' | 'projects'>,
+  projectId: string,
+  viewer: AssetViewer | null = null
+): Promise<Result<ProjectAssetsView, DomainError>> {
   if (!(await deps.projects.byId(projectId))) return err(notFound('没有这个项目'));
   const settings = await deps.assets.projectSettings(projectId);
-  const { choices } = resolveProjectAssets(await deps.assets.list(), projectId, settings);
+  const { choices } = resolveProjectAssets(await deps.assets.list(), projectId, settings, viewer);
   return ok({
     projectId,
     choices: choices.map(({ asset, enabled, shadowedBy }) => ({
@@ -611,7 +665,7 @@ export async function setProjectAsset(
   if (!(await deps.projects.byId(input.projectId))) return err(notFound('没有这个项目'));
   const asset = await deps.assets.get(input.assetId);
   if (!asset) return err(notFound('没有这个资产'));
-  if (asset.projectId !== null && asset.projectId !== input.projectId) return err(invalid('这是别的项目的项目级资产，不能在这里开'));
+  if (asset.scope === 'project' && asset.projectId !== input.projectId) return err(invalid('这是别的项目的项目级资产，不能在这里开'));
   await deps.assets.setProjectSetting(input.projectId, input.assetId, input.enabled);
   return ok(undefined);
 }
@@ -623,13 +677,15 @@ export async function setProjectAsset(
 export async function sessionAssetPlan(
   deps: Pick<AssetDeps, 'assets' | 'board'>,
   workerId: string,
-  projectId: string | null
+  projectId: string | null,
+  /** 会话发起人：决定个人 / 团队资产给不给（null = 只给全局 + 项目）。 */
+  viewer: AssetViewer | null = null
 ): Promise<{ assetIds: string[]; entries: SessionAssetEntry[] }> {
   const all = await deps.assets.list();
   const effective =
     projectId === null
-      ? all.filter((asset) => asset.projectId === null)
-      : resolveProjectAssets(all, projectId, await deps.assets.projectSettings(projectId)).effective;
+      ? resolveProjectAssets(all.filter((asset) => asset.scope !== 'project'), '', {}, viewer).effective
+      : resolveProjectAssets(all, projectId, await deps.assets.projectSettings(projectId), viewer).effective;
   const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === workerId).map((row) => row.assetId));
   const landed = deps.board.get(workerId)?.installed ?? {};
   const entries: SessionAssetEntry[] = [];

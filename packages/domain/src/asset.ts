@@ -48,11 +48,17 @@ export interface Asset {
   readonly kind: AssetKind;
   /** 落到 Worker 上的目录名 / 文件名；同一类、同一作用域里唯一（项目级可以和全局同名：就近优先）。 */
   readonly name: string;
-  /** 作用域：null = 全局（所有项目可用）；否则只属于这个项目。 */
+  /** 项目级资产的项目；其他作用域为 null。 */
   readonly projectId: string | null;
+  /** 作用域（ADR 0016）：personal / project / team / global。 */
+  readonly scope: AssetScope;
+  /** 作者（上架人）；迁移来的老资产记成 hub 管理员。 */
+  readonly ownerId: string;
+  /** 所属团队；global 资产也记作者的团队（只用于展示）。 */
+  readonly teamId: string | null;
   readonly description: string;
   readonly source: AssetSource;
-  /** 钉住的版本：下发给 Worker 的就是它。 */
+  /** 钉住的（= 已发布的）版本：下发给 Worker 的就是它。'' = 还没有通过审核的版本（不下发、不进会话）。 */
   readonly pinned: string;
   /** 来源上看到的最新版本；≠ pinned 就是「有新版本待确认」。 */
   readonly latest: string;
@@ -72,12 +78,23 @@ export interface AssetManifestEntry {
   readonly files: readonly AssetFile[];
 }
 
-export type AssetScope = 'global' | 'project';
-export const assetScope = (asset: Pick<Asset, 'projectId'>): AssetScope => (asset.projectId === null ? 'global' : 'project');
+/** ADR 0016：个人 → 项目 → 团队 → 全局。会话里同类同名时就近优先（personal 最近）。 */
+export type AssetScope = 'personal' | 'project' | 'team' | 'global';
+export const ASSET_SCOPES: readonly AssetScope[] = ['personal', 'project', 'team', 'global'];
+export const ASSET_SCOPE_LABEL: Readonly<Record<AssetScope, string>> = { personal: '个人', project: '项目', team: '团队', global: '全局' };
+export const assetScope = (asset: Pick<Asset, 'scope'>): AssetScope => asset.scope;
+/** 已发布（有通过审核的版本）。 */
+export const isPublished = (asset: Pick<Asset, 'pinned'>): boolean => asset.pinned !== '';
 
-/** Worker 上落地用的名字：全局资产 = name（兼容旧目录）；项目级 = name--<id 前 8 位>。 */
-export const assetSlot = (asset: Pick<Asset, 'id' | 'name' | 'projectId'>): string =>
-  asset.projectId === null ? asset.name : `${asset.name}--${asset.id.replace(/[^a-z0-9]/gi, '').slice(0, 8).toLowerCase()}`;
+/** 同名唯一性的范围：全局 ''、项目 = 项目 id、团队 = 团队 id、个人 = 作者 id。 */
+export const assetScopeRef = (asset: Pick<Asset, 'scope' | 'projectId' | 'teamId' | 'ownerId'>): string =>
+  asset.scope === 'global' ? '' : asset.scope === 'project' ? (asset.projectId ?? '') : asset.scope === 'team' ? (asset.teamId ?? '') : asset.ownerId;
+
+/** Worker 上落地用的名字：全局资产 = name（兼容旧目录）；其他作用域 = name--<id 前 8 位>（同名也不撞）。 */
+export const assetSlot = (asset: Pick<Asset, 'id' | 'name' | 'projectId'> & Partial<Pick<Asset, 'scope'>>): string =>
+  (asset.scope ?? (asset.projectId === null ? 'global' : 'project')) === 'global'
+    ? asset.name
+    : `${asset.name}--${asset.id.replace(/[^a-z0-9]/gi, '').slice(0, 8).toLowerCase()}`;
 
 /**
  * 一个项目的资产开关（项目设置里改）：assetId → 开 / 关。没写的取默认：
@@ -92,22 +109,51 @@ export interface ProjectAssetChoice {
   readonly shadowedBy: string | null;
 }
 
+/** 会话是谁、在哪个团队开的：个人 / 团队资产按它过滤（null = 不知道 → 只给全局 + 项目）。 */
+export interface AssetViewer {
+  readonly userId: string | null;
+  readonly teamId: string | null;
+}
+
+const RANK: Readonly<Record<AssetScope, number>> = { personal: 0, project: 1, team: 2, global: 3 };
+
+/** 这个项目（+ 会话发起人）看得见的资产：已发布、作用域对得上。 */
+export function assetVisibleIn(asset: Asset, projectId: string, viewer: AssetViewer | null): boolean {
+  if (!isPublished(asset)) return false;
+  switch (asset.scope) {
+    case 'global':
+      return true;
+    case 'project':
+      return asset.projectId === projectId;
+    case 'team':
+      return viewer !== null && viewer.teamId !== null && asset.teamId === viewer.teamId;
+    case 'personal':
+      return viewer !== null && viewer.userId !== null && asset.ownerId === viewer.userId;
+  }
+}
+
 /**
- * 就近优先：同类同名时项目级盖过全局。返回这个项目看得见的每个资产及其最终是否生效；
- * effective 里是真正给会话的那些。
+ * 就近优先：同类同名时 personal > project > team > global。返回这个项目看得见的每个资产及其最终是否生效；
+ * effective 里是真正给会话的那些。项目设置里的开关对所有作用域都有效（没写的默认开）。
  */
 export function resolveProjectAssets(
   assets: readonly Asset[],
   projectId: string,
-  settings: ProjectAssetSettings
+  settings: ProjectAssetSettings,
+  viewer: AssetViewer | null = null
 ): { choices: ProjectAssetChoice[]; effective: Asset[] } {
-  const visible = assets.filter((asset) => asset.projectId === null || asset.projectId === projectId);
+  const visible = assets.filter((asset) => assetVisibleIn(asset, projectId, viewer));
   const on = (asset: Asset) => settings[asset.id] ?? true;
-  const local = new Map<string, Asset>();
-  for (const asset of visible) if (asset.projectId !== null && on(asset)) local.set(`${asset.kind}:${asset.name}`, asset);
+  const best = new Map<string, Asset>();
+  for (const asset of visible) {
+    if (!on(asset)) continue;
+    const key = `${asset.kind}:${asset.name}`;
+    const current = best.get(key);
+    if (!current || RANK[asset.scope] < RANK[current.scope]) best.set(key, asset);
+  }
   const choices = visible.map((asset) => {
-    const nearer = asset.projectId === null ? local.get(`${asset.kind}:${asset.name}`) : undefined;
-    return { asset, enabled: on(asset), shadowedBy: nearer ? nearer.id : null };
+    const nearest = best.get(`${asset.kind}:${asset.name}`);
+    return { asset, enabled: on(asset), shadowedBy: nearest && nearest.id !== asset.id ? nearest.id : null };
   });
   return { choices, effective: choices.filter((choice) => choice.enabled && choice.shadowedBy === null).map((choice) => choice.asset) };
 }

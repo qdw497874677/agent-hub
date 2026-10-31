@@ -1,3 +1,4 @@
+import * as assetModule from '../asset.ts';
 import type { ApiToken } from '../api-token.ts';
 import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
 import { matchesAudit } from '../ports/audit-log.ts';
@@ -680,8 +681,58 @@ export function inMemoryEnrollment(admin: ReturnType<typeof inMemoryAdmin>, now:
   return { deps, pairings, credentials };
 }
 
+/** 资产审核仓库 + 通知的内存实现。 */
+export function inMemoryAssetReview(): {
+  review: import('../ports/asset-review-repository.ts').AssetReviewRepository;
+  notifications: import('../ports/asset-review-repository.ts').NotificationRepository & { rows: import('../asset-review.ts').Notification[] };
+} {
+  type S = import('../asset-review.ts').AssetSubmission;
+  type I = import('../asset-review.ts').InstallRequest;
+  const subs: S[] = [];
+  const comments: import('../asset-review.ts').ReviewComment[] = [];
+  const requests: I[] = [];
+  const settings = new Map<string, import('../asset-review.ts').AssetReviewSettings>();
+  const rows: import('../asset-review.ts').Notification[] = [];
+  return {
+    review: {
+      addSubmission: async (sub) => void subs.unshift(sub),
+      updateSubmission: async (sub) => {
+        const at = subs.findIndex((row) => row.id === sub.id);
+        if (at >= 0) subs[at] = sub;
+      },
+      submission: async (id) => subs.find((row) => row.id === id) ?? null,
+      submissions: async ({ assetId, status }) =>
+        subs.filter((row) => (!assetId || row.assetId === assetId) && (!status || status.includes(row.status))).sort((a, b) => b.createdAt - a.createdAt),
+      addComment: async (comment) => void comments.push(comment),
+      comments: async (id) => comments.filter((row) => row.submissionId === id),
+      addInstallRequest: async (request) => void requests.unshift(request),
+      updateInstallRequest: async (request) => {
+        const at = requests.findIndex((row) => row.id === request.id);
+        if (at >= 0) requests[at] = request;
+      },
+      installRequest: async (id) => requests.find((row) => row.id === id) ?? null,
+      installRequests: async ({ status, workerId, assetId }) =>
+        requests.filter((row) => (!status || row.status === status) && (!workerId || row.workerId === workerId) && (!assetId || row.assetId === assetId)),
+      settings: async (key) => settings.get(key) ?? null,
+      setSettings: async (key, value) => void settings.set(key, value)
+    },
+    notifications: {
+      rows,
+      add: async (note) => void rows.unshift(note),
+      list: async (userId, limit) => rows.filter((row) => row.userId === userId).slice(0, limit),
+      unread: async (userId) => rows.filter((row) => row.userId === userId && row.readAt === null).length,
+      markRead: async (userId, ids, at) => {
+        rows.forEach((row, index) => {
+          if (row.userId === userId && row.readAt === null && (ids === null || ids.includes(row.id))) rows[index] = { ...row, readAt: at };
+        });
+      }
+    }
+  };
+}
+
 /** 资产中心的内存实现：仓库、同步看板、可编程的投递和读取器。 */
 export function inMemoryAssets(now: () => number = () => 1_000) {
+  const { assetScopeRef } = assetModule;
   type A = import('../asset.ts').Asset;
   type R = import('../asset.ts').AssetRevision;
   const assets = new Map<string, A>();
@@ -695,7 +746,9 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     list: async () => [...assets.values()],
     get: async (id) => assets.get(id) ?? null,
     byName: async (kind, name, projectId) =>
-      [...assets.values()].find((a) => a.kind === kind && a.name === name && a.projectId === projectId) ?? null,
+      [...assets.values()].find((a) => a.kind === kind && a.name === name && a.projectId === projectId && (a.scope === 'global' || a.scope === 'project')) ?? null,
+    findInScope: async (kind, name, scope, ref) =>
+      [...assets.values()].find((a) => a.kind === kind && a.name === name && a.scope === scope && assetScopeRef(a) === ref) ?? null,
     create: async (asset, revision, data) => {
       assets.set(asset.id, asset);
       revisions.set(asset.id, [revision]);

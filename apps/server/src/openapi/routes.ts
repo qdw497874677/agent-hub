@@ -49,7 +49,7 @@ const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', 
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
 
 /** 每条路由要的权限范围（文档里写清楚；真正的判断在 can()）。 */
-export type ScopeNote = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | null;
+export type ScopeNote = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | 'assets:submit' | null;
 
 const route = <R extends Parameters<typeof createRoute>[0]>(scope: ScopeNote, config: R) =>
   createRoute({
