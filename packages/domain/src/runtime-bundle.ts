@@ -192,7 +192,9 @@ export interface ComponentPin {
 export type DriftItem =
   | { readonly kind: 'missing'; readonly componentId: string; readonly runtime: string; readonly expected: string }
   | { readonly kind: 'mismatch'; readonly componentId: string; readonly runtime: string; readonly expected: string; readonly actual: string }
-  | { readonly kind: 'external'; readonly componentId: string; readonly runtime: string; readonly actual: string };
+  | { readonly kind: 'external'; readonly componentId: string; readonly runtime: string; readonly actual: string }
+  /** hub 目录里有、但 hub 没有钉过（有人手动放进去的）：按不一致处理。 */
+  | { readonly kind: 'unexpected'; readonly componentId: string; readonly runtime: string; readonly actual: string };
 
 export interface DriftReport {
   readonly items: readonly DriftItem[];
@@ -226,7 +228,10 @@ export function detectDrift(expected: readonly ComponentPin[], inventory: Worker
   }
   for (const c of components) {
     if (c.managedBy === 'external') items.push({ kind: 'external', componentId: c.id, runtime: c.runtime, actual: c.version });
-    else if (!expected.some((pin) => pin.componentId === c.id && pin.runtime === c.runtime)) bad.add(c.id);
+    else if (!expected.some((pin) => pin.componentId === c.id && pin.runtime === c.runtime)) {
+      items.push({ kind: 'unexpected', componentId: c.id, runtime: c.runtime, actual: c.version });
+      bad.add(c.id);
+    }
   }
   const external = new Set(components.filter((c) => c.managedBy === 'external').map((c) => c.id));
   const trusted: InventoryCapability[] = [];
@@ -242,3 +247,15 @@ export function detectDrift(expected: readonly ComponentPin[], inventory: Worker
 
 /** 是否有需要人处理的漂移（外部组件不算）。 */
 export const hasDrift = (report: DriftReport): boolean => report.items.some((item) => item.kind !== 'external');
+
+/**
+ * mcp-server / skill 组件不走新的安装通道：它们就是已发布的资产版本，按会话经现有的资产下发（ADR 0016）送到 Worker。
+ * 这里只把清单里的资产引用解析成 { name, version }，交给资产服务去查审核状态和下发。
+ */
+export function bundleAssetRefs(manifest: BundleManifest): { readonly componentId: string; readonly kind: ComponentKind; readonly name: string; readonly version: number }[] {
+  return manifest.components.flatMap((component) => {
+    if (component.source.type !== 'asset') return [];
+    const [name, version] = component.source.ref.slice('asset:'.length).split('@') as [string, string];
+    return [{ componentId: component.id, kind: component.kind, name, version: Number(version) }];
+  });
+}

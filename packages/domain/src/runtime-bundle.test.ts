@@ -71,9 +71,16 @@ test('漂移：缺失 / 版本不一致 → 不可信；一致的可信；不在
       { id: 'stray', runtime: 'pi', version: '9.0.0', integrity: SHA, enabled: true, managedBy: 'hub' }
     ])
   );
-  assert.deepEqual(report.items.map((i) => `${i.kind}:${i.componentId}`).sort(), ['mismatch:b', 'missing:gone']);
+  assert.deepEqual(report.items.map((i) => `${i.kind}:${i.componentId}`).sort(), ['mismatch:b', 'missing:gone', 'unexpected:stray']);
   assert.deepEqual(report.trusted.map((c) => c.via), ['a']);
   assert.deepEqual(report.untrusted.map((c) => c.via).sort(), ['b', 'stray']);
   assert.equal(hasDrift(report), true);
   assert.deepEqual(detectDrift([], null), { items: [], trusted: [], untrusted: [] });
+});
+
+test('资产组件：解析成资产名和版本，交给现有资产下发', async () => {
+  const { bundleAssetRefs } = await import('./runtime-bundle.ts');
+  const parsed = parseBundleManifest(manifest);
+  assert.ok(parsed.ok);
+  assert.deepEqual(bundleAssetRefs(parsed.value), [{ componentId: 'github-mcp', kind: 'mcp-server', name: 'github-mcp', version: 3 }]);
 });

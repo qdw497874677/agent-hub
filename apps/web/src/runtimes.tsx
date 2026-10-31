@@ -165,7 +165,7 @@ export function InventorySection({ worker }: { worker: WorkerInfoDto }) {
                   {component.managedBy === 'external' ? (
                     <span className="text-tertiary" data-testid="inventory-external">外部安装（不由 hub 管理，不参与调度）</span>
                   ) : bad ? (
-                    <span className="text-red-500">⚠ 不可信：{bad.kind === 'missing' ? '缺失' : '版本或哈希不一致'}，需要重新安装</span>
+                    <span className="text-red-500">⚠ 不可信：{bad.kind === 'unexpected' ? '不是 hub 装的' : '版本或哈希不一致'}，需要重新安装</span>
                   ) : (
                     <span>✓</span>
                   )}

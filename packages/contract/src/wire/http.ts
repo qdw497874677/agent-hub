@@ -270,7 +270,7 @@ export const workerInfoSchema = z.object({
     .object({
       items: z.array(
         z.object({
-          kind: z.enum(['missing', 'mismatch', 'external']),
+          kind: z.enum(['missing', 'mismatch', 'external', 'unexpected']),
           componentId: z.string(),
           runtime: z.string(),
           expected: z.string().optional(),
