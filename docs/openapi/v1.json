@@ -444,7 +444,9 @@
                             "type": "string",
                             "enum": [
                               "install",
-                              "uninstall"
+                              "uninstall",
+                              "install_component",
+                              "uninstall_component"
                             ]
                           },
                           "version": {
@@ -452,6 +454,9 @@
                               "string",
                               "null"
                             ]
+                          },
+                          "componentId": {
+                            "type": "string"
                           },
                           "state": {
                             "type": "string",
@@ -819,6 +824,9 @@
                           "collectedAt": {
                             "type": "integer",
                             "minimum": 0
+                          },
+                          "componentInstall": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
@@ -4071,6 +4079,15 @@
                       "null"
                     ],
                     "minLength": 1
+                  },
+                  "requires": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 128,
+                      "pattern": "^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$"
+                    },
+                    "maxItems": 16
                   }
                 },
                 "required": [
