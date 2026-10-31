@@ -1,0 +1,39 @@
+# ADR 0019：可插拔的记忆机制（来源索引 + 整理条目，六边形端口）
+
+- 状态：proposed（待 David 拍板设计稿 §13）
+- 日期：2026-10-31
+- 关联：ADR 0017（权限）、ADR 0018（agent 间通信；会话类型、角色记忆 / 项目记忆已决）；设计稿 `docs/design/memory.md`
+
+## 背景
+
+多个 agent 运行时（claude、codex、grok、pi……）在 agent-hub 里协作。现在需要跨会话、跨项目的记忆：角色的工作方式、项目的架构 / 约定 / 决策 / 进度、用户偏好、持久型会话的压缩摘要。业界做法差异很大：Letta 把记忆块一直注入，Mem0 用 LLM 抽取事实并且只追加，Graphiti 用时间维度知识图谱，LangMem 按 namespace 组织，Claude Code 用 CLAUDE.md 加 auto memory，MCP 参考服务器用 JSONL 图。我们不能绑定其中任何一家，也需要让团队能替换策略。
+
+## 决定（提议）
+
+1. 记忆分两种：
+   - **来源**：项目里已有的内容（仓库文件、docs、ADR、任务、会话记录、群消息），就地索引、不复制，内容归项目；
+   - **整理条目**：提炼出的结论，带出处（`SourceRef`）链接回来源。
+   - 检索时联邦查询两边。
+2. 端口：`MemorySource`、`MemoryStore`、`MemoryIndex`、`Embedder`、`MemoryRetriever`、`MemoryPolicy`，由应用层 `MemoryService` 组合，它是唯一入口（权限、校验、审计都在这里）。
+3. 作用域 `user / role / project / group / session`；资源 `memory:<scope>`，一律走 `can(subject, action, resource)`；新增权限点 `memory.read / write / review / forget / purge / export / source.manage`。
+4. agent 通过 hub MCP 工具读写：`memory_search / get / write / forget / list`。注入只有一小块、有上限、仅 trusted 的钉住内容（通过可选的 `RuntimeAdapter` 能力 `contextPreamble`）；项目记忆不注入。
+5. 默认适配器：SQLite（`node:sqlite`）+ FTS5；`sqlite-vec` 向量和 RRF 融合作为可选。外部适配器（Graphiti、Mem0）后期接入。
+6. 冲突不改原文：`supersedes` + `validFrom/validTo` + 乐观锁；来源 hash 变了就标「可能过时」。
+7. agent 或外部写入的内容标 `untrusted`，检索时包裹返回、不能注入；`procedural` 记忆写入要人工确认。
+
+## 后果
+
+- 正面：
+  - 已有文档立刻可检索，不用重复维护；
+  - 换存储或策略不改领域代码；
+  - 每条记忆都可追溯、可审计、可导出。
+- 负面：
+  - 仓库在 worker 上，索引要在 worker 侧跑、经 relay 回传，读全文多一跳；
+  - 中文全文检索要额外验证。
+- 中性：多了一个「记忆」页和一个审核队列。
+
+## 备选
+
+- 直接接 Mem0 或 Zep 作为唯一实现：绑定厂商，自托管成本高，出处和权限不可控。
+- 所有内容都复制进记忆库：重复、过时、与项目所有权冲突。
+- 只做注入（Letta 式）：占上下文，而且不可信内容会进系统提示。
