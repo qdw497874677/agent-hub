@@ -11,7 +11,8 @@ import type {
   RuntimeOption,
   RuntimeSession,
   SessionEvent,
-  StartSpec
+  StartSpec,
+  WorkerInventory
 } from '@agent-hub/domain';
 import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
@@ -87,6 +88,10 @@ export interface WorkerLinkOptions {
   readonly resources?: ResourceProbe;
   /** 资源上报间隔，默认 15 秒。 */
   readonly metricsIntervalMs?: number;
+  /** 套件清单采集（ADR 0021 §7）：连上时、运行时任务结束后、每 `inventoryIntervalMs` 报一次。不给 = 不报。 */
+  readonly inventory?: () => WorkerInventory;
+  /** 默认 6 小时。 */
+  readonly inventoryIntervalMs?: number;
 }
 
 export interface WorkerLink {
@@ -198,6 +203,17 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   }
   const probeInterval = options.probeIntervalMs ?? 5 * 60_000;
+  /** 清单帧不进 outbox：断线期间的旧清单没意义，连回来会再报一次。 */
+  function reportInventory(): void {
+    if (!options.inventory || closed || !accepted || socket?.readyState !== WebSocket.OPEN) return;
+    try {
+      socket.send(JSON.stringify({ type: 'inventory', inventory: options.inventory() }));
+    } catch (error) {
+      options.onLog?.(`采集套件清单失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const inventoryTimer = options.inventory ? setInterval(reportInventory, options.inventoryIntervalMs ?? 6 * 60 * 60_000) : null;
+  inventoryTimer?.unref?.();
   const probeTimer = options.readiness && probeInterval > 0 ? setInterval(() => void probe(false), probeInterval) : null;
   probeTimer?.unref?.();
 
@@ -300,6 +316,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     options.onAccepted?.();
     // 每次连上都重新探测一次：机器上的登录状态可能在断线期间变了。
     void probe(true);
+    reportInventory();
   }
 
   function connect(): void {
@@ -433,6 +450,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         report(status);
         // 装好 / 卸掉：立刻重新探测，界面上的「未安装」跟着变
         if (status.state === 'succeeded') void probe(true);
+        if (status.state !== 'running') reportInventory();
       });
     } catch (error) {
       report({ jobId: command.jobId, state: 'failed', message: `安装出错：${message(error)}`, lines: [] });
@@ -661,6 +679,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (probeTimer) clearInterval(probeTimer);
+      if (inventoryTimer) clearInterval(inventoryTimer);
       stopMetrics();
       if (watchdog) clearTimeout(watchdog);
       channel.close('worker 正在退出');

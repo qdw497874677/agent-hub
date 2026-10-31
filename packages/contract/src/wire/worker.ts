@@ -126,7 +126,31 @@ export const workerRuntimeJobStatusSchema = z.object({
   version: z.string().max(64).nullable().optional()
 });
 
+/** 运行时套件清单（ADR 0021 §7）：连上时、每个运行时任务结束后、每 6 小时报一次。老 hub 不认，只记一条日志。 */
+export const workerInventorySchema = z.object({
+  runtimes: z
+    .array(z.object({ agentId: z.string().max(64), version: z.string().max(64), source: z.enum(['machine', 'hub']) }))
+    .max(32),
+  components: z
+    .array(
+      z.object({
+        id: z.string().max(214),
+        runtime: z.string().max(64),
+        version: z.string().max(64),
+        integrity: z.string().max(200),
+        enabled: z.boolean(),
+        managedBy: z.enum(['hub', 'external']),
+        source: z.string().max(300).optional()
+      })
+    )
+    .max(200),
+  capabilities: z.array(z.object({ capability: z.string().max(128), mode: z.string().max(64).optional(), via: z.string().max(214) })).max(200),
+  collectedAt: z.number().int().nonnegative()
+});
+export const workerInventoryFrameSchema = z.object({ type: z.literal('inventory'), inventory: workerInventorySchema });
+
 export const workerToServerSchema = z.discriminatedUnion('type', [
+  workerInventoryFrameSchema,
   workerHelloSchema,
   workerAgentsSchema,
   workerEnrollSchema,

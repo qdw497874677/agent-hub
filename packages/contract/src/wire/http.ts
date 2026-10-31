@@ -1,3 +1,4 @@
+import { workerInventorySchema } from './worker.ts';
 import { workerResourcesSchema } from './resources.ts';
 import { z } from 'zod';
 import { id, epochMs } from './common.ts';
@@ -261,7 +262,25 @@ export const workerInfoSchema = z.object({
     })
     .optional(),
   /** 机器资源（ADR 0014）；老 Worker 不报就没有。 */
-  resources: workerResourcesSchema.optional()
+  resources: workerResourcesSchema.optional(),
+  /** 运行时套件清单（ADR 0021）；老 Worker 不报就没有。 */
+  inventory: workerInventorySchema.optional(),
+  /** 漂移检测结果：外部组件只列出；missing / mismatch 的能力不可信。 */
+  drift: z
+    .object({
+      items: z.array(
+        z.object({
+          kind: z.enum(['missing', 'mismatch', 'external', 'unexpected']),
+          componentId: z.string(),
+          runtime: z.string(),
+          expected: z.string().optional(),
+          actual: z.string().optional()
+        })
+      ),
+      trusted: z.array(z.object({ capability: z.string(), mode: z.string().optional(), via: z.string() })),
+      untrusted: z.array(z.object({ capability: z.string(), mode: z.string().optional(), via: z.string() }))
+    })
+    .optional()
 });
 
 /** 在一台机器上装 / 卸 agent 运行时；version 不填 = 推荐版本。 */

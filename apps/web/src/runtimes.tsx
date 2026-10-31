@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type WorkerInfoDto } from './api.ts';
+import { localTime } from './local-time.ts';
 
 type Harness = NonNullable<WorkerInfoDto['agentModels']>[number];
 type Job = NonNullable<WorkerInfoDto['runtimeJob']>;
@@ -132,5 +133,59 @@ function JobPanel({ job }: { job: Job }) {
         </pre>
       ) : null}
     </div>
+  );
+}
+
+type Inventory = NonNullable<WorkerInfoDto['inventory']>;
+type Drift = NonNullable<WorkerInfoDto['drift']>;
+
+/**
+ * 套件清单（ADR 0021 §7，P1 只读）：运行时 + 组件。外部安装的只显示（不由 hub 管理、不参与调度）；
+ * 漂移的组件标「不可信」，修复要人手动触发（P2 才有安装入口）。老 Worker 不报清单，这一节不出现。
+ */
+export function InventorySection({ worker }: { worker: WorkerInfoDto }) {
+  const inventory: Inventory | undefined = worker.inventory;
+  if (!inventory) return null;
+  const drift: Drift = worker.drift ?? { items: [], trusted: [], untrusted: [] };
+  const problems = drift.items.filter((item) => item.kind !== 'external');
+  return (
+    <>
+      <dt className="text-tertiary">组件</dt>
+      <dd className="min-w-0" data-testid="inventory-section">
+        {inventory.components.length === 0 ? (
+          <p className="text-tertiary">没有装组件</p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {inventory.components.map((component) => {
+              const bad = problems.find((item) => item.componentId === component.id && item.runtime === component.runtime);
+              return (
+                <li key={`${component.runtime}:${component.id}`} className="min-w-0 break-words" data-testid="inventory-component">
+                  <span className="font-mono">{component.id}</span> <span className="text-tertiary">{component.version}</span>{' '}
+                  <span className="text-tertiary">（{nameOf(component.runtime)}）</span>{' '}
+                  {component.managedBy === 'external' ? (
+                    <span className="text-tertiary" data-testid="inventory-external">外部安装（不由 hub 管理，不参与调度）</span>
+                  ) : bad ? (
+                    <span className="text-red-500">⚠ 不可信：{bad.kind === 'unexpected' ? '不是 hub 装的' : '版本或哈希不一致'}，需要重新安装</span>
+                  ) : (
+                    <span>✓</span>
+                  )}
+                  {component.enabled ? null : <span className="text-tertiary">（已停用）</span>}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        {problems
+          .filter((item) => item.kind === 'missing')
+          .map((item) => (
+            <p key={`missing:${item.runtime}:${item.componentId}`} className="text-red-500">
+              ⚠ 缺失：{item.componentId} {item.expected}（{nameOf(item.runtime)}），能力不可信，需要重新安装
+            </p>
+          ))}
+        <p className="text-tertiary" data-testid="inventory-drift">
+          漂移：{problems.length === 0 ? '无' : `${problems.length} 项`}　上次清单：{localTime(inventory.collectedAt)}
+        </p>
+      </dd>
+    </>
   );
 }
