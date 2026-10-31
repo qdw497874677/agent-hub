@@ -1,6 +1,6 @@
 # ADR 0020：会话上下文策略（ContextStrategy）与运行时接入等级
 
-- 状态：proposed（待 David 拍板设计稿 §11）
+- 状态：accepted（2026-10-31，David 拍板见设计稿 §11，无未决项）
 - 日期：2026-10-31
 - 关联：ADR 0013（RuntimeAdapter 契约）、ADR 0017（权限）、ADR 0019（长期记忆）；设计稿 `docs/design/context-strategy.md`
 
@@ -18,10 +18,9 @@ David（2026-10-31）要求把这些统一抽象为「上下文策略」：默�
 1. 新端口 `ContextStrategy`，和长期记忆（`MemoryService`）分开。钩子有：调用模型前改写上下文（`transform`）、`onCompact`、暴露给模型的工具、状态持久化和重放、用量预算输入。
 2. 每个会话恰好一个策略，不叠加；选择顺序是 会话 > 角色 > 项目 > hub 默认。
 3. 内置策略：
-   - `compaction`：默认，摘要替换，就是现在的行为；
-   - `acp`：参照 billion-context-pi——稳定消息 id、模型决定的可逆分层压缩、原始记录不动、旁路状态可重放、保护区、`search_context`、注入压缩指南和用量提醒。
+   - 只内置 `compaction`：默认，摘要替换，就是现在的行为；运行时有原生压缩就用原生的。
    
-   候选适配器：`trim`、`tool-clear`、`summarize-window`、`paging`。
+   候选适配器：`trim`、`tool-clear`、`summarize-window`、`paging`，以及主动上下文剪枝 `context-pruning`。剪枝**先不做**（David：「acp上下文先不做」），billion-context-pi 的调研保留作参考。
 4. RuntimeAdapter 声明上下文能力，有三种模式：
    - `hub-managed`：hub 策略改写上下文；
    - `native`：运行时自己管，hub 只观察、记录；
@@ -35,14 +34,19 @@ David（2026-10-31）要求把这些统一抽象为「上下文策略」：默�
    
    「统一接入」= 全部运行时达到 L1。
 6. 策略注入的引导文字是政策、不是记忆：只允许策略包里的静态模板加用量数字，有上限、可审计，不能夹带记忆。所以不违反 ADR 0019「记忆只用工具读」。
-7. 策略产出（压缩摘要、规则候选）作为提炼的输入，出处按消息 id 范围记录；规则候选一律进人工确认。
+7. 策略产出（压缩摘要、原则候选）作为提炼的输入，出处按消息 id 范围记录。agent 提出的原则性规则**默认开**，通用地定义为 `principle-candidate`（不绑定具体策略），一律进人工确认后才成为 procedural 记忆。
+9. 会话级只能从项目已启用的策略里选；L1 有缺口的运行时允许接入，用估算用量和重启兜底，UI 标出缺口。
+
+## 命名
+
+现有 `acp` 运行时适配器 = **Agent Client Protocol**（「ACP 协议」）；billion-context-pi 的 Active Context Pruning 称「主动上下文剪枝」，策略 id `context-pruning`。不单独用「ACP」指剪枝。
 8. 策略和运行时插件只有 `cluster_admin` 能安装，锁版本，不自动更新，新版本只对新会话生效。
 
 ## 后果
 
 - 正面：
   - 换策略不改运行时适配器；
-  - pi 上能直接用 ACP；
+  - 以后加剪枝等策略不用改端口；
   - 所有运行时都有统一的用量和压缩可见性。
 - 负面：
   - 每个适配器都要补 L1；
@@ -54,4 +58,4 @@ David（2026-10-31）要求把这些统一抽象为「上下文策略」：默�
 
 - 把上下文管理并进记忆：生命周期和所有者都不同，而且记忆已经决定不注入。
 - 允许叠加多个策略：billion-context-pi 的 README 明确说两个压缩插件会互相破坏。
-- 只支持 native：做不了 ACP，也就没有统一的策略选择。
+- 只支持 native：做不了剪枝这类策略，也就没有统一的策略选择。
