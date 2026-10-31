@@ -23,6 +23,8 @@ export const PERMISSION_CATALOG = {
   audit: ['audit.read'],
   team: ['team.invite', 'team.manage', 'team.roles', 'team.grants'],
   // 资产上架与审核（ADR 0016）；发布到全局在 hub 级
+  // 记忆（ADR 0019）：条目继承所在作用域的权限
+  memory: ['memory.read', 'memory.write', 'memory.review', 'memory.forget', 'memory.purge', 'memory.export', 'memory.source.manage'],
   asset: ['asset.read', 'asset.submit', 'asset.review', 'asset.assign', 'asset.retire', 'asset.secret.use'],
   hub: ['hub.settings', 'hub.users', 'hub.assets', 'hub.providers', 'hub.visit', 'asset.publish_global']
 } as const;
@@ -55,7 +57,10 @@ export const TOKEN_NEVER_GRANTABLE: ReadonlySet<Permission> = new Set<Permission
   'asset.retire',
   'asset.secret.use',
   // 派生新会话要花钱、要人点头（ADR 0018）：只能本人在界面里批，令牌拿不到
-  'agent.spawn'
+  'agent.spawn',
+  // 审核记忆、彻底删除记忆只能本人在界面里做（ADR 0019）
+  'memory.review',
+  'memory.purge'
 ]);
 
 export type BuiltinRole = 'owner' | 'admin' | 'member' | 'viewer';
@@ -69,7 +74,7 @@ const teamAll = (except: readonly Permission[] = []): RolePermissions =>
 export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = {
   owner: teamAll(),
   // admin = owner 去掉「定义角色」和「彻底删除」；另外不能动 owner / 其他 admin（team.ts 里限制）。
-  admin: teamAll(['team.roles', 'project.purge']),
+  admin: teamAll(['team.roles', 'project.purge', 'memory.purge']),
   member: {
     'project.read': 'own',
     'project.create': 'team',
@@ -107,7 +112,12 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
     // 指定审核人另看团队审核设置（access_grants 里的 asset.review 行）
     'asset.assign': 'own',
     'asset.retire': 'own',
-    'asset.secret.use': 'own'
+    'asset.secret.use': 'own',
+    // 记忆：自己的 / 共享给自己的作用域里读写、忘掉自己写的、导出；审核和来源管理要另外授权
+    'memory.read': 'own',
+    'memory.write': 'own',
+    'memory.forget': 'own',
+    'memory.export': 'own'
   },
   viewer: {
     'project.read': 'team',
@@ -115,7 +125,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
     'session.read': 'team',
     'worker.read': 'team',
     'provider.read': 'team',
-    'asset.read': 'team'
+    'asset.read': 'team',
+    'memory.read': 'team'
   }
 };
 

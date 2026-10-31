@@ -1,0 +1,134 @@
+import type { MemoryEntry, MemoryKind, MemoryScope, MemoryStatus, MemoryTrust, ProjectMemoryMode, SourceRef } from '../memory.ts';
+
+/**
+ * 记忆端口（ADR 0019 §4）。hub 自带的 SQLite / FTS5 只是默认适配器；
+ * use case、MCP 工具、界面都只调这些端口，不碰 memory_* 表。换 Mem0 / Zep 只换适配器。
+ */
+
+/** —— 整理出来的条目：可写 —— */
+export interface MemoryEntryFilter {
+  readonly status?: readonly MemoryStatus[];
+  readonly kinds?: readonly MemoryKind[];
+  readonly limit?: number;
+}
+export interface MemoryStore {
+  readonly id: string;
+  put(entry: MemoryEntry): Promise<void>;
+  /** 乐观锁：库里的 version 不是 ifVersion 就返回 null（被别人改过了）。旧版本存进历史。 */
+  update(entry: MemoryEntry, ifVersion: number): Promise<MemoryEntry | null>;
+  get(id: string): Promise<MemoryEntry | null>;
+  /** 新的在前。 */
+  list(scopes: readonly MemoryScope[], filter?: MemoryEntryFilter): Promise<MemoryEntry[]>;
+  /** 出处里引用了这个 uri 的条目（来源变了要标 stale）。 */
+  citing(source: string, uri: string): Promise<MemoryEntry[]>;
+  /** 一条的历史版本，旧的在前。 */
+  history(id: string): Promise<MemoryEntry[]>;
+  /** 硬删除（memory.purge）：连历史一起删。软删除走 update(status = forgotten)。 */
+  purge(id: string): Promise<void>;
+  /** 自带检索的存储（Mem0、Zep）实现它；没有就靠 MemoryIndex。 */
+  search?(query: MemoryQuery): Promise<MemoryHit[]>;
+}
+
+/** —— 来源：就地索引，只读 —— */
+export interface SourceDoc {
+  readonly ref: SourceRef & { readonly hash: string };
+  readonly title: string;
+  /** 用来建索引的文字；适配器可以截断。 */
+  readonly text: string;
+  readonly updatedAt: number;
+}
+export interface SourceChanges {
+  /** 当前全部文档（P1 的来源都小：全量列、按哈希比增量）。 */
+  readonly docs: readonly SourceDoc[];
+  /** 列不全（机器离线、文件太多）：没列到的不要当成删除。 */
+  readonly partial: boolean;
+}
+export interface MemorySource {
+  readonly id: string;
+  readonly scopeKinds: readonly MemoryScope['kind'][];
+  /** 这个作用域下的文档。 */
+  scan(scope: MemoryScope): Promise<SourceChanges>;
+  /** 要用时再读正文。 */
+  read(scope: MemoryScope, ref: SourceRef): Promise<{ text: string; hash: string } | null>;
+  search?(query: MemoryQuery): Promise<MemoryHit[]>;
+}
+
+/** —— 索引：给没有自带检索的来源 / 存储用（FTS5） —— */
+export interface IndexDoc {
+  /** 'entry:<id>' 或 'src:<source>:<uri>'。 */
+  readonly key: string;
+  readonly scopeKey: string;
+  readonly origin: 'entry' | 'source';
+  readonly title: string;
+  readonly text: string;
+  readonly kind: MemoryKind | null;
+  readonly trust: MemoryTrust;
+  readonly updatedAt: number;
+  readonly ref: SourceRef | null;
+}
+export interface IndexHit {
+  readonly key: string;
+  readonly scopeKey: string;
+  readonly origin: 'entry' | 'source';
+  readonly title: string;
+  readonly snippet: string;
+  /** 越大越相关（已经归一到 0–1）。 */
+  readonly relevance: number;
+  readonly trust: MemoryTrust;
+  readonly updatedAt: number;
+  readonly ref: SourceRef | null;
+}
+export interface MemoryIndex {
+  upsert(docs: readonly IndexDoc[]): Promise<void>;
+  remove(keys: readonly string[]): Promise<void>;
+  /** 某个作用域下某个来源已经索引过的文档（key → hash），给增量和「来源变了」用。 */
+  indexed(scopeKey: string, source: string): Promise<Map<string, string>>;
+  query(query: { readonly text: string; readonly scopeKeys: readonly string[]; readonly origins: readonly ('entry' | 'source')[]; readonly kinds?: readonly MemoryKind[]; readonly limit: number }): Promise<IndexHit[]>;
+}
+
+/** —— 检索 —— */
+export interface MemoryQuery {
+  readonly text: string;
+  readonly scopes: readonly MemoryScope[];
+  readonly kinds?: readonly MemoryKind[];
+  readonly include?: readonly ('entries' | 'sources')[];
+  readonly limit: number;
+}
+export interface MemoryHit {
+  readonly key: string;
+  readonly origin: 'entry' | 'source';
+  readonly scopeKey: string;
+  readonly score: number;
+  readonly title: string;
+  readonly snippet: string;
+  readonly trust: MemoryTrust;
+  readonly updatedAt: number;
+  readonly entryId?: string;
+  readonly ref?: SourceRef;
+}
+export interface MemoryRetriever {
+  retrieve(query: MemoryQuery): Promise<MemoryHit[]>;
+}
+
+/** —— 策略：可替换 —— */
+export interface WriteContext {
+  readonly author: 'human' | 'agent';
+  /** 写的是不是「自己的」作用域：本人的 user、本会话的 session、本角色的 role。 */
+  readonly own: boolean;
+  /** 写的人能不能审核这个作用域（有 memory.review）。 */
+  readonly canReview: boolean;
+  readonly projectMode: ProjectMemoryMode;
+}
+export interface WriteDecision {
+  readonly action: 'accept' | 'review' | 'reject';
+  readonly reason?: string;
+}
+export interface MemoryPolicy {
+  onWrite(entry: Pick<MemoryEntry, 'scope' | 'kind' | 'title' | 'body'>, ctx: WriteContext): Promise<WriteDecision>;
+}
+
+/** —— 设置：每个项目的写入模式 —— */
+export interface MemorySettingsStore {
+  projectMode(projectId: string): Promise<ProjectMemoryMode>;
+  setProjectMode(projectId: string, mode: ProjectMemoryMode, at: number): Promise<void>;
+}

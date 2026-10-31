@@ -1,3 +1,4 @@
+import type { SessionId } from '../ids.ts';
 import type { AccessPolicy } from './authorization.ts';
 import type { Workspace } from '../workspace.ts';
 import type { AgentId } from '../ids.ts';
@@ -66,6 +67,17 @@ export interface Deps {
   readonly now: () => number;
   /** 授权（ADR 0011）。不给 = 没装账号体系，一律放行（单测、单机开发）。 */
   readonly access?: AccessPolicy;
+  /**
+   * 记忆的静态引导（ADR 0019）：新会话第一轮垫一行（不含任何记忆内容），注入要审计。
+   * 不给 = 没开记忆工具，不垫。
+   */
+  readonly memoryGuidance?: MemoryGuidance;
+}
+
+export interface MemoryGuidance {
+  readonly text: string;
+  readonly version: number;
+  injected(sessionId: SessionId, version: number): Promise<void>;
 }
 
 export interface CanvasProjection {
