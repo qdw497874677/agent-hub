@@ -711,6 +711,208 @@
                           "refusing",
                           "refuseWhenFull"
                         ]
+                      },
+                      "inventory": {
+                        "type": "object",
+                        "properties": {
+                          "runtimes": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "agentId": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "version": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "machine",
+                                    "hub"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "agentId",
+                                "version",
+                                "source"
+                              ]
+                            },
+                            "maxItems": 32
+                          },
+                          "components": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string",
+                                  "maxLength": 214
+                                },
+                                "runtime": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "version": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "integrity": {
+                                  "type": "string",
+                                  "maxLength": 200
+                                },
+                                "enabled": {
+                                  "type": "boolean"
+                                },
+                                "managedBy": {
+                                  "type": "string",
+                                  "enum": [
+                                    "hub",
+                                    "external"
+                                  ]
+                                },
+                                "source": {
+                                  "type": "string",
+                                  "maxLength": 300
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "runtime",
+                                "version",
+                                "integrity",
+                                "enabled",
+                                "managedBy"
+                              ]
+                            },
+                            "maxItems": 200
+                          },
+                          "capabilities": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "capability": {
+                                  "type": "string",
+                                  "maxLength": 128
+                                },
+                                "mode": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "via": {
+                                  "type": "string",
+                                  "maxLength": 214
+                                }
+                              },
+                              "required": [
+                                "capability",
+                                "via"
+                              ]
+                            },
+                            "maxItems": 200
+                          },
+                          "collectedAt": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "runtimes",
+                          "components",
+                          "capabilities",
+                          "collectedAt"
+                        ]
+                      },
+                      "drift": {
+                        "type": "object",
+                        "properties": {
+                          "items": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "missing",
+                                    "mismatch",
+                                    "external",
+                                    "unexpected"
+                                  ]
+                                },
+                                "componentId": {
+                                  "type": "string"
+                                },
+                                "runtime": {
+                                  "type": "string"
+                                },
+                                "expected": {
+                                  "type": "string"
+                                },
+                                "actual": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "componentId",
+                                "runtime"
+                              ]
+                            }
+                          },
+                          "trusted": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "capability": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "via": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "capability",
+                                "via"
+                              ]
+                            }
+                          },
+                          "untrusted": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "capability": {
+                                  "type": "string"
+                                },
+                                "mode": {
+                                  "type": "string"
+                                },
+                                "via": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "capability",
+                                "via"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "items",
+                          "trusted",
+                          "untrusted"
+                        ]
                       }
                     },
                     "required": [
