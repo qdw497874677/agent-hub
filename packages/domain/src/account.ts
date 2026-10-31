@@ -1,3 +1,4 @@
+import type { TokenVia } from './api-token.ts';
 import { newId } from './ids.ts';
 
 /**
@@ -85,6 +86,8 @@ export const ONE_TIME_TOKEN_TTL_MS = 30 * 60 * 1000;
 export interface Principal {
   readonly user: User;
   readonly loginId: LoginId;
+  /** 经开放 API 令牌来的请求（ADR 0014）；cookie 登录态没有。 */
+  readonly via?: TokenVia;
 }
 
 /** 登录态时效：30 天，用着就续（每次续到「最后一次使用 + 30 天」）。 */
@@ -195,7 +198,9 @@ export type AuditAction =
   | 'auth.logout'
   | 'auth.password_reset'
   | 'auth.password_change'
-  | 'auth.profile';
+  | 'auth.profile'
+  | 'token.create'
+  | 'token.revoke';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {

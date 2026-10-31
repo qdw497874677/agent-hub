@@ -98,6 +98,10 @@ import { fail } from './http-error.ts';
 import { recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity } from './session-activity.ts';
 import type { SessionActivityOptions } from './session-activity.ts';
 import type { AuthOptions } from './auth.ts';
+import { installApiTokens } from './api-tokens.ts';
+import { installOpenApi } from './openapi/app.ts';
+import type { OpenApiOptions } from './openapi/app.ts';
+import type { ApiTokenDeps } from '@agent-hub/domain';
 
 export interface AppOptions {
   readonly deps: Deps;
@@ -130,13 +134,15 @@ export interface AppOptions {
    * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
+  /** 开放 API（/openapi/v1 + MCP，ADR 0014）与设置页的令牌管理；要有账号体系。 */
+  readonly openApi?: OpenApiOptions & { readonly manage: ApiTokenDeps };
 }
 
 /** prompt 路由里 bodyLimit 之前认出的发送人。 */
 const senders = new WeakMap<Context, Principal | null>();
 
-const authorOf = (actor: Principal | null) =>
-  actor ? { author: { id: actor.user.id, name: actor.user.displayName } } : {};
+export const authorOf = (actor: Principal | null) =>
+  actor ? { author: { id: actor.user.id, name: actor.user.displayName, ...(actor.via ? { via: actor.via.name } : {}) } } : {};
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; response: Response };
 /** 契约里的 zod schema 只用到这一点点形状；server 不必直接依赖 zod。 */
@@ -202,6 +208,17 @@ export function createApp(options: AppOptions): Hono {
     if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);
     if (options.resources) installWorkerResources(app, options.resources, principalOf);
     if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf);
+    if (options.openApi) {
+      installApiTokens(app, options.openApi.manage, principalOf);
+      installOpenApi(app, options.openApi, {
+        deps,
+        hub,
+        activity: options.activity,
+        providers: options.providers,
+        projectDeletion: options.projectDeletion,
+        waitOptions: options.waitOptions
+      });
+    }
   }
   app.use('/api/*', async (c, next) => {
     if (options.auth || options.token === null) return next();

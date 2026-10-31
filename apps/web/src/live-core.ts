@@ -18,7 +18,7 @@ export type Block = Sequenced &
         readonly text: string;
         readonly attachments: readonly StoredAttachmentDto[];
         /** 谁说的；老事件、共享 token 下没有。 */
-        readonly author?: { readonly id: string; readonly name: string };
+        readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
       }
     | { readonly kind: 'text'; readonly text: string }
     /** 模型的思考过程；专注对话按显示设置折叠或隐藏，卡片不显示。 */
