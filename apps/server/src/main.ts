@@ -13,7 +13,8 @@ import { serveAssetFetch } from './asset-relay.ts';
 import { createMemorySources } from './memory-sources.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
-import { createSecretVault, createSqliteApiTokens, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
@@ -69,7 +70,7 @@ import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps } from '@agent-hub/domain';
-import { createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
+import { componentJobFinished, createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
 import { hubTokenWindow, seedTestAccount } from './account-setup.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -109,6 +110,8 @@ await mkdir(dataDir, { recursive: true });
 console.log(`[hub] 数据目录：${dataDir}`);
 
 const store = openSqliteStore(join(dataDir, 'hub.db'));
+// 运行时套件 P2（ADR 0021）：组件目录 + 每台机器钉住的组件（漂移检测的期望状态）
+const componentStore = createSqliteComponents(store.db);
 const hub = createStreamHub();
 const catalog = createLiveCatalog();
 let serverGateway: ServerGateway | null = null;
@@ -504,6 +507,13 @@ serverGateway = createServerGateway({
     });
   },
   enroll: createWorkerEnroll(enrollmentDeps, { rateMax: Number(readEnv('HUB_ENROLL_RATE_MAX') ?? 10) }),
+  expectedComponents: (workerId) => componentStore.pins.pinsFor(workerId),
+  onRuntimeJob(workerId, job) {
+    if (!job.component) return;
+    void componentJobFinished({ pins: componentStore.pins, audit: store.audit, now: () => Date.now() }, workerId, job).catch((failure: unknown) =>
+      log(`记录组件任务结果失败：${(failure as Error).message}`)
+    );
+  },
   onUpdateStatus(workerId, update) {
     log(`worker ${workerId} 更新：${update.state} ${update.message}`);
   },
@@ -583,6 +593,17 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   assets: { deps: assetDeps, audit: store.audit },
   providers: providerWiring,
   resources: { metrics: workerMetrics, settings: store.settings, workers: workerControl, audit: store.audit, now: () => Date.now(), access: deps.access },
+  ...(deps.access ? { components: {
+    catalog: componentStore.catalog,
+    pins: componentStore.pins,
+    workers: workerControl,
+    sessions: store.sessions,
+    settings: store.settings,
+    audit: store.audit,
+    access: deps.access,
+    resolveNpm: createNpmResolver(readEnv('HUB_NPM_REGISTRY') ?? 'https://registry.npmjs.org'),
+    now: () => Date.now()
+  } } : {}),
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },

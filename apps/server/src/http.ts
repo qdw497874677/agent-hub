@@ -47,6 +47,8 @@ import {
   projectOfRef,
   projectReader,
   workerReader,
+  inventoryViewer,
+  redactInventory,
   ATTACHMENT_LIMITS,
   asProjectId,
   asSessionId,
@@ -96,8 +98,9 @@ import { installAssetMarket } from './asset-market.ts';
 import { RELAY_PATH, type ProviderWiringApi } from './providers.ts';
 import { installEnrollment } from './enrollment.ts';
 import { installRuntimeInstall } from './runtime-install.ts';
+import { installComponents } from './components.ts';
 import { installWorkerResources } from './worker-resources.ts';
-import type { ResourceDeps, RuntimeInstallDeps } from '@agent-hub/domain';
+import type { ComponentDeps, ResourceDeps, RuntimeInstallDeps } from '@agent-hub/domain';
 import { installProjectDeletion } from './project-delete.ts';
 import { installAccess } from './access.ts';
 import type { DeleteProjectDeps } from '@agent-hub/domain';
@@ -128,6 +131,8 @@ export interface AppOptions {
   readonly enrollment?: EnrollmentOptions;
   /** 在机器上装 / 卸 agent 运行时（ADR 0010）；只在有账号体系时装。 */
   readonly runtimeInstall?: RuntimeInstallDeps;
+  /** 运行时套件 P2：组件目录与组件任务。 */
+  readonly components?: ComponentDeps;
   /** 机器资源历史与「满了拒绝新会话」开关（ADR 0014）。 */
   readonly resources?: ResourceDeps;
   /** 删除项目（要登录态记审计，所以同样只在有账号体系时装）。 */
@@ -230,6 +235,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.assets) installAssetMarket(app, options.assets.deps, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
     if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);
+    if (options.components) installComponents(app, options.components, principalOf);
     if (options.resources) installWorkerResources(app, options.resources, principalOf);
     if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf);
     if (options.openApi) {
@@ -302,8 +308,13 @@ export function createApp(options: AppOptions): Hono {
 
   app.get('/api/workers', async (c) => {
     const readable = await workerReader(deps.access, subjectOf(c));
+    const fullInventory = await inventoryViewer(deps.access, subjectOf(c));
     const workers = [];
-    for (const worker of await listWorkers(deps)) if (await readable(worker.workerId)) workers.push(worker);
+    for (const worker of await listWorkers(deps)) {
+      if (!(await readable(worker.workerId))) continue;
+      if (!(await fullInventory(worker))) workers.push(redactInventory(worker));
+      else workers.push(worker.runtimeJob?.component ? { ...worker, runtimeJob: { ...worker.runtimeJob, componentId: worker.runtimeJob.component.componentId } } : worker);
+    }
     return c.json(workerInfoSchema.array().parse(workers));
   });
   // 「重新检测」：只发指令，结果经 Worker 的 agent 清单异步回来，界面过一会儿再拉 /api/workers。
