@@ -186,6 +186,45 @@ accepts: [ask, notify]   # 可选：只接受哪些原语
 - 这样 §3.2 的 `reuse` 取值简化为：`sticky` = 持久型；`per-trace` / `always-new` = 任务型。
 - 数据：`sessions.kind`（`task | persistent`，迁移时老会话全部记为 `task`），持久型多 `home`（`group:<id>` 或 `role:<projectId>/<name>`）、`summary`、`generation`（重启次数）。
 
+### 3.5 角色提示词怎么配置（proposed，2026-10-31 调研）
+
+**调研**
+
+| 做法 | 机制 | 来源 | 核对 |
+|---|---|---|---|
+| Claude Code subagent | `.claude/agents/*.md`：YAML frontmatter（name、description、tools、model……）+ 正文即系统提示词；分项目级和用户级 | [sub-agents](https://code.claude.com/docs/en/sub-agents) | 已核对（目录和 frontmatter） |
+| CrewAI | 每个 agent 有 role / goal / backstory，可以放在 `agents.yaml` 里，用 `{topic}` 这样的变量插值 | [CrewAI agents](https://docs.crewai.com/en/concepts/agents) | 已核对 |
+| AGENTS.md | 仓库里的说明文件，可以嵌套；**离得最近的那份优先**，子项目可以各自定制 | [agents.md](https://agents.md/) | 已核对 |
+| Langfuse 提示词管理 | 提示词有版本；用标签（例如 production）指向某个版本；`{{变量}}`；可以用 `@@@langfusePrompt:name=…@@@` 引用别的提示词（组合） | [Langfuse composability](https://langfuse.com/docs/prompt-management/features/composability) · [get started](https://langfuse.com/docs/prompt-management/get-started) | 已核对（组合语法）；标签和变量语法只看到片段 |
+| LangSmith | 提示词每次保存就是一次 commit，commit tag 指向特定版本 | [manage prompts](https://docs.langchain.com/langsmith/manage-prompts) | 已核对 |
+| PromptLayer | 提示词注册表 + release labels（按标签部署、A/B） | [prompt registry](https://docs.promptlayer.com/features/prompt-registry/overview) | 已核对 |
+| OpenAI 提示词对象 | 在控制台建「可复用的提示词对象」，API 里按 id 引用，带版本和变量 | [prompt engineering](https://platform.openai.com/docs/guides/prompt-engineering) | 部分核对：看到了「reusable prompt objects」，`prompt: {id, version, variables}` 的形状**未核对** |
+
+**读出来的几条**：
+- 文件形态的主流是 **Markdown + YAML frontmatter**（Claude Code），并且和仓库里的 AGENTS.md 分层并存；
+- 平台形态的主流是**版本 + 标签 + 变量 + 引用组合**（Langfuse、LangSmith、PromptLayer、OpenAI）；
+- CrewAI 的 role / goal / backstory 只是把提示词拆成固定字段，等价于模板里的几个段落。
+
+**提议的格式**（和 §3.2 的「数据库 + 仓库文件」一致）：
+- **一种格式两处存**：Markdown + YAML frontmatter。仓库里放在 `.agent-hub/agents/<name>.md`，数据库表 `agent_roles` 里存同样的字段和正文；冲突时以数据库为准（已决 6）。
+- **frontmatter 字段**：`name`、`description`、`runtime`、`model`（必填，没有隐式默认）、`worker`、`tools`、`reuse`、`maxConcurrent`、`accepts`、`extends`（继承一个模板）、`version`。
+- **正文是模板**：
+  - 用 `{{变量}}` 写变量，只允许白名单里的变量（`project.name`、`group.name`、`members`、`role.name`、`today` 等），没有逻辑语句；
+  - 用 Mustache 的子集，选现成的库实现，不自己写解析器。
+- **分层组合**（从外到内拼接，越靠内越具体）：
+  1. hub 系统层：安全规则、不可信内容包裹说明——**不可被覆盖**；
+  2. 团队层；
+  3. 项目层：可以引用仓库的 AGENTS.md（只是引用，按 AGENTS.md「离得最近的优先」的规则读取）；
+  4. 角色层：角色正文；
+  5. 上下文策略的静态引导（ADR 0020，例如记忆引导一行）。
+  
+  每一层只能追加或替换自己的段落，不能删除上层的内容。
+- **版本**：
+  - 每次保存生成一个不可变的版本，用标签（`current`、`previous`）指向版本，借 Langfuse / LangSmith 的做法；
+  - 会话记录它用的是哪个角色版本；改提示词只对新会话生效；持久型会话在下一代生效；
+  - 从仓库读的角色，版本 = 文件的 git blob 哈希。
+- **主持人**：内置模板 `host`，用户用 `extends: host` 来定制；`model` 必填。
+
 ## 4. 消息层：一个信封
 
 ```ts
@@ -273,7 +312,9 @@ queued → delivering → delivered → (answered | expired | failed | canceled)
 
 群里不 @ 任何人的消息由**主持人**分派。
 
-- **是什么**：主持人是群里的一个角色成员（默认角色名 `host`，也可以指定任意角色），有自己的持久型会话。它只做分派，**不代替成员干活**。
+- **是什么**：主持人是群里的一个角色成员，有自己的持久型会话。它只做分派，**不代替成员干活**。
+- **可配置（David 2026-10-31）**：主持人就是一个普通角色定义（§3.2、§3.5），hub 自带一个内置模板 `host`（提示词、`group_dispatch` 工具、上面的限制），可以复制、改提示词，或者指定任意角色当主持人。
+- **模型必须显式配置**：主持人角色的 `runtime` 和 `model` **没有隐式默认值**；没有配置时，群设置里不能选它当主持人，并提示「先给主持人角色选择运行时和模型」。hub 或团队可以设置「主持人默认模型」，但这也是一项显式配置；没有设置时同样不可用。
 - **怎么配**：
   - 在群设置里选「主持人」：可以是某个成员角色，也可以「不设」；
   - 建群时默认不设，群模板可以预设；
@@ -509,6 +550,8 @@ David 的方向：**agent 是联系人，点对点 = 私聊（DM），组 = 群�
 | **P3 外部** | 开放 API messages / inbox SSE / webhook、外部 agent 登记、**A2A 服务端（Agent Card + SendMessage / SendStreamingMessage / GetTask / ListTasks / CancelTask）与客户端** | 用官方 A2A SDK（`a2a-sdk` / `@a2a-js/sdk`）做互通测试 |
 | **P4 编排** | `@agent-hub/orchestration` 库、声明式编排规格（视使用情况） | |
 
+**实施顺序**（David 2026-10-31 同意）：智能体消息 P2P 核心（本设计 P1）→ 记忆 P1（ADR 0019）→ IM / 群聊（本设计 P2、§5.5、§12）→ 上下文策略（ADR 0020）和运行时套件（ADR 0021）。
+
 ## 15. 风险
 
 | 风险 | 缓解 |
@@ -544,6 +587,14 @@ David 的方向：**agent 是联系人，点对点 = 私聊（DM），组 = 群�
 
 14. **群里不 @ 时**：由群的主持人 agent 决定谁回复（§5.5）；没有主持人时不自动回复。
 
-### 16.1 仍待确认
+15. **主持人可配置**：主持人是普通角色，内置模板 `host` 可以继承；主持人的运行时和模型必须显式配置，没有隐式默认（§5.5）。
+16. **主持人限制**：一次分派最多 3 个成员、2 分钟没有响应就退回、每个群每分钟最多 10 条，按原推荐。
+17. **实施顺序**：P2P 核心 → 记忆 P1 → IM / 群聊 → 上下文策略和运行时套件（§14）。
 
-无（原来的「群里不 @ 时是否回复」已在第 14 项决定）。
+### 16.1 仍待确认（§3.5 角色提示词格式，推荐加粗）
+
+1. **格式**：**A. Markdown + YAML frontmatter，数据库和仓库同一种格式**；B. 纯 YAML（CrewAI 式的 role / goal / backstory 字段）。
+2. **变量**：**A. `{{变量}}` 白名单，没有逻辑（Mustache 子集，用现成的库）**；B. 完整的模板语言（Jinja / Handlebars）。
+3. **分层**：**A. hub 系统层（不可覆盖）→ 团队 → 项目（可以引用 AGENTS.md）→ 角色 → 策略静态引导**；B. 只有角色一层。
+4. **版本**：**A. 不可变版本 + `current` / `previous` 标签；改动只对新会话（持久型对下一代）生效；仓库角色用 blob 哈希作版本**；B. 不做版本，就地修改。
+5. **模型默认值**：**A. 所有角色的 `model` 都必填；hub / 团队可以设「默认模型」，但必须显式设置**；B. 只有主持人必填。
