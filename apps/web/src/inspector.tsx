@@ -5,6 +5,7 @@ import { api } from './api.ts';
 import { StatusPill } from './status.tsx';
 import type { LiveSession } from './live.ts';
 import { SessionAssets } from './session-assets.tsx';
+import { SessionMessages } from './session-messages.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from './workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -149,6 +150,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose }: Pr
             )}
           </section>
           <SessionAssets sessionId={session.id} detailed />
+          <SessionMessages sessionId={session.id} />
           {artifacts.length > 0 ? (
             <section>
               <p className="mb-1 text-meta text-tertiary">产出物</p>

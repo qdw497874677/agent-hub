@@ -13,11 +13,11 @@ export function AuthorTag({ author, size = 'md' }: { author: { id: string; name:
   const initial = author ? [...author.name.trim()][0] ?? '?' : '?';
   const box = size === 'sm' ? 'h-4 w-4 text-[10px]' : 'h-5 w-5 text-[11px]';
   return (
-    <span className="flex items-center gap-1 text-meta text-tertiary" data-testid="msg-author" title={via ? `${name}（经令牌「${via}」）` : name}>
+    <span className="flex items-center gap-1 text-meta text-tertiary" data-testid="msg-author" title={via === 'agent' ? `${name}（agent 间消息）` : via ? `${name}（经令牌「${via}」）` : name}>
       <span className="max-w-[160px] truncate">{name}</span>
       {via && (
         <span className="max-w-[120px] truncate rounded bg-card-raised px-1 text-[10px]" data-testid="msg-author-via">
-          via {via}
+          {via === 'agent' ? 'agent 消息' : `via ${via}`}
         </span>
       )}
       <span aria-hidden className={`inline-flex shrink-0 items-center justify-center rounded-full font-medium text-primary ${box} ${author ? hue(author.id) : 'bg-card-raised'}`}>
