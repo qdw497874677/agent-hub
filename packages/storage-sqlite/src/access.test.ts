@@ -38,3 +38,23 @@ test('和 #119 共表：老的审核人表被补列，审核人行还在、能�
   await roles.delete('r1');
   assert.equal(await roles.byId('r1'), null);
 });
+
+test('老库 users.role 带 CHECK (owner/member)：重建去掉约束，数据和登录态都在，能存 admin / viewer / custom', async () => {
+  const { migrateUserRoles, createAccountRepositories } = await import('./accounts.ts');
+  const db = new DatabaseSync(':memory:');
+  db.exec(`PRAGMA foreign_keys = ON;
+CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, role TEXT NOT NULL CHECK (role IN ('owner','member')), password_hash TEXT, email_verified_at INTEGER, disabled_at INTEGER, created_at INTEGER NOT NULL);
+CREATE TABLE logins (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, token_hash TEXT NOT NULL UNIQUE, method TEXT NOT NULL, user_agent TEXT, created_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
+INSERT INTO users VALUES ('david', 'd@b.co', 'David', 'owner', 'h', 1, NULL, 1);
+INSERT INTO logins VALUES ('l1', 'david', 'th', 'password', NULL, 1, 1, 9999999999999);`);
+  assert.throws(() => db.exec("INSERT INTO users VALUES ('x', 'x@b.co', 'X', 'viewer', NULL, 1, NULL, 1)"));
+  const repos = createAccountRepositories(db);
+  assert.equal(migrateUserRoles(db), false, '幂等');
+  const david = await repos.users.byId('david' as never);
+  assert.equal(david?.role, 'owner');
+  assert.equal(david?.clusterAdmin, true, '迁移：最早的 owner 成为集群管理员');
+  assert.equal((db.prepare('SELECT COUNT(*) AS n FROM logins').get() as { n: number }).n, 1, '登录态没被级联删');
+  for (const role of ['admin', 'viewer', 'custom:r1'] as const) await repos.users.save({ ...david!, id: `u-${role}` as never, email: `${role}@b.co`, role, clusterAdmin: false });
+  assert.equal((await repos.users.byId('u-viewer' as never))?.role, 'viewer');
+  assert.equal((db.prepare('PRAGMA foreign_key_check').all()).length, 0);
+});

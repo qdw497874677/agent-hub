@@ -32,7 +32,7 @@ export function DialogShell({
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className={`w-full rounded-md border border-strong bg-panel p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-w-[420px]'}`}
+        className={`w-full rounded-md border border-strong bg-panel p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-h-[88dvh] max-w-[420px] overflow-y-auto overscroll-contain'}`}
         onClick={(event) => event.stopPropagation()}
       >
         {wide ? (

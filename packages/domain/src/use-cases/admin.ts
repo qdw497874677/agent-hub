@@ -129,9 +129,8 @@ export async function setUserDisabled(
   if (!found.ok) return found;
   const user = found.value;
   if (disabled && user.id === actor.user.id) return err(conflict('不能停用你自己'));
-  if (disabled && user.role === 'owner' && user.disabledAt === null && (await activeOwners(deps, user.teamId)).length <= 1) {
-    return err(conflict('这是团队最后一个可用的 owner，不能停用'));
-  }
+  // 停用是集群管理员的处置手段（比如自助注册的滥用账号，本身就是自己团队唯一的 owner），不按团队 owner 数拦；
+  // 只保证集群里至少留一位可用的集群管理员。
   if (disabled && user.clusterAdmin && user.disabledAt === null && (await activeAdmins(deps)).length <= 1) {
     return err(conflict('这是最后一位集群管理员，不能停用'));
   }

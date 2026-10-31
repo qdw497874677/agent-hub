@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
   id                TEXT PRIMARY KEY,
   email             TEXT NOT NULL UNIQUE,
   display_name      TEXT NOT NULL,
-  role              TEXT NOT NULL CHECK (role IN ('owner','member')),
+  role              TEXT NOT NULL,
   password_hash     TEXT,
   email_verified_at INTEGER,
   disabled_at       INTEGER,
@@ -322,10 +322,41 @@ export function migrateAuditIp(db: DatabaseSync): void {
   db.exec('CREATE INDEX IF NOT EXISTS audit_by_team ON audit_log(team_id, at DESC)');
 }
 
+/**
+ * ADR 0017：角色多了 admin / viewer / custom:<id>，老库 users.role 上的 CHECK (role IN ('owner','member')) 要去掉。
+ * SQLite 改不了约束，只能重建表：拿原建表语句去掉 CHECK，列顺序不变，整表搬过去（关外键，免得 logins 级联删）。幂等。
+ */
+export function migrateUserRoles(db: DatabaseSync): boolean {
+  const row = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'users'").get() as { sql: string } | undefined;
+  const CHECK = /\s*CHECK\s*\(\s*role\s+IN\s*\([^)]*\)\s*\)/i;
+  if (!row || !CHECK.test(row.sql)) return false;
+  const create = row.sql.replace(CHECK, '').replace(/^CREATE TABLE\s+("?users"?|users)/i, 'CREATE TABLE users_roles_v2');
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec(create);
+      db.exec('INSERT INTO users_roles_v2 SELECT * FROM users');
+      db.exec('DROP TABLE users');
+      db.exec('ALTER TABLE users_roles_v2 RENAME TO users');
+      const broken = db.prepare('PRAGMA foreign_key_check').all();
+      if (broken.length > 0) throw new Error(`users 重建后外键不一致：${broken.length} 行`);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+  return true;
+}
+
 export function createAccountRepositories(db: DatabaseSync): AccountRepositories {
   db.exec(ACCOUNT_SCHEMA);
   migrateAccountsP3(db);
   migrateTeams(db);
+  migrateUserRoles(db);
   migrateAuditIp(db);
 
   const upsertUser = db.prepare(
