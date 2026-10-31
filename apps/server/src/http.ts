@@ -84,6 +84,7 @@ import { installAuth, SSE_PATH } from './auth.ts';
 import { installAdmin } from './admin.ts';
 import { installTeam } from './team.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
+import { installAssetMarket } from './asset-market.ts';
 import { RELAY_PATH, type ProviderWiringApi } from './providers.ts';
 import { installEnrollment } from './enrollment.ts';
 import { installRuntimeInstall } from './runtime-install.ts';
@@ -204,6 +205,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
+    if (options.assets) installAssetMarket(app, options.assets.deps, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
     if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);
     if (options.resources) installWorkerResources(app, options.resources, principalOf);
@@ -216,7 +218,8 @@ export function createApp(options: AppOptions): Hono {
         activity: options.activity,
         providers: options.providers,
         projectDeletion: options.projectDeletion,
-        waitOptions: options.waitOptions
+        waitOptions: options.waitOptions,
+        assetReview: options.assets?.deps
       });
     }
   }

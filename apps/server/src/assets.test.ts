@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryAdmin, inMemoryAssets, inMemoryDeps, addTeamMember } from '@agent-hub/domain/testing';
+import { inMemoryAdmin, inMemoryAssetReviewDeps, inMemoryAssets, inMemoryDeps, addTeamMember } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 
@@ -15,13 +15,14 @@ function harness() {
   const admin = inMemoryAdmin();
   const assets = inMemoryAssets();
   const { deps } = inMemoryDeps();
+  const review = inMemoryAssetReviewDeps(admin, assets);
   const app = createApp({
     deps,
     hub: createStreamHub(),
     token: null,
     auth: { accounts: admin.accounts, hubToken: null },
     admin: { deps: admin.deps },
-    assets: { deps: assets.deps, audit: admin.deps.audit }
+    assets: { deps: review.deps, audit: admin.deps.audit }
   });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -37,7 +38,7 @@ function harness() {
       return { status: response.status, body: (await response.json().catch(() => null)) as any };
     };
   };
-  return { admin, assets, browser };
+  return { admin, assets, review, browser, app };
 }
 
 test('资产 API：主人上传 → 装到机器 → 传新版本看 diff → 确认升级；成员 403；审计留痕', async () => {
@@ -157,4 +158,44 @@ test('资产权限：主人能增删改、分配；成员只能用（所有 /api
   assert.equal((await owner(`/api/admin/assets/${id}`, { method: 'DELETE' })).status, 200);
   // 成员只读自己会话用了什么
   assert.equal((await member('/api/sessions/s1/assets')).status, 200);
+});
+
+test('资产市场 API：成员提交团队资产 → 自己批不了 → 主人看 diff / 评论 / 驳回 → 修改再提 → 批准上架；通知 + 审计；未登录 401', async () => {
+  const h = harness();
+  const owner = h.browser();
+  const member = h.browser();
+  const anon = h.browser();
+  assert.equal((await anon('/api/assets/catalog')).status, 401);
+  assert.equal((await owner('/api/auth/register', { method: 'POST', body: JSON.stringify({ email: 'boss@b.co', password: PASSWORD }) })).status, 200);
+  await addTeamMember(h.admin.accounts, 'm@b.co', PASSWORD);
+  assert.equal((await member('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'm@b.co', password: PASSWORD }) })).status, 200);
+  const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
+
+  const made = await member('/api/assets/upload', post({ kind: 'skill', scope: 'team', files: skillFiles('v1') }));
+  assert.equal(made.status, 201);
+  assert.equal(made.body.status, 'pending');
+  const sid = made.body.submissionId as string;
+  assert.equal((await member('/api/assets/catalog')).body.assets?.length ?? (await member('/api/assets/catalog')).body.length, 0, '没批之前不上架');
+  assert.ok([400, 403, 409].includes((await member(`/api/assets/reviews/${sid}/approve`, post({}))).status), '作者不能批自己的');
+
+  const queue = (await owner('/api/assets/reviews')).body;
+  assert.ok(JSON.stringify(queue).includes(sid), '主人的待审里有它');
+  const detail = await owner(`/api/assets/reviews/${sid}`);
+  assert.equal(detail.status, 200);
+  const diff = await owner(`/api/assets/reviews/${sid}/diff`);
+  assert.equal(diff.status, 200);
+  assert.equal((await owner(`/api/assets/reviews/${sid}/comments`, post({ path: 'SKILL.md', line: 4, body: '这行要改' }))).status, 201);
+  assert.equal((await owner(`/api/assets/reviews/${sid}/reject`, post({ reason: '再说清楚点', changesRequested: true }))).status, 200);
+  const notes = (await member('/api/notifications')).body;
+  assert.ok(notes.unread >= 1);
+  assert.ok(notes.items.some((n: { body: string; title: string }) => `${n.title}${n.body}`.includes('再说清楚点')));
+
+  const again = await member(`/api/assets/items/${made.body.assetId}/revisions`, post({ files: skillFiles('v2') }));
+  assert.equal(again.status, 200);
+  const sid2 = again.body.submissionId as string;
+  assert.equal((await owner(`/api/assets/reviews/${sid2}/approve`, post({ acknowledgeHigh: true }))).status, 200);
+  const catalog = (await member('/api/assets/catalog')).body;
+  assert.ok(JSON.stringify(catalog).includes(made.body.assetId), '批准后上架');
+  const actions = (await owner('/api/admin/audit')).body.map((e: { action: string }) => e.action);
+  for (const a of ['asset.submit', 'asset.comment', 'asset.request_changes', 'asset.approve']) assert.ok(actions.includes(a), a);
 });

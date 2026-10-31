@@ -12,12 +12,13 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AssetRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
+import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
 import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateWorkspaces } from './workspaces.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
@@ -39,6 +40,9 @@ export interface SqliteStore extends RepositorySet {
   readonly assets: AssetRepository;
   /** 每台 Worker 的资产同步状态（跨 hub 重启保留）。 */
   readonly assetSync: AssetSyncBoard;
+  /** 资产审核：提交、评论、安装申请、审核设置（ADR 0016）。 */
+  readonly assetReview: AssetReviewRepository;
+  readonly notifications: NotificationRepository;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -389,6 +393,8 @@ export function openSqliteStore(file: string): SqliteStore {
     enrollment: createEnrollmentRepository(db),
     assets: createAssetRepository(db),
     assetSync: createAssetSyncBoard(db),
+    assetReview: createAssetReviewRepository(db),
+    notifications: createNotificationRepository(db),
     sessions,
     artifacts,
     layout,

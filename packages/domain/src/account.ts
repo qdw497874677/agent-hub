@@ -200,7 +200,21 @@ export type AuditAction =
   | 'auth.password_change'
   | 'auth.profile'
   | 'token.create'
-  | 'token.revoke';
+  | 'token.revoke'
+  // 资产上架与审核（ADR 0016）
+  | 'asset.submit'
+  | 'asset.approve'
+  | 'asset.self_approve'
+  | 'asset.reject'
+  | 'asset.request_changes'
+  | 'asset.publish'
+  | 'asset.withdraw'
+  | 'asset.revoke'
+  | 'asset.comment'
+  | 'asset.install_request'
+  | 'asset.install_decide'
+  | 'asset.review_settings'
+  | 'asset.migrate';
 
 /** 运营后台的每个写操作留一条；只增不改。 */
 export interface AuditEntry {

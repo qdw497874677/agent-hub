@@ -49,7 +49,7 @@ const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', 
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
 
 /** 每条路由要的权限范围（文档里写清楚；真正的判断在 can()）。 */
-export type ScopeNote = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | null;
+export type ScopeNote = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | 'assets:submit' | null;
 
 const route = <R extends Parameters<typeof createRoute>[0]>(scope: ScopeNote, config: R) =>
   createRoute({
@@ -103,6 +103,18 @@ export const routes = {
     method: 'get', path: `${V1}/workspaces/{workspaceId}/changes`, tags: ['projects'], summary: '工作空间里未提交的改动',
     request: { params: z.object({ workspaceId: z.string().openapi({ param: { name: 'workspaceId', in: 'path' } }) }) },
     responses: { 200: json(workspaceChangesSchema) }
+  }),
+
+  submitAssetRevision: route('assets:submit', {
+    method: 'post', path: `${V1}/assets/{assetId}/revisions`, tags: ['assets'], summary: '给资产交一个新版本（进审核）',
+    description: '只有作者（或团队负责人）能交；新版本进待审队列，审核通过才上线。令牌不能审核、发布、装机或下架。文件内容 base64。',
+    request: {
+      params: z.object({ assetId: z.string().openapi({ param: { name: 'assetId', in: 'path' } }) }),
+      ...body(z.object({ files: z.array(z.object({ path: z.string().min(1).max(512), data: z.string() })).min(1).max(200) }))
+    },
+    responses: {
+      200: json(z.object({ assetId: z.string(), latest: z.string(), submissionId: z.string().nullable(), status: z.string().nullable() }))
+    }
   }),
 
   listTasks: route('projects:read', {

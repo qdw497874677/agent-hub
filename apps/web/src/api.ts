@@ -406,3 +406,56 @@ export const tokensApi = {
     post<{ token: string; info: ApiTokenDto }>('/api/tokens', input),
   revoke: (id: string) => call<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' })
 };
+
+// ---------- 资产市场 / 审核 / 通知（ADR 0016） ----------
+import type {
+  MarketAssetDto,
+  ReviewQueueItemDto,
+  SubmissionDetailDto,
+  InstallRequestDto,
+  NotificationDto,
+  AssetReviewSettingsDto,
+  AssetSubmissionDto,
+  AssetScopeDto
+} from './market/types.ts';
+export type * from './market/types.ts';
+export type AssetKindDto = 'skill' | 'instruction' | 'mcp';
+export interface MarketWorkerDto { workerId: string; label: string; state: string; local: boolean; mine: boolean; mode: 'install' | 'request' | 'none' }
+export interface SubmitResultDto { assetId: string; submissionId: string; status: string }
+type ReviewSettingsView = AssetReviewSettingsDto & { editable: boolean };
+const enc = encodeURIComponent;
+export const marketApi = {
+  catalog: () => call<MarketAssetDto[]>('/api/assets/catalog'),
+  mine: () => call<MarketAssetDto[]>('/api/assets/mine'),
+  reviews: () => call<ReviewQueueItemDto[]>('/api/assets/reviews'),
+  workers: () => call<MarketWorkerDto[]>('/api/assets/workers'),
+  installRequests: () =>
+    call<{ toDecide: (InstallRequestDto & { asset: string; requester: string })[]; mine: (InstallRequestDto & { asset: string })[] }>('/api/assets/install-requests'),
+  decideInstall: (id: string, approve: boolean, reason?: string) => post<unknown>(`/api/assets/install-requests/${enc(id)}`, { approve, reason }),
+  settings: () => call<{ team: (ReviewSettingsView & { teamId: string }) | null; hub: ReviewSettingsView | null }>('/api/assets/settings'),
+  saveSettings: (target: 'team' | 'hub', reviewers: string[], twoReviewers: { global: boolean; mcpStdio: boolean }) =>
+    call<AssetReviewSettingsDto>('/api/assets/settings', { method: 'PUT', body: JSON.stringify({ target, reviewers, twoReviewers }) }),
+  secrets: () => call<{ personal: { name: string; updatedAt: number }[]; team: { name: string; updatedAt: number }[]; teamEditable: boolean }>('/api/assets/secrets'),
+  setSecret: (layer: 'personal' | 'team', name: string, value: string) =>
+    call<{ ok: true }>(`/api/assets/secrets/${layer}/${enc(name)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  removeSecret: (layer: 'personal' | 'team', name: string) => call<{ ok: true }>(`/api/assets/secrets/${layer}/${enc(name)}`, { method: 'DELETE' }),
+  upload: (input: { kind: AssetKindDto; scope: AssetScopeDto; projectId?: string | null; name?: string | null; files: AssetUploadFile[] }) =>
+    post<SubmitResultDto>('/api/assets/upload', input),
+  git: (input: { kind: AssetKindDto; scope: AssetScopeDto; url: string; ref: string | null; path: string }) => post<SubmitResultDto>('/api/assets/git', input),
+  item: (id: string) => call<{ item: MarketAssetDto; revisions: AssetRevisionDto[]; submissions: AssetSubmissionDto[] }>(`/api/assets/items/${enc(id)}`),
+  revision: (id: string, files: AssetUploadFile[]) => post<{ latest: string; submissionId: string | null }>(`/api/assets/items/${enc(id)}/revisions`, { files }),
+  check: (id: string) => post<{ latest: string; submissionId: string | null }>(`/api/assets/items/${enc(id)}/check`, {}),
+  promote: (id: string) => post<{ submissionId: string }>(`/api/assets/items/${enc(id)}/promote`, {}),
+  revoke: (id: string, reason: string) => post<{ ok: true }>(`/api/assets/items/${enc(id)}/revoke`, { reason }),
+  install: (id: string, workerId: string, installed: boolean) =>
+    call<{ kind: 'installed' | 'uninstalled' | 'requested' }>(`/api/assets/items/${enc(id)}/workers/${enc(workerId)}`, { method: 'PUT', body: JSON.stringify({ installed }) }),
+  review: (sid: string) => call<SubmissionDetailDto>(`/api/assets/reviews/${enc(sid)}`),
+  reviewDiff: (sid: string) => call<{ files: AssetDiffDto['files'] | null }>(`/api/assets/reviews/${enc(sid)}/diff`),
+  reviewFile: (sid: string, path: string) => call<{ text: string }>(`/api/assets/reviews/${enc(sid)}/file?path=${enc(path)}`),
+  approve: (sid: string, acknowledgeHigh: boolean) => post<unknown>(`/api/assets/reviews/${enc(sid)}/approve`, { acknowledgeHigh }),
+  reject: (sid: string, reason: string, changesRequested: boolean) => post<unknown>(`/api/assets/reviews/${enc(sid)}/reject`, { reason, changesRequested }),
+  withdraw: (sid: string) => post<unknown>(`/api/assets/reviews/${enc(sid)}/withdraw`, {}),
+  comment: (sid: string, input: { path: string | null; line: number | null; body: string }) => post<unknown>(`/api/assets/reviews/${enc(sid)}/comments`, input),
+  notifications: () => call<{ items: NotificationDto[]; unread: number }>('/api/notifications'),
+  markRead: (ids: string[] | null) => post<{ ok: true }>('/api/notifications/read', { ids })
+};

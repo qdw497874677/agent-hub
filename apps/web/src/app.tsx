@@ -12,6 +12,7 @@ import { FocusView } from './focus.tsx';
 import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
 import { ProjectHeader } from './header.tsx';
 import { useRoute } from './use-route.ts';
+import { MarketPage } from './market/page.tsx';
 import { useNarrow } from './device.ts';
 import { TaskDetail } from './task-detail.tsx';
 import type { View } from './route.ts';
@@ -21,6 +22,7 @@ const LAST_PROJECT = 'agent-hub:last-project';
 /** 运营后台与工作台互不相干：分开渲染，各自的数据各自拉。 */
 export function App() {
   const [route] = useRoute();
+  if (route?.page === 'assets') return <MarketPage tab={route.tab} reviewId={route.reviewId} />;
   return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace />;
 }
 

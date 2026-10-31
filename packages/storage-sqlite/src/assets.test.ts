@@ -19,7 +19,7 @@ test('资产：建 / 加版本 / 安装 / 删（只清没人引用的 blob），
     assert.ok(v1.ok && v2.ok);
     const asset: Asset = {
       id: 'a1', kind: 'skill', name: 'greeter', description: 'd', source: { type: 'git', url: 'https://x/y.git', ref: 'main', path: 's' },
-      pinned: v1.value.digest, latest: v1.value.digest, projectId: null, createdAt: 1, updatedAt: 1
+      pinned: v1.value.digest, latest: v1.value.digest, projectId: null, scope: 'global', ownerId: '', teamId: null, createdAt: 1, updatedAt: 1
     };
     const rev = (packed: typeof v1.value, at: number) => ({ assetId: 'a1', digest: packed.digest, name: 'greeter', description: 'd', files: packed.files, commit: 'c', createdAt: at });
     await store.assets.create(asset, rev(v1.value, 1), v1.value.blobs);
@@ -89,7 +89,7 @@ test('资产作用域：旧库迁移后原有资产成全局；同名可分属�
     assert.equal(await store.assets.byName('skill', 'greeter', 'p1'), null);
     const packed = await packAsset('skill', [{ path: 'SKILL.md', data: enc('p') }]);
     assert.ok(packed.ok);
-    const asset: Asset = { id: 'a2', kind: 'skill', name: 'greeter', description: 'd', source: { type: 'upload' }, pinned: packed.value.digest, latest: packed.value.digest, projectId: 'p1', createdAt: 2, updatedAt: 2 };
+    const asset: Asset = { id: 'a2', kind: 'skill', name: 'greeter', description: 'd', source: { type: 'upload' }, pinned: packed.value.digest, latest: packed.value.digest, projectId: 'p1', scope: 'project', ownerId: '', teamId: null, createdAt: 2, updatedAt: 2 };
     await store.assets.create(asset, { assetId: 'a2', digest: packed.value.digest, name: 'greeter', description: 'd', files: packed.value.files, commit: null, createdAt: 2 }, packed.value.blobs);
     assert.equal((await store.assets.byName('skill', 'greeter', 'p1'))?.id, 'a2');
     await store.assets.setProjectSetting('p1', 'a1', false);

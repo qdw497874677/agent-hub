@@ -1,4 +1,5 @@
 import { AccountMenu } from './auth.tsx';
+import { NotificationBell } from './market/notifications.tsx';
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from './api.ts';
@@ -55,7 +56,10 @@ export function HomePage({
             <p className="text-head text-primary">agent-hub</p>
             <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
           </div>
-          <AccountMenu />
+          <div className="flex items-center gap-2">
+            <NotificationBell />
+            <AccountMenu />
+          </div>
         </div>
 
         <div className="mb-1 flex items-baseline justify-between">

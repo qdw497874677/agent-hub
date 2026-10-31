@@ -33,7 +33,15 @@ export type Permission =
   | 'audit.read'
   | 'hub.settings'
   | 'hub.users'
-  | 'hub.assets';
+  | 'hub.assets'
+  // 资产上架与审核（ADR 0016）
+  | 'asset.read'
+  | 'asset.submit'
+  | 'asset.review'
+  | 'asset.assign'
+  | 'asset.retire'
+  | 'asset.secret.use'
+  | 'asset.publish_global';
 
 export type Scope = 'team' | 'own';
 
@@ -60,7 +68,13 @@ const TEAM_ALL: RolePermissions = {
   'runtime.install': 'team',
   'member.invite': 'team',
   'member.manage': 'team',
-  'audit.read': 'team'
+  'audit.read': 'team',
+  'asset.read': 'team',
+  'asset.submit': 'team',
+  'asset.review': 'team',
+  'asset.assign': 'team',
+  'asset.retire': 'team',
+  'asset.secret.use': 'team'
 };
 
 /** 角色 → 权限集。改这里就是改授权模型；权限矩阵测试（access.test.ts）把它钉住。 */
@@ -85,12 +99,18 @@ export const ROLE_PERMISSIONS: Readonly<Record<Role, RolePermissions>> = {
     'worker.use_local': 'team',
     'worker.enroll': 'team',
     'worker.manage': 'own',
-    'runtime.install': 'own'
+    'runtime.install': 'own',
+    'asset.read': 'team',
+    'asset.submit': 'own',
+    // 指定审核人另看团队审核设置（不是角色权限）
+    'asset.assign': 'own',
+    'asset.retire': 'own',
+    'asset.secret.use': 'own'
   }
 };
 
 /** 只认 hubAdmin 的权限。 */
-const HUB_PERMISSIONS: ReadonlySet<Permission> = new Set(['hub.settings', 'hub.users', 'hub.assets']);
+const HUB_PERMISSIONS: ReadonlySet<Permission> = new Set(['hub.settings', 'hub.users', 'hub.assets', 'asset.publish_global']);
 
 /** 被判断的资源。项目下的任务、会话、工作空间都拿所在项目当资源。 */
 export interface Resource {

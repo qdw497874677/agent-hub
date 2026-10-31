@@ -197,7 +197,7 @@ export const projectAssetsSchema = z.object({
   choices: z.array(
     z.object({
       assetId: z.string(),
-      scope: z.enum(['global', 'project']),
+      scope: z.enum(['personal', 'project', 'team', 'global']),
       enabled: z.boolean(),
       shadowedBy: z.string().nullable(),
       overridden: z.boolean()

@@ -16,14 +16,16 @@ import {
   secretPutRequest,
   secretsOverviewSchema
 } from '@agent-hub/contract';
-import type { AssetDeps, AuditLog, IncomingFile, Principal } from '@agent-hub/domain';
+import type { AssetReviewDeps, AuditLog, IncomingFile, Principal } from '@agent-hub/domain';
 import {
   ASSET_KIND_LABEL,
   ASSET_LIMITS,
   assetFileText,
   assetRevisions,
   assetsOverview,
-  checkAssetUpdate,
+  checkGitForReview,
+  recordAdminPublish,
+  submitAssetRevision,
   deleteAsset,
   deleteSecret,
   listSecrets,
@@ -37,8 +39,7 @@ import {
   recordAssetAudit,
   scanGitSource,
   setAssetInstalled,
-  uploadAsset,
-  uploadAssetRevision
+  uploadAsset
 } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
@@ -48,7 +49,7 @@ import { fail } from './http-error.ts';
  * （/api/admin/* 的守门中间件在 admin.ts）。规则全在 domain，这里只做解析、审计、DTO。
  */
 export interface AssetRouteOptions {
-  readonly deps: AssetDeps;
+  readonly deps: AssetReviewDeps;
   readonly audit: AuditLog;
 }
 
@@ -80,6 +81,10 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
     return next();
   });
   const actor = (c: Context): Principal => actors.get(c) ?? (principalOf(c) as Principal);
+  const adminOwnership = (c: Context, projectId: string | null) => {
+    const who = actor(c);
+    return { scope: projectId ? ('project' as const) : ('global' as const), ownerId: who.user.id, teamId: who.user.teamId, publish: true };
+  };
   const audit = (c: Context, action: Parameters<typeof recordAssetAudit>[2], target: string, detail: string) =>
     recordAssetAudit({ audit: options.audit, now: deps.now }, actor(c), action, target, detail);
 
@@ -89,7 +94,12 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
     return c.json(manifest ?? { sessionId: c.req.param('sessionId'), workerId: null, entries: [], at: null });
   });
 
-  app.get('/api/admin/assets', async (c) => c.json(assetsOverviewSchema.parse(await assetsOverview(deps))));
+  // 运营后台只管 hub 运营的资产（全局 / 项目级）；团队、个人资产在资产市场里（ADR 0016）。
+  app.get('/api/admin/assets', async (c) => {
+    const overview = await assetsOverview(deps);
+    const assets = overview.assets.filter((asset) => asset.scope === 'global' || asset.scope === 'project');
+    return c.json(assetsOverviewSchema.parse({ ...overview, assets }));
+  });
 
   // 密钥：值只进不出（PUT 写入后界面再也看不到它）；审计只记名字。
   app.get('/api/admin/assets/secrets', async (c) => c.json(secretsOverviewSchema.parse(await listSecrets(deps))));
@@ -134,10 +144,12 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
       kind: input.value.kind,
       name: input.value.name ?? null,
       projectId: input.value.projectId ?? null,
-      files: decodeFiles(input.value.files)
+      files: decodeFiles(input.value.files),
+      ...adminOwnership(c, input.value.projectId ?? null)
     });
     if (!made.ok) return fail(c, made.error);
     await audit(c, 'asset.create', made.value.name, `上传${ASSET_KIND_LABEL[made.value.kind]} ${made.value.pinned.slice(0, 12)}`);
+    await recordAdminPublish(deps, actor(c), made.value, made.value.pinned, '运营后台上传即发布');
     return c.json({ id: made.value.id }, 201);
   });
 
@@ -157,10 +169,12 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
       ref: input.value.ref?.trim() || null,
       path: input.value.path,
       name: input.value.name ?? null,
-      projectId: input.value.projectId ?? null
+      projectId: input.value.projectId ?? null,
+      ...adminOwnership(c, input.value.projectId ?? null)
     });
     if (!made.ok) return fail(c, made.error);
     await audit(c, 'asset.create', made.value.name, `从 git 导入 ${input.value.url.trim()} ${input.value.path}`);
+    await recordAdminPublish(deps, actor(c), made.value, made.value.pinned, '运营后台导入即发布');
     return c.json({ id: made.value.id }, 201);
   });
 
@@ -184,17 +198,18 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
   app.post('/api/admin/assets/:assetId/revisions', uploadLimit, async (c) => {
     const input = await parse(c, assetRevisionUploadRequest);
     if (!input.ok) return input.response;
-    const result = await uploadAssetRevision(deps, c.req.param('assetId'), decodeFiles(input.value.files));
+    // 新版本不直接上线：开一个待审提交（ADR 0016），管理员可在审核页批，或在这里「钉到」它（记为自批）。
+    const result = await submitAssetRevision(deps, actor(c), c.req.param('assetId'), decodeFiles(input.value.files));
     if (!result.ok) return fail(c, result.error);
-    if (result.value.changed) await audit(c, 'asset.revision', result.value.asset.name, `上传新版本 ${result.value.asset.latest.slice(0, 12)}`);
-    return c.json({ changed: result.value.changed, latest: result.value.asset.latest });
+    const changed = result.value.submission !== null;
+    return c.json({ changed, latest: result.value.asset.latest, submissionId: result.value.submission?.id ?? null });
   });
 
   app.post('/api/admin/assets/:assetId/check', async (c) => {
-    const result = await checkAssetUpdate(deps, c.req.param('assetId'));
+    // 5A：来源有新版本 → 待审提交，已钉的老版本照常用。
+    const result = await checkGitForReview(deps, actor(c), c.req.param('assetId'));
     if (!result.ok) return fail(c, result.error);
-    if (result.value.changed) await audit(c, 'asset.revision', result.value.asset.name, `来源有新版本 ${result.value.asset.latest.slice(0, 12)}`);
-    return c.json({ changed: result.value.changed, latest: result.value.asset.latest });
+    return c.json({ changed: result.value.submission !== null, latest: result.value.asset.latest, submissionId: result.value.submission?.id ?? null });
   });
 
   app.post('/api/admin/assets/:assetId/pin', async (c) => {
@@ -203,6 +218,7 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
     const result = await pinAssetRevision(deps, c.req.param('assetId'), input.value.digest);
     if (!result.ok) return fail(c, result.error);
     await audit(c, 'asset.pin', result.value.name, `钉到 ${input.value.digest.slice(0, 12)}`);
+    await recordAdminPublish(deps, actor(c), result.value, input.value.digest, '运营后台钉版本');
     return c.json({ ok: true });
   });
 
