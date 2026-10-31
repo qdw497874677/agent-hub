@@ -2,7 +2,7 @@
 
 - 状态：accepted（2026-10-31 David 拍板，见下方「David 的决定」）
 - 日期：2026-10-31
-- 关联：ADR 0017（权限）、ADR 0018（agent 间通信；会话类型、角色记忆 / 项目记忆已决）；设计稿 `docs/design/memory.md`
+- 关联：ADR 0020（会话上下文策略，与本 ADR 分开）、ADR 0017（权限）、ADR 0018（agent 间通信；会话类型、角色记忆 / 项目记忆已决）；设计稿 `docs/design/memory.md`
 
 ## 背景
 
