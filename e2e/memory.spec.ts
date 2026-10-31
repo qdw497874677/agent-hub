@@ -56,3 +56,36 @@ test('项目写入模式默认只追加，可以切成审核', async ({ page, ba
   await page.goto('/#/memory');
   await expect(page.getByTestId('memory-scope').filter({ hasText: '记忆模式' }).first()).toBeVisible();
 });
+
+test('会话第一轮注入一次静态记忆引导（审计可见），第二轮不再注入', async ({ page, baseURL }) => {
+  await loginByApi(page);
+  const csrf = (await page.context().cookies()).find((c) => c.name === 'hub_csrf')?.value ?? '';
+  const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
+  let agentId: string | undefined;
+  for (let i = 0; i < 40 && !agentId; i++) {
+    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
+    agentId = workers.find((w) => w.state === 'online')?.agentIds[0];
+    if (!agentId) await page.waitForTimeout(500);
+  }
+  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const made = await page.request.post('/api/projects', { data: { name: `e2e 引导 ${Date.now().toString(36)}`, rootPath: mkdtempSync(join(tmpdir(), 'e2e-guide-')) }, headers });
+  expect(made.ok()).toBe(true);
+  const project = (await made.json()) as { id: string };
+  const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '引导' }, headers })).json()) as { id: string };
+  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const guided = async () => {
+    const rows = (await (await page.request.get('/api/admin/audit?action=memory.guidance')).json()) as Array<Record<string, unknown>>;
+    return rows.filter((r) => JSON.stringify(r).includes(session.id));
+  };
+  expect(await guided()).toHaveLength(0);
+  expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '第一轮' }, headers })).ok()).toBe(true);
+  await expect.poll(async () => (await guided()).length, { message: '第一轮注入引导并记审计' }).toBe(1);
+  expect(JSON.stringify((await guided())[0])).toMatch(/v\d+/);
+  // 等第一轮跑完再发第二轮
+  await page.goto(`/#/p/${project.id}/canvas`);
+  await expect(page.locator('.react-flow__node-session').first().getByTestId('session-card-log')).toContainText('第一轮', { timeout: 30000 });
+  await page.waitForTimeout(1500);
+  await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '第二轮' }, headers });
+  await expect(page.locator('.react-flow__node-session').first().getByTestId('session-card-log')).toContainText('第二轮', { timeout: 30000 });
+  expect(await guided(), '第二轮不再注入').toHaveLength(1);
+});

@@ -44,16 +44,31 @@ async function setup(page: Page, baseURL: string) {
   await page.waitForTimeout(1200); // 等开场 fitView 动画停下
 }
 
-async function mouseDrag(page: Page, from: Pt, dx: number, dy: number) {
+/**
+ * 起点给 Locator 时，等完停顿再量位置，并确认这个点上确实是它——停顿里视口或卡片若被挪了（比如开场适配晚到），
+ * 先量后等会按旧坐标按到别处（按到空白就成了平移画布，卡片当然不动），报错也只会是莫名其妙的「卡片没动」。
+ */
+async function startAt(from: Pt | Locator): Promise<Pt> {
+  if (!('evaluate' in from)) return from;
+  const at = await center(from);
+  const hit = await from.evaluate((n, p) => { const e = document.elementFromPoint(p.x, p.y); return !!e && (n === e || n.contains(e)); }, at);
+  expect(hit, `按下的点 (${at.x},${at.y}) 应该落在目标上`).toBe(true);
+  return at;
+}
+
+async function mouseDrag(page: Page, start: Pt | Locator, dx: number, dy: number) {
   await page.waitForTimeout(700); // 两次操作之间像人一样停一下，别被当成双击；d3-drag 在触摸结束后 500ms 内忽略鼠标
+  const from = await startAt(start);
   await page.mouse.move(from.x, from.y);
   await page.mouse.down();
   for (let k = 1; k <= 10; k++) await page.mouse.move(from.x + (dx * k) / 10, from.y + (dy * k) / 10);
   await page.mouse.up();
 }
 
-async function touch(page: Page, starts: Pt[], deltas: Pt[]) {
+async function touch(page: Page, targets: Array<Pt | Locator>, deltas: Pt[]) {
   await page.waitForTimeout(700);
+  const starts: Pt[] = [];
+  for (const t of targets) starts.push(await startAt(t));
   const cdp = await page.context().newCDPSession(page);
   const at = (k: number) => starts.map((s, i) => ({ x: Math.round(s.x + (deltas[i]!.x * k) / 10), y: Math.round(s.y + (deltas[i]!.y * k) / 10), id: i }));
   await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: at(0) });
@@ -94,21 +109,21 @@ test.describe('画布交互分区', () => {
       for (const [how, target] of [['鼠标·把手', card.getByTestId('card-drag-handle')], ['鼠标·顶栏', card.locator('header')]] as const) {
         const before = await pos(card);
         const vp = await viewport(page);
-        await mouseDrag(page, await center(target), 30, 20);
+        await mouseDrag(page, target, 30, 20);
         await expect.poll(() => pos(card), { message: `${how}拖动卡片` }).not.toBe(before);
         expect(await viewport(page), `${how}不平移画布`).toBe(vp);
       }
       for (const [how, target] of [['单指·把手', card.getByTestId('card-drag-handle')], ['单指·顶栏', card.locator('header')]] as const) {
         const before = await pos(card);
         const vp = await viewport(page);
-        await touch(page, [await center(target)], [{ x: 30, y: 20 }]);
+        await touch(page, [target], [{ x: 30, y: 20 }]);
         await expect.poll(() => pos(card), { message: `${how}拖动卡片` }).not.toBe(before);
         expect(await viewport(page), `${how}不平移画布`).toBe(vp);
       }
       // 框里的第二张卡也能拖
       {
         const before = await pos(other);
-        await mouseDrag(page, await center(other.getByTestId('card-drag-handle')), 20, 20);
+        await mouseDrag(page, other.getByTestId('card-drag-handle'), 20, 20);
         await expect.poll(() => pos(other), { message: '框里第二张卡能拖' }).not.toBe(before);
       }
 
@@ -133,7 +148,7 @@ test.describe('画布交互分区', () => {
       {
         const input = card.locator('textarea').first();
         const before = await pos(card);
-        await mouseDrag(page, await center(input), 30, 0);
+        await mouseDrag(page, input, 30, 0);
         await input.click();
         await page.keyboard.type('输入区正常');
         await expect(input).toHaveValue('输入区正常');
@@ -201,18 +216,18 @@ test.describe('画布交互分区', () => {
         const at = await center(log);
         await page.mouse.move(at.x, at.y);
         await page.mouse.wheel(0, 200);
-        await mouseDrag(page, await center(log), 30, 20);
+        await mouseDrag(page, log, 30, 20);
         await page.waitForTimeout(300);
         expect(await viewport(page), '窗口对话区不动画布').toBe(vp);
         expect(await scale(page), '窗口里滚轮不缩放画布').toBe(s);
         const before = (await opened.boundingBox())!;
-        await mouseDrag(page, await center(opened.getByTestId('window-titlebar').locator('p').first()), -40, 20);
+        await mouseDrag(page, opened.getByTestId('window-titlebar').locator('p').first(), -40, 20);
         await expect.poll(async () => (await opened.boundingBox())!.x, { message: '标题栏拖窗口' }).not.toBe(before.x);
         expect(await viewport(page), '拖窗口不动画布').toBe(vp);
         await opened.getByRole('button', { name: '关闭窗口' }).click();
       } else {
         // 手机：全屏；窗口里单指滑对话不动画布（画布被盖住），‹ 画布 回去
-        await touch(page, [await center(opened.getByRole('log', { name: '对话记录' }))], [{ x: 0, y: -60 }]);
+        await touch(page, [opened.getByRole('log', { name: '对话记录' })], [{ x: 0, y: -60 }]);
         await page.getByRole('button', { name: '关闭窗口' }).click();
       }
       await expect(opened).toHaveCount(0);
