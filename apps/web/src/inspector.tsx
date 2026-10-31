@@ -6,6 +6,7 @@ import { StatusPill } from './status.tsx';
 import type { LiveSession } from './live.ts';
 import { SessionAssets } from './session-assets.tsx';
 import { SessionMessages } from './session-messages.tsx';
+import { SessionContext } from './session-context.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from './workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -134,6 +135,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose }: Pr
               <p className="text-meta text-tertiary">该 agent 当前没有在线节点</p>
             )}
           </section>
+          <SessionContext sessionId={session.id} lastSeq={live?.lastSeq ?? session.lastSeq} />
           <section data-testid="session-activity">
             <p className="mb-1 text-meta text-tertiary">谁做了什么</p>
             {activity.length === 0 ? (

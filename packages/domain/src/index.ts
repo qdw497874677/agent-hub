@@ -125,3 +125,6 @@ export * from './use-cases/providers.ts';
 export type { AccessGrantRepository, TeamRoleRepository } from './ports/access-repository.ts';
 export * from './use-cases/access-admin.ts';
 export * from './session-lane.ts';
+export * from './context-strategy.ts';
+export * from './use-cases/context.ts';
+export type * from './ports/context-settings.ts';
