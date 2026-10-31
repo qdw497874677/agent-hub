@@ -130,7 +130,7 @@ function SubmitForm() {
       <input className={INPUT} data-testid="component-version" placeholder="确切版本，如 1.2.3" value={version} onChange={(e) => setVersion(e.target.value)} required />
       <input className={INPUT} data-testid="component-caps" placeholder="提供的能力，如 tool:web-search（逗号分隔）" value={caps} onChange={(e) => setCaps(e.target.value)} />
       <div className="flex items-center gap-2 sm:col-span-2">
-        <button className={SMALL} data-testid="component-submit" disabled={submit.isPending} type="submit">
+        <button className={`${SMALL} shrink-0 whitespace-nowrap`} data-testid="component-submit" disabled={submit.isPending} type="submit">
           {submit.isPending ? '查 registry…' : '提交审核'}
         </button>
         <span className="text-meta text-tertiary">hub 会先去 registry 解析并钉死这个版本的制品哈希，审的就是装的。</span>

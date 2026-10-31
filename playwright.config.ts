@@ -33,6 +33,8 @@ export default defineConfig({
       ...process.env,
       HUB_PORT: String(port),
       HUB_DATA_DIR: '/tmp/agent-hub-e2e-data',
+      // 组件安装 e2e 的假 npm registry（e2e/components.spec.ts 在这个端口上起）
+      HUB_NPM_REGISTRY: 'http://127.0.0.1:17981',
       HUB_SPAWN_WORKER: '1',
       // 整套 e2e 在一个服务里登录十几次，放宽登录限流，免得后面的用例吃 429
       HUB_LOGIN_RATE_MAX: '1000',
