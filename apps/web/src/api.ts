@@ -583,3 +583,19 @@ export const groupApi = {
   saveRoles: (projectId: string, roles: MessagingRoleDto[], limits: Record<string, number>) =>
     call<unknown>(`/api/projects/${encodeURIComponent(projectId)}/messaging`, { method: 'PUT', body: JSON.stringify({ roles, limits }) })
 };
+
+/** 上下文策略（ADR 0020 · P1）。 */
+export type L1LevelDto = 'runtime' | 'estimated' | 'missing';
+export interface SessionContextDto {
+  strategy: { id: string; version: string; title: string; modes: string[] };
+  mode: 'hub-managed' | 'native' | 'runtime-plugin';
+  source: 'session' | 'role' | 'project' | 'hub' | 'default';
+  fallback: { wanted: string; reason: string } | null;
+  sessionChoice: string | null;
+  enabled: string[];
+  capability: { runtime: string; modes: string[]; l1: Record<'usage' | 'compactionEvents' | 'transcript' | 'compact' | 'restart' | 'memoryTools', L1LevelDto>; gaps: string[] };
+  usage: { usedTokens: number; windowTokens: number; estimated: boolean; usedRatio: number; level: 'ok' | 'soft' | 'hard' };
+}
+export const contextApi = {
+  session: (id: string) => call<SessionContextDto>(`/api/sessions/${encodeURIComponent(id)}/context`)
+};
