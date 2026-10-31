@@ -2,6 +2,7 @@ import { decide, type Permission } from '../access.ts';
 import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
+import { createSessionLane, type SessionLane } from '../session-lane.ts';
 import {
   DEFAULT_ASK_TIMEOUT_MS,
   MAX_BODY_CHARS,
@@ -43,6 +44,9 @@ export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'project
   /** 按角色开一条新会话（组合根：建任务 + 派生会话）。actor 是批准的人。 */
   readonly spawn: (input: { project: Project; role: AgentRole; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
   readonly askTimeoutMs?: number;
+  /** 同一条会话的投递闸（组合根里两边共用一个）；occupied = 别的通道在这条会话上还有没收尾的投递。 */
+  readonly lane?: SessionLane;
+  readonly occupied?: (sessionId: SessionId) => Promise<boolean>;
 }
 
 export interface SendCommand {
@@ -92,6 +96,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
   const askTimeout = deps.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
   // 同一个目标会话的投递串行：避免两条消息同时判断「空闲」然后都投进去
   const locks = new Map<string, Promise<unknown>>();
+  const lane = deps.lane ?? createSessionLane();
   const serial = <T>(key: string, work: () => Promise<T>): Promise<T> => {
     const prev = locks.get(key) ?? Promise.resolve();
     const next = prev.then(work, work);
@@ -154,11 +159,12 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
 
   /** 对方空闲就投下一条排队的。 */
   const pump = (targetId: SessionId): Promise<void> =>
-    serial(targetId, async () => {
+    serial(targetId, () => lane.run(targetId, async () => {
       const target = await deps.sessions.byId(targetId);
       if (!target) return;
       if (isBusy(target)) return;
       if ((await deps.messages.deliveredTo(targetId)).length > 0) return;
+      if (await deps.occupied?.(targetId)) return;
       const next = (await deps.messages.queuedFor(targetId))[0];
       if (!next) return;
       const from = await deps.sessions.byId(next.fromSessionId);
@@ -184,7 +190,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         return;
       }
       await audit(delivering, delivering, 'delivered', 'hub', `→ ${targetId}`);
-    });
+    }));
 
   /** 失败：标记、审计；ask 失败要告诉提问方（以一条带 failure 的 reply 回去）。 */
   const fail = async (message: AgentMessage, code: FailureCode, detail: string): Promise<void> => {

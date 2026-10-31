@@ -184,3 +184,25 @@ test('5A：集群管理员临时进入别的团队：写原因、只读、两边
   expect(TEST_EMAIL).toBeTruthy();
   await outsider.close();
 });
+
+test('项目配置接口（消息角色表 / 记忆模式 / 群）：不存在的项目 404，别人的项目改不了', async ({ page, browser, baseURL }) => {
+  await loginByApi(page);
+  const h = await headers(page.context(), baseURL);
+  const missing = 'no-such-project';
+  expect((await page.request.get(`/api/projects/${missing}/messaging`)).status()).toBe(404);
+  expect((await page.request.put(`/api/projects/${missing}/messaging`, { headers: h, data: { roles: [], limits: {} } })).status()).toBe(404);
+  expect((await page.request.get(`/api/projects/${missing}/memory`)).status()).toBe(404);
+  expect((await page.request.put(`/api/projects/${missing}/memory`, { headers: h, data: { mode: 'review' } })).status()).toBe(404);
+  expect((await page.request.get(`/api/projects/${missing}/groups`)).status()).toBe(404);
+
+  const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 配置权限 ${currentRun()}`, rootPath: mkdtempSync(join(tmpdir(), 'e2e-cfg-')) }, headers: h })).json()) as { id: string };
+  const viewer = await invite(page, browser, 'cfgviewer', 'viewer');
+  const vh = await headers(viewer.context, baseURL);
+  const put = await viewer.page.request.put(`/api/projects/${project.id}/messaging`, { headers: vh, data: { roles: [{ name: 'x', agentId: 'grok', model: '' }], limits: {} } });
+  expect([403, 404]).toContain(put.status());
+  expect([403, 404]).toContain((await viewer.page.request.put(`/api/projects/${project.id}/memory`, { headers: vh, data: { mode: 'review' } })).status());
+  expect([403, 404]).toContain((await viewer.page.request.post(`/api/projects/${project.id}/groups`, { headers: vh, data: { name: 'x', members: ['x'] } })).status());
+  const config = (await (await page.request.get(`/api/projects/${project.id}/messaging`)).json()) as { roles: unknown[] };
+  expect(config.roles).toHaveLength(0);
+  await viewer.context.close();
+});

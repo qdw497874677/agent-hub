@@ -79,6 +79,7 @@ const ROLES: AgentRole[] = [
 ];
 
 async function world() {
+  const busyElsewhere = new Set<string>();
   let clock = 1000;
   const memory = inMemoryDeps({ now: () => clock });
   const deps = memory.deps;
@@ -120,7 +121,8 @@ async function world() {
       await deps.sessions.save(s.value);
       return s;
     },
-    interrupt: async (sid) => void interrupted.push(sid)
+    interrupt: async (sid) => void interrupted.push(sid),
+    occupied: async (sid) => busyElsewhere.has(sid)
   });
   const alice = principal('alice')!;
   const sessionOf = async (groupId: string, role: string) => (await groups.sessionFor(groupId, role))!;
@@ -135,7 +137,7 @@ async function world() {
     return r.value;
   };
   const lastDelivery = (sid: SessionId) => [...delivered].reverse().find((d) => d.sessionId === sid);
-  return { chat, groups, alice, principal, project: project.value, delivered, interrupted, sessionOf, finish, posts, lastDelivery, tick: (ms: number) => void (clock += ms) };
+  return { busyElsewhere, chat, groups, alice, principal, project: project.value, delivered, interrupted, sessionOf, finish, posts, lastDelivery, tick: (ms: number) => void (clock += ms) };
 }
 
 test('纯函数：@ 提及忽略代码块和引用；停止命令；[SILENT]；竞价', () => {
@@ -339,4 +341,20 @@ test('volunteer：并行竞价，过门槛的最高分发言，一轮一条；�
   await w.finish(coder, '[SILENT]');
   await w.finish(reviewer, '[SILENT]');
   assert.ok((await w.posts(g.value.id)).some((p) => /没有成员愿意接话/.test(p.body)));
+});
+
+test('同一条会话被 P2P 消息占着时，群投递排队，对方收尾后再投（不交错）', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['coder'], hostRole: null });
+  assert.ok(g.ok);
+  await w.chat.post(w.alice, g.value.id, '@coder 第一件');
+  const coder = await w.sessionOf(g.value.id, 'coder');
+  await w.finish(coder, '好');
+  w.busyElsewhere.add(coder);
+  const before = w.delivered.length;
+  await w.chat.post(w.alice, g.value.id, '@coder 第二件');
+  assert.equal(w.delivered.length, before, '别的通道在等回复，先不投');
+  w.busyElsewhere.delete(coder);
+  await w.chat.turnEnded(coder);
+  assert.match(w.lastDelivery(coder)!.text, /第二件/);
 });
