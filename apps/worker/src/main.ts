@@ -4,7 +4,7 @@ import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
-import { clearBootMarker, connectWorkerLink, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, collectInventory, connectWorkerLink, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -187,7 +187,16 @@ const provisioner = await createRuntimeManager({
 const metricsIntervalMs = Number(env['WORKER_METRICS_INTERVAL_MS'] ?? 0) || undefined;
 const resources = env['WORKER_METRICS'] === '0' ? undefined : createResourceProbe({ roots: files.roots });
 
+// 套件清单（ADR 0021 §7）：只读采集；WORKER_INVENTORY=0 关掉。pi 目录和 pi 自己一样认 PI_CODING_AGENT_DIR。
+const piDirEnv = env['PI_CODING_AGENT_DIR']?.trim();
+const piDir = piDirEnv ? resolve(piDirEnv.startsWith('~/') ? join(homedir(), piDirEnv.slice(2)) : piDirEnv) : join(homedir(), '.pi', 'agent');
+const inventory =
+  env['WORKER_INVENTORY'] === '0'
+    ? undefined
+    : () => collectInventory({ provisions: provisioner.provisions(), componentsRoot: join(runtimeStore.root, 'components'), piAgentDir: piDir });
+
 const link = connectWorkerLink({
+  ...(inventory ? { inventory } : {}),
   url: hubUrl,
   token,
   ...(localSecret ? { localSecret } : {}),

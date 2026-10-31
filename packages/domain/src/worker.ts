@@ -4,6 +4,7 @@ import type { ProviderProtocol } from './provider.ts';
 import { conflict, unavailable, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
 import type { RuntimeJob, RuntimeProvision } from './runtime-install.ts';
+import type { DriftReport, WorkerInventory } from './runtime-bundle.ts';
 
 /** Worker 的对外状态。Server / Worker 是适配器，但它得有地方被看见（S1.2）。 */
 export type WorkerState = 'online' | 'offline';
@@ -35,6 +36,10 @@ export interface WorkerStatus {
   readonly runtimeJob?: RuntimeJob;
   /** 机器资源（ADR 0014）；老 Worker 不报就没有。 */
   readonly resources?: WorkerResources;
+  /** 运行时套件清单（ADR 0021 §7）；老 Worker 不报就没有。 */
+  readonly inventory?: WorkerInventory;
+  /** 期望（pins）对实际（清单）的漂移；有清单才有。 */
+  readonly drift?: DriftReport;
 }
 
 /** 某个 agent 在某台机器上的模型清单。 */

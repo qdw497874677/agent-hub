@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi, api, type WorkerInfoDto } from './api.ts';
 import { AddMachineDialog } from './add-machine.tsx';
 import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
-import { RuntimeSection } from './runtimes.tsx';
+import { InventorySection, RuntimeSection } from './runtimes.tsx';
 import { ResourceDetails, ResourceSummary } from './resources.tsx';
 
 /**
@@ -151,6 +151,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
           ) : null}
           <ResourceDetails worker={worker} />
           {online ? <RuntimeSection worker={worker} /> : null}
+          {online ? <InventorySection worker={worker} /> : null}
           {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
         </dl>
       ) : null}

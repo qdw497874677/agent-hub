@@ -40,9 +40,11 @@ import type {
   ProviderProtocol,
   DebounceState,
   ResourceSample,
-  WorkerResources
+  WorkerResources,
+  WorkerInventory,
+  ComponentPin
 } from '@agent-hub/domain';
-import { assessPressure, conflict, debouncePressure, initialDebounce, invalid, unavailable } from '@agent-hub/domain';
+import { assessPressure, detectDrift, conflict, debouncePressure, initialDebounce, invalid, unavailable } from '@agent-hub/domain';
 
 /** hub 留给每台机器的安装日志上限（字符，取末尾）。 */
 const RUNTIME_LOG_LIMIT = 16_000;
@@ -81,6 +83,8 @@ export interface GatewayHooks {
   onUpdateStatus?(workerId: string, update: WorkerUpdate): void;
   /** 运行时任务结束（成功 / 失败 / 被拒）。 */
   onRuntimeJob?(workerId: string, job: RuntimeJob): void;
+  /** 这台 Worker 期望装着的组件（hub 的 component_pins，ADR 0021 P2 才写入）；不给 = 没有期望。 */
+  expectedComponents?(workerId: string): readonly ComponentPin[];
   onLog?(message: string): void;
   /**
    * 每条通过认证的连接一条 RPC 通道（端口）：组合根在这里挂 worker→hub 的方法（如 mcp.message），
@@ -139,6 +143,8 @@ interface Registered {
   update: WorkerUpdate | null;
   /** 最近一次运行时安装 / 卸载任务（ADR 0010）。 */
   runtimeJob: RuntimeJob | null;
+  /** 最近一次上报的套件清单（ADR 0021）。 */
+  inventory: WorkerInventory | null;
   /** 最近一次更新的目标提交：它重启后用新版本 hello 上来时，据此判定「更新完成」。 */
   updateTarget: string | null;
   /** 这条连接上的 RPC 通道；离线时为 null。 */
@@ -375,6 +381,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           build,
           update,
           runtimeJob: previous?.runtimeJob ?? null,
+          inventory: previous?.inventory ?? null,
           updateTarget: target !== null && build?.commit === target ? null : target,
           channel: null
         };
@@ -423,6 +430,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           ...(frame.version !== undefined && frame.version !== null ? { version: frame.version } : {})
         };
         if (terminal) hooks.onRuntimeJob?.(entry.workerId, entry.runtimeJob);
+        return;
+      }
+      if (frame.type === 'inventory') {
+        entry.inventory = frame.inventory as WorkerInventory;
         return;
       }
       if (frame.type === 'metrics') {
@@ -515,7 +526,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       ...(entry.socket === null && entry.reason !== undefined ? { reason: entry.reason } : {}),
       ...(entry.build ? { build: entry.build } : {}),
       ...(entry.update ? { update: entry.update } : {}),
-      ...(entry.runtimeJob ? { runtimeJob: entry.runtimeJob } : {})
+      ...(entry.runtimeJob ? { runtimeJob: entry.runtimeJob } : {}),
+      ...(entry.inventory ? { inventory: entry.inventory, drift: detectDrift(hooks.expectedComponents?.(entry.workerId) ?? [], entry.inventory) } : {})
     };
     const resources = resourcesOf(entry);
     return resources ? { ...status, resources } : status;
