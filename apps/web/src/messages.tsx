@@ -170,7 +170,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer) => v
   const stop = useMutation({ mutationFn: () => groupApi.stop(group.id), onSuccess: () => void client.invalidateQueries({ queryKey: KEY }) });
   const bottom = useRef<HTMLDivElement>(null);
   const count = posts.data?.posts.length ?? 0;
-  useEffect(() => bottom.current?.scrollIntoView({ block: 'end' }), [count]);
+  useEffect(() => { bottom.current?.scrollIntoView({ block: 'end' }); }, [count]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b border-hair px-3 py-2">

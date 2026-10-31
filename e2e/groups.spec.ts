@@ -51,7 +51,7 @@ test('建群：限额越界 400；没主持人时贴系统行；停止后成员�
 
   await page.getByTestId('group-stop').click();
   await page.getByTestId('open-members').click();
-  await expect(page.getByTestId('member-held')).toHaveCount(2);
+  await expect(page.getByTestId('group-drawer').getByTestId('member-held')).toHaveCount(2);
   await page.screenshot({ path: 'test-results/groups-mobile.png' });
 });
 
