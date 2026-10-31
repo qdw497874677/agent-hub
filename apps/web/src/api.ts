@@ -119,6 +119,9 @@ export interface SessionActivityDto {
 export const api = {
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
   probeWorker: (workerId: string) => post<{ ok: true }>(`/api/workers/${encodeURIComponent(workerId)}/probe`, {}),
+  /** 「资源满了就拒绝新会话」开关（ADR 0014，默认关）。 */
+  setResourcePolicy: (workerId: string, refuseWhenFull: boolean) =>
+    call<{ refuseWhenFull: boolean }>(`/api/workers/${encodeURIComponent(workerId)}/resource-policy`, { method: 'PUT', body: JSON.stringify({ refuseWhenFull }) }),
   /** 在这台机器上装 / 升级 / 卸载一个 agent 运行时；只回「已下发」，进度看 workers 列表里的 runtimeJob。 */
   runtimeJob: (workerId: string, agentId: string, body: { action: 'install' | 'uninstall'; version?: string }) =>
     post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/runtimes/${encodeURIComponent(agentId)}`, body),

@@ -4,7 +4,7 @@ import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
-import { clearBootMarker, connectWorkerLink, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, connectWorkerLink, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -183,6 +183,10 @@ const provisioner = await createRuntimeManager({
   machineProvided
 });
 
+// 机器资源上报（ADR 0014）：默认开，WORKER_METRICS=0 关掉；hub 不认识就不发
+const metricsIntervalMs = Number(env['WORKER_METRICS_INTERVAL_MS'] ?? 0) || undefined;
+const resources = env['WORKER_METRICS'] === '0' ? undefined : createResourceProbe({ roots: files.roots });
+
 const link = connectWorkerLink({
   url: hubUrl,
   token,
@@ -200,6 +204,8 @@ const link = connectWorkerLink({
   build,
   onUpdate,
   provisioner,
+  ...(resources ? { resources } : {}),
+  ...(metricsIntervalMs ? { metricsIntervalMs } : {}),
   onAccepted: markHealthySoon,
   onLog: log,
   // 断线会自己重连；走到这里只有两种情况：token 被拒、被管理员断开、或者自己 close() 了。

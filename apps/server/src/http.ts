@@ -87,7 +87,8 @@ import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
 import { RELAY_PATH, type ProviderWiringApi } from './providers.ts';
 import { installEnrollment } from './enrollment.ts';
 import { installRuntimeInstall } from './runtime-install.ts';
-import type { RuntimeInstallDeps } from '@agent-hub/domain';
+import { installWorkerResources } from './worker-resources.ts';
+import type { ResourceDeps, RuntimeInstallDeps } from '@agent-hub/domain';
 import { installProjectDeletion } from './project-delete.ts';
 import { installAccess } from './access.ts';
 import type { DeleteProjectDeps } from '@agent-hub/domain';
@@ -114,6 +115,8 @@ export interface AppOptions {
   readonly enrollment?: EnrollmentOptions;
   /** 在机器上装 / 卸 agent 运行时（ADR 0010）；只在有账号体系时装。 */
   readonly runtimeInstall?: RuntimeInstallDeps;
+  /** 机器资源历史与「满了拒绝新会话」开关（ADR 0014）。 */
+  readonly resources?: ResourceDeps;
   /** 删除项目（要登录态记审计，所以同样只在有账号体系时装）。 */
   readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'>;
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
@@ -197,6 +200,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
     if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);
+    if (options.resources) installWorkerResources(app, options.resources, principalOf);
     if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf);
   }
   app.use('/api/*', async (c, next) => {

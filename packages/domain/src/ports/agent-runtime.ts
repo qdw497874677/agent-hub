@@ -51,6 +51,8 @@ export interface RuntimeSession {
   /** 改一项，返回**改完之后的全量清单**——换模型会连带改变别的项的可选值。 */
   changeOption(id: string, value: string | boolean): Promise<Result<readonly RuntimeOption[], DomainError>>;
   dispose(): Promise<void>;
+  /** agent 主进程的 pid，用于按会话统计资源（ADR 0014）；不是本机进程的实现不给。 */
+  pid?(): number | null;
 }
 
 /** 新增一个 agent = 实现这一个端口 + 填一张能力矩阵。 */

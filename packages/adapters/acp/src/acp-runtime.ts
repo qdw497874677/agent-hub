@@ -48,6 +48,10 @@ class AcpSession implements RuntimeSession {
   private readonly config: AcpAgentConfig;
   private readonly onOptions: (options: readonly RuntimeOption[]) => void;
 
+  pid(): number | null {
+    return this.child.pid ?? null;
+  }
+
   constructor(
     sessionId: RuntimeSession['sessionId'],
     child: ChildProcessWithoutNullStreams,

@@ -10,10 +10,13 @@
     "@agent-hub/contract": "*",
     "@agent-hub/domain": "*",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "pidtree": "^1.0.0",
+    "pidusage": "^4.1.0",
     "simple-git": "^4.0.2",
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@types/pidusage": "^2.0.5",
     "@types/ws": "^8.18.1"
   }
 }

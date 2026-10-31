@@ -14,7 +14,7 @@ import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { createSecretVault, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createProviderWiring } from './providers.ts';
-import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand } from '@agent-hub/domain';
+import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
@@ -49,7 +49,7 @@ import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps } from '@agent-hub/domain';
-import { createAccessPolicy } from '@agent-hub/domain';
+import { createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
 import { hubTokenWindow, seedTestAccount } from './account-setup.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -224,6 +224,11 @@ async function mcpWorkers(): Promise<Set<string>> {
 }
 
 // 单台机器接入：接入码换专属凭据，hello 时按凭据认机器（docs/design/worker-enrollment.md）。
+// 资源采样（ADR 0014）只在网关内存里；策略开关持久化在 hub 设置里，启动时同步回网关。
+const workerMetrics: WorkerMetrics = {
+  history: (workerId) => serverGateway?.metrics(workerId) ?? [],
+  applyRefuseWhenFull: (ids) => serverGateway?.setRefuseWhenFull(ids)
+};
 const workerControl = {
   list: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
   disconnect: async (workerId: string, why?: 'admin' | 'revoked') => serverGateway?.disconnect(workerId, why) ?? false,
@@ -374,6 +379,7 @@ serverGateway = createServerGateway({
   },
   onLog: log
 });
+void loadResourcePolicy({ metrics: workerMetrics, settings: store.settings }).catch((failure: unknown) => log(`同步资源策略失败：${(failure as Error).message}`));
 
 const recovered = await reconcileInterrupted(deps);
 if (recovered > 0) log(`${recovered} 个会话上次没跑完，已标记为「中断」`);
@@ -440,6 +446,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   },
   assets: { deps: assetDeps, audit: store.audit },
   providers: providerWiring,
+  resources: { metrics: workerMetrics, settings: store.settings, workers: workerControl, audit: store.audit, now: () => Date.now(), access: deps.access },
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },

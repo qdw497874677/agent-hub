@@ -4,6 +4,7 @@ import { adminApi, api, type WorkerInfoDto } from './api.ts';
 import { AddMachineDialog } from './add-machine.tsx';
 import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
 import { RuntimeSection } from './runtimes.tsx';
+import { ResourceDetails, ResourceSummary } from './resources.tsx';
 
 /**
  * Worker：一台登记进 hub、真正跑 agent 的机器。
@@ -108,6 +109,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
                 }`
               : `离线 · ${relativeTime(worker.lastSeenAt)}${worker.reason ? ` · ${worker.reason}` : ''}`}
           </span>
+          <ResourceSummary worker={worker} />
         </span>
         <span className="shrink-0 text-meta text-tertiary">{open ? '▾' : '▸'}</span>
       </button>
@@ -147,6 +149,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
               </dd>
             </>
           ) : null}
+          <ResourceDetails worker={worker} />
           {online ? <RuntimeSection worker={worker} /> : null}
           {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
         </dl>

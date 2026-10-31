@@ -6,6 +6,7 @@ import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, WorkerT
 import {
   PROTOCOL_MISMATCH_CLOSE,
   PROTOCOL_VERSION,
+  WORKER_CAPABILITY_METRICS,
   assetsSync,
   providerTest,
   createRpcChannel,
@@ -37,8 +38,11 @@ import type {
   WorkspaceGit,
   RuntimeJob,
   ProviderProtocol,
+  DebounceState,
+  ResourceSample,
+  WorkerResources
 } from '@agent-hub/domain';
-import { conflict, invalid, unavailable } from '@agent-hub/domain';
+import { assessPressure, conflict, debouncePressure, initialDebounce, invalid, unavailable } from '@agent-hub/domain';
 
 /** hub 留给每台机器的安装日志上限（字符，取末尾）。 */
 const RUNTIME_LOG_LIMIT = 16_000;
@@ -163,6 +167,10 @@ export interface ServerGateway {
   /** 资产中心的投递端口：把清单推下去（assets.sync），Worker 回头经 assets.fetch 取内容。 */
   readonly assets: AssetDelivery;
   /** 让这台 Worker 测一个模型提供商（GET {baseUrl}/models）；经 hub 中转时 baseUrl 是 hub 上的临时中转路径。 */
+  /** 这台机器最近 1 小时的资源采样（只在内存里，hub 重启就没了；ADR 0014）。 */
+  metrics(workerId: string): readonly ResourceSample[];
+  /** 「资源满了就拒绝新会话」开关（持久化在 hub 设置里，启动时和改动时同步进来）。 */
+  setRefuseWhenFull(workerIds: Iterable<string>): void;
   testProvider(workerId: string, input: { protocol: ProviderProtocol; baseUrl: string; apiKey: string }): Promise<Result<{ ok: boolean; status: number; message: string; models: string[] }, DomainError>>;
   close(): void;
 }
@@ -187,6 +195,34 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     const entry = registry.get(workerId);
     return entry?.socket && entry.socket.readyState === WebSocket.OPEN ? entry : null;
   };
+
+  // 资源（ADR 0014）：每台一个环形缓冲 + 防抖状态，只在内存里
+  const METRICS_RETENTION_MS = 60 * 60_000;
+  const METRICS_MAX_POINTS = 300;
+  const usage = new Map<string, { samples: ResourceSample[]; debounce: DebounceState }>();
+  let refusePolicy = new Set<string>();
+
+  function recordMetrics(workerId: string, sample: ResourceSample): void {
+    const state = usage.get(workerId) ?? { samples: [], debounce: initialDebounce };
+    // 时间用 hub 的钟：Worker 的钟可能不准，而 CPU「持续 1 分钟」要按到达时间算
+    const stamped: ResourceSample = { ...sample, at: now() };
+    const pressure = assessPressure(stamped, state.samples);
+    state.debounce = debouncePressure(state.debounce, pressure);
+    state.samples.push(stamped);
+    const cutoff = stamped.at - METRICS_RETENTION_MS;
+    while (state.samples.length > 0 && (state.samples[0]!.at < cutoff || state.samples.length > METRICS_MAX_POINTS)) state.samples.shift();
+    usage.set(workerId, state);
+  }
+
+  function resourcesOf(entry: Registered): WorkerResources | undefined {
+    if (!entry.socket) return undefined; // 离线机器的旧数值没有意义
+    const state = usage.get(entry.workerId);
+    const latest = state?.samples.at(-1);
+    if (!state || !latest) return undefined;
+    const refuseWhenFull = refusePolicy.has(entry.workerId);
+    const pressure = state.debounce.current;
+    return { sample: latest, pressure, refuseWhenFull, refusing: refuseWhenFull && pressure.level === 'full' };
+  }
 
   const labelOf = (workerId: string): string => registry.get(workerId)?.label ?? workerId;
 
@@ -355,7 +391,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         });
         hooks.serve?.(frame.workerId, entry.channel);
         registry.set(frame.workerId, entry);
-        socket.send(JSON.stringify({ kind: 'welcome' } satisfies ServerToWorker));
+        socket.send(JSON.stringify({ kind: 'welcome', accepts: [WORKER_CAPABILITY_METRICS] } satisfies ServerToWorker));
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         return;
       }
@@ -387,6 +423,11 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           ...(frame.version !== undefined && frame.version !== null ? { version: frame.version } : {})
         };
         if (terminal) hooks.onRuntimeJob?.(entry.workerId, entry.runtimeJob);
+        return;
+      }
+      if (frame.type === 'metrics') {
+        const { type: _type, ...sample } = frame;
+        recordMetrics(entry.workerId, sample);
         return;
       }
       if (frame.type === 'update_status') {
@@ -476,7 +517,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       ...(entry.update ? { update: entry.update } : {}),
       ...(entry.runtimeJob ? { runtimeJob: entry.runtimeJob } : {})
     };
-    return status;
+    const resources = resourcesOf(entry);
+    return resources ? { ...status, resources } : status;
   }
 
   // 在线的排前面，同状态下本机在前，其次按名字：管理视图和选择器都按这个顺序显示。
@@ -577,6 +619,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     workers(): WorkerStatus[] {
       return statuses();
     },
+    metrics(workerId: string): readonly ResourceSample[] {
+      return [...(usage.get(workerId)?.samples ?? [])];
+    },
+    setRefuseWhenFull(workerIds: Iterable<string>): void {
+      refusePolicy = new Set(workerIds);
+    },
     adopt(workerId: string, sessionIds: readonly string[]): void {
       if (!online(workerId)) return;
       for (const sessionId of sessionIds) placement.set(sessionId, workerId);
@@ -589,7 +637,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     disconnect(workerId: string, why: 'admin' | 'revoked' = 'admin'): boolean {
       const socket = registry.get(workerId)?.socket;
-      if (why === 'revoked') registry.delete(workerId); // 吊销了就不再列在机器里
+      if (why === 'revoked') {
+        registry.delete(workerId);
+        usage.delete(workerId);
+      } // 吊销了就不再列在机器里
       if (!socket) return false;
       const reason = why === 'revoked' ? '机器已被吊销' : '管理员断开';
       (socket as WebSocket & { markKicked?: (reason: string) => void }).markKicked?.(reason);

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { SessionDto, TaskDto, WorkerInfoDto } from './api.ts';
 import { WorkerChip } from './workers.tsx';
+import { ResourceBadge, SessionUsage } from './resources.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
@@ -38,6 +39,8 @@ export type SessionNode = Node<
     agentLabel: string;
     /** 多台 Worker 时才有：会话跑在哪台。 */
     worker?: WorkerInfoDto | undefined;
+    /** 会话所在机器的资源（单机也有），用来显示这条会话的用量。 */
+    resources?: WorkerInfoDto['resources'];
     /** 「机器 · 工作空间 · 分支」（§4，卡片上）；老会话没有工作空间时不显示。 */
     place?: { readonly machine: string; readonly workspace: string; readonly path: string; readonly branch: string | null; readonly kept: string | null } | undefined;
     onOpen: () => void;
@@ -133,7 +136,7 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, worker, place, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
+  const { session, live, agentLabel, worker, resources, place, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
     data;
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
@@ -211,6 +214,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             </span>
           ) : null}
           {worker ? <WorkerChip worker={worker} /> : null}
+          <SessionUsage resources={resources} sessionId={session.id} />
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
           {expanded ? <span className="text-meta text-accent" title="已在画布中展开" data-testid="card-expanded">◫</span> : null}
@@ -398,6 +402,7 @@ export type FrameNode = Node<
     readonly label: string;
     readonly online: boolean | null;
     readonly count: number;
+    readonly resources?: WorkerInfoDto['resources'];
   },
   'frame'
 >;
@@ -423,6 +428,7 @@ export function WorkerFrame({ data }: NodeProps<FrameNode>) {
           <span aria-hidden className={`inline-block h-1.5 w-1.5 rounded-full ${data.online ? 'bg-sage' : 'bg-tertiary'}`} />
           {state}
         </span>
+        <ResourceBadge resources={data.resources} />
         <span className="ml-auto shrink-0 text-meta text-tertiary">{data.count} 个会话</span>
       </div>
     </div>
