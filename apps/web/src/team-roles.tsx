@@ -12,7 +12,7 @@ const KIND_LABEL: Record<string, string> = {
   worker: '机器', project: '项目', task: '任务', session: '会话', provider: '模型提供商', token: '令牌', audit: '审计', team: '团队', asset: '资产（技能 / MCP）', hub: 'hub（只给集群管理员）'
 };
 const PERM_LABEL: Record<string, string> = {
-  read: '查看', use: '使用', enroll: '接入', manage: '管理', policy: '策略', delete: '删除', 'runtime.install': '装运行时', create: '新建', update: '修改',
+  read: '查看', use: '使用', enroll: '接入', manage: '管理', policy: '策略', delete: '删除', 'runtime.install': '装运行时', 'runtime.component.install': '装组件', create: '新建', update: '修改',
   share: '分享', restore: '恢复', purge: '彻底删除', prompt: '发消息', interrupt: '打断', fork: '分叉', continue: '换机继续', service: '服务令牌',
   invite: '邀请', roles: '定义角色', grants: '单独授权', settings: '设置', users: '用户', assets: '资产', providers: '全站提供商', visit: '临时进入', submit: '提交', review: '审核', assign: '分配', retire: '下架', 'secret.use': '用密钥', publish_global: '发布到全站'
 };

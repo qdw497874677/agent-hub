@@ -5,6 +5,7 @@ import { Users } from './users.tsx';
 import { Workers } from './workers.tsx';
 import { Settings } from './settings.tsx';
 import { Audit } from './audit.tsx';
+import { Components } from './components.tsx';
 import { Assets, useUpgradableCount } from './assets.tsx';
 
 /**
@@ -16,6 +17,7 @@ const TABS: readonly { readonly id: AdminTab; readonly label: string }[] = [
   { id: 'users', label: '用户' },
   { id: 'workers', label: '机器' },
   { id: 'assets', label: '资产' },
+  { id: 'components', label: '组件' },
   { id: 'settings', label: '设置' },
   { id: 'audit', label: '审计' }
 ];
@@ -76,6 +78,7 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
           {tab === 'users' && <Users />}
           {tab === 'workers' && <Workers />}
           {tab === 'assets' && <Assets />}
+          {tab === 'components' && <Components />}
           {tab === 'settings' && <Settings />}
           {tab === 'audit' && <Audit />}
         </div>

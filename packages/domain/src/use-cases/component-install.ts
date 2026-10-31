@@ -48,9 +48,10 @@ async function clusterAdmin(_deps: ComponentDeps, actor: Principal | null): Prom
 }
 
 export async function listComponentCatalog(deps: ComponentDeps, actor: Principal | null): Promise<Result<CatalogComponent[], DomainError>> {
-  const admin = await clusterAdmin(deps, actor);
-  if (!admin.ok) return admin;
-  return ok(await deps.catalog.list());
+  if (!actor) return err(forbidden('请先登录'));
+  const all = await deps.catalog.list();
+  // 集群管理员看全部（含待审、已拒）；其他人只看已批准的——装组件时要从里面选
+  return ok(can(actor, 'asset.publish_global') ? all : all.filter((item) => item.status === 'approved'));
 }
 
 /** 提交一个第三方组件版本进目录：hub 查 registry 钉死制品，状态 pending，等 cluster_admin 审。 */

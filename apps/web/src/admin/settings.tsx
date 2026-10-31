@@ -62,6 +62,13 @@ export function Settings() {
               disabled={save.isPending}
               onChange={(membersCanAddMachines) => save.mutate({ membersCanAddMachines })}
             />
+            <Toggle
+              label="禁止安装脚本"
+              hint="打开后所有组件都用 --ignore-scripts 安装（ADR 0021 §8 的总开关）。依赖安装脚本才能用的组件可能装上了却跑不起来。"
+              checked={data.disableInstallScripts === true}
+              disabled={save.isPending}
+              onChange={(disableInstallScripts) => save.mutate({ disableInstallScripts })}
+            />
           </>
         ) : (
           <Empty text="载入中…" />
