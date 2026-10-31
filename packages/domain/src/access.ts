@@ -15,7 +15,7 @@ import type { Principal } from './account.ts';
 /** 权限目录：每一项属于一种资源类型。自定义角色只能从这里挑（且不能挑 NEVER_GRANTABLE 和 hub 级的）。 */
 export const PERMISSION_CATALOG = {
   worker: ['worker.read', 'worker.use', 'worker.enroll', 'worker.manage', 'worker.policy', 'worker.delete', 'runtime.install'],
-  project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn'],
+  project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post'],
   task: ['task.read', 'task.create', 'task.update', 'task.delete'],
   session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue'],
   provider: ['provider.read', 'provider.use', 'provider.manage'],
@@ -86,6 +86,9 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
     // agent 间通信（ADR 0018）：在自己的 / 被共享的项目里互发消息、提问；派生新会话（agent.spawn）要单独授权
     'agent.message.send': 'own',
     'agent.ask': 'own',
+    // 群聊（ADR 0018 · 群组）：在自己的 / 被共享的项目里建群、在群里说话
+    'group.manage': 'own',
+    'group.post': 'own',
     'task.read': 'own',
     'task.create': 'own',
     'task.update': 'own',

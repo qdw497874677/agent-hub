@@ -3,6 +3,8 @@ import { err, ok, type Result } from '../result.ts';
 import type { ToolContext, ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import type { MessageBus } from '../use-cases/messaging.ts';
 import type { AgentMessage } from '../messaging.ts';
+import type { GroupChat } from '../use-cases/groups.ts';
+import { HOST_MAX_ASSIGNEES } from '../groups.ts';
 
 /** agent 间通信工具（ADR 0018 · P2P）。发送方永远是授权绑定的那条会话，参数里没有「我是谁」。 */
 export const MESSAGE_TOOLS: readonly ToolDescriptor[] = [
@@ -74,6 +76,23 @@ export const MESSAGE_TOOLS: readonly ToolDescriptor[] = [
     scope: 'agent:message',
     description: 'List recent agent messages to and from this session, newest first.',
     inputSchema: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 50, default: 20 } }, additionalProperties: false }
+  },
+  {
+    name: 'group.dispatch',
+    version: 1,
+    scope: 'agent:message',
+    perMinute: 20,
+    description: `Only for a group-chat host: decide who answers the group message you were just given. Pass up to ${HOST_MAX_ASSIGNEES} member role names in assignees (never yourself), or decline: true with an optional short reply.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        assignees: { type: 'array', items: { type: 'string' }, maxItems: HOST_MAX_ASSIGNEES },
+        note: { type: 'string', maxLength: 500 },
+        decline: { type: 'boolean' },
+        reply: { type: 'string', maxLength: 4000 }
+      },
+      additionalProperties: false
+    }
   }
 ];
 
@@ -99,7 +118,7 @@ export const messageView = (m: AgentMessage) => ({
   createdAt: m.createdAt
 });
 
-export function createMessageToolProvider(bus: MessageBus): ToolProvider {
+export function createMessageToolProvider(bus: MessageBus, groups?: GroupChat): ToolProvider {
   return {
     id: 'agent-messaging',
     tools: () => MESSAGE_TOOLS,
@@ -131,6 +150,9 @@ export function createMessageToolProvider(bus: MessageBus): ToolProvider {
           const limit = typeof args.limit === 'number' && Number.isInteger(args.limit) ? Math.min(Math.max(args.limit, 1), 50) : 20;
           return ok((await bus.inbox(me, limit)).map(messageView));
         }
+        case 'group.dispatch':
+          if (!groups) return err(invalid('群聊没有启用'));
+          return groups.dispatch(me, args);
         default:
           return err(invalid(`没有这个工具：${name}`));
       }

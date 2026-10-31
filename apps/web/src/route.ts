@@ -18,6 +18,7 @@ export type Route =
   | { readonly page: 'assets'; readonly tab: MarketTab; readonly reviewId: string | null }
   | { readonly page: 'admin'; readonly tab: AdminTab }
   | { readonly page: 'memory'; readonly scope: string | null }
+  | { readonly page: 'messages'; readonly projectId: string | null; readonly groupId: string | null }
   | { readonly page: 'project'; readonly projectId: string; readonly view: View; readonly sessionId: string | null };
 
 const VIEWS: readonly View[] = ['canvas', 'list', 'focus'];
@@ -27,6 +28,7 @@ export function parseRoute(hash: string): Route | null {
   if (parts.length === 0) return null;
   if (parts[0] === 'admin') return { page: 'admin', tab: ADMIN_TABS.find((tab) => tab === parts[1]) ?? 'overview' };
   if (parts[0] === 'memory') return { page: 'memory', scope: parts[1] ?? null };
+  if (parts[0] === 'messages') return { page: 'messages', projectId: parts[1] ?? null, groupId: parts[1] ? (parts[2] ?? null) : null };
   if (parts[0] === 'assets') {
     if (parts[1] === 'review' && parts[2]) return { page: 'assets', tab: 'pending', reviewId: parts[2] };
     return { page: 'assets', tab: MARKET_TABS.find((tab) => tab === parts[1]) ?? 'catalog', reviewId: null };
@@ -42,6 +44,10 @@ export function formatRoute(route: Route): string {
   if (route.page === 'home') return '#/home';
   if (route.page === 'admin') return `#/admin/${route.tab}`;
   if (route.page === 'memory') return route.scope ? `#/memory/${encodeURIComponent(route.scope)}` : '#/memory';
+  if (route.page === 'messages') {
+    if (!route.projectId) return '#/messages';
+    return `#/messages/${encodeURIComponent(route.projectId)}${route.groupId ? `/${encodeURIComponent(route.groupId)}` : ''}`;
+  }
   if (route.page === 'assets') return route.reviewId ? `#/assets/review/${encodeURIComponent(route.reviewId)}` : `#/assets/${route.tab}`;
   const tail = route.sessionId ? `/${encodeURIComponent(route.sessionId)}` : '';
   return `#/p/${encodeURIComponent(route.projectId)}/${route.view}${tail}`;
