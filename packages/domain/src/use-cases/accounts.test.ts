@@ -18,7 +18,7 @@ test('第一个注册的人是 hub 管理员兼自己团队的 Owner；邮箱规
   const first = loggedIn(await registerUser(deps, { email: '  Alice@Example.com ', password: PASSWORD }));
   assert.equal(first.user.email, 'alice@example.com');
   assert.equal(first.user.role, 'owner');
-  assert.equal(first.user.hubAdmin, true);
+  assert.equal(first.user.clusterAdmin, true);
   assert.ok(first.user.teamId);
   assert.equal(first.user.displayName, 'alice');
   assert.notEqual(first.user.passwordHash, PASSWORD);
@@ -45,7 +45,7 @@ test('开放注册：自助注册的人得到自己的空团队并当 Owner；�
   assert.deepEqual(again.value, fresh.value);
   const bob = await deps.users.byEmail('bob@example.com');
   assert.equal(bob?.role, 'owner');
-  assert.equal(bob?.hubAdmin, false);
+  assert.equal(bob?.clusterAdmin, false);
   assert.notEqual(bob?.teamId, admin.user.teamId);
 });
 
@@ -131,6 +131,6 @@ test('并发注册只产生一个 hub 管理员', async () => {
   );
   // 只有一个抢到 hub 管理员；其余的因注册未开放被拒
   assert.equal(made.filter((result) => result.ok).length, 1);
-  const admins = (await deps.users.list()).filter((user) => user.hubAdmin);
+  const admins = (await deps.users.list()).filter((user) => user.clusterAdmin);
   assert.equal(admins.length, 1);
 });

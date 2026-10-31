@@ -44,8 +44,8 @@ export function ProvidersDialog({ onClose, me }: { onClose: () => void; me: Acco
       {editing ? (
         <ProviderForm
           existing={editing === 'new' ? null : editing}
-          canHub={me?.hubAdmin === true}
-          canTeam={me?.role === 'owner' || me?.hubAdmin === true}
+          canHub={me?.clusterAdmin === true}
+          canTeam={me?.role === 'owner' || me?.clusterAdmin === true}
           onDone={async () => {
             setEditing(null);
             await refresh();

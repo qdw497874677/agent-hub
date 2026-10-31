@@ -209,7 +209,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   });
   on(routes.createTask, async (c) => {
     const actor = principal(c);
-    if (!can(actor, 'task.write')) return fail(c, forbidden('令牌没有 projects:write'));
+    if (!can(actor, 'task.create')) return fail(c, forbidden('令牌没有 projects:write'));
     const result = await createTaskUseCase(deps, { ...valid<z.output<typeof createTaskRequest>>(c, 'json'), ownerId: actor.user.id });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });

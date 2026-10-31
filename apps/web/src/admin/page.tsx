@@ -22,8 +22,8 @@ const TABS: readonly { readonly id: AdminTab; readonly label: string }[] = [
 
 export function AdminPage({ tab }: { tab: AdminTab }) {
   const account = useAccount();
-  const upgradable = useUpgradableCount(account?.hubAdmin === true);
-  if (account?.hubAdmin !== true) {
+  const upgradable = useUpgradableCount(account?.clusterAdmin === true);
+  if (account?.clusterAdmin !== true) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
         <p className="text-head text-primary">只有 hub 管理员能进运营后台</p>

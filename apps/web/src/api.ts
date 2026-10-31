@@ -243,13 +243,57 @@ export function auditQuery(filter: AuditFilterInput): string {
 }
 
 /** 团队（ADR 0011）：成员都能看，团队 owner / hub 管理员能邀请、改角色、删人。 */
+/** 内置四个角色 + 团队自定义（custom:<id>，ADR 0017）。 */
+export type RoleKey = 'owner' | 'admin' | 'member' | 'viewer' | `custom:${string}`;
+export type PermissionScope = 'own' | 'team';
+export interface RoleViewDto {
+  readonly key: RoleKey;
+  readonly id?: string;
+  readonly name: string;
+  readonly builtin: boolean;
+  readonly permissions: Record<string, PermissionScope>;
+  readonly members: number;
+}
+export interface AccessCatalogDto {
+  readonly catalog: Record<string, readonly string[]>;
+  readonly all: readonly string[];
+  readonly grantable: readonly string[];
+  readonly neverGrantable: readonly string[];
+}
+export interface AccessGrantDto {
+  readonly id: string;
+  readonly teamId: string;
+  readonly userId: string;
+  readonly permission: string;
+  readonly resourceKind: string;
+  readonly resourceId: string;
+  readonly reason: string;
+  readonly createdAt: number;
+  readonly expiresAt: number | null;
+  readonly revokedAt: number | null;
+}
+export const accessApi = {
+  catalog: () => call<AccessCatalogDto>('/api/access/catalog'),
+  roles: () => call<RoleViewDto[]>('/api/team/roles'),
+  createRole: (name: string, permissions: Record<string, PermissionScope>) => post<{ id: string }>('/api/team/roles', { name, permissions }),
+  updateRole: (id: string, name: string, permissions: Record<string, PermissionScope>) =>
+    call<{ id: string }>(`/api/team/roles/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ name, permissions }) }),
+  deleteRole: (id: string) => call<{ ok: true }>(`/api/team/roles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  grants: () => call<AccessGrantDto[]>('/api/team/grants'),
+  revokeGrant: (id: string) => call<AccessGrantDto>(`/api/team/grants/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  visits: () => call<AccessGrantDto[]>('/api/access/visits'),
+  teams: () => call<{ id: string; name: string }[]>('/api/admin/teams'),
+  startVisit: (teamId: string, reason: string, durationMs: number) => post<AccessGrantDto>('/api/admin/visits', { teamId, reason, durationMs }),
+  endVisit: (id: string) => call<{ ok: true }>(`/api/access/visits/${encodeURIComponent(id)}`, { method: 'DELETE' })
+};
+
 export const teamApi = {
   team: () => call<TeamDto>('/api/team'),
   audit: (filter: AuditFilterInput = {}) => call<AuditEntryDto[]>(`/api/team/audit${auditQuery(filter)}`),
-  invite: (email: string, role: 'owner' | 'member', allowOverLimit = false) =>
+  invite: (email: string, role: RoleKey, allowOverLimit = false) =>
     post<InviteDto>('/api/team/invites', { email, role, allowOverLimit }),
   revokeInvite: (id: string) => call<InviteDto>(`/api/team/invites/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  setRole: (id: string, role: 'owner' | 'member') =>
+  setRole: (id: string, role: RoleKey) =>
     call<{ ok: true }>(`/api/team/members/${encodeURIComponent(id)}/role`, { method: 'PUT', body: JSON.stringify({ role }) }),
   remove: (id: string) =>
     call<{ transferredProjects: number }>(`/api/team/members/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -260,7 +304,9 @@ export const adminApi = {
   users: (q: string) => call<AdminUserDto[]>(`/api/admin/users?q=${encodeURIComponent(q)}`),
   disable: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/disable`, {}),
   enable: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/enable`, {}),
-  setRole: (id: string, role: 'owner' | 'member') => post<AdminUserDto>(`/api/admin/users/${id}/role`, { role }),
+  setRole: (id: string, role: RoleKey) => post<AdminUserDto>(`/api/admin/users/${id}/role`, { role }),
+  setClusterAdmin: (id: string, clusterAdmin: boolean) =>
+    call<{ id: string; clusterAdmin: boolean }>(`/api/admin/users/${id}/cluster-admin`, { method: 'PUT', body: JSON.stringify({ clusterAdmin }) }),
   markVerified: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/verify`, {}),
   revokeLogins: (id: string) => post<AdminUserDto>(`/api/admin/users/${id}/revoke-logins`, {}),
   workers: () => call<AdminWorkersDto>('/api/admin/workers'),

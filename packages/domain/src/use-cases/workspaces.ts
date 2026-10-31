@@ -1,10 +1,10 @@
+import type { Subject } from '../access.ts';
 import type { Location, Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
-import type { Principal } from '../account.ts';
 import { claimOf, createDirectory, gitOn, isEmptyDirectory, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
 import type { ProjectId } from '../ids.ts';
 import { asProjectId } from '../ids.ts';
@@ -101,7 +101,7 @@ export interface PrepareLongLivedCommand {
   readonly plan: LongLivedPlan;
   /** Server 本机的起点（没有本机 Worker 报 roots 时兜底）。 */
   readonly home: string;
-  readonly actor?: Principal | null;
+  readonly actor?: Subject | null;
 }
 
 export async function prepareLongLivedWorkspaceUseCase(

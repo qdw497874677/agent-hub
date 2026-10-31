@@ -1,3 +1,4 @@
+import { principalOfSubject, type Subject } from '../access.ts';
 import { createProject, normalizeDescription, parseRepo } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
@@ -10,7 +11,6 @@ import type { DirectoryEntry } from '../ports/workspace-fs.ts';
 import { newWorkspace, type Workspace } from '../workspace.ts';
 import { claimOf, directoryOwner, listOn, normalize, parentOf, remoteExists, resolveMachine, rootsOf } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
-import type { Principal } from '../account.ts';
 
 export { createDirectory, directoryOwner } from './machine-dirs.ts';
 import { managedDirectory, projectSlug, sortDirectoryEntries } from '../directories.ts';
@@ -27,7 +27,7 @@ export interface CreateProjectCommand {
   /** 可选的项目说明（markdown）。 */
   readonly description?: string | null;
   /** 谁建的：项目归他的团队、算他建的（ADR 0011）。 */
-  readonly actor?: Principal | null;
+  readonly actor?: Subject | null;
 }
 
 export async function createProjectUseCase(
@@ -54,8 +54,8 @@ export async function createProjectUseCase(
     now: deps.now(),
     repo: repo.value,
     description: description.value,
-    teamId: command.actor?.user.teamId ?? null,
-    createdBy: command.actor?.user.id ?? null
+    teamId: principalOfSubject(command.actor)?.user.teamId ?? null,
+    createdBy: principalOfSubject(command.actor)?.user.id ?? null
   });
   if (!created.ok) return created;
   let first: Workspace | null = null;

@@ -13,6 +13,8 @@ import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
 import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+import { createSqliteAccess } from './access.ts';
+import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
@@ -43,6 +45,8 @@ export interface SqliteStore extends RepositorySet {
   /** 资产审核：提交、评论、安装申请、审核设置（ADR 0016）。 */
   readonly assetReview: AssetReviewRepository;
   readonly notifications: NotificationRepository;
+  /** ADR 0017：显式授权 + 团队自定义角色。 */
+  readonly access: AccessRepos;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -89,6 +93,9 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
+  // ADR 0017：会话创建者（说话 / 中断只给他）。老会话从审计里的 session.start / session.fork 回填。
+  const addedCreatedBy = !columns.some((column) => column.name === 'created_by');
+  if (addedCreatedBy) db.exec('ALTER TABLE sessions ADD COLUMN created_by TEXT');
   db.exec(WORKSPACE_SCHEMA);
   migrateTasksV2(db);
   migrateWorkspaces(db);
@@ -123,8 +130,8 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, created_by, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
       'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
       'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
@@ -291,6 +298,7 @@ export function openSqliteStore(file: string): SqliteStore {
         JSON.stringify(session.optionSpec),
         session.workerId,
         session.workspaceId,
+        session.createdBy ?? null,
         session.createdAt,
         session.updatedAt
       );
@@ -383,6 +391,7 @@ export function openSqliteStore(file: string): SqliteStore {
   };
 
   const accountRepos = createAccountRepositories(db);
+  backfillSessionCreators(db);
   backfillProjectTeams(db);
   return {
     projects,
@@ -400,6 +409,7 @@ export function openSqliteStore(file: string): SqliteStore {
     layout,
     search: createSearch(db),
     ...accountRepos,
+    access: createSqliteAccess(db),
     db,
     close(): void {
       db.close();
@@ -415,4 +425,12 @@ export function backfillProjectTeams(db: DatabaseSync): void {
   if (!admin) return;
   db.prepare('UPDATE projects SET team_id = ? WHERE team_id IS NULL').run(admin.team_id);
   db.prepare('UPDATE projects SET created_by = ? WHERE created_by IS NULL').run(admin.id);
+}
+
+/** 老会话的 created_by：取审计里最早的 session.start / session.fork 操作人。幂等，每次启动只补还空着的。 */
+function backfillSessionCreators(db: DatabaseSync): void {
+  db.exec(
+    "UPDATE sessions SET created_by = (SELECT a.actor_id FROM audit_log a WHERE a.target = sessions.id " +
+      "AND a.action IN ('session.start', 'session.fork') ORDER BY a.at LIMIT 1) WHERE created_by IS NULL"
+  );
 }

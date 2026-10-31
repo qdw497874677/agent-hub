@@ -8,7 +8,7 @@ import { asAgentId } from '../ids.ts';
 import type { AuditEntry, Principal } from '../account.ts';
 import { deleteProjectUseCase, listTrashUseCase, purgeProjectUseCase, restoreProjectUseCase } from './delete-project.ts';
 
-const actor = { user: { id: 'u1', email: 'm@b.co', role: 'member', disabledAt: null, deletedAt: null, teamId: 't1', hubAdmin: false }, loginId: 'l1' } as unknown as Principal;
+const actor = { user: { id: 'u1', email: 'm@b.co', role: 'member', disabledAt: null, deletedAt: null, teamId: 't1', clusterAdmin: false }, loginId: 'l1' } as unknown as Principal;
 
 async function world(status: 'running' | 'stopped' = 'stopped', lastSeq = 0) {
   const { deps } = inMemoryDeps();

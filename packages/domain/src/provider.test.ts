@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { canManageProvider, canUseProvider, effectiveRouting, parseHubModel, validateProviderInput, type ProviderActor } from './provider.ts';
 import { providerUsableIn } from './use-cases/providers.ts';
 
-const actor = (teams: [string, 'owner' | 'member'][] = [], hubAdmin = false): ProviderActor => ({ userId: 'u1', hubAdmin, teams: new Map(teams) });
+/** 测试用主体：只在第一个团队里（一个人只属于一个团队）。 */
+const actor = (teams: [string, 'owner' | 'member'][] = [], clusterAdmin = false): ProviderActor =>
+  ({
+    user: { id: 'u1', email: 'u1@b.co', displayName: 'u1', role: teams[0]?.[1] ?? 'member', disabledAt: null, deletedAt: null, teamId: teams[0]?.[0] ?? null, clusterAdmin },
+    login: {}
+  }) as unknown as ProviderActor;
 const base = { scope: 'team' as const, ownerId: 't1', enabled: true, hasKey: true };
 
 test('parseHubModel', () => {
@@ -26,7 +31,8 @@ test('谁能管 / 谁能用', () => {
   assert.equal(canManageProvider(actor(), { scope: 'hub', ownerId: null }), false);
   assert.equal(canManageProvider(actor([], true), { scope: 'hub', ownerId: null }), true);
   assert.equal(canUseProvider(actor([['t1', 'member']]), base, 't1').ok, true);
-  assert.equal(canUseProvider(actor([['t1', 'member'], ['t2', 'member']]), base, 't2').ok, false);
+  assert.equal(canUseProvider(actor([['t2', 'member']]), base, 't2').ok, false);
+  assert.equal(canUseProvider(null, base, 't1').ok, false, '没认证不能用');
   assert.equal(canUseProvider(actor([['t1', 'member']]), { ...base, enabled: false }, 't1').ok, false);
   assert.equal(canUseProvider(actor([['t1', 'member']]), { ...base, hasKey: false }, 't1').ok, false);
   assert.equal(canUseProvider(actor([['t1', 'member']]), { scope: 'personal', ownerId: 'u1', enabled: true, hasKey: true }, 't9').ok, false);

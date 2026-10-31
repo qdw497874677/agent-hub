@@ -45,6 +45,8 @@ export interface Session {
   readonly workerId: string | null;
   /** 在哪个工作空间里干活（workspaces.md）。null = 迁移前的老会话，按项目目录推算。 */
   readonly workspaceId: WorkspaceId | null;
+  /** 谁开的这条会话（ADR 0017：说话 / 中断 / 换机继续默认只有他）。null = 老会话或系统开的。 */
+  readonly createdBy?: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -57,6 +59,7 @@ export interface DeriveSessionInput {
   readonly id?: SessionId;
   readonly workerId?: string | null;
   readonly workspaceId?: WorkspaceId | null;
+  readonly createdBy?: string | null;
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
@@ -79,6 +82,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     optionSpec: [],
     workerId: input.workerId ?? null,
     workspaceId: input.workspaceId ?? null,
+    createdBy: input.createdBy ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -93,6 +97,7 @@ export interface ForkSessionInput {
   readonly id?: SessionId;
   readonly workerId?: string | null;
   readonly workspaceId?: WorkspaceId | null;
+  readonly createdBy?: string | null;
 }
 
 export function forkSession(input: ForkSessionInput): Result<Session, DomainError> {
@@ -116,6 +121,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     optionSpec: [],
     workerId: input.workerId ?? null,
     workspaceId: input.workspaceId === undefined ? input.source.workspaceId : input.workspaceId,
+    createdBy: input.createdBy ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });

@@ -11,7 +11,7 @@ const enc = (text: string) => new TextEncoder().encode(text);
 
 const admin: User = {
   id: 'u-admin' as UserId, email: 'boss@x.co', displayName: 'boss', role: 'owner', passwordHash: null, emailVerifiedAt: 1,
-  disabledAt: null, createdAt: 1, teamId: 't0' as TeamId, hubAdmin: true, deletedAt: null
+  disabledAt: null, createdAt: 1, teamId: 't0' as TeamId, clusterAdmin: true, deletedAt: null
 };
 
 test('审核仓库：提交 / 评论 / 安装申请 / 通知往返；审核人存在通用 access_grants 表里', async () => {

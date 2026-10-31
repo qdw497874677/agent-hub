@@ -174,7 +174,7 @@ test('账号：用户按邮箱找回、登录态按哈希找回、停用的人�
   const store = openSqliteStore(':memory:');
   const owner = {
     id: asUserId('u1'), email: 'a@b.co', displayName: 'a', role: 'owner' as const,
-    passwordHash: 'scrypt$x', emailVerifiedAt: null, disabledAt: null, createdAt: 1, teamId: null, hubAdmin: false, deletedAt: null
+    passwordHash: 'scrypt$x', emailVerifiedAt: null, disabledAt: null, createdAt: 1, teamId: null, clusterAdmin: false, deletedAt: null
   };
   await store.users.save(owner);
   await store.users.save({ ...owner, id: asUserId('u2'), email: 'c@d.co', createdAt: 2 });
@@ -198,7 +198,7 @@ test('运营后台：登录活跃度、保留当前登录的踢下线、设置�
   const store = openSqliteStore(':memory:');
   const user = {
     id: asUserId('u1'), email: 'a@b.co', displayName: 'a', role: 'owner' as const,
-    passwordHash: null, emailVerifiedAt: null, disabledAt: null, createdAt: 1, teamId: null, hubAdmin: false, deletedAt: null
+    passwordHash: null, emailVerifiedAt: null, disabledAt: null, createdAt: 1, teamId: null, clusterAdmin: false, deletedAt: null
   };
   await store.users.save(user);
   const login = (id: string, createdAt: number, expiresAt: number) => ({
@@ -267,7 +267,7 @@ test('团队迁移（ADR 0011）：老库的人和项目都并进最早那位主
   const dir = mkdtempSync(join(tmpdir(), 'ahub-teams-'));
   const file = join(dir, 'hub.db');
   const first = openSqliteStore(file);
-  const base = { passwordHash: 'x', emailVerifiedAt: 1, disabledAt: null, teamId: null, hubAdmin: false, deletedAt: null };
+  const base = { passwordHash: 'x', emailVerifiedAt: 1, disabledAt: null, teamId: null, clusterAdmin: false, deletedAt: null };
   await first.users.save({ ...base, id: asUserId('m1'), email: 'm@b.co', displayName: 'm', role: 'member', createdAt: 1 });
   await first.users.save({ ...base, id: asUserId('d1'), email: 'd@b.co', displayName: 'David', role: 'owner', createdAt: 2 });
   const project = createProject({ name: 'old', now: 1 });
@@ -283,11 +283,11 @@ test('团队迁移（ADR 0011）：老库的人和项目都并进最早那位主
     const store = openSqliteStore(file);
     const david = await store.users.byEmail('d@b.co');
     const member = await store.users.byEmail('m@b.co');
-    assert.equal(david?.hubAdmin, true);
-    assert.equal(member?.hubAdmin, false);
+    assert.equal(david?.clusterAdmin, true);
+    assert.equal(member?.clusterAdmin, false);
     assert.equal(david?.teamId, 'team-d1');
     assert.equal(member?.teamId, 'team-d1');
-    assert.equal((await store.users.hubAdmin())?.id, 'd1');
+    assert.equal((await store.users.firstClusterAdmin())?.id, 'd1');
     assert.deepEqual((await store.teams.list()).map((team) => [team.id, team.ownerId]), [['team-d1', 'd1']]);
     const migrated = await store.projects.byId(project.value.id);
     assert.equal(migrated?.teamId, 'team-d1');

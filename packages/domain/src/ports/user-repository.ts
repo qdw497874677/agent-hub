@@ -13,6 +13,6 @@ export interface UserRepository {
    */
   claimFirstOwner(user: User): Promise<boolean>;
   /** hub 管理员（最早的那位，没删的）；还没有就 null。 */
-  hubAdmin(): Promise<User | null>;
+  firstClusterAdmin(): Promise<User | null>;
   list(): Promise<User[]>;
 }

@@ -1,3 +1,4 @@
+import { principalOfSubject, type Subject } from '../access.ts';
 import type { Session } from '../session.ts';
 import { forkSession } from '../session.ts';
 import type { SessionEvent } from '../event.ts';
@@ -9,7 +10,6 @@ import { isUsable, type Workspace } from '../workspace.ts';
 import type { SaveWipOutcome } from '../ports/workspace-git.ts';
 import { gitFor, resolveMachine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
-import type { Principal } from '../account.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { carryModelTo, placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
@@ -34,7 +34,7 @@ export interface ContinueElsewhereCommand {
   readonly saveWip?: boolean;
   /** 本机的 home 目录：新建临时目录时用。 */
   readonly home: string;
-  readonly actor?: Principal | null;
+  readonly actor?: Subject | null;
 }
 
 /** 摘要的字数上限：够交代来龙去脉，又不至于一开口就吃掉半个上下文窗口。 */
@@ -87,6 +87,7 @@ export async function continueElsewhereUseCase(
     const branch = wip?.pushed ? wip.branch : null;
     const sameMachine = from !== null && from.workerId === machine.value.workerId;
     const made = await prepareTemporaryWorkspaceUseCase(deps, {
+      actor: command.actor,
       projectId: project.id,
       taskId: task.id,
       workerId: targetWorker,
@@ -105,7 +106,8 @@ export async function continueElsewhereUseCase(
     model: carryModelTo(workers, placed.value, source.agentId, source.model),
     now: deps.now(),
     workerId: placed.value,
-    workspaceId: target.id
+    workspaceId: target.id,
+    createdBy: principalOfSubject(command.actor)?.user.id ?? null
   });
   if (!created.ok) return created;
   const session = { ...created.value, workerId: placed.value };

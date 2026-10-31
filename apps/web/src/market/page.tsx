@@ -122,7 +122,7 @@ function AssetCard({ item, showStatus }: { item: MarketAssetDto; showStatus: boo
           </button>
         ) : null}
         {item.canMaintain ? <MaintainButtons item={item} /> : null}
-        {account?.hubAdmin && item.published && item.asset.scope !== 'personal' ? (
+        {account?.clusterAdmin && item.published && item.asset.scope !== 'personal' ? (
           <button className={DANGER} onClick={() => setRevoking(true)}>
             下架
           </button>
@@ -392,7 +392,7 @@ function SubmitDialog({ onClose }: { onClose: () => void }) {
         : kind === 'mcp'
           ? text.trim() !== ''
           : /^[a-z0-9]+(-[a-z0-9]+)*$/.test(name) && text.trim() !== '';
-  const scopes: AssetScopeDto[] = account?.hubAdmin ? ['personal', 'team', 'global'] : ['personal', 'team'];
+  const scopes: AssetScopeDto[] = account?.clusterAdmin ? ['personal', 'team', 'global'] : ['personal', 'team'];
   return (
     <DialogShell title="提交资产" onClose={onClose}>
       {done ? (

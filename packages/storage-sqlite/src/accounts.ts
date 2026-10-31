@@ -182,7 +182,7 @@ const toUser = (row: UserRow): User => ({
   disabledAt: row.disabled_at,
   createdAt: row.created_at,
   teamId: row.team_id === null ? null : asTeamId(row.team_id),
-  hubAdmin: row.hub_admin === 1,
+  clusterAdmin: row.hub_admin === 1,
   deletedAt: row.deleted_at ?? null
 });
 
@@ -346,7 +346,7 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
       'WHERE NOT EXISTS (SELECT 1 FROM users WHERE hub_admin = 1 AND disabled_at IS NULL AND deleted_at IS NULL)'
   );
   const allUsers = db.prepare('SELECT * FROM users ORDER BY created_at ASC');
-  const hubAdminRow = db.prepare('SELECT * FROM users WHERE hub_admin = 1 AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1');
+  const clusterAdminRow = db.prepare('SELECT * FROM users WHERE hub_admin = 1 AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1');
   const insertTeam = db.prepare('INSERT INTO teams(id, name, owner_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name = excluded.name, owner_id = excluded.owner_id');
   const teamById = db.prepare('SELECT * FROM teams WHERE id = ?');
   const allTeams = db.prepare('SELECT * FROM teams ORDER BY created_at ASC');
@@ -399,12 +399,12 @@ export function createAccountRepositories(db: DatabaseSync): AccountRepositories
         user.disabledAt,
         user.createdAt,
         user.teamId ?? null,
-        user.hubAdmin ? 1 : 0,
+        user.clusterAdmin ? 1 : 0,
         user.deletedAt ?? null
       );
     },
-    async hubAdmin() {
-      const row = hubAdminRow.get() as UserRow | undefined;
+    async firstClusterAdmin() {
+      const row = clusterAdminRow.get() as UserRow | undefined;
       return row ? toUser(row) : null;
     },
     async byId(id) {

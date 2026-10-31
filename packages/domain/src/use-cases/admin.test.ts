@@ -23,7 +23,7 @@ async function setup() {
   const admin = inMemoryAdmin();
   const sign = async (email: string): Promise<{ principal: Principal; token: string }> => {
     // 第一个人注册成 hub 管理员；之后的人按内置账号加进他的团队（开放注册默认关闭）
-    const first = (await admin.accounts.users.hubAdmin()) === null;
+    const first = (await admin.accounts.users.firstClusterAdmin()) === null;
     let token: string;
     if (first) {
       const made = await registerUser(admin.accounts, { email, password: PASSWORD });

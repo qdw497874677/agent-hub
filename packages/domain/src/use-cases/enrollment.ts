@@ -62,7 +62,7 @@ async function audit(
 }
 
 const allowedToAdd = (principal: Principal | null, settings: HubSettings): principal is Principal =>
-  principal !== null && principal.user.disabledAt === null && canAddMachines(principal.user, settings);
+  canAddMachines(principal, settings);
 
 /** 「添加机器」：签发一个 15 分钟、一次性的 Pairing Code。明文只在这次返回里出现。 */
 export async function issuePairingCode(

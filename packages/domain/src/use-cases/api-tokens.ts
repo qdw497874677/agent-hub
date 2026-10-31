@@ -73,7 +73,7 @@ export async function createApiToken(
 
   let userId: string = actor.user.id;
   if (input.kind === 'service') {
-    if (!can(actor, 'member.manage', { teamId })) return err(forbidden('只有团队主人能建服务账号'));
+    if (!can(actor, 'team.manage', { teamId })) return err(forbidden('只有团队主人能建服务账号'));
     const role: Role = 'member'; // 服务账号永远是成员，不能当主人
     const service: User = {
       id: newUserId(),
@@ -85,7 +85,7 @@ export async function createApiToken(
       disabledAt: null,
       createdAt: now,
       teamId: actor.user.teamId,
-      hubAdmin: false,
+      clusterAdmin: false,
       deletedAt: null
     };
     await deps.users.save(service);
@@ -118,7 +118,7 @@ export async function createApiToken(
 export async function listApiTokens(deps: ApiTokenDeps, actor: Principal): Promise<ApiTokenView[]> {
   const teamId = actor.user.teamId;
   if (!teamId) return [];
-  const manage = can(actor, 'member.manage', { teamId });
+  const manage = can(actor, 'team.manage', { teamId });
   const now = deps.now();
   return (await deps.apiTokens.listByTeam(teamId))
     .filter((token) => (token.kind === 'personal' ? token.userId === actor.user.id : manage))
@@ -129,7 +129,7 @@ export async function listApiTokens(deps: ApiTokenDeps, actor: Principal): Promi
 export async function revokeApiToken(deps: ApiTokenDeps, actor: Principal, id: string): Promise<Result<ApiTokenView, DomainError>> {
   if (actor.via) return err(forbidden('令牌不能吊销令牌'));
   const token = await deps.apiTokens.byId(id);
-  const mine = token && token.teamId === actor.user.teamId && (token.kind === 'personal' ? token.userId === actor.user.id : can(actor, 'member.manage', { teamId: token.teamId }));
+  const mine = token && token.teamId === actor.user.teamId && (token.kind === 'personal' ? token.userId === actor.user.id : can(actor, 'team.manage', { teamId: token.teamId }));
   if (!token || !mine) return err(notFound('令牌不存在'));
   const now = deps.now();
   if (token.revokedAt !== null) return ok(view(token, now));

@@ -1,10 +1,11 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { ProvidersDialog } from './providers-dialog.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { authApi, teamApi, RequestFailed, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
+import { accessApi, authApi, teamApi, RequestFailed, type RoleKey, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
 import { DialogShell } from './dialog-shell.tsx';
 import { AuditView } from './admin/audit.tsx';
 import { TokensDialog } from './tokens-dialog.tsx';
+import { TeamGrants, TeamRoles, roleName } from './team-roles.tsx';
 
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
@@ -509,7 +510,7 @@ export function AccountMenu() {
         <div className="absolute right-0 top-9 z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta">
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
-          <p className="mt-1 text-tertiary">{account.hubAdmin ? 'hub 管理员' : account.role === 'owner' ? '主人' : '成员'}</p>
+          <p className="mt-1 text-tertiary">{account.clusterAdmin ? '集群管理员' : roleLabel(account.role)}</p>
           <a
             href="#/assets/catalog"
             className="mt-3 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
@@ -517,7 +518,7 @@ export function AccountMenu() {
           >
             资产市场
           </a>
-          {account.hubAdmin ? (
+          {account.clusterAdmin ? (
             <a
               href="#/admin/overview"
               className="mt-3 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
@@ -589,8 +590,8 @@ export function AccountMenu() {
   );
 }
 
-const roleLabel = (role: 'owner' | 'member') => (role === 'owner' ? '主人' : '成员');
-const SMALL_BTN = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+const BUILTIN_LABEL: Record<string, string> = { owner: '主人', admin: '管理员', member: '成员', viewer: '只读' };
+const roleLabel = (role: string, custom?: ReadonlyMap<string, string>) => BUILTIN_LABEL[role] ?? custom?.get(role) ?? '自定义角色';
 const SMALL_DANGER = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-rust hover:text-rust disabled:opacity-40';
 
 /** 我的团队：人人能看成员；团队 owner（和 hub 管理员）能邀请、撤销邀请、改角色、删人。 */
@@ -600,7 +601,12 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
   const team = useQuery({ queryKey: ['team'], queryFn: teamApi.team });
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['team'] });
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState<'owner' | 'member'>('member');
+  const [role, setRole] = useState<RoleKey>('member');
+  const roles = useQuery({ queryKey: ['team', 'roles'], queryFn: accessApi.roles, enabled: team.data?.canManage === true });
+  const customNames = new Map((roles.data ?? []).filter((r) => !r.builtin).map((r) => [r.key as string, r.name]));
+  // admin 不能给出 owner / admin，也不能改 owner / admin（服务端同样拦）
+  const actorIsOwner = me?.role === 'owner' || me?.clusterAdmin === true;
+  const assignable = (roles.data ?? []).filter((r) => actorIsOwner || (r.key !== 'owner' && r.key !== 'admin'));
   const [overLimit, setOverLimit] = useState(false);
   const invite = useMutation({
     mutationFn: () => teamApi.invite(email.trim(), role, overLimit),
@@ -611,7 +617,7 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
     }
   });
   const act = useMutation({
-    mutationFn: async (input: { kind: 'revoke' | 'role' | 'remove'; id: string; role?: 'owner' | 'member' }) => {
+    mutationFn: async (input: { kind: 'revoke' | 'role' | 'remove'; id: string; role?: RoleKey }) => {
       if (input.kind === 'revoke') return teamApi.revokeInvite(input.id);
       if (input.kind === 'role') return teamApi.setRole(input.id, input.role!);
       return teamApi.remove(input.id);
@@ -642,19 +648,23 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
                     {member.id === me?.id && <span className="ml-2 text-[11px] text-tertiary">你</span>}
                   </p>
                   <p className="truncate text-[11px] text-tertiary">
-                    {member.email} · {member.teamOwner ? '团队主人' : roleLabel(member.role)}
+                    {member.email} · {member.teamOwner ? '团队主人' : roleLabel(member.role, customNames)}
                     {member.disabled ? ' · 已停用' : ''}
                   </p>
                 </div>
                 {data!.canManage && !member.teamOwner && member.id !== me?.id && (
                   <>
-                    <button
-                      className={SMALL_BTN}
-                      disabled={act.isPending}
-                      onClick={() => act.mutate({ kind: 'role', id: member.id, role: member.role === 'owner' ? 'member' : 'owner' })}
+                    <select
+                      aria-label={`${member.email} 的角色`}
+                      data-testid="member-role"
+                      className="max-w-[7.5rem] shrink-0 rounded-sm border border-hair bg-card px-1.5 py-1 text-meta text-primary disabled:opacity-40"
+                      disabled={act.isPending || (!actorIsOwner && (member.role === 'owner' || member.role === 'admin'))}
+                      value={member.role}
+                      onChange={(e) => act.mutate({ kind: 'role', id: member.id, role: e.target.value as RoleKey })}
                     >
-                      {member.role === 'owner' ? '降为成员' : '设为主人'}
-                    </button>
+                      {!assignable.some((r) => r.key === member.role) && <option value={member.role}>{roleLabel(member.role, customNames)}</option>}
+                      {assignable.map((r) => <option key={r.key} value={r.key}>{roleName(r)}</option>)}
+                    </select>
                     <button
                       className={SMALL_DANGER}
                       disabled={act.isPending}
@@ -710,9 +720,10 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                   />
-                  <select aria-label="角色" className="rounded-sm border border-hair bg-card px-2 text-meta text-primary" value={role} onChange={(e) => setRole(e.target.value as 'owner' | 'member')}>
-                    <option value="member">成员</option>
-                    <option value="owner">主人</option>
+                  <select aria-label="角色" className="rounded-sm border border-hair bg-card px-2 text-meta text-primary" value={role} onChange={(e) => setRole(e.target.value as RoleKey)}>
+                    {(assignable.length ? assignable.map((r) => ({ key: r.key, label: roleName(r) })) : [{ key: 'member' as RoleKey, label: '成员' }]).map((r) => (
+                      <option key={r.key} value={r.key}>{r.label}</option>
+                    ))}
                   </select>
                 </div>
                 {full && data!.isTeamOwner && (
@@ -730,7 +741,21 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
             </>
           )}
           {act.error && <p role="alert" className="mt-2 text-meta text-rust">{message(act.error)}</p>}
-          {data!.canManage && !me?.hubAdmin && (
+          <details className="mt-4" data-testid="team-roles">
+            <summary className="cursor-pointer text-meta text-secondary">角色与权限</summary>
+            <div className="mt-2">
+              <TeamRoles canEdit={data!.isTeamOwner || me?.role === 'owner'} />
+            </div>
+          </details>
+          {data!.canManage && (
+            <details className="mt-4">
+              <summary className="cursor-pointer text-meta text-secondary">单独授权</summary>
+              <div className="mt-2">
+                <TeamGrants names={new Map(data!.members.map((m) => [m.id, m.displayName]))} />
+              </div>
+            </details>
+          )}
+          {data!.canManage && !me?.clusterAdmin && (
             <details className="mt-4">
               <summary className="cursor-pointer text-meta text-secondary">团队安全审计</summary>
               <div className="mt-2 max-h-[40dvh] overflow-y-auto">
