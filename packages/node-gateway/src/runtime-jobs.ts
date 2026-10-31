@@ -1,14 +1,16 @@
 import { spawn } from 'node:child_process';
 import { basename, delimiter, dirname } from 'node:path';
-import type { HarnessInstaller, InstallRun, RuntimeAction, RuntimeJobState, RuntimeProvision } from '@agent-hub/domain';
+import type { ComponentAction, ComponentJobResult, ComponentJobSpec, HarnessInstaller, InstallRun, RuntimeAction, RuntimeJobState, RuntimeProvision } from '@agent-hub/domain';
+import { installComponent, uninstallComponent } from './components.ts';
 import type { RuntimeStore } from './runtime-store.ts';
 
 /** hub 下发的一个任务（帧已过 schema 校验：agentId / version 是固定形状）。 */
 export interface RuntimeJobCommand {
   readonly jobId: string;
   readonly agentId: string;
-  readonly action: RuntimeAction;
+  readonly action: RuntimeAction | ComponentAction;
   readonly version: string | null;
+  readonly component?: ComponentJobSpec;
 }
 
 export interface RuntimeJobReport {
@@ -17,6 +19,7 @@ export interface RuntimeJobReport {
   readonly message: string;
   readonly lines: string[];
   readonly version?: string | null;
+  readonly component?: ComponentJobResult;
 }
 
 export interface RuntimeManager {
@@ -37,6 +40,8 @@ export interface RuntimeManagerOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   /** 跑 `<shim> --version`；测试可换。返回输出，失败抛错。 */
   readonly version?: (file: string, env: Record<string, string>) => Promise<string>;
+  /** hub 管理的组件（ADR 0021 P2）：根目录与 npm-cli.js。不给 = 不接组件任务。 */
+  readonly components?: { readonly root: string; readonly npm: string | null; readonly isRoot?: boolean };
 }
 
 /**
@@ -56,7 +61,7 @@ export function installEnv(source: Readonly<Record<string, string | undefined>>,
 
 const MAX_LINE = 2000;
 
-function runCommand(
+export function runCommand(
   command: string,
   args: readonly string[],
   options: { cwd?: string; env: Record<string, string>; signal: AbortSignal; onLine: (line: string) => void }
@@ -129,6 +134,60 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
       return runCommand(file, ['--version'], { env, signal: controller.signal, onLine: () => undefined }).finally(() => clearTimeout(timer));
     });
 
+  /** 组件任务：和运行时任务共用 busy（一台机器同时只跑一个安装任务）。 */
+  async function runComponent(command: RuntimeJobCommand, report: (status: RuntimeJobReport) => void): Promise<void> {
+    const spec = command.component;
+    const components = options.components;
+    if (!spec || !components) return report({ jobId: command.jobId, state: 'refused', message: '这台 Worker 不支持安装组件', lines: [] });
+    busy = true;
+    const lines: string[] = [];
+    let flushTimer: NodeJS.Timeout | null = null;
+    const send = (state: RuntimeJobState, message: string, extra: Partial<RuntimeJobReport> = {}) => {
+      if (flushTimer) clearTimeout(flushTimer);
+      flushTimer = null;
+      report({ jobId: command.jobId, state, message, lines: lines.splice(0), ...extra });
+    };
+    const log = (line: string) => {
+      lines.push(line.slice(0, MAX_LINE));
+      if (lines.length >= 200) send('running', '正在安装组件');
+      else flushTimer ??= setTimeout(() => send('running', '正在安装组件'), 300);
+    };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+    try {
+      const env = installEnv(options.env ?? process.env);
+      const outcome =
+        command.action === 'uninstall_component'
+          ? uninstallComponent({ root: components.root }, spec)
+          : await installComponent(
+              {
+                root: components.root,
+                node: process.execPath,
+                npm: components.npm,
+                env,
+                log,
+                isRoot: components.isRoot ?? process.getuid?.() === 0,
+                run: async (file, args, runOptions) => {
+                  await runCommand(file, args, { cwd: runOptions.cwd, env: runOptions.env, signal: controller.signal, onLine: log });
+                }
+              },
+              spec
+            );
+      if (outcome.ok) await options.onChange?.();
+      log(outcome.message);
+      send(outcome.ok ? 'succeeded' : outcome.refused ? 'refused' : 'failed', outcome.message, {
+        ...(outcome.ok ? { version: command.action === 'install_component' ? spec.version : null } : {}),
+        component: outcome.result
+      });
+    } catch (error) {
+      send('failed', `安装出错：${(error instanceof Error ? error.message : String(error)).slice(0, 300)}`);
+    } finally {
+      clearTimeout(timer);
+      busy = false;
+    }
+  }
+
   return {
     provisions() {
       const ids = new Set([...options.machineProvided.keys(), ...byAgent.keys()]);
@@ -137,6 +196,7 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
     async run(command, report) {
       const refuse = (message: string) => report({ jobId: command.jobId, state: 'refused', message, lines: [] });
       if (busy) return refuse('这台机器上已经有一个安装任务在跑');
+      if (command.action === 'install_component' || command.action === 'uninstall_component') return runComponent(command, report);
       const installer = byAgent.get(command.agentId);
       if (!installer) return refuse('这个 agent 不支持在线安装');
       if (options.machineProvided.get(command.agentId)) return refuse('这台机器自己装了它，以机器上的为准');

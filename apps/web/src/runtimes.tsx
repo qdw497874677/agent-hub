@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type WorkerInfoDto } from './api.ts';
 import { localTime } from './local-time.ts';
 
@@ -120,7 +120,7 @@ function JobPanel({ job }: { job: Job }) {
       <button className="flex w-full min-w-0 items-center gap-2 px-2 py-1 text-left text-xs" onClick={() => setOpen((value) => !value)}>
         <span className={`shrink-0 ${tone}`} data-testid="runtime-job-state">
           {running ? '⏳ ' : ''}
-          {nameOf(job.agentId)} {job.action === 'install' ? '安装' : '卸载'} · {STATE_TEXT[job.state]}
+          {job.componentId ? `组件 ${job.componentId}` : nameOf(job.agentId)} {job.action === 'install' || job.action === 'install_component' ? '安装' : '卸载'} · {STATE_TEXT[job.state]}
         </span>
         <span className="min-w-0 flex-1 truncate text-tertiary" data-testid="runtime-job-message">
           {job.message}
@@ -182,10 +182,75 @@ export function InventorySection({ worker }: { worker: WorkerInfoDto }) {
               ⚠ 缺失：{item.componentId} {item.expected}（{nameOf(item.runtime)}），能力不可信，需要重新安装
             </p>
           ))}
+        {inventory.componentInstall ? <ComponentActions worker={worker} /> : null}
         <p className="text-tertiary" data-testid="inventory-drift">
           漂移：{problems.length === 0 ? '无' : `${problems.length} 项`}　上次清单：{localTime(inventory.collectedAt)}
         </p>
       </dd>
     </>
+  );
+}
+
+/**
+ * 组件安装入口（ADR 0021 §8，P2）：从已批准的目录里选一个装；hub 装的可以卸载，漂移 / 缺失的可以修复（重装钉住的版本）。
+ * 升级只对新会话生效：正在跑的会话继续用旧目录。没有权限的人服务端会拒，按钮上直接把原话亮出来。
+ */
+function ComponentActions({ worker }: { worker: WorkerInfoDto }) {
+  const queryClient = useQueryClient();
+  const catalog = useQuery({ queryKey: ['components'], queryFn: api.components, staleTime: 30_000 });
+  const [picked, setPicked] = useState('');
+  const job = useMutation({
+    mutationFn: (input: { componentId: string; action: 'install' | 'uninstall'; version?: string }) =>
+      api.componentJob(worker.workerId, input.componentId, { action: input.action, ...(input.version ? { version: input.version } : {}) }),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['workers'] })
+  });
+  const busy = worker.runtimeJob?.state === 'running' || job.isPending;
+  const inventory = worker.inventory!;
+  const hubManaged = inventory.components.filter((c) => c.managedBy !== 'external');
+  const broken = (worker.drift?.items ?? []).filter((item) => item.kind === 'missing' || item.kind === 'mismatch');
+  const approved = (catalog.data ?? []).filter((c) => c.status === 'approved');
+  const button = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-xs text-secondary hover:border-ink hover:text-ink disabled:opacity-50';
+  return (
+    <div className="mt-1.5 flex min-w-0 flex-col gap-1.5" data-testid="component-actions">
+      {broken.map((item) => (
+        <div key={`fix:${item.componentId}`} className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 break-all text-tertiary">{item.componentId} {item.expected}</span>
+          <button className={button} data-testid={`component-repair-${item.componentId}`} disabled={busy}
+            onClick={() => job.mutate({ componentId: item.componentId, action: 'install', version: item.expected })}>
+            修复
+          </button>
+        </div>
+      ))}
+      {hubManaged.map((component) => (
+        <div key={`rm:${component.id}`} className="flex flex-wrap items-center gap-2">
+          <span className="min-w-0 break-all font-mono text-tertiary">{component.id}</span>
+          <button className={button} data-testid={`component-uninstall-${component.id}`} disabled={busy}
+            onClick={() => window.confirm(`卸载 ${component.id}？正在跑的会话不受影响`) && job.mutate({ componentId: component.id, action: 'uninstall' })}>
+            卸载
+          </button>
+        </div>
+      ))}
+      {approved.length ? (
+        <div className="flex min-w-0 flex-col gap-1.5 sm:flex-row sm:items-center">
+          <select className="min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-xs" data-testid="component-pick" value={picked} onChange={(e) => setPicked(e.target.value)}>
+            <option value="">选一个已批准的组件…</option>
+            {approved.map((c) => (
+              <option key={`${c.id}@${c.version}`} value={`${c.id}@${c.version}`}>
+                {c.id} v{c.version}{Object.keys(c.scripts).length ? '（带安装脚本）' : ''}
+              </option>
+            ))}
+          </select>
+          <button className={button} data-testid="component-install" disabled={busy || !picked}
+            onClick={() => {
+              const at = picked.lastIndexOf('@');
+              job.mutate({ componentId: picked.slice(0, at), action: 'install', version: picked.slice(at + 1) }, { onSuccess: () => setPicked('') });
+            }}>
+            安装 / 升级
+          </button>
+          <span className="text-xs text-tertiary">升级只对新会话生效</span>
+        </div>
+      ) : null}
+      {job.isError ? <p role="alert" className="text-xs text-rust">{(job.error as Error).message}</p> : null}
+    </div>
   );
 }

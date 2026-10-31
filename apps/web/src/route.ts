@@ -7,8 +7,8 @@
  */
 export type View = 'canvas' | 'list' | 'focus';
 
-export type AdminTab = 'overview' | 'users' | 'workers' | 'assets' | 'settings' | 'audit';
-export const ADMIN_TABS: readonly AdminTab[] = ['overview', 'users', 'workers', 'assets', 'settings', 'audit'];
+export type AdminTab = 'overview' | 'users' | 'workers' | 'assets' | 'settings' | 'audit' | 'components';
+export const ADMIN_TABS: readonly AdminTab[] = ['overview', 'users', 'workers', 'assets', 'settings', 'audit', 'components'];
 
 export type MarketTab = 'catalog' | 'mine' | 'pending' | 'settings';
 export const MARKET_TABS: readonly MarketTab[] = ['catalog', 'mine', 'pending', 'settings'];

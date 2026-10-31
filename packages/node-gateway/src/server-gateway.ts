@@ -427,7 +427,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           message: frame.message || job.message,
           log,
           endedAt: terminal ? now() : null,
-          ...(frame.version !== undefined && frame.version !== null ? { version: frame.version } : {})
+          ...(frame.version !== undefined && frame.version !== null ? { version: frame.version } : {}),
+          ...(frame.component ? { result: frame.component } : {})
         };
         if (terminal) hooks.onRuntimeJob?.(entry.workerId, entry.runtimeJob);
         return;
@@ -672,7 +673,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const entry = online(workerId);
       if (!entry?.socket) return false;
       entry.socket.send(
-        JSON.stringify({ kind: 'runtime_job', jobId: job.jobId, agentId: job.agentId, action: job.action, version: job.version } satisfies ServerToWorker)
+        JSON.stringify({
+          kind: 'runtime_job',
+          jobId: job.jobId,
+          agentId: job.agentId,
+          action: job.action,
+          version: job.version,
+          ...(job.component ? { component: { ...job.component, provides: [...job.component.provides] } } : {})
+        } satisfies ServerToWorker)
       );
       entry.runtimeJob = job;
       return true;

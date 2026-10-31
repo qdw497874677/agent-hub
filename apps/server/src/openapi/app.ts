@@ -36,6 +36,7 @@ import {
   setTaskSummaryUseCase,
   sweepTemporaryWorkspacesUseCase,
   workerReader,
+  redactInventory,
   workspaceChangesUseCase
 } from '@agent-hub/domain';
 import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
@@ -156,7 +157,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!can(actor, 'worker.read')) return fail(c, forbidden('令牌没有 workers:read'));
     const readable = await workerReader(deps.access, actor);
     const workers = [];
-    for (const worker of await listWorkers(deps)) if (await readable(worker.workerId)) workers.push(worker);
+    // 开放 API 是集成面：不出套件清单、外部组件的包名 / 来源串（ADR 0021 §7），只留能力
+    for (const worker of await listWorkers(deps)) if (await readable(worker.workerId)) workers.push(redactInventory(worker));
     return c.json(workers);
   });
 

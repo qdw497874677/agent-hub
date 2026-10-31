@@ -9,6 +9,7 @@ import type { SettingsRepository } from '../ports/settings-repository.ts';
 import type { EnrollmentRepository } from '../ports/enrollment-repository.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { Session } from '../session.ts';
+import type { WorkerStatus } from '../worker.ts';
 import { asProjectId, asSessionId, asTaskId, asWorkspaceId } from '../ids.ts';
 import type { Deps } from './deps.ts';
 
@@ -167,4 +168,27 @@ export async function workerReader(policy: AccessPolicy | undefined, actor: Subj
   if (!policy) return async () => true;
   const ctx = await policy.context();
   return async (workerId) => can(actor, 'worker.read', await policy.worker(workerId), ctx);
+}
+
+/**
+ * 套件清单的可见性（ADR 0021 §7）：完整清单（含外部组件的包名、来源串）只给能管这台机器运行时的人。
+ * 其他人（包括所有 API 令牌——runtime.component.install 令牌拿不到）只看到可信 / 不可信的能力，看不到外部组件。
+ */
+export async function inventoryViewer(policy: AccessPolicy | undefined, actor: Subject | null): Promise<(worker: Pick<WorkerStatus, 'workerId' | 'origin'>) => Promise<boolean>> {
+  if (!policy) return async () => true;
+  const ctx = await policy.context();
+  return async (worker) => {
+    const resource = await policy.worker(worker.origin === 'local' ? null : worker.workerId);
+    return can(actor, 'runtime.install', resource, ctx) || can(actor, 'runtime.component.install', resource, ctx);
+  };
+}
+
+/** 去掉清单、外部组件和组件任务的制品细节；能力（可信 / 不可信）保留，调度提示要用。 */
+export function redactInventory(worker: WorkerStatus): WorkerStatus {
+  const { inventory: _inventory, drift, runtimeJob, ...rest } = worker;
+  return {
+    ...rest,
+    ...(runtimeJob ? { runtimeJob: { ...runtimeJob, log: runtimeJob.component ? '' : runtimeJob.log, component: undefined, result: undefined } } : {}),
+    ...(drift ? { drift: { items: drift.items.filter((item) => item.kind !== 'external' && item.kind !== 'unexpected'), trusted: drift.trusted, untrusted: drift.untrusted } } : {})
+  } as WorkerStatus;
 }

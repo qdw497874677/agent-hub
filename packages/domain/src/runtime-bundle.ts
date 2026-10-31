@@ -179,6 +179,8 @@ export interface WorkerInventory {
   readonly capabilities: readonly InventoryCapability[];
   /** Worker 采集的时间（epoch ms）。 */
   readonly collectedAt: number;
+  /** Worker 能接组件任务（P2）。 */
+  readonly componentInstall?: boolean;
 }
 
 /** 期望状态：hub 的 component_pins 里的一行（P2 才会写入；P1 一直是空的）。 */

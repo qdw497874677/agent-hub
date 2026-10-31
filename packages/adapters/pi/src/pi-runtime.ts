@@ -325,6 +325,8 @@ export interface PiRuntimeOptions {
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
   /** 每会话的提供商扩展文件放哪（测试用）；默认系统临时目录。 */
   readonly providerDir?: string;
+  /** hub 装的组件包目录，开会话时现查并以 `-e <dir>` 加载（本地目录，不联网）。 */
+  readonly extensions?: () => readonly string[];
 }
 
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
@@ -348,6 +350,7 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       const ref = spec.resume?.agentSessionRef ?? null;
       if (ref) args.push('--session-id', ref);
       args.push(...piAssetArgs(spec.assets));
+      for (const dir of options.extensions?.() ?? []) args.push('--extension', dir);
 
       // 能力层：先确保用户全局 MCP 配置里有 agent-hub 这条（只含变量引用；文件按 Pi 版本选，见 piMcpPath），令牌走 env。
       // 条目是 stdio 垫片（见 pi-mcp.ts：Pi 不展开 url 里的变量）；垫片连 tools.url——hub 的 /mcp 或本机 relay。

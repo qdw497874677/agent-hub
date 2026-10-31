@@ -57,6 +57,25 @@ import type {
 export type { TeamDto, InviteDto, InvitePreviewDto };
 export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
 
+/** 组件目录里的一个版本（ADR 0021 §8）：制品由 hub 解析钉死，scripts 是审核时要看的安装脚本原文。 */
+export interface CatalogComponentDto {
+  id: string;
+  runtime: 'pi';
+  packageName: string;
+  version: string;
+  resolved: string;
+  integrity: string;
+  provides: { capability: string; mode?: string }[];
+  scripts: Record<string, string>;
+  dependencyCount: number;
+  status: 'pending' | 'approved' | 'rejected';
+  submittedBy: string;
+  submittedAt: number;
+  reviewedBy: string | null;
+  reviewedAt: number | null;
+  reviewNote: string | null;
+}
+
 export interface ApiError {
   readonly code: string;
   readonly message: string;
@@ -149,6 +168,14 @@ export const api = {
   /** 在这台机器上装 / 升级 / 卸载一个 agent 运行时；只回「已下发」，进度看 workers 列表里的 runtimeJob。 */
   runtimeJob: (workerId: string, agentId: string, body: { action: 'install' | 'uninstall'; version?: string }) =>
     post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/runtimes/${encodeURIComponent(agentId)}`, body),
+  /** 在这台机器上装 / 卸 / 修复一个目录里的组件（ADR 0021 §8）；进度同样看 runtimeJob。 */
+  componentJob: (workerId: string, componentId: string, body: { action: 'install' | 'uninstall'; version?: string }) =>
+    post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/components/${encodeURIComponent(componentId)}`, body),
+  components: () => call<{ components: CatalogComponentDto[] }>('/api/components').then((r) => r.components),
+  submitComponent: (input: { id: string; packageName: string; version: string; provides: { capability: string }[] }) =>
+    post<{ component: CatalogComponentDto }>('/api/components', input),
+  reviewComponent: (id: string, version: string, approve: boolean, note?: string) =>
+    post<{ component: CatalogComponentDto }>(`/api/components/${encodeURIComponent(id)}/${encodeURIComponent(version)}/review`, { approve, ...(note ? { note } : {}) }),
   home: () => call<HomeDto>('/api/home'),
   projects: () => call<ProjectDto[]>('/api/projects'),
   listDirectories: (path: string, workerId: string | null = null, project = '') =>

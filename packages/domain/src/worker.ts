@@ -126,6 +126,14 @@ export interface PlacementRequest {
   readonly requested: string | null;
   /** 项目目录所在的那台：目录在哪，agent 就只能在哪跑。null = 目录在 Server 本机。 */
   readonly projectWorker: string | null;
+  /** 要求的能力（ADR 0021 §8，决定 6）：只认机器上**可信**的能力；漂移的、外部组件的都不算。 */
+  readonly requires?: readonly string[];
+}
+
+function lacking(worker: WorkerStatus, requires: readonly string[] | undefined): string[] {
+  if (!requires || requires.length === 0) return [];
+  const trusted = new Set((worker.drift?.trusted ?? []).map((c) => c.capability));
+  return requires.filter((capability) => !trusted.has(capability));
 }
 
 /**
@@ -161,15 +169,19 @@ export function placeSession(
     const reason = harnessUnavailableReason(worker, request.agentId);
     if (reason !== null) return err(unavailable(`「${worker.label}」上的 ${request.agentId} 暂不可用：${reason}`));
     if (worker.resources?.refusing) return err(unavailable(refusingMessage(worker)));
+    const missing = lacking(worker, request.requires);
+    if (missing.length > 0) return err(conflict(`「${worker.label}」没有可信的能力：${missing.join('、')}`));
     return ok(worker.workerId);
   }
   const usable = (worker: WorkerStatus): boolean =>
-    offers(worker) && harnessUnavailableReason(worker, request.agentId) === null && !worker.resources?.refusing;
+    offers(worker) && harnessUnavailableReason(worker, request.agentId) === null && !worker.resources?.refusing && lacking(worker, request.requires).length === 0;
   const candidate =
     online.find((worker) => worker.origin === 'local' && usable(worker)) ?? online.find(usable);
   if (!candidate) {
     const reasons = online.flatMap((worker) => {
       if (offers(worker) && worker.resources?.refusing) return [`「${worker.label}」资源紧张暂不接新会话`];
+      const missing = offers(worker) ? lacking(worker, request.requires) : [];
+      if (missing.length > 0 && harnessUnavailableReason(worker, request.agentId) === null) return [`「${worker.label}」缺可信能力 ${missing.join('、')}`];
       const reason = offers(worker) ? harnessUnavailableReason(worker, request.agentId) : null;
       return reason === null ? [] : [`「${worker.label}」${reason}`];
     });

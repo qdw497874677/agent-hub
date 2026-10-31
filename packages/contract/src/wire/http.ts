@@ -83,7 +83,9 @@ export const deriveSessionRequest = z.object({
   /** 点名交给哪台 Worker；不给就按落点规则挑。 */
   workerId: z.string().min(1).nullable().optional(),
   /** 运行面板里选的工作空间；会话跟着它落到那台机器、那个目录。 */
-  workspaceId: z.string().min(1).nullable().optional()
+  workspaceId: z.string().min(1).nullable().optional(),
+  /** 要求的能力（ADR 0021 §8）：只落到这些能力可信的机器上。 */
+  requires: z.array(z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128)).max(16).optional()
 });
 
 /** 新建工作空间：持久的（新建托管目录 / 关联已有目录）或临时的（为某个任务开 worktree / 临时目录）。 */
@@ -251,8 +253,9 @@ export const workerInfoSchema = z.object({
     .object({
       jobId: z.string(),
       agentId: z.string(),
-      action: z.enum(['install', 'uninstall']),
+      action: z.enum(['install', 'uninstall', 'install_component', 'uninstall_component']),
       version: z.string().nullable(),
+      componentId: z.string().optional(),
       state: z.enum(['running', 'succeeded', 'failed', 'refused']),
       message: z.string(),
       log: z.string(),
@@ -290,6 +293,42 @@ export const runtimeJobRequest = z.object({
     .string()
     .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/)
     .optional()
+});
+
+/** 组件目录（ADR 0021 P2）：cluster_admin 提交一个确切版本的 npm 包，hub 去 registry 钉死制品。 */
+export const componentSubmitRequest = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+  packageName: z.string().regex(/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/),
+  version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/),
+  provides: z
+    .array(z.object({ capability: z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128), mode: z.string().max(64).optional() }))
+    .max(16)
+    .default([])
+});
+export const componentReviewRequest = z.object({ approve: z.boolean(), note: z.string().max(500).optional() });
+export const componentJobRequest = z.object({
+  action: z.enum(['install', 'uninstall']),
+  version: z
+    .string()
+    .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/)
+    .optional()
+});
+export const catalogComponentSchema = z.object({
+  id: z.string(),
+  runtime: z.literal('pi'),
+  packageName: z.string(),
+  version: z.string(),
+  resolved: z.string(),
+  integrity: z.string(),
+  provides: z.array(z.object({ capability: z.string(), mode: z.string().optional() })),
+  scripts: z.record(z.string(), z.string()),
+  dependencyCount: z.number().int().nonnegative(),
+  status: z.enum(['pending', 'approved', 'rejected']),
+  submittedBy: z.string(),
+  submittedAt: epochMs,
+  reviewedBy: z.string().nullable(),
+  reviewedAt: epochMs.nullable(),
+  reviewNote: z.string().nullable()
 });
 
 /** 改一项可调项：值可以是模型串、也可以是思考强度的档位名。 */

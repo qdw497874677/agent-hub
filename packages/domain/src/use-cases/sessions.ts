@@ -28,6 +28,8 @@ export interface DeriveCommand {
   readonly workspaceId?: string | null;
   /** 谁发起的：开跑前要过 authorizeWorker（本机 Worker 单独授权）。 */
   readonly actor?: Subject | null;
+  /** 要求的能力：只落到这些能力可信的机器上（ADR 0021 §8）。 */
+  readonly requires?: readonly string[];
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -60,7 +62,8 @@ export async function deriveSessionUseCase(
   const placed = placeSession(workers, {
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
-    projectWorker: workspace.workerId
+    projectWorker: workspace.workerId,
+    ...(command.requires?.length ? { requires: command.requires } : {})
   });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);

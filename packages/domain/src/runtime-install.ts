@@ -1,3 +1,4 @@
+import type { ComponentAction, ComponentJobResult, ComponentJobSpec } from './component-catalog.ts';
 import type { Principal } from './account.ts';
 import type { WorkerCredential } from './enrollment.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from './errors.ts';
@@ -31,8 +32,12 @@ export type RuntimeJobState = 'running' | 'succeeded' | 'failed' | 'refused';
 export interface RuntimeJob {
   readonly jobId: string;
   readonly agentId: string;
-  readonly action: RuntimeAction;
+  readonly action: RuntimeAction | ComponentAction;
   readonly version: string | null;
+  /** 组件任务（ADR 0021 P2）才有：要装 / 卸的组件。 */
+  readonly component?: ComponentJobSpec;
+  /** 组件任务结束时 Worker 报的结构化结果。 */
+  readonly result?: ComponentJobResult;
   readonly state: RuntimeJobState;
   readonly message: string;
   /** 安装日志的末尾（有上限）。 */

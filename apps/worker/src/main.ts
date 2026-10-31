@@ -4,7 +4,8 @@ import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
-import { clearBootMarker, collectInventory, connectWorkerLink, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { findNpm } from '@agent-hub/adapter-pi';
+import { clearBootMarker, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -108,6 +109,10 @@ const toolShim = {
   args: [...process.execArgv, join(dirname(fileURLToPath(import.meta.url)), 'mcp-shim.ts')]
 };
 
+// hub 管理的组件（ADR 0021 P2）：WORKER_COMPONENTS=0 关掉（不接组件任务、也不加载）。
+const componentsRoot = join(runtimeStore.root, 'components');
+const componentsEnabled = env['WORKER_COMPONENTS'] !== '0';
+
 /** 统一运行时适配器（ADR 0013 D8）：组合根只遍历注册表，不认得具体 agent。 */
 const prepared: PreparedRuntime[] = [];
 for (const adapter of RUNTIME_ADAPTERS) {
@@ -119,7 +124,8 @@ for (const adapter of RUNTIME_ADAPTERS) {
       command: harnessCommand,
       log,
       onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
-      onOptions: (sessionId, reported) => notifyOptions(sessionId, reported)
+      onOptions: (sessionId, reported) => notifyOptions(sessionId, reported),
+      ...(componentsEnabled ? { components: (runtime: string) => hubComponentDirs(componentsRoot, runtime) } : {})
     }))
   );
 }
@@ -180,7 +186,8 @@ async function onUpdate(commit: string, report: (status: UpdateReport) => void):
 const provisioner = await createRuntimeManager({
   store: runtimeStore,
   installers: prepared.flatMap((entry) => (entry.installer && machineProvided.has(entry.installer.agentId) ? [entry.installer] : [])),
-  machineProvided
+  machineProvided,
+  ...(componentsEnabled ? { components: { root: componentsRoot, npm: findNpm(process.execPath) } } : {})
 });
 
 // 机器资源上报（ADR 0014）：默认开，WORKER_METRICS=0 关掉；hub 不认识就不发
@@ -193,7 +200,7 @@ const piDir = piDirEnv ? resolve(piDirEnv.startsWith('~/') ? join(homedir(), piD
 const inventory =
   env['WORKER_INVENTORY'] === '0'
     ? undefined
-    : () => collectInventory({ provisions: provisioner.provisions(), componentsRoot: join(runtimeStore.root, 'components'), piAgentDir: piDir });
+    : () => collectInventory({ provisions: provisioner.provisions(), componentsRoot, piAgentDir: piDir, componentInstall: componentsEnabled });
 
 const link = connectWorkerLink({
   ...(inventory ? { inventory } : {}),
