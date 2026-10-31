@@ -137,6 +137,17 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
   await expect(sessionNode(page)).toHaveCount(1);
   await expect(taskNode(page, TASK_TITLE)).toContainText('1 个会话');
 
+  // 刷新前的位置也要等打开时的适配落定再读（fitOnOpen 会在尺寸稳定前重算几次）
+  let last = '';
+  await expect
+    .poll(async () => {
+      const box = await sessionNode(page).boundingBox();
+      const now = JSON.stringify(box && [Math.round(box.x), Math.round(box.y)]);
+      const same = now === last;
+      last = now;
+      return same;
+    }, { intervals: [200] })
+    .toBe(true);
   const before = await sessionNode(page).boundingBox();
   await page.mouse.move(0, 0);
   await page.goto('/');
