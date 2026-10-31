@@ -1,6 +1,6 @@
 # ADR 0017：按资源类型的权限模型 + 集群管理员独占本机 Worker
 
-- 状态：proposed
+- 状态：accepted（2026-10-30，David 拍板：1A 2A 3A 4A 5A 6B）
 - 日期：2026-10-30
 - 关联：ADR 0010、0011、0013、0014、0015、0016；设计稿 `docs/design/permissions.md`
 
@@ -18,6 +18,18 @@ ADR 0011 建立了「角色 = 权限集、一律走 `can()`」，但随着运行
 6. `NEVER_GRANTABLE` 扩展为：所有 `hub.*`、本机 Worker 权限、`provider.secret.read`、`asset.review`、`asset.publish_global`、`team.transfer/delete`。
 7. 表驱动矩阵测试 + 「除 cluster_admin 外无人能在本机 Worker 上得到任何权限」的枚举不变量测试。
 8. ADR 0016 的资产权限并入本模型：`asset.*` 进 `ROLE_DEFS`，`assetReviewers` 落到 `grants`。
+
+## David 的决定（2026-10-30）与落地差异
+
+- **1A** 收回 `localWorkerGrants`：启动迁移 `revokeLegacyLocalWorkerGrants` 给名单里每人写一条 `access.local_revoked` 审计，然后从设置里删掉该键（幂等）。
+- **2A** 集群管理员 ≥1、可多个：`User.clusterAdmin`；`PUT /api/admin/users/:id/cluster-admin`；最后一个不能撤、不能停用。
+- **3A** 新增 `admin`（= owner 去掉 `team.roles`、`project.purge`，且不能动 owner / 其他 admin）和 `viewer`（只读，含 `asset.read`）。
+- **4A** `session.prompt / interrupt / continue` 对 member 是 `own`：会话创建者（`Session.createdBy`）、team 范围的 owner/admin、或显式授权。被共享项目只给协作（读 / 建任务 / 改），不给别人会话的控制权，也不给共享 / 删除。
+- **5A** 集群管理员默认看不到别的团队；`POST /api/admin/visits` 临时只读进入（理由 4–200 字、≤24h、hub 和目标团队双审计），到期自动失效。
+- **6B** 本期就做团队自定义角色（`team_roles` 表，`User.role = custom:<id>`）：只能挑 `CUSTOM_ROLE_GRANTABLE`（去掉 hub.*、`team.roles`），范围不超过 admin；编辑器 + 矩阵视图（手机上是分组卡片）。
+- 与 ADR 0016（#119，先合并）的衔接：审核人沿用 #119 的 `access_grants` 表，本 ADR 在同一张表上补列（id、team_id、reason、created_by、expires_at、revoked_at）存显式授权，审核人行仍由审核设置整批维护；`asset.*` 进角色表（admin = owner，viewer = `asset.read`）；`asset.publish_global` 归 hub 级；令牌另拿不到 `asset.review/assign/retire/secret.use`（`TOKEN_NEVER_GRANTABLE`）。#119 里「hub 管理员是唯一合格审核人时可自审（审计标记）」改为对**集群管理员**成立，路由取第一位集群管理员。
+- 实现名与本文早期草稿的差异：`ROLE_DEFS` → `ROLE_PERMISSIONS`；`hub_roles` 没单独建表，用 `users.cluster_admin` 列；`provider.secret.read`、`team.transfer/delete` 本期没有对应接口，未加权限点。
+- `null` 主体不再代表放行：后台任务 / 无账号模式显式传 `systemSubject(reason)`。
 
 ## 后果
 

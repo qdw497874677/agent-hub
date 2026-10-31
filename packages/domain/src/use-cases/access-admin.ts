@@ -167,6 +167,8 @@ export async function createGrant(deps: AccessAdminDeps, subject: Subject | null
   const teamId = me.value.user.teamId;
   if (!teamId || !can(subject, 'team.grants', { kind: 'team', id: teamId, teamId })) return err(forbidden('你不能给别人授权'));
   if (customRoleProblem('grant', { [input.permission]: 'own' }) !== null) return err(invalid(`不能单独授权 ${input.permission}`));
+  // 审核人那几行由「审核设置」整批维护（#119，同表），不走单独授权，免得被审核设置覆盖或删掉
+  if (input.permission === 'asset.review') return err(invalid('审核人请在资产市场的审核设置里指定'));
   const target = await deps.users.byId(input.userId as UserId);
   if (!target || target.teamId !== teamId || target.deletedAt !== null) return err(notFound('团队里没有这个人'));
   const at = deps.now();

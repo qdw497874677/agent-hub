@@ -212,9 +212,9 @@ test('运营后台：登录活跃度、保留当前登录的踢下线、设置�
   await store.logins.removeForUser(user.id, asLoginId('l2'));
   assert.deepEqual((await store.logins.recent(5)).map((row) => row.id), ['l2']);
 
-  assert.deepEqual(await store.settings.get(), { openRegistration: false, membersCanAddMachines: true, localWorkerGrants: [], refuseWhenFull: [] });
-  await store.settings.save({ openRegistration: true, membersCanAddMachines: true, localWorkerGrants: ['u1'], refuseWhenFull: [] });
-  assert.deepEqual(await store.settings.get(), { openRegistration: true, membersCanAddMachines: true, localWorkerGrants: ['u1'], refuseWhenFull: [] });
+  assert.deepEqual(await store.settings.get(), { openRegistration: false, membersCanAddMachines: true, refuseWhenFull: [] });
+  await store.settings.save({ openRegistration: true, membersCanAddMachines: true, refuseWhenFull: [] });
+  assert.deepEqual(await store.settings.get(), { openRegistration: true, membersCanAddMachines: true, refuseWhenFull: [] });
 
   const entry = { id: 'a1', actorId: user.id, actorEmail: 'a@b.co', action: 'user.disable' as const, target: 'x', detail: '', at: 5 };
   await store.audit.append(entry);

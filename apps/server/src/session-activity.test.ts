@@ -50,7 +50,8 @@ async function setup() {
   assert.equal((await david('/api/auth/register', post({ email: 'david@b.co', password: PASSWORD }))).status, 200);
   await addTeamMember(accounts, 'm@b.co', PASSWORD);
   const memberUser = await accounts.users.byEmail('m@b.co');
-  await accounts.settings.save({ ...(await accounts.settings.get()), localWorkerGrants: [memberUser!.id] });
+  // 成员是团队 admin：能在别人开的会话里说话 / 打断（4A：team 范围）
+  await accounts.users.save({ ...memberUser!, role: 'admin' });
   const member = browser();
   assert.equal((await member('/api/auth/login', post({ email: 'm@b.co', password: PASSWORD }))).status, 200);
   // 成员自己的项目；david 是团队 owner，也看得见、能在里面说话
@@ -67,6 +68,10 @@ async function setup() {
 test('每条 prompt 记下发送人；读出时按账号现在的名字，删除匿名化后显示匿名名', async () => {
   const { accounts, david, member, project, session } = await setup();
   assert.equal((await david(`/api/sessions/${session.id}/prompt`, post({ text: '你好' }))).status, 200);
+  // 会话跑在本机 Worker 上：说话 = 用本机，团队 admin 也不行（1A），升为集群管理员后才行
+  assert.equal((await member(`/api/sessions/${session.id}/prompt`, post({ text: '我也来' }))).status, 403);
+  const asAdmin = await accounts.users.byEmail('m@b.co');
+  await accounts.users.save({ ...asAdmin!, clusterAdmin: true });
   assert.equal((await member(`/api/sessions/${session.id}/prompt`, post({ text: '我也来' }))).status, 200);
   const prompts = (await david(`/api/sessions/${session.id}/events`)).body.filter((e: any) => e.event.kind === 'prompt');
   const davidUser = await accounts.users.byEmail('david@b.co');
@@ -104,4 +109,16 @@ test('开会话、分叉、停下都记审计（带团队），会话详情能�
   await accounts.users.save({ ...memberUser!, displayName: ANONYMIZED_NAME, deletedAt: 5 });
   const after = (await david(`/api/sessions/${session.id}/activity`)).body;
   assert.equal(after.find((a: any) => a.action === 'session.interrupt').actor.name, ANONYMIZED_NAME);
+});
+
+test('4A：普通成员在共享项目里也不能在别人的会话里说话 / 打断；自己的会话可以', async () => {
+  const { accounts, member, session } = await setup();
+  const memberUser = await accounts.users.byEmail('m@b.co');
+  await accounts.users.save({ ...memberUser!, role: 'member' });
+  // 项目是成员自己建的，但会话是 david 开的
+  const prompt = await member(`/api/sessions/${session.id}/prompt`, post({ text: '插一句' }));
+  assert.equal(prompt.status, 403, JSON.stringify(prompt.body));
+  assert.equal((await member(`/api/sessions/${session.id}/interrupt`, post({}))).status, 403);
+  // 仍然看得见（项目是自己的）
+  assert.equal((await member(`/api/sessions/${session.id}/events`)).status, 200);
 });

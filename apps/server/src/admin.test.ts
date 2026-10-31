@@ -99,7 +99,7 @@ test('设置落库并在服务端生效：关注册后新人注册被拒；成�
     method: 'PUT',
     body: JSON.stringify({ openRegistration: false, membersCanAddMachines: false })
   });
-  assert.deepEqual(saved.body, { openRegistration: false, membersCanAddMachines: false, localWorkerGrants: [], refuseWhenFull: [] });
+  assert.deepEqual(saved.body, { openRegistration: false, membersCanAddMachines: false, refuseWhenFull: [] });
   assert.equal((await h.browser()('/api/auth/state')).body.registration, false);
   const late = await h.browser()('/api/auth/register', { method: 'POST', body: JSON.stringify({ email: 'x@b.co', password: PASSWORD }) });
   assert.equal(late.status, 409);

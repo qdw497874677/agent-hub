@@ -96,7 +96,13 @@ test('角色：最后一个主人不能降级也不能被停用；有第二个�
   const demote = await setUserRole(deps, owner.principal, owner.principal.user.id, 'member');
   assert.ok(!demote.ok && demote.error.code === 'conflict');
   assert.ok((await setUserRole(deps, owner.principal, member.principal.user.id, 'owner')).ok);
-  // 新主人停用原主人：原主人不是最后一个了，可以
+  // 原主人还是唯一的集群管理员：不能停用（2A：至少一位）
+  const asOwner = { ...member.principal, user: { ...member.principal.user, role: 'owner' as const } };
+  const blocked = await setUserDisabled(deps, asOwner, owner.principal.user.id, true);
+  assert.ok(!blocked.ok && blocked.error.code === 'conflict');
+  const promoted = await deps.users.byId(member.principal.user.id);
+  await deps.users.save({ ...promoted!, clusterAdmin: true });
+  // 新主人停用原主人：原主人不是最后一个主人、也不是最后一个集群管理员了，可以
   const other = { ...member.principal, user: { ...member.principal.user, role: 'owner' as const } };
   assert.ok((await setUserDisabled(deps, other, owner.principal.user.id, true)).ok);
   // 现在 other 是唯一可用的主人
