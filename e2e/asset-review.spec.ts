@@ -55,7 +55,7 @@ test('成员提交团队技能 → 自己批不了 → 主人逐行评论、要�
     await expect(item).toContainText('有高风险项');
     await item.click();
     await expect(page.getByTestId('findings')).toContainText('高风险');
-    await page.getByRole('button', { name: '评论第 5 行' }).click();
+    await page.getByRole('button', { name: '评论第 6 行' }).click();
     await page.getByTestId('comment-body').first().fill('别直接管道给 sh');
     await page.getByTestId('comment-send').first().click();
     await expect(page.getByText('别直接管道给 sh')).toBeVisible();
