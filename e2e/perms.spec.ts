@@ -160,10 +160,10 @@ test('5A：集群管理员临时进入别的团队：写原因、只读、两边
 
   await loginByApi(page);
   expect((await page.request.get(`/api/projects/${theirs.id}/canvas`)).status()).not.toBe(200);
-  const team = { team: (await (await outsider.request.get('/api/team')).json()) as { id: string; name: string } };
+  const team = (await (await outsider.request.get("/api/team")).json()) as { id: string; name: string };
   await page.goto('/#/admin/users');
   const panel = page.getByTestId('visit-panel');
-  await panel.getByLabel('要进入的团队').selectOption(team.team.id);
+  await panel.getByLabel('要进入的团队').selectOption(team.id);
   await panel.getByLabel('原因').fill('e2e 排查权限');
   await page.screenshot({ path: `${SHOTS}/visit-form.png`, fullPage: true });
   await panel.getByRole('button', { name: '进入' }).click();
@@ -174,7 +174,7 @@ test('5A：集群管理员临时进入别的团队：写原因、只读、两边
   const h = await headers(page.context());
   expect((await page.request.post('/api/tasks', { headers: h, data: { projectId: theirs.id, title: '不该能写' } })).status()).toBe(403);
   const hubAudit = (await (await page.request.get('/api/admin/audit?action=team.visit')).json()) as { target: string; actorEmail?: string }[];
-  expect(hubAudit.some((a) => a.target === team.team.id)).toBe(true);
+  expect(hubAudit.some((a) => a.target === team.id)).toBe(true);
   const theirAudit = (await (await outsider.request.get('/api/team/audit')).json()) as { action: string }[];
   expect(theirAudit.some((a) => a.action === 'team.visit')).toBe(true);
 
