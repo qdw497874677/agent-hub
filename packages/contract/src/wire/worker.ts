@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { rpcFrameSchema } from '../rpc/frames.ts';
 import { id } from './common.ts';
+import { workerMetricsSchema } from './resources.ts';
 import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema, sessionEventSchema, sessionOriginSchema } from './entities.ts';
 
 /** hub ↔ worker 长连接协议：握手、上下行帧、更新。 */
@@ -52,7 +53,9 @@ export const workerHelloSchema = z.object({
   /** 断线重连时：我手上还活着的会话。server 据此重新登记托管，而不是再 resume 一遍。 */
   sessions: z.array(id).default([]),
   /** 这台 Worker 跑的代码版本；老 Worker 不报，按「过期」显示。 */
-  build: buildInfoSchema.optional()
+  build: buildInfoSchema.optional(),
+  /** 这台 Worker 会发哪些可选帧（如 'metrics'）。老 Worker 不报 = 都不会。 */
+  capabilities: z.array(z.string().max(64)).max(32).optional()
 });
 
 export const workerEventSchema = z.object({
@@ -133,7 +136,8 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerOptionsSchema,
   workerStatusSchema,
   workerUpdateStatusSchema,
-  workerRuntimeJobStatusSchema
+  workerRuntimeJobStatusSchema,
+  workerMetricsSchema
 ]);
 
 /**
@@ -193,7 +197,11 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   /** 配对码换到的专属凭据：只出现在 enroll 握手的那条连接上，发完就关。 */
   z.object({ kind: z.literal('enrolled'), workerId: id, credential: z.string().min(1) }),
   /** hello 被接受了。worker 等到它才补发积压的帧：在这之前发的帧 server 一律不认（见 server-gateway）。 */
-  z.object({ kind: z.literal('welcome') }),
+  z.object({
+    kind: z.literal('welcome'),
+    /** hub 愿意收的可选帧；老 hub 不带 = 都别发（不升协议版本，见 ADR 0014）。 */
+    accepts: z.array(z.string().max(64)).max(32).optional()
+  }),
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),

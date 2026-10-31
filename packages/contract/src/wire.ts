@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
 import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
+import type { resourceSampleSchema, workerMetricsHistorySchema, workerResourcesSchema } from './wire/resources.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
 
 /**
@@ -13,6 +14,7 @@ import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.t
 export * from './wire/entities.ts';
 export * from './wire/http.ts';
 export * from './wire/worker.ts';
+export * from './wire/resources.ts';
 
 export type CapabilityDto = z.infer<typeof capabilitySchema>;
 export type AgentDto = z.infer<typeof agentSchema>;
@@ -32,6 +34,9 @@ export type JournalEntryDto = z.infer<typeof journalEntrySchema>;
 export type SearchHitDto = z.infer<typeof searchHitSchema>;
 export type SearchResponseDto = z.infer<typeof searchResponseSchema>;
 export type WorkerInfoDto = z.infer<typeof workerInfoSchema>;
+export type ResourceSampleDto = z.infer<typeof resourceSampleSchema>;
+export type WorkerResourcesDto = z.infer<typeof workerResourcesSchema>;
+export type WorkerMetricsHistoryDto = z.infer<typeof workerMetricsHistorySchema>;
 export type ProjectSummaryDto = z.infer<typeof projectSummarySchema>;
 export type HomeDto = z.infer<typeof homeSchema>;
 export type RecentSessionDto = z.infer<typeof recentSessionSchema>;

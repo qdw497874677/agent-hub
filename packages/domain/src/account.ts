@@ -131,8 +131,10 @@ export interface HubSettings {
   readonly membersCanAddMachines: boolean;
   /** 本机 Worker（hub 所在的机器）的单独授权：hub 管理员团队里的这些人能用。hub 管理员总能用，别的团队永远不能。 */
   readonly localWorkerGrants: readonly string[];
+  /** 开了「资源满了就拒绝新会话」的机器（ADR 0014，默认谁都不开）。 */
+  readonly refuseWhenFull: readonly string[];
 }
-export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, localWorkerGrants: [] };
+export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, localWorkerGrants: [], refuseWhenFull: [] };
 
 export const canAddMachines = (user: User, settings: HubSettings): boolean =>
   user.role === 'owner' || settings.membersCanAddMachines;
@@ -157,6 +159,7 @@ export type AuditAction =
   | 'worker.pair'
   | 'worker.enroll'
   | 'worker.revoke'
+  | 'worker.resource_policy'
   | 'runtime.install'
   | 'runtime.uninstall'
   | 'project.delete'

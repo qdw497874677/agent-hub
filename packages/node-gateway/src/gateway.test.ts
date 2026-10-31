@@ -712,3 +712,41 @@ test('资产经长连接下发：hub 推清单，Worker 按哈希回取、落进
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('资源（ADR 0014）：带 metrics 能力的 worker 被 welcome 接受后定时上报；老 worker 不带就没有资源，也照常上线', async () => {
+  const { gateway, url, stop } = await harness('t0k');
+  const sample = (sessions: ReadonlyMap<string, number>) => ({
+    at: 1,
+    machine: {
+      cpuPercent: 12,
+      cores: 4,
+      load: [0.5, 0.4, 0.3] as [number, number, number],
+      memTotal: 8 * 2 ** 30,
+      memAvailable: 2 ** 28,
+      swapUsed: 0,
+      disks: [{ root: '/', total: 100 * 2 ** 30, free: 50 * 2 ** 30 }],
+      uptimeSec: 100
+    },
+    sessions: [...sessions.keys()].map((sessionId) => ({ sessionId, cpuPercent: 1, rss: 1024, processes: 1 }))
+  });
+  const base = { url, token: 't0k', origin: 'remote' as const, reconnect: false, host: { hostname: 'box', platform: 'linux', arch: 'x64' }, roots: ['/tmp'], runtimes: [echoRuntime([])] };
+  const modern = connectWorkerLink({ ...base, workerId: 'new', label: '新', resources: { sample: async (s) => sample(s) }, metricsIntervalMs: 20 });
+  const old = connectWorkerLink({ ...base, workerId: 'old', label: '老' });
+  await waitFor(async () => gateway.workers().find((w) => w.workerId === 'new')?.resources !== undefined);
+  const fresh = gateway.workers().find((w) => w.workerId === 'new')?.resources;
+  assert.equal(fresh?.sample.machine.cores, 4);
+  assert.equal(fresh?.refusing, false);
+  assert.equal(fresh?.refuseWhenFull, false);
+  assert.ok(fresh && fresh.sample.at > 1, '时间戳用 hub 自己的钟');
+  await waitFor(async () => gateway.metrics('new').length >= 2);
+  const legacy = gateway.workers().find((w) => w.workerId === 'old');
+  assert.equal(legacy?.state, 'online');
+  assert.equal(legacy?.resources, undefined);
+  assert.deepEqual(gateway.metrics('old'), []);
+  gateway.setRefuseWhenFull(['new']);
+  assert.equal(gateway.workers().find((w) => w.workerId === 'new')?.resources?.refuseWhenFull, true);
+  await modern.close();
+  await waitFor(async () => gateway.workers().find((w) => w.workerId === 'new')?.state === 'offline');
+  assert.equal(gateway.workers().find((w) => w.workerId === 'new')?.resources, undefined, '离线不展示过期数据');
+  await stop(old);
+});

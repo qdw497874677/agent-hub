@@ -1,6 +1,7 @@
 export { createServerGateway } from './server-gateway.ts';
 export type { GatewayHooks, ServerGateway } from './server-gateway.ts';
 export { connectWorkerLink } from './worker-link.ts';
+export { createResourceProbe, type ResourceProbeOptions } from './resource-probe.ts';
 export { createHarnessRegistry, sameReadiness, withMissingHint } from './harness-registry.ts';
 export { fallbackDirs, missingCommandHint, resolveCommand } from './command-resolver.ts';
 export type { CommandResolution } from './command-resolver.ts';

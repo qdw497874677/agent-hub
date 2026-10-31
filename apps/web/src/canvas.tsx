@@ -300,6 +300,7 @@ export function CanvasView({
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
         agentLabel: agentLabel(session.agentId),
         worker: workerOf(session.workerId),
+        resources: resolveWorker(workers.list, session.workerId)?.resources,
         place: placeOf(session.workspaceId, session.workerId),
         onOpen: () => onOpen(session.id),
         onExpand: () => expand(session.id),
@@ -328,7 +329,7 @@ export function CanvasView({
         zIndex: -1,
         selectable: false,
         dragHandle: '.frame-handle',
-        data: { label: worker?.label ?? (raw === 'local' ? '本机' : '未知机器'), online: worker ? worker.state === 'online' : null, count: ids.length }
+        data: { label: worker?.label ?? (raw === 'local' ? '本机' : '未知机器'), online: worker ? worker.state === 'online' : null, count: ids.length, resources: worker?.resources }
       }];
     });
     // 框垫在最下面，卡片和连线画在框上

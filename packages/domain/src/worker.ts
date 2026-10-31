@@ -1,3 +1,4 @@
+import type { WorkerResources } from './resources.ts';
 import { parseHubModel } from './provider.ts';
 import type { ProviderProtocol } from './provider.ts';
 import { conflict, unavailable, type DomainError } from './errors.ts';
@@ -32,6 +33,8 @@ export interface WorkerStatus {
   readonly update?: WorkerUpdate;
   /** 最近一次运行时安装 / 卸载任务（hub 内存里的，重启 hub 就没了）。 */
   readonly runtimeJob?: RuntimeJob;
+  /** 机器资源（ADR 0014）；老 Worker 不报就没有。 */
+  readonly resources?: WorkerResources;
 }
 
 /** 某个 agent 在某台机器上的模型清单。 */
@@ -152,13 +155,16 @@ export function placeSession(
     if (!offers(worker)) return err(conflict(`Worker「${worker.label}」没装 ${request.agentId}`));
     const reason = harnessUnavailableReason(worker, request.agentId);
     if (reason !== null) return err(unavailable(`「${worker.label}」上的 ${request.agentId} 暂不可用：${reason}`));
+    if (worker.resources?.refusing) return err(unavailable(refusingMessage(worker)));
     return ok(worker.workerId);
   }
-  const usable = (worker: WorkerStatus): boolean => offers(worker) && harnessUnavailableReason(worker, request.agentId) === null;
+  const usable = (worker: WorkerStatus): boolean =>
+    offers(worker) && harnessUnavailableReason(worker, request.agentId) === null && !worker.resources?.refusing;
   const candidate =
     online.find((worker) => worker.origin === 'local' && usable(worker)) ?? online.find(usable);
   if (!candidate) {
     const reasons = online.flatMap((worker) => {
+      if (offers(worker) && worker.resources?.refusing) return [`「${worker.label}」资源紧张暂不接新会话`];
       const reason = offers(worker) ? harnessUnavailableReason(worker, request.agentId) : null;
       return reason === null ? [] : [`「${worker.label}」${reason}`];
     });
@@ -207,4 +213,10 @@ export function carryModelTo(workers: readonly WorkerStatus[], workerId: string,
 export function supportsProviders(workers: readonly WorkerStatus[], workerId: string, agentId: string): boolean {
   const entry = workers.find((worker) => worker.workerId === workerId)?.agentModels?.find((item) => item.agentId === agentId);
   return (entry?.providers?.length ?? 0) > 0;
+}
+
+/** 「满了就拒绝新会话」开着且资源满时的报错文案。 */
+export function refusingMessage(worker: WorkerStatus): string {
+  const why = worker.resources?.pressure.reasons.join('、') || '资源不足';
+  return `「${worker.label}」资源紧张（${why}），已设置为暂不接新会话`;
 }

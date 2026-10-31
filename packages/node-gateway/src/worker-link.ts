@@ -1,12 +1,13 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, RpcFailure, assetsFetch, assetsSync, createRpcChannel, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, RpcFailure, assetsFetch, assetsSync, createRpcChannel, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
 import { createProviderRelay } from './provider-relay.ts';
 import { authHeaders } from './provider-proxy.ts';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type {
   AgentRuntime,
   BuildInfo,
+  ResourceProbe,
   RuntimeOption,
   RuntimeSession,
   SessionEvent,
@@ -82,6 +83,10 @@ export interface WorkerLinkOptions {
   /** 经长连接中转的工具调用等 hub 答复的上限。 */
   readonly toolTimeoutMs?: number;
   readonly onUpdate?: (commit: string, report: (status: UpdateReport) => void) => Promise<void>;
+  /** 机器资源采样（ADR 0014）。给了就在 hello 里报 'metrics' 能力；hub 的 welcome 接受了才定时上报。 */
+  readonly resources?: ResourceProbe;
+  /** 资源上报间隔，默认 15 秒。 */
+  readonly metricsIntervalMs?: number;
 }
 
 export interface WorkerLink {
@@ -130,6 +135,40 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   /** 老 hub 不发 welcome：等这么久没等到就照旧补发，别把输出永远憋在本地。 */
   const WELCOME_FALLBACK_MS = options.welcomeFallbackMs ?? 5_000;
   let updating = false;
+  let metricsTimer: NodeJS.Timeout | null = null;
+  const stopMetrics = (): void => {
+    if (metricsTimer) clearInterval(metricsTimer);
+    metricsTimer = null;
+  };
+  /** 资源帧不进 outbox：断线期间的旧采样没有意义，连回来再采就是了。 */
+  function startMetrics(current: WebSocket): void {
+    stopMetrics();
+    const probe = options.resources;
+    if (!probe) return;
+    let busy = false;
+    const tick = async (): Promise<void> => {
+      if (busy || socket !== current || current.readyState !== WebSocket.OPEN) return;
+      busy = true;
+      try {
+        const pids = new Map<string, number>();
+        for (const [id, session] of sessions) {
+          const pid = session.pid?.();
+          if (typeof pid === 'number') pids.set(id, pid);
+        }
+        const sample = await probe.sample(pids);
+        if (socket === current && current.readyState === WebSocket.OPEN) {
+          current.send(JSON.stringify({ type: 'metrics', ...sample }));
+        }
+      } catch (error) {
+        options.onLog?.(`资源采样失败：${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        busy = false;
+      }
+    };
+    void tick();
+    metricsTimer = setInterval(() => void tick(), options.metricsIntervalMs ?? 15_000);
+    metricsTimer.unref?.();
+  }
 
   /** agent 清单 = runtime 的描述 + 最近一次探测的就绪状态。hub 只消费统一的 readiness，不认识具体 harness。 */
   const agentDtos = () => {
@@ -283,7 +322,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           ...(options.host ? { host: options.host } : {}),
           roots: [...(options.files?.roots ?? options.roots ?? [])],
           sessions: [...sessions.keys()],
-          ...(options.build ? { build: options.build } : {})
+          ...(options.build ? { build: options.build } : {}),
+          ...(options.resources ? { capabilities: [WORKER_CAPABILITY_METRICS] } : {})
         } satisfies WorkerToServer)
       );
       options.onLog?.(`已连上 ${options.url}${sessions.size > 0 ? `，接回 ${sessions.size} 个会话` : ''}`);
@@ -302,6 +342,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       if (socket === current) {
         socket = null;
         accepted = false;
+        stopMetrics();
         if (welcomeTimer) clearTimeout(welcomeTimer);
       }
       if (socket === null) channel.close('与 hub 断开了，调用没有完成');
@@ -354,7 +395,11 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       const command = parsed.data as ServerToWorker;
       if (command.kind === 'rpc') channel.receive(command.frame);
       else if (command.kind === 'update') void update(command.commit);
-      else if (command.kind === 'welcome') flush(current);
+      else if (command.kind === 'welcome') {
+        flush(current);
+        // 老 hub 的 welcome 不带 accepts：不发 metrics，免得它每 15 秒记一条「无法解析的帧」
+        if (command.accepts?.includes(WORKER_CAPABILITY_METRICS)) startMetrics(current);
+      }
       else if (command.kind === 'probe') void probe(true);
       else if (command.kind === 'runtime_job') void runtimeJob(command);
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
@@ -616,6 +661,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       closed = true;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       if (probeTimer) clearInterval(probeTimer);
+      stopMetrics();
       if (watchdog) clearTimeout(watchdog);
       channel.close('worker 正在退出');
       await mcpEndpoint.close();

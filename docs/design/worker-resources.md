@@ -1,7 +1,7 @@
 # Worker 上报机器资源占用（设计稿）
 
-- 状态：**草案，待拍板**（见 §12 决策问题）。本 PR 只写设计，不实现。
-- 相关：ADR 0001（六边形）、ADR 0011（团队 RBAC）、`docs/design/worker-enrollment.md`、ADR 0014（本稿配套，proposed）
+- 状态：**已拍板并实现**（2026-10-30，§12 记录决定）。SQLite 历史（§12 第 3 问的 B）不做。
+- 相关：ADR 0001（六边形）、ADR 0011（团队 RBAC）、`docs/design/worker-enrollment.md`、ADR 0014（本稿配套，accepted）
 
 ## 1. 背景与目标
 
@@ -157,10 +157,20 @@ port ResourceProbe             NodeResourceProbe（os+statfs+/proc）     Metric
 
 每期都要 e2e（含 390px）和 conformance 测试。
 
-## 12. 待决问题（含推荐默认值）
+## 12. 决定（原待决问题）
 
 1. **采集实现**：A. `node:os` + `/proc` + `pidtree`/`pidusage`（推荐）；B. `systeminformation` 全家桶；C. 纯 `node:os`（不做会话级）。
 2. **传输**：A. 新 `metrics` 帧 + hello 能力协商、不升协议版本（推荐）；B. 改为应用层心跳携带指标；C. 升 `PROTOCOL_VERSION` 到 3 强制所有 worker 升级。
 3. **存储**：A. 只内存（最新 + 1 h 环形缓冲）（推荐）；B. 再加 SQLite 1 分钟降采样保留 24 h；C. 只保留最新值、不做走势。
 4. **满载策略**：A. 只提示，可按 worker 打开「拒绝新会话」（推荐，默认关）；B. 默认拒绝；C. 只显示数字不判定。
 5. **会话级可见性与 GPU**：A. 会话占用跟会话权限走、GPU 默认关闭按 worker 开（推荐）；B. 能看机器就能看所有会话占用；C. 先不做会话级。
+
+**David 的决定（2026-10-30）：**
+
+1. 采集：**A**。`node:os` + `/proc/meminfo` + `statfs` + `pidtree`/`pidusage`（`packages/node-gateway/src/resource-probe.ts`）。
+2. 传输：**A**。新 `metrics` 帧 + 能力协商，不升协议版本。握手核实：hub 本来就在接受 hello 后回 `{kind:'welcome'}`；新增 hello 可选 `capabilities`、welcome 可选 `accepts`，worker 只在 `accepts` 含 `metrics` 时发，老 hub 不会收到无法解析的帧；老 worker 不带能力，hub 照常接、列表里资源显示「—」。
+3. 存储：**A**。只内存：最新 + 1 h（≤300 点），hub 重启即清空；不做 SQLite 历史。
+4. 满载：**A**。只提示；每台 worker 可选「资源紧张时拒绝新会话」，默认关。开着且判定为 full（经 3 个样本去抖）时，指定这台的新会话直接报「资源紧张暂不接新会话」，自动落点跳过它。
+5. 会话可见性：**B**。有这台机器 `worker.read` 的人能看到上面所有会话的占用。GPU：有 `nvidia-smi` 就自动采，没有则静默跳过、不再重试。
+
+**界面**：机器列表每行摘要「CPU · 内存 · 盘剩 · GPU」按压力着色（老 worker 显示「—」），展开看各盘、GPU、原因和开关；画布机器框标题栏有徽标（窄屏只剩颜色点）；会话卡片显示 `◔ CPU% · RSS`。数据随 `/api/workers` 的 5 s 轮询刷新。

@@ -1,3 +1,4 @@
+import { workerResourcesSchema } from './resources.ts';
 import { z } from 'zod';
 import { id, epochMs } from './common.ts';
 import { agentReadinessSchema, runtimeProvisionSchema, attachmentInputSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
@@ -258,7 +259,9 @@ export const workerInfoSchema = z.object({
       endedAt: epochMs.nullable(),
       actorEmail: z.string()
     })
-    .optional()
+    .optional(),
+  /** 机器资源（ADR 0014）；老 Worker 不报就没有。 */
+  resources: workerResourcesSchema.optional()
 });
 
 /** 在一台机器上装 / 卸 agent 运行时；version 不填 = 推荐版本。 */

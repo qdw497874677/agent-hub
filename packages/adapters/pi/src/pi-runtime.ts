@@ -44,6 +44,10 @@ class PiSession implements RuntimeSession {
   /** Pi 的失败原因几乎都在 stderr 上（比如模型名有歧义），丢掉它等于把可诊断性丢了。 */
   private lastStderr = '';
 
+  pid(): number | null {
+    return this.child.pid ?? null;
+  }
+
   constructor(
     sessionId: RuntimeSession['sessionId'],
     child: ChildProcessWithoutNullStreams,
