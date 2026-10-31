@@ -14,7 +14,7 @@ import type { Principal } from './account.ts';
 
 /** 权限目录：每一项属于一种资源类型。自定义角色只能从这里挑（且不能挑 NEVER_GRANTABLE 和 hub 级的）。 */
 export const PERMISSION_CATALOG = {
-  worker: ['worker.read', 'worker.use', 'worker.enroll', 'worker.manage', 'worker.policy', 'worker.delete', 'runtime.install'],
+  worker: ['worker.read', 'worker.use', 'worker.enroll', 'worker.manage', 'worker.policy', 'worker.delete', 'runtime.install', 'runtime.component.install'],
   project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post'],
   task: ['task.read', 'task.create', 'task.update', 'task.delete'],
   session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue'],
@@ -44,7 +44,8 @@ export const HUB_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(PERM
  * 任何令牌、显式授权、自定义角色都拿不到的权限。本机 Worker 的权限不在列表里，
  * 因为它们不是单独的权限点：can() 对 local 资源只认集群管理员（第 4 步）。
  */
-export const NEVER_GRANTABLE: ReadonlySet<Permission> = new Set<Permission>([...PERMISSION_CATALOG.hub, 'team.roles']);
+/** runtime.component.install（ADR 0021 §6）：组件会以 Worker 用户身份跑任意代码，自定义角色、API 令牌都拿不到。 */
+export const NEVER_GRANTABLE: ReadonlySet<Permission> = new Set<Permission>([...PERMISSION_CATALOG.hub, 'team.roles', 'runtime.component.install']);
 
 /**
  * 令牌额外拿不到的（ADR 0016）：审核 / 分配 / 下架 / 用密钥只能本人在界面里做。
@@ -107,6 +108,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
     'worker.policy': 'own',
     'worker.delete': 'own',
     'runtime.install': 'own',
+    'runtime.component.install': 'own',
     'provider.read': 'team',
     'provider.use': 'team',
     'provider.manage': 'own',

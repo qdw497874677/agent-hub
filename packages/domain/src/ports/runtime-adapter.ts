@@ -31,6 +31,8 @@ export interface RuntimeAdapterContext {
   log(message: string): void;
   onAgentSessionRef(sessionId: string, ref: string): void;
   onOptions(sessionId: string, options: readonly RuntimeOption[]): void;
+  /** hub 装的组件（ADR 0021 P2）在这台机器上的包目录（真实路径）。每次开会话时现查：升级只影响新会话。 */
+  components?(runtime: string): readonly string[];
 }
 
 /** 一个 agent 在这台机器上的全部组件。 */

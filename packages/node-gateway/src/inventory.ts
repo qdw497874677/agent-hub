@@ -15,6 +15,8 @@ export interface InventorySources {
   /** pi 的 agent 目录（PI_CODING_AGENT_DIR 或 ~/.pi/agent）；null = 不看。 */
   readonly piAgentDir: string | null;
   readonly now?: () => number;
+  /** 能接组件任务（P2）。 */
+  readonly componentInstall?: boolean;
 }
 
 const SAFE = /^[A-Za-z0-9@._+-]{1,214}$/;
@@ -84,11 +86,13 @@ function managed(root: string): { components: InventoryComponent[]; capabilities
         continue;
       }
       if (!SAFE.test(version)) continue;
-      const meta = readJson(join(root, runtime, id, version, '.component.json')) as { integrity?: unknown; enabled?: unknown; provides?: unknown } | null;
+      const meta = readJson(join(root, runtime, id, version, '.component.json')) as { integrity?: unknown; enabled?: unknown; provides?: unknown; version?: unknown } | null;
+      // P2 的版本目录叫 v-<uuid>，真实版本记在 .component.json 里
+      const reported = typeof meta?.version === 'string' && SAFE.test(meta.version) ? meta.version : version;
       components.push({
         id,
         runtime,
-        version,
+        version: reported.slice(0, 64),
         integrity: typeof meta?.integrity === 'string' ? meta.integrity.slice(0, 200) : '',
         enabled: meta?.enabled !== false,
         managedBy: 'hub'
@@ -113,6 +117,7 @@ export function collectInventory(sources: InventorySources): WorkerInventory {
     runtimes,
     components: [...hub.components, ...external].slice(0, MAX_COMPONENTS),
     capabilities: hub.capabilities.slice(0, MAX_COMPONENTS),
-    collectedAt: (sources.now ?? Date.now)()
+    collectedAt: (sources.now ?? Date.now)(),
+    ...(sources.componentInstall ? { componentInstall: true } : {})
   };
 }

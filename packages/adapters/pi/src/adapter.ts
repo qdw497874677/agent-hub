@@ -43,6 +43,7 @@ export function piAdapter(): RuntimeAdapter {
             models: discovered.models,
             defaultModel: discovered.defaultModel,
             toolShim: ctx.toolShim,
+            ...(ctx.components ? { extensions: () => ctx.components?.('pi') ?? [] } : {}),
             onAgentSessionRef: (sessionId, ref) => ctx.onAgentSessionRef(sessionId, ref),
             onOptions: (sessionId, reported) => ctx.onOptions(sessionId, reported)
           }),

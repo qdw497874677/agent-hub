@@ -113,6 +113,30 @@ export const workerAgentsSchema = z.object({
 export const runtimeVersionSchema = z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/);
 export const runtimeAgentIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
 export const runtimeActionSchema = z.enum(['install', 'uninstall']);
+/** 组件任务（ADR 0021 P2）：复用 runtime_job，多两个 action。只发给清单里报了 componentInstall 的 Worker。 */
+export const runtimeJobActionSchema = z.enum(['install', 'uninstall', 'install_component', 'uninstall_component']);
+const capabilityEntry = z.object({ capability: z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128), mode: z.string().max(64).optional() });
+/** 组件任务的规格：全是固定形状，没有可拼进命令的自由文本。 */
+export const componentJobSpecSchema = z.object({
+  componentId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
+  runtime: z.literal('pi'),
+  packageName: z.string().regex(/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/),
+  version: runtimeVersionSchema,
+  resolved: z.string().url().max(500),
+  integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/),
+  provides: z.array(capabilityEntry).max(16),
+  ignoreScripts: z.boolean(),
+  expectedCurrent: runtimeVersionSchema.nullable()
+});
+/** 组件任务结束时的结构化结果：hub 据此写审计（bundle.script_run / bundle.integrity_mismatch）。 */
+export const componentJobResultSchema = z.object({
+  integrity: z.string().max(200).optional(),
+  integrityMismatch: z.boolean().optional(),
+  ignoredScripts: z.boolean().optional(),
+  scripts: z.array(z.object({ package: z.string().max(214), script: z.string().max(32) })).max(200).optional(),
+  exitCode: z.number().int().nullable().optional(),
+  durationMs: z.number().int().nonnegative().optional()
+});
 export const runtimeJobStateSchema = z.enum(['running', 'succeeded', 'failed', 'refused']);
 
 /** Worker 回报安装 / 卸载任务的进度：lines 是这一批新增的日志行（增量）。 */
@@ -123,7 +147,8 @@ export const workerRuntimeJobStatusSchema = z.object({
   message: z.string().max(500),
   lines: z.array(z.string().max(2000)).max(500).default([]),
   /** 结束时装好的版本（卸载为 null）。 */
-  version: z.string().max(64).nullable().optional()
+  version: z.string().max(64).nullable().optional(),
+  component: componentJobResultSchema.optional()
 });
 
 /** 运行时套件清单（ADR 0021 §7）：连上时、每个运行时任务结束后、每 6 小时报一次。老 hub 不认，只记一条日志。 */
@@ -145,7 +170,9 @@ export const workerInventorySchema = z.object({
     )
     .max(200),
   capabilities: z.array(z.object({ capability: z.string().max(128), mode: z.string().max(64).optional(), via: z.string().max(214) })).max(200),
-  collectedAt: z.number().int().nonnegative()
+  collectedAt: z.number().int().nonnegative(),
+  /** 这台 Worker 能接组件任务（P2）。P1 的 Worker 不报 = hub 不给它发。 */
+  componentInstall: z.boolean().optional()
 });
 export const workerInventoryFrameSchema = z.object({ type: z.literal('inventory'), inventory: workerInventorySchema });
 
@@ -236,8 +263,9 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     kind: z.literal('runtime_job'),
     jobId: id,
     agentId: runtimeAgentIdSchema,
-    action: runtimeActionSchema,
-    version: runtimeVersionSchema.nullable()
+    action: runtimeJobActionSchema,
+    version: runtimeVersionSchema.nullable(),
+    component: componentJobSpecSchema.optional()
   }),
   z.object({ kind: z.literal('dispose'), sessionId: id }),
   /** 「重新检测」：让 worker 立刻重新探测各 harness 是否可用。老 worker 不认，只记一条日志。 */

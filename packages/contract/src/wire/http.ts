@@ -251,8 +251,9 @@ export const workerInfoSchema = z.object({
     .object({
       jobId: z.string(),
       agentId: z.string(),
-      action: z.enum(['install', 'uninstall']),
+      action: z.enum(['install', 'uninstall', 'install_component', 'uninstall_component']),
       version: z.string().nullable(),
+      componentId: z.string().optional(),
       state: z.enum(['running', 'succeeded', 'failed', 'refused']),
       message: z.string(),
       log: z.string(),
