@@ -28,7 +28,7 @@ Hermes 对外有两条可编程的路：
 | 契约 | Hermes 实现 |
 |---|---|
 | `id` | `'hermes'` |
-| `prepare(ctx)` | `ctx.command('hermes', 'HERMES_COMMAND')`；为本 Worker 准备专属 profile 目录（§8）；拉起或复用 `hermes gateway`（只绑 127.0.0.1，§9）；`GET /v1/capabilities` 确认 `run_submission / run_status / run_events_sse / run_stop`；`GET /v1/models` 和 `/api/model/options` 填模型目录 |
+| `prepare(ctx)` | `ctx.command('hermes', 'HERMES_COMMAND')`；为本 Worker 准备专属 profile 目录（§11）；拉起或复用 `hermes gateway`（只绑 127.0.0.1，§11）；`GET /v1/capabilities` 确认 `run_submission / run_status / run_events_sse / run_stop`；`GET /v1/models` 和 `/api/model/options` 填模型目录 |
 | `readiness` | `GET /health`（存活）+ `GET /health/detailed`（就绪；降级时仍是 200，要看 `status` 字段，已核对） |
 | `installer` | runtime bundle（ADR 0021，§10） |
 | `start(spec)` | 建 hub 自己的 API 会话（§4），保存 `agentSessionRef` = Hermes session id，`ctx.onAgentSessionRef` 回报 |
@@ -85,7 +85,7 @@ Hermes 对外有两条可编程的路：
 - hub 的处理：
   1. 适配器看到 `unknown` → 发 `SessionEvent('outcome_unknown')`，会话显示「上一轮结果未知（Hermes 重启）」，**不自动重发**（第一次可能已经执行了，可能有副作用）；
   2. 给人两个按钮：「标记为中断并继续」（调 `resolve-unknown`）和「查看 Hermes 记录」（`GET /api/sessions/{id}/messages`）；
-  3. 默认不自动 resolve（决定 D5）。
+  3. 默认不自动 resolve（决定 D3）。
 - 关机排空时非终态 run 带 `shutdown_requested_at`，最终落为 `interrupted`（已核对）→ hub 显示「Worker 上的 Hermes 正在重启」。
 
 ## 6. 批准与澄清 → hub 的人工介入
