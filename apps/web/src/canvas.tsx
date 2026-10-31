@@ -58,23 +58,52 @@ const ESTIMATE: Record<'task' | 'session', number> = { task: 160, session: 480 }
 const FIT = { padding: 0.12, minZoom: 0.55, maxZoom: 1 };
 
 /**
- * 打开时适配视口。要等卡片量出真实尺寸再算（最多等约半秒），
- * 规则见 openingViewport：手机上放不下就左上对齐，不再居中把开头推到屏幕外。
+ * 打开时适配视口。规则见 openingViewport：手机上放不下就左上对齐，不再居中把开头推到屏幕外。
+ *
+ * 包围盒只用「确定的」尺寸算：卡片位置 + 拖过的尺寸，没拖过就用默认宽、估计高（openingBounds）。
+ * 以前用量出来的尺寸，最多等 30 帧，等不到就按估计高度（会话卡 480）算；真实高度约 216，
+ * 而且会话历史异步回来后还会变。量没量到、历史回没回来全看机器忙不忙，于是两次打开的居中
+ * 能差 (480-216)/2 = 132px——就是 e2e「刷新后卡片低 132px」。现在同样的布局永远落在同一个视口。
+ * 只等容器有了尺寸（最多约半秒）；用户先动了画布就不再动它。
  */
 function fitOnOpen(
-  instance: Pick<ReactFlowInstance<AnyNode, Edge>, 'getNodes' | 'getNodesBounds' | 'setViewport'>,
+  instance: Pick<ReactFlowInstance<AnyNode, Edge>, 'setViewport'>,
   element: HTMLElement | null,
+  bounds: () => Rect | null,
+  userMoved: () => boolean,
   frames = 30
 ): void {
-  const nodes = instance.getNodes();
-  const measured = nodes.length > 0 && nodes.every((node) => node.measured?.width);
-  if (!measured && frames > 0) {
-    requestAnimationFrame(() => fitOnOpen(instance, element, frames - 1));
+  if (userMoved()) return;
+  const box = bounds();
+  const ready = element && element.clientWidth > 0 && element.clientHeight > 0;
+  if ((!ready || !box) && frames > 0) {
+    requestAnimationFrame(() => fitOnOpen(instance, element, bounds, userMoved, frames - 1));
     return;
   }
-  if (!element || nodes.length === 0) return;
-  const screen = { width: element.clientWidth, height: element.clientHeight };
-  void instance.setViewport(openingViewport(instance.getNodesBounds(nodes), screen, FIT));
+  if (!element || !box) return;
+  void instance.setViewport(openingViewport(box, { width: element.clientWidth, height: element.clientHeight }, FIT));
+}
+
+/** 打开时适配用的包围盒：卡片 + 机器框，只看位置和存下来的尺寸，不看量出来的（量出来的随加载时机变）。 */
+export function openingBounds(
+  cards: readonly { id: string; kind: 'task' | 'session' }[],
+  positions: Readonly<Record<string, Point>>,
+  sizes: Readonly<Record<string, Size>>,
+  frames: Iterable<readonly string[]>
+): Rect | null {
+  const kinds = new Map(cards.map((card) => [card.id, card.kind]));
+  const stable = (id: string): Size => {
+    const kind = kinds.get(id) ?? 'session';
+    return { width: sizes[id]?.width ?? CARD_LIMITS[kind].defaultWidth, height: sizes[id]?.height ?? ESTIMATE[kind] };
+  };
+  const rects = [...cards.flatMap((card) => (positions[card.id] ? [{ ...positions[card.id]!, ...stable(card.id) }] : []))];
+  for (const ids of frames) {
+    const rect = frameRect(ids, positions, stable);
+    if (rect) rects.push(rect);
+  }
+  if (rects.length === 0) return null;
+  const x = Math.min(...rects.map((r) => r.x)), y = Math.min(...rects.map((r) => r.y));
+  return { x, y, width: Math.max(...rects.map((r) => r.x + r.width)) - x, height: Math.max(...rects.map((r) => r.y + r.height)) - y };
 }
 
 export function CanvasView({
@@ -133,12 +162,17 @@ export function CanvasView({
     for (const [key, ids] of groups) for (const id of ids) map.set(id, key);
     return map;
   }, [groups]);
+  const groupsRef = useRef(groups);
+  groupsRef.current = groups;
   const dragStart = useRef<{ id: string; point: Point } | null>(null);
+  // 视口已经有人接管（用户拖 / 缩放、整理布局、跳到某张卡、把卡挪进视口）：打开时的自动适配就别再动它了
+  const userMoved = useRef(false);
   // 「整理布局」：唯一会动用户拖过的位置的入口，按真实尺寸整体重排并存库。
   const tidy = useCallback(() => {
     const next = arrange(canvas, sizeOf);
     setPositions(next);
     onLayoutChange({ positions: next });
+    userMoved.current = true;
     requestAnimationFrame(() => void flowFit.current?.({ duration: 300 }));
   }, [canvas, sizeOf, onLayoutChange]);
   // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
@@ -164,7 +198,9 @@ export function CanvasView({
     };
     const current = instance.getViewport();
     const next = panIntoView(current, rect, { width: element.clientWidth, height: element.clientHeight });
-    if (next !== current) void instance.setViewport(next, { duration: 200 });
+    if (next === current) return;
+    userMoved.current = true;
+    void instance.setViewport(next, { duration: 200 });
   }, []);
 
   useEffect(() => {
@@ -184,6 +220,7 @@ export function CanvasView({
     const point = positions[focus.id];
     if (!point || !flow.current) return;
     const width = cardWidth(canvas.sessions.some((session) => session.id === focus.id) ? 'session' : 'task', sizes[focus.id]);
+    userMoved.current = true;
     flow.current.setCenter(point.x + width / 2, point.y + 120, { zoom: 1, duration: 400 });
   }, [focus, positions, sizes, canvas.sessions]);
 
@@ -404,7 +441,22 @@ export function CanvasView({
         onInit={(instance) => {
           flow.current = instance;
           flowFit.current = instance.fitView;
-          fitOnOpen(instance, container.current);
+          fitOnOpen(
+            instance,
+            container.current,
+            () =>
+              openingBounds(
+                [...canvas.tasks.map((t) => ({ id: t.id, kind: 'task' as const })), ...canvas.sessions.map((x) => ({ id: x.id, kind: 'session' as const }))],
+                positionsRef.current,
+                sizesRef.current,
+                groupsRef.current.values()
+              ),
+            () => userMoved.current
+          );
+        }}
+        onMoveStart={(event) => {
+          // event 为 null 是程序设置的视口（适配、跳转），不算用户动过
+          if (event) userMoved.current = true;
         }}
         onNodeClick={(event, node) => {
           if (node.type !== 'session') return;
