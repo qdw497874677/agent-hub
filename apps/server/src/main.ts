@@ -14,11 +14,12 @@ import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { createSecretVault, createSqliteApiTokens, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createProviderWiring } from './providers.ts';
-import type { AssetDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
-  checkAllAssetUpdates
+  migrateAssetOwnership,
+  sweepGitForReview
 } from '@agent-hub/domain';
 import {
   err,
@@ -260,8 +261,15 @@ const providerWiring = createProviderWiring({
   testFromWorker: async (workerId, input) => (serverGateway ? serverGateway.testProvider(workerId, input) : err(unavailable('worker 通道尚未就绪'))),
   log
 });
-const assetDeps: AssetDeps = {
+const assetDeps: AssetReviewDeps = {
   assets: store.assets,
+  hubAdminId: async () => (await store.users.hubAdmin())?.id ?? null,
+  review: store.assetReview,
+  notifications: store.notifications,
+  audit: store.audit,
+  users: store.users,
+  teams: store.teams,
+  policy: deps.access!,
   reader: createAssetReader(),
   delivery: { push: async (workerId, manifest) => (serverGateway ? serverGateway.assets.push(workerId, manifest) : err(unavailable('worker 通道尚未就绪'))) },
   board: store.assetSync,
@@ -270,6 +278,11 @@ const assetDeps: AssetDeps = {
   secrets: createSecretVault(store.db, secretKey),
   now: () => Date.now()
 };
+// ADR 0016 迁移：老资产记到 hub 管理员名下（全局 / 项目级，已发布）；幂等，重启不重复。
+{
+  const migrated = await migrateAssetOwnership(assetDeps);
+  if (migrated.migrated > 0) log(`资产审核迁移：${migrated.migrated} 个老资产记到 hub 管理员名下，${migrated.pending} 个未钉的新版本转成待审提交`);
+}
 const remoteMcpClients = createRemoteClients();
 
 /**
@@ -281,7 +294,9 @@ async function withSessionAssets(command: WorkerCommand): Promise<WorkerCommand>
   try {
     // 项目作用域（就近优先 + 项目开关）∩ 这台机器装了的；找不到任务就只给全局的。
     const task = await store.tasks.byId(command.taskId);
-    const plan = await sessionAssetPlan(assetDeps, command.workerId, task?.projectId ?? null);
+    const project = task ? await store.projects.byId(task.projectId) : null;
+    const viewer = task?.ownerId ? { userId: task.ownerId, teamId: project?.teamId ?? null } : null;
+    const plan = await sessionAssetPlan(assetDeps, command.workerId, task?.projectId ?? null, viewer);
     let next: WorkerCommand = { ...command, assetIds: plan.assetIds };
     const launched = new Set<string>();
     if (command.tools) {
@@ -415,10 +430,9 @@ let assetCheckRunning = false; // 上一轮没跑完就跳过，免得同一个�
 const checkAssets = (why: string) => {
   if (assetCheckRunning) return Promise.resolve();
   assetCheckRunning = true;
-  return checkAllAssetUpdates({ ...assetDeps, audit: store.audit })
+  return sweepGitForReview(assetDeps)
     .then((report) => {
-      if (report.changed.length > 0) log(`资产更新检查（${why}）：${report.changed.map((asset) => asset.name).join('、')} 有新版本，待确认升级`);
-      for (const failure of report.failed) log(`资产更新检查（${why}）：${failure.asset.name} 查不了：${failure.message}`);
+      if (report.submitted > 0 || report.failed > 0) log(`资产更新检查（${why}）：查了 ${report.checked} 个，${report.submitted} 个有新版本已进审核，${report.failed} 个查不了`);
     })
     .catch((failure: unknown) => log(`资产更新检查失败：${(failure as Error).message}`))
     .finally(() => {

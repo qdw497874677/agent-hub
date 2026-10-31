@@ -105,6 +105,18 @@ export const routes = {
     responses: { 200: json(workspaceChangesSchema) }
   }),
 
+  submitAssetRevision: route('assets:submit', {
+    method: 'post', path: `${V1}/assets/{assetId}/revisions`, tags: ['assets'], summary: '给资产交一个新版本（进审核）',
+    description: '只有作者（或团队负责人）能交；新版本进待审队列，审核通过才上线。令牌不能审核、发布、装机或下架。文件内容 base64。',
+    request: {
+      params: z.object({ assetId: z.string().openapi({ param: { name: 'assetId', in: 'path' } }) }),
+      ...body(z.object({ files: z.array(z.object({ path: z.string().min(1).max(512), data: z.string() })).min(1).max(200) }))
+    },
+    responses: {
+      200: json(z.object({ assetId: z.string(), latest: z.string(), submissionId: z.string().nullable(), status: z.string().nullable() }))
+    }
+  }),
+
   listTasks: route('projects:read', {
     method: 'get', path: `${V1}/tasks`, tags: ['tasks'], summary: '项目下的任务',
     request: { query: z.object({ projectId: z.string().min(1) }) },

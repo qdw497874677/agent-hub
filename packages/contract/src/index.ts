@@ -7,3 +7,4 @@ export * from './rpc/index.ts';
 export * from './worker-methods.ts';
 export * from './stall.ts';
 export * from './api-tokens.ts';
+export * from './asset-market.ts';

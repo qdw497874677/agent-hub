@@ -17,6 +17,7 @@ import {
   createProjectUseCase,
   createTaskUseCase,
   deleteProjectUseCase,
+  submitAssetRevision,
   deriveSessionUseCase,
   editWorkLogUseCase,
   forbidden,
@@ -37,7 +38,7 @@ import {
   workerReader,
   workspaceChangesUseCase
 } from '@agent-hub/domain';
-import type { DeleteProjectDeps } from '@agent-hub/domain';
+import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
 import type { z } from 'zod';
 import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest } from '@agent-hub/contract';
 import { installAccess } from '../access.ts';
@@ -63,6 +64,8 @@ interface V1Context {
   readonly providers?: ProviderWiringApi;
   readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'>;
   readonly waitOptions?: (sessionId: string) => Promise<void>;
+  /** 资产审核（ADR 0016）：令牌只能交新版本（assets:submit）。 */
+  readonly assetReview?: AssetReviewDeps;
 }
 
 type Env = { Variables: { principal: Principal }; Bindings: Record<string | symbol, unknown> };
@@ -132,6 +135,15 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   const valid = <T>(c: Context, target: 'json' | 'query'): T => (c.req as unknown as { valid(t: string): T }).valid(target);
 
   on(routes.health, (c) => c.json({ ok: true }));
+  on(routes.submitAssetRevision, async (c) => {
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const body = valid<{ files: { path: string; data: string }[] }>(c, 'json');
+    const files = body.files.map((file) => ({ path: file.path, data: new Uint8Array(Buffer.from(file.data, 'base64')) }));
+    const result = await submitAssetRevision(ctx.assetReview, principal(c), c.req.param('assetId') ?? '', files);
+    if (!result.ok) return fail(c, result.error);
+    const { asset, submission } = result.value;
+    return c.json({ assetId: asset.id, latest: asset.latest, submissionId: submission?.id ?? null, status: submission?.status ?? null });
+  });
   on(routes.me, (c) => {
     const actor = principal(c);
     return c.json({

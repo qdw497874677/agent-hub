@@ -12,7 +12,6 @@ import {
   mcpRiskSummary,
   parseSecretKey,
   requiredApprovals,
-  reviewScope,
   scanAssetFiles,
   secretKey,
   secretLookupOrder,
@@ -137,7 +136,12 @@ export async function reviewerContext(
     const user = await deps.users.byId(id as UserId);
     if (user && user.teamId === asset.teamId && user.disabledAt === null && user.deletedAt === null) reviewers.push(user.id);
   }
-  return { hubAdminId: admin?.id ?? null, teamOwnerId: team?.ownerId ?? null, reviewers };
+  const hubReviewers: string[] = [];
+  for (const id of ((await deps.review.settings(HUB_REVIEW_KEY)) ?? DEFAULT_REVIEW_SETTINGS).reviewers) {
+    const user = await deps.users.byId(id as UserId);
+    if (user && user.disabledAt === null && user.deletedAt === null) hubReviewers.push(user.id);
+  }
+  return { hubAdminId: admin?.id ?? null, teamOwnerId: team?.ownerId ?? null, reviewers, hubReviewers };
 }
 
 async function mcpConfigAt(deps: Pick<AssetDeps, 'assets'>, assetId: string, digest: string): Promise<McpConfig | null> {
@@ -419,8 +423,6 @@ export async function approveSubmission(
   const loaded = await loadSubmission(deps, submissionId);
   if (!loaded.ok) return loaded;
   const { submission, asset } = loaded.value;
-  const scope = reviewScope(asset, submission);
-  if (scope === 'global' ? !can(actor, 'asset.publish_global') && !can(actor, 'asset.review') : false) return err(forbidden('你不是这次提交的审核人'));
   const ctx = await reviewerContext(deps, asset);
   const checked = checkReviewer(asset, submission, reviewer(actor), ctx);
   if (!checked.ok) {
@@ -888,9 +890,16 @@ export async function setReviewSettings(
   if (actor.via) return err(forbidden('令牌不能改审核设置'));
   if (target === 'hub') {
     if (!actor.user.hubAdmin) return err(forbidden('只有 hub 管理员能改全局资产的审核设置'));
-    const next = { reviewers: [], twoReviewers: input.twoReviewers };
+    // hub 级指定审核人：hub 管理员团队里的人（全局资产的第二位审核人从这里出）
+    const hubReviewers: string[] = [];
+    for (const id of new Set(input.reviewers)) {
+      const user: User | null = await deps.users.byId(id as UserId);
+      if (!user || user.teamId !== actor.user.teamId || user.deletedAt !== null) return err(invalid('全局审核人必须是 hub 管理员团队的成员'));
+      if (user.id !== actor.user.id) hubReviewers.push(user.id);
+    }
+    const next = { reviewers: hubReviewers, twoReviewers: input.twoReviewers };
     await deps.review.setSettings(HUB_REVIEW_KEY, next);
-    await audit(deps, actor, 'asset.review_settings', 'hub', `全局双人审核 ${next.twoReviewers.global ? '开' : '关'}，MCP stdio 双人审核 ${next.twoReviewers.mcpStdio ? '开' : '关'}`, null);
+    await audit(deps, actor, 'asset.review_settings', 'hub', `全局审核人 ${hubReviewers.length} 位；全局双人审核 ${next.twoReviewers.global ? '开' : '关'}，MCP stdio 双人审核 ${next.twoReviewers.mcpStdio ? '开' : '关'}`, null);
     return ok(next);
   }
   const teamId = actor.user.teamId;
@@ -1001,4 +1010,26 @@ export async function migrateAssetOwnership(deps: AssetReviewDeps): Promise<{ mi
     });
   }
   return { migrated, pending };
+}
+
+/**
+ * 运营后台（/api/admin/assets）的直接上架 / 钉版本：只有 hub 管理员走得到，等同 3A 允许的「hub 管理员自批全局资产」。
+ * 这里把同一版本上挂着的待审提交一并关掉（记成自批），并写一条带标记的审计。
+ */
+export async function recordAdminPublish(deps: AssetReviewDeps, actor: Principal, asset: Asset, digest: string, how: string): Promise<void> {
+  const at = deps.now();
+  const pending = await deps.review.submissions({ assetId: asset.id, status: ['pending'] });
+  for (const sub of pending) {
+    if (sub.targetScope !== null) continue;
+    const status = sub.digest === digest ? 'approved' : 'superseded';
+    await deps.review.updateSubmission({
+      ...sub,
+      status,
+      approvals: status === 'approved' ? [...sub.approvals, { userId: actor.user.id, at, selfApproved: true }] : sub.approvals,
+      decidedBy: actor.user.id,
+      decidedAt: at,
+      reason: status === 'approved' ? '运营后台直接发布' : '运营后台发布了别的版本'
+    });
+  }
+  await audit(deps, actor, 'asset.self_approve', asset.name, `⚑ hub 管理员自批：${how} ${digest.slice(0, 12)}`, asset.teamId);
 }

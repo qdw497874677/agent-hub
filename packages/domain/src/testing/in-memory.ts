@@ -3,6 +3,7 @@ import type { ApiToken } from '../api-token.ts';
 import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
 import { matchesAudit } from '../ports/audit-log.ts';
 import { seedAccount } from '../use-cases/accounts.ts';
+import { createAccessPolicy as createAccessPolicyForTests } from '../use-cases/authorization.ts';
 import { invitePending } from '../account.ts';
 import type { Invite } from '../account.ts';
 import type { InviteRepository } from '../ports/invite-repository.ts';
@@ -862,5 +863,37 @@ export function inMemoryApiTokens(): ApiTokenRepository & { readonly rows: Map<s
       const row = rows.get(id);
       if (row) rows.set(id, { ...row, lastUsedAt: at });
     }
+  };
+}
+
+/**
+ * 测试用：资产审核（ADR 0016）的整套依赖 = 资产假件 + 账号 / 审计（inMemoryAdmin）+ 审核仓库 + 授权策略。
+ * enrolledBy：远端机器 → 接入它的人（决定机器属于谁的团队、算不算「自己的机器」）。
+ */
+export function inMemoryAssetReviewDeps(
+  admin: ReturnType<typeof inMemoryAdmin>,
+  assets: ReturnType<typeof inMemoryAssets>,
+  enrolledBy: Map<string, string> = new Map()
+): { deps: import('../use-cases/asset-review.ts').AssetReviewDeps; notifications: ReturnType<typeof inMemoryAssetReview>['notifications'] } {
+  const { review, notifications } = inMemoryAssetReview();
+  const users = admin.accounts.users;
+  const policy = createAccessPolicyForTests({
+    users,
+    settings: admin.accounts.settings,
+    enrollment: { credentialFor: async (workerId) => (enrolledBy.has(workerId) ? ({ enrolledBy: enrolledBy.get(workerId) } as never) : null) },
+    gateway: { status: async () => assets.workers }
+  });
+  return {
+    deps: {
+      ...assets.deps,
+      hubAdminId: async () => (await users.hubAdmin())?.id ?? null,
+      review,
+      notifications,
+      audit: admin.deps.audit,
+      users,
+      teams: admin.accounts.teams,
+      policy
+    },
+    notifications
   };
 }

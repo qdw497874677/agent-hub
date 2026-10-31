@@ -143,6 +143,8 @@ export interface ReviewerContext {
   readonly teamOwnerId: string | null;
   /** 团队设置里的指定审核人（已过滤成本团队成员）。 */
   readonly reviewers: readonly string[];
+  /** hub 级指定审核人（全局资产 / 提升到全局用），不含 hub 管理员本人；缺省为空。 */
+  readonly hubReviewers?: readonly string[];
 }
 
 export interface Reviewer {
@@ -167,7 +169,12 @@ export function eligibleReviewers(
 ): { readonly ids: readonly string[]; readonly routedToHub: boolean } {
   const scope = reviewScope(asset, submission);
   if (scope === 'personal') return { ids: [], routedToHub: false };
-  if (scope === 'global') return { ids: ctx.hubAdminId ? [ctx.hubAdminId] : [], routedToHub: false };
+  if (scope === 'global') {
+    // hub 管理员总在（3A 允许他自批全局资产）；指定审核人里剔掉作者本人
+    const authors = new Set([submission.submittedBy, asset.ownerId]);
+    const extra = (ctx.hubReviewers ?? []).filter((id) => id !== ctx.hubAdminId && !authors.has(id));
+    return { ids: [...(ctx.hubAdminId ? [ctx.hubAdminId] : []), ...new Set(extra)], routedToHub: false };
+  }
   const authors = new Set([submission.submittedBy, asset.ownerId]);
   const team = [...new Set([ctx.teamOwnerId, ...ctx.reviewers].filter((id): id is string => !!id))].filter((id) => !authors.has(id));
   if (team.length > 0) return { ids: team, routedToHub: false };

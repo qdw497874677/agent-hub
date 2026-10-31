@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryAdmin, inMemoryAssets, inMemoryDeps, addTeamMember } from '@agent-hub/domain/testing';
+import { inMemoryAdmin, inMemoryAssetReviewDeps, inMemoryAssets, inMemoryDeps, addTeamMember } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 
@@ -15,13 +15,14 @@ function harness() {
   const admin = inMemoryAdmin();
   const assets = inMemoryAssets();
   const { deps } = inMemoryDeps();
+  const review = inMemoryAssetReviewDeps(admin, assets);
   const app = createApp({
     deps,
     hub: createStreamHub(),
     token: null,
     auth: { accounts: admin.accounts, hubToken: null },
     admin: { deps: admin.deps },
-    assets: { deps: assets.deps, audit: admin.deps.audit }
+    assets: { deps: review.deps, audit: admin.deps.audit }
   });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -37,7 +38,7 @@ function harness() {
       return { status: response.status, body: (await response.json().catch(() => null)) as any };
     };
   };
-  return { admin, assets, browser };
+  return { admin, assets, review, browser, app };
 }
 
 test('资产 API：主人上传 → 装到机器 → 传新版本看 diff → 确认升级；成员 403；审计留痕', async () => {
