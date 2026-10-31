@@ -97,6 +97,10 @@ export type { ToolDescriptor, ToolProvider, ToolContext, JsonSchema } from './po
 export type { ToolGrantRepository } from './ports/tool-grant-repository.ts';
 export * from './use-cases/tool-gateway.ts';
 export * from './tools/task-tools.ts';
+export * from './tools/message-tools.ts';
+export * from './messaging.ts';
+export * from './use-cases/messaging.ts';
+export type { MessageStore } from './ports/message-store.ts';
 
 export * from './asset.ts';
 export * from './mcp.ts';

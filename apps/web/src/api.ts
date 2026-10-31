@@ -116,7 +116,31 @@ export interface SessionActivityDto {
   readonly at: number;
 }
 
+/** agent 间通信（ADR 0018）里的一条消息。 */
+export interface AgentMessageDto {
+  readonly messageId: string;
+  readonly traceId: string;
+  readonly kind: 'send' | 'ask' | 'reply';
+  readonly from: string;
+  readonly to: string;
+  readonly targetSessionId: string | null;
+  readonly status: 'queued' | 'awaiting_approval' | 'delivered' | 'answered' | 'done' | 'failed' | 'denied';
+  readonly depth: number;
+  readonly replyTo: string | null;
+  readonly body: string;
+  readonly reply: string | null;
+  readonly replySource: 'tool' | 'last_turn' | null;
+  readonly failure: string | null;
+  readonly failureDetail: string | null;
+  readonly createdAt: number;
+}
+
 export const api = {
+  sessionMessages: (sessionId: string) =>
+    call<{ messages: AgentMessageDto[]; awaitingApproval: AgentMessageDto[] }>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`),
+  sendAgentMessage: (sessionId: string, body: { kind: 'send' | 'ask'; to: string; body: string }) =>
+    post<{ messageId: string; traceId: string; status: string }>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`, body),
+  decideAgentSpawn: (messageId: string, approve: boolean) => post<AgentMessageDto>(`/api/messages/${encodeURIComponent(messageId)}/decision`, { approve }),
   workers: () => call<WorkerInfoDto[]>('/api/workers'),
   probeWorker: (workerId: string) => post<{ ok: true }>(`/api/workers/${encodeURIComponent(workerId)}/probe`, {}),
   /** 「资源满了就拒绝新会话」开关（ADR 0014，默认关）。 */

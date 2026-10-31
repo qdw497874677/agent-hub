@@ -16,6 +16,13 @@ import { createSecretVault, createSqliteApiTokens, createSqliteProviders, loadSe
 import { createProviderWiring } from './providers.ts';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
+  createMessageBus,
+  createMessageToolProvider,
+  createTaskUseCase,
+  deriveSessionUseCase,
+  promptSessionUseCase,
+  withAccess,
+  type LoginId,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
@@ -151,11 +158,37 @@ const log = (message: string) => console.log(`[hub] ${message}`);
 // 唯一的传输是 relay：agent 连 worker 本机的入口，经 /worker 长连接到 hub，hub 不开 HTTP /mcp。
 const toolEndpoint = readEnv('HUB_TOOLS') === '0' ? null : { url: '', transport: 'relay' as const };
 if (readEnv('HUB_TOOLS_TRANSPORT') === 'http') log('HUB_TOOLS_TRANSPORT=http 已移除，忽略：工具一律经 worker 长连接中转');
+// agent 间通信（ADR 0018 · P2P）：消息总线 + 工具；回合结束（journal 里的 ended）时收回复、投下一条。
+const messageBus = createMessageBus({
+  now: deps.now,
+  sessions: deps.sessions,
+  projects: deps.projects,
+  tasks: deps.tasks,
+  messages: store.messages,
+  policy: deps.access,
+  principalOf: async (userId) => {
+    const user = await store.users.byId(userId as UserId);
+    if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
+    return withAccess(store.access, { user, loginId: 'agent-message' as LoginId }, Date.now());
+  },
+  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
+  spawn: async ({ project, role, actor, title }) => {
+    const task = await createTaskUseCase(deps, { projectId: project.id, title, ownerId: actor.user.id });
+    if (!task.ok) return task;
+    return deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
+  }
+});
+hub.stream.subscribe((frame) => {
+  if (frame.event?.kind !== 'ended') return;
+  void messageBus.turnEnded(frame.sessionId, frame.event.outcome).catch((error: unknown) => log(`agent 消息回合收尾失败：${String(error)}`));
+});
+setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
+
 toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
   tokens: createTokenIssuer(),
-  providers: [createTaskToolProvider(deps)]
+  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus)]
 });
 
 // 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。
@@ -479,6 +512,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },
+  messaging: { bus: messageBus, messages: store.messages },
   openApi: {
     tokens: apiTokenDeps,
     manage: apiTokenDeps,

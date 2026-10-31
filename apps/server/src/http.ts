@@ -86,6 +86,7 @@ import { installAuth, SSE_PATH, type SubjectOf } from './auth.ts';
 import { installAdmin } from './admin.ts';
 import { installTeam } from './team.ts';
 import { installAccessRoutes } from './access-routes.ts';
+import { installMessagingRoutes, type MessagingRouteDeps } from './messaging-routes.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
 import { installAssetMarket } from './asset-market.ts';
 import { RELAY_PATH, type ProviderWiringApi } from './providers.ts';
@@ -138,6 +139,8 @@ export interface AppOptions {
    * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
+  /** agent 间通信（ADR 0018）。 */
+  readonly messaging?: Omit<MessagingRouteDeps, 'deps'>;
   /** 开放 API（/openapi/v1 + MCP，ADR 0015）与设置页的令牌管理；要有账号体系。 */
   readonly openApi?: OpenApiOptions & { readonly manage: ApiTokenDeps };
 }
@@ -210,6 +213,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.admin) installAdmin(app, options.admin, principalOf);
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
+    if (options.messaging) installMessagingRoutes(app, { ...options.messaging, deps }, subjectOf);
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.assets) installAssetMarket(app, options.assets.deps, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);

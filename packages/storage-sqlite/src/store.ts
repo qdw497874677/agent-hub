@@ -12,12 +12,13 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
 import { createSqliteAccess } from './access.ts';
 import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
+import { createSqliteMessageStore } from './messages.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
@@ -36,6 +37,8 @@ export interface SqliteStore extends RepositorySet {
   readonly invites: InviteRepository;
   /** 能力层：工具授权（只存令牌 hash）与调用审计。 */
   readonly toolGrants: ToolGrantRepository;
+  /** agent 间通信（ADR 0018）：消息队列、派生记录、项目配置、审计。 */
+  readonly messages: MessageStore;
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
   readonly enrollment: EnrollmentRepository;
   /** 资产中心：技能 / 指令、不可变版本、内容 blob、Worker 安装关系。 */
@@ -398,6 +401,7 @@ export function openSqliteStore(file: string): SqliteStore {
     tasks,
     workLog: createWorkLogRepository(db),
     toolGrants: createToolGrantRepository(db),
+    messages: createSqliteMessageStore(db),
     workspaces: createWorkspaceRepository(db),
     enrollment: createEnrollmentRepository(db),
     assets: createAssetRepository(db),
