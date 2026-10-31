@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { ApiScope, ApiToken, ApiTokenRepository } from '@agent-hub/domain';
 
-/** 开放 API 令牌（ADR 0014）：只存哈希；明文只在创建时给一次。 */
+/** 开放 API 令牌（ADR 0015）：只存哈希；明文只在创建时给一次。 */
 export const API_TOKEN_SCHEMA = `
 CREATE TABLE IF NOT EXISTS api_tokens (
   id           TEXT PRIMARY KEY,

@@ -307,9 +307,16 @@ export function waitingForReply(live: Pick<LiveSession, 'awaiting'> | null | und
   return status !== 'done' && status !== 'stopped' && status !== 'interrupted';
 }
 
-/** 这段对话里有没有不止一个人说过话：只有一个人时不显示头像和名字（不知道是谁的老消息不算）。 */
+/**
+ * 这段对话里有没有不止一个人说过话：只有一个人时不显示头像和名字（不知道是谁的老消息不算）。
+ * 有经令牌（开放 API / MCP）发的消息时总是显示，好分清哪句是脚本发的。
+ */
 export function multipleAuthors(blocks: readonly Block[]): boolean {
   const ids = new Set<string>();
-  for (const block of blocks) if (block.kind === 'prompt' && block.author) ids.add(block.author.id);
+  for (const block of blocks) {
+    if (block.kind !== 'prompt' || !block.author) continue;
+    if (block.author.via) return true;
+    ids.add(block.author.id);
+  }
   return ids.size > 1;
 }

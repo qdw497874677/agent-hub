@@ -24,7 +24,7 @@ import {
 } from '@agent-hub/contract';
 
 /**
- * 开放 API v1 的路由表（ADR 0014）：路径、参数、请求体、响应形状都在这里，
+ * 开放 API v1 的路由表（ADR 0015）：路径、参数、请求体、响应形状都在这里，
  * 规范（openapi.json）和 MCP 工具清单都从它生成。请求 / 响应 schema 直接复用 @agent-hub/contract。
  */
 export const V1 = '/openapi/v1';

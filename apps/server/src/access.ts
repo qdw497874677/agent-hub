@@ -17,7 +17,7 @@ type AccessDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 
 export function installAccess(app: Hono<any>, deps: AccessDeps, principalOf: PrincipalOf, prefix = '/api'): void {
   const policy = deps.access;
   if (!policy) return;
-  // 同一套检查也守开放 API（/openapi/v1，ADR 0014）：只换前缀。
+  // 同一套检查也守开放 API（/openapi/v1，ADR 0015）：只换前缀。
   const esc = prefix.replace(/[/]/g, '\\/');
   const ROUTE = new RegExp(`^${esc}\\/(projects|tasks|sessions|workspaces)\\/([^/]+)`);
   const DISPATCHING = new RegExp(`^${esc}\\/sessions\\/[^/]+\\/(prompt|options|continue)$`);

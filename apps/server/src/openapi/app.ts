@@ -73,7 +73,7 @@ const unauthorized = (c: Context) => {
 };
 
 /**
- * 开放 API v1（ADR 0014）：/openapi/v1/*，只认 API 令牌（不认 cookie，所以没有 CSRF 这回事）。
+ * 开放 API v1（ADR 0015）：/openapi/v1/*，只认 API 令牌（不认 cookie，所以没有 CSRF 这回事）。
  * 授权与网页同一套：installAccess（换前缀）+ 领域 can()，令牌的权限范围在 can() 里与账号权限取交集。
  */
 export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Context): void {
@@ -380,7 +380,7 @@ export const openApiInfo = {
     title: 'Agent Hub 开放 API',
     version: '1.0.0',
     description:
-      '给内部 / 外部 agent 和脚本用的稳定接口（ADR 0014）。\n\n' +
+      '给内部 / 外部 agent 和脚本用的稳定接口（ADR 0015）。\n\n' +
       '- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n' +
       '- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n' +
       '- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n' +

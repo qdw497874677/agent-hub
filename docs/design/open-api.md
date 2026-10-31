@@ -1,7 +1,7 @@
 # 设计：统一开放 API（OpenAPI v1）
 
-- 状态：**proposed**（仅设计，未实现；待 David 拍板 §8）
-- 相关：ADR 0011（团队与 RBAC）、#107（操作人记录）、ADR 0013（模型提供商）、ADR 0014（本设计）
+- 状态：**accepted，已实现**（ADR 0015；§10 是实际落地与拍板结果）
+- 相关：ADR 0011（团队与 RBAC）、#107（操作人记录）、ADR 0013（模型提供商）、ADR 0015（本设计）
 
 ## 1. 目标
 把平台能力（项目管理、任务、智能体对话、机器）用一份**有版本、有文档、有权限范围**的 HTTP API 开放出来，内部 agent、外部 agent、自动化脚本都用同一套接入。UI 仍可用现有 `/api/*`，开放 API 是它的稳定子集。
@@ -145,3 +145,33 @@ GET /api/team（后续只读）；POST/DELETE /api/team/invites、PUT/DELETE /ap
 4. **v1 范围**：**对话 + 项目/任务（24 个端点）** / 只做对话 / 再加机器管理与运行时安装。
 5. **MCP server**：**P3 做，复用同一令牌** / 和 P1 一起做 / 不做。
 6. **令牌默认有效期**：**90 天，可续** / 30 天 / 永不过期。
+
+## 10. 拍板结果与实现（2026-10-30）
+
+| 问题 | 决定 |
+|---|---|
+| 前缀 | `/openapi/v1`，与 UI 的 `/api` 分开 |
+| 令牌 | 个人令牌 + 团队服务账号（服务账号需 `member.manage`，不占席位、不进成员列表） |
+| 范围 | 项目 + 任务 + 对话；新增 `GET /tasks`、`GET /tasks/:id`、`GET /sessions/:id`、`GET /sessions/:id/stream` |
+| MCP | 第一期上：官方 SDK，streamable HTTP（无状态），`POST /openapi/v1/mcp`，同令牌同权限，工具=路由 |
+| 有效期 | 默认永不过期，可选过期、可吊销，本人停用即失效 |
+| 规范/文档 | `@hono/zod-openapi` + Scalar；快照 `docs/openapi/v1.json` |
+
+### 怎么用
+```bash
+# 账号 → 访问令牌 → 生成（明文只显示一次）
+curl -H "Authorization: Bearer $AHP_TOKEN" https://<hub>/openapi/v1/projects
+curl -N -H "Authorization: Bearer $AHP_TOKEN" https://<hub>/openapi/v1/sessions/<id>/stream   # SSE
+```
+MCP 客户端配置：URL `https://<hub>/openapi/v1/mcp`，header `Authorization: Bearer ahp_…`。文档：`/openapi/v1/docs`，规范：`/openapi/v1/openapi.json`。
+
+### 代码落位（六边形）
+- 领域：`packages/domain/src/api-token.ts`（scope→权限、不可授集合）、`use-cases/api-tokens.ts`（建/列/吊销/认证）、`access.ts` 的 `can()` 对 `via` 取交集并拒本机。
+- 端口/存储：`ports/api-token-repository.ts`、`storage-sqlite/src/api-tokens.ts`（只存哈希）。
+- 驱动适配器：`apps/server/src/openapi/{routes,app,mcp}.ts`；设置面板 `apps/web/src/tokens-dialog.tsx`。
+- 测试：`apps/server/src/openapi.test.ts`（鉴权、scope、本机、429、MCP、SSE、快照）、`packages/domain/src/access.test.ts`、`e2e/openapi.spec.ts`。
+
+### 已知限制
+- 令牌是团队级/全项目的，暂不能限定到单个项目；没有 OAuth 授权码流程；webhooks 未做。
+- 限流是进程内内存计数，多实例部署需要换共享存储。
+- MCP 无状态：不推送通知，流式请用 SSE 接口；附件上传暂不经开放 API。

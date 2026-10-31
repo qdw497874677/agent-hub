@@ -19,7 +19,7 @@ export function ipOf(c: Context): string | null {
   }
 }
 
-/** 经令牌的操作在审计里注明「via 令牌」（ADR 0014）。 */
+/** 经令牌的操作在审计里注明「via 令牌」（ADR 0015）。 */
 export const viaSuffix = (actor: Principal, detail: string): string =>
   actor.via ? `${detail}${detail ? ' · ' : ''}via 令牌「${actor.via.name}」` : detail;
 

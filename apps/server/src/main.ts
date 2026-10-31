@@ -430,7 +430,7 @@ if (assetCheckMs > 0) {
   setInterval(() => void checkAssets('定时'), assetCheckMs).unref();
 }
 
-// 开放 API 令牌（ADR 0014）：只存哈希。
+// 开放 API 令牌（ADR 0015）：只存哈希。
 const apiTokenDeps = { apiTokens: createSqliteApiTokens(store.db), users: store.users, tokens: createTokenIssuer(), audit: store.audit, now: () => Date.now() };
 const envNumber = (name: string): number | undefined => {
   const value = readEnv(name);

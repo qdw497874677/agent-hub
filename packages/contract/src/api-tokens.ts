@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** 开放 API 令牌（ADR 0014）。明文只在创建响应里出现一次。 */
+/** 开放 API 令牌（ADR 0015）。明文只在创建响应里出现一次。 */
 export const apiScopeSchema = z.enum(['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read']);
 
 export const createApiTokenRequest = z.object({

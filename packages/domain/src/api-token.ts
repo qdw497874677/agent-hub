@@ -2,7 +2,7 @@ import type { Permission } from './access.ts';
 import type { User } from './account.ts';
 
 /**
- * 开放 API 令牌（ADR 0014）：个人令牌（代表本人）和团队服务账号（团队里的一个虚拟成员）。
+ * 开放 API 令牌（ADR 0015）：个人令牌（代表本人）和团队服务账号（团队里的一个虚拟成员）。
  * 有效权限 = 账号角色的权限 ∩ 令牌 scopes 打包出来的权限；判断仍只走 can()。
  */
 export type ApiScope = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read';

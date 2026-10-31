@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { authApi, teamApi, RequestFailed, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
 import { DialogShell } from './dialog-shell.tsx';
 import { AuditView } from './admin/audit.tsx';
+import { TokensDialog } from './tokens-dialog.tsx';
 
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
@@ -485,6 +486,7 @@ export function AccountMenu() {
   const [team, setTeam] = useState(false);
   const [settings, setSettings] = useState(false);
   const [providers, setProviders] = useState(false);
+  const [tokens, setTokens] = useState(false);
   const leave = useMutation({
     mutationFn: authApi.logout,
     onSettled: () => {
@@ -554,6 +556,15 @@ export function AccountMenu() {
             模型提供商
           </button>
           <button
+            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
+            onClick={() => {
+              setOpen(false);
+              setTokens(true);
+            }}
+          >
+            访问令牌
+          </button>
+          <button
             className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-rust hover:text-rust"
             onClick={() => leave.mutate()}
             disabled={leave.isPending}
@@ -565,6 +576,7 @@ export function AccountMenu() {
       {devices && <DevicesDialog onClose={() => setDevices(false)} />}
       {team && <TeamDialog onClose={() => setTeam(false)} />}
       {settings && <SettingsDialog onClose={() => setSettings(false)} />}
+      {tokens && <TokensDialog me={account} onClose={() => setTokens(false)} />}
       {providers && <ProvidersDialog me={account} onClose={() => setProviders(false)} />}
     </div>
   );

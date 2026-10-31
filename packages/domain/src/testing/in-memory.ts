@@ -796,7 +796,7 @@ export async function addTeamMember(
   if (!made.ok) throw new Error(made.error.message);
 }
 
-/** 开放 API 令牌的内存仓库（ADR 0014）。 */
+/** 开放 API 令牌的内存仓库（ADR 0015）。 */
 export function inMemoryApiTokens(): ApiTokenRepository & { readonly rows: Map<string, ApiToken> } {
   const rows = new Map<string, ApiToken>();
   return {

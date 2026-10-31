@@ -107,7 +107,7 @@ test('加角色只改配置：每个角色都有权限表', () => {
   assert.deepEqual(Object.keys(ROLE_PERMISSIONS).sort(), ['member', 'owner']);
 });
 
-// —— 开放 API 令牌（ADR 0014）：令牌的权限 = 本人权限 ∩ scopes，且永远不含本机 Worker 和 hub 级权限 ——
+// —— 开放 API 令牌（ADR 0015）：令牌的权限 = 本人权限 ∩ scopes，且永远不含本机 Worker 和 hub 级权限 ——
 import { API_SCOPES, NEVER_GRANTABLE, apiTokenUsable, permissionsOf } from './api-token.ts';
 
 const viaToken = (who: Principal, scopes: Parameters<typeof permissionsOf>[0]): Principal =>

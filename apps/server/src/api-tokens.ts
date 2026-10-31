@@ -6,7 +6,7 @@ import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
 /**
- * 设置页里管 API 令牌（ADR 0014），只走登录态（cookie + CSRF，由 installAuth 守）：
+ * 设置页里管 API 令牌（ADR 0015），只走登录态（cookie + CSRF，由 installAuth 守）：
  * - GET    /api/tokens       我的个人令牌 + （团队主人）服务账号
  * - POST   /api/tokens       新建；明文只在这次响应里出现
  * - DELETE /api/tokens/:id   吊销（服务账号连账号一起停用）

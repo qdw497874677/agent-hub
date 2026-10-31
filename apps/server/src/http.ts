@@ -134,7 +134,7 @@ export interface AppOptions {
    * 这里等它的全量回报，而不是把用户选的值直接当成结果显示出去。
    */
   readonly waitOptions?: (sessionId: string) => Promise<void>;
-  /** 开放 API（/openapi/v1 + MCP，ADR 0014）与设置页的令牌管理；要有账号体系。 */
+  /** 开放 API（/openapi/v1 + MCP，ADR 0015）与设置页的令牌管理；要有账号体系。 */
   readonly openApi?: OpenApiOptions & { readonly manage: ApiTokenDeps };
 }
 

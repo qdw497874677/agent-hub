@@ -13,7 +13,7 @@ import type { AuditLog } from '../ports/audit-log.ts';
 import type { TokenIssuer } from '../ports/token-issuer.ts';
 import type { UserRepository } from '../ports/user-repository.ts';
 
-/** 开放 API 令牌的用例（ADR 0014）。 */
+/** 开放 API 令牌的用例（ADR 0015）。 */
 export interface ApiTokenDeps {
   readonly apiTokens: ApiTokenRepository;
   readonly users: Pick<UserRepository, 'byId' | 'save'>;

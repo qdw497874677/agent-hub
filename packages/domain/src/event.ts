@@ -27,7 +27,7 @@ export type SessionEvent =
       /** 附件只留元数据；没带附件的老事件没有这个字段。 */
       readonly attachments?: readonly StoredAttachment[];
       /** 谁说的（登录态下才有；老事件没有 = 不知道）。 */
-      readonly author?: { readonly id: string; readonly name: string; /** 经开放 API 令牌发的：令牌名（ADR 0014）。 */ readonly via?: string };
+      readonly author?: { readonly id: string; readonly name: string; /** 经开放 API 令牌发的：令牌名（ADR 0015）。 */ readonly via?: string };
     }
   | { readonly kind: 'text'; readonly delta: string }
   /** 模型的思考过程（推理文字）。只进专注对话，默认折叠；卡片不渲染。 */

@@ -86,7 +86,7 @@ export const ONE_TIME_TOKEN_TTL_MS = 30 * 60 * 1000;
 export interface Principal {
   readonly user: User;
   readonly loginId: LoginId;
-  /** 经开放 API 令牌来的请求（ADR 0014）；cookie 登录态没有。 */
+  /** 经开放 API 令牌来的请求（ADR 0015）；cookie 登录态没有。 */
   readonly via?: TokenVia;
 }
 
