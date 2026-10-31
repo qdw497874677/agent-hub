@@ -152,12 +152,8 @@ for (const width of [1280, 390]) {
     const open = card.getByRole('button', { name: '打开' });
     await expect(open).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-selected-${width}.png` });
-    if (width >= 1024) {
-      await card.locator('header').dblclick({ position: { x: 8, y: 8 } });
-    } else {
-      await open.click();
-    }
-    await expect(page.getByRole('log', { name: '对话记录' }), width >= 1024 ? '双击进对话' : '点「打开」进对话').toBeVisible();
+    await open.click();
+    await expect(page.getByRole('log', { name: '对话记录' }), '点「打开」进对话').toBeVisible();
   });
 }
 });

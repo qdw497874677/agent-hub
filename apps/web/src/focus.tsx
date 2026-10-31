@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
@@ -18,7 +18,10 @@ interface Props {
   readonly live: LiveSession | null;
   readonly draft: string;
   readonly onDraftChange: (text: string) => void;
-  readonly onBack: () => void;
+  /** 整页时的「← 返回」；画布窗口里没有（窗口自己有关闭）。 */
+  readonly onBack?: () => void;
+  /** 画布窗口：顶栏变成拖动把手，右边挂窗口按钮（最小化/最大化/打开/关闭）。 */
+  readonly windowChrome?: { readonly actions: ReactNode };
   readonly onChanged: () => void;
   /** 换个地方继续之后跳到新会话。 */
   readonly onOpenSession: (sessionId: string) => void;
@@ -42,7 +45,8 @@ export function FocusView({
   onChanged,
   onOpenSession,
   artifacts,
-  onChangeOption
+  onChangeOption,
+  windowChrome
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [continuing, setContinuing] = useState(false);
@@ -104,10 +108,15 @@ export function FocusView({
 
   return (
     <div className="flex h-full flex-col bg-canvas">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3">
-        <button className="flex h-11 shrink-0 items-center px-1 text-meta text-tertiary hover:text-primary md:h-9" onClick={onBack} aria-label="返回">
-          ←<span className="hidden sm:inline">&nbsp;返回</span>
-        </button>
+      <header
+        className={`flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
+        data-testid={windowChrome ? 'window-titlebar' : undefined}
+      >
+        {onBack ? (
+          <button className="flex h-11 shrink-0 items-center px-1 text-meta text-tertiary hover:text-primary md:h-9" onClick={onBack} aria-label="返回">
+            ←<span className="hidden sm:inline">&nbsp;返回</span>
+          </button>
+        ) : null}
         <div className="min-w-0 flex-1">
           <p className="truncate text-body text-primary">{task?.title ?? session.taskId}</p>
           <p className="truncate font-mono text-meta text-tertiary">
@@ -148,6 +157,7 @@ export function FocusView({
               </>
             )}
           </Dropdown>
+          {windowChrome?.actions}
         </span>
       </header>
       {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} /> : null}

@@ -275,6 +275,7 @@ function Workspace() {
               live={live}
               onDerive={setDeriveFor}
               onOpen={openSession}
+              onChanged={refresh}
               onLayoutChange={saveLayout}
               onTaskStatus={setTaskStatus}
               onTaskDetail={setTaskDetail}

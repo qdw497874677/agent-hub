@@ -1,6 +1,7 @@
 import { AuthorTag } from './author.tsx';
 import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { SessionDto, TaskDto, WorkerInfoDto } from './api.ts';
 import { WorkerChip } from './workers.tsx';
 import { CardComposer } from './card-composer.tsx';
@@ -40,6 +41,10 @@ export type SessionNode = Node<
     /** 「机器 · 工作空间 · 分支」（§4，卡片上）；老会话没有工作空间时不显示。 */
     place?: { readonly machine: string; readonly workspace: string; readonly path: string; readonly branch: string | null; readonly kept: string | null } | undefined;
     onOpen: () => void;
+    /** 在画布里展开成窗口（双击卡片、⤢、右键）。 */
+    onExpand: () => void;
+    /** 已经展开成窗口了：卡上标一下。 */
+    expanded: boolean;
     /** 卡片上就地说话：不必先打开专注对话。 */
     draft: string;
     onDraftChange: (text: string) => void;
@@ -128,7 +133,7 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, worker, place, onOpen, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
+  const { session, live, agentLabel, worker, place, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
     data;
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
@@ -152,18 +157,45 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const showAuthor = multipleAuthors(blocks);
   const dimmed = status === 'stopped';
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
   return (
     <div
-      // 双击整张卡进专注对话。不能只靠 React Flow 的 onNodeDoubleClick：
+      // 双击整张卡在画布里展开成窗口（进会话页用「打开」）。不能只靠 React Flow 的 onNodeDoubleClick：
       // 卡片中段被输入框盖住了，而它会把表单控件上的双击事件当成「用户在编辑」而忽略。
-      onDoubleClick={() => onOpen()}
+      onDoubleClick={(event) => {
+        if ((event.target as HTMLElement).closest('input, textarea, button, select, a')) return;
+        onExpand();
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        // 菜单挂到 body 上、用屏幕坐标：不受画布缩放影响，也不会被画布上的会话窗口挡住
+        //（键盘菜单键 / 合成事件可能没有坐标：退回卡片左上角）
+        const box = event.currentTarget.getBoundingClientRect();
+        const x = Number.isFinite(event.clientX) && event.clientX > 0 ? event.clientX : box.left + 12;
+        const y = Number.isFinite(event.clientY) && event.clientY > 0 ? event.clientY : box.top + 12;
+        setMenu({ x: Math.max(4, Math.min(x, window.innerWidth - 176)), y: Math.max(4, Math.min(y, window.innerHeight - 96)) });
+      }}
       // 宽高由 React Flow 节点本身决定（node.width/height），卡片只铺满；输出区吃掉剩余高度。
       className={`group flex h-full w-full flex-col rounded-md border bg-card px-3 py-3 transition-colors ${
         selected ? 'border-accent' : 'border-hair'
       } ${dimmed ? 'opacity-70' : ''}`}
     >
       <CardResizer kind="session" selected={selected} onResized={onResized} />
+      {menu ? createPortal(
+        <>
+          <div className="nodrag fixed inset-0 z-[60]" onPointerDown={() => setMenu(null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); }} />
+          <div role="menu" className="nodrag fixed z-[61] flex min-w-40 flex-col rounded-sm border border-hair bg-card py-1 shadow-md" style={{ left: menu.x, top: menu.y }}>
+            <button role="menuitem" className="px-3 py-1.5 text-left text-meta text-primary hover:bg-hair/40" onClick={(event) => { event.stopPropagation(); setMenu(null); onExpand(); }}>
+              在画布中展开
+            </button>
+            <button role="menuitem" className="px-3 py-1.5 text-left text-meta text-primary hover:bg-hair/40" onClick={(event) => { event.stopPropagation(); setMenu(null); onOpen(); }}>
+              打开会话页
+            </button>
+          </div>
+        </>,
+        document.body,
+      ) : null}
       <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
       <header className="card-drag-zone mb-2 flex cursor-grab touch-none select-none items-center justify-between gap-2">
         <div className="flex items-baseline gap-2 overflow-hidden">
@@ -181,11 +213,25 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           {worker ? <WorkerChip worker={worker} /> : null}
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
+          {expanded ? <span className="text-meta text-accent" title="已在画布中展开" data-testid="card-expanded">◫</span> : null}
           <button
             className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-accent hover:text-accent focus:opacity-100 ${
               selected ? 'border-accent text-accent' : 'border-hair text-tertiary pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'
             }`}
-            title="打开专注对话（也可以双击卡片）"
+            title="在画布中展开（也可以双击卡片）"
+            aria-label="在画布中展开"
+            onClick={(event) => {
+              event.stopPropagation();
+              onExpand();
+            }}
+          >
+            ⤢
+          </button>
+          <button
+            className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-accent hover:text-accent focus:opacity-100 ${
+              selected ? 'border-accent text-accent' : 'border-hair text-tertiary pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'
+            }`}
+            title="打开会话页"
             onClick={(event) => {
               event.stopPropagation();
               onOpen();
