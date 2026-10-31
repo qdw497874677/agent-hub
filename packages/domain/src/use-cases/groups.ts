@@ -32,6 +32,7 @@ import {
   type ThreadStatus
 } from '../groups.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
+import { createSessionLane, type SessionLane } from '../session-lane.ts';
 import type { AgentRole } from '../messaging.ts';
 import type { GroupStore } from '../ports/group-store.ts';
 import type { Project } from '../project.ts';
@@ -61,6 +62,9 @@ export interface GroupChatDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' |
   readonly principalOf: (userId: string) => Promise<Principal | null>;
   /** 停止时尽量打断正在跑的回合（可选）。 */
   readonly interrupt?: (sessionId: SessionId) => Promise<unknown>;
+  /** 同一条会话的投递闸（组合根里两边共用一个）；occupied = 别的通道在这条会话上还有没收尾的投递。 */
+  readonly lane?: SessionLane;
+  readonly occupied?: (sessionId: SessionId) => Promise<boolean>;
 }
 
 export interface GroupView {
@@ -96,6 +100,7 @@ export interface GroupChat {
 const summary = (text: string): string => (text.length > 60 ? `${text.slice(0, 60)}…` : text).replaceAll('\n', ' ');
 
 export function createGroupChat(deps: GroupChatDeps): GroupChat {
+  const lane = deps.lane ?? createSessionLane();
   const locks = new Map<string, Promise<unknown>>();
   const serial = <T>(key: string, work: () => Promise<T>): Promise<T> => {
     const prev = locks.get(key) ?? Promise.resolve();
@@ -257,10 +262,11 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
   };
 
   const pumpSession = (groupId: string, sid: SessionId): Promise<void> =>
-    run(groupId, async (pending) => {
+    run(groupId, (pending) => lane.run(sid, async () => {
       const session = await deps.sessions.byId(sid);
       if (!session || isBusy(session)) return;
       if ((await deps.groups.deliveredTo(sid)).length > 0) return;
+      if (await deps.occupied?.(sid)) return;
       const next = (await deps.groups.queuedFor(sid))[0];
       if (!next) return;
       const group = await deps.groups.group(next.groupId);
@@ -278,7 +284,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         const current = (await deps.groups.deliveries(thread.id)).find((d) => d.id === delivering.id);
         if (current?.status === 'delivered') await failed(group, thread, current, sent.error.message, pending);
       }
-    });
+    }));
 
   const failed = async (group: Group, thread: GroupThread, d: GroupDelivery, reason: string, pending: Set<SessionId>): Promise<void> => {
     await settle(d, 'failed', reason);

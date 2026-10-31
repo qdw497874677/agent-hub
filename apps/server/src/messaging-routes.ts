@@ -55,6 +55,9 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     const session = await deps.sessions.byId(sessionId);
     if (!session) return fail(c, { code: 'not_found', message: '会话不存在' });
     const task = await deps.tasks.byId(session.taskId);
+    if (!task) return fail(c, { code: 'not_found', message: '会话不存在' });
+    const visible = await authorizeProject(deps.access, subjectOf(c), await deps.projects.byId(task.projectId), 'project.read');
+    if (!visible.ok) return fail(c, visible.error);
     const list = await bus.inbox(sessionId, 50);
     const pending = task ? (await messages.awaitingApproval(task.projectId)).filter((m) => m.fromSessionId === sessionId) : [];
     return c.json({ messages: list.map(messageView), awaitingApproval: pending.map(messageView) });
@@ -68,8 +71,14 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     return accepted.ok ? c.json(accepted.value, 201) : fail(c, accepted.error);
   });
 
+  // 项目配置：先确认项目存在且看得到（读）/ 能改（写），不然任何人都能给不存在或别人的项目写角色表
+  const projectFor = (c: Parameters<SubjectOf>[0], permission: 'project.read' | 'project.update') =>
+    deps.projects.byId(asProjectId(c.req.param('id') ?? '')).then((project) => authorizeProject(deps.access, subjectOf(c), project, permission));
+
   app.get('/api/projects/:id/messaging', async (c) => {
-    const projectId = asProjectId(c.req.param('id'));
+    const allowed = await projectFor(c, 'project.read');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const projectId = allowed.value.id;
     const config = await bus.config(projectId);
     const pending = await messages.awaitingApproval(projectId);
     return c.json({ ...config, awaitingApproval: pending.map(messageView) });
@@ -77,8 +86,10 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
 
   app.put('/api/projects/:id/messaging', async (c) => {
     const parsed = configBody.safeParse(await c.req.json().catch(() => null));
+    const allowed = await projectFor(c, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
     if (!parsed.success) return fail(c, { code: 'invalid', message: parsed.error.issues[0]?.message ?? '配置格式不对' });
-    const saved = await bus.saveConfig(asProjectId(c.req.param('id')), parsed.data);
+    const saved = await bus.saveConfig(allowed.value.id, parsed.data);
     return saved.ok ? c.json(saved.value) : fail(c, saved.error);
   });
 

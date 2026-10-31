@@ -20,6 +20,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createMessageBus,
   interruptSessionUseCase,
   createGroupChat,
+  createSessionLane,
   createMessageToolProvider,
   createMemoryService,
   createMemoryToolProvider,
@@ -168,7 +169,11 @@ const log = (message: string) => console.log(`[hub] ${message}`);
 const toolEndpoint = readEnv('HUB_TOOLS') === '0' ? null : { url: '', transport: 'relay' as const };
 if (readEnv('HUB_TOOLS_TRANSPORT') === 'http') log('HUB_TOOLS_TRANSPORT=http 已移除，忽略：工具一律经 worker 长连接中转');
 // agent 间通信（ADR 0018 · P2P）：消息总线 + 工具；回合结束（journal 里的 ended）时收回复、投下一条。
+// P2P 消息和群聊共用一道按会话的投递闸：同一条会话同一时间只有一个通道在等它的回复。
+const sessionLane = createSessionLane();
 const messageBus = createMessageBus({
+  lane: sessionLane,
+  occupied: async (sessionId) => (await store.groups.deliveredTo(sessionId)).length > 0,
   now: deps.now,
   sessions: deps.sessions,
   projects: deps.projects,
@@ -186,10 +191,6 @@ const messageBus = createMessageBus({
     if (!task.ok) return task;
     return deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
   }
-});
-hub.stream.subscribe((frame) => {
-  if (frame.event?.kind !== 'ended') return;
-  void messageBus.turnEnded(frame.sessionId, frame.event.outcome).catch((error: unknown) => log(`agent 消息回合收尾失败：${String(error)}`));
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
 
@@ -213,11 +214,18 @@ const groupChat = createGroupChat({
     if (!task.ok) return task;
     return deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
   },
-  interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId)
+  interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
+  lane: sessionLane,
+  occupied: async (sessionId) => (await store.messages.deliveredTo(sessionId)).length > 0
 });
+// 回合结束：先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
 hub.stream.subscribe((frame) => {
-  if (frame.event?.kind !== 'ended') return;
-  void groupChat.turnEnded(frame.sessionId).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
+  const event = frame.event;
+  if (event?.kind !== 'ended') return;
+  void (async () => {
+    await messageBus.turnEnded(frame.sessionId, event.outcome).catch((error: unknown) => log(`agent 消息回合收尾失败：${String(error)}`));
+    await groupChat.turnEnded(frame.sessionId).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
+  })();
 });
 setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
 
