@@ -510,6 +510,13 @@ export function AccountMenu() {
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
           <p className="mt-1 text-tertiary">{account.hubAdmin ? 'hub 管理员' : account.role === 'owner' ? '主人' : '成员'}</p>
+          <a
+            href="#/assets/catalog"
+            className="mt-3 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
+            onClick={() => setOpen(false)}
+          >
+            资产市场
+          </a>
           {account.hubAdmin ? (
             <a
               href="#/admin/overview"

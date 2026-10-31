@@ -1,13 +1,13 @@
 # ADR 0016：成员上架资产 + 审核流
 
-- 状态：**proposed**（等 David 拍板 `docs/design/asset-review.md` §16）
+- 状态：**accepted**（David 2026-10-30 拍板：1A 2A 3A 4A 5A 6B，见 `docs/design/asset-review.md` §17、§18）
 - 日期：2026-10-30
 - 相关：ADR 0011（团队与 RBAC）、ADR 0015（开放 API / 令牌）、`docs/design/asset-hub.md`
 
 ## 背景
 资产（技能 / 指令 / MCP）现在只有 hub 级一种作用域，`/api/admin/assets*` 全部要 `hub.assets`，即只有 David 能上架。成员想复用、分享自己的技能只能找 David。资产会进入 agent 的系统提示，MCP 还会在 Worker 上执行命令，放开上架必须配审核。
 
-## 决定（拟）
+## 决定
 1. **作用域四级**：`personal`（只自己）→ `project` → `team` → `global`（hub 全局）。资产记 `ownerId`、`teamId`、`scope`、`projectId?`。会话取用顺序：personal（会话创建者的）> project > team > global，同名就近优先。
 2. **权限进 `can()`**：新增 `asset.read`、`asset.submit`、`asset.review`、`asset.assign`、`asset.secret.use`、`asset.publish_global`（hub 级）。在 `ROLE_PERMISSIONS` 里映射：成员 `asset.submit: own`、`asset.read: team`、`asset.secret.use: own`；owner 全给 `team`；`asset.publish_global` 只有 hubAdmin。另设「指定审核人」名单（团队设置），等于给这几位追加 `asset.review: team`。`hub.assets` 保留为 hub 运营权限（全局资产、迁移、强制下架）。
 3. **生命周期 = 版本状态机**：资产本身只是名字和归属；每个**版本**走 `draft → submitted → (changes_requested | rejected | approved) → published → superseded / revoked`。新版本、Git 来源检测到的更新都生成新的 `submitted` 版本，**重新审核**；已发布版本在新版本通过前保持钉住不变。
@@ -26,3 +26,9 @@
 - 只开放「项目内资产」、不做审核：成员的 MCP stdio 会直接在团队 Worker 上执行，风险不可接受。
 - 审核只在 hub 级：团队多了以后 David 成为瓶颈，也违背 ADR 0011「团队自治」。
 - 自动扫描通过即发布：提示注入和恶意脚本没有可靠的自动判定。
+
+## 拍板与实现说明（2026-10-30）
+- 1A personal 不审，只能装到作者自己的 Worker；2A 团队主人 + 指定审核人审团队资产；3A 禁止自批，主人 / 单人团队的提交转 hub 管理员，hub 管理员对全局资产可自批并在审计里打 `asset.self_approve` 标记；4A 全局与 MCP stdio 可开「需 2 人通过」，默认关；5A Git 有更新 → 生成待审提交，旧的锁定版本照常用；6B 装到共享团队 Worker 要发安装申请，由 Worker 主人批准。
+- 审核人存在通用授权表 `access_grants`（`permission='asset.review'`，scope `team`），与 ADR 0017 一致；权限名仍是本 ADR 的 `asset.*`。
+- **解释（超出 3A 字面）**：当 hub 管理员是某个 project / team 提交唯一有资格的审核人（例如他自己就是团队主人）时，同样允许自批，带同一审计标记。hub 级审核人只能从 hub 管理员所在团队里选。
+- 迁移：已有资产全部转为 global（有项目绑定的转 project），owner 记为 hub 管理员；已有密钥归 hub 作用域；Worker 资产清单迁移前后逐字节相同（`asset-review.test.ts` 覆盖）。

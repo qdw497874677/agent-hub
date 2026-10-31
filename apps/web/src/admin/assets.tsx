@@ -571,7 +571,7 @@ function GitForm({ onDone }: { onDone: () => void }) {
 
 /* ── 差异与升级 ── */
 
-function Patch({ patch }: { patch: string }) {
+export function Patch({ patch }: { patch: string }) {
   return (
     <pre className="overflow-x-auto whitespace-pre font-mono text-[12px] leading-[1.45]">
       {patch
@@ -598,7 +598,7 @@ function Patch({ patch }: { patch: string }) {
   );
 }
 
-const CHANGE_TEXT = { added: '新增', removed: '删除', modified: '修改', unchanged: '未变' } as const;
+export const CHANGE_TEXT = { added: '新增', removed: '删除', modified: '修改', unchanged: '未变' } as const;
 
 function DiffBody({ asset, from, to }: { asset: Asset; from: string; to: string }) {
   const diff = useQuery({ queryKey: ['admin', 'assets', asset.id, 'diff', from, to], queryFn: () => assetsApi.diff(asset.id, from, to) });

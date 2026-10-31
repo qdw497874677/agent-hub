@@ -38,3 +38,4 @@ export const reviewSettingsRequest = z.object({
 });
 export const notificationsReadRequest = z.object({ ids: z.array(z.string()).max(200).nullable() });
 export const scopedSecretRequest = z.object({ value: z.string().min(1).max(16384) });
+

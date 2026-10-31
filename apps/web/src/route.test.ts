@@ -11,6 +11,8 @@ test('各种路由 format → parse 往返一致', () => {
   const routes: Route[] = [
     { page: 'home' },
     { page: 'admin', tab: 'users' },
+    { page: 'assets', tab: 'mine', reviewId: null },
+    { page: 'assets', tab: 'pending', reviewId: 's1' },
     { page: 'project', projectId: 'p1', view: 'canvas', sessionId: null },
     { page: 'project', projectId: 'p1', view: 'list', sessionId: 's9' },
     { page: 'project', projectId: 'p 中文', view: 'focus', sessionId: 's/1' }

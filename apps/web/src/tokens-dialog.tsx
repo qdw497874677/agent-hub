@@ -9,7 +9,8 @@ const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string }[] = [
   { id: 'projects:write', label: '改项目和任务', hint: '建项目 / 任务，改状态，写日志' },
   { id: 'sessions:read', label: '读对话', hint: '会话详情、事件、实时流' },
   { id: 'sessions:write', label: '发起对话', hint: '开会话、发消息、打断、分叉' },
-  { id: 'workers:read', label: '看机器', hint: '可用的远程机器（本机永远不开放）' }
+  { id: 'workers:read', label: '看机器', hint: '可用的远程机器（本机永远不开放）' },
+  { id: 'assets:submit', label: '提交资产新版本', hint: '只能给自己维护的资产提交新版本，进审核队列；不能批准、发布或安装' }
 ];
 const EXPIRY = [
   { label: '永不过期', days: 0 },

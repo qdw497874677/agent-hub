@@ -191,3 +191,10 @@ draft ──提交──▶ submitted ──通过──▶ approved ──发�
    A. 自动生成 `submitted` 版本进审核，旧版保持钉住（**推荐**）；B. 只提示，作者手动「提交新版本」；C. 小改动（仅文本）免审。
 6. **成员能否把资产装到团队共享 Worker？**
    A. 不能，只能装到项目（会话级下发）或自己的 Worker；共享 Worker 由团队 owner 装（**推荐**）；B. 成员能装，但需审核人批准安装请求；C. 成员能自由装。
+
+## 18. 已实现（2026-10-30，PR #119）
+- domain：`use-cases/asset-review.ts`（提交、审核、要求修改、撤回、评论、下架、提升作用域、Git 检查、安装申请、通知、设置）；`can()` 新增 `asset.*`。
+- storage-sqlite：资产加 `scope/owner_id/team_id/project_id`，新表提交 / 评论 / 通知 / 安装申请；审核人进 `access_grants`；`migrateAssetOwnership` 幂等。
+- server：`/api/assets/*`、`/api/notifications*`；开放 API 令牌新增 scope `assets:submit`（只能给自己的资产提交新版本）。
+- web：`#/assets/{catalog,mine,pending,settings}` 与 `#/assets/review/<id>`；审核页含差异、扫描、MCP 风险摘要、逐行评论；顶栏通知铃铛；390px 可用。
+- 已知限制：通知只站内（无邮件）；铃铛 60 秒轮询；e2e 未覆盖「共享团队 Worker 安装申请」与「真实 Git 远端更新」两条 UI 路径（domain / server 单测覆盖）；hub 管理员在唯一审核人场景下可自批（已打标记）。
