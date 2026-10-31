@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createNpmResolver } from './components.ts';
-import { startMockRegistry } from '../../../e2e/support/mock-npm-registry.ts';
+import { startMockRegistry } from '@agent-hub/node-gateway/testing';
 
 test('npm 解析器：查确切版本，拿 tarball、sha512、安装脚本；查不到报错', { timeout: 60_000 }, async () => {
   const registry = await startMockRegistry([

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import type { ComponentJobSpec } from '@agent-hub/domain';
 import { hubComponentDirs, installComponent, uninstallComponent, type ComponentInstallOptions } from './components.ts';
 import { runCommand } from './runtime-jobs.ts';
-import { npmCli, startMockRegistry, type MockRegistry } from '../../../e2e/support/mock-npm-registry.ts';
+import { npmCli, startMockRegistry, type MockRegistry } from './testing/mock-npm-registry.ts';
 
 const SCRIPT = 'node -e "require(\'fs\').writeFileSync(\'ran.txt\', \'y\')"';
 

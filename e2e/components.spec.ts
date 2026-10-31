@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { startMockRegistry } from './support/mock-npm-registry.ts';
+import { startMockRegistry } from '../packages/node-gateway/src/testing/mock-npm-registry.ts';
 
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 
