@@ -1,6 +1,6 @@
 # 设计：Agent 之间的通信（寻址 / 消息 / 原语 / 编排）
 
-- 状态：**proposed**（只有设计，没有代码；待 David 拍板 §16）
+- 状态：**accepted**（2026-10-31 David 拍板 §16 的 7 项；§3.4 会话类型、§12 IM 式界面为 proposed，待确认）。只有设计，没有代码
 - 日期：2026-10-30
 - 相关：ADR 0015（开放 API v1 + MCP）、ADR 0017（权限模型 / 集群管理员）、ADR 0006（提问是 journal 事件）、ADR 0004（按会话串行事件）、`docs/design/runtime-adapter-contract.md`；本设计对应 **ADR 0018**
 - 基线：origin/master `dbd9357`（含 #120 权限模型 97a2f2b、#121）
@@ -32,14 +32,14 @@
 
 | 方案 | 当前版本 / 状态 | 要点 | 链接 |
 |---|---|---|---|
-| **A2A**（Agent2Agent，Linux Foundation） | v1.0.0（2026-03-12），v1.0.1（2026-05-26）；Google、Microsoft、AWS、Cisco、IBM、SAP 等在 TSC | Agent Card（`/.well-known/agent-card.json`：skills、supportedInterfaces、capabilities、securitySchemes、可签名）；Message（role user/agent + Parts：text / file / data）；Task（服务端生成 id、`contextId` 归组、状态 submitted / working / input-required / auth-required / completed / failed / canceled / rejected，带 artifacts、history）；流式（SSE）；推送通知（webhook，客户端给 URL）；`tasks/list`；绑定 JSON-RPC / gRPC / HTTP+JSON；鉴权走 OpenAPI 式 securitySchemes（OAuth2 device code / PKCE、API key、mTLS）；扩展机制 | [规格](https://a2a-protocol.org/latest/specification/) · [定义](https://a2a-protocol.org/latest/definitions/) · [CHANGELOG](https://github.com/a2aproject/A2A/blob/main/CHANGELOG.md) · [任务生命周期](https://github.com/a2aproject/A2A/blob/main/docs/topics/life-of-a-task.md) |
+| **A2A**（Agent2Agent，Linux Foundation） | v1.0.0（2026-03-12），v1.0.1（2026-05-26）；Google、Microsoft、AWS、Cisco、IBM、SAP 等在 TSC | Agent Card（`/.well-known/agent-card.json`：skills、supportedInterfaces、capabilities、securitySchemes、可签名）；Message（`ROLE_USER / ROLE_AGENT` + Parts：`text` / `raw` / `url` / `data` 四选一）；Task（服务端生成 id、`contextId` 归组、`TASK_STATE_*` 状态，带 artifacts、history）；操作 `SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`、`SubscribeToTask`、推送配置 CRUD、`GetExtendedAgentCard`；`SendMessage` 默认阻塞到终态或中断态，`returnImmediately` 改为立即返回；推送通知 webhook 至少一次投递；`A2A-Version` 头协商；绑定 JSON-RPC / gRPC / HTTP+JSON（`POST /message:send`）；鉴权走 OpenAPI 式 securitySchemes（OAuth2 device code / PKCE、API key、mTLS）；扩展机制 | [规格](https://a2a-protocol.org/latest/specification/) · [定义](https://a2a-protocol.org/latest/definitions/) · [CHANGELOG](https://github.com/a2aproject/A2A/blob/main/CHANGELOG.md) · [任务生命周期](https://github.com/a2aproject/A2A/blob/main/docs/topics/life-of-a-task.md) |
 | **MCP** | 2026-07-28 版（取代 2025-11-25）：无状态（去掉 initialize 握手和 `Mcp-Session-Id`）、`server/discover`、`subscriptions/listen`；sampling / elicitation 改为 **MRTR**（结果 `resultType:"input_required"`，客户端带答案重发）；**Tasks** 移到官方扩展 `io.modelcontextprotocol/tasks`（`tasks/get` 轮询、`tasks/update`、`tasks/cancel`）；`_meta` 里传 OpenTelemetry `traceparent` | 是 **agent ↔ 工具** 协议，不是 agent ↔ agent；但它是我们给 agent 注入能力的现成通道，Tasks 扩展正好对应「长时间的 ask」 | [变更](https://modelcontextprotocol.io/specification/2026-07-28/changelog) · [博客](https://blog.modelcontextprotocol.io/posts/2026-07-28/) · [Tasks 扩展](https://tasks.extensions.modelcontextprotocol.io/seps/2663-tasks-extension) · [Elicitation（2025-11-25）](https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation) |
 | **ACP（Zed，Agent Client Protocol）** | 活跃；我们已在用（`packages/adapters/acp`） | 编辑器 / 客户端 ↔ 编码 agent 的 JSON-RPC over stdio：`session/new`（带 `mcpServers`）、`session/prompt`、`session/update` 流、权限请求。是 **人 / 客户端 → agent**，没有 agent 间寻址 | [agentclientprotocol.com](https://agentclientprotocol.com/) |
 | **ACP（IBM / BeeAI，Agent Communication Protocol）** | **2025-08 并入 A2A**，停止开发，官方给迁移指南 | REST、默认异步、SSE 流、离线发现；思想已进 A2A | [LF AI & Data 公告](https://lfaidata.foundation/communityblog/2025/08/29/acp-joins-forces-with-a2a-under-the-linux-foundations-lf-ai-data/) · [IBM Research](https://research.ibm.com/projects/agent-communication-protocol) |
 | **ANP**（Agent Network Protocol） | 社区规范 | 去中心化：`did:wba` 身份、端到端加密、元协议协商、Agent 描述 / 发现；面向开放互联网 | [agent-network-protocol.com](https://agent-network-protocol.com/) · [GitHub](https://github.com/agent-network-protocol/AgentNetworkProtocol) |
 | **AGNTCY SLIM**（Cisco 主导，LF） | IETF draft-mpsb-agntcy-slim-02（2026-07）；slim v2.x | **传输层**：gRPC over HTTP/2/3、分层名字路由、MLS 端到端加密、**组通信**、SRPC；承载 A2A / MCP（`slim-a2a` 支持 A2A v1.0）。明确区分 RPC（A2A/MCP）与消息（NATS/Kafka/SLIM），并说 agent 系统两者都要 | [草案](https://spec.slim.agntcy.org/draft-mpsb-agntcy-slim.html) · [GitHub](https://github.com/agntcy/slim) · [slim-a2a](https://github.com/agntcy/slim-a2a-python) |
 | **FIPA-ACL** | 2002 年标准，学术经典 | 言语行为 **performative**（inform、request、query-ref、agree、refuse、failure、propose、accept/reject-proposal、cfp、subscribe…）；信封字段 sender / receiver / reply-with / in-reply-to / conversation-id / reply-by / protocol；交互协议（Contract Net 等） | [FIPA ACL 规范](http://www.fipa.org/specs/fipa00061/SC00061G.html) · [Contract Net](http://www.fipa.org/specs/fipa00029/SC00029H.html) |
-| **AutoGen Core / Microsoft Agent Framework** | AutoGen 0.4+ 进维护，后继是 Microsoft Agent Framework | Actor 运行时：AgentId = type + key；**直接消息**（send，有返回）+ **发布订阅**（publish 到 TopicId = type + source，`TypeSubscription` 把 topic type 映射到 agent type、source 当 key，**按需实例化**）；Group Chat = 大家订阅同一 topic，Manager 发 `RequestToSpeak` 选下一个发言者 | [Topic & Subscription](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/core-concepts/topic-and-subscription.html) · [Group Chat](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/design-patterns/group-chat.html) · [迁移到 Agent Framework](https://learn.microsoft.com/en-us/agent-framework/migration-guide/from-autogen/) |
+| **AutoGen Core / Microsoft Agent Framework** | AutoGen 0.4 Core 仍有文档；微软官方给出「AutoGen → Microsoft Agent Framework」迁移指南，后者是后继 | Actor 运行时：AgentId = type + key；**直接消息**（send，有返回）+ **发布订阅**（publish 到 TopicId = type + source，`TypeSubscription` 把 topic type 映射到 agent type、source 当 key，**按需实例化**）；Group Chat = 大家订阅同一 topic，Manager 发 `RequestToSpeak` 选下一个发言者 | [Topic & Subscription](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/core-concepts/topic-and-subscription.html) · [Group Chat](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/design-patterns/group-chat.html) · [迁移到 Agent Framework](https://learn.microsoft.com/en-us/agent-framework/migration-guide/from-autogen/) |
 | **LangGraph** | 1.x | 图 = 共享状态 + 节点；multi-agent：supervisor（主管当工具路由）、swarm、**handoff**（`Command(goto=…, update=…)` 转交控制权）；检查点持久化、人在回路 interrupt | [Multi-agent](https://langchain-ai.github.io/langgraph/concepts/multi_agent/) · [langgraph-supervisor](https://github.com/langchain-ai/langgraph-supervisor-py) |
 | **CrewAI** | 1.x | Crew（角色 / 目标 / 背景）+ Task；Process：sequential / hierarchical（manager agent 委派）；Flows 做事件驱动编排；agent 间委派 / 提问工具 | [Docs](https://docs.crewai.com/) |
 | **OpenAI Agents SDK** | 活跃 | **Handoff**：把另一个 agent 当成 `transfer_to_<name>` 工具，转交整个对话；**agents-as-tools**：调用后拿回结果、控制权不转；guardrails；tracing（trace / span，自动） | [Handoffs](https://openai.github.io/openai-agents-python/handoffs/) · [Tracing](https://openai.github.io/openai-agents-python/tracing/) |
@@ -74,6 +74,42 @@
 4. **地址可以是「类型」而不只是「实例」**：AutoGen `TypeSubscription` 按需实例化、NATS subject 通配、Claude subagent 按名派生 → 对应我们「项目里的角色 → 复用或派生会话」。
 5. **控制权转交（handoff）与调用后返回（agent-as-tool）是两种不同语义**（OpenAI SDK、LangGraph 都区分）；我们会话是长期存在的实体，默认是 agent-as-tool（ask），handoff 用「把任务交给别人 + 结束自己」组合出来。
 6. **信封字段**几家高度一致：FIPA（reply-with / in-reply-to / conversation-id / reply-by）、CloudEvents（id / source / type / 扩展）、A2A（messageId / contextId / taskId / referenceTaskIds）、NATS（Msg-Id 去重）、OTel（traceparent）。
+
+### 2.4 核实记录（2026-10-31 逐条打开原文核对）
+
+| 条目 | 核实结果 | 来源 |
+|---|---|---|
+| A2A 版本 | 规格页标「Latest Released Version 1.0.0」；仓库 CHANGELOG 有 1.0.1（2026-05-26，补丁：HTTP 绑定首选 `application/a2a+json` 等）。规格写明补丁号不参与协商，协议版本按 `Major.Minor` = `1.0` | [规格](https://a2a-protocol.org/latest/specification/) · [CHANGELOG](https://github.com/a2aproject/A2A/blob/main/CHANGELOG.md) |
+| A2A 操作名（**更正**） | v1.0 的 JSON-RPC 方法是 `SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks`、`CancelTask`、`SubscribeToTask`、`Create/Get/List/DeleteTaskPushNotificationConfig`、`GetExtendedAgentCard`；REST 是 `POST /message:send`、`POST /message:stream`、`GET /tasks/{id}`、`POST /tasks/{id}:cancel`。初稿写的 `message/send`、`tasks/get` 是 0.x 的旧名，已全部改掉 | 规格 §5.3 Method Mapping |
+| A2A 状态与 Part（**更正**） | TaskState 是 ProtoJSON 枚举：`TASK_STATE_SUBMITTED / WORKING / COMPLETED / FAILED / CANCELED / INPUT_REQUIRED / REJECTED / AUTH_REQUIRED`；Role 是 `ROLE_USER / ROLE_AGENT`；Part 是 `text / raw / url / data` 四选一（不是 `file`），另带 `mediaType`、`filename` | 规格 §4.1 |
+| A2A 阻塞语义（**补充**） | `SendMessage` 默认阻塞到终态或中断态（`INPUT_REQUIRED` / `AUTH_REQUIRED`）；`returnImmediately: true` 才立即返回。我们的 notify 映射到后者 | 规格 §3.2.2 |
+| A2A 推送通知 | webhook 收 `StreamResponse`，至少一次投递，接收方要幂等；鉴权 `AuthenticationInfo`（Bearer 等） | 规格 §4.3 |
+| A2A 鉴权 | securitySchemes 基于 OpenAPI 3.2：API key、HTTP（Bearer）、OAuth2（authorization code + PKCE、client credentials、device code；implicit / password 已弃用）、OIDC、mTLS | 规格 §4.5 |
+| IBM ACP | 2025-08-29 LF AI & Data 公告并入 A2A，ACP 团队停止开发、转向 A2A；IBM Research 页置顶「ACP is now part of A2A」并给迁移指南 | [公告](https://lfaidata.foundation/communityblog/2025/08/29/acp-joins-forces-with-a2a-under-the-linux-foundations-lf-ai-data/) · [IBM](https://research.ibm.com/projects/agent-communication-protocol) |
+| MCP | 最新是 2026-07-28 规格：无状态、`server/discover`、`subscriptions/listen`、MRTR 取代服务端主动的 sampling / elicitation / roots、Tasks 移到 `io.modelcontextprotocol/tasks` 扩展（`tasks/get` 轮询、`tasks/update`、`tasks/cancel`，去掉 `tasks/list` 和阻塞的 `tasks/result`）、`_meta` 传 OTel `traceparent` | [变更](https://modelcontextprotocol.io/specification/2026-07-28/changelog) · [博客](https://blog.modelcontextprotocol.io/posts/2026-07-28/) · [Tasks SEP-2663](https://tasks.extensions.modelcontextprotocol.io/seps/2663-tasks-extension) |
+| AGNTCY SLIM | IETF draft-mpsb-agntcy-slim-02（2026-07-07，Cisco 作者，Informational）：A2A / MCP 的传输层，gRPC over HTTP/2/3、MLS 端到端加密、组通信、SRPC；`slim-a2a-python` 同时支持 A2A 1.0 和 0.3 | [草案](https://spec.slim.agntcy.org/draft-mpsb-agntcy-slim.html) · [GitHub](https://github.com/agntcy/slim) · [slim-a2a](https://github.com/agntcy/slim-a2a-python) |
+| AutoGen 主题 | Topic = (type, source)；Subscription 把 topic 映射到 AgentId；`TypeSubscription`：topic type → agent type，source 当 agent key → 每个 source 一个实例；没有订阅的 topic 消息不投递。Group Chat：所有参与者订阅同一 topic，Manager 发 `RequestToSpeak` 选下一个发言者 | [Topic & Subscription](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/core-concepts/topic-and-subscription.html) · [Group Chat](https://microsoft.github.io/autogen/stable/user-guide/core-user-guide/design-patterns/group-chat.html) · [迁移到 Agent Framework](https://learn.microsoft.com/en-us/agent-framework/migration-guide/from-autogen/) |
+
+本节以外的链接（LangGraph、CrewAI、OpenAI Agents SDK、Claude Code subagents、ANP、FIPA、NATS、CloudEvents、Zed ACP）是各项目官方文档入口，未逐字核对版本号。
+
+### 2.5 把多个 agent 放进同一个群聊的产品
+
+| 产品 | 成员 | 谁来回答（轮次） | 人插话 | agent 之间 | 来源 |
+|---|---|---|---|---|---|
+| **Slack**（Agents & tools） | 可把多个 agent / app 加进频道，也能 DM 单个 agent | 只有被 @ 的 agent 回答；交互可以设成公开或只自己可见 | 人随时发言，agent 只响应 @ | 官方帮助未描述 agent 互相调用 | [Work with AI agents in Slack](https://slack.com/help/articles/33076000248851-Work-with-AI-agents-in-Slack) |
+| **Microsoft Teams**（Copilot / SharePoint agents / Channel Agent） | 群聊、频道可加多个 agent；Channel Agent 每个频道只能有 1 个 | 必须逐个 @，一条消息不能同时 @ 多个；@Everyone 不包括 agent | 人主导 | **agent 不能互相调用**（实测，无「agent 循环」）；回答按提问人的数据权限生成 | [Copilot 群聊](https://support.microsoft.com/en-us/teams/chat-channels/how-to-use-microsoft-365-copilot-in-teams-group-chats) · [Channel Agent](https://learn.microsoft.com/en-us/microsoftteams/set-up-channel-agent-teams) · [多个 SharePoint agent（Topedia）](https://blog.topedia.com/posts/teams-now-supports-multiple-sharepoint-agents-in-chats-and-channel-conversations) |
+| **SquidHub** | 房间里有人和多个「squid」（不同人带来的 agent） | 每个 squid 有响应模式：只在被 @ 时 / 智能（默认，分类器决定要不要插话）/ 总是；**一条人类消息每拍只有一个 squid 回复**，由调度器选最合适的 | 人可 @ 指定，或按房间改模式 | 未强调 | [Docs](https://squidhub.ai/docs) |
+| **Douchat** | 云端 agent 和本地 agent CLI（Claude Code、Codex）同群 | `@名字` 直达、`@all` 问所有人；不 @ 时由「主导 agent」决定一个人答、几个并行、几个轮流或不答；寒暄只给一条短回复 | 人随时 @ | agent 能把任务转给别人或在群内私信，**所有交接在群里可见**；屡次失败的成员被移出本轮 | [Group chats](https://douchat.ai/features/group-chats) |
+| **Bloome** | agent 是一等成员，有资料卡、在成员列表里；群聊、DM、话题串都能用 | @ 呼叫；回复成串 | 人在回路里拍板 | agent 可互相委派、并行，在同一串里交叉审阅 | [Agents in group chat](https://bloome.im/features/ai-agents-in-group-chat) · [Multi-agent](https://bloome.im/features/multi-agent) |
+| **Cogent**（开源核心） | 把 Slack / WhatsApp / Telegram / Discord 频道桥接到 Claude Code、Codex 等，多人多 agent 同频道 | @ + 话题串回复，带署名 | 人在原来的聊天工具里发言 | agent 之间会互相对话；用 **A2A Agent Card** 描述每个 agent | [cogent.tools](https://cogent.tools/) |
+| 参照：AutoGen Group Chat | 所有参与者订阅同一 topic | Manager 轮询或用 LLM 选择器发 `RequestToSpeak`，一次只一个在干活 | 可加「人类代理」参与者 | 通过 Manager | 见 §2.4 |
+
+**读出来的几条（直接用于 §12）**
+1. **@ 是通用的寻址语法**：所有产品都用 @ 指定回答者，不 @ 时要么不回答（Slack / Teams），要么交给调度者 / 主导 agent 决定（SquidHub、Douchat、AutoGen）。
+2. **防刷屏是共识**：SquidHub 每拍只一个回复，Douchat 寒暄只一条短回复，Teams 干脆不让 agent 互相调用。→ 我们的默认：群里不 @ 时**不自动回复**，可选给群配一个「主持」角色。
+3. **交接必须可见**：Douchat、Bloome 都把 agent 之间的委派显示在群里。→ 群里的 agent 互调显示为一条「已转给 @reviewer」的系统行，点开看详情。
+4. **权限按提问人走**：Teams 用提问人的数据权限生成回答，与我们的 `onBehalfOf` 一致。
+5. **agent 是联系人 / 成员**：Slack 的 Agents 页、Bloome 的成员资料卡 → 我们的 IM 侧栏把持久型会话做成联系人。
 
 ## 3. 地址层
 
@@ -125,6 +161,30 @@ accepts: [ask, notify]   # 可选：只接受哪些原语
 `external_agents` 表：`{ id, teamId, name, kind: 'a2a'|'inbox', cardUrl?, card? (缓存), auth (引用 secret vault), serviceAccountId?, createdBy }`。
 - `a2a`：hub 作为 **A2A 客户端** 去调它；
 - `inbox`：对方用开放 API 令牌（服务账号）拉 SSE 收件箱或收 webhook（§10）。
+
+### 3.4 会话类型：任务型 vs 持久型（proposed，待 David 确认）
+
+会话在**创建时就定好类型**，之后不变。
+
+| | 任务型（`kind: task`） | 持久型（`kind: persistent`） |
+|---|---|---|
+| 用途 | 做一件事 | agent 在某个群或项目角色里的长期身份 |
+| 结束 | 有终态：完成 / 失败 / 取消，之后归档 | 没有「完成」 |
+| 状态 | 排队 / 运行中 / 等批准 / 终态 | 在线（空闲）/ 忙 / 有排队 / 离线（worker 不在）/ 已重启 |
+| 归属 | 一个 agent-hub 任务（`taskId` 必填，没有就自动建一个） | 一个群（每个成员 agent 一个）或一个项目角色（`reuse: sticky`） |
+| 上下文 | 全新开始，只带调用方给的内容 | 长期积累；超过阈值**自动压缩 / 摘要**；可**手动「重启」**（开新底层会话，带上一段摘要） |
+| 出现在哪 | 画布、任务列表 | IM 联系人、群成员 |
+| 谁能创建 | 人、持久型会话、编排 | 人（加 agent 进群、设常驻角色） |
+
+规则：
+- 持久型可以**派生任务型**并拿回结果（结果作为一条消息贴回它所在的 DM / 群，带「任务卡」链接到画布）；**任务型永远不会变成持久型**。
+- 点对点 / 群聊是**寻址方式**，和类型正交：
+  - DM 一个 agent 联系人 → 投给它的**持久型**会话；
+  - `ask role:reviewer`（不在群里）→ 默认**派生一个任务型**会话（`reuse: always-new`；可配 `sticky` 改投常驻的持久型）；
+  - 群里 @ 群成员 → 投给该成员在本群的持久型会话；
+  - 群里临时 @ 一个**不在群里**的角色 → 派生任务型会话（要 `agent.spawn`，按决定 4 需要批准），结果贴回群里。
+- 这样 §3.2 的 `reuse` 取值简化为：`sticky` = 持久型；`per-trace` / `always-new` = 任务型。
+- 数据：`sessions.kind`（`task | persistent`，迁移时老会话全部记为 `task`），持久型多 `home`（`group:<id>` 或 `role:<projectId>/<name>`）、`summary`、`generation`（重启次数）。
 
 ## 4. 消息层：一个信封
 
@@ -191,6 +251,23 @@ queued → delivering → delivered → (answered | expired | failed | canceled)
 ```
 - `delivered` = 已作为提问写进目标会话 journal（或外部已确认收到）；`answered` = 收到 reply。
 - 至少一次投递 + 幂等键去重 = 对 agent 而言恰好一次。
+
+### 5.4 点对点 vs 群聊：落到原语的例子
+
+| 用户看到的 | 实际的信封 / 原语 | 投给谁 |
+|---|---|---|
+| David 在 DM 里对 `@reviewer` 说「看下 PR #122」 | `send`，from = `user:david`，to = `session:<reviewer 的持久型>`（人发的不包「不可信」） | reviewer 持久型会话，作为一轮提问 |
+| reviewer 在 DM 里回答 | 这一轮的文本就是 DM 回复（人发起的不需要 `agent_reply`） | DM 时间线 |
+| reviewer 在干活时问 `@tester`：「这个用例能过吗？」 | `ask`，from = reviewer，to = `session:<tester 的持久型>`，`deadline` 10 分钟，`trace.depth` 1 | tester 会话；它忙就**排队**，DM 里显示「排队中 · 前面 1 条」 |
+| tester 用 `agent_reply` 回答 | `reply`，`correlationId` = 上面的 ask | 回到 reviewer（阻塞的工具调用返回，或作为新一轮） |
+| reviewer 说「开个任务把 lint 修了」 | `ask` to `role:<项目>/fixer`，fixer 解析为 `always-new` → **派生任务型会话**（按决定 4 先批准） | 新任务型会话；结果作为「任务卡」贴回 DM，点开跳到画布 |
+| David 在群「发布小组」里发「今晚能发吗？@all」 | `post` to `group:release`，`replyPolicy: { mode: 'all', timeoutMs: 15m }` | 群里每个成员 agent 的持久型会话；群顶部显示「等待回复 2/3」 |
+| David 在群里只 @ 两个人 | 两个 `ask`（同一 `traceId`），在群时间线里以一条消息显示 | 被 @ 的两个持久型会话 |
+| David 在群里不 @ 任何人 | `post`，`replyPolicy: none`（默认不自动回复，对齐 Slack / Teams）；群配了「主持」角色时，改为 ask 主持人，由它决定派给谁（对齐 Douchat / AutoGen） | 只记进群历史，各成员下一次被 @ 时能看到 |
+| 群里临时 @ 一个不在群里的 `@perf` 角色 | `ask` to `role:<项目>/perf` → 派生任务型会话（要 `agent.spawn` + 批准） | 结果作为任务卡贴回群 |
+| 群里 `@vote 选方案 A 还是 B` | `post` 带 `replyPolicy: { mode: 'all' }` + `data` part 的选项 schema；汇总由群主持或 UI 计票 | 所有成员 |
+
+群的历史怎么给 agent：每个成员的持久型会话**只收到 @ 它的消息和发给全群的 post**，附带「自上次以来群里的新消息摘要」（不超过 N 条 / 2k token），避免每条群消息都占一轮。
 
 ## 6. 身份与署名
 
@@ -334,20 +411,36 @@ queued → delivering → delivered → (answered | expired | failed | canceled)
 - **RuntimeAdapter 契约不变**：对运行时而言，收到消息就是一次 `prompt`；回复是 MCP 工具调用或轮次结束事件。只需要 journal 的提问事件多一个 `author` 字段（契约文档补一节）。
 - **SSE 事件**（`/api/stream`、开放 API `stream`）：`message.queued / delivered / answered / failed`、`trace.updated`、`approval.requested`。
 
-## 12. UI
+## 12. UI：IM 式（proposed，选型稿见 `docs/design/mockups/agent-messaging/`）
 
-- **画布连线**：会话卡之间画**有方向的边**（箭头 = from→to），按 trace 着色；ask 实线、notify 虚线；在途时动画，失败红色；边上数字 = 消息数。点边 → 抽屉里列出这两者之间的消息。
-- **组节点**：画布上一个圆角「组」节点，成员连线；`post` 时向成员放射动画。
-- **会话内消息时间线**：对话里 agent 发来的提问以不同样式显示（头像 = 角色名 + 「代 David」+「不可信」小标）；本会话发出的 ask / 回复以「已发送 → reviewer · 等待中 / 已回复」卡片出现，可点开对方会话。
-- **调用链视图**：`/#/traces/:id` 树 / 甘特图（像 OpenAI Agents SDK tracing / OTel）：每跳的会话、耗时、tokens、状态、深度；顶部显示预算用量；可一键取消整条链。
-- **批准卡**：派生新会话需批准时，在通知中心和发起会话里出卡片。
-- **手机（390px）**：画布边退化为会话卡上的「↗ 3 / ↘ 1」徽标；时间线和调用链用纵向列表 + 折叠；批准卡全宽按钮。
-- **设置**：项目「Agent 角色」编辑页（表单 + YAML 预览）、组管理、外部 agent 登记、能力授予（复用 ADR 0017 的授权 UI）。
+David 的方向：**agent 是联系人，点对点 = 私聊（DM），组 = 群聊**，人和 agent 都能在群里 @。
+
+- **联系人 = 持久型会话**（§3.4）：头像 + 角色名 + 状态点（在线 / 忙 / 排队 n / 离线）+ 运行时 / 模型小字。项目角色（sticky）和群成员都出现在这里。
+- **DM**：和普通聊天一样；agent 发来的消息带「代 David」与「agent 消息 · 不可信」小标（agent → agent 时）；本会话发出的 ask 显示为「→ @tester · 等待中 / 已回复」卡片。
+- **群聊**：成员栏（人 + agent）；输入框 `@` 弹出成员和可临时调用的角色；回复策略在发送前可选（不需要回复 / 任意一个 / 前 N 个 / 全部），发出后顶部显示「等待回复 2/3 · 剩 12 分钟」，点开看谁还没回。
+- **排队**：目标会话忙时，消息气泡下显示「排队中 · 前面 1 条」，联系人状态点变黄并带数字。
+- **派生批准**：临时 @ 一个不在群里的角色、或 agent 要派生任务型会话时，出一张批准卡（谁要求、哪个角色、哪台 worker / 模型、预算），按钮「批准 / 拒绝」；等待期间对应消息显示「等批准」。
+- **任务卡**：派生出来的任务型会话在聊天里是一张小卡（状态、耗时、tokens），点开跳到画布 / 任务页；完成后结果摘要贴在卡下。
+- **持久型的维护**：联系人详情里显示上下文用量、上次自动压缩时间、「重启」按钮（确认后带摘要开新底层会话）。
+- **调用链**：任意 ask / 任务卡可「查看调用链」→ §原设计的树 / 甘特视图。
+- 手机（390px）：一级是会话列表（联系人 + 群，像微信 / Slack 手机版），点进是全屏聊天；成员、调用链用底部抽屉。
+
+### 12.1 三个选型
+
+| | A. IM 侧栏 + 聊天窗 | B. 聊天嵌在画布 / 项目页 | C. 混合（IM 为主，画布联动） |
+|---|---|---|---|
+| 样子 | 新的顶级「消息」页：左栏联系人 + 群，右边聊天，最右成员 / 详情 | 在项目画布右侧开聊天抽屉；联系人 = 画布上的持久型卡；群 = 画布上的组节点 | 「消息」页同 A，但右侧详情栏是迷你画布 / 调用链；任务卡点开直接在画布定位 |
+| 好处 | 最熟悉（微信 / Slack），手机最自然；跨项目的群也放得下 | 和现有画布心智一致，调用关系一眼看到；不新增顶级页面 | 兼顾聊天效率和调用可视；持久型在 IM、任务型在画布，分工与 §3.4 一致 |
+| 坏处 | 与画布割裂，看不到调用图；多一个顶级入口 | 画布本来就挤，聊天抽屉在手机上几乎没空间；跨项目群没地方放 | 实现量最大（两套视图联动）；桌面右栏信息密 |
+| 手机 | 列表 → 聊天，最好 | 差：只能全屏抽屉，失去画布 | 同 A，详情改底部抽屉 |
+| 推荐 | | | **推荐 C**，分期先做 A 的部分（P1–P2），P2 末加联动 |
+
+截图：`docs/design/mockups/agent-messaging/option-{a,b,c}-{desktop,mobile,mobile-dm}.png`（桌面 1280×800、手机 390×844；HTML 用 `python3 gen.py` 重新生成，手机私聊视图在 URL 后加 `#dm`）。
 
 ## 13. 外部 agent 参与
 
-1. **作为 A2A 服务端（对外暴露 hub 里的 agent）**：每个设置为「发布」的项目角色生成 Agent Card：`GET /a2a/<projectId>/<role>/.well-known/agent-card.json`；`skills` 来自角色 description；`securitySchemes` = Bearer（开放 API 令牌 / 服务账号）；`supportedInterfaces` 先 JSON-RPC + HTTP+JSON。`message/send` → 我们的 `ask`（新 Task），`message/stream` → SSE 转发 `session/update` 的文本；`tasks/get / cancel / list` 映射到投递记录；推送通知 → 我们的 webhook 投递。
-2. **作为 A2A 客户端（调用外部 A2A agent）**：登记 Card URL → `external:<id>` 地址；`ask` → `message/send`（或流式）；外部 Task 的 `input-required` → 回到调用方会话作为一轮提问（「对方需要补充：…」）。
+1. **作为 A2A 服务端（对外暴露 hub 里的 agent）**：每个设置为「发布」的项目角色生成 Agent Card：`GET /a2a/<projectId>/<role>/.well-known/agent-card.json`；`skills` 来自角色 description；`securitySchemes` = Bearer（开放 API 令牌 / 服务账号）；`supportedInterfaces` 先 JSON-RPC + HTTP+JSON。`SendMessage` → 我们的 `ask`（新 Task），`SendStreamingMessage` / `SubscribeToTask` → SSE 转发 `session/update` 的文本；`GetTask / ListTasks / CancelTask` 映射到投递记录；`Create/Get/List/DeleteTaskPushNotificationConfig` → 我们的 webhook 投递。版本按 `A2A-Version` 头协商（空 = 0.3），P3 只实现 1.0。
+2. **作为 A2A 客户端（调用外部 A2A agent）**：登记 Card URL → `external:<id>` 地址；`ask` → `SendMessage`（或 `SendStreamingMessage`）；外部 Task 的 `input-required` → 回到调用方会话作为一轮提问（「对方需要补充：…」）。
 3. **非 A2A 外部 agent / 脚本**：开放 API v1 新增
    - `POST /openapi/v1/messages`（发信封，等同 MCP 工具）、`GET /openapi/v1/messages/:id`；
    - `GET /openapi/v1/inbox/stream`（SSE 收件箱，`Last-Event-ID` 续传）、`POST /openapi/v1/inbox/:id/ack`；
@@ -360,17 +453,17 @@ queued → delivering → delivered → (answered | expired | failed | canceled)
 |---|---|---|
 | `role:` 地址（发布的） | Agent（Agent Card） | 一个角色一张卡；`skills` ← 角色描述 |
 | `external:` 地址 | 远端 Agent（我们是 Client） | 缓存 Card，按 securitySchemes 鉴权 |
-| Envelope.parts | Message.parts（text / file / data） | 同形，几乎直译 |
-| `ask` | `message/send` 创建 Task | 回复 ↔ Task completed + artifacts / agent message |
-| `notify` | `message/send`（对方可返回无状态 Message） | |
+| Envelope.parts | Message.parts（每个 Part 是 `text` / `raw` / `url` / `data` 四选一，另有 `mediaType`、`filename`） | 我们的 `file` 部分 → `url`（短时签名链接）；`data` 直译 |
+| `ask` | `SendMessage`（REST `POST /message:send`）创建 Task | 回复 ↔ Task completed + artifacts / agent message |
+| `notify` | `SendMessage` + `configuration.returnImmediately=true`（对方也可直接回一个 Message，不建 Task） | |
 | `reply` | Task 的 agent Message / Artifact | |
-| `cancel` | `tasks/cancel` | |
+| `cancel` | `CancelTask`（`POST /tasks/{id}:cancel`） | |
 | `correlationId` | `taskId` | |
 | `trace.traceId` | `contextId`（+ 扩展 metadata 带 depth / path / onBehalfOf） | A2A 没有深度和代理身份 → 用 A2A extension `agenthub/trace` |
-| 投递状态 | TaskState（submitted / working / input-required / completed / failed / canceled / rejected） | `refused` ↔ `rejected` |
-| 流式 | `message/stream`（SSE） | |
+| 投递状态 | TaskState（`TASK_STATE_SUBMITTED / WORKING / INPUT_REQUIRED / AUTH_REQUIRED / COMPLETED / FAILED / CANCELED / REJECTED`） | `refused` ↔ `rejected` |
+| 流式 | `SendStreamingMessage` / `SubscribeToTask`（SSE） | |
 | webhook 投递 | push notifications | |
-| 组 / `post` / replyPolicy | **无对应** | 组只在 hub 内；对外部 A2A 成员 = 逐个 `message/send` 再聚合 |
+| 组 / `post` / replyPolicy | **无对应** | 组只在 hub 内；对外部 A2A 成员 = 逐个 `SendMessage` 再聚合 |
 | `deadline` / 预算 | 无 | 走 extension metadata，对方可忽略，hub 侧自己计时 |
 
 ### 13.2 借 / 改 / 弃
@@ -387,7 +480,7 @@ queued → delivering → delivered → (answered | expired | failed | canceled)
 |---|---|---|
 | **P1 核心点对点** | 信封、`MessageStore`（SQLite）、DeliveryWorker、`session:` / `role:`（sticky / per-trace，同项目）、MCP 工具 `agent_send / ask / reply / status / inbox_read / directory`、提问署名 + 不可信包裹、权限点 + 项目范围授权、深度 / 环 / 并发限制、审计、会话内时间线 | e2e：A ask B 拿到回复；忙时排队；越权被拒；深度 5 被拒；手机截图 |
 | **P2 组 + 派生 + UI** | 组与 replyPolicy、`always-new` 派生 + 批准卡、worker 范围授权、每链预算、画布方向边 / 组节点、调用链视图、SSE 事件 | e2e：投票 3 人 `all`、`any` 超时、派生需批准 |
-| **P3 外部** | 开放 API messages / inbox SSE / webhook、外部 agent 登记、**A2A 服务端（Agent Card + message/send/stream + tasks）与客户端** | 用官方 A2A SDK（`a2a-sdk` / `@a2a-js/sdk`）做互通测试 |
+| **P3 外部** | 开放 API messages / inbox SSE / webhook、外部 agent 登记、**A2A 服务端（Agent Card + SendMessage / SendStreamingMessage / GetTask / ListTasks / CancelTask）与客户端** | 用官方 A2A SDK（`a2a-sdk` / `@a2a-js/sdk`）做互通测试 |
 | **P4 编排** | `@agent-hub/orchestration` 库、声明式编排规格（视使用情况） | |
 
 ## 15. 风险
@@ -404,12 +497,18 @@ queued → delivering → delivered → (answered | expired | failed | canceled)
 | MCP 2026-07 无状态改动影响现有中转 | 本设计只加工具，不依赖 MCP 会话；随现有 MCP 升级走 |
 | 权限组合复杂、误放行 | 所有入口都过 `MessageBus.accept()`，表驱动测试 + 「本机 Worker / 跨团队永不放行」不变量测试 |
 
-## 16. 待拍板（推荐默认加粗）
+## 16. 已决（2026-10-31 David）
 
-1. **A2A 兼容到什么程度？** A. 不兼容，只做自有 API；**B. P3 做「出入两向的 A2A 网关」：发布角色为 Agent Card + 能调外部 A2A agent，内部仍用自有信封（推荐）**；C. 内部也直接用 A2A 对象（Task 作为内部模型）。
-2. **回复怎么捕获？** A. 只认 `agent_reply`；**B. `agent_reply` 为主，轮次结束兜底取最后文本（项目可关）（推荐）**；C. 只取最后文本。
-3. **消息进入忙碌会话：** **A. 排队，当前轮结束后作为新一轮（推荐）**；B. 打断当前轮；C. 拒绝并让发送方重试。
-4. **派生新会话是否需要人工批准（默认值）：** A. 从不；**B. 只在新开会话时需要发起人或项目 owner/admin 批准，复用已有会话不需要（推荐）**；C. 每次 ask 都要批准。
-5. **能力授予的默认范围：** **A. 默认按项目：项目内会话可互相 send/ask，派生要 `agent.spawn`；worker 范围作为额外授权（推荐）**；B. 默认全关，逐项目 / 逐 worker 开；C. 团队内全开。
-6. **`role:` 角色定义放哪：** A. 只在 hub 数据库；B. 只在仓库文件 `.agent-hub/agents/*.md`；**C. 两者都支持，hub 数据库优先、仓库文件可导入（推荐）**。
-7. **安全默认值：** **A. 深度 4、每链并发 8、扇出 10、派生 5、项目可调高到上限 2 倍（推荐）**；B. 更严（深度 2、扇出 5）；C. 不设默认，项目自定。
+1. **A2A**：选 B，在第 3 期做双向 A2A 网关；内部仍用自有信封。
+2. **回复**：选 B，以 `agent_reply` 为主，轮次结束时取最后一段文本兜底（项目可关）。
+3. **会话忙**：选 A，排队，等当前这一轮结束后作为新的一轮。
+4. **人工批准**：选 B，只有派生新会话需要批准，复用已有会话不需要。
+5. **默认授权**：选 A，项目内默认可以 send / ask，`agent.spawn` 单独授予。
+6. **角色定义**：选 C，数据库和仓库文件都支持，两边冲突时以数据库为准。
+7. **限额**：选 A，深度 4、每条链并发 8、扇出 10；项目最多可调到 2 倍。
+
+### 16.1 新提出、待确认
+
+- §3.4 会话类型：创建时就定好（任务型 / 持久型），任务型不会变成持久型；DM 投给持久型，问某个角色默认派生任务型。
+- §12 IM 式界面：选型 A / B / C（推荐 C，先做 A 的部分）。
+- 群里不 @ 任何人时：默认不自动回复；可以给群配一个「主持」角色来分派。
