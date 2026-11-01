@@ -72,7 +72,7 @@ echo "==> 安装依赖"
 cd "$here"
 npm install --no-fund --no-audit --omit=dev
 
-label="${WORKER_LABEL:-$(hostname)$suffix}"
+label="${WORKER_LABEL:-$(hostname 2>/dev/null || uname -n)$suffix}"
 credential=""
 if [[ -n "${HUB_PAIR:-}" ]]; then
   echo "==> 用接入码经长连接 $HUB_URL 换专属凭据"
