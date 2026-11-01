@@ -186,3 +186,13 @@ test('结果未知：interrupted + outcome_unknown → 交给人的 unknown 块�
   // 普通中断不出卡片
   assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'interrupted', reason: '用户中断' }, 2), []);
 });
+
+test('批准卡：request 出卡，resolved 写回同一张卡；不改「正在回复」', () => {
+  let blocks = applyBlocks([], { kind: 'approval', phase: 'request', id: 'a', title: 'rm x', expiresAt: 9 }, 1);
+  blocks = applyBlocks(blocks, { kind: 'approval', phase: 'request', id: 'a', title: 'rm x', expiresAt: 9 }, 2);
+  assert.equal(blocks.length, 1);
+  blocks = applyBlocks(blocks, { kind: 'approval', phase: 'resolved', id: 'a', decision: 'deny', by: 'timeout' }, 3);
+  assert.deepEqual(blocks, [{ kind: 'approval', id: 'a', title: 'rm x', expiresAt: 9, resolved: { decision: 'deny', by: 'timeout' }, seq: 1 }]);
+  const next = applyFrame(base, { sessionId: 's1', seq: 2, event: { kind: 'approval', phase: 'request', id: 'b', title: 't' }, status: 'running' });
+  assert.equal(next['s1']!.awaiting, true);
+});

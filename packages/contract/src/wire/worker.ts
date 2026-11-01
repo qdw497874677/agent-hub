@@ -279,6 +279,14 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     components: z.array(componentJobSpecSchema).min(1).max(16).optional()
   }),
   z.object({ kind: z.literal('dispose'), sessionId: id }),
+  /** 回答运行时的批准请求（ADR 0023）。老 worker 不认，只记一条日志。 */
+  z.object({
+    kind: z.literal('approval'),
+    sessionId: id,
+    approvalId: z.string().min(1).max(256),
+    decision: z.enum(['allow', 'deny']),
+    author: z.object({ id: z.string().max(200), name: z.string().max(200) }).optional()
+  }),
   /** 「重新检测」：让 worker 立刻重新探测各 harness 是否可用。老 worker 不认，只记一条日志。 */
   z.object({ kind: z.literal('probe') }),
   z.object({

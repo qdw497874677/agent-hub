@@ -6,6 +6,9 @@ import { createServer } from 'node:net';
 import { AsyncQueue } from '@agent-hub/contract';
 import {
   conflict,
+  createApprovalGate,
+  invalid,
+  type ApprovalGate,
   err,
   forbidden,
   ok,
@@ -359,6 +362,24 @@ export class HermesSession implements RuntimeSession {
   private run: { id: string; abort: AbortController } | null = null;
   private disposed = false;
   private readonly home: string | null;
+  /** 批准卡（ADR 0023）：人点了才回 Hermes；超时 / 会话关了一律拒绝。id → 这一轮的 run 和 Hermes 的请求号。 */
+  private readonly approvals = new Map<string, { runId: string; requestId: string; generation: number }>();
+  private readonly gate: ApprovalGate = createApprovalGate({
+    push: (event) => this.queue.push(event),
+    send: async (id, decision) => {
+      const target = this.approvals.get(id);
+      this.approvals.delete(id);
+      if (!target) return;
+      // 只给 once / deny：从不给 session / always，不在 Hermes 里留永久授权
+      await hermesJson(this.gateway.endpoint, 'POST', `/v1/runs/${encodeURIComponent(target.runId)}/approval`, {
+        request_id: target.requestId,
+        execution_generation: target.generation,
+        choice: decision === 'allow' ? 'once' : 'deny'
+      }).catch((error: unknown) => {
+        this.queue.push({ kind: 'diagnostic', level: 'warn', text: `回 Hermes 的批准失败：${(error as Error).message}` });
+      });
+    }
+  });
 
   constructor(sessionId: SessionId, gateway: Gateway, model: string, instructions: string, log: (message: string) => void, home: string | null = null) {
     this.sessionId = sessionId;
@@ -447,7 +468,7 @@ export class HermesSession implements RuntimeSession {
     const pending = await readPending(this.home);
     if (!pending?.runId) return;
     const status = await this.status(pending.runId);
-    if (status && ['queued', 'running', 'waiting'].includes(status.status)) {
+    if (status && ['queued', 'running', 'waiting', 'waiting_for_approval'].includes(status.status)) {
       const abort = new AbortController();
       this.run = { id: pending.runId, abort };
       this.queue.push({ kind: 'diagnostic', level: 'info', text: 'worker 重启前的一轮 Hermes 还在跑，接着跟。' });
@@ -477,6 +498,7 @@ export class HermesSession implements RuntimeSession {
             const mapped = map(raw);
             // 先放开「正在跑」再推终态：收到 ended 就马上发下一轮，不该撞上「上一轮还没结束」
             if (mapped.terminal && this.run?.id === runId) this.run = null;
+            if (mapped.terminal) this.withdrawRun(runId);
             for (const event of mapped.events) this.queue.push(event);
             if (mapped.control) void this.answer(runId, mapped.control);
             if (mapped.terminal) terminal = true;
@@ -507,6 +529,7 @@ export class HermesSession implements RuntimeSession {
     }
     if (!terminal && !abort.signal.aborted) this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' });
     // 有了结局（包括结果未知、已经交给人）就不用再对账；连不上 / 被 dispose 的留着，下次开会话再查
+    this.withdrawRun(runId);
     if (terminal) await this.clearPendingFor(runId);
     if (this.run?.id === runId) this.run = null;
   }
@@ -516,8 +539,9 @@ export class HermesSession implements RuntimeSession {
   }
 
   /**
-   * 批准：hub 没有批准卡片，和 ACP 运行时一样自动放行——但只给 `once`，从不给 session/always（不留永久授权）。
-   * 澄清：回一句固定的「用户不在，自己判断」。两种都记一条诊断，事后能查。
+   * 批准（ADR 0023）：推一张批准卡，等人点「允许 / 拒绝」；超时（默认 180s，比 Hermes 自己的 300s 短）当拒绝。
+   * 不再自动放行。允许只给 `once`，从不给 session/always（不留永久授权）。
+   * 澄清：回一句固定的「用户不在，自己判断」，记一条诊断。
    */
   private async answer(runId: string, control: HermesControl): Promise<void> {
     const generation = control.generation ?? (await this.status(runId))?.execution_generation;
@@ -525,19 +549,34 @@ export class HermesSession implements RuntimeSession {
       this.queue.push({ kind: 'diagnostic', level: 'warn', text: `Hermes 发来${control.kind === 'approval' ? '批准' : '澄清'}请求，但缺 id，没法回` });
       return;
     }
-    const field = control.kind === 'approval' ? { choice: 'once' } : { answer: CLARIFY_ANSWER };
-    this.queue.push({
-      kind: 'diagnostic',
-      level: 'info',
-      text: control.kind === 'approval' ? `自动批准了一次（仅本次）：${control.summary.slice(0, 200)}` : `Hermes 追问「${control.summary.slice(0, 200)}」，已回复用户不在、请自行判断`
-    });
-    await hermesJson(this.gateway.endpoint, 'POST', `/v1/runs/${encodeURIComponent(runId)}/${control.kind}`, {
+    if (control.kind === 'approval') {
+      const id = `${runId}:${control.requestId}`.slice(0, 256);
+      if (this.approvals.has(id)) return;
+      this.approvals.set(id, { runId, requestId: control.requestId, generation });
+      this.gate.request({ id, title: control.summary.slice(0, 4000) || 'Hermes 要执行一个需要批准的动作' });
+      return;
+    }
+    this.queue.push({ kind: 'diagnostic', level: 'info', text: `Hermes 追问「${control.summary.slice(0, 200)}」，已回复用户不在、请自行判断` });
+    await hermesJson(this.gateway.endpoint, 'POST', `/v1/runs/${encodeURIComponent(runId)}/clarify`, {
       request_id: control.requestId,
       execution_generation: generation,
-      ...field
+      answer: CLARIFY_ANSWER
     }).catch((error: unknown) => {
-      this.queue.push({ kind: 'diagnostic', level: 'warn', text: `回 Hermes 的${control.kind === 'approval' ? '批准' : '澄清'}失败：${(error as Error).message}` });
+      this.queue.push({ kind: 'diagnostic', level: 'warn', text: `回 Hermes 的澄清失败：${(error as Error).message}` });
     });
+  }
+
+  async respondApproval(id: string, decision: 'allow' | 'deny', author?: { readonly id: string; readonly name: string }): Promise<Result<void, DomainError>> {
+    return (await this.gate.respond(id, decision, author)) ? ok(undefined) : err(invalid('这个批准请求已经结束了'));
+  }
+
+  /** 这一轮结束了还开着的卡：Hermes 那边已经不等了，收掉，不再回。 */
+  private withdrawRun(runId: string): void {
+    for (const [id, target] of this.approvals) {
+      if (target.runId !== runId) continue;
+      this.approvals.delete(id);
+      this.gate.withdraw(id);
+    }
   }
 
   async interrupt(): Promise<void> {
@@ -556,6 +595,8 @@ export class HermesSession implements RuntimeSession {
     if (this.disposed) return;
     this.disposed = true;
     const run = this.run;
+    // 没回答的批准一律拒绝（回给 Hermes），再关事件流
+    await this.gate.close().catch(() => undefined);
     this.run?.abort.abort();
     this.run = null;
     this.queue.close();

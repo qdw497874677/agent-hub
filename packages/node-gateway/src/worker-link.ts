@@ -553,6 +553,16 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         });
       return;
     }
+    if (command.kind === 'approval') {
+      const done = session.respondApproval ? await session.respondApproval(command.approvalId, command.decision, command.author) : null;
+      if (done === null || !done.ok)
+        send({
+          type: 'event',
+          sessionId,
+          event: { kind: 'diagnostic', level: 'warn', text: done === null ? '这个运行时不收批准回答' : `批准回答没送到：${done.error.message}` }
+        });
+      return;
+    }
     if (command.kind === 'set_option') {
       const changed = await session.changeOption(command.optionId, command.value);
       if (!changed.ok) {

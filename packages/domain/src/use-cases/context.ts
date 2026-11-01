@@ -3,6 +3,7 @@ import type { ContextSettingsStore, ContextSetting } from '../ports/context-sett
 import type { Deps } from './deps.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
 import { isSideChannel } from '../event.ts';
+import { openApprovals } from '../approval.ts';
 import { conflict } from '../errors.ts';
 
 import type { Result } from '../result.ts';
@@ -72,7 +73,7 @@ const enabledOf = (project: ContextSetting | null) => project?.enabled ?? [DEFAU
 
 export function createContextService(deps: ContextDeps) {
   const store = deps.contextSettings;
-  const audit = (subject: Subject | null, action: 'context.strategy.set' | 'session.context.set' | 'session.context.compact' | 'role.context.set', target: string, detail: string, teamId: string | null) => {
+  const audit = (subject: Subject | null, action: 'context.strategy.set' | 'session.context.set' | 'session.context.compact' | 'session.approval.respond' | 'role.context.set', target: string, detail: string, teamId: string | null) => {
     const me = principalOfSubject(subject);
     return deps.audit.append({ id: newId(), actorId: (me?.user.id ?? 'system') as never, actorEmail: me?.user.email ?? '', action, target, detail: detail.slice(0, 500), at: deps.now(), teamId });
   };
@@ -171,6 +172,27 @@ export function createContextService(deps: ContextDeps) {
       const sent = await deps.gateway.dispatch({ kind: 'compact', sessionId: session.id, ...(instructions ? { instructions } : {}) });
       if (!sent.ok) return sent;
       await audit(subject, 'session.context.compact', session.id, instructions ? `手动压缩：${instructions}` : '手动压缩', found.project!.teamId ?? null);
+      return ok({ requested: true });
+    },
+    /**
+     * 回答运行时的批准请求（ADR 0023）。要 session.prompt——能让它干活的人才能批准它干活。
+     * 只认事件流里还开着、没过期的请求；重复点 / 超时之后才点都是 409。
+     */
+    async respondApproval(subject: Subject | null, sessionId: string, approvalId: string, decision: 'allow' | 'deny'): Promise<Result<{ requested: true }, DomainError>> {
+      const found = await locate(sessionId);
+      const allowed = await authorizeSession(deps.access, subject, found.project, found.session, 'session.prompt');
+      if (!allowed.ok) return allowed;
+      const session = allowed.value;
+      if (!deps.gateway) return err(invalid('这个 hub 不能转发批准'));
+      const events = await deps.sessions.eventsAfter(session.id, 0 as never);
+      const open = openApprovals(events.map((e) => e.event), deps.now());
+      const request = open.get(approvalId);
+      if (!request) return err(conflict('这个请求已经结束了（已回答或已超时）'));
+      const me = principalOfSubject(subject);
+      const author = me ? { id: String(me.user.id), name: me.user.displayName || me.user.email } : undefined;
+      const sent = await deps.gateway.dispatch({ kind: 'approval', sessionId: session.id, approvalId, decision, ...(author ? { author } : {}) });
+      if (!sent.ok) return sent;
+      await audit(subject, 'session.approval.respond', session.id, `${decision === 'allow' ? '允许' : '拒绝'}：${request.title ?? approvalId}`, found.project!.teamId ?? null);
       return ok({ requested: true });
     }
   };

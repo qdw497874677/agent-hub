@@ -217,5 +217,9 @@ export function eventLabel(event: JournalEntryDto['event']): string {
         : event.ok
           ? `压缩完成：${(event.tokensBefore ?? 0).toLocaleString()} → ${(event.tokensAfter ?? 0).toLocaleString()} token`
           : `压缩没成：${event.error ?? '被中止'}`;
+    case 'approval':
+      return event.phase === 'request'
+        ? `请求批准：${event.title ?? event.id}`
+        : `批准${event.decision === 'allow' ? '通过' : '被拒'}（${event.by === 'user' ? event.author?.name ?? '用户' : event.by === 'timeout' ? '超时' : '运行时撤回'}）`;
   }
 }

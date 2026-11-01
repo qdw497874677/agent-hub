@@ -34,6 +34,18 @@ export type Block = Sequenced &
      * 交给人选「重发这一轮」还是「不用了」。prompt 是上一条用户输入（重发只带文字，附件不带）。
      */
     | { readonly kind: 'unknown'; readonly text: string; readonly prompt: string | null }
+    /**
+     * 运行时要人批准（ADR 0023）：「允许 / 拒绝」卡。resolved 来了就把结论写回同一张卡，不再给按钮。
+     * expiresAt 过了还没 resolved 也不给按钮（运行时侧会补一条超时拒绝）。
+     */
+    | {
+        readonly kind: 'approval';
+        readonly id: string;
+        readonly title: string;
+        readonly detail?: string;
+        readonly expiresAt: number | null;
+        readonly resolved: { readonly decision: 'allow' | 'deny'; readonly by: 'user' | 'timeout' | 'runtime'; readonly author?: { readonly id: string; readonly name: string } } | null;
+      }
   );
 
 interface ToolResult {
@@ -112,6 +124,17 @@ function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: numbe
       }
       return blocks;
     }
+    case 'approval': {
+      if (event.phase === 'request') {
+        if (blocks.some((block) => block.kind === 'approval' && block.id === event.id)) return blocks;
+        return [...blocks, { kind: 'approval', id: event.id, title: event.title ?? '', ...(event.detail ? { detail: event.detail } : {}), expiresAt: event.expiresAt ?? null, resolved: null, seq }];
+      }
+      const index = blocks.findIndex((block) => block.kind === 'approval' && block.id === event.id);
+      const block = blocks[index];
+      if (index < 0 || block?.kind !== 'approval') return blocks;
+      const patched: Block = { ...block, resolved: { decision: event.decision ?? 'deny', by: event.by ?? 'runtime', ...(event.author ? { author: event.author } : {}) } };
+      return [...blocks.slice(0, index), patched, ...blocks.slice(index + 1)];
+    }
     case 'artifact':
       return [...blocks, { kind: 'artifact', path: event.path, bytes: event.bytes, seq }];
     case 'ended':
@@ -171,7 +194,7 @@ export function reasonFromEntries(entries: readonly JournalEntryDto[]): string |
 export function awaitingAfter(previous: boolean, event: SessionEventDto | null, status: SessionDto['status']): boolean {
   if (event === null) return status === 'running' && previous;
   if (event.kind === 'ended') return false;
-  if (event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction') return previous;
+  if (event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'approval') return previous;
   return true;
 }
 
@@ -181,7 +204,7 @@ export function awaitingAfter(previous: boolean, event: SessionEventDto | null, 
  */
 export function awaitingFromHistory(entries: readonly JournalEntryDto[], status: SessionDto['status']): boolean {
   if (status !== 'running') return false;
-  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic' && entry.event.kind !== 'context_usage' && entry.event.kind !== 'compaction');
+  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic' && entry.event.kind !== 'context_usage' && entry.event.kind !== 'compaction' && entry.event.kind !== 'approval');
   return last !== undefined && last.event.kind !== 'ended';
 }
 

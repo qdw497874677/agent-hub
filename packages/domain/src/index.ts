@@ -5,6 +5,7 @@ export * from './capability.ts';
 export * from './agent.ts';
 export * from './option.ts';
 export * from './event.ts';
+export * from './approval.ts';
 export * from './attachment.ts';
 export * from './project.ts';
 export * from './task.ts';
