@@ -72,6 +72,11 @@ export interface Deps {
    * 不给 = 没开记忆工具，不垫。
    */
   readonly memoryGuidance?: MemoryGuidance;
+  /**
+   * 会话以某个 bot 身份跑时，它的职责说明（系统提示块）。由上下文服务按角色层解析（ADR 0020）；
+   * 只在新会话第一句垫一次，续聊 / resume 不再垫。不给 = 不垫。
+   */
+  readonly sessionInstructions?: (sessionId: string) => Promise<string | null>;
 }
 
 export interface MemoryGuidance {

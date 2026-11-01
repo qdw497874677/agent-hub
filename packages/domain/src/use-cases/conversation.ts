@@ -72,7 +72,7 @@ export async function promptSessionUseCase(
   deps: Pick<
     Deps,
     'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
-  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance'>>,
+  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions'>>,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -85,6 +85,8 @@ export async function promptSessionUseCase(
   const { stored, parts } = prepared.value;
   // 新会话第一句：给 agent 垫上任务背景（目标、摘要、最近交接）。用户看到的仍是原话。
   const briefing = session.lastSeq === 0 && command.briefing !== false ? await briefingFor(deps, session) : null;
+  // bot 的职责说明（系统提示）：同样只在新会话第一句垫一次，放在最前面
+  const instructions = session.lastSeq === 0 && deps.sessionInstructions ? await deps.sessionInstructions(sessionId).catch(() => null) : null;
 
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——
   // 专注对话里会是一条没有提问的回答。
@@ -102,7 +104,7 @@ export async function promptSessionUseCase(
   if (!hosted.ok) return failTurn(deps, sessionId, hosted.error);
   // 记忆（ADR 0019）：第一轮只垫一行静态引导，内容靠 agent 自己 memory_search；垫了就记审计
   const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
-  const text = [guidance?.text, briefing, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+  const text = [instructions, guidance?.text, briefing, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
   if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
   const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
   return sent.ok ? sent : failTurn(deps, sessionId, sent.error);

@@ -238,3 +238,12 @@ export interface SpawnRecord {
   readonly traceId: string;
   readonly createdAt: number;
 }
+
+/**
+ * bot（持久智能体）的职责说明 → 系统提示块。会话开头垫一次（ADR 0020 角色层），续聊不再重复。
+ * 空说明返回 null。
+ */
+export function agentInstructionsBlock(agent: Pick<PersistentAgent, 'description'> | null | undefined): string | null {
+  const text = agent?.description.trim().slice(0, PERSISTENT_AGENT_DESCRIPTION_MAX);
+  return text ? `<agent-instructions>\n${text}\n</agent-instructions>` : null;
+}

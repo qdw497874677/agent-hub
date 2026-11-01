@@ -59,3 +59,29 @@ test('taskBriefing：项目说明和仓库原样交给 agent（没 git 仓库也
   assert.match(withRepo, /仓库：https:\/\/x\/y\.git/);
   assert.equal(taskBriefing(task(), [], { name: 'Demo', repoUrl: null, description: null }), null);
 });
+
+test('bot 会话：职责说明只在新会话第一句垫一次（放最前），续聊 / resume 不重复；用户看到的仍是原话', async () => {
+  const w = inMemoryDeps();
+  w.agents.push({ id: asAgentId('fake'), label: 'F', capabilities: Object.fromEntries(['prompt','interrupt','fork','resume','tool_calls','artifacts','structured_events','attachments'].map((k) => [k, { state: 'available' }])), models: ['m'], defaultModel: 'm', options: [] } as unknown as AgentDescriptor);
+  const project = await createProjectUseCase(w.deps, { name: 'p', rootPath: '/tmp/p' });
+  assert.ok(project.ok);
+  const t = await createTaskUseCase(w.deps, { projectId: project.value.id, title: 'x', ownerId: 'u' });
+  assert.ok(t.ok);
+  const s = await deriveSessionUseCase(w.deps, { taskId: t.value.id, agentId: 'fake', model: 'm' });
+  assert.ok(s.ok);
+  const asked: string[] = [];
+  const deps = { ...w.deps, sessionInstructions: async (id: string) => (asked.push(id), id === s.value.id ? '<agent-instructions>\n只写测试\n</agent-instructions>' : null) };
+  assert.ok((await promptSessionUseCase(deps, { sessionId: s.value.id, text: '开工' })).ok);
+  const first = w.dispatched.filter((c) => c.kind === 'prompt').at(-1) as { text: string };
+  assert.ok(first.text.startsWith('<agent-instructions>\n只写测试\n</agent-instructions>'));
+  assert.match(first.text, /开工$/);
+  const journal = await w.deps.sessions.eventsAfter(s.value.id, 0 as never);
+  assert.ok(journal.some((e) => e.event.kind === 'prompt' && e.event.text === '开工'));
+  assert.ok((await promptSessionUseCase(deps, { sessionId: s.value.id, text: '继续' })).ok);
+  assert.equal((w.dispatched.filter((c) => c.kind === 'prompt').at(-1) as { text: string }).text, '继续');
+  assert.equal(asked.length, 1);
+  // 解析失败不挡消息
+  const s2 = await deriveSessionUseCase(w.deps, { taskId: t.value.id, agentId: 'fake', model: 'm' });
+  assert.ok(s2.ok);
+  assert.ok((await promptSessionUseCase({ ...w.deps, sessionInstructions: async () => { throw new Error('x'); } }, { sessionId: s2.value.id, text: 'hi' })).ok);
+});
