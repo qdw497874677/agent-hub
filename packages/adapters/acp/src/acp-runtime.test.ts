@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { asSessionId, asTaskId } from '@agent-hub/domain';
 import type { RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
+import { hermesAcpOptionValue } from './hermes-acp.ts';
 import { createAcpRuntime } from './acp-runtime.ts';
 import type { AcpAgentConfig } from './config.ts';
 
@@ -95,5 +96,26 @@ test('acp runtime: launch 给的 sessionMeta 叠加到 session/new 的 _meta 上
   const text = (await turn).find((event) => event.kind === 'text');
   assert.ok(text && text.kind === 'text');
   assert.match(text.delta, /session\/new\{"yoloMode":true,"rules":"R"\}/);
+  await session.dispose();
+});
+
+test('acp runtime: 只报老式 models/modes 的 agent（Hermes）→ 选项照样能看能改，走 set_model / set_mode', async () => {
+  const runtime = createAcpRuntime({ ...config, args: [FAKE, '--legacy'], optionValue: hermesAcpOptionValue });
+  const started = await runtime.start(spec({ options: { model: 'hub-p/m-2', mode: 'accept_edits' } }));
+  assert.ok(started.ok, started.ok ? '' : started.error.message);
+  const session = started.value;
+  const byId = Object.fromEntries(session.options().map((o) => [o.id, o]));
+  assert.equal(byId['model']?.category, 'model');
+  assert.equal(byId['model']?.current, 'hub-p/m-2', 'agent 收到 custom:m-2，hub 看到的仍是 hub 模型 id（不改写 session.model）');
+  assert.ok(byId['model']?.choices.some((c) => c.kind === 'value' && c.value.value === 'hub-p/m-2'));
+  assert.equal(byId['mode']?.current, 'accept_edits');
+
+  const events = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'hi', parts: [] })).ok);
+  const text = (await events).find((event) => event.kind === 'text');
+  assert.ok(text && text.kind === 'text');
+  assert.equal(text.delta, 'methods:initialize,authenticate,session/new{"yoloMode":true},session/set_model,session/set_mode,session/prompt');
+  const bad = await session.changeOption('effort', 'high');
+  assert.equal(bad.ok, false);
   await session.dispose();
 });

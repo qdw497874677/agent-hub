@@ -19,7 +19,7 @@ import { unavailable } from '@agent-hub/domain';
 import { acpDescriptor, type AcpAgentConfig, type AcpLaunch } from './config.ts';
 import { endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
 import type { AcpPromptCapabilities } from './map-acp.ts';
-import { mapAcpOptions } from './map-options.ts';
+import { legacyAcpOptions, mapAcpOptions } from './map-options.ts';
 
 type Json = Record<string, unknown>;
 
@@ -98,11 +98,46 @@ class AcpSession implements RuntimeSession {
     for (const event of mapAcpUpdate(update, this.toolNames)) this.queue.push(event);
   }
 
+  /** agent 没有 configOptions、只报老式 models/modes（Hermes）：改值走 set_model / set_mode。 */
+  private legacy = false;
+
+  /** session/new|load 的响应：优先 configOptions，没有就读老式 models/modes。 */
+  private setReported(session: Json): void {
+    if (Array.isArray(session['configOptions']) && (session['configOptions'] as unknown[]).length > 0) {
+      this.setOptions(session['configOptions']);
+      return;
+    }
+    const legacy = legacyAcpOptions(session);
+    if (legacy.length === 0) return;
+    this.legacy = true;
+    this.publish(legacy);
+  }
+
   private setOptions(raw: unknown): void {
     const options = mapAcpOptions(raw);
     if (options.length === 0) return;
-    this.current = options;
-    this.onOptions(options);
+    this.publish(options);
+  }
+
+  /**
+   * agent 写法 → hub 写法（config.optionValue 的反向）。例如 Hermes 回报「custom:m-1」，
+   * hub 这边要看到并落库的仍是「hub-<slug>/m-1」——否则 session.model 被改写，重开时就配不上提供商了。
+   */
+  private readonly aliases = new Map<string, string>();
+
+  private publish(options: readonly RuntimeOption[]): void {
+    const alias = (value: string): string => this.aliases.get(value) ?? value;
+    const mapValue = <T extends { value: string }>(entry: T): T => ({ ...entry, value: alias(entry.value) });
+    this.current = this.aliases.size === 0
+      ? options
+      : options.map((option) => ({
+          ...option,
+          current: typeof option.current === 'string' ? alias(option.current) : option.current,
+          choices: option.choices.map((choice) =>
+            choice.kind === 'value' ? { ...choice, value: mapValue(choice.value) } : { ...choice, values: choice.values.map(mapValue) }
+          )
+        }));
+    this.onOptions(this.current);
   }
 
   /** 官方 SDK 按 schema 给出了强类型；平台扩展字段（_meta）和宽松读取走这个口子。 */
@@ -143,13 +178,13 @@ class AcpSession implements RuntimeSession {
     if (agentSessionRef === null) {
       const session = await this.request('session/new', this.sessionParams(cwd));
       if (typeof session['sessionId'] === 'string') this.agentSessionId = session['sessionId'];
-      this.setOptions(session['configOptions']);
+      this.setReported(session);
       return;
     }
     this.replaying = true;
     try {
       const session = await this.request('session/load', { sessionId: agentSessionRef, ...this.sessionParams(cwd) });
-      this.setOptions(session['configOptions']);
+      this.setReported(session);
     } finally {
       this.replaying = false;
     }
@@ -165,6 +200,10 @@ class AcpSession implements RuntimeSession {
   }
 
   async changeOption(id: string, value: string | boolean): Promise<Result<readonly RuntimeOption[], DomainError>> {
+    const agentValue = this.config.optionValue ? this.config.optionValue(id, value) : value;
+    if (typeof value === 'string' && typeof agentValue === 'string' && agentValue !== value) this.aliases.set(agentValue, value);
+    if (this.legacy) return this.changeLegacy(id, agentValue);
+    value = agentValue;
     try {
       const result = await this.request('session/set_config_option', {
         sessionId: this.agentSessionId,
@@ -179,6 +218,34 @@ class AcpSession implements RuntimeSession {
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) };
     }
+  }
+
+  private async changeLegacy(id: string, value: string | boolean): Promise<Result<readonly RuntimeOption[], DomainError>> {
+    if ((id !== 'model' && id !== 'mode') || typeof value !== 'string') {
+      return { ok: false, error: unavailable(`${this.config.label} 不认这个配置项：${id}`) };
+    }
+    try {
+      if (id === 'model') await this.request('session/set_model', { sessionId: this.agentSessionId, modelId: value });
+      else await this.request('session/set_mode', { sessionId: this.agentSessionId, modeId: value });
+    } catch (error) {
+      return { ok: false, error: unavailable((error as Error).message) };
+    }
+    // 老接口不回全量状态：本地把当前值改掉（新值不在候选里就补一条，比如 Hermes 的 custom 端点只列了当前模型）
+    const shown = this.aliases.get(value) ?? value;
+    this.publish(
+      this.current.map((option) =>
+        option.id !== id
+          ? option
+          : {
+              ...option,
+              current: value,
+              choices: option.choices.some((choice) => choice.kind === 'value' && (choice.value.value === value || choice.value.value === shown))
+                ? option.choices
+                : [...option.choices, { kind: 'value' as const, value: { value, label: shown } }]
+            }
+      )
+    );
+    return { ok: true, value: this.current };
   }
 
   async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
@@ -270,8 +337,8 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
 
       // 开跑前用户已经选好的项（派生时选的模型、思考强度），交给 agent 去落实。
       // 模型也是一个配置项（ACP 的 category: model），与其余选项走同一条 set_config_option。
-      for (const [id, value] of Object.entries(spec.options)) {
-        const changed = await session.changeOption(id, value);
+      for (const [id, raw] of Object.entries(spec.options)) {
+        const changed = await session.changeOption(id, raw);
         if (!changed.ok) {
           await session.dispose();
           return changed;
