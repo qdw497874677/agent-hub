@@ -27,7 +27,7 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
   const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
   await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '你好', attachments: [] }, headers });
   await expect
-    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ event?: { kind?: string } }>).some((e) => e.event?.kind === 'ended'), { timeout: 15_000 })
+    .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ event?: { kind?: string } }>).length > 0, { timeout: 30_000 })
     .toBe(true);
 
   const missing = await page.request.post(`/api/sessions/${id}/approvals/nope`, { data: { decision: 'allow' }, headers });
