@@ -177,3 +177,12 @@ test('prompt 带上作者；只有一个人说过话时不显示作者，老消�
   blocks = applyBlocks(blocks, { kind: 'prompt', text: 'me too', author: b }, 4);
   assert.equal(multipleAuthors(blocks), true);
 });
+
+test('结果未知：interrupted + outcome_unknown → 交给人的 unknown 块，带上一条用户输入', () => {
+  let blocks = applyBlocks([], { kind: 'prompt', text: '改一下 README' }, 1);
+  blocks = applyBlocks(blocks, { kind: 'text', delta: '好的' }, 2);
+  blocks = applyBlocks(blocks, { kind: 'ended', outcome: 'interrupted', reason: 'Hermes 这一轮的结果未知（outcome_unknown）' }, 3);
+  assert.deepEqual(blocks[blocks.length - 1], { kind: 'unknown', text: 'Hermes 这一轮的结果未知（outcome_unknown）', prompt: '改一下 README', seq: 3 });
+  // 普通中断不出卡片
+  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'interrupted', reason: '用户中断' }, 2), []);
+});
