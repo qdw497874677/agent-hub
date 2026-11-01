@@ -51,6 +51,15 @@ if [[ -z "$node_bin" ]]; then
   echo "找不到 node（需要 >= 26）" >&2
   exit 1
 fi
+if ! node_v="$("$node_bin" -v 2>&1)"; then
+  echo "node（$node_bin）跑不起来，先修好再重装：" >&2
+  echo "    $node_v" >&2
+  [[ "$node_v" == *libatomic* ]] && echo "    缺 libatomic：sudo yum install -y libatomic（RHEL 系）或 sudo apt install -y libatomic1（Debian 系）" >&2
+  exit 1
+fi
+# bootstrap 自带的 libatomic（见 bootstrap-worker.sh）：node 壳已经会带上，这里再写进 worker.env 兜底
+node_lib="$(cd "$(dirname "$node_bin")/.." && pwd)/lib"
+[[ -f "$node_lib/libatomic.so.1" ]] || node_lib=""
 
 # WORKER_ROOTS 是安全边界：hub 只能在这些目录里浏览、读写附件、开会话。
 if [[ -z "${WORKER_ROOTS:-}" && -t 0 ]]; then
@@ -113,6 +122,7 @@ umask 077
   echo "WORKER_ROOTS=$WORKER_ROOTS"
   echo "WORKER_STATE_DIR=$config_dir"
   echo "PATH=$worker_path"
+  if [[ -n "$node_lib" ]]; then echo "LD_LIBRARY_PATH=$node_lib"; fi
   if [[ -n "${WORKER_ASSETS_DIR:-}" ]]; then echo "WORKER_ASSETS_DIR=$WORKER_ASSETS_DIR"; fi
 } > "$env_file"
 chmod 600 "$env_file"

@@ -52,6 +52,84 @@ if ! node_ok; then
   rm -rf "$tmp"
   export PATH="$HOME/.local/node$NODE_MAJOR/bin:$PATH"
 fi
+
+# 最小化镜像（Alibaba Cloud Linux / RHEL / debian-slim）常缺 libatomic.so.1，nodejs.org 的 node 起不来。
+# 不需要 sudo：从 Debian 仓库取固定版本的 libatomic1 包（sha256 写死，换哪个镜像都要对得上），
+# 用纯 shell 拆 .deb 只取 libatomic.so.1 放进 ~/.local/node26/lib，再把 bin/node 换成带 LD_LIBRARY_PATH 的小壳。
+# 这样 npm（#!/usr/bin/env node）、install-worker.sh、systemd 的 ExecStart 走的都是同一个 node。
+LIBATOMIC_DEB_VER="12.2.0-14+deb12u1"
+LIBATOMIC_MIRRORS="${LIBATOMIC_MIRRORS:-https://deb.debian.org/debian https://mirrors.aliyun.com/debian https://snapshot.debian.org/archive/debian/20250601T000000Z}"
+ar_member() { # ar_member <deb> <成员名前缀> <输出>：.deb 是 ar 包，按 60 字节头逐个走
+  local f="$1" want="$2" out="$3" off=8 total name size
+  total="$(wc -c <"$f")"
+  while (( off + 60 <= total )); do
+    name="$(dd if="$f" bs=1 skip="$off" count=16 2>/dev/null | tr -d ' ')"
+    size="$(dd if="$f" bs=1 skip=$((off + 48)) count=10 2>/dev/null | tr -d ' ')"
+    [[ "$size" =~ ^[0-9]+$ ]] || return 1
+    if [[ "$name" == "$want"* ]]; then
+      tail -c +$((off + 61)) "$f" | head -c "$size" >"$out"
+      return 0
+    fi
+    off=$((off + 60 + size + size % 2))
+  done
+  return 1
+}
+fix_libatomic() { # fix_libatomic <node 安装目录>
+  local root="$1" deb_arch sum tmp mirror name
+  case "$(uname -m)" in
+    x86_64) deb_arch=amd64; sum=fbd4e154a6b444229ea002cc209df099209c0adc09102e5fd21239a3d2b55e2d ;;
+    aarch64 | arm64) deb_arch=arm64; sum=1693aa13ce2b30d061a519fc28b77b9bab8c8e45804ced5969d99821e1bc2159 ;;
+    *) return 1 ;;
+  esac
+  name="libatomic1_${LIBATOMIC_DEB_VER}_${deb_arch}.deb"
+  tmp="$(mktemp -d)"
+  for mirror in $LIBATOMIC_MIRRORS; do
+    if curl -fsSL -m 60 "$mirror/pool/main/g/gcc-12/${name/+/%2B}" -o "$tmp/l.deb" 2>/dev/null \
+      && echo "$sum  $tmp/l.deb" | sha256sum -c - >/dev/null 2>&1; then
+      if ar_member "$tmp/l.deb" data.tar "$tmp/data.tar.xz" && mkdir -p "$tmp/x" \
+        && tar -xJf "$tmp/data.tar.xz" -C "$tmp/x" 2>/dev/null; then
+        local so; so="$(find "$tmp/x" -name 'libatomic.so.1*' -type f | head -1)"
+        if [[ -n "$so" ]]; then
+          mkdir -p "$root/lib"
+          cp "$so" "$root/lib/libatomic.so.1"
+          rm -rf "$tmp"
+          return 0
+        fi
+      fi
+    fi
+  done
+  rm -rf "$tmp"
+  return 1
+}
+wrap_node() { # 把 bin/node 换成小壳：先找自带的 lib，再 exec 真的 node
+  local root="$1"
+  if [[ ! -e "$root/bin/node.real" ]]; then mv "$root/bin/node" "$root/bin/node.real"; fi
+  cat >"$root/bin/node" <<'SH'
+#!/bin/sh
+# agent-hub：这台机器缺 libatomic.so.1，用 ../lib 里自带的那份
+here="$(dirname "$(readlink -f "$0")")"
+LD_LIBRARY_PATH="$here/../lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" exec "$here/node.real" "$@"
+SH
+  chmod 755 "$root/bin/node"
+}
+node_err="$(node -v 2>&1 >/dev/null)" || true
+if ! node -v >/dev/null 2>&1; then
+  node_root="$(cd "$(dirname "$(command -v node)")/.." && pwd)"
+  if [[ "$node_err" == *libatomic.so.1* && "$node_root" == "$HOME/.local/node$NODE_MAJOR" ]]; then
+    echo "==> 系统缺 libatomic.so.1，免 sudo 取一份放进 $node_root/lib"
+    if fix_libatomic "$node_root"; then wrap_node "$node_root"; fi
+  fi
+fi
+if ! node -v >/dev/null 2>&1; then
+  echo "node 跑不起来：" >&2
+  node -v 2>&1 | sed 's/^/    /' >&2 || true
+  if [[ "$node_err" == *libatomic* ]]; then
+    echo "缺系统库 libatomic，自动补装失败。请让管理员装上后重跑同一条命令：" >&2
+    echo "    RHEL / Alibaba Cloud Linux / CentOS：sudo yum install -y libatomic" >&2
+    echo "    Debian / Ubuntu：sudo apt install -y libatomic1" >&2
+  fi
+  exit 1
+fi
 echo "==> Node $(node -v)"
 
 if [[ -d "$DIR/.git" ]]; then
