@@ -1,6 +1,8 @@
 import { defineConfig } from '@playwright/test';
 
-const port = 7896;
+const port = Number(process.env['E2E_PORT'] ?? 7896);
+// 同机并行跑两套 e2e 时用 E2E_PORT / E2E_DATA_DIR 隔开
+const dataDir = process.env['E2E_DATA_DIR'] ?? '/tmp/agent-hub-e2e-data';
 
 /**
  * e2e 用固定端口 + 固定数据目录，但**不预清理**：
@@ -32,7 +34,7 @@ export default defineConfig({
     env: {
       ...process.env,
       HUB_PORT: String(port),
-      HUB_DATA_DIR: '/tmp/agent-hub-e2e-data',
+      HUB_DATA_DIR: dataDir,
       // 组件安装 e2e 的假 npm registry（e2e/components.spec.ts 在这个端口上起）
       HUB_NPM_REGISTRY: 'http://127.0.0.1:17981',
       HUB_SPAWN_WORKER: '1',
@@ -42,13 +44,13 @@ export default defineConfig({
       // 发信走日志模式，同时把信逐行写进 outbox：用例从这里拿验证 / 重置链接
       HUB_MAIL_PROVIDER: 'log',
       HUB_PUBLIC_URL: `http://127.0.0.1:${port}`,
-      HUB_MAIL_OUTBOX: '/tmp/agent-hub-e2e-data/outbox.jsonl',
+      HUB_MAIL_OUTBOX: `${dataDir}/outbox.jsonl`,
       // 本机 Worker 只放开 /tmp：目录选择器的新建文件夹、托管目录都落在这里，不碰真实家目录
       WORKER_ROOTS: '/tmp',
       // 测试账号的密码文件放进 e2e 数据目录，不碰真实的 ~/.config/agent-hub
-      HUB_TEST_ACCOUNT_FILE: '/tmp/agent-hub-e2e-data/test-account',
+      HUB_TEST_ACCOUNT_FILE: `${dataDir}/test-account`,
       // 本机 Worker 的资产目录也放进 e2e 数据目录，不碰真实的 ~/.agent-hub/assets
-      WORKER_ASSETS_DIR: '/tmp/agent-hub-e2e-data/worker-assets'
+      WORKER_ASSETS_DIR: `${dataDir}/worker-assets`
     }
   }
 });

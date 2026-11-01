@@ -24,3 +24,12 @@ test('订阅点：去重、含打开的文件、封顶 200；变化命中目录'
   assert.ok(!touches('src', ['src/x/a.ts']));
   assert.ok(touches('', ['a.ts']));
 });
+
+test('缓存只在没出错时给出（离线不冒充当前）', async () => {
+  const { shown, FILES_QUERY } = await import('./files-core.ts');
+  assert.deepEqual(shown({ data: [1], error: null }), [1]);
+  assert.equal(shown({ data: [1], error: new Error('503') }), undefined);
+  assert.equal(shown({ data: undefined, error: null }), undefined);
+  assert.equal(FILES_QUERY.staleTime, 0);
+  assert.ok(FILES_QUERY.gcTime > 0);
+});

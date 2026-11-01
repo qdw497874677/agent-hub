@@ -1,5 +1,17 @@
 /** 文件浏览里不碰 DOM 的小规则（ADR 0025）：好测。 */
 
+/**
+ * 文件查询的缓存策略（stale-while-revalidate）：切回标签先显示缓存，同时后台重新读一遍。
+ * staleTime 0 = 每次挂载 / 失效都重读；gcTime 保留 10 分钟供切回时立即显示。
+ * ADR 0025 决定 8 仍成立：重读失败（Worker 离线）时不显示旧数据，界面一律 error 优先——见 shown()。
+ */
+export const FILES_QUERY = { retry: false, gcTime: 10 * 60_000, staleTime: 0, refetchOnWindowFocus: false } as const;
+
+/** 有错误就不给数据：离线显示离线，不拿缓存冒充当前。 */
+export function shown<Q extends { data?: unknown; error: unknown }>(query: Q): Q['data'] | undefined {
+  return query.error ? undefined : query.data;
+}
+
 export function crumbs(path: string): { name: string; path: string }[] {
   const parts = path === '' ? [] : path.split('/');
   return [{ name: '根目录', path: '' }, ...parts.map((name, i) => ({ name, path: parts.slice(0, i + 1).join('/') }))];

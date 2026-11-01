@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from './api.ts';
-import { crumbs, decodeText, GIT_LABEL, humanSize, languageOf, touches, watchPaths } from './files-core.ts';
+import { crumbs, FILES_QUERY, shown, decodeText, GIT_LABEL, humanSize, languageOf, touches, watchPaths } from './files-core.ts';
 import 'diff2html/bundles/css/diff2html.min.css';
 
 /**
@@ -14,7 +14,7 @@ import 'diff2html/bundles/css/diff2html.min.css';
 type Base = 'session' | 'head';
 type Opened = { path: string; confirmed: boolean; diff: boolean };
 
-const fresh = { retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false } as const;
+const fresh = FILES_QUERY;
 const sk = (sessionId: string) => ['files', sessionId] as const;
 
 function problem(error: unknown): string {
@@ -66,6 +66,7 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
   // 盯展开的目录和打开的文件（SSE）；断线重连后整体刷新一次（重订由 EventSource 重连完成）
   const paths = useMemo(() => watchPaths(expanded, opened?.path ?? null), [expanded, opened?.path]);
   const pathsKey = paths.join('\n');
+  const subscribed = useRef(false);
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
     let first = true;
@@ -77,7 +78,10 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
       source = new EventSource(filesApi.eventsUrl(sessionId, paths));
       source.addEventListener('ready', () => {
         if (!first) void client.invalidateQueries({ queryKey: sk(sessionId) });
+        // 换订阅（展开/返回）时旧连接已断、新连接未就绪，中间的改动会漏：补拉一次被盯的目录
+        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return k[0] === 'files' && k[1] === sessionId && k[2] === 'list' && paths.includes(String(k[3])); } });
         first = false;
+        subscribed.current = true;
       });
       source.addEventListener('changed', (message) => {
         const notice = JSON.parse((message as MessageEvent<string>).data) as { paths: string[]; reset?: boolean };
@@ -122,9 +126,9 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
       return next;
     });
 
-  const count = changes.data?.files.length;
+  const changed = shown(changes);
+  const count = changed?.files.length;
   const showList = wide || opened === null;
-  useEffect(() => setOpened(null), [tab]);
   const showHeader = !embedded || (!wide && opened !== null);
   return (
     <div className={embedded ? 'flex min-h-0 flex-1 flex-col bg-canvas' : 'fixed inset-0 z-50 flex flex-col bg-canvas'} role={embedded ? 'tabpanel' : 'dialog'} aria-label="工作空间文件" data-testid={embedded ? `files-panel-${tab}` : 'files-browser'}>
@@ -159,7 +163,7 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
                 <div className="min-h-0 flex-1 overflow-y-auto py-1" data-testid="files-tree">
                   {query.trim() !== '' ? (
                     found.error ? <p className="px-3 text-meta text-rust">{problem(found.error)}</p> :
-                    (found.data ?? []).map((p) => (
+                    (shown(found) ?? []).map((p) => (
                       <button key={p} className="block w-full truncate px-3 py-1.5 text-left font-mono text-sub text-secondary hover:bg-card" onClick={() => open({ path: p, sensitive: /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(p) })}>{p}</button>
                     ))
                   ) : (
@@ -175,11 +179,11 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
                     <option value="session">会话开始时</option>
                     <option value="head">当前 HEAD</option>
                   </select>
-                  {changes.data?.commit ? <span className="font-mono">{changes.data.commit.slice(0, 8)}</span> : null}
+                  {changed?.commit ? <span className="font-mono">{changed.commit.slice(0, 8)}</span> : null}
                 </div>
                 {changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
-                {changes.data?.files.length === 0 ? <p className="px-3 py-2 text-meta text-tertiary">没有改动</p> : null}
-                {changes.data?.files.map((f) => (
+                {changed?.files.length === 0 ? <p className="px-3 py-2 text-meta text-tertiary">没有改动</p> : null}
+                {changed?.files.map((f) => (
                   <button key={f.path} onClick={() => open({ path: f.path }, true)} data-testid="change-row"
                     className={`flex w-full items-baseline gap-2 px-3 py-2 text-left hover:bg-card ${opened?.path === f.path ? 'bg-card' : ''}`}>
                     <span className="w-3 shrink-0 font-mono text-meta text-accent">{GIT_LABEL[f.status] ?? '?'}</span>
@@ -240,7 +244,8 @@ function Directory(props: { sessionId: string; path: string; depth: number; expa
 
 function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; opened: Opened; wide: boolean; onCrumb: (p: string) => void }) {
   const file = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'read', opened.path, opened.confirmed], queryFn: () => filesApi.read(sessionId, opened.path, opened.confirmed) });
-  const text = useMemo(() => (file.data && !file.data.binary ? decodeText(file.data.data) : null), [file.data]);
+  const data = shown(file);
+  const text = useMemo(() => (data && !data.binary ? decodeText(data.data) : null), [data]);
   const [html, setHtml] = useState<string | null>(null);
   useEffect(() => {
     setHtml(null);
@@ -261,14 +266,14 @@ function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; ope
           </span>
         )) : null}
         <span className="ml-auto flex items-center gap-3">
-          {file.data ? <span>{humanSize(file.data.size)}</span> : null}
+          {data ? <span>{humanSize(data.size)}</span> : null}
           <a href={filesApi.downloadUrl(sessionId, opened.path, opened.confirmed)} download className="text-accent" data-testid="file-download">下载</a>
         </span>
       </div>
       {file.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {file.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(file.error)}</p> : null}
-      {file.data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件，不预览——可以下载</p> : null}
-      {file.data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">文件超过 1 MB，只显示前 1 MB</p> : null}
+      {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件，不预览——可以下载</p> : null}
+      {data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">文件超过 1 MB，只显示前 1 MB</p> : null}
       {text !== null ? (
         html ? <div className="files-code overflow-x-auto p-3 text-sub [&_pre]:!bg-transparent" data-testid="file-content" dangerouslySetInnerHTML={{ __html: html }} /> :
         <pre className="overflow-x-auto whitespace-pre p-3 font-mono text-sub text-secondary" data-testid="file-content">{text}</pre>
@@ -279,23 +284,24 @@ function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; ope
 
 function DiffView({ sessionId, path, base, wide }: { sessionId: string; path: string; base: Base; wide: boolean }) {
   const diff = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'diff', path, base], queryFn: () => filesApi.diff(sessionId, path, base) });
+  const data = shown(diff);
   const [html, setHtml] = useState<string | null>(null);
   useEffect(() => {
     setHtml(null);
-    if (!diff.data || diff.data.patch === '') return;
+    if (!data || data.patch === '') return;
     let live = true;
-    const patch = diff.data.patch;
+    const patch = data.patch;
     void import('diff2html').then((d2h) => live && setHtml(d2h.html(patch, { outputFormat: wide ? 'side-by-side' : 'line-by-line', drawFileList: false, matching: 'lines', colorScheme: 'dark' as never })));
     return () => { live = false; };
-  }, [diff.data, wide]);
+  }, [data, wide]);
   return (
     <div data-testid="diff-view">
       {diff.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {diff.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(diff.error)}</p> : null}
-      {diff.data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件有改动</p> : null}
-      {diff.data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">diff 超过 512 KB，只显示前一部分</p> : null}
-      {diff.data && diff.data.patch === '' && !diff.data.binary ? <p className="p-4 text-sub text-tertiary">没有差异</p> : null}
-      {html ? <div className="files-diff text-meta" dangerouslySetInnerHTML={{ __html: html }} /> : null}
+      {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件有改动</p> : null}
+      {data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">diff 超过 512 KB，只显示前一部分</p> : null}
+      {data && data.patch === '' && !data.binary ? <p className="p-4 text-sub text-tertiary">没有差异</p> : null}
+      {html && data ? <div className="files-diff text-meta" dangerouslySetInnerHTML={{ __html: html }} /> : null}
     </div>
   );
 }
