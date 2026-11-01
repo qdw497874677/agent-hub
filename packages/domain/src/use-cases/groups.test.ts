@@ -23,6 +23,8 @@ import {
 } from '../groups.ts';
 import { recordEvent } from './sessions.ts';
 import { createGroupChat } from './groups.ts';
+import { createPersistentAgents } from './persistent-agents.ts';
+import { configProblem, type MessagingConfig } from '../messaging.ts';
 
 function memoryGroups(): GroupStore & { deliveriesAll: () => GroupDelivery[] } {
   const groups = new Map<string, Group>();
@@ -80,6 +82,7 @@ const ROLES: AgentRole[] = [
 
 async function world() {
   const busyElsewhere = new Set<string>();
+  const roleList: AgentRole[] = [...ROLES];
   let clock = 1000;
   const memory = inMemoryDeps({ now: () => clock });
   const deps = memory.deps;
@@ -106,7 +109,7 @@ async function world() {
     tasks: deps.tasks,
     groups,
     policy: { context: async () => ({ hubTeamId: 'T', settings: { membersCanAddMachines: false } }), worker: async () => ({}) as never } as never,
-    roles: async () => ROLES,
+    roles: async () => roleList,
     principalOf: async (id) => principal(id),
     deliver: async (sessionId, text) => {
       delivered.push({ sessionId, text });
@@ -142,7 +145,7 @@ async function world() {
       await recordEvent(deps, { sessionId: sid, event: { kind: 'prompt', text } });
       const s = (await deps.sessions.byId(sid))!;
       await deps.sessions.save({ ...s, status: 'running' });
-    }, busyElsewhere, chat, groups, alice, principal, project: project.value, delivered, interrupted, sessionOf, finish, posts, lastDelivery, tick: (ms: number) => void (clock += ms) };
+    }, roleList, deps, busyElsewhere, chat, groups, alice, principal, project: project.value, delivered, interrupted, sessionOf, finish, posts, lastDelivery, tick: (ms: number) => void (clock += ms) };
 }
 
 test('纯函数：@ 提及忽略代码块和引用；停止命令；[SILENT]；竞价', () => {
@@ -417,4 +420,78 @@ test('硬停：停止也打断群会话里没有群投递、但还在跑的回�
   assert.equal(w.interrupted.length - before, 0, '「停止 @x」只打断 x');
   await w.chat.post(w.alice, g.value.id, '停止 @coder');
   assert.deepEqual(w.interrupted.slice(before), [coder]);
+});
+
+test('成员管理：一次加多个、移出（主持人和最后一个不能移）、viewer 不能动', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['host'], hostRole: 'host' });
+  assert.ok(g.ok);
+  const added = await w.chat.addMembers(w.alice, g.value.id, ['coder', 'reviewer', 'coder']);
+  assert.ok(added.ok);
+  assert.deepEqual(added.value.members, ['host', 'coder', 'reviewer']);
+  assert.ok(!(await w.chat.addMembers(w.alice, g.value.id, ['coder'])).ok, '都已在群里');
+  assert.ok(!(await w.chat.addMembers(w.alice, g.value.id, ['ghost'])).ok, '项目里没有');
+  const vicky = w.principal('vicky')!;
+  assert.ok(!(await w.chat.removeMember(vicky, g.value.id, 'coder')).ok, 'viewer 不能移');
+  const host = await w.chat.removeMember(w.alice, g.value.id, 'host');
+  assert.ok(!host.ok && /主持人/.test(host.error.message));
+  const removed = await w.chat.removeMember(w.alice, g.value.id, 'coder');
+  assert.ok(removed.ok);
+  assert.deepEqual(removed.value.members, ['host', 'reviewer']);
+  assert.ok(!(await w.chat.removeMember(w.alice, g.value.id, 'coder')).ok, '已经不在');
+  const posts = await w.posts(g.value.id);
+  assert.ok(posts.some((p) => p.author.kind === 'system' && /把 @coder、@reviewer 加进了群/.test(p.body)));
+  assert.ok(posts.some((p) => p.author.kind === 'system' && /把 @coder 移出了群/.test(p.body)));
+});
+
+test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删除时从群移出并清主持人', async () => {
+  const w = await world();
+  let config: MessagingConfig = { projectId: w.project.id, roles: w.roleList, limits: {}, updatedAt: 0 };
+  const agents = createPersistentAgents({
+    projects: w.deps.projects,
+    policy: { context: async () => ({ hubTeamId: 'T', settings: { membersCanAddMachines: false } }), worker: async () => ({}) as never } as never,
+    config: async () => config,
+    saveConfig: async (_p, input) => {
+      const problem = configProblem(input);
+      if (problem) return { ok: false, error: { code: 'invalid', message: problem } } as never;
+      config = { ...config, roles: input.roles, limits: input.limits };
+      w.roleList.splice(0, w.roleList.length, ...input.roles);
+      return { ok: true, value: config };
+    },
+    groupsOf: (p) => w.groups.groupsOf(p),
+    detach: (actor, p, name) => w.chat.detachAgent(actor, p, name)
+  });
+  const vicky = w.principal('vicky')!;
+  assert.ok(!(await agents.create(vicky, w.project.id, { name: 'qa', agentId: 'pi' })).ok, 'viewer 不能建');
+  assert.ok(!(await agents.create(w.alice, w.project.id, { name: 'QA 测试', agentId: 'pi' })).ok, '@id 不合法');
+  assert.ok(!(await agents.create(w.alice, w.project.id, { name: 'coder', agentId: 'pi' })).ok, '@id 重复');
+  assert.ok(!(await agents.create(w.alice, w.project.id, { name: 'qa', agentId: 'pi', description: 'x'.repeat(4001) })).ok, '职责太长');
+  const qa = await agents.create(w.alice, w.project.id, { name: 'qa', displayName: '  测试  ', color: 'rose', agentId: 'hermes', description: 'y'.repeat(4000) });
+  assert.ok(qa.ok, qa.ok ? '' : qa.error.message);
+  assert.equal(qa.value.displayName, '测试');
+  const edited = await agents.update(w.alice, w.project.id, 'qa', { displayName: '质检', model: 'm1', name: 'renamed' } as never);
+  assert.ok(edited.ok);
+  assert.equal(edited.value.name, 'qa', '@id 不随 patch 改');
+  assert.equal(edited.value.displayName, '质检');
+  assert.ok(!(await agents.update(w.alice, w.project.id, 'nope', {})).ok);
+
+  const g = await w.chat.create(w.alice, w.project.id, { name: '评审群', members: ['host', 'coder'], hostRole: 'host' });
+  assert.ok(g.ok);
+  const listed = await agents.list(w.alice, w.project.id);
+  assert.ok(listed.ok);
+  assert.deepEqual(listed.value.find((a) => a.name === 'host')?.groups, [{ id: g.value.id, name: '评审群', host: true }]);
+  const gone = await agents.remove(w.alice, w.project.id, 'host');
+  assert.ok(gone.ok);
+  assert.deepEqual(gone.value.removedFrom, [{ id: g.value.id, name: '评审群' }]);
+  const after = (await w.groups.group(g.value.id))!;
+  assert.deepEqual(after.members, ['coder']);
+  assert.equal(after.hostRole, null);
+  assert.ok(!config.roles.some((r) => r.name === 'host'));
+  assert.ok((await w.posts(g.value.id)).some((p) => p.author.kind === 'system' && /删除了 bot @host/.test(p.body)));
+});
+
+test('职责说明作为系统提示放在群消息最前面', async () => {
+  const { memberPrompt } = await import('../groups.ts');
+  const text = memberPrompt({ group: { name: 'g', members: ['coder'], hostRole: null }, role: 'coder', roles: ROLES, history: [], trigger: { author: 'alice', body: 'hi' } });
+  assert.ok(text.startsWith('<agent-instructions>\n写代码\n</agent-instructions>'));
 });

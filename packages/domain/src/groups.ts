@@ -1,5 +1,5 @@
 import type { ProjectId, SessionId } from './ids.ts';
-import type { AgentRole } from './messaging.ts';
+import { PERSISTENT_AGENT_DESCRIPTION_MAX, type AgentRole } from './messaging.ts';
 
 /**
  * 群聊（ADR 0018 · IM 与群组）：一个群 = 项目里的几个角色 + 人。
@@ -138,7 +138,7 @@ export function groupProblem(input: GroupInput, roles: readonly AgentRole[]): st
   const known = new Map(roles.map((r) => [r.name, r]));
   for (const m of input.members) {
     if (!ROLE_NAME.test(m)) return `成员名不合法：${m}`;
-    if (!known.has(m)) return `项目里没有角色 ${m}，先在「agent 消息」里加角色`;
+    if (!known.has(m)) return `项目里没有角色 ${m}，先在「Bot」页新建`;
   }
   const strategy = input.speakingStrategy ?? 'host';
   if (strategy !== 'host' && strategy !== 'volunteer') return '发言策略只能是 host 或 volunteer';
@@ -329,9 +329,16 @@ const rosterBlock = (ctx: PromptContext): string =>
     })
     .join('\n');
 
+/** 这个 bot 自己的职责说明（项目成员写的，可信），放在提示最前面当系统提示。 */
+const instructionsBlock = (ctx: PromptContext): string => {
+  const text = ctx.roles.find((r) => r.name === ctx.role)?.description.trim() ?? '';
+  return text ? `<agent-instructions>\n${clip(text, PERSISTENT_AGENT_DESCRIPTION_MAX)}\n</agent-instructions>` : '';
+};
+
 /** 投给普通成员的文字。 */
 export function memberPrompt(ctx: PromptContext, note = ''): string {
   return [
+    instructionsBlock(ctx),
     `You are @${ctx.role} in the group chat "${ctx.group.name}". Members:\n${rosterBlock(ctx)}`,
     historyBlock(ctx) + `New message from ${ctx.trigger.author}:\n<group-message untrusted="${ctx.trigger.author.startsWith('@') ? 'true' : 'false'}">\n${clip(ctx.trigger.body, 8000)}\n</group-message>`,
     note ? `Host note: ${clip(note, 500)}` : '',
@@ -355,10 +362,13 @@ export function hostPrompt(ctx: PromptContext, status: readonly { role: string; 
 /** 竞价：不直接发言，只报分数和准备说的话。 */
 export function bidPrompt(ctx: PromptContext): string {
   return [
+    instructionsBlock(ctx),
     `You are @${ctx.role} in the group chat "${ctx.group.name}". Members:\n${rosterBlock(ctx)}`,
     historyBlock(ctx) + `Latest message from ${ctx.trigger.author}:\n<group-message>\n${clip(ctx.trigger.body, 8000)}\n</group-message>`,
     `Only one member speaks next. Reply with only a JSON object {"score": 0..1, "message": "what you would post"} where score is how useful your message is right now, or exactly ${SILENT_TOKEN} if you have nothing to add.`
-  ].join('\n\n');
+  ]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 export const isDeliveryOpen = (d: Pick<GroupDelivery, 'status'>): boolean => d.status === 'queued' || d.status === 'delivered';
