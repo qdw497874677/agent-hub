@@ -1,0 +1,50 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>工作空间文件 草图</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,system-ui,sans-serif;background:#f6f7f9;color:#1d2330}
+header{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#fff;border-bottom:1px solid #e4e7ec}
+header b{flex:1}.tabs{display:flex;gap:4px;padding:8px 14px;background:#fff;border-bottom:1px solid #e4e7ec}
+.tab{padding:5px 12px;border-radius:16px;color:#5b6475}.tab.on{background:#1d2330;color:#fff}
+.wrap{display:flex;height:calc(100vh - 96px)}
+.tree{width:280px;background:#fff;border-right:1px solid #e4e7ec;overflow:auto;padding:8px}
+.search{width:100%;padding:8px 10px;border:1px solid #d9dde5;border-radius:8px;margin-bottom:8px;background:#f6f7f9}
+.row{display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:6px;white-space:nowrap}
+.row.sel{background:#eaf1ff}.dim{color:#a0a7b4}.g{margin-left:auto;font:600 11px monospace}
+.M{color:#c27c00}.A{color:#178a3e}.U{color:#2f6fed}
+.view{flex:1;overflow:auto;background:#fff}
+.vh{display:flex;gap:8px;align-items:center;padding:8px 14px;border-bottom:1px solid #e4e7ec;color:#5b6475}
+pre{white-space:normal;margin:0;padding:12px 0;font:12.5px/1.6 ui-monospace,Menlo,monospace}
+.l{display:flex;white-space:pre}.n{width:44px;text-align:right;padding-right:12px;color:#b3b9c4;user-select:none}
+.add{background:#e9f7ee}.del{background:#fdecec}
+.k{color:#a626a4}.s{color:#50a14f}.f{color:#4078f2}.c{color:#a0a1a7}
+.btn{border:1px solid #d9dde5;background:#fff;border-radius:6px;padding:3px 10px;font-size:12px}
+.crumb{display:none}
+@media(max-width:600px){.wrap{display:block;height:auto}.tree{width:100%;border:0}.view{display:none}
+.crumb{display:block;padding:6px 14px;color:#5b6475;font-size:13px;background:#fff}
+.row{padding:11px 8px;border-bottom:1px solid #f0f2f5;border-radius:0}.row.sel{background:none}}
+</style>
+<header><span>‹</span><b>会话 #12 · agent-hub</b><span class="dim">worker: omarchy</span></header>
+<div class="tabs"><span class="tab on">文件</span><span class="tab">改动 3</span></div>
+<div class="crumb">agent-hub / packages / domain / src</div>
+<div class="wrap"><div class="tree">
+<input class="search" placeholder="模糊找文件（如 wsfs）">
+<div class="row">📁 ports <span class="g M">●</span></div>
+<div class="row">📁 use-cases</div>
+<div class="row sel">📄 session.ts <span class="g M">M</span></div>
+<div class="row">📄 workspace.ts <span class="g A">A</span></div>
+<div class="row">📄 project.ts</div>
+<div class="row">📄 notes.md <span class="g U">?</span></div>
+<div class="row dim">📁 dist（已忽略）</div>
+<div class="row dim">🔒 .env（敏感，点开查看）</div>
+</div><div class="view">
+<div class="vh"><b style="color:#1d2330">session.ts</b><span>TypeScript · 4.2 KB</span><span style="flex:1"></span><span class="btn">源码</span><span class="btn">Diff</span><span class="btn">下载</span></div>
+<pre><div class="l"><span class="n">1</span><span><span class="k">import</span> { <span class="f">Result</span> } <span class="k">from</span> <span class="s">'./result.ts'</span>;</span></div>
+<div class="l"><span class="n">2</span><span></span></div>
+<div class="l"><span class="n">3</span><span class="c">/** 一次会话：跑在某个工作空间里 */</span></div>
+<div class="l"><span class="n">4</span><span><span class="k">export interface</span> <span class="f">Session</span> {</span></div>
+<div class="l"><span class="n">5</span><span>  <span class="k">readonly</span> id: string;</span></div>
+<div class="l del"><span class="n">6</span><span>- <span class="k">readonly</span> workerId: string;</span></div>
+<div class="l add"><span class="n">6</span><span>+ <span class="k">readonly</span> workspaceId: string;</span></div>
+<div class="l"><span class="n">7</span><span>  <span class="k">readonly</span> status: <span class="f">SessionStatus</span>;</span></div>
+<div class="l"><span class="n">8</span><span>}</span></div></pre>
+</div></div></html>
