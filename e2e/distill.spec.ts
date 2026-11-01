@@ -32,7 +32,7 @@ test('会后提炼：默认规则版；乱填的模型被拒；项目设置里�
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
   const toggle = box.getByTestId('project-distill-enabled');
   await expect(toggle).toBeChecked();
-  await toggle.uncheck();
+  await toggle.click();
   await expect(toggle).not.toBeChecked();
   await expect(box.getByTestId('project-distill-model')).toBeDisabled();
   expect(await (await page.request.get(path)).json()).toMatchObject({ enabled: false });
