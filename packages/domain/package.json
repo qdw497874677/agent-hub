@@ -11,6 +11,10 @@
     "./testing": {
       "types": "./src/testing/in-memory.ts",
       "default": "./src/testing/in-memory.ts"
+    },
+    "./testing/memory-contracts": {
+      "types": "./src/testing/memory-contracts.ts",
+      "default": "./src/testing/memory-contracts.ts"
     }
   }
 }

@@ -9,7 +9,7 @@ import {
   MEMORY_TOOLS,
   TOKEN_NEVER_GRANTABLE,
   asAgentId,
-  createDefaultMemoryPolicy,
+  defaultMemoryRegistry,
   createMemoryService,
   createMemoryToolProvider,
   createProject,
@@ -61,8 +61,7 @@ async function world() {
     tasks: deps.tasks,
     projects: deps.projects,
     ...store.memory,
-    sources: [source],
-    policy: createDefaultMemoryPolicy(),
+    ...defaultMemoryRegistry().source(source).build({ index: store.memory.index, store: store.memory.store }),
     audit: { append: async (entry) => void audits.push(entry) },
     principalOf: async (id) => (users.has(id) ? principal(id) : null),
     sourceTtlMs: 0

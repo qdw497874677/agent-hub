@@ -26,7 +26,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createMessageToolProvider,
   createMemoryService,
   createMemoryToolProvider,
-  createDefaultMemoryPolicy,
+  defaultMemoryRegistry,
   MEMORY_GUIDANCE,
   MEMORY_SWEEP_INTERVAL_MS,
   MEMORY_GUIDANCE_VERSION,
@@ -238,14 +238,16 @@ const contextService = createContextService({ projects: deps.projects, tasks: de
 setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
 
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
+// 记忆适配器都经注册表装配（memory.md §16）：来源、提炼、检索 / 排序、维护任务、治理各是一个端口。
+const memoryRegistry = defaultMemoryRegistry();
+for (const source of createMemorySources(deps, store.groups)) memoryRegistry.source(source);
 const memoryService = createMemoryService({
   now: deps.now,
   sessions: deps.sessions,
   projects: deps.projects,
   tasks: deps.tasks,
   ...store.memory,
-  sources: createMemorySources(deps, store.groups),
-  policy: createDefaultMemoryPolicy(),
+  ...memoryRegistry.build({ index: store.memory.index, store: store.memory.store }),
   audit: store.audit,
   access: deps.access,
   principalOf: async (userId) => {

@@ -133,3 +133,42 @@ export interface MemorySettingsStore {
   projectMode(projectId: string): Promise<ProjectMemoryMode>;
   setProjectMode(projectId: string, mode: ProjectMemoryMode, at: number): Promise<void>;
 }
+
+/* ——— P2 重构：每一块一个端口，适配器经注册表装配（见 memory.md §16） ——— */
+
+/** 写入路径：提炼器。规则版是默认适配器；模型版以后作为另一个适配器注册，不改服务。 */
+export interface DistillInput {
+  readonly summary: string;
+  readonly sessionId: string;
+  readonly seq: number;
+}
+export interface MemoryDistiller {
+  readonly id: string;
+  /** 返回候选：第一条是摘要本身（进 session:），其余是项目层候选。返回空 = 不写（比如含密钥）。 */
+  distill(input: DistillInput): Promise<readonly import('../memory.ts').DistillCandidate[]>;
+}
+
+/** 检索路径：多路结果怎么融合排序（默认 RRF k=60）。 */
+export interface MemoryRanker {
+  readonly id: string;
+  fuse(lists: readonly (readonly MemoryHit[])[]): MemoryHit[];
+}
+
+/** 定期维护：每个任务一个适配器（过期物化、每周抽查、以后的过时检测 / 整理）。sweep 依次跑注册的任务。 */
+export interface MaintenanceContext {
+  readonly now: number;
+  readonly store: MemoryStore;
+  readonly index: MemoryIndex;
+  /** 条目 → 索引文档（服务给的，任务不用知道索引格式）。 */
+  readonly indexDoc: (entry: MemoryEntry) => IndexDoc;
+}
+export interface MemoryMaintenanceJob {
+  readonly id: string;
+  run(ctx: MaintenanceContext): Promise<{ readonly count: number }>;
+}
+
+/** 治理：密钥过滤（命中返回类别名，没命中 null）。写入、导入、提炼都过它。 */
+export interface MemorySecretFilter {
+  readonly id: string;
+  check(text: string): string | null;
+}
