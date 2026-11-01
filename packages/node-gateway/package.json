@@ -11,6 +11,8 @@
     "@agent-hub/contract": "*",
     "@agent-hub/domain": "*",
     "@modelcontextprotocol/sdk": "^1.32.2",
+    "chokidar": "^4.0.3",
+    "fuzzysort": "^3.1.0",
     "pidtree": "^1.0.0",
     "pidusage": "^4.1.0",
     "simple-git": "^4.0.2",
