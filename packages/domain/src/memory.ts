@@ -19,11 +19,12 @@ export type MemoryKind = 'semantic' | 'episodic' | 'procedural' | 'preference';
 export const MEMORY_KINDS: readonly MemoryKind[] = ['semantic', 'episodic', 'procedural', 'preference'];
 
 /**
+ * staged：提炼出来的暂存条目（P2，§9.1），默认搜不到；14 天内被印证或有人采纳转 active，30 天没人理就过期。
  * proposed：等人确认 / 审核；active：生效；superseded：被新条目取代（留历史）；
  * rejected：审核没过；expired：过了有效期；invalidated：来源连续变了两次；forgotten：软删除。
  */
-export type MemoryStatus = 'proposed' | 'active' | 'superseded' | 'rejected' | 'expired' | 'invalidated' | 'forgotten';
-export const MEMORY_STATUSES: readonly MemoryStatus[] = ['proposed', 'active', 'superseded', 'rejected', 'expired', 'invalidated', 'forgotten'];
+export type MemoryStatus = 'staged' | 'proposed' | 'active' | 'superseded' | 'rejected' | 'expired' | 'invalidated' | 'forgotten';
+export const MEMORY_STATUSES: readonly MemoryStatus[] = ['staged', 'proposed', 'active', 'superseded', 'rejected', 'expired', 'invalidated', 'forgotten'];
 
 export type MemoryTrust = 'trusted' | 'untrusted';
 
@@ -100,6 +101,13 @@ export const MEMORY_VALIDITY_MS: Readonly<Record<MemoryKind, number | null>> = {
   procedural: null,
   preference: null
 };
+/** 暂存条目：多久内被印证可以转正；多久没人理就过期（§9.1）。 */
+export const STAGED_CORROBORATE_MS = 14 * DAY;
+export const STAGED_EXPIRE_MS = 30 * DAY;
+/** 会后提炼的限额（§6.1）：输入最多多少 token、每次最多几条、每条多长、每个项目每天最多几次、太短的会话不提炼。 */
+export const DISTILL_LIMITS = { inputTokens: 16_000, maxOutputs: 5, outputChars: 1000, runsPerProjectPerDay: 50, minTokens: 2000 } as const;
+/** 后台整理（物化过期状态）最多一天一次。 */
+export const MEMORY_SWEEP_INTERVAL_MS = DAY;
 /** 检索排序的最近性衰减半衰期（只影响排序，不删除）。 */
 export const MEMORY_HALF_LIFE_MS = 60 * DAY;
 
@@ -193,6 +201,7 @@ export function draftProblem(draft: MemoryDraft): string | null {
 
 /** 取代关系、过期都算上之后，这条现在是什么状态。过期是读时算的：不用后台任务也不会把过期的当成有效。 */
 export function effectiveStatus(entry: MemoryEntry, now: number): MemoryStatus {
+  if (entry.status === 'staged' && entry.createdAt + STAGED_EXPIRE_MS <= now) return 'expired';
   if ((entry.status === 'active' || entry.status === 'proposed') && entry.validTo !== null && entry.validTo <= now) return 'expired';
   return entry.status;
 }
@@ -229,3 +238,42 @@ export const MEMORY_GUIDANCE =
 export const MEMORY_GUIDANCE_TOKEN_LIMIT = 80;
 /** 粗算 token：单词、数字、每个标点各算一个，CJK 一字一个。比真实分词器偏高，够当上限用。 */
 export const estimateTokens = (text: string): number => (text.match(/[A-Za-z]+|\d+|[\u4e00-\u9fff]|[^\sA-Za-z\d]/g) ?? []).length;
+
+/** 印证：同一作用域里标题归一化后相同，就算「又一次得出同样的结论」。 */
+export const normalizeTitle = (title: string): string => title.toLowerCase().replace(/[\s\p{P}]+/gu, '');
+
+const PRINCIPLE_HINT = /(约定|规范|必须|不要|别再|总是|一律|务必|always|never|must|should(?:n't| not)?|convention|rule)/i;
+
+export interface DistillCandidate {
+  /** staged = 项目层暂存的经历；proposed = 工作方式候选（principle-candidate），进确认队列。 */
+  readonly status: 'staged' | 'proposed';
+  readonly draft: MemoryDraft;
+}
+
+/**
+ * 会后提炼（规则版，不调模型）：把运行时给的压缩摘要切成候选。
+ * - 一条 episodic：摘要本身（截到 1000 字），进项目层 staged；
+ * - 至多 4 条 procedural：摘要里像「约定 / 必须 / 不要 / always / never」的行，进确认队列（principle-candidate）。
+ * 输入先截到 16k token 的量级；总数 ≤ 5；含疑似密钥的行丢掉，摘要整体含密钥就整个不提炼。
+ */
+export function distillSummary(summary: string, origin: { sessionId: string; seq: number }): DistillCandidate[] {
+  const text = summary.trim().slice(0, DISTILL_LIMITS.inputTokens * 2);
+  if (text === '' || secretKind(text)) return [];
+  const clip = (value: string, max: number) => (value.length > max ? `${value.slice(0, max - 1)}…` : value);
+  const ref: SourceRef = { source: 'session', uri: `session:${origin.sessionId}#${origin.seq}` };
+  const firstLine = text.split('\n').map((line) => line.replace(/^[#>*\-\s\d.]+/, '').trim()).find((line) => line !== '') ?? '会话摘要';
+  const out: DistillCandidate[] = [
+    { status: 'staged', draft: { kind: 'episodic', title: clip(`会话摘要：${firstLine}`, 80), body: clip(text, DISTILL_LIMITS.outputChars), tags: ['distill'], sources: [ref] } }
+  ];
+  const seen = new Set<string>();
+  for (const raw of text.split('\n')) {
+    if (out.length >= DISTILL_LIMITS.maxOutputs) break;
+    const line = raw.replace(/^[\s>*\-\d.]+/, '').trim();
+    if (line.length < 8 || line.length > 300 || !PRINCIPLE_HINT.test(line)) continue;
+    const key = normalizeTitle(line);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ status: 'proposed', draft: { kind: 'procedural', title: clip(line, 80), body: clip(line, DISTILL_LIMITS.outputChars), tags: ['distill', 'principle-candidate'], sources: [ref] } });
+  }
+  return out;
+}

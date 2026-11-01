@@ -18,7 +18,8 @@ export interface MemoryStore {
   update(entry: MemoryEntry, ifVersion: number): Promise<MemoryEntry | null>;
   get(id: string): Promise<MemoryEntry | null>;
   /** 新的在前。 */
-  list(scopes: readonly MemoryScope[], filter?: MemoryEntryFilter): Promise<MemoryEntry[]>;
+  /** scopes = null：所有作用域（只给后台整理用）。 */
+  list(scopes: readonly MemoryScope[] | null, filter?: MemoryEntryFilter): Promise<MemoryEntry[]>;
   /** 出处里引用了这个 uri 的条目（来源变了要标 stale）。 */
   citing(source: string, uri: string): Promise<MemoryEntry[]>;
   /** 一条的历史版本，旧的在前。 */

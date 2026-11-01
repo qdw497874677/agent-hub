@@ -56,7 +56,7 @@ export function installMemoryRoutes(app: Hono<any>, options: MemoryRouteDeps, su
     if (!principal) return fail(c, { code: 'forbidden', message: '要登录' });
     const q = c.req.query('q') ?? '';
     const scopes = c.req.queries('scope') ?? [];
-    const found = await memory.search({ kind: 'user', principal }, { query: q, scopes, includeInactive: c.req.query('all') === '1' });
+    const found = await memory.search({ kind: 'user', principal }, { query: q, scopes, includeInactive: c.req.query('all') === '1', includeStaged: c.req.query('staged') === '1' });
     return found.ok ? c.json({ results: found.value }) : fail(c, found.error);
   });
 
