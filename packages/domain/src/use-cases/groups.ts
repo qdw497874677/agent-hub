@@ -91,6 +91,14 @@ export interface GroupChat {
   stop(actor: Principal, groupId: string): Promise<Result<Group, DomainError>>;
   /** 把一个项目角色加进群（group.manage）。只能 @ 成员：@ 到群外的项目角色时界面给「加入群组」按钮调这个；加完不自动重放那条消息。 */
   addMember(actor: Principal, groupId: string, role: string): Promise<Result<Group, DomainError>>;
+  /** 一次加多个 bot；已经在群里的跳过。 */
+  addMembers(actor: Principal, groupId: string, roles: readonly string[]): Promise<Result<Group, DomainError>>;
+  /** 把一个 bot 移出群。主持人要先换人；至少留一个成员。 */
+  removeMember(actor: Principal, groupId: string, role: string): Promise<Result<Group, DomainError>>;
+  /** 项目里引用这个 bot 的群（删 bot 前给人确认用）。 */
+  groupsWith(projectId: ProjectId, role: string): Promise<readonly Group[]>;
+  /** bot 被删了：从项目所有群里移出（是主持人就清掉主持人），返回受影响的群。调用方负责鉴权。 */
+  detachAgent(actor: Principal, projectId: ProjectId, role: string): Promise<readonly Group[]>;
   /** 主持人工具 group_dispatch。 */
   dispatch(sessionId: SessionId, input: Record<string, unknown>): Promise<Result<{ assignees: readonly string[] } | { declined: true }, DomainError>>;
   /** 会话一轮结束（组合根接 hub.stream 'ended'）。 */
@@ -578,7 +586,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
           const known = mentions.outsiders.filter((o) => roleNames.includes(o));
           const unknown = mentions.outsiders.filter((o) => !roleNames.includes(o));
           if (known.length > 0) await system(group, thread, `${known.map((o) => `@${o}`).join('、')} 不在这个群里，只能 @ 群成员：有管理权限的人可以点「加入群组」把它加进来，然后再发一次`);
-          if (unknown.length > 0) await system(group, thread, `${unknown.map((o) => `@${o}`).join('、')} 不在这个群里，也不是项目角色`);
+          if (unknown.length > 0) await system(group, thread, `${unknown.map((o) => `@${o}`).join('、')} 不在这个群里，也不是这个项目的 bot`);
           // 有 @ 的消息不经过主持人：只 @ 了群外的人就停在这里，不派生、不重放
           if (mentions.members.length === 0) {
             await end(group, thread, 'done', null);
@@ -644,19 +652,65 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     },
 
     async addMember(actor, groupId, role) {
+      return chat.addMembers(actor, groupId, [String(role ?? '')]);
+    },
+
+    async addMembers(actor, groupId, roles) {
+      const found = await authorize(actor, await deps.groups.group(groupId), 'group.manage');
+      if (!found.ok) return found;
+      const names = [...new Set(roles.map((r) => String(r ?? '')))];
+      if (names.length === 0) return err(invalid('至少选一个 bot'));
+      const known = new Set((await deps.roles(found.value.group.projectId)).map((r) => r.name));
+      const unknown = names.find((n) => !known.has(n));
+      if (unknown !== undefined) return err(invalid(`项目里没有 bot ${unknown}`));
+      return run(groupId, async () => {
+        const group = (await deps.groups.group(groupId))!;
+        const fresh = names.filter((n) => !group.members.includes(n));
+        if (fresh.length === 0) return err(invalid(names.length === 1 ? `@${names[0]} 已经在群里` : '选的 bot 都已经在群里'));
+        const members = [...group.members, ...fresh];
+        const problem = groupProblem({ name: group.name, members, hostRole: group.hostRole, speakingStrategy: group.speakingStrategy, limits: group.limits }, await deps.roles(group.projectId));
+        if (problem) return err(invalid(problem));
+        const next = await saveGroup(group, { members });
+        await system(next, null, `${actor.user.displayName || actor.user.email} 把 ${fresh.map((n) => `@${n}`).join('、')} 加进了群，现在可以 @ 它了`);
+        return ok(next);
+      });
+    },
+
+    async removeMember(actor, groupId, role) {
       const found = await authorize(actor, await deps.groups.group(groupId), 'group.manage');
       if (!found.ok) return found;
       const name = String(role ?? '');
-      if (!(await deps.roles(found.value.group.projectId)).some((r) => r.name === name)) return err(invalid(`项目里没有角色 ${name}`));
       return run(groupId, async () => {
         const group = (await deps.groups.group(groupId))!;
-        if (group.members.includes(name)) return err(invalid(`@${name} 已经在群里`));
-        const problem = groupProblem({ name: group.name, members: [...group.members, name], hostRole: group.hostRole, speakingStrategy: group.speakingStrategy, limits: group.limits }, await deps.roles(group.projectId));
-        if (problem) return err(invalid(problem));
-        const next = await saveGroup(group, { members: [...group.members, name] });
-        await system(next, null, `${actor.user.displayName || actor.user.email} 把 @${name} 加进了群，现在可以 @ 它了`);
+        if (!group.members.includes(name)) return err(notFound(`@${name} 不在群里`));
+        if (group.hostRole === name) return err(invalid(`@${name} 是主持人，先在群设置里换主持人`));
+        if (group.members.length <= 1) return err(invalid('群里至少要留一个成员'));
+        const next = await saveGroup(group, { members: group.members.filter((m) => m !== name), held: group.held.filter((h) => h !== name) });
+        await interruptBusy(groupId, [name]);
+        await system(next, null, `${actor.user.displayName || actor.user.email} 把 @${name} 移出了群`);
         return ok(next);
       });
+    },
+
+    async groupsWith(projectId, role) {
+      return (await deps.groups.groupsOf(projectId)).filter((g) => g.members.includes(role) || g.hostRole === role);
+    },
+
+    async detachAgent(actor, projectId, role) {
+      const affected = await chat.groupsWith(projectId, role);
+      for (const g of affected) {
+        await run(g.id, async () => {
+          const group = (await deps.groups.group(g.id))!;
+          const next = await saveGroup(group, {
+            members: group.members.filter((m) => m !== role),
+            held: group.held.filter((h) => h !== role),
+            hostRole: group.hostRole === role ? null : group.hostRole
+          });
+          await interruptBusy(g.id, [role]);
+          await system(next, null, `${actor.user.displayName || actor.user.email} 删除了 bot @${role}，已移出群${group.hostRole === role ? '；群里暂时没有主持人' : ''}`);
+        });
+      }
+      return affected;
     },
 
     async dispatch(sessionId, input) {

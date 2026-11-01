@@ -1,8 +1,9 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
-import { asProjectId, principalOfSubject, MAX_GROUP_LIMITS, MAX_POST_CHARS, type GroupChat } from '@agent-hub/domain';
+import { asProjectId, principalOfSubject, MAX_GROUP_LIMITS, MAX_POST_CHARS, type GroupChat, type PersistentAgents } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
+import { installPersistentAgentRoutes } from './persistent-agent-routes.ts';
 
 /**
  * 群聊的 HTTP 外壳（ADR 0018 · 群组）：
@@ -12,7 +13,8 @@ import { fail } from './http-error.ts';
  * - GET  /api/groups/:id/posts?after=&limit=
  * - POST /api/groups/:id/posts             人发言（group.post）
  * - POST /api/groups/:id/stop              停止：取消排队，成员暂停到人再次发言
- * - POST /api/groups/:id/members           把一个项目角色加进群（group.manage），不重放消息
+ * - POST /api/groups/:id/members           把 bot 加进群：{ role } 或 { roles: [] }（group.manage），不重放消息
+ * - DELETE /api/groups/:id/members/:role   把 bot 移出群（group.manage）；主持人要先换人
  * - GET  /api/groups/:id/chains            调用链：每段对话的投递（谁、哪条会话、结果）
  * 权限都在用例里按群所在的项目判。
  */
@@ -30,10 +32,12 @@ const postBody = z.object({ body: z.string().min(1).max(MAX_POST_CHARS) });
 
 export interface GroupRouteDeps {
   readonly groups: GroupChat;
+  readonly agents?: PersistentAgents;
 }
 
 export function installGroupRoutes(app: Hono<any>, options: GroupRouteDeps, subjectOf: SubjectOf): void {
   const { groups } = options;
+  if (options.agents) installPersistentAgentRoutes(app, options.agents, subjectOf);
   const me = (c: Parameters<SubjectOf>[0]) => principalOfSubject(subjectOf(c));
   const needUser = { code: 'forbidden' as const, message: '要以账号身份使用群聊' };
   const parseGroup = (raw: unknown) => {
@@ -103,9 +107,20 @@ export function installGroupRoutes(app: Hono<any>, options: GroupRouteDeps, subj
   app.post('/api/groups/:id/members', async (c) => {
     const actor = me(c);
     if (!actor) return fail(c, needUser);
-    const body = z.object({ role: z.string().min(1).max(40) }).safeParse(await c.req.json().catch(() => null));
-    if (!body.success) return fail(c, { code: 'invalid', message: '要给 role' });
-    const group = await groups.addMember(actor, c.req.param('id'), body.data.role);
+    const body = z
+      .object({ role: z.string().min(1).max(40).optional(), roles: z.array(z.string().min(1).max(40)).min(1).max(12).optional() })
+      .refine((b) => b.role !== undefined || b.roles !== undefined)
+      .safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(c, { code: 'invalid', message: '要给 role 或 roles' });
+    const names = body.data.roles ?? [body.data.role!];
+    const group = await groups.addMembers(actor, c.req.param('id'), names);
+    return group.ok ? c.json(group.value) : fail(c, group.error);
+  });
+
+  app.delete('/api/groups/:id/members/:role', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const group = await groups.removeMember(actor, c.req.param('id'), c.req.param('role'));
     return group.ok ? c.json(group.value) : fail(c, group.error);
   });
 

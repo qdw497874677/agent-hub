@@ -23,6 +23,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createMessageBus,
   interruptSessionUseCase,
   createGroupChat,
+  createPersistentAgents,
   createSessionLane,
   createContextService,
   createWorkspaceFilesService,
@@ -232,6 +233,15 @@ const groupChat = createGroupChat({
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
   occupied: async (sessionId) => (await store.messages.deliveredTo(sessionId)).length > 0
+});
+// 持久智能体（界面上叫 bot）：按条读写项目的 agent 消息配置；删除时从所有群移出。
+const persistentAgents = createPersistentAgents({
+  projects: deps.projects,
+  policy: deps.access,
+  config: (projectId) => messageBus.config(projectId),
+  saveConfig: (projectId, input) => messageBus.saveConfig(projectId, input),
+  groupsOf: (projectId) => store.groups.groupsOf(projectId),
+  detach: (actor, projectId, name) => groupChat.detachAgent(actor, projectId, name)
 });
 // 回合结束：先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
 hub.stream.subscribe((frame) => {
@@ -657,7 +667,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users },
   messaging: { bus: messageBus, messages: store.messages },
-  groups: { groups: groupChat },
+  groups: { groups: groupChat, agents: persistentAgents },
   context: contextService,
   files: filesService,
   memory: { memory: memoryService },

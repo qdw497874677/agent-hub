@@ -106,6 +106,7 @@ export * from './tools/context-tools.ts';
 export * from './messaging.ts';
 export * from './groups.ts';
 export * from './use-cases/groups.ts';
+export * from './use-cases/persistent-agents.ts';
 export type { GroupStore } from './ports/group-store.ts';
 export * from './use-cases/messaging.ts';
 export type { MessageStore } from './ports/message-store.ts';

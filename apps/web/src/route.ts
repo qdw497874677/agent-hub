@@ -1,5 +1,5 @@
 /**
- * 地址栏就是导航状态：`#/home` 首页，`#/p/<项目>/<视图>[/<会话>]`，`#/admin/<分页>` 运营后台，`#/assets/<分页>` / `#/assets/review/<提交>` 资产市场与审核，`#/memory[/<作用域>]` 记忆。
+ * 地址栏就是导航状态：`#/home` 首页，`#/p/<项目>/<视图>[/<会话>]`，`#/admin/<分页>` 运营后台，`#/assets/<分页>` / `#/assets/review/<提交>` 资产市场与审核，`#/memory[/<作用域>]` 记忆，`#/bots[/<项目>]` bot（持久智能体）。
  *
  * 为什么用 hash 而不是 history 路由：server 只托管一个 index.html，hash 不需要它配合回退；
  * 手机上「返回」手势、刷新、把链接发给自己另一台设备，都能回到同一个画面。
@@ -18,6 +18,7 @@ export type Route =
   | { readonly page: 'assets'; readonly tab: MarketTab; readonly reviewId: string | null }
   | { readonly page: 'admin'; readonly tab: AdminTab }
   | { readonly page: 'memory'; readonly scope: string | null }
+  | { readonly page: 'bots'; readonly projectId: string | null }
   | { readonly page: 'messages'; readonly projectId: string | null; readonly groupId: string | null }
   | { readonly page: 'project'; readonly projectId: string; readonly view: View; readonly sessionId: string | null };
 
@@ -28,6 +29,7 @@ export function parseRoute(hash: string): Route | null {
   if (parts.length === 0) return null;
   if (parts[0] === 'admin') return { page: 'admin', tab: ADMIN_TABS.find((tab) => tab === parts[1]) ?? 'overview' };
   if (parts[0] === 'memory') return { page: 'memory', scope: parts[1] ?? null };
+  if (parts[0] === 'bots') return { page: 'bots', projectId: parts[1] ?? null };
   if (parts[0] === 'messages') return { page: 'messages', projectId: parts[1] ?? null, groupId: parts[1] ? (parts[2] ?? null) : null };
   if (parts[0] === 'assets') {
     if (parts[1] === 'review' && parts[2]) return { page: 'assets', tab: 'pending', reviewId: parts[2] };
@@ -44,6 +46,7 @@ export function formatRoute(route: Route): string {
   if (route.page === 'home') return '#/home';
   if (route.page === 'admin') return `#/admin/${route.tab}`;
   if (route.page === 'memory') return route.scope ? `#/memory/${encodeURIComponent(route.scope)}` : '#/memory';
+  if (route.page === 'bots') return route.projectId ? `#/bots/${encodeURIComponent(route.projectId)}` : '#/bots';
   if (route.page === 'messages') {
     if (!route.projectId) return '#/messages';
     return `#/messages/${encodeURIComponent(route.projectId)}${route.groupId ? `/${encodeURIComponent(route.groupId)}` : ''}`;

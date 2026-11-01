@@ -34,3 +34,10 @@ test('后台：#/admin 默认概览，不认识的分页也回概览', () => {
   assert.deepEqual(parseRoute('#/admin/zzz'), { page: 'admin', tab: 'overview' });
   assert.deepEqual(parseRoute('#/admin/audit'), { page: 'admin', tab: 'audit' });
 });
+
+test('bot 页：#/bots[/<项目>]，/new 不算项目之外的段', () => {
+  assert.deepEqual(parseRoute('#/bots'), { page: 'bots', projectId: null });
+  assert.deepEqual(parseRoute('#/bots/p1/new'), { page: 'bots', projectId: 'p1' });
+  assert.equal(formatRoute({ page: 'bots', projectId: 'p 1' }), '#/bots/p%201');
+  assert.equal(formatRoute({ page: 'bots', projectId: null }), '#/bots');
+});

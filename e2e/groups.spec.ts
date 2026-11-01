@@ -84,7 +84,7 @@ test('只能 @ 群成员：@ 群外角色只给提示和「加入群组」，加
   await page.getByTestId('group-input').fill('@perf 看看这段为什么慢 @ghost');
   await page.getByTestId('group-send').click();
   await expect(page.getByTestId('system-line').filter({ hasText: '@perf 不在这个群里，只能 @ 群成员' })).toBeVisible();
-  await expect(page.getByTestId('system-line').filter({ hasText: '@ghost 不在这个群里，也不是项目角色' })).toBeVisible();
+  await expect(page.getByTestId('system-line').filter({ hasText: '@ghost 不在这个群里，也不是这个项目的 bot' })).toBeVisible();
   await expect(page.getByTestId('system-line').filter({ hasText: '没有设置主持人' })).toHaveCount(0);
   await expect(page.getByTestId('group-invite')).toHaveCount(0);
   await expect(page.getByTestId('group-outsider')).toHaveCount(1);
