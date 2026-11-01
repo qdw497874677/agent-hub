@@ -169,24 +169,167 @@ export function hubHttpFrom(hubUrl: string): string | null {
  * 从 hub 下目标提交的 bundle 到 dir，sha256 对不上就当没拿到。
  * 只收 40 位提交号；URL 是固定格式，不拼任何外部字符串。
  */
-export async function downloadHubBundle(options: { hubHttp: string; commit: string; dir: string; fetch?: typeof fetch }): Promise<string | null> {
+export async function downloadHubBundle(options: {
+  hubHttp: string;
+  commit: string;
+  dir: string;
+  fetch?: typeof fetch;
+}): Promise<string | null> {
+  return downloadHubArtifact({ ...options, kind: "bundle" });
+}
+
+/** 从 hub 下 worker-<提交>.<kind>（bundle 或 tar.gz）到 dir，先取 .sha256，对不上返回 null。 */
+export async function downloadHubArtifact(options: {
+  hubHttp: string;
+  commit: string;
+  dir: string;
+  kind: "bundle" | "tar.gz";
+  fetch?: typeof fetch;
+}): Promise<string | null> {
   if (!/^[0-9a-f]{40}$/.test(options.commit)) return null;
-  const { createHash } = await import('node:crypto');
-  const { mkdir, writeFile } = await import('node:fs/promises');
-  const { join } = await import('node:path');
+  const { createHash } = await import("node:crypto");
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
   const get = options.fetch ?? fetch;
-  const base = `${options.hubHttp}/install/worker-${options.commit}.bundle`;
+  const base = `${options.hubHttp}/install/worker-${options.commit}.${options.kind}`;
   const signal = AbortSignal.timeout(5 * 60_000);
   const sumResponse = await get(`${base}.sha256`, { signal });
   if (!sumResponse.ok) return null;
-  const expected = (await sumResponse.text()).trim().split(/\s+/)[0] ?? '';
+  const expected = (await sumResponse.text()).trim().split(/\s+/)[0] ?? "";
   if (!/^[0-9a-f]{64}$/.test(expected)) return null;
   const response = await get(base, { signal });
   if (!response.ok) return null;
   const body = Buffer.from(await response.arrayBuffer());
-  if (createHash('sha256').update(body).digest('hex') !== expected) return null;
+  if (createHash("sha256").update(body).digest("hex") !== expected) return null;
   await mkdir(options.dir, { recursive: true });
-  const path = join(options.dir, `worker-${options.commit}.bundle`);
+  const path = join(options.dir, `worker-${options.commit}.${options.kind}`);
   await writeFile(path, body);
   return path;
+}
+
+export interface TarballUpdateOptions {
+  /** 当前安装目录（解压安装，没有 .git）。新版本解到旁边的 <dir>.next，换好后旧的留在 <dir>.prev 供回滚。 */
+  readonly repoDir: string;
+  readonly commit: string;
+  readonly report: (status: UpdateReport) => void;
+  /** 下载并校验目标提交的 tar.gz，返回本地路径；拿不到返回 null。 */
+  readonly fetchTarball: (commit: string) => Promise<string | null>;
+  readonly run?: CommandRunner;
+  /** 默认 npm install --omit=dev（注册表沿用环境里的 NPM_CONFIG_REGISTRY，即 worker.env 里存的那个）。 */
+  readonly installArgs?: readonly string[];
+}
+
+/** 解压安装记提交号的文件（bootstrap-worker.sh 写，readBuildInfo 读）。 */
+export const COMMIT_FILE = ".agent-hub-commit";
+
+/**
+ * 没有 git 的安装怎么更新：下 tar 包 → 解到 <dir>.next → 复用旧 node_modules 再 npm install →
+ * 原子地 rename 换上（旧版留 <dir>.prev）。换上之前任何一步失败都不碰当前版本；
+ * 换上之后新版起不来由 worker-boot-guard.sh 换回 <dir>.prev。返回 true = 已换好，调用方退出重启。
+ */
+export async function runTarballUpdate(
+  options: TarballUpdateOptions,
+): Promise<boolean> {
+  const { existsSync, readFileSync } = await import("node:fs");
+  const { rename, rm, writeFile, mkdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const run = options.run ?? execRunner;
+  const dir = options.repoDir.replace(/\/+$/, "");
+  let log = "";
+  const tail = (): string => log.slice(-LOG_LIMIT);
+  const step = async (
+    command: string,
+    args: readonly string[],
+    cwd: string,
+  ): Promise<{ code: number; output: string }> => {
+    log += `$ ${command} ${args.join(" ")}\n`;
+    const result = await run(command, args, cwd);
+    log +=
+      result.output.endsWith("\n") || result.output === ""
+        ? result.output
+        : `${result.output}\n`;
+    return result;
+  };
+  const report = (state: WorkerUpdateState, message: string): void =>
+    options.report({ state, message, logTail: tail() });
+
+  if (!/^[0-9a-f]{40}$/.test(options.commit)) {
+    report("refused", "目标提交号不合法");
+    return false;
+  }
+  const target = options.commit;
+  let previous = "";
+  try {
+    previous = readFileSync(join(dir, COMMIT_FILE), "utf8").trim();
+  } catch {
+    // 没有标记
+  }
+  if (previous === target) {
+    report("succeeded", `已是目标版本 ${target.slice(0, 7)}，无需更新`);
+    return false;
+  }
+  report("updating", `从 hub 下载 ${target.slice(0, 7)} 的代码包`);
+  const tarball = await options.fetchTarball(target).catch(() => null);
+  if (!tarball) {
+    report(
+      "failed",
+      "从 hub 下载代码包失败（或 sha256 对不上），没有改动任何东西",
+    );
+    return false;
+  }
+  const next = `${dir}.next`;
+  const prev = `${dir}.prev`;
+  const abandon = async (why: string): Promise<false> => {
+    await rm(next, { recursive: true, force: true }).catch(() => {});
+    report("failed", `${why}，没有改动当前版本`);
+    return false;
+  };
+  await rm(next, { recursive: true, force: true });
+  await mkdir(next, { recursive: true });
+  if ((await step("tar", ["-xzf", tarball, "-C", next], next)).code !== 0)
+    return abandon("解压代码包失败");
+  await rm(tarball, { force: true }).catch(() => {});
+  await writeFile(join(next, COMMIT_FILE), `${target}\n`);
+  // 复用旧依赖：拷一份过去（不动正在跑的那份），npm install 只补差的
+  if (existsSync(join(dir, "node_modules")))
+    await step(
+      "cp",
+      ["-a", join(dir, "node_modules"), join(next, "node_modules")],
+      next,
+    );
+  report("updating", "安装依赖（npm install）");
+  if (
+    (
+      await step(
+        "npm",
+        options.installArgs ?? [
+          "install",
+          "--omit=dev",
+          "--no-audit",
+          "--no-fund",
+        ],
+        next,
+      )
+    ).code !== 0
+  ) {
+    return abandon("npm install 失败");
+  }
+  // 换上：<dir> → <dir>.prev，<dir>.next → <dir>。正在跑的进程拿着的是旧文件，不受影响。
+  try {
+    await rm(prev, { recursive: true, force: true });
+    await rename(dir, prev);
+  } catch (error) {
+    return abandon(`挪开当前版本失败（${(error as Error).message}）`);
+  }
+  try {
+    await rename(next, dir);
+  } catch (error) {
+    await rename(prev, dir).catch(() => {});
+    return abandon(`换上新版本失败（${(error as Error).message}）`);
+  }
+  report(
+    "succeeded",
+    `已更新到 ${target.slice(0, 7)}（旧版留在 ${prev}），正在重启`,
+  );
+  return true;
 }
