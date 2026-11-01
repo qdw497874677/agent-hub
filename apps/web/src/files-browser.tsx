@@ -34,10 +34,19 @@ function useWide(): boolean {
   return wide;
 }
 
-export function FilesBrowser({ sessionId, status, onClose }: { sessionId: string; status: string; onClose: () => void }) {
+export type FilesTab = 'files' | 'changes';
+
+type Props = { sessionId: string; status: string } & (
+  | { embedded?: false; onClose: () => void; tab?: undefined; onTab?: undefined }
+  | { embedded: true; tab: FilesTab; onTab?: undefined; onClose?: undefined }
+);
+
+/** 浮层（详情 → 浏览文件）或嵌在会话「文件 / 改动」标签页里（embedded：页签由会话头部管）。 */
+export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedTab }: Props) {
   const client = useQueryClient();
   const wide = useWide();
-  const [tab, setTab] = useState<'files' | 'changes'>('files');
+  const [ownTab, setTab] = useState<FilesTab>('files');
+  const tab = fixedTab ?? ownTab;
   const [base, setBase] = useState<Base>('session');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [opened, setOpened] = useState<Opened | null>(null);
@@ -115,9 +124,11 @@ export function FilesBrowser({ sessionId, status, onClose }: { sessionId: string
 
   const count = changes.data?.files.length;
   const showList = wide || opened === null;
+  useEffect(() => setOpened(null), [tab]);
+  const showHeader = !embedded || (!wide && opened !== null);
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-canvas" role="dialog" aria-label="工作空间文件" data-testid="files-browser">
-      <header className="flex shrink-0 items-center gap-2 border-b border-hair px-3 py-2">
+    <div className={embedded ? 'flex min-h-0 flex-1 flex-col bg-canvas' : 'fixed inset-0 z-50 flex flex-col bg-canvas'} role={embedded ? 'tabpanel' : 'dialog'} aria-label="工作空间文件" data-testid={embedded ? `files-panel-${tab}` : 'files-browser'}>
+      {showHeader ? <header className="flex shrink-0 items-center gap-2 border-b border-hair px-3 py-2">
         {!wide && opened ? (
           <button className="text-sub text-secondary" onClick={() => setOpened(null)} data-testid="files-back">‹ 返回</button>
         ) : (
@@ -131,8 +142,8 @@ export function FilesBrowser({ sessionId, status, onClose }: { sessionId: string
           </div>
         )}
         <span className="min-w-0 flex-1 truncate font-mono text-meta text-tertiary">{opened && !wide ? opened.path : ''}</span>
-        <button className="px-2 text-head text-secondary" onClick={onClose} aria-label="关闭" data-testid="files-close">×</button>
-      </header>
+        {onClose ? <button className="px-2 text-head text-secondary" onClick={onClose} aria-label="关闭" data-testid="files-close">×</button> : null}
+      </header> : null}
       <div className="flex min-h-0 flex-1">
         {showList ? (
           <aside className={`flex min-h-0 flex-col ${wide ? 'w-80 shrink-0 border-r border-hair' : 'flex-1'}`}>
