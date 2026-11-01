@@ -164,6 +164,7 @@ export type AuditAction =
   | 'context.strategy.set'
   | 'session.context.set'
   | 'session.context.compact'
+  | 'workspace.files.sensitive'
   | 'session.approval.respond'
   | 'role.context.set'
   | 'memory.write'

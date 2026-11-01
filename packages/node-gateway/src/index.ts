@@ -27,3 +27,5 @@ export { forwardProvider, offeredToken, readLimited, errorResponse, safeSubpath,
 export { collectInventory, parsePiPackage } from './inventory.ts';
 export type { InventorySources } from './inventory.ts';
 export { installComponent, installBundle, uninstallComponent, hubComponentDirs, currentVersionDir } from './components.ts';
+export { createWorkspaceBrowser, type BrowserOptions } from './workspace-browser.ts';
+export { createRemoteBrowsers, offlineWorkspaceBrowser } from './remote-workspace-browser.ts';

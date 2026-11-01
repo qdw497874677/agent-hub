@@ -15,7 +15,7 @@ import type { Principal } from './account.ts';
 /** 权限目录：每一项属于一种资源类型。自定义角色只能从这里挑（且不能挑 NEVER_GRANTABLE 和 hub 级的）。 */
 export const PERMISSION_CATALOG = {
   worker: ['worker.read', 'worker.use', 'worker.enroll', 'worker.manage', 'worker.policy', 'worker.delete', 'runtime.install', 'runtime.component.install'],
-  project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post'],
+  project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post', 'workspace.files.read'],
   task: ['task.read', 'task.create', 'task.update', 'task.delete'],
   session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue'],
   provider: ['provider.read', 'provider.use', 'provider.manage'],
@@ -78,6 +78,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
   admin: teamAll(['team.roles', 'project.purge', 'memory.purge']),
   member: {
     'project.read': 'own',
+    // 工作空间文件浏览（ADR 0025）：随 project.read 一起给，自定义角色可以单独去掉
+    'workspace.files.read': 'own',
     'project.create': 'team',
     'project.update': 'own',
     'project.share': 'own',
@@ -126,6 +128,7 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
   },
   viewer: {
     'project.read': 'team',
+    'workspace.files.read': 'team',
     'task.read': 'team',
     'session.read': 'team',
     'worker.read': 'team',
