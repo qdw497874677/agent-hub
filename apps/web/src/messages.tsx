@@ -168,6 +168,11 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer) => v
     onSuccess: () => { setText(''); void client.invalidateQueries({ queryKey: KEY }); }
   });
   const stop = useMutation({ mutationFn: () => groupApi.stop(group.id), onSuccess: () => void client.invalidateQueries({ queryKey: KEY }) });
+  const roles = useQuery({ queryKey: [...KEY, 'roles', group.projectId], queryFn: () => groupApi.roles(group.projectId) });
+  const invite = useMutation({ mutationFn: (v: { postId: string; role: string }) => groupApi.invite(group.id, v.postId, v.role), onSuccess: () => void client.invalidateQueries({ queryKey: KEY }) });
+  const roleNames = (roles.data?.roles ?? []).map((r) => r.name);
+  const outsidersOf = (body: string): string[] =>
+    [...new Set([...body.matchAll(/(^|[^\w@.])@([a-z0-9][a-z0-9_-]{0,39})/gi)].map((m) => m[2]!))].filter((n) => roleNames.includes(n) && !group.members.includes(n));
   const bottom = useRef<HTMLDivElement>(null);
   const count = posts.data?.posts.length ?? 0;
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'end' }); }, [count]);
@@ -193,6 +198,14 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer) => v
               <>
                 <span className="text-meta text-tertiary">{authorLabel(p)}</span>
                 <p className={`max-w-[85%] whitespace-pre-wrap break-words rounded-md px-3 py-1.5 text-body ${p.author.kind === 'user' ? 'bg-accent/15 text-primary' : 'bg-card text-primary'}`}>{p.body}</p>
+                {p.author.kind === 'user'
+                  ? outsidersOf(p.body).map((role) => (
+                      <button key={role} className={`${SMALL} mt-1`} data-testid="group-invite" data-role={role} disabled={invite.isPending} onClick={() => invite.mutate({ postId: p.id, role })}>
+                        临时请 @{role} 回答
+                      </button>
+                    ))
+                  : null}
+                {invite.isError && invite.variables && outsidersOf(p.body).includes(invite.variables.role) && invite.variables.postId === p.id ? <span className="text-meta text-rust" data-testid="group-invite-error">{(invite.error as Error).message}</span> : null}
               </>
             )}
           </li>
