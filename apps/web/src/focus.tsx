@@ -10,6 +10,10 @@ import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
 import { sessionCommands } from './commands.ts';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { filesApi } from './api.ts';
+import { FilesBrowser } from './files-browser.tsx';
+import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 
 interface Props {
@@ -52,6 +56,8 @@ export function FocusView({
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const [tab, setTab] = useState<SessionTab>('chat');
+  useEffect(() => setTab('chat'), [session.id]);
   const [settings, changeSettings] = useDisplaySettings();
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
@@ -63,6 +69,15 @@ export function FocusView({
   const lastSeq = live?.lastSeq ?? session.lastSeq;
   const turnRunning = waitingForReply(live, status);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
+  const queries = useQueryClient();
+  // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
+  useEffect(() => void queries.invalidateQueries({ queryKey: ['files', session.id, 'changes'] }), [status, session.id, queries]);
+  // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
+  const changeCount = useQuery({
+    retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false,
+    queryKey: ['files', session.id, 'changes', 'session'],
+    queryFn: () => filesApi.changes(session.id, 'session')
+  }).data?.files.length;
   const forkable = !busy && forkHint === null;
   const origin = session.origin;
   const forkSource = origin.kind === 'fork' ? canvas.sessions.find((candidate) => candidate.id === origin.fromSessionId) ?? null : null;
@@ -160,6 +175,29 @@ export function FocusView({
           {windowChrome?.actions}
         </span>
       </header>
+      <div role="tablist" aria-label="会话视图" className="flex shrink-0 gap-1 border-b border-hair px-2 py-1.5 md:px-3" data-testid="session-tabs">
+        {SESSION_TABS.map((t) => (
+          <button
+            key={t}
+            role="tab"
+            id={`session-tab-${t}`}
+            aria-selected={tab === t}
+            tabIndex={tab === t ? 0 : -1}
+            onClick={() => setTab(t)}
+            onKeyDown={(e) => {
+              if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+              const next = stepTab(tab, e.key === 'ArrowRight' ? 1 : -1);
+              setTab(next);
+              (e.currentTarget.parentElement?.querySelector(`#session-tab-${next}`) as HTMLElement | null)?.focus();
+            }}
+            className={`flex h-9 flex-1 items-center justify-center rounded-sm px-3 text-sub md:h-8 md:flex-none ${tab === t ? 'bg-card-raised text-primary' : 'text-tertiary hover:text-secondary'}`}
+            data-testid={`session-tab-${t}`}
+          >
+            {sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}
+          </button>
+        ))}
+      </div>
+      {tab !== 'chat' ? <FilesBrowser embedded tab={tab} sessionId={session.id} status={status} /> : null}
       {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} /> : null}
       {continuing ? (
         <ContinueDialog
@@ -174,7 +212,7 @@ export function FocusView({
         />
       ) : null}
 
-      <div ref={scroller} className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={scroller} className={`min-h-0 flex-1 overflow-y-auto ${tab === 'chat' ? '' : 'hidden'}`}>
         <div
           role="log"
           aria-label="对话记录"
@@ -228,7 +266,7 @@ export function FocusView({
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4">
+      <div className={`shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4 ${tab === 'chat' ? '' : 'hidden'}`}>
         <div className="mx-auto max-w-[760px]">
           <Composer
             large
