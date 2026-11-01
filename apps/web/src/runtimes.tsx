@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type WorkerInfoDto } from './api.ts';
+import { api, type CatalogComponentDto, type WorkerInfoDto } from './api.ts';
 import { localTime } from './local-time.ts';
 
 type Harness = NonNullable<WorkerInfoDto['agentModels']>[number];
@@ -250,7 +250,81 @@ function ComponentActions({ worker }: { worker: WorkerInfoDto }) {
           <span className="text-xs text-tertiary">升级只对新会话生效</span>
         </div>
       ) : null}
+      {inventory.bundleInstall && approved.length ? <BundleInstall worker={worker} approved={approved} busy={busy} /> : null}
       {job.isError ? <p role="alert" className="text-xs text-rust">{(job.error as Error).message}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * 整套安装（ADR 0021 P3）：勾一组已批准的组件一次装上。全有或全无：
+ * Worker 先把每个都装进暂存并核对，全部通过才一起切换；任何一个失败就一个都不换。只装组件，不装运行时本身。
+ */
+function BundleInstall({ worker, approved, busy }: { worker: WorkerInfoDto; approved: CatalogComponentDto[]; busy: boolean }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [chosen, setChosen] = useState<Record<string, string>>({});
+  // 每个组件只给最新批准的那一版
+  const latest = new Map<string, CatalogComponentDto>();
+  for (const c of [...approved].sort((a, b) => a.submittedAt - b.submittedAt)) latest.set(c.id, c);
+  const runtimes = new Set((worker.inventory?.runtimes ?? []).map((r) => r.agentId));
+  const options = [...latest.values()];
+  const install = useMutation({
+    mutationFn: () => api.bundleInstall(worker.workerId, Object.entries(chosen).map(([componentId, version]) => ({ componentId, version }))),
+    onSuccess: () => (setOpen(false), setChosen({})),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['workers'] })
+  });
+  const button = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-xs text-secondary hover:border-ink hover:text-ink disabled:opacity-50';
+  if (!open) {
+    return (
+      <div>
+        <button className={button} data-testid="bundle-install-open" disabled={busy} onClick={() => setOpen(true)}>
+          整套安装…
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="min-w-0 rounded-sm border border-hair p-2" role="dialog" aria-label="整套安装" data-testid="bundle-install-dialog">
+      <p className="text-xs text-secondary">勾选要一起装的组件（每个组件用最新批准的版本）：</p>
+      <ul className="mt-1 flex flex-col gap-1">
+        {options.map((c) => {
+          const missing = !runtimes.has(c.runtime);
+          return (
+            <li key={c.id} className="flex min-w-0 items-center gap-2 text-xs">
+              <input
+                type="checkbox"
+                data-testid={`bundle-pick-${c.id}`}
+                disabled={missing}
+                checked={chosen[c.id] === c.version}
+                onChange={(e) =>
+                  setChosen((prev) => {
+                    const next = { ...prev };
+                    if (e.target.checked) next[c.id] = c.version;
+                    else delete next[c.id];
+                    return next;
+                  })
+                }
+              />
+              <span className="min-w-0 break-all font-mono">{c.id}</span>
+              <span className="text-tertiary">v{c.version}（{nameOf(c.runtime)}{c.source === 'git' ? ' · git' : ''}）</span>
+              {missing ? <span className="text-tertiary">这台机器没有 {nameOf(c.runtime)}</span> : null}
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-1 text-xs text-tertiary" data-testid="bundle-all-or-nothing">
+        全有或全无：先把选中的都装进暂存目录并核对哈希，全部通过才一起切换；任何一个失败就一个都不换。已经装好的会跳过。
+      </p>
+      <div className="mt-1.5 flex gap-2">
+        <button className={button} data-testid="bundle-install-confirm" disabled={busy || install.isPending || Object.keys(chosen).length === 0} onClick={() => install.mutate()}>
+          安装 {Object.keys(chosen).length} 个
+        </button>
+        <button className={button} onClick={() => setOpen(false)}>
+          取消
+        </button>
+      </div>
+      {install.isError ? <p role="alert" className="mt-1 text-xs text-rust" data-testid="bundle-install-error">{(install.error as Error).message}</p> : null}
     </div>
   );
 }

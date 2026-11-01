@@ -13,10 +13,29 @@ import type { WorkerStatus } from './worker.ts';
 export type CatalogStatus = 'pending' | 'approved' | 'rejected';
 export const INSTALL_SCRIPT_NAMES = ['preinstall', 'install', 'postinstall'] as const;
 
+/** 能装组件的运行时（P3 起加了 opencode：v2 插件，按 file:// 路径进 OPENCODE_CONFIG_CONTENT.plugins）。 */
+export type ComponentRuntime = 'pi' | 'opencode';
+export const COMPONENT_RUNTIMES: readonly ComponentRuntime[] = ['pi', 'opencode'];
+
+/** 一次审核意见（P3 双人审核：要求 N 个不同的 cluster_admin 批准）。 */
+export interface CatalogApproval {
+  readonly by: string;
+  readonly at: number;
+  readonly note: string | null;
+}
+
 export interface CatalogComponent {
   /** hub 内的组件 id（目录名、钉住的 id），不是 npm 包名。 */
   readonly id: string;
-  readonly runtime: 'pi';
+  readonly runtime: ComponentRuntime;
+  /** 来源：npm（默认，老目录项没有这个字段）或钉在某个提交上的 git 仓库（P4）。 */
+  readonly source?: 'npm' | 'git';
+  /** git 来源：https 仓库地址 + 40 位提交号。 */
+  readonly gitUrl?: string;
+  readonly commit?: string;
+  /** 已有的批准（双人审核时攒够 requiredApprovals 个才变 approved）。 */
+  readonly approvals?: readonly CatalogApproval[];
+  readonly requiredApprovals?: number;
   readonly packageName: string;
   readonly version: string;
   /** npm 制品的下载地址（tarball）与 sha512：Worker 装完后对着锁文件逐项核对（借鉴 paseo 的做法）。 */
@@ -46,6 +65,13 @@ export const COMPONENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const NPM_PACKAGE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/;
 export const EXACT_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/;
 export const SHA512 = /^sha512-[A-Za-z0-9+/]{86}==$/;
+export const GIT_COMMIT = /^[0-9a-f]{40}$/;
+/** 只收 https 的公开仓库地址（不带账号密码、不带 #/?）。 */
+export const GIT_URL = /^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?\/[A-Za-z0-9._~\/-]{1,300}$/;
+export const GIT_INTEGRITY = /^git:[0-9a-f]{40}$/;
+export const gitIntegrity = (commit: string): string => `git:${commit}`;
+/** npm 认的 git 依赖写法：git+https://…#<commit>。 */
+export const gitSpec = (url: string, commit: string): string => `git+${url}#${commit}`;
 const CAPABILITY = /^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/;
 
 /** npm registry 的版本元数据里我们用到的那几项（hub 提交目录项时查一次）。 */
@@ -58,8 +84,22 @@ export interface NpmArtifactInfo {
   readonly dependencyCount: number;
 }
 
-export function validateSubmission(input: { id: string; packageName: string; version: string; provides: readonly ComponentProvides[] }): Result<void, DomainError> {
+export interface ComponentSubmission {
+  id: string;
+  packageName: string;
+  version: string;
+  provides: readonly ComponentProvides[];
+  runtime?: ComponentRuntime;
+  git?: { url: string; commit: string };
+}
+
+export function validateSubmission(input: ComponentSubmission): Result<void, DomainError> {
   if (!COMPONENT_ID.test(input.id)) return err(invalid('组件 id 只能是小写字母、数字和 . _ -'));
+  if (input.runtime && !COMPONENT_RUNTIMES.includes(input.runtime)) return err(invalid('这个运行时不支持装组件'));
+  if (input.git) {
+    if (!GIT_URL.test(input.git.url) || /@/.test(input.git.url)) return err(invalid('git 地址必须是 https，不能带账号或 #?'));
+    if (!GIT_COMMIT.test(input.git.commit)) return err(invalid('git 来源必须钉在一个 40 位的提交号上，不收分支或 tag'));
+  }
   if (!NPM_PACKAGE.test(input.packageName)) return err(invalid('npm 包名不对'));
   if (!EXACT_VERSION.test(input.version)) return err(invalid('版本必须是确切版本（X.Y.Z），不收范围、tag 或 latest'));
   if (input.provides.length > 16) return err(invalid('provides 最多 16 项'));
@@ -90,7 +130,9 @@ export type ComponentAction = 'install_component' | 'uninstall_component';
 /** 下发给 Worker 的组件任务（帧里只有固定形状的字段）。 */
 export interface ComponentJobSpec {
   readonly componentId: string;
-  readonly runtime: 'pi';
+  readonly runtime: ComponentRuntime;
+  /** git 来源（P4）：有它就按 git+https…#commit 装，integrity 是 git:<commit>。 */
+  readonly git?: { readonly url: string; readonly commit: string };
   readonly packageName: string;
   readonly version: string;
   readonly resolved: string;

@@ -119,11 +119,15 @@ const capabilityEntry = z.object({ capability: z.string().regex(/^[a-z][a-z0-9-]
 /** 组件任务的规格：全是固定形状，没有可拼进命令的自由文本。 */
 export const componentJobSpecSchema = z.object({
   componentId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
-  runtime: z.literal('pi'),
+  runtime: z.enum(['pi', 'opencode']),
+  /** git 来源（P4）：https 地址 + 40 位提交号；没有就是 npm。 */
+  git: z
+    .object({ url: z.string().regex(/^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?\/[A-Za-z0-9._~\/-]{1,300}$/), commit: z.string().regex(/^[0-9a-f]{40}$/) })
+    .optional(),
   packageName: z.string().regex(/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/),
   version: runtimeVersionSchema,
-  resolved: z.string().url().max(500),
-  integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/),
+  resolved: z.string().max(500).refine((v) => /^(https?:\/\/|git\+https:\/\/)/.test(v)),
+  integrity: z.string().regex(/^(sha512-[A-Za-z0-9+/]{86}==|git:[0-9a-f]{40})$/),
   provides: z.array(capabilityEntry).max(16),
   /** 恒为 true（ADR 0021 决定 8：安装脚本一律不执行）。保留字段是为了让旧版 Worker 也加 --ignore-scripts。 */
   ignoreScripts: z.literal(true),
@@ -173,7 +177,9 @@ export const workerInventorySchema = z.object({
   capabilities: z.array(z.object({ capability: z.string().max(128), mode: z.string().max(64).optional(), via: z.string().max(214) })).max(200),
   collectedAt: z.number().int().nonnegative(),
   /** 这台 Worker 能接组件任务（P2）。P1 的 Worker 不报 = hub 不给它发。 */
-  componentInstall: z.boolean().optional()
+  componentInstall: z.boolean().optional(),
+  /** 能接整套安装（P3）。 */
+  bundleInstall: z.boolean().optional()
 });
 export const workerInventoryFrameSchema = z.object({ type: z.literal('inventory'), inventory: workerInventorySchema });
 
@@ -268,7 +274,9 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     agentId: runtimeAgentIdSchema,
     action: runtimeJobActionSchema,
     version: runtimeVersionSchema.nullable(),
-    component: componentJobSpecSchema.optional()
+    component: componentJobSpecSchema.optional(),
+    /** 整套安装（P3）：全部装进暂存并核对通过才一起切换。只发给报了 bundleInstall 的 Worker。 */
+    components: z.array(componentJobSpecSchema).min(1).max(16).optional()
   }),
   z.object({ kind: z.literal('dispose'), sessionId: id }),
   /** 「重新检测」：让 worker 立刻重新探测各 harness 是否可用。老 worker 不认，只记一条日志。 */

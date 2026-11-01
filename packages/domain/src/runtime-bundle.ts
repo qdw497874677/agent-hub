@@ -181,6 +181,8 @@ export interface WorkerInventory {
   readonly collectedAt: number;
   /** Worker 能接组件任务（P2）。 */
   readonly componentInstall?: boolean;
+  /** 能接整套安装任务（P3：components[]，全有或全无）。 */
+  readonly bundleInstall?: boolean;
 }
 
 /** 期望状态：hub 的 component_pins 里的一行（P2 才会写入；P1 一直是空的）。 */

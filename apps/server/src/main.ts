@@ -603,6 +603,8 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
     audit: store.audit,
     access: deps.access,
     resolveNpm: createNpmResolver(readEnv('HUB_NPM_REGISTRY') ?? 'https://registry.npmjs.org'),
+    // 双人审核（P3）：默认 1 人；设成 2 就要两个不同的集群管理员批准，提交人不算
+    requiredApprovals: Number(readEnv('HUB_COMPONENT_REVIEWERS') ?? '1') || 1,
     now: () => Date.now()
   } } : {}),
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },

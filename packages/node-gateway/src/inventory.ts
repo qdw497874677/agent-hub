@@ -118,6 +118,6 @@ export function collectInventory(sources: InventorySources): WorkerInventory {
     components: [...hub.components, ...external].slice(0, MAX_COMPONENTS),
     capabilities: hub.capabilities.slice(0, MAX_COMPONENTS),
     collectedAt: (sources.now ?? Date.now)(),
-    ...(sources.componentInstall ? { componentInstall: true } : {})
+    ...(sources.componentInstall ? { componentInstall: true, bundleInstall: true } : {})
   };
 }

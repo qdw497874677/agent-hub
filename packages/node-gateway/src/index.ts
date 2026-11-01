@@ -26,4 +26,4 @@ export { createProviderRelay, type ProviderRelay, type RelaySession } from './pr
 export { forwardProvider, offeredToken, readLimited, errorResponse, safeSubpath, PayloadTooLarge, DEFAULT_PROXY_LIMITS, type ProxyLimits, type ProxyOutcome, type Upstream } from './provider-proxy.ts';
 export { collectInventory, parsePiPackage } from './inventory.ts';
 export type { InventorySources } from './inventory.ts';
-export { installComponent, uninstallComponent, hubComponentDirs, currentVersionDir } from './components.ts';
+export { installComponent, installBundle, uninstallComponent, hubComponentDirs, currentVersionDir } from './components.ts';
