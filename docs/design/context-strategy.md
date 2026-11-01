@@ -320,3 +320,16 @@ ADR 0019 决定：记忆**只用工具读、不注入**。策略的引导文字�
 ### 11.1 未决
 
 无。
+
+## 12. P3 实现：hub-managed 模式（2026-11-01）
+
+- **通路**：hub 自带 Pi 扩展 `packages/adapters/pi/extensions/hub-context.ts`。有工具授权时 pi-runtime 用 `--extension` 加载它。每次调模型前（Pi 的 `context` 事件），它调隐藏工具 `context.transform`。这个工具不在 `tools/list` 里，作用域是 `context`，每分钟 600 次，不占授权的总配额。hub 按会话的策略回答 `{apply, mode, keep, clear, guidance}`，扩展照着删轮次、把旧工具结果换成占位文字、在开头加引导。
+- **只发元数据**：发出去的只有序号 id、角色、token 估算和工具调用 id，正文不离开 worker。hub 侧 `parseContextMessages` 会丢掉任何 content 字段。
+- **内置策略**：
+  - `trim`：从用户消息处按整轮切，保留 system 和最后一轮，引导里说明原文还能用 memory_search 查到。
+  - `tool-clear`：最近 5 条之外的旧工具结果换成占位，消息和调用 / 结果对都保留，当前这一轮不动。
+  - 两个都只有 hub-managed 模式。软上限 0.7 窗口，trim 留 0.5 窗口。
+- **选模式**：按策略自己列的先后挑。compaction 先 native，所以默认会话行为不变。
+- **失败放行**：hub 连不上、超时（5 秒）、出错，或会话不在 hub-managed 模式，都原样发给模型；不在 hub-managed 时 60 秒内不再问。每次调用单独连接、用完就关，否则 `pi -p` 退不出去。
+- **老 worker**：没有这个扩展，什么都不做（照旧 native）。
+- **暂不做**：summarize-window 要模型生成摘要，和模型提炼一起做；策略事件（truncated / compressed）先不写进会话日志。

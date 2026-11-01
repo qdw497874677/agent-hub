@@ -15,6 +15,8 @@ export interface ToolDescriptor {
   readonly scope: ToolScope;
   /** 每个授权每分钟最多几次；不填用网关默认。 */
   readonly perMinute?: number;
+  /** 不列给模型（tools/list 里看不到），只给 hub 自己的运行时插件调；也不占授权的总配额（只算自己的桶）。 */
+  readonly hidden?: boolean;
 }
 
 export interface ToolContext {

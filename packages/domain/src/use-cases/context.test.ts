@@ -21,8 +21,8 @@ test('选策略：会话 > 角色 > 项目 > hub；运行时不支持 / 没安�
   assert.equal(none.source, 'default');
   const hub = resolveContextStrategy({ layers: { hub: { strategy: 'compaction' }, project: { strategy: 'compaction' } }, capability });
   assert.equal(hub.source, 'project');
-  const notInstalled = resolveContextStrategy({ layers: { session: { strategy: 'trim' } }, capability });
-  assert.deepEqual(notInstalled.fallback, { wanted: 'trim', reason: '这个策略没安装' });
+  const notInstalled = resolveContextStrategy({ layers: { session: { strategy: 'nope' } }, capability });
+  assert.deepEqual(notInstalled.fallback, { wanted: 'nope', reason: '这个策略没安装' });
   const unsupported = resolveContextStrategy({ layers: { role: { strategy: 'context-pruning' } }, capability, installed: [compactionStrategy, pruning], enabled: ['compaction', 'context-pruning'] });
   assert.equal(unsupported.strategy.id, 'compaction');
   assert.equal(unsupported.fallback?.reason, '运行时不支持这个策略');
@@ -81,7 +81,7 @@ test('服务：项目选策略要在启用列表里、只能选已安装的；�
   assert.equal(view.value.source, 'default');
   assert.ok(view.value.usage.usedTokens > 0);
 
-  const bad = await svc.setProject(null, project.value.id, { strategy: 'trim', enabled: ['trim'] });
+  const bad = await svc.setProject(null, project.value.id, { strategy: 'nope', enabled: ['nope'] });
   assert.equal(bad.ok, false);
   const outside = await svc.setProject(null, project.value.id, { strategy: 'compaction', enabled: [] });
   assert.equal(outside.ok, false);
@@ -166,4 +166,36 @@ test('服务：角色层（会话 > 角色 > 项目）和手动压缩（不支�
   const okay = await svc.compact(null, pi.id, '留下决定');
   assert.ok(okay.ok);
   assert.deepEqual(sent, [{ kind: 'compact', sessionId: pi.id, instructions: '留下决定' }]);
+});
+
+test('hub-managed：选了 trim 的会话，transformFor 给出 keep / 引导；compaction（native）不改写', async () => {
+  const { deps } = inMemoryDeps({ now: () => 5 });
+  const rows = new Map<string, ContextSetting>();
+  const store: ContextSettingsStore = { get: async (k) => rows.get(k) ?? null, set: async (k, v) => void (v ? rows.set(k, v) : rows.delete(k)), list: async () => [] };
+  const svc = createContextService({ ...deps, contextSettings: store, audit: { append: async () => {}, recent: async () => [], query: async () => [] } });
+  const project = createProject({ name: 'p', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(project.ok);
+  await deps.projects.save(project.value);
+  const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
+  assert.ok(task.ok);
+  await deps.tasks.save(task.value);
+  const session = deriveSession({ task: task.value, agentId: asAgentId('pi'), model: 'm', now: 1, createdBy: 'alice' });
+  assert.ok(session.ok);
+  await deps.sessions.save(session.value);
+  const big = Array.from({ length: 40 }, (_, i) => [{ id: `u${i}`, role: 'user' as const, tokens: 2000, content: null }, { id: `a${i}`, role: 'assistant' as const, tokens: 2000, content: null }]).flat();
+
+  const native = await svc.transformFor(session.value.id, big);
+  assert.ok(native.ok);
+  assert.equal(native.value.mode, 'native');
+  assert.equal(native.value.apply, false);
+
+  assert.ok((await svc.setProject(null, project.value.id, { strategy: 'compaction', enabled: ['compaction', 'trim'] })).ok);
+  assert.ok((await svc.setSession(null, session.value.id, 'trim')).ok);
+  const trimmed = await svc.transformFor(session.value.id, big);
+  assert.ok(trimmed.ok);
+  assert.equal(trimmed.value.mode, 'hub-managed');
+  assert.equal(trimmed.value.apply, true);
+  assert.ok(trimmed.value.keep.length < big.length && trimmed.value.keep.at(-1) === 'a39');
+  assert.equal(trimmed.value.guidance.length, 1);
+  assert.equal((await svc.transformFor('nope', big)).ok, false);
 });

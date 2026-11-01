@@ -161,3 +161,23 @@ test('权限、校验与限流：body 必须是字符串；旧版的 kind 参数
   w.tick(61_000);
   assert.ok((await w.gateway.call(full, 'task.log.append', { body: 'ok again' })).ok);
 });
+
+test('隐藏工具：不在 list 里、能按名调用、不占授权总配额', async () => {
+  const w = await world();
+  let calls = 0;
+  const gateway = createToolGateway({
+    now: () => 1_000,
+    toolGrants: fakeToolGrants(),
+    tokens,
+    perMinute: 2,
+    providers: [
+      createTaskToolProvider(w.deps),
+      { id: 'ctx', tools: () => [{ name: 'context.transform', version: 1, scope: 'context', perMinute: 100, hidden: true, description: 'x', inputSchema: { type: 'object' } }], call: async () => ({ ok: true, value: { n: ++calls } }) as never }
+    ]
+  });
+  const { grant } = await gateway.issue(w.session);
+  assert.ok(!gateway.list(grant).some((t) => t.name === 'context.transform'));
+  for (let i = 0; i < 5; i++) assert.ok((await gateway.call(grant, 'context.transform', {})).ok);
+  assert.ok((await gateway.call(grant, 'task.get', {})).ok !== undefined);
+  assert.equal(calls, 5);
+});

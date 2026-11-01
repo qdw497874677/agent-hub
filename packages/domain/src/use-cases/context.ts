@@ -18,9 +18,23 @@ import {
   contextCapabilityOf,
   estimateContextUsage,
   resolveContextStrategy,
+  hubManagedBudget,
   type ContextCapability,
-  type ContextMode
+  type ContextMessage,
+  type ContextMode,
+  type StrategyEvent
 } from '../context-strategy.ts';
+
+/** hub-managed 一次改写的结果：运行时照着 keep / clear 改自己的消息；apply=false 就原样发。 */
+export interface HubTransformResult {
+  readonly apply: boolean;
+  readonly strategy: string;
+  readonly mode: ContextMode;
+  readonly keep: readonly string[];
+  readonly clear: readonly string[];
+  readonly guidance: readonly string[];
+  readonly events: readonly StrategyEvent[];
+}
 
 export interface ContextDeps extends Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'access' | 'now'> {
   readonly contextSettings: ContextSettingsStore;
@@ -65,6 +79,7 @@ export function createContextService(deps: ContextDeps) {
   const installedIds = BUILTIN_STRATEGIES.map((s) => s.id);
 
   return {
+    transformFor,
     async project(subject: Subject | null, projectId: string): Promise<Result<ProjectContextView, DomainError>> {
       const allowed = await authorizeProject(deps.access, subject, await deps.projects.byId(asProjectId(projectId)), 'project.read');
       if (!allowed.ok) return allowed;
@@ -159,6 +174,41 @@ export function createContextService(deps: ContextDeps) {
       return ok({ requested: true });
     }
   };
+
+  /**
+   * hub-managed 改写（P3）：调用方是会话自己的工具授权（扩展转来的 `context` 事件），不是用户。
+   * 只收元数据（id / 角色 / token 估算 / 调用 id），不收消息正文；hub 的原始记录不动。
+   * 策略出错、会话不在 hub-managed 模式 → apply=false，运行时原样发（宁可不改，也不改坏）。
+   */
+  async function transformFor(sessionId: string, messages: readonly ContextMessage[]): Promise<Result<HubTransformResult, DomainError>> {
+    const found = await locate(sessionId);
+    if (!found.session || !found.project) return err(invalid('会话不存在'));
+    const session = found.session;
+    const projectId = found.project.id;
+    const role = deps.roleOf ? await deps.roleOf(session.id) : null;
+    const [own, roleSetting, project, hub] = await Promise.all([
+      store.get(`session:${session.id}`),
+      role ? store.get(`role:${projectId}:${role}`) : Promise.resolve(null),
+      store.get(`project:${projectId}`),
+      store.get('hub')
+    ]);
+    const resolved = resolveContextStrategy({ layers: { session: own, role: roleSetting, project, hub }, capability: contextCapabilityOf(String(session.agentId)), enabled: enabledOf(project) });
+    const noop: HubTransformResult = { apply: false, strategy: resolved.strategy.id, mode: resolved.mode, keep: [], clear: [], guidance: [], events: [] };
+    if (resolved.mode !== 'hub-managed' || !resolved.strategy.transform) return ok(noop);
+    const events = await deps.sessions.eventsAfter(session.id, 0 as never);
+    const used = messages.reduce((n, m) => n + m.tokens, 0);
+    const budget = hubManagedBudget(estimateContextUsage(events).windowTokens, used);
+    try {
+      const out = await resolved.strategy.transform({ transcript: { messages, guidance: [] }, state: resolved.strategy.initialState(), budget });
+      const ids = new Set(messages.map((m) => m.id));
+      const keep = out.view.messages.map((m) => m.id).filter((id) => ids.has(id));
+      const clear = out.view.messages.filter((m) => m.cleared && ids.has(m.id)).map((m) => m.id);
+      const changed = keep.length !== messages.length || clear.length > 0 || out.view.guidance.length > 0;
+      return ok({ ...noop, apply: changed, keep, clear, guidance: out.view.guidance, events: out.events });
+    } catch {
+      return ok(noop);
+    }
+  }
 
   async function locate(sessionId: string) {
     const session = await deps.sessions.byId(asSessionId(sessionId));
