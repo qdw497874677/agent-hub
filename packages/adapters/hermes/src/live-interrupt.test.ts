@@ -169,8 +169,8 @@ test('真 Hermes：两个会话共用一个网关，互相隔开', { skip: proce
   const a = await open('two-a', 'tok-a');
   const b = await open('two-b', 'tok-b');
   try {
-    assert.equal(a.session.pid(), b.session.pid(), '两个会话应该是同一个网关进程');
-    const pid = a.session.pid();
+    assert.equal(a.session.pid?.(), b.session.pid?.(), '两个会话应该是同一个网关进程');
+    const pid = a.session.pid?.() ?? null;
     assert.ok((await a.session.prompt({ text: '慢慢数 SECRET-A', parts: [] })).ok);
     await a.next((event) => event.kind === 'text', 60_000);
     assert.ok((await b.session.prompt({ text: '说 hi BETA', parts: [] })).ok);
