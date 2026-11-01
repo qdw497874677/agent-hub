@@ -29,6 +29,11 @@ export type Block = Sequenced &
     | { readonly kind: 'stall'; readonly text: string }
     /** 这一轮失败了（ended · failed）：原因写进对话里，不只是状态点变红——否则看着就是「发了没回」。 */
     | { readonly kind: 'error'; readonly text: string }
+    /**
+     * 这一轮结果未知（Hermes 的 outcome_unknown：worker / 网关中途重启过）：不自动重放、不当成功，
+     * 交给人选「重发这一轮」还是「不用了」。prompt 是上一条用户输入（重发只带文字，附件不带）。
+     */
+    | { readonly kind: 'unknown'; readonly text: string; readonly prompt: string | null }
   );
 
 interface ToolResult {
@@ -60,6 +65,9 @@ export type LiveMap = Readonly<Record<string, LiveSession>>;
  * 会话卡只渲染对话流；diagnostic 与 ended 不进卡片（见 visual-direction §5）。
  * 例外是卡顿提醒：它挂在末尾提示「可以中断」，之后来了任何事件就撤掉——卡顿已经过去了。
  */
+/** 运行时报「结果未知」时 reason 里带的标记（见 Hermes 运行时 UNKNOWN_OUTCOME_REASON）。 */
+export const UNKNOWN_OUTCOME_MARKER = 'outcome_unknown';
+
 export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   if (event.kind === 'diagnostic') {
     return event.text.startsWith(STALL_NOTICE_MARKER)
@@ -107,6 +115,10 @@ function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: numbe
     case 'artifact':
       return [...blocks, { kind: 'artifact', path: event.path, bytes: event.bytes, seq }];
     case 'ended':
+      if (event.outcome === 'interrupted' && event.reason?.includes(UNKNOWN_OUTCOME_MARKER)) {
+        const prompt = [...blocks].reverse().find((block) => block.kind === 'prompt');
+        return [...blocks, { kind: 'unknown', text: event.reason, prompt: prompt?.kind === 'prompt' ? prompt.text : null, seq }];
+      }
       return event.outcome === 'failed' ? [...blocks, { kind: 'error', text: event.reason ?? '这一轮失败了，agent 没有说原因', seq }] : blocks;
     default:
       return blocks;

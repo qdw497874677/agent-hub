@@ -1,6 +1,6 @@
 import { AuthorTag } from './author.tsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { attachmentUrl } from './api.ts';
+import { api, attachmentUrl } from './api.ts';
 import { useAccount } from './auth.tsx';
 import {
   DEFAULT_DISPLAY,
@@ -359,6 +359,9 @@ export function ChatBlock({
       </div>
     );
   }
+  if (block.kind === 'unknown') {
+    return <UnknownOutcome block={block} sessionId={sessionId} actionable={last && !running} />;
+  }
   if (block.kind === 'error') {
     return (
       <p role="alert" className="whitespace-pre-wrap rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust" data-testid="msg-error">
@@ -392,5 +395,67 @@ export function ChatBlock({
       <span className="text-tertiary">{block.bytes > 0 ? `${block.bytes} 字节` : ''}</span>
       <span className="ml-auto text-tertiary">{agentLabel}</span>
     </p>
+  );
+}
+
+/**
+ * 结果未知的一轮：说清楚不确定在哪，让人选。重发 = 把上一条文字再发一次（附件不带）；
+ * 不用了 = 只在这台浏览器记下「已处理」。只有它是最后一块、且不在跑时才给按钮。
+ */
+function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block, { kind: 'unknown' }>; sessionId: string; actionable: boolean }) {
+  const storageKey = `ahub:unknown-resolved:${sessionId}:${block.seq}`;
+  const [resolved, setResolved] = useState(() => {
+    try {
+      return localStorage.getItem(storageKey) !== null;
+    } catch {
+      return false;
+    }
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const resolve = (how: string) => {
+    try {
+      localStorage.setItem(storageKey, how);
+    } catch {
+      /* 存不下就只在这次页面里生效 */
+    }
+    setResolved(true);
+  };
+  const resend = async () => {
+    if (block.prompt === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.prompt(sessionId, block.prompt);
+      resolve('resent');
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div role="status" className="flex flex-col gap-2 rounded-sm border-l-2 border-ochre bg-ochre/10 px-3 py-2 text-meta text-primary" data-testid="msg-unknown">
+      <p className="font-medium text-ochre">这一轮结果不确定</p>
+      <p className="text-secondary">
+        运行时中途重启过，没法确认这一轮做完了没有（可能已经改了文件、跑了命令）。平台不会自动重试——请先看看工作区，再决定要不要重发。
+      </p>
+      {actionable && !resolved ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {block.prompt !== null ? (
+            <button type="button" className="rounded-sm border border-rule px-2 py-1 hover:bg-card-raised disabled:opacity-50" disabled={busy} onClick={() => void resend()} data-testid="unknown-resend">
+              {busy ? '重发中…' : '重发这一轮'}
+            </button>
+          ) : null}
+          <button type="button" className="rounded-sm px-2 py-1 text-secondary hover:bg-card-raised" disabled={busy} onClick={() => resolve('dismissed')} data-testid="unknown-dismiss">
+            不用了
+          </button>
+          {block.prompt !== null ? <span className="text-tertiary">重发只带文字，附件需要重新添加</span> : null}
+        </div>
+      ) : resolved ? (
+        <p className="text-tertiary">已处理</p>
+      ) : null}
+      {error ? <p role="alert" className="text-rust">重发失败：{error}</p> : null}
+    </div>
   );
 }

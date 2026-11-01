@@ -97,6 +97,13 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
       </div>
     );
   }
+  if (block.kind === 'unknown') {
+    return (
+      <p role="status" className="whitespace-pre-wrap border-l-2 border-ochre bg-ochre/10 px-2 py-1 text-meta text-ochre">
+        这一轮结果不确定，打开对话决定是否重发
+      </p>
+    );
+  }
   if (block.kind === 'error') {
     return (
       <p role="alert" className="whitespace-pre-wrap border-l-2 border-rust bg-rust/10 px-2 py-1 text-meta text-rust">
