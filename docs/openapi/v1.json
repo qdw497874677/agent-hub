@@ -827,6 +827,9 @@
                           },
                           "componentInstall": {
                             "type": "boolean"
+                          },
+                          "bundleInstall": {
+                            "type": "boolean"
                           }
                         },
                         "required": [
