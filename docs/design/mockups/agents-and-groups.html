@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>智能体与群聊 · 设计稿</title>
+<style>
+:root{--canvas:#14181a;--panel:#1b2022;--card:#1f2528;--raised:#242b2e;--hair:#2e3639;--strong:#3c4649;--p:#e8e3d9;--s:#9aa39e;--t:#6b7570;--acc:#d9a05b;--accd:#8a6a3d;--sage:#6e8c80;--rust:#8c6a55}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--canvas);color:var(--p);font:14px/1.55 'Noto Sans SC','Inter Tight',system-ui,sans-serif;min-height:100vh}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+.meta{font-size:12px;color:var(--t)}.sub{font-size:13px;color:var(--s)}
+.top{height:52px;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid var(--hair);background:var(--panel)}
+.top .proj{font-weight:600}.top .sp{flex:1}
+.ic{width:34px;height:34px;border-radius:8px;display:grid;place-items:center;color:var(--s);position:relative;border:1px solid transparent}
+.ic.on{color:var(--acc);border-color:var(--hair);background:var(--raised)}
+.red{position:absolute;top:6px;right:6px;width:8px;height:8px;border-radius:50%;background:#d0644a;border:2px solid var(--panel)}
+.me{width:30px;height:30px;border-radius:50%;background:var(--accd);display:grid;place-items:center;font-weight:600;font-size:13px}
+.tabs{display:flex;gap:4px;padding:0 12px;border-bottom:1px solid var(--hair);background:var(--panel);overflow-x:auto}
+.tab{padding:10px 12px;color:var(--s);white-space:nowrap;border-bottom:2px solid transparent}
+.tab.on{color:var(--p);border-color:var(--acc)}
+.wrap{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:20px;font-weight:600}h2{font-size:15px;font-weight:600}
+.row{display:flex;align-items:center;gap:10px}
+.btn{font:inherit;font-size:13px;padding:7px 14px;border-radius:8px;border:1px solid var(--strong);background:var(--raised);color:var(--p);display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+.btn.pri{background:var(--acc);border-color:var(--acc);color:#14181a;font-weight:600}
+.btn.ghost{background:none;border-color:transparent;color:var(--s)}
+.btn.dis{opacity:.45}
+.av{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;font-weight:600;flex-shrink:0;color:#14181a;font-size:15px}
+.av.sm{width:28px;height:28px;border-radius:8px;font-size:12px}
+.c1{background:#d9a05b}.c2{background:#6e8c80}.c3{background:#8fa3c4}.c4{background:#c08a9c}.c5{background:#a3a36b}
+.list{display:flex;flex-direction:column;gap:8px;margin-top:14px}
+.card{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:12px 14px}
+.agent{display:flex;gap:12px;align-items:center}
+.agent .n{font-weight:600}.agent .d{font-size:13px;color:var(--s);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{font-size:11px;padding:1px 7px;border-radius:10px;border:1px solid var(--strong);color:var(--s);white-space:nowrap}
+.pill.acc{border-color:var(--accd);color:var(--acc)}
+.grow{flex:1;min-width:0}
+.search{width:100%;background:var(--panel);border:1px solid var(--hair);border-radius:10px;padding:9px 12px;color:var(--t);font:inherit;margin-top:14px}
+label{display:block;font-size:13px;color:var(--s);margin:16px 0 6px}
+.in{width:100%;background:var(--panel);border:1px solid var(--strong);border-radius:10px;padding:10px 12px;color:var(--p);font:inherit}
+.in.ta{min-height:110px;line-height:1.6}
+.hint{font-size:12px;color:var(--t);margin-top:5px}
+.seg{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+.seg div{border:1px solid var(--strong);border-radius:10px;padding:9px 6px;text-align:center;font-size:13px;color:var(--s);background:var(--panel)}
+.seg div.on{border-color:var(--acc);color:var(--p);background:#251f17}
+.seg small{display:block;font-size:11px;color:var(--t)}
+.avs{display:flex;gap:8px;flex-wrap:wrap}
+.avs .av{width:36px;height:36px;border-radius:10px}.avs .sel{outline:2px solid var(--p);outline-offset:2px}
+.foot{padding:18px 0 14px;display:flex;gap:8px;justify-content:flex-end}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px}
+.chipm{display:inline-flex;align-items:center;gap:6px;background:var(--raised);border:1px solid var(--strong);border-radius:20px;padding:3px 10px 3px 3px;font-size:13px}
+.chipm .av{width:22px;height:22px;border-radius:50%;font-size:11px}
+.chipm b{color:var(--t);font-weight:400;margin-left:2px}
+.pick{display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid var(--hair)}
+.pick:last-child{border:0}
+.ck{width:20px;height:20px;border-radius:6px;border:1.5px solid var(--strong);display:grid;place-items:center;font-size:13px;flex-shrink:0}
+.ck.on{background:var(--acc);border-color:var(--acc);color:#14181a;font-weight:700}
+.box{background:var(--card);border:1px solid var(--hair);border-radius:12px;overflow:hidden}
+.adv{margin-top:16px;border:1px solid var(--hair);border-radius:12px;background:var(--card)}
+.adv .h{display:flex;align-items:center;padding:12px 14px;gap:8px}
+.adv .b{padding:0 14px 14px;border-top:1px solid var(--hair)}
+.radio{display:flex;flex-direction:column;gap:6px}
+.radio>div{border:1px solid var(--strong);border-radius:10px;padding:9px 12px;background:var(--panel)}
+.radio>div.on{border-color:var(--acc);background:#251f17}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.empty{text-align:center;padding:48px 20px;border:1px dashed var(--strong);border-radius:14px;margin-top:16px}
+.empty .big{width:64px;height:64px;border-radius:18px;margin:0 auto 14px;background:var(--raised);display:grid;place-items:center;font-size:28px;color:var(--acc)}
+.sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.55)}
+.sheet{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-radius:16px 16px 0 0;border-top:1px solid var(--strong);max-height:86vh;overflow:auto;padding:8px 16px 16px}
+.grab{width:40px;height:4px;border-radius:2px;background:var(--strong);margin:4px auto 10px}
+.feedfake{padding:16px;display:flex;flex-direction:column;gap:12px;opacity:.5}
+.feedfake div{background:var(--card);border:1px solid var(--hair);border-radius:10px;height:56px;max-width:420px}
+.ann{font-size:11px;color:var(--acc);border:1px dashed var(--accd);border-radius:6px;padding:2px 6px;display:inline-block}
+@media(min-width:900px){
+ .wrap{padding:24px}
+ .sheet{left:auto;right:0;top:0;bottom:0;width:420px;border-radius:0;border-top:0;border-left:1px solid var(--strong);max-height:none}
+ .grab{display:none}
+ .list.grid{display:grid;grid-template-columns:1fr 1fr}
+}
+</style></head><body>
+<div id="app"></div>
+<script>
+const A=[['产品经理','pm','Grok','grok-4','把需求拆成可验收的条目，主持讨论','c1','主持人'],
+['前端','fe','OpenCode','claude-sonnet','React / Tailwind，负责 apps/web','c2',''],
+['后端','be','Pi','gpt-5','Hono + SQLite，负责 apps/server','c3',''],
+['测试','qa','Hermes','qwen3-coder','写 e2e，回归验证','c4',''],
+['评审','reviewer','Pi','gpt-5','代码评审，只提意见不改代码','c5','']];
+const s=new URLSearchParams(location.search).get('s')||'agents';
+const icons=`<span class="ic">⌂</span><span class="ic ${s.startsWith('group')||s==='members'||s==='empty'?'on':''}">💬<i class="red"></i></span><span class="me">D</span>`;
+const TOP=`<div class="top"><span class="proj">agent-hub</span><span class="meta">▾</span><span class="sp"></span>${icons}</div>`;
+const tabs=on=>`<div class="tabs">${['任务','文件','记忆','智能体','群聊','设置'].map(t=>`<span class="tab ${t===on?'on':''}">${t}</span>`).join('')}</div>`;
+const av=(a,cls='')=>`<span class="av ${a[5]} ${cls}">${a[0][0]}</span>`;
+const agentsList=()=>TOP+tabs('智能体')+`<div class="wrap">
+<div class="row"><div class="grow"><h1>智能体</h1><div class="sub">项目里常驻的 AI 成员，可以私聊、拉进群、互相 @</div></div><span class="btn pri">＋ 新建</span></div>
+<input class="search" value="" placeholder="搜索名字或 @id">
+<div class="list grid">${A.map(a=>`<div class="card agent">${av(a)}<div class="grow"><div class="row"><span class="n">${a[0]}</span><span class="meta mono">@${a[1]}</span></div><div class="d">${a[4]}</div><div class="row" style="margin-top:6px;gap:6px"><span class="pill">${a[2]}</span><span class="pill mono">${a[3]}</span>${a[6]?'<span class="pill acc">可主持</span>':''}</div></div><span class="meta">⋯</span></div>`).join('')}</div>
+</div>`;
+const createAgent=()=>TOP+tabs('智能体')+`<div class="wrap">
+<div class="row"><span class="btn ghost">‹ 智能体</span></div><h1 style="margin-top:4px">新建智能体</h1>
+<label>头像</label><div class="avs">${['c1','c2','c3','c4','c5'].map((c,i)=>`<span class="av ${c} ${i==1?'sel':''}">测</span>`).join('')}</div>
+<div class="two"><div><label>名字</label><input class="in" value="测试"></div><div><label>@ID（群里 @ 它用）</label><input class="in mono" value="qa"></div></div>
+<div class="hint">名字随时可改；@ID 建好后不改，保证群里的 @ 和历史消息不失效。</div>
+<label>运行时</label><div class="seg"><div>Pi<small>2 台在线</small></div><div>OpenCode<small>1 台</small></div><div>Grok<small>1 台</small></div><div class="on">Hermes<small>1 台</small></div></div>
+<label>模型</label><input class="in mono" value="qwen3-coder  ▾"><div class="hint">留空用运行时默认模型；要当主持人必须选模型。</div>
+<label>职责说明（会作为它的系统提示）</label><textarea class="in ta">负责写 e2e 测试和回归验证。改完代码先跑 pnpm test，只报告失败用例和复现步骤。</textarea>
+<details style="margin-top:14px"><summary class="sub">高级：会话复用</summary></details>
+<div class="sub" style="margin-top:8px">会话复用：<b>同一个会话（推荐）</b></div>
+<div class="foot"><span class="btn">取消</span><span class="btn pri">创建</span></div></div>`;
+const memberPick=(sel)=>`<div class="chips">${A.filter(a=>sel.includes(a[1])).map(a=>`<span class="chipm">${av(a,'sm')}${a[0]}<b>✕</b></span>`).join('')}</div>
+<div class="box">${A.map(a=>`<div class="pick"><span class="ck ${sel.includes(a[1])?'on':''}">${sel.includes(a[1])?'✓':''}</span>${av(a,'sm')}<div class="grow"><div>${a[0]} <span class="meta mono">@${a[1]}</span></div><div class="meta">${a[2]} · ${a[3]}</div></div></div>`).join('')}</div>
+<div class="row" style="margin-top:8px"><span class="meta">没有合适的？</span><span class="btn ghost" style="color:var(--acc)">＋ 去新建智能体 ›</span></div>`;
+const createGroup=open=>TOP+tabs('群聊')+`<div class="wrap">
+<div class="row"><span class="btn ghost">‹ 群聊</span></div><h1 style="margin-top:4px">新建群聊</h1>
+<label>群名</label><input class="in" value="登录改版">
+<label>成员 <span class="meta">已选 3 / 最多 8</span></label>${memberPick(['pm','fe','be'])}
+<div class="adv"><div class="h"><span class="grow">高级设置</span>${open?'':'<span class="meta">产品经理主持 · 最多 6 轮 / 30 条</span>'}<span class="meta">${open?'▴':'▾'}</span></div>
+${open?`<div class="b"><label>谁来接话</label><div class="radio"><div class="on">主持人分配<div class="meta">主持人读完消息，决定下一个谁说</div></div><div>自由举手<div class="meta">每个成员自己判断要不要回</div></div></div>
+<label>主持人</label><input class="in" value="产品经理 @pm  ▾"><div class="hint">只列出已选模型的成员</div>
+<div class="two"><div><label>最多轮数</label><input class="in" value="6"></div><div><label>最多条数</label><input class="in" value="30"></div></div></div>`:''}</div>
+<div class="foot"><span class="btn">取消</span><span class="btn pri">建群</span></div></div>`;
+const empty=()=>TOP+tabs('群聊')+`<div class="wrap"><h1>新建群聊</h1><label>群名</label><input class="in" placeholder="比如：登录改版">
+<div class="empty"><div class="big">✦</div><h2>项目里还没有智能体</h2><div class="sub" style="margin:6px 0 16px">群成员要从智能体里挑。先建一个，比如「前端」「测试」。</div><span class="btn pri">＋ 新建智能体</span><div class="meta" style="margin-top:10px">建好会自动回到这里</div></div>
+<div class="foot"><span class="btn">取消</span><span class="btn pri dis">建群</span></div></div>`;
+const members=()=>TOP+`<div class="top" style="background:var(--canvas)"><span class="btn ghost">‹</span><b>登录改版</b><span class="meta">3 人</span><span class="sp"></span><span class="btn">成员</span></div><div class="feedfake"><div></div><div style="margin-left:auto"></div><div></div></div>
+<div class="sheet-bg"></div><div class="sheet"><div class="grab"></div><div class="row"><h2 class="grow">成员 · 3</h2><span class="btn">＋ 添加</span></div>
+<div class="box" style="margin-top:12px">${A.slice(0,3).map(a=>`<div class="pick">${av(a,'sm')}<div class="grow"><div>${a[0]} <span class="meta mono">@${a[1]}</span> ${a[6]?'<span class="pill acc">主持人</span>':''}</div><div class="meta">${a[2]} · ${a[1]==='fe'?'正在回复…':'空闲'}</div></div><span class="btn ghost">${a[6]?'':'移出'}</span></div>`).join('')}</div>
+<h2 style="margin-top:18px">从智能体添加</h2><div class="hint">新成员只看到加入之后的消息</div>
+<div class="box" style="margin-top:8px">${A.slice(3).map((a,i)=>`<div class="pick"><span class="ck ${i==0?'on':''}">${i==0?'✓':''}</span>${av(a,'sm')}<div class="grow">${a[0]} <span class="meta mono">@${a[1]}</span><div class="meta">${a[2]} · ${a[3]}</div></div></div>`).join('')}</div>
+<div class="row" style="margin-top:8px"><span class="btn ghost" style="color:var(--acc)">＋ 新建智能体 ›</span><span class="grow"></span><span class="btn pri">添加 1 个</span></div>
+<div class="meta" style="margin-top:14px">主持人不能直接移出，先在群设置里换主持人。</div></div>`;
+document.getElementById('app').innerHTML={agents:agentsList,'agent-new':createAgent,'group-new':()=>createGroup(false),'group-new-adv':()=>createGroup(true),members,empty}[s]();
+</script></body></html>
