@@ -15,6 +15,8 @@ import { installPersistentAgentRoutes } from './persistent-agent-routes.ts';
  * - POST /api/groups/:id/stop              停止：取消排队，成员暂停到人再次发言
  * - POST /api/groups/:id/members           把 bot 加进群：{ role } 或 { roles: [] }（group.manage），不重放消息
  * - DELETE /api/groups/:id/members/:role   把 bot 移出群（group.manage）；主持人要先换人
+ * - GET  /api/groups/unread              我看得到的群里的未读（顶栏红点）
+ * - POST /api/groups/:id/read             标已读（body 可给 seq，不给读到最新）
  * - GET  /api/groups/:id/chains            调用链：每段对话的投递（谁、哪条会话、结果）
  * 权限都在用例里按群所在的项目判。
  */
@@ -61,6 +63,22 @@ export function installGroupRoutes(app: Hono<any>, options: GroupRouteDeps, subj
     if (!parsed.ok) return fail(c, { code: 'invalid', message: parsed.message });
     const created = await groups.create(actor, asProjectId(c.req.param('id')), parsed.value);
     return created.ok ? c.json(created.value, 201) : fail(c, created.error);
+  });
+
+  app.get('/api/groups/unread', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const unread = await groups.unread(actor);
+    return unread.ok ? c.json(unread.value) : fail(c, unread.error);
+  });
+
+  app.post('/api/groups/:id/read', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const body = z.object({ seq: z.number().int().min(0).optional() }).safeParse((await c.req.json().catch(() => ({}))) ?? {});
+    if (!body.success) return fail(c, { code: 'invalid', message: 'seq 要是非负整数' });
+    const read = await groups.markRead(actor, c.req.param('id'), body.data.seq);
+    return read.ok ? c.json(read.value) : fail(c, read.error);
   });
 
   app.get('/api/groups/:id', async (c) => {

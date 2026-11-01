@@ -32,9 +32,13 @@ function memoryGroups(): GroupStore & { deliveriesAll: () => GroupDelivery[] } {
   const threads = new Map<string, GroupThread>();
   const deliveries = new Map<string, GroupDelivery>();
   const sessions: { groupId: string; role: string; sessionId: SessionId }[] = [];
+  const reads = new Map<string, number>();
   const ds = () => [...deliveries.values()].sort((a, b) => a.createdAt - b.createdAt);
   return {
     deliveriesAll: ds,
+    markRead: async (g, u, seq) => void reads.set(`${g}|${u}`, Math.max(reads.get(`${g}|${u}`) ?? 0, seq)),
+    unreadCount: async (g, u) => posts.filter((x) => x.groupId === g && x.seq > (reads.get(`${g}|${u}`) ?? 0) && !(x.author.kind === 'user' && x.author.id === u)).length,
+    latestSeq: async (g) => posts.filter((x) => x.groupId === g).length,
     saveGroup: async (g) => void groups.set(g.id, g),
     group: async (id) => groups.get(id) ?? null,
     groupsOf: async (p) => [...groups.values()].filter((g) => g.projectId === p),
@@ -494,4 +498,35 @@ test('职责说明作为系统提示放在群消息最前面', async () => {
   const { memberPrompt } = await import('../groups.ts');
   const text = memberPrompt({ group: { name: 'g', members: ['coder'], hostRole: null }, role: 'coder', roles: ROLES, history: [], trigger: { author: 'alice', body: 'hi' } });
   assert.ok(text.startsWith('<agent-instructions>\n写代码\n</agent-instructions>'));
+});
+
+test('未读：别人发的才算、自己发的不算；标已读清零、不倒退；外人看不到也标不了', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['coder'], hostRole: null });
+  assert.ok(g.ok);
+  const vicky = w.principal('vicky')!;
+  const unread = async (p: typeof vicky) => {
+    const r = await w.chat.unread(p);
+    assert.ok(r.ok);
+    return r.value;
+  };
+  // 建群的系统消息对 alice 和 vicky 都算未读
+  assert.equal((await unread(vicky)).total, 1);
+  assert.ok((await w.chat.markRead(w.alice, g.value.id)).ok);
+  assert.equal((await unread(w.alice)).total, 0);
+  await w.chat.post(w.alice, g.value.id, '大家好');
+  const all = await w.posts(g.value.id);
+  const others = all.filter((p) => !(p.author.kind === 'user' && p.author.id === 'alice')).length;
+  assert.equal((await unread(w.alice)).total, others - 1, '自己发的不算未读');
+  const v = await unread(vicky);
+  assert.equal(v.total, all.length);
+  assert.deepEqual(v.groups.map((x) => [x.groupId, x.count]), [[g.value.id, all.length]]);
+  const read = await w.chat.markRead(vicky, g.value.id);
+  assert.ok(read.ok);
+  assert.equal((await unread(vicky)).total, 0);
+  assert.ok((await w.chat.markRead(vicky, g.value.id, 0)).ok);
+  assert.equal((await unread(vicky)).total, 0, '已读位置不会倒退');
+  const mallory = w.principal('mallory')!;
+  assert.equal((await unread(mallory)).total, 0, '看不到的项目不算');
+  assert.ok(!(await w.chat.markRead(mallory, g.value.id)).ok);
 });
