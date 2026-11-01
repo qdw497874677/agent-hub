@@ -507,4 +507,10 @@ David 的问题：「有什么机制可以保守一些，并且保持新鲜度�
 - **压缩摘要进 `session:`**：worker 上报 `compaction`（end、ok、带 summary）后，hub 写一条 `session:<id>` 的 episodic（`via: compaction`，生效，untrusted），`traceId = compaction:<会话>:<序号>`，同一代只写一次。
 - **会后提炼（默认开，§6.1）**：规则版，**不调模型**——摘要本身进项目层 `staged`，摘要里像「约定 / 必须 / 不要 / always / never」的行（至多 4 条）作为 `principle-candidate` 的 procedural 进确认队列。限额：输入截到 16k token 量级、每次 ≤5 条、每条 ≤1000 字、每个项目每天 ≤50 次（进程内计数）、`tokensBefore < 2000` 不提炼、摘要含疑似密钥整条不写。`HUB_MEMORY_DISTILL=0` 整体关掉（只关提炼，`session:` 摘要照写）。
 - **后台整理**：启动 10 分钟后一次，之后每天一次：把读时算出的过期（staged 30 天、validTo 到期）物化成 `expired` 并移出索引。
-- **还没做（P2 剩下的）**：模型版提炼（要定用哪个模型和预算归属）、TranscriptSource / GroupSource、冲突提示、每周 5% 抽检、可选向量、导入；按项目开关提炼（现在只有全局环境变量）。
+- **P2 第二批（同日）**：
+  - `TranscriptSource`（source `transcript`，uri = 会话 id）：项目里最近 100 个会话的人类消息 + 回复文字（不含思考、工具调用和输出、诊断），每个最多 4 万字、留最近的；
+  - `GroupSource`（source `group`，uri = 群 id）：项目里各群最近 500 条消息。群属于项目，**挂在 project 作用域下**，读权限跟项目走（`group:` 作用域仍未开放）；
+  - 冲突提示：`memory_write` / `POST /api/memory` 写完回 `similar`（同作用域当前有效条目，标题切 3 字段做 FTS，前 5），**不自动合并**，只提示写入者用 supersedes；
+  - 每周抽查：后台整理里，最近 7 天自动转正（没人审过）的提炼条目随机抽 5%（3–20 条，不足 3 条就全抽）打 `spot-check` 标签回待审；7 天内抽过就不再抽（标签持久化，重启不重抽）；
+  - 导入：`POST /api/memory/import?scope=…`，正文 JSONL（导出格式即可），每行一条，一律 untrusted + proposed、via import；坏行 / 含密钥的行跳过并报行号；≤1000 行、≤2MB；要该作用域的 memory.write。
+- **还没做**：模型版提炼（要定模型和预算归属）；可选向量（ADR 写的是「可选、默认关」，需要 sqlite-vec 原生扩展 + embedder 提供商，等 David 定）；抽查发现错误后降低来源 trust；按项目开关提炼。

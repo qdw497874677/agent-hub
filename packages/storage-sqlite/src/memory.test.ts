@@ -306,3 +306,56 @@ test('P2 staged：别人写同标题就印证转正；有人采纳转 active+tru
   assert.ok(expired.value.some((e) => e.title.includes('没人理')));
   w.close();
 });
+
+test('P2 冲突提示：写相似条目时给出同作用域里当前有效的相似条目，不自动合并', async () => {
+  const w = await world();
+  const a = await w.service.write(w.agent, { scope: 'project', kind: 'semantic', title: '部署前做数据库快照', body: '一' });
+  assert.ok(a.ok);
+  const b = await w.service.write(w.agent, { scope: 'project', kind: 'semantic', title: '部署前先做数据库快照', body: '二' });
+  assert.ok(b.ok);
+  const similar = await w.service.similar(w.agent, b.value.id);
+  assert.deepEqual(similar.map((s) => s.id), [a.value.id]);
+  const still = await w.service.list(w.human('alice'), { scope: w.pkey, status: ['active'] });
+  assert.ok(still.ok);
+  assert.equal(still.value.length, 2);
+  w.close();
+});
+
+test('P2 导入：JSONL 一律 untrusted + 待审；坏行报出来；含密钥跳过；没写权限拒绝', async () => {
+  const w = await world();
+  const jsonl = [
+    JSON.stringify({ kind: 'semantic', title: '导入的约定', body: '用 ff-only 合并', tags: ['x'] }),
+    'not json',
+    JSON.stringify({ kind: 'semantic', title: '密钥', body: 'API_KEY=abcdef1234567890' }),
+    JSON.stringify({ kind: 'nope', title: 't', body: 'b' })
+  ].join('\n');
+  const result = await w.service.importEntries(w.principal('alice'), w.pkey, jsonl);
+  assert.ok(result.ok);
+  assert.equal(result.value.imported, 1);
+  assert.deepEqual(result.value.problems.map((p) => p.line), [2, 3, 4]);
+  const pending = await w.service.list(w.human('alice'), { scope: w.pkey, status: ['proposed'] });
+  assert.ok(pending.ok);
+  assert.equal(pending.value[0]!.trust, 'untrusted');
+  assert.equal(pending.value[0]!.provenance.via, 'import');
+  const viewer = await w.service.importEntries(w.principal('vicky'), w.pkey, jsonl);
+  assert.equal(viewer.ok, false);
+  w.close();
+});
+
+test('P2 每周抽查：最近 7 天自动转正的提炼条目抽 5%（至少 3 条）回待审；同一周不重抽', async () => {
+  const w = await world();
+  for (let i = 0; i < 4; i++) {
+    await w.service.ingestCompaction(w.agent.sessionId, { seq: i + 1, summary: `第 ${i} 件事`, tokensBefore: 50_000 });
+  }
+  const staged = await w.service.list(w.human('alice'), { scope: w.pkey, status: ['staged'] });
+  assert.ok(staged.ok);
+  for (const entry of staged.value) await w.service.write(w.human('alice'), { scope: w.pkey, kind: 'episodic', title: entry.title, body: '印证' });
+  const first = await w.service.sweep();
+  assert.equal(first.spotChecked, 3);
+  const back = await w.service.list(w.human('alice'), { scope: w.pkey, status: ['proposed'] });
+  assert.ok(back.ok);
+  assert.equal(back.value.filter((e) => e.tags.includes('spot-check')).length, 3);
+  const second = await w.service.sweep();
+  assert.equal(second.spotChecked, 0);
+  w.close();
+});
