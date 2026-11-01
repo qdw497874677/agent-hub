@@ -25,6 +25,7 @@ import {
   type ContextMode,
   type StrategyEvent
 } from '../context-strategy.ts';
+import { agentInstructionsBlock, type PersistentAgent } from '../messaging.ts';
 
 /** hub-managed 一次改写的结果：运行时照着 keep / clear 改自己的消息；apply=false 就原样发。 */
 export interface HubTransformResult {
@@ -42,6 +43,8 @@ export interface ContextDeps extends Pick<Deps, 'projects' | 'tasks' | 'sessions
   readonly audit: AuditLog;
   /** 会话属于哪个角色（ADR 0018 角色表）；没有就跳过角色层。 */
   readonly roleOf?: (sessionId: string) => Promise<string | null>;
+  /** 项目里某个 bot（持久智能体）的定义；给了才有职责说明这一层。 */
+  readonly agentOf?: (projectId: string, role: string) => Promise<Pick<PersistentAgent, 'description'> | null>;
   /** 手动压缩要把命令发到 worker；没有就不支持。 */
   readonly gateway?: Pick<NodeGateway, 'dispatch'>;
 }
@@ -81,6 +84,7 @@ export function createContextService(deps: ContextDeps) {
 
   return {
     transformFor,
+    instructionsFor,
     async project(subject: Subject | null, projectId: string): Promise<Result<ProjectContextView, DomainError>> {
       const allowed = await authorizeProject(deps.access, subject, await deps.projects.byId(asProjectId(projectId)), 'project.read');
       if (!allowed.ok) return allowed;
@@ -226,10 +230,24 @@ export function createContextService(deps: ContextDeps) {
       const keep = out.view.messages.map((m) => m.id).filter((id) => ids.has(id));
       const clear = out.view.messages.filter((m) => m.cleared && ids.has(m.id)).map((m) => m.id);
       const changed = keep.length !== messages.length || clear.length > 0 || out.view.guidance.length > 0;
-      return ok({ ...noop, apply: changed, keep, clear, guidance: out.view.guidance, events: out.events });
+      // 截掉了开头那句（职责说明垫在那里）→ 把说明作为引导补回去，别让 bot 忘了自己是谁
+      const firstUser = messages.find((m) => m.role === 'user')?.id;
+      const instructions = changed && firstUser && !keep.includes(firstUser) ? await instructionsFor(session.id) : null;
+      const guidance = instructions ? [instructions, ...out.view.guidance] : out.view.guidance;
+      return ok({ ...noop, apply: changed, keep, clear, guidance, events: out.events });
     } catch {
       return ok(noop);
     }
+  }
+
+  /** 会话以哪个 bot 身份跑（角色层），它的职责说明块；不是 bot 会话 / 没写说明 → null。 */
+  async function instructionsFor(sessionId: string): Promise<string | null> {
+    if (!deps.roleOf || !deps.agentOf) return null;
+    const role = await deps.roleOf(sessionId);
+    if (!role) return null;
+    const found = await locate(sessionId);
+    if (!found.project) return null;
+    return agentInstructionsBlock(await deps.agentOf(found.project.id, role));
   }
 
   async function locate(sessionId: string) {

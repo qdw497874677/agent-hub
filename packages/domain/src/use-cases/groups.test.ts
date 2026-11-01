@@ -494,10 +494,10 @@ test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删�
   assert.ok((await w.posts(g.value.id)).some((p) => p.author.kind === 'system' && /删除了 bot @host/.test(p.body)));
 });
 
-test('职责说明作为系统提示放在群消息最前面', async () => {
+test('群消息不再逐条重复职责说明（改由会话开头统一垫一次，ADR 0020 角色层）', async () => {
   const { memberPrompt } = await import('../groups.ts');
   const text = memberPrompt({ group: { name: 'g', members: ['coder'], hostRole: null }, role: 'coder', roles: ROLES, history: [], trigger: { author: 'alice', body: 'hi' } });
-  assert.ok(text.startsWith('<agent-instructions>\n写代码\n</agent-instructions>'));
+  assert.ok(!text.includes('<agent-instructions>'));
 });
 
 test('未读：别人发的才算、自己发的不算；标已读清零、不倒退；外人看不到也标不了', async () => {

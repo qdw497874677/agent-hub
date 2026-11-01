@@ -254,7 +254,10 @@ hub.stream.subscribe((frame) => {
 });
 const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit, gateway: deps.gateway,
   // 角色层（ADR 0020 §8）：派生出来的角色会话 → 角色；否则群里的成员 → 角色
-  roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId as SessionId))?.role ?? (await store.groups.memberOfSession(sessionId as SessionId))?.role ?? null });
+  roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId as SessionId))?.role ?? (await store.groups.memberOfSession(sessionId as SessionId))?.role ?? null,
+  // bot 职责说明（系统提示）：DM / 派生会话 / 群成员会话都在会话开头垫一次
+  agentOf: async (projectId, role) => (await messageBus.config(projectId as ProjectId)).roles.find((r) => r.name === role) ?? null });
+(deps as { sessionInstructions?: (sessionId: string) => Promise<string | null> }).sessionInstructions = (sessionId) => contextService.instructionsFor(sessionId);
 const offlineBrowser = offlineWorkspaceBrowser('worker 通道尚未就绪');
 const filesService = createWorkspaceFilesService({
   projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,

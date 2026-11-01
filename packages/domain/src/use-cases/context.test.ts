@@ -199,3 +199,36 @@ test('hub-managed：选了 trim 的会话，transformFor 给出 keep / 引导；
   assert.equal(trimmed.value.guidance.length, 1);
   assert.equal((await svc.transformFor('nope', big)).ok, false);
 });
+
+test('服务：bot 职责说明按角色层解析（非 bot 会话 / 空说明 → null，超长截断）', async () => {
+  const { deps } = inMemoryDeps({ now: () => 5 });
+  const store: ContextSettingsStore = { get: async () => null, set: async () => undefined, list: async () => [] };
+  const project = createProject({ name: 'p', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(project.ok);
+  await deps.projects.save(project.value);
+  const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
+  assert.ok(task.ok);
+  await deps.tasks.save(task.value);
+  const mk = async () => {
+    const s = deriveSession({ task: task.value, agentId: asAgentId('pi'), model: 'm', now: 1, createdBy: 'alice' });
+    assert.ok(s.ok);
+    await deps.sessions.save(s.value);
+    return s.value;
+  };
+  const [bot, plain, blank] = [await mk(), await mk(), await mk()];
+  const roles: Record<string, string> = { [bot.id]: 'coder', [blank.id]: 'blank' };
+  const descriptions: Record<string, string> = { coder: `  ${'x'.repeat(4100)}  `, blank: '   ' };
+  const svc = createContextService({
+    ...deps,
+    contextSettings: store,
+    audit: { append: async () => undefined, recent: async () => [], query: async () => [] },
+    roleOf: async (id) => roles[id] ?? null,
+    agentOf: async (pid, role) => (pid === project.value.id && descriptions[role] !== undefined ? { description: descriptions[role]! } : null)
+  });
+  const block = await svc.instructionsFor(bot.id);
+  assert.ok(block?.startsWith('<agent-instructions>\nxxx'));
+  assert.equal(block?.length, '<agent-instructions>\n\n</agent-instructions>'.length + 4000);
+  assert.equal(await svc.instructionsFor(plain.id), null);
+  assert.equal(await svc.instructionsFor(blank.id), null);
+  assert.equal(await createContextService({ ...deps, contextSettings: store, audit: { append: async () => undefined, recent: async () => [], query: async () => [] } }).instructionsFor(bot.id), null);
+});
