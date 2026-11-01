@@ -66,6 +66,7 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
   // 盯展开的目录和打开的文件（SSE）；断线重连后整体刷新一次（重订由 EventSource 重连完成）
   const paths = useMemo(() => watchPaths(expanded, opened?.path ?? null), [expanded, opened?.path]);
   const pathsKey = paths.join('\n');
+  const subscribed = useRef(false);
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
     let first = true;
@@ -77,7 +78,10 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
       source = new EventSource(filesApi.eventsUrl(sessionId, paths));
       source.addEventListener('ready', () => {
         if (!first) void client.invalidateQueries({ queryKey: sk(sessionId) });
+        // 换订阅（展开/返回）时旧连接已断、新连接未就绪，中间的改动会漏：补拉一次被盯的目录
+        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return k[0] === 'files' && k[1] === sessionId && k[2] === 'list' && paths.includes(String(k[3])); } });
         first = false;
+        subscribed.current = true;
       });
       source.addEventListener('changed', (message) => {
         const notice = JSON.parse((message as MessageEvent<string>).data) as { paths: string[]; reset?: boolean };
