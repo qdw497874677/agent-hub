@@ -9,5 +9,6 @@ export { acpReadiness } from './readiness.ts';
 export { execFailureReason, execProbe } from './exec-probe.ts';
 export type { ExecProbe } from './exec-probe.ts';
 export * from './installer.ts';
+export { hermesAcpConfig, hermesAcpHome, hermesAcpModelConfig, hermesAcpProviderLaunch } from './hermes-acp.ts';
 export { acpAdapter, acpAgents, acpConfigsFor, commandEnvVar } from './adapter.ts';
 export { opencodeProviderConfig, opencodeProviderLaunch, opencodeDialect, type OpencodeDialect } from './opencode-provider.ts';

@@ -26,7 +26,7 @@ export async function prepareSessionDir(root: string, sessionId: string): Promis
  * - terminal.cwd：一个中性的空目录——Runs API 没有每轮 cwd，一个网关服务多个工作区，
  *   不能把一个会话的工作区当成大家的默认目录；每轮的工作区绝对路径写进 instructions（保守选择，§17.3）；
  * - MCP：不配。MCP 是 profile 级，session key 不会转给 MCP（§14.3），共用网关下分不清是哪个会话在调 hub 工具，
- *   宁可不给也不能串（§17.4，列给 David）。
+ *   宁可不给也不能串（§17.4）；要 hub 工具的会话用 `hermes-acp` 运行时（ADR 0022 补充）。
  */
 export function hermesWorkerConfig(cwd: string): Record<string, unknown> {
   return {

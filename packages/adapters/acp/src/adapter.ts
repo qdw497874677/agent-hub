@@ -5,6 +5,7 @@ import { discoverAcpModels } from './discover-models.ts';
 import { acpReadiness } from './readiness.ts';
 import { opencodeInstaller } from './installer.ts';
 import { opencodeProviderLaunch } from './opencode-provider.ts';
+import { hermesAcpConfig } from './hermes-acp.ts';
 
 /**
  * ACP agent 是配置，不是代码：
@@ -42,6 +43,13 @@ export function commandEnvVar(id: string): string {
 }
 
 export function acpConfigsFor(ctx: Pick<RuntimeAdapterContext, 'env' | 'log' | 'components'>): AcpAgentConfig[] {
+  const configs = acpConfigsFromEnv(ctx);
+  // ADR 0022 D7：要 hub MCP 的 Hermes 会话走 ACP（共用网关分不清会话，见 hermes-acp.ts）
+  const hermes = configs.some((config) => config.id === 'hermes-acp') ? null : hermesAcpConfig(ctx.env);
+  return hermes ? [...configs, hermes] : configs;
+}
+
+function acpConfigsFromEnv(ctx: Pick<RuntimeAdapterContext, 'env' | 'log' | 'components'>): AcpAgentConfig[] {
   return acpAgents(ctx.env['ACP_AGENTS'], ctx.log).map((config) => {
     if (config.id !== 'opencode') return config;
     // OPENCODE_COMMAND 是单机安装的后门；ACP_AGENTS 里自己写的 opencode 条目也照样认 hub 下发的资产
