@@ -1,3 +1,4 @@
+import { createInstallArtifacts } from './install-artifacts.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -668,7 +669,8 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   enrollment: {
     deps: enrollmentDeps,
     bootstrapScript: join(repoRoot, 'scripts', 'bootstrap-worker.sh'),
-    commit: hubBuild.commit
+    commit: hubBuild.commit,
+    artifacts: createInstallArtifacts({ repoDir: repoRoot, commit: hubBuild.commit, cacheDir: join(dataDir, 'install-cache') })
   }
 });
 

@@ -5,7 +5,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -166,9 +166,12 @@ async function onUpdate(commit: string, report: (status: UpdateReport) => void):
     else report({ state: 'refused', message: '本机 Worker 与 hub 共用代码：请在 hub 上 git pull 后重启 hub', logTail: '' });
     return;
   }
+  const hubHttp = hubHttpFrom(hubUrl);
   const changed = await runSelfUpdate({
     repoDir: repoRoot,
     commit,
+    // 先从 hub 取代码（不依赖 GitHub），拿不到再 git fetch origin
+    ...(hubHttp ? { fetchBundle: (target: string) => downloadHubBundle({ hubHttp, commit: target, dir: join(stateDir, 'update-cache') }) } : {}),
     report: (status) => {
       log(`更新：${status.message}`);
       report(status);

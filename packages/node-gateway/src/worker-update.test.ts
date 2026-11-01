@@ -11,7 +11,7 @@ import type { WorkerStatus } from '@agent-hub/domain';
 import { createServerGateway } from './server-gateway.ts';
 import { connectWorkerLink } from './worker-link.ts';
 import { readBuildInfo } from './build-info.ts';
-import { fetchFailureReason, runSelfUpdate, type CommandRunner, type UpdateReport } from './updater.ts';
+import { downloadHubBundle, fetchFailureReason, HUB_BUNDLE_REF, hubHttpFrom, runSelfUpdate, type CommandRunner, type UpdateReport } from './updater.ts';
 
 const A = 'a'.repeat(40);
 const B = 'b'.repeat(40);
@@ -262,4 +262,65 @@ test('updater：git fetch 偶发失败会重试，成功就继续；一直失败
   assert.match(reports.at(-1)?.message ?? '', /失败 3 次（域名解析失败（DNS））/);
   assert.equal(fetchFailureReason('remote: Repository not found.'), '没有权限（认证失败或仓库不可见）');
   assert.ok(!fetchFailureReason("unable to access 'https://tok@github.com/'").includes('github'));
+});
+
+test('updater：先用 hub 的 bundle（origin 连不上也能更新）；bundle 拿不到才 git fetch origin', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hub-update-bundle-'));
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+  try {
+    const origin = join(root, 'origin');
+    const clone = join(root, 'clone');
+    execFileSync('git', ['init', '-q', '-b', 'master', origin]);
+    await writeFile(join(origin, 'package.json'), '{"version":"1.2.3"}\n');
+    git(origin, 'add', '.');
+    git(origin, 'commit', '-qm', 'one');
+    execFileSync('git', ['clone', '-q', origin, clone]);
+    await writeFile(join(origin, 'b.txt'), 'b\n');
+    git(origin, 'add', '.');
+    git(origin, 'commit', '-qm', 'two');
+    const target = git(origin, 'rev-parse', 'HEAD');
+    git(origin, 'update-ref', HUB_BUNDLE_REF, target);
+    const bundle = join(root, 'w.bundle');
+    git(origin, 'bundle', 'create', bundle, HUB_BUNDLE_REF);
+    // 「GitHub」不通
+    git(clone, 'remote', 'set-url', 'origin', join(root, 'nowhere'));
+    const reports: UpdateReport[] = [];
+    const changed = await runSelfUpdate({ repoDir: clone, commit: target, report: (r) => reports.push(r), installArgs: ['--version'], fetchBundle: async () => bundle, fetchRetryDelaysMs: [0, 0] });
+    assert.equal(changed, true, reports.map((r) => r.message).join(' / '));
+    assert.equal(readBuildInfo(clone).commit, target);
+    assert.ok(!reports.some((r) => /git fetch 失败/.test(r.message)), '没去碰 origin');
+
+    // bundle 拿不到：退回 origin，origin 也不通就报 fetch 失败、什么都不改
+    const reports2: UpdateReport[] = [];
+    git(clone, 'reset', '-q', '--hard', 'HEAD~1');
+    assert.equal(await runSelfUpdate({ repoDir: clone, commit: target, report: (r) => reports2.push(r), installArgs: ['--version'], fetchBundle: async () => null, fetchRetryDelaysMs: [0, 0] }), false);
+    assert.match(reports2.at(-1)?.message ?? '', /git fetch 失败 3 次/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('downloadHubBundle：sha256 对上才落盘；hubHttpFrom 从 ws 地址推出 http', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'hub-bundle-dl-'));
+  const { createHash } = await import('node:crypto');
+  const body = Buffer.from('bundle-bytes');
+  const sum = createHash('sha256').update(body).digest('hex');
+  const seen: string[] = [];
+  const fake = (good: boolean) => (async (url: string | URL | Request) => {
+    seen.push(String(url));
+    return String(url).endsWith('.sha256') ? new Response(`${good ? sum : 'f'.repeat(64)}  x\n`) : new Response(body);
+  }) as typeof fetch;
+  try {
+    const path = await downloadHubBundle({ hubHttp: 'http://hub:7878', commit: A, dir, fetch: fake(true) });
+    assert.ok(path?.endsWith(`worker-${A}.bundle`));
+    assert.equal(seen[0], `http://hub:7878/install/worker-${A}.bundle.sha256`);
+    assert.equal(await downloadHubBundle({ hubHttp: 'http://hub:7878', commit: B, dir, fetch: fake(false) }), null);
+    assert.equal(await downloadHubBundle({ hubHttp: 'http://hub:7878', commit: 'nope', dir, fetch: fake(true) }), null);
+    assert.equal(hubHttpFrom('ws://8.8.8.8:17900/worker'), 'http://8.8.8.8:17900');
+    assert.equal(hubHttpFrom('wss://hub.example/worker'), 'https://hub.example');
+    assert.equal(hubHttpFrom('not a url'), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

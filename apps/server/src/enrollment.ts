@@ -1,5 +1,8 @@
 import type { Context, Hono } from 'hono';
+import { createReadStream } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
+import type { InstallArtifacts } from './install-artifacts.ts';
 import type { PairingDto } from '@agent-hub/contract';
 import type { EnrollmentDeps } from '@agent-hub/domain';
 import { issuePairingCode, revokeWorker } from '@agent-hub/domain';
@@ -19,6 +22,8 @@ export interface EnrollmentOptions {
   readonly bootstrapScript: string;
   /** hub 当前的提交：新机器 checkout 到它，版本天然一致。 */
   readonly commit: string | null;
+  /** 从 hub 直接下代码（不经 GitHub）：GET /install/worker-<提交>.{tar.gz,bundle}[.sha256]。 */
+  readonly artifacts?: InstallArtifacts;
 }
 
 
@@ -64,5 +69,26 @@ export function installEnrollment(app: Hono, options: EnrollmentOptions, princip
       .replaceAll('__HUB_HTTP__', origin)
       .replaceAll('__HUB_COMMIT__', options.commit && /^[0-9a-f]{7,40}$/.test(options.commit) ? options.commit : '');
     return c.body(script, 200, { 'content-type': 'text/x-shellscript; charset=utf-8', 'cache-control': 'no-store' });
+  });
+
+  // 代码包：和 install-worker.sh 一样不要登录（内容就是公开仓库里的那个提交，不含任何配置 / 数据）
+  app.get('/install/:name', async (c) => {
+    const artifacts = options.artifacts;
+    const match = /^worker(?:-([0-9a-f]{40}))?\.(tar\.gz|bundle)(\.sha256)?$/.exec(c.req.param('name'));
+    if (!artifacts?.commit || !match) return c.text('没有这个安装包', 404);
+    const [, commit, kind, checksum] = match as unknown as [string, string | undefined, 'tar.gz' | 'bundle', string | undefined];
+    if (commit && commit !== artifacts.commit) return c.text(`hub 只提供它正在跑的提交 ${artifacts.commit}`, 404);
+    const artifact = await artifacts.get(kind);
+    if (!artifact) return c.text('安装包生成失败（hub 不是从 git 仓库运行？）', 503);
+    const file = `worker-${artifacts.commit}.${kind}`;
+    if (checksum) return c.text(`${artifact.sha256}  ${file}\n`, 200, { 'cache-control': 'no-store' });
+    return c.body(Readable.toWeb(createReadStream(artifact.path)) as ReadableStream, 200, {
+      'content-type': kind === 'bundle' ? 'application/x-git-bundle' : 'application/gzip',
+      'content-length': String(artifact.size),
+      'content-disposition': `attachment; filename="${file}"`,
+      'x-agent-hub-commit': artifacts.commit,
+      'x-agent-hub-sha256': artifact.sha256,
+      'cache-control': commit ? 'public, max-age=86400, immutable' : 'no-store'
+    });
   });
 }

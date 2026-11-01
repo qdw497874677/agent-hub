@@ -24,8 +24,8 @@ NODE_MAJOR=26
 : "${HUB_PAIR:?需要接入码：在控制台「机器 → 添加机器」复制完整命令}"
 
 need() { command -v "$1" >/dev/null || { echo "缺少 $1，请先安装（比如 apt install -y $1）" >&2; exit 1; }; }
-need git
 need curl
+need tar
 
 node_ok() { command -v node >/dev/null && [[ "$(node -p 'process.versions.node.split(".")[0]')" -ge $NODE_MAJOR ]]; }
 if ! node_ok && [[ -x "$HOME/.local/node$NODE_MAJOR/bin/node" ]]; then
@@ -38,11 +38,13 @@ if ! node_ok; then
     *) echo "不认识的 CPU 架构 $(uname -m)：请自己装 Node $NODE_MAJOR" >&2; exit 1 ;;
   esac
   # tar + xz 只有装 Node 时才用得上（nodejs.org 的包是 .tar.xz）
-  need tar
   need xz
   echo "==> 安装 Node $NODE_MAJOR 到 ~/.local/node$NODE_MAJOR"
-  base="https://nodejs.org/dist/latest-v$NODE_MAJOR.x"
-  file="$(curl -fsSL "$base/SHASUMS256.txt" | awk '{print $2}' | grep -E "^node-v[0-9.]+-linux-$arch\.tar\.xz$" | head -1)"
+  file=""
+  for base in "${NODE_DIST:-https://nodejs.org/dist}/latest-v$NODE_MAJOR.x" "https://npmmirror.com/mirrors/node/latest-v$NODE_MAJOR.x"; do
+    file="$(curl -fsSL -m 20 "$base/SHASUMS256.txt" 2>/dev/null | awk '{print $2}' | grep -E "^node-v[0-9.]+-linux-$arch\.tar\.xz$" | head -1)" || true
+    [[ -n "$file" ]] && break
+  done
   [[ -n "$file" ]] || { echo "nodejs.org 上找不到 Node $NODE_MAJOR 的 linux-$arch 包" >&2; exit 1; }
   tmp="$(mktemp -d)"
   curl -fsSL "$base/$file" -o "$tmp/$file"
@@ -132,18 +134,77 @@ if ! node -v >/dev/null 2>&1; then
 fi
 echo "==> Node $(node -v)"
 
-if [[ -d "$DIR/.git" ]]; then
-  echo "==> 更新 $DIR"
-  git -C "$DIR" fetch --quiet origin
-else
-  echo "==> 克隆 $REPO 到 $DIR"
-  git clone --quiet "$REPO" "$DIR"
+# 代码优先从 hub 取（hub 发的就是它自己正在跑的那个提交，sha256 校验），连不上 GitHub 的机器也能装；
+# 有 git 取 .bundle（保留 git 语义：之后的「更新」、启动失败回滚都靠它），没 git 取 .tar.gz 解压。
+# hub 取不到才退回 git clone GitHub。
+hub_get() { # hub_get <种类 bundle|tar.gz> <输出文件>：下载并校验 sha256
+  [[ -n "$HUB_COMMIT" && "$HUB_HTTP" != __HUB_HTTP__ ]] || return 1
+  local url="$HUB_HTTP/install/worker-$HUB_COMMIT.$1" sum
+  sum="$(curl -fsSL -m 30 "$url.sha256" 2>/dev/null | awk '{print $1}')" || return 1
+  [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || return 1
+  curl -fsSL -m 600 "$url" -o "$2" 2>/dev/null || return 1
+  echo "$sum  $2" | sha256sum -c - >/dev/null 2>&1
+}
+BUNDLE_REF=refs/agent-hub/install
+from_hub=""
+tmp_code="$(mktemp -d)"
+if command -v git >/dev/null; then
+  if hub_get bundle "$tmp_code/w.bundle"; then
+    if [[ ! -d "$DIR/.git" ]]; then
+      if [[ -e "$DIR" && -n "$(ls -A "$DIR" 2>/dev/null)" && ! -f "$DIR/.agent-hub-commit" ]]; then
+        echo "$DIR 已存在且不是 agent-hub 的安装目录；换个 AGENT_HUB_DIR 或先挪走它" >&2; exit 1
+      fi
+      # 以前用 tar 包装的：换成 git 仓库（node_modules 留着，npm 会对齐）
+      [[ -d "$DIR" ]] && find "$DIR" -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +
+      mkdir -p "$DIR"
+      git -C "$DIR" init --quiet
+      git -C "$DIR" remote add origin "$REPO"
+    fi
+    if git -C "$DIR" fetch --quiet "$tmp_code/w.bundle" "+$BUNDLE_REF:$BUNDLE_REF" \
+      && git -C "$DIR" checkout --quiet -f -B agent-hub-worker "$HUB_COMMIT"; then
+      from_hub=1
+      echo "==> 代码取自 hub（${HUB_COMMIT:0:7}）"
+    fi
+  fi
+elif hub_get tar.gz "$tmp_code/w.tar.gz"; then
+  if [[ -d "$DIR/.git" ]]; then
+    echo "$DIR 是 git 仓库但这台机器没有 git：先装 git 再重跑" >&2; exit 1
+  fi
+  if [[ -e "$DIR" && -n "$(ls -A "$DIR" 2>/dev/null)" && ! -f "$DIR/.agent-hub-commit" ]]; then
+    echo "$DIR 已存在且不是 agent-hub 的安装目录；换个 AGENT_HUB_DIR 或先挪走它" >&2; exit 1
+  fi
+  # 升级：旧文件清掉（node_modules 留着加速 npm），整包解开
+  [[ -d "$DIR" ]] && find "$DIR" -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +
+  mkdir -p "$DIR"
+  tar -xzf "$tmp_code/w.tar.gz" -C "$DIR"
+  echo "$HUB_COMMIT" >"$DIR/.agent-hub-commit"
+  from_hub=1
+  echo "==> 代码取自 hub（${HUB_COMMIT:0:7}，没有 git：解压安装，远程「更新」需要先装 git 再重跑安装命令）"
 fi
-if [[ -n "$HUB_COMMIT" ]]; then
-  # 和 hub 同一个提交：协议版本天然一致；之后由 hub 的「更新」按钮推着走。
-  git -C "$DIR" checkout --quiet -B agent-hub-worker "$HUB_COMMIT" \
-    || { echo "仓库里没有 hub 的提交 $HUB_COMMIT（hub 跑的是没推上去的代码？）；先用默认分支" >&2; git -C "$DIR" checkout --quiet origin/HEAD; }
+rm -rf "$tmp_code"
+
+if [[ -z "$from_hub" ]]; then
+  need git
+  echo "==> 没能从 hub 取到代码，改从 $REPO 拉取"
+  if [[ -d "$DIR/.git" ]]; then
+    echo "==> 更新 $DIR"
+    git -C "$DIR" fetch --quiet origin
+  else
+    git clone --quiet "$REPO" "$DIR"
+  fi
+  if [[ -n "$HUB_COMMIT" ]]; then
+    # 和 hub 同一个提交：协议版本天然一致；之后由 hub 的「更新」按钮推着走。
+    git -C "$DIR" checkout --quiet -B agent-hub-worker "$HUB_COMMIT" \
+      || { echo "仓库里没有 hub 的提交 $HUB_COMMIT（hub 跑的是没推上去的代码？）；先用默认分支" >&2; git -C "$DIR" checkout --quiet origin/HEAD; }
+  fi
 fi
+
+# npm 源：没指定就用官方；registry.npmjs.org 连不上自动换 npmmirror（install-worker.sh 会写进 worker.env）
+if [[ -z "${NPM_CONFIG_REGISTRY:-${npm_config_registry:-}}" ]] && ! curl -fsSI -m 8 https://registry.npmjs.org/ >/dev/null 2>&1; then
+  echo "==> registry.npmjs.org 连不上，npm 改用 https://registry.npmmirror.com"
+  export NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+fi
+[[ -n "${npm_config_registry:-}" && -z "${NPM_CONFIG_REGISTRY:-}" ]] && export NPM_CONFIG_REGISTRY="$npm_config_registry"
 
 export HUB_HTTP HUB_PAIR
 [[ -n "${WORKER_INSTANCE:-}" ]] && export WORKER_INSTANCE

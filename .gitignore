@@ -10,3 +10,4 @@ apps/web/dist/
 test-results/
 playwright-report/
 *.tsbuildinfo
+.agent-hub-commit
