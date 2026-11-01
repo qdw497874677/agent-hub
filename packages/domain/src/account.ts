@@ -145,8 +145,6 @@ export interface HubSettings {
   readonly localWorkerGrants?: readonly string[];
   /** 开了「资源满了就拒绝新会话」的机器（ADR 0014，默认谁都不开）。 */
   readonly refuseWhenFull: readonly string[];
-  /** hub 级「禁止安装脚本」（ADR 0021 决定 8，默认关）：开着时组件一律 --ignore-scripts 安装。 */
-  readonly disableInstallScripts?: boolean;
 }
 export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, refuseWhenFull: [] };
 
@@ -191,7 +189,7 @@ export type AuditAction =
   | 'runtime.component.uninstall'
   | 'bundle.submit'
   | 'bundle.review'
-  | 'bundle.script_run'
+  | 'bundle.script_skipped'
   | 'bundle.integrity_mismatch'
   | 'project.delete'
   | 'asset.create'

@@ -55,7 +55,6 @@ function setup(artifact: Partial<NpmArtifactInfo> = {}) {
     },
     workers: { list: async () => workers, runtimeJob: async (id, job) => (jobs.push({ id, job }), true) },
     sessions: { listAll: async () => [] },
-    settings: { get: async () => settings },
     audit: { append: async (e) => void entries.unshift(e), recent: async () => entries, query: async () => entries },
     access,
     resolveNpm: async (name, version) => ({ name, version, resolved: `https://r/${name}-${version}.tgz`, integrity: INTEGRITY, scripts: { postinstall: 'node x.js' }, dependencyCount: 2, ...artifact }),
@@ -111,8 +110,8 @@ test('目录：集群管理员看全部，其他人只看已批准的', async ()
   assert.equal((await listComponentCatalog(deps, null)).ok, false);
 });
 
-test('装组件：没审过的不行；成员能装自己的机器，别人的不行；禁止安装脚本 → ignoreScripts', async () => {
-  const { deps, jobs, entries, workers, settings } = setup();
+test('装组件：没审过的不行；成员能装自己的机器，别人的不行；安装脚本一律不执行（ignoreScripts 恒为 true）', async () => {
+  const { deps, jobs, entries, workers } = setup();
   workers.push(machine('w1'));
   await submitComponent(deps, david, submission);
   const pending = await startComponentJob(deps, member, 'w1', { componentId: 'demo', version: '1.0.0', action: 'install_component' });
@@ -122,13 +121,9 @@ test('装组件：没审过的不行；成员能装自己的机器，别人的�
   assert.equal(!other.ok && other.error.code, 'forbidden');
   const ok = await startComponentJob(deps, member, 'w1', { componentId: 'demo', version: '1.0.0', action: 'install_component' });
   assert.ok(ok.ok, !ok.ok ? ok.error.message : '');
-  assert.equal(jobs[0]?.job.component?.ignoreScripts, false);
+  assert.equal(jobs[0]?.job.component?.ignoreScripts, true);
   assert.equal(jobs[0]?.job.component?.expectedCurrent, null);
   assert.equal(entries[0]?.action, 'runtime.component.install');
-  (settings as { disableInstallScripts?: boolean }).disableInstallScripts = true;
-  await startComponentJob(deps, member, 'w1', { componentId: 'demo', version: '1.0.0', action: 'install_component' });
-  assert.equal(jobs[1]?.job.component?.ignoreScripts, true);
-  assert.match(entries[0]!.detail, /禁止安装脚本/);
 });
 
 test('老 Worker（不报 componentInstall）不发组件任务', async () => {
@@ -140,17 +135,17 @@ test('老 Worker（不报 componentInstall）不发组件任务', async () => {
   assert.equal(!result.ok && result.error.code, 'conflict');
 });
 
-test('任务结束：成功写钉住、脚本逐条审计；哈希不符记审计且不写钉住；卸载删钉住', async () => {
+test('任务结束：成功写钉住、没执行的脚本逐条审计；哈希不符记审计且不写钉住；卸载删钉住', async () => {
   const { deps, pins, entries } = setup();
   const base: RuntimeJob = {
     jobId: 'j', agentId: 'pi', action: 'install_component', version: '1.0.0', state: 'succeeded', message: '', log: '', startedAt: 1, endedAt: 2, actorEmail: 'm@b.co',
-    component: { componentId: 'demo', runtime: 'pi', packageName: 'demo-pi-ext', version: '1.0.0', resolved: 'https://r/x.tgz', integrity: INTEGRITY, provides: [], ignoreScripts: false, expectedCurrent: null },
+    component: { componentId: 'demo', runtime: 'pi', packageName: 'demo-pi-ext', version: '1.0.0', resolved: 'https://r/x.tgz', integrity: INTEGRITY, provides: [], ignoreScripts: true, expectedCurrent: null },
     result: { scripts: [{ package: 'demo-pi-ext', script: 'postinstall' }, { package: 'dep', script: 'install' }] }
   };
   await componentJobFinished(deps, 'w1', base);
   assert.equal(pins.length, 1);
   assert.equal(pins[0]?.version, '1.0.0');
-  assert.deepEqual(entries.filter((e) => e.action === 'bundle.script_run').map((e) => e.detail).sort(), ['demo-pi-ext postinstall', 'dep install']);
+  assert.deepEqual(entries.filter((e) => e.action === 'bundle.script_skipped').map((e) => e.detail).sort(), ['demo-pi-ext postinstall（未执行）', 'dep install（未执行）']);
   await componentJobFinished(deps, 'w2', { ...base, state: 'failed', result: { integrityMismatch: true, integrity: 'sha512-zzz' } });
   assert.equal(entries[0]?.action, 'bundle.integrity_mismatch');
   assert.equal(pins.filter((p) => p.workerId === 'w2').length, 0);

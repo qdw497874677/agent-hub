@@ -12,7 +12,8 @@ import type { ComponentJobResult, ComponentJobSpec } from '@agent-hub/domain';
  * - 装完对着锁文件 `node_modules/<pkg>` 那一项核对版本和 integrity（审的就是装的）；
  * - 期望当前版本（compare-and-swap）：和机器上的对不上就拒绝；
  * - 路径一律 realpath 后检查不越出组件根目录。
- * 和 paseo 不同（ADR 0021 决定 8）：安装脚本默认允许；hub 开了「禁止安装脚本」才加 --ignore-scripts。
+ * - 一律 `--ignore-scripts`（ADR 0021 决定 8，2026-10-31 改为跟 paseo 一致）：组件及其依赖的安装脚本都不执行，
+ *   只把声明了的脚本列出来回报给 hub（审计 + 提示「可能用不了」）。没有例外路径，所以 root 跑的 Worker 也能装。
  */
 export interface ComponentInstallOptions {
   readonly root: string;
@@ -23,8 +24,6 @@ export interface ComponentInstallOptions {
   readonly run: (file: string, args: readonly string[], options: { cwd: string; env: Record<string, string> }) => Promise<void>;
   readonly env: Record<string, string>;
   readonly log: (line: string) => void;
-  /** 当前进程是不是 root（测试可换）。root 下不跑第三方安装脚本。 */
-  readonly isRoot?: boolean;
   readonly now?: () => number;
 }
 
@@ -92,7 +91,6 @@ export async function installComponent(options: ComponentInstallOptions, spec: C
   const refuse = (message: string): ComponentOutcome => ({ ok: false, refused: true, message, result: { durationMs: elapsed() } });
   if (current !== spec.expectedCurrent) return refuse(`机器上的版本（${current ?? '没装'}）和 hub 以为的（${spec.expectedCurrent ?? '没装'}）不一致，先刷新再试`);
   if (!options.npm) return refuse('这台机器的 Node 旁边没有 npm，没法装组件');
-  if (!spec.ignoreScripts && options.isRoot) return refuse('Worker 以 root 运行：不以 root 跑第三方安装脚本。请用普通用户运行 Worker，或在 hub 设置里打开「禁止安装脚本」');
 
   mkdirSync(base, { recursive: true });
   const staging = join(base, `.staging-${randomUUID()}`);
@@ -105,7 +103,7 @@ export async function installComponent(options: ComponentInstallOptions, spec: C
     );
     // npm 缓存和 HOME 都放进暂存目录：不读写 Worker 用户的 ~/.npmrc / 缓存，装完一起删
     const env = { ...options.env, HOME: staging, npm_config_cache: join(staging, '.npm-cache'), npm_config_userconfig: join(staging, '.npmrc') };
-    const args = [options.npm, 'install', '--no-audit', '--no-fund', '--omit=dev', '--package-lock=true', ...(spec.ignoreScripts ? ['--ignore-scripts'] : [])];
+    const args = [options.npm, 'install', '--no-audit', '--no-fund', '--omit=dev', '--package-lock=true', '--ignore-scripts'];
     options.log(`$ npm ${args.slice(1).join(' ')}（${spec.packageName}@${spec.version}）`);
     await options.run(options.node, args, { cwd: staging, env });
 
@@ -123,7 +121,9 @@ export async function installComponent(options: ComponentInstallOptions, spec: C
     const pkg = readJson(join(pkgDir, 'package.json'));
     if (pkg?.['name'] !== spec.packageName || pkg?.['version'] !== spec.version) throw new Error('装出来的 package.json 对不上');
     if (!inside(staging, realpathSync(pkgDir))) throw new Error('包目录越出了暂存目录');
-    scripts = spec.ignoreScripts ? [] : scriptsInTree(staging, lock);
+    // 没执行的安装脚本：只是列出来（hub 记审计、提示可能用不了）
+    scripts = scriptsInTree(staging, lock);
+    if (scripts.length) options.log(`提示：${scripts.map((s) => `${s.package} ${s.script}`).join('、')} 声明了安装脚本，没有执行；依赖它的组件可能用不了`);
     rmSync(join(staging, '.npm-cache'), { recursive: true, force: true });
     writeFileSync(
       join(staging, '.component.json'),
@@ -143,14 +143,14 @@ export async function installComponent(options: ComponentInstallOptions, spec: C
     return {
       ok: true,
       message: `已安装组件 ${spec.componentId} ${spec.version}`,
-      result: { integrity: spec.integrity, ignoredScripts: spec.ignoreScripts, scripts, exitCode: 0, durationMs: elapsed() }
+      result: { integrity: spec.integrity, ignoredScripts: true, scripts, exitCode: 0, durationMs: elapsed() }
     };
   } catch (error) {
     // 只回滚这一个组件：删暂存，current 不动
     rmSync(staging, { recursive: true, force: true });
     const message = error instanceof Error ? error.message : String(error);
     const code = /退出码 (\d+)/.exec(message);
-    return { ok: false, message: `安装失败：${message.slice(0, 300)}`, result: { ignoredScripts: spec.ignoreScripts, scripts, exitCode: code ? Number(code[1]) : null, durationMs: elapsed() } };
+    return { ok: false, message: `安装失败：${message.slice(0, 300)}`, result: { ignoredScripts: true, scripts, exitCode: code ? Number(code[1]) : null, durationMs: elapsed() } };
   }
 }
 

@@ -54,6 +54,11 @@ function Item({ item, all }: { item: CatalogComponentDto; all: readonly CatalogC
         >
           {STATUS[item.status]}
         </span>
+        {Object.keys(item.scripts).length ? (
+          <span className="rounded-sm border border-rust px-1 text-xs text-rust" data-testid="component-has-scripts" title="安装脚本不会执行，依赖它的组件可能用不了">
+            有安装脚本 · 可能用不了
+          </span>
+        ) : null}
       </div>
       <p className="mt-1 break-all text-meta text-tertiary">
         npm：<span className="font-mono">{item.packageName}@{item.version}</span> · 依赖 {item.dependencyCount} 个 · 提交 {item.submittedBy} {at(item.submittedAt)}
@@ -62,11 +67,11 @@ function Item({ item, all }: { item: CatalogComponentDto; all: readonly CatalogC
       {item.provides.length ? <p className="text-meta text-secondary">能力：{item.provides.map((p) => p.capability).join('、')}</p> : null}
       <div className="mt-2" data-testid="component-scripts">
         {scripts.length === 0 ? (
-          <p className="text-meta text-tertiary">顶层包没有安装脚本{item.dependencyCount > 0 ? '（依赖里的脚本装的时候也会跑，会逐条记审计）' : ''}</p>
+          <p className="text-meta text-tertiary">顶层包没有安装脚本{item.dependencyCount > 0 ? '（依赖里如果有，也一律不执行）' : ''}</p>
         ) : (
           <>
-            <p className="text-meta text-rust">
-              ⚠ 带安装脚本：Worker 会用非 root 身份运行，每条都记审计；hub 设置里可以一键禁止所有安装脚本。
+            <p className="text-meta text-rust" data-testid="component-scripts-warning">
+              ⚠ 声明了安装脚本：这些脚本<strong>不会执行</strong>（一律 --ignore-scripts，仅供审核参考）。依赖安装脚本的组件可能装上了也用不了。
               {previous ? ` 与已批准的 v${previous.version} 对比：` : ''}
             </p>
             {scripts.map((script) => (

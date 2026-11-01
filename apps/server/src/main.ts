@@ -598,7 +598,6 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
     pins: componentStore.pins,
     workers: workerControl,
     sessions: store.sessions,
-    settings: store.settings,
     audit: store.audit,
     access: deps.access,
     resolveNpm: createNpmResolver(readEnv('HUB_NPM_REGISTRY') ?? 'https://registry.npmjs.org'),

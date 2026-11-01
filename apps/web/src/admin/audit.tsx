@@ -45,7 +45,7 @@ const ACTION_LABEL: Record<string, string> = {
   'runtime.component.uninstall': '卸组件',
   'bundle.submit': '提交组件',
   'bundle.review': '审核组件',
-  'bundle.script_run': '组件安装脚本',
+  'bundle.script_skipped': '组件安装脚本（未执行）',
   'bundle.integrity_mismatch': '组件校验不符',
   'project.create': '建项目',
   'project.delete': '删项目',

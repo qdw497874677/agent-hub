@@ -6,9 +6,7 @@ import { agentReadinessSchema } from './wire/entities.ts';
 export const roleRequest = z.object({ role: roleSchema });
 export const settingsSchema = z.object({
   openRegistration: z.boolean(),
-  membersCanAddMachines: z.boolean(),
-  /** ADR 0021 决定 8 的 hub 级开关：开着时组件一律 --ignore-scripts 安装。 */
-  disableInstallScripts: z.boolean().optional()
+  membersCanAddMachines: z.boolean()
 });
 export type SettingsDto = z.infer<typeof settingsSchema>;
 export const settingsPatchRequest = settingsSchema.partial();
