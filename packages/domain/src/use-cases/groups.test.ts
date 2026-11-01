@@ -376,7 +376,7 @@ test('只能 @ 群成员：@ 群外角色只给提示、不派生；有 group.ma
   assert.equal(await w.groups.sessionFor(g.value.id, 'host'), null, '有 @ 的消息不经过主持人');
   let posts = await w.posts(g.value.id);
   assert.ok(posts.some((p) => p.author.kind === 'system' && /@reviewer 不在这个群里，只能 @ 群成员/.test(p.body)));
-  assert.ok(posts.some((p) => p.author.kind === 'system' && /@nobody 不在这个群里，也不是项目角色/.test(p.body)));
+  assert.ok(posts.some((p) => p.author.kind === 'system' && /@nobody 不在这个群里，也不是这个项目的 bot/.test(p.body)));
   assert.equal(await w.groups.sessionFor(g.value.id, 'reviewer'), null, '不派生');
 
   const vicky = w.principal('vicky')!;

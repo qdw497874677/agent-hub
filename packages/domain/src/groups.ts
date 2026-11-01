@@ -41,7 +41,7 @@ export interface Group {
   readonly id: string;
   readonly projectId: ProjectId;
   readonly name: string;
-  /** 成员 = 项目角色名（MessagingConfig.roles 里的 name）。 */
+  /** 成员 = 持久智能体（bot）的 @id（MessagingConfig.roles 里的 name）。 */
   readonly members: readonly string[];
   readonly hostRole: string | null;
   readonly speakingStrategy: SpeakingStrategy;

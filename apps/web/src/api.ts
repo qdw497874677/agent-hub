@@ -631,7 +631,21 @@ export interface GroupPostDto { id: string; seq: number; threadId: string | null
 export interface GroupThreadDto { id: string; status: string; round: number; messages: number; createdAt: number; updatedAt: number }
 export interface GroupDeliveryDto { id: string; round: number; purpose: 'host' | 'member' | 'bid'; role: string; sessionId: string | null; status: string; result: string | null; score: number | null; note?: string | null; promptChars: number; createdAt?: number }
 export interface GroupViewDto { group: GroupDto; sessions: { role: string; sessionId: string; status: string }[]; running: GroupThreadDto[]; canManage: boolean }
-export interface MessagingRoleDto { name: string; description: string; agentId: string; model: string; reuse: 'sticky' | 'per-trace' | 'always-new' }
+export type BotColorDto = 'amber' | 'sage' | 'sky' | 'rose' | 'olive' | 'slate';
+/** 持久智能体（界面上叫 bot）。name 就是 @id，建好不改。 */
+export interface MessagingRoleDto { name: string; displayName?: string; color?: BotColorDto; description: string; agentId: string; model: string; reuse: 'sticky' | 'per-trace' | 'always-new' }
+export interface BotDto extends MessagingRoleDto { groups: { id: string; name: string; host: boolean }[] }
+export type BotInputDto = Partial<Omit<MessagingRoleDto, 'name'>>;
+
+/** bot（持久智能体）按条增删改。 */
+export const botApi = {
+  list: (projectId: string) => call<{ agents: BotDto[] }>(`/api/projects/${encodeURIComponent(projectId)}/agents`),
+  create: (projectId: string, input: BotInputDto & { name: string; agentId: string }) => post<MessagingRoleDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, input),
+  update: (projectId: string, name: string, input: BotInputDto) =>
+    call<MessagingRoleDto>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(input) }),
+  remove: (projectId: string, name: string) =>
+    call<{ removedFrom: { id: string; name: string }[] }>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}`, { method: 'DELETE' })
+};
 export interface GroupInputDto { name: string; members: string[]; hostRole: string | null; speakingStrategy: 'host' | 'volunteer'; limits: Partial<GroupLimitsDto> }
 
 /** 群聊（ADR 0018 · 群组）。 */
@@ -644,6 +658,8 @@ export const groupApi = {
   post: (id: string, body: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/posts`, { body }),
   stop: (id: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/stop`, {}),
   addMember: (id: string, role: string) => post<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members`, { role }),
+  addMembers: (id: string, roles: string[]) => post<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members`, { roles }),
+  removeMember: (id: string, role: string) => call<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(role)}`, { method: 'DELETE' }),
   chains: (id: string) => call<{ chains: { thread: GroupThreadDto; deliveries: GroupDeliveryDto[] }[] }>(`/api/groups/${encodeURIComponent(id)}/chains`),
   roles: (projectId: string) => call<{ roles: MessagingRoleDto[]; limits: Record<string, number> }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`),
   saveRoles: (projectId: string, roles: MessagingRoleDto[], limits: Record<string, number>) =>

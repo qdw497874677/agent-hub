@@ -586,7 +586,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
           const known = mentions.outsiders.filter((o) => roleNames.includes(o));
           const unknown = mentions.outsiders.filter((o) => !roleNames.includes(o));
           if (known.length > 0) await system(group, thread, `${known.map((o) => `@${o}`).join('、')} 不在这个群里，只能 @ 群成员：有管理权限的人可以点「加入群组」把它加进来，然后再发一次`);
-          if (unknown.length > 0) await system(group, thread, `${unknown.map((o) => `@${o}`).join('、')} 不在这个群里，也不是项目角色`);
+          if (unknown.length > 0) await system(group, thread, `${unknown.map((o) => `@${o}`).join('、')} 不在这个群里，也不是这个项目的 bot`);
           // 有 @ 的消息不经过主持人：只 @ 了群外的人就停在这里，不派生、不重放
           if (mentions.members.length === 0) {
             await end(group, thread, 'done', null);
