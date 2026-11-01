@@ -18,7 +18,7 @@ import type {
 } from '@agent-hub/domain';
 import { invalid, unavailable } from '@agent-hub/domain';
 import { piDescriptorFor } from './descriptor.ts';
-import { createPiEventMapper } from './map-event.ts';
+import { compactionResult, createPiEventMapper, usageFromStats } from './map-event.ts';
 
 interface Pending {
   resolve: (value: Record<string, unknown>) => void;
@@ -32,6 +32,7 @@ class PiSession implements RuntimeSession {
   private readonly pending = new Map<string, Pending>();
   private readonly mapper = createPiEventMapper();
   private counter = 0;
+  private compactionsSeen = 0;
   private disposed = false;
   /**
    * Pi 的可调项不是一次问完的：模型清单在本机探测时就已知，
@@ -89,6 +90,11 @@ class PiSession implements RuntimeSession {
           continue;
         }
         for (const event of this.mapper.map(record)) this.queue.push(event);
+        // 一轮结束 / 压缩结束后问一次真实用量（ADR 0020 L1）。不能在 pump 里 await：响应也是 pump 读的。
+        if (head['type'] === 'agent_settled' || head['type'] === 'compaction_end') {
+          if (head['type'] === 'compaction_end') this.compactionsSeen += 1;
+          void this.reportUsage();
+        }
       }
     } catch (error) {
       this.queue.push({
@@ -144,6 +150,34 @@ class PiSession implements RuntimeSession {
   async interrupt(): Promise<void> {
     if (this.disposed) return;
     this.child.stdin.write(`${JSON.stringify({ type: 'abort' })}\n`);
+  }
+
+  private async reportUsage(): Promise<void> {
+    if (this.disposed) return;
+    try {
+      const response = await this.send({ type: 'get_session_stats' });
+      const event = usageFromStats(response['data']);
+      if (event && !this.disposed) this.queue.push(event);
+    } catch {
+      /* 老版本 Pi 没有 get_session_stats：界面退回 hub 估算 */
+    }
+  }
+
+  /** 手动压缩：Pi RPC `compact`。Pi 自己会发 compaction_start / end；没发的话按响应补一条 end。 */
+  async compact(instructions?: string): Promise<Result<void, DomainError>> {
+    if (this.disposed) return { ok: false, error: unavailable('会话已结束') as DomainError };
+    const seen = this.compactionsSeen;
+    try {
+      const response = await this.send({ type: 'compact', ...(instructions ? { customInstructions: instructions } : {}) });
+      if (this.compactionsSeen === seen) {
+        const data = response['data'];
+        if (typeof data === 'object' && data !== null) this.queue.push(compactionResult(data as Record<string, unknown>, 'manual'));
+        void this.reportUsage();
+      }
+      return { ok: true, value: undefined };
+    } catch (error) {
+      return { ok: false, error: unavailable((error as Error).message) as DomainError };
+    }
   }
 
   events(): AsyncIterable<SessionEvent> {

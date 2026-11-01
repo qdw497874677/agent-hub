@@ -5,7 +5,7 @@ import type { StoredAttachment } from './attachment.ts';
  * 归一化事件。加变体要改这份文件并过 ADR：
  * 变体数就是新 agent 的映射成本，它直接决定「新增 agent 零内核改动」的成本。
  *
- * 八个变体，其中七个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
+ * 十个变体（ADR 0020 加了两个旁路的 context_usage / compaction），其中九个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
  * 用户说了什么必须留在 journal 里，否则重开浏览器后一半对话是空的。
  * 见 ADR 0006。
  */
@@ -17,7 +17,9 @@ export const SESSION_EVENT_KINDS = [
   'tool_result',
   'artifact',
   'ended',
-  'diagnostic'
+  'diagnostic',
+  'context_usage',
+  'compaction'
 ] as const;
 
 export type SessionEvent =
@@ -47,13 +49,34 @@ export type SessionEvent =
       readonly outcome: 'done' | 'stopped' | 'interrupted' | 'failed';
       readonly reason?: string;
     }
-  | { readonly kind: 'diagnostic'; readonly level: 'info' | 'warn' | 'error'; readonly text: string };
+  | { readonly kind: 'diagnostic'; readonly level: 'info' | 'warn' | 'error'; readonly text: string }
+  /**
+   * 运行时报上来的上下文用量（ADR 0020 L1）。旁路状态：不进卡片、不改会话状态。
+   * `usedTokens` / `percent` 为 null = 刚压缩完、运行时还没有新数。
+   */
+  | { readonly kind: 'context_usage'; readonly usedTokens: number | null; readonly windowTokens: number; readonly percent: number | null }
+  /** 运行时原生压缩（ADR 0020 StrategyEvent.compacted 的落地形状）。start / end 各一条；失败时 ok=false。 */
+  | {
+      readonly kind: 'compaction';
+      readonly phase: 'start' | 'end';
+      readonly reason: 'manual' | 'threshold' | 'overflow';
+      readonly ok?: boolean;
+      readonly tokensBefore?: number;
+      readonly tokensAfter?: number;
+      readonly summary?: string;
+      readonly error?: string;
+    };
+
+/** 旁路事件：只记账，不算对话内容，也不算「有动静」。 */
+export function isSideChannel(event: SessionEvent): boolean {
+  return event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction';
+}
 
 /** 画布卡片默认渲染的事件。diagnostic 只进事件流抽屉，prompt 只在专注对话里露脸。 */
 export const CARD_EVENT_KINDS = ['text', 'tool_call', 'tool_result', 'artifact'] as const;
 
 export function showsOnCard(event: SessionEvent): boolean {
-  return event.kind !== 'diagnostic' && event.kind !== 'ended' && event.kind !== 'prompt';
+  return !isSideChannel(event) && event.kind !== 'ended' && event.kind !== 'prompt';
 }
 
 export interface JournalEntry {

@@ -6,6 +6,7 @@ import { DialogShell, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useWorkers } from './workers.tsx';
 import { useAccount } from './auth.tsx';
 import { ProjectAssets } from './project-assets.tsx';
+import { ProjectContext } from './project-context.tsx';
 
 type Pending = { workspace: WorkspaceDto; mode: 'unregister' | 'delete' | 'force' };
 
@@ -28,6 +29,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
       <h2 className="mb-3 text-body text-primary">项目设置 · {project.name}</h2>
       <DescriptionEditor project={project} />
       {account?.clusterAdmin ? <ProjectAssets projectId={project.id} /> : null}
+      <ProjectContext projectId={project.id} canEdit />
       <h3 className="mb-1 text-sub text-primary">工作空间</h3>
       <p className="mb-3 text-meta text-tertiary">任务做完或放弃后，临时工作空间会自动删除；有没保存的改动的会保留下来，等你决定。</p>
       {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}

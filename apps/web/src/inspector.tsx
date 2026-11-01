@@ -209,5 +209,13 @@ export function eventLabel(event: JournalEntryDto['event']): string {
             : `出错：${event.reason ?? '没有说原因'}`;
     case 'diagnostic':
       return `${event.level === 'error' ? '出错' : event.level === 'warn' ? '提醒' : '提示'}：${event.text}`;
+    case 'context_usage':
+      return event.usedTokens === null ? '上下文用量：刚压缩完，等下一轮' : `上下文用量 ${event.usedTokens.toLocaleString()} / ${event.windowTokens.toLocaleString()} token`;
+    case 'compaction':
+      return event.phase === 'start'
+        ? `开始压缩上下文（${event.reason === 'manual' ? '手动' : event.reason === 'overflow' ? '溢出' : '到阈值'}）`
+        : event.ok
+          ? `压缩完成：${(event.tokensBefore ?? 0).toLocaleString()} → ${(event.tokensAfter ?? 0).toLocaleString()} token`
+          : `压缩没成：${event.error ?? '被中止'}`;
   }
 }

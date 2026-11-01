@@ -13,3 +13,12 @@ test('上下文策略设置：存取、覆盖、删除（回到继承）', async
   await store.set('project:p', null);
   assert.equal(await store.get('project:p'), null);
 });
+
+test('上下文策略设置：按前缀列出（角色层）', async () => {
+  const store = createSqliteContextSettings(new DatabaseSync(':memory:'));
+  await store.set('role:p:coder', { strategy: 'compaction', updatedAt: 1, updatedBy: 'u' });
+  await store.set('role:p:review', { strategy: 'compaction', updatedAt: 1, updatedBy: 'u' });
+  await store.set('role:q:coder', { strategy: 'compaction', updatedAt: 1, updatedBy: 'u' });
+  await store.set('project:p', { strategy: 'compaction', updatedAt: 1, updatedBy: 'u' });
+  assert.deepEqual((await store.list('role:p:')).map((r) => r.key), ['role:p:coder', 'role:p:review']);
+});

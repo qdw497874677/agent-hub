@@ -6105,6 +6105,91 @@
                               "level",
                               "text"
                             ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "context_usage"
+                                ]
+                              },
+                              "usedTokens": {
+                                "type": [
+                                  "integer",
+                                  "null"
+                                ],
+                                "minimum": 0
+                              },
+                              "windowTokens": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "percent": {
+                                "type": [
+                                  "number",
+                                  "null"
+                                ],
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "usedTokens",
+                              "windowTokens",
+                              "percent"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "compaction"
+                                ]
+                              },
+                              "phase": {
+                                "type": "string",
+                                "enum": [
+                                  "start",
+                                  "end"
+                                ]
+                              },
+                              "reason": {
+                                "type": "string",
+                                "enum": [
+                                  "manual",
+                                  "threshold",
+                                  "overflow"
+                                ]
+                              },
+                              "ok": {
+                                "type": "boolean"
+                              },
+                              "tokensBefore": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "tokensAfter": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "summary": {
+                                "type": "string",
+                                "maxLength": 20000
+                              },
+                              "error": {
+                                "type": "string",
+                                "maxLength": 2000
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "phase",
+                              "reason"
+                            ]
                           }
                         ]
                       },

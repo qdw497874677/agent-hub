@@ -8,9 +8,17 @@ const L1: Record<string, string> = { usage: '用量', compactionEvents: '压缩�
 /** 会话详情里的「上下文」一节：生效策略、来源、退回原因、估算用量、L1 缺口。 */
 export function SessionContext({ sessionId, lastSeq }: { sessionId: string; lastSeq: number }) {
   const [view, setView] = useState<SessionContextDto | null>(null);
+  const [note, setNote] = useState<string | null>(null);
   useEffect(() => {
     void contextApi.session(sessionId).then(setView, () => setView(null));
   }, [sessionId, lastSeq]);
+  const compact = () => {
+    setNote('已请求压缩…');
+    contextApi.compact(sessionId).then(
+      () => setNote('已请求压缩，结果会出现在事件流里'),
+      (e: Error) => setNote(e.message)
+    );
+  };
   if (!view) return null;
   const pct = Math.min(100, Math.round(view.usage.usedRatio * 100));
   return (
@@ -29,8 +37,22 @@ export function SessionContext({ sessionId, lastSeq }: { sessionId: string; last
       </div>
       <p className="mt-0.5 font-mono text-meta text-tertiary" data-testid="context-usage">
         {view.usage.estimated ? '约 ' : ''}
-        {view.usage.usedTokens.toLocaleString()} / {view.usage.windowTokens.toLocaleString()} token（{pct}%）{view.usage.estimated ? ' · hub 估算' : ''}
+        {view.usage.usedTokens.toLocaleString()} / {view.usage.windowTokens.toLocaleString()} token（{pct}%）{view.usage.estimated ? ' · hub 估算' : ' · 运行时报告'}
       </p>
+      {view.usage.lastCompaction ? (
+        <p className="text-meta text-tertiary" data-testid="context-last-compaction">
+          上次压缩：
+          {view.usage.lastCompaction.ok
+            ? `${(view.usage.lastCompaction.tokensBefore ?? 0).toLocaleString()} → ${(view.usage.lastCompaction.tokensAfter ?? 0).toLocaleString()} token`
+            : '没成功'}
+        </p>
+      ) : null}
+      {view.capability.l1.compact === 'runtime' ? (
+        <button type="button" data-testid="context-compact" className="mt-1 rounded border border-hair px-1.5 py-0.5 text-meta text-secondary hover:text-primary" onClick={compact}>
+          立即压缩
+        </button>
+      ) : null}
+      {note ? <p className="text-meta text-tertiary" data-testid="context-compact-note">{note}</p> : null}
       <p className="mt-1 text-meta text-tertiary">
         {Object.entries(view.capability.l1).map(([key, level]) => (
           <span key={key} className="mr-2 inline-block">

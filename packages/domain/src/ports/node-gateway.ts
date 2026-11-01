@@ -52,6 +52,8 @@ export type WorkerCommand =
       readonly parts: readonly PromptPart[];
     }
   | { readonly kind: 'interrupt'; readonly sessionId: SessionId }
+  /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */
+  | { readonly kind: 'compact'; readonly sessionId: SessionId; readonly instructions?: string }
   | { readonly kind: 'dispose'; readonly sessionId: SessionId };
 
 export interface NodeGateway {

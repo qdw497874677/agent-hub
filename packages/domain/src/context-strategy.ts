@@ -122,8 +122,8 @@ export function contextCapabilityOf(agentId: string): ContextCapability {
     return {
       runtime,
       modes: ['native'],
-      l1: { ...common, usage: 'estimated', compactionEvents: 'missing', compact: 'missing' },
-      gaps: ['用量是 hub 按事件估算的（pi RPC get_session_stats 还没接）', '原生压缩事件还没接（compaction_start / end）', '手动压缩退回为重启会话']
+      l1: { ...common, usage: 'runtime', compactionEvents: 'runtime', compact: 'runtime' },
+      gaps: []
     };
   if (runtime === 'grok')
     return {
@@ -185,20 +185,46 @@ function pickMode(strategy: ContextStrategy, capability: ContextCapability): Con
 
 export const DEFAULT_WINDOW_TOKENS = 128_000;
 
+export interface ContextUsage {
+  readonly usedTokens: number;
+  readonly windowTokens: number;
+  /** true = hub 按事件估算；false = 运行时报的（context_usage 事件）。 */
+  readonly estimated: boolean;
+  readonly usedRatio: number;
+  readonly level: 'ok' | 'soft' | 'hard';
+  /** 最近一次压缩（运行时原生）；没有就是 null。 */
+  readonly lastCompaction: { readonly seq: number; readonly ok: boolean; readonly tokensBefore: number | null; readonly tokensAfter: number | null } | null;
+}
+
+const levelOf = (ratio: number): ContextUsage['level'] => (ratio >= 0.95 ? 'hard' : ratio >= 0.7 ? 'soft' : 'ok');
+
 /**
- * L1 兜底：运行时报不出用量时，按 hub 事件流估算这一代的上下文用量。
- * 只算会进模型上下文的东西（提问、回复、工具调用和结果）；思考和诊断不算。
+ * L1 用量：运行时报过 context_usage 就用最后一条（刚压缩完还没新数时用压缩后的估计值）；
+ * 否则按 hub 事件流估算——只算会进模型上下文的东西（提问、回复、工具调用和结果）；思考和诊断不算；
+ * 估算只算最近一次成功压缩之后的事件。
  */
-export function estimateContextUsage(events: readonly JournalEntry[], windowTokens = DEFAULT_WINDOW_TOKENS): { usedTokens: number; windowTokens: number; estimated: true; usedRatio: number; level: 'ok' | 'soft' | 'hard' } {
+export function estimateContextUsage(events: readonly JournalEntry[], windowTokens = DEFAULT_WINDOW_TOKENS): ContextUsage {
   let used = 0;
-  for (const { event } of events) {
+  let runtime: { used: number | null; window: number } | null = null;
+  let lastCompaction: ContextUsage['lastCompaction'] = null;
+  for (const { seq, event } of events) {
     if (event.kind === 'prompt' || event.kind === 'text') used += estimateTokens(event.kind === 'prompt' ? event.text : event.delta);
     else if (event.kind === 'tool_call') used += estimateTokens(event.name + event.input);
     else if (event.kind === 'tool_result') used += estimateTokens(event.output ?? '');
+    else if (event.kind === 'context_usage') runtime = { used: event.usedTokens, window: event.windowTokens };
+    else if (event.kind === 'compaction' && event.phase === 'end') {
+      lastCompaction = { seq: Number(seq), ok: event.ok === true, tokensBefore: event.tokensBefore ?? null, tokensAfter: event.tokensAfter ?? null };
+      if (event.ok) {
+        used = event.tokensAfter ?? 0;
+        if (runtime) runtime = { used: event.tokensAfter ?? null, window: runtime.window };
+      }
+    }
   }
-  const usedRatio = windowTokens > 0 ? used / windowTokens : 0;
-  return { usedTokens: used, windowTokens, estimated: true, usedRatio, level: usedRatio >= 0.95 ? 'hard' : usedRatio >= 0.7 ? 'soft' : 'ok' };
+  if (runtime && runtime.used !== null) {
+    const ratio = runtime.window > 0 ? runtime.used / runtime.window : 0;
+    return { usedTokens: runtime.used, windowTokens: runtime.window, estimated: false, usedRatio: ratio, level: levelOf(ratio), lastCompaction };
+  }
+  const win = runtime?.window ?? windowTokens;
+  const usedRatio = win > 0 ? used / win : 0;
+  return { usedTokens: used, windowTokens: win, estimated: true, usedRatio, level: levelOf(usedRatio), lastCompaction };
 }
-
-/** 策略引导的硬上限（ADR 0020 决定 6）。P1 的 compaction 不注入，只有 ADR 0019 的那一行记忆引导。 */
-export const GUIDANCE_LIMITS = { compactGuideTokens: 1500, nudgeTokens: 200 } as const;

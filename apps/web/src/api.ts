@@ -620,10 +620,32 @@ export interface SessionContextDto {
   source: 'session' | 'role' | 'project' | 'hub' | 'default';
   fallback: { wanted: string; reason: string } | null;
   sessionChoice: string | null;
+  role: string | null;
   enabled: string[];
   capability: { runtime: string; modes: string[]; l1: Record<'usage' | 'compactionEvents' | 'transcript' | 'compact' | 'restart' | 'memoryTools', L1LevelDto>; gaps: string[] };
-  usage: { usedTokens: number; windowTokens: number; estimated: boolean; usedRatio: number; level: 'ok' | 'soft' | 'hard' };
+  usage: {
+    usedTokens: number;
+    windowTokens: number;
+    estimated: boolean;
+    usedRatio: number;
+    level: 'ok' | 'soft' | 'hard';
+    lastCompaction: { seq: number; ok: boolean; tokensBefore: number | null; tokensAfter: number | null } | null;
+  };
 }
+export interface ProjectContextDto {
+  strategy: string;
+  enabled: string[];
+  inherited: boolean;
+  installed: { id: string; version: string; title: string; modes: string[] }[];
+  candidates: { id: string; title: string; note: string }[];
+  roles: { role: string; strategy: string }[];
+}
+const put = (body: unknown): RequestInit => ({ method: 'PUT', body: JSON.stringify(body) });
 export const contextApi = {
-  session: (id: string) => call<SessionContextDto>(`/api/sessions/${encodeURIComponent(id)}/context`)
+  session: (id: string) => call<SessionContextDto>(`/api/sessions/${encodeURIComponent(id)}/context`),
+  compact: (id: string) => call<{ requested: true }>(`/api/sessions/${encodeURIComponent(id)}/context/compact`, { method: 'POST', body: '{}' }),
+  project: (id: string) => call<ProjectContextDto>(`/api/projects/${encodeURIComponent(id)}/context`),
+  setProject: (id: string, input: { strategy: string; enabled: string[] }) => call<ProjectContextDto>(`/api/projects/${encodeURIComponent(id)}/context`, put(input)),
+  setRole: (id: string, role: string, strategy: string | null) =>
+    call<ProjectContextDto>(`/api/projects/${encodeURIComponent(id)}/context/roles/${encodeURIComponent(role)}`, put({ strategy }))
 };

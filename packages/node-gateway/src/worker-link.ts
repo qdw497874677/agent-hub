@@ -543,6 +543,16 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await session.interrupt();
       return;
     }
+    if (command.kind === 'compact') {
+      const done = session.compact ? await session.compact(command.instructions) : null;
+      if (done === null || !done.ok)
+        send({
+          type: 'event',
+          sessionId,
+          event: { kind: 'diagnostic', level: 'warn', text: done === null ? '这个运行时不支持手动压缩，可以重启会话' : `压缩失败：${done.error.message}` }
+        });
+      return;
+    }
     if (command.kind === 'set_option') {
       const changed = await session.changeOption(command.optionId, command.value);
       if (!changed.ok) {

@@ -53,6 +53,8 @@ export interface RuntimeSession {
   dispose(): Promise<void>;
   /** agent 主进程的 pid，用于按会话统计资源（ADR 0014）；不是本机进程的实现不给。 */
   pid?(): number | null;
+  /** 手动触发运行时原生压缩（ADR 0020 L1 compact）。不支持的运行时不实现——hub 让用户改用重启。 */
+  compact?(instructions?: string): Promise<Result<void, DomainError>>;
 }
 
 /** 新增一个 agent = 实现这一个端口 + 填一张能力矩阵。 */
