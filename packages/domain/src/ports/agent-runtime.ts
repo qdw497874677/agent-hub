@@ -55,6 +55,11 @@ export interface RuntimeSession {
   pid?(): number | null;
   /** 手动触发运行时原生压缩（ADR 0020 L1 compact）。不支持的运行时不实现——hub 让用户改用重启。 */
   compact?(instructions?: string): Promise<Result<void, DomainError>>;
+  /**
+   * 回答一个批准请求（ADR 0023，事件 `approval`）。会要批准的运行时才实现；
+   * 不认识 / 已收尾的 id 返回 invalid。超时当拒绝由运行时侧自己计时（见 createApprovalGate）。
+   */
+  respondApproval?(id: string, decision: 'allow' | 'deny', author?: { readonly id: string; readonly name: string }): Promise<Result<void, DomainError>>;
 }
 
 /** 新增一个 agent = 实现这一个端口 + 填一张能力矩阵。 */

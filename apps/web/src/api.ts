@@ -232,6 +232,9 @@ export const api = {
   fork: (input: ForkSessionRequest) => post<SessionDto>('/api/sessions/fork', input),
   continueElsewhere: (sessionId: string, input: ContinueElsewhereRequest) =>
     post<SessionDto>(`/api/sessions/${sessionId}/continue`, input),
+  /** 回答运行时的批准请求（ADR 0023）。已结束（已回答 / 超时）返回 409。 */
+  respondApproval: (sessionId: string, approvalId: string, decision: 'allow' | 'deny') =>
+    call<{ requested: true }>(`/api/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`, { method: 'POST', body: JSON.stringify({ decision }) }),
   prompt: (sessionId: string, text: string, attachments: readonly AttachmentInputDto[] = []) =>
     post<{ ok: true }>(`/api/sessions/${sessionId}/prompt`, { text, attachments }),
   projectFiles: (projectId: string, q: string, sessionId?: string) =>

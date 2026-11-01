@@ -283,6 +283,17 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     tokensAfter: z.number().int().nonnegative().optional(),
     summary: z.string().max(20000).optional(),
     error: z.string().max(2000).optional()
+  }),
+  z.object({
+    kind: z.literal('approval'),
+    phase: z.enum(['request', 'resolved']),
+    id: z.string().min(1).max(256),
+    title: z.string().max(4000).optional(),
+    detail: z.string().max(20000).optional(),
+    expiresAt: z.number().int().nonnegative().optional(),
+    decision: z.enum(['allow', 'deny']).optional(),
+    by: z.enum(['user', 'timeout', 'runtime']).optional(),
+    author: z.object({ id: z.string(), name: z.string() }).optional()
   })
 ]);
 

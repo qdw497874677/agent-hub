@@ -359,6 +359,7 @@ export function ChatBlock({
       </div>
     );
   }
+  if (block.kind === 'approval') return <ApprovalCard block={block} sessionId={sessionId} />;
   if (block.kind === 'unknown') {
     return <UnknownOutcome block={block} sessionId={sessionId} actionable={last && !running} />;
   }
@@ -402,6 +403,67 @@ export function ChatBlock({
  * 结果未知的一轮：说清楚不确定在哪，让人选。重发 = 把上一条文字再发一次（附件不带）；
  * 不用了 = 只在这台浏览器记下「已处理」。只有它是最后一块、且不在跑时才给按钮。
  */
+/**
+ * 批准卡（ADR 0023）：运行时要做一件需要人点头的事。手机上按钮整行、至少 44px 高，点得准。
+ * 超时 = 拒绝：倒计时到 0 就不再给按钮，等运行时补上结论。
+ */
+function ApprovalCard({ block, sessionId }: { block: Extract<Block, { kind: 'approval' }>; sessionId: string }) {
+  const [now, setNow] = useState(() => Date.now());
+  const [busy, setBusy] = useState<'allow' | 'deny' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const left = block.expiresAt === null ? null : Math.max(0, Math.ceil((block.expiresAt - now) / 1000));
+  const open = block.resolved === null && (left === null || left > 0);
+  useEffect(() => {
+    if (!open || block.expiresAt === null) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [open, block.expiresAt]);
+  const answer = async (decision: 'allow' | 'deny') => {
+    setBusy(decision);
+    setError(null);
+    try {
+      await api.respondApproval(sessionId, block.id, decision);
+    } catch (cause) {
+      setError((cause as Error).message);
+      setBusy(null);
+    }
+  };
+  const verdict = block.resolved
+    ? block.resolved.decision === 'allow'
+      ? `已允许${block.resolved.author ? `（${block.resolved.author.name}）` : ''}`
+      : block.resolved.by === 'timeout'
+        ? '超时，已拒绝'
+        : block.resolved.by === 'runtime'
+          ? '运行时已不再等待'
+          : `已拒绝${block.resolved.author ? `（${block.resolved.author.name}）` : ''}`
+    : open
+      ? null
+      : '超时，已拒绝';
+  return (
+    <div role="group" aria-label="需要你批准" className="flex flex-col gap-2 rounded-sm border-l-2 border-ochre bg-ochre/10 px-3 py-2 text-meta text-primary" data-testid="msg-approval" data-state={block.resolved ? block.resolved.decision : open ? 'open' : 'expired'}>
+      <p className="font-medium text-ochre">需要你批准</p>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-secondary">{block.title || '（运行时没说要做什么）'}</pre>
+      {block.detail ? <p className="whitespace-pre-wrap text-secondary">{block.detail}</p> : null}
+      {open ? (
+        <>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <button type="button" className="min-h-[44px] w-full rounded-sm border border-rule bg-card-raised px-3 font-medium hover:bg-card disabled:opacity-50 sm:w-auto" disabled={busy !== null} onClick={() => void answer('allow')} data-testid="approval-allow">
+              {busy === 'allow' ? '发送中…' : '允许（仅这一次）'}
+            </button>
+            <button type="button" className="min-h-[44px] w-full rounded-sm border border-rust px-3 text-rust hover:bg-rust/10 disabled:opacity-50 sm:w-auto" disabled={busy !== null} onClick={() => void answer('deny')} data-testid="approval-deny">
+              {busy === 'deny' ? '发送中…' : '拒绝'}
+            </button>
+          </div>
+          {left !== null ? <p className="text-tertiary" data-testid="approval-countdown">{left} 秒内不回答就当拒绝</p> : null}
+        </>
+      ) : (
+        <p className="text-secondary" data-testid="approval-verdict">{verdict}</p>
+      )}
+      {error ? <p role="alert" className="text-rust">{error}</p> : null}
+    </div>
+  );
+}
+
 function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block, { kind: 'unknown' }>; sessionId: string; actionable: boolean }) {
   const storageKey = `ahub:unknown-resolved:${sessionId}:${block.seq}`;
   const [resolved, setResolved] = useState(() => {

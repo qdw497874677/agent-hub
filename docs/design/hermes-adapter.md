@@ -189,7 +189,7 @@ Hermes 对外有两条可编程的路：
 
 - **每个 hub 会话一个网关**（不是每 worker 一个）：中继令牌按会话发、没有每轮 cwd、MCP 是 profile 级、一个网关绑一个 HERMES_HOME，四条都指向「每会话」。网关只听 127.0.0.1 随机端口，API 密钥随机、只在内存。会话目录 `~/.local/state/agent-hub/hermes/sessions/ahub-<会话 id>` 不删，resume 时 Hermes 自己的 state.db 接着用（实测跨网关重启能接上历史）。
 - **默认不注册**：要设 `HERMES_COMMAND` 或 `WORKER_HERMES=1`。只能用 hub 模型提供商（D6）；worker 环境里像密钥的变量（`*KEY*`、`*TOKEN*` 等）不传给 Hermes。
-- **批准**：hub 还没有批准卡片，和 ACP 运行时一样自动放行，但只回 `once`，从不回 session/always；每次记一条诊断。
+- **批准**：~~hub 还没有批准卡片，自动放行 `once`~~ → 已由 §18 / ADR 0023 的批准卡取代。
 - **澄清**：回固定一句「用户不在，自己判断并说明假设」，记诊断。
 - **结果未知（unknown）**：不自动处理（D3）——发 warn 诊断 + `ended interrupted`。界面上的「标记已解决」按钮留到后续。
 - **幂等键** `ahub:<会话>:<轮次>:<随机>`，429/503/网络错误用同一个键退避（最多 2 分钟）。键只在 worker 内存里：worker 自己重启时不跨进程复用（已知缺口）。
@@ -239,3 +239,11 @@ MCP 是 profile 级，session key 不会转给 MCP（§14.3）。共用网关下
 - 上游看到：A 的请求全是 A 的令牌、真模型名 `slow-1`；B 的请求全是 B 的令牌，消息里没有 A 的话，有 B 自己的工作区路径；
 - 关 A 后网关还在、B 还能再跑一轮；B 也关了网关退出；
 - 原来的单会话中断用例照旧通过（中断 → `stopped`，约 0.4s；收到 ended 马上能发下一轮）。幂等键 / 对账 / 结果未知的单测照旧通过。
+
+## 18. 批准卡（2026-11-01，ADR 0023）
+
+- `approval.request` → 适配器用 `createApprovalGate` 推 `approval(request)`，id = `<run_id>:<request_id>`，标题是命令。
+- 人点「允许」→ `POST /v1/runs/{id}/approval {request_id, execution_generation, choice: 'once'}`；「拒绝」/ 超时（180s）/ 会话关闭 → `choice: 'deny'`。从不发 `session` / `always`。
+- 一轮结束时还开着的卡 → `approval(resolved, by: runtime)`，不再回 Hermes。
+- 对账：`waiting_for_approval` 当作还在跑，接着跟。
+- 实测（本机 Hermes v0.22.5，假模型让它跑 `rm -rf <ws>/victim`，`live-approval.test.ts`）：拒绝 → `tool_result ok=false`，目录还在；允许 → `ok=true`，目录没了；重复回答被拒。

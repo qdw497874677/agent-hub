@@ -10,10 +10,12 @@ import { fail } from './http-error.ts';
  * - GET/PUT /api/sessions/:id/context   会话的生效策略、模式、退回原因、L1 能力缺口、估算用量；会话级选择（创建者）
  * - PUT /api/projects/:id/context/roles/:role   角色层选择（project.update；null = 跟随项目）
  * - POST /api/sessions/:id/context/compact     手动压缩（session.prompt；运行时不支持返回 400，正在回复返回 409）
+ * - POST /api/sessions/:id/approvals/:approvalId  回答运行时的批准请求 {decision: allow|deny}（ADR 0023；session.prompt；已结束 409）
  * 权限全在 ContextService 里过，项目 / 会话不存在一律 404。
  */
 const projectBody = z.object({ strategy: z.string().min(1).max(60), enabled: z.array(z.string().min(1).max(60)).min(1).max(20) });
 const sessionBody = z.object({ strategy: z.string().min(1).max(60).nullable() });
+const approvalBody = z.object({ decision: z.enum(['allow', 'deny']) });
 const compactBody = z.object({ instructions: z.string().max(2000).optional() });
 
 export function installContextRoutes(app: Hono<any>, context: ContextService, subjectOf: SubjectOf): void {
@@ -44,6 +46,14 @@ export function installContextRoutes(app: Hono<any>, context: ContextService, su
     const body = compactBody.safeParse((await c.req.json().catch(() => ({}))) ?? {});
     if (!body.success) return fail(c, { code: 'invalid', message: 'instructions 最多 2000 字' });
     const r = await context.compact(subjectOf(c), c.req.param('id'), body.data.instructions);
+    return r.ok ? c.json(r.value, 202) : fail(c, r.error);
+  });
+  app.post('/api/sessions/:id/approvals/:approvalId', async (c) => {
+    const seen = await context.session(subjectOf(c), c.req.param('id'));
+    if (!seen.ok) return fail(c, seen.error);
+    const body = approvalBody.safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(c, { code: 'invalid', message: 'decision 是 allow 或 deny' });
+    const r = await context.respondApproval(subjectOf(c), c.req.param('id'), c.req.param('approvalId'), body.data.decision);
     return r.ok ? c.json(r.value, 202) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/context', async (c) => {

@@ -54,6 +54,14 @@ export type WorkerCommand =
   | { readonly kind: 'interrupt'; readonly sessionId: SessionId }
   /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */
   | { readonly kind: 'compact'; readonly sessionId: SessionId; readonly instructions?: string }
+  /** 回答运行时的批准请求（ADR 0023）。老 worker 不认，只记一条日志——运行时那边超时当拒绝。 */
+  | {
+      readonly kind: 'approval';
+      readonly sessionId: SessionId;
+      readonly approvalId: string;
+      readonly decision: 'allow' | 'deny';
+      readonly author?: { readonly id: string; readonly name: string };
+    }
   | { readonly kind: 'dispose'; readonly sessionId: SessionId };
 
 export interface NodeGateway {

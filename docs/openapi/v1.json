@@ -6193,6 +6193,76 @@
                               "phase",
                               "reason"
                             ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "approval"
+                                ]
+                              },
+                              "phase": {
+                                "type": "string",
+                                "enum": [
+                                  "request",
+                                  "resolved"
+                                ]
+                              },
+                              "id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256
+                              },
+                              "title": {
+                                "type": "string",
+                                "maxLength": 4000
+                              },
+                              "detail": {
+                                "type": "string",
+                                "maxLength": 20000
+                              },
+                              "expiresAt": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "decision": {
+                                "type": "string",
+                                "enum": [
+                                  "allow",
+                                  "deny"
+                                ]
+                              },
+                              "by": {
+                                "type": "string",
+                                "enum": [
+                                  "user",
+                                  "timeout",
+                                  "runtime"
+                                ]
+                              },
+                              "author": {
+                                "type": "object",
+                                "properties": {
+                                  "id": {
+                                    "type": "string"
+                                  },
+                                  "name": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "name"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "phase",
+                              "id"
+                            ]
                           }
                         ]
                       },

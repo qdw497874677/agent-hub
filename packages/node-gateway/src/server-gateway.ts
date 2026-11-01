@@ -721,6 +721,8 @@ function toWire(command: WorkerCommand): ServerToWorker {
       return { kind: 'interrupt', sessionId: command.sessionId };
     case 'dispose':
       return { kind: 'dispose', sessionId: command.sessionId };
+    case 'approval':
+      return { kind: 'approval', sessionId: command.sessionId, approvalId: command.approvalId, decision: command.decision, ...(command.author ? { author: { ...command.author } } : {}) };
     case 'compact':
       return { kind: 'compact', sessionId: command.sessionId, ...(command.instructions ? { instructions: command.instructions } : {}) };
     case 'set_option':

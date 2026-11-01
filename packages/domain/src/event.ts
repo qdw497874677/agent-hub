@@ -5,7 +5,7 @@ import type { StoredAttachment } from './attachment.ts';
  * 归一化事件。加变体要改这份文件并过 ADR：
  * 变体数就是新 agent 的映射成本，它直接决定「新增 agent 零内核改动」的成本。
  *
- * 十个变体（ADR 0020 加了两个旁路的 context_usage / compaction），其中九个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
+ * 十一个变体（ADR 0020 加了两个旁路的 context_usage / compaction，ADR 0023 加了旁路的 approval），其中九个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
  * 用户说了什么必须留在 journal 里，否则重开浏览器后一半对话是空的。
  * 见 ADR 0006。
  */
@@ -19,7 +19,8 @@ export const SESSION_EVENT_KINDS = [
   'ended',
   'diagnostic',
   'context_usage',
-  'compaction'
+  'compaction',
+  'approval'
 ] as const;
 
 export type SessionEvent =
@@ -65,11 +66,31 @@ export type SessionEvent =
       readonly tokensAfter?: number;
       readonly summary?: string;
       readonly error?: string;
+    }
+  /**
+   * 运行时要人批准一个动作（ADR 0023）。request 推一张「允许 / 拒绝」卡；resolved 收掉它。
+   * 超时 = 拒绝（运行时侧的 ApprovalGate 计时，hub 和网页都不在线也照样收尾）。旁路：不改会话状态。
+   */
+  | {
+      readonly kind: 'approval';
+      readonly phase: 'request' | 'resolved';
+      /** 这次请求的 id（运行时内唯一）；回答时原样带回。 */
+      readonly id: string;
+      /** request：一句话说要干什么（命令、动作）。 */
+      readonly title?: string;
+      readonly detail?: string;
+      /** request：过了这个时间点（epoch ms）还没回答就当拒绝。 */
+      readonly expiresAt?: number;
+      /** resolved：结论。 */
+      readonly decision?: 'allow' | 'deny';
+      /** resolved：谁定的——人点的、超时、运行时自己撤了。 */
+      readonly by?: 'user' | 'timeout' | 'runtime';
+      readonly author?: { readonly id: string; readonly name: string };
     };
 
 /** 旁路事件：只记账，不算对话内容，也不算「有动静」。 */
 export function isSideChannel(event: SessionEvent): boolean {
-  return event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction';
+  return event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'approval';
 }
 
 /** 画布卡片默认渲染的事件。diagnostic 只进事件流抽屉，prompt 只在专注对话里露脸。 */
