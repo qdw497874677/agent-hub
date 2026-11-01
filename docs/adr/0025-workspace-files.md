@@ -1,6 +1,6 @@
 # ADR 0025：工作空间文件浏览（参考 opencode 网页端）
 
-- 状态：proposed（2026-11-01）
+- 状态：accepted（2026-11-01 David 在决策卡里定了 D1–D8）
 - 相关：ADR 0013、docs/design/workspaces.md、docs/design/workspace-files.md
 
 ## 决定（草案）
@@ -14,13 +14,13 @@
 7. 移动端列表钻取 + 全屏查看；桌面左树右文。
 8. 新端口 `WorkspaceBrowser`，适配器走 NodeGateway。
 
-## 待定（每项：选项 → 推荐）
+## 定稿（2026-11-01 David）
 
-- D1 范围：只读 / 只读+下载 / 含编辑上传 → **只读+单文件下载**
-- D2 权限：复用 `project.read` / 新增 `workspace.files.read` 默认随 project.read 授予 / 新增且默认只给 owner、管理员 → **新增权限，默认随 project.read 授予**（可单独收回）
-- D3 实时刷新：P1 手动刷新 / P1 就做监听推送 → **P1 手动刷新 + 会话每轮结束自动刷新，监听放 P2**
-- D4 敏感文件（.env、密钥）：照常显示 / 名单内默认遮住、有权限者点开并审计 / 完全不给看 → **默认遮住，点开记审计**
-- D5 diff 组件：@pierre/diffs（opencode 同款，beta）/ diff2html（成熟）/ 自己用 Shiki 渲染 → **diff2html**（成熟稳定，后续可换）
-- D6 忽略文件：隐藏 / 灰显可展开 → **灰显可展开**
-- D7 diff 基准：工作区 vs HEAD / vs 会话开始时的提交 / 两者可切 → **两者可切，默认会话开始时**（需在会话开始时记下 HEAD）
-- D8 Worker 离线：报错 / 显示上次缓存 → **报「Worker 离线」不缓存**（避免看到过期内容）
+- D1：只读 + 单文件下载；编辑/上传放 P3。
+- D2：新增 `workspace.files.read`，随 `project.read` 默认授予，可单独收回。
+- D3：**P1 就做实时监听**：Worker 用 chokidar 监听，防抖 300 ms，遵守忽略规则；只监听已展开的目录（depth 0）和打开的文件，每个工作空间最多 200 个监听点；事件经现有 hub↔Worker 长连接推给已订阅的浏览器（SSE）；断线重连后重新订阅并整体刷新。
+- D4：敏感文件（`.env*`、`*.pem`、`*.key`、`id_rsa*`、`id_ed25519*`、`*.p12`）内容默认遮住，点开要显式确认，记审计 `workspace.files.sensitive`。
+- D5：diff 用 diff2html。
+- D6：被忽略的条目灰显、可展开。
+- D7：diff 基准可切；默认对比「会话开始时的 HEAD」（会话开始时记下），没有记录时退回 HEAD。
+- D8：Worker 离线显示「Worker 离线」，不缓存。

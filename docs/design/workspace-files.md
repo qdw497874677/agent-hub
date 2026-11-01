@@ -1,6 +1,6 @@
 # 工作空间文件浏览 设计
 
-> 状态：**草案（proposed）**，只是设计，不含代码。对应 ADR 0025。参考 opencode 网页端（commit `69269e4`，2026-11-01）。
+> 状态：**已定稿（accepted，2026-11-01）**，只是设计，不含代码。对应 ADR 0025。参考 opencode 网页端（commit `69269e4`，2026-11-01）。
 
 ## 1. 目标
 
@@ -33,7 +33,8 @@
 
 ### 4.1 范围（分阶段）
 - **P1 只读**：目录树（懒加载）、模糊找文件、文件查看（高亮、图片预览、二进制只显示信息）、git 状态标记、单文件 diff 和「本会话改动」列表、下载单个文件。
-- **P2**：文件变化实时刷新（Worker 监听 → 事件推前端）、全文搜索（ripgrep）。
+- **P1 含实时刷新**（D3）：见 §4.9。
+- **P2**：全文搜索（ripgrep）。
 - **P3（待定）**：编辑/上传/删除——和 agent 同时写有冲突风险，需要另行设计。
 
 ### 4.2 传输（hub → Worker RPC，新增 4 个方法，contract 里定义）
@@ -69,8 +70,14 @@ hub 侧新增端口 `WorkspaceBrowser`（domain/ports），适配器走 NodeGate
 ### 4.8 入口
 会话详情加「文件」页签（定位到会话的工作空间），工作空间列表每项加「浏览」。
 
-## 5. 待定决策（给 David）
-见 ADR 0025「待定」节。
+### 4.9 实时监听（D3）
+- Worker：chokidar，`depth: 0`，`ignoreInitial`，忽略 `.git/` 和 .gitignore 命中的路径；按工作空间合并事件，防抖 300 ms 后发一条 `files.changed {workspaceId, paths[]}`。
+- 只监听浏览器订阅的「已展开目录 + 打开的文件」，引用计数，最后一个订阅者走后 30 秒释放；每工作空间上限 200 个点，超出回「太多，请手动刷新」。
+- hub：`files.watch / files.unwatch` RPC；浏览器经 SSE `GET /api/workspaces/:id/files/events?paths=` 订阅，断线（浏览器或 Worker）后重新订阅并整体刷新。
+- 会话每轮结束也触发一次刷新兜底。
+
+## 5. 定稿决策
+见 ADR 0025「定稿」节。
 
 ## 6. 草图
 `docs/design/mockups/workspace-files/index.html`（390px 与桌面截图在 PR 里）。
