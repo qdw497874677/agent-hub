@@ -12,7 +12,7 @@ import { fail } from './http-error.ts';
  * - GET  /api/groups/:id/posts?after=&limit=
  * - POST /api/groups/:id/posts             人发言（group.post）
  * - POST /api/groups/:id/stop              停止：取消排队，成员暂停到人再次发言
- * - POST /api/groups/:id/invite            临时请群外的项目角色回答某条消息（group.post + agent.spawn）
+ * - POST /api/groups/:id/members           把一个项目角色加进群（group.manage），不重放消息
  * - GET  /api/groups/:id/chains            调用链：每段对话的投递（谁、哪条会话、结果）
  * 权限都在用例里按群所在的项目判。
  */
@@ -100,13 +100,13 @@ export function installGroupRoutes(app: Hono<any>, options: GroupRouteDeps, subj
     return stopped.ok ? c.json(stopped.value) : fail(c, stopped.error);
   });
 
-  app.post('/api/groups/:id/invite', async (c) => {
+  app.post('/api/groups/:id/members', async (c) => {
     const actor = me(c);
     if (!actor) return fail(c, needUser);
-    const body = z.object({ postId: z.string().min(1).max(80), role: z.string().min(1).max(40) }).safeParse(await c.req.json().catch(() => null));
-    if (!body.success) return fail(c, { code: 'invalid', message: '要给 postId 和 role' });
-    const thread = await groups.invite(actor, c.req.param('id'), body.data);
-    return thread.ok ? c.json(thread.value) : fail(c, thread.error);
+    const body = z.object({ role: z.string().min(1).max(40) }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(c, { code: 'invalid', message: '要给 role' });
+    const group = await groups.addMember(actor, c.req.param('id'), body.data.role);
+    return group.ok ? c.json(group.value) : fail(c, group.error);
   });
 
   app.get('/api/groups/:id/chains', async (c) => {

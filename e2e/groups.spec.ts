@@ -71,7 +71,7 @@ test('@ 成员直达：成员在群里回话，调用链能链到会话', async 
   expect(chains.chains[0]?.deliveries.some((d) => d.role === 'echo' && d.sessionId)).toBe(true);
 });
 
-test('@ 群外角色：不经过主持人，消息下出「临时请」按钮，点了才派生、不会变成成员', async ({ page, baseURL }) => {
+test('只能 @ 群成员：@ 群外角色只给提示和「加入群组」，加进来后不重放，再 @ 才算', async ({ page, baseURL }) => {
   const w = await world(page, baseURL!);
   await page.request.put(`/api/projects/${w.project}/messaging`, {
     headers: w.headers,
@@ -83,17 +83,23 @@ test('@ 群外角色：不经过主持人，消息下出「临时请」按钮，
   await page.goto(`/#/messages/${w.project}/${group.id}`);
   await page.getByTestId('group-input').fill('@perf 看看这段为什么慢 @ghost');
   await page.getByTestId('group-send').click();
-  await expect(page.getByTestId('system-line').filter({ hasText: '@perf 不在这个群里：可以' })).toBeVisible();
+  await expect(page.getByTestId('system-line').filter({ hasText: '@perf 不在这个群里，只能 @ 群成员' })).toBeVisible();
   await expect(page.getByTestId('system-line').filter({ hasText: '@ghost 不在这个群里，也不是项目角色' })).toBeVisible();
   await expect(page.getByTestId('system-line').filter({ hasText: '没有设置主持人' })).toHaveCount(0);
-  const invite = page.getByTestId('group-invite');
-  await expect(invite).toHaveCount(1);
-  await expect(invite).toHaveAttribute('data-role', 'perf');
-  await invite.click();
-  await expect(page.getByTestId('system-line').filter({ hasText: '临时请 @perf 回答' })).toBeVisible();
-  const view = (await (await page.request.get(`/api/groups/${group.id}`)).json()) as { group: { members: string[] } };
-  expect(view.group.members).toEqual(['writer']);
-  const again = await page.request.post(`/api/groups/${group.id}/invite`, { headers: w.headers, data: { postId: 'nope', role: 'perf' } });
-  expect(again.status()).toBe(404);
+  await expect(page.getByTestId('group-invite')).toHaveCount(0);
+  await expect(page.getByTestId('group-outsider')).toHaveCount(1);
+  const add = page.getByTestId('group-add-member');
+  await expect(add).toHaveCount(1);
+  await expect(add).toHaveAttribute('data-role', 'perf');
+  await add.click();
+  await expect(page.getByTestId('system-line').filter({ hasText: '把 @perf 加进了群' })).toBeVisible();
+  await expect(page.getByTestId('group-add-member')).toHaveCount(0);
+  const view = (await (await page.request.get(`/api/groups/${group.id}`)).json()) as { group: { members: string[] }; canManage: boolean };
+  expect(view.group.members).toEqual(['writer', 'perf']);
+  expect(view.canManage).toBe(true);
+  const chains = (await (await page.request.get(`/api/groups/${group.id}/chains`)).json()) as { chains: { deliveries: { role: string }[] }[] };
+  expect(chains.chains.flatMap((c) => c.deliveries).some((d) => d.role === 'perf'), '加完不自动重放').toBe(false);
+  expect((await page.request.post(`/api/groups/${group.id}/invite`, { headers: w.headers, data: { postId: 'x', role: 'perf' } })).status()).toBe(404);
+  expect((await page.request.post(`/api/groups/${group.id}/members`, { headers: w.headers, data: { role: 'perf' } })).status()).toBe(400);
   await page.request.post(`/api/groups/${group.id}/stop`, { headers: w.headers, data: {} });
 });

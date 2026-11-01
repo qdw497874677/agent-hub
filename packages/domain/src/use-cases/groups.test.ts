@@ -364,7 +364,7 @@ test('同一条会话被 P2P 消息占着时，群投递排队，对方收尾后
   assert.match(w.lastDelivery(coder)!.text, /第二件/);
 });
 
-test('@ 群外角色：不走主持人，提示可以临时请；确认后派生会话回答、结果贴回群里；要 agent.spawn', async () => {
+test('只能 @ 群成员：@ 群外角色只给提示、不派生；有 group.manage 的人把它加进群，加完不重放', async () => {
   const w = await world();
   const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['host', 'coder'], hostRole: 'host' });
   assert.ok(g.ok);
@@ -372,29 +372,27 @@ test('@ 群外角色：不走主持人，提示可以临时请；确认后派生
   assert.ok(root.ok);
   assert.equal(await w.groups.sessionFor(g.value.id, 'host'), null, '有 @ 的消息不经过主持人');
   let posts = await w.posts(g.value.id);
-  assert.ok(posts.some((p) => p.author.kind === 'system' && /@reviewer 不在这个群里：可以/.test(p.body)));
+  assert.ok(posts.some((p) => p.author.kind === 'system' && /@reviewer 不在这个群里，只能 @ 群成员/.test(p.body)));
   assert.ok(posts.some((p) => p.author.kind === 'system' && /@nobody 不在这个群里，也不是项目角色/.test(p.body)));
-  assert.equal(await w.groups.sessionFor(g.value.id, 'reviewer'), null, '没确认前不派生');
+  assert.equal(await w.groups.sessionFor(g.value.id, 'reviewer'), null, '不派生');
 
-  const viewer = await w.chat.invite(w.principal('vicky')!, g.value.id, { postId: root.value.id, role: 'reviewer' });
-  assert.ok(!viewer.ok, 'viewer 不能请');
-  assert.ok(!(await w.chat.invite(w.principal('olga')!, g.value.id, { postId: root.value.id, role: 'coder' })).ok, '成员直接 @');
-  assert.ok(!(await w.chat.invite(w.principal('olga')!, g.value.id, { postId: root.value.id, role: 'nobody' })).ok, '不是角色');
-
-  const denied = await w.chat.invite(w.alice, g.value.id, { postId: root.value.id, role: 'reviewer' });
-  assert.ok(!denied.ok && /agent.spawn/.test(denied.error.message), '普通成员默认没有 agent.spawn');
-  const olga = w.principal('olga')!;
-  const t = await w.chat.invite(olga, g.value.id, { postId: root.value.id, role: 'reviewer' });
-  assert.ok(t.ok && t.value.status === 'running', t.ok ? '' : t.error.message);
-  assert.ok(!(await w.chat.invite(olga, g.value.id, { postId: root.value.id, role: 'reviewer' })).ok, '不重复请');
-  const reviewer = await w.sessionOf(g.value.id, 'reviewer');
-  assert.match(w.lastDelivery(reviewer)!.text, /帮忙看下/);
-  assert.match(w.lastDelivery(reviewer)!.text, /不是这个群的成员/);
-  await w.finish(reviewer, '看过了，没问题');
+  const vicky = w.principal('vicky')!;
+  const vv = await w.chat.view(vicky, g.value.id);
+  assert.ok(vv.ok && vv.value.canManage === false, 'viewer 看不到加入按钮');
+  assert.ok(!(await w.chat.addMember(vicky, g.value.id, 'reviewer')).ok, 'viewer 不能加');
+  const av = await w.chat.view(w.alice, g.value.id);
+  assert.ok(av.ok && av.value.canManage === true);
+  assert.ok(!(await w.chat.addMember(w.alice, g.value.id, 'nobody')).ok, '不是项目角色');
+  assert.ok(!(await w.chat.addMember(w.alice, g.value.id, 'coder')).ok, '已经是成员');
+  const added = await w.chat.addMember(w.alice, g.value.id, 'reviewer');
+  assert.ok(added.ok && added.value.members.includes('reviewer'), added.ok ? '' : added.error.message);
+  assert.equal(await w.groups.sessionFor(g.value.id, 'reviewer'), null, '加完不自动重放');
   posts = await w.posts(g.value.id);
-  assert.ok(posts.some((p) => p.author.kind === 'agent' && p.author.role === 'reviewer' && p.body === '看过了，没问题'), '结果贴回群里');
-  const view = await w.chat.view(w.alice, g.value.id);
-  assert.ok(view.ok && !view.value.group.members.includes('reviewer'), '不会变成成员');
+  assert.ok(posts.some((p) => p.author.kind === 'system' && /把 @reviewer 加进了群/.test(p.body)));
+
+  await w.chat.post(w.alice, g.value.id, '@reviewer 再看下');
+  const reviewer = await w.sessionOf(g.value.id, 'reviewer');
+  assert.match(w.lastDelivery(reviewer)!.text, /再看下/);
 });
 
 test('硬停：停止也打断群会话里没有群投递、但还在跑的回合', async () => {
