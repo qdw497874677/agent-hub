@@ -138,7 +138,7 @@ echo "==> Node $(node -v)"
 # 有 git 取 .bundle（保留 git 语义：之后的「更新」、启动失败回滚都靠它），没 git 取 .tar.gz 解压。
 # hub 取不到才退回 git clone GitHub。
 hub_get() { # hub_get <种类 bundle|tar.gz> <输出文件>：下载并校验 sha256
-  [[ -n "$HUB_COMMIT" && "$HUB_HTTP" != __HUB_HTTP__ ]] || return 1
+  [[ -n "$HUB_COMMIT" && "$HUB_HTTP" == http* ]] || return 1
   local url="$HUB_HTTP/install/worker-$HUB_COMMIT.$1" sum
   sum="$(curl -fsSL -m 30 "$url.sha256" 2>/dev/null | awk '{print $1}')" || return 1
   [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || return 1
