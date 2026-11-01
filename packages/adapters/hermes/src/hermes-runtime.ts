@@ -321,6 +321,13 @@ export class HermesSession implements RuntimeSession {
     return ok(undefined);
   }
 
+  /** 只清这一轮自己的记录：收尾时下一轮可能已经记上了。 */
+  private async clearPendingFor(runId: string): Promise<void> {
+    if (!this.home) return;
+    const current = await readPending(this.home);
+    if (current?.runId === runId) await this.savePending(null);
+  }
+
   private async savePending(pending: PendingTurn | null): Promise<void> {
     if (!this.home) return;
     await writePending(this.home, pending).catch((error: unknown) => this.log(`记不下 Hermes 的进行中一轮：${(error as Error).message}`));
@@ -364,6 +371,8 @@ export class HermesSession implements RuntimeSession {
           (raw) => {
             if (terminal) return;
             const mapped = map(raw);
+            // 先放开「正在跑」再推终态：收到 ended 就马上发下一轮，不该撞上「上一轮还没结束」
+            if (mapped.terminal && this.run?.id === runId) this.run = null;
             for (const event of mapped.events) this.queue.push(event);
             if (mapped.control) void this.answer(runId, mapped.control);
             if (mapped.terminal) terminal = true;
@@ -394,7 +403,7 @@ export class HermesSession implements RuntimeSession {
     }
     if (!terminal && !abort.signal.aborted) this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' });
     // 有了结局（包括结果未知、已经交给人）就不用再对账；连不上 / 被 dispose 的留着，下次开会话再查
-    if (terminal) await this.savePending(null);
+    if (terminal) await this.clearPendingFor(runId);
     if (this.run?.id === runId) this.run = null;
   }
 
