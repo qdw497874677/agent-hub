@@ -23,3 +23,9 @@ Hermes Agent 提供 API Server（OpenAI 兼容接口 + Runs API：幂等提交�
 
 - 得到幂等、可恢复、可记账的 Hermes 集成；代价是要管理一个常驻 gateway 进程和它的密钥。
 - 设计文档 §14 列出的未核对项要在 P1 前实测；如果 MCP 按会话接入做不到，退回 ACP 路径（D7）。
+
+## 修订（2026-11-01）
+
+- P1 落地：`packages/adapters/hermes`（Runs API），§14 实测结果与实施细节见 docs/design/hermes-adapter.md §15。
+- D2-A 调整为「每个 hub 会话一个网关」（原因：中继令牌按会话、无每轮 cwd、MCP 是 profile 级、一个网关绑一个 HERMES_HOME）。待 David 确认。
+- D7 退路未触发：hub MCP 通过每会话 profile 的 `mcp_servers` 注入。

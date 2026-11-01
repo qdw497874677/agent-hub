@@ -1,0 +1,14 @@
+{
+  "name": "@agent-hub/adapter-hermes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@agent-hub/adapter-acp": "*",
+    "@agent-hub/contract": "*",
+    "@agent-hub/domain": "*"
+  }
+}

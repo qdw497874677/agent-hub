@@ -170,3 +170,27 @@ Hermes 对外有两条可编程的路：
 5. 专属 profile 目录的环境变量名；
 6. 终端 / 文件工具能否限定在工作区；
 7. 一个 gateway 下各会话的进程 / 资源归属（`pid()` 只能近似）。
+
+## 15. P1 实施记录（2026-11-01，Hermes v0.22.5，本机全新安装 + 假模型服务实测）
+
+### 15.1 §14 验证结果
+
+| 项 | 结果 |
+| --- | --- |
+| 14.1 澄清事件 | SSE 事件名 `clarify.request`（还有 `approval.responded`）；回复 `POST /v1/runs/{id}/clarify`，body 必须恰好是 `{request_id, execution_generation, answer}` |
+| 14.2 批准选项 | `once / session / always / deny`；body 恰好 `{request_id, execution_generation, choice}` |
+| 14.3 session key 转给 MCP | **不转**（只用于计费）。MCP 是 profile 级 → 按会话写进 profile 的 `mcp_servers`，D7 退回 ACP 不需要 |
+| 14.4 关原生记忆 | `memory.memory_enabled=false`、`memory.user_profile_enabled=false` |
+| 14.5 profile 环境变量 | `HERMES_HOME`；配置里 `${VAR}` 读时展开（model 和 mcp env 都实测可用） |
+| 14.6 每轮 cwd | **没有**。只有 profile 的 `terminal.cwd`（默认目录，不是沙箱） |
+| 其他 | 一个 HERMES_HOME 只能起一个网关；`X-Hermes-Session-Key` 是幂等指纹的一部分（换了就 409 `idempotency_key_conflict`）；完整 HERMES_HOME 约 424 MB，共享 installs/cache 后一个会话约 5.5 MB |
+
+### 15.2 实际形状（相对 D2-A 的偏离，保守选择，待 David 确认）
+
+- **每个 hub 会话一个网关**（不是每 worker 一个）：中继令牌按会话发、没有每轮 cwd、MCP 是 profile 级、一个网关绑一个 HERMES_HOME，四条都指向「每会话」。网关只听 127.0.0.1 随机端口，API 密钥随机、只在内存。会话目录 `~/.local/state/agent-hub/hermes/sessions/ahub-<会话 id>` 不删，resume 时 Hermes 自己的 state.db 接着用（实测跨网关重启能接上历史）。
+- **默认不注册**：要设 `HERMES_COMMAND` 或 `WORKER_HERMES=1`。只能用 hub 模型提供商（D6）；worker 环境里像密钥的变量（`*KEY*`、`*TOKEN*` 等）不传给 Hermes。
+- **批准**：hub 还没有批准卡片，和 ACP 运行时一样自动放行，但只回 `once`，从不回 session/always；每次记一条诊断。
+- **澄清**：回固定一句「用户不在，自己判断并说明假设」，记诊断。
+- **结果未知（unknown）**：不自动处理（D3）——发 warn 诊断 + `ended interrupted`。界面上的「标记已解决」按钮留到后续。
+- **幂等键** `ahub:<会话>:<轮次>:<随机>`，429/503/网络错误用同一个键退避（最多 2 分钟）。键只在 worker 内存里：worker 自己重启时不跨进程复用（已知缺口）。
+- 不发 `conversation_history`；不支持 fork（descriptor 里 denied）。
