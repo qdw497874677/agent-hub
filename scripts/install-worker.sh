@@ -68,6 +68,19 @@ fi
 WORKER_ROOTS="${WORKER_ROOTS:-$HOME}"
 echo "==> WORKER_ROOTS=$WORKER_ROOTS（之后改 $env_file 再 ${sysctl[*]} restart $service）"
 
+# npm 源：显式指定 > 上次装时记下的 > 官方（连不上就 npmmirror）。写进 worker.env，远程「更新」跑 npm ci 也用它。
+npm_registry="${NPM_CONFIG_REGISTRY:-${npm_config_registry:-}}"
+if [[ -z "$npm_registry" && -f "$env_file" ]]; then
+  npm_registry="$(sed -n 's/^NPM_CONFIG_REGISTRY=//p' "$env_file" | tail -1)"
+fi
+if [[ -z "$npm_registry" ]] && ! curl -fsSI -m 8 https://registry.npmjs.org/ >/dev/null 2>&1; then
+  npm_registry=https://registry.npmmirror.com
+fi
+if [[ -n "$npm_registry" ]]; then
+  export NPM_CONFIG_REGISTRY="$npm_registry"
+  echo "==> npm 源：$npm_registry"
+fi
+
 echo "==> 安装依赖"
 cd "$here"
 npm install --no-fund --no-audit --omit=dev
@@ -123,6 +136,7 @@ umask 077
   echo "WORKER_STATE_DIR=$config_dir"
   echo "PATH=$worker_path"
   if [[ -n "$node_lib" ]]; then echo "LD_LIBRARY_PATH=$node_lib"; fi
+  if [[ -n "$npm_registry" ]]; then echo "NPM_CONFIG_REGISTRY=$npm_registry"; fi
   if [[ -n "${WORKER_ASSETS_DIR:-}" ]]; then echo "WORKER_ASSETS_DIR=$WORKER_ASSETS_DIR"; fi
 } > "$env_file"
 chmod 600 "$env_file"
