@@ -247,3 +247,6 @@ MCP 是 profile 级，session key 不会转给 MCP（§14.3）。共用网关下
 - 一轮结束时还开着的卡 → `approval(resolved, by: runtime)`，不再回 Hermes。
 - 对账：`waiting_for_approval` 当作还在跑，接着跟。
 - 实测（本机 Hermes v0.22.5，假模型让它跑 `rm -rf <ws>/victim`，`live-approval.test.ts`）：拒绝 → `tool_result ok=false`，目录还在；允许 → `ok=true`，目录没了；重复回答被拒。
+
+### §17.4 补充
+要 hub MCP 的 Hermes 会话选 `hermes-acp` 运行时：一会话一进程 + 独立 HERMES_HOME，MCP 走 ACP 会话级 mcpServers（ADR 0022 补充）。

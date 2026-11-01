@@ -29,3 +29,13 @@ Hermes Agent 提供 API Server（OpenAI 兼容接口 + Runs API：幂等提交�
 - P1 落地：`packages/adapters/hermes`（Runs API），§14 实测结果与实施细节见 docs/design/hermes-adapter.md §15。
 - ~~D2-A 调整为「每个 hub 会话一个网关」~~ → 2026-11-01 David 要求回到 D2-A：**每个 worker 一个网关**，会话用 Hermes 自己的会话（`ahub-<id>` + `X-Hermes-Session-Key`）隔开。按会话的中继凭据走 worker 内分流器（模型名带路由）；无每轮 cwd → 工作区写进 instructions、网关 cwd 是中性空目录；hub MCP 工具在共用网关下暂不提供（分不清调用方会话，宁缺不串）。细节与实测见设计文档 §17。
 - D7 退路未触发：~~hub MCP 通过每会话 profile 的 `mcp_servers` 注入~~（每 worker 一个网关后暂停，见 §17.4）。
+
+## 补充：共用网关下的 hub MCP —— D7 回退落地（2026-11-01）
+
+- 核实：session key 不会转给 MCP（设计 §14.3），worker profile + 本地中继分不清是哪个会话在调 hub 工具 → 按 D7 回退到 ACP。
+- 新增运行时 `hermes-acp`（`hermes acp`，走现有 ACP 运行时，`packages/adapters/acp/src/hermes-acp.ts`），只在 `HERMES_COMMAND` / `WORKER_HERMES=1` 时注册，和共用网关的 `hermes` 并存：
+  - hub 工具：ACP `session/new` 的 `mcpServers` 是会话级的（Hermes 0.22.5 的 `gateway.session_local_mcp`），toolShim 照常下发；
+  - 每会话独立 `HERMES_HOME`（`$HERMES_HUB_ROOT/acp/ahub-<会话>`），config.yaml 只引用 `HUB_PROVIDER_BASE_URL` / `HUB_PROVIDER_TOKEN` 变量名，值只在子进程 env；
+  - 实测：`hermes acp` 会在该 home 下自起一个 `gateway run --idle-exit`，所以是一会话一网关，空闲自退；
+  - 没选 hub 模型：给一个空 home（`acp/_unrouted`），Hermes 拒绝建会话（model 为空），不会读用户的 `~/.hermes`。
+- 保守选择（列给 David）：不让多个 ACP 会话共用一个 home（网关按第一个会话的 env 起，会串令牌）；默认模型取提供商清单第一个，会话里的换模型走 ACP `set_session_model`；共用网关版 `hermes` 继续不带 hub MCP。
