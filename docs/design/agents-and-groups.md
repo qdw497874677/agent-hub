@@ -69,16 +69,23 @@
 需要的改动：
 1. `AgentRole` 加可选字段 `displayName`、`avatar`（颜色或图片 id）。`name` 继续当 `@id`，不可改，避免群成员引用和历史消息失效。旧数据 `displayName` 缺省显示 `name`。
 2. 加单条接口，避免整表 PUT 互相覆盖：`POST /api/projects/:id/agents`、`PUT/DELETE /api/projects/:id/agents/:name`（内部仍写同一份 messaging 配置，权限 `agent.role.manage`）。旧接口保留。
-3. 删除智能体：返回/处理引用它的群；是主持人的群需先换主持人，否则拒绝。
+3. 删除智能体：返回/处理引用它的群（已决定：确认后自动移出，主持人置空，见下）。
 4. `DELETE /api/groups/:id/members/:role`（`group.manage`），主持人不能直接移出；`POST /members` 支持一次传多个。
 5. 前端：新增 `agents.tsx` 和路由；`messages.tsx` 删掉 `RoleForm`，`GroupForm` 改成成员勾选 + 折叠高级设置；`MembersPanel` 加添加/移出。
 6. 「职责说明」现有 `description` 上限 500 字，作为系统提示可能不够，建议放宽到 4000。
 
-## 待 David 决定
+## 已决定（David，PR #167 评审）
 
-1. 叫「智能体」还是保留「角色」？（建议界面统一叫「智能体」，代码仍是 role。）
-2. `@id` 建好不可改，可以接受吗？还是允许改并自动迁移群成员？
-3. 智能体是项目级（现状）还是做成团队级、多个项目共用？建议先项目级。
-4. 头像先只做颜色 + 首字，要不要支持上传图片？
-5. 职责说明要不要放宽到 4000 字并真正注入系统提示？
-6. 删除被群引用的智能体：自动移出，还是必须先手动移出？
+1. **命名**：底层模型叫「持久智能体」（代码 `PersistentAgent`，由 `AgentRole` 改名，`AgentRole` 留作兼容别名）；**界面上统一叫「bot」**——导航 tab「Bot」、按钮「新建 bot」、提示文案都用 bot。下文和稿图里的「智能体」在界面上一律读作 bot。
+2. **@id 建好不可改**，显示名可改。
+3. **项目级**：bot 属于项目，不做团队级共享。
+4. **头像**：颜色 + 首字（6 色：amber / sage / sky / rose / olive / slate），不做上传。
+5. **职责说明**：上限放宽到 **4000 字**，并作为该 bot 的系统提示注入（群里的成员 / 竞价提示最前面的 `<agent-instructions>`）。
+6. **删除被群引用的 bot**：确认框先列出受影响的群（是主持人的会注明），确认后**自动从这些群移出**；是主持人的群主持人置空，群里贴一条系统消息。
+
+### 落地说明
+
+- 存储不变：仍写项目的 messaging 配置（JSON 数组），新增字段 `displayName` / `color` 都是可选的，旧数据原样可读，不需要表结构迁移；群成员仍按 `@id` 引用。
+- 单条接口：`GET/POST /api/projects/:id/agents`、`PUT/DELETE /api/projects/:id/agents/:name`；读要 `project.read`，写沿用旧整表接口的项目更新权限。旧接口 `/api/projects/:id/messaging` 保留。
+- 群成员：`POST /api/groups/:id/members` 支持 `{ roles: [...] }`；`DELETE /api/groups/:id/members/:role`，主持人和最后一个成员不能移出。
+- 路由：`#/bots/<项目>`；`#/bots/<项目>/new` 直接打开新建表单（空状态和建群里的「新建 bot」链到这里）。
