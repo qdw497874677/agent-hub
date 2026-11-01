@@ -605,6 +605,7 @@ export const groupApi = {
   posts: (id: string) => call<{ posts: GroupPostDto[] }>(`/api/groups/${encodeURIComponent(id)}/posts?limit=200`),
   post: (id: string, body: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/posts`, { body }),
   stop: (id: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/stop`, {}),
+  invite: (id: string, postId: string, role: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/invite`, { postId, role }),
   chains: (id: string) => call<{ chains: { thread: GroupThreadDto; deliveries: GroupDeliveryDto[] }[] }>(`/api/groups/${encodeURIComponent(id)}/chains`),
   roles: (projectId: string) => call<{ roles: MessagingRoleDto[]; limits: Record<string, number> }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`),
   saveRoles: (projectId: string, roles: MessagingRoleDto[], limits: Record<string, number>) =>

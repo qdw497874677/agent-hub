@@ -87,6 +87,8 @@ export interface GroupChat {
   chains(actor: Principal, groupId: string, limit: number): Promise<Result<ChainView[], DomainError>>;
   post(actor: Principal, groupId: string, body: string): Promise<Result<GroupPost, DomainError>>;
   stop(actor: Principal, groupId: string): Promise<Result<Group, DomainError>>;
+  /** 人确认：临时请一个不在群里的项目角色回答某条消息（ADR 0018 决定 4：派生要 agent.spawn，人点确认就是批准）。 */
+  invite(actor: Principal, groupId: string, input: { postId: string; role: string }): Promise<Result<GroupThread, DomainError>>;
   /** 主持人工具 group_dispatch。 */
   dispatch(sessionId: SessionId, input: Record<string, unknown>): Promise<Result<{ assignees: readonly string[] } | { declined: true }, DomainError>>;
   /** 会话一轮结束（组合根接 hub.stream 'ended'）。 */
@@ -123,7 +125,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
 
   const projectOf = async (projectId: ProjectId) => deps.projects.byId(projectId);
 
-  const authorize = async (actor: Principal, group: Group | null, permission: 'project.read' | 'group.post' | 'group.manage'): Promise<Result<{ group: Group; project: Project }, DomainError>> => {
+  const authorize = async (actor: Principal, group: Group | null, permission: 'project.read' | 'group.post' | 'group.manage' | 'agent.spawn'): Promise<Result<{ group: Group; project: Project }, DomainError>> => {
     if (!group) return err(notFound('群不存在'));
     const project = await projectOf(group.projectId);
     const allowed = await authorizeProject(deps.policy, actor, project, permission);
@@ -439,6 +441,20 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
       .trim();
   };
 
+  /** 打断群里还忙着的会话（roles 为 null 就是全部）。已经因为投递被打断的会话再打断一次也无害。 */
+  const interruptBusy = async (groupId: string, roles: readonly string[] | null, done: ReadonlySet<SessionId> = new Set()): Promise<number> => {
+    let n = 0;
+    for (const s of await deps.groups.sessionsOf(groupId)) {
+      if (roles && !roles.includes(s.role)) continue;
+      if (done.has(s.sessionId)) continue;
+      const session = await deps.sessions.byId(s.sessionId);
+      if (!session || !isBusy(session)) continue;
+      await deps.interrupt?.(s.sessionId);
+      n++;
+    }
+    return n;
+  };
+
   const chat: GroupChat = {
     async list(actor, projectId) {
       const project = await authorizeProject(deps.policy, actor, await projectOf(projectId), 'project.read');
@@ -541,6 +557,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
               }
             }
           }
+          await interruptBusy(groupId, stopped);
           await system(group, null, `已暂停 ${stopped.map((s) => `@${s}`).join('、')}，你下次发言时恢复`);
           return ok(post);
         }
@@ -552,8 +569,19 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         let thread: GroupThread = { id: newId(), groupId, rootPostId: root.id, status: 'running', round: 0, messages: 0, createdAt: now, updatedAt: now };
         await deps.groups.saveThread(thread);
         const mentions = parseMentions(text, group.members);
-        if (mentions.outsiders.length > 0) await system(group, thread, `${mentions.outsiders.map((o) => `@${o}`).join('、')} 不在这个群里`);
         const trigger = { author: me.name, body: text, seq: root.seq };
+        if (mentions.outsiders.length > 0) {
+          const roleNames = (await deps.roles(group.projectId)).map((r) => r.name);
+          const known = mentions.outsiders.filter((o) => roleNames.includes(o));
+          const unknown = mentions.outsiders.filter((o) => !roleNames.includes(o));
+          if (known.length > 0) await system(group, thread, `${known.map((o) => `@${o}`).join('、')} 不在这个群里：可以在这条消息上点「临时请它回答」（会派生一条任务会话，需要 agent.spawn），或者到群设置里把它加进来`);
+          if (unknown.length > 0) await system(group, thread, `${unknown.map((o) => `@${o}`).join('、')} 不在这个群里，也不是项目角色`);
+          // 有 @ 的消息不经过主持人：只 @ 了群外的人就停在这里，等人确认
+          if (mentions.members.length === 0) {
+            await end(group, thread, 'done', null);
+            return ok(root);
+          }
+        }
 
         if (mentions.members.length > 0) {
           thread = await saveThread(thread, { round: 1 });
@@ -592,17 +620,48 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         let group = (await deps.groups.group(groupId))!;
         group = await saveGroup(group, { held: ['*'] });
         let canceled = 0;
+        const hit = new Set<SessionId>();
         for (const thread of await deps.groups.runningThreads(groupId)) {
           for (const d of await deps.groups.deliveries(thread.id)) {
             if (!isDeliveryOpen(d)) continue;
             await settle(d, 'canceled', null);
             canceled++;
-            if (d.status === 'delivered' && d.sessionId) await deps.interrupt?.(d.sessionId);
+            if (d.status === 'delivered' && d.sessionId) {
+              await deps.interrupt?.(d.sessionId);
+              hit.add(d.sessionId);
+            }
           }
           await saveThread(thread, { status: 'stopped' });
         }
-        await system(group, null, `${actor.user.displayName || actor.user.email} 按了停止${canceled ? `，取消了 ${canceled} 个待办` : ''}；成员暂停到你再次发言`);
+        // 硬停：群里的常驻会话是群专用的，还在跑的（比如成员顺手发起的追问轮）也一起打断
+        const interrupted = hit.size + (await interruptBusy(groupId, null, hit));
+        await system(group, null, `${actor.user.displayName || actor.user.email} 按了停止${canceled ? `，取消了 ${canceled} 个待办` : ''}${interrupted ? `，打断了 ${interrupted} 个正在跑的会话` : ''}；成员暂停到你再次发言`);
         return ok(group);
+      });
+    },
+
+    async invite(actor, groupId, input) {
+      const found = await authorize(actor, await deps.groups.group(groupId), 'group.post');
+      if (!found.ok) return found;
+      const spawn = await authorize(actor, found.value.group, 'agent.spawn');
+      if (!spawn.ok) return err(forbidden('你没有 agent.spawn 权限，不能临时请群外角色'));
+      return run(groupId, async (pending) => {
+        const group = (await deps.groups.group(groupId))!;
+        const role = String(input.role ?? '');
+        if (group.members.includes(role)) return err(invalid(`@${role} 已经在群里，直接 @ 它就行`));
+        if (!(await deps.roles(group.projectId)).some((r) => r.name === role)) return err(invalid(`项目里没有角色 ${role}`));
+        const root = (await deps.groups.posts(groupId, null, 200)).find((p) => p.id === input.postId);
+        if (!root || root.author.kind !== 'user') return err(notFound('消息不存在'));
+        if (!parseMentions(root.body, group.members).outsiders.includes(role)) return err(invalid(`这条消息没有 @${role}`));
+        const dup = (await deps.groups.threads(groupId, 50)).find((t) => t.rootPostId === root.id && t.status === 'running');
+        if (dup) return err(invalid('这条消息已经有进行中的对话'));
+        const now = deps.now();
+        let thread: GroupThread = { id: newId(), groupId, rootPostId: root.id, status: 'running', round: 1, messages: 0, createdAt: now, updatedAt: now };
+        await deps.groups.saveThread(thread);
+        await system(group, thread, `${actor.user.displayName || actor.user.email} 临时请 @${role} 回答（群外，不会成为成员）`);
+        const n = await schedule(group, thread, 1, 'member', [role], { author: author(root.author), body: root.body, seq: root.seq }, pending, '你不是这个群的成员，只是被临时请来回答这一条；回答完就结束。');
+        if (n === 0) thread = await end(group, thread, 'done', `@${role} 没能起来`);
+        return ok(thread);
       });
     },
 

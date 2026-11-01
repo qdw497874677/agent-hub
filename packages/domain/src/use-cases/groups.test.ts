@@ -87,7 +87,8 @@ async function world() {
   const users = new Map<string, User>([
     ['alice', user('alice', 'member')],
     ['vicky', user('vicky', 'viewer')],
-    ['mallory', user('mallory', 'member')]
+    ['mallory', user('mallory', 'member')],
+    ['olga', user('olga', 'owner')]
   ]);
   const principal = (id: string): Principal | null => {
     const u = users.get(id);
@@ -137,7 +138,11 @@ async function world() {
     return r.value;
   };
   const lastDelivery = (sid: SessionId) => [...delivered].reverse().find((d) => d.sessionId === sid);
-  return { busyElsewhere, chat, groups, alice, principal, project: project.value, delivered, interrupted, sessionOf, finish, posts, lastDelivery, tick: (ms: number) => void (clock += ms) };
+  return { recordPrompt: async (sid: SessionId, text: string) => {
+      await recordEvent(deps, { sessionId: sid, event: { kind: 'prompt', text } });
+      const s = (await deps.sessions.byId(sid))!;
+      await deps.sessions.save({ ...s, status: 'running' });
+    }, busyElsewhere, chat, groups, alice, principal, project: project.value, delivered, interrupted, sessionOf, finish, posts, lastDelivery, tick: (ms: number) => void (clock += ms) };
 }
 
 test('纯函数：@ 提及忽略代码块和引用；停止命令；[SILENT]；竞价', () => {
@@ -357,4 +362,61 @@ test('同一条会话被 P2P 消息占着时，群投递排队，对方收尾后
   w.busyElsewhere.delete(coder);
   await w.chat.turnEnded(coder);
   assert.match(w.lastDelivery(coder)!.text, /第二件/);
+});
+
+test('@ 群外角色：不走主持人，提示可以临时请；确认后派生会话回答、结果贴回群里；要 agent.spawn', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['host', 'coder'], hostRole: 'host' });
+  assert.ok(g.ok);
+  const root = await w.chat.post(w.alice, g.value.id, '@reviewer 帮忙看下 @nobody');
+  assert.ok(root.ok);
+  assert.equal(await w.groups.sessionFor(g.value.id, 'host'), null, '有 @ 的消息不经过主持人');
+  let posts = await w.posts(g.value.id);
+  assert.ok(posts.some((p) => p.author.kind === 'system' && /@reviewer 不在这个群里：可以/.test(p.body)));
+  assert.ok(posts.some((p) => p.author.kind === 'system' && /@nobody 不在这个群里，也不是项目角色/.test(p.body)));
+  assert.equal(await w.groups.sessionFor(g.value.id, 'reviewer'), null, '没确认前不派生');
+
+  const viewer = await w.chat.invite(w.principal('vicky')!, g.value.id, { postId: root.value.id, role: 'reviewer' });
+  assert.ok(!viewer.ok, 'viewer 不能请');
+  assert.ok(!(await w.chat.invite(w.principal('olga')!, g.value.id, { postId: root.value.id, role: 'coder' })).ok, '成员直接 @');
+  assert.ok(!(await w.chat.invite(w.principal('olga')!, g.value.id, { postId: root.value.id, role: 'nobody' })).ok, '不是角色');
+
+  const denied = await w.chat.invite(w.alice, g.value.id, { postId: root.value.id, role: 'reviewer' });
+  assert.ok(!denied.ok && /agent.spawn/.test(denied.error.message), '普通成员默认没有 agent.spawn');
+  const olga = w.principal('olga')!;
+  const t = await w.chat.invite(olga, g.value.id, { postId: root.value.id, role: 'reviewer' });
+  assert.ok(t.ok && t.value.status === 'running', t.ok ? '' : t.error.message);
+  assert.ok(!(await w.chat.invite(olga, g.value.id, { postId: root.value.id, role: 'reviewer' })).ok, '不重复请');
+  const reviewer = await w.sessionOf(g.value.id, 'reviewer');
+  assert.match(w.lastDelivery(reviewer)!.text, /帮忙看下/);
+  assert.match(w.lastDelivery(reviewer)!.text, /不是这个群的成员/);
+  await w.finish(reviewer, '看过了，没问题');
+  posts = await w.posts(g.value.id);
+  assert.ok(posts.some((p) => p.author.kind === 'agent' && p.author.role === 'reviewer' && p.body === '看过了，没问题'), '结果贴回群里');
+  const view = await w.chat.view(w.alice, g.value.id);
+  assert.ok(view.ok && !view.value.group.members.includes('reviewer'), '不会变成成员');
+});
+
+test('硬停：停止也打断群会话里没有群投递、但还在跑的回合', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['coder', 'reviewer'], hostRole: null });
+  assert.ok(g.ok);
+  await w.chat.post(w.alice, g.value.id, '@coder 开始');
+  const coder = await w.sessionOf(g.value.id, 'coder');
+  await w.finish(coder, '好');
+  let before = w.interrupted.length;
+  await w.chat.stop(w.alice, g.value.id);
+  assert.equal(w.interrupted.length - before, 0, '都闲着就不打断');
+  // coder 的会话又被别的途径开了一轮（不是群投递）
+  await w.recordPrompt(coder, '别处来的追问');
+  before = w.interrupted.length;
+  const r = await w.chat.stop(w.alice, g.value.id);
+  assert.ok(r.ok);
+  assert.deepEqual(w.interrupted.slice(before), [coder]);
+  assert.ok((await w.posts(g.value.id)).some((p) => p.author.kind === 'system' && /打断了 1 个/.test(p.body)));
+  before = w.interrupted.length;
+  await w.chat.post(w.alice, g.value.id, '停止 @reviewer');
+  assert.equal(w.interrupted.length - before, 0, '「停止 @x」只打断 x');
+  await w.chat.post(w.alice, g.value.id, '停止 @coder');
+  assert.deepEqual(w.interrupted.slice(before), [coder]);
 });
