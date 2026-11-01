@@ -155,6 +155,7 @@ exec 9>"$config_dir/run-worker.lock"
 if command -v flock >/dev/null; then flock -n 9 || { echo "已经在跑了"; exit 0; }; fi
 cd "$here"
 while true; do
+  cd "$here" || exit 1  # 每轮重进：解压安装更新后目录是换过的
   bash "$here/scripts/worker-boot-guard.sh" || true
   (set -a; . "$env_file"; set +a; exec "$node_bin" "$here/apps/worker/src/main.ts")
   code=\$?

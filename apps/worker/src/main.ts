@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -167,16 +167,32 @@ async function onUpdate(commit: string, report: (status: UpdateReport) => void):
     return;
   }
   const hubHttp = hubHttpFrom(hubUrl);
-  const changed = await runSelfUpdate({
-    repoDir: repoRoot,
-    commit,
-    // 先从 hub 取代码（不依赖 GitHub），拿不到再 git fetch origin
-    ...(hubHttp ? { fetchBundle: (target: string) => downloadHubBundle({ hubHttp, commit: target, dir: join(stateDir, 'update-cache') }) } : {}),
-    report: (status) => {
-      log(`更新：${status.message}`);
-      report(status);
+  const progress = (status: UpdateReport): void => {
+    log(`更新：${status.message}`);
+    report(status);
+  };
+  // 没有 git（用 hub 的 tar 包装的）：整包解到新目录再换上；有 git：走 bundle / git fetch
+  let changed: boolean;
+  if (!existsSync(join(repoRoot, '.git'))) {
+    if (!hubHttp) {
+      report({ state: 'refused', message: '解压安装的 Worker 要从 hub 下代码包，但 HUB_URL 推不出 hub 的 http 地址', logTail: '' });
+      return;
     }
-  });
+    changed = await runTarballUpdate({
+      repoDir: repoRoot,
+      commit,
+      fetchTarball: (target) => downloadHubArtifact({ hubHttp, commit: target, dir: join(stateDir, 'update-cache'), kind: 'tar.gz' }),
+      report: progress
+    });
+  } else {
+    changed = await runSelfUpdate({
+      repoDir: repoRoot,
+      commit,
+      // 先从 hub 取代码（不依赖 GitHub），拿不到再 git fetch origin
+      ...(hubHttp ? { fetchBundle: (target: string) => downloadHubBundle({ hubHttp, commit: target, dir: join(stateDir, 'update-cache') }) } : {}),
+      report: progress
+    });
+  }
   if (changed) {
     // 待验证标记：新版本健康后自己删；起不来的话 scripts/worker-boot-guard.sh 会回滚到原提交。
     if (build.commit) writeBootMarker(stateDir, build.commit, commit);

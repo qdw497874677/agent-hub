@@ -12,7 +12,7 @@ export { createWorkerFiles, boundaryHint, OutsideRootsError } from './worker-fil
 export type { WorkerFiles } from './worker-files.ts';
 export { createWorkerAssets, defaultAssetsRoot, type WorkerAssets, type FetchBlobs } from './worker-assets.ts';
 export { readBuildInfo } from './build-info.ts';
-export { runSelfUpdate, execRunner, downloadHubBundle, hubHttpFrom, HUB_BUNDLE_REF } from './updater.ts';
+export { runSelfUpdate, execRunner, downloadHubBundle, downloadHubArtifact, runTarballUpdate, COMMIT_FILE, hubHttpFrom, HUB_BUNDLE_REF } from './updater.ts';
 export { writeBootMarker, clearBootMarker, bootMarkerPath } from './boot-marker.ts';
 export type { CommandRunner, UpdateReport, UpdateOptions } from './updater.ts';
 export { createMcpEndpoint } from './mcp-endpoint.ts';
