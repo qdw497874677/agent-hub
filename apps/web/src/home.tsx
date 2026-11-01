@@ -1,3 +1,4 @@
+import { MessagesEntry } from './messages-entry.tsx';
 import { AccountMenu } from './auth.tsx';
 import { NotificationBell } from './market/notifications.tsx';
 import { useMemo, useState } from 'react';
@@ -57,7 +58,8 @@ export function HomePage({
             <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
           </div>
           <div className="flex items-center gap-2">
-            <NotificationBell />
+            <MessagesEntry />
+        <NotificationBell />
             <AccountMenu />
           </div>
         </div>

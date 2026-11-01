@@ -49,6 +49,12 @@ CREATE TABLE IF NOT EXISTS agent_group_sessions (
   PRIMARY KEY (group_id, role)
 );
 CREATE INDEX IF NOT EXISTS agent_group_sessions_session ON agent_group_sessions(session_id);
+CREATE TABLE IF NOT EXISTS agent_group_reads (
+  group_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  PRIMARY KEY (group_id, user_id)
+);
 `;
 
 const doc = <T>(row: Row | undefined): T | null => (row ? (JSON.parse(row.doc as string) as T) : null);
@@ -77,6 +83,10 @@ export function createSqliteGroupStore(db: DatabaseSync): GroupStore {
   const putSession = db.prepare('INSERT INTO agent_group_sessions (group_id, role, session_id) VALUES (?, ?, ?) ON CONFLICT(group_id, role) DO UPDATE SET session_id = excluded.session_id');
   const sessionsOf = db.prepare('SELECT role, session_id FROM agent_group_sessions WHERE group_id = ? ORDER BY role');
   const memberOf = db.prepare('SELECT group_id, role FROM agent_group_sessions WHERE session_id = ?');
+  const putRead = db.prepare('INSERT INTO agent_group_reads (group_id, user_id, seq) VALUES (?, ?, ?) ON CONFLICT(group_id, user_id) DO UPDATE SET seq = MAX(seq, excluded.seq)');
+  const unread = db.prepare(
+    "SELECT COUNT(*) AS n FROM agent_group_posts WHERE group_id = ? AND seq > COALESCE((SELECT seq FROM agent_group_reads WHERE group_id = ? AND user_id = ?), 0) AND NOT (json_extract(doc, '$.author.kind') = 'user' AND json_extract(doc, '$.author.id') = ?)"
+  );
   return {
     async saveGroup(g) {
       putGroup.run(g.id, g.projectId, JSON.stringify(g), g.createdAt);
@@ -115,6 +125,11 @@ export function createSqliteGroupStore(db: DatabaseSync): GroupStore {
     async memberOfSession(sessionId) {
       const row = memberOf.get(sessionId) as Row | undefined;
       return row ? { groupId: row.group_id as string, role: row.role as string } : null;
-    }
+    },
+    async markRead(groupId, userId, seq) {
+      putRead.run(groupId, userId, seq);
+    },
+    unreadCount: async (groupId, userId) => (unread.get(groupId, groupId, userId, userId) as Row).n as number,
+    latestSeq: async (groupId) => (maxSeq.get(groupId) as Row).seq as number
   };
 }

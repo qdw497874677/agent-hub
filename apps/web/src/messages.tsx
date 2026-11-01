@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, groupApi, type GroupDto, type GroupInputDto, type GroupPostDto, type MessagingRoleDto } from './api.ts';
 import { AccountMenu, useAccount } from './auth.tsx';
 import { formatRoute } from './route.ts';
+import { MessagesEntry, useGroupUnread, useMarkGroupRead } from './messages-entry.tsx';
 import { INPUT, SMALL, DANGER, errorText, Empty } from './admin/shared.tsx';
 import { BotAvatar, HubTabs, botLabel } from './bots.tsx';
 
@@ -228,6 +229,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer) => v
     [...new Set([...body.matchAll(/(^|[^\w@.])@([a-z0-9][a-z0-9_-]{0,39})/gi)].map((m) => m[2]!))].filter((n) => roleNames.includes(n) && !group.members.includes(n));
   const bottom = useRef<HTMLDivElement>(null);
   const count = posts.data?.posts.length ?? 0;
+  useMarkGroupRead(group.id, posts.data ? (posts.data.posts.at(-1)?.seq ?? 0) : null);
   useEffect(() => { bottom.current?.scrollIntoView({ block: 'end' }); }, [count]);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -297,6 +299,8 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
   const groups = useQuery({ queryKey: [...KEY, 'list', pid], queryFn: () => groupApi.list(pid!), enabled: !!pid, refetchInterval: 5000 });
   const roles = useQuery({ queryKey: [...KEY, 'roles', pid], queryFn: () => groupApi.roles(pid!), enabled: !!pid });
   const [drawer, setDrawer] = useState<Drawer>(null);
+  const unread = useGroupUnread();
+  const unreadOf = (id: string): number => unread.data?.groups.find((u) => u.groupId === id)?.count ?? 0;
   const [creating, setCreating] = useState(false);
   if (!account) return null;
   const list = groups.data?.groups ?? [];
@@ -314,7 +318,10 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
         <select aria-label="项目" data-testid="messages-project" className={`${INPUT} max-w-[40%]`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>
           {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <AccountMenu />
+        <div className="flex shrink-0 items-center gap-2">
+          <MessagesEntry />
+          <AccountMenu />
+        </div>
       </header>
       <div className="flex min-h-0 flex-1">
         <aside className={`${current ? 'hidden md:flex' : 'flex'} w-full flex-col border-r border-hair md:w-64`}>
@@ -328,6 +335,11 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
                   className={`flex items-center gap-2 border-b border-hair px-3 py-2.5 text-body ${g.id === current?.id ? 'bg-card text-primary' : 'text-secondary hover:bg-card'}`}
                 >
                   <span className="min-w-0 flex-1 truncate">{g.name}</span>
+                  {unreadOf(g.id) && g.id !== current?.id ? (
+                    <span data-testid="group-unread" aria-label={`${unreadOf(g.id)} 条未读`} className="min-w-[18px] rounded-full bg-rust px-1.5 text-center text-meta leading-[18px] text-canvas">
+                      {unreadOf(g.id)}
+                    </span>
+                  ) : null}
                   {g.needsUser ? <span className="rounded-sm border border-rust px-1.5 text-meta text-rust">需要你</span> : null}
                   <span className="text-meta text-tertiary">{g.members.length} 人</span>
                 </a>

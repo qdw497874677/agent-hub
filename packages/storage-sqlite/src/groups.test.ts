@@ -48,3 +48,30 @@ test('群聊存储往返：群 / 消息 seq / 对话 / 投递队列 / 常驻会�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('群已读位置：未读不算自己发的；标已读只进不退；重开库还在', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-grp-read-'));
+  try {
+    const path = join(dir, 'hub.db');
+    {
+      const store = openSqliteStore(path);
+      await store.groups.saveGroup(group);
+      for (const [i, author] of [{ kind: 'system' }, { kind: 'user', id: 'alice', name: 'alice' }, { kind: 'user', id: 'bob', name: 'bob' }].entries()) {
+        await store.groups.appendPost({ id: `p${i}`, groupId: 'g1', threadId: null, round: 0, author: author as never, body: 'x', mentions: [], needsUser: false, createdAt: i });
+      }
+      assert.equal(await store.groups.unreadCount('g1', 'alice'), 2);
+      assert.equal(await store.groups.unreadCount('g1', 'carol'), 3);
+      assert.equal(await store.groups.latestSeq('g1'), 3);
+      await store.groups.markRead('g1', 'alice', 2);
+      await store.groups.markRead('g1', 'alice', 1);
+      assert.equal(await store.groups.unreadCount('g1', 'alice'), 1);
+      store.close?.();
+    }
+    const store = openSqliteStore(path);
+    assert.equal(await store.groups.unreadCount('g1', 'alice'), 1);
+    assert.equal(await store.groups.latestSeq('nope'), 0);
+    store.close?.();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

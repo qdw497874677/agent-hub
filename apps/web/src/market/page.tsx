@@ -1,3 +1,4 @@
+import { MessagesEntry } from '../messages-entry.tsx';
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { marketApi, teamApi, type AssetKindDto, type AssetScopeDto, type MarketAssetDto } from '../api.ts';
@@ -45,7 +46,8 @@ export function MarketPage({ tab, reviewId }: { tab: MarketTab; reviewId: string
           <h1 className="text-head text-primary">资产市场</h1>
         </div>
         <div className="flex items-center gap-2">
-          <NotificationBell />
+          <MessagesEntry />
+        <NotificationBell />
           <AccountMenu />
         </div>
       </header>

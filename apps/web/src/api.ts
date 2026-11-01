@@ -649,6 +649,11 @@ export const botApi = {
 export interface GroupInputDto { name: string; members: string[]; hostRole: string | null; speakingStrategy: 'host' | 'volunteer'; limits: Partial<GroupLimitsDto> }
 
 /** 群聊（ADR 0018 · 群组）。 */
+export interface GroupUnreadDto {
+  total: number;
+  groups: { groupId: string; projectId: string; count: number }[];
+}
+
 export const groupApi = {
   list: (projectId: string) => call<{ groups: GroupDto[] }>(`/api/projects/${encodeURIComponent(projectId)}/groups`),
   create: (projectId: string, input: GroupInputDto) => post<GroupDto>(`/api/projects/${encodeURIComponent(projectId)}/groups`, input),
@@ -661,6 +666,8 @@ export const groupApi = {
   addMembers: (id: string, roles: string[]) => post<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members`, { roles }),
   removeMember: (id: string, role: string) => call<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(role)}`, { method: 'DELETE' }),
   chains: (id: string) => call<{ chains: { thread: GroupThreadDto; deliveries: GroupDeliveryDto[] }[] }>(`/api/groups/${encodeURIComponent(id)}/chains`),
+  unread: () => call<GroupUnreadDto>('/api/groups/unread'),
+  markRead: (id: string, seq?: number) => post<{ seq: number }>(`/api/groups/${encodeURIComponent(id)}/read`, seq === undefined ? {} : { seq }),
   roles: (projectId: string) => call<{ roles: MessagingRoleDto[]; limits: Record<string, number> }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`),
   saveRoles: (projectId: string, roles: MessagingRoleDto[], limits: Record<string, number>) =>
     call<unknown>(`/api/projects/${encodeURIComponent(projectId)}/messaging`, { method: 'PUT', body: JSON.stringify({ roles, limits }) })

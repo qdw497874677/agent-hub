@@ -25,4 +25,10 @@ export interface GroupStore {
   sessionsOf(groupId: string): Promise<{ role: string; sessionId: SessionId }[]>;
   /** 这条会话是哪个群的哪个角色。 */
   memberOfSession(sessionId: SessionId): Promise<{ groupId: string; role: string } | null>;
+  /** 已读到哪条（每人每群一个 seq）：记成 max(原值, seq)，不会倒退。 */
+  markRead(groupId: string, userId: string, seq: number): Promise<void>;
+  /** 这个人在这个群的未读条数：seq 大于已读位置、且不是他自己发的。 */
+  unreadCount(groupId: string, userId: string): Promise<number>;
+  /** 群里最新一条的 seq（没有消息为 0）。 */
+  latestSeq(groupId: string): Promise<number>;
 }

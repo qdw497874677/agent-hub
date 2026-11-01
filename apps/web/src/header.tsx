@@ -1,3 +1,4 @@
+import { MessagesEntry } from './messages-entry.tsx';
 import { useState } from 'react';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { AccountMenu } from './auth.tsx';
@@ -102,6 +103,7 @@ export function ProjectHeader(props: Props) {
           ⚙
         </button>
         {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
+        <MessagesEntry />
         <NotificationBell />
         <AccountMenu />
       </div>

@@ -80,6 +80,11 @@ export interface ChainView {
   readonly deliveries: readonly GroupDelivery[];
 }
 
+export interface UnreadSummary {
+  readonly total: number;
+  readonly groups: readonly { readonly groupId: string; readonly projectId: string; readonly count: number }[];
+}
+
 export interface GroupChat {
   list(actor: Principal, projectId: ProjectId): Promise<Result<Group[], DomainError>>;
   create(actor: Principal, projectId: ProjectId, input: GroupInput): Promise<Result<Group, DomainError>>;
@@ -105,6 +110,10 @@ export interface GroupChat {
   turnEnded(sessionId: SessionId): Promise<void>;
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
+  /** 这个人看得到的所有群里的未读（顶栏消息图标的红点）。 */
+  unread(actor: Principal): Promise<Result<UnreadSummary, DomainError>>;
+  /** 标成已读：读到 seq（不给就读到最新）。 */
+  markRead(actor: Principal, groupId: string, seq?: number): Promise<Result<{ seq: number }, DomainError>>;
   /** 这条会话是不是群成员会话（给工具判断用）。 */
   memberOf(sessionId: SessionId): Promise<{ groupId: string; role: string } | null>;
 }
@@ -526,6 +535,27 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
       }
       const canManage = (await authorizeProject(deps.policy, actor, found.value.project, 'group.manage')).ok;
       return ok({ group: found.value.group, sessions, running: await deps.groups.runningThreads(groupId), canManage });
+    },
+
+    async unread(actor) {
+      const groups: { groupId: string; projectId: string; count: number }[] = [];
+      for (const project of await deps.projects.list()) {
+        if (!(await authorizeProject(deps.policy, actor, project, 'project.read')).ok) continue;
+        for (const group of await deps.groups.groupsOf(project.id)) {
+          const count = await deps.groups.unreadCount(group.id, actor.user.id);
+          if (count > 0) groups.push({ groupId: group.id, projectId: project.id, count });
+        }
+      }
+      return ok({ total: groups.reduce((n, g) => n + g.count, 0), groups });
+    },
+
+    async markRead(actor, groupId, seq) {
+      const found = await authorize(actor, await deps.groups.group(groupId), 'project.read');
+      if (!found.ok) return found;
+      const latest = await deps.groups.latestSeq(groupId);
+      const upTo = seq === undefined ? latest : Math.min(Math.max(0, Math.floor(seq)), latest);
+      await deps.groups.markRead(groupId, actor.user.id, upTo);
+      return ok({ seq: upTo });
     },
 
     async posts(actor, groupId, afterSeq, limit) {
