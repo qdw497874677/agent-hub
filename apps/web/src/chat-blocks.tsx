@@ -13,7 +13,8 @@ import {
 } from './display-settings.ts';
 import type { Block } from './live.ts';
 import { LogMarkdown } from './log-markdown.tsx';
-import { clipLines, parseUnifiedDiff, toolFamily, toolSummary, toolView, type DiffLine } from './tool-format.ts';
+import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine } from './tool-format.ts';
+import { useFileLinks } from './file-links.tsx';
 
 /**
  * 专注对话里的一条条消息（参照 OpenCode web 的时间线）：
@@ -272,12 +273,12 @@ function ToolCard({ block, settings }: { block: Extract<Block, { kind: 'tool' }>
           </pre>
         ) : view.kind === 'edit' ? (
           <>
-            <p className="font-mono text-meta text-tertiary">{view.path}</p>
+            <p className="font-mono text-meta text-tertiary"><PathText path={view.path} input={block.input} /></p>
             <DiffView lines={view.diff} />
           </>
         ) : view.kind === 'file' ? (
           <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
-            {view.path}
+            <PathText path={view.path} input={block.input} />
             {view.detail ? ` · ${view.detail}` : ''}
           </p>
         ) : (
@@ -294,6 +295,26 @@ function ToolCard({ block, settings }: { block: Extract<Block, { kind: 'tool' }>
         ) : null}
       </div>
     </details>
+  );
+}
+
+/** 工具参数里的文件路径：在工作空间内就是按钮，点了跳到「文件」页那个文件（知道行号就到那一行）。 */
+function PathText({ path, input }: { path: string; input: string }) {
+  const links = useFileLinks();
+  const target = links ? toolFileTarget(input, links.root) : null;
+  if (!links || !target) return <>{path}</>;
+  return (
+    <button
+      type="button"
+      data-testid="tool-path-link"
+      data-path={target.path}
+      data-line={target.line ?? undefined}
+      title={target.line ? `在文件页打开 ${target.path}:${target.line}` : `在文件页打开 ${target.path}`}
+      className="min-h-6 break-all text-left text-accent underline decoration-dotted underline-offset-2 hover:text-primary"
+      onClick={() => links.open(target)}
+    >
+      {path}
+    </button>
   );
 }
 

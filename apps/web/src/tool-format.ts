@@ -121,3 +121,57 @@ export function clipLines(text: string, max = OUTPUT_PREVIEW_LINES): { readonly 
   if (all.length <= max) return { shown: all.join('\n'), hidden: 0 };
   return { shown: all.slice(0, max).join('\n'), hidden: all.length - max };
 }
+
+export interface FileTarget {
+  /** 相对工作空间根的路径（不以 / 开头、不含 ..）。 */
+  readonly path: string;
+  /** 1 起的行号；不知道就是 null。 */
+  readonly line: number | null;
+}
+
+const PATH_KEYS = ['path', 'file_path', 'filePath', 'file', 'filename'];
+const LINE_KEYS = ['line', 'offset', 'start_line', 'startLine', 'line_number', 'lineNumber'];
+
+/** 规范化成相对根的路径；越出根（..）就返回 null。 */
+function inside(relative: string): string | null {
+  const parts: string[] = [];
+  for (const part of relative.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part === '..') {
+      if (parts.length === 0) return null;
+      parts.pop();
+    } else parts.push(part);
+  }
+  return parts.length === 0 ? null : parts.join('/');
+}
+
+/**
+ * 工具调用参数里的文件路径 → 「文件」页能打开的目标。只认参数里的路径字段（不扫消息正文）。
+ * 相对路径按工作空间根解析；绝对路径必须落在 root 下（root 不知道就不认绝对路径）；
+ * 越出工作空间、~、带协议的一律不可点。
+ */
+export function toolFileTarget(input: string, root: string | null): FileTarget | null {
+  const args = parse(input);
+  if (args === null) return null;
+  const raw = str(args, ...PATH_KEYS);
+  if (raw === null || raw.includes('\0') || raw.startsWith('~') || /^[a-z][a-z0-9+.-]*:/i.test(raw) || raw.includes('\\')) return null;
+  let relative: string;
+  if (raw.startsWith('/')) {
+    if (root === null || root === '') return null;
+    const base = root.replace(/\/+$/, '');
+    if (base === '' || !(raw === base || raw.startsWith(`${base}/`))) return null;
+    relative = raw.slice(base.length);
+  } else relative = raw;
+  const path = inside(relative);
+  if (path === null) return null;
+  let line: number | null = null;
+  for (const key of LINE_KEYS) {
+    const value = args[key];
+    const n = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+    if (Number.isInteger(n) && n >= 1) {
+      line = n;
+      break;
+    }
+  }
+  return { path, line };
+}
