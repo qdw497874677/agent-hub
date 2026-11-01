@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { AsyncQueue } from '@agent-hub/contract';
 import {
@@ -30,6 +31,9 @@ import { createHermesEventMapper, type HermesControl } from './map-event.ts';
 export const REQUIRED_FEATURES = ['run_submission', 'run_status', 'run_events_sse', 'run_stop'] as const;
 
 /** 澄清问题的固定回答：hub 里没有人在线答 Hermes 的追问（设计文档 §14.1，保守选择）。 */
+/** 结果未知的固定原因文字：界面认它给「重发 / 不用了」（outcome_unknown 是 Hermes 的说法）。 */
+export const UNKNOWN_OUTCOME_REASON = 'Hermes 这一轮的结果未知（outcome_unknown）';
+
 export const CLARIFY_ANSWER = 'The user is not available to answer right now. Use your best judgment, state your assumption, and continue.';
 
 /**
@@ -202,9 +206,42 @@ export function createHermesRuntime(options: HermesRuntimeOptions): AgentRuntime
       }
       if (!spec.resume?.agentSessionRef) options.onAgentSessionRef?.(spec.sessionId, sessionKey);
       const instructions = await instructionsFor(spec.assets);
-      return ok(new HermesSession(spec.sessionId, gateway, model, instructions, log));
+      const session = new HermesSession(spec.sessionId, gateway, model, instructions, log, home);
+      await session.reconcile();
+      return ok(session);
     }
   };
+}
+
+/**
+ * 正在提交 / 进行中的一轮记在会话的 HERMES_HOME 里（worker 重启也还在）：
+ * - 幂等键：同一条输入在确认收到之前重发，用同一个键（Hermes 只会跑一次）；
+ * - 对账：worker 重启后开会话时，按记下的 run_id 查 Hermes，说清上一轮的结局。
+ */
+export interface PendingTurn {
+  readonly key: string;
+  readonly inputHash: string;
+  readonly runId: string | null;
+  readonly at: number;
+}
+export const PENDING_FILE = 'ahub-pending.json';
+const hashInput = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 32);
+
+export async function readPending(home: string): Promise<PendingTurn | null> {
+  try {
+    const value = JSON.parse(await readFile(join(home, PENDING_FILE), 'utf8')) as Partial<PendingTurn>;
+    if (typeof value.key !== 'string' || typeof value.inputHash !== 'string') return null;
+    return { key: value.key, inputHash: value.inputHash, runId: typeof value.runId === 'string' ? value.runId : null, at: typeof value.at === 'number' ? value.at : 0 };
+  } catch {
+    return null;
+  }
+}
+async function writePending(home: string, pending: PendingTurn | null): Promise<void> {
+  const path = join(home, PENDING_FILE);
+  if (!pending) return rm(path, { force: true });
+  const tmp = `${path}.tmp`;
+  await writeFile(tmp, JSON.stringify(pending), { mode: 0o600 });
+  await rename(tmp, path);
 }
 
 export class HermesSession implements RuntimeSession {
@@ -217,9 +254,11 @@ export class HermesSession implements RuntimeSession {
   private seq = 0;
   private run: { id: string; abort: AbortController } | null = null;
   private disposed = false;
+  private readonly home: string | null;
 
-  constructor(sessionId: SessionId, gateway: Gateway, model: string, instructions: string, log: (message: string) => void) {
+  constructor(sessionId: SessionId, gateway: Gateway, model: string, instructions: string, log: (message: string) => void, home: string | null = null) {
     this.sessionId = sessionId;
+    this.home = home;
     this.gateway = gateway;
     this.model = model;
     this.instructions = instructions;
@@ -250,11 +289,16 @@ export class HermesSession implements RuntimeSession {
 
   async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
     if (this.run) return err(conflict('上一轮还没结束'));
-    // 幂等键：会话 + 轮次 + 随机数；重试只用同一个（§14：还要带同一个 X-Hermes-Session-Key）
-    const key = `ahub:${this.sessionId}:${++this.seq}:${randomBytes(6).toString('hex')}`;
+    // 幂等键：会话 + 轮次 + 随机数；重试只用同一个（§14：还要带同一个 X-Hermes-Session-Key）。
+    // 记在 HERMES_HOME：上次同一条输入没确认收到（worker 中途重启），这次沿用那个键，不会多跑一轮。
+    const text = hermesInput(input);
+    const inputHash = hashInput(text);
+    const previous = this.home ? await readPending(this.home) : null;
+    const key = previous && previous.runId === null && previous.inputHash === inputHash ? previous.key : `ahub:${this.sessionId}:${++this.seq}:${randomBytes(6).toString('hex')}`;
+    await this.savePending({ key, inputHash, runId: null, at: Date.now() });
     const body: Record<string, unknown> = {
       session_id: this.gateway.endpoint.sessionKey,
-      input: hermesInput(input),
+      input: text,
       model: this.model,
       provider: 'custom',
       ...(this.instructions ? { instructions: this.instructions } : {})
@@ -265,13 +309,47 @@ export class HermesSession implements RuntimeSession {
       runId = submitted.run_id;
     } catch (error) {
       if (error instanceof HermesHttpError && (error.status === 429 || error.status === 503)) return err(unavailable('Hermes 太忙（被限流），稍后再试'));
+      // 明确被拒（4xx）：这一轮肯定没跑，键不用留；连不上 / 超时的留着，重发同一条沿用这个键
+      if (error instanceof HermesHttpError && error.status >= 400 && error.status < 500) await this.savePending(null);
       if (error instanceof HermesHttpError && error.status === 409) return err(conflict(`Hermes 拒绝了这一轮：${error.code}`));
       return err(unavailable(`Hermes 不收这一轮：${(error as Error).message}`));
     }
+    await this.savePending({ key, inputHash, runId, at: Date.now() });
     const abort = new AbortController();
     this.run = { id: runId, abort };
     void this.follow(runId, abort);
     return ok(undefined);
+  }
+
+  private async savePending(pending: PendingTurn | null): Promise<void> {
+    if (!this.home) return;
+    await writePending(this.home, pending).catch((error: unknown) => this.log(`记不下 Hermes 的进行中一轮：${(error as Error).message}`));
+  }
+
+  /**
+   * 开会话时对账：上次 worker 停掉前有一轮没收尾（记了 run_id），查 Hermes 说清结局。
+   * 还在跑 → 接着跟；结果未知 → 交给人（界面上给「重发 / 不用了」）；已结束 → 记一条诊断。
+   * 只提交了、没拿到 run_id 的不动：下次发同一条会沿用同一个幂等键。
+   */
+  async reconcile(): Promise<void> {
+    if (!this.home) return;
+    const pending = await readPending(this.home);
+    if (!pending?.runId) return;
+    const status = await this.status(pending.runId);
+    if (status && ['queued', 'running', 'waiting'].includes(status.status)) {
+      const abort = new AbortController();
+      this.run = { id: pending.runId, abort };
+      this.queue.push({ kind: 'diagnostic', level: 'info', text: 'worker 重启前的一轮 Hermes 还在跑，接着跟。' });
+      void this.follow(pending.runId, abort);
+      return;
+    }
+    await this.savePending(null);
+    if (!status || status.status === 'unknown') {
+      this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'worker 重启前提交的一轮 Hermes，结果不确定；没有自动重试，请看工作区后决定是否重发。' });
+      this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
+      return;
+    }
+    this.queue.push({ kind: 'diagnostic', level: 'info', text: `worker 重启前提交的一轮 Hermes 已经${status.status === 'completed' ? '完成' : status.status === 'failed' ? '失败' : '停止'}（${status.status}）。` });
   }
 
   /** 跟一轮的事件流直到终态；断线了查状态，没结束就重连（SSE 自带补发）。 */
@@ -301,7 +379,7 @@ export class HermesSession implements RuntimeSession {
       if (status?.status === 'unknown') {
         // D3：结果未知不自动处理（不重放、不当成功），交给人
         this.queue.push({ kind: 'diagnostic', level: 'warn', text: 'Hermes 重启过，这一轮是否执行完不确定；没有自动重试，请看工作区后决定是否重发。' });
-        this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: 'Hermes 这一轮的结果未知（outcome_unknown）' });
+        this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: UNKNOWN_OUTCOME_REASON });
         terminal = true;
         break;
       }
@@ -315,6 +393,8 @@ export class HermesSession implements RuntimeSession {
       await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 10_000)));
     }
     if (!terminal && !abort.signal.aborted) this.queue.push({ kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' });
+    // 有了结局（包括结果未知、已经交给人）就不用再对账；连不上 / 被 dispose 的留着，下次开会话再查
+    if (terminal) await this.savePending(null);
     if (this.run?.id === runId) this.run = null;
   }
 
