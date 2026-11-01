@@ -110,6 +110,8 @@ export type { MessageStore } from './ports/message-store.ts';
 export * from './memory.ts';
 export type * from './ports/memory.ts';
 export * from './use-cases/memory.ts';
+export * from './memory-adapters/builtin.ts';
+export * from './memory-adapters/registry.ts';
 
 export * from './asset.ts';
 export * from './mcp.ts';

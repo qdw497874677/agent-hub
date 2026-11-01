@@ -501,7 +501,7 @@ David 的问题：「有什么机制可以保守一些，并且保持新鲜度�
 | agent 不查记忆（没有注入） | 工具描述要求先查；角色提示词里写「先查记忆」；P2 用指标观察每个会话的 `memory_search` 调用率 |
 | 提炼默认开导致成本上升、噪声变多 | §6.1 的次数、token、条数上限和每天预算；untrusted 降权；可按项目关掉 |
 
-## 13. P2 第一批的实现（2026-11-01）
+## 15. P2 第一批的实现（2026-11-01）
 
 - **暂存层**：`MemoryStatus` 加 `staged`。默认搜不到（`memory_search` 传 `include_staged: true` / 接口 `?staged=1` 才给，排序打 0.6 折）；14 天内同作用域有**别的作者**写出归一化后同标题的条目就转 `active`（仍 untrusted）；有审核权的人在「待审」里点「采纳」转 `active` + trusted；30 天没人理读时即算 `expired`。
 - **压缩摘要进 `session:`**：worker 上报 `compaction`（end、ok、带 summary）后，hub 写一条 `session:<id>` 的 episodic（`via: compaction`，生效，untrusted），`traceId = compaction:<会话>:<序号>`，同一代只写一次。
@@ -514,3 +514,28 @@ David 的问题：「有什么机制可以保守一些，并且保持新鲜度�
   - 每周抽查：后台整理里，最近 7 天自动转正（没人审过）的提炼条目随机抽 5%（3–20 条，不足 3 条就全抽）打 `spot-check` 标签回待审；7 天内抽过就不再抽（标签持久化，重启不重抽）；
   - 导入：`POST /api/memory/import?scope=…`，正文 JSONL（导出格式即可），每行一条，一律 untrusted + proposed、via import；坏行 / 含密钥的行跳过并报行号；≤1000 行、≤2MB；要该作用域的 memory.write。
 - **还没做**：模型版提炼（要定模型和预算归属）；可选向量（ADR 写的是「可选、默认关」，需要 sqlite-vec 原生扩展 + embedder 提供商，等 David 定）；抽查发现错误后降低来源 trust；按项目开关提炼。
+
+## 16. 端口与适配器（2026-11-01 重构，行为不变）
+
+记忆按块拆成端口（`packages/domain/src/ports/memory.ts`），领域代码（`use-cases/memory.ts`）只依赖端口，不认识任何具体适配器。具体实现都经**注册表**（`memory-adapters/registry.ts`）装配，内置实现在 `memory-adapters/builtin.ts`。
+
+| 块 | 端口 | 内置适配器 | 注册方法 |
+|---|---|---|---|
+| 来源 | `MemorySource`（scan / read / 可选 search） | adr、docs、task、transcript、group（apps/server/memory-sources.ts） | `registry.source(s)` |
+| 写入 | `MemoryStore`（put / update / list / citing / history / purge） | SQLite（storage-sqlite） | 由存储提供，`build({store})` |
+| 提炼 | `MemoryDistiller`（distill(DistillInput) → 候选） | `ruleDistiller`（规则式） | `registry.distiller(d)`（后加的替换前面的） |
+| 索引 | `MemoryIndex`（upsert / remove / indexed / query） | SQLite FTS5 | `build({index})` |
+| 检索 | `MemoryRetriever` + `MemoryRanker`（fuse） | `createRrfRetriever` + `rrfRanker`（k=60） | `registry.retriever(factory)` / `registry.ranker(r)` |
+| 维护 | `MemoryMaintenanceJob`（id, run(ctx) → {count}） | `expire`、`spot-check` | `registry.job(j)`（按注册顺序在 sweep 里跑） |
+| 治理·策略 | `MemoryPolicy`（onWrite → accept/propose/reject） | 默认策略（作用域 × 作者 × 项目模式） | `registry.policy(id, p)`，多个用 `composePolicies` 串起来，最严的赢 |
+| 治理·密钥 | `MemorySecretFilter`（check(text) → 类型或 null） | `patternSecretFilter` | `registry.secretFilter(f)`，多个任一命中即拦 |
+| 治理·作用域 / 出处 / 取代 | `scopeKey`、`can`、`MemoryEntry.provenance`、`supersedes` | 领域纯函数 / 字段 | 不是插件点：这些是数据模型，换实现会破坏审计 |
+
+`registry.describe()` 列出当前装配了什么；`build({index, store})` 返回 `{sources, distiller, jobs, policy, secretFilter, retriever}`，直接展开进 `createMemoryService`。
+
+### 加一个适配器
+
+1. 实现对应端口（只 import `@agent-hub/domain` 的类型，别反向依赖 use-cases）。
+2. 在装配点注册：server 的 `main.ts` 里 `defaultMemoryRegistry().source(...)/.distiller(...)/.job(...)`。
+3. 跑契约：`@agent-hub/domain/testing/memory-contracts` 里有 `memorySourceContract`、`distillerContract`、`memoryIndexContract`、`rankerContract`、`maintenanceJobContract`、`governanceContract`；新适配器的测试文件里对它跑一遍对应那组（参考 `storage-sqlite/src/memory-contracts.test.ts`、`apps/server/src/memory-sources.test.ts`）。契约不过不合并。
+4. 模型式提炼（以后）：写一个 `MemoryDistiller` 适配器调模型，注册后替换 `ruleDistiller`；契约里的「含密钥不出候选」仍然要过。

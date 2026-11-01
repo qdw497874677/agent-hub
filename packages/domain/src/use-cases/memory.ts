@@ -6,7 +6,6 @@ import {
   DISTILL_LIMITS,
   MEMORY_READ_CHUNK,
   STAGED_CORROBORATE_MS,
-  distillSummary,
   normalizeTitle,
   MEMORY_SEARCH_LIMIT_MAX,
   MEMORY_VALIDITY_MS,
@@ -17,7 +16,6 @@ import {
   parseScopeKey,
   rankScore,
   scopeKey,
-  secretKind,
   wrapMemory,
   type MemoryDraft,
   type MemoryEntry,
@@ -30,16 +28,15 @@ import {
 import type { AuditLog } from '../ports/audit-log.ts';
 import type {
   IndexDoc,
-  MemoryHit,
   MemoryIndex,
   MemoryPolicy,
-  MemoryQuery,
+  MemoryDistiller,
+  MemoryMaintenanceJob,
   MemoryRetriever,
+  MemorySecretFilter,
   MemorySettingsStore,
   MemorySource,
-  MemoryStore,
-  WriteContext,
-  WriteDecision
+  MemoryStore
 } from '../ports/memory.ts';
 import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -63,7 +60,12 @@ export interface MemoryServiceDeps extends Pick<Deps, 'now' | 'sessions' | 'task
   readonly settings: MemorySettingsStore;
   readonly sources: readonly MemorySource[];
   readonly policy: MemoryPolicy;
-  readonly retriever?: MemoryRetriever;
+  readonly retriever: MemoryRetriever;
+  /** 写入路径的提炼器（规则版 / 以后的模型版），由注册表装配。 */
+  readonly distiller: MemoryDistiller;
+  /** sweep 依次跑的维护任务。 */
+  readonly jobs: readonly MemoryMaintenanceJob[];
+  readonly secretFilter: MemorySecretFilter;
   readonly audit: Pick<AuditLog, 'append'>;
   readonly access?: AccessPolicy;
   readonly principalOf: (userId: string) => Promise<Principal | null>;
@@ -133,66 +135,6 @@ export interface MemoryService {
   importEntries(principal: Principal, scope: string, jsonl: string): Promise<Result<{ imported: number; problems: { line: number; message: string }[] }, DomainError>>;
   /** 会话第一轮垫的静态引导：注入要审计（只记版本，不记内容）。 */
   guidanceInjected(sessionId: SessionId, version: number): Promise<void>;
-}
-
-/** 默认策略（设计 §6）。 */
-export function createDefaultMemoryPolicy(): MemoryPolicy {
-  return {
-    async onWrite(entry, ctx: WriteContext): Promise<WriteDecision> {
-      // 工作方式 / 检查清单：agent 写的一律要人确认；人自己写的就是确认过的
-      if (entry.kind === 'procedural' && ctx.author === 'agent') return { action: 'review', reason: '工作方式（procedural）要人确认' };
-      switch (entry.scope.kind) {
-        case 'user':
-          return ctx.author === 'human' && ctx.own ? { action: 'accept' } : { action: 'review', reason: '替本人记的要本人确认' };
-        case 'role':
-          return { action: 'accept' };
-        case 'project':
-          if (ctx.projectMode === 'review' && !(ctx.author === 'human' && ctx.canReview)) return { action: 'review', reason: '这个项目的记忆要审核' };
-          return { action: 'accept' };
-        case 'group':
-        case 'session':
-          return { action: 'accept' };
-      }
-    }
-  };
-}
-
-/** 默认检索：索引 + 自带检索的存储 / 来源，RRF（k=60）融合。 */
-export function createRrfRetriever(deps: { index: MemoryIndex; store?: MemoryStore; sources?: readonly MemorySource[] }): MemoryRetriever {
-  return {
-    async retrieve(query: MemoryQuery): Promise<MemoryHit[]> {
-      const include = query.include ?? ['entries', 'sources'];
-      const origins = (['entry', 'source'] as const).filter((origin) => include.includes(origin === 'entry' ? 'entries' : 'sources'));
-      const lists: MemoryHit[][] = [];
-      const indexed = await deps.index.query({ text: query.text, scopeKeys: query.scopes.map(scopeKey), origins, kinds: query.kinds, limit: query.limit * 3 });
-      lists.push(
-        indexed.map((hit) => ({
-          key: hit.key,
-          origin: hit.origin,
-          scopeKey: hit.scopeKey,
-          score: hit.relevance,
-          title: hit.title,
-          snippet: hit.snippet,
-          trust: hit.trust,
-          updatedAt: hit.updatedAt,
-          ...(hit.origin === 'entry' ? { entryId: hit.key.slice('entry:'.length) } : {}),
-          ...(hit.ref ? { ref: hit.ref } : {})
-        }))
-      );
-      if (deps.store?.search && include.includes('entries')) lists.push(await deps.store.search(query));
-      for (const source of deps.sources ?? []) if (source.search && include.includes('sources')) lists.push(await source.search(query));
-      if (lists.length === 1) return lists[0] as MemoryHit[];
-      const fused = new Map<string, { hit: MemoryHit; score: number }>();
-      for (const list of lists) {
-        list.forEach((hit, rank) => {
-          const current = fused.get(hit.key);
-          const add = 1 / (60 + rank + 1);
-          fused.set(hit.key, { hit: current?.hit ?? hit, score: (current?.score ?? 0) + add });
-        });
-      }
-      return [...fused.values()].sort((a, b) => b.score - a.score).map(({ hit, score }) => ({ ...hit, score }));
-    }
-  };
 }
 
 const FALLBACK_CONTEXT: AccessContext = { hubTeamId: null, settings: { membersCanAddMachines: true } };
@@ -439,7 +381,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
           version: 1
         };
       };
-      const candidates = distillSummary(summary, { sessionId, seq: input.seq });
+      const candidates = await deps.distiller.distill({ summary, sessionId, seq: input.seq });
       if (candidates.length === 0) return { written: 0, skipped: '摘要含疑似密钥或为空，不写' };
       const written: MemoryEntry[] = [];
       // 1) 压缩摘要本身进 session:（生效；只这条会话和同项目的人看得到）
@@ -473,41 +415,20 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     },
 
     async sweep() {
-      const now = deps.now();
-      let expired = 0;
-      const candidates = await deps.store.list(null, { status: ['staged', 'proposed', 'active'], limit: 10_000 });
-      for (const entry of candidates) {
-        if (effectiveStatus(entry, now) !== 'expired') continue;
-        const updated = await deps.store.update({ ...entry, status: 'expired', updatedAt: now, version: entry.version + 1 }, entry.version);
-        if (!updated) continue;
-        await deps.index.remove([`entry:${entry.id}`]);
-        expired += 1;
-      }
-      // 每周抽查（§9.1 第 7 条）：最近 7 天自动转正（没经过人）的提炼条目里随机抽 5%（3–20 条）回确认队列。
-      // 用标签 spot-check 记「这周抽过了」，重启也不会重抽。
-      let spotChecked = 0;
-      const week = 7 * 86_400_000;
-      const live = await deps.store.list(null, { status: ['active', 'proposed'], limit: 10_000 });
-      const sampledRecently = live.some((entry) => entry.tags.includes('spot-check') && now - entry.updatedAt < week);
-      if (!sampledRecently) {
-        const pool = live.filter(
-          (entry) => entry.status === 'active' && entry.provenance.via === 'distill' && !entry.provenance.reviewedBy && now - entry.updatedAt < week && !entry.tags.includes('spot-check')
-        );
-        if (pool.length > 0) {
-          const count = Math.min(pool.length, Math.max(3, Math.min(20, Math.ceil(pool.length * 0.05))));
-          const picked = [...pool].sort(() => Math.random() - 0.5).slice(0, count);
-          for (const entry of picked) {
-            const updated = await deps.store.update(
-              { ...entry, status: 'proposed', tags: [...entry.tags, 'spot-check'].slice(0, 10), updatedAt: now, version: entry.version + 1 },
-              entry.version
-            );
-            if (!updated) continue;
-            await deps.index.upsert([indexDoc(updated)]);
-            spotChecked += 1;
-          }
+      const ctx = { now: deps.now(), store: deps.store, index: deps.index, indexDoc };
+      const counts = new Map<string, number>();
+      for (const job of deps.jobs) {
+        try {
+          counts.set(job.id, (await job.run(ctx)).count);
+        } catch {
+          counts.set(job.id, 0);
         }
       }
-      if (expired > 0 || spotChecked > 0) await systemAudit('memory.write', 'memory:sweep', `后台整理：${expired} 条过期，${spotChecked} 条抽查回待审`);
+      const expired = counts.get('expire') ?? 0;
+      const spotChecked = counts.get('spot-check') ?? 0;
+      const others = [...counts].filter(([id, n]) => id !== 'expire' && id !== 'spot-check' && n > 0);
+      if (expired > 0 || spotChecked > 0 || others.length > 0)
+        await systemAudit('memory.write', 'memory:sweep', `后台整理：${expired} 条过期，${spotChecked} 条抽查回待审${others.map(([id, n]) => `，${id} ${n} 条`).join('')}`);
       return { expired, spotChecked };
     },
 
@@ -569,7 +490,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
           problems.push({ line: index + 1, message: problem });
           continue;
         }
-        if (secretKind(`${draft.title}\n${draft.body}`)) {
+        if (deps.secretFilter.check(`${draft.title}\n${draft.body}`)) {
           problems.push({ line: index + 1, message: '看起来含有密钥，跳过' });
           continue;
         }
@@ -610,7 +531,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       if (!scope.ok) return scope;
       const problem = draftProblem(input);
       if (problem) return err(invalid(problem));
-      const secret = secretKind(`${input.title}\n${input.body}\n${(input.sources ?? []).map((ref) => `${ref.uri} ${ref.quote ?? ''}`).join('\n')}`);
+      const secret = deps.secretFilter.check(`${input.title}\n${input.body}\n${(input.sources ?? []).map((ref) => `${ref.uri} ${ref.quote ?? ''}`).join('\n')}`);
       if (secret) {
         await audit(me.value, 'memory.reject', scopeKey(scope.value), `疑似密钥（${secret}），拒绝写入`);
         return err(invalid(`看起来含有密钥（${secret}），不能写进记忆；记「去哪儿取」，不要记值`));
@@ -698,7 +619,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       }
       if (scopes.length === 0) return ok([]);
       for (const scope of scopes) if (scope.kind === 'project' && (input.include ?? ['entries', 'sources']).includes('sources')) await ensureSources(scope.projectId);
-      const retriever = deps.retriever ?? createRrfRetriever({ index: deps.index, store: deps.store, sources: deps.sources });
+      const retriever = deps.retriever;
       const hits = await retriever.retrieve({ text: input.query, scopes, kinds: input.kinds, include: input.include, limit: limit * 2 });
       const now = deps.now();
       const results: SearchResult[] = [];
