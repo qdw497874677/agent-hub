@@ -28,6 +28,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createMemoryToolProvider,
   createDefaultMemoryPolicy,
   MEMORY_GUIDANCE,
+  MEMORY_SWEEP_INTERVAL_MS,
   MEMORY_GUIDANCE_VERSION,
   type MemoryGuidance,
   createTaskUseCase,
@@ -255,6 +256,17 @@ const memoryService = createMemoryService({
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId))?.role ?? null,
   sourceTtlMs: 5 * 60_000
 });
+// 记忆 P2：运行时压缩完把摘要交给记忆（session: 摘要 + 会后提炼）；后台整理一天一次（启动 10 分钟后先跑一次）。
+hub.stream.subscribe((frame) => {
+  const event = frame.event;
+  if (event?.kind !== 'compaction' || event.phase !== 'end' || event.ok !== true || !event.summary) return;
+  void memoryService
+    .ingestCompaction(frame.sessionId as SessionId, { seq: Number(frame.seq), summary: event.summary, ...(event.tokensBefore !== undefined ? { tokensBefore: event.tokensBefore } : {}) })
+    .catch((error: unknown) => log(`压缩摘要写记忆失败：${String(error)}`));
+});
+const memorySweep = () => void memoryService.sweep().catch((error: unknown) => log(`记忆后台整理失败：${String(error)}`));
+setTimeout(memorySweep, 10 * 60_000).unref();
+setInterval(memorySweep, MEMORY_SWEEP_INTERVAL_MS).unref();
 if (toolEndpoint) {
   (deps as { memoryGuidance?: MemoryGuidance }).memoryGuidance = {
     text: MEMORY_GUIDANCE,

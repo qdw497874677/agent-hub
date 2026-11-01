@@ -67,3 +67,7 @@ David（2026-10-31）要求把这些统一抽象为「上下文策略」：默�
 - `POST /api/sessions/:id/context/compact`（session.prompt）：运行时不支持返回 400（界面提示改用重启，**不自动重启**）；正在回复返回 409；否则发 `compact` 命令给 worker，202。老 worker 不认这条命令，只记日志。
 - 角色层：`roleOf` = 派生会话的角色，否则群成员角色；`PUT /api/projects/:id/context/roles/:role`（project.update，null = 跟随项目），项目视图带 `roles`。
 - 项目设置里加「上下文策略」一节（项目默认 + 启用 + 角色层）。
+
+## 修订
+
+- 2026-11-01：P2 落地——压缩事件的摘要接入记忆提炼（ADR 0019 设计 §13），`principle-candidate` 进确认队列（默认开，`HUB_MEMORY_DISTILL=0` 可关）。P3（hub-managed 模式）未开始。

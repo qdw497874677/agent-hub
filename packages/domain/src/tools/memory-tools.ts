@@ -25,7 +25,8 @@ export const MEMORY_TOOLS: readonly ToolDescriptor[] = [
         scopes: { type: 'array', items: SCOPE, maxItems: 4 },
         kinds: { type: 'array', items: KIND, maxItems: 4 },
         include: { type: 'array', items: { type: 'string', enum: ['entries', 'sources'] } },
-        limit: { type: 'integer', minimum: 1, maximum: 20, default: 8 }
+        limit: { type: 'integer', minimum: 1, maximum: 20, default: 8 },
+        include_staged: { type: 'boolean', default: false, description: 'Also return staged (auto-distilled, unconfirmed) entries, ranked lower.' }
       },
       required: ['query'],
       additionalProperties: false
@@ -124,7 +125,7 @@ export function createMemoryToolProvider(memory: MemoryService): ToolProvider {
           const query = str(args.query);
           if (!query) return err(invalid('要给 query'));
           const include = strings(args.include)?.filter((item): item is 'entries' | 'sources' => item === 'entries' || item === 'sources');
-          return memory.search(caller, { query, scopes: strings(args.scopes), kinds: kinds(args.kinds), include, limit: int(args.limit) });
+          return memory.search(caller, { query, scopes: strings(args.scopes), kinds: kinds(args.kinds), include, limit: int(args.limit), includeStaged: args.include_staged === true });
         }
         case 'memory.get': {
           const ref = record(args.ref);

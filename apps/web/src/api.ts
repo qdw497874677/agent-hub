@@ -571,7 +571,7 @@ export interface MemoryEntryDto {
   title: string;
   body: string;
   tags: string[];
-  status: 'active' | 'proposed' | 'rejected' | 'forgotten' | 'superseded' | 'expired' | 'invalidated';
+  status: 'staged' | 'active' | 'proposed' | 'rejected' | 'forgotten' | 'superseded' | 'expired' | 'invalidated';
   trust: 'trusted' | 'untrusted';
   stale: boolean;
   provenance: { author: { kind: string; userId?: string; sessionId?: string }; via?: string };

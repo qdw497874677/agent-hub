@@ -107,10 +107,10 @@ export function createSqliteMemoryStore(db: DatabaseSync): MemoryStore {
     async get(id) {
       return parseEntry(byId.get(id) as Row | undefined);
     },
-    async list(scopes: readonly MemoryScope[], filter: MemoryEntryFilter = {}) {
-      if (scopes.length === 0) return [];
-      const keys = scopes.map(scopeKey);
-      const where = [`scope_key IN (${keys.map(() => '?').join(',')})`];
+    async list(scopes: readonly MemoryScope[] | null, filter: MemoryEntryFilter = {}) {
+      if (scopes !== null && scopes.length === 0) return [];
+      const keys = (scopes ?? []).map(scopeKey);
+      const where = scopes === null ? ['1 = 1'] : [`scope_key IN (${keys.map(() => '?').join(',')})`];
       const params: (string | number)[] = [...keys];
       if (filter.status && filter.status.length > 0) {
         where.push(`status IN (${filter.status.map(() => '?').join(',')})`);

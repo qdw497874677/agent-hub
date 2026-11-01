@@ -11,7 +11,7 @@ import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty } from './ad
  */
 const KEY = ['memory'] as const;
 const KIND_TEXT: Record<MemoryEntryDto['kind'], string> = { semantic: '事实', episodic: '经历', procedural: '做法' };
-const STATUS_TEXT: Partial<Record<MemoryEntryDto['status'], string>> = { proposed: '待审', active: '生效' };
+const STATUS_TEXT: Partial<Record<MemoryEntryDto['status'], string>> = { staged: '暂存', proposed: '待审', active: '生效' };
 
 function useMemoryAction<T>(run: (input: T) => Promise<unknown>) {
   const client = useQueryClient();
@@ -26,7 +26,7 @@ function EntryRow({ entry, canReview }: { entry: MemoryEntryDto; canReview: bool
     <li data-testid="memory-entry" className="border-b border-hair px-3 py-2 last:border-0">
       <div className="flex flex-wrap items-center gap-1.5 text-meta">
         <span className="rounded-sm bg-card px-1.5 text-secondary">{KIND_TEXT[entry.kind]}</span>
-        <span className={entry.status === 'proposed' ? 'text-rust' : 'text-tertiary'}>{STATUS_TEXT[entry.status] ?? entry.status}</span>
+        <span className={entry.status === 'proposed' || entry.status === 'staged' ? 'text-rust' : 'text-tertiary'}>{STATUS_TEXT[entry.status] ?? entry.status}</span>
         {entry.trust === 'untrusted' ? <span className="text-tertiary">· agent 写的</span> : null}
         {entry.stale ? <span data-testid="memory-stale" className="text-rust">· 来源已变化</span> : null}
         <span className="ml-auto text-tertiary">{at(entry.updatedAt)}</span>
@@ -34,9 +34,9 @@ function EntryRow({ entry, canReview }: { entry: MemoryEntryDto; canReview: bool
       <p className="mt-1 break-words text-body text-primary">{entry.title}</p>
       <p className="mt-0.5 whitespace-pre-wrap break-words text-meta text-secondary">{entry.body}</p>
       <div className="mt-1.5 flex flex-wrap gap-2">
-        {entry.status === 'proposed' && canReview ? (
+        {(entry.status === 'proposed' || entry.status === 'staged') && canReview ? (
           <>
-            <button className={SMALL} data-testid="memory-approve" disabled={review.isPending} onClick={() => review.mutate(true)}>通过</button>
+            <button className={SMALL} data-testid="memory-approve" disabled={review.isPending} onClick={() => review.mutate(true)}>{entry.status === 'staged' ? '采纳' : '通过'}</button>
             <button className={SMALL} data-testid="memory-reject" disabled={review.isPending} onClick={() => review.mutate(false)}>拒绝</button>
           </>
         ) : null}

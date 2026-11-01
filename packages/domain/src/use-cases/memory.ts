@@ -3,7 +3,11 @@ import type { AuditAction, Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { asProjectId, asSessionId, newId, type SessionId } from '../ids.ts';
 import {
+  DISTILL_LIMITS,
   MEMORY_READ_CHUNK,
+  STAGED_CORROBORATE_MS,
+  distillSummary,
+  normalizeTitle,
   MEMORY_SEARCH_LIMIT_MAX,
   MEMORY_VALIDITY_MS,
   SOURCE_CHANGES_INVALIDATE,
@@ -81,6 +85,8 @@ export interface SearchInput {
   readonly limit?: number;
   /** 也给 proposed / superseded / 过期的（带状态标记）。 */
   readonly includeInactive?: boolean;
+  /** 也给暂存的（staged，提炼出来还没转正的；排序打 0.6 折）。 */
+  readonly includeStaged?: boolean;
 }
 export interface SearchResult {
   readonly id?: string;
@@ -112,6 +118,13 @@ export interface MemoryService {
   setProjectMode(principal: Principal, projectId: string, mode: ProjectMemoryMode): Promise<Result<ProjectMemoryMode, DomainError>>;
   /** 重扫一个项目的来源：增量更新索引，出处变了的条目标 stale，变两次转 invalidated。 */
   reindex(projectId: string, force?: boolean): Promise<{ indexed: number; removed: number; staled: number }>;
+  /**
+   * 运行时压缩完（P2）：摘要写进 session:（episodic，生效）；再按 §6.1 提炼——项目层 staged 一条、工作方式候选进确认队列。
+   * 同一会话同一代（压缩序号）只跑一次；会话太短、项目当天超额、摘要含疑似密钥都跳过。返回写了几条。
+   */
+  ingestCompaction(sessionId: SessionId, input: { seq: number; summary: string; tokensBefore?: number }): Promise<{ written: number; skipped?: string }>;
+  /** 后台整理（一天最多一次）：把读时算出来的过期（staged 30 天、validTo 到期）物化成 expired，并从索引里拿掉。 */
+  sweep(): Promise<{ expired: number }>;
   /** 会话第一轮垫的静态引导：注入要审计（只记版本，不记内容）。 */
   guidanceInjected(sessionId: SessionId, version: number): Promise<void>;
 }
@@ -352,7 +365,123 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     return status === entry.status ? entry : { ...entry, status };
   };
 
+  /**
+   * 印证（§9.1）：同作用域里有 14 天内的 staged 条目和新写的标题一样、而且不是同一个作者（同一条会话自己重复不算），
+   * 那条就转 active（仍然 untrusted，没经过人）。
+   */
+  const corroborate = async (entry: MemoryEntry): Promise<void> => {
+    const now = deps.now();
+    const key = normalizeTitle(entry.title);
+    const author = (e: MemoryEntry) => `${e.provenance.author.kind}:${e.provenance.author.id}`;
+    const staged = await deps.store.list([entry.scope], { status: ['staged'], limit: 200 });
+    for (const old of staged) {
+      if (old.id === entry.id || author(old) === author(entry)) continue;
+      if (now - old.createdAt > STAGED_CORROBORATE_MS || effectiveStatus(old, now) !== 'staged') continue;
+      if (normalizeTitle(old.title) !== key) continue;
+      const updated = await deps.store.update({ ...old, status: 'active', updatedAt: now, version: old.version + 1 }, old.version);
+      if (!updated) continue;
+      await deps.index.upsert([indexDoc(updated)]);
+      await systemAudit('memory.write', scopeKey(old.scope), `${old.id} staged → active（被 ${entry.id} 印证）`);
+    }
+  };
+
+  const systemAudit = (action: AuditAction, target: string, detail: string, teamId: string | null = null) =>
+    deps.audit.append({ id: newId(), actorId: 'system' as never, actorEmail: '', action, target, detail: detail.slice(0, 500), at: deps.now(), teamId });
+
+  /** 当天每个项目跑过几次提炼（进程内计数；重启从 0 算，偏宽松但有上面的「每代一次」兜底）。 */
+  const distillRuns = new Map<string, { day: number; count: number }>();
+  /** 已经处理过的压缩代（会话:序号），防同一代重复。 */
+  const distilled = new Set<string>();
+
   const service: MemoryService = {
+    async ingestCompaction(sessionId, input) {
+      const generation = `${sessionId}:${input.seq}`;
+      if (distilled.has(generation)) return { written: 0, skipped: '这一代已经提炼过' };
+      distilled.add(generation);
+      if (distilled.size > 5000) distilled.clear();
+      const summary = input.summary.trim();
+      if (summary === '') return { written: 0, skipped: '没有摘要' };
+      const session = await deps.sessions.byId(sessionId);
+      if (!session) return { written: 0, skipped: '会话不存在' };
+      const project = await projectOfSession(session);
+      if (!project) return { written: 0, skipped: '会话所属项目不存在' };
+      const traceId = `compaction:${generation}`;
+      const existing = await deps.store.list([{ kind: 'session', sessionId }], { limit: 200 });
+      if (existing.some((entry) => entry.provenance.traceId === traceId)) return { written: 0, skipped: '这一代已经提炼过' };
+      const now = deps.now();
+      const author = { kind: 'system', id: 'compaction' } as const;
+      const base = (scope: MemoryScope, status: MemoryStatus, draft: MemoryDraft, via: 'compaction' | 'distill'): MemoryEntry => {
+        const validity = MEMORY_VALIDITY_MS[draft.kind];
+        return {
+          id: newId(),
+          scope,
+          kind: draft.kind,
+          title: draft.title,
+          body: draft.body,
+          tags: [...(draft.tags ?? [])],
+          status,
+          supersedes: [],
+          supersededBy: null,
+          validFrom: now,
+          validTo: validity === null ? null : now + validity,
+          provenance: { author, sources: draft.sources ?? [], via, traceId },
+          trust: 'untrusted',
+          stale: false,
+          sourceChanges: 0,
+          createdAt: now,
+          updatedAt: now,
+          version: 1
+        };
+      };
+      const candidates = distillSummary(summary, { sessionId, seq: input.seq });
+      if (candidates.length === 0) return { written: 0, skipped: '摘要含疑似密钥或为空，不写' };
+      const written: MemoryEntry[] = [];
+      // 1) 压缩摘要本身进 session:（生效；只这条会话和同项目的人看得到）
+      const sessionEntry = base({ kind: 'session', sessionId }, 'active', candidates[0]!.draft, 'compaction');
+      await deps.store.put(sessionEntry);
+      written.push(sessionEntry);
+      // 2) 会后提炼：太短的会话不提炼；每个项目每天最多 50 次
+      let skipped: string | undefined;
+      const day = Math.floor(now / 86_400_000);
+      const runs = distillRuns.get(project.id);
+      const count = runs && runs.day === day ? runs.count : 0;
+      if (process.env.HUB_MEMORY_DISTILL === '0') skipped = '提炼已关闭（HUB_MEMORY_DISTILL=0）';
+      else if (input.tokensBefore !== undefined && input.tokensBefore < DISTILL_LIMITS.minTokens) skipped = '会话太短，不提炼';
+      else if (count >= DISTILL_LIMITS.runsPerProjectPerDay) skipped = '项目当天提炼次数到上限';
+      else {
+        distillRuns.set(project.id, { day, count: count + 1 });
+        for (const candidate of candidates) {
+          const entry = base({ kind: 'project', projectId: project.id }, candidate.status, candidate.draft, 'distill');
+          await deps.store.put(entry);
+          written.push(entry);
+        }
+      }
+      await deps.index.upsert(written.map(indexDoc));
+      await systemAudit(
+        'memory.write',
+        `session:${sessionId}`,
+        `压缩摘要 → ${written.map((entry) => `${entry.id}(${scopeKey(entry.scope)} ${entry.status})`).join(', ')}${skipped ? `；${skipped}` : ''}`,
+        project.teamId ?? null
+      );
+      return { written: written.length, ...(skipped ? { skipped } : {}) };
+    },
+
+    async sweep() {
+      const now = deps.now();
+      let expired = 0;
+      const candidates = await deps.store.list(null, { status: ['staged', 'proposed', 'active'], limit: 10_000 });
+      for (const entry of candidates) {
+        if (effectiveStatus(entry, now) !== 'expired') continue;
+        const updated = await deps.store.update({ ...entry, status: 'expired', updatedAt: now, version: entry.version + 1 }, entry.version);
+        if (!updated) continue;
+        await deps.index.remove([`entry:${entry.id}`]);
+        expired += 1;
+      }
+      if (expired > 0) await systemAudit('memory.write', 'memory:sweep', `后台整理：${expired} 条过期`);
+      return { expired };
+    },
+
+
     async write(caller, input, via = caller.kind === 'session' ? 'tool' : 'ui') {
       const me = await who(caller);
       if (!me.ok) return me;
@@ -408,6 +537,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       };
       await deps.store.put(entry);
       if (entry.status === 'active') await applySupersedes(entry);
+      await corroborate(entry);
       await deps.index.upsert([indexDoc(entry)]);
       await audit(
         me.value,
@@ -457,8 +587,8 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
           if (!entry) continue;
           const status = effectiveStatus(entry, now);
           if (status === 'forgotten' || status === 'rejected') continue;
-          if (status !== 'active' && !input.includeInactive) continue;
-          const score = rankScore(hit.score, entry.updatedAt, entry.trust, now, entry.stale);
+          if (status !== 'active' && !input.includeInactive && !(status === 'staged' && input.includeStaged)) continue;
+          const score = rankScore(hit.score, entry.updatedAt, entry.trust, now, entry.stale) * (status === 'staged' ? 0.6 : 1);
           results.push({
             id: entry.id,
             origin: 'entry',
@@ -579,7 +709,8 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         const permitted = await allowed(me, 'memory.review', entry.scope);
         if (!permitted.ok) return permitted;
       }
-      if (effectiveStatus(entry, deps.now()) !== 'proposed') return err(conflict('这条不在待审状态'));
+      const current = effectiveStatus(entry, deps.now());
+      if (current !== 'proposed' && current !== 'staged') return err(conflict('这条不在待审 / 暂存状态'));
       const now = deps.now();
       const next: MemoryEntry = {
         ...entry,
@@ -639,7 +770,10 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       const parsed = scopes.flatMap((scope) => parseScopeKey(scope.key) ?? []);
       if (parsed.length === 0) return [];
       const now = deps.now();
-      return (await deps.store.list(parsed, { status: ['proposed'], limit: 200 })).filter((entry) => effectiveStatus(entry, now) === 'proposed');
+      return (await deps.store.list(parsed, { status: ['proposed', 'staged'], limit: 200 })).filter((entry) => {
+        const status = effectiveStatus(entry, now);
+        return status === 'proposed' || status === 'staged';
+      });
     },
 
     async projectMode(principal, projectId) {

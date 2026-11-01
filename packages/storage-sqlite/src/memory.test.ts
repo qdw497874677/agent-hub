@@ -231,3 +231,78 @@ test('FTS 查询词：短词走 LIKE，标点当分隔', () => {
   assert.deepEqual(ftsTerms('快照 deploy'), { match: '"deploy"', short: ['快照'] });
   assert.equal(ftsTerms('a"bcd').match, '"bcd"');
 });
+
+test('P2 压缩摘要：session: 一条生效，项目层 staged 一条 + 工作方式候选进待审；同一代只跑一次；默认搜不到 staged', async () => {
+  const w = await world();
+  const summary = '# 修好了登录重定向\n- 约定：上线前必须做数据库快照\n- 改了 auth.ts 的回调地址';
+  const first = await w.service.ingestCompaction(w.agent.sessionId, { seq: 7, summary, tokensBefore: 50_000 });
+  assert.equal(first.written, 3);
+  const again = await w.service.ingestCompaction(w.agent.sessionId, { seq: 7, summary, tokensBefore: 50_000 });
+  assert.equal(again.written, 0);
+  const session = await w.service.list(w.human('alice'), { scope: `session:${w.agent.sessionId}` });
+  assert.ok(session.ok);
+  assert.equal(session.value.length, 1);
+  assert.equal(session.value[0]!.status, 'active');
+  assert.equal(session.value[0]!.provenance.via, 'compaction');
+  const project = await w.service.list(w.human('alice'), { scope: w.pkey });
+  assert.ok(project.ok);
+  assert.deepEqual(project.value.map((e) => `${e.kind}:${e.status}:${e.trust}`).sort(), ['episodic:staged:untrusted', 'procedural:proposed:untrusted']);
+  const hidden = await w.service.search(w.human('alice'), { query: '登录重定向', scopes: [w.pkey], include: ['entries'] });
+  assert.ok(hidden.ok);
+  assert.equal(hidden.value.length, 0);
+  const shown = await w.service.search(w.human('alice'), { query: '登录重定向', scopes: [w.pkey], include: ['entries'], includeStaged: true });
+  assert.ok(shown.ok);
+  assert.equal(shown.value[0]!.status, 'staged');
+  const pending = await w.service.pending(w.principal('olga'));
+  assert.equal(pending.length, 2);
+  w.close();
+});
+
+test('P2 提炼的护栏：太短不提炼、含密钥整条不写、HUB_MEMORY_DISTILL=0 关掉', async () => {
+  const w = await world();
+  const short = await w.service.ingestCompaction(w.agent.sessionId, { seq: 1, summary: '小改动', tokensBefore: 500 });
+  assert.equal(short.written, 1);
+  assert.match(short.skipped ?? '', /太短/);
+  const secret = await w.service.ingestCompaction(w.agent.sessionId, { seq: 2, summary: 'API_KEY=abcdef1234567890 记一下', tokensBefore: 50_000 });
+  assert.equal(secret.written, 0);
+  process.env.HUB_MEMORY_DISTILL = '0';
+  try {
+    const off = await w.service.ingestCompaction(w.agent.sessionId, { seq: 3, summary: '大改动', tokensBefore: 50_000 });
+    assert.equal(off.written, 1);
+    assert.match(off.skipped ?? '', /关闭/);
+  } finally {
+    delete process.env.HUB_MEMORY_DISTILL;
+  }
+  w.close();
+});
+
+test('P2 staged：别人写同标题就印证转正；有人采纳转 active+trusted；30 天没人理过期，后台整理物化', async () => {
+  const w = await world();
+  await w.service.ingestCompaction(w.agent.sessionId, { seq: 1, summary: '部署流程梳理', tokensBefore: 50_000 });
+  const staged = (await w.service.list(w.human('alice'), { scope: w.pkey, status: ['staged'] }));
+  assert.ok(staged.ok);
+  const id = staged.value[0]!.id;
+  // 印证：人写一条同标题（归一化后相同）
+  const wrote = await w.service.write(w.human('alice'), { scope: w.pkey, kind: 'episodic', title: '会话摘要：部署流程梳理！', body: '确认过' });
+  assert.ok(wrote.ok);
+  const promoted = await w.service.list(w.human('alice'), { scope: w.pkey, status: ['active'] });
+  assert.ok(promoted.ok);
+  assert.ok(promoted.value.some((e) => e.id === id));
+
+  await w.service.ingestCompaction(w.agent.sessionId, { seq: 2, summary: '第二件事：缓存失效', tokensBefore: 50_000 });
+  const second = (await w.service.list(w.human('alice'), { scope: w.pkey, status: ['staged'] }));
+  assert.ok(second.ok);
+  const adopted = await w.service.review(w.principal('olga'), second.value[0]!.id, true);
+  assert.ok(adopted.ok);
+  assert.equal(adopted.value.status, 'active');
+  assert.equal(adopted.value.trust, 'trusted');
+
+  await w.service.ingestCompaction(w.agent.sessionId, { seq: 3, summary: '第三件事：没人理', tokensBefore: 50_000 });
+  w.tick(31 * DAY);
+  const swept = await w.service.sweep();
+  assert.ok(swept.expired >= 1);
+  const expired = await w.service.list(w.human('alice'), { scope: w.pkey, status: ['expired'] });
+  assert.ok(expired.ok);
+  assert.ok(expired.value.some((e) => e.title.includes('没人理')));
+  w.close();
+});
