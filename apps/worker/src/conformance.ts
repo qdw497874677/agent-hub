@@ -38,10 +38,10 @@ export interface ConformanceFixture {
 }
 
 /** 一个与世隔绝的上下文：临时 HOME、命令全指向不存在的路径、环境里埋一个假密钥。 */
-export function conformanceFixture(): ConformanceFixture {
+export function conformanceFixture(extraEnv: Record<string, string> = {}): ConformanceFixture {
   const home = mkdtempSync(join(tmpdir(), 'hub-conformance-'));
   const logs: string[] = [];
-  const env: Record<string, string> = { PATH: '', HOME: home, HUB_CONFORMANCE_SECRET: CONFORMANCE_SECRET };
+  const env: Record<string, string> = { PATH: '', HOME: home, HUB_CONFORMANCE_SECRET: CONFORMANCE_SECRET, ...extraEnv };
   return {
     home,
     logs,
@@ -64,9 +64,9 @@ export interface ConformanceReport {
 }
 
 /** 跑一遍契约检查；返回失败清单（空 = 通过）。 */
-export async function runRuntimeConformance(adapter: RuntimeAdapter): Promise<ConformanceReport> {
+export async function runRuntimeConformance(adapter: RuntimeAdapter, extraEnv: Record<string, string> = {}): Promise<ConformanceReport> {
   const failures: string[] = [];
-  const fixture = conformanceFixture();
+  const fixture = conformanceFixture(extraEnv);
   const realHome = homedir();
   const before = fingerprint(realHome);
   try {
