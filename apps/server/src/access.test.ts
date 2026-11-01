@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addTeamMember, inMemoryAccounts, inMemoryDeps, mailedToken } from '@agent-hub/domain/testing';
-import { asAgentId, createAccessPolicy, newWorkspace, type AgentDescriptor } from '@agent-hub/domain';
+import { asAgentId, createAccessPolicy, deriveSession, newWorkspace, type AgentDescriptor } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 
@@ -117,4 +117,23 @@ test('hub 团队成员不能用本机（localWorkerGrants 已收回）；只有�
   await accounts.users.save({ ...user!, clusterAdmin: true });
   assert.equal((await member('/api/fs/directories?path=/')).status, 200);
   assert.equal((await member('/api/workers')).body.length, world.workers.length);
+});
+
+test('会话改名：能写这条会话的人才能改；别的团队 / 不相干成员改不了；名字随会话列表下发', async () => {
+  const { david, stranger, member, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const task = (await david('/api/tasks', post({ projectId: project.id, title: '任务', goal: '' }))).body;
+  const made = deriveSession({ task: { ...task, createdAt: task.createdAt }, agentId: asAgentId('fake'), model: 'm1', now: 1 });
+  assert.ok(made.ok);
+  await world.deps.sessions.save(made.value);
+  const put = (title: string) => ({ method: 'PUT', body: JSON.stringify({ title }) });
+  const path = `/api/sessions/${made.value.id}/title`;
+  const ok = await david(path, put('  查登录 bug '));
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.title, '查登录 bug');
+  assert.ok([403, 404].includes((await stranger(path, put('x'))).status));
+  assert.ok([403, 404].includes((await member(path, put('x'))).status));
+  assert.equal((await david(path, put('x'.repeat(81)))).status, 400);
+  const canvas = (await david(`/api/projects/${project.id}/canvas`)).body;
+  assert.equal(canvas.sessions.find((s: { id: string }) => s.id === made.value.id)?.title, '查登录 bug');
 });

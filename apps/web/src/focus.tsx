@@ -56,6 +56,9 @@ export function FocusView({
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  useEffect(() => setRenaming(false), [session.id]);
   const [tab, setTab] = useState<SessionTab>('chat');
   useEffect(() => setTab('chat'), [session.id]);
   const [settings, changeSettings] = useDisplaySettings();
@@ -99,6 +102,18 @@ export function FocusView({
     };
   }, [session.id, origin.kind, origin.kind === 'fork' ? origin.fromSessionId : '', origin.kind === 'fork' ? origin.atSeq : 0]);
 
+  function startRename() {
+    setTitleDraft(session.title ?? '');
+    setRenaming(true);
+  }
+
+  function saveRename() {
+    const next = titleDraft.replace(/\s+/g, ' ').trim();
+    setRenaming(false);
+    if (next === (session.title ?? '')) return;
+    void run(() => api.renameSession(session.id, next));
+  }
+
   function fork() {
     void run(async () => {
       const created = await api.fork({ sessionId: session.id, agentId: session.agentId, model: session.model });
@@ -133,9 +148,36 @@ export function FocusView({
           </button>
         ) : null}
         <div className="min-w-0 flex-1">
-          <p className="truncate text-body text-primary">{task?.title ?? session.taskId}</p>
+          {renaming ? (
+            <input
+              autoFocus
+              value={titleDraft}
+              maxLength={80}
+              placeholder={task?.title ?? '会话名'}
+              aria-label="会话名"
+              data-testid="session-title-input"
+              className="h-7 w-full rounded-sm border border-hair bg-card px-1.5 text-body text-primary outline-none focus:border-accent"
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onPointerDown={(e) => e.stopPropagation()}
+              onBlur={saveRename}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur();
+                if (e.key === 'Escape') setRenaming(false);
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className="block max-w-full truncate text-left text-body text-primary hover:underline decoration-dotted"
+              title="点击重命名"
+              data-testid="session-title"
+              onClick={startRename}
+            >
+              {session.title || task?.title || session.taskId}
+            </button>
+          )}
           <p className="truncate font-mono text-meta text-tertiary">
-            {agentLabel} · {session.model === '' ? '默认模型' : session.model}
+            {session.title ? `${task?.title ?? session.taskId} · ` : ''}{agentLabel} · {session.model === '' ? '默认模型' : session.model}
             {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
           </p>
         </div>
@@ -151,6 +193,14 @@ export function FocusView({
           <Dropdown label="更多" icon="⋯">
             {(close) => (
               <>
+                <MenuItem
+                  title="重命名"
+                  hint="给这条会话起个名字；清空 = 回到默认显示"
+                  onClick={() => {
+                    close();
+                    startRename();
+                  }}
+                />
                 <MenuItem
                   title="分叉"
                   hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
@@ -299,5 +349,6 @@ export function FocusView({
 function sessionName(canvas: CanvasDto, session: SessionDto): string {
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
+  if (session.title) return session.title;
   return `${task?.title ?? session.taskId} · ${agent?.label ?? session.agentId}`;
 }

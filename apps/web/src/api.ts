@@ -262,6 +262,8 @@ export const api = {
     call<ProjectFilesDto>(
       `/api/projects/${projectId}/files?q=${encodeURIComponent(q)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ''}`
     ),
+  renameSession: (sessionId: string, title: string) =>
+    call<SessionDto>(`/api/sessions/${encodeURIComponent(sessionId)}/title`, { method: 'PUT', body: JSON.stringify({ title }) }),
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),

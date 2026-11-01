@@ -120,6 +120,9 @@ export const workspaceChangesSchema = z.object({
   reason: z.string().nullable()
 });
 
+/** 会话改名；空串 = 清掉。长度上限和领域层一致（SESSION_TITLE_MAX）。 */
+export const renameSessionRequest = z.object({ title: z.string().max(200) });
+
 export const forkSessionRequest = z.object({
   sessionId: id,
   /** 已忽略：服务端一律从来源的最新处分叉。留着只为老客户端不报错。 */

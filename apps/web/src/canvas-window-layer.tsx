@@ -102,6 +102,7 @@ interface LayerProps {
 export function sessionTitle(canvas: CanvasDto, session: SessionDto): string {
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
+  if (session.title) return session.title;
   return `${task?.title ?? session.taskId} · ${agent?.label ?? session.agentId}`;
 }
 

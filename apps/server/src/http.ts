@@ -27,6 +27,7 @@ import {
   workspaceSchema,
   workspaceViewSchema,
   forkSessionRequest,
+  renameSessionRequest,
   continueElsewhereRequest,
   projectFilesSchema,
   promptRequest,
@@ -71,6 +72,7 @@ import {
   workspaceChangesUseCase,
   workspaceViewsUseCase,
   forkSessionUseCase,
+  renameSessionUseCase,
   continueElsewhereUseCase,
   interruptSessionUseCase,
   listProjectFiles,
@@ -595,6 +597,14 @@ export function createApp(options: AppOptions): Hono {
     if (!changed.ok) return fail(c, changed.error);
     await options.waitOptions?.(sessionId);
     return c.json((await deps.sessions.byId(asSessionId(sessionId))) ?? changed.value);
+  });
+
+  /** 会话改名。守门中间件按 session.prompt 判权限（能在这条会话里说话的人才能改名）。 */
+  app.put('/api/sessions/:sessionId/title', async (c) => {
+    const input = await body(c, renameSessionRequest);
+    if (!input.ok) return input.response;
+    const renamed = await renameSessionUseCase(deps, { sessionId: c.req.param('sessionId'), title: input.value.title });
+    return renamed.ok ? c.json(renamed.value) : fail(c, renamed.error);
   });
 
   app.post('/api/sessions/:sessionId/interrupt', async (c) => {

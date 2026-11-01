@@ -161,7 +161,12 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
   return {
     journal,
     async save(session) {
-      rows.set(session.id, session);
+      const existing = rows.get(session.id);
+      rows.set(session.id, existing ? { ...session, title: existing.title ?? null } : session);
+    },
+    async setTitle(id, title, at) {
+      const existing = rows.get(id);
+      if (existing) rows.set(id, { ...existing, title, updatedAt: at });
     },
     async byId(id) {
       return rows.get(id) ?? null;
@@ -176,7 +181,8 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
       return [...rows.values()];
     },
     async append(session, event, at) {
-      rows.set(session.id, session);
+      const existing = rows.get(session.id);
+      rows.set(session.id, existing ? { ...session, title: existing.title ?? null } : session);
       const entries = journal.get(session.id) ?? [];
       entries.push({ seq: session.lastSeq, event, at });
       journal.set(session.id, entries);

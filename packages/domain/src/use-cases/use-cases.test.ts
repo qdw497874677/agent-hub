@@ -8,7 +8,7 @@ import { err, ok } from '../result.ts';
 import { fakeGit, inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
-import { changeSessionOption, deriveSessionUseCase, forkSessionUseCase, recordEvent } from './sessions.ts';
+import { changeSessionOption, deriveSessionUseCase, forkSessionUseCase, recordEvent, renameSessionUseCase } from './sessions.ts';
 import { ensureHosted } from './hosting.ts';
 import {
   ingestAgentSessionRef,
@@ -428,4 +428,21 @@ test('节点列表来自网关端口', async () => {
     }
   });
   assert.deepEqual((await listWorkers(w.deps)).map((row) => row.workerId), ['w1']);
+});
+
+test('会话改名：去空白、压换行；空串清掉；超长拒绝；不存在 404', async () => {
+  const w = await world();
+  const session = await derived(w);
+  const renamed = await renameSessionUseCase(w.deps, { sessionId: session.id, title: '  查\n登录 bug  ' });
+  assert.ok(renamed.ok);
+  assert.equal(renamed.value.title, '查 登录 bug');
+  await recordEvent(w.deps, { sessionId: session.id, event: { kind: 'text', delta: 'hi' } });
+  assert.equal((await w.deps.sessions.byId(session.id))?.title, '查 登录 bug', '会话继续跑、save 之后名字还在');
+  const cleared = await renameSessionUseCase(w.deps, { sessionId: session.id, title: '   ' });
+  assert.ok(cleared.ok);
+  assert.equal(cleared.value.title, null);
+  const tooLong = await renameSessionUseCase(w.deps, { sessionId: session.id, title: 'x'.repeat(81) });
+  assert.equal(tooLong.ok, false);
+  const missing = await renameSessionUseCase(w.deps, { sessionId: 'nope', title: 'a' });
+  assert.equal(!missing.ok && missing.error.code, 'not_found');
 });

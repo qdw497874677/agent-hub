@@ -211,7 +211,9 @@ export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'pr
         sessions: sessions.map((session, index) => {
           const prompt = (canvas.previews[session.id] ?? []).find((entry) => entry.event.kind === 'prompt');
           const text = prompt && prompt.event.kind === 'prompt' ? prompt.event.text.replace(/\s+/g, ' ').trim() : '';
-          return { session, label: text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `会话 ${index + 1}` };
+          const fallback = text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `会话 ${index + 1}`;
+          // 用户起过名就用名字；没起回退到首句 / 「会话 N」
+          return { session, label: session.title ? session.title : fallback };
         })
       };
     });

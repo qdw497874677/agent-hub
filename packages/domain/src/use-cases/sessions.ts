@@ -6,7 +6,7 @@ import type { Seq, SessionId } from '../ids.ts';
 import { asAgentId, asSessionId, asTaskId, asWorkspaceId } from '../ids.ts';
 import { isUsable } from '../workspace.ts';
 import type { DomainError } from '../errors.ts';
-import { conflict, notFound } from '../errors.ts';
+import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
@@ -322,4 +322,20 @@ export async function interruptSessionUseCase(
     return ended.ok ? ok(undefined) : ended;
   }
   return deps.gateway.dispatch({ kind: 'interrupt', sessionId: id });
+}
+
+export const SESSION_TITLE_MAX = 80;
+
+/** 会话改名：去首尾空白、压掉换行；空串 = 清掉名字（回退到默认显示）。权限在入口按 session.prompt 判（能在这条会话里说话的人）。 */
+export async function renameSessionUseCase(
+  deps: Pick<Deps, 'sessions' | 'now'>,
+  command: { readonly sessionId: string; readonly title: string }
+): Promise<Result<Session, DomainError>> {
+  const id = asSessionId(command.sessionId);
+  const session = await deps.sessions.byId(id);
+  if (!session) return err(notFound('会话不存在'));
+  const title = command.title.replace(/\s+/g, ' ').trim();
+  if (title.length > SESSION_TITLE_MAX) return err(invalid(`会话名最多 ${SESSION_TITLE_MAX} 个字`));
+  await deps.sessions.setTitle(id, title === '' ? null : title, deps.now());
+  return ok((await deps.sessions.byId(id)) ?? session);
 }

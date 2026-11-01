@@ -109,6 +109,8 @@ export function openSqliteStore(file: string): SqliteStore {
   // ADR 0017：会话创建者（说话 / 中断只给他）。老会话从审计里的 session.start / session.fork 回填。
   const addedCreatedBy = !columns.some((column) => column.name === 'created_by');
   if (addedCreatedBy) db.exec('ALTER TABLE sessions ADD COLUMN created_by TEXT');
+  // 会话名（用户可改）。NULL = 没起名。
+  if (!columns.some((column) => column.name === 'title')) db.exec('ALTER TABLE sessions ADD COLUMN title TEXT');
   db.exec(WORKSPACE_SCHEMA);
   migrateTasksV2(db);
   migrateWorkspaces(db);
@@ -141,10 +143,11 @@ export function openSqliteStore(file: string): SqliteStore {
     'SELECT * FROM tasks WHERE project_id = ? ORDER BY created_at ASC'
   );
 
+  const updateSessionTitle = db.prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, created_by, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, created_by, title, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
       'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
       'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
@@ -312,6 +315,7 @@ export function openSqliteStore(file: string): SqliteStore {
         session.workerId,
         session.workspaceId,
         session.createdBy ?? null,
+        session.title ?? null,
         session.createdAt,
         session.updatedAt
       );
@@ -364,6 +368,9 @@ export function openSqliteStore(file: string): SqliteStore {
     async entryIdAt(sessionId: Parameters<typeof asSessionId>[0], seq: Seq): Promise<string | null> {
       const row = selectEntryId.get(sessionId, seq) as { entry_id?: string } | undefined;
       return row?.entry_id ?? null;
+    },
+    async setTitle(sessionId: Parameters<typeof asSessionId>[0], title: string | null, at: number): Promise<void> {
+      updateSessionTitle.run(title, at, sessionId);
     }
   };
 
