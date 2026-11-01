@@ -34,7 +34,9 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
 
   const view = (await (await page.request.get(`/api/projects/${project.id}/context`)).json()) as { strategy: string; enabled: string[]; inherited: boolean };
   expect(view).toMatchObject({ strategy: 'compaction', enabled: ['compaction'], inherited: true });
-  expect((await page.request.put(`/api/projects/${project.id}/context`, { headers, data: { strategy: 'trim', enabled: ['trim'] } })).status()).toBe(400);
+  expect((await page.request.put(`/api/projects/${project.id}/context`, { headers, data: { strategy: 'nope', enabled: ['nope'] } })).status()).toBe(400);
+  // P3：trim 已内置（hub-managed），能启用
+  expect((await page.request.put(`/api/projects/${project.id}/context`, { headers, data: { strategy: 'compaction', enabled: ['compaction', 'trim'] } })).status()).toBe(200);
   expect((await page.request.put(`/api/projects/${project.id}/context`, { headers, data: { strategy: 'compaction', enabled: ['compaction'] } })).status()).toBe(200);
   expect((await page.request.put(`/api/sessions/${sid}/context`, { headers, data: { strategy: 'context-pruning' } })).status()).toBe(400);
   const set = await page.request.put(`/api/sessions/${sid}/context`, { headers, data: { strategy: 'compaction' } });
