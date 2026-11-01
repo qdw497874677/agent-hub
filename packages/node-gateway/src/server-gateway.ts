@@ -2,6 +2,8 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
+import type { WorkspaceBrowser } from '@agent-hub/domain';
+import { createRemoteBrowsers } from './remote-workspace-browser.ts';
 import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import {
   PROTOCOL_MISMATCH_CLOSE,
@@ -178,6 +180,8 @@ export interface ServerGateway {
   /** 「资源满了就拒绝新会话」开关（持久化在 hub 设置里，启动时和改动时同步进来）。 */
   setRefuseWhenFull(workerIds: Iterable<string>): void;
   testProvider(workerId: string, input: { protocol: ProviderProtocol; baseUrl: string; apiKey: string }): Promise<Result<{ ok: boolean; status: number; message: string; models: string[] }, DomainError>>;
+  /** 远端 Worker 上的工作空间文件浏览（ADR 0025）。 */
+  browser(workerId: string): WorkspaceBrowser;
   close(): void;
 }
 
@@ -257,6 +261,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (entry.socket !== socket) return;
     entry.socket = null;
     entry.reason = reason;
+    remoteBrowsers.workerGone(entry.workerId);
     for (const [sessionId, workerId] of placement) {
       if (workerId === entry.workerId) placement.delete(sessionId);
     }
@@ -396,6 +401,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
             return true;
           }
         });
+        remoteBrowsers.serve(frame.workerId, entry.channel);
         hooks.serve?.(frame.workerId, entry.channel);
         registry.set(frame.workerId, entry);
         socket.send(JSON.stringify({ kind: 'welcome', accepts: [WORKER_CAPABILITY_METRICS] } satisfies ServerToWorker));
@@ -549,6 +555,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     const { code, message } = outcome.error;
     if (code === 'invalid') return { ok: false, error: invalid(message) };
     if (code === 'conflict') return { ok: false, error: conflict(message) };
+    if (code === 'not_found') return { ok: false, error: { code: 'not_found', message } };
     if (code === 'timeout') return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」没有及时回复${what}`) };
     return { ok: false, error: unavailable(message) };
   }
@@ -611,6 +618,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     }
   };
 
+  const remoteBrowsers = createRemoteBrowsers({ channelOf, offline, toDomain });
+
   const assets: AssetDelivery = {
     async push(workerId, manifest) {
       const channel = channelOf(workerId);
@@ -631,6 +640,9 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     workers(): WorkerStatus[] {
       return statuses();
+    },
+    browser(workerId: string): WorkspaceBrowser {
+      return remoteBrowsers.browser(workerId);
     },
     metrics(workerId: string): readonly ResourceSample[] {
       return [...(usage.get(workerId)?.samples ?? [])];

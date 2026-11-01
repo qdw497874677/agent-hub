@@ -3,7 +3,7 @@
  */
 export const FILES_LIMITS = {
   previewBytes: 1024 * 1024,
-  downloadBytes: 50 * 1024 * 1024,
+  downloadBytes: 20 * 1024 * 1024,
   dirEntries: 1000,
   findResults: 50,
   diffBytes: 512 * 1024,

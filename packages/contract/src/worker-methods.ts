@@ -135,3 +135,65 @@ export const providerTest = method(
   z.object({ protocol: z.enum(['openai-chat', 'openai-responses', 'anthropic']), baseUrl: z.string().min(1).max(2000), apiKey: z.string().min(1).max(4096) }),
   z.object({ ok: z.boolean(), status: z.number().int(), message: z.string(), models: z.array(z.string()).max(500) })
 );
+
+/* ── 工作空间文件浏览（ADR 0025）：hub→worker 的 files.*，worker→hub 的 files.changed。Worker 侧都过 WORKER_ROOTS + realpath。 ── */
+
+const gitStatus = z.enum(['modified', 'added', 'deleted', 'renamed', 'untracked', 'conflicted']);
+const browserEntry = z.object({
+  name: z.string(),
+  path: z.string(),
+  type: z.enum(['file', 'dir', 'symlink']),
+  size: z.number(),
+  modifiedAt: z.number(),
+  ignored: z.boolean(),
+  sensitive: z.boolean(),
+  git: gitStatus.nullable()
+});
+
+export const filesList = method(
+  'files.list',
+  z.object({ root: z.string(), path: z.string(), limit: z.number().int().positive() }),
+  z.object({ path: z.string(), entries: z.array(browserEntry), truncated: z.boolean(), isGit: z.boolean() })
+);
+
+/** data：base64；binary 时为空串。 */
+export const filesRead = method(
+  'files.read',
+  z.object({ root: z.string(), path: z.string(), maxBytes: z.number().int().positive() }),
+  z.object({ path: z.string(), size: z.number(), modifiedAt: z.number(), binary: z.boolean(), truncated: z.boolean(), data: z.string() })
+);
+
+export const filesFind = method(
+  'files.find',
+  z.object({ root: z.string(), query: z.string(), limit: z.number().int().positive() }),
+  z.object({ files: z.array(z.string()) })
+);
+
+export const filesChanges = method(
+  'files.changes',
+  z.object({ root: z.string(), base: z.string().nullable() }),
+  z.object({ files: z.array(z.object({ path: z.string(), status: gitStatus, additions: z.number(), deletions: z.number(), oldPath: z.string().optional() })) })
+);
+
+export const filesDiff = method(
+  'files.diff',
+  z.object({ root: z.string(), path: z.string(), base: z.string().nullable(), maxBytes: z.number().int().positive() }),
+  z.object({ path: z.string(), patch: z.string(), truncated: z.boolean(), binary: z.boolean() })
+);
+
+export const filesHead = method('files.head', z.object({ root: z.string() }), z.object({ head: z.string().nullable() }));
+
+/** 开始盯：watchId 由 hub 起，变化用 files.changed 回报。 */
+export const filesWatch = method(
+  'files.watch',
+  z.object({ watchId: z.string().min(1).max(80), root: z.string(), paths: z.array(z.string()).max(200) }),
+  z.object({})
+);
+export const filesUnwatch = method('files.unwatch', z.object({ watchId: z.string().min(1).max(80) }), z.object({}));
+
+/** worker→hub：某个订阅下有东西变了（已防抖）。 */
+export const filesChanged = method(
+  'files.changed',
+  z.object({ watchId: z.string().min(1).max(80), paths: z.array(z.string()).max(1000) }),
+  z.object({})
+);
