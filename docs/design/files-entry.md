@@ -1,5 +1,7 @@
 # 工作空间文件：入口位置设计（调研 + 三方案）
 
+> **决定（2026-11-01，David）：采用方案 A**——会话头部「对话 / 文件 / 改动」标签切换，手机 390 与桌面 1280 都要好用；改动默认对比会话开始（session_git_bases，可切 HEAD）；工具参数里的路径可点暂不做；「详情 → 浏览文件」保留。下文第 3 节的推荐（C+B）仅作调研记录，未采纳。实现见 feat/files-tabs PR。
+>
 > 起因：现在文件浏览器只能从 会话 → 详情 → 浏览文件 进入，太隐蔽。本文是纯设计文档，不改代码。
 > Mockup：`docs/design/mockups/files-entry.html?opt=A|B|C&view=…`，截图在 `docs/design/mockups/files-entry/`。
 
