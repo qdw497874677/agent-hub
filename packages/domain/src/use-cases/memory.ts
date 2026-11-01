@@ -56,6 +56,8 @@ import type { Deps } from './deps.ts';
  */
 export interface DistillSettings {
   readonly model: string | null;
+  /** 项目开关（默认开）。 */
+  readonly enabled: boolean;
   /** HUB_MEMORY_DISTILL=0：全站关了，项目设置不生效。 */
   readonly globalOff: boolean;
 }
@@ -131,6 +133,7 @@ export interface MemoryService {
   /** 项目设置 · 会后提炼（ADR 0024）：选哪个模型（null = 规则版）。 */
   distillSettings(principal: Principal, projectId: string): Promise<Result<DistillSettings, DomainError>>;
   setDistillModel(principal: Principal, projectId: string, model: string | null): Promise<Result<DistillSettings, DomainError>>;
+  setDistillEnabled(principal: Principal, projectId: string, enabled: boolean): Promise<Result<DistillSettings, DomainError>>;
   /** 重扫一个项目的来源：增量更新索引，出处变了的条目标 stale，变两次转 invalidated。 */
   reindex(projectId: string, force?: boolean): Promise<{ indexed: number; removed: number; staled: number }>;
   /**
@@ -354,6 +357,12 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
   /** 已经处理过的压缩代（会话:序号），防同一代重复。 */
   const distilled = new Set<string>();
 
+  const distillView = async (projectId: string): Promise<DistillSettings> => ({
+    model: await deps.settings.distillModel(projectId),
+    enabled: await deps.settings.distillEnabled(projectId),
+    globalOff: process.env.HUB_MEMORY_DISTILL === '0'
+  });
+
   const service: MemoryService = {
     async ingestCompaction(sessionId, input) {
       const generation = `${sessionId}:${input.seq}`;
@@ -409,6 +418,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       const runs = distillRuns.get(project.id);
       const count = runs && runs.day === day ? runs.count : 0;
       if (process.env.HUB_MEMORY_DISTILL === '0') skipped = '提炼已关闭（HUB_MEMORY_DISTILL=0）';
+      else if (!(await deps.settings.distillEnabled(project.id))) skipped = '项目已关闭提炼';
       else if (input.tokensBefore !== undefined && input.tokensBefore < DISTILL_LIMITS.minTokens) skipped = '会话太短，不提炼';
       else if (count >= DISTILL_LIMITS.runsPerProjectPerDay) skipped = '项目当天提炼次数到上限';
       else {
@@ -860,7 +870,17 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       const me: Who = { principal, author: 'human', session: null, project: null, role: null };
       const permitted = await allowed(me, 'memory.read', { kind: 'project', projectId });
       if (!permitted.ok) return permitted;
-      return ok({ model: await deps.settings.distillModel(projectId), globalOff: process.env.HUB_MEMORY_DISTILL === '0' });
+      return ok(await distillView(projectId));
+    },
+
+    async setDistillEnabled(principal, projectId, enabled) {
+      const me: Who = { principal, author: 'human', session: null, project: null, role: null };
+      const permitted = await allowed(me, 'memory.review', { kind: 'project', projectId });
+      if (!permitted.ok) return permitted;
+      const before = await deps.settings.distillEnabled(projectId);
+      await deps.settings.setDistillEnabled(projectId, enabled, deps.now());
+      if (before !== enabled) await audit(me, 'memory.settings', `project:${projectId}`, `会后提炼 ${before ? '开' : '关'} → ${enabled ? '开' : '关'}`);
+      return ok(await distillView(projectId));
     },
 
     async setDistillModel(principal, projectId, model) {
@@ -875,7 +895,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       const before = await deps.settings.distillModel(projectId);
       await deps.settings.setDistillModel(projectId, model, deps.now());
       if (before !== model) await audit(me, 'memory.settings', `project:${projectId}`, `提炼模型 ${before ?? '规则版'} → ${model ?? '规则版'}`);
-      return ok({ model, globalOff: process.env.HUB_MEMORY_DISTILL === '0' });
+      return ok(await distillView(projectId));
     },
 
     async reindex(projectId, force = false) {

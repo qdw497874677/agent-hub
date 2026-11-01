@@ -18,6 +18,9 @@ test('会后提炼：默认规则版；乱填的模型被拒；项目设置里�
   expect((await page.request.put(path, { headers, data: { model: 'gpt-4o' } })).status()).toBe(400);
   expect((await page.request.put(path, { headers, data: { model: 'hub-no-such/x' } })).status()).toBe(400);
   expect((await page.request.put(path, { headers, data: { model: null } })).status()).toBe(200);
+  expect(await (await page.request.get(path)).json()).toMatchObject({ enabled: true });
+  expect((await page.request.put(path, { headers, data: { enabled: 'no' } })).status()).toBe(400);
+  expect((await page.request.put(path, { headers, data: {} })).status()).toBe(400);
   expect((await page.request.get(`/api/providers/models?projectId=${project.id}`)).ok()).toBe(true);
 
   await page.setViewportSize({ width: 390, height: 844 });
@@ -27,6 +30,12 @@ test('会后提炼：默认规则版；乱填的模型被拒；项目设置里�
   await expect(box.getByTestId('project-distill-model')).toHaveValue('');
   await expect(box.getByTestId('project-distill-model')).toContainText('规则版');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  const toggle = box.getByTestId('project-distill-enabled');
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(box.getByTestId('project-distill-model')).toBeDisabled();
+  expect(await (await page.request.get(path)).json()).toMatchObject({ enabled: false });
   await box.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/project-distill-390.png` });
 });

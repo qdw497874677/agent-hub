@@ -21,3 +21,9 @@
 - 提示词固定（中文，要求只输出 JSON、不编造、不输出凭据），不按项目定制。
 - 超时 60 秒、`max_tokens` 1500、回复上限 256 KB 写死。
 - 每天 50 次上限仍是进程内计数（沿用 P2），没有落库。
+
+## 补充：项目级提炼开关（2026-11-01，第 4 项）
+
+- `memory_distill_settings.enabled`（默认 1，老库自动 `ALTER TABLE` 加列）。`PUT /api/projects/:id/memory/distill {enabled}`，权限 `memory.review`，审计 `memory.settings`。
+- 顺序：全局 `HUB_MEMORY_DISTILL=0` 优先 → 项目关 → 最短会话 → 每日上限；关了只跳过项目层提炼，session: 压缩摘要照写（它不是「提炼」，只是原文）。
+- 保守选择：关掉不删已有的提炼条目；关掉时模型下拉框灰掉但保留选择。

@@ -147,6 +147,12 @@ export function createSqliteMemorySettings(db: DatabaseSync): MemorySettingsStor
   db.exec(MEMORY_SCHEMA);
   const get = db.prepare('SELECT mode FROM memory_settings WHERE project_id = ?');
   const set = db.prepare('INSERT INTO memory_settings (project_id, mode, updated_at) VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at');
+  const columns = db.prepare('PRAGMA table_info(memory_distill_settings)').all() as { name: string }[];
+  if (!columns.some((column) => column.name === 'enabled')) db.exec('ALTER TABLE memory_distill_settings ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1');
+  const getEnabled = db.prepare('SELECT enabled FROM memory_distill_settings WHERE project_id = ?');
+  const setEnabled = db.prepare(
+    'INSERT INTO memory_distill_settings (project_id, model, enabled, updated_at) VALUES (?, NULL, ?, ?) ON CONFLICT(project_id) DO UPDATE SET enabled = excluded.enabled, updated_at = excluded.updated_at'
+  );
   const getDistill = db.prepare('SELECT model FROM memory_distill_settings WHERE project_id = ?');
   const setDistill = db.prepare(
     'INSERT INTO memory_distill_settings (project_id, model, updated_at) VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET model = excluded.model, updated_at = excluded.updated_at'
@@ -158,6 +164,13 @@ export function createSqliteMemorySettings(db: DatabaseSync): MemorySettingsStor
     },
     async setDistillModel(projectId, model, at) {
       setDistill.run(projectId, model, at);
+    },
+    async distillEnabled(projectId) {
+      const row = getEnabled.get(projectId) as { enabled: number } | undefined;
+      return row ? row.enabled !== 0 : true;
+    },
+    async setDistillEnabled(projectId, enabled, at) {
+      setEnabled.run(projectId, enabled ? 1 : 0, at);
     },
     async projectMode(projectId) {
       const row = get.get(projectId) as Row | undefined;

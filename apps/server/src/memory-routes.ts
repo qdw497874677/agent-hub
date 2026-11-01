@@ -146,10 +146,15 @@ export function installMemoryRoutes(app: Hono<any>, options: MemoryRouteDeps, su
   app.put('/api/projects/:id/memory/distill', async (c) => {
     const principal = who(c);
     if (!principal) return fail(c, { code: 'forbidden', message: '要登录' });
-    const body = (await c.req.json().catch(() => null)) as { model?: unknown } | null;
-    const model = body?.model;
-    if (!body || (model !== null && (typeof model !== 'string' || model.length > 300))) return fail(c, { code: 'invalid', message: 'model 要是 hub 模型 id 或 null（规则版）' });
-    const settings = await memory.setDistillModel(principal, c.req.param('id'), model === '' ? null : (model as string | null));
+    const body = (await c.req.json().catch(() => null)) as { model?: unknown; enabled?: unknown } | null;
+    if (!body || typeof body !== 'object') return fail(c, { code: 'invalid', message: '请求体要是 {model?, enabled?}' });
+    const model = body.model;
+    if ('model' in body && model !== null && (typeof model !== 'string' || model.length > 300)) return fail(c, { code: 'invalid', message: 'model 要是 hub 模型 id 或 null（规则版）' });
+    if ('enabled' in body && typeof body.enabled !== 'boolean') return fail(c, { code: 'invalid', message: 'enabled 要是布尔值' });
+    if (!('model' in body) && !('enabled' in body)) return fail(c, { code: 'invalid', message: '要给 model 或 enabled' });
+    let settings = await memory.distillSettings(principal, c.req.param('id'));
+    if ('enabled' in body) settings = await memory.setDistillEnabled(principal, c.req.param('id'), body.enabled as boolean);
+    if (settings.ok && 'model' in body) settings = await memory.setDistillModel(principal, c.req.param('id'), model === '' ? null : (model as string | null));
     return settings.ok ? c.json(settings.value) : fail(c, settings.error);
   });
 
