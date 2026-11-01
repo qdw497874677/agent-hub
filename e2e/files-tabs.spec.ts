@@ -36,7 +36,7 @@ async function setup(page: Page, baseURL: string) {
   const sid = ((await derived.json()) as { id: string }).id;
   // 会话开始之后才改：对比「会话开始时」应能看到
   writeFileSync(join(root, 'src/app.ts'), 'export const answer = 42;\n');
-  return { projectId: project.id, sid };
+  return { projectId: project.id, sid, root };
 }
 
 for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 1280, 800]] as const) {
@@ -80,11 +80,52 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
     await page.getByTestId('session-tab-chat').click();
     await expect(page.getByRole('log', { name: '对话记录' })).toBeVisible();
-    await expect(page.getByTestId('files-panel-files')).toHaveCount(0);
+    await expect(page.getByTestId('files-panel-files')).toBeHidden();
 
     // 详情 → 浏览文件 仍可用
     await page.getByRole('button', { name: '详情' }).click();
     await page.getByTestId('open-files').click();
     await expect(page.getByTestId('files-browser')).toBeVisible();
+  });
+}
+
+for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 1280, 800]] as const) {
+  test(`切回文件 / 改动先显示缓存再刷新，离线仍显示离线（${name}）`, async ({ page, baseURL }) => {
+    await page.setViewportSize({ width, height });
+    const { projectId, sid, root } = await setup(page, baseURL!);
+    await page.goto(`/#/p/${projectId}/focus/${sid}`);
+    await page.getByTestId('session-tab-files').click();
+    const files = page.getByTestId('files-panel-files');
+    await files.locator('[data-path="src"]').click();
+    await files.locator('[data-path="src/app.ts"]').click();
+    await expect(files.getByTestId('file-content')).toContainText('answer = 42');
+    await page.getByTestId('session-tab-changes').click();
+    const changes = page.getByTestId('files-panel-changes');
+    await changes.getByTestId('change-row').filter({ hasText: 'src/app.ts' }).click();
+    await expect(changes.getByTestId('diff-view')).toContainText('42');
+
+    // 第二次切回：内容立即在，没有「读取中」
+    await page.getByTestId('session-tab-chat').click();
+    writeFileSync(join(root, 'src/app.ts'), 'export const answer = 43;\n');
+    await page.getByTestId('session-tab-files').click();
+    await expect(files.getByTestId('file-content')).toBeVisible({ timeout: 300 });
+    await expect(files.getByText('读取中…')).toHaveCount(0);
+    await expect(files.getByTestId('file-content')).toContainText('answer = 43', { timeout: 15_000 });
+    await page.getByTestId('session-tab-changes').click();
+    await expect(changes.getByTestId('diff-view')).toBeVisible({ timeout: 300 });
+    await expect(changes.getByText('读取中…')).toHaveCount(0);
+    await expect(changes.getByTestId('diff-view')).toContainText('43', { timeout: 15_000 });
+
+    // Worker 离线：重读失败就显示离线，不拿缓存冒充当前
+    await page.route(`**/api/sessions/${sid}/**`, (route) =>
+      /\/(files|git)\b/.test(route.request().url()) ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"worker offline"}' }) : route.fallback()
+    );
+    await page.getByTestId('session-tab-files').click();
+    await expect(files.getByTestId('files-error').first()).toContainText('Worker 离线');
+    await expect(files.getByTestId('file-content')).toHaveCount(0);
+    await page.getByTestId('session-tab-changes').click();
+    await expect(changes.getByTestId('files-error').first()).toContainText('Worker 离线');
+    await expect(changes.getByTestId('change-row')).toHaveCount(0);
+    await expect(page.getByTestId('session-tab-changes')).toHaveText('改动');
   });
 }

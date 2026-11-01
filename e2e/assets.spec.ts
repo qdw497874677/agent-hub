@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { loginByApi } from "./login.ts";
 import { currentRun } from "./run-id.ts";
 
-const ROOT = "/tmp/agent-hub-e2e-data/worker-assets";
+const ROOT = `${process.env['E2E_DATA_DIR'] ?? '/tmp/agent-hub-e2e-data'}/worker-assets`;
 const skill = (name: string, body: string) =>
   Buffer.from(`---\nname: ${name}\ndescription: e2e 技能 ${name}\n---\n\n${body}\n`);
 

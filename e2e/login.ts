@@ -4,7 +4,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
 
 export const TEST_EMAIL = 'test@agent-hub.local';
 /** server 启动时生成、写进 e2e 数据目录的测试账号密码。 */
-export const testPassword = (): string => readFileSync('/tmp/agent-hub-e2e-data/test-account', 'utf8').trim();
+export const testPassword = (): string => readFileSync(`${process.env['E2E_DATA_DIR'] ?? '/tmp/agent-hub-e2e-data'}/test-account`, 'utf8').trim();
 
 /** 走 API 登录：cookie 落在 page 的上下文里，后续页面直接是已登录状态。 */
 export async function loginByApi(page: Page): Promise<void> {
@@ -12,7 +12,7 @@ export async function loginByApi(page: Page): Promise<void> {
   if (!response.ok()) throw new Error(`测试账号登录失败：HTTP ${response.status()}`);
 }
 
-const OUTBOX = '/tmp/agent-hub-e2e-data/outbox.jsonl';
+const OUTBOX = `${process.env['E2E_DATA_DIR'] ?? '/tmp/agent-hub-e2e-data'}/outbox.jsonl`;
 
 /** 从日志模式的 outbox 里取发给某人的最新一封信里的链接（等它落盘，最多 5 秒）。 */
 export async function mailedLink(email: string, kind: 'verify' | 'reset' | 'invite' = 'verify'): Promise<string> {

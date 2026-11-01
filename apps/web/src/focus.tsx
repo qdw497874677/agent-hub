@@ -10,7 +10,8 @@ import { StatusPill } from './status.tsx';
 import { attachmentsCapability } from './attachments.ts';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
 import { sessionCommands } from './commands.ts';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
+import { FILES_QUERY, shown } from './files-core.ts';
 import { filesApi } from './api.ts';
 import { FilesBrowser } from './files-browser.tsx';
 import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
@@ -59,8 +60,20 @@ export function FocusView({
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   useEffect(() => setRenaming(false), [session.id]);
+  const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>('chat');
-  useEffect(() => setTab('chat'), [session.id]);
+  // 访问过的文件 / 改动页保持挂载（隐藏），切回时状态和内容都还在；换会话才重置
+  const [visited, setVisited] = useState<ReadonlySet<SessionTab>>(() => new Set(['chat']));
+  useEffect(() => {
+    setTab('chat');
+    setVisited(new Set(['chat']));
+  }, [session.id]);
+  useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
+  // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
+  useEffect(() => {
+    if (tab !== 'chat') void queries.invalidateQueries({ queryKey: ['files', session.id] });
+  }, [tab, session.id, queries]);
+  const refreshing = useIsFetching({ queryKey: ['files', session.id] }) > 0;
   const [settings, changeSettings] = useDisplaySettings();
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
@@ -72,15 +85,14 @@ export function FocusView({
   const lastSeq = live?.lastSeq ?? session.lastSeq;
   const turnRunning = waitingForReply(live, status);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
-  const queries = useQueryClient();
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
   useEffect(() => void queries.invalidateQueries({ queryKey: ['files', session.id, 'changes'] }), [status, session.id, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
-  const changeCount = useQuery({
-    retry: false, gcTime: 0, staleTime: 0, refetchOnWindowFocus: false,
+  const changeCount = shown(useQuery({
+    ...FILES_QUERY,
     queryKey: ['files', session.id, 'changes', 'session'],
     queryFn: () => filesApi.changes(session.id, 'session')
-  }).data?.files.length;
+  }))?.files.length;
   const forkable = !busy && forkHint === null;
   const origin = session.origin;
   const forkSource = origin.kind === 'fork' ? canvas.sessions.find((candidate) => candidate.id === origin.fromSessionId) ?? null : null;
@@ -246,8 +258,17 @@ export function FocusView({
             {sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}
           </button>
         ))}
+        {tab !== 'chat' && refreshing ? (
+          <span className="ml-auto self-center px-2 text-meta text-tertiary" aria-live="polite" data-testid="files-refreshing">刷新中…</span>
+        ) : null}
       </div>
-      {tab !== 'chat' ? <FilesBrowser embedded tab={tab} sessionId={session.id} status={status} /> : null}
+      {(['files', 'changes'] as const).map((t) =>
+        visited.has(t) ? (
+          <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+            <FilesBrowser embedded tab={t} sessionId={session.id} status={status} />
+          </div>
+        ) : null
+      )}
       {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} /> : null}
       {continuing ? (
         <ContinueDialog
