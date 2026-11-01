@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { PROVIDER_BASE_URL_ENV, PROVIDER_TOKEN_ENV, type ProviderLaunch } from '@agent-hub/domain';
+import { parseHubModel, PROVIDER_BASE_URL_ENV, PROVIDER_TOKEN_ENV, type ProviderLaunch } from '@agent-hub/domain';
 import type { AcpAgentConfig, AcpLaunch } from './config.ts';
 
 /**
@@ -21,7 +21,10 @@ export function hermesAcpModelConfig(launch: ProviderLaunch): Record<string, unk
       base_url: `\${${PROVIDER_BASE_URL_ENV}}`,
       api_key: `\${${PROVIDER_TOKEN_ENV}}`
     },
-    memory: { memory_enabled: false, user_profile_enabled: false }
+    memory: { memory_enabled: false, user_profile_enabled: false },
+    // hermes acp 会在这个 home 自动拉起一个 `gateway run --idle-exit`（约 270MB），默认闲 600 秒才退；
+    // 一会话一 home，留着就是一堆空转进程——闲 60 秒就退（会话还在用时它不算闲）。
+    gateway: { unmanaged_idle_exit_seconds: 60 }
   };
 }
 
@@ -37,6 +40,16 @@ export function hermesAcpProviderLaunch(root: string) {
   };
 }
 
+/**
+ * Hermes ACP 的模型 id 是「custom:<模型>」（config.yaml 里 provider: custom）；hub 下发的是「hub-<slug>/<模型>」。
+ * 不换的话 set_model 会把 Hermes 切到一个它不认识的模型。
+ */
+export function hermesAcpOptionValue(id: string, value: string | boolean): string | boolean {
+  if (id !== 'model' || typeof value !== 'string') return value;
+  const hub = parseHubModel(value);
+  return hub ? `custom:${hub.modelId}` : value;
+}
+
 /** 只在 Hermes 开了（HERMES_COMMAND 或 WORKER_HERMES=1）才加；只用 hub 模型（没有本机凭据可用）。 */
 export function hermesAcpConfig(env: Readonly<Record<string, string | undefined>>, home = homedir()): AcpAgentConfig | null {
   if (!env['HERMES_COMMAND'] && env['WORKER_HERMES'] !== '1') return null;
@@ -49,6 +62,7 @@ export function hermesAcpConfig(env: Readonly<Record<string, string | undefined>
     // 没选 hub 模型时也不碰用户的 ~/.hermes：给一个空 home（没凭据，跑不起来就报错，不偷用本机配置）
     launch: () => ({ env: { HERMES_HOME: join(root, 'acp', '_unrouted') } }),
     providerProtocols: ['openai-chat'],
-    providerLaunch: hermesAcpProviderLaunch(root)
+    providerLaunch: hermesAcpProviderLaunch(root),
+    optionValue: hermesAcpOptionValue
   };
 }

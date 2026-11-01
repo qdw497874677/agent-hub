@@ -91,3 +91,40 @@ export function currentValues(options: readonly RuntimeOption[]): Record<string,
   for (const option of options) values[option.id] = option.current;
   return values;
 }
+
+/**
+ * 老式（ACP unstable）的会话级 `models` / `modes`：没有 configOptions 的 agent（Hermes 0.22.5）只报这两块，
+ * 改值走 `session/set_model` / `session/set_mode`。翻成同形状的 RuntimeOption，id 固定为 `model` / `mode`。
+ */
+export const LEGACY_OPTION_IDS = ['model', 'mode'] as const;
+
+export function legacyAcpOptions(session: Readonly<Record<string, unknown>>): readonly RuntimeOption[] {
+  const out: RuntimeOption[] = [];
+  const models = session['models'] as { availableModels?: { modelId?: unknown; name?: unknown; description?: unknown }[]; currentModelId?: unknown } | undefined;
+  if (models && typeof models.currentModelId === 'string') {
+    out.push({
+      id: 'model',
+      label: '模型',
+      category: 'model',
+      kind: 'select',
+      current: models.currentModelId,
+      choices: (models.availableModels ?? []).flatMap((m) =>
+        typeof m.modelId === 'string' ? [{ kind: 'value' as const, value: { value: m.modelId, label: typeof m.name === 'string' ? m.name : m.modelId, ...(typeof m.description === 'string' ? { description: m.description } : {}) } }] : []
+      )
+    });
+  }
+  const modes = session['modes'] as { availableModes?: { id?: unknown; name?: unknown; description?: unknown }[]; currentModeId?: unknown } | undefined;
+  if (modes && typeof modes.currentModeId === 'string') {
+    out.push({
+      id: 'mode',
+      label: '模式',
+      category: 'mode',
+      kind: 'select',
+      current: modes.currentModeId,
+      choices: (modes.availableModes ?? []).flatMap((m) =>
+        typeof m.id === 'string' ? [{ kind: 'value' as const, value: { value: m.id, label: typeof m.name === 'string' ? m.name : m.id, ...(typeof m.description === 'string' ? { description: m.description } : {}) } }] : []
+      )
+    });
+  }
+  return out;
+}

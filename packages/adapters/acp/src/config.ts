@@ -41,6 +41,8 @@ export interface AcpAgentConfig {
    * 渲染出来的配置只能引用令牌的环境变量名，令牌值只进 env。
    */
   readonly providerLaunch?: (sessionId: string, provider: ProviderLaunch, base: AcpLaunch) => Promise<AcpLaunch> | AcpLaunch;
+  /** 可选：开跑前下发的选项值换成 agent 认的写法（例如 hub 模型「hub-<slug>/<id>」→ Hermes 的「custom:<id>」）。 */
+  readonly optionValue?: (id: string, value: string | boolean) => string | boolean;
 }
 
 export interface AcpLaunch {

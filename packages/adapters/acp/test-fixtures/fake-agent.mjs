@@ -6,6 +6,13 @@ const say = (sessionId, text) =>
   send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
 
 let model = 'a';
+let mode = 'default';
+// --legacy：像 Hermes 0.22.5 那样只报老式 models/modes，不报 configOptions
+const LEGACY = process.argv.includes('--legacy');
+const reported = () =>
+  LEGACY
+    ? { models: { availableModels: [{ modelId: 'custom:a', name: 'A' }], currentModelId: model }, modes: { availableModes: [{ id: 'default', name: 'Default' }, { id: 'accept_edits', name: 'Accept' }], currentModeId: mode } }
+    : { configOptions: options() };
 const options = () => [
   { id: 'model', name: 'Model', type: 'select', category: 'model', currentValue: model, options: [{ value: 'a', name: 'A' }, { value: 'b', name: 'B' }] }
 ];
@@ -27,13 +34,21 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     case 'authenticate':
       return send({ id: msg.id, result: {} });
     case 'session/new':
-      return send({ id: msg.id, result: { sessionId: 's1', configOptions: options() } });
+      if (LEGACY) model = 'custom:a';
+      return send({ id: msg.id, result: { sessionId: 's1', ...reported() } });
     case 'session/load':
       say(msg.params.sessionId, 'replayed history');
       return send({ id: msg.id, result: { configOptions: options() } });
     case 'session/set_config_option':
+      if (LEGACY) return send({ id: msg.id, result: { configOptions: [] } });
       model = msg.params.value;
       return send({ id: msg.id, result: { configOptions: options() } });
+    case 'session/set_model':
+      model = msg.params.modelId;
+      return send({ id: msg.id, result: {} });
+    case 'session/set_mode':
+      mode = msg.params.modeId;
+      return send({ id: msg.id, result: {} });
     case 'session/prompt':
       say(msg.params.sessionId, `methods:${seen.join(',')}`);
       if (msg.params.prompt[0].text !== 'ask') return send({ id: msg.id, result: { stopReason: 'end_turn' } });
