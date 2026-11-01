@@ -127,9 +127,51 @@ umask 077
 } > "$env_file"
 chmod 600 "$env_file"
 
-if [[ "${1:-}" == "--no-systemd" ]] || ! command -v systemctl >/dev/null; then
+# 没有可用的 systemd（容器、没 user 实例 / DBus 的机器）就用一个自带的守护循环：nohup 起，crontab @reboot 开机拉起。
+systemd_ok() {
+  command -v systemctl >/dev/null || return 1
+  if [[ $EUID -eq 0 ]]; then systemctl show-environment >/dev/null 2>&1; else systemctl --user show-environment >/dev/null 2>&1; fi
+}
+launcher="$config_dir/run-worker.sh"
+start_without_systemd() {
+  cat > "$launcher" <<RUN
+#!/usr/bin/env bash
+# agent-hub Worker 守护循环（没有 systemd 时用）：崩了 3 秒后重启；退出码 78（hub 拒绝这台机器）就停。
+exec 9>"$config_dir/run-worker.lock"
+if command -v flock >/dev/null; then flock -n 9 || { echo "已经在跑了"; exit 0; }; fi
+cd "$here"
+while true; do
+  bash "$here/scripts/worker-boot-guard.sh" || true
+  (set -a; . "$env_file"; set +a; exec "$node_bin" "$here/apps/worker/src/main.ts")
+  code=\$?
+  [[ \$code -eq 78 ]] && { echo "hub 拒绝了这台机器（退出码 78），不再重启"; exit 78; }
+  sleep 3
+done
+RUN
+  chmod 700 "$launcher"
+  pkill -f "$launcher" 2>/dev/null || true
+  sleep 1
+  nohup setsid bash "$launcher" >>"$config_dir/worker.log" 2>&1 </dev/null &
+  echo "==> 已在后台启动（不经 systemd）。看日志：tail -f $config_dir/worker.log"
+  echo "    停止：pkill -f $launcher"
+  if command -v crontab >/dev/null; then
+    { crontab -l 2>/dev/null | grep -vF "$launcher" || true; echo "@reboot bash $launcher >>$config_dir/worker.log 2>&1"; } | crontab - 2>/dev/null \
+      && echo "    已加 crontab @reboot：重启机器后自动拉起" \
+      || echo "    提示：crontab 写不进去，重启机器后要手动执行 nohup bash $launcher &"
+  else
+    echo "    提示：没有 crontab，重启机器后要手动执行 nohup bash $launcher >>$config_dir/worker.log 2>&1 &"
+  fi
+}
+
+if [[ "${1:-}" == "--no-systemd" ]]; then
   echo "==> 跳过 systemd。前台启动："
   echo "    set -a; . $env_file; set +a; node $here/apps/worker/src/main.ts"
+  echo "    （或后台常驻：nohup bash $launcher &，重装时去掉 --no-systemd 会自动写好它）"
+  exit 0
+fi
+if ! systemd_ok; then
+  echo "==> 这台机器用不了 systemd$([[ $EUID -ne 0 ]] && echo " --user")（没有 user 实例或 DBus），改用后台守护循环"
+  start_without_systemd
   exit 0
 fi
 
@@ -160,7 +202,14 @@ UNIT
 
 if [[ $EUID -ne 0 ]]; then
   # 不登录也要跑：user unit 需要 linger（没权限就提示，不中断安装）。
-  loginctl enable-linger "$USER" 2>/dev/null || echo "    提示：退出登录后要继续跑，请执行 sudo loginctl enable-linger $USER"
+  user="${USER:-$(id -un)}"
+  if [[ "$(loginctl show-user "$user" -p Linger --value 2>/dev/null)" != yes ]]; then
+    if loginctl enable-linger "$user" 2>/dev/null && [[ "$(loginctl show-user "$user" -p Linger --value 2>/dev/null)" == yes ]]; then
+      echo "==> 已开启 linger：退出登录后 Worker 继续跑"
+    else
+      echo "    注意：没能开启 linger（需要管理员）。退出登录后这台 Worker 会停；请管理员执行 sudo loginctl enable-linger $user"
+    fi
+  fi
 fi
 "${sysctl[@]}" daemon-reload
 "${sysctl[@]}" enable "$service.service"
