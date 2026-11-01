@@ -1,3 +1,4 @@
+import { pathToFileURL } from 'node:url';
 import { asAgentId, available, capabilityMatrix, limited } from '@agent-hub/domain';
 import type { AgentDescriptor, ProviderLaunch, ProviderProtocol, RuntimeOption, SessionAssets } from '@agent-hub/domain';
 
@@ -55,8 +56,14 @@ export interface AcpLaunch {
  * 机器上已经设置了这个变量时做深合并：用户的值全部保留，数组追加 hub 的条目（去重）；
  * 原值不是 JSON 对象就没法合并，只用 hub 这一段（OpenCode 本来也读不了它）。
  */
-export function opencodeLaunch(assets: SessionAssets, existing: string | undefined = process.env['OPENCODE_CONFIG_CONTENT']): AcpLaunch {
+export function opencodeLaunch(
+  assets: SessionAssets,
+  existing: string | undefined = process.env['OPENCODE_CONFIG_CONTENT'],
+  /** hub 装的 opencode 组件（ADR 0021 P3）：包目录的真实路径。v2 的 `plugins` 认 file:// 本地路径，插件默认导出 {id, setup}。 */
+  plugins: readonly string[] = []
+): AcpLaunch {
   const content: Record<string, unknown> = {};
+  if (plugins.length > 0) content['plugins'] = plugins.map((dir) => pathToFileURL(dir).href);
   // 每个技能目录单独给（OpenCode 在每个 path 下找 **/SKILL.md）：会话只看得见这次生效的那些。
   if (assets.skills.length > 0) content['skills'] = { paths: assets.skills.map((skill) => skill.path.replace(/\/SKILL\.md$/, '')) };
   if (assets.instructions.length > 0) content['instructions'] = assets.instructions.map((item) => item.path);

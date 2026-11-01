@@ -60,7 +60,12 @@ export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDt
 /** 组件目录里的一个版本（ADR 0021 §8）：制品由 hub 解析钉死，scripts 是审核时要看的安装脚本原文。 */
 export interface CatalogComponentDto {
   id: string;
-  runtime: 'pi';
+  runtime: 'pi' | 'opencode';
+  source?: 'npm' | 'git';
+  gitUrl?: string;
+  commit?: string;
+  approvals?: { by: string; at: number; note: string | null }[];
+  requiredApprovals?: number;
   packageName: string;
   version: string;
   resolved: string;
@@ -172,7 +177,9 @@ export const api = {
   componentJob: (workerId: string, componentId: string, body: { action: 'install' | 'uninstall'; version?: string }) =>
     post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/components/${encodeURIComponent(componentId)}`, body),
   components: () => call<{ components: CatalogComponentDto[] }>('/api/components').then((r) => r.components),
-  submitComponent: (input: { id: string; packageName: string; version: string; provides: { capability: string }[] }) =>
+  bundleInstall: (workerId: string, components: { componentId: string; version: string }[]) =>
+    post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/bundle-install`, { components }),
+  submitComponent: (input: { id: string; packageName: string; version: string; provides: { capability: string }[]; runtime?: 'pi' | 'opencode'; git?: { url: string; commit: string } }) =>
     post<{ component: CatalogComponentDto }>('/api/components', input),
   reviewComponent: (id: string, version: string, approve: boolean, note?: string) =>
     post<{ component: CatalogComponentDto }>(`/api/components/${encodeURIComponent(id)}/${encodeURIComponent(version)}/review`, { approve, ...(note ? { note } : {}) }),

@@ -9,7 +9,6 @@ import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
-import type { ComponentProvides } from '../runtime-bundle.ts';
 import { isBusy } from '../session.ts';
 import {
   catalogKey,
@@ -18,8 +17,13 @@ import {
   validateSubmission,
   type CatalogComponent,
   type ComponentAction,
-  type NpmArtifactInfo
+  type ComponentJobSpec,
+  type ComponentSubmission,
+  type NpmArtifactInfo,
+  gitIntegrity,
+  gitSpec
 } from '../component-catalog.ts';
+import type { WorkerComponentPin } from '../component-catalog.ts';
 
 export interface ComponentDeps {
   readonly catalog: ComponentCatalogRepository;
@@ -32,6 +36,8 @@ export interface ComponentDeps {
   readonly resolveNpm: (packageName: string, version: string) => Promise<NpmArtifactInfo>;
   readonly now: () => number;
   readonly newJobId?: () => string;
+  /** 每个目录项需要几个不同的 cluster_admin 批准（P3 双人审核；默认 1）。≥2 时提交人自己那票不算。 */
+  readonly requiredApprovals?: number;
 }
 
 const audit = (deps: ComponentDeps, by: Principal, action: Parameters<AuditLog['append']>[0]['action'], target: string, detail: string) =>
@@ -56,7 +62,7 @@ export async function listComponentCatalog(deps: ComponentDeps, actor: Principal
 export async function submitComponent(
   deps: ComponentDeps,
   actor: Principal | null,
-  input: { id: string; packageName: string; version: string; provides: readonly ComponentProvides[] }
+  input: ComponentSubmission
 ): Promise<Result<CatalogComponent, DomainError>> {
   const admin = await clusterAdmin(deps, actor);
   if (!admin.ok) return admin;
@@ -66,17 +72,27 @@ export async function submitComponent(
   if (existing && existing.status !== 'rejected') return err(conflict('这个版本已经在目录里'));
   const others = (await deps.catalog.list()).filter((c) => c.id === input.id);
   if (others.some((c) => c.packageName !== input.packageName)) return err(conflict('同一个组件 id 不能换 npm 包'));
+  if (others.some((c) => (c.runtime ?? 'pi') !== (input.runtime ?? 'pi'))) return err(conflict('同一个组件 id 不能换运行时'));
   let info: NpmArtifactInfo;
-  try {
-    info = await deps.resolveNpm(input.packageName, input.version);
-  } catch (failure) {
-    return err(invalid(`查不到这个 npm 版本：${(failure as Error).message}`));
+  if (input.git) {
+    // git 来源（P4）：钉死提交号，制品就是那个提交；hub 不去拉仓库，安装脚本审核时看不到（装的时候一律不执行）
+    info = { name: input.packageName, version: input.version, resolved: gitSpec(input.git.url, input.git.commit), integrity: gitIntegrity(input.git.commit), scripts: {}, dependencyCount: 0 };
+  } else {
+    try {
+      info = await deps.resolveNpm(input.packageName, input.version);
+    } catch (failure) {
+      return err(invalid(`查不到这个 npm 版本：${(failure as Error).message}`));
+    }
+    const checked = checkArtifact(info, input.packageName, input.version);
+    if (!checked.ok) return checked;
   }
-  const checked = checkArtifact(info, input.packageName, input.version);
-  if (!checked.ok) return checked;
+  const required = Math.max(1, Math.min(3, Math.floor(deps.requiredApprovals ?? 1)));
   const item: CatalogComponent = {
     id: input.id,
-    runtime: 'pi',
+    runtime: input.runtime ?? 'pi',
+    ...(input.git ? { source: 'git' as const, gitUrl: input.git.url, commit: input.git.commit } : {}),
+    approvals: [],
+    requiredApprovals: required,
     packageName: input.packageName,
     version: input.version,
     resolved: info.resolved,
@@ -109,8 +125,21 @@ export async function reviewComponent(
   const item = await deps.catalog.byId(catalogKey(id, version));
   if (!item) return err(notFound('组件目录里没有这一项'));
   if (item.status !== 'pending') return err(conflict('这一项已经审过了'));
+  const required = item.requiredApprovals ?? 1;
+  const approvals = item.approvals ?? [];
+  const me = admin.value.user.email;
+  if (decision.approve && required >= 2 && me === item.submittedBy) return err(forbidden('需要另外的集群管理员审核：提交人自己不能批准'));
+  if (decision.approve && approvals.some((a) => a.by === me)) return err(conflict('你已经批准过了，还要等别的集群管理员'));
+  const nextApprovals = decision.approve ? [...approvals, { by: me, at: deps.now(), note: decision.note?.slice(0, 500) ?? null }] : approvals;
+  if (decision.approve && nextApprovals.length < required) {
+    const partial: CatalogComponent = { ...item, approvals: nextApprovals };
+    await deps.catalog.save(partial);
+    await audit(deps, admin.value, 'bundle.review', catalogKey(id, version), `批准 ${item.packageName}@${version}（${nextApprovals.length}/${required}，还差 ${required - nextApprovals.length} 人）`);
+    return ok(partial);
+  }
   const next: CatalogComponent = {
     ...item,
+    approvals: nextApprovals,
     status: decision.approve ? 'approved' : 'rejected',
     reviewedBy: admin.value.user.email,
     reviewedAt: deps.now(),
@@ -119,6 +148,77 @@ export async function reviewComponent(
   await deps.catalog.save(next);
   await audit(deps, admin.value, 'bundle.review', catalogKey(id, version), `${decision.approve ? '批准' : '驳回'} ${item.packageName}@${version}${decision.note ? `：${decision.note.slice(0, 200)}` : ''}`);
   return ok(next);
+}
+
+function specOf(item: CatalogComponent, from: string | null): ComponentJobSpec {
+  return {
+    componentId: item.id,
+    runtime: item.runtime,
+    ...(item.source === 'git' && item.gitUrl && item.commit ? { git: { url: item.gitUrl, commit: item.commit } } : {}),
+    packageName: item.packageName,
+    version: item.version,
+    resolved: item.resolved,
+    integrity: item.integrity,
+    provides: item.provides,
+    ignoreScripts: true,
+    expectedCurrent: from
+  };
+}
+
+/**
+ * 一次装一组组件（P3「装套件」）：全有或全无——Worker 先把每一个都装进暂存目录并核对，
+ * 全部通过才一起切换 current；任何一个失败都不切换。只管组件，不装运行时本身。
+ * 每一项按单个安装同样的规则检查（已审核、运行时在机器上、CAS 期望版本）；已经是这个版本且没漂移的跳过。
+ */
+export async function startBundleJob(
+  deps: ComponentDeps,
+  actor: Principal | null,
+  workerId: string,
+  request: { components: readonly { componentId: string; version: string }[] }
+): Promise<Result<RuntimeJob, DomainError>> {
+  if (!actor) return err(forbidden('请先登录'));
+  const worker = (await deps.workers.list()).find((candidate) => candidate.workerId === workerId);
+  const scoped = await authorizeWorker(deps.access, actor, worker?.origin === 'local' ? null : workerId, 'runtime.component.install');
+  if (!scoped.ok) return scoped;
+  if (request.components.length === 0) return err(invalid('至少选一个组件'));
+  if (request.components.length > 16) return err(invalid('一次最多装 16 个组件'));
+  if (new Set(request.components.map((c) => c.componentId)).size !== request.components.length) return err(invalid('同一个组件只能选一个版本'));
+  if (worker?.inventory && !worker.inventory.bundleInstall) return err(conflict('这台 Worker 版本太旧，不支持整套安装：先更新它'));
+  const pins = deps.pins.pinsFor(workerId);
+  const catalog = await deps.catalog.list();
+  const specs: ComponentJobSpec[] = [];
+  const skipped: string[] = [];
+  for (const wanted of request.components) {
+    const item = catalog.find((c) => c.id === wanted.componentId && c.version === wanted.version) ?? null;
+    const pin: WorkerComponentPin | null = pins.find((p) => p.componentId === wanted.componentId) ?? null;
+    const plan = planComponentJob(worker, item, 'install_component', pin, 0);
+    if (!plan.ok) {
+      if (plan.error.message.startsWith('已经装的就是')) {
+        skipped.push(wanted.componentId);
+        continue;
+      }
+      return err({ ...plan.error, message: `${wanted.componentId}：${plan.error.message}` });
+    }
+    if (item) specs.push(specOf(item, plan.value.from));
+  }
+  if (specs.length === 0) return err(conflict('选的组件都已经装好了'));
+  const job: RuntimeJob = {
+    jobId: (deps.newJobId ?? newId)(),
+    agentId: specs[0]!.runtime,
+    action: 'install_component',
+    version: null,
+    components: specs,
+    state: 'running',
+    message: `正在整套安装 ${specs.length} 个组件（全部通过才切换）`,
+    log: '',
+    startedAt: deps.now(),
+    endedAt: null,
+    actorEmail: actor.user.email
+  };
+  if (!(await deps.workers.runtimeJob(workerId, job))) return err(conflict('这台机器已经不在线'));
+  const label = worker ? `${worker.label}（${workerId}）` : workerId;
+  await audit(deps, actor, 'runtime.component.install', label, `整套：${specs.map((s) => `${s.componentId} ${s.expectedCurrent ? `${s.expectedCurrent} → ` : ''}${s.version}`).join('、')}${skipped.length ? `（已装好跳过：${skipped.join('、')}）` : ''}`);
+  return ok(job);
 }
 
 /** 在一台机器上装 / 升级 / 修复 / 卸载一个目录组件。权限 runtime.component.install（NEVER_GRANTABLE：只有内置角色有）。 */
@@ -150,17 +250,7 @@ export async function startComponentJob(
     agentId: item.runtime,
     action: request.action,
     version: install ? item.version : null,
-    component: {
-      componentId: item.id,
-      runtime: item.runtime,
-      packageName: item.packageName,
-      version: item.version,
-      resolved: item.resolved,
-      integrity: item.integrity,
-      provides: item.provides,
-      ignoreScripts: true,
-      expectedCurrent: plan.value.from
-    },
+    component: specOf(item, plan.value.from),
     state: 'running',
     message: install ? `正在${plan.value.repair ? '修复' : '安装'}组件 ${item.id} ${item.version}` : `正在卸载组件 ${item.id}`,
     log: '',
@@ -179,8 +269,18 @@ export async function startComponentJob(
 
 /** 组件任务结束（Worker 报了终态）：成功才改 component_pins；跑过的脚本、哈希不符都单独记审计。 */
 export async function componentJobFinished(deps: Pick<ComponentDeps, 'pins' | 'audit' | 'now'>, workerId: string, job: RuntimeJob): Promise<void> {
+  if (job.state === 'running') return;
+  if (job.components?.length) {
+    // 整套任务：结果只有一份（全有或全无），成功才把每一项都钉上
+    for (const spec of job.components) await finishOne(deps, workerId, { ...job, component: spec, components: undefined });
+    return;
+  }
+  await finishOne(deps, workerId, job);
+}
+
+async function finishOne(deps: Pick<ComponentDeps, 'pins' | 'audit' | 'now'>, workerId: string, job: RuntimeJob): Promise<void> {
   const spec = job.component;
-  if (!spec || job.state === 'running') return;
+  if (!spec) return;
   const system = { user: { id: 'system', email: job.actorEmail } } as Principal;
   const target = `${workerId}:${spec.componentId}@${spec.version}`;
   if (job.result?.integrityMismatch) {

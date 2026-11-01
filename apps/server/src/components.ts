@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
-import { componentJobRequest, componentReviewRequest, componentSubmitRequest } from '@agent-hub/contract';
+import { bundleInstallRequest, componentJobRequest, componentReviewRequest, componentSubmitRequest } from '@agent-hub/contract';
 import type { ComponentDeps, NpmArtifactInfo } from '@agent-hub/domain';
-import { installScriptsOf, listComponentCatalog, reviewComponent, startComponentJob, submitComponent } from '@agent-hub/domain';
+import { installScriptsOf, listComponentCatalog, reviewComponent, startBundleJob, startComponentJob, submitComponent } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -44,7 +44,9 @@ export function installComponents(app: Hono, deps: ComponentDeps, principalOf: P
       id: parsed.data.id,
       packageName: parsed.data.packageName,
       version: parsed.data.version,
-      provides: parsed.data.provides.map((p) => ({ capability: p.capability, ...(p.mode ? { mode: p.mode } : {}) }))
+      provides: parsed.data.provides.map((p) => ({ capability: p.capability, ...(p.mode ? { mode: p.mode } : {}) })),
+      runtime: parsed.data.runtime,
+      ...(parsed.data.git ? { git: parsed.data.git } : {})
     });
     return result.ok ? c.json({ component: result.value }, 201) : fail(c, result.error);
   });
@@ -58,6 +60,14 @@ export function installComponents(app: Hono, deps: ComponentDeps, principalOf: P
       ...(parsed.data.note ? { note: parsed.data.note } : {})
     });
     return result.ok ? c.json({ component: result.value }) : fail(c, result.error);
+  });
+  app.post('/api/workers/:id/bundle-install', async (c) => {
+    const principal = principalOf(c);
+    if (!principal) return c.json(unauthorized, 401);
+    const parsed = bundleInstallRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求格式不对：components 是 [{ componentId, version }]（1–16 个）' } }, 400);
+    const result = await startBundleJob(deps, principal, c.req.param('id'), { components: parsed.data.components });
+    return result.ok ? c.json({ job: result.value }, 202) : fail(c, result.error);
   });
   app.post('/api/workers/:id/components/:componentId', async (c) => {
     const principal = principalOf(c);

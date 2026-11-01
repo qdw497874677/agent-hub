@@ -36,6 +36,8 @@ export interface RuntimeJob {
   readonly version: string | null;
   /** 组件任务（ADR 0021 P2）才有：要装 / 卸的组件。 */
   readonly component?: ComponentJobSpec;
+  /** 整套安装（P3）：多个组件一个任务，全有或全无。 */
+  readonly components?: readonly ComponentJobSpec[] | undefined;
   /** 组件任务结束时 Worker 报的结构化结果。 */
   readonly result?: ComponentJobResult;
   readonly state: RuntimeJobState;

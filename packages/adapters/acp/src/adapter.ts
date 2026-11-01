@@ -41,17 +41,21 @@ export function commandEnvVar(id: string): string {
   return `${id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_COMMAND`;
 }
 
-export function acpConfigsFor(ctx: Pick<RuntimeAdapterContext, 'env' | 'log'>): AcpAgentConfig[] {
+export function acpConfigsFor(ctx: Pick<RuntimeAdapterContext, 'env' | 'log' | 'components'>): AcpAgentConfig[] {
   return acpAgents(ctx.env['ACP_AGENTS'], ctx.log).map((config) => {
     if (config.id !== 'opencode') return config;
     // OPENCODE_COMMAND 是单机安装的后门；ACP_AGENTS 里自己写的 opencode 条目也照样认 hub 下发的资产
     const override = ctx.env['OPENCODE_COMMAND'];
     const command = override ?? config.command;
     return {
-      launch: opencodeLaunch,
       providerProtocols: ['openai-chat', 'openai-responses', 'anthropic'] as const,
       providerLaunch: opencodeProviderLaunch(command),
       ...config,
+      // 每次开会话现查 hub 装的 opencode 组件（插件）；ACP_AGENTS 里自定义的 launch 优先
+      launch:
+        config.launch && config.launch !== opencodeLaunch
+          ? config.launch
+          : (assets: Parameters<typeof opencodeLaunch>[0]) => opencodeLaunch(assets, process.env['OPENCODE_CONFIG_CONTENT'], ctx.components?.('opencode') ?? []),
       command
     };
   });

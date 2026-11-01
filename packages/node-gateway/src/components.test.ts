@@ -4,7 +4,8 @@ import { existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ComponentJobSpec } from '@agent-hub/domain';
-import { hubComponentDirs, installComponent, uninstallComponent, type ComponentInstallOptions } from './components.ts';
+import { hubComponentDirs, installBundle, installComponent, uninstallComponent, type ComponentInstallOptions } from './components.ts';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { runCommand } from './runtime-jobs.ts';
 import { npmCli, startMockRegistry, type MockRegistry } from './testing/mock-npm-registry.ts';
 
@@ -110,4 +111,71 @@ test('npm 失败（包不存在）→ 只删暂存，报失败', { timeout: 120_
   } finally {
     await registry.close();
   }
+});
+
+test('整套安装（P3）：任何一个核对失败 → 一个都不切换；全部通过才一起切换', { timeout: 120_000 }, async () => {
+  const registry = await startMockRegistry([
+    { name: 'demo-pi-ext', version: '1.0.0' },
+    { name: 'other-pi-ext', version: '2.0.0' }
+  ]);
+  try {
+    const root = mkdtempSync(join(tmpdir(), 'comp-bundle-'));
+    const opts = options(root, registry);
+    const a = spec(registry, '1.0.0');
+    const b = spec(registry, '2.0.0', { componentId: 'other', packageName: 'other-pi-ext', resolved: `${registry.url}/-/other-pi-ext-2.0.0.tgz`, integrity: registry.integrity('other-pi-ext', '2.0.0') });
+    const broken = await installBundle(opts, [a, { ...b, integrity: registry.integrity('demo-pi-ext', '1.0.0') }]);
+    assert.equal(broken.ok, false);
+    assert.match(broken.message, /整套安装已取消/);
+    assert.equal(broken.result.integrityMismatch, true);
+    assert.ok(!existsSync(join(root, 'pi', 'demo', 'current')), '第一个已经暂存好也不切换');
+    assert.ok(!existsSync(join(root, 'pi', 'other', 'current')));
+    const good = await installBundle(opts, [a, b]);
+    assert.ok(good.ok, good.message);
+    assert.equal(hubComponentDirs(root, 'pi').length, 2);
+  } finally {
+    await registry.close();
+  }
+});
+
+test('git 来源（P4）：锁文件钉住的必须是审核时的提交；opencode 组件放在自己的运行时目录下', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'comp-git-'));
+  const commit = 'a'.repeat(40);
+  let lockCommit = commit;
+  const fake: ComponentInstallOptions = {
+    root,
+    node: process.execPath,
+    npm: '/fake/npm-cli.js',
+    env: {},
+    log: () => undefined,
+    run: async (_file, args, opts) => {
+      assert.ok(args.includes('--ignore-scripts'));
+      const pkg = JSON.parse(readFileSync(join(opts.cwd, 'package.json'), 'utf8'));
+      assert.equal(pkg.dependencies['oc-plugin'], `git+https://example.com/org/oc-plugin.git#${commit}`);
+      mkdirSync(join(opts.cwd, 'node_modules', 'oc-plugin'), { recursive: true });
+      writeFileSync(join(opts.cwd, 'node_modules', 'oc-plugin', 'package.json'), JSON.stringify({ name: 'oc-plugin', version: '0.1.0' }));
+      writeFileSync(join(opts.cwd, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/oc-plugin': { version: '0.1.0', resolved: `git+ssh://git@example.com/org/oc-plugin.git#${lockCommit}` } } }));
+    }
+  };
+  const gitSpec: ComponentJobSpec = {
+    componentId: 'oc-plugin',
+    runtime: 'opencode',
+    git: { url: 'https://example.com/org/oc-plugin.git', commit },
+    packageName: 'oc-plugin',
+    version: '0.1.0',
+    resolved: `git+https://example.com/org/oc-plugin.git#${commit}`,
+    integrity: `git:${commit}`,
+    provides: [],
+    ignoreScripts: true,
+    expectedCurrent: null
+  };
+  lockCommit = 'b'.repeat(40);
+  const moved = await installComponent(fake, gitSpec);
+  assert.equal(moved.ok, false);
+  assert.equal(moved.result.integrityMismatch, true);
+  assert.ok(!existsSync(join(root, 'opencode', 'oc-plugin', 'current')));
+  lockCommit = commit;
+  const ok = await installComponent(fake, gitSpec);
+  assert.ok(ok.ok, ok.message);
+  assert.equal(hubComponentDirs(root, 'opencode').length, 1);
+  assert.equal(hubComponentDirs(root, 'pi').length, 0);
 });

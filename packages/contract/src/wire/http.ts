@@ -303,7 +303,20 @@ export const componentSubmitRequest = z.object({
   provides: z
     .array(z.object({ capability: z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128), mode: z.string().max(64).optional() }))
     .max(16)
-    .default([])
+    .default([]),
+  /** 组件给哪个运行时（P3 起有 opencode 插件）；默认 pi。 */
+  runtime: z.enum(['pi', 'opencode']).default('pi'),
+  /** git 来源（P4）：https 地址 + 40 位提交号；有它就不查 npm registry。 */
+  git: z
+    .object({ url: z.string().regex(/^https:\/\/[A-Za-z0-9.-]+(:\d{1,5})?\/[A-Za-z0-9._~\/-]{1,300}$/), commit: z.string().regex(/^[0-9a-f]{40}$/) })
+    .optional()
+});
+/** 整套安装（P3）：一组目录组件，全有或全无。 */
+export const bundleInstallRequest = z.object({
+  components: z
+    .array(z.object({ componentId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/), version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/) }))
+    .min(1)
+    .max(16)
 });
 export const componentReviewRequest = z.object({ approve: z.boolean(), note: z.string().max(500).optional() });
 export const componentJobRequest = z.object({
@@ -315,7 +328,12 @@ export const componentJobRequest = z.object({
 });
 export const catalogComponentSchema = z.object({
   id: z.string(),
-  runtime: z.literal('pi'),
+  runtime: z.enum(['pi', 'opencode']),
+  source: z.enum(['npm', 'git']).optional(),
+  gitUrl: z.string().optional(),
+  commit: z.string().optional(),
+  approvals: z.array(z.object({ by: z.string(), at: epochMs, note: z.string().nullable() })).optional(),
+  requiredApprovals: z.number().int().positive().optional(),
   packageName: z.string(),
   version: z.string(),
   resolved: z.string(),

@@ -224,3 +224,12 @@ interface WorkerInventory {
 ### 12.1 未决
 
 无。
+
+## 13. P3/P4 实施记录（2026-11-01）
+
+- **opencode 插件组件**：组件 `runtime: opencode` 装到 `components/opencode/<id>/current`，acp 适配器启动 opencode 时把这些目录以 `file://` 写进 `OPENCODE_CONFIG_CONTENT.plugins`（和用户自己的配置合并）。已在 box 上核对 opencode v2：模块必须默认导出 `{ id, setup }`（或 `effect`），否则加载失败。
+- **整套安装**：`POST /api/workers/:id/bundle-install`，一次 `runtime_job` 带 1–16 个组件；Worker 先全部暂存，任何一个失败就删掉全部暂存、不切换任何组件。已装同版本的跳过。老 Worker（没上报 `bundleInstall`）拒绝。界面：机器页「整套安装」对话框。
+- **git 来源**：只收 https、不带凭据的地址 + 40 位 commit；hub 不克隆，完整性记为 `git:<commit>`，Worker 装完核对锁文件 `resolved` 必须以 `#<commit>` 结尾，否则按 `integrity_mismatch` 失败。只在组件目录层面支持，清单（manifest）的 git 来源没改。
+- **2 人审核**：`HUB_COMPONENT_REVIEWERS`（默认 1，最多 3）。≥2 时提交人不能投票，同一人不能投两次，凑够人数才批准；一票拒绝即拒绝。
+
+保守取舍（待 David 确认）：§12 第 3 条说默认「只回滚失败的组件」、可选「全部或全不」；实际整套安装**始终**是全部或全不（每台机器同时只跑一个任务，部分成功的语义容易让人误会），单个组件安装照旧。

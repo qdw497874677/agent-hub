@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { basename, delimiter, dirname } from 'node:path';
 import type { ComponentAction, ComponentJobResult, ComponentJobSpec, HarnessInstaller, InstallRun, RuntimeAction, RuntimeJobState, RuntimeProvision } from '@agent-hub/domain';
-import { installComponent, uninstallComponent } from './components.ts';
+import { installBundle, installComponent, uninstallComponent } from './components.ts';
 import type { RuntimeStore } from './runtime-store.ts';
 
 /** hub 下发的一个任务（帧已过 schema 校验：agentId / version 是固定形状）。 */
@@ -11,6 +11,7 @@ export interface RuntimeJobCommand {
   readonly action: RuntimeAction | ComponentAction;
   readonly version: string | null;
   readonly component?: ComponentJobSpec;
+  readonly components?: readonly ComponentJobSpec[];
 }
 
 export interface RuntimeJobReport {
@@ -136,7 +137,8 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
 
   /** 组件任务：和运行时任务共用 busy（一台机器同时只跑一个安装任务）。 */
   async function runComponent(command: RuntimeJobCommand, report: (status: RuntimeJobReport) => void): Promise<void> {
-    const spec = command.component;
+    const bundle = command.components?.length ? command.components : null;
+    const spec = command.component ?? bundle?.[0];
     const components = options.components;
     if (!spec || !components) return report({ jobId: command.jobId, state: 'refused', message: '这台 Worker 不支持安装组件', lines: [] });
     busy = true;
@@ -160,7 +162,7 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
       const outcome =
         command.action === 'uninstall_component'
           ? uninstallComponent({ root: components.root }, spec)
-          : await installComponent(
+          : await (bundle ? (o: Parameters<typeof installComponent>[0]) => installBundle(o, bundle) : (o: Parameters<typeof installComponent>[0]) => installComponent(o, spec))(
               {
                 root: components.root,
                 node: process.execPath,
@@ -170,13 +172,12 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
                 run: async (file, args, runOptions) => {
                   await runCommand(file, args, { cwd: runOptions.cwd, env: runOptions.env, signal: controller.signal, onLine: log });
                 }
-              },
-              spec
+              }
             );
       if (outcome.ok) await options.onChange?.();
       log(outcome.message);
       send(outcome.ok ? 'succeeded' : outcome.refused ? 'refused' : 'failed', outcome.message, {
-        ...(outcome.ok ? { version: command.action === 'install_component' ? spec.version : null } : {}),
+        ...(outcome.ok ? { version: command.action === 'install_component' && !bundle ? spec.version : null } : {}),
         component: outcome.result
       });
     } catch (error) {

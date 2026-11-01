@@ -60,8 +60,21 @@ function Item({ item, all }: { item: CatalogComponentDto; all: readonly CatalogC
           </span>
         ) : null}
       </div>
+      {(item.requiredApprovals ?? 1) > 1 ? (
+        <p className="mt-1 text-meta text-secondary" data-testid="component-approvals">
+          双人审核：{item.approvals?.length ?? 0}/{item.requiredApprovals} 已批准
+          {item.approvals?.length ? `（${item.approvals.map((a) => a.by).join('、')}）` : ''}；提交人不能自己批
+        </p>
+      ) : null}
       <p className="mt-1 break-all text-meta text-tertiary">
-        npm：<span className="font-mono">{item.packageName}@{item.version}</span> · 依赖 {item.dependencyCount} 个 · 提交 {item.submittedBy} {at(item.submittedAt)}
+        {item.runtime === 'opencode' ? <span className="mr-1 rounded-sm border border-hair px-1 text-xs">OpenCode 插件</span> : null}
+        {item.source === 'git' ? (
+          <span data-testid="component-git">
+            git：<span className="font-mono">{item.gitUrl}</span> @ <span className="font-mono">{item.commit?.slice(0, 12)}</span>（安装脚本审核时看不到，装时一律不执行）
+          </span>
+        ) : (
+          <>npm：<span className="font-mono">{item.packageName}@{item.version}</span></>
+        )} · 依赖 {item.dependencyCount} 个 · 提交 {item.submittedBy} {at(item.submittedAt)}
       </p>
       <p className="break-all font-mono text-[11px] text-tertiary">{item.integrity}</p>
       {item.provides.length ? <p className="text-meta text-secondary">能力：{item.provides.map((p) => p.capability).join('、')}</p> : null}
@@ -114,12 +127,17 @@ function SubmitForm() {
   const [packageName, setPackageName] = useState('');
   const [version, setVersion] = useState('');
   const [caps, setCaps] = useState('');
+  const [runtime, setRuntime] = useState<'pi' | 'opencode'>('pi');
+  const [gitUrl, setGitUrl] = useState('');
+  const [commit, setCommit] = useState('');
   const submit = useAdminAction(() =>
     api.submitComponent({
       id: id.trim(),
       packageName: packageName.trim(),
       version: version.trim(),
-      provides: caps.split(/[,，\s]+/).filter(Boolean).map((capability) => ({ capability }))
+      provides: caps.split(/[,，\s]+/).filter(Boolean).map((capability) => ({ capability })),
+      runtime,
+      ...(gitUrl.trim() ? { git: { url: gitUrl.trim(), commit: commit.trim() } } : {})
     })
   );
   return (
@@ -127,13 +145,20 @@ function SubmitForm() {
       className="grid grid-cols-1 gap-2 px-3 py-3 sm:grid-cols-2"
       onSubmit={(event) => {
         event.preventDefault();
-        submit.mutate(undefined, { onSuccess: () => (setId(''), setPackageName(''), setVersion(''), setCaps('')) });
+        submit.mutate(undefined, { onSuccess: () => (setId(''), setPackageName(''), setVersion(''), setCaps(''), setGitUrl(''), setCommit('')) });
       }}
     >
       <input className={INPUT} data-testid="component-id" placeholder="组件 id，如 web-search" value={id} onChange={(e) => setId(e.target.value)} required />
       <input className={INPUT} data-testid="component-package" placeholder="npm 包名" value={packageName} onChange={(e) => setPackageName(e.target.value)} required />
       <input className={INPUT} data-testid="component-version" placeholder="确切版本，如 1.2.3" value={version} onChange={(e) => setVersion(e.target.value)} required />
       <input className={INPUT} data-testid="component-caps" placeholder="提供的能力，如 tool:web-search（逗号分隔）" value={caps} onChange={(e) => setCaps(e.target.value)} />
+      <select className={INPUT} data-testid="component-runtime" value={runtime} onChange={(e) => setRuntime(e.target.value as 'pi' | 'opencode')}>
+        <option value="pi">pi 扩展</option>
+        <option value="opencode">OpenCode 插件（v2：默认导出 {'{ id, setup }'}）</option>
+      </select>
+      <span className="self-center text-meta text-tertiary">可选：从 git 装（钉在提交上）</span>
+      <input className={INPUT} data-testid="component-git-url" placeholder="git 仓库 https 地址（留空 = 从 npm 装）" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />
+      <input className={INPUT} data-testid="component-git-commit" placeholder="40 位提交号" value={commit} onChange={(e) => setCommit(e.target.value)} required={gitUrl.trim() !== ''} />
       <div className="flex items-center gap-2 sm:col-span-2">
         <button className={`${SMALL} shrink-0 whitespace-nowrap`} data-testid="component-submit" disabled={submit.isPending} type="submit">
           {submit.isPending ? '查 registry…' : '提交审核'}

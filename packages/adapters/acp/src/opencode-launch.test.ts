@@ -32,3 +32,11 @@ test('OpenCode 内联配置：原值不是 JSON 对象就只用 hub 这一段', 
 test('mergeConfig：类型冲突时以用户为准', () => {
   assert.deepEqual(mergeConfig({ skills: 'off', instructions: 'x' }, { skills: { paths: ['/h'] }, instructions: ['/h.md'], n: 1 }), { skills: 'off', instructions: 'x', n: 1 });
 });
+
+test('hub 装的 opencode 组件（P3）：按 file:// 路径进 plugins，和用户已有的 plugins 合并', () => {
+  const launch = opencodeLaunch({ skills: [], instructions: [] } as unknown as Parameters<typeof opencodeLaunch>[0], JSON.stringify({ plugins: ['user-plugin'] }), ['/var/hub/components/opencode/x/v-1/node_modules/x']);
+  const content = JSON.parse(launch.env!['OPENCODE_CONFIG_CONTENT']!);
+  assert.deepEqual(content.plugins, ['user-plugin', 'file:///var/hub/components/opencode/x/v-1/node_modules/x']);
+  const none = JSON.parse(opencodeLaunch({ skills: [], instructions: [] } as unknown as Parameters<typeof opencodeLaunch>[0], undefined, []).env!['OPENCODE_CONFIG_CONTENT']!);
+  assert.equal(none.plugins, undefined);
+});
