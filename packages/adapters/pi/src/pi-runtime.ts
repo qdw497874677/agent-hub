@@ -26,7 +26,7 @@ interface Pending {
   reject: (error: Error) => void;
 }
 
-class PiSession implements RuntimeSession {
+export class PiSession implements RuntimeSession {
   readonly sessionId: RuntimeSession['sessionId'];
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly queue = new AsyncQueue<SessionEvent>();
@@ -58,6 +58,8 @@ class PiSession implements RuntimeSession {
   ) {
     this.sessionId = sessionId;
     this.child = child;
+    // 进程先走了再写会有 EPIPE：交给 write 回调 / pending 处理，别让未接的 error 事件打崩 worker
+    child.stdin.on('error', () => undefined);
     this.modelChoices = modelChoices;
     this.onOptions = onOptions;
     child.stderr.setEncoding('utf8');
@@ -127,8 +129,19 @@ class PiSession implements RuntimeSession {
     const id = `c${this.counter}`;
     const payload = { id, ...command };
     return new Promise<Record<string, unknown>>((resolve, reject) => {
+      // 会话已 dispose（stdin 已 end）或进程已走：直接拒。往 end 过的流写会抛 ERR_STREAM_WRITE_AFTER_END，
+      // 那是个没人接的 error 事件，会把整个 worker 进程带走（e2e 里 loadOptions 和 dispose 撞上时出现过）。
+      const stdin = this.child.stdin;
+      if (stdin.writableEnded || stdin.destroyed) {
+        reject(new Error('Pi 进程已退出'));
+        return;
+      }
       this.pending.set(id, { resolve, reject });
-      this.child.stdin.write(`${JSON.stringify(payload)}\n`);
+      stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+        if (!error) return;
+        this.pending.delete(id);
+        reject(error);
+      });
     });
   }
 
@@ -150,7 +163,7 @@ class PiSession implements RuntimeSession {
 
   async interrupt(): Promise<void> {
     if (this.disposed) return;
-    this.child.stdin.write(`${JSON.stringify({ type: 'abort' })}\n`);
+    if (!this.child.stdin.writableEnded && !this.child.stdin.destroyed) this.child.stdin.write(`${JSON.stringify({ type: 'abort' })}\n`, () => undefined);
   }
 
   private async reportUsage(): Promise<void> {

@@ -65,7 +65,10 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   await page.goto(`/#/p/${project.id}/focus/${sid}`);
   await page.getByRole('button', { name: '详情' }).click();
   await page.getByTestId('open-files').click();
-  const browser = page.getByTestId('files-browser');
+  // 详情 → 浏览文件：关掉详情，切到会话的「文件」标签页（不再是全屏浮层）
+  await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('open-files')).toHaveCount(0);
+  const browser = page.getByTestId('files-panel-files');
   await expect(browser.locator('[data-path="src"]')).toBeVisible();
   await expect(browser.locator('[data-path=".env"]')).toHaveCount(0);
   await expect(browser.locator('[data-path="node_modules"]')).toHaveClass(/opacity-50/);
@@ -88,11 +91,12 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
   await browser.getByTestId('files-back').click();
 
   // 改动：列表 + diff
-  await browser.getByTestId('files-tab-changes').click();
-  await browser.getByTestId('changes-base').selectOption('head');
-  await browser.getByTestId('change-row').filter({ hasText: 'src/app.ts' }).click();
-  await expect(browser.getByTestId('diff-view')).toContainText('42');
+  await page.getByTestId('session-tab-changes').click();
+  const changesPanel = page.getByTestId('files-panel-changes');
+  await changesPanel.getByTestId('changes-base').selectOption('head');
+  await changesPanel.getByTestId('change-row').filter({ hasText: 'src/app.ts' }).click();
+  await expect(changesPanel.getByTestId('diff-view')).toContainText('42');
   await page.screenshot({ path: `${SHOTS}/diff-390.png` });
-  await browser.getByTestId('files-close').click();
-  await expect(browser).toHaveCount(0);
+  await page.getByTestId('session-tab-chat').click();
+  await expect(page.getByTestId('files-panel-changes')).toBeHidden();
 });
