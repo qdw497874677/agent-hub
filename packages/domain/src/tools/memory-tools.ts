@@ -148,7 +148,15 @@ export function createMemoryToolProvider(memory: MemoryService): ToolProvider {
               })
             : undefined;
           const written = await memory.write(caller, { scope, kind, title, body, tags: strings(args.tags), supersedes: strings(args.supersedes), sources }, 'tool');
-          return written.ok ? { ok: true, value: brief(written.value) } : written;
+          if (!written.ok) return written;
+          const similar = await memory.similar(caller, written.value.id);
+          return {
+            ok: true,
+            value: {
+              ...brief(written.value),
+              ...(similar.length > 0 ? { similar, hint: 'Similar current entries exist. If this one replaces them, write again with supersedes (or forget the duplicate).' } : {})
+            }
+          };
         }
         case 'memory.forget': {
           const id = str(args.id);

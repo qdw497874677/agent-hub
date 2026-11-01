@@ -81,7 +81,18 @@ export function installMemoryRoutes(app: Hono<any>, options: MemoryRouteDeps, su
     const parsed = writeBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, { code: 'invalid', message: parsed.error.issues[0]?.message ?? '格式不对' });
     const wrote = await memory.write({ kind: 'user', principal }, parsed.data as never, 'ui');
-    return wrote.ok ? c.json(wrote.value, 201) : fail(c, wrote.error);
+    if (!wrote.ok) return fail(c, wrote.error);
+    return c.json({ ...wrote.value, similar: await memory.similar({ kind: 'user', principal }, wrote.value.id) }, 201);
+  });
+
+  // 导入（设计 §11）：JSONL 正文，一律进待审
+  app.post('/api/memory/import', async (c) => {
+    const principal = who(c);
+    if (!principal) return fail(c, { code: 'forbidden', message: '要登录' });
+    const text = await c.req.text();
+    if (text.length > 2_000_000) return fail(c, { code: 'invalid', message: '最多 2MB' });
+    const imported = await memory.importEntries(principal, c.req.query('scope') ?? '', text);
+    return imported.ok ? c.json(imported.value) : fail(c, imported.error);
   });
 
   app.post('/api/memory/:id/review', async (c) => {

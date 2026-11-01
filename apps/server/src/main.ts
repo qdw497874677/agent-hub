@@ -244,7 +244,7 @@ const memoryService = createMemoryService({
   projects: deps.projects,
   tasks: deps.tasks,
   ...store.memory,
-  sources: createMemorySources(deps),
+  sources: createMemorySources(deps, store.groups),
   policy: createDefaultMemoryPolicy(),
   audit: store.audit,
   access: deps.access,

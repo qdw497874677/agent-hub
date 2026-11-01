@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { asProjectId, locationOf, type Deps, type MemoryScope, type MemorySource, type SourceDoc } from '@agent-hub/domain';
+import { asProjectId, locationOf, type Deps, type GroupStore, type JournalEntry, type MemoryScope, type MemorySource, type SourceDoc } from '@agent-hub/domain';
 
 /**
  * 记忆来源（ADR 0019 §5 · P1）：就地索引，不复制、不搬家。
@@ -110,6 +110,98 @@ function taskSource(deps: FileDeps): MemorySource {
   };
 }
 
-export function createMemorySources(deps: FileDeps): MemorySource[] {
-  return [markdownSource(deps, 'adr', (path) => isAdr(path)), markdownSource(deps, 'docs', (path) => isMarkdown(path) && !isAdr(path)), taskSource(deps)];
+const TRANSCRIPT_EVENTS = 2000;
+const TRANSCRIPT_SESSIONS = 100;
+
+/** 会话记录只取人说的话和 agent 的回复文字（不含思考、工具原始输出、诊断）。 */
+export function renderTranscript(events: readonly JournalEntry[]): string {
+  const lines: string[] = [];
+  let reply = '';
+  const flush = () => {
+    if (reply.trim() !== '') lines.push(`agent：${reply.trim()}`);
+    reply = '';
+  };
+  for (const { event } of events) {
+    if (event.kind === 'prompt') {
+      flush();
+      lines.push(`人：${event.text.trim()}`);
+    } else if (event.kind === 'text') reply += event.delta;
+    else if (event.kind === 'ended') flush();
+  }
+  flush();
+  const text = lines.join('\n');
+  // 太长留后面的（最近的更有用）
+  return text.length > INDEX_CHARS ? text.slice(text.length - INDEX_CHARS) : text;
+}
+
+/** TranscriptSource（P2）：项目里各会话的人类消息和回复。uri = 会话 id。 */
+function transcriptSource(deps: FileDeps & Pick<Deps, 'sessions'>): MemorySource {
+  const load = async (sessionId: string) => renderTranscript(await deps.sessions.tail(sessionId as never, TRANSCRIPT_EVENTS));
+  return {
+    id: 'transcript',
+    scopeKinds: ['project'],
+    async scan(scope) {
+      if (scope.kind !== 'project') return { docs: [], partial: true };
+      const sessions = (await deps.sessions.listByProject(asProjectId(scope.projectId))).sort((a, b) => b.updatedAt - a.updatedAt);
+      const docs: SourceDoc[] = [];
+      for (const session of sessions.slice(0, TRANSCRIPT_SESSIONS)) {
+        const text = await load(session.id);
+        if (text === '') continue;
+        const task = await deps.tasks.byId(session.taskId);
+        docs.push({ ref: { source: 'transcript', uri: session.id, hash: sha(text) }, title: `会话记录 · ${task?.title ?? session.id}`, text, updatedAt: session.updatedAt });
+      }
+      return { docs, partial: sessions.length > TRANSCRIPT_SESSIONS };
+    },
+    async read(scope, ref) {
+      if (scope.kind !== 'project') return null;
+      const session = await deps.sessions.byId(ref.uri as never);
+      if (!session) return null;
+      const task = await deps.tasks.byId(session.taskId);
+      if (!task || task.projectId !== scope.projectId) return null;
+      const text = await load(session.id);
+      return { text, hash: sha(text) };
+    }
+  };
+}
+
+/** GroupSource（P2）：项目里各群最近的消息。群属于项目，读权限跟项目走。uri = 群 id。 */
+function groupSource(groups: Pick<GroupStore, 'group' | 'groupsOf' | 'posts'>): MemorySource {
+  const load = async (groupId: string) => {
+    const posts = await groups.posts(groupId, null, 500);
+    const text = posts
+      .map((post) => `${post.author.kind === 'user' ? post.author.name : post.author.kind === 'agent' ? post.author.role : '系统'}：${post.body}`)
+      .join('\n');
+    return text.length > INDEX_CHARS ? text.slice(text.length - INDEX_CHARS) : text;
+  };
+  return {
+    id: 'group',
+    scopeKinds: ['project'],
+    async scan(scope) {
+      if (scope.kind !== 'project') return { docs: [], partial: true };
+      const docs: SourceDoc[] = [];
+      for (const group of await groups.groupsOf(asProjectId(scope.projectId))) {
+        const text = await load(group.id);
+        if (text === '') continue;
+        docs.push({ ref: { source: 'group', uri: group.id, hash: sha(text) }, title: `群 · ${group.name}`, text, updatedAt: group.updatedAt });
+      }
+      return { docs, partial: false };
+    },
+    async read(scope, ref) {
+      if (scope.kind !== 'project') return null;
+      const group = await groups.group(ref.uri);
+      if (!group || group.projectId !== scope.projectId) return null;
+      const text = await load(group.id);
+      return { text, hash: sha(text) };
+    }
+  };
+}
+
+export function createMemorySources(deps: FileDeps & Pick<Deps, 'sessions'>, groups?: Pick<GroupStore, 'group' | 'groupsOf' | 'posts'>): MemorySource[] {
+  return [
+    markdownSource(deps, 'adr', (path) => isAdr(path)),
+    markdownSource(deps, 'docs', (path) => isMarkdown(path) && !isAdr(path)),
+    taskSource(deps),
+    transcriptSource(deps),
+    ...(groups ? [groupSource(groups)] : [])
+  ];
 }

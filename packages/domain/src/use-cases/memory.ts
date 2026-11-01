@@ -124,7 +124,13 @@ export interface MemoryService {
    */
   ingestCompaction(sessionId: SessionId, input: { seq: number; summary: string; tokensBefore?: number }): Promise<{ written: number; skipped?: string }>;
   /** 后台整理（一天最多一次）：把读时算出来的过期（staged 30 天、validTo 到期）物化成 expired，并从索引里拿掉。 */
-  sweep(): Promise<{ expired: number }>;
+  sweep(): Promise<{ expired: number; spotChecked: number }>;
+  /**
+   * 冲突提示（§9）：同作用域里和这条相似的当前有效条目（FTS 前 5），不自动合并，交给写入者决定要不要 supersedes。
+   */
+  similar(caller: MemoryCaller, entryId: string): Promise<{ id: string; title: string }[]>;
+  /** 导入（§11）：JSONL，每行一个条目；一律 untrusted + proposed（要审核），via import。返回写了几条和每行的问题。 */
+  importEntries(principal: Principal, scope: string, jsonl: string): Promise<Result<{ imported: number; problems: { line: number; message: string }[] }, DomainError>>;
   /** 会话第一轮垫的静态引导：注入要审计（只记版本，不记内容）。 */
   guidanceInjected(sessionId: SessionId, version: number): Promise<void>;
 }
@@ -477,8 +483,123 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         await deps.index.remove([`entry:${entry.id}`]);
         expired += 1;
       }
-      if (expired > 0) await systemAudit('memory.write', 'memory:sweep', `后台整理：${expired} 条过期`);
-      return { expired };
+      // 每周抽查（§9.1 第 7 条）：最近 7 天自动转正（没经过人）的提炼条目里随机抽 5%（3–20 条）回确认队列。
+      // 用标签 spot-check 记「这周抽过了」，重启也不会重抽。
+      let spotChecked = 0;
+      const week = 7 * 86_400_000;
+      const live = await deps.store.list(null, { status: ['active', 'proposed'], limit: 10_000 });
+      const sampledRecently = live.some((entry) => entry.tags.includes('spot-check') && now - entry.updatedAt < week);
+      if (!sampledRecently) {
+        const pool = live.filter(
+          (entry) => entry.status === 'active' && entry.provenance.via === 'distill' && !entry.provenance.reviewedBy && now - entry.updatedAt < week && !entry.tags.includes('spot-check')
+        );
+        if (pool.length > 0) {
+          const count = Math.min(pool.length, Math.max(3, Math.min(20, Math.ceil(pool.length * 0.05))));
+          const picked = [...pool].sort(() => Math.random() - 0.5).slice(0, count);
+          for (const entry of picked) {
+            const updated = await deps.store.update(
+              { ...entry, status: 'proposed', tags: [...entry.tags, 'spot-check'].slice(0, 10), updatedAt: now, version: entry.version + 1 },
+              entry.version
+            );
+            if (!updated) continue;
+            await deps.index.upsert([indexDoc(updated)]);
+            spotChecked += 1;
+          }
+        }
+      }
+      if (expired > 0 || spotChecked > 0) await systemAudit('memory.write', 'memory:sweep', `后台整理：${expired} 条过期，${spotChecked} 条抽查回待审`);
+      return { expired, spotChecked };
+    },
+
+    async similar(caller, entryId) {
+      const me = await who(caller);
+      if (!me.ok) return [];
+      const entry = await deps.store.get(entryId);
+      if (!entry || !(await can(me.value, 'memory.read', entry.scope))) return [];
+            // 标题切成 3 字一段（OR）：CJK 没有空格，整句当一个词只能精确匹配
+      const chars = [...entry.title.replace(/\s+/g, ' ')];
+      const chunks: string[] = [];
+      for (let at = 0; at + 3 <= chars.length && chunks.length < 12; at += 2) chunks.push(chars.slice(at, at + 3).join(''));
+      const text = chunks.length > 0 ? chunks.join(' ') : entry.title;
+      const hits = await deps.index.query({ text, scopeKeys: [scopeKey(entry.scope)], origins: ['entry'], limit: 10 }).catch(() => []);
+      const now = deps.now();
+      const out: { id: string; title: string }[] = [];
+      for (const hit of hits) {
+        const otherId = hit.key.startsWith('entry:') ? hit.key.slice(6) : null;
+        if (!otherId || otherId === entry.id || entry.supersedes.includes(otherId)) continue;
+        const other = await deps.store.get(otherId);
+        if (!other || !isCurrent(other, now)) continue;
+        out.push({ id: other.id, title: other.title });
+        if (out.length >= 5) break;
+      }
+      return out;
+    },
+
+    async importEntries(principal, raw, jsonl) {
+      const me: Who = { principal, author: 'human', session: null, project: null, role: null };
+      const scope = resolveScope(me, raw);
+      if (!scope.ok) return scope;
+      const permitted = await allowed(me, 'memory.write', scope.value);
+      if (!permitted.ok) return permitted;
+      const lines = jsonl.split('\n');
+      if (lines.length > 1000) return err(invalid('一次最多导入 1000 行'));
+      const problems: { line: number; message: string }[] = [];
+      let imported = 0;
+      const now = deps.now();
+      for (const [index, line] of lines.entries()) {
+        if (line.trim() === '') continue;
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(line) as Record<string, unknown>;
+        } catch {
+          problems.push({ line: index + 1, message: '不是 JSON' });
+          continue;
+        }
+        const draft: MemoryDraft = {
+          kind: parsed.kind as MemoryKind,
+          title: typeof parsed.title === 'string' ? parsed.title : '',
+          body: typeof parsed.body === 'string' ? parsed.body : '',
+          tags: Array.isArray(parsed.tags) ? parsed.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+          sources: Array.isArray((parsed.provenance as { sources?: unknown } | undefined)?.sources)
+            ? ((parsed.provenance as { sources: SourceRef[] }).sources.filter((ref) => typeof ref?.source === 'string' && typeof ref?.uri === 'string'))
+            : []
+        };
+        const problem = draftProblem(draft);
+        if (problem) {
+          problems.push({ line: index + 1, message: problem });
+          continue;
+        }
+        if (secretKind(`${draft.title}\n${draft.body}`)) {
+          problems.push({ line: index + 1, message: '看起来含有密钥，跳过' });
+          continue;
+        }
+        const validity = MEMORY_VALIDITY_MS[draft.kind];
+        const entry: MemoryEntry = {
+          id: newId(),
+          scope: scope.value,
+          kind: draft.kind,
+          title: draft.title.trim(),
+          body: draft.body,
+          tags: [...new Set((draft.tags ?? []).map((tag) => tag.trim()))],
+          status: 'proposed',
+          supersedes: [],
+          supersededBy: null,
+          validFrom: now,
+          validTo: validity === null ? null : now + validity,
+          provenance: { author: { kind: 'user', id: principal.user.id }, sources: draft.sources ?? [], via: 'import' },
+          trust: 'untrusted',
+          stale: false,
+          sourceChanges: 0,
+          createdAt: now,
+          updatedAt: now,
+          version: 1
+        };
+        await deps.store.put(entry);
+        await deps.index.upsert([indexDoc(entry)]);
+        imported += 1;
+      }
+      await audit(me, 'memory.write', scopeKey(scope.value), `导入 ${imported} 条（待审），${problems.length} 行有问题`);
+      return ok({ imported, problems: problems.slice(0, 50) });
     },
 
 
