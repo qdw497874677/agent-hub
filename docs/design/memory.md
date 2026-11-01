@@ -500,3 +500,11 @@ David 的问题：「有什么机制可以保守一些，并且保持新鲜度�
 | 运行时自带的记忆与 hub 记忆重复 | 自带记忆只作为来源索引；工具描述要求「先搜再写」 |
 | agent 不查记忆（没有注入） | 工具描述要求先查；角色提示词里写「先查记忆」；P2 用指标观察每个会话的 `memory_search` 调用率 |
 | 提炼默认开导致成本上升、噪声变多 | §6.1 的次数、token、条数上限和每天预算；untrusted 降权；可按项目关掉 |
+
+## 13. P2 第一批的实现（2026-11-01）
+
+- **暂存层**：`MemoryStatus` 加 `staged`。默认搜不到（`memory_search` 传 `include_staged: true` / 接口 `?staged=1` 才给，排序打 0.6 折）；14 天内同作用域有**别的作者**写出归一化后同标题的条目就转 `active`（仍 untrusted）；有审核权的人在「待审」里点「采纳」转 `active` + trusted；30 天没人理读时即算 `expired`。
+- **压缩摘要进 `session:`**：worker 上报 `compaction`（end、ok、带 summary）后，hub 写一条 `session:<id>` 的 episodic（`via: compaction`，生效，untrusted），`traceId = compaction:<会话>:<序号>`，同一代只写一次。
+- **会后提炼（默认开，§6.1）**：规则版，**不调模型**——摘要本身进项目层 `staged`，摘要里像「约定 / 必须 / 不要 / always / never」的行（至多 4 条）作为 `principle-candidate` 的 procedural 进确认队列。限额：输入截到 16k token 量级、每次 ≤5 条、每条 ≤1000 字、每个项目每天 ≤50 次（进程内计数）、`tokensBefore < 2000` 不提炼、摘要含疑似密钥整条不写。`HUB_MEMORY_DISTILL=0` 整体关掉（只关提炼，`session:` 摘要照写）。
+- **后台整理**：启动 10 分钟后一次，之后每天一次：把读时算出的过期（staged 30 天、validTo 到期）物化成 `expired` 并移出索引。
+- **还没做（P2 剩下的）**：模型版提炼（要定用哪个模型和预算归属）、TranscriptSource / GroupSource、冲突提示、每周 5% 抽检、可选向量、导入；按项目开关提炼（现在只有全局环境变量）。
