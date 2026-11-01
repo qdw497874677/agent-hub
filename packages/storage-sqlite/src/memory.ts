@@ -48,6 +48,11 @@ CREATE TABLE IF NOT EXISTS memory_settings (
   mode TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS memory_distill_settings (
+  project_id TEXT PRIMARY KEY,
+  model TEXT,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS memory_index_docs (
   key TEXT PRIMARY KEY,
   scope_key TEXT NOT NULL,
@@ -142,7 +147,18 @@ export function createSqliteMemorySettings(db: DatabaseSync): MemorySettingsStor
   db.exec(MEMORY_SCHEMA);
   const get = db.prepare('SELECT mode FROM memory_settings WHERE project_id = ?');
   const set = db.prepare('INSERT INTO memory_settings (project_id, mode, updated_at) VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET mode = excluded.mode, updated_at = excluded.updated_at');
+  const getDistill = db.prepare('SELECT model FROM memory_distill_settings WHERE project_id = ?');
+  const setDistill = db.prepare(
+    'INSERT INTO memory_distill_settings (project_id, model, updated_at) VALUES (?, ?, ?) ON CONFLICT(project_id) DO UPDATE SET model = excluded.model, updated_at = excluded.updated_at'
+  );
   return {
+    async distillModel(projectId) {
+      const row = getDistill.get(projectId) as { model: string | null } | undefined;
+      return row?.model ?? null;
+    },
+    async setDistillModel(projectId, model, at) {
+      setDistill.run(projectId, model, at);
+    },
     async projectMode(projectId) {
       const row = get.get(projectId) as Row | undefined;
       return row?.mode === 'review' ? 'review' : 'append-only';

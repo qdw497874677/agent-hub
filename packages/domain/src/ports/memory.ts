@@ -132,6 +132,9 @@ export interface MemoryPolicy {
 export interface MemorySettingsStore {
   projectMode(projectId: string): Promise<ProjectMemoryMode>;
   setProjectMode(projectId: string, mode: ProjectMemoryMode, at: number): Promise<void>;
+  /** 会后提炼用哪个模型（hub-<slug>/<model>；null = 规则版）。ADR 0024。 */
+  distillModel(projectId: string): Promise<string | null>;
+  setDistillModel(projectId: string, model: string | null, at: number): Promise<void>;
 }
 
 /* ——— P2 重构：每一块一个端口，适配器经注册表装配（见 memory.md §16） ——— */
@@ -141,6 +144,8 @@ export interface DistillInput {
   readonly summary: string;
   readonly sessionId: string;
   readonly seq: number;
+  /** 会话所属项目：模型版提炼器按项目设置挑模型、记用量。 */
+  readonly projectId: string;
 }
 export interface MemoryDistiller {
   readonly id: string;

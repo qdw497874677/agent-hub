@@ -4,6 +4,8 @@ import { conflict, forbidden, invalid, notFound, type DomainError } from '../err
 import { asProjectId, asSessionId, newId, type SessionId } from '../ids.ts';
 import {
   DISTILL_LIMITS,
+  distillSummary,
+  secretKind,
   MEMORY_READ_CHUNK,
   STAGED_CORROBORATE_MS,
   normalizeTitle,
@@ -52,6 +54,12 @@ import type { Deps } from './deps.ts';
  *   （本人 user、所在 project、本 session、所属 role），agent 只能用简写，不能指定任意 id；
  * - 人（界面 / 开放 API）：给完整的作用域键，逐个过 can()。
  */
+export interface DistillSettings {
+  readonly model: string | null;
+  /** HUB_MEMORY_DISTILL=0：全站关了，项目设置不生效。 */
+  readonly globalOff: boolean;
+}
+
 export type MemoryCaller = { readonly kind: 'session'; readonly sessionId: SessionId } | { readonly kind: 'user'; readonly principal: Principal };
 
 export interface MemoryServiceDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' | 'projects'> {
@@ -63,6 +71,8 @@ export interface MemoryServiceDeps extends Pick<Deps, 'now' | 'sessions' | 'task
   readonly retriever: MemoryRetriever;
   /** 写入路径的提炼器（规则版 / 以后的模型版），由注册表装配。 */
   readonly distiller: MemoryDistiller;
+  /** 选提炼模型时核对：设置人有 provider.use、作用域对得上项目、模型在提供商里（由 hub 装配；没有 = 只能用规则版）。 */
+  readonly checkDistillModel?: (principal: Principal, projectId: string, model: string) => Promise<Result<true, DomainError>>;
   /** sweep 依次跑的维护任务。 */
   readonly jobs: readonly MemoryMaintenanceJob[];
   readonly secretFilter: MemorySecretFilter;
@@ -118,6 +128,9 @@ export interface MemoryService {
   pending(principal: Principal): Promise<MemoryEntry[]>;
   projectMode(principal: Principal, projectId: string): Promise<Result<ProjectMemoryMode, DomainError>>;
   setProjectMode(principal: Principal, projectId: string, mode: ProjectMemoryMode): Promise<Result<ProjectMemoryMode, DomainError>>;
+  /** 项目设置 · 会后提炼（ADR 0024）：选哪个模型（null = 规则版）。 */
+  distillSettings(principal: Principal, projectId: string): Promise<Result<DistillSettings, DomainError>>;
+  setDistillModel(principal: Principal, projectId: string, model: string | null): Promise<Result<DistillSettings, DomainError>>;
   /** 重扫一个项目的来源：增量更新索引，出处变了的条目标 stale，变两次转 invalidated。 */
   reindex(projectId: string, force?: boolean): Promise<{ indexed: number; removed: number; staled: number }>;
   /**
@@ -381,11 +394,13 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
           version: 1
         };
       };
-      const candidates = await deps.distiller.distill({ summary, sessionId, seq: input.seq });
-      if (candidates.length === 0) return { written: 0, skipped: '摘要含疑似密钥或为空，不写' };
+      const distillInput = { summary, sessionId, seq: input.seq, projectId: project.id };
+      // 会话层摘要始终走规则版（不调模型）：只是摘要原文 + 密钥过滤
+      const own = distillSummary(summary, { sessionId, seq: input.seq });
+      if (own.length === 0) return { written: 0, skipped: '摘要含疑似密钥或为空，不写' };
       const written: MemoryEntry[] = [];
       // 1) 压缩摘要本身进 session:（生效；只这条会话和同项目的人看得到）
-      const sessionEntry = base({ kind: 'session', sessionId }, 'active', candidates[0]!.draft, 'compaction');
+      const sessionEntry = base({ kind: 'session', sessionId }, 'active', own[0]!.draft, 'compaction');
       await deps.store.put(sessionEntry);
       written.push(sessionEntry);
       // 2) 会后提炼：太短的会话不提炼；每个项目每天最多 50 次
@@ -398,7 +413,11 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       else if (count >= DISTILL_LIMITS.runsPerProjectPerDay) skipped = '项目当天提炼次数到上限';
       else {
         distillRuns.set(project.id, { day, count: count + 1 });
-        for (const candidate of candidates) {
+        // 只有真要提炼时才调提炼器（模型版会花钱）；状态只认 staged / proposed，绝不直接生效
+        const candidates = deps.distiller.id === 'rule' ? own : await deps.distiller.distill(distillInput);
+        for (const candidate of candidates.slice(0, DISTILL_LIMITS.maxOutputs)) {
+          if (candidate.status !== 'staged' && candidate.status !== 'proposed') continue;
+          if (secretKind(`${candidate.draft.title}\n${candidate.draft.body}`)) continue;
           const entry = base({ kind: 'project', projectId: project.id }, candidate.status, candidate.draft, 'distill');
           await deps.store.put(entry);
           written.push(entry);
@@ -835,6 +854,28 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       await deps.settings.setProjectMode(projectId, mode, deps.now());
       if (before !== mode) await audit(me, 'memory.settings', `project:${projectId}`, `写入模式 ${before} → ${mode}`);
       return ok(mode);
+    },
+
+    async distillSettings(principal, projectId) {
+      const me: Who = { principal, author: 'human', session: null, project: null, role: null };
+      const permitted = await allowed(me, 'memory.read', { kind: 'project', projectId });
+      if (!permitted.ok) return permitted;
+      return ok({ model: await deps.settings.distillModel(projectId), globalOff: process.env.HUB_MEMORY_DISTILL === '0' });
+    },
+
+    async setDistillModel(principal, projectId, model) {
+      const me: Who = { principal, author: 'human', session: null, project: null, role: null };
+      const permitted = await allowed(me, 'memory.review', { kind: 'project', projectId });
+      if (!permitted.ok) return permitted;
+      if (model !== null) {
+        if (!deps.checkDistillModel) return err(invalid('这个 hub 没有装模型版提炼器'));
+        const checked = await deps.checkDistillModel(principal, projectId, model);
+        if (!checked.ok) return checked;
+      }
+      const before = await deps.settings.distillModel(projectId);
+      await deps.settings.setDistillModel(projectId, model, deps.now());
+      if (before !== model) await audit(me, 'memory.settings', `project:${projectId}`, `提炼模型 ${before ?? '规则版'} → ${model ?? '规则版'}`);
+      return ok({ model, globalOff: process.env.HUB_MEMORY_DISTILL === '0' });
     },
 
     async reindex(projectId, force = false) {

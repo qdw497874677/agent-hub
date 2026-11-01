@@ -47,14 +47,14 @@ export function distillerContract(name: string, distiller: MemoryDistiller): Con
     {
       name: `${name}：含密钥 / 空摘要不出候选`,
       async run() {
-        must((await distiller.distill({ summary: `部署用 ${SECRET}`, sessionId: 's', seq: 1 })).length === 0, '含密钥 → 空');
-        must((await distiller.distill({ summary: '   ', sessionId: 's', seq: 1 })).length === 0, '空 → 空');
+        must((await distiller.distill({ summary: `部署用 ${SECRET}`, sessionId: 's', seq: 1, projectId: 'p1' })).length === 0, '含密钥 → 空');
+        must((await distiller.distill({ summary: '   ', sessionId: 's', seq: 1, projectId: 'p1' })).length === 0, '空 → 空');
       }
     },
     {
       name: `${name}：候选格式`,
       async run() {
-        const out = await distiller.distill({ summary: '修好了登录。约定：上线前必须先做数据库快照。', sessionId: 's', seq: 2 });
+        const out = await distiller.distill({ summary: '修好了登录。约定：上线前必须先做数据库快照。', sessionId: 's', seq: 2, projectId: 'p1' });
         must(out.length > 0, '正常摘要至少一条');
         for (const c of out) must((c.status === 'staged' || c.status === 'proposed') && c.draft.title.trim() !== '', 'status ∈ {staged, proposed}，标题不空');
       }

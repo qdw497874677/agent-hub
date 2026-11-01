@@ -42,6 +42,8 @@ export interface ProviderWiring {
   readonly deps: ProviderDeps;
   /** 项目的团队（null = 不分团队）。 */
   projectTeam(taskId: string): Promise<string | null>;
+  /** 按项目 id 查团队（项目设置里挑提炼模型用）。 */
+  projectTeamOf?(projectId: string): Promise<string | null>;
   /** personal 提供商主人所在团队。 */
   userTeam(userId: string): Promise<string | null>;
   hostOf(sessionId: string): string | null;
@@ -214,11 +216,12 @@ export function createProviderWiring(wiring: ProviderWiring) {
       const principal = principalOf(c);
       const actor = providerActor(principal);
       const taskId = c.req.query('taskId') ?? '';
-      const team = taskId ? await wiring.projectTeam(taskId) : null;
+      const projectId = c.req.query('projectId') ?? '';
+      const team = taskId ? await wiring.projectTeam(taskId) : projectId && wiring.projectTeamOf ? await wiring.projectTeamOf(projectId) : null;
       const out = [];
       for (const provider of await deps.providers.list()) {
         if (!canUseProvider(actor, provider, team).ok) continue;
-        out.push({ slug: provider.slug, name: provider.name, protocol: provider.protocol, models: provider.models.map((model) => ({ id: hubModelId(provider.slug, model.id), label: model.name ?? model.id })) });
+        out.push({ slug: provider.slug, name: provider.name, protocol: provider.protocol, scope: provider.scope, models: provider.models.map((model) => ({ id: hubModelId(provider.slug, model.id), label: model.name ?? model.id })) });
       }
       return c.json(out);
     });
