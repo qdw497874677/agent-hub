@@ -179,7 +179,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await expect(composer).toBeVisible();
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();
-  await expect(page.getByRole('columnheader', { name: '任务' })).toBeVisible();
+  await expect(page.getByTestId('list-view')).toBeVisible();
   await page.getByRole('button', { name: '对话', exact: true }).click();
   await expect(composer).toHaveValue('这段草稿要活过视图切换');
 
