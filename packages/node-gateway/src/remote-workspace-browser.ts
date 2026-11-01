@@ -76,3 +76,9 @@ export function createRemoteBrowsers(deps: {
     }
   };
 }
+
+/** 通道还没就绪时的占位：每个调用都如实报不可用（决定 8：不缓存、不假装）。 */
+export function offlineWorkspaceBrowser(message: string): WorkspaceBrowser {
+  const no = async () => ({ ok: false as const, error: { code: 'unavailable' as const, message } });
+  return { list: no, read: no, find: no, changes: no, diff: no, head: no, watch: no };
+}

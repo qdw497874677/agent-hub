@@ -25,7 +25,7 @@ const agent: AgentDescriptor = {
 function fakeBrowser(tag: string, calls: string[]): WorkspaceBrowser {
   return {
     list: async (root, path) => (calls.push(`${tag}:list:${root}:${path}`), ok({ path, entries: [], truncated: false, isGit: true })),
-    read: async (root, path) => (calls.push(`${tag}:read:${path}`), ok({ path, size: 1, modifiedAt: 0, binary: false, truncated: false, bytes: new Uint8Array([65]) })),
+    read: async (_root, path) => (calls.push(`${tag}:read:${path}`), ok({ path, size: 1, modifiedAt: 0, binary: false, truncated: false, bytes: new Uint8Array([65]) })),
     find: async () => ok(['a.ts']),
     changes: async (_root, base) => (calls.push(`${tag}:changes:${base}`), ok([])),
     diff: async (_root, path, base) => (calls.push(`${tag}:diff:${path}:${base}`), ok({ path, patch: '', truncated: false, binary: false })),

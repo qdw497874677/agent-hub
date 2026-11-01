@@ -24,6 +24,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createGroupChat,
   createSessionLane,
   createContextService,
+  createWorkspaceFilesService,
   createMessageToolProvider,
   createMemoryService,
   checkProviderModel,
@@ -69,7 +70,7 @@ import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
-import { createGitWorkspace, createLocalFs, readBuildInfo } from '@agent-hub/node-gateway';
+import { createGitWorkspace, createLocalFs, readBuildInfo, createWorkspaceBrowser, offlineWorkspaceBrowser } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
@@ -142,7 +143,10 @@ const deps: Deps = {
       // hub 模型提供商：只给选中的那一个（ADR 0013 D3）；不能用就让这次启动失败，不静默换模型
       const granted = await providerWiring.grantFor(command);
       if (!granted.ok) return granted;
-      return serverGateway.gateway.dispatch(await withSessionAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, granted.value) : granted.value));
+      const sent = await serverGateway.gateway.dispatch(await withSessionAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, granted.value) : granted.value));
+      // 记下会话开始时的 HEAD（ADR 0025 决定 7）：diff 默认对它比；失败不影响会话
+      if (sent.ok && command.kind === 'start_session') void filesService.recordBase(command.sessionId).catch(() => undefined);
+      return sent;
     },
     listDirectories: async (workerId, path) =>
       serverGateway
@@ -240,6 +244,14 @@ hub.stream.subscribe((frame) => {
 const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit, gateway: deps.gateway,
   // 角色层（ADR 0020 §8）：派生出来的角色会话 → 角色；否则群里的成员 → 角色
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId as SessionId))?.role ?? (await store.groups.memberOfSession(sessionId as SessionId))?.role ?? null });
+const offlineBrowser = offlineWorkspaceBrowser('worker 通道尚未就绪');
+const filesService = createWorkspaceFilesService({
+  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,
+  local: createWorkspaceBrowser(),
+  remote: (workerId) => (serverGateway ? serverGateway.browser(workerId) : offlineBrowser),
+  bases: store.sessionBases,
+  now: () => Date.now()
+});
 setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
 
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
@@ -646,6 +658,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   messaging: { bus: messageBus, messages: store.messages },
   groups: { groups: groupChat },
   context: contextService,
+  files: filesService,
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,
