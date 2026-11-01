@@ -183,6 +183,7 @@ accepts: [ask, notify]   # 可选：只接受哪些原语
   - `ask role:reviewer`（不在群里）→ 默认**派生一个任务型**会话（`reuse: always-new`；可配 `sticky` 改投常驻的持久型）；
   - 群里 @ 群成员 → 投给该成员在本群的持久型会话；
   - 群里临时 @ 一个**不在群里**的角色 → 派生任务型会话（要 `agent.spawn`，按决定 4 需要批准），结果贴回群里。
+    - 实现（PR #136）：人 @ 群外角色时只贴一行提示、**不派生、不经过主持人**；消息下出「临时请 @x 回答」按钮，点了（`POST /api/groups/:id/invite`，要 `group.post` + `agent.spawn`）就算批准。会话记在群里但角色**不进成员表**，回答完这段对话就结束；@ 到的既不是成员也不是项目角色只贴一行「也不是项目角色」。agent 回复里 @ 群外的人不触发任何事。
 - 这样 §3.2 的 `reuse` 取值简化为：`sticky` = 持久型；`per-trace` / `always-new` = 任务型。
 - 数据：`sessions.kind`（`task | persistent`，迁移时老会话全部记为 `task`），持久型多 `home`（`group:<id>` 或 `role:<projectId>/<name>`）、`summary`、`generation`（重启次数）。
 
@@ -346,7 +347,7 @@ queued → delivering → delivered → (answered | expired | failed | canceled)
 | 每条人类消息的硬上限 | 「每次发送最多 10 条消息、3 轮」 | 每条人类消息默认最多 **3 轮**、**10 条** agent 消息（项目可调高，最多 **5 轮、20 条**），计数包括主持人的分派行。到上限就停止，群里显示一行系统提示 |
 | 显式的沉默标记 | `[SILENT]`、`NO_REPLY` 等「有意沉默」标记，会记进记录但不显示 | 成员可以回复 `[SILENT]` 表示没有补充；hub 把它记为投递已完成、内容为空，不在群里显示，计入「整轮沉默」的判断 |
 | @user 升级 | agent 用 `@user` 把需要判断的事交给人，群条目上显示「needs you」徽标 | agent 用 `@user`（或 `@<人名>`）升级；群列表和侧栏显示「需要你」徽标；人回复后徽标消失 |
-| 停止 / 暂停 | Stop 按钮取消排队中的后续轮次并暂停成员；「stop @bot」把 stop 写在 @ 旁边才算指令，代码块和引用里的不算 | 群顶部加「停止」按钮：取消这条人类消息排队中的后续轮次，并暂停（hold）全部成员，直到人再次发言；`停止 @成员` / `stop @member` 只暂停被 @ 的成员；代码块和引用里的这类词不算指令 |
+| 停止 / 暂停 | Stop 按钮取消排队中的后续轮次并暂停成员；「stop @bot」把 stop 写在 @ 旁边才算指令，代码块和引用里的不算 | 群顶部加「停止」按钮：取消这条人类消息排队中的后续轮次，并暂停（hold）全部成员，直到人再次发言；`停止 @成员` / `stop @member` 只暂停被 @ 的成员；代码块和引用里的这类词不算指令。硬停（PR #136）：除了打断有群投递的回合，群里常驻会话还在跑的回合（比如别处来的追问）也一起打断；「停止 @x」同样只打断 x |
 | 点对点投递回执 | 发送方拿到 `status: queued` 和 `delivery_id` | `agent_send / ask` 立即返回 `{ status: 'queued', deliveryId }`，`agent_status(deliveryId)` 查询进度（§5.3 的投递状态机） |
 | 失败类型码 | 失败带类型码，调用方按码分支（「重新登录」还是「稍后重试」），不用解析报错文字 | 失败统一带 `code`：`target_offline`、`timeout`、`rate_limited`、`context_overflow`、`auth`、`quota`、`config`、`denied`、`unresolvable` |
 | 只重试一次，只对暂时性错误 | 失败的投递**最多重试一次**，只在重试有用时（目标离线、超时、限流）；auth / quota / config 永不自动重试；上下文超限先压缩再重试 | 同样：只有 `target_offline` / `timeout` / `rate_limited` / `context_overflow` 自动重试一次（`context_overflow` 先触发压缩，ADR 0020 L1）；其他类型码直接失败。重试用同一个 `deliveryId` 作为幂等键 |
