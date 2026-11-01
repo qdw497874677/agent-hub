@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
@@ -15,7 +15,7 @@ async function writeHeaders(page: import('@playwright/test').Page, baseURL: stri
 
 /**
  * 运行时套件 P2（ADR 0021 §7/§8）：cluster_admin 在手机宽度上提交、看安装脚本、批准；
- * 再在机器页上装到一台远程 Worker（非 root），清单变 ✓；最后卸载。全部走本地假 registry。
+ * 再在机器页上装到一台远程 Worker，安装脚本不执行，清单变 ✓；最后卸载。全部走本地假 registry。
  */
 test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390px）', async ({ page, baseURL }) => {
   test.setTimeout(150_000);
@@ -46,6 +46,8 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     const item = page.getByTestId('component-item').filter({ hasText: id }).filter({ hasText: '1.0.0' });
     await expect(item.getByTestId('component-status')).toContainText(/待审/, { timeout: 20_000 });
     await expect(item.getByTestId('component-scripts')).toContainText('postinstall');
+    await expect(item.getByTestId('component-scripts-warning')).toContainText('不会执行');
+    await expect(item.getByTestId('component-has-scripts')).toBeVisible();
     await item.getByTestId('component-approve').click();
     await expect(item.getByTestId('component-status')).toContainText(/已批准|通过/);
 
@@ -62,7 +64,7 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'components-admin-390.png'), fullPage: true });
 
-    // 接一台远程机器（以当前非 root 用户跑），npm 指向假 registry
+    // 接一台远程机器，npm 指向假 registry
     const pairing = await page.request.post('/api/workers/pairing', { data: {}, headers });
     const code = ((await pairing.json()) as { code: string }).code;
     const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
@@ -95,7 +97,9 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     expect((await me())?.drift?.items.filter((i) => i.componentId === id)).toEqual([]);
     const installed = join(runtimesDir, 'components', 'pi', id, 'current');
     expect(existsSync(installed)).toBe(true);
-    expect(readFileSync(join(installed, 'node_modules', pkg, 'postinstall.ok'), 'utf8')).toBe('1');
+    // ADR 0021 决定 8（2026-10-31 修订）：安装脚本一律不执行
+    expect(existsSync(join(installed, 'node_modules', pkg, 'package.json'))).toBe(true);
+    expect(existsSync(join(installed, 'node_modules', pkg, 'postinstall.ok'))).toBe(false);
     const row = page.getByTestId('inventory-component').filter({ hasText: id });
     await expect(row).toContainText('✓', { timeout: 20_000 });
     await row.scrollIntoViewIfNeeded();

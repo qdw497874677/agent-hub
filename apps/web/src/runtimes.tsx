@@ -236,7 +236,7 @@ function ComponentActions({ worker }: { worker: WorkerInfoDto }) {
             <option value="">选一个已批准的组件…</option>
             {approved.map((c) => (
               <option key={`${c.id}@${c.version}`} value={`${c.id}@${c.version}`}>
-                {c.id} v{c.version}{Object.keys(c.scripts).length ? '（带安装脚本）' : ''}
+                {c.id} v{c.version}{Object.keys(c.scripts).length ? '（声明了安装脚本，不会执行，可能用不了）' : ''}
               </option>
             ))}
           </select>

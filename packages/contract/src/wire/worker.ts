@@ -125,10 +125,11 @@ export const componentJobSpecSchema = z.object({
   resolved: z.string().url().max(500),
   integrity: z.string().regex(/^sha512-[A-Za-z0-9+/]{86}==$/),
   provides: z.array(capabilityEntry).max(16),
-  ignoreScripts: z.boolean(),
+  /** 恒为 true（ADR 0021 决定 8：安装脚本一律不执行）。保留字段是为了让旧版 Worker 也加 --ignore-scripts。 */
+  ignoreScripts: z.literal(true),
   expectedCurrent: runtimeVersionSchema.nullable()
 });
-/** 组件任务结束时的结构化结果：hub 据此写审计（bundle.script_run / bundle.integrity_mismatch）。 */
+/** 组件任务结束时的结构化结果：hub 据此写审计（bundle.script_skipped / bundle.integrity_mismatch）。 */
 export const componentJobResultSchema = z.object({
   integrity: z.string().max(200).optional(),
   integrityMismatch: z.boolean().optional(),

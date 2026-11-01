@@ -19,7 +19,6 @@ function options(root: string, registry: MockRegistry, extra: Partial<ComponentI
     env: { PATH: process.env['PATH'] ?? '', npm_config_registry: registry.url },
     run: async (file, args, opts) => void (await runCommand(file, args, { ...opts, signal: AbortSignal.timeout(60_000), onLine: (line) => lines.push(line) })),
     log: (line) => lines.push(line),
-    isRoot: false,
     lines,
     ...extra
   };
@@ -34,7 +33,7 @@ function spec(registry: MockRegistry, version: string, extra: Partial<ComponentJ
     resolved: `${registry.url}/-/demo-pi-ext-${version}.tgz`,
     integrity: registry.integrity('demo-pi-ext', version),
     provides: [{ capability: 'tool:demo' }],
-    ignoreScripts: false,
+    ignoreScripts: true,
     expectedCurrent: null,
     ...extra
   };
@@ -54,7 +53,8 @@ test('组件安装：暂存 → 核对锁文件 → 切换 current；升级保�
     const base = join(root, 'pi', 'demo');
     const v1 = readlinkSync(join(base, 'current'));
     assert.match(v1, /^v-/);
-    assert.ok(existsSync(join(base, v1, 'node_modules', 'demo-pi-ext', 'ran.txt')), '脚本跑了');
+    assert.ok(!existsSync(join(base, v1, 'node_modules', 'demo-pi-ext', 'ran.txt')), '安装脚本一律不执行（--ignore-scripts）');
+    assert.equal(first.result.ignoredScripts, true);
     const meta = JSON.parse(readFileSync(join(base, v1, '.component.json'), 'utf8'));
     assert.equal(meta.version, '1.0.0');
     assert.deepEqual(hubComponentDirs(root, 'pi'), [realpathSync(join(base, v1, 'node_modules', 'demo-pi-ext'))]);
@@ -95,24 +95,6 @@ test('制品被换：锁文件哈希和钉住的不符 → 丢弃暂存，curren
       (await import('node:fs')).readdirSync(join(root, 'pi', 'demo')).filter((n) => n.startsWith('.staging-')),
       []
     );
-  } finally {
-    await registry.close();
-  }
-});
-
-test('root 运行且允许脚本 → 拒绝；禁止安装脚本时 root 也能装，脚本不跑', { timeout: 120_000 }, async () => {
-  const registry = await startMockRegistry([{ name: 'demo-pi-ext', version: '1.0.0', scripts: { postinstall: SCRIPT } }]);
-  try {
-    const root = mkdtempSync(join(tmpdir(), 'comp-'));
-    const opts = options(root, registry, { isRoot: true });
-    const refused = await installComponent(opts, spec(registry, '1.0.0'));
-    assert.equal(refused.refused, true);
-    assert.match(refused.message, /root/);
-    const ok = await installComponent(opts, spec(registry, '1.0.0', { ignoreScripts: true }));
-    assert.ok(ok.ok, ok.message);
-    assert.equal(ok.result.ignoredScripts, true);
-    const dir = readlinkSync(join(root, 'pi', 'demo', 'current'));
-    assert.equal(existsSync(join(root, 'pi', 'demo', dir, 'node_modules', 'demo-pi-ext', 'ran.txt')), false);
   } finally {
     await registry.close();
   }

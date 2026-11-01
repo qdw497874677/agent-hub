@@ -41,7 +41,7 @@ export interface RuntimeManagerOptions {
   /** 跑 `<shim> --version`；测试可换。返回输出，失败抛错。 */
   readonly version?: (file: string, env: Record<string, string>) => Promise<string>;
   /** hub 管理的组件（ADR 0021 P2）：根目录与 npm-cli.js。不给 = 不接组件任务。 */
-  readonly components?: { readonly root: string; readonly npm: string | null; readonly isRoot?: boolean };
+  readonly components?: { readonly root: string; readonly npm: string | null };
 }
 
 /**
@@ -167,7 +167,6 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
                 npm: components.npm,
                 env,
                 log,
-                isRoot: components.isRoot ?? process.getuid?.() === 0,
                 run: async (file, args, runOptions) => {
                   await runCommand(file, args, { cwd: runOptions.cwd, env: runOptions.env, signal: controller.signal, onLine: log });
                 }

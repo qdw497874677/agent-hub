@@ -96,8 +96,8 @@ export interface ComponentJobSpec {
   readonly resolved: string;
   readonly integrity: string;
   readonly provides: readonly ComponentProvides[];
-  /** hub 级「禁止安装脚本」开着：Worker 用 --ignore-scripts。 */
-  readonly ignoreScripts: boolean;
+  /** 恒为 true：安装脚本一律不执行（ADR 0021 决定 8）；留着给旧版 Worker 看。 */
+  readonly ignoreScripts: true;
   /** 期望当前装着的版本（借鉴 paseo 的 compare-and-swap）：和 Worker 上的对不上就拒绝，防止审核后状态变了。null = 应该没装。 */
   readonly expectedCurrent: string | null;
 }

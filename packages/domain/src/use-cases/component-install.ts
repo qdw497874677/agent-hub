@@ -4,7 +4,6 @@ import { newId } from '../ids.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { ComponentCatalogRepository, ComponentPinStore } from '../ports/component-store.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
-import type { SettingsRepository } from '../ports/settings-repository.ts';
 import type { WorkerControl } from '../ports/worker-control.ts';
 import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
@@ -27,7 +26,6 @@ export interface ComponentDeps {
   readonly pins: ComponentPinStore;
   readonly workers: Pick<WorkerControl, 'list' | 'runtimeJob'>;
   readonly sessions: Pick<SessionRepository, 'listAll'>;
-  readonly settings: Pick<SettingsRepository, 'get'>;
   readonly audit: AuditLog;
   readonly access: AccessPolicy;
   /** hub 在审核前去 registry 查制品（下载地址、sha512、安装脚本）——借鉴 paseo 的「审的就是装的」。 */
@@ -146,8 +144,6 @@ export async function startComponentJob(
     : 0;
   const plan = planComponentJob(worker, item, request.action, pin, busy);
   if (!plan.ok || !item) return plan.ok ? err(notFound('组件目录里没有这一项')) : plan;
-  const settings = await deps.settings.get();
-  const ignoreScripts = settings.disableInstallScripts === true;
   const install = request.action === 'install_component';
   const job: RuntimeJob = {
     jobId: (deps.newJobId ?? newId)(),
@@ -162,7 +158,7 @@ export async function startComponentJob(
       resolved: item.resolved,
       integrity: item.integrity,
       provides: item.provides,
-      ignoreScripts,
+      ignoreScripts: true,
       expectedCurrent: plan.value.from
     },
     state: 'running',
@@ -175,7 +171,7 @@ export async function startComponentJob(
   if (!(await deps.workers.runtimeJob(workerId, job))) return err(conflict('这台机器已经不在线'));
   const label = worker ? `${worker.label}（${workerId}）` : workerId;
   const detail = install
-    ? `${item.id} ${plan.value.from ? `${plan.value.from} → ` : ''}${item.version}${plan.value.repair ? '（修复漂移）' : ''}${ignoreScripts ? '，禁止安装脚本' : ''}`
+    ? `${item.id} ${plan.value.from ? `${plan.value.from} → ` : ''}${item.version}${plan.value.repair ? '（修复漂移）' : ''}`
     : `${item.id} 卸载 ${plan.value.from ?? ''}`.trim();
   await audit(deps, actor, install ? 'runtime.component.install' : 'runtime.component.uninstall', label, detail);
   return ok(job);
@@ -191,7 +187,7 @@ export async function componentJobFinished(deps: Pick<ComponentDeps, 'pins' | 'a
     await audit(deps as ComponentDeps, system, 'bundle.integrity_mismatch', target, `期望 ${spec.integrity.slice(0, 24)}…，实际 ${(job.result.integrity ?? '未知').slice(0, 24)}…；已回滚，没有切换版本`);
   }
   for (const run of job.result?.scripts ?? []) {
-    await audit(deps as ComponentDeps, system, 'bundle.script_run', target, `${run.package} ${run.script}`);
+    await audit(deps as ComponentDeps, system, 'bundle.script_skipped', target, `${run.package} ${run.script}（未执行）`);
   }
   if (job.state !== 'succeeded') return;
   if (job.action === 'uninstall_component') {
