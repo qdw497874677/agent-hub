@@ -27,5 +27,5 @@ Hermes Agent 提供 API Server（OpenAI 兼容接口 + Runs API：幂等提交�
 ## 修订（2026-11-01）
 
 - P1 落地：`packages/adapters/hermes`（Runs API），§14 实测结果与实施细节见 docs/design/hermes-adapter.md §15。
-- D2-A 调整为「每个 hub 会话一个网关」（原因：中继令牌按会话、无每轮 cwd、MCP 是 profile 级、一个网关绑一个 HERMES_HOME）。待 David 确认。
-- D7 退路未触发：hub MCP 通过每会话 profile 的 `mcp_servers` 注入。
+- ~~D2-A 调整为「每个 hub 会话一个网关」~~ → 2026-11-01 David 要求回到 D2-A：**每个 worker 一个网关**，会话用 Hermes 自己的会话（`ahub-<id>` + `X-Hermes-Session-Key`）隔开。按会话的中继凭据走 worker 内分流器（模型名带路由）；无每轮 cwd → 工作区写进 instructions、网关 cwd 是中性空目录；hub MCP 工具在共用网关下暂不提供（分不清调用方会话，宁缺不串）。细节与实测见设计文档 §17。
+- D7 退路未触发：~~hub MCP 通过每会话 profile 的 `mcp_servers` 注入~~（每 worker 一个网关后暂停，见 §17.4）。

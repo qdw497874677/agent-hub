@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import test from 'node:test';
 import type { StartSpec } from '@agent-hub/domain';
 import { submitRun, HermesHttpError } from './client.ts';
-import { prepareHermesHome, hermesSessionKey } from './home.ts';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { prepareSessionDir, prepareWorkerHome, hermesSessionKey } from './home.ts';
+import { routedModel, startProviderMux } from './provider-mux.ts';
 import { hermesBaseEnv, hermesInput, hermesModel } from './hermes-runtime.ts';
 import { createHermesEventMapper } from './map-event.ts';
 import { createSseParser } from './sse.ts';
@@ -65,20 +68,53 @@ test('事件映射：终态和控制事件', () => {
   assert.deepEqual(map({ event: 'something.new' }).events, []);
 });
 
-test('profile：令牌只用变量引用，记忆默认关，MCP 走垫片', async () => {
+test('worker 共用 profile：只有变量引用，记忆默认关，cwd 是中性目录，不配 MCP', async () => {
   const root = await mkdtemp(join(tmpdir(), 'hermes-home-'));
-  const dir = await prepareHermesHome(root, 's/1', { model: 'm-1', workspaceRoot: '/ws', toolShim: { command: 'node', args: ['shim.js'] } });
-  assert.equal(dir, join(root, 'sessions', 'ahub-s_1'));
-  const text = await readFile(join(dir, 'config.yaml'), 'utf8');
-  const config = JSON.parse(text);
-  assert.deepEqual(config.model, { provider: 'custom', default: 'm-1', base_url: '${HUB_PROVIDER_BASE_URL}', api_key: '${HUB_PROVIDER_TOKEN}' });
+  const { home, cwd } = await prepareWorkerHome(root);
+  assert.equal(home, join(root, 'worker', 'home'));
+  const config = JSON.parse(await readFile(join(home, 'config.yaml'), 'utf8'));
+  assert.deepEqual(config.model, { provider: 'custom', default: 'ahub-unrouted', base_url: '${HUB_PROVIDER_BASE_URL}', api_key: '${HUB_PROVIDER_TOKEN}' });
   assert.deepEqual(config.memory, { memory_enabled: false, user_profile_enabled: false });
-  assert.equal(config.terminal.cwd, '/ws');
-  assert.equal(config.mcp_servers['agent-hub'].env.AGENT_HUB_TOOL_TOKEN, '${AGENT_HUB_TOOL_TOKEN}');
-  assert.equal(await readlink(join(dir, 'installs')), join(root, 'shared', 'installs'));
-  // 第二次（resume）复用同一个目录
-  assert.equal(await prepareHermesHome(root, 's/1', { model: 'm-1', workspaceRoot: '/ws' }), dir);
+  assert.equal(config.terminal.cwd, cwd);
+  assert.equal(config.mcp_servers, undefined);
+  assert.equal(await readlink(join(home, 'installs')), join(root, 'shared', 'installs'));
+  assert.equal((await prepareWorkerHome(root)).home, home);
+  assert.equal(await prepareSessionDir(root, 's/1'), join(root, 'worker', 'sessions', 'ahub-s_1'));
   assert.equal(hermesSessionKey('abc'), 'ahub-abc');
+});
+
+test('分流器：按模型路由换成会话自己的令牌和真模型；未知路由 404；没密钥 401', async () => {
+  const seen: { auth: string | undefined; model: unknown; url: string | undefined }[] = [];
+  const upstream = createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => (body += c));
+    req.on('end', () => {
+      seen.push({ auth: req.headers.authorization, model: JSON.parse(body).model, url: req.url });
+      res.writeHead(200, { 'content-type': 'application/json' }).end('{"ok":true}');
+    });
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const up = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/relay/h1`;
+  const mux = await startProviderMux();
+  const a = mux.add({ baseUrl: up, token: 'tok-a', models: [{ id: 'm1' }] });
+  const b = mux.add({ baseUrl: up, token: 'tok-b', models: [{ id: 'm2' }] });
+  const post = (model: string, key = mux.key) =>
+    fetch(`${mux.baseUrl}/chat/completions`, { method: 'POST', headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' }, body: JSON.stringify({ model, messages: [] }) });
+  assert.equal((await post(routedModel(a, 'm1'))).status, 200);
+  assert.equal((await post(routedModel(b, 'm2'))).status, 200);
+  assert.deepEqual(seen, [
+    { auth: 'Bearer tok-a', model: 'm1', url: '/relay/h1/chat/completions' },
+    { auth: 'Bearer tok-b', model: 'm2', url: '/relay/h1/chat/completions' }
+  ]);
+  assert.equal((await post('m1')).status, 404);
+  assert.equal((await post(routedModel(a, 'm1'), 'wrong')).status, 401);
+  const models = (await (await fetch(`${mux.baseUrl}/models`, { headers: { authorization: `Bearer ${mux.key}` } })).json()) as { data: { id: string }[] };
+  assert.deepEqual(models.data.map((m: { id: string }) => m.id).sort(), [routedModel(a, 'm1'), routedModel(b, 'm2')].sort());
+  mux.remove(a);
+  assert.equal((await post(routedModel(a, 'm1'))).status, 404);
+  assert.equal(mux.size(), 1);
+  await mux.close();
+  upstream.close();
 });
 
 test('环境：像密钥的变量不传给 Hermes', () => {
