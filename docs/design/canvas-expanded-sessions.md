@@ -134,3 +134,7 @@ PiX 是基于 Pi 的非线性会话工作台（Electron + Vue），图谱节点 
 - 适配器：`canvas-windows-store.ts`（localStorage）。
 - UI：`canvas-window-layer.tsx`（`useCanvasWindows` + 窗口层 + 窗口条 + 手机滑动条），窗口内容复用 `FocusView`（`windowChrome`）。
 - e2e：`e2e/canvas-windows.spec.ts`（1280 全流程、5 个会话溢出、390 手机）、`e2e/canvas-interaction.spec.ts`（窗口区分区）。
+
+## 列表视图按任务分组（2026-11-01，PR #153）
+
+组头是任务标题 + 会话数；行标题是会话预览里能看到的第一句话（预览只有最近几条事件，看不到就叫「会话 N」），下面一行是开始时间 · 来源（派生 / 分叉自 #n）· agent，手机上也常显；桌面再加模型和 #seq。整行是 ≥44px 的按钮。

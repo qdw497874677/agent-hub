@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { localTime } from './local-time.ts';
 import { useQuery } from '@tanstack/react-query';
 import type { CanvasDto, SearchHitDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
@@ -33,62 +34,50 @@ export function ListView({
   onTaskDetail: (taskId: string) => void;
   onNewTask: () => void;
 }) {
-  const taskTitle = useMemo(
-    () => new Map(canvas.tasks.map((task) => [task.id, task.title])),
-    [canvas.tasks]
-  );
+  const groups = useMemo(() => groupSessions(canvas), [canvas]);
+  const agentLabel = (agentId: string) => canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
 
   return (
-    <div className="h-full overflow-y-auto px-3 py-4 md:px-6">
-      <table className="w-full border-collapse text-body">
-        <thead>
-          <tr className="border-b border-hair text-left text-meta text-tertiary">
-            <th className="py-2 font-normal">任务</th>
-            <th className="py-2 font-normal">agent</th>
-            <th className="hidden py-2 font-normal md:table-cell">模型</th>
-            <th className="hidden py-2 font-normal md:table-cell">来源</th>
-            <th className="py-2 font-normal">状态</th>
-            <th className="hidden py-2 font-normal md:table-cell">事件</th>
-          </tr>
-        </thead>
-        <tbody>
-          {canvas.sessions.length === 0 ? (
-            <tr>
-              <td className="py-6 text-meta text-tertiary" colSpan={6}>
-                还没有会话。点下面的任务（或画布上任务卡的「＋ 会话」）就能派生一条。
-              </td>
-            </tr>
-          ) : null}
-          {canvas.sessions.map((session) => {
-            const status = statusOf(session, live);
-            const seq = live[session.id]?.lastSeq ?? session.lastSeq;
-            return (
-              <tr
-                key={session.id}
-                className="cursor-pointer border-b border-hair/60 hover:bg-card focus-visible:bg-card"
-                tabIndex={0}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') onOpen(session.id);
-                }}
-                onClick={() => onOpen(session.id)}
-              >
-                <td className="max-w-[140px] truncate py-3 text-primary md:max-w-[280px] md:py-2">{taskTitle.get(session.taskId) ?? '—'}</td>
-                <td className="py-2 text-secondary">
-                  {canvas.agents.find((agent) => agent.id === session.agentId)?.label ?? session.agentId}
-                </td>
-                <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">{session.model === '' ? '默认模型' : session.model}</td>
-                <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">
-                  {session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生'}
-                </td>
-                <td className="py-2">
-                  <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
-                </td>
-                <td className="hidden py-2 font-mono text-meta text-tertiary md:table-cell">#{seq}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+    <div className="h-full overflow-y-auto px-3 py-4 md:px-6" data-testid="list-view">
+      {canvas.sessions.length === 0 ? (
+        <p className="py-6 text-meta text-tertiary">还没有会话。点下面的任务（或画布上任务卡的「＋ 会话」）就能派生一条。</p>
+      ) : null}
+      {groups.map((group) => (
+        <section key={group.taskId} className="mb-4" aria-label={`任务：${group.title}`} data-testid="list-task-group">
+          <h3 className="flex items-baseline gap-2 border-b border-hair py-2 text-sub text-primary">
+            <span className="min-w-0 truncate">{group.title}</span>
+            <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
+          </h3>
+          <ul>
+            {group.sessions.map(({ session, label }) => {
+              const status = statusOf(session, live);
+              const seq = live[session.id]?.lastSeq ?? session.lastSeq;
+              const origin = session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生';
+              return (
+                <li key={session.id}>
+                  <button
+                    type="button"
+                    data-testid="list-session-row"
+                    className="flex min-h-[44px] w-full items-center gap-3 border-b border-hair/60 py-2 pl-3 text-left hover:bg-card focus-visible:bg-card"
+                    onClick={() => onOpen(session.id)}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-body text-primary" data-testid="list-session-label">{label}</span>
+                      <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
+                        {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
+                        <span className="hidden md:inline"> · {session.model === '' ? '默认模型' : session.model} · #{seq}</span>
+                      </span>
+                    </span>
+                    <span className="shrink-0">
+                      <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
 
       <div className="mt-6 border-t border-hair pt-3">
         <p className="mb-2 text-meta text-secondary">任务 · 点一下从它再开一条会话</p>
@@ -205,4 +194,25 @@ export function SearchPalette({
       </div>
     </div>
   );
+}
+
+/** 列表按任务分组；组内按开始时间排。行标题用会话里能看到的第一句话（预览只有最近几条事件，看不到就用「会话 N」）。 */
+export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'previews'>) {
+  const byTask = new Map<string, CanvasDto['sessions'][number][]>();
+  for (const session of canvas.sessions) byTask.set(session.taskId, [...(byTask.get(session.taskId) ?? []), session]);
+  const order = [...canvas.tasks.map((task) => task.id), ...[...byTask.keys()].filter((id) => !canvas.tasks.some((task) => task.id === id))];
+  return order
+    .filter((taskId) => byTask.has(taskId))
+    .map((taskId) => {
+      const sessions = [...(byTask.get(taskId) ?? [])].sort((a, b) => a.createdAt - b.createdAt);
+      return {
+        taskId,
+        title: canvas.tasks.find((task) => task.id === taskId)?.title ?? '—',
+        sessions: sessions.map((session, index) => {
+          const prompt = (canvas.previews[session.id] ?? []).find((entry) => entry.event.kind === 'prompt');
+          const text = prompt && prompt.event.kind === 'prompt' ? prompt.event.text.replace(/\s+/g, ' ').trim() : '';
+          return { session, label: text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `会话 ${index + 1}` };
+        })
+      };
+    });
 }
