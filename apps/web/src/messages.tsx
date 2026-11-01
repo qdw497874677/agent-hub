@@ -169,7 +169,10 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer) => v
   });
   const stop = useMutation({ mutationFn: () => groupApi.stop(group.id), onSuccess: () => void client.invalidateQueries({ queryKey: KEY }) });
   const roles = useQuery({ queryKey: [...KEY, 'roles', group.projectId], queryFn: () => groupApi.roles(group.projectId) });
-  const invite = useMutation({ mutationFn: (v: { postId: string; role: string }) => groupApi.invite(group.id, v.postId, v.role), onSuccess: () => void client.invalidateQueries({ queryKey: KEY }) });
+  const view = useQuery({ queryKey: [...KEY, 'view', group.id], queryFn: () => groupApi.view(group.id), refetchInterval: 4000 });
+  const canManage = view.data?.canManage === true;
+  // 只能 @ 群成员：@ 到群外的项目角色只给提示，有 group.manage 的人多一个「加入群组」；加完不重放，由人再发
+  const add = useMutation({ mutationFn: (v: { postId: string; role: string }) => groupApi.addMember(group.id, v.role), onSuccess: () => void client.invalidateQueries({ queryKey: KEY }) });
   const roleNames = (roles.data?.roles ?? []).map((r) => r.name);
   const outsidersOf = (body: string): string[] =>
     [...new Set([...body.matchAll(/(^|[^\w@.])@([a-z0-9][a-z0-9_-]{0,39})/gi)].map((m) => m[2]!))].filter((n) => roleNames.includes(n) && !group.members.includes(n));
@@ -200,12 +203,17 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer) => v
                 <p className={`max-w-[85%] whitespace-pre-wrap break-words rounded-md px-3 py-1.5 text-body ${p.author.kind === 'user' ? 'bg-accent/15 text-primary' : 'bg-card text-primary'}`}>{p.body}</p>
                 {p.author.kind === 'user'
                   ? outsidersOf(p.body).map((role) => (
-                      <button key={role} className={`${SMALL} mt-1`} data-testid="group-invite" data-role={role} disabled={invite.isPending} onClick={() => invite.mutate({ postId: p.id, role })}>
-                        临时请 @{role} 回答
-                      </button>
+                      <span key={role} className="mt-1 flex items-center gap-2 text-meta text-tertiary" data-testid="group-outsider" data-role={role}>
+                        @{role} 不在群里，只能 @ 群成员
+                        {canManage ? (
+                          <button className={SMALL} data-testid="group-add-member" data-role={role} disabled={add.isPending} onClick={() => add.mutate({ postId: p.id, role })}>
+                            加入群组
+                          </button>
+                        ) : null}
+                      </span>
                     ))
                   : null}
-                {invite.isError && invite.variables && outsidersOf(p.body).includes(invite.variables.role) && invite.variables.postId === p.id ? <span className="text-meta text-rust" data-testid="group-invite-error">{(invite.error as Error).message}</span> : null}
+                {add.isError && add.variables && add.variables.postId === p.id ? <span className="text-meta text-rust" data-testid="group-add-member-error">{(add.error as Error).message}</span> : null}
               </>
             )}
           </li>
