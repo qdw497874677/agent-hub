@@ -192,9 +192,13 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await expect(sessionNode(page)).toHaveCount(1);
   await expect(page.locator('.react-flow__node-session').getByText(ECHO, { exact: true })).toBeVisible();
 
-  // 列表视图：一行一个会话，点一行进那条会话
+  // 列表视图：按任务分组，组头是任务标题；行上是第一句话 + 开始时间 + 来源，点一行进那条会话
   await page.getByRole('button', { name: '列表' }).click();
-  await page.getByRole('cell', { name: TASK_TITLE }).click();
+  const group = page.getByRole('region', { name: `任务：${TASK_TITLE}` });
+  await expect(group.getByRole('heading')).toContainText(TASK_TITLE);
+  const row = group.getByTestId('list-session-row').first();
+  await expect(row.getByTestId('list-session-meta')).toContainText(/\d+-\d{2} \d{2}:\d{2} · 派生/);
+  await row.click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
 });
 
