@@ -24,7 +24,8 @@ import {
 } from '@agent-hub/domain';
 import { HermesHttpError, hermesJson, streamRun, submitRun, type HermesEndpoint } from './client.ts';
 import { hermesDescriptor } from './descriptor.ts';
-import { hermesSessionKey, prepareHermesHome } from './home.ts';
+import { hermesSessionKey, prepareSessionDir, prepareWorkerHome } from './home.ts';
+import { routedModel, startProviderMux, type ProviderMux } from './provider-mux.ts';
 import { createHermesEventMapper, type HermesControl } from './map-event.ts';
 
 /** Runs API 里 P1 离不开的几项（/v1/capabilities）。缺一项就不开会话，不猜。 */
@@ -102,8 +103,9 @@ export function hermesModel(spec: StartSpec): string {
 
 export interface HermesRuntimeOptions {
   readonly command?: string;
-  /** 每会话 HERMES_HOME 的根目录（见 home.ts）。 */
+  /** hub 管的 Hermes 根目录（见 home.ts）：worker/home 是共用的 HERMES_HOME。 */
   readonly root: string;
+  /** 保留给以后：共用网关下暂不配 hub 工具（§17.4）。 */
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
   readonly onAgentSessionRef?: (sessionId: string, ref: string) => void;
   readonly log?: (message: string) => void;
@@ -112,9 +114,13 @@ export interface HermesRuntimeOptions {
   readonly env?: NodeJS.ProcessEnv;
 }
 
-interface Gateway {
+/** 一个会话看到的网关：共用的进程 + 带自己 session key 的地址；release 是「我不用了」（最后一个走的关网关）。 */
+export interface Gateway {
   readonly child: ChildProcess;
   readonly endpoint: HermesEndpoint;
+  /** 每轮 model 前面加的分流路由（provider-mux.ts）；没有就原样发。 */
+  readonly route?: string;
+  readonly release?: () => Promise<void>;
 }
 
 async function waitHealthy(child: ChildProcess, baseUrl: string, timeoutMs: number): Promise<void> {
@@ -131,65 +137,135 @@ async function waitHealthy(child: ChildProcess, baseUrl: string, timeoutMs: numb
   throw new Error('Hermes 网关没在时限内起来');
 }
 
+interface SharedGateway {
+  readonly child: ChildProcess;
+  readonly baseUrl: string;
+  readonly key: string;
+  readonly mux: ProviderMux;
+  refs: number;
+}
+
+function stopChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  child.kill('SIGTERM');
+  const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
+  return new Promise<void>((resolve) =>
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    })
+  );
+}
+
 /**
- * 一个 hub 会话 = 一个 Hermes 网关进程（独占一个 HERMES_HOME、127.0.0.1 上的随机端口、随机 API 密钥）。
- * 偏离 ADR 0022 D2-A（每 worker 一个网关），原因见设计文档 §14：中继令牌按会话发、Runs API 没有每轮 cwd、
- * MCP 是 profile 级、一个网关只服务一个 HERMES_HOME。
+ * 一个 worker = 一个 Hermes 网关（ADR 0022 D2-A）：一个 HERMES_HOME、127.0.0.1 上的随机端口、随机 API 密钥。
+ * 会话之间用 Hermes 自己的会话隔开（每个 hub 会话一个 `ahub-<id>`，每个请求带它的 X-Hermes-Session-Key）。
+ * 按会话的中继凭据走 worker 内的分流器（provider-mux.ts）；网关在第一个会话来时起，最后一个会话走时关。
  */
 export function createHermesRuntime(options: HermesRuntimeOptions): AgentRuntime {
   const command = options.command ?? 'hermes';
   const log = options.log ?? (() => undefined);
+  let shared: Promise<SharedGateway> | null = null;
+
+  async function boot(): Promise<SharedGateway> {
+    const { home, cwd } = await prepareWorkerHome(options.root);
+    const mux = await startProviderMux();
+    const port = await freePort();
+    const key = randomBytes(24).toString('hex');
+    const env: Record<string, string> = {
+      ...hermesBaseEnv(options.env ?? process.env),
+      HERMES_HOME: home,
+      API_SERVER_ENABLED: 'true',
+      API_SERVER_HOST: '127.0.0.1',
+      API_SERVER_PORT: String(port),
+      API_SERVER_KEY: key,
+      [PROVIDER_BASE_URL_ENV]: mux.baseUrl,
+      [PROVIDER_TOKEN_ENV]: mux.key
+    };
+    let child: ChildProcess;
+    try {
+      child = spawn(command, ['gateway', 'run'], { cwd, env, stdio: ['ignore', 'ignore', 'pipe'] });
+    } catch (error) {
+      await mux.close();
+      throw new Error(`无法启动 Hermes：${(error as Error).message}`);
+    }
+    child.on('error', () => undefined);
+    child.setMaxListeners(0); // 每个会话听一次 exit
+    let stderrTail = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000);
+    });
+    const baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      await waitHealthy(child, baseUrl, options.bootTimeoutMs ?? 60_000);
+      const caps = await hermesJson<{ features?: Record<string, unknown> }>({ baseUrl, key, sessionKey: 'ahub-probe' }, 'GET', '/v1/capabilities');
+      const missing = REQUIRED_FEATURES.filter((feature) => !caps?.features?.[feature]);
+      if (missing.length > 0) throw new Error(`这个 Hermes 版本缺 Runs API 能力：${missing.join(', ')}`);
+    } catch (error) {
+      await stopChild(child);
+      await mux.close();
+      log(`Hermes 起不来：${(error as Error).message}${stderrTail ? `\n${stderrTail.split('\n').slice(-5).join('\n')}` : ''}`);
+      throw error;
+    }
+    const gateway: SharedGateway = { child, baseUrl, key, mux, refs: 0 };
+    child.once('exit', () => {
+      // 网关死了：已开的会话各自收尾（HermesSession 听 exit），下一个会话来时重起
+      void mux.close();
+      if (shared && gatewayOf === gateway) {
+        shared = null;
+        gatewayOf = null;
+      }
+    });
+    gatewayOf = gateway;
+    return gateway;
+  }
+  let gatewayOf: SharedGateway | null = null;
+
+  async function acquire(): Promise<SharedGateway> {
+    if (!shared) {
+      shared = boot();
+      shared.catch(() => {
+        shared = null;
+      });
+    }
+    const gateway = await shared;
+    gateway.refs++;
+    return gateway;
+  }
+
+  async function release(gateway: SharedGateway): Promise<void> {
+    gateway.refs--;
+    if (gateway.refs > 0) return;
+    if (gatewayOf === gateway) {
+      shared = null;
+      gatewayOf = null;
+    }
+    await stopChild(gateway.child);
+    await gateway.mux.close();
+  }
+
   return {
     descriptor: hermesDescriptor(),
     async start(spec: StartSpec): Promise<Result<RuntimeSession, DomainError>> {
       if (!spec.provider) return err(unavailable('Hermes 只能用 hub 模型提供商：请先在会话里选一个 hub 模型'));
       const model = hermesModel(spec);
       if (!model) return err(unavailable('选的 hub 模型提供商没有模型'));
-      let home: string;
+      let dir: string;
+      let gateway: SharedGateway;
       try {
-        home = await prepareHermesHome(options.root, spec.sessionId, {
-          model,
-          workspaceRoot: spec.workspaceRoot,
-          ...(spec.tools && options.toolShim ? { toolShim: options.toolShim } : {})
-        });
+        dir = await prepareSessionDir(options.root, spec.sessionId);
       } catch (error) {
         return err(unavailable(`建不了 Hermes 目录：${(error as Error).message}`));
       }
-      const port = await freePort();
-      const key = randomBytes(24).toString('hex');
-      const env: Record<string, string> = {
-        ...hermesBaseEnv(options.env ?? process.env),
-        HERMES_HOME: home,
-        API_SERVER_ENABLED: 'true',
-        API_SERVER_HOST: '127.0.0.1',
-        API_SERVER_PORT: String(port),
-        API_SERVER_KEY: key,
-        [PROVIDER_BASE_URL_ENV]: spec.provider.baseUrl,
-        [PROVIDER_TOKEN_ENV]: spec.provider.token,
-        ...(spec.tools
-          ? { AGENT_HUB_TOOL_URL: spec.tools.url, AGENT_HUB_TOOL_TOKEN: spec.tools.token, AGENT_HUB_MCP: JSON.stringify(spec.mcp ?? []) }
-          : {})
-      };
-      let child: ChildProcess;
       try {
-        child = spawn(command, ['gateway', 'run'], { cwd: spec.workspaceRoot, env, stdio: ['ignore', 'ignore', 'pipe'] });
+        gateway = await acquire();
       } catch (error) {
-        return err(unavailable(`无法启动 Hermes：${(error as Error).message}`));
+        return err(unavailable(`Hermes 起不来：${(error as Error).message}`));
       }
-      child.on('error', () => undefined);
-      let stderrTail = '';
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000);
-      });
-      const baseUrl = `http://127.0.0.1:${port}`;
       const sessionKey = spec.resume?.agentSessionRef ?? hermesSessionKey(spec.sessionId);
-      const gateway: Gateway = { child, endpoint: { baseUrl, key, sessionKey } };
+      const endpoint: HermesEndpoint = { baseUrl: gateway.baseUrl, key: gateway.key, sessionKey };
       try {
-        await waitHealthy(child, baseUrl, options.bootTimeoutMs ?? 60_000);
-        const caps = await hermesJson<{ features?: Record<string, unknown> }>(gateway.endpoint, 'GET', '/v1/capabilities');
-        const missing = REQUIRED_FEATURES.filter((feature) => !caps?.features?.[feature]);
-        if (missing.length > 0) throw new Error(`这个 Hermes 版本缺 Runs API 能力：${missing.join(', ')}`);
-        await hermesJson(gateway.endpoint, 'POST', '/api/sessions', { id: sessionKey }).catch((error: unknown) => {
+        await hermesJson(endpoint, 'POST', '/api/sessions', { id: sessionKey }).catch((error: unknown) => {
           // 已经有了 = resume；被别的主人占着 = 拒绝（不接管别人的 Hermes 会话）
           if (error instanceof HermesHttpError && error.status === 409) {
             if (error.code === 'permission_denied') throw new Error('foreign_session');
@@ -198,19 +274,47 @@ export function createHermesRuntime(options: HermesRuntimeOptions): AgentRuntime
           throw error;
         });
       } catch (error) {
-        child.kill('SIGTERM');
+        await release(gateway);
         const message = (error as Error).message;
         if (message === 'foreign_session') return err(forbidden('这个 Hermes 会话属于别的主人，hub 不接管'));
-        log(`Hermes 起不来：${message}${stderrTail ? `\n${stderrTail.split('\n').slice(-5).join('\n')}` : ''}`);
-        return err(unavailable(`Hermes 起不来：${message}`));
+        return err(unavailable(`Hermes 开不了会话：${message}`));
       }
+      const route = gateway.mux.add({ baseUrl: spec.provider.baseUrl, token: spec.provider.token, models: spec.provider.models });
       if (!spec.resume?.agentSessionRef) options.onAgentSessionRef?.(spec.sessionId, sessionKey);
-      const instructions = await instructionsFor(spec.assets);
-      const session = new HermesSession(spec.sessionId, gateway, model, instructions, log, home);
+      const instructions = [workspaceInstructions(spec.workspaceRoot), await instructionsFor(spec.assets)].filter(Boolean).join('\n\n');
+      let released = false;
+      const session = new HermesSession(
+        spec.sessionId,
+        {
+          child: gateway.child,
+          endpoint,
+          route,
+          release: async () => {
+            if (released) return;
+            released = true;
+            gateway.mux.remove(route);
+            await release(gateway);
+          }
+        },
+        model,
+        instructions,
+        log,
+        dir
+      );
       await session.reconcile();
       return ok(session);
     }
   };
+}
+
+/** 共用网关没有每会话 cwd（§17.3）：把工作区写进每轮的 instructions。 */
+export function workspaceInstructions(workspaceRoot: string): string {
+  return [
+    '## Workspace',
+    `Your workspace for this conversation is ${workspaceRoot}.`,
+    'Always work inside it: use absolute paths under it for file tools, and start every terminal command with `cd` into it.',
+    'Never read or modify files outside it unless the user explicitly asks.'
+  ].join('\n');
 }
 
 /**
@@ -299,7 +403,7 @@ export class HermesSession implements RuntimeSession {
     const body: Record<string, unknown> = {
       session_id: this.gateway.endpoint.sessionKey,
       input: text,
-      model: this.model,
+      model: this.gateway.route ? routedModel(this.gateway.route, this.model) : this.model,
       provider: 'custom',
       ...(this.instructions ? { instructions: this.instructions } : {})
     };
@@ -451,15 +555,16 @@ export class HermesSession implements RuntimeSession {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    const run = this.run;
     this.run?.abort.abort();
     this.run = null;
     this.queue.close();
-    const child = this.gateway.child;
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGTERM');
-      const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
-      await new Promise<void>((resolve) => child.once('exit', () => resolve()));
-      clearTimeout(timer);
+    if (this.gateway.release) {
+      // 共用网关：停掉自己这一轮（别的会话还在用网关），再交回引用
+      if (run) await hermesJson(this.gateway.endpoint, 'POST', `/v1/runs/${encodeURIComponent(run.id)}/stop`, {}).catch(() => undefined);
+      await this.gateway.release();
+      return;
     }
+    await stopChild(this.gateway.child);
   }
 }

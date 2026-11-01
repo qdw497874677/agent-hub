@@ -206,3 +206,36 @@ Hermes 对外有两条可编程的路：
 2. **结果未知的处理界面**：`ended interrupted` 且原因带 `outcome_unknown` 时，对话里出一张说明卡（不确定在哪、平台不会自动重试、先看工作区）。卡是最后一块且不在跑时给两个按钮：「重发这一轮」（把上一句文字原样再发；附件不带，卡上写明），「不用了」（只在这台浏览器记成已处理）。画布卡片上只显示一行提示。
 3. **真网关中断测试**：`HERMES_LIVE=1 node --test packages/adapters/hermes/src/live-interrupt.test.ts`。全新 HERMES_HOME + 本地假 OpenAI 兼容模型（慢慢吐字，不用密钥）：发一轮 → 出字 → 中断 → 落 `stopped`（实测 0.4–0.6s），收到 ended 马上发下一轮也能接。CI 默认跳过（没装 Hermes）。
    - 测出并修了一个竞态：以前先推 ended、后放开「正在跑」，收到 ended 马上发下一轮会撞「上一轮还没结束」。现在终态先放开再推。
+
+## 17. 每个 worker 一个网关（2026-11-01，回到 D2-A）
+
+David 要求按 ADR 0022 D2-A：一个 worker 只起一个 Hermes 网关，会话用 Hermes 自己的会话机制隔开。§15 里「每会话一个网关」的四个理由逐个处理如下。
+
+### 17.1 中继凭据按会话：worker 内分流器
+
+- 实测（v0.22.5，假模型服务抓包）：Hermes 发给上游的请求里**没有任何会话标识**——header 只有 OpenAI SDK 的 `x-stainless-*` 和 `authorization`，body 只有 `model/messages/tools/stream/...`。
+- 所以靠模型名带路由：网关的 custom provider 指 worker 内的 `provider-mux.ts`（127.0.0.1 随机端口 + 随机密钥，密钥只在内存和网关进程环境里）。每个会话开起来时登记一条路由 `{中继 baseUrl, 会话令牌, 模型}`，拿到一个随机路由 id；每轮提交 `model: "<路由>~<真模型>"`。分流器认出路由、换回真模型、带上**这个会话自己的**中继令牌转给 hub 中继——用量照旧按会话 / 提供商 / 项目记（ADR 0013 不变）。
+- 未知路由 / 会话已关 → 404，绝不会落到别的会话的凭据上。会话令牌只在内存里，不落盘。
+
+### 17.2 会话隔离
+
+- 每个 hub 会话 `ahub-<id>` 一条 Hermes 会话（`POST /api/sessions`，409 = resume，`permission_denied` = 别人的，拒绝）；每个请求带它自己的 `X-Hermes-Session-Key`，幂等键也按会话。
+- 进行中一轮的记录（幂等 / 对账，§16）放在 `root/worker/sessions/ahub-<id>/ahub-pending.json`，各管各的。
+- 网关按引用计数：第一个会话来时起，最后一个会话关时停；网关意外退出，所有开着的会话各自收尾（interrupted），下一个会话来时重起。关一个会话只 stop 它自己那一轮，不动网关。
+
+### 17.3 无每轮 cwd（保守选择，列给 David）
+
+Runs API 和 REST `/api/sessions` 都没有 cwd（只有 TUI JSON-RPC 的 `session.create` 有会话级 cwd，那要接 websocket 协议，P1 不做）。所以：
+- 网关的 `terminal.cwd` 是一个**中性的空目录**（`root/worker/cwd`），不拿任何一个会话的工作区当大家的默认目录；
+- 每轮 instructions 开头写明这个会话的工作区绝对路径，要求文件工具用绝对路径、终端命令先 `cd` 进去。这是提示不是沙箱（§15 也不是）。
+
+### 17.4 MCP（hub 工具）暂不提供（保守选择，列给 David）
+
+MCP 是 profile 级，session key 不会转给 MCP（§14.3）。共用网关下 hub 工具垫片分不清是哪个会话在调——按「宁缺不串」，共用网关不配 `mcp_servers`。以后的路：接 TUI JSON-RPC 的会话级策略，或 Hermes 把会话 id 转给 MCP。
+
+### 17.5 实测（本机全新 Hermes v0.22.5 + 假模型服务，`HERMES_LIVE=1`）
+
+- 两个会话同一个网关 pid；A 在慢慢吐字时 B 正常跑完（`done`）；中断 A → `stopped`；
+- 上游看到：A 的请求全是 A 的令牌、真模型名 `slow-1`；B 的请求全是 B 的令牌，消息里没有 A 的话，有 B 自己的工作区路径；
+- 关 A 后网关还在、B 还能再跑一轮；B 也关了网关退出；
+- 原来的单会话中断用例照旧通过（中断 → `stopped`，约 0.4s；收到 ended 马上能发下一轮）。幂等键 / 对账 / 结果未知的单测照旧通过。
