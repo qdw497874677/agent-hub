@@ -133,6 +133,15 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
       </div>
     );
   }
+  if (block.kind === 'approval') {
+    // 卡片上只提醒；允许 / 拒绝在打开的对话里点（按钮够大，手机也点得准）
+    return (
+      <p role="status" className="truncate border-l border-ochre pl-2 text-meta text-ochre" data-testid="card-approval">
+        {block.resolved ? (block.resolved.decision === 'allow' ? '已允许：' : '已拒绝：') : '等你批准：'}
+        <span className="font-mono">{block.title.slice(0, 80)}</span>
+      </p>
+    );
+  }
   return (
     <div className="flex items-baseline gap-2 text-meta">
       <span className="text-accent-dim">◆</span>
