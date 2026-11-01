@@ -13,7 +13,7 @@ export function ProjectDistill({ projectId }: { projectId: string }) {
   const models = useQuery({ queryKey: ['memory', 'distill-models', projectId], queryFn: () => memoryApi.distillModels(projectId), retry: false });
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
-    mutationFn: (model: string | null) => memoryApi.setDistill(projectId, { model }),
+    mutationFn: (input: { model?: string | null; enabled?: boolean }) => memoryApi.setDistill(projectId, input),
     onSuccess: (next: DistillSettingsDto) => {
       setError(null);
       client.setQueryData(key, next);
@@ -28,14 +28,25 @@ export function ProjectDistill({ projectId }: { projectId: string }) {
     <section data-testid="project-distill" className="mb-4">
       <h3 className="mb-1 text-sub text-primary">会后提炼</h3>
       <p className="mb-2 text-meta text-tertiary">会话压缩后从摘要里提炼项目记忆。选了模型就由 hub 调它（按次计入该提供商用量）；不选用规则版。结果只进暂存 / 待确认。</p>
+      <label className="mb-1 flex min-h-[44px] items-center gap-2 text-meta text-secondary">
+        <input
+          type="checkbox"
+          data-testid="project-distill-enabled"
+          className="h-5 w-5"
+          checked={data.enabled}
+          disabled={save.isPending}
+          onChange={(e) => save.mutate({ enabled: e.target.checked })}
+        />
+        这个项目开启会后提炼
+      </label>
       <label className="mb-1 flex flex-wrap items-center gap-2 text-meta text-secondary">
         提炼模型
         <select
           data-testid="project-distill-model"
           className="min-h-[36px] max-w-full rounded border border-hair bg-surface px-1 py-0.5"
           value={data.model ?? ''}
-          disabled={save.isPending}
-          onChange={(e) => save.mutate(e.target.value === '' ? null : e.target.value)}
+          disabled={save.isPending || !data.enabled}
+          onChange={(e) => save.mutate({ model: e.target.value === '' ? null : e.target.value })}
         >
           <option value="">规则版（不调模型）</option>
           {data.model && !known ? <option value={data.model}>{data.model}（现在不可用）</option> : null}

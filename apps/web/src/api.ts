@@ -583,7 +583,7 @@ export interface MemoryEntryDto {
 export interface MemoryScopeDto { key: string; label: string; canWrite: boolean; canReview: boolean }
 
 /** 记忆（ADR 0019）：界面只做列表、审核、忘掉、手写一条。 */
-export interface DistillSettingsDto { readonly model: string | null; readonly globalOff: boolean }
+export interface DistillSettingsDto { readonly model: string | null; readonly enabled: boolean; readonly globalOff: boolean }
 export const memoryApi = {
   scopes: () => call<{ scopes: MemoryScopeDto[] }>('/api/memory/scopes'),
   list: (scope: string) => call<{ entries: MemoryEntryDto[] }>(`/api/memory?scope=${encodeURIComponent(scope)}&status=active&status=proposed`),
@@ -592,7 +592,7 @@ export const memoryApi = {
   review: (id: string, approve: boolean) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/review`, { approve }),
   forget: (id: string, reason: string) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/forget`, { reason }),
   distill: (projectId: string) => call<DistillSettingsDto>(`/api/projects/${encodeURIComponent(projectId)}/memory/distill`),
-  setDistill: (projectId: string, input: { model: string | null }) =>
+  setDistill: (projectId: string, input: { model?: string | null; enabled?: boolean }) =>
     call<DistillSettingsDto>(`/api/projects/${encodeURIComponent(projectId)}/memory/distill`, { method: 'PUT', body: JSON.stringify(input) }),
   distillModels: (projectId: string) => call<HubModelsDto[]>(`/api/providers/models?projectId=${encodeURIComponent(projectId)}`)
 };

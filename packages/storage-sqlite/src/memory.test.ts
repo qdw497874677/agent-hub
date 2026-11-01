@@ -426,3 +426,37 @@ test('项目提炼模型设置：要 memory.review，要过 hub 核对；改了�
     w.close();
   }
 });
+
+test('项目提炼开关：默认开；关了不调提炼器、session: 摘要照写；全局 0 优先；改了记审计', async () => {
+  const calls: string[] = [];
+  const distiller: MemoryDistiller = { id: 'model', distill: async (input) => (calls.push(input.projectId), [{ status: 'staged', draft: { kind: 'episodic', title: '模型摘要', body: 'b' } }]) };
+  const w = await world({ distiller });
+  try {
+    const initial = await w.service.distillSettings(w.principal('olga'), w.projectId);
+    assert.ok(initial.ok && initial.value.enabled === true);
+    assert.ok(!(await w.service.setDistillEnabled(w.principal('vicky'), w.projectId, false)).ok, 'viewer 不能改');
+    const off = await w.service.setDistillEnabled(w.principal('olga'), w.projectId, false);
+    assert.ok(off.ok && off.value.enabled === false);
+    assert.ok(w.audits.some((a) => a.action === 'memory.settings' && a.detail.includes('会后提炼 开 → 关')));
+    const got = await w.service.ingestCompaction(w.agent.sessionId, { seq: 1, summary: '部署流程梳理完了', tokensBefore: 50_000 });
+    assert.equal(calls.length, 0);
+    assert.equal(got.written, 1);
+    assert.equal(got.skipped, '项目已关闭提炼');
+    await w.service.setDistillEnabled(w.principal('olga'), w.projectId, true);
+    const prev = process.env.HUB_MEMORY_DISTILL;
+    process.env.HUB_MEMORY_DISTILL = '0';
+    try {
+      const view = await w.service.distillSettings(w.principal('olga'), w.projectId);
+      assert.ok(view.ok && view.value.globalOff && view.value.enabled);
+      await w.service.ingestCompaction(w.agent.sessionId, { seq: 2, summary: '又一件事', tokensBefore: 50_000 });
+      assert.equal(calls.length, 0, '全局关优先');
+    } finally {
+      if (prev === undefined) delete process.env.HUB_MEMORY_DISTILL;
+      else process.env.HUB_MEMORY_DISTILL = prev;
+    }
+    await w.service.ingestCompaction(w.agent.sessionId, { seq: 3, summary: '第三件事', tokensBefore: 50_000 });
+    assert.equal(calls.length, 1);
+  } finally {
+    w.close();
+  }
+});

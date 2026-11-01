@@ -135,6 +135,9 @@ export interface MemorySettingsStore {
   /** 会后提炼用哪个模型（hub-<slug>/<model>；null = 规则版）。ADR 0024。 */
   distillModel(projectId: string): Promise<string | null>;
   setDistillModel(projectId: string, model: string | null, at: number): Promise<void>;
+  /** 项目级提炼开关（默认开；全局 HUB_MEMORY_DISTILL=0 优先）。 */
+  distillEnabled(projectId: string): Promise<boolean>;
+  setDistillEnabled(projectId: string, enabled: boolean, at: number): Promise<void>;
 }
 
 /* ——— P2 重构：每一块一个端口，适配器经注册表装配（见 memory.md §16） ——— */
