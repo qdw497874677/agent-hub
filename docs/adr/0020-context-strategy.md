@@ -59,3 +59,11 @@ David（2026-10-31）要求把这些统一抽象为「上下文策略」：默�
 - 把上下文管理并进记忆：生命周期和所有者都不同，而且记忆已经决定不注入。
 - 允许叠加多个策略：billion-context-pi 的 README 明确说两个压缩插件会互相破坏。
 - 只支持 native：做不了剪枝这类策略，也就没有统一的策略选择。
+
+## 实现记录 · L1 接线（P1 补完）
+
+- 新增两个旁路事件 `context_usage` / `compaction`（`isSideChannel`：不进卡片、不改会话状态、不算「有动静」）。
+- pi：`compaction_start/end` → `compaction`；每轮 `agent_settled` 和压缩结束后发 `get_session_stats` → `context_usage`；`compact` RPC 接成 `RuntimeSession.compact()`。pi 的 L1 用量 / 压缩事件 / 触发压缩都是 `runtime`。
+- `POST /api/sessions/:id/context/compact`（session.prompt）：运行时不支持返回 400（界面提示改用重启，**不自动重启**）；正在回复返回 409；否则发 `compact` 命令给 worker，202。老 worker 不认这条命令，只记日志。
+- 角色层：`roleOf` = 派生会话的角色，否则群成员角色；`PUT /api/projects/:id/context/roles/:role`（project.update，null = 跟随项目），项目视图带 `roles`。
+- 项目设置里加「上下文策略」一节（项目默认 + 启用 + 角色层）。

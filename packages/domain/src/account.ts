@@ -163,6 +163,8 @@ export interface LoginActivity {
 export type AuditAction =
   | 'context.strategy.set'
   | 'session.context.set'
+  | 'session.context.compact'
+  | 'role.context.set'
   | 'memory.write'
   | 'memory.review'
   | 'memory.forget'

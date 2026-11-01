@@ -267,6 +267,22 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     kind: z.literal('diagnostic'),
     level: z.enum(['info', 'warn', 'error']),
     text: z.string()
+  }),
+  z.object({
+    kind: z.literal('context_usage'),
+    usedTokens: z.number().int().nonnegative().nullable(),
+    windowTokens: z.number().int().nonnegative(),
+    percent: z.number().nonnegative().nullable()
+  }),
+  z.object({
+    kind: z.literal('compaction'),
+    phase: z.enum(['start', 'end']),
+    reason: z.enum(['manual', 'threshold', 'overflow']),
+    ok: z.boolean().optional(),
+    tokensBefore: z.number().int().nonnegative().optional(),
+    tokensAfter: z.number().int().nonnegative().optional(),
+    summary: z.string().max(20000).optional(),
+    error: z.string().max(2000).optional()
   })
 ]);
 

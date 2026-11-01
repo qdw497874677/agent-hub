@@ -40,8 +40,10 @@ test('L1 能力：每个已支持的运行时都有观察 / 控制，缺口如�
     assert.equal(cap.l1.restart, 'runtime');
     assert.equal(cap.l1.memoryTools, 'runtime');
     assert.notEqual(cap.l1.usage, 'missing', '用量至少有估算');
-    assert.ok(cap.gaps.length > 0);
+    assert.ok(cap.gaps.length > 0 || cap.l1.compact === 'runtime', `${agent} 缺口要如实标出`);
   }
+  const pi = contextCapabilityOf('pi');
+  assert.deepEqual([pi.l1.usage, pi.l1.compactionEvents, pi.l1.compact], ['runtime', 'runtime', 'runtime']);
   assert.equal(contextCapabilityOf('opencode').runtime, 'acp');
 });
 
@@ -57,7 +59,7 @@ test('估算用量：只算提问 / 回复 / 工具，思考不算；到 70% / 9
 test('服务：项目选策略要在启用列表里、只能选已安装的；会话只能从项目启用的里选，改了记审计', async () => {
   const { deps } = inMemoryDeps({ now: () => 5 });
   const rows = new Map<string, ContextSetting>();
-  const store: ContextSettingsStore = { get: async (k) => rows.get(k) ?? null, set: async (k, v) => void (v ? rows.set(k, v) : rows.delete(k)) };
+  const store: ContextSettingsStore = { get: async (k) => rows.get(k) ?? null, set: async (k, v) => void (v ? rows.set(k, v) : rows.delete(k)), list: async (prefix) => [...rows].filter(([k]) => k.startsWith(prefix)).map(([key, setting]) => ({ key, setting })) };
   const audits: AuditEntry[] = [];
   const svc = createContextService({ ...deps, contextSettings: store, audit: { append: async (e) => void audits.push(e), recent: async () => [], query: async () => [] } });
   const project = createProject({ name: 'p', now: 1, teamId: 'T', createdBy: 'alice' });
@@ -95,4 +97,73 @@ test('服务：项目选策略要在启用列表里、只能选已安装的；�
   assert.ok(back.ok);
   assert.equal(back.value.source, 'project');
   assert.deepEqual(audits.map((a) => a.action), ['context.strategy.set', 'session.context.set', 'session.context.set']);
+});
+
+test('用量：运行时报过 context_usage 就用它；压缩成功后从压缩后的数算', () => {
+  let seq = 0;
+  const ev = (event: unknown) => ({ seq: ++seq as never, at: 0, event: event as never });
+  const u = estimateContextUsage([ev({ kind: 'prompt', text: 'hi' }), ev({ kind: 'context_usage', usedTokens: 60000, windowTokens: 200000, percent: 30 })]);
+  assert.equal(u.estimated, false);
+  assert.equal(u.usedTokens, 60000);
+  assert.equal(u.windowTokens, 200000);
+  const after = estimateContextUsage([
+    ev({ kind: 'context_usage', usedTokens: 190000, windowTokens: 200000, percent: 95 }),
+    ev({ kind: 'compaction', phase: 'start', reason: 'manual' }),
+    ev({ kind: 'compaction', phase: 'end', reason: 'manual', ok: true, tokensBefore: 190000, tokensAfter: 30000 }),
+    ev({ kind: 'context_usage', usedTokens: null, windowTokens: 200000, percent: null })
+  ]);
+  assert.equal(after.usedTokens, 30000);
+  assert.equal(after.windowTokens, 200000);
+  assert.deepEqual(after.lastCompaction, { seq: 5, ok: true, tokensBefore: 190000, tokensAfter: 30000 });
+});
+
+test('服务：角色层（会话 > 角色 > 项目）和手动压缩（不支持 / 正在回复 / 发出去）', async () => {
+  const { deps } = inMemoryDeps({ now: () => 5 });
+  const rows = new Map<string, ContextSetting>();
+  const store: ContextSettingsStore = { get: async (k) => rows.get(k) ?? null, set: async (k, v) => void (v ? rows.set(k, v) : rows.delete(k)), list: async (prefix) => [...rows].filter(([k]) => k.startsWith(prefix)).map(([key, setting]) => ({ key, setting })) };
+  const sent: unknown[] = [];
+  const svc = createContextService({
+    ...deps,
+    contextSettings: store,
+    audit: { append: async () => undefined, recent: async () => [], query: async () => [] },
+    roleOf: async () => 'coder',
+    gateway: { dispatch: async (c) => (sent.push(c), { ok: true, value: undefined }) }
+  });
+  const project = createProject({ name: 'p', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(project.ok);
+  await deps.projects.save(project.value);
+  const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
+  assert.ok(task.ok);
+  await deps.tasks.save(task.value);
+  const mk = async (agent: string) => {
+    const s = deriveSession({ task: task.value, agentId: asAgentId(agent), model: 'm', now: 1, createdBy: 'alice' });
+    assert.ok(s.ok);
+    await deps.sessions.save(s.value);
+    return s.value;
+  };
+  const pi = await mk('pi');
+  assert.equal((await svc.setRole(null, project.value.id, 'bad role!', 'compaction')).ok, false);
+  const set = await svc.setRole(null, project.value.id, 'coder', 'compaction');
+  assert.ok(set.ok);
+  assert.deepEqual(set.value.roles, [{ role: 'coder', strategy: 'compaction' }]);
+  const view = await svc.session(null, pi.id);
+  assert.ok(view.ok);
+  assert.equal(view.value.source, 'role');
+  assert.equal(view.value.role, 'coder');
+  const cleared = await svc.setRole(null, project.value.id, 'coder', null);
+  assert.ok(cleared.ok);
+  assert.deepEqual(cleared.value.roles, []);
+
+  const acp = await mk('opencode');
+  const no = await svc.compact(null, acp.id);
+  assert.equal(no.ok, false);
+  await deps.sessions.save({ ...pi, status: 'running' });
+  await recordEvent(deps, { sessionId: pi.id, event: { kind: 'prompt', text: '做点事' } });
+  const busy = await svc.compact(null, pi.id);
+  assert.equal(!busy.ok && busy.error.code, 'conflict');
+  await recordEvent(deps, { sessionId: pi.id, event: { kind: 'ended', outcome: 'done' } });
+  await recordEvent(deps, { sessionId: pi.id, event: { kind: 'context_usage', usedTokens: 10, windowTokens: 100, percent: 10 } });
+  const okay = await svc.compact(null, pi.id, '留下决定');
+  assert.ok(okay.ok);
+  assert.deepEqual(sent, [{ kind: 'compact', sessionId: pi.id, instructions: '留下决定' }]);
 });

@@ -22,7 +22,18 @@ export function createSqliteContextSettings(db: DatabaseSync): ContextSettingsSt
     'INSERT INTO context_settings (key, strategy, params, enabled, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET strategy = excluded.strategy, params = excluded.params, enabled = excluded.enabled, updated_at = excluded.updated_at, updated_by = excluded.updated_by'
   );
   const del = db.prepare('DELETE FROM context_settings WHERE key = ?');
+  const byPrefix = db.prepare('SELECT key, strategy, params, enabled, updated_at, updated_by FROM context_settings WHERE substr(key, 1, ?) = ? ORDER BY key');
+  const decode = (row: Row): ContextSetting => ({
+    strategy: row.strategy,
+    ...(row.params ? { params: JSON.parse(row.params) as Record<string, unknown> } : {}),
+    ...(row.enabled ? { enabled: JSON.parse(row.enabled) as string[] } : {}),
+    updatedAt: row.updated_at,
+    updatedBy: row.updated_by
+  });
   return {
+    async list(prefix) {
+      return (byPrefix.all(prefix.length, prefix) as unknown as (Row & { key: string })[]).map((row) => ({ key: row.key, setting: decode(row) }));
+    },
     async get(key) {
       const row = get.get(key) as Row | undefined;
       if (!row) return null;

@@ -720,6 +720,8 @@ function toWire(command: WorkerCommand): ServerToWorker {
       return { kind: 'interrupt', sessionId: command.sessionId };
     case 'dispose':
       return { kind: 'dispose', sessionId: command.sessionId };
+    case 'compact':
+      return { kind: 'compact', sessionId: command.sessionId, ...(command.instructions ? { instructions: command.instructions } : {}) };
     case 'set_option':
       return {
         kind: 'set_option',

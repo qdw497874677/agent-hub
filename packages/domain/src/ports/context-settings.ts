@@ -11,4 +11,6 @@ export interface ContextSetting extends StrategyChoice {
 export interface ContextSettingsStore {
   get(key: string): Promise<ContextSetting | null>;
   set(key: string, value: ContextSetting | null): Promise<void>;
+  /** 按键前缀列出（比如 'role:<projectId>:'）。 */
+  list(prefix: string): Promise<{ key: string; setting: ContextSetting }[]>;
 }

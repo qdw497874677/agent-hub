@@ -97,6 +97,10 @@ function mapRecord(record: unknown, writePaths: Map<string, string>, turn: TurnS
     }
     case 'session_info_changed':
       return [];
+    case 'compaction_start':
+      return [{ kind: 'compaction', phase: 'start', reason: compactionReason(r['reason']) }];
+    case 'compaction_end':
+      return [compactionEnd(r)];
     case 'response': {
       if (r['success'] === true) return [];
       return [{ kind: 'diagnostic', level: 'error', text: `${String(r['command'])}：${String(r['error'])}` }];
@@ -171,4 +175,48 @@ function outputOf(result: unknown): { output?: string } {
     .map((part) => (typeof part === 'object' && part !== null && (part as Record<string, unknown>)['type'] === 'text' ? String((part as Record<string, unknown>)['text'] ?? '') : ''))
     .join('');
   return text === '' ? {} : { output: clipToolOutput(text) };
+}
+
+function compactionReason(raw: unknown): 'manual' | 'threshold' | 'overflow' {
+  return raw === 'manual' || raw === 'overflow' ? raw : 'threshold';
+}
+
+const nonNegInt = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : undefined);
+
+/** `compaction_end`：有 result 就是成功；没有 = 中止（aborted）或失败（errorMessage）。摘要截断后进 journal。 */
+export function compactionEnd(r: Record<string, unknown>): SessionEvent {
+  const reason = compactionReason(r['reason']);
+  const result = typeof r['result'] === 'object' && r['result'] !== null ? (r['result'] as Record<string, unknown>) : null;
+  if (!result) {
+    const error = r['aborted'] === true ? '被中止' : typeof r['errorMessage'] === 'string' ? r['errorMessage'].slice(0, 2000) : '没有说原因';
+    return { kind: 'compaction', phase: 'end', reason, ok: false, error };
+  }
+  return compactionResult(result, reason);
+}
+
+export function compactionResult(result: Record<string, unknown>, reason: 'manual' | 'threshold' | 'overflow'): SessionEvent {
+  const before = nonNegInt(result['tokensBefore']);
+  const after = nonNegInt(result['estimatedTokensAfter']);
+  return {
+    kind: 'compaction',
+    phase: 'end',
+    reason,
+    ok: true,
+    ...(before !== undefined ? { tokensBefore: before } : {}),
+    ...(after !== undefined ? { tokensAfter: after } : {}),
+    ...(typeof result['summary'] === 'string' ? { summary: result['summary'].slice(0, 20000) } : {})
+  };
+}
+
+/** `get_session_stats` 的 data → context_usage；没有 contextUsage（没模型 / 没窗口）就不报。 */
+export function usageFromStats(data: unknown): SessionEvent | null {
+  if (typeof data !== 'object' || data === null) return null;
+  const usage = (data as Record<string, unknown>)['contextUsage'];
+  if (typeof usage !== 'object' || usage === null) return null;
+  const u = usage as Record<string, unknown>;
+  const windowTokens = nonNegInt(u['contextWindow']);
+  if (windowTokens === undefined || windowTokens === 0) return null;
+  const used = nonNegInt(u['tokens']);
+  const percent = typeof u['percent'] === 'number' && Number.isFinite(u['percent']) && u['percent'] >= 0 ? u['percent'] : null;
+  return { kind: 'context_usage', usedTokens: used ?? null, windowTokens, percent: used === undefined ? null : percent };
 }

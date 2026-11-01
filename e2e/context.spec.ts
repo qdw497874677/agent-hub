@@ -41,7 +41,14 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
   expect(set.status(), await set.text()).toBe(200);
   const ctx = (await set.json()) as { strategy: { id: string }; mode: string; source: string; usage: { estimated: boolean }; capability: { gaps: string[] } };
   expect(ctx).toMatchObject({ strategy: { id: 'compaction' }, mode: 'native', source: 'session', usage: { estimated: true } });
-  expect(ctx.capability.gaps.length).toBeGreaterThan(0);
+  const pi = ctx.capability.gaps.length === 0;
+  // 角色层：只能从启用的里选；角色名有格式
+  expect((await page.request.put(`/api/projects/${project.id}/context/roles/bad%20role`, { headers, data: { strategy: 'compaction' } })).status()).toBe(400);
+  expect((await page.request.put(`/api/projects/${project.id}/context/roles/coder`, { headers, data: { strategy: 'trim' } })).status()).toBe(400);
+  // 手动压缩：不存在 404；不支持的运行时 400；还没开过一轮的 pi 会话发得出去（202）或因为不在 worker 上报 503
+  expect((await page.request.post('/api/sessions/no-such/context/compact', { headers, data: {} })).status()).toBe(404);
+  const compact = await page.request.post(`/api/sessions/${sid}/context/compact`, { headers, data: {} });
+  if (!pi) expect(compact.status()).toBe(400);
   const audit = await page.request.get(`/api/admin/audit?target=${sid}&limit=20`);
   if (audit.ok()) expect(await audit.text()).toContain('session.context.set');
 
@@ -52,8 +59,21 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
   await expect(panel.getByTestId('context-strategy')).toContainText('自动压缩');
   await expect(panel.getByTestId('context-strategy')).toContainText('来自会话设置');
   await expect(panel.getByTestId('context-usage')).toContainText('hub 估算');
-  await expect(panel.getByTestId('context-gaps')).toBeVisible();
+  if (pi) await expect(panel.getByTestId('context-compact')).toBeVisible();
+  else await expect(panel.getByTestId('context-gaps')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
   await panel.scrollIntoViewIfNeeded();
   await page.screenshot({ path: `${SHOTS}/session-context-390.png` });
+
+  // 项目设置 · 上下文策略：给角色单独设置，再改回跟随项目
+  await page.getByRole('complementary', { name: '会话详情' }).getByRole('button', { name: '关闭' }).click();
+  await page.getByRole('button', { name: '项目设置' }).click();
+  const box = page.getByTestId('project-context');
+  await expect(box.getByTestId('project-context-strategy')).toHaveValue('compaction');
+  await box.getByTestId('project-context-role-input').fill('coder');
+  await box.getByTestId('project-context-role-add').click();
+  await expect(box.getByTestId('project-context-roles')).toContainText('@coder');
+  await page.screenshot({ path: `${SHOTS}/project-context-390.png` });
+  await box.getByRole('button', { name: '改回跟随项目' }).click();
+  await expect(box.getByTestId('project-context-roles')).not.toContainText('@coder');
 });

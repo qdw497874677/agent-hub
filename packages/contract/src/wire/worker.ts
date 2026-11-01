@@ -257,6 +257,8 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
+  /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */
+  z.object({ kind: z.literal('compact'), sessionId: id, instructions: z.string().max(2000).optional() }),
   /** 让 Worker 把自己更新到 hub 的这个提交。只有提交号，没有任何可拼进命令的自由文本。 */
   z.object({ kind: z.literal('update'), commit: commitShaSchema }),
   /** 装 / 卸一个 agent 运行时（ADR 0010）。安装器是 Worker 上的白名单适配器，这里只有 id 和版本号。老 worker 不认，只记一条日志。 */

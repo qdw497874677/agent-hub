@@ -66,6 +66,7 @@ export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, se
       ? [...withoutStall(blocks), { kind: 'stall', text: event.text, seq }]
       : blocks;
   }
+  if (event.kind === 'context_usage' || event.kind === 'compaction') return blocks;
   return foldBlocks(withoutStall(blocks), event, seq);
 }
 
@@ -158,7 +159,7 @@ export function reasonFromEntries(entries: readonly JournalEntryDto[]): string |
 export function awaitingAfter(previous: boolean, event: SessionEventDto | null, status: SessionDto['status']): boolean {
   if (event === null) return status === 'running' && previous;
   if (event.kind === 'ended') return false;
-  if (event.kind === 'diagnostic') return previous;
+  if (event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction') return previous;
   return true;
 }
 
@@ -168,7 +169,7 @@ export function awaitingAfter(previous: boolean, event: SessionEventDto | null, 
  */
 export function awaitingFromHistory(entries: readonly JournalEntryDto[], status: SessionDto['status']): boolean {
   if (status !== 'running') return false;
-  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic');
+  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic' && entry.event.kind !== 'context_usage' && entry.event.kind !== 'compaction');
   return last !== undefined && last.event.kind !== 'ended';
 }
 
