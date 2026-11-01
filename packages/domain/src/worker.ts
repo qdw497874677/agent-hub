@@ -99,7 +99,8 @@ export interface BuildInfo {
   readonly protocol: number;
 }
 
-export type WorkerUpdateState = 'updating' | 'succeeded' | 'failed' | 'refused';
+/** rolled_back：新版本起不来，启动守卫已自动换回旧版（Worker 用旧版重连后报上来）。 */
+export type WorkerUpdateState = 'updating' | 'succeeded' | 'failed' | 'refused' | 'rolled_back';
 
 export interface WorkerUpdate {
   readonly state: WorkerUpdateState;

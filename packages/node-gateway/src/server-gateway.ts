@@ -450,7 +450,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       }
       if (frame.type === 'update_status') {
         entry.update = { state: frame.state, message: frame.message, logTail: frame.logTail, at: now() };
-        if (frame.state === 'failed' || frame.state === 'refused') entry.updateTarget = null;
+        if (frame.state === 'failed' || frame.state === 'refused' || frame.state === 'rolled_back') entry.updateTarget = null;
         hooks.onUpdateStatus?.(entry.workerId, entry.update);
         return;
       }

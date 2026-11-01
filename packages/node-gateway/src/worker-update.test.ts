@@ -107,6 +107,47 @@ test('版本随 hello 上报；更新指令下发、进度回报，worker 重启
   await stop();
 });
 
+test('启动守卫回退后：旧版重连时补报 rolled_back（带坏提交和原因），hub 清掉更新目标，只报一次', async () => {
+  const { gateway, url, updates, stop } = await harness();
+  const first = connectWorkerLink({
+    url, token: '', workerId: 'w1', label: 'x', origin: 'remote', reconnect: false, runtimes: [],
+    build: { version: '1.0.0', commit: A, protocol: PROTOCOL_VERSION },
+    onUpdate: async (_commit, report) => report({ state: 'succeeded', message: '已更新到 bbbbbbb，正在重启', logTail: '' })
+  });
+  await until(() => gateway.workers().length === 1);
+  gateway.requestUpdate('w1', B);
+  await until(() => updates.includes('succeeded'));
+  await first.close();
+  await until(() => one(gateway.workers())?.state === 'offline');
+
+  let note: { failed: string; restored: string; reason: string } | null = { failed: B, restored: A, reason: 'Error: boom' };
+  const { rollbackReport } = await import('./boot-marker.ts');
+  const back = () =>
+    connectWorkerLink({
+      url, token: '', workerId: 'w1', label: 'x', origin: 'remote', reconnect: false, runtimes: [],
+      build: { version: '1.0.0', commit: A, protocol: PROTOCOL_VERSION },
+      pendingUpdateReport: () => (note ? { report: rollbackReport(note), done: () => void (note = null) } : null)
+    });
+  const again = back();
+  await until(() => one(gateway.workers())?.update?.state === 'rolled_back');
+  const status = one(gateway.workers());
+  assert.equal(status?.build?.commit, A);
+  assert.match(status?.update?.message ?? '', /新版本 bbbbbbb 没能正常启动，已自动回退到 aaaaaaa/);
+  assert.equal(status?.update?.logTail, 'Error: boom');
+  assert.equal(note, null, '报完就删记录');
+  await again.close();
+  await until(() => one(gateway.workers())?.state === 'offline');
+  // 之后哪怕带着 B 重连，也不会被当成「更新成功」（目标已清掉）
+  const later = connectWorkerLink({
+    url, token: '', workerId: 'w1', label: 'x', origin: 'remote', reconnect: false, runtimes: [],
+    build: { version: '1.0.0', commit: B, protocol: PROTOCOL_VERSION }
+  });
+  await until(() => one(gateway.workers())?.state === 'online');
+  assert.equal(one(gateway.workers())?.update?.state, 'rolled_back');
+  await later.close();
+  await stop();
+});
+
 test('不支持远程更新的 worker 回 refused', async () => {
   const { gateway, url, stop } = await harness();
   const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', reconnect: false, runtimes: [] });

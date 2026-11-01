@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bootMarkerPath, clearBootMarker, writeBootMarker } from './boot-marker.ts';
+import { bootMarkerPath, clearBootMarker, readRollbackNote, rollbackNotePath, writeBootMarker } from './boot-marker.ts';
 
 const guard = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'worker-boot-guard.sh');
 
@@ -46,6 +46,10 @@ test('自更新后新版本一直没报健康：第 3 次启动前回滚到原�
     assert.equal(r.head(), r.previous);
     assert.equal(readFileSync(join(r.dir, 'version'), 'utf8'), 'old');
     assert.equal(existsSync(bootMarkerPath(r.state)), false);
+    const note = readRollbackNote(r.state);
+    assert.equal(note?.failed, r.target);
+    assert.equal(note?.restored, r.previous);
+    assert.match(note?.reason ?? '', /git 回滚/);
   } finally {
     rmSync(r.dir, { recursive: true, force: true });
   }
@@ -77,5 +81,17 @@ test('标记格式不对：删掉、不动代码', () => {
     assert.equal(r.head(), r.target);
   } finally {
     rmSync(r.dir, { recursive: true, force: true });
+  }
+});
+
+test('回退记录：格式不对就删掉，不报', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'rb-note-'));
+  try {
+    assert.equal(readRollbackNote(dir), null);
+    writeFileSync(rollbackNotePath(dir), 'nope\nwhatever');
+    assert.equal(readRollbackNote(dir), null);
+    assert.equal(existsSync(rollbackNotePath(dir)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
