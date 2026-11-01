@@ -136,6 +136,23 @@ export function installMemoryRoutes(app: Hono<any>, options: MemoryRouteDeps, su
     return mode.ok ? c.json({ mode: mode.value }) : fail(c, mode.error);
   });
 
+  app.get('/api/projects/:id/memory/distill', async (c) => {
+    const principal = who(c);
+    if (!principal) return fail(c, { code: 'forbidden', message: '要登录' });
+    const settings = await memory.distillSettings(principal, c.req.param('id'));
+    return settings.ok ? c.json(settings.value) : fail(c, settings.error);
+  });
+
+  app.put('/api/projects/:id/memory/distill', async (c) => {
+    const principal = who(c);
+    if (!principal) return fail(c, { code: 'forbidden', message: '要登录' });
+    const body = (await c.req.json().catch(() => null)) as { model?: unknown } | null;
+    const model = body?.model;
+    if (!body || (model !== null && (typeof model !== 'string' || model.length > 300))) return fail(c, { code: 'invalid', message: 'model 要是 hub 模型 id 或 null（规则版）' });
+    const settings = await memory.setDistillModel(principal, c.req.param('id'), model === '' ? null : (model as string | null));
+    return settings.ok ? c.json(settings.value) : fail(c, settings.error);
+  });
+
   app.post('/api/projects/:id/memory/reindex', async (c) => {
     const principal = who(c);
     const project = await deps.projects.byId(asProjectId(c.req.param('id')));

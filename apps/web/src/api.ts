@@ -489,7 +489,7 @@ export interface ProviderInputDto {
   routing: 'direct' | 'hub';
   enabled: boolean;
 }
-export interface HubModelsDto { readonly slug: string; readonly name: string; readonly protocol: ProviderProtocolDto; readonly models: readonly { id: string; label: string }[] }
+export interface HubModelsDto { readonly slug: string; readonly name: string; readonly protocol: ProviderProtocolDto; readonly scope?: 'personal' | 'team' | 'hub'; readonly models: readonly { id: string; label: string }[] }
 const providerPath = (id: string) => `/api/providers/${encodeURIComponent(id)}`;
 export const providersApi = {
   list: () => call<{ providers: ProviderDto[]; workerRouting: Record<string, 'direct' | 'hub'> }>('/api/providers'),
@@ -583,13 +583,18 @@ export interface MemoryEntryDto {
 export interface MemoryScopeDto { key: string; label: string; canWrite: boolean; canReview: boolean }
 
 /** 记忆（ADR 0019）：界面只做列表、审核、忘掉、手写一条。 */
+export interface DistillSettingsDto { readonly model: string | null; readonly globalOff: boolean }
 export const memoryApi = {
   scopes: () => call<{ scopes: MemoryScopeDto[] }>('/api/memory/scopes'),
   list: (scope: string) => call<{ entries: MemoryEntryDto[] }>(`/api/memory?scope=${encodeURIComponent(scope)}&status=active&status=proposed`),
   pending: () => call<{ entries: MemoryEntryDto[] }>('/api/memory/pending'),
   write: (input: { scope: string; kind: MemoryEntryDto['kind']; title: string; body: string }) => post<MemoryEntryDto>('/api/memory', input),
   review: (id: string, approve: boolean) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/review`, { approve }),
-  forget: (id: string, reason: string) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/forget`, { reason })
+  forget: (id: string, reason: string) => post<MemoryEntryDto>(`/api/memory/${encodeURIComponent(id)}/forget`, { reason }),
+  distill: (projectId: string) => call<DistillSettingsDto>(`/api/projects/${encodeURIComponent(projectId)}/memory/distill`),
+  setDistill: (projectId: string, input: { model: string | null }) =>
+    call<DistillSettingsDto>(`/api/projects/${encodeURIComponent(projectId)}/memory/distill`, { method: 'PUT', body: JSON.stringify(input) }),
+  distillModels: (projectId: string) => call<HubModelsDto[]>(`/api/providers/models?projectId=${encodeURIComponent(projectId)}`)
 };
 
 export interface GroupLimitsDto { maxRounds: number; maxMessages: number }

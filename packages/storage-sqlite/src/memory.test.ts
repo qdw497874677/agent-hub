@@ -16,6 +16,8 @@ import {
   createTask,
   deriveSession,
   estimateTokens,
+  type MemoryDistiller,
+  type MemoryServiceDeps,
   type MemorySource,
   type Principal,
   type User
@@ -27,7 +29,7 @@ import { ftsTerms } from './memory.ts';
 const DAY = 24 * 60 * 60 * 1000;
 const user = (id: string, role: string): User => ({ id, email: `${id}@x.test`, displayName: id, role, teamId: 'T', disabledAt: null, deletedAt: null, clusterAdmin: false }) as unknown as User;
 
-async function world() {
+async function world(extra: { distiller?: MemoryDistiller; checkDistillModel?: MemoryServiceDeps['checkDistillModel'] } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'mem-'));
   const store = openSqliteStore(join(dir, 'hub.db'));
   let clock = 10 * DAY;
@@ -62,6 +64,8 @@ async function world() {
     projects: deps.projects,
     ...store.memory,
     ...defaultMemoryRegistry().source(source).build({ index: store.memory.index, store: store.memory.store }),
+    ...(extra.distiller ? { distiller: extra.distiller } : {}),
+    ...(extra.checkDistillModel ? { checkDistillModel: extra.checkDistillModel } : {}),
     audit: { append: async (entry) => void audits.push(entry) },
     principalOf: async (id) => (users.has(id) ? principal(id) : null),
     sourceTtlMs: 0
@@ -357,4 +361,68 @@ test('P2 每周抽查：最近 7 天自动转正的提炼条目抽 5%（至少 3
   const second = await w.service.sweep();
   assert.equal(second.spotChecked, 0);
   w.close();
+});
+
+test('模型版提炼器：只在要提炼时才调；session: 仍是规则版摘要；active / 含密钥的候选被服务端丢掉', async () => {
+  const calls: string[] = [];
+  const distiller: MemoryDistiller = {
+    id: 'model',
+    async distill(input) {
+      calls.push(input.projectId);
+      return [
+        { status: 'staged', draft: { kind: 'episodic', title: '模型摘要', body: '模型写的摘要' } },
+        { status: 'active' as never, draft: { kind: 'semantic', title: '越权', body: '想直接生效' } },
+        { status: 'proposed', draft: { kind: 'procedural', title: '带密钥', body: 'API_KEY=abcdef1234567890' } },
+        { status: 'proposed', draft: { kind: 'procedural', title: '上线前快照', body: '上线前必须先做数据库快照' } }
+      ];
+    }
+  };
+  const w = await world({ distiller });
+  try {
+    const short = await w.service.ingestCompaction(w.agent.sessionId, { seq: 1, summary: '小改动', tokensBefore: 500 });
+    assert.equal(calls.length, 0, '太短的会话不调模型');
+    assert.equal(short.written, 1);
+    const prev = process.env.HUB_MEMORY_DISTILL;
+    process.env.HUB_MEMORY_DISTILL = '0';
+    try {
+      await w.service.ingestCompaction(w.agent.sessionId, { seq: 2, summary: '大改动', tokensBefore: 50_000 });
+    } finally {
+      if (prev === undefined) delete process.env.HUB_MEMORY_DISTILL;
+      else process.env.HUB_MEMORY_DISTILL = prev;
+    }
+    assert.equal(calls.length, 0, '全局关了不调模型');
+    const got = await w.service.ingestCompaction(w.agent.sessionId, { seq: 3, summary: '部署流程梳理完了', tokensBefore: 50_000 });
+    assert.deepEqual(calls, [w.projectId]);
+    assert.equal(got.written, 3, 'session 摘要 + staged + 一条 proposed');
+    const listed = await w.service.list(w.human('alice'), { scope: w.pkey, status: ['active', 'staged', 'proposed'] });
+    assert.ok(listed.ok);
+    const titles = listed.value.map((e) => `${e.title}:${e.status}`).sort();
+    assert.ok(titles.includes('模型摘要:staged'));
+    assert.ok(titles.includes('上线前快照:proposed'));
+    assert.ok(!titles.some((t) => t.startsWith('越权') || t.startsWith('带密钥')));
+  } finally {
+    w.close();
+  }
+});
+
+test('项目提炼模型设置：要 memory.review，要过 hub 核对；改了记审计', async () => {
+  const checked: string[] = [];
+  const w = await world({ checkDistillModel: async (_p, _project, model) => (checked.push(model), model === 'hub-x/ok' ? { ok: true, value: true } : { ok: false, error: { code: 'invalid', message: '不能用' } }) });
+  try {
+    const empty = await w.service.distillSettings(w.principal('olga'), w.projectId);
+    assert.ok(empty.ok);
+    assert.equal(empty.value.model, null);
+    const bad = await w.service.setDistillModel(w.principal('olga'), w.projectId, 'hub-x/no');
+    assert.ok(!bad.ok);
+    const set = await w.service.setDistillModel(w.principal('olga'), w.projectId, 'hub-x/ok');
+    assert.ok(set.ok, JSON.stringify(set));
+    assert.equal((await w.service.distillSettings(w.principal('olga'), w.projectId)).ok && set.value.model, 'hub-x/ok');
+    assert.ok(w.audits.some((a) => a.action === 'memory.settings' && a.detail.includes('hub-x/ok')));
+    const back = await w.service.setDistillModel(w.principal('olga'), w.projectId, null);
+    assert.ok(back.ok && back.value.model === null);
+    const outsider = await w.service.setDistillModel(w.principal('vicky'), w.projectId, 'hub-x/ok');
+    assert.ok(!outsider.ok);
+  } finally {
+    w.close();
+  }
 });

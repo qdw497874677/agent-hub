@@ -16,6 +16,7 @@ import { createWorkerEnroll } from './worker-enroll.ts';
 import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
+import { createModelDistiller } from './model-distiller.ts';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
@@ -25,6 +26,9 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createContextService,
   createMessageToolProvider,
   createMemoryService,
+  checkProviderModel,
+  invalid,
+  ok,
   createMemoryToolProvider,
   createContextToolProvider,
   defaultMemoryRegistry,
@@ -240,8 +244,15 @@ setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref()
 
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
 // 记忆适配器都经注册表装配（memory.md §16）：来源、提炼、检索 / 排序、维护任务、治理各是一个端口。
+const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
+const providerRepo = createSqliteProviders(store.db, secretKey);
+const projectTeamOf = async (projectId: string) => (await store.projects.byId(projectId as ProjectId))?.teamId ?? null;
 const memoryRegistry = defaultMemoryRegistry();
 for (const source of createMemorySources(deps, store.groups)) memoryRegistry.source(source);
+// 会后提炼（ADR 0024）：项目选了模型就由 hub 直接调它，没选 / 失败回落规则版
+memoryRegistry.distiller(
+  createModelDistiller({ settings: store.memory.settings, providers: providerRepo, projectTeam: projectTeamOf, audit: store.audit, now: () => Date.now(), log })
+);
 const memoryService = createMemoryService({
   now: deps.now,
   sessions: deps.sessions,
@@ -257,6 +268,13 @@ const memoryService = createMemoryService({
     return withAccess(store.access, { user, loginId: 'agent-memory' as LoginId }, Date.now());
   },
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId))?.role ?? null,
+  checkDistillModel: async (principal, projectId, model) => {
+    const checked = await checkProviderModel({ providers: providerRepo }, principal, model, await projectTeamOf(projectId));
+    if (!checked.ok) return checked;
+    if (!checked.value) return err(invalid('提炼模型要选已注册的 hub 模型（hub-<slug>/<model>）'));
+    if (checked.value.scope === 'personal') return err(invalid('个人模型提供商不能用于项目提炼'));
+    return ok(true as const);
+  },
   sourceTtlMs: 5 * 60_000
 });
 // 记忆 P2：运行时压缩完把摘要交给记忆（session: 摘要 + 会后提炼）；后台整理一天一次（启动 10 分钟后先跑一次）。
@@ -384,13 +402,13 @@ const enrollmentDeps: EnrollmentDeps = {
 };
 
 // 资产中心（docs/design/asset-hub.md）：技能 / 指令按 Worker 安装，经长连接下发。同步状态落库，hub 重启后照样显示；Worker 每次上线都会再同步。
-const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
 const providerWiring = createProviderWiring({
-  deps: { providers: createSqliteProviders(store.db, secretKey), audit: store.audit, now: () => Date.now() },
+  deps: { providers: providerRepo, audit: store.audit, now: () => Date.now() },
   projectTeam: async (taskId) => {
     const task = await store.tasks.byId(taskId as TaskId);
     return task ? ((await store.projects.byId(task.projectId))?.teamId ?? null) : null;
   },
+  projectTeamOf: projectTeamOf,
   userTeam: async (userId) => (await store.users.byId(userId as UserId))?.teamId ?? null,
   hostOf: (sessionId) => serverGateway?.hostOf(sessionId as SessionId) ?? null,
   testFromWorker: async (workerId, input) => (serverGateway ? serverGateway.testProvider(workerId, input) : err(unavailable('worker 通道尚未就绪'))),

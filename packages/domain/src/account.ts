@@ -174,6 +174,7 @@ export type AuditAction =
   | 'memory.guidance'
   | 'memory.reject'
   | 'memory.settings'
+  | 'memory.distill'
   | 'user.disable'
   | 'user.enable'
   | 'user.role'

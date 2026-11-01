@@ -513,7 +513,7 @@ David 的问题：「有什么机制可以保守一些，并且保持新鲜度�
   - 冲突提示：`memory_write` / `POST /api/memory` 写完回 `similar`（同作用域当前有效条目，标题切 3 字段做 FTS，前 5），**不自动合并**，只提示写入者用 supersedes；
   - 每周抽查：后台整理里，最近 7 天自动转正（没人审过）的提炼条目随机抽 5%（3–20 条，不足 3 条就全抽）打 `spot-check` 标签回待审；7 天内抽过就不再抽（标签持久化，重启不重抽）；
   - 导入：`POST /api/memory/import?scope=…`，正文 JSONL（导出格式即可），每行一条，一律 untrusted + proposed、via import；坏行 / 含密钥的行跳过并报行号；≤1000 行、≤2MB；要该作用域的 memory.write。
-- **还没做**：模型版提炼（要定模型和预算归属）；可选向量（ADR 写的是「可选、默认关」，需要 sqlite-vec 原生扩展 + embedder 提供商，等 David 定）；抽查发现错误后降低来源 trust；按项目开关提炼。
+- **还没做**：~~模型版提炼~~（已做，见 §17 / ADR 0024）；可选向量（ADR 写的是「可选、默认关」，需要 sqlite-vec 原生扩展 + embedder 提供商，等 David 定）；抽查发现错误后降低来源 trust；按项目开关提炼。
 
 ## 16. 端口与适配器（2026-11-01 重构，行为不变）
 
@@ -539,3 +539,12 @@ David 的问题：「有什么机制可以保守一些，并且保持新鲜度�
 2. 在装配点注册：server 的 `main.ts` 里 `defaultMemoryRegistry().source(...)/.distiller(...)/.job(...)`。
 3. 跑契约：`@agent-hub/domain/testing/memory-contracts` 里有 `memorySourceContract`、`distillerContract`、`memoryIndexContract`、`rankerContract`、`maintenanceJobContract`、`governanceContract`；新适配器的测试文件里对它跑一遍对应那组（参考 `storage-sqlite/src/memory-contracts.test.ts`、`apps/server/src/memory-sources.test.ts`）。契约不过不合并。
 4. 模型式提炼（以后）：写一个 `MemoryDistiller` 适配器调模型，注册后替换 `ruleDistiller`；契约里的「含密钥不出候选」仍然要过。
+
+## 17. 模型版提炼（2026-11-01，ADR 0024）
+
+- 适配器 `apps/server/src/model-distiller.ts`（`id: 'model'`），在 `main.ts` 经注册表 `.distiller()` 装上；没选模型的项目照旧走规则版。
+- `DistillInput` 加了 `projectId`；`MemorySettingsStore` 加了 `distillModel / setDistillModel`（表 `memory_distill_settings`）。
+- 服务 `ingestCompaction` 调整：session: 摘要固定用规则版；只有过了全局开关、最短会话、每日上限之后才调提炼器；写项目层前再过一遍状态（只 staged / proposed）、密钥过滤和 5 条上限。
+- API：`GET / PUT /api/projects/:id/memory/distill`（`{model: string|null, globalOff}`）；`GET /api/providers/models?projectId=` 给项目设置的下拉框（多了 `scope` 字段，前端过滤掉个人提供商）。
+- 网页：项目设置 → 「会后提炼」下拉框（`project-distill`）。
+- 用量：提供商累计 + 审计 `memory.distill`（每次一条，带项目）。
