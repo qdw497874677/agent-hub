@@ -194,3 +194,15 @@ Hermes 对外有两条可编程的路：
 - **结果未知（unknown）**：不自动处理（D3）——发 warn 诊断 + `ended interrupted`。界面上的「标记已解决」按钮留到后续。
 - **幂等键** `ahub:<会话>:<轮次>:<随机>`，429/503/网络错误用同一个键退避（最多 2 分钟）。键只在 worker 内存里：worker 自己重启时不跨进程复用（已知缺口）。
 - 不发 `conversation_history`；不支持 fork（descriptor 里 denied）。
+
+## 16. 加固（2026-11-01）
+
+拓扑不变：仍是每会话一个网关（§15）。
+
+1. **进行中一轮记盘**：`<HERMES_HOME>/ahub-pending.json`（0600，原子改名写）记 `{key, inputHash, runId, at}`。
+   - 提交前写（runId 为 null），拿到 run_id 后补上，这一轮有了结局再清；收尾只清 runId 对得上的那份（下一轮可能已经记上）。
+   - 幂等键跨 worker 重启：上次同一条输入没确认收到（5xx / 断线），这次沿用同一个键，Hermes 只跑一次；明确 4xx 被拒就清掉；换了输入就换键。
+   - 开会话对账：记着 runId 的，查 `GET /v1/runs/{id}`。还在跑 → 接着跟；结果未知或查不到 → 一条警告诊断 + `ended interrupted`（原因带 `outcome_unknown`）；已结束 → 只记一条诊断（不补 ended，免得一轮旧结局冒充新一轮）。
+2. **结果未知的处理界面**：`ended interrupted` 且原因带 `outcome_unknown` 时，对话里出一张说明卡（不确定在哪、平台不会自动重试、先看工作区）。卡是最后一块且不在跑时给两个按钮：「重发这一轮」（把上一句文字原样再发；附件不带，卡上写明），「不用了」（只在这台浏览器记成已处理）。画布卡片上只显示一行提示。
+3. **真网关中断测试**：`HERMES_LIVE=1 node --test packages/adapters/hermes/src/live-interrupt.test.ts`。全新 HERMES_HOME + 本地假 OpenAI 兼容模型（慢慢吐字，不用密钥）：发一轮 → 出字 → 中断 → 落 `stopped`（实测 0.4–0.6s），收到 ended 马上发下一轮也能接。CI 默认跳过（没装 Hermes）。
+   - 测出并修了一个竞态：以前先推 ended、后放开「正在跑」，收到 ended 马上发下一轮会撞「上一轮还没结束」。现在终态先放开再推。
