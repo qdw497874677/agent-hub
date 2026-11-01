@@ -8,6 +8,18 @@ import type { ToolGateway, ToolGrant } from '@agent-hub/domain';
 export const toWireName = (name: string): string => name.replaceAll('.', '_');
 
 /**
+ * MCP 规范要求 structuredContent 是对象（SDK 客户端按 record 校验，数组会报 -32602）。
+ * 领域工具可能返回数组（memory.search / memory.list / agent.directory / agent.inbox）或标量：
+ * 普通对象原样给；数组包成 { items }；其余包成 { result }。文本 content 仍是原值的 JSON。
+ */
+export function toStructured(value: unknown): Record<string, unknown> {
+  if (Array.isArray(value)) return { items: value };
+  if (value !== null && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) return value as Record<string, unknown>;
+  if (value !== null && typeof value === 'object') return { result: JSON.parse(JSON.stringify(value)) as unknown };
+  return { result: value ?? null };
+}
+
+/**
  * 能力层的 MCP 服务端：一个授权 → 一个 SDK Server，背后是领域的 ToolGateway。
  * 不认识任何传输——长连接中转（mcp-relay.ts）把它接到 SDK 传输上。
  */
@@ -27,8 +39,8 @@ export function createMcpServer(gateway: ToolGateway, grant: ToolGrant): Server 
     const result = await gateway.call(grant, name, request.params.arguments ?? {});
     if (!result.ok) return { isError: true, content: [{ type: 'text' as const, text: result.error.message }] };
     return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result.value, null, 2) }],
-      structuredContent: result.value as Record<string, unknown>
+      content: [{ type: 'text' as const, text: JSON.stringify(result.value ?? null, null, 2) }],
+      structuredContent: toStructured(result.value)
     };
   });
   return server;
