@@ -8,7 +8,8 @@ const UPDATE_TEXT: Record<string, string> = {
   updating: '更新中',
   succeeded: '更新成功',
   failed: '更新失败',
-  refused: '拒绝更新'
+  refused: '拒绝更新',
+  rolled_back: '已回退'
 };
 
 const shortCommit = (commit: string | null | undefined): string => (commit ? commit.slice(0, 7) : '无提交号');
@@ -143,7 +144,9 @@ export function Workers() {
                     <div data-testid="worker-update" className="pl-4 text-meta">
                       <span
                         className={
-                          worker.update.state === 'failed' || worker.update.state === 'refused'
+                          worker.update.state === 'failed' ||
+                          worker.update.state === 'refused' ||
+                          worker.update.state === 'rolled_back'
                             ? 'text-rust'
                             : 'text-secondary'
                         }

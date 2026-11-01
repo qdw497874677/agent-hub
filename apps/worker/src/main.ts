@@ -5,7 +5,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -242,6 +242,12 @@ const link = connectWorkerLink({
   ...(resources ? { resources } : {}),
   ...(metricsIntervalMs ? { metricsIntervalMs } : {}),
   onAccepted: markHealthySoon,
+  pendingUpdateReport: () => {
+    const note = readRollbackNote(stateDir);
+    if (!note) return null;
+    log(`补报：新版本 ${note.failed.slice(0, 7)} 起不来，已回退到 ${note.restored.slice(0, 7)}`);
+    return { report: rollbackReport(note), done: () => clearRollbackNote(stateDir) };
+  },
   onLog: log,
   // 断线会自己重连；走到这里只有两种情况：token 被拒、被管理员断开、或者自己 close() 了。
   onClose: (why) => {

@@ -17,6 +17,23 @@ state="${WORKER_STATE_DIR:-$HOME/.config/agent-hub}"
 marker="$state/update-pending"
 limit="${WORKER_BOOT_ATTEMPTS:-2}"
 npm_bin="${AGENT_HUB_NPM:-npm}"
+note="$state/update-rolledback"
+# 回退后留一份记录，Worker 用旧版连上 hub 时补报「已回退」（见 readRollbackNote）
+log_tail() { # 备用启动脚本写 worker.log；systemd 的在 journal 里
+  local f="${WORKER_LOG_FILE:-$state/worker.log}"
+  if [[ -f "$f" ]]; then tail -n 30 "$f" 2>/dev/null
+  elif command -v journalctl >/dev/null; then
+    local u="${WORKER_SERVICE:-agent-hub-worker}"
+    { timeout 5 journalctl --user -u "$u" -n 30 -o cat 2>/dev/null || timeout 5 journalctl -u "$u" -n 30 -o cat 2>/dev/null; } | grep -v '^-- No entries'
+  fi | cut -c1-200
+}
+write_note() { # write_note <结果说明>
+  { printf '%s %s\n' "$target" "$previous"
+    echo "新版本 ${target:0:7} 连续 ${limit} 次启动都没能连上 hub 并稳定运行，启动守卫$1。"
+    local t; t="$(log_tail)"
+    if [[ -n "$t" ]]; then echo "--- 最近的 Worker 日志 ---"; echo "$t"; fi
+  } > "$note.tmp" 2>/dev/null && mv -f "$note.tmp" "$note"
+}
 
 [[ -f "$marker" ]] || exit 0
 read -r previous target boots < "$marker" || true
@@ -41,6 +58,7 @@ if [[ ! -d "$here/.git" ]]; then
     rm -rf "$here.failed"
     if mv "$here" "$here.failed" && mv "$prev_dir" "$here"; then
       echo "[boot-guard] 已换回 ${previous:0:7}（坏掉的新版留在 $here.failed）" >&2
+      write_note "已把旧版目录换回来（坏掉的新版留在 $here.failed）"
     else
       [[ -d "$here" ]] || mv "$here.failed" "$here"
       echo "[boot-guard] 换回旧版失败，请手动处理（$prev_dir）" >&2
@@ -54,6 +72,7 @@ fi
 cd "$here" || exit 0
 if git reset --hard "$previous" && "$npm_bin" ci --omit=dev --no-audit --no-fund; then
   echo "[boot-guard] 已回滚到 ${previous:0:7}" >&2
+  write_note "已 git 回滚到 ${previous:0:7} 并重装依赖"
 else
   echo "[boot-guard] 回滚失败，请手动处理（scripts/update-worker.sh ${previous:0:7}）" >&2
 fi

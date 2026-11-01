@@ -5,7 +5,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { writeBootMarker } from './boot-marker.ts';
+import { readRollbackNote, writeBootMarker } from './boot-marker.ts';
 import { readBuildInfo } from './build-info.ts';
 import { runTarballUpdate, type UpdateReport } from './updater.ts';
 
@@ -90,6 +90,10 @@ test('解压安装：换上的新版一直起不来，boot guard 把 .prev 换�
     assert.equal(readBuildInfo(s.dir).commit, OLD);
     assert.equal(readFileSync(join(`${s.dir}.failed`, 'version'), 'utf8'), 'new');
     assert.equal(existsSync(join(state, 'update-pending')), false);
+    const note = readRollbackNote(state);
+    assert.equal(note?.failed, NEW);
+    assert.equal(note?.restored, OLD);
+    assert.match(note?.reason ?? '', /旧版目录换回来/);
   } finally {
     rmSync(s.root, { recursive: true, force: true });
   }

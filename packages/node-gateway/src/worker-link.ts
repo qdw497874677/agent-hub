@@ -73,6 +73,8 @@ export interface WorkerLinkOptions {
   readonly onOpen?: () => void;
   /** server 接受了这条连接（收到 welcome，或老 hub 下等满兜底时间）。 */
   readonly onAccepted?: () => void;
+  /** 每次连上时问一次：有没有要补报的更新结果（比如启动守卫刚回退过）。返回的会作为 update_status 发出；发出后调 done。 */
+  readonly pendingUpdateReport?: () => { report: UpdateReport; done: () => void } | null;
   /** adapter 拿到 agent 报的可调项时回调（ACP 在 session/new 就给了，Pi 要问一次）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
   /** 这台跑的代码版本，hello 时报上去。 */
@@ -314,6 +316,11 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     dropped = 0;
     for (const frame of outbox.splice(0)) current.send(JSON.stringify(frame));
     options.onAccepted?.();
+    const pending = options.pendingUpdateReport?.();
+    if (pending) {
+      current.send(JSON.stringify({ type: 'update_status', ...pending.report }));
+      pending.done();
+    }
     // 每次连上都重新探测一次：机器上的登录状态可能在断线期间变了。
     void probe(true);
     reportInventory();

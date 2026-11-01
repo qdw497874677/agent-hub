@@ -23,7 +23,7 @@ export const buildInfoSchema = z.object({
 /** git 完整提交号：更新指令唯一的参数，不接受任何其他形式的输入。 */
 export const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 
-export const updateStateSchema = z.enum(['updating', 'succeeded', 'failed', 'refused']);
+export const updateStateSchema = z.enum(['updating', 'succeeded', 'failed', 'refused', 'rolled_back']);
 
 /** Worker 执行更新时的进度回报。 */
 export const workerUpdateStatusSchema = z.object({
