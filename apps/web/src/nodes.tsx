@@ -223,6 +223,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             ⠿
           </span>
           <span className="shrink-0 text-head text-primary">{agentLabel}</span>
+          {session.title ? <span className="truncate text-sub text-secondary" data-testid="card-session-title">{session.title}</span> : null}
           {/* 没有可调项清单（老会话还没人报过）时退回显示模型名 */}
           {session.optionSpec.length === 0 ? (
             <span className="truncate font-mono text-meta text-tertiary">

@@ -17,4 +17,6 @@ export interface SessionRepository {
   /** 双权威对齐：把平台的 seq 映射到 agent 自己的会话条目 id。 */
   linkEntry(sessionId: SessionId, seq: Seq, agentEntryId: string): Promise<void>;
   entryIdAt(sessionId: SessionId, seq: Seq): Promise<string | null>;
+  /** 只改会话名（null = 清掉）；和 save 分开，免得跑着的会话拿旧对象 save 时把名字冲掉。 */
+  setTitle(sessionId: SessionId, title: string | null, at: number): Promise<void>;
 }

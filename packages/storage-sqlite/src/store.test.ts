@@ -298,3 +298,16 @@ test('团队迁移（ADR 0011）：老库的人和项目都并进最早那位主
   }
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('会话名：setTitle 落库；之后的 save（跑着的会话拿旧对象）不会冲掉名字；null 清掉', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  await store.sessions.setTitle(session.id, '查登录 bug', now + 1);
+  assert.equal((await store.sessions.byId(session.id))?.title, '查登录 bug');
+  await store.sessions.save({ ...session, updatedAt: now + 2 });
+  assert.equal((await store.sessions.byId(session.id))?.title, '查登录 bug');
+  assert.equal((await store.sessions.listByTask(session.taskId))[0]?.title, '查登录 bug');
+  await store.sessions.setTitle(session.id, null, now + 3);
+  assert.equal((await store.sessions.byId(session.id))?.title, undefined);
+  store.close();
+});

@@ -2697,6 +2697,12 @@
                             ],
                             "default": null
                           },
+                          "title": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "createdAt": {
                             "type": "integer",
                             "minimum": 0
@@ -4346,6 +4352,12 @@
                       ],
                       "default": null
                     },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -4716,6 +4728,12 @@
                       ],
                       "default": null
                     },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -5063,6 +5081,12 @@
                         "null"
                       ],
                       "default": null
+                    },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -5741,6 +5765,12 @@
                         "null"
                       ],
                       "default": null
+                    },
+                    "title": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",

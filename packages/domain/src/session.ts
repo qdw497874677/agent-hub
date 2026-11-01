@@ -47,6 +47,8 @@ export interface Session {
   readonly workspaceId: WorkspaceId | null;
   /** 谁开的这条会话（ADR 0017：说话 / 中断 / 换机继续默认只有他）。null = 老会话或系统开的。 */
   readonly createdBy?: string | null;
+  /** 用户起的会话名（null = 没起，界面回退到首句 / 「会话 N」）。只能经 SessionRepository.setTitle 改，save 不覆盖它。 */
+  readonly title?: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

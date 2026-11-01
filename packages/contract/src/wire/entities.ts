@@ -166,6 +166,8 @@ export const sessionSchema = z.object({
   workerId: z.string().nullable().default(null),
   /** 在哪个工作空间里干活；null = 迁移前的老会话。 */
   workspaceId: z.string().nullable().default(null),
+  /** 用户起的会话名；null = 没起（界面回退到首句 / 「会话 N」）。 */
+  title: z.string().nullable().optional(),
   createdAt: epochMs,
   updatedAt: epochMs
 });
