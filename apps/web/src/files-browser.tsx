@@ -12,7 +12,9 @@ import 'diff2html/bundles/css/diff2html.min.css';
  * - 不缓存（决定 8）：Worker 不在线就如实显示「Worker 离线」。
  */
 type Base = 'session' | 'head';
-type Opened = { path: string; confirmed: boolean; diff: boolean };
+type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null };
+/** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
+export type Reveal = { path: string; line: number | null; nonce: number };
 
 const fresh = FILES_QUERY;
 const sk = (sessionId: string) => ['files', sessionId] as const;
@@ -36,10 +38,10 @@ function useWide(): boolean {
 
 export type FilesTab = 'files' | 'changes';
 
-type Props = { sessionId: string; status: string; tab: FilesTab };
+type Props = { sessionId: string; status: string; tab: FilesTab; reveal?: Reveal | null };
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, status, tab }: Props) {
+export function FilesBrowser({ sessionId, status, tab, reveal = null }: Props) {
   const client = useQueryClient();
   const wide = useWide();
   const [base, setBase] = useState<Base>('session');
@@ -47,6 +49,16 @@ export function FilesBrowser({ sessionId, status, tab }: Props) {
   const [opened, setOpened] = useState<Opened | null>(null);
   const [showSensitive, setShowSensitive] = useState(false);
   const [query, setQuery] = useState('');
+
+  useEffect(() => {
+    if (!reveal) return;
+    const sensitive = /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(reveal.path);
+    if (sensitive && !window.confirm(`「${reveal.path}」可能含密钥或凭据。确定要打开吗？（会记入审计）`)) return;
+    setQuery('');
+    setExpanded((current) => new Set([...current, ...crumbs(reveal.path).slice(0, -1).map((c) => c.path)]));
+    setOpened({ path: reveal.path, confirmed: sensitive, diff: false, line: reveal.line });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal?.nonce]);
 
   const changes = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'changes', base], queryFn: () => filesApi.changes(sessionId, base) });
   const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: [...sk(sessionId), 'find', query], queryFn: () => filesApi.find(sessionId, query.trim()) });
@@ -237,6 +249,17 @@ function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; ope
     void import('shiki').then(({ codeToHtml }) => codeToHtml(text, { lang, theme: 'github-dark-dimmed' })).then((h) => live && setHtml(h), () => undefined);
     return () => { live = false; };
   }, [text, opened.path]);
+  const content = useRef<HTMLDivElement>(null);
+  const line = opened.line ?? null;
+  useEffect(() => {
+    const root = content.current;
+    if (!root || line === null || text === null) return;
+    root.querySelectorAll('[data-target-line]').forEach((el) => el.removeAttribute('data-target-line'));
+    const target = root.querySelectorAll('.line')[line - 1];
+    if (!target) return;
+    target.setAttribute('data-target-line', String(line));
+    target.scrollIntoView({ block: 'center' });
+  }, [line, text, html]);
   return (
     <div className="flex min-h-full flex-col">
       <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-hair px-3 py-2 text-meta text-tertiary">
@@ -256,8 +279,10 @@ function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; ope
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件，不预览——可以下载</p> : null}
       {data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">文件超过 1 MB，只显示前 1 MB</p> : null}
       {text !== null ? (
-        html ? <div className="files-code overflow-x-auto p-3 text-sub [&_pre]:!bg-transparent" data-testid="file-content" dangerouslySetInnerHTML={{ __html: html }} /> :
-        <pre className="overflow-x-auto whitespace-pre p-3 font-mono text-sub text-secondary" data-testid="file-content">{text}</pre>
+        <div ref={content} className="[&_[data-target-line]]:bg-accent/20" data-line={line ?? undefined}>
+          {html ? <div className="files-code overflow-x-auto p-3 text-sub [&_pre]:!bg-transparent" data-testid="file-content" dangerouslySetInnerHTML={{ __html: html }} /> :
+          <pre className="overflow-x-auto whitespace-pre p-3 font-mono text-sub text-secondary" data-testid="file-content">{line === null ? text : text.split('\n').map((l, i) => <span key={i} className="line">{l}{'\n'}</span>)}</pre>}
+        </div>
       ) : null}
     </div>
   );

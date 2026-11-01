@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
@@ -13,7 +13,8 @@ import { sessionCommands } from './commands.ts';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from './files-core.ts';
 import { filesApi } from './api.ts';
-import { FilesBrowser } from './files-browser.tsx';
+import { FilesBrowser, type Reveal } from './files-browser.tsx';
+import { FileLinksContext, type FileLinks } from './file-links.tsx';
 import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 
@@ -64,10 +65,21 @@ export function FocusView({
   const [tab, setTab] = useState<SessionTab>('chat');
   // 访问过的文件 / 改动页保持挂载（隐藏），切回时状态和内容都还在；换会话才重置
   const [visited, setVisited] = useState<ReadonlySet<SessionTab>>(() => new Set(['chat']));
+  const [reveal, setReveal] = useState<Reveal | null>(null);
   useEffect(() => {
     setTab('chat');
     setVisited(new Set(['chat']));
+    setReveal(null);
   }, [session.id]);
+  // 工具参数里的路径可点：只认这条会话工作空间里的（老会话没有工作空间就只认相对路径）
+  const workspaceRoot = canvas.workspaces.find((w) => w.id === session.workspaceId)?.path ?? null;
+  const fileLinks = useMemo<FileLinks>(() => ({
+    root: workspaceRoot,
+    open: (target) => {
+      setReveal((prev) => ({ ...target, nonce: (prev?.nonce ?? 0) + 1 }));
+      setTab('files');
+    }
+  }), [workspaceRoot]);
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
   useEffect(() => {
@@ -265,7 +277,7 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} status={status} />
+            <FilesBrowser tab={t} sessionId={session.id} status={status} reveal={t === 'files' ? reveal : null} />
           </div>
         ) : null
       )}
@@ -313,7 +325,8 @@ export function FocusView({
           {blocks.length === 0 ? (
             <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
           ) : (
-            blocks.map((block, index) => (
+            <FileLinksContext.Provider value={fileLinks}>
+            {blocks.map((block, index) => (
               <ChatBlock
                 key={index}
                 block={block}
@@ -324,7 +337,8 @@ export function FocusView({
                 running={turnRunning}
                 showAuthor={showAuthor}
               />
-            ))
+            ))}
+            </FileLinksContext.Provider>
           )}
           {reason && blocks[blocks.length - 1]?.kind !== 'error' ? (
             <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
