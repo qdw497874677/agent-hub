@@ -7,6 +7,7 @@ import type { LiveSession } from './live.ts';
 import { SessionAssets } from './session-assets.tsx';
 import { SessionMessages } from './session-messages.tsx';
 import { SessionContext } from './session-context.tsx';
+import { FilesBrowser } from './files-browser.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from './workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -64,6 +65,7 @@ const ACTION_LABEL: Record<string, string> = {
 
 export function SessionDetails({ canvas, session, artifacts, live, onClose }: Props) {
   const [showJournal, setShowJournal] = useState(false);
+  const [showFiles, setShowFiles] = useState(false);
   const [journal, setJournal] = useState<readonly JournalEntryDto[]>([]);
   const [activity, setActivity] = useState<readonly SessionActivityDto[]>([]);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
@@ -153,6 +155,10 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose }: Pr
           </section>
           <SessionAssets sessionId={session.id} detailed />
           <SessionMessages sessionId={session.id} />
+          <section>
+            <button className="text-meta text-accent hover:text-primary" onClick={() => setShowFiles(true)} data-testid="open-files">浏览文件</button>
+            {showFiles ? <FilesBrowser sessionId={session.id} status={status} onClose={() => setShowFiles(false)} /> : null}
+          </section>
           {artifacts.length > 0 ? (
             <section>
               <p className="mb-1 text-meta text-tertiary">产出物</p>
