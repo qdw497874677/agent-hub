@@ -7,7 +7,6 @@ import type { LiveSession } from './live.ts';
 import { SessionAssets } from './session-assets.tsx';
 import { SessionMessages } from './session-messages.tsx';
 import { SessionContext } from './session-context.tsx';
-import { FilesBrowser } from './files-browser.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from './workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -48,6 +47,8 @@ interface Props {
   readonly artifacts: readonly ArtifactDto[];
   readonly live: LiveSession | null;
   readonly onClose: () => void;
+  /** 浏览文件：关掉详情，切到会话的「文件」标签页。 */
+  readonly onBrowseFiles: () => void;
 }
 
 /**
@@ -63,9 +64,8 @@ const ACTION_LABEL: Record<string, string> = {
   'session.continue': '换机继续'
 };
 
-export function SessionDetails({ canvas, session, artifacts, live, onClose }: Props) {
+export function SessionDetails({ canvas, session, artifacts, live, onClose, onBrowseFiles }: Props) {
   const [showJournal, setShowJournal] = useState(false);
-  const [showFiles, setShowFiles] = useState(false);
   const [journal, setJournal] = useState<readonly JournalEntryDto[]>([]);
   const [activity, setActivity] = useState<readonly SessionActivityDto[]>([]);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
@@ -156,8 +156,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose }: Pr
           <SessionAssets sessionId={session.id} detailed />
           <SessionMessages sessionId={session.id} />
           <section>
-            <button className="text-meta text-accent hover:text-primary" onClick={() => setShowFiles(true)} data-testid="open-files">浏览文件</button>
-            {showFiles ? <FilesBrowser sessionId={session.id} status={status} onClose={() => setShowFiles(false)} /> : null}
+            <button className="text-meta text-accent hover:text-primary" onClick={onBrowseFiles} data-testid="open-files">浏览文件</button>
           </section>
           {artifacts.length > 0 ? (
             <section>

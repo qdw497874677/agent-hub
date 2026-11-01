@@ -265,11 +265,11 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser embedded tab={t} sessionId={session.id} status={status} />
+            <FilesBrowser tab={t} sessionId={session.id} status={status} />
           </div>
         ) : null
       )}
-      {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} /> : null}
+      {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} onBrowseFiles={() => { setDetails(false); setTab('files'); }} /> : null}
       {continuing ? (
         <ContinueDialog
           canvas={canvas}

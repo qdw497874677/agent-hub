@@ -5,7 +5,7 @@ import { crumbs, FILES_QUERY, shown, decodeText, GIT_LABEL, humanSize, languageO
 import 'diff2html/bundles/css/diff2html.min.css';
 
 /**
- * 工作空间文件浏览（ADR 0025 · P1，只读）。全屏浮层：
+ * 工作空间文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
  * - 手机：目录列表 → 点文件进全屏查看，左上「返回」；桌面：左树右看。
  * - 「文件 | 改动(n)」两页；改动的基准可切（会话开始 / 当前 HEAD）。
  * - 敏感文件默认藏起；打开要确认（服务端记审计）。被忽略的灰显但能展开；.git 不列。
@@ -36,17 +36,12 @@ function useWide(): boolean {
 
 export type FilesTab = 'files' | 'changes';
 
-type Props = { sessionId: string; status: string } & (
-  | { embedded?: false; onClose: () => void; tab?: undefined; onTab?: undefined }
-  | { embedded: true; tab: FilesTab; onTab?: undefined; onClose?: undefined }
-);
+type Props = { sessionId: string; status: string; tab: FilesTab };
 
-/** 浮层（详情 → 浏览文件）或嵌在会话「文件 / 改动」标签页里（embedded：页签由会话头部管）。 */
-export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedTab }: Props) {
+/** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
+export function FilesBrowser({ sessionId, status, tab }: Props) {
   const client = useQueryClient();
   const wide = useWide();
-  const [ownTab, setTab] = useState<FilesTab>('files');
-  const tab = fixedTab ?? ownTab;
   const [base, setBase] = useState<Base>('session');
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [opened, setOpened] = useState<Opened | null>(null);
@@ -127,26 +122,12 @@ export function FilesBrowser({ sessionId, status, onClose, embedded, tab: fixedT
     });
 
   const changed = shown(changes);
-  const count = changed?.files.length;
   const showList = wide || opened === null;
-  const showHeader = !embedded || (!wide && opened !== null);
   return (
-    <div className={embedded ? 'flex min-h-0 flex-1 flex-col bg-canvas' : 'fixed inset-0 z-50 flex flex-col bg-canvas'} role={embedded ? 'tabpanel' : 'dialog'} aria-label="工作空间文件" data-testid={embedded ? `files-panel-${tab}` : 'files-browser'}>
-      {showHeader ? <header className="flex shrink-0 items-center gap-2 border-b border-hair px-3 py-2">
-        {!wide && opened ? (
-          <button className="text-sub text-secondary" onClick={() => setOpened(null)} data-testid="files-back">‹ 返回</button>
-        ) : (
-          <div className="flex gap-1" role="tablist">
-            {(['files', 'changes'] as const).map((t) => (
-              <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
-                className={`rounded px-2 py-1 text-sub ${tab === t ? 'bg-card-raised text-primary' : 'text-tertiary'}`} data-testid={`files-tab-${t}`}>
-                {t === 'files' ? '文件' : `改动${count === undefined ? '' : `(${count})`}`}
-              </button>
-            ))}
-          </div>
-        )}
-        <span className="min-w-0 flex-1 truncate font-mono text-meta text-tertiary">{opened && !wide ? opened.path : ''}</span>
-        {onClose ? <button className="px-2 text-head text-secondary" onClick={onClose} aria-label="关闭" data-testid="files-close">×</button> : null}
+    <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作空间文件" data-testid={`files-panel-${tab}`}>
+      {!wide && opened ? <header className="flex shrink-0 items-center gap-2 border-b border-hair px-3 py-2">
+        <button className="text-sub text-secondary" onClick={() => setOpened(null)} data-testid="files-back">‹ 返回</button>
+        <span className="min-w-0 flex-1 truncate font-mono text-meta text-tertiary">{opened.path}</span>
       </header> : null}
       <div className="flex min-h-0 flex-1">
         {showList ? (
