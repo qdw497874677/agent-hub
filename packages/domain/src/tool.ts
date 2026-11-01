@@ -6,12 +6,12 @@ import type { SessionId, TaskId } from './ids.ts';
  */
 /** agent:message = agent 间通信（ADR 0018）；真正能不能发还要过消息总线的权限交集。 */
 /** memory = 记忆工具（ADR 0019）；能读写哪个作用域还要过记忆服务的 can()。 */
-export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory';
+export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context';
 
-export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory'];
+export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context'];
 
 /** 默认授权：读任务 + 写日志 + 改状态（agent 只能走到 进行中/受阻/待验收，done 仍由人确认）。 */
-export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory'];
+export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context'];
 
 /**
  * 授权是短期的滑动有效期：签发后 1 小时内没有用就过期；每次认证成功续到「现在 + 1 小时」，

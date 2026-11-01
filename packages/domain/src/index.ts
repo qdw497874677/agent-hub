@@ -101,6 +101,7 @@ export * from './use-cases/tool-gateway.ts';
 export * from './tools/task-tools.ts';
 export * from './tools/message-tools.ts';
 export * from './tools/memory-tools.ts';
+export * from './tools/context-tools.ts';
 export * from './messaging.ts';
 export * from './groups.ts';
 export * from './use-cases/groups.ts';

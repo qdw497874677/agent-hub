@@ -26,6 +26,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createMessageToolProvider,
   createMemoryService,
   createMemoryToolProvider,
+  createContextToolProvider,
   defaultMemoryRegistry,
   MEMORY_GUIDANCE,
   MEMORY_SWEEP_INTERVAL_MS,
@@ -281,7 +282,7 @@ toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
   tokens: createTokenIssuer(),
-  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService)]
+  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService)]
 });
 
 // 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。

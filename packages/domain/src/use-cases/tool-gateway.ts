@@ -116,7 +116,7 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
     },
 
     list(grant) {
-      return [...byName.values()].map((entry) => entry.tool).filter((tool) => grant.scopes.includes(tool.scope));
+      return [...byName.values()].map((entry) => entry.tool).filter((tool) => !tool.hidden && grant.scopes.includes(tool.scope));
     },
 
     async call(grant, name, input) {
@@ -126,7 +126,7 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
       if (!entry) result = err(notFound(`没有这个工具：${name}`));
       else if (!grantActive(grant, started)) result = err(forbidden('授权已过期或已作废'));
       else if (!grant.scopes.includes(entry.tool.scope)) result = err(forbidden(`这个会话没有 ${entry.tool.scope} 权限`));
-      else if (!allow(grant.id, defaultPerMinute, started) || !allow(`${grant.id}:${name}`, entry.tool.perMinute ?? defaultPerMinute, started)) {
+      else if ((!entry.tool.hidden && !allow(grant.id, defaultPerMinute, started)) || !allow(`${grant.id}:${name}`, entry.tool.perMinute ?? defaultPerMinute, started)) {
         result = err(invalid('调用太频繁了，过一分钟再试'));
       } else {
         try {

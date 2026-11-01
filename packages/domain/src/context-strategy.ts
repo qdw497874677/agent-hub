@@ -30,6 +30,11 @@ export interface ContextMessage {
   readonly content: unknown;
   readonly tokens: number;
   readonly tool?: string;
+  /** assistant 消息里发起的工具调用 id；tool 消息对应的调用 id（协议要求成对，不能拆开）。 */
+  readonly calls?: readonly string[];
+  readonly callId?: string;
+  /** 策略把这条工具结果清理掉了（运行时用占位文字替换内容）。 */
+  readonly cleared?: boolean;
 }
 export interface ContextView {
   readonly messages: readonly ContextMessage[];
@@ -81,14 +86,87 @@ export const compactionStrategy: ContextStrategy = {
   onCompact: async ({ state }) => ({ state, events: [] })
 };
 
-/** hub 已安装（锁定版本）的策略。只有 cluster_admin 能装新的（P1 只有内置的一个）。 */
-export const BUILTIN_STRATEGIES: readonly ContextStrategy[] = [compactionStrategy];
+/** hub-managed 策略的触发点和保留量（ADR 没定具体数字，取保守值：到软上限才动，动完留一半窗口）。 */
+export const HUB_MANAGED_LIMITS = { softRatio: 0.7, keepRatio: 0.5, keepToolResults: 5 } as const;
+export const TOOL_CLEARED_TEXT = '旧工具结果已清理，可以重新执行';
+export const TRIM_GUIDANCE = '更早的对话已被截断（完整原文仍在 hub 会话记录里，需要时可以用 memory_search 查）。';
+
+const stateless = { initialState: () => ({ schemaVersion: 1, data: null }), replay: async () => ({ schemaVersion: 1, data: null }) };
+
+/** 最后一条用户消息的下标（底线：它和它之后的内容永远不动）。 */
+const lastUserIndex = (messages: readonly ContextMessage[]): number => {
+  for (let i = messages.length - 1; i >= 0; i--) if (messages[i]!.role === 'user') return i;
+  return -1;
+};
+const sumTokens = (messages: readonly ContextMessage[]): number => messages.reduce((n, m) => n + m.tokens, 0);
+
+/**
+ * 截断（P3）：超过软上限时，从后往前按「整轮」（以用户消息开头）保留，直到占满 keepRatio 个窗口。
+ * 切点总在用户消息上，所以工具调用 / 结果对不会被拆开；system 消息总是保留；最后一轮总是保留。
+ */
+export const trimStrategy: ContextStrategy = {
+  id: 'trim',
+  version: '1',
+  title: '截断（保留最近几轮）',
+  modes: ['hub-managed'],
+  ...stateless,
+  async transform({ transcript, state, budget }) {
+    const msgs = transcript.messages;
+    const used = sumTokens(msgs);
+    if (used <= budget.softLimit) return { view: transcript, state, events: [] };
+    const keepBudget = Math.floor(budget.windowTokens * HUB_MANAGED_LIMITS.keepRatio);
+    const floor = lastUserIndex(msgs);
+    if (floor <= 0) return { view: transcript, state, events: [] };
+    const system = msgs.filter((m) => m.role === 'system');
+    let cut = floor;
+    let kept = sumTokens(msgs.slice(floor).filter((m) => m.role !== 'system')) + sumTokens(system);
+    for (let i = floor - 1; i >= 0; i--) {
+      if (msgs[i]!.role !== 'user') continue;
+      const turn = sumTokens(msgs.slice(i, cut).filter((m) => m.role !== 'system'));
+      if (kept + turn > keepBudget) break;
+      kept += turn;
+      cut = i;
+    }
+    const dropped = msgs.slice(0, cut).filter((m) => m.role !== 'system');
+    if (dropped.length === 0) return { view: transcript, state, events: [] };
+    const messages = [...msgs.slice(0, cut).filter((m) => m.role === 'system'), ...msgs.slice(cut)];
+    return {
+      view: { messages, guidance: [...transcript.guidance, TRIM_GUIDANCE] },
+      state,
+      events: [{ kind: 'truncated', range: { from: dropped[0]!.id, to: dropped[dropped.length - 1]!.id } }]
+    };
+  }
+};
+
+/**
+ * 清理旧工具结果（P3）：超过软上限时，最近 keepToolResults 条工具结果之外的都换成占位文字。
+ * 只换内容不删消息，调用 / 结果对还在；最后一条用户消息之后（正在进行的这一轮）不动。
+ */
+export const toolClearStrategy: ContextStrategy = {
+  id: 'tool-clear',
+  version: '1',
+  title: '清理旧工具结果',
+  modes: ['hub-managed'],
+  ...stateless,
+  async transform({ transcript, state, budget }) {
+    const msgs = transcript.messages;
+    if (sumTokens(msgs) <= budget.softLimit) return { view: transcript, state, events: [] };
+    const floor = lastUserIndex(msgs);
+    const tools = msgs.map((m, i) => ({ m, i })).filter(({ m, i }) => m.role === 'tool' && !m.cleared && (floor < 0 || i < floor));
+    const clear = new Set(tools.slice(0, Math.max(0, tools.length - HUB_MANAGED_LIMITS.keepToolResults)).map(({ m }) => m.id));
+    if (clear.size === 0) return { view: transcript, state, events: [] };
+    const messages = msgs.map((m) => (clear.has(m.id) ? { ...m, cleared: true, tokens: 12 } : m));
+    const ids = [...clear];
+    return { view: { messages, guidance: transcript.guidance }, state, events: [{ kind: 'compressed', range: { from: ids[0]!, to: ids[ids.length - 1]! }, tier: 1, summary: TOOL_CLEARED_TEXT, blockId: `tool-clear:${ids[0]}` }] };
+  }
+};
+
+/** hub 已安装（锁定版本）的策略。只有 cluster_admin 能装新的。 */
+export const BUILTIN_STRATEGIES: readonly ContextStrategy[] = [compactionStrategy, trimStrategy, toolClearStrategy];
 
 /** 候选（不能选，只在界面上列出来说明）。 */
 export const CANDIDATE_STRATEGIES: readonly { id: string; title: string; note: string }[] = [
-  { id: 'trim', title: '截断', note: '候选（P3）' },
-  { id: 'tool-clear', title: '清理旧工具结果', note: '候选（P3）' },
-  { id: 'summarize-window', title: '滑动窗口摘要', note: '候选（P3）' },
+  { id: 'summarize-window', title: '滑动窗口摘要', note: '候选（要模型生成摘要，和模型提炼一起做）' },
   { id: 'paging', title: '分页换入换出', note: '候选（P4）' },
   { id: 'context-pruning', title: '主动上下文剪枝', note: '先不做' }
 ];
@@ -118,10 +196,11 @@ export interface ContextCapability {
 export function contextCapabilityOf(agentId: string): ContextCapability {
   const runtime: ContextCapability['runtime'] = agentId === 'pi' || agentId.startsWith('pi-') ? 'pi' : agentId === 'grok' || agentId.startsWith('grok-') ? 'grok' : 'acp';
   const common = { transcript: 'runtime', restart: 'runtime', memoryTools: 'runtime' } as const;
+  // pi：hub 自带的扩展把 `context` 事件转给 hub（hub-managed，P3）；旧 worker 没这个扩展时 hub-managed 策略不生效。
   if (runtime === 'pi')
     return {
       runtime,
-      modes: ['native'],
+      modes: ['native', 'hub-managed'],
       l1: { ...common, usage: 'runtime', compactionEvents: 'runtime', compact: 'runtime' },
       gaps: []
     };
@@ -178,8 +257,9 @@ export function resolveContextStrategy(input: {
   return { strategy, mode, source: picked.source, fallback: null };
 }
 
+/** 按策略自己列的先后挑（compaction 先 native：运行时自己压缩，hub 不介入）。 */
 function pickMode(strategy: ContextStrategy, capability: ContextCapability): ContextMode | null {
-  for (const mode of ['hub-managed', 'runtime-plugin', 'native'] as const) if (strategy.modes.includes(mode) && capability.modes.includes(mode)) return mode;
+  for (const mode of strategy.modes) if (capability.modes.includes(mode)) return mode;
   return null;
 }
 
@@ -227,4 +307,9 @@ export function estimateContextUsage(events: readonly JournalEntry[], windowToke
   const win = runtime?.window ?? windowTokens;
   const usedRatio = win > 0 ? used / win : 0;
   return { usedTokens: used, windowTokens: win, estimated: true, usedRatio, level: levelOf(usedRatio), lastCompaction };
+}
+
+/** 预算：窗口来自会话记录（运行时报的或默认值），软 / 硬上限按比例。 */
+export function hubManagedBudget(windowTokens: number, usedTokens: number): ContextBudget {
+  return { windowTokens, usedTokens, reserveTokens: 0, softLimit: Math.floor(windowTokens * HUB_MANAGED_LIMITS.softRatio), hardLimit: Math.floor(windowTokens * 0.95) };
 }

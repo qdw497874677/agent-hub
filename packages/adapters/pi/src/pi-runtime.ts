@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { piProviderLaunch } from './pi-provider.ts';
 import { ensurePiMcpConfig, piHasBuiltinMcp, piToolEnv } from './pi-mcp.ts';
 import { execProbe } from './exec-probe.ts';
@@ -361,7 +362,12 @@ export interface PiRuntimeOptions {
   readonly providerDir?: string;
   /** hub 装的组件包目录，开会话时现查并以 `-e <dir>` 加载（本地目录，不联网）。 */
   readonly extensions?: () => readonly string[];
+  /** hub 自带的 hub-managed 上下文扩展（P3）；null = 不加载。只在会话有工具授权时加载。 */
+  readonly hubContextExtension?: string | null;
 }
+
+/** 扩展文件随仓库发布（worker 从仓库运行），SDK 从仓库的 node_modules 解析。 */
+export const HUB_CONTEXT_EXTENSION = fileURLToPath(new URL('../extensions/hub-context.ts', import.meta.url));
 
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
   const command = options.command ?? 'pi';
@@ -385,6 +391,8 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       if (ref) args.push('--session-id', ref);
       args.push(...piAssetArgs(spec.assets));
       for (const dir of options.extensions?.() ?? []) args.push('--extension', dir);
+      const hubContext = options.hubContextExtension === undefined ? HUB_CONTEXT_EXTENSION : options.hubContextExtension;
+      if (spec.tools && hubContext) args.push('--extension', hubContext);
 
       // 能力层：先确保用户全局 MCP 配置里有 agent-hub 这条（只含变量引用；文件按 Pi 版本选，见 piMcpPath），令牌走 env。
       // 条目是 stdio 垫片（见 pi-mcp.ts：Pi 不展开 url 里的变量）；垫片连 tools.url——hub 的 /mcp 或本机 relay。
