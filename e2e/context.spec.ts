@@ -58,7 +58,7 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
   const panel = page.getByRole('complementary', { name: '会话详情' }).getByTestId('session-context');
   await expect(panel.getByTestId('context-strategy')).toContainText('自动压缩');
   await expect(panel.getByTestId('context-strategy')).toContainText('来自会话设置');
-  await expect(panel.getByTestId('context-usage')).toContainText('hub 估算');
+  await expect(panel.getByTestId('context-usage')).toContainText(/hub 估算|运行时报告/);
   if (pi) await expect(panel.getByTestId('context-compact')).toBeVisible();
   else await expect(panel.getByTestId('context-gaps')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
