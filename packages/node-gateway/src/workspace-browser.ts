@@ -1,10 +1,13 @@
 import { execFile } from 'node:child_process';
 import { lstat, open, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { join, sep } from 'node:path';
+import { tmpdir } from 'node:os';
+import { randomBytes } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import fuzzysort from 'fuzzysort';
 import type { BrowserEntry, ChangedFile, DirectoryPage, DomainError, FileChangeNotice, FileGitStatus, Result, WorkspaceBrowser } from '@agent-hub/domain';
-import { FILES_LIMITS, invalid, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, notFound, unavailable } from '@agent-hub/domain';
+import { FILES_LIMITS, isCheckpointPrefix, isCheckpointRef, invalid, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, notFound, unavailable } from '@agent-hub/domain';
 
 /**
  * WorkspaceBrowser 的本机实现（ADR 0025）：fs + git CLI + fuzzysort + chokidar。
@@ -20,6 +23,8 @@ export interface BrowserOptions {
 
 const WALK_SKIP = new Set(['.git', 'node_modules', 'dist', 'build', 'target', 'coverage', '__pycache__', 'vendor']);
 const WALK_LIMIT = 20_000;
+/** git 的空树：基准没有提交时拿它当起点。 */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 class Fail extends Error {
   readonly error: DomainError;
@@ -43,7 +48,7 @@ async function attempt<T>(run: () => Promise<T>): Promise<Result<T, DomainError>
 }
 
 interface Git {
-  (args: readonly string[], options?: { allowExit?: readonly number[]; input?: string }): Promise<string>;
+  (args: readonly string[], options?: { allowExit?: readonly number[]; input?: string; env?: Record<string, string> }): Promise<string>;
 }
 
 export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceBrowser {
@@ -77,7 +82,7 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
       const child = execFile(
         'git',
         ['-c', 'core.quotepath=off', '-c', 'color.ui=false', ...args],
-        { cwd, timeout: gitTimeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } },
+        { cwd, timeout: gitTimeoutMs, maxBuffer: 64 * 1024 * 1024, encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...opts.env } },
         (error, stdout) => {
           const exit = error && typeof (error as { code?: unknown }).code === 'number' ? ((error as { code: number }).code) : error ? -1 : 0;
           if (error && !(opts.allowExit ?? []).includes(exit)) reject(error);
@@ -144,6 +149,18 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
       }
     }
     return files;
+  }
+
+  /** 「新」的一边：只接受提交 id（检查点）；null = 工作区。 */
+  async function targetRef(git: Git, target: string | null): Promise<string | null> {
+    if (target === null) return null;
+    if (!isCommitId(target)) fail(invalid('对比提交不合法'));
+    try {
+      await git(['rev-parse', '--verify', '--quiet', `${target}^{commit}`]);
+      return target;
+    } catch {
+      return fail(notFound('检查点不存在（可能已过保留期被清理）'));
+    }
   }
 
   async function baseRef(git: Git, base: string | null): Promise<string | null> {
@@ -234,16 +251,18 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         return fuzzysort.go(q, files, { limit, threshold: 0.2 }).map((hit) => hit.target);
       }),
 
-    changes: (root, base) =>
+    changes: (root, base, target = null) =>
       attempt(async (): Promise<ChangedFile[]> => {
         const real = await rootOf(root);
         const git = gitIn(real);
         if (!(await isRepo(git))) return [];
         const ref = await baseRef(git, base);
+        const to = await targetRef(git, target);
         const out: ChangedFile[] = [];
-        if (ref !== null) {
-          const names = (await git(['diff', '--relative', '--name-status', '-z', '-M', ref, '--', '.'])).split('\0');
-          const nums = (await git(['diff', '--relative', '--numstat', '-z', '-M', ref, '--', '.'])).split('\0');
+        if (ref !== null || to !== null) {
+          const range = ref === null ? [EMPTY_TREE, to!] : to === null ? [ref] : [ref, to];
+          const names = (await git(['diff', '--relative', '--name-status', '-z', '-M', ...range, '--', '.'])).split('\0');
+          const nums = (await git(['diff', '--relative', '--numstat', '-z', '-M', ...range, '--', '.'])).split('\0');
           const counts = new Map<string, [number, number]>();
           for (let i = 0; i < nums.length; i++) {
             const m = /^(-|\d+)\t(-|\d+)\t(.*)$/.exec(nums[i]!);
@@ -271,6 +290,7 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
             }
           }
         }
+        if (to !== null) return out.sort((a, b) => a.path.localeCompare(b.path)); // 两个提交之间：未跟踪文件已经在检查点里了
         const seen = new Set(out.map((f) => f.path));
         const untracked = (await git(['ls-files', '-o', '--exclude-standard', '-z', ...(ref === null ? ['-c'] : [])])).split('\0').filter((p) => p && !seen.has(p));
         for (const path of untracked) {
@@ -279,7 +299,7 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         return out.sort((a, b) => a.path.localeCompare(b.path));
       }),
 
-    diff: (root, path, base, maxBytes) =>
+    diff: (root, path, base, maxBytes, target = null) =>
       attempt(async () => {
         const real = await rootOf(root);
         if (!isBrowsablePath(path) || path === '') fail(invalid('路径不合法'));
@@ -290,6 +310,12 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         const git = gitIn(real);
         if (!(await isRepo(git))) fail(invalid('不是 git 仓库，没有 diff'));
         const ref = await baseRef(git, base);
+        const to = await targetRef(git, target);
+        if (to !== null) {
+          const patch = await git(['diff', '--relative', '-M', ref ?? EMPTY_TREE, to, '--', path]);
+          const truncated = Buffer.byteLength(patch) > maxBytes;
+          return { path, patch: truncated ? Buffer.from(patch).subarray(0, maxBytes).toString('utf8') : patch, truncated, binary: /^Binary files /m.test(patch) };
+        }
         let patch = ref === null ? '' : await git(['diff', '--relative', '-M', ref, '--', path]);
         if (patch === '') {
           const tracked = (await git(['ls-files', '-z', '--', path])).length > 0;
@@ -298,6 +324,45 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         const binary = /^Binary files /m.test(patch);
         const truncated = Buffer.byteLength(patch) > maxBytes;
         return { path, patch: truncated ? Buffer.from(patch).subarray(0, maxBytes).toString('utf8') : patch, truncated, binary };
+      }),
+
+    checkpoint: (root, ref) =>
+      attempt(async () => {
+        if (!isCheckpointRef(ref)) fail(invalid('检查点 ref 不合法'));
+        const real = await rootOf(root);
+        if (!(await isRepo(gitIn(real)))) return null;
+        const top = (await gitIn(real)(['rev-parse', '--show-toplevel'])).trim();
+        const git = gitIn(top);
+        const index = join(tmpdir(), `agent-hub-index-${randomBytes(8).toString('hex')}`);
+        const env = { GIT_INDEX_FILE: index, GIT_AUTHOR_NAME: 'agent-hub', GIT_AUTHOR_EMAIL: 'checkpoint@agent-hub.local', GIT_COMMITTER_NAME: 'agent-hub', GIT_COMMITTER_EMAIL: 'checkpoint@agent-hub.local' };
+        try {
+          let head: string | null = null;
+          try {
+            head = (await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])).trim() || null;
+          } catch {
+            head = null;
+          }
+          await git(head ? ['read-tree', head] : ['read-tree', '--empty'], { env });
+          // 临时 index：真 index（用户暂存的东西）不受影响；忽略文件照 .gitignore 跳过
+          await git(['add', '-A', '--', '.'], { env });
+          const tree = (await git(['write-tree'], { env })).trim();
+          const commit = (await git(['commit-tree', tree, ...(head ? ['-p', head] : []), '-m', `agent-hub checkpoint ${ref}`], { env })).trim();
+          await git(['update-ref', ref, commit]);
+          return commit;
+        } finally {
+          await rm(index, { force: true }).catch(() => undefined);
+        }
+      }),
+
+    dropRefs: (root, prefix) =>
+      attempt(async () => {
+        if (!isCheckpointPrefix(prefix)) fail(invalid('检查点前缀不合法'));
+        const real = await rootOf(root);
+        const git = gitIn(real);
+        if (!(await isRepo(git))) return 0;
+        const refs = (await git(['for-each-ref', '--format=%(refname)', prefix])).split('\n').filter(Boolean);
+        if (refs.length > 0) await git(['update-ref', '--stdin'], { input: refs.map((r) => `delete ${r}\n`).join('') });
+        return refs.length;
       }),
 
     head: (root) =>

@@ -138,6 +138,7 @@ export * from './use-cases/context.ts';
 export type * from './ports/context-settings.ts';
 export * from './runtime-bundle.ts';
 export * from './component-catalog.ts';
-export type { BrowserEntry, ChangedFile, DirectoryPage, FileChangeNotice, FileContent, FileDiff, FileGitStatus, SessionBaseStore, WorkspaceBrowser } from './ports/workspace-browser.ts';
+export type { BrowserEntry, ChangedFile, DirectoryPage, FileChangeNotice, FileContent, FileDiff, FileGitStatus, SessionBaseStore, WorkspaceBrowser, TurnCheckpoint, CheckpointStore } from './ports/workspace-browser.ts';
+export { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, isCheckpointRef, isCheckpointPrefix } from './ports/workspace-browser.ts';
 export { FILES_LIMITS, isBrowsablePath, isCommitId, isSensitivePath, looksBinary } from './workspace-files.ts';
 export * from './use-cases/workspace-files.ts';

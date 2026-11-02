@@ -15,6 +15,8 @@ import {
   filesDiff,
   filesFind,
   filesHead,
+  filesCheckpoint,
+  filesDropRefs,
   filesList,
   filesRead,
   filesUnwatch,
@@ -101,8 +103,10 @@ function serveWorkspaceBrowser(port: RpcPort, files: WorkerFiles | undefined): v
     return { ...rest, data: Buffer.from(bytes).toString('base64') };
   });
   port.handle(filesFind, async ({ root, query, limit }) => ({ files: [...unwrap(await need().find(root, query, limit))] }));
-  port.handle(filesChanges, async ({ root, base }) => ({ files: unwrap(await need().changes(root, base)).map((f) => ({ ...f })) }));
-  port.handle(filesDiff, async ({ root, path, base, maxBytes }) => unwrap(await need().diff(root, path, base, maxBytes)));
+  port.handle(filesChanges, async ({ root, base, target }) => ({ files: unwrap(await need().changes(root, base, target ?? null)).map((f) => ({ ...f })) }));
+  port.handle(filesDiff, async ({ root, path, base, maxBytes, target }) => unwrap(await need().diff(root, path, base, maxBytes, target ?? null)));
+  port.handle(filesCheckpoint, async ({ root, ref }) => ({ commit: unwrap(await need().checkpoint(root, ref)) }));
+  port.handle(filesDropRefs, async ({ root, prefix }) => ({ dropped: unwrap(await need().dropRefs(root, prefix)) }));
   port.handle(filesHead, async ({ root }) => ({ head: unwrap(await need().head(root)) }));
   port.handle(filesWatch, async ({ watchId, root, paths }) => {
     watches.get(watchId)?.();

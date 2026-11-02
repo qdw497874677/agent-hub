@@ -1,4 +1,4 @@
-import { RpcFailure, filesChanged, filesChanges, filesDiff, filesFind, filesHead, filesList, filesRead, filesUnwatch, filesWatch, type RpcChannel, type RpcOutcome } from '@agent-hub/contract';
+import { RpcFailure, filesCheckpoint, filesDropRefs, filesChanged, filesChanges, filesDiff, filesFind, filesHead, filesList, filesRead, filesUnwatch, filesWatch, type RpcChannel, type RpcOutcome } from '@agent-hub/contract';
 import type { DomainError, FileChangeNotice, Result, WorkspaceBrowser } from '@agent-hub/domain';
 import { newId } from '@agent-hub/domain';
 
@@ -53,8 +53,10 @@ export function createRemoteBrowsers(deps: {
             bytes: new Uint8Array(Buffer.from(data, 'base64'))
           })),
         find: async (root, query, limit) => map(await call((c) => c.request(filesFind, { root, query, limit }, timeout), '文件搜索'), (v) => v.files),
-        changes: async (root, base) => map(await call((c) => c.request(filesChanges, { root, base }, timeout), '改动列表'), (v) => v.files),
-        diff: async (root, path, base, maxBytes) => call((c) => c.request(filesDiff, { root, path, base, maxBytes }, timeout), 'diff'),
+        changes: async (root, base, target = null) => map(await call((c) => c.request(filesChanges, { root, base, ...(target ? { target } : {}) }, timeout), '改动列表'), (v) => v.files),
+        diff: async (root, path, base, maxBytes, target = null) => call((c) => c.request(filesDiff, { root, path, base, maxBytes, ...(target ? { target } : {}) }, timeout), 'diff'),
+        checkpoint: async (root, ref) => map(await call((c) => c.request(filesCheckpoint, { root, ref }, { timeoutMs: 30_000 }), '检查点'), (v) => v.commit),
+        dropRefs: async (root, prefix) => map(await call((c) => c.request(filesDropRefs, { root, prefix }, timeout), '清理检查点'), (v) => v.dropped),
         head: async (root) => map(await call((c) => c.request(filesHead, { root }, timeout), 'HEAD'), (v) => v.head),
         watch: async (root, paths, onChange) => {
           const watchId = newId();
@@ -80,5 +82,5 @@ export function createRemoteBrowsers(deps: {
 /** 通道还没就绪时的占位：每个调用都如实报不可用（决定 8：不缓存、不假装）。 */
 export function offlineWorkspaceBrowser(message: string): WorkspaceBrowser {
   const no = async () => ({ ok: false as const, error: { code: 'unavailable' as const, message } });
-  return { list: no, read: no, find: no, changes: no, diff: no, head: no, watch: no };
+  return { list: no, read: no, find: no, changes: no, diff: no, checkpoint: no, dropRefs: no, head: no, watch: no };
 }

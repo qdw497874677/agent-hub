@@ -16,7 +16,9 @@ import { fail } from './http-error.ts';
  * - GET /api/sessions/:id/files/events?paths=a,b    SSE：这些目录 / 文件变了就推 {paths, reset?}
  * 会话可见性由 installAccess（session.read）把关，workspace.files.read 在用例里判。Worker 不在线 → 503，不缓存。
  */
-const baseOf = (raw: string | undefined) => (raw === 'head' ? 'head' : 'session');
+const baseOf = (raw: string | undefined) => (raw === 'head' ? 'head' : raw === 'turn' ? 'turn' : 'session');
+/** turn=n：第几轮；不给 = 最近一轮。 */
+const turnOf = (raw: string | undefined) => (raw && /^\d{1,6}$/.test(raw) ? Number(raw) : undefined);
 const noStore = { 'cache-control': 'no-store' };
 
 export function installFilesRoutes(app: Hono<any>, files: WorkspaceFilesService, subjectOf: SubjectOf): void {
@@ -53,11 +55,15 @@ export function installFilesRoutes(app: Hono<any>, files: WorkspaceFilesService,
     return r.ok ? c.json({ files: r.value }, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/git/changes', async (c) => {
-    const r = await files.changes(subjectOf(c), sid(c), baseOf(c.req.query('base')));
+    const r = await files.changes(subjectOf(c), sid(c), baseOf(c.req.query('base')), turnOf(c.req.query('turn')));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
+  app.get('/api/sessions/:id/git/turns', async (c) => {
+    const r = await files.turns(subjectOf(c), sid(c));
+    return r.ok ? c.json({ turns: r.value }, 200, noStore) : fail(c, r.error);
+  });
   app.get('/api/sessions/:id/git/diff', async (c) => {
-    const r = await files.diff(subjectOf(c), sid(c), c.req.query('path') ?? '', baseOf(c.req.query('base')));
+    const r = await files.diff(subjectOf(c), sid(c), c.req.query('path') ?? '', baseOf(c.req.query('base')), turnOf(c.req.query('turn')));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/files/events', async (c) => {

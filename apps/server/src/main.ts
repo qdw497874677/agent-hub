@@ -143,6 +143,11 @@ const deps: Deps = {
       if (!serverGateway) return err(unavailable('worker 通道尚未就绪'));
       if (command.kind === 'dispose') providerWiring.revoke(command.sessionId);
       // hub 模型提供商：只给选中的那一个（ADR 0013 D3）；不能用就让这次启动失败，不静默换模型
+      // 回合检查点（ADR 0027 D2）：问话发给 agent 之前先给工作区拍一张；最多等 5 秒，拍不成也照发
+      if (command.kind === 'prompt') {
+        const seq = (await store.sessions.byId(command.sessionId))?.lastSeq ?? 0;
+        await Promise.race([filesService.beginTurn(command.sessionId, seq).catch(() => null), new Promise((r) => setTimeout(r, 5_000))]);
+      }
       const granted = await providerWiring.grantFor(command);
       if (!granted.ok) return granted;
       const sent = await serverGateway.gateway.dispatch(await withSessionAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, granted.value) : granted.value));
@@ -264,8 +269,14 @@ const filesService = createWorkspaceFilesService({
   local: createWorkspaceBrowser(),
   remote: (workerId) => (serverGateway ? serverGateway.browser(workerId) : offlineBrowser),
   bases: store.sessionBases,
+  checkpoints: store.checkpoints,
   now: () => Date.now()
 });
+// 回合结束后拍「之后」那张（ADR 0027 D2）；保留期清理每小时一次（D1）
+hub.stream.subscribe((frame) => {
+  if (frame.event?.kind === 'ended') void filesService.endTurn(frame.sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
+});
+setInterval(() => void filesService.sweepCheckpoints().catch(() => undefined), 3_600_000).unref();
 setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
 
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
