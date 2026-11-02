@@ -5,8 +5,7 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from './api.ts';
 import { api } from './api.ts';
-import { DirectoryPicker } from './directory-picker.tsx';
-import { WorkerPicker, WorkersBadge, resolveWorker, useWorkers } from './workers.tsx';
+import { WorkersBadge } from './workers.tsx';
 import { coarsePointer } from './device.ts';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
 
@@ -206,18 +205,10 @@ function CreateProjectPanel({
   onCreated: (project: ProjectDto) => void;
 }) {
   const [name, setName] = useState('');
-  const [rootPath, setRootPath] = useState('');
   const [repoUrl, setRepoUrl] = useState('');
   const [defaultBranch, setDefaultBranch] = useState('');
   const [description, setDescription] = useState('');
-  const workers = useWorkers();
-  // 默认不替人选机器：只填名字就能建（不带工作空间）；要放到某台机器上再展开选
-  const [workerId, setWorkerId] = useState<string | null>(null);
-  const fallback = resolveWorker(workers.list, null)?.workerId ?? null;
-  const target = workerId ?? fallback;
-  const [placing, setPlacing] = useState(false);
-  // 目录选择器只在点「浏览…」后打开
-  const [browsing, setBrowsing] = useState(false);
+  const [gitOpen, setGitOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -225,7 +216,6 @@ function CreateProjectPanel({
     mutationFn: () =>
       api.createProject({
         name: name.trim(),
-        ...(rootPath.trim() === '' ? {} : { rootPath: rootPath.trim(), workerId: target }),
         ...(repoUrl.trim() === '' ? {} : { repoUrl: repoUrl.trim(), defaultBranch: defaultBranch.trim() || null }),
         ...(description.trim() === '' ? {} : { description })
       }),
@@ -244,7 +234,7 @@ function CreateProjectPanel({
     <section aria-label="新建项目" className="mb-6 rounded-md border border-hair bg-panel p-4">
       <p className="mb-1 text-head text-primary">新建项目</p>
       <p className="mb-3 text-meta text-secondary">
-        项目是你在做的东西。起个名字就能建；放到哪台机器、哪个目录可以以后再定。
+        项目是你在做的东西，起个名字就能建。在哪台机器、哪个目录干活，开始任务时再选。
       </p>
 
       <form
@@ -281,76 +271,27 @@ function CreateProjectPanel({
         onChange={(event) => setDescription(event.target.value)}
       />
 
+      {/* 项目只是 hub 里的一条记录，不绑机器；工作空间在开始任务时（选机器 → 选工作空间）再定。 */}
       <button
         type="button"
-        aria-expanded={placing}
-        aria-controls="new-project-placement"
+        aria-expanded={gitOpen}
+        aria-controls="new-project-git"
         className="mb-2 flex min-h-[36px] items-center gap-1.5 text-meta text-secondary hover:text-primary"
-        onClick={() => setPlacing((open) => !open)}
+        onClick={() => setGitOpen((open) => !open)}
       >
-        <span aria-hidden className={`inline-block transition-transform ${placing ? 'rotate-90' : ''}`}>▸</span>
-        放到某台机器上（可选）
-        {!placing && rootPath.trim() !== '' ? <span className="truncate font-mono text-tertiary">· {rootPath.trim()}</span> : null}
+        <span aria-hidden className={`inline-block transition-transform ${gitOpen ? 'rotate-90' : ''}`}>▸</span>
+        git 仓库（可选）
+        {!gitOpen && repoUrl.trim() !== '' ? <span className="min-w-0 truncate font-mono text-tertiary">· {repoUrl.trim()}</span> : null}
       </button>
 
-      {placing ? (
-        <div id="new-project-placement" className="mb-3 rounded-sm border border-hair p-3">
-          <p className="mb-2 text-meta text-tertiary">
-            选了目录，它就是这个项目的第一个持久工作空间；不选也行，开始任务时再选在哪台机器、哪个工作空间干活。
-            填了 git 仓库，新建工作空间时会把它下载到那台机器。
-          </p>
-          <WorkerPicker
-            label="目录在哪台机器上"
-            workers={workers.list}
-            value={workerId}
-            onChange={(id) => {
-              setWorkerId(id);
-              setRootPath('');
-            }}
-          />
-
-          {/* 行与选择器同时在：想打字就打，想点就点，不必先关掉一个再打开另一个。 */}
-          <div className="mb-3 flex gap-2">
-            <input
-              aria-label="目录"
-              className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
-              value={rootPath}
-              placeholder="目录（/绝对路径）"
-              spellCheck={false}
-              autoCapitalize="off"
-              onChange={(event) => setRootPath(event.target.value)}
-            />
-            <button
-              type="button"
-              className="min-h-[32px] shrink-0 rounded-sm border border-hair px-3 py-1.5 text-meta text-secondary hover:border-strong"
-              onClick={() => setBrowsing((open) => !open)}
-            >
-              {browsing ? '收起' : '浏览…'}
-            </button>
-          </div>
-
-          {browsing ? (
-            <div className="mb-3">
-              <DirectoryPicker
-                workerId={target}
-                project={name}
-                onCancel={() => setBrowsing(false)}
-                onPick={(picked) => {
-                  setRootPath(picked);
-                  setBrowsing(false);
-                  if (workerId === null) setWorkerId(target);
-                  if (name.trim() === '') setName(picked.split('/').filter(Boolean).at(-1) ?? '');
-                }}
-              />
-            </div>
-          ) : null}
-
+      {gitOpen ? (
+        <div id="new-project-git" className="mb-3">
           <div className="flex flex-wrap gap-2">
             <input
               aria-label="git 仓库"
               className="min-w-0 flex-[3_1_220px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
               value={repoUrl}
-              placeholder="git 仓库（可选，https://… 或 git@…）"
+              placeholder="https://… 或 git@…"
               spellCheck={false}
               autoCapitalize="off"
               onChange={(event) => setRepoUrl(event.target.value)}
@@ -366,6 +307,7 @@ function CreateProjectPanel({
               onChange={(event) => setDefaultBranch(event.target.value)}
             />
           </div>
+          <p className="mt-1.5 text-meta text-tertiary">新建工作空间时会把仓库下载到那台机器。</p>
         </div>
       ) : null}
 

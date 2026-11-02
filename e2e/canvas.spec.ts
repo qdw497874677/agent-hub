@@ -37,8 +37,8 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // M1：指一个本地目录（打字也行，点选也行——点选见下一条用例）
   await nav.getByTitle('新建项目').click();
   const panel = page.getByLabel('新建项目');
-  await panel.getByRole('button', { name: '放到某台机器上（可选）' }).click();
-  await panel.getByLabel('目录', { exact: true }).fill(PROJECT_DIR);
+  // 建项目只要名字：不选机器、不选目录（项目只是 hub 里的一条记录）
+  await expect(panel.getByLabel('目录', { exact: true })).toHaveCount(0);
   await panel.getByLabel('项目名').fill(PROJECT_NAME);
   await panel.getByRole('button', { name: '创建' }).click();
 
@@ -66,10 +66,22 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 
   // M2：从任务派生会话（任务卡上的「＋ 会话」；双击在自动化的零间隔点击下会落到重渲染的空档里）
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  // 运行面板：先选工作空间（不预选，没选「开始」是灰的）。建项目时给的目录就是第一个持久工作空间。
+  // 运行面板：先选工作空间（不预选，没选「开始」是灰的）。新项目还没有工作空间：把已有目录登记成持久工作空间。
   const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
   await expect(run.getByRole('button', { name: '开始' })).toBeDisabled();
-  await run.getByRole('radio', { name: new RegExp(`agent-hub-e2e-project-${RUN}.*持久`) }).click();
+  await run.getByRole('radio', { name: /新建持久工作空间/ }).click();
+  await run.getByRole('radio', { name: '选已有目录' }).click();
+  // 目录可以点选，不必手打路径：路径框里打路径，Enter 进入选中的文件夹
+  const picker = page.getByLabel('目录选择器');
+  if ((await picker.count()) === 0) await run.getByRole('button', { name: '浏览…' }).click();
+  const input = picker.getByRole('combobox', { name: '路径' });
+  await expect(input).toHaveValue(/\/$/);
+  await input.fill(PROJECT_DIR);
+  await expect(picker.getByRole('option').filter({ hasText: `agent-hub-e2e-project-${RUN}` }).first()).toHaveAttribute('data-selected', 'true');
+  await input.press('Enter');
+  await expect(input).toHaveValue(`${PROJECT_DIR}/`);
+  await picker.getByRole('button', { name: '使用', exact: true }).click();
+  await expect(run).toContainText(`agent-hub-e2e-project-${RUN}`);
   await run.getByRole('button', { name: '开始' }).click();
   // 派生完直接进这条会话的对话；回画布看卡片
   await expect(page.getByLabel('发送消息')).toBeVisible();
@@ -108,29 +120,6 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await expect(page.locator('.react-flow__node-session')).toHaveCount(0);
   await page.getByRole('button', { name: '返回' }).click();
   await expect(sessionNode(page)).toHaveCount(1);
-});
-
-test('目录可以点选，不必手打路径', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('navigation').getByTitle('新建项目').click();
-  await page.getByLabel('新建项目').getByRole('button', { name: '放到某台机器上（可选）' }).click();
-  await page.getByLabel('新建项目').getByRole('button', { name: '浏览…' }).click();
-
-  // 一个路径输入框：直接打路径，Enter 进入选中的文件夹
-  const picker = page.getByLabel('目录选择器');
-  const input = picker.getByRole('combobox', { name: '路径' });
-  await expect(input).toHaveValue(/\/$/);
-  await input.fill(`/tmp/agent-hub-e2e-project-${RUN}`);
-  await expect(picker.getByRole('option').filter({ hasText: `agent-hub-e2e-project-${RUN}` }).first()).toHaveAttribute('data-selected', 'true');
-  await input.press('Enter');
-  await expect(input).toHaveValue(`${PROJECT_DIR}/`);
-
-  await picker.getByRole('button', { name: '使用', exact: true }).click();
-  const panel = page.getByLabel('新建项目');
-  await expect(panel.getByLabel('目录', { exact: true })).toHaveValue(PROJECT_DIR);
-  // 选完目录，项目名自动取最后一段
-  await expect(panel.getByLabel('项目名')).toHaveValue(`agent-hub-e2e-project-${RUN}`);
-  await panel.getByRole('button', { name: '取消' }).click();
 });
 
 test('刷新之后画布还在，布局被记住', async ({ page }) => {

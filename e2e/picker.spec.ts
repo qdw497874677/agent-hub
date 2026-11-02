@@ -8,15 +8,31 @@ const NAME = `picker-${RUN}`;
 const MANAGED = `/tmp/agent-hub-workspaces/${NAME}`;
 const SCRATCH = `/tmp/agent-hub-e2e-pick-${RUN}`;
 
+// 目录选择器的宿主：开始任务时的「新建持久工作空间」（建项目表单不再选目录）。
+// 项目名就是 NAME，托管目录按它算。项目 / 任务走 API 建一次，之后每段重新打开对话框。
+let projectId: string | null = null;
+const TASK = `选目录-${RUN}`;
+
 async function openPickerFor(page: Page, name: string) {
-  await page.goto("/");
-  await page.getByRole("navigation").getByTitle("新建项目").click();
-  const panel = page.getByLabel("新建项目");
-  await panel.getByLabel("项目名").fill(name);
-  // 起点按打开时的项目名算：先填名字，再展开、点「浏览…」
-  await panel.getByRole("button", { name: "放到某台机器上（可选）" }).click();
-  await panel.getByRole("button", { name: "浏览…" }).click();
-  return { panel, picker: page.getByLabel("目录选择器") };
+  if (!projectId) {
+    await page.goto("/");
+    const csrf = (await page.context().cookies()).find((c) => c.name === "hub_csrf")?.value ?? "";
+    const headers = { origin: new URL(page.url()).origin, "x-hub-csrf": csrf };
+    const made = await page.request.post("/api/projects", { data: { name }, headers });
+    expect(made.status(), await made.text()).toBe(201);
+    projectId = ((await made.json()) as { id: string }).id;
+    const task = await page.request.post("/api/tasks", { data: { projectId, title: TASK }, headers });
+    expect(task.ok(), await task.text()).toBe(true);
+  }
+  // 同一 hash 的 goto 不会刷新页面，上一段的对话框会残留；强制重载
+  await page.goto(`/#/p/${projectId}`);
+  await page.reload();
+  await page.locator(".react-flow__node-task").filter({ hasText: TASK }).getByRole("button", { name: "＋ 会话" }).click();
+  const panel = page.getByRole("dialog", { name: "在哪台机器、哪个工作空间干活？" });
+  await panel.getByRole("radio", { name: /新建持久工作空间/ }).click();
+  const picker = page.getByLabel("目录选择器");
+  await expect(picker).toBeVisible();
+  return { panel, picker };
 }
 
 // 三段放在一条用例里只登录一次：登录接口有频率限制，整套 e2e 已经登录很多次了
@@ -59,10 +75,9 @@ async function managedAndCreate(page: Page) {
   await input.press("Enter");
   await expect(input).toHaveValue(`${MANAGED}/sub/`);
   await input.press("Control+Enter");
-  await expect(panel.getByLabel("目录", { exact: true })).toHaveValue(
-    `${MANAGED}/sub`,
-  );
-  await panel.getByRole("button", { name: "取消" }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(panel).toContainText(/sub/);
+  await expect(panel.getByRole("button", { name: "开始" })).toBeEnabled();
 }
 
 async function startsInManaged(page: Page) {
@@ -70,7 +85,7 @@ async function startsInManaged(page: Page) {
   mkdirSync(`${SCRATCH}/plain`, { recursive: true });
   mkdirSync(`${SCRATCH}/.cache`, { recursive: true });
   mkdirSync(MANAGED, { recursive: true });
-  const { panel, picker } = await openPickerFor(page, NAME);
+  const { picker } = await openPickerFor(page, NAME);
   const input = pathBox(picker);
   await expect(input).toHaveValue(`${MANAGED}/`);
 
@@ -99,19 +114,11 @@ async function startsInManaged(page: Page) {
   await expect(picker.getByRole("option", { name: "上一级" })).toHaveCount(0);
   await input.press("Backspace");
   await expect(input).toHaveValue("/tmp/");
-  await panel.getByRole("button", { name: "取消" }).click();
 }
 
 async function mobileFullScreen(page: Page) {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
-  await page.getByRole("navigation").getByTitle("新建项目").click();
-  const panel = page.getByLabel("新建项目");
-  const picker = page.getByLabel("目录选择器");
-  await expect(picker).toHaveCount(0);
-  await panel.getByLabel("项目名").fill(NAME);
-  await panel.getByRole("button", { name: "放到某台机器上（可选）" }).click();
-  await panel.getByRole("button", { name: "浏览…" }).click();
+  const { picker } = await openPickerFor(page, NAME);
   const box = await picker.boundingBox();
   expect(box).not.toBeNull();
   expect(Math.round(box!.width)).toBe(390);
@@ -130,17 +137,7 @@ async function mobileFullScreen(page: Page) {
 async function newFolderButton(page: Page, width: number, tag: string) {
   await page.setViewportSize({ width, height: 844 });
   mkdirSync(`${MANAGED}/sub`, { recursive: true });
-  let panel, picker;
-  if (width < 768) {
-    // 手机上选择器默认收起，直接点「浏览…」
-    await page.goto("/");
-    await page.getByRole("navigation").getByTitle("新建项目").click();
-    panel = page.getByLabel("新建项目");
-    picker = page.getByLabel("目录选择器");
-    await panel.getByLabel("项目名").fill(NAME);
-    await panel.getByRole("button", { name: "放到某台机器上（可选）" }).click();
-    await panel.getByRole("button", { name: "浏览…" }).click();
-  } else ({ panel, picker } = await openPickerFor(page, NAME));
+  const { picker } = await openPickerFor(page, NAME);
   const input = pathBox(picker);
   await expect(input).toHaveValue(`${MANAGED}/`);
   const button = picker.getByRole("button", { name: "新建文件夹" });
@@ -172,6 +169,4 @@ async function newFolderButton(page: Page, width: number, tag: string) {
   await expect(input).toHaveValue(`${MANAGED}/${folder}/`);
   expect(existsSync(`${MANAGED}/${folder}`)).toBe(true);
   await expect(picker.getByRole("option", { name: new RegExp(`使用 .*${folder}`) })).toHaveAttribute("data-selected", "true");
-  if (width < 768) await picker.getByRole("button", { name: "关闭" }).click();
-  else await panel.getByRole("button", { name: "取消" }).click();
 }
