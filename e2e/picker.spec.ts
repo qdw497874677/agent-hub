@@ -13,8 +13,8 @@ async function openPickerFor(page: Page, name: string) {
   await page.getByRole("navigation").getByTitle("新建项目").click();
   const panel = page.getByLabel("新建项目");
   await panel.getByLabel("项目名").fill(name);
-  // 起点按打开时的项目名算：收起再打开
-  await panel.getByRole("button", { name: "收起" }).click();
+  // 起点按打开时的项目名算：先填名字，再展开、点「浏览…」
+  await panel.getByRole("button", { name: "放到某台机器上（可选）" }).click();
   await panel.getByRole("button", { name: "浏览…" }).click();
   return { panel, picker: page.getByLabel("目录选择器") };
 }
@@ -110,6 +110,7 @@ async function mobileFullScreen(page: Page) {
   const picker = page.getByLabel("目录选择器");
   await expect(picker).toHaveCount(0);
   await panel.getByLabel("项目名").fill(NAME);
+  await panel.getByRole("button", { name: "放到某台机器上（可选）" }).click();
   await panel.getByRole("button", { name: "浏览…" }).click();
   const box = await picker.boundingBox();
   expect(box).not.toBeNull();
@@ -137,6 +138,7 @@ async function newFolderButton(page: Page, width: number, tag: string) {
     panel = page.getByLabel("新建项目");
     picker = page.getByLabel("目录选择器");
     await panel.getByLabel("项目名").fill(NAME);
+    await panel.getByRole("button", { name: "放到某台机器上（可选）" }).click();
     await panel.getByRole("button", { name: "浏览…" }).click();
   } else ({ panel, picker } = await openPickerFor(page, NAME));
   const input = pathBox(picker);
