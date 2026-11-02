@@ -68,7 +68,7 @@ export function createModelDistiller(deps: ModelDistillerDeps): MemoryDistiller 
       let failure: string | null = null;
       let out: DistillCandidate[] = [];
       try {
-        const request = buildRequest(provider, parsed.modelId, text);
+        const request = buildRequest(provider, parsed.modelId, SYSTEM_PROMPT, `会话摘要：\n${text}`);
         bytesOut = Buffer.byteLength(request.body);
         const response = await doFetch(request.url, {
           method: 'POST',
@@ -119,8 +119,8 @@ function joinUrl(base: string, path: string): string {
   return base.replace(/\/+$/, '') + path;
 }
 
-function buildRequest(provider: ModelProvider, model: string, text: string): { url: string; body: string } {
-  const user = `会话摘要：\n${text}`;
+export function buildRequest(provider: ModelProvider, model: string, system: string, user: string): { url: string; body: string } {
+  const SYSTEM_PROMPT = system;
   if (provider.protocol === 'anthropic') {
     const base = provider.baseUrl.replace(/\/+$/, '');
     return {
@@ -137,7 +137,7 @@ function buildRequest(provider: ModelProvider, model: string, text: string): { u
   };
 }
 
-function authHeaders(provider: ModelProvider, apiKey: string): Record<string, string> {
+export function authHeaders(provider: ModelProvider, apiKey: string): Record<string, string> {
   return provider.protocol === 'anthropic' ? { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' } : { authorization: `Bearer ${apiKey}` };
 }
 

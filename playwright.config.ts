@@ -37,6 +37,8 @@ export default defineConfig({
       HUB_DATA_DIR: dataDir,
       // 组件安装 e2e 的假 npm registry（e2e/components.spec.ts 在这个端口上起）
       HUB_NPM_REGISTRY: 'http://127.0.0.1:17981',
+      // 开 PR 的 token 路径打这个假 GitHub API（e2e/git-commit-push-pr.spec.ts 在这个端口上起）
+      HUB_GITHUB_API: 'http://127.0.0.1:17982',
       HUB_SPAWN_WORKER: '1',
       // 整套 e2e 在一个服务里登录十几次，放宽登录限流，免得后面的用例吃 429
       HUB_LOGIN_RATE_MAX: '1000',

@@ -38,13 +38,17 @@ function useWide(): boolean {
 
 export type FilesTab = 'files' | 'changes';
 
-type Props = { sessionId: string; status: string; tab: FilesTab; reveal?: Reveal | null };
+type Props = { sessionId: string; status: string; tab: FilesTab; reveal?: Reveal | null; base?: { base: string; nonce: number } | null };
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, status, tab, reveal = null }: Props) {
+export function FilesBrowser({ sessionId, status, tab, reveal = null, base: wanted = null }: Props) {
   const client = useQueryClient();
   const wide = useWide();
-  const [base, setBase] = useState<Base>('session');
+  const [base, setBase] = useState<Base>(wanted?.base ?? 'session');
+  // 从聊天里「改了 N 个文件」点进来：切到那一轮
+  useEffect(() => {
+    if (wanted) setBase(wanted.base);
+  }, [wanted?.nonce]);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [opened, setOpened] = useState<Opened | null>(null);
   const [showSensitive, setShowSensitive] = useState(false);

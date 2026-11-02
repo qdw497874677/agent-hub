@@ -15,7 +15,7 @@ import type { Principal } from './account.ts';
 /** 权限目录：每一项属于一种资源类型。自定义角色只能从这里挑（且不能挑 NEVER_GRANTABLE 和 hub 级的）。 */
 export const PERMISSION_CATALOG = {
   worker: ['worker.read', 'worker.use', 'worker.enroll', 'worker.manage', 'worker.policy', 'worker.delete', 'runtime.install', 'runtime.component.install'],
-  project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post', 'workspace.files.read'],
+  project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post', 'workspace.files.read', 'git.push'],
   task: ['task.read', 'task.create', 'task.update', 'task.delete'],
   session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue'],
   provider: ['provider.read', 'provider.use', 'provider.manage'],
@@ -81,6 +81,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
     'project.read': 'own',
     // 工作空间文件浏览（ADR 0025）：随 project.read 一起给，自定义角色可以单独去掉
     'workspace.files.read': 'own',
+    // 推送分支 / 开 PR（ADR 0027 D5）：项目 owner 和成员默认有，团队可用自定义角色收回
+    'git.push': 'own',
     'project.create': 'team',
     'project.update': 'own',
     'project.share': 'own',

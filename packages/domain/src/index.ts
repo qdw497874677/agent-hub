@@ -37,7 +37,7 @@ export type { NodeGateway, WorkerCommand } from './ports/node-gateway.ts';
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
-export type { CloneInput, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
+export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
 export type { SessionHosting } from './ports/session-hosting.ts';
@@ -142,3 +142,6 @@ export type { BrowserEntry, ChangedFile, DirectoryPage, FileChangeNotice, FileCo
 export { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, isCheckpointRef, isCheckpointPrefix } from './ports/workspace-browser.ts';
 export { FILES_LIMITS, isBrowsablePath, isCommitId, isSensitivePath, looksBinary } from './workspace-files.ts';
 export * from './use-cases/workspace-files.ts';
+export type { PullRequestLink, PullRequestRepository, GitHostTokenStore, GitHostApi, GitText, GitTextInput, GitTextWriter } from './ports/pull-requests.ts';
+export * from './git-workflow.ts';
+export * from './use-cases/git-workflow.ts';

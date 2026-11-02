@@ -22,6 +22,10 @@ import {
   wsInspect,
   wsRemove,
   wsSaveWip,
+  wsPreview,
+  wsCommit,
+  wsPush,
+  wsGh,
   wsStatus
 } from '@agent-hub/contract';
 import type {
@@ -613,6 +617,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null }, slow), '新开分支'),
         status: (path) => call((c) => c.request(wsStatus, { path }), '检查改动'),
         saveWip: (path, message) => call((c) => c.request(wsSaveWip, { path, message }, slow), '提交并推送'),
+        preview: (path, maxPatchBytes) => call((c) => c.request(wsPreview, { path, maxPatchBytes }, { timeoutMs: 60_000 }), '读取改动'),
+        commit: (path, input) => call((c) => c.request(wsCommit, { path, ...input }, { timeoutMs: 120_000 }), '提交'),
+        push: (path) => call((c) => c.request(wsPush, { path }, slow), '推送'),
+        gh: (path, request) => call((c) => c.request(wsGh, { path, request }, { timeoutMs: 120_000 }), 'gh 开 PR'),
         remove: (path, kind, options) => call((c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}) }, { timeoutMs: 120_000 }), '删除工作空间')
       };
     }

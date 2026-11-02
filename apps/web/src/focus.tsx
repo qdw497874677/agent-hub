@@ -14,6 +14,8 @@ import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from './files-core.ts';
 import { filesApi } from './api.ts';
 import { FilesBrowser, type Reveal } from './files-browser.tsx';
+import { GitDialog, PullRequestChips } from './git-dialog.tsx';
+import { gitApi } from './api.ts';
 import { FileLinksContext, type FileLinks } from './file-links.tsx';
 import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
@@ -106,6 +108,25 @@ export function FocusView({
     queryFn: () => filesApi.changes(session.id, 'session')
   }))?.files.length;
   const forkable = !busy && forkHint === null;
+  const [gitOpen, setGitOpen] = useState(false);
+  // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
+  const turns = shown(useQuery({ ...FILES_QUERY, queryKey: ['files', session.id, 'turns'], queryFn: () => filesApi.turns(session.id) })) ?? [];
+  const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
+  const promptSeqs = blocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
+  /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
+  const badgeBefore = (seq: number) => {
+    const i = promptSeqs.indexOf(seq);
+    return i > 0 ? (doneTurns.find((t) => t.promptSeq === promptSeqs[i - 1]) ?? null) : null;
+  };
+  const lastPrompt = promptSeqs[promptSeqs.length - 1];
+  const lastBadge = lastPrompt === undefined ? null : (doneTurns.find((t) => t.promptSeq === lastPrompt) ?? null);
+  const [turnBase, setTurnBase] = useState<{ base: string; nonce: number } | null>(null);
+  const openTurn = (turn: number) => {
+    setTurnBase({ base: `turn:${turn}`, nonce: Date.now() });
+    setTab('changes');
+  };
+  // 任务上的 PR（打开任务时服务端顺手同步状态）
+  const taskPrs = useQuery({ queryKey: ['task-prs', session.taskId], queryFn: () => gitApi.taskPullRequests(session.taskId), staleTime: 60_000, retry: false }).data ?? [];
   const origin = session.origin;
   const forkSource = origin.kind === 'fork' ? canvas.sessions.find((candidate) => candidate.id === origin.fromSessionId) ?? null : null;
   const sourceName = forkSource ? sessionName(canvas, forkSource) : '来源会话';
@@ -218,6 +239,14 @@ export function FocusView({
             {(close) => (
               <>
                 <MenuItem
+                  title="提交与推送…"
+                  hint="提交改动、推送分支、开 PR；说明由模型起草，可改"
+                  onClick={() => {
+                    close();
+                    setGitOpen(true);
+                  }}
+                />
+                <MenuItem
                   title="重命名"
                   hint="给这条会话起个名字；清空 = 回到默认显示"
                   onClick={() => {
@@ -249,6 +278,8 @@ export function FocusView({
           {windowChrome?.actions}
         </span>
       </header>
+      {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
+      {gitOpen ? <GitDialog sessionId={session.id} onClose={() => setGitOpen(false)} /> : null}
       <div role="tablist" aria-label="会话视图" className="flex shrink-0 gap-1 border-b border-hair px-2 py-1.5 md:px-3" data-testid="session-tabs">
         {SESSION_TABS.map((t) => (
           <button
@@ -277,7 +308,7 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} status={status} reveal={t === 'files' ? reveal : null} />
+            <FilesBrowser tab={t} sessionId={session.id} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} />
           </div>
         ) : null
       )}
@@ -327,8 +358,8 @@ export function FocusView({
           ) : (
             <FileLinksContext.Provider value={fileLinks}>
             {blocks.map((block, index) => (
+              <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}>
               <ChatBlock
-                key={index}
                 block={block}
                 agentLabel={agentLabel}
                 sessionId={session.id}
@@ -337,7 +368,9 @@ export function FocusView({
                 running={turnRunning}
                 showAuthor={showAuthor}
               />
+              </TurnFrag>
             ))}
+            {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
             </FileLinksContext.Provider>
           )}
           {reason && blocks[blocks.length - 1]?.kind !== 'error' ? (
@@ -386,4 +419,22 @@ function sessionName(canvas: CanvasDto, session: SessionDto): string {
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   if (session.title) return session.title;
   return `${task?.title ?? session.taskId} · ${agent?.label ?? session.agentId}`;
+}
+
+type TurnRow = { turn: number; files: number | null; additions: number | null; deletions: number | null };
+function TurnBadge({ turn, onOpen }: { turn: TurnRow; onOpen: (turn: number) => void }) {
+  return (
+    <button type="button" data-testid="turn-badge" onClick={() => onOpen(turn.turn)}
+      className="self-start rounded-full border border-hair px-2 py-0.5 font-mono text-[11px] text-tertiary hover:border-strong hover:text-primary">
+      改了 {turn.files} 个文件{turn.additions !== null ? ` · +${turn.additions} −${turn.deletions ?? 0}` : ''}
+    </button>
+  );
+}
+function TurnFrag({ badge, onOpen, children }: { badge: TurnRow | null; onOpen: (turn: number) => void; children: ReactNode }) {
+  return (
+    <>
+      {badge ? <TurnBadge turn={badge} onOpen={onOpen} /> : null}
+      {children}
+    </>
+  );
 }

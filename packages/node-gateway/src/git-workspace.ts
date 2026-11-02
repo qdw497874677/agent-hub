@@ -1,7 +1,8 @@
 import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
-import type { DomainError, GitStatus, Result, WorkspaceGit } from '@agent-hub/domain';
+import { execFile } from 'node:child_process';
+import type { CommitPreview, DomainError, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
 import { conflict, folderNameProblem, invalid, unavailable, unsavedReason } from '@agent-hub/domain';
 
 /**
@@ -129,6 +130,68 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
     },
 
+    async preview(path, maxPatchBytes) {
+      const blocked = await guard(path);
+      if (blocked) return { ok: false, error: blocked };
+      if (!(await exists(path))) return { ok: false, error: unavailable(`目录不存在：${path}`) };
+      try {
+        return { ok: true, value: await previewOf(path, maxPatchBytes) };
+      } catch (error) {
+        return failed('读取改动', error);
+      }
+    },
+
+    async commit(path, { message, authorName, authorEmail }) {
+      const blocked = await guard(path);
+      if (blocked) return { ok: false, error: blocked };
+      if (!message.trim()) return { ok: false, error: invalid('提交说明不能为空') };
+      const git = simpleGit(path);
+      try {
+        const branch = (await git.raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim();
+        if (branch === '') return { ok: true, value: { committed: false, sha: null, reason: '当前不在任何分支上（detached HEAD）' } };
+        await git.raw(['add', '-A']);
+        if ((await git.raw(['diff', '--cached', '--name-only'])).trim() === '') return { ok: true, value: { committed: false, sha: null, reason: '没有要提交的改动' } };
+        // author = 操作人；committer 用机器自己的 git 身份，没配就退回 author
+        const ident = await git.raw(['config', 'user.email']).catch(() => '');
+        const fallback = ident.trim() ? [] : ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`];
+        await git.raw([...fallback, 'commit', '--no-verify', `--author=${authorName.replace(/[<>\n]/g, '')} <${authorEmail.replace(/[<>\s]/g, '')}>`, '-m', message]);
+        return { ok: true, value: { committed: true, sha: (await git.revparse(['HEAD'])).trim(), reason: null } };
+      } catch (error) {
+        return { ok: true, value: { committed: false, sha: null, reason: gitMessage(error) } };
+      }
+    },
+
+    async push(path) {
+      const blocked = await guard(path);
+      if (blocked) return { ok: false, error: blocked };
+      const git = networkGit(path);
+      const branch = (await git.raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim() || null;
+      if (!branch) return { ok: true, value: { pushed: false, branch: null, reason: '当前不在任何分支上（detached HEAD）' } };
+      const remotes = await git.getRemotes().catch(() => []);
+      if (!remotes.some((remote) => remote.name === 'origin')) return { ok: true, value: { pushed: false, branch, reason: '没有 origin 远端' } };
+      try {
+        await git.raw(['push', '-u', 'origin', branch]);
+        return { ok: true, value: { pushed: true, branch, reason: null } };
+      } catch (error) {
+        return { ok: true, value: { pushed: false, branch, reason: gitMessage(error) } };
+      }
+    },
+
+    async gh(path, request) {
+      const blocked = await guard(path);
+      if (blocked) return { ok: false, error: blocked };
+      const run = (args: string[]) => runGh(path, args);
+      if (request.action === 'create') {
+        const created = await run(['pr', 'create', '--base', request.base, '--head', request.head, '--title', request.title, '--body', request.body]);
+        if (!created.ok) return { ok: true, value: created };
+        const url = created.out.trim().split('\n').map((l) => l.trim()).filter((l) => /^https?:\/\//.test(l)).at(-1);
+        if (!url) return { ok: true, value: { ok: false, reason: 'gh 没有返回 PR 链接' } };
+        const viewed = await viewPr(run, url);
+        return { ok: true, value: viewed.ok ? viewed : { ok: true, pr: { number: Number(/\/pull\/(\d+)/.exec(url)?.[1] ?? 0), url, state: 'open', headSha: null, mergedAt: null } } };
+      }
+      return { ok: true, value: await viewPr(run, String(request.number)) };
+    },
+
     async remove(path, kind, options) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
@@ -187,6 +250,86 @@ function networkGit(baseDir: string): SimpleGit {
     if (value !== undefined) env[key] = value;
   }
   return simpleGit({ baseDir, allowEnvironment: CREDENTIAL_ENV }).env(env);
+}
+
+type GhRun = (args: string[]) => Promise<{ ok: true; out: string } | { ok: false; reason: string }>;
+
+/** 跑这台机器上已登录的 gh：不交互、60 秒；没装 / 没登录都翻成 ok:false + 原因（原因里抹掉凭据）。 */
+function runGh(cwd: string, args: string[]): ReturnType<GhRun> {
+  const env: Record<string, string> = { GH_PROMPT_DISABLED: '1', GIT_TERMINAL_PROMPT: '0', NO_COLOR: '1' };
+  for (const key of [...PASS_THROUGH, 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_HOST', 'GH_CONFIG_DIR', 'XDG_CONFIG_HOME']) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return new Promise((done) => {
+    execFile('gh', args, { cwd, env, timeout: 60_000, maxBuffer: 1 << 20 }, (error, stdout, stderr) => {
+      if (!error) return done({ ok: true, out: String(stdout) });
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return done({ ok: false, reason: '这台机器上没有 gh' });
+      done({ ok: false, reason: gitMessage(String(stderr || error.message)) || 'gh 失败' });
+    });
+  });
+}
+
+async function viewPr(run: GhRun, ref: string): Promise<{ ok: true; pr: RemotePullRequest } | { ok: false; reason: string }> {
+  const viewed = await run(['pr', 'view', ref, '--json', 'number,url,state,headRefOid,mergedAt']);
+  if (!viewed.ok) return viewed;
+  try {
+    const o = JSON.parse(viewed.out) as { number: number; url: string; state: string; headRefOid?: string; mergedAt?: string | null };
+    const state = o.state === 'MERGED' ? 'merged' : o.state === 'CLOSED' ? 'closed' : 'open';
+    return { ok: true, pr: { number: o.number, url: o.url, state, headSha: o.headRefOid ?? null, mergedAt: o.mergedAt ? Date.parse(o.mergedAt) : null } };
+  } catch {
+    return { ok: false, reason: 'gh 返回的不是 JSON' };
+  }
+}
+
+const STATUS_OF: Record<string, string> = { A: 'added', M: 'modified', D: 'deleted', R: 'renamed', C: 'added', T: 'modified', '?': 'untracked' };
+
+async function previewOf(path: string, maxPatchBytes: number): Promise<CommitPreview> {
+  const git = simpleGit(path);
+  const empty: CommitPreview = { isGit: false, branch: null, defaultBranch: null, remoteUrl: null, upstream: null, ahead: 0, head: null, files: [], patch: '', truncated: false };
+  if (!(await git.checkIsRepo().catch(() => false))) return empty;
+  const branch = await currentBranch(git);
+  // 读配置里的原始 URL，不用 get-url（它会套 insteadOf 改写，认不出 GitHub）
+  const remoteUrl = ((await git.raw(['config', '--get', 'remote.origin.url']).catch(() => '')) || '').trim() || null;
+  const head = (await git.raw(['rev-parse', '-q', '--verify', 'HEAD']).catch(() => '')).trim() || null;
+  let defaultBranch = (await git.raw(['symbolic-ref', '--short', '-q', 'refs/remotes/origin/HEAD']).catch(() => '')).trim().replace(/^origin\//, '') || null;
+  if (!defaultBranch) {
+    for (const name of ['main', 'master']) {
+      const has = (await git.raw(['rev-parse', '-q', '--verify', `refs/heads/${name}`]).catch(() => '')).trim() || (await git.raw(['rev-parse', '-q', '--verify', `refs/remotes/origin/${name}`]).catch(() => '')).trim();
+      if (has) {
+        defaultBranch = name;
+        break;
+      }
+    }
+  }
+  const upstream = (await git.raw(['rev-parse', '--abbrev-ref', '-q', '@{upstream}']).catch(() => '')).trim() || null;
+  const against = upstream ?? (defaultBranch && remoteUrl ? `origin/${defaultBranch}` : null);
+  const ahead = head && against ? Number((await git.raw(['rev-list', '--count', `${against}..HEAD`]).catch(() => '0')).trim()) || 0 : 0;
+  // D7：未跟踪文件也算（强制 normal，不受仓库配置影响）
+  const porcelain = await git.raw(['-c', 'status.showUntrackedFiles=normal', 'status', '--porcelain=v1', '-z']);
+  const files: { path: string; status: string }[] = [];
+  const parts = porcelain.split('\0');
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i]!;
+    if (entry.length < 4) continue;
+    const xy = entry.slice(0, 2);
+    const code = xy === '??' ? '?' : (xy[0] !== ' ' ? xy[0]! : xy[1]!);
+    files.push({ path: entry.slice(3), status: STATUS_OF[code] ?? 'modified' });
+    if (xy[0] === 'R' || xy[0] === 'C') i++; // -z 下重命名的旧名单独一段
+  }
+  let patch = '';
+  let truncated = false;
+  if (maxPatchBytes > 0 && files.length > 0) {
+    // 只看不写：已跟踪的 diff 对 HEAD；未跟踪的只列名字（内容进不了模型，免得把大文件 / 密钥送出去）
+    const raw = head ? await git.raw(['diff', '--no-color', '--no-ext-diff', 'HEAD']).catch(() => '') : '';
+    const untracked = files.filter((f) => f.status === 'untracked').map((f) => `新文件：${f.path}`).join('\n');
+    const all = [raw, untracked].filter(Boolean).join('\n');
+    const bytes = Buffer.from(all);
+    truncated = bytes.length > maxPatchBytes;
+    patch = truncated ? bytes.subarray(0, maxPatchBytes).toString('utf8') : all;
+  }
+  return { isGit: true, branch, defaultBranch, remoteUrl, upstream, ahead, head, files, patch, truncated };
 }
 
 /** 有什么会丢就说什么；都没有返回 null（规则在领域里，和自动清理同一套）。 */

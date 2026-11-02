@@ -159,3 +159,66 @@ test('clone 进空目录可以（目录选择器里刚新建的）；有东西�
   assert.equal(broken.ok, false);
   assert.deepEqual(await readdir(join(root, 'empty')), []);
 });
+
+test('提交预览 → 提交（--author）→ 推送 -u（ADR 0027 阶段 2）', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const repo = cloned.value.path;
+  sh(repo, 'checkout', '-qb', 'feat/x');
+  await writeFile(join(repo, 'README.md'), 'changed\n');
+  await mkdir(join(repo, 'dir'));
+  await writeFile(join(repo, 'dir', 'new.txt'), 'new\n');
+
+  const p = await git.preview(repo, 64 * 1024);
+  assert.ok(p.ok, p.ok ? '' : p.error.message);
+  assert.equal(p.value.isGit, true);
+  assert.equal(p.value.branch, 'feat/x');
+  assert.equal(p.value.defaultBranch, 'main');
+  assert.equal(p.value.remoteUrl, url);
+  // 未跟踪的也列出（showUntrackedFiles=normal：新目录显示成目录）
+  const paths = p.value.files.map((f) => f.path);
+  assert.ok(paths.includes('README.md'), paths.join(','));
+  assert.ok(paths.some((x) => x.startsWith('dir')), paths.join(','));
+  assert.match(p.value.patch, /README\.md/);
+
+  const c = await git.commit(repo, { message: 'feat: 改 README', authorName: '小明', authorEmail: 'xm@example.com' });
+  assert.ok(c.ok && c.value.committed, c.ok ? c.value.reason ?? '' : c.error.message);
+  assert.equal(sh(repo, 'log', '-1', '--format=%an <%ae>|%s').trim(), '小明 <xm@example.com>|feat: 改 README');
+  assert.equal(sh(repo, 'status', '--porcelain').trim(), '');
+  const after = await git.preview(repo, 0);
+  assert.ok(after.ok);
+  assert.equal(after.value.files.length, 0);
+  assert.equal(after.value.ahead, 1);
+
+  const pushed = await git.push(repo);
+  assert.ok(pushed.ok && pushed.value.pushed, pushed.ok ? pushed.value.reason ?? '' : pushed.error.message);
+  assert.equal(sh(url, 'log', '-1', '--format=%s', 'feat/x').trim(), 'feat: 改 README');
+  const synced = await git.preview(repo, 0);
+  assert.ok(synced.ok);
+  assert.equal(synced.value.upstream, 'origin/feat/x');
+  assert.equal(synced.value.ahead, 0);
+
+  const nothing = await git.commit(repo, { message: 'x', authorName: 'a', authorEmail: 'a@a' });
+  assert.ok(nothing.ok && !nothing.value.committed);
+
+  const notRepo = await git.preview(join(root), 0);
+  assert.ok(notRepo.ok && notRepo.value.isGit === false);
+});
+
+test('gh：没装 gh → 明确原因，不抛', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'p'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const saved = process.env.PATH;
+  process.env.PATH = join(root, 'empty-bin');
+  try {
+    const r = await git.gh(cloned.value.path, { action: 'view', number: 1 });
+    assert.ok(r.ok);
+    assert.equal(r.value.ok, false);
+  } finally {
+    process.env.PATH = saved;
+  }
+});
