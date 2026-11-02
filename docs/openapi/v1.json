@@ -334,6 +334,30 @@
                                         "maxLength": 64
                                       },
                                       "maxItems": 16
+                                    },
+                                    "check": {
+                                      "type": "object",
+                                      "properties": {
+                                        "ok": {
+                                          "type": "boolean"
+                                        },
+                                        "model": {
+                                          "type": "string",
+                                          "maxLength": 200
+                                        },
+                                        "reason": {
+                                          "type": "string",
+                                          "maxLength": 2000
+                                        },
+                                        "at": {
+                                          "type": "number"
+                                        }
+                                      },
+                                      "required": [
+                                        "ok",
+                                        "model",
+                                        "at"
+                                      ]
                                     }
                                   },
                                   "required": [

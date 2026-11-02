@@ -43,6 +43,8 @@ export interface PreparedRuntime {
   readonly hint: string | null;
   /** hub 知道怎么在线安装的才有。 */
   readonly installer?: HarnessInstaller;
+  /** 能不能做启动后的模型自检（真问一次模型）。ACP agent 是；自己会把模型错误报成失败的（如 Pi）不用。 */
+  readonly selfCheck?: boolean;
   /** 启动日志里的一句话（例如「Pi 认得 12 个模型」）。 */
   readonly summary: string;
 }

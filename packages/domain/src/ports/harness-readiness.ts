@@ -1,4 +1,4 @@
-import type { AgentReadiness } from '../worker.ts';
+import type { AgentReadiness, ModelCheck } from '../worker.ts';
 
 /** 一次探测的结果：能不能用，外加这台机器上它报的模型（报不出来就是空清单）。 */
 export interface HarnessProbe {
@@ -15,4 +15,13 @@ export interface HarnessProbe {
 export interface HarnessReadiness {
   readonly agentId: string;
   probe(): Promise<HarnessProbe>;
+}
+
+/**
+ * 可选的「真问一次模型」自检：会花一次很小的模型调用，所以只在 Worker 启动后后台跑一次，有超时，
+ * 不挡启动、不改就绪状态（失败只在界面上提醒）。原因里不得带凭据。
+ */
+export interface HarnessSelfCheck {
+  readonly agentId: string;
+  run(): Promise<ModelCheck>;
 }

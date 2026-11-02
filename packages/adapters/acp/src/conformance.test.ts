@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
+import { endedFromStopReason, mapAcpUpdate, redactLine } from './map-acp.ts';
 import { acpDescriptor } from './config.ts';
 import { mapAcpOptions } from './map-options.ts';
 
@@ -97,4 +97,23 @@ test('acp: 模型清单从 model 选项投影出来，不是另写一份', () =>
   );
   assert.deepEqual(descriptor.models, ['a', 'b']);
   assert.equal(descriptor.defaultModel, 'b');
+});
+
+test('endedFromStopReason：空回合、拒答、截断都是 failed 并带原因', () => {
+  assert.deepEqual(endedFromStopReason('end_turn', { produced: true }), { kind: 'ended', outcome: 'done' });
+  const empty = endedFromStopReason('end_turn', { produced: false, stderrTail: ['boom'] });
+  assert.equal(empty.kind === 'ended' && empty.outcome, 'failed');
+  assert.match(empty.kind === 'ended' ? (empty.reason ?? '') : '', /没有返回任何内容[\s\S]*stopReason: end_turn[\s\S]*boom/);
+  assert.equal(endedFromStopReason('cancelled', { produced: false }).kind === 'ended' && (endedFromStopReason('cancelled', { produced: false }) as { outcome: string }).outcome, 'stopped');
+  for (const reason of ['refusal', 'max_tokens', 'max_turn_requests']) {
+    const ended = endedFromStopReason(reason, { produced: true });
+    assert.equal(ended.kind === 'ended' && ended.outcome, 'failed', reason);
+  }
+});
+
+test('redactLine：密钥 / 令牌 / 长串都打码', () => {
+  const out = redactLine('api_key=sk-abcdef1234567890 Authorization: Bearer eyJhbGciOi.xyz token: "t0ps3cret" hash 0123456789abcdef0123456789abcdef');
+  assert.doesNotMatch(out, /abcdef1234567890|eyJhbGciOi|t0ps3cret|0123456789abcdef0123/);
+  assert.match(out, /api_key=\*\*\*/);
+  assert.equal(redactLine('plain error: connect ECONNREFUSED 127.0.0.1:443'), 'plain error: connect ECONNREFUSED 127.0.0.1:443');
 });

@@ -4,7 +4,7 @@ export { createAcpRuntime } from './acp-runtime.ts';
 export { discoverAcpModels, parseModelLines } from './discover-models.ts';
 export type { AcpRuntimeOptions } from './acp-runtime.ts';
 export { currentValues, mapAcpOptions } from './map-options.ts';
-export { endedFromStopReason, mapAcpUpdate } from './map-acp.ts';
+export { endedFromStopReason, mapAcpUpdate, redactLine, StderrTail } from './map-acp.ts';
 export { acpReadiness } from './readiness.ts';
 export { execFailureReason, execProbe } from './exec-probe.ts';
 export type { ExecProbe } from './exec-probe.ts';

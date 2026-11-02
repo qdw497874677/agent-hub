@@ -5,6 +5,15 @@ const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', 
 const say = (sessionId, text) =>
   send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
 
+// --models：像 `opencode models` 那样列模型就退出
+if (process.argv.includes('--models')) {
+  process.stdout.write('fake/m1\nfake/m2\n');
+  process.exit(0);
+}
+// --empty-all：每一轮都什么都不回（模拟模型 / 鉴权坏掉的 agent）
+const EMPTY_ALL = process.argv.includes('--empty-all');
+process.stderr.write('fake agent booting\n');
+
 let model = 'a';
 let mode = 'default';
 // --legacy：像 Hermes 0.22.5 那样只报老式 models/modes，不报 configOptions
@@ -49,9 +58,25 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     case 'session/set_mode':
       mode = msg.params.modeId;
       return send({ id: msg.id, result: {} });
-    case 'session/prompt':
+    case 'session/prompt': {
+      const text = msg.params.prompt[0].text;
+      // hub 会在用户文字前面加上下文：魔法词用「包含」判断
+      const all = msg.params.prompt.map((block) => block.text ?? '').join('\n');
+      if (EMPTY_ALL || all.includes('please-empty')) {
+        process.stderr.write('Error: 401 Unauthorized from provider, api_key=sk-livesecret1234567890 Authorization: Bearer abcdefghijklmnop\n');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      if (all.includes('please-refuse')) return send({ id: msg.id, result: { stopReason: 'refusal' } });
+      if (all.includes('please-long')) {
+        say(msg.params.sessionId, '写了一半');
+        return send({ id: msg.id, result: { stopReason: 'max_tokens' } });
+      }
+      if (text.includes('OK')) {
+        say(msg.params.sessionId, 'OK');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
       say(msg.params.sessionId, `methods:${seen.join(',')}`);
-      if (msg.params.prompt[0].text !== 'ask') return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      if (text !== 'ask') return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       pendingPrompt = msg.id;
       return send({
         id: 99,
@@ -65,5 +90,6 @@ createInterface({ input: process.stdin }).on('line', (line) => {
           ]
         }
       });
+    }
   }
 });

@@ -5,7 +5,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -130,7 +130,15 @@ for (const adapter of RUNTIME_ADAPTERS) {
   );
 }
 const runtimes: AgentRuntime[] = prepared.map((entry) => entry.runtime);
-const readiness = createHarnessRegistry(prepared.map((entry) => withMissingHint(entry.readiness, entry.hint)));
+// 启动后的模型自检（WORKER_MODEL_CHECK=0 关掉）：每个进程一次、后台跑、有超时，结果显示在控制台
+const selfChecks =
+  env['WORKER_MODEL_CHECK'] === '0'
+    ? []
+    : prepared.filter((entry) => entry.selfCheck === true).map((entry) => runtimeSelfCheck(entry.runtime, { timeoutMs: Number(env['WORKER_MODEL_CHECK_TIMEOUT_MS'] ?? '') || 45_000 }));
+const readiness = createHarnessRegistry(
+  prepared.map((entry) => withMissingHint(entry.readiness, entry.hint)),
+  { selfChecks }
+);
 const probeIntervalMs = Number(env['HARNESS_PROBE_INTERVAL_MS'] ?? '') || undefined;
 for (const entry of prepared) log(entry.summary);
 
@@ -274,8 +282,13 @@ if (parentPid > 0) {
   }, 2_000).unref();
 }
 
-notifyAgentSessionRef = (sessionId, ref) => link.notifyAgentSessionRef(sessionId, ref);
-notifyOptions = (sessionId, reported) => link.notifyOptions(sessionId, reported);
+// 自检会话不是 hub 的会话，不往上报
+notifyAgentSessionRef = (sessionId, ref) => {
+  if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyAgentSessionRef(sessionId, ref);
+};
+notifyOptions = (sessionId, reported) => {
+  if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyOptions(sessionId, reported);
+};
 
 log(`已装 agent：${runtimes.map((runtime) => runtime.descriptor.label).join('、')}`);
 

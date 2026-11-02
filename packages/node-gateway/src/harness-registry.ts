@@ -1,4 +1,4 @@
-import type { AgentReadiness, HarnessProbe, HarnessReadiness } from '@agent-hub/domain';
+import type { AgentReadiness, HarnessProbe, HarnessReadiness, HarnessSelfCheck, ModelCheck } from '@agent-hub/domain';
 
 /**
  * 把各 harness 的就绪探测适配器组合起来。加一个 harness = 往列表里加一个适配器，这里不认识任何具体 harness。
@@ -9,15 +9,32 @@ export interface HarnessRegistry {
   probeAll(): Promise<ReadonlyMap<string, HarnessProbe>>;
   /** 上一次探测的结果；还没探测过是空表（= 都当 ready，和老 worker 一样）。 */
   latest(): ReadonlyMap<string, HarnessProbe>;
+  /**
+   * 模型自检：每个进程只跑一次（重复调用返回同一个结果），只对探测为 ready 的 harness 跑。
+   * 结果并进 latest() 的 ready.check；返回本次新得到的结果（没跑任何自检是空表）。
+   */
+  selfCheckOnce(): Promise<ReadonlyMap<string, ModelCheck>>;
 }
 
 export function createHarnessRegistry(
   probes: readonly HarnessReadiness[],
-  options: { readonly timeoutMs?: number } = {}
+  options: { readonly timeoutMs?: number; readonly selfChecks?: readonly HarnessSelfCheck[] } = {}
 ): HarnessRegistry {
   const timeoutMs = options.timeoutMs ?? 20_000;
   let current: ReadonlyMap<string, HarnessProbe> = new Map();
   let inflight: Promise<ReadonlyMap<string, HarnessProbe>> | null = null;
+  const checks = new Map<string, ModelCheck>();
+  let selfChecking: Promise<ReadonlyMap<string, ModelCheck>> | null = null;
+  /** 把自检结果并进 ready 的就绪状态（不可用的不并：先修好装 / 登录）。 */
+  const merged = (): ReadonlyMap<string, HarnessProbe> => {
+    if (checks.size === 0) return current;
+    const out = new Map<string, HarnessProbe>();
+    for (const [id, probe] of current) {
+      const check = checks.get(id);
+      out.set(id, check && probe.readiness.state === 'ready' ? { ...probe, readiness: { ...probe.readiness, check } } : probe);
+    }
+    return out;
+  };
 
   const failed = (reason: string): HarnessProbe => ({ readiness: { state: 'unavailable', reason }, models: [], defaultModel: '' });
 
@@ -35,12 +52,27 @@ export function createHarnessRegistry(
   }
 
   return {
-    latest: () => current,
+    latest: merged,
+    selfCheckOnce() {
+      selfChecking ??= (async () => {
+        const fresh = new Map<string, ModelCheck>();
+        const ready = (id: string) => current.get(id)?.readiness.state === 'ready';
+        // 一个一个跑：同时拉起几个 agent 会抢启动资源，而且自检不急
+        for (const check of options.selfChecks ?? []) {
+          if (!ready(check.agentId)) continue;
+          const result = await check.run().catch((error: unknown) => ({ ok: false, model: '', reason: `自检出错：${error instanceof Error ? error.message : String(error)}`, at: Date.now() }));
+          checks.set(check.agentId, result);
+          fresh.set(check.agentId, result);
+        }
+        return fresh;
+      })();
+      return selfChecking;
+    },
     probeAll() {
       inflight ??= Promise.all(probes.map(async (probe) => [probe.agentId, await one(probe)] as const))
         .then((entries) => {
           current = new Map(entries);
-          return current;
+          return merged();
         })
         .finally(() => {
           inflight = null;
@@ -53,7 +85,8 @@ export function createHarnessRegistry(
 /** 两次探测的就绪状态是否一样（决定要不要再报一次 agent 清单）。 */
 export function sameReadiness(a: ReadonlyMap<string, HarnessProbe>, b: ReadonlyMap<string, HarnessProbe>): boolean {
   if (a.size !== b.size) return false;
-  const key = (r: AgentReadiness | undefined): string => (r ? (r.state === 'ready' ? `ready:${(r.lacks ?? []).join(',')}` : `x:${r.reason}:${r.hint ?? ''}`) : '');
+  const key = (r: AgentReadiness | undefined): string =>
+    r ? (r.state === 'ready' ? `ready:${(r.lacks ?? []).join(',')}:${r.check ? `${r.check.ok}:${r.check.at}` : ''}` : `x:${r.reason}:${r.hint ?? ''}`) : '';
   for (const [id, probe] of a) if (key(probe.readiness) !== key(b.get(id)?.readiness)) return false;
   return true;
 }
