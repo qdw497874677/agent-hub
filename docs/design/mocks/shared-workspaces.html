@@ -41,12 +41,12 @@ if(v=='project'){h=nav('s')+`<div class="wrap"><h1>agent-hub 前端改版 · 关
  <div class="opt sel"><div class="path">/root/agent-hub-workspaces/docs-site</div><div class="muted">🖥 aliyun-server-本机 · 用在：文档站</div></div>
  <div class="opt"><div class="path">/workspace/scratch</div><div class="muted">🖥 grok-bot-vm · 未关联任何项目</div></div>
  <div style="margin-top:10px;text-align:right"><button class="btn">取消</button> <button class="btn pri">关联</button></div></div></div>`}
+if(v=='start-empty'){h=`<div class="wrap"><div class="dialog"><b>在哪台机器、哪个工作空间干活？</b><div class="muted">任务：修登录 · 项目：文档站</div><div class="card"><b>这个项目还没有关联工作空间</b><div class="muted">工作空间是团队的。先把团队里已有的关联过来，或者新建一个。</div><div style="margin-top:8px"><button class="btn pri">关联工作空间…</button></div></div><div class="sec">新建</div><div class="opt">＋ 新建持久工作空间 <span class="muted">（建好后关联到本项目）</span></div><div class="opt">＋ 新建临时工作空间</div><div style="margin-top:12px;text-align:right"><button class="btn">取消</button> <button class="btn pri" disabled style="opacity:.5">开始</button></div></div></div>`}
 if(v=='start'){h=`<div class="wrap"><div class="dialog"><b>在哪台机器、哪个工作空间干活？</b><div class="muted">任务：修登录 · 项目：agent-hub 前端改版</div>
  <div class="sec">本项目已关联</div>
  <div class="opt sel"><div class="path">/root/code/agent-hub</div><div class="muted">🖥 aliyun-server-本机 · git master</div><div class="warn">⚠ 这里已有 2 个运行中的会话（本项目 1、性能优化 1），可能互相改到同一文件</div></div>
  <div class="opt"><div class="path">/workspace/agent-hub</div><div class="muted">🖥 grok-bot-vm · git feat/x</div></div>
- <div class="sec">团队里的其他工作空间</div>
- <div class="opt"><div class="path">/root/agent-hub-workspaces/docs-site</div><div class="muted">🖥 aliyun-server-本机 · 用在：文档站 · 选它会关联到本项目</div></div>
+ <div class="opt" style="border-style:dashed">🔗 关联工作空间… <span class="muted">（去项目设置挑团队里已有的，选择器里不能当场关联）</span></div>
  <div class="sec">新建</div><div class="opt">＋ 新建持久工作空间 <span class="muted">（建好后关联到本项目，团队里也能用）</span></div>
  <div class="opt">＋ 新建临时工作空间 <span class="muted">（只给这个任务，用完清理）</span></div>
  <div style="margin-top:12px;text-align:right"><button class="btn">取消</button> <button class="btn pri">开始</button></div></div></div>`}
