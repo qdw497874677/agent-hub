@@ -55,12 +55,24 @@ export interface AgentModels {
   readonly providers?: readonly ProviderProtocol[];
 }
 
+/** 模型自检：起一个临时会话问一句，看 agent 真能回话（装了 ≠ 模型 / 鉴权 / 网络通）。 */
+export interface ModelCheck {
+  readonly ok: boolean;
+  /** 自检时用的模型（agent 报的当前模型；报不出来是空串 = 默认模型）。 */
+  readonly model: string;
+  /** 失败原因（中文短句，已脱敏）。 */
+  readonly reason?: string;
+  /** 毫秒时间戳。 */
+  readonly at: number;
+}
+
 /**
  * 某个 harness 在某台机器上的就绪状态：装了不等于能用（没登录、没配模型）。
  * `reason` 是给人看的中文短句，例如「未登录」「未配置模型」「未安装」。
  */
 export type AgentReadiness =
-  | { readonly state: 'ready'; readonly lacks?: string[] }
+  /** check：启动后真问一次模型的结果（只有做过自检才有）；ok=false 时仍算 ready，只是界面要提醒。 */
+  | { readonly state: 'ready'; readonly lacks?: string[]; readonly check?: ModelCheck }
   /** hint：怎么修的一句话（如「PATH 里找不到 pi，可设 PI_COMMAND 指定路径」），界面跟在原因后面。 */
   | { readonly state: 'unavailable'; readonly reason: string; readonly hint?: string };
 

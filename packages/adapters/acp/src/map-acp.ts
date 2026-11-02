@@ -77,11 +77,67 @@ function artifactOf(rawOutput: unknown): (SessionEvent & { kind: 'artifact' }) |
   return { kind: 'artifact', path, bytes: 0 };
 }
 
-export function endedFromStopReason(stopReason: unknown): SessionEvent {
-  return {
-    kind: 'ended',
-    outcome: stopReason === 'cancelled' ? 'stopped' : 'done'
-  };
+/** 这一轮里 agent 有没有吐出过东西，以及它 stderr 最后几行（已脱敏）。 */
+export interface TurnFacts {
+  readonly produced: boolean;
+  readonly stderrTail?: readonly string[];
+}
+
+/** 只有「真的回答了」才算 done：空回合、拒答、截断都要让人看见原因（红色错误），不能静默成「完成」。 */
+export function endedFromStopReason(stopReason: unknown, facts: TurnFacts = { produced: true }): SessionEvent {
+  const reason = typeof stopReason === 'string' ? stopReason : String(stopReason ?? 'unknown');
+  if (reason === 'cancelled') return { kind: 'ended', outcome: 'stopped' };
+  const tail = facts.stderrTail && facts.stderrTail.length > 0 ? `\n最近的 agent 日志：\n${facts.stderrTail.join('\n')}` : '';
+  if (reason === 'refusal') return { kind: 'ended', outcome: 'failed', reason: `模型拒绝了这次请求（stopReason: refusal）${tail}` };
+  if (reason === 'max_tokens') return { kind: 'ended', outcome: 'failed', reason: `输出达到长度上限被截断（stopReason: max_tokens）${tail}` };
+  if (reason === 'max_turn_requests') return { kind: 'ended', outcome: 'failed', reason: `这一轮调用模型的次数达到上限，被中止（stopReason: max_turn_requests）${tail}` };
+  if (!facts.produced) return { kind: 'ended', outcome: 'failed', reason: `agent 没有返回任何内容（可能是模型/鉴权/网络问题）。stopReason: ${reason}${tail}` };
+  return { kind: 'ended', outcome: 'done' };
+}
+
+const SECRET_PATTERNS: readonly RegExp[] = [
+  /\b(sk|pk|rk|ghp|gho|ghs|xox[abp])[-_][A-Za-z0-9_-]{6,}/g,
+  /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{6,}/gi,
+  /\b([A-Za-z_]*(?:key|token|secret|password|passwd|pwd|auth)[A-Za-z_]*)(["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
+  /\b[A-Fa-f0-9]{32,}\b/g,
+  /\b[A-Za-z0-9+/_-]{40,}={0,2}/g
+];
+
+/** stderr 行脱敏：密钥、令牌、长串一律打码；只保留 300 字符。 */
+export function redactLine(line: string): string {
+  let out = line;
+  out = out.replace(SECRET_PATTERNS[0]!, (m) => `${m.split(/[-_]/)[0]}-***`);
+  out = out.replace(SECRET_PATTERNS[1]!, (_m, kind: string) => `${kind} ***`);
+  out = out.replace(SECRET_PATTERNS[2]!, (_m, name: string, sep: string) => `${name}${sep}***`);
+  out = out.replace(SECRET_PATTERNS[3]!, '***');
+  out = out.replace(SECRET_PATTERNS[4]!, '***');
+  return out.length > 300 ? `${out.slice(0, 300)}…` : out;
+}
+
+/** 环形缓存 stderr 最后 n 行（同时把管道读空，防止 agent 写满 stderr 卡住）。 */
+export class StderrTail {
+  private lines: string[] = [];
+  private partial = '';
+  private readonly max: number;
+  constructor(max = 30) {
+    this.max = max;
+  }
+  push(chunk: string): void {
+    const parts = (this.partial + chunk).split(/\r?\n/);
+    this.partial = parts.pop() ?? '';
+    if (this.partial.length > 4000) this.partial = this.partial.slice(-4000);
+    for (const line of parts) this.add(line);
+  }
+  private add(line: string): void {
+    const clean = line.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '').trimEnd();
+    if (clean.trim() === '') return;
+    this.lines.push(redactLine(clean));
+    if (this.lines.length > this.max) this.lines.shift();
+  }
+  tail(n = 12): string[] {
+    const all = this.partial.trim() ? [...this.lines, redactLine(this.partial.trimEnd())] : this.lines;
+    return all.slice(-n);
+  }
 }
 
 function safeJson(value: unknown): string {

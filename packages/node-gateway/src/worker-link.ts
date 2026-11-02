@@ -204,6 +204,18 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       options.onLog?.(`探测 harness 失败：${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  async function selfCheck(): Promise<void> {
+    if (!options.readiness || closed) return;
+    try {
+      const fresh = await options.readiness.selfCheckOnce();
+      for (const [agentId, check] of fresh) {
+        options.onLog?.(check.ok ? `${agentId} 模型自检通过${check.model ? `（${check.model}）` : ''}` : `${agentId} 模型自检失败：${check.reason ?? ''}`);
+      }
+      if (fresh.size > 0 && !closed) send({ type: 'agents', agents: agentDtos() });
+    } catch (error) {
+      options.onLog?.(`模型自检失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const probeInterval = options.probeIntervalMs ?? 5 * 60_000;
   /** 清单帧不进 outbox：断线期间的旧清单没意义，连回来会再报一次。 */
   function reportInventory(): void {
@@ -322,7 +334,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       pending.done();
     }
     // 每次连上都重新探测一次：机器上的登录状态可能在断线期间变了。
-    void probe(true);
+    // 第一次探测完后台跑一次模型自检（每个进程只跑一次，不挡任何东西），有结果再报一次清单。
+    void probe(true).then(selfCheck);
     reportInventory();
   }
 

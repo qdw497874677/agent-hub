@@ -119,3 +119,38 @@ test('acp runtime: 只报老式 models/modes 的 agent（Hermes）→ 选项照�
   assert.equal(bad.ok, false);
   await session.dispose();
 });
+
+test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏后的 stderr', async () => {
+  const runtime = createAcpRuntime(config);
+  const started = await runtime.start(spec());
+  assert.ok(started.ok);
+  const session = started.value;
+  const events = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'please-empty', parts: [] })).ok);
+  const ended = (await events).at(-1);
+  assert.ok(ended && ended.kind === 'ended');
+  assert.equal(ended.outcome, 'failed');
+  assert.match(ended.reason ?? '', /agent 没有返回任何内容（可能是模型\/鉴权\/网络问题）/);
+  assert.match(ended.reason ?? '', /stopReason: end_turn/);
+  assert.match(ended.reason ?? '', /401 Unauthorized/);
+  assert.doesNotMatch(ended.reason ?? '', /livesecret|abcdefghijklmnop/);
+  await session.dispose();
+});
+
+test('acp runtime: refusal / max_tokens 各自报失败原因，不再当成完成', async () => {
+  const runtime = createAcpRuntime(config);
+  const started = await runtime.start(spec());
+  assert.ok(started.ok);
+  const session = started.value;
+  let events = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'please-refuse', parts: [] })).ok);
+  let ended = (await events).at(-1);
+  assert.ok(ended && ended.kind === 'ended' && ended.outcome === 'failed');
+  assert.match(ended.reason ?? '', /模型拒绝了这次请求/);
+  events = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'please-long', parts: [] })).ok);
+  ended = (await events).at(-1);
+  assert.ok(ended && ended.kind === 'ended' && ended.outcome === 'failed');
+  assert.match(ended.reason ?? '', /长度上限/);
+  await session.dispose();
+});

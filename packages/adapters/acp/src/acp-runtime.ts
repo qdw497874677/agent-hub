@@ -17,7 +17,7 @@ import type {
 } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
 import { acpDescriptor, type AcpAgentConfig, type AcpLaunch } from './config.ts';
-import { endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
+import { StderrTail, endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
 import type { AcpPromptCapabilities } from './map-acp.ts';
 import { legacyAcpOptions, mapAcpOptions } from './map-options.ts';
 
@@ -32,6 +32,9 @@ const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false },
  * `@agentclientprotocol/sdk`；这里只剩平台自己的规则：
  * 事件归一、回放去重、可调项全量上报、dispose 记 stopped。
  */
+/** 这些事件算「agent 有回应」。 */
+const PRODUCING: ReadonlySet<SessionEvent['kind']> = new Set(['text', 'thinking', 'tool_call', 'tool_result', 'artifact', 'approval']);
+
 class AcpSession implements RuntimeSession {
   readonly sessionId: RuntimeSession['sessionId'];
   private readonly queue = new AsyncQueue<SessionEvent>();
@@ -43,6 +46,9 @@ class AcpSession implements RuntimeSession {
   /** 主动 dispose 导致的进程退出记 stopped，不是 failed。 */
   private disposed = false;
   private current: readonly RuntimeOption[] = [];
+  /** 这一轮 agent 有没有吐出过正文 / 思考 / 工具调用；一点没有就当失败报出来。 */
+  private produced = false;
+  private readonly stderr = new StderrTail();
 
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly config: AcpAgentConfig;
@@ -62,6 +68,9 @@ class AcpSession implements RuntimeSession {
     this.child = child;
     this.config = config;
     this.onOptions = onOptions;
+    // 一定要读 stderr：不读会写满管道把 agent 卡住；最后几行留着给空回合当线索（已脱敏）。
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk: string) => this.stderr.push(chunk));
     const app = client()
       .onNotification('session/update', ({ params }) => this.onUpdate(params.update as unknown as Json))
       // 平台替用户放行工具调用（与 yolo 模式一致）；agent 自己的 deny 规则仍生效。
@@ -84,7 +93,11 @@ class AcpSession implements RuntimeSession {
   }
 
   private finish(): void {
-    this.queue.push({ kind: 'ended', outcome: this.disposed ? 'stopped' : 'failed' });
+    if (this.disposed) this.queue.push({ kind: 'ended', outcome: 'stopped' });
+    else {
+      const tail = this.stderr.tail();
+      this.queue.push({ kind: 'ended', outcome: 'failed', reason: `${this.config.label} 进程意外退出${tail.length > 0 ? `\n最近的 agent 日志：\n${tail.join('\n')}` : ''}` });
+    }
     this.queue.close();
   }
 
@@ -95,7 +108,10 @@ class AcpSession implements RuntimeSession {
       return;
     }
     if (this.replaying) return;
-    for (const event of mapAcpUpdate(update, this.toolNames)) this.queue.push(event);
+    for (const event of mapAcpUpdate(update, this.toolNames)) {
+      if (PRODUCING.has(event.kind)) this.produced = true;
+      this.queue.push(event);
+    }
   }
 
   /** agent 没有 configOptions、只报老式 models/modes（Hermes）：改值走 set_model / set_mode。 */
@@ -251,12 +267,13 @@ class AcpSession implements RuntimeSession {
   async prompt(input: PromptInput): Promise<Result<void, DomainError>> {
     const blocks = toAcpPrompt(input, this.promptCaps, this.config.label);
     if (!blocks.ok) return blocks;
+    this.produced = false;
     try {
       const result = await this.request('session/prompt', {
         sessionId: this.agentSessionId,
         prompt: blocks.value
       });
-      this.queue.push(endedFromStopReason(result['stopReason'] as string | undefined));
+      this.queue.push(endedFromStopReason(result['stopReason'], { produced: this.produced, stderrTail: this.produced ? [] : this.stderr.tail() }));
       return { ok: true, value: undefined };
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) };

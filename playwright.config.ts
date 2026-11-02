@@ -50,7 +50,9 @@ export default defineConfig({
       // 测试账号的密码文件放进 e2e 数据目录，不碰真实的 ~/.config/agent-hub
       HUB_TEST_ACCOUNT_FILE: `${dataDir}/test-account`,
       // 本机 Worker 的资产目录也放进 e2e 数据目录，不碰真实的 ~/.agent-hub/assets
-      WORKER_ASSETS_DIR: `${dataDir}/worker-assets`
+      WORKER_ASSETS_DIR: `${dataDir}/worker-assets`,
+      // 本机 Worker 不做模型自检：e2e 不该真去调模型（自检有专门的用例，用假 ACP agent）
+      WORKER_MODEL_CHECK: '0'
     }
   }
 });

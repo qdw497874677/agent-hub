@@ -88,6 +88,8 @@ export function acpAdapter(): RuntimeAdapter {
         }),
         readiness: acpReadiness(config),
         hint,
+        // ACP 的 end_turn 不区分「答完了」和「模型没通」：启动后真问一次才知道
+        selfCheck: true,
         // 只给我们认得怎么装的；ACP_AGENTS 里自定义的 agent 不在线安装
         ...(config.id === 'opencode' ? { installer: opencodeInstaller() } : {}),
         summary: `${config.label} 认得 ${models[index]?.length ?? 0} 个模型`
