@@ -30,6 +30,7 @@ for (const width of [1280, 390]) {
     await expect(page.getByLabel('目录选择器')).toHaveCount(0);
     await expect(panel.getByText(/放到某台机器上/)).toHaveCount(0);
     await expect(git).toHaveAttribute('aria-expanded', 'false');
+    await expect(git.locator('span[aria-hidden]').first()).toHaveText('▸');
     await expect(panel.getByLabel('git 仓库', { exact: true })).toHaveCount(0);
 
     // 名字框占满第一行（除去「创建」），说明在它正下方
@@ -46,6 +47,7 @@ for (const width of [1280, 390]) {
     // 展开 git：仓库 + 默认分支（没填仓库时分支是灰的）；仍然没有目录 / 机器
     await git.click();
     await expect(git).toHaveAttribute('aria-expanded', 'true');
+    await expect(git.locator('span[aria-hidden]').first()).toHaveText('▾');
     await expect(panel.getByLabel('git 仓库', { exact: true })).toBeVisible();
     await expect(panel.getByLabel('默认分支')).toBeDisabled();
     await expect(panel.getByLabel('目录', { exact: true })).toHaveCount(0);

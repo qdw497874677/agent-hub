@@ -1,3 +1,6 @@
+import { shortPath, workspaceName } from './workspace-format.ts';
+export { shortPath, workspaceName };
+import { LinkWorkspaces } from './link-workspaces.tsx';
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api, type CanvasDto, type CreateWorkspaceRequest, type WorkerInfoDto, type WorkspaceDto, type WorkspaceViewDto } from './api.ts';
@@ -35,24 +38,12 @@ export function useWorkspaceViews(projectId: string) {
   return useQuery({ queryKey: ['workspaces', projectId], queryFn: () => api.workspaces(projectId), refetchInterval: 5000 });
 }
 
-/** 工作空间的人话名字：有标签用标签，否则用文件夹名。 */
-export function workspaceName(workspace: Pick<WorkspaceDto, 'label' | 'path'>): string {
-  return workspace.label ?? (workspace.path.split('/').filter(Boolean).at(-1) || workspace.path);
-}
-
 export const KIND_LABEL = { long_lived: '持久', temporary: '临时' } as const;
 export const KIND_HINT = {
   long_lived: '持久：一直保留，下次还能接着用。',
   temporary: '临时：任务结束后自动清理；有未保存的改动会保留并提醒你。'
 } as const;
 export const CONCURRENT_HINT = '另一个任务也在这里干活，改动可能互相影响';
-
-/** 路径中间省略：~/agent-hub/…/foo（§9.7）。 */
-export function shortPath(path: string): string {
-  const tilde = path.replace(/^\/home\/[^/]+/, '~').replace(/^\/root(?=\/|$)/, '~');
-  const parts = tilde.split('/');
-  return parts.length <= 4 ? tilde : `${parts.slice(0, 2).join('/')}/…/${parts.at(-1)}`;
-}
 
 const ROW = 'flex min-h-[56px] w-full items-start gap-2 rounded-sm border px-3 py-2 text-left';
 const rowClass = (selected: boolean) => `${ROW} ${selected ? 'border-accent bg-card' : 'border-hair hover:border-strong'}`;
@@ -178,9 +169,9 @@ export function WorkspaceChooser({
           <div role="radiogroup" aria-label="选择工作空间" className="flex flex-col gap-1.5">
             {views.isLoading ? <p className="text-meta text-tertiary">正在读取工作空间…</p> : null}
             {!views.isLoading && here.length === 0 ? (
-              <p className="text-meta text-tertiary">这台机器上还没有这个项目的工作空间，新建一个吧。</p>
+              <p data-testid="ws-none-linked" className="text-meta text-tertiary">本项目在这台机器上还没有关联工作空间。关联一个团队里已有的，或者新建一个。</p>
             ) : null}
-            {here.map(({ workspace, runningTaskIds }) => {
+            {here.map(({ workspace, runningTaskIds, otherProjectSessions }) => {
               const selected = choice?.type === 'existing' && choice.workspaceId === workspace.id;
               const others = runningTaskIds.some((id) => id !== taskId);
               return (
@@ -211,10 +202,21 @@ export function WorkspaceChooser({
                         ⚠ {CONCURRENT_HINT}
                       </span>
                     ) : null}
+                    {(otherProjectSessions ?? 0) > 0 ? (
+                      <span data-testid="ws-other-projects" className="mt-0.5 block text-meta text-rust" title={CONCURRENT_HINT}>
+                        ⚠ 其他项目有 {otherProjectSessions} 个会话也在这里干活
+                      </span>
+                    ) : null}
                   </span>
                 </button>
               );
             })}
+            <LinkWorkspaces
+              projectId={canvas.project.id}
+              linked={(views.data ?? []).map(({ workspace }) => workspace.id)}
+              workerId={machine}
+              onLinked={(workspaceId) => onChoice({ type: 'existing', workspaceId })}
+            />
             <NewTemporary
               canvas={canvas}
               taskId={taskId}

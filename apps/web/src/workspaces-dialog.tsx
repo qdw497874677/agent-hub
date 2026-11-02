@@ -8,8 +8,9 @@ import { useAccount } from './auth.tsx';
 import { ProjectAssets } from './project-assets.tsx';
 import { ProjectContext } from './project-context.tsx';
 import { ProjectDistill } from './project-distill.tsx';
+import { LinkWorkspaces } from './link-workspaces.tsx';
 
-type Pending = { workspace: WorkspaceDto; mode: 'unregister' | 'delete' | 'force' };
+type Pending = { workspace: WorkspaceDto; mode: 'unlink' | 'unregister' | 'delete' | 'force' };
 
 const SOURCE: Record<WorkspaceDto['source'], string> = { linked: '已有目录', created: '新建目录', cloned: '克隆', worktree: 'worktree' };
 
@@ -33,6 +34,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
       <ProjectContext projectId={project.id} canEdit />
       <ProjectDistill projectId={project.id} />
       <h3 className="mb-1 text-sub text-primary">工作空间</h3>
+      <p className="mb-1 text-meta text-tertiary">本项目能在这些目录里开任务。取消关联不会删目录，也不影响其他项目。</p>
       <p className="mb-3 text-meta text-tertiary">任务做完或放弃后，临时工作空间会自动删除；有没保存的改动的会保留下来，等你决定。</p>
       {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
       {list.data && groups.size === 0 ? <p className="text-meta text-tertiary">还没有工作空间。</p> : null}
@@ -46,6 +48,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           </ul>
         </section>
       ))}
+      <LinkWorkspaces projectId={project.id} linked={(list.data ?? []).map((view) => view.workspace.id)} />
       {pending ? <ConfirmRemove pending={pending} projectId={project.id} onDone={() => setPending(null)} /> : null}
     </DialogShell>
   );
@@ -57,7 +60,7 @@ function WorkspaceRow({ view, onAct }: { view: WorkspaceViewDto; onAct: (mode: P
   const busy = view.runningTaskIds.length > 0;
   const deletable = workspace.kind === 'long_lived' && (workspace.source === 'created' || workspace.source === 'cloned');
   const actions: { mode: Pending['mode']; label: string }[] = [
-    ...(workspace.kind === 'long_lived' ? [{ mode: 'unregister' as const, label: '移除登记' }] : []),
+    ...(workspace.kind === 'long_lived' ? [{ mode: 'unlink' as const, label: '取消关联' }, { mode: 'unregister' as const, label: '移除登记' }] : []),
     ...(deletable ? [{ mode: 'delete' as const, label: '同时删除目录' }] : []),
     ...(workspace.kind === 'temporary' ? [{ mode: workspace.state === 'kept' ? ('force' as const) : ('delete' as const), label: workspace.state === 'kept' ? '强制删除' : '删除' }] : [])
   ];
@@ -71,6 +74,9 @@ function WorkspaceRow({ view, onAct }: { view: WorkspaceViewDto; onAct: (mode: P
         </div>
         <div className="break-all font-mono text-meta text-tertiary">{workspace.path}</div>
         <div className={`text-meta ${workspace.state === 'kept' ? 'text-rust' : 'text-secondary'}`}>{busy ? '有会话正在运行' : state}</div>
+        {(view.otherProjectSessions ?? 0) > 0 ? (
+          <div data-testid="ws-other-projects" className="text-meta text-rust">⚠ 其他项目有 {view.otherProjectSessions} 个会话也在这里干活</div>
+        ) : null}
       </div>
       {actions.length > 0 && !busy ? (
         <>
@@ -102,21 +108,24 @@ function WorkspaceRow({ view, onAct }: { view: WorkspaceViewDto; onAct: (mode: P
 function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; projectId: string; onDone: () => void }) {
   const queryClient = useQueryClient();
   const { workspace, mode } = pending;
-  const changes = useQuery({ queryKey: ['workspace-changes', workspace.id], queryFn: () => api.workspaceChanges(workspace.id), enabled: mode !== 'unregister' && workspace.isGit === true });
+  const changes = useQuery({ queryKey: ['workspace-changes', workspace.id], queryFn: () => api.workspaceChanges(workspace.id), enabled: mode !== 'unregister' && mode !== 'unlink' && workspace.isGit === true });
   const remove = useMutation({
-    mutationFn: () => api.removeWorkspace(workspace.id, { deleteDirectory: mode !== 'unregister', force: mode === 'force' || (mode === 'delete' && workspace.kind === 'long_lived') }),
+    mutationFn: () => mode === 'unlink' ? api.unlinkWorkspace(projectId, workspace.id) : api.removeWorkspace(workspace.id, { deleteDirectory: mode !== 'unregister', force: mode === 'force' || (mode === 'delete' && workspace.kind === 'long_lived') }),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] });
+      await queryClient.invalidateQueries({ queryKey: ['team-workspaces'] });
       onDone();
     }
   });
-  const title = mode === 'unregister' ? '移除登记' : mode === 'force' ? '强制删除' : '删除目录';
+  const title = mode === 'unlink' ? '取消关联' : mode === 'unregister' ? '移除登记' : mode === 'force' ? '强制删除' : '删除目录';
   return (
     <div className="mt-3 rounded-sm border border-rust/60 p-3">
       <h3 className="mb-1 text-sub text-primary">{title}？</h3>
       <p className="mb-2 text-meta text-secondary">
-        {mode === 'unregister'
-          ? '只是不再在这里列出它，目录和里面的文件原样保留。'
+        {mode === 'unlink'
+          ? '本项目不再在这里开任务。目录、文件和其他项目的关联都不受影响。'
+          : mode === 'unregister'
+          ? '从团队里移除这个工作空间，所有关联它的项目都不能再用它；目录和里面的文件原样保留。'
           : <>会删掉 <span className="break-all font-mono">{workspace.path}</span>，删了找不回来。</>}
       </p>
       {(changes.data?.reason ?? (mode === 'force' ? workspace.keptReason : null)) ? <p className="mb-2 text-meta text-rust">会丢掉：{changes.data?.reason ?? workspace.keptReason}</p> : null}

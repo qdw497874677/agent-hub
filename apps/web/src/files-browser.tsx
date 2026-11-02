@@ -61,6 +61,8 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null }: Props) {
   }, [reveal?.nonce]);
 
   const changes = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'changes', base], queryFn: () => filesApi.changes(sessionId, base) });
+  const context = useQuery({ queryKey: [...sk(sessionId), 'context'], queryFn: () => filesApi.context(sessionId), staleTime: 15_000 });
+  const others = context.data?.otherProjectSessions ?? 0;
   const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: [...sk(sessionId), 'find', query], queryFn: () => filesApi.find(sessionId, query.trim()) });
 
   // 回合结束（状态变了）就刷新一遍：agent 刚改过文件
@@ -137,6 +139,11 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null }: Props) {
   const showList = wide || opened === null;
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作空间文件" data-testid={`files-panel-${tab}`}>
+      {others > 0 ? (
+        <p data-testid="files-other-projects" className="shrink-0 border-b border-hair px-3 py-1 text-meta text-rust">
+          ⚠ 其他项目有 {others} 个会话也在这个工作空间里干活，这里的改动可能不全是本会话的
+        </p>
+      ) : null}
       {!wide && opened ? <header className="flex shrink-0 items-center gap-2 border-b border-hair px-3 py-2">
         <button className="text-sub text-secondary" onClick={() => setOpened(null)} data-testid="files-back">‹ 返回</button>
         <span className="min-w-0 flex-1 truncate font-mono text-meta text-tertiary">{opened.path}</span>

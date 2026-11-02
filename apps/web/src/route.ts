@@ -15,6 +15,7 @@ export const MARKET_TABS: readonly MarketTab[] = ['catalog', 'mine', 'pending', 
 
 export type Route =
   | { readonly page: 'home' }
+  | { readonly page: 'workspaces' }
   | { readonly page: 'assets'; readonly tab: MarketTab; readonly reviewId: string | null }
   | { readonly page: 'admin'; readonly tab: AdminTab }
   | { readonly page: 'memory'; readonly scope: string | null }
@@ -28,6 +29,7 @@ export function parseRoute(hash: string): Route | null {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
   if (parts.length === 0) return null;
   if (parts[0] === 'admin') return { page: 'admin', tab: ADMIN_TABS.find((tab) => tab === parts[1]) ?? 'overview' };
+  if (parts[0] === 'workspaces') return { page: 'workspaces' };
   if (parts[0] === 'memory') return { page: 'memory', scope: parts[1] ?? null };
   if (parts[0] === 'bots') return { page: 'bots', projectId: parts[1] ?? null };
   if (parts[0] === 'messages') return { page: 'messages', projectId: parts[1] ?? null, groupId: parts[1] ? (parts[2] ?? null) : null };
@@ -44,6 +46,7 @@ export function parseRoute(hash: string): Route | null {
 
 export function formatRoute(route: Route): string {
   if (route.page === 'home') return '#/home';
+  if (route.page === 'workspaces') return '#/workspaces';
   if (route.page === 'admin') return `#/admin/${route.tab}`;
   if (route.page === 'memory') return route.scope ? `#/memory/${encodeURIComponent(route.scope)}` : '#/memory';
   if (route.page === 'bots') return route.projectId ? `#/bots/${encodeURIComponent(route.projectId)}` : '#/bots';
