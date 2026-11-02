@@ -61,6 +61,7 @@ export * from './use-cases/attachments.ts';
 export * from './use-cases/workspaces.ts';
 export * from './use-cases/temporary-workspaces.ts';
 export * from './use-cases/workspace-cleanup.ts';
+export * from './use-cases/team-workspaces.ts';
 
 export * from './account.ts';
 export * from './access.ts';

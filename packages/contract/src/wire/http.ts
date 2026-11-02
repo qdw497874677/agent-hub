@@ -104,6 +104,17 @@ export const createWorkspaceRequest = z.discriminatedUnion('kind', [
 ]);
 
 /** 移除工作空间：只移除登记，或连目录一起删（force = 二次确认过，有改动也删）。 */
+/** 团队页新建工作空间（ADR 0026）：在团队里建，可选顺手关联一个项目。 */
+export const createTeamWorkspaceRequest = z.object({
+  workerId: z.string().min(1).nullable().default(null),
+  mode: z.enum(['create', 'link']),
+  path: z.string().optional(),
+  repoUrl: z.string().max(500).optional(),
+  branch: z.string().max(200).optional(),
+  name: z.string().max(100).optional(),
+  projectId: z.string().optional()
+});
+
 export const removeWorkspaceRequest = z.object({
   deleteDirectory: z.boolean().default(false),
   force: z.boolean().default(false)

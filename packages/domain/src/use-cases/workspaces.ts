@@ -1,13 +1,13 @@
-import type { Subject } from '../access.ts';
+import { principalOfSubject, type Subject } from '../access.ts';
 import type { Location, Project } from '../project.ts';
 import type { Session } from '../session.ts';
-import { isUsable, newWorkspace, normalizePath, samePlace, type Workspace } from '../workspace.ts';
+import { concurrencyOf, isUsable, newWorkspace, normalizePath, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
 import { claimOf, createDirectory, gitOn, isEmptyDirectory, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
 import type { ProjectId } from '../ids.ts';
-import { asProjectId } from '../ids.ts';
+import { asProjectId, asWorkspaceId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -64,24 +64,39 @@ export async function listWorkspacesUseCase(
 /** 运行面板里一行：工作空间本身 + 现在有哪些任务正在里面跑会话（并发警告用）。 */
 export interface WorkspaceView {
   readonly workspace: Workspace;
+  /** 本项目正在里面跑会话的任务。 */
   readonly runningTaskIds: readonly string[];
+  /** 别的项目正在里面跑的会话数（ADR 0026 Q6：只给个数，不透露是哪个项目 / 任务）。 */
+  readonly otherProjectSessions: number;
 }
 
 /** 同 listWorkspacesUseCase，另附每个工作空间里正在跑的任务——面板据此提示「另一个任务也在这里干活」。 */
 export async function workspaceViewsUseCase(
-  deps: Pick<Deps, 'projects' | 'sessions' | 'workspaces'>,
+  deps: Pick<Deps, 'projects' | 'sessions' | 'tasks' | 'workspaces'>,
   projectId: string
 ): Promise<Result<WorkspaceView[], DomainError>> {
   const listed = await listWorkspacesUseCase(deps, projectId);
   if (!listed.ok) return listed;
-  const running = new Map<string, Set<string>>();
-  for (const session of await deps.sessions.listByProject(asProjectId(projectId))) {
-    if (session.status !== 'running' || !session.workspaceId) continue;
-    const tasks = running.get(session.workspaceId) ?? new Set<string>();
-    tasks.add(session.taskId);
-    running.set(session.workspaceId, tasks);
+  const views: WorkspaceView[] = [];
+  for (const workspace of listed.value) {
+    views.push({ workspace, ...(await workspaceConcurrency(deps, workspace.id, projectId)) });
   }
-  return ok(listed.value.map((workspace) => ({ workspace, runningTaskIds: [...(running.get(workspace.id) ?? [])] })));
+  return ok(views);
+}
+
+/** 某个工作空间里正在跑的会话：本项目的任务 id + 别的项目的会话数。 */
+export async function workspaceConcurrency(
+  deps: Pick<Deps, 'sessions' | 'tasks'>,
+  workspaceId: string,
+  projectId: string
+): Promise<{ readonly runningTaskIds: readonly string[]; readonly otherProjectSessions: number }> {
+  const running = (await deps.sessions.listByWorkspace(asWorkspaceId(workspaceId))).filter((session) => session.status === 'running');
+  const withProject: { taskId: string; projectId: string | null }[] = [];
+  for (const session of running) {
+    const task = await deps.tasks.byId(session.taskId);
+    withProject.push({ taskId: session.taskId, projectId: task?.projectId ?? null });
+  }
+  return concurrencyOf(withProject, projectId);
 }
 
 /**
@@ -110,17 +125,57 @@ export async function prepareLongLivedWorkspaceUseCase(
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project) return err(notFound('项目不存在'));
+  // ADR 0026：为项目新建 = 在项目的团队里建（项目仓库只是默认配方）+ 关联到这个项目
+  const prepared = await prepareTeamWorkspace(deps, {
+    teamId: project.teamId,
+    originProjectId: project.id,
+    repo: project.repo ? { url: project.repo.url, branch: project.repo.defaultBranch } : null,
+    slug: projectSlug(project.name) ?? 'project',
+    workerId: command.workerId,
+    plan: command.plan,
+    home: command.home,
+    actor: command.actor ?? null
+  });
+  if (!prepared.ok) return prepared;
+  await deps.workspaces.link({ projectId: project.id, workspaceId: prepared.value.id, linkedBy: actorId(command.actor ?? null), linkedAt: deps.now() });
+  return prepared;
+}
+
+export interface PrepareTeamWorkspaceCommand {
+  readonly teamId: string | null;
+  /** 为哪个项目建的（只作记录）；团队页直接建是 null。 */
+  readonly originProjectId: ProjectId | null;
+  /** 仓库配方（Q3：存在工作空间上）。null = 空目录。 */
+  readonly repo: { readonly url: string; readonly branch: string | null } | null;
+  /** 托管目录名的基础。 */
+  readonly slug: string;
+  readonly workerId: string | null;
+  readonly plan: LongLivedPlan;
+  readonly home: string;
+  readonly actor: Subject | null;
+}
+
+/**
+ * 团队里建 / 登记一个长期工作空间（不关联任何项目）：
+ * 同团队同机器完全相同的目录已经登记过就返回那一条（幂等），嵌套的拒绝。
+ */
+export async function prepareTeamWorkspace(
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access'>,
+  command: PrepareTeamWorkspaceCommand
+): Promise<Result<Workspace, DomainError>> {
   const resolved = await resolveMachine(deps, command.workerId);
   if (!resolved.ok) return resolved;
-  const allowed = await authorizeWorker(deps.access, command.actor ?? null, resolved.value.workerId);
+  const allowed = await authorizeWorker(deps.access, command.actor, resolved.value.workerId);
   if (!allowed.ok) return allowed;
   const machine = resolved.value;
+  const claimFor = (path: string) => claimOf(deps, { teamId: command.teamId, projectId: command.originProjectId, workerId: machine.workerId, path });
 
   const git = gitOn(deps, machine.route);
   let path: string;
   let source: Workspace['source'];
   let branch: string | null = null;
   let isGit: boolean | null = null;
+  let repoUrl: string | null = null;
   if (command.plan.mode === 'link') {
     if (!command.plan.path.startsWith('/')) return err(invalid('目录必须是绝对路径'));
     const listed = await listOn(deps, machine.route, normalizePath(command.plan.path));
@@ -128,8 +183,9 @@ export async function prepareLongLivedWorkspaceUseCase(
     if (listed.value === null) return err(invalid(`目录不存在：${command.plan.path}`));
     path = listed.value.path;
     source = 'linked';
-    const taken = await claimOf(deps, { projectId: project.id, workerId: machine.workerId, path });
+    const taken = await claimFor(path);
     if (!taken.ok) return taken;
+    if (taken.value) return ok(taken.value);
     // 探测只是为了卡片上显示分支；失败（老 Worker 不认 ws.*）不挡关联
     const inspected = await git.inspect(path);
     if (inspected.ok) {
@@ -138,17 +194,18 @@ export async function prepareLongLivedWorkspaceUseCase(
     }
   } else {
     const place = command.plan.path
-      ? await chosenPlace(deps, project, machine, command.plan.path, command.home)
-      : await managedPlace(deps, project, machine.route, command);
+      ? await chosenPlace(deps, claimFor, machine, command.plan.path, command.home)
+      : await managedPlace(deps, command.slug, machine.route, command);
     if (!place.ok) return place;
-    if (project.repo) {
+    if (command.repo) {
       // 有仓库：把它下载到选的目录 / 托管目录（用那台机器自己的 git 凭据；空目录也能直接 clone 进去）
-      const cloned = await git.clone({ repoUrl: project.repo.url, parent: place.value.parent, name: place.value.name, branch: project.repo.defaultBranch });
+      const cloned = await git.clone({ repoUrl: command.repo.url, parent: place.value.parent, name: place.value.name, branch: command.repo.branch });
       if (!cloned.ok) return cloned;
       path = cloned.value.path;
       branch = cloned.value.branch;
       isGit = true;
       source = 'cloned';
+      repoUrl = command.repo.url;
     } else if (place.value.exists) {
       // 人在目录选择器里刚建好的空文件夹：直接用
       path = `${place.value.parent === '/' ? '' : place.value.parent}/${place.value.name}`;
@@ -161,14 +218,14 @@ export async function prepareLongLivedWorkspaceUseCase(
       isGit = false;
       source = 'created';
     }
+    const again = await claimFor(path);
+    if (again.ok && again.value) return ok(again.value);
   }
 
-  const existing = (await deps.workspaces.byProject(project.id)).find(
-    (workspace) => workspace.state !== 'removed' && samePlace(workspace, { workerId: machine.workerId, path })
-  );
-  if (existing) return ok(existing);
   const created = newWorkspace({
-    projectId: project.id,
+    projectId: command.originProjectId,
+    teamId: command.teamId,
+    repoUrl,
     workerId: machine.workerId,
     path,
     kind: 'long_lived',
@@ -182,12 +239,16 @@ export async function prepareLongLivedWorkspaceUseCase(
   return ok(created.value);
 }
 
+export function actorId(actor: Subject | null): string | null {
+  return principalOfSubject(actor)?.user.id ?? null;
+}
+
 /** `<roots[0]>/agent-hub-workspaces/<slug>`：先确保托管这层在，再挑一个磁盘上还没有的名字（还没建）。 */
 async function managedPlace(
   deps: Pick<Deps, 'fs' | 'gateway'>,
-  project: Project,
+  slug: string,
   owner: string | null,
-  command: Pick<PrepareLongLivedCommand, 'workerId' | 'home'>
+  command: Pick<PrepareTeamWorkspaceCommand, 'workerId' | 'home'>
 ): Promise<Result<{ readonly parent: string; readonly name: string; readonly exists: boolean }, DomainError>> {
   const roots = await rootsOf(deps, owner, command.workerId, command.home);
   const root = roots[0];
@@ -197,7 +258,6 @@ async function managedPlace(
   const listed = await listOn(deps, owner, base.value.path);
   if (!listed.ok) return listed;
   const taken = new Set((listed.value?.entries ?? []).map((entry) => entry.name));
-  const slug = projectSlug(project.name) ?? 'project';
   return ok({ parent: base.value.path, name: freeName(slug, taken), exists: false });
 }
 
@@ -207,8 +267,8 @@ async function managedPlace(
  * 已经有东西的目录不行——那是「选已有目录」。
  */
 async function chosenPlace(
-  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'workspaces'>,
-  project: Project,
+  deps: Pick<Deps, 'fs' | 'gateway'>,
+  claimFor: (path: string) => Promise<Result<Workspace | null, DomainError>>,
   machine: Machine,
   raw: string,
   home: string
@@ -236,7 +296,7 @@ async function chosenPlace(
     if (!empty.ok) return empty;
     if (!empty.value) return err(conflict(`「${path}」里已经有东西了；选一个空文件夹，或者改用「选已有目录」`));
   }
-  const taken = await claimOf(deps, { projectId: project.id, workerId: machine.workerId, path });
+  const taken = await claimFor(path);
   if (!taken.ok) return taken;
   return ok({ parent: parentListed.value.path, name, exists: target.value !== null });
 }

@@ -10,6 +10,7 @@ import type { EnrollmentRepository } from '../ports/enrollment-repository.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { Session } from '../session.ts';
 import type { WorkerStatus } from '../worker.ts';
+import type { Workspace } from '../workspace.ts';
 import { asProjectId, asSessionId, asTaskId, asWorkspaceId } from '../ids.ts';
 import type { Deps } from './deps.ts';
 
@@ -129,6 +130,55 @@ export async function authorizeWorker(
   return ok(undefined);
 }
 
+/**
+ * 团队级的工作空间权限（ADR 0026）：workspace.manage 在团队上（owner / admin 默认有）。
+ * teamId 为 null（老数据）按 hub 团队算。
+ */
+export async function canManageTeamWorkspaces(policy: AccessPolicy | undefined, actor: Subject | null, teamId: string | null): Promise<boolean> {
+  if (!policy) return true;
+  const ctx = await policy.context();
+  const team = teamId ?? ctx.hubTeamId;
+  if (team === null) return false;
+  return can(actor, 'workspace.manage', { kind: 'team', id: team, teamId: team }, ctx);
+}
+
+/** 能用 / 看见这个工作空间的项目：临时的是它所属的项目，长期的是关联到它的项目。 */
+export async function projectsOfWorkspace(deps: Pick<Deps, 'projects' | 'workspaces'>, workspace: Workspace): Promise<Project[]> {
+  const ids =
+    workspace.kind === 'temporary'
+      ? workspace.projectId ? [workspace.projectId] : []
+      : (await deps.workspaces.linksOf(workspace.id)).map((link) => link.projectId);
+  const projects: Project[] = [];
+  for (const id of ids) {
+    const project = await deps.projects.byId(id);
+    if (project && project.deletedAt === null) projects.push(project);
+  }
+  return projects;
+}
+
+/**
+ * 能不能对这个工作空间做 permission（ADR 0026 §4）：
+ * 有团队 workspace.manage 的直接可以；否则关联项目里任一个允许 permission 就可以。
+ * 一个关联项目都看不见 → notFound（不泄露存在）。
+ */
+export async function authorizeWorkspace(
+  deps: Pick<Deps, 'projects' | 'workspaces' | 'access'>,
+  actor: Subject | null,
+  workspace: Workspace | null,
+  permission: Permission
+): Promise<Result<Workspace, DomainError>> {
+  if (!workspace || workspace.state === 'removed') return err(notFound('工作空间不存在'));
+  if (!deps.access) return ok(workspace);
+  if (await canManageTeamWorkspaces(deps.access, actor, workspace.teamId)) return ok(workspace);
+  let denied: DomainError | null = null;
+  for (const project of await projectsOfWorkspace(deps, workspace)) {
+    const allowed = await authorizeProject(deps.access, actor, project, permission);
+    if (allowed.ok) return ok(workspace);
+    if (allowed.error.code !== 'not_found') denied = allowed.error;
+  }
+  return err(denied ?? notFound('工作空间不存在'));
+}
+
 /** 路由上的各种 id → 它所在的项目（任务、会话、工作空间都挂在项目下）。找不到是 null。 */
 export type ResourceRef =
   | { readonly kind: 'project'; readonly id: string }
@@ -143,7 +193,9 @@ export async function projectOfRef(
   if (ref.kind === 'project') return { project: await deps.projects.byId(asProjectId(ref.id)), session: null };
   if (ref.kind === 'workspace') {
     const workspace = await deps.workspaces.byId(asWorkspaceId(ref.id));
-    return { project: workspace ? await deps.projects.byId(workspace.projectId) : null, session: null };
+    if (!workspace) return { project: null, session: null };
+    const projectId = workspace.projectId ?? (await deps.workspaces.linksOf(workspace.id))[0]?.projectId ?? null;
+    return { project: projectId ? await deps.projects.byId(projectId) : null, session: null };
   }
   let taskId = ref.id;
   let session: Session | null = null;

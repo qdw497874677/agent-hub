@@ -1,6 +1,6 @@
 import type { z } from 'zod';
-import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
-import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
+import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
+import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
 import type { resourceSampleSchema, workerMetricsHistorySchema, workerResourcesSchema } from './wire/resources.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
 
@@ -23,6 +23,8 @@ export type OptionValueDto = z.infer<typeof optionValueSchema>;
 export type ProjectDto = z.infer<typeof projectSchema>;
 export type WorkspaceDto = z.infer<typeof workspaceSchema>;
 export type WorkspaceViewDto = z.infer<typeof workspaceViewSchema>;
+export type TeamWorkspaceViewDto = z.infer<typeof teamWorkspaceViewSchema>;
+export type CreateTeamWorkspaceRequest = z.input<typeof createTeamWorkspaceRequest>;
 export type CreateWorkspaceRequest = z.input<typeof createWorkspaceRequest>;
 export type TaskDto = z.infer<typeof taskSchema>;
 export type SessionDto = z.infer<typeof sessionSchema>;

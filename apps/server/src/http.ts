@@ -26,6 +26,8 @@ import {
   workspaceChangesSchema,
   workspaceSchema,
   workspaceViewSchema,
+  teamWorkspaceViewSchema,
+  createTeamWorkspaceRequest,
   forkSessionRequest,
   renameSessionRequest,
   continueElsewhereRequest,
@@ -67,7 +69,11 @@ import {
   deriveSessionUseCase,
   prepareLongLivedWorkspaceUseCase,
   prepareTemporaryWorkspaceUseCase,
-  removeWorkspaceUseCase,
+  deleteWorkspaceUseCase,
+  listTeamWorkspacesUseCase,
+  createTeamWorkspaceUseCase,
+  linkWorkspaceUseCase,
+  unlinkWorkspaceUseCase,
   sweepTemporaryWorkspacesUseCase,
   workspaceChangesUseCase,
   workspaceViewsUseCase,
@@ -400,7 +406,38 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/workspaces/:workspaceId/remove', async (c) => {
     const input = await body(c, removeWorkspaceRequest);
     if (!input.ok) return input.response;
-    const result = await removeWorkspaceUseCase(deps, { workspaceId: c.req.param('workspaceId'), ...input.value });
+    const result = await deleteWorkspaceUseCase(deps, { workspaceId: c.req.param('workspaceId'), ...input.value, actor: subjectOf(c) });
+    return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
+  });
+
+  // 团队工作空间（ADR 0026）：列表 / 团队里新建
+  app.get('/api/workspaces', async (c) => {
+    const result = await listTeamWorkspacesUseCase(deps, subjectOf(c));
+    return result.ok ? c.json(teamWorkspaceViewSchema.array().parse(result.value)) : fail(c, result.error);
+  });
+  app.post('/api/workspaces', async (c) => {
+    const input = await body(c, createTeamWorkspaceRequest);
+    if (!input.ok) return input.response;
+    const request = input.value;
+    const result = await createTeamWorkspaceUseCase(deps, {
+      actor: subjectOf(c),
+      workerId: request.workerId,
+      plan: request.mode === 'link' ? { mode: 'link', path: request.path ?? '' } : request.path?.trim() ? { mode: 'create', path: request.path } : { mode: 'create' },
+      repoUrl: request.repoUrl ?? null,
+      branch: request.branch ?? null,
+      name: request.name ?? null,
+      projectId: request.projectId ?? null,
+      home: homedir()
+    });
+    return result.ok ? c.json(workspaceSchema.parse(result.value), 201) : fail(c, result.error);
+  });
+  // 关联 / 取消关联（项目设置 · 工作空间；Q4：对项目有 project.update 且看得见工作空间）
+  app.put('/api/projects/:projectId/workspaces/:workspaceId', async (c) => {
+    const result = await linkWorkspaceUseCase(deps, { actor: subjectOf(c), projectId: c.req.param('projectId'), workspaceId: c.req.param('workspaceId') });
+    return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
+  });
+  app.delete('/api/projects/:projectId/workspaces/:workspaceId', async (c) => {
+    const result = await unlinkWorkspaceUseCase(deps, { actor: subjectOf(c), projectId: c.req.param('projectId'), workspaceId: c.req.param('workspaceId') });
     return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
   });
 

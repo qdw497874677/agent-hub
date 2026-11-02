@@ -72,23 +72,31 @@ test('worktree 失败（同名分支已在别处检出等）：不登记，原�
   assert.equal((await w.deps.workspaces.byTask(w.task.id)).length, 0);
 });
 
-test('一个目录只属于一个项目：别的项目登记过的目录、它的上下级都不能再关联', async () => {
+test('ADR 0026 唯一性：同团队同一目录复用并关联，上下级目录互相嵌套的拒绝', async () => {
   const w = await world();
   const other = await createProjectUseCase(w.deps, { name: 'other' });
   assert.ok(other.ok);
   const link = (projectId: string, path: string) =>
     prepareLongLivedWorkspaceUseCase(w.deps, { projectId, workerId: 'remote-1', plan: { mode: 'link', path }, home: '/home/me' });
-  assert.ok((await link(w.project.id, '/srv/work/shared')).ok);
-  for (const path of ['/srv/work/shared', '/srv/work/shared/sub', '/srv/work']) {
+  const first = await link(w.project.id, '/srv/work/shared');
+  assert.ok(first.ok);
+  const again = await link(other.value.id, '/srv/work/shared');
+  assert.ok(again.ok && again.value.id === first.value.id, '同一目录 = 同一个工作空间');
+  assert.deepEqual((await w.deps.workspaces.linksOf(first.value.id)).map((l) => l.projectId).sort(), [w.project.id, other.value.id].sort());
+  for (const path of ['/srv/work/shared/sub', '/srv/work']) {
     const result = await link(other.value.id, path);
     assert.equal(result.ok, false, path);
-    if (!result.ok) assert.match(result.error.message, /已经属于项目「Demo App」/);
+    if (!result.ok) assert.match(result.error.message, /互相嵌套/);
   }
   assert.ok((await link(other.value.id, '/srv/work/elsewhere')).ok, '兄弟目录没问题');
-  assert.ok((await link(w.project.id, '/srv/work/shared/sub')).ok, '同一项目的不算');
-  // 建项目时直接给目录也查
+  // 建项目时直接给同一个目录：复用并关联，不再拒绝
   const third = await createProjectUseCase(w.deps, { name: 'third', rootPath: '/tmp/x' });
   assert.ok(third.ok);
   const fourth = await createProjectUseCase(w.deps, { name: 'fourth', rootPath: '/tmp/x' });
-  assert.equal(fourth.ok, false);
+  assert.ok(fourth.ok);
+  const thirdWs = (await w.deps.workspaces.byProject(third.value.id))[0];
+  const fourthWs = (await w.deps.workspaces.byProject(fourth.value.id))[0];
+  assert.equal(thirdWs?.id, fourthWs?.id);
+  const nested = await createProjectUseCase(w.deps, { name: 'fifth', rootPath: '/tmp/x/y' });
+  assert.equal(nested.ok, false);
 });

@@ -26,7 +26,7 @@ import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemory
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
-import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateWorkspaces } from './workspaces.ts';
+import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
@@ -111,6 +111,7 @@ export function openSqliteStore(file: string): SqliteStore {
   if (addedCreatedBy) db.exec('ALTER TABLE sessions ADD COLUMN created_by TEXT');
   // 会话名（用户可改）。NULL = 没起名。
   if (!columns.some((column) => column.name === 'title')) db.exec('ALTER TABLE sessions ADD COLUMN title TEXT');
+  upgradeWorkspaceTable(db);
   db.exec(WORKSPACE_SCHEMA);
   migrateTasksV2(db);
   migrateWorkspaces(db);
@@ -161,6 +162,7 @@ export function openSqliteStore(file: string): SqliteStore {
     'SELECT s.* FROM sessions s JOIN tasks t ON t.id = s.task_id ' +
       'WHERE t.project_id = ? ORDER BY s.created_at ASC'
   );
+  const selectSessionsByWorkspace = db.prepare('SELECT * FROM sessions WHERE workspace_id = ? ORDER BY created_at ASC');
   const selectAllSessions = db.prepare('SELECT * FROM sessions ORDER BY created_at ASC');
   const appendJournal = db.prepare(
     'INSERT OR IGNORE INTO journal(session_id, seq, type, payload, at) VALUES (?, ?, ?, ?, ?)'
@@ -214,6 +216,10 @@ export function openSqliteStore(file: string): SqliteStore {
     'DELETE FROM task_log_entries WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)',
     'DELETE FROM tasks WHERE project_id = ?',
     'DELETE FROM layout WHERE project_id = ?',
+    // ADR 0026：长期工作空间属于团队——还关联着别的项目的留下（只去掉「最早为谁建」），其余连登记一起删
+    'DELETE FROM project_workspaces WHERE project_id = ?',
+    "UPDATE workspaces SET project_id = NULL WHERE project_id = ? AND kind = 'long_lived' AND id IN (SELECT workspace_id FROM project_workspaces)",
+    'DELETE FROM project_workspaces WHERE workspace_id IN (SELECT id FROM workspaces WHERE project_id = ?)',
     'DELETE FROM workspaces WHERE project_id = ?',
     'DELETE FROM projects WHERE id = ?'
   ].map((sql) => db.prepare(sql));
@@ -330,6 +336,9 @@ export function openSqliteStore(file: string): SqliteStore {
     async listByProject(projectId: Parameters<typeof asProjectId>[0]): Promise<Session[]> {
       return selectSessionsByProject.all(projectId).map((row) => toSession(row));
     },
+    async listByWorkspace(workspaceId: string): Promise<Session[]> {
+      return selectSessionsByWorkspace.all(workspaceId).map((row) => toSession(row));
+    },
     async listAll(): Promise<Session[]> {
       return selectAllSessions.all().map((row) => toSession(row));
     },
@@ -413,6 +422,10 @@ export function openSqliteStore(file: string): SqliteStore {
   const accountRepos = createAccountRepositories(db);
   backfillSessionCreators(db);
   backfillProjectTeams(db);
+  const shared = migrateSharedWorkspaces(db);
+  if (shared.linked + shared.teamed + shared.merged > 0) {
+    console.log(`[storage] 共享工作空间迁移（ADR 0026）：新增关联 ${shared.linked}，补团队 ${shared.teamed}，合并重复登记 ${shared.merged}`);
+  }
   return {
     projects,
     tasks,

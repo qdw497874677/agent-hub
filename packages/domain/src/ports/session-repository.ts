@@ -1,4 +1,4 @@
-import type { ProjectId, Seq, SessionId, TaskId } from '../ids.ts';
+import type { ProjectId, Seq, SessionId, TaskId, WorkspaceId } from '../ids.ts';
 import type { JournalEntry, SessionEvent } from '../event.ts';
 import type { Session } from '../session.ts';
 
@@ -7,6 +7,8 @@ export interface SessionRepository {
   byId(id: SessionId): Promise<Session | null>;
   listByTask(taskId: TaskId): Promise<Session[]>;
   listByProject(projectId: ProjectId): Promise<Session[]>;
+  /** 在这个工作空间里的会话（所有项目；跨项目并发警告 / 改动页计数用）。 */
+  listByWorkspace(workspaceId: WorkspaceId): Promise<Session[]>;
   /** 启动对账用：把残留的 running 降级为 interrupted。 */
   listAll(): Promise<Session[]>;
   /** 原子追加：journal 行与 session 的 lastSeq / status 在同一事务里落盘。 */
