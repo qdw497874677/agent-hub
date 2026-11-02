@@ -161,6 +161,12 @@ export interface LoginActivity {
 }
 
 export type AuditAction =
+  | 'git.commit'
+  | 'git.text'
+  | 'git.push'
+  | 'git.pr'
+  | 'git.host_token.set'
+  | 'git.host_token.remove'
   | 'context.strategy.set'
   | 'session.context.set'
   | 'session.context.compact'

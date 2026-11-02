@@ -48,7 +48,7 @@ import type {
   LoginActivity
 } from '../index.ts';
 import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
-import type { GitStatus, WorkspaceGit } from '../index.ts';
+import type { CommitPreview, GitStatus, RemotePullRequest, WorkspaceGit } from '../index.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
 
 /**
@@ -339,6 +339,10 @@ export interface FakeGit {
   readonly repos: Set<string>;
   /** 下一次 clone / addWorktree 失败的原因。 */
   failNext: string | null;
+  /** 路径 → 提交预览（ADR 0027 §2）；没登记的 = 干净、无 origin。commit 会清空 files、ahead+1。 */
+  readonly previews: Map<string, CommitPreview>;
+  /** gh 的行为：null = 没装；否则建出来的 PR 编号从这里递增。 */
+  gh: { next: number; state: RemotePullRequest['state'] } | null;
   on(machine: string): WorkspaceGit;
 }
 
@@ -346,11 +350,14 @@ export function fakeGit(): FakeGit {
   const calls: string[] = [];
   const statuses = new Map<string, GitStatus>();
   const repos = new Set<string>();
+  const previews = new Map<string, CommitPreview>();
   const state: FakeGit = {
     calls,
     statuses,
     repos,
     failNext: null,
+    previews,
+    gh: null,
     on(machine) {
       const fail = () => {
         const reason = state.failNext;
@@ -392,6 +399,31 @@ export function fakeGit(): FakeGit {
           const committed = Boolean(status.dirty) || status.untracked > 0;
           statuses.set(path, { ...status, dirty: false, untracked: 0, unpushed: 0, upstream: `origin/${status.branch}` });
           return ok({ committed, pushed: true, branch: status.branch, reason: null });
+        },
+        preview: async (path) => {
+          calls.push(`${machine}:preview:${path}`);
+          return ok(previews.get(path) ?? { isGit: true, branch: 'main', defaultBranch: 'main', remoteUrl: null, upstream: null, ahead: 0, head: 'h0', files: [], patch: '', truncated: false });
+        },
+        commit: async (path, input) => {
+          calls.push(`${machine}:commit:${path}:${input.authorName}<${input.authorEmail}>:${input.message.split('\n')[0]}`);
+          const p = previews.get(path);
+          if (!p || p.files.length === 0) return ok({ committed: false, sha: null, reason: '没有改动' });
+          const sha = `c${calls.length}`;
+          previews.set(path, { ...p, files: [], patch: '', head: sha, ahead: p.ahead + 1 });
+          return ok({ committed: true, sha, reason: null });
+        },
+        push: async (path) => {
+          calls.push(`${machine}:push:${path}`);
+          const p = previews.get(path);
+          if (!p?.remoteUrl) return ok({ pushed: false, branch: p?.branch ?? null, reason: '没有 origin' });
+          previews.set(path, { ...p, ahead: 0, upstream: `origin/${p.branch}` });
+          return ok({ pushed: true, branch: p.branch, reason: null });
+        },
+        gh: async (path, request) => {
+          calls.push(`${machine}:gh:${request.action}:${path}`);
+          if (!state.gh) return ok({ ok: false as const, reason: 'gh 没装' });
+          const number = request.action === 'create' ? state.gh.next++ : request.number;
+          return ok({ ok: true as const, pr: { number, url: `https://github.com/o/r/pull/${number}`, state: request.action === 'create' ? 'open' : state.gh.state, headSha: null, mergedAt: state.gh.state === 'merged' && request.action === 'view' ? 1 : null } });
         },
         remove: async (path, kind, options) => {
           calls.push(`${machine}:remove:${kind}:${path}${options?.force ? ':force' : ''}`);

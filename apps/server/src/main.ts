@@ -14,9 +14,11 @@ import { serveAssetFetch } from './asset-relay.ts';
 import { createMemorySources } from './memory-sources.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
-import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
+import { createGitTextWriter } from './git-text-writer.ts';
+import { createGitHubApi } from './github-api.ts';
 import { createModelDistiller } from './model-distiller.ts';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
@@ -27,6 +29,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createSessionLane,
   createContextService,
   createWorkspaceFilesService,
+  createGitWorkflowService,
   createMessageToolProvider,
   createMemoryService,
   checkProviderModel,
@@ -284,6 +287,19 @@ setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref()
 const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
 const providerRepo = createSqliteProviders(store.db, secretKey);
 const projectTeamOf = async (projectId: string) => (await store.projects.byId(projectId as ProjectId))?.teamId ?? null;
+// 提交 / 推送 / PR（ADR 0027 阶段 2）：文字由提炼模型写（D4），PR 走团队 token → gh → 链接（D3）
+const gitService = createGitWorkflowService({
+  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,
+  workLog: store.workLog, git: deps.git,
+  pullRequests: createSqlitePullRequests(store.db),
+  tokens: createSqliteGitHostTokens(store.db, secretKey),
+  host: createGitHubApi({ base: readEnv('HUB_GITHUB_API') ?? undefined }),
+  writer: createGitTextWriter({ settings: store.memory.settings, providers: providerRepo, projectTeam: projectTeamOf, audit: store.audit, now: () => Date.now(), log }),
+  hubTeamId: async () => (await store.users.firstClusterAdmin())?.teamId ?? null,
+  now: () => Date.now()
+});
+// PR 状态每 10 分钟同步一次（打开任务时也会顺手同步）
+setInterval(() => void gitService.syncDue(20).catch(() => undefined), 600_000).unref();
 const memoryRegistry = defaultMemoryRegistry();
 for (const source of createMemorySources(deps, store.groups)) memoryRegistry.source(source);
 // 会后提炼（ADR 0024）：项目选了模型就由 hub 直接调它，没选 / 失败回落规则版
@@ -684,6 +700,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   groups: { groups: groupChat, agents: persistentAgents },
   context: contextService,
   files: filesService,
+  git: gitService,
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,

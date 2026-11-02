@@ -6,6 +6,7 @@ import { DialogShell } from './dialog-shell.tsx';
 import { AuditView } from './admin/audit.tsx';
 import { TokensDialog } from './tokens-dialog.tsx';
 import { TeamGrants, TeamRoles, roleName } from './team-roles.tsx';
+import { GitHostTokenPanel } from './git-dialog.tsx';
 
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
@@ -771,6 +772,7 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
               </div>
             </details>
           )}
+          {data!.canManage && <GitHostTokenPanel />}
           {data!.canManage && !me?.clusterAdmin && (
             <details className="mt-4">
               <summary className="cursor-pointer text-meta text-secondary">团队安全审计</summary>

@@ -9,6 +9,10 @@ import {
   wsInspect,
   wsRemove,
   wsSaveWip,
+  wsPreview,
+  wsCommit,
+  wsPush,
+  wsGh,
   wsStatus,
   filesChanged,
   filesChanges,
@@ -75,6 +79,13 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined): void 
   port.handle(wsAddWorktree, async (input) => unwrap(await need().addWorktree(input)));
   port.handle(wsStatus, async ({ path }) => unwrap(await need().status(path)));
   port.handle(wsSaveWip, async ({ path, message }) => unwrap(await need().saveWip(path, message)));
+  port.handle(wsPreview, async ({ path, maxPatchBytes }) => {
+    const preview = unwrap(await need().preview(path, maxPatchBytes));
+    return { ...preview, files: [...preview.files] };
+  });
+  port.handle(wsCommit, async ({ path, ...input }) => unwrap(await need().commit(path, input)));
+  port.handle(wsPush, async ({ path }) => unwrap(await need().push(path)));
+  port.handle(wsGh, async ({ path, request }) => unwrap(await need().gh(path, request)));
   port.handle(wsRemove, async ({ path, kind, force }) => unwrap(await need().remove(path, kind, { force: force === true })));
 }
 

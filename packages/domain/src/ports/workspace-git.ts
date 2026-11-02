@@ -47,6 +47,59 @@ export interface SaveWipOutcome {
   readonly reason: string | null;
 }
 
+/** 提交前看一眼（ADR 0027 §2）：分支、远端、改了哪些、diff（截断）。 */
+export interface CommitPreview {
+  readonly isGit: boolean;
+  readonly branch: string | null;
+  /** origin 的默认分支（origin/HEAD）；拿不到退回 main / master 里存在的那个；都没有 null。 */
+  readonly defaultBranch: string | null;
+  readonly remoteUrl: string | null;
+  readonly upstream: string | null;
+  /** 本地有、upstream 没有的提交数（没 upstream = 相对默认分支）。 */
+  readonly ahead: number;
+  readonly head: string | null;
+  /** 工作区的改动（含未跟踪，showUntrackedFiles=normal）。 */
+  readonly files: readonly { readonly path: string; readonly status: string }[];
+  readonly patch: string;
+  readonly truncated: boolean;
+}
+
+export interface CommitInput {
+  readonly message: string;
+  /** 操作人 hub 账号的身份（ADR 0027 D5）；committer 仍是这台机器的 git 身份。 */
+  readonly authorName: string;
+  readonly authorEmail: string;
+}
+
+export interface CommitOutcome {
+  readonly committed: boolean;
+  readonly sha: string | null;
+  readonly reason: string | null;
+}
+
+export interface PushOutcome {
+  readonly pushed: boolean;
+  readonly branch: string | null;
+  readonly reason: string | null;
+}
+
+/** Worker 上 gh CLI 建 / 查 PR（ADR 0027 D3）。gh 没装 / 没登录不是错误：ok=false + 原因。 */
+export type GhRequest =
+  | { readonly action: 'create'; readonly base: string; readonly head: string; readonly title: string; readonly body: string }
+  | { readonly action: 'view'; readonly number: number };
+export type GhOutcome =
+  | { readonly ok: true; readonly pr: RemotePullRequest }
+  | { readonly ok: false; readonly reason: string };
+
+/** 托管平台上一个 PR 的状态（gh / REST 都翻成这个）。 */
+export interface RemotePullRequest {
+  readonly number: number;
+  readonly url: string;
+  readonly state: 'open' | 'closed' | 'merged';
+  readonly headSha: string | null;
+  readonly mergedAt: number | null;
+}
+
 export type RemoveKind = 'worktree' | 'directory';
 
 /** force：人已经二次确认过会丢掉的东西，不再检查改动。 */
@@ -69,6 +122,14 @@ export interface WorkspaceGit {
   status(path: string): Promise<Result<GitStatus, DomainError>>;
   /** 把所有改动（含未跟踪）提交成一个 WIP 提交，再 `push -u origin <当前分支>`。 */
   saveWip(path: string, message: string): Promise<Result<SaveWipOutcome, DomainError>>;
+  /** ADR 0027 §2：提交前预览（patch 截断到 maxPatchBytes）。 */
+  preview(path: string, maxPatchBytes: number): Promise<Result<CommitPreview, DomainError>>;
+  /** `add -A` + `commit --author`；没改动 = committed:false。 */
+  commit(path: string, input: CommitInput): Promise<Result<CommitOutcome, DomainError>>;
+  /** `push -u origin <当前分支>`；没 origin / 被拒 = pushed:false + 原因。 */
+  push(path: string): Promise<Result<PushOutcome, DomainError>>;
+  /** 用这台机器上已登录的 gh。 */
+  gh(path: string, request: GhRequest): Promise<Result<GhOutcome, DomainError>>;
   /** worktree 用 `git worktree remove`（不 --force，分支保留）；directory 只删平台建的临时目录。删之前再查一次。 */
   remove(path: string, kind: RemoveKind, options?: RemoveOptions): Promise<Result<RemoveOutcome, DomainError>>;
 }

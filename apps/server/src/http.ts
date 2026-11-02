@@ -1,7 +1,8 @@
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
-import type { ContextService, WorkspaceFilesService } from '@agent-hub/domain';
+import { installGitRoutes } from './git-routes.ts';
+import type { ContextService, WorkspaceFilesService, GitWorkflowService } from '@agent-hub/domain';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { Hono } from 'hono';
@@ -166,6 +167,7 @@ export interface AppOptions {
   readonly context?: ContextService;
   /** 工作空间文件浏览（ADR 0025）。 */
   readonly files?: WorkspaceFilesService;
+  readonly git?: GitWorkflowService;
   /** 开放 API（/openapi/v1 + MCP，ADR 0015）与设置页的令牌管理；要有账号体系。 */
   readonly openApi?: OpenApiOptions & { readonly manage: ApiTokenDeps };
 }
@@ -243,6 +245,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.groups) installGroupRoutes(app, options.groups, subjectOf);
     if (options.context) installContextRoutes(app, options.context, subjectOf);
     if (options.files) installFilesRoutes(app, options.files, subjectOf);
+    if (options.git) installGitRoutes(app, options.git, subjectOf);
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.assets) installAssetMarket(app, options.assets.deps, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);

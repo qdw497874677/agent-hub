@@ -90,6 +90,56 @@ export const wsSaveWip = method(
   z.object({ committed: z.boolean(), pushed: z.boolean(), branch: z.string().nullable(), reason: z.string().nullable() })
 );
 
+/* ── ADR 0027 阶段 2：提交 / 推送 / gh 开 PR ── */
+const remotePr = z.object({
+  number: z.number().int(),
+  url: z.string(),
+  state: z.enum(['open', 'closed', 'merged']),
+  headSha: z.string().nullable(),
+  mergedAt: z.number().nullable()
+});
+
+export const wsPreview = method(
+  'ws.preview',
+  z.object({ path: z.string(), maxPatchBytes: z.number().int().min(0).max(1 << 20) }),
+  z.object({
+    isGit: z.boolean(),
+    branch: z.string().nullable(),
+    defaultBranch: z.string().nullable(),
+    remoteUrl: z.string().nullable(),
+    upstream: z.string().nullable(),
+    ahead: z.number().int(),
+    head: z.string().nullable(),
+    files: z.array(z.object({ path: z.string(), status: z.string() })),
+    patch: z.string(),
+    truncated: z.boolean()
+  })
+);
+
+export const wsCommit = method(
+  'ws.commit',
+  z.object({ path: z.string(), message: z.string().min(1).max(8000), authorName: z.string().max(200), authorEmail: z.string().max(320) }),
+  z.object({ committed: z.boolean(), sha: z.string().nullable(), reason: z.string().nullable() })
+);
+
+export const wsPush = method(
+  'ws.push',
+  z.object({ path: z.string() }),
+  z.object({ pushed: z.boolean(), branch: z.string().nullable(), reason: z.string().nullable() })
+);
+
+export const wsGh = method(
+  'ws.gh',
+  z.object({
+    path: z.string(),
+    request: z.discriminatedUnion('action', [
+      z.object({ action: z.literal('create'), base: z.string().min(1), head: z.string().min(1), title: z.string().min(1).max(300), body: z.string().max(65_536) }),
+      z.object({ action: z.literal('view'), number: z.number().int().positive() })
+    ])
+  }),
+  z.union([z.object({ ok: z.literal(true), pr: remotePr }), z.object({ ok: z.literal(false), reason: z.string() })])
+);
+
 /** Worker 删之前会再查一次；有改动就回 removed:false + 原因（不是错误）。 */
 export const wsRemove = method(
   'ws.remove',
