@@ -1,3 +1,5 @@
+import type { WorkspaceSweepStore } from '../ports/workspace-sweeps.ts';
+import type { PullRequestRepository } from '../ports/pull-requests.ts';
 import type { SessionId } from '../ids.ts';
 import type { AccessPolicy } from './authorization.ts';
 import type { Workspace } from '../workspace.ts';
@@ -77,6 +79,15 @@ export interface Deps {
    * 只在新会话第一句垫一次，续聊 / resume 不再垫。不给 = 不垫。
    */
   readonly sessionInstructions?: (sessionId: string) => Promise<string | null>;
+  /** 清理增强（ADR 0027 §3）：规则 / 记录 / PR 状态 / 删检查点。不给 = 只按原规则（任务结束且干净）。 */
+  readonly cleanup?: CleanupExtras;
+}
+
+export interface CleanupExtras {
+  readonly sweeps: WorkspaceSweepStore;
+  readonly pullRequests: Pick<PullRequestRepository, 'byWorkspace' | 'byTask'>;
+  /** 删工作空间（人点的）时把它会话的检查点 ref 一起删；自动清理只删 checkout，不调它。 */
+  readonly dropCheckpoints?: (sessionId: string) => Promise<void>;
 }
 
 export interface MemoryGuidance {

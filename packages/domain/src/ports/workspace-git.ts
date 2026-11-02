@@ -19,6 +19,10 @@ export interface GitStatus {
   readonly unpushed: number;
   readonly branch: string | null;
   readonly upstream: string | null;
+  /** 当前 HEAD 提交号（ADR 0027 §3：squash 合并按「HEAD == PR 最后的 head_sha」判定）。老 Worker 不报 = undefined。 */
+  readonly head?: string | null;
+  /** 目录占多大（字节，清理报告用）；量不出来 / 老 Worker = undefined / null。 */
+  readonly sizeBytes?: number | null;
 }
 
 export interface CloneInput {
@@ -105,6 +109,11 @@ export type RemoveKind = 'worktree' | 'directory';
 /** force：人已经二次确认过会丢掉的东西，不再检查改动。 */
 export interface RemoveOptions {
   readonly force?: boolean;
+  /**
+   * ADR 0027 §3：PR 已被 squash / rebase 合并时，本地提交在远端「看起来没合并」。
+   * 给了这个提交号且 HEAD 正好是它 → 不把「未推送的提交」当成删除的理由（未提交 / 未跟踪仍然保护）。
+   */
+  readonly mergedHead?: string;
 }
 
 /** 删除的结果：被拒（有改动）不是错误，原因写在 reason 里，hub 据此标 kept。 */

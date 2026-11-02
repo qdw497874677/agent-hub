@@ -91,6 +91,7 @@
 1. **P1 checkpoint + 本轮 diff**（约 3–4 天）：Worker RPC、表、`runTurn` 挂钩、改动页切换。是回滚的前提。
 2. **P2 提交/推送/PR**（约 3–5 天）：`PullRequestProvider`（D3）、`CommitMessageWriter`、Git 菜单、PR 状态同步。
 3. **P3 清理增强**（约 2 天）：依赖 P2 的 PR 状态；报告页、自动重建测试。
+   - 已实现：`workspace_cleanup_policies / workspace_sweep_runs / workspace_sweep_items` 三表；策略 `GET/PUT /api/projects/:id/cleanup`（idleDays 1–365 或 null），`POST …/cleanup/sweep` 手动清理，`GET …/cleanup/records` 记录 + 孤儿目录（只列不删）。触发点：启动、每小时、任务完成。按 PR head sha 判定已合并（squash 也算），状态检查强制 `status.showUntrackedFiles=normal`；只删工作目录，分支与历史保留，删除时同时丢弃该空间所有会话的 checkpoint ref；下次开任务从分支原路径重建。同一 hub 内清理串行执行。
 4. **P4 回滚到消息**（约 3 天）：依赖 P1。
 5. **P5 worktree 改进**（约 2–3 天）：长任务 RPC + 进度、setup script、submodule、改名、位置、哈希名。可与 P3/P4 并行。
 

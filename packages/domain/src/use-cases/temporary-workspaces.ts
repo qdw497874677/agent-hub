@@ -1,7 +1,7 @@
 import type { Subject } from '../access.ts';
 import type { Project } from '../project.ts';
 import { isUsable, newWorkspace, type Workspace } from '../workspace.ts';
-import { asProjectId, asTaskId, newId } from '../ids.ts';
+import { asProjectId, asTaskId, newId, type TaskId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -62,6 +62,12 @@ export async function prepareTemporaryWorkspaceUseCase(
   if (!allowed.ok) return allowed;
   const machine = resolved.value;
 
+  // ADR 0027 §3：清理只删了 checkout，分支还在 → 同一台机器上按原分支、原目录重建，会话历史 / 检查点接得上
+  if (!command.branch) {
+    const revived = await reviveRemovedWorktree(deps, task.id, machine);
+    if (revived) return ok(revived);
+  }
+
   const id = shortId();
   const name = `${branchSlug(task.title)}-${id}`;
   const base = await gitBase(deps, project, machine, command);
@@ -112,6 +118,25 @@ export async function prepareTemporaryWorkspaceUseCase(
   if (!created.ok) return created;
   await deps.workspaces.save(created.value);
   return ok(created.value);
+}
+
+/** 这个任务在这台机器上被清理掉的 worktree（最近的那个）：按原分支检出回原路径。失败（分支被删了…）= null，调用方照常新开。 */
+async function reviveRemovedWorktree(
+  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces'>,
+  taskId: TaskId,
+  machine: Machine
+): Promise<Workspace | null> {
+  const gone = (await deps.workspaces.byTask(taskId))
+    .filter((w) => w.state === 'removed' && w.source === 'worktree' && w.branch && w.baseWorkspaceId && w.workerId === machine.workerId)
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  if (!gone?.branch || !gone.baseWorkspaceId) return null;
+  const base = await deps.workspaces.byId(gone.baseWorkspaceId);
+  if (!base || !isUsable(base)) return null;
+  const made = await gitOn(deps, machine.route).addWorktree({ repoPath: base.path, path: gone.path, branch: gone.branch, existing: true });
+  if (!made.ok) return null;
+  const revived: Workspace = { ...gone, path: made.value.path, branch: made.value.branch, state: 'ready', keptReason: null, updatedAt: deps.now() };
+  await deps.workspaces.save(revived);
+  return revived;
 }
 
 /** worktree 从哪个长期工作空间长：这台机器上最近建的 git 长期工作空间；没有但项目有仓库就先 clone 一个。 */

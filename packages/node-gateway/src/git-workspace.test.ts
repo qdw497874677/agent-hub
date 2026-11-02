@@ -45,7 +45,10 @@ test('clone → inspect → worktree → status → remove：有改动拒删，�
   // 新分支什么都没做：干净（提交都在 main 上）
   const clean = await git.status(tree);
   assert.ok(clean.ok);
-  assert.deepEqual({ ...clean.value, upstream: null }, { dirty: false, untracked: 0, unpushed: 0, branch: 'agent-hub/fix-1a2b', upstream: null });
+  const { head, sizeBytes, ...plain } = clean.value;
+  assert.match(head ?? '', /^[0-9a-f]{40}$/);
+  assert.ok((sizeBytes ?? 0) > 0);
+  assert.deepEqual({ ...plain, upstream: null }, { dirty: false, untracked: 0, unpushed: 0, branch: 'agent-hub/fix-1a2b', upstream: null });
 
   // 未跟踪文件 → 拒删
   await writeFile(join(tree, 'new.txt'), 'x');
@@ -74,6 +77,32 @@ test('clone → inspect → worktree → status → remove：有改动拒删，�
   const resumed = await git.addWorktree({ repoPath: cloned.value.path, path: tree, branch: 'agent-hub/fix-1a2b' });
   assert.ok(resumed.ok, resumed.ok ? '' : resumed.error.message);
   assert.equal(existsSync(join(tree, 'new.txt')), true);
+});
+
+test('squash 合并：HEAD 等于 PR head 才允许删「只在本分支」的提交；showUntrackedFiles=no 也看得见未跟踪文件', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'agent-hub'), name: 'demo' });
+  assert.ok(cloned.ok);
+  sh(cloned.value.path, 'config', 'status.showUntrackedFiles', 'no');
+  const tree = join(root, 'agent-hub', '.worktrees', 'demo', 'sq');
+  assert.ok((await git.addWorktree({ repoPath: cloned.value.path, path: tree, branch: 'agent-hub/sq' })).ok);
+  await writeFile(join(tree, 'a.txt'), 'a');
+  const seen = await git.status(tree);
+  assert.ok(seen.ok && seen.value.untracked === 1, JSON.stringify(seen));
+  sh(tree, 'add', '.');
+  sh(tree, 'commit', '-qm', 'feat');
+  const head = sh(tree, 'rev-parse', 'HEAD').trim();
+  const wrong = await git.remove(tree, 'worktree', { mergedHead: '0'.repeat(40) });
+  assert.ok(wrong.ok && !wrong.value.removed, '别的 head 不算');
+  await writeFile(join(tree, 'later.txt'), 'x');
+  const dirty = await git.remove(tree, 'worktree', { mergedHead: head });
+  assert.ok(dirty.ok && !dirty.value.removed, '合并后又有未跟踪文件：保留');
+  sh(tree, 'clean', '-fq');
+  const gone = await git.remove(tree, 'worktree', { mergedHead: head });
+  assert.ok(gone.ok && gone.value.removed, JSON.stringify(gone));
+  assert.equal(existsSync(tree), false);
+  assert.match(sh(cloned.value.path, 'branch', '--list', 'agent-hub/sq'), /sq/, '分支保留');
 });
 
 test('非 git 临时目录：空的删，有文件的保留；边界外的一律拒绝', async () => {

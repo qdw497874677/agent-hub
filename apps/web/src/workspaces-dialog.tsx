@@ -9,6 +9,7 @@ import { ProjectAssets } from './project-assets.tsx';
 import { ProjectContext } from './project-context.tsx';
 import { ProjectDistill } from './project-distill.tsx';
 import { LinkWorkspaces } from './link-workspaces.tsx';
+import { WorkspaceCleanup } from './workspace-cleanup.tsx';
 
 type Pending = { workspace: WorkspaceDto; mode: 'unlink' | 'unregister' | 'delete' | 'force' };
 
@@ -35,7 +36,6 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
       <ProjectDistill projectId={project.id} />
       <h3 className="mb-1 text-sub text-primary">工作空间</h3>
       <p className="mb-1 text-meta text-tertiary">本项目能在这些目录里开任务。取消关联不会删目录，也不影响其他项目。</p>
-      <p className="mb-3 text-meta text-tertiary">任务做完或放弃后，临时工作空间会自动删除；有没保存的改动的会保留下来，等你决定。</p>
       {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
       {list.data && groups.size === 0 ? <p className="text-meta text-tertiary">还没有工作空间。</p> : null}
       {[...groups].map(([workerId, views]) => (
@@ -49,6 +49,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
         </section>
       ))}
       <LinkWorkspaces projectId={project.id} linked={(list.data ?? []).map((view) => view.workspace.id)} />
+      <WorkspaceCleanup projectId={project.id} />
       {pending ? <ConfirmRemove pending={pending} projectId={project.id} onDone={() => setPending(null)} /> : null}
     </DialogShell>
   );

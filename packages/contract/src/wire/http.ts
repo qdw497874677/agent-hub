@@ -115,6 +115,13 @@ export const createTeamWorkspaceRequest = z.object({
   projectId: z.string().optional()
 });
 
+/** 项目清理规则（ADR 0027 阶段 3 / D6）。 */
+export const cleanupPolicyRequest = z.object({
+  prMerged: z.boolean().optional(),
+  taskEndedClean: z.boolean().optional(),
+  idleDays: z.number().int().nullable().optional()
+});
+
 export const removeWorkspaceRequest = z.object({
   deleteDirectory: z.boolean().default(false),
   force: z.boolean().default(false)
