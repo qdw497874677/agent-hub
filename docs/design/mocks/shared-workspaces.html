@@ -1,0 +1,54 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>共享工作空间 mock</title>
+<style>
+body{margin:0;background:#16181b;color:#e6e6e6;font:14px/1.5 system-ui,"Noto Sans CJK SC",sans-serif}
+.wrap{max-width:860px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:0 0 4px}.sub{color:#8b9097;font-size:12px}
+.nav{display:flex;gap:16px;border-bottom:1px solid #2c2f34;padding:10px 16px;font-size:13px;color:#8b9097}.nav b{color:#e6e6e6;border-bottom:2px solid #c99a5b;padding-bottom:8px}
+.grp{margin-top:16px;color:#8b9097;font-size:12px}
+.card{background:#1d2024;border:1px solid #2c2f34;border-radius:6px;padding:10px 12px;margin-top:8px}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:flex-start;flex-wrap:wrap}
+.path{font-family:ui-monospace,monospace;font-size:13px;word-break:break-all}
+.tag{display:inline-block;border:1px solid #3a3e44;border-radius:10px;padding:0 8px;font-size:12px;color:#b8bcc2;margin:4px 4px 0 0}
+.btn{border:1px solid #3a3e44;background:none;color:#e6e6e6;border-radius:4px;padding:5px 10px;font-size:13px;min-height:32px}
+.pri{background:#c99a5b;color:#1a1a1a;border-color:#c99a5b}.danger{color:#e07a6b}
+.warn{color:#d9b25c;font-size:12px}.muted{color:#8b9097;font-size:12px}
+.dialog{max-width:520px;margin:24px auto;background:#1d2024;border:1px solid #3a3e44;border-radius:8px;padding:16px}
+.opt{border:1px solid #2c2f34;border-radius:6px;padding:8px 10px;margin-top:6px}.opt.sel{border-color:#c99a5b}
+.sec{margin-top:14px;font-size:12px;color:#8b9097}
+</style>
+<body><div id="app"></div>
+<script>
+const v=new URLSearchParams(location.search).get('view')||'team';
+const ws=[
+ {m:'aliyun-server-本机',p:'/root/code/agent-hub',git:'master',pr:['agent-hub 前端改版','性能优化'],run:'2 个会话运行中（2 个项目）'},
+ {m:'aliyun-server-本机',p:'/root/agent-hub-workspaces/docs-site',git:'main',pr:['文档站'],run:''},
+ {m:'grok-bot-vm',p:'/workspace/agent-hub',git:'feat/x',pr:['agent-hub 前端改版'],run:''},
+ {m:'grok-bot-vm',p:'/workspace/scratch',git:'',pr:[],run:''}];
+const tags=a=>a.length?a.map(x=>`<span class="tag">${x}</span>`).join(''):'<span class="muted">未关联任何项目</span>';
+const nav=t=>`<div class="nav"><span${t=='p'?' style="color:#e6e6e6"':''}>项目</span><b>${t=='w'?'工作空间':'项目设置'}</b><span>团队</span></div>`;
+let h='';
+if(v=='team'){h=nav('w')+`<div class="wrap"><div class="row"><div><h1>团队工作空间</h1><div class="sub">机器上的目录。一个工作空间可以给多个项目用。</div></div><button class="btn pri">＋ 新建工作空间</button></div>`;
+ let last='';for(const w of ws){if(w.m!=last){h+=`<div class="grp">🖥 ${w.m}</div>`;last=w.m}
+ h+=`<div class="card"><div class="row"><div class="path">${w.p}</div><div><button class="btn">关联到项目</button> <button class="btn danger">删除</button></div></div>
+ <div class="muted">${w.git?'git · '+w.git:'不是 git 仓库'}</div><div><span class="muted">用在：</span>${tags(w.pr)}</div>${w.run?`<div class="warn">⚠ ${w.run}</div>`:''}</div>`}
+ h+=`<div class="card" style="border-color:#e07a6b55"><b>删除确认（示意）</b><div class="muted">/root/code/agent-hub 正在被这些项目使用：</div>${tags(ws[0].pr)}<div class="muted">删除后这些项目都不能再在这里开会话。默认只移除登记，不删目录。</div><div style="margin-top:8px"><button class="btn">取消</button> <button class="btn danger">移除登记</button></div></div></div>`}
+if(v=='project'){h=nav('s')+`<div class="wrap"><h1>agent-hub 前端改版 · 关联工作空间</h1><div class="sub">本项目能在这些目录里开会话。取消关联不会删目录，也不影响其他项目。</div>
+ <div style="margin-top:12px"><button class="btn pri">关联已有</button> <button class="btn">新建并关联</button></div>`;
+ for(const w of ws.filter(w=>w.pr.includes('agent-hub 前端改版')))h+=`<div class="card"><div class="row"><div><div class="path">${w.p}</div><div class="muted">🖥 ${w.m} · git · ${w.git}</div></div><button class="btn">取消关联</button></div>${(o=>o.length?`<div><span class="muted">也用在：</span>${tags(o)}</div>`:'<div class="muted">只有本项目在用</div>')(w.pr.filter(x=>x!='agent-hub 前端改版'))}</div>`;
+ h+=`<div class="sec">临时工作空间（归任务所有，不能共享）</div><div class="card"><div class="path">/workspace/agent-hub/.worktrees/fix-login-3fa2</div><div class="muted">任务「修登录」· 用完满足条件会自动清理</div></div>
+ <div class="dialog"><b>关联已有工作空间</b><div class="muted">团队里你能看到的、还没关联到本项目的：</div>
+ <div class="opt sel"><div class="path">/root/agent-hub-workspaces/docs-site</div><div class="muted">🖥 aliyun-server-本机 · 用在：文档站</div></div>
+ <div class="opt"><div class="path">/workspace/scratch</div><div class="muted">🖥 grok-bot-vm · 未关联任何项目</div></div>
+ <div style="margin-top:10px;text-align:right"><button class="btn">取消</button> <button class="btn pri">关联</button></div></div></div>`}
+if(v=='start'){h=`<div class="wrap"><div class="dialog"><b>在哪台机器、哪个工作空间干活？</b><div class="muted">任务：修登录 · 项目：agent-hub 前端改版</div>
+ <div class="sec">本项目已关联</div>
+ <div class="opt sel"><div class="path">/root/code/agent-hub</div><div class="muted">🖥 aliyun-server-本机 · git master</div><div class="warn">⚠ 这里已有 2 个运行中的会话（本项目 1、性能优化 1），可能互相改到同一文件</div></div>
+ <div class="opt"><div class="path">/workspace/agent-hub</div><div class="muted">🖥 grok-bot-vm · git feat/x</div></div>
+ <div class="sec">团队里的其他工作空间</div>
+ <div class="opt"><div class="path">/root/agent-hub-workspaces/docs-site</div><div class="muted">🖥 aliyun-server-本机 · 用在：文档站 · 选它会关联到本项目</div></div>
+ <div class="sec">新建</div><div class="opt">＋ 新建持久工作空间 <span class="muted">（建好后关联到本项目，团队里也能用）</span></div>
+ <div class="opt">＋ 新建临时工作空间 <span class="muted">（只给这个任务，用完清理）</span></div>
+ <div style="margin-top:12px;text-align:right"><button class="btn">取消</button> <button class="btn pri">开始</button></div></div></div>`}
+document.getElementById('app').innerHTML=h;
+</script></body></html>
