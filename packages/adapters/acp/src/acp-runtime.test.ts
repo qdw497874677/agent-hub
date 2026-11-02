@@ -120,11 +120,12 @@ test('acp runtime: 只报老式 models/modes 的 agent（Hermes）→ 选项照�
   await session.dispose();
 });
 
-test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏后的 stderr', async () => {
+test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏后的 stderr', async (t) => {
   const runtime = createAcpRuntime(config);
   const started = await runtime.start(spec());
   assert.ok(started.ok);
   const session = started.value;
+  t.after(() => session.dispose());
   const events = collectUntilEnded(session);
   assert.ok((await session.prompt({ text: 'please-empty', parts: [] })).ok);
   const ended = (await events).at(-1);
@@ -137,11 +138,12 @@ test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏�
   await session.dispose();
 });
 
-test('acp runtime: refusal / max_tokens 各自报失败原因，不再当成完成', async () => {
+test('acp runtime: refusal / max_tokens 各自报失败原因，不再当成完成', async (t) => {
   const runtime = createAcpRuntime(config);
   const started = await runtime.start(spec());
   assert.ok(started.ok);
   const session = started.value;
+  t.after(() => session.dispose());
   let events = collectUntilEnded(session);
   assert.ok((await session.prompt({ text: 'please-refuse', parts: [] })).ok);
   let ended = (await events).at(-1);

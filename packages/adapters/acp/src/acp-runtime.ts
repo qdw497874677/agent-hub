@@ -273,6 +273,8 @@ class AcpSession implements RuntimeSession {
         sessionId: this.agentSessionId,
         prompt: blocks.value
       });
+      // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
+      if (!this.produced) await new Promise((resolve) => setTimeout(resolve, 200));
       this.queue.push(endedFromStopReason(result['stopReason'], { produced: this.produced, stderrTail: this.produced ? [] : this.stderr.tail() }));
       return { ok: true, value: undefined };
     } catch (error) {
