@@ -1,6 +1,6 @@
 # ADR 0027：git 工作流（每轮 checkpoint、提交/推送/PR、回滚到消息、清理增强、worktree 改进）
 
-- 状态：proposed（2026-11-02，等 David 定「待拍板」D1–D10）
+- 状态：accepted（2026-11-02 David 定了 D1–D10，见末尾「定稿」）
 - 相关：ADR 0004（按会话串行事件）、ADR 0006（提示词是 journal 事件）、ADR 0011/0017（RBAC）、ADR 0012（fork）、ADR 0013（hub 模型提供商）、ADR 0024（提炼模型选择）、ADR 0025（工作空间文件/改动页）、ADR 0026（团队工作空间、git 配方在工作空间上）、docs/design/workspaces.md §3/§5
 - 参考：[pingdotgg/t3code](https://github.com/pingdotgg/t3code)（MIT，Copyright 2026 T3 Tools Inc.，调研版本 `ac8dce0c`）。下文标【t3】的是借鉴其思路；本 ADR 不直接复制其代码，若实现时移植代码片段，须在文件头保留其 MIT 版权声明并在 `THIRD_PARTY_NOTICES` 登记。
 
@@ -108,3 +108,16 @@
 - **D8 不支持原生 rewind 的 runtime**：从该消息之前 fork 出新会话（ADR 0012，带工作日志）／ 不提供「只回滚对话」。
 - **D9 回滚文件范围**：仅临时工作空间，共享/并发时拒绝 ／ 长期工作空间也允许（需二次确认）。
 - **D10 worktree 默认位置**：保持仓库旁 `.worktrees/`（新增 Worker 配置可改）／ 改为 Worker 数据目录 `<roots[0]>/agent-hub-worktrees/<repo>/<branch>`（只影响新建）。
+
+## 定稿（2026-11-02 David）
+
+- D1：`refs/agent-hub/checkpoints/<sessionId>/<n>`；会话结束后保留 30 天（每小时巡检删过期 ref 和记录），工作空间移除时一并删除。
+- D2：每轮前后各一次。
+- D3：**两者都支持**：Worker 上已登录的 `gh` CLI，以及 hub 团队级 GitHub token。token 作为 hub 密钥存放：团队设置 →「代码托管」里由团队 owner 配置，和现有模型提供商密钥同样**加密落盘**（复用 ADR 0013 的密钥加密），接口只回「已配置 / 末 4 位」，永不回显、不写日志、不下发给 Worker；hub 用它直调 GitHub REST API 建 PR。选择顺序：团队配了 token → 用 token；否则 → Worker 的 `gh`；都没有 → 只推送，给出「在 GitHub 上新建 PR」链接。
+- D4：项目提炼模型（ADR 0024），没选或调用失败退回规则版模板。
+- D5：项目 owner + member 有 `git.push`（推送、建 PR），团队可收回；提交用操作人 hub 账号的姓名/邮箱作 `--author`。
+- D6：「PR 已合并」「任务结束且干净」默认开；「闲置 N 天」默认关。
+- D7：保护已跟踪改动 + 未跟踪文件（被忽略的文件可删）。
+- D8：runtime 不支持原生 rewind 时，从该消息之前 fork 新会话（ADR 0012）。
+- D9：文件回滚只限临时工作空间。
+- D10：默认保持仓库旁 `.worktrees/`，Worker 配置 `worktreesDir` 可改。
