@@ -1,5 +1,7 @@
 // 最小的 ACP agent（ndjson over stdio），只给 acp-runtime 的测试用。
 import { createInterface } from 'node:readline';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 const say = (sessionId, text) =>
@@ -27,6 +29,7 @@ const options = () => [
 ];
 const seen = [];
 let pendingPrompt;
+let cwd = process.cwd();
 
 createInterface({ input: process.stdin }).on('line', (line) => {
   const msg = JSON.parse(line);
@@ -43,6 +46,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     case 'authenticate':
       return send({ id: msg.id, result: {} });
     case 'session/new':
+      if (typeof msg.params?.cwd === 'string') cwd = msg.params.cwd;
       if (LEGACY) model = 'custom:a';
       return send({ id: msg.id, result: { sessionId: 's1', ...reported() } });
     case 'session/load':
@@ -64,6 +68,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       const all = msg.params.prompt.map((block) => block.text ?? '').join('\n');
       if (EMPTY_ALL || all.includes('please-empty')) {
         process.stderr.write('Error: 401 Unauthorized from provider, api_key=sk-livesecret1234567890 Authorization: Bearer abcdefghijklmnop\n');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      // please-write:<相对路径>=<一行内容>：在会话目录里追加一行（回合检查点 e2e 用）
+      const writes = [...all.matchAll(/please-write:([\w./-]+)=(\S+)/g)];
+      if (writes.length > 0) {
+        for (const [, file, line] of writes) appendFileSync(join(cwd, file), `${line}\n`);
+        say(msg.params.sessionId, `wrote ${writes.map((w) => w[1]).join(',')}`);
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
       if (all.includes('please-refuse')) return send({ id: msg.id, result: { stopReason: 'refusal' } });

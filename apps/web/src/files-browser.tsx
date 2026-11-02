@@ -11,7 +11,7 @@ import 'diff2html/bundles/css/diff2html.min.css';
  * - 敏感文件默认藏起；打开要确认（服务端记审计）。被忽略的灰显但能展开；.git 不列。
  * - 不缓存（决定 8）：Worker 不在线就如实显示「Worker 离线」。
  */
-type Base = 'session' | 'head';
+type Base = string; // 'session' | 'head' | 'turn' | 'turn:<n>'
 type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null };
 /** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
 export type Reveal = { path: string; line: number | null; nonce: number };
@@ -61,6 +61,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null }: Props) {
   }, [reveal?.nonce]);
 
   const changes = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'changes', base], queryFn: () => filesApi.changes(sessionId, base) });
+  const turns = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'turns'], queryFn: () => filesApi.turns(sessionId) });
   const context = useQuery({ queryKey: [...sk(sessionId), 'context'], queryFn: () => filesApi.context(sessionId), staleTime: 15_000 });
   const others = context.data?.otherProjectSessions ?? 0;
   const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: [...sk(sessionId), 'find', query], queryFn: () => filesApi.find(sessionId, query.trim()) });
@@ -176,9 +177,14 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null }: Props) {
                 <div className="flex items-center gap-2 border-b border-hair px-3 py-2 text-meta text-tertiary">
                   对比
                   <select value={base} onChange={(e) => setBase(e.target.value as Base)} className="rounded bg-card px-1 py-0.5 text-sub text-secondary" data-testid="changes-base">
-                    <option value="session">会话开始时</option>
-                    <option value="head">当前 HEAD</option>
+                    <option value="session">整个会话</option>
+                    <option value="head">对比 HEAD</option>
+                    {(turns.data?.length ?? 0) > 0 ? <option value="turn">本轮（第 {turns.data!.at(-1)!.turn} 轮）</option> : null}
+                    {[...(turns.data ?? [])].reverse().slice(1).map((t) => (
+                      <option key={t.turn} value={`turn:${t.turn}`}>第 {t.turn} 轮{t.files !== null ? ` · ${t.files} 个文件` : ''}</option>
+                    ))}
                   </select>
+                  {base.startsWith('turn') && changed?.target === null ? <span className="text-accent" data-testid="turn-live">进行中</span> : null}
                   {changed?.commit ? <span className="font-mono">{changed.commit.slice(0, 8)}</span> : null}
                 </div>
                 {changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}

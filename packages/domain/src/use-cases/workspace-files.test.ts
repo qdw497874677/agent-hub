@@ -6,7 +6,7 @@ import { asAgentId } from '../ids.ts';
 import { capabilityMatrix, available } from '../capability.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import { ok } from '../result.ts';
-import type { WorkspaceBrowser } from '../ports/workspace-browser.ts';
+import { isCheckpointPrefix, isCheckpointRef, type CheckpointStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
 import { isBrowsablePath, isSensitivePath, looksBinary, isCommitId } from '../workspace-files.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
@@ -27,10 +27,26 @@ function fakeBrowser(tag: string, calls: string[]): WorkspaceBrowser {
     list: async (root, path) => (calls.push(`${tag}:list:${root}:${path}`), ok({ path, entries: [], truncated: false, isGit: true })),
     read: async (_root, path) => (calls.push(`${tag}:read:${path}`), ok({ path, size: 1, modifiedAt: 0, binary: false, truncated: false, bytes: new Uint8Array([65]) })),
     find: async () => ok(['a.ts']),
-    changes: async (_root, base) => (calls.push(`${tag}:changes:${base}`), ok([])),
-    diff: async (_root, path, base) => (calls.push(`${tag}:diff:${path}:${base}`), ok({ path, patch: '', truncated: false, binary: false })),
+    changes: async (_root, base, target) => (calls.push(`${tag}:changes:${base}${target ? `..${target}` : ''}`), ok(target ? [{ path: 'a.ts', status: 'modified' as const, additions: 2, deletions: 1 }] : [])),
+    diff: async (_root, path, base, _max, target) => (calls.push(`${tag}:diff:${path}:${base}${target ? `..${target}` : ''}`), ok({ path, patch: '', truncated: false, binary: false })),
+    checkpoint: async (_root, ref) => (calls.push(`${tag}:checkpoint:${ref.split('/').at(-1)}`), ok(`c0ffee${ref.split('/').at(-1)}`)),
+    dropRefs: async (_root, prefix) => (calls.push(`${tag}:drop:${prefix.split('/').length}`), ok(2)),
     head: async () => ok('abc1234'),
     watch: async (_root, paths) => (calls.push(`${tag}:watch:${paths.join(',')}`), ok(() => calls.push(`${tag}:unwatch`)))
+  };
+}
+
+function memoryCheckpoints(): CheckpointStore {
+  const rows: TurnCheckpoint[] = [];
+  return {
+    list: async (id) => rows.filter((r) => r.sessionId === id),
+    begin: async (row) => void rows.push({ ...row, after: null, endedAt: null, files: null, additions: null, deletions: null }),
+    end: async (id, turn, row) => {
+      const i = rows.findIndex((r) => r.sessionId === id && r.turn === turn);
+      if (i >= 0) rows[i] = { ...rows[i]!, ...row };
+    },
+    staleSessions: async (cutoff) => [...new Set(rows.filter((r) => (r.endedAt ?? r.startedAt) < cutoff).map((r) => r.sessionId))],
+    remove: async (id) => void rows.splice(0, rows.length, ...rows.filter((r) => r.sessionId !== id))
   };
 }
 
@@ -53,6 +69,7 @@ async function world() {
     local: fakeBrowser('local', calls),
     remote: (id) => fakeBrowser(id, calls),
     bases: { get: async (id) => bases.get(id) ?? null, setIfAbsent: async (id, h) => void (bases.has(id) || bases.set(id, h)) },
+    checkpoints: memoryCheckpoints(),
     now: () => clock
   });
   return { ...w, svc, calls, audits, bases, session: session.value, project: project.value, tick: (ms: number) => (clock += ms) };
@@ -116,4 +133,58 @@ test('限流：每人每秒 20 次；watch 最多 200 个点', async () => {
   assert.ok(watched.ok);
   watched.value();
   assert.deepEqual(w.calls.slice(-2), ['local:watch:,src', 'local:unwatch']);
+});
+
+test('回合检查点：开始 / 结束各拍一张，本轮 = 前 → 后，进行中 = 前 → 工作区；没收尾的上一轮先收掉', async () => {
+  const w = await world();
+  const sid = w.session.id;
+  assert.equal((await w.svc.changes(null, sid, 'turn')).ok, false); // 还没有回合
+  const first = await w.svc.beginTurn(sid, 1);
+  assert.equal(first?.turn, 1);
+  const live = await w.svc.changes(null, sid, 'turn');
+  assert.ok(live.ok);
+  assert.equal(live.value.target, null);
+  assert.ok(w.calls.includes('local:changes:c0ffee1'));
+  w.tick(10);
+  await w.svc.endTurn(sid);
+  const turns = await w.svc.turns(null, sid);
+  assert.ok(turns.ok);
+  assert.deepEqual(turns.value.map((t) => [t.turn, t.before, t.after, t.files, t.additions, t.deletions]), [[1, 'c0ffee1', 'c0ffee2', 1, 2, 1]]);
+  const done = await w.svc.changes(null, sid, 'turn', 1);
+  assert.ok(done.ok);
+  assert.equal(done.value.files.length, 1);
+  assert.ok((await w.svc.diff(null, sid, 'a.ts', 'turn', 1)).ok);
+  assert.ok(w.calls.includes('local:diff:a.ts:c0ffee1..c0ffee2'));
+  // 第二轮开了没收（ended 丢了），第三轮开始时先把第二轮收掉
+  await w.svc.beginTurn(sid, 5);
+  await w.svc.beginTurn(sid, 9);
+  const after = await w.svc.turns(null, sid);
+  assert.ok(after.ok);
+  assert.deepEqual(after.value.map((t) => [t.turn, t.promptSeq, t.after !== null]), [[1, 1, true], [2, 5, true], [3, 9, false]]);
+  assert.equal((await w.svc.changes(null, sid, 'turn', 42)).ok, false);
+});
+
+test('检查点保留期：30 天后连 ref 带行一起删；运行中的会话不动', async () => {
+  const w = await world();
+  const sid = w.session.id;
+  await w.svc.beginTurn(sid, 1);
+  await w.svc.endTurn(sid);
+  assert.equal(await w.svc.sweepCheckpoints(), 0);
+  w.tick(31 * 24 * 3600 * 1000);
+  const running = await w.deps.sessions.byId(sid);
+  await w.deps.sessions.save({ ...running!, status: 'running' });
+  assert.equal(await w.svc.sweepCheckpoints(), 0);
+  await w.deps.sessions.save({ ...running!, status: 'done' });
+  assert.equal(await w.svc.sweepCheckpoints(), 1);
+  assert.ok(w.calls.some((c) => c.startsWith('local:drop:')));
+  const turns = await w.svc.turns(null, sid);
+  assert.ok(turns.ok);
+  assert.equal(turns.value.length, 0);
+});
+
+test('检查点 ref 规则：只认 refs/agent-hub/checkpoints/<会话>/<n>', () => {
+  assert.ok(isCheckpointRef('refs/agent-hub/checkpoints/abc-1/3'));
+  for (const bad of ['refs/heads/main', 'refs/agent-hub/checkpoints/../x/1', 'refs/agent-hub/checkpoints/a/b', 'HEAD']) assert.ok(!isCheckpointRef(bad), bad);
+  assert.ok(isCheckpointPrefix('refs/agent-hub/checkpoints/abc/'));
+  assert.ok(!isCheckpointPrefix('refs/agent-hub/checkpoints/'));
 });

@@ -168,7 +168,11 @@ export interface FileEntryDto { name: string; path: string; type: 'file' | 'dir'
 export interface DirectoryPageDto { path: string; entries: FileEntryDto[]; truncated: boolean; isGit: boolean }
 export interface FileContentDto { path: string; size: number; modifiedAt: number; binary: boolean; truncated: boolean; data: string }
 export interface ChangedFileDto { path: string; status: string; additions: number; deletions: number; oldPath?: string }
-export interface FileChangesDto { base: 'session' | 'head'; commit: string | null; files: ChangedFileDto[] }
+export interface FileChangesDto { base: 'session' | 'head' | 'turn'; commit: string | null; target?: string | null; turn?: number | null; files: ChangedFileDto[] }
+export interface TurnCheckpointDto { turn: number; promptSeq: number; before: string; after: string | null; startedAt: number; endedAt: number | null; files: number | null; additions: number | null; deletions: number | null }
+/** 'session' | 'head' | 'turn'（最近一轮）| 'turn:3'（第 3 轮）。 */
+export type DiffBaseSpec = string;
+const baseQuery = (base: DiffBaseSpec) => { const [b, n] = base.split(':'); return `base=${b}${n ? `&turn=${n}` : ''}`; };
 export interface FileDiffDto { path: string; patch: string; truncated: boolean; binary: boolean }
 export interface FilesContextDto { sessionId: string; root: string; workerId: string | null; sessionBase: string | null; otherProjectSessions?: number }
 export const filesApi = {
@@ -177,8 +181,9 @@ export const filesApi = {
   read: (id: string, path: string, confirm: boolean) => call<FileContentDto>(`${sq(id)}/files/content?path=${encodeURIComponent(path)}${confirm ? '&confirm=1' : ''}`),
   downloadUrl: (id: string, path: string, confirm: boolean) => `${sq(id)}/files/download?path=${encodeURIComponent(path)}${confirm ? '&confirm=1' : ''}`,
   find: (id: string, q: string) => call<{ files: string[] }>(`${sq(id)}/files/find?q=${encodeURIComponent(q)}`).then((r) => r.files),
-  changes: (id: string, base: 'session' | 'head') => call<FileChangesDto>(`${sq(id)}/git/changes?base=${base}`),
-  diff: (id: string, path: string, base: 'session' | 'head') => call<FileDiffDto>(`${sq(id)}/git/diff?path=${encodeURIComponent(path)}&base=${base}`),
+  changes: (id: string, base: DiffBaseSpec) => call<FileChangesDto>(`${sq(id)}/git/changes?${baseQuery(base)}`),
+  diff: (id: string, path: string, base: DiffBaseSpec) => call<FileDiffDto>(`${sq(id)}/git/diff?path=${encodeURIComponent(path)}&${baseQuery(base)}`),
+  turns: (id: string) => call<{ turns: TurnCheckpointDto[] }>(`${sq(id)}/git/turns`).then((r) => r.turns),
   eventsUrl: (id: string, paths: readonly string[]) => `${sq(id)}/files/events?paths=${paths.map(encodeURIComponent).join(',')}`
 };
 

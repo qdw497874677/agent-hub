@@ -143,3 +143,59 @@ test('watch：防抖后报变化的目录，取消后不再报', async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('checkpoint：临时 index 拍工作区（含未跟踪、不含忽略），不碰真 index；两张之间的 changes / diff；dropRefs', async () => {
+  const root = await repo();
+  try {
+    const b = createWorkspaceBrowser();
+    await writeFile(join(root, 'staged.txt'), 'keep me staged\n');
+    git(root, 'add', 'staged.txt');
+    const before = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s1/1');
+    assert.ok(before.ok && before.value);
+    await writeFile(join(root, 'src/a.ts'), 'export const a = 2;\nexport const b = 3;\n');
+    await writeFile(join(root, 'new.md'), 'one\ntwo\n');
+    await mkdir(join(root, 'out'));
+    await writeFile(join(root, 'out/ignored.js'), 'x');
+    const after = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s1/2');
+    assert.ok(after.ok && after.value);
+    // 真 index 原样：staged.txt 还是暂存的新增，别的没被 add
+    assert.equal(execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: root, encoding: 'utf8' }).trim(), 'staged.txt');
+    const changed = await b.changes(root, before.value, after.value);
+    assert.ok(changed.ok);
+    assert.deepEqual(changed.value.map((f) => [f.path, f.status, f.additions, f.deletions]), [['new.md', 'added', 2, 0], ['src/a.ts', 'modified', 2, 1]]);
+    const patch = await b.diff(root, 'src/a.ts', before.value, 1 << 20, after.value);
+    assert.ok(patch.ok && patch.value.patch.includes('+export const b = 3;'));
+    // 进行中：前 → 工作区
+    await writeFile(join(root, 'later.txt'), 'z\n');
+    const live = await b.changes(root, before.value);
+    assert.ok(live.ok && live.value.some((f) => f.path === 'later.txt'));
+    assert.equal((await b.checkpoint(root, 'refs/heads/main')).ok, false);
+    const dropped = await b.dropRefs(root, 'refs/agent-hub/checkpoints/s1/');
+    assert.ok(dropped.ok);
+    assert.equal(dropped.value, 2);
+    assert.equal(execFileSync('git', ['for-each-ref', 'refs/agent-hub/'], { cwd: root, encoding: 'utf8' }).trim(), '');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('checkpoint：还没有提交的仓库也能拍；不是仓库 = null', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wsb-empty-'));
+  try {
+    const b = createWorkspaceBrowser();
+    git(root, 'init', '-q');
+    await writeFile(join(root, 'a.txt'), 'a\n');
+    const shot = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s2/1');
+    assert.ok(shot.ok && shot.value);
+    const all = await b.changes(root, null, shot.value);
+    assert.ok(all.ok);
+    assert.deepEqual(all.value.map((f) => f.path), ['a.txt']);
+    const plain = await mkdtemp(join(tmpdir(), 'wsb-plain-'));
+    const none = await b.checkpoint(plain, 'refs/agent-hub/checkpoints/s2/1');
+    assert.ok(none.ok);
+    assert.equal(none.value, null);
+    await rm(plain, { recursive: true, force: true });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

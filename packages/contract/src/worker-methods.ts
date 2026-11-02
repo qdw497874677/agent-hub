@@ -171,15 +171,19 @@ export const filesFind = method(
 
 export const filesChanges = method(
   'files.changes',
-  z.object({ root: z.string(), base: z.string().nullable() }),
+  z.object({ root: z.string(), base: z.string().nullable(), target: z.string().nullable().optional() }),
   z.object({ files: z.array(z.object({ path: z.string(), status: gitStatus, additions: z.number(), deletions: z.number(), oldPath: z.string().optional() })) })
 );
 
 export const filesDiff = method(
   'files.diff',
-  z.object({ root: z.string(), path: z.string(), base: z.string().nullable(), maxBytes: z.number().int().positive() }),
+  z.object({ root: z.string(), path: z.string(), base: z.string().nullable(), maxBytes: z.number().int().positive(), target: z.string().nullable().optional() }),
   z.object({ path: z.string(), patch: z.string(), truncated: z.boolean(), binary: z.boolean() })
 );
+
+/** 回合检查点（ADR 0027）：临时 index 写树 + commit-tree + update-ref。老 Worker 没有 = unsupported，hub 照常跑，只是没有「本轮」。 */
+export const filesCheckpoint = method('files.checkpoint', z.object({ root: z.string(), ref: z.string().max(200) }), z.object({ commit: z.string().nullable() }));
+export const filesDropRefs = method('files.drop_refs', z.object({ root: z.string(), prefix: z.string().max(200) }), z.object({ dropped: z.number() }));
 
 export const filesHead = method('files.head', z.object({ root: z.string() }), z.object({ head: z.string().nullable() }));
 
