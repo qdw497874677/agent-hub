@@ -107,13 +107,14 @@ test('changes / diff / head：相对会话开始的提交，未跟踪文件也�
     assert.ok(head.ok && head.value);
     await writeFile(join(root, 'src/a.ts'), 'export const a = 2;\n');
     git(root, 'commit', '-qam', 'second');
-    await writeFile(join(root, 'new.txt'), 'n\n');
+    await writeFile(join(root, 'new.txt'), 'n\nm');
+    await writeFile(join(root, 'blob.bin'), Buffer.from([1, 0, 2, 10]));
     const vsHead = await b.changes(root, null);
     assert.ok(vsHead.ok);
-    assert.deepEqual(vsHead.value.map((f) => [f.path, f.status]), [['new.txt', 'untracked']]);
+    assert.deepEqual(vsHead.value.map((f) => [f.path, f.status]), [['blob.bin', 'untracked'], ['new.txt', 'untracked']]);
     const vsStart = await b.changes(root, head.value);
     assert.ok(vsStart.ok);
-    assert.deepEqual(vsStart.value.map((f) => [f.path, f.status, f.additions, f.deletions]), [['new.txt', 'untracked', 0, 0], ['src/a.ts', 'modified', 1, 1]]);
+    assert.deepEqual(vsStart.value.map((f) => [f.path, f.status, f.additions, f.deletions]), [['blob.bin', 'untracked', 0, 0], ['new.txt', 'untracked', 2, 0], ['src/a.ts', 'modified', 1, 1]]);
     const d = await b.diff(root, 'src/a.ts', head.value, 512 * 1024);
     assert.ok(d.ok && d.value.patch.includes('+export const a = 2;'));
     const u = await b.diff(root, 'new.txt', null, 512 * 1024);

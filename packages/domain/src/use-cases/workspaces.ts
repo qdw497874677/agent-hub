@@ -320,3 +320,16 @@ export async function adoptLocalWorkspacesUseCase(
   for (const workspace of legacy) await deps.workspaces.save({ ...workspace, workerId: worker.workerId, updatedAt: deps.now() });
   return legacy.length;
 }
+
+/**
+ * 这个项目能不能用这个工作空间（ADR 0026）：临时的看 projectId；持久的看关联表——
+ * 团队工作空间的 projectId 可能是 null（团队页新建）或别的项目（来源项目），不能拿它判断归属。
+ */
+export async function usableByProject(
+  deps: { workspaces: Pick<Deps['workspaces'], 'linksOf'> },
+  workspace: Workspace,
+  projectId: string
+): Promise<boolean> {
+  if (workspace.kind === 'temporary') return workspace.projectId === projectId;
+  return (await deps.workspaces.linksOf(workspace.id)).some((link) => link.projectId === projectId);
+}

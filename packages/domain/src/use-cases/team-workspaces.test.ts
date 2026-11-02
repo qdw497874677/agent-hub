@@ -10,6 +10,7 @@ import { DEFAULT_SETTINGS } from '../account.ts';
 import type { AccessPolicy } from './authorization.ts';
 import { authorizeWorkspace } from './authorization.ts';
 import { prepareLongLivedWorkspaceUseCase, workspaceViewsUseCase } from './workspaces.ts';
+import { deriveSessionUseCase } from './sessions.ts';
 import {
   createTeamWorkspaceUseCase,
   deleteWorkspaceUseCase,
@@ -17,6 +18,26 @@ import {
   listTeamWorkspacesUseCase,
   unlinkWorkspaceUseCase
 } from './team-workspaces.ts';
+
+import type { AgentDescriptor } from '../agent.ts';
+const fake: AgentDescriptor = {
+  id: asAgentId('fake'),
+  label: 'Fake',
+  capabilities: {
+    prompt: { state: 'available' },
+    interrupt: { state: 'available' },
+    fork: { state: 'available' },
+    resume: { state: 'available' },
+    tool_calls: { state: 'available' },
+    artifacts: { state: 'available' },
+    structured_events: { state: 'available' },
+    attachments: { state: 'available' }
+  },
+  models: [],
+  defaultModel: '',
+  options: []
+};
+
 
 const who = (id: string, role: string) =>
   ({ user: { id, email: `${id}@b.co`, role, disabledAt: null, deletedAt: null, teamId: 't1', clusterAdmin: false }, loginId: `l-${id}` }) as unknown as Principal;
@@ -109,4 +130,25 @@ test('关联（Q4）：要项目的 project.update 且看得见工作空间；�
   assert.deepEqual((await w.deps.workspaces.byProject(w.b.id)).map((x) => x.id), [ws.value.id]);
   // 只剩 beta：bob 可以删（只移除登记）
   assert.ok((await deleteWorkspaceUseCase(w.deps, { actor: bob, workspaceId: ws.value.id, deleteDirectory: false })).ok);
+});
+
+test('在关联的团队工作空间里开会话（projectId 为 null 也认关联表）；没关联的项目不认', async () => {
+  const w = await world();
+  w.agents.push(fake);
+  const ws = await createTeamWorkspaceUseCase(w.deps, { actor: owner, workerId: 'remote-1', plan: { mode: 'link', path: '/srv/work/shared' }, home: '/h' });
+  assert.ok(ws.ok);
+  assert.equal(ws.value.projectId, null);
+  const linked = await linkWorkspaceUseCase(w.deps, { actor: owner, projectId: w.a.id, workspaceId: ws.value.id });
+  assert.ok(linked.ok, linked.ok ? '' : linked.error.message);
+  const mkTask = async (projectId: typeof w.a.id) => {
+    const t = createTask({ projectId, title: 't', goal: '', now: 1 });
+    assert.ok(t.ok);
+    await w.deps.tasks.save(t.value);
+    return t.value;
+  };
+  const started = await deriveSessionUseCase(w.deps, { taskId: (await mkTask(w.a.id)).id, agentId: 'fake', model: '', workspaceId: ws.value.id, actor: owner });
+  assert.ok(started.ok, started.ok ? '' : started.error.message);
+  assert.equal(started.value.workspaceId, ws.value.id);
+  const foreign = await deriveSessionUseCase(w.deps, { taskId: (await mkTask(w.b.id)).id, agentId: 'fake', model: '', workspaceId: ws.value.id, actor: owner });
+  assert.equal(foreign.ok, false);
 });

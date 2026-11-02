@@ -1,3 +1,4 @@
+import { usableByProject } from './workspaces.ts';
 import { principalOfSubject, type Subject } from '../access.ts';
 import type { Session } from '../session.ts';
 import { forkSession } from '../session.ts';
@@ -60,7 +61,7 @@ export async function continueElsewhereUseCase(
   let chosen: Workspace | null = null;
   if (command.target.kind === 'workspace') {
     chosen = await deps.workspaces.byId(command.target.workspaceId as never);
-    if (!chosen || chosen.projectId !== project.id || !isUsable(chosen)) return err(notFound('目标工作空间不存在或已不可用'));
+    if (!chosen || !(await usableByProject(deps, chosen, project.id)) || !isUsable(chosen)) return err(notFound('目标工作空间不存在或已不可用'));
     if (chosen.id === source.workspaceId) return err(conflict('会话已经在这个工作空间里了'));
   }
   const targetWorker = chosen ? chosen.workerId : command.target.kind === 'temporary' ? command.target.workerId : null;

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { lstat, open, readdir, realpath, stat } from 'node:fs/promises';
+import { lstat, open, readFile, readdir, realpath, stat } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import fuzzysort from 'fuzzysort';
@@ -273,7 +273,9 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         }
         const seen = new Set(out.map((f) => f.path));
         const untracked = (await git(['ls-files', '-o', '--exclude-standard', '-z', ...(ref === null ? ['-c'] : [])])).split('\0').filter((p) => p && !seen.has(p));
-        for (const path of untracked) out.push({ path, status: ref === null ? 'added' : 'untracked', additions: 0, deletions: 0 });
+        for (const path of untracked) {
+          out.push({ path, status: ref === null ? 'added' : 'untracked', additions: await lineCount(real, path), deletions: 0 });
+        }
         return out.sort((a, b) => a.path.localeCompare(b.path));
       }),
 
@@ -356,4 +358,21 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         };
       })
   };
+}
+
+/** 未跟踪的新文件：git diff 不算它，自己数行数（和 diff 里的 +N 对上）；二进制/太大/读不了的记 0。 */
+async function lineCount(root: string, path: string): Promise<number> {
+  try {
+    const full = join(root, path);
+    const info = await stat(full);
+    if (!info.isFile() || info.size > 2 * 1024 * 1024) return 0;
+    const buf = await readFile(full);
+    if (buf.length === 0) return 0;
+    if (looksBinary(buf)) return 0;
+    let n = 0;
+    for (const byte of buf) if (byte === 10) n++;
+    return buf[buf.length - 1] === 10 ? n : n + 1;
+  } catch {
+    return 0;
+  }
 }
