@@ -15,7 +15,16 @@ export type WorkspaceState = 'preparing' | 'ready' | 'failed' | 'kept' | 'remove
 
 export interface Workspace {
   readonly id: WorkspaceId;
-  readonly projectId: ProjectId;
+  /**
+   * 临时工作空间：所属项目（必填，不共享）。
+   * 长期工作空间：最早为哪个项目建的（只作记录 / 回滚用）；团队页直接建的是 null。
+   * 长期工作空间给哪些项目用，看关联表（ProjectWorkspaceLink，ADR 0026）。
+   */
+  readonly projectId: ProjectId | null;
+  /** 所属团队（ADR 0026）。null = 没装账号体系 / 老数据，按 hub 团队处理。 */
+  readonly teamId: string | null;
+  /** 这个目录从哪个仓库下载的（ADR 0026 Q3：仓库配方在工作空间上）；不是 clone 来的是 null。 */
+  readonly repoUrl: string | null;
   /** 哪台 Worker 的文件系统。null = 和 Server 同机（多机之前迁移过来的老目录）。 */
   /** 在哪台 Worker 上（本机也记真实 id）。null 只出现在老数据 / 没有本机 Worker 时，按 Server 本机处理。 */
   readonly workerId: string | null;
@@ -38,7 +47,9 @@ export interface Workspace {
 }
 
 export interface NewWorkspaceInput {
-  readonly projectId: ProjectId;
+  readonly projectId: ProjectId | null;
+  readonly teamId?: string | null;
+  readonly repoUrl?: string | null;
   readonly workerId: string | null;
   readonly path: string;
   readonly kind: WorkspaceKind;
@@ -63,10 +74,13 @@ export function newWorkspace(input: NewWorkspaceInput): Result<Workspace, Domain
   if ((input.kind === 'temporary') !== (owner !== null)) {
     return err(invalid('临时工作空间必须属于一个任务；长期工作空间不属于任何任务'));
   }
+  if (input.kind === 'temporary' && input.projectId === null) return err(invalid('临时工作空间必须属于一个项目'));
   if (input.source === 'worktree' && input.kind !== 'temporary') return err(invalid('worktree 只用于临时工作空间'));
   return ok({
     id: input.id ?? newWorkspaceId(),
     projectId: input.projectId,
+    teamId: input.teamId ?? null,
+    repoUrl: input.repoUrl ?? null,
     workerId: input.workerId,
     path: normalizePath(input.path),
     kind: input.kind,
@@ -107,24 +121,48 @@ function within(a: string, b: string): boolean {
   return a === b || b === '/' || a.startsWith(`${b}/`);
 }
 
+/** 项目 ↔ 长期工作空间的关联（ADR 0026，多对多）。 */
+export interface ProjectWorkspaceLink {
+  readonly projectId: ProjectId;
+  readonly workspaceId: WorkspaceId;
+  readonly linkedBy: string | null;
+  readonly linkedAt: number;
+}
+
 /**
- * 不变量「一个目录最多属于一个项目」（§10 已定，含嵌套）：同一台机器上别的项目登记过同一个目录、
- * 它的上级或下级目录，就返回占用的那条。同项目的不算（一台机器上可以有多个同项目工作空间）。
+ * 唯一性（ADR 0026 §6）：同一团队、同一台机器上，活跃的长期工作空间路径唯一且不嵌套。
+ * - exact：完全相同的目录已经登记成长期工作空间（调用方复用它、关联到项目即可）；
+ * - nested：和某个已登记目录互相嵌套（拒绝）。同项目的临时工作空间不算（沿用原规则）。
  */
-export function claimedByOther(
-  place: Pick<Workspace, 'projectId' | 'workerId' | 'path'>,
+export function placeConflict(
+  place: { readonly teamId: string | null; readonly workerId: string | null; readonly path: string; readonly projectId?: ProjectId | null },
   registered: readonly Workspace[]
-): Workspace | null {
+): { readonly exact: Workspace | null; readonly nested: Workspace | null } {
   const path = normalizePath(place.path);
-  return (
-    registered.find(
-      (other) =>
-        other.state !== 'removed' &&
-        other.projectId !== place.projectId &&
-        other.workerId === place.workerId &&
-        (within(path, normalizePath(other.path)) || within(normalizePath(other.path), path))
-    ) ?? null
-  );
+  let exact: Workspace | null = null;
+  let nested: Workspace | null = null;
+  for (const other of registered) {
+    if (other.state === 'removed' || other.workerId !== place.workerId || other.teamId !== place.teamId) continue;
+    if (other.kind === 'temporary' && place.projectId != null && other.projectId === place.projectId) continue;
+    const otherPath = normalizePath(other.path);
+    if (otherPath === path && other.kind === 'long_lived') exact ??= other;
+    else if (within(path, otherPath) || within(otherPath, path)) nested ??= other;
+  }
+  return { exact, nested };
+}
+
+/** 同一个工作空间里正在跑的会话，按是不是本项目分开数（跨项目并发警告，ADR 0026 §5）。 */
+export function concurrencyOf(
+  running: readonly { readonly taskId: string; readonly projectId: string | null }[],
+  projectId: string
+): { readonly runningTaskIds: readonly string[]; readonly otherProjectSessions: number } {
+  const mine = new Set<string>();
+  let others = 0;
+  for (const session of running) {
+    if (session.projectId === projectId) mine.add(session.taskId);
+    else others += 1;
+  }
+  return { runningTaskIds: [...mine], otherProjectSessions: others };
 }
 
 /** 同一个目录在同一台机器上只登记一次（removed 的不算）。 */

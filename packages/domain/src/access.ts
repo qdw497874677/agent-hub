@@ -21,7 +21,8 @@ export const PERMISSION_CATALOG = {
   provider: ['provider.read', 'provider.use', 'provider.manage'],
   token: ['token.service'],
   audit: ['audit.read'],
-  team: ['team.invite', 'team.manage', 'team.roles', 'team.grants'],
+  // workspace.manage（ADR 0026）：团队工作空间页里新建 / 删除 / 关联到任意项目
+  team: ['team.invite', 'team.manage', 'team.roles', 'team.grants', 'workspace.manage'],
   // 资产上架与审核（ADR 0016）；发布到全局在 hub 级
   // 记忆（ADR 0019）：条目继承所在作用域的权限
   memory: ['memory.read', 'memory.write', 'memory.review', 'memory.forget', 'memory.purge', 'memory.export', 'memory.source.manage'],

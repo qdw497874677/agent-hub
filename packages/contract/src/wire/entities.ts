@@ -99,7 +99,10 @@ export const projectSchema = z.object({
 /** 工作空间（docs/design/workspaces.md §2）：某台机器上的一个目录，会话在里面干活。 */
 export const workspaceSchema = z.object({
   id,
-  projectId: id,
+  /** 临时：所属项目；长期：最早为哪个项目建的（团队页直接建的是 null）。用哪些项目看关联（ADR 0026）。 */
+  projectId: z.string().nullable(),
+  teamId: z.string().nullable().default(null),
+  repoUrl: z.string().nullable().default(null),
   /** null = 和 Server 同机。 */
   workerId: z.string().nullable(),
   path: z.string(),
@@ -119,7 +122,17 @@ export const workspaceSchema = z.object({
 /** 运行面板的一行：工作空间 + 正在里面跑会话的任务（并发警告）。 */
 export const workspaceViewSchema = z.object({
   workspace: workspaceSchema,
-  runningTaskIds: z.array(z.string())
+  runningTaskIds: z.array(z.string()),
+  /** 别的项目此刻在里面跑的会话数（只给个数）。 */
+  otherProjectSessions: z.number().int().nonnegative().default(0)
+});
+
+/** 团队工作空间页的一行（ADR 0026）。 */
+export const teamWorkspaceViewSchema = z.object({
+  workspace: workspaceSchema,
+  projects: z.array(z.object({ id: z.string(), name: z.string() })),
+  hiddenProjects: z.number().int().nonnegative(),
+  runningSessions: z.number().int().nonnegative()
 });
 
 export const taskStatusSchema = z.enum(['todo', 'in_progress', 'blocked', 'in_review', 'done', 'abandoned']);

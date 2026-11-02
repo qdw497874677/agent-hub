@@ -13,6 +13,7 @@ import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
 import { ProjectHeader } from './header.tsx';
 import { useRoute } from './use-route.ts';
 import { MemoryPage } from './memory.tsx';
+import { TeamWorkspacesPage } from './team-workspaces.tsx';
 import { MessagesPage } from './messages.tsx';
 import { BotsPage } from './bots.tsx';
 import { MarketPage } from './market/page.tsx';
@@ -25,6 +26,7 @@ const LAST_PROJECT = 'agent-hub:last-project';
 /** 运营后台与工作台互不相干：分开渲染，各自的数据各自拉。 */
 export function App() {
   const [route] = useRoute();
+  if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
   if (route?.page === 'bots') return <BotsPage projectId={route.projectId} />;
   if (route?.page === 'messages') return <MessagesPage projectId={route.projectId} groupId={route.groupId} />;

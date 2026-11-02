@@ -1,7 +1,7 @@
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import type { ProjectId } from '../ids.ts';
-import { claimedByOther } from '../workspace.ts';
+import { placeConflict, type Workspace } from '../workspace.ts';
 import type { Result } from '../result.ts';
 import { err, ok } from '../result.ts';
 import type { Deps } from './deps.ts';
@@ -147,14 +147,20 @@ export function gitOn(deps: Pick<Deps, 'git' | 'gateway'>, owner: string | null)
   return owner === null ? deps.git : deps.gateway.git(owner);
 }
 
-/** 「一个目录最多属于一个项目」：被别的项目（含上下级目录）占了就拒绝，告诉人是哪个项目。 */
+/**
+ * 唯一性（ADR 0026 §6）：同一团队同一台机器上，长期工作空间的目录唯一、且不和别的登记互相嵌套。
+ * 完全相同的目录已经登记过 → ok(那一条)，调用方复用它（关联到项目）；嵌套 → 冲突；都没有 → ok(null)。
+ */
 export async function claimOf(
   deps: Pick<Deps, 'projects' | 'workspaces'>,
-  place: { readonly projectId: ProjectId; readonly workerId: string | null; readonly path: string }
-): Promise<Result<null, DomainError>> {
-  const other = claimedByOther(place, await deps.workspaces.onMachine(place.workerId));
-  if (!other) return ok(null);
-  const owner = await deps.projects.byId(other.projectId);
-  return err(conflict(`这个目录已经属于项目「${owner?.name ?? '另一个项目'}」（${other.path}），一个目录只能属于一个项目`));
+  place: { readonly teamId: string | null; readonly projectId: ProjectId | null; readonly workerId: string | null; readonly path: string }
+): Promise<Result<Workspace | null, DomainError>> {
+  const found = placeConflict(place, await deps.workspaces.onMachine(place.workerId));
+  if (found.nested) {
+    const owner = found.nested.projectId ? await deps.projects.byId(found.nested.projectId) : null;
+    const where = owner ? `项目「${owner.name}」的` : '团队里的';
+    return err(conflict(`这个目录和${where}工作空间 ${found.nested.path} 互相嵌套；一个目录不能套在另一个工作空间里`));
+  }
+  return ok(found.exact);
 }
 

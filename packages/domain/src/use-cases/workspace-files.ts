@@ -24,7 +24,7 @@ import { locationOf } from './workspaces.ts';
 export interface WorkspaceFilesDeps {
   readonly projects: Pick<ProjectRepository, 'byId'>;
   readonly tasks: Pick<TaskRepository, 'byId'>;
-  readonly sessions: Pick<SessionRepository, 'byId'>;
+  readonly sessions: Pick<SessionRepository, 'byId' | 'listByWorkspace'>;
   readonly workspaces: WorkspaceRepository;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
@@ -45,6 +45,11 @@ export interface FilesContext {
   readonly workerId: string | null;
   /** 会话开始时的 HEAD（没记下来是 null，此时 session 基准退回当前 HEAD）。 */
   readonly sessionBase: string | null;
+  /**
+   * 别的项目此刻在同一个工作空间里跑的会话数（ADR 0026 Q6）。改动页的 git 改动是整个目录的，
+   * 里面可能混着它们的改动；只给个数，不透露是哪个项目。
+   */
+  readonly otherProjectSessions: number;
 }
 
 interface Located {
@@ -116,7 +121,22 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
     async context(subject: Subject | null, sessionId: string): Promise<Result<FilesContext, DomainError>> {
       const found = await locate(subject, sessionId);
       if (!found.ok) return found;
-      return ok({ sessionId: found.value.session.id, root: found.value.root, workerId: found.value.workerId, sessionBase: await deps.bases.get(found.value.session.id) });
+      let otherProjectSessions = 0;
+      const workspaceId = found.value.session.workspaceId;
+      if (workspaceId) {
+        for (const other of await deps.sessions.listByWorkspace(workspaceId)) {
+          if (other.status !== 'running' || other.id === found.value.session.id) continue;
+          const task = await deps.tasks.byId(other.taskId);
+          if (task && task.projectId !== found.value.project.id) otherProjectSessions += 1;
+        }
+      }
+      return ok({
+        sessionId: found.value.session.id,
+        root: found.value.root,
+        workerId: found.value.workerId,
+        sessionBase: await deps.bases.get(found.value.session.id),
+        otherProjectSessions
+      });
     },
     async list(subject: Subject | null, sessionId: string, path: string): Promise<Result<DirectoryPage, DomainError>> {
       const bad = checkPath(path);

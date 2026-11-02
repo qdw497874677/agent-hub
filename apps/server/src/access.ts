@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono';
 import type { Deps, Permission, ResourceRef, Subject } from '@agent-hub/domain';
-import { authorizeProject, authorizeSession, authorizeWorker, projectOfRef } from '@agent-hub/domain';
+import { asWorkspaceId, authorizeProject, authorizeSession, authorizeWorker, authorizeWorkspace, projectOfRef } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -25,6 +25,13 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
   const BODY_CHECKED = new Set(['/tasks', '/sessions', '/sessions/derive', '/sessions/fork', '/fs/directories'].map((path) => prefix + path));
 
   const checkRef = async (c: Context, actor: Subject | null, ref: ResourceRef, permission: Permission): Promise<Response | null> => {
+    if (ref.kind === 'workspace') {
+      // ADR 0026：长期工作空间可能关联多个项目——任一关联项目允许、或有团队 workspace.manage 就行
+      const workspace = await deps.workspaces.byId(asWorkspaceId(ref.id));
+      if (!workspace) return null;
+      const allowed = await authorizeWorkspace(deps, actor, workspace, permission);
+      return allowed.ok ? null : fail(c, allowed.error);
+    }
     const { project, session } = await projectOfRef(deps, ref);
     if (!project) return null; // 不存在的交给路由自己报 404（文案更准）
     const onSession = session !== null && ref.kind === 'session' && SESSION_SCOPED.has(permission);

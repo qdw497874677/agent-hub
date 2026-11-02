@@ -102,6 +102,10 @@ export function HomePage({
           ) : null}
         </ul>
 
+        <a data-testid="nav-workspaces" className="mb-4 flex items-baseline justify-between rounded-sm px-2 py-1 text-body text-secondary hover:bg-card" href="#/workspaces">
+          工作空间<span className="text-meta text-tertiary">团队共用 →</span>
+        </a>
+
         <TrashList />
         {deleting ? <DeleteProjectDialog project={deleting} onClose={() => setDeleting(null)} /> : null}
         <div className="mt-auto border-t border-hair pt-3">
@@ -279,7 +283,7 @@ function CreateProjectPanel({
         className="mb-2 flex min-h-[36px] items-center gap-1.5 text-meta text-secondary hover:text-primary"
         onClick={() => setGitOpen((open) => !open)}
       >
-        <span aria-hidden className={`inline-block transition-transform ${gitOpen ? 'rotate-90' : ''}`}>▸</span>
+        <span aria-hidden className="inline-block w-3 text-center">{gitOpen ? '▾' : '▸'}</span>
         git 仓库（可选）
         {!gitOpen && repoUrl.trim() !== '' ? <span className="min-w-0 truncate font-mono text-tertiary">· {repoUrl.trim()}</span> : null}
       </button>

@@ -59,16 +59,22 @@ export async function createProjectUseCase(
   });
   if (!created.ok) return created;
   let first: Workspace | null = null;
+  let reuse: Workspace | null = null;
   if (rootPath !== '') {
-    const taken = await claimOf(deps, { projectId: created.value.id, workerId: where.value.workerId, path: rootPath });
+    const taken = await claimOf(deps, { teamId: created.value.teamId, projectId: created.value.id, workerId: where.value.workerId, path: rootPath });
     if (!taken.ok) return taken;
-    // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
-    const linked = newWorkspace({ projectId: created.value.id, workerId: where.value.workerId, path: rootPath, kind: 'long_lived', source: 'linked', now: deps.now() });
-    if (!linked.ok) return linked;
-    first = linked.value;
+    reuse = taken.value;
+    if (!reuse) {
+      // 给了目录：它就是这个项目的第一个持久工作空间（关联已有目录，平台永不删它）
+      const linked = newWorkspace({ projectId: created.value.id, teamId: created.value.teamId, workerId: where.value.workerId, path: rootPath, kind: 'long_lived', source: 'linked', now: deps.now() });
+      if (!linked.ok) return linked;
+      first = linked.value;
+    }
   }
   await deps.projects.save(created.value);
   if (first) await deps.workspaces.save(first);
+  // 团队里已经登记过这个目录（ADR 0026）：直接关联，不再「属于别的项目」
+  if (reuse) await deps.workspaces.link({ projectId: created.value.id, workspaceId: reuse.id, linkedBy: created.value.createdBy, linkedAt: deps.now() });
   return ok(created.value);
 }
 

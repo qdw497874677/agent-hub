@@ -34,6 +34,7 @@ import type {
   WorkerCommand,
   WorkspaceFS,
   Workspace,
+  ProjectWorkspaceLink,
   WorkspaceRepository,
   AccountDeps,
   Login,
@@ -78,19 +79,39 @@ export function fakeProjects(): ProjectRepository {
   };
 }
 
-export function fakeWorkspaces(): WorkspaceRepository & { rows: Map<string, Workspace> } {
+export function fakeWorkspaces(): WorkspaceRepository & { rows: Map<string, Workspace>; links: ProjectWorkspaceLink[] } {
   const rows = new Map<string, Workspace>();
+  const links: ProjectWorkspaceLink[] = [];
   const all = () => [...rows.values()].sort((a, b) => a.createdAt - b.createdAt);
   return {
     rows,
+    links,
     async save(workspace) {
+      const fresh = !rows.has(workspace.id);
       rows.set(workspace.id, workspace);
+      if (fresh && workspace.kind === 'long_lived' && workspace.projectId !== null) {
+        links.push({ projectId: workspace.projectId, workspaceId: workspace.id, linkedBy: null, linkedAt: workspace.createdAt });
+      }
     },
     async byId(id) {
       return rows.get(id) ?? null;
     },
     async byProject(projectId) {
-      return all().filter((w) => w.projectId === projectId);
+      const linked = new Set(links.filter((l) => l.projectId === projectId).map((l) => l.workspaceId as string));
+      return all().filter((w) => (w.kind === 'temporary' ? w.projectId === projectId : linked.has(w.id)));
+    },
+    async longLived() {
+      return all().filter((w) => w.kind === 'long_lived' && w.state !== 'removed');
+    },
+    async link(link) {
+      if (!links.some((l) => l.projectId === link.projectId && l.workspaceId === link.workspaceId)) links.push(link);
+    },
+    async unlink(projectId, workspaceId) {
+      const i = links.findIndex((l) => l.projectId === projectId && l.workspaceId === workspaceId);
+      if (i >= 0) links.splice(i, 1);
+    },
+    async linksOf(workspaceId) {
+      return links.filter((l) => l.workspaceId === workspaceId);
     },
     async byTask(taskId) {
       return all().filter((w) => w.ownerTaskId === taskId);
@@ -176,6 +197,9 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
     },
     async listByProject(projectId) {
       return [...rows.values()].filter((session) => tasks.get(session.taskId)?.projectId === projectId);
+    },
+    async listByWorkspace(workspaceId) {
+      return [...rows.values()].filter((session) => session.workspaceId === workspaceId);
     },
     async listAll() {
       return [...rows.values()];

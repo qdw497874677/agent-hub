@@ -21,9 +21,8 @@ export function unsavedReason(status: GitStatus): string | null {
 const FINISHED = new Set(['done', 'abandoned']);
 
 async function busy(deps: Pick<Deps, 'sessions'>, workspace: Workspace): Promise<boolean> {
-  return (await deps.sessions.listByProject(workspace.projectId)).some(
-    (session) => session.workspaceId === workspace.id && session.status === 'running'
-  );
+  // ADR 0026：长期工作空间被多个项目共用，所有项目的会话都算
+  return (await deps.sessions.listByWorkspace(workspace.id)).some((session) => session.status === 'running');
 }
 
 const removeKind = (workspace: Workspace) => (workspace.source === 'worktree' ? 'worktree' : 'directory');
@@ -127,9 +126,7 @@ export async function removeWorkspaceUseCase(
   if (command.deleteDirectory) {
     if (!platformOwnsDirectory(workspace)) return err(invalid('这是你自己选的目录，平台不会删它；只能移除登记'));
     if (workspace.kind === 'long_lived') {
-      const children = (await deps.workspaces.byProject(workspace.projectId)).filter(
-        (other) => other.baseWorkspaceId === workspace.id && other.state !== 'removed'
-      );
+      const children = (await deps.workspaces.temporaries()).filter((other) => other.baseWorkspaceId === workspace.id);
       if (children.length > 0) return err(conflict(`还有 ${children.length} 个临时工作空间是从它开出来的，先处理它们`));
     }
     const outcome = await (await gitFor(deps, workspace.workerId)).remove(workspace.path, removeKind(workspace), { force: command.force === true });

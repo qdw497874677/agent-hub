@@ -32,6 +32,8 @@ import type {
   CreateWorkspaceRequest,
   RemoveWorkspaceRequest,
   WorkspaceChangesDto,
+  TeamWorkspaceViewDto,
+  CreateTeamWorkspaceRequest,
   AccountDto,
   LoginDeviceDto,
   AuthState,
@@ -55,7 +57,7 @@ import type {
 } from '@agent-hub/contract';
 
 export type { TeamDto, InviteDto, InvitePreviewDto };
-export type { WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
+export type { TeamWorkspaceViewDto, CreateTeamWorkspaceRequest, WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
 
 /** 组件目录里的一个版本（ADR 0021 §8）：制品由 hub 解析钉死，scripts 是审核时要看的安装脚本原文。 */
 export interface CatalogComponentDto {
@@ -168,7 +170,7 @@ export interface FileContentDto { path: string; size: number; modifiedAt: number
 export interface ChangedFileDto { path: string; status: string; additions: number; deletions: number; oldPath?: string }
 export interface FileChangesDto { base: 'session' | 'head'; commit: string | null; files: ChangedFileDto[] }
 export interface FileDiffDto { path: string; patch: string; truncated: boolean; binary: boolean }
-export interface FilesContextDto { sessionId: string; root: string; workerId: string | null; sessionBase: string | null }
+export interface FilesContextDto { sessionId: string; root: string; workerId: string | null; sessionBase: string | null; otherProjectSessions?: number }
 export const filesApi = {
   context: (id: string) => call<FilesContextDto>(`${sq(id)}/files/context`),
   list: (id: string, path: string) => call<DirectoryPageDto>(`${sq(id)}/files?path=${encodeURIComponent(path)}`),
@@ -234,6 +236,12 @@ export const api = {
   workspaces: (projectId: string) => call<WorkspaceViewDto[]>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`),
   createWorkspace: (projectId: string, input: CreateWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`, input),
+  teamWorkspaces: () => call<TeamWorkspaceViewDto[]>('/api/workspaces'),
+  createTeamWorkspace: (input: CreateTeamWorkspaceRequest) => post<WorkspaceDto>('/api/workspaces', input),
+  linkWorkspace: (projectId: string, workspaceId: string) =>
+    call<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'PUT' }),
+  unlinkWorkspace: (projectId: string, workspaceId: string) =>
+    call<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'DELETE' }),
   workspaceChanges: (workspaceId: string) => call<WorkspaceChangesDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/changes`),
   removeWorkspace: (workspaceId: string, input: RemoveWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/remove`, input),
