@@ -15,7 +15,7 @@ import { ensureHosted, startCommand } from './hosting.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
-import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
+import { defaultWorkspaceFor, locationOf, usableByProject } from './workspaces.ts';
 import { authorizeWorker } from './authorization.ts';
 
 export interface DeriveCommand {
@@ -51,7 +51,7 @@ export async function deriveSessionUseCase(
 
   const chosen = command.workspaceId ? await deps.workspaces.byId(asWorkspaceId(command.workspaceId)) : null;
   if (command.workspaceId) {
-    if (!chosen || chosen.projectId !== project.id) return err(notFound('工作空间不存在'));
+    if (!chosen || !(await usableByProject(deps, chosen, project.id))) return err(notFound('工作空间不存在'));
     if (!isUsable(chosen)) return err(conflict('这个工作空间现在用不了（准备中、失败或已删除）'));
     if (chosen.kind === 'temporary' && chosen.ownerTaskId !== task.id) return err(conflict('这个临时工作空间属于别的任务'));
   }

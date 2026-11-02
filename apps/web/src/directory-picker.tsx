@@ -43,7 +43,8 @@ export function DirectoryPicker({
   const listing = useQuery({
     queryKey: ['directories', workerId, dir, startProject],
     queryFn: () => api.listDirectories(dir, workerId, startProject),
-    placeholderData: (previous) => previous
+    // 只沿用同一台机器的上一份结果：换机器时别把旧机器的目录当新机器的起点（那会落到它的 WORKER_ROOTS 外面）
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[1] === workerId ? previous : undefined)
   });
 
   // 换了机器：回到那台机器的起点
@@ -55,8 +56,8 @@ export function DirectoryPicker({
 
   // 第一次拿到起点（或输入了不带 / 的东西）：把输入框对齐成「目录/」
   useEffect(() => {
-    if (listing.data && dir === '') setText(withSlash(listing.data.path));
-  }, [listing.data, dir]);
+    if (listing.data && dir === '' && !listing.isPlaceholderData) setText(withSlash(listing.data.path));
+  }, [listing.data, listing.isPlaceholderData, dir]);
 
   const current =
     listing.data && listing.data.path === (dir === '' ? listing.data.path : dir) ? listing.data : undefined;
@@ -301,7 +302,14 @@ export function DirectoryPicker({
 
         <Command.List className="min-h-0 flex-1 overflow-y-auto p-1.5 [scroll-padding-block:6px]">
           {listing.error && !current ? (
-            <p className="px-3 py-2 text-meta text-rust">{(listing.error as Error).message}</p>
+            <p className="px-3 py-2 text-meta text-rust">
+              {(listing.error as Error).message}
+              {dir !== '' ? (
+                <button type="button" data-testid="picker-reset" className="ml-2 text-accent hover:underline" onClick={() => setText('')}>
+                  回到起点
+                </button>
+              ) : null}
+            </p>
           ) : null}
           {mutationError ? <p className="px-3 py-1.5 text-meta text-rust">{mutationError.message}</p> : null}
 

@@ -105,3 +105,51 @@ test('团队工作空间：新建 → 项目关联 → 开始任务只列已关�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('关联的团队工作空间里真的能开会话，也能「换个工作空间继续」进去', async ({ page, baseURL }) => {
+  await loginByApi(page);
+  const headers = await csrfHeaders(page, baseURL!);
+  let agentId: string | undefined;
+  for (let i = 0; i < 40 && !agentId; i++) {
+    const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ agentIds: string[]; state: string }>;
+    agentId = workers.find((worker) => worker.state === 'online')?.agentIds[0];
+    if (!agentId) await page.waitForTimeout(500);
+  }
+  test.skip(!agentId, '这台机器上没有可用的 agent');
+  const dirs = [join(tmpdir(), `shared-run-a-${RUN}`), join(tmpdir(), `shared-run-b-${RUN}`)];
+  for (const d of dirs) mkdirSync(d, { recursive: true });
+  const project = (await (await page.request.post('/api/projects', { data: { name: `shared-run-${RUN}` }, headers })).json()) as { id: string; name: string };
+  const made: Array<{ id: string; projectId: string | null }> = [];
+  try {
+    for (const path of dirs) {
+      const ws = await page.request.post('/api/workspaces', { data: { mode: 'link', path }, headers });
+      expect(ws.status(), await ws.text()).toBeLessThan(300);
+      const value = (await ws.json()) as { id: string; projectId: string | null };
+      expect(value.projectId).toBeNull();
+      made.push(value);
+      const linked = await page.request.put(`/api/projects/${project.id}/workspaces/${value.id}`, { headers });
+      expect(linked.ok(), await linked.text()).toBe(true);
+    }
+    const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '共享工作空间里干活' }, headers })).json()) as { id: string };
+    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '', workspaceId: made[0]!.id }, headers });
+    expect(derived.status(), await derived.text()).toBe(201);
+    const session = (await derived.json()) as { id: string; workspaceId: string };
+    expect(session.workspaceId).toBe(made[0]!.id);
+    // 说一句，让会话有内容（e2e 里没有真 agent，有事件落库就行）
+    await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '在共享工作空间里看看', attachments: [] }, headers });
+    await expect
+      .poll(async () => {
+        const events = (await (await page.request.get(`/api/sessions/${session.id}/events`)).json()) as Array<{ kind?: string; event?: { kind?: string } }>;
+        return events.length;
+      }, { timeout: 15_000 })
+      .toBeGreaterThan(0);
+
+    const moved = await page.request.post(`/api/sessions/${session.id}/continue`, { data: { target: { kind: 'workspace', workspaceId: made[1]!.id } }, headers });
+    expect(moved.status(), await moved.text()).toBe(201);
+    expect(((await moved.json()) as { workspaceId: string }).workspaceId).toBe(made[1]!.id);
+  } finally {
+    await page.request.delete(`/api/projects/${project.id}`, { data: { confirmName: project.name }, headers });
+    for (const ws of made) await page.request.post(`/api/workspaces/${ws.id}/remove`, { data: { deleteDirectory: false, force: true }, headers });
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  }
+});

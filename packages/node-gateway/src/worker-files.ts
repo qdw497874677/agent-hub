@@ -32,8 +32,8 @@ export class OutsideRootsError extends Error {}
 export function boundaryHint(path: string, roots: readonly string[]): string {
   return (
     `「${path}」不在这台 Worker 允许访问的目录里（WORKER_ROOTS：${roots.join(':') || '未设置'}）。` +
-    '要放开：在那台机器的 ~/.config/agent-hub/worker.env 里把目录加进 WORKER_ROOTS（冒号分隔），' +
-    '再执行 systemctl --user restart agent-hub-worker'
+    '要放开：在那台机器上把目录加进 WORKER_ROOTS（冒号分隔；装成服务的在 ~/.config/agent-hub/worker.env 里），' +
+    '然后重启 Worker（systemd 装的用 systemctl --user restart agent-hub-worker，脚本/前台启动的就停掉重跑）'
   );
 }
 
