@@ -211,10 +211,13 @@ function CreateProjectPanel({
   const [defaultBranch, setDefaultBranch] = useState('');
   const [description, setDescription] = useState('');
   const workers = useWorkers();
+  // 默认不替人选机器：只填名字就能建（不带工作空间）；要放到某台机器上再展开选
   const [workerId, setWorkerId] = useState<string | null>(null);
-  const chosen = workerId ?? resolveWorker(workers.list, null)?.workerId ?? null;
-  // 手机上选择器是全屏的：先让人看见表单（填名字），点「浏览…」再盖上来
-  const [browsing, setBrowsing] = useState(() => !window.matchMedia('(max-width: 767px)').matches);
+  const fallback = resolveWorker(workers.list, null)?.workerId ?? null;
+  const target = workerId ?? fallback;
+  const [placing, setPlacing] = useState(false);
+  // 目录选择器只在点「浏览…」后打开
+  const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -222,7 +225,7 @@ function CreateProjectPanel({
     mutationFn: () =>
       api.createProject({
         name: name.trim(),
-        ...(rootPath.trim() === '' ? {} : { rootPath: rootPath.trim(), workerId: chosen }),
+        ...(rootPath.trim() === '' ? {} : { rootPath: rootPath.trim(), workerId: target }),
         ...(repoUrl.trim() === '' ? {} : { repoUrl: repoUrl.trim(), defaultBranch: defaultBranch.trim() || null }),
         ...(description.trim() === '' ? {} : { description })
       }),
@@ -241,76 +244,34 @@ function CreateProjectPanel({
     <section aria-label="新建项目" className="mb-6 rounded-md border border-hair bg-panel p-4">
       <p className="mb-1 text-head text-primary">新建项目</p>
       <p className="mb-3 text-meta text-secondary">
-        项目是你在做的东西。目录可以先不选：开始任务时再选在哪台机器、哪个工作空间干活；
-        选了的话，它就是这个项目的第一个持久工作空间。填了 git 仓库，新建工作空间时会把它下载到那台机器。
+        项目是你在做的东西。起个名字就能建；放到哪台机器、哪个目录可以以后再定。
       </p>
 
-      <WorkerPicker
-        label="目录在哪台机器上（可选）"
-        workers={workers.list}
-        value={chosen}
-        onChange={(id) => {
-          setWorkerId(id);
-          setRootPath('');
+      <form
+        className="mb-2 flex gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (name.trim() === '' || create.isPending) return;
+          setError(null);
+          create.mutate();
         }}
-      />
-
-      {/* 行与选择器同时在：想打字就打，想点就点，不必先关掉一个再打开另一个。 */}
-      <div className="mb-3 flex gap-2">
-        <input
-          aria-label="目录"
-          className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
-          value={rootPath}
-          placeholder="目录（可选，/绝对路径）"
-          spellCheck={false}
-          onChange={(event) => setRootPath(event.target.value)}
-        />
-        <button
-          className="shrink-0 rounded-sm border border-hair px-3 py-1.5 text-meta text-secondary hover:border-strong"
-          onClick={() => setBrowsing((open) => !open)}
-        >
-          {browsing ? '收起' : '浏览…'}
-        </button>
+      >
         <input
           aria-label="项目名"
-          className="w-[160px] shrink-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-body text-primary outline-none focus:border-accent"
+          autoFocus
+          className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-3 py-2 text-head text-primary outline-none focus:border-accent"
           value={name}
           placeholder="项目名"
           onChange={(event) => setName(event.target.value)}
         />
         <button
-          className="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-meta text-canvas disabled:opacity-40"
+          type="submit"
+          className="min-h-[40px] shrink-0 rounded-sm bg-accent px-4 py-2 text-body text-canvas disabled:opacity-40"
           disabled={name.trim() === '' || create.isPending}
-          onClick={() => {
-            setError(null);
-            create.mutate();
-          }}
         >
-          开始
+          创建
         </button>
-      </div>
-
-      <div className="mb-3 flex flex-wrap gap-2">
-        <input
-          aria-label="git 仓库"
-          className="min-w-0 flex-[3_1_220px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
-          value={repoUrl}
-          placeholder="git 仓库（可选，https://… 或 git@…）"
-          spellCheck={false}
-          autoCapitalize="off"
-          onChange={(event) => setRepoUrl(event.target.value)}
-        />
-        <input
-          aria-label="默认分支"
-          className="min-w-0 flex-[1_1_120px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent disabled:opacity-40"
-          value={defaultBranch}
-          placeholder="默认分支（可选）"
-          spellCheck={false}
-          autoCapitalize="off"
-          disabled={repoUrl.trim() === ''}
-          onChange={(event) => setDefaultBranch(event.target.value)}
-        />
-      </div>
+      </form>
 
       <textarea
         aria-label="项目说明"
@@ -320,18 +281,91 @@ function CreateProjectPanel({
         onChange={(event) => setDescription(event.target.value)}
       />
 
-      {browsing ? (
-        <div className="mb-3">
-          <DirectoryPicker
-            workerId={chosen}
-            project={name}
-            onCancel={() => setBrowsing(false)}
-            onPick={(picked) => {
-              setRootPath(picked);
-              setBrowsing(false);
-              if (name.trim() === '') setName(picked.split('/').filter(Boolean).at(-1) ?? '');
+      <button
+        type="button"
+        aria-expanded={placing}
+        aria-controls="new-project-placement"
+        className="mb-2 flex min-h-[36px] items-center gap-1.5 text-meta text-secondary hover:text-primary"
+        onClick={() => setPlacing((open) => !open)}
+      >
+        <span aria-hidden className={`inline-block transition-transform ${placing ? 'rotate-90' : ''}`}>▸</span>
+        放到某台机器上（可选）
+        {!placing && rootPath.trim() !== '' ? <span className="truncate font-mono text-tertiary">· {rootPath.trim()}</span> : null}
+      </button>
+
+      {placing ? (
+        <div id="new-project-placement" className="mb-3 rounded-sm border border-hair p-3">
+          <p className="mb-2 text-meta text-tertiary">
+            选了目录，它就是这个项目的第一个持久工作空间；不选也行，开始任务时再选在哪台机器、哪个工作空间干活。
+            填了 git 仓库，新建工作空间时会把它下载到那台机器。
+          </p>
+          <WorkerPicker
+            label="目录在哪台机器上"
+            workers={workers.list}
+            value={workerId}
+            onChange={(id) => {
+              setWorkerId(id);
+              setRootPath('');
             }}
           />
+
+          {/* 行与选择器同时在：想打字就打，想点就点，不必先关掉一个再打开另一个。 */}
+          <div className="mb-3 flex gap-2">
+            <input
+              aria-label="目录"
+              className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
+              value={rootPath}
+              placeholder="目录（/绝对路径）"
+              spellCheck={false}
+              autoCapitalize="off"
+              onChange={(event) => setRootPath(event.target.value)}
+            />
+            <button
+              type="button"
+              className="min-h-[32px] shrink-0 rounded-sm border border-hair px-3 py-1.5 text-meta text-secondary hover:border-strong"
+              onClick={() => setBrowsing((open) => !open)}
+            >
+              {browsing ? '收起' : '浏览…'}
+            </button>
+          </div>
+
+          {browsing ? (
+            <div className="mb-3">
+              <DirectoryPicker
+                workerId={target}
+                project={name}
+                onCancel={() => setBrowsing(false)}
+                onPick={(picked) => {
+                  setRootPath(picked);
+                  setBrowsing(false);
+                  if (workerId === null) setWorkerId(target);
+                  if (name.trim() === '') setName(picked.split('/').filter(Boolean).at(-1) ?? '');
+                }}
+              />
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap gap-2">
+            <input
+              aria-label="git 仓库"
+              className="min-w-0 flex-[3_1_220px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
+              value={repoUrl}
+              placeholder="git 仓库（可选，https://… 或 git@…）"
+              spellCheck={false}
+              autoCapitalize="off"
+              onChange={(event) => setRepoUrl(event.target.value)}
+            />
+            <input
+              aria-label="默认分支"
+              className="min-w-0 flex-[1_1_120px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent disabled:opacity-40"
+              value={defaultBranch}
+              placeholder="默认分支（可选）"
+              spellCheck={false}
+              autoCapitalize="off"
+              disabled={repoUrl.trim() === ''}
+              onChange={(event) => setDefaultBranch(event.target.value)}
+            />
+          </div>
         </div>
       ) : null}
 

@@ -37,9 +37,10 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // M1：指一个本地目录（打字也行，点选也行——点选见下一条用例）
   await nav.getByTitle('新建项目').click();
   const panel = page.getByLabel('新建项目');
+  await panel.getByRole('button', { name: '放到某台机器上（可选）' }).click();
   await panel.getByLabel('目录', { exact: true }).fill(PROJECT_DIR);
   await panel.getByLabel('项目名').fill(PROJECT_NAME);
-  await panel.getByRole('button', { name: '开始' }).click();
+  await panel.getByRole('button', { name: '创建' }).click();
 
   // M1：画布出现
   await expect(page.getByRole('button', { name: '新建任务' }).first()).toBeVisible();
@@ -112,6 +113,8 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 test('目录可以点选，不必手打路径', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('navigation').getByTitle('新建项目').click();
+  await page.getByLabel('新建项目').getByRole('button', { name: '放到某台机器上（可选）' }).click();
+  await page.getByLabel('新建项目').getByRole('button', { name: '浏览…' }).click();
 
   // 一个路径输入框：直接打路径，Enter 进入选中的文件夹
   const picker = page.getByLabel('目录选择器');
