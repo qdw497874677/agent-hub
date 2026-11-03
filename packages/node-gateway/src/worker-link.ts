@@ -1,7 +1,8 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
 import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
-import { RECONNECT_POLICY, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
+import { RECONNECT_POLICY, canInvoke, capabilityDenied, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
+import type { WorkerCapability } from '@agent-hub/domain';
 import { createProviderRelay } from './provider-relay.ts';
 import { authHeaders } from './provider-proxy.ts';
 import { agentToDto } from '@agent-hub/contract/codec';
@@ -134,6 +135,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   let closed = false;
   /** hub 的 welcome 说它认原生分叉的帧（ADR 0028）。 */
   let nativeBranch = false;
+  /** hub 在 welcome 里给的能力上限（ADR 0030 D3「双端强制」）；没给（老 hub / 本机 / 共享令牌）= 不限。 */
+  let granted: readonly string[] | null = null;
+  const denial = (needed: string | undefined) =>
+    canInvoke(granted, needed as WorkerCapability | undefined) ? null : capabilityDenied(needed as WorkerCapability);
   let attempt = 0;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let watchdog: NodeJS.Timeout | null = null;
@@ -253,6 +258,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const channel = createRpcChannel({
     idPrefix: 'w',
     timeoutMs: options.toolTimeoutMs ?? 60_000,
+    allow: (method) => {
+      const reason = denial(method.capability);
+      return reason ? { code: 'forbidden', message: reason } : null;
+    },
     send: (frame) => {
       if (!socket || socket.readyState !== WebSocket.OPEN || !accepted) return false;
       socket.send(JSON.stringify({ type: 'rpc', frame } satisfies WorkerToServer));
@@ -457,6 +466,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       }
       const command = parsed.data as ServerToWorker;
       if (command.kind === 'rpc') channel.receive(command.frame);
+      else if (command.kind !== 'welcome' && command.kind !== 'enrolled' && denial(commandCapability(command.kind))) refuse(command);
       else if (command.kind === 'update') void update(command.commit);
       else if (command.kind === 'welcome') {
         if (command.heartbeat) {
@@ -467,12 +477,23 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         // 老 hub 的 welcome 不带 accepts：不发 metrics，免得它每 15 秒记一条「无法解析的帧」
         if (command.accepts?.includes(WORKER_CAPABILITY_METRICS)) startMetrics(current);
         nativeBranch = command.accepts?.includes(WORKER_CAPABILITY_NATIVE_BRANCH) ?? false;
+        granted = command.capabilities ?? null;
       }
       else if (command.kind === 'probe') void probe(true);
       else if (command.kind === 'runtime_job') void runtimeJob(command);
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
       else void handle(command);
     });
+  }
+
+  /** 越权的指令：不执行，按指令种类回一个「被拒」，hub 那边不会干等。 */
+  function refuse(command: ServerToWorker): void {
+    const reason = denial(commandCapability(command.kind)) ?? '不允许';
+    options.onLog?.(`拒绝越权指令 ${command.kind}：${reason}`);
+    if (command.kind === 'update') send({ type: 'update_status', state: 'refused', message: reason, logTail: '' });
+    else if (command.kind === 'runtime_job') send({ type: 'runtime_job_status', jobId: command.jobId, state: 'refused', message: reason, lines: [] });
+    else if (command.kind === 'start_session' || command.kind === 'prompt')
+      send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason } });
   }
 
   const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));

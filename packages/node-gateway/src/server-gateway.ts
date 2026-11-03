@@ -54,6 +54,8 @@ import type {
   WorkerInventory,
   ComponentPin
 } from '@agent-hub/domain';
+import { canInvoke, capabilityDenied, commandCapability, forbidden } from '@agent-hub/domain';
+import type { WorkerCapability } from '@agent-hub/domain';
 import { assessPressure, detectDrift, conflict, debouncePressure, initialDebounce, invalid, unavailable } from '@agent-hub/domain';
 
 /** hub 留给每台机器的安装日志上限（字符，取末尾）。 */
@@ -79,7 +81,12 @@ export interface GatewayHooks {
     readonly workerId: string;
     readonly credential?: string | undefined;
     readonly sharedTokenOk: boolean;
-  }): Promise<{ readonly ok: true } | { readonly ok: false; readonly reason: string }>;
+    /** 来源地址 / 报的版本：认过就记到凭据上（ADR 0030 D3）。 */
+    readonly address?: string | null;
+    readonly userAgent?: string | null;
+  }): Promise<{ readonly ok: true; readonly capabilities?: readonly string[] } | { readonly ok: false; readonly reason: string }>;
+  /** 经反向代理进来时，来源地址取 X-Forwarded-For 最后一跳（HUB_TRUST_PROXY=1）。默认只信 socket 地址。 */
+  readonly trustProxy?: boolean;
   onHello(worker: WorkerStatus, agents: AgentDto[], sessions: readonly string[]): void;
   /** Worker 重新探测后报来新的 agent 清单（就绪状态变了，或是「重新检测」的结果）。 */
   onAgents?(worker: WorkerStatus, agents: AgentDto[]): void;
@@ -143,6 +150,24 @@ export function sameSecret(offered: string | undefined, expected: string): boole
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** hub 侧闸门：hub 发出的方法要凭据允许；对端（Worker）发来的请求只走 control 类，照样问一句。 */
+function gate(entry: { readonly capabilities: readonly string[] | null }) {
+  return (method: { readonly name: string; readonly capability?: string }) =>
+    canInvoke(entry.capabilities, method.capability as WorkerCapability | undefined)
+      ? null
+      : { code: 'forbidden', message: capabilityDenied(method.capability as WorkerCapability) };
+}
+
+/** 来源地址：默认 socket 对端；信任代理时取 X-Forwarded-For 最后一跳（代理自己加的那段，伪造不了）。 */
+export function clientAddressOf(request: IncomingMessage | undefined, trustProxy: boolean): string | undefined {
+  const socketAddress = request?.socket.remoteAddress?.replace(/^::ffff:/, '');
+  if (!trustProxy) return socketAddress;
+  const header = request?.headers['x-forwarded-for'];
+  const raw = Array.isArray(header) ? header.join(',') : header;
+  const last = raw?.split(',').map((part) => part.trim()).filter(Boolean).at(-1);
+  return last?.replace(/^::ffff:/, '') ?? socketAddress;
+}
+
 interface Registered {
   readonly workerId: string;
   label: string;
@@ -172,6 +197,10 @@ interface Registered {
   updateTarget: string | null;
   /** 这条连接上的 RPC 通道；离线时为 null。 */
   channel: RpcChannel | null;
+  /** 凭据允许的能力（ADR 0030 D3）；null = 不限（本机 / 共享令牌 / 老凭据前的行为）。 */
+  capabilities: readonly string[] | null;
+  /** 这次连接的来历：给界面显示「上次连上 · 来自 · 版本」。 */
+  connection: { at: number; address: string | null; version: string | null };
 }
 
 export interface ServerGateway {
@@ -281,6 +310,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   function sendTo(workerId: string, command: ServerToWorker): Result<void, DomainError> {
     const entry = online(workerId);
     if (!entry?.socket) return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」不在线`) };
+    const needed = commandCapability(command.kind);
+    if (!canInvoke(entry.capabilities, needed)) return { ok: false, error: forbidden(capabilityDenied(needed as WorkerCapability)) };
     entry.socket.send(JSON.stringify(command));
     return { ok: true, value: undefined };
   }
@@ -315,6 +346,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
 
   wss.on('connection', (socket: WebSocket, request?: IncomingMessage) => {
     const address = request?.socket.remoteAddress;
+    const clientAddress = clientAddressOf(request, hooks.trustProxy === true) ?? null;
     let entry: Registered | null = null;
     let closeReason = '连接断开';
     const helloTimer = setTimeout(() => {
@@ -376,7 +408,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (frame.type === 'hello') {
         const sharedTokenOk = hooks.token === null || sameSecret(frame.token, hooks.token);
         const verdict = hooks.authenticate
-          ? await hooks.authenticate({ workerId: frame.workerId, credential: frame.credential, sharedTokenOk })
+          ? await hooks.authenticate({
+              workerId: frame.workerId,
+              credential: frame.credential,
+              sharedTokenOk,
+              address: clientAddress,
+              userAgent: frame.build?.commit ?? null
+            })
           : sharedTokenOk
             ? ({ ok: true } as const)
             : ({ ok: false, reason: 'token 不匹配' } as const);
@@ -434,13 +472,16 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           runtimeJob: previous?.runtimeJob ?? null,
           inventory: previous?.inventory ?? null,
           updateTarget: target !== null && build?.commit === target ? null : target,
-          channel: null
+          channel: null,
+          capabilities: verdict.capabilities ?? null,
+          connection: { at: now(), address: clientAddress, version: build?.commit ?? null }
         };
         previous?.channel?.close('被同一台机器的新连接顶替');
         const current = socket;
         entry.channel = createRpcChannel({
           idPrefix: 'h',
           timeoutMs: requestTimeoutMs,
+          allow: gate(entry),
           send: (rpc) => {
             if (current.readyState !== WebSocket.OPEN) return false;
             current.send(JSON.stringify({ kind: 'rpc', frame: rpc } satisfies ServerToWorker));
@@ -454,7 +495,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           JSON.stringify({
             kind: 'welcome',
             accepts: [WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH],
-            heartbeat: { intervalMs: policy.intervalMs, missLimit: policy.missLimit, echoMs: policy.echoMs }
+            heartbeat: { intervalMs: policy.intervalMs, missLimit: policy.missLimit, echoMs: policy.echoMs },
+            ...(entry.capabilities ? { capabilities: [...entry.capabilities] } : {})
           } satisfies ServerToWorker)
         );
         if (frame.dropped) hooks.onLog?.(`Worker「${frame.label}」上次断线期间丢了 ${frame.dropped} 帧输出`);
@@ -597,6 +639,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       roots: entry.roots,
       lastSeenAt: entry.lastSeenAt,
       link: { state: entry.link.state, since: entry.link.since, rttMs: entry.link.rttMs, connectedAt: entry.link.connectedAt },
+      connection: { connectedAt: entry.connection.at, address: entry.connection.address, version: entry.connection.version },
+      ...(entry.capabilities ? { capabilities: [...entry.capabilities] } : {}),
       sessionCount,
       ...(entry.host ? { hostname: entry.host.hostname, platform: `${entry.host.platform}/${entry.host.arch}` } : {}),
       ...(entry.socket === null && entry.reason !== undefined ? { reason: entry.reason } : {}),
@@ -624,6 +668,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     const { code, message } = outcome.error;
     if (code === 'invalid') return { ok: false, error: invalid(message) };
     if (code === 'conflict') return { ok: false, error: conflict(message) };
+    if (code === 'forbidden') return { ok: false, error: forbidden(message) };
     if (code === 'not_found') return { ok: false, error: { code: 'not_found', message } };
     if (code === 'timeout') return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」没有及时回复${what}`) };
     return { ok: false, error: unavailable(message) };
@@ -750,6 +795,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     requestUpdate(workerId: string, commit: string): boolean {
       const entry = online(workerId);
       if (!entry?.socket) return false;
+      if (!canInvoke(entry.capabilities, 'update')) return false;
       entry.socket.send(JSON.stringify({ kind: 'update', commit } satisfies ServerToWorker));
       entry.updateTarget = commit;
       entry.update = { state: 'updating', message: `已发出更新指令 → ${commit.slice(0, 7)}`, logTail: '', at: now() };
@@ -759,6 +805,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     requestRuntimeJob(workerId: string, job: RuntimeJob): boolean {
       const entry = online(workerId);
       if (!entry?.socket) return false;
+      if (!canInvoke(entry.capabilities, 'runtimes')) return false;
       entry.socket.send(
         JSON.stringify({
           kind: 'runtime_job',

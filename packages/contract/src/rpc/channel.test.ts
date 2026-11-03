@@ -78,3 +78,26 @@ test('rpc：通道关了，在途请求以 closed 结束；发不出去也是 cl
   const unsent = await dead.request(slow, {});
   assert.equal(!unsent.ok && unsent.error.code, 'closed');
 });
+
+test('rpc：allow 闸门——发出前拦下不发帧；对端也按自己的闸门拒（ADR 0030 D3 双端强制）', async () => {
+  const guarded = { name: 'guarded', capability: 'files.write', params: z.object({}), result: z.object({}) };
+  const sent: RpcFrame[] = [];
+  const deny = (method: { capability?: string }) => (method.capability === 'files.write' ? { code: 'forbidden', message: '不允许' } : null);
+  const ends: RpcChannel[] = [];
+  ends.push(createRpcChannel({ idPrefix: 'a', allow: deny, send: (f) => (sent.push(f), queueMicrotask(() => ends[1]!.receive(f)), true) }));
+  ends.push(createRpcChannel({ idPrefix: 'b', allow: deny, send: (f) => (queueMicrotask(() => ends[0]!.receive(f)), true) }));
+  let ran = false;
+  ends[1]!.handle(guarded, async () => ((ran = true), {}));
+  ends[0]!.handle(guarded, async () => ((ran = true), {}));
+  const out = await ends[0]!.request(guarded, {});
+  assert.equal(!out.ok && out.error.code, 'forbidden');
+  assert.equal(sent.length, 0);
+  // 对端（不信发起方的闸门）收到请求也拒，不跑处理器
+  const replies: RpcFrame[] = [];
+  const lone = createRpcChannel({ idPrefix: 'd', allow: deny, send: (f) => (replies.push(f), true) });
+  lone.handle(guarded, async () => ((ran = true), {}));
+  lone.receive({ rpc: 'call', id: 'x1', method: 'guarded', params: {} });
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(ran, false);
+  assert.match(JSON.stringify(replies), /forbidden/);
+});

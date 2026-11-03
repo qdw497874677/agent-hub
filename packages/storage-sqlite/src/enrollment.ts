@@ -39,11 +39,31 @@ const toCredential = (row: Row): WorkerCredential => ({
   enrolledBy: asUserId(String(row['enrolled_by'])),
   label: String(row['label']),
   createdAt: Number(row['created_at']),
-  revokedAt: row['revoked_at'] == null ? null : Number(row['revoked_at'])
+  revokedAt: row['revoked_at'] == null ? null : Number(row['revoked_at']),
+  capabilities: row['capabilities'] == null ? null : (JSON.parse(String(row['capabilities'])) as string[]),
+  lastConnectedAt: row['last_connected_at'] == null ? null : Number(row['last_connected_at']),
+  lastAddress: row['last_address'] == null ? null : String(row['last_address']),
+  lastUserAgent: row['last_user_agent'] == null ? null : String(row['last_user_agent']),
+  rotatedAt: row['rotated_at'] == null ? null : Number(row['rotated_at'])
 });
+
+/** ADR 0030 D3/D4 新列：只加列，老库升级不丢数据；null = 老凭据（能力按 full）。 */
+const ADDED_COLUMNS: readonly [string, string][] = [
+  ['capabilities', 'TEXT'],
+  ['last_connected_at', 'INTEGER'],
+  ['last_address', 'TEXT'],
+  ['last_user_agent', 'TEXT'],
+  ['rotated_at', 'INTEGER']
+];
+
+function migrate(db: DatabaseSync): void {
+  const have = new Set((db.prepare('PRAGMA table_info(worker_credentials)').all() as Row[]).map((r) => String(r['name'])));
+  for (const [name, type] of ADDED_COLUMNS) if (!have.has(name)) db.exec(`ALTER TABLE worker_credentials ADD COLUMN ${name} ${type}`);
+}
 
 export function createEnrollmentRepository(db: DatabaseSync): EnrollmentRepository {
   db.exec(ENROLLMENT_SCHEMA);
+  migrate(db);
   const insertPairing = db.prepare(
     'INSERT INTO pairing_codes(hash, created_by, created_at, expires_at, used_at, worker_id) VALUES (?, ?, ?, ?, ?, ?)'
   );
@@ -52,14 +72,19 @@ export function createEnrollmentRepository(db: DatabaseSync): EnrollmentReposito
   // 过期一天的码顺手清掉，表不会无限长
   const sweep = db.prepare('DELETE FROM pairing_codes WHERE expires_at < ?');
   const upsertCredential = db.prepare(
-    'INSERT INTO worker_credentials(worker_id, token_hash, enrolled_by, label, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO worker_credentials(worker_id, token_hash, enrolled_by, label, created_at, revoked_at, capabilities, rotated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(worker_id) DO UPDATE SET token_hash = excluded.token_hash, enrolled_by = excluded.enrolled_by, ' +
-      'label = excluded.label, created_at = excluded.created_at, revoked_at = excluded.revoked_at'
+      'label = excluded.label, created_at = excluded.created_at, revoked_at = excluded.revoked_at, ' +
+      'capabilities = excluded.capabilities, rotated_at = excluded.rotated_at'
   );
   const credentialByHash = db.prepare('SELECT * FROM worker_credentials WHERE token_hash = ?');
   const credentialFor = db.prepare('SELECT * FROM worker_credentials WHERE worker_id = ?');
   const allCredentials = db.prepare('SELECT * FROM worker_credentials ORDER BY created_at ASC');
   const revoke = db.prepare('UPDATE worker_credentials SET revoked_at = ? WHERE worker_id = ? AND revoked_at IS NULL');
+  const recordConnection = db.prepare(
+    'UPDATE worker_credentials SET last_connected_at = ?, last_address = ?, last_user_agent = ? WHERE worker_id = ?'
+  );
+  const setCapabilities = db.prepare('UPDATE worker_credentials SET capabilities = ? WHERE worker_id = ?');
 
   return {
     async savePairing(code) {
@@ -74,7 +99,16 @@ export function createEnrollmentRepository(db: DatabaseSync): EnrollmentReposito
       return Number(consume.run(at, workerId, hash).changes) === 1;
     },
     async saveCredential(c) {
-      upsertCredential.run(c.workerId, c.tokenHash, c.enrolledBy, c.label, c.createdAt, c.revokedAt);
+      upsertCredential.run(
+        c.workerId,
+        c.tokenHash,
+        c.enrolledBy,
+        c.label,
+        c.createdAt,
+        c.revokedAt,
+        c.capabilities == null ? null : JSON.stringify(c.capabilities),
+        c.rotatedAt ?? null
+      );
     },
     async credentialByHash(hash) {
       const row = credentialByHash.get(hash) as Row | undefined;
@@ -89,6 +123,12 @@ export function createEnrollmentRepository(db: DatabaseSync): EnrollmentReposito
     },
     async revoke(workerId, at) {
       revoke.run(at, workerId);
+    },
+    async recordConnection(workerId, c) {
+      recordConnection.run(c.at, c.address, c.userAgent, workerId);
+    },
+    async setCapabilities(workerId, capabilities) {
+      setCapabilities.run(JSON.stringify(capabilities), workerId);
     }
   };
 }

@@ -4,6 +4,8 @@ import type { AuditEntry, HubSettings, Principal } from '../account.ts';
 import { canAddMachines } from '../account.ts';
 import { CREDENTIAL_PREFIX, PAIRING_PREFIX, PAIRING_TTL_MS } from '../enrollment.ts';
 import type { WorkerCredential } from '../enrollment.ts';
+import { normalizeCapabilities } from '../worker-capability.ts';
+import type { WorkerCapability } from '../worker-capability.ts';
 import { conflict, forbidden, invalid, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
 import { err, ok } from '../result.ts';
@@ -127,7 +129,7 @@ export async function enrollWorker(
 }
 
 export type WorkerAuth =
-  | { readonly ok: true; readonly via: 'credential' | 'shared' }
+  | { readonly ok: true; readonly via: 'credential' | 'shared'; readonly capabilities?: readonly WorkerCapability[] }
   | { readonly ok: false; readonly reason: string };
 
 /**
@@ -137,14 +139,22 @@ export type WorkerAuth =
  *   否则吊销形同虚设，知道 id 的人也能冒名顶替。
  */
 export async function authenticateWorker(
-  deps: Pick<EnrollmentDeps, 'enrollment' | 'tokens'>,
-  hello: { readonly workerId: string; readonly credential?: string | undefined; readonly sharedTokenOk: boolean }
+  deps: Pick<EnrollmentDeps, 'enrollment' | 'tokens' | 'now'>,
+  hello: {
+    readonly workerId: string;
+    readonly credential?: string | undefined;
+    readonly sharedTokenOk: boolean;
+    /** 来源地址与版本（ADR 0030 D3）：认过了就记到凭据上。 */
+    readonly address?: string | null | undefined;
+    readonly userAgent?: string | null | undefined;
+  }
 ): Promise<WorkerAuth> {
   if (hello.credential) {
     const found = await deps.enrollment.credentialByHash(deps.tokens.hashOf(hello.credential));
     if (!found || found.workerId !== hello.workerId) return { ok: false, reason: '机器凭据无效' };
     if (found.revokedAt !== null) return { ok: false, reason: '这台机器已被吊销' };
-    return { ok: true, via: 'credential' };
+    await deps.enrollment.recordConnection(found.workerId, { at: deps.now(), address: hello.address ?? null, userAgent: hello.userAgent ?? null });
+    return { ok: true, via: 'credential', capabilities: normalizeCapabilities(found.capabilities ?? null) };
   }
   const bound = await deps.enrollment.credentialFor(hello.workerId);
   if (bound) return { ok: false, reason: bound.revokedAt !== null ? '这台机器已被吊销' : '这台机器需要用它的专属凭据连接' };

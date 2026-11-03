@@ -272,6 +272,10 @@ export const workerInfoSchema = z.object({
   link: z
     .object({ state: z.enum(['connecting', 'syncing', 'live', 'degraded', 'disconnected', 'rejected']), since: z.number(), rttMs: z.number().nullable(), connectedAt: z.number().nullable() })
     .optional(),
+  /** 这次连接的来历（ADR 0030 D3）。 */
+  connection: z.object({ connectedAt: z.number(), address: z.string().nullable(), version: z.string().nullable() }).optional(),
+  /** 凭据允许的能力；不给 = 不限。 */
+  capabilities: z.array(z.string()).optional(),
   sessionCount: z.number().int().nonnegative().optional(),
   /** 最近一次运行时安装 / 卸载任务。 */
   runtimeJob: z

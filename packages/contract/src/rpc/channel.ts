@@ -8,6 +8,11 @@ export interface RpcChannelOptions {
   readonly timeoutMs?: number;
   /** id 前缀：两端各用各的，日志里一眼分得清是谁发起的。 */
   readonly idPrefix?: string;
+  /**
+   * 权限闸门：发请求前、处理对端请求前都问一句；返回错误 = 不发 / 不跑，直接以这个错误结束。
+   * 两端各自把关（ADR 0030 D3「双端强制」）。不给 = 都放行。
+   */
+  readonly allow?: (method: RpcMethod) => RpcError | null;
 }
 
 export interface RpcChannel extends RpcPort {
@@ -49,6 +54,8 @@ export function createRpcChannel(options: RpcChannelOptions): RpcChannel {
     running.set(id, controller);
     const entry = handlers.get(method);
     if (!entry) return reply({ error: { code: 'unknown_method', message: `对端不认识方法 ${method}` } });
+    const denied = options.allow?.(entry.method);
+    if (denied) return reply({ error: denied });
     const parsed = entry.method.params.safeParse(params);
     if (!parsed.success) return reply({ error: { code: 'bad_params', message: parsed.error.message } });
     try {
@@ -72,6 +79,8 @@ export function createRpcChannel(options: RpcChannelOptions): RpcChannel {
     ): Promise<RpcOutcome<z.output<R>>> {
       return new Promise((resolve) => {
         if (call.signal?.aborted) return resolve(fail('cancelled', '调用方已取消'));
+        const denied = options.allow?.(method as RpcMethod);
+        if (denied) return resolve({ ok: false, error: denied });
         seq += 1;
         const id = `${prefix}${seq}`;
         const timeoutMs = call.timeoutMs ?? defaultTimeout;

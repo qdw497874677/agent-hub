@@ -85,6 +85,51 @@ export function WorkerChip({ worker, fallback }: { worker: WorkerInfoDto | undef
   );
 }
 
+/** 凭据能力的中文名（与 domain WORKER_CAPABILITY_LABELS 同义；web 不直接依赖 domain）。 */
+const CAPABILITY_LABELS: Readonly<Record<string, string>> = {
+  sessions: '跑 agent',
+  'files.read': '读文件',
+  'files.write': '改文件',
+  git: 'git',
+  'git.remote': '推送 / 开 PR',
+  runtimes: '装运行时',
+  update: '远程更新'
+};
+const ALL_CAPABILITIES = Object.keys(CAPABILITY_LABELS);
+
+/** 「上次连上 3 分钟前 · 来自 1.2.3.4 · 版本 abc1234」（ADR 0030 D3）。 */
+export function ConnectionLine({ connection }: { connection: NonNullable<WorkerInfoDto['connection']> }) {
+  const parts = [`${relativeTime(connection.connectedAt)} 连上`];
+  if (connection.address) parts.push(`来自 ${connection.address}`);
+  if (connection.version) parts.push(`版本 ${connection.version.slice(0, 7)}`);
+  return (
+    <span className="block truncate" title={new Date(connection.connectedAt).toLocaleString()}>
+      {parts.join(' · ')}
+    </span>
+  );
+}
+
+export function CapabilityLine({ capabilities }: { capabilities: readonly string[] }) {
+  const missing = ALL_CAPABILITIES.filter((c) => !capabilities.includes(c));
+  if (missing.length === 0) return <span>全部</span>;
+  return (
+    <span className="flex flex-wrap gap-1">
+      {ALL_CAPABILITIES.map((c) => (
+        <span
+          key={c}
+          className={
+            capabilities.includes(c)
+              ? 'rounded border border-hair px-1.5 text-xs text-secondary'
+              : 'rounded px-1.5 text-xs text-tertiary line-through'
+          }
+        >
+          {CAPABILITY_LABELS[c]}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
   const [open, setOpen] = useState(false);
   const online = worker.state === 'online';
@@ -127,6 +172,22 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
           ) : null}
           <dt className="text-tertiary">最后在线</dt>
           <dd className="text-secondary">{online ? '现在' : relativeTime(worker.lastSeenAt)}</dd>
+          {worker.connection ? (
+            <>
+              <dt className="text-tertiary">连接</dt>
+              <dd className="min-w-0 text-secondary">
+                <ConnectionLine connection={worker.connection} />
+              </dd>
+            </>
+          ) : null}
+          {worker.capabilities ? (
+            <>
+              <dt className="text-tertiary">权限</dt>
+              <dd className="min-w-0 text-secondary">
+                <CapabilityLine capabilities={worker.capabilities} />
+              </dd>
+            </>
+          ) : null}
           {(worker.roots ?? []).length > 0 ? (
             <>
               <dt className="text-tertiary">可用目录</dt>

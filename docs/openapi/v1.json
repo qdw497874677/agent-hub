@@ -488,6 +488,37 @@
                           "connectedAt"
                         ]
                       },
+                      "connection": {
+                        "type": "object",
+                        "properties": {
+                          "connectedAt": {
+                            "type": "number"
+                          },
+                          "address": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "version": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "connectedAt",
+                          "address",
+                          "version"
+                        ]
+                      },
+                      "capabilities": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
                       "sessionCount": {
                         "type": "integer",
                         "minimum": 0
