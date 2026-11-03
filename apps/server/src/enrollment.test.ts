@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
@@ -63,7 +64,14 @@ test('添加机器：登录的人拿到一行命令；新机器不登录也能�
 
   const pairing = await member('/api/workers/pairing', { method: 'POST' });
   assert.equal(pairing.status, 200);
-  assert.equal(pairing.body.command, `curl -fsSL http://hub:7878/install-worker.sh | HUB_PAIR=${pairing.body.code} bash`);
+  assert.equal(pairing.body.shortCommand, `curl -fsSL http://hub:7878/install-worker.sh | HUB_PAIR=${pairing.body.code} bash`);
+  // 校验版：嵌进命令的 sha256 就是 hub 实际发出的脚本的 sha256
+  const served = Buffer.from(await (await h.raw('/install-worker.sh')).arrayBuffer());
+  const sum = createHash('sha256').update(served).digest('hex');
+  assert.equal(
+    pairing.body.command,
+    `curl -fsSL http://hub:7878/install-worker.sh -o /tmp/ahb.sh && echo "${sum}  /tmp/ahb.sh" | sha256sum -c - && HUB_PAIR=${pairing.body.code} bash /tmp/ahb.sh`
+  );
 
   const enrolled = await h.enroll(pairing.body.code);
   assert.equal(enrolled.status, 200);
@@ -116,6 +124,8 @@ test('引导脚本：填好 hub 地址和提交号；Host 头里塞 shell 字符
   const script = await response.text();
   assert.match(script, /HUB_HTTP="\$\{HUB_HTTP:-http:\/\/hub:7878\}"/);
   assert.match(script, /HUB_COMMIT="\$\{HUB_COMMIT:-abc1234\}"/);
+  assert.match(script, /^PRE_MIN_FREE_KB=1572864$/m, '预检阈值由 domain 渲染进脚本');
+  assert.doesNotMatch(script, /__PRECHECK_VARS__/);
   const evil = await h.raw('/install-worker.sh', { headers: { host: 'x$(id)' } });
   assert.equal(evil.status, 400);
 });

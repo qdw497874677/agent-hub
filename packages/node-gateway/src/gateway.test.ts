@@ -761,7 +761,7 @@ test('连接健康（ADR 0030 D1）：welcome 带心跳参数；link.echo 回来
   raw.terminate();
   await rec.until(() => rec.gone.includes('raw'));
 
-  const link = connectWorkerLink({ url, workerId: 'w1', label: '笔记本', origin: 'remote', reconnect: false, runtimes: [echoRuntime([])] });
+  const link = connectWorkerLink({ url, token: 't0k', workerId: 'w1', label: '笔记本', origin: 'remote', reconnect: false, runtimes: [echoRuntime([])] });
   await rec.until(() => gateway.workers().find((w) => w.workerId === 'w1')?.link?.state === 'live');
   const live = gateway.workers().find((w) => w.workerId === 'w1')!;
   assert.equal(typeof live.link?.rttMs, 'number');

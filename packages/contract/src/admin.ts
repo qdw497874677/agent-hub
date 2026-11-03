@@ -101,8 +101,10 @@ export type EnrollInfoDto = z.infer<typeof enrollInfoSchema>;
 export const pairingSchema = z.object({
   code: z.string(),
   expiresAt: z.number(),
-  /** 在新机器上粘贴运行的一行命令（curl 安装脚本 | HUB_PAIR=… bash）。 */
+  /** 在新机器上粘贴运行的一行命令：下载引导脚本、核对 sha256 再执行（ADR 0030 D4）。 */
   command: z.string(),
+  /** 简短版（curl … | HUB_PAIR=… bash），不校验；没有 sha256sum 的机器用。 */
+  shortCommand: z.string().optional(),
   hubUrl: z.string()
 });
 export type PairingDto = z.infer<typeof pairingSchema>;

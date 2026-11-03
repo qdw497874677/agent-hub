@@ -19,14 +19,21 @@ test('添加机器：一行命令、倒计时、凭码接入、吊销后断开',
 
   const dialog = page.getByRole('dialog', { name: '添加机器' });
   const command = dialog.getByLabel('安装命令');
-  await expect(command).toContainText('/install-worker.sh | HUB_PAIR=ahw_pair_');
+  await expect(command).toContainText('/install-worker.sh -o /tmp/ahb.sh && echo "');
+  await expect(command).toContainText('| sha256sum -c - && HUB_PAIR=ahw_pair_');
+  await expect(dialog.getByTestId('short-command')).toContainText('简短版');
+  await expect(dialog.getByTestId('http-hint')).toContainText('HTTPS');
   await expect(dialog.getByText(/1[45]:\d\d 后过期 · 只能用一次/)).toBeVisible();
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'add-machine-desktop.png') });
 
   const text = (await command.textContent()) ?? '';
   const code = /HUB_PAIR=(\S+)/.exec(text)?.[1] ?? '';
   const script = await page.request.get('/install-worker.sh');
-  expect(await script.text()).toContain(`HUB_HTTP="\${HUB_HTTP:-${baseURL}}"`);
+  const body = await script.body();
+  expect(body.toString('utf8')).toContain(`HUB_HTTP="\${HUB_HTTP:-${baseURL}}"`);
+  // 命令里嵌的 sha256 和实际下到的脚本一致
+  const { createHash } = await import('node:crypto');
+  expect(text).toContain(createHash('sha256').update(body).digest('hex'));
 
   // 新机器那一侧：不带任何登录态，跑安装脚本用的同一个 CLI，经 /worker 长连接凭码换凭据
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
