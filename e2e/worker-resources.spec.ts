@@ -70,7 +70,9 @@ async function setupCanvas(page: Page, baseURL: string) {
   const now = Date.now();
   await page.route('**/api/workers', async (route) => {
     if (route.request().method() !== 'GET') return route.fallback();
-    const response = await route.fetch();
+    // 用例收尾关页面时轮询可能还在路上：这时 fetch 会抛「页面已关」，忽略即可
+    const response = await route.fetch().catch(() => null);
+    if (!response) return;
     const body = (await response.json()) as WorkerJson[];
     for (const w of body) {
       if (w.workerId !== worker!.workerId) continue;

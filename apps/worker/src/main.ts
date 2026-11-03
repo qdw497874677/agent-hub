@@ -6,7 +6,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -169,6 +169,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '.
 const build = readBuildInfo(repoRoot);
 log(`版本 ${build.version}（${build.commit ? build.commit.slice(0, 7) : '非 git 仓库'}，协议 v${build.protocol}）`);
 
+/**
+ * 更新方式（ADR 0030 D2）：HUB_WORKER_UPDATE_MODE=releases 用 releases/<sha> + current/previous + 试运行；
+ * 默认 legacy（原地 git / 解压）。releases 要求代码是 git 检出（staging 从它克隆）。
+ */
+const releasesMode = env['HUB_WORKER_UPDATE_MODE'] === 'releases' && origin === 'remote' && existsSync(join(repoRoot, '.git'));
+const releasesRoot = env['WORKER_RELEASES_DIR']?.trim() || defaultReleasesRoot(homedir());
+const trial = releasesMode ? trialInProgress(releasesRoot, repoRoot) : null;
+if (env['HUB_WORKER_UPDATE_MODE'] === 'releases') log(releasesMode ? `更新方式：releases（${releasesRoot}）${trial ? `，正在试运行 ${trial.target.slice(0, 7)}` : ''}` : '更新方式：要求 releases 但代码不是 git 检出（或是本机 Worker），仍按 legacy');
+
 /** 被 hub 拒绝时的退出码（EX_CONFIG）：重启也没用，要重新接入。 */
 const REJECTED_EXIT_CODE = 78;
 
@@ -190,6 +199,23 @@ async function onUpdate(commit: string, report: (status: UpdateReport) => void):
   };
   // 没有 git（用 hub 的 tar 包装的）：整包解到新目录再换上；有 git：走 bundle / git fetch
   let changed: boolean;
+  if (releasesMode) {
+    // ADR 0030 D2：装到 releases/<sha>，换 current，重启后试运行；hub 观察通过才提交
+    if (!build.commit) {
+      report({ state: 'refused', message: '读不到当前提交号，没法用 releases 布局更新', logTail: '' });
+      return;
+    }
+    const swapped = await runReleaseUpdate({
+      root: releasesRoot,
+      runningDir: repoRoot,
+      runningCommit: build.commit,
+      commit,
+      ...(hubHttp ? { fetchBundle: (target: string) => downloadHubBundle({ hubHttp, commit: target, dir: join(stateDir, 'update-cache') }) } : {}),
+      report: progress
+    });
+    if (swapped) setTimeout(() => void link.close().finally(() => process.exit(RESTART_EXIT_CODE)), 500);
+    return;
+  }
   if (!existsSync(join(repoRoot, '.git'))) {
     if (!hubHttp) {
       report({ state: 'refused', message: '解压安装的 Worker 要从 hub 下代码包，但 HUB_URL 推不出 hub 的 http 地址', logTail: '' });
@@ -262,6 +288,19 @@ const link = connectWorkerLink({
   ...(resources ? { resources } : {}),
   ...(metricsIntervalMs ? { metricsIntervalMs } : {}),
   onAccepted: markHealthySoon,
+  ...(trial
+    ? {
+        trialUpdate: () => (trialInProgress(releasesRoot, repoRoot) ? { id: trial.id, inventory: inventory !== undefined } : null),
+        onUpdateCommit: (id: string) => {
+          if (commitRelease(releasesRoot, id)) log(`试运行通过：${trial.target.slice(0, 7)} 已提交`);
+        },
+        onUpdateAbort: (id: string, reason: string) => {
+          if (!abortRelease(releasesRoot, stateDir, id, reason)) return;
+          log(`试运行没通过（${reason}）：已把 current 切回 ${trial.previous.slice(0, 7)}，重启`);
+          setTimeout(() => void link.close().finally(() => process.exit(RESTART_EXIT_CODE)), 200);
+        }
+      }
+    : {}),
   pendingUpdateReport: () => {
     const note = readRollbackNote(stateDir);
     if (!note) return null;

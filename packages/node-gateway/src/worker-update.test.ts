@@ -40,8 +40,8 @@ async function harness() {
   return { gateway, url, updates, stop };
 }
 
-async function until(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 3000;
+async function until(predicate: () => boolean, ms = 3000): Promise<void> {
+  const deadline = Date.now() + ms;
   while (!predicate()) {
     if (Date.now() > deadline) throw new Error('等待超时');
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -364,4 +364,80 @@ test('downloadHubBundle：sha256 对上才落盘；hubHttpFrom 从 ws 地址推�
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+async function trialHarness(options: { trialStableMs: number; trialTimeoutMs: number }) {
+  const updates: { state: string; message: string; trialRemainingMs?: number }[] = [];
+  const gateway = createServerGateway(
+    {
+      token: null,
+      onHello: () => {},
+      onEvent: () => {},
+      onAgentSession: () => {},
+      onOptions: () => {},
+      onStatus: () => {},
+      onWorkerGone: () => {},
+      onUpdateStatus: (_id, update) => void updates.push({ ...update })
+    },
+    { ...options, trialTickMs: 20, echoMs: 1000 }
+  );
+  const server: Server = createServer();
+  server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const stop = async () => {
+    gateway.close();
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+  };
+  return { gateway, url, updates, stop };
+}
+
+test('试运行（ADR 0030 D2）：trial hello → 显示试运行中；连接健康稳定满窗口 → 下发 update_commit、标记成功', async () => {
+  const { gateway, url, updates, stop } = await trialHarness({ trialStableMs: 300, trialTimeoutMs: 10_000 });
+  const committed: string[] = [];
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    origin: 'remote',
+    reconnect: false,
+    runtimes: [],
+    build: { version: '1.0.0', commit: B, protocol: PROTOCOL_VERSION },
+    trialUpdate: () => ({ id: 'u-1', inventory: false }),
+    onUpdateCommit: (id) => void committed.push(id),
+    onUpdateAbort: () => assert.fail('不该回退')
+  });
+  await until(() => updates.some((u) => u.state === 'trial'));
+  assert.match(updates.find((u) => u.state === 'trial')?.message ?? '', /试运行中/);
+  await until(() => committed.length === 1, 6000);
+  assert.deepEqual(committed, ['u-1']);
+  await until(() => one(gateway.workers())?.update?.state === 'succeeded');
+  assert.match(one(gateway.workers())?.update?.message ?? '', /试运行通过，已提交 bbbbbbb/);
+  await link.close();
+  await stop();
+});
+
+test('试运行：时限内没达标（等不到 inventory）→ 下发 update_abort、标记失败带原因', async () => {
+  const { gateway, url, stop } = await trialHarness({ trialStableMs: 200, trialTimeoutMs: 1800 });
+  const aborted: string[] = [];
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    origin: 'remote',
+    reconnect: false,
+    runtimes: [],
+    build: { version: '1.0.0', commit: B, protocol: PROTOCOL_VERSION },
+    trialUpdate: () => ({ id: 'u-2', inventory: true }),
+    onUpdateCommit: () => assert.fail('不该提交'),
+    onUpdateAbort: (id, reason) => void aborted.push(`${id}:${reason}`)
+  });
+  await until(() => aborted.length === 1, 6000);
+  assert.match(aborted[0] ?? '', /^u-2:.*套件清单/);
+  assert.equal(one(gateway.workers())?.update?.state, 'failed');
+  await link.close();
+  await stop();
 });

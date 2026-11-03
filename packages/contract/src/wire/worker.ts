@@ -23,7 +23,7 @@ export const buildInfoSchema = z.object({
 /** git 完整提交号：更新指令唯一的参数，不接受任何其他形式的输入。 */
 export const commitShaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 
-export const updateStateSchema = z.enum(['updating', 'succeeded', 'failed', 'refused', 'rolled_back']);
+export const updateStateSchema = z.enum(['updating', 'trial', 'succeeded', 'failed', 'refused', 'rolled_back']);
 
 /** Worker 执行更新时的进度回报。 */
 export const workerUpdateStatusSchema = z.object({
@@ -57,7 +57,16 @@ export const workerHelloSchema = z.object({
   /** 这台 Worker 会发哪些可选帧（如 'metrics'）。老 Worker 不报 = 都不会。 */
   capabilities: z.array(z.string().max(64)).max(32).optional(),
   /** 上次断线期间 outbox 满了丢掉的帧数（ADR 0030 D1）；hub 记日志并在界面上提示。 */
-  dropped: z.number().int().nonnegative().optional()
+  dropped: z.number().int().nonnegative().optional(),
+  /** releases 布局下刚换上的新版本（ADR 0030 D2）：等 hub 观察后下发 update_commit / update_abort。 */
+  update: z
+    .object({
+      id: z.string().regex(/^[a-z0-9-]{1,64}$/),
+      phase: z.literal('trial'),
+      /** false = 这台不发 inventory（WORKER_INVENTORY=0），提交条件里不等它。 */
+      inventory: z.boolean().default(true)
+    })
+    .optional()
 });
 
 export const workerEventSchema = z.object({
@@ -286,6 +295,10 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('enrolled'), workerId: id, credential: z.string().min(1) }),
   /** 轮换凭据（ADR 0030 D3）：Worker 写进 worker.env 后用它重连；旧凭据宽限 5 分钟。明文只在这一帧里。老 worker 不认，只记一条日志（轮换会超时失败、旧凭据保留）。 */
   z.object({ kind: z.literal('credential_rotate'), credential: z.string().min(1).max(256) }),
+  /** 试运行通过：Worker 把 update.json 记为 committed（ADR 0030 D2）。 */
+  z.object({ kind: z.literal('update_commit'), id: z.string().regex(/^[a-z0-9-]{1,64}$/) }),
+  /** 试运行没通过：Worker 切回 previous 后重启。 */
+  z.object({ kind: z.literal('update_abort'), id: z.string().regex(/^[a-z0-9-]{1,64}$/), reason: z.string().max(300) }),
   /** hello 被接受了。worker 等到它才补发积压的帧：在这之前发的帧 server 一律不认（见 server-gateway）。 */
   z.object({
     kind: z.literal('welcome'),

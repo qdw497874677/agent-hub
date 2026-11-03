@@ -13,6 +13,12 @@ const UPDATE_TEXT: Record<string, string> = {
   rolled_back: '已回退'
 };
 
+/** 试运行（ADR 0030 D2）显示剩余秒数：hub 每 2 秒算一次，这里也按 2 秒刷新。 */
+const updateLabel = (update: NonNullable<AdminWorkerDto['update']>): string =>
+  update.state === 'trial'
+    ? `试运行中（剩 ${Math.max(0, Math.ceil((update.trialRemainingMs ?? 0) / 1000))}s）`
+    : (UPDATE_TEXT[update.state] ?? update.state);
+
 const shortCommit = (commit: string | null | undefined): string => (commit ? commit.slice(0, 7) : '无提交号');
 const buildText = (build: AdminWorkerDto['build']): string =>
   build ? `v${build.version} · ${shortCommit(build.commit)}` : '版本未知（旧版 Worker）';
@@ -23,7 +29,7 @@ export function Workers() {
     queryFn: adminApi.workers,
     // 有机器在更新时快一点刷新，进度才跟得上
     refetchInterval: (query) =>
-      query.state.data?.workers.some((worker) => worker.update?.state === 'updating') ? 2_000 : 10_000
+      query.state.data?.workers.some((worker) => worker.update?.state === 'updating' || worker.update?.state === 'trial') ? 2_000 : 10_000
   });
   const action = useAdminAction(
     ({ kind, worker }: { kind: 'disconnect' | 'update' | 'revoke'; worker: AdminWorkerDto }): Promise<unknown> =>
@@ -66,7 +72,7 @@ export function Workers() {
           <ul>
             {list.map((worker) => {
               const online = worker.state === 'online';
-              const updating = worker.update?.state === 'updating';
+              const updating = worker.update?.state === 'updating' || worker.update?.state === 'trial';
               return (
                 <li
                   key={worker.workerId}
@@ -152,7 +158,7 @@ export function Workers() {
                             : 'text-secondary'
                         }
                       >
-                        {UPDATE_TEXT[worker.update.state] ?? worker.update.state}：{worker.update.message} ·{' '}
+                        {updateLabel(worker.update)}：{worker.update.message} ·{' '}
                         {at(worker.update.at)}
                       </span>
                       {worker.update.logTail ? (

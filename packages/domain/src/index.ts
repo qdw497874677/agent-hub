@@ -19,6 +19,7 @@ export * from './worker.ts';
 export * from './resources.ts';
 export * from './link-health.ts';
 export * from './worker-capability.ts';
+export * from './worker-update.ts';
 export * from './backup-plan.ts';
 export * from './directories.ts';
 export * from './workspace.ts';

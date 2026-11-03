@@ -156,8 +156,9 @@ if command -v flock >/dev/null; then flock -n 9 || { echo "已经在跑了"; exi
 cd "$here"
 while true; do
   cd "$here" || exit 1  # 每轮重进：解压安装更新后目录是换过的
-  bash "$here/scripts/worker-boot-guard.sh" || true
-  (set -a; . "$env_file"; set +a; exec "$node_bin" "$here/apps/worker/src/main.ts")
+  (set -a; . "$env_file"; set +a; bash "$here/scripts/worker-boot-guard.sh") || true
+  # releases 布局（HUB_WORKER_UPDATE_MODE=releases）跑 current，否则跑本目录（见 worker-start.sh）
+  (set -a; . "$env_file"; set +a; exec bash "$here/scripts/worker-start.sh" "$node_bin")
   code=\$?
   [[ \$code -eq 78 ]] && { echo "hub 拒绝了这台机器（退出码 78），不再重启"; exit 78; }
   sleep 3
@@ -204,7 +205,7 @@ WorkingDirectory=$here
 EnvironmentFile=$env_file
 # 自更新后新版本连续起不来就回滚到原提交（见脚本注释）；前面的 - 表示守卫失败也照常启动。
 ExecStartPre=-/usr/bin/env bash $here/scripts/worker-boot-guard.sh
-ExecStart=$node_bin $here/apps/worker/src/main.ts
+ExecStart=/usr/bin/env bash $here/scripts/worker-start.sh $node_bin
 # Worker 自己会断线重连；进程级崩溃交给 systemd。
 Restart=always
 RestartSec=3

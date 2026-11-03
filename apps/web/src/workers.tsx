@@ -98,6 +98,21 @@ const CAPABILITY_LABELS: Readonly<Record<string, string>> = {
 const ALL_CAPABILITIES = Object.keys(CAPABILITY_LABELS);
 
 /** 「上次连上 3 分钟前 · 来自 1.2.3.4 · 版本 abc1234」（ADR 0030 D3）。 */
+const UPDATE_STATE_TEXT: Record<string, string> = { updating: '更新中', succeeded: '更新成功', failed: '更新失败', refused: '拒绝更新', rolled_back: '已回退' };
+
+/** 最近一次远程更新：试运行（ADR 0030 D2）显示剩余秒数。 */
+export function UpdateLine({ update }: { update: NonNullable<WorkerInfoDto['update']> }) {
+  const label =
+    update.state === 'trial'
+      ? `试运行中（剩 ${Math.max(0, Math.ceil((update.trialRemainingMs ?? 0) / 1000))}s）`
+      : (UPDATE_STATE_TEXT[update.state] ?? update.state);
+  return (
+    <span className="block break-words" title={new Date(update.at).toLocaleString()}>
+      {label}：{update.message}
+    </span>
+  );
+}
+
 export function ConnectionLine({ connection }: { connection: NonNullable<WorkerInfoDto['connection']> }) {
   const parts = [`${relativeTime(connection.connectedAt)} 连上`];
   if (connection.address) parts.push(`来自 ${connection.address}`);
@@ -177,6 +192,14 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
               <dt className="text-tertiary">连接</dt>
               <dd className="min-w-0 text-secondary">
                 <ConnectionLine connection={worker.connection} />
+              </dd>
+            </>
+          ) : null}
+          {worker.update ? (
+            <>
+              <dt className="text-tertiary">更新</dt>
+              <dd data-testid="worker-update-line" className={`min-w-0 ${worker.update.state === 'failed' || worker.update.state === 'rolled_back' ? 'text-rust' : 'text-secondary'}`}>
+                <UpdateLine update={worker.update} />
               </dd>
             </>
           ) : null}
