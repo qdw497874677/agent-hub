@@ -1,6 +1,6 @@
 # ADR 0029：上下文交接重做（参考 t3code）
 
-- 状态：proposed（等 David 定 Q1–Q6）
+- 状态：accepted（2026-11-02 David 定了 Q1–Q6，全部按推荐，见末尾「定稿」）
 - 相关：ADR 0012（fork 血缘）、ADR 0019（记忆工具 / ToolProvider）、ADR 0024（distill 模型）、ADR 0028（原生分叉优先，摘要兜底）
 - 参考：t3code `e0f69e9e`（2026-11-02，MIT）
   - `packages/provider-core/src/server/handoffBudget.ts`
@@ -136,3 +136,13 @@ brief 的开头固定加这样一段：
 2. 在 `tools/session-tools.ts` 新增 `session.read`，加上权限测试。
 3. briefing 事件上加 `handoff` 统计字段，web 端加交接小条，桌面和 390 宽度都要过 e2e。
 4. 部署前拍 DB 快照，用测试账号分别验证「换机器继续」和「从这里重来」的摘要兜底。
+
+## 定稿（2026-11-02，David）
+
+Q1–Q6 全部按推荐：
+- Q1：只带原文，不加 distill 摘要头（以后再做开关，默认关）。
+- Q2：新做 hub 工具 `session.read`，不扩展 `memory.search`。
+- Q3：先不建交接表，统计挂在 briefing 事件的 `handoff` 字段上。
+- Q4：工具结果只用 ✓/✗ 加截短输出，不加 `exitCode` 字段。
+- Q5：预算上限默认 16k token，`HUB_HANDOFF_TOKEN_CAP` 可调。
+- Q6：`session.read` 可读血缘祖先 + 同一项目里当前用户可见的会话。
