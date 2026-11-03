@@ -35,6 +35,44 @@ write_note() { # write_note <结果说明>
   } > "$note.tmp" 2>/dev/null && mv -f "$note.tmp" "$note"
 }
 
+# releases 布局（ADR 0030 D2，HUB_WORKER_UPDATE_MODE=releases）：只看 state/update.json，回退 = 把 current 切回 previous。
+# 不重装依赖：previous 是一个装好的完整版本。update.json 是 Worker 写的单行 JSON，字段格式固定，这里只用 sed 取。
+if [[ "${HUB_WORKER_UPDATE_MODE:-legacy}" == "releases" ]]; then
+  root="${WORKER_RELEASES_DIR:-$HOME/.local/share/agent-hub/worker}"
+  ufile="$root/state/update.json"
+  [[ -f "$ufile" ]] || exit 0
+  json="$(tr -d '\n' < "$ufile")"
+  str_field() { sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p" <<<"$json"; }
+  num_field() { sed -n "s/.*\"$1\":\([0-9]*\).*/\1/p" <<<"$json"; }
+  phase="$(str_field phase)"; id="$(str_field id)"; previous="$(str_field previous)"; target="$(str_field target)"
+  boots="$(num_field boots)"; started="$(num_field startedAt)"
+  [[ "$phase" == "trial" ]] || exit 0
+  if [[ ! "$previous" =~ ^[0-9a-f]{40}$ || ! "$target" =~ ^[0-9a-f]{40}$ || ! "$boots" =~ ^[0-9]+$ || ! "$id" =~ ^[a-z0-9-]{1,64}$ ]]; then
+    echo "[boot-guard] update.json 格式不对，忽略" >&2
+    exit 0
+  fi
+  boots=$((boots + 1))
+  write_state() {
+    printf '{"id":"%s","previous":"%s","target":"%s","phase":"%s","boots":%s,"startedAt":%s}\n' "$id" "$previous" "$target" "$1" "$boots" "${started:-0}" > "$ufile.tmp" && mv -f "$ufile.tmp" "$ufile"
+  }
+  if (( boots <= limit )); then
+    write_state trial
+    echo "[boot-guard] 试运行 ${target:0:7} 第 ${boots} 次启动（超过 ${limit} 次没通过就切回 ${previous:0:7}）"
+    exit 0
+  fi
+  prev_dir="$(readlink -f "$root/previous" 2>/dev/null || true)"
+  if [[ -n "$prev_dir" && -f "$prev_dir/apps/worker/src/main.ts" ]]; then
+    ln -sfn "$prev_dir" "$root/current.tmp" && { mv -Tf "$root/current.tmp" "$root/current" 2>/dev/null || { rm -f "$root/current"; mv -f "$root/current.tmp" "$root/current"; }; }
+    write_state rolled_back
+    echo "[boot-guard] 试运行 ${target:0:7} 连续 ${limit} 次没通过，已把 current 切回 ${previous:0:7}" >&2
+    mkdir -p "$state" 2>/dev/null
+    write_note "已把 current 切回上一个版本 ${previous:0:7}（没重装依赖）"
+  else
+    echo "[boot-guard] 找不到 previous（$root/previous），没法回退：请手动处理" >&2
+  fi
+  exit 0
+fi
+
 [[ -f "$marker" ]] || exit 0
 read -r previous target boots < "$marker" || true
 if [[ ! "$previous" =~ ^[0-9a-f]{40}$ || ! "$target" =~ ^[0-9a-f]{40}$ || ! "${boots:-}" =~ ^[0-9]+$ ]]; then

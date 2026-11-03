@@ -46,7 +46,7 @@ export const adminWorkerSchema = z.object({
   /** 和 hub 的版本不一致（或没报版本）。 */
   outdated: z.boolean(),
   update: z
-    .object({ state: z.string(), message: z.string(), logTail: z.string(), at: z.number() })
+    .object({ state: z.string(), message: z.string(), logTail: z.string(), at: z.number(), trialRemainingMs: z.number().optional(), trialDeadlineAt: z.number().optional() })
     .nullable(),
   /** 各 harness 在这台上能不能用（Worker 探测的）；readiness 缺省 = 老 Worker 没报，当作能用。 */
   harnesses: z.array(z.object({ agentId: z.string(), readiness: agentReadinessSchema.optional() })).default([])

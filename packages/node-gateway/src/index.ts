@@ -16,6 +16,8 @@ export { readBuildInfo } from './build-info.ts';
 export { runSelfUpdate, execRunner, downloadHubBundle, downloadHubArtifact, runTarballUpdate, COMMIT_FILE, hubHttpFrom, HUB_BUNDLE_REF } from './updater.ts';
 export { writeBootMarker, clearBootMarker, bootMarkerPath, rollbackNotePath, readRollbackNote, clearRollbackNote, rollbackReport } from './boot-marker.ts';
 export type { RollbackNote } from './boot-marker.ts';
+export { runReleaseUpdate, commitRelease, abortRelease, pruneReleases, readUpdateState, writeUpdateState, formatUpdateState, currentRelease, trialInProgress, defaultReleasesRoot } from './releases.ts';
+export type { UpdateStateFile, ReleasePhase, ReleaseUpdateOptions } from './releases.ts';
 export type { CommandRunner, UpdateReport, UpdateOptions } from './updater.ts';
 export { createMcpEndpoint } from './mcp-endpoint.ts';
 export type { McpEndpoint } from './mcp-endpoint.ts';

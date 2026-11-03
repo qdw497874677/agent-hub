@@ -97,6 +97,13 @@ export interface WorkerLinkOptions {
   /** 经长连接中转的工具调用等 hub 答复的上限。 */
   readonly toolTimeoutMs?: number;
   readonly onUpdate?: (commit: string, report: (status: UpdateReport) => void) => Promise<void>;
+  /**
+   * releases 布局下正在试运行的新版本（ADR 0030 D2）：每次 hello 前问一次，给了就在 hello 里带 update:{id, phase:'trial'}。
+   * hub 观察 60 秒稳定后发 update_commit（→ onUpdateCommit），没通过发 update_abort（→ onUpdateAbort）。
+   */
+  readonly trialUpdate?: () => { readonly id: string; readonly inventory: boolean } | null;
+  readonly onUpdateCommit?: (id: string) => void;
+  readonly onUpdateAbort?: (id: string, reason: string) => void;
   /** 机器资源采样（ADR 0014）。给了就在 hello 里报 'metrics' 能力；hub 的 welcome 接受了才定时上报。 */
   readonly resources?: ResourceProbe;
   /** 资源上报间隔，默认 15 秒。 */
@@ -123,7 +130,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' }
+  { kind: 'update' | 'update_commit' | 'update_abort' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -384,6 +391,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       }, options.stableMs ?? RECONNECT_POLICY.stableMs);
       stableTimer.unref?.();
       droppedReported = dropped;
+      const trial = options.trialUpdate?.() ?? null;
       // hello 必须是第一帧：先于补发的积压事件，server 才知道这些事件是谁的。
       current.send(
         JSON.stringify({
@@ -400,7 +408,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           sessions: [...sessions.keys()],
           ...(options.build ? { build: options.build } : {}),
           ...(options.resources ? { capabilities: [WORKER_CAPABILITY_METRICS] } : {}),
-          ...(droppedReported > 0 ? { dropped: droppedReported } : {})
+          ...(droppedReported > 0 ? { dropped: droppedReported } : {}),
+          ...(trial ? { update: { id: trial.id, phase: 'trial' as const, inventory: trial.inventory } } : {})
         } satisfies WorkerToServer)
       );
       options.onLog?.(`已连上 ${options.url}${sessions.size > 0 ? `，接回 ${sessions.size} 个会话` : ''}`);
@@ -475,6 +484,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       if (command.kind === 'rpc') channel.receive(command.frame);
       else if (command.kind !== 'welcome' && command.kind !== 'enrolled' && denial(commandCapability(command.kind))) refuse(command);
       else if (command.kind === 'update') void update(command.commit);
+      else if (command.kind === 'update_commit') options.onUpdateCommit?.(command.id);
+      else if (command.kind === 'update_abort') options.onUpdateAbort?.(command.id, command.reason);
       else if (command.kind === 'welcome') {
         if (command.heartbeat) {
           watchdogMs = workerWatchdogMs(command.heartbeat);

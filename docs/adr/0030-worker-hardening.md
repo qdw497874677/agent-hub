@@ -191,3 +191,11 @@ Q1–Q7 全部按推荐：
 - Q7：能力存在凭据行上。
 
 按 P1→P5 顺序实现，每阶段一个 PR。P5 先只在测试 Worker 上启用（`HUB_WORKER_UPDATE_MODE` 可退回 legacy），作为试运行。
+
+### P5 实现说明（试运行中）
+
+- 开关：worker.env 里 `HUB_WORKER_UPDATE_MODE=releases`（默认 legacy），根目录 `WORKER_RELEASES_DIR`（默认 `~/.local/share/agent-hub/worker`）。本机 Worker、非 git 检出一律仍按 legacy。
+- 启动：`scripts/worker-start.sh` 在 releases 模式下跑 `current` 指向的版本；守卫 `worker-boot-guard.sh` 仍从原工作区运行（bash，不依赖新代码）。
+- 迁移：第一次更新时原工作区原样成为 `previous`，新版本装进 `releases/<sha>`（从正在跑的检出克隆，缺的提交先取 hub bundle 再 git fetch origin），`npm ci --omit=dev` + `apps/worker/src/selfcheck.ts` 预检通过才换 `current`。
+- 试运行：hello 带 `update:{id, phase:'trial'}`；hub 用 `decideTrial`（domain/worker-update.ts）判断，满足即发 `update_commit`，5 分钟没通过发 `update_abort`。新版本起不来由守卫数到 boots > 2 切回 `previous`。两种回退都写 `update-rolledback`，旧版连上后补报 `rolled_back`。
+- 提交后清理：只留 current、previous 和 1 个更早的 release。

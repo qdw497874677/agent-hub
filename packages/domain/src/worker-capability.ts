@@ -80,6 +80,8 @@ export const COMMAND_CAPABILITY: Readonly<Record<string, WorkerMethodCapability>
   approval: 'sessions',
   set_option: 'sessions',
   update: 'update',
+  update_commit: 'update',
+  update_abort: 'update',
   runtime_job: 'runtimes',
   probe: 'control'
 };

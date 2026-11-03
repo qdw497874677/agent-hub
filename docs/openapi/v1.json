@@ -519,6 +519,28 @@
                           "type": "string"
                         }
                       },
+                      "update": {
+                        "type": "object",
+                        "properties": {
+                          "state": {
+                            "type": "string"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "at": {
+                            "type": "number"
+                          },
+                          "trialRemainingMs": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "state",
+                          "message",
+                          "at"
+                        ]
+                      },
                       "sessionCount": {
                         "type": "integer",
                         "minimum": 0

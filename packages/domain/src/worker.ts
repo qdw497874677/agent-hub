@@ -118,14 +118,21 @@ export interface BuildInfo {
   readonly protocol: number;
 }
 
-/** rolled_back：新版本起不来，启动守卫已自动换回旧版（Worker 用旧版重连后报上来）。 */
-export type WorkerUpdateState = 'updating' | 'succeeded' | 'failed' | 'refused' | 'rolled_back';
+/**
+ * rolled_back：新版本起不来，启动守卫已自动换回旧版（Worker 用旧版重连后报上来）。
+ * trial：releases 布局下新版本已换上、正在试运行，等 hub 握手提交（ADR 0030 D2）。
+ */
+export type WorkerUpdateState = 'updating' | 'trial' | 'succeeded' | 'failed' | 'refused' | 'rolled_back';
 
 export interface WorkerUpdate {
   readonly state: WorkerUpdateState;
   readonly message: string;
   readonly logTail: string;
   readonly at: number;
+  /** trial：还要稳定多久才提交（ms，按 at 那一刻算）。 */
+  readonly trialRemainingMs?: number;
+  /** trial：这个时间点前没通过就回退。 */
+  readonly trialDeadlineAt?: number;
 }
 
 /**

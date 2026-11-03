@@ -276,6 +276,10 @@ export const workerInfoSchema = z.object({
   connection: z.object({ connectedAt: z.number(), address: z.string().nullable(), version: z.string().nullable() }).optional(),
   /** 凭据允许的能力；不给 = 不限。 */
   capabilities: z.array(z.string()).optional(),
+  /** 最近一次远程更新（含 ADR 0030 D2 的试运行）；日志只给管理员看，这里不带。 */
+  update: z
+    .object({ state: z.string(), message: z.string(), at: z.number(), trialRemainingMs: z.number().optional() })
+    .optional(),
   sessionCount: z.number().int().nonnegative().optional(),
   /** 最近一次运行时安装 / 卸载任务。 */
   runtimeJob: z

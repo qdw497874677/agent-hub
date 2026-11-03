@@ -30,7 +30,7 @@ import {
   wsStatus,
   linkEcho
 } from '@agent-hub/contract';
-import { DEFAULT_HEARTBEAT, initialLink, linkIsDead, reduceLink } from '@agent-hub/domain';
+import { DEFAULT_HEARTBEAT, decideTrial, initialLink, linkIsDead, reduceLink } from '@agent-hub/domain';
 import type { HeartbeatPolicy, LinkEvent, LinkHealth } from '@agent-hub/domain';
 import type {
   AssetDelivery,
@@ -127,6 +127,11 @@ export interface GatewayHooks {
 export interface GatewayOptions {
   /** 心跳间隔。连续一个间隔没收到 pong 就判定离线并断开。 */
   readonly heartbeatMs?: number;
+  /** 试运行检查间隔（ADR 0030 D2）；默认 2 秒。 */
+  readonly trialTickMs?: number;
+  /** 试运行稳定窗口 / 总时限；测试里调小。 */
+  readonly trialStableMs?: number;
+  readonly trialTimeoutMs?: number;
   /** 连续漏几次 pong 判离线（ADR 0030 Q1，默认 2）。 */
   readonly missLimit?: number;
   /** 应用层回声间隔（默认 30 秒）；0 = 不做。 */
@@ -195,6 +200,8 @@ interface Registered {
   inventory: WorkerInventory | null;
   /** 最近一次更新的目标提交：它重启后用新版本 hello 上来时，据此判定「更新完成」。 */
   updateTarget: string | null;
+  /** 正在试运行的新版本（ADR 0030 D2）：hub 观察它，决定 update_commit / update_abort。 */
+  trial: { id: string; startedAt: number; commit: string | null; inventoryApplied: boolean } | null;
   /** 这条连接上的 RPC 通道；离线时为 null。 */
   channel: RpcChannel | null;
   /** 凭据允许的能力（ADR 0030 D3）；null = 不限（本机 / 共享令牌 / 老凭据前的行为）。 */
@@ -474,12 +481,31 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           runtimeJob: previous?.runtimeJob ?? null,
           inventory: previous?.inventory ?? null,
           updateTarget: target !== null && build?.commit === target ? null : target,
+          trial: frame.update
+            ? {
+                id: frame.update.id,
+                startedAt: previous?.trial?.id === frame.update.id ? previous.trial.startedAt : now(),
+                commit: build?.commit ?? null,
+                inventoryApplied: !frame.update.inventory
+              }
+            : null,
           channel: null,
           capabilities: verdict.capabilities ?? null,
           connection: { at: now(), address: clientAddress, version: build?.commit ?? null }
         };
         previous?.channel?.close('被同一台机器的新连接顶替');
         const current = socket;
+        if (entry.trial) {
+          entry.update = {
+            state: 'trial',
+            message: `试运行中：${entry.trial.commit?.slice(0, 7) ?? '新版本'}（稳定 60 秒且没有重连就提交）`,
+            logTail: entry.update?.logTail ?? '',
+            at: now(),
+            trialRemainingMs: trialStableMs,
+            trialDeadlineAt: entry.trial.startedAt + trialTimeoutMs
+          };
+          hooks.onUpdateStatus?.(entry.workerId, entry.update);
+        }
         entry.channel = createRpcChannel({
           idPrefix: 'h',
           timeoutMs: requestTimeoutMs,
@@ -539,6 +565,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       }
       if (frame.type === 'inventory') {
         entry.inventory = frame.inventory as WorkerInventory;
+        if (entry.trial) entry.trial.inventoryApplied = true;
         return;
       }
       if (frame.type === 'metrics') {
@@ -613,6 +640,40 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     }
   }, heartbeatMs);
   heartbeat.unref();
+
+  // 试运行观察（ADR 0030 D2）：领域策略决定提交 / 回退 / 继续等，这里只负责发帧和记状态
+  const trialStableMs = options.trialStableMs ?? 60_000;
+  const trialTimeoutMs = options.trialTimeoutMs ?? 5 * 60_000;
+  const trials = setInterval(() => {
+    for (const entry of registry.values()) {
+      const trial = entry.trial;
+      if (!trial) continue;
+      const decision = decideTrial(
+        { startedAt: trial.startedAt, connectedAt: entry.link.connectedAt ?? trial.startedAt, link: entry.link.state, inventoryApplied: trial.inventoryApplied, online: entry.socket !== null },
+        now(),
+        trialStableMs,
+        trialTimeoutMs
+      );
+      const short = trial.commit?.slice(0, 7) ?? '新版本';
+      if (decision.kind === 'wait') {
+        if (entry.update?.state === 'trial') entry.update = { ...entry.update, at: now(), trialRemainingMs: decision.remainingMs, trialDeadlineAt: decision.deadlineAt };
+        continue;
+      }
+      const socket = entry.socket;
+      const frame: ServerToWorker =
+        decision.kind === 'commit' ? { kind: 'update_commit', id: trial.id } : { kind: 'update_abort', id: trial.id, reason: decision.reason };
+      if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
+      entry.trial = null;
+      entry.updateTarget = null;
+      entry.update =
+        decision.kind === 'commit'
+          ? { state: 'succeeded', message: `试运行通过，已提交 ${short}`, logTail: entry.update?.logTail ?? '', at: now() }
+          : { state: 'failed', message: `${decision.reason}，${socket ? '已让 Worker 切回上一个版本' : 'Worker 离线，由它的启动守卫切回上一个版本'}`, logTail: entry.update?.logTail ?? '', at: now() };
+      hooks.onLog?.(`worker ${entry.workerId} 试运行 ${short}：${decision.kind}`);
+      hooks.onUpdateStatus?.(entry.workerId, entry.update);
+    }
+  }, options.trialTickMs ?? 2_000);
+  trials.unref();
   const echoes =
     policy.echoMs > 0
       ? setInterval(() => {
@@ -831,6 +892,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     close(): void {
       clearInterval(heartbeat);
+      clearInterval(trials);
       if (echoes) clearInterval(echoes);
       for (const entry of registry.values()) entry.channel?.close('hub 正在关闭');
       for (const entry of registry.values()) entry.socket?.terminate();
