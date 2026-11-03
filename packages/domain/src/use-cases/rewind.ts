@@ -84,7 +84,8 @@ export function createRewindService(deps: RewindDeps) {
     const earlier = (await deps.sessions.eventsAfter(session.id, 0 as never)).filter((e) => e.seq < promptSeq && e.event.kind === 'prompt');
     if (earlier.length === 0) return { mode: 'none', reason: null, branch: null };
     const summary = (reason: string): Plan => ({ mode: 'summary', reason, branch: null });
-    const descriptor = deps.agents.descriptor(session.agentId);
+    // 能力看原会话所在那台机器（别的机器上同名 agent 可能是老版本）
+    const descriptor = (session.workerId ? deps.agents.descriptorOn?.(session.workerId, session.agentId) : null) ?? deps.agents.descriptor(session.agentId);
     if (!descriptor) return summary('找不到这个 agent');
     if (!allowsFor(descriptor.capabilities, 'branch_at_turn')) return summary(unavailableReason(descriptor.capabilities, 'branch_at_turn') ?? '这个 agent 不能原生分叉');
     if (!session.agentSessionRef) return summary('原会话没有记下 agent 自己的会话 id');

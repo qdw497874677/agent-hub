@@ -36,6 +36,8 @@ import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 export interface AgentCatalog {
   list(): readonly AgentDescriptor[];
   descriptor(id: AgentId): AgentDescriptor | null;
+  /** 某台机器上报的这个 agent（多机时各机版本可能不同，能力以会话所在那台为准）；没有就退回 descriptor()。 */
+  descriptorOn?(workerId: string, id: AgentId): AgentDescriptor | null;
 }
 
 /**

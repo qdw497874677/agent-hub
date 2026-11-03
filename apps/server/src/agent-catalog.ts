@@ -33,6 +33,9 @@ export function createLiveCatalog(): LiveCatalog {
     descriptor(id: AgentId): AgentDescriptor | null {
       return all().find((descriptor) => descriptor.id === id) ?? null;
     },
+    descriptorOn(workerId: string, id: AgentId): AgentDescriptor | null {
+      return byWorker.get(workerId)?.find((descriptor) => descriptor.id === id) ?? null;
+    },
     upsert(workerId: string, agents: readonly AgentDto[]): void {
       byWorker.set(workerId, agents.map((agent) => agentFromDto(agent)));
     },

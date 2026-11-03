@@ -70,7 +70,7 @@ async function world(opts: { native?: boolean } = {}) {
     }
   };
   const svc = createRewindService({ ...w.deps, files, turnRefs });
-  return { ...w, svc, sid, seqs, restores, refs, task: task.value, project: project.value, refuse: () => (refuse = true) };
+  return { ...w, svc, sid, seqs, restores, refs, files, task: task.value, project: project.value, refuse: () => (refuse = true) };
 }
 
 test('从这里重来：只回滚对话 = 从这条消息之前分叉，之前的对话做交接摘要，原消息回填', async () => {
@@ -208,4 +208,19 @@ test('原生分叉：缺上一轮标识（功能上线前的消息）就退回�
   w.refs.get(w.sid)!.delete(w.seqs[0]!);
   const preview = await w.svc.preview(null, w.sid, w.seqs[1]!);
   assert.ok(preview.ok && preview.value.mode === 'summary' && /原生标识/.test(preview.value.modeReason ?? ''));
+});
+
+test('原生分叉：能力以原会话所在那台机器为准（别的机器上同名 agent 是老版本也不影响）', async () => {
+  const w = await world({ native: true });
+  const session = (await w.deps.sessions.byId(w.sid))!;
+  const agents = w.deps.agents;
+  // 「第一台」报的是老版本（不支持），原会话那台支持
+  const svc = createRewindService({
+    ...w.deps,
+    agents: { list: () => agents.list(), descriptor: () => fake, descriptorOn: (workerId, id) => (workerId === session.workerId ? agents.descriptor(id) : null) },
+    files: w.files,
+    turnRefs: { record: async () => undefined, list: async () => w.refs.get(w.sid) ?? new Map() }
+  });
+  const preview = await svc.preview(null, w.sid, w.seqs[1]!);
+  assert.ok(preview.ok && preview.value.mode === 'native', JSON.stringify(preview));
 });
