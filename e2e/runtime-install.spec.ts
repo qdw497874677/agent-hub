@@ -65,8 +65,23 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'install-01-missing.png') });
 
     await pi.getByTestId('runtime-pi-install').click();
-    await expect(pi.getByTestId('runtime-pi-install')).toHaveText('确认安装 v1.4.0');
-    await pi.getByTestId('runtime-pi-install').click();
+    const confirm = pi.getByTestId('runtime-pi-install');
+    await expect(confirm).toHaveText('确认安装 v1.4.0');
+    // 等确认时按钮要看得见、点得动（以前 bg-ink 没定义，按钮透明 + 深色字，看着像禁用）
+    await expect(confirm).toBeEnabled();
+    await expect(pi.getByTestId('runtime-pi-confirm-hint')).toHaveText(/再点一次确认/);
+    const look = await confirm.evaluate((el) => {
+      const style = getComputedStyle(el);
+      return { bg: style.backgroundColor, color: style.color, opacity: style.opacity };
+    });
+    expect(look.bg).not.toMatch(/rgba\(0, 0, 0, 0\)|transparent/);
+    expect(look.color).not.toBe(look.bg);
+    expect(look.opacity).toBe('1');
+    if (SHOTS) await page.screenshot({ path: join(SHOTS, 'install-01b-confirm.png') });
+    // 6 秒后仍在确认态（窗口放宽到 10 秒）
+    await page.waitForTimeout(6_000);
+    await expect(confirm).toHaveText('确认安装 v1.4.0');
+    await confirm.click();
     await expect(page.getByTestId('runtime-job-state')).toContainText('Pi 安装 · 进行中');
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'install-02-running.png') });
     await expect(page.getByTestId('runtime-job-state')).toContainText('完成', { timeout: 240_000 });
