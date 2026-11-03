@@ -18,6 +18,7 @@ import { GitDialog, PullRequestChips } from './git-dialog.tsx';
 import { gitApi } from './api.ts';
 import { FileLinksContext, type FileLinks } from './file-links.tsx';
 import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
+import { RewindDialog } from './rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 
 interface Props {
@@ -33,6 +34,8 @@ interface Props {
   readonly onChanged: () => void;
   /** 换个地方继续之后跳到新会话。 */
   readonly onOpenSession: (sessionId: string) => void;
+  /** 从这里重来：把原消息放进新会话的输入框。 */
+  readonly onSeedDraft?: (sessionId: string, text: string) => void;
   readonly artifacts: readonly ArtifactDto[];
   readonly onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
 }
@@ -52,6 +55,7 @@ export function FocusView({
   onBack,
   onChanged,
   onOpenSession,
+  onSeedDraft,
   artifacts,
   onChangeOption,
   windowChrome
@@ -109,6 +113,8 @@ export function FocusView({
   }))?.files.length;
   const forkable = !busy && forkHint === null;
   const [gitOpen, setGitOpen] = useState(false);
+  const [rewindAt, setRewindAt] = useState<number | null>(null);
+  useEffect(() => setRewindAt(null), [session.id]);
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
   const turns = shown(useQuery({ ...FILES_QUERY, queryKey: ['files', session.id, 'turns'], queryFn: () => filesApi.turns(session.id) })) ?? [];
   const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
@@ -280,6 +286,10 @@ export function FocusView({
       </header>
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
       {gitOpen ? <GitDialog sessionId={session.id} onClose={() => setGitOpen(false)} /> : null}
+      {rewindAt !== null ? (
+        <RewindDialog sessionId={session.id} promptSeq={rewindAt} onClose={() => setRewindAt(null)}
+          onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
+      ) : null}
       <div role="tablist" aria-label="会话视图" className="flex shrink-0 gap-1 border-b border-hair px-2 py-1.5 md:px-3" data-testid="session-tabs">
         {SESSION_TABS.map((t) => (
           <button
@@ -358,7 +368,8 @@ export function FocusView({
           ) : (
             <FileLinksContext.Provider value={fileLinks}>
             {blocks.map((block, index) => (
-              <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}>
+              <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
+                onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
               <ChatBlock
                 block={block}
                 agentLabel={agentLabel}
@@ -430,11 +441,38 @@ function TurnBadge({ turn, onOpen }: { turn: TurnRow; onOpen: (turn: number) => 
     </button>
   );
 }
-function TurnFrag({ badge, onOpen, children }: { badge: TurnRow | null; onOpen: (turn: number) => void; children: ReactNode }) {
+function TurnFrag({ badge, onOpen, onRewind, children }: { badge: TurnRow | null; onOpen: (turn: number) => void; onRewind: (() => void) | null; children: ReactNode }) {
   return (
     <>
       {badge ? <TurnBadge turn={badge} onOpen={onOpen} /> : null}
-      {children}
+      {onRewind ? (
+        <div className="group/msg relative flex flex-col">
+          {children}
+          <MessageMenu onRewind={onRewind} />
+        </div>
+      ) : children}
     </>
+  );
+}
+
+/** 用户消息下面的「⋯」：目前只有「从这里重来」。 */
+function MessageMenu({ onRewind }: { onRewind: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative -mt-0.5 flex justify-end">
+      <button type="button" aria-label="消息操作" aria-expanded={open} data-testid="msg-menu"
+        className="rounded-sm px-1.5 text-meta leading-5 text-tertiary hover:bg-hair/40 hover:text-primary"
+        onClick={() => setOpen((v) => !v)}>
+        ⋯
+      </button>
+      {open ? (
+        <div role="menu" className="absolute right-0 top-6 z-20 min-w-[132px] rounded-sm border border-strong bg-panel py-1 shadow-lg" onMouseLeave={() => setOpen(false)}>
+          <button type="button" role="menuitem" data-testid="msg-rewind" className="block w-full px-3 py-1.5 text-left text-sub text-primary hover:bg-hair/40"
+            onClick={() => { setOpen(false); onRewind(); }}>
+            从这里重来
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }

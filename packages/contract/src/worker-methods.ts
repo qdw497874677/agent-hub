@@ -82,7 +82,8 @@ export const wsStatus = method(
     branch: z.string().nullable(),
     upstream: z.string().nullable(),
     head: z.string().nullable().optional(),
-    sizeBytes: z.number().nullable().optional()
+    sizeBytes: z.number().nullable().optional(),
+    files: z.number().int().nullable().optional()
   })
 );
 
@@ -237,6 +238,11 @@ export const filesDiff = method(
 export const filesCheckpoint = method('files.checkpoint', z.object({ root: z.string(), ref: z.string().max(200) }), z.object({ commit: z.string().nullable() }));
 export const filesDropRefs = method('files.drop_refs', z.object({ root: z.string(), prefix: z.string().max(200) }), z.object({ dropped: z.number() }));
 
+export const filesRestore = method(
+  'files.restore',
+  z.object({ root: z.string(), commit: z.string().max(64), safetyRef: z.string().max(200) }),
+  z.object({ safety: z.string(), restored: z.number(), removed: z.number() })
+);
 export const filesHead = method('files.head', z.object({ root: z.string() }), z.object({ head: z.string().nullable() }));
 
 /** 开始盯：watchId 由 hub 起，变化用 files.changed 回报。 */

@@ -57,6 +57,7 @@ export * from './use-cases/conversation.ts';
 export * from './use-cases/home.ts';
 export * from './use-cases/workers.ts';
 export * from './use-cases/continue-elsewhere.ts';
+export * from './use-cases/rewind.ts';
 export * from './use-cases/attachments.ts';
 export * from './use-cases/workspaces.ts';
 export * from './use-cases/temporary-workspaces.ts';

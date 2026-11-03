@@ -30,6 +30,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createContextService,
   createWorkspaceFilesService,
   createGitWorkflowService,
+  createRewindService,
   createMessageToolProvider,
   createMemoryService,
   checkProviderModel,
@@ -705,6 +706,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   context: contextService,
   files: filesService,
   git: gitService,
+  rewind: createRewindService({ ...deps, files: filesService }),
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,

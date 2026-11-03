@@ -31,6 +31,7 @@ function fakeBrowser(tag: string, calls: string[]): WorkspaceBrowser {
     diff: async (_root, path, base, _max, target) => (calls.push(`${tag}:diff:${path}:${base}${target ? `..${target}` : ''}`), ok({ path, patch: '', truncated: false, binary: false })),
     checkpoint: async (_root, ref) => (calls.push(`${tag}:checkpoint:${ref.split('/').at(-1)}`), ok(`c0ffee${ref.split('/').at(-1)}`)),
     dropRefs: async (_root, prefix) => (calls.push(`${tag}:drop:${prefix.split('/').length}`), ok(2)),
+    restore: async (_root, commit) => (calls.push(`${tag}:restore:${commit}`), ok({ safety: 'safe', restored: 1, removed: 0 })),
     head: async () => ok('abc1234'),
     watch: async (_root, paths) => (calls.push(`${tag}:watch:${paths.join(',')}`), ok(() => calls.push(`${tag}:unwatch`)))
   };
@@ -162,6 +163,13 @@ test('回合检查点：开始 / 结束各拍一张，本轮 = 前 → 后，进
   assert.ok(after.ok);
   assert.deepEqual(after.value.map((t) => [t.turn, t.promptSeq, t.after !== null]), [[1, 1, true], [2, 5, true], [3, 9, false]]);
   assert.equal((await w.svc.changes(null, sid, 'turn', 42)).ok, false);
+  // 从第二轮那条问话重来：恢复到第二轮开始前的检查点
+  assert.equal((await w.svc.turnFor(sid, 5))?.turn, 2);
+  const restored = await w.svc.restoreTurn(sid, 5);
+  assert.ok(restored.ok && restored.value.turn === 2);
+  assert.ok(w.calls.includes('local:restore:c0ffee3'));
+  const missing = await w.svc.restoreTurn(sid, 4);
+  assert.ok(!missing.ok && missing.error.code === 'not_found');
 });
 
 test('检查点保留期：30 天后连 ref 带行一起删；运行中的会话不动', async () => {

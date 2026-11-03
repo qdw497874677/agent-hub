@@ -274,6 +274,7 @@ function Workspace() {
           onBack={() => setView(homeView)}
           onChanged={refresh}
           onOpenSession={openSession}
+          onSeedDraft={(id, text) => setDrafts((current) => ({ ...current, [id]: text }))}
           artifacts={canvas.data.artifacts.filter((artifact) => artifact.sessionId === selectedSession.id)}
           onChangeOption={(optionId, value) =>
             changeOption(selectedSession.id, optionId, value)

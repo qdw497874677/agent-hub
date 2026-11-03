@@ -199,3 +199,44 @@ test('checkpoint：还没有提交的仓库也能拍；不是仓库 = null', asy
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('restore：回到检查点（改的写回、删的恢复、新增的删掉），忽略文件不动，先拍安全检查点；推送过的新提交拒绝', async () => {
+  const root = await repo();
+  const remote = await mkdtemp(join(tmpdir(), 'wsb-remote-'));
+  try {
+    const b = createWorkspaceBrowser();
+    await writeFile(join(root, 'notes.txt'), 'untracked before\n');
+    const before = await b.checkpoint(root, 'refs/agent-hub/checkpoints/s1/1');
+    assert.ok(before.ok && before.value);
+    await writeFile(join(root, 'src/a.ts'), 'export const a = 99;\n');
+    await rm(join(root, 'README.md'));
+    await mkdir(join(root, 'src/deep'));
+    await writeFile(join(root, 'src/deep/new.ts'), 'new\n');
+    await mkdir(join(root, 'out'));
+    await writeFile(join(root, 'out/build.js'), 'ignored\n');
+    const done = await b.restore(root, before.value, 'refs/agent-hub/checkpoints/s1/3');
+    assert.ok(done.ok, JSON.stringify(done));
+    assert.deepEqual([done.value.restored, done.value.removed], [2, 1]);
+    const { readFileSync, existsSync } = await import('node:fs');
+    assert.equal(readFileSync(join(root, 'src/a.ts'), 'utf8'), 'export const a = 1;\n');
+    assert.equal(readFileSync(join(root, 'README.md'), 'utf8'), '# hi\n');
+    assert.equal(readFileSync(join(root, 'notes.txt'), 'utf8'), 'untracked before\n');
+    assert.equal(existsSync(join(root, 'src/deep/new.ts')), false);
+    assert.equal(existsSync(join(root, 'out/build.js')), true);
+    assert.equal(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim(), '?? notes.txt');
+    // 安全检查点里还有回滚前的样子（可撤销）
+    assert.equal(execFileSync('git', ['show', `${done.value.safety}:src/a.ts`], { cwd: root, encoding: 'utf8' }), 'export const a = 99;\n');
+    // 之后的提交推送过 → 拒绝
+    git(remote, 'init', '-q', '--bare');
+    git(root, 'remote', 'add', 'origin', remote);
+    await writeFile(join(root, 'src/a.ts'), 'export const a = 2;\n');
+    git(root, 'commit', '-qam', 'later');
+    git(root, 'push', '-q', 'origin', 'main');
+    const refused = await b.restore(root, before.value, 'refs/agent-hub/checkpoints/s1/5');
+    assert.ok(!refused.ok && refused.error.code === 'conflict');
+    assert.equal((await b.restore(root, 'zzz', 'refs/agent-hub/checkpoints/s1/7')).ok, false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(remote, { recursive: true, force: true });
+  }
+});

@@ -7,7 +7,7 @@ import { rm } from 'node:fs/promises';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import fuzzysort from 'fuzzysort';
 import type { BrowserEntry, ChangedFile, DirectoryPage, DomainError, FileChangeNotice, FileGitStatus, Result, WorkspaceBrowser } from '@agent-hub/domain';
-import { FILES_LIMITS, isCheckpointPrefix, isCheckpointRef, invalid, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, notFound, unavailable } from '@agent-hub/domain';
+import { FILES_LIMITS, conflict, isCheckpointPrefix, isCheckpointRef, invalid, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, notFound, unavailable } from '@agent-hub/domain';
 
 /**
  * WorkspaceBrowser 的本机实现（ADR 0025）：fs + git CLI + fuzzysort + chokidar。
@@ -174,7 +174,7 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
     }
   }
 
-  return {
+  const browser: WorkspaceBrowser = {
     list: (root, path, { limit }) =>
       attempt(async (): Promise<DirectoryPage> => {
         const real = await rootOf(root);
@@ -365,6 +365,54 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         return refs.length;
       }),
 
+    restore: (root, commit, safetyRef) =>
+      attempt(async () => {
+        if (!isCommitId(commit) || !isCheckpointRef(safetyRef)) fail(invalid('检查点不合法'));
+        const real = await rootOf(root);
+        if (!(await isRepo(gitIn(real)))) fail(invalid('不是 git 仓库，没有检查点可回滚'));
+        const top = (await gitIn(real)(['rev-parse', '--show-toplevel'])).trim();
+        const git = gitIn(top);
+        try {
+          await git(['cat-file', '-e', `${commit}^{commit}`]);
+        } catch {
+          fail(notFound('检查点不在这个仓库里了（可能已过保留期被清理）'));
+        }
+        const parent = (await git(['rev-list', '--parents', '-n', '1', commit])).trim().split(' ')[1] ?? null;
+        let head: string | null = null;
+        try {
+          head = (await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])).trim() || null;
+        } catch {
+          head = null;
+        }
+        // 这一轮之后有了新提交、而且推上去了：文件回滚会和远端的历史对不上，拒绝
+        if (head && head !== parent) {
+          const pushed = (await git(['for-each-ref', '--contains', head, '--format=%(refname)', 'refs/remotes'])).trim();
+          if (pushed) fail(conflict('这一轮之后的提交已经推送到远端，不能回滚文件；可以只回滚对话'));
+        }
+        const safety = await browser.checkpoint(real, safetyRef);
+        if (!safety.ok) fail(safety.error);
+        const now = safety.ok ? safety.value : null;
+        if (!now) fail(unavailable('恢复前的检查点没拍成，没有动文件'));
+        const list = async (filter: string) =>
+          (await git(['diff', '--name-only', '-z', '--no-renames', `--diff-filter=${filter}`, commit, now as string])).split('\0').filter(Boolean);
+        const added = await list('A');
+        const changed = await list('MDT');
+        for (const path of added) await rm(join(top, path), { force: true });
+        if (changed.length > 0) {
+          const index = join(tmpdir(), `agent-hub-index-${randomBytes(8).toString('hex')}`);
+          const env = { GIT_INDEX_FILE: index };
+          try {
+            await git(['read-tree', commit], { env });
+            await git(['checkout-index', '-f', '-z', '--stdin'], { env, input: changed.join('\0') });
+          } finally {
+            await rm(index, { force: true }).catch(() => undefined);
+          }
+        }
+        // 真 index 的 stat 缓存刷新一下，git status 不至于误报
+        await git(['update-index', '-q', '--refresh'], { allowExit: [1] }).catch(() => undefined);
+        return { safety: now as string, restored: changed.length, removed: added.length };
+      }),
+
     head: (root) =>
       attempt(async () => {
         const real = await rootOf(root);
@@ -423,6 +471,7 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         };
       })
   };
+  return browser;
 }
 
 /** 未跟踪的新文件：git diff 不算它，自己数行数（和 diff 里的 +N 对上）；二进制/太大/读不了的记 0。 */

@@ -100,10 +100,12 @@ export interface ForkSessionInput {
   readonly workerId?: string | null;
   readonly workspaceId?: WorkspaceId | null;
   readonly createdBy?: string | null;
+  /** 「从这里重来」回到第一条消息之前：允许 atSeq = 0（什么都不继承）。 */
+  readonly allowEmpty?: boolean;
 }
 
 export function forkSession(input: ForkSessionInput): Result<Session, DomainError> {
-  if (!Number.isInteger(input.atSeq) || input.atSeq <= 0) {
+  if (!Number.isInteger(input.atSeq) || input.atSeq < (input.allowEmpty ? 0 : 1)) {
     return err(invalid('分叉点必须是正整数事件序号'));
   }
   if (input.atSeq > input.source.lastSeq) {

@@ -5,7 +5,7 @@ import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
-import { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, type ChangedFile, type CheckpointStore, type DirectoryPage, type FileChangeNotice, type FileContent, type FileDiff, type SessionBaseStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
+import { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, type ChangedFile, type CheckpointStore, type DirectoryPage, type FileChangeNotice, type FileContent, type FileDiff, type RestoreOutcome, type SessionBaseStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
 import type { Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { asSessionId, newId } from '../ids.ts';
@@ -244,6 +244,28 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
         if (!open || open.after !== null) return;
         const where = await locateSystem(sessionId);
         if (where) await closeTurn(store, where, open);
+      });
+    },
+    /** 以这条问话开头的那一轮（「从这里重来」用）；没有检查点 = null。 */
+    async turnFor(sessionId: string, promptSeq: number): Promise<TurnCheckpoint | null> {
+      return (await deps.checkpoints?.list(sessionId))?.find((t) => t.promptSeq === promptSeq) ?? null;
+    },
+    /**
+     * 连文件一起回滚（ADR 0027 阶段 4）：工作区恢复到这一轮开始前；恢复前的样子拍到同一会话前缀下的安全 ref，
+     * 跟会话的检查点一起过保留期 / 随工作空间删除。权限、共享检查在调用方（rewind 用例）。
+     */
+    async turnsOf(sessionId: string): Promise<readonly TurnCheckpoint[]> {
+      return (await deps.checkpoints?.list(sessionId)) ?? [];
+    },
+    async restoreTurn(sessionId: string, promptSeq: number): Promise<Result<RestoreOutcome & { readonly turn: number }, DomainError>> {
+      const turn = await this.turnFor(sessionId, promptSeq);
+      if (!turn) return err(notFound('这条消息没有检查点（检查点上线之前的消息，或工作空间不是 git 仓库），不能回滚文件'));
+      return serial(sessionId, async () => {
+        const where = await locateSystem(sessionId);
+        if (!where) return err(invalid('这条会话还没有工作空间'));
+        const safety = checkpointRef(sessionId, 900_000 + (Math.floor(deps.now() / 1000) % 99_999));
+        const done = await where.browser.restore(where.root, turn.before, safety);
+        return done.ok ? ok({ ...done.value, turn: turn.turn }) : done;
       });
     },
     /** 保留期清理（D1）：最后一个检查点 30 天前的会话，删 ref + 删行。删工作空间时用 dropSession。 */
