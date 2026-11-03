@@ -15,6 +15,7 @@ const ACTION_LABEL: Record<string, string> = {
   'worker.pair': '签发接入码',
   'worker.enroll': '接入机器',
   'worker.revoke': '吊销机器',
+  'worker.rotate': '轮换机器凭据',
   'asset.create': '添加资产',
   'asset.revision': '资产新版本',
   'asset.pin': '升级资产',

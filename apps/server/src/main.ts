@@ -457,7 +457,8 @@ const workerControl = {
   disconnect: async (workerId: string, why?: 'admin' | 'revoked') => serverGateway?.disconnect(workerId, why) ?? false,
   hubBuild: () => hubBuild,
   update: async (workerId: string, commit: string) => serverGateway?.requestUpdate(workerId, commit) ?? false,
-  runtimeJob: async (workerId: string, job: RuntimeJob) => serverGateway?.requestRuntimeJob(workerId, job) ?? false
+  runtimeJob: async (workerId: string, job: RuntimeJob) => serverGateway?.requestRuntimeJob(workerId, job) ?? false,
+  rotateCredential: async (workerId: string, credential: string) => serverGateway?.rotateCredential(workerId, credential) ?? false
 };
 const enrollmentDeps: EnrollmentDeps = {
   enrollment: store.enrollment,

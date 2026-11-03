@@ -6,7 +6,7 @@ import { Readable } from 'node:stream';
 import type { InstallArtifacts } from './install-artifacts.ts';
 import type { PairingDto } from '@agent-hub/contract';
 import type { EnrollmentDeps } from '@agent-hub/domain';
-import { issuePairingCode, precheckShellVars, revokeWorker } from '@agent-hub/domain';
+import { credentialStatus, issuePairingCode, precheckShellVars, revokeWorker, rotateWorkerCredential } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -59,7 +59,8 @@ export function installEnrollment(app: Hono, options: EnrollmentOptions, princip
   const { deps } = options;
 
   app.post('/api/workers/pairing', async (c) => {
-    const result = await issuePairingCode(deps, principalOf(c));
+    const requested = (await c.req.json().catch(() => null)) as { preset?: unknown } | null;
+    const result = await issuePairingCode(deps, principalOf(c), requested?.preset ?? 'full');
     if (!result.ok) return fail(c, result.error);
     const hubUrl = publicOrigin(c);
     const short = { command: `curl -fsSL ${hubUrl}/install-worker.sh | HUB_PAIR=${result.value.code} bash`, shortCommand: undefined as string | undefined };
@@ -72,6 +73,7 @@ export function installEnrollment(app: Hono, options: EnrollmentOptions, princip
       expiresAt: result.value.expiresAt,
       hubUrl,
       command: commands.command,
+      preset: result.value.preset,
       ...(commands.shortCommand ? { shortCommand: commands.shortCommand } : {})
     };
     c.header('cache-control', 'no-store');
@@ -83,6 +85,20 @@ export function installEnrollment(app: Hono, options: EnrollmentOptions, princip
     if (!principal) return c.json({ error: { code: 'unauthorized', message: '请先登录' } }, 401);
     const result = await revokeWorker(deps, principal, c.req.param('id'));
     return result.ok ? c.json({ workerId: result.value.workerId, revokedAt: result.value.revokedAt }) : fail(c, result.error);
+  });
+
+  // 轮换凭据（ADR 0030 D3/P4）：只手动；Worker 要在线
+  app.post('/api/workers/:id/rotate', async (c) => {
+    const principal = principalOf(c);
+    if (!principal) return c.json({ error: { code: 'unauthorized', message: '请先登录' } }, 401);
+    const result = await rotateWorkerCredential(deps, principal, c.req.param('id'));
+    return result.ok ? c.json({ workerId: result.value.workerId, pendingUntil: result.value.pendingUntil }, 202) : fail(c, result.error);
+  });
+  app.get('/api/workers/:id/credential', async (c) => {
+    const principal = principalOf(c);
+    if (!principal) return c.json({ error: { code: 'unauthorized', message: '请先登录' } }, 401);
+    const result = await credentialStatus(deps, principal, c.req.param('id'));
+    return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
   app.get('/install-worker.sh', async (c) => {

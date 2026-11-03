@@ -63,3 +63,30 @@ test('ADR 0030 D3：凭据记下连接来历和能力；老库补列不丢数据
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('ADR 0030 P4：码带能力集；轮换中新旧哈希都能查到，转正后旧的查不到，失败只清新的', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-enroll-'));
+  try {
+    const store = openSqliteStore(join(dir, 'hub.db'));
+    const by = 'u1' as UserId;
+    await store.enrollment.savePairing({ hash: 'p1', createdBy: by, createdAt: 1, expiresAt: 100, usedAt: null, workerId: null, capabilities: ['files.read'] });
+    assert.deepEqual((await store.enrollment.pairingByHash('p1'))?.capabilities, ['files.read']);
+    await store.enrollment.saveCredential({ workerId: 'w', tokenHash: 'old', enrolledBy: by, label: 'x', createdAt: 1, revokedAt: null });
+    await store.enrollment.beginRotation('w', 'new', 500);
+    assert.equal((await store.enrollment.credentialByHash('new'))?.workerId, 'w');
+    assert.equal((await store.enrollment.credentialByHash('old'))?.pendingUntil, 500);
+    assert.equal(await store.enrollment.completeRotation('w', 'wrong', 10), false);
+    assert.equal(await store.enrollment.completeRotation('w', 'new', 10), true);
+    assert.equal(await store.enrollment.credentialByHash('old'), null);
+    const after = await store.enrollment.credentialFor('w');
+    assert.equal(after?.tokenHash, 'new');
+    assert.equal(after?.rotatedAt, 10);
+    assert.equal(after?.pendingHash, null);
+    await store.enrollment.beginRotation('w', 'newer', 900);
+    await store.enrollment.failRotation('w', 20);
+    assert.equal(await store.enrollment.credentialByHash('newer'), null);
+    assert.equal((await store.enrollment.credentialFor('w'))?.rotationFailedAt, 20);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

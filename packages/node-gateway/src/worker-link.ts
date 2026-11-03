@@ -35,6 +35,11 @@ export interface WorkerLinkOptions {
   readonly localSecret?: string;
   /** 单台机器接入换来的专属凭据；有它时 hub 不看共享 token。 */
   readonly credential?: string;
+  /**
+   * 轮换凭据（ADR 0030 D3）：hub 下发了新凭据，把它持久化（worker.env）。返回 true 才换用新凭据重连；
+   * 没有这个回调 / 写失败 = 继续用旧的（hub 宽限期过了会判轮换失败、保留旧凭据）。
+   */
+  readonly onCredentialRotate?: (credential: string) => Promise<boolean>;
   readonly runtimes: readonly AgentRuntime[];
   /**
    * 各 harness 的就绪探测（端口适配器的组合）。连上后、每 `probeIntervalMs`、收到 hub 的 probe 指令时各跑一次，
@@ -118,7 +123,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' }
+  { kind: 'update' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -133,6 +138,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const starting = new Map<string, Promise<void>>();
   let socket: WebSocket | null = null;
   let closed = false;
+  /** 当前凭据：轮换成功后换成新的（只在内存和 worker.env 里，不进日志）。 */
+  let credential = options.credential;
   /** hub 的 welcome 说它认原生分叉的帧（ADR 0028）。 */
   let nativeBranch = false;
   /** hub 在 welcome 里给的能力上限（ADR 0030 D3「双端强制」）；没给（老 hub / 本机 / 共享令牌）= 不限。 */
@@ -386,7 +393,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           origin: options.origin ?? 'local',
           token: options.token,
           ...(options.localSecret ? { localSecret: options.localSecret } : {}),
-          ...(options.credential ? { credential: options.credential } : {}),
+          ...(credential ? { credential } : {}),
           agents: agentDtos(),
           ...(options.host ? { host: options.host } : {}),
           roots: [...(options.files?.roots ?? options.roots ?? [])],
@@ -482,8 +489,27 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       else if (command.kind === 'probe') void probe(true);
       else if (command.kind === 'runtime_job') void runtimeJob(command);
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
+      else if (command.kind === 'credential_rotate') void rotateCredential(current, command.credential);
       else void handle(command);
     });
+  }
+
+  async function rotateCredential(current: WebSocket, next: string): Promise<void> {
+    if (!credential || !options.onCredentialRotate) {
+      options.onLog?.('hub 要轮换凭据，但这台 Worker 不支持（没有专属凭据或不知道 worker.env 在哪），继续用旧凭据');
+      return;
+    }
+    let saved = false;
+    try {
+      saved = await options.onCredentialRotate(next);
+    } catch (error) {
+      options.onLog?.(`保存新凭据失败：${error instanceof Error ? error.message : String(error)}，继续用旧凭据`);
+      return;
+    }
+    if (!saved) return;
+    credential = next;
+    options.onLog?.('凭据已轮换，用新凭据重连');
+    if (socket === current) current.close(1000, 'credential rotated');
   }
 
   /** 越权的指令：不执行，按指令种类回一个「被拒」，hub 那边不会干等。 */

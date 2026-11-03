@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { rewriteCredentialEnv } from './credential-env.ts';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -243,6 +244,8 @@ const link = connectWorkerLink({
   token,
   ...(localSecret ? { localSecret } : {}),
   ...(credential ? { credential } : {}),
+  // 轮换（ADR 0030 D3）：新凭据写回 worker.env（tmp + fsync + rename），找不到那一行就不换
+  onCredentialRotate: async (next) => rewriteCredentialEnv(env['WORKER_ENV_FILE'] ?? join(env['WORKER_STATE_DIR'] ?? join(homedir(), '.config', 'agent-hub'), 'worker.env'), next),
   workerId,
   label,
   origin,

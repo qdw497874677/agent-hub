@@ -193,6 +193,7 @@ export type AuditAction =
   | 'worker.pair'
   | 'worker.enroll'
   | 'worker.revoke'
+  | 'worker.rotate'
   | 'worker.resource_policy'
   | 'runtime.install'
   | 'runtime.uninstall'

@@ -218,6 +218,8 @@ export interface ServerGateway {
   disconnect(workerId: string, why?: 'admin' | 'revoked'): boolean;
   /** 让在线的 Worker 更新到这个提交（只发提交号）。不在线返回 false。 */
   requestUpdate(workerId: string, commit: string): boolean;
+  /** 经已认证的连接下发轮换后的新凭据（ADR 0030 D3）。只给凭专属凭据连上的；不在线返回 false。 */
+  rotateCredential(workerId: string, credential: string): boolean;
   /** 让在线的 Worker 立刻重新探测各 harness 是否可用。不在线返回 false；老 Worker 收到会忽略。 */
   requestProbe(workerId: string): boolean;
   /** 下发运行时安装 / 卸载任务，记为 running。不在线返回 false；老 Worker 收到只记日志（界面上它不报 provision，根本不会发）。 */
@@ -799,6 +801,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       entry.socket.send(JSON.stringify({ kind: 'update', commit } satisfies ServerToWorker));
       entry.updateTarget = commit;
       entry.update = { state: 'updating', message: `已发出更新指令 → ${commit.slice(0, 7)}`, logTail: '', at: now() };
+      return true;
+    },
+    rotateCredential(workerId: string, credential: string): boolean {
+      const entry = online(workerId);
+      if (!entry?.socket || entry.socket.readyState !== WebSocket.OPEN) return false;
+      // 明文只在这一帧里出现，不进 wire 日志
+      entry.socket.send(JSON.stringify({ kind: 'credential_rotate', credential } satisfies ServerToWorker));
       return true;
     },
     requestProbe,
