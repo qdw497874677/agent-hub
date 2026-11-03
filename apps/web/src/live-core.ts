@@ -10,6 +10,9 @@ interface Sequenced {
   readonly seq: number;
 }
 
+/** 交接统计：形状同 wire 上 prompt.handoff。 */
+export type HandoffDto = NonNullable<Extract<SessionEventDto, { kind: 'prompt' }>['handoff']>;
+
 export type Block = Sequenced &
   (
     /** 用户自己说的话。它来自平台（server 收到 prompt 时先记一条），不是 agent 推来的。 */
@@ -19,6 +22,8 @@ export type Block = Sequenced &
         readonly attachments: readonly StoredAttachmentDto[];
         /** 谁说的；老事件、共享 token 下没有。 */
         readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
+        /** 平台写的交接简报（ADR 0029）：带了多少、省略多少。 */
+        readonly handoff?: HandoffDto;
       }
     | { readonly kind: 'text'; readonly text: string }
     /** 模型的思考过程；专注对话按显示设置折叠或隐藏，卡片不显示。 */
@@ -97,7 +102,7 @@ function withoutStall(blocks: readonly Block[]): readonly Block[] {
 function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   switch (event.kind) {
     case 'prompt':
-      return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], ...(event.author ? { author: event.author } : {}), seq }];
+      return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], ...(event.author ? { author: event.author } : {}), ...(event.handoff ? { handoff: event.handoff } : {}), seq }];
     case 'text': {
       const last = blocks[blocks.length - 1];
       if (last?.kind === 'text') {

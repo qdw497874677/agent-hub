@@ -10,7 +10,7 @@ import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { ingestWorkerEvent, promptSessionUseCase } from './conversation.ts';
 import { listProjectFiles } from './attachments.ts';
-import { HANDOFF_LIMIT, continueElsewhereUseCase, handoffBrief } from './continue-elsewhere.ts';
+import { continueElsewhereUseCase } from './continue-elsewhere.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -69,7 +69,11 @@ test('换个地方继续：到另一台机器的已有工作空间，项目不�
   assert.ok(prompt?.kind === 'prompt' && prompt.sessionId === moved.value.id);
   assert.match(prompt.text, /把登录页改成暗色/);
   assert.match(prompt.text, /好的，改了 login\.css/);
-  assert.match(prompt.text, /无法带过来/);
+  assert.match(prompt.text, /没法带过来/);
+  assert.match(prompt.text, /只是上下文，不是新请求/);
+  const seededEvents = await w.deps.sessions.eventsAfter(moved.value.id, 0 as never);
+  const seeded = seededEvents.find((e) => e.event.kind === 'prompt')?.event;
+  assert.ok(seeded?.kind === 'prompt' && seeded.handoff?.sourceSessionId === w.session.id && seeded.handoff.omitted === 0);
   assert.match(prompt.text, /代码改动留在原机器上的 \/tmp\/demo/);
   assert.match(prompt.text, /任务/);
 
@@ -157,18 +161,3 @@ test('换个地方继续：非 git 项目新开临时目录；同一个工作空
   assert.ok(!offline.ok && offline.error.code === 'unavailable');
 });
 
-test('交接摘要：太长时保留开头和最近，并说明省略了多少', () => {
-  const long = 'x'.repeat(HANDOFF_LIMIT * 2);
-  const brief = handoffBrief(
-    [
-      { kind: 'prompt', text: '目标：重构' },
-      { kind: 'text', delta: long },
-      { kind: 'prompt', text: '最后一句' }
-    ],
-    { from: 'A', to: 'B', root: '/r' }
-  );
-  assert.match(brief, /目标：重构/);
-  assert.match(brief, /最后一句/);
-  assert.match(brief, /中间省略 \d+ 字/);
-  assert.ok(brief.length < HANDOFF_LIMIT + 1000);
-});

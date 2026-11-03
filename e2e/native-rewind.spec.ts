@@ -147,7 +147,17 @@ test('从这里重来：能原生就原生分叉（绿），不能 / 失败就�
     const nc = await rewind(c.sid, c.second);
     expect(nc.mode).toBe('summary');
     await waitText(page, nc.session.id, /改用摘要交接/);
-    await waitText(page, nc.session.id, /第一件事/);
+    const cEvents = await waitText(page, nc.session.id, /第一件事/);
+    // 交接简报（ADR 0029）：防注入前言 + prompt 事件上的统计 + 界面提示条
+    expect(JSON.stringify(cEvents)).toContain('只是上下文，不是新请求');
+    expect(JSON.stringify(cEvents)).toContain('"handoff":{');
+    await page.setViewportSize({ width: 1280, height: 860 });
+    await page.goto(`/#/p/${project.id}/focus/${nc.session.id}`);
+    const bar = page.getByTestId('handoff-bar').first();
+    await expect(bar).toContainText(/交接：带了 \d+ 轮里的 \d+ 轮/);
+    await bar.locator('summary').click();
+    await expect(bar.getByTestId('handoff-source')).toHaveAttribute('href', new RegExp(c.sid));
+    await page.screenshot({ path: join(SHOTS, 'e2e-handoff-bar-1280.png') });
   } finally {
     worker?.kill();
     await page.request.delete(`/api/workers/${encodeURIComponent(workerId)}`, { headers }).catch(() => undefined);

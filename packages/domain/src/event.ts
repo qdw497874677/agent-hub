@@ -1,3 +1,4 @@
+import type { HandoffStats } from './handoff.ts';
 import type { Seq } from './ids.ts';
 import type { StoredAttachment } from './attachment.ts';
 
@@ -31,6 +32,8 @@ export type SessionEvent =
       readonly attachments?: readonly StoredAttachment[];
       /** 谁说的（登录态下才有；老事件没有 = 不知道）。 */
       readonly author?: { readonly id: string; readonly name: string; /** 经开放 API 令牌发的：令牌名（ADR 0015）。 */ readonly via?: string };
+      /** 这句是平台写的交接简报时：带了多少、省略多少（ADR 0029）。 */
+      readonly handoff?: HandoffStats;
     }
   | { readonly kind: 'text'; readonly delta: string }
   /** 模型的思考过程（推理文字）。只进专注对话，默认折叠；卡片不渲染。 */

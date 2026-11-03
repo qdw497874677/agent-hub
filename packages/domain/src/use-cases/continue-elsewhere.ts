@@ -2,7 +2,7 @@ import { usableByProject } from './workspaces.ts';
 import { principalOfSubject, type Subject } from '../access.ts';
 import type { Session } from '../session.ts';
 import { forkSession } from '../session.ts';
-import type { SessionEvent } from '../event.ts';
+import { buildHandoff } from '../handoff.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, notFound, unavailable } from '../errors.ts';
 import { asSessionId } from '../ids.ts';
@@ -39,7 +39,6 @@ export interface ContinueElsewhereCommand {
 }
 
 /** 摘要的字数上限：够交代来龙去脉，又不至于一开口就吃掉半个上下文窗口。 */
-export const HANDOFF_LIMIT = 12_000;
 
 export async function continueElsewhereUseCase(
   deps: Pick<
@@ -124,11 +123,12 @@ export async function continueElsewhereUseCase(
 
   const label = (id: string | null) => workers.find((w) => w.workerId === (id ?? placedLocal(workers)))?.label ?? id ?? '原来的机器';
   const journal = await deps.sessions.eventsAfter(source.id, 0 as never);
-  const brief = handoffBrief(
-    journal.map((entry) => entry.event),
-    { from: `${label(source.workerId)}${from ? ` 的 ${from.path}` : ''}`, to: label(placed.value), root: target.path, code: codeNote(from, target, wip) }
+  const brief = buildHandoff(
+    journal,
+    { from: `${label(source.workerId)}${from ? ` 的 ${from.path}` : ''}`, to: label(placed.value), root: target.path, code: codeNote(from, target, wip) },
+    { sourceSessionId: source.id, ...((deps as { handoffTokenCap?: number }).handoffTokenCap ? { cap: (deps as { handoffTokenCap?: number }).handoffTokenCap! } : {}) }
   );
-  const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief, briefing: true });
+  const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief.text, briefing: true, handoff: brief.stats });
   if (!seeded.ok) return err(seeded.error.code === 'unavailable' ? unavailable(seeded.error.message) : seeded.error);
   return ok((await deps.sessions.byId(session.id)) ?? session);
 }
@@ -149,51 +149,4 @@ export function codeNote(from: Workspace | null, target: Workspace, wip: SaveWip
   if (wip) return `尝试提交 WIP 但没推上去（${wip.reason ?? '原因不明'}）：代码改动留在原机器上${from ? `的 ${from.path}` : ''}。`;
   if (!from) return '代码改动留在原机器上。';
   return `代码改动留在原机器上的 ${from.path}${from.branch ? `（分支 ${from.branch}）` : ''}，没有搬过来；这里的文件以本工作空间为准。`;
-}
-
-/**
- * 把 journal 压成交接摘要：保留人说了什么、agent 答了什么、动过哪些工具和文件。
- * 太长时保留开头的目标和最近的进展，中间截掉并明说截掉了。
- */
-export function handoffBrief(
-  events: readonly SessionEvent[],
-  where: { readonly from: string; readonly to: string; readonly root: string; readonly code?: string }
-): string {
-  const turns: string[] = [];
-  let reply = '';
-  const flush = () => {
-    if (reply.trim()) turns.push(`助手：${reply.trim()}`);
-    reply = '';
-  };
-  for (const event of events) {
-    if (event.kind === 'text') reply += event.delta;
-    else if (event.kind === 'prompt') {
-      flush();
-      const files = (event.attachments ?? []).map((a) => a.path).join('、');
-      turns.push(`用户：${event.text.trim()}${files ? `（附带：${files}）` : ''}`);
-    } else if (event.kind === 'tool_call') {
-      flush();
-      turns.push(`[工具] ${event.name}`);
-    } else if (event.kind === 'artifact') {
-      flush();
-      turns.push(`[产出] ${event.path}`);
-    }
-  }
-  flush();
-  let body = turns.join('\n');
-  if (body.length > HANDOFF_LIMIT) {
-    const head = body.slice(0, Math.floor(HANDOFF_LIMIT * 0.3));
-    const tail = body.slice(body.length - Math.floor(HANDOFF_LIMIT * 0.7));
-    body = `${head}\n……（中间省略 ${body.length - head.length - tail.length} 字）……\n${tail}`;
-  }
-  return [
-    `这是一段从「${where.from}」接过来的对话。原来那台机器上的 agent 会话状态无法带过来，下面是平台记录的对话摘要。`,
-    `现在你在「${where.to}」上，工作目录是 ${where.root}。${where.code ?? '文件以这台机器上的为准，原机器上没提交的改动这里可能没有。'}`,
-    '',
-    '--- 之前的对话 ---',
-    body,
-    '--- 摘要结束 ---',
-    '',
-    '请先用一两句话确认你理解到的目标和进展，然后等我下一条指令。'
-  ].join('\n');
 }

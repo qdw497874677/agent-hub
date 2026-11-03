@@ -38,6 +38,8 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   ok,
   createMemoryToolProvider,
   createContextToolProvider,
+  createSessionToolProvider,
+  handoffCapFromEnv,
   defaultMemoryRegistry,
   MEMORY_GUIDANCE,
   MEMORY_SWEEP_INTERVAL_MS,
@@ -131,6 +133,7 @@ let serverGateway: ServerGateway | null = null;
 const optionWaiters = createOptionWaiters();
 
 const deps: Deps = {
+  handoffTokenCap: handoffCapFromEnv(readEnv('HUB_HANDOFF_TOKEN_CAP') ?? undefined),
   projects: store.projects,
   tasks: store.tasks,
   workLog: store.workLog,
@@ -359,7 +362,7 @@ toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
   tokens: createTokenIssuer(),
-  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService)]
+  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService), createSessionToolProvider(deps)]
 });
 
 // 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。
