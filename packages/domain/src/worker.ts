@@ -43,6 +43,10 @@ export interface WorkerStatus {
   readonly drift?: DriftReport;
   /** 连接健康（ADR 0030 D1）：hub 看到的这条连接现在怎么样。 */
   readonly link?: { readonly state: LinkState; readonly since: number; readonly rttMs: number | null; readonly connectedAt: number | null };
+  /** 这次连接的来历（ADR 0030 D3）：何时连上、从哪个地址、报的版本。 */
+  readonly connection?: { readonly connectedAt: number; readonly address: string | null; readonly version: string | null };
+  /** 凭据允许的能力（ADR 0030 D3）；没有 = 不限（本机 / 共享令牌）。 */
+  readonly capabilities?: readonly string[];
 }
 
 /** 某个 agent 在某台机器上的模型清单。 */

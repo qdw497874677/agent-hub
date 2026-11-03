@@ -732,6 +732,14 @@ export function inMemoryEnrollment(admin: ReturnType<typeof inMemoryAdmin>, now:
     revoke: async (workerId, at) => {
       const found = credentials.get(workerId);
       if (found && found.revokedAt === null) credentials.set(workerId, { ...found, revokedAt: at });
+    },
+    recordConnection: async (workerId, c) => {
+      const found = credentials.get(workerId);
+      if (found) credentials.set(workerId, { ...found, lastConnectedAt: c.at, lastAddress: c.address, lastUserAgent: c.userAgent });
+    },
+    setCapabilities: async (workerId, capabilities) => {
+      const found = credentials.get(workerId);
+      if (found) credentials.set(workerId, { ...found, capabilities });
     }
   };
   const deps: import('../use-cases/enrollment.ts').EnrollmentDeps = {

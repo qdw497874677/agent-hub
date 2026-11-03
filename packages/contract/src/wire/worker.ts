@@ -292,7 +292,9 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     /** 心跳参数（ADR 0030 D1）：Worker 据此设看门狗。老 hub 不带 = 用 Worker 自己的默认。 */
     heartbeat: z
       .object({ intervalMs: z.number().int().min(1_000).max(300_000), missLimit: z.number().int().min(1).max(10), echoMs: z.number().int().min(1_000).max(600_000) })
-      .optional()
+      .optional(),
+    /** 这台机器凭据允许的能力（ADR 0030 D3）。Worker 据此拒绝越权请求；老 hub 不带 = 不限。 */
+    capabilities: z.array(z.string().max(32)).max(16).optional()
   }),
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),

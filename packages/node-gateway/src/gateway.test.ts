@@ -602,7 +602,9 @@ test('专属凭据：hello 带上凭据交给 authenticate 判；吊销后收到
   let closed = false;
   const link = connectWorkerLink({ url, token: '', credential: 'ahw_good', workerId: 'w1', label: 'x', runtimes: [], initialBackoffMs: 10, onClose: () => (closed = true) });
   await rec.until(() => rec.hellos.length === 1);
-  assert.deepEqual(seen.at(-1), { workerId: 'w1', credential: 'ahw_good', sharedTokenOk: false });
+  const last = seen.at(-1)!;
+  assert.deepEqual({ workerId: last.workerId, credential: last.credential, sharedTokenOk: last.sharedTokenOk }, { workerId: 'w1', credential: 'ahw_good', sharedTokenOk: false });
+  assert.equal((last as { address?: string }).address, '127.0.0.1', '来源地址交给 authenticate 记账');
 
   revoked = true;
   assert.equal(gateway.disconnect('w1', 'revoked'), true);
@@ -769,4 +771,64 @@ test('连接健康（ADR 0030 D1）：welcome 带心跳参数；link.echo 回来
   gateway.disconnect('w1');
   await rec.until(() => gateway.workers().find((w) => w.workerId === 'w1')?.link?.state === 'rejected');
   await stop(link);
+});
+
+test('能力（ADR 0030 D3）：只读凭据——hub 拦下开会话 / 写文件，读照常；界面拿得到连接来历和能力', async () => {
+  const rec = recorder('shared');
+  const gateway = createServerGateway({
+    ...rec.hooks,
+    authenticate: async () => ({ ok: true, capabilities: ['files.read'] })
+  });
+  const server: Server = createServer();
+  server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const root = await mkdtemp(join(tmpdir(), 'cap-'));
+  const link = connectWorkerLink({
+    url, token: '', credential: 'ahw_ro', workerId: 'w-ro', label: '只读', runtimes: [echoRuntime([])],
+    files: createWorkerFiles({ roots: [root], enforced: true })
+  });
+  await rec.until(() => rec.hellos.length === 1);
+  const started = await gateway.gateway.dispatch(start('s1', 'w-ro'));
+  assert.equal(!started.ok && started.error.code, 'forbidden');
+  const made = await gateway.gateway.makeDirectory('w-ro', root, 'x');
+  assert.equal(!made.ok && made.error.code, 'forbidden');
+  assert.equal((await gateway.gateway.listFiles('w-ro', root, 10)).ok, true);
+  assert.equal(gateway.requestUpdate('w-ro', 'abc'), false);
+  const status = gateway.workers()[0]!;
+  assert.deepEqual(status.capabilities, ['files.read']);
+  assert.equal(status.connection?.address, '127.0.0.1');
+  await link.close();
+  gateway.close();
+  server.closeAllConnections?.();
+  await new Promise((resolve) => server.close(resolve));
+});
+
+test('能力（ADR 0030 D3）：Worker 自己也把关——welcome 说只读，越权的开会话直接以失败结束，越权 RPC 回 forbidden', async () => {
+  const { WebSocketServer } = await import('ws');
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+  await new Promise((resolve) => wss.once('listening', resolve));
+  const url = `ws://127.0.0.1:${(wss.address() as AddressInfo).port}`;
+  const frames: Record<string, unknown>[] = [];
+  wss.on('connection', (socket) => {
+    socket.on('message', (raw: Buffer) => {
+      const frame = JSON.parse(raw.toString()) as Record<string, unknown>;
+      frames.push(frame);
+      if (frame['type'] === 'hello') {
+        socket.send(JSON.stringify({ kind: 'welcome', accepts: [], capabilities: ['files.read'] }));
+        socket.send(JSON.stringify({ ...start('s1', 'w1'), kind: 'start_session', sessionId: 's1', taskId: 't1' }));
+        socket.send(JSON.stringify({ kind: 'rpc', frame: { rpc: 'call', id: 'h1', method: 'fs.make_directory', params: { parent: '/tmp', name: 'x' } } }));
+      }
+    });
+  });
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], initialBackoffMs: 10 });
+  const deadline = Date.now() + 3000;
+  const has = (re: RegExp) => frames.some((f) => re.test(JSON.stringify(f)));
+  while (!(has(/"outcome":"failed"/) && has(/forbidden/)) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(has(/"outcome":"failed"/), '越权开会话以失败结束');
+  assert.ok(has(/forbidden/), '越权 RPC 回 forbidden');
+  assert.equal(seen.length, 0, 'agent 根本没起');
+  await link.close();
+  await new Promise((resolve) => wss.close(resolve));
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { inMemoryAdmin, inMemoryEnrollment } from '../testing/in-memory.ts';
 import { authenticateWorker, enrollWorker, issuePairingCode, revokeWorker } from './enrollment.ts';
 import { PAIRING_TTL_MS } from '../enrollment.ts';
+import { WORKER_CAPABILITIES } from '../worker-capability.ts';
 import type { Principal, User, UserId } from '../account.ts';
 
 async function setup() {
@@ -89,7 +90,7 @@ test('hello 认证：凭据要对得上 workerId；有凭据记录的机器不�
   assert.ok(enrolled.ok);
   const { workerId, credential } = enrolled.value;
 
-  assert.deepEqual(await authenticateWorker(deps, { workerId, credential, sharedTokenOk: false }), { ok: true, via: 'credential' });
+  assert.deepEqual(await authenticateWorker(deps, { workerId, credential, sharedTokenOk: false }), { ok: true, via: 'credential', capabilities: WORKER_CAPABILITIES });
   assert.equal((await authenticateWorker(deps, { workerId: 'other', credential, sharedTokenOk: true })).ok, false);
   assert.equal((await authenticateWorker(deps, { workerId, sharedTokenOk: true })).ok, false);
   // 老机器：没有凭据记录，凭共享令牌照旧

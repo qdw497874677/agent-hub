@@ -6,6 +6,8 @@ export interface RpcMethod<P extends z.ZodType = z.ZodType, R extends z.ZodType 
   readonly name: string;
   readonly params: P;
   readonly result: R;
+  /** 调这个方法要的权限（由上层定义，如 Worker 能力）。通道核心只把它交给 allow 判断，自己不解释。 */
+  readonly capability?: string;
 }
 
 export type RpcOutcome<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: RpcError };

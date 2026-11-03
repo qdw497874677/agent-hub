@@ -36,3 +36,30 @@ test('接入码只能兑换一次；凭据按哈希 / workerId 查；吊销留�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('ADR 0030 D3：凭据记下连接来历和能力；老库补列不丢数据', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-enroll-'));
+  try {
+    const path = join(dir, 'hub.db');
+    const { DatabaseSync } = await import('node:sqlite');
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE worker_credentials (worker_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, enrolled_by TEXT NOT NULL,
+      label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER);
+      INSERT INTO worker_credentials VALUES ('old', 'h-old', 'u1', '老机器', 1, NULL);`);
+    old.close();
+    const store = openSqliteStore(path);
+    const legacy = await store.enrollment.credentialFor('old');
+    assert.equal(legacy?.label, '老机器');
+    assert.equal(legacy?.capabilities, null);
+    await store.enrollment.recordConnection('old', { at: 42, address: '1.2.3.4', userAgent: 'abc1234' });
+    await store.enrollment.setCapabilities('old', ['files.read']);
+    const after = await store.enrollment.credentialFor('old');
+    assert.equal(after?.lastConnectedAt, 42);
+    assert.equal(after?.lastAddress, '1.2.3.4');
+    assert.equal(after?.lastUserAgent, 'abc1234');
+    assert.deepEqual(after?.capabilities, ['files.read']);
+    store.close?.();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -28,4 +28,17 @@ export interface WorkerCredential {
   readonly label: string;
   readonly createdAt: number;
   readonly revokedAt: number | null;
+  /** 能力上限（ADR 0030 D3）；null = 老凭据，按 full。 */
+  readonly capabilities?: readonly string[] | null;
+  /** 最近一次连上（hello 通过）的时间、来源地址、报的版本（ADR 0030 D3）。 */
+  readonly lastConnectedAt?: number | null;
+  readonly lastAddress?: string | null;
+  readonly lastUserAgent?: string | null;
+  readonly rotatedAt?: number | null;
+}
+
+export interface WorkerConnection {
+  readonly at: number;
+  readonly address: string | null;
+  readonly userAgent: string | null;
 }
