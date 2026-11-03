@@ -23,6 +23,8 @@ export interface GitStatus {
   readonly head?: string | null;
   /** 目录占多大（字节，清理报告用）；量不出来 / 老 Worker = undefined / null。 */
   readonly sizeBytes?: number | null;
+  /** 不是 git 仓库时（dirty = null）目录里有几个文件（递归，封顶 10000）；git 仓库 / 老 Worker = undefined。 */
+  readonly files?: number | null;
 }
 
 export interface CloneInput {

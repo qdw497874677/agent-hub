@@ -750,6 +750,14 @@ export const gitApi = {
   removeToken: () => call<GitHostTokenDto>('/api/git-host/token', { method: 'DELETE' })
 };
 
+export interface RewindPreviewDto { promptSeq: number; prompt: string; filesAllowed: boolean; filesBlocked: string | null; turnsAfter: number }
+export interface RewindDto { session: SessionDto; prompt: string; files: { turn: number; restored: number; removed: number; safety: string } | null }
+/** 从某条消息重来（ADR 0027 阶段 4）。 */
+export const rewindApi = {
+  preview: (id: string, promptSeq: number) => call<RewindPreviewDto>(`${sq(id)}/rewind?promptSeq=${promptSeq}`),
+  rewind: (id: string, promptSeq: number, files: boolean) => post<RewindDto>(`${sq(id)}/rewind`, { promptSeq, files })
+};
+
 export interface CleanupPolicyDto {
   prMerged: boolean;
   taskEndedClean: boolean;

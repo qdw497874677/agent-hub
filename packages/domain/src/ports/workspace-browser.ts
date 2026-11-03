@@ -79,10 +79,25 @@ export interface WorkspaceBrowser {
   checkpoint(root: string, ref: string): Promise<Result<string | null, DomainError>>;
   /** 删掉某个前缀下的所有检查点 ref（保留期到了 / 工作空间删了）。前缀必须在 refs/agent-hub/checkpoints/ 下。 */
   dropRefs(root: string, prefix: string): Promise<Result<number, DomainError>>;
+  /**
+   * 把工作区恢复成某个检查点（ADR 0027 阶段 4，「连文件一起回滚」）：先把现状拍到 safetyRef（可撤销），
+   * 再把和目标不同的文件写回、删掉目标里没有的（这一轮之后新增的）。忽略的文件不动，真 index 不动。
+   * 目标之后 HEAD 已经前进且新提交已推送到远端 → conflict。
+   */
+  restore(root: string, commit: string, safetyRef: string): Promise<Result<RestoreOutcome, DomainError>>;
   /** 当前 HEAD 提交号；不是 git 仓库或还没提交是 null。 */
   head(root: string): Promise<Result<string | null, DomainError>>;
   /** 盯住这些相对路径（目录只看一层、文件看自己）；返回取消订阅。 */
   watch(root: string, paths: readonly string[], onChange: (notice: FileChangeNotice) => void): Promise<Result<() => void, DomainError>>;
+}
+
+export interface RestoreOutcome {
+  /** 恢复前拍的那张（撤销用）。 */
+  readonly safety: string;
+  /** 写回的文件数（改过 / 删过的）。 */
+  readonly restored: number;
+  /** 删掉的文件数（这一轮之后新增的）。 */
+  readonly removed: number;
 }
 
 /** 会话开始时的 HEAD（ADR 0025 决定 7：diff 默认基准）。 */

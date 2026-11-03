@@ -3,7 +3,7 @@ import { dirname, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
 import type { CommitPreview, DomainError, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
-import { conflict, folderNameProblem, invalid, unavailable, unsavedReason } from '@agent-hub/domain';
+import { conflict, folderNameProblem, invalid, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
 
 /**
  * WorkspaceGit 的 git 实现（simple-git，跑这台机器上的 git 和它自己的凭据）。
@@ -229,8 +229,9 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
       // 非 git 的临时目录：平台看不出哪些东西要紧，只有空目录才删
       if (status.dirty === null) {
+        const files = status.files ?? (await countFiles(path));
         const entries = await readdir(path).catch(() => ['?']);
-        if (entries.length > 0) return { ok: true, value: { removed: false, reason: '不是 git 目录，里面还有文件，平台不确定能不能删' } };
+        if (files > 0 || entries.length > 0) return { ok: true, value: { removed: false, reason: files > 0 ? nonGitReason(files) : '不是 git 仓库，目录不是空的（还有空文件夹），先留着' } };
       } else if (reason) {
         return { ok: true, value: { removed: false, reason } };
       }
@@ -340,7 +341,7 @@ export const keepReason = unsavedReason;
 async function statusOf(path: string): Promise<GitStatus> {
   const git = simpleGit(path);
   if (!(await git.checkIsRepo().catch(() => false))) {
-    return { dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null };
+    return { dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null, files: await countFiles(path), sizeBytes: await sizeOf(path) };
   }
   // 强制 normal：用户全局设 status.showUntrackedFiles=no 时也要看见未跟踪文件（D7）
   const status = await simpleGit(path, { config: ['status.showUntrackedFiles=normal'] }).status();
@@ -355,6 +356,26 @@ async function statusOf(path: string): Promise<GitStatus> {
     .catch(() => '0');
   const head = (await git.raw(['rev-parse', 'HEAD']).catch(() => '')).trim() || null;
   return { dirty, untracked, unpushed: Number(lonely.trim()) || 0, branch, upstream: status.tracking ?? null, head, sizeBytes: await sizeOf(path) };
+}
+
+/** 非 git 目录里有几个文件（递归，不跟符号链接，封顶 10000）；读不了算 1（宁可留着）。 */
+async function countFiles(path: string, cap = 10_000): Promise<number> {
+  let n = 0;
+  const walk = async (dir: string): Promise<void> => {
+    if (n >= cap) return;
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (n >= cap) return;
+      if (entry.isDirectory()) await walk(join(dir, entry.name));
+      else n += 1;
+    }
+  };
+  try {
+    await walk(path);
+    return n;
+  } catch {
+    return Math.max(n, 1);
+  }
 }
 
 /** 目录占用（du -sk，超时就不报）；只用于清理记录的展示。 */

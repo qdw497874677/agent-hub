@@ -13,12 +13,19 @@ type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' |
 
 /** 删了会丢什么，说人话；都没有返回 null（§5 第 3 条）。 */
 export function unsavedReason(status: GitStatus): string | null {
+  // 不是 git 仓库：平台分不清哪些文件要紧，只要目录里还有东西就留着（空目录才删）
+  if (status.dirty === null) {
+    if (status.files === undefined || status.files === null) return null; // 老 Worker 不报：删的时候 Worker 自己会再查
+    return status.files > 0 ? nonGitReason(status.files) : null;
+  }
   const parts: string[] = [];
   if (status.dirty) parts.push('有未提交的改动');
   if (status.untracked > 0) parts.push(`有 ${status.untracked} 个未跟踪的文件`);
   if (status.unpushed > 0) parts.push(`有 ${status.unpushed} 个提交还没推送或合并`);
   return parts.length > 0 ? parts.join('，') : null;
 }
+
+export const nonGitReason = (files: number) => `不是 git 仓库，目录里还有 ${files >= 10_000 ? '10000+' : files} 个文件，平台分不清哪些要紧，先留着`;
 
 const FINISHED = new Set(['done', 'abandoned']);
 const DAY_MS = 24 * 60 * 60 * 1000;

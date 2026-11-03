@@ -22,6 +22,8 @@ async function world(repoUrl?: string) {
 
 test('改动说成人话', () => {
   assert.equal(unsavedReason({ dirty: false, untracked: 0, unpushed: 0, branch: 'x', upstream: null }), null);
+  assert.equal(unsavedReason({ dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null }), null); // 老 Worker：交给 Worker 判断
+  assert.match(unsavedReason({ dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null, files: 1 }) ?? '', /还有 1 个文件/);
   assert.equal(unsavedReason({ dirty: true, untracked: 2, unpushed: 1, branch: 'x', upstream: null }), '有未提交的改动，有 2 个未跟踪的文件，有 1 个提交还没推送或合并');
 });
 
@@ -59,12 +61,35 @@ test('机器离线：跳过，下次再查', async () => {
   assert.equal((await w.deps.workspaces.byId(w.temp.id))?.state, 'ready');
 });
 
-test('非 git 项目也能清理临时目录', async () => {
+test('非 git 项目也能清理临时目录（空目录才删）', async () => {
   const w = await world();
   assert.equal(w.temp.isGit, false);
+  w.git.statuses.set(w.temp.path, { dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null, files: 0 });
   await w.finish();
   const report = await sweepTemporaryWorkspacesUseCase(w.deps);
   assert.deepEqual(report.removed, [w.temp.id]);
+});
+
+test('非 git 临时目录里还有文件：任务结束 / 清理时保留，清理记录写明原因；手动删也拒绝，强制才删', async () => {
+  const w = await world();
+  w.git.statuses.set(w.temp.path, { dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null, files: 3, sizeBytes: 4096 });
+  const sweeps = sweepStore();
+  (w.deps as { cleanup?: unknown }).cleanup = { sweeps: sweeps.store, pullRequests: { byWorkspace: async () => [], byTask: async () => [] }, dropCheckpoints: async () => undefined };
+  await w.finish();
+  const report = await sweepTemporaryWorkspacesUseCase(w.deps, { taskId: w.task.id });
+  assert.deepEqual(report.kept, [w.temp.id]);
+  assert.equal(report.removed.length, 0);
+  assert.ok(!w.git.calls.some((call) => call.includes(':remove:')));
+  const kept = await w.deps.workspaces.byId(w.temp.id);
+  assert.equal(kept?.state, 'kept');
+  assert.match(kept?.keptReason ?? '', /不是 git 仓库，目录里还有 3 个文件/);
+  assert.equal(sweeps.items[0]?.action, 'kept');
+  assert.match(sweeps.items[0]?.reason ?? '', /还有 3 个文件/);
+  assert.equal(sweeps.items[0]?.sizeBytes, 4096);
+  const plain = await removeWorkspaceUseCase(w.deps, { workspaceId: w.temp.id, deleteDirectory: true });
+  assert.ok(!plain.ok && /3 个文件/.test(plain.error.message));
+  const forced = await removeWorkspaceUseCase(w.deps, { workspaceId: w.temp.id, deleteDirectory: true, force: true });
+  assert.ok(forced.ok);
 });
 
 test('人自己的目录只能移除登记，不能删；还有临时工作空间时不能删持久目录', async () => {

@@ -113,10 +113,19 @@ test('非 git 临时目录：空的删，有文件的保留；边界外的一律
   await mkdir(empty);
   await mkdir(full);
   await writeFile(join(full, 'notes.md'), 'x');
+  await mkdir(join(full, 'sub'));
+  await writeFile(join(full, 'sub', 'b.txt'), 'y');
   const status = await git.status(full);
   assert.ok(status.ok && status.value.dirty === null);
+  assert.equal(status.value.files, 2); // 递归数文件，Hub 据此提前保留并记原因
   const kept = await git.remove(full, 'directory');
-  assert.ok(kept.ok && !kept.value.removed);
+  assert.ok(kept.ok && !kept.value.removed && /还有 2 个文件/.test(kept.value.reason));
+  assert.equal(existsSync(join(full, 'notes.md')), true);
+  // 只剩空文件夹也不是空目录：留着
+  const hollow = join(root, 'hollow');
+  await mkdir(join(hollow, 'dir'), { recursive: true });
+  const hollowKept = await git.remove(hollow, 'directory');
+  assert.ok(hollowKept.ok && !hollowKept.value.removed && /不是空的/.test(hollowKept.value.reason));
   const gone = await git.remove(empty, 'directory');
   assert.ok(gone.ok && gone.value.removed);
   assert.equal(existsSync(empty), false);

@@ -131,6 +131,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, drafts, onDra
         onDraftChange={(text) => onDraftChange(session.id, text)}
         onChanged={onChanged}
         onOpenSession={(id) => act((current, cap) => openWindow(current, id, cap))}
+        onSeedDraft={onDraftChange}
         artifacts={canvas.artifacts.filter((artifact) => artifact.sessionId === session.id)}
         onChangeOption={(optionId, value) => onChangeOption(session.id, optionId, value)}
         windowChrome={{ actions }}

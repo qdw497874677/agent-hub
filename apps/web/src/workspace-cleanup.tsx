@@ -72,9 +72,15 @@ export function WorkspaceCleanup({ projectId }: { projectId: string }) {
       {records.data && records.data.items.length === 0 ? <p className="text-meta text-tertiary">还没有记录。</p> : null}
       <ul className="space-y-1">
         {(records.data?.items ?? []).slice(0, 50).map((item) => (
-          <li key={`${item.runId}-${item.workspaceId}`} className="break-all text-meta text-secondary" data-testid="cleanup-item">
-            <span className={item.action === 'removed' ? 'text-primary' : 'text-tertiary'}>{ACTION[item.action]}</span> · {item.branch ?? item.path} · {formatSize(item.sizeBytes)} · {item.reason}
-            <span className="text-tertiary"> · {new Date(item.at).toLocaleString()}</span>
+          <li key={`${item.runId}-${item.workspaceId}`} className="min-w-0 text-meta text-secondary" data-testid="cleanup-item">
+            {/* 窄屏：第一行动作 + 分支 / 路径（截断，悬停看全），第二行原因 · 大小 · 时间（ADR 0027 阶段 4 修 390px 折行） */}
+            <div className="flex min-w-0 items-baseline gap-1.5">
+              <span className={`shrink-0 ${item.action === 'removed' ? 'text-primary' : 'text-tertiary'}`}>{ACTION[item.action]}</span>
+              <span className="min-w-0 truncate font-mono" title={item.path}>{item.branch ?? item.path}</span>
+            </div>
+            <div className="break-words text-tertiary">
+              {item.reason} · {formatSize(item.sizeBytes)} · <span className="whitespace-nowrap">{new Date(item.at).toLocaleString()}</span>
+            </div>
           </li>
         ))}
       </ul>
@@ -83,7 +89,7 @@ export function WorkspaceCleanup({ projectId }: { projectId: string }) {
           <h4 className="mb-1 mt-3 text-meta text-secondary">没有登记的目录（不会自动删）</h4>
           <ul className="space-y-1">
             {records.data.orphans.map((o) => (
-              <li key={`${o.workerId ?? ''}${o.path}`} className="break-all text-meta text-tertiary" data-testid="cleanup-orphan">
+              <li key={`${o.workerId ?? ''}${o.path}`} title={o.path} className="truncate font-mono text-meta text-tertiary" data-testid="cleanup-orphan">
                 {o.path}
               </li>
             ))}

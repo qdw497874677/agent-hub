@@ -164,6 +164,9 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
         await expect(panel.getByLabel(/闲置超过/)).toBeChecked();
         await expect(panel.locator('input[type=number]')).toHaveValue('14');
       }
+      // 窄屏不横向溢出：每条记录两行（动作 + 分支截断 / 原因 · 大小 · 时间）
+      const overflow = await panel.evaluate((el) => [...el.querySelectorAll('[data-testid=cleanup-item]')].some((li) => li.scrollWidth > li.clientWidth + 1) || el.scrollWidth > el.clientWidth + 1);
+      expect(overflow).toBe(false);
       await panel.screenshot({ path: join(SHOTS, `cleanup-panel-${width}.png`) });
       await page.screenshot({ path: join(SHOTS, `settings-${width}.png`) });
       await page.keyboard.press('Escape');
