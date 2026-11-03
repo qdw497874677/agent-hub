@@ -133,6 +133,17 @@ function CommandBox({ pairing, expired }: { pairing: PairingDto | undefined; exp
           {copied ? '已复制' : '复制命令'}
         </button>
       </div>
+      {pairing?.shortCommand ? (
+        <details className="border-t border-hair px-2.5 py-1.5 text-meta text-secondary" data-testid="short-command">
+          <summary className="cursor-pointer">简短版（不校验 sha256，没有 sha256sum 的机器用）</summary>
+          <code className="mt-1 block select-all break-all font-mono text-primary">{pairing.shortCommand}</code>
+        </details>
+      ) : null}
+      {pairing && pairing.hubUrl.startsWith('http://') ? (
+        <p className="border-t border-hair px-2.5 py-1.5 text-meta text-accent" data-testid="http-hint">
+          hub 走的是 HTTP：sha256 校验只能防传输损坏，防不了中间人篡改。建议在 hub 前面加 HTTPS 反代。
+        </p>
+      ) : null}
     </div>
   );
 }

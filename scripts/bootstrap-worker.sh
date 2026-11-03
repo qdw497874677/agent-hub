@@ -24,8 +24,64 @@ NODE_MAJOR=26
 : "${HUB_PAIR:?需要接入码：在控制台「机器 → 添加机器」复制完整命令}"
 
 need() { command -v "$1" >/dev/null || { echo "缺少 $1，请先安装（比如 apt install -y $1）" >&2; exit 1; }; }
-need curl
-need tar
+
+# ---- 加锁（ADR 0030 D4）：同一台机器同时只跑一个安装 ----
+LOCK_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub${WORKER_INSTANCE:+-$WORKER_INSTANCE}"
+mkdir -p "$LOCK_DIR"
+if command -v flock >/dev/null; then
+  exec 8>"$LOCK_DIR/install.lock"
+  if ! flock -n 8; then echo "已有安装在进行（锁 $LOCK_DIR/install.lock）；等它结束再试" >&2; exit 0; fi
+else
+  lock="$LOCK_DIR/install.lock.d"
+  if ! mkdir "$lock" 2>/dev/null; then
+    old_pid="$(cat "$lock/pid" 2>/dev/null || true)"
+    if [[ -n "$old_pid" ]] && kill -0 "$old_pid" 2>/dev/null; then echo "已有安装在进行（pid $old_pid）；等它结束再试" >&2; exit 0; fi
+    echo "==> 清掉残留的安装锁（pid ${old_pid:-?} 已不在）"
+    rm -rf "$lock"; mkdir "$lock"
+  fi
+  echo $$ >"$lock/pid"
+  trap 'rm -rf "$lock"' EXIT
+fi
+
+# ---- 预检：阈值由 hub 按 packages/domain/src/install-precheck.ts 填入；全部做完再一起报 ----
+# __PRECHECK_VARS__（hub 渲染时换成阈值；直接跑仓库里的脚本就用下面的默认值）
+PRE_OS="${PRE_OS:-Linux Darwin}"; PRE_ARCH="${PRE_ARCH:-x86_64 amd64 aarch64 arm64}"
+PRE_MIN_FREE_KB="${PRE_MIN_FREE_KB:-1572864}"; PRE_MAX_SKEW="${PRE_MAX_SKEW:-300}"
+PRE_HEALTH_TIMEOUT="${PRE_HEALTH_TIMEOUT:-5}"; PRE_TOOLS="${PRE_TOOLS:-curl tar}"
+precheck() {
+  local fails=() os arch free t hdr hub_date skew
+  os="$(uname -s)"; arch="$(uname -m)"
+  [[ " $PRE_OS " == *" $os "* ]] || fails+=("不支持的系统 $os（只支持 Linux / macOS）")
+  [[ " $PRE_ARCH " == *" $arch "* ]] || fails+=("不支持的 CPU 架构 $arch（只支持 x64 / arm64）")
+  [[ -w "$HOME" ]] || fails+=("家目录 $HOME 不可写")
+  free="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
+  if [[ "$free" =~ ^[0-9]+$ ]] && (( free < PRE_MIN_FREE_KB )); then
+    fails+=("家目录可用空间 $((free / 1024))MB，不够 $((PRE_MIN_FREE_KB / 1024))MB")
+  fi
+  for t in $PRE_TOOLS; do command -v "$t" >/dev/null || fails+=("缺少 $t，请先安装（比如 apt install -y $t）"); done
+  if [[ "$HUB_HTTP" == http* ]] && command -v curl >/dev/null; then
+    if hdr="$(curl -fsS -m "$PRE_HEALTH_TIMEOUT" -D - -o /dev/null "$HUB_HTTP/api/health" 2>/dev/null)"; then
+      hub_date="$(printf '%s' "$hdr" | tr -d '\r' | sed -n 's/^[Dd]ate: //p' | head -1)"
+      if [[ -n "$hub_date" ]] && t="$(date -d "$hub_date" +%s 2>/dev/null || date -j -f '%a, %d %b %Y %T %Z' "$hub_date" +%s 2>/dev/null)"; then
+        skew=$(( $(date +%s) - t )); (( skew < 0 )) && skew=$(( -skew ))
+        (( skew > PRE_MAX_SKEW )) && fails+=("本机时钟和 hub 差 ${skew} 秒（超过 ${PRE_MAX_SKEW} 秒，接入码会被判过期），请先校时")
+      fi
+    else
+      fails+=("${PRE_HEALTH_TIMEOUT} 秒内连不上 $HUB_HTTP/api/health")
+    fi
+  fi
+  if [[ "$os" == Linux ]] && ! systemctl --user show-environment >/dev/null 2>&1; then
+    echo "==> 提示：systemctl --user 不可用，会改用备用启动脚本（守护循环）"
+  fi
+  [[ -d "$DIR" && -n "$(ls -A "$DIR" 2>/dev/null)" ]] && echo "==> 提示：$DIR 已有安装，这次会就地更新（要重装请先挪走它）"
+  if (( ${#fails[@]} )); then
+    echo "预检没通过（一共 ${#fails[@]} 项，修好后重跑同一条命令）：" >&2
+    printf '  - %s\n' "${fails[@]}" >&2
+    exit 1
+  fi
+  echo "==> 预检通过"
+}
+[[ "${AGENT_HUB_SKIP_PRECHECK:-}" == 1 ]] || precheck
 
 node_ok() { command -v node >/dev/null && [[ "$(node -p 'process.versions.node.split(".")[0]')" -ge $NODE_MAJOR ]]; }
 if ! node_ok && [[ -x "$HOME/.local/node$NODE_MAJOR/bin/node" ]]; then

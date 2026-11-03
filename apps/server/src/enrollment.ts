@@ -1,11 +1,12 @@
 import type { Context, Hono } from 'hono';
 import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import type { InstallArtifacts } from './install-artifacts.ts';
 import type { PairingDto } from '@agent-hub/contract';
 import type { EnrollmentDeps } from '@agent-hub/domain';
-import { issuePairingCode, revokeWorker } from '@agent-hub/domain';
+import { issuePairingCode, precheckShellVars, revokeWorker } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -37,6 +38,23 @@ export function publicOrigin(c: Context): string {
 /** 只放进单引号里的值：hub 地址来自 Host 头，不能让它在 shell 里变成命令。 */
 const shellSafe = (value: string): boolean => /^[A-Za-z0-9._:/\-[\]]+$/.test(value);
 
+/** 渲染给某个 hub 地址的引导脚本（同一地址、同一提交 → 同一字节，sha256 才能嵌进命令）。 */
+export async function renderBootstrap(options: EnrollmentOptions, origin: string): Promise<string> {
+  const template = await readFile(options.bootstrapScript, 'utf8');
+  return template
+    .replaceAll('__HUB_HTTP__', origin)
+    .replaceAll('__HUB_COMMIT__', options.commit && /^[0-9a-f]{7,40}$/.test(options.commit) ? options.commit : '')
+    .replace(/^# __PRECHECK_VARS__.*$/m, precheckShellVars());
+}
+
+/** ADR 0030 D4：先下载到文件、核对 sha256 再执行；旧的 `| bash` 作为简短版保留。 */
+export function installCommands(hubUrl: string, code: string, sha256: string): { command: string; shortCommand: string } {
+  return {
+    command: `curl -fsSL ${hubUrl}/install-worker.sh -o /tmp/ahb.sh && echo "${sha256}  /tmp/ahb.sh" | sha256sum -c - && HUB_PAIR=${code} bash /tmp/ahb.sh`,
+    shortCommand: `curl -fsSL ${hubUrl}/install-worker.sh | HUB_PAIR=${code} bash`
+  };
+}
+
 export function installEnrollment(app: Hono, options: EnrollmentOptions, principalOf: PrincipalOf): void {
   const { deps } = options;
 
@@ -44,11 +62,17 @@ export function installEnrollment(app: Hono, options: EnrollmentOptions, princip
     const result = await issuePairingCode(deps, principalOf(c));
     if (!result.ok) return fail(c, result.error);
     const hubUrl = publicOrigin(c);
+    const short = { command: `curl -fsSL ${hubUrl}/install-worker.sh | HUB_PAIR=${result.value.code} bash`, shortCommand: undefined as string | undefined };
+    // Host 不安全时不渲染脚本（/install-worker.sh 也会 400），只给简短版
+    const commands = shellSafe(hubUrl)
+      ? installCommands(hubUrl, result.value.code, createHash('sha256').update(await renderBootstrap(options, hubUrl)).digest('hex'))
+      : short;
     const body: PairingDto = {
       code: result.value.code,
       expiresAt: result.value.expiresAt,
       hubUrl,
-      command: `curl -fsSL ${hubUrl}/install-worker.sh | HUB_PAIR=${result.value.code} bash`
+      command: commands.command,
+      ...(commands.shortCommand ? { shortCommand: commands.shortCommand } : {})
     };
     c.header('cache-control', 'no-store');
     return c.json(body);
@@ -64,10 +88,7 @@ export function installEnrollment(app: Hono, options: EnrollmentOptions, princip
   app.get('/install-worker.sh', async (c) => {
     const origin = publicOrigin(c);
     if (!shellSafe(origin)) return c.text('Host 不合法', 400);
-    const template = await readFile(options.bootstrapScript, 'utf8');
-    const script = template
-      .replaceAll('__HUB_HTTP__', origin)
-      .replaceAll('__HUB_COMMIT__', options.commit && /^[0-9a-f]{7,40}$/.test(options.commit) ? options.commit : '');
+    const script = await renderBootstrap(options, origin);
     return c.body(script, 200, { 'content-type': 'text/x-shellscript; charset=utf-8', 'cache-control': 'no-store' });
   });
 
