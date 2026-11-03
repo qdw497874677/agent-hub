@@ -1,3 +1,4 @@
+import type { LinkState } from './link-health.ts';
 import type { WorkerResources } from './resources.ts';
 import { parseHubModel } from './provider.ts';
 import type { ProviderProtocol } from './provider.ts';
@@ -40,6 +41,8 @@ export interface WorkerStatus {
   readonly inventory?: WorkerInventory;
   /** 期望（pins）对实际（清单）的漂移；有清单才有。 */
   readonly drift?: DriftReport;
+  /** 连接健康（ADR 0030 D1）：hub 看到的这条连接现在怎么样。 */
+  readonly link?: { readonly state: LinkState; readonly since: number; readonly rttMs: number | null; readonly connectedAt: number | null };
 }
 
 /** 某个 agent 在某台机器上的模型清单。 */

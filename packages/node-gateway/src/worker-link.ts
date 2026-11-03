@@ -1,6 +1,7 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
+import { RECONNECT_POLICY, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
 import { createProviderRelay } from './provider-relay.ts';
 import { authHeaders } from './provider-proxy.ts';
 import { agentToDto } from '@agent-hub/contract/codec';
@@ -54,6 +55,8 @@ export interface WorkerLinkOptions {
   /** 等 server welcome 的最长时间，过了就照旧补发（兼容不发 welcome 的老 hub）。默认 5 秒。 */
   readonly welcomeFallbackMs?: number;
   readonly initialBackoffMs?: number;
+  /** 连上稳定多久才把重连次数清零（默认 60 秒，ADR 0030 Q2）。 */
+  readonly stableMs?: number;
   readonly maxBackoffMs?: number;
   /** 多久没收到 server 的 ping 就认为连接已死（半开连接不会触发 close）。0 = 不检测。 */
   readonly heartbeatTimeoutMs?: number;
@@ -134,6 +137,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   let attempt = 0;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let watchdog: NodeJS.Timeout | null = null;
+  /** hub 在 welcome 里给的心跳参数算出的看门狗（ADR 0030 D1）；没给就用 heartbeatTimeoutMs。 */
+  let watchdogMs: number | null = null;
+  /** 连上满这么久才把重连次数清零（Q2）。 */
+  let stableTimer: NodeJS.Timeout | null = null;
+  /** 上一次断线丢掉的帧数：下一次 hello 报给 hub。 */
+  let droppedReported = 0;
   /**
    * 断线期间产生的帧先攒着，连回来按顺序补发。agent 不会因为网络抖一下就停：
    * 不攒的话那段输出就永远丢了（server 那边 journal 有幂等保护，补发不会写两遍）。
@@ -251,6 +260,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   });
   serveWorkerFiles(channel, options.files, options.roots ?? [], options.worktreesDir ? { worktreesDir: options.worktreesDir } : {});
+  channel.handle(linkEcho, async ({ at }) => ({ at }));
   channel.handle(assetsSync, async ({ entries }) => {
     if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');
     const fetchBlobs = async (hashes: readonly string[]) => {
@@ -314,7 +324,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   };
 
   const armWatchdog = (current: WebSocket): void => {
-    const timeout = options.heartbeatTimeoutMs ?? 30_000;
+    const timeout = watchdogMs ?? options.heartbeatTimeoutMs ?? 30_000;
     if (timeout <= 0) return;
     if (watchdog) clearTimeout(watchdog);
     watchdog = setTimeout(() => {
@@ -332,6 +342,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     accepted = true;
     if (dropped > 0) options.onLog?.(`断线太久，丢了 ${dropped} 帧最旧的输出`);
     dropped = 0;
+    droppedReported = 0;
     for (const frame of outbox.splice(0)) current.send(JSON.stringify(frame));
     options.onAccepted?.();
     const pending = options.pendingUpdateReport?.();
@@ -350,7 +361,13 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     socket = current;
 
     current.on('open', () => {
-      attempt = 0;
+      // 连上不立刻清零：连上就被踢的循环会每次都从 0.5 秒重来。稳定满一分钟才算数。
+      if (stableTimer) clearTimeout(stableTimer);
+      stableTimer = setTimeout(() => {
+        if (socket === current) attempt = 0;
+      }, options.stableMs ?? RECONNECT_POLICY.stableMs);
+      stableTimer.unref?.();
+      droppedReported = dropped;
       // hello 必须是第一帧：先于补发的积压事件，server 才知道这些事件是谁的。
       current.send(
         JSON.stringify({
@@ -366,7 +383,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           roots: [...(options.files?.roots ?? options.roots ?? [])],
           sessions: [...sessions.keys()],
           ...(options.build ? { build: options.build } : {}),
-          ...(options.resources ? { capabilities: [WORKER_CAPABILITY_METRICS] } : {})
+          ...(options.resources ? { capabilities: [WORKER_CAPABILITY_METRICS] } : {}),
+          ...(droppedReported > 0 ? { dropped: droppedReported } : {})
         } satisfies WorkerToServer)
       );
       options.onLog?.(`已连上 ${options.url}${sessions.size > 0 ? `，接回 ${sessions.size} 个会话` : ''}`);
@@ -382,6 +400,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
     current.on('close', (code: number, reason: Buffer) => {
       if (watchdog) clearTimeout(watchdog);
+      if (stableTimer) clearTimeout(stableTimer);
       if (socket === current) {
         socket = null;
         accepted = false;
@@ -410,9 +429,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         options.onClose?.();
         return;
       }
-      const base = options.initialBackoffMs ?? 500;
-      const cap = options.maxBackoffMs ?? 15_000;
-      const delay = Math.min(cap, base * 2 ** attempt) * (0.8 + Math.random() * 0.4);
+      const delay = reconnectDelay(attempt, Math.random(), {
+        baseMs: options.initialBackoffMs ?? RECONNECT_POLICY.baseMs,
+        capMs: options.maxBackoffMs ?? RECONNECT_POLICY.capMs
+      });
       attempt += 1;
       options.onLog?.(`与 server 断开，${(delay / 1000).toFixed(1)} 秒后重连（第 ${attempt} 次）`);
       reconnectTimer = setTimeout(connect, delay);
@@ -439,6 +459,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       if (command.kind === 'rpc') channel.receive(command.frame);
       else if (command.kind === 'update') void update(command.commit);
       else if (command.kind === 'welcome') {
+        if (command.heartbeat) {
+          watchdogMs = workerWatchdogMs(command.heartbeat);
+          armWatchdog(current);
+        }
         flush(current);
         // 老 hub 的 welcome 不带 accepts：不发 metrics，免得它每 15 秒记一条「无法解析的帧」
         if (command.accepts?.includes(WORKER_CAPABILITY_METRICS)) startMetrics(current);

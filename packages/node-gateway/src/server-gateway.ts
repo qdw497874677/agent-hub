@@ -27,8 +27,11 @@ import {
   wsCommit,
   wsPush,
   wsGh,
-  wsStatus
+  wsStatus,
+  linkEcho
 } from '@agent-hub/contract';
+import { DEFAULT_HEARTBEAT, initialLink, linkIsDead, reduceLink } from '@agent-hub/domain';
+import type { HeartbeatPolicy, LinkEvent, LinkHealth } from '@agent-hub/domain';
 import type {
   AssetDelivery,
   BuildInfo,
@@ -117,6 +120,12 @@ export interface GatewayHooks {
 export interface GatewayOptions {
   /** 心跳间隔。连续一个间隔没收到 pong 就判定离线并断开。 */
   readonly heartbeatMs?: number;
+  /** 连续漏几次 pong 判离线（ADR 0030 Q1，默认 2）。 */
+  readonly missLimit?: number;
+  /** 应用层回声间隔（默认 30 秒）；0 = 不做。 */
+  readonly echoMs?: number;
+  /** 回声超时（默认 10 秒）。 */
+  readonly echoTimeoutMs?: number;
   /** 目录浏览这类请求-回复的超时。 */
   readonly requestTimeoutMs?: number;
   /** 连上之后多久内必须 hello；不说话的连接不该一直占着。 */
@@ -148,6 +157,10 @@ interface Registered {
   lastSeenAt: number;
   /** 心跳：发 ping 前置 false，收到 pong 置 true；下一轮还是 false 就是失联。 */
   alive: boolean;
+  /** 连接健康（ADR 0030 D1）。 */
+  link: LinkHealth;
+  /** 被踢 / 吊销：断开后记为 rejected 而不是 disconnected。 */
+  kicked: boolean;
   reason?: string;
   build: BuildInfo | null;
   update: WorkerUpdate | null;
@@ -205,7 +218,28 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   const placement = new Map<string, string>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_FRAME_BYTES });
   const now = options.now ?? Date.now;
-  const heartbeatMs = options.heartbeatMs ?? 10_000;
+  const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT.intervalMs;
+  const policy: HeartbeatPolicy = {
+    intervalMs: heartbeatMs,
+    missLimit: options.missLimit ?? DEFAULT_HEARTBEAT.missLimit,
+    echoMs: options.echoMs ?? DEFAULT_HEARTBEAT.echoMs,
+    echoTimeoutMs: options.echoTimeoutMs ?? DEFAULT_HEARTBEAT.echoTimeoutMs
+  };
+  const feed = (entry: Registered, event: LinkEvent): void => {
+    entry.link = reduceLink(entry.link, event, now(), policy);
+  };
+  /** 问一句 link.echo：回来了量往返；老 Worker 不认也算活着；超时 / 断线记为卡住。 */
+  async function echo(entry: Registered): Promise<void> {
+    const channel = entry.channel;
+    const socket = entry.socket;
+    if (!channel || !socket) return;
+    const started = now();
+    const outcome = await channel.request(linkEcho, { at: started }, { timeoutMs: policy.echoTimeoutMs });
+    if (entry.socket !== socket) return; // 期间换了连接：这次结果不算
+    if (outcome.ok) feed(entry, { type: 'echo', rttMs: Math.max(0, now() - started) });
+    else if (outcome.error.code === 'unknown_method') feed(entry, { type: 'echo', rttMs: null });
+    else feed(entry, { type: 'echo_failed' });
+  }
   const helloTimeoutMs = options.helloTimeoutMs ?? 10_000;
   const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
 
@@ -269,6 +303,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (entry.socket !== socket) return;
     entry.socket = null;
     entry.reason = reason;
+    feed(entry, { type: 'closed', rejected: entry.kicked });
     remoteBrowsers.workerGone(entry.workerId);
     for (const [sessionId, workerId] of placement) {
       if (workerId === entry.workerId) placement.delete(sessionId);
@@ -290,6 +325,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     socket.on('pong', () => {
       if (entry && entry.socket === socket) {
         entry.alive = true;
+        feed(entry, { type: 'pong' });
         entry.lastSeenAt = now();
       }
     });
@@ -391,6 +427,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           roots: frame.roots,
           lastSeenAt: now(),
           alive: true,
+          link: reduceLink(previous?.link ?? initialLink(now()), { type: 'connected' }, now(), policy),
+          kicked: false,
           build,
           update,
           runtimeJob: previous?.runtimeJob ?? null,
@@ -412,7 +450,15 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         remoteBrowsers.serve(frame.workerId, entry.channel);
         hooks.serve?.(frame.workerId, entry.channel);
         registry.set(frame.workerId, entry);
-        socket.send(JSON.stringify({ kind: 'welcome', accepts: [WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH] } satisfies ServerToWorker));
+        socket.send(
+          JSON.stringify({
+            kind: 'welcome',
+            accepts: [WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH],
+            heartbeat: { intervalMs: policy.intervalMs, missLimit: policy.missLimit, echoMs: policy.echoMs }
+          } satisfies ServerToWorker)
+        );
+        if (frame.dropped) hooks.onLog?.(`Worker「${frame.label}」上次断线期间丢了 ${frame.dropped} 帧输出`);
+        if (policy.echoMs > 0) void echo(entry);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         return;
       }
@@ -507,9 +553,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const socket = entry.socket;
       if (!socket) continue;
       if (!entry.alive) {
-        (socket as WebSocket & { markTimeout?: () => void }).markTimeout?.();
-        socket.terminate();
-        continue;
+        feed(entry, { type: 'missed' });
+        if (linkIsDead(entry.link, policy)) {
+          (socket as WebSocket & { markTimeout?: () => void }).markTimeout?.();
+          socket.terminate();
+          continue;
+        }
       }
       entry.alive = false;
       try {
@@ -520,6 +569,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     }
   }, heartbeatMs);
   heartbeat.unref();
+  const echoes =
+    policy.echoMs > 0
+      ? setInterval(() => {
+          for (const entry of registry.values()) if (entry.socket) void echo(entry);
+        }, policy.echoMs)
+      : null;
+  echoes?.unref();
 
   function describe(entry: Registered): WorkerStatus {
     let sessionCount = 0;
@@ -540,6 +596,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       })),
       roots: entry.roots,
       lastSeenAt: entry.lastSeenAt,
+      link: { state: entry.link.state, since: entry.link.since, rttMs: entry.link.rttMs, connectedAt: entry.link.connectedAt },
       sessionCount,
       ...(entry.host ? { hostname: entry.host.hostname, platform: `${entry.host.platform}/${entry.host.arch}` } : {}),
       ...(entry.socket === null && entry.reason !== undefined ? { reason: entry.reason } : {}),
@@ -677,7 +734,9 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       wss.handleUpgrade(request, socket, head, (ws) => wss.emit('connection', ws, request));
     },
     disconnect(workerId: string, why: 'admin' | 'revoked' = 'admin'): boolean {
-      const socket = registry.get(workerId)?.socket;
+      const kicked = registry.get(workerId);
+      if (kicked) kicked.kicked = true;
+      const socket = kicked?.socket;
       if (why === 'revoked') {
         registry.delete(workerId);
         usage.delete(workerId);
@@ -716,6 +775,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     close(): void {
       clearInterval(heartbeat);
+      if (echoes) clearInterval(echoes);
       for (const entry of registry.values()) entry.channel?.close('hub 正在关闭');
       for (const entry of registry.values()) entry.socket?.terminate();
       registry.clear();

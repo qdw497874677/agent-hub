@@ -259,3 +259,6 @@ export const filesChanged = method(
   z.object({ watchId: z.string().min(1).max(80), paths: z.array(z.string()).max(1000) }),
   z.object({})
 );
+
+/** 应用层回声（ADR 0030 D1）：hub 定时问一句，量的是「对端事件循环真的在处理帧」，不只是 TCP 活着。 */
+export const linkEcho = method('link.echo', z.object({ at: z.number() }), z.object({ at: z.number() }));

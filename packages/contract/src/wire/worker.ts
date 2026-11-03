@@ -55,7 +55,9 @@ export const workerHelloSchema = z.object({
   /** 这台 Worker 跑的代码版本；老 Worker 不报，按「过期」显示。 */
   build: buildInfoSchema.optional(),
   /** 这台 Worker 会发哪些可选帧（如 'metrics'）。老 Worker 不报 = 都不会。 */
-  capabilities: z.array(z.string().max(64)).max(32).optional()
+  capabilities: z.array(z.string().max(64)).max(32).optional(),
+  /** 上次断线期间 outbox 满了丢掉的帧数（ADR 0030 D1）；hub 记日志并在界面上提示。 */
+  dropped: z.number().int().nonnegative().optional()
 });
 
 export const workerEventSchema = z.object({
@@ -286,7 +288,11 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('welcome'),
     /** hub 愿意收的可选帧；老 hub 不带 = 都别发（不升协议版本，见 ADR 0014）。 */
-    accepts: z.array(z.string().max(64)).max(32).optional()
+    accepts: z.array(z.string().max(64)).max(32).optional(),
+    /** 心跳参数（ADR 0030 D1）：Worker 据此设看门狗。老 hub 不带 = 用 Worker 自己的默认。 */
+    heartbeat: z
+      .object({ intervalMs: z.number().int().min(1_000).max(300_000), missLimit: z.number().int().min(1).max(10), echoMs: z.number().int().min(1_000).max(600_000) })
+      .optional()
   }),
   startSessionCommandSchema,
   z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),

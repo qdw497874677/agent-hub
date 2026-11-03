@@ -268,6 +268,10 @@ export const workerInfoSchema = z.object({
   platform: z.string().optional(),
   roots: z.array(z.string()).optional(),
   lastSeenAt: epochMs.optional(),
+  /** 连接健康（ADR 0030 D1）；老 hub 没有。 */
+  link: z
+    .object({ state: z.enum(['connecting', 'syncing', 'live', 'degraded', 'disconnected', 'rejected']), since: z.number(), rttMs: z.number().nullable(), connectedAt: z.number().nullable() })
+    .optional(),
   sessionCount: z.number().int().nonnegative().optional(),
   /** 最近一次运行时安装 / 卸载任务。 */
   runtimeJob: z

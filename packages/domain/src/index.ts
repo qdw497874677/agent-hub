@@ -16,6 +16,8 @@ export * from './artifact.ts';
 export * from './canvas.ts';
 export * from './worker.ts';
 export * from './resources.ts';
+export * from './link-health.ts';
+export * from './backup-plan.ts';
 export * from './directories.ts';
 export * from './workspace.ts';
 export * from './runtime-install.ts';

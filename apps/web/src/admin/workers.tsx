@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { adminApi } from '../api.ts';
 import type { AdminWorkerDto } from '../api.ts';
 import { HarnessBadges, RecheckButton } from '../harness.tsx';
+import { linkText } from '../link-badge.tsx';
 import { SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAction } from './shared.tsx';
 
 const UPDATE_TEXT: Record<string, string> = {
@@ -123,7 +124,7 @@ export function Workers() {
                   </div>
                   <p className="pl-4 text-meta text-tertiary">
                     {online
-                      ? `在线 · ${worker.sessionCount} 条会话`
+                      ? `在线${worker.link ? `（${linkText(worker.link)}）` : ''} · ${worker.sessionCount} 条会话`
                       : `离线${worker.reason ? `（${worker.reason}）` : ''}`}{' '}
                     · 最近 {at(worker.lastSeenAt)}
                   </p>
