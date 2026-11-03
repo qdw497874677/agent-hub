@@ -1,6 +1,6 @@
 # ADR 0028：「从这里重来」优先用运行时原生分叉 / 回退
 
-- 状态：proposed（草案，等 David 定 Q1–Q7）
+- 状态：accepted（2026-11-02 David 定了 Q1–Q7，全部按推荐，见末尾「定稿」）
 - 相关：ADR 0006（提示词是 journal 事件）、ADR 0012（fork 血缘）、ADR 0013 D8（统一运行时适配器契约）、ADR 0027（D8 无原生 rewind 时分叉、D9 文件回滚只限临时工作空间、阶段 4 / PR #182 的现有实现）
 - 调研日期：2026-11-02（各文档 / 源码取当日 main）
 
@@ -92,3 +92,14 @@ export interface RuntimeAdapterContext {
 2. pi：记录 entryId、`start` 支持 `branch`（`--session-id` 来源 → `fork`）；fake pi 单测 + 真 pi e2e。
 3. ACP：initialize 探测 `session/fork`，方言配置（claude-agent-acp 的 `_meta` 锚点），记录 turnRef；OpenCode / Codex 按探测结果开关。
 4. 用例 + 对话框文案 + e2e（原生 / 兜底 / 原生失败退回三条），线上用测试账号走 pi 一遍。
+
+## 定稿（2026-11-02，David）
+
+Q1–Q7 全部按推荐：
+- Q1：一律新开 hub 会话，agent 侧原生分叉；不做原地回退。
+- Q2：文件回滚只用 hub 的 git checkpoint，D9 不变；不调 `rewindFiles` / OpenCode `revert`。
+- Q3：没有 turnRef 的老消息走摘要兜底，对话框写明原因。
+- Q4：Codex / OpenCode 只在 ACP 桥声明了 fork 时用，不新写 app-server / HTTP 适配器。
+- Q5：原生分叉失败自动退回摘要，新会话里提示一行。
+- Q6：换 Worker / 换 agent 一律摘要。
+- Q7：pi 只用 RPC `fork`。
