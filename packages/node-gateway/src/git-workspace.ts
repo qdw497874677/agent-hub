@@ -213,7 +213,9 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       } catch (error) {
         return failed('检查改动', error);
       }
-      const reason = keepReason(status);
+      // PR 已合并（含 squash）且 HEAD 就是 PR 的 head：这些「只在本分支」的提交已经进了主干
+      const merged = options?.mergedHead && status.head === options.mergedHead;
+      const reason = keepReason(merged ? { ...status, unpushed: 0 } : status);
       if (kind === 'worktree') {
         if (status.dirty === null) return { ok: false, error: invalid(`「${path}」不是 git worktree`) };
         if (reason) return { ok: true, value: { removed: false, reason } };
@@ -340,7 +342,8 @@ async function statusOf(path: string): Promise<GitStatus> {
   if (!(await git.checkIsRepo().catch(() => false))) {
     return { dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null };
   }
-  const status = await git.status();
+  // 强制 normal：用户全局设 status.showUntrackedFiles=no 时也要看见未跟踪文件（D7）
+  const status = await simpleGit(path, { config: ['status.showUntrackedFiles=normal'] }).status();
   const untracked = status.not_added.length;
   const dirty = status.files.length - untracked > 0;
   const branch = await currentBranch(git);
@@ -350,7 +353,18 @@ async function statusOf(path: string): Promise<GitStatus> {
   const lonely = await git
     .raw(['rev-list', '--count', 'HEAD', '--not', ...exclude, '--branches', '--remotes'])
     .catch(() => '0');
-  return { dirty, untracked, unpushed: Number(lonely.trim()) || 0, branch, upstream: status.tracking ?? null };
+  const head = (await git.raw(['rev-parse', 'HEAD']).catch(() => '')).trim() || null;
+  return { dirty, untracked, unpushed: Number(lonely.trim()) || 0, branch, upstream: status.tracking ?? null, head, sizeBytes: await sizeOf(path) };
+}
+
+/** 目录占用（du -sk，超时就不报）；只用于清理记录的展示。 */
+function sizeOf(path: string): Promise<number | null> {
+  return new Promise((done) => {
+    execFile('du', ['-sk', path], { timeout: 10_000 }, (error, stdout) => {
+      const kb = Number(String(stdout).split(/\s/)[0]);
+      done(error || !Number.isFinite(kb) ? null : kb * 1024);
+    });
+  });
 }
 
 async function currentBranch(git: SimpleGit): Promise<string | null> {

@@ -84,3 +84,96 @@ test('人自己的目录只能移除登记，不能删；还有临时工作空�
     assert.ok(unregistered.ok);
   }
 });
+
+/* ── ADR 0027 阶段 3：规则、squash 合并、闲置、清理记录、检查点、重建 ── */
+import type { CleanupPolicy, SweepItem, SweepRun, WorkspaceSweepStore } from '../ports/workspace-sweeps.ts';
+import type { PullRequestLink } from '../ports/pull-requests.ts';
+import { cleanupRecordsUseCase, saveCleanupPolicyUseCase } from './workspace-cleanup-admin.ts';
+
+function sweepStore() {
+  const policies = new Map<string, CleanupPolicy>();
+  const runs: SweepRun[] = [];
+  const items: SweepItem[] = [];
+  const store: WorkspaceSweepStore = {
+    policy: async (scope, id) => policies.get(`${scope}:${id}`) ?? null,
+    savePolicy: async (scope, id, p) => void policies.set(`${scope}:${id}`, p),
+    saveRun: async (run, list) => void (runs.push(run), items.push(...list)),
+    itemsOfProject: async (projectId, limit) => items.filter((i) => i.projectId === projectId).reverse().slice(0, limit)
+  };
+  return { store, runs, items };
+}
+
+async function withCleanup(prs: PullRequestLink[] = []) {
+  const w = await world('https://example.com/demo.git');
+  const sweeps = sweepStore();
+  const dropped: string[] = [];
+  (w.deps as { cleanup?: unknown }).cleanup = {
+    sweeps: sweeps.store,
+    pullRequests: { byWorkspace: async (id: string) => prs.filter((p) => p.workspaceId === id), byTask: async (id: string) => prs.filter((p) => p.taskId === id) },
+    dropCheckpoints: async (id: string) => void dropped.push(id)
+  };
+  return { ...w, sweeps, dropped };
+}
+
+const pr = (over: Partial<PullRequestLink>): PullRequestLink => ({
+  id: 'pr1', taskId: 't', workspaceId: null, sessionId: null, provider: 'github', via: 'gh', repo: 'o/r', number: 7, url: 'u', branch: 'b', base: 'main',
+  state: 'merged', headSha: 'abc', mergedAt: 1, createdBy: 'me', createdAt: 1, lastSyncedAt: 1, ...over
+});
+
+test('squash 合并：任务没结束也删（HEAD == PR head），分支上的提交不算未推送；记一条带大小的记录', async () => {
+  const w = await withCleanup();
+  const link = pr({ taskId: w.task.id, workspaceId: w.temp.id, branch: w.temp.branch ?? 'b' });
+  (w.deps as { cleanup: { pullRequests: unknown } }).cleanup.pullRequests = { byWorkspace: async () => [link], byTask: async () => [link] };
+  w.git.statuses.set(w.temp.path, { dirty: false, untracked: 0, unpushed: 2, branch: w.temp.branch, upstream: null, head: 'abc', sizeBytes: 4096 });
+  const report = await sweepTemporaryWorkspacesUseCase(w.deps);
+  assert.deepEqual(report.removed, [w.temp.id]);
+  assert.equal(w.sweeps.items[0]?.action, 'removed');
+  assert.equal(w.sweeps.items[0]?.sizeBytes, 4096);
+  assert.match(w.sweeps.items[0]?.reason ?? '', /PR #7 已合并/);
+});
+
+test('squash 合并但 HEAD 之后又有新提交 / 未跟踪文件：保留', async () => {
+  const w = await withCleanup();
+  const link = pr({ taskId: w.task.id, workspaceId: w.temp.id });
+  (w.deps as { cleanup: { pullRequests: unknown } }).cleanup.pullRequests = { byWorkspace: async () => [link], byTask: async () => [] };
+  w.git.statuses.set(w.temp.path, { dirty: false, untracked: 0, unpushed: 3, branch: w.temp.branch, upstream: null, head: 'def' });
+  assert.deepEqual((await sweepTemporaryWorkspacesUseCase(w.deps)).kept, [w.temp.id]);
+  w.git.statuses.set(w.temp.path, { dirty: false, untracked: 1, unpushed: 2, branch: w.temp.branch, upstream: null, head: 'abc' });
+  const again = await sweepTemporaryWorkspacesUseCase(w.deps);
+  assert.deepEqual(again.kept, [w.temp.id]);
+  assert.match((await w.deps.workspaces.byId(w.temp.id))?.keptReason ?? '', /未跟踪/);
+  assert.equal(w.sweeps.items.filter((i) => i.action === 'kept').length, 2, '原因变了才再记');
+  await sweepTemporaryWorkspacesUseCase(w.deps);
+  assert.equal(w.sweeps.items.filter((i) => i.action === 'kept').length, 2, '同样的原因不重复记');
+});
+
+test('规则：关掉「任务结束」就不删；闲置 N 天默认关，打开后按最后活动判断', async () => {
+  const w = await withCleanup();
+  const saved = await saveCleanupPolicyUseCase(w.deps, null, w.project.id, { taskEndedClean: false });
+  assert.ok(saved.ok, saved.ok ? '' : saved.error.message);
+  await w.finish();
+  assert.equal((await sweepTemporaryWorkspacesUseCase(w.deps)).removed.length, 0);
+  assert.equal((await saveCleanupPolicyUseCase(w.deps, null, w.project.id, { idleDays: 0 })).ok, false);
+  assert.ok((await saveCleanupPolicyUseCase(w.deps, null, w.project.id, { idleDays: 3 })).ok);
+  assert.equal((await sweepTemporaryWorkspacesUseCase(w.deps)).removed.length, 0, '刚刚还在用');
+  const base = w.deps.now;
+  (w.deps as { now: () => number }).now = () => base() + 4 * 24 * 3600 * 1000;
+  const report = await sweepTemporaryWorkspacesUseCase(w.deps);
+  assert.deepEqual(report.removed, [w.temp.id]);
+  assert.match(w.sweeps.items[0]?.reason ?? '', /闲置超过 3 天/);
+});
+
+test('删工作空间时删检查点；记录可查；任务再开始时从分支重建同一路径', async () => {
+  const w = await withCleanup();
+  await w.finish();
+  await sweepTemporaryWorkspacesUseCase(w.deps, { trigger: 'manual' });
+  assert.equal(w.sweeps.runs[0]?.trigger, 'manual');
+  const records = await cleanupRecordsUseCase(w.deps, null, w.project.id);
+  assert.ok(records.ok && records.value.items.length === 1);
+  await setTaskStatusUseCase(w.deps, w.task.id, 'in_progress', 'user');
+  const again = await prepareTemporaryWorkspaceUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, workerId: 'remote-1', home: '/home/me' });
+  assert.ok(again.ok, again.ok ? '' : again.error.message);
+  assert.equal(again.value.path, w.temp.path);
+  assert.equal(again.value.branch, w.temp.branch);
+  assert.equal(again.value.state, 'ready');
+});

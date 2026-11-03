@@ -621,7 +621,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         commit: (path, input) => call((c) => c.request(wsCommit, { path, ...input }, { timeoutMs: 120_000 }), '提交'),
         push: (path) => call((c) => c.request(wsPush, { path }, slow), '推送'),
         gh: (path, request) => call((c) => c.request(wsGh, { path, request }, { timeoutMs: 120_000 }), 'gh 开 PR'),
-        remove: (path, kind, options) => call((c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}) }, { timeoutMs: 120_000 }), '删除工作空间')
+        remove: (path, kind, options) => call((c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}), ...(options?.mergedHead ? { mergedHead: options.mergedHead } : {}) }, { timeoutMs: 120_000 }), '删除工作空间')
       };
     }
   };

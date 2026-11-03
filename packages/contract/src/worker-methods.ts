@@ -80,7 +80,9 @@ export const wsStatus = method(
     untracked: z.number().int(),
     unpushed: z.number().int(),
     branch: z.string().nullable(),
-    upstream: z.string().nullable()
+    upstream: z.string().nullable(),
+    head: z.string().nullable().optional(),
+    sizeBytes: z.number().nullable().optional()
   })
 );
 
@@ -143,7 +145,7 @@ export const wsGh = method(
 /** Worker 删之前会再查一次；有改动就回 removed:false + 原因（不是错误）。 */
 export const wsRemove = method(
   'ws.remove',
-  z.object({ path: z.string(), kind: z.enum(['worktree', 'directory']), force: z.boolean().optional() }),
+  z.object({ path: z.string(), kind: z.enum(['worktree', 'directory']), force: z.boolean().optional(), mergedHead: z.string().optional() }),
   z.union([z.object({ removed: z.literal(true) }), z.object({ removed: z.literal(false), reason: z.string() })])
 );
 

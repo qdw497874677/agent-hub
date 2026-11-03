@@ -247,6 +247,12 @@ export const api = {
     call<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'PUT' }),
   unlinkWorkspace: (projectId: string, workspaceId: string) =>
     call<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'DELETE' }),
+  cleanupPolicy: (projectId: string) => call<CleanupPolicyDto>(`/api/projects/${encodeURIComponent(projectId)}/cleanup`),
+  saveCleanupPolicy: (projectId: string, input: Partial<CleanupPolicyDto>) =>
+    call<CleanupPolicyDto>(`/api/projects/${encodeURIComponent(projectId)}/cleanup`, { method: 'PUT', body: JSON.stringify(input) }),
+  sweepProject: (projectId: string) =>
+    post<{ removed: string[]; kept: string[]; skipped: string[]; failed?: string[] }>(`/api/projects/${encodeURIComponent(projectId)}/cleanup/sweep`, {}),
+  cleanupRecords: (projectId: string) => call<CleanupRecordsDto>(`/api/projects/${encodeURIComponent(projectId)}/cleanup/records`),
   workspaceChanges: (workspaceId: string) => call<WorkspaceChangesDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/changes`),
   removeWorkspace: (workspaceId: string, input: RemoveWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/remove`, input),
@@ -743,3 +749,13 @@ export const gitApi = {
   setToken: (token: string) => call<GitHostTokenDto>('/api/git-host/token', { method: 'PUT', body: JSON.stringify({ token }) }),
   removeToken: () => call<GitHostTokenDto>('/api/git-host/token', { method: 'DELETE' })
 };
+
+export interface CleanupPolicyDto {
+  prMerged: boolean;
+  taskEndedClean: boolean;
+  idleDays: number | null;
+}
+export interface CleanupRecordsDto {
+  items: { runId: string; workspaceId: string; path: string; branch: string | null; action: 'removed' | 'kept' | 'failed'; reason: string; sizeBytes: number | null; at: number }[];
+  orphans: { path: string; workerId: string | null }[];
+}

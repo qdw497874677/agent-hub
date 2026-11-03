@@ -86,7 +86,7 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined): void 
   port.handle(wsCommit, async ({ path, ...input }) => unwrap(await need().commit(path, input)));
   port.handle(wsPush, async ({ path }) => unwrap(await need().push(path)));
   port.handle(wsGh, async ({ path, request }) => unwrap(await need().gh(path, request)));
-  port.handle(wsRemove, async ({ path, kind, force }) => unwrap(await need().remove(path, kind, { force: force === true })));
+  port.handle(wsRemove, async ({ path, kind, force, mergedHead }) => unwrap(await need().remove(path, kind, { force: force === true, ...(mergedHead ? { mergedHead } : {}) })));
 }
 
 /**

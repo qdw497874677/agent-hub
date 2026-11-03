@@ -61,6 +61,7 @@ export * from './use-cases/attachments.ts';
 export * from './use-cases/workspaces.ts';
 export * from './use-cases/temporary-workspaces.ts';
 export * from './use-cases/workspace-cleanup.ts';
+export * from './use-cases/workspace-cleanup-admin.ts';
 export * from './use-cases/team-workspaces.ts';
 
 export * from './account.ts';
@@ -142,6 +143,8 @@ export type { BrowserEntry, ChangedFile, DirectoryPage, FileChangeNotice, FileCo
 export { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, isCheckpointRef, isCheckpointPrefix } from './ports/workspace-browser.ts';
 export { FILES_LIMITS, isBrowsablePath, isCommitId, isSensitivePath, looksBinary } from './workspace-files.ts';
 export * from './use-cases/workspace-files.ts';
+export { DEFAULT_CLEANUP_POLICY, IDLE_DAYS_MAX } from './ports/workspace-sweeps.ts';
+export type { CleanupPolicy, SweepAction, SweepItem, SweepRun, WorkspaceSweepStore } from './ports/workspace-sweeps.ts';
 export type { PullRequestLink, PullRequestRepository, GitHostTokenStore, GitHostApi, GitText, GitTextInput, GitTextWriter } from './ports/pull-requests.ts';
 export * from './git-workflow.ts';
 export * from './use-cases/git-workflow.ts';

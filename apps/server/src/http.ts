@@ -24,6 +24,7 @@ import {
   deriveSessionRequest,
   createWorkspaceRequest,
   removeWorkspaceRequest,
+  cleanupPolicyRequest,
   workspaceChangesSchema,
   workspaceSchema,
   workspaceViewSchema,
@@ -76,6 +77,10 @@ import {
   linkWorkspaceUseCase,
   unlinkWorkspaceUseCase,
   sweepTemporaryWorkspacesUseCase,
+  cleanupPolicyUseCase,
+  saveCleanupPolicyUseCase,
+  sweepProjectUseCase,
+  cleanupRecordsUseCase,
   workspaceChangesUseCase,
   workspaceViewsUseCase,
   forkSessionUseCase,
@@ -446,6 +451,25 @@ export function createApp(options: AppOptions): Hono {
 
   // 立刻清理一次（项目设置里「重新检查」）
   app.post('/api/workspaces/sweep', async (c) => c.json(await sweepTemporaryWorkspacesUseCase(deps)));
+  // 清理规则 / 立即清理 / 清理记录（ADR 0027 阶段 3）
+  app.get('/api/projects/:projectId/cleanup', async (c) => {
+    const result = await cleanupPolicyUseCase(deps, subjectOf(c), c.req.param('projectId'));
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  app.put('/api/projects/:projectId/cleanup', async (c) => {
+    const input = await body(c, cleanupPolicyRequest);
+    if (!input.ok) return input.response;
+    const result = await saveCleanupPolicyUseCase(deps, subjectOf(c), c.req.param('projectId'), input.value);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  app.post('/api/projects/:projectId/cleanup/sweep', async (c) => {
+    const result = await sweepProjectUseCase(deps, subjectOf(c), c.req.param('projectId'));
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  app.get('/api/projects/:projectId/cleanup/records', async (c) => {
+    const result = await cleanupRecordsUseCase(deps, subjectOf(c), c.req.param('projectId'));
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
 
   app.get('/api/projects/:projectId/canvas', async (c) => {
     const result = await loadCanvas(deps, c.req.param('projectId'));

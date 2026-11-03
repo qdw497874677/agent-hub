@@ -14,7 +14,7 @@ import { serveAssetFetch } from './asset-relay.ts';
 import { createMemorySources } from './memory-sources.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
-import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
@@ -287,11 +287,15 @@ setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref()
 const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
 const providerRepo = createSqliteProviders(store.db, secretKey);
 const projectTeamOf = async (projectId: string) => (await store.projects.byId(projectId as ProjectId))?.teamId ?? null;
+const pullRequestRepo = createSqlitePullRequests(store.db);
+const workspaceSweeps = createSqliteWorkspaceSweeps(store.db);
+// 清理（ADR 0027 阶段 3）：按 PR 合并 / 任务结束判断，删工作空间时一起删检查点 ref
+(deps as { cleanup?: Deps["cleanup"] }).cleanup = { sweeps: workspaceSweeps, pullRequests: pullRequestRepo, dropCheckpoints: (sessionId: string) => filesService.dropSession(sessionId) };
 // 提交 / 推送 / PR（ADR 0027 阶段 2）：文字由提炼模型写（D4），PR 走团队 token → gh → 链接（D3）
 const gitService = createGitWorkflowService({
   projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,
   workLog: store.workLog, git: deps.git,
-  pullRequests: createSqlitePullRequests(store.db),
+  pullRequests: pullRequestRepo,
   tokens: createSqliteGitHostTokens(store.db, secretKey),
   host: createGitHubApi({ base: readEnv('HUB_GITHUB_API') ?? undefined }),
   writer: createGitTextWriter({ settings: store.memory.settings, providers: providerRepo, projectTeam: projectTeamOf, audit: store.audit, now: () => Date.now(), log }),
@@ -626,16 +630,16 @@ if (stallMs > 0) {
 }
 
 // 临时工作空间清理（workspaces.md §5）：启动后一会儿（等 Worker 连上）跑一次，之后每小时一次
-const sweep = (why: string) =>
-  sweepTemporaryWorkspacesUseCase(deps)
+const sweep = (why: 'startup' | 'hourly') =>
+  sweepTemporaryWorkspacesUseCase(deps, { trigger: why })
     .then((report) => {
       if (report.removed.length + report.kept.length > 0) {
-        log(`临时工作空间清理（${why}）：删了 ${report.removed.length} 个，保留 ${report.kept.length} 个（有未保存的改动）`);
+        log(`临时工作空间清理（${why}）：删了 ${report.removed.length} 个，保留 ${report.kept.length} 个`);
       }
     })
     .catch((failure: unknown) => log(`临时工作空间清理失败：${(failure as Error).message}`));
-setTimeout(() => void sweep('启动'), 60_000).unref();
-setInterval(() => void sweep('每小时'), 60 * 60_000).unref();
+setTimeout(() => void sweep('startup'), 60_000).unref();
+setInterval(() => void sweep('hourly'), 60 * 60_000).unref();
 
 // 资产更新提醒：定时去 Git 来源看有没有新版本（默认每 6 小时；HUB_ASSET_CHECK_MS=0 关掉）。只记「有新版本」，升级仍要主人看对比后确认。
 const assetCheckMs = Number(readEnv('HUB_ASSET_CHECK_MS') ?? 6 * 60 * 60_000);
