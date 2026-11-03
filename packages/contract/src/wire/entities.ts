@@ -18,10 +18,22 @@ export const capabilityNameSchema = z.enum([
   'tool_calls',
   'artifacts',
   'structured_events',
-  'attachments'
+  'attachments',
+  'branch_at_turn'
 ]);
 
-export const capabilityMatrixSchema = z.record(capabilityNameSchema, capabilitySchema);
+/** branch_at_turn 是 ADR 0028 加的：旧 worker 不报，可缺（解码时按「不支持」补）。 */
+export const capabilityMatrixSchema = z.object({
+  prompt: capabilitySchema,
+  interrupt: capabilitySchema,
+  fork: capabilitySchema,
+  resume: capabilitySchema,
+  tool_calls: capabilitySchema,
+  artifacts: capabilitySchema,
+  structured_events: capabilitySchema,
+  attachments: capabilitySchema,
+  branch_at_turn: capabilitySchema.optional()
+});
 
 /**
  * 可调项：形状照 ACP 的 ConfigOption。agent 报什么，界面就渲染什么——

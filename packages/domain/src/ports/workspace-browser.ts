@@ -131,6 +131,13 @@ export interface CheckpointStore {
   remove(sessionId: string): Promise<void>;
 }
 
+/** 每一轮在原生 agent 会话里的标识（ADR 0028）：pi 是这一轮用户消息的 entryId，Claude 是这一轮最后一条 assistant messageId。 */
+export interface TurnRefStore {
+  record(sessionId: string, promptSeq: number, turnRef: string): Promise<void>;
+  /** promptSeq → turnRef */
+  list(sessionId: string): Promise<ReadonlyMap<number, string>>;
+}
+
 export const CHECKPOINT_REF_PREFIX = 'refs/agent-hub/checkpoints/';
 /** 保留期：会话最后一个检查点之后 30 天（ADR 0027 D1）。 */
 export const CHECKPOINT_RETENTION_MS = 30 * 24 * 3600 * 1000;

@@ -9,6 +9,7 @@ import {
   PROTOCOL_MISMATCH_CLOSE,
   PROTOCOL_VERSION,
   WORKER_CAPABILITY_METRICS,
+  WORKER_CAPABILITY_NATIVE_BRANCH,
   assetsSync,
   providerTest,
   createRpcChannel,
@@ -83,6 +84,9 @@ export interface GatewayHooks {
   onEvent(workerId: string, sessionId: SessionId, event: SessionEvent): void;
   onAgentSession(workerId: string, sessionId: SessionId, agentSessionRef: string): void;
   onOptions(workerId: string, sessionId: SessionId, options: readonly RuntimeOption[]): void;
+  /** ADR 0028：这一轮的原生标识 / 带 branch 的启动结果。 */
+  onTurnRef?(workerId: string, sessionId: SessionId, turnRef: string): void;
+  onBranchResult?(workerId: string, sessionId: SessionId, outcome: 'native' | 'failed', reason?: string): void;
   onStatus(workerId: string, sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
   onWorkerGone(workerId: string, reason: string): void;
   /** Worker 报来更新进度（给日志用；状态本身网关会记着，出现在 workers() 里）。 */
@@ -408,7 +412,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         remoteBrowsers.serve(frame.workerId, entry.channel);
         hooks.serve?.(frame.workerId, entry.channel);
         registry.set(frame.workerId, entry);
-        socket.send(JSON.stringify({ kind: 'welcome', accepts: [WORKER_CAPABILITY_METRICS] } satisfies ServerToWorker));
+        socket.send(JSON.stringify({ kind: 'welcome', accepts: [WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH] } satisfies ServerToWorker));
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         return;
       }
@@ -462,6 +466,10 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (frame.type === 'event') hooks.onEvent(from, frame.sessionId as SessionId, frame.event);
       else if (frame.type === 'agent_session') {
         hooks.onAgentSession(from, frame.sessionId as SessionId, frame.agentSessionRef);
+      } else if (frame.type === 'turn_ref') {
+        hooks.onTurnRef?.(from, frame.sessionId as SessionId, frame.turnRef);
+      } else if (frame.type === 'branch_result') {
+        hooks.onBranchResult?.(from, frame.sessionId as SessionId, frame.outcome, frame.reason);
       } else if (frame.type === 'options') {
         hooks.onOptions(from, frame.sessionId as SessionId, frame.options);
       } else if (frame.type === 'status') {
@@ -728,6 +736,7 @@ function toWire(command: WorkerCommand): ServerToWorker {
         origin: command.origin,
         resume: command.resume,
         options: command.options,
+        ...(command.branch ? { branch: { ...command.branch } } : {}),
         ...(command.tools ? { tools: command.tools } : {}),
         ...(command.mcp && command.mcp.length > 0
           ? { mcp: command.mcp.map((entry) => (entry.transport === 'stdio' ? { ...entry, args: [...entry.args], env: { ...entry.env } } : { ...entry })) }

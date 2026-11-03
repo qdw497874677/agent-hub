@@ -276,6 +276,7 @@ const filesService = createWorkspaceFilesService({
   checkpoints: store.checkpoints,
   now: () => Date.now()
 });
+const rewindService = createRewindService({ ...deps, files: filesService, turnRefs: store.turnRefs });
 // 回合结束后拍「之后」那张（ADR 0027 D2）；保留期清理每小时一次（D1）
 hub.stream.subscribe((frame) => {
   if (frame.event?.kind === 'ended') void filesService.endTurn(frame.sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
@@ -572,6 +573,12 @@ serverGateway = createServerGateway({
       })
     );
   },
+  onTurnRef(workerId, sessionId, turnRef) {
+    fromWorker(workerId, sessionId, () => void rewindService.recordTurnRef(sessionId, turnRef).catch((e) => log(`记录原生标识失败：${String(e)}`)));
+  },
+  onBranchResult(workerId, sessionId, outcome, reason) {
+    fromWorker(workerId, sessionId, () => void rewindService.branchResult(sessionId, outcome, reason).catch((e) => log(`处理分叉结果失败：${String(e)}`)));
+  },
   onAgentSession(workerId, sessionId, agentSessionRef) {
     fromWorker(workerId, sessionId, () => void ingestAgentSessionRef(deps, sessionId, agentSessionRef));
   },
@@ -706,7 +713,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   context: contextService,
   files: filesService,
   git: gitService,
-  rewind: createRewindService({ ...deps, files: filesService }),
+  rewind: rewindService,
   memory: { memory: memoryService },
   openApi: {
     tokens: apiTokenDeps,

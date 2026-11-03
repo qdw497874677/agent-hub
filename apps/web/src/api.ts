@@ -750,7 +750,7 @@ export const gitApi = {
   removeToken: () => call<GitHostTokenDto>('/api/git-host/token', { method: 'DELETE' })
 };
 
-export interface RewindPreviewDto { promptSeq: number; prompt: string; filesAllowed: boolean; filesBlocked: string | null; turnsAfter: number }
+export interface RewindPreviewDto { promptSeq: number; prompt: string; filesAllowed: boolean; filesBlocked: string | null; turnsAfter: number; mode?: 'native' | 'summary' | 'none'; modeReason?: string | null; agentLabel?: string }
 export interface RewindDto { session: SessionDto; prompt: string; files: { turn: number; restored: number; removed: number; safety: string } | null }
 /** 从某条消息重来（ADR 0027 阶段 4）。 */
 export const rewindApi = {

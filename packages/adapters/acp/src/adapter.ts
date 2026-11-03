@@ -25,6 +25,7 @@ export function acpAgents(raw: string | undefined, log: (message: string) => voi
         label: typeof candidate.label === 'string' ? candidate.label : candidate.id,
         command: candidate.command,
         args: Array.isArray(candidate.args) ? candidate.args.filter((arg) => typeof arg === 'string') : [],
+        ...(candidate.branchAtTurn === 'jetbrains-air' ? { branchAtTurn: 'jetbrains-air' as const } : {}),
         ...(Array.isArray(candidate.listModelsArgs)
           ? { listModelsArgs: candidate.listModelsArgs.filter((arg) => typeof arg === 'string') }
           : {})
@@ -84,7 +85,8 @@ export function acpAdapter(): RuntimeAdapter {
           descriptor: acpDescriptor(config, [], models[index] ?? []),
           toolShim: ctx.toolShim,
           onAgentSessionRef: (sessionId, ref) => ctx.onAgentSessionRef(sessionId, ref),
-          onOptions: (sessionId, reported) => ctx.onOptions(sessionId, reported)
+          onOptions: (sessionId, reported) => ctx.onOptions(sessionId, reported),
+          onTurnRef: (sessionId, turnRef) => ctx.onTurnRef?.(sessionId, turnRef)
         }),
         readiness: acpReadiness(config),
         hint,

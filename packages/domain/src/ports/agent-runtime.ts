@@ -15,6 +15,12 @@ export interface StartSpec {
   readonly workspaceRoot: string;
   /** 双权威：知道 agent 自己的会话 id 和平台已确认的游标，才能接着聊。 */
   readonly resume: { readonly agentSessionRef: string | null; readonly cursor: Seq } | null;
+  /**
+   * ADR 0028 原生分叉（只在 resume 为 null 时有）：从来源 agent 会话里「第 turnRef 这一轮之前」分出一条新 agent 会话。
+   * turnRef 是要重来的那一轮的标识，previousTurnRef 是它前一轮的；各运行时用自己认的那个（Pi 用前者，Claude 用后者）。
+   * 做不到就返回错误——Worker 会改成新开一条空会话，hub 用摘要交接，不许静默装作分叉成功。
+   */
+  readonly branch?: BranchSpec;
   /** 开跑前就要定下的可调项（键是 option id）。空对象 = 全部用 agent 的默认。 */
   readonly options: Readonly<Record<string, string | boolean>>;
   /** hub 能力层（MCP）。运行时按自己的方式注入：ACP 走 session/new.mcpServers，Pi 走环境变量。 */
@@ -28,6 +34,12 @@ export interface StartSpec {
   readonly mcp?: readonly McpLaunch[];
   /** hub 模型提供商（ADR 0013）：本机中继地址 + 中继令牌。运行时只把令牌放进 agent 的环境变量，不写进文件 / 参数。 */
   readonly provider?: ProviderLaunch;
+}
+
+export interface BranchSpec {
+  readonly fromAgentSessionRef: string;
+  readonly turnRef: string | null;
+  readonly previousTurnRef: string | null;
 }
 
 /** Worker 专属资产目录里此刻装着的东西。 */

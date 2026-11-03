@@ -31,6 +31,11 @@ export interface RuntimeAdapterContext {
   log(message: string): void;
   onAgentSessionRef(sessionId: string, ref: string): void;
   onOptions(sessionId: string, options: readonly RuntimeOption[]): void;
+  /**
+   * ADR 0028：这一轮在 agent 那边的原生标识（分叉时要用）。必须在这一轮的 ended 事件**之前**报，
+   * hub 按「最近一次 ended 之后的第一条提问」认领它。不支持原生分叉的运行时不调。
+   */
+  onTurnRef?(sessionId: string, turnRef: string): void;
   /** hub 装的组件（ADR 0021 P2）在这台机器上的包目录（真实路径）。每次开会话时现查：升级只影响新会话。 */
   components?(runtime: string): readonly string[];
 }

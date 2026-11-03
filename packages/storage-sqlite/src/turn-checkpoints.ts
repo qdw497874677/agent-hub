@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { CheckpointStore, TurnCheckpoint } from '@agent-hub/domain';
+import type { CheckpointStore, TurnCheckpoint, TurnRefStore } from '@agent-hub/domain';
 
 /** 回合检查点（ADR 0027 D1/D2）：每轮一行，开始前 / 结束后两个提交。ref 本身在工作空间的仓库里。 */
 export function createSqliteCheckpoints(db: DatabaseSync): CheckpointStore {
@@ -33,6 +33,23 @@ export function createSqliteCheckpoints(db: DatabaseSync): CheckpointStore {
     },
     async remove(sessionId) {
       remove.run(sessionId);
+    }
+  };
+}
+
+/** 每轮的原生标识（ADR 0028），从这里重来时原生分叉用。 */
+export function createSqliteTurnRefs(db: DatabaseSync): TurnRefStore {
+  db.exec(`CREATE TABLE IF NOT EXISTS turn_refs (
+    session_id TEXT NOT NULL, prompt_seq INTEGER NOT NULL, turn_ref TEXT NOT NULL,
+    PRIMARY KEY (session_id, prompt_seq))`);
+  const put = db.prepare('INSERT OR REPLACE INTO turn_refs (session_id, prompt_seq, turn_ref) VALUES (?, ?, ?)');
+  const list = db.prepare('SELECT prompt_seq, turn_ref FROM turn_refs WHERE session_id = ?');
+  return {
+    async record(sessionId, promptSeq, turnRef) {
+      put.run(sessionId, promptSeq, turnRef);
+    },
+    async list(sessionId) {
+      return new Map((list.all(sessionId) as { prompt_seq: number; turn_ref: string }[]).map((r) => [r.prompt_seq, r.turn_ref]));
     }
   };
 }

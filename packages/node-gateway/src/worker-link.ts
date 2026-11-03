@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, RpcFailure, assetsFetch, assetsSync, createRpcChannel, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
 import { createProviderRelay } from './provider-relay.ts';
 import { authHeaders } from './provider-proxy.ts';
 import { agentToDto } from '@agent-hub/contract/codec';
@@ -103,6 +103,8 @@ export interface WorkerLink {
   notifyAgentSessionRef(sessionId: string, agentSessionRef: string): void;
   /** agent 报上来的可调项当前值（模型、思考强度……）。 */
   notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void;
+  /** ADR 0028：这一轮的原生标识。hub 不认（老 hub）就不发。 */
+  notifyTurnRef(sessionId: string, turnRef: string): void;
   close(): Promise<void>;
 }
 
@@ -127,6 +129,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const starting = new Map<string, Promise<void>>();
   let socket: WebSocket | null = null;
   let closed = false;
+  /** hub 的 welcome 说它认原生分叉的帧（ADR 0028）。 */
+  let nativeBranch = false;
   let attempt = 0;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let watchdog: NodeJS.Timeout | null = null;
@@ -438,6 +442,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         flush(current);
         // 老 hub 的 welcome 不带 accepts：不发 metrics，免得它每 15 秒记一条「无法解析的帧」
         if (command.accepts?.includes(WORKER_CAPABILITY_METRICS)) startMetrics(current);
+        nativeBranch = command.accepts?.includes(WORKER_CAPABILITY_NATIVE_BRANCH) ?? false;
       }
       else if (command.kind === 'probe') void probe(true);
       else if (command.kind === 'runtime_job') void runtimeJob(command);
@@ -639,6 +644,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       workspaceRoot: command.workspaceRoot,
       resume: command.resume,
       options: command.options,
+      ...(command.branch && command.resume === null ? { branch: command.branch } : {}),
       ...(command.tools ? { tools: await toolAccess(command.tools) } : {}),
       ...(command.tools && command.mcp && command.mcp.length > 0 ? { mcp: await mcpAccess(command.mcp) } : {})
     };
@@ -665,7 +671,25 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await previous.dispose().catch(() => {});
     }
 
-    const started = await runtime.start(spec);
+    let started = await runtime.start(spec);
+    if (spec.branch) {
+      // ADR 0028 Q5：原生分叉没成就退回「新开一条空会话」，告诉 hub 改用摘要交接——不能让用户卡在一条起不来的会话上
+      let failure: string | null = null;
+      if (!started.ok) {
+        failure = started.error.message;
+        options.onLog?.(`${command.agentId} 原生分叉失败，改为新开会话：${failure}`);
+        const { branch: _dropped, ...plain } = spec;
+        started = await runtime.start(plain);
+      }
+      if (nativeBranch && started.ok) {
+        send({
+          type: 'branch_result',
+          sessionId: command.sessionId,
+          outcome: failure === null ? 'native' : 'failed',
+          ...(failure === null ? {} : { reason: failure.slice(0, 2000) })
+        });
+      }
+    }
     if (!started.ok) {
       providerRelay.close(command.sessionId);
       options.onLog?.(`${command.agentId} 启动失败：${started.error.message}`);
@@ -715,6 +739,9 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     },
     notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void {
       send({ type: 'options', sessionId, options: [...options] });
+    },
+    notifyTurnRef(sessionId: string, turnRef: string): void {
+      if (nativeBranch) send({ type: 'turn_ref', sessionId, turnRef });
     },
     async close(): Promise<void> {
       if (closed) return;
