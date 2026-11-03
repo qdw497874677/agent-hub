@@ -19,7 +19,12 @@ export interface PairingCode {
   readonly usedAt: number | null;
   /** 兑换出的那台机器。 */
   readonly workerId: string | null;
+  /** 签发时选的能力预设展开后的能力集（ADR 0030 P4）；null = 老码，按 full。 */
+  readonly capabilities?: readonly string[] | null;
 }
+
+/** 轮换的宽限期：新凭据 5 分钟内连上才算换成功，否则作废新的、留旧的（ADR 0030 D3）。 */
+export const ROTATION_GRACE_MS = 5 * 60 * 1000;
 
 export interface WorkerCredential {
   readonly workerId: string;
@@ -35,6 +40,20 @@ export interface WorkerCredential {
   readonly lastAddress?: string | null;
   readonly lastUserAgent?: string | null;
   readonly rotatedAt?: number | null;
+  /** 轮换中的新凭据哈希与宽限截止；新凭据连上即转正（token_hash 换成它），过期作废。 */
+  readonly pendingHash?: string | null;
+  readonly pendingUntil?: number | null;
+  /** 最近一次轮换失败的时间（下发失败或宽限期内没换上）。 */
+  readonly rotationFailedAt?: number | null;
+}
+
+export type RotationState = 'none' | 'pending' | 'failed' | 'rotated';
+
+/** 凭据的轮换状态（UI 显示用）。 */
+export function rotationState(credential: WorkerCredential, now: number): RotationState {
+  if (credential.pendingHash && credential.pendingUntil != null) return credential.pendingUntil > now ? 'pending' : 'failed';
+  if (credential.rotationFailedAt != null && credential.rotationFailedAt >= (credential.rotatedAt ?? 0)) return 'failed';
+  return credential.rotatedAt != null ? 'rotated' : 'none';
 }
 
 export interface WorkerConnection {

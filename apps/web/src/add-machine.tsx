@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { adminApi, type PairingDto, type WorkerInfoDto } from './api.ts';
+import { adminApi, type PairingDto, type WorkerInfoDto, type WorkerPreset } from './api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 
 /**
@@ -12,8 +12,9 @@ import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.ts
 export function AddMachineDialog({ workers, onClose }: { workers: readonly WorkerInfoDto[]; onClose: () => void }) {
   const queryClient = useQueryClient();
   const known = useRef<Set<string>>(new Set());
+  const [preset, setPreset] = useState<WorkerPreset>('full');
   const issue = useMutation({
-    mutationFn: adminApi.pairing,
+    mutationFn: (chosen: WorkerPreset) => adminApi.pairing(chosen),
     onSuccess: () => {
       known.current = new Set(workers.map((worker) => worker.workerId));
     }
@@ -26,14 +27,20 @@ export function AddMachineDialog({ workers, onClose }: { workers: readonly Worke
   useEffect(() => {
     if (issueOnce.current) return;
     issueOnce.current = true;
-    issue.mutate();
+    issue.mutate('full');
   }, [issue]);
+  // 换预设 = 重新签一个码（旧码 15 分钟后自然失效）：能力写在码上，兑换时只能取交集
+  const choose = (next: WorkerPreset): void => {
+    if (next === preset) return;
+    setPreset(next);
+    issue.mutate(next);
+  };
 
   useEffect(() => {
     if (pairing) void queryClient.invalidateQueries({ queryKey: ['workers'] });
   }, [pairing, queryClient]);
 
-  const joined = pairing ? workers.find((worker) => !known.current.has(worker.workerId) && worker.state === 'online') : undefined;
+  const joined = pairing ? workers.find((worker) => worker.origin === 'remote' && !known.current.has(worker.workerId) && worker.state === 'online') : undefined;
   const left = pairing ? Math.max(0, pairing.expiresAt - now) : 0;
   const expired = pairing !== undefined && left === 0 && !joined;
 
@@ -59,13 +66,14 @@ export function AddMachineDialog({ workers, onClose }: { workers: readonly Worke
               {(issue.error as Error).message}
             </p>
           ) : null}
+          <PresetPicker value={preset} onChange={choose} disabled={issue.isPending} />
           <CommandBox pairing={pairing} expired={expired} />
           <div className="mt-2 flex items-center justify-between gap-2 text-meta">
             <span className={expired ? 'text-rust' : 'text-tertiary'} aria-live="polite">
               {!pairing ? '正在生成接入码…' : expired ? '接入码已过期' : `${clock(left)} 后过期 · 只能用一次`}
             </span>
             {expired || issue.isError ? (
-              <button className={PRIMARY_BUTTON} onClick={() => issue.mutate()} disabled={issue.isPending}>
+              <button className={PRIMARY_BUTTON} onClick={() => issue.mutate(preset)} disabled={issue.isPending}>
                 重新生成
               </button>
             ) : pairing ? (
@@ -99,6 +107,43 @@ export function AddMachineDialog({ workers, onClose }: { workers: readonly Worke
         </div>
       ) : null}
     </DialogShell>
+  );
+}
+
+const PRESETS: readonly { readonly id: WorkerPreset; readonly label: string; readonly hint: string }[] = [
+  { id: 'full', label: '完整', hint: '能跑 agent、读写文件、git、推送 / 开 PR、装卸运行时、自更新' },
+  { id: 'readonly', label: '只读', hint: '只能读文件，不能跑 agent' },
+  { id: 'no-remote', label: '不能推送', hint: '能跑 agent 和本地 git，但 hub 不会替它推送或开 PR' },
+  { id: 'no-install', label: '不能安装', hint: '不能装卸运行时，也不能远程自更新' }
+];
+
+/** 权限预设（ADR 0030 D3）：写在接入码上，之后只能收窄；要放宽得重新配对。 */
+function PresetPicker({ value, onChange, disabled }: { value: WorkerPreset; onChange: (preset: WorkerPreset) => void; disabled: boolean }) {
+  const current = PRESETS.find((p) => p.id === value) ?? PRESETS[0]!;
+  return (
+    <fieldset className="mb-2" data-testid="preset-picker">
+      <legend className="mb-1 text-meta text-secondary">这台机器的权限</legend>
+      <div className="grid grid-cols-2 gap-1 sm:grid-cols-4" role="radiogroup">
+        {PRESETS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            role="radio"
+            aria-checked={p.id === value}
+            disabled={disabled}
+            onClick={() => onChange(p.id)}
+            className={`rounded-sm border px-2 py-1 text-meta ${
+              p.id === value ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-secondary hover:border-accent'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <p className="mt-1 text-xs text-tertiary">
+        {current.hint}。{value !== 'readonly' ? '能跑 agent 就等于能在那台机器上执行任意代码，这里限制的是 hub 自己的工具，不是沙箱。' : ''}之后只能收窄，放宽要重新配对。
+      </p>
+    </fieldset>
   );
 }
 

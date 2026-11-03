@@ -15,4 +15,6 @@ export interface WorkerControl {
   update(workerId: string, commit: string): Promise<boolean>;
   /** 下发一个运行时安装 / 卸载任务（hub 记下它为 running）；不在线返回 false。 */
   runtimeJob(workerId: string, job: RuntimeJob): Promise<boolean>;
+  /** 经当前已认证的连接下发新凭据（ADR 0030 D3 轮换）；不在线返回 false。老实现没有 = 不支持轮换。 */
+  rotateCredential?(workerId: string, credential: string): Promise<boolean>;
 }

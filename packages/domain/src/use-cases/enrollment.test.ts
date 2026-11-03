@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryAdmin, inMemoryEnrollment } from '../testing/in-memory.ts';
-import { authenticateWorker, enrollWorker, issuePairingCode, revokeWorker } from './enrollment.ts';
-import { PAIRING_TTL_MS } from '../enrollment.ts';
+import { authenticateWorker, credentialStatus, enrollWorker, issuePairingCode, revokeWorker, rotateWorkerCredential } from './enrollment.ts';
+import { PAIRING_TTL_MS, ROTATION_GRACE_MS } from '../enrollment.ts';
 import { WORKER_CAPABILITIES } from '../worker-capability.ts';
 import type { Principal, User, UserId } from '../account.ts';
 
@@ -127,4 +127,67 @@ test('吊销：成员只能吊销自己接入的；本机不能吊销；共享�
   assert.equal(admin.entries[0]?.action, 'worker.revoke');
   assert.equal((await revokeWorker(deps, owner, 'legacy')).ok, false, '不重复吊销');
   assert.equal((await revokeWorker(deps, owner, 'ghost')).ok, false);
+});
+
+test('P4 预设：码上带能力集，兑换出的凭据就是它；不认识的预设拒绝', async () => {
+  const { deps, credentials, member } = await setup();
+  const issued = await issuePairingCode(deps, member, 'readonly');
+  assert.ok(issued.ok);
+  assert.equal(issued.value.preset, 'readonly');
+  const enrolled = await enrollWorker(deps, { code: issued.value.code });
+  assert.ok(enrolled.ok);
+  assert.deepEqual(credentials.get(enrolled.value.workerId)!.capabilities, ['files.read']);
+  const auth = await authenticateWorker(deps, { workerId: enrolled.value.workerId, credential: enrolled.value.credential, sharedTokenOk: false });
+  assert.ok(auth.ok);
+  assert.deepEqual(auth.ok && auth.capabilities, ['files.read']);
+  const bad = await issuePairingCode(deps, member, 'root');
+  assert.ok(!bad.ok);
+});
+
+test('P4 轮换：新凭据宽限期内连上就转正、旧的作废；离线不能轮换', async () => {
+  const { deps, member, tick } = await setup();
+  const issued = await issuePairingCode(deps, member, 'no-remote');
+  assert.ok(issued.ok);
+  const enrolled = await enrollWorker(deps, { code: issued.value.code });
+  assert.ok(enrolled.ok);
+  const workerId = enrolled.value.workerId;
+  let sent: string | null = null;
+  const offline = await rotateWorkerCredential({ ...deps, workers: { ...deps.workers, list: async () => [], rotateCredential: async () => true } }, member, workerId);
+  assert.ok(!offline.ok);
+  const live = {
+    ...deps,
+    workers: { ...deps.workers, list: async () => [{ workerId } as never], rotateCredential: async (_: string, c: string) => ((sent = c), true) }
+  };
+  const rotated = await rotateWorkerCredential(live, member, workerId);
+  assert.ok(rotated.ok);
+  assert.ok(sent);
+  // 宽限期内旧的还认
+  assert.ok((await authenticateWorker(deps, { workerId, credential: enrolled.value.credential, sharedTokenOk: false })).ok);
+  const again = await rotateWorkerCredential(live, member, workerId);
+  assert.ok(!again.ok, '进行中不能再轮换');
+  tick(1000);
+  const fresh = await authenticateWorker(deps, { workerId, credential: sent!, sharedTokenOk: false });
+  assert.ok(fresh.ok);
+  assert.ok(!(await authenticateWorker(deps, { workerId, credential: enrolled.value.credential, sharedTokenOk: false })).ok, '旧凭据作废');
+  const status = await credentialStatus(deps, member, workerId);
+  assert.ok(status.ok);
+  assert.equal(status.value.rotation, 'rotated');
+});
+
+test('P4 轮换：5 分钟内没换上就作废新的、留旧的', async () => {
+  const { deps, member, tick } = await setup();
+  const issued = await issuePairingCode(deps, member);
+  assert.ok(issued.ok);
+  const enrolled = await enrollWorker(deps, { code: issued.value.code });
+  assert.ok(enrolled.ok);
+  const workerId = enrolled.value.workerId;
+  let sent = '';
+  const live = { ...deps, workers: { ...deps.workers, list: async () => [{ workerId } as never], rotateCredential: async (_: string, c: string) => ((sent = c), true) } };
+  assert.ok((await rotateWorkerCredential(live, member, workerId)).ok);
+  tick(ROTATION_GRACE_MS + 1);
+  assert.ok(!(await authenticateWorker(deps, { workerId, credential: sent, sharedTokenOk: false })).ok);
+  assert.ok((await authenticateWorker(deps, { workerId, credential: enrolled.value.credential, sharedTokenOk: false })).ok);
+  const status = await credentialStatus(deps, member, workerId);
+  assert.ok(status.ok);
+  assert.equal(status.value.rotation, 'failed');
 });

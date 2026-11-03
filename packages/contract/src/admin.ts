@@ -105,7 +105,9 @@ export const pairingSchema = z.object({
   command: z.string(),
   /** 简短版（curl … | HUB_PAIR=… bash），不校验；没有 sha256sum 的机器用。 */
   shortCommand: z.string().optional(),
-  hubUrl: z.string()
+  hubUrl: z.string(),
+  /** 签发时选的权限预设（ADR 0030 P4）；老 hub 没有。 */
+  preset: z.enum(['full', 'readonly', 'no-remote', 'no-install']).optional()
 });
 export type PairingDto = z.infer<typeof pairingSchema>;
 
@@ -223,3 +225,13 @@ const secretViewSchema = z.object({ name: z.string(), updatedAt: z.number(), use
 export const secretsOverviewSchema = z.object({ secrets: z.array(secretViewSchema), missing: z.array(secretViewSchema) });
 export type SecretsOverviewDto = z.infer<typeof secretsOverviewSchema>;
 export const secretPutRequest = z.object({ value: z.string().min(1).max(16 * 1024) });
+
+/** 机器凭据的轮换状态（ADR 0030 D3）。 */
+export const credentialStatusSchema = z.object({
+  workerId: z.string(),
+  rotation: z.enum(['none', 'pending', 'failed', 'rotated']),
+  rotatedAt: z.number().nullable(),
+  pendingUntil: z.number().nullable(),
+  rotationFailedAt: z.number().nullable()
+});
+export type CredentialStatusDto = z.infer<typeof credentialStatusSchema>;

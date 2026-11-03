@@ -726,7 +726,7 @@ export function inMemoryEnrollment(admin: ReturnType<typeof inMemoryAdmin>, now:
       return true;
     },
     saveCredential: async (credential) => void credentials.set(credential.workerId, credential),
-    credentialByHash: async (hash) => [...credentials.values()].find((c) => c.tokenHash === hash) ?? null,
+    credentialByHash: async (hash) => [...credentials.values()].find((c) => c.tokenHash === hash || c.pendingHash === hash) ?? null,
     credentialFor: async (workerId) => credentials.get(workerId) ?? null,
     listCredentials: async () => [...credentials.values()],
     revoke: async (workerId, at) => {
@@ -740,6 +740,20 @@ export function inMemoryEnrollment(admin: ReturnType<typeof inMemoryAdmin>, now:
     setCapabilities: async (workerId, capabilities) => {
       const found = credentials.get(workerId);
       if (found) credentials.set(workerId, { ...found, capabilities });
+    },
+    beginRotation: async (workerId, pendingHash, until) => {
+      const found = credentials.get(workerId);
+      if (found) credentials.set(workerId, { ...found, pendingHash, pendingUntil: until });
+    },
+    completeRotation: async (workerId, pendingHash, at) => {
+      const found = credentials.get(workerId);
+      if (!found || found.pendingHash !== pendingHash) return false;
+      credentials.set(workerId, { ...found, tokenHash: pendingHash, pendingHash: null, pendingUntil: null, rotatedAt: at });
+      return true;
+    },
+    failRotation: async (workerId, at) => {
+      const found = credentials.get(workerId);
+      if (found) credentials.set(workerId, { ...found, pendingHash: null, pendingUntil: null, rotationFailedAt: at });
     }
   };
   const deps: import('../use-cases/enrollment.ts').EnrollmentDeps = {

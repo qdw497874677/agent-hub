@@ -215,10 +215,57 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
           <ResourceDetails worker={worker} />
           {online ? <RuntimeSection worker={worker} /> : null}
           {online ? <InventorySection worker={worker} /> : null}
+          {worker.origin === 'remote' ? <RotateCredential worker={worker} online={online} /> : null}
           {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
         </dl>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * 轮换凭据（ADR 0030 D3，只手动）：新凭据经当前连接下发，Worker 写进 worker.env 后用它重连；
+ * 旧凭据宽限 5 分钟，没换上就作废新的、留旧的。离线不能轮换。没有专属凭据（共享令牌接入）的机器不显示。
+ */
+function RotateCredential({ worker, online }: { worker: WorkerInfoDto; online: boolean }) {
+  const queryClient = useQueryClient();
+  const status = useQuery({
+    queryKey: ['workers', worker.workerId, 'credential'],
+    queryFn: () => adminApi.credentialStatus(worker.workerId),
+    retry: false,
+    refetchInterval: (query) => (query.state.data?.rotation === 'pending' ? 3000 : false)
+  });
+  const rotate = useMutation({
+    mutationFn: () => adminApi.rotateWorker(worker.workerId),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['workers', worker.workerId, 'credential'] })
+  });
+  if (!status.data) return null;
+  const s = status.data;
+  const text =
+    s.rotation === 'pending'
+      ? '轮换中：等它用新凭据重连…'
+      : s.rotation === 'failed'
+        ? `上次轮换失败（${relativeTime(s.rotationFailedAt ?? Date.now())}），旧凭据仍有效`
+        : s.rotation === 'rotated'
+          ? `${relativeTime(s.rotatedAt ?? Date.now())}轮换过`
+          : '从未轮换';
+  return (
+    <>
+      <dt className="text-tertiary">凭据</dt>
+      <dd className="flex min-w-0 flex-wrap items-center justify-between gap-2 text-secondary" data-testid="credential-rotation">
+        <span className={`min-w-0 ${s.rotation === 'failed' ? 'text-rust' : ''}`} role={rotate.isError ? 'alert' : undefined}>
+          {rotate.isError ? (rotate.error as Error).message : text}
+        </span>
+        <button
+          className="shrink-0 rounded-sm border border-hair px-2.5 py-1 text-meta text-secondary hover:border-accent hover:text-primary disabled:opacity-50"
+          disabled={!online || rotate.isPending || s.rotation === 'pending'}
+          title={online ? '生成新凭据并下发，旧的 5 分钟后作废' : '机器离线不能轮换；只能吊销后重新配对'}
+          onClick={() => rotate.mutate()}
+        >
+          {rotate.isPending ? '下发中…' : '轮换凭据'}
+        </button>
+      </dd>
+    </>
   );
 }
 

@@ -44,6 +44,7 @@ import type {
   AuditEntryDto,
   EnrollInfoDto,
   PairingDto,
+  CredentialStatusDto,
   SettingsDto,
   AssetsOverviewDto,
   ProjectAssetsDto,
@@ -424,7 +425,10 @@ export const adminApi = {
   audit: (filter: AuditFilterInput = {}) => call<AuditEntryDto[]>(`/api/admin/audit${auditQuery(filter)}`),
   enrollInfo: () => call<EnrollInfoDto>('/api/workers/enroll-info'),
   /** 签发一次性接入码（15 分钟、用一次），连同在新机器上运行的一行命令。 */
-  pairing: () => post<PairingDto>('/api/workers/pairing', {}),
+  pairing: (preset: WorkerPreset = 'full') => post<PairingDto>('/api/workers/pairing', { preset }),
+  /** 手动轮换凭据（ADR 0030 D3）：新凭据经当前连接下发，旧的宽限 5 分钟。 */
+  rotateWorker: (workerId: string) => post<{ workerId: string; pendingUntil: number }>(`/api/workers/${encodeURIComponent(workerId)}/rotate`, {}),
+  credentialStatus: (workerId: string) => call<CredentialStatusDto>(`/api/workers/${encodeURIComponent(workerId)}/credential`),
   /** 吊销一台机器：作废它的凭据并立刻断开，它不会再重连。 */
   revokeWorker: (workerId: string) =>
     call<{ workerId: string; revokedAt: number }>(`/api/workers/${encodeURIComponent(workerId)}`, { method: 'DELETE' })
@@ -482,6 +486,7 @@ export type {
   AuditEntryDto,
   EnrollInfoDto,
   PairingDto,
+  CredentialStatusDto,
   SettingsDto,
   AgentDto,
   AttachmentInputDto,
@@ -767,3 +772,5 @@ export interface CleanupRecordsDto {
   items: { runId: string; workspaceId: string; path: string; branch: string | null; action: 'removed' | 'kept' | 'failed'; reason: string; sizeBytes: number | null; at: number }[];
   orphans: { path: string; workerId: string | null }[];
 }
+
+export type WorkerPreset = 'full' | 'readonly' | 'no-remote' | 'no-install';

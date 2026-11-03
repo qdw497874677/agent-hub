@@ -284,6 +284,8 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('rpc'), frame: rpcFrameSchema }),
   /** 配对码换到的专属凭据：只出现在 enroll 握手的那条连接上，发完就关。 */
   z.object({ kind: z.literal('enrolled'), workerId: id, credential: z.string().min(1) }),
+  /** 轮换凭据（ADR 0030 D3）：Worker 写进 worker.env 后用它重连；旧凭据宽限 5 分钟。明文只在这一帧里。老 worker 不认，只记一条日志（轮换会超时失败、旧凭据保留）。 */
+  z.object({ kind: z.literal('credential_rotate'), credential: z.string().min(1).max(256) }),
   /** hello 被接受了。worker 等到它才补发积压的帧：在这之前发的帧 server 一律不认（见 server-gateway）。 */
   z.object({
     kind: z.literal('welcome'),
