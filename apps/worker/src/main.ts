@@ -94,7 +94,13 @@ function harnessCommand(name: string, envVar: string, agentId: string = name): {
 const log = (message: string): void => {
   process.stdout.write(`[worker] ${message}\n`);
 };
+/** ADR 0027 D10：新建 worktree 放哪（WORKER_WORKTREES_DIR），默认仓库旁 `.worktrees/`。必须在 WORKER_ROOTS 里面，否则忽略。 */
+const worktreesDirEnv = env['WORKER_WORKTREES_DIR']?.trim();
+const worktreesDirRaw = worktreesDirEnv ? resolve(worktreesDirEnv.startsWith('~/') ? join(homedir(), worktreesDirEnv.slice(2)) : worktreesDirEnv) : undefined;
+const worktreesDir = worktreesDirRaw && roots.some((root) => worktreesDirRaw === root || worktreesDirRaw.startsWith(`${root}/`)) ? worktreesDirRaw : undefined;
 log(`允许访问的目录（WORKER_ROOTS${env['WORKER_ROOTS'] === undefined ? '，未配置，默认 $HOME' : ''}）：${roots.join(':')}`);
+if (worktreesDirRaw && !worktreesDir) log(`WORKER_WORKTREES_DIR=${worktreesDirRaw} 不在 WORKER_ROOTS 里，忽略；新建 worktree 仍放在仓库旁 .worktrees/`);
+else log(`新建 worktree 放在：${worktreesDir ? `${worktreesDir}/<仓库名>/<目录名>（WORKER_WORKTREES_DIR）` : '仓库旁 .worktrees/<仓库名>/<目录名>（默认，可设 WORKER_WORKTREES_DIR）'}`);
 
 // 先接住 adapter 的回调，等 link 就绪后转给它——adapter 在构造时就要拿到这个函数。
 let notifyAgentSessionRef: (sessionId: string, ref: string) => void = () => undefined;
@@ -243,6 +249,7 @@ const link = connectWorkerLink({
   ...(probeIntervalMs !== undefined ? { probeIntervalMs } : {}),
   host: { hostname: hostname(), platform: platform(), arch: arch() },
   files,
+  ...(worktreesDir ? { worktreesDir } : {}),
   assets,
   build,
   onUpdate,

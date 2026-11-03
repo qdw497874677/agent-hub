@@ -10,7 +10,25 @@ import { conflict, folderNameProblem, invalid, nonGitReason, unavailable, unsave
  * `check` 是这台机器的目录边界：返回 null = 允许，否则是给人看的原因。
  * hub 本机传「全部允许」；Worker 传 WORKER_ROOTS 的 realpath 检查。
  */
-export function createGitWorkspace(check: (path: string) => Promise<string | null> = async () => null): WorkspaceGit {
+export interface GitWorkspaceOptions {
+  /**
+   * ADR 0027 D10：新建 worktree 放哪。省略 = hub 给的默认位置（仓库旁 `.worktrees/<仓库名>/<目录名>`）；
+   * 配了（Worker 的 WORKER_WORKTREES_DIR）= `<worktreesDir>/<仓库名>/<目录名>`。只影响新建：
+   * 沿用原分支重建（existing）照旧用登记的路径，老记录是绝对路径不迁移。
+   */
+  readonly worktreesDir?: string;
+}
+
+/** D10：hub 给的默认路径 → 这台 Worker 配置的位置（保留最后两段 `<仓库名>/<目录名>`）。 */
+export function relocateWorktree(path: string, worktreesDir: string | undefined): string {
+  if (!worktreesDir) return path;
+  const parts = path.split('/').filter(Boolean);
+  const name = parts.at(-1) ?? 'worktree';
+  const repo = parts.at(-2) ?? 'repo';
+  return join(resolve(worktreesDir), repo, name);
+}
+
+export function createGitWorkspace(check: (path: string) => Promise<string | null> = async () => null, options: GitWorkspaceOptions = {}): WorkspaceGit {
   const guard = async (path: string): Promise<DomainError | null> => {
     if (!path.startsWith('/')) return invalid('目录必须是绝对路径');
     const problem = await check(path);
@@ -57,7 +75,8 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       return { ok: true, value: { path: target, branch: await currentBranch(simpleGit(target)) } };
     },
 
-    async addWorktree({ repoPath, path, branch, base, existing }) {
+    async addWorktree({ repoPath, path: requested, branch, base, existing }) {
+      const path = existing ? requested : relocateWorktree(requested, options.worktreesDir);
       for (const place of [repoPath, dirname(path)]) {
         const blocked = await guard(place);
         if (blocked) return { ok: false, error: blocked };

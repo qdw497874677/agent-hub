@@ -65,6 +65,8 @@ export interface WorkerLinkOptions {
    * 都过 WORKER_ROOTS 边界。不给就回「这台不支持」，附件也不落盘。
    */
   readonly files?: WorkerFiles;
+  /** ADR 0027 D10：新建 worktree 的位置（WORKER_WORKTREES_DIR）；省略 = 仓库旁 `.worktrees/`。 */
+  readonly worktreesDir?: string;
   /** hub 下发的技能与指令落在这里（专属目录）。不给就回「这台不支持」，会话也不带资产。 */
   readonly assets?: WorkerAssets;
   /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
@@ -244,7 +246,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return true;
     }
   });
-  serveWorkerFiles(channel, options.files, options.roots ?? []);
+  serveWorkerFiles(channel, options.files, options.roots ?? [], options.worktreesDir ? { worktreesDir: options.worktreesDir } : {});
   channel.handle(assetsSync, async ({ entries }) => {
     if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');
     const fetchBlobs = async (hashes: readonly string[]) => {

@@ -273,3 +273,20 @@ test('gh：没装 gh → 明确原因，不抛', async () => {
     process.env.PATH = saved;
   }
 });
+
+test('D10 worktreesDir：新建放到配置的位置（<dir>/<仓库名>/<目录名>），沿用原分支重建仍用登记的路径', async () => {
+  const { root, url } = await origin();
+  const custom = join(root, 'trees');
+  const git = createGitWorkspace(async () => null, { worktreesDir: custom });
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'agent-hub'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const asked = join(root, 'agent-hub', '.worktrees', 'demo', 'fix-1');
+  const made = await git.addWorktree({ repoPath: cloned.value.path, path: asked, branch: 'agent-hub/fix-1' });
+  assert.ok(made.ok, JSON.stringify(made));
+  assert.equal(made.value.path, join(custom, 'demo', 'fix-1'));
+  assert.equal(existsSync(asked), false);
+  assert.ok((await git.remove(made.value.path, 'worktree')).ok);
+  const old = join(root, 'agent-hub', '.worktrees', 'demo', 'fix-1');
+  const revived = await git.addWorktree({ repoPath: cloned.value.path, path: old, branch: 'agent-hub/fix-1', existing: true });
+  assert.ok(revived.ok && revived.value.path === old, JSON.stringify(revived));
+});
