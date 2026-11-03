@@ -55,7 +55,7 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
   });
   useEffect(() => {
     if (!armed) return;
-    const timer = setTimeout(() => setArmed(null), 5000);
+    const timer = setTimeout(() => setArmed(null), 10_000);
     return () => clearTimeout(timer);
   }, [armed]);
 
@@ -79,7 +79,7 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
       key={key}
       data-testid={`runtime-${harness.agentId}-${key}`}
       className={`shrink-0 rounded-sm border px-2 py-0.5 text-xs ${
-        armed === kind ? (danger ? 'border-rust bg-rust text-canvas' : 'border-ink bg-ink text-canvas') : 'border-hair text-secondary hover:border-ink hover:text-ink'
+        armed === kind ? (danger ? 'border-rust bg-rust text-primary' : 'border-accent bg-accent text-canvas') : 'border-hair text-secondary hover:border-strong hover:text-primary'
       } disabled:opacity-50`}
       disabled={busy || start.isPending}
       onClick={() => (armed === kind ? start.mutate(kind) : setArmed(kind))}
@@ -96,6 +96,11 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
       </span>
       {upgrade ? button('install', 'upgrade', upgrade.label, upgrade.confirm) : null}
       {action ? button(action.kind, action.kind, action.label, action.confirm, action.kind === 'uninstall') : null}
+      {armed ? (
+        <span className="text-xs text-accent" data-testid={`runtime-${harness.agentId}-confirm-hint`}>
+          再点一次确认 · 10 秒内有效
+        </span>
+      ) : null}
       {reason ? (
         <span className="basis-full text-xs text-tertiary" role={start.isError ? 'alert' : undefined}>
           {reason}
@@ -114,7 +119,7 @@ function JobPanel({ job }: { job: Job }) {
   useEffect(() => {
     if (running) setOpen(true);
   }, [running]);
-  const tone = job.state === 'failed' || job.state === 'refused' ? 'text-rust' : job.state === 'succeeded' ? 'text-secondary' : 'text-ink';
+  const tone = job.state === 'failed' || job.state === 'refused' ? 'text-rust' : job.state === 'succeeded' ? 'text-secondary' : 'text-primary';
   return (
     <div className="mt-1.5 min-w-0 rounded-sm border border-hair" data-testid="runtime-job">
       <button className="flex w-full min-w-0 items-center gap-2 px-2 py-1 text-left text-xs" onClick={() => setOpen((value) => !value)}>
@@ -209,7 +214,7 @@ function ComponentActions({ worker }: { worker: WorkerInfoDto }) {
   const hubManaged = inventory.components.filter((c) => c.managedBy !== 'external');
   const broken = (worker.drift?.items ?? []).filter((item) => item.kind === 'missing' || item.kind === 'mismatch');
   const approved = (catalog.data ?? []).filter((c) => c.status === 'approved');
-  const button = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-xs text-secondary hover:border-ink hover:text-ink disabled:opacity-50';
+  const button = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-xs text-secondary hover:border-strong hover:text-primary disabled:opacity-50';
   return (
     <div className="mt-1.5 flex min-w-0 flex-col gap-1.5" data-testid="component-actions">
       {broken.map((item) => (
@@ -274,7 +279,7 @@ function BundleInstall({ worker, approved, busy }: { worker: WorkerInfoDto; appr
     onSuccess: () => (setOpen(false), setChosen({})),
     onSettled: () => void queryClient.invalidateQueries({ queryKey: ['workers'] })
   });
-  const button = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-xs text-secondary hover:border-ink hover:text-ink disabled:opacity-50';
+  const button = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-xs text-secondary hover:border-strong hover:text-primary disabled:opacity-50';
   if (!open) {
     return (
       <div>
