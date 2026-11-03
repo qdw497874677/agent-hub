@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, rm } from 'node:fs/promises';
+import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
@@ -340,7 +340,9 @@ export const keepReason = unsavedReason;
 
 async function statusOf(path: string): Promise<GitStatus> {
   const git = simpleGit(path);
-  if (!(await git.checkIsRepo().catch(() => false))) {
+  // 只认「自己就是仓库根」的目录：非 git 临时目录常建在某个仓库里面（Worker 根目录本身是仓库），
+  // 这时 git 看到的是外层仓库——外层干净不代表这个目录里没东西，按非 git 目录处理
+  if (!(await git.checkIsRepo().catch(() => false)) || !(await ownRepo(git, path))) {
     return { dirty: null, untracked: 0, unpushed: 0, branch: null, upstream: null, files: await countFiles(path), sizeBytes: await sizeOf(path) };
   }
   // 强制 normal：用户全局设 status.showUntrackedFiles=no 时也要看见未跟踪文件（D7）
@@ -356,6 +358,13 @@ async function statusOf(path: string): Promise<GitStatus> {
     .catch(() => '0');
   const head = (await git.raw(['rev-parse', 'HEAD']).catch(() => '')).trim() || null;
   return { dirty, untracked, unpushed: Number(lonely.trim()) || 0, branch, upstream: status.tracking ?? null, head, sizeBytes: await sizeOf(path) };
+}
+
+async function ownRepo(git: SimpleGit, path: string): Promise<boolean> {
+  const top = (await git.raw(['rev-parse', '--show-toplevel']).catch(() => '')).trim();
+  if (!top) return false;
+  const [a, b] = await Promise.all([realpath(top).catch(() => top), realpath(path).catch(() => path)]);
+  return a === b;
 }
 
 /** 非 git 目录里有几个文件（递归，不跟符号链接，封顶 10000）；读不了算 1（宁可留着）。 */

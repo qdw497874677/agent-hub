@@ -133,6 +133,19 @@ test('非 git 临时目录：空的删，有文件的保留；边界外的一律
   assert.equal(outside.ok, false);
   const notWorktree = await git.remove(full, 'worktree');
   assert.equal(notWorktree.ok, false);
+  // 建在别的仓库里面的非 git 临时目录（Worker 根目录本身是仓库）：外层仓库干净也不能删
+  const outer = join(root, 'outer');
+  await mkdir(outer);
+  execFileSync('git', ['init', '-q'], { cwd: outer });
+  await writeFile(join(outer, '.gitignore'), 'tmp/\n');
+  const nested = join(outer, 'tmp', 'job');
+  await mkdir(nested, { recursive: true });
+  await writeFile(join(nested, 'notes.md'), 'keep');
+  const nestedStatus = await git.status(nested);
+  assert.ok(nestedStatus.ok && nestedStatus.value.dirty === null && nestedStatus.value.files === 1);
+  const nestedKept = await git.remove(nested, 'directory');
+  assert.ok(nestedKept.ok && !nestedKept.value.removed && /还有 1 个文件/.test(nestedKept.value.reason));
+  assert.equal(existsSync(join(nested, 'notes.md')), true);
 });
 
 test('clone 失败：不留半截目录，报错里不带凭据', async () => {
