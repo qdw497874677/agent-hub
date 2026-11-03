@@ -33,6 +33,10 @@ export const adminWorkerSchema = z.object({
   hostname: z.string().nullable(),
   platform: z.string().nullable(),
   lastSeenAt: z.number().nullable(),
+  /** 连接健康（ADR 0030 D1）；老 hub 没有。 */
+  link: z
+    .object({ state: z.enum(['connecting', 'syncing', 'live', 'degraded', 'disconnected', 'rejected']), since: z.number(), rttMs: z.number().nullable(), connectedAt: z.number().nullable() })
+    .optional(),
   sessionCount: z.number(),
   /** 谁加的这台机器：本机、某人凭接入码加的（邮箱），或凭共享 HUB_TOKEN 接入的老机器。 */
   enrolledBy: z.string(),

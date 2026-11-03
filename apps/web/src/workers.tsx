@@ -5,6 +5,7 @@ import { AddMachineDialog } from './add-machine.tsx';
 import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
 import { InventorySection, RuntimeSection } from './runtimes.tsx';
 import { ResourceDetails, ResourceSummary } from './resources.tsx';
+import { LinkBadge } from './link-badge.tsx';
 
 /**
  * Worker：一台登记进 hub、真正跑 agent 的机器。
@@ -100,6 +101,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
           <span className="flex items-baseline gap-1.5">
             <span className="truncate text-body text-primary">{worker.label}</span>
             {worker.origin === 'local' && worker.label !== '本机' ? <span className="text-meta text-tertiary">本机</span> : null}
+            {online ? <LinkBadge link={worker.link} /> : null}
           </span>
           <span className="block truncate text-meta text-tertiary">
             {online

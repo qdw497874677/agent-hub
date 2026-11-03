@@ -1,3 +1,4 @@
+import { backupArgs, runBackup } from './backup.ts';
 import { createInstallArtifacts } from './install-artifacts.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -101,6 +102,12 @@ const repoRoot = join(here, '..', '..', '..');
 /** hub 自己的版本：机器列表里「过期」的参照，也是远程更新的目标。 */
 const hubBuild = readBuildInfo(repoRoot);
 const dataDir = readEnv('HUB_DATA_DIR') ?? join(homedir(), '.local', 'share', 'agent-hub');
+if (process.argv[2] === 'backup') {
+  // 部署前快照（ADR 0030 D2）：只碰数据库文件，不起服务。
+  const result = runBackup({ dataDir, ...backupArgs(process.argv.slice(3)), commit: hubBuild.commit });
+  console.log(JSON.stringify(result.report));
+  process.exit(result.code);
+}
 const host = readEnv('HUB_HOST') ?? '127.0.0.1';
 const port = Number(readEnv('HUB_PORT') ?? 7878);
 const token = readEnv('HUB_TOKEN');

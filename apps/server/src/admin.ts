@@ -62,6 +62,7 @@ const workerDto = (worker: WorkerStatus, hub: BuildInfo, enrolment?: Enrolment):
   hostname: worker.hostname ?? null,
   platform: worker.platform ?? null,
   lastSeenAt: worker.lastSeenAt ?? null,
+  ...(worker.link ? { link: worker.link } : {}),
   sessionCount: worker.sessionCount ?? 0,
   enrolledBy: worker.origin === 'local' ? '本机（随 hub 启动）' : (enrolment?.by ?? '共享 HUB_TOKEN 接入'),
   dedicated: enrolment?.dedicated ?? false,

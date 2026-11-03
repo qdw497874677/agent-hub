@@ -750,3 +750,23 @@ test('资源（ADR 0014）：带 metrics 能力的 worker 被 welcome 接受后�
   assert.equal(gateway.workers().find((w) => w.workerId === 'new')?.resources, undefined, '离线不展示过期数据');
   await stop(old);
 });
+
+test('连接健康（ADR 0030 D1）：welcome 带心跳参数；link.echo 回来后 syncing → live，断开记 disconnected，吊销记 rejected', async () => {
+  const { rec, gateway, url, stop } = await harness(null, { echoMs: 60_000 });
+  const raw = new WebSocket(url);
+  await new Promise((resolve) => raw.once('open', resolve));
+  const welcome = new Promise<Record<string, unknown>>((resolve) => raw.once('message', (data) => resolve(JSON.parse(String(data)))));
+  raw.send(JSON.stringify({ type: 'hello', workerId: 'raw', label: 'x', origin: 'remote', agents: [], dropped: 3 }));
+  assert.deepEqual((await welcome).heartbeat, { intervalMs: 10_000, missLimit: 2, echoMs: 60_000 });
+  raw.terminate();
+  await rec.until(() => rec.gone.includes('raw'));
+
+  const link = connectWorkerLink({ url, workerId: 'w1', label: '笔记本', origin: 'remote', reconnect: false, runtimes: [echoRuntime([])] });
+  await rec.until(() => gateway.workers().find((w) => w.workerId === 'w1')?.link?.state === 'live');
+  const live = gateway.workers().find((w) => w.workerId === 'w1')!;
+  assert.equal(typeof live.link?.rttMs, 'number');
+  assert.equal(gateway.workers().find((w) => w.workerId === 'raw')?.link?.state, 'disconnected');
+  gateway.disconnect('w1');
+  await rec.until(() => gateway.workers().find((w) => w.workerId === 'w1')?.link?.state === 'rejected');
+  await stop(link);
+});

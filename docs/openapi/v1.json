@@ -451,6 +451,43 @@
                         "type": "integer",
                         "minimum": 0
                       },
+                      "link": {
+                        "type": "object",
+                        "properties": {
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "connecting",
+                              "syncing",
+                              "live",
+                              "degraded",
+                              "disconnected",
+                              "rejected"
+                            ]
+                          },
+                          "since": {
+                            "type": "number"
+                          },
+                          "rttMs": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "connectedAt": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "state",
+                          "since",
+                          "rttMs",
+                          "connectedAt"
+                        ]
+                      },
                       "sessionCount": {
                         "type": "integer",
                         "minimum": 0
