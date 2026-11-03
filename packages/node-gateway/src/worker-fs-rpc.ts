@@ -29,7 +29,7 @@ import {
   type RpcPort
 } from '@agent-hub/contract';
 import type { DomainError, Result } from '@agent-hub/domain';
-import { createGitWorkspace } from './git-workspace.ts';
+import { createGitWorkspace, type GitWorkspaceOptions } from './git-workspace.ts';
 import { createWorkspaceBrowser } from './workspace-browser.ts';
 import type { WorkerFiles } from './worker-files.ts';
 
@@ -37,7 +37,7 @@ import type { WorkerFiles } from './worker-files.ts';
  * Worker 侧文件操作适配器：RPC 端口上的 fs.* 方法 → WorkerFiles（WORKER_ROOTS 边界在它里面）。
  * 不认识传输；没有 files 就一律答「这台不支持」。
  */
-export function serveWorkerFiles(port: RpcPort, files: WorkerFiles | undefined, fallbackRoots: readonly string[] = []): void {
+export function serveWorkerFiles(port: RpcPort, files: WorkerFiles | undefined, fallbackRoots: readonly string[] = [], gitOptions: GitWorkspaceOptions = {}): void {
   const need = (what: string): WorkerFiles => {
     if (!files) throw new RpcFailure('unsupported', `这台 Worker 不支持${what}`);
     return files;
@@ -60,13 +60,13 @@ export function serveWorkerFiles(port: RpcPort, files: WorkerFiles | undefined, 
     return { data: bytes === null ? null : Buffer.from(bytes).toString('base64') };
   });
 
-  serveWorkspaceGit(port, files);
+  serveWorkspaceGit(port, files, gitOptions);
   serveWorkspaceBrowser(port, files);
 }
 
 /** ws.*：工作空间的 git / 目录操作，边界和 fs.* 一样是 WORKER_ROOTS（没有 files 就整组不支持）。 */
-function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined): void {
-  const git = files ? createGitWorkspace((path) => files.check(path)) : null;
+function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOptions: GitWorkspaceOptions): void {
+  const git = files ? createGitWorkspace((path) => files.check(path), gitOptions) : null;
   const need = () => {
     if (!git) throw new RpcFailure('unsupported', '这台 Worker 不支持工作空间操作');
     return git;
