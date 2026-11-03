@@ -1,6 +1,6 @@
 # ADR 0030：Worker 加固（参考 t3code 远程连接）
 
-- 状态：proposed（设计稿，未实现；2026-11-02 David「按照建议优化」）
+- 状态：accepted（2026-11-02 David 定了 Q1–Q7，全部按推荐，见末尾「定稿」）
 - 相关：ADR 0010（Worker 装运行时）、ADR 0014（Worker 资源指标）、ADR 0017（权限模型）、ADR 0021（运行时包）、ADR 0025（工作区文件）
 - 参考：t3code `61c3794c`（2026-11-02，MIT）
   - `packages/client-runtime/src/connection/supervisor.ts`、`docs/internals/connection-runtime.md`（重连、探测、「传输健康 ≠ 数据新鲜」）
@@ -178,3 +178,16 @@ WorkerCapability =
 - `machines-1280.png` / `machines-390.png`：机器列表，包含五种 LinkBadge、连接信息、能力预设，以及试运行中的更新。
 - `add-machine-1280.png` / `add-machine-390.png`：添加机器，包含能力预设、带校验的命令和预检项说明。
 - `worker-detail-1280.png` / `worker-detail-390.png`：单台机器详情，包含凭据（轮换、吊销）和更新时间线。
+
+## 定稿（2026-11-02，David）
+
+Q1–Q7 全部按推荐：
+- Q1：10s×2（20s 判死），welcome 可覆盖。
+- Q2：试运行稳定窗口 60s。
+- Q3：readonly 不含 sessions；另设 no-remote。
+- Q4：hub 部署失败只回退代码，不自动恢复 DB。
+- Q5：只提示 HTTPS，不强制。
+- Q6：轮换只做手动。
+- Q7：能力存在凭据行上。
+
+按 P1→P5 顺序实现，每阶段一个 PR。P5 先只在测试 Worker 上启用（`HUB_WORKER_UPDATE_MODE` 可退回 legacy），作为试运行。
