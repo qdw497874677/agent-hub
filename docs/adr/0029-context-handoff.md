@@ -146,3 +146,10 @@ Q1–Q6 全部按推荐：
 - Q4：工具结果只用 ✓/✗ 加截短输出，不加 `exitCode` 字段。
 - Q5：预算上限默认 16k token，`HUB_HANDOFF_TOKEN_CAP` 可调。
 - Q6：`session.read` 可读血缘祖先 + 同一项目里当前用户可见的会话。
+
+## 实现落点
+
+- `packages/domain/src/handoff.ts`：`handoffItems`（条目化，工具调用配对 ✓/✗ + 耗时 + 输入 ≤300 字 + 输出末尾 600 字）、`selectHandoffItems`（整条挑选）、`handoffBudget` / `handoffCapFromEnv`（窗口 − 新消息和附件 − 余量 max(16k, 窗口/4)，夹在 [2k, cap]）、`buildHandoff`（防注入前言 + 时间顺序原文 + 省略标记，返回 `{text, stats}`）。换机器继续和从这里重来的摘要兜底都用它。
+- `prompt` 事件加可选 `handoff` 统计（domain 事件 + wire schema），界面在用户气泡上方画可折叠的「交接」提示条（`HandoffBar`，`data-testid="handoff-bar"`）。
+- `packages/domain/src/tools/session-tools.ts`：hub 工具 `session.read`（scope `context`，60 次/分钟）；能读本会话的分叉祖先或同项目会话，其余一律 forbidden（不区分不存在）。
+- `HUB_HANDOFF_TOKEN_CAP`：server 启动时读，默认 16000，低于 2000 或非数字时用默认。

@@ -12,6 +12,8 @@ import {
   type ToolDisplay
 } from './display-settings.ts';
 import type { Block } from './live.ts';
+import type { HandoffDto } from './live-core.ts';
+import { formatRoute, parseRoute } from './route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
 import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine } from './tool-format.ts';
 import { useFileLinks } from './file-links.tsx';
@@ -330,6 +332,35 @@ function ThinkingBlock({ text, settings, live }: { text: string; settings: Displ
   );
 }
 
+const rangeText = (ranges: readonly (readonly [number, number])[]) =>
+  ranges.map(([a, b]) => (a === b ? `第 ${a} 轮` : `第 ${a}–${b} 轮`)).join('、');
+
+/** 交接提示条（ADR 0029 · D6）：这条是平台写的交接简报，带了多少、省略多少；省略的 agent 可以用 session.read 查。 */
+export function HandoffBar({ handoff }: { handoff: HandoffDto }) {
+  const route = parseRoute(typeof location === 'undefined' ? '' : location.hash);
+  const sourceHref =
+    route && route.page === 'project' ? formatRoute({ ...route, view: 'focus', sessionId: handoff.sourceSessionId }) : null;
+  const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+  return (
+    <details className="w-full max-w-[85%] self-end rounded-sm border border-hair bg-card px-2.5 py-1.5 text-meta text-secondary" data-testid="handoff-bar">
+      <summary className="cursor-pointer select-none">
+        交接：带了 {handoff.turns} 轮里的 {handoff.carriedTurns} 轮（{handoff.carried} 条）
+        {handoff.omitted > 0 ? `，省略 ${handoff.omitted} 条` : '，没有省略'} · 约 {k(handoff.tokens)} / {k(handoff.budget)} token
+      </summary>
+      <div className="mt-1.5 flex flex-col gap-1">
+        <p>这条是平台替你写给 agent 的交接简报：原来的 agent 会话状态带不过来，只带了平台记录的对话原文，按预算整条挑选（先保最近和第一句）。</p>
+        {handoff.omittedTurns.length > 0 ? <p>整轮省略：{rangeText(handoff.omittedTurns)}。agent 需要时可以用 session.read 查原文。</p> : null}
+        {handoff.omitted > 0 && handoff.omittedTurns.length === 0 ? <p>省略的是部分轮次里较旧的条目（多是工具调用）；agent 需要时可以用 session.read 查原文。</p> : null}
+        {sourceHref ? (
+          <a className="text-accent" href={sourceHref} data-testid="handoff-source">
+            打开来源会话 →
+          </a>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 export function ChatBlock({
   block,
   sessionId,
@@ -354,6 +385,7 @@ export function ChatBlock({
     const others = block.attachments.filter((item) => item.kind !== 'image');
     return (
       <div className="flex flex-col items-end gap-1.5" data-testid="msg-user">
+        {block.handoff ? <HandoffBar handoff={block.handoff} /> : null}
         {showAuthor ? <AuthorTag author={block.author} /> : null}
         {images.length > 0 ? (
           <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">

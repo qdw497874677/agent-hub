@@ -1,3 +1,4 @@
+import type { HandoffStats } from '../handoff.ts';
 import { locationOf } from './workspaces.ts';
 import { routeOf } from './machine-dirs.ts';
 import type { Session } from '../session.ts';
@@ -28,6 +29,8 @@ export interface PromptCommand {
   readonly briefing?: boolean;
   /** 发这句话的人（登录态下才有）。 */
   readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
+  /** 交接简报的统计（ADR 0029），存在 prompt 事件上给界面画提示条。 */
+  readonly handoff?: HandoffStats;
 }
 
 /**
@@ -95,7 +98,8 @@ export async function promptSessionUseCase(
         kind: 'prompt',
         text: command.text,
         ...(stored.length > 0 ? { attachments: stored } : {}),
-        ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {})
+        ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
+        ...(command.handoff ? { handoff: command.handoff } : {})
       } })
   );
   if (!logged.ok) return logged;

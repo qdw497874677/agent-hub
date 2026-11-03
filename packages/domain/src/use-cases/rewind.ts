@@ -13,7 +13,7 @@ import type { Deps } from './deps.ts';
 import { startCommand } from './hosting.ts';
 import { interruptSessionUseCase, recordEvent } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
-import { handoffBrief } from './continue-elsewhere.ts';
+import { buildHandoff, type HandoffResult } from '../handoff.ts';
 import { locationOf } from './workspaces.ts';
 
 /**
@@ -77,7 +77,8 @@ interface Plan {
 
 export function createRewindService(deps: RewindDeps) {
   /** 原生分叉已派发、等 worker 回 branch_result 的会话 → 万一失败要补发的交接摘要（只在内存里；hub 重启就丢，新会话照样能用，只是少了前情）。 */
-  const pendingBriefs = new Map<string, string>();
+  const pendingBriefs = new Map<string, HandoffResult>();
+  const handoffCap = (deps as { handoffTokenCap?: number }).handoffTokenCap;
 
   async function plan(found: Found, workerId: string | null): Promise<Plan> {
     const { session, promptSeq } = found;
@@ -193,15 +194,15 @@ export function createRewindService(deps: RewindDeps) {
       deps.hosting.add(session.id, session.workerId);
 
       if (planned.mode !== 'none') {
-        const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq).map((e) => e.event);
-        const brief = handoffBrief(earlier, {
+        const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq);
+        const brief = buildHandoff(earlier, {
           from: '同一会话（从一条消息处重来）',
           to: '同一个工作空间',
           root: found.value.root,
           code: files
             ? `文件已回滚到这条消息之前（第 ${files.turn} 轮开始前）的样子。`
             : '注意：文件没有回滚，工作区里可能还留着之后那几轮的改动。'
-        });
+        }, { sourceSessionId: source.id, ...(handoffCap ? { cap: handoffCap } : {}) });
         if (planned.mode === 'native') {
           pendingBriefs.set(session.id, brief);
         } else {
@@ -209,7 +210,7 @@ export function createRewindService(deps: RewindDeps) {
             sessionId: session.id,
             event: { kind: 'diagnostic', level: 'warn', text: `没法原生分叉（${planned.reason}），改用摘要交接：agent 只看到之前对话的摘要` }
           });
-          const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief, briefing: true });
+          const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief.text, briefing: true, handoff: brief.stats });
           if (!seeded.ok) return err(seeded.error);
         }
       }
@@ -250,7 +251,7 @@ export function createRewindService(deps: RewindDeps) {
         sessionId: asSessionId(sessionId),
         event: { kind: 'diagnostic', level: 'warn', text: `原生分叉失败（${reason ?? '原因不明'}），改用摘要交接：agent 只看到之前对话的摘要` }
       });
-      if (brief) await promptSessionUseCase(deps, { sessionId: asSessionId(sessionId), text: brief, briefing: true });
+      if (brief) await promptSessionUseCase(deps, { sessionId: asSessionId(sessionId), text: brief.text, briefing: true, handoff: brief.stats });
     }
   };
 }

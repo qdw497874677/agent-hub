@@ -277,7 +277,20 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     text: z.string(),
     attachments: z.array(storedAttachmentSchema).optional(),
     /** 谁说的（登录态下才有；老事件没有 = 不知道）。name 读出时按当前账号刷新，删掉的用户显示匿名名。 */
-    author: z.object({ id: z.string(), name: z.string(), via: z.string().optional() }).optional()
+    author: z.object({ id: z.string(), name: z.string(), via: z.string().optional() }).optional(),
+    /** 平台写的交接简报：带了多少、省略多少（ADR 0029）。 */
+    handoff: z
+      .object({
+        sourceSessionId: z.string(),
+        turns: z.number().int().nonnegative(),
+        carriedTurns: z.number().int().nonnegative(),
+        carried: z.number().int().nonnegative(),
+        omitted: z.number().int().nonnegative(),
+        omittedTurns: z.array(z.tuple([z.number().int(), z.number().int()])),
+        tokens: z.number().int().nonnegative(),
+        budget: z.number().int().nonnegative()
+      })
+      .optional()
   }),
   z.object({ kind: z.literal('text'), delta: z.string() }),
   z.object({ kind: z.literal('thinking'), delta: z.string() }),

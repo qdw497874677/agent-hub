@@ -48,6 +48,8 @@ export interface AgentCatalog {
  * 所以不进 Deps——等调度/下发真的落地时再接进来，不提前养空实现。
  */
 export interface Deps {
+  /** 交接简报的 token 上限（HUB_HANDOFF_TOKEN_CAP，默认 16k）。 */
+  readonly handoffTokenCap?: number;
   readonly projects: ProjectRepository;
   readonly tasks: TaskRepository;
   /** 任务工作日志（只追加）。 */
