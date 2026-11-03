@@ -64,3 +64,5 @@ export const resourcePolicyRequest = z.object({ refuseWhenFull: z.boolean() });
 
 /** hub 和 Worker 在握手里互报能力：认识的才发，不认识的字段老版本 zod 会直接丢掉。 */
 export const WORKER_CAPABILITY_METRICS = 'metrics';
+/** hub 认 turn_ref / branch_result 两种帧（ADR 0028 原生分叉）。老 hub 不认：worker 就不发。 */
+export const WORKER_CAPABILITY_NATIVE_BRANCH = 'native_branch';

@@ -1,6 +1,8 @@
 import { principalOfSubject, type Subject } from '../access.ts';
 import { forkSession, type Session } from '../session.ts';
-import type { TurnCheckpoint, RestoreOutcome } from '../ports/workspace-browser.ts';
+import type { TurnCheckpoint, RestoreOutcome, TurnRefStore } from '../ports/workspace-browser.ts';
+import type { BranchSpec } from '../ports/agent-runtime.ts';
+import { allowsFor, unavailableReason } from '../capability.ts';
 import type { Workspace } from '../workspace.ts';
 import { asSessionId } from '../ids.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
@@ -31,7 +33,10 @@ export interface RewindFiles {
 export type RewindDeps = Pick<
   Deps,
   'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access'
-> & { readonly files: RewindFiles };
+> & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore };
+
+/** 对话怎么接上（ADR 0028）：native = 原生从这条消息分叉；summary = 新开会话 + 摘要交接；none = 第一条消息，不用交接。 */
+export type RewindMode = 'native' | 'summary' | 'none';
 
 export interface RewindPreview {
   readonly promptSeq: number;
@@ -41,6 +46,10 @@ export interface RewindPreview {
   readonly filesBlocked: string | null;
   /** 回滚文件会撤掉的：从这一轮开始到现在的轮数。 */
   readonly turnsAfter: number;
+  readonly mode: RewindMode;
+  /** mode = summary 时为什么不能原生分叉。 */
+  readonly modeReason: string | null;
+  readonly agentLabel: string;
 }
 
 export interface RewindOutcome {
@@ -48,6 +57,7 @@ export interface RewindOutcome {
   /** 回填到新会话输入框的原消息。 */
   readonly prompt: string;
   readonly files: (RestoreOutcome & { readonly turn: number }) | null;
+  readonly mode: RewindMode;
 }
 
 interface Found {
@@ -59,7 +69,33 @@ interface Found {
   readonly root: string;
 }
 
+interface Plan {
+  readonly mode: RewindMode;
+  readonly reason: string | null;
+  readonly branch: BranchSpec | null;
+}
+
 export function createRewindService(deps: RewindDeps) {
+  /** 原生分叉已派发、等 worker 回 branch_result 的会话 → 万一失败要补发的交接摘要（只在内存里；hub 重启就丢，新会话照样能用，只是少了前情）。 */
+  const pendingBriefs = new Map<string, string>();
+
+  async function plan(found: Found, workerId: string | null): Promise<Plan> {
+    const { session, promptSeq } = found;
+    const earlier = (await deps.sessions.eventsAfter(session.id, 0 as never)).filter((e) => e.seq < promptSeq && e.event.kind === 'prompt');
+    if (earlier.length === 0) return { mode: 'none', reason: null, branch: null };
+    const summary = (reason: string): Plan => ({ mode: 'summary', reason, branch: null });
+    const descriptor = deps.agents.descriptor(session.agentId);
+    if (!descriptor) return summary('找不到这个 agent');
+    if (!allowsFor(descriptor.capabilities, 'branch_at_turn')) return summary(unavailableReason(descriptor.capabilities, 'branch_at_turn') ?? '这个 agent 不能原生分叉');
+    if (!session.agentSessionRef) return summary('原会话没有记下 agent 自己的会话 id');
+    if (workerId !== null && workerId !== session.workerId) return summary('原会话所在的机器现在不可用，换机器只能摘要交接');
+    const refs = await deps.turnRefs.list(session.id);
+    const turnRef = refs.get(promptSeq) ?? null;
+    const previousTurnRef = refs.get(earlier[earlier.length - 1]!.seq) ?? null;
+    if (!turnRef || !previousTurnRef) return summary('这条消息没有记下原生标识（功能上线之前的消息）');
+    return { mode: 'native', reason: null, branch: { fromAgentSessionRef: session.agentSessionRef, turnRef, previousTurnRef } };
+  }
+
   async function find(actor: Subject | null, sessionId: string, promptSeq: number): Promise<Result<Found, DomainError>> {
     if (!Number.isInteger(promptSeq) || promptSeq < 1) return err(invalid('消息序号不对'));
     const session = await deps.sessions.byId(asSessionId(sessionId));
@@ -102,7 +138,8 @@ export function createRewindService(deps: RewindDeps) {
       if (!found.ok) return found;
       const blocked = await filesBlocked(actor, found.value);
       const turnsAfter = (await deps.files.turnsOf(found.value.session.id)).filter((t) => t.promptSeq >= promptSeq).length;
-      return ok({ promptSeq, prompt: found.value.prompt, filesAllowed: blocked === null, filesBlocked: blocked, turnsAfter });
+      const planned = await plan(found.value, null);
+      return ok({ promptSeq, prompt: found.value.prompt, filesAllowed: blocked === null, filesBlocked: blocked, turnsAfter, mode: planned.mode, modeReason: planned.reason, agentLabel: deps.agents.descriptor(found.value.session.agentId)?.label ?? found.value.session.agentId });
     },
 
     async rewind(actor: Subject | null, sessionId: string, promptSeq: number, withFiles: boolean): Promise<Result<RewindOutcome, DomainError>> {
@@ -143,16 +180,19 @@ export function createRewindService(deps: RewindDeps) {
       if (!created.ok) return created;
       const session = { ...created.value, workerId: placed.value };
       await deps.sessions.save(session);
-      // 原生 agent 会话截不到这条之前：新开（resume = null），之前的对话用摘要交接
-      const started = await deps.gateway.dispatch(startCommand(session, found.value.root || workspace?.path || '', null, source.options));
+      const planned = await plan(found.value, placed.value);
+      // 原生分叉（ADR 0028）：worker 从原 agent 会话的这条消息之前分出去；不行就新开（resume = null），之前的对话用摘要交接
+      const started = await deps.gateway.dispatch(
+        startCommand(session, found.value.root || workspace?.path || '', null, source.options, planned.branch ?? undefined)
+      );
       if (!started.ok) {
         await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
         return err(started.error);
       }
       deps.hosting.add(session.id, session.workerId);
 
-      const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq).map((e) => e.event);
-      if (earlier.some((e) => e.kind === 'prompt')) {
+      if (planned.mode !== 'none') {
+        const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq).map((e) => e.event);
         const brief = handoffBrief(earlier, {
           from: '同一会话（从一条消息处重来）',
           to: '同一个工作空间',
@@ -161,8 +201,16 @@ export function createRewindService(deps: RewindDeps) {
             ? `文件已回滚到这条消息之前（第 ${files.turn} 轮开始前）的样子。`
             : '注意：文件没有回滚，工作区里可能还留着之后那几轮的改动。'
         });
-        const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief, briefing: true });
-        if (!seeded.ok) return err(seeded.error);
+        if (planned.mode === 'native') {
+          pendingBriefs.set(session.id, brief);
+        } else {
+          await recordEvent(deps, {
+            sessionId: session.id,
+            event: { kind: 'diagnostic', level: 'warn', text: `没法原生分叉（${planned.reason}），改用摘要交接：agent 只看到之前对话的摘要` }
+          });
+          const seeded = await promptSessionUseCase(deps, { sessionId: session.id, text: brief, briefing: true });
+          if (!seeded.ok) return err(seeded.error);
+        }
       }
       // 原会话留个记号（不删任何内容，ADR 0006）
       await recordEvent(deps, {
@@ -173,7 +221,35 @@ export function createRewindService(deps: RewindDeps) {
           text: `已从第 ${promptSeq} 步那条消息重来${files ? `，文件已回滚（改回 ${files.restored} 个、删掉 ${files.removed} 个）` : '（文件未回滚）'} → 新会话 ${session.id.slice(0, 8)}`
         }
       });
-      return ok({ session: (await deps.sessions.byId(session.id)) ?? session, prompt: found.value.prompt, files });
+      return ok({ session: (await deps.sessions.byId(session.id)) ?? session, prompt: found.value.prompt, files, mode: planned.mode });
+    },
+
+    /** worker 报来这一轮的原生标识：挂到最近一次 ended 之后的第一条消息上（标识在 ended 之前报，消息是立刻记的，不排队）。 */
+    async recordTurnRef(sessionId: string, turnRef: string): Promise<void> {
+      const events = await deps.sessions.eventsAfter(asSessionId(sessionId), 0 as never);
+      let lastEnded = 0;
+      for (const e of events) if (e.event.kind === 'ended') lastEnded = e.seq;
+      const prompts = events.filter((e) => e.event.kind === 'prompt');
+      const target = prompts.find((e) => e.seq > lastEnded) ?? prompts[prompts.length - 1];
+      if (target) await deps.turnRefs.record(sessionId, target.seq, turnRef);
+    },
+
+    /** worker 回报带 branch 的启动结果：失败就补发交接摘要（worker 已经退成新开会话）。 */
+    async branchResult(sessionId: string, outcome: 'native' | 'failed', reason?: string): Promise<void> {
+      const brief = pendingBriefs.get(sessionId);
+      pendingBriefs.delete(sessionId);
+      if (outcome === 'native') {
+        await recordEvent(deps, {
+          sessionId: asSessionId(sessionId),
+          event: { kind: 'diagnostic', level: 'info', text: '已原生分叉：agent 保留了这条消息之前的完整上下文' }
+        });
+        return;
+      }
+      await recordEvent(deps, {
+        sessionId: asSessionId(sessionId),
+        event: { kind: 'diagnostic', level: 'warn', text: `原生分叉失败（${reason ?? '原因不明'}），改用摘要交接：agent 只看到之前对话的摘要` }
+      });
+      if (brief) await promptSessionUseCase(deps, { sessionId: asSessionId(sessionId), text: brief, briefing: true });
     }
   };
 }

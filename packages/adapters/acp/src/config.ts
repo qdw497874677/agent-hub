@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-import { asAgentId, available, capabilityMatrix, limited } from '@agent-hub/domain';
+import { asAgentId, available, capabilityMatrix, denied, limited } from '@agent-hub/domain';
 import type { AgentDescriptor, ProviderLaunch, ProviderProtocol, RuntimeOption, SessionAssets } from '@agent-hub/domain';
 
 /**
@@ -43,6 +43,18 @@ export interface AcpAgentConfig {
   readonly providerLaunch?: (sessionId: string, provider: ProviderLaunch, base: AcpLaunch) => Promise<AcpLaunch> | AcpLaunch;
   /** 可选：开跑前下发的选项值换成 agent 认的写法（例如 hub 模型「hub-<slug>/<id>」→ Hermes 的「custom:<id>」）。 */
   readonly optionValue?: (id: string, value: string | boolean) => string | boolean;
+  /**
+   * 从某条消息原生分叉的方言（ADR 0028）。ACP 的 `session/fork` 本身只能复制整条会话；
+   * `jetbrains-air` = claude-agent-acp 认的 `_meta.jetbrains.air.fork.messageId`（保留到这条 assistant 消息为止）。
+   * 不写时按命令名自动认 claude-agent-acp / claude-code-acp。
+   */
+  readonly branchAtTurn?: 'jetbrains-air';
+}
+
+/** 这个 agent 能不能从某条消息原生分叉；能就返回方言。 */
+export function acpBranchAtTurn(config: Pick<AcpAgentConfig, 'branchAtTurn' | 'command' | 'args'>): 'jetbrains-air' | null {
+  if (config.branchAtTurn) return config.branchAtTurn;
+  return /claude-(agent|code)-acp/.test([config.command, ...config.args].join(' ')) ? 'jetbrains-air' : null;
 }
 
 export interface AcpLaunch {
@@ -133,7 +145,10 @@ export function acpDescriptor(
       tool_calls: available,
       artifacts: limited('ACP 工具结果无权威文件路径，只在 rawOutput 带绝对路径时归档'),
       structured_events: available,
-      attachments: limited('图片与内嵌文件取决于 agent 声明的 promptCapabilities，不支持时发送会明确报错；@ 引用以 resource_link 传递')
+      attachments: limited('图片与内嵌文件取决于 agent 声明的 promptCapabilities，不支持时发送会明确报错；@ 引用以 resource_link 传递'),
+      branch_at_turn: acpBranchAtTurn(config)
+        ? available
+        : denied(`${config.label} 的 ACP 接口只能复制整条会话，不能从某条消息分叉；「从这里重来」会用摘要交接`)
     }),
     models,
     defaultModel: typeof model?.current === 'string' ? model.current : '',

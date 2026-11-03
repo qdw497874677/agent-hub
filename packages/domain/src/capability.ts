@@ -17,7 +17,8 @@ export type CapabilityName =
   | 'tool_calls'
   | 'artifacts'
   | 'structured_events'
-  | 'attachments';
+  | 'attachments'
+  | 'branch_at_turn';
 
 export const CAPABILITY_NAMES: readonly CapabilityName[] = [
   'prompt',
@@ -27,7 +28,8 @@ export const CAPABILITY_NAMES: readonly CapabilityName[] = [
   'tool_calls',
   'artifacts',
   'structured_events',
-  'attachments'
+  'attachments',
+  'branch_at_turn'
 ];
 
 export const CAPABILITY_LABELS: Readonly<Record<CapabilityName, string>> = {
@@ -38,10 +40,12 @@ export const CAPABILITY_LABELS: Readonly<Record<CapabilityName, string>> = {
   tool_calls: '工具调用可见',
   artifacts: '产出物归档',
   structured_events: '结构化事件',
-  attachments: '附件与 @ 引用'
+  attachments: '附件与 @ 引用',
+  branch_at_turn: '从某条消息原生分叉'
 };
 
-export type CapabilityMatrix = Readonly<Record<CapabilityName, Capability>>;
+/** branch_at_turn 可缺（老 worker / 老数据不报），读的时候走 allowsFor / unavailableReason 补默认。 */
+export type CapabilityMatrix = Readonly<Record<Exclude<CapabilityName, 'branch_at_turn'>, Capability>> & { readonly branch_at_turn?: Capability };
 
 export const available: Capability = { state: 'available' };
 
@@ -53,8 +57,14 @@ export function denied(reason: string): Capability {
   return { state: 'denied', reason };
 }
 
+/** ADR 0028 新增的能力：旧 worker 不报这一项，按「不支持」补上，所以构造时可以缺。 */
+export const BRANCH_AT_TURN_DEFAULT: Capability = denied('这个 agent 不能从某条消息原生分叉，「从这里重来」会用摘要交接');
+
 /** 构造矩阵时校验原因必填。缺原因是编码错误，不是用户输入错误，所以直接抛。 */
-export function capabilityMatrix(raw: Record<CapabilityName, Capability>): CapabilityMatrix {
+export function capabilityMatrix(
+  input: Record<Exclude<CapabilityName, 'branch_at_turn'>, Capability> & { readonly branch_at_turn?: Capability }
+): CapabilityMatrix {
+  const raw: Record<CapabilityName, Capability> = { ...input, branch_at_turn: input.branch_at_turn ?? BRANCH_AT_TURN_DEFAULT };
   for (const name of CAPABILITY_NAMES) {
     const cap = raw[name];
     if (!cap) throw new Error(`能力矩阵缺项：${name}`);
@@ -66,11 +76,11 @@ export function capabilityMatrix(raw: Record<CapabilityName, Capability>): Capab
 }
 
 export function allowsFor(matrix: CapabilityMatrix, name: CapabilityName): boolean {
-  return matrix[name].state !== 'denied';
+  return (matrix[name] ?? BRANCH_AT_TURN_DEFAULT).state !== 'denied';
 }
 
 /** UI 显示不可用原因时只调这一个函数，不自己判断 agent 是谁。 */
 export function unavailableReason(matrix: CapabilityMatrix, name: CapabilityName): string | null {
-  const cap = matrix[name];
+  const cap = matrix[name] ?? BRANCH_AT_TURN_DEFAULT;
   return cap.state === 'available' ? null : (cap.reason ?? null);
 }

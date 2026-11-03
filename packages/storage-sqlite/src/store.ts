@@ -12,7 +12,8 @@ import type {
 import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
-import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, ContextSettingsStore, SessionBaseStore, CheckpointStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, ContextSettingsStore, SessionBaseStore, CheckpointStore,
+  TurnRefStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
 import { createSqliteAccess } from './access.ts';
 import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
@@ -22,7 +23,7 @@ import { createSqliteMessageStore } from './messages.ts';
 import { createSqliteGroupStore } from './groups.ts';
 import { createSqliteContextSettings } from './context-settings.ts';
 import { createSqliteSessionBases } from './session-bases.ts';
-import { createSqliteCheckpoints } from './turn-checkpoints.ts';
+import { createSqliteCheckpoints, createSqliteTurnRefs } from './turn-checkpoints.ts';
 import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemoryStore } from './memory.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
@@ -51,6 +52,7 @@ export interface SqliteStore extends RepositorySet {
   readonly sessionBases: SessionBaseStore;
   /** 回合检查点（ADR 0027）。 */
   readonly checkpoints: CheckpointStore;
+  readonly turnRefs: TurnRefStore;
   readonly memory: { readonly store: MemoryStore; readonly index: MemoryIndex; readonly settings: MemorySettingsStore };
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
   readonly enrollment: EnrollmentRepository;
@@ -439,6 +441,7 @@ export function openSqliteStore(file: string): SqliteStore {
     contextSettings: createSqliteContextSettings(db),
     sessionBases: createSqliteSessionBases(db),
     checkpoints: createSqliteCheckpoints(db),
+    turnRefs: createSqliteTurnRefs(db),
     memory: { store: createSqliteMemoryStore(db), index: createSqliteMemoryIndex(db), settings: createSqliteMemorySettings(db) },
     workspaces: createWorkspaceRepository(db),
     enrollment: createEnrollmentRepository(db),

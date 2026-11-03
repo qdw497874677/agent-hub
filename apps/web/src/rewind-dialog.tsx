@@ -44,12 +44,21 @@ export function RewindDialog({ sessionId, promptSeq, onClose, onDone }: {
         ) : (
           <p className="text-meta text-tertiary">读取中…</p>
         )}
+        {p?.mode === 'native' ? (
+          <p className="rounded-md bg-sage/10 px-2 py-1.5 text-meta text-sage" data-testid="rewind-mode" data-mode="native">
+            ✓ 用 {p.agentLabel} 自带的分支：新会话逐字保留这条消息之前的上下文，不用摘要
+          </p>
+        ) : p?.mode === 'summary' ? (
+          <p className="rounded-md bg-ochre/10 px-2 py-1.5 text-meta text-ochre" data-testid="rewind-mode" data-mode="summary">
+            新会话会收到一段之前对话的摘要（{p.modeReason ?? `${p.agentLabel} 不支持从中间某条消息分叉`}）
+          </p>
+        ) : null}
         <fieldset className="flex flex-col gap-2" disabled={!p || busy}>
           <label className="flex items-start gap-2 text-sub text-primary">
             <input type="radio" name="rewind" className="mt-1" checked={!files} onChange={() => setFiles(false)} />
             <span>
               只回滚对话
-              <span className="block text-meta text-tertiary">新开一条会话，带上这条消息之前的对话；工作区文件保持现在的样子。</span>
+              <span className="block text-meta text-tertiary">新开一条会话，从这条消息之前接着聊；工作区文件保持现在的样子。</span>
             </span>
           </label>
           <label className={`flex items-start gap-2 text-sub ${p?.filesAllowed ? 'text-primary' : 'text-tertiary'}`}>

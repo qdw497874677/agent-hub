@@ -4,8 +4,14 @@ import { appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
+// --fork：像 claude-agent-acp 那样声明 session/fork、每条 assistant 消息带 messageId、认 _meta.jetbrains.air.fork（ADR 0028）
+const FORK = process.argv.includes('--fork');
+// --fork-fail：声明了 fork，但真分叉时报错（原生分叉失败的退路）
+const FORK_FAIL = process.argv.includes('--fork-fail');
+let turn = 0;
+let forkedAt = null;
 const say = (sessionId, text) =>
-  send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } });
+  send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, ...(FORK ? { messageId: `m-${sessionId}-${turn}` } : {}) } } });
 
 // --models：像 `opencode models` 那样列模型就退出
 if (process.argv.includes('--models')) {
@@ -42,7 +48,13 @@ createInterface({ input: process.stdin }).on('line', (line) => {
   seen.push(msg.method + (msg.params?._meta ? JSON.stringify(msg.params._meta) : ''));
   switch (msg.method) {
     case 'initialize':
-      return send({ id: msg.id, result: { protocolVersion: 1, authMethods: [{ id: 'key', name: 'Key' }] } });
+      return send({ id: msg.id, result: { protocolVersion: 1, authMethods: [{ id: 'key', name: 'Key' }], ...(FORK ? { agentCapabilities: { sessionCapabilities: { fork: {} } } } : {}) } });
+    case 'session/fork': {
+      if (FORK_FAIL) return send({ id: msg.id, error: { code: -32603, message: 'fake fork failure' } });
+      if (typeof msg.params?.cwd === 'string') cwd = msg.params.cwd;
+      forkedAt = msg.params?._meta?.jetbrains?.air?.fork?.messageId ?? 'latest';
+      return send({ id: msg.id, result: { sessionId: `f-${forkedAt}`, ...reported() } });
+    }
     case 'authenticate':
       return send({ id: msg.id, result: {} });
     case 'session/new':
@@ -63,6 +75,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       mode = msg.params.modeId;
       return send({ id: msg.id, result: {} });
     case 'session/prompt': {
+      turn += 1;
       const text = msg.params.prompt[0].text;
       // hub 会在用户文字前面加上下文：魔法词用「包含」判断
       const all = msg.params.prompt.map((block) => block.text ?? '').join('\n');
@@ -75,6 +88,10 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       if (writes.length > 0) {
         for (const [, file, line] of writes) appendFileSync(join(cwd, file), `${line}\n`);
         say(msg.params.sessionId, `wrote ${writes.map((w) => w[1]).join(',')}`);
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      if (all.includes('please-history')) {
+        say(msg.params.sessionId, `history:forked-at=${forkedAt ?? 'none'};briefed=${all.includes('交接') || all.includes('摘要') ? 'maybe' : 'no'}`);
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
       if (all.includes('please-refuse')) return send({ id: msg.id, result: { stopReason: 'refusal' } });

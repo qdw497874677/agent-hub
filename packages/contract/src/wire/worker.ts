@@ -70,6 +70,21 @@ export const workerAgentSessionSchema = z.object({
   agentSessionRef: id
 });
 
+/** ADR 0028：agent 报上来的「这一轮」的原生标识（Pi 的用户消息 entryId、Claude 的最后一条助手消息 id）。hub 挂到当前这一轮上。 */
+export const workerTurnRefSchema = z.object({
+  type: z.literal('turn_ref'),
+  sessionId: id,
+  turnRef: z.string().min(1).max(512)
+});
+
+/** ADR 0028：带 branch 的 start_session 结果。failed = 原生分叉没成，worker 已改成新开一条空会话，hub 补发摘要交接。 */
+export const workerBranchResultSchema = z.object({
+  type: z.literal('branch_result'),
+  sessionId: id,
+  outcome: z.enum(['native', 'failed']),
+  reason: z.string().max(2000).optional()
+});
+
 /** worker 把 agent 报上来的可调项当前值交回 server，好让重开浏览器时选择器不空着。 */
 export const workerOptionsSchema = z.object({
   type: z.literal('options'),
@@ -191,6 +206,8 @@ export const workerToServerSchema = z.discriminatedUnion('type', [
   workerRpcSchema,
   workerEventSchema,
   workerAgentSessionSchema,
+  workerTurnRefSchema,
+  workerBranchResultSchema,
   workerOptionsSchema,
   workerStatusSchema,
   workerUpdateStatusSchema,
@@ -230,6 +247,17 @@ export const startSessionCommandSchema = z.object({
     .nullable(),
   /** 开跑前就定下的可调项；空对象表示全用 agent 默认。 */
   options: optionValuesSchema,
+  /**
+   * ADR 0028 原生分叉：从来源 agent 会话的某一轮之前分出一条新 agent 会话（resume 为 null 时才有）。
+   * hub 只在 agent 报了 branch_at_turn（新 worker）时才给，老 worker 不会收到。
+   */
+  branch: z
+    .object({
+      fromAgentSessionRef: z.string().min(1).max(512),
+      turnRef: z.string().min(1).max(512).nullable(),
+      previousTurnRef: z.string().min(1).max(512).nullable()
+    })
+    .optional(),
   /** 能力层（可选）：旧 worker 收不到就当没有工具。token 不许进日志。 */
   tools: toolAccessSchema.optional(),
   /** MCP 资产（旧 worker 忽略）。stdio 的 env 含密钥明文：只进 agent 进程，不落盘、不进日志。 */

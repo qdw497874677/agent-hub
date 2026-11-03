@@ -105,6 +105,7 @@ else log(`新建 worktree 放在：${worktreesDir ? `${worktreesDir}/<仓库名>
 // 先接住 adapter 的回调，等 link 就绪后转给它——adapter 在构造时就要拿到这个函数。
 let notifyAgentSessionRef: (sessionId: string, ref: string) => void = () => undefined;
 let notifyOptions: (sessionId: string, options: readonly RuntimeOption[]) => void = () => undefined;
+let notifyTurnRef: (sessionId: string, turnRef: string) => void = () => undefined;
 
 /**
  * stdio MCP 垫片：和 worker 同一个 node、同样的启动参数（.ts 直接跑），
@@ -131,6 +132,7 @@ for (const adapter of RUNTIME_ADAPTERS) {
       log,
       onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
       onOptions: (sessionId, reported) => notifyOptions(sessionId, reported),
+      onTurnRef: (sessionId, turnRef) => notifyTurnRef(sessionId, turnRef),
       ...(componentsEnabled ? { components: (runtime: string) => hubComponentDirs(componentsRoot, runtime) } : {})
     }))
   );
@@ -292,6 +294,9 @@ if (parentPid > 0) {
 // 自检会话不是 hub 的会话，不往上报
 notifyAgentSessionRef = (sessionId, ref) => {
   if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyAgentSessionRef(sessionId, ref);
+};
+notifyTurnRef = (sessionId, turnRef) => {
+  if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyTurnRef(sessionId, turnRef);
 };
 notifyOptions = (sessionId, reported) => {
   if (!sessionId.startsWith(SELF_CHECK_PREFIX)) link.notifyOptions(sessionId, reported);

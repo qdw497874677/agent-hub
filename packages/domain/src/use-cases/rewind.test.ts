@@ -22,9 +22,22 @@ const fake: AgentDescriptor = {
   options: []
 };
 
-async function world() {
+const native: AgentDescriptor = {
+  ...fake,
+  capabilities: capabilityMatrix({ prompt: available, interrupt: available, fork: available, resume: available, tool_calls: available, artifacts: available, structured_events: available, attachments: available, branch_at_turn: available })
+};
+
+async function world(opts: { native?: boolean } = {}) {
   const w = inMemoryDeps();
-  w.agents.push(fake);
+  w.agents.push(opts.native ? native : fake);
+  const refs = new Map<string, Map<number, string>>();
+  const turnRefs = {
+    record: async (sessionId: string, promptSeq: number, turnRef: string) => {
+      refs.set(sessionId, (refs.get(sessionId) ?? new Map()).set(promptSeq, turnRef));
+    },
+    list: async (sessionId: string) => refs.get(sessionId) ?? new Map<number, string>()
+  };
+  let svcRef: ReturnType<typeof createRewindService> | null = null;
   const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo' });
   assert.ok(project.ok);
   const task = await createTaskUseCase(w.deps, { projectId: project.value.id, title: 't' });
@@ -32,12 +45,16 @@ async function world() {
   const session = await deriveSessionUseCase(w.deps, { taskId: task.value.id, agentId: 'fake', model: 'm1' });
   assert.ok(session.ok);
   const sid = session.value.id;
+  svcRef = createRewindService({ ...w.deps, files: null as never, turnRefs });
+  if (opts.native) await w.deps.sessions.save({ ...(await w.deps.sessions.byId(sid))!, agentSessionRef: 'agent-1' });
   const seqs: number[] = [];
   for (const [text, reply] of [['第一件事', '做完一'], ['第二件事', '做完二']] as const) {
     assert.ok((await promptSessionUseCase(w.deps, { sessionId: sid, text })).ok);
     const at = (await w.deps.sessions.eventsAfter(sid, 0 as never)).filter((e) => e.event.kind === 'prompt' && e.event.text === text).at(-1)!.seq;
     seqs.push(at);
     await ingestWorkerEvent(w.deps, sid, { kind: 'text', delta: reply });
+    // 原生标识在 ended 之前到
+    if (opts.native) await svcRef!.recordTurnRef(sid, `ref-${text}`);
     await ingestWorkerEvent(w.deps, sid, { kind: 'ended', outcome: 'done' });
   }
   const turns: TurnCheckpoint[] = seqs.map((promptSeq, i) => ({ sessionId: sid, turn: i + 1, promptSeq, before: `b${i + 1}`, after: `a${i + 1}`, files: 1, additions: 1, deletions: 0, startedAt: 0, endedAt: 1 }) as TurnCheckpoint);
@@ -52,8 +69,8 @@ async function world() {
       return ok({ safety: 'safe', restored: 2, removed: 1, turn: turns.find((t) => t.promptSeq === seq)!.turn });
     }
   };
-  const svc = createRewindService({ ...w.deps, files });
-  return { ...w, svc, sid, seqs, restores, task: task.value, project: project.value, refuse: () => (refuse = true) };
+  const svc = createRewindService({ ...w.deps, files, turnRefs });
+  return { ...w, svc, sid, seqs, restores, refs, task: task.value, project: project.value, refuse: () => (refuse = true) };
 }
 
 test('从这里重来：只回滚对话 = 从这条消息之前分叉，之前的对话做交接摘要，原消息回填', async () => {
@@ -139,4 +156,56 @@ test('父子目录算重叠', () => {
   assert.ok(overlaps('/a/b', '/a/b/c'));
   assert.ok(overlaps('/a/b/', '/a/b'));
   assert.ok(!overlaps('/a/b', '/a/bc'));
+});
+
+test('原生分叉（ADR 0028）：标识记到对应那一轮；能原生就带 branch 启动、不发摘要，worker 回 native 后只留一条说明', async () => {
+  const w = await world({ native: true });
+  assert.deepEqual([...(w.refs.get(w.sid) ?? new Map()).entries()], [[w.seqs[0]!, 'ref-第一件事'], [w.seqs[1]!, 'ref-第二件事']]);
+  const preview = await w.svc.preview(null, w.sid, w.seqs[1]!);
+  assert.ok(preview.ok && preview.value.mode === 'native', JSON.stringify(preview));
+  const before = w.dispatched.length;
+  const out = await w.svc.rewind(null, w.sid, w.seqs[1]!, false);
+  assert.ok(out.ok && out.value.mode === 'native', JSON.stringify(out));
+  const sent = w.dispatched.slice(before);
+  const start = sent.find((c) => c.kind === 'start_session');
+  assert.ok(start?.kind === 'start_session');
+  assert.deepEqual(start.branch, { fromAgentSessionRef: 'agent-1', turnRef: 'ref-第二件事', previousTurnRef: 'ref-第一件事' });
+  assert.equal(sent.filter((c) => c.kind === 'prompt').length, 0);
+  await w.svc.branchResult(out.value.session.id, 'native');
+  const events = await w.deps.sessions.eventsAfter(out.value.session.id, 0 as never);
+  assert.ok(events.some((e) => e.event.kind === 'diagnostic' && /已原生分叉/.test(e.event.text)));
+  assert.equal(w.dispatched.slice(before).filter((c) => c.kind === 'prompt').length, 0);
+});
+
+test('原生分叉失败：worker 已退成新开会话，hub 补发交接摘要并说明原因', async () => {
+  const w = await world({ native: true });
+  const out = await w.svc.rewind(null, w.sid, w.seqs[1]!, false);
+  assert.ok(out.ok && out.value.mode === 'native');
+  const before = w.dispatched.length;
+  await w.svc.branchResult(out.value.session.id, 'failed', 'fork 报错');
+  const brief = w.dispatched.slice(before).find((c) => c.kind === 'prompt');
+  assert.ok(brief?.kind === 'prompt' && /第一件事/.test(brief.text) && !/第二件事/.test(brief.text));
+  const events = await w.deps.sessions.eventsAfter(out.value.session.id, 0 as never);
+  assert.ok(events.some((e) => e.event.kind === 'diagnostic' && /原生分叉失败（fork 报错）/.test(e.event.text)));
+});
+
+test('不能原生分叉：preview 说清原因，rewind 走摘要并在新会话里提示；第一条消息 mode = none', async () => {
+  const w = await world();
+  const preview = await w.svc.preview(null, w.sid, w.seqs[1]!);
+  assert.ok(preview.ok && preview.value.mode === 'summary' && /摘要交接/.test(preview.value.modeReason ?? ''), JSON.stringify(preview));
+  const first = await w.svc.preview(null, w.sid, w.seqs[0]!);
+  assert.ok(first.ok && first.value.mode === 'none');
+  const out = await w.svc.rewind(null, w.sid, w.seqs[1]!, false);
+  assert.ok(out.ok && out.value.mode === 'summary');
+  const start = w.dispatched.filter((c) => c.kind === 'start_session').at(-1);
+  assert.ok(start?.kind === 'start_session' && start.branch === undefined);
+  const events = await w.deps.sessions.eventsAfter(out.value.session.id, 0 as never);
+  assert.ok(events.some((e) => e.event.kind === 'diagnostic' && /改用摘要交接/.test(e.event.text)));
+});
+
+test('原生分叉：缺上一轮标识（功能上线前的消息）就退回摘要', async () => {
+  const w = await world({ native: true });
+  w.refs.get(w.sid)!.delete(w.seqs[0]!);
+  const preview = await w.svc.preview(null, w.sid, w.seqs[1]!);
+  assert.ok(preview.ok && preview.value.mode === 'summary' && /原生标识/.test(preview.value.modeReason ?? ''));
 });

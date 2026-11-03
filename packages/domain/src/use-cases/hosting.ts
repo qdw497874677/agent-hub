@@ -19,7 +19,8 @@ export function startCommand(
   session: Session & { readonly workerId: string },
   workspaceRoot: string,
   resume: StartCommand['resume'],
-  inherited: Readonly<Record<string, string | boolean>> = session.options
+  inherited: Readonly<Record<string, string | boolean>> = session.options,
+  branch?: StartCommand['branch']
 ): StartCommand {
   const options = session.model === '' ? { ...inherited } : { ...inherited, model: session.model };
   return {
@@ -31,7 +32,8 @@ export function startCommand(
     workspaceRoot,
     origin: session.origin,
     resume,
-    options
+    options,
+    ...(branch ? { branch } : {})
   };
 }
 

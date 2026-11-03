@@ -24,7 +24,9 @@ export function piDescriptorFor(
     tool_calls: available,
     artifacts: available,
     structured_events: available,
-    attachments: limited('Pi RPC 只接收图片；上传文件和 @ 引用以绝对路径写进消息，由 Pi 自己读取')
+    attachments: limited('Pi RPC 只接收图片；上传文件和 @ 引用以绝对路径写进消息，由 Pi 自己读取'),
+    // ADR 0028：Pi RPC `fork {entryId}` 从某条用户消息之前分出新会话
+    branch_at_turn: available
   }),
   // 模型列表由 worker 从本机 Pi 配置里读出来报上去——这里不许猜。
   models,

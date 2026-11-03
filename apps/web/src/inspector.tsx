@@ -17,12 +17,13 @@ const CAPABILITY_LABEL: Record<string, string> = {
   tool_calls: '工具调用',
   artifacts: '产出物',
   structured_events: '结构化事件',
-  attachments: '附件与 @ 引用'
+  attachments: '附件与 @ 引用',
+  branch_at_turn: '从某条消息原生分叉'
 };
 
 type CapabilityName = keyof AgentDto['capabilities'];
 
-function CapabilityRow({ name, capability }: { name: CapabilityName; capability: AgentDto['capabilities'][CapabilityName] }) {
+function CapabilityRow({ name, capability }: { name: CapabilityName; capability: NonNullable<AgentDto['capabilities'][CapabilityName]> }) {
   const mark = capability.state === 'denied' ? '—' : '✓';
   const colour =
     capability.state === 'available' ? 'text-sage' : capability.state === 'limited' ? 'text-accent' : 'text-tertiary';
@@ -90,8 +91,8 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
   }, [onClose]);
 
   const status = live?.status ?? session.status;
-  const capabilityNames = agent ? (Object.keys(agent.capabilities) as CapabilityName[]) : [];
-  const limited = capabilityNames.filter((name) => agent!.capabilities[name].state !== 'available');
+  const capabilityNames = agent ? (Object.keys(agent.capabilities) as CapabilityName[]).filter((name) => agent.capabilities[name]) : [];
+  const limited = capabilityNames.filter((name) => agent!.capabilities[name]!.state !== 'available');
 
   return (
     <div className="fixed inset-0 z-40 flex items-end bg-black/40 md:items-stretch md:justify-end" onClick={onClose}>
@@ -132,7 +133,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
           <section>
             <p className="mb-1 text-meta text-tertiary">能力</p>
             {agent ? (
-              capabilityNames.map((name) => <CapabilityRow key={name} name={name} capability={agent.capabilities[name]} />)
+              capabilityNames.map((name) => <CapabilityRow key={name} name={name} capability={agent.capabilities[name]!} />)
             ) : (
               <p className="text-meta text-tertiary">该 agent 当前没有在线节点</p>
             )}

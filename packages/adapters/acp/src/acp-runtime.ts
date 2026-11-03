@@ -16,7 +16,8 @@ import type {
   StartSpec
 } from '@agent-hub/domain';
 import { unavailable } from '@agent-hub/domain';
-import { acpDescriptor, type AcpAgentConfig, type AcpLaunch } from './config.ts';
+import { acpBranchAtTurn, acpDescriptor, type AcpAgentConfig, type AcpLaunch } from './config.ts';
+import type { BranchSpec } from '@agent-hub/domain';
 import { StderrTail, endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
 import type { AcpPromptCapabilities } from './map-acp.ts';
 import { legacyAcpOptions, mapAcpOptions } from './map-options.ts';
@@ -49,6 +50,10 @@ class AcpSession implements RuntimeSession {
   /** 这一轮 agent 有没有吐出过正文 / 思考 / 工具调用；一点没有就当失败报出来。 */
   private produced = false;
   private readonly stderr = new StderrTail();
+  /** 这一轮最后一条 assistant 消息的 id（ADR 0028）；一轮结束、推 ended 之前报给 hub。 */
+  private lastMessageId: string | null = null;
+  onTurnRef: ((turnRef: string) => void) | undefined = undefined;
+  private init: Json = {};
 
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly config: AcpAgentConfig;
@@ -108,6 +113,10 @@ class AcpSession implements RuntimeSession {
       return;
     }
     if (this.replaying) return;
+    const kind = update['sessionUpdate'];
+    if ((kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') && typeof update['messageId'] === 'string' && update['messageId']) {
+      this.lastMessageId = update['messageId'];
+    }
     for (const event of mapAcpUpdate(update, this.toolNames)) {
       if (PRODUCING.has(event.kind)) this.produced = true;
       this.queue.push(event);
@@ -172,6 +181,7 @@ class AcpSession implements RuntimeSession {
 
   private async handshake(): Promise<void> {
     const init = await this.request('initialize', { protocolVersion: 1, clientCapabilities: CLIENT_CAPABILITIES });
+    this.init = init;
     this.promptCaps = readPromptCapabilities(init);
     this.mcpCaps = readMcpCapabilities(init);
     const methods = ((init['authMethods'] as { id?: unknown }[] | undefined) ?? []).flatMap((method) =>
@@ -189,8 +199,26 @@ class AcpSession implements RuntimeSession {
     return { cwd, mcpServers: mcpServersFor(this.tools, this.mcpCaps, this.toolShim, this.mcp), ...(meta ? { _meta: meta } : {}) };
   }
 
-  async open(cwd: string, agentSessionRef: string | null): Promise<void> {
+  async open(cwd: string, agentSessionRef: string | null, branch: BranchSpec | null = null): Promise<void> {
     await this.handshake();
+    if (branch) {
+      const caps = (this.init['agentCapabilities'] as Json | undefined)?.['sessionCapabilities'] as Json | undefined;
+      if (!caps?.['fork']) throw new Error(`${this.config.label} 没有声明 session/fork`);
+      if (!branch.previousTurnRef) throw new Error('没有上一轮的 assistant 消息 id');
+      const params = this.sessionParams(cwd);
+      const meta = (params['_meta'] as Json | undefined) ?? {};
+      const jetbrains = (meta['jetbrains'] as Json | undefined) ?? {};
+      const air = (jetbrains['air'] as Json | undefined) ?? {};
+      const session = await this.request('session/fork', {
+        sessionId: branch.fromAgentSessionRef,
+        ...params,
+        _meta: { ...meta, jetbrains: { ...jetbrains, air: { ...air, fork: { version: 1, messageId: branch.previousTurnRef } } } }
+      });
+      if (typeof session['sessionId'] !== 'string' || !session['sessionId']) throw new Error('session/fork 没有返回新会话 id');
+      this.agentSessionId = session['sessionId'];
+      this.setReported(session);
+      return;
+    }
     if (agentSessionRef === null) {
       const session = await this.request('session/new', this.sessionParams(cwd));
       if (typeof session['sessionId'] === 'string') this.agentSessionId = session['sessionId'];
@@ -268,6 +296,7 @@ class AcpSession implements RuntimeSession {
     const blocks = toAcpPrompt(input, this.promptCaps, this.config.label);
     if (!blocks.ok) return blocks;
     this.produced = false;
+    this.lastMessageId = null;
     try {
       const result = await this.request('session/prompt', {
         sessionId: this.agentSessionId,
@@ -275,6 +304,7 @@ class AcpSession implements RuntimeSession {
       });
       // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
       if (!this.produced) await new Promise((resolve) => setTimeout(resolve, 200));
+      if (this.lastMessageId) this.onTurnRef?.(this.lastMessageId);
       this.queue.push(endedFromStopReason(result['stopReason'], { produced: this.produced, stderrTail: this.produced ? [] : this.stderr.tail() }));
       return { ok: true, value: undefined };
     } catch (error) {
@@ -310,6 +340,8 @@ export interface AcpRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** agent 报上来的可调项（含当前值），worker 用它告诉 server。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
+  /** 每轮的原生标识（ADR 0028），只对能原生分叉的 agent 报。 */
+  readonly onTurnRef?: (sessionId: string, turnRef: string) => void;
   /** stdio MCP 垫片（`node mcp-shim.ts`）：Pi 一直用；ACP agent 不会 HTTP MCP 时用。 */
   readonly toolShim?: { readonly command: string; readonly args: readonly string[] };
 }
@@ -346,9 +378,15 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
       session.mcp = spec.mcp;
       session.toolShim = options.toolShim;
       session.launchMeta = launch.sessionMeta;
+      const dialect = acpBranchAtTurn(config);
+      if (dialect && options.onTurnRef) session.onTurnRef = (turnRef) => options.onTurnRef?.(spec.sessionId, turnRef);
+      if (spec.branch && !dialect) {
+        await session.dispose();
+        return { ok: false, error: unavailable(`${config.label} 不能从某条消息原生分叉`) };
+      }
       const ref = spec.resume?.agentSessionRef ?? null;
       try {
-        await session.open(spec.workspaceRoot, ref);
+        await session.open(spec.workspaceRoot, ref, spec.resume ? null : (spec.branch ?? null));
       } catch (error) {
         await session.dispose();
         return { ok: false, error: unavailable(`${config.label} 握手失败：${(error as Error).message}`) };

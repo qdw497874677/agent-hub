@@ -45,6 +45,12 @@ export class PiSession implements RuntimeSession {
   private readonly onOptions: ((options: readonly RuntimeOption[]) => void) | undefined;
   /** Pi 的失败原因几乎都在 stderr 上（比如模型名有歧义），丢掉它等于把可诊断性丢了。 */
   private lastStderr = '';
+  /**
+   * 事件按顺序推，但一轮结束（agent_settled）时要先问 Pi 这一轮的 entryId 再推 ended（ADR 0028：标识要先于 ended 到 hub）。
+   * pump 里不能 await 响应（响应也是 pump 读的），所以推送串成一条链。
+   */
+  private tail: Promise<void> = Promise.resolve();
+  private readonly onTurnRef: ((turnRef: string) => void) | undefined;
 
   pid(): number | null {
     return this.child.pid ?? null;
@@ -54,8 +60,10 @@ export class PiSession implements RuntimeSession {
     sessionId: RuntimeSession['sessionId'],
     child: ChildProcessWithoutNullStreams,
     modelChoices: readonly string[],
-    onOptions?: (options: readonly RuntimeOption[]) => void
+    onOptions?: (options: readonly RuntimeOption[]) => void,
+    onTurnRef?: (turnRef: string) => void
   ) {
+    this.onTurnRef = onTurnRef;
     this.sessionId = sessionId;
     this.child = child;
     // 进程先走了再写会有 EPIPE：交给 write 回调 / pending 处理，别让未接的 error 事件打崩 worker
@@ -92,7 +100,11 @@ export class PiSession implements RuntimeSession {
           }
           continue;
         }
-        for (const event of this.mapper.map(record)) this.queue.push(event);
+        const mapped = this.mapper.map(record);
+        if (head['type'] === 'agent_settled' && this.onTurnRef) this.tail = this.tail.then(() => this.reportTurnRef());
+        this.tail = this.tail.then(() => {
+          for (const event of mapped) this.queue.push(event);
+        });
         // 一轮结束 / 压缩结束后问一次真实用量（ADR 0020 L1）。不能在 pump 里 await：响应也是 pump 读的。
         if (head['type'] === 'agent_settled' || head['type'] === 'compaction_end') {
           if (head['type'] === 'compaction_end') this.compactionsSeen += 1;
@@ -106,6 +118,7 @@ export class PiSession implements RuntimeSession {
         text: `Pi 事件流中断：${(error as Error).message}`
       });
     } finally {
+      await this.tail;
       // 退出码 + 最后一行 stderr 一起进 ended.reason：卡片上要能看出为什么失败。
       const code = this.child.exitCode;
       const reason = this.disposed
@@ -164,6 +177,26 @@ export class PiSession implements RuntimeSession {
   async interrupt(): Promise<void> {
     if (this.disposed) return;
     if (!this.child.stdin.writableEnded && !this.child.stdin.destroyed) this.child.stdin.write(`${JSON.stringify({ type: 'abort' })}\n`, () => undefined);
+  }
+
+  /** 这一轮的用户消息在 Pi 会话树里的 entryId（get_fork_messages 最后一条）；从这里重来时 `fork` 它。 */
+  private async reportTurnRef(): Promise<void> {
+    if (this.disposed) return;
+    try {
+      const response = await this.send({ type: 'get_fork_messages' });
+      const messages = (response['data'] as { messages?: unknown } | undefined)?.messages;
+      const last = Array.isArray(messages) ? (messages.at(-1) as { entryId?: unknown } | undefined) : undefined;
+      if (typeof last?.entryId === 'string' && last.entryId) this.onTurnRef?.(last.entryId);
+    } catch {
+      /* 老版本 Pi 没有 get_fork_messages：这一轮只能摘要交接 */
+    }
+  }
+
+  /** 原生分叉（ADR 0028）：Pi 新建一个会话，历史停在 entryId 那条用户消息之前，进程切到新会话。 */
+  async fork(entryId: string): Promise<void> {
+    const response = await this.send({ type: 'fork', entryId });
+    const data = response['data'] as { cancelled?: unknown } | undefined;
+    if (data?.cancelled === true) throw new Error('Pi 取消了分叉');
   }
 
   private async reportUsage(): Promise<void> {
@@ -323,6 +356,11 @@ export class PiSession implements RuntimeSession {
   }
 }
 
+function withTimeout<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([work, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(message)), ms)))]).finally(() => clearTimeout(timer));
+}
+
 /**
  * 当前模型不收图时给出拒绝理由；Pi 没报 `input` 清单（老版本）就当它收，交给模型自己说。
  */
@@ -367,6 +405,8 @@ export interface PiRuntimeOptions {
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** 可调项当前值上报（模型、思考强度）。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
+  /** 每轮的原生标识（ADR 0028）。 */
+  readonly onTurnRef?: (sessionId: string, turnRef: string) => void;
   /** Pi 的 agent 目录（放 MCP 配置）；null = 不碰（测试）。默认 PI_CODING_AGENT_DIR 或 ~/.pi/agent。 */
   readonly piAgentDir?: string | null;
   /** worker 的 stdio MCP 垫片；不给就不写 mcp.json（Pi 拿不到工具）。 */
@@ -400,7 +440,9 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       const model = spec.options['model'];
       const args = ['--mode', 'rpc', ...(typeof model === 'string' && model !== '' ? ['--model', model] : [])];
       if (options.sessionDir) args.push('--session-dir', options.sessionDir);
-      const ref = spec.resume?.agentSessionRef ?? null;
+      const branch = spec.branch && spec.branch.turnRef ? spec.branch : null;
+      if (spec.branch && !branch) return { ok: false, error: unavailable('这条消息没有 Pi 的 entryId，不能原生分叉') };
+      const ref = spec.resume?.agentSessionRef ?? branch?.fromAgentSessionRef ?? null;
       if (ref) args.push('--session-id', ref);
       args.push(...piAssetArgs(spec.assets));
       for (const dir of options.extensions?.() ?? []) args.push('--extension', dir);
@@ -438,9 +480,31 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
         /* 启动失败由 exit 事件与事件流共同反映，这里只避免未处理的 error 崩进程 */
       });
 
-      const session = new PiSession(spec.sessionId, child, options.models ?? [], (reported) =>
-        options.onOptions?.(spec.sessionId, reported)
+      const session = new PiSession(
+        spec.sessionId,
+        child,
+        options.models ?? [],
+        (reported) => options.onOptions?.(spec.sessionId, reported),
+        options.onTurnRef ? (turnRef) => options.onTurnRef?.(spec.sessionId, turnRef) : undefined
       );
+
+      if (branch) {
+        // 先等进程起来、在原会话上 fork 成功，再报新会话 id；失败就收掉进程，worker 会退回新开 + 摘要
+        try {
+          await new Promise<void>((resolve, reject) => {
+            child.once('spawn', () => resolve());
+            child.once('error', (error) => reject(error));
+          });
+          await withTimeout(session.fork(branch.turnRef!), 30_000, 'Pi 分叉超时');
+        } catch (error) {
+          await session.dispose();
+          return { ok: false, error: unavailable(`Pi 原生分叉失败：${(error as Error).message}`) };
+        }
+        const forked = await session.identify();
+        if (forked) options.onAgentSessionRef?.(spec.sessionId, forked);
+        void session.loadOptions();
+        return { ok: true, value: session };
+      }
 
       child.once('spawn', () => {
         void session.identify().then((ref) => {
