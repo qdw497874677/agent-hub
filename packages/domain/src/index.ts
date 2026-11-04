@@ -156,3 +156,6 @@ export type { CleanupPolicy, SweepAction, SweepItem, SweepRun, WorkspaceSweepSto
 export type { PullRequestLink, PullRequestRepository, GitHostTokenStore, GitHostApi, GitText, GitTextInput, GitTextWriter } from './ports/pull-requests.ts';
 export * from './git-workflow.ts';
 export * from './use-cases/git-workflow.ts';
+export * from './delivery.ts';
+export type { DeliveryQueue } from './ports/delivery-queue.ts';
+export { attemptDelivery, pumpDeliveries, retryDeliveryNow, cancelDelivery, type DeliveryDeps, type PromptPayload } from './use-cases/delivery.ts';

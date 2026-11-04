@@ -1004,3 +1004,27 @@ export function inMemoryAccess(): { grants: AccessGrantRepository; roles: TeamRo
     }
   };
 }
+
+/** 内存版送达队列（ADR 0031），语义同 SQLite 版。 */
+export function inMemoryDeliveries(): import('../ports/delivery-queue.ts').DeliveryQueue & { rows: Map<string, import('../delivery.ts').Delivery> } {
+  type D = import('../delivery.ts').Delivery;
+  const rows = new Map<string, D>();
+  const pendingStates = new Set(['queued', 'sending', 'undelivered']);
+  const order = (a: D, b: D) => a.createdAt - b.createdAt || a.seq - b.seq;
+  const pendingFor = (sid: string) => [...rows.values()].filter((d) => d.sessionId === sid && d.kind === 'prompt' && pendingStates.has(d.state)).sort(order);
+  return {
+    rows,
+    async save(d) { rows.set(d.id, d); },
+    async byId(id) { return rows.get(id) ?? null; },
+    async pendingFor(sid) { return pendingFor(sid); },
+    async due(now) {
+      const heads = new Map<string, D>();
+      for (const d of [...rows.values()].filter((x) => x.kind === 'prompt' && pendingStates.has(x.state)).sort(order)) if (!heads.has(d.sessionId)) heads.set(d.sessionId, d);
+      return [...heads.values()].filter((d) => d.state === 'queued' && (d.nextAt ?? 0) <= now);
+    },
+    async held(sid, kind) { return [...rows.values()].filter((d) => d.sessionId === sid && d.kind === kind && d.state === 'held').at(-1) ?? null; },
+    async recent(sid, limit) { return [...rows.values()].filter((d) => d.sessionId === sid && d.kind === 'prompt').sort(order).slice(-limit); },
+    async wakeAll(now) { let n = 0; for (const d of rows.values()) if (d.kind === 'prompt' && d.state === 'queued' && (d.nextAt ?? 0) > now) { rows.set(d.id, { ...d, nextAt: now }); n++; } return n; },
+    async recoverSending(now) { let n = 0; for (const d of rows.values()) if (d.state === 'sending') { rows.set(d.id, { ...d, state: 'queued', nextAt: now, updatedAt: now }); n++; } return n; }
+  };
+}

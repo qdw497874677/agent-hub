@@ -312,7 +312,7 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     capabilities: z.array(z.string().max(32)).max(16).optional()
   }),
   startSessionCommandSchema,
-  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]) }),
+  z.object({ kind: z.literal('prompt'), sessionId: id, text: z.string(), parts: z.array(promptPartSchema).default([]), deliveryId: z.string().max(128).optional() }),
   z.object({ kind: z.literal('interrupt'), sessionId: id }),
   /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */
   z.object({ kind: z.literal('compact'), sessionId: id, instructions: z.string().max(2000).optional() }),

@@ -32,7 +32,7 @@ export interface RewindFiles {
 
 export type RewindDeps = Pick<
   Deps,
-  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access'
+  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access' | 'deliveries'
 > & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore };
 
 /** 对话怎么接上（ADR 0028）：native = 原生从这条消息分叉；summary = 新开会话 + 摘要交接；none = 第一条消息，不用交接。 */
@@ -76,8 +76,32 @@ interface Plan {
 }
 
 export function createRewindService(deps: RewindDeps) {
-  /** 原生分叉已派发、等 worker 回 branch_result 的会话 → 万一失败要补发的交接摘要（只在内存里；hub 重启就丢，新会话照样能用，只是少了前情）。 */
-  const pendingBriefs = new Map<string, HandoffResult>();
+  /**
+   * 原生分叉已派发、等 worker 回 branch_result 的会话 → 万一失败要补发的交接摘要。
+   * 有送达队列（ADR 0031）就落库（held），hub 重启也不丢；没有才退回内存。
+   */
+  const memoryBriefs = new Map<string, HandoffResult>();
+  const pendingBriefs = {
+    async set(sessionId: string, brief: HandoffResult): Promise<void> {
+      if (!deps.deliveries) return void memoryBriefs.set(sessionId, brief);
+      const now = deps.now();
+      await deps.deliveries.save({
+        id: `brief_${sessionId}`, sessionId, seq: 0, kind: 'handoff_brief', payload: brief,
+        state: 'held', attempt: 0, nextAt: null, lastError: null, createdAt: now, updatedAt: now
+      });
+    },
+    async take(sessionId: string): Promise<HandoffResult | undefined> {
+      if (!deps.deliveries) {
+        const brief = memoryBriefs.get(sessionId);
+        memoryBriefs.delete(sessionId);
+        return brief;
+      }
+      const held = await deps.deliveries.held(sessionId, 'handoff_brief');
+      if (!held) return undefined;
+      await deps.deliveries.save({ ...held, state: 'delivered', updatedAt: deps.now() });
+      return held.payload as HandoffResult;
+    }
+  };
   const handoffCap = (deps as { handoffTokenCap?: number }).handoffTokenCap;
 
   async function plan(found: Found, workerId: string | null): Promise<Plan> {
@@ -204,7 +228,7 @@ export function createRewindService(deps: RewindDeps) {
             : '注意：文件没有回滚，工作区里可能还留着之后那几轮的改动。'
         }, { sourceSessionId: source.id, ...(handoffCap ? { cap: handoffCap } : {}) });
         if (planned.mode === 'native') {
-          pendingBriefs.set(session.id, brief);
+          await pendingBriefs.set(session.id, brief);
         } else {
           await recordEvent(deps, {
             sessionId: session.id,
@@ -238,8 +262,7 @@ export function createRewindService(deps: RewindDeps) {
 
     /** worker 回报带 branch 的启动结果：失败就补发交接摘要（worker 已经退成新开会话）。 */
     async branchResult(sessionId: string, outcome: 'native' | 'failed', reason?: string): Promise<void> {
-      const brief = pendingBriefs.get(sessionId);
-      pendingBriefs.delete(sessionId);
+      const brief = await pendingBriefs.take(sessionId);
       if (outcome === 'native') {
         await recordEvent(deps, {
           sessionId: asSessionId(sessionId),

@@ -13,7 +13,7 @@ import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
 import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, ContextSettingsStore, SessionBaseStore, CheckpointStore,
-  TurnRefStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+  TurnRefStore, DeliveryQueue, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
 import { createSqliteAccess } from './access.ts';
 import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
@@ -24,6 +24,7 @@ import { createSqliteGroupStore } from './groups.ts';
 import { createSqliteContextSettings } from './context-settings.ts';
 import { createSqliteSessionBases } from './session-bases.ts';
 import { createSqliteCheckpoints, createSqliteTurnRefs } from './turn-checkpoints.ts';
+import { createSqliteDeliveries } from './deliveries.ts';
 import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemoryStore } from './memory.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
@@ -53,6 +54,8 @@ export interface SqliteStore extends RepositorySet {
   /** 回合检查点（ADR 0027）。 */
   readonly checkpoints: CheckpointStore;
   readonly turnRefs: TurnRefStore;
+  /** 送达队列（ADR 0031）。 */
+  readonly deliveries: DeliveryQueue;
   readonly memory: { readonly store: MemoryStore; readonly index: MemoryIndex; readonly settings: MemorySettingsStore };
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
   readonly enrollment: EnrollmentRepository;
@@ -442,6 +445,7 @@ export function openSqliteStore(file: string): SqliteStore {
     sessionBases: createSqliteSessionBases(db),
     checkpoints: createSqliteCheckpoints(db),
     turnRefs: createSqliteTurnRefs(db),
+    deliveries: createSqliteDeliveries(db),
     memory: { store: createSqliteMemoryStore(db), index: createSqliteMemoryIndex(db), settings: createSqliteMemorySettings(db) },
     workspaces: createWorkspaceRepository(db),
     enrollment: createEnrollmentRepository(db),

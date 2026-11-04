@@ -12,6 +12,8 @@ import type { AttachmentInput, PromptPart, StoredAttachment } from '../attachmen
 import { attachmentPath, base64Bytes, validateAttachments } from '../attachment.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
+import { attemptDelivery } from './delivery.ts';
+import type { Delivery } from '../delivery.ts';
 import { ensureHosted, projectOf } from './hosting.ts';
 import { recordEvent, recordSessionOptions } from './sessions.ts';
 import { taskBriefing } from '../task-briefing.ts';
@@ -75,7 +77,7 @@ export async function promptSessionUseCase(
   deps: Pick<
     Deps,
     'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
-  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions'>>,
+  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries'>>,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -103,6 +105,27 @@ export async function promptSessionUseCase(
       } })
   );
   if (!logged.ok) return logged;
+
+  if (deps.deliveries) {
+    const deliveries = deps.deliveries;
+    // ADR 0031：先进送达队列再送。前面还有没送达的，就只排队，不越过它。
+    const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
+    const text = [instructions, guidance?.text, briefing, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+    if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
+    const pending = await deliveries.pendingFor(sessionId);
+    const ahead = pending.length > 0;
+    // 人又说话了：卡在「未送达」的队首重新给满次数，马上再试
+    const head = pending[0];
+    if (head?.state === 'undelivered') await deliveries.save({ ...head, state: 'queued', attempt: 0, nextAt: deps.now(), updatedAt: deps.now() });
+    const now = deps.now();
+    const delivery: Delivery = {
+      id: randomDeliveryId(), sessionId, seq: logged.value.lastSeq, kind: 'prompt', payload: { text, parts },
+      state: 'queued', attempt: 0, nextAt: ahead ? null : now, lastError: null, createdAt: now, updatedAt: now
+    };
+    await deliveries.save(delivery);
+    if (ahead) return ok(undefined);
+    return attemptDelivery({ ...deps, deliveries }, delivery);
+  }
 
   const hosted = await ensureHosted(deps, session);
   if (!hosted.ok) return failTurn(deps, sessionId, hosted.error);
@@ -263,4 +286,8 @@ export async function workerAttached(
     attached.push(session.id);
   }
   return attached;
+}
+
+function randomDeliveryId(): string {
+  return `dlv_${globalThis.crypto.randomUUID()}`;
 }

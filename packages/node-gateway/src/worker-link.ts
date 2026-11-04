@@ -533,6 +533,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason } });
   }
 
+  /** 最近送达过的 deliveryId（ADR 0031 去重，最多记 1000 个）。 */
+  const seenDeliveries = new Set<string>();
   const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
   async function update(commit: string): Promise<void> {
@@ -631,6 +633,15 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return;
     }
     if (command.kind === 'prompt') {
+      // ADR 0031：hub 重试同一条消息时按 deliveryId 去重，agent 不会收到两遍
+      if (command.deliveryId) {
+        if (seenDeliveries.has(command.deliveryId)) {
+          options.onLog?.(`重复的消息 ${command.deliveryId}，跳过`);
+          return;
+        }
+        seenDeliveries.add(command.deliveryId);
+        if (seenDeliveries.size > 1000) seenDeliveries.delete(seenDeliveries.values().next().value as string);
+      }
       await persistParts(command.parts);
       const result = await session.prompt({ text: command.text, parts: command.parts });
       if (!result.ok) {
