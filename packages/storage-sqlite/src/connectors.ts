@@ -64,6 +64,7 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
     async runs(b, limit) { return (db.prepare('SELECT * FROM trigger_run WHERE binding_id = ? ORDER BY created_at DESC LIMIT ?').all(b, limit) as R[]).map(toR); },
     async openRuns(b) { return (db.prepare("SELECT * FROM trigger_run WHERE binding_id = ? AND state IN ('waiting','delivered')").all(b) as R[]).map(toR); },
     async waitingRuns() { return (db.prepare("SELECT * FROM trigger_run WHERE state = 'waiting' ORDER BY created_at").all() as R[]).map(toR); },
+    async deliveredRuns() { return (db.prepare("SELECT * FROM trigger_run WHERE state = 'delivered' ORDER BY created_at").all() as R[]).map(toR); },
     async deliveredRunFor(s) { const r = db.prepare("SELECT * FROM trigger_run WHERE session_id = ? AND state = 'delivered' ORDER BY created_at DESC LIMIT 1").get(s) as R | undefined; return r ? toR(r) : null; },
     async agentProjects(p, n) { return (db.prepare('SELECT project_id FROM agent_project WHERE agent_project_id = ? AND agent_name = ? ORDER BY project_id').all(p, n) as { project_id: string }[]).map((r) => r.project_id); },
     async setAgentProjects(p, n, ids) {

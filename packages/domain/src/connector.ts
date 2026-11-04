@@ -46,7 +46,7 @@ export interface ConnectorBinding {
   readonly updatedAt: number;
 }
 
-export type TriggerRunState = 'waiting' | 'delivered' | 'done' | 'failed' | 'skipped';
+export type TriggerRunState = 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped';
 
 export interface TriggerRun {
   readonly id: string;
@@ -66,6 +66,10 @@ export const isOpenRun = (r: Pick<TriggerRun, 'state'>): boolean => r.state === 
 
 /** 连续失败这么多次自动暂停，并进「等我处理」。 */
 export const BINDING_MAX_FAILURES = 5;
+
+/** 投进去多久没等到回合结束就算超时：max(周期, 30 分钟)，最多 6 小时。 */
+export const RUN_STALE_MIN_MS = 30 * 60_000;
+export const staleAfterMs = (periodMs: number | null): number => Math.min(Math.max(periodMs ?? 0, RUN_STALE_MIN_MS), 6 * 3_600_000);
 
 /** 送进会话的那段话：外部文本包成引用块。 */
 export function formatInbound(binding: Pick<ConnectorBinding, 'name' | 'connector'>, event: InboundEvent): string {

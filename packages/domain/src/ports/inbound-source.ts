@@ -8,6 +8,8 @@ export interface InboundSource {
   validate(kind: string, params: Readonly<Record<string, unknown>>): string | null;
   /** 显示用：一行说明（如「每 15 分钟」）。 */
   describe(binding: ConnectorBinding): string;
+  /** 触发周期（毫秒）；用来定「投进去多久没结束算超时」。没有周期的来源不填。 */
+  periodMs?(binding: ConnectorBinding): number | null;
   start(ctx: InboundContext): { stop(): void };
 }
 

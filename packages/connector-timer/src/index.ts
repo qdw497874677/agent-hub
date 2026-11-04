@@ -59,6 +59,7 @@ export function createTimerSource(opts: { readonly intervalMs?: number } = {}): 
       return null;
     },
     describe: (b: ConnectorBinding) => `每 ${everyMs(b.params) / MIN} 分钟`,
+    periodMs: (b: ConnectorBinding) => everyMs(b.params),
     start(ctx) {
       let busy = false;
       const run = () => {
