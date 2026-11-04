@@ -1,6 +1,6 @@
 # ADR 0031：「等我处理」收件箱、消息送达可见可重试、任务来历
 
-- 状态：proposed（设计稿，等 David 定 Q1–Q8）
+- 状态：accepted（2026-11-03 16:45 PT David 定了 Q1–Q8，全部按推荐，见末尾「定稿」）
 - 相关：ADR 0023（运行时审批卡）、ADR 0028（原生回退）、ADR 0029（上下文交接）、ADR 0030（Worker 加固：能力范围、审计）
 - 参考：DeepSeek dsh-superagent-prototype（研究原型，docs/000–008）：「人的注意力是最稀缺资源」、会话阶段派生、投递失败可见并退避重试、每张工单带 mandate（谁、从哪、凭什么）
 
@@ -136,3 +136,7 @@ interface Provenance {
 
 - 手机 390：![](assets/0031/inbox-390.png)
 - 电脑 1280：![](assets/0031/inbox-1280.png)
+
+## 定稿
+
+2026-11-03 16:45（PT）David 决定：Q1–Q8 全部按推荐；合并本 ADR，按 P1→P4 分期实现上线。
