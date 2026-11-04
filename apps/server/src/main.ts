@@ -2,6 +2,7 @@ import { backupArgs, runBackup } from './backup.ts';
 import { createInstallArtifacts } from './install-artifacts.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { createTimerSource } from '@agent-hub/connector-timer';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -41,6 +42,9 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createMemoryToolProvider,
   createContextToolProvider,
   createSessionToolProvider,
+  createConnectorHub,
+  createAgentTaskToolProvider,
+  notFound, forbidden,
   handoffCapFromEnv,
   defaultMemoryRegistry,
   MEMORY_GUIDANCE,
@@ -275,6 +279,46 @@ const persistentAgents = createPersistentAgents({
   groupsOf: (projectId) => store.groups.groupsOf(projectId),
   detach: (actor, projectId, name) => groupChat.detachAgent(actor, projectId, name)
 });
+// 连接器（ADR 0032 R1）：入站来源只经 InboundSource 端口接进来；核心不认识具体连接器。
+// bot 的会话：派生出来的 → 角色；群成员 → 角色；项目 = 那条会话所在任务的项目（bot 定义在那个项目里，即默认项目）。
+const botOfSession = async (sessionId: SessionId): Promise<{ projectId: string; name: string } | null> => {
+  const role = (await store.messages.spawnOf(sessionId))?.role ?? (await store.groups.memberOfSession(sessionId))?.role ?? null;
+  if (!role) return null;
+  const session = await deps.sessions.byId(sessionId);
+  const task = session ? await deps.tasks.byId(session.taskId) : null;
+  return task ? { projectId: task.projectId, name: role } : null;
+};
+const connectorHub = createConnectorHub({
+  now: deps.now, projects: deps.projects, sessions: deps.sessions, policy: deps.access,
+  store: store.connectors,
+  sources: [createTimerSource()],
+  agentExists: async (projectId, name) => (await messageBus.config(projectId)).roles.some((r) => r.name === name),
+  spawn: async ({ projectId, agentName, ownerId, title }) => {
+    const role = (await messageBus.config(projectId)).roles.find((r) => r.name === agentName);
+    if (!role) return err(notFound(`bot @${agentName} 已不存在`));
+    const user = await store.users.byId(ownerId as UserId);
+    if (!user || user.disabledAt !== null || user.deletedAt !== null) return err(forbidden('建这个触发的账号已停用'));
+    const actor = await withAccess(store.access, { user, loginId: 'agent-connector' as LoginId }, Date.now());
+    const task = await createTaskUseCase(deps, { projectId, title, ownerId });
+    if (!task.ok) return task;
+    const created = await deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
+    if (created.ok) {
+      // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去
+      await store.messages.saveSpawn({ sessionId: created.value.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: created.value.id, traceId: `connector:${created.value.id}`, createdAt: Date.now() });
+      await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' }).catch(() => undefined);
+    }
+    return created;
+  },
+  busy: async (sessionId) => (await store.deliveries.pendingFor(sessionId)).length > 0
+    || (await store.messages.deliveredTo(sessionId)).length > 0 || (await store.groups.deliveredTo(sessionId)).length > 0,
+  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author })
+});
+connectorHub.start();
+setInterval(() => void connectorHub.tick().catch((error: unknown) => log(`连接器重试失败：${String(error)}`)), 15_000).unref();
+hub.stream.subscribe((frame) => {
+  const event = frame.event;
+  if (event?.kind === 'ended') void connectorHub.turnEnded(frame.sessionId, event.outcome).catch(() => undefined);
+});
 // 回合结束：先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
 hub.stream.subscribe((frame) => {
   const event = frame.event;
@@ -392,7 +436,16 @@ toolGateway = createToolGateway({
   now: deps.now,
   toolGrants: store.toolGrants,
   tokens: createTokenIssuer(),
-  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService), createSessionToolProvider(deps)]
+  providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
+    createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
+    // R2：bot 建任务 / 读关联项目；权限 = 关联关系，配额只算触发唤醒的回合（HUB_ROUTER_COUNT_HUMAN=1 时人发起的也算）
+    createAgentTaskToolProvider({
+      ...deps, requests: store.agentTasks, agentOf: botOfSession,
+      associations: (projectId, name) => store.connectors.agentProjects(projectId, name),
+      wakeOf: async (sid) => { const run = await store.connectors.deliveredRunFor(sid); const b = run ? await store.connectors.binding(run.bindingId) : null; return run && b ? { runId: run.id, timeZone: b.timeZone } : null; },
+      countHuman: readEnv('HUB_ROUTER_COUNT_HUMAN') === '1',
+      defaultTimeZone: readEnv('HUB_TIME_ZONE') ?? 'Asia/Shanghai'
+    })]
 });
 
 // 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。
@@ -713,7 +766,7 @@ const envNumber = (name: string): number | undefined => {
   return value === null || value === undefined ? undefined : Number(value);
 };
 
-const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard, 
+const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks }, waitOptions: optionWaiters.wait, guard, 
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {

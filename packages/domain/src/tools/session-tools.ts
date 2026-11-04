@@ -46,7 +46,9 @@ const int = (value: unknown, fallback: number, min: number, max: number): number
 export async function canReadSession(
   deps: Pick<Deps, 'sessions' | 'tasks'>,
   callerId: string,
-  target: Session
+  target: Session,
+  /** bot 关联的项目（ADR 0032）：关联了就能读那些项目里的会话。 */
+  extraProjects?: (callerSessionId: string) => Promise<readonly string[]>
 ): Promise<boolean> {
   if (target.id === callerId) return true;
   let cursor = await deps.sessions.byId(asSessionId(callerId));
@@ -58,10 +60,12 @@ export async function canReadSession(
   }
   if (!caller) return false;
   const [mine, theirs] = await Promise.all([deps.tasks.byId(caller.taskId), deps.tasks.byId(target.taskId)]);
-  return !!mine && !!theirs && mine.projectId === theirs.projectId;
+  if (!mine || !theirs) return false;
+  if (mine.projectId === theirs.projectId) return true;
+  return extraProjects ? (await extraProjects(callerId)).includes(theirs.projectId) : false;
 }
 
-export function createSessionToolProvider(deps: Pick<Deps, 'sessions' | 'tasks'>): ToolProvider {
+export function createSessionToolProvider(deps: Pick<Deps, 'sessions' | 'tasks'> & { readonly extraProjects?: (callerSessionId: string) => Promise<readonly string[]> }): ToolProvider {
   return {
     id: 'session',
     tools: () => SESSION_TOOLS,
@@ -72,7 +76,7 @@ export function createSessionToolProvider(deps: Pick<Deps, 'sessions' | 'tasks'>
       if (!id) return err(invalid('session_id 必填'));
       const target = await deps.sessions.byId(asSessionId(id));
       // 不存在和没权限说法一样，不泄露别人的会话 id 是否存在
-      if (!target || !(await canReadSession(deps, ctx.grant.sessionId, target))) return err(forbidden('读不了这个会话（只能读本会话的分叉来源或同项目的会话）'));
+      if (!target || !(await canReadSession(deps, ctx.grant.sessionId, target, deps.extraProjects))) return err(forbidden('读不了这个会话（只能读本会话的分叉来源、同项目或已关联项目的会话）'));
       const maxChars = int(args.max_chars_per_item, 2000, 200, SESSION_READ_MAX_CHARS);
       const items = handoffItems(await deps.sessions.eventsAfter(target.id, 0 as never));
       const shape = (item: (typeof items)[number], offset = 0) => {

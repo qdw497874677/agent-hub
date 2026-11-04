@@ -23,7 +23,8 @@ const ALLOWED = new Map([
   ['@agent-hub/adapter-acp', ['@agent-hub/domain', '@agent-hub/contract']],
   ['@agent-hub/adapter-accounts', ['@agent-hub/domain']],
   ['@agent-hub/adapter-assets', ['@agent-hub/domain']],
-  ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts', '@agent-hub/adapter-assets']],
+  ['@agent-hub/connector-timer', ['@agent-hub/domain']],
+  ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts', '@agent-hub/adapter-assets', '@agent-hub/connector-timer']],
   ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok', '@agent-hub/adapter-hermes']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
@@ -60,6 +61,16 @@ const FILE_RULES = [
     files: /^packages\/domain\/src\//,
     forbid: /^(ws|zod|hono|@modelcontextprotocol\/sdk)$/,
     why: '领域与传输无关'
+  },
+  {
+    files: /^packages\/(domain|storage-sqlite|contract)\/src\//,
+    forbid: /^@agent-hub\/connector-|github|octokit|linear/i,
+    why: '核心不认识任何具体连接器（ADR 0032）：只认 InboundSource / OutputSink / ToolProvider 端口'
+  },
+  {
+    files: /^packages\/connector-[^/]+\/src\//,
+    only: /^(\.|@agent-hub\/domain$|node:)/,
+    why: '连接器只实现端口，只依赖领域'
   }
 ];
 
