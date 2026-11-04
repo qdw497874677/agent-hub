@@ -1,6 +1,6 @@
 # ADR 0032：连接器（Connector）与总管（Router）
 
-- 状态：proposed（12 个问题和 7 条补充已由 David 定稿，2026-11-04；等他确认草图后合并）
+- 状态：accepted（2026-11-04 PT David 定稿，见末尾「定稿」）
 - 相关：ADR 0023（审批卡）、ADR 0030（能力、凭据预设）、ADR 0031（送达队列 `message_delivery`、收件箱、来历）
 - 参考（/workspace/research）：hermes-agent（cron 先推进 next_run、宽限、运行唯一键）、openclaw（唤醒到主会话、IM 通道）、dsh-superagent（总管拆单）、OpenHands（label 触发、写权限校验、回写 issue）
 
@@ -149,10 +149,6 @@ task += origin_connector, origin_external_id, created_by_agent, approval, queue_
 - 智能体自己管理定时（timer 工具）、自动合并 PR
 - 连接器市场或第三方连接器
 
-## 新的待定问题
-1. Binding 挂在智能体下还是项目下？推荐挂在智能体下（Bot 页管理），project 作为过滤字段。
-2. 工具门控是否新增能力名（`connector.github.comment`），还是复用 ADR 0030 的预设？推荐新增细粒度能力，并映射进现有预设（no-push 允许 comment/react）。
-
 ## 草图
 - Bot 页「连接器」（触发 + 工具 + 记录）：![](assets/0032/conn-390.png) ![](assets/0032/conn-1280.png)
 - 总管面板：![](assets/0032/dash-390.png) ![](assets/0032/dash-1280.png)
@@ -162,3 +158,4 @@ task += origin_connector, origin_external_id, created_by_agent, approval, queue_
 2026-11-04（PT）David 决定：
 - Q1–Q12 全部按推荐；7 条补充也已接受（人工任务不受项目上限、注入用规则隔离、时间按时区显示存 UTC、配额按自然日重置、写权限在代码里核对、外部文本按不可信处理、核心不得 import github）。
 - 设计改为以 Connector 为统一抽象，遵循「简单而抽象」的原则。
+- 2026-11-04（PT）补充：Binding 挂在智能体下（Bot 页管理，project 只是过滤字段）；工具门控新增细粒度能力（如 `connector.github.comment`），并映射进现有权限预设（no-push 允许 comment/react）。
