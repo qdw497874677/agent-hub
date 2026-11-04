@@ -823,3 +823,27 @@ export interface AttentionDto {
   readonly items: readonly AttentionItemDto[];
   readonly working: number;
 }
+
+/** 连接器（ADR 0032）：bot 的触发、运行记录、关联项目、等我处理。 */
+export interface TriggerRunDto { id: string; bindingId: string; externalId: string; plannedAt: number | null; catchup: boolean; state: 'waiting' | 'delivered' | 'done' | 'failed' | 'skipped'; reason: string | null; sessionId: string | null; createdAt: number; updatedAt: number }
+export interface BindingDto {
+  id: string; connector: string; kind: string; agentProjectId: string; agentName: string; projectId: string | null; name: string; target: 'main' | 'new';
+  params: Record<string, unknown>; enabled: boolean; pausedReason: string | null; consecutiveFailures: number; nextRunAt: number | null; mainSessionId: string | null;
+  timeZone: string; summary: string; lastRun: TriggerRunDto | null; createdAt: number
+}
+export interface ConnectorNoticeDto { kind: 'binding_paused' | 'task_pending'; id: string; title: string; reason: string; since: number; projectId: string; agentName: string | null }
+const agentPath = (projectId: string, name: string) => `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}`;
+export const connectorApi = {
+  bindings: (projectId: string, name: string) => call<{ bindings: BindingDto[] }>(`${agentPath(projectId, name)}/bindings`),
+  create: (projectId: string, name: string, input: { connector: string; kind: string; name: string; target: 'main' | 'new'; projectId: string | null; params: Record<string, unknown>; timeZone: string }) =>
+    post<BindingDto>(`${agentPath(projectId, name)}/bindings`, input),
+  update: (id: string, patch: { enabled?: boolean; name?: string; target?: 'main' | 'new'; params?: Record<string, unknown> }) =>
+    call<BindingDto>(`/api/bindings/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  remove: (id: string) => call<{ ok: true }>(`/api/bindings/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  runs: (id: string) => call<{ runs: TriggerRunDto[] }>(`/api/bindings/${encodeURIComponent(id)}/runs`),
+  projects: (projectId: string, name: string) => call<{ defaultProjectId: string; projectIds: string[] }>(`${agentPath(projectId, name)}/projects`),
+  setProjects: (projectId: string, name: string, projectIds: string[]) =>
+    call<{ defaultProjectId: string; projectIds: string[] }>(`${agentPath(projectId, name)}/projects`, { method: 'PUT', body: JSON.stringify({ projectIds }) }),
+  notices: () => call<{ notices: ConnectorNoticeDto[] }>('/api/connectors/notices'),
+  decide: (id: string, approve: boolean) => post<unknown>(`/api/agent-tasks/${encodeURIComponent(id)}/decision`, { approve })
+};

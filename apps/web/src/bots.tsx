@@ -4,6 +4,7 @@ import { api, botApi, type BotColorDto, type BotDto, type MessagingRoleDto } fro
 import { AccountMenu, useAccount } from './auth.tsx';
 import { formatRoute } from './route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from './admin/shared.tsx';
+import { BotConnectors } from './bot-connectors.tsx';
 
 /**
  * Bot 页（#/bots[/<项目>]）：持久智能体在界面上就叫 bot。
@@ -203,6 +204,7 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
                 <p className="text-meta text-secondary">{runtime(b.agentId)} · {b.model || '默认模型'}</p>
                 {b.description ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{b.description}</p> : null}
                 <p className="mt-1 text-meta text-tertiary" data-testid="bot-groups">{b.groups.length ? `在 ${b.groups.map((g) => g.name).join('、')}` : '还没进群'}</p>
+                {pid ? <BotConnectors projectId={pid} name={b.name} /> : null}
               </div>
               <div className="flex shrink-0 flex-col gap-1 sm:flex-row">
                 <button className={SMALL} data-testid="bot-edit" onClick={() => setEditing(b.name)}>编辑</button>

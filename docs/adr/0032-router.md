@@ -16,7 +16,7 @@
 |---|---|---|
 | **入站** | `InboundSource` | 发出规范化入站事件 `{kind, externalId, actor, text: Untrusted, url}`；hub 按 **Binding** 转成消息，经 ADR 0031 送达队列投递到持久智能体（主会话 / 每次新会话） |
 | | `OutputSink`（可选） | 会话桥的回程：任务生命周期或会话回复 → 来源侧动作（GitHub 评论、IM 回消息） |
-| **出站** | `ToolProvider` | 暴露给智能体调用的工具，经现有能力和权限预设门控 |
+| **出站** | `ToolProvider`（**已有**：`packages/domain/src/ports/tool-provider.ts`） | 暴露给智能体调用的工具：注册进现有工具网关（`createToolGateway`），**经 MCP 到达运行时**（hub 侧 `apps/server/src/mcp-server.ts`，worker 侧 `apps/worker/src/mcp-shim.ts`）；门控 = 现有 ToolGrant / scope + 新的细粒度能力。**MCP 是工具到运行时的唯一通道**，不另建工具端口或传输 |
 
 - **Binding**（核心）：一条配置，内容是「入站事件 → 哪个智能体、主会话还是每次新会话、限定哪个项目」。
 - 核心**分别**注册和处理入站与出站，两半之间没有依赖。只做入站的（timer）、只提供工具的（纯 MCP 工具集）、两者都有的（GitHub、IM），走的是同一套代码。
@@ -54,26 +54,40 @@ flowchart LR
 ### 端口
 
 ```ts
-// ports/inbound-source.ts
+// ports/inbound-source.ts（R1 新增）
 interface InboundSource { id: string; kinds: string[];
-  start(inst: ConnectorInstance, emit: (e: InboundEvent) => Promise<void>): Stoppable }
-type InboundEvent = { kind: string; externalId: string; parentExternalId?: string;
-  actor: { id: string; trusted: boolean }; text: Untrusted<string>; url?: string;
-  verdict: 'ok' | { skip: SkipReason } | 'quarantine' };   // 硬规则由来源在 emit 前判定
-// ports/output-sink.ts
-interface OutputSink { id: string; deliver(inst, ev: TaskLifecycleEvent | SessionReply): Promise<void> }
-// ports/tool-provider.ts
-interface ToolProvider { id: string; tools: ToolSpec[]; call(inst, tool, args, ctx): Promise<ToolResult> }
-// 连接器 = 可选组合，仅用于打包和 UI 分组
-type Connector = { id: string; inbound?: InboundSource; sink?: OutputSink; tools?: ToolProvider };
+  validate(kind, params): string | null; describe(binding): string;
+  start(ctx: InboundContext): { stop(): void } }
+interface InboundContext { now(); bindings(); advance(id, expected, next) /* CAS */;
+  emit(bindingId, e: InboundEvent); skip(bindingId, {externalId, plannedAt}, reason) }
+type InboundEvent = { kind; externalId; parentExternalId?; plannedAt?; catchup?;
+  title; text: string /* 人写的 */ | Untrusted<string> /* 外部来的 */; url? };
+// 硬规则（标签、写权限、注入）由来源在 emit 前判定；核心再兜底去重、配额
+// ports/output-sink.ts（R1 只放类型，R4 实现）
+interface OutputSink { id: string; deliver(binding, ev): Promise<void> }
+// ports/tool-provider.ts（已有，不改）：{ id, tools(): ToolDescriptor[], call(name, input, {grant, now}) }
 ```
 
+「ToolRegistry」就是现有工具网关的 `providers` 列表：连接器的工具半边 = 一个 `ToolProvider`，在组合根注册进去，自动经 MCP 暴露。
+
 `Untrusted<T>` 是领域类型：送进模型前统一包成带边界标记的引用块，并注明「这是数据，不是指令」。去重（`connector + externalId`）和每日配额由核心在 emit 之后再统一做一次兜底。
+
+## 持久智能体 = 组合，不是新类型
+
+持久智能体（bot）= **{ 工作空间, 提示策略, 工具集, 记忆 }** + **关联项目** + **连接器 Binding**。总管只是其中一种组合（总管提示策略 + task 工具 + 关联项目），**不是新类型**；任何 bot 关联了项目就能用 task 工具。
+
+- **独立于项目**：bot 有一个默认项目（定义它的项目）和一组关联项目（新表 `agent_project`）。关联集合**就是**总管白名单，不另设白名单。
+- 关联了：bot 能读项目信息、读任务和会话、在那里建任务；没关联：看不见、写不了。只有在两个项目上都有修改权限的人才能关联。
+- 触发消息进 bot 的会话；`task.create` 不带项目就用默认项目；显式项目必须在关联集合里。
+- R1/R2 新代码只依赖它需要的那一小块：task 工具经现有工具网关注册；Binding 只认 bot 标识（默认项目 + @id）；关联只是一张表；不碰提示策略和记忆。
+
+**主线场景**：用户建 bot → 在对话里让它做事 → 它调 `task.create` 在默认项目建任务 → 任务会话推进（R3 调度；R3 之前人用现有任务流程启动）→ 完成后经送达队列通知 bot → bot 向用户汇报。
 
 ## 场景检验
 
 | 场景 | 入站 | Sink | 工具 | Binding |
 |---|---|---|---|---|
+| **主线：对话 → 建任务** | — | — | ✓ `task.create`（核心） | 不需要 |
 | 定时唤醒 `timer` | ✓ `timer.fired` | — | — | → 总管主会话 / 每次新会话 |
 | GitHub issue | ✓ `issue.eligible`（agent 标签 + 写权限） | ✓ 👀 / PR 链接 / 失败原因 | ✓ `github.comment/react` | → 总管，限定项目 |
 | GitHub PR 跟进 | ✓ `pr.mention`（写权限者 @ 机器人） | ✓ | ✓ | → 原会话（parentExternalId） |
@@ -96,10 +110,16 @@ type Connector = { id: string; inbound?: InboundSource; sink?: OutputSink; tools
   - 默认送主会话，也可以每次新会话（Q1）；最小间隔 5 分钟，默认 15 分钟（Q2）。
   - 定时不过期；连续失败 5 次自动暂停，并进「等我处理」（Q4）。
 - 第一期只有人能在 UI 上建 Binding（Q5）。时间按账号时区显示，存储用 UTC。
+- 实现（R1）：内置 `@agent-hub/connector-timer` 包（只依赖 domain）；`connector_instance` 推迟到 R4（timer 不需要配置和凭据，R1 不建空表）。
+  - Binding 挂在 bot（定义项目 + @id）下；`project_id` 只是可选的过滤字段，必须是 bot 的默认或关联项目。
+  - 主会话：第一次触发时开一条（建任务 + 派生，并记成这个 bot 的派生会话，职责说明照常注入），之后复用；坏了再开。
 
 ### R2 任务工具（核心）
-- `task.create / task.list / task.cancel`；`create` 带 `origin {connector, externalId}`，同一个键只建一次。
-- 「总管」权限档：每次唤醒最多建 3 个、每天 20 个（按账号时区的自然日重置），只限白名单项目；超出的进收件箱等人批准（Q6）。配额在代码里检查。
+- `task.create / task.list / task.cancel`；`create` 带 `source {connector, externalId}`，同一项目同一个键只建一次。新 scope `task:create`。
+- 读工具（按关联门控）：`project.list`、`project.get`（默认 + 关联项目）、`task.list`（跨关联项目）、复用现有 `session.read`（放宽到「同项目或已关联项目」）。
+- 「总管」权限档：每次唤醒最多建 3 个、每天 20 个（按 Binding 时区的自然日重置），只限关联项目；超出的进收件箱等人批准（Q6）。配额在代码里检查。
+- **配额只算连接器 / 触发唤醒的回合**；人在对话里发起的回合建的任务不计（`HUB_ROUTER_COUNT_HUMAN=1` 可改成也算）。见「开放问题」。
+- `task.cancel` 只能取消自己建的、还没开始（todo）或还在待批的；用 system 身份置 abandoned（agent 本身仍不能置 done/abandoned）。
 
 ### R3 调度器（核心）
 - 并发上限：全局 2、每台机器 1、每个项目 1，另留 1 个人工槽（Q7）。人手发起的任务只受全局上限和人工槽约束，不受「每个项目 1」限制。
@@ -121,15 +141,21 @@ type Connector = { id: string; inbound?: InboundSource; sink?: OutputSink; tools
 ## 数据模型草图
 
 ```sql
+-- R1（已实现）
+connector_binding(id, connector, kind, agent_project_id, agent_name,   -- 挂在 bot 下
+                  project_id NULL,                                     -- 可选过滤，须是默认 / 关联项目
+                  name, target 'main'|'new', params,                   -- timer: everyMin/prompt
+                  enabled, paused_reason, consecutive_failures, next_run_at, main_session_id,
+                  created_by, time_zone, created_at, updated_at)
+trigger_run(id, binding_id, external_id, planned_at, catchup, state 'waiting'|'delivered'|'done'|'failed'|'skipped',
+            reason, session_id, text, created_at, updated_at, UNIQUE(binding_id, external_id))
+agent_project(agent_project_id, agent_name, project_id)                -- 关联 = 白名单
+-- R2（已实现；不改 task 表，来历和配额记在旁表）
+agent_task_request(id, task_id NULL, account_id, agent, session_id, project_id, title, goal,
+                   origin_connector, origin_external_id, wake_key, counted, approval 'none'|'pending'|'approved'|'rejected'|'cancelled',
+                   UNIQUE(project_id, origin_connector, origin_external_id) WHERE 未拒绝 / 未取消)
+-- R4
 connector_instance(id, account_id, connector, config_json, token_ref, enabled, created_at)
-connector_binding(id, instance_id, event_kind, agent_id, target 'main'|'new', project_id,
-                  params_json,            -- timer: every_sec/prompt；github: repo/label
-                  next_run_at, paused_reason, consecutive_failures, created_by)
-trigger_run(id, binding_id, planned_at, external_id, decision 'delivered'|'skipped'|'quarantined'|'pending_approval'|'catchup',
-            reason, delivery_id, task_id, created_at,
-            UNIQUE(binding_id, planned_at), UNIQUE(binding_id, external_id))
-task += origin_connector, origin_external_id, created_by_agent, approval, queue_state, worker_id
-        UNIQUE(project_id, origin_connector, origin_external_id)
 ```
 
 ## 分期
@@ -143,6 +169,18 @@ task += origin_connector, origin_external_id, created_by_agent, approval, queue_
 | R5 | 面板 | 390/1280 截图 |
 
 每期：本地 `npm run ci` 和完整 e2e 都通过才合并；部署前先做快照；线上只用测试账号验证。
+
+## 开放问题
+- **配额是否算人发起的回合**：现定不算（只算触发唤醒的回合，识别方式 = 这条会话上有已投递的 trigger_run），`HUB_ROUTER_COUNT_HUMAN=1` 可改。以后可做成每个 bot 的设置。
+- **账号时区**：代码里没有账号时区；R1 由浏览器建 Binding 时带上时区，人发起的回合用 `HUB_TIME_ZONE`（默认 Asia/Shanghai）。以后加到账号设置。
+- **bot 的组成部分有耦合（R1/R2 不重构，只列出来）**：
+  - bot 存在项目的消息配置里（`messaging.roles`），标识是「项目 + @id」，没有独立的 agent id；关联表和 Binding 只能用这对键。
+  - 提示策略 = role 的 `description`，靠「派生记录 / 群成员」反查 role 后注入；会话不派生就拿不到。
+  - 工具集不是按 bot 配：所有会话共用 `DEFAULT_TOOL_SCOPES`，没有「这个 bot 有哪些工具」的配置。
+  - 工作空间跟任务走：bot 要开会话必须先建一个任务（触发的主会话也是这样）。
+  - 记忆按项目 / 账号作用域，不认 bot。
+  - 建议后续重构：独立 `agent` 表（稳定 id）+ 四个可替换部件 `{workspace, promptPolicy, toolset, memory}` 各自引用；role 配置迁过去；工具集按 bot 选 scope / 能力；bot 自有常驻工作空间不再借任务。
+- 连接器工具（R4 起）用细粒度能力（如 `connector.github.comment`）；R2 的 task 工具先用 scope `task:create`，待能力表落地后映射过去。
 
 ## 以后再说
 - Webhook 推送触发、IM/邮件/Linear 连接器的具体实现

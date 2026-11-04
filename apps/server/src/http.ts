@@ -1,3 +1,4 @@
+import { installConnectorRoutes, type ConnectorRouteDeps } from './connector-routes.ts';
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
@@ -161,6 +162,8 @@ export interface AppOptions {
   readonly guard?: RequestGuard;
   /** 会话里「谁做的」：操作审计 + 作者名刷新；只在有账号体系时装。 */
   readonly activity?: SessionActivityOptions;
+  /** 连接器（ADR 0032）：触发、关联项目、超额待批。 */
+  readonly connectors?: Omit<ConnectorRouteDeps, 'deps'>;
   /** 「等我处理」（ADR 0031 D1）。 */
   readonly attention?: { readonly store: AttentionStore; readonly pullRequests?: Pick<PullRequestRepository, 'byTask'> };
   /**
@@ -254,6 +257,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.auth.team) installTeam(app, options.auth.team, principalOf);
     if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
     if (options.messaging) installMessagingRoutes(app, { ...options.messaging, deps }, subjectOf);
+    if (options.connectors) installConnectorRoutes(app, { ...options.connectors, deps }, subjectOf);
     if (options.memory) installMemoryRoutes(app, { ...options.memory, deps }, subjectOf);
     if (options.groups) installGroupRoutes(app, options.groups, subjectOf);
     if (options.context) installContextRoutes(app, options.context, subjectOf);

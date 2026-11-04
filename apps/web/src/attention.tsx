@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, type AttentionItemDto, type AttentionPhase } from './api.ts';
+import { api, connectorApi, type AttentionItemDto, type AttentionPhase } from './api.ts';
+import { formatRoute } from './route.ts';
 import { relativeTime } from './workers.tsx';
 
 /**
@@ -70,16 +71,17 @@ export function useAutoAck(sessionId: string | null, delayMs = 3000) {
 export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): void }) {
   const attention = useAttention();
   const ack = useAckAttention();
-  if (!attention.data) return null;
+  if (!attention.data) return <ConnectorNotices />;
   const { items, working } = attention.data;
   if (items.length === 0) {
     return (
-      <p data-testid="attention-quiet" className="mb-4 text-meta text-tertiary">
+      <><ConnectorNotices /><p data-testid="attention-quiet" className="mb-4 text-meta text-tertiary">
         没有等你处理的{working > 0 ? ` · ${working} 条在跑` : ''}
-      </p>
+      </p></>
     );
   }
   return (
+    <><ConnectorNotices />
     <section data-testid="attention-inbox" className="mb-5 rounded-md border border-rust/40 bg-card">
       <p className="border-b border-hair px-3 py-2 text-meta text-primary">
         等我处理 · {items.length}
@@ -101,6 +103,41 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
             <button data-testid="attention-later" className="shrink-0 text-meta text-secondary hover:text-accent" onClick={() => ack.mutate(item)}>
               稍后
             </button>
+          </li>
+        ))}
+      </ul>
+    </section></>
+  );
+}
+
+/** 连接器的事（ADR 0032）：自动暂停的触发、超额等批准的 bot 任务。 */
+function ConnectorNotices() {
+  const client = useQueryClient();
+  const notices = useQuery({ queryKey: ['connector-notices'], queryFn: connectorApi.notices, refetchInterval: 15_000 });
+  const decide = useMutation({
+    mutationFn: ({ id, approve }: { id: string; approve: boolean }) => connectorApi.decide(id, approve),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['connector-notices'] })
+  });
+  const list = notices.data?.notices ?? [];
+  if (!list.length) return null;
+  return (
+    <section data-testid="connector-notices" className="mb-3 rounded-md border border-rust/40 bg-card">
+      <ul>
+        {list.map((n) => (
+          <li key={`${n.kind}|${n.id}`} data-testid="connector-notice" data-kind={n.kind} className="flex flex-wrap items-center gap-2 border-b border-hair px-3 py-2 last:border-b-0">
+            <span className="shrink-0 rounded bg-rust/15 px-1.5 text-[11px] leading-[18px] text-rust">{n.kind === 'binding_paused' ? '触发已暂停' : 'bot 建任务待批'}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-body text-primary">{n.title}</span>
+              <span className="block truncate text-meta text-tertiary">{n.reason} · {relativeTime(n.since)}</span>
+            </span>
+            {n.kind === 'task_pending' ? (
+              <span className="flex gap-1">
+                <button data-testid="agent-task-approve" className="text-meta text-accent" disabled={decide.isPending} onClick={() => decide.mutate({ id: n.id, approve: true })}>批准</button>
+                <button data-testid="agent-task-reject" className="text-meta text-secondary" disabled={decide.isPending} onClick={() => decide.mutate({ id: n.id, approve: false })}>拒绝</button>
+              </span>
+            ) : (
+              <a className="text-meta text-accent" href={formatRoute({ page: 'bots', projectId: n.projectId })}>去 Bot 页</a>
+            )}
           </li>
         ))}
       </ul>

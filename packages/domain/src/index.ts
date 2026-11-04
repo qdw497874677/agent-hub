@@ -165,3 +165,10 @@ export { recordProvenance, type ProvenanceDeps, type RecordProvenanceInput } fro
 export { derivePhase, needsHuman, isAskTool, NEEDS_HUMAN, PHASE_RANK, type Phase, type PhaseView, type PhaseInput } from './attention.ts';
 export type { AttentionStore, AttentionAck } from './ports/attention-store.ts';
 export { loadAttention, ATTENTION_WINDOW_MS, type AttentionItem, type AttentionView, type AttentionDeps } from './use-cases/attention.ts';
+export * from './connector.ts';
+export type { InboundSource, InboundContext } from './ports/inbound-source.ts';
+export type { OutputSink } from './ports/output-sink.ts';
+export type { ConnectorStore } from './ports/connector-store.ts';
+export type { AgentTaskStore, AgentTaskRequest, AgentTaskApproval } from './ports/agent-task-store.ts';
+export { createConnectorHub, type ConnectorHub, type ConnectorHubDeps, type BindingInput, type BindingView, type ConnectorNotice } from './use-cases/connectors.ts';
+export { createAgentTaskToolProvider, decideAgentTask, AGENT_TASK_TOOLS, ROUTER_CAPS, type AgentTaskToolDeps } from './tools/agent-task-tools.ts';
