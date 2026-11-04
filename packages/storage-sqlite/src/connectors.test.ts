@@ -13,7 +13,7 @@ const fake: AgentDescriptor = { id: asAgentId('fake'), label: 'F', models: ['m']
   capabilities: { prompt: on, interrupt: on, fork: on, resume: on, tool_calls: on, artifacts: on, structured_events: on, attachments: on } };
 const actor = { user: { id: 'u1' } } as unknown as Principal;
 
-async function world(opts: { countHuman?: boolean } = {}) {
+async function world(opts: { countHuman?: boolean; fresh?: { lastSeq: number } } = {}) {
   const w = inMemoryDeps();
   w.agents.push(fake);
   const { connectors, agentTasks } = createSqliteConnectors(new DatabaseSync(':memory:'));
@@ -26,7 +26,7 @@ async function world(opts: { countHuman?: boolean } = {}) {
     assert.ok(t.ok);
     const s = await deriveSessionUseCase(w.deps, { taskId: t.value.id, agentId: 'fake', model: 'm' });
     assert.ok(s.ok);
-    const withOwner = { ...s.value, createdBy: 'u1', status: 'stopped' as const };
+    const withOwner = opts.fresh ? { ...s.value, createdBy: 'u1', status: 'running' as const, lastSeq: opts.fresh.lastSeq } : { ...s.value, createdBy: 'u1', status: 'stopped' as const };
     await w.deps.sessions.save(withOwner);
     return withOwner;
   };
@@ -163,4 +163,18 @@ test('agent_project：关联可改可清', async () => {
   assert.deepEqual(await connectors.agentProjects('p', 'a'), []);
   const b = { id: 'b', nextRunAt: null } as unknown as ConnectorBinding;
   void b; void (null as unknown as SessionId);
+});
+
+test('触发：刚派生、从没发过话的会话（running + lastSeq 0）直接投；真在跑一轮才等', async () => {
+  const fresh = await world({ fresh: { lastSeq: 0 } });
+  const b = await fresh.hub.create(actor, fresh.home.id, 'router', { connector: 'timer', kind: 'tick', name: '巡检', params: { prompt: '看看' } });
+  assert.ok(b.ok);
+  await fresh.ctx().emit(b.value.id, { kind: 'tick', externalId: '1', plannedAt: 1, title: '巡检', text: '看看' });
+  assert.equal(fresh.delivered.length, 1);
+  const working = await world({ fresh: { lastSeq: 3 } });
+  const b2 = await working.hub.create(actor, working.home.id, 'router', { connector: 'timer', kind: 'tick', name: '巡检', params: { prompt: '看看' } });
+  assert.ok(b2.ok);
+  await working.ctx().emit(b2.value.id, { kind: 'tick', externalId: '1', plannedAt: 1, title: '巡检', text: '看看' });
+  assert.equal(working.delivered.length, 0);
+  assert.equal((await working.connectors.runs(b2.value.id, 10))[0]!.state, 'waiting');
 });

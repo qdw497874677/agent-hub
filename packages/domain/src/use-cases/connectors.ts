@@ -5,7 +5,7 @@ import { newId, type ProjectId, type SessionId } from '../ids.ts';
 import type { ConnectorStore } from '../ports/connector-store.ts';
 import type { InboundContext, InboundSource } from '../ports/inbound-source.ts';
 import { err, ok, type Result } from '../result.ts';
-import type { Session } from '../session.ts';
+import { isBusy, type Session } from '../session.ts';
 import { authorizeProject, type AccessPolicy } from './authorization.ts';
 import type { Deps } from './deps.ts';
 
@@ -81,7 +81,8 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     if (!session.ok) return fail(binding, run, session.error.message);
     const sessionId = session.value.id;
     const now = deps.now();
-    if (session.value.status === 'running' || (await deps.busy(sessionId))) {
+    // 只有真在跑一轮才算忙；刚派生、从没发过话的会话（lastSeq = 0）也是 running，但要直接投
+    if (isBusy(session.value) || (await deps.busy(sessionId))) {
       await deps.store.saveRun({ ...run, state: 'waiting', sessionId, reason: '智能体正忙，等它这一轮结束', updatedAt: now });
       return;
     }
