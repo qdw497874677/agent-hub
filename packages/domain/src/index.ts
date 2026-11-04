@@ -162,3 +162,6 @@ export { attemptDelivery, pumpDeliveries, retryDeliveryNow, cancelDelivery, type
 export { validateProvenance, legacyProvenance, viaLabel, PARENT_REQUIRED, type SessionProvenance, type ProvenanceVia, type ProvenanceActorKind } from './provenance.ts';
 export type { ProvenanceStore } from './ports/provenance-store.ts';
 export { recordProvenance, type ProvenanceDeps, type RecordProvenanceInput } from './use-cases/provenance.ts';
+export { derivePhase, needsHuman, isAskTool, NEEDS_HUMAN, PHASE_RANK, type Phase, type PhaseView, type PhaseInput } from './attention.ts';
+export type { AttentionStore, AttentionAck } from './ports/attention-store.ts';
+export { loadAttention, ATTENTION_WINDOW_MS, type AttentionItem, type AttentionView, type AttentionDeps } from './use-cases/attention.ts';

@@ -45,7 +45,8 @@ import {
   workerInfoSchema
 } from '@agent-hub/contract';
 import type { Deps, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
-import { systemSubject } from '@agent-hub/domain';
+import { systemSubject, isSystem, loadAttention, NEEDS_HUMAN } from '@agent-hub/domain';
+import type { AttentionStore, PullRequestRepository } from '@agent-hub/domain';
 const NO_AUTH_SUBJECT = systemSubject('no-auth');
 import {
   authorizeProject,
@@ -160,6 +161,8 @@ export interface AppOptions {
   readonly guard?: RequestGuard;
   /** 会话里「谁做的」：操作审计 + 作者名刷新；只在有账号体系时装。 */
   readonly activity?: SessionActivityOptions;
+  /** 「等我处理」（ADR 0031 D1）。 */
+  readonly attention?: { readonly store: AttentionStore; readonly pullRequests?: Pick<PullRequestRepository, 'byTask'> };
   /**
    * 等 agent 回报它改完之后的可调项。
    *
@@ -716,6 +719,28 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/sessions/:sessionId/activity', async (c) =>
     c.json(options.activity ? await sessionActivity(options.activity, c.req.param('sessionId')) : [])
   );
+
+  // 等我处理（ADR 0031 D1）：只看我发起的、或我负责的任务；不推送，前端拿来画角标和收件箱。
+  app.get('/api/attention', async (c) => {
+    const subject = subjectOf(c);
+    const att = options.attention;
+    if (!att || !subject || isSystem(subject)) return c.json({ items: [], working: 0 });
+    return c.json(await loadAttention(
+      { ...deps, attention: att.store, deliveries: deps.deliveries, pullRequests: att.pullRequests },
+      { accountId: subject.user.id, now: Date.now(), include: await projectReader(deps.access, subject) }
+    ));
+  });
+  app.post('/api/attention/ack', async (c) => {
+    const subject = subjectOf(c);
+    const att = options.attention;
+    if (!att || !subject || isSystem(subject)) return c.json({ ok: true });
+    const body = (await c.req.json().catch(() => null)) as { sessionId?: unknown; phase?: unknown; since?: unknown } | null;
+    if (!body || typeof body.sessionId !== 'string' || typeof body.phase !== 'string' || !NEEDS_HUMAN.has(body.phase as never) || typeof body.since !== 'number') {
+      return c.json({ error: { code: 'invalid', message: '需要 sessionId / phase / since' } }, 400);
+    }
+    await att.store.ack(subject.user.id, { sessionId: body.sessionId, phase: body.phase as never, since: body.since }, Date.now());
+    return c.json({ ok: true });
+  });
 
   // 任务来历（ADR 0031 D3）：谁、从哪、凭什么开的；只读。访问中间件按 session.read 守着。
   app.get('/api/sessions/:sessionId/provenance', async (c) => {

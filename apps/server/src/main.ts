@@ -745,6 +745,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
   activity: { audit: store.audit, users: store.users, provenance: store.provenance },
+  attention: { store: store.attention, pullRequests: pullRequestRepo },
   messaging: { bus: messageBus, messages: store.messages },
   groups: { groups: groupChat, agents: persistentAgents },
   context: contextService,
