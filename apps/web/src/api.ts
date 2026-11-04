@@ -825,7 +825,7 @@ export interface AttentionDto {
 }
 
 /** 连接器（ADR 0032）：bot 的触发、运行记录、关联项目、等我处理。 */
-export interface TriggerRunDto { id: string; bindingId: string; externalId: string; plannedAt: number | null; catchup: boolean; state: 'waiting' | 'delivered' | 'done' | 'failed' | 'skipped'; reason: string | null; sessionId: string | null; createdAt: number; updatedAt: number }
+export interface TriggerRunDto { id: string; bindingId: string; externalId: string; plannedAt: number | null; catchup: boolean; state: 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped'; reason: string | null; sessionId: string | null; createdAt: number; updatedAt: number }
 export interface BindingDto {
   id: string; connector: string; kind: string; agentProjectId: string; agentName: string; projectId: string | null; name: string; target: 'main' | 'new';
   params: Record<string, unknown>; enabled: boolean; pausedReason: string | null; consecutiveFailures: number; nextRunAt: number | null; mainSessionId: string | null;

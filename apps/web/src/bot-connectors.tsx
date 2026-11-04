@@ -9,7 +9,7 @@ import { INPUT, SMALL, DANGER, errorText } from './admin/shared.tsx';
  * 关联项目 = bot 能看见 / 建任务的项目（默认项目是定义它的那个，总在里面）。
  * 触发只能由人在这里建；timer 最短 5 分钟、默认 15；连续失败 5 次自动暂停。
  */
-const STATE: Record<TriggerRunDto['state'], string> = { waiting: '等待中', delivered: '已投递', done: '完成', failed: '失败', skipped: '跳过' };
+const STATE: Record<TriggerRunDto['state'], string> = { waiting: '等待中', delivered: '已投递', done: '完成', failed: '失败', timeout: '超时', skipped: '跳过' };
 const time = (ms: number | null) => (ms ? new Date(ms).toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—');
 
 export function BotConnectors({ projectId, name }: { projectId: string; name: string }) {

@@ -16,6 +16,7 @@ export interface ConnectorStore {
   runs(bindingId: string, limit: number): Promise<TriggerRun[]>;
   openRuns(bindingId: string): Promise<TriggerRun[]>;
   waitingRuns(): Promise<TriggerRun[]>;
+  deliveredRuns(): Promise<TriggerRun[]>;
   deliveredRunFor(sessionId: string): Promise<TriggerRun | null>;
   /** 智能体关联的项目（默认项目 = 定义它的项目，不在表里）。 */
   agentProjects(agentProjectId: string, agentName: string): Promise<string[]>;

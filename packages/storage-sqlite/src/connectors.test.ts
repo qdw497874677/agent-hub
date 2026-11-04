@@ -13,7 +13,8 @@ const fake: AgentDescriptor = { id: asAgentId('fake'), label: 'F', models: ['m']
   capabilities: { prompt: on, interrupt: on, fork: on, resume: on, tool_calls: on, artifacts: on, structured_events: on, attachments: on } };
 const actor = { user: { id: 'u1' } } as unknown as Principal;
 
-async function world(opts: { countHuman?: boolean; fresh?: { lastSeq: number } } = {}) {
+async function world(opts: { countHuman?: boolean; fresh?: { lastSeq: number }; onDeliver?: (sessionId: string) => Promise<void> } = {}) {
+  let skew = 0;
   const w = inMemoryDeps();
   w.agents.push(fake);
   const { connectors, agentTasks } = createSqliteConnectors(new DatabaseSync(':memory:'));
@@ -36,11 +37,11 @@ async function world(opts: { countHuman?: boolean; fresh?: { lastSeq: number } }
   let ctx: InboundContext | null = null;
   const src: InboundSource = { id: 'timer', kinds: ['tick'], validate: (_k, p) => (typeof p.prompt === 'string' && p.prompt ? null : '要写 prompt'), describe: () => '每 15 分钟', start: (c) => { ctx = c; return { stop() {} }; } };
   const hub = createConnectorHub({
-    now: w.deps.now, projects: w.deps.projects, sessions: w.deps.sessions, store: connectors, sources: [src],
+    now: () => w.deps.now() + skew, projects: w.deps.projects, sessions: w.deps.sessions, store: connectors, sources: [src],
     agentExists: async (_p, n) => n === 'router',
     spawn: async () => ok(botSession),
     busy: async () => busy,
-    deliver: async (sessionId, text) => { delivered.push({ sessionId, text }); return ok(undefined); }
+    deliver: async (sessionId, text) => { delivered.push({ sessionId, text }); await opts.onDeliver?.(sessionId); return ok(undefined); }
   });
   hub.start();
   const tools = createAgentTaskToolProvider({
@@ -51,7 +52,7 @@ async function world(opts: { countHuman?: boolean; fresh?: { lastSeq: number } }
     countHuman: opts.countHuman
   });
   const grant = { grant: { sessionId: botSession.id, taskId: botSession.taskId, scopes: ['task:create', 'task:read'] } as unknown as ToolGrant, now: 0 };
-  return { w, connectors, agentTasks, hub, tools, grant, home, other, hidden, botSession, delivered, setBusy: (b: boolean) => { busy = b; }, ctx: () => ctx! };
+  return { w, connectors, agentTasks, hub, tools, grant, home, other, hidden, botSession, delivered, setBusy: (b: boolean) => { busy = b; }, ctx: () => ctx!, skip: (ms: number) => { skew += ms; } };
 }
 
 test('触发：建 → 触发投递 → 同一时刻去重 → 上一次没完跳过 → 回合结束记完成', async () => {
@@ -177,4 +178,37 @@ test('触发：刚派生、从没发过话的会话（running + lastSeq 0）直�
   await working.ctx().emit(b2.value.id, { kind: 'tick', externalId: '1', plannedAt: 1, title: '巡检', text: '看看' });
   assert.equal(working.delivered.length, 0);
   assert.equal((await working.connectors.runs(b2.value.id, 10))[0]!.state, 'waiting');
+});
+
+test('触发：回合在 deliver 返回前就结束（快回合）也能记完成，下一次照常投', async () => {
+  let hubRef: { turnEnded: (s: string, o: 'done') => Promise<void> } | null = null;
+  const x = await world({ onDeliver: async (sid) => { await hubRef!.turnEnded(sid, 'done'); } });
+  hubRef = x.hub;
+  const b = await x.hub.create(actor, x.home.id, 'router', { connector: 'timer', kind: 'tick', name: '巡检', params: { prompt: '看看' } });
+  assert.ok(b.ok);
+  for (const t of [100, 200, 300]) await x.ctx().emit(b.value.id, { kind: 'tick', externalId: String(t), plannedAt: t, title: '巡检', text: '看看' });
+  assert.equal(x.delivered.length, 3);
+  assert.deepEqual((await x.connectors.runs(b.value.id, 10)).map((r) => r.state), ['done', 'done', 'done']);
+});
+
+test('触发：漏了回合结束 → 超时记 timeout 失败、放行下一次；连续 5 次自动暂停', async () => {
+  const x = await world();
+  const b = await x.hub.create(actor, x.home.id, 'router', { connector: 'timer', kind: 'tick', name: '巡检', params: { prompt: '看看' } });
+  assert.ok(b.ok);
+  await x.ctx().emit(b.value.id, { kind: 'tick', externalId: '1', plannedAt: 1, title: '巡检', text: '看看' });
+  x.skip(10 * 60_000);
+  assert.equal(await x.hub.sweepStale(), 0);
+  x.skip(25 * 60_000);
+  assert.equal(await x.hub.sweepStale(), 1);
+  const [last] = await x.connectors.runs(b.value.id, 1);
+  assert.equal(last!.state, 'timeout');
+  for (let i = 2; i <= 5; i++) {
+    await x.ctx().emit(b.value.id, { kind: 'tick', externalId: String(i), plannedAt: i, title: '巡检', text: '看看' });
+    x.skip(31 * 60_000);
+    await x.hub.tick();
+  }
+  assert.equal(x.delivered.length, 5);
+  const fresh = (await x.connectors.binding(b.value.id))!;
+  assert.equal(fresh.enabled, false);
+  assert.match(fresh.pausedReason ?? '', /超时/);
 });

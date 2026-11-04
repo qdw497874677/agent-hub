@@ -1,4 +1,4 @@
-import { BINDING_MAX_FAILURES, formatInbound, type ConnectorBinding, type InboundEvent, type TriggerRun } from '../connector.ts';
+import { BINDING_MAX_FAILURES, staleAfterMs, formatInbound, type ConnectorBinding, type InboundEvent, type TriggerRun } from '../connector.ts';
 import type { Principal } from '../account.ts';
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
@@ -47,9 +47,9 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
   const can = async (actor: Principal, projectId: string, permission: 'project.read' | 'project.update') =>
     authorizeProject(deps.policy, actor, await deps.projects.byId(projectId as ProjectId), permission);
 
-  const fail = async (binding: ConnectorBinding, run: TriggerRun, reason: string) => {
+  const fail = async (binding: ConnectorBinding, run: TriggerRun, reason: string, state: 'failed' | 'timeout' = 'failed') => {
     const now = deps.now();
-    await deps.store.saveRun({ ...run, state: 'failed', reason, updatedAt: now });
+    await deps.store.saveRun({ ...run, state, reason, updatedAt: now });
     const fresh = (await deps.store.binding(binding.id)) ?? binding;
     const failures = fresh.consecutiveFailures + 1;
     const pause = failures >= BINDING_MAX_FAILURES;
@@ -86,9 +86,30 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       await deps.store.saveRun({ ...run, state: 'waiting', sessionId, reason: '智能体正忙，等它这一轮结束', updatedAt: now });
       return;
     }
+    // 先记 delivered 再投：回合可能在 deliver 返回前就结束（快回合 / deliver 等到回合收尾才返回），
+    // 反过来写会让 turnEnded 找不到这次运行，它就永远停在 delivered，后面每次触发都被跳过。
+    const delivered: TriggerRun = { ...run, state: 'delivered', sessionId, reason: null, updatedAt: now };
+    await deps.store.saveRun(delivered);
     const sent = await deps.deliver(sessionId, run.text, { id: binding.createdBy, name: `${binding.connector} · ${binding.name}`, via: 'connector' });
-    if (!sent.ok) return fail(binding, { ...run, sessionId }, sent.error.message);
-    await deps.store.saveRun({ ...run, state: 'delivered', sessionId, reason: null, updatedAt: deps.now() });
+    if (!sent.ok) {
+      const current = (await deps.store.runs(run.bindingId, 5)).find((r) => r.id === run.id);
+      if (!current || current.state === 'delivered') return fail(binding, delivered, sent.error.message);
+    }
+  };
+
+  /** 兜底：投进去后迟迟没收到回合结束（漏了 ended、重启丢了事件），超时记 timeout 失败，放行下一次。 */
+  const sweepStale = async (): Promise<number> => {
+    const now = deps.now();
+    let n = 0;
+    for (const run of await deps.store.deliveredRuns()) {
+      const binding = await deps.store.binding(run.bindingId);
+      if (!binding) continue;
+      const limit = staleAfterMs(sources.get(binding.connector)?.periodMs?.(binding) ?? null);
+      if (now - run.updatedAt < limit) continue;
+      await fail(binding, run, `超过 ${Math.round(limit / 60_000)} 分钟没等到这一轮结束，按超时处理`, 'timeout');
+      n++;
+    }
+    return n;
   };
 
   const emit = async (bindingId: string, event: InboundEvent): Promise<void> => {
@@ -139,8 +160,10 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       return { stop: () => handles.forEach((h) => h.stop()) };
     },
     emit,
+    sweepStale,
     /** 等着的再试一次（组合根定时调）。 */
     async tick(): Promise<number> {
+      await sweepStale().catch(() => undefined);
       const waiting = await deps.store.waitingRuns();
       for (const run of waiting) await attempt(run).catch(() => undefined);
       return waiting.length;
