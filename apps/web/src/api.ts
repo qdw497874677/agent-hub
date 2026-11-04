@@ -774,3 +774,15 @@ export interface CleanupRecordsDto {
 }
 
 export type WorkerPreset = 'full' | 'readonly' | 'no-remote' | 'no-install';
+
+/** 送达状态（ADR 0031 D2）。 */
+export interface DeliveryDto {
+  id: string; sessionId: string; seq: number; kind: 'prompt';
+  state: 'queued' | 'sending' | 'delivered' | 'undelivered' | 'cancelled';
+  attempt: number; nextAt: number | null; lastError: string | null; createdAt: number; updatedAt: number;
+}
+export const deliveryApi = {
+  list: (sessionId: string) => call<DeliveryDto[]>(`${sq(sessionId)}/deliveries`),
+  retry: (sessionId: string, id: string) => post<{ ok: true }>(`${sq(sessionId)}/deliveries/${encodeURIComponent(id)}/retry`, {}),
+  cancel: (sessionId: string, id: string) => post<{ ok: true }>(`${sq(sessionId)}/deliveries/${encodeURIComponent(id)}/cancel`, {})
+};

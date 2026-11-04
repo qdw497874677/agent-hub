@@ -95,7 +95,10 @@ import {
   loadCanvas,
   loadHome,
   invalid,
+  notFound,
   promptSessionUseCase,
+  retryDeliveryNow,
+  cancelDelivery,
   readSessionAttachment,
   saveLayoutUseCase,
   searchUseCase,
@@ -626,6 +629,23 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   }
   );
+
+  // 送达状态（ADR 0031 D2）：气泡下的「排队中 / 发送中 / 未送达 · 立即重试 · 撤回」。不回 payload。
+  app.get('/api/sessions/:sessionId/deliveries', async (c) => {
+    if (!deps.deliveries) return c.json([]);
+    const rows = await deps.deliveries.recent(c.req.param('sessionId'), 50);
+    return c.json(rows.map(({ payload: _payload, ...rest }) => rest));
+  });
+  const deliveryAction = (run: typeof retryDeliveryNow) => async (c: Context) => {
+    const deliveries = deps.deliveries;
+    if (!deliveries) return fail(c, notFound('没有送达队列'));
+    const found = await deliveries.byId(c.req.param('deliveryId') ?? '');
+    if (!found || found.sessionId !== c.req.param('sessionId')) return fail(c, notFound('没有这条待送达的消息'));
+    const result = await run({ ...deps, deliveries }, found.id);
+    return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+  };
+  app.post('/api/sessions/:sessionId/deliveries/:deliveryId/retry', deliveryAction(retryDeliveryNow));
+  app.post('/api/sessions/:sessionId/deliveries/:deliveryId/cancel', deliveryAction(cancelDelivery));
 
   // 专注对话里的附件缩略图：只放行这条会话自己的附件目录。
   app.get('/api/sessions/:sessionId/attachment', async (c) => {

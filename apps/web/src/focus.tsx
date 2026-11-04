@@ -1,3 +1,4 @@
+import { DeliveryContext, useDeliveries } from './delivery-note.tsx';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
@@ -101,6 +102,7 @@ export function FocusView({
   const reason = live?.reason ?? null;
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
+  const deliveriesBySeq = useDeliveries(session.id, lastSeq);
   const turnRunning = waitingForReply(live, status);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
@@ -367,6 +369,7 @@ export function FocusView({
             <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
           ) : (
             <FileLinksContext.Provider value={fileLinks}>
+            <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
             {blocks.map((block, index) => (
               <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
                 onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
@@ -382,6 +385,7 @@ export function FocusView({
               </TurnFrag>
             ))}
             {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
+            </DeliveryContext.Provider>
             </FileLinksContext.Provider>
           )}
           {reason && blocks[blocks.length - 1]?.kind !== 'error' ? (
