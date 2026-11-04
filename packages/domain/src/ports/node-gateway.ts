@@ -53,6 +53,8 @@ export type WorkerCommand =
       readonly sessionId: SessionId;
       readonly text: string;
       readonly parts: readonly PromptPart[];
+      /** 送达队列里的 id（ADR 0031）：Worker 按它去重，重试不会让 agent 收到两遍。 */
+      readonly deliveryId?: string;
     }
   | { readonly kind: 'interrupt'; readonly sessionId: SessionId }
   /** 手动压缩上下文（ADR 0020）。老 worker 不认，只记一条日志。 */

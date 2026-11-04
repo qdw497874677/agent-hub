@@ -49,6 +49,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createTaskUseCase,
   deriveSessionUseCase,
   promptSessionUseCase,
+  pumpDeliveries,
   withAccess,
   type LoginId,
   sweepTemporaryWorkspacesUseCase,
@@ -188,6 +189,7 @@ const deps: Deps = {
   hosting: createMemoryHosting(),
   queue: createSessionQueue(),
   now: () => Date.now(),
+  deliveries: store.deliveries,
   // 授权（ADR 0011）：can() 要的团队 / 本机授权从这里拿；机器状态延迟到调用时再读 deps.gateway。
   access: createAccessPolicy({
     users: store.users,
@@ -291,6 +293,16 @@ const rewindService = createRewindService({ ...deps, files: filesService, turnRe
 hub.stream.subscribe((frame) => {
   if (frame.event?.kind === 'ended') void filesService.endTurn(frame.sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
 });
+// 送达队列（ADR 0031 D2）：重启时把上次停在「发送中」的退回排队，之后每秒泵一次
+void store.deliveries.recoverSending(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条上次没送完，重新排队`));
+let pumping = false;
+setInterval(() => {
+  if (pumping) return;
+  pumping = true;
+  void pumpDeliveries({ ...deps, deliveries: store.deliveries })
+    .catch((error: unknown) => log(`送达队列失败：${String(error)}`))
+    .finally(() => { pumping = false; });
+}, 1_000).unref();
 setInterval(() => void filesService.sweepCheckpoints().catch(() => undefined), 3_600_000).unref();
 setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
 
@@ -562,6 +574,8 @@ serverGateway = createServerGateway({
         if (count > 0) log(`${count} 个本机工作空间改记为 Worker ${worker.workerId}`);
       })
       .catch((failure: unknown) => log(`迁移本机工作空间失败：${(failure as Error).message}`));
+    // 机器回来了：排队的消息不等退避，马上再试（ADR 0031）
+    void store.deliveries.wakeAll(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条因 ${worker.label} 上线提前重试`));
     if (sessions.length > 0) {
       void workerAttached(deps, worker.workerId, sessions).then((ids) => {
         serverGateway?.adopt(worker.workerId, ids);

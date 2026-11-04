@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { AgentDescriptor } from '../agent.ts';
 import { asAgentId } from '../ids.ts';
 import { available, capabilityMatrix } from '../capability.ts';
-import { inMemoryDeps } from '../testing/in-memory.ts';
+import { inMemoryDeps, inMemoryDeliveries } from '../testing/in-memory.ts';
 import { ok, err } from '../result.ts';
 import { conflict } from '../errors.ts';
 import type { TurnCheckpoint } from '../ports/workspace-browser.ts';
@@ -223,4 +223,21 @@ test('原生分叉：能力以原会话所在那台机器为准（别的机器�
   });
   const preview = await svc.preview(null, w.sid, w.seqs[1]!);
   assert.ok(preview.ok && preview.value.mode === 'native', JSON.stringify(preview));
+});
+
+test('原生分叉等结果期间 hub 重启：交接摘要落在送达队列里，新的服务实例照样补发（ADR 0031）', async () => {
+  const w = await world({ native: true });
+  const deliveries = inMemoryDeliveries();
+  const turnRefs = { record: async () => undefined, list: async () => w.refs.get(w.sid) ?? new Map<number, string>() };
+  const first = createRewindService({ ...w.deps, deliveries, files: w.files, turnRefs });
+  const out = await first.rewind(null, w.sid, w.seqs[1]!, false);
+  assert.ok(out.ok && out.value.mode === 'native', JSON.stringify(out));
+  assert.equal([...deliveries.rows.values()].filter((d) => d.state === 'held').length, 1);
+  // 「重启」：丢掉旧服务，只留数据库
+  const second = createRewindService({ ...w.deps, deliveries, files: w.files, turnRefs });
+  const before = w.dispatched.length;
+  await second.branchResult(out.value.session.id, 'failed', 'fork 报错');
+  const brief = w.dispatched.slice(before).find((c) => c.kind === 'prompt');
+  assert.ok(brief?.kind === 'prompt' && /第一件事/.test(brief.text));
+  assert.equal([...deliveries.rows.values()].filter((d) => d.state === 'held').length, 0);
 });

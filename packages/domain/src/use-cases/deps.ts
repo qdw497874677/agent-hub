@@ -1,3 +1,4 @@
+import type { DeliveryQueue } from '../ports/delivery-queue.ts';
 import type { WorkspaceSweepStore } from '../ports/workspace-sweeps.ts';
 import type { PullRequestRepository } from '../ports/pull-requests.ts';
 import type { SessionId } from '../ids.ts';
@@ -71,6 +72,8 @@ export interface Deps {
   /** 同一会话的写入串行（ADR 0004）。 */
   readonly queue: SessionQueue;
   readonly now: () => number;
+  /** 送达队列（ADR 0031 D2）。不给 = 老行为：送不出去当场失败。 */
+  readonly deliveries?: DeliveryQueue;
   /** 授权（ADR 0011）。不给 = 没装账号体系，一律放行（单测、单机开发）。 */
   readonly access?: AccessPolicy;
   /**
