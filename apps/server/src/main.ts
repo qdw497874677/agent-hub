@@ -32,6 +32,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createWorkspaceFilesService,
   createGitWorkflowService,
   createRewindService,
+  recordProvenance,
   createMessageToolProvider,
   createMemoryService,
   checkProviderModel,
@@ -226,7 +227,12 @@ const messageBus = createMessageBus({
   spawn: async ({ project, role, actor, title }) => {
     const task = await createTaskUseCase(deps, { projectId: project.id, title, ownerId: actor.user.id });
     if (!task.ok) return task;
-    return deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
+    const created = await deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
+    if (created.ok) {
+      await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' })
+        .catch(() => undefined);
+    }
+    return created;
   }
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
@@ -249,7 +255,12 @@ const groupChat = createGroupChat({
   spawn: async ({ project, role, actor, title }) => {
     const task = await createTaskUseCase(deps, { projectId: project.id, title, ownerId: actor.user.id });
     if (!task.ok) return task;
-    return deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
+    const created = await deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
+    if (created.ok) {
+      await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'group' })
+        .catch(() => undefined);
+    }
+    return created;
   },
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
@@ -733,7 +744,7 @@ const app = createApp({ deps, hub, token, waitOptions: optionWaiters.wait, guard
   } } : {}),
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
   projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
-  activity: { audit: store.audit, users: store.users },
+  activity: { audit: store.audit, users: store.users, provenance: store.provenance },
   messaging: { bus: messageBus, messages: store.messages },
   groups: { groups: groupChat, agents: persistentAgents },
   context: contextService,

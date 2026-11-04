@@ -126,7 +126,7 @@ import type { DeleteProjectDeps } from '@agent-hub/domain';
 import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
-import { recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity } from './session-activity.ts';
+import { noteProvenance, viaOfClient, recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity } from './session-activity.ts';
 import type { SessionActivityOptions } from './session-activity.ts';
 import type { AuthOptions } from './auth.ts';
 import { installApiTokens } from './api-tokens.ts';
@@ -256,7 +256,8 @@ export function createApp(options: AppOptions): Hono {
     if (options.context) installContextRoutes(app, options.context, subjectOf);
     if (options.files) installFilesRoutes(app, options.files, subjectOf);
     if (options.git) installGitRoutes(app, options.git, subjectOf);
-    if (options.rewind) installRewindRoutes(app, options.rewind, subjectOf);
+    if (options.rewind) installRewindRoutes(app, options.rewind, subjectOf, (c, subject, session, from, atSeq) =>
+      noteProvenance(deps, options.activity, c, subject, session, 'rewind', { sessionId: from, atSeq }));
     if (options.admin && options.assets) installAssetRoutes(app, options.assets, principalOf);
     if (options.assets) installAssetMarket(app, options.assets.deps, principalOf);
     if (options.enrollment) installEnrollment(app, options.enrollment, principalOf);
@@ -573,7 +574,10 @@ export function createApp(options: AppOptions): Hono {
     const allowed = await options.providers?.checkModel(actor, input.value.model, input.value.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
     const result = await deriveSessionUseCase(deps, { ...input.value, actor });
-    if (result.ok) await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
+    if (result.ok) {
+      await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
+      await noteProvenance(deps, options.activity, c, actor, result.value, viaOfClient(c));
+    }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
 
@@ -587,6 +591,7 @@ export function createApp(options: AppOptions): Hono {
       const at = origin.kind === 'fork' ? ` #${origin.atSeq}` : '';
       await recordSessionAction(deps, options.activity, c, actor, 'session.fork', result.value.id, `从 ${input.value.sessionId}${at} 分叉`);
       await recordSessionAction(deps, options.activity, c, actor, 'session.fork', input.value.sessionId, `分叉出 ${result.value.id}`);
+      await noteProvenance(deps, options.activity, c, actor, result.value, 'fork');
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
@@ -601,6 +606,7 @@ export function createApp(options: AppOptions): Hono {
     if (result.ok) {
       await recordSessionAction(deps, options.activity, c, actor, 'session.continue', result.value.id, `接着 ${from} 换机继续`);
       await recordSessionAction(deps, options.activity, c, actor, 'session.continue', from, `换到 ${result.value.id} 继续`);
+      await noteProvenance(deps, options.activity, c, actor, result.value, 'continue_elsewhere', { sessionId: from });
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
@@ -710,6 +716,15 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/sessions/:sessionId/activity', async (c) =>
     c.json(options.activity ? await sessionActivity(options.activity, c.req.param('sessionId')) : [])
   );
+
+  // 任务来历（ADR 0031 D3）：谁、从哪、凭什么开的；只读。访问中间件按 session.read 守着。
+  app.get('/api/sessions/:sessionId/provenance', async (c) => {
+    const store = options.activity?.provenance;
+    const p = store ? await store.get(c.req.param('sessionId')) : null;
+    if (!p) return c.json(null);
+    const parent = p.parent ? await deps.sessions.byId(p.parent.sessionId as never).catch(() => null) : null;
+    return c.json({ ...p, parentTitle: parent?.title ?? null });
+  });
 
   /** SSE：一条连接推所有会话的事件，前端按 sessionId 分流。 */
   app.get('/api/stream', (c) =>

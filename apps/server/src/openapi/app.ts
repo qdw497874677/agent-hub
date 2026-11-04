@@ -45,7 +45,7 @@ import type { createProjectRequest, createTaskRequest, deriveSessionRequest, for
 import { installAccess } from '../access.ts';
 import { fail } from '../http-error.ts';
 import { createRateLimiter } from '../rate-limit.ts';
-import { recordSessionAction, refreshAuthors, sessionActivity } from '../session-activity.ts';
+import { noteProvenance, recordSessionAction, refreshAuthors, sessionActivity } from '../session-activity.ts';
 import type { SessionActivityOptions } from '../session-activity.ts';
 import type { StreamHub } from '../stream-hub.ts';
 import type { ProviderWiringApi } from '../providers.ts';
@@ -271,7 +271,10 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const allowed = await ctx.providers?.checkModel(actor, input.model, input.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
     const result = await deriveSessionUseCase(deps, { ...input, actor });
-    if (result.ok) await recordSessionAction(deps, ctx.activity, c, actor, 'session.start', result.value.id, '');
+    if (result.ok) {
+      await recordSessionAction(deps, ctx.activity, c, actor, 'session.start', result.value.id, '');
+      await noteProvenance(deps, ctx.activity, c, actor, result.value, 'api');
+    }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
   on(routes.forkSession, async (c) => {
@@ -282,6 +285,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (result.ok) {
       await recordSessionAction(deps, ctx.activity, c, actor, 'session.fork', result.value.id, `从 ${input.sessionId} 分叉`);
       await recordSessionAction(deps, ctx.activity, c, actor, 'session.fork', input.sessionId, `分叉出 ${result.value.id}`);
+      await noteProvenance(deps, ctx.activity, c, actor, result.value, 'fork');
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });

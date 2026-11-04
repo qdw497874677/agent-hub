@@ -1,12 +1,14 @@
 import type { Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { asTaskId, newId, principalOfSubject } from '@agent-hub/domain';
-import type { AuditLog, Deps, JournalEntry, Principal, Subject, UserId, UserRepository } from '@agent-hub/domain';
+import { asTaskId, newId, principalOfSubject, recordProvenance } from '@agent-hub/domain';
+import type { ProvenanceStore, ProvenanceVia, Session, AuditLog, Deps, JournalEntry, Principal, Subject, UserId, UserRepository } from '@agent-hub/domain';
 
 /** 会话里「谁做了什么」：审计 + 读出时把作者名刷新成账号当前的名字。 */
 export interface SessionActivityOptions {
   readonly audit: AuditLog;
   readonly users: Pick<UserRepository, 'byId'>;
+  /** 任务来历（ADR 0031 D3）；不给就不记。 */
+  readonly provenance?: ProvenanceStore;
 }
 
 export type SessionAction = 'session.start' | 'session.fork' | 'session.interrupt' | 'session.continue';
@@ -117,4 +119,36 @@ export async function sessionActivity(options: SessionActivityOptions, sessionId
       at: e.at
     }))
   );
+}
+
+/** 手机浏览器还是电脑（只用于来历的 via，不做任何授权判断）。 */
+export function viaOfClient(c: Context): ProvenanceVia {
+  if (c.req.header('sec-ch-ua-mobile') === '?1') return 'mobile';
+  return /Mobile|Android|iPhone|iPad/i.test(c.req.header('user-agent') ?? '') ? 'mobile' : 'web';
+}
+
+/** 会话建好后写一次来历 + session.created 审计（ADR 0031 D3）。失败只记日志，不影响会话本身。 */
+export async function noteProvenance(
+  deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'now'>,
+  options: SessionActivityOptions | undefined,
+  c: Context | null,
+  subject: Subject | null,
+  session: Pick<Session, 'id' | 'taskId' | 'origin'>,
+  via: ProvenanceVia,
+  parent?: { readonly sessionId: string; readonly atSeq?: number } | null
+): Promise<void> {
+  if (!options?.provenance) return;
+  let teamId: string | null = null;
+  try {
+    const task = await deps.tasks.byId(asTaskId(session.taskId));
+    const project = task ? await deps.projects.byId(task.projectId) : null;
+    teamId = project?.teamId ?? null;
+  } catch {
+    // 查不到就用操作人的团队
+  }
+  const r = await recordProvenance(
+    { provenance: options.provenance, audit: options.audit, now: deps.now },
+    { session, subject, via, parent: parent ?? null, ip: c ? ipOf(c) : null, ...(teamId ? { teamId } : {}) }
+  ).catch((e: unknown) => ({ ok: false as const, error: { message: String(e) } }));
+  if (!r.ok) console.warn(`[provenance] ${session.id}: ${r.error.message}`);
 }

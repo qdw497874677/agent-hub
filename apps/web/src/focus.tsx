@@ -1,4 +1,5 @@
 import { DeliveryContext, useDeliveries } from './delivery-note.tsx';
+import { ProvenanceRow } from './provenance-row.tsx';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
@@ -286,6 +287,7 @@ export function FocusView({
           {windowChrome?.actions}
         </span>
       </header>
+      <ProvenanceRow sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
       {gitOpen ? <GitDialog sessionId={session.id} onClose={() => setGitOpen(false)} /> : null}
       {rewindAt !== null ? (
