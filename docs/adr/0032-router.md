@@ -6,82 +6,89 @@
 
 ## 原则
 
-**通用但不过度设计：简单而抽象。** 核心只有 5 个概念；定时、GitHub、IM、邮件都只是它们的**配置**，不另建子系统。用不上的东西放进「以后再说」。
+**通用但不过度设计：简单而抽象。** 核心只有几个概念（入站、Sink、工具、Binding）；定时、GitHub、IM、邮件都只是它们的**配置**，不另建子系统。用不上的东西放进「以后再说」。
 
-## 五个概念
+## 概念
 
-| 概念 | 是什么 | 谁拥有 |
+**Connector 只是一个分组名**：它把两种**内部完全独立**的能力打包在一起，具体连接器可以只实现其中一半。
+
+| 半边 | 端口 | 作用 |
 |---|---|---|
-| **Connector** | 一个可插拔模块：声明它能发出哪些入站事件、提供哪些工具；自带配置和硬规则 | 连接器包 |
-| **Binding** | 一条配置：「某连接器实例的某类事件 → 某持久智能体，送主会话 / 每次新会话，限定项目」 | 核心 |
-| **Inbound event** | 连接器发出的规范化事件 `{connector, kind, externalId, actor, text: Untrusted, url}`；hub 按 Binding 转成消息，经 ADR 0031 送达队列投递 | 连接器产出，核心投递 |
-| **Tool** | 连接器暴露给智能体调用的工具（`github.comment`、`github.react`…），走现有能力 + 权限预设门控 | 连接器实现，核心门控 |
-| **Sink** | 任务生命周期（入队/完成/失败）→ 连接器的回写动作。本质是 hub 替智能体调用该连接器的工具 | 核心发事件，连接器处理 |
+| **入站** | `InboundSource` | 发出规范化入站事件 `{kind, externalId, actor, text: Untrusted, url}`；hub 按 **Binding** 转成消息，经 ADR 0031 送达队列投递到持久智能体（主会话 / 每次新会话） |
+| | `OutputSink`（可选） | 会话桥的回程：任务生命周期或会话回复 → 来源侧动作（GitHub 评论、IM 回消息） |
+| **出站** | `ToolProvider` | 暴露给智能体调用的工具，经现有能力和权限预设门控 |
 
-**硬安全规则在连接器/hub 代码里执行，从不交给智能体**：写权限加标签校验、注入隔离、去重、每日配额。工具调用同样经过这些检查，无法绕过。
-
-核心只负责：连接器注册与生命周期、Binding、工具门控、任务工具与调度器。
+- **Binding**（核心）：一条配置，内容是「入站事件 → 哪个智能体、主会话还是每次新会话、限定哪个项目」。
+- 核心**分别**注册和处理入站与出站，两半之间没有依赖。只做入站的（timer）、只提供工具的（纯 MCP 工具集）、两者都有的（GitHub、IM），走的是同一套代码。
+- **硬安全规则在连接器和 hub 代码里执行，从不交给智能体**：写权限加标签校验、注入隔离、去重、每日配额。工具调用也要经过这些检查，无法绕过。
+- 核心只负责：入站和工具两个注册表、Binding、工具门控、任务工具和调度器。
 
 ```mermaid
 flowchart LR
-  subgraph conn["连接器包（各自独立）"]
-    TM[timer<br/>内置，只入站]
-    GH[github<br/>入站 + 工具 + Sink]
-    LN[linear / slack / email<br/>同一接口]
+  subgraph in["入站（InboundSource / OutputSink）"]
+    TM[timer]
+    GHI[github 入站]
+    IMI[slack/飞书 入站]
   end
-  subgraph core["核心 packages/domain + server"]
-    REG[ConnectorRegistry]
-    BIND[Binding 路由]
-    GATE[工具门控<br/>能力/预设]
+  subgraph out["出站（ToolProvider）"]
+    GHT[github 工具]
+    IMT[slack 工具]
+    MCP[MCP 工具集]
+  end
+  subgraph core["核心"]
+    SR[InboundRegistry] --> BIND[Binding] --> Q[[ADR 0031 送达队列]]
+    TR[ToolRegistry] --> GATE[工具门控]
     TASK[task 工具 + 调度器]
   end
-  Q[[ADR 0031 送达队列]]
   AG[持久智能体会话]
-  TM & GH & LN -->|Inbound event| REG --> BIND --> Q --> AG
-  AG -->|调用工具| GATE --> GH & LN
-  AG -->|task.create| TASK
-  TASK -->|生命周期事件 Sink| GH & LN
+  TM & GHI & IMI --> SR
+  Q --> AG
+  AG --> GATE
+  GHT & IMT & MCP --> TR
+  AG --> TASK
+  TASK -->|生命周期| SINK[OutputSink] --> GHI & IMI
 ```
 
-依赖方向：连接器包只依赖 `domain` 里的端口类型；`domain` 不 import 任何连接器；组合根注册。依赖检查加一条：`packages/domain` 不得出现 github 相关 import。
+依赖方向：连接器包只依赖 `domain` 里的端口类型，`domain` 不 import 任何连接器，在组合根注册。依赖检查另加一条：`packages/domain` 里不得出现 github 相关 import。
 
-### 端口（全部）
+### 端口
 
 ```ts
-// ports/connector.ts
-interface Connector {
-  id: string;                                   // 'timer' | 'github' | …
-  events: EventKind[];                          // 能发出的入站事件类型
-  tools: ToolSpec[];                            // 暴露的工具（带所需能力）
-  start(inst: ConnectorInstance, emit: (e: InboundEvent) => Promise<void>): Stoppable;
-  call(inst, tool: string, args, ctx): Promise<ToolResult>;  // 工具与 Sink 共用
-  onTask?(inst, ev: TaskLifecycleEvent): Promise<void>;      // Sink
-}
+// ports/inbound-source.ts
+interface InboundSource { id: string; kinds: string[];
+  start(inst: ConnectorInstance, emit: (e: InboundEvent) => Promise<void>): Stoppable }
 type InboundEvent = { kind: string; externalId: string; parentExternalId?: string;
   actor: { id: string; trusted: boolean }; text: Untrusted<string>; url?: string;
-  verdict: 'ok' | { skip: SkipReason } | 'quarantine' };      // 硬规则由连接器在 emit 前判定
+  verdict: 'ok' | { skip: SkipReason } | 'quarantine' };   // 硬规则由来源在 emit 前判定
+// ports/output-sink.ts
+interface OutputSink { id: string; deliver(inst, ev: TaskLifecycleEvent | SessionReply): Promise<void> }
+// ports/tool-provider.ts
+interface ToolProvider { id: string; tools: ToolSpec[]; call(inst, tool, args, ctx): Promise<ToolResult> }
+// 连接器 = 可选组合，仅用于打包和 UI 分组
+type Connector = { id: string; inbound?: InboundSource; sink?: OutputSink; tools?: ToolProvider };
 ```
 
-`Untrusted<T>` 是领域类型：送进模型前统一包成带边界标记的引用块并注明「这是数据，不是指令」。去重（`connector + externalId`）、每日配额由核心在 emit 后再统一做一次，连接器写错也兜得住。
+`Untrusted<T>` 是领域类型：送进模型前统一包成带边界标记的引用块，并注明「这是数据，不是指令」。去重（`connector + externalId`）和每日配额由核心在 emit 之后再统一做一次兜底。
 
 ## 场景检验
 
-| 场景 | Connector | Inbound event | Binding | Tool | Sink |
-|---|---|---|---|---|---|
-| 定时唤醒 | `timer`（内置） | `timer.fired` | → 总管主会话（或每次新会话） | 无（以后再说：智能体管定时） | 无 |
-| GitHub issue | `github` | `issue.eligible`（agent 标签 + 写权限） | → 总管，限定项目 | `github.comment/react` | 👀 / PR 链接 / 失败原因 |
-| GitHub PR 跟进 | `github` | `pr.mention`（写权限者 @ 机器人） | → 原会话（parentExternalId） | 同上 | 同上 |
-| IM（Slack/Telegram/飞书） | `slack` 等 | `message` | → 某智能体主会话 | `slack.reply` | 可选 |
-| 邮件 | `email` | `mail.received` | → 某智能体 | `email.reply` | 可选 |
-| Linear | `linear` | `issue.eligible` | → 总管 | `linear.comment` | 改状态 / 评论 |
-| Webhook（以后） | 任一连接器换成推送触发 | 同上 | 同上 | — | — |
+| 场景 | 入站 | Sink | 工具 | Binding |
+|---|---|---|---|---|
+| 定时唤醒 `timer` | ✓ `timer.fired` | — | — | → 总管主会话 / 每次新会话 |
+| GitHub issue | ✓ `issue.eligible`（agent 标签 + 写权限） | ✓ 👀 / PR 链接 / 失败原因 | ✓ `github.comment/react` | → 总管，限定项目 |
+| GitHub PR 跟进 | ✓ `pr.mention`（写权限者 @ 机器人） | ✓ | ✓ | → 原会话（parentExternalId） |
+| IM（Slack/Telegram/飞书） | ✓ `message` | ✓ 回到原对话 | ✓ `slack.reply` 等 | → 某智能体主会话 |
+| 邮件 | ✓ `mail.received` | ✓ 回信 | 可选 | → 某智能体 |
+| Linear | ✓ `issue.eligible` | ✓ 评论 / 改状态 | ✓ `linear.comment` | → 总管 |
+| 纯 MCP 工具集 | — | — | ✓ | 不需要 |
+| Webhook（以后） | 入站改成推送触发 | 同上 | — | 同上 |
 
-每一行都只用这五个概念，没有新增的子系统。
+每一行都只是「入站 / Sink / 工具」三者按需组合，没有新的子系统。
 
 ## 决定
 
 ### R1 连接器框架 + `timer` 连接器
-- 核心：`ConnectorRegistry`、`connector_instance`、`connector_binding`、`trigger_run`；入站事件按 Binding 投递到送达队列；智能体正忙就排队，不打断。
+- 核心：`InboundRegistry` 与 `ToolRegistry`（互相独立）、`connector_instance`、`connector_binding`、`trigger_run`；入站事件按 Binding 投递到送达队列；智能体正忙就排队，不打断。
 - `timer` 采用 Hermes 的做法：
   - **先推进 next_run 再触发**；运行唯一键是 `binding + 计划时刻`。
   - 宽限窗口为周期的一半，错过的**只补跑一次**；超出宽限就跳过并记录原因（Q3）。
