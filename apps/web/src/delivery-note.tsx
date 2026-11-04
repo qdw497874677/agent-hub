@@ -63,7 +63,10 @@ export function DeliveryNote({ seq }: { seq: number }) {
   if (d.state === 'sending') body = <span className="text-tertiary">发送中…</span>;
   else if (d.state === 'undelivered')
     body = <span className="text-rust" title={d.lastError ?? undefined}>未送达{d.lastError ? `：${d.lastError}` : ''}{actions}</span>;
-  else if (d.attempt === 0) body = <span className="text-tertiary">排队中 · 等上一条送达</span>;
+  else if (d.attempt === 0) {
+    const behind = [...ctx.bySeq.values()].some((o) => o.seq < d.seq && PENDING.has(o.state));
+    body = <span className="text-tertiary">{behind ? '排队中 · 等上一条送达' : '排队中'}</span>;
+  }
   else {
     const secs = Math.max(0, Math.ceil(((d.nextAt ?? now) - now) / 1000));
     body = <span className="text-rust" title={d.lastError ?? undefined}>未送达 · 第 {d.attempt + 1} 次重试 {secs} 秒后{actions}</span>;
