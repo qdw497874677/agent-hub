@@ -94,6 +94,26 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         say(msg.params.sessionId, `history:forked-at=${forkedAt ?? 'none'};briefed=${all.includes('交接') || all.includes('摘要') ? 'maybe' : 'no'}`);
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
+      // 「等我处理」e2e：显式提问工具 / 以问号结尾 / 这一轮 git commit
+      const tool = (title, rawInput) => {
+        const toolCallId = `t-${turn}-${title.length}`;
+        send({ method: 'session/update', params: { sessionId: msg.params.sessionId, update: { sessionUpdate: 'tool_call', toolCallId, title, kind: 'other', rawInput } } });
+        send({ method: 'session/update', params: { sessionId: msg.params.sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId, status: 'completed' } } });
+      };
+      if (all.includes('please-asktool')) {
+        tool('AskUserQuestion', { question: '用 A 还是 B' });
+        say(msg.params.sessionId, '等你选。');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      if (all.includes('please-question')) {
+        say(msg.params.sessionId, '要我继续吗？');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      if (all.includes('please-commit')) {
+        tool('bash', { command: 'git commit -m "改好了"' });
+        say(msg.params.sessionId, '提交好了。');
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
       if (all.includes('please-refuse')) return send({ id: msg.id, result: { stopReason: 'refusal' } });
       if (all.includes('please-long')) {
         say(msg.params.sessionId, '写了一半');

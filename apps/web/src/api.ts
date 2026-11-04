@@ -290,6 +290,9 @@ export const api = {
   sessionAssets: (sessionId: string) => call<SessionAssetsDto>(`/api/sessions/${sessionId}/assets`),
   activity: (sessionId: string) => call<SessionActivityDto[]>(`/api/sessions/${sessionId}/activity`),
   provenance: (sessionId: string) => call<ProvenanceDto | null>(`/api/sessions/${sessionId}/provenance`),
+  attention: () => call<AttentionDto>('/api/attention'),
+  ackAttention: (item: { sessionId: string; phase: string; since: number }) =>
+    post<{ ok: true }>('/api/attention/ack', { sessionId: item.sessionId, phase: item.phase, since: item.since }),
   events: (sessionId: string, after = 0) =>
     call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>
@@ -799,4 +802,24 @@ export interface ProvenanceDto {
   readonly authority: { readonly role: string; readonly scope?: readonly string[] | null; readonly tokenId?: string | null };
   readonly backfilled: boolean;
   readonly createdAt: number;
+}
+
+/** 「等我处理」（ADR 0031 D1）。 */
+export type AttentionPhase = 'needs_approval' | 'needs_answer' | 'needs_review' | 'failed' | 'undelivered';
+export interface AttentionItemDto {
+  readonly sessionId: string;
+  readonly taskId: string;
+  readonly taskTitle: string;
+  readonly projectId: string;
+  readonly projectName: string;
+  readonly agentId: string;
+  readonly phase: AttentionPhase;
+  readonly since: number;
+  readonly reason: string;
+  readonly possible: boolean;
+  readonly expiresAt: number | null;
+}
+export interface AttentionDto {
+  readonly items: readonly AttentionItemDto[];
+  readonly working: number;
 }

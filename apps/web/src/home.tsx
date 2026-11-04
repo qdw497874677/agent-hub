@@ -1,6 +1,7 @@
 import { MessagesEntry } from './messages-entry.tsx';
 import { AccountMenu } from './auth.tsx';
 import { NotificationBell } from './market/notifications.tsx';
+import { AttentionBadge, AttentionInbox } from './attention.tsx';
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from './api.ts';
@@ -57,8 +58,9 @@ export function HomePage({
             <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
           </div>
           <div className="flex items-center gap-2">
+            <AttentionBadge compact onClick={() => document.querySelector('[data-testid="attention-inbox"]')?.scrollIntoView({ behavior: 'smooth' })} />
             <MessagesEntry />
-        <NotificationBell />
+            <NotificationBell />
             <AccountMenu />
           </div>
         </div>
@@ -115,6 +117,14 @@ export function HomePage({
 
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[760px] px-4 py-6 md:px-8">
+          {creating ? null : (
+            <AttentionInbox
+              onOpen={(item) => {
+                const project = projectById.get(item.projectId);
+                if (project) onOpen(project, item.sessionId);
+              }}
+            />
+          )}
           {creating ? (
             <CreateProjectPanel
               onCancel={() => setCreating(false)}

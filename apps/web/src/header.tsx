@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { AccountMenu } from './auth.tsx';
 import { NotificationBell } from './market/notifications.tsx';
+import { AttentionBadge } from './attention.tsx';
 import type { ProjectDto } from './api.ts';
 import type { StreamState } from './live.ts';
 import type { View } from './route.ts';
@@ -103,6 +104,7 @@ export function ProjectHeader(props: Props) {
           ⚙
         </button>
         {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
+        <AttentionBadge onClick={props.onHome} />
         <MessagesEntry />
         <NotificationBell />
         <AccountMenu />
