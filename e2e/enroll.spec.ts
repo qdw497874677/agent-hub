@@ -118,17 +118,23 @@ test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 work
   const first = (await command.textContent()) ?? '';
   await dialog.getByRole('radio', { name: '只读' }).click();
   await expect(dialog.getByRole('radio', { name: '只读' })).toHaveAttribute('aria-checked', 'true');
-  await expect(command).not.toHaveText(first);
+  // 换预设会重签：签发期间命令框是空白占位，只等「不同于旧命令」会在空白那一刻放行、读到空码。
+  // 要等新码真正出来（带 HUB_PAIR 且和旧码不同）再读。
+  const firstCode = /HUB_PAIR=(\S+)/.exec(first)?.[1] ?? '';
+  await expect(command).not.toContainText(firstCode);
+  await expect(command).toContainText(/HUB_PAIR=ahw_pair_/);
   await expect(dialog.getByText(/只能读文件，不能跑 agent/)).toBeVisible();
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'add-machine-preset.png') });
   const code = /HUB_PAIR=(\S+)/.exec((await command.textContent()) ?? '')?.[1] ?? '';
+  expect(code).toMatch(/^ahw_pair_/);
+  expect(code).not.toBe(firstCode);
 
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], {
     env: { PATH: process.env['PATH'] ?? '', HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: 'e2e 只读机器' },
     encoding: 'utf8'
   });
-  expect(enrolled.status).toBe(0);
+  expect(enrolled.status, enrolled.stderr).toBe(0);
   const [workerId = '', credential = ''] = enrolled.stdout.trim().split('\n');
 
   const state = mkdtempSync(join(tmpdir(), 'hub-e2e-worker-'));
