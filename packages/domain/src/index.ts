@@ -159,3 +159,6 @@ export * from './use-cases/git-workflow.ts';
 export * from './delivery.ts';
 export type { DeliveryQueue } from './ports/delivery-queue.ts';
 export { attemptDelivery, pumpDeliveries, retryDeliveryNow, cancelDelivery, type DeliveryDeps, type PromptPayload } from './use-cases/delivery.ts';
+export { validateProvenance, legacyProvenance, viaLabel, PARENT_REQUIRED, type SessionProvenance, type ProvenanceVia, type ProvenanceActorKind } from './provenance.ts';
+export type { ProvenanceStore } from './ports/provenance-store.ts';
+export { recordProvenance, type ProvenanceDeps, type RecordProvenanceInput } from './use-cases/provenance.ts';

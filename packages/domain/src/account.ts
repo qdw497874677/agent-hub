@@ -225,6 +225,7 @@ export type AuditAction =
   | 'project.share'
   | 'user.delete'
   | 'invite.create'
+  | 'session.created'
   | 'session.start'
   | 'session.fork'
   | 'session.interrupt'

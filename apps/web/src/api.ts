@@ -289,6 +289,7 @@ export const api = {
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
   sessionAssets: (sessionId: string) => call<SessionAssetsDto>(`/api/sessions/${sessionId}/assets`),
   activity: (sessionId: string) => call<SessionActivityDto[]>(`/api/sessions/${sessionId}/activity`),
+  provenance: (sessionId: string) => call<ProvenanceDto | null>(`/api/sessions/${sessionId}/provenance`),
   events: (sessionId: string, after = 0) =>
     call<JournalEntryDto[]>(`/api/sessions/${sessionId}/events${after > 0 ? `?after=${after}` : ''}`),
   search: (projectId: string, q: string) =>
@@ -786,3 +787,16 @@ export const deliveryApi = {
   retry: (sessionId: string, id: string) => post<{ ok: true }>(`${sq(sessionId)}/deliveries/${encodeURIComponent(id)}/retry`, {}),
   cancel: (sessionId: string, id: string) => post<{ ok: true }>(`${sq(sessionId)}/deliveries/${encodeURIComponent(id)}/cancel`, {})
 };
+
+/** 任务来历（ADR 0031 D3）。 */
+export interface ProvenanceDto {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly actor: { readonly kind: 'user' | 'api_token' | 'agent' | 'system'; readonly id: string; readonly name: string };
+  readonly via: string;
+  readonly parent?: { readonly sessionId: string; readonly atSeq?: number } | null;
+  readonly parentTitle?: string | null;
+  readonly authority: { readonly role: string; readonly scope?: readonly string[] | null; readonly tokenId?: string | null };
+  readonly backfilled: boolean;
+  readonly createdAt: number;
+}
