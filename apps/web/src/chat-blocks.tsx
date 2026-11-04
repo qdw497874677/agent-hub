@@ -1,3 +1,4 @@
+import { DeliveryNote } from './delivery-note.tsx';
 import { AuthorTag } from './author.tsx';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { api, attachmentUrl } from './api.ts';
@@ -409,6 +410,7 @@ export function ChatBlock({
         {block.text !== '' ? (
           <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-3 py-2 text-body text-primary">{block.text}</p>
         ) : null}
+        <DeliveryNote seq={block.seq} />
       </div>
     );
   }
