@@ -60,6 +60,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   deriveSessionUseCase,
   promptSessionUseCase,
   pumpDeliveries,
+  releaseAfterTurn,
   withAccess,
   type LoginId,
   sweepTemporaryWorkspacesUseCase,
@@ -410,6 +411,11 @@ const rewindService = createRewindService({ ...deps, files: filesService, turnRe
 // 回合结束后拍「之后」那张（ADR 0027 D2）；保留期清理每小时一次（D1）
 hub.stream.subscribe((frame) => {
   if (frame.event?.kind === 'ended') void filesService.endTurn(frame.sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
+});
+// 回合结束：等上一轮的那条消息（人在定时触发跑着时发的话等）马上送，不等下一次泵
+hub.stream.subscribe((frame) => {
+  if (frame.event?.kind !== 'ended') return;
+  void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, frame.sessionId).catch((error: unknown) => log(`送达队列收尾失败：${String(error)}`));
 });
 // 送达队列（ADR 0031 D2）：重启时把上次停在「发送中」的退回排队，之后每秒泵一次
 void store.deliveries.recoverSending(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条上次没送完，重新排队`));

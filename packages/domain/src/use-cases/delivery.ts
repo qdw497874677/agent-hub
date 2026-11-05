@@ -22,9 +22,42 @@ export interface PromptPayload {
   readonly parts: readonly PromptPart[];
 }
 
-/** 送一次。成功记 delivered；可重试的失败排下一次；用尽或不可重试就收掉这一轮。 */
+/** 上一轮还在跑时，排队的消息隔多久再看一眼（回合结束时也会被立刻叫醒）。 */
+export const TURN_WAIT_MS = 5_000;
+/** 上一轮多久没动静就不再算「在跑」。 */
+export const TURN_STALE_MS = 30 * 60_000;
+
+/**
+ * 会话里是不是还有一轮没结束：从 journal 末尾往回看，跳过还没送出去的（排队中 / 未送达 / 撤回的）prompt，
+ * 先碰到 ended 就是空闲，先碰到已送出的 prompt 就是那一轮还在跑（定时触发、派来的消息、人上一句都算）。
+ * 这时把消息直接交给 agent，运行时会以「Agent is already processing」拒掉。
+ */
+export async function turnInProgress(deps: Pick<Deps, 'sessions' | 'now'> & { readonly deliveries?: DeliveryQueue }, sessionId: SessionId): Promise<boolean> {
+  const recent = deps.deliveries ? await deps.deliveries.recent(sessionId, 200) : [];
+  const unsent = new Set(recent.filter((d) => d.state !== 'delivered' && d.state !== 'sending').map((d) => d.seq));
+  const tail = (await deps.sessions.tail(sessionId, 2_000)).filter((e) => !(e.event.kind === 'prompt' && unsent.has(e.seq)));
+  // 兜底：最后一次动静已经过去 30 分钟（进程没了、漏了 ended），不再挡着后面的消息
+  const last = tail[tail.length - 1];
+  if (!last || deps.now() - last.at > TURN_STALE_MS) return false;
+  for (let i = tail.length - 1; i >= 0; i--) {
+    const e = tail[i]!;
+    if (e.event.kind === 'ended') return false;
+    if (e.event.kind === 'prompt') return true;
+  }
+  return false;
+}
+
+/**
+ * 送一次。上一轮还没结束就原样排着（不算失败、不扣次数），等回合结束再送；
+ * 成功记 delivered；可重试的失败排下一次；用尽或不可重试就收掉这一轮。
+ */
 export async function attemptDelivery(deps: DeliveryDeps, delivery: Delivery): Promise<Result<void, DomainError>> {
   const sessionId = delivery.sessionId as SessionId;
+  if (delivery.kind === 'prompt' && (await turnInProgress(deps, sessionId))) {
+    const now = deps.now();
+    await deps.deliveries.save({ ...delivery, state: 'queued', nextAt: now + TURN_WAIT_MS, lastError: null, updatedAt: now });
+    return ok(undefined);
+  }
   await deps.deliveries.save({ ...delivery, state: 'sending', updatedAt: deps.now() });
   const session = await deps.sessions.byId(sessionId);
   let failure: DomainError | null = null;
@@ -66,6 +99,14 @@ export async function pumpDeliveries(deps: DeliveryDeps): Promise<number> {
   const due = await deps.deliveries.due(deps.now());
   for (const d of due) await attemptDelivery(deps, d).catch(() => undefined);
   return due.length;
+}
+
+/** 回合结束：这个会话排在队首、等上一轮的那条马上送（不等下一次泵）。 */
+export async function releaseAfterTurn(deps: DeliveryDeps, sessionId: string): Promise<boolean> {
+  const head = (await deps.deliveries.pendingFor(sessionId))[0];
+  if (!head || head.state !== 'queued') return false;
+  await attemptDelivery(deps, head);
+  return true;
 }
 
 /** 人点「立即重试」：只对未送达、或排队中的会话队首有效；重新给满 10 次。 */
