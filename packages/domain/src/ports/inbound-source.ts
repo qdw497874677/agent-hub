@@ -21,4 +21,6 @@ export interface InboundContext {
   advance(bindingId: string, expected: number | null, next: number): Promise<boolean>;
   emit(bindingId: string, event: InboundEvent): Promise<void>;
   skip(bindingId: string, event: Pick<InboundEvent, 'externalId' | 'plannedAt'>, reason: string): Promise<void>;
+  /** 这个 externalId 在这个 Binding 上已经有记录（处理过 / 跳过 / 隔离）。来源用它省掉重复的外部查询。 */
+  seen(bindingId: string, externalId: string): Promise<boolean>;
 }

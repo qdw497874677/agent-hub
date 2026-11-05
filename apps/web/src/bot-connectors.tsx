@@ -52,15 +52,21 @@ function AgentProjects({ projectId, name }: { projectId: string; name: string })
 function Triggers({ projectId, name }: { projectId: string; name: string }) {
   const key = ['bindings', projectId, name];
   const list = useQuery({ queryKey: key, queryFn: () => connectorApi.bindings(projectId, name), refetchInterval: 15_000 });
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<false | 'timer' | 'github'>(false);
   const items = list.data?.bindings ?? [];
   return (
     <div data-testid="bot-triggers">
       <div className="flex items-center gap-2">
-        <p className="text-meta text-secondary">触发 <span className="text-tertiary">· 到点叫醒它</span></p>
-        {!adding ? <button className={`${SMALL} ml-auto`} data-testid="trigger-new" onClick={() => setAdding(true)}>添加定时</button> : null}
+        <p className="text-meta text-secondary">触发 <span className="text-tertiary">· 到点或有新 issue 时叫醒它</span></p>
+        {!adding ? (
+          <span className="ml-auto flex gap-1">
+            <button className={SMALL} data-testid="trigger-new" onClick={() => setAdding('timer')}>添加定时</button>
+            <button className={SMALL} data-testid="trigger-new-github" onClick={() => setAdding('github')}>绑定 GitHub</button>
+          </span>
+        ) : null}
       </div>
-      {adding ? <TimerForm projectId={projectId} name={name} onDone={() => setAdding(false)} /> : null}
+      {adding === 'timer' ? <TimerForm projectId={projectId} name={name} onDone={() => setAdding(false)} /> : null}
+      {adding === 'github' ? <GithubForm projectId={projectId} name={name} onDone={() => setAdding(false)} /> : null}
       <ul className="mt-1 flex flex-col gap-1">
         {items.map((b) => <TriggerRow key={b.id} b={b} listKey={key} />)}
       </ul>
@@ -104,6 +110,41 @@ function TimerForm({ projectId, name, onDone }: { projectId: string; name: strin
   );
 }
 
+/** GitHub 绑定（ADR 0032 R4）：只轮询；只认带标签、且标签由有写权限的人贴上的 issue。用这个项目团队的 GitHub token。 */
+function GithubForm({ projectId, name, onDone }: { projectId: string; name: string; onDone: () => void }) {
+  const qc = useQueryClient();
+  const [repo, setRepo] = useState('');
+  const [label, setLabel] = useState('agent');
+  const [every, setEvery] = useState(15);
+  const validRepo = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/.test(repo.trim());
+  const create = useMutation({
+    mutationFn: () => connectorApi.create(projectId, name, {
+      connector: 'github', kind: 'issue', name: repo.trim(), target: 'main', projectId: null, params: { repo: repo.trim(), label: label.trim() || 'agent', everyMin: every },
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['bindings', projectId, name] }); onDone(); }
+  });
+  return (
+    <form className="mt-1 flex flex-col gap-2 rounded-md border border-hair p-2" data-testid="github-form" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input className={INPUT} aria-label="仓库" data-testid="github-repo" placeholder="owner/name" value={repo} maxLength={140} onChange={(e) => setRepo(e.target.value)} />
+        <input className={`${INPUT} sm:w-32`} aria-label="标签" data-testid="github-label" value={label} maxLength={50} onChange={(e) => setLabel(e.target.value)} />
+        <label className="flex items-center gap-1 text-meta text-secondary whitespace-nowrap">每
+          <input className={`${INPUT} w-20`} type="number" min={5} max={1440} data-testid="github-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
+      </div>
+      <p className="text-meta text-tertiary">
+        只看带这个标签、且标签由有写权限的人贴上的 issue；疑似注入的不交给 bot、进「等我处理」。开工贴 👀，完成回 PR 链接，失败回原因。
+        PR 上有写权限的人 @ bot 会回到开 PR 的会话。用这个项目所在团队的 GitHub token（团队设置里配）。
+      </p>
+      <div className="flex gap-2">
+        <button className={SMALL} type="submit" data-testid="github-save" disabled={create.isPending || every < 5 || !validRepo}>保存</button>
+        <button className={SMALL} type="button" onClick={onDone}>取消</button>
+      </div>
+      {create.error ? <p className="text-meta text-rust">{errorText(create.error)}</p> : null}
+    </form>
+  );
+}
+
 function TriggerRow({ b, listKey }: { b: BindingDto; listKey: unknown[] }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -114,7 +155,7 @@ function TriggerRow({ b, listKey }: { b: BindingDto; listKey: unknown[] }) {
   return (
     <li className="rounded-md border border-hair p-2" data-testid="trigger-item" data-id={b.id}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-body text-primary">⏰ {b.name}</span>
+        <span className="text-body text-primary">{b.connector === 'github' ? '🐙' : '⏰'} {b.name}</span>
         <span className="text-meta text-tertiary">{b.summary} · {b.target === 'main' ? '主会话' : '新会话'}</span>
         <span className={`text-meta ${b.pausedReason ? 'text-rust' : b.enabled ? 'text-accent' : 'text-tertiary'}`} data-testid="trigger-state">
           {b.pausedReason ? '已暂停' : b.enabled ? `下次 ${time(b.nextRunAt)}` : '已停用'}

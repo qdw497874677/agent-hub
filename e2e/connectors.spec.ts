@@ -59,5 +59,22 @@ for (const width of [390, 1280]) {
     await page.screenshot({ path: `${SHOTS}/${width}-list.png`, fullPage: true });
     await item.getByTestId('trigger-delete').click();
     await expect(conn.getByTestId('trigger-item')).toHaveCount(0);
+
+    // GitHub 绑定（R4）：仓库格式不对不能存；存好显示 仓库 · 标签 · 间隔；接口拒绝 5 分钟以下
+    const badGh = await page.request.post(`/api/projects/${project}/agents/router/bindings`, { headers, data: { connector: 'github', kind: 'issue', name: 'x', params: { repo: 'acme/app', everyMin: 2 } } });
+    expect(badGh.status()).toBe(400);
+    await conn.getByTestId('trigger-new-github').click();
+    await conn.getByTestId('github-repo').fill('not a repo');
+    await expect(conn.getByTestId('github-save')).toBeDisabled();
+    await conn.getByTestId('github-repo').fill('acme/app');
+    await conn.getByTestId('github-every').fill('20');
+    await page.screenshot({ path: `${SHOTS}/${width}-github-form.png`, fullPage: true });
+    await conn.getByTestId('github-save').click();
+    const gh = conn.getByTestId('trigger-item');
+    await expect(gh).toHaveCount(1);
+    await expect(gh).toContainText('acme/app · 标签 agent · 每 20 分钟');
+    await page.screenshot({ path: `${SHOTS}/${width}-github-list.png`, fullPage: true });
+    await gh.getByTestId('trigger-delete').click();
+    await expect(conn.getByTestId('trigger-item')).toHaveCount(0);
   });
 }
