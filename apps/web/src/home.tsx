@@ -2,6 +2,7 @@ import { MessagesEntry } from './messages-entry.tsx';
 import { AccountMenu } from './auth.tsx';
 import { NotificationBell } from './market/notifications.tsx';
 import { AttentionBadge, AttentionInbox } from './attention.tsx';
+import { TaskQueue } from './task-queue.tsx';
 import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from './api.ts';
@@ -125,6 +126,7 @@ export function HomePage({
               }}
             />
           )}
+          {creating ? null : <TaskQueue />}
           {creating ? (
             <CreateProjectPanel
               onCancel={() => setCreating(false)}

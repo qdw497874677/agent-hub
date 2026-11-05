@@ -124,6 +124,7 @@ interface OutputSink { id: string; deliver(binding, ev): Promise<void> }
 ### R3 调度器（核心）
 - 并发上限：全局 2、每台机器 1、每个项目 1，另留 1 个人工槽（Q7）。人手发起的任务只受全局上限和人工槽约束，不受「每个项目 1」限制。
 - 任务结束后，经送达队列通知发起它的总管会话，同时触发对应连接器的 Sink。
+- 实现说明：调度器在 domain（`use-cases/dispatcher.ts` + 纯函数 `dispatch.ts`），经 `TaskDispatchStore`/启动/通知等端口接外部，不引用任何连接器。只有 `task.create` 真建出任务（含批准的超额）才入队，上线前已有的任务不会被自动派发。先把行置为 running 再开会话、tick 串行，保证不重复派发；重启后按会话尾部对账补结算。排队中的可在首页「任务队列」取消（任务记为放弃）。「人手发起」＝ 人在对话里让 bot 建的（wakeKey 为空或 `session:`）。
 
 ### R4 `github` 连接器（GitHub 规则全部在这一个包里）
 - 只轮询，不接 webhook（Q12）。

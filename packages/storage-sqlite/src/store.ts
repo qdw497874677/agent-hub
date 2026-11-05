@@ -27,6 +27,7 @@ import { createSqliteCheckpoints, createSqliteTurnRefs } from './turn-checkpoint
 import { createSqliteDeliveries } from './deliveries.ts';
 import { createSqliteProvenance } from './provenance.ts';
 import { createSqliteConnectors } from './connectors.ts';
+import { createSqliteTaskDispatch } from './task-dispatch.ts';
 import { createSqliteAttention } from './attention.ts';
 import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemoryStore } from './memory.ts';
 import { createEnrollmentRepository } from './enrollment.ts';
@@ -62,6 +63,7 @@ export interface SqliteStore extends RepositorySet {
   readonly provenance: ProvenanceStore;
   readonly connectors: import('@agent-hub/domain').ConnectorStore;
   readonly agentTasks: import('@agent-hub/domain').AgentTaskStore;
+  readonly dispatches: import('@agent-hub/domain').TaskDispatchStore;
   readonly attention: AttentionStore;
   readonly memory: { readonly store: MemoryStore; readonly index: MemoryIndex; readonly settings: MemorySettingsStore };
   /** 单台机器接入：Pairing Code 与 Worker 凭据（都只存 hash）。 */
@@ -455,6 +457,7 @@ export function openSqliteStore(file: string): SqliteStore {
     deliveries: createSqliteDeliveries(db),
     provenance: createSqliteProvenance(db),
     ...createSqliteConnectors(db),
+    dispatches: createSqliteTaskDispatch(db),
     attention: createSqliteAttention(db),
     memory: { store: createSqliteMemoryStore(db), index: createSqliteMemoryIndex(db), settings: createSqliteMemorySettings(db) },
     workspaces: createWorkspaceRepository(db),
