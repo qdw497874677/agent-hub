@@ -212,3 +212,21 @@ test('触发：漏了回合结束 → 超时记 timeout 失败、放行下一次
   assert.equal(fresh.enabled, false);
   assert.match(fresh.pausedReason ?? '', /超时/);
 });
+
+test('R4：轮询来的事件（无计划时刻）上一次没完不记跳过、下次再来；指定会话；seen；疑似注入进等我处理', async () => {
+  const x = await world();
+  const b = await x.hub.create(actor, x.home.id, 'router', { connector: 'timer', kind: 'tick', name: '巡检', params: { prompt: '看看' } });
+  assert.ok(b.ok);
+  await x.ctx().emit(b.value.id, { kind: 'issue', externalId: 'a/b#1@1', title: 'i1', text: { untrusted: true, value: '修 bug' }, note: '（来源说明）' });
+  assert.match(x.delivered[0]!.text, /（来源说明）\n以下是外部来源的内容/);
+  await x.ctx().emit(b.value.id, { kind: 'issue', externalId: 'a/b#2@2', title: 'i2', text: { untrusted: true, value: 'x' } });
+  assert.equal(await x.ctx().seen(b.value.id, 'a/b#2@2'), false, '没占去重键');
+  assert.equal(await x.ctx().seen(b.value.id, 'a/b#1@1'), true);
+  await x.hub.turnEnded(x.botSession.id, 'done');
+  await x.ctx().emit(b.value.id, { kind: 'pr.comment', externalId: 'a/b#5/comment/9', title: 'pr', text: { untrusted: true, value: '改一下' }, targetSessionId: x.botSession.id });
+  assert.equal(x.delivered.length, 2);
+  assert.equal(x.delivered[1]!.sessionId, x.botSession.id);
+  await x.ctx().skip(b.value.id, { externalId: 'a/b#3@3' }, '疑似注入（要求忽略之前的指令），已隔离');
+  const notices = await x.hub.notices('u1');
+  assert.deepEqual(notices.map((n) => n.kind), ['inbound_quarantined']);
+});

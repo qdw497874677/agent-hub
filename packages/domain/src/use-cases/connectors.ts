@@ -40,7 +40,9 @@ export interface BindingInput {
 
 export interface BindingView extends ConnectorBinding { readonly summary: string; readonly lastRun: TriggerRun | null }
 
-export interface ConnectorNotice { readonly kind: 'binding_paused'; readonly id: string; readonly title: string; readonly reason: string; readonly since: number; readonly projectId: string; readonly agentName: string }
+export interface ConnectorNotice { readonly kind: 'binding_paused' | 'inbound_quarantined'; readonly id: string; readonly title: string; readonly reason: string; readonly since: number; readonly projectId: string; readonly agentName: string }
+
+export const QUARANTINE_NOTICE_MS = 7 * 24 * 60 * 60_000;
 
 export function createConnectorHub(deps: ConnectorHubDeps) {
   const sources = new Map(deps.sources.map((s) => [s.id, s]));
@@ -118,10 +120,12 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     const now = deps.now();
     const run: TriggerRun = {
       id: newId(), bindingId, externalId: event.externalId, plannedAt: event.plannedAt ?? null, catchup: event.catchup === true,
-      state: 'waiting', reason: null, sessionId: null, text: formatInbound(binding, event), createdAt: now, updatedAt: now
+      state: 'waiting', reason: null, sessionId: event.targetSessionId ?? null, text: formatInbound(binding, event), createdAt: now, updatedAt: now
     };
     const open = await deps.store.openRuns(bindingId);
     if (open.length > 0) {
+      // 不是按计划时刻来的（轮询到的外部事件）：不记跳过、不占去重键，下次轮询再来
+      if (event.plannedAt === undefined) return;
       await deps.store.insertRun({ ...run, state: 'skipped', reason: '上一次还没结束，本次跳过' });
       return;
     }
@@ -139,7 +143,8 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     bindings: async () => (await deps.store.bindingsFor(source.id)).filter((b) => b.enabled),
     advance: (id, expected, next) => deps.store.advance(id, expected, next, deps.now()),
     emit,
-    skip
+    skip,
+    seen: (bindingId, externalId) => deps.store.hasRun(bindingId, externalId)
   });
 
   const view = async (b: ConnectorBinding): Promise<BindingView> => ({
@@ -239,9 +244,20 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     },
     /** 「等我处理」：我建的、被自动暂停的触发。 */
     async notices(accountId: string): Promise<ConnectorNotice[]> {
-      return (await deps.store.allBindings())
-        .filter((b) => b.createdBy === accountId && !b.enabled && b.pausedReason)
+      const mine = (await deps.store.allBindings()).filter((b) => b.createdBy === accountId);
+      const paused = mine.filter((b) => !b.enabled && b.pausedReason)
         .map((b) => ({ kind: 'binding_paused' as const, id: b.id, title: `@${b.agentName} · ${b.name}`, reason: b.pausedReason!, since: b.updatedAt, projectId: b.agentProjectId, agentName: b.agentName }));
+      // 来源按规则隔离的疑似注入（reason 以「疑似注入」开头）：最近 7 天的列出来让人看
+      const since = deps.now() - QUARANTINE_NOTICE_MS;
+      const quarantined: ConnectorNotice[] = [];
+      for (const b of mine) {
+        for (const r of await deps.store.runs(b.id, 50)) {
+          if (r.state === 'skipped' && r.createdAt >= since && r.reason?.startsWith('疑似注入')) {
+            quarantined.push({ kind: 'inbound_quarantined', id: r.id, title: `@${b.agentName} · ${b.name}`, reason: r.reason, since: r.createdAt, projectId: b.agentProjectId, agentName: b.agentName });
+          }
+        }
+      }
+      return [...paused, ...quarantined];
     },
     async agentProjects(actor: Principal, projectId: string, agentName: string): Promise<Result<{ defaultProjectId: string; projectIds: string[] }, DomainError>> {
       const allowed = await can(actor, projectId, 'project.read');

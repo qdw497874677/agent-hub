@@ -60,6 +60,7 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
       return Number(r.changes) > 0;
     },
     async insertRun(r) { return Number(insR.run(...runArgs(r)).changes) > 0; },
+    async hasRun(b, e) { return db.prepare('SELECT 1 FROM trigger_run WHERE binding_id = ? AND external_id = ? LIMIT 1').get(b, e) !== undefined; },
     async saveRun(r) { upR.run(...runArgs(r)); },
     async runs(b, limit) { return (db.prepare('SELECT * FROM trigger_run WHERE binding_id = ? ORDER BY created_at DESC LIMIT ?').all(b, limit) as R[]).map(toR); },
     async openRuns(b) { return (db.prepare("SELECT * FROM trigger_run WHERE binding_id = ? AND state IN ('waiting','delivered')").all(b) as R[]).map(toR); },

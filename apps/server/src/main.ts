@@ -3,6 +3,7 @@ import { createInstallArtifacts } from './install-artifacts.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createTimerSource } from '@agent-hub/connector-timer';
+import { createGithubClient, createGithubSink, createGithubSource, createGithubToolProvider, githubParams, parseIssueKey } from '@agent-hub/connector-github';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -294,10 +295,37 @@ const botOfSession = async (sessionId: SessionId): Promise<{ projectId: string; 
   const task = session ? await deps.tasks.byId(session.taskId) : null;
   return task ? { projectId: task.projectId, name: role } : null;
 };
+// GitHub 连接器（ADR 0032 R4）：规则全在 @agent-hub/connector-github；这里只给它项目绑定的 token、PR 和会话的对应。
+const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
+const gitHostTokens = createSqliteGitHostTokens(store.db, secretKey);
+const githubClient = createGithubClient({ base: readEnv('HUB_GITHUB_API') ?? undefined });
+const teamTokenOf = async (projectId: string) => {
+  const teamId = (await store.projects.byId(projectId as ProjectId))?.teamId ?? null;
+  return teamId ? gitHostTokens.reveal(teamId) : null;
+};
+/** 某项目能回帖的仓库：智能体（默认项目 + 关联项目）覆盖到它的 github Binding。 */
+const githubReposFor = async (projectId: string) => {
+  const repos: string[] = [];
+  for (const b of await store.connectors.bindingsFor('github')) {
+    const scope = b.projectId ? [b.projectId] : [b.agentProjectId, ...(await store.connectors.agentProjects(b.agentProjectId, b.agentName))];
+    if (scope.includes(projectId)) repos.push(githubParams(b.params).repo);
+  }
+  return repos;
+};
+const pullRequestRepoEarly = createSqlitePullRequests(store.db);
+const githubSource = createGithubSource({
+  client: githubClient,
+  tokenFor: (b) => teamTokenOf(b.projectId ?? b.agentProjectId),
+  sessionForPr: async (repo, number) => {
+    const link = (await pullRequestRepoEarly.openSyncedBefore(Number.MAX_SAFE_INTEGER, 1000)).find((l) => l.repo.toLowerCase() === repo.toLowerCase() && l.number === number);
+    return link?.sessionId ?? null;
+  },
+  log
+});
 const connectorHub = createConnectorHub({
   now: deps.now, projects: deps.projects, sessions: deps.sessions, policy: deps.access,
   store: store.connectors,
-  sources: [createTimerSource()],
+  sources: [createTimerSource(), githubSource],
   agentExists: async (projectId, name) => (await messageBus.config(projectId)).roles.some((r) => r.name === name),
   spawn: async ({ projectId, agentName, ownerId, title }) => {
     const role = (await messageBus.config(projectId)).roles.find((r) => r.name === agentName);
@@ -370,6 +398,7 @@ const dispatcher = createDispatcher({
   },
   notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
   abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
+  sinks: [createGithubSink({ client: githubClient, tokenFor: teamTokenOf, boundRepos: githubReposFor, prLinks: async (taskId) => (await pullRequestRepoEarly.byTask(taskId)).map((l) => l.url), log })],
   log
 });
 const enqueueDispatch = async (r: AgentTaskRequest) => {
@@ -432,10 +461,9 @@ setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref()
 
 // 记忆（ADR 0019 · P1）：SQLite + FTS5 默认适配器；来源就地索引（ADR、文档、任务）；只经工具读，第一轮只垫一行静态引导。
 // 记忆适配器都经注册表装配（memory.md §16）：来源、提炼、检索 / 排序、维护任务、治理各是一个端口。
-const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
 const providerRepo = createSqliteProviders(store.db, secretKey);
 const projectTeamOf = async (projectId: string) => (await store.projects.byId(projectId as ProjectId))?.teamId ?? null;
-const pullRequestRepo = createSqlitePullRequests(store.db);
+const pullRequestRepo = pullRequestRepoEarly;
 const workspaceSweeps = createSqliteWorkspaceSweeps(store.db);
 // 清理（ADR 0027 阶段 3）：按 PR 合并 / 任务结束判断，删工作空间时一起删检查点 ref
 (deps as { cleanup?: Deps["cleanup"] }).cleanup = { sweeps: workspaceSweeps, pullRequests: pullRequestRepo, dropCheckpoints: (sessionId: string) => filesService.dropSession(sessionId) };
@@ -444,7 +472,7 @@ const gitService = createGitWorkflowService({
   projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,
   workLog: store.workLog, git: deps.git,
   pullRequests: pullRequestRepo,
-  tokens: createSqliteGitHostTokens(store.db, secretKey),
+  tokens: gitHostTokens,
   host: createGitHubApi({ base: readEnv('HUB_GITHUB_API') ?? undefined }),
   writer: createGitTextWriter({ settings: store.memory.settings, providers: providerRepo, projectTeam: projectTeamOf, audit: store.audit, now: () => Date.now(), log }),
   hubTeamId: async () => (await store.users.firstClusterAdmin())?.teamId ?? null,
@@ -514,6 +542,25 @@ toolGateway = createToolGateway({
       wakeOf: async (sid) => { const run = await store.connectors.deliveredRunFor(sid); const b = run ? await store.connectors.binding(run.bindingId) : null; return run && b ? { runId: run.id, timeZone: b.timeZone } : null; },
       countHuman: readEnv('HUB_ROUTER_COUNT_HUMAN') === '1',
       defaultTimeZone: readEnv('HUB_TIME_ZONE') ?? 'Asia/Shanghai'
+    }),
+    // R4：github.comment / github.react；只对绑给这个 bot（或这个任务来源）的仓库，能力按 Worker 预设映射
+    createGithubToolProvider({
+      client: githubClient,
+      tokenFor: teamTokenOf,
+      workerCapabilities: async (sid) => {
+        const s = await deps.sessions.byId(sid as SessionId);
+        return s?.workerId ? ((await store.enrollment.credentialFor(s.workerId))?.capabilities ?? null) : null;
+      },
+      bindingsOf: async (sid) => {
+        const bot = await botOfSession(sid as SessionId);
+        if (bot) {
+          return (await store.connectors.bindingsOf(bot.projectId, bot.name)).filter((b) => b.connector === 'github')
+            .map((b) => ({ repo: githubParams(b.params).repo, projectId: b.projectId ?? b.agentProjectId }));
+        }
+        const d = await store.dispatches.bySession(sid);
+        const at = d?.originConnector === 'github' && d.originExternalId ? parseIssueKey(d.originExternalId) : null;
+        return at && d && (await githubReposFor(d.projectId)).includes(at.repo) ? [{ repo: at.repo, projectId: d.projectId }] : [];
+      }
     })]
 });
 
