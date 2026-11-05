@@ -19,6 +19,7 @@
     "@scalar/hono-api-reference": "^0.12.17",
     "hono": "^4.9.12",
     "zod": "^4.6.7",
-    "@agent-hub/connector-timer": "*"
+    "@agent-hub/connector-timer": "*",
+    "@agent-hub/connector-github": "*"
   }
 }

@@ -12,6 +12,7 @@ export interface ConnectorStore {
   advance(id: string, expected: number | null, next: number, now: number): Promise<boolean>;
   /** 插入一条运行记录；同 binding + externalId 已有就返回 false（去重）。 */
   insertRun(r: TriggerRun): Promise<boolean>;
+  hasRun(bindingId: string, externalId: string): Promise<boolean>;
   saveRun(r: TriggerRun): Promise<void>;
   runs(bindingId: string, limit: number): Promise<TriggerRun[]>;
   openRuns(bindingId: string): Promise<TriggerRun[]>;

@@ -54,7 +54,7 @@ export function createDispatcher(deps: DispatcherDeps) {
     if (!d.originConnector || !d.originExternalId) return;
     for (const s of deps.sinks ?? []) {
       if (s.id !== d.originConnector) continue;
-      await s.deliver({ kind: d.state === 'done' ? 'task.finished' : 'task.failed', bindingId: '', externalId: d.originExternalId, detail: d.result ?? '' }).catch(() => undefined);
+      await s.deliver({ kind: d.state === 'done' ? 'task.finished' : 'task.failed', bindingId: '', externalId: d.originExternalId, detail: d.result ?? '', taskId: d.taskId, projectId: d.projectId }).catch(() => undefined);
     }
   };
 

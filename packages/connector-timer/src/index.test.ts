@@ -34,7 +34,7 @@ test('tick：CAS 抢到才触发；抢不到不发', async () => {
   const b = { id: 'b1', enabled: true, pausedReason: null, nextRunAt: 0, params: { everyMin: 10, prompt: '看看' }, name: 'n' } as unknown as ConnectorBinding;
   const emitted: InboundEvent[] = [];
   let win = true;
-  const ctx: InboundContext = { now: () => 1000, bindings: async () => [b], advance: async () => win, emit: async (_id, e) => { emitted.push(e); }, skip: async () => {} };
+  const ctx: InboundContext = { now: () => 1000, bindings: async () => [b], advance: async () => win, emit: async (_id, e) => { emitted.push(e); }, skip: async () => {}, seen: async () => false };
   await timerTick(ctx);
   assert.equal(emitted.length, 1);
   assert.equal(emitted[0]!.externalId, '0');

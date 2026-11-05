@@ -831,7 +831,7 @@ export interface BindingDto {
   params: Record<string, unknown>; enabled: boolean; pausedReason: string | null; consecutiveFailures: number; nextRunAt: number | null; mainSessionId: string | null;
   timeZone: string; summary: string; lastRun: TriggerRunDto | null; createdAt: number
 }
-export interface ConnectorNoticeDto { kind: 'binding_paused' | 'task_pending'; id: string; title: string; reason: string; since: number; projectId: string; agentName: string | null }
+export interface ConnectorNoticeDto { kind: 'binding_paused' | 'inbound_quarantined' | 'task_pending'; id: string; title: string; reason: string; since: number; projectId: string; agentName: string | null }
 const agentPath = (projectId: string, name: string) => `/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}`;
 export const connectorApi = {
   bindings: (projectId: string, name: string) => call<{ bindings: BindingDto[] }>(`${agentPath(projectId, name)}/bindings`),
