@@ -9,7 +9,8 @@ import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
-import { cancelDelivery, pumpDeliveries, retryDeliveryNow } from './delivery.ts';
+import { cancelDelivery, pumpDeliveries, releaseAfterTurn, retryDeliveryNow, TURN_STALE_MS, TURN_WAIT_MS } from './delivery.ts';
+import { recordEvent } from './sessions.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
 
 async function world() {
@@ -57,7 +58,7 @@ test('离线时不再当场失败：进队列按退避重试，机器回来后�
   assert.equal((await w.deliveries.byId(d!.id))!.state, 'delivered');
 });
 
-test('严格按序：前一条没送达，后面的只排队；送达后下一条接着送', async () => {
+test('严格按序：前一条没送达，后面的只排队；送达且那一轮结束后下一条接着送', async () => {
   const w = await world();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '一' });
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '二' });
@@ -67,6 +68,10 @@ test('严格按序：前一条没送达，后面的只排队；送达后下一�
   w.online();
   w.tick(2_000);
   await pumpDeliveries(w.deps);
+  await pumpDeliveries(w.deps);
+  assert.equal(w.sent.length, 1, '第一轮没结束，第二条不塞进去');
+  await recordEvent(w.deps, { sessionId: w.sid, event: { kind: 'ended', outcome: 'done' } });
+  w.tick(TURN_WAIT_MS);
   await pumpDeliveries(w.deps);
   assert.deepEqual(w.sent.map((c) => (c.kind === 'prompt' ? c.text.split('\n').at(-1) : '')), ['一', '二']);
 });
@@ -99,4 +104,46 @@ test('撤回：不再送，journal 记一条说明', async () => {
   w.tick(10_000);
   assert.equal(await pumpDeliveries(w.deps), 0);
   assert.ok(ok(undefined).ok);
+});
+
+test('上一轮还在跑（如定时触发）：人发的话排队、不扣次数，回合结束立刻送达', async () => {
+  const w = await world();
+  w.online();
+  const first = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '定时触发：扫一遍', author: { id: 'u', name: 'timer', via: 'connector' } });
+  assert.ok(first.ok);
+  assert.equal(w.sent.length, 1);
+  const second = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '人插一句' });
+  assert.ok(second.ok, JSON.stringify(second));
+  assert.equal(w.sent.length, 1, '回合没结束，不往运行时塞');
+  const [q] = await w.deliveries.pendingFor(w.sid);
+  assert.equal(q!.state, 'queued');
+  assert.equal(q!.attempt, 0);
+  assert.equal(await pumpDeliveries(w.deps), 0, '泵也不越过还在跑的这一轮');
+  w.tick(TURN_WAIT_MS);
+  await pumpDeliveries(w.deps);
+  assert.equal(w.sent.length, 1);
+  await recordEvent(w.deps, { sessionId: w.sid, event: { kind: 'ended', outcome: 'done' } });
+  assert.equal(await releaseAfterTurn(w.deps, w.sid), true);
+  assert.equal(w.sent.length, 2);
+  assert.ok(w.sent[1]!.kind === 'prompt' && w.sent[1]!.text.endsWith('人插一句'));
+  assert.equal((await w.deliveries.byId(q!.id))!.state, 'delivered');
+});
+
+test('上一轮 30 分钟没动静：不再挡着后面的消息', async () => {
+  const w = await world();
+  w.online();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'a' });
+  w.tick(TURN_STALE_MS + 1);
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'b' });
+  assert.equal(w.sent.length, 2);
+});
+
+test('撤回的那句不算开了一轮', async () => {
+  const w = await world();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'a' });
+  const [d] = await w.deliveries.pendingFor(w.sid);
+  assert.ok((await cancelDelivery(w.deps, d!.id)).ok);
+  w.online();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'b' });
+  assert.equal(w.sent.length, 1);
 });
