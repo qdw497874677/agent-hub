@@ -28,7 +28,7 @@ export const AGENT_TASK_TOOLS: readonly ToolDescriptor[] = [
   },
   {
     name: 'task.create', version: 1, scope: 'task:create', perMinute: 10,
-    description: 'Create a new task (title + goal) in your default project, or in another associated project. A human or task agent then works on it. If the task comes from an external item, pass source {connector, externalId}: the same item is never created twice. When woken by a trigger you may create at most 3 per wake and 20 per day; extra ones wait for human approval.',
+    description: 'Create a new task (title + goal) in your default project, or in another associated project. A task agent is then dispatched automatically (queued under concurrency caps); when it finishes you receive a [调度通知] message with its result, so tell the user then — do not poll. If the task comes from an external item, pass source {connector, externalId}: the same item is never created twice. When woken by a trigger you may create at most 3 per wake and 20 per day; extra ones wait for human approval.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -55,6 +55,8 @@ export interface AgentTaskToolDeps extends Pick<Deps, 'now' | 'tasks' | 'project
   readonly wakeOf: (sessionId: SessionId) => Promise<{ runId: string; timeZone: string } | null>;
   readonly countHuman?: boolean;
   readonly defaultTimeZone?: string;
+  /** 任务真正建出来之后（R3：交给调度器排队）。 */
+  readonly onCreated?: (r: AgentTaskRequest) => Promise<void>;
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
@@ -151,8 +153,10 @@ export function createAgentTaskToolProvider(deps: AgentTaskToolDeps): ToolProvid
           if (approval === 'pending') return ok({ ...reqView(saved), message: `超出配额（${reason}），已交给人批准；批准后才会建任务` });
           const task = await createTaskUseCase(deps, { projectId: project.value, title, goal: draft.goal, ownerId: owner });
           if (!task.ok) { await deps.requests.save({ ...saved, approval: 'cancelled', counted: false, updatedAt: deps.now() }); return task; }
-          await deps.requests.save({ ...saved, taskId: task.value.id, updatedAt: deps.now() });
-          return ok({ ...reqView({ ...saved, taskId: task.value.id }), status: task.value.status });
+          const created = { ...saved, taskId: task.value.id, updatedAt: deps.now() };
+          await deps.requests.save(created);
+          await deps.onCreated?.(created).catch(() => undefined);
+          return ok({ ...reqView(created), status: task.value.status, ...(deps.onCreated ? { queued: true, message: '任务已建好并进入调度队列，任务智能体做完后你会收到一条 [调度通知]，到时再告诉用户结果' } : {}) });
         }
         case 'task.cancel': {
           const id = str(args.id);
@@ -177,7 +181,7 @@ export function createAgentTaskToolProvider(deps: AgentTaskToolDeps): ToolProvid
 
 /** 人批 / 拒超额的那条（收件箱里点）。批准才真正建任务。 */
 export async function decideAgentTask(
-  deps: Pick<Deps, 'now' | 'tasks' | 'projects'> & { readonly requests: AgentTaskStore },
+  deps: Pick<Deps, 'now' | 'tasks' | 'projects'> & { readonly requests: AgentTaskStore; readonly onCreated?: (r: AgentTaskRequest) => Promise<void> },
   accountId: string, id: string, approve: boolean
 ): Promise<Result<AgentTaskRequest, DomainError>> {
   const r = await deps.requests.byId(id);
@@ -188,5 +192,6 @@ export async function decideAgentTask(
   if (!task.ok) return task;
   const next = { ...r, approval: 'approved' as const, taskId: task.value.id, updatedAt: deps.now() };
   await deps.requests.save(next);
+  await deps.onCreated?.(next).catch(() => undefined);
   return ok(next);
 }

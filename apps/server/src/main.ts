@@ -44,6 +44,11 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createSessionToolProvider,
   createConnectorHub,
   createAgentTaskToolProvider,
+  createDispatcher,
+  setTaskStatusUseCase,
+  defaultWorkspaceFor,
+  isBusy,
+  type AgentTaskRequest,
   notFound, forbidden,
   handoffCapFromEnv,
   defaultMemoryRegistry,
@@ -319,6 +324,64 @@ hub.stream.subscribe((frame) => {
   const event = frame.event;
   if (event?.kind === 'ended') void connectorHub.turnEnded(frame.sessionId, event.outcome).catch(() => undefined);
 });
+// 调度器（ADR 0032 R3）：task.create 建出的任务排队 → 按上限开任务智能体会话 → 一轮结束经送达队列通知建它的 bot。
+// 只经端口：开会话 / 发消息复用现有派生 + 送达流程；人直接开的会话不经过这里。
+const sessionOwner = async (ownerId: string) => {
+  const user = await store.users.byId(ownerId as UserId);
+  if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
+  return withAccess(store.access, { user, loginId: 'agent-dispatch' as LoginId }, Date.now());
+};
+const dispatcher = createDispatcher({
+  now: deps.now,
+  store: store.dispatches,
+  placement: async (projectId) => {
+    const ws = await defaultWorkspaceFor(deps, projectId as ProjectId);
+    const workerId = ws?.workerId ?? null;
+    const workers = await deps.gateway.status();
+    return { workerId, online: workers.some((w) => w.state === 'online' && (workerId === null ? w.origin === 'local' : w.workerId === workerId)) };
+  },
+  start: async (d) => {
+    const actor = await sessionOwner(d.accountId);
+    if (!actor) return err(forbidden('建这个任务的账号已停用'));
+    if (!d.agentId) return err(notFound('不知道用哪个运行时'));
+    const created = await deriveSessionUseCase(deps, { taskId: d.taskId, agentId: d.agentId, model: d.model ?? '', actor });
+    if (!created.ok) return created;
+    await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' }).catch(() => undefined);
+    const text = [`你是被调度器派来推进这个任务的任务智能体。任务：「${d.title}」`, d.goal ? `目标：\n${d.goal}` : '',
+      '直接动手完成它；做完后用一段简短的文字总结结果（做了什么、产出在哪、有没有没做完的）。这段总结会转给建这个任务的 bot。'].filter(Boolean).join('\n\n');
+    const sent = await promptSessionUseCase(deps, { sessionId: created.value.id, text, author: { id: d.accountId, name: '调度器', via: 'dispatch' } });
+    if (!sent.ok) return sent;
+    return ok({ sessionId: created.value.id as string, workerId: created.value.workerId ?? null });
+  },
+  sessionState: async (sid) => {
+    const s = await deps.sessions.byId(sid as SessionId);
+    if (!s) return null;
+    const pending = (await store.deliveries.pendingFor(sid)).length > 0;
+    if (s.status === 'running' || pending || s.lastSeq === 0) return { running: true, outcome: null, reply: '' };
+    const tail = await deps.sessions.tail(sid as SessionId, 400);
+    let reply = '';
+    for (const e of tail) { if (e.event.kind === 'prompt') reply = ''; else if (e.event.kind === 'text') reply += e.event.delta; }
+    return { running: false, outcome: s.status === 'done' ? 'done' : 'failed', reply: reply.trim() };
+  },
+  busy: async (sid) => {
+    const s = await deps.sessions.byId(sid as SessionId);
+    return (s ? isBusy(s) : false) || (await store.deliveries.pendingFor(sid)).length > 0;
+  },
+  notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
+  abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
+  log
+});
+const enqueueDispatch = async (r: AgentTaskRequest) => {
+  const creator = await deps.sessions.byId(r.sessionId as SessionId);
+  const bot = await botOfSession(r.sessionId as SessionId);
+  const role = bot ? (await messageBus.config(bot.projectId as ProjectId)).roles.find((x) => x.name === bot.name) : null;
+  await dispatcher.enqueue(r, { agentId: role?.agentId ?? creator?.agentId ?? null, model: role?.model ?? creator?.model ?? null });
+  void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`));
+};
+setInterval(() => void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`)), 10_000).unref();
+hub.stream.subscribe((frame) => {
+  if (frame.event?.kind === 'ended') void dispatcher.sessionEnded(frame.sessionId).catch(() => undefined);
+});
 // 回合结束：先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
 hub.stream.subscribe((frame) => {
   const event = frame.event;
@@ -440,7 +503,7 @@ toolGateway = createToolGateway({
     createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
     // R2：bot 建任务 / 读关联项目；权限 = 关联关系，配额只算触发唤醒的回合（HUB_ROUTER_COUNT_HUMAN=1 时人发起的也算）
     createAgentTaskToolProvider({
-      ...deps, requests: store.agentTasks, agentOf: botOfSession,
+      ...deps, requests: store.agentTasks, agentOf: botOfSession, onCreated: enqueueDispatch,
       associations: (projectId, name) => store.connectors.agentProjects(projectId, name),
       wakeOf: async (sid) => { const run = await store.connectors.deliveredRunFor(sid); const b = run ? await store.connectors.binding(run.bindingId) : null; return run && b ? { runId: run.id, timeZone: b.timeZone } : null; },
       countHuman: readEnv('HUB_ROUTER_COUNT_HUMAN') === '1',
@@ -766,7 +829,7 @@ const envNumber = (name: string): number | undefined => {
   return value === null || value === undefined ? undefined : Number(value);
 };
 
-const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks }, waitOptions: optionWaiters.wait, guard, 
+const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard, 
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {

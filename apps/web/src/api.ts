@@ -845,5 +845,18 @@ export const connectorApi = {
   setProjects: (projectId: string, name: string, projectIds: string[]) =>
     call<{ defaultProjectId: string; projectIds: string[] }>(`${agentPath(projectId, name)}/projects`, { method: 'PUT', body: JSON.stringify({ projectIds }) }),
   notices: () => call<{ notices: ConnectorNoticeDto[] }>('/api/connectors/notices'),
-  decide: (id: string, approve: boolean) => post<unknown>(`/api/agent-tasks/${encodeURIComponent(id)}/decision`, { approve })
+  decide: (id: string, approve: boolean) => post<unknown>(`/api/agent-tasks/${encodeURIComponent(id)}/decision`, { approve }),
+  dispatch: () => call<DispatchQueueDto>('/api/dispatch'),
+  cancelDispatch: (id: string) => post<unknown>(`/api/dispatch/${encodeURIComponent(id)}/cancel`, {})
 };
+
+export interface DispatchItemDto {
+  id: string; taskId: string; projectId: string; title: string; human: boolean; state: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  workerId: string | null; sessionId: string | null; waitReason: string | null; result: string | null; notified: boolean; position: number | null;
+  createdAt: number; startedAt: number | null; updatedAt: number;
+}
+export interface DispatchQueueDto {
+  queued: DispatchItemDto[]; running: DispatchItemDto[]; recent: DispatchItemDto[];
+  pending: { id: string; title: string; projectId: string; agentName: string | null; createdAt: number }[];
+  caps: { global: number; perWorker: number; perProject: number; humanReserved: number } | null;
+}

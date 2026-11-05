@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
-import { decideAgentTask, principalOfSubject, type AgentTaskStore, type ConnectorHub, type Deps } from '@agent-hub/domain';
+import { decideAgentTask, principalOfSubject, type AgentTaskRequest, type AgentTaskStore, type ConnectorHub, type Deps, type Dispatcher } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -11,11 +11,16 @@ import { fail } from './http-error.ts';
  * - GET/PUT    /api/projects/:id/agents/:name/projects   关联项目（= 白名单）
  * - GET        /api/connectors/notices                   等我处理：自动暂停的触发 + 超额待批的任务
  * - POST       /api/agent-tasks/:id/decision             批 / 拒超额任务
+ * - GET        /api/dispatch                             任务队列（R3）：排队 / 运行 / 最近完成
+ * - POST       /api/dispatch/:id/cancel                  取消排队中的任务
  */
 export interface ConnectorRouteDeps {
   readonly hub: ConnectorHub;
   readonly agentTasks: AgentTaskStore;
   readonly deps: Pick<Deps, 'now' | 'tasks' | 'projects'>;
+  readonly dispatcher?: Dispatcher;
+  /** 任务真正建出来（批准超额后）：交给调度器排队。 */
+  readonly onCreated?: (r: AgentTaskRequest) => Promise<void>;
 }
 
 const createBody = z.object({
@@ -84,7 +89,19 @@ export function installConnectorRoutes(app: Hono<any>, r: ConnectorRouteDeps, su
     const actor = me(c); if (!actor) return fail(c, needUser);
     const p = z.object({ approve: z.boolean() }).safeParse(await c.req.json().catch(() => null));
     if (!p.success) return fail(c, bad(p.error));
-    const out = await decideAgentTask({ ...r.deps, requests: r.agentTasks }, actor.user.id, c.req.param('id'), p.data.approve);
+    const out = await decideAgentTask({ ...r.deps, requests: r.agentTasks, ...(r.onCreated ? { onCreated: r.onCreated } : {}) }, actor.user.id, c.req.param('id'), p.data.approve);
+    return out.ok ? c.json(out.value) : fail(c, out.error);
+  });
+  app.get('/api/dispatch', async (c) => {
+    const actor = me(c); if (!actor || !r.dispatcher) return c.json({ queued: [], running: [], recent: [], pending: [], caps: null });
+    const view = await r.dispatcher.list(actor.user.id);
+    const pending = (await r.agentTasks.pendingFor(actor.user.id)).map((q) => ({ id: q.id, title: q.title, projectId: q.projectId, agentName: q.agent, createdAt: q.createdAt }));
+    return c.json({ ...view, pending });
+  });
+  app.post('/api/dispatch/:id/cancel', async (c) => {
+    const actor = me(c); if (!actor) return fail(c, needUser);
+    if (!r.dispatcher) return fail(c, { code: 'not_found' as const, message: '调度器没开' });
+    const out = await r.dispatcher.cancel(actor.user.id, c.req.param('id'));
     return out.ok ? c.json(out.value) : fail(c, out.error);
   });
 }

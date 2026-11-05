@@ -172,3 +172,6 @@ export type { ConnectorStore } from './ports/connector-store.ts';
 export type { AgentTaskStore, AgentTaskRequest, AgentTaskApproval } from './ports/agent-task-store.ts';
 export { createConnectorHub, type ConnectorHub, type ConnectorHubDeps, type BindingInput, type BindingView, type ConnectorNotice } from './use-cases/connectors.ts';
 export { createAgentTaskToolProvider, decideAgentTask, AGENT_TASK_TOOLS, ROUTER_CAPS, type AgentTaskToolDeps } from './tools/agent-task-tools.ts';
+export * from './dispatch.ts';
+export type { TaskDispatch, TaskDispatchStore, DispatchState } from './ports/task-dispatch-store.ts';
+export { createDispatcher, type Dispatcher, type DispatcherDeps, type DispatchView } from './use-cases/dispatcher.ts';
