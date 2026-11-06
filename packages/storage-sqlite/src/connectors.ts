@@ -63,6 +63,20 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
     async hasRun(b, e) { return db.prepare('SELECT 1 FROM trigger_run WHERE binding_id = ? AND external_id = ? LIMIT 1').get(b, e) !== undefined; },
     async saveRun(r) { upR.run(...runArgs(r)); },
     async runs(b, limit) { return (db.prepare('SELECT * FROM trigger_run WHERE binding_id = ? ORDER BY created_at DESC LIMIT ?').all(b, limit) as R[]).map(toR); },
+    async run(id) { const r = db.prepare('SELECT * FROM trigger_run WHERE id = ?').get(id) as R | undefined; return r ? toR(r) : null; },
+    async runsSince(ids, since, limit) {
+      if (ids.length === 0 || limit <= 0) return [];
+      const marks = ids.map(() => '?').join(',');
+      return (db.prepare(`SELECT * FROM trigger_run WHERE binding_id IN (${marks}) AND created_at >= ? ORDER BY created_at DESC LIMIT ?`).all(...ids, since, limit) as R[]).map(toR);
+    },
+    async countRunsByState(ids, since) {
+      const counts: Record<TriggerRun['state'], number> = { waiting: 0, delivered: 0, done: 0, failed: 0, timeout: 0, skipped: 0 };
+      if (ids.length === 0) return counts;
+      const marks = ids.map(() => '?').join(',');
+      const rows = db.prepare(`SELECT state, COUNT(*) AS n FROM trigger_run WHERE binding_id IN (${marks}) AND created_at >= ? GROUP BY state`).all(...ids, since) as { state: string; n: number }[];
+      for (const row of rows) if (row.state in counts) counts[row.state as TriggerRun['state']] = row.n;
+      return counts;
+    },
     async openRuns(b) { return (db.prepare("SELECT * FROM trigger_run WHERE binding_id = ? AND state IN ('waiting','delivered')").all(b) as R[]).map(toR); },
     async waitingRuns() { return (db.prepare("SELECT * FROM trigger_run WHERE state = 'waiting' ORDER BY created_at").all() as R[]).map(toR); },
     async deliveredRuns() { return (db.prepare("SELECT * FROM trigger_run WHERE state = 'delivered' ORDER BY created_at").all() as R[]).map(toR); },
@@ -92,7 +106,12 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
       if (ids.length === 0) return [];
       return (db.prepare(`SELECT * FROM agent_task_request WHERE session_id IN (${ids.map(() => '?').join(',')}) ORDER BY created_at DESC LIMIT ?`).all(...ids, limit) as Q[]).map(toQ);
     },
-    async pendingFor(a) { return (db.prepare("SELECT * FROM agent_task_request WHERE account_id = ? AND approval = 'pending' ORDER BY created_at").all(a) as Q[]).map(toQ); }
+    async pendingFor(a) { return (db.prepare("SELECT * FROM agent_task_request WHERE account_id = ? AND approval = 'pending' ORDER BY created_at").all(a) as Q[]).map(toQ); },
+    async byWakeKeys(keys) {
+      if (keys.length === 0) return [];
+      const marks = keys.map(() => '?').join(',');
+      return (db.prepare(`SELECT * FROM agent_task_request WHERE wake_key IN (${marks}) ORDER BY created_at`).all(...keys) as Q[]).map(toQ);
+    }
   };
   return { connectors, agentTasks };
 }

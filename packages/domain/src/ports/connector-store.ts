@@ -1,4 +1,4 @@
-import type { ConnectorBinding, TriggerRun } from '../connector.ts';
+import type { ConnectorBinding, TriggerRun, TriggerRunState } from '../connector.ts';
 
 /** connector_binding / trigger_run 的持久化。 */
 export interface ConnectorStore {
@@ -15,6 +15,10 @@ export interface ConnectorStore {
   hasRun(bindingId: string, externalId: string): Promise<boolean>;
   saveRun(r: TriggerRun): Promise<void>;
   runs(bindingId: string, limit: number): Promise<TriggerRun[]>;
+  run(id: string): Promise<TriggerRun | null>;
+  /** 这些绑定上、创建时间不早于 since 的运行，新的在前。limit 是上限。 */
+  runsSince(bindingIds: readonly string[], since: number, limit: number): Promise<TriggerRun[]>;
+  countRunsByState(bindingIds: readonly string[], since: number): Promise<Record<TriggerRunState, number>>;
   openRuns(bindingId: string): Promise<TriggerRun[]>;
   waitingRuns(): Promise<TriggerRun[]>;
   deliveredRuns(): Promise<TriggerRun[]>;

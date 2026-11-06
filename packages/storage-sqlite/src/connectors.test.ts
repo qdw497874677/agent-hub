@@ -213,6 +213,27 @@ test('触发：漏了回合结束 → 超时记 timeout 失败、放行下一次
   assert.match(fresh.pausedReason ?? '', /超时/);
 });
 
+test('可观测查询：按时间窗计数，空绑定不报错', async () => {
+  const { connectors, agentTasks } = createSqliteConnectors(new DatabaseSync(':memory:'));
+  const now = 1_000_000;
+  await connectors.saveBinding({
+    id: 'b1', connector: 'timer', kind: 'tick', agentProjectId: 'p', agentName: 'router', projectId: null, name: '巡检', target: 'main',
+    params: {}, enabled: true, pausedReason: null, consecutiveFailures: 0, nextRunAt: null, mainSessionId: null, createdBy: 'u1', timeZone: 'Asia/Shanghai', createdAt: now, updatedAt: now
+  });
+  await connectors.insertRun({ id: 'r1', bindingId: 'b1', externalId: '1', plannedAt: now, catchup: false, state: 'done', reason: null, sessionId: null, text: 'secret', createdAt: now, updatedAt: now });
+  await connectors.insertRun({ id: 'r2', bindingId: 'b1', externalId: '2', plannedAt: now, catchup: false, state: 'skipped', reason: '超出宽限', sessionId: null, text: '', createdAt: now - 10, updatedAt: now });
+  assert.equal((await connectors.runsSince([], now - 1, 10)).length, 0);
+  assert.equal((await connectors.runsSince(['b1'], now - 1, 10)).length, 1);
+  assert.equal((await connectors.countRunsByState(['b1'], now - 20)).done, 1);
+  assert.equal((await connectors.countRunsByState(['b1'], now - 20)).skipped, 1);
+  const row = await connectors.run('r1');
+  assert.equal(row?.text, 'secret');
+  await agentTasks.insert({ id: 'q1', taskId: 't1', accountId: 'u1', agent: 'p/router', sessionId: 's', projectId: 'p', title: '做', goal: 'g', originConnector: 'github', originExternalId: 'acme/demo#1', wakeKey: 'r1', counted: true, approval: 'none', createdAt: now, updatedAt: now });
+  await agentTasks.insert({ id: 'q2', taskId: null, accountId: 'u1', agent: null, sessionId: 's', projectId: 'p', title: '别的', goal: '', originConnector: 'github', originExternalId: 'acme/demo#1', wakeKey: 'other', counted: false, approval: 'pending', createdAt: now, updatedAt: now });
+  assert.deepEqual((await agentTasks.byWakeKeys(['r1'])).map((item) => item.id), ['q1']);
+  assert.deepEqual(await agentTasks.byWakeKeys([]), []);
+});
+
 test('R4：轮询来的事件（无计划时刻）上一次没完不记跳过、下次再来；指定会话；seen；疑似注入进等我处理', async () => {
   const x = await world();
   const b = await x.hub.create(actor, x.home.id, 'router', { connector: 'timer', kind: 'tick', name: '巡检', params: { prompt: '看看' } });

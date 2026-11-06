@@ -1,4 +1,5 @@
 import { installConnectorRoutes, type ConnectorRouteDeps } from './connector-routes.ts';
+import { installObserveRoutes, type ObserveRouteOptions } from './observe-routes.ts';
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
@@ -164,6 +165,8 @@ export interface AppOptions {
   readonly activity?: SessionActivityOptions;
   /** 连接器（ADR 0032）：触发、关联项目、超额待批。 */
   readonly connectors?: Omit<ConnectorRouteDeps, 'deps'>;
+  /** 可观测（ADR 0033）。关掉或读失败都不影响业务路由。 */
+  readonly observe?: ObserveRouteOptions;
   /** 「等我处理」（ADR 0031 D1）。 */
   readonly attention?: { readonly store: AttentionStore; readonly pullRequests?: Pick<PullRequestRepository, 'byTask'> };
   /**
@@ -258,6 +261,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.auth.accessAdmin) installAccessRoutes(app, options.auth.accessAdmin, subjectOf);
     if (options.messaging) installMessagingRoutes(app, { ...options.messaging, deps }, subjectOf);
     if (options.connectors) installConnectorRoutes(app, { ...options.connectors, deps }, subjectOf);
+    if (options.observe) installObserveRoutes(app, options.observe, subjectOf);
     if (options.memory) installMemoryRoutes(app, { ...options.memory, deps }, subjectOf);
     if (options.groups) installGroupRoutes(app, options.groups, subjectOf);
     if (options.context) installContextRoutes(app, options.context, subjectOf);
@@ -284,6 +288,8 @@ export function createApp(options: AppOptions): Hono {
         assetReview: options.assets?.deps
       });
     }
+  } else if (options.observe) {
+    installObserveRoutes(app, options.observe, subjectOf);
   }
   app.use('/api/*', async (c, next) => {
     if (options.auth || options.token === null) return next();

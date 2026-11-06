@@ -90,6 +90,7 @@ import {
 } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
+import { createConnectorObserveReader } from './observe-connector.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createGitWorkspace, createLocalFs, readBuildInfo, createWorkspaceBrowser, offlineWorkspaceBrowser } from '@agent-hub/node-gateway';
@@ -882,7 +883,15 @@ const envNumber = (name: string): number | undefined => {
   return value === null || value === undefined ? undefined : Number(value);
 };
 
-const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard, 
+const observeEnabled = readEnv('OBSERVE') !== '0';
+const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
+  observe: {
+    enabled: observeEnabled,
+    readers: observeEnabled ? [createConnectorObserveReader({
+      now: deps.now, projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
+      deliveries: store.deliveries, store: store.connectors, requests: store.agentTasks, dispatches: store.dispatches, policy: deps.access
+    })] : []
+  }, 
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {

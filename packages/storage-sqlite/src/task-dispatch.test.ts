@@ -72,6 +72,17 @@ test('调度器：重启后从库里重建 running 计数，已结束的补对�
   assert.match(b.notified[0]!.text, /任务失败/);
 });
 
+test('按 taskId 取出调度行，空列表是空的', async () => {
+  const store = createSqliteTaskDispatch(new DatabaseSync(':memory:'));
+  const row = await store.insert({
+    id: 'd1', taskId: 't1', accountId: 'u', projectId: 'p', title: '做', goal: 'g', human: false, notifySessionId: 'bot', agentId: 'pi', model: 'm',
+    originConnector: 'github', originExternalId: 'acme/demo#18', state: 'failed', workerId: null, sessionId: 'task-s', waitReason: null, result: '测试挂了', notified: true,
+    createdAt: 1, startedAt: 2, updatedAt: 5
+  });
+  assert.equal((await store.byTaskIds(['t1']))[0]?.id, row.id);
+  assert.deepEqual(await store.byTaskIds([]), []);
+});
+
 test('调度器：取消排队的任务；开始了就不能取消', async () => {
   const w = world();
   const q1 = (await w.d.enqueue(req(1), { agentId: 'pi', model: 'm' }))!;

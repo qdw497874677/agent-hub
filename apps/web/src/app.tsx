@@ -16,6 +16,7 @@ import { MemoryPage } from './memory.tsx';
 import { TeamWorkspacesPage } from './team-workspaces.tsx';
 import { MessagesPage } from './messages.tsx';
 import { BotsPage } from './bots.tsx';
+import { ObservePage } from './observe.tsx';
 import { MarketPage } from './market/page.tsx';
 import { useNarrow } from './device.ts';
 import { TaskDetail } from './task-detail.tsx';
@@ -29,6 +30,7 @@ export function App() {
   if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
   if (route?.page === 'bots') return <BotsPage projectId={route.projectId} />;
+  if (route?.page === 'observe') return <ObservePage source={route.source} id={route.id} />;
   if (route?.page === 'messages') return <MessagesPage projectId={route.projectId} groupId={route.groupId} />;
   if (route?.page === 'assets') return <MarketPage tab={route.tab} reviewId={route.reviewId} />;
   return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace />;
