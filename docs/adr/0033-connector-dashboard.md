@@ -1,236 +1,208 @@
-# ADR 0033：可观测（统一只读链路）
+# ADR 0033：可观测（可替换的轻量只读模块）
 
-- 状态：proposed（2026-11-06 修订。David 问过能否做成一个通用一点的可观测模块，本轮按这个方向改设计。未实现，未合并，未部署）
-- 相关：ADR 0032（连接器；R5 原来的两句话）、ADR 0031（送达、来历）、ADR 0018（agent 消息的 `traceId`、群线程）
-- 上一稿：同文件曾把 R5 画成 Router 专属页 `#/connectors`。那一稿的状态事实（触发枚举、`wakeKey`、回写未落库、页面只读）仍然有效，收进下面的「连接器来源」。专属页不再是终稿。旧草图留在 `assets/0033/overview-1280.png`、`trace-1280.png`。
+- 状态：proposed（2026-11-06 再修订。未实现，未合并，未部署）
+- 相关：ADR 0032（连接器）、ADR 0031（送达、来历）、ADR 0018（协作 `traceId`、群线程）
+- 本文件的前两稿：Router 专属页；然后是「按业务表来源 + id 直接读」的统一列表。第二稿的字段事实还用，产品形态改成下面这一版：界面只认一份厂商无关的只读契约，本地表和将来的 Langfuse 都是适配器。
 
-本轮没有写生产代码。分支上在此之前只有设计提交。
+没有生产代码。没有连接 Langfuse，没有账号，没有密钥。
 
-## 1. 模块是什么
+## 1. 查过什么
 
-工作台左栏一个入口「可观测」。它用同一张列表、同一套筛选、同一种详情，看几类已经发生的事走到了哪一跳。
+只看了公开文档，以及文档里直接链出来的两张图。没有登录 Langfuse、LangSmith、Phoenix、AgentOps，没有开账号，没有打开需要登录的控制台。
 
-来源是适配器，不是新的业务对象。第一期只接连接器触发，用总管这条自动化链路把通用模型走通。会话送达、任务调度是这条链上的跳。agent 协作和群线程是后面的来源，键已经在库里，本期不接进页面。
-
-它不替代这些现成的地方：
-
-| 已有页面 | 仍负责 |
-|---|---|
-| 首页最近会话、画布、专注对话 | 把事情做完 |
-| 首页「等我处理」和连接器通知 | 批准、稍后 |
-| 首页任务队列 | 看槽位、取消排队 |
-| Bot 页 | 建触发、暂停、删除、关联项目 |
-| 消息 / 群 | 说话 |
-| 运营后台 | 人、机器、审计 |
-
-也不做这些：
-
-- CPU、内存、请求量、指标平台
-- 一套 tracing SDK（span、baggage、采样、导出）
-- 一条跨来源的全局 `traceId`，或把现有 id 合并成一个
-- 在这块页面上批准、取消、暂停、重试、撤回
-
-回写没有表。详情里这一跳固定写「未记录」，不显示已回帖或回帖失败。
-
-## 2. 入口
-
-路由：
-
-| 路由 | 画面 |
-|---|---|
-| `#/observe` | 总览 |
-| `#/observe/<来源>/<原生 id>` | 这一条链的详情 |
-
-放在首页壳的左栏，工作空间上方，名字叫「可观测」。不进运营后台，不进 Bot 页的「群聊 | Bot」。主区用剩余宽度，不套首页会话清单的 760px。
-
-跳转是链接，不把对方的按钮搬过来：
-
-- 会话 → `#/p/<项目>/focus/<会话>`
-- 绑定 → `#/bots/<定义项目>`
-- 批准、取消排队 → `#/home`
-- Bot 页触发行可以链到 `#/observe/connector/<runId>`，仍留下原来的「记录」
-
-## 3. 通用概念和适配边界
-
-三条就够，都是读模型，不落新表。
-
-| 概念 | 含义 |
-|---|---|
-| 来源 | 一个适配器，只认识一张已有的「链头」 |
-| 链 | `来源 + 原生 id`。id 沿用那张表自己的主键或已有关联键，不新造 |
-| 跳 | 适配器用已有外键接上的一格。接不上就写「未关联」或「未记录」，不补一条看起来像成功的状态 |
-
-领域层放类型和纯函数（`wakeKey` 对齐、送达时间窗、连接器的「要看的」谓词）。来源适配器在组合根，调用现有仓储。`packages/domain` 不 import 连接器包。
-
-适配器只做读。它不订阅新事件，不改写入路径。
-
-链头决定列表里的一行。跳只出现在详情里。这样「统一」指的是同一套呈现，不是把所有过程揉成一条轨迹。
-
-## 4. 各来源能接上什么
-
-下表按当前 master 的字段。没有写上去的关联，就是没有。
-
-| 来源 | 链头（已有） | 能接上的跳 | 接不上 |
-|---|---|---|---|
-| 连接器 `connector` | `trigger_run.id` | `sessionId` → bot 会话；`agent_task_request.wakeKey = trigger_run.id` → 请求和 `taskId`；`task_dispatch.taskId` → 调度、任务会话、`notifySessionId` | 没有 `deliveryId`。GitHub 触发键 `owner/repo#N@事件` 和任务来源键 `owner/repo#N` 不是同一串，禁止互相当键。回写无表 |
-| 协作 `message` | `agent_messages.traceId`（ADR 0018，第一条消息生成，ask / reply / 派生继承） | `byTrace`、`fromSessionId`、`targetSessionId`、`replyTo`、`agent_spawns.traceId` | 不指向 `trigger_run` 或 `task_dispatch`。投进会话的 `message_delivery` 不记 message id |
-| 群 `group` | `GroupThread.id` | `GroupDelivery.threadId`、其上的 `sessionId`、`GroupPost.threadId` | 不指向连接器或协作 trace。会话送达是另一张表 |
-| 人开会话 | 无链头 | 会话有 `taskId`、来历 `via`（`web` / `api` / `mobile` 等）、prompt 的 `author.via` | 没有「这一次人的操作」的 id。列出来会和首页最近会话重复 |
-
-三套 id 不要混：
-
-- 协作的 `traceId` 只属于 ADR 0018。`newTraceId()` 就是普通 `newId()`。
-- 连接器给 bot 开会话时，spawn 行写 `traceId: connector:<会话 id>`（`apps/server/src/main.ts`）。这是派生表的填充值，不会往 `agent_messages` 插行，不能拿去 `byTrace`。
-- 来历 `via = bot` 只说明会话是 bot 派生的，看不出 timer 还是 github。调度开的任务会话也是 `via = bot`，没有 parent 指回 bot 会话。
-
-会话送达（ADR 0031 `message_delivery`）和群投递（`GroupDelivery`）是两张表、两套状态。详情里写全称，不合成一种「投递」。
-
-送达行和 journal 的关系：`message_delivery.seq` 对得上那条 prompt。prompt 上有 `author.via`（代码里出现过 `connector`、`dispatch`、`agent`、`group`，开放 API 则可能是令牌名，不是闭集）。因此能看出这条 prompt 从哪类入口来，仍然不能看出是哪一次 `trigger_run`。主会话会被多次触发复用，同一种 `via` 会有多条。
-
-## 5. 状态和部分链
-
-每跳显示那张表自己的枚举，旁边加已有中文。不发明「链路状态」去覆盖它们。
-
-连接器触发：`waiting` 等待中，`delivered` 已交给回合，`done` 回合结束，`failed` 回合失败，`timeout` 超时，`skipped` 跳过。这里的 `delivered` 不是送达表的 `delivered`（已送达）。
-
-会话：`running` 运行中，`stopped` 已停止，`done` 完成，`interrupted` 中断，`failed` 失败。`running` 且 `lastSeq = 0` 用现有文案「就绪」。读会话行。Worker 另报的 `running` 不写回会话行，这页不接那条流。
-
-任务：现有 `TASK_STATUS_LABEL`。开会话时 `todo` → `in_progress`。调度结束不改任务状态。只有首页队列取消才置 `abandoned`。
-
-调度：`queued` 排队，`running` 运行中，`done` 完成，`failed` 失败，`cancelled` 已取消。`notified = true` 表示已经尝试把结果投给 bot 会话，不等于送达成功。bot 正忙时保持 false。
-
-协作消息：`queued` / `awaiting_approval` / `delivered` / `answered` / `done` / `failed` / `denied`。这是 ADR 0018 的状态，和上面三套同名时也不合并。
-
-群线程：`running` / `done` / `silent` / `limit` / `stopped` / `fallback` / `rate_limited`。群投递：`queued` / `delivered` / `done` / `silent` / `canceled` / `failed`。
-
-部分链是正常情况。详情按跳列出，空的跳写原因：
-
-| 跳 | 空的时候 |
-|---|---|
-| 会话 | 触发在交给会话之前就跳过了 |
-| 会话送达 | 无外键。窗口内 0 条就写「窗口内没有送达行」；多条全部列出，不指定哪一条是这次 |
-| 任务 | 「这次没有建任务」 |
-| 回写 | 永远是「未记录」 |
-
-送达窗口仍按上一稿：`createdAt` 落在 `[run.createdAt, run.updatedAt + 60s]`。60 秒是因为运行先写成 `delivered`，送达行随后才插入。窗口可能含稍后的调度通知。响应里 `linked` 恒为 `false`，`sink.recorded` 恒为 `false`。
-
-「只看失败或缺环」用在列表，不把结构性缺口算进去。回写未记录、送达没有外键，几乎每条连接器链都有，放进筛选会把列表变成全量。这个开关只留业务上要看的：
-
-- 触发 `failed` 或 `timeout`
-- `skipped` 且原因以 `疑似注入` 或 `轮询失败` 开头
-- 经 `wakeKey` 接上的调度是 `failed`
-- 经 `wakeKey` 接上的请求还是 `pending`
-
-无写权限、超出宽限、上一轮没结束、错过几次，留在全量里。它们是规则生效。
-
-连接器原因原文、配额口径、连续失败只跟触发的 `failed` / `timeout` 有关、GitHub 在上一轮还开着时不记跳过：与上一稿第 1 节相同，实现时以那一节的句子为准（见文末附录）。
-
-## 6. 权限和隔离
-
-沿用 `project.read`，不加权限点，不提供跨团队的总表。
-
-| 链 | 要能读的项目 |
-|---|---|
-| 连接器 | bot 的定义项目（`agentProjectId`） |
-| 协作消息 | `AgentMessage.projectId` |
-| 群线程 | 群的 `projectId` |
-| 链上的任务、调度 | 任务所在项目。这比 `GET /api/dispatch` 宽：队列接口只按账号滤，协作者看不到别人账号建的任务；那些任务在项目里本来就能读 |
-
-今日配额 N/20 只属于连接器来源，而且只算当前账号的 `countSince`。绑在别人账号上的触发不显示那个数字（`countSince` 会跨这个人的全部 bot）。待批准不计入这 20。多个绑定时区不一致时按时间分行，不合成一个分数。没有自己的绑定时不显示芯片。
-
-批准和取消仍校验记录属于当前账号。本模块不调用这两个接口。
-
-## 7. 最小接口
-
-`GET /api/observe?since=<ms>&source=&projectId=`
-
-`since` 默认现在往前 24 小时（墙钟）。`source` 空着表示本期已接入的全部来源；第一期只有 `connector`。
-
-```ts
-interface ObserveChain {
-  readonly source: 'connector';
-  readonly id: string;
-  readonly projectId: string;
-  readonly title: string;
-  readonly at: number;
-  readonly nativeState: string;
-  readonly gap: string | null;
-}
-```
-
-`gap` 是给列表的一句人话（例如「调度失败」「疑似注入」），不是新枚举。截断 200 条时 `truncated: true`，计数仍是时间窗全量。
-
-`GET /api/observe/:source/:id`
-
-```ts
-interface ObserveHop {
-  readonly kind: 'trigger' | 'session_delivery' | 'session' | 'task_request' | 'task' | 'dispatch' | 'sink';
-  readonly ref: string | null;
-  readonly state: string | null;
-  readonly linked: boolean;
-  readonly note: string;
-}
-```
-
-连接器详情把 `Board` 里需要的字段放在对应跳的 `note` 和并列的只读对象里（触发去掉 `text`，请求去掉 `goal`，调度结果只留第一行 80 字）。`sink` 这一跳的 `state` 为 null，`note` 为「未记录」。不返回 `trigger_run.text`。
-
-查询方法仍是上一稿那四个，因为连接器来源需要跨绑定的运行和按 `wakeKey` 找请求：`runsSince`、`countRunsByState`、`byWakeKeys`、`byTaskIds`。加上按 id 取一次运行。不加列、不加表。
-
-纯函数：`matchWake` 只认 `wakeKey === run.id`；`deliveryWindow`；`connectorNeedsLook`（第 5 节的谓词）。测试要覆盖「`acme/demo#18` 对不上 `acme/demo#18@evt_91`」。
-
-协作来源以后直接用 `MessageStore.byTrace`。群来源以后用 `GroupStore.thread` 和 `deliveries(threadId)`。这两处不用为可观测另做表。
-
-## 8. 分期
-
-| 期 | 内容 | 不包含 |
+| 来源 | URL | 实际看到的 |
 |---|---|---|
-| P1 | 列表、详情、筛选的壳；只注册连接器适配器。总览上能看到触发，详情上能看到会话、送达窗口、`wakeKey` 接上的任务和调度，回写写未记录。左栏入口。只读 | 协作、群、人开会话单列、回写落库、指标 |
-| P2 | 注册协作适配器。链头是 `traceId`。详情用 `byTrace` 和会话 id。送达仍标未关联到某一条 message | 与连接器链自动合并 |
-| P3 | 注册群适配器。链头是线程，跳是 `GroupDelivery` | 把群投递和会话送达合成一种状态 |
+| Langfuse 数据模型 | https://langfuse.com/docs/observability/data-model | 正文。Observation 嵌在 trace 里，trace 可再归进 session。采集在后台批量发送，不挡请求。短命进程要自己 `flush()`，否则退出时队列里的记录会丢 |
+| Langfuse 追踪概览 | https://langfuse.com/docs/observability/overview | 正文，以及文中的图 https://langfuse.com/images/docs/tracing-overview.png 。这张图看过：左侧是筛选和观察表（时间、类型、名字、trace），中间是缩进的观察树，节点上有名字和秒数，右侧是选中节点的 Preview（输入、输出）。同页还有分数、费用、图表入口。图里没有单独的瀑布条 |
+| Langfuse 新 trace 视图说明 | https://langfuse.com/changelog/2025-03-19-new-trace-view | 正文：Tree 和 Timeline 可以切换。这一页的抓取结果里没有图，不能说看过那张瀑布 |
+| Langfuse 观察表用法 | https://langfuse.com/faq/all/explore-observations-in-v4 | 正文：默认先看根观察。父级被导出过滤掉时，子级仍带着 parent id，所以「没有父行」和「逻辑上的根」不是一回事 |
+| Langfuse 公开 API | https://langfuse.com/docs/api-and-data-platform/features/public-api | 正文：`parentObservationId` 是物理父级。`isRootObservation` 为真时，父级 id 仍可能非空 |
+| Langfuse session 图 | https://langfuse.com/images/docs/session.png | 图看过：左侧按轮次折叠的轨迹，右侧是对话，不是调用树 |
+| Langfuse 什么是一条好 trace | https://langfuse.com/docs/observability/best-practices | 正文：一条 trace 是一次自洽的工作；多轮用 session 串。树里应能看到每次模型调用，而不是包成一个总数 |
+| LangSmith 概念 | https://docs.langchain.com/langsmith/observability-concepts | 正文：run 组成 trace，thread 串多轮，trajectory 是把嵌套摊平后的消息。没有打开他们的产品界面 |
+| LangSmith 看 trace | https://docs.langchain.com/langsmith/view-traces | 正文：列表点进去是侧栏；Trajectory / Turns / Details 三种。没有 `thread_id` 就没有 Turns。没有看见图 |
+| LangSmith run 字段 | https://docs.langchain.com/langsmith/run-data-format | 正文：`parent_run_id`、`trace_id`、起止时间、`child_run_ids`。费用和 token 是字段，不是我们要做的功能 |
+| Phoenix 信号 | https://arize.com/docs/phoenix/tracing/concepts-tracing/otel-openinference/signals | 正文：树来自 `parent_id`。父级 id 指向不存在的 span 叫 orphan。Span links 指向别的 span，可跨 trace。没有看见图 |
+| OpenTelemetry 概念 | https://opentelemetry.io/docs/concepts/signals/traces/ | 正文：一个 span 至多一个 parent。Links 用来表示异步、当时还不知道何时开始的后续工作。Span 状态是 Unset / Error / Ok |
+| AgentOps 概念 | https://docs.agentops.ai/v2/concepts/traces 与 https://docs.agentops.ai/v2/concepts/spans | 正文：列表、树、时间线、详情是不同视图。https://app.agentops.ai/traces 打开后是登录墙，没有看见图 |
 
-每一期本地 `npm run ci` 和相关 e2e 通过再谈合并。不部署，不读 `server.env`，不对 issue 发言。
+第三方课程站上的瀑布说明没有当作产品事实。
 
-P1 验收沿用连接器事实，并加上：
+从这些材料里拿走的，只是布局和两个关系：
 
-- 列表行的 `source` 是 `connector`，id 是 `trigger_run.id`
-- `wakeKey` 对齐；外部键不相等的两串不会连上
-- 响应无 `text`；`linked` 与 `sink.recorded` 为 false
-- 无 `project.read` 的绑定不出现；他人绑定不带配额数字
-- 页面上没有批准、取消、暂停、重试
-- 加载时不说「还没有」；失败时保留上一份并显示「刷新失败」
+- 轻量入口是一张表。点一行，左边是可折叠的树，右边是选中节点。Langfuse 那张追踪图就是这个结构。
+- 父子和链接分开。OpenTelemetry 写明：父子是同一条轨迹里的直接下级；链接是因果，常用于排队之后才发生的工作。Phoenix 把对不上的父级标成 orphan，不把它画成根下面的亲子。
 
-## 9. 草图
+不拿走的：费用、token、评分、数据集、标注、告警、图表、LLM-as-a-judge、prompt 管理和实验。Langfuse 自己的概览把这些算作追踪之外的用法。
 
-1280×800，深色控制室。数字和仓库名是编的，画面上有「示例数据」。`acme/demo` 不是真实仓库。
+配色仍用 agent-hub 的深色控制室。Langfuse 那张图是浅色后台，不照搬。
 
-- 总览（多种来源；未接入的来源用标记写明，不装成已经有数据）：![](assets/0033/observe-1280.png)
-- 详情（一条连接器链，跳是通用的，缺口按代码）：![](assets/0033/observe-trace-1280.png)
+## 2. 模块边界
 
-上一稿 Router 专属页：![](assets/0033/overview-1280.png) ![](assets/0033/trace-1280.png)
+可观测是只读模块。业务执行不调用它。注册表里没有适配器时，页面显示「未启用」，连接器、调度、送达照常工作。
 
-## 10. 已定
+```mermaid
+flowchart LR
+  UI["apps/web 可观测页"] --> DTO["ObserveTrace 契约"]
+  HTTP["apps/server 只读路由"] --> REG["ObserveReader 注册表"]
+  REG --> LOCAL["本地连接器适配器"]
+  REG -. 以后 .-> EXT["外部只读适配器"]
+  LOCAL --> STORES["现有仓储端口"]
+  BIZ["连接器 / 调度 / 送达 / 消息"] --> STORES
+  UI -. 不引用 .-> STORES
+  UI -. 不引用 .-> EXT
+```
 
-- 一个入口、一张列表、一种详情。来源用适配器填。
-- 链的身份是 `来源 + 原生 id`。不新增全局 trace，不把协作 `traceId`、spawn 上的 `connector:<会话>`、来历 `via` 当成同一种东西。
-- 人在网页上直接开的会话不单列。它没有链头，首页已经有最近会话。
-- 调度和会话送达在连接器链里是跳，不各自再做一页。队列和气泡上的操作留在原处。
-- 回写保持「未记录」。本模块不落尝试表。
-- 第一期只接连接器，用来验证这个模型。协作和群排在后面，因为键已经有了，不需要先改写入。
-- 「只看失败或缺环」不用「回写未记录」和「送达无外键」当条件。
+依赖方向：
 
-## 11. 要决定的两件事
+- `packages/observe` 只有类型和纯函数（组树、缺父级、脱敏后的属性）。它不 import domain、sqlite、Langfuse SDK、HTTP。
+- 本地适配器在组合根。它 import 现有仓储端口和 `packages/observe`，把行映射成契约。domain 的连接器、调度、消息代码不 import 可观测。
+- 网页只消费 HTTP 返回的契约，不出现表名，也不出现 Langfuse 的客户端。
+- 关掉模块等于不注册适配器、不挂路由。业务路径上没有对它的调用，所以失败也不会堵住建任务或投递。
 
-1. **以后要不要把人开的普通会话也单列成一种来源？** 推荐：不要。没有「这一次操作」的 id，列表会和首页重复。别的链需要时，会话已经能作为一跳出现。若一定要单列，得先定链头是任务还是会话，那是单独一期。
+不做 SDK、消息总线、新表。第一期适配器现查现映射。
 
-2. **协作链和连接器链以后要不要在写入时记成同一个 id？** 推荐：不要。两套过程今天没有外键，页面用「未关联」说明即可。强行共用 id 要改 spawn 和消息的写入，超出只读可观测。
+三种和外部平台有关的事，不能并成一个开关：
 
-## 附录：连接器来源的计数口径
+| 方式 | 做什么 | 第一期 |
+|---|---|---|
+| 读 | 另一个 `ObserveReader`。例如以后用 Langfuse 公开 API 的 `parentObservationId` 填 `parentId` | 不做。不配置 host，不放密钥 |
+| 导出 | 业务写完之后，后台批量把事件送出去。失败就丢，不在请求里等对方 | 不做。一做就会碰到写入路径 |
+| 跳转 | 契约上可选的 `externalUrl`。有地址才显示「在外部打开」 | 字段留着，本地适配器恒为 null |
 
-从上一稿保留，避免实现时另起一套。
+Langfuse 文档里的后台导出是他们 SDK 的行为。我们若要导出，也得放在业务返回之后，并且和「把 Langfuse 的树读进来」不是同一条代码。
 
-- 一行是一次 `trigger_run`。建出个数 = `wakeKey` 等于这次 id 且 `taskId` 非空的请求数。`pending` 没有 `taskId`，算待批准，不算建出，也不进今日 20。
-- 今日已计入 = 当前账号 `counted = 1` 的 `countSince`。日界用绑定的时区。人在对话里让 bot 建的默认不计。
-- 触发 `delivered` 的中文用「已交给回合」。Bot 页仍写「已投递」，两处同时出现时以链路页的长标签为准。
-- 调度 `notified` 的中文用「已尝试通知」。首页队列现在写「已通知 bot」，实现期把那句改成同一说法。
-- GitHub 在上一次运行还开着时不写跳过行，计数里也没有。
-- 连续失败只在触发变为 `failed` / `timeout` 时增加。调度失败不加。下一次触发 `done` 会把计数清零。
+## 3. 契约
+
+界面只看见这些。适配器负责填，填不出就空着。
+
+```ts
+interface ObserveNode {
+  readonly id: string;
+  readonly name: string;
+  readonly kind: string;
+  readonly state: string | null;
+  readonly stateLabel: string | null;
+  readonly startedAt: number | null;
+  readonly endedAt: number | null;
+  /** 起止都有才有数。文案说明这数是什么，例如「记录跨度」或「送达用时」。 */
+  readonly durationMs: number | null;
+  readonly durationLabel: string | null;
+  /** 仅当存储里有父级且能对上时填写。没有就 null。 */
+  readonly parentId: string | null;
+  readonly links: readonly { readonly to: string; readonly label: string }[];
+  readonly attrs: readonly { readonly key: string; readonly value: string }[];
+}
+
+interface ObserveTrace {
+  readonly id: string;
+  readonly source: string;
+  readonly title: string;
+  readonly projectId: string | null;
+  readonly externalUrl: string | null;
+  readonly nodes: readonly ObserveNode[];
+}
+```
+
+`id` 是这个模块里的查看 id，例如 `connector:run-18`。它不是 W3C trace id，也不写成全局追踪号。
+
+纯函数 `buildTree`：
+
+- `parentId` 指向本响应里的另一个节点：实线子节点，可折叠。
+- `parentId` 有值但本响应里没有那个节点：不挂到别人下面，标「父级不在本页」。
+- `links`：虚线，文案带「链接」。可折叠，但不算调用子级。
+- 两边都没有：放在「未关联」。
+
+异步的后续工作用链接。调度在触发回合结束之后另开会话，这是排队后的工作，不是触发函数里的子调用。OpenTelemetry 对这种关系用的是 link，不是 parent。
+
+耗时：两个时间戳都有才算。触发的 `updatedAt - createdAt` 标成「记录跨度」（最后一次改状态减去创建），不标成模型耗时。调度在 `startedAt` 和结束时间都有时标成「调度占用」。缺一个时间就写「无耗时」，不画条。
+
+属性白名单由适配器复制。触发正文、`goal`、送达载荷、令牌、密钥不进 `attrs`。外部适配器以后若要读 Langfuse 的 input/output，默认不取这两块；要取必须另有脱敏，不在第一期。
+
+## 4. 本地连接器适配器怎么填
+
+证据不够就不填 `parentId`。
+
+| 节点 | 从哪来 | 父子 | 链接 | 耗时 |
+|---|---|---|---|---|
+| 触发 | `trigger_run` | 无父级，它是这条查看的根 | `sessionId` → 会话，标签「投递到此会话」 | 记录跨度 |
+| 任务请求 | `wakeKey === trigger_run.id` | 无。请求是回合里后来写下的，不是子调用 | 指回触发，标签「由这次唤醒建下」 | 无，除非只要创建时间 |
+| 任务 | `request.taskId` | 无 | 从请求链到任务 | 无单次耗时。状态用 `TASK_STATUS_LABEL` |
+| 调度 | `task_dispatch.taskId` | 无 | 从任务链到调度。`notifySessionId` 再链回 bot 会话，标签「已尝试通知」 | `startedAt` 与结束时间都有才有「调度占用」 |
+| 任务会话 | `dispatch.sessionId` | 无 | 从调度链到会话 | 无 |
+| 会话送达 | `message_delivery` | 无。没有 deliveryId，时间窗不是外键 | 不挂。窗口内的行放进「未关联」 | 终态才有「送达用时」 |
+| 回写 | 无表 | 无 | 无 | 节点仍出现，状态空，属性写「未记录」 |
+
+`owner/repo#N@事件` 和任务来源键 `owner/repo#N` 不相等，适配器不得用它们互指。
+
+协作 `traceId` 和群线程是以后的另一个本地适配器，不是这条触发的子节点。spawn 上的 `connector:<会话>` 不映射成父级。来历 `via = bot` 只说明是 bot 派生，不说明是哪一次触发。
+
+人在网页上直接开的会话仍然不单列。没有链头，首页已有最近会话。
+
+## 5. 界面
+
+两个层次，都只读。
+
+列表 `#/observe`：时间、来源、标题、原生状态、一句缺口。筛选是来源、项目、近 24 小时，以及「只看失败或缺环」。这个开关不用「回写未记录」和「送达无外键」，否则几乎每行都会命中。它沿用连接器上已经写明的业务条件：触发 `failed` / `timeout`、以「疑似注入」或「轮询失败」开头的跳过、调度 `failed`、请求 `pending`。
+
+详情 `#/observe/<source>/<id>`：
+
+- 左：可折叠树。实线是父子，虚线是链接。未关联和未记录分在树下两截，不缩进成子节点。
+- 右：选中节点的名字、状态、两个时间、耗时文案、白名单属性、这条边是父子还是链接。
+- 第一期不画瀑布。Langfuse 的 Timeline 是另一视图；我们多数边是链接，把它们画成一根时间条会像同一次调用。节点上只放绝对时间和耗时文案。
+- 没有批准、取消、暂停、重试。那些仍在首页、Bot 页和会话气泡。
+
+加载时不显示「还没有」或 0。失败保留上一份，顶上「刷新失败」。没有绑定时，列表写「还没有可显示的记录」，并链到 Bot 页。模块未启用时单独一句，不装成空数据。
+
+## 6. 权限、脱敏、开关
+
+- 本地适配器：连接器链要求对 bot 定义项目有 `project.read`。链上的任务还要求对任务项目有 `project.read`。不提供跨团队总表。
+- 今日 N/20 仍只算当前账号自己的 `countSince`，并且只出现在连接器触发节点的属性里。别人的绑定不带这个数。
+- 适配器抛错只影响这次读取。
+- 环境变量只表达开关，例如以后的 `OBSERVE=0` 不注册适配器。第一期不读取密钥，不读 `server.env` 里的令牌。外部平台的密钥若要做，也只存在账号自己的配置里，不进仓库、不进这条响应。
+
+## 7. 分期
+
+| 期 | 内容 |
+|---|---|
+| P1 | `packages/observe` 契约和 `buildTree`。本地连接器适配器。列表、树、右侧详情。`externalUrl` 恒为 null。回写节点写未记录 |
+| P2 | 第二个本地适配器：协作 `traceId` 或群线程，二选一先做有 `replyTo` / `threadId` 可证明父子的那个。仍不导出 |
+| P3 | 仅当决定要接外部平台：先做跳转 URL。读外部 trace 是另一个适配器。导出更晚，因为要动到写入之后的后台发送 |
+
+验收（P1，实现时）：
+
+- 网页模块的 import 里没有仓储、没有 `@langfuse`。
+- domain 的连接器与调度文件不 import `packages/observe`。
+- `wakeKey` 能接上；两条 GitHub 键不相等时不产生链接。
+- 调度节点的 `parentId` 为空，只出现在 `links`。
+- 父级 id 指到本页没有的节点时，标「父级不在本页」，不挂到根的子级里冒充。
+- 响应无触发正文、无载荷、无密钥。`externalUrl` 为 null，`sink` 节点无状态。
+- 无 `project.read` 的绑定不出现。他人配额不出现。
+- 树可以折叠。选中节点换右侧详情。加载与失败的文案符合第 5 节。
+- 本地 1280 截图至少有列表和树。实现期再截，不用本文件的草图充数。
+
+## 8. 草图
+
+1280×800，深色，标了示例数据。布局参考第 1 节看过的 Langfuse 追踪图（表、缩进树、右侧详情），没有费用和评分。
+
+- 列表：![](assets/0033/observe-list-1280.png)
+- 树和详情：![](assets/0033/observe-tree-1280.png)
+
+更早的草图仍留在同目录：`overview-1280.png`、`trace-1280.png`、`observe-1280.png`、`observe-trace-1280.png`。它们不是这一版的界面。
+
+## 9. 已定
+
+- 模块可卸载。业务路径不调用它。
+- 界面只依赖第 3 节的契约。
+- 第一期只有本地连接器适配器，不连 Langfuse。
+- 不新造全局 traceId，不用字符串相近来接 GitHub 的两把键。
+- 父子必须有父级证据。对不上就「父级不在本页」或「未关联」。调度、通知、唤醒建任务用链接。
+- 第一期有树，没有瀑布。
+- 回写保持「未记录」。
+- 人开会话不单列。协作 trace 与连接器查看 id 不合并。
+
+## 10. 要决定的两件事
+
+1. **若以后接 Langfuse，第一步做哪一种？** 推荐：只做跳转。有外部 id 时给出「在 Langfuse 打开」。不把对方的树读进来，也不把我们的事件送出去。读和导出都会碰到密钥或写入路径，单独再批。
+
+2. **瀑布要不要跟树一起做？** 推荐：不要。第一期树加上每节点的时间和耗时文案。瀑布只适合以后那些真正有父级、并且起止都可信的节点，避免把链接画成同一次调用。
