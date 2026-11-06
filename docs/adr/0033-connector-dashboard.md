@@ -1,351 +1,236 @@
-# ADR 0033：R5 连接器链路（只读面板）
+# ADR 0033：可观测（统一只读链路）
 
-- 状态：proposed（2026-11-06，设计稿，未实现）
-- 相关：ADR 0032（连接器与总管，R5 的两句话范围）、ADR 0031（送达队列、收件箱、来历）、ADR 0030（能力与审计）
-- 不改：0032 已定的端口、Binding 挂在 bot 下、工具只走 MCP、timer 只做入站、GitHub 规则留在连接器包里
+- 状态：proposed（2026-11-06 修订。David 问过能否做成一个通用一点的可观测模块，本轮按这个方向改设计。未实现，未合并，未部署）
+- 相关：ADR 0032（连接器；R5 原来的两句话）、ADR 0031（送达、来历）、ADR 0018（agent 消息的 `traceId`、群线程）
+- 上一稿：同文件曾把 R5 画成 Router 专属页 `#/connectors`。那一稿的状态事实（触发枚举、`wakeKey`、回写未落库、页面只读）仍然有效，收进下面的「连接器来源」。专属页不再是终稿。旧草图留在 `assets/0033/overview-1280.png`、`trace-1280.png`。
 
-本文只定 R5 怎么做成一个最小可读的面板。不实现、不合入生产、不部署。
+本轮没有写生产代码。分支上在此之前只有设计提交。
 
-0032 文末的浅色「总管面板」草图是定架构时的示意图。它把一行画成一条 GitHub issue，并把「批准」放在面板上。R1–R4 落地之后，一行对应的是 `trigger_run`，批准、取消、暂停已经有页面。下面的草图按代码里的表和枚举重画，旧图保留在 0032。
+## 1. 模块是什么
 
-## 1. 现在库里有什么
+工作台左栏一个入口「可观测」。它用同一张列表、同一套筛选、同一种详情，看几类已经发生的事走到了哪一跳。
 
-核对对象是 master（R4 已合入，`#210`）。下面每格都是已有字段或已有行为。
+来源是适配器，不是新的业务对象。第一期只接连接器触发，用总管这条自动化链路把通用模型走通。会话送达、任务调度是这条链上的跳。agent 协作和群线程是后面的来源，键已经在库里，本期不接进页面。
 
-| 环节 | 存在哪里 | 真实状态 | 和下一环怎么接 |
-|---|---|---|---|
-| 触发 | `trigger_run` | `waiting` `delivered` `done` `failed` `timeout` `skipped` | `sessionId` 指向 **bot 会话**。没有 `deliveryId` |
-| 送达 | `message_delivery` | `queued` `sending` `delivered` `undelivered` `cancelled` `held` | 只有 `sessionId`。载荷是 `{text, parts}`，没有作者、没有 `via` |
-| 会话 | `sessions.status` | `running` `stopped` `done` `interrupted` `failed` | bot 会话和任务会话是两条。来历 `via` 为 `bot`（派生时写入） |
-| 建任务记录 | `agent_task_request` | 审批 `none` `pending` `approved` `rejected` `cancelled` | 唤醒键 `wakeKey` = 这次 `trigger_run.id`。人发起的是 `null` 或 `session:<id>` |
-| 任务 | `tasks.status` | `todo` `in_progress` `blocked` `in_review` `done` `abandoned` | 开会话时 `todo` → `in_progress`。调度结束**不**改任务状态。从队列取消才置 `abandoned` |
-| 调度 | `task_dispatch` | `queued` `running` `done` `failed` `cancelled` | `taskId`、`sessionId`（任务会话）、`notifySessionId`（bot 会话）、`originConnector`、`originExternalId`、`notified`、`waitReason`、`human` |
-| 回写 | 无表 | 无枚举 | `OutputSink.deliver` 失败被吞掉，只打日志。👀 失败同样只打日志 |
+它不替代这些现成的地方：
 
-同一枚举词在两张表里不是一回事：
-
-- `trigger_run.delivered`：这次运行已经调用送达，bot 这一轮还没结束。
-- `message_delivery.delivered`：某一条 prompt 已经交给运行时。
-
-等待原因和跳过原因是代码里写死的句子，不是新枚举：
-
-| 来源 | `reason` |
+| 已有页面 | 仍负责 |
 |---|---|
-| 忙 | `智能体正忙，等它这一轮结束`（停在 `waiting`，此时还没调用送达） |
-| 上一轮没完（仅 timer，带 `plannedAt`） | `上一次还没结束，本次跳过` |
-| timer 宽限 | `超出宽限（半个周期），不补跑` |
-| timer 漏跑 | `错过 N 次（hub 不在线），只补最近一次` |
-| GitHub 写权限 | `标签是 @某用户 贴的，他没有写权限，不处理` |
-| GitHub 注入 | `疑似注入（<规则 id>），已隔离，没交给 bot：<url>` |
-| GitHub 轮询 | `轮询失败：<错误>`，每天最多一条（`externalId` 为 `error:<日序号>`） |
-| 回合 | `这一轮失败了` / `这一轮被打断了`（`stopped` 与 `interrupted` 都走后一句） |
-| 超时 | `超过 N 分钟没等到这一轮结束，按超时处理` |
-| 自动暂停 | 绑定 `pausedReason` = `连续失败 N 次，已自动暂停：<原因>`，N = 5 |
+| 首页最近会话、画布、专注对话 | 把事情做完 |
+| 首页「等我处理」和连接器通知 | 批准、稍后 |
+| 首页任务队列 | 看槽位、取消排队 |
+| Bot 页 | 建触发、暂停、删除、关联项目 |
+| 消息 / 群 | 说话 |
+| 运营后台 | 人、机器、审计 |
 
-GitHub 在上一次运行还开着时**不记跳过**（没有 `plannedAt` 就直接返回，下次轮询再看）。面板上不会有这一行，计数里也不会有。
+也不做这些：
 
-调度 `waitReason` 只有四句：`等机器上线`、`等机器空位`、`等项目空位`、`并发已满`。
+- CPU、内存、请求量、指标平台
+- 一套 tracing SDK（span、baggage、采样、导出）
+- 一条跨来源的全局 `traceId`，或把现有 id 合并成一个
+- 在这块页面上批准、取消、暂停、重试、撤回
 
-配额（`ROUTER_CAPS`）：一次唤醒 3，一个账号一个自然日 20。只数 `counted = 1` 的行。超额当时记 `pending` 且 `counted = 0`，批准后仍是 `counted = 0`。所以「今日已计入」和「建出了几个任务」是两个数。日界用**那次唤醒的绑定时区**；代码里没有账号时区。人在对话里让 bot 建的任务默认不计（`HUB_ROUTER_COUNT_HUMAN=1` 才计）。
+回写没有表。详情里这一跳固定写「未记录」，不显示已回帖或回帖失败。
 
-GitHub 的两边键不一样，不能拿字符串对齐：
+## 2. 入口
 
-- `trigger_run.externalId` = `owner/repo#N@<事件 id>`
-- `task.create` 的 `source.externalId` = `owner/repo#N`（提示词里要求 bot 这样填）
-
-能对齐的键是 `agent_task_request.wakeKey = trigger_run.id`。
-
-`notified = true` 的含义是：调度器已经尝试把结果投进 bot 会话（先把标记写成 true，再调用送达）。bot 正忙时标记保持 false。调用失败只打日志，标记不会改回 false。它不等于「bot 已经收到」。
-
-绑定连续失败只在触发运行变成 `failed` / `timeout` 时 +1。任务调度失败不加这个计数。下一次触发运行变成 `done` 时，计数清零。
-
-会话行的 `status` 只在 `ended` 时写成终态。Worker 报的 `running` 只推到界面流，不写回会话行。链路页首期读会话行，和调度器读的是同一份；不接那条不落库的流。
-
-## 2. 范围
-
-R5 做一块**只读链路**：近一个时间窗里，我能读到的触发各自走到哪一环，今日配额用了多少，超额还待批几条。
-
-一行是一次 `trigger_run`。这一行上能数出来的：
-
-- 跳过：本行 `state = skipped`，原因用 `reason` 原文。
-- 建了几个：`wakeKey` 等于本行 id、且 `taskId` 非空的 `agent_task_request` 条数。`pending` 还没有 `taskId`，算在「待批准」里，不算进「建出」。
-
-### 非目标
-
-- 不新建连接器，不做 webhook / IM / 邮件 / Linear，不让智能体自己改定时，不自动合并 PR。
-- 不改 0032 的端口和表的职责。首期两段**不加列、不加表**。
-- 不把 Bot 页的「触发」编辑器、首页「任务队列」、首页「等我处理 / 连接器通知」再做一遍。
-- 不在这块页面上批准、拒绝、取消排队、暂停或删除绑定、重试或撤回送达。
-- 不回放 `trigger_run.text`。外部正文可能是注入样本；timer 的原文在 Bot 页和会话里已经有。
-- 不把服务日志刮进面板（`[github] 👀 失败`、`[github] 回帖失败`、`调度：通知 bot 失败` 仍只在日志里）。
-- 不重做 bot 的身份模型（0032 开放问题里的独立 `agent` 表）。
-- 本设计稿不实现页面、不跑线上、不对任何 issue 发言。
-
-## 3. 入口与导航
-
-新路由放在现有首页壳里（左侧 220px 栏 + 右侧主区），不进运营后台，也不进 Bot 页的「群聊 | Bot」切换。
+路由：
 
 | 路由 | 画面 |
 |---|---|
-| `#/connectors` | 总览 |
-| `#/connectors/b/<bindingId>` | 总览，预先筛到这一条绑定 |
-| `#/connectors/r/<runId>` | 这一次运行的五环明细 |
+| `#/observe` | 总览 |
+| `#/observe/<来源>/<原生 id>` | 这一条链的详情 |
 
-主区拉满剩余宽度。首页会话清单仍是中间 760px，这条路由不套那个上限，否则五环排不开。
+放在首页壳的左栏，工作空间上方，名字叫「可观测」。不进运营后台，不进 Bot 页的「群聊 | Bot」。主区用剩余宽度，不套首页会话清单的 760px。
 
-入口（都是链接，不新做一套导航）：
+跳转是链接，不把对方的按钮搬过来：
 
-1. 首页左栏，「工作空间」上方，一项「链路」。有没有调度记录都在，因为任务队列在空的时候整段隐藏，链路不能跟着藏。
-2. 首页「任务队列」标题右侧，文字链「链路」。队列本身仍留在首页。
-3. Bot 页每个触发上现有的「记录」保留（最近 30 条）。旁边加「链路」，去 `#/connectors/b/<id>`。
-4. 首页连接器通知仍负责批准和「去 Bot 页」。通知行加文字链「链路」：暂停去绑定，隔离去那次 `skipped` 运行，待批去总览并带上待批筛选。
+- 会话 → `#/p/<项目>/focus/<会话>`
+- 绑定 → `#/bots/<定义项目>`
+- 批准、取消排队 → `#/home`
+- Bot 页触发行可以链到 `#/observe/connector/<runId>`，仍留下原来的「记录」
 
-手机宽度以后把左栏和五环改成上下堆叠，沿用现有组件。本设计稿只画 1280×800。实现期按 0032 的验收再补 390 的截图。
+## 3. 通用概念和适配边界
 
-## 4. 信息层次
+三条就够，都是读模型，不落新表。
 
-总览从上到下：
-
-1. **标题行**：链路。副文案写明只读，以及批准、取消、暂停分别在哪一页。
-2. **筛选**：连接器（来自 `GET /api/connectors` 的 `sources`，现在是 timer 与 github）、触发状态（六个枚举）、时间窗（默认近 24 小时，墙钟）、项目（绑定上的可选 `projectId`，或 bot 的定义项目）。另有开关「只看异常」。
-3. **四块计数**，每块标明口径：
-   - 触发：时间窗内按 `trigger_run.state` 的全量计数（不是表格截断后的条数）。
-   - 建出：窗内 `taskId` 非空的请求数；旁边是待批准数。
-   - 今日已计入：当前账号 `countSince` / 20。时区见第 8 节。待批准不在这 20 里。
-   - 调度：当前账号队列里 `running` 与 `queued` 的条数，上限用现有 `DISPATCH_CAPS`（全局 2 + 人工预留 1）。不重画首页的槽位格子。
-4. **一句固定说明**：回写没有落库，👀 和评论的成败只在服务日志里。这句不是计数。
-5. **绑定条**：名称、`describe()` 的摘要、主会话或新会话、下次运行、启用 / 停用 / 自动暂停。自动暂停用 `pausedReason` 原文，链到 Bot 页。
-6. **运行表**：最近若干条。列是时间、触发、状态（枚举 + 中文）、原因、bot 会话、这次唤醒建出的任务数、调度摘要。点一行进明细。
-7. **脚注**：表是最近 N 条；上面的触发计数是时间窗全量。GitHub 在上一轮还开着时不产生跳过行。
-
-明细是五列，从左到右，缺的环留空并写原因，不补一个看起来像成功的状态：
-
-| 列 | 展示 | 空的时候写什么 |
-|---|---|---|
-| 触发 | 枚举、`externalId`、`catchup`、`plannedAt`、`reason`、绑定连续失败的当前值 | 不会空，这条页面就是一次运行 |
-| 投递 | 该 bot 会话上、落在对照窗口里的 `message_delivery`：枚举、`kind`、`attempt`、`lastError` | `sessionId` 为空，或窗口内 0 条：写「无外键，窗口内没有送达行」。有多条：全部列出，不指定哪一条「就是这次」 |
-| 会话 | bot 会话与任务会话各自的 `status`（用现有 `STATUS` 文案）。bot 会话来历 `via = bot` | 跳过且从未解析会话：这一列空 |
-| 任务 | 请求的审批、`counted`、`wakeKey`、来源键、任务状态、调度状态、`waitReason`、`human`、`notified`、结果第一行（最多 80 字，与首页队列一致） | 这次唤醒没有请求：写「这次没有建任务」 |
-| 回写 | 固定「未记录」 | 始终是这一句。有 `originConnector` 时补一句代码路径：调度 `done` 会调 `task.finished`，`failed` 会调 `task.failed`；`task.created` 被 GitHub sink 忽略；👀 在入站轮询时尝试 |
-
-对照窗口（服务端算，不把 `text` 发给浏览器）：
-
-- 候选是该 `sessionId` 上 `createdAt` 落在 `[run.createdAt, run.updatedAt + 60s]` 的送达行。60 秒是因为运行先写成 `delivered`，送达行在那之后才插入，用闭区间会漏掉刚写上的那一条。
-- 窗口可能含稍后的「调度通知」（也是 `kind = prompt`）。载荷里没有 `via`，所以不能靠它区分。
-- 响应里这些行带 `inWindow: true`，并带 `linked: false`。`linked` 在有外键之前恒为 false。
-
-「只看异常」为真时留下满足任一条件的运行，外加自动暂停的绑定（绑定不是运行，单独一条）：
-
-- 触发状态是 `failed` 或 `timeout`
-- `skipped` 且 `reason` 以 `疑似注入` 或 `轮询失败` 开头
-- 经 `wakeKey` 接上的调度状态是 `failed`
-- 经 `wakeKey` 接上的请求审批是 `pending`
-
-无写权限、超出宽限、上一轮没结束、错过 N 次，留在全量列表里，不进异常。它们是规则生效，不是故障。
-
-明细页顶上用同一谓词列出相邻的异常，点哪条换 `#/connectors/r/<id>`；暂停的绑定去 Bot 页。
-
-### 中文标签
-
-Bot 页已有「已投递」。链路页同时出现两套 `delivered`，标签写成：
-
-| 枚举 | 链路页中文 | 已有页面 |
-|---|---|---|
-| 触发 `waiting` | 等待中 | Bot 页同文 |
-| 触发 `delivered` | 已交给回合 | Bot 页写「已投递」 |
-| 触发 `done` | 回合结束 | Bot 页写「完成」 |
-| 触发 `failed` | 回合失败 | Bot 页写「失败」 |
-| 触发 `timeout` | 超时 | 同 |
-| 触发 `skipped` | 跳过 | 同 |
-| 送达六态 | 排队 / 发送中 / 已送达 / 未送达 / 已撤回 / 挂起 | 会话气泡已用前五态；`held` 是交接简报，连接器唤醒不会产生 |
-| 会话五态 | 现有 `STATUS`：运行中、完成、已停止、中断、失败。`running` 且 `lastSeq = 0` 显示「就绪」 | 同 |
-| 任务六态 | 现有 `TASK_STATUS_LABEL` | 同 |
-| 调度五态 | 首页队列已有：排队、运行中、完成、失败、已取消 | 同 |
-| `notified` | true 写「已尝试通知」，false 写「等 bot 空下来再通知」 | 首页队列后半句已有；前半句把「已通知 bot」改成「已尝试通知」，避免读成已经送达。首页那句留到实现期一并改掉，避免两处说法不同 |
-
-枚举值用等宽字跟在中文旁边，方便对日志。
-
-## 5. 只读、跳转、三种空态
-
-这块页面没有写按钮。
-
-| 想做的事 | 去哪 |
+| 概念 | 含义 |
 |---|---|
-| 批准或拒绝超额 | 首页连接器通知（已有「批准 / 拒绝」） |
-| 取消还在排队的调度 | 首页任务队列（已有「取消」） |
-| 暂停、恢复、删除、修改绑定 | Bot 页该触发的行 |
-| 立即重试或撤回一条送达 | 会话页该气泡下（已有） |
-| 看 bot 或任务会话 | `#/p/<项目>/focus/<会话>` |
-| 看自动暂停或隔离的原文通知 | 首页通知 |
+| 来源 | 一个适配器，只认识一张已有的「链头」 |
+| 链 | `来源 + 原生 id`。id 沿用那张表自己的主键或已有关联键，不新造 |
+| 跳 | 适配器用已有外键接上的一格。接不上就写「未关联」或「未记录」，不补一条看起来像成功的状态 |
 
-跳转都用现有 `formatRoute`。明细列上的会话 id、任务 id 做成这些链接。
+领域层放类型和纯函数（`wakeKey` 对齐、送达时间窗、连接器的「要看的」谓词）。来源适配器在组合根，调用现有仓储。`packages/domain` 不 import 连接器包。
 
-三种状态分开，不把「还没加载」说成「没有」：
+适配器只做读。它不订阅新事件，不改写入路径。
 
-| 情况 | 表现 |
+链头决定列表里的一行。跳只出现在详情里。这样「统一」指的是同一套呈现，不是把所有过程揉成一条轨迹。
+
+## 4. 各来源能接上什么
+
+下表按当前 master 的字段。没有写上去的关联，就是没有。
+
+| 来源 | 链头（已有） | 能接上的跳 | 接不上 |
+|---|---|---|---|
+| 连接器 `connector` | `trigger_run.id` | `sessionId` → bot 会话；`agent_task_request.wakeKey = trigger_run.id` → 请求和 `taskId`；`task_dispatch.taskId` → 调度、任务会话、`notifySessionId` | 没有 `deliveryId`。GitHub 触发键 `owner/repo#N@事件` 和任务来源键 `owner/repo#N` 不是同一串，禁止互相当键。回写无表 |
+| 协作 `message` | `agent_messages.traceId`（ADR 0018，第一条消息生成，ask / reply / 派生继承） | `byTrace`、`fromSessionId`、`targetSessionId`、`replyTo`、`agent_spawns.traceId` | 不指向 `trigger_run` 或 `task_dispatch`。投进会话的 `message_delivery` 不记 message id |
+| 群 `group` | `GroupThread.id` | `GroupDelivery.threadId`、其上的 `sessionId`、`GroupPost.threadId` | 不指向连接器或协作 trace。会话送达是另一张表 |
+| 人开会话 | 无链头 | 会话有 `taskId`、来历 `via`（`web` / `api` / `mobile` 等）、prompt 的 `author.via` | 没有「这一次人的操作」的 id。列出来会和首页最近会话重复 |
+
+三套 id 不要混：
+
+- 协作的 `traceId` 只属于 ADR 0018。`newTraceId()` 就是普通 `newId()`。
+- 连接器给 bot 开会话时，spawn 行写 `traceId: connector:<会话 id>`（`apps/server/src/main.ts`）。这是派生表的填充值，不会往 `agent_messages` 插行，不能拿去 `byTrace`。
+- 来历 `via = bot` 只说明会话是 bot 派生的，看不出 timer 还是 github。调度开的任务会话也是 `via = bot`，没有 parent 指回 bot 会话。
+
+会话送达（ADR 0031 `message_delivery`）和群投递（`GroupDelivery`）是两张表、两套状态。详情里写全称，不合成一种「投递」。
+
+送达行和 journal 的关系：`message_delivery.seq` 对得上那条 prompt。prompt 上有 `author.via`（代码里出现过 `connector`、`dispatch`、`agent`、`group`，开放 API 则可能是令牌名，不是闭集）。因此能看出这条 prompt 从哪类入口来，仍然不能看出是哪一次 `trigger_run`。主会话会被多次触发复用，同一种 `via` 会有多条。
+
+## 5. 状态和部分链
+
+每跳显示那张表自己的枚举，旁边加已有中文。不发明「链路状态」去覆盖它们。
+
+连接器触发：`waiting` 等待中，`delivered` 已交给回合，`done` 回合结束，`failed` 回合失败，`timeout` 超时，`skipped` 跳过。这里的 `delivered` 不是送达表的 `delivered`（已送达）。
+
+会话：`running` 运行中，`stopped` 已停止，`done` 完成，`interrupted` 中断，`failed` 失败。`running` 且 `lastSeq = 0` 用现有文案「就绪」。读会话行。Worker 另报的 `running` 不写回会话行，这页不接那条流。
+
+任务：现有 `TASK_STATUS_LABEL`。开会话时 `todo` → `in_progress`。调度结束不改任务状态。只有首页队列取消才置 `abandoned`。
+
+调度：`queued` 排队，`running` 运行中，`done` 完成，`failed` 失败，`cancelled` 已取消。`notified = true` 表示已经尝试把结果投给 bot 会话，不等于送达成功。bot 正忙时保持 false。
+
+协作消息：`queued` / `awaiting_approval` / `delivered` / `answered` / `done` / `failed` / `denied`。这是 ADR 0018 的状态，和上面三套同名时也不合并。
+
+群线程：`running` / `done` / `silent` / `limit` / `stopped` / `fallback` / `rate_limited`。群投递：`queued` / `delivered` / `done` / `silent` / `canceled` / `failed`。
+
+部分链是正常情况。详情按跳列出，空的跳写原因：
+
+| 跳 | 空的时候 |
 |---|---|
-| 加载 | 计数和表的位置是灰块。不出现「还没有」「0」 |
-| 成功但没有绑定 | 「还没有触发。」链接到 Bot 页 |
-| 成功但时间窗内 0 条 | 「这段时间没有运行。」计数为 0，表空 |
-| 异常开关下 0 条 | 一行灰字「没有要看的异常」，与首页收件箱安静时同一语气 |
-| 请求失败 | 保留上一份成功数据（若有），顶上一行「刷新失败」，带「重试」。没有上一份时整页这一行，不渲染成空列表 |
-| 轮询 | 一份 `GET`，10 秒，与「等我处理」相同。刷新失败不把表清掉 |
+| 会话 | 触发在交给会话之前就跳过了 |
+| 会话送达 | 无外键。窗口内 0 条就写「窗口内没有送达行」；多条全部列出，不指定哪一条是这次 |
+| 任务 | 「这次没有建任务」 |
+| 回写 | 永远是「未记录」 |
 
-## 6. 权限与可观测性
+送达窗口仍按上一稿：`createdAt` 落在 `[run.createdAt, run.updatedAt + 60s]`。60 秒是因为运行先写成 `delivered`，送达行随后才插入。窗口可能含稍后的调度通知。响应里 `linked` 恒为 `false`，`sink.recorded` 恒为 `false`。
 
-沿用现有检查，不加权限点：
+「只看失败或缺环」用在列表，不把结构性缺口算进去。回写未记录、送达没有外键，几乎每条连接器链都有，放进筛选会把列表变成全量。这个开关只留业务上要看的：
 
-- 绑定和运行：对 bot 的定义项目有 `project.read`（与 `GET .../bindings`、`GET /api/bindings/:id/runs` 相同）。没有权限的绑定不出现。
-- 请求和调度行：对任务所在项目有 `project.read`。这比 `GET /api/dispatch` 宽。现有队列接口只按 `accountId` 滤，协作者看不到别人账号建的任务；那些任务在项目里本来就能读。链路按项目读，才能把一次唤醒和它建的任务接上。
-- 今日 N/20：只算**当前账号**的 `countSince`。绑在别人账号上的触发，写「配额在建触发的人账上」，不显示那个数。`countSince` 跨这个人的全部 bot，把别人的日计数画出来会带出别的项目。
-- 批准、取消仍校验记录属于当前账号。本页不调用这两个接口。
+- 触发 `failed` 或 `timeout`
+- `skipped` 且原因以 `疑似注入` 或 `轮询失败` 开头
+- 经 `wakeKey` 接上的调度是 `failed`
+- 经 `wakeKey` 接上的请求还是 `pending`
 
-可观测性就是这份读模型加上现有日志。不做指标管道，不新开推送。`truncated: true` 时脚注写「表只显示最近 200 条，计数是全量」。
+无写权限、超出宽限、上一轮没结束、错过几次，留在全量里。它们是规则生效。
 
-## 7. 数据与接口
+连接器原因原文、配额口径、连续失败只跟触发的 `failed` / `timeout` 有关、GitHub 在上一轮还开着时不记跳过：与上一稿第 1 节相同，实现时以那一节的句子为准（见文末附录）。
 
-首期读现有表。新代码是一个用例如下，外加查询方法。`packages/domain` 继续不 import 连接器。
+## 6. 权限和隔离
 
-```mermaid
-flowchart LR
-  UI["#/connectors 只读"] --> UC[readConnectorBoard / readConnectorRun]
-  UC --> B[connector_binding / trigger_run]
-  UC --> R[agent_task_request]
-  UC --> D[task_dispatch]
-  UC --> S[sessions.status]
-  UC --> M[message_delivery.recent]
-  UI --> OLD[首页通知 / 任务队列 / Bot 页 / 会话]
-```
+沿用 `project.read`，不加权限点，不提供跨团队的总表。
 
-已有、总览直接复用的部分：
-
-- `GET /api/connectors`：连接器 id 与 kinds，筛选用。
-- `ConnectorStore.bindingsOf` / `allBindings`，再按 `project.read` 滤。
-- `AgentTaskStore.countSince`、`pendingFor`。
-- `Dispatcher` 的上限常量。队列格子仍用现有 `GET /api/dispatch`，链路页不靠它做关联（它只含当前账号最近 60 条，且响应类型在前端没把 `originConnector` 标出来）。
-
-现有接口不够、需要补的只是查询，不是新表：
-
-| 端口方法 | 原因 |
+| 链 | 要能读的项目 |
 |---|---|
-| `ConnectorStore.runsSince(bindingIds, since, limit)` | 现有 `runs` 按单条绑定、路由里写死 30 条。5 分钟一次的 timer 一天远超 30 |
-| `ConnectorStore.countRunsByState(bindingIds, since)` | 计数要全量，不能靠截断后的列表加总 |
-| `AgentTaskStore.byWakeKeys(keys)` | 现有只有 `bySession`、`pendingFor`、`countWake` |
-| `TaskDispatchStore.byTaskIds(ids)` | `recent(account, 60)` 接不全 |
+| 连接器 | bot 的定义项目（`agentProjectId`） |
+| 协作消息 | `AgentMessage.projectId` |
+| 群线程 | 群的 `projectId` |
+| 链上的任务、调度 | 任务所在项目。这比 `GET /api/dispatch` 宽：队列接口只按账号滤，协作者看不到别人账号建的任务；那些任务在项目里本来就能读 |
 
-HTTP 两个，都挂在现有 `connector-routes`：
+今日配额 N/20 只属于连接器来源，而且只算当前账号的 `countSince`。绑在别人账号上的触发不显示那个数字（`countSince` 会跨这个人的全部 bot）。待批准不计入这 20。多个绑定时区不一致时按时间分行，不合成一个分数。没有自己的绑定时不显示芯片。
 
-`GET /api/connectors/board?since=<ms>&bindingId=&connector=&state=`
+批准和取消仍校验记录属于当前账号。本模块不调用这两个接口。
+
+## 7. 最小接口
+
+`GET /api/observe?since=<ms>&source=&projectId=`
+
+`since` 默认现在往前 24 小时（墙钟）。`source` 空着表示本期已接入的全部来源；第一期只有 `connector`。
 
 ```ts
-interface ConnectorBoard {
-  readonly since: number;
-  readonly truncated: boolean;
-  readonly quota: { readonly used: number; readonly cap: 20; readonly perWake: 3; readonly timeZone: string; readonly since: number } | null;
-  readonly pending: readonly { readonly id: string; readonly title: string; readonly projectId: string; readonly createdAt: number }[];
-  readonly counts: Readonly<Record<TriggerRunState, number>>;
-  readonly createdTasks: number;
-  readonly dispatch: { readonly running: number; readonly queued: number; readonly caps: { readonly global: 2; readonly humanReserved: 1 } };
-  readonly bindings: readonly BindingView[];
-  readonly runs: readonly BoardRun[];
-  readonly requests: readonly BoardRequest[];
-  readonly dispatches: readonly BoardDispatch[];
+interface ObserveChain {
+  readonly source: 'connector';
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly at: number;
+  readonly nativeState: string;
+  readonly gap: string | null;
 }
 ```
 
-`quota` 在「不该看别人的日计数」时为 `null`。`BindingView` 用现有字段。`BoardRun` 是 `TriggerRun` 去掉 `text`。`BoardRequest` 含 `id, wakeKey, taskId, projectId, title, approval, counted, originConnector, originExternalId, createdAt`，不含 `goal`。`BoardDispatch` 含 `id, taskId, state, waitReason, sessionId, notifySessionId, notified, human, originConnector, originExternalId, resultFirstLine, workerId, updatedAt`。
+`gap` 是给列表的一句人话（例如「调度失败」「疑似注入」），不是新枚举。截断 200 条时 `truncated: true`，计数仍是时间窗全量。
 
-`GET /api/connectors/runs/:runId`
+`GET /api/observe/:source/:id`
 
 ```ts
-interface ConnectorRunDetail {
-  readonly run: BoardRun;
-  readonly binding: BindingView;
-  readonly requests: readonly BoardRequest[];
-  readonly dispatches: readonly BoardDispatch[];
-  readonly sessions: readonly { readonly id: string; readonly role: 'bot' | 'task'; readonly status: SessionStatus; readonly lastSeq: number }[];
-  readonly deliveries: readonly { readonly id: string; readonly kind: DeliveryKind; readonly state: DeliveryState; readonly attempt: number; readonly lastError: string | null; readonly createdAt: number; readonly inWindow: boolean }[];
-  readonly linked: false;
-  readonly sink: { readonly recorded: false };
+interface ObserveHop {
+  readonly kind: 'trigger' | 'session_delivery' | 'session' | 'task_request' | 'task' | 'dispatch' | 'sink';
+  readonly ref: string | null;
+  readonly state: string | null;
+  readonly linked: boolean;
+  readonly note: string;
 }
 ```
 
-`linked` 与 `sink.recorded` 写成字面量 `false`，实现里不要改成可空的成功态。任务状态由已有任务仓储按 `taskId` 读取，放在 `requests` 旁的 `taskStatus` 字段（`TaskStatus | null`）。没有单独发明「链路状态」。
+连接器详情把 `Board` 里需要的字段放在对应跳的 `note` 和并列的只读对象里（触发去掉 `text`，请求去掉 `goal`，调度结果只留第一行 80 字）。`sink` 这一跳的 `state` 为 null，`note` 为「未记录」。不返回 `trigger_run.text`。
 
-纯函数放在 `packages/domain`：`summarizeBoard` 做计数和配额窗口，`assembleRun` 做五环。时区、权限过滤的输入由用例注入，函数本身不读钟、不读库。
+查询方法仍是上一稿那四个，因为连接器来源需要跨绑定的运行和按 `wakeKey` 找请求：`runsSince`、`countRunsByState`、`byWakeKeys`、`byTaskIds`。加上按 id 取一次运行。不加列、不加表。
 
-今日配额的时区规则：当前账号名下、自己能读的绑定，若 `timeZone` 全部相同，用它做 `dayStart`，芯片印出这个时区名。若不一致，芯片按每个时区分行，每行一个 `countSince(我, dayStart(now, 该时区))`，不合成一个分数。没有绑定时，不显示芯片（没有可以引用的时区；人发起的回合用 `HUB_TIME_ZONE`，那不是这块页面的默认）。
+纯函数：`matchWake` 只认 `wakeKey === run.id`；`deliveryWindow`；`connectorNeedsLook`（第 5 节的谓词）。测试要覆盖「`acme/demo#18` 对不上 `acme/demo#18@evt_91`」。
 
-`since` 默认 `now - 24h`。这是墙钟窗口，和「今日已计入」的自然日并排，两个标签都写出来。
+协作来源以后直接用 `MessageStore.byTrace`。群来源以后用 `GroupStore.thread` 和 `deliveries(threadId)`。这两处不用为可观测另做表。
 
-## 8. 分期与验收
+## 8. 分期
 
-每期一个实现 PR。本地 `npm run ci` 与相关 e2e 通过再合。不合入本设计稿。不部署，不读 `server.env`，不对 issue 发言，不用线上 worker。
+| 期 | 内容 | 不包含 |
+|---|---|---|
+| P1 | 列表、详情、筛选的壳；只注册连接器适配器。总览上能看到触发，详情上能看到会话、送达窗口、`wakeKey` 接上的任务和调度，回写写未记录。左栏入口。只读 | 协作、群、人开会话单列、回写落库、指标 |
+| P2 | 注册协作适配器。链头是 `traceId`。详情用 `byTrace` 和会话 id。送达仍标未关联到某一条 message | 与连接器链自动合并 |
+| P3 | 注册群适配器。链头是线程，跳是 `GroupDelivery` | 把群投递和会话送达合成一种状态 |
 
-### P1 总览
+每一期本地 `npm run ci` 和相关 e2e 通过再谈合并。不部署，不读 `server.env`，不对 issue 发言。
 
-- 领域纯函数 + 四个查询方法 + `GET /api/connectors/board`。
-- 路由与左栏入口、队列标题上的链接、Bot 行上的「链路」。
-- 总览的筛选、四块计数、绑定条、运行表、加载 / 空 / 错误。
-- 页面上没有批准、取消、暂停、删除。
+P1 验收沿用连接器事实，并加上：
 
-验收：
-
-- 计数按六种触发状态加总，截断 200 条时 `truncated` 为真且计数仍是全量。
-- `pending` 与批准后的行不进 `used`。两个时区出两行，不合并。
-- `wakeKey` 对齐；`acme/demo#18` 与 `acme/demo#18@evt_91` 不会被当成同一键。
-- 响应里没有 `text`。无 `project.read` 的绑定不出现。他人绑定的 `quota` 为 `null`。
-- 组件或 e2e 用本地夹具打开 `#/connectors`：加载时不出现「还没有」；失败时出现「刷新失败」；链接指向 `#/home`、`#/bots/...`、`#/p/.../focus/...`。
-
-### P2 明细
-
-- `GET /api/connectors/runs/:runId` 与五环页面、异常开关、相邻异常。
-- 首页队列把「已通知 bot」改成「已尝试通知」。
-
-验收：
-
-- 触发 `done`、任务仍是 `in_progress`、调度 `failed` 三套状态同时出现，互不覆盖。
-- 调度失败不增加绑定的 `consecutiveFailures`；之后的 `done` 会把该计数清零（用现有夹具，不断言新行为）。
-- `sink.recorded` 与 `linked` 为 false。窗口比 `updatedAt` 晚 5ms 的送达行仍出现；更早的同文案 timer 送达不出现。
-- `notified: true` 不生成送达成功的展示。
-- 异常谓词：无写权限的跳过不在内；`疑似注入`、`轮询失败`、触发 `failed`、调度 `failed`、`pending` 在内。
-- 本地 1280 与 390 截图。390 是同一块上下排列。
-
-### P3 回写记录（仅在第 11 节得到肯定之后）
-
-另加一张只追加的尝试表，由组合根在调用 sink 与 👀 之后写入：连接器 id、`externalId`、种类（`eyes` / `task.finished` / `task.failed`）、成功或失败、错误摘要、时间。不改 `OutputSink` 的语义，失败仍然不阻断调度。面板第五列才从「未记录」换成这条尝试。没有这条决定之前不做 P3。
+- 列表行的 `source` 是 `connector`，id 是 `trigger_run.id`
+- `wakeKey` 对齐；外部键不相等的两串不会连上
+- 响应无 `text`；`linked` 与 `sink.recorded` 为 false
+- 无 `project.read` 的绑定不出现；他人绑定不带配额数字
+- 页面上没有批准、取消、暂停、重试
+- 加载时不说「还没有」；失败时保留上一份并显示「刷新失败」
 
 ## 9. 草图
 
-桌面 1280×800，深色控制室（`docs/design/visual-direction.md` 的色板与字号）。数据是编的，画面上有「示例」标记。仓库名用 `acme/demo`，没有令牌、没有 issue 正文。
+1280×800，深色控制室。数字和仓库名是编的，画面上有「示例数据」。`acme/demo` 不是真实仓库。
 
-- 总览：![](assets/0033/overview-1280.png)
-- 异常明细（一次唤醒回合已结束，任务调度失败，回写未记录）：![](assets/0033/trace-1280.png)
+- 总览（多种来源；未接入的来源用标记写明，不装成已经有数据）：![](assets/0033/observe-1280.png)
+- 详情（一条连接器链，跳是通用的，缺口按代码）：![](assets/0033/observe-trace-1280.png)
 
-示例世界与计数一致，便于对照第 4 节：
+上一稿 Router 专属页：![](assets/0033/overview-1280.png) ![](assets/0033/trace-1280.png)
 
-- 近 24 小时触发 13 条：`done` 6、`delivered` 1、`waiting` 1、`failed` 1、`timeout` 0、`skipped` 4。表显示最近 8 条，其余 4 条 `done` 与 1 条宽限跳过在计数里、不在表里。
-- 窗内建出任务 4。待批准 1，不在这 4 里，也不在 6/20 里。
-- 今日已计入 6/20，时区 `Asia/Shanghai`（示例里两条启用绑定同时区）。
-- 调度：运行 1、排队 1（`等项目空位`）。全局上限 2，人工预留 1。
-- 绑定「夜巡」自动暂停，原因是连续失败 5 次。它不是一条运行。
-- 明细那一行：触发 `done`，外部键 `acme/demo#18@evt_91`；来源键 `acme/demo#18`；bot 会话 `done`；任务会话 `failed`；任务 `in_progress`；调度 `failed`，结果第一行「测试挂了」；`notified` true；回写未记录。窗口内一条 `prompt` / `delivered`，另有一条更早的不在窗口内。
+## 10. 已定
 
-## 10. 已定（实现时直接照此，不再单开选择题）
+- 一个入口、一张列表、一种详情。来源用适配器填。
+- 链的身份是 `来源 + 原生 id`。不新增全局 trace，不把协作 `traceId`、spawn 上的 `connector:<会话>`、来历 `via` 当成同一种东西。
+- 人在网页上直接开的会话不单列。它没有链头，首页已经有最近会话。
+- 调度和会话送达在连接器链里是跳，不各自再做一页。队列和气泡上的操作留在原处。
+- 回写保持「未记录」。本模块不落尝试表。
+- 第一期只接连接器，用来验证这个模型。协作和群排在后面，因为键已经有了，不需要先改写入。
+- 「只看失败或缺环」不用「回写未记录」和「送达无外键」当条件。
 
-- 页面只读；写操作留在已有按钮上。
-- 路由 `#/connectors`、`#/connectors/b/<id>`、`/r/<id>`，放在首页左栏。
-- 一行是一次 `trigger_run`。关联用 `wakeKey`，不用 GitHub 两边的外部键互比。
-- 首期不落回写、不给 `trigger_run` 加 `deliveryId`。第五列写「未记录」，投递列写对照窗口。
-- 不返回 `text`。
-- 异常谓词按第 4 节。无写权限等规则跳过留在全量列表。
-- 配额芯片只显示当前账号；多时区分行。
-- 会话状态读会话行，不读 Worker 的未落库 `running` 流。
+## 11. 要决定的两件事
 
-## 11. 需要决定的一件事
+1. **以后要不要把人开的普通会话也单列成一种来源？** 推荐：不要。没有「这一次操作」的 id，列表会和首页重复。别的链需要时，会话已经能作为一跳出现。若一定要单列，得先定链头是任务还是会话，那是单独一期。
 
-**回写成败要不要在 P3 落一条只追加的尝试记录？**
+2. **协作链和连接器链以后要不要在写入时记成同一个 id？** 推荐：不要。两套过程今天没有外键，页面用「未关联」说明即可。强行共用 id 要改 spawn 和消息的写入，超出只读可观测。
 
-推荐：**首期不要。** 面板写「未记录」。👀 和回帖失败今天只在服务日志里，调度不会因为回帖失败而改状态。若要在面板上区分「已回帖 / 回帖失败」，再单开 P3，不放进 P1/P2，也不改 sink 的失败处理。
+## 附录：连接器来源的计数口径
 
-没有第二件必须现在拍板的事。第 10 节如果要改，直接在审阅里指出即可。
+从上一稿保留，避免实现时另起一套。
+
+- 一行是一次 `trigger_run`。建出个数 = `wakeKey` 等于这次 id 且 `taskId` 非空的请求数。`pending` 没有 `taskId`，算待批准，不算建出，也不进今日 20。
+- 今日已计入 = 当前账号 `counted = 1` 的 `countSince`。日界用绑定的时区。人在对话里让 bot 建的默认不计。
+- 触发 `delivered` 的中文用「已交给回合」。Bot 页仍写「已投递」，两处同时出现时以链路页的长标签为准。
+- 调度 `notified` 的中文用「已尝试通知」。首页队列现在写「已通知 bot」，实现期把那句改成同一说法。
+- GitHub 在上一次运行还开着时不写跳过行，计数里也没有。
+- 连续失败只在触发变为 `failed` / `timeout` 时增加。调度失败不加。下一次触发 `done` 会把计数清零。
