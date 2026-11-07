@@ -113,6 +113,8 @@ Hub 的「模型提供商」是另一条路，说明在 `docs/model-providers.md
 npm run e2e -- e2e/observe.spec.ts
 ```
 
+OpenCode Go 的无密钥 Pi 配置见 `docs/testing/opencode-go-pi.md`。没有 `OPENCODE_API_KEY` 时不要把整套 E2E 当成模型测试。
+
 ## 阿里云复测（git worktree 删除）
 
 `packages/node-gateway/src/git-workspace.test.ts` 在 Git 把 `--git-common-dir` 印成相对路径时会失败：`dirname` 按进程当前目录解析，simple-git 报 `Cannot use simple-git on a directory that does not exist`。修法是相对 worktree 解析，不改机器上的 `safe.directory`。复测：
@@ -151,7 +153,7 @@ npm run e2e -- e2e/observe.spec.ts
 | 树折叠、选中换详情、耗时语义 | e2e 点触发节点看「记录跨度」再折叠链接；`durationBetween` 单测；假 ACP 那条看「送达用时」 | 无 |
 | 页面跳转 | `route.test.ts` 的 `#/observe`；e2e「打开树」 | 会话链接只在节点带「会话」「项目」属性时出现，送达用例会点到详情，不把假 ACP 会话当成模型成功 |
 | 401 匿名；匿名主体不跑适配器 | e2e 无 cookie 401；路由单测 `viewer: anonymous` | 无 |
-| OBSERVE=0 | `main.ts` 里 `OBSERVE !== '0'` 就不注册；路由 `enabled:false` 不调用适配器，`/api/health` 仍 200 | 没有单独起进程断言环境变量。行为由 `enabled:false` 单测覆盖 |
+| OBSERVE=0 | `apps/server/src/observe-flag.test.ts` 用独立进程、临时数据目录和 `OBSERVE=0` 启动，登录后 `/api/observe` 为 `enabled: false`，`/api/health` 仍 200 | 无 |
 | 适配器抛错不影响别的接口 | 路由单测：observe 503，`/api/health` 200；送达读失败只少这一跳 | 无 |
 | 1280 截图 | e2e 写列表、树、含送达节点的树 | 送达节点是假 ACP + 测试插入的行 |
 
