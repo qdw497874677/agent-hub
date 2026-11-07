@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * 开放 API（ADR 0014）：设置里建令牌（只显示一次）→ Bearer 调 /openapi/v1 → 远程机器上开会话、发消息、读 SSE 流
@@ -114,7 +115,7 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
         WORKER_ID: workerId,
         WORKER_ORIGIN: 'remote',
         WORKER_LABEL: 'e2e openapi 机器',
-        WORKER_ROOTS: '/tmp',
+        WORKER_ROOTS: e2eWorkerRoots(),
         WORKER_STATE_DIR: state
       },
       stdio: 'ignore'

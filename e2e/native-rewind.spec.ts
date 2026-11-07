@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * ADR 0028：从这里重来时原生分叉。假 ACP agent 三种：
@@ -47,7 +48,7 @@ test('从这里重来：能原生就原生分叉（绿），不能 / 失败就�
   const code = ((await (await page.request.post('/api/workers/pairing', { data: {}, headers })).json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
   const state = mkdtempSync(join(tmpdir(), 'hub-e2e-native-rewind-'));
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const label = `e2e 原生分叉 ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -61,7 +62,7 @@ test('从这里重来：能原生就原生分叉（绿），不能 / 失败就�
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
         PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-        WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), WORKER_MODEL_CHECK: '0',
+        WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), WORKER_MODEL_CHECK: '0',
         ACP_AGENTS: JSON.stringify([
           { id: 'fakefork', label: '假 Claude', command: process.execPath, args: [FAKE, '--fork'], listModelsArgs: [FAKE, '--models'], branchAtTurn: 'jetbrains-air' },
           { id: 'fakeforkfail', label: '假 Claude（坏）', command: process.execPath, args: [FAKE, '--fork', '--fork-fail'], listModelsArgs: [FAKE, '--models'], branchAtTurn: 'jetbrains-air' },
@@ -71,8 +72,8 @@ test('从这里重来：能原生就原生分叉（绿），不能 / 失败就�
       stdio: 'ignore'
     });
     for (let i = 0; i < 60; i++) {
-      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ id: string; state: string }>;
-      if (workers.some((w) => w.id === workerId && w.state === 'online')) break;
+      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ id?: string; workerId?: string; state: string }>;
+      if (workers.some((w) => (w.workerId ?? w.id) === workerId && w.state === 'online')) break;
       await page.waitForTimeout(500);
     }
     const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 原生分叉 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };

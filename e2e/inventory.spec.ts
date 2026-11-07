@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 async function writeHeaders(page: import('@playwright/test').Page, baseURL: string): Promise<Record<string, string>> {
   const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
@@ -25,7 +26,7 @@ test('套件清单：外部组件只显示，来路不明的 hub 组件标不可
   expect(pairing.ok()).toBe(true);
   const code = ((await pairing.json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: 'e2e 清单机器' }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
   const [workerId = '', credential = ''] = enrolled.stdout.trim().split('\n');
@@ -41,7 +42,7 @@ test('套件清单：外部组件只显示，来路不明的 hub 组件标不可
   let worker: ChildProcess | null = null;
   try {
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
-      env: { PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: 'e2e 清单机器', WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: runtimesDir },
+      env: { PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: 'e2e 清单机器', WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: runtimesDir },
       stdio: 'ignore'
     });
     await expect

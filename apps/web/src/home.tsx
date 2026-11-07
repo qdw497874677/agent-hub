@@ -105,6 +105,9 @@ export function HomePage({
           ) : null}
         </ul>
 
+        <a data-testid="nav-observe" className="mb-1 flex items-baseline justify-between rounded-sm px-2 py-1 text-body text-secondary hover:bg-card" href="#/observe">
+          可观测
+        </a>
         <a data-testid="nav-workspaces" className="mb-4 flex items-baseline justify-between rounded-sm px-2 py-1 text-body text-secondary hover:bg-card" href="#/workspaces">
           工作空间<span className="text-meta text-tertiary">团队共用 →</span>
         </a>

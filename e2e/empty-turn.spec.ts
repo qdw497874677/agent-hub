@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * 空回合（ACP agent 一句话没回就 end_turn）要显示成红色错误，不能静默成「完成」；
@@ -22,7 +23,7 @@ test('空回合显示红色错误，模型自检失败显示在机器列表', as
   expect(pairing.ok()).toBe(true);
   const code = ((await pairing.json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const label = `e2e 空回合机器 ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -37,7 +38,7 @@ test('空回合显示红色错误，模型自检失败显示在机器列表', as
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
         PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-        WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'),
+        WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'),
         ACP_AGENTS: JSON.stringify(agents), WORKER_MODEL_CHECK_TIMEOUT_MS: '15000'
       },
       stdio: 'ignore'

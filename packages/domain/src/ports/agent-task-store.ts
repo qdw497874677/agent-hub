@@ -29,4 +29,6 @@ export interface AgentTaskStore {
   countSince(accountId: string, since: number): Promise<number>;
   bySession(sessionIds: readonly string[], limit: number): Promise<AgentTaskRequest[]>;
   pendingFor(accountId: string): Promise<AgentTaskRequest[]>;
+  /** wakeKey 命中的请求。空列表返回空。不用来源外部键。 */
+  byWakeKeys(keys: readonly string[]): Promise<AgentTaskRequest[]>;
 }

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * 自更新后新版本起不来、启动守卫把旧版换回来之后：Worker 用旧版连上 hub 时补报「已回退」，
@@ -19,7 +20,7 @@ test('自动回退后，运营后台显示「已回退」和原因', async ({ pa
   expect(pairing.ok()).toBe(true);
   const code = ((await pairing.json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const label = 'e2e 回退机器';
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -33,7 +34,7 @@ test('自动回退后，运营后台显示「已回退」和原因', async ({ pa
   let worker: ChildProcess | null = null;
   try {
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
-      env: { PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label, WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes') },
+      env: { PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label, WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes') },
       stdio: 'ignore'
     });
     await page.goto('/#/admin/workers');

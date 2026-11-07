@@ -860,3 +860,41 @@ export interface DispatchQueueDto {
   pending: { id: string; title: string; projectId: string; agentName: string | null; createdAt: number }[];
   caps: { global: number; perWorker: number; perProject: number; humanReserved: number } | null;
 }
+
+/** 可观测（ADR 0033）。网页只认这份契约，不认业务表。 */
+export interface ObserveListItemDto {
+  id: string; source: string; title: string; projectId: string | null; at: number;
+  nativeState: string; nativeStateLabel: string; gap: string | null;
+}
+export interface ObserveNodeDto {
+  id: string; name: string; kind: string; state: string | null; stateLabel: string | null;
+  startedAt: number | null; endedAt: number | null; durationMs: number | null; durationLabel: string | null;
+  parentId: string | null; links: { to: string; label: string }[];
+  attrs: { key: string; value: string }[];
+}
+export interface ObserveBranchDto {
+  node: ObserveNodeDto;
+  children: ObserveBranchDto[];
+  links: { label: string; branch: ObserveBranchDto }[];
+}
+export interface ObserveTreeDto {
+  roots: ObserveBranchDto[];
+  missingParent: ObserveNodeDto[];
+  unlinked: ObserveNodeDto[];
+  unrecorded: ObserveNodeDto[];
+}
+export interface ObserveTraceDto {
+  id: string; source: string; headId: string; title: string; projectId: string | null;
+  externalUrl: string | null; nodes: ObserveNodeDto[];
+}
+export const observeApi = {
+  list: (query: { since: number; source?: string; projectId?: string; needsLook?: boolean; limit?: number }) => {
+    const q = new URLSearchParams({ since: String(query.since) });
+    if (query.source) q.set('source', query.source);
+    if (query.projectId) q.set('projectId', query.projectId);
+    if (query.needsLook) q.set('needsLook', '1');
+    if (query.limit) q.set('limit', String(query.limit));
+    return call<{ enabled: boolean; truncated: boolean; viewer?: 'anonymous' | 'user' | 'system'; scanLimit?: number | null; items: ObserveListItemDto[] }>(`/api/observe?${q}`);
+  },
+  get: (source: string, id: string) => call<{ enabled: boolean; trace: ObserveTraceDto | null; tree: ObserveTreeDto | null }>(`/api/observe/${encodeURIComponent(source)}/${encodeURIComponent(id)}`)
+};
