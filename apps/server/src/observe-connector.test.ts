@@ -142,6 +142,11 @@ test('送达读失败只影响这一跳', async () => {
   assert.equal(view?.nodes.find((node) => node.kind === 'delivery')?.attrs[0]?.value, '读取失败');
 });
 
+test('来源不是 connector 时列表为空', async () => {
+  const listed = await reader().list({ since: 0, source: 'langfuse', projectId: null, needsLook: false, limit: 50 }, me);
+  assert.deepEqual(listed.items, []);
+});
+
 test('列表截断：limit 小于条数时 truncated', async () => {
   const runs = [1, 2, 3].map((n) => run({ id: `r${n}`, externalId: String(n), createdAt: now + n }));
   const listed = await reader({ runs }).list({ since: 0, source: null, projectId: 'p1', needsLook: false, limit: 2 }, me);
@@ -255,6 +260,22 @@ test('两个团队：别人的触发不进我的列表', async () => {
   const foreign = await stranger('/api/observe?since=0');
   assert.deepEqual(foreign.body.items, []);
   assert.equal((await stranger('/api/observe/connector/run-18')).status, 404);
+});
+
+test('列表 limit 超过 200 时路由夹到 200', async () => {
+  const app = new Hono();
+  let seen = 0;
+  installObserveRoutes(app, {
+    enabled: true,
+    readers: [{
+      id: 'connector',
+      list: async (query) => { seen = query.limit; return { truncated: false, scanLimit: 500, items: [] }; },
+      get: async () => null
+    }]
+  }, () => systemSubject('test'));
+  const body = await (await app.request('/api/observe?since=0&limit=9999')).json() as { scanLimit: number };
+  assert.equal(seen, 200);
+  assert.equal(body.scanLimit, 500);
 });
 
 test('匿名打到路由时不调用适配器，并标明不是空数据', async () => {

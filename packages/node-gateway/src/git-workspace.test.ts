@@ -5,7 +5,14 @@ import { mkdtemp, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGitWorkspace } from './git-workspace.ts';
+import { createGitWorkspace, mainWorktreeDir } from './git-workspace.ts';
+
+test('git-common-dir 的相对路径按 worktree 解析，不按进程 cwd', () => {
+  const worktree = '/tmp/ws/agent-hub/.worktrees/demo-fix';
+  assert.equal(mainWorktreeDir(worktree, '../../demo/.git'), '/tmp/ws/agent-hub/demo');
+  assert.equal(mainWorktreeDir(worktree, '/tmp/ws/agent-hub/demo/.git'), '/tmp/ws/agent-hub/demo');
+  assert.equal(mainWorktreeDir(worktree, ''), worktree);
+});
 
 const sh = (cwd: string, ...args: string[]) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' } });

@@ -113,6 +113,48 @@ Hub 的「模型提供商」是另一条路，说明在 `docs/model-providers.md
 npm run e2e -- e2e/observe.spec.ts
 ```
 
+## 阿里云复测（git worktree 删除）
+
+`packages/node-gateway/src/git-workspace.test.ts` 在 Git 把 `--git-common-dir` 印成相对路径时会失败：`dirname` 按进程当前目录解析，simple-git 报 `Cannot use simple-git on a directory that does not exist`。修法是相对 worktree 解析，不改机器上的 `safe.directory`。复测：
+
+```bash
+node --test packages/node-gateway/src/git-workspace.test.ts
+npm run ci
+npm run e2e -- e2e/observe.spec.ts
+```
+
+`e2e/observe.spec.ts` 不需要模型。其中「含送达节点」用仓库里的 `fake-agent.mjs` 派生会话，送达行是测试插入的，不是真模型。
+
+## E2E 能力分组
+
+分组按用例源码里的调用，不按文件名。默认 `npm run e2e` 会把 `E2E_REAL` 和没装 hermes 的用例跳过。假 ACP 不是真模型。
+
+不需要模型，也不派生会话：`admin`、`asset-review`、`assets`、`auth`、`bots`、`connectors`、`delete-project`、`distill`、`enroll`、`inventory`、`messages-entry`、`mobile-canvas`、`new-project-form`、`providers`、`team`、`update-rollback`。`observe.spec.ts` 的前两条也在这里；第三条要假 ACP。`runtime-install.spec.ts` 在远程 worker 上装 pi，要 PATH 里有 npm，不要求模型回话。
+
+假 ACP（`packages/adapters/acp/test-fixtures/fake-agent.mjs`，单独注册一台 worker）：`attention`、`delivery`、`empty-turn`、`git-commit-push-pr`、`native-rewind`、`provenance`、`rewind`、`turn-checkpoints`、`workspace-cleanup`，以及 `observe.spec.ts` 的送达节点那条。
+
+要本机 worker 的 agent 就绪（`pi` 能列出模型，否则 `derive` 是 503）。下面这些取在线 worker 的第一个 `agentIds`，多数还不检查模型原文：`agent-messaging`、`approval-card`、`author`、`canvas-history`、`canvas-interaction`、`canvas-move`、`canvas-refresh`、`canvas-windows`、`chat`、`composer-align`、`context`、`files`、`files-tabs`、`list-view`、`memory`（其中一条会发 prompt）、`mobile-focus`、`perms`（其中一条会派生会话）、`run-failed`、`scroll-bottom`、`session-title`、`shared-workspaces`（其中一条会派生）、`tool-path-links`、`unknown-outcome`、`worker-frame`、`worker-resources`。`picker` 和 `workspace-create` 不调用 derive，但要能打开「开始任务」对话框；worker 未就绪时这个对话框出不来。`canvas.spec.ts` 从界面开会话，并要求模型只回 `E2E-OK-<run id>`。`groups.spec.ts` 里「@ 成员直达」要求 agent 真的回一句；另外两条只建群，不要求回话。`openapi.spec.ts` 在远程 worker 上开会话并发消息。`components.spec.ts` 把组件装到另一台 worker，要那台 PATH 上能装 pi 组件，不要求模型回话。
+
+默认跳过：`chat-real.spec.ts` 只有 `E2E_REAL=1` 才跑，那是真 agent。`hermes-acp.spec.ts` 只有本机 worker 报了 `hermes-acp`（装了 hermes 且 `WORKER_HERMES=1`）才跑；模型是用例自己起的本地假 OpenAI 网关，不是生产密钥。
+
+## 可观测 P1 验收矩阵
+
+| 承诺 | 证据 | 缺口 |
+| --- | --- | --- |
+| 网页不 import 仓储 / Langfuse；domain 不 import observe | `npm run check` | 无 |
+| wakeKey 接上；GitHub 来源键不相等时不接 | `observe-connector.test.ts`「wakeKey 接上任务」 | 无 |
+| 调度 parentId 为空，只在 links | 同上 | 无 |
+| 父级不在本页不挂到根下 | `packages/observe/src/tree.test.ts` | 无 |
+| 无正文、无载荷、无密钥；externalUrl 为 null；回写无状态 | connector 单测 + e2e 详情不含「不应出现在页面上的正文」 | 无 |
+| 无 project.read 不出现；他人配额不出现；别的团队 404 | connector 单测 +「两个团队」 | 无 |
+| 先取 500 再筛，本页限额，截断文案 | connector 单测；路由 limit>200 夹到 200；e2e `observe-scan` 与「只看失败或缺环」 | 页面没有「来源」下拉，来源筛选只在 API（`source=langfuse` 单测） |
+| 树折叠、选中换详情、耗时语义 | e2e 点触发节点看「记录跨度」再折叠链接；`durationBetween` 单测；假 ACP 那条看「送达用时」 | 无 |
+| 页面跳转 | `route.test.ts` 的 `#/observe`；e2e「打开树」 | 会话链接只在节点带「会话」「项目」属性时出现，送达用例会点到详情，不把假 ACP 会话当成模型成功 |
+| 401 匿名；匿名主体不跑适配器 | e2e 无 cookie 401；路由单测 `viewer: anonymous` | 无 |
+| OBSERVE=0 | `main.ts` 里 `OBSERVE !== '0'` 就不注册；路由 `enabled:false` 不调用适配器，`/api/health` 仍 200 | 没有单独起进程断言环境变量。行为由 `enabled:false` 单测覆盖 |
+| 适配器抛错不影响别的接口 | 路由单测：observe 503，`/api/health` 200；送达读失败只少这一跳 | 无 |
+| 1280 截图 | e2e 写列表、树、含送达节点的树 | 送达节点是假 ACP + 测试插入的行 |
+
 ## 建议的执行顺序
 
 1. 解压源码包到独立目录，`git rev-parse` 不适用（包里没有 `.git`）。对一下包旁的 SHA256 和说明里的提交号。

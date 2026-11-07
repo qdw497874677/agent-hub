@@ -1,5 +1,5 @@
 import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
 import type { CommitPreview, DomainError, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
@@ -17,6 +17,18 @@ export interface GitWorkspaceOptions {
    * 沿用原分支重建（existing）照旧用登记的路径，老记录是绝对路径不迁移。
    */
   readonly worktreesDir?: string;
+}
+
+/**
+ * `git rev-parse --git-common-dir` 在 worktree 里经常印相对路径，而且是相对这个 worktree，不是相对进程的 cwd。
+ * 按 cwd 做 dirname 会指到一个不存在的目录，simple-git 直接拒绝构造。
+ * 绝对路径原样用；相对路径相对 worktree 解析。
+ */
+export function mainWorktreeDir(worktree: string, commonDirOutput: string): string {
+  const raw = commonDirOutput.trim();
+  if (raw === '') return worktree;
+  const common = isAbsolute(raw) ? raw : resolve(worktree, raw);
+  return dirname(common);
 }
 
 /** D10：hub 给的默认路径 → 这台 Worker 配置的位置（保留最后两段 `<仓库名>/<目录名>`）。 */
@@ -218,8 +230,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       if (options?.force) {
         // 人二次确认过「这些改动不要了」：worktree 用 --force 摘掉（分支和已提交的仍在主仓库里），目录整个删
         try {
-          const common = kind === 'worktree' ? (await simpleGit(path).raw(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim() : null;
-          if (common) await simpleGit(dirname(common)).raw(['worktree', 'remove', '--force', path]);
+          if (kind === 'worktree') await detachWorktree(path, true);
           else await rm(path, { recursive: true, force: true });
         } catch (error) {
           return failed('删除工作空间', error);
@@ -239,8 +250,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         if (status.dirty === null) return { ok: false, error: invalid(`「${path}」不是 git worktree`) };
         if (reason) return { ok: true, value: { removed: false, reason } };
         try {
-          const common = (await simpleGit(path).raw(['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim();
-          await simpleGit(dirname(common)).raw(['worktree', 'remove', path]); // 不加 --force；分支保留
+          await detachWorktree(path, false); // 不加 --force；分支保留
         } catch (error) {
           return failed('删除工作空间', error);
         }
@@ -258,6 +268,19 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       return { ok: true, value: { removed: true } };
     }
   };
+}
+
+/** 从主工作区摘掉 worktree。common dir 解析不到目录时，就在这个 worktree 里摘掉自己（git 允许）。 */
+async function detachWorktree(path: string, force: boolean): Promise<void> {
+  const raw = (await simpleGit(path).raw(['rev-parse', '--git-common-dir'])).trim();
+  const main = mainWorktreeDir(path, raw);
+  const args = ['worktree', 'remove', ...(force ? ['--force'] : []), path];
+  const mainIsDir = await lstat(main).then((stat) => stat.isDirectory()).catch(() => false);
+  if (mainIsDir) {
+    await simpleGit(main).raw(args);
+    return;
+  }
+  await simpleGit(path).raw(args);
 }
 
 /** 机器自己的 git 凭据要用到的变量（ssh agent、自定义 ssh 命令、askpass、代理），其余 GIT_* 不放行。 */
