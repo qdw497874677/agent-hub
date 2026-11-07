@@ -61,6 +61,8 @@ export interface ObserveListQuery {
 
 export interface ObserveList {
   readonly truncated: boolean;
+  /** 时间窗里先取最近这么多条，再做筛选。适配器没有这条上限时不填。 */
+  readonly scanLimit?: number;
   readonly items: readonly ObserveListItem[];
 }
 

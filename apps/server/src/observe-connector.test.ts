@@ -147,6 +147,41 @@ test('列表截断：limit 小于条数时 truncated', async () => {
   const listed = await reader({ runs }).list({ since: 0, source: null, projectId: 'p1', needsLook: false, limit: 2 }, me);
   assert.equal(listed.items.length, 2);
   assert.equal(listed.truncated, true);
+  assert.equal(listed.scanLimit, 500);
+});
+
+test('先取最近 500 再筛选：窗口外更早的失败被丢掉，truncated 为真', async () => {
+  const runs = Array.from({ length: 501 }, (_, index) => run({
+    id: index === 0 ? 'old-fail' : `ok-${index}`,
+    state: index === 0 ? 'failed' : 'done',
+    reason: index === 0 ? '最早的失败' : null,
+    externalId: String(index),
+    createdAt: now + index
+  }));
+  const listed = await reader({ runs }).list({ since: 0, source: null, projectId: null, needsLook: true, limit: 50 }, me);
+  assert.equal(listed.truncated, true);
+  assert.equal(listed.scanLimit, 500);
+  assert.equal(listed.items.some((item) => item.id === 'connector:old-fail'), false);
+  assert.equal(listed.items.length, 0);
+});
+
+test('匿名主体在有权限策略时列表为空，不带绑定名', async () => {
+  const bag = stores();
+  const withPolicy = createConnectorObserveReader({
+    now: () => now,
+    projects: { byId: async () => ({ id: 'p1', name: '秘密项目', teamId: 't', createdBy: 'u1', deletedAt: null } as never) } as never,
+    sessions: { byId: async () => null } as never,
+    tasks: { byId: async () => null } as never,
+    deliveries: { recent: async () => [] } as never,
+    store: bag.store as never,
+    requests: bag.requestsStore as never,
+    dispatches: bag.dispatchStore as never,
+    policy: { context: async () => ({} as never), worker: async () => ({} as never) } as never
+  });
+  const listed = await withPolicy.list({ since: 0, source: null, projectId: null, needsLook: false, limit: 50 }, null);
+  assert.deepEqual(listed.items, []);
+  assert.equal(JSON.stringify(listed).includes('acme/demo'), false);
+  assert.equal(await withPolicy.get('run-18', null), null);
 });
 
 test('路由：关闭时不装成空数据；读取失败不挡住健康检查', async () => {
@@ -220,6 +255,34 @@ test('两个团队：别人的触发不进我的列表', async () => {
   const foreign = await stranger('/api/observe?since=0');
   assert.deepEqual(foreign.body.items, []);
   assert.equal((await stranger('/api/observe/connector/run-18')).status, 404);
+});
+
+test('匿名打到路由时不调用适配器，并标明不是空数据', async () => {
+  const app = new Hono();
+  let called = false;
+  installObserveRoutes(app, { enabled: true, readers: [{ id: 'connector', list: async () => { called = true; return { truncated: false, items: [{ id: 'x', source: 'connector', title: '秘密', projectId: null, at: 1, nativeState: 'done', nativeStateLabel: '完成', gap: null }] }; }, get: async () => { called = true; return null; } }] }, () => null);
+  const body = await (await app.request('/api/observe')).json() as { viewer: string; items: unknown[] };
+  assert.equal(body.viewer, 'anonymous');
+  assert.deepEqual(body.items, []);
+  assert.equal(called, false);
+  const detail = await app.request('/api/observe/connector/run-18');
+  assert.equal(detail.status, 403);
+  assert.equal(called, false);
+});
+
+test('开了账号时，未登录的可观测接口被登录闸门拒绝，适配器不跑', async () => {
+  const world = inMemoryDeps();
+  const accounts = inMemoryAccounts();
+  let called = false;
+  const app = createApp({
+    deps: world.deps, hub: createStreamHub(), token: null,
+    auth: { accounts, hubToken: null },
+    observe: { enabled: true, readers: [{ id: 'connector', list: async () => { called = true; return { truncated: false, items: [] }; }, get: async () => { called = true; return null; } }] }
+  });
+  const response = await app.request('/api/observe?since=0');
+  assert.equal(response.status, 401);
+  assert.equal(((await response.json()) as { error: { message: string } }).error.message, '请先登录');
+  assert.equal(called, false);
 });
 
 test('未启用的路由可以直接挂上，不调用适配器', async () => {

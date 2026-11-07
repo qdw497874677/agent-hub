@@ -89,8 +89,14 @@ function ObserveList() {
       ) : null}
       {list.isPending ? <div data-testid="observe-loading" className="h-24 rounded-md bg-card" /> : null}
       {list.data && !list.data.enabled ? <p data-testid="observe-disabled" className="text-meta text-tertiary">可观测未启用。触发和调度照常进行。</p> : null}
-      {list.data?.enabled && list.data.items.length === 0 ? (
-        <p data-testid="observe-empty" className="text-meta text-tertiary">还没有可显示的记录。<a className="text-accent" href="#/bots">去 Bot 页</a></p>
+      {list.data?.viewer === 'anonymous' ? (
+        <p data-testid="observe-anonymous" className="mb-2 text-meta text-rust">没有登录。开了账号权限时这里不列出记录，这不是「没有数据」。</p>
+      ) : null}
+      {list.data?.enabled && list.data.viewer !== 'anonymous' ? (
+        <p data-testid="observe-access" className="mb-2 text-meta text-secondary">只显示你能读的项目。没有登录的请求会被拒绝，不会显示成空列表。别的团队的触发不会出现。</p>
+      ) : null}
+      {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.items.length === 0 ? (
+        <p data-testid="observe-empty" className="text-meta text-tertiary">没有你能看的记录。<a className="text-accent" href="#/bots">去 Bot 页</a></p>
       ) : null}
       {list.data?.enabled && list.data.items.length > 0 ? (
         <table className="w-full border-collapse overflow-hidden rounded-md border border-hair bg-card" data-testid="observe-list">
@@ -118,7 +124,12 @@ function ObserveList() {
           </tbody>
         </table>
       ) : null}
-      {list.data?.truncated ? <p className="mt-2 text-meta text-tertiary">只显示最近的一批。更早的要缩小时间或项目。</p> : null}
+      {list.data?.enabled && list.data.viewer !== 'anonymous' ? (
+        <p className={`mt-2 text-meta ${list.data.truncated ? 'text-accent' : 'text-tertiary'}`} data-testid="observe-scan" data-truncated={list.data.truncated ? '1' : '0'}>
+          时间窗里先取最近 {list.data.scanLimit ?? 500} 条，再按「失败或缺环」筛选，这一页最多 50 条。
+          {list.data.truncated ? '这一次已经截断，更早的失败可能不在这里。' : '超过就会截断，更早的失败可能不在这里。'}
+        </p>
+      ) : null}
     </div>
   );
 }

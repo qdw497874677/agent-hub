@@ -135,7 +135,7 @@ export function createConnectorObserveReader(deps: ConnectorObserveDeps): Observ
         });
       }
       const limit = Math.max(1, query.limit);
-      return { truncated: truncatedScan || items.length > limit, items: items.slice(0, limit) };
+      return { truncated: truncatedScan || items.length > limit, scanLimit: SCAN, items: items.slice(0, limit) };
     },
     async get(nativeId: string, subject: unknown): Promise<ObserveTrace | null> {
       const run = await deps.store.run(nativeId);

@@ -894,7 +894,7 @@ export const observeApi = {
     if (query.projectId) q.set('projectId', query.projectId);
     if (query.needsLook) q.set('needsLook', '1');
     if (query.limit) q.set('limit', String(query.limit));
-    return call<{ enabled: boolean; truncated: boolean; items: ObserveListItemDto[] }>(`/api/observe?${q}`);
+    return call<{ enabled: boolean; truncated: boolean; viewer?: 'anonymous' | 'user' | 'system'; scanLimit?: number | null; items: ObserveListItemDto[] }>(`/api/observe?${q}`);
   },
   get: (source: string, id: string) => call<{ enabled: boolean; trace: ObserveTraceDto | null; tree: ObserveTreeDto | null }>(`/api/observe/${encodeURIComponent(source)}/${encodeURIComponent(id)}`)
 };
