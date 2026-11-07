@@ -115,7 +115,9 @@ npm run e2e -- e2e/observe.spec.ts
 
 OpenCode Go 的无密钥 Pi 配置见 `docs/testing/opencode-go-pi.md`。没有 `OPENCODE_API_KEY` 时不要把整套 E2E 当成模型测试。
 
-源码包不是 git 仓库。打包时把这次提交的 40 位 SHA 写进包根的 `.agent-hub-commit`（`readBuildInfo` 已会读它）。不要为了让后台出现提交号而去 `git init` 伪造历史。远程 Worker 的 `WORKER_ROOTS` 盖住 `os.tmpdir()` 的真实路径，PATH 带上这次 node 和父进程里的 `pi`；见 `e2e/isolation.ts`。非 git 的清理用例不要把 `TMPDIR` 放进另一个 git 仓库里面，否则那份目录会被当成外层仓库的未跟踪文件。
+源码包不是 git 仓库。打包时把这次提交的 40 位 SHA 写进包根的 `.agent-hub-commit`（`readBuildInfo` 已会读它）。不要为了让后台出现提交号而去 `git init` 伪造历史。远程 Worker 的 `WORKER_ROOTS` 盖住 `os.tmpdir()` 的真实路径。默认 PATH 只带这次 node 和 npm，不把宿主机的 `pi` 算成空机器上的「机器自带」；组件安装那条用例才显式带上 `pi`。假 `gh` 的目录放在 PATH 最前。见 `e2e/isolation.ts`。
+
+Chrome 的 `SingletonSocket` 放在 `$TMPDIR` 下，整条路径超过 108 字节就会启动失败。`playwright.config.ts` 在进程内把过长的 `TMPDIR` 改到 `/tmp/ah-e2e`，不改用户 shell。非 git 的清理用例不要把临时目录放进另一个 git 仓库里面。
 
 ## 阿里云复测（git worktree 删除）
 

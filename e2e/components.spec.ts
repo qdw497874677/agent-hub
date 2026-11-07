@@ -70,7 +70,7 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     const pairing = await page.request.post('/api/workers/pairing', { data: {}, headers });
     const code = ((await pairing.json()) as { code: string }).code;
     const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-    const PATH = e2eWorkerPath(`${process.env['HOME'] ?? ''}/.local/bin`);
+    const PATH = e2eWorkerPath(`${process.env['HOME'] ?? ''}/.local/bin`, { agents: true });
     const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: `e2e 组件机器 ${run}` }, encoding: 'utf8' });
     expect(enrolled.status).toBe(0);
     const [wid = '', credential = ''] = enrolled.stdout.trim().split('\n');

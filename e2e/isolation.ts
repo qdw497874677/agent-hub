@@ -21,11 +21,20 @@ function commandDir(name: string): string | null {
 }
 
 /**
- * 让 Worker 子进程找得到和这次 node 配套的 npm，以及父进程 PATH 里的 pi。
- * 用例原先把 PATH 收成 /usr/bin，目录安装的 node / pi 会变成「未安装」，组件安装会被拒。
+ * 远程 Worker 的 PATH。
+ * 默认只给这次 node、它旁边的 npm，以及系统基本目录，不把宿主机的 pi / opencode / grok 算成「机器自带」。
+ * `agents: true` 才把父进程 PATH 里的 pi 加进来（组件安装要求这台机器已经有 pi）。
+ * `extra` 放最前，测试替身（假 gh）不会被后面的同名命令盖住。
  */
-export function e2eWorkerPath(extra = ''): string {
-  // extra 放最前：用例用它挡住系统里的 gh / git，换成测试替身。
-  const dirs = [extra, dirname(process.execPath), commandDir('pi'), commandDir('npm'), '/usr/local/bin', '/usr/bin', '/bin'].filter((dir): dir is string => Boolean(dir));
+export function e2eWorkerPath(extra = '', options: { agents?: boolean } = {}): string {
+  const dirs = [
+    extra,
+    dirname(process.execPath),
+    options.agents ? commandDir('pi') : null,
+    commandDir('npm'),
+    '/usr/local/bin',
+    '/usr/bin',
+    '/bin'
+  ].filter((dir): dir is string => Boolean(dir));
   return [...new Set(dirs)].join(':');
 }

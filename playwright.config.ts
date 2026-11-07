@@ -1,4 +1,17 @@
+import { mkdirSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
+
+/**
+ * Chrome 的单实例套接字放在 $TMPDIR 下，路径加上结尾的 NUL 不能超过 108 字节。
+ * 隔离运行若把 TMPDIR 指到很长的工作目录，浏览器会在启动时退出。
+ * 只改这个 Playwright 进程的 TMPDIR，不改用户 shell 的全局设置；已经够短就保持原值。
+ */
+const chromeSocketTail = '/com.google.Chrome.XXXXXX/SingletonSocket';
+const inheritedTmp = process.env.TMPDIR ?? '';
+if (inheritedTmp === '' || Buffer.byteLength(inheritedTmp) + Buffer.byteLength(chromeSocketTail) >= 108) {
+  mkdirSync('/tmp/ah-e2e', { recursive: true });
+  process.env.TMPDIR = '/tmp/ah-e2e';
+}
 
 const port = Number(process.env['E2E_PORT'] ?? 7896);
 // 同机并行跑两套 e2e 时用 E2E_PORT / E2E_DATA_DIR 隔开
