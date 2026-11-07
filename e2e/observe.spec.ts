@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /** 可观测页：真实页面、测试库里的一条连接器链。1280×800。 */
 const DATA = process.env['E2E_DATA_DIR'] ?? '/tmp/agent-hub-e2e-data';
@@ -86,7 +87,7 @@ test('可观测树含送达节点（假 ACP 会话 + 测试送达行，1280×800
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
   const code = ((await (await page.request.post('/api/workers/pairing', { data: {}, headers })).json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const pathEnv = '/usr/local/bin:/usr/bin:/bin';
+  const pathEnv = e2eWorkerPath();
   const label = `e2e 可观测假ACP ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH: pathEnv, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status, enrolled.stderr).toBe(0);
@@ -97,7 +98,7 @@ test('可观测树含送达节点（假 ACP 会话 + 测试送达行，1280×800
   const worker: ChildProcess = spawn(process.execPath, ['apps/worker/src/main.ts'], {
     env: {
       PATH: pathEnv, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-      WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
+      WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
     },
     stdio: 'ignore'
   });
@@ -110,8 +111,12 @@ test('可观测树含送达节点（假 ACP 会话 + 测试送达行，1280×800
       await page.waitForTimeout(500);
     }
     const tag = Date.now().toString(36);
-    const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 送达 ${tag}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
-    const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: `测试数据 送达 ${tag}` }, headers })).json()) as { id: string };
+    const created = await page.request.post('/api/projects', { data: { name: `e2e 送达 ${tag}`, rootPath: dir, workerId }, headers });
+    expect(created.ok(), await created.text()).toBe(true);
+    const project = (await created.json()) as { id: string };
+    const made = await page.request.post('/api/tasks', { data: { projectId: project.id, title: `测试数据 送达 ${tag}` }, headers });
+    expect(made.ok(), await made.text()).toBe(true);
+    const task = (await made.json()) as { id: string };
     const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: 'fakeacp', model: '' }, headers });
     expect(derived.ok(), await derived.text()).toBe(true);
     const sessionId = ((await derived.json()) as { id: string }).id;

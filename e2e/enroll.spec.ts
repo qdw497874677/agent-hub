@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, request as apiRequest } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 
@@ -65,7 +66,7 @@ test('添加机器：一行命令、倒计时、凭码接入、吊销后断开',
         WORKER_ID: workerId,
         WORKER_ORIGIN: 'remote',
         WORKER_LABEL: 'e2e 新机器',
-        WORKER_ROOTS: '/tmp',
+        WORKER_ROOTS: e2eWorkerRoots(),
         WORKER_STATE_DIR: state
       },
       stdio: 'ignore'
@@ -151,7 +152,7 @@ test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 work
         WORKER_ID: workerId,
         WORKER_ORIGIN: 'remote',
         WORKER_LABEL: 'e2e 只读机器',
-        WORKER_ROOTS: '/tmp',
+        WORKER_ROOTS: e2eWorkerRoots(),
         WORKER_STATE_DIR: state
       },
       stdio: 'ignore'

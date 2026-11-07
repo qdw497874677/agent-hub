@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /** 写操作要带 CSRF 头和同源 Origin（和界面一样）。 */
 async function writeHeaders(page: import('@playwright/test').Page, baseURL: string): Promise<Record<string, string>> {
@@ -27,7 +28,7 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
   const code = ((await pairing.json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
   // 剥掉 PATH：机器上找不到 pi / opencode / grok，只留 node 和 npm
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], {
     env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: 'e2e 空机器' },
     encoding: 'utf8'
@@ -48,7 +49,7 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
         WORKER_ID: workerId,
         WORKER_ORIGIN: 'remote',
         WORKER_LABEL: 'e2e 空机器',
-        WORKER_ROOTS: '/tmp',
+        WORKER_ROOTS: e2eWorkerRoots(),
         WORKER_STATE_DIR: state,
         WORKER_RUNTIMES_DIR: runtimesDir
       },

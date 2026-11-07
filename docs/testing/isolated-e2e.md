@@ -115,6 +115,8 @@ npm run e2e -- e2e/observe.spec.ts
 
 OpenCode Go 的无密钥 Pi 配置见 `docs/testing/opencode-go-pi.md`。没有 `OPENCODE_API_KEY` 时不要把整套 E2E 当成模型测试。
 
+源码包不是 git 仓库。打包时把这次提交的 40 位 SHA 写进包根的 `.agent-hub-commit`（`readBuildInfo` 已会读它）。不要为了让后台出现提交号而去 `git init` 伪造历史。远程 Worker 的 `WORKER_ROOTS` 盖住 `os.tmpdir()` 的真实路径，PATH 带上这次 node 和父进程里的 `pi`；见 `e2e/isolation.ts`。非 git 的清理用例不要把 `TMPDIR` 放进另一个 git 仓库里面，否则那份目录会被当成外层仓库的未跟踪文件。
+
 ## 阿里云复测（git worktree 删除）
 
 `packages/node-gateway/src/git-workspace.test.ts` 在 Git 把 `--git-common-dir` 印成相对路径时会失败：`dirname` 按进程当前目录解析，simple-git 报 `Cannot use simple-git on a directory that does not exist`。修法是相对 worktree 解析，不改机器上的 `safe.directory`。复测：

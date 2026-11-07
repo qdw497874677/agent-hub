@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * ADR 0027 阶段 2：提交 / 推送 / 开 PR，整条真路径——
@@ -70,7 +71,7 @@ test('提交 / 推送 / 开 PR：token → gh → 链接；推送真落到 bare 
   const broken = join(state, 'gh-broken');
   writeFileSync(join(bin, 'gh'), `#!/bin/sh\nif [ -e "${broken}" ]; then echo "gh: not logged in" >&2; exit 1; fi\nif [ "$2" = "create" ]; then echo "https://github.com/e2e/demo/pull/42"; exit 0; fi\necho '{"number":42,"url":"https://github.com/e2e/demo/pull/42","state":"OPEN","headRefOid":"y","mergedAt":null}'\n`);
   chmodSync(join(bin, 'gh'), 0o755);
-  const PATH = `${bin}:/usr/local/bin:/usr/bin:/bin`;
+  const PATH = e2eWorkerPath(bin);
   const label = `e2e git 机器 ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -94,14 +95,14 @@ test('提交 / 推送 / 开 PR：token → gh → 链接；推送真落到 bare 
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
         PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-        WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), WORKER_MODEL_CHECK: '0',
+        WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), WORKER_MODEL_CHECK: '0',
         ACP_AGENTS: JSON.stringify([{ id: 'fakeacp', label: '假 ACP', command: process.execPath, args: [FAKE], listModelsArgs: [FAKE, '--models'] }])
       },
       stdio: 'ignore'
     });
     for (let i = 0; i < 60; i++) {
-      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ id: string; state: string }>;
-      if (workers.some((w) => w.id === workerId && w.state === 'online')) break;
+      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ id?: string; workerId?: string; state: string }>;
+      if (workers.some((w) => (w.workerId ?? w.id) === workerId && w.state === 'online')) break;
       await page.waitForTimeout(500);
     }
     const project = (await (await page.request.post('/api/projects', { data: { name: `e2e git ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
