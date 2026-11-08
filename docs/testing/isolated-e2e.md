@@ -64,9 +64,11 @@ npm run up    # npm run build && node apps/server/src/main.ts
 
 `HUB_SPAWN_WORKER=1` 时，server 拉起的本机 worker 的 `HUB_URL` 被设成 `ws://127.0.0.1:<E2E_PORT>/worker`。它只连这套测试 server。
 
+`playwright.config.ts` 传给 webServer 的环境来自 `e2e/server-env.ts`。Playwright 会先展开自己的 `process.env`。密钥名必须在配置对象里是 `undefined`，不能只 `delete`，否则启动 shell 会重新继承。`ZAI_CODING_CN_API_KEY` 因此不会进入 `npm run build`、hub 或本机 worker。指定 `E2E_HUB_MODEL` 时，`OPENCODE_API_KEY`、`OPENCODE_GO_API_KEY` 和 `PI_DEFAULT_MODEL` 同样不进入。细节在 `docs/testing/hub-glm-e2e.md`。
+
 ## 怎样才不会碰到现有服务
 
-在生产机器上跑之前，用一套**干净的环境变量**和**独立的家目录**。`playwright.config.ts` 把当前 `process.env` 整份传给测试 server，server 再传给它拉起的 worker。shell 里如果已经有生产用的 `HUB_TOKEN`、`SMTP_PASS`、`RESEND_API_KEY`，会进测试进程。不要 `source` 生产环境文件。
+在生产机器上跑之前，用一套**干净的环境变量**和**独立的家目录**。除了 `e2e/server-env.ts` 盖住的密钥名，Playwright 仍会把当前 `process.env` 传给测试 server，server 再传给它拉起的 worker。shell 里如果已经有生产用的 `HUB_TOKEN`、`SMTP_PASS`、`RESEND_API_KEY`，会进测试进程。不要 `source` 生产环境文件。
 
 下面这组是最小隔离。把路径换成这台机器上的空目录。`7897` 仅在确认不是现网端口时使用；现网如果占了 7896 或 7878，就再换一个未监听的端口。
 

@@ -6,7 +6,13 @@
 
 ## 密钥边界
 
-`ZAI_CODING_CN_API_KEY` 只留在**启动 Playwright 的那个进程**里。`playwright.config.ts` 在交给 hub / worker 的环境里删掉它，并在设置了 `E2E_HUB_MODEL` 时再删掉 `PI_DEFAULT_MODEL`、`OPENCODE_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`。不要写进文件、argv、日志或源码。
+`ZAI_CODING_CN_API_KEY` 只留在**启动 Playwright 的那个进程**里，给登录后的 `POST /api/providers` 用。不要写进文件、argv、日志或源码。
+
+Playwright 启动 webServer 的实际对象是 `{ ...默认值, ...process.env, ...config.env }`，并且 `shell: true`。这条 shell 跑的是 `npm run build && node apps/server/src/main.ts`。从 `config.env` 里 `delete` 掉的名字不会盖住前面的 `process.env`，shell、build、hub、以及 hub 拉起的本机 worker 都会继承。`e2e/server-env.ts` 把这些名字设成对象自己的 `undefined`。Node 在 spawn 时丢掉这种值，子进程的环境里没有这个名字。
+
+任何模式都这样处理 `ZAI_CODING_CN_API_KEY` 和 `ZAI_API_KEY`。设置了 `E2E_HUB_MODEL` 时再同样处理 `PI_DEFAULT_MODEL`、`OPENCODE_API_KEY`、`OPENCODE_GO_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`XAI_API_KEY`。`HUB_PROVIDER_TOKEN` 不在这份名单里，会话中继令牌仍按原来的授权交给当次 Pi。
+
+测试进程里另外拉起的远程 worker（`e2e/openapi.spec.ts`）也走同一份 `serverEnv()`，不把种子密钥和上述 Go 变量传进去。
 
 登录成功后，第一个 `loginByApi` 若发现还没有这家全站供应商，就 `POST /api/providers` 一次。作用域是 `hub`（页面上的「全站」）：空库里的 `test@agent-hub.local` 是集群管理员，后面邀请出来的账号和别的团队也能用。个人或团队作用域盖不住这些账号。
 

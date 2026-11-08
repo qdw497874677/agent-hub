@@ -45,6 +45,7 @@ export default defineConfig({
     url: `http://127.0.0.1:${port}/api/health`,
     reuseExistingServer: false,
     timeout: 60_000,
+    // serverEnv() 把密钥名设成 undefined。Playwright 会先展开 process.env，delete 掉的名字会被重新继承。
     env: {
       ...serverEnv(),
       HUB_PORT: String(port),

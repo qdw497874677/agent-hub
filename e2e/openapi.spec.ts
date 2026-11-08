@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { serverEnv } from './server-env.ts';
 import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
@@ -109,7 +110,7 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
   try {
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
-        ...process.env,
+        ...serverEnv(),
         HUB_URL: hubUrl,
         HUB_WORKER_CREDENTIAL: credential,
         WORKER_ID: workerId,
