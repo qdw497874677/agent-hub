@@ -67,7 +67,8 @@ export async function ensureHosted(
     const chosen = placeSession(await deps.gateway.status(), {
       agentId: session.agentId,
       requested: null,
-      projectWorker: where.workerId
+      projectWorker: where.workerId,
+      model: session.model
     });
     if (!chosen.ok) return chosen;
     placed = { ...session, workerId: chosen.value };

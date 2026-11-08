@@ -110,6 +110,16 @@ export function harnessUnavailableReason(worker: WorkerStatus, agentId: string):
   return readiness?.state === 'unavailable' ? readiness.reason : null;
 }
 
+/**
+ * 落点时的就绪。只有「未配置模型」可以让给 hub 模型：本机没有原生 key，但 agent 认 hub 提供商，
+ * 选了 hub-<标识>/<模型> 就能开。未安装、检测失败、超时、缺适配器仍然拒绝。
+ */
+export function harnessBlocksPlacement(worker: WorkerStatus, agentId: string, model: string | undefined): string | null {
+  const reason = harnessUnavailableReason(worker, agentId);
+  if (reason === '未配置模型' && parseHubModel(model) && supportsProviders([worker], worker.workerId, agentId)) return null;
+  return reason;
+}
+
 /** 一份代码的身份：package 版本 + git 提交 + Worker 通道协议版本。 */
 export interface BuildInfo {
   readonly version: string;
@@ -155,6 +165,8 @@ export interface PlacementRequest {
   readonly projectWorker: string | null;
   /** 要求的能力（ADR 0021 §8，决定 6）：只认机器上**可信**的能力；漂移的、外部组件的都不算。 */
   readonly requires?: readonly string[];
+  /** 这次要开的模型。hub 模型可以在「未配置模型」的机器上落点；不传则不放宽。 */
+  readonly model?: string;
 }
 
 function lacking(worker: WorkerStatus, requires: readonly string[] | undefined): string[] {
@@ -193,7 +205,7 @@ export function placeSession(
       return err(unavailable(`Worker「${worker?.label ?? pinned}」不在线`));
     }
     if (!offers(worker)) return err(conflict(`Worker「${worker.label}」没装 ${request.agentId}`));
-    const reason = harnessUnavailableReason(worker, request.agentId);
+    const reason = harnessBlocksPlacement(worker, request.agentId, request.model);
     if (reason !== null) return err(unavailable(`「${worker.label}」上的 ${request.agentId} 暂不可用：${reason}`));
     if (worker.resources?.refusing) return err(unavailable(refusingMessage(worker)));
     const missing = lacking(worker, request.requires);
@@ -201,7 +213,7 @@ export function placeSession(
     return ok(worker.workerId);
   }
   const usable = (worker: WorkerStatus): boolean =>
-    offers(worker) && harnessUnavailableReason(worker, request.agentId) === null && !worker.resources?.refusing && lacking(worker, request.requires).length === 0;
+    offers(worker) && harnessBlocksPlacement(worker, request.agentId, request.model) === null && !worker.resources?.refusing && lacking(worker, request.requires).length === 0;
   const candidate =
     online.find((worker) => worker.origin === 'local' && usable(worker)) ?? online.find(usable);
   if (!candidate) {
@@ -209,7 +221,7 @@ export function placeSession(
       if (offers(worker) && worker.resources?.refusing) return [`「${worker.label}」资源紧张暂不接新会话`];
       const missing = offers(worker) ? lacking(worker, request.requires) : [];
       if (missing.length > 0 && harnessUnavailableReason(worker, request.agentId) === null) return [`「${worker.label}」缺可信能力 ${missing.join('、')}`];
-      const reason = offers(worker) ? harnessUnavailableReason(worker, request.agentId) : null;
+      const reason = offers(worker) ? harnessBlocksPlacement(worker, request.agentId, request.model) : null;
       return reason === null ? [] : [`「${worker.label}」${reason}`];
     });
     return err(unavailable(`没有在线的 Worker 能用 ${request.agentId}${reasons.length > 0 ? `（${reasons.join('，')}）` : ''}`));
@@ -232,15 +244,19 @@ export function checkModelOn(
   workers: readonly WorkerStatus[],
   workerId: string,
   agentId: string,
-  model: string
+  model: string,
+  protocol?: ProviderProtocol | null
 ): Result<string, DomainError> {
-  const entry = modelsOn(workers, workerId, agentId);
-  if (model === '' || !entry || entry.models.includes(model)) return ok(model);
   const label0 = workers.find((worker) => worker.workerId === workerId)?.label ?? workerId;
   if (parseHubModel(model)) {
-    // hub 提供商的模型不在机器清单里：只要这个 agent 认得 hub 提供商就放行，具体授权在派生 / 启动时查
-    return supportsProviders(workers, workerId, agentId) ? ok(model) : err(conflict(`「${label0}」上的 ${agentId} 不支持 hub 模型提供商`));
+    // hub 提供商的模型不在机器清单里：agent 得认这种协议。授权（有没有 key、能不能用）在派生 / 启动时查。
+    if (!supportsProviders(workers, workerId, agentId)) return err(conflict(`「${label0}」上的 ${agentId} 不支持 hub 模型提供商`));
+    const protocols = workers.find((worker) => worker.workerId === workerId)?.agentModels?.find((entry) => entry.agentId === agentId)?.providers ?? [];
+    if (protocol && !protocols.includes(protocol)) return err(conflict(`「${label0}」上的 ${agentId} 不支持 ${protocol} 协议的 hub 模型`));
+    return ok(model);
   }
+  const entry = modelsOn(workers, workerId, agentId);
+  if (model === '' || !entry || entry.models.includes(model)) return ok(model);
   const label = workers.find((worker) => worker.workerId === workerId)?.label ?? workerId;
   return err(conflict(`「${label}」上的 ${agentId} 没有模型 ${model}，换一个它有的模型`));
 }

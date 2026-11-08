@@ -19,6 +19,9 @@ test('parseHubModel', () => {
 
 test('validateProviderInput：标识、地址、模型', () => {
   const input = { slug: 'gw', name: 'GW', protocol: 'openai-chat' as const, baseUrl: 'https://api.example.com/v1', models: [{ id: 'm' }], routing: 'direct' as const, enabled: true };
+  const valid = validateProviderInput({ ...input, apiKey: 'sk-test-placeholder-not-real' } as typeof input & { apiKey: string });
+  assert.equal(valid.ok, true);
+  assert.equal(valid.ok && 'apiKey' in valid.value, false);
   assert.equal(validateProviderInput(input).ok, true);
   assert.equal(validateProviderInput({ ...input, slug: 'Bad Slug!' }).ok, false);
   assert.equal(validateProviderInput({ ...input, baseUrl: 'https://u:p@api.example.com/v1' }).ok, false);

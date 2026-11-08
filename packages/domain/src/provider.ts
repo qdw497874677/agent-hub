@@ -113,7 +113,10 @@ export function validateProviderInput(input: ProviderInput): Result<ProviderInpu
       ...(model.maxTokens ? { maxTokens: model.maxTokens } : {})
     });
   }
-  return { ok: true, value: { ...input, slug, name, baseUrl, models } };
+  return {
+    ok: true,
+    value: { slug, name, protocol: input.protocol, baseUrl, models, routing: input.routing, enabled: input.enabled }
+  };
 }
 
 /** 谁在看 / 用：授权主体（登录的人、系统主体）。判断全走 can()（ADR 0017）。 */

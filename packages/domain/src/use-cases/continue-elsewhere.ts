@@ -67,7 +67,7 @@ export async function continueElsewhereUseCase(
   const machine = await resolveMachine(deps, targetWorker);
   if (!machine.ok) return machine;
   const workers = await deps.gateway.status();
-  const placed = placeSession(workers, { agentId: source.agentId, requested: machine.value.workerId, projectWorker: machine.value.workerId });
+  const placed = placeSession(workers, { agentId: source.agentId, requested: machine.value.workerId, projectWorker: machine.value.workerId, model: source.model });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
   if (!allowed.ok) return allowed;

@@ -13,6 +13,7 @@ import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, startCommand } from './hosting.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
+import type { ProviderProtocol } from '../provider.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
@@ -31,6 +32,8 @@ export interface DeriveCommand {
   readonly actor?: Subject | null;
   /** 要求的能力：只落到这些能力可信的机器上（ADR 0021 §8）。 */
   readonly requires?: readonly string[];
+  /** 派生前已核对的 hub 提供商协议。用来拒绝 agent 不认的协议；不是 hub 模型就不传。 */
+  readonly hubProtocol?: ProviderProtocol;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -64,12 +67,13 @@ export async function deriveSessionUseCase(
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
     projectWorker: workspace.workerId,
+    model: command.model,
     ...(command.requires?.length ? { requires: command.requires } : {})
   });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
   if (!allowed.ok) return allowed;
-  const model = checkModelOn(workers, placed.value, agentId, command.model);
+  const model = checkModelOn(workers, placed.value, agentId, command.model, command.hubProtocol);
   if (!model.ok) return model;
   const created = deriveSession({
     task,
@@ -165,7 +169,8 @@ export async function forkSessionUseCase(
   const placed = placeSession(workers, {
     agentId,
     requested: source.workerId,
-    projectWorker: source.workerId
+    projectWorker: source.workerId,
+    model: command.model
   });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);

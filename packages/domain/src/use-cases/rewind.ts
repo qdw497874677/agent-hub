@@ -177,7 +177,7 @@ export function createRewindService(deps: RewindDeps) {
         if (blocked) return err(conflict(blocked));
       }
       const workers = await deps.gateway.status();
-      const placed = placeSession(workers, { agentId: source.agentId, requested: source.workerId, projectWorker: source.workerId });
+      const placed = placeSession(workers, { agentId: source.agentId, requested: source.workerId, projectWorker: source.workerId, model: source.model });
       if (!placed.ok) return placed;
       const allowed = await authorizeWorker(deps.access, actor, placed.value);
       if (!allowed.ok) return allowed;

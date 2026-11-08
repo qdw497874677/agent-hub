@@ -270,7 +270,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!can(actor, 'session.create')) return fail(c, forbidden('令牌没有 sessions:write'));
     const allowed = await ctx.providers?.checkModel(actor, input.model, input.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
-    const result = await deriveSessionUseCase(deps, { ...input, actor });
+    const result = await deriveSessionUseCase(deps, { ...input, actor, ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {}) });
     if (result.ok) {
       await recordSessionAction(deps, ctx.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, ctx.activity, c, actor, result.value, 'api');

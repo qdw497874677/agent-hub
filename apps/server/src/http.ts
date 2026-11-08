@@ -586,7 +586,7 @@ export function createApp(options: AppOptions): Hono {
     const actor = subjectOf(c);
     const allowed = await options.providers?.checkModel(actor, input.value.model, input.value.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
-    const result = await deriveSessionUseCase(deps, { ...input.value, actor });
+    const result = await deriveSessionUseCase(deps, { ...input.value, actor, ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {}) });
     if (result.ok) {
       await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, options.activity, c, actor, result.value, viaOfClient(c));

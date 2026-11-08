@@ -66,6 +66,13 @@ interface Handle {
 
 export const RELAY_PATH = '/provider-relay';
 
+/** 出 HTTP 的供应商对象。密钥只进保险箱，任何响应都不带 apiKey 字段，也不带明文。 */
+export function publicProvider<T extends object>(value: T): Omit<T, 'apiKey'> {
+  const copy = { ...value } as Record<string, unknown>;
+  delete copy['apiKey'];
+  return copy as Omit<T, 'apiKey'>;
+}
+
 const same = (offered: string, expected: Buffer): boolean => {
   const given = Buffer.from(offered, 'utf8');
   return given.length === expected.length && timingSafeEqual(given, expected);
@@ -165,10 +172,10 @@ export function createProviderWiring(wiring: ProviderWiring) {
   }
 
   /** 派生 / 分叉时核对选的 hub 模型。 */
-  async function checkModel(principal: Subject | null, model: string | undefined, taskId: string): Promise<Result<true, DomainError>> {
-    if (!parseHubModel(model)) return ok(true);
+  async function checkModel(principal: Subject | null, model: string | undefined, taskId: string): Promise<Result<ModelProvider['protocol'] | null, DomainError>> {
+    if (!parseHubModel(model)) return ok(null);
     const checked = await checkProviderModel(deps, principal, model ?? '', await wiring.projectTeam(taskId));
-    return checked.ok ? ok(true) : checked;
+    return checked.ok ? ok(checked.value?.protocol ?? null) : checked;
   }
 
   /** D3：换提供商 = 新开会话；同一提供商里换模型可以。 */
@@ -209,7 +216,7 @@ export function createProviderWiring(wiring: ProviderWiring) {
       enabled: input['enabled'] !== false
     });
 
-    app.get('/api/providers', async (c) => c.json({ providers: await listProviders(deps, principalOf(c)), workerRouting: await deps.providers.workerRouting() }));
+    app.get('/api/providers', async (c) => c.json({ providers: (await listProviders(deps, principalOf(c))).map(publicProvider), workerRouting: await deps.providers.workerRouting() }));
 
     /** 会话里能选的 hub 模型（按项目团队过滤）：模型选择器用。 */
     app.get('/api/providers/models', async (c) => {
@@ -232,13 +239,13 @@ export function createProviderWiring(wiring: ProviderWiring) {
       const scope = str(input['scope'], 'personal') as 'personal' | 'team' | 'hub';
       const apiKey = typeof input['apiKey'] === 'string' && input['apiKey'] ? input['apiKey'] : undefined;
       const result = await createProvider(deps, principalOf(c), { ...asInput(input), scope, ...(apiKey ? { apiKey } : {}) });
-      return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+      return result.ok ? c.json(publicProvider(result.value), 201) : fail(c, result.error);
     });
     app.put('/api/providers/:id', async (c) => {
       const input = await read(c);
       if (!input) return badBody(c);
       const result = await updateProvider(deps, principalOf(c), c.req.param('id'), asInput(input));
-      return result.ok ? c.json(result.value) : fail(c, result.error);
+      return result.ok ? c.json(publicProvider(result.value)) : fail(c, result.error);
     });
     app.put('/api/providers/:id/key', async (c) => {
       const input = await read(c);
