@@ -114,4 +114,6 @@ export interface CanvasProjection {
   readonly agents: readonly AgentDescriptor[];
   /** 每个会话最近的一段事件：关掉浏览器再打开，卡片里得还是那句话。 */
   readonly previews: Readonly<Record<string, readonly JournalEntry[]>>;
+  /** 每个会话的第一句提问。列表认人用，不跟 previews 的 24 条尾巴走。 */
+  readonly openings: Readonly<Record<string, string>>;
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { crumbs, decodeText, filesErrorText, humanSize, languageOf, parentOf, touches, watchPaths } from './files-core.ts';
+import { crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, touches, watchPaths } from './files-core.ts';
 
 test('只有写明不在线的 503 才收成 Worker 离线', () => {
   assert.equal(filesErrorText(503, 'Worker「e2e」不在线'), 'Worker 离线');
@@ -10,6 +10,13 @@ test('只有写明不在线的 503 才收成 Worker 离线', () => {
   assert.equal(filesErrorText(503, '目录不存在：/tmp/x'), '目录不存在：/tmp/x');
   assert.equal(filesErrorText(503, undefined), '');
   assert.equal(filesErrorText(400, '路径不合法'), '路径不合法');
+});
+
+test('目录列表的刷新会取消进行中的旧请求，diff 不会', () => {
+  assert.equal(filesRefetch('list').cancelRefetch, true);
+  assert.equal(filesRefetch('diff').cancelRefetch, false);
+  assert.equal(filesRefetch('changes').cancelRefetch, false);
+  assert.equal(filesRefetch('read').cancelRefetch, false);
 });
 
 test('面包屑 / 父目录', () => {

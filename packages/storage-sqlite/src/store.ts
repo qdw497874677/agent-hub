@@ -195,6 +195,9 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectEventsTail = db.prepare(
     'SELECT seq, payload, at FROM journal WHERE session_id = ? ORDER BY seq DESC LIMIT ?'
   );
+  const selectFirstPrompt = db.prepare(
+    "SELECT seq, payload, at FROM journal WHERE session_id = ? AND type = 'prompt' ORDER BY seq ASC LIMIT 1"
+  );
   const selectEventsAfter = db.prepare(
     'SELECT seq, payload, at FROM journal WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
   );
@@ -387,6 +390,10 @@ export function openSqliteStore(file: string): SqliteStore {
         .all(sessionId, limit)
         .reverse()
         .map((row) => toJournalEntry(row));
+    },
+    async firstPrompt(sessionId: Parameters<typeof asSessionId>[0]): Promise<JournalEntry | null> {
+      const row = selectFirstPrompt.get(sessionId);
+      return row ? toJournalEntry(row) : null;
     },
     async linkEntry(sessionId: Parameters<typeof asSessionId>[0], seq: Seq, entryId: string): Promise<void> {
       insertEntryMap.run(sessionId, seq, entryId);

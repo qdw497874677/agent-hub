@@ -16,6 +16,8 @@ export interface SessionRepository {
   eventsAfter(sessionId: SessionId, afterSeq: Seq): Promise<JournalEntry[]>;
   /** 最近 N 条事件（时间正序）。画布重开时要靠它把卡片填回来，不能只有实时帧。 */
   tail(sessionId: SessionId, limit: number): Promise<JournalEntry[]>;
+  /** 这条会话的第一句提问。列表要靠它认人，不能只看 tail：一轮工具调用就能把开头挤出最近 24 条。 */
+  firstPrompt(sessionId: SessionId): Promise<JournalEntry | null>;
   /** 双权威对齐：把平台的 seq 映射到 agent 自己的会话条目 id。 */
   linkEntry(sessionId: SessionId, seq: Seq, agentEntryId: string): Promise<void>;
   entryIdAt(sessionId: SessionId, seq: Seq): Promise<string | null>;

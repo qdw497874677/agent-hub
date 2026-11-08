@@ -217,6 +217,9 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
     async tail(sessionId, limit) {
       return (journal.get(sessionId) ?? []).slice(-limit);
     },
+    async firstPrompt(sessionId) {
+      return (journal.get(sessionId) ?? []).find((entry) => entry.event.kind === 'prompt') ?? null;
+    },
     async linkEntry() {},
     async entryIdAt() {
       return null;

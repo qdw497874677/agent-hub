@@ -84,10 +84,17 @@ test('journal：append 分配连续序号，eventsAfter 与 tail 切片正确，
   assert.deepEqual(all.map((entry) => entry.event), events);
   assert.deepEqual((await store.sessions.eventsAfter(session.id, 2)).map((entry) => entry.seq), [3, 4]);
   assert.deepEqual((await store.sessions.tail(session.id, 2)).map((entry) => entry.seq), [3, 4]);
+  const opening = await store.sessions.firstPrompt(session.id);
+  assert.equal(opening?.seq, 1);
+  assert.equal(opening?.event.kind === 'prompt' ? opening.event.text : '', '写个文件');
 
   const stored = await store.sessions.byId(session.id);
   assert.equal(stored?.lastSeq, 4);
   assert.equal(stored?.status, 'done');
+  session = applyEvent(session, { kind: 'prompt', text: '后一句' }, now + 4);
+  await store.sessions.append(session, { kind: 'prompt', text: '后一句' }, now + 4);
+  const stillFirst = await store.sessions.firstPrompt(session.id);
+  assert.equal(stillFirst?.event.kind === 'prompt' ? stillFirst.event.text : '', '写个文件');
 
   await store.sessions.linkEntry(session.id, 2, 'entry-2');
   assert.equal(await store.sessions.entryIdAt(session.id, 2), 'entry-2');

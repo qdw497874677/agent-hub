@@ -3,6 +3,7 @@ import { localTime } from './local-time.ts';
 import { useQuery } from '@tanstack/react-query';
 import type { CanvasDto, SearchHitDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
+import { sessionListLabel } from './session-label.ts';
 import type { LiveMap } from './live.ts';
 import { StatusPill } from './status.tsx';
 import { NoTasksHint } from './empty-tasks.tsx';
@@ -196,8 +197,8 @@ export function SearchPalette({
   );
 }
 
-/** 列表按任务分组；组内按开始时间排。行标题用会话里能看到的第一句话（预览只有最近几条事件，看不到就用「会话 N」）。 */
-export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'previews'>) {
+/** 列表按任务分组；组内按开始时间排。行标题用第一句话；预览只有最近几条，第一句另存在 openings 里。 */
+export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'previews' | 'openings'>) {
   const byTask = new Map<string, CanvasDto['sessions'][number][]>();
   for (const session of canvas.sessions) byTask.set(session.taskId, [...(byTask.get(session.taskId) ?? []), session]);
   const order = [...canvas.tasks.map((task) => task.id), ...[...byTask.keys()].filter((id) => !canvas.tasks.some((task) => task.id === id))];
@@ -210,10 +211,11 @@ export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'pr
         title: canvas.tasks.find((task) => task.id === taskId)?.title ?? '—',
         sessions: sessions.map((session, index) => {
           const prompt = (canvas.previews[session.id] ?? []).find((entry) => entry.event.kind === 'prompt');
-          const text = prompt && prompt.event.kind === 'prompt' ? prompt.event.text.replace(/\s+/g, ' ').trim() : '';
-          const fallback = text ? (text.length > 60 ? `${text.slice(0, 60)}…` : text) : `会话 ${index + 1}`;
-          // 用户起过名就用名字；没起回退到首句 / 「会话 N」
-          return { session, label: session.title ? session.title : fallback };
+          const previewText = prompt && prompt.event.kind === 'prompt' ? prompt.event.text : '';
+          return {
+            session,
+            label: sessionListLabel({ title: session.title, previewText, opening: canvas.openings[session.id], index })
+          };
         })
       };
     });

@@ -20,9 +20,14 @@ export async function loadCanvas(
 
   const PREVIEW_EVENTS = 24;
   const previews: Record<string, readonly JournalEntry[]> = {};
+  const openings: Record<string, string> = {};
   await Promise.all(
     sessions.map(async (session) => {
       previews[session.id] = await deps.sessions.tail(session.id, PREVIEW_EVENTS);
+      const first = await deps.sessions.firstPrompt(session.id);
+      if (!first || first.event.kind !== 'prompt') return;
+      const text = first.event.text.replace(/\s+/g, ' ').trim();
+      if (text) openings[session.id] = text;
     })
   );
 
@@ -41,7 +46,8 @@ export async function loadCanvas(
     edges: buildLineage(tasks, sessions),
     layout,
     agents: deps.agents.list(),
-    previews
+    previews,
+    openings
   });
 }
 
