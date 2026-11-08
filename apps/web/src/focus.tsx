@@ -23,6 +23,7 @@ import { FileLinksContext, type FileLinks } from './file-links.tsx';
 import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
 import { RewindDialog } from './rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
+import { ContextMeter } from './context-meter.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -405,6 +406,11 @@ export function FocusView({
 
       <div className={`shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4 ${tab === 'chat' ? '' : 'hidden'}`}>
         <div className="mx-auto max-w-[760px]">
+          {live?.contextUsage ? (
+            <div className="mb-1 flex justify-end pr-1">
+              <ContextMeter usage={live.contextUsage} />
+            </div>
+          ) : null}
           <Composer
             large
             session={{ ...session, status }}

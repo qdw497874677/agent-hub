@@ -4,7 +4,7 @@ import { applyBlocks, multipleAuthors, applyFrame, cardBlocks, waitingForReply, 
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
-  s1: { blocks: [{ kind: 'prompt', text: '嗨', attachments: [], seq: 1 }], status: 'running', lastSeq: 1, reason: null, awaiting: true }
+  s1: { blocks: [{ kind: 'prompt', text: '嗨', attachments: [], seq: 1 }], status: 'running', lastSeq: 1, reason: null, awaiting: true, contextUsage: null }
 };
 
 test('旧帧被丢弃，新帧追加并推进游标', () => {
@@ -18,6 +18,32 @@ test('状态帧不推进游标，否则同 seq 的事件会被当成旧帧丢掉
   const next = applyFrame(base, { sessionId: 's1', seq: 2, event: null, status: 'done' });
   assert.equal(next.s1?.lastSeq, 1);
   assert.equal(next.s1?.status, 'done');
+});
+
+test('上下文用量是旁路事件：更新占用但不进对话块，状态帧也保留它', () => {
+  const next = applyFrame(base, {
+    sessionId: 's1',
+    seq: 2,
+    event: { kind: 'context_usage', usedTokens: 60_000, windowTokens: 200_000, percent: 30 },
+    status: 'running'
+  });
+  assert.equal(next.s1?.blocks.length, 1);
+  assert.deepEqual(next.s1?.contextUsage, { usedTokens: 60_000, windowTokens: 200_000, percent: 30 });
+  const status = applyFrame(next, { sessionId: 's1', seq: 2, event: null, status: 'done' });
+  assert.deepEqual(status.s1?.contextUsage, { usedTokens: 60_000, windowTokens: 200_000, percent: 30 });
+});
+
+test('打开对话换整段历史时，也从历史里播种最后的上下文用量', () => {
+  const session = { id: 's1', status: 'done', lastSeq: 2 } as unknown as SessionDto;
+  const entries = [
+    { seq: 1, at: '', event: { kind: 'prompt', text: '嗨' } },
+    { seq: 2, at: '', event: { kind: 'context_usage', usedTokens: 12_000, windowTokens: 128_000, percent: 9 } }
+  ] as unknown as JournalEntryDto[];
+  assert.deepEqual(withFullHistory({}, session, entries)['s1']?.contextUsage, {
+    usedTokens: 12_000,
+    windowTokens: 128_000,
+    percent: 9
+  });
 });
 
 test('断线补帧：after=lastSeq 的历史被重放，与重连后的实时帧交错也不重复', () => {
@@ -86,7 +112,7 @@ test('打开对话换上整段历史：投影被思考 delta 挤满时正文也�
   const kinds = map['s1']?.blocks.map((block) => block.kind);
   assert.deepEqual(kinds, ['prompt', 'thinking', 'text']);
   assert.equal(map['s1']?.lastSeq, 33);
-  const newer = { s1: { blocks: [], status: 'running', lastSeq: 50, reason: null, awaiting: true } } as unknown as LiveMap;
+  const newer = { s1: { blocks: [], status: 'running', lastSeq: 50, reason: null, awaiting: true, contextUsage: null } } as unknown as LiveMap;
   assert.equal(withFullHistory(newer, session, entries), newer);
 });
 

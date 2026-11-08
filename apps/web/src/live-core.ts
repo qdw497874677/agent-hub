@@ -60,6 +60,23 @@ interface ToolResult {
   readonly output?: string;
 }
 
+/** 运行时报告的最新上下文用量；`usedTokens` 为 null = 刚压缩完还没新数。 */
+export interface ContextUsage {
+  readonly usedTokens: number | null;
+  readonly windowTokens: number;
+  readonly percent: number | null;
+}
+
+export function contextUsageFromEntries(entries: readonly JournalEntryDto[]): ContextUsage | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const event = entries[index]?.event;
+    if (event?.kind === 'context_usage') {
+      return { usedTokens: event.usedTokens, windowTokens: event.windowTokens, percent: event.percent };
+    }
+  }
+  return null;
+}
+
 export interface LiveSession {
   readonly blocks: readonly Block[];
   readonly status: SessionDto['status'];
@@ -74,6 +91,11 @@ export interface LiveSession {
    * 才不会出现「刚开一条会话，发送按钮就变成停止按钮」。
    */
   readonly awaiting: boolean;
+  /**
+   * 运行时报上来的上下文用量。旁路事件，不进对话块；主视图拿它显示当前占用。
+   * 没有运行时（或还没报过）就是 null。
+   */
+  readonly contextUsage: ContextUsage | null;
 }
 
 export type LiveMap = Readonly<Record<string, LiveSession>>;
@@ -227,7 +249,8 @@ export function resolveLive(
     status: session.status,
     lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
     reason: reasonFromEntries(preview),
-    awaiting: awaitingFromHistory(preview, session.status)
+    awaiting: awaitingFromHistory(preview, session.status),
+    contextUsage: contextUsageFromEntries(preview)
   };
 }
 
@@ -250,6 +273,10 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
   const reason =
     frame.event?.kind === 'ended' && frame.event.reason !== undefined ? frame.event.reason : (previous?.reason ?? null);
   const awaiting = awaitingAfter(previous?.awaiting ?? false, frame.event, frame.status);
+  const contextUsage =
+    frame.event?.kind === 'context_usage'
+      ? { usedTokens: frame.event.usedTokens, windowTokens: frame.event.windowTokens, percent: frame.event.percent }
+      : (previous?.contextUsage ?? null);
   const next: LiveSession = {
     blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
     status: frame.status,
@@ -257,7 +284,8 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
     // 只有带事件的帧才推进游标：状态帧和它旁边那条事件共用同一个 seq，
     // 推进了就会把那条事件当成「旧帧」丢掉——提问气泡曾整条消失过。
     lastSeq: frame.event ? frame.seq : (previous?.lastSeq ?? 0),
-    reason
+    reason,
+    contextUsage
   };
   return { ...current, [frame.sessionId]: next };
 }
@@ -310,7 +338,8 @@ export function withFullHistory(current: LiveMap, session: SessionDto, entries: 
       status: previous?.status ?? session.status,
       lastSeq: Math.max(top, previous?.lastSeq ?? 0),
       reason: reasonFromEntries(entries),
-      awaiting: previous?.awaiting ?? awaitingFromHistory(entries, session.status)
+      awaiting: previous?.awaiting ?? awaitingFromHistory(entries, session.status),
+      contextUsage: contextUsageFromEntries(entries) ?? previous?.contextUsage ?? null
     }
   };
 }
