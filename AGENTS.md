@@ -130,6 +130,30 @@ scripts/aliyun-ssh.sh 'hostname; systemctl is-active agent-hub-server agent-hub-
 scripts/deploy-aliyun.sh
 ```
 
+**注意：阿里云上解析不了 `github.com`**（实测 `Could not resolve host`），所以 `deploy-hub.sh` 里的 `git fetch origin` 会失败。网络恢复前用 git bundle 部署：
+
+```bash
+# 1) 本地打包：从服务器当前提交到本地 master
+git bundle create /tmp/hub-update.bundle <server-head>..master
+
+# 2) 上传
+scripts/aliyun-ssh.sh 'cat > /root/hub-update.bundle' < /tmp/hub-update.bundle
+
+# 3) 服务器上：备份 → fetch bundle → ff-only merge → npm ci → build → restart → health
+scripts/aliyun-ssh.sh '
+  export PATH=/root/.local/node26/bin:$PATH
+  cd /root/ahub-server/app
+  HUB_DATA_DIR=/root/ahub-server/data node apps/server/src/main.ts backup --keep 10
+  git fetch /root/hub-update.bundle master && git merge --ff-only FETCH_HEAD
+  npm ci --no-audit --no-fund && npm run build
+  systemctl restart agent-hub-server
+'
+```
+
+失败时回退：`git reset --hard <旧提交>` → `npm ci && npm run build` → `systemctl restart agent-hub-server`。
+
+**`npm ci` 报 `EAI_AGAIN`**：阿里云默认的 `100.100.2.136/138` DNS 曾整体失效，npm 会把 `node_modules` 清空后卡住。先备份 `/etc/resolv.conf`，临时加 `nameserver 223.5.5.5` 再重试；装完可按需恢复。不要用 `pkill -f "npm ci"`，它会匹配并杀掉自己的 SSH 命令，按 PID 杀。
+
 `scripts/deploy-hub.sh` 的约定：
 
 - 部署前快照数据库；快照失败则不部署
