@@ -142,13 +142,10 @@ export function createConnectorObserveReader(deps: ConnectorObserveDeps): Observ
       if (!run) return null;
       const binding = await deps.store.binding(run.bindingId);
       if (!binding || !(await canRead(binding.agentProjectId, subject))) return null;
-      const requests = (await deps.requests.byWakeKeys([run.id])).filter((item) => item.wakeKey === run.id);
-      const visibleRequests: AgentTaskRequest[] = [];
-      for (const request of requests) if (await canRead(request.projectId, subject)) visibleRequests.push(request);
-      const dispatches = await deps.dispatches.byTaskIds(visibleRequests.flatMap((item) => item.taskId ? [item.taskId] : []));
-      const visibleDispatches: TaskDispatch[] = [];
-      for (const item of dispatches) if (await canRead(item.projectId, subject)) visibleDispatches.push(item);
-      const nodes = await nodesFor(deps, subject, binding, run, visibleRequests, visibleDispatches);
+      const { requests, dispatches } = await related([run], subject);
+      const visibleRequests = requests.filter((item) => item.wakeKey === run.id);
+      const taskIds = new Set(visibleRequests.flatMap((item) => item.taskId ? [item.taskId] : []));
+      const nodes = await nodesFor(deps, subject, binding, run, visibleRequests, dispatches.filter((item) => taskIds.has(item.taskId)));
       const headId = `trigger:${run.id}`;
       return {
         id: `connector:${run.id}`,
