@@ -8,6 +8,27 @@ const row = (id: string, sessionId: string, createdAt: number, over: Partial<Del
   id, sessionId, seq: createdAt, kind: 'prompt', payload: { text: id, parts: [] }, state: 'queued', attempt: 0, nextAt: null, lastError: null, createdAt, updatedAt: createdAt, ...over
 });
 
+test('认领：同一会话并发只放行一条；未送达的队首被重新排队，新的一句不越过', async () => {
+  const db = new DatabaseSync(':memory:');
+  const q = createSqliteDeliveries(db);
+  const [first, second] = await Promise.all([
+    q.claimPrompt(row('a1', 'A', 1, { nextAt: 1 })),
+    q.claimPrompt(row('a2', 'A', 2, { nextAt: 2 }))
+  ]);
+  assert.deepEqual([first.send, second.send].sort(), [false, true]);
+  const pending = await q.pendingFor('A');
+  assert.equal(pending.length, 2);
+  assert.equal(pending.filter((item) => item.nextAt === null).length, 1);
+  await q.save({ ...pending[0]!, state: 'undelivered', nextAt: null });
+  const third = await q.claimPrompt(row('a3', 'A', 3, { nextAt: 3 }));
+  assert.equal(third.send, false);
+  const again = await q.pendingFor('A');
+  assert.equal(again[0]!.state, 'queued');
+  assert.equal(again[0]!.attempt, 0);
+  assert.equal(again.at(-1)!.id, 'a3');
+  assert.equal(again.at(-1)!.nextAt, null);
+});
+
 test('送达队列：每个会话只出队首；未送达挡住后面的；重启把 sending 退回 queued；held 能取回', async () => {
   const db = new DatabaseSync(':memory:');
   const q = createSqliteDeliveries(db);

@@ -12,6 +12,8 @@ import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, startCommand } from './hosting.ts';
+import type { WorkerCommand } from '../ports/node-gateway.ts';
+import type { ProviderProtocol } from '../provider.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
@@ -30,6 +32,8 @@ export interface DeriveCommand {
   readonly actor?: Subject | null;
   /** 要求的能力：只落到这些能力可信的机器上（ADR 0021 §8）。 */
   readonly requires?: readonly string[];
+  /** 派生前已核对的 hub 提供商协议。用来拒绝 agent 不认的协议；不是 hub 模型就不传。 */
+  readonly hubProtocol?: ProviderProtocol;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -59,16 +63,23 @@ export async function deriveSessionUseCase(
   const workspace = chosen ?? (await defaultWorkspaceFor(deps, project.id));
   if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
   const workers = await deps.gateway.status();
+  // 令牌永远不能用本机。先于就绪检查拒绝，避免「未配置模型」把本机拒绝盖成 503。
+  const homeWorker = workspace.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
+  if (homeWorker !== null) {
+    const early = await authorizeWorker(deps.access, command.actor ?? null, homeWorker);
+    if (!early.ok) return early;
+  }
   const placed = placeSession(workers, {
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
     projectWorker: workspace.workerId,
+    model: command.model,
     ...(command.requires?.length ? { requires: command.requires } : {})
   });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
   if (!allowed.ok) return allowed;
-  const model = checkModelOn(workers, placed.value, agentId, command.model);
+  const model = checkModelOn(workers, placed.value, agentId, command.model, command.hubProtocol);
   if (!model.ok) return model;
   const created = deriveSession({
     task,
@@ -83,14 +94,27 @@ export async function deriveSessionUseCase(
 
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
+  const started = await startSavedSession(deps, session, startCommand(session, workspace.path, null, {}));
+  if (!started.ok) return started;
+  await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
+  return ok(session);
+}
 
-  const dispatched = await deps.gateway.dispatch(startCommand(session, workspace.path, null, {}));
+/**
+ * 会话行已经保存。派发 start；失败把状态改成 failed，并且不托管。
+ * 成功后才 hosting.add。调用方若要在保存和派发之间做别的事（例如倒带先 plan），自己留在外面。
+ */
+export async function startSavedSession(
+  deps: Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions'>,
+  session: Session,
+  command: WorkerCommand
+): Promise<Result<Session, DomainError>> {
+  const dispatched = await deps.gateway.dispatch(command);
   if (!dispatched.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
   }
   deps.hosting.add(session.id, session.workerId);
-  await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
   return ok(session);
 }
 
@@ -148,10 +172,16 @@ export async function forkSessionUseCase(
 
   // 分叉要读来源会话的 agent 会话文件，那份文件只在来源的那台机器上：钉死在它上面。
   const workers = await deps.gateway.status();
+  const homeWorker = source.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
+  if (homeWorker !== null) {
+    const early = await authorizeWorker(deps.access, command.actor ?? null, homeWorker);
+    if (!early.ok) return early;
+  }
   const placed = placeSession(workers, {
     agentId,
     requested: source.workerId,
-    projectWorker: source.workerId
+    projectWorker: source.workerId,
+    model: command.model
   });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
@@ -174,14 +204,12 @@ export async function forkSessionUseCase(
   await deps.sessions.save(session);
 
   const { root } = await locationOf(deps, project, session);
-  const dispatched = await deps.gateway.dispatch(
+  const started = await startSavedSession(
+    deps,
+    session,
     startCommand(session, root, { agentSessionRef: source.agentSessionRef, cursor: atSeq }, source.options)
   );
-  if (!dispatched.ok) {
-    await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
-    return err(dispatched.error);
-  }
-  deps.hosting.add(session.id, session.workerId);
+  if (!started.ok) return started;
   await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的最新处（第 ${atSeq} 步）分叉出 ${session.agentId} 会话`);
   return ok(session);
 }

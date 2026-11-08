@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { piProviderLaunch } from './pi-provider.ts';
+import { piProviderLaunch, piSessionModelChoices } from './pi-provider.ts';
 import { ensurePiMcpConfig, piHasBuiltinMcp, piToolEnv } from './pi-mcp.ts';
 import { execProbe } from './exec-probe.ts';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -45,6 +46,9 @@ export class PiSession implements RuntimeSession {
   private readonly onOptions: ((options: readonly RuntimeOption[]) => void) | undefined;
   /** Pi 的失败原因几乎都在 stderr 上（比如模型名有歧义），丢掉它等于把可诊断性丢了。 */
   private lastStderr = '';
+  /** spawn 的 error 事件。工作目录没了时退出码是 libuv 的 -2，单看数字不像失败原因。 */
+  private spawnError: NodeJS.ErrnoException | null = null;
+  private readonly workspaceRoot: string | null;
   /**
    * 事件按顺序推，但一轮结束（agent_settled）时要先问 Pi 这一轮的 entryId 再推 ended（ADR 0028：标识要先于 ended 到 hub）。
    * pump 里不能 await 响应（响应也是 pump 读的），所以推送串成一条链。
@@ -61,11 +65,16 @@ export class PiSession implements RuntimeSession {
     child: ChildProcessWithoutNullStreams,
     modelChoices: readonly string[],
     onOptions?: (options: readonly RuntimeOption[]) => void,
-    onTurnRef?: (turnRef: string) => void
+    onTurnRef?: (turnRef: string) => void,
+    workspaceRoot: string | null = null
   ) {
     this.onTurnRef = onTurnRef;
+    this.workspaceRoot = workspaceRoot;
     this.sessionId = sessionId;
     this.child = child;
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      this.spawnError = error;
+    });
     // 进程先走了再写会有 EPIPE：交给 write 回调 / pending 处理，别让未接的 error 事件打崩 worker
     child.stdin.on('error', () => undefined);
     this.modelChoices = modelChoices;
@@ -121,11 +130,16 @@ export class PiSession implements RuntimeSession {
       await this.tail;
       // 退出码 + 最后一行 stderr 一起进 ended.reason：卡片上要能看出为什么失败。
       const code = this.child.exitCode;
+      const root = this.workspaceRoot;
+      const directoryGone = root !== null && root !== '' && !existsSync(root);
+      // 目录没了时退出码常常是 libuv 的 -2，stderr 可能还有 Pi 自己的说明。两样都留，不把原文吞掉。
       const reason = this.disposed
         ? undefined
-        : [code === null ? 'Pi 进程已退出' : `Pi 退出码 ${code}`, this.lastStderr]
-            .filter((part) => part !== '')
-            .join('：');
+        : directoryGone
+          ? [`工作目录不存在：${root}`, this.lastStderr].filter((part) => part !== '').join('：')
+          : [code === null ? 'Pi 进程已退出' : `Pi 退出码 ${code}`, this.spawnError?.code ?? '', this.lastStderr]
+              .filter((part) => part !== '')
+              .join('：');
       this.queue.push({
         kind: 'ended',
         outcome: this.disposed ? 'stopped' : 'failed',
@@ -483,9 +497,10 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       const session = new PiSession(
         spec.sessionId,
         child,
-        options.models ?? [],
+        piSessionModelChoices(options.models ?? [], spec.provider),
         (reported) => options.onOptions?.(spec.sessionId, reported),
-        options.onTurnRef ? (turnRef) => options.onTurnRef?.(spec.sessionId, turnRef) : undefined
+        options.onTurnRef ? (turnRef) => options.onTurnRef?.(spec.sessionId, turnRef) : undefined,
+        spec.workspaceRoot
       );
 
       if (branch) {

@@ -15,7 +15,9 @@ test('各种路由 format → parse 往返一致', () => {
     { page: 'assets', tab: 'pending', reviewId: 's1' },
     { page: 'project', projectId: 'p1', view: 'canvas', sessionId: null },
     { page: 'project', projectId: 'p1', view: 'list', sessionId: 's9' },
-    { page: 'project', projectId: 'p 中文', view: 'focus', sessionId: 's/1' }
+    { page: 'project', projectId: 'p 中文', view: 'focus', sessionId: 's/1' },
+    { page: 'observe', source: null, id: null },
+    { page: 'observe', source: 'connector', id: 'run/1' }
   ];
   for (const route of routes) {
     const hash = formatRoute(route);
@@ -33,6 +35,11 @@ test('后台：#/admin 默认概览，不认识的分页也回概览', () => {
   assert.deepEqual(parseRoute('#/admin'), { page: 'admin', tab: 'overview' });
   assert.deepEqual(parseRoute('#/admin/zzz'), { page: 'admin', tab: 'overview' });
   assert.deepEqual(parseRoute('#/admin/audit'), { page: 'admin', tab: 'audit' });
+});
+
+test('可观测：列表和一条链', () => {
+  assert.deepEqual(parseRoute('#/observe'), { page: 'observe', source: null, id: null });
+  assert.deepEqual(parseRoute('#/observe/connector/run-1'), { page: 'observe', source: 'connector', id: 'run-1' });
 });
 
 test('bot 页：#/bots[/<项目>]，/new 不算项目之外的段', () => {

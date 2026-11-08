@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 谁说的话、谁做的事：prompt 记下发送人；同一条会话里只有一个人说过话时不标，
@@ -26,7 +27,7 @@ async function setup(page: Page, baseURL: string) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-author-'));
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 作者 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '谁说的' }, headers })).json()) as { id: string };
-  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
   expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '我是本人' }, headers })).status()).toBe(200);
   await page.request.post(`/api/sessions/${session.id}/interrupt`, { headers });
   return { project: project.id, session: session.id };

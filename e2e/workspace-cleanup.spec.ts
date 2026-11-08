@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * ADR 0027 阶段 3：临时工作空间清理，整条真路径——远端 Worker 上真的 git worktree。
@@ -38,7 +39,7 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
   // 假 gh：create 打印链接；view 报「已合并」，head 就是当前 HEAD（squash 合并后 GitHub 的样子）
   writeFileSync(join(bin, 'gh'), `#!/bin/sh\nif [ "$2" = "create" ]; then echo "https://github.com/e2e/demo/pull/51"; exit 0; fi\necho "{\\"number\\":51,\\"url\\":\\"https://github.com/e2e/demo/pull/51\\",\\"state\\":\\"MERGED\\",\\"headRefOid\\":\\"$(git rev-parse HEAD)\\",\\"mergedAt\\":\\"2026-11-01T00:00:00Z\\"}"\n`);
   chmodSync(join(bin, 'gh'), 0o755);
-  const PATH = `${bin}:/usr/local/bin:/usr/bin:/bin`;
+  const PATH = e2eWorkerPath(bin);
   const label = `e2e 清理机器 ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -64,17 +65,20 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
         PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-        WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), WORKER_MODEL_CHECK: '0',
+        WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), WORKER_MODEL_CHECK: '0',
         ACP_AGENTS: JSON.stringify([{ id: 'fakeacp', label: '假 ACP', command: process.execPath, args: [FAKE], listModelsArgs: [FAKE, '--models'] }])
       },
       stdio: 'ignore'
     });
     for (let i = 0; i < 60; i++) {
-      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ id: string; state: string }>;
-      if (workers.some((w) => w.id === workerId && w.state === 'online')) break;
+      const workers = (await (await page.request.get('/api/workers')).json()) as Array<{ id?: string; workerId?: string; state: string }>;
+      if (workers.some((w) => (w.workerId ?? w.id) === workerId && w.state === 'online')) break;
+      if (i === 59) throw new Error('假 ACP worker 没有上线');
       await page.waitForTimeout(500);
     }
-    const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 清理 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers })).json()) as { id: string };
+    const created = await page.request.post('/api/projects', { data: { name: `e2e 清理 ${Date.now().toString(36)}`, rootPath: dir, workerId }, headers });
+    expect(created.ok(), await created.text()).toBe(true);
+    const project = (await created.json()) as { id: string };
     const newTask = async (title: string) => ((await (await page.request.post('/api/tasks', { data: { projectId: project.id, title }, headers })).json()) as { id: string }).id;
     const temp = async (taskId: string) => {
       const r = await page.request.post(`/api/projects/${project.id}/workspaces`, { data: { kind: 'temporary', taskId, workerId }, headers });

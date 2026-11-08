@@ -244,7 +244,9 @@ export const canvasSchema = z.object({
   layout: layoutSchema,
   agents: z.array(agentSchema),
   // 用 lazy 引用：canvasSchema 在 journalEntrySchema 之前定义，直接引会撞 TDZ
-  previews: z.record(z.string(), z.array(z.lazy(() => journalEntrySchema)))
+  previews: z.record(z.string(), z.array(z.lazy(() => journalEntrySchema))),
+  /** 每个会话的第一句提问。最近 24 条预览装不下工具调用时，列表仍靠它认人。 */
+  openings: z.record(z.string(), z.string()).default({})
 });
 
 /** journal 里的附件元数据（没有字节）。 */

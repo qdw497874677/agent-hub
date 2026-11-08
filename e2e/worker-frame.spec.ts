@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 同一台 worker 的会话在画布上一个框：标题是机器名 + 在线状态；拖框标题栏，框里的卡一起走；
@@ -33,7 +34,7 @@ async function setup(page: Page, baseURL: string) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-frame-'));
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 框 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '分框' }, headers })).json()) as { id: string };
-  const derive = async () => ((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string }).id;
+  const derive = async () => ((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string }).id;
   const a = await derive();
   const b = await derive();
   await page.route(`**/api/projects/${project.id}/canvas`, async (route) => {

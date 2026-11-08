@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from './api.ts';
-import { crumbs, FILES_QUERY, shown, decodeText, GIT_LABEL, humanSize, languageOf, touches, watchPaths } from './files-core.ts';
+import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, touches, watchPaths } from './files-core.ts';
 import 'diff2html/bundles/css/diff2html.min.css';
 
 /**
@@ -20,7 +20,7 @@ const fresh = FILES_QUERY;
 const sk = (sessionId: string) => ['files', sessionId] as const;
 
 function problem(error: unknown): string {
-  if (error instanceof RequestFailed && error.status === 503) return 'Worker 离线';
+  if (error instanceof RequestFailed) return filesErrorText(error.status, error.detail.message);
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -73,7 +73,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
   // 回合结束（状态变了）就刷新一遍：agent 刚改过文件
   const lastStatus = useRef(status);
   useEffect(() => {
-    if (lastStatus.current !== status) void client.invalidateQueries({ queryKey: sk(sessionId) });
+    if (lastStatus.current !== status) void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
     lastStatus.current = status;
   }, [status, sessionId, client]);
 
@@ -91,27 +91,28 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
       if (disposed) return;
       source = new EventSource(filesApi.eventsUrl(sessionId, paths));
       source.addEventListener('ready', () => {
-        if (!first) void client.invalidateQueries({ queryKey: sk(sessionId) });
-        // 换订阅（展开/返回）时旧连接已断、新连接未就绪，中间的改动会漏：补拉一次被盯的目录
-        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return k[0] === 'files' && k[1] === sessionId && k[2] === 'list' && paths.includes(String(k[3])); } });
+        if (!first) void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
+        // 换订阅（展开/返回）时旧连接已断、新连接未就绪，中间的改动会漏：补拉一次被盯的目录。
+        // 返回时列表往往已经在读旧目录，不取消的话这次补拉会被丢掉。
+        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return k[0] === 'files' && k[1] === sessionId && k[2] === 'list' && paths.includes(String(k[3])); } }, filesRefetch('list'));
         first = false;
         subscribed.current = true;
       });
       source.addEventListener('changed', (message) => {
         const notice = JSON.parse((message as MessageEvent<string>).data) as { paths: string[]; reset?: boolean };
         if (notice.reset) {
-          void client.invalidateQueries({ queryKey: sk(sessionId) });
+          void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
           return;
         }
-        void client.invalidateQueries({
-          predicate: (q) => {
-            const key = q.queryKey as unknown[];
-            if (key[0] !== 'files' || key[1] !== sessionId) return false;
-            if (key[2] === 'list') return touches(String(key[3]), notice.paths);
-            if (key[2] === 'read' || key[2] === 'diff') return notice.paths.includes(String(key[3]));
-            return key[2] === 'changes';
-          }
-        });
+        const touched = (q: { queryKey: readonly unknown[] }, kinds: readonly string[]) => {
+          const key = q.queryKey;
+          if (key[0] !== 'files' || key[1] !== sessionId || !kinds.includes(String(key[2]))) return false;
+          if (key[2] === 'list') return touches(String(key[3]), notice.paths);
+          if (key[2] === 'read' || key[2] === 'diff') return notice.paths.includes(String(key[3]));
+          return key[2] === 'changes';
+        };
+        void client.invalidateQueries({ predicate: (q) => touched(q, ['list']) }, filesRefetch('list'));
+        void client.invalidateQueries({ predicate: (q) => touched(q, ['read', 'diff', 'changes']) }, filesRefetch('diff'));
       });
       source.addEventListener('error', () => {
         if (source?.readyState !== EventSource.CLOSED) return;

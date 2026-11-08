@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 会话页就是对话（参照 OpenCode web）：从画布点卡片直接进对话；
@@ -21,7 +22,7 @@ async function openFromCanvas(page: Page, baseURL: string, say?: string) {
   const name = `e2e 对话 ${Date.now().toString(36)}`;
   const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '第一个任务，随便聊聊' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const { id } = (await derived.json()) as { id: string };
   if (say) {

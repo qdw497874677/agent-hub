@@ -8,7 +8,10 @@ export const FILES_LIMITS = {
   findResults: 50,
   diffBytes: 512 * 1024,
   watchPoints: 200,
-  requestsPerSecond: 20
+  /** 持续每秒最多这么多。打开改动页再切一轮，同一秒会超过这个数。 */
+  requestsPerSecond: 20,
+  /** 开头允许攒下的次数。检查点页实测同一秒会到 21，20 的整秒桶会把下一轮读成 503。 */
+  requestBurst: 40
 } as const;
 
 /** 相对路径：'' 是根；不许绝对路径、..、NUL、反斜杠，也不许碰 .git。 */

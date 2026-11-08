@@ -108,7 +108,7 @@ export function FocusView({
   const turnRunning = waitingForReply(live, status);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
-  useEffect(() => void queries.invalidateQueries({ queryKey: ['files', session.id, 'changes'] }), [status, session.id, queries]);
+  useEffect(() => void queries.invalidateQueries({ queryKey: ['files', session.id, 'changes'] }, { cancelRefetch: false }), [status, session.id, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
   const changeCount = shown(useQuery({
     ...FILES_QUERY,

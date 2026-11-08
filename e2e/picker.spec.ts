@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { existsSync, mkdirSync } from "node:fs";
 import { currentRun } from "./run-id.ts";
 import { loginByApi } from "./login.ts";
+import { chooseHubModel } from "./hub-model.ts";
 
 const RUN = currentRun();
 const NAME = `picker-${RUN}`;
@@ -77,6 +78,7 @@ async function managedAndCreate(page: Page) {
   await input.press("Control+Enter");
   await expect(picker).toHaveCount(0);
   await expect(panel).toContainText(/sub/);
+  await chooseHubModel(panel);
   await expect(panel.getByRole("button", { name: "开始" })).toBeEnabled();
 }
 

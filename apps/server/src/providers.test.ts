@@ -39,6 +39,8 @@ async function setup(routing: 'direct' | 'hub', upstream: string) {
   const deps = { providers, audit: null, now: () => Date.now() };
   const created = await createProvider(deps, systemSubject('test'), { scope: 'hub', slug: 'gw', name: 'GW', protocol: 'openai-chat', baseUrl: upstream, models: [{ id: 'm-1' }], routing, enabled: true, apiKey: SECRET });
   assert.ok(created.ok);
+  assert.equal(JSON.stringify(created.value).includes(SECRET), false);
+  assert.equal('apiKey' in created.value, false);
   const host = new Map<string, string>([['s1', 'w1']]);
   const wiring = createProviderWiring({
     deps,
@@ -177,6 +179,59 @@ test('两种模式端到端：agent → worker 本机中继 →（hub 中转）�
     hub.close();
     await upstream.close();
   }
+});
+
+test('HTTP 创建、更新、换密钥、列表都不回明文；无 key 或模型对不上不能下发；中转授权仍在', async () => {
+  const KEY = 'sk-test-placeholder-not-real';
+  const providers = createSqliteProviders(new DatabaseSync(':memory:'), randomBytes(32));
+  const deps = { providers, audit: null, now: () => 1 };
+  const wiring = createProviderWiring({
+    deps,
+    projectTeam: async () => null,
+    userTeam: async () => null,
+    hostOf: () => 'w1',
+    testFromWorker: async () => ok({ ok: true, status: 200, message: 'ok', models: [] }),
+    log: () => undefined
+  });
+  const app = new Hono();
+  wiring.install(app, () => systemSubject('test'));
+  const body = {
+    slug: 'cn-glm-flash',
+    name: 'GLM',
+    protocol: 'openai-chat',
+    baseUrl: 'https://open.bigmodel.cn/api/coding/paas/v4',
+    models: ['glm-5.3-flash'],
+    routing: 'direct',
+    scope: 'hub',
+    apiKey: KEY
+  };
+  const created = await app.request('/api/providers', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const createdText = await created.text();
+  assert.equal(created.status, 201);
+  assert.equal(createdText.includes(KEY), false);
+  assert.equal(createdText.includes('"apiKey"'), false);
+  const saved = JSON.parse(createdText) as { id: string; hasKey: boolean };
+  assert.equal(saved.hasKey, true);
+  const updated = await app.request(`/api/providers/${saved.id}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...body, models: [{ id: 'glm-5.3-flash' }] })
+  });
+  const updatedText = await updated.text();
+  assert.equal(updated.status, 200);
+  assert.equal(updatedText.includes(KEY), false);
+  const rotated = await app.request(`/api/providers/${saved.id}/key`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey: KEY }) });
+  assert.equal((await rotated.text()).includes(KEY), false);
+  const listed = await (await app.request('/api/providers')).text();
+  assert.equal(listed.includes(KEY), false);
+  assert.match(listed, /"hasKey":true/);
+  const granted = await wiring.grantFor(start('hub-cn-glm-flash/glm-5.3-flash'));
+  assert.ok(granted.ok && granted.value.kind === 'start_session' && granted.value.provider?.via === 'direct');
+  assert.equal((await wiring.checkModel(systemSubject('test'), 'hub-cn-glm-flash/other-model', 't1')).ok, false);
+  assert.equal((await wiring.checkModel(systemSubject('test'), 'hub-missing/glm-5.3-flash', 't1')).ok, false);
+  const bare = await createProvider(deps, systemSubject('test'), { scope: 'hub', slug: 'nokey', name: 'No', protocol: 'openai-chat', baseUrl: 'https://example.com/v1', models: [{ id: 'm' }], routing: 'direct', enabled: true });
+  assert.ok(bare.ok && bare.value.hasKey === false);
+  assert.equal((await wiring.grantFor({ ...start('hub-nokey/m'), sessionId: 's-nokey' as never })).ok, false);
 });
 
 test('换提供商要新开会话；同一提供商里换模型可以', async () => {

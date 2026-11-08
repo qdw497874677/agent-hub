@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 机器资源（ADR 0014）：
@@ -64,7 +65,7 @@ async function setupCanvas(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 资源 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '资源' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true });
-  const derive = async () => ((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: worker!.agentIds[0], model: '' }, headers })).json()) as { id: string }).id;
+  const derive = async () => ((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: worker!.agentIds[0], model: piModel() }, headers })).json()) as { id: string }).id;
   const a = await derive();
   const b = await derive();
   const now = Date.now();

@@ -64,18 +64,24 @@ interface Located {
 }
 
 export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
-  const buckets = new Map<string, { at: number; count: number }>();
+  const buckets = new Map<string, { tokens: number; updatedAt: number }>();
   const throttle = (subject: Subject | null): Result<void, DomainError> => {
     const key = principalOfSubject(subject)?.user.id ?? 'anonymous';
-    const second = Math.floor(deps.now() / 1000);
-    const bucket = buckets.get(key);
-    if (!bucket || bucket.at !== second) {
-      buckets.set(key, { at: second, count: 1 });
+    const now = deps.now();
+    const burst = FILES_LIMITS.requestBurst;
+    const rate = FILES_LIMITS.requestsPerSecond;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { tokens: burst, updatedAt: now };
+      buckets.set(key, bucket);
       if (buckets.size > 10_000) buckets.clear();
-      return ok(undefined);
     }
-    bucket.count += 1;
-    return bucket.count > FILES_LIMITS.requestsPerSecond ? err(unavailable('请求太频繁，稍后再试')) : ok(undefined);
+    const elapsed = Math.max(0, now - bucket.updatedAt);
+    bucket.tokens = Math.min(burst, bucket.tokens + (elapsed / 1000) * rate);
+    bucket.updatedAt = now;
+    if (bucket.tokens < 1) return err(unavailable('请求太频繁，稍后再试'));
+    bucket.tokens -= 1;
+    return ok(undefined);
   };
 
   async function locate(subject: Subject | null, sessionId: string, opts: { throttle?: boolean } = {}): Promise<Result<Located, DomainError>> {

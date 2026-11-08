@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /** 运行失败（这里是目录不在 Worker 允许的范围里）：对话里有中文原因，输入框回到「发送」，不再挂着「中断」。 */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
@@ -25,7 +26,7 @@ test('运行失败后输入框显示「发送」而不是「中断」', async ({
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '跑不起来的任务' }, headers })).json()) as { id: string };
   // 建完项目再把目录删掉：Worker 起 agent 时进不去，这次运行一定失败
   rmSync(dir, { recursive: true, force: true });
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
   await page.goto(`/#/p/${project.id}/canvas`);
   await page.locator('.react-flow__node-session').getByRole('button', { name: '打开' }).click();
   const log = page.getByRole('log', { name: '对话记录' });

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 test.use({ viewport: { width: 390, height: 844 } });
 
@@ -21,10 +22,10 @@ test('列表视图：按任务分组，手机上每行都有能区分的信息',
   const dir = mkdtempSync(join(tmpdir(), 'e2e-list-'));
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 列表 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '同名任务' }, headers })).json()) as { id: string };
-  const first = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const first = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
   await page.request.post(`/api/sessions/${first.id}/prompt`, { data: { text: '第一条会话：看看日志' }, headers });
   await page.waitForTimeout(1500);
-  const fork = await page.request.post('/api/sessions/fork', { data: { sessionId: first.id, agentId, model: '' }, headers });
+  const fork = await page.request.post('/api/sessions/fork', { data: { sessionId: first.id, agentId, model: piModel() }, headers });
   expect(fork.ok()).toBe(true);
 
   await page.goto(`/#/p/${project.id}`);

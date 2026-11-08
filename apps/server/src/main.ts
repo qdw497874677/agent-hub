@@ -17,6 +17,7 @@ import { serveAssetFetch } from './asset-relay.ts';
 import { createMemorySources } from './memory-sources.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
+import { loadActor, openRoleSession } from './role-session.ts';
 import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
@@ -57,13 +58,10 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   MEMORY_SWEEP_INTERVAL_MS,
   MEMORY_GUIDANCE_VERSION,
   type MemoryGuidance,
-  createTaskUseCase,
   deriveSessionUseCase,
   promptSessionUseCase,
   pumpDeliveries,
   releaseAfterTurn,
-  withAccess,
-  type LoginId,
   sweepTemporaryWorkspacesUseCase,
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
@@ -90,6 +88,7 @@ import {
 } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
+import { createConnectorObserveReader } from './observe-connector.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createGitWorkspace, createLocalFs, readBuildInfo, createWorkspaceBrowser, offlineWorkspaceBrowser } from '@agent-hub/node-gateway';
@@ -229,22 +228,11 @@ const messageBus = createMessageBus({
   tasks: deps.tasks,
   messages: store.messages,
   policy: deps.access,
-  principalOf: async (userId) => {
-    const user = await store.users.byId(userId as UserId);
-    if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
-    return withAccess(store.access, { user, loginId: 'agent-message' as LoginId }, Date.now());
-  },
+  principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
-  spawn: async ({ project, role, actor, title }) => {
-    const task = await createTaskUseCase(deps, { projectId: project.id, title, ownerId: actor.user.id });
-    if (!task.ok) return task;
-    const created = await deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
-    if (created.ok) {
-      await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' })
-        .catch(() => undefined);
-    }
-    return created;
-  }
+  spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, actor, via: 'bot'
+  })
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
 
@@ -257,22 +245,11 @@ const groupChat = createGroupChat({
   groups: store.groups,
   policy: deps.access,
   roles: async (projectId) => (await messageBus.config(projectId)).roles,
-  principalOf: async (userId) => {
-    const user = await store.users.byId(userId as UserId);
-    if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
-    return withAccess(store.access, { user, loginId: 'agent-group' as LoginId }, Date.now());
-  },
+  principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-group'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
-  spawn: async ({ project, role, actor, title }) => {
-    const task = await createTaskUseCase(deps, { projectId: project.id, title, ownerId: actor.user.id });
-    if (!task.ok) return task;
-    const created = await deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
-    if (created.ok) {
-      await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'group' })
-        .catch(() => undefined);
-    }
-    return created;
-  },
+  spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, actor, via: 'group'
+  }),
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
   occupied: async (sessionId) => (await store.messages.deliveredTo(sessionId)).length > 0
@@ -330,18 +307,15 @@ const connectorHub = createConnectorHub({
   spawn: async ({ projectId, agentName, ownerId, title }) => {
     const role = (await messageBus.config(projectId)).roles.find((r) => r.name === agentName);
     if (!role) return err(notFound(`bot @${agentName} 已不存在`));
-    const user = await store.users.byId(ownerId as UserId);
-    if (!user || user.disabledAt !== null || user.deletedAt !== null) return err(forbidden('建这个触发的账号已停用'));
-    const actor = await withAccess(store.access, { user, loginId: 'agent-connector' as LoginId }, Date.now());
-    const task = await createTaskUseCase(deps, { projectId, title, ownerId });
-    if (!task.ok) return task;
-    const created = await deriveSessionUseCase(deps, { taskId: task.value.id, agentId: role.agentId, model: role.model, actor });
-    if (created.ok) {
-      // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去
-      await store.messages.saveSpawn({ sessionId: created.value.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: created.value.id, traceId: `connector:${created.value.id}`, createdAt: Date.now() });
-      await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' }).catch(() => undefined);
-    }
-    return created;
+    const actor = await loadActor(store.users, store.access, ownerId, 'agent-connector');
+    if (!actor) return err(forbidden('建这个触发的账号已停用'));
+    return openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
+      projectId, title, ownerId, agentId: role.agentId, model: role.model, actor, via: 'bot',
+      afterDerive: async (session) => {
+        // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去。先于来历。
+        await store.messages.saveSpawn({ sessionId: session.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: session.id, traceId: `connector:${session.id}`, createdAt: Date.now() });
+      }
+    });
   },
   busy: async (sessionId) => (await store.deliveries.pendingFor(sessionId)).length > 0
     || (await store.messages.deliveredTo(sessionId)).length > 0 || (await store.groups.deliveredTo(sessionId)).length > 0,
@@ -355,11 +329,7 @@ hub.stream.subscribe((frame) => {
 });
 // 调度器（ADR 0032 R3）：task.create 建出的任务排队 → 按上限开任务智能体会话 → 一轮结束经送达队列通知建它的 bot。
 // 只经端口：开会话 / 发消息复用现有派生 + 送达流程；人直接开的会话不经过这里。
-const sessionOwner = async (ownerId: string) => {
-  const user = await store.users.byId(ownerId as UserId);
-  if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
-  return withAccess(store.access, { user, loginId: 'agent-dispatch' as LoginId }, Date.now());
-};
+const sessionOwner = (ownerId: string) => loadActor(store.users, store.access, ownerId, 'agent-dispatch');
 const dispatcher = createDispatcher({
   now: deps.now,
   store: store.dispatches,
@@ -394,7 +364,12 @@ const dispatcher = createDispatcher({
   },
   busy: async (sid) => {
     const s = await deps.sessions.byId(sid as SessionId);
-    return (s ? isBusy(s) : false) || (await store.deliveries.pendingFor(sid)).length > 0;
+    // 与连接器同一组旗标。isBusy 在第一轮 ended 之后经常为假，不能单独当互斥。
+    // 群 / P2P 已经写成 delivered 的投递，调度不能再往同一条会话插一句。
+    return (s ? isBusy(s) : false)
+      || (await store.deliveries.pendingFor(sid)).length > 0
+      || (await store.messages.deliveredTo(sid as SessionId)).length > 0
+      || (await store.groups.deliveredTo(sid as SessionId)).length > 0;
   },
   notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
   abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
@@ -495,11 +470,7 @@ const memoryService = createMemoryService({
   ...memoryRegistry.build({ index: store.memory.index, store: store.memory.store }),
   audit: store.audit,
   access: deps.access,
-  principalOf: async (userId) => {
-    const user = await store.users.byId(userId as UserId);
-    if (!user || user.disabledAt !== null || user.deletedAt !== null) return null;
-    return withAccess(store.access, { user, loginId: 'agent-memory' as LoginId }, Date.now());
-  },
+  principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-memory'),
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId))?.role ?? null,
   checkDistillModel: async (principal, projectId, model) => {
     const checked = await checkProviderModel({ providers: providerRepo }, principal, model, await projectTeamOf(projectId));
@@ -882,7 +853,15 @@ const envNumber = (name: string): number | undefined => {
   return value === null || value === undefined ? undefined : Number(value);
 };
 
-const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard, 
+const observeEnabled = readEnv('OBSERVE') !== '0';
+const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
+  observe: {
+    enabled: observeEnabled,
+    readers: observeEnabled ? [createConnectorObserveReader({
+      now: deps.now, projects: deps.projects, sessions: deps.sessions, tasks: deps.tasks,
+      deliveries: store.deliveries, store: store.connectors, requests: store.agentTasks, dispatches: store.dispatches, policy: deps.access
+    })] : []
+  }, 
   auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {

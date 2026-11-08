@@ -170,6 +170,28 @@ test('对话：开会话 → prompt（作者带 via）→ events / stream；审�
   await reader.cancel().catch(() => undefined);
 });
 
+test('令牌打本机：机器没配原生模型也先 403，不把拒绝说成未配置模型', async () => {
+  const { david, mint, api, world } = await setup();
+  world.workers.splice(0, world.workers.length, {
+    workerId: 'local',
+    label: '本机',
+    origin: 'local',
+    state: 'online',
+    agentIds: ['fake'],
+    agentModels: [{ agentId: 'fake', models: [], defaultModel: '', readiness: { state: 'unavailable', reason: '未配置模型' }, providers: ['openai-chat'] }]
+  });
+  const call = api((await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token);
+  const project = (await call('/projects', post({ name: 'p' }))).body;
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
+  const workspace = newWorkspace({ projectId: project.id, workerId: null, path: '/tmp/x', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  const derived = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: '', workspaceId: workspace.value.id }));
+  assert.equal(derived.status, 403, JSON.stringify(derived.body));
+  assert.equal(JSON.stringify(derived.body).includes('未配置模型'), false);
+  assert.equal(world.dispatched.length, 0);
+});
+
 test('worker.use_local 永远授不出去：hub 管理员的令牌也不能在本机开会话', async () => {
   const { david, mint, api, world } = await setup();
   const call = api((await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token);

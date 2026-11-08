@@ -138,6 +138,7 @@ interface OutputSink { id: string; deliver(binding, ev): Promise<void> }
 ### R5 面板
 - 每次触发记一条：建了几个、跳过几个、每一条的原因。
 - 显示今日配额用量和超额待批准列表。
+- 呈现放进统一的只读「可观测」模块，连接器触发是第一种来源。见 [ADR 0033](0033-connector-dashboard.md)。本节的架构和上面两条范围不变。文末旧草图保留。
 
 ## 数据模型草图
 

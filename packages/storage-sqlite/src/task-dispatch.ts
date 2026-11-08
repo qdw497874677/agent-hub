@@ -35,6 +35,11 @@ export function createSqliteTaskDispatch(db: DatabaseSync): TaskDispatchStore {
     async bySession(s) { return one('SELECT * FROM task_dispatch WHERE session_id = ? ORDER BY created_at DESC LIMIT 1', s); },
     async active() { return many("SELECT * FROM task_dispatch WHERE state IN ('queued','running') ORDER BY created_at"); },
     async unnotified() { return many("SELECT * FROM task_dispatch WHERE notified = 0 AND state IN ('done','failed') ORDER BY updated_at"); },
-    async recent(a, limit) { return many("SELECT * FROM task_dispatch WHERE account_id = ? ORDER BY CASE WHEN state IN ('queued','running') THEN 0 ELSE 1 END, updated_at DESC LIMIT ?", a, limit); }
+    async recent(a, limit) { return many("SELECT * FROM task_dispatch WHERE account_id = ? ORDER BY CASE WHEN state IN ('queued','running') THEN 0 ELSE 1 END, updated_at DESC LIMIT ?", a, limit); },
+    async byTaskIds(ids) {
+      if (ids.length === 0) return [];
+      const marks = ids.map(() => '?').join(',');
+      return many(`SELECT * FROM task_dispatch WHERE task_id IN (${marks}) ORDER BY created_at`, ...ids);
+    }
   };
 }

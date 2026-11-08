@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { startMockRegistry } from '../packages/node-gateway/src/testing/mock-npm-registry.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 
@@ -69,7 +70,7 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     const pairing = await page.request.post('/api/workers/pairing', { data: {}, headers });
     const code = ((await pairing.json()) as { code: string }).code;
     const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-    const PATH = `${process.env['HOME']}/.local/bin:/usr/local/bin:/usr/bin:/bin`;
+    const PATH = e2eWorkerPath(`${process.env['HOME'] ?? ''}/.local/bin`, { agents: true });
     const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: `e2e 组件机器 ${run}` }, encoding: 'utf8' });
     expect(enrolled.status).toBe(0);
     const [wid = '', credential = ''] = enrolled.stdout.trim().split('\n');
@@ -77,7 +78,7 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     worker = spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
         PATH, HOME: process.env['HOME'] ?? state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote',
-        WORKER_LABEL: `e2e 组件机器 ${run}`, WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: runtimesDir,
+        WORKER_LABEL: `e2e 组件机器 ${run}`, WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: runtimesDir,
         npm_config_registry: `${registry.url}/`, npm_config_cache: join(state, 'npm-cache')
       },
       stdio: 'ignore'

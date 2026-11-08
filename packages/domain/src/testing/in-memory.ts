@@ -217,6 +217,9 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
     async tail(sessionId, limit) {
       return (journal.get(sessionId) ?? []).slice(-limit);
     },
+    async firstPrompt(sessionId) {
+      return (journal.get(sessionId) ?? []).find((entry) => entry.event.kind === 'prompt') ?? null;
+    },
     async linkEntry() {},
     async entryIdAt() {
       return null;
@@ -1015,6 +1018,15 @@ export function inMemoryDeliveries(): import('../ports/delivery-queue.ts').Deliv
   return {
     rows,
     async save(d) { rows.set(d.id, d); },
+    async claimPrompt(incoming) {
+      const open = pendingFor(incoming.sessionId);
+      const head = open[0];
+      if (head?.state === 'undelivered') rows.set(head.id, { ...head, state: 'queued', attempt: 0, nextAt: incoming.updatedAt, updatedAt: incoming.updatedAt });
+      const ahead = pendingFor(incoming.sessionId).length > 0;
+      const stored = { ...incoming, state: 'queued' as const, nextAt: ahead ? null : incoming.nextAt };
+      rows.set(stored.id, stored);
+      return { delivery: stored, send: !ahead };
+    },
     async byId(id) { return rows.get(id) ?? null; },
     async pendingFor(sid) { return pendingFor(sid); },
     async due(now) {

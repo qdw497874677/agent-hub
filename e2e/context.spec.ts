@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * ADR 0020 · 上下文策略 P1：会话详情显示生效策略（默认 compaction / 运行时原生）、估算用量和 L1 缺口；
@@ -28,7 +29,7 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
   test.skip(!agentId, '这台机器上没有可用的 agent');
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 上下文 ${Date.now().toString(36)}`, rootPath: mkdtempSync(join(tmpdir(), 'e2e-ctx-')) }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '上下文' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const sid = ((await derived.json()) as { id: string }).id;
 

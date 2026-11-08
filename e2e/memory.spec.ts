@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /** 记忆页（ADR 0019 · P1）：手机宽度下能看、能记、能忘；密钥样的内容写不进去；项目写入模式能切。 */
 test.use({ viewport: { width: 390, height: 844 } });
@@ -72,7 +73,7 @@ test('会话第一轮注入一次静态记忆引导（审计可见），第二�
   expect(made.ok()).toBe(true);
   const project = (await made.json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '引导' }, headers })).json()) as { id: string };
-  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
   const guided = async () => {
     const rows = (await (await page.request.get('/api/admin/audit?action=memory.guidance')).json()) as Array<Record<string, unknown>>;
     return rows.filter((r) => JSON.stringify(r).includes(session.id));

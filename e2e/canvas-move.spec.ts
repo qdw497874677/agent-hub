@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 画布怎么动：卡片里的对话区只管滚动（nowheel/nopan/nodrag），
@@ -26,7 +27,7 @@ async function canvasWithSession(page: Page, baseURL: string) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-move-'));
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 移动 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '移动' }, headers })).json()) as { id: string };
-  await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers });
+  await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
   await page.goto(`/#/p/${project.id}/canvas`);
   await expect(page.locator('.react-flow__node-session')).toHaveCount(1);
 }

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * 等我处理（ADR 0031 P4）：显式提问 → 等回答；问号结尾 → 可能在等你；这一轮 commit → 等审查；失败 → 失败了。
@@ -19,7 +20,7 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
   const code = ((await (await page.request.post('/api/workers/pairing', { data: {}, headers })).json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const label = `e2e 待办机器 ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -29,7 +30,7 @@ test('等我处理：四种要人的状态上榜，角标和标题带数，稍�
   const worker: ChildProcess = spawn(process.execPath, ['apps/worker/src/main.ts'], {
     env: {
       PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-      WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
+      WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
     },
     stdio: 'ignore'
   });

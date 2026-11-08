@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import type { APIRequestContext, Page } from '@playwright/test';
+import { ensureHubProvider } from './hub-model.ts';
 
 export const TEST_EMAIL = 'test@agent-hub.local';
 /** server 启动时生成、写进 e2e 数据目录的测试账号密码。 */
@@ -10,6 +11,7 @@ export const testPassword = (): string => readFileSync(`${process.env['E2E_DATA_
 export async function loginByApi(page: Page): Promise<void> {
   const response = await page.request.post('/api/auth/login', { data: { email: TEST_EMAIL, password: testPassword() } });
   if (!response.ok()) throw new Error(`测试账号登录失败：HTTP ${response.status()}`);
+  await ensureHubProvider(page);
 }
 
 const OUTBOX = `${process.env['E2E_DATA_DIR'] ?? '/tmp/agent-hub-e2e-data'}/outbox.jsonl`;

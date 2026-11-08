@@ -161,6 +161,7 @@ function TriggerRow({ b, listKey }: { b: BindingDto; listKey: unknown[] }) {
           {b.pausedReason ? '已暂停' : b.enabled ? `下次 ${time(b.nextRunAt)}` : '已停用'}
         </span>
         <div className="ml-auto flex gap-1">
+          <a className={SMALL} data-testid="trigger-observe" href={formatRoute(b.lastRun ? { page: 'observe', source: 'connector', id: b.lastRun.id } : { page: 'observe', source: null, id: null })}>可观测</a>
           <button className={SMALL} data-testid="trigger-runs" onClick={() => setOpen(!open)}>{open ? '收起' : '记录'}</button>
           <button className={SMALL} data-testid="trigger-toggle" disabled={toggle.isPending} onClick={() => toggle.mutate()}>{b.enabled ? '暂停' : '恢复'}</button>
           <button className={DANGER} data-testid="trigger-delete" disabled={remove.isPending} onClick={() => remove.mutate()}>删除</button>

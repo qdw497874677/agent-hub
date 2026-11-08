@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * 送达状态（ADR 0031 P2）：Worker 断开时发的消息在气泡下显示「未送达 · 第 n 次重试 · 立即重试 · 撤回」，
@@ -19,7 +20,7 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
   const code = ((await (await page.request.post('/api/workers/pairing', { data: {}, headers })).json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const label = `e2e 送达机器 ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -30,7 +31,7 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
     spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
         PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-        WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
+        WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
       },
       stdio: 'ignore'
     });

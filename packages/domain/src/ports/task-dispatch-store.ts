@@ -40,4 +40,5 @@ export interface TaskDispatchStore {
   unnotified(): Promise<TaskDispatch[]>;
   /** 某账号最近的（UI）。 */
   recent(accountId: string, limit: number): Promise<TaskDispatch[]>;
+  byTaskIds(taskIds: readonly string[]): Promise<TaskDispatch[]>;
 }

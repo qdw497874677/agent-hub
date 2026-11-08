@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * 任务来历（ADR 0031 P3）：网页开的会话顶部有一行可折叠的「来历」（发起人 · 网页 · 权限 · 时间）；
@@ -19,7 +20,7 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
   const code = ((await (await page.request.post('/api/workers/pairing', { data: {}, headers })).json()) as { code: string }).code;
   const hubUrl = `${baseURL!.replace(/^http/, 'ws')}/worker`;
-  const PATH = '/usr/local/bin:/usr/bin:/bin';
+  const PATH = e2eWorkerPath();
   const label = `e2e 来历机器 ${Date.now().toString(36)}`;
   const enrolled = spawnSync(process.execPath, ['apps/worker/src/enroll.ts'], { env: { PATH, HUB_URL: hubUrl, HUB_PAIR: code, WORKER_LABEL: label }, encoding: 'utf8' });
   expect(enrolled.status).toBe(0);
@@ -30,7 +31,7 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
     spawn(process.execPath, ['apps/worker/src/main.ts'], {
       env: {
         PATH, HOME: state, HUB_URL: hubUrl, HUB_WORKER_CREDENTIAL: credential, WORKER_ID: workerId, WORKER_ORIGIN: 'remote', WORKER_LABEL: label,
-        WORKER_ROOTS: '/tmp', WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
+        WORKER_ROOTS: e2eWorkerRoots(), WORKER_STATE_DIR: state, WORKER_RUNTIMES_DIR: join(state, 'runtimes'), ACP_AGENTS: JSON.stringify(agents)
       },
       stdio: 'ignore'
     });

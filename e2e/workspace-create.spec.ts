@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
+import { chooseHubModel } from './hub-model.ts';
 
 const RUN = currentRun();
 const NAME = `ws-create-${RUN}`;
@@ -52,6 +53,7 @@ test('新建持久工作空间：先选目录（可就地新建文件夹），�
 
     await expect(run.getByText('新建持久工作空间', { exact: false }).last()).toBeVisible();
     await expect(run).toContainText(folder);
+    await chooseHubModel(run);
     await expect(start).toBeEnabled();
     if (SHOTS) await page.screenshot({ path: join(SHOTS, `workspace-create-ready-${tag}.png`) });
     await start.click();

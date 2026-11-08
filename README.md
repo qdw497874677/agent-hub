@@ -171,7 +171,7 @@ npm run e2e    # Playwright：真浏览器 + 真 agent，从建项目到模型�
 
 `npm run check` 是三个零依赖脚本：domain 纯净性、包间 import 边界、端口签名不许出现 `sqlite`/`zod`/`Row`/`Request` 等实现细节。它们挡的是「架构在三个月后自己腐化」这件事。
 
-用系统 chromium 跑 e2e（不下载 Playwright 自带浏览器），路径写死在 `playwright.config.ts` 的 `launchOptions.executablePath`。
+用系统 chromium 跑 e2e（不下载 Playwright 自带浏览器），路径写死在 `playwright.config.ts` 的 `launchOptions.executablePath`。在已有 hub 的机器上跑整套时，用独立家目录、数据目录和端口，见 [`docs/testing/isolated-e2e.md`](docs/testing/isolated-e2e.md)。Hub 模型这条验收的命令和交接见 [`docs/testing/hub-glm-e2e.md`](docs/testing/hub-glm-e2e.md)、[`docs/testing/pr211-handoff.md`](docs/testing/pr211-handoff.md)。
 
 ## 文档
 

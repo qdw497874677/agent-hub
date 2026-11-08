@@ -262,6 +262,10 @@ test('令牌：权限是本人权限和 scopes 的交集', () => {
 test('令牌：hub 级、team.roles、本机 Worker 永远授不出去，哪怕全部 scopes、哪怕集群管理员', () => {
   const all = permissionsOf([...API_SCOPES]);
   for (const permission of TOKEN_NEVER_GRANTABLE) assert.ok(!all.includes(permission), permission);
+  assert.equal(permissionsOf(['sessions:write']).includes('provider.use'), false);
+  assert.ok(permissionsOf(['providers:use']).includes('provider.use'));
+  assert.ok(permissionsOf(['providers:use']).includes('provider.read'));
+  assert.equal(permissionsOf(['providers:use']).includes('provider.manage'), false);
   const token = viaToken(david, [...API_SCOPES]);
   assert.equal(can(token, 'worker.use', local, ctx), false);
   assert.equal(can(token, 'worker.use', { kind: 'worker', id: 'w', teamId: 'hub', createdBy: 'david' }, ctx), true);

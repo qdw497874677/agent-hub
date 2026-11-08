@@ -1,4 +1,18 @@
+import { mkdirSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
+import { serverEnv } from './e2e/server-env.ts';
+
+/**
+ * Chrome 的单实例套接字放在 $TMPDIR 下，路径加上结尾的 NUL 不能超过 108 字节。
+ * 隔离运行若把 TMPDIR 指到很长的工作目录，浏览器会在启动时退出。
+ * 只改这个 Playwright 进程的 TMPDIR，不改用户 shell 的全局设置；已经够短就保持原值。
+ */
+const chromeSocketTail = '/com.google.Chrome.XXXXXX/SingletonSocket';
+const inheritedTmp = process.env.TMPDIR ?? '';
+if (inheritedTmp === '' || Buffer.byteLength(inheritedTmp) + Buffer.byteLength(chromeSocketTail) >= 108) {
+  mkdirSync('/tmp/ah-e2e', { recursive: true });
+  process.env.TMPDIR = '/tmp/ah-e2e';
+}
 
 const port = Number(process.env['E2E_PORT'] ?? 7896);
 // 同机并行跑两套 e2e 时用 E2E_PORT / E2E_DATA_DIR 隔开
@@ -31,8 +45,9 @@ export default defineConfig({
     url: `http://127.0.0.1:${port}/api/health`,
     reuseExistingServer: false,
     timeout: 60_000,
+    // serverEnv() 把密钥名设成 undefined。Playwright 会先展开 process.env，delete 掉的名字会被重新继承。
     env: {
-      ...process.env,
+      ...serverEnv(),
       HUB_PORT: String(port),
       HUB_DATA_DIR: dataDir,
       // 组件安装 e2e 的假 npm registry（e2e/components.spec.ts 在这个端口上起）
@@ -42,6 +57,8 @@ export default defineConfig({
       HUB_SPAWN_WORKER: '1',
       // 整套 e2e 在一个服务里登录十几次，放宽登录限流，免得后面的用例吃 429
       HUB_LOGIN_RATE_MAX: '1000',
+      // 52 条共用一个回环地址。生产默认仍是 10 次 / 10 分钟，这里只放宽测试进程。
+      HUB_ENROLL_RATE_MAX: '1000',
       HUB_MAIL_RATE_MAX: '1000',
       // 发信走日志模式，同时把信逐行写进 outbox：用例从这里拿验证 / 重置链接
       HUB_MAIL_PROVIDER: 'log',

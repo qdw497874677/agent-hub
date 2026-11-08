@@ -5,7 +5,7 @@ import { asAgentId } from '../ids.ts';
 import { available, capabilityMatrix } from '../capability.ts';
 import { inMemoryDeps, inMemoryDeliveries } from '../testing/in-memory.ts';
 import { ok, err } from '../result.ts';
-import { conflict } from '../errors.ts';
+import { conflict, unavailable } from '../errors.ts';
 import type { TurnCheckpoint } from '../ports/workspace-browser.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
@@ -240,4 +240,20 @@ test('原生分叉等结果期间 hub 重启：交接摘要落在送达队列里
   const brief = w.dispatched.slice(before).find((c) => c.kind === 'prompt');
   assert.ok(brief?.kind === 'prompt' && /第一件事/.test(brief.text));
   assert.equal([...deliveries.rows.values()].filter((d) => d.state === 'held').length, 0);
+});
+
+test('从这里重来：开会话失败则新会话是 failed，且不托管', async () => {
+  const w = await world();
+  const liveBefore = w.deps.hosting.live.size;
+  w.deps.gateway.dispatch = async (command) => {
+    if (command.kind === 'start_session' && command.sessionId !== w.sid) return err(unavailable('没有 worker'));
+    return ok(undefined);
+  };
+  const out = await w.svc.rewind(null, w.sid, w.seqs[1]!, false);
+  assert.equal(out.ok, false);
+  if (!out.ok) assert.equal(out.error.message, '没有 worker');
+  const created = (await w.deps.sessions.listAll()).find((session) => session.id !== w.sid);
+  assert.equal(created?.status, 'failed');
+  assert.equal(w.deps.hosting.live.has(created!.id), false);
+  assert.equal(w.deps.hosting.live.size, liveBefore);
 });

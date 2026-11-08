@@ -6,7 +6,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import type { SessionEvent, SessionId, StartSpec, TaskId } from '@agent-hub/domain';
+import type { RuntimeSession, SessionEvent, SessionId, StartSpec, TaskId } from '@agent-hub/domain';
 import { createHermesRuntime } from './hermes-runtime.ts';
 
 /**
@@ -45,9 +45,11 @@ test('真 Hermes：批准卡 拒绝 / 允许', { skip: process.env['HERMES_LIVE'
   const baseUrl = `http://127.0.0.1:${(model.address() as AddressInfo).port}/v1`;
   const logs: string[] = [];
   const runtime = createHermesRuntime({ root, log: (m) => logs.push(m), bootTimeoutMs: 90_000 });
+  let session: RuntimeSession | null = null;
+  try {
   const started = await runtime.start({ sessionId: 'appr-1' as SessionId, taskId: 't' as TaskId, workspaceRoot, resume: null, options: {}, provider: { baseUrl, token: 'local-fake', models: [{ id: 'fake-1', name: 'fake-1' }] } } as unknown as StartSpec);
   assert.ok(started.ok, `起不来：${started.ok ? '' : started.error.message}\n${logs.join('\n')}`);
-  const session = started.value;
+  session = started.value;
   const it = session.events()[Symbol.asyncIterator]();
   const next = async (until: (e: SessionEvent) => boolean, ms: number) => {
     const deadline = Date.now() + ms;
@@ -72,7 +74,9 @@ test('真 Hermes：批准卡 拒绝 / 允许', { skip: process.env['HERMES_LIVE'
       assert.equal(existsSync(victim), decision === 'deny', `${decision} 之后 victim ${existsSync(victim) ? '还在' : '没了'}`);
     }
   } finally {
-    await session.dispose();
+    await session?.dispose();
+  }
+  } finally {
     model.close();
   }
 });

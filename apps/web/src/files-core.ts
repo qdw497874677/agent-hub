@@ -7,6 +7,26 @@
  */
 export const FILES_QUERY = { retry: false, gcTime: 10 * 60_000, staleTime: 0, refetchOnWindowFocus: false } as const;
 
+/**
+ * 目录列表必须丢掉进行中的旧结果再读。返回时文件已经建好，但请求是在那之前发出的，
+ * 再碰上「有请求在飞就不再读」就会一直显示旧目录。
+ * diff 和改动数正在读时不能取消，否则切轮次会停在空表。
+ */
+export function filesRefetch(kind: string): { cancelRefetch: boolean } {
+  return { cancelRefetch: kind === 'list' };
+}
+
+/**
+ * 文件接口的 503。只有正文写明这台 Worker 不在线，才收成「Worker 离线」。
+ * 限流、超时（没有及时回复）、通道尚未就绪、git 自己的失败都留原文。
+ * 这些都是 503，收成同一句会把「机器断了」和「还在、只是没及时回」混在一起。
+ */
+export function filesErrorText(status: number, message: string | undefined): string {
+  const text = typeof message === 'string' ? message : '';
+  if (status === 503 && text.includes('不在线')) return 'Worker 离线';
+  return text;
+}
+
 /** 有错误就不给数据：离线显示离线，不拿缓存冒充当前。 */
 export function shown<Q extends { data?: unknown; error: unknown }>(query: Q): Q['data'] | undefined {
   return query.error ? undefined : query.data;

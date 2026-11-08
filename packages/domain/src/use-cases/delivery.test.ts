@@ -41,6 +41,35 @@ async function world() {
   return { deps, deliveries, sent, sid: session.value.id, online: () => (offline = false), tick: (ms: number) => (clock += ms) };
 }
 
+test('并发两句：只有先认领的那条派给 worker，另一条停在 queued，两句都留在 journal', async () => {
+  const w = await world();
+  w.online();
+  let pendingEntered = 0;
+  const innerPending = w.deliveries.pendingFor.bind(w.deliveries);
+  let releaseFirst: (() => void) | null = null;
+  w.deliveries.pendingFor = async (sessionId) => {
+    pendingEntered += 1;
+    if (pendingEntered === 1) await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    else releaseFirst?.();
+    return innerPending(sessionId);
+  };
+  const [first, second] = await Promise.all([
+    promptSessionUseCase(w.deps, { sessionId: w.sid, text: '先' }),
+    promptSessionUseCase(w.deps, { sessionId: w.sid, text: '后' })
+  ]);
+  assert.ok(first.ok && second.ok);
+  assert.equal(w.sent.length, 1, 'worker 只收到队首');
+  assert.equal(pendingEntered, 0, '认领不能拆成 pendingFor 再 save');
+  const rows = await w.deliveries.recent(w.sid, 10);
+  assert.equal(rows.length, 2);
+  const waiting = rows.find((row) => row.state === 'queued');
+  assert.ok(waiting);
+  assert.equal(waiting.attempt, 0);
+  assert.equal(waiting.nextAt, null);
+  const events = await w.deps.sessions.eventsAfter(w.sid, 0 as never);
+  assert.deepEqual(events.filter((event) => event.event.kind === 'prompt').map((event) => event.event.kind === 'prompt' ? event.event.text : ''), ['先', '后']);
+});
+
 test('离线时不再当场失败：进队列按退避重试，机器回来后送达并带 deliveryId', async () => {
   const w = await world();
   const out = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '你好' });

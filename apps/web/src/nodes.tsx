@@ -216,10 +216,11 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         document.body,
       ) : null}
       <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
-      <header className="card-drag-zone mb-2 flex cursor-grab touch-none select-none items-center justify-between gap-2">
-        <div className="flex items-baseline gap-2 overflow-hidden">
-          {/* 拖动把手：卡片里的对话区只管滚动，移动卡片按住顶栏（或这个把手）拖 */}
-          <span aria-hidden title="按住顶栏拖动卡片" data-testid="card-drag-handle" className="shrink-0 cursor-grab select-none text-meta text-tertiary">
+      <header className="card-drag-zone mb-2 flex min-h-11 cursor-grab touch-none select-none items-center justify-between gap-2">
+        <div className="flex min-w-0 items-baseline gap-2 overflow-hidden">
+          {/* 拖动把手：卡片里的对话区只管滚动，移动卡片按住顶栏（或这个把手）拖。
+              390px 上顶栏量到约 12px 高，把手约 4×8 且盒子在顶栏边框外。加高后单指按中线仍在拖动区。 */}
+          <span aria-hidden title="按住顶栏拖动卡片" data-testid="card-drag-handle" className="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center cursor-grab select-none text-meta text-tertiary">
             ⠿
           </span>
           <span className="shrink-0 text-head text-primary">{agentLabel}</span>
