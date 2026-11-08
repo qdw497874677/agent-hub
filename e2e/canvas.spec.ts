@@ -117,6 +117,9 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await sessionNode(page).getByRole('button', { name: '打开' }).click();
   // 收窄到对话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
   await expect(page.getByRole('log', { name: '对话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
+  // 输入框上方贴着运行时报的上下文占用；Pi 在 agent_settled 后会补一条 get_session_stats。
+  await expect(page.getByTestId('context-meter')).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByTestId('context-meter')).toHaveAttribute('title', /上下文：.*token/);
   await expect(page.getByRole('button', { name: '返回' })).toBeVisible();
   // 专注对话里画布不在了：整屏只有这一条会话
   await expect(page.locator('.react-flow__node-session')).toHaveCount(0);
@@ -278,8 +281,13 @@ test('会话卡片能改模型与思考强度，改完不回弹', async ({ page 
   const card = sessionNode(page);
   const model = card.getByLabel('模型');
   await expect(model).toBeVisible();
-  // 清单是 agent 报的，所以它必须至少有一个候选
-  expect(await model.locator('option').count()).toBeGreaterThan(0);
+  // 模型多时是可搜索选择器（按钮 + 弹层）；清单是 agent 报的，必须至少有一个候选
+  await model.click();
+  const sheet = page.getByRole('dialog', { name: '选择模型' });
+  await expect(sheet).toBeVisible();
+  expect(await sheet.getByRole('option').count()).toBeGreaterThan(0);
+  await page.keyboard.press('Escape');
+  await expect(sheet).toBeHidden();
 
   const thinking = card.getByLabel('思考强度');
   if (await thinking.count()) {

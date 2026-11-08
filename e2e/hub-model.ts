@@ -91,6 +91,7 @@ export async function chooseHubModel(dialog: Locator): Promise<void> {
   }
   await control.click();
   const sheet = dialog.page().getByRole('dialog', { name: '选择模型' });
-  await sheet.getByLabel('搜索模型').fill(model);
-  await sheet.getByRole('option', { name: model }).click();
+  await sheet.getByRole('combobox').fill(model);
+  const modelId = model.slice(model.indexOf('/') + 1);
+  await sheet.getByRole('option').filter({ hasText: modelId }).first().click();
 }
