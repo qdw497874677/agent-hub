@@ -26,7 +26,7 @@ test('建群：限额越界 400；没主持人时贴系统行；停止后成员�
   const w = await world(page, baseURL!);
   const roles = await page.request.put(`/api/projects/${w.project}/messaging`, {
     headers: w.headers,
-    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: piModel() }, { name: 'critic', agentId: w.agentId ?? 'grok', model: piModel() }], limits: {} }
+    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: '' }, { name: 'critic', agentId: w.agentId ?? 'grok', model: '' }], limits: {} }
   });
   expect(roles.ok(), await roles.text()).toBe(true);
   const tooMany = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: ['writer'], limits: { maxRounds: 6 } } });

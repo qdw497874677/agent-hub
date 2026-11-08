@@ -42,15 +42,21 @@ npm run e2e -- --workers=1 --reporter=line,json
 
 ## 哪些路径会带上这个模型
 
-- API 派生：在线 worker 的真 Pi（`model: piModel()`）。包括会发问的画布历史、文件、列表、真对话、OpenAPI 除外。
+- API 派生：在线 worker 的真 Pi（`model: piModel()`）。包括会发问的画布历史、文件、列表、真对话。开放 API 的远程会话也传 `piModel()`，但令牌要另带 `providers:use`。本机拒绝那条仍传空模型。
 - 分叉：`list-view` 的 fork 同样带 `piModel()`。
-- 群和 agent 消息：角色上的 `model` 字段写成 `piModel()`。这是产品本来就有的字段。
+- 群和 agent 消息：真要 Pi 回话的角色，`model` 字段写成 `piModel()`。这是产品本来就有的字段。专门断言「没写模型的主持人应 400」的那组角色仍是空模型。
 - 画布和「新建持久工作空间」：点「开始」之前用 `#derive-model` 选中。清单不超过 8 个时是原生 `<select>`；更多时打开「选择模型」搜索。没有原生模型时列表里只有这一项。
 
-## 产品缺口
+## 产品边界
 
-`POST /openapi/v1/sessions` 的令牌 scope `sessions:write` 不含 `provider.use`。所以开放 API 那条即使用 `model: hub-cn-glm-flash/glm-5.3-flash` 也会在权限上被拒。用例仍传空模型，避免把一次权限拒绝伪装成模型选择成功。没有原生模型时，这条远程真对话不能走 Hub GLM。
+开放 API 要选用 hub 模型，令牌必须另带 `providers:use`。它只对应 `provider.use`，没有并进 `sessions:write`。不勾选时，带 `hub-<标识>/<模型>` 的开会话会被拒绝。设置了 `E2E_HUB_MODEL` 时，建令牌会多勾「使用模型提供商」，远程那条会话才传这个模型。未设置时令牌和模型都和以前一样。
 
-`messages-entry` 和 `perms` 里写死的 `agentId: 'grok'` 仍是空模型。那不是 Pi。
+令牌打本机 Worker 仍然先 403。机器没配原生模型时，不再把这次拒绝说成 503「未配置模型」。真的缺运行时、检测失败，仍然拒绝。
+
+画布在「未配置模型」但已经有同协议 hub 模型时，可以先选这台机器和工作空间，再在模型控件里选 hub 模型。空模型不会被改成 hub 默认，「开始」在没选模型时仍然是灰的。
+
+`messages-entry` 和 `perms` 里写死的 `agentId: 'grok'` 仍是空模型。那不是 Pi。建群那条「主持人必须显式带模型」的负例也仍是空模型。
 
 假 ACP（`fakeacp`、`fakefork`）和 Hermes 自建的 `hub-<当次 slug>/m-1` 不读 `E2E_HUB_MODEL`。
+
+Hermes 在全新 `HERMES_HOME` 里若先装 Python 依赖并以退出码 75 要求再启动，网关只再拉起一次。安装失败再退出 75 就停，不转圈。批准卡用例如果启动失败，也会关掉本地假模型服务，避免测试进程因为这个端口一直挂着。

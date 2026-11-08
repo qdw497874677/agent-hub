@@ -55,6 +55,11 @@ export function hermesBaseEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
+/** Hermes 装完 Python 依赖会以 75 退出，要求父进程再拉起。只再试一次，避免安装失败时转圈。 */
+export function hermesShouldRestart(exitCode: number | null, stderr: string, restarts: number): boolean {
+  return exitCode === 75 && restarts < 1 && stderr.includes('Installing Python dependencies');
+}
+
 export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
@@ -185,31 +190,47 @@ export function createHermesRuntime(options: HermesRuntimeOptions): AgentRuntime
       [PROVIDER_BASE_URL_ENV]: mux.baseUrl,
       [PROVIDER_TOKEN_ENV]: mux.key
     };
-    let child: ChildProcess;
-    try {
-      child = spawn(command, ['gateway', 'run'], { cwd, env, stdio: ['ignore', 'ignore', 'pipe'] });
-    } catch (error) {
-      await mux.close();
-      throw new Error(`无法启动 Hermes：${(error as Error).message}`);
-    }
-    child.on('error', () => undefined);
-    child.setMaxListeners(0); // 每个会话听一次 exit
+    let child: ChildProcess | null = null;
     let stderrTail = '';
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000);
-    });
     const baseUrl = `http://127.0.0.1:${port}`;
+    let restarts = 0;
     try {
-      await waitHealthy(child, baseUrl, options.bootTimeoutMs ?? 60_000);
-      const caps = await hermesJson<{ features?: Record<string, unknown> }>({ baseUrl, key, sessionKey: 'ahub-probe' }, 'GET', '/v1/capabilities');
-      const missing = REQUIRED_FEATURES.filter((feature) => !caps?.features?.[feature]);
-      if (missing.length > 0) throw new Error(`这个 Hermes 版本缺 Runs API 能力：${missing.join(', ')}`);
+      for (;;) {
+        stderrTail = '';
+        try {
+          child = spawn(command, ['gateway', 'run'], { cwd, env, stdio: ['ignore', 'ignore', 'pipe'] });
+        } catch (error) {
+          throw new Error(`无法启动 Hermes：${(error as Error).message}`);
+        }
+        child.on('error', () => undefined);
+        child.setMaxListeners(0); // 每个会话听一次 exit
+        child.stderr?.on('data', (chunk: Buffer) => {
+          stderrTail = (stderrTail + chunk.toString('utf8')).slice(-2000);
+        });
+        try {
+          await waitHealthy(child, baseUrl, options.bootTimeoutMs ?? 60_000);
+          const caps = await hermesJson<{ features?: Record<string, unknown> }>({ baseUrl, key, sessionKey: 'ahub-probe' }, 'GET', '/v1/capabilities');
+          const missing = REQUIRED_FEATURES.filter((feature) => !caps?.features?.[feature]);
+          if (missing.length > 0) throw new Error(`这个 Hermes 版本缺 Runs API 能力：${missing.join(', ')}`);
+          break;
+        } catch (error) {
+          const exitCode = child.exitCode;
+          await stopChild(child);
+          if (hermesShouldRestart(exitCode, stderrTail, restarts)) {
+            restarts += 1;
+            log('Hermes 装完依赖后退出 75，再启动一次');
+            continue;
+          }
+          throw error;
+        }
+      }
     } catch (error) {
-      await stopChild(child);
+      if (child) await stopChild(child);
       await mux.close();
       log(`Hermes 起不来：${(error as Error).message}${stderrTail ? `\n${stderrTail.split('\n').slice(-5).join('\n')}` : ''}`);
       throw error;
     }
+    if (!child) throw new Error('Hermes 没有进程');
     const gateway: SharedGateway = { child, baseUrl, key, mux, refs: 0 };
     child.once('exit', () => {
       // 网关死了：已开的会话各自收尾（HermesSession 听 exit），下一个会话来时重起

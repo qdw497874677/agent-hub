@@ -63,6 +63,12 @@ export async function deriveSessionUseCase(
   const workspace = chosen ?? (await defaultWorkspaceFor(deps, project.id));
   if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
   const workers = await deps.gateway.status();
+  // 令牌永远不能用本机。先于就绪检查拒绝，避免「未配置模型」把本机拒绝盖成 503。
+  const homeWorker = workspace.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
+  if (homeWorker !== null) {
+    const early = await authorizeWorker(deps.access, command.actor ?? null, homeWorker);
+    if (!early.ok) return early;
+  }
   const placed = placeSession(workers, {
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
@@ -166,6 +172,11 @@ export async function forkSessionUseCase(
 
   // 分叉要读来源会话的 agent 会话文件，那份文件只在来源的那台机器上：钉死在它上面。
   const workers = await deps.gateway.status();
+  const homeWorker = source.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;
+  if (homeWorker !== null) {
+    const early = await authorizeWorker(deps.access, command.actor ?? null, homeWorker);
+    if (!early.ok) return early;
+  }
   const placed = placeSession(workers, {
     agentId,
     requested: source.workerId,

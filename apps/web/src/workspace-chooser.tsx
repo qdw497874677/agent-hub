@@ -7,6 +7,7 @@ import { api, type CanvasDto, type CreateWorkspaceRequest, type WorkerInfoDto, t
 import { DirectoryPicker } from './directory-picker.tsx';
 import { WorkerChip, WorkerPicker, resolveWorker } from './workers.tsx';
 import { RecheckButton, harnessHint, harnessReason } from './harness.tsx';
+import { canSelectMachine } from './harness-gate.ts';
 
 /**
  * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作空间干活？」
@@ -65,7 +66,8 @@ export function WorkspaceChooser({
   machine,
   onMachine,
   choice,
-  onChoice
+  onChoice,
+  hubProtocols = []
 }: {
   canvas: CanvasDto;
   taskId: string;
@@ -76,6 +78,8 @@ export function WorkspaceChooser({
   onMachine: (workerId: string | null) => void;
   choice: WorkspaceChoice | null;
   onChoice: (choice: WorkspaceChoice | null) => void;
+  /** 已有 hub 模型的协议。未配置原生模型时，同协议的机器仍可选，用来再选 hub 模型。 */
+  hubProtocols?: readonly string[];
 }) {
   const views = useWorkspaceViews(canvas.project.id);
   const agentLabel = canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
@@ -84,8 +88,9 @@ export function WorkspaceChooser({
   const machines = workers.filter(offers);
   const online = machines.filter((worker) => worker.state === 'online');
   // 装了不等于能用：没登录 / 没配模型的那台变灰、不能选（老 Worker 不报，当能用）
-  const blocked = online.filter((worker) => harnessReason(worker, agentId) !== null);
-  const usable = online.filter((worker) => harnessReason(worker, agentId) === null);
+  const selectable = (worker: WorkerInfoDto) => canSelectMachine(worker, agentId, hubProtocols);
+  const blocked = online.filter((worker) => !selectable(worker));
+  const usable = online.filter(selectable);
 
   // 只有一台能用的机器：直接用它（不是「默认」，是没得选）
   useEffect(() => {

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, request as apiRequest, type APIRequestContext } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { e2eHubModel, piModel } from './hub-model.ts';
 import { serverEnv } from './server-env.ts';
 import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
@@ -41,7 +42,8 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
   const dialog = page.getByRole('dialog', { name: '访问令牌' });
   const name = `e2e-bot-${Date.now().toString(36)}`;
   await dialog.getByTestId('token-name').fill(name);
-  for (const label of ['改项目和任务', '发起对话', '看机器']) await dialog.getByText(label, { exact: true }).click();
+  const scopeLabels = ['改项目和任务', '发起对话', '看机器', ...(e2eHubModel() ? ['使用模型提供商'] : [])];
+  for (const label of scopeLabels) await dialog.getByText(label, { exact: true }).click();
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'tokens-create-390.png') });
   await dialog.getByTestId('token-create').click();
   const value = dialog.getByTestId('token-value');
@@ -136,7 +138,7 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
     const task = await bot.post('/openapi/v1/tasks', { data: { projectId: project.id, title: '经开放 API 聊一句' } });
     expect(task.status(), await task.text()).toBe(201);
     const taskId = ((await task.json()) as { id: string }).id;
-    const started = await bot.post('/openapi/v1/sessions', { data: { taskId, agentId, model: '', workerId } });
+    const started = await bot.post('/openapi/v1/sessions', { data: { taskId, agentId, model: piModel(), workerId } });
     expect(started.status(), await started.text()).toBe(201);
     const sessionId = ((await started.json()) as { id: string }).id;
     const prompted = await bot.post(`/openapi/v1/sessions/${sessionId}/prompt`, { data: { text: '只回复「好」一个字' } });

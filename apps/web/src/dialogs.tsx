@@ -5,6 +5,7 @@ import { api, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, 
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from './workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
+import { canSelectMachine, startBlockReason } from './harness-gate.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from './model-picker.tsx';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
@@ -107,6 +108,8 @@ export function DeriveDialog({
   const [machine, setMachine] = useState<string | null>(null);
   // 模型清单按机器来：两台机器的 Pi 配的 provider 可能完全不同
   const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.models(taskId), retry: false });
+  const hubProtocols = [...new Set((hubModels.data ?? []).map((provider) => provider.protocol))];
+  const selectedHub = (hubModels.data ?? []).flatMap((provider) => provider.models.map((item) => ({ id: item.id, protocol: provider.protocol }))).find((item) => item.id === model) ?? null;
   const offered = withHubModels(
     modelsFor(workers.list, machine, agentId) ?? { models: agent?.models ?? [], defaultModel: agent?.defaultModel ?? '' },
     workers.list,
@@ -184,6 +187,7 @@ export function DeriveDialog({
           onMachine={setMachine}
           choice={choice}
           onChoice={setChoice}
+          hubProtocols={hubProtocols}
         />
         <div className="mb-4 grid grid-cols-1 gap-x-3 sm:grid-cols-2">
         <div>
@@ -196,9 +200,11 @@ export function DeriveDialog({
         >
           {canvas.agents.map((candidate) => {
             // 选了机器：那台上不能用的 agent 变灰并写明原因（没选机器时由下面的机器列表说明）
-            const why = machine === null ? null : harnessReason(workers.byId(machine), candidate.id);
+            const worker = machine === null ? undefined : workers.byId(machine);
+            const why = worker ? harnessReason(worker, candidate.id) : null;
+            const disabled = why !== null && !(why === '未配置模型' && canSelectMachine(worker, candidate.id, hubProtocols));
             return (
-              <option key={candidate.id} value={candidate.id} disabled={why !== null}>
+              <option key={candidate.id} value={candidate.id} disabled={disabled}>
                 {why ? `${candidate.label}（${why}）` : candidate.label}
               </option>
             );
@@ -245,7 +251,7 @@ export function DeriveDialog({
           <button
             type="button"
             className={PRIMARY_BUTTON}
-            disabled={agentId === '' || machine === null || harnessReason(workers.byId(machine), agentId) !== null || !choiceReady(choice) || derive.isPending}
+            disabled={agentId === '' || machine === null || startBlockReason(workers.byId(machine), agentId, model, selectedHub?.protocol ?? null) !== null || !choiceReady(choice) || derive.isPending}
             onClick={() => derive.mutate()}
           >
             {phase === 'preparing'

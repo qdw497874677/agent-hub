@@ -5,8 +5,8 @@ import type { User } from './account.ts';
  * 开放 API 令牌（ADR 0015）：个人令牌（代表本人）和团队服务账号（团队里的一个虚拟成员）。
  * 有效权限 = 账号角色的权限 ∩ 令牌 scopes 打包出来的权限；判断仍只走 can()。
  */
-export type ApiScope = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | 'assets:submit';
-export const API_SCOPES: readonly ApiScope[] = ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read', 'assets:submit'];
+export type ApiScope = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | 'assets:submit' | 'providers:use';
+export const API_SCOPES: readonly ApiScope[] = ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read', 'assets:submit', 'providers:use'];
 
 /** scope → 权限点。这里永远不出现 hub.*；本机 Worker 在 can() 里对令牌一律拒绝。 */
 export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>> = {
@@ -14,6 +14,8 @@ export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>
   'projects:write': ['project.read', 'task.read', 'project.create', 'project.update', 'project.delete', 'task.create', 'task.update'],
   'sessions:read': ['session.read', 'task.read'],
   'sessions:write': ['session.read', 'task.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue', 'worker.use', 'worker.read'],
+  // 不并进 sessions:write：开会话的令牌默认不能用 hub 模型，要另外勾选。
+  'providers:use': ['provider.use'],
   'workers:read': ['worker.read'],
   // ADR 0016：令牌只能提交资产版本（进审核队列），审核 / 发布 / 分配 / 下架 / 用密钥都不行
   'assets:submit': ['asset.submit']
