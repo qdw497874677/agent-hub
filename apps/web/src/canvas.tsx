@@ -178,6 +178,41 @@ export function CanvasView({
   // 选中态自己管：节点是由数据推出来的受控节点，React Flow 的选中/拖动/缩放都以 change 的形式交回来。
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const container = useRef<HTMLDivElement | null>(null);
+  // 框身应能单指平移。390px 上框内边距大约只有 12px，Chrome 会把落在卡片外约 10px 内的触摸
+  // 改派到会话卡上，而 elementFromPoint 仍是画布。整张卡带 nopan，这次平移就被吃掉。
+  // 按下的点其实不在这张卡里时，先拿掉 nopan，让这次手势平移画布；松手再加回去。
+  useEffect(() => {
+    const el = container.current;
+    if (!el) return;
+    let lifted: Element | null = null;
+    const restore = () => {
+      lifted?.classList.add('nopan');
+      lifted = null;
+    };
+    const onStart = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (!touch) return;
+      const hit = document.elementFromPoint(touch.clientX, touch.clientY);
+      const node = (event.target as Element | null)?.closest?.('.react-flow__node');
+      if (!node || !hit || node.contains(hit) || !node.classList.contains('nopan')) return;
+      node.classList.remove('nopan');
+      lifted = node;
+    };
+    const onMove = () => {
+      if (lifted?.classList.contains('nopan')) lifted.classList.remove('nopan');
+    };
+    el.addEventListener('touchstart', onStart, true);
+    el.addEventListener('touchmove', onMove, true);
+    el.addEventListener('touchend', restore, true);
+    el.addEventListener('touchcancel', restore, true);
+    return () => {
+      el.removeEventListener('touchstart', onStart, true);
+      el.removeEventListener('touchmove', onMove, true);
+      el.removeEventListener('touchend', restore, true);
+      el.removeEventListener('touchcancel', restore, true);
+      restore();
+    };
+  }, []);
   // 展开成画布窗口（双击会话卡 / ⤢ / 右键）：多个并排看，状态存在本机浏览器
   const narrow = useNarrow();
   const windows = useCanvasWindows(canvas, container, narrow);
