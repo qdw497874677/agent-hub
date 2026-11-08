@@ -120,6 +120,7 @@ test('关联的团队工作空间里真的能开会话，也能「换个工作�
   for (const d of dirs) mkdirSync(d, { recursive: true });
   const project = (await (await page.request.post('/api/projects', { data: { name: `shared-run-${RUN}` }, headers })).json()) as { id: string; name: string };
   const made: Array<{ id: string; projectId: string | null }> = [];
+  const sessionIds: string[] = [];
   try {
     for (const path of dirs) {
       const ws = await page.request.post('/api/workspaces', { data: { mode: 'link', path }, headers });
@@ -134,6 +135,7 @@ test('关联的团队工作空间里真的能开会话，也能「换个工作�
     const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '', workspaceId: made[0]!.id }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     const session = (await derived.json()) as { id: string; workspaceId: string };
+    sessionIds.push(session.id);
     expect(session.workspaceId).toBe(made[0]!.id);
     // 说一句，让会话有内容（e2e 里没有真 agent，有事件落库就行）
     await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '在共享工作空间里看看', attachments: [] }, headers });
@@ -146,10 +148,19 @@ test('关联的团队工作空间里真的能开会话，也能「换个工作�
 
     const moved = await page.request.post(`/api/sessions/${session.id}/continue`, { data: { target: { kind: 'workspace', workspaceId: made[1]!.id } }, headers });
     expect(moved.status(), await moved.text()).toBe(201);
-    expect(((await moved.json()) as { workspaceId: string }).workspaceId).toBe(made[1]!.id);
+    const continued = (await moved.json()) as { id: string; workspaceId: string };
+    sessionIds.push(continued.id);
+    expect(continued.workspaceId).toBe(made[1]!.id);
   } finally {
-    await page.request.delete(`/api/projects/${project.id}`, { data: { confirmName: project.name }, headers });
+    // 真模型可能还在这两个目录里。先停会话，删项目被拒就不要拆目录，否则下一用例会看到进程在已删除的 cwd 里退出。
+    for (const id of sessionIds) await page.request.post(`/api/sessions/${id}/interrupt`, { headers }).catch(() => undefined);
+    let removed = false;
+    for (let i = 0; i < 25 && !removed; i++) {
+      const del = await page.request.delete(`/api/projects/${project.id}`, { data: { confirmName: project.name }, headers }).catch(() => null);
+      removed = del !== null && del.status() !== 409;
+      if (!removed) await page.waitForTimeout(200);
+    }
     for (const ws of made) await page.request.post(`/api/workspaces/${ws.id}/remove`, { data: { deleteDirectory: false, force: true }, headers });
-    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    if (removed) for (const d of dirs) rmSync(d, { recursive: true, force: true });
   }
 });
