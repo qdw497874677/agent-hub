@@ -34,6 +34,12 @@ export function piProviderSource(launch: ProviderLaunch): string {
   return `// agent-hub：这次会话的 hub 模型提供商（不含密钥）\nexport default function (pi) {\n  pi.registerProvider(${JSON.stringify(`hub-${launch.slug}`)}, ${JSON.stringify(config, null, 2)});\n}\n`;
 }
 
+/** 这次会话的模型候选项：机器原生清单加上本会话 hub 提供商的模型。不改原生默认，也不在没选时塞一个。 */
+export function piSessionModelChoices(native: readonly string[], launch: Pick<ProviderLaunch, 'slug' | 'models'> | undefined): string[] {
+  const extra = launch ? launch.models.map((model) => `hub-${launch.slug}/${model.id}`) : [];
+  return [...new Set([...native, ...extra])];
+}
+
 /** 写好扩展文件，返回要加的参数和环境变量。 */
 export async function piProviderLaunch(sessionId: string, launch: ProviderLaunch, root = join(tmpdir(), 'agent-hub-providers')): Promise<{ args: string[]; env: Record<string, string> }> {
   const dir = join(root, sessionId.replace(/[^A-Za-z0-9_-]/g, '_'));

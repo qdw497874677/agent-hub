@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { piProviderLaunch } from './pi-provider.ts';
+import { piProviderLaunch, piSessionModelChoices } from './pi-provider.ts';
 import { ensurePiMcpConfig, piHasBuiltinMcp, piToolEnv } from './pi-mcp.ts';
 import { execProbe } from './exec-probe.ts';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -497,7 +497,7 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
       const session = new PiSession(
         spec.sessionId,
         child,
-        options.models ?? [],
+        piSessionModelChoices(options.models ?? [], spec.provider),
         (reported) => options.onOptions?.(spec.sessionId, reported),
         options.onTurnRef ? (turnRef) => options.onTurnRef?.(spec.sessionId, turnRef) : undefined,
         spec.workspaceRoot

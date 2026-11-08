@@ -53,9 +53,9 @@ test('新建持久工作空间：先选目录（可就地新建文件夹），�
 
     await expect(run.getByText('新建持久工作空间', { exact: false }).last()).toBeVisible();
     await expect(run).toContainText(folder);
+    await chooseHubModel(run);
     await expect(start).toBeEnabled();
     if (SHOTS) await page.screenshot({ path: join(SHOTS, `workspace-create-ready-${tag}.png`) });
-    await chooseHubModel(run);
     await start.click();
     await expect(run).toHaveCount(0);
 

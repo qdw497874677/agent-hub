@@ -14,8 +14,8 @@ export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>
   'projects:write': ['project.read', 'task.read', 'project.create', 'project.update', 'project.delete', 'task.create', 'task.update'],
   'sessions:read': ['session.read', 'task.read'],
   'sessions:write': ['session.read', 'task.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue', 'worker.use', 'worker.read'],
-  // 不并进 sessions:write：开会话的令牌默认不能用 hub 模型，要另外勾选。
-  'providers:use': ['provider.use'],
+  // 不并进 sessions:write。用之前先要看得见，所以带上 provider.read，不含管理。
+  'providers:use': ['provider.read', 'provider.use'],
   'workers:read': ['worker.read'],
   // ADR 0016：令牌只能提交资产版本（进审核队列），审核 / 发布 / 分配 / 下架 / 用密钥都不行
   'assets:submit': ['asset.submit']
