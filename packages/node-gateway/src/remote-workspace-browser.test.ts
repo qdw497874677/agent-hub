@@ -56,6 +56,13 @@ test('远端浏览：files.* 过 RPC，WORKER_ROOTS 外的根被拒，变化经 
     online = false;
     const gone = await b.list(root, '', { limit: 10 });
     assert.equal(gone.ok, false);
+    if (!gone.ok) assert.match(gone.error.message, /不在线/);
+    const changes = await b.changes(root, 'HEAD');
+    assert.equal(changes.ok, false);
+    if (!changes.ok) {
+      assert.equal(changes.error.code, 'unavailable');
+      assert.equal(changes.error.message, 'Worker「w」不在线');
+    }
   } finally {
     await rm(allowed, { recursive: true, force: true });
     await rm(other, { recursive: true, force: true });

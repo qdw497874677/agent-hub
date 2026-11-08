@@ -120,9 +120,11 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     await expect(changes.getByText('读取中…')).toHaveCount(0);
     await expect(changes.getByTestId('diff-view')).toContainText('43', { timeout: 15_000 });
 
-    // Worker 离线：重读失败就显示离线，不拿缓存冒充当前
+    // Worker 真不在线：重读失败就显示离线，不拿缓存冒充当前。正文用接口的 { error: { code, message } }。
     await page.route(`**/api/sessions/${sid}/**`, (route) =>
-      /\/(files|git)\b/.test(route.request().url()) ? route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"worker offline"}' }) : route.fallback()
+      /\/(files|git)\b/.test(route.request().url())
+        ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: { code: 'unavailable', message: 'Worker「e2e」不在线' } }) })
+        : route.fallback()
     );
     await page.getByTestId('session-tab-files').click();
     await expect(files.getByTestId('files-error').first()).toContainText('Worker 离线');
