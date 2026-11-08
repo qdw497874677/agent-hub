@@ -7,6 +7,16 @@
  */
 export const FILES_QUERY = { retry: false, gcTime: 10 * 60_000, staleTime: 0, refetchOnWindowFocus: false } as const;
 
+/**
+ * 文件接口的 503。限流文案要原样留着；通道没了才写成「Worker 离线」。
+ * 两条都是 503，混在一起会把「请求太频繁」看成机器断了。
+ */
+export function filesErrorText(status: number, message: string): string {
+  if (status === 503 && message.includes('请求太频繁')) return message;
+  if (status === 503) return 'Worker 离线';
+  return message;
+}
+
 /** 有错误就不给数据：离线显示离线，不拿缓存冒充当前。 */
 export function shown<Q extends { data?: unknown; error: unknown }>(query: Q): Q['data'] | undefined {
   return query.error ? undefined : query.data;

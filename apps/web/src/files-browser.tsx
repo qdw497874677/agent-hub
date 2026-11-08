@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from './api.ts';
-import { crumbs, FILES_QUERY, shown, decodeText, GIT_LABEL, humanSize, languageOf, touches, watchPaths } from './files-core.ts';
+import { crumbs, FILES_QUERY, filesErrorText, shown, decodeText, GIT_LABEL, humanSize, languageOf, touches, watchPaths } from './files-core.ts';
 import 'diff2html/bundles/css/diff2html.min.css';
 
 /**
@@ -20,7 +20,7 @@ const fresh = FILES_QUERY;
 const sk = (sessionId: string) => ['files', sessionId] as const;
 
 function problem(error: unknown): string {
-  if (error instanceof RequestFailed && error.status === 503) return 'Worker 离线';
+  if (error instanceof RequestFailed) return filesErrorText(error.status, error.detail.message);
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -99,7 +99,6 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
       });
       source.addEventListener('changed', (message) => {
         const notice = JSON.parse((message as MessageEvent<string>).data) as { paths: string[]; reset?: boolean };
-        // cancelRefetch 默认会掐掉还没回来的 git diff。切「第 N 轮」时列表会停在 0 行，也没有错误。
         if (notice.reset) {
           void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
           return;

@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { crumbs, decodeText, humanSize, languageOf, parentOf, touches, watchPaths } from './files-core.ts';
+import { crumbs, decodeText, filesErrorText, humanSize, languageOf, parentOf, touches, watchPaths } from './files-core.ts';
+
+test('限流的 503 不写成 Worker 离线', () => {
+  assert.equal(filesErrorText(503, '请求太频繁，稍后再试'), '请求太频繁，稍后再试');
+  assert.equal(filesErrorText(503, 'worker 通道尚未就绪'), 'Worker 离线');
+  assert.equal(filesErrorText(400, '路径不合法'), '路径不合法');
+});
 
 test('面包屑 / 父目录', () => {
   assert.deepEqual(crumbs('a/b').map((c) => c.path), ['', 'a', 'a/b']);

@@ -122,11 +122,12 @@ test('diff 基准：session = 开始时记下的 HEAD（没记就 null=当前 HE
   assert.ok(ctx.ok && ctx.value.sessionBase === 'abc1234' && ctx.value.root === '/tmp/demo');
 });
 
-test('限流：每人每秒 20 次；watch 最多 200 个点', async () => {
+test('限流：开头可连续 40 次，第 41 次拒绝；每秒补 20；watch 最多 200 个点', async () => {
   const w = await world();
-  for (let i = 0; i < 20; i++) assert.ok((await w.svc.find(null, w.session.id, 'a')).ok);
+  for (let i = 0; i < 40; i++) assert.ok((await w.svc.find(null, w.session.id, 'a')).ok, `第 ${i + 1} 次`);
   const limited = await w.svc.find(null, w.session.id, 'a');
   assert.equal(limited.ok, false);
+  if (!limited.ok) assert.equal(limited.error.message, '请求太频繁，稍后再试');
   w.tick(1000);
   assert.ok((await w.svc.find(null, w.session.id, 'a')).ok);
   assert.equal((await w.svc.watch(null, w.session.id, Array.from({ length: 201 }, (_, i) => `d${i}`), () => undefined)).ok, false);
