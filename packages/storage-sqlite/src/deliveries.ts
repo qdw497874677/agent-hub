@@ -28,9 +28,29 @@ export function createSqliteDeliveries(db: DatabaseSync): DeliveryQueue {
   const recent = db.prepare('SELECT * FROM message_delivery WHERE session_id = ? AND kind = \'prompt\' ORDER BY created_at DESC LIMIT ?');
   const wake = db.prepare(`UPDATE message_delivery SET next_at = ? WHERE kind = 'prompt' AND state = 'queued' AND COALESCE(next_at, 0) > ?`);
   const recover = db.prepare(`UPDATE message_delivery SET state = 'queued', next_at = ?, updated_at = ? WHERE state = 'sending'`);
+  const write = (d: Delivery) => {
+    upsert.run(d.id, d.sessionId, d.seq, d.kind, JSON.stringify(d.payload), d.state, d.attempt, d.nextAt, d.lastError, d.createdAt, d.updatedAt);
+  };
   return {
     async save(d) {
-      upsert.run(d.id, d.sessionId, d.seq, d.kind, JSON.stringify(d.payload), d.state, d.attempt, d.nextAt, d.lastError, d.createdAt, d.updatedAt);
+      write(d);
+    },
+    async claimPrompt(incoming) {
+      // 读和写之间不能让出事件循环：否则两条 prompt 都会看见空队列，各派一次。
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const open = (pending.all(incoming.sessionId) as Row[]).map(toDelivery);
+        const head = open[0];
+        if (head?.state === 'undelivered') write({ ...head, state: 'queued', attempt: 0, nextAt: incoming.updatedAt, updatedAt: incoming.updatedAt });
+        const ahead = (pending.all(incoming.sessionId) as Row[]).length > 0;
+        const stored: Delivery = { ...incoming, state: 'queued', nextAt: ahead ? null : incoming.nextAt };
+        write(stored);
+        db.exec('COMMIT');
+        return { delivery: stored, send: !ahead };
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
     },
     async byId(id) {
       const r = byId.get(id) as Row | undefined;

@@ -55,6 +55,8 @@ export default defineConfig({
       HUB_SPAWN_WORKER: '1',
       // 整套 e2e 在一个服务里登录十几次，放宽登录限流，免得后面的用例吃 429
       HUB_LOGIN_RATE_MAX: '1000',
+      // 52 条共用一个回环地址。生产默认仍是 10 次 / 10 分钟，这里只放宽测试进程。
+      HUB_ENROLL_RATE_MAX: '1000',
       HUB_MAIL_RATE_MAX: '1000',
       // 发信走日志模式，同时把信逐行写进 outbox：用例从这里拿验证 / 重置链接
       HUB_MAIL_PROVIDER: 'log',

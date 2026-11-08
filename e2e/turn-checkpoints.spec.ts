@@ -103,7 +103,9 @@ test('回合检查点：两轮真对话，本轮 / 整个会话 / 对比 HEAD，
       await page.getByTestId('session-tab-changes').click();
       const panel = page.getByTestId('files-panel-changes');
       await panel.getByTestId('changes-base').selectOption('turn');
-      await expect(panel.getByTestId('change-row')).toHaveCount(2);
+      const changesBody = await (await page.request.get(`/api/sessions/${sid}/git/changes?base=turn`)).text();
+      const changesError = (await panel.getByTestId('files-error').textContent().catch(() => '')) ?? '';
+      await expect(panel.getByTestId('change-row'), `接口=${changesBody.slice(0, 500)} 界面错误=${changesError}`).toHaveCount(2);
       await panel.getByTestId('change-row').filter({ hasText: 'a.txt' }).click();
       await expect(panel.getByTestId('diff-view')).toContainText('more');
       await page.screenshot({ path: join(SHOTS, `turn-${width}.png`) });

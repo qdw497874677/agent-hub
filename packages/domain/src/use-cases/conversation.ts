@@ -13,7 +13,6 @@ import { attachmentPath, base64Bytes, validateAttachments } from '../attachment.
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { attemptDelivery } from './delivery.ts';
-import type { Delivery } from '../delivery.ts';
 import { ensureHosted, projectOf } from './hosting.ts';
 import { recordEvent, recordSessionOptions } from './sessions.ts';
 import { taskBriefing } from '../task-briefing.ts';
@@ -112,19 +111,16 @@ export async function promptSessionUseCase(
     const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
     const text = [instructions, guidance?.text, briefing, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
     if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
-    const pending = await deliveries.pendingFor(sessionId);
-    const ahead = pending.length > 0;
-    // 人又说话了：卡在「未送达」的队首重新给满次数，马上再试
-    const head = pending[0];
-    if (head?.state === 'undelivered') await deliveries.save({ ...head, state: 'queued', attempt: 0, nextAt: deps.now(), updatedAt: deps.now() });
     const now = deps.now();
-    const delivery: Delivery = {
+    // 人的话已经在上面落进 journal。认领必须是送达队列里的一次写入：
+    // 先 pendingFor 再 save 时，两条并发都会看见空队列，各派一次给 worker。
+    // 不在写 journal 之前认领：排队的那句也得留在会话里，不能因为抢不到队首就丢掉。
+    const claimed = await deliveries.claimPrompt({
       id: randomDeliveryId(), sessionId, seq: logged.value.lastSeq, kind: 'prompt', payload: { text, parts },
-      state: 'queued', attempt: 0, nextAt: ahead ? null : now, lastError: null, createdAt: now, updatedAt: now
-    };
-    await deliveries.save(delivery);
-    if (ahead) return ok(undefined);
-    return attemptDelivery({ ...deps, deliveries }, delivery);
+      state: 'queued', attempt: 0, nextAt: now, lastError: null, createdAt: now, updatedAt: now
+    });
+    if (!claimed.send) return ok(undefined);
+    return attemptDelivery({ ...deps, deliveries }, claimed.delivery);
   }
 
   const hosted = await ensureHosted(deps, session);

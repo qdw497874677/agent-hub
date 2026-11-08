@@ -395,7 +395,12 @@ const dispatcher = createDispatcher({
   },
   busy: async (sid) => {
     const s = await deps.sessions.byId(sid as SessionId);
-    return (s ? isBusy(s) : false) || (await store.deliveries.pendingFor(sid)).length > 0;
+    // 与连接器同一组旗标。isBusy 在第一轮 ended 之后经常为假，不能单独当互斥。
+    // 群 / P2P 已经写成 delivered 的投递，调度不能再往同一条会话插一句。
+    return (s ? isBusy(s) : false)
+      || (await store.deliveries.pendingFor(sid)).length > 0
+      || (await store.messages.deliveredTo(sid as SessionId)).length > 0
+      || (await store.groups.deliveredTo(sid as SessionId)).length > 0;
   },
   notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
   abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
