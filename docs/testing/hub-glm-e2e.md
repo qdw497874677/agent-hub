@@ -63,4 +63,4 @@ npm run e2e -- --workers=1 --reporter=line,json
 
 Hermes 在全新 `HERMES_HOME` 里若先装 Python 依赖并以退出码 75 要求再启动，网关只再拉起一次。安装失败再退出 75 就停，不转圈。批准卡用例如果启动失败，也会关掉本地假模型服务，避免测试进程因为这个端口一直挂着。
 
-交接、已知问题和尚未填的最终结果见 [pr211-handoff.md](pr211-handoff.md)。
+交接、已知问题和 `0cfc530` 的最终首跑见 [pr211-handoff.md](pr211-handoff.md)。
