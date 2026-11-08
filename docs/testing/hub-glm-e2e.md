@@ -1,0 +1,50 @@
+# 用 Hub 供应商跑完整 E2E（glm-5.3-flash）
+
+只在要真 Pi 走 Hub 供应商时用。未设置 `E2E_HUB_MODEL` 时，套件和以前一样传空模型。
+
+假 ACP 仍是 `fakeacp` + 空模型。Hermes 仍用用例里的本地假网关，不改成 GLM。故意删掉工作目录再等失败的用例保持原样；目录在启动前就没了，一般不会打到上游。
+
+## 密钥边界
+
+`ZAI_CODING_CN_API_KEY` 只留在**启动 Playwright 的那个进程**里。`playwright.config.ts` 在交给 hub / worker 的环境里删掉它，并在设置了 `E2E_HUB_MODEL` 时再删掉 `PI_DEFAULT_MODEL`、`OPENCODE_API_KEY`、`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`。不要写进文件、argv、日志或源码。
+
+登录成功后，第一个 `loginByApi` 若发现还没有这家全站供应商，就 `POST /api/providers` 一次。作用域是 `hub`（页面上的「全站」）：空库里的 `test@agent-hub.local` 是集群管理员，后面邀请出来的账号和别的团队也能用。个人或团队作用域盖不住这些账号。
+
+不要把 `/workspace/glmhub-runtime` 指成 `E2E_DATA_DIR`。用一个新目录。
+
+## 命令
+
+```bash
+unset PI_DEFAULT_MODEL OPENCODE_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY
+export E2E_DATA_DIR=/var/tmp/agent-hub-e2e-glm
+export E2E_PORT=7897
+export HOME=/var/tmp/agent-hub-e2e-glm-home
+export WORKER_STATE_DIR="$HOME/.config/agent-hub"
+export WORKER_ID=e2e-glm
+export E2E_CHROME=/usr/bin/google-chrome
+export E2E_HUB_MODEL=hub-cn-glm-flash/glm-5.3-flash
+export E2E_HUB_PROVIDER_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
+# ZAI_CODING_CN_API_KEY 由启动这个进程的环境注入，不要写进脚本
+mkdir -p "$E2E_DATA_DIR" "$HOME" "$WORKER_STATE_DIR"
+node -e "const k=process.env.ZAI_CODING_CN_API_KEY; console.log(k ? 'ZAI_CODING_CN_API_KEY set len='+k.length : 'ZAI_CODING_CN_API_KEY unset')"
+npm run e2e -- --workers=1 --reporter=line,json
+```
+
+`E2E_REAL=1` 才会跑 `chat-real`。`WORKER_HERMES=1` 才会跑 Hermes；它的模型仍是用例自己的假网关。
+
+种子只发生一次。供应商已在且含 `glm-5.3-flash` 就跳过。标识对了但没有这个模型，会停下来要求换新的 `E2E_DATA_DIR`。
+
+## 哪些路径会带上这个模型
+
+- API 派生：在线 worker 的真 Pi（`model: piModel()`）。包括会发问的画布历史、文件、列表、真对话、OpenAPI 除外。
+- 分叉：`list-view` 的 fork 同样带 `piModel()`。
+- 群和 agent 消息：角色上的 `model` 字段写成 `piModel()`。这是产品本来就有的字段。
+- 画布和「新建持久工作空间」：点「开始」之前用 `#derive-model` 选中。清单不超过 8 个时是原生 `<select>`；更多时打开「选择模型」搜索。没有原生模型时列表里只有这一项。
+
+## 产品缺口
+
+`POST /openapi/v1/sessions` 的令牌 scope `sessions:write` 不含 `provider.use`。所以开放 API 那条即使用 `model: hub-cn-glm-flash/glm-5.3-flash` 也会在权限上被拒。用例仍传空模型，避免把一次权限拒绝伪装成模型选择成功。没有原生模型时，这条远程真对话不能走 Hub GLM。
+
+`messages-entry` 和 `perms` 里写死的 `agentId: 'grok'` 仍是空模型。那不是 Pi。
+
+假 ACP（`fakeacp`、`fakefork`）和 Hermes 自建的 `hub-<当次 slug>/m-1` 不读 `E2E_HUB_MODEL`。

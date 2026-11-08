@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 
@@ -23,7 +24,7 @@ test('手机专注对话：⋯ 菜单里能换个地方继续；没说过话的�
   const name = `e2e 手机对话 ${Date.now().toString(36)}`;
   const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '换地方' }, headers })).json()) as { id: string };
-  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers });
+  const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
   expect(derived.status(), await derived.text()).toBe(201);
   const session = (await derived.json()) as { id: string };
 

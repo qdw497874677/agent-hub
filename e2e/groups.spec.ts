@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /** 群聊（ADR 0018 · 群组）：建群、没主持人时的系统行、@ 直达成员、停止暂停全员、限额校验、手机布局。 */
 async function world(page: Page, baseURL: string) {
@@ -25,7 +26,7 @@ test('建群：限额越界 400；没主持人时贴系统行；停止后成员�
   const w = await world(page, baseURL!);
   const roles = await page.request.put(`/api/projects/${w.project}/messaging`, {
     headers: w.headers,
-    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: '' }, { name: 'critic', agentId: w.agentId ?? 'grok', model: '' }], limits: {} }
+    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: piModel() }, { name: 'critic', agentId: w.agentId ?? 'grok', model: piModel() }], limits: {} }
   });
   expect(roles.ok(), await roles.text()).toBe(true);
   const tooMany = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: ['writer'], limits: { maxRounds: 6 } } });
@@ -59,7 +60,7 @@ test('@ 成员直达：成员在群里回话，调用链能链到会话', async 
   test.setTimeout(240_000);
   const w = await world(page, baseURL!);
   test.skip(!w.agentId, '这台机器上没有可用的 agent');
-  await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: 'echo', agentId: w.agentId, model: '' }], limits: {} } });
+  await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: 'echo', agentId: w.agentId, model: piModel() }], limits: {} } });
   const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: '回声', members: ['echo'] } });
   expect(g.ok(), await g.text()).toBe(true);
   const group = (await g.json()) as { id: string };
@@ -75,7 +76,7 @@ test('只能 @ 群成员：@ 群外角色只给提示和「加入群组」，加
   const w = await world(page, baseURL!);
   await page.request.put(`/api/projects/${w.project}/messaging`, {
     headers: w.headers,
-    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: '' }, { name: 'perf', agentId: w.agentId ?? 'grok', model: '' }], limits: {} }
+    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: piModel() }, { name: 'perf', agentId: w.agentId ?? 'grok', model: piModel() }], limits: {} }
   });
   const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: '外援', members: ['writer'] } });
   expect(g.ok(), await g.text()).toBe(true);

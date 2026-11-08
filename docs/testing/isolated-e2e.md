@@ -103,7 +103,7 @@ mkdir -p "$ISOLATED_HOME" "$ISOLATED_DATA" "$WORKER_STATE_DIR"
 
 Hub 的「模型提供商」是另一条路，说明在 `docs/model-providers.md`。空库上的内置测试账号（默认 `test@agent-hub.local`，密码在 `$E2E_DATA_DIR/test-account`）会成为这个库的集群管理员，可以在页面上添加个人、团队或全站提供商。密钥加密后只进这个 `HUB_DATA_DIR` 的库，不改 `~/.pi/agent/models.json`。会话里要选 `hub-<标识>/<模型>` 才会用它。
 
-这条路**不能**单独让 `npm run e2e` 变绿：就绪检查发生在下发提供商之前，画布用例也不去选 `hub-*` 模型。提供商配置适合隔离实例上的手工验证，不能代替 pi 自己的模型目录。
+空模型不会自动改用 Hub 供应商。要让整套 E2E 的真 Pi 显式选 `hub-<标识>/<模型>`，见 `docs/testing/hub-glm-e2e.md`。未设置 `E2E_HUB_MODEL` 时，用例仍传空模型。不要把 `PI_DEFAULT_MODEL` 设成 `hub-...` 来冒充原生清单。
 
 假 ACP（`packages/adapters/acp/test-fixtures/fake-agent.mjs`）只被本来就启动它的用例使用，例如来历、送达、可观测树里的送达节点。不要把它放进默认 worker 的 `ACP_AGENTS` 来冒充整套 E2E 通过。`e2e/chat-real.spec.ts` 只有 `E2E_REAL=1` 才跑，默认跳过。
 

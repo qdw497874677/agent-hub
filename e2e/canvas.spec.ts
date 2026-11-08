@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
+import { chooseHubModel } from './hub-model.ts';
 
 /**
  * 闭环的那条线：一个干净的浏览器，从零到「会话在卡片里真的跑起来了」。
@@ -82,6 +83,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await expect(input).toHaveValue(`${PROJECT_DIR}/`);
   await picker.getByRole('button', { name: '使用', exact: true }).click();
   await expect(run).toContainText(`agent-hub-e2e-project-${RUN}`);
+  await chooseHubModel(run);
   await run.getByRole('button', { name: '开始' }).click();
   // 派生完直接进这条会话的对话；回画布看卡片
   await expect(page.getByLabel('发送消息')).toBeVisible();

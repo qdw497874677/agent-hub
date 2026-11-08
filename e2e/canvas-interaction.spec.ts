@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 画布交互分区矩阵（docs/guide.md「画布交互」）：每个区只做一件事，1280 / 390、鼠标 / 滚轮 / 单指 / 双指都过一遍，
@@ -33,7 +34,7 @@ async function setup(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 分区 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '分区' }, headers })).json()) as { id: string };
   const ids: string[] = [];
-  for (let i = 0; i < 2; i++) ids.push(((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string }).id);
+  for (let i = 0; i < 2; i++) ids.push(((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string }).id);
   // 对话区要有内容才谈得上「滚」
   const long = Array.from({ length: 30 }, (_, i) => `第 ${i + 1} 行`).join('\n');
   await page.request.post(`/api/sessions/${ids[0]}/prompt`, { data: { text: long }, headers });

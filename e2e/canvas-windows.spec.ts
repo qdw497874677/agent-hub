@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page, type Locator } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 画布中展开会话（docs/design/canvas-expanded-sessions.md）：
@@ -33,7 +34,7 @@ async function setup(page: Page, baseURL: string, count: number) {
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '多窗口' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true }); // 目录不在：agent 很快失败落地，不真去跑模型
   const ids: string[] = [];
-  for (let i = 0; i < count; i++) ids.push(((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string }).id);
+  for (let i = 0; i < count; i++) ids.push(((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string }).id);
   const long = Array.from({ length: 40 }, (_, i) => `窗口第 ${i + 1} 行：${'很长的一段话，'.repeat(6)}`).join('\n');
   await page.request.post(`/api/sessions/${ids[0]}/prompt`, { data: { text: long }, headers });
   await page.goto(`/#/p/${project.id}/canvas`);

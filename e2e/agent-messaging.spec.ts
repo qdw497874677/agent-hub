@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * ADR 0018 · agent 间通信 P2P：A ask B 拿到回复、B 忙时排队、没权限 / 找不到被拒、派生要人批（批准卡片，390px 手机宽度）。
@@ -26,7 +27,7 @@ async function world(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 协作 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: 'agent 协作' }, headers })).json()) as { id: string };
   const session = async (): Promise<string> => {
-    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers });
+    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     return ((await derived.json()) as { id: string }).id;
   };
@@ -99,7 +100,7 @@ test('没权限 / 找不到 / 派生要人批：拒绝有审计；批准卡片�
   const agentId = w.agentId;
   const tooHigh = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [], limits: { maxDepth: 9 } } });
   expect(tooHigh.status(), '超过默认 2 倍的上限被拒').toBe(400);
-  const saved = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: 'reviewer', description: '审代码', agentId, model: '', reuse: 'sticky' }], limits: { maxDepth: 8 } } });
+  const saved = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: 'reviewer', description: '审代码', agentId, model: piModel(), reuse: 'sticky' }], limits: { maxDepth: 8 } } });
   expect(saved.status(), await saved.text()).toBe(200);
   const spawnAsk = await w.send(a, { kind: 'ask', to: 'role:reviewer', body: '帮我审一下这个改动' });
   expect(spawnAsk.status()).toBe(201);

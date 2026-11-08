@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 真 agent 跑一轮带工具的对话（bash、读文件、改文件），看对话页把它们都画出来。
@@ -26,7 +27,7 @@ for (const agent of AGENTS) {
     writeFileSync(join(dir, 'notes.md'), '# 笔记\n\n颜色：红色\n');
     const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 真对话 ${agent} ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
     const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: `真对话：${agent}` }, headers })).json()) as { id: string };
-    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers });
+    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     const { id } = (await derived.json()) as { id: string };
 

@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { defineConfig } from '@playwright/test';
+import { serverEnv } from './e2e/server-env.ts';
 
 /**
  * Chrome 的单实例套接字放在 $TMPDIR 下，路径加上结尾的 NUL 不能超过 108 字节。
@@ -45,7 +46,7 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 60_000,
     env: {
-      ...process.env,
+      ...serverEnv(),
       HUB_PORT: String(port),
       HUB_DATA_DIR: dataDir,
       // 组件安装 e2e 的假 npm registry（e2e/components.spec.ts 在这个端口上起）

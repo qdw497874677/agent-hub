@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 输入框底栏：「+ / 拍照 / 模型 / 思考强度 / 发送」一样高、垂直居中对齐——
@@ -25,7 +26,7 @@ async function setup(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 对齐 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '对齐' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true });
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
   // e2e 的 agent 不报可调项：在画布投影里给这条会话补上和 David 截图一样的两项——
   // 候选很多的模型（走可搜索的按钮选择器）+ 思考强度（原生下拉）
   const models = Array.from({ length: 12 }, (_, i) => ({ kind: 'value', value: { value: `zai/glm-5.${i}-flash`, label: `zai-coding-cn/glm-5.${i}-flash` } }));

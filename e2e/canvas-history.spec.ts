@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Locator, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 刷新之后画布卡片和画布窗口里是整段历史，不只是投影带的最后 24 条事件：
@@ -30,7 +31,7 @@ async function longSession(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '长对话' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true });
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
   const ended = async () => {
     const events = (await (await page.request.get(`/api/sessions/${id}/events`)).json()) as Array<{ kind?: string; event?: { kind?: string } }>;
     return events.filter((entry) => (entry.kind ?? entry.event?.kind) === 'ended').length;

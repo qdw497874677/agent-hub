@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { test, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import { TEST_EMAIL, loginByApi, mailedLink, openRegistration, verifyByApi } from './login.ts';
 import { currentRun } from './run-id.ts';
+import { piModel } from './hub-model.ts';
 
 /** ADR 0017 权限模型：角色、自定义角色、viewer 只读、admin 边界、4A 会话说话、5A 临时进入。全部 390px 手机宽度。 */
 const SHOTS = '/workspace/shots/perms';
@@ -126,7 +127,7 @@ test('4A + 1A：同团队成员不能在别人的会话里说话 / 打断（会�
   const dir = mkdtempSync(join(tmpdir(), 'e2e-perms-'));
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 权限 ${currentRun()}`, rootPath: dir }, headers: h })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '共享项目' }, headers: h })).json()) as { id: string };
-  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers: h })).json()) as { id: string };
+  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers: h })).json()) as { id: string };
   expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '我是创建者' }, headers: h })).status()).toBe(200);
 
   const member = await invite(page, browser, 'peer', 'member');

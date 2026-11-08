@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 const SHOTS = '/workspace/shots/session-title';
 
@@ -20,7 +21,7 @@ async function seed(page: Page, baseURL: string, tag: string) {
   const dir = mkdtempSync(join(tmpdir(), 'e2e-title-'));
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 会话名 ${tag} ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '改名任务' }, headers })).json()) as { id: string };
-  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
   return { project, task, session, headers };
 }
 

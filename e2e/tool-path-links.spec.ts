@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 对话里工具调用参数的文件路径可点：点了切到会话「文件」页并打开那个文件，知道行号就滚到那一行。
@@ -28,7 +29,7 @@ async function setup(page: Page, baseURL: string) {
   writeFileSync(join(root, 'README.md'), '# 说明\n');
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 工具路径 ${Date.now().toString(36)}`, rootPath: root }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '工具路径' }, headers })).json()) as { id: string };
-  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '' }, headers })).json()) as { id: string };
+  const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
   await page.request.post(`/api/sessions/${id}/prompt`, { data: { text: '你好 src/app.ts', attachments: [] }, headers });
   await expect
     .poll(async () => ((await (await page.request.get(`/api/sessions/${id}/events`)).json()) as unknown[]).length > 0, { timeout: 30_000 })

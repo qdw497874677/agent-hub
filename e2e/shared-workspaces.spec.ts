@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { test, expect, type Page } from '@playwright/test';
 import { currentRun } from './run-id.ts';
 import { loginByApi } from './login.ts';
+import { piModel } from './hub-model.ts';
 
 /**
  * 共享工作空间（ADR 0026）：团队页建一个不关联的工作空间 → 项目设置里关联 → 另一个项目开始任务时
@@ -132,7 +133,7 @@ test('关联的团队工作空间里真的能开会话，也能「换个工作�
       expect(linked.ok(), await linked.text()).toBe(true);
     }
     const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '共享工作空间里干活' }, headers })).json()) as { id: string };
-    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: '', workspaceId: made[0]!.id }, headers });
+    const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel(), workspaceId: made[0]!.id }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     const session = (await derived.json()) as { id: string; workspaceId: string };
     sessionIds.push(session.id);
