@@ -12,6 +12,7 @@ import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
 import { ensureHosted, startCommand } from './hosting.ts';
+import type { WorkerCommand } from '../ports/node-gateway.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
@@ -83,14 +84,27 @@ export async function deriveSessionUseCase(
 
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
+  const started = await startSavedSession(deps, session, startCommand(session, workspace.path, null, {}));
+  if (!started.ok) return started;
+  await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
+  return ok(session);
+}
 
-  const dispatched = await deps.gateway.dispatch(startCommand(session, workspace.path, null, {}));
+/**
+ * 会话行已经保存。派发 start；失败把状态改成 failed，并且不托管。
+ * 成功后才 hosting.add。调用方若要在保存和派发之间做别的事（例如倒带先 plan），自己留在外面。
+ */
+export async function startSavedSession(
+  deps: Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions'>,
+  session: Session,
+  command: WorkerCommand
+): Promise<Result<Session, DomainError>> {
+  const dispatched = await deps.gateway.dispatch(command);
   if (!dispatched.ok) {
     await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
     return err(dispatched.error);
   }
   deps.hosting.add(session.id, session.workerId);
-  await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
   return ok(session);
 }
 
@@ -174,14 +188,12 @@ export async function forkSessionUseCase(
   await deps.sessions.save(session);
 
   const { root } = await locationOf(deps, project, session);
-  const dispatched = await deps.gateway.dispatch(
+  const started = await startSavedSession(
+    deps,
+    session,
     startCommand(session, root, { agentSessionRef: source.agentSessionRef, cursor: atSeq }, source.options)
   );
-  if (!dispatched.ok) {
-    await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
-    return err(dispatched.error);
-  }
-  deps.hosting.add(session.id, session.workerId);
+  if (!started.ok) return started;
   await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的最新处（第 ${atSeq} 步）分叉出 ${session.agentId} 会话`);
   return ok(session);
 }

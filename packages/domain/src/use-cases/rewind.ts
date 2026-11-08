@@ -11,7 +11,7 @@ import { placeSession } from '../worker.ts';
 import { authorizeProject, authorizeSession, authorizeWorker } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { startCommand } from './hosting.ts';
-import { interruptSessionUseCase, recordEvent } from './sessions.ts';
+import { interruptSessionUseCase, recordEvent, startSavedSession } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
 import { buildHandoff, type HandoffResult } from '../handoff.ts';
 import { locationOf } from './workspaces.ts';
@@ -208,14 +208,13 @@ export function createRewindService(deps: RewindDeps) {
       await deps.sessions.save(session);
       const planned = await plan(found.value, placed.value);
       // 原生分叉（ADR 0028）：worker 从原 agent 会话的这条消息之前分出去；不行就新开（resume = null），之前的对话用摘要交接
-      const started = await deps.gateway.dispatch(
+      // plan 留在保存之后、派发之前：plan 抛错时会话已在，但还不是 failed，也不托管。
+      const started = await startSavedSession(
+        deps,
+        session,
         startCommand(session, found.value.root || workspace?.path || '', null, source.options, planned.branch ?? undefined)
       );
-      if (!started.ok) {
-        await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
-        return err(started.error);
-      }
-      deps.hosting.add(session.id, session.workerId);
+      if (!started.ok) return started;
 
       if (planned.mode !== 'none') {
         const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq);
