@@ -73,7 +73,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
   // 回合结束（状态变了）就刷新一遍：agent 刚改过文件
   const lastStatus = useRef(status);
   useEffect(() => {
-    if (lastStatus.current !== status) void client.invalidateQueries({ queryKey: sk(sessionId) });
+    if (lastStatus.current !== status) void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
     lastStatus.current = status;
   }, [status, sessionId, client]);
 
@@ -91,16 +91,17 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
       if (disposed) return;
       source = new EventSource(filesApi.eventsUrl(sessionId, paths));
       source.addEventListener('ready', () => {
-        if (!first) void client.invalidateQueries({ queryKey: sk(sessionId) });
+        if (!first) void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
         // 换订阅（展开/返回）时旧连接已断、新连接未就绪，中间的改动会漏：补拉一次被盯的目录
-        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return k[0] === 'files' && k[1] === sessionId && k[2] === 'list' && paths.includes(String(k[3])); } });
+        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return k[0] === 'files' && k[1] === sessionId && k[2] === 'list' && paths.includes(String(k[3])); } }, { cancelRefetch: false });
         first = false;
         subscribed.current = true;
       });
       source.addEventListener('changed', (message) => {
         const notice = JSON.parse((message as MessageEvent<string>).data) as { paths: string[]; reset?: boolean };
+        // cancelRefetch 默认会掐掉还没回来的 git diff。切「第 N 轮」时列表会停在 0 行，也没有错误。
         if (notice.reset) {
-          void client.invalidateQueries({ queryKey: sk(sessionId) });
+          void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
           return;
         }
         void client.invalidateQueries({
@@ -111,7 +112,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
             if (key[2] === 'read' || key[2] === 'diff') return notice.paths.includes(String(key[3]));
             return key[2] === 'changes';
           }
-        });
+        }, { cancelRefetch: false });
       });
       source.addEventListener('error', () => {
         if (source?.readyState !== EventSource.CLOSED) return;
