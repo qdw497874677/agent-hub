@@ -50,13 +50,12 @@ set -a; . ./.env.deploy.local; set +a
 | Hub | `/root/ahub-server/app`，服务 `agent-hub-server`，端口 `17900` |
 | Hub 数据 | `/root/ahub-server/data` |
 | Hub 环境 | `/root/ahub-server/server.env` |
-| Worker | `/root/agent-hub`，服务 `agent-hub-worker`，连 `ws://127.0.0.1:17878/worker` |
-| Worker 环境 | `/root/.config/agent-hub/worker.env` |
+| Worker | 随 hub 内嵌启动（`local-074cfa87`），没有独立 worker 服务 |
 | Node | `/root/.local/node26/bin/node` |
 
 注意：
 
-- 这台机器上 `/root/agent-hub` 的 worker 比 `/root/ahub-server/app` 的 server **旧**（PR #177 左右），部署时要一起看版本。
+- 2026-11-09 已清理旧的 `/root/agent-hub`、`agent-hub-worker.service`（连 `127.0.0.1:17878`）和 `/root/.config/agent-hub/worker.env`。
 - `HUB_HOST=0.0.0.0`、`HUB_PORT=17900` 是公网可达的；改鉴权相关配置前先确认账号体系与 `HUB_TOKEN` 状态。
 - 机器只有 2 vCPU / 1.7 GiB，不要在上面跑重负载并行测试。
 
@@ -124,7 +123,7 @@ node apps/server/src/main.ts
 
 ```bash
 # 只读检查
-scripts/aliyun-ssh.sh 'hostname; systemctl is-active agent-hub-server agent-hub-worker'
+scripts/aliyun-ssh.sh 'hostname; systemctl is-active agent-hub-server'
 
 # 走仓库自带的备份 → ff-only → npm ci → build → restart → health 流程
 scripts/deploy-aliyun.sh
@@ -172,7 +171,6 @@ scripts/aliyun-ssh.sh '
 
 - **`npm test` 默认并发可能卡住**：分模块或串行跑都正常；串行全量约 82 秒。
 - **`package-lock.json` 可能落后**：`@agent-hub/connector-github` 曾经缺条目，`npm ci` 会报缺包；`npm install` 后应提交锁文件同步。
-- **阿里云 worker 版本落后**：`/root/agent-hub` 的 `agent-hub-worker.service` 仍指向已无监听的 `127.0.0.1:17878`（持续重连失败）；实际可用的是 hub 自带的 `local-074cfa87` 和本机接入的 `remote-7ecd5a47`。
 - **旧共享令牌仍可登录**：阿里云 hub 的 `tokenLogin` 仍为 `true`，`HUB_TOKEN` 可以换登录态；迁移完成后应停用。
 - **SSH 允许 root 密码登录**且服务端 OpenSSH 较老；长期应改密钥登录并关闭密码认证。
 - **截图**：远端截图是文件，SSH 终端看不到；用 `scp` 或 SSH 端口转发到本地浏览器。
