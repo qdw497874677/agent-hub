@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ProjectDto, TaskDto } from './api.ts';
+import type { CanvasDto, ProjectDto, TaskDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from './home.tsx';
 import { AdminPage } from './admin/page.tsx';
@@ -180,22 +180,39 @@ function Workspace() {
     [project]
   );
 
+  // 连线只改画布上的边：直接补缓存，别再拉一次整张画布（大项目一次 400KB+）。
   const linkSessions = useCallback(
     async (aSessionId: string, bSessionId: string) => {
       if (!project) return;
-      await api.createSessionLink(project.id, aSessionId, bSessionId);
-      refresh();
+      const link = await api.createSessionLink(project.id, aSessionId, bSessionId);
+      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) => {
+        if (!current || current.edges.some((edge) => edge.kind === 'link' && edge.aSessionId === link.aSessionId && edge.bSessionId === link.bSessionId)) return current;
+        return { ...current, edges: [...current.edges, { kind: 'link' as const, aSessionId: link.aSessionId, bSessionId: link.bSessionId }] };
+      });
     },
-    [project, refresh]
+    [project, queryClient]
   );
 
   const unlinkSessions = useCallback(
     async (aSessionId: string, bSessionId: string) => {
       if (!project) return;
       await api.deleteSessionLink(project.id, aSessionId, bSessionId);
-      refresh();
+      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) =>
+        current
+          ? {
+              ...current,
+              edges: current.edges.filter(
+                (edge) =>
+                  !(
+                    edge.kind === 'link' &&
+                    ((edge.aSessionId === aSessionId && edge.bSessionId === bSessionId) || (edge.aSessionId === bSessionId && edge.bSessionId === aSessionId))
+                  )
+              )
+            }
+          : current
+      );
     },
-    [project, refresh]
+    [project, queryClient]
   );
 
   const selectedSession = useMemo(

@@ -1,7 +1,7 @@
 import { DeliveryContext, useDeliveries } from './delivery-note.tsx';
 import { ProvenanceRow } from './provenance-row.tsx';
 import { AttentionAutoAck } from './attention.tsx';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
@@ -73,7 +73,10 @@ export function FocusView({
   const [titleDraft, setTitleDraft] = useState('');
   const [linksOpen, setLinksOpen] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
+  const [linkOverrides, setLinkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [linkError, setLinkError] = useState<string | null>(null);
+  // 同一 tick 内连点两下时 state 还没刷新，用 ref 抢先挡住第二次请求。
+  const linkBusyRef = useRef(false);
   useEffect(() => setRenaming(false), [session.id]);
   const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>('chat');
@@ -110,32 +113,85 @@ export function FocusView({
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
   const deliveriesBySeq = useDeliveries(session.id, lastSeq);
+  const canvasLinkedIds = useMemo(
+    () =>
+      new Set(
+        canvas.edges.flatMap((edge) => {
+          if (edge.kind !== 'link') return [];
+          if (edge.aSessionId === session.id) return [edge.bSessionId];
+          if (edge.bSessionId === session.id) return [edge.aSessionId];
+          return [];
+        })
+      ),
+    [canvas.edges, session.id]
+  );
+  // 先按用户点击立刻显示，请求成功后把 canvas 缓存里的边补上；缓存到了再清掉覆盖值。
   const linkedSessions = useMemo(() => {
-    const ids = new Set(
-      canvas.edges.flatMap((edge) => {
-        if (edge.kind !== 'link') return [];
-        if (edge.aSessionId === session.id) return [edge.bSessionId];
-        if (edge.bSessionId === session.id) return [edge.aSessionId];
-        return [];
-      })
-    );
+    const ids = new Set(canvasLinkedIds);
+    for (const [id, linked] of linkOverrides) {
+      if (linked) ids.add(id);
+      else ids.delete(id);
+    }
     return canvas.sessions.filter((candidate) => ids.has(candidate.id) && candidate.status !== 'failed');
-  }, [canvas.edges, canvas.sessions, session.id]);
+  }, [canvasLinkedIds, canvas.sessions, linkOverrides]);
   const linkedIds = useMemo(() => new Set(linkedSessions.map((candidate) => candidate.id)), [linkedSessions]);
   const linkName = (candidate: SessionDto): string =>
     candidate.title?.trim() || canvas.openings[candidate.id]?.trim() || '未命名会话';
 
+  useEffect(() => {
+    if (linkBusy === null) return;
+    const desired = linkOverrides.get(linkBusy);
+    if (desired === undefined || canvasLinkedIds.has(linkBusy) === desired) {
+      setLinkBusy(null);
+      linkBusyRef.current = false;
+      setLinkOverrides((current) => {
+        if (!current.has(linkBusy)) return current;
+        const next = new Map(current);
+        next.delete(linkBusy);
+        return next;
+      });
+    }
+  }, [canvasLinkedIds, linkBusy, linkOverrides]);
+
   async function toggleLink(otherId: string, next: boolean): Promise<void> {
+    if (linkBusyRef.current) return;
+    linkBusyRef.current = true;
     setLinkError(null);
     setLinkBusy(otherId);
+    setLinkOverrides((current) => new Map(current).set(otherId, next));
     try {
-      if (next) await api.createSessionLink(canvas.project.id, session.id, otherId);
-      else await api.deleteSessionLink(canvas.project.id, session.id, otherId);
-      onChanged();
+      if (next) {
+        const link = await api.createSessionLink(canvas.project.id, session.id, otherId);
+        queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) => {
+          if (!current || current.edges.some((edge) => edge.kind === 'link' && edge.aSessionId === link.aSessionId && edge.bSessionId === link.bSessionId)) return current;
+          return { ...current, edges: [...current.edges, { kind: 'link' as const, aSessionId: link.aSessionId, bSessionId: link.bSessionId }] };
+        });
+      } else {
+        await api.deleteSessionLink(canvas.project.id, session.id, otherId);
+        queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
+          current
+            ? {
+                ...current,
+                edges: current.edges.filter(
+                  (edge) =>
+                    !(
+                      edge.kind === 'link' &&
+                      ((edge.aSessionId === session.id && edge.bSessionId === otherId) || (edge.aSessionId === otherId && edge.bSessionId === session.id))
+                    )
+                )
+              }
+            : current
+        );
+      }
     } catch (failure) {
+      setLinkOverrides((current) => {
+        const next = new Map(current);
+        next.delete(otherId);
+        return next;
+      });
       setLinkError(failure instanceof Error ? failure.message : '连接失败');
-    } finally {
       setLinkBusy(null);
+      linkBusyRef.current = false;
     }
   }
   const turnRunning = waitingForReply(live, status);
@@ -471,7 +527,7 @@ export function FocusView({
                   <button
                     className="px-1.5 py-0.5 text-tertiary hover:text-rust disabled:opacity-40"
                     aria-label={`断开 ${linkName(candidate)}`}
-                    disabled={linkBusy === candidate.id}
+                    disabled={linkBusy !== null}
                     onClick={() => void toggleLink(candidate.id, false)}
                   >
                     ×

@@ -65,28 +65,33 @@ export function SessionLinksDialog({
       {rows.length === 0 ? (
         <p className="py-6 text-center text-meta text-tertiary">同项目里还没有其他会话</p>
       ) : (
-        <div className="flex flex-col gap-1" data-testid="session-link-options">
+        <div className="flex flex-col gap-1" data-testid="session-link-options" aria-busy={busyId !== null}>
           {rows.map((row) => {
             const busy = busyId === row.session.id;
+            const pending = busyId !== null;
             return (
               <label
                 key={row.session.id}
                 className={`flex cursor-pointer items-start gap-2 rounded-sm border px-2 py-2 ${
                   row.connected ? 'border-accent/50 bg-card-raised' : 'border-hair hover:border-strong'
-                } ${busy ? 'opacity-60' : ''}`}
+                } ${pending ? 'cursor-wait opacity-60' : ''}`}
               >
                 <input
                   type="checkbox"
                   className="mt-1"
                   checked={row.connected}
-                  disabled={busy}
+                  disabled={pending}
                   aria-label={`连接 ${row.title}`}
                   onChange={() => onToggle(row.session.id, !row.connected)}
                 />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline gap-2">
                     <span className="truncate text-sub text-primary">{row.title}</span>
-                    {row.connected ? <span className="shrink-0 text-meta text-accent">已连接</span> : null}
+                    {busy ? (
+                      <span className="shrink-0 text-meta text-tertiary" aria-live="polite">处理中…</span>
+                    ) : row.connected ? (
+                      <span className="shrink-0 text-meta text-accent">已连接</span>
+                    ) : null}
                   </span>
                   <span className="mt-0.5 flex gap-2 text-meta text-tertiary">
                     <span>{row.agent}</span>

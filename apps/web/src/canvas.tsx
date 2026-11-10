@@ -135,6 +135,7 @@ export function CanvasView({
   const flowFit = useRef<ReactFlowInstance<AnyNode, Edge>['fitView'] | null>(null);
   const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
   const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
   const sessionIds = useMemo(() => new Set(canvas.sessions.map((session) => session.id)), [canvas.sessions]);
   const sizesRef = useRef(sizes);
   sizesRef.current = sizes;
@@ -564,13 +565,15 @@ export function CanvasView({
           onLayoutChange({ positions: { [node.id]: point } });
         }}
         onConnect={(connection) => {
-          if (!connection.source || !connection.target) return;
+          if (linkBusy || !connection.source || !connection.target) return;
           setLinkError(null);
-          void onLink(connection.source, connection.target).catch((failure: unknown) =>
-            setLinkError(failure instanceof Error ? failure.message : '连接失败')
-          );
+          setLinkBusy(true);
+          void onLink(connection.source, connection.target)
+            .catch((failure: unknown) => setLinkError(failure instanceof Error ? failure.message : '连接失败'))
+            .finally(() => setLinkBusy(false));
         }}
         isValidConnection={(connection) =>
+          !linkBusy &&
           connection.source !== connection.target &&
           connection.sourceHandle === 'link-source' &&
           connection.targetHandle === 'link-target' &&
@@ -578,13 +581,17 @@ export function CanvasView({
           sessionIds.has(connection.target ?? '')
         }
         onEdgesDelete={(deleted) => {
-          for (const edge of deleted) {
+          if (linkBusy) return;
+          const links = deleted.flatMap((edge) => {
             const data = edge.data as { kind?: string; aSessionId?: string; bSessionId?: string } | undefined;
-            if (data?.kind !== 'link' || !data.aSessionId || !data.bSessionId) continue;
-            void onUnlink(data.aSessionId, data.bSessionId).catch((failure: unknown) =>
-              setLinkError(failure instanceof Error ? failure.message : '断开失败')
-            );
-          }
+            return data?.kind === 'link' && data.aSessionId && data.bSessionId ? [{ a: data.aSessionId, b: data.bSessionId }] : [];
+          });
+          if (links.length === 0) return;
+          setLinkError(null);
+          setLinkBusy(true);
+          void Promise.all(links.map(({ a, b }) => onUnlink(a, b)))
+            .catch((failure: unknown) => setLinkError(failure instanceof Error ? failure.message : '断开失败'))
+            .finally(() => setLinkBusy(false));
         }}
         minZoom={0.35}
         maxZoom={1.4}

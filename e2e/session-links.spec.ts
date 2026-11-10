@@ -102,7 +102,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await expect(dialog).toBeVisible();
   const checkbox = dialog.locator('input[type="checkbox"]').first();
   await expect(checkbox).not.toBeChecked();
-  // 受控 checkbox：点击后要等 API 回来才更新，不能要求点击瞬间就 checked。
+  // 乐观更新：点击后立即显示已连接，后台再确认。
   await checkbox.click();
   await expect(page.getByRole('button', { name: '连接 1', exact: true })).toBeVisible();
   await expect(checkbox).toBeChecked();
