@@ -57,11 +57,13 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
     const row = page.getByTestId('provenance-row');
     await expect(row).toContainText('来历');
-    await expect(row).toContainText('网页');
-    await expect(row).toContainText('权限：');
+    await expect(row).toContainText('网页创建');
+    await expect(row).not.toContainText('权限：');
     await expect(page.getByTestId('provenance-details')).toHaveCount(0);
     await page.getByTestId('provenance-toggle').click();
-    await expect(page.getByTestId('provenance-details')).toContainText('途径');
+    await expect(page.getByTestId('provenance-details')).toContainText('发起人');
+    await expect(page.getByTestId('provenance-details')).toContainText('来源');
+    await expect(page.getByTestId('provenance-details')).toContainText('权限');
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/provenance-1280.png` });
     const prov = (await (await page.request.get(`/api/sessions/${session.id}/provenance`)).json()) as { id: string; via: string; backfilled: boolean; actor: { kind: string } };
     expect(prov.via).toBe('web');
