@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
@@ -8,7 +8,7 @@ import { piModel } from './hub-model.ts';
 test.use({ viewport: { width: 390, height: 844 } });
 
 // 同一个任务下两条会话（一条派生、一条分叉）在手机上要分得清：组头是任务，行上是第一句话 / 时间 / 分叉自 #n
-test('列表视图：按任务分组，手机上每行都有能区分的信息', async ({ page, baseURL }) => {
+test('列表视图：按任务分组，手机上每行都有能区分的信息', async ({ page, baseURL }, testInfo) => {
   await loginByApi(page);
   const csrf = (await page.context().cookies()).find((c) => c.name === 'hub_csrf')?.value ?? '';
   const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
@@ -30,6 +30,7 @@ test('列表视图：按任务分组，手机上每行都有能区分的信息',
 
   await page.goto(`/#/p/${project.id}`);
   await page.getByRole('button', { name: '列表' }).click();
+  await expect(page.getByTestId('list-context')).toContainText(project.name);
   const group = page.getByRole('region', { name: '任务：同名任务' });
   await expect(group.getByRole('heading')).toContainText('2 条会话');
   const rows = group.getByTestId('list-session-row');
@@ -38,8 +39,8 @@ test('列表视图：按任务分组，手机上每行都有能区分的信息',
   await expect(rows.nth(0).getByTestId('list-session-meta')).toBeVisible();
   await expect(rows.nth(0).getByTestId('list-session-meta')).toContainText('派生');
   await expect(rows.nth(1).getByTestId('list-session-meta')).toContainText(/分叉自 #\d+/);
+  await expect(rows.nth(0).getByTestId('list-session-place')).toBeVisible();
   const box = await rows.nth(1).boundingBox();
   expect(box && box.height >= 44 && box.x + box.width <= 390).toBe(true);
-  mkdirSync('/workspace/shots/list', { recursive: true });
-  await page.screenshot({ path: '/workspace/shots/list/list-390.png' });
+  await page.screenshot({ path: testInfo.outputPath('list-390.png') });
 });

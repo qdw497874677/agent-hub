@@ -7,6 +7,8 @@ import { sessionListLabel } from './session-label.ts';
 import type { LiveMap } from './live.ts';
 import { StatusPill } from './status.tsx';
 import { NoTasksHint } from './empty-tasks.tsx';
+import { resolveWorker, useWorkers, WorkerChip } from './workers.tsx';
+import { workspaceName } from './workspace-format.ts';
 
 
 function statusOf(session: SessionDto, live: LiveMap): SessionDto['status'] {
@@ -36,16 +38,31 @@ export function ListView({
   onNewTask: () => void;
 }) {
   const groups = useMemo(() => groupSessions(canvas), [canvas]);
+  const workers = useWorkers();
+  const workspaces = useMemo(
+    () => new Map(canvas.workspaces.map((workspace) => [workspace.id, workspace])),
+    [canvas.workspaces]
+  );
   const agentLabel = (agentId: string) => canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
 
   return (
     <div className="h-full overflow-y-auto px-3 py-4 md:px-6" data-testid="list-view">
+      <div className="mb-3 border-b border-hair pb-2" data-testid="list-context">
+        <div className="flex items-baseline gap-2">
+          <span className="shrink-0 text-meta text-tertiary">项目</span>
+          <span className="min-w-0 truncate text-sub text-primary" title={canvas.project.name}>{canvas.project.name}</span>
+        </div>
+        <div className="mt-0.5 text-meta text-tertiary">
+          {groups.length} 个任务 · {canvas.sessions.length} 条会话
+        </div>
+      </div>
       {canvas.sessions.length === 0 ? (
         <p className="py-6 text-meta text-tertiary">还没有会话。点下面的任务（或画布上任务卡的「＋ 会话」）就能派生一条。</p>
       ) : null}
       {groups.map((group) => (
         <section key={group.taskId} className="mb-4" aria-label={`任务：${group.title}`} data-testid="list-task-group">
-          <h3 className="flex items-baseline gap-2 border-b border-hair py-2 text-sub text-primary">
+          <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
+            <span className="shrink-0 text-meta text-tertiary">任务</span>
             <span className="min-w-0 truncate">{group.title}</span>
             <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
           </h3>
@@ -54,6 +71,8 @@ export function ListView({
               const status = statusOf(session, live);
               const seq = live[session.id]?.lastSeq ?? session.lastSeq;
               const origin = session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生';
+              const worker = resolveWorker(workers.list, session.workerId);
+              const workspace = session.workspaceId ? workspaces.get(session.workspaceId) : undefined;
               return (
                 <li key={session.id}>
                   <button
@@ -66,7 +85,20 @@ export function ListView({
                       <span className="block truncate text-body text-primary" data-testid="list-session-label">{label}</span>
                       <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
                         {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
-                        <span className="hidden md:inline"> · {session.model === '' ? '默认模型' : session.model} · #{seq}</span>
+                      </span>
+                      <span className="mt-1 flex min-w-0 items-center gap-1.5" data-testid="list-session-place">
+                        <WorkerChip
+                          worker={worker}
+                          fallback={session.workerId ? session.workerId.slice(0, 8) : '本机'}
+                        />
+                        {workspace ? (
+                          <span className="min-w-0 truncate text-meta text-tertiary" title={workspace.path}>
+                            {workspaceName(workspace)}
+                          </span>
+                        ) : null}
+                        <span className="hidden shrink-0 text-meta text-tertiary md:inline">
+                          {session.model === '' ? '默认模型' : session.model} · #{seq}
+                        </span>
                       </span>
                     </span>
                     <span className="shrink-0">
