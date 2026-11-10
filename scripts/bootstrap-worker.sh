@@ -195,11 +195,30 @@ echo "==> Node $(node -v)"
 # hub 取不到才退回 git clone GitHub。
 hub_get() { # hub_get <种类 bundle|tar.gz> <输出文件>：下载并校验 sha256
   [[ -n "$HUB_COMMIT" && "$HUB_HTTP" == http* ]] || return 1
-  local url="$HUB_HTTP/install/worker-$HUB_COMMIT.$1" sum
-  sum="$(curl -fsSL -m 30 "$url.sha256" 2>/dev/null | awk '{print $1}')" || return 1
-  [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || return 1
-  curl -fsSL -m 600 "$url" -o "$2" 2>/dev/null || return 1
-  echo "$sum  $2" | sha256sum -c - >/dev/null 2>&1
+  local url="$HUB_HTTP/install/worker-$HUB_COMMIT.$1" sum started size
+  echo "==> 从 hub 获取代码包（${HUB_COMMIT:0:7}.$1）"
+  if ! sum="$(curl -fsSL -m 30 "$url.sha256" 2>/dev/null | awk '{print $1}')"; then
+    echo "==> 取代码包信息失败：$url.sha256" >&2
+    return 1
+  fi
+  if [[ ! "$sum" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "==> hub 返回的代码包校验值不合法" >&2
+    return 1
+  fi
+  # 交互式终端显示下载进度；脚本/日志里只输出阶段信息，避免刷屏。
+  local curl_opts=(-fL -S --retry 2 --retry-delay 1 -m 600)
+  if [[ -t 2 ]]; then curl_opts+=(--progress-bar); else curl_opts+=(-sS); fi
+  started=$SECONDS
+  if ! curl "${curl_opts[@]}" "$url" -o "$2"; then
+    echo "==> 代码包下载失败：$url" >&2
+    return 1
+  fi
+  size="$(du -h "$2" 2>/dev/null | cut -f1)"
+  echo "==> 代码包下载完成（${size:-未知大小}，$((SECONDS - started))s）"
+  if ! echo "$sum  $2" | sha256sum -c - >/dev/null 2>&1; then
+    echo "==> 代码包 sha256 校验失败" >&2
+    return 1
+  fi
 }
 BUNDLE_REF=refs/agent-hub/install
 from_hub=""
@@ -216,6 +235,7 @@ if command -v git >/dev/null; then
       git -C "$DIR" init --quiet
       git -C "$DIR" remote add origin "$REPO"
     fi
+    echo "==> 把代码包合入 $DIR 并切换到 ${HUB_COMMIT:0:7}"
     if git -C "$DIR" fetch --quiet "$tmp_code/w.bundle" "+$BUNDLE_REF:$BUNDLE_REF" \
       && git -C "$DIR" checkout --quiet -f -B agent-hub-worker "$HUB_COMMIT"; then
       from_hub=1
@@ -230,6 +250,7 @@ elif hub_get tar.gz "$tmp_code/w.tar.gz"; then
     echo "$DIR 已存在且不是 agent-hub 的安装目录；换个 AGENT_HUB_DIR 或先挪走它" >&2; exit 1
   fi
   # 升级：旧文件清掉（node_modules 留着加速 npm），整包解开
+  echo "==> 解压代码包到 $DIR"
   [[ -d "$DIR" ]] && find "$DIR" -mindepth 1 -maxdepth 1 ! -name node_modules -exec rm -rf {} +
   mkdir -p "$DIR"
   tar -xzf "$tmp_code/w.tar.gz" -C "$DIR"
@@ -241,13 +262,15 @@ rm -rf "$tmp_code"
 
 if [[ -z "$from_hub" ]]; then
   need git
-  echo "==> 没能从 hub 取到代码，改从 $REPO 拉取"
+  echo "==> 没能从 hub 取到代码，改从 $REPO 拉取（这一步可能需要一会儿）"
   if [[ -d "$DIR/.git" ]]; then
-    echo "==> 更新 $DIR"
+    echo "==> 更新本地仓库 $DIR"
     git -C "$DIR" fetch --quiet origin
   else
+    echo "==> 首次 clone 到 $DIR"
     git clone --quiet "$REPO" "$DIR"
   fi
+  echo "==> 仓库已就绪，切换到 hub 的提交"
   if [[ -n "$HUB_COMMIT" ]]; then
     # 和 hub 同一个提交：协议版本天然一致；之后由 hub 的「更新」按钮推着走。
     git -C "$DIR" checkout --quiet -B agent-hub-worker "$HUB_COMMIT" \

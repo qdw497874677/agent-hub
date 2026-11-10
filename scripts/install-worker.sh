@@ -81,9 +81,10 @@ if [[ -n "$npm_registry" ]]; then
   echo "==> npm 源：$npm_registry"
 fi
 
-echo "==> 安装依赖"
+echo "==> 安装依赖（npm install --omit=dev，首次可能需要几分钟）"
 cd "$here"
 npm install --no-fund --no-audit --omit=dev
+echo "==> 依赖安装完成"
 
 label="${WORKER_LABEL:-$(hostname 2>/dev/null || uname -n)$suffix}"
 credential=""
@@ -112,14 +113,16 @@ harness_dirs() {
 }
 old_path=""
 if [[ -f "$env_file" ]]; then old_path="$(sed -n 's/^PATH=//p' "$env_file" | tail -1)"; fi
+echo "==> 查找 pi / opencode / grok 的安装位置（最多约 40 秒）"
+harness_list="$(harness_dirs | awk 'NF && !seen[$0]++')"
 worker_path="$({
-  harness_dirs
+  printf '%s\n' "$harness_list"
   dirname "$node_bin"
   tr ':' '\n' <<<"$old_path"
   tr ':' '\n' <<<"$PATH"
   tr ':' '\n' <<<"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 } | awk 'NF && !seen[$0]++' | paste -sd: -)"
-found_harnesses="$(harness_dirs | sort -u | paste -sd' ' -)"
+found_harnesses="$(sort -u <<<"$harness_list" | paste -sd' ' -)"
 echo "==> harness 所在目录：${found_harnesses:-（登录 shell 里没找到 pi / opencode / grok）}"
 
 echo "==> 写配置 $env_file"
@@ -229,5 +232,6 @@ if [[ $EUID -ne 0 ]]; then
 fi
 "${sysctl[@]}" daemon-reload
 "${sysctl[@]}" enable "$service.service"
+echo "==> 启动 $service"
 "${sysctl[@]}" restart "$service.service"
 echo "==> 已启动。看日志：journalctl ${sysctl[1]:-} -u $service -f"
