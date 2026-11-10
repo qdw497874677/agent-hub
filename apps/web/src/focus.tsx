@@ -24,6 +24,7 @@ import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './sessi
 import { RewindDialog } from './rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 import { ContextMeter } from './context-meter.tsx';
+import { SessionLinksDialog } from './session-links-dialog.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -70,6 +71,9 @@ export function FocusView({
   const [details, setDetails] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
+  const [linksOpen, setLinksOpen] = useState(false);
+  const [linkBusy, setLinkBusy] = useState<string | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
   useEffect(() => setRenaming(false), [session.id]);
   const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>('chat');
@@ -106,6 +110,34 @@ export function FocusView({
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
   const deliveriesBySeq = useDeliveries(session.id, lastSeq);
+  const linkedSessions = useMemo(() => {
+    const ids = new Set(
+      canvas.edges.flatMap((edge) => {
+        if (edge.kind !== 'link') return [];
+        if (edge.aSessionId === session.id) return [edge.bSessionId];
+        if (edge.bSessionId === session.id) return [edge.aSessionId];
+        return [];
+      })
+    );
+    return canvas.sessions.filter((candidate) => ids.has(candidate.id) && candidate.status !== 'failed');
+  }, [canvas.edges, canvas.sessions, session.id]);
+  const linkedIds = useMemo(() => new Set(linkedSessions.map((candidate) => candidate.id)), [linkedSessions]);
+  const linkName = (candidate: SessionDto): string =>
+    candidate.title?.trim() || canvas.openings[candidate.id]?.trim() || '未命名会话';
+
+  async function toggleLink(otherId: string, next: boolean): Promise<void> {
+    setLinkError(null);
+    setLinkBusy(otherId);
+    try {
+      if (next) await api.createSessionLink(canvas.project.id, session.id, otherId);
+      else await api.deleteSessionLink(canvas.project.id, session.id, otherId);
+      onChanged();
+    } catch (failure) {
+      setLinkError(failure instanceof Error ? failure.message : '连接失败');
+    } finally {
+      setLinkBusy(null);
+    }
+  }
   const turnRunning = waitingForReply(live, status);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
@@ -241,6 +273,13 @@ export function FocusView({
         <span className="flex shrink-0 items-center">
           <button
             className="flex h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:h-9"
+            onClick={() => setLinksOpen(true)}
+            title="连接同项目的其他会话"
+          >
+            连接 {linkedSessions.length}
+          </button>
+          <button
+            className="flex h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:h-9"
             onClick={() => setDetails(true)}
           >
             详情
@@ -329,6 +368,22 @@ export function FocusView({
           </div>
         ) : null
       )}
+      {linksOpen ? (
+        <SessionLinksDialog
+          sessions={canvas.sessions}
+          currentId={session.id}
+          linked={linkedIds}
+          openings={canvas.openings}
+          agents={canvas.agents}
+          busyId={linkBusy}
+          error={linkError}
+          onToggle={(otherId, next) => void toggleLink(otherId, next)}
+          onClose={() => {
+            setLinksOpen(false);
+            setLinkError(null);
+          }}
+        />
+      ) : null}
       {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} onBrowseFiles={() => { setDetails(false); setTab('files'); }} /> : null}
       {continuing ? (
         <ContinueDialog
@@ -406,6 +461,25 @@ export function FocusView({
 
       <div className={`shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4 ${tab === 'chat' ? '' : 'hidden'}`}>
         <div className="mx-auto max-w-[760px]">
+          {linkedSessions.length > 0 ? (
+            <div className="mb-1 flex flex-wrap items-center gap-1.5" data-testid="session-link-chips">
+              {linkedSessions.map((candidate) => (
+                <span key={candidate.id} className="inline-flex max-w-full items-center rounded-full border border-hair bg-card-raised text-meta">
+                  <button className="max-w-[14rem] truncate px-2 py-0.5 text-secondary hover:text-primary" onClick={() => onOpenSession(candidate.id)}>
+                    {linkName(candidate)}
+                  </button>
+                  <button
+                    className="px-1.5 py-0.5 text-tertiary hover:text-rust disabled:opacity-40"
+                    aria-label={`断开 ${linkName(candidate)}`}
+                    disabled={linkBusy === candidate.id}
+                    onClick={() => void toggleLink(candidate.id, false)}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+          ) : null}
           {live?.contextUsage ? (
             <div className="mb-1 flex justify-end pr-1">
               <ContextMeter usage={live.contextUsage} />

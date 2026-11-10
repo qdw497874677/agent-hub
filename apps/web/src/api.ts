@@ -298,8 +298,24 @@ export const api = {
   search: (projectId: string, q: string) =>
     call<SearchResponseDto>(`/api/search?projectId=${encodeURIComponent(projectId)}&q=${encodeURIComponent(q)}`),
   saveLayout: (projectId: string, patch: SaveLayoutRequest) =>
-    call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(patch) })
+    call<LayoutDto>(`/api/projects/${projectId}/layout`, { method: 'PUT', body: JSON.stringify(patch) }),
+  createSessionLink: (projectId: string, aSessionId: string, bSessionId: string) =>
+    post<SessionLinkDto>(`/api/projects/${projectId}/session-links`, { aSessionId, bSessionId }),
+  deleteSessionLink: (projectId: string, aSessionId: string, bSessionId: string) =>
+    call<{ ok: true }>(
+      `/api/projects/${projectId}/session-links/${encodeURIComponent(aSessionId)}/${encodeURIComponent(bSessionId)}`,
+      { method: 'DELETE' }
+    )
 };
+
+/** 会话连线：无向，a/b 只是规范化后的两端。 */
+export interface SessionLinkDto {
+  readonly projectId: string;
+  readonly aSessionId: string;
+  readonly bSessionId: string;
+  readonly createdBy: string | null;
+  readonly createdAt: number;
+}
 
 /** 会话启动时实际给出的资产清单（见 asset-hub.md「会话资产清单」）。 */
 export interface SessionAssetsDto {

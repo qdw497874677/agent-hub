@@ -50,6 +50,8 @@ import type {
 import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
 import type { CommitPreview, GitStatus, RemotePullRequest, WorkspaceGit } from '../index.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
+import { canonicalLink, type SessionLink } from '../session-link.ts';
+import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
 
 /**
  * 用例测试与 HTTP 合同测试共用的内存假件。
@@ -250,6 +252,36 @@ export function fakeLayout(): LayoutStore {
     },
     async save(layout) {
       rows.set(layout.projectId, layout);
+    }
+  };
+}
+
+export function fakeSessionLinks(): SessionLinkRepository & { rows: Map<string, SessionLink> } {
+  const rows = new Map<string, SessionLink>();
+  const key = (link: SessionLink): string => `${link.projectId}:${link.aSessionId}:${link.bSessionId}`;
+  return {
+    rows,
+    async listByProject(projectId) {
+      return [...rows.values()].filter((link) => link.projectId === projectId);
+    },
+    async forSession(sessionId) {
+      return [...rows.values()].filter((link) => link.aSessionId === sessionId || link.bSessionId === sessionId);
+    },
+    async areLinked(one, other) {
+      return [...rows.values()].some(
+        (link) =>
+          (link.aSessionId === one && link.bSessionId === other) ||
+          (link.aSessionId === other && link.bSessionId === one)
+      );
+    },
+    async save(link) {
+      rows.set(key(link), link);
+    },
+    async remove(projectId, one, other) {
+      rows.delete(key(canonicalLink(projectId, one, other, null, 0)));
+    },
+    async removeByProject(projectId) {
+      for (const [id, link] of rows) if (link.projectId === projectId) rows.delete(id);
     }
   };
 }

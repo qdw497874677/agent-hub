@@ -1,5 +1,6 @@
 import type { ProjectId, Seq, SessionId, TaskId } from './ids.ts';
 import type { Session } from './session.ts';
+import type { SessionLink } from './session-link.ts';
 import type { Task } from './task.ts';
 
 /** 画布坐标。布局是视图状态，但它必须活过浏览器重启（S6.3 / S7.1）。 */
@@ -54,7 +55,7 @@ export function applyLayoutPatch(layout: CanvasLayout, patch: LayoutPatch, now: 
   };
 }
 
-/** 血缘边。线型由 kind 决定：derive 实线、fork 虚线（视觉方向 §3）。 */
+/** 画布边。线型由 kind 决定：derive 实线、fork 虚线、link 无向实线（视觉方向 §3）。 */
 export type LineageEdge =
   | { readonly kind: 'derive'; readonly taskId: TaskId; readonly sessionId: SessionId }
   | {
@@ -62,10 +63,20 @@ export type LineageEdge =
       readonly fromSessionId: SessionId;
       readonly toSessionId: SessionId;
       readonly atSeq: Seq;
+    }
+  | {
+      readonly kind: 'link';
+      readonly aSessionId: SessionId;
+      readonly bSessionId: SessionId;
     };
 
-export function buildLineage(tasks: readonly Task[], sessions: readonly Session[]): LineageEdge[] {
+export function buildLineage(
+  tasks: readonly Task[],
+  sessions: readonly Session[],
+  links: readonly SessionLink[] = []
+): LineageEdge[] {
   const knownTasks = new Set(tasks.map((t) => t.id));
+  const knownSessions = new Set(sessions.map((s) => s.id));
   const edges: LineageEdge[] = [];
   for (const session of sessions) {
     if (!knownTasks.has(session.taskId)) continue;
@@ -78,6 +89,11 @@ export function buildLineage(tasks: readonly Task[], sessions: readonly Session[
         atSeq: session.origin.atSeq
       });
     }
+  }
+  for (const link of links) {
+    // 至少两端都还在这个项目里才画：会话被删掉后关系行可能还没清（清理有延迟）。
+    if (!knownSessions.has(link.aSessionId) || !knownSessions.has(link.bSessionId)) continue;
+    edges.push({ kind: 'link', aSessionId: link.aSessionId, bSessionId: link.bSessionId });
   }
   return edges;
 }

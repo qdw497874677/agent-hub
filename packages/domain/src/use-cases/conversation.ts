@@ -15,6 +15,7 @@ import type { Deps } from './deps.ts';
 import { attemptDelivery } from './delivery.ts';
 import { ensureHosted, projectOf } from './hosting.ts';
 import { recordEvent, recordSessionOptions } from './sessions.ts';
+import { otherEnd } from '../session-link.ts';
 import { taskBriefing } from '../task-briefing.ts';
 
 /*
@@ -71,12 +72,38 @@ async function prepareAttachments(
   return ok({ stored, parts });
 }
 
+/**
+ * 会话连线：每轮 prompt 前把“显式连接了谁”告诉 agent。
+ * 只读 links，不碰消息表；连接是谁建的、有没有方向都不影响这里。
+ */
+async function peerBriefingFor(
+  deps: Pick<Deps, 'links' | 'sessions'>,
+  session: Session
+): Promise<string | null> {
+  if (!deps.links) return null;
+  const links = await deps.links.forSession(session.id);
+  if (links.length === 0) return null;
+  const lines: string[] = [];
+  for (const link of links.slice(0, 20)) {
+    const peerId = otherEnd(link, session.id);
+    if (!peerId) continue;
+    const peer = await deps.sessions.byId(peerId);
+    if (!peer || peer.status === 'failed') continue;
+    const first = await deps.sessions.firstPrompt(peer.id);
+    const opening = first?.event.kind === 'prompt' ? first.event.text.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+    const title = peer.title ? `「${peer.title}」` : '';
+    lines.push(`- session:${peer.id} · ${peer.agentId}${title}${opening ? ` · 首句：${opening}` : ''} · ${peer.status}`);
+  }
+  if (lines.length === 0) return null;
+  return `已连接的会话（只有这些会话能和你互发消息；需要时用 agent.send / agent.ask）：\n${lines.join('\n')}`;
+}
+
 /** 发消息：先记下「用户说了什么」，再确保有人托管，最后才叫 agent。 */
 export async function promptSessionUseCase(
   deps: Pick<
     Deps,
     'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
-  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries'>>,
+  > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links'>>,
   command: PromptCommand
 ): Promise<Result<void, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
@@ -91,6 +118,8 @@ export async function promptSessionUseCase(
   const briefing = session.lastSeq === 0 && command.briefing !== false ? await briefingFor(deps, session) : null;
   // bot 的职责说明（系统提示）：同样只在新会话第一句垫一次，放在最前面
   const instructions = session.lastSeq === 0 && deps.sessionInstructions ? await deps.sessionInstructions(sessionId).catch(() => null) : null;
+  // 每次发话都告诉它“现在连着谁”，连接变化下一轮就生效；没有连线时完全不加。
+  const peers = await peerBriefingFor(deps, session);
 
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——
   // 专注对话里会是一条没有提问的回答。
@@ -109,7 +138,7 @@ export async function promptSessionUseCase(
     const deliveries = deps.deliveries;
     // ADR 0031：先进送达队列再送。前面还有没送达的，就只排队，不越过它。
     const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
-    const text = [instructions, guidance?.text, briefing, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+    const text = [instructions, guidance?.text, briefing, peers, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
     if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
     const now = deps.now();
     // 人的话已经在上面落进 journal。认领必须是送达队列里的一次写入：
@@ -127,7 +156,7 @@ export async function promptSessionUseCase(
   if (!hosted.ok) return failTurn(deps, sessionId, hosted.error);
   // 记忆（ADR 0019）：第一轮只垫一行静态引导，内容靠 agent 自己 memory_search；垫了就记审计
   const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
-  const text = [instructions, guidance?.text, briefing, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+  const text = [instructions, guidance?.text, briefing, peers, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
   if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
   const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
   return sent.ok ? sent : failTurn(deps, sessionId, sent.error);

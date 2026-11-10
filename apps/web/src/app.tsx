@@ -180,6 +180,24 @@ function Workspace() {
     [project]
   );
 
+  const linkSessions = useCallback(
+    async (aSessionId: string, bSessionId: string) => {
+      if (!project) return;
+      await api.createSessionLink(project.id, aSessionId, bSessionId);
+      refresh();
+    },
+    [project, refresh]
+  );
+
+  const unlinkSessions = useCallback(
+    async (aSessionId: string, bSessionId: string) => {
+      if (!project) return;
+      await api.deleteSessionLink(project.id, aSessionId, bSessionId);
+      refresh();
+    },
+    [project, refresh]
+  );
+
   const selectedSession = useMemo(
     () => canvas.data?.sessions.find((session) => session.id === selected) ?? null,
     [canvas.data, selected]
@@ -312,6 +330,8 @@ function Workspace() {
               onSend={sendPrompt}
               onInterrupt={interruptSession}
               onChangeOption={changeOption}
+              onLink={linkSessions}
+              onUnlink={unlinkSessions}
             />
           ) : (
             <div className="flex h-full items-center justify-center text-meta text-tertiary">

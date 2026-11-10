@@ -215,7 +215,14 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </>,
         document.body,
       ) : null}
-      <Handle type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
+      <Handle id="lineage-target" type="target" position={Position.Left} className="!size-1.5 !border-0 !bg-strong" />
+      <Handle
+        id="link-target"
+        type="target"
+        position={Position.Top}
+        title="连到这里"
+        className="!size-2 !border-0 !bg-accent"
+      />
       <header className="card-drag-zone mb-2 flex min-h-11 cursor-grab touch-none select-none items-center justify-between gap-2">
         <div className="flex min-w-0 items-baseline gap-2 overflow-hidden">
           {/* 拖动把手：卡片里的对话区只管滚动，移动卡片按住顶栏（或这个把手）拖。
@@ -335,7 +342,8 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         <span>{session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '从任务派生'}</span>
       </footer>
 
-      <Handle type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
+      <Handle id="link-source" type="source" position={Position.Bottom} title="拖到另一条会话，建立连接" className="!size-2 !border-0 !bg-accent" />
+      <Handle id="lineage-source" type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
     </div>
   );
 }
@@ -409,7 +417,7 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
           </button>
         ))}
       </div>
-      <Handle type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
+      <Handle id="lineage-source" type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
     </div>
   );
 }

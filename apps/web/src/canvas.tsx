@@ -44,6 +44,9 @@ interface Props {
   readonly onInterrupt: (sessionId: string) => Promise<void>;
   /** 改 agent 的可调项（模型、思考强度…）：清单由 agent 报，我们只转发。 */
   readonly onChangeOption: (sessionId: string, optionId: string, value: string | boolean) => Promise<void>;
+  /** 画布拖线：两端都是会话，服务端会规范成无向关系。 */
+  readonly onLink: (aSessionId: string, bSessionId: string) => Promise<void>;
+  readonly onUnlink: (aSessionId: string, bSessionId: string) => Promise<void>;
   readonly onLayoutChange: (patch: LayoutPatch) => void;
   readonly onTaskStatus: (taskId: string, status: TaskDto['status']) => void;
   readonly onTaskDetail: (taskId: string) => void;
@@ -120,7 +123,9 @@ export function CanvasView({
   onDraftChange,
   onSend,
   onInterrupt,
-  onChangeOption
+  onChangeOption,
+  onLink,
+  onUnlink
 }: Props) {
   // setCenter 只需要视口能力，用 Pick 而不是整个实例，免得节点泛型跟着穿进来
   const flow = useRef<Pick<
@@ -129,6 +134,8 @@ export function CanvasView({
   > | null>(null);
   const flowFit = useRef<ReactFlowInstance<AnyNode, Edge>['fitView'] | null>(null);
   const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const sessionIds = useMemo(() => new Set(canvas.sessions.map((session) => session.id)), [canvas.sessions]);
   const sizesRef = useRef(sizes);
   sizesRef.current = sizes;
   // 卡片尺寸：拖过的 > 量到的 > 按上限估。排布全靠它，不再用固定格子。
@@ -441,7 +448,10 @@ export function CanvasView({
         id: `derive-${edge.taskId}-${edge.sessionId}`,
         source: edge.taskId,
         target: edge.sessionId,
+        sourceHandle: 'lineage-source',
+        targetHandle: 'lineage-target',
         type: 'smoothstep',
+        deletable: false,
         style: { stroke: 'var(--color-strong)', strokeWidth: 1 }
       }));
     const forked: Edge[] = canvas.edges
@@ -450,13 +460,30 @@ export function CanvasView({
         id: `fork-${edge.fromSessionId}-${edge.toSessionId}`,
         source: edge.fromSessionId,
         target: edge.toSessionId,
+        sourceHandle: 'lineage-source',
+        targetHandle: 'lineage-target',
         type: 'smoothstep',
+        deletable: false,
         label: `#${edge.atSeq}`,
         labelStyle: { fill: 'var(--color-sage)', fontSize: 11, fontFamily: 'var(--font-mono)' },
         labelBgStyle: { fill: 'var(--color-canvas)' },
         style: { stroke: 'var(--color-sage)', strokeWidth: 1, strokeDasharray: '6 4' }
       }));
-    return [...derived, ...forked];
+    const linked: Edge[] = canvas.edges
+      .filter((edge) => edge.kind === 'link')
+      .map((edge) => ({
+        id: `link-${edge.aSessionId}-${edge.bSessionId}`,
+        source: edge.aSessionId,
+        target: edge.bSessionId,
+        sourceHandle: 'link-source',
+        targetHandle: 'link-target',
+        type: 'straight',
+        // 无向关系：没有箭头；选中后按 Delete 删除。
+        data: { kind: 'link', aSessionId: edge.aSessionId, bSessionId: edge.bSessionId },
+        deletable: true,
+        style: { stroke: 'var(--color-accent)', strokeWidth: 1.5 }
+      }));
+    return [...derived, ...forked, ...linked];
   }, [canvas.edges]);
 
   return (
@@ -536,6 +563,29 @@ export function CanvasView({
           setPositions((current) => ({ ...current, [node.id]: point }));
           onLayoutChange({ positions: { [node.id]: point } });
         }}
+        onConnect={(connection) => {
+          if (!connection.source || !connection.target) return;
+          setLinkError(null);
+          void onLink(connection.source, connection.target).catch((failure: unknown) =>
+            setLinkError(failure instanceof Error ? failure.message : '连接失败')
+          );
+        }}
+        isValidConnection={(connection) =>
+          connection.source !== connection.target &&
+          connection.sourceHandle === 'link-source' &&
+          connection.targetHandle === 'link-target' &&
+          sessionIds.has(connection.source ?? '') &&
+          sessionIds.has(connection.target ?? '')
+        }
+        onEdgesDelete={(deleted) => {
+          for (const edge of deleted) {
+            const data = edge.data as { kind?: string; aSessionId?: string; bSessionId?: string } | undefined;
+            if (data?.kind !== 'link' || !data.aSessionId || !data.bSessionId) continue;
+            void onUnlink(data.aSessionId, data.bSessionId).catch((failure: unknown) =>
+              setLinkError(failure instanceof Error ? failure.message : '断开失败')
+            );
+          }
+        }}
         minZoom={0.35}
         maxZoom={1.4}
       >
@@ -552,6 +602,14 @@ export function CanvasView({
           ) : null}
         </Controls>
       </ReactFlow>
+      {linkError ? (
+        <div role="alert" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-sm border border-rust bg-panel px-3 py-1.5 text-meta text-rust shadow-md">
+          <span>{linkError}</span>
+          <button aria-label="关闭提示" className="text-tertiary hover:text-primary" onClick={() => setLinkError(null)}>
+            ×
+          </button>
+        </div>
+      ) : null}
       <CanvasWindowLayer
         windows={windows}
         narrow={narrow}

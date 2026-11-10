@@ -160,6 +160,7 @@ const deps: Deps = {
   workspaces: store.workspaces,
   artifacts: store.artifacts,
   layout: store.layout,
+  links: store.links,
   stream: hub.stream,
   gateway: {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
@@ -227,6 +228,7 @@ const messageBus = createMessageBus({
   projects: deps.projects,
   tasks: deps.tasks,
   messages: store.messages,
+  links: store.links,
   policy: deps.access,
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),

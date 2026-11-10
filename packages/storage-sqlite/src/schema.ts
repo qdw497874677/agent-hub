@@ -109,4 +109,15 @@ CREATE TABLE IF NOT EXISTS layout (
   sizes      TEXT NOT NULL DEFAULT '{}',
   updated_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS session_links (
+  project_id   TEXT NOT NULL,
+  a_session_id TEXT NOT NULL,
+  b_session_id TEXT NOT NULL,
+  created_by   TEXT,
+  created_at   INTEGER NOT NULL,
+  PRIMARY KEY (project_id, a_session_id, b_session_id)
+);
+
+CREATE INDEX IF NOT EXISTS session_links_b ON session_links(b_session_id);
 `;

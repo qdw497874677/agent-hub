@@ -171,6 +171,9 @@ export const saveLayoutRequest = z.object({
   sizes: z.record(id, sizeSchema).optional()
 });
 
+/** 画布拖线 / 对话页“连接会话”：两端都是同项目会话。 */
+export const createSessionLinkRequest = z.object({ aSessionId: id, bSessionId: id });
+
 // ---- 响应 ----
 
 export const apiErrorSchema = z.object({

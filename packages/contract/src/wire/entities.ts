@@ -230,7 +230,8 @@ export const lineageEdgeSchema = z.discriminatedUnion('kind', [
     fromSessionId: id,
     toSessionId: id,
     atSeq: z.number().int().positive()
-  })
+  }),
+  z.object({ kind: z.literal('link'), aSessionId: id, bSessionId: id })
 ]);
 
 export const canvasSchema = z.object({

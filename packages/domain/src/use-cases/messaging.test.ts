@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryDeps } from '../testing/in-memory.ts';
+import { inMemoryDeps, fakeSessionLinks } from '../testing/in-memory.ts';
 import { createProject, type Project } from '../project.ts';
 import { createTask } from '../task.ts';
 import { deriveSession, type Session } from '../session.ts';
@@ -11,6 +11,8 @@ import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } fr
 import { wrapUntrusted } from '../messaging.ts';
 import { recordEvent } from './sessions.ts';
 import { createMessageBus } from './messaging.ts';
+import { canonicalLink } from '../session-link.ts';
+import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
 
 function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audits: MessageAuditEntry[] } {
   const all = new Map<string, AgentMessage>();
@@ -54,9 +56,9 @@ const user = (id: string, role: Role): User => ({
   deletedAt: null
 }) as unknown as User;
 
-async function world(options: { askTimeoutMs?: number } = {}) {
+async function world(options: { askTimeoutMs?: number; links?: SessionLinkRepository } = {}) {
   let clock = 1000;
-  const memory = inMemoryDeps({ now: () => clock });
+  const memory = inMemoryDeps({ now: () => clock, ...(options.links ? { links: options.links } : {}) });
   const deps = memory.deps;
   const messages = memoryMessages();
   const users = new Map<string, User>([
@@ -106,7 +108,8 @@ async function world(options: { askTimeoutMs?: number } = {}) {
       await deps.sessions.save(s.value);
       return s;
     },
-    ...(options.askTimeoutMs ? { askTimeoutMs: options.askTimeoutMs } : {})
+    ...(options.askTimeoutMs ? { askTimeoutMs: options.askTimeoutMs } : {}),
+    ...(options.links ? { links: options.links } : {})
   });
   /** 让会话结束这一轮：先吐一段文字，再 ended，然后通知总线（组合根里是 stream 订阅）。 */
   const finishTurn = async (sessionId: SessionId, text: string, outcome: 'done' | 'failed' = 'done') => {
@@ -319,4 +322,46 @@ test('不可信包装：正文里的标签被转义，伪造不了外层', () =>
   });
   assert.equal(text.match(/<\/agent-message>/g)?.length, 1);
   assert.ok(!text.includes('<system>'));
+});
+
+test('严格模式：只有连线的会话能互发；连上后 directory/peers 都标 connected', async () => {
+  const links = fakeSessionLinks();
+  const w = await world({ links });
+  const a = await w.newSession('alice');
+  const b = await w.newSession('alice');
+
+  const blocked = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'hi' });
+  assert.equal(blocked.ok, false);
+  if (!blocked.ok) assert.match(blocked.error.message, /只有明确连接的会话/);
+
+  const empty = await w.bus.directory(a.id);
+  assert.ok(empty.ok);
+  assert.equal(empty.value.some((entry) => entry.address === `session:${b.id}`), false);
+  const noPeers = await w.bus.peers(a.id);
+  assert.ok(noPeers.ok);
+  assert.equal(noPeers.value.length, 0);
+
+  await links.save(canonicalLink(w.project.id, b.id, a.id, 'alice', 1000));
+  const sent = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'hi' });
+  assert.ok(sent.ok);
+  assert.equal(w.delivered[0]?.sessionId, b.id);
+
+  const directory = await w.bus.directory(a.id);
+  assert.ok(directory.ok);
+  assert.equal(directory.value.find((entry) => entry.address === `session:${b.id}`)?.connected, true);
+  const peers = await w.bus.peers(a.id);
+  assert.ok(peers.ok);
+  assert.deepEqual(peers.value.map((entry) => [entry.address, entry.connected]), [[`session:${b.id}`, true]]);
+});
+
+test('严格模式：派生父子关系仍是隐式连接，不需要显式连线', async () => {
+  const links = fakeSessionLinks();
+  const w = await world({ links });
+  const parent = await w.newSession('alice');
+  const child = await w.newSession('alice');
+  await w.messages.saveSpawn({ sessionId: child.id, spawnerSessionId: parent.id, projectId: w.project.id, role: null, traceId: 't1', createdAt: 1 } as never);
+
+  const sent = await w.bus.accept({ fromSessionId: parent.id, kind: 'send', to: `session:${child.id}`, body: 'go' });
+  assert.ok(sent.ok);
+  assert.equal(w.delivered[0]?.sessionId, child.id);
 });

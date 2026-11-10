@@ -13,13 +13,14 @@ import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
 import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, ContextSettingsStore, SessionBaseStore, CheckpointStore,
-  TurnRefStore, DeliveryQueue, ProvenanceStore, AttentionStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository } from '@agent-hub/domain';
+  TurnRefStore, DeliveryQueue, ProvenanceStore, AttentionStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository, SessionLinkRepository } from '@agent-hub/domain';
 import { createSqliteAccess } from './access.ts';
 import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
 import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './work-log.ts';
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createSqliteMessageStore } from './messages.ts';
+import { createSqliteSessionLinks } from './session-links.ts';
 import { createSqliteGroupStore } from './groups.ts';
 import { createSqliteContextSettings } from './context-settings.ts';
 import { createSqliteSessionBases } from './session-bases.ts';
@@ -77,6 +78,8 @@ export interface SqliteStore extends RepositorySet {
   readonly notifications: NotificationRepository;
   /** ADR 0017：显式授权 + 团队自定义角色。 */
   readonly access: AccessRepos;
+  /** 画布/对话页的会话连线（无向关系）。 */
+  readonly links: SessionLinkRepository;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -232,6 +235,7 @@ export function openSqliteStore(file: string): SqliteStore {
     `DELETE FROM session_text WHERE session_id IN (${sessionsOf})`,
     `DELETE FROM journal WHERE session_id IN (${sessionsOf})`,
     `DELETE FROM artifacts WHERE session_id IN (${sessionsOf})`,
+    'DELETE FROM session_links WHERE project_id = ?',
     'DELETE FROM sessions WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)',
     'DELETE FROM task_log_entries WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ?)',
     'DELETE FROM tasks WHERE project_id = ?',
@@ -476,6 +480,7 @@ export function openSqliteStore(file: string): SqliteStore {
     sessions,
     artifacts,
     layout,
+    links: createSqliteSessionLinks(db),
     search: createSearch(db),
     ...accountRepos,
     access: createSqliteAccess(db),

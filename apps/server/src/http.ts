@@ -39,6 +39,7 @@ import {
   projectFilesSchema,
   promptRequest,
   saveLayoutRequest,
+  createSessionLinkRequest,
   setTaskStatusRequest,
   setTaskSummaryRequest,
   appendLogRequest,
@@ -96,6 +97,8 @@ import {
   listWorkers,
   probeWorker,
   loadCanvas,
+  linkSessionsUseCase,
+  unlinkSessionsUseCase,
   loadHome,
   invalid,
   notFound,
@@ -501,6 +504,28 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, saveLayoutRequest);
     if (!input.ok) return input.response;
     return c.json(await saveLayoutUseCase(deps, c.req.param('projectId'), input.value));
+  });
+
+  // 会话连线：画布拖线与对话页选择器共用。关系无向、项目级，跨 owner 允许；
+  // 这里只要求 agent.message.send（和消息本身一致），发消息时仍会再查双方权限。
+  app.post('/api/projects/:projectId/session-links', async (c) => {
+    const input = await body(c, createSessionLinkRequest);
+    if (!input.ok) return input.response;
+    const projectId = c.req.param('projectId');
+    const project = await deps.projects.byId(asProjectId(projectId));
+    const allowed = await authorizeProject(deps.access, subjectOf(c), project, 'agent.message.send');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const result = await linkSessionsUseCase(deps, projectId, input.value.aSessionId, input.value.bSessionId, principalOf(c)?.user.id ?? null);
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+
+  app.delete('/api/projects/:projectId/session-links/:a/:b', async (c) => {
+    const projectId = c.req.param('projectId');
+    const project = await deps.projects.byId(asProjectId(projectId));
+    const allowed = await authorizeProject(deps.access, subjectOf(c), project, 'agent.message.send');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const result = await unlinkSessionsUseCase(deps, projectId, c.req.param('a'), c.req.param('b'));
+    return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   });
 
   /** 列表视图与 Cmd+K 的同一个后端：按任务标题/目标 + 会话里说过的话搜。 */

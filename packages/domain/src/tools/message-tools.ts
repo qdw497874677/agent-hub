@@ -16,6 +16,13 @@ export const MESSAGE_TOOLS: readonly ToolDescriptor[] = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false }
   },
   {
+    name: 'agent.peers',
+    version: 1,
+    scope: 'agent:message',
+    description: 'List the sessions explicitly connected to you (canvas links or the conversation picker). Only connected sessions and your spawn parent/children can exchange messages with you.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false }
+  },
+  {
     name: 'agent.send',
     version: 1,
     scope: 'agent:message',
@@ -128,6 +135,8 @@ export function createMessageToolProvider(bus: MessageBus, groups?: GroupChat): 
       switch (name) {
         case 'agent.directory':
           return bus.directory(me);
+        case 'agent.peers':
+          return bus.peers(me);
         case 'agent.send':
         case 'agent.ask': {
           const to = str(args.to);

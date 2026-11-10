@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
-import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
+import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, createSessionLinkRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
 import type { resourceSampleSchema, workerMetricsHistorySchema, workerResourcesSchema } from './wire/resources.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
 
@@ -50,6 +50,7 @@ export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;
 export type ForkSessionRequest = z.infer<typeof forkSessionRequest>;
 export type ContinueElsewhereRequest = z.infer<typeof continueElsewhereRequest>;
 export type SaveLayoutRequest = z.infer<typeof saveLayoutRequest>;
+export type CreateSessionLinkRequest = z.infer<typeof createSessionLinkRequest>;
 export type AttachmentInputDto = z.infer<typeof attachmentInputSchema>;
 export type StoredAttachmentDto = z.infer<typeof storedAttachmentSchema>;
 export type ProjectFilesDto = z.infer<typeof projectFilesSchema>;

@@ -17,6 +17,7 @@ import type { TaskRepository } from '../ports/task-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { ArtifactRepository } from '../ports/artifact-repository.ts';
 import type { LayoutStore } from '../ports/layout-store.ts';
+import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
 import type { SessionEventStream } from '../ports/event-stream.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { WorkspaceGit } from '../ports/workspace-git.ts';
@@ -60,6 +61,8 @@ export interface Deps {
   readonly workspaces: WorkspaceRepository;
   readonly artifacts: ArtifactRepository;
   readonly layout: LayoutStore;
+  /** 会话连线（无向、项目级）。不给 = 没启用画布关系，消息仍按旧的全项目可见。 */
+  readonly links?: SessionLinkRepository;
   readonly stream: SessionEventStream;
   readonly gateway: NodeGateway;
   readonly agents: AgentCatalog;

@@ -23,9 +23,11 @@ import {
   type MessagingConfig
 } from '../messaging.ts';
 import type { MessageStore } from '../ports/message-store.ts';
+import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
 import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isBusy, type Session } from '../session.ts';
+import { otherEnd } from '../session-link.ts';
 import { projectAsResource, type AccessPolicy } from './authorization.ts';
 import type { Deps } from './deps.ts';
 
@@ -47,6 +49,8 @@ export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'project
   /** 同一条会话的投递闸（组合根里两边共用一个）；occupied = 别的通道在这条会话上还有没收尾的投递。 */
   readonly lane?: SessionLane;
   readonly occupied?: (sessionId: SessionId) => Promise<boolean>;
+  /** 会话连线。给了就收紧成“只有连过的会话能互发/互相看见”；不给 = 旧的全项目可见。 */
+  readonly links?: SessionLinkRepository;
 }
 
 export interface SendCommand {
@@ -71,6 +75,8 @@ export interface AgentDirectoryEntry {
   readonly label: string;
   readonly status: string;
   readonly description?: string;
+  /** 是否通过画布/对话页显式连接（派生关系不算）。 */
+  readonly connected?: boolean;
 }
 
 export interface MessageBus {
@@ -82,6 +88,8 @@ export interface MessageBus {
   /** 人批 / 拒一条派生请求。 */
   decideSpawn(messageId: string, actor: Principal, approve: boolean): Promise<Result<AgentMessage, DomainError>>;
   directory(fromSessionId: SessionId): Promise<Result<AgentDirectoryEntry[], DomainError>>;
+  /** 只列显式连接的会话（不包含角色，也不含仅派生关系）。 */
+  peers(fromSessionId: SessionId): Promise<Result<AgentDirectoryEntry[], DomainError>>;
   status(fromSessionId: SessionId, messageId: string): Promise<Result<AgentMessage, DomainError>>;
   inbox(sessionId: SessionId, limit: number): Promise<AgentMessage[]>;
   /** 超时扫一遍（组合根定时调）。 */
@@ -255,6 +263,17 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     return null;
   };
 
+  /** 显式连线或同一条派生链（父 ↔ 子）都允许；没配 links 时保持旧行为。 */
+  const canReach = async (from: Session, target: Session): Promise<boolean> => {
+    if (!deps.links) return true;
+    const [fromSpawn, targetSpawn] = await Promise.all([deps.messages.spawnOf(from.id), deps.messages.spawnOf(target.id)]);
+    if (fromSpawn?.spawnerSessionId === target.id || targetSpawn?.spawnerSessionId === from.id) return true;
+    return deps.links.areLinked(from.id, target.id);
+  };
+
+  const linkProblem = async (from: Session, target: Session): Promise<string | null> =>
+    (await canReach(from, target)) ? null : '只有明确连接的会话才能互相发消息';
+
   const bus: MessageBus = {
     async accept(command) {
       const body = command.body;
@@ -313,7 +332,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           const spawns = (await deps.messages.spawnsForRole(project.id, role.name)).filter((s) => role!.reuse === 'sticky' || s.traceId === traceId);
           for (const spawn of spawns.sort((a, b) => b.createdAt - a.createdAt)) {
             const candidate = await deps.sessions.byId(spawn.sessionId);
-            if (candidate && candidate.status !== 'failed' && (await isolationProblem(from, candidate)) === null) {
+            if (candidate && candidate.status !== 'failed' && (await isolationProblem(from, candidate)) === null && (await canReach(from, candidate))) {
               target = candidate;
               break;
             }
@@ -325,6 +344,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         if (!(await allowed(callee, permission, project))) return deny('denied', `被调会话的主人没有 ${permission}`);
         const isolated = await isolationProblem(from, target);
         if (isolated) return deny('denied', isolated);
+        const unlinked = await linkProblem(from, target);
+        if (unlinked) return deny('denied', unlinked);
       } else if (!(await allowed(onBehalfOf, 'agent.spawn', project)) || !(await allowed(caller, 'agent.spawn', project))) {
         return deny('denied', `没有现成的 ${address.kind === 'role' ? address.role : ''} 会话，派生新会话要 agent.spawn 权限`);
       }
@@ -441,11 +462,20 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const { session: from, project } = here;
       const sessions = await deps.sessions.listByProject(project.id);
       const entries: AgentDirectoryEntry[] = [];
+      const fromSpawn = await deps.messages.spawnOf(from.id);
       for (const session of sessions) {
         if (session.id === from.id || session.status === 'failed') continue;
         if ((await isolationProblem(from, session)) !== null) continue;
         const spawn = await deps.messages.spawnOf(session.id);
-        entries.push({ address: `session:${session.id}`, label: labelOf(session, spawn?.role ?? null), status: isBusy(session) ? 'busy' : session.status === 'running' ? 'idle' : session.status });
+        const explicit = deps.links ? await deps.links.areLinked(from.id, session.id) : false;
+        const implicit = fromSpawn?.spawnerSessionId === session.id || spawn?.spawnerSessionId === from.id;
+        if (deps.links && !explicit && !implicit) continue;
+        entries.push({
+          address: `session:${session.id}`,
+          label: labelOf(session, spawn?.role ?? null),
+          status: isBusy(session) ? 'busy' : session.status === 'running' ? 'idle' : session.status,
+          ...(explicit ? { connected: true } : {})
+        });
       }
       if (!(await deps.messages.spawnOf(from.id))) {
         for (const role of (await loadConfig(project.id)).roles) {
@@ -453,6 +483,29 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         }
       }
       return ok(entries);
+    },
+
+    async peers(fromSessionId) {
+      const here = await sessionAndProject(fromSessionId);
+      if (!here) return err(notFound('会话不存在'));
+      const { session: from } = here;
+      if (!deps.links) return ok([]);
+      const links = await deps.links.forSession(from.id);
+      const peers: AgentDirectoryEntry[] = [];
+      for (const link of links) {
+        const peerId = otherEnd(link, from.id);
+        if (!peerId) continue;
+        const session = await deps.sessions.byId(peerId);
+        if (!session || session.status === 'failed') continue;
+        const spawn = await deps.messages.spawnOf(session.id);
+        peers.push({
+          address: `session:${session.id}`,
+          label: labelOf(session, spawn?.role ?? null),
+          status: isBusy(session) ? 'busy' : session.status === 'running' ? 'idle' : session.status,
+          connected: true
+        });
+      }
+      return ok(peers);
     },
 
     async status(fromSessionId, messageId) {
