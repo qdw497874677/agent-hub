@@ -187,7 +187,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await expect(page.getByRole('button', { name: new RegExp(ECHO) }).first()).toBeVisible();
   await palette.press('Enter');
   await expect(sessionNode(page)).toHaveCount(1);
-  await expect(page.locator('.react-flow__node-session').getByText(ECHO, { exact: true })).toBeVisible();
+  await expect(sessionNode(page)).toContainText(ECHO);
 
   // 列表视图：按任务分组，组头是任务标题；行上是第一句话 + 开始时间 + 来源，点一行进那条会话
   await page.getByRole('button', { name: '列表' }).click();

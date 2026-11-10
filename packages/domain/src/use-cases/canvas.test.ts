@@ -65,7 +65,12 @@ test('画布：会话连线是无向边，断开后消失', async () => {
   assert.ok(canvas.ok);
   const links = canvas.value.edges.filter((edge) => edge.kind === 'link');
   assert.equal(links.length, 1);
-  assert.equal(links[0]?.kind === 'link' && links[0].aSessionId, one.value.id);
+  const link = links[0];
+  assert.ok(link?.kind === 'link');
+  assert.deepEqual(
+    [link.aSessionId, link.bSessionId].sort(),
+    [one.value.id, other.value.id].sort()
+  );
 
   const removed = await unlinkSessionsUseCase(w.deps, project.value.id, other.value.id, one.value.id);
   assert.ok(removed.ok);
