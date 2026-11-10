@@ -1,6 +1,7 @@
 import { pathToFileURL } from 'node:url';
 import { asAgentId, available, capabilityMatrix, denied, limited } from '@agent-hub/domain';
 import type { AgentDescriptor, ProviderLaunch, ProviderProtocol, RuntimeOption, SessionAssets } from '@agent-hub/domain';
+import type { AcpOptionOverride } from './map-options.ts';
 
 /**
  * 一个 ACP agent 的全部可配置项。
@@ -43,6 +44,12 @@ export interface AcpAgentConfig {
   readonly providerLaunch?: (sessionId: string, provider: ProviderLaunch, base: AcpLaunch) => Promise<AcpLaunch> | AcpLaunch;
   /** 可选：开跑前下发的选项值换成 agent 认的写法（例如 hub 模型「hub-<slug>/<id>」→ Hermes 的「custom:<id>」）。 */
   readonly optionValue?: (id: string, value: string | boolean) => string | boolean;
+  /**
+   * 可选：把 ACP 的通用 category/label 修正成平台语义。
+   * 例如 OpenCode 的 `mode` 实际是当前 agent，映射成 `agent` 后会话主界面就会显示它；
+   * 不改 id，改值仍然走同一条 `set_config_option`。
+   */
+  readonly optionOverrides?: Readonly<Record<string, AcpOptionOverride>>;
   /**
    * 从某条消息原生分叉的方言（ADR 0028）。ACP 的 `session/fork` 本身只能复制整条会话；
    * `jetbrains-air` = claude-agent-acp 认的 `_meta.jetbrains.air.fork.messageId`（保留到这条 assistant 消息为止）。
@@ -117,7 +124,17 @@ export function mergeConfig(user: Json, hub: Json): Json {
 }
 
 export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [
-  { id: 'opencode', label: 'OpenCode', command: 'opencode', args: ['acp'], listModelsArgs: ['models'], launch: opencodeLaunch }
+  {
+    id: 'opencode',
+    label: 'OpenCode',
+    command: 'opencode',
+    args: ['acp'],
+    listModelsArgs: ['models'],
+    launch: opencodeLaunch,
+    // OpenCode 的 Session Mode 就是当前 agent（orchestrator/build/plan），
+    // 平台把它当 `agent` 选项展示；其他 agent 的 mode 仍是权限/会话模式。
+    optionOverrides: { mode: { category: 'agent', label: 'Agent' } }
+  }
 ];
 
 /**

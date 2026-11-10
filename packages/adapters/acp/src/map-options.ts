@@ -33,7 +33,7 @@ interface AcpConfigOption {
   readonly options?: readonly (AcpValue | AcpGroup)[];
 }
 
-const CATEGORIES: readonly OptionCategory[] = ['model', 'mode', 'model_config', 'thought_level'];
+const CATEGORIES: readonly OptionCategory[] = ['model', 'agent', 'mode', 'model_config', 'thought_level'];
 
 function categoryOf(raw: string | undefined): OptionCategory {
   return CATEGORIES.find((category) => category === raw) ?? 'custom';
@@ -43,12 +43,28 @@ function isGroup(entry: AcpValue | AcpGroup): entry is AcpGroup {
   return (entry as AcpGroup).groupId !== undefined;
 }
 
-export function mapAcpOptions(raw: unknown): readonly RuntimeOption[] {
+/**
+ * 运行时自己的名字 → 平台语义。
+ *
+ * ACP 的 `category` 是通用词汇，同一个 `mode` 在不同 agent 里可能指完全不同的东西：
+ * OpenCode 的 `mode` 是当前 agent（orchestrator/build/plan），Hermes 的 `mode` 是权限模式。
+ * 所以语义修正放在 agent 配置里，适配器只负责搬运，不按 agent 名字写分支。
+ */
+export interface AcpOptionOverride {
+  readonly category?: OptionCategory;
+  readonly label?: string;
+}
+
+export function mapAcpOptions(
+  raw: unknown,
+  overrides: Readonly<Record<string, AcpOptionOverride>> = {}
+): readonly RuntimeOption[] {
   if (!Array.isArray(raw)) return [];
   const options: RuntimeOption[] = [];
   for (const entry of raw as AcpConfigOption[]) {
     const configId = entry?.id ?? entry?.configId;
     if (typeof configId !== 'string') continue;
+    const override = Object.prototype.hasOwnProperty.call(overrides, configId) ? overrides[configId] : undefined;
     const choices: OptionValueOrGroup[] = [];
     for (const item of entry.options ?? []) {
       if (isGroup(item)) {
@@ -74,9 +90,9 @@ export function mapAcpOptions(raw: unknown): readonly RuntimeOption[] {
     }
     options.push({
       id: configId,
-      label: entry.name,
+      label: override?.label ?? entry.name,
       ...(entry.description === undefined ? {} : { description: entry.description }),
-      category: categoryOf(entry.category),
+      category: override?.category ?? categoryOf(entry.category),
       kind: entry.type === 'boolean' ? 'boolean' : 'select',
       current: entry.currentValue,
       choices

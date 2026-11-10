@@ -54,7 +54,7 @@ export const optionChoiceSchema = z.discriminatedUnion('kind', [
   })
 ]);
 
-export const optionCategorySchema = z.enum(['model', 'mode', 'model_config', 'thought_level', 'custom']);
+export const optionCategorySchema = z.enum(['model', 'agent', 'mode', 'model_config', 'thought_level', 'custom']);
 
 export const runtimeOptionSchema = z.object({
   id: z.string(),

@@ -6,12 +6,12 @@ interface Props {
   readonly options: readonly RuntimeOptionDto[];
   readonly values: Readonly<Record<string, string | boolean>>;
   readonly onChange: (optionId: string, value: string | boolean) => void;
-  /** 卡片里空间只有 320px：只留模型与思考强度，其余在检查器里。 */
+  /** 卡片里空间只有 320px：只留模型、Agent、模式与思考强度，其余在检查器里。 */
   readonly compact?: boolean;
   readonly disabled?: boolean;
 }
 
-const COMPACT_CATEGORIES = ['model', 'thought_level'];
+const COMPACT_CATEGORIES: readonly string[] = ['model', 'agent', 'mode', 'thought_level'];
 
 export function currentOf(
   options: readonly RuntimeOptionDto[],

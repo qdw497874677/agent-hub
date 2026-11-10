@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { endedFromStopReason, mapAcpUpdate, redactLine } from './map-acp.ts';
-import { acpDescriptor } from './config.ts';
+import { ACP_AGENT_DEFAULTS, acpDescriptor } from './config.ts';
 import { mapAcpOptions } from './map-options.ts';
 
 const toolNames = new Map<string, string>();
@@ -76,6 +76,36 @@ test('acp: 可调项照抄 ACP 的形状，不认识的 category 收进 custom',
   assert.equal(options[0]?.choices[1]?.kind, 'group');
   assert.equal(options[1]?.kind, 'boolean');
   assert.equal(options[1]?.current, false);
+});
+
+test('acp: OpenCode 默认把 Session Mode 当 Agent 展示', () => {
+  const opencode = ACP_AGENT_DEFAULTS.find((config) => config.id === 'opencode');
+  assert.deepEqual(opencode?.optionOverrides, { mode: { category: 'agent', label: 'Agent' } });
+});
+
+test('acp: agent 配置可把 mode 映射成平台语义 agent，id 不变', () => {
+  const options = mapAcpOptions(
+    [
+      {
+        id: 'mode',
+        name: 'Session Mode',
+        category: 'mode',
+        type: 'select',
+        currentValue: 'build',
+        options: [
+          { value: 'orchestrator', name: 'orchestrator' },
+          { value: 'build', name: 'build' },
+          { value: 'plan', name: 'plan' }
+        ]
+      }
+    ],
+    { mode: { category: 'agent', label: 'Agent' } }
+  );
+
+  assert.equal(options[0]?.id, 'mode');
+  assert.equal(options[0]?.category, 'agent');
+  assert.equal(options[0]?.label, 'Agent');
+  assert.equal(options[0]?.current, 'build');
 });
 
 test('acp: 模型清单从 model 选项投影出来，不是另写一份', () => {

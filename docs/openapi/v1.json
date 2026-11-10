@@ -2683,6 +2683,7 @@
                                   "type": "string",
                                   "enum": [
                                     "model",
+                                    "agent",
                                     "mode",
                                     "model_config",
                                     "thought_level",
@@ -4338,6 +4339,7 @@
                             "type": "string",
                             "enum": [
                               "model",
+                              "agent",
                               "mode",
                               "model_config",
                               "thought_level",
@@ -4714,6 +4716,7 @@
                             "type": "string",
                             "enum": [
                               "model",
+                              "agent",
                               "mode",
                               "model_config",
                               "thought_level",
@@ -5068,6 +5071,7 @@
                             "type": "string",
                             "enum": [
                               "model",
+                              "agent",
                               "mode",
                               "model_config",
                               "thought_level",
@@ -5752,6 +5756,7 @@
                             "type": "string",
                             "enum": [
                               "model",
+                              "agent",
                               "mode",
                               "model_config",
                               "thought_level",

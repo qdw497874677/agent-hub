@@ -139,7 +139,7 @@ class AcpSession implements RuntimeSession {
   }
 
   private setOptions(raw: unknown): void {
-    const options = mapAcpOptions(raw);
+    const options = mapAcpOptions(raw, this.config.optionOverrides);
     if (options.length === 0) return;
     this.publish(options);
   }

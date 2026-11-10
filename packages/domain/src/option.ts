@@ -11,7 +11,7 @@
  */
 
 /** 语义分类。只用来决定摆放位置与图标，**不能**当作正确性依赖。 */
-export type OptionCategory = 'model' | 'mode' | 'model_config' | 'thought_level' | 'custom';
+export type OptionCategory = 'model' | 'agent' | 'mode' | 'model_config' | 'thought_level' | 'custom';
 
 export interface OptionValue {
   readonly value: string;
