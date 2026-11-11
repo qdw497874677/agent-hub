@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyBlocks, multipleAuthors, applyFrame, cardBlocks, waitingForReply, catchUp, forkBlockedHint, inheritedBlocks, resolveLive, withFullHistory, type LiveMap } from './live-core.ts';
+import { applyBlocks, multipleAuthors, applyFrame, cardBlocks, waitingForReply, catchUp, forkBlockedHint, inheritedBlocks, resolveLive, withFullHistory, subagentStepCount, type LiveMap } from './live-core.ts';
 import { STALL_NOTICE_MARKER } from '@agent-hub/contract/stall';
 
 const base: LiveMap = {
@@ -46,15 +46,27 @@ test('打开对话换整段历史时，也从历史里播种最后的上下文�
   });
 });
 
-test('子代理生命周期与子事件暂不混进主对话块', () => {
-  let blocks = applyBlocks([], { kind: 'subagent', phase: 'start', id: 'c1', parentId: 's1', depth: 1, agent: 'explorer', status: 'running' }, 1);
-  assert.deepEqual(blocks, []);
+test('子代理生命周期与子事件折成嵌套块，不混进主对话', () => {
+  let blocks = applyBlocks([], { kind: 'subagent', phase: 'start', id: 'c1', parentId: 's1', depth: 1, agent: 'explorer', title: '查目录', status: 'running' }, 1);
+  assert.deepEqual(blocks, [
+    { kind: 'subagent', id: 'c1', parentId: 's1', depth: 1, agent: 'explorer', title: '查目录', status: 'running', children: [], seq: 1 }
+  ]);
   blocks = applyBlocks(blocks, { kind: 'text', delta: 'child', subagentId: 'c1' }, 2);
-  assert.deepEqual(blocks, []);
-  blocks = applyBlocks(blocks, { kind: 'text', delta: 'parent' }, 3);
-  assert.deepEqual(blocks, [{ kind: 'text', text: 'parent', seq: 3 }]);
-  blocks = applyBlocks(blocks, { kind: 'subagent', phase: 'end', id: 'c1', parentId: 's1', depth: 1, status: 'completed' }, 4);
-  assert.deepEqual(blocks, [{ kind: 'text', text: 'parent', seq: 3 }]);
+  blocks = applyBlocks(blocks, { kind: 'tool_call', name: 'shell', input: 'ls', subagentId: 'c1' }, 3);
+  blocks = applyBlocks(blocks, { kind: 'tool_result', name: 'shell', ok: true, durationMs: 3, subagentId: 'c1' }, 4);
+  blocks = applyBlocks(blocks, { kind: 'text', delta: 'parent' }, 5);
+  assert.deepEqual(blocks[1], { kind: 'text', text: 'parent', seq: 5 });
+  const group = blocks[0];
+  assert.ok(group?.kind === 'subagent');
+  assert.deepEqual(group.children, [
+    { kind: 'text', text: 'child', seq: 2 },
+    { kind: 'tool', name: 'shell', input: 'ls', result: { ok: true, durationMs: 3 }, seq: 3 }
+  ]);
+  blocks = applyBlocks(blocks, { kind: 'subagent', phase: 'end', id: 'c1', parentId: 's1', depth: 1, status: 'completed' }, 6);
+  const ended = blocks[0];
+  assert.ok(ended?.kind === 'subagent');
+  assert.equal(ended.status, 'completed');
+  assert.equal(subagentStepCount(ended), 2);
 });
 
 test('断线补帧：after=lastSeq 的历史被重放，与重连后的实时帧交错也不重复', () => {

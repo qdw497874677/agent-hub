@@ -8,7 +8,7 @@ import { ResourceBadge, SessionUsage } from './resources.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { StatusPill } from './status.tsx';
 import { OptionControls } from './options.tsx';
-import { cardBlocks, multipleAuthors, waitingForReply, type LiveSession } from './live.ts';
+import { cardBlocks, multipleAuthors, waitingForReply, subagentStepCount, type LiveSession } from './live.ts';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from './use-stick-to-bottom.ts';
@@ -131,6 +131,17 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
         <span className="truncate opacity-60">{block.input.slice(0, 80)}</span>
         <span className="text-tertiary">{spent}</span>
       </div>
+    );
+  }
+  if (block.kind === 'subagent') {
+    const status = block.status === 'running' ? '运行中' : block.status === 'failed' ? '失败' : block.status === 'cancelled' ? '已取消' : '完成';
+    return (
+      <p className={`flex items-baseline gap-2 border-l pl-2 text-meta ${block.status === 'failed' ? 'border-rust text-rust' : 'border-accent/40 text-secondary'}`} data-testid="card-subagent">
+        <span className="text-accent">◈</span>
+        <span className="font-mono text-sage">{block.agent ?? '子代理'}</span>
+        <span className="truncate opacity-70">{block.title ?? ''}</span>
+        <span className="ml-auto shrink-0 text-tertiary">{status} · {subagentStepCount(block)} 步</span>
+      </p>
     );
   }
   if (block.kind === 'approval') {

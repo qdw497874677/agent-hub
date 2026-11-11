@@ -17,6 +17,7 @@ import type { HandoffDto } from './live-core.ts';
 import { formatRoute, parseRoute } from './route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
 import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine } from './tool-format.ts';
+import { subagentStepCount } from './live.ts';
 import { useFileLinks } from './file-links.tsx';
 
 /**
@@ -381,6 +382,52 @@ export function ChatBlock({
   /** 不止一个人说过话时，用户气泡旁标出是谁。 */
   showAuthor?: boolean;
 }) {
+  if (block.kind === 'subagent') {
+    const label = block.agent ?? '子代理';
+    const status =
+      block.status === 'running'
+        ? { text: '运行中', className: 'text-accent' }
+        : block.status === 'failed'
+          ? { text: '失败', className: 'text-rust' }
+          : block.status === 'cancelled'
+            ? { text: '已取消', className: 'text-tertiary' }
+            : { text: '完成', className: 'text-sage' };
+    const steps = subagentStepCount(block);
+    return (
+      <details
+        className="group rounded-sm border-l-2 border-accent/40 bg-card/40 pl-3"
+        open={block.status === 'failed'}
+        data-testid="subagent-card"
+        data-subagent-id={block.id}
+        data-status={block.status}
+      >
+        <summary className="flex cursor-pointer list-none items-baseline gap-2 py-1 text-meta text-secondary">
+          <span className={block.status === 'failed' ? 'text-rust' : 'text-accent'}>◈</span>
+          <span className="shrink-0 font-mono text-sage">{label}</span>
+          {block.title ? <span className="min-w-0 truncate text-secondary">{block.title}</span> : null}
+          <span className={`ml-auto shrink-0 ${status.className}`}>{status.text}</span>
+          <span className="shrink-0 text-tertiary">{steps > 0 ? `${steps} 步` : '等待输出'}</span>
+        </summary>
+        <div className="mt-1 space-y-2 border-l border-hair pl-3">
+          {block.children.length === 0 ? (
+            <p className="text-meta text-tertiary">子代理还没有输出。</p>
+          ) : (
+            block.children.map((child, index) => (
+              <ChatBlock
+                key={`${child.seq}-${index}`}
+                block={child}
+                sessionId={sessionId}
+                agentLabel={agentLabel}
+                settings={settings}
+                last={block.status === 'running' && index === block.children.length - 1}
+                running={block.status === 'running'}
+              />
+            ))
+          )}
+        </div>
+      </details>
+    );
+  }
   if (block.kind === 'prompt') {
     const images = block.attachments.filter((item) => item.kind === 'image');
     const others = block.attachments.filter((item) => item.kind !== 'image');

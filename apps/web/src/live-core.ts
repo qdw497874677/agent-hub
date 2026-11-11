@@ -30,6 +30,17 @@ export type Block = Sequenced &
     | { readonly kind: 'thinking'; readonly text: string }
     | { readonly kind: 'tool'; readonly name: string; readonly input: string; readonly result: ToolResult | null }
     | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number }
+    /** 父会话里的一段子代理时间线（ADR 0034）：不是 Hub 会话，只在父对话里展开。 */
+    | {
+        readonly kind: 'subagent';
+        readonly id: string;
+        readonly parentId: string;
+        readonly depth: number;
+        readonly title?: string;
+        readonly agent?: string;
+        readonly status: 'running' | 'completed' | 'failed' | 'cancelled';
+        readonly children: readonly Block[];
+      }
     /** server 卡顿巡检记的提醒；一有新输出就撤掉（见 applyBlocks）。 */
     | { readonly kind: 'stall'; readonly text: string }
     /** 这一轮失败了（ended · failed）：原因写进对话里，不只是状态点变红——否则看着就是「发了没回」。 */
@@ -114,10 +125,82 @@ export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, se
       : blocks;
   }
   if (event.kind === 'context_usage' || event.kind === 'compaction') return blocks;
-  // 子代理事件先留在 journal 里（后续 UI 用）；当前主对话还没做嵌套渲染，先不混进主块。
-  if (event.kind === 'subagent') return blocks;
-  if ('subagentId' in event && event.subagentId) return blocks;
+  // 子代理是父会话里的一段嵌套时间线：start/end 建组，子事件按 subagentId 折进去。
+  if (event.kind === 'subagent') return applySubagent(blocks, event, seq);
+  if ('subagentId' in event && event.subagentId) return foldSubagentEvent(blocks, event.subagentId, event, seq);
   return foldBlocks(withoutStall(blocks), event, seq);
+}
+
+type SubagentBlock = Extract<Block, { kind: 'subagent' }>;
+
+function applySubagent(
+  blocks: readonly Block[],
+  event: Extract<SessionEventDto, { kind: 'subagent' }>,
+  seq: number
+): readonly Block[] {
+  if (event.phase === 'start') {
+    if (findSubagent(blocks, event.id)) return blocks;
+    const group: SubagentBlock = {
+      kind: 'subagent',
+      id: event.id,
+      parentId: event.parentId,
+      depth: event.depth,
+      ...(event.title ? { title: event.title } : {}),
+      ...(event.agent ? { agent: event.agent } : {}),
+      status: event.status ?? 'running',
+      children: [],
+      seq
+    };
+    const parent = findSubagent(blocks, event.parentId);
+    if (parent) return updateSubagent(blocks, parent.id, (block) => ({ ...block, children: [...block.children, group] }));
+    return [...blocks, group];
+  }
+  return updateSubagent(blocks, event.id, (block) => ({ ...block, status: event.status ?? 'completed' }));
+}
+
+function findSubagent(blocks: readonly Block[], id: string): SubagentBlock | null {
+  for (const block of blocks) {
+    if (block.kind !== 'subagent') continue;
+    if (block.id === id) return block;
+    const nested = findSubagent(block.children, id);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function updateSubagent(
+  blocks: readonly Block[],
+  id: string,
+  update: (block: SubagentBlock) => SubagentBlock
+): readonly Block[] {
+  let changed = false;
+  const next = blocks.map((block) => {
+    if (block.kind !== 'subagent') return block;
+    if (block.id === id) {
+      changed = true;
+      return update(block);
+    }
+    const children = updateSubagent(block.children, id, update);
+    if (children === block.children) return block;
+    changed = true;
+    return { ...block, children };
+  });
+  return changed ? next : blocks;
+}
+
+function foldSubagentEvent(
+  blocks: readonly Block[],
+  id: string,
+  event: SessionEventDto,
+  seq: number
+): readonly Block[] {
+  if (!findSubagent(blocks, id)) return blocks;
+  return updateSubagent(blocks, id, (block) => ({ ...block, children: foldBlocks(block.children, event, seq) }));
+}
+
+/** 子代理卡摘要里显示“几步”：只数叶子块，嵌套子代理继续往下数。 */
+export function subagentStepCount(block: SubagentBlock): number {
+  return block.children.reduce((sum, child) => sum + (child.kind === 'subagent' ? subagentStepCount(child) : 1), 0);
 }
 
 function withoutStall(blocks: readonly Block[]): readonly Block[] {
