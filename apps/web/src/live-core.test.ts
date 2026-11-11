@@ -46,6 +46,17 @@ test('打开对话换整段历史时，也从历史里播种最后的上下文�
   });
 });
 
+test('子代理生命周期与子事件暂不混进主对话块', () => {
+  let blocks = applyBlocks([], { kind: 'subagent', phase: 'start', id: 'c1', parentId: 's1', depth: 1, agent: 'explorer', status: 'running' }, 1);
+  assert.deepEqual(blocks, []);
+  blocks = applyBlocks(blocks, { kind: 'text', delta: 'child', subagentId: 'c1' }, 2);
+  assert.deepEqual(blocks, []);
+  blocks = applyBlocks(blocks, { kind: 'text', delta: 'parent' }, 3);
+  assert.deepEqual(blocks, [{ kind: 'text', text: 'parent', seq: 3 }]);
+  blocks = applyBlocks(blocks, { kind: 'subagent', phase: 'end', id: 'c1', parentId: 's1', depth: 1, status: 'completed' }, 4);
+  assert.deepEqual(blocks, [{ kind: 'text', text: 'parent', seq: 3 }]);
+});
+
 test('断线补帧：after=lastSeq 的历史被重放，与重连后的实时帧交错也不重复', () => {
   const live = applyFrame(base, { sessionId: 's1', seq: 3, event: { kind: 'text', delta: 'B' }, status: 'running' });
   // 断线期间漏了 seq 2，重连后补回 2、3、4（3 已经由实时帧送到）

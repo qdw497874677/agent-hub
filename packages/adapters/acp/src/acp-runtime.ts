@@ -18,8 +18,8 @@ import type {
 import { unavailable } from '@agent-hub/domain';
 import { acpBranchAtTurn, acpDescriptor, type AcpAgentConfig, type AcpLaunch } from './config.ts';
 import type { BranchSpec } from '@agent-hub/domain';
-import { StderrTail, endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
-import type { AcpPromptCapabilities } from './map-acp.ts';
+import { StderrTail, endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, readSubagentMeta, toAcpPrompt } from './map-acp.ts';
+import type { AcpPromptCapabilities, AcpSubagentMeta } from './map-acp.ts';
 import { legacyAcpOptions, mapAcpOptions } from './map-options.ts';
 
 type Json = Record<string, unknown>;
@@ -36,10 +36,26 @@ const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false },
 /** 这些事件算「agent 有回应」。 */
 const PRODUCING: ReadonlySet<SessionEvent['kind']> = new Set(['text', 'thinking', 'tool_call', 'tool_result', 'artifact', 'approval']);
 
+/** 父工具的完成内容里会带 `<subagent sessionID="…" state="completed">`；这是子代理结束的权威信号。 */
+function subagentIdFromToolContent(content: unknown): string | null {
+  if (!Array.isArray(content)) return null;
+  for (const item of content) {
+    const block = item as Record<string, unknown> | null;
+    if (block?.['type'] !== 'text' || typeof block['text'] !== 'string') continue;
+    const match = /<subagent\b[^>]*\bsessionID="([^"]+)"/.exec(block['text']);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
+
 class AcpSession implements RuntimeSession {
   readonly sessionId: RuntimeSession['sessionId'];
   private readonly queue = new AsyncQueue<SessionEvent>();
   private readonly toolNames = new Map<string, string>();
+  /** 本会话里见过的子代理：id → 元信息 / 是否已经发过 end。 */
+  private readonly subagents = new Map<string, { readonly meta: AcpSubagentMeta; readonly agent?: string; ended: boolean }>();
+  /** 父会话里正在跑的 subagent 工具调用；子会话第一次出现时用它补 agent 名字。 */
+  private activeSubagent: { readonly toolCallId: string; readonly agent?: string; childId?: string } | null = null;
   private readonly connection: ClientConnection;
   private agentSessionId = '';
   /** session/load 时 agent 会用 session/update 回放历史；平台已有这些事件，回放期间丢掉。 */
@@ -77,7 +93,7 @@ class AcpSession implements RuntimeSession {
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', (chunk: string) => this.stderr.push(chunk));
     const app = client()
-      .onNotification('session/update', ({ params }) => this.onUpdate(params.update as unknown as Json))
+      .onNotification('session/update', ({ params }) => this.onUpdate(params.update as unknown as Json, params._meta))
       // 平台替用户放行工具调用（与 yolo 模式一致）；agent 自己的 deny 规则仍生效。
       .onRequest('session/request_permission', ({ params }) => {
         const allow = params.options.find((option) => option.kind.startsWith('allow')) ?? params.options[0];
@@ -98,6 +114,7 @@ class AcpSession implements RuntimeSession {
   }
 
   private finish(): void {
+    this.endAllSubagents(this.disposed ? 'cancelled' : 'failed');
     if (this.disposed) this.queue.push({ kind: 'ended', outcome: 'stopped' });
     else {
       const tail = this.stderr.tail();
@@ -106,13 +123,23 @@ class AcpSession implements RuntimeSession {
     this.queue.close();
   }
 
-  private onUpdate(update: Json): void {
+  private onUpdate(update: Json, meta?: unknown): void {
     // agent 自己也会推全量配置（比如换模型后思考强度的可选值跟着变）。
     if (update['sessionUpdate'] === 'config_option_update') {
       this.setOptions(update['configOptions']);
       return;
     }
     if (this.replaying) return;
+    const child = readSubagentMeta(meta);
+    if (child) {
+      this.noteSubagent(child);
+      for (const event of mapAcpUpdate(update, this.toolNames, child.id)) {
+        if (PRODUCING.has(event.kind)) this.produced = true;
+        this.queue.push(event);
+      }
+      return;
+    }
+    this.noteParentTool(update);
     const kind = update['sessionUpdate'];
     if ((kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') && typeof update['messageId'] === 'string' && update['messageId']) {
       this.lastMessageId = update['messageId'];
@@ -121,6 +148,69 @@ class AcpSession implements RuntimeSession {
       if (PRODUCING.has(event.kind)) this.produced = true;
       this.queue.push(event);
     }
+  }
+
+  /** 第一次看到某个 child session：发 start，并把正在跑的父工具锚点记下来。 */
+  private noteSubagent(meta: AcpSubagentMeta): void {
+    if (this.subagents.has(meta.id)) return;
+    const agent = this.activeSubagent?.agent;
+    this.subagents.set(meta.id, { meta, ...(agent ? { agent } : {}), ended: false });
+    if (this.activeSubagent) this.activeSubagent.childId = meta.id;
+    this.queue.push({
+      kind: 'subagent',
+      phase: 'start',
+      id: meta.id,
+      parentId: meta.parentId,
+      depth: meta.depth,
+      ...(meta.title ? { title: meta.title } : {}),
+      ...(agent ? { agent } : {}),
+      status: 'running'
+    });
+  }
+
+  /** OpenCode 把子代理包在 title=subagent 的父工具调用里；用它的 rawInput 补 agent 名字。 */
+  private noteParentTool(update: Json): void {
+    const kind = update['sessionUpdate'];
+    if (kind !== 'tool_call' && kind !== 'tool_call_update') return;
+    const toolCallId = String(update['toolCallId'] ?? '');
+    if (!toolCallId) return;
+    const raw = update['rawInput'];
+    const input = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {};
+    const title = String(update['title'] ?? '').toLowerCase();
+    const looksSubagent = title === 'subagent' || title === 'task' || typeof input['agent'] === 'string';
+    const agent = typeof input['agent'] === 'string' && input['agent'] ? input['agent'] : undefined;
+    if (looksSubagent) {
+      if (this.activeSubagent?.toolCallId !== toolCallId) {
+        this.activeSubagent = { toolCallId, ...(agent ? { agent } : {}) };
+      } else if (agent && !this.activeSubagent.agent) {
+        this.activeSubagent = { ...this.activeSubagent, agent };
+      }
+    }
+    const status = update['status'];
+    if (status !== 'completed' && status !== 'failed') return;
+    const childId = subagentIdFromToolContent(update['content']) ?? this.activeSubagent?.childId;
+    if (childId) this.endSubagent(childId, status === 'completed' ? 'completed' : 'failed');
+    if (this.activeSubagent?.toolCallId === toolCallId) this.activeSubagent = null;
+  }
+
+  private endSubagent(id: string, status: 'completed' | 'failed' | 'cancelled'): void {
+    const state = this.subagents.get(id);
+    if (!state || state.ended) return;
+    state.ended = true;
+    this.queue.push({
+      kind: 'subagent',
+      phase: 'end',
+      id: state.meta.id,
+      parentId: state.meta.parentId,
+      depth: state.meta.depth,
+      ...(state.meta.title ? { title: state.meta.title } : {}),
+      ...(state.agent ? { agent: state.agent } : {}),
+      status
+    });
+  }
+
+  private endAllSubagents(status: 'completed' | 'failed' | 'cancelled'): void {
+    for (const id of this.subagents.keys()) this.endSubagent(id, status);
   }
 
   /** agent 没有 configOptions、只报老式 models/modes（Hermes）：改值走 set_model / set_mode。 */
@@ -305,6 +395,7 @@ class AcpSession implements RuntimeSession {
       // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
       if (!this.produced) await new Promise((resolve) => setTimeout(resolve, 200));
       if (this.lastMessageId) this.onTurnRef?.(this.lastMessageId);
+      this.endAllSubagents('completed');
       this.queue.push(endedFromStopReason(result['stopReason'], { produced: this.produced, stderrTail: this.produced ? [] : this.stderr.tail() }));
       return { ok: true, value: undefined };
     } catch (error) {

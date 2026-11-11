@@ -138,6 +138,42 @@ test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏�
   await session.dispose();
 });
 
+test('acp runtime: child session updates → subagent start/子事件/end，父会话不混入子文本', async (t) => {
+  const runtime = createAcpRuntime({ ...config, args: [FAKE, '--child'] });
+  const started = await runtime.start(spec());
+  assert.ok(started.ok);
+  const session = started.value;
+  t.after(() => session.dispose());
+  const events = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'please-child', parts: [] })).ok);
+  const seen = await events;
+
+  const start = seen.find((event) => event.kind === 'subagent' && event.phase === 'start');
+  assert.ok(start && start.kind === 'subagent');
+  assert.equal(start.id, 'c1');
+  assert.equal(start.parentId, 's1');
+  assert.equal(start.depth, 1);
+  assert.equal(start.title, 'child task');
+  assert.equal(start.agent, 'explorer');
+  assert.equal(start.status, 'running');
+
+  const childText = seen.find((event) => event.kind === 'text' && event.subagentId === 'c1');
+  assert.ok(childText && childText.kind === 'text');
+  assert.equal(childText.delta, 'child says hi');
+  const childTool = seen.find((event) => event.kind === 'tool_call' && event.subagentId === 'c1');
+  assert.ok(childTool && childTool.kind === 'tool_call');
+  assert.equal(childTool.name, 'child: shell');
+  const parentText = seen.find((event) => event.kind === 'text' && !event.subagentId);
+  assert.ok(parentText && parentText.kind === 'text');
+  assert.equal(parentText.delta, 'parent done');
+
+  const end = seen.find((event) => event.kind === 'subagent' && event.phase === 'end');
+  assert.ok(end && end.kind === 'subagent');
+  assert.equal(end.id, 'c1');
+  assert.equal(end.status, 'completed');
+  assert.deepEqual(seen.at(-1), { kind: 'ended', outcome: 'done' });
+});
+
 test('acp runtime: refusal / max_tokens 各自报失败原因，不再当成完成', async (t) => {
   const runtime = createAcpRuntime(config);
   const started = await runtime.start(spec());

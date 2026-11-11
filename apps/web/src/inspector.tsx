@@ -227,5 +227,9 @@ export function eventLabel(event: JournalEntryDto['event']): string {
       return event.phase === 'request'
         ? `请求批准：${event.title ?? event.id}`
         : `批准${event.decision === 'allow' ? '通过' : '被拒'}（${event.by === 'user' ? event.author?.name ?? '用户' : event.by === 'timeout' ? '超时' : '运行时撤回'}）`;
+    case 'subagent':
+      return event.phase === 'start'
+        ? `子代理${event.agent ? ` ${event.agent}` : ''}开始${event.title ? `：${event.title}` : ''}`
+        : `子代理${event.agent ? ` ${event.agent}` : ''}${event.status === 'completed' ? '完成' : event.status === 'cancelled' ? '取消' : '失败'}`;
   }
 }

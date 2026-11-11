@@ -7,23 +7,25 @@ import { clipToolOutput, invalid } from '@agent-hub/domain';
  */
 export function mapAcpUpdate(
   update: unknown,
-  toolNames: Map<string, string>
+  toolNames: Map<string, string>,
+  subagentId?: string
 ): SessionEvent[] {
   if (typeof update !== 'object' || update === null) return [];
   const u = update as Record<string, unknown>;
+  const sub = subagentId ? { subagentId } : {};
 
   switch (u['sessionUpdate']) {
     case 'agent_message_chunk': {
       const content = u['content'] as Record<string, unknown> | undefined;
       if (content?.['type'] === 'text' && typeof content['text'] === 'string' && content['text']) {
-        return [{ kind: 'text', delta: content['text'] }];
+        return [{ kind: 'text', delta: content['text'], ...sub }];
       }
       return [];
     }
     case 'agent_thought_chunk': {
       const content = u['content'] as Record<string, unknown> | undefined;
       if (content?.['type'] === 'text' && typeof content['text'] === 'string' && content['text']) {
-        return [{ kind: 'thinking', delta: content['text'] }];
+        return [{ kind: 'thinking', delta: content['text'], ...sub }];
       }
       return [];
     }
@@ -32,7 +34,7 @@ export function mapAcpUpdate(
       const name = String(u['title'] ?? u['kind'] ?? 'tool');
       if (id) toolNames.set(id, name);
       const raw = u['rawInput'];
-      return [{ kind: 'tool_call', name, input: typeof raw === 'string' ? raw : safeJson(raw) }];
+      return [{ kind: 'tool_call', name, input: typeof raw === 'string' ? raw : safeJson(raw), ...sub }];
     }
     case 'tool_call_update': {
       const id = String(u['toolCallId'] ?? '');
@@ -40,10 +42,10 @@ export function mapAcpUpdate(
       if (status !== 'completed' && status !== 'failed') return [];
       const name = toolNames.get(id) ?? 'tool';
       const events: SessionEvent[] = [
-        { kind: 'tool_result', name, ok: status === 'completed', durationMs: 0, ...acpOutput(u['content'], u['rawOutput']) }
+        { kind: 'tool_result', name, ok: status === 'completed', durationMs: 0, ...acpOutput(u['content'], u['rawOutput']), ...sub }
       ];
-      if (status === 'completed') events.push(...diffArtifacts(u['content']));
-      const artifact = artifactOf(u['rawOutput']);
+      if (status === 'completed') events.push(...diffArtifacts(u['content'], subagentId));
+      const artifact = artifactOf(u['rawOutput'], subagentId);
       if (artifact && !events.some((e) => e.kind === 'artifact' && e.path === artifact.path)) events.push(artifact);
       return events;
     }
@@ -52,11 +54,34 @@ export function mapAcpUpdate(
   }
 }
 
+/** OpenCode 的子会话更新在 `session/update` 的 `_meta` 里标出父子关系；其他 agent 不报就不猜。 */
+export interface AcpSubagentMeta {
+  readonly id: string;
+  readonly parentId: string;
+  readonly depth: number;
+  readonly title?: string;
+}
+
+export function readSubagentMeta(meta: unknown): AcpSubagentMeta | null {
+  if (typeof meta !== 'object' || meta === null) return null;
+  const raw = (meta as Record<string, unknown>)['opencode/child-session'];
+  if (typeof raw !== 'object' || raw === null) return null;
+  const child = raw as Record<string, unknown>;
+  if (typeof child['id'] !== 'string' || !child['id']) return null;
+  if (typeof child['parentID'] !== 'string' || !child['parentID']) return null;
+  return {
+    id: child['id'],
+    parentId: child['parentID'],
+    depth: typeof child['depth'] === 'number' ? child['depth'] : 1,
+    ...(typeof child['title'] === 'string' && child['title'] ? { title: child['title'] } : {})
+  };
+}
+
 /**
  * ACP 的 write/edit 工具在完成时可以带 `content: [{ type: 'diff', path, newText }]`（ACP 标准的 diff 内容块；Grok 1.0.70 实测会带），
  * 这是权威的文件路径；bytes 取 newText 的 UTF-8 长度。
  */
-function diffArtifacts(content: unknown): (SessionEvent & { kind: 'artifact' })[] {
+function diffArtifacts(content: unknown, subagentId?: string): (SessionEvent & { kind: 'artifact' })[] {
   if (!Array.isArray(content)) return [];
   const out: (SessionEvent & { kind: 'artifact' })[] = [];
   for (const item of content) {
@@ -64,17 +89,17 @@ function diffArtifacts(content: unknown): (SessionEvent & { kind: 'artifact' })[
     if (c?.['type'] !== 'diff' || typeof c['path'] !== 'string' || !c['path'].startsWith('/')) continue;
     if (out.some((a) => a.path === c['path'])) continue;
     const text = typeof c['newText'] === 'string' ? c['newText'] : '';
-    out.push({ kind: 'artifact', path: c['path'], bytes: Buffer.byteLength(text, 'utf8') });
+    out.push({ kind: 'artifact', path: c['path'], bytes: Buffer.byteLength(text, 'utf8'), ...(subagentId ? { subagentId } : {}) });
   }
   return out;
 }
 
 /** 只认写文件类工具的输出，且必须带绝对路径。 */
-function artifactOf(rawOutput: unknown): (SessionEvent & { kind: 'artifact' }) | null {
+function artifactOf(rawOutput: unknown, subagentId?: string): (SessionEvent & { kind: 'artifact' }) | null {
   if (typeof rawOutput !== 'object' || rawOutput === null) return null;
   const path = (rawOutput as Record<string, unknown>)['path'];
   if (typeof path !== 'string' || !path.startsWith('/')) return null;
-  return { kind: 'artifact', path, bytes: 0 };
+  return { kind: 'artifact', path, bytes: 0, ...(subagentId ? { subagentId } : {}) };
 }
 
 /** 这一轮里 agent 有没有吐出过东西，以及它 stderr 最后几行（已脱敏）。 */

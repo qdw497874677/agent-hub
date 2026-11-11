@@ -6,7 +6,7 @@ import type { StoredAttachment } from './attachment.ts';
  * 归一化事件。加变体要改这份文件并过 ADR：
  * 变体数就是新 agent 的映射成本，它直接决定「新增 agent 零内核改动」的成本。
  *
- * 十一个变体（ADR 0020 加了两个旁路的 context_usage / compaction，ADR 0023 加了旁路的 approval），其中九个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
+ * 十二个变体（ADR 0020 加了两个旁路的 context_usage / compaction，ADR 0023 加了旁路的 approval，ADR 0034 加了 subagent），其中十个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
  * 用户说了什么必须留在 journal 里，否则重开浏览器后一半对话是空的。
  * 见 ADR 0006。
  */
@@ -21,7 +21,8 @@ export const SESSION_EVENT_KINDS = [
   'diagnostic',
   'context_usage',
   'compaction',
-  'approval'
+  'approval',
+  'subagent'
 ] as const;
 
 export type SessionEvent =
@@ -35,10 +36,10 @@ export type SessionEvent =
       /** 这句是平台写的交接简报时：带了多少、省略多少（ADR 0029）。 */
       readonly handoff?: HandoffStats;
     }
-  | { readonly kind: 'text'; readonly delta: string }
+  | { readonly kind: 'text'; readonly delta: string; readonly subagentId?: string }
   /** 模型的思考过程（推理文字）。只进专注对话，默认折叠；卡片不渲染。 */
-  | { readonly kind: 'thinking'; readonly delta: string }
-  | { readonly kind: 'tool_call'; readonly name: string; readonly input: string }
+  | { readonly kind: 'thinking'; readonly delta: string; readonly subagentId?: string }
+  | { readonly kind: 'tool_call'; readonly name: string; readonly input: string; readonly subagentId?: string }
   | {
       readonly kind: 'tool_result';
       readonly name: string;
@@ -46,8 +47,23 @@ export type SessionEvent =
       readonly durationMs: number;
       /** 工具的输出（截断到 TOOL_OUTPUT_LIMIT）。老事件和不报输出的 agent 没有这个字段。 */
       readonly output?: string;
+      readonly subagentId?: string;
     }
-  | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number }
+  | { readonly kind: 'artifact'; readonly path: string; readonly bytes: number; readonly subagentId?: string }
+  /**
+   * 运行时会话内派生的子代理（ADR 0034）。子代理不是 Hub 会话：不占画布节点，
+   * 只作为父会话里的一组事件。`start` / `end` 成对出现，中间的子事件带 `subagentId`。
+   */
+  | {
+      readonly kind: 'subagent';
+      readonly phase: 'start' | 'end';
+      readonly id: string;
+      readonly parentId: string;
+      readonly depth: number;
+      readonly title?: string;
+      readonly agent?: string;
+      readonly status?: 'running' | 'completed' | 'failed' | 'cancelled';
+    }
   | {
       readonly kind: 'ended';
       readonly outcome: 'done' | 'stopped' | 'interrupted' | 'failed';

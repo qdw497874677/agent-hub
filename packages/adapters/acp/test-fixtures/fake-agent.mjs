@@ -8,6 +8,8 @@ const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', 
 const FORK = process.argv.includes('--fork');
 // --fork-fail：声明了 fork，但真分叉时报错（原生分叉失败的退路）
 const FORK_FAIL = process.argv.includes('--fork-fail');
+// --child：模拟 OpenCode 的 child session updates（子代理事件带 _meta['opencode/child-session']）
+const CHILD = process.argv.includes('--child');
 let turn = 0;
 let forkedAt = null;
 const say = (sessionId, text) =>
@@ -92,6 +94,17 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       }
       if (all.includes('please-history')) {
         say(msg.params.sessionId, `history:forked-at=${forkedAt ?? 'none'};briefed=${all.includes('交接') || all.includes('摘要') ? 'maybe' : 'no'}`);
+        return send({ id: msg.id, result: { stopReason: 'end_turn' } });
+      }
+      if (CHILD && all.includes('please-child')) {
+        const sessionId = msg.params.sessionId;
+        const child = { 'opencode/child-session': { id: 'c1', parentID: sessionId, depth: 1, title: 'child task' } };
+        send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call', toolCallId: 'p1', title: 'subagent', kind: 'other', rawInput: {} } } });
+        send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'p1', status: 'in_progress', rawInput: { agent: 'explorer', description: 'child task', prompt: 'list', background: false } } } });
+        send({ method: 'session/update', params: { sessionId, _meta: child, update: { sessionUpdate: 'tool_call', toolCallId: 'c1:t1', title: 'child: shell', kind: 'other', rawInput: { command: 'ls' } } } });
+        send({ method: 'session/update', params: { sessionId, _meta: child, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'child says hi' } } } });
+        send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'p1', status: 'completed', content: [{ type: 'text', text: '<subagent sessionID="c1" state="completed">done</subagent>' }] } } });
+        say(sessionId, 'parent done');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });
       }
       // 「等我处理」e2e：显式提问工具 / 以问号结尾 / 这一轮 git commit

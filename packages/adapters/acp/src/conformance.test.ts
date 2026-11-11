@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { endedFromStopReason, mapAcpUpdate, redactLine } from './map-acp.ts';
+import { endedFromStopReason, mapAcpUpdate, readSubagentMeta, redactLine } from './map-acp.ts';
 import { ACP_AGENT_DEFAULTS, acpDescriptor } from './config.ts';
 import { mapAcpOptions } from './map-options.ts';
 
@@ -46,6 +46,18 @@ for (const [index, step] of FIXTURE.entries()) {
     assert.deepEqual(mapAcpUpdate(step.given, toolNames), step.expect);
   });
 }
+
+test('OpenCode 子代理：读取 child meta，事件带 subagentId', () => {
+  assert.deepEqual(
+    readSubagentMeta({ 'opencode/child-session': { id: 'c1', parentID: 'p1', depth: 1, title: 'child' } }),
+    { id: 'c1', parentId: 'p1', depth: 1, title: 'child' }
+  );
+  assert.equal(readSubagentMeta({}), null);
+  assert.deepEqual(
+    mapAcpUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } }, toolNames, 'c1'),
+    [{ kind: 'text', delta: 'hi', subagentId: 'c1' }]
+  );
+});
 
 test('OpenCode 停止原因映射', () => {
   assert.deepEqual(endedFromStopReason('cancelled'), { kind: 'ended', outcome: 'stopped' });

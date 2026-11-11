@@ -295,17 +295,28 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
       })
       .optional()
   }),
-  z.object({ kind: z.literal('text'), delta: z.string() }),
-  z.object({ kind: z.literal('thinking'), delta: z.string() }),
-  z.object({ kind: z.literal('tool_call'), name: z.string(), input: z.string() }),
+  z.object({ kind: z.literal('text'), delta: z.string(), subagentId: z.string().optional() }),
+  z.object({ kind: z.literal('thinking'), delta: z.string(), subagentId: z.string().optional() }),
+  z.object({ kind: z.literal('tool_call'), name: z.string(), input: z.string(), subagentId: z.string().optional() }),
   z.object({
     kind: z.literal('tool_result'),
     name: z.string(),
     ok: z.boolean(),
     durationMs: z.number().int().nonnegative(),
-    output: z.string().optional()
+    output: z.string().optional(),
+    subagentId: z.string().optional()
   }),
-  z.object({ kind: z.literal('artifact'), path: z.string(), bytes: z.number().int().nonnegative() }),
+  z.object({ kind: z.literal('artifact'), path: z.string(), bytes: z.number().int().nonnegative(), subagentId: z.string().optional() }),
+  z.object({
+    kind: z.literal('subagent'),
+    phase: z.enum(['start', 'end']),
+    id: z.string().min(1),
+    parentId: z.string().min(1),
+    depth: z.number().int().nonnegative(),
+    title: z.string().max(4000).optional(),
+    agent: z.string().max(200).optional(),
+    status: z.enum(['running', 'completed', 'failed', 'cancelled']).optional()
+  }),
   z.object({
     kind: z.literal('ended'),
     outcome: z.enum(['done', 'stopped', 'interrupted', 'failed']),

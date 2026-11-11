@@ -114,6 +114,9 @@ export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, se
       : blocks;
   }
   if (event.kind === 'context_usage' || event.kind === 'compaction') return blocks;
+  // 子代理事件先留在 journal 里（后续 UI 用）；当前主对话还没做嵌套渲染，先不混进主块。
+  if (event.kind === 'subagent') return blocks;
+  if ('subagentId' in event && event.subagentId) return blocks;
   return foldBlocks(withoutStall(blocks), event, seq);
 }
 
