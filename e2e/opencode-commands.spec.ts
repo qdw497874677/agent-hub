@@ -68,6 +68,7 @@ test('OpenCode 的运行时斜杠命令透出到 Hub 输入框', async ({ page }
   expect(derived.ok(), await derived.text()).toBeTruthy();
   const sessionId = (await derived.json()).id as string;
 
+  await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${encodeURIComponent(projectId)}/focus/${encodeURIComponent(sessionId)}`);
   const input = page.getByLabel('发送消息');
   await expect(input).toBeVisible({ timeout: 30_000 });
@@ -92,4 +93,10 @@ test('OpenCode 的运行时斜杠命令透出到 Hub 输入框', async ({ page }
   await expect(menu.getByRole('option', { name: /^\/init/ })).toBeVisible();
   await expect(menu.getByRole('option', { name: /^\/review/ })).toBeVisible();
   await expect(menu.getByRole('option', { name: /^\/compact/ })).toBeVisible();
+  // 手机上命令名不能被长说明挤掉；菜单也不能横向溢出。
+  expect(await menu.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+  const clipped = await menu.locator('li > button > span:first-child').evaluateAll((nodes) =>
+    nodes.some((node) => node.scrollWidth > node.clientWidth + 1)
+  );
+  expect(clipped).toBe(false);
 });

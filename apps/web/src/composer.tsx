@@ -245,8 +245,10 @@ export function Composer({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={option.pick}
               >
-                <span className="truncate font-mono">{option.label}</span>
-                {option.hint ? <span className="ml-auto shrink-0 text-meta text-tertiary">{option.hint}</span> : null}
+                <span className={`font-mono ${trigger?.kind === '/' ? 'shrink-0' : 'truncate'}`}>{option.label}</span>
+                {option.hint ? (
+                  <span className="ml-auto min-w-0 truncate text-right text-meta text-tertiary">{option.hint}</span>
+                ) : null}
               </button>
             </li>
           ))}
