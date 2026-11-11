@@ -21,7 +21,7 @@
 | P3 | 子代理时间线 UI | 已完成 | P1 事件模型 |
 | P4 | 结构化工具详情 + 权限请求 | 已完成 | P3 |
 | P5 | 运行时状态 + 自定义运行时别名 | 待开始 | P2 |
-| P6 | ACP transformer + 编排工具 | 待开始 | P1/P3 |
+| P6 | ACP transformer + 编排工具 | 部分完成 | P1/P3 |
 
 ## 2. P1 Agent Profile
 
@@ -95,7 +95,9 @@
 
 **目标**：把供应商私有工具名/通知归一化；给编排 agent 发现和操作其他会话的工具。
 
-- Worker 侧 ACP transformer 钩子：`discover/configure/notification/toolCall`。
+已完成（P6a）：`agent.list_profiles`、`agent.inspect_runtime`、`agent.activity`、`agent.spawn`、`agent.set_option`，薄封装现有 session/profile 用例；spawn 限同任务、set_option 限同项目同 owner。
+
+待做（P6b）：Worker 侧 ACP transformer 钩子：`discover/configure/notification/toolCall`。
 - 编排工具（薄封装现有 session/messaging，不重写消息总线）：
   - `list_agent_profiles`
   - `inspect_agent_runtime`

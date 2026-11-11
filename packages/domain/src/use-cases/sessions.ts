@@ -39,6 +39,8 @@ export interface DeriveCommand {
   readonly profileId?: string;
   /** 直接指定启动选项（例如从 Agent 配置套用后用户又改过）。 */
   readonly options?: Readonly<Record<string, string | boolean>>;
+  /** 谁拥有新会话；工具派生时继承父会话主人，人类请求默认取 actor。 */
+  readonly createdBy?: string | null;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -104,7 +106,7 @@ export async function deriveSessionUseCase(
     now: deps.now(),
     workerId: placed.value,
     workspaceId: workspace.id,
-    createdBy: principalOfSubject(command.actor)?.user.id ?? null,
+    createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
     options: initialOptions
   });
   if (!created.ok) return created;

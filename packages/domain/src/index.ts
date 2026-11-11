@@ -118,6 +118,7 @@ export * from './tools/message-tools.ts';
 export * from './tools/memory-tools.ts';
 export * from './tools/context-tools.ts';
 export * from './tools/session-tools.ts';
+export * from './tools/agent-orchestration-tools.ts';
 export * from './messaging.ts';
 export * from './groups.ts';
 export * from './use-cases/groups.ts';

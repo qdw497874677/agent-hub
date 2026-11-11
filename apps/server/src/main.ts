@@ -44,6 +44,9 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createMemoryToolProvider,
   createContextToolProvider,
   createSessionToolProvider,
+  createAgentOrchestrationToolProvider,
+  changeSessionOption,
+  systemSubject,
   createConnectorHub,
   createAgentTaskToolProvider,
   createDispatcher,
@@ -509,6 +512,36 @@ toolGateway = createToolGateway({
   tokens: createTokenIssuer(),
   providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
     createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
+    createAgentOrchestrationToolProvider({
+      agentProfiles: deps.agentProfiles,
+      sessions: deps.sessions,
+      tasks: deps.tasks,
+      projects: deps.projects,
+      agents: deps.agents,
+      now: deps.now,
+      spawn: async (input) => {
+        const created = await deriveSessionUseCase(deps, {
+          taskId: input.taskId,
+          agentId: input.agentId,
+          model: input.model,
+          options: input.options,
+          actor: systemSubject('agent.spawn'),
+          createdBy: input.createdBy
+        });
+        if (!created.ok) return created;
+        const session = created.value;
+        if (input.prompt) {
+          const sent = await promptSessionUseCase(deps, {
+            sessionId: session.id,
+            text: input.prompt,
+            author: { id: 'agent-orchestrator', name: '编排 Agent', via: 'agent' }
+          });
+          if (!sent.ok) return sent;
+        }
+        return ok({ sessionId: session.id, taskId: session.taskId, agentId: session.agentId, model: session.model, status: session.status });
+      },
+      setOption: (sessionId, optionId, value) => changeSessionOption(deps, { sessionId, id: optionId, value })
+    }),
     // R2：bot 建任务 / 读关联项目；权限 = 关联关系，配额只算触发唤醒的回合（HUB_ROUTER_COUNT_HUMAN=1 时人发起的也算）
     createAgentTaskToolProvider({
       ...deps, requests: store.agentTasks, agentOf: botOfSession, onCreated: enqueueDispatch,
