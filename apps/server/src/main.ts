@@ -21,10 +21,11 @@ import { loadActor, openRoleSession } from './role-session.ts';
 import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
+import { createSessionEnvironment, type SessionEnvironment } from './session-environment.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
 import { createGitHubApi } from './github-api.ts';
 import { createModelDistiller } from './model-distiller.ts';
-import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerCommand, WorkerMetrics } from '@agent-hub/domain';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
   interruptSessionUseCase,
@@ -81,9 +82,7 @@ import {
   ingestWorkerOptions,
   reconcileInterrupted,
   syncWorkerAssets,
-  sessionMcpLaunch,
   remoteMcpTarget,
-  sessionAssetPlan,
   withAssetNeeds,
   unavailable,
   workerAttached,
@@ -152,6 +151,7 @@ const componentStore = createSqliteComponents(store.db);
 const hub = createStreamHub();
 const catalog = createLiveCatalog();
 let serverGateway: ServerGateway | null = null;
+let sessionEnvironment: SessionEnvironment | null = null;
 const optionWaiters = createOptionWaiters();
 
 const deps: Deps = {
@@ -166,6 +166,10 @@ const deps: Deps = {
   links: store.links,
   agentProfiles: store.agentProfiles,
   toolGrants: store.toolGrants,
+  // 环境端口在资产依赖就绪后才构造；这里用委托保持组合根的单向初始化。
+  environment: {
+    revision: async (session) => (sessionEnvironment ? sessionEnvironment.revision(session) : null)
+  },
   stream: hub.stream,
   gateway: {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
@@ -182,9 +186,25 @@ const deps: Deps = {
       }
       const granted = await providerWiring.grantFor(command);
       if (!granted.ok) return granted;
-      const sent = await serverGateway.gateway.dispatch(await withSessionAssets(toolGateway ? await withToolAccess(toolGateway, toolEndpoint, granted.value) : granted.value));
+      let effective = toolGateway
+        ? await withToolAccess(toolGateway, toolEndpoint, granted.value)
+        : granted.value;
+      let environmentRevision: string | null = null;
+      if (sessionEnvironment) {
+        const prepared = await sessionEnvironment.prepare(effective);
+        effective = prepared.command;
+        environmentRevision = prepared.revision;
+      }
+      const sent = await serverGateway.gateway.dispatch(effective);
       // 记下会话开始时的 HEAD（ADR 0025 决定 7）：diff 默认对它比；失败不影响会话
-      if (sent.ok && command.kind === 'start_session') void filesService.recordBase(command.sessionId).catch(() => undefined);
+      if (sent.ok && command.kind === 'start_session') {
+        void filesService.recordBase(command.sessionId).catch(() => undefined);
+        if (environmentRevision) {
+          void store.sessions
+            .setEnvironmentRevision(command.sessionId, environmentRevision, Date.now())
+            .catch(() => undefined);
+        }
+      }
       return sent;
     },
     listDirectories: async (workerId, path) =>
@@ -704,36 +724,12 @@ const assetDeps: AssetReviewDeps = {
   if (migrated.migrated > 0) log(`资产审核迁移：${migrated.migrated} 个老资产记到 hub 管理员名下，${migrated.pending} 个未钉的新版本转成待审提交`);
 }
 const remoteMcpClients = createRemoteClients();
-
-/**
- * 有工具令牌的 start_session 才带 MCP 资产（远端那些要凭令牌走中转）。stdio 的密钥此刻才展开，
- * 随这条指令直接发给 Worker，不落库、不进日志；缺密钥的只记名字。
- */
-async function withSessionAssets(command: WorkerCommand): Promise<WorkerCommand> {
-  if (command.kind !== 'start_session') return command;
-  try {
-    // 项目作用域（就近优先 + 项目开关）∩ 这台机器装了的；找不到任务就只给全局的。
-    const task = await store.tasks.byId(command.taskId);
-    const project = task ? await store.projects.byId(task.projectId) : null;
-    const viewer = task?.ownerId ? { userId: task.ownerId, teamId: project?.teamId ?? null } : null;
-    const plan = await sessionAssetPlan(assetDeps, command.workerId, task?.projectId ?? null, viewer);
-    let next: WorkerCommand = { ...command, assetIds: plan.assetIds };
-    const launched = new Set<string>();
-    if (command.tools) {
-      const { launch, skipped } = await sessionMcpLaunch(assetDeps, command.workerId, new Set(plan.assetIds));
-      for (const item of skipped) log(`MCP「${item.name}」这次没给会话 ${command.sessionId}：${item.reason}`);
-      for (const item of launch) launched.add(item.name);
-      if (launch.length > 0) next = { ...next, mcp: launch };
-    }
-    // 会话资产清单：实际给出去的那些（MCP 只算真的启动了的），会话界面展示用
-    const entries = plan.entries.filter((entry) => entry.kind !== 'mcp' || launched.has(entry.name));
-    await store.assets.recordSessionAssets({ sessionId: command.sessionId, workerId: command.workerId, entries, at: Date.now() });
-    return next;
-  } catch (failure) {
-    log(`会话资产展开失败：${(failure as Error).message}`);
-    return command;
-  }
-}
+sessionEnvironment = createSessionEnvironment({
+  assetDeps,
+  tasks: store.tasks,
+  projects: store.projects,
+  log
+});
 const syncAssets = (workerId: string) =>
   void syncWorkerAssets(assetDeps, workerId)
     .then((status) => {

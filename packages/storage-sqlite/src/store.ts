@@ -107,6 +107,9 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'worker_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN worker_id TEXT');
   }
+  if (!columns.some((column) => column.name === 'environment_revision')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN environment_revision TEXT');
+  }
   const projectColumns = db.prepare('PRAGMA table_info(projects)').all() as { name: string }[];
   if (!projectColumns.some((column) => column.name === 'worker_id')) {
     db.exec('ALTER TABLE projects ADD COLUMN worker_id TEXT');
@@ -168,13 +171,17 @@ export function openSqliteStore(file: string): SqliteStore {
   );
 
   const updateSessionTitle = db.prepare('UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?');
+  const updateSessionEnvironment = db.prepare(
+    'UPDATE sessions SET environment_revision = ?, updated_at = ? WHERE id = ?'
+  );
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, created_by, title, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
       'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
       'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
+      'environment_revision = excluded.environment_revision, ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -347,6 +354,7 @@ export function openSqliteStore(file: string): SqliteStore {
         JSON.stringify(session.optionSpec),
         session.workerId,
         session.workspaceId,
+        session.environmentRevision ?? null,
         session.createdBy ?? null,
         session.title ?? null,
         session.createdAt,
@@ -411,6 +419,13 @@ export function openSqliteStore(file: string): SqliteStore {
     },
     async setTitle(sessionId: Parameters<typeof asSessionId>[0], title: string | null, at: number): Promise<void> {
       updateSessionTitle.run(title, at, sessionId);
+    },
+    async setEnvironmentRevision(
+      sessionId: Parameters<typeof asSessionId>[0],
+      revision: string | null,
+      at: number
+    ): Promise<void> {
+      updateSessionEnvironment.run(revision, at, sessionId);
     }
   };
 

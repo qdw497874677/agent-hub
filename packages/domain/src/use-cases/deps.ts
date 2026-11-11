@@ -27,6 +27,7 @@ import type { WorkspaceFS } from '../ports/workspace-fs.ts';
 import type { SearchGateway } from '../ports/search-gateway.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
+import type { SessionEnvironmentPort } from '../ports/session-environment.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 
@@ -78,6 +79,8 @@ export interface Deps {
   readonly hosting: SessionHosting;
   /** 工具授权；用于判断托管中的进程是否还拿着有效令牌。不给 = 不检查。 */
   readonly toolGrants?: ToolGrantRepository;
+  /** 会话环境版本；用于资产/MCP/技能变化后下一轮自动重托管。不给 = 不刷新。 */
+  readonly environment?: SessionEnvironmentPort;
   /** 同一会话的写入串行（ADR 0004）。 */
   readonly queue: SessionQueue;
   readonly now: () => number;

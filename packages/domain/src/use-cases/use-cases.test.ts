@@ -257,6 +257,38 @@ test('ensureHosted：工具授权过期后重新托管换新令牌', async () =>
   assert.equal(w.dispatched.length, 0);
 });
 
+test('ensureHosted：环境版本没变不重托管，变了才重托管', async () => {
+  let revision = 'r1';
+  const w = await world({ environment: { revision: async () => revision } });
+  const session = await derived(w);
+  // 实际组合根在 dispatch 成功后落这个版本；内存网关不经过组合根，测试直接模拟。
+  await w.deps.sessions.setEnvironmentRevision(session.id, 'r1', w.deps.now());
+  const current = await w.deps.sessions.byId(session.id);
+  assert.ok(current);
+
+  w.dispatched.length = 0;
+  assert.ok((await ensureHosted(w.deps, current)).ok);
+  assert.equal(w.dispatched.length, 0);
+
+  revision = 'r2';
+  assert.ok((await ensureHosted(w.deps, current)).ok);
+  assert.equal(w.dispatched[0]?.kind, 'start_session');
+  assert.equal((await w.deps.sessions.byId(session.id))?.environmentRevision, 'r2');
+});
+
+test('ensureHosted：旧会话没有环境版本时不强制刷新', async () => {
+  let revision = 'r1';
+  const w = await world({ environment: { revision: async () => revision } });
+  const session = await derived(w);
+  await w.deps.sessions.setEnvironmentRevision(session.id, null, w.deps.now());
+  const legacy = await w.deps.sessions.byId(session.id);
+  assert.ok(legacy);
+
+  w.dispatched.length = 0;
+  assert.ok((await ensureHosted(w.deps, legacy)).ok);
+  assert.equal(w.dispatched.length, 0);
+});
+
 test('worker 事件：相对路径的产出物按项目根补上字节数', async () => {
   const stats: string[] = [];
   const w = await world();

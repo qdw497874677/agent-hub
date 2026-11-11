@@ -192,6 +192,10 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
       const existing = rows.get(id);
       if (existing) rows.set(id, { ...existing, title, updatedAt: at });
     },
+    async setEnvironmentRevision(id, revision, at) {
+      const existing = rows.get(id);
+      if (existing) rows.set(id, { ...existing, environmentRevision: revision, updatedAt: at });
+    },
     async byId(id) {
       return rows.get(id) ?? null;
     },

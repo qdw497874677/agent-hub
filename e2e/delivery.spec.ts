@@ -62,6 +62,21 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
     await page.waitForTimeout(1_500);
     await expect(log.getByTestId('delivery-note')).toHaveCount(0); // 送达了就安静
 
+    // 发送即时反馈：API 慢时，用户气泡先贴上，journal 回来后再让位给真实事件。
+    let delayPrompt = true;
+    await page.route('**/api/sessions/*/prompt', async (route) => {
+      if (!delayPrompt) return route.continue();
+      delayPrompt = false;
+      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      await route.continue();
+    });
+    const composer = page.getByLabel('发送消息');
+    await composer.fill('乐观反馈第四句');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.getByTestId('pending-prompts')).toContainText('乐观反馈第四句', { timeout: 600 });
+    await expect(page.getByTestId('pending-prompts')).toHaveCount(0, { timeout: 15_000 });
+    await expect(log.getByText('乐观反馈第四句')).toBeVisible({ timeout: 15_000 });
+
     worker.kill();
     worker = null;
     await online(false);

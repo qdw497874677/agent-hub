@@ -49,6 +49,12 @@ export interface Session {
   readonly createdBy?: string | null;
   /** 用户起的会话名（null = 没起，界面回退到首句 / 「会话 N」）。只能经 SessionRepository.setTitle 改，save 不覆盖它。 */
   readonly title?: string | null;
+  /**
+   * 上次成功启动时实际使用的环境版本（资产 / MCP / 系统提示等）。
+   * 只有 server 的环境适配器能算；不记录资产明细，也不含令牌。
+   * null / 缺省 = 旧会话或还没算过，不因此强制重托管。
+   */
+  readonly environmentRevision?: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

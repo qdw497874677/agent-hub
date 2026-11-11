@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   options          TEXT NOT NULL DEFAULT '{}',
   option_spec      TEXT NOT NULL DEFAULT '[]',
   worker_id        TEXT,
+  environment_revision TEXT,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );

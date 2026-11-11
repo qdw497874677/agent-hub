@@ -116,6 +116,9 @@ export function toSession(row: Row): Session {
     optionSpec: parseOptionSpec(nullableStr(row, 'option_spec')),
     workerId: nullableStr(row, 'worker_id'),
     workspaceId: nullableStr(row, 'workspace_id') as Session['workspaceId'],
+    ...(nullableStr(row, 'environment_revision') !== null
+      ? { environmentRevision: nullableStr(row, 'environment_revision') }
+      : {}),
     createdBy: nullableStr(row, 'created_by'),
     // 没起名时不带这个字段，和刚派生出来的领域对象一模一样（往返测试的护栏）
     ...(typeof row['title'] === 'string' ? { title: row['title'] } : {}),

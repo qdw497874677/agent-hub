@@ -23,4 +23,6 @@ export interface SessionRepository {
   entryIdAt(sessionId: SessionId, seq: Seq): Promise<string | null>;
   /** 只改会话名（null = 清掉）；和 save 分开，免得跑着的会话拿旧对象 save 时把名字冲掉。 */
   setTitle(sessionId: SessionId, title: string | null, at: number): Promise<void>;
+  /** 只改环境版本；和 save 分开，避免启动时拿旧会话对象覆盖 lastSeq/status。 */
+  setEnvironmentRevision(sessionId: SessionId, revision: string | null, at: number): Promise<void>;
 }

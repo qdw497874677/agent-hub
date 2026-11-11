@@ -68,6 +68,10 @@ export function FocusView({
   windowChrome
 }: Props) {
   const [busy, setBusy] = useState(false);
+  // 发出去到 journal 回显之间，先给用户一条自己的气泡；不然慢在 ensureHosted 时像没反应。
+  const [pendingPrompts, setPendingPrompts] = useState<
+    readonly { readonly id: string; readonly text: string; readonly baseline: number }[]
+  >([]);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
@@ -112,6 +116,20 @@ export function FocusView({
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const blocks = live?.blocks ?? [];
+  // journal 里出现同文 prompt 后，乐观气泡让位给真实事件；用发送前的数量对账，避免同文重复误删。
+  useEffect(() => {
+    setPendingPrompts((previous) => {
+      if (previous.length === 0) return previous;
+      const counts = new Map<string, number>();
+      for (const block of blocks) {
+        if (block.kind === 'prompt') counts.set(block.text, (counts.get(block.text) ?? 0) + 1);
+      }
+      const next = previous.filter((pending) => (counts.get(pending.text) ?? 0) <= pending.baseline);
+      return next.length === previous.length ? previous : next;
+    });
+  }, [blocks]);
+  const promptCount = (text: string) =>
+    blocks.filter((block) => block.kind === 'prompt' && block.text === text).length;
   const status = live?.status ?? session.status;
   const reason = live?.reason ?? null;
   const agentLabel = agent?.label ?? session.agentId;
@@ -312,6 +330,28 @@ export function FocusView({
       onChanged();
       return true;
     } catch (failure) {
+      setError((failure as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 先把用户的气泡放上去，再等服务端把 prompt 写进 journal。慢的是 ensureHosted，不该让输入框空着等。 */
+  async function sendMessage(text: string, attachments: Parameters<typeof api.prompt>[2]): Promise<boolean> {
+    const id = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // 同文消息可能已经出现过；以发送前的数量为基线，journal 多出一条才让位。
+    const baseline = promptCount(text) + pendingPrompts.filter((pending) => pending.text === text).length;
+    setPendingPrompts((previous) => [...previous, { id, text, baseline }]);
+    setBusy(true);
+    setError(null);
+    try {
+      await api.prompt(session.id, text, attachments);
+      onDraftChange('');
+      onChanged();
+      return true;
+    } catch (failure) {
+      setPendingPrompts((previous) => previous.filter((pending) => pending.id !== id));
       setError((failure as Error).message);
       return false;
     } finally {
@@ -629,6 +669,30 @@ export function FocusView({
               {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
             </div>
           ) : null}
+          {pendingPrompts.length > 0 ? (
+            <section
+              aria-label="正在发送的消息"
+              aria-live="polite"
+              data-testid="pending-prompts"
+              className="mb-2 border-t border-dashed border-hair pt-2"
+            >
+              <p className="mb-1 text-meta text-tertiary">正在发送…</p>
+              <div className="flex flex-col gap-2">
+                {pendingPrompts.map((pending, index) => (
+                  <ChatBlock
+                    key={pending.id}
+                    block={{ kind: 'prompt', text: pending.text, attachments: [], seq: -1 - index }}
+                    agentLabel={agentLabel}
+                    sessionId={session.id}
+                    settings={settings}
+                    last={false}
+                    running={false}
+                    showAuthor={showAuthor}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
           {queuedBlocks.length > 0 ? (
             <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
               <section aria-label="排队中的消息" aria-live="polite" data-testid="queued-prompts" className="mb-2 max-h-[40vh] overflow-y-auto border-t border-dashed border-hair pt-2">
@@ -656,12 +720,7 @@ export function FocusView({
             agentLabel={agentLabel}
             draft={draft}
             onDraftChange={onDraftChange}
-            onSend={(text, attachments) =>
-              run(async () => {
-                await api.prompt(session.id, text, attachments);
-                onDraftChange('');
-              })
-            }
+            onSend={sendMessage}
             onInterrupt={() => void run(() => api.interrupt(session.id))}
             busy={busy}
             error={error}

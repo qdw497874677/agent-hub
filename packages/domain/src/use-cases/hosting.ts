@@ -51,15 +51,28 @@ export async function projectOf(
  * 这就是 S7.1「重开浏览器还能接着干活」。
  */
 export async function ensureHosted(
-  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'now'> & Partial<Pick<Deps, 'toolGrants'>>,
+  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'now'> &
+    Partial<Pick<Deps, 'toolGrants' | 'environment'>>,
   session: Session
 ): Promise<Result<void, DomainError>> {
+  // 环境版本只比较，不在这里解释资产/MCP；算不出来就维持旧行为。
+  const currentRevision = deps.environment
+    ? await deps.environment.revision(session).catch(() => null)
+    : null;
+  const stale =
+    currentRevision !== null &&
+    session.environmentRevision != null &&
+    currentRevision !== session.environmentRevision;
   if (deps.hosting.has(session.id)) {
-    // 托管中的进程可能已经跨过 token 的 TTL。ACP 的 MCP Authorization 只在
-    // session/new|load 注入，prompt 无法热换；令牌失效时主动重新托管，
-    // 让 start_session 重新签发并下发。
-    const grant = deps.toolGrants ? await deps.toolGrants.activeForSession(session.id, deps.now()) : null;
-    if (!deps.toolGrants || grant !== null) return ok(undefined);
+    // 资产/MCP/技能变化：不在一轮中途换进程，等下一次投递前重新托管。
+    // 重新托管会走 start_session(resume)，Worker 同 id 启动会先 dispose 旧进程。
+    if (!stale) {
+      // 托管中的进程可能已经跨过 token 的 TTL。ACP 的 MCP Authorization 只在
+      // session/new|load 注入，prompt 无法热换；令牌失效时主动重新托管，
+      // 让 start_session 重新签发并下发。
+      const grant = deps.toolGrants ? await deps.toolGrants.activeForSession(session.id, deps.now()) : null;
+      if (!deps.toolGrants || grant !== null) return ok(undefined);
+    }
     deps.hosting.drop(session.id);
   }
   const project = await projectOf(deps, session);
@@ -95,6 +108,12 @@ export async function ensureHosted(
   );
   if (!resumed.ok) return resumed;
   deps.hosting.add(session.id, placed.workerId);
+  // 只有启动成功后才把环境版本记成「已应用」。失败时保留旧值，下一次还能重试。
+  if (currentRevision !== null) {
+    await deps.sessions
+      .setEnvironmentRevision(placed.id, currentRevision, deps.now())
+      .catch(() => undefined);
+  }
   return ok(undefined);
 }
 
