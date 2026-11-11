@@ -101,7 +101,9 @@
 
 已完成（P6a）：`agent.list_profiles`、`agent.inspect_runtime`、`agent.activity`、`agent.spawn`、`agent.set_option`，薄封装现有 session/profile 用例；spawn 限同任务、set_option 限同项目同 owner。
 
-待做（P6b）：Worker 侧 ACP transformer 钩子：`discover/configure/notification/toolCall`。
+已完成（P6b 基础设施）：`AcpRuntimeCodec` / `AcpSessionCodec`；OpenCode 的子会话 `_meta`、父工具配对、start/end 已从 `acp-runtime.ts` 迁到 `codecs/opencode.ts`；通用 mapper 仍是默认路径，codec 可返回 `null` 回退。`ACP_AGENTS` 只能配数据，不能注入 codec。设计见 `docs/design/acp-runtime-codec.md`。
+
+待做（P6b 后续）：接 Claude Code/Codex 等工具名/通知差异明显的 runtime 时，新增对应 codec；没有具体私有格式前不再造空钩子。
 - 编排工具（薄封装现有 session/messaging，不重写消息总线）：
   - `list_agent_profiles`
   - `inspect_agent_runtime`

@@ -52,7 +52,7 @@ OpenCode 2.2.6 在 `initialize.agentCapabilities._meta['opencode/child-session-u
 - 子工具调用的 `toolCallId` 形如 `<childSessionId>:<toolCallId>`；
 - 父工具完成的内容里有 `<subagent sessionID="…" state="completed">`。
 
-适配器因此：
+适配器因此（2026-11-11 起这些逻辑在 `AcpRuntimeCodec` 的 OpenCode 实现里，通用 mapper 不认 vendor 名字）：
 
 1. 保留 `params._meta`，读 child meta；
 2. 第一次见到 child id 时发 `subagent start`；

@@ -26,6 +26,12 @@ test('ACP_AGENTS：自定义运行时别名保留 command/env/models/defaultMode
   assert.deepEqual(alias.models, ['claude-sonnet-4-5', 'claude-opus-4-1']);
   assert.equal(alias.defaultModel, 'claude-sonnet-4-5');
   assert.deepEqual(alias.optionOverrides, { mode: { category: 'agent', label: 'Agent' } });
+  assert.equal(alias.codec, undefined, '自定义 runtime 不能从 JSON 注入 codec');
+});
+
+test('ACP_AGENTS：OpenCode 条目恢复内置 codec，但不接受 JSON 里的 codec', () => {
+  const agents = acpAgents(JSON.stringify([{ id: 'opencode', command: 'opencode', args: ['acp'], codec: { id: 'evil' } }]));
+  assert.equal(agents[0]?.codec?.id, 'opencode');
 });
 
 test('ACP_AGENTS：非法 JSON 回退默认，缺 command 的条目跳过', () => {

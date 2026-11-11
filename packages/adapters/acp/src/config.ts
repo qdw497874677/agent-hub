@@ -2,6 +2,8 @@ import { pathToFileURL } from 'node:url';
 import { asAgentId, available, capabilityMatrix, denied, limited } from '@agent-hub/domain';
 import type { AgentDescriptor, ProviderLaunch, ProviderProtocol, RuntimeOption, SessionAssets } from '@agent-hub/domain';
 import type { AcpOptionOverride } from './map-options.ts';
+import type { AcpRuntimeCodec } from './codec.ts';
+import { opencodeCodec } from './codecs/opencode.ts';
 
 /**
  * 一个 ACP agent 的全部可配置项。
@@ -56,6 +58,13 @@ export interface AcpAgentConfig {
    * 不改 id，改值仍然走同一条 `set_config_option`。
    */
   readonly optionOverrides?: Readonly<Record<string, AcpOptionOverride>>;
+  /**
+   * 可选：runtime 私有的 ACP 语义 codec（子代理、私有通知等）。
+   * 这是代码扩展点，`ACP_AGENTS` 只能配数据，不能注入 codec。
+   */
+  readonly codec?: AcpRuntimeCodec;
+  /** 可选：从 ACP_AGENTS 选一个内置 codec（当前只支持 opencode），用于别名。 */
+  readonly codecId?: 'opencode';
   /**
    * 从某条消息原生分叉的方言（ADR 0028）。ACP 的 `session/fork` 本身只能复制整条会话；
    * `jetbrains-air` = claude-agent-acp 认的 `_meta.jetbrains.air.fork.messageId`（保留到这条 assistant 消息为止）。
@@ -139,7 +148,8 @@ export const ACP_AGENT_DEFAULTS: readonly AcpAgentConfig[] = [
     launch: opencodeLaunch,
     // OpenCode 的 Session Mode 就是当前 agent（orchestrator/build/plan），
     // 平台把它当 `agent` 选项展示；其他 agent 的 mode 仍是权限/会话模式。
-    optionOverrides: { mode: { category: 'agent', label: 'Agent' } }
+    optionOverrides: { mode: { category: 'agent', label: 'Agent' } },
+    codec: opencodeCodec
   }
 ];
 
@@ -157,7 +167,7 @@ export function acpDescriptor(
 ): AgentDescriptor {
   const model = options.find((option) => option.category === 'model');
   const models = model === undefined ? [...new Set(discovered)] : [...new Set(choicesOf(model))];
-  return {
+  const descriptor: AgentDescriptor = {
     id: asAgentId(config.id),
     label: config.label,
     capabilities: capabilityMatrix({
@@ -178,6 +188,7 @@ export function acpDescriptor(
     options,
     ...(config.providerLaunch && config.providerProtocols?.length ? { providers: config.providerProtocols } : {})
   };
+  return config.codec?.descriptor?.(descriptor, config) ?? descriptor;
 }
 
 function choicesOf(option: RuntimeOption): string[] {

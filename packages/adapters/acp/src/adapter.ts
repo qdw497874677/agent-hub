@@ -6,6 +6,7 @@ import { acpReadiness } from './readiness.ts';
 import { opencodeInstaller } from './installer.ts';
 import { opencodeProviderLaunch } from './opencode-provider.ts';
 import { hermesAcpConfig } from './hermes-acp.ts';
+import { opencodeCodec } from './codecs/opencode.ts';
 
 /**
  * ACP agent 是配置，不是代码：
@@ -32,6 +33,9 @@ export function acpAgents(raw: string | undefined, log: (message: string) => voi
         ...(typeof candidate.defaultModel === 'string' ? { defaultModel: candidate.defaultModel } : {}),
         ...(candidate.optionOverrides && typeof candidate.optionOverrides === 'object' && !Array.isArray(candidate.optionOverrides) ? { optionOverrides: candidate.optionOverrides } : {}),
         ...(candidate.branchAtTurn === 'jetbrains-air' ? { branchAtTurn: 'jetbrains-air' as const } : {}),
+        // codec 是内置代码，不能从 ACP_AGENTS 注入；只允许用 codecId 选已知实现。
+        ...(typeof candidate.codecId === 'string' && candidate.codecId === 'opencode' ? { codecId: candidate.codecId } : {}),
+        ...(candidate.codecId === 'opencode' || candidate.id === 'opencode' ? { codec: opencodeCodec } : {}),
         ...(Array.isArray(candidate.listModelsArgs)
           ? { listModelsArgs: candidate.listModelsArgs.filter((arg) => typeof arg === 'string') }
           : {})

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { endedFromStopReason, mapAcpUpdate, readSubagentMeta, redactLine } from './map-acp.ts';
+import { endedFromStopReason, mapAcpUpdate, redactLine } from './map-acp.ts';
+import { readSubagentMeta } from './codecs/opencode.ts';
 import { ACP_AGENT_DEFAULTS, acpDescriptor } from './config.ts';
 import { mapAcpOptions } from './map-options.ts';
 
@@ -121,6 +122,7 @@ test('acp: 模型元数据从候选项 _meta 搬到 RuntimeOption', () => {
 test('acp: OpenCode 默认把 Session Mode 当 Agent 展示', () => {
   const opencode = ACP_AGENT_DEFAULTS.find((config) => config.id === 'opencode');
   assert.deepEqual(opencode?.optionOverrides, { mode: { category: 'agent', label: 'Agent' } });
+  assert.equal(opencode?.codec?.id, 'opencode');
 });
 
 test('acp: agent 配置可把 mode 映射成平台语义 agent，id 不变', () => {

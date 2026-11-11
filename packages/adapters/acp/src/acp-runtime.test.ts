@@ -6,6 +6,7 @@ import type { RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain'
 import { hermesAcpOptionValue } from './hermes-acp.ts';
 import { createAcpRuntime } from './acp-runtime.ts';
 import type { AcpAgentConfig } from './config.ts';
+import { opencodeCodec } from './codecs/opencode.ts';
 
 const FAKE = fileURLToPath(new URL('../test-fixtures/fake-agent.mjs', import.meta.url));
 
@@ -139,7 +140,7 @@ test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏�
 });
 
 test('acp runtime: child session updates → subagent start/子事件/end，父会话不混入子文本', async (t) => {
-  const runtime = createAcpRuntime({ ...config, args: [FAKE, '--child'] });
+  const runtime = createAcpRuntime({ ...config, args: [FAKE, '--child'], codec: opencodeCodec });
   const started = await runtime.start(spec());
   assert.ok(started.ok);
   const session = started.value;

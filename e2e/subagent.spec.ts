@@ -34,7 +34,8 @@ test('子代理事件折叠成会话内的卡片，并显示完成状态', async
       label: '假 ACP',
       command: process.execPath,
       args: [FAKE, '--child'],
-      listModelsArgs: [FAKE, '--models']
+      listModelsArgs: [FAKE, '--models'],
+      codecId: 'opencode'
     }
   ];
   const worker: ChildProcess = spawn(process.execPath, ['apps/worker/src/main.ts'], {

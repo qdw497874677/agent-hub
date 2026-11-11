@@ -54,29 +54,6 @@ export function mapAcpUpdate(
   }
 }
 
-/** OpenCode 的子会话更新在 `session/update` 的 `_meta` 里标出父子关系；其他 agent 不报就不猜。 */
-export interface AcpSubagentMeta {
-  readonly id: string;
-  readonly parentId: string;
-  readonly depth: number;
-  readonly title?: string;
-}
-
-export function readSubagentMeta(meta: unknown): AcpSubagentMeta | null {
-  if (typeof meta !== 'object' || meta === null) return null;
-  const raw = (meta as Record<string, unknown>)['opencode/child-session'];
-  if (typeof raw !== 'object' || raw === null) return null;
-  const child = raw as Record<string, unknown>;
-  if (typeof child['id'] !== 'string' || !child['id']) return null;
-  if (typeof child['parentID'] !== 'string' || !child['parentID']) return null;
-  return {
-    id: child['id'],
-    parentId: child['parentID'],
-    depth: typeof child['depth'] === 'number' ? child['depth'] : 1,
-    ...(typeof child['title'] === 'string' && child['title'] ? { title: child['title'] } : {})
-  };
-}
-
 /**
  * ACP 的 write/edit 工具在完成时可以带 `content: [{ type: 'diff', path, newText }]`（ACP 标准的 diff 内容块；Grok 1.0.70 实测会带），
  * 这是权威的文件路径；bytes 取 newText 的 UTF-8 长度。
