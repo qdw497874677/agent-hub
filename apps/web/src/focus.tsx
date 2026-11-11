@@ -216,13 +216,25 @@ export function FocusView({
   const turnRunning = waitingForReply(live, status);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
-  useEffect(() => void queries.invalidateQueries({ queryKey: ['files', session.id, 'changes'] }, { cancelRefetch: false }), [status, session.id, queries]);
+  useEffect(() => {
+    void queries.invalidateQueries({ queryKey: ['files', session.id, 'changes'] }, { cancelRefetch: false });
+    void queries.invalidateQueries({ queryKey: ['git', session.id, 'state'] }, { cancelRefetch: false });
+  }, [status, session.id, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
   const changeCount = shown(useQuery({
     ...FILES_QUERY,
     queryKey: ['files', session.id, 'changes', 'session'],
     queryFn: () => filesApi.changes(session.id, 'session')
   }))?.files.length;
+  const workspace = canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
+  // 和 OpenCode 一样把当前分支放在输入框旁边；分支可能被 agent 切换，所以回合结束后刷新。
+  const gitState = shown(useQuery({
+    queryKey: ['git', session.id, 'state'],
+    queryFn: () => gitApi.state(session.id),
+    enabled: workspace !== undefined && workspace.isGit !== false,
+    staleTime: 15_000,
+    retry: false
+  }));
   const forkable = !busy && forkHint === null;
   const [gitOpen, setGitOpen] = useState(false);
   const [rewindAt, setRewindAt] = useState<number | null>(null);
@@ -598,9 +610,23 @@ export function FocusView({
               ))}
             </div>
           ) : null}
-          {live?.contextUsage ? (
-            <div className="mb-1 flex justify-end pr-1">
-              <ContextMeter usage={live.contextUsage} />
+          {gitState?.isGit || live?.contextUsage ? (
+            <div className="mb-1 flex items-center justify-between gap-2 pr-1">
+              {gitState?.isGit ? (
+                <button
+                  type="button"
+                  className="flex min-w-0 items-center gap-1 text-meta text-tertiary hover:text-primary"
+                  title={`${gitState.branch ?? '分离 HEAD'}${gitState.ahead > 0 ? ` · 领先 ${gitState.ahead}` : ''}${gitState.files.length > 0 ? ` · ${gitState.files.length} 个未提交改动` : ''}`}
+                  data-testid="git-branch"
+                  onClick={() => setGitOpen(true)}
+                >
+                  <span aria-hidden>⎇</span>
+                  <span className="truncate font-mono">{gitState.branch ?? 'HEAD'}</span>
+                  {gitState.files.length > 0 ? <span className="shrink-0 text-rust">{gitState.files.length} 改动</span> : null}
+                  {gitState.ahead > 0 ? <span className="shrink-0 text-tertiary">↑{gitState.ahead}</span> : null}
+                </button>
+              ) : <span />}
+              {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
             </div>
           ) : null}
           {queuedBlocks.length > 0 ? (

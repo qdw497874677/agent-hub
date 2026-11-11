@@ -13,7 +13,6 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
  * 但 git 的 insteadOf 把它指到本地 bare 仓库（推送真落地，不碰 GitHub）；
  * PR 三条路：团队 token（假 GitHub API）→ Worker 的 gh（PATH 里的假 gh）→ 只推送 + 链接。
  */
-const SHOTS = '/workspace/shots/git-workflow/2-commit-push-pr';
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 const TOKEN = 'ghp_e2eFakeToken000000000000000000ABCD';
 
@@ -51,9 +50,8 @@ async function waitTurns(page: Page, sid: string, count: number): Promise<void> 
   throw new Error(`等不到 ${count} 轮检查点`);
 }
 
-test('提交 / 推送 / 开 PR：token → gh → 链接；推送真落到 bare 仓库；token 只回末 4 位', async ({ page, baseURL }) => {
+test('提交 / 推送 / 开 PR：token → gh → 链接；推送真落到 bare 仓库；token 只回末 4 位', async ({ page, baseURL }, testInfo) => {
   test.setTimeout(180_000);
-  mkdirSync(SHOTS, { recursive: true });
   const seen: Seen[] = [];
   const github = await fakeGitHub(seen);
   await loginByApi(page);
@@ -134,20 +132,21 @@ test('提交 / 推送 / 开 PR：token → gh → 链接；推送真落到 bare 
       await page.setViewportSize({ width, height: width > 500 ? 860 : 844 });
       await page.goto(`/#/p/${project.id}/focus/${sid}`);
       await page.reload();
+      await expect(page.getByTestId('git-branch')).toContainText('feat/e2e-git');
       await expect(page.getByTestId('turn-badge').first()).toContainText('改了 1 个文件');
-      await page.screenshot({ path: join(SHOTS, `turn-badge-${width}.png`) });
+      await page.screenshot({ path: testInfo.outputPath(`turn-badge-${width}.png`) });
       await page.getByRole('button', { name: /更多/ }).first().click();
       await page.getByText('提交与推送…').click();
       const dialog = page.getByTestId('git-dialog');
       await expect(dialog.getByTestId('git-files')).toContainText('a.txt');
       await expect(dialog.getByTestId('git-message')).not.toHaveValue('');
       await expect(dialog.getByTestId('git-pr-title')).toHaveValue(/a\.txt|demo/);
-      await page.screenshot({ path: join(SHOTS, `dialog-${width}.png`) });
+      await page.screenshot({ path: testInfo.outputPath(`dialog-${width}.png`) });
       if (width === 390) {
         await dialog.getByTestId('git-message').fill('feat: 加 a.txt\n\n由 e2e 提交');
         await dialog.getByTestId('git-pr').click();
         await expect(dialog.getByTestId('git-result-pr')).toHaveText('#41');
-        await page.screenshot({ path: join(SHOTS, `pr-token-${width}.png`) });
+        await page.screenshot({ path: testInfo.outputPath(`pr-token-${width}.png`) });
       } else {
         await page.keyboard.press('Escape');
       }
@@ -165,9 +164,9 @@ test('提交 / 推送 / 开 PR：token → gh → 链接；推送真落到 bare 
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByTestId('pr-chip').first()).toContainText('PR #41');
-    await page.screenshot({ path: join(SHOTS, `pr-chip-390.png`) });
+    await page.screenshot({ path: testInfo.outputPath('pr-chip-390.png') });
     await page.setViewportSize({ width: 1280, height: 860 });
-    await page.screenshot({ path: join(SHOTS, `pr-chip-1280.png`) });
+    await page.screenshot({ path: testInfo.outputPath('pr-chip-1280.png') });
 
     // gh 路径：删掉 token，再改一轮，用 Worker 上的 gh 开
     expect((await page.request.delete('/api/git-host/token', { headers })).ok()).toBe(true);
