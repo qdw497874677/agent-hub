@@ -13,7 +13,7 @@ interface Props {
 
 const COMPACT_CATEGORIES: readonly string[] = ['model', 'agent', 'mode', 'thought_level'];
 /** 底栏顺序：先选模型，再选 agent/模式，最后是思考强度。 */
-const COMPACT_ORDER: readonly string[] = ['model', 'agent', 'mode', 'thought_level'];
+const COMPACT_ORDER: readonly string[] = ['model', 'thought_level', 'agent', 'mode'];
 
 export function currentOf(
   options: readonly RuntimeOptionDto[],

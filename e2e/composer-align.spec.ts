@@ -47,7 +47,7 @@ async function setup(page: Page, baseURL: string) {
 /** 底栏里每个控件的盒子：高度相同、垂直中线相同（容差 1px）。 */
 async function expectAligned(row: Locator, label: string) {
   const controls = row.locator('button:visible, select:visible');
-  const boxes = (await controls.evaluateAll((nodes) => nodes.map((n) => { const r = n.getBoundingClientRect(); return { name: n.getAttribute('aria-label') ?? n.tagName, top: r.top, height: r.height }; })));
+  const boxes = (await controls.evaluateAll((nodes) => nodes.map((n) => { const r = n.getBoundingClientRect(); return { name: n.getAttribute('aria-label') ?? n.tagName, top: r.top, left: r.left, height: r.height }; })));
   expect(boxes.length, `${label}：底栏控件`).toBeGreaterThanOrEqual(4);
   const options = boxes.filter((b) => b.name !== '添加附件' && b.name !== '拍照' && b.name !== '发送' && b.name !== '中断');
   const tall = Math.max(...boxes.map((b) => b.height));
@@ -55,6 +55,13 @@ async function expectAligned(row: Locator, label: string) {
   const mid = (b: { top: number; height: number }) => b.top + b.height / 2;
   for (const b of boxes) expect(Math.abs(mid(b) - mid(boxes[0]!)), `${label}：${b.name} 垂直居中`).toBeLessThanOrEqual(1);
   for (const b of options) expect(Math.abs(b.height - tall), `${label}：${b.name} 和按钮一样高`).toBeLessThanOrEqual(1);
+  const model = boxes.find((b) => b.name.startsWith('模型：'));
+  const effort = boxes.find((b) => b.name === '思考强度');
+  const agent = boxes.find((b) => b.name === 'Agent');
+  if (model && effort) {
+    expect(model.left, `${label}：模型在思考强度左边`).toBeLessThan(effort.left);
+    if (agent) expect(agent.left, `${label}：Agent 在思考强度右边`).toBeGreaterThan(effort.left);
+  }
   return boxes;
 }
 
