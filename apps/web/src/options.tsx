@@ -12,6 +12,8 @@ interface Props {
 }
 
 const COMPACT_CATEGORIES: readonly string[] = ['model', 'agent', 'mode', 'thought_level'];
+/** 底栏顺序：先选模型，再选 agent/模式，最后是思考强度。 */
+const COMPACT_ORDER: readonly string[] = ['model', 'agent', 'mode', 'thought_level'];
 
 export function currentOf(
   options: readonly RuntimeOptionDto[],
@@ -30,13 +32,19 @@ export function currentOf(
  */
 export function OptionControls({ options, values, onChange, compact = false, disabled = false }: Props) {
   const visible = compact
-    ? options.filter((option) => COMPACT_CATEGORIES.includes(option.category))
+    ? options
+        .filter((option) => COMPACT_CATEGORIES.includes(option.category))
+        .slice()
+        .sort((left, right) => COMPACT_ORDER.indexOf(left.category) - COMPACT_ORDER.indexOf(right.category))
     : options;
   if (visible.length === 0) return null;
 
   return (
-    // compact（输入框底栏）不换行：模型名可以截断，思考强度固定宽度跟在后面——手机上折成两行很难看
-    <div className={`flex min-w-0 items-center gap-1.5 ${compact ? 'flex-nowrap' : 'flex-wrap'}`}>
+    // 窄屏放不下三项时换行，别把模型选择器挤成一条竖线；sm 以上保持一行。
+    <div
+      data-testid={compact ? 'option-controls-compact' : 'option-controls'}
+      className={`flex min-w-0 items-center gap-1.5 ${compact ? 'flex-wrap sm:flex-nowrap' : 'flex-wrap'}`}
+    >
       {visible.map((option) => {
         const current = currentOf(options, values, option);
         if (option.kind === 'boolean') {
@@ -68,7 +76,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
               value={String(current)}
               disabled={disabled}
               onChange={(value) => onChange(option.id, value)}
-              className={`${compact ? 'min-w-0 flex-1' : ''} max-w-[160px] ${compact ? 'option-control' : 'py-0.5'} rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
+              className={`${compact ? 'min-w-[92px] flex-1' : ''} max-w-[160px] ${compact ? 'option-control' : 'py-0.5'} rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             />
           );
         }
@@ -77,7 +85,8 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             key={option.id}
             aria-label={option.label}
             title={option.description ?? option.label}
-            className={`${compact ? (option.category === 'model' ? 'min-w-0 flex-1' : 'shrink-0') : ''} max-w-[132px] ${compact ? 'option-control' : 'py-0.5'} truncate rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
+            data-category={option.category}
+            className={`${compact ? (option.category === 'model' ? 'min-w-[92px] flex-1' : 'shrink-0') : ''} max-w-[112px] sm:max-w-[132px] ${compact ? 'option-control' : 'py-0.5'} truncate rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             value={String(current)}
             disabled={disabled}
             // 下拉里选东西不该顺手把卡片拖走
