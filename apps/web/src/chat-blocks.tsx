@@ -280,6 +280,36 @@ function ToolCard({ block, settings }: { block: Extract<Block, { kind: 'tool' }>
             <p className="font-mono text-meta text-tertiary"><PathText path={view.path} input={block.input} /></p>
             <DiffView lines={view.diff} />
           </>
+        ) : view.kind === 'read' ? (
+          <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
+            <PathText path={view.path} input={block.input} />
+            {view.detail ? ` · ${view.detail}` : ''}
+          </p>
+        ) : view.kind === 'search' ? (
+          <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
+            <span className="text-accent">⌕ </span>
+            {view.query}
+            {view.path ? ` · ${view.path}` : ''}
+          </p>
+        ) : view.kind === 'fetch' ? (
+          <p className="break-all font-mono text-meta text-tertiary" data-testid="tool-input">
+            {view.url}
+          </p>
+        ) : view.kind === 'worktree' ? (
+          <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
+            {view.path}
+            {view.branch ? ` · ${view.branch}` : ''}
+          </p>
+        ) : view.kind === 'subagent' ? (
+          <p className="text-meta text-secondary" data-testid="tool-input">
+            <span className="text-accent">◈ </span>
+            {view.agent ?? '子代理'}
+            {view.description ? ` · ${view.description}` : ''}
+          </p>
+        ) : view.kind === 'plan' ? (
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-meta text-tertiary" data-testid="tool-input">
+            {view.text}
+          </pre>
         ) : view.kind === 'file' ? (
           <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
             <PathText path={view.path} input={block.input} />

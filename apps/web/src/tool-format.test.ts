@@ -30,8 +30,16 @@ test('OpenCode edit：oldString/newString；write 的 content 全是 +', () => {
 });
 
 test('read：路径 + 其它参数；认不出的原样', () => {
-  assert.deepEqual(toolView('read', '{"path":"x.ts","offset":3}'), { kind: 'file', path: 'x.ts', detail: 'offset: 3' });
+  assert.deepEqual(toolView('read', '{"path":"x.ts","offset":3}'), { kind: 'read', path: 'x.ts', detail: 'offset: 3' });
   assert.deepEqual(toolView('weird', 'not json'), { kind: 'raw', text: 'not json' });
+});
+
+test('search / fetch / subagent / plan / worktree：按类型给摘要', () => {
+  assert.deepEqual(toolView('grep', '{"pattern":"needle","path":"src"}'), { kind: 'search', query: 'needle', path: 'src' });
+  assert.deepEqual(toolView('webfetch', '{"url":"https://example.com"}'), { kind: 'fetch', url: 'https://example.com' });
+  assert.deepEqual(toolView('task', '{"agent":"explorer","description":"看目录"}'), { kind: 'subagent', agent: 'explorer', description: '看目录' });
+  assert.deepEqual(toolView('plan', '{"plan":"先读代码"}'), { kind: 'plan', text: '先读代码' });
+  assert.deepEqual(toolView('create_worktree', '{"path":".worktrees/a","branch":"feat/a"}'), { kind: 'worktree', path: '.worktrees/a', branch: 'feat/a' });
 });
 
 test('统一 diff 文本解析；不是 diff 返回 null', () => {

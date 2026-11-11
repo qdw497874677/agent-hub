@@ -13,6 +13,12 @@ export interface DiffLine {
 export type ToolView =
   | { readonly kind: 'shell'; readonly command: string }
   | { readonly kind: 'edit'; readonly path: string; readonly diff: readonly DiffLine[] }
+  | { readonly kind: 'read'; readonly path: string; readonly detail: string }
+  | { readonly kind: 'search'; readonly query: string; readonly path?: string }
+  | { readonly kind: 'fetch'; readonly url: string }
+  | { readonly kind: 'worktree'; readonly path: string; readonly branch?: string }
+  | { readonly kind: 'subagent'; readonly agent?: string; readonly description?: string }
+  | { readonly kind: 'plan'; readonly text: string }
   | { readonly kind: 'file'; readonly path: string; readonly detail: string }
   | { readonly kind: 'raw'; readonly text: string };
 
@@ -80,6 +86,35 @@ export function toolView(name: string, input: string): ToolView {
   }
   const content = str(args, 'content', 'text');
   if (content !== null && /write|create/i.test(name)) return { kind: 'edit', path, diff: lines(content, '+') };
+  const query = str(args, 'query', 'pattern', 'q', 'regex');
+  if (query !== null && /search|grep|glob|find|ripgrep|rg/i.test(name)) {
+    const searchPath = str(args, 'path', 'file_path', 'filePath', 'directory', 'dir') ?? undefined;
+    return { kind: 'search', query, ...(searchPath === undefined ? {} : { path: searchPath }) };
+  }
+  const url = str(args, 'url', 'uri', 'href');
+  if (url !== null && /fetch|http|browser|web|curl/i.test(name)) return { kind: 'fetch', url };
+  if (/subagent|task/i.test(name)) {
+    const agent = str(args, 'agent', 'subagent_type', 'subagentType', 'type') ?? undefined;
+    const description = str(args, 'description', 'title', 'prompt') ?? undefined;
+    if (agent !== undefined || description !== undefined) {
+      return { kind: 'subagent', ...(agent === undefined ? {} : { agent }), ...(description === undefined ? {} : { description }) };
+    }
+  }
+  if (/plan|todo/i.test(name)) {
+    const text = str(args, 'plan', 'text', 'content', 'todos') ?? input;
+    return { kind: 'plan', text };
+  }
+  if (/worktree/i.test(name)) {
+    const branch = str(args, 'branch', 'name') ?? undefined;
+    return { kind: 'worktree', path: path || '.', ...(branch === undefined ? {} : { branch }) };
+  }
+  if (/^read|read_|readfile|cat/i.test(name) && path !== '') {
+    const rest = Object.entries(args)
+      .filter(([key]) => !['path', 'file_path', 'filePath', 'file', 'filename'].includes(key))
+      .map(([key, value]) => `${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+      .join(' · ');
+    return { kind: 'read', path, detail: rest };
+  }
   if (path !== '') {
     const rest = Object.entries(args)
       .filter(([key]) => !['path', 'file_path', 'filePath', 'file', 'filename'].includes(key))
@@ -106,6 +141,18 @@ export function toolSummary(view: ToolView): string {
       const minus = view.diff.filter((line) => line.sign === '-').length;
       return `${view.path} +${plus} -${minus}`;
     }
+    case 'read':
+      return view.detail === '' ? view.path : `${view.path} · ${view.detail}`;
+    case 'search':
+      return view.path === undefined ? view.query : `${view.query} · ${view.path}`;
+    case 'fetch':
+      return view.url;
+    case 'worktree':
+      return view.branch === undefined ? view.path : `${view.path} · ${view.branch}`;
+    case 'subagent':
+      return [view.agent, view.description].filter((part): part is string => part !== undefined && part !== '').join(' · ') || '子代理';
+    case 'plan':
+      return view.text.replace(/\s+/g, ' ').slice(0, 160);
     case 'file':
       return view.detail === '' ? view.path : `${view.path} · ${view.detail}`;
     case 'raw':

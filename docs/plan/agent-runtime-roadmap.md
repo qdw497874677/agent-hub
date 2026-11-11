@@ -19,7 +19,7 @@
 | P1 | Agent Profile | 已完成 | P0 |
 | P2 | 运行时 controls / 模型元数据 | 已完成 | P1 |
 | P3 | 子代理时间线 UI | 已完成 | P1 事件模型 |
-| P4 | 结构化工具详情 + 权限请求 | 待开始 | P3 |
+| P4 | 结构化工具详情 + 权限请求 | 已完成 | P3 |
 | P5 | 运行时状态 + 自定义运行时别名 | 待开始 | P2 |
 | P6 | ACP transformer + 编排工具 | 待开始 | P1/P3 |
 
@@ -75,12 +75,12 @@
 
 ## 5. P4 结构化工具详情 + 权限请求
 
-**目标**：工具卡不只显示原始 JSON，而是按类型展示；权限请求变成可操作卡片。
+已完成：
 
-- `ProviderToolCallDetail` 对应到 Hub：shell/read/edit/write/search/fetch/worktree/subagent/plan/unknown。
-- 工具卡显示命令、路径、diff、搜索结果摘要；原始输入仍可展开。
-- 权限请求：kind、actions、suggestions、detail；支持 allow/deny、updatedInput/updatedPermissions。
-- 验收：OpenCode/Hermes 的常见工具都有结构化视图；未知工具降级为文本。
+- `toolView` 识别 `shell`、`edit`、`read`、`search`、`fetch`、`worktree`、`subagent`、`plan`、`file`、`raw`；未知工具降级为原始 JSON。
+- 工具卡按类型显示命令、路径/行号、diff、搜索词、URL、子代理、计划文本；原始输入仍可展开。
+- 权限请求沿用现有 `approval` 卡：显示标题/详情、允许/拒绝、倒计时和超时拒绝；没有新增平台自造权限。
+- 验证：`tool-format.test.ts` 覆盖各类型识别与摘要；E2E 工具卡不回归。
 
 ## 6. P5 运行时状态 + 自定义运行时别名
 
