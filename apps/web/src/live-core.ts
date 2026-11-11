@@ -78,6 +78,21 @@ export interface ContextUsage {
   readonly percent: number | null;
 }
 
+/** 运行时在当前会话里可用的斜杠命令。 */
+export interface RuntimeCommand {
+  readonly name: string;
+  readonly description?: string;
+  readonly hint?: string;
+}
+
+export function commandsFromEntries(entries: readonly JournalEntryDto[]): readonly RuntimeCommand[] | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const event = entries[index]?.event;
+    if (event?.kind === 'commands') return event.commands;
+  }
+  return null;
+}
+
 export function contextUsageFromEntries(entries: readonly JournalEntryDto[]): ContextUsage | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const event = entries[index]?.event;
@@ -107,6 +122,8 @@ export interface LiveSession {
    * 没有运行时（或还没报过）就是 null。
    */
   readonly contextUsage: ContextUsage | null;
+  /** 运行时当前可用的斜杠命令；没有运行时或还没报过就是空数组。 */
+  readonly commands: readonly RuntimeCommand[];
 }
 
 export type LiveMap = Readonly<Record<string, LiveSession>>;
@@ -124,7 +141,7 @@ export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, se
       ? [...withoutStall(blocks), { kind: 'stall', text: event.text, seq }]
       : blocks;
   }
-  if (event.kind === 'context_usage' || event.kind === 'compaction') return blocks;
+  if (event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'commands') return blocks;
   // 子代理是父会话里的一段嵌套时间线：start/end 建组，子事件按 subagentId 折进去。
   if (event.kind === 'subagent') return applySubagent(blocks, event, seq);
   if ('subagentId' in event && event.subagentId) return foldSubagentEvent(blocks, event.subagentId, event, seq);
@@ -307,7 +324,7 @@ export function reasonFromEntries(entries: readonly JournalEntryDto[]): string |
 export function awaitingAfter(previous: boolean, event: SessionEventDto | null, status: SessionDto['status']): boolean {
   if (event === null) return status === 'running' && previous;
   if (event.kind === 'ended') return false;
-  if (event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'approval') return previous;
+  if (event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'approval' || event.kind === 'commands') return previous;
   return true;
 }
 
@@ -317,7 +334,7 @@ export function awaitingAfter(previous: boolean, event: SessionEventDto | null, 
  */
 export function awaitingFromHistory(entries: readonly JournalEntryDto[], status: SessionDto['status']): boolean {
   if (status !== 'running') return false;
-  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic' && entry.event.kind !== 'context_usage' && entry.event.kind !== 'compaction' && entry.event.kind !== 'approval');
+  const last = [...entries].sort((a, b) => b.seq - a.seq).find((entry) => entry.event.kind !== 'diagnostic' && entry.event.kind !== 'context_usage' && entry.event.kind !== 'compaction' && entry.event.kind !== 'approval' && entry.event.kind !== 'commands');
   return last !== undefined && last.event.kind !== 'ended';
 }
 
@@ -336,7 +353,8 @@ export function resolveLive(
     lastSeq: preview.reduce((highest, entry) => Math.max(highest, entry.seq), session.lastSeq),
     reason: reasonFromEntries(preview),
     awaiting: awaitingFromHistory(preview, session.status),
-    contextUsage: contextUsageFromEntries(preview)
+    contextUsage: contextUsageFromEntries(preview),
+    commands: commandsFromEntries(preview) ?? []
   };
 }
 
@@ -363,6 +381,7 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
     frame.event?.kind === 'context_usage'
       ? { usedTokens: frame.event.usedTokens, windowTokens: frame.event.windowTokens, percent: frame.event.percent }
       : (previous?.contextUsage ?? null);
+  const commands = frame.event?.kind === 'commands' ? frame.event.commands : (previous?.commands ?? []);
   const next: LiveSession = {
     blocks: frame.event ? applyBlocks(blocks, frame.event, frame.seq) : blocks,
     status: frame.status,
@@ -371,7 +390,8 @@ export function applyFrame(current: LiveMap, frame: Frame): LiveMap {
     // 推进了就会把那条事件当成「旧帧」丢掉——提问气泡曾整条消失过。
     lastSeq: frame.event ? frame.seq : (previous?.lastSeq ?? 0),
     reason,
-    contextUsage
+    contextUsage,
+    commands
   };
   return { ...current, [frame.sessionId]: next };
 }
@@ -425,7 +445,8 @@ export function withFullHistory(current: LiveMap, session: SessionDto, entries: 
       lastSeq: Math.max(top, previous?.lastSeq ?? 0),
       reason: reasonFromEntries(entries),
       awaiting: previous?.awaiting ?? awaitingFromHistory(entries, session.status),
-      contextUsage: contextUsageFromEntries(entries) ?? previous?.contextUsage ?? null
+      contextUsage: contextUsageFromEntries(entries) ?? previous?.contextUsage ?? null,
+      commands: commandsFromEntries(entries) ?? previous?.commands ?? []
     }
   };
 }

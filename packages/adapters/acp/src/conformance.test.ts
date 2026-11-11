@@ -65,6 +65,31 @@ test('OpenCode 停止原因映射', () => {
   assert.deepEqual(endedFromStopReason('end_turn'), { kind: 'ended', outcome: 'done' });
 });
 
+test('ACP 斜杠命令：available_commands_update 映射成一条 commands 事件', () => {
+  assert.deepEqual(
+    mapAcpUpdate(
+      {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [
+          { name: 'init', description: 'guided AGENTS.md setup' },
+          { name: 'review', description: 'review changes', input: { hint: 'commit|branch|pr' } },
+          { name: '', description: 'ignored' }
+        ]
+      },
+      toolNames
+    ),
+    [
+      {
+        kind: 'commands',
+        commands: [
+          { name: 'init', description: 'guided AGENTS.md setup' },
+          { name: 'review', description: 'review changes', hint: 'commit|branch|pr' }
+        ]
+      }
+    ]
+  );
+});
+
 // 可调项：ACP 的 ConfigOption → RuntimeOption，含分组与未认识的 category。
 test('acp: 可调项照抄 ACP 的形状，不认识的 category 收进 custom', () => {
   const options = mapAcpOptions([

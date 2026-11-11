@@ -156,6 +156,11 @@ export function Composer({
   }
 
   function runCommand(command: SlashCommand): void {
+    if (command.insert !== undefined) {
+      replaceTrigger(command.insert);
+      area.current?.focus();
+      return;
+    }
     replaceTrigger('');
     command.run().then(
       () => setNotice(null),

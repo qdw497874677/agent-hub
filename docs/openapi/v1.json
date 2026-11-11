@@ -6662,6 +6662,45 @@
                               "kind": {
                                 "type": "string",
                                 "enum": [
+                                  "commands"
+                                ]
+                              },
+                              "commands": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "name": {
+                                      "type": "string",
+                                      "minLength": 1,
+                                      "maxLength": 200
+                                    },
+                                    "description": {
+                                      "type": "string",
+                                      "maxLength": 4000
+                                    },
+                                    "hint": {
+                                      "type": "string",
+                                      "maxLength": 4000
+                                    }
+                                  },
+                                  "required": [
+                                    "name"
+                                  ]
+                                }
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "commands"
+                            ]
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
                                   "ended"
                                 ]
                               },

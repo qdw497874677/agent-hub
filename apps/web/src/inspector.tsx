@@ -231,5 +231,7 @@ export function eventLabel(event: JournalEntryDto['event']): string {
       return event.phase === 'start'
         ? `子代理${event.agent ? ` ${event.agent}` : ''}开始${event.title ? `：${event.title}` : ''}`
         : `子代理${event.agent ? ` ${event.agent}` : ''}${event.status === 'completed' ? '完成' : event.status === 'cancelled' ? '取消' : '失败'}`;
+    case 'commands':
+      return event.commands.length === 0 ? '运行时没有暴露斜杠命令' : `运行时暴露了 ${event.commands.length} 个斜杠命令`;
   }
 }

@@ -24,7 +24,9 @@ export function sessionCommands(
       run: () => (forkBlocked !== null ? Promise.reject(new Error(forkBlocked)) : api.fork({ sessionId: session.id, agentId: session.agentId, model: session.model }))
     });
   }
-  return [...commands, ...extra];
+  // hub 自带动作优先；运行时若报同名命令，以 hub 的为准，避免菜单里出现两个 /new。
+  const local = new Set(commands.map((command) => command.name));
+  return [...commands, ...extra.filter((command) => !local.has(command.name))];
 }
 
 

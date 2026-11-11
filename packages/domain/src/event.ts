@@ -6,7 +6,7 @@ import type { StoredAttachment } from './attachment.ts';
  * 归一化事件。加变体要改这份文件并过 ADR：
  * 变体数就是新 agent 的映射成本，它直接决定「新增 agent 零内核改动」的成本。
  *
- * 十二个变体（ADR 0020 加了两个旁路的 context_usage / compaction，ADR 0023 加了旁路的 approval，ADR 0034 加了 subagent），其中十个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
+ * 十三个变体（ADR 0020 加了两个旁路的 context_usage / compaction，ADR 0023 加了旁路的 approval，ADR 0034 加了 subagent，commands 加的是运行时可用的斜杠命令），其中十一个来自 agent（adapter 负责映射），`prompt` 来自平台自己——
  * 用户说了什么必须留在 journal 里，否则重开浏览器后一半对话是空的。
  * 见 ADR 0006。
  */
@@ -22,8 +22,17 @@ export const SESSION_EVENT_KINDS = [
   'context_usage',
   'compaction',
   'approval',
-  'subagent'
+  'subagent',
+  'commands'
 ] as const;
+
+/** 运行时在当前会话里可用的斜杠命令（ACP available_commands_update）。 */
+export interface SessionCommand {
+  readonly name: string;
+  readonly description?: string;
+  /** 命令接受参数时的输入提示；有它界面只补全命令名，让人继续写参数。 */
+  readonly hint?: string;
+}
 
 export type SessionEvent =
   | {
@@ -64,6 +73,11 @@ export type SessionEvent =
       readonly agent?: string;
       readonly status?: 'running' | 'completed' | 'failed' | 'cancelled';
     }
+  /**
+   * 运行时可用的斜杠命令。旁路状态：不进对话、不改会话状态；后到的快照整表替换前一份。
+   * hub 自带的 /interrupt、/new、/fork 仍在界面上，与运行时命令按名字去重。
+   */
+  | { readonly kind: 'commands'; readonly commands: readonly SessionCommand[] }
   | {
       readonly kind: 'ended';
       readonly outcome: 'done' | 'stopped' | 'interrupted' | 'failed';
@@ -109,7 +123,7 @@ export type SessionEvent =
 
 /** 旁路事件：只记账，不算对话内容，也不算「有动静」。 */
 export function isSideChannel(event: SessionEvent): boolean {
-  return event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'approval';
+  return event.kind === 'diagnostic' || event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'approval' || event.kind === 'commands';
 }
 
 /** 画布卡片默认渲染的事件。diagnostic 只进事件流抽屉，prompt 只在专注对话里露脸。 */

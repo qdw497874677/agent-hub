@@ -49,6 +49,20 @@ export function mapAcpUpdate(
       if (artifact && !events.some((e) => e.kind === 'artifact' && e.path === artifact.path)) events.push(artifact);
       return events;
     }
+    case 'available_commands_update': {
+      const raw = u['availableCommands'];
+      if (!Array.isArray(raw)) return [];
+      const commands = raw.flatMap((item) => {
+        if (typeof item !== 'object' || item === null) return [];
+        const command = item as Record<string, unknown>;
+        if (typeof command['name'] !== 'string' || command['name'].trim() === '') return [];
+        const input = command['input'] as Record<string, unknown> | undefined;
+        const hint = input && typeof input['hint'] === 'string' ? input['hint'].slice(0, 4000) : undefined;
+        const description = typeof command['description'] === 'string' ? command['description'].slice(0, 4000) : undefined;
+        return [{ name: command['name'].slice(0, 200), ...(description ? { description } : {}), ...(hint ? { hint } : {}) }];
+      });
+      return commands.length ? [{ kind: 'commands', commands }] : [];
+    }
     default:
       return [];
   }

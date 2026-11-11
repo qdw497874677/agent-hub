@@ -59,6 +59,8 @@ export function triggerAt(text: string, caret: number): { kind: '@' | '/'; query
 export interface SlashCommand {
   readonly name: string;
   readonly hint: string;
+  /** 运行时命令需要参数时：只补全 `/name `，不立刻发送。 */
+  readonly insert?: string;
   readonly run: () => Promise<unknown>;
 }
 

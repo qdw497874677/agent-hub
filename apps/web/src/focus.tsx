@@ -141,6 +141,21 @@ export function FocusView({
   const linkedIds = useMemo(() => new Set(linkedSessions.map((candidate) => candidate.id)), [linkedSessions]);
   const linkName = (candidate: SessionDto): string =>
     candidate.title?.trim() || canvas.openings[candidate.id]?.trim() || '未命名会话';
+  // 运行时通过 ACP available_commands_update 报上来的命令。带参数提示的只补全命令名，让人接着写参数；
+  // 不带参数的选中即发送（和运行时自己的 /init、/review 行为一致）。
+  const runtimeCommands = useMemo(
+    () =>
+      (live?.commands ?? []).map((command) => {
+        const insert = command.hint ? `/${command.name} ` : undefined;
+        return {
+          name: command.name,
+          hint: command.description ?? command.hint ?? '运行时命令',
+          ...(insert ? { insert } : {}),
+          run: () => api.prompt(session.id, `/${command.name}`, [])
+        };
+      }),
+    [live?.commands, session.id]
+  );
 
   useEffect(() => {
     if (linkBusy === null) return;
@@ -627,7 +642,7 @@ export function FocusView({
             awaiting={turnRunning}
             onChangeOption={(optionId, value) => void run(() => onChangeOption(optionId, value))}
             capability={attachmentsCapability(agent?.capabilities)}
-            commands={sessionCommands(session, [], forkHint)}
+            commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}
           />
         </div>

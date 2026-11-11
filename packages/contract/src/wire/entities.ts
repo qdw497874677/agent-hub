@@ -304,6 +304,13 @@ export const promptPartSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('mention'), name: z.string(), path: z.string() })
 ]);
 
+/** 运行时会话里可用的斜杠命令（ACP available_commands_update）。 */
+export const sessionCommandSchema = z.object({
+  name: z.string().min(1).max(200),
+  description: z.string().max(4000).optional(),
+  hint: z.string().max(4000).optional()
+});
+
 /** 归一化事件过网时的形状：与 domain 的 SessionEvent 一一对应。 */
 export const sessionEventSchema = z.discriminatedUnion('kind', [
   z.object({
@@ -348,6 +355,7 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
     agent: z.string().max(200).optional(),
     status: z.enum(['running', 'completed', 'failed', 'cancelled']).optional()
   }),
+  z.object({ kind: z.literal('commands'), commands: z.array(sessionCommandSchema).readonly() }),
   z.object({
     kind: z.literal('ended'),
     outcome: z.enum(['done', 'stopped', 'interrupted', 'failed']),
