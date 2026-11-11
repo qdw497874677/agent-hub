@@ -5,7 +5,7 @@ import type { Session } from '../session.ts';
 import { asAgentId, asSessionId } from '../ids.ts';
 import { unavailable } from '../errors.ts';
 import { err, ok } from '../result.ts';
-import { fakeGit, inMemoryDeps } from '../testing/in-memory.ts';
+import { fakeGit, fakeToolGrants, inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { changeSessionOption, deriveSessionUseCase, forkSessionUseCase, recordEvent, renameSessionUseCase } from './sessions.ts';
@@ -228,6 +228,33 @@ test('ensureHosted：项目没了就拒绝，而不是对空气发指令', async
   w.deps.tasks.rows.clear();
   const hosted = await ensureHosted(w.deps, session);
   assert.ok(!hosted.ok && hosted.error.code === 'not_found');
+});
+
+test('ensureHosted：工具授权过期后重新托管换新令牌', async () => {
+  const grants = fakeToolGrants();
+  const w = await world({ toolGrants: grants });
+  const session = await derived(w);
+  const now = w.deps.now();
+  const grant = {
+    id: 'grant-1',
+    tokenHash: 'hash',
+    taskId: w.task.id,
+    sessionId: session.id,
+    workerId: 'local',
+    scopes: ['task:read'] as const,
+    createdAt: now - 2,
+    expiresAt: now - 1,
+    revokedAt: null
+  };
+  await grants.save(grant);
+  w.dispatched.length = 0;
+  assert.ok((await ensureHosted(w.deps, session)).ok);
+  assert.equal(w.dispatched[0]?.kind, 'start_session');
+
+  await grants.save({ ...grant, expiresAt: now + 60_000 });
+  w.dispatched.length = 0;
+  assert.ok((await ensureHosted(w.deps, session)).ok);
+  assert.equal(w.dispatched.length, 0);
 });
 
 test('worker 事件：相对路径的产出物按项目根补上字节数', async () => {

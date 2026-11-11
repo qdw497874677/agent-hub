@@ -65,6 +65,9 @@ export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository
      ON CONFLICT(id) DO UPDATE SET revoked_at = excluded.revoked_at, expires_at = excluded.expires_at`
   );
   const byHash = db.prepare('SELECT * FROM tool_grants WHERE token_hash = ?');
+  const activeBySession = db.prepare(
+    'SELECT * FROM tool_grants WHERE session_id = ? AND revoked_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1'
+  );
   const revoke = db.prepare('UPDATE tool_grants SET revoked_at = ? WHERE session_id = ? AND revoked_at IS NULL');
   const activeRows = db.prepare('SELECT id, session_id FROM tool_grants WHERE revoked_at IS NULL');
   const revokeOne = db.prepare('UPDATE tool_grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL');
@@ -90,6 +93,10 @@ export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository
     },
     async byTokenHash(hash) {
       const row = byHash.get(hash) as Row | undefined;
+      return row ? toGrant(row) : null;
+    },
+    async activeForSession(sessionId, now) {
+      const row = activeBySession.get(sessionId, now) as Row | undefined;
       return row ? toGrant(row) : null;
     },
     async revokeAllExcept(keep, now) {

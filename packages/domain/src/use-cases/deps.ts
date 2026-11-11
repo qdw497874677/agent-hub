@@ -18,6 +18,7 @@ import type { SessionRepository } from '../ports/session-repository.ts';
 import type { ArtifactRepository } from '../ports/artifact-repository.ts';
 import type { LayoutStore } from '../ports/layout-store.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
+import type { ToolGrantRepository } from '../ports/tool-grant-repository.ts';
 import type { AgentProfileRepository } from '../ports/agent-profile-repository.ts';
 import type { SessionEventStream } from '../ports/event-stream.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
@@ -75,6 +76,8 @@ export interface Deps {
   readonly search: SearchGateway;
   /** 哪些会话此刻有 worker 托管；不在就得先 resume 再说话。 */
   readonly hosting: SessionHosting;
+  /** 工具授权；用于判断托管中的进程是否还拿着有效令牌。不给 = 不检查。 */
+  readonly toolGrants?: ToolGrantRepository;
   /** 同一会话的写入串行（ADR 0004）。 */
   readonly queue: SessionQueue;
   readonly now: () => number;

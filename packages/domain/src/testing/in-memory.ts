@@ -737,6 +737,11 @@ export function fakeToolGrants(): import('../ports/tool-grant-repository.ts').To
     async byTokenHash(hash) {
       return grants.find((row) => row.tokenHash === hash) ?? null;
     },
+    async activeForSession(sessionId, now) {
+      return grants
+        .filter((row) => row.sessionId === sessionId && row.revokedAt === null && row.expiresAt > now)
+        .sort((a, b) => b.createdAt - a.createdAt)[0] ?? null;
+    },
     async revokeAllExcept(keep, now) {
       let count = 0;
       grants.forEach((row, index) => {

@@ -165,6 +165,7 @@ const deps: Deps = {
   layout: store.layout,
   links: store.links,
   agentProfiles: store.agentProfiles,
+  toolGrants: store.toolGrants,
   stream: hub.stream,
   gateway: {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
@@ -571,12 +572,9 @@ toolGateway = createToolGateway({
     })]
 });
 
-// 启动时清掉陈旧授权：只有库里还是「运行中」的会话可能被重连的 worker 接回来，其余一律作废。
-{
-  const running = (await store.sessions.listAll()).filter((session) => session.status === 'running').map((session) => session.id);
-  const revoked = await toolGateway.revokeAllExcept(running);
-  if (revoked > 0) log(`作废了 ${revoked} 条陈旧的工具授权`);
-}
+// 工具授权不随 hub 重启回收：ACP 进程里的 MCP Authorization 无法热换，
+// 重启后旧会话仍可能继续使用同一把会话令牌。过期由授权自身的 TTL 负责。
+
 
 // 账号体系是独立的限界上下文：不塞进 Deps。
 const mailSetup = mailFromEnv({ env: readEnv, log, fallbackUrl: `http://127.0.0.1:${port}` });
@@ -798,9 +796,8 @@ serverGateway = createServerGateway({
   onStatus(workerId, sessionId, status) {
     fromWorker(workerId, sessionId, () => {
       void ingestRuntimeStatus(deps, sessionId, status);
-      // 会话跑完 / 进程没了：它的工具令牌立刻作废（再说话会重新托管、换新令牌）
-      if (status !== 'running') providerWiring.revoke(sessionId);
-      if (status !== 'running' && toolGateway) void toolGateway.revoke({ id: sessionId }).catch(() => undefined);
+      // 一轮结束/进程消失都不回收工具令牌：ACP 进程只在 session/new|load 时拿到
+      // MCP Authorization，后续 prompt 无法热换 token。授权随会话保留，dispose 时再作废。
     });
   },
   onWorkerGone(workerId, reason) {

@@ -66,27 +66,23 @@ test('签发授权：令牌换得到授权；重新签发作废旧的；作废/�
   const second = await w.gateway.issue(w.session);
   assert.equal(await w.gateway.authenticate(first.token), null);
   assert.ok(await w.gateway.authenticate(second.token));
-  w.tick(13 * 60 * 60 * 1000);
+  w.tick(31 * 24 * 60 * 60 * 1000);
   assert.equal(await w.gateway.authenticate(second.token), null);
   assert.equal(await w.gateway.authenticate(''), null);
 });
 
-test('授权短期滑动续期：闲置 1 小时过期；一直在用就续，但签发后最多 12 小时', async () => {
+test('授权滑动续期：闲置 7 天过期；一直在用就续，但签发后最多 30 天', async () => {
   const w = await world();
   const idle = await w.gateway.issue(w.session);
-  w.tick(61 * 60 * 1000);
-  assert.equal(await w.gateway.authenticate(idle.token), null, '闲置超过 1 小时即失效');
+  w.tick(8 * 24 * 60 * 60 * 1000);
+  assert.equal(await w.gateway.authenticate(idle.token), null, '闲置超过 7 天即失效');
 
   const busy = await w.gateway.issue(w.session);
-  for (let hour = 0; hour < 11; hour += 1) {
-    w.tick(40 * 60 * 1000);
-    assert.ok(await w.gateway.authenticate(busy.token), `第 ${hour} 次续期`);
+  for (let day = 0; day < 29; day += 1) {
+    w.tick(20 * 60 * 60 * 1000);
+    assert.ok(await w.gateway.authenticate(busy.token), `第 ${day} 次续期`);
   }
-  // 已经过了 7 小时多；再一直用也活不过签发后 12 小时
-  for (let i = 0; i < 12; i += 1) {
-    w.tick(40 * 60 * 1000);
-    await w.gateway.authenticate(busy.token);
-  }
+  w.tick(8 * 24 * 60 * 60 * 1000);
   assert.equal(await w.gateway.authenticate(busy.token), null, '超过最长寿命');
 });
 

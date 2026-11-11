@@ -156,8 +156,9 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
 }
 
 /**
- * 发给 worker 之前给 start_session 配上工具：每次（新开、续跑、重新托管）都换一把新令牌，旧的作废；
- * dispose 时作废。签发失败不拦会话——没有工具也能干活。
+ * 发给 worker 之前给 start_session 配上工具：新开/重新托管时换一把新令牌，旧的作废。
+ * 授权不随单轮结束回收：ACP 进程只在 session/new|load 时拿到 MCP Authorization，
+ * 后续 prompt 无法热换 token。dispose 时作废；签发失败不拦会话——没有工具也能干活。
  */
 export async function withToolAccess(
   gateway: ToolGateway,

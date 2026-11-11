@@ -15,12 +15,16 @@ export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write',
 export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector'];
 
 /**
- * 授权是短期的滑动有效期：签发后 1 小时内没有用就过期；每次认证成功续到「现在 + 1 小时」，
- * 但从签发起最长 12 小时（到点必须靠重新托管换新令牌）。
- * 另外：会话跑完（worker 报 ended/gone）立刻作废；hub 启动时作废所有不在运行中的会话的授权。
+ * 授权是滑动有效期：签发后 7 天内没有用就过期；每次认证成功续到「现在 + 7 天」，
+ * 但从签发起最长 30 天。
+ *
+ * 不能按「一轮」回收：ACP 的 MCP 配置只在 session/new|load 时下发给 agent 进程，
+ * 后续 prompt 不会重新注入 Authorization；一轮结束就作废会让第二天继续说话时
+ * agent_peers / agent_directory 等 Hub 工具全部 401。
+ * 授权只在 dispose、会话删除、Worker 离线时作废。
  */
-export const TOOL_GRANT_TTL_MS = 60 * 60 * 1000;
-export const TOOL_GRANT_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
+export const TOOL_GRANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const TOOL_GRANT_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** 一次授权：令牌本身只交给 agent 一次，库里只存 hash。 */
 export interface ToolGrant {

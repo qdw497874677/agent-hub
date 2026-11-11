@@ -5,6 +5,8 @@ import type { ToolCallRecord, ToolGrant } from '../tool.ts';
 export interface ToolGrantRepository {
   save(grant: ToolGrant): Promise<void>;
   byTokenHash(hash: string): Promise<ToolGrant | null>;
+  /** 这条会话当前还有效的授权（未作废、未过期）；没有则 null。 */
+  activeForSession(sessionId: SessionId, now: number): Promise<ToolGrant | null>;
   /** 作废这条会话所有还有效的授权；返回作废了几条。 */
   revokeSession(sessionId: SessionId, now: number): Promise<number>;
   /** 作废所有还有效、且会话不在 `keep` 里的授权；返回作废了几条。`keep` 为空 = 全部作废。 */

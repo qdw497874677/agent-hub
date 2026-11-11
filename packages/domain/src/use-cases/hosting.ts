@@ -51,10 +51,17 @@ export async function projectOf(
  * 这就是 S7.1「重开浏览器还能接着干活」。
  */
 export async function ensureHosted(
-  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'now'>,
+  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'now'> & Partial<Pick<Deps, 'toolGrants'>>,
   session: Session
 ): Promise<Result<void, DomainError>> {
-  if (deps.hosting.has(session.id)) return ok(undefined);
+  if (deps.hosting.has(session.id)) {
+    // 托管中的进程可能已经跨过 token 的 TTL。ACP 的 MCP Authorization 只在
+    // session/new|load 注入，prompt 无法热换；令牌失效时主动重新托管，
+    // 让 start_session 重新签发并下发。
+    const grant = deps.toolGrants ? await deps.toolGrants.activeForSession(session.id, deps.now()) : null;
+    if (!deps.toolGrants || grant !== null) return ok(undefined);
+    deps.hosting.drop(session.id);
+  }
   const project = await projectOf(deps, session);
   if (!project) return err(notFound('会话所属任务或项目不存在'));
   // resume 必须回到原来那台：agent 的会话文件只在那台机器上。
