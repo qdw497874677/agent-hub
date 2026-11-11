@@ -71,9 +71,13 @@ test('acp runtime: 恢复时丢掉回放、权限请求自动选 allow、dispose
 
   const turn = collectUntilEnded(session);
   assert.ok((await session.prompt({ text: 'ask', parts: [] })).ok);
-  const texts = (await turn).flatMap((event) => (event.kind === 'text' ? [event.delta] : []));
+  const events = await turn;
+  const texts = events.flatMap((event) => (event.kind === 'text' ? [event.delta] : []));
   assert.ok(!texts.includes('replayed history'), '回放的历史不该再出现');
   assert.ok(texts.includes('perm:yes'));
+  const commands = events.find((event) => event.kind === 'commands');
+  assert.ok(commands && commands.kind === 'commands');
+  assert.deepEqual(commands.commands.map((command) => command.name), ['init'], '恢复会话时重新上报的命令表要保留');
 
   const rest = collectUntilEnded(session);
   await session.dispose();

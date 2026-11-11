@@ -65,6 +65,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id: msg.id, result: { sessionId: 's1', ...reported() } });
     case 'session/load':
       say(msg.params.sessionId, 'replayed history');
+      send({
+        method: 'session/update',
+        params: {
+          sessionId: msg.params.sessionId,
+          update: {
+            sessionUpdate: 'available_commands_update',
+            availableCommands: [{ name: 'init', description: 'guided setup' }]
+          }
+        }
+      });
       return send({ id: msg.id, result: { configOptions: options() } });
     case 'session/set_config_option':
       if (LEGACY) return send({ id: msg.id, result: { configOptions: [] } });

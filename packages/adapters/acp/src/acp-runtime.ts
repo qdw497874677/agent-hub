@@ -124,7 +124,8 @@ class AcpSession implements RuntimeSession {
       this.setOptions(update['configOptions']);
       return;
     }
-    if (this.replaying) return;
+    // session/load 会回放历史，但也会重新上报当前命令表；命令不是历史，不能一起丢。
+    if (this.replaying && update['sessionUpdate'] !== 'available_commands_update') return;
 
     if (this.codec) {
       try {
