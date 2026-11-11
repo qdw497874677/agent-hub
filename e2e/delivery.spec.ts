@@ -67,10 +67,14 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
     await online(false);
     await say('离线时发的第二句');
     await say('离线时发的第三句');
-    const notes = log.getByTestId('delivery-note');
+    const notes = page.getByTestId('delivery-note');
     await expect(notes.nth(0)).toContainText(/未送达 · 第 \d+ 次重试 \d+ 秒后/, { timeout: 30_000 });
     await expect(notes.nth(0).getByRole('button', { name: '立即重试' })).toBeVisible();
     await expect(notes.nth(1)).toHaveText('排队中 · 等上一条送达');
+    const queued = page.getByTestId('queued-prompts');
+    await expect(queued).toBeVisible();
+    await expect(queued).toContainText('离线时发的第二句');
+    await expect(queued).toContainText('离线时发的第三句');
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/delivery-pending-1280.png` });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(notes.nth(1)).toBeVisible();

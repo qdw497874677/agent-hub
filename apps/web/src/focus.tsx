@@ -211,7 +211,15 @@ export function FocusView({
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
   const turns = shown(useQuery({ ...FILES_QUERY, queryKey: ['files', session.id, 'turns'], queryFn: () => filesApi.turns(session.id) })) ?? [];
   const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
-  const promptSeqs = blocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
+  // 排队中的用户消息不留在时间线里：它们要一直贴在对话底部，不能因为 agent 继续输出而被顶到上面。
+  const heldPromptSeqs = new Set(
+    [...deliveriesBySeq]
+      .filter(([, delivery]) => delivery.state === 'queued' || delivery.state === 'sending' || delivery.state === 'undelivered')
+      .map(([seq]) => seq)
+  );
+  const timelineBlocks = blocks.filter((block) => !(block.kind === 'prompt' && heldPromptSeqs.has(block.seq)));
+  const queuedBlocks = blocks.filter((block): block is Extract<Block, { kind: 'prompt' }> => block.kind === 'prompt' && heldPromptSeqs.has(block.seq));
+  const promptSeqs = timelineBlocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
   /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
   const badgeBefore = (seq: number) => {
     const i = promptSeqs.indexOf(seq);
@@ -486,7 +494,7 @@ export function FocusView({
           ) : (
             <FileLinksContext.Provider value={fileLinks}>
             <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
-            {blocks.map((block, index) => (
+            {timelineBlocks.map((block, index) => (
               <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
                 onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
               <ChatBlock
@@ -494,24 +502,24 @@ export function FocusView({
                 agentLabel={agentLabel}
                 sessionId={session.id}
                 settings={settings}
-                last={index === blocks.length - 1}
+                last={index === timelineBlocks.length - 1}
                 running={turnRunning}
                 showAuthor={showAuthor}
               />
               </TurnFrag>
             ))}
             {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
+            {reason && timelineBlocks[timelineBlocks.length - 1]?.kind !== 'error' ? (
+              <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
+            ) : null}
+            {turnRunning ? (
+              <p className="text-meta text-tertiary" aria-live="polite">
+                {agentLabel} 正在回复…
+              </p>
+            ) : null}
             </DeliveryContext.Provider>
             </FileLinksContext.Provider>
           )}
-          {reason && blocks[blocks.length - 1]?.kind !== 'error' ? (
-            <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
-          ) : null}
-          {turnRunning ? (
-            <p className="text-meta text-tertiary" aria-live="polite">
-              {agentLabel} 正在回复…
-            </p>
-          ) : null}
         </div>
       </div>
 
@@ -540,6 +548,27 @@ export function FocusView({
             <div className="mb-1 flex justify-end pr-1">
               <ContextMeter usage={live.contextUsage} />
             </div>
+          ) : null}
+          {queuedBlocks.length > 0 ? (
+            <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
+              <section aria-label="排队中的消息" aria-live="polite" data-testid="queued-prompts" className="mb-2 max-h-[40vh] overflow-y-auto border-t border-dashed border-hair pt-2">
+                <p className="mb-1 text-meta text-tertiary">排队中 · 当前回复结束后发送</p>
+                <div className="flex flex-col gap-2">
+                  {queuedBlocks.map((block) => (
+                    <ChatBlock
+                      key={`queued-${block.seq}`}
+                      block={block}
+                      agentLabel={agentLabel}
+                      sessionId={session.id}
+                      settings={settings}
+                      last={false}
+                      running={turnRunning}
+                      showAuthor={showAuthor}
+                    />
+                  ))}
+                </div>
+              </section>
+            </DeliveryContext.Provider>
           ) : null}
           <Composer
             large
