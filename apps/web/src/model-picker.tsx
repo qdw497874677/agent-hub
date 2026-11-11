@@ -8,6 +8,12 @@ export const SEARCHABLE_AFTER = 8;
 
 const recentKey = (scope: string) => `agent-hub.recent-models.${scope}`;
 
+/** 底栏空间有限：`provider/model` 只留 `model`，完整值仍在 aria-label/title 里。 */
+function modelName(label: string): string {
+  const slash = label.lastIndexOf('/');
+  return slash >= 0 ? label.slice(slash + 1) : label;
+}
+
 function readRecent(scope: string): string[] {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(recentKey(scope)) ?? '[]');
@@ -30,7 +36,8 @@ export function ModelPicker({
   label = '模型',
   disabled = false,
   className = '',
-  id
+  id,
+  short = false
 }: {
   items: readonly ModelItem[];
   value: string;
@@ -41,19 +48,23 @@ export function ModelPicker({
   disabled?: boolean;
   className?: string;
   id?: string;
+  /** 窄屏底栏只显示模型名本身，不把提供方前缀也塞进去。 */
+  short?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const current = items.find((item) => item.value === value);
+  const full = current?.label ?? value;
+  const shown = short ? modelName(full) : full;
   return (
     <>
       <button
         type="button"
         id={id}
-        aria-label={`${label}：${current?.label ?? value}`}
+        aria-label={`${label}：${full}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
-        title={current?.label ?? value}
+        title={full}
         className={`flex min-w-0 items-center justify-between gap-1 text-left ${className}`}
         onClick={(event) => {
           event.stopPropagation();
@@ -61,7 +72,7 @@ export function ModelPicker({
         }}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        <span className="min-w-0 truncate">{current?.label ?? (value || '默认')}</span>
+        <span className="min-w-0 truncate">{shown || '默认'}</span>
         <span aria-hidden className="shrink-0 text-tertiary">
           ▾
         </span>

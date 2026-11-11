@@ -340,14 +340,16 @@ export function FocusView({
         <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
         <span className="flex shrink-0 items-center">
           <button
-            className="flex h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:h-9"
+            className="flex h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary sm:px-2 md:h-9"
+            aria-label={`连接 ${linkedSessions.length}`}
             onClick={() => setLinksOpen(true)}
             title="连接同项目的其他会话"
           >
-            连接 {linkedSessions.length}
+            <span aria-hidden className="sm:hidden">⇄ {linkedSessions.length}</span>
+            <span className="hidden sm:inline">连接 {linkedSessions.length}</span>
           </button>
           <button
-            className="flex h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary md:h-9"
+            className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary sm:flex md:h-9"
             onClick={() => setDetails(true)}
           >
             详情
@@ -356,6 +358,14 @@ export function FocusView({
           <Dropdown label="更多" icon="⋯">
             {(close) => (
               <>
+                <MenuItem
+                  title="详情"
+                  hint="查看会话、工作空间和用量"
+                  onClick={() => {
+                    close();
+                    setDetails(true);
+                  }}
+                />
                 <MenuItem
                   title="提交与推送…"
                   hint="提交改动、推送分支、开 PR；说明由模型起草，可改"
@@ -581,7 +591,7 @@ export function FocusView({
           {queuedBlocks.length > 0 ? (
             <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
               <section aria-label="排队中的消息" aria-live="polite" data-testid="queued-prompts" className="mb-2 max-h-[40vh] overflow-y-auto border-t border-dashed border-hair pt-2">
-                <p className="mb-1 text-meta text-tertiary">排队中 · 当前回复结束后发送</p>
+                <p className="mb-1 text-meta text-tertiary">待发送 · 当前回复结束后自动发出</p>
                 <div className="flex flex-col gap-2">
                   {queuedBlocks.map((block) => (
                     <ChatBlock

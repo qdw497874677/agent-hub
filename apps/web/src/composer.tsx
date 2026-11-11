@@ -331,13 +331,13 @@ export function Composer({
         />
         {notice ? <p className="mt-1 text-meta text-rust">{notice}</p> : null}
         <div className="mt-1 flex items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <div className="flex min-w-0 flex-1 items-center gap-1">
             <button
               type="button"
               aria-label="添加附件"
               title={attachTitle}
               disabled={denied}
-              className="grid size-9 md:size-7 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30"
+              className="grid h-9 w-7 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 md:h-7"
               onClick={() => filePicker.current?.click()}
             >
               +
@@ -348,7 +348,7 @@ export function Composer({
                 aria-label="拍照"
                 title={attachTitle}
                 disabled={denied}
-                className="grid size-9 md:size-7 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30"
+                className="hidden size-9 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 sm:grid md:size-7"
                 onClick={() => camera.current?.click()}
               >
                 ◉

@@ -6,7 +6,7 @@ import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
 /**
- * 输入框底栏：「+ / 拍照 / 模型 / 思考强度 / 发送」一样高、垂直居中对齐——
+ * 输入框底栏：「+ / 拍照 / 模型 / Agent / 思考强度 / 发送」一样高、垂直居中对齐——
  * 画布窗口和会话页、手机（触屏，下拉被抬到 16px）和桌面都是。按钮都能用：附件能选、可调项能改、有字才能发。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
@@ -27,11 +27,12 @@ async function setup(page: Page, baseURL: string) {
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '对齐' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true });
   const { id } = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
-  // e2e 的 agent 不报可调项：在画布投影里给这条会话补上和 David 截图一样的两项——
-  // 候选很多的模型（走可搜索的按钮选择器）+ 思考强度（原生下拉）
+  // e2e 的 agent 不报可调项：在画布投影里给这条会话补上和真实 OpenCode 一样的三项——
+  // 候选很多的模型（走可搜索的按钮选择器）+ Agent + 思考强度
   const models = Array.from({ length: 12 }, (_, i) => ({ kind: 'value', value: { value: `zai/glm-5.${i}-flash`, label: `zai-coding-cn/glm-5.${i}-flash` } }));
   const optionSpec = [
     { id: 'model', label: '模型', category: 'model', kind: 'select', current: 'zai/glm-5.3-flash', choices: models },
+    { id: 'mode', label: 'Agent', category: 'agent', kind: 'select', current: 'orchestrator', choices: ['orchestrator', 'build', 'plan'].map((v) => ({ kind: 'value', value: { value: v, label: v } })) },
     { id: 'effort', label: '思考强度', category: 'thought_level', kind: 'select', current: 'high', choices: ['low', 'medium', 'high'].map((v) => ({ kind: 'value', value: { value: v, label: v } })) }
   ];
   await page.route(`**/api/projects/${project.id}/canvas`, async (route) => {
