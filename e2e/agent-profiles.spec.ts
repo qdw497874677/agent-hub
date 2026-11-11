@@ -13,17 +13,9 @@ const PROFILE_NAME = `配置-${RUN}`;
 const taskNode = (page: Page, title: string) => page.locator('.react-flow__node-task').filter({ hasText: title });
 const sessionNode = (page: Page) => page.locator('.react-flow__node-session');
 
-async function chooseWorkspace(page: Page, dialog: Locator): Promise<void> {
-  await dialog.getByRole('radio', { name: /新建持久工作空间/ }).click();
-  await dialog.getByRole('radio', { name: '选已有目录' }).click();
-  const picker = page.getByLabel('目录选择器');
-  if ((await picker.count()) === 0) await dialog.getByRole('button', { name: '浏览…' }).click();
-  const pathInput = picker.getByRole('combobox', { name: '路径' });
-  await pathInput.fill(PROJECT_DIR);
-  await pathInput.press('Enter');
-  await expect(pathInput).toHaveValue(`${PROJECT_DIR}/`);
-  await picker.getByRole('button', { name: '使用', exact: true }).click();
-  await expect(dialog).toContainText(PROJECT_DIR.split('/').pop() ?? '');
+async function chooseWorkspace(_page: Page, dialog: Locator): Promise<void> {
+  // 这个测试只关心 profile 的保存/套用，不关心目录选择；用临时工作空间避免路径输入框。
+  await dialog.getByRole('radio', { name: /新建临时工作空间/ }).click();
 }
 
 test.beforeAll(() => {
