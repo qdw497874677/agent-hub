@@ -110,6 +110,41 @@ test('OpenCode codec：finish 收尾未结束的子代理', () => {
   assert.deepEqual(codec.finish('failed'), []);
 });
 
+test('OpenCode codec：child_update 扩展通知按 status/update 折叠', () => {
+  const codec = new OpenCodeSessionCodec();
+  const base = {
+    rootSessionId: 's1',
+    childSessionId: 'c1',
+    parentSessionId: 's1',
+    depth: 1,
+    title: 'child task'
+  } as const;
+
+  assert.deepEqual(codec.childUpdate({ ...base, type: 'status', status: 'created' }, toolNames), [
+    { kind: 'subagent', phase: 'start', id: 'c1', parentId: 's1', depth: 1, title: 'child task', status: 'running' }
+  ]);
+  assert.deepEqual(codec.childUpdate({ ...base, type: 'status', status: 'running' }, toolNames), []);
+  assert.deepEqual(
+    codec.childUpdate({
+      ...base,
+      type: 'update',
+      update: { sessionUpdate: 'tool_call', toolCallId: 'c1:t1', title: 'child: shell', rawInput: { command: 'ls' } }
+    }, toolNames),
+    [{ kind: 'tool_call', name: 'child: shell', input: '{"command":"ls"}', subagentId: 'c1' }]
+  );
+  assert.deepEqual(
+    codec.childUpdate({
+      ...base,
+      type: 'update',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } }
+    }, toolNames),
+    [{ kind: 'text', delta: 'hi', subagentId: 'c1' }]
+  );
+  assert.deepEqual(codec.childUpdate({ ...base, type: 'status', status: 'completed' }, toolNames), [
+    { kind: 'subagent', phase: 'end', id: 'c1', parentId: 's1', depth: 1, title: 'child task', status: 'completed' }
+  ]);
+});
+
 test('readSubagentMeta：非法/空 meta 返回 null', () => {
   assert.equal(readSubagentMeta(undefined), null);
   assert.equal(readSubagentMeta({}), null);

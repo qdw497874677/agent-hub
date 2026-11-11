@@ -98,11 +98,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       }
       if (CHILD && all.includes('please-child')) {
         const sessionId = msg.params.sessionId;
-        const child = { 'opencode/child-session': { id: 'c1', parentID: sessionId, depth: 1, title: 'child task' } };
+        const child = { rootSessionId: sessionId, childSessionId: 'c1', parentSessionId: sessionId, depth: 1, title: 'child task' };
+        const status = (value) => send({ method: 'opencode/session/child_update', params: { ...child, type: 'status', status: value } });
+        const update = (value) => send({ method: 'opencode/session/child_update', params: { ...child, type: 'update', update: value } });
         send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call', toolCallId: 'p1', title: 'subagent', kind: 'other', rawInput: {} } } });
         send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'p1', status: 'in_progress', rawInput: { agent: 'explorer', description: 'child task', prompt: 'list', background: false } } } });
-        send({ method: 'session/update', params: { sessionId, _meta: child, update: { sessionUpdate: 'tool_call', toolCallId: 'c1:t1', title: 'child: shell', kind: 'other', rawInput: { command: 'ls' } } } });
-        send({ method: 'session/update', params: { sessionId, _meta: child, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'child says hi' } } } });
+        status('created');
+        status('running');
+        update({ sessionUpdate: 'tool_call', toolCallId: 'c1:t1', title: 'child: shell', kind: 'other', rawInput: { command: 'ls' } });
+        update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'child says hi' } });
+        status('completed');
         send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'p1', status: 'completed', content: [{ type: 'text', text: '<subagent sessionID="c1" state="completed">done</subagent>' }] } } });
         say(sessionId, 'parent done');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });

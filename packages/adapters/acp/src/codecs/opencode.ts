@@ -1,8 +1,11 @@
 import type { SessionEvent } from '@agent-hub/domain';
-import type { AcpCodecContext, AcpCodecResult, AcpRuntimeCodec, AcpSessionCodec, AcpUpdate } from '../codec.ts';
+import type { AcpChildUpdate, AcpCodecContext, AcpCodecResult, AcpRuntimeCodec, AcpSessionCodec, AcpUpdate } from '../codec.ts';
 import { mapAcpUpdate } from '../map-acp.ts';
 
-/** OpenCode 的子会话更新在 `session/update` 的 `_meta` 里标出父子关系。 */
+/**
+ * 旧版 OpenCode 会把子会话更新塞进 `session/update` 的 `_meta`；
+ * 2.2.6 实际走 extNotification `opencode/session/child_update`，两种都兼容。
+ */
 export interface AcpSubagentMeta {
   readonly id: string;
   readonly parentId: string;
@@ -72,6 +75,32 @@ export class OpenCodeSessionCodec implements AcpSessionCodec {
     const ended = this.noteParentTool(context.update);
     const mapped = mapAcpUpdate(context.update, context.toolNames);
     return { events: [...ended, ...mapped] };
+  }
+
+  childUpdate(update: AcpChildUpdate, toolNames: Map<string, string>): readonly SessionEvent[] {
+    const meta: AcpSubagentMeta = {
+      id: update.childSessionId,
+      parentId: update.parentSessionId,
+      depth: update.depth,
+      ...(update.title ? { title: update.title } : {})
+    };
+    const events: SessionEvent[] = [];
+    const start = this.noteSubagent(meta);
+    if (start) events.push(start);
+
+    if (update.type === 'update') {
+      if (update.update) events.push(...mapAcpUpdate(update.update, toolNames, update.childSessionId));
+      return events;
+    }
+
+    if (update.status === 'completed' || update.status === 'failed' || update.status === 'interrupted') {
+      const end = this.endSubagent(
+        update.childSessionId,
+        update.status === 'completed' ? 'completed' : update.status === 'failed' ? 'failed' : 'cancelled'
+      );
+      if (end) events.push(end);
+    }
+    return events;
   }
 
   finish(status: 'completed' | 'failed' | 'cancelled'): readonly SessionEvent[] {

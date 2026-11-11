@@ -45,20 +45,21 @@ type SubagentEvent = {
 
 ## 3. ACP 映射
 
-OpenCode 2.2.6 在 `initialize.agentCapabilities._meta['opencode/child-session-updates']` 声明能力。子会话更新仍走 `session/update`，但：
+OpenCode 2.2.6 在 `initialize.agentCapabilities._meta['opencode/child-session-updates']` 声明能力；客户端必须在 `initialize.clientCapabilities._meta` 回传 `{'opencode/child-session-updates': true}` 才会收到。子会话更新走 ACP 扩展通知 `opencode/session/child_update`，**不是** `session/update`：
 
-- `params.sessionId` 是父会话 id；
-- `params._meta['opencode/child-session']` 是 `{ id, parentID, depth, title? }`；
+- 通知参数是 `{ rootSessionId, childSessionId, parentSessionId, depth, title?, type:'status'|'update' }`；
+- `type:'status'` 的 `status` 为 `created/running/completed/interrupted/failed`；
+- `type:'update'` 的 `update` 是标准 ACP update，已注入 `_meta['opencode/child-session'] = { id, parentID, depth, title? }`；
 - 子工具调用的 `toolCallId` 形如 `<childSessionId>:<toolCallId>`；
 - 父工具完成的内容里有 `<subagent sessionID="…" state="completed">`。
 
 适配器因此（2026-11-11 起这些逻辑在 `AcpRuntimeCodec` 的 OpenCode 实现里，通用 mapper 不认 vendor 名字）：
 
-1. 保留 `params._meta`，读 child meta；
-2. 第一次见到 child id 时发 `subagent start`；
-3. 子事件带 `subagentId`；
-4. 父工具 completed/failed 或本轮结束时发 `subagent end`；
-5. 其他 agent 不报 child meta 就不猜，不按 agent 名字写分支。
+1. 在 `initialize` 里声明 child-updates 能力，并注册 `opencode/session/child_update` 通知；
+2. 第一次见到 child id 时发 `subagent start`，子事件带 `subagentId`；
+3. `status` 为 completed/failed/interrupted 时发 `subagent end`；
+4. 父工具 completed/failed 或本轮结束时兜底 `subagent end`；
+5. 其他 agent 不报 child update 就不猜，不按 agent 名字写分支。
 
 Hermes 的 `subagent.start/complete` 已经带 child session id，后续可升级为同一事件；当前仍保留 diagnostic 兜底。
 

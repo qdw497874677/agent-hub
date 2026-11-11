@@ -67,7 +67,7 @@
 后端已就绪：
 
 - `subagent start/end` 事件；子事件带 `subagentId`。
-- ACP 读取 `opencode/child-session` meta，父工具完成/本轮结束收尾。
+- ACP 注册 `opencode/session/child_update` 扩展通知（先声明 client `_meta` 能力），父工具完成/本轮结束收尾。
 - fake agent `--child` 与 runtime/conformance 单测。
 
 已完成：

@@ -17,6 +17,18 @@ export interface AcpCodecResult {
   readonly events: readonly SessionEvent[];
 }
 
+/** ACP 扩展通知 `opencode/session/child_update` 的载荷。 */
+export interface AcpChildUpdate {
+  readonly rootSessionId: string;
+  readonly childSessionId: string;
+  readonly parentSessionId: string;
+  readonly depth: number;
+  readonly title?: string;
+  readonly type: 'status' | 'update';
+  readonly status?: 'created' | 'running' | 'completed' | 'interrupted' | 'failed';
+  readonly update?: AcpUpdate;
+}
+
 /**
  * 一个 runtime 的 ACP 私有语义 codec。
  *
@@ -39,6 +51,8 @@ export interface AcpSessionCodec {
    * 抛错由 AcpSession 捕获并降级，不允许 codec 打断会话。
    */
   decode(context: AcpCodecContext): AcpCodecResult | null;
+  /** 处理 runtime 自己的子会话扩展通知；没有这个扩展的 runtime 不实现。 */
+  childUpdate?(update: AcpChildUpdate, toolNames: Map<string, string>): readonly SessionEvent[];
   /** 本轮结束/进程退出时收尾，例如给所有 running 子代理发 end。 */
   finish(status: 'completed' | 'failed' | 'cancelled'): readonly SessionEvent[];
 }

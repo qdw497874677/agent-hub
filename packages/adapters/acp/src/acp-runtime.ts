@@ -20,7 +20,7 @@ import { acpBranchAtTurn, acpDescriptor, type AcpAgentConfig, type AcpLaunch } f
 import type { BranchSpec } from '@agent-hub/domain';
 import { StderrTail, endedFromStopReason, mapAcpUpdate, mcpServersFor, readMcpCapabilities, readPromptCapabilities, toAcpPrompt } from './map-acp.ts';
 import type { AcpPromptCapabilities } from './map-acp.ts';
-import type { AcpSessionCodec } from './codec.ts';
+import type { AcpChildUpdate, AcpSessionCodec } from './codec.ts';
 import { legacyAcpOptions, mapAcpOptions } from './map-options.ts';
 
 type Json = Record<string, unknown>;
@@ -83,6 +83,12 @@ class AcpSession implements RuntimeSession {
     child.stderr.on('data', (chunk: string) => this.stderr.push(chunk));
     const app = client()
       .onNotification('session/update', ({ params }) => this.onUpdate(params.update as unknown as Json, params._meta))
+      // OpenCode 的子会话更新是 ACP 扩展通知，不走 session/update。
+      .onNotification<AcpChildUpdate>(
+        'opencode/session/child_update',
+        (raw) => raw as AcpChildUpdate,
+        ({ params }) => this.onChildUpdate(params)
+      )
       // 平台替用户放行工具调用（与 yolo 模式一致）；agent 自己的 deny 规则仍生效。
       .onRequest('session/request_permission', ({ params }) => {
         const allow = params.options.find((option) => option.kind.startsWith('allow')) ?? params.options[0];
@@ -146,6 +152,25 @@ class AcpSession implements RuntimeSession {
     for (const event of mapAcpUpdate(update, this.toolNames)) {
       if (PRODUCING.has(event.kind)) this.produced = true;
       this.queue.push(event);
+    }
+  }
+
+  private onChildUpdate(update: AcpChildUpdate): void {
+    if (this.replaying || !this.codec?.childUpdate) return;
+    try {
+      for (const event of this.codec.childUpdate(update, this.toolNames)) {
+        if (PRODUCING.has(event.kind)) this.produced = true;
+        this.queue.push(event);
+      }
+    } catch (error) {
+      if (!this.codecWarned) {
+        this.codecWarned = true;
+        this.queue.push({
+          kind: 'diagnostic',
+          level: 'error',
+          text: `${this.config.label} 的 ACP codec 处理子会话更新失败：${(error as Error).message}`
+        });
+      }
     }
   }
 
@@ -238,7 +263,11 @@ class AcpSession implements RuntimeSession {
   }
 
   private async handshake(): Promise<void> {
-    const init = await this.request('initialize', { protocolVersion: 1, clientCapabilities: CLIENT_CAPABILITIES });
+    const clientCapabilities =
+      this.config.codec?.id === 'opencode'
+        ? { ...CLIENT_CAPABILITIES, _meta: { 'opencode/child-session-updates': true } }
+        : CLIENT_CAPABILITIES;
+    const init = await this.request('initialize', { protocolVersion: 1, clientCapabilities });
     this.init = init;
     this.promptCaps = readPromptCapabilities(init);
     this.mcpCaps = readMcpCapabilities(init);

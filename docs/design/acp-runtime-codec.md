@@ -32,7 +32,7 @@ Codec 不是网络层，也不改变 ACP 握手；它只在“收到一条 updat
 
 但下面这些不是纯结构问题：
 
-- OpenCode 的 `_meta["opencode/child-session"]` 表示子会话，需要维护 start/end 状态。
+- OpenCode 的 `opencode/session/child_update` 扩展通知表示子会话，需要维护 start/end 状态。
 - 父工具 `subagent` 的完成内容里才有 child id，需要和前面的事件配对。
 - Claude 的 `Task` 工具和 OpenCode 的 `subagent` 都是子代理，但参数/生命周期不同。
 - 不同 runtime 的 plan/todo、usage、命令通知格式不同。
