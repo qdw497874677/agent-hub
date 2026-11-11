@@ -40,6 +40,7 @@ import {
   promptRequest,
   saveLayoutRequest,
   createSessionLinkRequest,
+  agentProfileInputSchema,
   setTaskStatusRequest,
   setTaskSummaryRequest,
   appendLogRequest,
@@ -67,6 +68,11 @@ import {
   appendWorkLogUseCase,
   editWorkLogUseCase,
   changeSessionOption,
+  listAgentProfiles,
+  createAgentProfile,
+  updateAgentProfile,
+  deleteAgentProfile,
+  agentProfileForUse,
   browseDirectories,
   createDirectory,
   createProjectUseCase,
@@ -605,11 +611,45 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
+  app.get('/api/agent-profiles', async (c) => {
+    const ownerId = principalOf(c)?.user.id ?? null;
+    const result = await listAgentProfiles(deps, ownerId);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  app.post('/api/agent-profiles', async (c) => {
+    const input = await body(c, agentProfileInputSchema);
+    if (!input.ok) return input.response;
+    const ownerId = principalOf(c)?.user.id ?? null;
+    const result = await createAgentProfile(deps, ownerId, input.value);
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+
+  app.patch('/api/agent-profiles/:profileId', async (c) => {
+    const input = await body(c, agentProfileInputSchema);
+    if (!input.ok) return input.response;
+    const ownerId = principalOf(c)?.user.id ?? null;
+    const result = await updateAgentProfile(deps, ownerId, c.req.param('profileId'), input.value);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  app.delete('/api/agent-profiles/:profileId', async (c) => {
+    const ownerId = principalOf(c)?.user.id ?? null;
+    const result = await deleteAgentProfile(deps, ownerId, c.req.param('profileId'));
+    return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+  });
+
   app.post('/api/sessions/derive', async (c) => {
     const input = await body(c, deriveSessionRequest);
     if (!input.ok) return input.response;
     const actor = subjectOf(c);
-    const allowed = await options.providers?.checkModel(actor, input.value.model, input.value.taskId);
+    let modelForCheck = input.value.model;
+    if (input.value.profileId) {
+      const profile = await agentProfileForUse(deps, principalOf(c)?.user.id ?? null, input.value.profileId);
+      if (!profile.ok) return fail(c, profile.error);
+      modelForCheck = profile.value.model;
+    }
+    const allowed = await options.providers?.checkModel(actor, modelForCheck, input.value.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
     const result = await deriveSessionUseCase(deps, { ...input.value, actor, ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {}) });
     if (result.ok) {

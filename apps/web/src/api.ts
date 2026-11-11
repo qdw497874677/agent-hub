@@ -1,5 +1,7 @@
 import type {
   AgentDto,
+  AgentProfileDto,
+  AgentProfileInput,
   AttachmentInputDto,
   CapabilityDto,
   ProjectFilesDto,
@@ -270,6 +272,12 @@ export const api = {
   appendTaskLog: (taskId: string, input: { body: string }) =>
     post<{ entry: WorkLogEntryDto; task: TaskDto }>(`/api/tasks/${taskId}/log`, input),
   derive: (input: DeriveSessionRequest) => post<SessionDto>('/api/sessions/derive', input),
+  agentProfiles: () => call<AgentProfileDto[]>('/api/agent-profiles'),
+  createAgentProfile: (input: AgentProfileInput) => post<AgentProfileDto>('/api/agent-profiles', input),
+  updateAgentProfile: (id: string, input: AgentProfileInput) =>
+    call<AgentProfileDto>(`/api/agent-profiles/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  deleteAgentProfile: (id: string) =>
+    call<{ ok: true }>(`/api/agent-profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   fork: (input: ForkSessionRequest) => post<SessionDto>('/api/sessions/fork', input),
   continueElsewhere: (sessionId: string, input: ContinueElsewhereRequest) =>
     post<SessionDto>(`/api/sessions/${sessionId}/continue`, input),

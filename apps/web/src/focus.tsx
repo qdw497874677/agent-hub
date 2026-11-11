@@ -25,6 +25,7 @@ import { RewindDialog } from './rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 import { ContextMeter } from './context-meter.tsx';
 import { SessionLinksDialog } from './session-links-dialog.tsx';
+import { SaveAgentProfileDialog } from './agent-profile-dialog.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -72,6 +73,7 @@ export function FocusView({
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [linksOpen, setLinksOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [linkOverrides, setLinkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -369,6 +371,14 @@ export function FocusView({
                   }}
                 />
                 <MenuItem
+                  title="保存为 Agent 配置…"
+                  hint="把这条会话的 agent、模型和选项存成下次可直接套用的组合"
+                  onClick={() => {
+                    close();
+                    setProfileOpen(true);
+                  }}
+                />
+                <MenuItem
                   title="分叉"
                   hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
                   disabled={!forkable}
@@ -432,6 +442,14 @@ export function FocusView({
           </div>
         ) : null
       )}
+      {profileOpen ? (
+        <SaveAgentProfileDialog
+          session={session}
+          agentLabel={agentLabel}
+          onClose={() => setProfileOpen(false)}
+          onSaved={() => setProfileOpen(false)}
+        />
+      ) : null}
       {linksOpen ? (
         <SessionLinksDialog
           sessions={canvas.sessions}

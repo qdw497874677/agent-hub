@@ -13,7 +13,7 @@ import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
 import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, ContextSettingsStore, SessionBaseStore, CheckpointStore,
-  TurnRefStore, DeliveryQueue, ProvenanceStore, AttentionStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository, SessionLinkRepository } from '@agent-hub/domain';
+  TurnRefStore, DeliveryQueue, ProvenanceStore, AttentionStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository, SessionLinkRepository, AgentProfileRepository } from '@agent-hub/domain';
 import { createSqliteAccess } from './access.ts';
 import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
@@ -21,6 +21,7 @@ import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './w
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createSqliteMessageStore } from './messages.ts';
 import { createSqliteSessionLinks } from './session-links.ts';
+import { createSqliteAgentProfiles } from './agent-profiles.ts';
 import { createSqliteGroupStore } from './groups.ts';
 import { createSqliteContextSettings } from './context-settings.ts';
 import { createSqliteSessionBases } from './session-bases.ts';
@@ -80,6 +81,8 @@ export interface SqliteStore extends RepositorySet {
   readonly access: AccessRepos;
   /** 画布/对话页的会话连线（无向关系）。 */
   readonly links: SessionLinkRepository;
+  /** 可复用的 Agent 启动配置（按 owner 隔离）。 */
+  readonly agentProfiles: AgentProfileRepository;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
   readonly db: DatabaseSync;
   close(): void;
@@ -481,6 +484,7 @@ export function openSqliteStore(file: string): SqliteStore {
     artifacts,
     layout,
     links: createSqliteSessionLinks(db),
+    agentProfiles: createSqliteAgentProfiles(db),
     search: createSearch(db),
     ...accountRepos,
     access: createSqliteAccess(db),

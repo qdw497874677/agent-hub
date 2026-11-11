@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import type { agentSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
+import type { agentSchema, agentProfileSchema, agentProfileInputSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
 import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, createSessionLinkRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
 import type { resourceSampleSchema, workerMetricsHistorySchema, workerResourcesSchema } from './wire/resources.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
@@ -19,6 +19,8 @@ export * from './wire/resources.ts';
 export type CapabilityDto = z.infer<typeof capabilitySchema>;
 export type AgentDto = z.infer<typeof agentSchema>;
 export type RuntimeOptionDto = z.infer<typeof runtimeOptionSchema>;
+export type AgentProfileDto = z.infer<typeof agentProfileSchema>;
+export type AgentProfileInput = z.input<typeof agentProfileInputSchema>;
 export type OptionValueDto = z.infer<typeof optionValueSchema>;
 export type ProjectDto = z.infer<typeof projectSchema>;
 export type WorkspaceDto = z.infer<typeof workspaceSchema>;

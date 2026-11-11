@@ -69,6 +69,26 @@ export const runtimeOptionSchema = z.object({
 
 export const optionValuesSchema = z.record(z.string(), z.union([z.string(), z.boolean()]));
 
+/** Agent 配置：一组可复用的启动组合，按 owner 隔离。 */
+export const agentProfileSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  agentId: id,
+  model: z.string(),
+  options: optionValuesSchema,
+  notes: z.string(),
+  createdAt: epochMs,
+  updatedAt: epochMs
+});
+
+export const agentProfileInputSchema = z.object({
+  name: z.string().min(1).max(80),
+  agentId: id,
+  model: z.string().max(2000).optional().default(''),
+  options: optionValuesSchema.optional(),
+  notes: z.string().max(2000).optional().default('')
+});
+
 export const agentReadinessSchema = z.discriminatedUnion('state', [
   /** lacks：能用，但缺某个可选部件（如 Pi 的 MCP 适配器）；hub 视资产决定是否降为不可用。 */
   z.object({

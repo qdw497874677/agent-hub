@@ -62,6 +62,8 @@ export interface DeriveSessionInput {
   readonly workerId?: string | null;
   readonly workspaceId?: WorkspaceId | null;
   readonly createdBy?: string | null;
+  /** 来自 Agent 配置的启动选项；模型仍以 model 字段为准。 */
+  readonly options?: Readonly<Record<string, string | boolean>>;
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
@@ -80,7 +82,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     status: 'running',
     lastSeq: 0,
     agentSessionRef: null,
-    options: {},
+    options: input.options ?? {},
     optionSpec: [],
     workerId: input.workerId ?? null,
     workspaceId: input.workspaceId ?? null,

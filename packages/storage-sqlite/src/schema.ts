@@ -120,4 +120,18 @@ CREATE TABLE IF NOT EXISTS session_links (
 );
 
 CREATE INDEX IF NOT EXISTS session_links_b ON session_links(b_session_id);
+
+-- Agent 配置：可复用的启动组合，按 owner 隔离（owner_id = NULL 表示无账号/本机）。
+CREATE TABLE IF NOT EXISTS agent_profiles (
+  id         TEXT PRIMARY KEY,
+  owner_id   TEXT,
+  name       TEXT NOT NULL,
+  agent_id   TEXT NOT NULL,
+  model      TEXT NOT NULL DEFAULT '',
+  options    TEXT NOT NULL DEFAULT '{}',
+  notes      TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS agent_profiles_by_owner ON agent_profiles(owner_id, updated_at);
 `;

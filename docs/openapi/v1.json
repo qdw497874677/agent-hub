@@ -4212,6 +4212,23 @@
                       "pattern": "^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$"
                     },
                     "maxItems": 16
+                  },
+                  "profileId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "options": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "boolean"
+                        }
+                      ]
+                    }
                   }
                 },
                 "required": [

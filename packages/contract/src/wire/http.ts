@@ -2,7 +2,7 @@ import { workerInventorySchema } from './worker.ts';
 import { workerResourcesSchema } from './resources.ts';
 import { z } from 'zod';
 import { id, epochMs } from './common.ts';
-import { agentReadinessSchema, runtimeProvisionSchema, attachmentInputSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
+import { agentReadinessSchema, runtimeProvisionSchema, attachmentInputSchema, optionValuesSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
 
 /** HTTP API 的请求与响应。 */
 
@@ -85,7 +85,11 @@ export const deriveSessionRequest = z.object({
   /** 运行面板里选的工作空间；会话跟着它落到那台机器、那个目录。 */
   workspaceId: z.string().min(1).nullable().optional(),
   /** 要求的能力（ADR 0021 §8）：只落到这些能力可信的机器上。 */
-  requires: z.array(z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128)).max(16).optional()
+  requires: z.array(z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128)).max(16).optional(),
+  /** 用一份 Agent 配置启动；profile 里的 agent/model/options 作为默认。 */
+  profileId: z.string().min(1).optional(),
+  /** 直接指定启动选项；会覆盖 profile 里的同名选项。 */
+  options: optionValuesSchema.optional()
 });
 
 /** 新建工作空间：持久的（新建托管目录 / 关联已有目录）或临时的（为某个任务开 worktree / 临时目录）。 */

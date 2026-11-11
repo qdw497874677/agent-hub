@@ -103,6 +103,8 @@ export function DeriveDialog({
   const [agentId, setAgentId] = useState(canvas.agents[0]?.id ?? '');
   const agent = canvas.agents.find((candidate) => candidate.id === agentId);
   const [model, setModel] = useState(agent?.defaultModel ?? '');
+  const [profileId, setProfileId] = useState('');
+  const profiles = useQuery({ queryKey: ['agent-profiles'], queryFn: () => api.agentProfiles(), retry: false });
   const workers = useWorkers();
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作空间；不预选，没选之前「开始」是灰的
   const [machine, setMachine] = useState<string | null>(null);
@@ -140,7 +142,7 @@ export function DeriveDialog({
         await queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] });
       }
       setPhase('starting');
-      return api.derive({ taskId, agentId, model, workspaceId });
+      return api.derive({ taskId, agentId, model, workspaceId, ...(profileId ? { profileId } : {}) });
     },
     onSettled: () => setPhase('idle'),
     onSuccess: async (session) => {
@@ -189,6 +191,31 @@ export function DeriveDialog({
           onChoice={setChoice}
           hubProtocols={hubProtocols}
         />
+        <div className="mb-3">
+          <label className="mb-1 block text-meta text-secondary" htmlFor="derive-profile">Agent 配置（可留空）</label>
+          <select
+            id="derive-profile"
+            className={INPUT}
+            value={profileId}
+            onChange={(event) => {
+              const next = event.target.value;
+              setProfileId(next);
+              const profile = (profiles.data ?? []).find((candidate) => candidate.id === next);
+              if (profile) {
+                setAgentId(profile.agentId);
+                setModel(profile.model);
+              }
+            }}
+          >
+            <option value="">不用配置，手动选</option>
+            {(profiles.data ?? []).map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name} · {profile.agentId}{profile.model ? ` · ${profile.model}` : ''}
+              </option>
+            ))}
+          </select>
+          {profiles.error ? <p className="mt-1 text-meta text-rust">{(profiles.error as Error).message}</p> : null}
+        </div>
         <div className="mb-4 grid grid-cols-1 gap-x-3 sm:grid-cols-2">
         <div>
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-agent">agent</label>
@@ -196,7 +223,10 @@ export function DeriveDialog({
           id="derive-agent"
           className={`mb-3 ${INPUT}`}
           value={agentId}
-          onChange={(event) => setAgentId(event.target.value)}
+          onChange={(event) => {
+            setProfileId('');
+            setAgentId(event.target.value);
+          }}
         >
           {canvas.agents.map((candidate) => {
             // 选了机器：那台上不能用的 agent 变灰并写明原因（没选机器时由下面的机器列表说明）
@@ -219,7 +249,10 @@ export function DeriveDialog({
             className={`mb-3 ${INPUT}`}
             scope={agentId}
             value={model}
-            onChange={setModel}
+            onChange={(value) => {
+              setProfileId('');
+              setModel(value);
+            }}
             items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
           />
         ) : (
@@ -228,7 +261,10 @@ export function DeriveDialog({
             className={`mb-3 ${INPUT}`}
             value={model}
             disabled={offered.models.length === 0}
-            onChange={(event) => setModel(event.target.value)}
+            onChange={(event) => {
+              setProfileId('');
+              setModel(event.target.value);
+            }}
           >
             {offered.models.length === 0 ? (
               <option value="">用 agent 自己的默认</option>

@@ -19,6 +19,7 @@ import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
 import { defaultWorkspaceFor, locationOf, usableByProject } from './workspaces.ts';
 import { authorizeWorker } from './authorization.ts';
+import { agentProfileForUse } from './agent-profiles.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
@@ -34,11 +35,15 @@ export interface DeriveCommand {
   readonly requires?: readonly string[];
   /** 派生前已核对的 hub 提供商协议。用来拒绝 agent 不认的协议；不是 hub 模型就不传。 */
   readonly hubProtocol?: ProviderProtocol;
+  /** 用一份 Agent 配置启动；profile 里的 agent/model/options 作为默认，command.options 可覆盖选项。 */
+  readonly profileId?: string;
+  /** 直接指定启动选项（例如从 Agent 配置套用后用户又改过）。 */
+  readonly options?: Readonly<Record<string, string | boolean>>;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
 export async function deriveSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
   const task = await deps.tasks.byId(asTaskId(command.taskId));
@@ -46,9 +51,20 @@ export async function deriveSessionUseCase(
   const project = await deps.projects.byId(task.projectId);
   if (!project) return err(notFound('项目不存在'));
 
-  const agentId = asAgentId(command.agentId);
+  let agentIdValue = command.agentId;
+  let modelValue = command.model;
+  let initialOptions = { ...(command.options ?? {}) };
+  if (command.profileId) {
+    const profile = await agentProfileForUse(deps, principalOfSubject(command.actor)?.user.id ?? null, command.profileId);
+    if (!profile.ok) return profile;
+    agentIdValue = profile.value.agentId;
+    modelValue = profile.value.model;
+    initialOptions = { ...profile.value.options, ...initialOptions };
+  }
+
+  const agentId = asAgentId(agentIdValue);
   const descriptor = deps.agents.descriptor(agentId);
-  if (!descriptor) return err(conflict(`没有在线节点提供 ${command.agentId}`));
+  if (!descriptor) return err(conflict(`没有在线节点提供 ${agentIdValue}`));
   if (descriptor.capabilities.prompt.state === 'denied') {
     return err(conflict(descriptor.capabilities.prompt.reason ?? '该 agent 不可发送消息'));
   }
@@ -73,13 +89,13 @@ export async function deriveSessionUseCase(
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
     projectWorker: workspace.workerId,
-    model: command.model,
+    model: modelValue,
     ...(command.requires?.length ? { requires: command.requires } : {})
   });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
   if (!allowed.ok) return allowed;
-  const model = checkModelOn(workers, placed.value, agentId, command.model, command.hubProtocol);
+  const model = checkModelOn(workers, placed.value, agentId, modelValue, command.hubProtocol);
   if (!model.ok) return model;
   const created = deriveSession({
     task,
@@ -88,13 +104,14 @@ export async function deriveSessionUseCase(
     now: deps.now(),
     workerId: placed.value,
     workspaceId: workspace.id,
-    createdBy: principalOfSubject(command.actor)?.user.id ?? null
+    createdBy: principalOfSubject(command.actor)?.user.id ?? null,
+    options: initialOptions
   });
   if (!created.ok) return created;
 
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
-  const started = await startSavedSession(deps, session, startCommand(session, workspace.path, null, {}));
+  const started = await startSavedSession(deps, session, startCommand(session, workspace.path, null, session.options));
   if (!started.ok) return started;
   await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
   return ok(session);

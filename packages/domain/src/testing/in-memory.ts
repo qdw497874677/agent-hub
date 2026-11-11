@@ -45,9 +45,10 @@ import type {
   AuditEntry,
   HubSettings,
   Team,
-  LoginActivity
-} from '../index.ts';
-import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
+  LoginActivity,
+  AgentProfile,
+  AgentProfileRepository
+} from '../index.ts';import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
 import type { CommitPreview, GitStatus, RemotePullRequest, WorkspaceGit } from '../index.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
 import { canonicalLink, type SessionLink } from '../session-link.ts';
@@ -256,8 +257,7 @@ export function fakeLayout(): LayoutStore {
   };
 }
 
-export function fakeSessionLinks(): SessionLinkRepository & { rows: Map<string, SessionLink> } {
-  const rows = new Map<string, SessionLink>();
+export function fakeSessionLinks(): SessionLinkRepository & { rows: Map<string, SessionLink> } {  const rows = new Map<string, SessionLink>();
   const key = (link: SessionLink): string => `${link.projectId}:${link.aSessionId}:${link.bSessionId}`;
   return {
     rows,
@@ -282,6 +282,28 @@ export function fakeSessionLinks(): SessionLinkRepository & { rows: Map<string, 
     },
     async removeByProject(projectId) {
       for (const [id, link] of rows) if (link.projectId === projectId) rows.delete(id);
+    }
+  };
+}
+
+export function fakeAgentProfiles(): AgentProfileRepository & { rows: Map<string, AgentProfile> } {
+  const rows = new Map<string, AgentProfile>();
+  return {
+    rows,
+    async listByOwner(ownerId) {
+      return [...rows.values()].filter((profile) => profile.ownerId === ownerId).sort((a, b) => b.updatedAt - a.updatedAt);
+    },
+    async byId(id) {
+      return rows.get(id) ?? null;
+    },
+    async save(profile) {
+      rows.set(profile.id, profile);
+    },
+    async remove(id) {
+      rows.delete(id);
+    },
+    async removeByOwner(ownerId) {
+      for (const [id, profile] of rows) if (profile.ownerId === ownerId) rows.delete(id);
     }
   };
 }

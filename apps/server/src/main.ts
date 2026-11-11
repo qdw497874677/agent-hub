@@ -161,6 +161,7 @@ const deps: Deps = {
   artifacts: store.artifacts,
   layout: store.layout,
   links: store.links,
+  agentProfiles: store.agentProfiles,
   stream: hub.stream,
   gateway: {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),
