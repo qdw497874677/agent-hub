@@ -13,10 +13,26 @@
 /** 语义分类。只用来决定摆放位置与图标，**不能**当作正确性依赖。 */
 export type OptionCategory = 'model' | 'agent' | 'mode' | 'model_config' | 'thought_level' | 'custom';
 
+export interface OptionValueMeta {
+  /** 模型上下文窗口（token）。 */
+  readonly contextWindow?: number;
+  /** 模型最大输出（token）。 */
+  readonly maxTokens?: number;
+  /** 选中这个模型时默认的思考强度 / 选项值。 */
+  readonly defaultThinking?: string;
+  /** 同一个模型的别名，选择器搜索时也匹配。 */
+  readonly aliases?: readonly string[];
+  /** false = 显示但不可选，通常表示当前账号不可用。 */
+  readonly selectable?: boolean;
+  /** 能力标签，如 vision、tools、reasoning。 */
+  readonly tags?: readonly string[];
+}
+
 export interface OptionValue {
   readonly value: string;
   readonly label: string;
   readonly description?: string;
+  readonly metadata?: OptionValueMeta;
 }
 
 export type OptionValueOrGroup =

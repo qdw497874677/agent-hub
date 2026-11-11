@@ -39,10 +39,20 @@ export const capabilityMatrixSchema = z.object({
  * 可调项：形状照 ACP 的 ConfigOption。agent 报什么，界面就渲染什么——
  * 所以这层只负责搬运，不解释哪个选项叫什么名字。
  */
+export const optionValueMetaSchema = z.object({
+  contextWindow: z.number().int().positive().optional(),
+  maxTokens: z.number().int().positive().optional(),
+  defaultThinking: z.string().optional(),
+  aliases: z.array(z.string()).readonly().optional(),
+  selectable: z.boolean().optional(),
+  tags: z.array(z.string()).readonly().optional()
+});
+
 export const optionValueSchema = z.object({
   value: z.string(),
   label: z.string(),
-  description: z.string().optional()
+  description: z.string().optional(),
+  metadata: optionValueMetaSchema.optional()
 });
 
 export const optionChoiceSchema = z.discriminatedUnion('kind', [

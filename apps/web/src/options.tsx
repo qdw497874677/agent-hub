@@ -99,13 +99,13 @@ export function OptionControls({ options, values, onChange, compact = false, dis
               choice.kind === 'group' ? (
                 <optgroup key={`${option.id}-${index}`} label={choice.label}>
                   {choice.values.map((value) => (
-                    <option key={value.value} value={value.value}>
+                    <option key={value.value} value={value.value} disabled={value.metadata?.selectable === false}>
                       {value.label}
                     </option>
                   ))}
                 </optgroup>
               ) : (
-                <option key={choice.value.value} value={choice.value.value}>
+                <option key={choice.value.value} value={choice.value.value} disabled={choice.value.metadata?.selectable === false}>
                   {choice.value.label}
                 </option>
               )
@@ -118,10 +118,39 @@ export function OptionControls({ options, values, onChange, compact = false, dis
 }
 
 /** agent 报的候选项可能分了组也可能没分：摊平成一列，分组名带上，模型选择器按它分组。 */
+type OptionValueDto = Extract<RuntimeOptionDto['choices'][number], { kind: 'value' }>['value'];
+
 export function flatChoices(option: RuntimeOptionDto): ModelItem[] {
+  const item = (value: OptionValueDto, group?: string): ModelItem => {
+    const meta = modelMeta(value.metadata);
+    return {
+      value: value.value,
+      label: value.label,
+      ...(group === undefined ? {} : { group }),
+      ...(value.description === undefined ? {} : { description: value.description }),
+      ...(value.metadata?.aliases === undefined ? {} : { keywords: value.metadata.aliases }),
+      ...(meta === undefined ? {} : { meta }),
+      ...(value.metadata?.selectable === false ? { disabled: true } : {})
+    };
+  };
   return option.choices.flatMap((choice) =>
     choice.kind === 'group'
-      ? choice.values.map((value) => ({ value: value.value, label: value.label, group: choice.label }))
-      : [{ value: choice.value.value, label: choice.value.label }]
+      ? choice.values.map((value) => item(value, choice.label))
+      : [item(choice.value)]
   );
+}
+
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Math.round(tokens / 100_000) / 10}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`;
+  return String(tokens);
+}
+
+function modelMeta(metadata: OptionValueDto['metadata']): string | undefined {
+  if (metadata === undefined) return undefined;
+  const parts: string[] = [];
+  if (metadata.contextWindow !== undefined) parts.push(`${compactTokens(metadata.contextWindow)} 上下文`);
+  if (metadata.maxTokens !== undefined) parts.push(`${compactTokens(metadata.maxTokens)} 输出`);
+  if (metadata.tags !== undefined && metadata.tags.length > 0) parts.push(metadata.tags.join(' · '));
+  return parts.length === 0 ? undefined : parts.join(' · ');
 }

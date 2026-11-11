@@ -188,15 +188,22 @@ function ModelSheet({
                   <Command.Item
                     key={keyOf(group.heading, item.value)}
                     value={keyOf(group.heading, item.value)}
+                    disabled={item.disabled === true}
                     onSelect={() => pick(item.value)}
-                    className="flex min-h-[48px] cursor-pointer items-center gap-2 rounded-sm px-3 text-body text-secondary data-[selected=true]:bg-card-raised data-[selected=true]:text-primary sm:min-h-0 sm:py-1.5"
+                    className="flex min-h-[48px] cursor-pointer items-center gap-2 rounded-sm px-3 text-body text-secondary data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-45 data-[selected=true]:bg-card-raised data-[selected=true]:text-primary sm:min-h-0 sm:py-1.5"
                   >
                     <span aria-hidden className="w-4 shrink-0 text-center text-accent">
                       {item.value === value ? '✓' : ''}
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-mono text-sub" title={item.label}>
-                      {/* 组名已经是提供方了，行里不再重复前缀 */}
-                      {item.label.startsWith(`${group.heading}/`) ? item.label.slice(group.heading.length + 1) : item.label}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline gap-2">
+                        <span className="min-w-0 truncate font-mono text-sub" title={item.label}>
+                          {/* 组名已经是提供方了，行里不再重复前缀 */}
+                          {item.label.startsWith(`${group.heading}/`) ? item.label.slice(group.heading.length + 1) : item.label}
+                        </span>
+                        {item.meta ? <span className="ml-auto shrink-0 text-meta text-tertiary">{item.meta}</span> : null}
+                      </span>
+                      {item.description ? <span className="block truncate text-meta text-tertiary">{item.description}</span> : null}
                     </span>
                   </Command.Item>
                 ))}

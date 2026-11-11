@@ -1,4 +1,4 @@
-import type { OptionCategory, OptionValueOrGroup, RuntimeOption } from '@agent-hub/domain';
+import type { OptionCategory, OptionValueMeta, OptionValueOrGroup, RuntimeOption } from '@agent-hub/domain';
 
 /**
  * ACP 的 ConfigOption → 平台的 RuntimeOption。
@@ -13,6 +13,9 @@ interface AcpValue {
   readonly value: string;
   readonly name: string;
   readonly description?: string;
+  /** ACP 允许厂商在候选项上带 `_meta`；Hub 只读认识的那几个字段。 */
+  readonly _meta?: Readonly<Record<string, unknown>>;
+  readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
 interface AcpGroup {
@@ -41,6 +44,47 @@ function categoryOf(raw: string | undefined): OptionCategory {
 
 function isGroup(entry: AcpValue | AcpGroup): entry is AcpGroup {
   return (entry as AcpGroup).groupId !== undefined;
+}
+
+function positiveNumber(raw: unknown): number | undefined {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : undefined;
+}
+
+function stringList(raw: unknown): readonly string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const values = raw.filter((value): value is string => typeof value === 'string' && value.length > 0);
+  return values.length > 0 ? values : undefined;
+}
+
+/**
+ * ACP 候选项的 `_meta` 没有统一 schema；各 runtime 会把模型元数据挂在不同的键上。
+ * 这里只认 Hub 会展示的几项，认不出就原样忽略，不猜。
+ */
+function optionValueMeta(value: AcpValue): OptionValueMeta | undefined {
+  const meta = value._meta ?? value.metadata;
+  if (meta === undefined) return undefined;
+  const contextWindow = positiveNumber(meta['contextWindow'] ?? meta['contextWindowMaxTokens']);
+  const maxTokens = positiveNumber(meta['maxTokens']);
+  const defaultThinking =
+    typeof meta['defaultThinking'] === 'string'
+      ? meta['defaultThinking']
+      : typeof meta['defaultThinkingOptionId'] === 'string'
+        ? meta['defaultThinkingOptionId']
+        : undefined;
+  const aliases = stringList(meta['aliases']);
+  const selectable = typeof meta['selectable'] === 'boolean' ? meta['selectable'] : typeof meta['isSelectable'] === 'boolean' ? meta['isSelectable'] : undefined;
+  const tags = stringList(meta['tags']);
+  if (contextWindow === undefined && maxTokens === undefined && defaultThinking === undefined && aliases === undefined && selectable === undefined && tags === undefined) {
+    return undefined;
+  }
+  return {
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(maxTokens === undefined ? {} : { maxTokens }),
+    ...(defaultThinking === undefined ? {} : { defaultThinking }),
+    ...(aliases === undefined ? {} : { aliases }),
+    ...(selectable === undefined ? {} : { selectable }),
+    ...(tags === undefined ? {} : { tags })
+  };
 }
 
 /**
@@ -74,7 +118,8 @@ export function mapAcpOptions(
           values: item.options.map((value) => ({
             value: value.value,
             label: value.name,
-            ...(value.description === undefined ? {} : { description: value.description })
+            ...(value.description === undefined ? {} : { description: value.description }),
+            ...(optionValueMeta(value) === undefined ? {} : { metadata: optionValueMeta(value) })
           }))
         });
       } else {
@@ -83,7 +128,8 @@ export function mapAcpOptions(
           value: {
             value: item.value,
             label: item.name,
-            ...(item.description === undefined ? {} : { description: item.description })
+            ...(item.description === undefined ? {} : { description: item.description }),
+            ...(optionValueMeta(item) === undefined ? {} : { metadata: optionValueMeta(item) })
           }
         });
       }

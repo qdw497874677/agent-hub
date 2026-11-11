@@ -2731,6 +2731,37 @@
                                               },
                                               "description": {
                                                 "type": "string"
+                                              },
+                                              "metadata": {
+                                                "type": "object",
+                                                "properties": {
+                                                  "contextWindow": {
+                                                    "type": "integer",
+                                                    "exclusiveMinimum": 0
+                                                  },
+                                                  "maxTokens": {
+                                                    "type": "integer",
+                                                    "exclusiveMinimum": 0
+                                                  },
+                                                  "defaultThinking": {
+                                                    "type": "string"
+                                                  },
+                                                  "aliases": {
+                                                    "type": "array",
+                                                    "items": {
+                                                      "type": "string"
+                                                    }
+                                                  },
+                                                  "selectable": {
+                                                    "type": "boolean"
+                                                  },
+                                                  "tags": {
+                                                    "type": "array",
+                                                    "items": {
+                                                      "type": "string"
+                                                    }
+                                                  }
+                                                }
                                               }
                                             },
                                             "required": [
@@ -2769,6 +2800,37 @@
                                                 },
                                                 "description": {
                                                   "type": "string"
+                                                },
+                                                "metadata": {
+                                                  "type": "object",
+                                                  "properties": {
+                                                    "contextWindow": {
+                                                      "type": "integer",
+                                                      "exclusiveMinimum": 0
+                                                    },
+                                                    "maxTokens": {
+                                                      "type": "integer",
+                                                      "exclusiveMinimum": 0
+                                                    },
+                                                    "defaultThinking": {
+                                                      "type": "string"
+                                                    },
+                                                    "aliases": {
+                                                      "type": "array",
+                                                      "items": {
+                                                        "type": "string"
+                                                      }
+                                                    },
+                                                    "selectable": {
+                                                      "type": "boolean"
+                                                    },
+                                                    "tags": {
+                                                      "type": "array",
+                                                      "items": {
+                                                        "type": "string"
+                                                      }
+                                                    }
+                                                  }
                                                 }
                                               },
                                               "required": [
@@ -4404,6 +4466,37 @@
                                         },
                                         "description": {
                                           "type": "string"
+                                        },
+                                        "metadata": {
+                                          "type": "object",
+                                          "properties": {
+                                            "contextWindow": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "maxTokens": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "defaultThinking": {
+                                              "type": "string"
+                                            },
+                                            "aliases": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "selectable": {
+                                              "type": "boolean"
+                                            },
+                                            "tags": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
                                         }
                                       },
                                       "required": [
@@ -4442,6 +4535,37 @@
                                           },
                                           "description": {
                                             "type": "string"
+                                          },
+                                          "metadata": {
+                                            "type": "object",
+                                            "properties": {
+                                              "contextWindow": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "maxTokens": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "defaultThinking": {
+                                                "type": "string"
+                                              },
+                                              "aliases": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "selectable": {
+                                                "type": "boolean"
+                                              },
+                                              "tags": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              }
+                                            }
                                           }
                                         },
                                         "required": [
@@ -4781,6 +4905,37 @@
                                         },
                                         "description": {
                                           "type": "string"
+                                        },
+                                        "metadata": {
+                                          "type": "object",
+                                          "properties": {
+                                            "contextWindow": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "maxTokens": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "defaultThinking": {
+                                              "type": "string"
+                                            },
+                                            "aliases": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "selectable": {
+                                              "type": "boolean"
+                                            },
+                                            "tags": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
                                         }
                                       },
                                       "required": [
@@ -4819,6 +4974,37 @@
                                           },
                                           "description": {
                                             "type": "string"
+                                          },
+                                          "metadata": {
+                                            "type": "object",
+                                            "properties": {
+                                              "contextWindow": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "maxTokens": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "defaultThinking": {
+                                                "type": "string"
+                                              },
+                                              "aliases": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "selectable": {
+                                                "type": "boolean"
+                                              },
+                                              "tags": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              }
+                                            }
                                           }
                                         },
                                         "required": [
@@ -5136,6 +5322,37 @@
                                         },
                                         "description": {
                                           "type": "string"
+                                        },
+                                        "metadata": {
+                                          "type": "object",
+                                          "properties": {
+                                            "contextWindow": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "maxTokens": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "defaultThinking": {
+                                              "type": "string"
+                                            },
+                                            "aliases": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "selectable": {
+                                              "type": "boolean"
+                                            },
+                                            "tags": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
                                         }
                                       },
                                       "required": [
@@ -5174,6 +5391,37 @@
                                           },
                                           "description": {
                                             "type": "string"
+                                          },
+                                          "metadata": {
+                                            "type": "object",
+                                            "properties": {
+                                              "contextWindow": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "maxTokens": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "defaultThinking": {
+                                                "type": "string"
+                                              },
+                                              "aliases": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "selectable": {
+                                                "type": "boolean"
+                                              },
+                                              "tags": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              }
+                                            }
                                           }
                                         },
                                         "required": [
@@ -5821,6 +6069,37 @@
                                         },
                                         "description": {
                                           "type": "string"
+                                        },
+                                        "metadata": {
+                                          "type": "object",
+                                          "properties": {
+                                            "contextWindow": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "maxTokens": {
+                                              "type": "integer",
+                                              "exclusiveMinimum": 0
+                                            },
+                                            "defaultThinking": {
+                                              "type": "string"
+                                            },
+                                            "aliases": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            },
+                                            "selectable": {
+                                              "type": "boolean"
+                                            },
+                                            "tags": {
+                                              "type": "array",
+                                              "items": {
+                                                "type": "string"
+                                              }
+                                            }
+                                          }
                                         }
                                       },
                                       "required": [
@@ -5859,6 +6138,37 @@
                                           },
                                           "description": {
                                             "type": "string"
+                                          },
+                                          "metadata": {
+                                            "type": "object",
+                                            "properties": {
+                                              "contextWindow": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "maxTokens": {
+                                                "type": "integer",
+                                                "exclusiveMinimum": 0
+                                              },
+                                              "defaultThinking": {
+                                                "type": "string"
+                                              },
+                                              "aliases": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              },
+                                              "selectable": {
+                                                "type": "boolean"
+                                              },
+                                              "tags": {
+                                                "type": "array",
+                                                "items": {
+                                                  "type": "string"
+                                                }
+                                              }
+                                            }
                                           }
                                         },
                                         "required": [

@@ -37,6 +37,11 @@ test('筛选：模糊匹配模型名或提供方，不再单列最近', () => {
   assert.deepEqual(groupModels(items, 'zzz'), []);
 });
 
+test('筛选：模型别名也参与匹配', () => {
+  const aliased = [{ value: 'cliproxy/glm-5', label: 'GLM 5', keywords: ['zhipu'] }];
+  assert.deepEqual(groupModels(aliased, 'zhipu').flatMap((g) => g.items.map((i) => i.value)), ['cliproxy/glm-5']);
+});
+
 test('最近用过：放最前、去重、限长', () => {
   assert.deepEqual(pushRecent(['a', 'b', 'c'], 'b', 3), ['b', 'a', 'c']);
   assert.deepEqual(pushRecent(['a', 'b', 'c'], 'd', 3), ['d', 'a', 'b']);

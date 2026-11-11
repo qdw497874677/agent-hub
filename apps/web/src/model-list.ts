@@ -9,6 +9,13 @@ export interface ModelItem {
   readonly label: string;
   /** agent 自己给了分组就用它；没给就按 `提供方/模型` 的前缀分。 */
   readonly group?: string;
+  readonly description?: string;
+  /** 搜索时额外匹配的词（模型别名等）。 */
+  readonly keywords?: readonly string[];
+  /** 模型元数据摘要，如 `200K 上下文 · vision`。 */
+  readonly meta?: string;
+  /** false = 显示但不可选。 */
+  readonly disabled?: boolean;
 }
 
 export interface ModelGroup {
@@ -41,7 +48,7 @@ export function groupModels(items: readonly ModelItem[], query: string, recent: 
   }
   const scored = items
     .map((item) => {
-      const scores = [fuzzyScore(item.label, q), fuzzyScore(item.value, q), fuzzyScore(providerOf(item), q)].filter(
+      const scores = [fuzzyScore(item.label, q), fuzzyScore(item.value, q), fuzzyScore(providerOf(item), q), ...(item.keywords ?? []).map((word) => fuzzyScore(word, q))].filter(
         (score): score is number => score !== null
       );
       return { item, score: scores.length > 0 ? Math.max(...scores) : null };

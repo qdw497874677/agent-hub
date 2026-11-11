@@ -90,6 +90,34 @@ test('acp: 可调项照抄 ACP 的形状，不认识的 category 收进 custom',
   assert.equal(options[1]?.current, false);
 });
 
+test('acp: 模型元数据从候选项 _meta 搬到 RuntimeOption', () => {
+  const options = mapAcpOptions([
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: 'a',
+      options: [
+        {
+          value: 'a',
+          name: 'Model A',
+          _meta: { contextWindow: 200000, maxTokens: 8192, aliases: ['a-fast'], isSelectable: false, tags: ['vision'] }
+        }
+      ]
+    }
+  ]);
+  const value = options[0]?.choices[0];
+  assert.ok(value?.kind === 'value');
+  assert.deepEqual(value.value.metadata, {
+    contextWindow: 200000,
+    maxTokens: 8192,
+    aliases: ['a-fast'],
+    selectable: false,
+    tags: ['vision']
+  });
+});
+
 test('acp: OpenCode 默认把 Session Mode 当 Agent 展示', () => {
   const opencode = ACP_AGENT_DEFAULTS.find((config) => config.id === 'opencode');
   assert.deepEqual(opencode?.optionOverrides, { mode: { category: 'agent', label: 'Agent' } });

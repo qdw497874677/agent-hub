@@ -17,7 +17,7 @@
 |---|---|---|---|
 | P0 | 契约、命名、能力矩阵 | 部分完成 | — |
 | P1 | Agent Profile | 已完成 | P0 |
-| P2 | 运行时 controls / 模型元数据 | 待开始 | P1 |
+| P2 | 运行时 controls / 模型元数据 | 已完成 | P1 |
 | P3 | 子代理时间线 UI | 已完成 | P1 事件模型 |
 | P4 | 结构化工具详情 + 权限请求 | 待开始 | P3 |
 | P5 | 运行时状态 + 自定义运行时别名 | 待开始 | P2 |
@@ -45,11 +45,14 @@
 
 **目标**：把“运行时自报什么就能调什么”从被动列表变成可渲染的通用控件。
 
-- `RuntimeOption` 增加通用 control 描述：`select | toggle`（参考 Paseo `ProviderOptionControl`），不再只靠 `kind` 猜。
-- 模型元数据：context window、默认 thinking、别名、是否可选、价格/能力标签。
-- `RuntimeOption` 的 `choices` 支持分组/禁用/说明；`optionSpec` 仍由 runtime 上报。
-- Web 底栏和完整控制面板共用同一套排序、宽度、窄屏策略。
-- 验收：OpenCode 的 model/agent/effort 与 Pi 的模型/思考强度都能用同一组件渲染；未知类别不崩。
+已完成：
+
+- `RuntimeOption.kind` 继续作为控件类型：`select` / `boolean`（toggle）。
+- 候选项 `OptionValue` 增加可选 `metadata`：`contextWindow`、`maxTokens`、`defaultThinking`、`aliases`、`selectable`、`tags`。
+- ACP `mapAcpOptions` 从候选项 `_meta`/`metadata` 搬运上述字段；认不出就忽略。
+- 模型选择器显示 `200K 上下文 · 8192 输出 · vision` 一类摘要；`selectable:false` 的模型置灰不可选；别名参与搜索。
+- 原生 `<select>` 同样禁用不可选项；compact/完整面板仍共用 `OptionControls`。
+- 验证：ACP conformance 覆盖元数据搬运；`model-list` 覆盖别名搜索；OpenAPI 快照更新。
 
 ## 4. P3 子代理时间线 UI
 
