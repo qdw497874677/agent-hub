@@ -20,7 +20,7 @@
 | P2 | 运行时 controls / 模型元数据 | 已完成 | P1 |
 | P3 | 子代理时间线 UI | 已完成 | P1 事件模型 |
 | P4 | 结构化工具详情 + 权限请求 | 已完成 | P3 |
-| P5 | 运行时状态 + 自定义运行时别名 | 待开始 | P2 |
+| P5 | 运行时状态 + 自定义运行时别名 | 部分完成 | P2 |
 | P6 | ACP transformer + 编排工具 | 部分完成 | P1/P3 |
 
 ## 2. P1 Agent Profile
@@ -86,10 +86,14 @@
 
 **目标**：管理员能看见每个 runtime 是否可用；能配置别名/凭据，但不破坏安全边界。
 
-- runtime snapshot：`ready/loading/unavailable/error`、诊断、模型数、最后探测时间。
-- 自定义 Agent Runtime 配置：`extends` 内置 runtime 或 `acp`；command/env/options/models/additionalModels；管理员/worker 校验。
-- 别名只影响启动计划，不改 Hub 的 `provider` 语义。
-- 验收：runtime 状态可见；别名不影响已有会话；错误配置有明确诊断。
+已完成：
+
+- 运行时状态沿用 `/api/workers`：Worker online/offline、harness readiness、agent 清单与诊断；管理页用 `HarnessBadges`/`RecheckButton` 展示，`/api/workers/:id/probe` 重新检测。
+- 自定义运行时别名走 Worker 的 `ACP_AGENTS`（JSON 数组）：`id/label/command/args/env/models/defaultModel/optionOverrides`；`env` 只由操作者配置，`models` 是发现失败时的兜底，`defaultModel` 影响派生默认模型，`optionOverrides` 可把 ACP `mode` 映射成 `agent`。
+- 别名是启动配置，只影响之后启动的会话；已有会话不变。改完需重连/重启 Worker。
+- 未做管理 UI 和热加载；`ACP_AGENTS` 能执行任意命令，属于操作者信任边界。
+
+验收：Worker/agent 状态与 readiness 可见；别名能被 Worker 报成独立 descriptor；非法条目跳过并回退。
 
 ## 7. P6 ACP transformer + 编排工具
 

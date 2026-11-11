@@ -454,7 +454,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
         child = spawn(config.command, [...(launch.args ?? config.args)], {
           cwd: spec.workspaceRoot,
           stdio: ['pipe', 'pipe', 'pipe'],
-          ...(launch.env ? { env: { ...process.env, ...launch.env } } : {})
+          ...(config.env || launch.env ? { env: { ...process.env, ...config.env, ...launch.env } } : {})
         });
       } catch (error) {
         return { ok: false, error: unavailable(`无法启动 ${config.label}：${(error as Error).message}`) };

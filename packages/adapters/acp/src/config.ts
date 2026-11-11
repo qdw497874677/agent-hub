@@ -16,6 +16,12 @@ export interface AcpAgentConfig {
   readonly label: string;
   readonly command: string;
   readonly args: readonly string[];
+  /** 可选：启动这个 runtime 时额外注入的环境变量（别名/凭据用；只由操作者配置）。 */
+  readonly env?: Readonly<Record<string, string>>;
+  /** 可选：启动时列不出模型时的兜底清单。 */
+  readonly models?: readonly string[];
+  /** 可选：没有会话选项时的默认模型。 */
+  readonly defaultModel?: string;
   /** 可选：这个 agent 认得的额外启动参数以外的东西，暂时只用于日志。 */
   readonly note?: string;
   /**
@@ -168,7 +174,7 @@ export function acpDescriptor(
         : denied(`${config.label} 的 ACP 接口只能复制整条会话，不能从某条消息分叉；「从这里重来」会用摘要交接`)
     }),
     models,
-    defaultModel: typeof model?.current === 'string' ? model.current : '',
+    defaultModel: config.defaultModel ?? (typeof model?.current === 'string' ? model.current : ''),
     options,
     ...(config.providerLaunch && config.providerProtocols?.length ? { providers: config.providerProtocols } : {})
   };

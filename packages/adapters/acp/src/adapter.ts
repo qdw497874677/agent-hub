@@ -25,6 +25,12 @@ export function acpAgents(raw: string | undefined, log: (message: string) => voi
         label: typeof candidate.label === 'string' ? candidate.label : candidate.id,
         command: candidate.command,
         args: Array.isArray(candidate.args) ? candidate.args.filter((arg) => typeof arg === 'string') : [],
+        ...(candidate.env && typeof candidate.env === 'object' && !Array.isArray(candidate.env)
+          ? { env: Object.fromEntries(Object.entries(candidate.env).filter((entry): entry is [string, string] => typeof entry[1] === 'string')) }
+          : {}),
+        ...(Array.isArray(candidate.models) ? { models: candidate.models.filter((model): model is string => typeof model === 'string') } : {}),
+        ...(typeof candidate.defaultModel === 'string' ? { defaultModel: candidate.defaultModel } : {}),
+        ...(candidate.optionOverrides && typeof candidate.optionOverrides === 'object' && !Array.isArray(candidate.optionOverrides) ? { optionOverrides: candidate.optionOverrides } : {}),
         ...(candidate.branchAtTurn === 'jetbrains-air' ? { branchAtTurn: 'jetbrains-air' as const } : {}),
         ...(Array.isArray(candidate.listModelsArgs)
           ? { listModelsArgs: candidate.listModelsArgs.filter((arg) => typeof arg === 'string') }
@@ -79,7 +85,10 @@ export function acpAdapter(): RuntimeAdapter {
         return { config: { ...config, command: found.command }, hint: found.hint };
       });
       // ACP 只在开了会话之后才报模型；启动时先问一次，派生对话框才有得选。
-      const models = await Promise.all(resolved.map(({ config }) => discoverAcpModels(config)));
+      const models = await Promise.all(resolved.map(async ({ config }) => {
+        const found = await discoverAcpModels(config);
+        return found.length > 0 ? found : [...(config.models ?? [])];
+      }));
       return resolved.map(({ config, hint }, index) => ({
         runtime: createAcpRuntime(config, {
           descriptor: acpDescriptor(config, [], models[index] ?? []),
