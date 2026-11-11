@@ -59,7 +59,7 @@ import type {
   InvitePreviewDto
 } from '@agent-hub/contract';
 
-export type { TeamDto, InviteDto, InvitePreviewDto };
+export type { TeamDto, InviteDto, InvitePreviewDto, AgentProfileDto, AgentProfileInput };
 export type { TeamWorkspaceViewDto, CreateTeamWorkspaceRequest, WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
 
 /** 组件目录里的一个版本（ADR 0021 §8）：制品由 hub 解析钉死，scripts 是审核时要看的安装脚本原文。 */

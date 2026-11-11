@@ -15,15 +15,24 @@
 
 | 阶段 | 内容 | 状态 | 依赖 |
 |---|---|---|---|
-| P0 | 契约、命名、能力矩阵 | 部分完成 | — |
+| P0 | 契约、命名、能力矩阵 | 已完成 | — |
 | P1 | Agent Profile | 已完成 | P0 |
 | P2 | 运行时 controls / 模型元数据 | 已完成 | P1 |
 | P3 | 子代理时间线 UI | 已完成 | P1 事件模型 |
 | P4 | 结构化工具详情 + 权限请求 | 已完成 | P3 |
 | P5 | 运行时状态 + 自定义运行时别名 | 部分完成 | P2 |
-| P6 | ACP transformer + 编排工具 | 部分完成 | P1/P3 |
+| P6 | ACP transformer + 编排工具 | 已完成（后续按 runtime 补 codec） | P1/P3 |
 
-## 2. P1 Agent Profile
+## 2. P0 能力矩阵
+
+已完成：
+
+- `subagent` 进入 `CapabilityName` / `CAPABILITY_NAMES` / `CAPABILITY_LABELS`，UI 用统一三态判断，不按 agent 名字写分支。
+- 后加能力可缺省：不报 `subagent` 的运行时按 `denied` 处理，旧 descriptor 不用一起改。
+- OpenCode（带 `opencode` codec）报 `available`；Hermes 报 `limited`（只有开始/结束，没有子会话时间线）；Pi/Grok/通用 ACP 默认 `denied`。
+- `allowsFor` / `unavailableReason` 对缺省能力使用按名称的默认值，避免把 `subagent` 误判成 `branch_at_turn`。
+
+## 3. P1 Agent Profile
 
 **目标**：保存一组 runtime/model/options，派生时直接套用；不修改已有会话。
 
@@ -34,14 +43,11 @@
 - API：`GET/POST /api/agent-profiles`、`PATCH/DELETE /api/agent-profiles/:id`。
 - 派生：`deriveSessionRequest.profileId` 优先提供 agent/model/options。
 - Web：派生对话框选择 profile；会话“更多”保存当前配置。
-- 验证：typecheck/check/build、954 单测、`e2e/agent-profiles.spec.ts`。
+- 配置管理页：会话“更多 → 管理 Agent 配置…”和派生对话框“管理”；支持改名、改模型/备注、复制、删除。
+- 配置与 `optionSpec` 的兼容检查：派生对话框提示当前运行时未上报的 agent/模型/选项；后端仍会拒绝不存在的模型。
+- 验证：typecheck/check/build、单测、`e2e/agent-profiles.spec.ts`（保存 → 管理页改名 → 派生套用）。
 
-后续：
-
-- 配置管理页（改名/删除/复制）。
-- 配置与 `optionSpec` 的兼容检查：运行时升级后某个 option 不存在时，派生要提示而不是静默忽略。
-
-## 3. P2 运行时 controls / 模型元数据
+## 4. P2 运行时 controls / 模型元数据
 
 **目标**：把“运行时自报什么就能调什么”从被动列表变成可渲染的通用控件。
 
@@ -54,7 +60,7 @@
 - 原生 `<select>` 同样禁用不可选项；compact/完整面板仍共用 `OptionControls`。
 - 验证：ACP conformance 覆盖元数据搬运；`model-list` 覆盖别名搜索；OpenAPI 快照更新。
 
-## 4. P3 子代理时间线 UI
+## 5. P3 子代理时间线 UI
 
 **目标**：主会话里看到子代理；不新增 Hub 会话，不增加画布节点。
 
@@ -73,7 +79,7 @@
 - 历史回放、SSE 补帧、fork 继承保持原样；旧会话无 subagent 不受影响。
 - 验证：`live-core.test.ts` 覆盖 start→子事件→end；`e2e/subagent.spec.ts` 用 fake ACP `--child` 看到子代理卡与画布 badge。
 
-## 5. P4 结构化工具详情 + 权限请求
+## 6. P4 结构化工具详情 + 权限请求
 
 已完成：
 
@@ -82,7 +88,7 @@
 - 权限请求沿用现有 `approval` 卡：显示标题/详情、允许/拒绝、倒计时和超时拒绝；没有新增平台自造权限。
 - 验证：`tool-format.test.ts` 覆盖各类型识别与摘要；E2E 工具卡不回归。
 
-## 6. P5 运行时状态 + 自定义运行时别名
+## 7. P5 运行时状态 + 自定义运行时别名
 
 **目标**：管理员能看见每个 runtime 是否可用；能配置别名/凭据，但不破坏安全边界。
 
@@ -95,7 +101,7 @@
 
 验收：Worker/agent 状态与 readiness 可见；别名能被 Worker 报成独立 descriptor；非法条目跳过并回退。
 
-## 7. P6 ACP transformer + 编排工具
+## 8. P6 ACP transformer + 编排工具
 
 **目标**：把供应商私有工具名/通知归一化；给编排 agent 发现和操作其他会话的工具。
 
@@ -112,7 +118,7 @@
   - `get_agent_activity`
 - 验收：transformer 不改全局配置、不泄密钥；编排工具受现有权限/限额约束。
 
-## 8. 验证基线
+## 9. 验证基线
 
 每个阶段完成时必须跑：
 

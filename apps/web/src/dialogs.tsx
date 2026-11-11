@@ -7,6 +7,7 @@ import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice }
 import { harnessReason } from './harness.tsx';
 import { canSelectMachine, startBlockReason } from './harness-gate.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from './model-picker.tsx';
+import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -104,6 +105,7 @@ export function DeriveDialog({
   const agent = canvas.agents.find((candidate) => candidate.id === agentId);
   const [model, setModel] = useState(agent?.defaultModel ?? '');
   const [profileId, setProfileId] = useState('');
+  const [profilesOpen, setProfilesOpen] = useState(false);
   const profiles = useQuery({ queryKey: ['agent-profiles'], queryFn: () => api.agentProfiles(), retry: false });
   const workers = useWorkers();
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作空间；不预选，没选之前「开始」是灰的
@@ -121,6 +123,16 @@ export function DeriveDialog({
   );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
+  const selectedProfile = (profiles.data ?? []).find((profile) => profile.id === profileId) ?? null;
+  const profileAgent = selectedProfile === null ? null : (canvas.agents.find((candidate) => candidate.id === selectedProfile.agentId) ?? null);
+  const profileOptionIds = new Set((profileAgent?.options ?? []).map((option) => option.id));
+  const unsupportedProfileOptions =
+    selectedProfile === null ? [] : Object.keys(selectedProfile.options).filter((id) => !profileOptionIds.has(id));
+  const profileModelUnavailable =
+    selectedProfile !== null &&
+    selectedProfile.model !== '' &&
+    offered.models.length > 0 &&
+    !offered.models.includes(selectedProfile.model);
   const queryClient = useQueryClient();
   const projectId = canvas.project.id;
   const derive = useMutation({
@@ -192,7 +204,12 @@ export function DeriveDialog({
           hubProtocols={hubProtocols}
         />
         <div className="mb-3">
-          <label className="mb-1 block text-meta text-secondary" htmlFor="derive-profile">Agent 配置（可留空）</label>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <label className="block text-meta text-secondary" htmlFor="derive-profile">Agent 配置（可留空）</label>
+            <button type="button" className="text-meta text-accent underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
+              管理
+            </button>
+          </div>
           <select
             id="derive-profile"
             className={INPUT}
@@ -215,6 +232,17 @@ export function DeriveDialog({
             ))}
           </select>
           {profiles.error ? <p className="mt-1 text-meta text-rust">{(profiles.error as Error).message}</p> : null}
+          {selectedProfile !== null && profileAgent === null ? (
+            <p className="mt-1 text-meta text-rust">这个配置的 agent「{selectedProfile.agentId}」当前没有运行时在线。</p>
+          ) : null}
+          {profileModelUnavailable ? (
+            <p className="mt-1 text-meta text-rust">这个配置的模型「{selectedProfile.model}」在当前机器/运行时不可用。</p>
+          ) : null}
+          {unsupportedProfileOptions.length > 0 ? (
+            <p className="mt-1 text-meta text-rust">
+              这个配置带有当前 agent 不认识的选项：{unsupportedProfileOptions.join('、')}，派生后会被忽略。
+            </p>
+          ) : null}
         </div>
         <div className="mb-4 grid grid-cols-1 gap-x-3 sm:grid-cols-2">
         <div>
@@ -296,6 +324,7 @@ export function DeriveDialog({
                 : '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
           </button>
         </div>
+        {profilesOpen ? <AgentProfilesDialog agents={canvas.agents} onClose={() => setProfilesOpen(false)} /> : null}
     </DialogShell>
   );
 }

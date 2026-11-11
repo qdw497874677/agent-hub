@@ -26,6 +26,7 @@ import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, typ
 import { ContextMeter } from './context-meter.tsx';
 import { SessionLinksDialog } from './session-links-dialog.tsx';
 import { SaveAgentProfileDialog } from './agent-profile-dialog.tsx';
+import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -74,6 +75,7 @@ export function FocusView({
   const [titleDraft, setTitleDraft] = useState('');
   const [linksOpen, setLinksOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [profilesOpen, setProfilesOpen] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [linkOverrides, setLinkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -379,6 +381,14 @@ export function FocusView({
                   }}
                 />
                 <MenuItem
+                  title="管理 Agent 配置…"
+                  hint="改名、改模型、复制或删除已保存的启动组合"
+                  onClick={() => {
+                    close();
+                    setProfilesOpen(true);
+                  }}
+                />
+                <MenuItem
                   title="分叉"
                   hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
                   disabled={!forkable}
@@ -450,6 +460,7 @@ export function FocusView({
           onSaved={() => setProfileOpen(false)}
         />
       ) : null}
+      {profilesOpen ? <AgentProfilesDialog agents={canvas.agents} onClose={() => setProfilesOpen(false)} /> : null}
       {linksOpen ? (
         <SessionLinksDialog
           sessions={canvas.sessions}

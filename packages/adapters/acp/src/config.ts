@@ -181,7 +181,11 @@ export function acpDescriptor(
       attachments: limited('图片与内嵌文件取决于 agent 声明的 promptCapabilities，不支持时发送会明确报错；@ 引用以 resource_link 传递'),
       branch_at_turn: acpBranchAtTurn(config)
         ? available
-        : denied(`${config.label} 的 ACP 接口只能复制整条会话，不能从某条消息分叉；「从这里重来」会用摘要交接`)
+        : denied(`${config.label} 的 ACP 接口只能复制整条会话，不能从某条消息分叉；「从这里重来」会用摘要交接`),
+      subagent:
+        config.codec?.id === 'opencode'
+          ? available
+          : denied(`${config.label} 没有上报子代理结构，子代理只能作为普通工具调用显示`)
     }),
     models,
     defaultModel: config.defaultModel ?? (typeof model?.current === 'string' ? model.current : ''),

@@ -32,7 +32,8 @@ export const capabilityMatrixSchema = z.object({
   artifacts: capabilitySchema,
   structured_events: capabilitySchema,
   attachments: capabilitySchema,
-  branch_at_turn: capabilitySchema.optional()
+  branch_at_turn: capabilitySchema.optional(),
+  subagent: capabilitySchema.optional()
 });
 
 /**

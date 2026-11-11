@@ -20,7 +20,8 @@ export function hermesDescriptor(): AgentDescriptor {
       tool_calls: available,
       artifacts: limited('Hermes 只报工具名和脱敏预览，认不出写了哪些文件'),
       structured_events: available,
-      attachments: limited('Runs API 只收文本；上传文件以绝对路径写进消息，由 Hermes 自己读取')
+      attachments: limited('Runs API 只收文本；上传文件以绝对路径写进消息，由 Hermes 自己读取'),
+      subagent: limited('Hermes 只上报子任务开始/结束，没有子会话的文本与工具时间线')
     }),
     models: [],
     defaultModel: '',

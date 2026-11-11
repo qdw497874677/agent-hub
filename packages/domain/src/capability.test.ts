@@ -8,6 +8,7 @@ import {
   limited,
   unavailableReason,
   type Capability,
+  type CapabilityMatrix,
   type CapabilityName
 } from './capability.ts';
 
@@ -37,4 +38,10 @@ test('limited 与 denied 必须带原因——用户看到置灰要知道为什�
     capabilityMatrix({ ...full('available'), fork: denied(' ') })
   );
   assert.equal(unavailableReason(full('denied'), 'fork'), '不支持');
+});
+
+test('没说 subagent 的旧矩阵按 denied 补，不回退到 branch_at_turn 的原因', () => {
+  const legacy = {} as CapabilityMatrix;
+  assert.match(unavailableReason(legacy, 'subagent') ?? '', /子代理/);
+  assert.match(unavailableReason(legacy, 'branch_at_turn') ?? '', /分叉/);
 });

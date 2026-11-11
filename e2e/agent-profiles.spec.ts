@@ -54,13 +54,25 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   await saveDialog.getByRole('button', { name: '保存' }).click();
   await expect(saveDialog).toHaveCount(0);
 
+  // 管理页：改名，确认管理 UI 与派生下拉同步。
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: /管理 Agent 配置/ }).click();
+  const manage = page.getByRole('dialog', { name: 'Agent 配置' });
+  const managedRow = manage.getByTestId('agent-profile-row').filter({ hasText: PROFILE_NAME });
+  await expect(managedRow).toBeVisible();
+  await managedRow.getByRole('button', { name: '编辑' }).click();
+  await manage.getByLabel('名字').fill(`${PROFILE_NAME}-改`);
+  await manage.getByRole('button', { name: '保存' }).click();
+  await expect(manage.getByTestId('agent-profile-row').filter({ hasText: `${PROFILE_NAME}-改` })).toBeVisible();
+  await page.keyboard.press('Escape');
+
   // 回画布，派生第二条会话并选 profile。
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
   const secondRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
   await chooseWorkspace(page, secondRun);
   const profile = secondRun.getByLabel('Agent 配置（可留空）');
-  const profileOption = profile.locator('option').filter({ hasText: PROFILE_NAME });
+  const profileOption = profile.locator('option').filter({ hasText: `${PROFILE_NAME}-改` });
   await expect(profileOption).toHaveCount(1);
   const profileId = await profileOption.getAttribute('value');
   if (!profileId) throw new Error('Agent 配置没有 id');
