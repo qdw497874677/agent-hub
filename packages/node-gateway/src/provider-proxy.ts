@@ -1,4 +1,5 @@
-import type { ProviderProtocol } from '@agent-hub/domain';
+import type { ProviderModel, ProviderProtocol } from '@agent-hub/domain';
+import { PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS, parseHubModel } from '@agent-hub/domain';
 
 /**
  * 模型提供商的转发核心（worker 本机中继与 hub 中转共用，ADR 0013）：
@@ -19,6 +20,8 @@ export interface Upstream {
   readonly baseUrl: string;
   readonly apiKey: string;
   readonly protocol: ProviderProtocol;
+  /** 这个提供商的模型（含每模型 extra）：转发时按请求体里的 model 合并额外参数。 */
+  readonly models?: readonly ProviderModel[] | undefined;
 }
 
 export interface ProxyOutcome {
@@ -70,6 +73,61 @@ export function errorResponse(status: number, message: string): Response {
 }
 
 /**
+ * 哪些上游路径允许合并 model extra（只看路径部分，忽略 query）。
+ * 只合并会话式请求：/models 之类的 GET 不碰。
+ */
+const MERGE_PATHS = ['/chat/completions', '/completions', '/responses', '/messages'];
+
+const EXTRA_FORBIDDEN = new Set(PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS);
+
+/** 请求体里的 model 去掉 hub-<slug>/ 前缀：agent 可能拿到的是 hub 模型 id。 */
+function bareModel(model: string): string {
+  const parsed = parseHubModel(model);
+  if (parsed) return parsed.modelId;
+  if (model.startsWith('hub-')) {
+    const slash = model.indexOf('/');
+    if (slash > 0 && slash < model.length - 1) return model.slice(slash + 1);
+  }
+  return model;
+}
+
+/**
+ * 把提供商为该模型配置的 extra 合并进上游请求体（纯函数）：
+ * 只有 POST + JSON 对象 + 命中会话式路径且 model 对得上时才改；顶层浅合并，extra 覆盖同名键，
+ * 但绝不覆盖 model/messages/input/stream/stream_options/tools。
+ * 任何不命中或解析失败都原样返回入参，不抛错。
+ */
+export function mergeModelExtra(
+  request: { readonly method: string; readonly subpath: string; readonly headers: { get(name: string): string | null }; readonly body: Uint8Array },
+  models: readonly ProviderModel[] | undefined
+): Uint8Array {
+  if (!models?.length || request.body.byteLength === 0) return request.body;
+  if (request.method.toUpperCase() !== 'POST') return request.body;
+  if (!(request.headers.get('content-type') ?? '').toLowerCase().includes('application/json')) return request.body;
+  const path = request.subpath.split('?')[0] ?? '';
+  if (!MERGE_PATHS.some((suffix) => path.endsWith(suffix))) return request.body;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder().decode(request.body));
+  } catch {
+    return request.body;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return request.body;
+  const body = parsed as Record<string, unknown>;
+  if (typeof body['model'] !== 'string') return request.body;
+  const id = bareModel(body['model']);
+  const extra = models.find((model) => model.id === id)?.extra;
+  if (!extra || Object.keys(extra).length === 0) return request.body;
+  const entries = Object.entries(body);
+  for (const [key, value] of Object.entries(extra)) {
+    if (EXTRA_FORBIDDEN.has(key)) continue;
+    entries.push([key, value]);
+  }
+  // Object.fromEntries 按数据属性写入：即使 extra 里混进 __proto__ 也不会改原型。
+  return new TextEncoder().encode(JSON.stringify(Object.fromEntries(entries)));
+}
+
+/**
  * 转发一个请求。onDone 在响应体转完（或出错 / 超时）时调一次，用于计数。
  * 返回的 Response 的 body 是边收边转的流。
  */
@@ -81,7 +139,8 @@ export async function forwardProvider(
 ): Promise<Response> {
   const subpath = safeSubpath(request.subpath);
   if (!subpath) return errorResponse(400, '路径不合法');
-  if (request.body.byteLength > limits.maxRequestBytes) return errorResponse(413, '请求体太大');
+  const body = mergeModelExtra(request, upstream.models);
+  if (body.byteLength > limits.maxRequestBytes) return errorResponse(413, '请求体太大');
   const headers: Record<string, string> = {};
   for (const name of FORWARD_HEADERS) {
     const value = request.headers.get(name);
@@ -93,7 +152,7 @@ export async function forwardProvider(
   total.unref?.();
   const headerTimer = setTimeout(() => abort.abort(new Error('上游响应超时')), limits.headersTimeoutMs);
   headerTimer.unref?.();
-  const bytesIn = request.body.byteLength;
+  const bytesIn = body.byteLength;
   let done = false;
   const finish = (status: number, bytesOut: number, ok: boolean) => {
     if (done) return;
@@ -108,7 +167,7 @@ export async function forwardProvider(
     response = await fetch(upstream.baseUrl.replace(/\/+$/, '') + subpath, {
       method,
       headers,
-      ...(method === 'GET' || method === 'HEAD' ? {} : { body: request.body }),
+      ...(method === 'GET' || method === 'HEAD' ? {} : { body }),
       signal: abort.signal,
       redirect: 'manual'
     });

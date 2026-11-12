@@ -19,6 +19,39 @@ export interface ProviderModel {
   readonly name?: string;
   readonly contextWindow?: number;
   readonly maxTokens?: number;
+  /**
+   * 这个模型额外的上游请求体参数（temperature、reasoning 之类）：
+   * 转发时对 JSON 请求体的顶层做浅合并，会话控制的字段（model/messages/…）不许覆盖。
+   * 已建立的会话收到 provider_update 后立即用新值（不重启 agent）；
+   * contextWindow / maxTokens 是 agent 启动配置，改完要下次启动才生效。
+   */
+  readonly extra?: Readonly<Record<string, unknown>>;
+}
+
+/** 这些键由会话 / agent 自己决定，提供商不能借 extra 覆盖。 */
+export const PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS: readonly string[] = ['model', 'messages', 'input', 'stream', 'stream_options', 'tools'];
+
+/** extra 序列化后的上限：够写常见采样参数，又不至于让提供商记录膨胀。 */
+export const PROVIDER_MODEL_EXTRA_MAX_BYTES = 4096;
+
+/**
+ * 校验模型的额外参数：必须是 JSON 对象、序列化后不超过 4096 字节、不带禁键。
+ * 合法返回 null；非法返回中文原因（调用方拼进「模型 id「…」的额外参数…」）。
+ */
+export function providerModelExtraError(extra: unknown): string | null {
+  if (extra === null || typeof extra !== 'object' || Array.isArray(extra)) return '必须是 JSON 对象';
+  for (const key of PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(extra, key)) return `不能包含「${key}」（这些字段由会话控制）`;
+  }
+  let text: string;
+  try {
+    text = JSON.stringify(extra);
+  } catch {
+    return '必须是能序列化成 JSON 的对象';
+  }
+  if (text === undefined) return '必须是 JSON 对象';
+  if (new TextEncoder().encode(text).byteLength > PROVIDER_MODEL_EXTRA_MAX_BYTES) return `序列化后不能超过 ${PROVIDER_MODEL_EXTRA_MAX_BYTES} 字节`;
+  return null;
 }
 
 export interface ProviderCheck {
@@ -105,12 +138,16 @@ export function validateProviderInput(input: ProviderInput): Result<ProviderInpu
     const id = model.id.trim();
     if (!id || id.length > 120 || /\s/.test(id)) return { ok: false, error: invalid(`模型 id「${id}」不合法`) };
     if (seen.has(id)) return { ok: false, error: invalid(`模型 id「${id}」重复`) };
+    const extraError = model.extra === undefined ? null : providerModelExtraError(model.extra);
+    if (extraError) return { ok: false, error: invalid(`模型 id「${id}」的额外参数${extraError}`) };
     seen.add(id);
     models.push({
       id,
       ...(model.name?.trim() ? { name: model.name.trim() } : {}),
       ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
-      ...(model.maxTokens ? { maxTokens: model.maxTokens } : {})
+      ...(model.maxTokens ? { maxTokens: model.maxTokens } : {}),
+      // 存一份 JSON 语义的干净副本：丢掉 undefined / 函数之类序列化时会消失的键
+      ...(model.extra ? { extra: JSON.parse(JSON.stringify(model.extra)) as Record<string, unknown> } : {})
     });
   }
   return {

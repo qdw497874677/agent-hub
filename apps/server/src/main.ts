@@ -702,6 +702,7 @@ const providerWiring = createProviderWiring({
   userTeam: async (userId) => (await store.users.byId(userId as UserId))?.teamId ?? null,
   hostOf: (sessionId) => serverGateway?.hostOf(sessionId as SessionId) ?? null,
   testFromWorker: async (workerId, input) => (serverGateway ? serverGateway.testProvider(workerId, input) : err(unavailable('worker 通道尚未就绪'))),
+  updateProvider: (sessionId, workerId, models) => serverGateway?.updateProvider(sessionId, workerId, models) ?? false,
   log
 });
 const assetDeps: AssetReviewDeps = {
@@ -769,6 +770,8 @@ serverGateway = createServerGateway({
   },
   // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 里。
   onEvent(workerId, sessionId, event) {
+    // 会话真的结束了：收掉 direct 会话登记和 hub 中转句柄（dispose 帧不是每条会话都会发）
+    if (event.kind === 'ended') providerWiring.revoke(sessionId);
     fromWorker(workerId, sessionId, () =>
       void ingestWorkerEvent(deps, sessionId, event).then((result) => {
         if (!result.ok) log(`落盘事件失败：${result.error.message}`);

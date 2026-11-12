@@ -246,6 +246,14 @@ export const mcpLaunchSchema = z.discriminatedUnion('transport', [
   z.object({ transport: z.literal('http'), name: z.string().min(1), url: z.string().default('') })
 ]);
 
+/**
+ * hub 模型定义（provider 帧与 provider_update 帧共用；worker 帧里只有模型本身，不带密钥和地址）。
+ * extra 是合并进上游请求体的额外参数（即时生效）；contextWindow / maxTokens 只在下次启动时写进 agent 配置。
+ */
+export const providerModelsSchema = z
+  .array(z.object({ id: z.string(), name: z.string().optional(), contextWindow: z.number().optional(), maxTokens: z.number().optional(), extra: z.record(z.string(), z.unknown()).optional() }))
+  .max(100);
+
 export const startSessionCommandSchema = z.object({
   kind: z.literal('start_session'),
   sessionId: id,
@@ -283,7 +291,7 @@ export const startSessionCommandSchema = z.object({
       protocol: z.enum(['openai-chat', 'openai-responses', 'anthropic']),
       baseUrl: z.string().min(1).max(2000),
       apiKey: z.string().min(1).max(4096),
-      models: z.array(z.object({ id: z.string(), name: z.string().optional(), contextWindow: z.number().optional(), maxTokens: z.number().optional() })).max(100),
+      models: providerModelsSchema,
       via: z.enum(['direct', 'hub'])
     })
     .optional()
@@ -345,5 +353,10 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     sessionId: id,
     optionId: z.string(),
     value: z.union([z.string(), z.boolean()])
-  })
+  }),
+  /**
+   * 会话进行中热更新模型定义（只换 extra 这类请求参数，不重启 agent）。
+   * 不带 apiKey / baseUrl：密钥不二次下发。老 worker 不认，只记一条日志（hub 尽力而为，不影响会话）。
+   */
+  z.object({ kind: z.literal('provider_update'), sessionId: id, models: providerModelsSchema })
 ]);

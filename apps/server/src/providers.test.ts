@@ -4,7 +4,7 @@ import { createServer, type IncomingHttpHeaders } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { Hono } from 'hono';
-import { createProvider, ok, systemSubject, type WorkerCommand } from '@agent-hub/domain';
+import { createProvider, ok, systemSubject, type ProviderModel, type WorkerCommand } from '@agent-hub/domain';
 import { createSqliteProviders } from '@agent-hub/storage-sqlite';
 import { createProviderRelay } from '@agent-hub/node-gateway';
 import { serve } from '@hono/node-server';
@@ -241,4 +241,183 @@ test('换提供商要新开会话；同一提供商里换模型可以', async ()
   assert.equal(wiring.optionAllowed('cliproxy/x', 'model', 'hub-gw/m-1').ok, false);
   assert.equal(wiring.optionAllowed('a/b', 'model', 'c/d').ok, true);
   assert.equal(wiring.optionAllowed('hub-gw/m-1', 'thinking', 'high').ok, true);
+});
+
+/** 探测桩上游：回一份带元数据的 /models，并记下收到的头。 */
+async function fakeModelsUpstream(reply: { status?: number; body?: string } = {}) {
+  const seen: IncomingHttpHeaders[] = [];
+  const server = createServer((request, response) => {
+    seen.push(request.headers);
+    request.resume();
+    request.on('end', () => {
+      response.writeHead(reply.status ?? 200, { 'content-type': 'application/json' });
+      response.end(reply.body ?? JSON.stringify({
+        data: [
+          { id: 'm-1', display_name: 'Model One', context_length: 128000, max_completion_tokens: 8192 },
+          { id: 'or-1', top_provider: { max_completion_tokens: 4096 }, context_length: 64000 },
+          { id: 'bad' }
+        ]
+      }));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  return { url: `http://127.0.0.1:${port}/v1`, seen, close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }) };
+}
+
+test('热更新：改 provider 后把新模型参数推给已建立的 direct 会话；离线只记日志不报错', async () => {
+  const providers = createSqliteProviders(new DatabaseSync(':memory:'), randomBytes(32));
+  const deps = { providers, audit: null, now: () => 1 };
+  const pushes: { sessionId: string; workerId: string; models: readonly ProviderModel[] }[] = [];
+  const logs: string[] = [];
+  let online = true;
+  const wiring = createProviderWiring({
+    deps,
+    projectTeam: async () => null,
+    userTeam: async () => null,
+    hostOf: () => 'w1',
+    testFromWorker: async () => ok({ ok: true, status: 200, message: 'ok', models: [] }),
+    updateProvider: (sessionId, workerId, models) => {
+      pushes.push({ sessionId, workerId, models });
+      return online;
+    },
+    log: (line) => logs.push(line)
+  });
+  const app = new Hono();
+  wiring.install(app, () => systemSubject('test'));
+  const created = await createProvider(deps, systemSubject('test'), {
+    scope: 'hub',
+    slug: 'gw',
+    name: 'GW',
+    protocol: 'openai-chat',
+    baseUrl: 'http://127.0.0.1:9/v1',
+    models: [{ id: 'm-1', extra: { temperature: 0.1 } }],
+    routing: 'direct',
+    enabled: true,
+    apiKey: SECRET
+  });
+  assert.ok(created.ok);
+  assert.ok((await wiring.grantFor(start('hub-gw/m-1'))).ok);
+
+  const body = { slug: 'gw', name: 'GW', protocol: 'openai-chat', baseUrl: 'http://127.0.0.1:9/v1', models: [{ id: 'm-1', extra: { temperature: 0.9 } }], routing: 'direct', enabled: true };
+  const updated = await app.request(`/api/providers/${created.value.id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal(updated.status, 200);
+  assert.equal(pushes.length, 1);
+  assert.equal(pushes[0]!.sessionId, 's1');
+  assert.equal(pushes[0]!.workerId, 'w1');
+  assert.deepEqual(pushes[0]!.models, [{ id: 'm-1', extra: { temperature: 0.9 } }]);
+
+  // 换密钥也顺带推一次（保持会话与库一致）
+  const rotated = await app.request(`/api/providers/${created.value.id}/key`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey: SECRET }) });
+  assert.equal(rotated.status, 200);
+  assert.equal(pushes.length, 2);
+
+  // 会话结束后不再推（revoke 里清掉登记）
+  wiring.revoke('s1');
+  const afterEnd = await app.request(`/api/providers/${created.value.id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal(afterEnd.status, 200);
+  assert.equal(pushes.length, 2);
+
+  // 新会话再登记上
+  assert.ok((await wiring.grantFor(start('hub-gw/m-1'))).ok);
+
+  // worker 离线：HTTP 仍成功，只记日志
+  online = false;
+  const offline = await app.request(`/api/providers/${created.value.id}`, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal(offline.status, 200);
+  assert.equal(pushes.length, 3);
+  assert.ok(logs.some((line) => line.includes('仍用旧参数')));
+
+  // 删除：推空列表，会话不再带原来的 extra
+  online = true;
+  const removed = await app.request(`/api/providers/${created.value.id}`, { method: 'DELETE' });
+  assert.equal(removed.status, 200);
+  assert.deepEqual(pushes.at(-1)!.models, []);
+});
+
+test('probe：hub 直连拿模型元数据，按协议带鉴权头；上游 4xx/5xx 也 200 + ok:false', async () => {
+  const upstream = await fakeModelsUpstream();
+  const providers = createSqliteProviders(new DatabaseSync(':memory:'), randomBytes(32));
+  const deps = { providers, audit: null, now: () => 1 };
+  const wiring = createProviderWiring({ deps, projectTeam: async () => null, userTeam: async () => null, hostOf: () => null, testFromWorker: async () => ok({ ok: true, status: 200, message: 'ok', models: [] }), log: () => undefined });
+  const app = new Hono();
+  wiring.install(app, () => systemSubject('test'));
+  const post = (body: unknown) => app.request('/api/providers/probe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    const response = await post({ protocol: 'openai-chat', baseUrl: upstream.url, apiKey: SECRET });
+    const body = (await response.json()) as { ok: boolean; status: number; via: string; message: string; models: { id: string; name?: string; contextWindow?: number; maxTokens?: number }[] };
+    assert.equal(response.status, 200);
+    assert.deepEqual({ ok: body.ok, status: body.status, via: body.via }, { ok: true, status: 200, via: 'hub' });
+    assert.deepEqual(body.models, [
+      { id: 'm-1', name: 'Model One', contextWindow: 128000, maxTokens: 8192 },
+      { id: 'or-1', contextWindow: 64000, maxTokens: 4096 },
+      { id: 'bad' }
+    ]);
+    assert.equal(upstream.seen.at(-1)!.authorization, `Bearer ${SECRET}`);
+    assert.match(body.message, /3 个模型/);
+
+    await post({ protocol: 'anthropic', baseUrl: upstream.url.replace(/\/v1$/, ''), apiKey: SECRET });
+    assert.equal(upstream.seen.at(-1)!['x-api-key'], SECRET);
+    assert.equal(upstream.seen.at(-1)!['anthropic-version'], '2023-06-01');
+
+    assert.equal((await post({ protocol: 'openai-chat', baseUrl: 'ftp://x' })).status, 400);
+    assert.equal((await post({ protocol: 'nope', baseUrl: upstream.url })).status, 400);
+  } finally {
+    await upstream.close();
+  }
+
+  const failing = await fakeModelsUpstream({ status: 503, body: 'upstream down' });
+  try {
+    const response = await post({ protocol: 'openai-chat', baseUrl: failing.url });
+    const body = (await response.json()) as { ok: boolean; status: number; message: string; via: string };
+    assert.equal(response.status, 200);
+    assert.equal(body.ok, false);
+    assert.equal(body.status, 503);
+    assert.equal(body.via, 'hub');
+    assert.match(body.message, /HTTP 503/);
+  } finally {
+    await failing.close();
+  }
+});
+
+test('probe：给 providerId 用库里的密钥并校验管理权；worker 在线走 worker，离线退回 hub', async () => {
+  const upstream = await fakeModelsUpstream();
+  const providers = createSqliteProviders(new DatabaseSync(':memory:'), randomBytes(32));
+  const deps = { providers, audit: null, now: () => 1 };
+  const calls: { workerId: string; input: { protocol: string; baseUrl: string; apiKey: string } }[] = [];
+  let offline = false;
+  const wiring = createProviderWiring({
+    deps,
+    projectTeam: async () => null,
+    userTeam: async () => null,
+    hostOf: () => null,
+    testFromWorker: async (workerId, input) => {
+      calls.push({ workerId, input });
+      return offline ? { ok: false as const, error: { code: 'unavailable' as const, message: '这台机器不在线' } } : ok({ ok: true, status: 200, message: '通了：1 个模型', models: ['m-1'] });
+    },
+    log: () => undefined
+  });
+  const app = new Hono();
+  wiring.install(app, () => systemSubject('test'));
+  const created = await createProvider(deps, systemSubject('test'), { scope: 'hub', slug: 'gw', name: 'GW', protocol: 'openai-chat', baseUrl: upstream.url, models: [{ id: 'm-1' }], routing: 'direct', enabled: true, apiKey: SECRET });
+  assert.ok(created.ok);
+  const post = (body: unknown) => app.request('/api/providers/probe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    const viaWorker = (await (await post({ providerId: created.value.id, workerId: 'w1' })).json()) as { ok: boolean; via: string; models: unknown[] };
+    assert.deepEqual(viaWorker, { ok: true, status: 200, message: '通了：1 个模型', via: 'worker', models: [{ id: 'm-1' }] });
+    assert.equal(calls.at(-1)!.workerId, 'w1');
+    assert.equal(calls.at(-1)!.input.apiKey, SECRET);
+    assert.equal(calls.at(-1)!.input.baseUrl, upstream.url);
+
+    offline = true;
+    const fallback = (await (await post({ providerId: created.value.id, workerId: 'w1' })).json()) as { ok: boolean; via: string; models: unknown[] };
+    assert.equal(fallback.via, 'hub');
+    assert.equal(fallback.ok, true);
+    assert.equal(fallback.models.length, 3);
+    assert.equal(upstream.seen.at(-1)!.authorization, `Bearer ${SECRET}`);
+
+    assert.equal((await post({ providerId: 'missing', workerId: 'w1' })).status, 404);
+  } finally {
+    await upstream.close();
+  }
 });

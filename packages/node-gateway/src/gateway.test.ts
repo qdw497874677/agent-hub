@@ -39,7 +39,8 @@ function echoRuntime(seen: StartSpec[]): AgentRuntime {
       capabilities: capabilityMatrix(all),
       models: [],
       defaultModel: '',
-      options: []
+      options: [],
+      providers: ['openai-chat']
     },
     async start(spec) {
       seen.push(spec);
@@ -237,6 +238,60 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
   await rec.until(() => rec.refs.length === 1);
   assert.equal(rec.refs[0], 'agent-ref-1');
   await stop(link);
+});
+
+test('provider_update：会话进行中热更新 extra，下一个请求立刻生效', async () => {
+  const bodies: Record<string, unknown>[] = [];
+  const upstream = createServer((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown>);
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end('{}');
+    });
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const port = (upstream.address() as AddressInfo).port;
+  const { rec, gateway, url, stop } = await harness(null);
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)] });
+  await rec.until(() => rec.hellos.length === 1);
+
+  const provider = {
+    slug: 'gw',
+    name: 'GW',
+    protocol: 'openai-chat' as const,
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    apiKey: 'sk-direct',
+    models: [{ id: 'm-1', extra: { temperature: 0.1 } }],
+    via: 'direct' as const
+  };
+  assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), provider })).ok);
+  await waitFor(async () => seen.length === 1 && seen[0]?.provider !== undefined);
+  const agent = seen[0]!.provider!;
+  const post = async () => {
+    const response = await fetch(`${agent.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${agent.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'm-1', messages: [] })
+    });
+    await response.text();
+  };
+  await post();
+  assert.equal(bodies.at(-1)?.['temperature'], 0.1);
+
+  assert.equal(gateway.updateProvider('s1', 'w1', [{ id: 'm-1', extra: { temperature: 0.8 } }]), true);
+  await waitFor(async () => {
+    await post();
+    return bodies.at(-1)?.['temperature'] === 0.8;
+  });
+  assert.equal(bodies.at(-1)?.['model'], 'm-1');
+  assert.equal(gateway.updateProvider('s1', 'missing', []), false);
+
+  await stop(link);
+  upstream.closeAllConnections();
+  upstream.close();
 });
 
 test('prompt 被 agent 拒掉：除了错误诊断还补一条 ended(failed)，会话不会一直挂在运行中', async () => {

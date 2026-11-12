@@ -79,6 +79,8 @@ export const COMMAND_CAPABILITY: Readonly<Record<string, WorkerMethodCapability>
   dispose: 'sessions',
   approval: 'sessions',
   set_option: 'sessions',
+  /** 会话里热更新 provider 的模型定义（extra）：能跑会话的机器才能收。 */
+  provider_update: 'sessions',
   update: 'update',
   update_commit: 'update',
   update_abort: 'update',

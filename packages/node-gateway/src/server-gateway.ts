@@ -48,6 +48,7 @@ import type {
   WorkspaceGit,
   RuntimeJob,
   ProviderProtocol,
+  ProviderModel,
   DebounceState,
   ResourceSample,
   WorkerResources,
@@ -239,6 +240,11 @@ export interface ServerGateway {
   /** 「资源满了就拒绝新会话」开关（持久化在 hub 设置里，启动时和改动时同步进来）。 */
   setRefuseWhenFull(workerIds: Iterable<string>): void;
   testProvider(workerId: string, input: { protocol: ProviderProtocol; baseUrl: string; apiKey: string }): Promise<Result<{ ok: boolean; status: number; message: string; models: string[] }, DomainError>>;
+  /**
+   * 会话进行中热更新 provider 的模型定义（只有 extra 这类请求参数即时生效，不重启 agent）。
+   * 尽力而为：离线 / 凭据不允许 / 老 Worker 不认都返回 false，不抛错。
+   */
+  updateProvider(sessionId: string, workerId: string, models: readonly ProviderModel[]): boolean;
   /** 远端 Worker 上的工作空间文件浏览（ADR 0025）。 */
   browser(workerId: string): WorkspaceBrowser;
   close(): void;
@@ -323,6 +329,18 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (!canInvoke(entry.capabilities, needed)) return { ok: false, error: forbidden(capabilityDenied(needed as WorkerCapability)) };
     entry.socket.send(JSON.stringify(command));
     return { ok: true, value: undefined };
+  }
+
+  /**
+   * 会话进行中把 provider 的模型定义热更新给 worker（只有 extra 这类请求参数即时生效，不重启 agent）。
+   * 尽力而为：worker 离线 / 凭据不允许 / 老 worker 不认这个帧都只返回 false，不抛错。
+   */
+  function updateProvider(sessionId: string, workerId: string, models: readonly ProviderModel[]): boolean {
+    const entry = online(workerId);
+    if (!entry?.socket || !canInvoke(entry.capabilities, 'sessions')) return false;
+    const frame: ServerToWorker = { kind: 'provider_update', sessionId, models: models.map((model) => ({ ...model })) };
+    entry.socket.send(JSON.stringify(frame));
+    return true;
   }
 
   function dispatchTo(command: WorkerCommand): Result<void, DomainError> {
@@ -826,6 +844,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (!channel) return offline(workerId);
       return toDomain(await channel.request(providerTest, input, { timeoutMs: 30_000 }), '测试模型提供商', workerId);
     },
+    updateProvider,
     workers(): WorkerStatus[] {
       return statuses();
     },

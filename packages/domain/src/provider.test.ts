@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { permissionsOf } from './api-token.ts';
-import { canManageProvider, canUseProvider, effectiveRouting, parseHubModel, validateProviderInput, type ProviderActor } from './provider.ts';
+import { canManageProvider, canUseProvider, effectiveRouting, parseHubModel, providerModelExtraError, validateProviderInput, type ProviderActor } from './provider.ts';
 import { providerUsableIn } from './use-cases/providers.ts';
 
 /** 测试用主体：只在第一个团队里（一个人只属于一个团队）。 */
@@ -69,4 +69,30 @@ test('providerUsableIn（下发时按项目复查）与 effectiveRouting', () =>
   assert.equal(effectiveRouting({ routing: 'direct' }, 'hub'), 'hub');
   assert.equal(effectiveRouting({ routing: 'hub' }, null), 'hub');
   assert.equal(effectiveRouting({ routing: 'hub' }, undefined), 'hub');
+});
+
+test('providerModelExtraError：必须是 JSON 对象、≤4096 字节、不带禁键', () => {
+  assert.equal(providerModelExtraError({ temperature: 0.2 }), null);
+  assert.equal(providerModelExtraError({}), null);
+  assert.equal(providerModelExtraError([]), '必须是 JSON 对象');
+  assert.equal(providerModelExtraError(null), '必须是 JSON 对象');
+  assert.equal(providerModelExtraError('x'), '必须是 JSON 对象');
+  assert.match(providerModelExtraError({ model: 'other' }) ?? '', /不能包含「model」/);
+  assert.match(providerModelExtraError({ stream: true }) ?? '', /不能包含「stream」/);
+  assert.match(providerModelExtraError({ tools: [] }) ?? '', /不能包含「tools」/);
+  assert.match(providerModelExtraError({ reasoning: 'x'.repeat(4096) }) ?? '', /4096 字节/);
+  // 4096 字节整好压线：前缀 + 引号也算
+  assert.equal(providerModelExtraError({ a: 'x'.repeat(4000) }), null);
+});
+
+test('validateProviderInput：extra 透传、非法值拒绝', () => {
+  const input = { slug: 'gw', name: 'GW', protocol: 'openai-chat' as const, baseUrl: 'https://api.example.com/v1', models: [{ id: 'm', extra: { temperature: 0.2, reasoning_effort: 'low' } }], routing: 'direct' as const, enabled: true };
+  const valid = validateProviderInput(input);
+  assert.ok(valid.ok);
+  assert.deepEqual(valid.ok && valid.value.models[0]?.extra, { temperature: 0.2, reasoning_effort: 'low' });
+
+  const bad = validateProviderInput({ ...input, models: [{ id: 'm', extra: { messages: [] } }] });
+  assert.equal(bad.ok, false);
+  assert.match(bad.ok ? '' : bad.error.message, /模型 id「m」的额外参数不能包含「messages」/);
+  assert.equal(validateProviderInput({ ...input, models: [{ id: 'm', extra: 'nope' as never }] }).ok, false);
 });

@@ -499,6 +499,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       }
       else if (command.kind === 'probe') void probe(true);
       else if (command.kind === 'runtime_job') void runtimeJob(command);
+      else if (command.kind === 'provider_update') providerRelay.update(command.sessionId, { models: command.models });
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
       else if (command.kind === 'credential_rotate') void rotateCredential(current, command.credential);
       else void handle(command);
@@ -748,7 +749,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         return;
       }
       // 真密钥（direct）或中转令牌（via hub）只留在这个进程的中继里；agent 拿到的是本机地址 + 会话令牌
-      const relay = await providerRelay.open(command.sessionId, { baseUrl: upstreamUrl(grant.baseUrl), apiKey: grant.apiKey, protocol: grant.protocol });
+      const relay = await providerRelay.open(command.sessionId, { baseUrl: upstreamUrl(grant.baseUrl), apiKey: grant.apiKey, protocol: grant.protocol, models: grant.models });
       spec = { ...spec, provider: { slug: grant.slug, name: grant.name, protocol: grant.protocol, models: grant.models, baseUrl: relay.baseUrl, token: relay.token } };
       options.onLog?.(`会话 ${command.sessionId} 用 hub 模型提供商「${grant.slug}」（${grant.via === 'hub' ? '经 hub 中转' : '本机直连'}）`);
     }

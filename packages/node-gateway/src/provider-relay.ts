@@ -17,6 +17,11 @@ export interface RelaySession {
 
 export interface ProviderRelay {
   open(sessionId: string, upstream: Upstream): Promise<RelaySession>;
+  /**
+   * 会话进行中热更新上游的模型定义（只有 extra 这类请求参数即时生效；contextWindow / maxTokens 由 agent 启动配置决定）。
+   * 中继不存在就静默忽略；handle / token / 监听端口都不动。
+   */
+  update(sessionId: string, upstream: Pick<Upstream, 'models'>): void;
   close(sessionId: string): void;
   stop(): Promise<void>;
   /** 测试用：当前监听地址。 */
@@ -26,7 +31,8 @@ export interface ProviderRelay {
 interface Entry {
   readonly handle: string;
   readonly token: Buffer;
-  readonly upstream: Upstream;
+  /** 热更新时整个换掉（模型定义变了，地址和密钥不变）。 */
+  upstream: Upstream;
 }
 
 const same = (offered: string, expected: Buffer): boolean => {
@@ -110,6 +116,12 @@ export function createProviderRelay(options: { readonly limits?: ProxyLimits; re
       const handle = bySession.get(sessionId);
       if (handle) byHandle.delete(handle);
       bySession.delete(sessionId);
+    },
+    update(sessionId, upstream) {
+      const handle = bySession.get(sessionId);
+      const entry = handle === undefined ? undefined : byHandle.get(handle);
+      if (!entry) return;
+      entry.upstream = { ...entry.upstream, models: upstream.models };
     },
     async stop() {
       byHandle.clear();
