@@ -42,6 +42,27 @@ export function parentOf(path: string): string {
   return i < 0 ? '' : path.slice(0, i);
 }
 
+/**
+ * 路径的紧凑写法：放得下就给全文，放不下就留末尾几段、中间省略（`…/workspace/agent-hub`）。
+ * 工作空间根路径通常很长，窄屏只留得住尾巴；保留开头会看不出是哪一层。
+ */
+export function shortPath(path: string, max = 32): string {
+  if (path.length <= max) return path;
+  const prefix = '…/';
+  const parts = path.split('/').filter((part) => part !== '');
+  const budget = Math.max(max - prefix.length, 1);
+  const tail: string[] = [];
+  let size = 0;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const name = parts[i] ?? '';
+    const next = size === 0 ? name.length : size + 1 + name.length;
+    if (tail.length > 0 && next > budget) break;
+    tail.unshift(name);
+    size = next;
+  }
+  return `${prefix}${tail.join('/')}`;
+}
+
 const LANG: Record<string, string> = {
   ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript', json: 'json', md: 'markdown',
   py: 'python', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', rb: 'ruby', php: 'php', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp',

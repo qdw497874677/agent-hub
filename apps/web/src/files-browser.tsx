@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from './api.ts';
-import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, touches, watchPaths } from './files-core.ts';
+import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
 import 'diff2html/bundles/css/diff2html.min.css';
 
 /**
@@ -143,6 +143,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
 
   const changed = shown(changes);
   const showList = wide || opened === null;
+  const root = context.data?.root;
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作空间文件" data-testid={`files-panel-${tab}`}>
       {others > 0 ? (
@@ -150,22 +151,19 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
           ⚠ 其他项目有 {others} 个会话也在这个工作空间里干活，这里的改动可能不全是本会话的
         </p>
       ) : null}
-      {!wide && opened ? <header className="flex shrink-0 items-center gap-2 border-b border-hair px-3 py-2">
-        <button className="text-sub text-secondary" onClick={() => setOpened(null)} data-testid="files-back">‹ 返回</button>
-        <span className="min-w-0 flex-1 truncate font-mono text-meta text-tertiary">{opened.path}</span>
-      </header> : null}
       <div className="flex min-h-0 flex-1">
         {showList ? (
           <aside className={`flex min-h-0 flex-col ${wide ? 'w-80 shrink-0 border-r border-hair' : 'flex-1'}`}>
             {tab === 'files' ? (
               <>
-                <div className="flex items-center gap-2 border-b border-hair px-3 py-2">
+                <div className="flex items-center gap-2 px-3 py-2">
                   <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="找文件…" className="min-w-0 flex-1 rounded bg-card px-2 py-1 text-sub outline-none" data-testid="files-find" />
                   <label className="flex shrink-0 items-center gap-1 text-meta text-tertiary">
                     <input type="checkbox" checked={showSensitive} onChange={(e) => setShowSensitive(e.target.checked)} data-testid="files-show-sensitive" />
                     敏感
                   </label>
                 </div>
+                <RootPath root={root} wide={wide} />
                 <div className="min-h-0 flex-1 overflow-y-auto py-1" data-testid="files-tree">
                   {query.trim() !== '' ? (
                     found.error ? <p className="px-3 text-meta text-rust">{problem(found.error)}</p> :
@@ -179,7 +177,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
               </>
             ) : (
               <div className="min-h-0 flex-1 overflow-y-auto" data-testid="changes-list">
-                <div className="flex items-center gap-2 border-b border-hair px-3 py-2 text-meta text-tertiary">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-2 text-meta text-tertiary">
                   对比
                   <select value={base} onChange={(e) => setBase(e.target.value as Base)} className="rounded bg-card px-1 py-0.5 text-sub text-secondary" data-testid="changes-base">
                     <option value="session">整个会话</option>
@@ -192,6 +190,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
                   {base.startsWith('turn') && changed?.target === null ? <span className="text-accent" data-testid="turn-live">进行中</span> : null}
                   {changed?.commit ? <span className="font-mono">{changed.commit.slice(0, 8)}</span> : null}
                 </div>
+                <RootPath root={root} wide={wide} />
                 {changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
                 {changed?.files.length === 0 ? <p className="px-3 py-2 text-meta text-tertiary">没有改动</p> : null}
                 {changed?.files.map((f) => (
@@ -210,8 +209,8 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
         {wide || opened ? (
           <main className="min-w-0 flex-1 overflow-auto">
             {opened ? (
-              opened.diff ? <DiffView sessionId={sessionId} path={opened.path} base={base} wide={wide} /> :
-              <FileView sessionId={sessionId} opened={opened} wide={wide} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
+              opened.diff ? <DiffView sessionId={sessionId} path={opened.path} base={base} wide={wide} root={root} onBack={() => setOpened(null)} /> :
+              <FileView sessionId={sessionId} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
             ) : (
               <p className="p-6 text-sub text-tertiary">选一个文件查看</p>
             )}
@@ -253,7 +252,66 @@ function Directory(props: { sessionId: string; path: string; depth: number; expa
   );
 }
 
-function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; opened: Opened; wide: boolean; onCrumb: (p: string) => void }) {
+/** 工作空间根路径：文件路径都相对它，太长时只留末尾几段（全文在 title 里，手机也撑不破布局）。 */
+function RootPath({ root, wide }: { root: string | undefined; wide: boolean }) {
+  if (!root) return null;
+  return (
+    <p data-testid="files-root" title={root} className="min-w-0 truncate border-b border-hair px-3 py-1 font-mono text-meta text-tertiary">
+      {shortPath(root, wide ? 120 : 30)}
+    </p>
+  );
+}
+
+/**
+ * 预览顶栏：完整相对路径是这一栏最显眼的信息。
+ * 桌面每一段仍可点回目录；手机放不下面包屑，直接给整条路径，并在下面一行说明根在哪。
+ */
+function PathBar({ path, root, wide, download, size, onCrumb, onBack }: {
+  path: string;
+  root: string | undefined;
+  wide: boolean;
+  download?: string;
+  size?: number;
+  onCrumb?: (p: string) => void;
+  onBack?: () => void;
+}) {
+  const trail = crumbs(path).slice(1);
+  return (
+    <div className="flex shrink-0 flex-col gap-0.5 border-b border-hair px-3 py-2" data-testid="file-header">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        {!wide && onBack ? (
+          <button className="shrink-0 text-sub text-secondary hover:text-primary" onClick={onBack} data-testid="files-back">‹ 返回</button>
+        ) : null}
+        {wide && onCrumb ? (
+          <span className="flex min-w-0 flex-1 select-text flex-wrap items-baseline font-mono text-sub leading-tight" title={path} data-testid="file-path">
+            <button className="shrink-0 text-tertiary hover:text-primary" onClick={() => onCrumb('')} title="工作空间根目录" data-testid="file-crumb">根目录</button>
+            {trail.map((c, i) => (
+              <span key={c.path} className="flex min-w-0 items-baseline">
+                <span aria-hidden className="px-0.5 text-tertiary">/</span>
+                {i < trail.length - 1 ? (
+                  <button className="min-w-0 truncate max-w-[18rem] text-secondary hover:text-primary" onClick={() => onCrumb(c.path)} data-testid="file-crumb">{c.name}</button>
+                ) : (
+                  <span className="min-w-0 truncate text-primary" title={path}>{c.name}</span>
+                )}
+              </span>
+            ))}
+          </span>
+        ) : (
+          <span className="min-w-0 flex-1 select-text truncate font-mono text-sub leading-tight text-primary" title={path} data-testid="file-path">{path}</span>
+        )}
+        <span className="ml-auto flex shrink-0 items-center gap-3 text-meta text-tertiary">
+          {size !== undefined ? <span className="font-mono">{humanSize(size)}</span> : null}
+          {download ? <a href={download} download className="text-accent" data-testid="file-download">下载</a> : null}
+        </span>
+      </div>
+      {root ? (
+        <p className="min-w-0 truncate font-mono text-meta text-tertiary" title={root} data-testid="file-root">位于 {shortPath(root, wide ? 96 : 26)}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function FileView({ sessionId, opened, wide, root, onBack, onCrumb }: { sessionId: string; opened: Opened; wide: boolean; root: string | undefined; onBack: () => void; onCrumb: (p: string) => void }) {
   const file = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'read', opened.path, opened.confirmed], queryFn: () => filesApi.read(sessionId, opened.path, opened.confirmed) });
   const data = shown(file);
   const text = useMemo(() => (data && !data.binary ? decodeText(data.data) : null), [data]);
@@ -280,18 +338,7 @@ function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; ope
   }, [line, text, html]);
   return (
     <div className="flex min-h-full flex-col">
-      <div className="flex flex-wrap items-center gap-x-1 gap-y-0.5 border-b border-hair px-3 py-2 text-meta text-tertiary">
-        {wide ? crumbs(opened.path).map((c, i, all) => (
-          <span key={c.path} className="flex items-center gap-1">
-            {i < all.length - 1 ? <button className="hover:text-primary" onClick={() => onCrumb(c.path)}>{c.name}</button> : <span className="font-mono text-secondary">{c.name}</span>}
-            {i < all.length - 1 ? <span>/</span> : null}
-          </span>
-        )) : null}
-        <span className="ml-auto flex items-center gap-3">
-          {data ? <span>{humanSize(data.size)}</span> : null}
-          <a href={filesApi.downloadUrl(sessionId, opened.path, opened.confirmed)} download className="text-accent" data-testid="file-download">下载</a>
-        </span>
-      </div>
+      <PathBar path={opened.path} root={root} wide={wide} size={data?.size} download={filesApi.downloadUrl(sessionId, opened.path, opened.confirmed)} onCrumb={onCrumb} onBack={onBack} />
       {file.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {file.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(file.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件，不预览——可以下载</p> : null}
@@ -306,7 +353,7 @@ function FileView({ sessionId, opened, wide, onCrumb }: { sessionId: string; ope
   );
 }
 
-function DiffView({ sessionId, path, base, wide }: { sessionId: string; path: string; base: Base; wide: boolean }) {
+function DiffView({ sessionId, path, base, wide, root, onBack }: { sessionId: string; path: string; base: Base; wide: boolean; root: string | undefined; onBack: () => void }) {
   const diff = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'diff', path, base], queryFn: () => filesApi.diff(sessionId, path, base) });
   const data = shown(diff);
   const [html, setHtml] = useState<string | null>(null);
@@ -320,6 +367,7 @@ function DiffView({ sessionId, path, base, wide }: { sessionId: string; path: st
   }, [data, wide]);
   return (
     <div data-testid="diff-view">
+      <PathBar path={path} root={root} wide={wide} onBack={onBack} />
       {diff.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {diff.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(diff.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件有改动</p> : null}

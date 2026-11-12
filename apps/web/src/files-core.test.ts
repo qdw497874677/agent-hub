@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, touches, watchPaths } from './files-core.ts';
+import { crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, shortPath, touches, watchPaths } from './files-core.ts';
 
 test('只有写明不在线的 503 才收成 Worker 离线', () => {
   assert.equal(filesErrorText(503, 'Worker「e2e」不在线'), 'Worker 离线');
@@ -24,6 +24,16 @@ test('面包屑 / 父目录', () => {
   assert.deepEqual(crumbs(''), [{ name: '根目录', path: '' }]);
   assert.equal(parentOf('a/b/c.ts'), 'a/b');
   assert.equal(parentOf('c.ts'), '');
+});
+
+test('根路径的紧凑写法：放得下给全文，放不下留末尾几段', () => {
+  assert.equal(shortPath('/tmp/x', 32), '/tmp/x');
+  assert.equal(shortPath('/home/qdw/Projects/workspace/agent-hub', 120), '/home/qdw/Projects/workspace/agent-hub');
+  assert.equal(shortPath('/home/qdw/Projects/workspace/agent-hub', 32), '…/Projects/workspace/agent-hub');
+  assert.ok(shortPath('/home/qdw/Projects/workspace/agent-hub', 26).length <= 26);
+  // 一段就超预算时也保留它（交给 CSS 截断），不能返回空串
+  assert.equal(shortPath('/tmp/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12), '…/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+  assert.equal(shortPath('/tmp/x/', 3), '…/x');
 });
 
 test('语言 / 大小 / 解码', () => {
