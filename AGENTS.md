@@ -10,7 +10,7 @@ agent-hub 是运行时无关的 agent 工作台：自带机器和 agent，把任
 - 控制面：`apps/server`（HTTP + SSE + SQLite）
 - 数据面：`apps/worker`（跑 agent 进程）
 - 画布：`apps/web`
-- 架构约束：`npm run check`（domain 纯净性、包边界、端口签名）
+- 架构约束：`npm run check`（domain 纯净性、包边界、端口签名、lockfile 一致性）
 - 关键文档：`README.md`、`GLOSSARY.md`、`docs/adr/`
 
 ## 2. 环境
@@ -66,19 +66,16 @@ npm install
 npm run check              # 架构约束
 npm run typecheck          # 后端 + packages
 npm run typecheck:web
-npm test                   # 注意：默认并发可能卡住，见 §6
+npm test                   # 单测（不含 e2e/**，并发跑，约 27 秒）
+npm run test:e2e-node      # e2e/**/*.test.ts 的 node:test 用例
+npm run test:all           # 上面两个都跑
+npm run test:serial        # 串行全量（排查并发问题时用）
 npm run build              # 只构建前端
 npm run up                 # 构建前端 + 起 server（默认同机起 worker）
 npm run dev                # server + Vite
 ```
 
-`npm test` 当前建议串行跑：
-
-```bash
-node --test --test-concurrency=1 \
-  "packages/**/*.test.ts" "apps/server/**/*.test.ts" \
-  "apps/worker/**/*.test.ts" "apps/web/src/**/*.test.ts"
-```
+跑真 `npm install` / `npm pack` 的用例默认跳过，需要时 `HUB_TEST_INSTALL=1 npm test`。
 
 ## 4. 浏览器 E2E
 
@@ -129,23 +126,23 @@ scripts/aliyun-ssh.sh 'hostname; systemctl is-active agent-hub-server'
 scripts/deploy-aliyun.sh
 ```
 
-**注意：阿里云上解析不了 `github.com`**（实测 `Could not resolve host`），所以 `deploy-hub.sh` 里的 `git fetch origin` 会失败。网络恢复前用 git bundle 部署：
+**注意：阿里云上解析不了 `github.com`**（实测 `Could not resolve host`），所以 `deploy-hub.sh` 里的 `git fetch origin` 会失败。网络恢复前走 bundle 分支（DEP-1，一条命令，含 sha256 与上传）：
 
 ```bash
-# 1) 本地打包：从服务器当前提交到本地 master
-git bundle create /tmp/hub-update.bundle <server-head>..master
+# 本地打包 → 上传 → 远端：备份 → fetch bundle → ff-only merge → npm ci → build → restart → health
+scripts/deploy-aliyun.sh --bundle <服务器当前提交>
+```
 
-# 2) 上传
-scripts/aliyun-ssh.sh 'cat > /root/hub-update.bundle' < /tmp/hub-update.bundle
+手工等价流程（脚本不可用时）：
 
-# 3) 服务器上：备份 → fetch bundle → ff-only merge → npm ci → build → restart → health
+```bash
+git bundle create /tmp/opencode/hub-update.bundle <server-head>..master
+scripts/aliyun-ssh.sh 'cat > /root/hub-update.bundle' < /tmp/opencode/hub-update.bundle
 scripts/aliyun-ssh.sh '
   export PATH=/root/.local/node26/bin:$PATH
   cd /root/ahub-server/app
-  HUB_DATA_DIR=/root/ahub-server/data node apps/server/src/main.ts backup --keep 10
-  git fetch /root/hub-update.bundle master && git merge --ff-only FETCH_HEAD
-  npm ci --no-audit --no-fund && npm run build
-  systemctl restart agent-hub-server
+  scripts/deploy-hub.sh --app /root/ahub-server/app --data-dir /root/ahub-server/data \
+    --service agent-hub-server --node /root/.local/node26/bin/node --bundle /root/hub-update.bundle
 '
 ```
 
@@ -169,9 +166,8 @@ scripts/aliyun-ssh.sh '
 
 ## 6. 已知问题与注意事项
 
-- **`npm test` 默认并发可能卡住**：分模块或串行跑都正常；串行全量约 82 秒。
-- **`package-lock.json` 可能落后**：`@agent-hub/connector-github` 曾经缺条目，`npm ci` 会报缺包；`npm install` 后应提交锁文件同步。
-- **旧共享令牌仍可登录**：阿里云 hub 的 `tokenLogin` 仍为 `true`，`HUB_TOKEN` 可以换登录态；迁移完成后应停用。
+- **`npm test` 卡住的旧症结已修**（2026-11-12，REL-1）：e2e 子进程原本 `stdio: pipe` 且 `stop()` 不等待；现在统一走 `apps/server/src/test-support/spawn.ts`（`stdio: 'ignore'` + SIGTERM→3s→SIGKILL），`npm test` 不再包含 `e2e/**`，默认并发约 27 秒。若再卡住先看这个助手。
+- **`package-lock.json` 可能落后**：`npm ci` 会报缺包。现在 `npm run check` 末尾的 `check:lockfile` 会直接失败，`npm install` 后提交锁文件即可。
 - **SSH 允许 root 密码登录**且服务端 OpenSSH 较老；长期应改密钥登录并关闭密码认证。
 - **截图**：远端截图是文件，SSH 终端看不到；用 `scp` 或 SSH 端口转发到本地浏览器。
 

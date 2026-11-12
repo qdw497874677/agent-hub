@@ -96,8 +96,7 @@
 
 - 运行时状态沿用 `/api/workers`：Worker online/offline、harness readiness、agent 清单与诊断；管理页用 `HarnessBadges`/`RecheckButton` 展示，`/api/workers/:id/probe` 重新检测。
 - 自定义运行时别名走 Worker 的 `ACP_AGENTS`（JSON 数组）：`id/label/command/args/env/models/defaultModel/optionOverrides`；`env` 只由操作者配置，`models` 是发现失败时的兜底，`defaultModel` 影响派生默认模型，`optionOverrides` 可把 ACP `mode` 映射成 `agent`。
-- 别名是启动配置，只影响之后启动的会话；已有会话不变。改完需重连/重启 Worker。
-- 未做管理 UI 和热加载；`ACP_AGENTS` 能执行任意命令，属于操作者信任边界。
+- 别名是启动配置，只影响之后启动的会话，已有会话不变；改完需重连/重启 Worker，管理 UI 和热加载暂未做。`ACP_AGENTS` 能执行任意命令，属于操作者信任边界。
 
 验收：Worker/agent 状态与 readiness 可见；别名能被 Worker 报成独立 descriptor；非法条目跳过并回退。
 
@@ -110,13 +109,8 @@
 已完成（P6b 基础设施）：`AcpRuntimeCodec` / `AcpSessionCodec`；OpenCode 的子会话 `_meta`、父工具配对、start/end 已从 `acp-runtime.ts` 迁到 `codecs/opencode.ts`；通用 mapper 仍是默认路径，codec 可返回 `null` 回退。`ACP_AGENTS` 只能配数据，不能注入 codec。设计见 `docs/design/acp-runtime-codec.md`。
 
 待做（P6b 后续）：接 Claude Code/Codex 等工具名/通知差异明显的 runtime 时，新增对应 codec；没有具体私有格式前不再造空钩子。
-- 编排工具（薄封装现有 session/messaging，不重写消息总线）：
-  - `list_agent_profiles`
-  - `inspect_agent_runtime`
-  - `spawn_agent` / `create_session`
-  - `set_agent_option`（权限门禁）
-  - `get_agent_activity`
-- 验收：transformer 不改全局配置、不泄密钥；编排工具受现有权限/限额约束。
+
+验收：transformer 不改全局配置、不泄密钥；编排工具受现有权限/限额约束。
 
 ## 9. 验证基线
 

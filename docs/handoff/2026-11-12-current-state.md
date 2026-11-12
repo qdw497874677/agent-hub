@@ -9,13 +9,13 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `bb7f732 fix(web): improve accessibility, touch targets and contrast` |
-| origin/master | 已同步到 `bb7f732` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `bb7f7325f` |
+| 本地 HEAD | `ff34492 docs: add current state handoff` + 本轮修复（见 §9，尚未推送 origin） |
+| origin/master | 已同步到 `ff34492` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `bb7f7325f`（**尚未部署本轮修复**） |
 | 阿里云 health | `{"ok":true}` |
 | 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online |
-| 本地工作区 | 干净 |
-| 最近完整验证 | 989 单测：986 pass / 3 skipped / 0 fail；相关 E2E 14 passed |
+| 本地工作区 | 干净（本轮修复已提交） |
+| 最近完整验证 | `npm test` 983 单测：975 pass / 8 skipped / 0 fail，26s（默认并发，不含 `e2e/**`）；`npm run test:e2e-node` 6/6；`npm run check`、`typecheck`、`typecheck:web`、`build` 全 0 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
 
