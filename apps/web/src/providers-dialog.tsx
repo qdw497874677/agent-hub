@@ -1,15 +1,16 @@
-import type { AccountDto } from './api.ts';
+import type { AccountDto, ProviderModelDto } from './api.ts';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
+import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON, SMALL_BUTTON } from './dialog-shell.tsx';
 import { providersApi, type ProviderDto, type ProviderInputDto } from './api.ts';
 import { useWorkers } from './workers.tsx';
+import { ModelEditor } from './provider-model-editor.tsx';
+import { buildProviderModels, draftFromModels, type ModelDraft } from './provider-models.ts';
 
 /**
  * 模型提供商（ADR 0013）：个人 / 团队 / 全站三种作用域。
  * 密钥只写不读；选了它的模型开会话时，hub 只把这一个提供商配给 agent（真密钥留在 worker 中继或 hub 里）。
  */
-const SMALL = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
 const SCOPE_LABEL = { personal: '个人', team: '团队', hub: '全站' } as const;
 const PROTOCOL_LABEL = { 'openai-chat': 'OpenAI Chat Completions', 'openai-responses': 'OpenAI Responses', anthropic: 'Anthropic Messages' } as const;
 
@@ -111,14 +112,14 @@ function ProviderRow({ provider, onEdit, onChanged }: { provider: ProviderDto; o
               </option>
             ))}
           </select>
-          <button className={SMALL} disabled={!target || test.isPending} onClick={() => test.mutate()}>
+          <button className={SMALL_BUTTON} disabled={!target || test.isPending} onClick={() => test.mutate()}>
             {test.isPending ? '测试中…' : '测试连接'}
           </button>
-          <button className={SMALL} onClick={onEdit}>
+          <button className={SMALL_BUTTON} onClick={onEdit}>
             编辑
           </button>
           <button
-            className={SMALL}
+            className={SMALL_BUTTON}
             disabled={remove.isPending}
             onClick={() => {
               if (window.confirm(`删除模型提供商「${provider.name}」？用它的会话下次启动会失败。`)) remove.mutate();
@@ -138,15 +139,15 @@ function ProviderForm({ existing, canHub, canTeam, onDone }: { existing: Provide
       ? { ...blank, ...existing, models: [...existing.models], apiKey: '' }
       : { ...blank }
   );
-  const [modelsText, setModelsText] = useState(() => (existing ? existing.models.map((model) => model.id).join('\n') : ''));
+  // 模型按行编辑：勾选 = 保存，未勾选 = 保存时删除；拉取只补空字段。
+  const [drafts, setDrafts] = useState<ModelDraft[]>(() => draftFromModels(existing?.models ?? []));
+  const [showAllErrors, setShowAllErrors] = useState(false);
   const set = <K extends keyof typeof form>(key: K, value: (typeof form)[K]) => setForm((current) => ({ ...current, [key]: value }));
+  const built = buildProviderModels(drafts);
+  const errorsById = new Map(built.errors.map((entry) => [entry.id, entry.errors] as const));
+  const modelsInvalid = built.errors.length > 0;
   const save = useMutation({
-    mutationFn: async () => {
-      const models = modelsText
-        .split(/[\n,]/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .map((id) => existing?.models.find((model) => model.id === id) ?? { id });
+    mutationFn: async (models: ProviderModelDto[]) => {
       const input: ProviderInputDto = { slug: form.slug, name: form.name, protocol: form.protocol, baseUrl: form.baseUrl, models, routing: form.routing, enabled: form.enabled };
       if (existing) {
         await providersApi.update(existing.id, input);
@@ -161,9 +162,18 @@ function ProviderForm({ existing, canHub, canTeam, onDone }: { existing: Provide
   return (
     <form
       className="mt-2 min-h-0 flex-1 overflow-y-auto"
+      onKeyDown={(event) => {
+        // 输入框里按回车不要提交整个表单；多行额外参数、按钮和「看示例」的展开保持原生行为。
+        const tag = (event.target as HTMLElement).tagName;
+        if (event.key === 'Enter' && tag !== 'TEXTAREA' && tag !== 'BUTTON' && tag !== 'SUMMARY') event.preventDefault();
+      }}
       onSubmit={(event) => {
         event.preventDefault();
-        save.mutate();
+        if (modelsInvalid) {
+          setShowAllErrors(true);
+          return;
+        }
+        save.mutate(built.models);
       }}
     >
       <div className="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
@@ -198,8 +208,21 @@ function ProviderForm({ existing, canHub, canTeam, onDone }: { existing: Provide
       <input id="provider-base" className={INPUT} value={form.baseUrl} onChange={(event) => set('baseUrl', event.target.value)} placeholder="https://api.example.com/v1" />
       <label className={label} htmlFor="provider-key">API Key{existing?.hasKey ? '（已配置；留空不改）' : ''}</label>
       <input id="provider-key" className={INPUT} type="password" autoComplete="off" value={form.apiKey} onChange={(event) => set('apiKey', event.target.value)} />
-      <label className={label} htmlFor="provider-models">模型 id（一行一个）</label>
-      <textarea id="provider-models" className={`${INPUT} h-24 font-mono`} value={modelsText} onChange={(event) => setModelsText(event.target.value)} />
+      <p className={label}>模型</p>
+      <ModelEditor
+        drafts={drafts}
+        onChange={setDrafts}
+        protocol={form.protocol}
+        baseUrl={form.baseUrl}
+        apiKey={form.apiKey}
+        providerId={existing?.id ?? null}
+        hasStoredKey={existing?.hasKey === true}
+        errors={errorsById}
+        showErrors={showAllErrors}
+      />
+      {modelsInvalid ? (
+        <p className="mt-1 text-meta text-rust">有 {built.errors.length} 个模型的设置要改（标红的行），改好再保存。</p>
+      ) : null}
       <label className={label} htmlFor="provider-routing">请求怎么走</label>
       <select id="provider-routing" className={INPUT} value={form.routing} onChange={(event) => set('routing', event.target.value as typeof form.routing)}>
         <option value="direct">worker 直连（默认：密钥下发到 worker 的本机中继）</option>

@@ -58,6 +58,7 @@ import type {
   InviteDto,
   InvitePreviewDto
 } from '@agent-hub/contract';
+import type { ProviderModelSpec } from './provider-models.ts';
 
 export type { TeamDto, InviteDto, InvitePreviewDto, AgentProfileDto, AgentProfileInput };
 export type { TeamWorkspaceViewDto, CreateTeamWorkspaceRequest, WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
@@ -537,7 +538,8 @@ export type {
 
 /** 模型提供商（ADR 0013）：密钥只写不读，界面只看得到「已配置」。 */
 export type ProviderProtocolDto = 'openai-chat' | 'openai-responses' | 'anthropic';
-export interface ProviderModelDto { readonly id: string; readonly name?: string; readonly contextWindow?: number; readonly maxTokens?: number }
+/** 模型形状定义在不带 DOM 的纯逻辑模块里（那边的单测要能被根 tsconfig 编译），这里只做别名。 */
+export type ProviderModelDto = ProviderModelSpec;
 export interface ProviderDto {
   readonly id: string;
   readonly scope: 'personal' | 'team' | 'hub';
@@ -564,10 +566,26 @@ export interface ProviderInputDto {
   enabled: boolean;
 }
 export interface HubModelsDto { readonly slug: string; readonly name: string; readonly protocol: ProviderProtocolDto; readonly scope?: 'personal' | 'team' | 'hub'; readonly models: readonly { id: string; label: string }[] }
+/** 拉取模型：给了 workerId 就走那台机器的网络，否则 hub 直连；给了 providerId 就用服务器上已存的密钥。 */
+export interface ProviderProbeInputDto {
+  protocol: ProviderProtocolDto;
+  baseUrl: string;
+  apiKey?: string;
+  providerId?: string;
+  workerId?: string;
+}
+export interface ProviderProbeDto {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly message: string;
+  readonly via: 'worker' | 'hub';
+  readonly models: readonly { readonly id: string; readonly name?: string; readonly contextWindow?: number; readonly maxTokens?: number }[];
+}
 const providerPath = (id: string) => `/api/providers/${encodeURIComponent(id)}`;
 export const providersApi = {
   list: () => call<{ providers: ProviderDto[]; workerRouting: Record<string, 'direct' | 'hub'> }>('/api/providers'),
   models: (taskId?: string) => call<HubModelsDto[]>(`/api/providers/models${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`),
+  probe: (input: ProviderProbeInputDto) => post<ProviderProbeDto>('/api/providers/probe', input),
   create: (input: ProviderInputDto & { scope: 'personal' | 'team' | 'hub'; apiKey?: string }) => post<ProviderDto>('/api/providers', input),
   update: (id: string, input: ProviderInputDto) => call<ProviderDto>(providerPath(id), { method: 'PUT', body: JSON.stringify(input) }),
   setKey: (id: string, apiKey: string) => call<{ ok: true }>(`${providerPath(id)}/key`, { method: 'PUT', body: JSON.stringify({ apiKey }) }),
