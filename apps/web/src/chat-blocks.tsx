@@ -177,36 +177,40 @@ function Toggle({ label, hint, checked, disabled, onChange }: { label: string; h
 }
 
 /** 「显示」菜单：对应 OpenCode 的 Show reasoning summaries / Expand shell・edit tool parts / compact。 */
+export function DisplaySettingsPanel({ settings, onChange }: { settings: DisplaySettings; onChange: (patch: Partial<DisplaySettings>) => void }) {
+  return (
+    <div className="py-1" data-testid="display-settings">
+      <Segmented<ToolDisplay>
+        label="工具调用"
+        value={settings.tools}
+        options={[
+          ['expanded', '展开'],
+          ['collapsed', '折叠'],
+          ['hidden', '隐藏']
+        ]}
+        onChange={(tools) => onChange({ tools })}
+      />
+      <Toggle label="命令输出默认展开" checked={settings.shellExpanded} disabled={settings.tools !== 'collapsed'} onChange={(shellExpanded) => onChange({ shellExpanded })} />
+      <Toggle label="文件改动默认展开" checked={settings.editExpanded} disabled={settings.tools !== 'collapsed'} onChange={(editExpanded) => onChange({ editExpanded })} />
+      <Segmented<ThinkingDisplay>
+        label="思考过程"
+        value={settings.thinking}
+        options={[
+          ['shown', '显示'],
+          ['collapsed', '折叠'],
+          ['hidden', '隐藏']
+        ]}
+        onChange={(thinking) => onChange({ thinking })}
+      />
+      <Toggle label="紧凑模式" hint="收紧行距，一屏多看几条" checked={settings.compact} onChange={(compact) => onChange({ compact })} />
+    </div>
+  );
+}
+
 export function DisplayMenu({ settings, onChange }: { settings: DisplaySettings; onChange: (patch: Partial<DisplaySettings>) => void }) {
   return (
     <Dropdown label="显示设置" icon={<span aria-hidden>Aa</span>} width="w-72">
-      {() => (
-        <div className="py-1" data-testid="display-settings">
-          <Segmented<ToolDisplay>
-            label="工具调用"
-            value={settings.tools}
-            options={[
-              ['expanded', '展开'],
-              ['collapsed', '折叠'],
-              ['hidden', '隐藏']
-            ]}
-            onChange={(tools) => onChange({ tools })}
-          />
-          <Toggle label="命令输出默认展开" checked={settings.shellExpanded} disabled={settings.tools !== 'collapsed'} onChange={(shellExpanded) => onChange({ shellExpanded })} />
-          <Toggle label="文件改动默认展开" checked={settings.editExpanded} disabled={settings.tools !== 'collapsed'} onChange={(editExpanded) => onChange({ editExpanded })} />
-          <Segmented<ThinkingDisplay>
-            label="思考过程"
-            value={settings.thinking}
-            options={[
-              ['shown', '显示'],
-              ['collapsed', '折叠'],
-              ['hidden', '隐藏']
-            ]}
-            onChange={(thinking) => onChange({ thinking })}
-          />
-          <Toggle label="紧凑模式" hint="收紧行距，一屏多看几条" checked={settings.compact} onChange={(compact) => onChange({ compact })} />
-        </div>
-      )}
+      {() => <DisplaySettingsPanel settings={settings} onChange={onChange} />}
     </Dropdown>
   );
 }

@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
+import { DisplaySettingsDialog } from './display-settings-dialog.tsx';
 import { Composer } from './composer.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { SessionDetails } from './inspector.tsx';
@@ -75,6 +76,7 @@ export function FocusView({
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const [displayOpen, setDisplayOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [linksOpen, setLinksOpen] = useState(false);
@@ -407,13 +409,12 @@ export function FocusView({
         <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
         <span className="flex shrink-0 items-center">
           <button
-            className="flex h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary sm:px-2 md:h-9"
+            className="hidden h-11 shrink-0 items-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary sm:flex sm:px-2 md:h-9"
             aria-label={`连接 ${linkedSessions.length}`}
             onClick={() => setLinksOpen(true)}
             title="连接同项目的其他会话"
           >
-            <span aria-hidden className="sm:hidden">⇄ {linkedSessions.length}</span>
-            <span className="hidden sm:inline">连接 {linkedSessions.length}</span>
+            连接 {linkedSessions.length}
           </button>
           <button
             className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary sm:flex md:h-9"
@@ -421,7 +422,9 @@ export function FocusView({
           >
             详情
           </button>
-          <DisplayMenu settings={settings} onChange={changeSettings} />
+          <span className="hidden sm:flex">
+            <DisplayMenu settings={settings} onChange={changeSettings} />
+          </span>
           <Dropdown label="更多" icon="⋯">
             {(close) => (
               <>
@@ -431,6 +434,22 @@ export function FocusView({
                   onClick={() => {
                     close();
                     setDetails(true);
+                  }}
+                />
+                <MenuItem
+                  title="连接会话…"
+                  hint="把这条会话和同项目的其他会话连起来"
+                  onClick={() => {
+                    close();
+                    setLinksOpen(true);
+                  }}
+                />
+                <MenuItem
+                  title="显示设置…"
+                  hint="工具调用、思考过程、紧凑模式"
+                  onClick={() => {
+                    close();
+                    setDisplayOpen(true);
                   }}
                 />
                 <MenuItem
@@ -556,6 +575,7 @@ export function FocusView({
           }}
         />
       ) : null}
+      {displayOpen ? <DisplaySettingsDialog settings={settings} onChange={changeSettings} onClose={() => setDisplayOpen(false)} /> : null}
       {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} onBrowseFiles={() => { setDetails(false); setTab('files'); }} /> : null}
       {continuing ? (
         <ContinueDialog

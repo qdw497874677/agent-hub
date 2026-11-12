@@ -58,9 +58,12 @@ for (const width of [360, 430]) {
     await expect(page.getByRole('menuitem', { name: /^分叉/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /从某一步分叉/ })).toHaveCount(0);
     await expect(page.getByRole('menuitem', { name: /换个地方继续/ })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: /^连接会话/ })).toBeVisible();
+    await expect(page.getByRole('menuitem', { name: /^显示设置/ })).toBeVisible();
     await page.keyboard.press('Escape');
 
-    await page.getByRole('button', { name: '详情' }).click();
+    await page.getByRole('button', { name: '更多' }).click();
+    await page.getByRole('menuitem', { name: /^详情/ }).click();
     const sheet = page.getByRole('complementary', { name: '会话详情' });
     await expect(sheet).toBeVisible();
     await expect(sheet.getByText('能力', { exact: true })).toBeVisible();

@@ -322,6 +322,42 @@ test('会话卡片能改模型与思考强度，改完不回弹', async ({ page 
   }
 });
 
+test('会话页窄屏 header 只留标题、状态和更多', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await enterProject(page, PROJECT_NAME);
+  const sidebar = page.getByRole('complementary', { name: '项目导航' });
+  if (!(await sidebar.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: '打开侧栏' }).click();
+  }
+  await sidebar.getByRole('button', { name: '画布', exact: true }).click();
+  await expect(sessionNode(page)).toHaveCount(1);
+  await sessionNode(page).locator('header').click();
+  await sessionNode(page).getByRole('button', { name: '打开', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('focus-header-390.png') });
+
+  // 直连按钮和「Aa」在手机上收进「更多」，标题不再被一排动作挤掉。
+  await expect(page.getByRole('button', { name: /^连接 \d+$/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '显示设置' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: '更多' }).click();
+  await expect(page.getByRole('menuitem', { name: /^连接会话/ })).toBeVisible();
+  await expect(page.getByRole('menuitem', { name: /^显示设置/ })).toBeVisible();
+
+  await page.getByRole('menuitem', { name: /^连接会话/ }).click();
+  const links = page.getByRole('dialog', { name: '连接会话' });
+  await expect(links).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(links).toHaveCount(0);
+
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: /^显示设置/ }).click();
+  const dialog = page.getByRole('dialog', { name: '显示设置' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('display-settings')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+});
+
 test('侧栏：桌面常驻，手机上从菜单滑出', async ({ page }, testInfo) => {
   await enterProject(page, PROJECT_NAME);
   const sidebar = page.getByRole('complementary', { name: '项目导航' });
