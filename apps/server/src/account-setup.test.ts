@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inMemoryAccounts } from '@agent-hub/domain/testing';
-import { hubTokenWindow, seedTestAccount } from './account-setup.ts';
+import { seedTestAccount } from './account-setup.ts';
 
 test('测试账号：密码写进 600 文件、日志里没有密码、重启沿用同一个密码', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hub-acct-'));
@@ -39,12 +39,3 @@ test('HUB_TEST_ACCOUNT_PASSWORD：启动时把账号和密码文件对齐到指�
   rmSync(dir, { recursive: true });
 });
 
-test('HUB_TOKEN 过渡期：起点落盘，重启不续命，过期返回 null', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hub-tok-'));
-  const day = 86_400_000;
-  assert.equal(await hubTokenWindow(dir, null, 30, 0), null);
-  assert.equal((await hubTokenWindow(dir, 't', 30, 1000))?.until, 1000 + 30 * day);
-  assert.equal((await hubTokenWindow(dir, 't', 30, 5 * day))?.until, 1000 + 30 * day);
-  assert.equal(await hubTokenWindow(dir, 't', 30, 31 * day), null);
-  rmSync(dir, { recursive: true });
-});

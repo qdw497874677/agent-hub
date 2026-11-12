@@ -75,7 +75,7 @@ export interface GatewayHooks {
    */
   /**
    * 认 hello：专属凭据，或退回共享 HUB_TOKEN（`sharedTokenOk` 由网关算好）。
-   * 不给就只看共享令牌（老行为）。拒绝时 reason 原样放进关闭码 4401 的原因里。
+   * 不给就只看共享令牌（裸传输：单测/嵌入式直用）。拒绝时 reason 原样放进关闭码 4401 的原因里。
    */
   authenticate?(hello: {
     readonly workerId: string;
@@ -415,7 +415,16 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       }
 
       if (frame.type === 'hello') {
-        const sharedTokenOk = hooks.token === null || sameSecret(frame.token, hooks.token);
+        // 本机子进程的口令：hub 每次启动换一个，只有它自己知道（不落盘、不外传），用来证明 origin: 'local' 不是自封的。
+        const secret = hooks.localSecret ?? null;
+        const provenLocal = secret !== null && sameSecret(frame.localSecret, secret);
+        // SEC：配了 HUB_TOKEN 就只认它；没配时不再放行无凭据的 worker——只认 hub 自己拉起的本机子进程。
+        // 没有 authenticate 钩子的是裸传输（单测/嵌入式直用），那里没有凭据模型，维持旧的「无 token 即放行」。
+        const sharedTokenOk = hooks.token !== null
+          ? sameSecret(frame.token, hooks.token)
+          : hooks.authenticate !== undefined
+            ? provenLocal
+            : true;
         const verdict = hooks.authenticate
           ? await hooks.authenticate({
               workerId: frame.workerId,
@@ -439,8 +448,6 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           );
           return;
         }
-        const secret = hooks.localSecret ?? null;
-        const provenLocal = secret !== null && sameSecret(frame.localSecret, secret);
         const previous = registry.get(frame.workerId);
         if (previous?.socket && previous.socket !== socket) {
           // 同一个 workerId 已经有条活连接：重连比旧连接的 close 先到是常事，但只认

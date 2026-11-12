@@ -146,8 +146,9 @@ export type WorkerAuth =
 /**
  * 一次 hello 认不认：
  * - 带了专属凭据：凭据有效、未吊销、且绑定的就是这个 workerId；
- * - 没带：退回共享 HUB_TOKEN（旧决定，保留），但已经登记过专属凭据（或被吊销过）的 workerId 不许走这条路——
- *   否则吊销形同虚设，知道 id 的人也能冒名顶替。
+ * - 没带：退回共享令牌，但只信网关算出来的 sharedTokenOk——配了 HUB_TOKEN 时是令牌匹配，
+ *   没配时只有 hub 自己拉起的本机子进程才算（网关判，领域这边只看结论）。
+ *   已经登记过专属凭据（或被吊销过）的 workerId 不许走这条路，否则吊销形同虚设，知道 id 的人也能冒名顶替。
  */
 export async function authenticateWorker(
   deps: Pick<EnrollmentDeps, 'enrollment' | 'tokens' | 'now'>,

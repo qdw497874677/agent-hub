@@ -227,7 +227,7 @@ test('两个团队：别人的触发不进我的列表', async () => {
     dispatches: { byTaskIds: async () => [] } as never,
     policy: access
   });
-  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, hubToken: null }, observe: { enabled: true, readers: [observeReader] } });
+  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts }, observe: { enabled: true, readers: [observeReader] } });
   const jar = new Map<string, string>();
   const browser = () => async (path: string, init: RequestInit = {}) => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -297,7 +297,7 @@ test('开了账号时，未登录的可观测接口被登录闸门拒绝，适�
   let called = false;
   const app = createApp({
     deps: world.deps, hub: createStreamHub(), token: null,
-    auth: { accounts, hubToken: null },
+    auth: { accounts },
     observe: { enabled: true, readers: [{ id: 'connector', list: async () => { called = true; return { truncated: false, items: [] }; }, get: async () => { called = true; return null; } }] }
   });
   const response = await app.request('/api/observe?since=0');

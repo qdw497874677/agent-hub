@@ -13,7 +13,7 @@ function harness(extra: Partial<AccountDeps> = {}, mailRateMax = 5) {
   const base = inMemoryAccounts(() => clock);
   const accounts = { ...base, ...extra };
   const { deps } = inMemoryDeps({ now: () => clock });
-  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, hubToken: null, mailRateMax }, admin: { deps: { ...admin.deps, users: base.users, logins: base.logins, settings: base.settings } } });
+  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, mailRateMax }, admin: { deps: { ...admin.deps, users: base.users, logins: base.logins, settings: base.settings } } });
   const browser = (ua = 'test-browser') => {
     const jar = new Map<string, string>();
     return async (path: string, init: RequestInit & { csrf?: boolean } = {}) => {

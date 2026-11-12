@@ -341,7 +341,6 @@ export const authApi = {
   login: (email: string, password: string) => post<{ user: AccountDto }>('/api/auth/login', { email, password }),
   register: (email: string, password: string, displayName?: string) =>
     post<{ user: AccountDto } | { checkEmail: true }>('/api/auth/register', { email, password, displayName }),
-  tokenLogin: (token: string) => post<{ user: AccountDto }>('/api/auth/token-login', { token }),
   logout: () => post<{ ok: true }>('/api/auth/logout', {}),
   verifyEmail: (token: string) => post<{ user: AccountDto }>('/api/auth/verify-email', { token }),
   resendVerification: () => post<{ alreadyVerified: boolean }>('/api/auth/resend-verification', {}),

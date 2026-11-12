@@ -35,7 +35,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
     deps,
     hub,
     token: null,
-    auth: { accounts, hubToken: null },
+    auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users },
     openApi: { tokens: tokenDeps, manage: tokenDeps, rate }
   });

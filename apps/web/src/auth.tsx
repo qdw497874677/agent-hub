@@ -10,22 +10,11 @@ import { GitHostTokenPanel } from './git-dialog.tsx';
 
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
- * 旧链接里的 `?token=…` 自动换成一次 HUB_TOKEN 登录（30 天过渡期内）。
  */
 const AccountContext = createContext<AccountDto | null>(null);
 export const useAccount = (): AccountDto | null => useContext(AccountContext);
 
 const STATE_KEY = ['auth'] as const;
-
-function takeUrlToken(): string | null {
-  const url = new URL(window.location.href);
-  const token = url.searchParams.get('token');
-  if (!token) return null;
-  url.searchParams.delete('token');
-  window.history.replaceState(null, '', url.toString());
-  localStorage.removeItem('agent-hub:token'); // 老版本存过，清掉
-  return token;
-}
 
 /** 邮件里的链接是 `#/verify?token=…` / `#/reset?token=…`：令牌只在 hash 里，不进服务端日志和 Referer。 */
 type MailLink = { kind: 'verify' | 'reset' | 'invite'; token: string };
@@ -42,17 +31,8 @@ const message = (error: unknown): string | null =>
 
 export function AuthGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
-  const urlToken = useRef<string | null>(typeof window === 'undefined' ? null : takeUrlToken());
-  const [exchanging, setExchanging] = useState(urlToken.current !== null);
   const [mailLink, setMailLink] = useState<MailLink | null>(() => (typeof window === 'undefined' ? null : takeMailLink()));
-  const state = useQuery({ queryKey: STATE_KEY, queryFn: authApi.state, enabled: !exchanging, staleTime: Infinity });
-
-  useEffect(() => {
-    const token = urlToken.current;
-    if (token === null) return;
-    urlToken.current = null;
-    void authApi.tokenLogin(token).catch(() => undefined).finally(() => setExchanging(false));
-  }, []);
+  const state = useQuery({ queryKey: STATE_KEY, queryFn: authApi.state, staleTime: Infinity });
 
   useEffect(() => {
     // 已经开着 hub 的标签页里再点信里的链接：只变 hash，不会重新加载
@@ -75,7 +55,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (mailLink?.kind === 'reset') return <ResetPasswordPage token={mailLink.token} onDone={() => setMailLink(null)} />;
   if (mailLink?.kind === 'invite') return <AcceptInvitePage token={mailLink.token} onDone={() => setMailLink(null)} />;
   if (mailLink?.kind === 'verify') return <VerifyLinkPage token={mailLink.token} onDone={() => setMailLink(null)} />;
-  if (exchanging || state.isPending) return <Splash text="正在确认身份…" />;
+  if (state.isPending) return <Splash text="正在确认身份…" />;
   if (state.isError) return <Splash text="连不上服务端，稍后刷新重试" />;
   if (!state.data.user) return <LoginPage state={state.data} />;
   if (!state.data.user.emailVerified) return <VerifyEmailPage user={state.data.user} mailDelivery={state.data.mailDelivery} />;
@@ -90,7 +70,7 @@ const INPUT =
   'w-full rounded-sm border border-hair bg-card px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent';
 const PRIMARY = 'w-full rounded-sm bg-accent px-3 py-2.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40';
 
-type Mode = 'login' | 'register' | 'token' | 'forgot';
+type Mode = 'login' | 'register' | 'forgot';
 
 function LoginPage({ state }: { state: AuthState }) {
   const queryClient = useQueryClient();
@@ -98,7 +78,6 @@ function LoginPage({ state }: { state: AuthState }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [token, setToken] = useState('');
 
   const [forgotSent, setForgotSent] = useState(false);
   const [registerSent, setRegisterSent] = useState(false);
@@ -115,7 +94,7 @@ function LoginPage({ state }: { state: AuthState }) {
         if ('checkEmail' in result) setRegisterSent(true);
         return result;
       }
-      return mode === 'login' ? authApi.login(email, password) : authApi.tokenLogin(token);
+      return authApi.login(email, password);
     },
     onSuccess: async (result) => {
       if (mode === 'forgot') return;
@@ -125,7 +104,7 @@ function LoginPage({ state }: { state: AuthState }) {
     }
   });
   const error = message(submit.error);
-  const ready = mode === 'token' ? token !== '' : mode === 'forgot' ? email.trim() !== '' : email.trim() !== '' && password !== '';
+  const ready = mode === 'forgot' ? email.trim() !== '' : email.trim() !== '' && password !== '';
   const switchTo = (next: Mode) => {
     setMode(next);
     setForgotSent(false);
@@ -135,8 +114,7 @@ function LoginPage({ state }: { state: AuthState }) {
 
   const tabs: { id: Mode; label: string }[] = [
     { id: 'login', label: '登录' },
-    ...(state.registration ? [{ id: 'register' as const, label: '注册' }] : []),
-    ...(state.tokenLogin ? [{ id: 'token' as const, label: 'HUB_TOKEN' }] : [])
+    ...(state.registration ? [{ id: 'register' as const, label: '注册' }] : [])
   ];
 
   return (
@@ -194,14 +172,8 @@ function LoginPage({ state }: { state: AuthState }) {
             if (ready && !submit.isPending) submit.mutate();
           }}
         >
-          {mode === 'token' ? (
-            <>
-              <label className="text-meta text-secondary" htmlFor="auth-token">部署时设置的 HUB_TOKEN（30 天过渡期内可用）</label>
-              <input id="auth-token" type="password" autoComplete="off" className={INPUT} value={token} onChange={(e) => setToken(e.target.value)} />
-            </>
-          ) : (
-            <>
-              <label className="text-meta text-secondary" htmlFor="auth-email">邮箱</label>
+          <>
+            <label className="text-meta text-secondary" htmlFor="auth-email">邮箱</label>
               <input
                 id="auth-email"
                 type="email"
@@ -239,9 +211,8 @@ function LoginPage({ state }: { state: AuthState }) {
                   />
                 </>
               )}
-              {mode === 'forgot' && <p className="text-meta text-tertiary">输入注册时用的邮箱，我们会发一封重置密码的信。</p>}
-            </>
-          )}
+            {mode === 'forgot' && <p className="text-meta text-tertiary">输入注册时用的邮箱，我们会发一封重置密码的信。</p>}
+          </>
           {error && (
             <p role="alert" className="text-meta text-rust">
               {error}

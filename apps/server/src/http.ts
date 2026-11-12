@@ -118,7 +118,7 @@ import {
   setTaskSummaryUseCase
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
-import { installAuth, SSE_PATH, type SubjectOf } from './auth.ts';
+import { installAuth, type SubjectOf } from './auth.ts';
 import { installAdmin } from './admin.ts';
 import { installTeam } from './team.ts';
 import { installAccessRoutes } from './access-routes.ts';
@@ -302,12 +302,8 @@ export function createApp(options: AppOptions): Hono {
   }
   app.use('/api/*', async (c, next) => {
     if (options.auth || options.token === null) return next();
-    // header 优先；SSE（EventSource）设不了请求头，所以也接受查询串。
-    const offered = (c.req.header('authorization') ?? '') === `Bearer ${options.token}`
-      ? options.token
-      : c.req.path === SSE_PATH
-        ? (c.req.query('token') ?? '')
-        : '';
+    // 只认请求头；查询串里的令牌会进访问日志、浏览器历史和 Referer（SEC-1a）。
+    const offered = (c.req.header('authorization') ?? '') === `Bearer ${options.token}` ? options.token : '';
     if (!sameSecret(offered, options.token)) {
       return c.json({ error: { code: 'unauthorized', message: '缺少或错误的 token' } }, 401); // 不是领域错误，所以不走 fail()
     }

@@ -28,7 +28,7 @@ async function setup() {
     deps,
     hub: createStreamHub(),
     token: null,
-    auth: { accounts, hubToken: null },
+    auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users }
   });
   const browser = () => {

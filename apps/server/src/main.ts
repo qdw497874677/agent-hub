@@ -101,7 +101,7 @@ import { createRequestGuard } from './request-guard.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps } from '@agent-hub/domain';
 import { componentJobFinished, createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
-import { hubTokenWindow, seedTestAccount } from './account-setup.ts';
+import { seedTestAccount } from './account-setup.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
 
@@ -131,16 +131,6 @@ const guard = createRequestGuard([host, ...(readEnv('HUB_ALLOWED_HOSTS') ?? '').
 // 只给自己拉起的本机 worker：它凭这个证明 origin: 'local' 不是自封的。每次启动换一个。
 const localSecret = randomBytes(32).toString('hex');
 const spawnWorker = readEnv('HUB_SPAWN_WORKER') ?? '1';
-
-if (!LOOPBACKS.has(host) && token === null) {
-  console.error(
-    `拒绝启动：绑定到 ${host} 却没设 HUB_TOKEN。\n` +
-      '定位 §6 反故事 1 写的是「不管 key」，但那指的是不管模型的 key；\n' +
-      '把自己的 agent 集群暴露在网络上而不设 token 是另一件事。\n' +
-      '设一个 HUB_TOKEN 再启动。'
-  );
-  process.exit(1);
-}
 
 await mkdir(dataDir, { recursive: true });
 console.log(`[hub] 数据目录：${dataDir}`);
@@ -621,6 +611,16 @@ const accounts: AccountDeps = {
   ...(Number.isFinite(maxUsers) && maxUsers > 0 ? { maxUsers } : {}),
   now: () => Date.now()
 };
+// 公网绑定必须能证明「这台 hub 有主」：要么配了 HUB_TOKEN（给脚本/worker），要么已经有主人账号。
+// 放在账号仓库打开之后（才知道有没有主人），又放在种测试账号之前（测试账号不算主人的证明）。
+if (!LOOPBACKS.has(host) && token === null && (await accounts.users.firstClusterAdmin()) === null) {
+  console.error(
+    `拒绝启动：绑定到 ${host}，但既没设 HUB_TOKEN，也还没有主人账号。\n` +
+      '先在本机注册主人账号，或设置 HUB_TOKEN 再启动。'
+  );
+  store.close();
+  process.exit(1);
+}
 const testAccount = readEnv('HUB_TEST_ACCOUNT') ?? 'test@agent-hub.local';
 if (testAccount !== 'off') {
   await seedTestAccount(
@@ -640,9 +640,6 @@ if (testAccount !== 'off') {
   const admins = (await store.users.list()).filter((u) => u.clusterAdmin && u.deletedAt === null);
   if (admins.length > 0) log(`集群管理员：${admins.map((u) => u.email).join(', ')}`);
 }
-const hubToken = await hubTokenWindow(dataDir, token, Number(readEnv('HUB_TOKEN_SUNSET_DAYS') ?? 30), Date.now());
-if (token !== null && hubToken === null) log('HUB_TOKEN 已过 30 天过渡期：不再能登录或调 API（worker 通道仍用它）');
-
 /**
  * Worker 发来的会话帧先过领域的落点核对，再交给 ingest*。
  * 核对是异步的（要查库），串成一条链才能保证 ingest 的调用顺序和帧到达的顺序一致。
@@ -897,7 +894,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
       deliveries: store.deliveries, store: store.connectors, requests: store.agentTasks, dispatches: store.dispatches, policy: deps.access
     })] : []
   }, 
-  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, hubToken, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
+  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {
       users: store.users,

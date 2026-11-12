@@ -20,7 +20,7 @@ function harness() {
     deps,
     hub: createStreamHub(),
     token: null,
-    auth: { accounts: admin.accounts, hubToken: null },
+    auth: { accounts: admin.accounts },
     admin: { deps: admin.deps },
     assets: { deps: review.deps, audit: admin.deps.audit }
   });

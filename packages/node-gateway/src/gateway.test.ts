@@ -620,6 +620,43 @@ test('专属凭据：hello 带上凭据交给 authenticate 判；吊销后收到
   await new Promise((resolve) => server.close(resolve));
 });
 
+test('没配 HUB_TOKEN：没凭据的 worker 一律拒绝，只放行 hub 自己拉起的本机子进程', async () => {
+  const rec = recorder(null);
+  const seen: boolean[] = [];
+  const gateway = createServerGateway({
+    ...rec.hooks,
+    localSecret: 'boot-secret',
+    authenticate: async (hello) => {
+      seen.push(hello.sharedTokenOk);
+      return hello.sharedTokenOk || hello.credential === 'ahw_good' ? { ok: true } : { ok: false, reason: 'token 不匹配' };
+    }
+  });
+  const server: Server = createServer();
+  server.on('upgrade', (request, socket, head) => gateway.handleUpgrade(request, socket, head));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  // 以前 HUB_TOKEN 为空时直接放行；SEC：现在必须拒绝
+  const anon = await rawHello(url, { workerId: 'anon', origin: 'remote' });
+  assert.equal(await anon.closed, 4401);
+  assert.deepEqual(seen, [false], '没配 token 时 sharedTokenOk 不再默认为 true');
+  assert.equal(rec.hellos.length, 0);
+
+  // 冒充本机但答不上口令：也拒绝
+  const spoof = await rawHello(url, { workerId: 'local-x', origin: 'local', localSecret: 'guess' });
+  assert.equal(await spoof.closed, 4401);
+
+  // hub 拉起的子进程凭口令进来
+  const child = await rawHello(url, { workerId: 'local-1', origin: 'local', localSecret: 'boot-secret' });
+  await rec.until(() => rec.hellos.length === 1);
+  assert.equal(rec.hellos[0]?.worker.origin, 'local');
+  child.socket.terminate();
+
+  gateway.close();
+  server.closeAllConnections?.();
+  await new Promise((resolve) => server.close(resolve));
+});
+
 test('4409 顶回：没被 server 接受的连接上不发帧，换条连接被接受后按序补发', async () => {
   const { WebSocketServer } = await import('ws');
   const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });

@@ -1,31 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import type { AccountDeps } from '@agent-hub/domain';
 import { seedAccount } from '@agent-hub/domain';
-
-const DAY = 24 * 60 * 60 * 1000;
-
-/**
- * 旧 HUB_TOKEN 的过渡期：从第一次在账号版里见到它算起 N 天（默认 30）。
- * 起点记在数据目录里，重启不会续命。
- */
-export async function hubTokenWindow(
-  dataDir: string,
-  token: string | null,
-  days: number,
-  now: number
-): Promise<{ value: string; until: number } | null> {
-  if (token === null) return null;
-  const file = join(dataDir, 'hub-token-since');
-  let since = Number((await readFile(file, 'utf8').catch(() => '')).trim());
-  if (!Number.isFinite(since) || since <= 0) {
-    since = now;
-    await writeFile(file, String(since), { mode: 0o600 });
-  }
-  const until = since + days * DAY;
-  return now < until ? { value: token, until } : null;
-}
 
 /**
  * 内置测试账号：给了 options.password（HUB_TEST_ACCOUNT_PASSWORD）就用它，每次启动对齐并写进密码文件；

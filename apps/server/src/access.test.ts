@@ -30,7 +30,7 @@ function harness() {
     gateway: world.deps.gateway
   });
   const deps = { ...world.deps, access };
-  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, hubToken: null } });
+  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts } });
   const browser = () => {
     const jar = new Map<string, string>();
     return async (path: string, init: RequestInit = {}) => {

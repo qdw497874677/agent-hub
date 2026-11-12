@@ -10,12 +10,11 @@ import {
   loginRequest,
   registerRequest,
   resetPasswordRequest,
-  tokenLoginRequest,
   tokenRequest
 } from '@agent-hub/contract';
 import type { AccountDto, AuthState, LoginDeviceDto } from '@agent-hub/contract';
 import type { AccessAdminDeps, AccessRepos, AccountDeps, DomainError, IssuedLogin, Principal, Result, Subject, TeamDeps, User, UserId } from '@agent-hub/domain';
-import { systemSubject, withAccess } from '@agent-hub/domain';
+import { withAccess } from '@agent-hub/domain';
 import {
   ok,
   acceptInvite,
@@ -27,7 +26,6 @@ import {
   authenticate,
   isEmailVerified,
   listMyLogins,
-  loginAsFirstOwner,
   loginWithPassword,
   logout,
   normalizeEmail,
@@ -48,7 +46,7 @@ import { createLoginBackoff } from './login-backoff.ts';
  * 账号的 HTTP 外壳（docs/design/accounts.md §8–§10）：
  * - 登录态放 httpOnly cookie；https 下才加 Secure 并用 `__Host-` 前缀，http 测试照样能用。
  * - CSRF 用双提交：非 httpOnly 的 hub_csrf cookie + X-Hub-CSRF 请求头，cookie 认证的写请求必须带。
- * - 旧 HUB_TOKEN 过渡 30 天：期内 Bearer 照常放行（给脚本），也能换一个 Owner 登录。
+ * - 旧共享 HUB_TOKEN 的登录通道（Bearer / ?token= / token-login）已下线，SEC-1b；它现在只用于 worker 通道。
  */
 export interface AuthOptions {
   readonly accounts: AccountDeps;
@@ -56,8 +54,6 @@ export interface AuthOptions {
   readonly team?: TeamDeps;
   /** ADR 0017：自定义角色、显式授权、临时进入、集群管理员。 */
   readonly accessAdmin?: AccessAdminDeps;
-  /** 旧共享令牌；null = 没配或过渡期已过。 */
-  readonly hubToken: { readonly value: string; readonly until: number } | null;
   /** 限流：15 分钟内每个 IP 最多登录几次（不分邮箱），默认 30；e2e 用 HUB_LOGIN_RATE_MAX 放宽。另有按邮箱的退避（login-backoff.ts）。 */
   readonly loginRateMax?: number;
   /** 发信类接口（忘记密码、重发验证）每小时每 IP / 每邮箱最多几次，默认 5（设计 §9）。 */
@@ -69,8 +65,6 @@ export interface AuthOptions {
 }
 
 export const CSRF_HEADER = 'x-hub-csrf';
-/** 唯一允许 `?token=` 的路由（EventSource 设不了 Authorization）。 */
-export const SSE_PATH = '/api/stream';
 const LOGIN = 'hub_login';
 const CSRF = 'hub_csrf';
 // 不走登录态的入口。新机器兑换接入码不在 HTTP 上：走 /worker 长连接的 enroll 握手。
@@ -107,29 +101,21 @@ function unauthorized(c: Context, message = '请先登录'): Response {
   return c.json({ error: { code: 'unauthorized', message } }, 401);
 }
 
-/** 守门中间件认出的身份；Bearer 旧令牌放行的请求没有身份（null）。 */
+/** 守门中间件认出的身份；没登录就是 null。 */
 export type PrincipalOf = (c: Context) => Principal | null;
 /**
- * 授权用的主体：登录的人；旧共享 HUB_TOKEN 放行的请求是显式的系统主体（不再用 null 代表放行，ADR 0017）；
- * 都不是就 null，can() 一律拒绝。
+ * 授权用的主体：登录的人；没有就 null，can() 一律拒绝（ADR 0017）。
  */
 export type SubjectOf = (c: Context) => Subject | null;
-const HUB_TOKEN_SUBJECT = systemSubject('hub-token');
 
 export function installAuth(app: Hono, options: AuthOptions): { principalOf: PrincipalOf; subjectOf: SubjectOf } {
   const { accounts } = options;
   // 守门中间件认出的身份，路由里直接取，不再查一遍库。
   const principals = new WeakMap<Request, Principal | null>();
-  const hubTokenRequests = new WeakSet<Request>();
   const backoff = createLoginBackoff(accounts.now);
   const limiter = createRateLimiter({ max: options.loginRateMax ?? 30, windowMs: 15 * 60 * 1000, now: accounts.now });
   const mailLimiter = createRateLimiter({ max: options.mailRateMax ?? 5, windowMs: 60 * 60 * 1000, now: accounts.now });
   const client = (c: Context) => ({ userAgent: c.req.header('user-agent') ?? null, ip: clientKey(c) === 'unknown' ? null : clientKey(c) });
-
-  const tokenValid = (offered: string): boolean => {
-    const hub = options.hubToken;
-    return hub !== null && accounts.now() < hub.until && offered !== '' && sameSecret(offered, hub.value);
-  };
 
   const issueCookies = (c: Context, issued: IssuedLogin) => {
     const secure = isHttps(c);
@@ -199,13 +185,6 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
       }
       return next();
     }
-    // 过渡期：脚本仍可用 Bearer（或 SSE 用 ?token=）带旧 HUB_TOKEN。
-    const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer /, '');
-    // 查询串里的令牌会进访问日志、浏览器历史和 Referer，只给设不了请求头的 SSE 用。
-    if (tokenValid(bearer) || (path === SSE_PATH && tokenValid(c.req.query('token') ?? ''))) {
-      hubTokenRequests.add(c.req.raw);
-      return next();
-    }
     return unauthorized(c);
   });
 
@@ -213,7 +192,6 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
     const principal = principals.get(c.req.raw) ?? null;
     const state: AuthState = {
       user: principal ? toDto(principal.user) : null,
-      tokenLogin: options.hubToken !== null && accounts.now() < options.hubToken.until,
       // 还没有主人时总能注册（认领第一个账号），否则看开关。
       registration:
         (await accounts.users.firstClusterAdmin()) === null ||
@@ -261,14 +239,6 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
       await securityEvent(accounts, actor, 'auth.login_failed', email, result.error.message, ip);
     }
     return respond(c, result);
-  });
-
-  app.post('/api/auth/token-login', async (c) => {
-    const limited = throttled(c, `token:${clientKey(c)}`);
-    if (limited) return limited;
-    const parsed = tokenLoginRequest.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success || !tokenValid(parsed.data.token)) return unauthorized(c, 'token 不对，或者已经过了 30 天过渡期');
-    return respond(c, await loginAsFirstOwner(accounts, client(c)));
   });
 
   app.post('/api/auth/logout', async (c) => {
@@ -391,6 +361,6 @@ export function installAuth(app: Hono, options: AuthOptions): { principalOf: Pri
   });
 
   const principalOf: PrincipalOf = (c) => principals.get(c.req.raw) ?? null;
-  const subjectOf: SubjectOf = (c) => principalOf(c) ?? (hubTokenRequests.has(c.req.raw) ? HUB_TOKEN_SUBJECT : null);
+  const subjectOf: SubjectOf = (c) => principalOf(c);
   return { principalOf, subjectOf };
 }

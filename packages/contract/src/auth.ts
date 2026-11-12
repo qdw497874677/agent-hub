@@ -13,7 +13,6 @@ export const registerRequest = z.object({
   displayName: z.string().max(60).optional()
 });
 export const loginRequest = z.object({ email: z.string().max(254), password: z.string().max(256) });
-export const tokenLoginRequest = z.object({ token: z.string().max(512) });
 
 export const accountSchema = z.object({
   id: z.string(),
@@ -29,8 +28,6 @@ export type AccountDto = z.infer<typeof accountSchema>;
 
 export const authStateSchema = z.object({
   user: accountSchema.nullable(),
-  /** 旧 HUB_TOKEN 还能不能换登录（30 天过渡期内且配了才是 true）。 */
-  tokenLogin: z.boolean(),
   registration: z.boolean(),
   /** 这台 hub 真能发信吗（false = 只记日志）：验证页据此提示「找主人手动标记」。 */
   mailDelivery: z.boolean()

@@ -18,7 +18,7 @@ function harness() {
     deps,
     hub: createStreamHub(),
     token: null,
-    auth: { accounts: admin.accounts, hubToken: null },
+    auth: { accounts: admin.accounts },
     admin: { deps: admin.deps, enrollment: enrollment.deps },
     enrollment: { deps: enrollment.deps, bootstrapScript, commit: 'abc1234' }
   });

@@ -23,7 +23,7 @@ function harness(maxUsers?: number) {
   });
   const deps = { ...world.deps, access };
   const team = { ...accounts, projects: world.deps.projects };
-  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, team, hubToken: null, loginRateMax: 1000 } });
+  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, team, loginRateMax: 1000 } });
   const browser = () => {
     const jar = new Map<string, string>();
     return async (path: string, init: RequestInit = {}) => {
@@ -193,7 +193,7 @@ test('按 IP 限流：不分邮箱，换着邮箱试也会被挡', async () => {
   const h = harness();
   const accounts = { ...h.accounts };
   const world = inMemoryDeps();
-  const app = createApp({ deps: world.deps, hub: createStreamHub(), token: null, auth: { accounts, hubToken: null, loginRateMax: 3 } });
+  const app = createApp({ deps: world.deps, hub: createStreamHub(), token: null, auth: { accounts, loginRateMax: 3 } });
   const statuses: number[] = [];
   for (let i = 0; i < 4; i++) {
     const r = await app.fetch(new Request('http://hub/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: `u${i}@b.co`, password: 'wrong password' }) }));

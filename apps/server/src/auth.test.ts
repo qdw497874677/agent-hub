@@ -7,11 +7,11 @@ import { createStreamHub } from './stream-hub.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 
-function harness(hubToken: { value: string; until: number } | null = null) {
+function harness() {
   let clock = 1_000_000;
   const accounts = inMemoryAccounts(() => clock);
   const { deps } = inMemoryDeps({ now: () => clock });
-  const app = createApp({ deps, hub: createStreamHub(), token: hubToken?.value ?? null, auth: { accounts, hubToken } });
+  const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts } });
   const jar = new Map<string, string>();
   const call = async (path: string, init: RequestInit & { csrf?: boolean; base?: string } = {}) => {
     const headers: Record<string, string> = { 'content-type': 'application/json', ...(init.headers as Record<string, string>) };
@@ -33,7 +33,7 @@ test('没登录：API 401，健康检查和账号接口放行', async () => {
   const { call } = harness();
   assert.equal((await call('/api/projects')).status, 401);
   assert.equal((await call('/api/health')).status, 200);
-  assert.deepEqual((await call('/api/auth/state')).body, { user: null, tokenLogin: false, registration: true, mailDelivery: false });
+  assert.deepEqual((await call('/api/auth/state')).body, { user: null, registration: true, mailDelivery: false });
 });
 
 test('注册 → 有 cookie、能调 API；写请求要 CSRF 头；登出后 cookie 失效', async () => {
@@ -77,27 +77,24 @@ test('登录：错密码与不存在的邮箱同一句话；停用账号拒绝�
   assert.equal(disabled.status, 409);
 });
 
-test('旧 HUB_TOKEN：过渡期内 Bearer 放行、能换 Owner 登录；过期后两者都不行', async () => {
-  const { app, call, accounts, jar, tick } = harness({ value: 's3cret', until: 1_000_000 + 30 * DAY });
+test('旧 HUB_TOKEN 登录通道已下线：Bearer、查询串、token-login 都进不来', async () => {
+  const { app, call, accounts, jar, tick } = harness();
   await seedAccount(accounts, { email: 'o@x.co', password: 'owner password', role: 'owner', displayName: 'o' });
-  assert.equal((await call('/api/projects', { headers: { authorization: 'Bearer s3cret' } })).status, 200);
-  // 查询串只给 SSE：别的接口带 ?token= 一律 401（令牌会进日志、历史和 Referer）
+  // 过渡期内也不认：查询串会进访问日志、浏览器历史和 Referer，Bearer 过渡分支一并下线（SEC-1a / SEC-1b）
+  assert.equal((await call('/api/projects', { headers: { authorization: 'Bearer s3cret' } })).status, 401);
   assert.equal((await call('/api/projects?token=s3cret')).status, 401);
-  const abort = new AbortController();
-  const stream = await app.fetch(new Request('http://hub/api/stream?token=s3cret', { signal: abort.signal }));
-  assert.equal(stream.status, 200);
-  await stream.body?.cancel();
-  abort.abort();
-  assert.equal((await call('/api/projects', { headers: { authorization: 'Bearer wrong' } })).status, 401);
-  assert.equal((await call('/api/auth/token-login', { method: 'POST', body: JSON.stringify({ token: 'wrong' }) })).status, 401);
-  const exchanged = await call('/api/auth/token-login', { method: 'POST', body: JSON.stringify({ token: 's3cret' }) });
-  assert.equal(exchanged.body.user.email, 'o@x.co');
-  assert.equal((await call('/api/auth/state')).body.tokenLogin, true);
+  const stream = await app.fetch(new Request('http://hub/api/stream?token=s3cret'));
+  assert.equal(stream.status, 401);
+  assert.equal((await call('/api/auth/token-login', { method: 'POST', body: JSON.stringify({ token: 's3cret' }) })).status, 404);
+  assert.equal((await call('/api/auth/state')).body.tokenLogin, undefined);
 
+  // 正常登录照旧能用；过期后更不用说
+  const login = await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'o@x.co', password: 'owner password' }) });
+  assert.equal(login.status, 200);
+  assert.equal((await call('/api/projects')).status, 200);
   jar.clear();
   tick(31 * DAY);
   assert.equal((await call('/api/projects', { headers: { authorization: 'Bearer s3cret' } })).status, 401);
-  assert.equal((await call('/api/auth/token-login', { method: 'POST', body: JSON.stringify({ token: 's3cret' }) })).status, 401);
 });
 
 test('登录退避：同一邮箱连错 5 次后 429', async () => {
