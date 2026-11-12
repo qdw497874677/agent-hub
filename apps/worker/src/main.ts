@@ -184,7 +184,11 @@ for (const [agentId, command] of machineCommands) {
 const selfChecks =
   env['WORKER_MODEL_CHECK'] === '0'
     ? []
-    : prepared.filter((entry) => entry.selfCheck === true).map((entry) => runtimeSelfCheck(entry.runtime, { timeoutMs: Number(env['WORKER_MODEL_CHECK_TIMEOUT_MS'] ?? '') || 45_000 }));
+    : prepared
+        // 一台机器都没装（hint 非空 = 调度垫片后面既没有 hub 版本也没有机器自带）就没什么可自检的：
+        // 现在跑只会拿到垫片的 127，日志里变成「检测失败（退出码 127）」，不如老实地报未安装。
+        .filter((entry) => entry.selfCheck === true && entry.hint === null)
+        .map((entry) => runtimeSelfCheck(entry.runtime, { timeoutMs: Number(env['WORKER_MODEL_CHECK_TIMEOUT_MS'] ?? '') || 45_000 }));
 const readiness = createHarnessRegistry(
   prepared.map((entry) => withMissingHint(entry.readiness, entry.hint)),
   { selfChecks }

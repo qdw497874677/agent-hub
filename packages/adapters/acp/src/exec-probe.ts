@@ -12,10 +12,14 @@ export function execProbe(command: string, args: readonly string[], timeoutMs: n
     try {
       execFile(command, [...args], { timeout: timeoutMs, maxBuffer: 4 * 1024 * 1024 }, (error, stdout) => {
         if (!error) return resolve({ kind: 'ok', stdout: String(stdout) });
-        const failure = error as NodeJS.ErrnoException & { killed?: boolean; code?: unknown };
-        if (failure.code === 'ENOENT') return resolve({ kind: 'missing' });
+        const failure = error as NodeJS.ErrnoException & { killed?: boolean };
+        // spawn 失败时 `code` 是 errno 字符串，进程自己退出时是数字；这里两种都要认。
+        const exitCode: unknown = failure.code;
+        if (exitCode === 'ENOENT') return resolve({ kind: 'missing' });
+        // 127 是调度垫片「hub 没装、机器上也没有」的约定退出码（ADR 0010），等同没装。
+        if (exitCode === 127) return resolve({ kind: 'missing' });
         if (failure.killed) return resolve({ kind: 'timeout' });
-        resolve({ kind: 'failed', code: typeof failure.code === 'number' ? failure.code : null });
+        resolve({ kind: 'failed', code: typeof exitCode === 'number' ? exitCode : null });
       });
     } catch {
       resolve({ kind: 'missing' });
