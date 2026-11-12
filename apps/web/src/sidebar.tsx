@@ -70,7 +70,7 @@ export function ProjectSidebar({
     >
       <div className="flex items-center gap-1.5 border-b border-hair px-2 py-2">
         <button
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-secondary hover:border-accent hover:text-accent"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-secondary hover:border-accent hover:text-accent lg:h-8 lg:w-8"
           title="回到首页"
           aria-label="回到首页"
           onClick={onHome}
@@ -78,7 +78,7 @@ export function ProjectSidebar({
           ⌂
         </button>
         <select
-          className="min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent text-body text-primary outline-none"
+          className="min-h-11 min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent text-body text-primary outline-none lg:min-h-0"
           value={project.id}
           aria-label="切换项目"
           onChange={(event) => {
@@ -94,7 +94,7 @@ export function ProjectSidebar({
         </select>
         {onClose ? (
           <button
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm text-sub text-tertiary hover:text-primary"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm text-sub text-tertiary hover:text-primary lg:h-8 lg:w-8"
             aria-label="关闭侧栏"
             onClick={onClose}
           >
@@ -107,11 +107,12 @@ export function ProjectSidebar({
         {VIEWS.map((item) => (
           <button
             key={item.view}
-            className={`flex h-8 items-center justify-center gap-1 rounded-sm border text-meta ${
+            className={`flex h-11 items-center justify-center gap-1 rounded-sm border text-meta lg:h-8 ${
               view === item.view
                 ? 'border-accent/50 bg-card-raised text-primary'
                 : 'border-transparent text-tertiary hover:border-hair hover:text-secondary'
             }`}
+            aria-pressed={view === item.view}
             disabled={item.view === 'focus' && !canFocus}
             onClick={() => onView(item.view)}
           >
@@ -123,14 +124,14 @@ export function ProjectSidebar({
 
       <div className="grid grid-cols-2 gap-1 border-b border-hair p-2">
         <button
-          className="rounded-sm border border-hair px-2 py-1.5 text-meta text-secondary hover:border-accent hover:text-accent"
+          className="min-h-11 rounded-sm border border-hair px-2 py-1.5 text-meta text-secondary hover:border-accent hover:text-accent lg:min-h-0"
           onClick={onSearch}
           title="搜索任务与会话（⌘K）"
         >
           搜索 ⌘K
         </button>
         <button
-          className="rounded-sm border border-hair px-2 py-1.5 text-meta text-secondary hover:border-accent hover:text-accent"
+          className="min-h-11 rounded-sm border border-hair px-2 py-1.5 text-meta text-secondary hover:border-accent hover:text-accent lg:min-h-0"
           onClick={onNewTask}
         >
           新建任务
@@ -149,7 +150,7 @@ export function ProjectSidebar({
                   {task.title}
                 </p>
                 {rows.length === 0 ? (
-                  <p className="px-2 py-1 text-meta text-tertiary/70">还没有会话</p>
+                  <p className="px-2 py-1 text-meta text-tertiary">还没有会话</p>
                 ) : (
                   rows.map((session) => {
                     const active = selectedId === session.id;
@@ -158,9 +159,10 @@ export function ProjectSidebar({
                       <button
                         key={session.id}
                         data-testid="sidebar-session"
-                        className={`mb-0.5 flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-meta ${
+                        className={`mb-0.5 flex min-h-11 w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-meta lg:min-h-0 ${
                           active ? 'bg-card-raised text-primary' : 'text-secondary hover:bg-card hover:text-primary'
                         }`}
+                        aria-current={active ? 'page' : undefined}
                         title={`${title} · ${session.agentId} · ${session.status}`}
                         onClick={() => onOpenSession(session.id)}
                       >
@@ -190,7 +192,7 @@ export function ProjectSidebar({
         <div className="flex items-center justify-between gap-1">
           <WorkersBadge placement="up" />
           <button
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-tertiary hover:border-accent hover:text-accent"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-tertiary hover:border-accent hover:text-accent lg:h-8 lg:w-8"
             title="项目设置"
             aria-label="项目设置"
             onClick={() => setSettings(true)}

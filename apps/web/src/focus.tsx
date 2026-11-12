@@ -531,7 +531,7 @@ export function FocusView({
               setTab(next);
               (e.currentTarget.parentElement?.querySelector(`#session-tab-${next}`) as HTMLElement | null)?.focus();
             }}
-            className={`flex h-9 flex-1 items-center justify-center rounded-sm px-3 text-sub md:h-8 md:flex-none ${tab === t ? 'bg-card-raised text-primary' : 'text-tertiary hover:text-secondary'}`}
+            className={`flex h-11 flex-1 items-center justify-center rounded-sm px-3 text-sub md:h-8 md:flex-none ${tab === t ? 'bg-card-raised text-primary' : 'text-tertiary hover:text-secondary'}`}
             data-testid={`session-tab-${t}`}
           >
             {sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}
@@ -795,7 +795,7 @@ function MessageMenu({ onRewind }: { onRewind: () => void }) {
   return (
     <div className="relative -mt-0.5 flex justify-end">
       <button type="button" aria-label="消息操作" aria-expanded={open} data-testid="msg-menu"
-        className="rounded-sm px-1.5 text-meta leading-5 text-tertiary hover:bg-hair/40 hover:text-primary"
+        className="flex min-h-9 min-w-9 items-center justify-center rounded-sm px-1.5 text-meta leading-5 text-tertiary hover:bg-hair/40 hover:text-primary"
         onClick={() => setOpen((v) => !v)}>
         ⋯
       </button>

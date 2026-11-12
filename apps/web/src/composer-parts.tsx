@@ -19,7 +19,7 @@ export function ActionDot({
   onInterrupt: () => void;
   size: 'sm' | 'md';
 }) {
-  const box = size === 'sm' ? 'size-6 text-meta' : 'size-9 text-sub md:size-7';
+  const box = size === 'sm' ? 'size-9 text-meta md:size-6' : 'size-10 text-sub md:size-7';
   if (running) {
     return (
       <button

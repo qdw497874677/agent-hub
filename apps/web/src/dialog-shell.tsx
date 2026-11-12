@@ -38,7 +38,7 @@ export function DialogShell({
         {wide ? (
           <button
             aria-label="关闭"
-            className="absolute right-2 top-2 rounded-sm px-2 py-1 text-body text-tertiary hover:text-primary"
+            className="absolute right-2 top-2 flex h-11 w-11 items-center justify-center rounded-sm text-body text-tertiary hover:text-primary"
             onClick={onClose}
           >
             ×
@@ -51,8 +51,8 @@ export function DialogShell({
 }
 
 export const INPUT =
-  'w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent disabled:text-tertiary';
+  'min-h-11 w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent disabled:text-tertiary md:min-h-0';
 export const SECONDARY_BUTTON =
-  'rounded-sm border border-hair px-3 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary';
-export const PRIMARY_BUTTON = 'rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40';
+  'min-h-11 rounded-sm border border-hair px-3 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary md:min-h-0';
+export const PRIMARY_BUTTON = 'min-h-11 rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
 

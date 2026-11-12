@@ -14,11 +14,12 @@
   --color-strong: #3c4649;
   --color-primary: #e8e3d9;
   --color-secondary: #9aa39e;
-  --color-tertiary: #6b7570;
+  /* 11px 的元信息也要过 WCAG AA：旧的 #6b7570 在 card 上只有 3.45:1。 */
+  --color-tertiary: #8b9690;
   --color-accent: #d9a05b;
-  --color-accent-dim: #8a6a3d;
-  --color-sage: #6e8c80;
-  --color-rust: #8c6a55;
+  --color-accent-dim: #b6894f;
+  --color-sage: #82a394;
+  --color-rust: #c08a6a;
 
   --font-sans: 'Noto Sans SC', 'Inter Tight', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -42,12 +43,42 @@ body,
   /* 手机浏览器的地址栏会伸缩：dvh 跟着可见区域走，100vh 会把输入框压到屏幕外 */
   height: 100dvh;
   margin: 0;
+  color-scheme: dark;
   background: var(--color-canvas);
   color: var(--color-primary);
   font-family: var(--font-sans);
   font-size: var(--text-body);
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  color: var(--color-primary);
+}
+
+/* 触屏去掉 300ms 点击延迟；视觉尺寸不动，只让点击更快。 */
+@media (pointer: coarse) {
+  button,
+  [role='button'],
+  a,
+  select,
+  summary {
+    touch-action: manipulation;
+  }
+}
+
+/* 系统要求更高对比度时，别只依赖用户去挑主题。 */
+@media (prefers-contrast: more) {
+  :root {
+    --color-secondary: #d3dbd6;
+    --color-tertiary: #b7c0bb;
+    --color-hair: #566266;
+    --color-strong: #77868a;
+    --color-accent-dim: #d6a96b;
+    --color-sage: #a6c8b9;
+    --color-rust: #e2ab8c;
+  }
 }
 
 /* iOS 上小于 16px 的输入框获得焦点会强制放大页面，触屏设备统一抬到 16px */
@@ -66,7 +97,7 @@ body,
 /* 输入框底栏的可调项：按钮和下拉统一盒子高度、垂直居中，和「+ / 发送」同高（手机 36px，md 以上 28px，和发送圆点一样） */
 .option-control {
   box-sizing: border-box;
-  height: 2.25rem;
+  height: 2.5rem;
   line-height: 1.25;
   padding-top: 0;
   padding-bottom: 0;
@@ -142,9 +173,15 @@ body,
  * 一根 1px 琥珀线——它是「此刻在这里」，正好是强调色该说的话（visual-direction §1）。
  */
 :where(button, a, select, summary, [tabindex]):focus-visible {
-  outline: 1px solid var(--color-accent);
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
   border-radius: 2px;
+}
+
+/* 对话框/表单里的输入框也用同一根焦点线；原来只有 focus:border-accent，深色下不够醒目。 */
+:where(input, textarea):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
 }
 
 /* 画布交互分区：拖动区自己吃掉触摸手势，不让浏览器拿去滚页面/缩放（真机上否则一拖就被 pointercancel 打断） */

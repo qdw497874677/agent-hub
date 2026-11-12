@@ -181,7 +181,7 @@ export function SearchPalette({
       >
         <input
           ref={input}
-          className="w-full border-b border-hair bg-transparent px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary"
+          className="min-h-11 w-full border-b border-hair bg-transparent px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary"
           placeholder="搜任务标题，或者你记得的那句话"
           value={query}
           onChange={(event) => {

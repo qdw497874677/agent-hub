@@ -239,7 +239,7 @@ export function Composer({
             <li key={option.key} role="option" aria-selected={index === active}>
               <button
                 type="button"
-                className={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-sub ${
+                className={`flex min-h-11 w-full items-baseline gap-2 px-3 py-2.5 text-left text-sub md:min-h-0 md:py-1.5 ${
                   index === active ? 'bg-accent/15 text-primary' : 'text-secondary hover:bg-card'
                 }`}
                 onMouseDown={(event) => event.preventDefault()}
@@ -285,7 +285,7 @@ export function Composer({
                 <button
                   type="button"
                   aria-label={`移除 ${item.kind === 'mention' ? item.path : item.name}`}
-                  className="grid size-5 shrink-0 place-items-center rounded-sm text-tertiary hover:bg-card hover:text-primary"
+                  className="grid size-7 shrink-0 place-items-center rounded-sm text-tertiary hover:bg-card hover:text-primary md:size-5"
                   onClick={() => setItems((current) => current.filter((other) => other.id !== item.id))}
                 >
                   ×
@@ -344,7 +344,7 @@ export function Composer({
               aria-label="添加附件"
               title={attachTitle}
               disabled={denied}
-              className="grid h-9 w-7 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 md:h-7"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 md:h-7 md:w-7"
               onClick={() => filePicker.current?.click()}
             >
               +
@@ -355,7 +355,7 @@ export function Composer({
                 aria-label="拍照"
                 title={attachTitle}
                 disabled={denied}
-                className="hidden size-9 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 sm:grid md:size-7"
+                className="hidden size-10 shrink-0 place-items-center rounded-sm text-sub text-tertiary hover:bg-card-raised hover:text-primary disabled:opacity-30 sm:grid md:size-7"
                 onClick={() => camera.current?.click()}
               >
                 ◉
