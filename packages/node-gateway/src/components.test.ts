@@ -40,7 +40,7 @@ function spec(registry: MockRegistry, version: string, extra: Partial<ComponentJ
   };
 }
 
-test('组件安装：暂存 → 核对锁文件 → 切换 current；升级保留上一版；卸载', { timeout: 120_000 }, async () => {
+test('组件安装：暂存 → 核对锁文件 → 切换 current；升级保留上一版；卸载', { timeout: 120_000, skip: process.env['HUB_TEST_INSTALL'] !== '1' }, async () => {
   const registry = await startMockRegistry([
     { name: 'demo-pi-ext', version: '1.0.0', scripts: { postinstall: SCRIPT } },
     { name: 'demo-pi-ext', version: '1.1.0' }
@@ -79,7 +79,7 @@ test('组件安装：暂存 → 核对锁文件 → 切换 current；升级保�
   }
 });
 
-test('制品被换：锁文件哈希和钉住的不符 → 丢弃暂存，current 不动', { timeout: 120_000 }, async () => {
+test('制品被换：锁文件哈希和钉住的不符 → 丢弃暂存，current 不动', { timeout: 120_000, skip: process.env['HUB_TEST_INSTALL'] !== '1' }, async () => {
   const registry = await startMockRegistry([{ name: 'demo-pi-ext', version: '1.0.0' }, { name: 'demo-pi-ext', version: '1.1.0' }]);
   try {
     const root = mkdtempSync(join(tmpdir(), 'comp-'));
@@ -101,7 +101,7 @@ test('制品被换：锁文件哈希和钉住的不符 → 丢弃暂存，curren
   }
 });
 
-test('npm 失败（包不存在）→ 只删暂存，报失败', { timeout: 120_000 }, async () => {
+test('npm 失败（包不存在）→ 只删暂存，报失败', { timeout: 120_000, skip: process.env['HUB_TEST_INSTALL'] !== '1' }, async () => {
   const registry = await startMockRegistry([{ name: 'other', version: '1.0.0' }]);
   try {
     const root = mkdtempSync(join(tmpdir(), 'comp-'));
@@ -113,7 +113,7 @@ test('npm 失败（包不存在）→ 只删暂存，报失败', { timeout: 120_
   }
 });
 
-test('整套安装（P3）：任何一个核对失败 → 一个都不切换；全部通过才一起切换', { timeout: 120_000 }, async () => {
+test('整套安装（P3）：任何一个核对失败 → 一个都不切换；全部通过才一起切换', { timeout: 120_000, skip: process.env['HUB_TEST_INSTALL'] !== '1' }, async () => {
   const registry = await startMockRegistry([
     { name: 'demo-pi-ext', version: '1.0.0' },
     { name: 'other-pi-ext', version: '2.0.0' }

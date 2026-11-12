@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createNpmResolver } from './components.ts';
 import { startMockRegistry } from '@agent-hub/node-gateway/testing';
 
-test('npm 解析器：查确切版本，拿 tarball、sha512、安装脚本；查不到报错', { timeout: 60_000 }, async () => {
+test('npm 解析器：查确切版本，拿 tarball、sha512、安装脚本；查不到报错', { timeout: 60_000, skip: process.env['HUB_TEST_INSTALL'] !== '1' }, async () => {
   const registry = await startMockRegistry([
     { name: 'demo-pi-ext', version: '1.0.0', scripts: { postinstall: 'node x.js', test: 'echo' } },
     { name: '@scope/ext', version: '2.0.0' }

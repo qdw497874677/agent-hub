@@ -1,5 +1,8 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { asSessionId, asTaskId } from '@agent-hub/domain';
 import type { RuntimeSession, SessionEvent, StartSpec } from '@agent-hub/domain';
@@ -19,15 +22,18 @@ const config: AcpAgentConfig = {
   sessionMeta: { yoloMode: true }
 };
 
-function spec(overrides: Partial<StartSpec> = {}): StartSpec {
-  return {
-    sessionId: asSessionId('hub-1'),
-    taskId: asTaskId('task-1'),
-    workspaceRoot: process.cwd(),
-    resume: null,
-    options: {},
-    ...overrides
-  };
+function spec(t: TestContext, overrides: Partial<StartSpec> = {}): Promise<StartSpec> {
+  return mkdtemp(join(tmpdir(), 'hub-acp-')).then((workspaceRoot) => {
+    t.after(() => rm(workspaceRoot, { recursive: true, force: true }));
+    return {
+      sessionId: asSessionId('hub-1'),
+      taskId: asTaskId('task-1'),
+      workspaceRoot,
+      resume: null,
+      options: {},
+      ...overrides
+    };
+  });
 }
 
 async function collectUntilEnded(session: RuntimeSession): Promise<SessionEvent[]> {
@@ -39,14 +45,14 @@ async function collectUntilEnded(session: RuntimeSession): Promise<SessionEvent[
   return out;
 }
 
-test('acp runtime: 认证钩子、_meta、开跑前选项都按顺序落到 agent 上', async () => {
+test('acp runtime: 认证钩子、_meta、开跑前选项都按顺序落到 agent 上', async (t) => {
   const refs: string[] = [];
   const reported: string[] = [];
   const runtime = createAcpRuntime(config, {
     onAgentSessionRef: (_id, ref) => refs.push(ref),
     onOptions: (_id, options) => reported.push(String(options[0]?.current))
   });
-  const started = await runtime.start(spec({ options: { model: 'b' } }));
+  const started = await runtime.start(await spec(t, { options: { model: 'b' } }));
   assert.ok(started.ok);
   const session = started.value;
   assert.deepEqual(refs, ['s1'], '新会话立刻报出 agent 的真实 ref');
@@ -63,9 +69,9 @@ test('acp runtime: 认证钩子、_meta、开跑前选项都按顺序落到 agen
   await session.dispose();
 });
 
-test('acp runtime: 恢复时丢掉回放、权限请求自动选 allow、dispose 记 stopped', async () => {
+test('acp runtime: 恢复时丢掉回放、权限请求自动选 allow、dispose 记 stopped', async (t) => {
   const runtime = createAcpRuntime(config);
-  const started = await runtime.start(spec({ resume: { agentSessionRef: 's-old', cursor: 0 } }));
+  const started = await runtime.start(await spec(t, { resume: { agentSessionRef: 's-old', cursor: 0 } }));
   assert.ok(started.ok);
   const session = started.value;
 
@@ -84,16 +90,16 @@ test('acp runtime: 恢复时丢掉回放、权限请求自动选 allow、dispose
   assert.deepEqual((await rest).at(-1), { kind: 'ended', outcome: 'stopped' });
 });
 
-test('acp runtime: 命令不存在时返回 unavailable，不崩', async () => {
+test('acp runtime: 命令不存在时返回 unavailable，不崩', async (t) => {
   const runtime = createAcpRuntime({ ...config, command: '/nonexistent/agent' });
-  const started = await runtime.start(spec());
+  const started = await runtime.start(await spec(t));
   assert.equal(started.ok, false);
 });
 
-test('acp runtime: launch 给的 sessionMeta 叠加到 session/new 的 _meta 上（Grok 的 rules 走这里）', async () => {
+test('acp runtime: launch 给的 sessionMeta 叠加到 session/new 的 _meta 上（Grok 的 rules 走这里）', async (t) => {
   const assets = { root: '/x', skills: [], instructions: [] };
   const runtime = createAcpRuntime({ ...config, launch: () => ({ sessionMeta: { rules: 'R' } }) });
-  const started = await runtime.start(spec({ assets }));
+  const started = await runtime.start(await spec(t, { assets }));
   assert.ok(started.ok);
   const session = started.value;
   const turn = collectUntilEnded(session);
@@ -104,9 +110,9 @@ test('acp runtime: launch 给的 sessionMeta 叠加到 session/new 的 _meta 上
   await session.dispose();
 });
 
-test('acp runtime: 只报老式 models/modes 的 agent（Hermes）→ 选项照样能看能改，走 set_model / set_mode', async () => {
+test('acp runtime: 只报老式 models/modes 的 agent（Hermes）→ 选项照样能看能改，走 set_model / set_mode', async (t) => {
   const runtime = createAcpRuntime({ ...config, args: [FAKE, '--legacy'], optionValue: hermesAcpOptionValue });
-  const started = await runtime.start(spec({ options: { model: 'hub-p/m-2', mode: 'accept_edits' } }));
+  const started = await runtime.start(await spec(t, { options: { model: 'hub-p/m-2', mode: 'accept_edits' } }));
   assert.ok(started.ok, started.ok ? '' : started.error.message);
   const session = started.value;
   const byId = Object.fromEntries(session.options().map((o) => [o.id, o]));
@@ -127,7 +133,7 @@ test('acp runtime: 只报老式 models/modes 的 agent（Hermes）→ 选项照�
 
 test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏后的 stderr', async (t) => {
   const runtime = createAcpRuntime(config);
-  const started = await runtime.start(spec());
+  const started = await runtime.start(await spec(t));
   assert.ok(started.ok);
   const session = started.value;
   t.after(() => session.dispose());
@@ -145,7 +151,7 @@ test('acp runtime: 一轮什么都没回 → failed，带 stopReason 和脱敏�
 
 test('acp runtime: child session updates → subagent start/子事件/end，父会话不混入子文本', async (t) => {
   const runtime = createAcpRuntime({ ...config, args: [FAKE, '--child'], codec: opencodeCodec });
-  const started = await runtime.start(spec());
+  const started = await runtime.start(await spec(t));
   assert.ok(started.ok);
   const session = started.value;
   t.after(() => session.dispose());
@@ -181,7 +187,7 @@ test('acp runtime: child session updates → subagent start/子事件/end，父�
 
 test('acp runtime: refusal / max_tokens 各自报失败原因，不再当成完成', async (t) => {
   const runtime = createAcpRuntime(config);
-  const started = await runtime.start(spec());
+  const started = await runtime.start(await spec(t));
   assert.ok(started.ok);
   const session = started.value;
   t.after(() => session.dispose());

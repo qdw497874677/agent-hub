@@ -28,10 +28,10 @@ function app(dir: string, commit: string) {
   const enrollment = inMemoryEnrollment(admin);
   const { deps } = inMemoryDeps();
   const bootstrapScript = fileURLToPath(new URL('../../../scripts/bootstrap-worker.sh', import.meta.url));
-  const artifacts = createInstallArtifacts({ repoDir: dir, commit, cacheDir: join(dir, '..', `cache-${commit.slice(0, 8)}`) });
+  const artifacts = createInstallArtifacts({ repoDir: dir, commit, cacheDir: join(dir, '.cache') });
   const built = createApp({
     deps, hub: createStreamHub(), token: null,
-    auth: { accounts: admin.accounts, hubToken: null },
+    auth: { accounts: admin.accounts },
     admin: { deps: admin.deps, enrollment: enrollment.deps },
     enrollment: { deps: enrollment.deps, bootstrapScript, commit, artifacts }
   });

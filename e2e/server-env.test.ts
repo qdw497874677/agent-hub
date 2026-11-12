@@ -1,30 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
-import { createServer } from 'node:net';
+import { once } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ChildProcess } from 'node:child_process';
 import { hubProviderBody } from './hub-model.ts';
 import { playwrightWebServerEnv, serverEnv } from './server-env.ts';
+import { readHubLog, reservePort, spawnHub, stop } from './spawn-hub.ts';
 
 const KEY = 'sk-test-placeholder-not-real';
 const GO = 'sk-go-placeholder-not-real';
 const RELAY = 'relay-placeholder';
 const FORBIDDEN = ['ZAI_CODING_CN_API_KEY', 'ZAI_API_KEY', 'OPENCODE_API_KEY', 'OPENCODE_GO_API_KEY', 'PI_DEFAULT_MODEL'] as const;
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      const port = typeof address === 'object' && address ? address.port : 0;
-      server.close(() => resolve(port));
-    });
-  });
-}
 
 function envNames(pid: number): Set<string> {
   const raw = readFileSync(`/proc/${pid}/environ`);
@@ -34,6 +23,16 @@ function envNames(pid: number): Set<string> {
     if (eq > 0) names.add(entry.slice(0, eq));
   }
   return names;
+}
+
+/** spawn 事件可能早于子进程 exec；此时 /proc/pid/environ 还是父进程的副本，等它换上新环境。 */
+async function envNamesAfterExec(pid: number, marker: string): Promise<Set<string>> {
+  for (let i = 0; i < 50; i++) {
+    const names = envNames(pid);
+    if (names.has(marker)) return names;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return envNames(pid);
 }
 
 function descendants(pid: number): number[] {
@@ -61,22 +60,10 @@ function assertAbsent(pid: number, label: string): void {
   assert.equal(names.has('HUB_PROVIDER_TOKEN'), true, label);
 }
 
-async function launch(env: NodeJS.ProcessEnv, command: string): Promise<ChildProcess> {
-  const child = spawn(command, [], { env, shell: true, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-  await new Promise<void>((resolve, reject) => {
-    child.once('spawn', () => resolve());
-    child.once('error', reject);
-  });
+async function launch(env: NodeJS.ProcessEnv, command: string, logFile: string): Promise<ChildProcess> {
+  const child = spawnHub(command, [], { env, shell: true, detached: true, logFile });
+  await once(child, 'spawn');
   return child;
-}
-
-function stop(child: ChildProcess): void {
-  if (!child.pid) return;
-  try {
-    process.kill(-child.pid, 'SIGTERM');
-  } catch {
-    child.kill('SIGTERM');
-  }
 }
 
 test('Playwright 仍先展开 process.env；delete 会让 shell 继承密钥名，undefined 不会', async () => {
@@ -103,24 +90,31 @@ test('Playwright 仍先展开 process.env；delete 会让 shell 继承密钥名�
   assert.equal(covered['OPENCODE_GO_API_KEY'], undefined);
   assert.equal(covered['HUB_PROVIDER_TOKEN'], RELAY);
 
-  const leakedChild = await launch(leaked, 'sleep 30');
-  const coveredChild = await launch(covered, 'sleep 30');
+  const dir = await mkdtemp(join(tmpdir(), 'hub-e2e-env-'));
+  const children: ChildProcess[] = [];
   try {
+    const leakedChild = await launch(leaked, 'sleep 30', join(dir, 'leaked.log'));
+    children.push(leakedChild);
+    const coveredChild = await launch(covered, 'sleep 30', join(dir, 'covered.log'));
+    children.push(coveredChild);
     assert.ok(leakedChild.pid);
     assert.ok(coveredChild.pid);
-    assert.equal(envNames(leakedChild.pid).has('ZAI_CODING_CN_API_KEY'), true);
-    assert.equal(envNames(coveredChild.pid).has('ZAI_CODING_CN_API_KEY'), false);
-    assert.equal(envNames(coveredChild.pid).has('OPENCODE_GO_API_KEY'), false);
-    assert.equal(envNames(coveredChild.pid).has('HUB_PROVIDER_TOKEN'), true);
+    const leakedNames = await envNamesAfterExec(leakedChild.pid, 'HUB_PROVIDER_TOKEN');
+    const coveredNames = await envNamesAfterExec(coveredChild.pid, 'HUB_PROVIDER_TOKEN');
+    assert.equal(leakedNames.has('ZAI_CODING_CN_API_KEY'), true);
+    assert.equal(coveredNames.has('ZAI_CODING_CN_API_KEY'), false);
+    assert.equal(coveredNames.has('OPENCODE_GO_API_KEY'), false);
+    assert.equal(coveredNames.has('HUB_PROVIDER_TOKEN'), true);
   } finally {
-    stop(leakedChild);
-    stop(coveredChild);
+    for (const child of children) await stop(child);
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
 test('真实 shell 拉起 hub 与 worker 后环境里没有占位密钥，测试进程仍能创建供应商', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hub-e2e-env-'));
-  const port = await freePort();
+  const port = await reservePort();
+  const logFile = join(dir, 'hub.log');
   const passwordFile = join(dir, 'test-account');
   const parent: NodeJS.ProcessEnv = {
     ...process.env,
@@ -149,10 +143,7 @@ test('真实 shell 拉起 hub 与 worker 后环境里没有占位密钥，测试
   };
   const launched = playwrightWebServerEnv(parent, configEnv);
   assert.equal(parent['ZAI_CODING_CN_API_KEY'], KEY);
-  const child = await launch(launched, 'node apps/server/src/main.ts');
-  let logs = '';
-  child.stdout?.on('data', (chunk: Buffer) => { logs += chunk.toString(); });
-  child.stderr?.on('data', (chunk: Buffer) => { logs += chunk.toString(); });
+  const child = await launch(launched, 'node apps/server/src/main.ts', logFile);
   const base = `http://127.0.0.1:${port}`;
   try {
     let health = 0;
@@ -196,10 +187,11 @@ test('真实 shell 拉起 hub 与 worker 后环境里没有占位密钥，测试
     assert.equal(text.includes(GO), false);
     assert.equal(text.includes('"apiKey"'), false);
     assert.equal((JSON.parse(text) as { hasKey: boolean }).hasKey, true);
+    const logs = readHubLog(logFile);
     assert.equal(logs.includes(KEY), false);
     assert.equal(logs.includes(GO), false);
   } finally {
-    stop(child);
+    await stop(child);
     await rm(dir, { recursive: true, force: true });
   }
 });

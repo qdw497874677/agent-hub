@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { readHubLog, reservePort, spawnHub, stop } from './test-support/spawn.ts';
 
 /**
  * OBSERVE=0 必须在独立进程里看：main.ts 启动时决定注不注册适配器。
@@ -11,9 +12,10 @@ import { join } from 'node:path';
  */
 test('OBSERVE=0 的独立进程：登录后列表是未启用，健康检查仍在', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'hub-observe-off-'));
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  const port = await reservePort();
   const passwordFile = join(dir, 'test-account');
-  const child: ChildProcess = spawn(process.execPath, ['apps/server/src/main.ts'], {
+  const logFile = join(dir, 'hub.log');
+  const child = spawnHub(process.execPath, ['apps/server/src/main.ts'], {
     env: {
       PATH: process.env.PATH ?? '',
       HOME: dir,
@@ -26,11 +28,9 @@ test('OBSERVE=0 的独立进程：登录后列表是未启用，健康检查仍�
       HUB_TEST_ACCOUNT_FILE: passwordFile,
       HUB_MAIL_PROVIDER: 'log'
     },
-    stdio: ['ignore', 'pipe', 'pipe']
+    logFile
   });
-  let logs = '';
-  child.stdout?.on('data', (chunk) => { logs += chunk.toString(); });
-  child.stderr?.on('data', (chunk) => { logs += chunk.toString(); });
+  await once(child, 'spawn');
   const base = `http://127.0.0.1:${port}`;
   try {
     let health = 0;
@@ -39,7 +39,7 @@ test('OBSERVE=0 的独立进程：登录后列表是未启用，健康检查仍�
       if (health === 200) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    assert.equal(health, 200, logs.slice(-500));
+    assert.equal(health, 200, readHubLog(logFile).slice(-500));
     const password = (await readFile(passwordFile, 'utf8')).trim();
     assert.ok(password.length >= 10);
     const login = await fetch(`${base}/api/auth/login`, {
@@ -56,7 +56,7 @@ test('OBSERVE=0 的独立进程：登录后列表是未启用，健康检查仍�
     assert.deepEqual(body.items ?? [], []);
     assert.equal((await fetch(`${base}/api/health`)).status, 200);
   } finally {
-    child.kill('SIGTERM');
+    await stop(child);
     await rm(dir, { recursive: true, force: true });
   }
 });
