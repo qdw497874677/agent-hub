@@ -19,6 +19,18 @@ const ECHO = `E2E-OK-${RUN}`;
 const sessionNode = (page: Page) => page.locator('.react-flow__node-session');
 const taskNode = (page: Page, title: string) => page.locator('.react-flow__node-task').filter({ hasText: title });
 
+/** 首页和项目页都可能出现；侧栏上线后统一从项目选择器进入。 */
+async function enterProject(page: Page, name: string): Promise<void> {
+  await page.goto('/');
+  const sidebar = page.getByRole('complementary', { name: '项目导航' });
+  if (await sidebar.isVisible().catch(() => false)) {
+    await sidebar.getByRole('combobox', { name: '切换项目' }).selectOption({ label: name });
+    return;
+  }
+  const nav = page.getByRole('navigation');
+  await nav.getByRole('button', { name: new RegExp(`^${name}`) }).first().click();
+}
+
 test.beforeAll(() => {
   mkdirSync(PROJECT_DIR, { recursive: true });
 });
@@ -200,9 +212,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
 });
 
 test('节点在线状态可见，任务的收尾与放弃是两个动作', async ({ page }) => {
-  await page.goto('/');
-  await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
+  await enterProject(page, PROJECT_NAME);
   await expect(sessionNode(page)).toHaveCount(1);
 
   // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以节点状态是常驻可查的
@@ -210,7 +220,9 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await badge.click();
   await expect(page.getByText(/\d+ 在线/)).toBeVisible();
   await expect(page.getByRole('listitem').filter({ hasText: '本机' }).first()).toBeVisible();
-  await badge.click();
+  // 浮层可能盖住徽标，用 Esc 收起，避免点击被拦截。
+  await page.keyboard.press('Escape');
+  await expect(badge).toHaveAttribute('aria-expanded', 'false');
 
   // S4.2：收尾不是放弃。先收尾，卡片改口，再重开回到进行中
   await taskNode(page, TASK_TITLE).hover();
@@ -223,8 +235,14 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
 });
 
 test('任务详情：日志按作者区分、写日志刷新当前进展、可手改、改状态留痕', async ({ page }) => {
-  await page.goto('/');
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
+  await enterProject(page, PROJECT_NAME);
+  // 本用例不依赖上一条用例留下的状态：先自己收尾一次。
+  await taskNode(page, TASK_TITLE).hover();
+  await taskNode(page, TASK_TITLE).getByRole('button', { name: '收尾' }).click();
+  await expect(taskNode(page, TASK_TITLE)).toContainText('已收尾');
+  await taskNode(page, TASK_TITLE).hover();
+  await taskNode(page, TASK_TITLE).getByRole('button', { name: '重开' }).click();
+  await expect(taskNode(page, TASK_TITLE)).toContainText('进行中');
   await taskNode(page, TASK_TITLE).hover();
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '日志' }).click();
   const drawer = page.getByTestId('task-detail');
@@ -302,4 +320,23 @@ test('会话卡片能改模型与思考强度，改完不回弹', async ({ page 
       await expect(thinking).toHaveValue(next as string);
     }
   }
+});
+
+test('侧栏：桌面常驻，手机上从菜单滑出', async ({ page }, testInfo) => {
+  await enterProject(page, PROJECT_NAME);
+  const sidebar = page.getByRole('complementary', { name: '项目导航' });
+  await expect(sidebar).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('sidebar-1280.png'), fullPage: true });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(sidebar).toBeHidden();
+  await page.getByRole('button', { name: '打开侧栏' }).click();
+  await expect(sidebar).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: '新建任务' })).toBeVisible();
+  expect(await sidebar.getByRole('combobox', { name: '切换项目' }).locator('option:checked').textContent()).toBe(PROJECT_NAME);
+  await page.screenshot({ path: testInfo.outputPath('sidebar-390.png'), fullPage: true });
+
+  await sidebar.getByRole('button', { name: '列表', exact: true }).click();
+  await expect(sidebar).toBeHidden();
+  await expect(page.getByTestId('list-context')).toBeVisible();
 });

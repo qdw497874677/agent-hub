@@ -170,6 +170,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   // 画布拖线也不能连离线机器上的会话。
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: '画布', exact: true }).click();
+  await expect(sessionNode(page)).toHaveCount(2);
   const [offlineSource, offlineTarget] = await sessionNode(page).all();
   if (!offlineSource || !offlineTarget) throw new Error('离线场景缺少两个会话节点');
   await dragLink(

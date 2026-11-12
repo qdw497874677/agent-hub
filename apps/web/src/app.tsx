@@ -11,6 +11,7 @@ import { ListView, SearchPalette } from './views.tsx';
 import { FocusView } from './focus.tsx';
 import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
 import { ProjectHeader } from './header.tsx';
+import { ProjectSidebar } from './sidebar.tsx';
 import { useRoute } from './use-route.ts';
 import { MemoryPage } from './memory.tsx';
 import { TeamWorkspacesPage } from './team-workspaces.tsx';
@@ -42,6 +43,7 @@ function Workspace() {
   const narrow = useNarrow();
   const homeView: View = narrow ? 'list' : 'canvas';
   const [newTask, setNewTask] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [deriveFor, setDeriveFor] = useState<string | null>(null);
   const [taskDetail, setTaskDetail] = useState<string | null>(null);
   const [search, setSearch] = useState(false);
@@ -280,26 +282,72 @@ function Workspace() {
     );
   }
 
+  const sidebar = (onClose?: () => void) => (
+    <ProjectSidebar
+      project={project}
+      projects={projects.data ?? []}
+      view={view}
+      canFocus={selectedSession !== null}
+      selectedId={selected}
+      canvas={canvas.data ?? null}
+      onHome={() => {
+        onClose?.();
+        setDrafts({});
+        navigate({ page: 'home' });
+      }}
+      onSwitchProject={(picked) => {
+        onClose?.();
+        setDrafts({});
+        goProject(picked, view === 'focus' ? homeView : view, null);
+      }}
+      onView={(next) => {
+        onClose?.();
+        setView(next);
+      }}
+      onOpenSession={(sessionId) => {
+        onClose?.();
+        openSession(sessionId);
+      }}
+      onSearch={() => {
+        onClose?.();
+        setSearch(true);
+      }}
+      onNewTask={() => {
+        onClose?.();
+        setNewTask(true);
+      }}
+      onClose={onClose}
+    />
+  );
+
   return (
-    <div className="flex h-full flex-col">
-      <ProjectHeader
-        project={project}
-        projects={projects.data ?? []}
-        view={view}
-        canFocus={selectedSession !== null}
-        stream={stream}
-        onHome={() => {
-          setDrafts({});
-          navigate({ page: 'home' });
-        }}
-        onSwitchProject={(picked) => {
-          setDrafts({});
-          goProject(picked, view === 'focus' ? homeView : view, null);
-        }}
-        onView={setView}
-        onSearch={() => setSearch(true)}
-        onNewTask={() => setNewTask(true)}
-      />
+    <div className="flex h-full">
+      <div className="hidden h-full lg:flex">{sidebar()}</div>
+      {sidebarOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex bg-canvas/60 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        >
+          <div className="h-full w-[min(86vw,320px)]" onClick={(event) => event.stopPropagation()}>
+            {sidebar(() => setSidebarOpen(false))}
+          </div>
+        </div>
+      ) : null}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="lg:hidden">
+          <ProjectHeader
+            project={project}
+            projects={projects.data ?? []}
+            stream={stream}
+            onMenu={() => setSidebarOpen(true)}
+            onSwitchProject={(picked) => {
+              setDrafts({});
+              goProject(picked, view === 'focus' ? homeView : view, null);
+            }}
+            onSearch={() => setSearch(true)}
+            onNewTask={() => setNewTask(true)}
+          />
+        </div>
 
       {canvas.data && view === 'focus' && selectedSession ? (
         <FocusView
@@ -406,6 +454,7 @@ function Workspace() {
           }}
         />
       ) : null}
+      </div>
     </div>
   );
 }

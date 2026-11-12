@@ -29,7 +29,8 @@ test('列表视图：按任务分组，手机上每行都有能区分的信息',
   expect(fork.ok()).toBe(true);
 
   await page.goto(`/#/p/${project.id}`);
-  await page.getByRole('button', { name: '列表' }).click();
+  await page.getByRole('button', { name: '打开侧栏' }).click();
+  await page.getByRole('complementary', { name: '项目导航' }).getByRole('button', { name: '列表', exact: true }).click();
   await expect(page.getByTestId('list-context')).toContainText(project.name);
   const group = page.getByRole('region', { name: '任务：同名任务' });
   await expect(group.getByRole('heading')).toContainText('2 条会话');
