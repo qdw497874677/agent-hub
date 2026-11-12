@@ -11,13 +11,15 @@
 | 分支 | `master` |
 | 本地 HEAD | `ff34492 docs: add current state handoff` + 本轮修复（见 §9，尚未推送 origin） |
 | origin/master | 已同步到 `ff34492` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `bb7f7325f`（**尚未部署本轮修复**） |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `e04ee7d2e`（2026-11-12 18:48 已部署本轮修复） |
 | 阿里云 health | `{"ok":true}` |
 | 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online |
 | 本地工作区 | 干净（本轮修复已提交） |
 | 最近完整验证 | `npm test` 983 单测：975 pass / 8 skipped / 0 fail，26s（默认并发，不含 `e2e/**`）；`npm run test:e2e-node` 6/6；`npm run check`、`typecheck`、`typecheck:web`、`build` 全 0 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
+
+2026-11-12 晚补丁（已部署，详见 `docs/plan/known-issues.md` §1.1）：下线 `HUB_TOKEN` 登录通道（`?token=`、`Bearer`、`/api/auth/token-login`、前端 token 登录）；worker 通道改为「有 `HUB_TOKEN` 时比对共享令牌，没有时只认本机子进程」；修掉测试进程泄漏/临时目录污染（`apps/server/src/test-support/spawn.ts`）；`HUB_PORT` 端到端贯通；`deploy-aliyun.sh --bundle` 支持离线更新；门禁补 `check-lockfile`、`check-selftest` 与「解析失败不跳过」。部署后 `POST /api/auth/token-login` 返回 404、`/api/stream?token=` 返回 401，两台 worker 均 online。
 
 ## 2. 已完成的主线
 
