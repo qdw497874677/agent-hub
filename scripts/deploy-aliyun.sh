@@ -12,21 +12,24 @@ ENV_FILE=${ALIYUN_ENV_FILE:-"$ROOT/.env.deploy.local"}
 
 usage() {
   cat <<'EOF'
-用法：scripts/deploy-aliyun.sh [--bundle <old-sha>]
+用法：scripts/deploy-aliyun.sh [--bundle [old-sha]]
 
-  （无参数）          服务器上 git fetch 后快进到 ALIYUN_REF（默认 origin/master）
-  --bundle <old-sha>  本地打 <old-sha>..HEAD 的 bundle，上传后让远端 deploy-hub.sh --bundle 快进
+  （无参数）            服务器上 git fetch 后快进到 ALIYUN_REF（默认 origin/master）
+  --bundle              自动问服务器当前 HEAD，本地打「它..HEAD」的 bundle，上传后快进
+  --bundle <old-sha>    同上，但用你指定的起点（服务器当前 HEAD 的提交号）
 
-<old-sha> 是服务器当前 HEAD（scripts/aliyun-ssh.sh 'git -C <app> rev-parse HEAD'）。
+<old-sha> 省略时由 scripts/aliyun-ssh.sh 'git -C <app> rev-parse HEAD' 现查。
+服务器连不上 GitHub 时走这条路径（阿里云默认如此）。
 EOF
 }
 
 BUNDLE_FROM=
+WANT_BUNDLE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --bundle)
-      [ $# -ge 2 ] || { usage >&2; exit 1; }
-      BUNDLE_FROM=$2; shift 2 ;;
+      WANT_BUNDLE=1
+      if [ $# -ge 2 ] && [ "${2#-}" = "$2" ]; then BUNDLE_FROM=$2; shift 2; else shift; fi ;;
     --help|-h) usage; exit 0 ;;
     *) echo "不认识的参数：$1" >&2; usage >&2; exit 1 ;;
   esac
@@ -48,6 +51,20 @@ set +a
 ALIYUN_NODE=${ALIYUN_NODE:-node}
 ALIYUN_PORT=${ALIYUN_PORT:-17900}
 ALIYUN_REF=${ALIYUN_REF:-origin/master}
+
+# --bundle 不带起点时现查服务器 HEAD：省得每次手工 rev-parse，也避免猜错起点打出空 bundle。
+if [ "$WANT_BUNDLE" = 1 ] && [ -z "$BUNDLE_FROM" ]; then
+  echo "[deploy-aliyun] 现查 $ALIYUN_SSH_USER@$ALIYUN_HOST:$ALIYUN_APP_DIR 的当前提交…"
+  BUNDLE_FROM=$(
+    "$ROOT/scripts/aliyun-ssh.sh" "git -C '$ALIYUN_APP_DIR' rev-parse HEAD" 2>/dev/null \
+      | tr -d '\r' | grep -E '^[0-9a-f]{40}$' | tail -1
+  ) || true
+  [ -n "$BUNDLE_FROM" ] || {
+    echo "[deploy-aliyun] 查不到服务器当前提交；请显式传 --bundle <old-sha>（或确认 SSH 能连上）" >&2
+    exit 1
+  }
+  echo "[deploy-aliyun] 服务器在 ${BUNDLE_FROM:0:12}"
+fi
 
 if [ -n "$BUNDLE_FROM" ]; then
   # 本地打包 → sha256 → 上传；远端 decode 只认 bundle，不再碰 GitHub。

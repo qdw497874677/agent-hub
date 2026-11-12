@@ -39,8 +39,8 @@ scripts/install.sh --no-systemd   # 只装依赖与构建
 
 | 环境变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `HUB_HOST` / `HUB_PORT` | `127.0.0.1` / `7878` | 绑非 loopback 却**没有** `HUB_TOKEN` 时拒绝启动 |
-| `HUB_TOKEN` | 空 | server 与 worker 之间的共享密钥；也是 HTTP 的 Bearer token |
+| `HUB_HOST` / `HUB_PORT` | `127.0.0.1` / `7878` | 绑非 loopback 时，**既没有** `HUB_TOKEN` **也还没有主人账号**就拒绝启动 |
+| `HUB_TOKEN` | 空 | server 与 worker 之间的共享密钥。浏览器登录不再接受它；新接入建议用配对码领 `ahw_` 专属凭据（见下文「多台机器」） |
 | `HUB_DATA_DIR` | `~/.local/share/agent-hub` | SQLite（WAL）与运行数据 |
 | `HUB_SPAWN_WORKER` | `1` | 是否由 server 拉起本机 worker |
 | `PI_COMMAND` / `PI_SESSION_DIR` | `pi` / Pi 自己的 | 换一个 Pi 可执行文件或会话目录 |
@@ -81,6 +81,52 @@ curl -fsSL http://100.x.y.z:7878/install-worker.sh | HUB_PAIR=ahw_pair_… bash
 新版本**起不来**也会回滚：退出重启前 Worker 写下 `~/.config/agent-hub/update-pending`（原提交、目标提交、启动次数），连上 hub 稳定 15 秒后自己删掉；systemd 的 `ExecStartPre` 跑 `scripts/worker-boot-guard.sh`，连续 2 次启动（`WORKER_BOOT_ATTEMPTS`）都没删掉就回到原提交、重装依赖再启动。守卫是纯 bash，不依赖新代码。老的安装重跑一次 `scripts/install-worker.sh` 才会带上这一行。
 本机 Worker 与 hub 共用代码，更新 hub（`git pull` 后重启）即可；点它的「更新」只做演练。
 协议版本不兼容的 Worker 会被拒绝并提示在那台机器上手动运行 `scripts/update-worker.sh [提交号]`。
+
+## 部署与升级
+
+三种机器、三条路径。
+
+| 场景 | 用什么 | 做什么 |
+| --- | --- | --- |
+| 本机 / 开发机 | `scripts/install.sh` | 装依赖、构建前端、装成 systemd 用户服务并 `enable --now`；`--no-systemd` 只装依赖与构建 |
+| 公网服务器（阿里云等） | `scripts/deploy-aliyun.sh --bundle` | 本地打包 → 上传 → 服务器备份、快进、装依赖、构建、重启、健康检查；起不来自动回退代码 |
+| 任何 Worker | 运营后台「机器」页点「更新」 | 逐台或「更新全部过期」；也可在那台机器上跑 `scripts/update-worker.sh [提交号]` |
+
+### hub：本机
+
+```bash
+npm install && npm run build && npm run up   # 前台跑
+scripts/install.sh                            # 或装成 systemd 用户服务
+```
+
+升级就是拉代码 → 依赖有变化时重装 → 重新构建 → 重启。本机 Worker 与 hub 共用代码，跟着重启即可（在机器列表里点它的「更新」只做演练）。
+
+### hub：公网服务器
+
+绑到非 loopback 时，**必须已经有主人账号或设了 `HUB_TOKEN`**，否则 server 拒绝启动。所以首次部署要么先在本机注册主人账号、再把数据目录带上去，要么把 `HUB_TEST_ACCOUNT` 指到自己的邮箱（用完记得改回 `off`）。
+
+服务器连不上 GitHub（阿里云就是）时走 bundle：
+
+```bash
+scripts/deploy-aliyun.sh --bundle          # 自动问服务器当前提交，打「它..HEAD」
+scripts/deploy-aliyun.sh --bundle <sha>    # 起点自己指定
+```
+
+主机、目录、服务名、端口从 `.env.deploy.local` 读（见 `AGENTS.md` §2）。脚本按顺序做五件事，任何一步失败都会停下并说明原因：
+
+1. 本机 `git bundle create` + `sha256sum`，上传到服务器 `/tmp`；
+2. 服务器上 `git bundle verify` → `git fetch` 到 `deploy-<sha>` → `git merge --ff-only`（不产生合并提交，代码有本地改动会被拒）；
+3. 备份数据库：`VACUUM INTO` 快照 + `PRAGMA integrity_check`，失败即停；
+4. `npm ci` → `npm run build` → `systemctl restart` → 最多 60 秒健康检查；
+5. 起不来就 `git reset --hard` 回旧提交、重装、重启（退出码 2）。
+
+**数据库不会自动恢复**：快照留在服务器 `backups/` 下，要回滚数据得人工确认。部署完至少确认四件事：`/api/health` 200、能登录、机器页 Worker 在线、新开一条会话能收到第一条回复。
+
+### 升级 Worker
+
+后台「机器」页显示每台的 package 版本与提交号，比 hub 旧的标「过期」。点「更新」之后，Worker 先尝试从 hub 直接拉 `GET /install/worker-<提交>.bundle`（带 sha256），拉不到才回退 `git fetch origin`；然后 `--ff-only` 到目标提交 → `npm ci --omit=dev` → 退出由 systemd 重启。任一步失败都会回滚到原提交，进度和日志尾巴回到页面上。
+
+新版本**起不来**还有一层兜底：`~/.config/agent-hub/update-pending` 标记 + `scripts/worker-boot-guard.sh`，连续两次启动都没稳定下来就换回 `<目录>.prev`。协议版本不兼容时后台会拒绝更新，只能到那台机器上跑 `scripts/update-worker.sh [提交号]`。
 
 ## 架构：内核不认识进程
 
