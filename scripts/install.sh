@@ -5,6 +5,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 data_dir="${HUB_DATA_DIR:-$HOME/.local/share/agent-hub}"
+hub_port="${HUB_PORT:-7878}"
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 echo "==> 安装依赖"
@@ -19,7 +20,7 @@ mkdir -p "$data_dir"
 
 if [[ "${1:-}" == "--no-systemd" ]]; then
   echo "==> 跳过 systemd"
-  echo "启动：npm run up   （控制台 http://127.0.0.1:7878）"
+  echo "启动：npm run up   （控制台 http://127.0.0.1:$hub_port）"
   exit 0
 fi
 
@@ -35,7 +36,7 @@ Type=simple
 WorkingDirectory=$here
 ExecStart=$(command -v node) $here/apps/server/src/main.ts
 Environment=HUB_DATA_DIR=$data_dir
-Environment=HUB_PORT=7878
+Environment=HUB_PORT=$hub_port
 Restart=on-failure
 RestartSec=2
 
@@ -49,5 +50,5 @@ systemctl --user enable --now agent-hub.service
 echo "==> 好了"
 systemctl --user --no-pager status agent-hub.service | head -5
 echo
-echo "控制台：http://127.0.0.1:7878"
+echo "控制台：http://127.0.0.1:$hub_port"
 echo "日志：journalctl --user -u agent-hub -f"

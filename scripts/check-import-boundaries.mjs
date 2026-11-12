@@ -8,6 +8,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 
 const ROOT = new URL('../', import.meta.url).pathname;
 
@@ -139,83 +140,114 @@ function findCycle(graph) {
   return null;
 }
 
-const failures = [];
+/**
+ * 检查 root 下的层间依赖、相对路径逃逸、package.json 声明、循环 import 与文件级端口规则。
+ * 返回失败信息数组（相对 root 的路径）；空数组表示通过。
+ * 任何 package.json 读不出来或不是合法 JSON 都算失败，不能静默跳过该包。
+ */
+export async function checkImportBoundaries(root = ROOT) {
+  const failures = [];
 
-const dirs = [];
-for (const dir of ['packages', 'apps']) {
-  for (const e of await readdir(join(ROOT, dir), { withFileTypes: true })) {
-    if (!e.isDirectory()) continue;
-    if (dir === 'packages' && e.name === 'adapters') {
-      for (const a of await readdir(join(ROOT, 'packages/adapters'), { withFileTypes: true })) {
-        if (a.isDirectory()) dirs.push(join(ROOT, 'packages/adapters', a.name));
-      }
-    } else dirs.push(join(ROOT, dir, e.name));
-  }
-}
-
-for (const pkgDir of dirs) {
-  let pkg;
-  try {
-    pkg = JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8'));
-  } catch {
-    continue;
-  }
-  const allowed = ALLOWED.get(pkg.name);
-  if (!allowed) {
-    failures.push(`${relative(ROOT, pkgDir)}: 包名 "${pkg.name}" 不在层间依赖表里，先把它加进 scripts/check-import-boundaries.mjs`);
-    continue;
-  }
-  const declared = new Set(
-    ['dependencies', 'devDependencies', 'peerDependencies'].flatMap((field) => Object.keys(pkg[field] ?? {}))
-  );
-  const graph = new Map();
-
-  for (const file of await walk(join(pkgDir, 'src'))) {
-    const source = await readFile(file, 'utf8');
-    const where = relative(ROOT, file);
-    const edges = [];
-    graph.set(file, edges);
-
-    for (const { spec, typeOnly } of importsOf(source)) {
-      for (const rule of FILE_RULES) {
-        if (!rule.files.test(where)) continue;
-        const bare = spec.startsWith('.') ? spec : packageOf(spec);
-        if ((rule.only && !rule.only.test(bare)) || (rule.forbid && (rule.forbid.test(bare) || rule.forbid.test(spec)))) {
-          failures.push(`${where}: 不得 import "${spec}"（${rule.why}）`);
+  const dirs = [];
+  for (const dir of ['packages', 'apps']) {
+    for (const e of await readdir(join(root, dir), { withFileTypes: true })) {
+      if (!e.isDirectory()) continue;
+      if (dir === 'packages' && e.name === 'adapters') {
+        for (const a of await readdir(join(root, 'packages/adapters'), { withFileTypes: true })) {
+          if (a.isDirectory()) dirs.push(join(root, 'packages/adapters', a.name));
         }
-      }
-      if (spec.startsWith('node:')) continue;
-
-      if (spec.startsWith('.')) {
-        const target = resolve(dirname(file), spec);
-        if (target !== pkgDir && !target.startsWith(pkgDir + sep)) {
-          failures.push(`${where}: 相对路径 "${spec}" 逃出了 ${pkg.name}，跨包请用包名 import`);
-          continue;
-        }
-        const resolved = resolveRelative(file, spec);
-        if (resolved && !typeOnly) edges.push(resolved);
-        continue;
-      }
-
-      const name = packageOf(spec);
-      if (name === pkg.name) continue;
-      if (name.startsWith('@agent-hub/') && !allowed.includes(name)) {
-        const isApp = new RegExp(`^(${APP_PREFIX})$`).test(name);
-        failures.push(`${where}: ${pkg.name} 不得 import "${name}"${isApp ? '（apps 之间不可互相依赖）' : ''}`);
-        continue;
-      }
-      if (!declared.has(name)) {
-        failures.push(`${where}: import 了 "${name}"，但 ${relative(ROOT, pkgDir)}/package.json 没有声明它`);
-      }
+      } else dirs.push(join(root, dir, e.name));
     }
   }
 
-  const cycle = findCycle(graph);
-  if (cycle) failures.push(`${pkg.name}: 运行时循环 import：${cycle.map((f) => relative(pkgDir, f)).join(' → ')}`);
+  for (const pkgDir of dirs) {
+    let pkg;
+    try {
+      pkg = JSON.parse(await readFile(join(pkgDir, 'package.json'), 'utf8'));
+    } catch (error) {
+      failures.push(`${relative(root, pkgDir)}/package.json: 无法读取或解析（${error.message}）——门禁不会跳过这个包`);
+      continue;
+    }
+    const allowed = ALLOWED.get(pkg.name);
+    if (!allowed) {
+      failures.push(`${relative(root, pkgDir)}: 包名 "${pkg.name}" 不在层间依赖表里，先把它加进 scripts/check-import-boundaries.mjs`);
+      continue;
+    }
+    const declared = new Set(
+      ['dependencies', 'devDependencies', 'peerDependencies'].flatMap((field) => Object.keys(pkg[field] ?? {}))
+    );
+    const graph = new Map();
+
+    let files;
+    try {
+      files = await walk(join(pkgDir, 'src'));
+    } catch (error) {
+      failures.push(`${relative(root, pkgDir)}/src: 无法遍历（${error.message}）`);
+      continue;
+    }
+
+    for (const file of files) {
+      let source;
+      try {
+        source = await readFile(file, 'utf8');
+      } catch (error) {
+        failures.push(`${relative(root, file)}: 无法读取（${error.message}）`);
+        continue;
+      }
+      const where = relative(root, file);
+      const edges = [];
+      graph.set(file, edges);
+
+      for (const { spec, typeOnly } of importsOf(source)) {
+        for (const rule of FILE_RULES) {
+          if (!rule.files.test(where)) continue;
+          const bare = spec.startsWith('.') ? spec : packageOf(spec);
+          if ((rule.only && !rule.only.test(bare)) || (rule.forbid && (rule.forbid.test(bare) || rule.forbid.test(spec)))) {
+            failures.push(`${where}: 不得 import "${spec}"（${rule.why}）`);
+          }
+        }
+        if (spec.startsWith('node:')) continue;
+
+        if (spec.startsWith('.')) {
+          const target = resolve(dirname(file), spec);
+          if (target !== pkgDir && !target.startsWith(pkgDir + sep)) {
+            failures.push(`${where}: 相对路径 "${spec}" 逃出了 ${pkg.name}，跨包请用包名 import`);
+            continue;
+          }
+          const resolved = resolveRelative(file, spec);
+          if (resolved && !typeOnly) edges.push(resolved);
+          continue;
+        }
+
+        const name = packageOf(spec);
+        if (name === pkg.name) continue;
+        if (name.startsWith('@agent-hub/') && !allowed.includes(name)) {
+          const isApp = new RegExp(`^(${APP_PREFIX})$`).test(name);
+          failures.push(`${where}: ${pkg.name} 不得 import "${name}"${isApp ? '（apps 之间不可互相依赖）' : ''}`);
+          continue;
+        }
+        if (!declared.has(name)) {
+          failures.push(`${where}: import 了 "${name}"，但 ${relative(root, pkgDir)}/package.json 没有声明它`);
+        }
+      }
+    }
+
+    const cycle = findCycle(graph);
+    if (cycle) failures.push(`${pkg.name}: 运行时循环 import：${cycle.map((f) => relative(pkgDir, f)).join(' → ')}`);
+  }
+
+  return failures;
 }
 
-if (failures.length > 0) {
-  console.error('✗ import boundaries 失败：\n' + failures.map((f) => '  - ' + f).join('\n'));
-  process.exit(1);
+export function reportImportBoundaries(failures) {
+  if (failures.length > 0) {
+    console.error('✗ import boundaries 失败：\n' + failures.map((f) => '  - ' + f).join('\n'));
+    process.exit(1);
+  }
+  console.log('✓ import boundaries（层间表 / 相对路径 / package.json 声明 / 循环 / 端口-适配器文件规则）');
 }
-console.log('✓ import boundaries（层间表 / 相对路径 / package.json 声明 / 循环 / 端口-适配器文件规则）');
+
+// 仅在直接执行时跑全仓检查；被 import（比如 check-selftest.mjs）时只暴露函数。
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  reportImportBoundaries(await checkImportBoundaries(ROOT));
+}

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # hub 部署（ADR 0030 D2）：快照 → 快进 → 装依赖 → 构建 → 重启 → 健康检查；失败只回退代码，绝不自动恢复数据库（Q4）。
 #
-# 用法：scripts/deploy-hub.sh --app DIR --data-dir DIR --service NAME [--node BIN] [--health URL] [--ref origin/master] [--keep N]
+# 用法：scripts/deploy-hub.sh --app DIR --data-dir DIR --service NAME [--node BIN] [--health URL] [--ref origin/master] [--bundle FILE] [--keep N]
 # 退出码：0 成功；2 新版本起不来、已回退到旧代码；3 磁盘不够没备份；4 快照坏了；1 其它。
 set -euo pipefail
 
-APP=; DATA=; SERVICE=; NODE=node; HEALTH=http://127.0.0.1:7878/api/health; REF=origin/master; KEEP=10
+APP=; DATA=; SERVICE=; NODE=node; HEALTH=http://127.0.0.1:${HUB_PORT:-17900}/api/health; REF=origin/master; BUNDLE=; KEEP=10
 while [ $# -gt 0 ]; do
   case "$1" in
     --app) APP=$2; shift 2 ;;
@@ -14,6 +14,7 @@ while [ $# -gt 0 ]; do
     --node) NODE=$2; shift 2 ;;
     --health) HEALTH=$2; shift 2 ;;
     --ref) REF=$2; shift 2 ;;
+    --bundle) BUNDLE=$2; shift 2 ;;
     --keep) KEEP=$2; shift 2 ;;
     *) echo "不认识的参数：$1" >&2; exit 1 ;;
   esac
@@ -35,9 +36,19 @@ else
   "$NODE" -e "const {DatabaseSync}=require('node:sqlite');new DatabaseSync(process.argv[1]).exec(\"VACUUM INTO '\"+process.argv[2]+\"'\");const r=new DatabaseSync(process.argv[2]).prepare('PRAGMA integrity_check').get().integrity_check;console.log(JSON.stringify({ok:r==='ok',path:process.argv[2],integrity:r}));process.exit(r==='ok'?0:4)" "$DATA/hub.db" "$OUT"
 fi
 
-# 2. 代码
-git fetch -q
-git merge -q --ff-only "$REF"
+# 2. 代码：给了 --bundle 就走本地代码包（阿里云解析不了 github.com，DEP-1），否则照旧从远端快进
+if [ -n "$BUNDLE" ]; then
+  [ -f "$BUNDLE" ] || { say "bundle 不存在：$BUNDLE"; exit 1; }
+  git bundle verify -q "$BUNDLE" >/dev/null || { say "bundle 校验失败：$BUNDLE"; exit 1; }
+  SHA=$(git bundle list-heads "$BUNDLE" | awk 'NR==1 {print $1}')
+  [ -n "$SHA" ] || { say "bundle 里没有 ref：$BUNDLE"; exit 1; }
+  say "bundle $BUNDLE → deploy-$SHA"
+  git fetch -q "$BUNDLE" "+HEAD:refs/heads/deploy-$SHA"
+  git merge -q --ff-only "deploy-$SHA"
+else
+  git fetch -q
+  git merge -q --ff-only "$REF"
+fi
 NEXT=$(git rev-parse HEAD)
 say "目标 $NEXT"
 
