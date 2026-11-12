@@ -51,6 +51,22 @@ interface Props {
 }
 
 /**
+ * 「更多」里的分组：一组相关操作，上面一条细线和一个说明这组在管什么的短标题。
+ * role=group + aria-label 让读屏按组报；可见标题对读屏是重复的，所以留给眼睛。
+ *
+ * 分隔线由各组的 className 自己出：手机专属的那组在 DOM 里排最前但在桌面上不显示，
+ * 用 first: 会算错谁在最上面。
+ */
+function MenuGroup({ label, className = '', children }: { readonly label: string; readonly className?: string; readonly children: ReactNode }) {
+  return (
+    <div role="group" aria-label={label} className={className}>
+      <p aria-hidden="true" className="px-3 pb-0.5 pt-1.5 text-meta text-tertiary">{label}</p>
+      {children}
+    </div>
+  );
+}
+
+/**
  * 专注对话：一条会话，整屏看。
  *
  * 画布回答「这些思路之间是什么关系」，这里回答「它到底说了什么」。
@@ -78,6 +94,7 @@ export function FocusView({
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  // 只有手机上会用到这个对话框：桌面的「Aa」是内嵌的 DisplayMenu。
   const [displayOpen, setDisplayOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
@@ -444,80 +461,82 @@ export function FocusView({
           <Dropdown label="更多" icon="⋯">
             {(close) => (
               <>
-                <MenuItem
-                  title="详情"
-                  hint="查看会话、工作空间和用量"
-                  onClick={() => {
-                    close();
-                    setDetails(true);
-                  }}
-                />
-                <MenuItem
-                  title="连接会话…"
-                  hint="把这条会话和同项目的其他会话连起来"
-                  onClick={() => {
-                    close();
-                    setLinksOpen(true);
-                  }}
-                />
-                <MenuItem
-                  title="显示设置…"
-                  hint="工具调用、思考过程、紧凑模式"
-                  onClick={() => {
-                    close();
-                    setDisplayOpen(true);
-                  }}
-                />
-                <MenuItem
-                  title="提交与推送…"
-                  hint="提交改动、推送分支、开 PR；说明由模型起草，可改"
-                  onClick={() => {
-                    close();
-                    setGitOpen(true);
-                  }}
-                />
-                <MenuItem
-                  title="重命名"
-                  hint="给这条会话起个名字；清空 = 回到默认显示"
-                  onClick={() => {
-                    close();
-                    startRename();
-                  }}
-                />
-                <MenuItem
-                  title="保存为 Agent 配置…"
-                  hint="把这条会话的 agent、模型和选项存成下次可直接套用的组合"
-                  onClick={() => {
-                    close();
-                    setProfileOpen(true);
-                  }}
-                />
-                <MenuItem
-                  title="管理 Agent 配置…"
-                  hint="改名、改模型、复制或删除已保存的启动组合"
-                  onClick={() => {
-                    close();
-                    setProfilesOpen(true);
-                  }}
-                />
-                <MenuItem
-                  title="分叉"
-                  hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
-                  disabled={!forkable}
-                  onClick={() => {
-                    close();
-                    fork();
-                  }}
-                />
-                <MenuItem
-                  title="换个地方继续…"
-                  hint={canContinueElsewhere(session) ? '换台机器或工作空间，带着对话摘要接着做' : CONTINUE_DISABLED_HINT}
-                  disabled={!canContinueElsewhere(session)}
-                  onClick={() => {
-                    close();
-                    setContinuing(true);
-                  }}
-                />
+                {/* 手机上 header 只留标题、状态和「⋯」（连接 / 详情 / Aa 都在 sm 以上才显示），
+                    这三个入口在这里补一份；桌面上不渲染，避免和 header 重复。 */}
+                <MenuGroup label="详情与显示" className="sm:hidden">
+                  <MenuItem
+                    title="详情"
+                    hint="查看会话、工作空间和用量"
+                    onClick={() => {
+                      close();
+                      setDetails(true);
+                    }}
+                  />
+                  <MenuItem
+                    title="连接会话…"
+                    hint="把这条会话和同项目的其他会话连起来"
+                    onClick={() => {
+                      close();
+                      setLinksOpen(true);
+                    }}
+                  />
+                  <MenuItem
+                    title="显示设置…"
+                    hint="工具调用、思考过程、紧凑模式"
+                    onClick={() => {
+                      close();
+                      setDisplayOpen(true);
+                    }}
+                  />
+                </MenuGroup>
+                <MenuGroup label="这次会话" className="border-t border-hair sm:border-t-0">
+                  <MenuItem
+                    title="分叉"
+                    hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
+                    disabled={!forkable}
+                    onClick={() => {
+                      close();
+                      fork();
+                    }}
+                  />
+                  <MenuItem
+                    title="换个地方继续…"
+                    hint={canContinueElsewhere(session) ? '换台机器或工作空间，带着对话摘要接着做' : CONTINUE_DISABLED_HINT}
+                    disabled={!canContinueElsewhere(session)}
+                    onClick={() => {
+                      close();
+                      setContinuing(true);
+                    }}
+                  />
+                </MenuGroup>
+                <MenuGroup label="代码" className="border-t border-hair">
+                  <MenuItem
+                    title="提交与推送…"
+                    hint="提交改动、推送分支、开 PR；说明由模型起草，可改"
+                    onClick={() => {
+                      close();
+                      setGitOpen(true);
+                    }}
+                  />
+                </MenuGroup>
+                <MenuGroup label="Agent 配置" className="border-t border-hair">
+                  <MenuItem
+                    title="保存为 Agent 配置…"
+                    hint="把这条会话的 agent、模型和选项存成下次可直接套用的组合"
+                    onClick={() => {
+                      close();
+                      setProfileOpen(true);
+                    }}
+                  />
+                  <MenuItem
+                    title="管理 Agent 配置…"
+                    hint="改名、改模型、复制或删除已保存的启动组合"
+                    onClick={() => {
+                      close();
+                      setProfilesOpen(true);
+                    }}
+                  />
+                </MenuGroup>
               </>
             )}
           </Dropdown>

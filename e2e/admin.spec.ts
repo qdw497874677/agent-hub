@@ -103,8 +103,8 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
     await expect(local.getByTestId("harness-recheck")).toBeEnabled({ timeout: 10_000 });
     await expect(local.getByTestId("worker-harnesses")).not.toContainText("不在线");
 
-    // 设置：关注册 → 新人注册被服务端拒；再打开
-    await page.getByRole("link", { name: "设置" }).click();
+    // 平台设置并进了概览底部（后台不再有「设置」分页），开关还是原来的 role=switch
+    await page.getByRole("link", { name: "概览" }).click();
     const open = page.getByRole("switch", { name: /开放注册/ });
     await expect(open).toBeChecked();
     await open.click();

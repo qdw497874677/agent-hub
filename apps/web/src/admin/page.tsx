@@ -3,28 +3,20 @@ import { formatRoute, type AdminTab } from '../route.ts';
 import { Overview } from './overview.tsx';
 import { Users } from './users.tsx';
 import { Workers } from './workers.tsx';
-import { Settings } from './settings.tsx';
 import { Audit } from './audit.tsx';
 import { Components } from './components.tsx';
 import { Assets, useUpgradableCount } from './assets.tsx';
+import { ADMIN_PAGE_TABS, resolveAdminTab } from './tabs.ts';
 
 /**
  * 运营后台（#/admin/<分页>），只有主人能进；服务端对 /api/admin/* 同样只认主人。
- * 窄屏下分页是顶部横向滚动的一排，宽屏是左侧栏。
+ * 窄屏下分页是顶部横向滚动的一排，宽屏是左侧栏。分页清单在 ./tabs.ts，和单测共用一份。
  */
-const TABS: readonly { readonly id: AdminTab; readonly label: string }[] = [
-  { id: 'overview', label: '概览' },
-  { id: 'users', label: '用户' },
-  { id: 'workers', label: '机器' },
-  { id: 'assets', label: '资产' },
-  { id: 'components', label: '组件' },
-  { id: 'settings', label: '设置' },
-  { id: 'audit', label: '审计' }
-];
-
 export function AdminPage({ tab }: { tab: AdminTab }) {
   const account = useAccount();
   const upgradable = useUpgradableCount(account?.clusterAdmin === true);
+  // 别名映射：收藏夹或旧消息里的 #/admin/settings 不该白屏。
+  const active: AdminTab = resolveAdminTab(tab);
   if (account?.clusterAdmin !== true) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
@@ -48,13 +40,13 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
           <AccountMenu />
         </div>
         <ul className="flex gap-1 overflow-x-auto px-2 py-2 md:flex-col md:gap-0.5 md:px-2 md:py-3">
-          {TABS.map((item) => (
+          {ADMIN_PAGE_TABS.map((item) => (
             <li key={item.id} className="shrink-0">
               <a
                 href={formatRoute({ page: 'admin', tab: item.id })}
-                aria-current={item.id === tab ? 'page' : undefined}
+                aria-current={item.id === active ? 'page' : undefined}
                 className={`block rounded-sm px-3 py-1.5 text-body ${
-                  item.id === tab ? 'bg-card text-primary' : 'text-secondary hover:bg-card'
+                  item.id === active ? 'bg-card text-primary' : 'text-secondary hover:bg-card'
                 }`}
               >
                 {item.label}
@@ -74,13 +66,12 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
       </nav>
       <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
         <div className="mx-auto max-w-[880px] min-w-0">
-          {tab === 'overview' && <Overview />}
-          {tab === 'users' && <Users />}
-          {tab === 'workers' && <Workers />}
-          {tab === 'assets' && <Assets />}
-          {tab === 'components' && <Components />}
-          {tab === 'settings' && <Settings />}
-          {tab === 'audit' && <Audit />}
+          {active === 'overview' && <Overview />}
+          {active === 'users' && <Users />}
+          {active === 'workers' && <Workers />}
+          {active === 'assets' && <Assets />}
+          {active === 'components' && <Components />}
+          {active === 'audit' && <Audit />}
         </div>
       </main>
     </div>

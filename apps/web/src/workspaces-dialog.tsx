@@ -15,12 +15,27 @@ type Pending = { workspace: WorkspaceDto; mode: 'unlink' | 'unregister' | 'delet
 
 const SOURCE: Record<WorkspaceDto['source'], string> = { linked: '已有目录', created: '新建目录', cloned: '克隆', worktree: 'worktree' };
 
-/** 项目设置 · 工作空间（workspaces.md §7）：按机器分组，看状态、移除登记、删目录、强制删除。 */
+type ProjectTab = 'project' | 'context' | 'assets' | 'workspaces';
+
+/**
+ * 项目设置（workspaces.md §7）：四块话题各占一栏——说明与清理、上下文、资产（仅管理员）、工作空间。
+ * 面板都挂着只切显示：在「项目」里改了一半的说明，去看别的 tab 再回来还在。
+ */
 export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; onClose: () => void }) {
   const workers = useWorkers();
   const account = useAccount();
+  const isAdmin = account?.clusterAdmin === true;
   const list = useQuery({ queryKey: ['workspaces', project.id], queryFn: () => api.workspaces(project.id) });
+  const [tab, setTab] = useState<ProjectTab>('project');
   const [pending, setPending] = useState<Pending | null>(null);
+  const tabs: readonly { readonly id: ProjectTab; readonly label: string }[] = [
+    { id: 'project', label: '项目' },
+    { id: 'context', label: '上下文' },
+    ...(isAdmin ? [{ id: 'assets' as const, label: '资产' }] : []),
+    { id: 'workspaces', label: '工作空间' }
+  ];
+  // 隐藏用 class 而不是 hidden 属性：面板里自己的 flex/grid 类不会把它顶回可见。
+  const panel = (id: ProjectTab) => (tab === id ? '' : 'hidden');
   const groups = new Map<string, WorkspaceViewDto[]>();
   for (const view of list.data ?? []) {
     if (view.workspace.state === 'removed') continue;
@@ -30,27 +45,64 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
   return (
     <DialogShell title="项目设置" onClose={onClose}>
       <h2 className="mb-3 text-body text-primary">项目设置 · {project.name}</h2>
-      <DescriptionEditor project={project} />
-      {account?.clusterAdmin ? <ProjectAssets projectId={project.id} /> : null}
-      <ProjectContext projectId={project.id} canEdit />
-      <ProjectDistill projectId={project.id} />
-      <h3 className="mb-1 text-sub text-primary">工作空间</h3>
-      <p className="mb-1 text-meta text-tertiary">本项目能在这些目录里开任务。取消关联不会删目录，也不影响其他项目。</p>
-      {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
-      {list.data && groups.size === 0 ? <p className="text-meta text-tertiary">还没有工作空间。</p> : null}
-      {[...groups].map(([workerId, views]) => (
-        <section key={workerId} className="mb-3">
-          <h3 className="mb-1 text-meta text-secondary">{workers.byId(workerId || null)?.label ?? (workerId ? '未知机器' : '本机')}</h3>
-          <ul className="space-y-1">
-            {views.map((view) => (
-              <WorkspaceRow key={view.workspace.id} view={view} onAct={(mode) => setPending({ workspace: view.workspace, mode })} />
-            ))}
-          </ul>
-        </section>
-      ))}
-      <LinkWorkspaces projectId={project.id} linked={(list.data ?? []).map((view) => view.workspace.id)} />
-      <WorkspaceCleanup projectId={project.id} />
-      {pending ? <ConfirmRemove pending={pending} projectId={project.id} onDone={() => setPending(null)} /> : null}
+      <div role="tablist" aria-label="项目设置" className="mb-3 flex gap-1 overflow-x-auto border-b border-hair">
+        {tabs.map((item, index) => (
+          <button
+            key={item.id}
+            id={`project-tab-${item.id}`}
+            role="tab"
+            aria-selected={tab === item.id}
+            tabIndex={tab === item.id ? 0 : -1}
+            className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sub ${
+              tab === item.id ? 'border-accent text-primary' : 'border-transparent text-tertiary hover:text-secondary'
+            }`}
+            onClick={() => setTab(item.id)}
+            onKeyDown={(event) => {
+              if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+              const step = event.key === 'ArrowRight' ? 1 : -1;
+              const next = tabs[(index + step + tabs.length) % tabs.length];
+              if (!next) return;
+              setTab(next.id);
+              (event.currentTarget.parentElement?.querySelector(`#project-tab-${next.id}`) as HTMLElement | null)?.focus();
+            }}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div className="min-h-[280px]">
+        <div className={panel('project')}>
+          <DescriptionEditor project={project} />
+          <WorkspaceCleanup projectId={project.id} />
+        </div>
+        <div className={panel('context')}>
+          <ProjectContext projectId={project.id} canEdit />
+          <ProjectDistill projectId={project.id} />
+        </div>
+        {isAdmin ? (
+          <div className={panel('assets')}>
+            <ProjectAssets projectId={project.id} />
+          </div>
+        ) : null}
+        <div className={panel('workspaces')}>
+          <h3 className="mb-1 text-sub text-primary">工作空间</h3>
+          <p className="mb-1 text-meta text-tertiary">本项目能在这些目录里开任务。取消关联不会删目录，也不影响其他项目。</p>
+          {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
+          {list.data && groups.size === 0 ? <p className="text-meta text-tertiary">还没有工作空间。</p> : null}
+          {[...groups].map(([workerId, views]) => (
+            <section key={workerId} className="mb-3">
+              <h3 className="mb-1 text-meta text-secondary">{workers.byId(workerId || null)?.label ?? (workerId ? '未知机器' : '本机')}</h3>
+              <ul className="space-y-1">
+                {views.map((view) => (
+                  <WorkspaceRow key={view.workspace.id} view={view} onAct={(mode) => setPending({ workspace: view.workspace, mode })} />
+                ))}
+              </ul>
+            </section>
+          ))}
+          <LinkWorkspaces projectId={project.id} linked={(list.data ?? []).map((view) => view.workspace.id)} />
+          {pending ? <ConfirmRemove pending={pending} projectId={project.id} onDone={() => setPending(null)} /> : null}
+        </div>
+      </div>
     </DialogShell>
   );
 }

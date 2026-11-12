@@ -73,7 +73,7 @@ test.describe('手机 390', () => {
 
 test.describe('桌面 1280', () => {
   test.use({ viewport: { width: 1280, height: 800 } });
-  test('会话名：⋯ 菜单里「重命名」；Esc 取消；刷新后标题和列表都还在', async ({ page, baseURL }) => {
+  test('会话名：点标题就地改名；Esc 取消；刷新后标题和列表都还在', async ({ page, baseURL }) => {
     const { project, session } = await seed(page, baseURL!, '1280');
     mkdirSync(SHOTS, { recursive: true });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
@@ -85,9 +85,8 @@ test.describe('桌面 1280', () => {
     await page.getByTestId('session-title-input').press('Escape');
     await expect(title).toHaveText('改名任务');
 
-    const header = page.locator('header', { has: page.getByTestId('session-title') }).first();
-    await header.getByRole('button', { name: '更多' }).click();
-    await page.getByRole('menuitem', { name: /^重命名/ }).click();
+    // 「⋯」里不再有重命名：标题本身就是入口，点一下就地改
+    await title.click();
     const input = page.getByTestId('session-title-input');
     await expect(input).toBeFocused();
     await input.fill('桌面上起的名字');

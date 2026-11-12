@@ -58,6 +58,7 @@ for (const width of [360, 430]) {
     await expect(page.getByRole('menuitem', { name: /^分叉/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /从某一步分叉/ })).toHaveCount(0);
     await expect(page.getByRole('menuitem', { name: /换个地方继续/ })).toBeVisible();
+    // 桌面上「连接」「详情」「Aa」在 header 里；手机上这三个入口收进「更多」的第一组
     await expect(page.getByRole('menuitem', { name: /^连接会话/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /^显示设置/ })).toBeVisible();
     await page.keyboard.press('Escape');
@@ -79,6 +80,12 @@ for (const width of [360, 430]) {
 
 test('显示设置：每个选项都能切，刷新后还在', async ({ page, baseURL }) => {
   await openFromCanvas(page, baseURL!);
+  // 桌面（默认 1280）：「⋯」里不再重复 header 的连接 / 详情 / 显示设置
+  await page.getByRole('button', { name: '更多' }).click();
+  await expect(page.getByRole('menuitem', { name: /^连接会话/ })).toHaveCount(0);
+  await expect(page.getByRole('menuitem', { name: /^详情/ })).toHaveCount(0);
+  await expect(page.getByRole('menuitem', { name: /^显示设置/ })).toHaveCount(0);
+  await page.keyboard.press('Escape');
   const open = async () => {
     await page.getByRole('button', { name: '显示设置' }).click();
     return page.getByTestId('display-settings');
