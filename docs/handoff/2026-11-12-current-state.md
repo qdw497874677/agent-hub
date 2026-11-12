@@ -9,17 +9,19 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `88ceb7a feat(web): 文件 tab 显示路径` |
-| origin/master | 已同步到 `88ceb7a` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `88ceb7a`（2026-11-12 22:05 用 `deploy-aliyun.sh --bundle` 部署） |
+| 本地 HEAD | `41112cc fix(worker): 调度垫片退出 127 时按未安装上报，未装就跳过模型自检` |
+| origin/master | 已同步到 `41112cc` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `41112cc`（2026-11-13 00:05 用 `deploy-aliyun.sh --bundle` 部署） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online，代码 `88ceb7a` |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online，代码 `41112cc` |
 | 本地工作区 | 干净（本轮修复已提交） |
-| 最近完整验证 | `npm test` 1013 单测：1005 pass / 8 skipped / 0 fail，26s（默认并发，不含 `e2e/**`）；`npm run check`、`typecheck`、`typecheck:web`、`build` 全 0 |
+| 最近完整验证 | `npm test` 1044 单测：1036 pass / 8 skipped / 0 fail，27s（默认并发，不含 `e2e/**`）；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
 
 2026-11-12 夜补丁（已部署 `88ceb7a`）：供应商模型可一键从上游拉取、逐模型配置上下文/最大输出与「额外参数 JSON」（中继顶层浅合并，`hub` 与 `direct` 两条链路都生效），改动对已建立会话走 `provider_update` 热更新；会话里的「连接 N」芯片改为先弹小窗预览再跳转；文件 tab 标出工作空间根路径与完整相对路径（手机端原先看不到路径）。
+
+2026-11-12/13 第二轮（已部署 `41112cc`）：机器页面的 agent 运行时改为「机器自带 + hub 安装」并存，可按机器显式切换（`packages/node-gateway/src/runtime-store.ts` 的调度垫片 `<runtimes>/bin/<command>` → `dispatch.mjs`；卸载保留垫片，缺省回落机器自带）；侧栏新增全站导航分组（工作/我的/团队/管理），账号菜单只留守账号项；会话「⋯」按「这次会话/代码/Agent 配置」分层，手机端补「详情与显示」组，项目设置拆成 项目/上下文/资产/工作空间 四页，运营后台并入「平台设置」并去掉独立 tab；用户可见文案统一把 Worker 叫作「机器」。运行时的版本切换只对**新建**会话生效，正在跑的会话继续用旧版本；供应商的「额外参数」走 `provider_update`，已建立会话即时生效。
 
 2026-11-12 晚补丁（已部署，详见 `docs/plan/known-issues.md` §1.1）：下线 `HUB_TOKEN` 登录通道（`?token=`、`Bearer`、`/api/auth/token-login`、前端 token 登录）；worker 通道改为「有 `HUB_TOKEN` 时比对共享令牌，没有时只认本机子进程」；修掉测试进程泄漏/临时目录污染（`apps/server/src/test-support/spawn.ts`）；`HUB_PORT` 端到端贯通；`deploy-aliyun.sh --bundle` 支持离线更新；门禁补 `check-lockfile`、`check-selftest` 与「解析失败不跳过」。部署后 `POST /api/auth/token-login` 返回 404、`/api/stream?token=` 返回 401，两台 worker 均 online。
 
