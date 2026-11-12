@@ -79,6 +79,25 @@ test('画布：会话连线是无向边，断开后消失', async () => {
   assert.equal(after.value.edges.some((edge) => edge.kind === 'link'), false);
 });
 
+test('画布：机器不在线时不能建立新连接', async () => {
+  const w = inMemoryDeps({
+    links: fakeSessionLinks(),
+    workerPresence: { online: async () => false }
+  });
+  w.agents.push(agent);
+  const project = await createProjectUseCase(w.deps, { name: 'offline', rootPath: '/tmp/offline' });
+  assert.ok(project.ok);
+  const task = await createTaskUseCase(w.deps, { projectId: project.value.id, title: '离线' });
+  assert.ok(task.ok);
+  const one = await deriveSessionUseCase(w.deps, { taskId: task.value.id, agentId: 'fake', model: 'm1' });
+  const other = await deriveSessionUseCase(w.deps, { taskId: task.value.id, agentId: 'fake', model: 'm1' });
+  assert.ok(one.ok && other.ok);
+
+  const linked = await linkSessionsUseCase(w.deps, project.value.id, one.value.id, other.value.id, 'alice');
+  assert.equal(linked.ok, false);
+  if (!linked.ok) assert.match(linked.error.message, /不在线/);
+});
+
 test('画布：不能连接自己，也不能连接别的项目的会话', async () => {
   const w = inMemoryDeps({ links: fakeSessionLinks() });
   w.agents.push(agent);

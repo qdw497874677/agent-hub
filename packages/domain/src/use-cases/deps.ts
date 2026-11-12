@@ -28,6 +28,7 @@ import type { SearchGateway } from '../ports/search-gateway.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
 import type { SessionQueue } from '../ports/session-queue.ts';
 import type { SessionEnvironmentPort } from '../ports/session-environment.ts';
+import type { WorkerPresence } from '../ports/worker-presence.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 
@@ -81,6 +82,8 @@ export interface Deps {
   readonly toolGrants?: ToolGrantRepository;
   /** 会话环境版本；用于资产/MCP/技能变化后下一轮自动重托管。不给 = 不刷新。 */
   readonly environment?: SessionEnvironmentPort;
+  /** 机器在线状态；用于拒绝连接离线机器上的会话。不给 = 不检查。 */
+  readonly workerPresence?: WorkerPresence;
   /** 同一会话的写入串行（ADR 0004）。 */
   readonly queue: SessionQueue;
   readonly now: () => number;

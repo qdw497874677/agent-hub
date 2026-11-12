@@ -545,6 +545,8 @@ export function FocusView({
           linked={linkedIds}
           openings={canvas.openings}
           agents={canvas.agents}
+          tasks={canvas.tasks}
+          workspaces={canvas.workspaces}
           busyId={linkBusy}
           error={linkError}
           onToggle={(otherId, next) => void toggleLink(otherId, next)}

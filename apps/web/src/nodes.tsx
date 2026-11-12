@@ -39,6 +39,8 @@ export type SessionNode = Node<
     agentLabel: string;
     /** 多台 Worker 时才有：会话跑在哪台。 */
     worker?: WorkerInfoDto | undefined;
+    /** 会话所在机器是否在线；undefined = 机器列表还没到，先不拦。 */
+    online?: boolean | undefined;
     /** 会话所在机器的资源（单机也有），用来显示这条会话的用量。 */
     resources?: WorkerInfoDto['resources'];
     /** 「机器 · 工作空间 · 分支」（§4，卡片上）；老会话没有工作空间时不显示。 */
@@ -232,6 +234,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         type="target"
         position={Position.Top}
         title="连到这里"
+        isConnectable={data.online !== false}
         className="!size-2 !border-0 !bg-accent"
       />
       <header className="card-drag-zone mb-2 flex min-h-11 cursor-grab touch-none select-none items-center justify-between gap-2">
@@ -353,7 +356,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         <span>{session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '从任务派生'}</span>
       </footer>
 
-      <Handle id="link-source" type="source" position={Position.Bottom} title="拖到另一条会话，建立连接" className="!size-2 !border-0 !bg-accent" />
+      <Handle id="link-source" type="source" position={Position.Bottom} title="拖到另一条会话，建立连接" isConnectable={data.online !== false} className="!size-2 !border-0 !bg-accent" />
       <Handle id="lineage-source" type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
     </div>
   );

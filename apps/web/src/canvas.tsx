@@ -136,7 +136,17 @@ export function CanvasView({
   const [sizes, setSizes] = useState<Record<string, Size>>(() => ({ ...canvas.layout.sizes }));
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkBusy, setLinkBusy] = useState(false);
+  const workers = useWorkers();
   const sessionIds = useMemo(() => new Set(canvas.sessions.map((session) => session.id)), [canvas.sessions]);
+  const onlineSessionIds = useMemo(() => {
+    // worker 列表还没到时不拦，服务端会再校验；列表到了以后只允许两端都在线。
+    if (workers.list.length === 0) return sessionIds;
+    return new Set(
+      canvas.sessions
+        .filter((session) => resolveWorker(workers.list, session.workerId)?.state === 'online')
+        .map((session) => session.id)
+    );
+  }, [canvas.sessions, sessionIds, workers.list]);
   const sizesRef = useRef(sizes);
   sizesRef.current = sizes;
   // 卡片尺寸：拖过的 > 量到的 > 按上限估。排布全靠它，不再用固定格子。
@@ -267,7 +277,6 @@ export function CanvasView({
     flow.current.setCenter(point.x + width / 2, point.y + 120, { zoom: 1, duration: 400 });
   }, [focus, positions, sizes, canvas.sessions]);
 
-  const workers = useWorkers();
   const placeOf = useCallback(
     (workspaceId: string | null | undefined, workerId: string | null) => {
       const workspace = workspaceId ? canvas.workspaces.find((item) => item.id === workspaceId) : undefined;
@@ -380,6 +389,7 @@ export function CanvasView({
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
         agentLabel: agentLabel(session.agentId),
         worker: workerOf(session.workerId),
+        online: workers.list.length === 0 ? undefined : resolveWorker(workers.list, session.workerId)?.state === 'online',
         resources: resolveWorker(workers.list, session.workerId)?.resources,
         place: placeOf(session.workspaceId, session.workerId),
         onOpen: () => onOpen(session.id),
@@ -566,6 +576,10 @@ export function CanvasView({
         }}
         onConnect={(connection) => {
           if (linkBusy || !connection.source || !connection.target) return;
+          if (!onlineSessionIds.has(connection.source) || !onlineSessionIds.has(connection.target)) {
+            setLinkError('会话所在的机器不在线，连上之后再连');
+            return;
+          }
           setLinkError(null);
           setLinkBusy(true);
           void onLink(connection.source, connection.target)
@@ -577,8 +591,8 @@ export function CanvasView({
           connection.source !== connection.target &&
           connection.sourceHandle === 'link-source' &&
           connection.targetHandle === 'link-target' &&
-          sessionIds.has(connection.source ?? '') &&
-          sessionIds.has(connection.target ?? '')
+          onlineSessionIds.has(connection.source ?? '') &&
+          onlineSessionIds.has(connection.target ?? '')
         }
         onEdgesDelete={(deleted) => {
           if (linkBusy) return;

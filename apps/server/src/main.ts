@@ -170,6 +170,12 @@ const deps: Deps = {
   environment: {
     revision: async (session) => (sessionEnvironment ? sessionEnvironment.revision(session) : null)
   },
+  workerPresence: {
+    online: async (workerId) =>
+      (serverGateway?.workers() ?? []).some(
+        (worker) => worker.state === 'online' && (workerId === null ? worker.origin === 'local' : worker.workerId === workerId)
+      )
+  },
   stream: hub.stream,
   gateway: {
     status: async () => withAssetNeeds(serverGateway?.workers() ?? [], await mcpWorkers()),

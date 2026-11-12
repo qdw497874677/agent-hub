@@ -4,7 +4,7 @@ import { asProjectId, asSessionId } from '../ids.ts';
 import { canonicalLink, type SessionLink } from '../session-link.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { DomainError } from '../errors.ts';
-import { invalid, notFound, notImplemented } from '../errors.ts';
+import { conflict, invalid, notFound, notImplemented } from '../errors.ts';
 import type { JournalEntry } from '../event.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
 
@@ -68,7 +68,7 @@ export async function saveLayoutUseCase(
 
 /** 把两条会话连起来（无向，幂等）。关系是项目级资源；跨 owner 允许，消息权限另算。 */
 export async function linkSessionsUseCase(
-  deps: Pick<Deps, 'links' | 'now' | 'projects' | 'sessions'>,
+  deps: Pick<Deps, 'links' | 'now' | 'projects' | 'sessions' | 'workerPresence'>,
   projectId: string,
   one: string,
   other: string,
@@ -81,8 +81,18 @@ export async function linkSessionsUseCase(
   const b = asSessionId(other);
   if (a === b) return err(invalid('不能把会话连到自己'));
   const sessions = await deps.sessions.listByProject(project.id);
-  const known = new Set(sessions.map((session) => session.id));
-  if (!known.has(a) || !known.has(b)) return err(notFound('会话不在这个项目里'));
+  const first = sessions.find((session) => session.id === a);
+  const second = sessions.find((session) => session.id === b);
+  if (!first || !second) return err(notFound('会话不在这个项目里'));
+  if (deps.workerPresence) {
+    const [firstOnline, secondOnline] = await Promise.all([
+      deps.workerPresence.online(first.workerId ?? null),
+      deps.workerPresence.online(second.workerId ?? null)
+    ]);
+    if (!firstOnline && !secondOnline) return err(conflict('两台会话所在的机器都不在线，连上之后再连'));
+    if (!firstOnline) return err(conflict('当前会话所在的机器不在线，连上之后再连'));
+    if (!secondOnline) return err(conflict('对方会话所在的机器不在线，连上之后再连'));
+  }
   const link = canonicalLink(project.id, a, b, createdBy, deps.now());
   await deps.links.save(link);
   return ok(link);

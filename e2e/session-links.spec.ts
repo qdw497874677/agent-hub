@@ -102,6 +102,12 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await expect(dialog).toBeVisible();
   const checkbox = dialog.locator('input[type="checkbox"]').first();
   await expect(checkbox).not.toBeChecked();
+  // 同名会话也能靠任务 / 机器 / 工作空间 / 短号区分。
+  const firstOption = dialog.getByTestId('session-link-options').locator('label').first();
+  const workerLabel = ((await (await page.request.get('/api/workers')).json()) as Array<{ label: string }>)[0]?.label ?? '本机';
+  await expect(firstOption).toContainText(TASK_TITLE);
+  await expect(firstOption).toContainText(workerLabel);
+  await expect(firstOption).toContainText(/#[0-9a-f]{8}/);
   // 乐观更新：点击后立即显示已连接，后台再确认。
   await checkbox.click();
   await expect(page.getByRole('button', { name: '连接 1', exact: true })).toBeVisible();
@@ -143,4 +149,33 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await page.goto(`/#/p/${projectId}/focus/${firstSessionId}`);
   await expect(page.getByRole('button', { name: '连接 1', exact: true })).toBeVisible();
   await expect(page.getByTestId('session-link-chips')).toBeVisible();
+
+  // 离线机器：选择器不允许新建连接。
+  await page.getByRole('button', { name: '连接 1', exact: true }).click();
+  const onlineDialog = page.getByRole('dialog', { name: '连接会话' });
+  await onlineDialog.locator('input[type="checkbox"]').first().click();
+  await page.keyboard.press('Escape');
+  await page.route('**/api/workers', async (route) => {
+    const response = await route.fetch();
+    const body = (await response.json()) as Array<Record<string, unknown>>;
+    await route.fulfill({ response, json: body.map((worker) => ({ ...worker, state: 'offline' })) });
+  });
+  await page.reload();
+  await expect(page.getByRole('button', { name: '连接 0', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '连接 0', exact: true }).click();
+  const offlineDialog = page.getByRole('dialog', { name: '连接会话' });
+  await expect(offlineDialog.locator('input[type="checkbox"]').first()).toBeDisabled();
+  await expect(offlineDialog).toContainText('机器离线');
+
+  // 画布拖线也不能连离线机器上的会话。
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: '画布', exact: true }).click();
+  const [offlineSource, offlineTarget] = await sessionNode(page).all();
+  if (!offlineSource || !offlineTarget) throw new Error('离线场景缺少两个会话节点');
+  await dragLink(
+    page,
+    offlineSource.locator('.react-flow__handle-bottom'),
+    offlineTarget.locator('.react-flow__handle-top')
+  );
+  await expect.poll(async () => linkCount(page, projectId)).toBe(0);
 });
