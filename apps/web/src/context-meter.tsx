@@ -12,9 +12,10 @@ export function shortTokens(tokens: number): string {
  * 参考 opencode web：贴着输入框显示，不打断对话；手机上只留百分比。
  */
 export function ContextMeter({ usage }: { usage: ContextUsage }) {
-  const percent =
+  const rawPercent =
     usage.percent ??
-    (usage.usedTokens === null || usage.windowTokens <= 0 ? null : Math.round((usage.usedTokens / usage.windowTokens) * 100));
+    (usage.usedTokens === null || usage.windowTokens <= 0 ? null : (usage.usedTokens / usage.windowTokens) * 100);
+  const percent = rawPercent === null ? null : Math.max(0, Math.min(100, Math.round(rawPercent)));
   const used = usage.usedTokens === null ? '—' : shortTokens(usage.usedTokens);
   const window = shortTokens(usage.windowTokens);
   const title = `上下文：${usage.usedTokens?.toLocaleString() ?? '—'} / ${usage.windowTokens.toLocaleString()} token${percent === null ? '' : `（${percent}%）`}`;
