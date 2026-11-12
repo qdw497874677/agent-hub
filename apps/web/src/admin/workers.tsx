@@ -21,7 +21,7 @@ const updateLabel = (update: NonNullable<AdminWorkerDto['update']>): string =>
 
 const shortCommit = (commit: string | null | undefined): string => (commit ? commit.slice(0, 7) : '无提交号');
 const buildText = (build: AdminWorkerDto['build']): string =>
-  build ? `v${build.version} · ${shortCommit(build.commit)}` : '版本未知（旧版 Worker）';
+  build ? `v${build.version} · ${shortCommit(build.commit)}` : '版本未知（旧版）';
 
 export function Workers() {
   const workers = useQuery({
@@ -107,7 +107,7 @@ export function Workers() {
                         className={DANGER}
                         disabled={action.isPending}
                         onClick={() => {
-                          if (window.confirm(`断开「${worker.label}」？它不会自动重连，要在那台机器上重启 Worker。`))
+                          if (window.confirm(`断开「${worker.label}」？它不会自动重连，要回到那台机器上重新启动。`))
                             action.mutate({ kind: 'disconnect', worker });
                         }}
                       >

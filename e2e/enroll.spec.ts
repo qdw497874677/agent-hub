@@ -15,7 +15,7 @@ const SHOTS = process.env['E2E_SCREENSHOTS'];
 test('添加机器：一行命令、倒计时、凭码接入、吊销后断开', async ({ page, baseURL }) => {
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^Worker：/ }).first().click();
+  await page.getByRole('button', { name: /^机器：/ }).first().click();
   await page.getByRole('button', { name: '添加机器' }).click();
 
   const dialog = page.getByRole('dialog', { name: '添加机器' });
@@ -74,7 +74,7 @@ test('添加机器：一行命令、倒计时、凭码接入、吊销后断开',
     await expect(dialog.getByText('✓ e2e 新机器 已连上')).toBeVisible();
     await dialog.getByRole('button', { name: '完成' }).click();
 
-    await page.getByRole('button', { name: /^Worker：/ }).first().click();
+    await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: /e2e 新机器/ }).click();
     await page.getByRole('button', { name: '吊销这台机器' }).click();
     await page.getByRole('button', { name: '确认吊销' }).click();
@@ -96,7 +96,7 @@ test('窄屏：添加机器贴底成 sheet，命令可读可复制', async ({ pa
   await page.setViewportSize({ width: 390, height: 844 });
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^Worker：/ }).first().click();
+  await page.getByRole('button', { name: /^机器：/ }).first().click();
   await page.getByRole('button', { name: '添加机器' }).click();
   const dialog = page.getByRole('dialog', { name: '添加机器' });
   await expect(dialog.getByLabel('安装命令')).toContainText('HUB_PAIR=ahw_pair_');
@@ -111,7 +111,7 @@ test('窄屏：添加机器贴底成 sheet，命令可读可复制', async ({ pa
 test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 worker.env', async ({ page, baseURL }) => {
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^Worker：/ }).first().click();
+  await page.getByRole('button', { name: /^机器：/ }).first().click();
   await page.getByRole('button', { name: '添加机器' }).click();
   const dialog = page.getByRole('dialog', { name: '添加机器' });
   const command = dialog.getByLabel('安装命令');
@@ -160,7 +160,7 @@ test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 work
     await expect(dialog.getByText('✓ e2e 只读机器 已连上')).toBeVisible();
     await dialog.getByRole('button', { name: '完成' }).click();
 
-    await page.getByRole('button', { name: /^Worker：/ }).first().click();
+    await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: /e2e 只读机器/ }).click();
     const rotation = page.getByTestId('credential-rotation');
     await expect(rotation).toContainText('从未轮换');

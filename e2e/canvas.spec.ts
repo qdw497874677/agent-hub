@@ -189,7 +189,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
   await composer.fill('这段草稿要活过视图切换');
   await page.getByRole('button', { name: '列表' }).click();
   await expect(page.getByTestId('list-view')).toBeVisible();
-  await page.getByRole('button', { name: '对话', exact: true }).click();
+  await page.getByRole('button', { name: '会话', exact: true }).click();
   await expect(composer).toHaveValue('这段草稿要活过视图切换');
 
   // 搜索：用会话正文里的词命中，回车跳到那个节点
@@ -216,7 +216,7 @@ test('节点在线状态可见，任务的收尾与放弃是两个动作', async
   await expect(sessionNode(page)).toHaveCount(1);
 
   // S1.2：「它挂了」和「我改坏了配置」要能分辨，所以节点状态是常驻可查的
-  const badge = page.getByRole('button', { name: /^Worker：/ }).first();
+  const badge = page.getByRole('button', { name: /^机器：/ }).first();
   await badge.click();
   await expect(page.getByText(/\d+ 在线/)).toBeVisible();
   await expect(page.getByRole('listitem').filter({ hasText: '本机' }).first()).toBeVisible();
@@ -335,7 +335,7 @@ test('会话页窄屏 header 只留标题、状态和更多', async ({ page }, t
   await sessionNode(page).getByRole('button', { name: '打开', exact: true }).click();
   await page.screenshot({ path: testInfo.outputPath('focus-header-390.png') });
 
-  // 直连按钮和「Aa」在手机上收进「更多」，标题不再被一排动作挤掉。
+  // 直连按钮和「Aa」在手机上收进「更多」的第一组（那组只在 <640px 出现），标题不再被一排动作挤掉。
   await expect(page.getByRole('button', { name: /^连接 \d+$/ })).toHaveCount(0);
   await expect(page.getByRole('button', { name: '显示设置' })).toHaveCount(0);
 

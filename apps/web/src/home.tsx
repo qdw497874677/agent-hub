@@ -10,6 +10,7 @@ import { api } from './api.ts';
 import { WorkersBadge } from './workers.tsx';
 import { coarsePointer } from './device.ts';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
+import { GlobalNav } from './global-nav.tsx';
 
 /**
  * 首页。
@@ -52,7 +53,10 @@ export function HomePage({
 
   return (
     <div className="flex h-full flex-col md:flex-row">
-      <nav className="flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto border-b border-hair px-3 py-4 md:max-h-none md:w-[220px] md:border-b-0 md:border-r">
+      <aside
+        className="flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto border-b border-hair px-3 py-4 md:max-h-none md:w-[220px] md:border-b-0 md:border-r"
+        aria-label="首页侧栏"
+      >
         <div className="mb-4 flex items-start justify-between gap-2">
           <div>
             <p className="text-head text-primary">agent-hub</p>
@@ -105,19 +109,16 @@ export function HomePage({
           ) : null}
         </ul>
 
-        <a data-testid="nav-observe" className="mb-1 flex items-baseline justify-between rounded-sm px-2 py-1 text-body text-secondary hover:bg-card" href="#/observe">
-          可观测
-        </a>
-        <a data-testid="nav-workspaces" className="mb-4 flex items-baseline justify-between rounded-sm px-2 py-1 text-body text-secondary hover:bg-card" href="#/workspaces">
-          工作空间<span className="text-meta text-tertiary">团队共用 →</span>
-        </a>
+        <div className="mb-3 border-y border-hair">
+          <GlobalNav />
+        </div>
 
         <TrashList />
         {deleting ? <DeleteProjectDialog project={deleting} onClose={() => setDeleting(null)} /> : null}
         <div className="mt-auto border-t border-hair pt-3">
           <WorkersBadge placement="up" />
         </div>
-      </nav>
+      </aside>
 
       <main className="min-w-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-[760px] px-4 py-6 md:px-8">

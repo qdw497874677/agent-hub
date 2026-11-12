@@ -137,7 +137,7 @@ test.describe('资源展示', () => {
 
       // 机器列表：窄屏顶栏不放机器徽标，在首页侧栏底部
       if (width < 768) await page.goto('/#/');
-      await page.getByRole('button', { name: /^Worker：/ }).first().click();
+      await page.getByRole('button', { name: /^机器：/ }).first().click();
       const summaries = page.getByTestId('worker-resources');
       await expect(summaries).toHaveCount(2);
       const fresh = page.locator('[data-testid="worker-resources"][data-level="warn"]');

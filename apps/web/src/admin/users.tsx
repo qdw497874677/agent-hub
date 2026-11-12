@@ -93,10 +93,10 @@ export function Users() {
                         title={
                           user.clusterAdmin && admins <= 1
                             ? '至少要留一位集群管理员'
-                            : '集群管理员管整个 hub（用户、设置、hub 本机 Worker），但看不了别的团队的数据，除非临时进入'
+                            : '集群管理员管整个 hub（用户、设置、hub 本机），但看不了别的团队的数据，除非临时进入'
                         }
                         onClick={() => {
-                          if (!user.clusterAdmin && !window.confirm(`把 ${user.email} 设为集群管理员？TA 将能使用 hub 本机 Worker、管理所有用户。`)) return;
+                          if (!user.clusterAdmin && !window.confirm(`把 ${user.email} 设为集群管理员？TA 将能使用 hub 本机、管理所有用户。`)) return;
                           grant.mutate({ user, on: !user.clusterAdmin });
                         }}
                       >

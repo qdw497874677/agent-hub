@@ -29,7 +29,7 @@ export function DirectoryPicker({
   onPick: (path: string) => void;
   /** 有它才显示「关闭」（手机全屏时需要一个出口）。 */
   onCancel?: () => void;
-  /** 浏览哪台 Worker 的文件系统；null = hub 所在这台。 */
+  /** 浏览哪台机器的文件系统；null = hub 所在这台。 */
   workerId?: string | null;
   /** 项目名：用来算托管目录、决定起点。 */
   project?: string;

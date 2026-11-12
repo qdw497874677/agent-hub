@@ -128,10 +128,10 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
         : route.fallback()
     );
     await page.getByTestId('session-tab-files').click();
-    await expect(files.getByTestId('files-error').first()).toContainText('Worker 离线');
+    await expect(files.getByTestId('files-error').first()).toContainText('机器离线');
     await expect(files.getByTestId('file-content')).toHaveCount(0);
     await page.getByTestId('session-tab-changes').click();
-    await expect(changes.getByTestId('files-error').first()).toContainText('Worker 离线');
+    await expect(changes.getByTestId('files-error').first()).toContainText('机器离线');
     await expect(changes.getByTestId('change-row')).toHaveCount(0);
     await expect(page.getByTestId('session-tab-changes')).toHaveText('改动');
   });

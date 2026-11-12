@@ -160,7 +160,7 @@ function RoleEditor({ catalog, initial, onDone }: { catalog: AccessCatalogDto; i
               })}
           </fieldset>
         ))}
-      <p className="text-[11px] text-tertiary">hub 级权限（设置、用户、hub 本机 Worker）和「定义角色」永远不能放进自定义角色。</p>
+      <p className="text-[11px] text-tertiary">hub 级权限（设置、用户、hub 本机）和「定义角色」永远不能放进自定义角色。</p>
       {save.error ? <p role="alert" className="text-meta text-rust">{errorOf(save.error)}</p> : null}
       <div className="flex gap-2">
         <button type="submit" className={PRIMARY_BUTTON} disabled={!name.trim() || save.isPending}>{save.isPending ? '保存中…' : '保存角色'}</button>

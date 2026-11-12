@@ -119,7 +119,7 @@ function McpRisk({ risk }: { risk: McpRiskSummaryDto }) {
     <div data-testid="mcp-risk" className={`rounded-sm border px-2.5 py-2 ${risk.level === 'high' ? 'border-rust' : 'border-hair'}`}>
       <p className="text-primary">
         MCP 风险：<span className={risk.level === 'high' ? 'text-rust' : risk.level === 'medium' ? 'text-accent' : 'text-tertiary'}>{RISK_TEXT[risk.level]}</span> ·{' '}
-        {risk.transport === 'stdio' ? '在 Worker 上执行命令（stdio）' : '连远端 HTTP'}
+        {risk.transport === 'stdio' ? '在机器上执行命令（stdio）' : '连远端 HTTP'}
       </p>
       {risk.command ? (
         <p className="break-all font-mono text-secondary">

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { CanvasDto, ProjectDto, SessionDto } from './api.ts';
 import { AccountMenu } from './auth.tsx';
 import { AttentionBadge } from './attention.tsx';
+import { GlobalNav } from './global-nav.tsx';
 import { MessagesEntry } from './messages-entry.tsx';
 import { NotificationBell } from './market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
@@ -11,7 +12,7 @@ import type { View } from './route.ts';
 const VIEWS: readonly { view: View; label: string; icon: string }[] = [
   { view: 'canvas', label: '画布', icon: '▦' },
   { view: 'list', label: '列表', icon: '☷' },
-  { view: 'focus', label: '对话', icon: '◫' }
+  { view: 'focus', label: '会话', icon: '◫' }
 ];
 
 interface Props {
@@ -101,6 +102,10 @@ export function ProjectSidebar({
             ×
           </button>
         ) : null}
+      </div>
+
+      <div className="border-b border-hair">
+        <GlobalNav />
       </div>
 
       <div className="grid grid-cols-3 gap-1 border-b border-hair p-2" role="group" aria-label="视图">

@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { crumbs, decodeText, filesErrorText, filesRefetch, humanSize, languageOf, parentOf, shortPath, touches, watchPaths } from './files-core.ts';
 
-test('只有写明不在线的 503 才收成 Worker 离线', () => {
-  assert.equal(filesErrorText(503, 'Worker「e2e」不在线'), 'Worker 离线');
+test('只有写明不在线的 503 才收成机器离线', () => {
+  assert.equal(filesErrorText(503, 'Worker「e2e」不在线'), '机器离线');
   assert.equal(filesErrorText(503, '请求太频繁，稍后再试'), '请求太频繁，稍后再试');
   assert.equal(filesErrorText(503, 'Worker「e2e」没有及时回复改动列表'), 'Worker「e2e」没有及时回复改动列表');
   assert.equal(filesErrorText(503, 'worker 通道尚未就绪'), 'worker 通道尚未就绪');

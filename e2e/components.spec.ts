@@ -88,7 +88,7 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     await expect.poll(async () => (await me())?.inventory?.componentInstall === true, { timeout: 30_000 }).toBe(true);
 
     await page.goto('/');
-    await page.getByRole('button', { name: /^Worker：/ }).first().click();
+    await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: new RegExp(`e2e 组件机器 ${run}`) }).click();
     const actions = page.getByTestId('component-actions');
     await expect(actions).toBeVisible({ timeout: 20_000 });
@@ -117,7 +117,7 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     expect((await page.request.post('/api/components', { data: { id: id2, packageName: `${pkg}-b`, version: '2.0.0', provides: [] }, headers })).ok()).toBe(true);
     expect((await page.request.post(`/api/components/${id2}/2.0.0/review`, { data: { approve: true }, headers })).ok()).toBe(true);
     await page.reload();
-    await page.getByRole('button', { name: /^Worker：/ }).first().click();
+    await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: new RegExp(`e2e 组件机器 ${run}`) }).click();
     await page.getByTestId('bundle-install-open').click();
     const dialog = page.getByTestId('bundle-install-dialog');

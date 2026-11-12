@@ -56,11 +56,12 @@ for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop'
     await expect(page.getByTestId('messages-unread')).toHaveCount(0, { timeout: 10_000 });
     await page.screenshot({ path: `${SHOTS}/${vp.name}-read.png` });
 
-    // 账号菜单里的「消息」还在
+    // 侧栏全局导航里的「消息」入口还在（账号菜单里不再重复这一项）
     await page.goto(`/#/p/${w.project}`);
     await expect(page.getByTestId('messages-unread')).toHaveCount(0);
-    await page.getByRole('button', { name: '账号' }).click();
-    await expect(page.getByTestId('menu-messages')).toBeVisible();
+    const navMessages = page.getByTestId('nav-messages');
+    await expect(navMessages).toBeAttached();
+    await expect(navMessages).toHaveAttribute('href', '#/messages');
     const read = (await (await page.request.get('/api/groups/unread')).json()) as { total: number; groups: { groupId: string }[] };
     expect(read.groups.find((x) => x.groupId === group)).toBeUndefined();
   });

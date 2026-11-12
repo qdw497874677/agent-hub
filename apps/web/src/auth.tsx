@@ -450,7 +450,9 @@ function DevicesDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** 头部的账号按钮：显示首字，点开看邮箱、退出登录。 */
+/** 头部的账号按钮：显示首字，点开是个人 / 组织两组入口和退出登录。 */
+const MENU_ROW = 'w-full rounded-sm px-2 py-1.5 text-left text-secondary hover:bg-card-raised hover:text-primary';
+
 export function AccountMenu() {
   const account = useAccount();
   const queryClient = useQueryClient();
@@ -479,89 +481,72 @@ export function AccountMenu() {
         {account.displayName.slice(0, 1).toUpperCase()}
       </button>
       {open && (
-        <div className="absolute right-0 top-9 z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta">
+        <div className="absolute right-0 top-9 z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta" data-testid="account-menu">
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
           <p className="mt-1 text-tertiary">{account.clusterAdmin ? '集群管理员' : roleLabel(account.role)}</p>
-          <a
-            href="#/assets/catalog"
-            className="mt-3 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
-            onClick={() => setOpen(false)}
-          >
-            资产市场
-          </a>
-          <a
-            href="#/messages"
-            data-testid="menu-messages"
-            className="mt-2 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
-            onClick={() => setOpen(false)}
-          >
-            消息
-          </a>
-          <a
-            href="#/memory"
-            data-testid="menu-memory"
-            className="mt-2 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
-            onClick={() => setOpen(false)}
-          >
-            记忆
-          </a>
-          {account.clusterAdmin ? (
-            <a
-              href="#/admin/overview"
-              className="mt-3 block w-full rounded-sm border border-hair px-2 py-1.5 text-center text-secondary hover:border-accent hover:text-accent"
-              onClick={() => setOpen(false)}
+
+          <div className="mt-3 border-t border-hair pt-1.5">
+            <p className="px-2 pb-0.5 text-meta text-tertiary">个人</p>
+            <button
+              className={MENU_ROW}
+              data-testid="menu-settings"
+              onClick={() => {
+                setOpen(false);
+                setSettings(true);
+              }}
             >
-              运营后台
-            </a>
-          ) : null}
+              个人设置
+            </button>
+            <button
+              className={MENU_ROW}
+              data-testid="menu-devices"
+              onClick={() => {
+                setOpen(false);
+                setDevices(true);
+              }}
+            >
+              登录设备
+            </button>
+            <button
+              className={MENU_ROW}
+              data-testid="menu-tokens"
+              onClick={() => {
+                setOpen(false);
+                setTokens(true);
+              }}
+            >
+              访问令牌
+            </button>
+          </div>
+
+          <div className="mt-2 border-t border-hair pt-1.5">
+            <p className="px-2 pb-0.5 text-meta text-tertiary">组织</p>
+            <button
+              className={MENU_ROW}
+              data-testid="menu-team"
+              onClick={() => {
+                setOpen(false);
+                setTeam(true);
+              }}
+            >
+              我的团队
+            </button>
+            <button
+              className={MENU_ROW}
+              data-testid="menu-providers"
+              onClick={() => {
+                setOpen(false);
+                setProviders(true);
+              }}
+            >
+              模型提供商
+            </button>
+          </div>
+
           <button
-            className="mt-3 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
-            onClick={() => {
-              setOpen(false);
-              setDevices(true);
-            }}
-          >
-            登录设备
-          </button>
-          <button
-            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
-            onClick={() => {
-              setOpen(false);
-              setTeam(true);
-            }}
-          >
-            我的团队
-          </button>
-          <button
-            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
-            onClick={() => {
-              setOpen(false);
-              setSettings(true);
-            }}
-          >
-            个人设置
-          </button>
-          <button
-            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
-            onClick={() => {
-              setOpen(false);
-              setProviders(true);
-            }}
-          >
-            模型提供商
-          </button>
-          <button
-            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-accent hover:text-accent"
-            onClick={() => {
-              setOpen(false);
-              setTokens(true);
-            }}
-          >
-            访问令牌
-          </button>
-          <button
-            className="mt-2 w-full rounded-sm border border-hair px-2 py-1.5 text-secondary hover:border-rust hover:text-rust"
+            className="mt-2 w-full border-t border-hair px-2 pb-0.5 pt-2 text-left text-secondary hover:text-rust disabled:opacity-40"
+            data-testid="menu-logout"
             onClick={() => leave.mutate()}
             disabled={leave.isPending}
           >

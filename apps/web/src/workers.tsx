@@ -328,7 +328,7 @@ function RevokeButton({ worker }: { worker: WorkerInfoDto }) {
 }
 
 /**
- * 顶栏的 Worker 状态 + 管理面板。面板本身就是 Worker 列表：
+ * 顶栏的机器状态 + 管理面板。面板本身就是机器列表：
  * 在线的排前面，离线的留着（带最后在线时间和原因），点开看主机、目录、ID。
  */
 export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up' }) {
@@ -358,11 +358,11 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
         className="flex items-center gap-1.5 rounded-sm border border-hair px-2.5 py-1 text-meta text-secondary hover:border-accent hover:text-accent"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        aria-label={`Worker：${online.length}/${list.length} 在线`}
-        title="Worker：跑 agent 的机器"
+        aria-label={`机器：${online.length}/${list.length} 在线`}
+        title="机器：跑 agent 的机器"
       >
         <span className={`block size-[7px] rounded-full ${tone}`} />
-        {list.length === 0 ? '没有 Worker' : list.length === 1 ? (list[0]?.label ?? 'Worker') : `${online.length}/${list.length} Worker`}
+        {list.length === 0 ? '没有机器' : list.length === 1 ? (list[0]?.label ?? '机器') : `${online.length}/${list.length} 机器`}
       </button>
 
       {open ? (
@@ -373,13 +373,13 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
               : 'absolute right-0 top-9 w-[min(340px,calc(100vw-1.5rem))]'
           }`}><div className="overflow-hidden rounded-md border border-strong bg-panel shadow-lg">
           <header className="flex items-baseline justify-between border-b border-hair px-3 py-2">
-            <span className="text-sub text-primary">Worker</span>
+            <span className="text-sub text-primary">机器</span>
             <span className="text-meta text-tertiary">
               {online.length} 在线{list.length > online.length ? ` · ${list.length - online.length} 离线` : ''}
             </span>
           </header>
           {list.length === 0 ? (
-            <p className="px-3 py-3 text-meta text-tertiary">还没有 Worker 连上。它起来后会自己报到——刚启动的话等几秒。</p>
+            <p className="px-3 py-3 text-meta text-tertiary">还没有机器连上。它起来后会自己报到——刚启动的话等几秒。</p>
           ) : (
             <ul className="max-h-[60vh] overflow-y-auto">
               {list.map((worker) => (

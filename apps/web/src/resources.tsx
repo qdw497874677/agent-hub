@@ -41,7 +41,7 @@ export function ResourceSummary({ worker }: { worker: WorkerInfoDto }) {
   if (worker.state !== 'online') return null;
   if (!r) {
     return (
-      <span className="block truncate text-meta text-tertiary" data-testid="worker-resources" data-level="none" title="这台 worker 版本较老，没有上报资源">
+      <span className="block truncate text-meta text-tertiary" data-testid="worker-resources" data-level="none" title="这台机器版本较老，没有上报资源">
         CPU — · 内存 — · 盘 —
       </span>
     );

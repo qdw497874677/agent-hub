@@ -63,7 +63,7 @@ test('套件清单：外部组件只显示，来路不明的 hub 组件标不可
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto('/');
-    await page.getByRole('button', { name: /^Worker：/ }).first().click();
+    await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: /e2e 清单机器/ }).click();
     const section = page.getByTestId('inventory-section');
     await expect(section).toBeVisible({ timeout: 20_000 });

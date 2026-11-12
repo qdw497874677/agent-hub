@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { sessionTabLabel, stepTab } from './session-tabs.ts';
 
 test('会话标签文字', () => {
-  assert.equal(sessionTabLabel('chat'), '对话');
+  assert.equal(sessionTabLabel('chat'), '会话');
   assert.equal(sessionTabLabel('files', 3), '文件');
   assert.equal(sessionTabLabel('changes'), '改动');
   assert.equal(sessionTabLabel('changes', 0), '改动 0');

@@ -9,7 +9,7 @@ import 'diff2html/bundles/css/diff2html.min.css';
  * - 手机：目录列表 → 点文件进全屏查看，左上「返回」；桌面：左树右看。
  * - 「文件 | 改动(n)」两页；改动的基准可切（会话开始 / 当前 HEAD）。
  * - 敏感文件默认藏起；打开要确认（服务端记审计）。被忽略的灰显但能展开；.git 不列。
- * - 不缓存（决定 8）：Worker 不在线就如实显示「Worker 离线」。
+ * - 不缓存（决定 8）：机器不在线就如实显示「机器离线」。
  */
 type Base = string; // 'session' | 'head' | 'turn' | 'turn:<n>'
 type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null };

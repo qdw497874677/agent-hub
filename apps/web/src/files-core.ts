@@ -3,7 +3,7 @@
 /**
  * 文件查询的缓存策略（stale-while-revalidate）：切回标签先显示缓存，同时后台重新读一遍。
  * staleTime 0 = 每次挂载 / 失效都重读；gcTime 保留 10 分钟供切回时立即显示。
- * ADR 0025 决定 8 仍成立：重读失败（Worker 离线）时不显示旧数据，界面一律 error 优先——见 shown()。
+ * ADR 0025 决定 8 仍成立：重读失败（机器离线）时不显示旧数据，界面一律 error 优先——见 shown()。
  */
 export const FILES_QUERY = { retry: false, gcTime: 10 * 60_000, staleTime: 0, refetchOnWindowFocus: false } as const;
 
@@ -17,13 +17,13 @@ export function filesRefetch(kind: string): { cancelRefetch: boolean } {
 }
 
 /**
- * 文件接口的 503。只有正文写明这台 Worker 不在线，才收成「Worker 离线」。
+ * 文件接口的 503。只有正文写明这台机器不在线，才收成「机器离线」。
  * 限流、超时（没有及时回复）、通道尚未就绪、git 自己的失败都留原文。
  * 这些都是 503，收成同一句会把「机器断了」和「还在、只是没及时回」混在一起。
  */
 export function filesErrorText(status: number, message: string | undefined): string {
   const text = typeof message === 'string' ? message : '';
-  if (status === 503 && text.includes('不在线')) return 'Worker 离线';
+  if (status === 503 && text.includes('不在线')) return '机器离线';
   return text;
 }
 

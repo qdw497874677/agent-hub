@@ -5,7 +5,7 @@ import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-s
 
 /**
  * 提交 / 推送 / 开 PR（ADR 0027 阶段 2）：说明由项目的提炼模型起草（D4，失败回落模板），人可以改；
- * PR 走团队 token → Worker 的 gh → 只推送 + 给链接（D3）。
+ * PR 走团队 token → 机器上的 gh → 只推送 + 给链接（D3）。
  */
 const STATUS: Record<string, string> = { untracked: '新', added: '新', modified: '改', deleted: '删', renamed: '名' };
 

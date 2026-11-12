@@ -92,7 +92,7 @@ export function AddMachineDialog({ workers, onClose }: { workers: readonly Worke
               <li>装成 systemd 服务，开机自启、断线重连</li>
             </ul>
             <p className="mt-1.5">
-              这台机器上已经有一台 Worker、想再装一台：在命令的 <span className="font-mono">bash</span> 前加{' '}
+              这台机器上已经接入过一台、想再接入一台：在命令的 <span className="font-mono">bash</span> 前加{' '}
               <span className="font-mono">WORKER_INSTANCE=第二台的名字</span>，代码、配置、资产和服务都会单独一份。
             </p>
             <p className="mt-1.5">之后随时可以在这里吊销这台机器，它会立刻断开。</p>
