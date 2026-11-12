@@ -79,27 +79,31 @@ test('接入这台机器的成员能装；别的成员、已吊销的、本机 W
   assert.equal(!anonymous.ok && anonymous.error.code, 'forbidden');
 });
 
-test('机器自带的不装不卸；离线拒绝；老 Worker 拒绝；同时只一个任务', async () => {
+test('机器自带的也能再装（并存），switch 按 source 校验；离线拒绝；老 Worker 拒绝；同时只一个任务', async () => {
   const { admin, deps } = setup();
   admin.workerList.push(
-    machine('own', { source: 'machine', recommended: '2.2.2' }),
+    machine('own', { source: 'machine', machineVersion: '2.0.0', recommended: '2.2.2' }),
     machine('off', missing, { state: 'offline' }),
     machine('old', undefined),
     machine('busy', missing, {
       runtimeJob: { jobId: 'j', agentId: 'pi', action: 'install', version: '1.0.0', state: 'running', message: '', log: '', startedAt: 1, endedAt: null, actorEmail: '' }
     })
   );
-  const message = async (id: string, action: 'install' | 'uninstall' = 'install') => {
-    const result = await startRuntimeJob(deps, owner, id, { agentId: 'opencode', action });
+  const message = async (id: string, action: 'install' | 'uninstall' | 'switch' = 'install', source?: 'machine' | 'hub') => {
+    const result = await startRuntimeJob(deps, owner, id, { agentId: 'opencode', action, ...(source ? { source } : {}) });
     return result.ok ? 'ok' : result.error.message;
   };
-  assert.match(await message('own'), /以机器上的为准/);
-  assert.match(await message('own', 'uninstall'), /以机器上的为准/);
+  // 机器自带不再阻止安装：装一份 hub 的并存
+  assert.equal(await message('own'), 'ok');
+  assert.match(await message('own', 'uninstall'), /只能卸载 hub 装的那份/);
+  assert.equal(await message('own', 'switch', 'machine'), 'ok');
+  assert.match(await message('own', 'switch', 'hub'), /hub 还没装这个 agent 的版本/);
+  assert.match(await message('own', 'switch'), /切换要指明 source/);
   assert.match(await message('off'), /不在线/);
   assert.match(await message('old'), /版本太旧/);
   assert.match(await message('busy'), /已经有一个安装任务/);
   assert.match(await message('nope'), /没有这台机器/);
-  assert.equal(admin.runtimeJobs.length, 0);
+  assert.equal(admin.runtimeJobs.length, 2);
 });
 
 test('版本号只收 X.Y.Z；装不了的原因原样给出；同版本不重装', async () => {

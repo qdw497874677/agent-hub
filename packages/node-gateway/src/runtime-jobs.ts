@@ -10,6 +10,8 @@ export interface RuntimeJobCommand {
   readonly agentId: string;
   readonly action: RuntimeAction | ComponentAction;
   readonly version: string | null;
+  /** switch 的目标来源（install / uninstall 没有）。 */
+  readonly source?: 'machine' | 'hub';
   readonly component?: ComponentJobSpec;
   readonly components?: readonly ComponentJobSpec[];
 }
@@ -34,6 +36,8 @@ export interface RuntimeManagerOptions {
   readonly installers: readonly HarnessInstaller[];
   /** 每个 agent 在启动时是否已经由机器自己提供（X_COMMAND / PATH / 常见位置）。 */
   readonly machineProvided: ReadonlyMap<string, boolean>;
+  /** 机器自带那份的版本（启动时探测一次）；null = 探测失败。 */
+  readonly machineVersions?: ReadonlyMap<string, string | null>;
   /** 装好 / 卸掉之后：重新探测并报 agent 清单。 */
   readonly onChange?: () => void | Promise<void>;
   readonly timeoutMs?: number;
@@ -115,15 +119,24 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
 
   const provisionOf = (agentId: string): RuntimeProvision => {
     const installer = byAgent.get(agentId);
-    if (options.machineProvided.get(agentId)) return { source: 'machine', ...(installer ? { recommended: installer.recommendedVersion } : {}) };
-    if (!installer) return { source: 'missing' };
-    const version = store.installed(agentId);
+    const hubVersion = store.installed(agentId);
+    const machineVersion = options.machineVersions?.get(agentId) ?? null;
+    const hasMachine = store.machinePath(agentId) !== null || options.machineProvided.get(agentId) === true;
+    const preference = store.preference(agentId);
+    // source 是当前实际生效的那份：用户选过就按选择，否则 hub 装了报 hub，再否则机器自带。
+    const source =
+      preference === 'machine' && hasMachine ? 'machine' : hubVersion ? 'hub' : hasMachine ? 'machine' : 'missing';
+    const version = source === 'hub' ? hubVersion : source === 'machine' ? machineVersion : null;
     const blocker = blockers.get(agentId) ?? null;
     return {
-      source: version ? 'hub' : 'missing',
+      source,
       ...(version ? { version } : {}),
-      recommended: installer.recommendedVersion,
-      ...(blocker ? { blocker } : {})
+      ...(hasMachine && machineVersion ? { machineVersion } : {}),
+      ...(hubVersion ? { hubVersion } : {}),
+      ...(preference ? { preference } : {}),
+      ...(installer ? { recommended: installer.recommendedVersion } : {}),
+      // 装了 hub 的版本就不再用安装条件挡着：切换 / 卸载都还能做
+      ...(!hubVersion && blocker ? { blocker } : {})
     };
   };
 
@@ -197,9 +210,36 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
       const refuse = (message: string) => report({ jobId: command.jobId, state: 'refused', message, lines: [] });
       if (busy) return refuse('这台机器上已经有一个安装任务在跑');
       if (command.action === 'install_component' || command.action === 'uninstall_component') return runComponent(command, report);
+      if (command.action === 'switch') {
+        const source = command.source;
+        if (source !== 'machine' && source !== 'hub') return refuse('切换要指明 source（machine 或 hub）');
+        busy = true;
+        try {
+          if (source === 'hub') {
+            const version = store.installed(command.agentId);
+            if (!version) {
+              report({ jobId: command.jobId, state: 'refused', message: 'hub 还没装这个 agent 的版本', lines: [] });
+              return;
+            }
+            store.setPreference(command.agentId, 'hub');
+            await options.onChange?.();
+            report({ jobId: command.jobId, state: 'succeeded', message: `已切换到 hub 安装的 v${version}`, lines: [] });
+            return;
+          }
+          if (!store.machinePath(command.agentId)) {
+            report({ jobId: command.jobId, state: 'refused', message: '这台机器上没有自带的版本', lines: [] });
+            return;
+          }
+          store.setPreference(command.agentId, 'machine');
+          await options.onChange?.();
+          report({ jobId: command.jobId, state: 'succeeded', message: '已切换到机器自带的版本', lines: [] });
+        } finally {
+          busy = false;
+        }
+        return;
+      }
       const installer = byAgent.get(command.agentId);
       if (!installer) return refuse('这个 agent 不支持在线安装');
-      if (options.machineProvided.get(command.agentId)) return refuse('这台机器自己装了它，以机器上的为准');
       busy = true;
 
       let pending: string[] = [];
@@ -233,6 +273,7 @@ export async function createRuntimeManager(options: RuntimeManagerOptions): Prom
           }
           step(`删除 ${command.agentId} ${version}`);
           store.remove(command.agentId, installer.command);
+          if (store.preference(command.agentId) === 'hub') store.setPreference(command.agentId, null);
           await options.onChange?.();
           flush('succeeded', `已卸载 ${version}`, null);
           return;

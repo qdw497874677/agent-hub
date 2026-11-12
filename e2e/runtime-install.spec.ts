@@ -57,7 +57,7 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
     });
 
     await page.goto('/');
-    await page.getByRole('button', { name: /^Worker：/ }).first().click();
+    await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: /e2e 空机器/ }).click();
     const pi = page.getByTestId('runtime-pi');
     await expect(page.getByTestId('runtime-pi-source')).toHaveText('未安装', { timeout: 30_000 });
@@ -99,7 +99,7 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
     await pi.getByTestId('runtime-pi-uninstall').click();
     await pi.getByTestId('runtime-pi-uninstall').click();
     await expect(page.getByTestId('runtime-pi-source')).toHaveText('未安装', { timeout: 30_000 });
-    expect(existsSync(join(runtimesDir, 'bin', 'pi'))).toBe(false);
+    expect(existsSync(join(runtimesDir, 'bin', 'pi'))).toBe(true);
 
     const audit = (await (await page.request.get('/api/admin/audit')).json()) as { action: string }[];
     expect(audit.slice(0, 2).map((entry) => entry.action)).toEqual(['runtime.uninstall', 'runtime.install']);
@@ -111,7 +111,7 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
   }
 });
 
-test('运行时安装：机器自带的不让装，坏请求被挡', async ({ page, baseURL }) => {
+test('运行时安装：机器自带的也能并存 / 切换，坏请求被挡', async ({ page, baseURL }) => {
   await loginByApi(page);
   const headers = await writeHeaders(page, baseURL!);
   const workers = (await (await page.request.get('/api/workers')).json()) as {
@@ -123,11 +123,14 @@ test('运行时安装：机器自带的不让装，坏请求被挡', async ({ pa
   test.skip(!local, '没有本机 worker');
   const bad = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/pi`, { data: { action: 'install', version: '1.0; rm -rf /' }, headers });
   expect(bad.status()).toBe(400);
+  // switch 不带 source：契约层就挡住
+  const noSource = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/pi`, { data: { action: 'switch' }, headers });
+  expect(noSource.status()).toBe(400);
   const machine = local!.agentModels?.find((harness) => harness.provision?.source === 'machine');
   if (machine) {
-    const refused = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/${machine.agentId}`, { data: { action: 'install' }, headers });
-    expect(refused.status()).toBe(409);
-    expect(((await refused.json()) as { error: { message: string } }).error.message).toContain('以机器上的为准');
+    // 机器自带的那份保留着：可以显式切过去，而不是被「以机器上的为准」拒绝
+    const switched = await page.request.post(`/api/workers/${encodeURIComponent(local!.workerId)}/runtimes/${machine.agentId}`, { data: { action: 'switch', source: 'machine' }, headers });
+    expect(switched.status()).toBe(202);
   }
 });
 
@@ -135,7 +138,7 @@ test('窄屏：运行时一节不溢出', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await loginByApi(page);
   await page.goto('/');
-  await page.getByRole('button', { name: /^Worker：/ }).first().click();
+  await page.getByRole('button', { name: /^机器：/ }).first().click();
   await page.getByRole('button', { name: /本机/ }).first().click();
   const section = page.getByTestId('runtime-section');
   await expect(section).toBeVisible();

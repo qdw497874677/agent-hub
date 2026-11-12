@@ -909,6 +909,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           agentId: job.agentId,
           action: job.action,
           version: job.version,
+          ...(job.source ? { source: job.source } : {}),
           ...(job.component ? { component: { ...job.component, provides: [...job.component.provides] } } : {}),
           ...(job.components?.length ? { components: job.components.map((c) => ({ ...c, provides: [...c.provides] })) } : {})
         } satisfies ServerToWorker)

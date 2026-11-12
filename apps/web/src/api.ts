@@ -202,8 +202,11 @@ export const api = {
   /** 「资源满了就拒绝新会话」开关（ADR 0014，默认关）。 */
   setResourcePolicy: (workerId: string, refuseWhenFull: boolean) =>
     call<{ refuseWhenFull: boolean }>(`/api/workers/${encodeURIComponent(workerId)}/resource-policy`, { method: 'PUT', body: JSON.stringify({ refuseWhenFull }) }),
-  /** 在这台机器上装 / 升级 / 卸载一个 agent 运行时；只回「已下发」，进度看 workers 列表里的 runtimeJob。 */
-  runtimeJob: (workerId: string, agentId: string, body: { action: 'install' | 'uninstall'; version?: string }) =>
+  /**
+   * 在这台机器上装 / 升级 / 卸载 / 切换一个 agent 运行时；只回「已下发」，进度看 workers 列表里的 runtimeJob。
+   * `install` 不带 version = 推荐版本；`switch` 要指明切到哪份（只影响下次新建的会话）。
+   */
+  runtimeJob: (workerId: string, agentId: string, body: { action: 'install' | 'uninstall' | 'switch'; version?: string; source?: 'machine' | 'hub' }) =>
     post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/runtimes/${encodeURIComponent(agentId)}`, body),
   /** 在这台机器上装 / 卸 / 修复一个目录里的组件（ADR 0021 §8）；进度同样看 runtimeJob。 */
   componentJob: (workerId: string, componentId: string, body: { action: 'install' | 'uninstall'; version?: string }) =>

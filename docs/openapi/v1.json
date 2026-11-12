@@ -403,6 +403,21 @@
                                   "type": "string",
                                   "maxLength": 64
                                 },
+                                "machineVersion": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "hubVersion": {
+                                  "type": "string",
+                                  "maxLength": 64
+                                },
+                                "preference": {
+                                  "type": "string",
+                                  "enum": [
+                                    "machine",
+                                    "hub"
+                                  ]
+                                },
                                 "recommended": {
                                   "type": "string",
                                   "maxLength": 64
@@ -559,6 +574,7 @@
                             "enum": [
                               "install",
                               "uninstall",
+                              "switch",
                               "install_component",
                               "uninstall_component"
                             ]

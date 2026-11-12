@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type CatalogComponentDto, type WorkerInfoDto } from './api.ts';
+import { SMALL_BUTTON } from './dialog-shell.tsx';
 import { localTime } from './local-time.ts';
+import { runtimeView, versionError } from './runtime-view.ts';
 
 type Harness = NonNullable<WorkerInfoDto['agentModels']>[number];
 type Job = NonNullable<WorkerInfoDto['runtimeJob']>;
@@ -9,18 +11,15 @@ type Job = NonNullable<WorkerInfoDto['runtimeJob']>;
 const AGENT_NAME: Record<string, string> = { pi: 'Pi', opencode: 'OpenCode', grok: 'Grok' };
 const nameOf = (id: string): string => AGENT_NAME[id] ?? id;
 
-/** 机器自带 / hub 安装 vX / 未安装 */
-function sourceLabel(harness: Harness): string {
-  const provision = harness.provision;
-  if (!provision) return '';
-  if (provision.source === 'machine') return '机器自带';
-  if (provision.source === 'hub') return `hub 安装 v${provision.version ?? '?'}`;
-  return '未安装';
-}
+/** 已经在等着确认的按钮亮起来；其余用 SMALL_BUTTON。 */
+const ARMED_BUTTON = 'shrink-0 rounded-sm border border-accent bg-accent px-2 py-1 text-meta text-canvas';
+const ARMED_DANGER = 'shrink-0 rounded-sm border border-rust bg-rust px-2 py-1 text-meta text-primary';
 
 /**
- * 运行时（ADR 0010）：每个 agent 在这台机器上从哪来，能装就给「安装 / 升级 / 卸载」。
- * 机器自带的只显示、不动；老 Worker 不报 provision，这一节整个不出现。
+ * 运行时（ADR 0010）：每个 agent 在这台机器上从哪来、装的是哪一份。
+ * 机器自带的那份会把版本号报上来；hub 可以另装一份，两份之间显式切换。
+ * 切换 / 安装都只对下次新建的会话生效，正在跑的会话继续用旧的。
+ * 老 Worker 不报 provision，这一节整个不出现。
  */
 export function RuntimeSection({ worker }: { worker: WorkerInfoDto }) {
   const harnesses = (worker.agentModels ?? []).filter((harness) => harness.provision);
@@ -42,68 +41,132 @@ export function RuntimeSection({ worker }: { worker: WorkerInfoDto }) {
   );
 }
 
+type Arming = 'install' | 'upgrade' | 'uninstall' | 'switch';
+
 function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness: Harness; busy: boolean }) {
   const queryClient = useQueryClient();
-  const provision = harness.provision!;
-  const [armed, setArmed] = useState<'install' | 'uninstall' | null>(null);
+  const id = harness.agentId;
+  const view = runtimeView(harness.provision!);
+  const [armed, setArmed] = useState<Arming | null>(null);
+  const [version, setVersion] = useState('');
   const start = useMutation({
-    mutationFn: (action: 'install' | 'uninstall') => api.runtimeJob(worker.workerId, harness.agentId, { action }),
+    mutationFn: (input: { action: 'install' | 'uninstall' | 'switch'; version?: string; source?: 'machine' | 'hub' }) =>
+      api.runtimeJob(worker.workerId, id, input),
     onSettled: () => {
       setArmed(null);
+      setVersion('');
       void queryClient.invalidateQueries({ queryKey: ['workers'] });
     }
   });
   useEffect(() => {
     if (!armed) return;
-    const timer = setTimeout(() => setArmed(null), 10_000);
+    const timer = setTimeout(() => {
+      setArmed(null);
+      setVersion('');
+    }, 10_000);
     return () => clearTimeout(timer);
   }, [armed]);
 
-  const recommended = provision.recommended;
-  let action: { kind: 'install' | 'uninstall'; label: string; confirm: string } | null = null;
-  let upgrade: { label: string; confirm: string } | null = null;
-  if (provision.source === 'missing' && recommended && !provision.blocker) {
-    action = { kind: 'install', label: '安装', confirm: `确认安装 v${recommended}` };
-  }
-  if (provision.source === 'hub') {
-    action = { kind: 'uninstall', label: '卸载', confirm: '确认卸载' };
-    if (recommended && provision.version !== recommended) upgrade = { label: `升级到 v${recommended}`, confirm: `确认升级到 v${recommended}` };
-  }
-  const reason =
-    provision.source === 'machine'
-      ? '这台机器自己装的，以它为准，hub 不动'
-      : provision.blocker ?? (start.isError ? (start.error as Error).message : '');
+  const preset = view.install?.preset ?? null;
+  const problem = versionError(version, preset);
+  const picked = version.trim() || preset;
+  const upgradeTo = view.hub?.upgradeTo ?? null;
+  const other = view.other;
 
-  const button = (kind: 'install' | 'uninstall', key: string, label: string, confirm: string, danger = false) => (
+  const arm = (key: Arming) => {
+    if (key === 'install') setVersion(preset ?? '');
+    setArmed(key);
+  };
+  const runInstall = () => {
+    if (problem) return;
+    start.mutate({ action: 'install', ...(picked ? { version: picked } : {}) });
+  };
+  const chip = (key: 'upgrade' | 'uninstall' | 'switch', label: string, confirm: string, run: () => void) => (
     <button
       key={key}
-      data-testid={`runtime-${harness.agentId}-${key}`}
-      className={`shrink-0 rounded-sm border px-2 py-0.5 text-xs ${
-        armed === kind ? (danger ? 'border-rust bg-rust text-primary' : 'border-accent bg-accent text-canvas') : 'border-hair text-secondary hover:border-strong hover:text-primary'
-      } disabled:opacity-50`}
+      data-testid={`runtime-${id}-${key}`}
+      className={armed === key ? (key === 'uninstall' ? ARMED_DANGER : ARMED_BUTTON) : SMALL_BUTTON}
       disabled={busy || start.isPending}
-      onClick={() => (armed === kind ? start.mutate(kind) : setArmed(kind))}
+      onClick={() => (armed === key ? run() : arm(key))}
     >
-      {armed === kind ? confirm : label}
+      {armed === key ? confirm : label}
     </button>
   );
+  // 安装 / 切换都只影响新会话：一句话说清楚，别让用户以为点完正在跑的会话就换了。
+  const actionable = Boolean(view.install || view.hub || view.other);
+  const note =
+    view.notice ??
+    (view.other
+      ? '切换对下次新建的会话生效，正在跑的会话继续用旧版本'
+      : actionable
+        ? '对下次新建的会话生效，正在跑的会话继续用旧版本'
+        : view.blocker);
 
   return (
-    <li className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5" data-testid={`runtime-${harness.agentId}`}>
-      <span className="text-secondary">{nameOf(harness.agentId)}</span>
-      <span className="rounded-sm border border-hair px-1 text-xs text-tertiary" data-testid={`runtime-${harness.agentId}-source`}>
-        {sourceLabel(harness)}
+    <li className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-testid={`runtime-${id}`}>
+      <span className="text-secondary">{nameOf(id)}</span>
+      <span className="rounded-sm border border-hair px-1 text-meta text-tertiary" data-testid={`runtime-${id}-source`}>
+        {view.activeLabel}
+        {view.both ? '（生效中）' : ''}
+        {view.other ? ` · ${view.other.label}` : ''}
       </span>
-      {upgrade ? button('install', 'upgrade', upgrade.label, upgrade.confirm) : null}
-      {action ? button(action.kind, action.kind, action.label, action.confirm, action.kind === 'uninstall') : null}
+      {view.install ? (
+        armed === 'install' ? (
+          <span className="flex min-w-0 flex-wrap items-center gap-1">
+            <input
+              data-testid={`runtime-${id}-version`}
+              aria-label="hub 安装的版本"
+              className={`w-24 min-w-0 rounded-sm border bg-card px-1.5 py-0.5 font-mono text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent ${
+                problem ? 'border-rust' : 'border-hair'
+              }`}
+              placeholder={preset ?? '2.2.2'}
+              inputMode="numeric"
+              value={version}
+              onChange={(event) => setVersion(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') runInstall();
+              }}
+            />
+            <button data-testid={`runtime-${id}-install`} className={ARMED_BUTTON} disabled={busy || start.isPending || Boolean(problem)} onClick={runInstall}>
+              {picked ? `确认安装 v${picked}` : '确认安装'}
+            </button>
+            <button
+              data-testid={`runtime-${id}-install-cancel`}
+              className={SMALL_BUTTON}
+              onClick={() => {
+                setArmed(null);
+                setVersion('');
+              }}
+            >
+              取消
+            </button>
+            {problem ? (
+              <span role="alert" className="basis-full text-meta text-rust" data-testid={`runtime-${id}-version-error`}>
+                {problem}
+              </span>
+            ) : null}
+          </span>
+        ) : (
+          <button data-testid={`runtime-${id}-install`} className={SMALL_BUTTON} disabled={busy || start.isPending} onClick={() => arm('install')}>
+            {view.install.label}
+          </button>
+        )
+      ) : null}
+      {upgradeTo ? chip('upgrade', `升级到 v${upgradeTo}`, `确认升级到 v${upgradeTo}`, () => start.mutate({ action: 'install', version: upgradeTo })) : null}
+      {other ? chip('switch', other.button, '确认切换', () => start.mutate({ action: 'switch', source: other.side })) : null}
+      {view.hub ? chip('uninstall', '卸载', '确认卸载', () => start.mutate({ action: 'uninstall' })) : null}
       {armed ? (
-        <span className="text-xs text-accent" data-testid={`runtime-${harness.agentId}-confirm-hint`}>
+        <span className="text-meta text-accent" data-testid={`runtime-${id}-confirm-hint`}>
           再点一次确认 · 10 秒内有效
         </span>
       ) : null}
-      {reason ? (
-        <span className="basis-full text-xs text-tertiary" role={start.isError ? 'alert' : undefined}>
-          {reason}
+      {start.isError ? (
+        <span role="alert" className="basis-full text-meta text-rust">
+          {(start.error as Error).message}
+        </span>
+      ) : note ? (
+        <span className="basis-full text-meta text-tertiary" data-testid={`runtime-${id}-note`}>
+          {note}
         </span>
       ) : null}
     </li>
@@ -111,6 +174,13 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
 }
 
 const STATE_TEXT: Record<Job['state'], string> = { running: '进行中', succeeded: '完成', failed: '失败', refused: '没做' };
+const ACTION_TEXT: Record<string, string> = {
+  install: '安装',
+  install_component: '安装',
+  uninstall: '卸载',
+  uninstall_component: '卸载',
+  switch: '切换'
+};
 
 /** 最近一次任务：状态一行，日志可展开；跑的时候默认展开看进度。 */
 function JobPanel({ job }: { job: Job }) {
@@ -125,7 +195,7 @@ function JobPanel({ job }: { job: Job }) {
       <button className="flex w-full min-w-0 items-center gap-2 px-2 py-1 text-left text-xs" onClick={() => setOpen((value) => !value)}>
         <span className={`shrink-0 ${tone}`} data-testid="runtime-job-state">
           {running ? '⏳ ' : ''}
-          {job.componentId ? `组件 ${job.componentId}` : nameOf(job.agentId)} {job.action === 'install' || job.action === 'install_component' ? '安装' : '卸载'} · {STATE_TEXT[job.state]}
+          {job.componentId ? `组件 ${job.componentId}` : nameOf(job.agentId)} {ACTION_TEXT[job.action] ?? job.action} · {STATE_TEXT[job.state]}
         </span>
         <span className="min-w-0 flex-1 truncate text-tertiary" data-testid="runtime-job-message">
           {job.message}

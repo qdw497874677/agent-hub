@@ -111,10 +111,21 @@ export const agentReadinessSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('unavailable'), reason: z.string(), hint: z.string().max(200).optional() })
 ]);
 
-/** 运行时从哪来（ADR 0010）：machine = 机器自带，以它为准；hub = hub 装的；missing = 没有。 */
+/**
+ * 运行时从哪来（ADR 0010）：source 是**当前实际生效**的那份——
+ * machine = 机器自带的；hub = hub 装的；missing = 没有。两者都在时由 preference 决定，
+ * preference 缺省且 hub 装了就报 hub（老行为），否则 machine。
+ */
 export const runtimeProvisionSchema = z.object({
   source: z.enum(['machine', 'hub', 'missing']),
+  /** 当前生效那份的版本（machine 时是机探测到的版本，可能没有）。 */
   version: z.string().max(64).optional(),
+  /** 机器自带那份 `--version` 探测结果；机器上没有这个 agent 时不出现。 */
+  machineVersion: z.string().max(64).optional(),
+  /** hub 装的那份的版本；没装就没有。 */
+  hubVersion: z.string().max(64).optional(),
+  /** 用户显式选过的那份；没选过不出现。 */
+  preference: z.enum(['machine', 'hub']).optional(),
   recommended: z.string().max(64).optional(),
   blocker: z.string().max(200).optional()
 });

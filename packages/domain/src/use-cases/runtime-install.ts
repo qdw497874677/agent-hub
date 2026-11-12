@@ -52,8 +52,14 @@ export async function startRuntimeJob(
     agentId: request.agentId,
     action: plan.value.action,
     version: plan.value.version,
+    ...(plan.value.source ? { source: plan.value.source } : {}),
     state: 'running',
-    message: plan.value.action === 'install' ? `正在安装 ${plan.value.version}` : '正在卸载',
+    message:
+      plan.value.action === 'install'
+        ? `正在安装 ${plan.value.version}`
+        : plan.value.action === 'switch'
+          ? `正在切换到${plan.value.source === 'hub' ? ' hub 安装的' : '机器自带的'}版本`
+          : '正在卸载',
     log: '',
     startedAt: deps.now(),
     endedAt: null,
@@ -64,12 +70,14 @@ export async function startRuntimeJob(
   const detail =
     job.action === 'uninstall'
       ? `${request.agentId} 卸载 ${plan.value.from ?? ''}`.trim()
-      : `${request.agentId} ${plan.value.from ? `${plan.value.from} → ` : ''}${job.version}`;
+      : job.action === 'switch'
+        ? `${request.agentId} 切换到 ${job.source}${job.version ? ` ${job.version}` : ''}`.trim()
+        : `${request.agentId} ${plan.value.from ? `${plan.value.from} → ` : ''}${job.version}`;
   await deps.audit.append({
     id: newId(),
     actorId: by.user.id,
     actorEmail: by.user.email,
-    action: job.action === 'install' ? 'runtime.install' : 'runtime.uninstall',
+    action: job.action === 'install' ? 'runtime.install' : job.action === 'uninstall' ? 'runtime.uninstall' : 'runtime.switch',
     target: label,
     detail,
     at: deps.now()

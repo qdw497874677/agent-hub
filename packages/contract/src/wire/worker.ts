@@ -138,9 +138,9 @@ export const workerAgentsSchema = z.object({
 /** 版本号与 agent id 都会进命令参数和路径：只收固定形状（与 domain RUNTIME_VERSION / RUNTIME_AGENT_ID 同）。 */
 export const runtimeVersionSchema = z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/);
 export const runtimeAgentIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
-export const runtimeActionSchema = z.enum(['install', 'uninstall']);
+export const runtimeActionSchema = z.enum(['install', 'uninstall', 'switch']);
 /** 组件任务（ADR 0021 P2）：复用 runtime_job，多两个 action。只发给清单里报了 componentInstall 的 Worker。 */
-export const runtimeJobActionSchema = z.enum(['install', 'uninstall', 'install_component', 'uninstall_component']);
+export const runtimeJobActionSchema = z.enum(['install', 'uninstall', 'switch', 'install_component', 'uninstall_component']);
 const capabilityEntry = z.object({ capability: z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128), mode: z.string().max(64).optional() });
 /** 组件任务的规格：全是固定形状，没有可拼进命令的自由文本。 */
 export const componentJobSpecSchema = z.object({
@@ -333,6 +333,8 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
     agentId: runtimeAgentIdSchema,
     action: runtimeJobActionSchema,
     version: runtimeVersionSchema.nullable(),
+    /** switch 的目标（machine / hub）；只对 switch 有意义，老 Worker 不认就忽略。 */
+    source: z.enum(['machine', 'hub']).optional(),
     component: componentJobSpecSchema.optional(),
     /** 整套安装（P3）：全部装进暂存并核对通过才一起切换。只发给报了 bundleInstall 的 Worker。 */
     components: z.array(componentJobSpecSchema).min(1).max(16).optional()

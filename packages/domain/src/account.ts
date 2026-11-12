@@ -197,6 +197,7 @@ export type AuditAction =
   | 'worker.resource_policy'
   | 'runtime.install'
   | 'runtime.uninstall'
+  | 'runtime.switch'
   | 'runtime.component.install'
   | 'runtime.component.uninstall'
   | 'bundle.submit'

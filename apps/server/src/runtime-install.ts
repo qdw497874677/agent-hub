@@ -15,11 +15,12 @@ export function installRuntimeInstall(app: Hono, deps: RuntimeInstallDeps, princ
     const principal = principalOf(c);
     if (!principal) return c.json({ error: { code: 'unauthorized', message: '请先登录' } }, 401);
     const parsed = runtimeJobRequestSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求格式不对：action 只能是 install / uninstall，version 形如 1.2.3' } }, 400);
+    if (!parsed.success) return c.json({ error: { code: 'invalid', message: '请求格式不对：action 只能是 install / uninstall / switch（switch 要带 source），version 形如 1.2.3' } }, 400);
     const result = await startRuntimeJob(deps, principal, c.req.param('id'), {
       agentId: c.req.param('agentId'),
       action: parsed.data.action,
-      ...(parsed.data.version ? { version: parsed.data.version } : {})
+      ...(parsed.data.version ? { version: parsed.data.version } : {}),
+      ...(parsed.data.source ? { source: parsed.data.source } : {})
     });
     return result.ok ? c.json({ job: result.value }, 202) : fail(c, result.error);
   });

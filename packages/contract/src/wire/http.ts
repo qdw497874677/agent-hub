@@ -293,7 +293,7 @@ export const workerInfoSchema = z.object({
     .object({
       jobId: z.string(),
       agentId: z.string(),
-      action: z.enum(['install', 'uninstall', 'install_component', 'uninstall_component']),
+      action: z.enum(['install', 'uninstall', 'switch', 'install_component', 'uninstall_component']),
       version: z.string().nullable(),
       componentId: z.string().optional(),
       state: z.enum(['running', 'succeeded', 'failed', 'refused']),
@@ -326,14 +326,20 @@ export const workerInfoSchema = z.object({
     .optional()
 });
 
-/** 在一台机器上装 / 卸 agent 运行时；version 不填 = 推荐版本。 */
-export const runtimeJobRequest = z.object({
-  action: z.enum(['install', 'uninstall']),
-  version: z
-    .string()
-    .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/)
-    .optional()
-});
+/** 在一台机器上装 / 卸 / 切换 agent 运行时；version 不填 = 推荐版本，switch 要指明 source。 */
+export const runtimeJobRequest = z
+  .object({
+    action: z.enum(['install', 'uninstall', 'switch']),
+    version: z
+      .string()
+      .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/)
+      .optional(),
+    /** switch 时必填，其余动作忽略。 */
+    source: z.enum(['machine', 'hub']).optional()
+  })
+  .refine((value) => value.action !== 'switch' || value.source !== undefined, {
+    message: 'switch 要指明 source（machine 或 hub）'
+  });
 
 /** 组件目录（ADR 0021 P2）：cluster_admin 提交一个确切版本的 npm 包，hub 去 registry 钉死制品。 */
 export const componentSubmitRequest = z.object({

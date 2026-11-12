@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { rewriteCredentialEnv } from './credential-env.ts';
 import { arch, homedir, hostname, platform } from 'node:os';
 import { delimiter, dirname, join, resolve } from 'node:path';
@@ -72,25 +73,51 @@ const assets = createWorkerAssets({ root: defaultAssetsRoot(env) });
 
 /**
  * harness 命令在哪：X_COMMAND 点名的原样用，否则 PATH，再否则常见安装位置（resolveCommand）。
+ * 找到的位置记进 runtime store（machine 文件），命令本身一律指向调度垫片——
+ * 用户在 hub 机器页装了 / 切换了版本，下次开会话就生效，不用重启 Worker。
  * 在常见位置找到的，把那个目录补进本进程 PATH，子进程（含脚本里的 `#!/usr/bin/env node`）跟着找得到。
- * 找不到就留原名：就绪探测照常报「未安装」，再带一句怎么修。
+ * 找不到也照样写调度垫片：之后 hub 上装好就能用；就绪探测照常报「未安装」，再带一句怎么修。
  */
 const runtimeStore = createRuntimeStore({ root: defaultRuntimesRoot(env) });
-/** 启动时每个 agent 是不是机器自己提供的（ADR 0010：机器自带的 hub 不装、不覆盖）。 */
+/** 启动时每个 agent 是不是机器自己提供的（用于上报，不再阻止 hub 安装另一份）。 */
 const machineProvided = new Map<string, boolean>();
+/** 启动时找到的机器自带可执行文件（绝对路径），用来探测版本。 */
+const machineCommands = new Map<string, string>();
+
+/** `resolveCommand` 的 path 分支只回命令名；调度垫片要绝对路径，这里在 PATH 里再找一次。 */
+function executablePath(name: string): string | null {
+  for (const dir of (env['PATH'] ?? '').split(delimiter).filter(Boolean)) {
+    const file = join(dir, name);
+    try {
+      accessSync(file, constants.X_OK);
+      return file;
+    } catch {
+      // 继续找
+    }
+  }
+  return null;
+}
 
 function harnessCommand(name: string, envVar: string, agentId: string = name): { command: string; hint: string | null } {
   const found = resolveCommand(name, { explicit: env[envVar], path: env['PATH'], home: homedir(), env });
-  machineProvided.set(agentId, found.source !== 'missing');
+  const target = runtimeStore.shimPath(name);
   if (found.source === 'missing') {
-    // 机器上没有：指向 hub 管理的 shim。现在装没装都行——装好后探测立刻认得，不用重启 Worker
-    return { command: runtimeStore.shimPath(name), hint: runtimeStore.installed(agentId) ? null : missingCommandHint(name, envVar) };
+    machineProvided.set(agentId, false);
+    runtimeStore.setMachine(agentId, null);
+    runtimeStore.writeDispatch(agentId, name);
+    // 机器上没有：指向调度垫片。现在装没装都行——装好后探测立刻认得，不用重启 Worker
+    return { command: target, hint: runtimeStore.installed(agentId) ? null : missingCommandHint(name, envVar) };
   }
   if (found.source === 'fallback') {
     env['PATH'] = [found.dir, ...(env['PATH'] ?? '').split(delimiter).filter(Boolean)].join(delimiter);
     process.stdout.write(`[worker] PATH 里没有 ${name}，用 ${found.command}（已把 ${found.dir} 补进 PATH；可设 ${envVar} 固定）\n`);
   }
-  return { command: found.command, hint: null };
+  const absolute = found.source === 'fallback' ? found.command : found.command.startsWith('/') ? found.command : (executablePath(found.command) ?? found.command);
+  machineProvided.set(agentId, true);
+  machineCommands.set(agentId, absolute);
+  runtimeStore.setMachine(agentId, absolute);
+  runtimeStore.writeDispatch(agentId, name);
+  return { command: target, hint: null };
 }
 const log = (message: string): void => {
   process.stdout.write(`[worker] ${message}\n`);
@@ -139,6 +166,20 @@ for (const adapter of RUNTIME_ADAPTERS) {
   );
 }
 const runtimes: AgentRuntime[] = prepared.map((entry) => entry.runtime);
+/**
+ * 机器自带那份的版本：启动时各探测一次，给 hub 的机器页显示（现在一律 unknown 的那种）。
+ * 探测失败 / 超时 / 版本号认不出都记 null —— 绝不能让 Worker 起不来。
+ */
+const machineVersions = new Map<string, string | null>();
+for (const [agentId, command] of machineCommands) {
+  try {
+    const probe = spawnSync(command, ['--version'], { timeout: 3000, encoding: 'utf8' });
+    const text = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`;
+    machineVersions.set(agentId, text.match(/\d+\.\d+\.\d+/)?.[0] ?? null);
+  } catch {
+    machineVersions.set(agentId, null);
+  }
+}
 // 启动后的模型自检（WORKER_MODEL_CHECK=0 关掉）：每个进程一次、后台跑、有超时，结果显示在控制台
 const selfChecks =
   env['WORKER_MODEL_CHECK'] === '0'
@@ -249,6 +290,7 @@ const provisioner = await createRuntimeManager({
   store: runtimeStore,
   installers: prepared.flatMap((entry) => (entry.installer && machineProvided.has(entry.installer.agentId) ? [entry.installer] : [])),
   machineProvided,
+  machineVersions,
   ...(componentsEnabled ? { components: { root: componentsRoot, npm: findNpm(process.execPath) } } : {})
 });
 
