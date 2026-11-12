@@ -26,6 +26,8 @@ import { RewindDialog } from './rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 import { ContextMeter } from './context-meter.tsx';
 import { SessionLinksDialog } from './session-links-dialog.tsx';
+import { SessionLinkChip } from './session-link-popover.tsx';
+import { sessionLinkInfo } from './session-link-info.ts';
 import { SaveAgentProfileDialog } from './agent-profile-dialog.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 
@@ -85,9 +87,15 @@ export function FocusView({
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [linkOverrides, setLinkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [linkError, setLinkError] = useState<string | null>(null);
+  // 哪条连接芯片的小窗开着；同一时间只开一个。
+  const [linkInfoId, setLinkInfoId] = useState<string | null>(null);
+  const chipsRef = useRef<HTMLDivElement | null>(null);
   // 同一 tick 内连点两下时 state 还没刷新，用 ref 抢先挡住第二次请求。
   const linkBusyRef = useRef(false);
-  useEffect(() => setRenaming(false), [session.id]);
+  useEffect(() => {
+    setRenaming(false);
+    setLinkInfoId(null);
+  }, [session.id]);
   const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>('chat');
   // 访问过的文件 / 改动页保持挂载（隐藏），切回时状态和内容都还在；换会话才重置
@@ -159,8 +167,16 @@ export function FocusView({
     return canvas.sessions.filter((candidate) => ids.has(candidate.id) && candidate.status !== 'failed');
   }, [canvasLinkedIds, canvas.sessions, linkOverrides]);
   const linkedIds = useMemo(() => new Set(linkedSessions.map((candidate) => candidate.id)), [linkedSessions]);
-  const linkName = (candidate: SessionDto): string =>
-    candidate.title?.trim() || canvas.openings[candidate.id]?.trim() || '未命名会话';
+  // 连接从别处断掉（小窗里的按钮、芯片上的 ×、选择器）之后，小窗不能还挂在这。
+  useEffect(() => {
+    if (linkInfoId !== null && !linkedIds.has(linkInfoId)) setLinkInfoId(null);
+  }, [linkInfoId, linkedIds]);
+
+  /** 断开后芯片马上消失：焦点先落到芯片那一行，键盘用户不会掉回页面开头。 */
+  function unlinkLinkedSession(otherId: string): void {
+    void toggleLink(otherId, false);
+    requestAnimationFrame(() => chipsRef.current?.focus());
+  }
   // 运行时通过 ACP available_commands_update 报上来的命令。带参数提示的只补全命令名，让人接着写参数；
   // 不带参数的选中即发送（和运行时自己的 /init、/review 行为一致）。
   const runtimeCommands = useMemo(
@@ -654,22 +670,38 @@ export function FocusView({
       <div className={`shrink-0 border-t border-hair px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-4 ${tab === 'chat' ? '' : 'hidden'}`}>
         <div className="mx-auto max-w-[760px]">
           {linkedSessions.length > 0 ? (
-            <div className="mb-1 flex flex-wrap items-center gap-1.5" data-testid="session-link-chips">
-              {linkedSessions.map((candidate) => (
-                <span key={candidate.id} className="inline-flex max-w-full items-center rounded-full border border-hair bg-card-raised text-meta">
-                  <button className="max-w-[14rem] truncate px-2 py-0.5 text-secondary hover:text-primary" onClick={() => onOpenSession(candidate.id)}>
-                    {linkName(candidate)}
-                  </button>
-                  <button
-                    className="px-1.5 py-0.5 text-tertiary hover:text-rust disabled:opacity-40"
-                    aria-label={`断开 ${linkName(candidate)}`}
-                    disabled={linkBusy !== null}
-                    onClick={() => void toggleLink(candidate.id, false)}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
+            <div
+              ref={chipsRef}
+              tabIndex={-1}
+              role="group"
+              aria-label="已连接的会话"
+              className="mb-1 flex flex-wrap items-center gap-1.5 outline-none"
+              data-testid="session-link-chips"
+            >
+              {linkedSessions.map((candidate) => {
+                const origin = candidate.origin;
+                const forkSource =
+                  origin.kind === 'fork' ? (canvas.sessions.find((other) => other.id === origin.fromSessionId) ?? null) : null;
+                return (
+                  <SessionLinkChip
+                    key={candidate.id}
+                    info={sessionLinkInfo({
+                      session: candidate,
+                      opening: canvas.openings[candidate.id],
+                      agentLabel: canvas.agents.find((agent) => agent.id === candidate.agentId)?.label,
+                      forkedFromName: forkSource ? sessionName(canvas, forkSource) : null
+                    })}
+                    open={linkInfoId === candidate.id}
+                    onOpenChange={(next) => setLinkInfoId(next ? candidate.id : null)}
+                    unlinkBusy={linkBusy !== null}
+                    onOpenSession={(id) => {
+                      setLinkInfoId(null);
+                      onOpenSession(id);
+                    }}
+                    onUnlink={unlinkLinkedSession}
+                  />
+                );
+              })}
             </div>
           ) : null}
           {gitState?.isGit || live?.contextUsage ? (
