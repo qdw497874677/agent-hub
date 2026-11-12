@@ -11,7 +11,8 @@ export default defineConfig({
   server: {
     port: webPort,
     proxy: {
-      '/api': { target: `http://127.0.0.1:${hubPort}`, changeOrigin: true }
+      // ws: 终端走 /api/sessions/:id/terminal（同源 WS），代理不转发 upgrade 就永远是「断线」
+      '/api': { target: `http://127.0.0.1:${hubPort}`, changeOrigin: true, ws: true }
     }
   }
 });

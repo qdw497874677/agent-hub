@@ -267,5 +267,28 @@ export const filesChanged = method(
   z.object({})
 );
 
+/**
+ * 交互式终端（docs/design/terminal.md）。cwd 不进协议：worker 用自己的会话工作空间 Map 决定，
+ * 并过 WorkerFiles.check()。不支持 PTY 的 worker 回 unsupported，hub 据此隐藏页签。
+ */
+const terminalId = z.string().min(1).max(120);
+
+export const terminalOpen = method(
+  'terminal.open', 'sessions',
+  z.object({ terminalId, sessionId: terminalId, cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) }),
+  z.object({ cols: z.number(), rows: z.number(), reused: z.boolean() })
+);
+
+export const terminalResize = method(
+  'terminal.resize', 'sessions',
+  z.object({ terminalId, cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) }),
+  z.object({ ok: z.literal(true) })
+);
+
+export const terminalClose = method('terminal.close', 'sessions', z.object({ terminalId }), z.object({ ok: z.literal(true) }));
+
+/** 对账：hub 重启后用它找出自己不认识、还活着的 PTY。 */
+export const terminalList = method('terminal.list', 'sessions', z.object({}), z.object({ terminals: z.array(z.object({ terminalId, sessionId: terminalId })).max(200) }));
+
 /** 应用层回声（ADR 0030 D1）：hub 定时问一句，量的是「对端事件循环真的在处理帧」，不只是 TCP 活着。 */
 export const linkEcho = method('link.echo', 'control', z.object({ at: z.number() }), z.object({ at: z.number() }));

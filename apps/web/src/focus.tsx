@@ -1,7 +1,7 @@
 import { DeliveryContext, useDeliveries } from './delivery-note.tsx';
 import { ProvenanceRow } from './provenance-row.tsx';
 import { AttentionAutoAck } from './attention.tsx';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, CanvasDto, SessionDto } from './api.ts';
 import { api } from './api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from './chat-blocks.tsx';
@@ -22,6 +22,13 @@ import { GitDialog, PullRequestChips } from './git-dialog.tsx';
 import { gitApi } from './api.ts';
 import { FileLinksContext, type FileLinks } from './file-links.tsx';
 import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
+import { TerminalPanel } from './terminal-panel.tsx';
+import {
+  subscribeTerminalSupport,
+  terminalSupportKeys,
+  terminalUnsupported as terminalBlocked
+} from './terminal-core.ts';
+import { resolveWorker, useWorkers } from './workers.tsx';
 import { RewindDialog } from './rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from './live.ts';
 import { ContextMeter } from './context-meter.tsx';
@@ -159,6 +166,25 @@ export function FocusView({
     blocks.filter((block) => block.kind === 'prompt' && block.text === text).length;
   const status = live?.status ?? session.status;
   const reason = live?.reason ?? null;
+  // 终端页签：会话跑着、机器在线、且没被探测成「不支持」才出现（docs/design/terminal.md §7）。
+  const workers = useWorkers();
+  const worker = resolveWorker(workers.list, session.workerId);
+  const supportKeys = useMemo(
+    () => terminalSupportKeys(session.id, session.workerId),
+    [session.id, session.workerId]
+  );
+  // 机器列表还没拿到时先当在线：页签不该在首屏闪一下才出现。
+  const workerOnline = workers.list.length === 0 || worker?.state === 'online';
+  const terminalUnavailable = useSyncExternalStore(subscribeTerminalSupport, () => terminalBlocked(supportKeys));
+  const terminalAvailable = status === 'running' && workerOnline && !terminalUnavailable;
+  const tabs = useMemo(
+    () => SESSION_TABS.filter((candidate) => candidate !== 'terminal' || terminalAvailable),
+    [terminalAvailable]
+  );
+  // 终端变得不可用（会话结束 / 机器掉线 / 探测到不支持）时退回对话，别停在空页上。
+  useEffect(() => {
+    if (tab === 'terminal' && !terminalAvailable) setTab('chat');
+  }, [tab, terminalAvailable]);
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
   const deliveriesBySeq = useDeliveries(session.id, lastSeq);
@@ -552,7 +578,7 @@ export function FocusView({
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
       ) : null}
       <div role="tablist" aria-label="会话视图" className="flex shrink-0 gap-1 border-b border-hair px-2 py-1.5 md:px-3" data-testid="session-tabs">
-        {SESSION_TABS.map((t) => (
+        {tabs.map((t) => (
           <button
             key={t}
             role="tab"
@@ -562,7 +588,10 @@ export function FocusView({
             onClick={() => setTab(t)}
             onKeyDown={(e) => {
               if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-              const next = stepTab(tab, e.key === 'ArrowRight' ? 1 : -1);
+              const delta = e.key === 'ArrowRight' ? 1 : -1;
+              let next = stepTab(tab, delta);
+              // 终端页签可能被藏起来：跳过它，别把焦点送到不存在的 tab 上。
+              if (next === 'terminal' && !terminalAvailable) next = stepTab(next, delta);
               setTab(next);
               (e.currentTarget.parentElement?.querySelector(`#session-tab-${next}`) as HTMLElement | null)?.focus();
             }}
@@ -572,7 +601,7 @@ export function FocusView({
             {sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}
           </button>
         ))}
-        {tab !== 'chat' && refreshing ? (
+        {tab !== 'chat' && tab !== 'terminal' && refreshing ? (
           <span className="ml-auto self-center px-2 text-meta text-tertiary" aria-live="polite" data-testid="files-refreshing">刷新中…</span>
         ) : null}
       </div>
@@ -583,6 +612,12 @@ export function FocusView({
           </div>
         ) : null
       )}
+      {/* 终端和文件页一样：首访后保持挂载（hidden 不卸载），切回来还是同一个 shell 画面 */}
+      {terminalAvailable && visited.has('terminal') ? (
+        <div key={`${session.id}-terminal`} className={tab === 'terminal' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+          <TerminalPanel sessionId={session.id} workerId={session.workerId} active={tab === 'terminal'} />
+        </div>
+      ) : null}
       {profileOpen ? (
         <SaveAgentProfileDialog
           session={session}

@@ -209,8 +209,29 @@ export const workerInventorySchema = z.object({
 });
 export const workerInventoryFrameSchema = z.object({ type: z.literal('inventory'), inventory: workerInventorySchema });
 
+/**
+ * 终端输出（docs/design/terminal.md）：worker 主动推、没有回复，所以不走 RPC。
+ * data 为 base64，单帧 ≤64 KB 原始数据；老 hub 不认只记日志。
+ */
+const terminalId = z.string().min(1).max(120);
+
+export const workerTerminalDataSchema = z.object({
+  type: z.literal('terminal_data'),
+  terminalId,
+  data: z.string().max(131_072)
+});
+
+export const workerTerminalExitSchema = z.object({
+  type: z.literal('terminal_exit'),
+  terminalId,
+  code: z.number().int(),
+  signal: z.number().int().optional()
+});
+
 export const workerToServerSchema = z.discriminatedUnion('type', [
   workerInventoryFrameSchema,
+  workerTerminalDataSchema,
+  workerTerminalExitSchema,
   workerHelloSchema,
   workerAgentsSchema,
   workerEnrollSchema,
@@ -360,5 +381,7 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
    * 会话进行中热更新模型定义（只换 extra 这类请求参数，不重启 agent）。
    * 不带 apiKey / baseUrl：密钥不二次下发。老 worker 不认，只记一条日志（hub 尽力而为，不影响会话）。
    */
-  z.object({ kind: z.literal('provider_update'), sessionId: id, models: providerModelsSchema })
+  z.object({ kind: z.literal('provider_update'), sessionId: id, models: providerModelsSchema }),
+  /** 终端键盘输入（base64）。老 worker 不认，只记一条日志。 */
+  z.object({ kind: z.literal('terminal_input'), terminalId, data: z.string().max(131_072) })
 ]);

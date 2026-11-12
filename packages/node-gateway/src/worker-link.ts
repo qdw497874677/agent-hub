@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema, terminalClose, terminalList, terminalOpen, terminalResize } from '@agent-hub/contract';
 import { RECONNECT_POLICY, canInvoke, capabilityDenied, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
 import type { WorkerCapability } from '@agent-hub/domain';
 import { createProviderRelay } from './provider-relay.ts';
@@ -19,6 +19,7 @@ import type {
 import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
 import type { WorkerAssets } from './worker-assets.ts';
+import { TerminalNotReadyError, type TerminalHost } from './terminal.ts';
 import type { UpdateReport } from './updater.ts';
 import type { RuntimeJobReport, RuntimeManager } from './runtime-jobs.ts';
 import { createMcpEndpoint } from './mcp-endpoint.ts';
@@ -78,6 +79,11 @@ export interface WorkerLinkOptions {
   readonly worktreesDir?: string;
   /** hub 下发的技能与指令落在这里（专属目录）。不给就回「这台不支持」，会话也不带资产。 */
   readonly assets?: WorkerAssets;
+  /**
+   * 会话终端（docs/design/terminal.md）。没装 node-pty 时不给：
+   * `terminal.*` 一律回 unsupported，界面不显示终端页签。
+   */
+  readonly terminal?: TerminalHost;
   /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
   readonly onClose?: (why?: { readonly code: number }) => void;
   /** 每次连上（含重连）。 */
@@ -121,6 +127,14 @@ export interface WorkerLink {
   notifyOptions(sessionId: string, options: readonly RuntimeOption[]): void;
   /** ADR 0028：这一轮的原生标识。hub 不认（老 hub）就不发。 */
   notifyTurnRef(sessionId: string, turnRef: string): void;
+  /** 终端输出回传（base64 后进 `terminal_data`）。不进 outbox：断线期间的旧输出没有意义。 */
+  sendTerminalData(terminalId: string, data: Uint8Array): void;
+  /** 终端里的进程退出了。 */
+  sendTerminalExit(terminalId: string, code: number, signal?: number): void;
+  /** 当前链路还有多少字节没发出去（终端背压用）。 */
+  bufferedAmount(): number;
+  /** 会话在这台机器上的工作目录；不在这台机器上跑 = undefined（终端据此报错）。 */
+  workspaceOf(sessionId: string): string | undefined;
   close(): Promise<void>;
 }
 
@@ -130,7 +144,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'update_commit' | 'update_abort' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' }
+  { kind: 'update' | 'update_commit' | 'update_abort' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' | 'terminal_input' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -333,6 +347,40 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   });
 
+  /**
+   * 终端 RPC（docs/design/terminal.md §5）：hub 只转终端号，cwd 和 shell 都由这台机器决定。
+   * 没装 node-pty / 组合根没装配 = unsupported，界面不显示终端页签。
+   */
+  const terminal = options.terminal;
+  const terminalUnavailable = (): never => {
+    throw new RpcFailure('unsupported', '这台 Worker 不支持终端');
+  };
+  channel.handle(terminalOpen, async ({ terminalId, sessionId, cols, rows }) => {
+    if (!terminal) return terminalUnavailable();
+    try {
+      return await terminal.open({ terminalId, sessionId, cols, rows });
+    } catch (error) {
+      throw new RpcFailure(error instanceof TerminalNotReadyError ? 'not_ready' : 'failed', message(error));
+    }
+  });
+  channel.handle(terminalResize, async ({ terminalId, cols, rows }) => {
+    if (!terminal) return terminalUnavailable();
+    try {
+      return await terminal.resize(terminalId, cols, rows);
+    } catch (error) {
+      throw new RpcFailure('failed', message(error));
+    }
+  });
+  channel.handle(terminalClose, async ({ terminalId }) => {
+    if (!terminal) return terminalUnavailable();
+    try {
+      return await terminal.close(terminalId);
+    } catch (error) {
+      throw new RpcFailure('failed', message(error));
+    }
+  });
+  channel.handle(terminalList, async () => ({ terminals: terminal ? terminal.list() : [] }));
+
   const send = (frame: WorkerToServer): void => {
     if (socket && socket.readyState === WebSocket.OPEN && accepted) {
       socket.send(JSON.stringify(frame));
@@ -502,6 +550,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       else if (command.kind === 'provider_update') providerRelay.update(command.sessionId, { models: command.models });
       else if (command.kind === 'enrolled') return; // 只在 enroll 握手里出现
       else if (command.kind === 'credential_rotate') void rotateCredential(current, command.credential);
+      else if (command.kind === 'terminal_input') terminalInput(command);
       else void handle(command);
     });
   }
@@ -537,6 +586,40 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   /** 最近送达过的 deliveryId（ADR 0031 去重，最多记 1000 个）。 */
   const seenDeliveries = new Set<string>();
   const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+  /** 标准 base64（带 padding）。 */
+  const TERMINAL_BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+  /**
+   * 键盘输入是单向帧：坏帧丢掉比让键盘卡住强。Node 的 base64 解码器会静默吞坏字符，
+   * 所以解完再编回去核对——不然一个非法字符只会让半个按键生效。
+   */
+  function decodeTerminalInput(data: string): Buffer | null {
+    if (data.length === 0) return Buffer.alloc(0);
+    if (data.length % 4 !== 0 || !TERMINAL_BASE64.test(data)) return null;
+    const bytes = Buffer.from(data, 'base64');
+    return bytes.toString('base64') === data ? bytes : null;
+  }
+
+  function terminalInput(command: Extract<ServerToWorker, { kind: 'terminal_input' }>): void {
+    if (!options.terminal) return;
+    const bytes = decodeTerminalInput(command.data);
+    if (bytes === null) {
+      options.onLog?.(`终端 ${command.terminalId} 的输入不是合法 base64，忽略`);
+      return;
+    }
+    if (bytes.length === 0) return;
+    if (!options.terminal.write(command.terminalId, bytes)) options.onLog?.(`终端 ${command.terminalId} 不存在，输入丢弃`);
+  }
+
+  /** 会话结束 / 链路关闭：终端不能留着，否则 shell 成了孤儿。 */
+  async function closeTerminals(sessionId: string): Promise<void> {
+    if (!options.terminal) return;
+    try {
+      await options.terminal.closeSession(sessionId);
+    } catch (error) {
+      options.onLog?.(`回收会话 ${sessionId} 的终端失败：${message(error)}`);
+    }
+  }
 
   async function update(commit: string): Promise<void> {
     const report = (status: UpdateReport): void => send({ type: 'update_status', ...status });
@@ -607,6 +690,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         event: { kind: 'ended', outcome: 'failed', reason: `${command.kind} 失败：${reason}` }
       });
       sessions.delete(command.sessionId);
+      await closeTerminals(command.sessionId);
     }
   }
 
@@ -700,6 +784,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     await session.dispose();
     sessions.delete(sessionId);
     providerRelay.close(sessionId);
+    await closeTerminals(sessionId);
   }
 
   /** relay：URL 填成本机 MCP 入口，令牌不变。 */
@@ -817,6 +902,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         if (sessions.get(command.sessionId) === session) {
           sessions.delete(command.sessionId);
           workspaces.delete(command.sessionId);
+          await closeTerminals(command.sessionId);
           // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
           // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
           send({ type: 'status', sessionId: command.sessionId, status: 'ended' });
@@ -837,6 +923,21 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     notifyTurnRef(sessionId: string, turnRef: string): void {
       if (nativeBranch) send({ type: 'turn_ref', sessionId, turnRef });
     },
+    sendTerminalData(terminalId: string, data: Uint8Array): void {
+      // 不进 outbox：断线几十秒后补发一屏旧像素既没用又挤占补发额度，重连后 hub 会让人重开终端。
+      if (!socket || socket.readyState !== WebSocket.OPEN || !accepted) return;
+      socket.send(JSON.stringify({ type: 'terminal_data', terminalId, data: Buffer.from(data).toString('base64') } satisfies WorkerToServer));
+    },
+    sendTerminalExit(terminalId: string, code: number, signal?: number): void {
+      if (!socket || socket.readyState !== WebSocket.OPEN || !accepted) return;
+      socket.send(JSON.stringify({ type: 'terminal_exit', terminalId, code, ...(signal === undefined ? {} : { signal }) } satisfies WorkerToServer));
+    },
+    bufferedAmount(): number {
+      return socket?.bufferedAmount ?? 0;
+    },
+    workspaceOf(sessionId: string): string | undefined {
+      return workspaces.get(sessionId);
+    },
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
@@ -848,6 +949,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       channel.close('worker 正在退出');
       await mcpEndpoint.close();
       await providerRelay.stop();
+      await options.terminal?.disposeAll().catch((error: unknown) => options.onLog?.(`回收终端失败：${message(error)}`));
       for (const session of sessions.values()) await session.dispose();
       sessions.clear();
       if (socket) socket.close();

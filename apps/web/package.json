@@ -12,6 +12,8 @@
   "dependencies": {
     "@agent-hub/contract": "*",
     "@tanstack/react-query": "^5.90.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "@xyflow/react": "^12.11.6",
     "cmdk": "^1.1.1",
     "diff2html": "^3.4.56",

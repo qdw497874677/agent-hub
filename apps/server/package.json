@@ -21,6 +21,7 @@
     "zod": "^4.6.7",
     "@agent-hub/observe": "*",
     "@agent-hub/connector-timer": "*",
-    "@agent-hub/connector-github": "*"
+    "@agent-hub/connector-github": "*",
+    "ws": "^8.18.3"
   }
 }

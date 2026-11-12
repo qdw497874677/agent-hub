@@ -17,6 +17,10 @@ import {
   fsListFiles,
   fsMakeDirectory,
   fsReadFile,
+  terminalClose,
+  terminalList,
+  terminalOpen,
+  terminalResize,
   workerToServerSchema,
   wsAddWorktree,
   wsClone,
@@ -100,6 +104,14 @@ export interface GatewayHooks {
   onBranchResult?(workerId: string, sessionId: SessionId, outcome: 'native' | 'failed', reason?: string): void;
   onStatus(workerId: string, sessionId: SessionId, status: RuntimeStatus, reason?: string): void;
   onWorkerGone(workerId: string, reason: string): void;
+  /**
+   * 交互式终端（docs/design/terminal.md）：
+   * - `knownTerminals`：hub 上还挂着的 terminalId，worker 重连对账时据此清理自己不认识的残留 PTY。
+   * - 两个回调按 terminalId 把 worker 的输出 / 退出送回桥接层；桥接层自己找是哪个浏览器。
+   */
+  knownTerminals?(workerId: string): ReadonlySet<string>;
+  onTerminalData?(workerId: string, terminalId: string, data: string): void;
+  onTerminalExit?(workerId: string, terminalId: string, code: number, signal?: number): void;
   /** Worker 报来更新进度（给日志用；状态本身网关会记着，出现在 workers() 里）。 */
   onUpdateStatus?(workerId: string, update: WorkerUpdate): void;
   /** 运行时任务结束（成功 / 失败 / 被拒）。 */
@@ -207,8 +219,21 @@ interface Registered {
   channel: RpcChannel | null;
   /** 凭据允许的能力（ADR 0030 D3）；null = 不限（本机 / 共享令牌 / 老凭据前的行为）。 */
   capabilities: readonly string[] | null;
+  /** 这条连接做过终端对账没有（重连 / inventory 只做一次）。 */
+  terminalReconciled: boolean;
   /** 这次连接的来历：给界面显示「上次连上 · 来自 · 版本」。 */
   connection: { at: number; address: string | null; version: string | null };
+}
+
+/** 终端 RPC 的结果：失败保留 worker 的 code（如 `unsupported`），桥接层据此隐藏页签。 */
+export type TerminalOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly code: string; readonly message: string };
+
+export interface TerminalOpened {
+  readonly cols: number;
+  readonly rows: number;
+  readonly reused: boolean;
 }
 
 export interface ServerGateway {
@@ -245,6 +270,21 @@ export interface ServerGateway {
    * 尽力而为：离线 / 凭据不允许 / 老 Worker 不认都返回 false，不抛错。
    */
   updateProvider(sessionId: string, workerId: string, models: readonly ProviderModel[]): boolean;
+  /**
+   * 交互式终端（docs/design/terminal.md §6）。都像 updateProvider 一样尽力而为：
+   * worker 离线 / 凭据没有 `sessions` / 老 worker 不认，一律 `{ok:false}`，不抛错。
+   */
+  openTerminal(
+    workerId: string,
+    input: { readonly terminalId: string; readonly sessionId: string; readonly cols: number; readonly rows: number }
+  ): Promise<TerminalOutcome<TerminalOpened>>;
+  resizeTerminal(workerId: string, terminalId: string, cols: number, rows: number): Promise<TerminalOutcome<{ readonly ok: true }>>;
+  closeTerminal(workerId: string, terminalId: string): Promise<TerminalOutcome<{ readonly ok: true }>>;
+  listTerminals(workerId: string): Promise<TerminalOutcome<readonly { readonly terminalId: string; readonly sessionId: string }[]>>;
+  /** 浏览器按键 / 粘贴：直接走帧，不等 RPC 回复。离线返回 false。 */
+  sendTerminalInput(workerId: string, terminalId: string, data: string): boolean;
+  /** worker 重连后对账：关掉 hub 不认识、worker 上还活着的 PTY。 */
+  reconcileTerminals(workerId: string): Promise<void>;
   /** 远端 Worker 上的工作空间文件浏览（ADR 0025）。 */
   browser(workerId: string): WorkspaceBrowser;
   close(): void;
@@ -343,6 +383,87 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     return true;
   }
 
+  /* ── 交互式终端（docs/design/terminal.md §6） ── */
+
+  const terminalUnavailable = (workerId: string): { ok: false; code: string; message: string } => ({
+    ok: false,
+    code: 'unavailable',
+    message: `Worker「${labelOf(workerId)}」不在线`
+  });
+
+  /** 终端 RPC 的前置闸门：离线、凭据没有 `sessions` 都在这里挡掉。 */
+  function terminalBlocked(workerId: string): { ok: false; code: string; message: string } | null {
+    const entry = online(workerId);
+    if (!entry?.channel) return terminalUnavailable(workerId);
+    if (!canInvoke(entry.capabilities, 'sessions')) return { ok: false, code: 'forbidden', message: capabilityDenied('sessions') };
+    return null;
+  }
+
+  async function openTerminal(
+    workerId: string,
+    input: { readonly terminalId: string; readonly sessionId: string; readonly cols: number; readonly rows: number }
+  ): Promise<TerminalOutcome<TerminalOpened>> {
+    const blocked = terminalBlocked(workerId);
+    if (blocked) return blocked;
+    const outcome = await online(workerId)!.channel!.request(terminalOpen, {
+      terminalId: input.terminalId,
+      sessionId: input.sessionId,
+      cols: input.cols,
+      rows: input.rows
+    });
+    return outcome.ok ? { ok: true, value: outcome.value } : { ok: false, code: outcome.error.code, message: outcome.error.message };
+  }
+
+  async function resizeTerminal(workerId: string, terminalId: string, cols: number, rows: number): Promise<TerminalOutcome<{ ok: true }>> {
+    const blocked = terminalBlocked(workerId);
+    if (blocked) return blocked;
+    const outcome = await online(workerId)!.channel!.request(terminalResize, { terminalId, cols, rows });
+    return outcome.ok ? { ok: true, value: outcome.value } : { ok: false, code: outcome.error.code, message: outcome.error.message };
+  }
+
+  async function closeTerminal(workerId: string, terminalId: string): Promise<TerminalOutcome<{ ok: true }>> {
+    const blocked = terminalBlocked(workerId);
+    if (blocked) return blocked;
+    const outcome = await online(workerId)!.channel!.request(terminalClose, { terminalId });
+    return outcome.ok ? { ok: true, value: outcome.value } : { ok: false, code: outcome.error.code, message: outcome.error.message };
+  }
+
+  async function listTerminals(workerId: string): Promise<TerminalOutcome<readonly { terminalId: string; sessionId: string }[]>> {
+    const blocked = terminalBlocked(workerId);
+    if (blocked) return blocked;
+    const outcome = await online(workerId)!.channel!.request(terminalList, {});
+    return outcome.ok ? { ok: true, value: outcome.value.terminals } : { ok: false, code: outcome.error.code, message: outcome.error.message };
+  }
+
+  /** 浏览器输入直接走帧（不等回复）：worker 按 terminalId 找回 PTY。 */
+  function sendTerminalInput(workerId: string, terminalId: string, data: string): boolean {
+    const entry = online(workerId);
+    if (!entry?.socket || !canInvoke(entry.capabilities, 'sessions')) return false;
+    entry.socket.send(JSON.stringify({ kind: 'terminal_input', terminalId, data } satisfies ServerToWorker));
+    return true;
+  }
+
+  /**
+   * worker 重连后对账：hub 重启会丢掉内存里的终端表，worker 上的 PTY 却还活着。
+   * 把 hub 不认识的 terminalId 全关掉；对账失败只记日志，不影响 worker 使用。
+   */
+  async function reconcileTerminals(workerId: string): Promise<void> {
+    const entry = online(workerId);
+    if (!entry?.channel || !canInvoke(entry.capabilities, 'sessions') || entry.terminalReconciled) return;
+    entry.terminalReconciled = true;
+    const listed = await listTerminals(workerId);
+    if (!listed.ok) {
+      hooks.onLog?.(`终端对账失败（${workerId}）：${listed.message}`);
+      return;
+    }
+    const known = hooks.knownTerminals?.(workerId) ?? new Set<string>();
+    for (const terminal of listed.value) {
+      if (known.has(terminal.terminalId)) continue;
+      const closed = await closeTerminal(workerId, terminal.terminalId);
+      if (!closed.ok) hooks.onLog?.(`清理残留终端失败（${terminal.terminalId}）：${closed.message}`);
+    }
+  }
+
   function dispatchTo(command: WorkerCommand): Result<void, DomainError> {
     if (command.kind === 'start_session') {
       const sent = sendTo(command.workerId, toWire(command));
@@ -360,6 +481,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     // 同一个 workerId 重连时旧连接晚一步关闭：别让它把新连接标成离线。
     if (entry.socket !== socket) return;
     entry.socket = null;
+    entry.terminalReconciled = false;
     entry.reason = reason;
     feed(entry, { type: 'closed', rejected: entry.kicked });
     remoteBrowsers.workerGone(entry.workerId);
@@ -516,6 +638,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
             : null,
           channel: null,
           capabilities: verdict.capabilities ?? null,
+          terminalReconciled: false,
           connection: { at: now(), address: clientAddress, version: build?.commit ?? null }
         };
         previous?.channel?.close('被同一台机器的新连接顶替');
@@ -555,6 +678,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         if (frame.dropped) hooks.onLog?.(`Worker「${frame.label}」上次断线期间丢了 ${frame.dropped} 帧输出`);
         if (policy.echoMs > 0) void echo(entry);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
+        void reconcileTerminals(entry.workerId);
         return;
       }
 
@@ -591,6 +715,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       if (frame.type === 'inventory') {
         entry.inventory = frame.inventory as WorkerInventory;
         if (entry.trial) entry.trial.inventoryApplied = true;
+        // hello 里没带上 terminal.list 的老 worker，等 inventory 落地后再对一次账
+        void reconcileTerminals(entry.workerId);
         return;
       }
       if (frame.type === 'metrics') {
@@ -605,6 +731,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         return;
       }
       const from = entry.workerId;
+      if (frame.type === 'terminal_data') {
+        hooks.onTerminalData?.(from, frame.terminalId, frame.data);
+        return;
+      }
+      if (frame.type === 'terminal_exit') {
+        hooks.onTerminalExit?.(from, frame.terminalId, frame.code, frame.signal);
+        return;
+      }
       if (frame.type === 'event') hooks.onEvent(from, frame.sessionId as SessionId, frame.event);
       else if (frame.type === 'agent_session') {
         hooks.onAgentSession(from, frame.sessionId as SessionId, frame.agentSessionRef);
@@ -845,6 +979,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return toDomain(await channel.request(providerTest, input, { timeoutMs: 30_000 }), '测试模型提供商', workerId);
     },
     updateProvider,
+    openTerminal,
+    resizeTerminal,
+    closeTerminal,
+    listTerminals,
+    sendTerminalInput,
+    reconcileTerminals,
     workers(): WorkerStatus[] {
       return statuses();
     },

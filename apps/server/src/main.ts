@@ -70,9 +70,11 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
   sweepGitForReview,
-  revokeLegacyLocalWorkerGrants
+  revokeLegacyLocalWorkerGrants,
+  terminalTarget
 } from '@agent-hub/domain';
 import {
+  authenticate,
   err,
   ingestAgentSessionRef,
   ingestRuntimeStatus,
@@ -86,7 +88,8 @@ import {
   withAssetNeeds,
   unavailable,
   workerAttached,
-  workerGone
+  workerGone,
+  withAccess
 } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
 import { createApp } from './http.ts';
@@ -98,6 +101,7 @@ import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
+import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps } from '@agent-hub/domain';
 import { componentJobFinished, createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
@@ -141,6 +145,8 @@ const componentStore = createSqliteComponents(store.db);
 const hub = createStreamHub();
 const catalog = createLiveCatalog();
 let serverGateway: ServerGateway | null = null;
+/** 会话终端桥接：浏览器 WS ↔ worker PTY。装配在 serverGateway 之后。 */
+let terminalBridge: TerminalBridge | null = null;
 let sessionEnvironment: SessionEnvironment | null = null;
 const optionWaiters = createOptionWaiters();
 
@@ -771,7 +777,10 @@ serverGateway = createServerGateway({
   // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 里。
   onEvent(workerId, sessionId, event) {
     // 会话真的结束了：收掉 direct 会话登记和 hub 中转句柄（dispose 帧不是每条会话都会发）
-    if (event.kind === 'ended') providerWiring.revoke(sessionId);
+    if (event.kind === 'ended') {
+      providerWiring.revoke(sessionId);
+      terminalBridge?.closeSession(sessionId);
+    }
     fromWorker(workerId, sessionId, () =>
       void ingestWorkerEvent(deps, sessionId, event).then((result) => {
         if (!result.ok) log(`落盘事件失败：${result.error.message}`);
@@ -805,6 +814,8 @@ serverGateway = createServerGateway({
   onWorkerGone(workerId, reason) {
     catalog.removeWorker(workerId);
     workerGone(deps, workerId);
+    // 机器没了，它上面的 PTY 也没了：只关对应的浏览器 WS，不发 terminal.close。
+    terminalBridge?.closeWorker(workerId);
     log(`worker 离线：${workerId}（${reason}）`);
   },
   // 每条认证过的长连接：挂上 MCP 中转（RPC 端口 → MCP 服务端 → ToolGateway），绑定这台 Worker。
@@ -829,7 +840,25 @@ serverGateway = createServerGateway({
   onUpdateStatus(workerId, update) {
     log(`worker ${workerId} 更新：${update.state} ${update.message}`);
   },
+  // 终端：worker 重连后对账（清掉 hub 不知道的残留 PTY）与数据 / 退出帧都转给桥接。
+  knownTerminals: (workerId) => terminalBridge?.knownTerminals(workerId) ?? new Set<string>(),
+  onTerminalData(workerId, terminalId, data) {
+    terminalBridge?.onWorkerData(workerId, terminalId, data);
+  },
+  onTerminalExit(workerId, terminalId, code) {
+    terminalBridge?.onWorkerExit(workerId, terminalId, code);
+  },
   onLog: log
+});
+
+// 会话终端（docs/design/terminal.md）：浏览器 WS 的鉴权沿用 cookie + session.read；
+// 目标机器 / 目录由 domain 的 terminalTarget 决定，桥接只管帧和生命周期。
+terminalBridge = createTerminalBridge({
+  gateway: serverGateway,
+  authenticate: async (value) => withAccess(store.access, await authenticate(accounts, value), accounts.now()),
+  target: (subject, sessionId) => terminalTarget(deps, subject, sessionId),
+  hostAllowed: (hostname) => guard.hostAllowed(hostname),
+  log
 });
 void loadResourcePolicy({ metrics: workerMetrics, settings: store.settings }).catch((failure: unknown) => log(`同步资源策略失败：${(failure as Error).message}`));
 
@@ -926,7 +955,13 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
     now: () => Date.now()
   } } : {}),
   runtimeInstall: { workers: workerControl, enrollment: store.enrollment, sessions: store.sessions, audit: store.audit, now: () => Date.now(), access: deps.access },
-  projectDeletion: { toolGrants: store.toolGrants, audit: store.audit },
+  projectDeletion: {
+    toolGrants: store.toolGrants,
+    audit: store.audit,
+    onSessionsPurged: (sessionIds) => {
+      for (const sessionId of sessionIds) terminalBridge?.closeSession(sessionId);
+    }
+  },
   activity: { audit: store.audit, users: store.users, provenance: store.provenance },
   attention: { store: store.attention, pullRequests: pullRequestRepo },
   messaging: { bus: messageBus, messages: store.messages },
@@ -964,10 +999,21 @@ server.on('error', (error: NodeJS.ErrnoException) => {
   throw error;
 });
 server.on('upgrade', (request, socket, head) => {
-  // 只有 worker 通道走 WebSocket；浏览器发起的（带 Origin 的跨站请求）和重绑定来的一律不升级。
-  const path = (request.url ?? '').split('?')[0];
+  const path = (request.url ?? '').split('?')[0] ?? '';
   const hostHeader = request.headers.host;
-  if (path !== '/worker' || !guard.hostAllowed(hostHeader) || !guard.originAllowed(request.headers.origin, hostHeader)) {
+  // Host 校验对所有升级请求先做（防 DNS rebinding）。
+  if (!guard.hostAllowed(hostHeader)) {
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  // 会话终端：Origin / 双 cookie / session.read 由桥接按设计稿 §2.3 的顺序自己校验。
+  if (/^\/api\/sessions\/[^/]+\/terminal$/.test(path)) {
+    if (terminalBridge) terminalBridge.attach(request, socket, head);
+    else socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  // 其余只有 worker 通道走 WebSocket；浏览器发起的（带 Origin 的跨站请求）和重绑定来的一律不升级。
+  if (path !== '/worker' || !guard.originAllowed(request.headers.origin, hostHeader)) {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
     return;
   }
@@ -1014,6 +1060,7 @@ if (spawnWorker === '1') {
   const shutdown = () => {
     stopping = true;
     child.kill('SIGTERM');
+    terminalBridge?.close();
     serverGateway?.close();
     store.close();
     server.close();

@@ -71,6 +71,7 @@ export * from './handoff.ts';
 export * from './use-cases/rewind.ts';
 export * from './use-cases/attachments.ts';
 export * from './use-cases/workspaces.ts';
+export * from './use-cases/terminal.ts';
 export * from './use-cases/temporary-workspaces.ts';
 export * from './use-cases/workspace-cleanup.ts';
 export * from './use-cases/workspace-cleanup-admin.ts';

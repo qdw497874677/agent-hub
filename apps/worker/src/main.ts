@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 
@@ -310,6 +310,36 @@ const inventory =
     ? undefined
     : () => collectInventory({ provisions: provisioner.provisions(), componentsRoot, piAgentDir: piDir, componentInstall: componentsEnabled });
 
+/**
+ * 会话终端（docs/design/terminal.md）：在这台机器上开 PTY，cwd 就是会话的工作目录（由 link 的 workspaces 决定）。
+ * 没装 node-pty 时 createTerminalHost 回 null，worker 照常启动，hub 上不显示终端页签。
+ * 回调经 link 回传，所以这里先建 host、link 建好之后再接上（闭包，调用时 link 已存在）。
+ */
+const terminalShell = (): string => {
+  const configured = env['TERMINAL_SHELL']?.trim();
+  if (configured) return configured;
+  const fromEnv = env['SHELL']?.trim();
+  return fromEnv && existsSync(fromEnv) ? fromEnv : '/bin/bash';
+};
+/** TERMINAL_MAX / TERMINAL_LINGER_MS：非正整数一律忽略，用宿主默认值。 */
+const positiveInt = (raw: string | undefined): number | undefined => {
+  const value = Number(raw ?? '');
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+};
+const terminalMax = positiveInt(env['TERMINAL_MAX']);
+const terminalLingerMs = positiveInt(env['TERMINAL_LINGER_MS']);
+const terminal = createTerminalHost({
+  shell: terminalShell(),
+  ...(terminalMax !== undefined ? { max: terminalMax } : {}),
+  ...(terminalLingerMs !== undefined ? { lingerMs: terminalLingerMs } : {}),
+  check: (path) => files.check(path),
+  backpressure: () => link.bufferedAmount(),
+  cwdOf: (sessionId) => link.workspaceOf(sessionId),
+  onData: (terminalId, chunk) => link.sendTerminalData(terminalId, chunk),
+  onExit: (terminalId, code, signal) => link.sendTerminalExit(terminalId, code, signal),
+  log
+});
+
 const link = connectWorkerLink({
   ...(inventory ? { inventory } : {}),
   url: hubUrl,
@@ -328,6 +358,7 @@ const link = connectWorkerLink({
   files,
   ...(worktreesDir ? { worktreesDir } : {}),
   assets,
+  ...(terminal ? { terminal } : {}),
   build,
   onUpdate,
   provisioner,

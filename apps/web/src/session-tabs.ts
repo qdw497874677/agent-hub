@@ -1,14 +1,15 @@
 /**
- * 会话页的三个标签（PR #156 方案 A）：会话 / 文件 / 改动。纯函数，不依赖 React。
+ * 会话页的标签（PR #156 方案 A + 终端）：会话 / 文件 / 改动 / 终端。纯函数，不依赖 React。
  */
-export type SessionTab = 'chat' | 'files' | 'changes';
+export type SessionTab = 'chat' | 'files' | 'changes' | 'terminal';
 
-export const SESSION_TABS: readonly SessionTab[] = ['chat', 'files', 'changes'];
+export const SESSION_TABS: readonly SessionTab[] = ['chat', 'files', 'changes', 'terminal'];
 
 /** 标签文字；改动数未知（还没读到 / 机器离线）时不显示数字。 */
 export function sessionTabLabel(tab: SessionTab, changeCount?: number): string {
   if (tab === 'chat') return '会话';
   if (tab === 'files') return '文件';
+  if (tab === 'terminal') return '终端';
   return changeCount === undefined ? '改动' : `改动 ${changeCount}`;
 }
 

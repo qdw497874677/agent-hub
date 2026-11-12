@@ -12,7 +12,13 @@ import { fail } from './http-error.ts';
  * - POST   /api/projects/:id/restore      还原
  * - POST   /api/projects/:id/purge        彻底删除（要输项目名）
  */
-export function installProjectDeletion(app: Hono, deps: DeleteProjectDeps, principalOf: PrincipalOf): void {
+export function installProjectDeletion(
+  app: Hono,
+  deps: DeleteProjectDeps,
+  principalOf: PrincipalOf,
+  /** 彻底删除项目会连带删掉会话：让调用方（终端桥接）收掉这些会话的资源。 */
+  onSessionsPurged?: (sessionIds: readonly string[]) => void
+): void {
   const confirm = async (c: Context) => deleteProjectRequest.safeParse(await c.req.json().catch(() => null));
   app.delete('/api/projects/:projectId', async (c) => {
     const parsed = await confirm(c);
@@ -34,10 +40,14 @@ export function installProjectDeletion(app: Hono, deps: DeleteProjectDeps, princ
   app.post('/api/projects/:projectId/purge', async (c) => {
     const parsed = await confirm(c);
     if (!parsed.success) return fail(c, { code: 'invalid', message: '请求体不合法' });
+    const projectId = asProjectId(c.req.param('projectId'));
+    // 删完就查不到会话了：先记下 id，成功后再让终端桥接收尾。
+    const sessions = await deps.sessions.listByProject(projectId);
     const result = await purgeProjectUseCase(deps, principalOf(c), {
-      projectId: asProjectId(c.req.param('projectId')),
+      projectId,
       confirmName: parsed.data.confirmName
     });
+    if (result.ok) onSessionsPurged?.(sessions.map((session) => session.id));
     return result.ok ? c.json({ id: result.value.id, purged: true }) : fail(c, result.error);
   });
 }

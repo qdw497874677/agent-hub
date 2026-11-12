@@ -167,7 +167,10 @@ export interface AppOptions {
   /** 机器资源历史与「满了拒绝新会话」开关（ADR 0014）。 */
   readonly resources?: ResourceDeps;
   /** 删除项目（要登录态记审计，所以同样只在有账号体系时装）。 */
-  readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'>;
+  readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'> & {
+    /** 彻底删除项目连带删会话时，收掉这些会话的终端等资源。 */
+    readonly onSessionsPurged?: (sessionIds: readonly string[]) => void;
+  };
   /** Host / Origin 检查；不给就不查（单测里直接打 app.request）。 */
   readonly guard?: RequestGuard;
   /** 会话里「谁做的」：操作审计 + 作者名刷新；只在有账号体系时装。 */
@@ -284,7 +287,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);
     if (options.components) installComponents(app, options.components, principalOf);
     if (options.resources) installWorkerResources(app, options.resources, principalOf);
-    if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf);
+    if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf, options.projectDeletion.onSessionsPurged);
     if (options.openApi) {
       installApiTokens(app, options.openApi.manage, principalOf);
       installOpenApi(app, options.openApi, {
