@@ -1,3 +1,4 @@
+import type { HTMLAttributes } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Background,
@@ -23,6 +24,12 @@ import { CanvasWindowLayer, useCanvasWindows } from './canvas-window-layer.tsx';
 import { useNarrow } from '../../shell/device.ts';
 
 const nodeTypes: NodeTypes = { session: SessionCard, task: TaskCard, frame: WorkerFrame };
+
+/**
+ * 收起过的会话在画布上仍然在，只是退到背景：把状态挂到节点 DOM 上，
+ * 外层（样式和测试）不用钻进卡片就能按状态挑出它。React 的类型里没有 data-* 索引签名，转一次。
+ */
+const SETTLED_NODE_ATTRS = { 'data-settled': 'true' } as unknown as HTMLAttributes<HTMLDivElement>;
 
 type Point = { x: number; y: number };
 
@@ -386,6 +393,8 @@ export function CanvasView({
       position: positions[session.id] ?? { x: 0, y: 0 },
       // 交互分区（docs/guide.md「画布交互」）：会话卡只能按住顶栏拖；对话区滚动、输入区打字，互不抢。
       dragHandle: '.card-drag-zone',
+      // 收起过的卡在画布上仍然在，只是退到背景；标在节点上也方便外部按状态找它。
+      ...(session.settledAt != null ? { domAttributes: SETTLED_NODE_ATTRS } : {}),
       ...box('session', session.id),
       data: {
         session,

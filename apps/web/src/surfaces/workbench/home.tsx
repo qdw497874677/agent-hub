@@ -180,16 +180,19 @@ export function HomePage({
               <h2 className="mb-1 px-1 text-meta text-tertiary">{label}</h2>
               <ul>
                 {sessions.map((session) => (
-                  <li key={session.sessionId}>
+                  <li key={session.sessionId} data-settled={settled(session) ? 'true' : undefined}>
                     <button
-                      className="flex w-full items-center gap-2.5 rounded-sm px-1 py-1.5 text-left hover:bg-card"
+                      className={`flex w-full items-center gap-2.5 rounded-sm px-1 py-1.5 text-left hover:bg-card ${settled(session) ? 'opacity-60' : ''}`}
                       onClick={() => open(session)}
                     >
-                      <span className={`size-1.5 shrink-0 rounded-full ${dotClass(session.status)}`} />
+                      <span
+                        className={`size-1.5 shrink-0 rounded-full ${settled(session) ? 'border border-tertiary' : dotClass(session.status)}`}
+                      />
                       <span className="min-w-0 flex-1 truncate text-body text-primary">
                         {session.taskTitle}
                       </span>
                       <span className="shrink-0 text-meta text-secondary">{session.agentId}</span>
+                      {settled(session) ? <span className="shrink-0 text-meta text-tertiary">已收起</span> : null}
                       <span className="shrink-0 text-meta text-tertiary">{session.projectName}</span>
                       <span className="w-16 shrink-0 text-right text-meta text-tertiary">
                         {ago(session.updatedAt)}
@@ -363,6 +366,10 @@ function groupByDay(sessions: readonly RecentSessionDto[]): Array<[string, Recen
 }
 
 /** 与画布卡片同一套颜色：运行中琥珀、完成 sage、已停止灰、中断/失败 rust。 */
+function settled(session: RecentSessionDto): boolean {
+  return session.settledAt !== null && session.settledAt !== undefined;
+}
+
 function dotClass(status: RecentSessionDto['status']): string {
   if (status === 'running') return 'bg-accent';
   if (status === 'done') return 'bg-sage';

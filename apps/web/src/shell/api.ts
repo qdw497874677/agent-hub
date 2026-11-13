@@ -343,6 +343,12 @@ export const api = {
   renameSession: (sessionId: string, title: string) =>
     call<SessionDto>(`/api/sessions/${encodeURIComponent(sessionId)}/title`, { method: 'PUT', body: JSON.stringify({ title }) }),
   /**
+   * 收起 / 移回活跃列表（docs/design/interaction-borrowing.md §1）：只改「还看不看得到」，
+   * 不碰会话记录和进程。跑着的会话服务端会拒（409），菜单里先把原因写出来。
+   */
+  settleSession: (sessionId: string, settled: boolean) =>
+    post<SessionDto>(`/api/sessions/${encodeURIComponent(sessionId)}/settle`, { settled }),
+  /**
    * 删除一条会话：对话记录、产物引用、连线一起没；工作空间里的文件保留。
    * 会话还在跑服务端回 409，没权限 403，已经没了 404。
    */

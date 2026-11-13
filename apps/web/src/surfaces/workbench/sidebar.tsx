@@ -8,6 +8,7 @@ import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { WorkersBadge } from '../../shell/workers.tsx';
 import type { View } from '../../shell/route.ts';
+import { PHASE_DOT, activeSessions, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 
 const VIEWS: readonly { view: View; label: string; icon: string }[] = [
   { view: 'canvas', label: '画布', icon: '▦' },
@@ -51,17 +52,26 @@ export function ProjectSidebar({
   onClose
 }: Props) {
   const [settings, setSettings] = useState(false);
+  const [showSettled, setShowSettled] = useState(false);
   const tasks = canvas?.tasks ?? [];
+  // 活跃列表默认不含收起过的：侧栏是「现在要管什么」，不是全量档案。
+  const active = useMemo(() => activeSessions(canvas?.sessions ?? []), [canvas?.sessions]);
+  const settled = useMemo(() => settledSessions(canvas?.sessions ?? []), [canvas?.sessions]);
   const sessions = useMemo(() => {
     const grouped = new Map<string, SessionDto[]>();
-    for (const session of canvas?.sessions ?? []) {
+    for (const session of active) {
       const list = grouped.get(session.taskId) ?? [];
       list.push(session);
       grouped.set(session.taskId, list);
     }
     return grouped;
-  }, [canvas?.sessions]);
+  }, [active]);
+  // 任务下一条都没有 / 只是都收起来了，说法不一样。
+  const tasksWithSessions = useMemo(() => new Set((canvas?.sessions ?? []).map((session) => session.taskId)), [canvas?.sessions]);
   const taskTitle = useMemo(() => new Map(tasks.map((task) => [task.id, task.title])), [tasks]);
+
+  const titleOf = (session: SessionDto): string =>
+    session.title?.trim() || canvas?.openings[session.id]?.trim() || taskTitle.get(session.taskId) || session.id.slice(-8);
 
   return (
     <aside
@@ -153,44 +163,57 @@ export function ProjectSidebar({
               <section key={task.id} className="mb-2">
                 <p className="truncate px-2 py-1 text-meta text-tertiary" title={task.title}>
                   {task.title}
+                  {/* 任务下一条活跃会话都没有，但确实有过：让它别看起来像「丢了」。 */}
+                  {rows.length === 0 && tasksWithSessions.has(task.id) ? (
+                    <span className="text-tertiary/70"> · 都收起来了</span>
+                  ) : null}
                 </p>
                 {rows.length === 0 ? (
-                  <p className="px-2 py-1 text-meta text-tertiary">还没有会话</p>
+                  tasksWithSessions.has(task.id) ? null : (
+                    <p className="px-2 py-1 text-meta text-tertiary">还没有会话</p>
+                  )
                 ) : (
-                  rows.map((session) => {
-                    const active = selectedId === session.id;
-                    const title = session.title?.trim() || canvas?.openings[session.id]?.trim() || taskTitle.get(session.taskId) || session.id.slice(-8);
-                    return (
-                      <button
-                        key={session.id}
-                        data-testid="sidebar-session"
-                        className={`mb-0.5 flex min-h-11 w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-meta lg:min-h-0 ${
-                          active ? 'bg-card-raised text-primary' : 'text-secondary hover:bg-card hover:text-primary'
-                        }`}
-                        aria-current={active ? 'page' : undefined}
-                        title={`${title} · ${session.agentId} · ${session.status}`}
-                        onClick={() => onOpenSession(session.id)}
-                      >
-                        <span
-                          className={`size-1.5 shrink-0 rounded-full ${
-                            session.status === 'running'
-                              ? 'bg-accent'
-                              : session.status === 'failed'
-                                ? 'bg-rust'
-                                : 'bg-tertiary/60'
-                          }`}
-                          aria-hidden
-                        />
-                        <span className="min-w-0 flex-1 truncate">{title}</span>
-                        <span className="shrink-0 font-mono text-tertiary">#{session.id.slice(-4)}</span>
-                      </button>
-                    );
-                  })
+                  rows.map((session) => (
+                    <SessionRow
+                      key={session.id}
+                      session={session}
+                      title={titleOf(session)}
+                      active={selectedId === session.id}
+                      onOpen={onOpenSession}
+                    />
+                  ))
                 )}
               </section>
             );
           })
         )}
+        <div className="mt-1 border-t border-hair pt-1" data-testid="sidebar-settled">
+          <button
+            data-testid="sidebar-settled-toggle"
+            aria-expanded={settled.length > 0 ? showSettled : undefined}
+            disabled={settled.length === 0}
+            className="flex min-h-11 w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-meta text-tertiary hover:bg-card hover:text-secondary disabled:hover:bg-transparent lg:min-h-0"
+            title={settled.length === 0 ? '做完的会话可以收起掉，安安静静留在这里' : undefined}
+            onClick={() => setShowSettled((open) => !open)}
+          >
+            <span aria-hidden className="w-3 shrink-0 text-center">{settled.length > 0 ? (showSettled ? '▾' : '▸') : ''}</span>
+            <span>已收起 {settled.length}</span>
+          </button>
+          {showSettled && settled.length > 0 ? (
+            <div className="mt-0.5" data-testid="sidebar-settled-list">
+              {settled.map((session) => (
+                <SessionRow
+                  key={session.id}
+                  session={session}
+                  title={titleOf(session)}
+                  active={selectedId === session.id}
+                  muted
+                  onOpen={onOpenSession}
+                />
+              ))}
+            </div>
+          ) : null}
+        </div>
       </nav>
 
       <div className="space-y-2 border-t border-hair p-2">
@@ -214,5 +237,47 @@ export function ProjectSidebar({
       </div>
       {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
     </aside>
+  );
+}
+
+/**
+ * 侧栏里的一行会话：名字在左，状态点在最右（同款小圆点，颜色只说「忙 / 出事 / 歇着」）。
+ * 收起过的那份用更淡的字，展开后也能一眼看出它们已经退场。
+ */
+function SessionRow({
+  session,
+  title,
+  active,
+  muted = false,
+  onOpen
+}: {
+  readonly session: SessionDto;
+  readonly title: string;
+  readonly active: boolean;
+  readonly muted?: boolean;
+  readonly onOpen: (sessionId: string) => void;
+}) {
+  const phase = sessionPhase(session);
+  const tone = phaseTone(phase);
+  return (
+    <button
+      data-testid="sidebar-session"
+      data-phase={phase}
+      data-settled={muted ? 'true' : undefined}
+      className={`mb-0.5 flex min-h-11 w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-meta lg:min-h-0 ${
+        active
+          ? 'bg-card-raised text-primary'
+          : muted
+            ? 'text-tertiary hover:bg-card hover:text-secondary'
+            : 'text-secondary hover:bg-card hover:text-primary'
+      }`}
+      aria-current={active ? 'page' : undefined}
+      title={`${title} · ${session.agentId} · ${phaseLabel(phase)}`}
+      onClick={() => onOpen(session.id)}
+    >
+      <span className="min-w-0 flex-1 truncate">{title}</span>
+      <span className="shrink-0 font-mono text-tertiary">#{session.id.slice(-4)}</span>
+      <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${PHASE_DOT[tone]}`} />
+    </button>
   );
 }

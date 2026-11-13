@@ -181,6 +181,13 @@ export function FocusView({
   const reason = live?.reason ?? null;
   // 删除会话：跑着的时候服务端会拒（409），菜单里先把原因写出来，别点下去才知道。
   const deleteHint = deleteSessionBlockedHint({ status });
+  // 收起（interaction-borrowing §1）：做完的会话移出活跃列表；跑着的先别沉，停下来再说。
+  const settled = session.settledAt != null;
+  const settleHint = settled
+    ? '回到侧栏的活跃列表，随时可以再收起'
+    : status === 'running'
+      ? '会话还在跑，停下来才能收起'
+      : '做完的会话移出活跃列表；画布上仍然看得到';
   // 终端页签：会话跑着、机器在线、且没被探测成「不支持」才出现（docs/design/terminal.md §7）。
   const workers = useWorkers();
   const worker = resolveWorker(workers.list, session.workerId);
@@ -415,6 +422,34 @@ export function FocusView({
     });
   }
 
+  /**
+   * 收起 / 移回活跃列表：先就地改画布的缓存，侧栏和卡片立刻反应；
+   * 再让画布与首页去问服务端要真数据。失败落在 Composer 上方的就地错误里（和改名、分叉一样）。
+   */
+  async function setSettled(next: boolean): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await api.settleSession(session.id, next);
+      const settledAt = next ? (updated.settledAt ?? Date.now()) : null;
+      queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
+        current
+          ? {
+              ...current,
+              sessions: current.sessions.map((item) => (item.id === session.id ? { ...item, settledAt } : item))
+            }
+          : current
+      );
+      onChanged();
+      void queries.invalidateQueries({ queryKey: ['home'] });
+      void queries.invalidateQueries({ queryKey: ['session', session.id] });
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     setError(null);
@@ -573,6 +608,16 @@ export function FocusView({
                     onClick={() => {
                       close();
                       setContinuing(true);
+                    }}
+                  />
+                  <MenuItem
+                    title={settled ? '移回活跃列表' : '收起：移出活跃列表'}
+                    hint={settleHint}
+                    disabled={!settled && status === 'running'}
+                    testId="session-settle"
+                    onClick={() => {
+                      close();
+                      void setSettled(!settled);
                     }}
                   />
                   <MenuItem

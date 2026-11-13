@@ -1,13 +1,13 @@
 import { AuthorTag } from '../../atoms/author.tsx';
 import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '@xyflow/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { AttachmentInputDto, PromptAckDto, SessionDto, TaskDto, WorkerInfoDto } from '../../shell/api.ts';
 import { WorkerChip } from '../../shell/workers.tsx';
 import { ResourceBadge, SessionUsage } from '../../shell/resources.tsx';
 import { CardComposer } from './card-composer.tsx';
-import { StatusPill } from '../../atoms/status.tsx';
 import { OptionControls } from '../../atoms/options.tsx';
+import { PHASE_DOT, elapsedLabel, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
 import {
   cardBlocks,
   multipleAuthors,
@@ -214,11 +214,20 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     }
   }
   const status = live?.status ?? session.status;
+  const phase = sessionPhase({ status, settledAt: session.settledAt });
+  const settled = phase === 'settled';
   const failed = status === 'failed' || status === 'interrupted';
   const failureReason = failed ? (live?.reason ?? null) : null;
   const blocks = live?.blocks ?? [];
   const showAuthor = multipleAuthors(blocks);
   const dimmed = status === 'stopped';
+  // 工作中才数时长；半分钟一跳就够（秒级数字会一直抓眼睛）。
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (phase !== 'working') return;
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [phase]);
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -272,9 +281,11 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         setMenu({ x: Math.max(4, Math.min(x, window.innerWidth - 176)), y: Math.max(4, Math.min(y, window.innerHeight - 96)) });
       }}
       // 宽高由 React Flow 节点本身决定（node.width/height），卡片只铺满；输出区吃掉剩余高度。
+      // 收起过的卡还在画布上（位置和连线都别断），但整张退到背景，视线先落到活跃的。
+      data-settled={settled ? 'true' : undefined}
       className={`group flex h-full w-full flex-col rounded-md border bg-card px-3 py-3 transition-colors ${
         selected ? 'border-accent' : 'border-hair'
-      } ${dimmed ? 'opacity-70' : ''}`}
+      } ${dimmed || settled ? 'opacity-60' : ''}`}
     >
       <CardResizer kind="session" selected={selected} onResized={onResized} />
       {menu ? createPortal(
@@ -319,6 +330,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <SessionUsage resources={resources} sessionId={session.id} />
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
+          <CardStatus phase={phase} startedAt={session.createdAt} now={now} reason={failureReason} />
           {expanded ? <span className="text-meta text-accent" title="已在画布中展开" data-testid="card-expanded">◫</span> : null}
           <button
             className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-accent hover:text-accent focus:opacity-100 ${
@@ -345,7 +357,6 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           >
             打开
           </button>
-          <StatusPill status={status} reason={failureReason} lastSeq={live?.lastSeq ?? session.lastSeq} />
         </span>
       </header>
 
@@ -447,6 +458,39 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       <Handle id="link-source" type="source" position={Position.Bottom} title="拖到另一条会话，建立连接" isConnectable={data.online !== false} className="!size-2 !border-0 !bg-accent" />
       <Handle id="lineage-source" type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
     </div>
+  );
+}
+
+/**
+ * 卡片上的状态位：点 + 文案，工作中的再跟一句「已跑多久」。
+ * 替换原来的 StatusPill：一个状态只说一次，别让眼睛在两个地方对同一件事。
+ */
+function CardStatus({
+  phase,
+  startedAt,
+  now,
+  reason
+}: {
+  phase: SessionPhase;
+  startedAt: number;
+  now: number;
+  reason: string | null;
+}) {
+  const tone = phaseTone(phase);
+  const elapsed = phase === 'working' ? elapsedLabel(startedAt, now) : null;
+  const suffix = elapsed === null ? null : elapsed === '刚刚' ? '刚开始' : `已跑 ${elapsed}`;
+  return (
+    <span
+      data-testid="card-status"
+      data-phase={phase}
+      data-tone={tone}
+      className="flex shrink-0 items-center gap-1.5 whitespace-nowrap text-meta text-secondary"
+      title={reason ?? (suffix ? `${phaseLabel(phase)} · ${suffix}` : phaseLabel(phase))}
+    >
+      <span aria-hidden className={`block size-[7px] shrink-0 rounded-full ${PHASE_DOT[tone]}`} />
+      <span>{phaseLabel(phase)}</span>
+      {suffix ? <span className="text-tertiary">· {suffix}</span> : null}
+    </span>
   );
 }
 
