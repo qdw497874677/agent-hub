@@ -124,6 +124,14 @@ class Reader {
   }
 }
 
+async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
+  const started = Date.now();
+  while (!check()) {
+    if (Date.now() - started > timeoutMs) throw new Error('等待条件超时');
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 function open(port: number, cookie: string, options: { origin?: string } = {}): Promise<{ socket: WebSocket; reader: Reader; closed: Promise<number> }> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/api/sessions/s1/terminal?cols=100&rows=30`, {
@@ -281,6 +289,28 @@ test('会话结束：浏览器收到 exit，worker 收到 terminal.close', async
     assert.equal(await closed, 1000);
     assert.deepEqual(world.calls.close, [{ workerId: 'w1', terminalId: 's1:1' }]);
     assert.equal(world.bridge.knownTerminals('w1').size, 0);
+  } finally {
+    await world.close();
+  }
+});
+
+test('浏览器断开后的 linger 终端：会话结束时仍发 terminal.close', async () => {
+  const world = await harness();
+  try {
+    const { socket, reader } = await open(world.port, 'hub_login=good');
+    assert.deepEqual(await reader.next(), { t: 'ready', terminalId: 's1:1' });
+
+    socket.close();
+    // 服务端先看到 close 事件，把这条会话从 entries 移到 linger 表。
+    await waitFor(() => world.sockets[0]?.readyState !== WebSocket.OPEN);
+    assert.equal(world.calls.close.length, 0, 'linger 期不主动关，等会话结束');
+    assert.deepEqual([...world.bridge.knownTerminals('w1')], ['s1:1'], 'linger 的 PTY 仍是 hub 认识的终端');
+
+    world.bridge.closeSession('s1');
+    await waitFor(() => world.calls.close.length === 1);
+    assert.deepEqual(world.calls.close, [{ workerId: 'w1', terminalId: 's1:1' }]);
+    assert.equal(world.bridge.knownTerminals('w1').size, 0);
+    assert.equal(world.bridge.knownTerminals().size, 0);
   } finally {
     await world.close();
   }

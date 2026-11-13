@@ -150,6 +150,14 @@ interface Entry {
   misses: number;
   /** bufferedAmount 第一次超过阈值的时间；降回来就清空。 */
   slowSince: number | null;
+  /** worker 上是否真的开过 PTY：浏览器断在 open 途中时也要靠它记住 linger。 */
+  opened: boolean;
+}
+
+/** 开过 PTY、但浏览器已经断开（在 worker 的 linger 期里）：会话结束时仍要主动 terminal.close。 */
+interface LingeringTerminal {
+  readonly workerId: string;
+  readonly terminalId: string;
 }
 
 function send(socket: WebSocket, frame: HubFrame): void {
@@ -179,6 +187,8 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
   const slowGraceMs = options.slowGraceMs ?? DEFAULT_SLOW_GRACE_MS;
   const slowCheckMs = options.slowCheckMs ?? DEFAULT_SLOW_CHECK_MS;
   const entries = new Map<string, Entry>();
+  /** sessionId → 浏览器已断开、PTY 还留在 worker 上的终端。 */
+  const lingering = new Map<string, LingeringTerminal>();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD });
 
   const entryOfTerminal = (workerId: string, terminalId: string): Entry | null => {
@@ -191,6 +201,18 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
   /** 只删 Map 里仍是这一个的连接（重连 / 关闭先后到达时不误删新的）。 */
   function forget(sessionId: string, entry: Entry): void {
     if (entries.get(sessionId) === entry) entries.delete(sessionId);
+  }
+
+  /** 浏览器断开但 PTY 还留在 worker 的 linger 期：记下来，会话结束时仍要主动 terminal.close。 */
+  function linger(sessionId: string, workerId: string, terminalId: string): void {
+    lingering.set(sessionId, { workerId, terminalId });
+  }
+
+  /** PTY 已经没了（worker 报 exit / 机器离线 / 刚发过 close）：对应的 linger 记录也清掉。 */
+  function forgetLingering(workerId: string, terminalId: string): void {
+    for (const [sessionId, item] of [...lingering]) {
+      if (item.workerId === workerId && item.terminalId === terminalId) lingering.delete(sessionId);
+    }
   }
 
   function closeEntry(sessionId: string, entry: Entry, code: number, reason: string): void {
@@ -218,7 +240,7 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
       return;
     }
     const terminalId = terminalIdOf(sessionId);
-    const entry: Entry = { terminalId, workerId, socket, alive: true, misses: 0, slowSince: null };
+    const entry: Entry = { terminalId, workerId, socket, alive: true, misses: 0, slowSince: null, opened: false };
     entries.set(sessionId, entry);
 
     socket.on('pong', () => {
@@ -256,11 +278,14 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
       }
     });
     socket.on('close', () => {
-      // 设计稿 §3：标签页关掉 / 刷新时 PTY 留着（worker 侧 TERMINAL_LINGER_MS），这里只摘掉客户端。
+      // 设计稿 §3：标签页关掉 / 刷新时 PTY 留着（worker 侧 TERMINAL_LINGER_MS），这里只摘掉客户端；
+      // 但要在 linger 表里记一笔，会话结束时 closeSession 才能主动发 terminal.close。
       forget(sessionId, entry);
+      if (entry.opened) linger(sessionId, entry.workerId, entry.terminalId);
     });
     socket.on('error', () => {
       forget(sessionId, entry);
+      if (entry.opened) linger(sessionId, entry.workerId, entry.terminalId);
     });
     options.onSocket?.(sessionId, socket);
 
@@ -280,7 +305,13 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
       socket.close(1011, 'open failed');
       return;
     }
-    if (entries.get(sessionId) !== entry) return; // 打开期间窗口关了：PTY 留着，等下次复用
+    entry.opened = true;
+    if (entries.get(sessionId) !== entry) {
+      // 打开期间窗口关了：PTY 留着，等下次复用；也记成 linger，会话结束时能主动收掉。
+      linger(sessionId, entry.workerId, entry.terminalId);
+      return;
+    }
+    lingering.delete(sessionId); // 复用成功：客户端已经接回来了
     send(socket, { t: 'ready', terminalId });
     // 复用还活着的 PTY：先把最近输出补回去，页面刷新后不会只剩一个空屏。
     if (opened.value.scrollback !== undefined && opened.value.scrollback !== '') {
@@ -378,6 +409,8 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
     },
 
     onWorkerExit(workerId: string, terminalId: string, code: number): void {
+      // PTY 已经退出：linger 记录跟着清掉，别在会话结束时再对不存在的终端发 close。
+      forgetLingering(workerId, terminalId);
       const entry = entryOfTerminal(workerId, terminalId);
       if (!entry) return;
       for (const [sessionId, candidate] of entries) {
@@ -386,6 +419,7 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
           break;
         }
       }
+      entry.opened = false;
       send(entry.socket, { t: 'exit', code });
       try {
         entry.socket.close(1000, '终端已退出');
@@ -396,26 +430,37 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
 
     closeSession(sessionId: string): void {
       const entry = entries.get(sessionId);
-      if (!entry) return;
-      forget(sessionId, entry);
-      send(entry.socket, { t: 'exit', code: 0 });
-      try {
-        entry.socket.close(1000, '会话已结束');
-      } catch {
-        // 已经关了
+      const detached = lingering.get(sessionId);
+      // 客户端已经断开的 linger 终端没有 entry，但 PTY 还在 worker 上：也要主动关。
+      if (!entry && !detached) return;
+      if (entry) {
+        forget(sessionId, entry);
+        entry.opened = false; // 主动发 close 了，close 事件别把它再记成 linger
+        send(entry.socket, { t: 'exit', code: 0 });
+        try {
+          entry.socket.close(1000, '会话已结束');
+        } catch {
+          // 已经关了
+        }
       }
-      void gateway.closeTerminal(entry.workerId, entry.terminalId).then(
+      lingering.delete(sessionId);
+      const workerId = entry?.workerId ?? detached!.workerId;
+      const terminalId = entry?.terminalId ?? detached!.terminalId;
+      void gateway.closeTerminal(workerId, terminalId).then(
         (closed) => {
-          if (!closed.ok) log(`关闭终端失败（${entry.terminalId}）：${closed.message ?? 'worker 没确认'}`);
+          if (!closed.ok) log(`关闭终端失败（${terminalId}）：${closed.message ?? 'worker 没确认'}`);
         },
-        (error: unknown) => log(`关闭终端失败（${entry.terminalId}）：${error instanceof Error ? error.message : String(error)}`)
+        (error: unknown) => log(`关闭终端失败（${terminalId}）：${error instanceof Error ? error.message : String(error)}`)
       );
     },
 
     closeWorker(workerId: string): void {
+      // PTY 随 worker 一起没了：linger 记录直接丢，不发 terminal.close。
+      for (const [sessionId, item] of [...lingering]) if (item.workerId === workerId) lingering.delete(sessionId);
       for (const [sessionId, entry] of [...entries]) {
         if (entry.workerId !== workerId) continue;
         forget(sessionId, entry);
+        entry.opened = false;
         send(entry.socket, { t: 'error', message: '机器离线' });
         try {
           entry.socket.close(1011, 'worker offline');
@@ -429,6 +474,10 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
       const known = new Set<string>();
       for (const entry of entries.values()) {
         if (workerId === undefined || workerId === null || entry.workerId === workerId) known.add(entry.terminalId);
+      }
+      // linger 的 PTY 也还开在 worker 上：worker 重连对账时别把它当残留关掉。
+      for (const item of lingering.values()) {
+        if (workerId === undefined || workerId === null || item.workerId === workerId) known.add(item.terminalId);
       }
       return known;
     },
@@ -457,6 +506,7 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
       clearInterval(heartbeat);
       clearInterval(slowTimer);
       for (const entry of entries.values()) {
+        entry.opened = false;
         try {
           entry.socket.close(1001, 'hub 正在关闭');
         } catch {
@@ -464,6 +514,7 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
         }
       }
       entries.clear();
+      lingering.clear();
       wss.close();
     }
   };

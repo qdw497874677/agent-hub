@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { PROVIDER_TOKEN_ENV, type ProviderLaunch } from '@agent-hub/domain';
+import { PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS, PROVIDER_TOKEN_ENV, type ProviderLaunch, type ProviderModel } from '@agent-hub/domain';
 import { mergeConfig, type AcpLaunch } from './config.ts';
 
 /**
@@ -8,6 +8,21 @@ import { mergeConfig, type AcpLaunch } from './config.ts';
  * v1（1.x）用 `provider`，v2 用 `providers`；方言按 `opencode --version` 的大版本选。
  */
 export type OpencodeDialect = 'v1' | 'v2';
+
+/**
+ * 提供商模型配置的 extra：并进该模型的配置对象（opencode 允许任意附加字段）。
+ * 会话控制字段（model / messages / input / stream / …）由 agent 自己决定，一律丢掉；
+ * name / limit 由下面显式写入，所以调用处放在 extra 之后展开——extra 覆盖不了它们。
+ */
+function modelExtra(model: ProviderModel): Record<string, unknown> {
+  if (!model.extra) return {};
+  const extra: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(model.extra)) {
+    if (PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS.includes(key)) continue;
+    extra[key] = value;
+  }
+  return extra;
+}
 
 export function opencodeProviderConfig(launch: ProviderLaunch, dialect: OpencodeDialect): Record<string, unknown> {
   const id = `hub-${launch.slug}`;
@@ -25,7 +40,9 @@ export function opencodeProviderConfig(launch: ProviderLaunch, dialect: Opencode
           env: [PROVIDER_TOKEN_ENV],
           package: pkg,
           settings: { baseURL: launch.baseUrl },
-          models: Object.fromEntries(launch.models.map((model) => [model.id, { name: model.name ?? model.id }]))
+          models: Object.fromEntries(
+            launch.models.map((model) => [model.id, { ...modelExtra(model), name: model.name ?? model.id }])
+          )
         }
       }
     };
@@ -40,7 +57,11 @@ export function opencodeProviderConfig(launch: ProviderLaunch, dialect: Opencode
         models: Object.fromEntries(
           launch.models.map((model) => [
             model.id,
-            { name: model.name ?? model.id, ...(model.contextWindow ? { limit: { context: model.contextWindow, output: model.maxTokens ?? 8192 } } : {}) }
+            {
+              ...modelExtra(model),
+              name: model.name ?? model.id,
+              ...(model.contextWindow ? { limit: { context: model.contextWindow, output: model.maxTokens ?? 8192 } } : {})
+            }
           ])
         )
       }

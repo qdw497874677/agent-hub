@@ -8,6 +8,7 @@ import { asAgentId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } from '../messaging.ts';
+import type { BotDefinition } from '../bot.ts';
 import { wrapUntrusted } from '../messaging.ts';
 import { recordEvent } from './sessions.ts';
 import { createMessageBus } from './messaging.ts';
@@ -233,6 +234,27 @@ test('并发上限 8：同一条链同时进行中的消息', async () => {
   for (let i = 0; i < 7; i += 1) assert.ok((await w.bus.accept({ fromSessionId: hub.id, kind: 'ask', to: `session:${(await w.newSession('alice')).id}`, body: `${i}` })).ok);
   const ninth = await w.bus.accept({ fromSessionId: hub.id, kind: 'ask', to: `session:${(await w.newSession('alice')).id}`, body: '9' });
   assert.equal(!ninth.ok && ninth.error.message.startsWith('rate_limited'), true);
+});
+
+test('整表保存也走 ref 净化：空壳 role 被拒，ref 归一后再落库', async () => {
+  const w = await world();
+  // 没有 ref 的空壳（老客户端 / 直接调域层）：要按校验错误拒掉，不能 TypeError，也不能把 `{}` 写进 bots 表。
+  const shell = await w.bus.saveConfig(w.project.id, {
+    roles: [{ name: 'x', description: '', reuse: 'sticky' } as unknown as BotDefinition],
+    limits: {}
+  });
+  assert.equal(shell.ok, false);
+  assert.match(!shell.ok ? shell.error.message : '', /要指定 agent/);
+  assert.deepEqual(await w.deps.bots.list(w.project.id), []);
+
+  // 合法 role 的 ref 与单条保存同一条净化路径：runtime / model 去空白，options 取规范副本。
+  const saved = await w.bus.saveConfig(w.project.id, {
+    roles: [{ name: 'qa', description: '', reuse: 'sticky', ref: { runtime: ' pi ', model: ' m-1 ', options: { effort: 'high' } } }],
+    limits: {}
+  });
+  assert.ok(saved.ok);
+  assert.deepEqual(saved.value.roles[0]!.ref, { runtime: 'pi', model: 'm-1', options: { effort: 'high' } });
+  assert.deepEqual((await w.bus.config(w.project.id)).roles.map((bot) => bot.name), ['qa']);
 });
 
 test('派生新会话：要 agent.spawn、要人批；批完投递，派生会话默认隔离', async () => {

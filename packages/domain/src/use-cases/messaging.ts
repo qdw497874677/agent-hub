@@ -1,4 +1,5 @@
 import { decide, type Permission } from '../access.ts';
+import { validateAgentRef } from '../agent-ref.ts';
 import { botIdFrom, type Bot, type BotDefinition } from '../bot.ts';
 import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
@@ -533,19 +534,37 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     config: loadConfig,
 
     async saveConfig(projectId, input) {
-      const problem = configProblem(input);
+      // 整表保存也走单条保存的净化：ref 先补成合法形状交给 configProblem 报好懂的错，
+      // 再用 validateAgentRef 返回的规范值落库（trim 过的 runtime/model + 过滤后的 options）。
+      // 不这么做，`{name:'x'}` 这种没有 ref 的空壳会直接 TypeError，ref 里的空白 / 脏值也会原样进库。
+      const drafted: BotDefinition[] = input.roles.map((role) => {
+        const raw = role as Partial<BotDefinition>;
+        const ref = raw.ref;
+        return {
+          ...role,
+          name: (raw.name ?? '').trim(),
+          ref: { runtime: ref?.runtime ?? '', model: ref?.model ?? '', options: ref?.options ?? {} }
+        };
+      });
+      const problem = configProblem({ roles: drafted, limits: input.limits });
       if (problem) return err(invalid(problem));
+      const normalized: BotDefinition[] = [];
+      for (const draft of drafted) {
+        const checked = validateAgentRef(draft.ref);
+        if (!checked.ok) return err(invalid(`bot ${draft.name} 的${checked.error.message}`));
+        normalized.push({ ...draft, ref: checked.value });
+      }
       const now = deps.now();
       const existing = await deps.bots.list(projectId);
       const byName = new Map(existing.map((bot) => [bot.name, bot]));
       const roles: Bot[] = [];
-      for (const draft of input.roles) {
-        const name = draft.name.trim();
+      for (const draft of normalized) {
+        const name = draft.name;
         const current = byName.get(name);
         const bot: Bot = {
           ...draft,
           name,
-          ref: { ...draft.ref, runtime: draft.ref.runtime.trim(), model: draft.ref.model.trim() },
+          ref: draft.ref,
           id: current?.id ?? botIdFrom(`${projectId}\0${name}`),
           projectId,
           createdAt: current?.createdAt ?? now,
