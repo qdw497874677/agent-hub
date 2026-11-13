@@ -587,6 +587,7 @@ export type {
   HomeDto,
   ProjectDto,
   ProjectSummaryDto,
+  PromptAckDto,
   RecentSessionDto,
   OptionValueDto,
   RuntimeOptionDto,

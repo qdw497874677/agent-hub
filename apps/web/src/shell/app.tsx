@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type { CanvasDto, ProjectDto, TaskDto } from './api.ts';
+import type { AttachmentInputDto, CanvasDto, ProjectDto, PromptAckDto, TaskDto } from './api.ts';
 import { api } from './api.ts';
 import { HomePage } from '../surfaces/workbench/home.tsx';
 import { AdminPage } from './admin/page.tsx';
@@ -119,18 +119,26 @@ function Workspace() {
   });
 
   // 画布卡片上就地说话：发完清掉这张卡的草稿，不走「先选中再进对话」那条路。
+  // clientMessageId 由卡片自己的乐观气泡生成，重试沿用同一个；把它透传给服务端才能对账。
   const sendPrompt = useCallback(
-    async (sessionId: string, text: string) => {
+    async (
+      sessionId: string,
+      text: string,
+      clientMessageId: string,
+      attachments: readonly AttachmentInputDto[] = []
+    ): Promise<PromptAckDto> => {
       // 先清草稿再等回复：等的这段时间卡片若被画布重新挂载，不该把刚发出去的话又填回输入框
       // （e2e 偶发失败就是它：模型慢时输入框里又出现了原话，看着像没发出去）。没发出去再放回来。
       setDrafts((current) => ({ ...current, [sessionId]: '' }));
+      let ack: PromptAckDto;
       try {
-        await api.prompt(sessionId, text);
+        ack = await api.prompt(sessionId, text, [...attachments], clientMessageId);
       } catch (failure) {
         setDrafts((current) => ({ ...current, [sessionId]: current[sessionId] || text }));
         throw failure;
       }
       refresh();
+      return ack;
     },
     [refresh]
   );

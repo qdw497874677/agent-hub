@@ -41,14 +41,9 @@ import { AgentProfilesDialog } from '../../shell/agent-profiles-dialog.tsx';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
 import { deleteSessionBlockedHint, edgeSurvivesSession } from '../../atoms/delete-session.ts';
 import { environmentNotice } from '../../atoms/environment-notice.ts';
-import {
-  ACK_TIMEOUT_MS,
-  expirePending,
-  newClientMessageId,
-  pendingLabel,
-  reconcilePending,
-  type PendingPrompt
-} from '../../atoms/pending-prompt.ts';
+import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
+import { heldPromptSeqs, splitTimeline } from '../../atoms/prompt-delivery.ts';
+import { PendingPrompts, QueuedPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -106,8 +101,6 @@ export function FocusView({
   windowChrome
 }: Props) {
   const [busy, setBusy] = useState(false);
-  // 发出去到 journal 回显之间，先给用户一条自己的气泡；对账只认 clientMessageId，同文也不会认错。
-  const [pendingPrompts, setPendingPrompts] = useState<readonly PendingPrompt[]>([]);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
@@ -177,20 +170,12 @@ export function FocusView({
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
   const task = canvas.tasks.find((candidate) => candidate.id === session.taskId);
   const blocks = live?.blocks ?? [];
-  // journal 里出现同 id 的 prompt 后，乐观气泡让位给真实事件；同文的另一条不受影响。
-  useEffect(() => {
-    setPendingPrompts((previous) => reconcilePending(previous, blocks));
-  }, [blocks]);
-  // 回执迟迟不来就是「未送达」：宁可让人点一次重试，也别让气泡一直装作在发。
-  useEffect(() => {
-    const waiting = pendingPrompts.filter((item) => item.state === 'sending');
-    if (waiting.length === 0) return;
-    const delay = Math.max(0, Math.min(...waiting.map((item) => item.sentAt + ACK_TIMEOUT_MS - Date.now())));
-    const timer = setTimeout(() => {
-      setPendingPrompts((previous) => expirePending(previous, Date.now()));
-    }, delay + 50);
-    return () => clearTimeout(timer);
-  }, [pendingPrompts]);
+  // 乐观气泡、8 秒超时、重试/放弃、和 journal 对账：和画布卡片是同一份实现。
+  const delivery = usePromptDelivery({
+    sessionId: session.id,
+    blocks,
+    send: (text, attachments, clientMessageId) => api.prompt(session.id, text, attachments, clientMessageId)
+  });
   const status = live?.status ?? session.status;
   const reason = live?.reason ?? null;
   // 删除会话：跑着的时候服务端会拒（409），菜单里先把原因写出来，别点下去才知道。
@@ -357,13 +342,11 @@ export function FocusView({
   const turns = shown(useQuery({ ...FILES_QUERY, queryKey: fileKeys.turns(), queryFn: () => filesApi.turns(session.id) })) ?? [];
   const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
   // 排队中的用户消息不留在时间线里：它们要一直贴在对话底部，不能因为 agent 继续输出而被顶到上面。
-  const heldPromptSeqs = new Set(
-    [...deliveriesBySeq]
-      .filter(([, delivery]) => delivery.state === 'queued' || delivery.state === 'sending' || delivery.state === 'undelivered')
-      .map(([seq]) => seq)
+  const held = heldPromptSeqs(deliveriesBySeq);
+  const { timeline: timelineBlocks, queued } = splitTimeline(blocks, held);
+  const queuedBlocks = queued.filter(
+    (block): block is Extract<Block, { kind: 'prompt' }> => block.kind === 'prompt'
   );
-  const timelineBlocks = blocks.filter((block) => !(block.kind === 'prompt' && heldPromptSeqs.has(block.seq)));
-  const queuedBlocks = blocks.filter((block): block is Extract<Block, { kind: 'prompt' }> => block.kind === 'prompt' && heldPromptSeqs.has(block.seq));
   const promptSeqs = timelineBlocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
   /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
   const badgeBefore = (seq: number) => {
@@ -451,21 +434,14 @@ export function FocusView({
    * 回执只说明「已接收」；真正让气泡消失的是 journal 里出现同一个 clientMessageId。
    */
   async function sendMessage(text: string, attachments: readonly AttachmentInputDto[]): Promise<boolean> {
-    const id = newClientMessageId();
-    const sentAt = Date.now();
-    setPendingPrompts((previous) => [...previous, { id, text, attachments: [...attachments], state: 'sending', sentAt }]);
     setBusy(true);
     setError(null);
     try {
-      const ack = await api.prompt(session.id, text, attachments, id);
-      setPendingPrompts((previous) =>
-        previous.map((pending) => (pending.id === id ? { ...pending, state: ack.state, seq: ack.seq } : pending))
-      );
+      await delivery.deliver(text, attachments);
       onDraftChange('');
       onChanged();
       return true;
     } catch (failure) {
-      setPendingPrompts((previous) => previous.filter((pending) => pending.id !== id));
       setError((failure as Error).message);
       return false;
     } finally {
@@ -475,25 +451,13 @@ export function FocusView({
 
   /** 未送达：用同一个 clientMessageId 重发，服务端幂等，重发不会变成两条。 */
   async function retryPending(pending: PendingPrompt): Promise<void> {
-    setPendingPrompts((previous) =>
-      previous.map((item) => (item.id === pending.id ? { ...item, state: 'sending', sentAt: Date.now() } : item))
-    );
     setError(null);
     try {
-      const ack = await api.prompt(session.id, pending.text, pending.attachments, pending.id);
-      setPendingPrompts((previous) =>
-        previous.map((item) => (item.id === pending.id ? { ...item, state: ack.state, seq: ack.seq } : item))
-      );
+      await delivery.retry(pending);
       onChanged();
     } catch (failure) {
-      setPendingPrompts((previous) => previous.filter((item) => item.id !== pending.id));
       setError((failure as Error).message);
     }
-  }
-
-  /** 放弃只撤掉本地气泡：服务端如果其实收到了，它已经在对话里了。 */
-  function discardPending(id: string): void {
-    setPendingPrompts((previous) => previous.filter((item) => item.id !== id));
   }
 
   return (
@@ -909,75 +873,38 @@ export function FocusView({
               {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
             </div>
           ) : null}
-          {pendingPrompts.length > 0 ? (
-            <section
-              aria-label="还没写进对话的消息"
-              aria-live="polite"
-              data-testid="pending-prompts"
-              className="mb-2 border-t border-dashed border-hair pt-2"
-            >
-              <div className="flex flex-col gap-2">
-                {pendingPrompts.map((pending, index) => (
-                  <div key={pending.id} className="flex flex-col gap-1">
-                    <ChatBlock
-                      block={{ kind: 'prompt', text: pending.text, attachments: [], seq: -1 - index }}
-                      agentLabel={agentLabel}
-                      sessionId={session.id}
-                      settings={settings}
-                      last={false}
-                      running={false}
-                      showAuthor={showAuthor}
-                    />
-                    {pending.state === 'unknown' ? (
-                      <div
-                        className="flex flex-wrap items-center gap-1 text-meta text-tertiary"
-                        data-testid="pending-unknown"
-                      >
-                        <span className="mr-1 text-rust">未送达</span>
-                        <button
-                          type="button"
-                          data-testid="pending-retry"
-                          onClick={() => void retryPending(pending)}
-                          className="inline-flex min-h-8 items-center rounded-sm border border-hair px-2.5 text-meta text-secondary hover:border-strong hover:text-primary active:bg-card"
-                        >
-                          重试
-                        </button>
-                        <button
-                          type="button"
-                          data-testid="pending-discard"
-                          onClick={() => discardPending(pending.id)}
-                          className="inline-flex min-h-8 items-center rounded-sm px-2.5 text-meta text-tertiary hover:text-primary active:bg-card"
-                        >
-                          放弃
-                        </button>
-                      </div>
-                    ) : (
-                      <p className="text-meta text-tertiary">{pendingLabel(pending.state)}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
+          <PendingPrompts
+            pending={delivery.pending}
+            onRetry={(pending) => void retryPending(pending)}
+            onDiscard={delivery.discard}
+            renderPrompt={(pending, _index, seq) => (
+              <ChatBlock
+                block={{ kind: 'prompt', text: pending.text, attachments: [], seq }}
+                agentLabel={agentLabel}
+                sessionId={session.id}
+                settings={settings}
+                last={false}
+                running={false}
+                showAuthor={showAuthor}
+              />
+            )}
+          />
           {queuedBlocks.length > 0 ? (
             <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
-              <section aria-label="排队中的消息" aria-live="polite" data-testid="queued-prompts" className="mb-2 max-h-[40vh] overflow-y-auto border-t border-dashed border-hair pt-2">
-                <p className="mb-1 text-meta text-tertiary">待发送 · 当前回复结束后自动发出</p>
-                <div className="flex flex-col gap-2">
-                  {queuedBlocks.map((block) => (
-                    <ChatBlock
-                      key={`queued-${block.seq}`}
-                      block={block}
-                      agentLabel={agentLabel}
-                      sessionId={session.id}
-                      settings={settings}
-                      last={false}
-                      running={turnRunning}
-                      showAuthor={showAuthor}
-                    />
-                  ))}
-                </div>
-              </section>
+              <QueuedPrompts
+                blocks={queuedBlocks}
+                renderPrompt={(block) => (
+                  <ChatBlock
+                    block={block}
+                    agentLabel={agentLabel}
+                    sessionId={session.id}
+                    settings={settings}
+                    last={false}
+                    running={turnRunning}
+                    showAuthor={showAuthor}
+                  />
+                )}
+              />
             </DeliveryContext.Provider>
           ) : null}
           {envNotice ? (

@@ -2,13 +2,24 @@ import { AuthorTag } from '../../atoms/author.tsx';
 import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import type { SessionDto, TaskDto, WorkerInfoDto } from '../../shell/api.ts';
+import type { AttachmentInputDto, PromptAckDto, SessionDto, TaskDto, WorkerInfoDto } from '../../shell/api.ts';
 import { WorkerChip } from '../../shell/workers.tsx';
 import { ResourceBadge, SessionUsage } from '../../shell/resources.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { StatusPill } from '../../atoms/status.tsx';
 import { OptionControls } from '../../atoms/options.tsx';
-import { cardBlocks, multipleAuthors, waitingForReply, subagentStepCount, type LiveSession } from '../../atoms/live.ts';
+import {
+  cardBlocks,
+  multipleAuthors,
+  waitingForReply,
+  subagentStepCount,
+  type Block,
+  type LiveSession
+} from '../../atoms/live.ts';
+import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
+import { heldPromptSeqs, splitTimeline } from '../../atoms/prompt-delivery.ts';
+import { PendingPrompts, QueuedPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
+import { useDeliveries } from '../../atoms/delivery-note.tsx';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
@@ -53,7 +64,12 @@ export type SessionNode = Node<
     /** 卡片上就地说话：不必先打开专注对话。 */
     draft: string;
     onDraftChange: (text: string) => void;
-    onSend: (text: string) => Promise<void>;
+    /** 回执是 202（可能只是排队）；带 clientMessageId 才能和 journal 里的那条对上。 */
+    onSend: (
+      text: string,
+      clientMessageId: string,
+      attachments?: readonly AttachmentInputDto[]
+    ) => Promise<PromptAckDto>;
     onInterrupt: () => Promise<void>;
     onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
   } & Resizable,
@@ -164,6 +180,21 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
   );
 }
 
+/** 卡片上的单行气泡：一条消息只占一行，长了省略；完整内容在打开的对话里看。 */
+function CardPromptBubble({ text, count = 0, testId }: { text: string; count?: number; testId: string }) {
+  const label = text !== '' ? text : count > 0 ? `${count} 个附件` : '（空消息）';
+  return (
+    <div className="flex justify-end" data-testid={testId}>
+      <p
+        title={text !== '' ? text : undefined}
+        className="max-w-[85%] truncate rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary"
+      >
+        {label}
+      </p>
+    </div>
+  );
+}
+
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const { session, live, agentLabel, worker, resources, place, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
     data;
@@ -190,6 +221,38 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const dimmed = status === 'stopped';
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // 发出去的反馈和专注对话是同一份实现：乐观气泡、8 秒未送达重试/放弃、和 journal 回显对账。
+  const deliveriesBySeq = useDeliveries(session.id, live?.lastSeq ?? session.lastSeq);
+  const delivery = usePromptDelivery({
+    sessionId: session.id,
+    blocks,
+    send: (text, attachments, clientMessageId) => onSend(text, clientMessageId, attachments)
+  });
+  // 排队中的用户消息不留在日志里，贴着 composer 显示，否则会被后续输出顶到上面看不见。
+  const { timeline, queued } = splitTimeline(blocks, heldPromptSeqs(deliveriesBySeq));
+  const queuedBlocks = queued.filter((block): block is Extract<Block, { kind: 'prompt' }> => block.kind === 'prompt');
+
+  async function send(text: string): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await delivery.deliver(text);
+    } catch (failure) {
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function retry(pending: PendingPrompt): Promise<void> {
+    setError(null);
+    try {
+      await delivery.retry(pending);
+    } catch (failure) {
+      setError((failure as Error).message);
+    }
+  }
 
   return (
     <div
@@ -323,7 +386,9 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         ref={scroller}
         // nowheel/nopan/nodrag：滚轮、触摸滑动滚的是这段对话，不是拖动或缩放画布。
         data-testid="session-card-log"
-        className={`nowheel nopan nodrag min-h-0 flex-1 cursor-auto select-text touch-pan-y space-y-1.5 overflow-y-auto overscroll-contain pr-1 ${size ? '' : 'max-h-[320px]'}`}>
+        className={`nowheel nopan nodrag min-h-0 flex-1 cursor-auto select-text touch-pan-y space-y-1.5 overflow-y-auto overscroll-contain pr-1 ${
+          size ? '' : 'max-h-[320px] min-h-[120px]'
+        }`}>
         {failureReason ? (
           <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
         ) : null}
@@ -336,16 +401,39 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
               : '尚无输出'}
           </p>
         ) : (
-          cardBlocks(blocks).map((block, index) => <BlockView key={index} block={block} showAuthor={showAuthor} />)
+          cardBlocks(timeline).map((block, index) => <BlockView key={index} block={block} showAuthor={showAuthor} />)
         )}
+        {/* 排队区贴在滚动区底部：滚上去了也还看得见刚发的那条在等什么。 */}
+        {queuedBlocks.length > 0 ? (
+          <div className="sticky bottom-0 -mx-0.5 bg-card">
+            <QueuedPrompts
+              blocks={queuedBlocks}
+              compact
+              testIdPrefix="card-"
+              renderPrompt={(block) => <CardPromptBubble text={block.text} testId="card-msg-queued" />}
+            />
+          </div>
+        ) : null}
       </div>
+
+      {/* 还没写进对话的消息：就贴在 composer 上方，发完立刻看得到「已收到 · 排队中」还是「未送达」。 */}
+      <PendingPrompts
+        pending={delivery.pending}
+        onRetry={(pending) => void retry(pending)}
+        onDiscard={delivery.discard}
+        compact
+        testIdPrefix="card-"
+        renderPrompt={(pending) => (
+          <CardPromptBubble text={pending.text} count={pending.attachments.length} testId="card-msg-pending" />
+        )}
+      />
 
       <CardComposer
         session={{ ...session, status }}
         awaiting={waitingForReply(live, status)}
         draft={draft}
         onDraftChange={onDraftChange}
-        onSend={(text) => void run(() => onSend(text))}
+        onSend={send}
         onInterrupt={() => void run(onInterrupt)}
         busy={busy}
         error={error}

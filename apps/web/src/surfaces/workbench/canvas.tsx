@@ -10,7 +10,7 @@ import {
   type NodeTypes,
   type ReactFlowInstance
 } from '@xyflow/react';
-import type { CanvasDto, SaveLayoutRequest, TaskDto } from '../../shell/api.ts';
+import type { AttachmentInputDto, CanvasDto, PromptAckDto, SaveLayoutRequest, TaskDto } from '../../shell/api.ts';
 import { resolveLive, type LiveMap } from '../../atoms/live.ts';
 import { SessionCard, TaskCard, WorkerFrame, type FrameNode, type SessionNode, type TaskNode } from './nodes.tsx';
 type AnyNode = TaskNode | SessionNode | FrameNode;
@@ -40,7 +40,12 @@ interface Props {
   /** 卡片上的输入行：草稿存在 App 层，切视图不丢（S6.4）。 */
   readonly drafts: Readonly<Record<string, string>>;
   readonly onDraftChange: (sessionId: string, text: string) => void;
-  readonly onSend: (sessionId: string, text: string) => Promise<void>;
+  readonly onSend: (
+    sessionId: string,
+    text: string,
+    clientMessageId: string,
+    attachments?: readonly AttachmentInputDto[]
+  ) => Promise<PromptAckDto>;
   readonly onInterrupt: (sessionId: string) => Promise<void>;
   /** 改 agent 的可调项（模型、思考强度…）：清单由 agent 报，我们只转发。 */
   readonly onChangeOption: (sessionId: string, optionId: string, value: string | boolean) => Promise<void>;
@@ -397,7 +402,8 @@ export function CanvasView({
         expanded: expanded(session.id),
         draft: drafts[session.id] ?? '',
         onDraftChange: (text: string) => onDraftChange(session.id, text),
-        onSend: (text: string) => onSend(session.id, text),
+        onSend: (text: string, clientMessageId: string, attachments?: readonly AttachmentInputDto[]) =>
+          onSend(session.id, text, clientMessageId, attachments),
         onInterrupt: () => onInterrupt(session.id),
         onChangeOption: (optionId: string, value: string | boolean) => onChangeOption(session.id, optionId, value)
       }
