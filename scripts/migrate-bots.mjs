@@ -16,7 +16,8 @@
  *   node scripts/migrate-bots.mjs --data-dir /root/ahub-server/data --revert
  *
  * 安全约定（与部署脚本一致：库不自动恢复，迁移必须能退）：
- *   - 默认要求 `<data-dir>/backups` 里 10 分钟内有快照，否则拒绝执行；`--no-backup-check` 可跳过（仅供本地测试）。
+ *   - 默认要求 `<data-dir>/backups` 里 10 分钟内有快照（部署脚本的快照默认在别处，可用 `--backup-dir` 指过去），
+ *     否则拒绝执行；`--no-backup-check` 可跳过（仅供本地测试）。
  *   - `--dry-run` 只打印将要做的改动，不写库。
  *   - `--revert` 反向执行 2/3/4（删 bots 行、bot: → role:、settings 键改回）；不删表。
  */
@@ -53,6 +54,7 @@ const dataDir = valueOf('--data-dir') ?? process.env.HUB_DATA_DIR ?? join(homedi
 const dryRun = has('--dry-run');
 const revert = has('--revert');
 const skipBackupCheck = has('--no-backup-check');
+const backupDirArg = valueOf('--backup-dir');
 const dbPath = join(dataDir, 'hub.db');
 
 const log = (...parts) => console.log('[migrate-bots]', ...parts);
@@ -62,7 +64,7 @@ async function assertFreshBackup() {
     log('⚠ 跳过备份检查（--no-backup-check）');
     return;
   }
-  const dir = join(dataDir, 'backups');
+  const dir = backupDirArg ?? join(dataDir, 'backups');
   let newest = 0;
   try {
     for (const name of await readdir(dir)) {
@@ -75,7 +77,7 @@ async function assertFreshBackup() {
   }
   if (Date.now() - newest > BACKUP_WINDOW_MS) {
     console.error(
-      `[migrate-bots] 拒绝执行：${dir} 里没有 10 分钟内的快照。先跑 \`HUB_DATA_DIR=${dataDir} node apps/server/src/main.ts backup\`。`
+      `[migrate-bots] 拒绝执行：${dir} 里没有 10 分钟内的快照。先跑 \`HUB_DATA_DIR=${dataDir} node apps/server/src/main.ts backup\`，或用 --backup-dir 指向快照目录。`
     );
     process.exit(1);
   }
