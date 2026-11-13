@@ -10,6 +10,7 @@ import { ProjectContext } from './project-context.tsx';
 import { ProjectDistill } from './project-distill.tsx';
 import { LinkWorkspaces } from './link-workspaces.tsx';
 import { WorkspaceCleanup } from './workspace-cleanup.tsx';
+import { workspaceKeys } from '../../shell/query-keys.ts';
 
 type Pending = { workspace: WorkspaceDto; mode: 'unlink' | 'unregister' | 'delete' | 'force' };
 
@@ -161,7 +162,7 @@ function WorkspaceRow({ view, onAct }: { view: WorkspaceViewDto; onAct: (mode: P
 function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; projectId: string; onDone: () => void }) {
   const queryClient = useQueryClient();
   const { workspace, mode } = pending;
-  const changes = useQuery({ queryKey: ['workspace-changes', workspace.id], queryFn: () => api.workspaceChanges(workspace.id), enabled: mode !== 'unregister' && mode !== 'unlink' && workspace.isGit === true });
+  const changes = useQuery({ queryKey: workspaceKeys.changes(workspace.id), queryFn: () => api.workspaceChanges(workspace.id), enabled: mode !== 'unregister' && mode !== 'unlink' && workspace.isGit === true });
   const remove = useMutation({
     mutationFn: () => mode === 'unlink' ? api.unlinkWorkspace(projectId, workspace.id) : api.removeWorkspace(workspace.id, { deleteDirectory: mode !== 'unregister', force: mode === 'force' || (mode === 'delete' && workspace.kind === 'long_lived') }),
     onSuccess: async () => {

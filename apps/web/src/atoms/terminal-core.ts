@@ -297,9 +297,9 @@ export function isUnsupportedTerminal(message: string | undefined): boolean {
 const unsupported = new Set<string>();
 const listeners = new Set<() => void>();
 
-/** 一台机器可能被多条会话共用；键同时给 worker 和 session，任一命中就算不可用。 */
-export function terminalSupportKeys(sessionId: string, workerId: string | null): readonly string[] {
-  return [workerId ? `worker:${workerId}` : 'worker:local', `session:${sessionId}`];
+/** 终端支持是「一台机器」的属性：同机多条会话共用一条缓存，任一探测到不支持就整体隐藏。 */
+export function terminalSupportKeys(workerId: string | null): readonly string[] {
+  return [workerId ? `worker:${workerId}` : 'worker:local'];
 }
 
 export function markTerminalUnsupported(keys: readonly string[]): void {

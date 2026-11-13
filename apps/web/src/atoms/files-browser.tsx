@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
 import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
+import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
 import 'diff2html/bundles/css/diff2html.min.css';
 
 /**
@@ -17,7 +18,6 @@ type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number |
 export type Reveal = { path: string; line: number | null; nonce: number };
 
 const fresh = FILES_QUERY;
-const sk = (sessionId: string) => ['files', sessionId] as const;
 
 function problem(error: unknown): string {
   if (error instanceof RequestFailed) return filesErrorText(error.status, error.detail.message);
@@ -38,11 +38,19 @@ function useWide(): boolean {
 
 export type FilesTab = 'files' | 'changes';
 
-type Props = { sessionId: string; status: string; tab: FilesTab; reveal?: Reveal | null; base?: { base: string; nonce: number } | null };
+type Props = {
+  sessionId: string;
+  workspaceId: string | null;
+  status: string;
+  tab: FilesTab;
+  reveal?: Reveal | null;
+  base?: { base: string; nonce: number } | null;
+};
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, status, tab, reveal = null, base: wanted = null }: Props) {
+export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = null, base: wanted = null }: Props) {
   const client = useQueryClient();
+  const keys = filesKeys(workspaceId, sessionId);
   const wide = useWide();
   const [base, setBase] = useState<Base>(wanted?.base ?? 'session');
   // 从聊天里「改了 N 个文件」点进来：切到那一轮
@@ -64,18 +72,22 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
 
-  const changes = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'changes', base], queryFn: () => filesApi.changes(sessionId, base) });
-  const turns = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'turns'], queryFn: () => filesApi.turns(sessionId) });
-  const context = useQuery({ queryKey: [...sk(sessionId), 'context'], queryFn: () => filesApi.context(sessionId), staleTime: 15_000 });
+  const changes = useQuery({ ...fresh, queryKey: keys.changes(base), queryFn: () => filesApi.changes(sessionId, base) });
+  const turns = useQuery({ ...fresh, queryKey: keys.turns(), queryFn: () => filesApi.turns(sessionId) });
+  const context = useQuery({ queryKey: keys.context(), queryFn: () => filesApi.context(sessionId), staleTime: 15_000 });
   const others = context.data?.otherProjectSessions ?? 0;
-  const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: [...sk(sessionId), 'find', query], queryFn: () => filesApi.find(sessionId, query.trim()) });
+  const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: keys.find(query.trim()), queryFn: () => filesApi.find(sessionId, query.trim()) });
 
   // 回合结束（状态变了）就刷新一遍：agent 刚改过文件
   const lastStatus = useRef(status);
   useEffect(() => {
-    if (lastStatus.current !== status) void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
+    if (lastStatus.current === status) return;
+    const keysNow = filesKeys(workspaceId, sessionId);
+    for (const prefix of filesInvalidationKeys(keysNow)) {
+      void client.invalidateQueries({ queryKey: prefix }, { cancelRefetch: false });
+    }
     lastStatus.current = status;
-  }, [status, sessionId, client]);
+  }, [status, sessionId, workspaceId, client]);
 
   // 盯展开的目录和打开的文件（SSE）；断线重连后整体刷新一次（重订由 EventSource 重连完成）
   const paths = useMemo(() => watchPaths(expanded, opened?.path ?? null), [expanded, opened?.path]);
@@ -83,6 +95,16 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
   const subscribed = useRef(false);
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
+    // 事件源仍按会话订阅（服务端只知道会话的 cwd），但失效前缀必须跟查询 key 的归属一致：
+    // 目录维度的缓存按工作空间存，只失效 sessionId 前缀会让实时更新悄悄失效。
+    const keys = filesKeys(workspaceId, sessionId);
+    const dir = keys.dir[1];
+    const inScope = (key: readonly unknown[]) => key[0] === 'files' && (key[1] === dir || key[1] === sessionId);
+    const invalidateAll = (options?: { cancelRefetch: boolean }) => {
+      for (const prefix of filesInvalidationKeys(keys)) {
+        void client.invalidateQueries({ queryKey: prefix }, options);
+      }
+    };
     let first = true;
     let source: EventSource | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -91,22 +113,22 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
       if (disposed) return;
       source = new EventSource(filesApi.eventsUrl(sessionId, paths));
       source.addEventListener('ready', () => {
-        if (!first) void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
+        if (!first) invalidateAll({ cancelRefetch: false });
         // 换订阅（展开/返回）时旧连接已断、新连接未就绪，中间的改动会漏：补拉一次被盯的目录。
         // 返回时列表往往已经在读旧目录，不取消的话这次补拉会被丢掉。
-        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return k[0] === 'files' && k[1] === sessionId && k[2] === 'list' && paths.includes(String(k[3])); } }, filesRefetch('list'));
+        else if (subscribed.current) void client.invalidateQueries({ predicate: (q) => { const k = q.queryKey as unknown[]; return inScope(k) && k[2] === 'list' && paths.includes(String(k[3])); } }, filesRefetch('list'));
         first = false;
         subscribed.current = true;
       });
       source.addEventListener('changed', (message) => {
         const notice = JSON.parse((message as MessageEvent<string>).data) as { paths: string[]; reset?: boolean };
         if (notice.reset) {
-          void client.invalidateQueries({ queryKey: sk(sessionId) }, { cancelRefetch: false });
+          invalidateAll({ cancelRefetch: false });
           return;
         }
         const touched = (q: { queryKey: readonly unknown[] }, kinds: readonly string[]) => {
           const key = q.queryKey;
-          if (key[0] !== 'files' || key[1] !== sessionId || !kinds.includes(String(key[2]))) return false;
+          if (!inScope(key) || !kinds.includes(String(key[2]))) return false;
           if (key[2] === 'list') return touches(String(key[3]), notice.paths);
           if (key[2] === 'read' || key[2] === 'diff') return notice.paths.includes(String(key[3]));
           return key[2] === 'changes';
@@ -127,7 +149,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
       source?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, pathsKey, client]);
+  }, [sessionId, workspaceId, pathsKey, client]);
 
   const open = (entry: { path: string; sensitive?: boolean }, diff = false) => {
     if (entry.sensitive && !window.confirm(`「${entry.path}」可能含密钥或凭据。确定要打开吗？（会记入审计）`)) return;
@@ -171,7 +193,7 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
                       <button key={p} className="block w-full truncate px-3 py-1.5 text-left font-mono text-sub text-secondary hover:bg-card" onClick={() => open({ path: p, sensitive: /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(p) })}>{p}</button>
                     ))
                   ) : (
-                    <Directory sessionId={sessionId} path="" depth={0} expanded={expanded} toggle={toggle} open={open} showSensitive={showSensitive} selected={opened?.path ?? null} />
+                    <Directory sessionId={sessionId} keys={keys} path="" depth={0} expanded={expanded} toggle={toggle} open={open} showSensitive={showSensitive} selected={opened?.path ?? null} />
                   )}
                 </div>
               </>
@@ -209,8 +231,8 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
         {wide || opened ? (
           <main className="min-w-0 flex-1 overflow-auto">
             {opened ? (
-              opened.diff ? <DiffView sessionId={sessionId} path={opened.path} base={base} wide={wide} root={root} onBack={() => setOpened(null)} /> :
-              <FileView sessionId={sessionId} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
+              opened.diff ? <DiffView sessionId={sessionId} keys={keys} path={opened.path} base={base} wide={wide} root={root} onBack={() => setOpened(null)} /> :
+              <FileView sessionId={sessionId} keys={keys} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
             ) : (
               <p className="p-6 text-sub text-tertiary">选一个文件查看</p>
             )}
@@ -221,9 +243,9 @@ export function FilesBrowser({ sessionId, status, tab, reveal = null, base: want
   );
 }
 
-function Directory(props: { sessionId: string; path: string; depth: number; expanded: Set<string>; toggle: (p: string) => void; open: (e: FileEntryDto) => void; showSensitive: boolean; selected: string | null }) {
-  const { sessionId, path, depth } = props;
-  const page = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'list', path], queryFn: () => filesApi.list(sessionId, path) });
+function Directory(props: { sessionId: string; keys: FilesKeys; path: string; depth: number; expanded: Set<string>; toggle: (p: string) => void; open: (e: FileEntryDto) => void; showSensitive: boolean; selected: string | null }) {
+  const { sessionId, keys, path, depth } = props;
+  const page = useQuery({ ...fresh, queryKey: keys.list(path), queryFn: () => filesApi.list(sessionId, path) });
   if (page.isPending) return <p className="py-1 text-meta text-tertiary" style={{ paddingLeft: 12 + depth * 14 }}>…</p>;
   if (page.error) return <p className="py-1 text-meta text-rust" style={{ paddingLeft: 12 + depth * 14 }} data-testid="files-error">{problem(page.error)}</p>;
   const entries = page.data.entries.filter((e) => props.showSensitive || !e.sensitive);
@@ -311,8 +333,8 @@ function PathBar({ path, root, wide, download, size, onCrumb, onBack }: {
   );
 }
 
-function FileView({ sessionId, opened, wide, root, onBack, onCrumb }: { sessionId: string; opened: Opened; wide: boolean; root: string | undefined; onBack: () => void; onCrumb: (p: string) => void }) {
-  const file = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'read', opened.path, opened.confirmed], queryFn: () => filesApi.read(sessionId, opened.path, opened.confirmed) });
+function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { sessionId: string; keys: FilesKeys; opened: Opened; wide: boolean; root: string | undefined; onBack: () => void; onCrumb: (p: string) => void }) {
+  const file = useQuery({ ...fresh, queryKey: keys.read(opened.path, opened.confirmed), queryFn: () => filesApi.read(sessionId, opened.path, opened.confirmed) });
   const data = shown(file);
   const text = useMemo(() => (data && !data.binary ? decodeText(data.data) : null), [data]);
   const [html, setHtml] = useState<string | null>(null);
@@ -353,8 +375,8 @@ function FileView({ sessionId, opened, wide, root, onBack, onCrumb }: { sessionI
   );
 }
 
-function DiffView({ sessionId, path, base, wide, root, onBack }: { sessionId: string; path: string; base: Base; wide: boolean; root: string | undefined; onBack: () => void }) {
-  const diff = useQuery({ ...fresh, queryKey: [...sk(sessionId), 'diff', path, base], queryFn: () => filesApi.diff(sessionId, path, base) });
+function DiffView({ sessionId, keys, path, base, wide, root, onBack }: { sessionId: string; keys: FilesKeys; path: string; base: Base; wide: boolean; root: string | undefined; onBack: () => void }) {
+  const diff = useQuery({ ...fresh, queryKey: keys.diff(path, base), queryFn: () => filesApi.diff(sessionId, path, base) });
   const data = shown(diff);
   const [html, setHtml] = useState<string | null>(null);
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { gitApi, type GitRunDto, type PullRequestDto } from '../../shell/api.ts';
+import { filesInvalidationKeys, filesKeys, gitKeys, taskKeys, workspaceKeys } from '../../shell/query-keys.ts';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 
 /**
@@ -9,9 +10,16 @@ import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shel
  */
 const STATUS: Record<string, string> = { untracked: '新', added: '新', modified: '改', deleted: '删', renamed: '名' };
 
-export function GitDialog({ sessionId, onClose }: { sessionId: string; onClose: () => void }) {
+export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClose }: {
+  sessionId: string;
+  /** 目录维度：git 状态按工作空间缓存，同目录的会话共享（见 query-keys.ts）。 */
+  workspaceId?: string | null;
+  /** 提交 / 推送后刷新这个任务的 PR 列表；不知道就退化为旧的全前缀。 */
+  taskId?: string | null;
+  onClose: () => void;
+}) {
   const queries = useQueryClient();
-  const state = useQuery({ queryKey: ['git', sessionId, 'state'], queryFn: () => gitApi.state(sessionId) });
+  const state = useQuery({ queryKey: gitKeys.state(workspaceId, sessionId), queryFn: () => gitApi.state(sessionId) });
   const [message, setMessage] = useState('');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -44,9 +52,13 @@ export function GitDialog({ sessionId, onClose }: { sessionId: string; onClose: 
     try {
       const out = await gitApi.run(sessionId, { action, message, ...(action === 'pr' ? { title, body } : {}) });
       setResult(out);
-      void queries.invalidateQueries({ queryKey: ['git', sessionId] });
-      void queries.invalidateQueries({ queryKey: ['files', sessionId] });
-      void queries.invalidateQueries({ queryKey: ['task-prs'] });
+      // git 真相按目录归一：状态、文件页、工作空间改动都失效，三处显示同一份结果。
+      void queries.invalidateQueries({ queryKey: gitKeys.all(workspaceId, sessionId) });
+      for (const prefix of filesInvalidationKeys(filesKeys(workspaceId, sessionId))) {
+        void queries.invalidateQueries({ queryKey: prefix });
+      }
+      if (workspaceId) void queries.invalidateQueries({ queryKey: workspaceKeys.changes(workspaceId) });
+      void queries.invalidateQueries({ queryKey: taskId ? taskKeys.pullRequests(taskId) : ['task-prs'] });
     } catch (failure) {
       setError((failure as Error).message);
     } finally {

@@ -1,14 +1,17 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { rewindApi } from '../shell/api.ts';
+import { filesInvalidationKeys, filesKeys } from '../shell/query-keys.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../shell/dialog-shell.tsx';
 
 /**
  * 「⋯ → 从这里重来」（ADR 0027 阶段 4）：从这条消息之前分叉一条新会话（原会话不动），原消息回填到新会话输入框。
  * 连文件一起回滚只给临时工作空间（D9）；不能时把原因摆出来，而不是藏掉选项。
  */
-export function RewindDialog({ sessionId, promptSeq, onClose, onDone }: {
+export function RewindDialog({ sessionId, workspaceId = null, promptSeq, onClose, onDone }: {
   sessionId: string;
+  /** 目录维度：文件数据按工作空间缓存，回滚后同目录的会话都要刷新。 */
+  workspaceId?: string | null;
   promptSeq: number;
   onClose: () => void;
   onDone: (sessionId: string, prompt: string) => void;
@@ -25,7 +28,9 @@ export function RewindDialog({ sessionId, promptSeq, onClose, onDone }: {
     setError(null);
     try {
       const out = await rewindApi.rewind(sessionId, promptSeq, files);
-      void queries.invalidateQueries({ queryKey: ['files', sessionId] });
+      for (const prefix of filesInvalidationKeys(filesKeys(workspaceId, sessionId))) {
+        void queries.invalidateQueries({ queryKey: prefix });
+      }
       onDone(out.session.id, out.prompt);
     } catch (failure) {
       setError((failure as Error).message);

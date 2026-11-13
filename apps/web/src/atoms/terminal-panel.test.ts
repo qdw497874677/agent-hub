@@ -161,10 +161,10 @@ test('isUnsupportedTerminal：英文错误码与中文说法都认', () => {
 
 test('支持探测缓存：记住后通知订阅方，刷新/复位能清掉', () => {
   resetTerminalSupport();
-  const keys = terminalSupportKeys('ses-1', 'remote-7ecd');
-  assert.deepEqual(keys, ['worker:remote-7ecd', 'session:ses-1']);
+  const keys = terminalSupportKeys('remote-7ecd');
+  assert.deepEqual(keys, ['worker:remote-7ecd']);
   // 老会话没有 workerId：算到本机那台
-  assert.deepEqual(terminalSupportKeys('ses-2', null), ['worker:local', 'session:ses-2']);
+  assert.deepEqual(terminalSupportKeys(null), ['worker:local']);
 
   let notified = 0;
   const unsubscribe = subscribeTerminalSupport(() => {
@@ -172,9 +172,9 @@ test('支持探测缓存：记住后通知订阅方，刷新/复位能清掉', (
   });
   assert.equal(terminalUnsupported(keys), false);
   markTerminalUnsupported(keys);
+  // 同机另一条会话（只要 worker 相同）也一起隐藏
   assert.equal(terminalUnsupported(['worker:remote-7ecd']), true);
-  assert.equal(terminalUnsupported(['session:ses-1']), true);
-  assert.equal(terminalUnsupported(['session:other']), false);
+  assert.equal(terminalUnsupported(['worker:other']), false);
   assert.equal(notified, 1);
   // 重复标记不再通知
   markTerminalUnsupported(keys);

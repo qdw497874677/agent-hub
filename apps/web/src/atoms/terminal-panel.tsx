@@ -185,7 +185,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
       stopped = true;
       dispatch({ type: 'error', message });
       if (isUnsupportedTerminal(message)) {
-        markTerminalUnsupported(terminalSupportKeys(sessionId, workerIdRef.current));
+        markTerminalUnsupported(terminalSupportKeys(workerIdRef.current));
       }
       try {
         socket?.close();

@@ -16,6 +16,7 @@ import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
 import { sessionCommands } from '../../atoms/commands.ts';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
+import { filesInvalidationKeys, filesKeys, gitKeys, taskKeys } from '../../shell/query-keys.ts';
 import { filesApi } from '../../shell/api.ts';
 import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
@@ -151,11 +152,19 @@ export function FocusView({
     }
   }), [workspaceRoot]);
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
+  // 目录派生的文件 / git 状态按工作空间归一：同目录的多条会话共享缓存（见 query-keys.ts）。
+  const fileKeys = filesKeys(session.workspaceId, session.id);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
   useEffect(() => {
-    if (tab !== 'chat') void queries.invalidateQueries({ queryKey: ['files', session.id] });
-  }, [tab, session.id, queries]);
-  const refreshing = useIsFetching({ queryKey: ['files', session.id] }) > 0;
+    if (tab === 'chat') return;
+    const keys = filesKeys(session.workspaceId, session.id);
+    for (const prefix of filesInvalidationKeys(keys)) {
+      void queries.invalidateQueries({ queryKey: prefix });
+    }
+  }, [tab, session.id, session.workspaceId, queries]);
+  const refreshing = useIsFetching({
+    predicate: (q) => q.queryKey[0] === 'files' && (q.queryKey[1] === fileKeys.dir[1] || q.queryKey[1] === session.id)
+  }) > 0;
   const [settings, changeSettings] = useDisplaySettings();
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const agent = canvas.agents.find((candidate) => candidate.id === session.agentId);
@@ -183,8 +192,8 @@ export function FocusView({
   const workers = useWorkers();
   const worker = resolveWorker(workers.list, session.workerId);
   const supportKeys = useMemo(
-    () => terminalSupportKeys(session.id, session.workerId),
-    [session.id, session.workerId]
+    () => terminalSupportKeys(session.workerId),
+    [session.workerId]
   );
   // 机器列表还没拿到时先当在线：页签不该在首屏闪一下才出现。
   const workerOnline = workers.list.length === 0 || worker?.state === 'online';
@@ -310,19 +319,22 @@ export function FocusView({
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
   useEffect(() => {
-    void queries.invalidateQueries({ queryKey: ['files', session.id, 'changes'] }, { cancelRefetch: false });
-    void queries.invalidateQueries({ queryKey: ['git', session.id, 'state'] }, { cancelRefetch: false });
-  }, [status, session.id, queries]);
+    const keys = filesKeys(session.workspaceId, session.id);
+    for (const prefix of filesInvalidationKeys(keys)) {
+      void queries.invalidateQueries({ queryKey: [...prefix, 'changes'] }, { cancelRefetch: false });
+    }
+    void queries.invalidateQueries({ queryKey: gitKeys.state(session.workspaceId, session.id) }, { cancelRefetch: false });
+  }, [status, session.id, session.workspaceId, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
   const changeCount = shown(useQuery({
     ...FILES_QUERY,
-    queryKey: ['files', session.id, 'changes', 'session'],
+    queryKey: fileKeys.changes('session'),
     queryFn: () => filesApi.changes(session.id, 'session')
   }))?.files.length;
   const workspace = canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
   // 和 OpenCode 一样把当前分支放在输入框旁边；分支可能被 agent 切换，所以回合结束后刷新。
   const gitState = shown(useQuery({
-    queryKey: ['git', session.id, 'state'],
+    queryKey: gitKeys.state(session.workspaceId, session.id),
     queryFn: () => gitApi.state(session.id),
     enabled: workspace !== undefined && workspace.isGit !== false,
     staleTime: 15_000,
@@ -333,7 +345,7 @@ export function FocusView({
   const [rewindAt, setRewindAt] = useState<number | null>(null);
   useEffect(() => setRewindAt(null), [session.id]);
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
-  const turns = shown(useQuery({ ...FILES_QUERY, queryKey: ['files', session.id, 'turns'], queryFn: () => filesApi.turns(session.id) })) ?? [];
+  const turns = shown(useQuery({ ...FILES_QUERY, queryKey: fileKeys.turns(), queryFn: () => filesApi.turns(session.id) })) ?? [];
   const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
   // 排队中的用户消息不留在时间线里：它们要一直贴在对话底部，不能因为 agent 继续输出而被顶到上面。
   const heldPromptSeqs = new Set(
@@ -357,7 +369,7 @@ export function FocusView({
     setTab('changes');
   };
   // 任务上的 PR（打开任务时服务端顺手同步状态）
-  const taskPrs = useQuery({ queryKey: ['task-prs', session.taskId], queryFn: () => gitApi.taskPullRequests(session.taskId), staleTime: 60_000, retry: false }).data ?? [];
+  const taskPrs = useQuery({ queryKey: taskKeys.pullRequests(session.taskId), queryFn: () => gitApi.taskPullRequests(session.taskId), staleTime: 60_000, retry: false }).data ?? [];
   const origin = session.origin;
   const forkSource = origin.kind === 'fork' ? canvas.sessions.find((candidate) => candidate.id === origin.fromSessionId) ?? null : null;
   const sourceName = forkSource ? sessionName(canvas, forkSource) : '来源会话';
@@ -597,9 +609,9 @@ export function FocusView({
       <ProvenanceRow sessionId={session.id} />
       <AttentionAutoAck sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
-      {gitOpen ? <GitDialog sessionId={session.id} onClose={() => setGitOpen(false)} /> : null}
+      {gitOpen ? <GitDialog sessionId={session.id} workspaceId={session.workspaceId} taskId={session.taskId} onClose={() => setGitOpen(false)} /> : null}
       {rewindAt !== null ? (
-        <RewindDialog sessionId={session.id} promptSeq={rewindAt} onClose={() => setRewindAt(null)}
+        <RewindDialog sessionId={session.id} workspaceId={session.workspaceId} promptSeq={rewindAt} onClose={() => setRewindAt(null)}
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
       ) : null}
       {/* 右侧 pr 是给绝对定位的刷新指示器留的固定位置：它永远占这么宽，指示器出现或消失都不会让页签重排 */}
@@ -647,7 +659,7 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} />
+            <FilesBrowser tab={t} sessionId={session.id} workspaceId={session.workspaceId} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} />
           </div>
         ) : null
       )}

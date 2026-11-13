@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { deliveryApi, type DeliveryDto } from '../shell/api.ts';
 
@@ -7,13 +7,24 @@ export const DeliveryContext = createContext<{ sessionId: string; bySeq: Readonl
 
 const PENDING = new Set(['queued', 'sending', 'undelivered']);
 
+/**
+ * 送达状态按会话缓存。eventCount 只当「又有事件了」的提醒，不进 key：
+ * 以前进 key 会让每个事件都多一份缓存，也会让别处 ['deliveries', sessionId] 的失效前缀对不上。
+ */
 export function useDeliveries(sessionId: string, eventCount: number) {
   const query = useQuery({
-    queryKey: ['deliveries', sessionId, eventCount],
+    queryKey: ['deliveries', sessionId],
     queryFn: () => deliveryApi.list(sessionId),
     retry: false,
+    staleTime: 0,
     refetchInterval: (q) => ((q.state.data ?? []).some((d) => PENDING.has(d.state)) ? 2_000 : false)
   });
+  const lastCount = useRef(eventCount);
+  useEffect(() => {
+    if (lastCount.current === eventCount) return;
+    lastCount.current = eventCount;
+    void query.refetch();
+  }, [eventCount, query.refetch]);
   const bySeq = new Map<number, DeliveryDto>();
   for (const d of query.data ?? []) bySeq.set(d.seq, d);
   return bySeq;

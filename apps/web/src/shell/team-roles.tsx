@@ -258,7 +258,11 @@ export function VisitPanel({ myTeamId }: { myTeamId: string | null }) {
   const [teamId, setTeamId] = useState('');
   const [reason, setReason] = useState('');
   const [duration, setDuration] = useState(DURATIONS[0]!.ms);
-  const refresh = () => queryClient.invalidateQueries();
+  // 进入 / 退出团队会影响 team 与 access 两类查询；不要无参刷新把整个缓存都打掉。
+  const refresh = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ['team'] }),
+    queryClient.invalidateQueries({ queryKey: ['access'] })
+  ]);
   const start = useMutation({ mutationFn: () => accessApi.startVisit(teamId, reason.trim(), duration), onSuccess: async () => { setReason(''); await refresh(); } });
   const end = useMutation({ mutationFn: (id: string) => accessApi.endVisit(id), onSuccess: refresh });
   const others = (teams.data ?? []).filter((team) => team.id !== myTeamId);
