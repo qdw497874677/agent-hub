@@ -315,6 +315,12 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/health', (c) => c.json({ ok: true }));
+  // 临时：真机拿不到控制台，让页面把布局实测值发回来（定位完就删）。
+  app.post('/api/client-diag', async (c) => {
+    const raw = (await c.req.text()).slice(0, 2000);
+    console.log('[client-diag]', raw.replace(/\n/g, ' '));
+    return c.json({ ok: true });
+  });
   options.providers?.install(app, subjectOf);
 
   app.get('/api/home', async (c) =>

@@ -68,7 +68,7 @@ export const CSRF_HEADER = 'x-hub-csrf';
 const LOGIN = 'hub_login';
 const CSRF = 'hub_csrf';
 // 不走登录态的入口。新机器兑换接入码不在 HTTP 上：走 /worker 长连接的 enroll 握手。
-const OPEN = ['/api/health', '/api/auth/'];
+const OPEN = ['/api/health', '/api/auth/', '/api/client-diag'];
 
 
 function isHttps(c: Context): boolean {
