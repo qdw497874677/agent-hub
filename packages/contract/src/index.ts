@@ -8,3 +8,4 @@ export * from './worker-methods.ts';
 export * from './stall.ts';
 export * from './api-tokens.ts';
 export * from './asset-market.ts';
+export * from './messaging.ts';
