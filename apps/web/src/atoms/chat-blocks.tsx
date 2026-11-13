@@ -4,10 +4,12 @@ import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { api, attachmentUrl } from '../shell/api.ts';
 import { useAccount } from '../shell/auth.tsx';
 import {
+  applyContrast,
   DEFAULT_DISPLAY,
   displayKey,
   parseDisplay,
   toolOpenByDefault,
+  type ContrastDisplay,
   type DisplaySettings,
   type ThinkingDisplay,
   type ToolDisplay
@@ -32,6 +34,13 @@ export function useDisplaySettings(): [DisplaySettings, (patch: Partial<DisplayS
   const key = displayKey(account?.id ?? null);
   const [settings, setSettings] = useState<DisplaySettings>(() => readDisplay(key));
   useEffect(() => setSettings(readDisplay(key)), [key]);
+  // 对比度手开关落在 <html data-contrast> 上：跟随系统时把属性删掉，
+  // 让 styles.css 的 @media (prefers-contrast: more) 继续生效。
+  useEffect(() => {
+    const root = document.documentElement;
+    if (applyContrast(settings) === 'more') root.dataset.contrast = 'more';
+    else delete root.dataset.contrast;
+  }, [settings]);
   return [
     settings,
     (patch) =>
@@ -147,18 +156,24 @@ export function MenuItem({
 
 function Segmented<T extends string>({
   label,
+  hint,
   value,
   options,
   onChange
 }: {
   label: string;
+  /** 一句话说明这组开关管什么，跟 Toggle 的 hint 一样排在标签下面。 */
+  hint?: string;
   value: T;
   options: readonly (readonly [T, string])[];
   onChange: (value: T) => void;
 }) {
   return (
     <div role="radiogroup" aria-label={label} className="flex items-center justify-between gap-2 px-3 py-1.5">
-      <span className="text-meta text-secondary">{label}</span>
+      <span className="text-meta text-secondary">
+        {label}
+        {hint ? <span className="block text-tertiary">{hint}</span> : null}
+      </span>
       <span className="flex rounded-sm border border-hair">
         {options.map(([id, text]) => (
           <button
@@ -215,6 +230,16 @@ export function DisplaySettingsPanel({ settings, onChange }: { settings: Display
         onChange={(thinking) => onChange({ thinking })}
       />
       <Toggle label="紧凑模式" hint="收紧行距，一屏多看几条" checked={settings.compact} onChange={(compact) => onChange({ compact })} />
+      <Segmented<ContrastDisplay>
+        label="对比度"
+        hint="提高次要文字与分隔线的对比度"
+        value={settings.contrast}
+        options={[
+          ['auto', '跟随系统'],
+          ['more', '更高']
+        ]}
+        onChange={(contrast) => onChange({ contrast })}
+      />
     </div>
   );
 }

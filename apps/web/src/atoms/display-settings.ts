@@ -7,6 +7,8 @@
  */
 export type ToolDisplay = 'expanded' | 'collapsed' | 'hidden';
 export type ThinkingDisplay = 'shown' | 'collapsed' | 'hidden';
+/** 对比度：跟随系统偏好，或者由用户手动要求更高。 */
+export type ContrastDisplay = 'auto' | 'more';
 
 export interface DisplaySettings {
   /** 工具调用：展开 / 折叠 / 隐藏。 */
@@ -19,6 +21,8 @@ export interface DisplaySettings {
   readonly thinking: ThinkingDisplay;
   /** 紧凑模式：行距、间隔都收紧，一屏多看几条。 */
   readonly compact: boolean;
+  /** 对比度：auto 跟随系统，more 手动抬高一档。 */
+  readonly contrast: ContrastDisplay;
 }
 
 export const DEFAULT_DISPLAY: DisplaySettings = {
@@ -26,7 +30,8 @@ export const DEFAULT_DISPLAY: DisplaySettings = {
   shellExpanded: false,
   editExpanded: true,
   thinking: 'collapsed',
-  compact: false
+  compact: false,
+  contrast: 'auto'
 };
 
 export const displayKey = (userId: string | null) => `agent-hub.display.${userId ?? 'anon'}`;
@@ -50,8 +55,17 @@ export function parseDisplay(raw: string | null): DisplaySettings {
     shellExpanded: flag('shellExpanded', DEFAULT_DISPLAY.shellExpanded),
     editExpanded: flag('editExpanded', DEFAULT_DISPLAY.editExpanded),
     thinking: pick('thinking', ['shown', 'collapsed', 'hidden'], DEFAULT_DISPLAY.thinking),
-    compact: flag('compact', DEFAULT_DISPLAY.compact)
+    compact: flag('compact', DEFAULT_DISPLAY.compact),
+    contrast: pick('contrast', ['auto', 'more'], DEFAULT_DISPLAY.contrast)
   };
+}
+
+/**
+ * 该给页面写的对比度。现在只有 auto / more 两档，直接透传；
+ * 以后要加 'less' 时，所有「settings → 页面表现」的判断都从这里改，不用翻组件。
+ */
+export function applyContrast(settings: DisplaySettings): ContrastDisplay {
+  return settings.contrast;
 }
 
 /** 某个工具卡片一打开时是不是展开的。 */

@@ -80,17 +80,42 @@ body {
   }
 }
 
+/*
+ * 更高对比度的一组值只写这一份：系统要求（prefers-contrast: more）和
+ * 「显示设置 › 对比度」里的手开关（<html data-contrast="more">）共用。
+ */
+:root {
+  --contrast-secondary: #d3dbd6;
+  --contrast-tertiary: #b7c0bb;
+  --contrast-hair: #566266;
+  --contrast-strong: #77868a;
+  --contrast-accent-dim: #d6a96b;
+  --contrast-sage: #a6c8b9;
+  --contrast-rust: #e2ab8c;
+}
+
 /* 系统要求更高对比度时，别只依赖用户去挑主题。 */
 @media (prefers-contrast: more) {
   :root {
-    --color-secondary: #d3dbd6;
-    --color-tertiary: #b7c0bb;
-    --color-hair: #566266;
-    --color-strong: #77868a;
-    --color-accent-dim: #d6a96b;
-    --color-sage: #a6c8b9;
-    --color-rust: #e2ab8c;
+    --color-secondary: var(--contrast-secondary);
+    --color-tertiary: var(--contrast-tertiary);
+    --color-hair: var(--contrast-hair);
+    --color-strong: var(--contrast-strong);
+    --color-accent-dim: var(--contrast-accent-dim);
+    --color-sage: var(--contrast-sage);
+    --color-rust: var(--contrast-rust);
   }
+}
+
+/* 手开关：设成 auto 时属性会被删掉，上面的 media query 照旧说话。 */
+[data-contrast='more'] {
+  --color-secondary: var(--contrast-secondary);
+  --color-tertiary: var(--contrast-tertiary);
+  --color-hair: var(--contrast-hair);
+  --color-strong: var(--contrast-strong);
+  --color-accent-dim: var(--contrast-accent-dim);
+  --color-sage: var(--contrast-sage);
+  --color-rust: var(--contrast-rust);
 }
 
 /* iOS 上小于 16px 的输入框获得焦点会强制放大页面，触屏设备统一抬到 16px */
