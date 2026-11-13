@@ -37,12 +37,12 @@
 }
 
 html,
-body,
-#root {
+body {
   height: 100%;
-  /* 手机浏览器的地址栏会伸缩：dvh 跟着可见区域走，100vh 会把输入框压到屏幕外 */
-  height: 100dvh;
   margin: 0;
+  /* 页面本身不滚：唯一的滚动容器是消息列表 / 各页的内容区。
+     键盘弹出时浏览器会试着滚动文档把输入框顶上来，那正是「要滑到最下面才看得见输入框」的来源。 */
+  overflow: hidden;
   color-scheme: dark;
   background: var(--color-canvas);
   color: var(--color-primary);
@@ -50,6 +50,18 @@ body,
   font-size: var(--text-body);
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * shell 的高度由 app-viewport.ts 写进 --app-height：手机软键盘只改 visualViewport，
+ * 布局视口和 dvh 都不动，照着 dvh 排就会把输入框排到键盘底下。
+ * 变量还没写上（或是没有 visualViewport 的老浏览器）时退回 dvh，和以前一样。
+ * --app-offset 是浏览器把文档顶上去的那段距离，补在这里，顶部 header 不会被裁半截。
+ */
+#root {
+  height: var(--app-height, 100dvh);
+  position: relative;
+  top: var(--app-offset, 0px);
 }
 
 ::selection {

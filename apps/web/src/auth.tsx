@@ -118,7 +118,7 @@ function LoginPage({ state }: { state: AuthState }) {
   ];
 
   return (
-    <main className="flex min-h-full items-start justify-center overflow-y-auto px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(12vh,env(safe-area-inset-top))]">
+    <main className="flex h-full min-h-full items-start justify-center overflow-y-auto overscroll-contain px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(12vh,env(safe-area-inset-top))]">
       <div className="w-full max-w-[380px]">
         <p className="text-head text-primary">agent-hub</p>
         <p className="mb-6 mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
@@ -236,7 +236,7 @@ function LoginPage({ state }: { state: AuthState }) {
 /** 窄屏优先的居中卡片：图标 + 标题 + 正文 + 操作。 */
 function Card({ icon, title, children }: { icon: string; title: string; children: ReactNode }) {
   return (
-    <main className="flex min-h-full items-start justify-center overflow-y-auto px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(12vh,env(safe-area-inset-top))]">
+    <main className="flex h-full min-h-full items-start justify-center overflow-y-auto overscroll-contain px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(12vh,env(safe-area-inset-top))]">
       <div className="w-full max-w-[380px]">
         <div aria-hidden className="mb-4 flex h-12 w-12 items-center justify-center rounded-full border border-hair bg-card text-[22px]">
           {icon}
