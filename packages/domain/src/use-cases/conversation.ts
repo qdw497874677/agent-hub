@@ -206,8 +206,11 @@ export async function promptSessionUseCase(
       state: claimed.send ? 'sending' : 'queued'
     };
     if (!claimed.send) return ok(ack);
-    const sent = await attemptDelivery({ ...deps, deliveries }, claimed.delivery);
-    return sent.ok ? ok(ack) : sent;
+    // 已进 journal + 队列：先回执，派发在后台跑；失败由 delivery/ended 记录，不再变成 HTTP 错误
+    // （design/message-send-feedback.md §5.2）。attemptDelivery 自己负责把 delivery 记成
+    // sending/queued/delivered/undelivered，未送达时补 ended(failed)，所以这里不用兜底。
+    void attemptDelivery({ ...deps, deliveries }, claimed.delivery).catch(() => undefined);
+    return ok(ack);
   }
 
   const hosted = await ensureHosted(deps, session);

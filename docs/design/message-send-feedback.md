@@ -1,6 +1,6 @@
 # 消息发送反馈（Message Send Feedback）
 
-> 状态：P0 已实现（前端乐观气泡）；P1（服务端快速 ack + clientMessageId 幂等）待做  
+> 状态：P0 已实现（前端乐观气泡）；P1 服务端侧已落地（快速 ack + `clientMessageId` 幂等 + 后台派发），前端对账待接  
 > 目标：发送后立即出现用户气泡和“发送中”状态，不再等 `api.prompt` 返回  
 > 参考：OpenCode Web 的乐观用户消息、排队状态和失败恢复
 
@@ -176,6 +176,8 @@ attemptDelivery() -> 后台执行
 
 注意：如果 `ensureHosted` 失败，第一轮用户仍看到“已接收，发送失败”，而不是 HTTP 错误；这符合队列语义。
 
+> 进度（2026-11-14）：MS-2 已落地 —— `promptSessionUseCase` 先回 ack，`void attemptDelivery()` 在后台执行，失败只更新 delivery / 补 `ended(failed)`，不再把 HTTP 变成 500；没有注入 delivery 队列的旧部署仍同步派发并返回错误。
+
 ### 5.3 幂等
 
 服务端按 `(sessionId, clientMessageId)` 去重：
@@ -210,6 +212,8 @@ attemptDelivery() -> 后台执行
 | offline | 不乐观发送，提示离线 | 草稿保留 |
 
 复用现有 `DeliveryNote` 文案，避免新增第二套状态词。
+
+> 进度（2026-11-14）：MS-2 已落地（ack 先返回，派发后台）；上表的 `sending/queued/failed` 由 delivery 状态驱动，UI 接线见后续 MS-4。
 
 ## 7. 文件边界
 

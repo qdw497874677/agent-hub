@@ -237,6 +237,8 @@ test('原生分叉等结果期间 hub 重启：交接摘要落在送达队列里
   const second = createRewindService({ ...w.deps, deliveries, files: w.files, turnRefs });
   const before = w.dispatched.length;
   await second.branchResult(out.value.session.id, 'failed', 'fork 报错');
+  // promptSessionUseCase 现在后台派发：等微任务跑完再看 worker 收到了什么。
+  await new Promise<void>((resolve) => setImmediate(resolve));
   const brief = w.dispatched.slice(before).find((c) => c.kind === 'prompt');
   assert.ok(brief?.kind === 'prompt' && /第一件事/.test(brief.text));
   assert.equal([...deliveries.rows.values()].filter((d) => d.state === 'held').length, 0);

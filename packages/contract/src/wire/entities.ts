@@ -342,7 +342,9 @@ export const sessionEventSchema = z.discriminatedUnion('kind', [
         tokens: z.number().int().nonnegative(),
         budget: z.number().int().nonnegative()
       })
-      .optional()
+      .optional(),
+    /** 客户端幂等键（design/message-send-feedback.md §5.3）：UI 靠它对账本地 pending 气泡。 */
+    clientMessageId: z.string().min(1).max(80).optional()
   }),
   z.object({ kind: z.literal('text'), delta: z.string(), subagentId: z.string().optional() }),
   z.object({ kind: z.literal('thinking'), delta: z.string(), subagentId: z.string().optional() }),

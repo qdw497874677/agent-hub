@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { agentToDto } from '@agent-hub/contract/codec';
-import type { AgentDescriptor, EnvironmentPlanner, JournalEntry, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
-import { asAgentId, asSessionId, recordEvent } from '@agent-hub/domain';
-import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeps } from '@agent-hub/domain/testing';
+import type { AgentDescriptor, DeliveryQueue, EnvironmentPlanner, JournalEntry, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
+import { asAgentId, asSessionId, recordEvent, unavailable } from '@agent-hub/domain';
+import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeliveries, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { createLiveCatalog } from './agent-catalog.ts';
@@ -54,7 +54,7 @@ const descriptor: AgentDescriptor = {
   ]
 };
 
-function harness(token: string | null = null, environment?: EnvironmentPlanner) {
+function harness(token: string | null = null, environment?: EnvironmentPlanner, deliveries?: DeliveryQueue) {
   const tasks = fakeTasks();
   const sessions = fakeSessions(tasks.rows);
   const hosting = fakeHosting();
@@ -62,6 +62,7 @@ function harness(token: string | null = null, environment?: EnvironmentPlanner) 
     tasks,
     sessions,
     hosting,
+    ...(deliveries ? { deliveries } : {}),
     stream: createStreamHub().stream,
     agents: createLiveCatalog(),
     now: () => 1_700_000_000_000,
@@ -228,6 +229,50 @@ test('prompt 返回 202 和发送回执；同一 clientMessageId 重发不再落
   assert.equal(prompts.length, 1);
   assert.equal(prompts[0]?.seq, ack.seq);
   assert.ok(prompts[0]?.event.kind === 'prompt' && prompts[0].event.clientMessageId === 'cm-http-1');
+});
+
+test('MS-2：接上送达队列后，派发失败仍然是 202；失败落在 delivery，不是 HTTP 500', async () => {
+  // 产品语义变了：调用方不能再拿 500 判断「Agent 发不出去」（design/message-send-feedback.md §9.2）。
+  // 这条测试固定住新语义 —— 已进 journal + 队列就算接收成功，送达失败只体现为 delivery 状态。
+  const deliveries = inMemoryDeliveries();
+  const { deps, call } = harness(null, undefined, deliveries);
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+  // 网关只在 prompt 上 unavailable：派生会话要的 start_session 必须还能成功，
+  // 而 prompt 这条就是以前会把请求变成 500 的路径。
+  const baseDispatch = deps.gateway.dispatch;
+  deps.gateway.dispatch = async (command) =>
+    command.kind === 'prompt' ? { ok: false, error: unavailable('Worker 不在线') } : baseDispatch(command);
+
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'demo', rootPath: '/tmp/demo' }) });
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId: (project.body as { id: string }).id, title: 't' }) });
+  const derived = await call('/api/sessions/derive', {
+    method: 'POST',
+    body: JSON.stringify({ taskId: (task.body as { id: string }).id, agentId: 'fake', model: 'fake-1' })
+  });
+  assert.equal(derived.status, 201, JSON.stringify(derived.body));
+  const sessionId = (derived.body as { id: string }).id;
+
+  const prompted = await call(`/api/sessions/${sessionId}/prompt`, {
+    method: 'POST',
+    body: JSON.stringify({ text: '派发会失败', clientMessageId: 'cm-http-fail' })
+  });
+  assert.equal(prompted.status, 202, JSON.stringify(prompted.body));
+  const ack = prompted.body as { ok: boolean; seq: number; deliveryId: string | null; state: string };
+  assert.equal(ack.state, 'sending', 'ack 先回执，不等派发');
+  assert.ok(ack.deliveryId);
+
+  // 后台那一段微任务跑完后，失败只落在 delivery 上。
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const row = await deliveries.byId(ack.deliveryId);
+  assert.equal(row?.state, 'queued', 'unavailable 可重试，排下一次');
+  assert.equal(row?.lastError, 'Worker 不在线');
+
+  // journal 里那句话还在（客户端不会误以为没发出去）。
+  const entries = (await call(`/api/sessions/${sessionId}/events`)).body as JournalEntry[];
+  const prompts = entries.filter((entry) => entry.event.kind === 'prompt');
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0]?.seq, ack.seq);
+  assert.ok(prompts[0]?.event.kind === 'prompt' && prompts[0].event.clientMessageId === 'cm-http-fail');
 });
 
 test('分叉一个不存在的会话返回 404，还没内容的会话分叉返回 409', async () => {

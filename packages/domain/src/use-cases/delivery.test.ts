@@ -13,6 +13,12 @@ import { cancelDelivery, pumpDeliveries, releaseAfterTurn, retryDeliveryNow, TUR
 import { recordEvent } from './sessions.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
 
+/**
+ * promptSessionUseCase 现在先回 ack，再把派发丢到后台（MS-2）。
+ * 测试要看派发结果，就等后台那一段的微任务跑完；setImmediate 在微任务清空后触发，不用睡固定时长。
+ */
+const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
 async function world() {
   const deliveries = inMemoryDeliveries();
   let offline = true;
@@ -58,6 +64,7 @@ test('并发两句：只有先认领的那条派给 worker，另一条停在 que
     promptSessionUseCase(w.deps, { sessionId: w.sid, text: '后' })
   ]);
   assert.ok(first.ok && second.ok);
+  await settle();
   assert.equal(w.sent.length, 1, 'worker 只收到队首');
   assert.equal(pendingEntered, 0, '认领不能拆成 pendingFor 再 save');
   const rows = await w.deliveries.recent(w.sid, 10);
@@ -74,6 +81,7 @@ test('离线时不再当场失败：进队列按退避重试，机器回来后�
   const w = await world();
   const out = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '你好' });
   assert.ok(out.ok, JSON.stringify(out));
+  await settle();
   const [d] = await w.deliveries.pendingFor(w.sid);
   assert.equal(d!.state, 'queued');
   assert.equal(d!.attempt, 1);
@@ -90,7 +98,9 @@ test('离线时不再当场失败：进队列按退避重试，机器回来后�
 test('严格按序：前一条没送达，后面的只排队；送达且那一轮结束后下一条接着送', async () => {
   const w = await world();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '一' });
+  await settle();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '二' });
+  await settle();
   const pending = await w.deliveries.pendingFor(w.sid);
   assert.equal(pending.length, 2);
   assert.equal(pending[1]!.attempt, 0, '第二条没试过');
@@ -108,6 +118,7 @@ test('严格按序：前一条没送达，后面的只排队；送达且那一�
 test('重试 10 次后未送达并收掉这一轮；立即重试、撤回', async () => {
   const w = await world();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '一' });
+  await settle();
   for (let i = 0; i < 12; i++) {
     w.tick(60_000);
     await pumpDeliveries(w.deps);
@@ -126,6 +137,7 @@ test('重试 10 次后未送达并收掉这一轮；立即重试、撤回', asyn
 test('撤回：不再送，journal 记一条说明', async () => {
   const w = await world();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '一' });
+  await settle();
   const [d] = await w.deliveries.pendingFor(w.sid);
   assert.ok((await cancelDelivery(w.deps, d!.id)).ok);
   assert.equal((await w.deliveries.pendingFor(w.sid)).length, 0);
@@ -140,9 +152,11 @@ test('上一轮还在跑（如定时触发）：人发的话排队、不扣次�
   w.online();
   const first = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '定时触发：扫一遍', author: { id: 'u', name: 'timer', via: 'connector' } });
   assert.ok(first.ok);
+  await settle();
   assert.equal(w.sent.length, 1);
   const second = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '人插一句' });
   assert.ok(second.ok, JSON.stringify(second));
+  await settle();
   assert.equal(w.sent.length, 1, '回合没结束，不往运行时塞');
   const [q] = await w.deliveries.pendingFor(w.sid);
   assert.equal(q!.state, 'queued');
@@ -162,17 +176,21 @@ test('上一轮 30 分钟没动静：不再挡着后面的消息', async () => {
   const w = await world();
   w.online();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'a' });
+  await settle();
   w.tick(TURN_STALE_MS + 1);
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'b' });
+  await settle();
   assert.equal(w.sent.length, 2);
 });
 
 test('撤回的那句不算开了一轮', async () => {
   const w = await world();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'a' });
+  await settle();
   const [d] = await w.deliveries.pendingFor(w.sid);
   assert.ok((await cancelDelivery(w.deps, d!.id)).ok);
   w.online();
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'b' });
+  await settle();
   assert.equal(w.sent.length, 1);
 });
