@@ -48,6 +48,7 @@ const tick = async (ctx: InboundContext) => {
 export function createTimerSource(opts: { readonly intervalMs?: number } = {}): InboundSource {
   return {
     id: 'timer',
+    label: '定时',
     kinds: ['tick'],
     validate(kind, params) {
       if (kind !== 'tick') return '定时器只有 tick';

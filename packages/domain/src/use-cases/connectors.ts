@@ -159,7 +159,7 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
   };
 
   return {
-    sources: () => [...sources.values()].map((s) => ({ id: s.id, kinds: s.kinds })),
+    sources: () => [...sources.values()].map((s) => ({ id: s.id, label: s.label, kinds: s.kinds })),
     start(): { stop(): void } {
       const handles = [...sources.values()].map((s) => s.start(contextFor(s)));
       return { stop: () => handles.forEach((h) => h.stop()) };

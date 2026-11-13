@@ -3,6 +3,8 @@ import type { ConnectorBinding, InboundEvent } from '../connector.ts';
 /** 入站半边（ADR 0032）：一个来源发出规范化事件；硬规则由来源在 emit 前判定，核心再兜底去重和配额。 */
 export interface InboundSource {
   readonly id: string;
+  /** 给人看的名字（如「定时」「GitHub」）；不填时界面回落到 id。 */
+  readonly label?: string;
   readonly kinds: readonly string[];
   /** 建 / 改 Binding 时校验参数；返回问题描述，没问题是 null。 */
   validate(kind: string, params: Readonly<Record<string, unknown>>): string | null;

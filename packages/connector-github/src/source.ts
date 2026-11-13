@@ -102,6 +102,7 @@ export function createGithubSource(deps: GithubSourceDeps): InboundSource {
   };
   return {
     id: 'github',
+    label: 'GitHub',
     kinds: ['issue'],
     validate: validateGithubParams,
     describe: (b) => { const p = githubParams(b.params); return `${p.repo} · 标签 ${p.label} · 每 ${p.everyMin} 分钟`; },

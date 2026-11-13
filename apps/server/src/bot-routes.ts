@@ -6,6 +6,10 @@ import {
   AGENT_REF_OPTIONS_MAX,
   AGENT_REF_OPTION_VALUE_MAX,
   asProjectId,
+  err,
+  invalid,
+  notFound,
+  ok,
   PERSISTENT_AGENT_COLORS,
   PERSISTENT_AGENT_DESCRIPTION_MAX,
   PERSISTENT_AGENT_DISPLAY_NAME_MAX,
@@ -15,11 +19,15 @@ import {
   type BotId,
   type BotInput,
   type BotPatch,
+  type ConnectorBinding,
+  type ConnectorHub,
   type DomainError,
   type Principal,
   type ProjectId,
-  type Result
+  type Result,
+  type TriggerRun
 } from '@agent-hub/domain';
+import type { BotTriggerDto, BotTriggerRunDto, BotTriggersDto } from '@agent-hub/contract';
 import type { SubjectOf } from './auth.ts';
 import { botRecordDto } from './agent-ref-dto.ts';
 import type { BotTokenSource } from './persistent-agent-routes.ts';
@@ -38,15 +46,19 @@ export interface BotsApi {
  * 一等 bot 的 HTTP 外壳（C3a）：
  * - GET    /api/bots?projectId=…   列表
  * - POST   /api/bots               新建（name 即 @id，建好不改）
- * - GET    /api/bots/:id           单条
- * - PATCH  /api/bots/:id           改显示名 / 颜色 / 职责 / 运行时 / 模型 / 复用（name 不可改）
- * - DELETE /api/bots/:id           删除（不拦群 / 会话引用；群聊的收尾由 /agents 那条路径负责）
+ * - GET    /api/bots/:idOrName     单条（`bot_` 开头按 id；否则按 ?projectId= + 名字）
+ * - PATCH  /api/bots/:id           改显示名 / 颜色 / 职责 / 运行时 / 模型 / 复用（name 不可改；只认 id）
+ * - DELETE /api/bots/:id           删除（只认 id；不拦群 / 会话引用；群聊的收尾由 /agents 那条路径负责）
+ * - GET    /api/bots/:idOrName/triggers   这个 bot 的触发器 + 每个最近 5 条运行（C4）
  *
  * 鉴权在用例里做（读 project.read、写 project.share），这里只负责解析、身份与 DTO。
  * 老的 /api/projects/:id/agents 仍在 persistent-agent-routes.ts，内部走同一套用例。
  *
  * C3c：列表 / 单条顺带回填 `token`（凭据摘要），形状与 `BotDto.token` 一致。
  * 凭据来源是可选的 `botTokens`；没接时一律 null，前端按「还没发过」显示。
+ *
+ * C4：`hub` 是可选第 5 参（老部署 / 单测没接连接器时不传）。没传时触发器接口回空列表，
+ * 其余 bot 接口不受影响；`sources` 直接取 `hub.sources()` 的真实形状（id + kinds）。
  */
 const optionsBody = z
   .record(
@@ -67,7 +79,27 @@ const fields = {
 const createBody = z.object({ projectId: z.string().min(1), name: z.string().min(1).max(40), ...fields });
 const patchBody = z.object({ ...fields, agentId: fields.agentId.optional(), name: z.string().min(1).max(40).optional() });
 
-export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: SubjectOf, botTokens?: BotTokenSource): void {
+/** 运行记录去掉 `text`（可能很大、也可能是外部不可信文本）。 */
+const runDto = (run: TriggerRun): BotTriggerRunDto => ({
+  id: run.id, bindingId: run.bindingId, externalId: run.externalId, state: run.state,
+  plannedAt: run.plannedAt, catchup: run.catchup, reason: run.reason, sessionId: run.sessionId,
+  createdAt: run.createdAt, updatedAt: run.updatedAt
+});
+
+const triggerDto = (binding: ConnectorBinding, runs: readonly TriggerRun[]): BotTriggerDto => ({
+  id: binding.id, connector: binding.connector, kind: binding.kind, name: binding.name, target: binding.target,
+  projectId: binding.projectId, enabled: binding.enabled, pausedReason: binding.pausedReason,
+  consecutiveFailures: binding.consecutiveFailures, nextRunAt: binding.nextRunAt, mainSessionId: binding.mainSessionId,
+  createdAt: binding.createdAt, updatedAt: binding.updatedAt, runs: runs.map(runDto)
+});
+
+export function installBotRoutes(
+  app: Hono<any>,
+  bots: BotsApi,
+  subjectOf: SubjectOf,
+  botTokens?: BotTokenSource,
+  hub?: Pick<ConnectorHub, 'sources' | 'list' | 'runs'>
+): void {
   const me = (c: Parameters<SubjectOf>[0]) => principalOfSubject(subjectOf(c));
   const needUser = { code: 'forbidden' as const, message: '要以账号身份管理 bot' };
   const issue = (e: z.ZodError) => {
@@ -81,6 +113,19 @@ export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: Subje
   };
   const tokensOf = async (projectId: ProjectId) => (botTokens ? botTokens.listBotsByProject(projectId) : []);
   const recordOf = async (bot: Bot) => ({ ...botRecordDto(bot), token: tokenOf(await tokensOf(bot.projectId), bot.name) });
+
+  /**
+   * 单条寻址：`bot_` 开头按 id；否则当名字，必须带 projectId（同名 bot 只在项目内唯一）。
+   * 名字路径走 listBots（含旧 roles JSON 回落），所以迁移前后都能按名字找到。
+   */
+  const resolve = async (actor: Principal, idOrName: string, projectId: string | undefined): Promise<Result<Bot, DomainError>> => {
+    if (idOrName.startsWith('bot_')) return bots.getBot(actor, idOrName as BotId);
+    if (!projectId) return err(invalid('按名字找 bot 要带 projectId'));
+    const list = await bots.listBots(actor, asProjectId(projectId));
+    if (!list.ok) return list;
+    const hit = list.value.find((bot) => bot.name === idOrName);
+    return hit ? ok(hit) : err(notFound('没有这个 bot'));
+  };
 
   app.get('/api/bots', async (c) => {
     const actor = me(c);
@@ -104,11 +149,32 @@ export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: Subje
     return created.ok ? c.json({ ...botRecordDto(created.value), token: null }, 201) : fail(c, created.error);
   });
 
-  app.get('/api/bots/:id', async (c) => {
+  app.get('/api/bots/:idOrName', async (c) => {
     const actor = me(c);
     if (!actor) return fail(c, needUser);
-    const bot = await bots.getBot(actor, c.req.param('id') as BotId);
+    const bot = await resolve(actor, c.req.param('idOrName'), c.req.query('projectId')?.trim());
     return bot.ok ? c.json(await recordOf(bot.value)) : fail(c, bot.error);
+  });
+
+  app.get('/api/bots/:idOrName/triggers', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const found = await resolve(actor, c.req.param('idOrName'), c.req.query('projectId')?.trim());
+    if (!found.ok) return fail(c, found.error);
+    const bot = found.value;
+    // 老部署 / 没接连接器：空列表，前端按「还没有触发」显示。
+    if (!hub) return c.json({ sources: [], bindings: [] } satisfies BotTriggersDto);
+    const listed = await hub.list(actor, bot.projectId, bot.name);
+    if (!listed.ok) return fail(c, listed.error);
+    const bindings = await Promise.all(
+      listed.value.map(async (binding) => {
+        // 一条触发读失败不影响其他条：只是这几条运行记录空着。
+        const runs = await hub.runs(actor, binding.id, 5);
+        return triggerDto(binding, runs.ok ? runs.value : []);
+      })
+    );
+    const sources = hub.sources().map((source) => ({ id: source.id, kinds: [...source.kinds] }));
+    return c.json({ sources, bindings } satisfies BotTriggersDto);
   });
 
   app.patch('/api/bots/:id', async (c) => {

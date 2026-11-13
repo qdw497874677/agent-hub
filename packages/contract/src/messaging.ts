@@ -94,6 +94,34 @@ export interface BindingDto {
 }
 export interface ConnectorNoticeDto { kind: 'binding_paused' | 'inbound_quarantined' | 'task_pending'; id: string; title: string; reason: string; since: number; projectId: string; agentName: string | null }
 
+// ---- 一等 bot 的触发器读接口（C4）：GET /api/bots/:idOrName/triggers ----
+
+/** 一次触发运行。不带 `text`：投进去的内容可能很大、也可能是外部不可信文本，读接口不复制它。 */
+export interface BotTriggerRunDto {
+  id: string; bindingId: string; externalId: string;
+  state: 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped';
+  plannedAt: number | null; catchup: boolean; reason: string | null; sessionId: string | null;
+  createdAt: number; updatedAt: number;
+}
+/**
+ * 已注册的连接器来源。`kinds` 是它能发的事件种类（timer: tick、github: issue…）。
+ * 形状直接跟 `hub.sources()` 走：来源端口只暴露 id 与 kinds，没有显示名。
+ */
+export interface BotTriggerSourceDto {
+  id: string;
+  /** 给人看的名字；来源没提供时前端回落到 id。 */
+  label?: string;
+  kinds: string[];
+}
+/** 挂在 bot 下的一条触发器（ConnectorBinding）＋ 最近几条运行。 */
+export interface BotTriggerDto {
+  id: string; connector: string; kind: string; name: string; target: 'main' | 'new';
+  projectId: string | null; enabled: boolean; pausedReason: string | null; consecutiveFailures: number;
+  nextRunAt: number | null; mainSessionId: string | null;
+  createdAt: number; updatedAt: number; runs: BotTriggerRunDto[];
+}
+export interface BotTriggersDto { sources: BotTriggerSourceDto[]; bindings: BotTriggerDto[] }
+
 // ---- 上下文策略（ADR 0020 · P1） ----
 
 export type L1LevelDto = 'runtime' | 'estimated' | 'missing';
