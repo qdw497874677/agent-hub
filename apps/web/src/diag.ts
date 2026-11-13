@@ -13,6 +13,8 @@ interface Snapshot {
   readonly doc: string;
   readonly composer: string;
   readonly textarea: string;
+  readonly where: string;
+  readonly others: string;
 }
 
 const rectOf = (element: Element | null): string => {
@@ -37,7 +39,15 @@ function snapshot(step: string): Snapshot {
     root: `${rectOf(root)} ${root ? getComputedStyle(root).overflow : ''}`,
     doc: `scrollH${document.documentElement.scrollHeight} bodyOverflow${getComputedStyle(document.body).overflow} clientH${document.documentElement.clientHeight}`,
     composer: composer ? `${rectOf(composer)} ${getComputedStyle(composer).display}/${getComputedStyle(composer).visibility}` : 'null',
-    textarea: textarea ? `${rectOf(textarea)} ${getComputedStyle(textarea).display}` : 'null'
+    textarea: textarea ? `${rectOf(textarea)} ${getComputedStyle(textarea).display}` : 'null',
+    // 到底停在哪个页面：hash 路由 + 关键容器在不在，避免把别的页面的 textarea 当成输入框。
+    where: `${location.pathname}${location.hash}`.slice(0, 120) + ` title=${document.title.slice(0, 30)}`,
+    others: [
+      `log=${document.querySelectorAll('[role=log]').length}`,
+      `tabs=${document.querySelectorAll('[data-testid=session-tabs]').length}`,
+      `ta=${document.querySelectorAll('textarea').length}`,
+      `btn=${document.querySelectorAll('button').length}`
+    ].join(' ')
   };
 }
 
@@ -59,6 +69,11 @@ export function mountDiagnostics(): void {
     setTimeout(() => report(step), ms);
   }
 
+  let burst = 0;
+  window.visualViewport?.addEventListener('resize', () => {
+    if (burst++ < 12) setTimeout(() => report(`vv${burst}`), 50);
+  });
+
   if (new URLSearchParams(location.search).get('diag') !== '1') return;
   const box = document.createElement('div');
   box.style.cssText = [
@@ -78,7 +93,9 @@ export function mountDiagnostics(): void {
       `root   ${s.root}`,
       `doc    ${s.doc}`,
       `compos ${s.composer}`,
-      `area   ${s.textarea}`
+      `area   ${s.textarea}`,
+      `where  ${s.where}`,
+      `others ${s.others}`
     ].join('\n');
   };
   paint();
