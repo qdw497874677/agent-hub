@@ -260,7 +260,7 @@ const messageBus = createMessageBus({
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
   spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, actor, via: 'bot'
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, options: role.options, actor, via: 'bot'
   })
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
@@ -277,7 +277,7 @@ const groupChat = createGroupChat({
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-group'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
   spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, actor, via: 'group'
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, options: role.options, actor, via: 'group'
   }),
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
@@ -286,6 +286,7 @@ const groupChat = createGroupChat({
 // 持久智能体（界面上叫 bot）：按条读写项目的 agent 消息配置；删除时从所有群移出。
 const persistentAgents = createPersistentAgents({
   projects: deps.projects,
+  sessions: deps.sessions,
   policy: deps.access,
   config: (projectId) => messageBus.config(projectId),
   saveConfig: (projectId, input) => messageBus.saveConfig(projectId, input),
@@ -339,7 +340,7 @@ const connectorHub = createConnectorHub({
     const actor = await loadActor(store.users, store.access, ownerId, 'agent-connector');
     if (!actor) return err(forbidden('建这个触发的账号已停用'));
     return openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-      projectId, title, ownerId, agentId: role.agentId, model: role.model, actor, via: 'bot',
+      projectId, title, ownerId, agentId: role.agentId, model: role.model, options: role.options, actor, via: 'bot',
       afterDerive: async (session) => {
         // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去。先于来历。
         await store.messages.saveSpawn({ sessionId: session.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: session.id, traceId: `connector:${session.id}`, createdAt: Date.now() });
@@ -372,7 +373,16 @@ const dispatcher = createDispatcher({
     const actor = await sessionOwner(d.accountId);
     if (!actor) return err(forbidden('建这个任务的账号已停用'));
     if (!d.agentId) return err(notFound('不知道用哪个运行时'));
-    const created = await deriveSessionUseCase(deps, { taskId: d.taskId, agentId: d.agentId, model: d.model ?? '', actor });
+    // 调度出来的会话也继承建任务的 bot 的启动选项（与 P2P / 群聊 / 连接器三条派生同源）。
+    const bot = d.notifySessionId ? await botOfSession(d.notifySessionId as SessionId) : null;
+    const role = bot ? (await messageBus.config(bot.projectId as ProjectId)).roles.find((x) => x.name === bot.name) : null;
+    const created = await deriveSessionUseCase(deps, {
+      taskId: d.taskId,
+      agentId: d.agentId,
+      model: d.model ?? '',
+      actor,
+      ...(role?.options ? { options: role.options } : {})
+    });
     if (!created.ok) return created;
     await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' }).catch(() => undefined);
     const text = [`你是被调度器派来推进这个任务的任务智能体。任务：「${d.title}」`, d.goal ? `目标：\n${d.goal}` : '',

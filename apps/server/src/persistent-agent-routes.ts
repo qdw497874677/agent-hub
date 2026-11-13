@@ -1,6 +1,15 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
-import { asProjectId, principalOfSubject, PERSISTENT_AGENT_COLORS, PERSISTENT_AGENT_DESCRIPTION_MAX, PERSISTENT_AGENT_DISPLAY_NAME_MAX, type PersistentAgents } from '@agent-hub/domain';
+import {
+  asProjectId,
+  OPTION_KEY,
+  PERSISTENT_AGENT_COLORS,
+  PERSISTENT_AGENT_DESCRIPTION_MAX,
+  PERSISTENT_AGENT_DISPLAY_NAME_MAX,
+  PERSISTENT_AGENT_OPTIONS_MAX,
+  principalOfSubject,
+  type PersistentAgents
+} from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -12,13 +21,18 @@ import { fail } from './http-error.ts';
  * - DELETE /api/projects/:id/agents/:name    删除，同时从所有群移出
  * 旧的整表接口 /api/projects/:id/messaging 保留。
  */
+const optionsBody = z
+  .record(z.string().regex(OPTION_KEY, '选项键要小写字母开头，只含 a-z 0-9 _ . -'), z.union([z.string().max(200), z.boolean()]))
+  .refine((value) => Object.keys(value).length <= PERSISTENT_AGENT_OPTIONS_MAX, `启动选项最多 ${PERSISTENT_AGENT_OPTIONS_MAX} 个`);
+
 const fields = {
   displayName: z.string().max(PERSISTENT_AGENT_DISPLAY_NAME_MAX).optional(),
   color: z.enum(PERSISTENT_AGENT_COLORS).optional(),
   description: z.string().max(PERSISTENT_AGENT_DESCRIPTION_MAX).optional(),
   agentId: z.string().min(1).max(80),
   model: z.string().max(200).optional(),
-  reuse: z.enum(['sticky', 'per-trace', 'always-new']).optional()
+  reuse: z.enum(['sticky', 'per-trace', 'always-new']).optional(),
+  options: optionsBody.optional()
 };
 const createBody = z.object({ name: z.string().min(1).max(40), ...fields });
 const patchBody = z.object({ ...fields, agentId: fields.agentId.optional() });

@@ -1,7 +1,16 @@
 import type { Principal } from '../account.ts';
 import { invalid, notFound, type DomainError } from '../errors.ts';
 import type { ProjectId } from '../ids.ts';
-import { configProblem, isPersistentAgentName, type MessageLimits, type MessagingConfig, type PersistentAgent, type RoleReuse } from '../messaging.ts';
+import {
+  configProblem,
+  isPersistentAgentName,
+  persistentAgentOptionsSpecProblem,
+  type MessageLimits,
+  type MessagingConfig,
+  type PersistentAgent,
+  type RoleReuse
+} from '../messaging.ts';
+import type { RuntimeOption } from '../option.ts';
 import type { Group } from '../groups.ts';
 import { err, ok, type Result } from '../result.ts';
 import { authorizeProject, type AccessPolicy } from './authorization.ts';
@@ -22,6 +31,7 @@ export interface PersistentAgentInput {
   readonly agentId: string;
   readonly model?: string;
   readonly reuse?: RoleReuse;
+  readonly options?: Readonly<Record<string, string | boolean>>;
 }
 export type PersistentAgentPatch = Partial<Omit<PersistentAgentInput, 'name'>>;
 
@@ -30,7 +40,7 @@ export interface PersistentAgentView extends PersistentAgent {
   readonly groups: readonly { id: string; name: string; host: boolean }[];
 }
 
-export interface PersistentAgentsDeps extends Pick<Deps, 'projects'> {
+export interface PersistentAgentsDeps extends Pick<Deps, 'projects' | 'sessions'> {
   readonly policy?: AccessPolicy;
   readonly config: (projectId: ProjectId) => Promise<MessagingConfig>;
   readonly saveConfig: (projectId: ProjectId, input: { roles: readonly PersistentAgent[]; limits: Partial<MessageLimits> }) => Promise<Result<MessagingConfig, DomainError>>;
@@ -45,6 +55,19 @@ export interface PersistentAgents {
   remove(actor: Principal, projectId: ProjectId, name: string): Promise<Result<{ removedFrom: readonly { id: string; name: string }[] }, DomainError>>;
 }
 
+/**
+ * 这个项目里该 agent 上报过的可调项（按 id 去重，取自各会话的 `optionSpec`）。
+ * agent 的静态 descriptor 只带 models，选项清单要等会话握手后才有，所以只能从已有会话里学。
+ */
+async function observedOptions(deps: PersistentAgentsDeps, projectId: ProjectId, agentId: string): Promise<readonly RuntimeOption[]> {
+  const seen = new Map<string, RuntimeOption>();
+  for (const session of await deps.sessions.listByProject(projectId)) {
+    if (session.agentId !== agentId) continue;
+    for (const option of session.optionSpec) if (!seen.has(option.id)) seen.set(option.id, option);
+  }
+  return [...seen.values()];
+}
+
 const clean = (a: PersistentAgent): PersistentAgent => {
   const displayName = a.displayName?.trim();
   return {
@@ -54,7 +77,8 @@ const clean = (a: PersistentAgent): PersistentAgent => {
     description: a.description,
     agentId: a.agentId.trim(),
     model: a.model.trim(),
-    reuse: a.reuse
+    reuse: a.reuse,
+    ...(a.options && Object.keys(a.options).length > 0 ? { options: { ...a.options } } : {})
   };
 };
 
@@ -88,7 +112,18 @@ export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAg
       if (!isPersistentAgentName(name)) return err(invalid('@id 只能用小写字母、数字、- 和 _，字母或数字开头（最多 40 个字符）'));
       const config = await deps.config(projectId);
       if (config.roles.some((r) => r.name === name)) return err(invalid(`@${name} 已经有了，换一个 @id`));
-      const agent = clean({ name, displayName: input.displayName, color: input.color, description: input.description ?? '', agentId: input.agentId, model: input.model ?? '', reuse: input.reuse ?? 'sticky' });
+      const agent = clean({
+        name,
+        displayName: input.displayName,
+        color: input.color,
+        description: input.description ?? '',
+        agentId: input.agentId,
+        model: input.model ?? '',
+        reuse: input.reuse ?? 'sticky',
+        ...(input.options !== undefined ? { options: input.options } : {})
+      });
+      const specProblem = persistentAgentOptionsSpecProblem(agent.options, await observedOptions(deps, projectId, agent.agentId));
+      if (specProblem) return err(invalid(`bot ${name} 的${specProblem}`));
       const saved = await save(projectId, config, [...config.roles, agent]);
       return saved.ok ? ok(agent) : saved;
     },
@@ -107,8 +142,11 @@ export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAg
         ...(patch.agentId !== undefined ? { agentId: patch.agentId } : {}),
         ...(patch.model !== undefined ? { model: patch.model } : {}),
         ...(patch.reuse !== undefined ? { reuse: patch.reuse } : {}),
+        ...(patch.options !== undefined ? { options: patch.options } : {}),
         name
       });
+      const specProblem = persistentAgentOptionsSpecProblem(next.options, await observedOptions(deps, projectId, next.agentId));
+      if (specProblem) return err(invalid(`bot ${name} 的${specProblem}`));
       const saved = await save(projectId, config, config.roles.map((r) => (r.name === name ? next : r)));
       return saved.ok ? ok(next) : saved;
     },

@@ -482,13 +482,21 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
       }
 
       // 开跑前用户已经选好的项（派生时选的模型、思考强度），交给 agent 去落实。
-      // 模型也是一个配置项（ACP 的 category: model），与其余选项走同一条 set_config_option。
-      for (const [id, raw] of Object.entries(spec.options)) {
+      // 模型也是一个配置项（ACP 的 category: model），与其余选项走同一条 set_config_option；
+      // 但它必须先落——思考强度这类项只在选定模型之后才出现在清单里。
+      const entries = Object.entries(spec.options).sort(([left], [right]) => Number(right === 'model') - Number(left === 'model'));
+      for (const [id, raw] of entries) {
+        const known = session.options().some((option) => option.id === id);
         const changed = await session.changeOption(id, raw);
-        if (!changed.ok) {
-          await session.dispose();
-          return changed;
+        if (changed.ok) continue;
+        // agent 没上报过这个键：多半是 bot / 配置里留下的多余默认值，跳过并记一笔，
+        // 别为一个不生效的默认值把整条会话杀掉。值不合法（键认得）仍然失败。
+        if (!known) {
+          console.warn(`[${config.label}] 跳过未知配置项 ${id}：agent 没有上报它`);
+          continue;
         }
+        await session.dispose();
+        return changed;
       }
 
       options.onAgentSessionRef?.(spec.sessionId, session.agentRef || ref || 'pending');

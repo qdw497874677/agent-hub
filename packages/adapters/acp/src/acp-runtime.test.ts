@@ -203,3 +203,22 @@ test('acp runtime: refusal / max_tokens 各自报失败原因，不再当成完�
   assert.match(ended.reason ?? '', /长度上限/);
   await session.dispose();
 });
+
+test('acp runtime: 没上报过的配置项跳过，模型照常先落', async (t) => {
+  const runtime = createAcpRuntime(config);
+  const started = await runtime.start(await spec(t, { options: { not_a_real_option: 'x', model: 'b' } }));
+  assert.ok(started.ok, started.ok ? '' : started.error.message);
+  const session = started.value;
+  t.after(() => session.dispose());
+  assert.equal(session.options()[0]?.current, 'b', '模型照常落');
+  const events = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'hi', parts: [] })).ok);
+  const text = (await events).find((event) => event.kind === 'text');
+  assert.ok(text && text.kind === 'text');
+  assert.equal(
+    text.delta,
+    'methods:initialize,authenticate,session/new{"yoloMode":true},session/set_config_option,session/set_config_option,session/prompt',
+    '未知项被 agent 拒绝后跳过，模型的值先于其它项应用'
+  );
+  await session.dispose();
+});

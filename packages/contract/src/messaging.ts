@@ -27,7 +27,11 @@ export interface GroupUnreadDto {
 // ---- 持久智能体（界面上叫 bot；name 就是 @id，建好不改） ----
 
 export type BotColorDto = 'amber' | 'sage' | 'sky' | 'rose' | 'olive' | 'slate';
-export interface MessagingRoleDto { name: string; displayName?: string; color?: BotColorDto; description: string; agentId: string; model: string; reuse: 'sticky' | 'per-trace' | 'always-new' }
+export interface MessagingRoleDto {
+  name: string; displayName?: string; color?: BotColorDto; description: string; agentId: string; model: string; reuse: 'sticky' | 'per-trace' | 'always-new';
+  /** 建会话时垫进去的启动选项（会话内仍可覆盖）；键与会话的可调项同源。 */
+  options?: Record<string, string | boolean>;
+}
 export interface BotDto extends MessagingRoleDto { groups: { id: string; name: string; host: boolean }[] }
 export type BotInputDto = Partial<Omit<MessagingRoleDto, 'name'>>;
 

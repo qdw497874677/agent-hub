@@ -110,6 +110,8 @@ export interface ForkSessionInput {
   readonly createdBy?: string | null;
   /** 「从这里重来」回到第一条消息之前：允许 atSeq = 0（什么都不继承）。 */
   readonly allowEmpty?: boolean;
+  /** 启动选项快照：分叉出来的会话用它重启，缺省为空（老调用方行为不变）。 */
+  readonly options?: Readonly<Record<string, string | boolean>>;
 }
 
 export function forkSession(input: ForkSessionInput): Result<Session, DomainError> {
@@ -129,7 +131,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     status: 'running',
     lastSeq: 0,
     agentSessionRef: null,
-    options: {},
+    options: { ...input.options },
     optionSpec: [],
     workerId: input.workerId ?? null,
     workspaceId: input.workspaceId === undefined ? input.source.workspaceId : input.workspaceId,

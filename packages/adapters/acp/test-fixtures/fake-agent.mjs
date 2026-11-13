@@ -76,10 +76,17 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         }
       });
       return send({ id: msg.id, result: { configOptions: options() } });
-    case 'session/set_config_option':
+    case 'session/set_config_option': {
       if (LEGACY) return send({ id: msg.id, result: { configOptions: [] } });
-      model = msg.params.value;
+      const known = new Set([...options().map((option) => option.id), 'mode', 'thinking', 'effort']);
+      if (!known.has(msg.params.configId)) {
+        return send({ id: msg.id, error: { code: -32602, message: `Unknown config option: ${msg.params.configId}` } });
+      }
+      if (msg.params.configId === 'mode') mode = msg.params.value;
+      else if (msg.params.configId !== 'model') return send({ id: msg.id, result: { configOptions: options() } });
+      else model = msg.params.value;
       return send({ id: msg.id, result: { configOptions: options() } });
+    }
     case 'session/set_model':
       model = msg.params.modelId;
       return send({ id: msg.id, result: {} });

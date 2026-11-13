@@ -98,6 +98,22 @@ test('P2P 写 via=bot，群写 via=group；连接器先记派生再写 via=bot',
   assert.ok(spawnAt >= 0 && spawnAt < provAt);
 });
 
+test('bot 的启动选项垫进新会话，会话仍可再改', async () => {
+  const w = await world();
+  const actor = await loadActor(w.users, undefined, 'u1', 'agent-message');
+  assert.ok(actor);
+  const provenance = {
+    provenance: { record: async () => true, get: async () => null },
+    now: () => 9
+  };
+  const created = await openRoleSession(w.w.deps, provenance, {
+    projectId: w.project.id, title: 'bot', ownerId: 'u1', agentId: 'fake', model: 'm',
+    options: { thought_level: 'medium', sandbox: true }, actor, via: 'bot'
+  });
+  assert.ok(created.ok, created.ok ? '' : created.error.message);
+  assert.deepEqual(created.value.options, { thought_level: 'medium', sandbox: true });
+});
+
 test('任务建不成或没有这个运行时：不写来历、不写派生记录', async () => {
   const w = await world();
   const actor = await loadActor(w.users, undefined, 'u1', 'agent-connector');

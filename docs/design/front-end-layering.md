@@ -13,7 +13,7 @@
 
 - IM 的页面（`#/messages`、`#/bots`）已经和项目 Workspace 并列渲染（`apps/web/src/app.tsx:31-37`），但导航把它们塞进「我的」组（`apps/web/src/global-nav.ts:40-71`：`mine=[memory, messages, bots]`），用户看不出这是两个产品。
 - 工作台反过来依赖 IM 模块：`apps/web/src/focus.tsx:1,3,204,598,764,875` 用了 `delivery-note.tsx` 的 `DeliveryContext/useDeliveries` 与 `attention.tsx` 的 `AttentionAutoAck`；`apps/web/src/chat-blocks.tsx:1` 用 `DeliveryNote`；`apps/web/src/inspector.tsx:8` 用 `SessionMessages`。这不是「工作台需要 IM」，而是「这些是会话运行态原子，被错误地放在了 IM 目录语义下」。
-- 两套启动配置能力不对等：`PersistentAgent`（`packages/domain/src/messaging.ts:94-105`）只有 `agentId/model/reuse`，而 `AgentProfile`（`packages/domain/src/agent-profile.ts:6-16`）有 `options`；群聊派生会话的入口 `packages/domain/src/use-cases/groups.ts:61` 只传 `role`，所以 **bot 起的会话今天带不了启动选项**。
+- 两套启动配置能力不对等（**已修**）：`PersistentAgent` 现在有 `options`（`packages/domain/src/messaging.ts:110`），`role-session.ts:56` 在派生时垫进会话；历史上 `AgentProfile`（`packages/domain/src/agent-profile.ts:6-16`）有 `options` 而 bot 没有。
 - 前端 DTO 没进契约：`BotDto/GroupDto/DeliveryDto/AttentionDto/ConnectorNoticeDto` 手写在 `apps/web/src/api.ts:702-886`，`@agent-hub/contract` 里没有。
 - IM 实体全部以 `projectId` 为外键（`packages/domain/src/messaging.ts:127`、`groups.ts:35`）：IM 不是独立聚合，而是「项目里的一个配置块」。
 
@@ -83,7 +83,7 @@ export const imSurface: Surface = {
 
 ## 4. 原子缺口收敛（先做，不然分层是空壳）
 
-1. **bot 的启动配置**：`PersistentAgent` 加 `options?: Readonly<Record<string, string | boolean>>`（`packages/domain/src/messaging.ts:94-105`），`groups.ts:61` 的 `spawn` 透传 `options`，消费点 `packages/domain/src/use-cases/messaging.ts:331-340` 建会话时带上。校验用现成的 `RuntimeOption` 形状（`packages/domain/src/option.ts:38-52`），**不新增一套选项定义**。
+1. **bot 的启动配置（已落地）**：`PersistentAgent.options?: Readonly<Record<string, string | boolean>>`（`packages/domain/src/messaging.ts:110`）；派生入口 `apps/server/src/role-session.ts:56` 透传给 `deriveSessionUseCase`，P2P / 群聊 / 连接器 / 调度器四处在 `apps/server/src/main.ts:262,279,342,375` 带上；编辑入口 `apps/web/src/surfaces/im/bot-options.ts` + `bots.tsx` 的「启动选项」。校验用现成的 `RuntimeOption` 形状（`packages/domain/src/option.ts:38-52`），**不新增一套选项定义**：键是 agent 上报的 configId（`effort`/`thinking`/`mode`），不是 category（`thought_level` 填进去会被拒）。启动时未知键告警后跳过，已知键的非法值仍让本次启动失败。
 2. **DTO 进契约**：`BotDto/GroupDto/DeliveryDto/AttentionDto/ConnectorNoticeDto` 从 `apps/web/src/api.ts` 移到 `packages/contract/src/*`，web 只 import 契约。
 3. **项目仍是共享基础设施**：IM 不新增独立聚合；`MessagingConfig.projectId` 与 `Group.projectId` 不变。产品面上把「项目」表述为「IM 的工作区」（文案层），底层不复制概念。
 4. **持久 vs 临时**：已经是原子的（`RoleReuse`：`sticky | per-trace | always-new`，`packages/domain/src/messaging.ts:88-89`；会话 `Session.options` 是唯一权威），分层时只允许引用、不允许解释。
@@ -121,7 +121,7 @@ export const imSurface: Surface = {
 | M1 | 目录搬迁：atoms / shell / surfaces 三段（纯移动 + import 路径） | 单测、`build`、`typecheck:web` 全绿，页面手测无回归 |
 | M2 | DTO 进契约；`api.ts` 只做请求 | `check`（包边界）通过 |
 | M3 | IM 面收拢：`bots/messages/connectors` 只在 im 面；工作台不再 import 它们 | 门禁豁免表只剩 M4 相关条目 |
-| M4 | bot 启动配置：`PersistentAgent.options` + spawn 透传 + 编辑入口复用会话选项 UI | 新建 bot 会话带 `thought_level` 等选项（可测） |
+| M4 | bot 启动配置：`PersistentAgent.options` + spawn 透传 + bot 页编辑「启动选项」 | 新建 bot 会话带上 `effort`/`thinking`/`mode` 等 agent 真有的可调项（可测） |
 | M5 | 导航重排（第 6 节）+ 文案统一 | e2e 导航断言更新 |
 
 每阶段独立提交、独立部署，任何一阶段失败可回滚到上一个提交。
@@ -134,7 +134,7 @@ export const imSurface: Surface = {
 | M1 | 已落地 | `apps/web/src/{atoms,shell,surfaces}`，151 个文件纯移动（提交 `c50cb5c`） |
 | M2 | 已落地 | `packages/contract/src/messaging.ts`，web 只做同名转发（提交 `53107c0`） |
 | M3 | 已落地 | `surfaces/{im,workbench}/manifest.ts` 声明导航与路由，`route.ts` 只留注册表与壳自己的页（提交 `b94867f`） |
-| M4 | 待做 | bot 启动配置，见第 4 节第 1 条 |
+| M4 | 已落地 | bot 启动配置，见第 4 节第 1 条（`packages/domain/src/messaging.ts:110`、`apps/web/src/surfaces/im/bot-options.ts`） |
 | M5 | 待做 | 导航重排（第 6 节），需要设计确认后再动 |
 
 M3 之后「加一个产品面」的步骤是：建 `surfaces/<id>/manifest.ts` → 在 `route.ts` 的 `SURFACES` 加一行。壳的导航表、路由解析、门禁规则都不用改。
@@ -175,7 +175,7 @@ M3 之后「加一个产品面」的步骤是：建 `surfaces/<id>/manifest.ts` 
 
 ### 9.4 对本方案的影响
 
-- 第 4 节的「bot 启动配置」按原则 3 落地：`PersistentAgent` 是那个 N:1 的「1」，`options` 是它的配置；`spawn` 时允许本次覆盖（会话级可调项），两处都用同一套 `RuntimeOption`。
+- 第 4 节的「bot 启动配置」按原则 3 落地：`PersistentAgent` 是那个 N:1 的「1」，`options` 是它的配置；`spawn` 时允许本次覆盖（会话级可调项），两处都用同一套 `RuntimeOption`。**`options` 只是建会话时的 seed**：派生后以 `Session.options` 为准（含 fork/rewind/continue 的快照），改 bot 默认值不追改已有会话。
 - 第 5 节的设置归属按原则 2 落地：账号/团队/运行时尚在壳层（共享），项目设置在**工作台面**，bot/群设置在**消息面**；没有任何一面能自己新增「策略类」设置。
 - 第 2.1 节的 manifest 是原则 1 的实现手段：壳不持有页面状态，产品面只是渲染与入口，原子能力仍只在后端与 atoms 一份。
 
@@ -186,7 +186,7 @@ M3 之后「加一个产品面」的步骤是：建 `surfaces/<id>/manifest.ts` 
 | # | 缺口 | 现状证据 | 落点 | 验收 |
 | --- | --- | --- | --- | --- |
 | C1 | bot 没有独立身份与凭据 | `PersistentAgent`（`packages/domain/src/messaging.ts:94-105`）挂在 `projectId` 下；bot 起的会话借创建者权限 | 给 bot 发 `ahp_` 同族 token，作用域 = 该 bot 的群/项目 + 声明的工具集；审计带 bot 身份 | 用 bot token 调 `/api/...` 只能碰自己的群；越权 403 且审计可查 |
-| C2 | bot 没有启动配置 | `packages/domain/src/use-cases/groups.ts:61` 的 `spawn` 只传 role | `PersistentAgent.options` + spawn 透传（第 4 节第 1 条） | 新建 bot 会话带上 `thought_level`/上下文策略 |
+| C2 | ~~bot 没有启动配置~~（已落地） | `PersistentAgent.options` + 四处派生透传（第 4 节第 1 条） | 完成 | 新建 bot 会话带上 `effort`/`thinking`/`mode` 等可调项；真机冒烟 4/4 通过 |
 | C3 | 触发器不是 bot 的一等属性 | 连接器按 `projectId` 挂（ADR 0032），bot 借用项目的 | 连接器加 `botName?` 归属；触发时按 bot 的 runtime binding 建会话 | bot 自己配一个定时/PR 触发，不依赖项目连接器 |
 | C4 | 没有稳定的 bot 资源 API | 只有 `/api/projects/:id/agents` | `/api/bots`、`/api/bots/:name`（跨项目寻址，名字即 `@id`） | 外部集成方按名字引用 bot 不随项目迁移失效 |
 

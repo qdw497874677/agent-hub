@@ -352,7 +352,10 @@ export class PiSession implements RuntimeSession {
         if (typeof value !== 'string') return { ok: false, error: unavailable('思考档位必须是一个字符串') };
         await this.send({ type: 'set_thinking_level', level: value });
       } else {
-        return { ok: false, error: unavailable(`Pi 没有可调项 ${id}`) };
+        // 没上报过的键：忽略而不是失败（bot 的默认值可能来自别的 agent 的配置），
+        // 否则一个多余键会让这条 bot 的每次派生都起不来。
+        console.warn(`[pi] 跳过未知配置项 ${id}`);
+        return { ok: true, value: await this.loadOptions() };
       }
       // 换模型会连带改变可用档位，所以整份重新问一遍。
       return { ok: true, value: await this.loadOptions() };
@@ -436,6 +439,24 @@ export interface PiRuntimeOptions {
 /** 扩展文件随仓库发布（worker 从仓库运行），SDK 从仓库的 node_modules 解析。 */
 export const HUB_CONTEXT_EXTENSION = fileURLToPath(new URL('../extensions/hub-context.ts', import.meta.url));
 
+/**
+ * 把 bot / Agent Profile 给的启动选项逐项落到 Pi 上。
+ * `model` 已经作为 `--model` 参数传过，这里跳过；未知键由 `changeOption` 告警后忽略，
+ * 已知键的非法值则让本次启动失败（与 ACP 运行时一致，不要静默丢掉用户的选择）。
+ */
+export async function applyStartOptions(
+  session: Pick<PiSession, 'changeOption'>,
+  options: Readonly<Record<string, string | boolean>>
+): Promise<Result<null, DomainError>> {
+  for (const [id, value] of Object.entries(options)) {
+    if (id === 'model') continue;
+    if (typeof value === 'string' && value === '') continue;
+    const changed = await session.changeOption(id, value);
+    if (!changed.ok) return { ok: false, error: changed.error };
+  }
+  return { ok: true, value: null };
+}
+
 export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
   const command = options.command ?? 'pi';
   // Pi 自带 MCP 与否决定 agent-hub 写进哪个文件；问一次 `pi --version` 就缓存
@@ -517,15 +538,26 @@ export function createPiRuntime(options: PiRuntimeOptions = {}): AgentRuntime {
         }
         const forked = await session.identify();
         if (forked) options.onAgentSessionRef?.(spec.sessionId, forked);
+        const applied = await applyStartOptions(session, spec.options);
+        if (!applied.ok) {
+          await session.dispose();
+          return applied;
+        }
         void session.loadOptions();
         return { ok: true, value: session };
       }
 
       child.once('spawn', () => {
-        void session.identify().then((ref) => {
+        void (async () => {
+          const ref = await session.identify();
           if (ref) options.onAgentSessionRef?.(spec.sessionId, ref);
-        });
-        void session.loadOptions();
+          const applied = await applyStartOptions(session, spec.options);
+          if (!applied.ok) {
+            await session.dispose();
+            return;
+          }
+          await session.loadOptions();
+        })();
       });
 
       return { ok: true, value: session };

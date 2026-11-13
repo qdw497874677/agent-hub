@@ -453,6 +453,7 @@ test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删�
   let config: MessagingConfig = { projectId: w.project.id, roles: w.roleList, limits: {}, updatedAt: 0 };
   const agents = createPersistentAgents({
     projects: w.deps.projects,
+    sessions: w.deps.sessions,
     policy: { context: async () => ({ hubTeamId: 'T', settings: { membersCanAddMachines: false } }), worker: async () => ({}) as never } as never,
     config: async () => config,
     saveConfig: async (_p, input) => {
@@ -529,4 +530,30 @@ test('未读：别人发的才算、自己发的不算；标已读清零、不�
   const mallory = w.principal('mallory')!;
   assert.equal((await unread(mallory)).total, 0, '看不到的项目不算');
   assert.ok(!(await w.chat.markRead(mallory, g.value.id)).ok);
+});
+
+test('bot 的启动选项：能存能改，形状不对就拒', async () => {
+  const w = await world();
+  let config: MessagingConfig = { projectId: w.project.id, roles: [], limits: {}, updatedAt: 0 };
+  const agents = createPersistentAgents({
+    projects: w.deps.projects,
+    sessions: w.deps.sessions,
+    config: async () => config,
+    saveConfig: async (_p, input) => {
+      const problem = configProblem(input);
+      if (problem) return { ok: false, error: { code: 'invalid', message: problem } } as never;
+      config = { ...config, roles: input.roles, limits: input.limits };
+      return { ok: true, value: config };
+    },
+    groupsOf: async () => [],
+    detach: async () => []
+  });
+  assert.ok(!(await agents.create(w.alice, w.project.id, { name: 'bad', agentId: 'pi', options: { 'Thought Level': 'high' } })).ok, '键形状不对');
+  assert.ok(!(await agents.create(w.alice, w.project.id, { name: 'bad', agentId: 'pi', options: { thought_level: 'x'.repeat(201) } })).ok, '值太长');
+  const ok = await agents.create(w.alice, w.project.id, { name: 'slow', agentId: 'pi', options: { thought_level: 'high', sandbox: true } });
+  assert.ok(ok.ok, ok.ok ? '' : ok.error.message);
+  assert.deepEqual(ok.value.options, { thought_level: 'high', sandbox: true });
+  const cleared = await agents.update(w.alice, w.project.id, 'slow', { options: {} });
+  assert.ok(cleared.ok, cleared.ok ? '' : cleared.error.message);
+  assert.equal(cleared.value.options, undefined, '清空后不落空对象');
 });

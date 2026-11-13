@@ -35,6 +35,8 @@
 
 2026-11-13 下午（`646fd85` → `1adf3c0`）：思考强度归位与前端分层。`provider-proxy` 的 `mergeModelExtra` 遇到 `reasoning_effort/reasoning/thinking/thinking_config` 时，若 agent 已经发了值就以 agent 为准（配置只当默认值）；模型选择器按提供商收口（hub 模型会话只列同提供商，跨类收进不可点说明）；文件页的「刷新中…」改成不占位的圆角指示器。前端按 `atoms / shell / surfaces` 三层拆分（`apps/web/src/atoms` 55 个、`shell` 58 个、`surfaces/workbench` 36 个、`surfaces/im` 3 个），`FILE_RULES` 加三条反向依赖规则并进 selftest；IM/运行态 DTO 上提到 `packages/contract/src/messaging.ts`；产品形态用 `surfaces/<形态>/manifest.ts` 声明导航与路由，壳只在 `route.ts` 的 `SURFACES` 注册表加一行。设计与后续能力路线见 `docs/design/front-end-layering.md`（§7.1 进展、§10 bot 凭据/options/触发器/资源 API）。
 
+2026-11-13 傍晚（未推送）：C2 bot 启动选项。`PersistentAgent.options` 是建会话时的 seed，四处派生（P2P / 群聊 / 连接器 / 调度器，`apps/server/src/main.ts:262,279,342,375`）都会带上；fork / rewind / continue-elsewhere 现在把 `source.options` 快照进新会话，重启后 `ensureHosted` 不会再丢。bot 页加了「启动选项」编辑区（键建议 `effort`/`thinking`/`mode`——必须是 agent 上报的 configId，`thought_level` 是分类名填不得）。启动侧：ACP 先落模型、未知键告警后跳过，已知键的非法值仍让本次启动失败；Pi 之前根本不应用非 model 选项（等于静默丢弃），现在逐项 `change_option`。
+
 ## 2. 已完成的主线
 
 ### 2.1 Agent Runtime / Paseo 借鉴

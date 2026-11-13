@@ -5,6 +5,8 @@ import {
   asSessionId,
   authorizeProject,
   messageView,
+  OPTION_KEY,
+  PERSISTENT_AGENT_OPTIONS_MAX,
   principalOfSubject,
   type Deps,
   type MessageBus,
@@ -28,12 +30,18 @@ const sendBody = z.object({
   body: z.string().min(1).max(32768),
   idempotencyKey: z.string().max(100).optional()
 });
+// 与 domain 的 configProblem 用同一套规则；前端逐条提示也照这份，别在三处各写一遍。
+const optionsBody = z
+  .record(z.string().regex(OPTION_KEY, '选项键要小写字母开头，只含 a-z 0-9 _ . -'), z.union([z.string().max(200), z.boolean()]))
+  .refine((value) => Object.keys(value).length <= PERSISTENT_AGENT_OPTIONS_MAX, `启动选项最多 ${PERSISTENT_AGENT_OPTIONS_MAX} 个`);
+
 const roleBody = z.object({
   name: z.string().max(40),
   description: z.string().max(500).default(''),
   agentId: z.string().min(1).max(80),
   model: z.string().max(200).default(''),
-  reuse: z.enum(['sticky', 'per-trace', 'always-new']).default('sticky')
+  reuse: z.enum(['sticky', 'per-trace', 'always-new']).default('sticky'),
+  options: optionsBody.optional()
 });
 const configBody = z.object({
   roles: z.array(roleBody).max(50),

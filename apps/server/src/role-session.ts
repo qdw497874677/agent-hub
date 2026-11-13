@@ -44,6 +44,8 @@ export async function openRoleSession(
     readonly ownerId: string;
     readonly agentId: string;
     readonly model: string;
+    /** bot 配的启动选项：建会话时垫进去（会话内仍可覆盖）。 */
+    readonly options?: Readonly<Record<string, string | boolean>>;
     readonly actor: Subject;
     readonly via: ProvenanceVia;
     readonly afterDerive?: (session: Session) => Promise<void>;
@@ -55,6 +57,7 @@ export async function openRoleSession(
     taskId: task.value.id,
     agentId: input.agentId,
     model: input.model,
+    ...(input.options ? { options: input.options } : {}),
     actor: input.actor
   });
   if (!created.ok) return created;

@@ -215,7 +215,8 @@ export async function forkSessionUseCase(
     model: model.value,
     now: deps.now(),
     workerId: placed.value,
-    createdBy: principalOfSubject(command.actor)?.user.id ?? null
+    createdBy: principalOfSubject(command.actor)?.user.id ?? null,
+    options: source.options
   });
   if (!created.ok) return created;
 

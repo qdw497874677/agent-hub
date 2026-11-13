@@ -59,6 +59,20 @@
 
 仍未做：SEC-2（运维，需真实 SSH 凭据）、DEP-2、CAP-1..5。
 
+### 1.2 进展（2026-11-13 · C2 bot 启动选项）
+
+已修：
+- **调度器派生不带 bot 选项**：`apps/server/src/main.ts:375` 现在从 `notifySessionId` 找回 bot 的 role 并透传 `options`（`enqueueDispatch` 那层只存 agentId/model，不动表结构）。
+- **fork / rewind / continue-elsewhere 重启后丢选项**：`packages/domain/src/session.ts` 的 `forkSession` 多了可选 `options`，三个调用点把 `source.options` 快照进新会话；此前首轮带选项、`ensureHosted` 重启用 `Session.options` 时就没了。
+- **Pi 静默丢弃非 model 选项**：`packages/adapters/pi/src/pi-runtime.ts` 的 `applyStartOptions` 在 spawn 后逐项 `changeOption`；此前 `options:{thinking:'low'}` 会存库成功、会话里仍是 `high`。
+- **未知项导致每条消息新开 failed 会话**：ACP 改为模型优先 + 未知键 `console.warn` 后继续（`packages/adapters/acp/src/acp-runtime.ts:488-503`），已知键的值非法仍失败。
+- **三处校验漂移**：`apps/server/src/messaging-routes.ts` 与 `persistent-agent-routes.ts` 的 options schema 补 `OPTION_KEY` 正则与 `≤16` 上限（常量从 domain 导出）；前端 `bot-options.ts` 补值长 200 校验；删掉死代码 `groupApi.saveRoles`（整表 PUT 会清空 displayName/color/options）。
+
+已知残留（未修，按需再排）：
+- **空清单窗口**：项目里还没有该 agent 的会话上报过 `optionSpec` 时，`persistentAgentOptionsSpecProblem` 只做形状校验，任意键都放行；产物要么被运行期静默跳过（未知键），要么让会话启动失败（已知键、非法值）。冒烟脚本 `/tmp/opencode/bot-options-smoke/` 的 3b/3c 可复现。
+- **选项键是 configId 不是 category**：opencode 的思考强度 id 是 `effort`（且只在模型有 variants 时上报），Pi 是 `thinking`；填 `thought_level` 会被服务端按「没有这个可调项」拒。UI 建议已改成 `effort`/`thinking`/`mode`。
+- **本机 opencode 不暴露思考强度**：`~/.cache/opencode/models.json` 里 my-codex 的模型 variants 全为 0，端到端只能拿 `mode` 验证。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道

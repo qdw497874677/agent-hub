@@ -5,6 +5,11 @@ import { AccountMenu, useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
 import { BotConnectors } from './bot-connectors.tsx';
+import {
+  BOT_OPTION_KEY_SUGGESTIONS, BOT_OPTION_VALUE_SUGGESTIONS, BOT_OPTION_VALUE_MAX,
+  botOptionRows, botOptionsProblem, botOptionRowProblem, botOptionsInput, flipBotOptionRow,
+  newBotOptionRow, type BotOptionRow
+} from './bot-options.ts';
 
 /**
  * Bot 页（#/bots[/<项目>]）：持久智能体在界面上就叫 bot。
@@ -57,11 +62,16 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
   const [model, setModel] = useState(bot?.model ?? '');
   const [description, setDescription] = useState(bot?.description ?? '');
   const [reuse, setReuse] = useState<MessagingRoleDto['reuse']>(bot?.reuse ?? 'sticky');
+  // 启动选项：编辑时还原成行；保存时只收非空键，全空就不传（编辑时传 {} 表示清空）。
+  const [options, setOptions] = useState<BotOptionRow[]>(() => botOptionRows(bot?.options));
   const [more, setMore] = useState(false);
   const client = useQueryClient();
+  const optionsError = botOptionsProblem(options);
+  const setOption = (index: number, patch: Partial<BotOptionRow>) =>
+    setOptions((rows) => rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   const save = useMutation({
     mutationFn: () => {
-      const input = { displayName: displayName.trim(), color, agentId, model: model.trim(), description, reuse };
+      const input = { displayName: displayName.trim(), color, agentId, model: model.trim(), description, reuse, ...botOptionsInput(options, !!bot) };
       return bot ? botApi.update(projectId, bot.name, input) : botApi.create(projectId, { name: name.trim(), ...input });
     },
     onSuccess: () => { void client.invalidateQueries({ queryKey: BOTS_KEY }); void client.invalidateQueries({ queryKey: ['groups'] }); onDone(); }
@@ -69,7 +79,7 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
   const preview = { name: name || '?', displayName, color };
   const known = RUNTIMES.some((r) => r.id === agentId);
   return (
-    <form data-testid="bot-form" className="flex flex-col gap-3 rounded-md border border-strong bg-panel p-3" onSubmit={(e) => { e.preventDefault(); save.mutate(); }}>
+    <form data-testid="bot-form" className="flex flex-col gap-3 rounded-md border border-strong bg-panel p-3" onSubmit={(e) => { e.preventDefault(); if (optionsError) return; save.mutate(); }}>
       <div className="flex items-center gap-3">
         <BotAvatar bot={preview} size={40} />
         <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="颜色">
@@ -114,14 +124,85 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
         {more ? '▾' : '▸'} 高级 · 会话复用：{reuse === 'sticky' ? '一直用同一个会话' : reuse === 'per-trace' ? '每条对话链一个' : '每次新开'}
       </button>
       {more ? (
-        <select aria-label="会话复用" data-testid="bot-reuse" className={INPUT} value={reuse} onChange={(e) => setReuse(e.target.value as MessagingRoleDto['reuse'])}>
-          <option value="sticky">一直用同一个会话（推荐）</option>
-          <option value="per-trace">每条对话链一个会话</option>
-          <option value="always-new">每次新开会话</option>
-        </select>
+        <>
+          <select aria-label="会话复用" data-testid="bot-reuse" className={INPUT} value={reuse} onChange={(e) => setReuse(e.target.value as MessagingRoleDto['reuse'])}>
+            <option value="sticky">一直用同一个会话（推荐）</option>
+            <option value="per-trace">每条对话链一个会话</option>
+            <option value="always-new">每次新开会话</option>
+          </select>
+          <div data-testid="bot-options" className="flex flex-col gap-2 rounded-sm border border-hair bg-card p-2">
+            <div>
+              <p className="text-meta text-secondary">启动选项</p>
+              <p className="text-meta text-tertiary">建会话时作为默认值；会话里可以再改。</p>
+            </div>
+            {options.map((row, i) => {
+              const rowProblem = botOptionRowProblem(options, i);
+              const bad = rowProblem ? { borderColor: 'var(--color-rust)' } : undefined;
+              const valueHints = BOT_OPTION_VALUE_SUGGESTIONS[row.key.trim()];
+              return (
+                <div key={i} className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center">
+                    <input
+                      data-testid="bot-option-key" aria-label="选项键" className={`${INPUT} min-w-0 font-mono sm:flex-1`}
+                      style={bad} list="bot-option-keys" autoComplete="off" spellCheck={false} maxLength={41}
+                      placeholder="effort" value={row.key}
+                      onChange={(e) => setOption(i, { key: e.target.value })}
+                    />
+                    <div className="flex min-w-0 items-center gap-1 sm:flex-1">
+                      {row.kind === 'text' ? (
+                        <input
+                          data-testid="bot-option-value" aria-label="选项值" className={`${INPUT} min-w-0 flex-1 font-mono`}
+                          style={bad} list={valueHints ? `bot-option-values-${i}` : undefined} autoComplete="off" spellCheck={false} maxLength={BOT_OPTION_VALUE_MAX}
+                          placeholder={valueHints ? valueHints.join(' / ') : '值（可留空）'} value={row.text}
+                          onChange={(e) => setOption(i, { text: e.target.value })}
+                        />
+                      ) : (
+                        <label className="flex min-w-0 flex-1 items-center gap-2 px-1 py-1.5 text-meta text-secondary">
+                          <input
+                            type="checkbox" role="switch" data-testid="bot-option-value" aria-label="选项值"
+                            className="h-4 w-4 shrink-0 accent-[var(--color-accent)]" checked={row.on}
+                            onChange={(e) => setOption(i, { on: e.target.checked })}
+                          />
+                          {row.on ? '打开' : '关闭'}
+                        </label>
+                      )}
+                      <button
+                        type="button" data-testid="bot-option-toggle" className={`${SMALL} shrink-0`}
+                        aria-label={row.kind === 'text' ? '切换为开关' : '切换为文本'} aria-pressed={row.kind === 'switch'}
+                        title={row.kind === 'text' ? '改成开关（是 / 否）' : '改成文本'}
+                        onClick={() => setOptions((rows) => rows.map((r, j) => (j === i ? flipBotOptionRow(r) : r)))}
+                      >
+                        {row.kind === 'text' ? '开关' : '文本'}
+                      </button>
+                      <button
+                        type="button" data-testid="bot-option-remove" aria-label="删除选项" className={`${DANGER} shrink-0`}
+                        onClick={() => setOptions((rows) => rows.filter((_, j) => j !== i))}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                  {valueHints ? (
+                    <datalist id={`bot-option-values-${i}`}>
+                      {valueHints.map((value) => <option key={value} value={value} />)}
+                    </datalist>
+                  ) : null}
+                  {rowProblem ? <p className="text-meta text-rust">{rowProblem}</p> : null}
+                </div>
+              );
+            })}
+            <button type="button" data-testid="bot-option-add" className="self-start text-meta text-tertiary hover:text-secondary" onClick={() => setOptions((rows) => [...rows, newBotOptionRow()])}>
+              ＋ 添加选项
+            </button>
+            <datalist id="bot-option-keys">
+              {BOT_OPTION_KEY_SUGGESTIONS.map((key) => <option key={key} value={key} />)}
+            </datalist>
+            {optionsError ? <p data-testid="bot-options-error" className="text-meta text-rust">{optionsError}</p> : null}
+          </div>
+        </>
       ) : null}
       <div className="flex items-center gap-2">
-        <button type="submit" data-testid="bot-save" className={SMALL} disabled={save.isPending || (!bot && !name.trim())}>{bot ? '保存' : '新建 bot'}</button>
+        <button type="submit" data-testid="bot-save" className={SMALL} disabled={save.isPending || (!bot && !name.trim()) || optionsError !== null}>{bot ? '保存' : '新建 bot'}</button>
         <button type="button" className={SMALL} onClick={onDone}>取消</button>
         {save.error ? <p data-testid="bot-error" className="text-meta text-rust">{errorText(save.error)}</p> : null}
       </div>

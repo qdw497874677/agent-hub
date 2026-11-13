@@ -196,6 +196,7 @@ export function createRewindService(deps: RewindDeps) {
         source,
         atSeq: (promptSeq - 1) as never,
         allowEmpty: true,
+        options: source.options,
         agentId: source.agentId,
         model: source.model,
         now: deps.now(),

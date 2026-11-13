@@ -772,9 +772,7 @@ export const groupApi = {
   chains: (id: string) => call<{ chains: { thread: GroupThreadDto; deliveries: GroupDeliveryDto[] }[] }>(`/api/groups/${encodeURIComponent(id)}/chains`),
   unread: () => call<GroupUnreadDto>('/api/groups/unread'),
   markRead: (id: string, seq?: number) => post<{ seq: number }>(`/api/groups/${encodeURIComponent(id)}/read`, seq === undefined ? {} : { seq }),
-  roles: (projectId: string) => call<{ roles: MessagingRoleDto[]; limits: Record<string, number> }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`),
-  saveRoles: (projectId: string, roles: MessagingRoleDto[], limits: Record<string, number>) =>
-    call<unknown>(`/api/projects/${encodeURIComponent(projectId)}/messaging`, { method: 'PUT', body: JSON.stringify({ roles, limits }) })
+  roles: (projectId: string) => call<{ roles: MessagingRoleDto[]; limits: Record<string, number> }>(`/api/projects/${encodeURIComponent(projectId)}/messaging`)
 };
 
 const put = (body: unknown): RequestInit => ({ method: 'PUT', body: JSON.stringify(body) });

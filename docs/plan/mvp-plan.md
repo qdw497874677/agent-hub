@@ -250,7 +250,7 @@ M6 之后补的三件 M3/M4 遗留（列表视图、搜索、项目切换）见 
 | --- | --- | --- |
 | 扩展方式从「每个 agent 一个包」改成「协议一包、agent 一条配置」 | `packages/adapters/opencode` → `packages/adapters/acp`（通用），OpenCode 变成 `ACP_AGENTS` 里的一条 JSON | 说 ACP 的 agent 有几十个，它们之间没有区别；按 agent 建包会得到 N 份同样的握手代码。Pi 没有 ACP，所以它仍然独占一个包 |
 | 可调项清单 | `RuntimeOption[]`，形状照抄 ACP 的 `ConfigOption`；`category` 只用于摆放 | 见 ADR 0007。UI 里没有任何硬编码的选项名 |
-| 会话存两份 | `options`（当前值）+ `optionSpec`（整份清单，含候选） | 只存值的话，选择器不知道该列什么；而候选只有 agent 知道，且换模型后候选会变 |
+| 会话存两份 | `options`（当前值）+ `optionSpec`（整份清单，含候选）；另有第三层来源：bot / Agent Profile 的配置在派生时快照进 `Session.options` | 只存值的话，选择器不知道该列什么；而候选只有 agent 知道，且换模型后候选会变 |
 | 改选项后的「真相」 | 用户点选后平台**不**回显，等 agent 回报全量状态再落库，HTTP 响应最多等 8 秒 | 「换模型成功了」只有换完还愿意回答的 agent 有资格说。乐观回显会和真实状态分叉，而分叉的界面比慢一点的界面危险得多 |
 | 改选项前先拉起 agent | `ensureHosted()`：会话不在 live 集合里就先 `start_session` + resume，和「接着说一句」同一条路径 | 第一次实测就撞上了：跑完的会话已被 worker dispose，`set_option` 打在一个不存在的会话上，日志只有「未知会话」，而接口返回 200 |
 | 模型值同时写进 `Session.model` | 由 agent 回报驱动，不由用户点选驱动 | `--model` 是重启参数，它必须等于 agent 真正在用的那个 |

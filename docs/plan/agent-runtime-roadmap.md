@@ -7,7 +7,8 @@
 ## 0. 命名与边界
 
 - **Agent Runtime**：Claude Code、OpenCode、Pi、Grok 这类 agent CLI 适配器。Hub 现有的 `provider` 只指模型 API 提供商，不要复用。
-- **Agent Profile**：一组可复用的 runtime / model / mode / thinking / options 组合。
+- **Agent Profile**：一组可复用的 runtime / model / mode / thinking / options 组合。它属**人**（跨项目复用）。
+- **bot 启动选项**：`PersistentAgent.options`，属**项目里的 bot**，是派生会话时的 seed 值；与 profile 同走 `deriveSessionUseCase` 的 options 合并（本次命令入参 > profile > bot seed），派生后以 `Session.options` 为唯一权威。
 - **Subagent**：父会话内由运行时派生的子代理。它不是 Hub `Session`，不进画布会话树，不单独授权。
 - 基本单位仍是 `Session`。不引入 Paseo 的持久化 agent 实体，也不照搬 workspace tabs / 完整编排 UI。
 
@@ -41,7 +42,7 @@
 - 领域：`AgentProfile`、校验、owner 隔离 CRUD。
 - 存储：SQLite `agent_profiles`。
 - API：`GET/POST /api/agent-profiles`、`PATCH/DELETE /api/agent-profiles/:id`。
-- 派生：`deriveSessionRequest.profileId` 优先提供 agent/model/options。
+- 派生：`deriveSessionRequest.profileId` 优先提供 agent/model/options；没有 profile 时可以用 bot 的 `options`（`apps/server/src/role-session.ts:56`）。
 - Web：派生对话框选择 profile；会话“更多”保存当前配置。
 - 配置管理页：会话“更多 → 管理 Agent 配置…”和派生对话框“管理”；支持改名、改模型/备注、复制、删除。
 - 配置与 `optionSpec` 的兼容检查：派生对话框提示当前运行时未上报的 agent/模型/选项；后端仍会拒绝不存在的模型。

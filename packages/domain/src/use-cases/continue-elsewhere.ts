@@ -102,6 +102,7 @@ export async function continueElsewhereUseCase(
   const created = forkSession({
     source,
     atSeq: source.lastSeq,
+    options: source.options,
     agentId: source.agentId,
     model: carryModelTo(workers, placed.value, source.agentId, source.model),
     now: deps.now(),
