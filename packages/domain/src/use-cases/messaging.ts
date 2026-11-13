@@ -15,12 +15,12 @@ import {
   parseAddress,
   wrapUntrusted,
   type AgentMessage,
-  type AgentRole,
   type FailureCode,
   type MessageAuditAction,
   type MessageKind,
   type MessageLimits,
-  type MessagingConfig
+  type MessagingConfig,
+  type PersistentAgent
 } from '../messaging.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
@@ -43,8 +43,8 @@ export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'project
   readonly principalOf: (userId: string) => Promise<Principal | null>;
   /** 把一段话作为一轮提问送进会话（组合根接到 promptSessionUseCase）。 */
   readonly deliver: (sessionId: SessionId, text: string, author: { id: string; name: string; via: string }) => Promise<Result<unknown, DomainError>>;
-  /** 按角色开一条新会话（组合根：建任务 + 派生会话）。actor 是批准的人。 */
-  readonly spawn: (input: { project: Project; role: AgentRole; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
+  /** 按 bot 开一条新会话（组合根：建任务 + 派生会话）。actor 是批准的人。 */
+  readonly spawn: (input: { project: Project; role: PersistentAgent; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
   readonly askTimeoutMs?: number;
   /** 同一条会话的投递闸（组合根里两边共用一个）；occupied = 别的通道在这条会话上还有没收尾的投递。 */
   readonly lane?: SessionLane;
@@ -95,7 +95,7 @@ export interface MessageBus {
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   config(projectId: ProjectId): Promise<MessagingConfig>;
-  saveConfig(projectId: ProjectId, input: { roles: readonly AgentRole[]; limits: Partial<MessageLimits> }): Promise<Result<MessagingConfig, DomainError>>;
+  saveConfig(projectId: ProjectId, input: { roles: readonly PersistentAgent[]; limits: Partial<MessageLimits> }): Promise<Result<MessagingConfig, DomainError>>;
 }
 
 const summary = (text: string): string => (text.length > 80 ? `${text.slice(0, 80)}…` : text).replaceAll('\n', ' ');
@@ -152,7 +152,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
 
   const loadConfig = async (projectId: ProjectId): Promise<MessagingConfig> => (await deps.messages.config(projectId)) ?? emptyConfig(projectId);
 
-  const labelOf = (session: Session, role: string | null): string => `${role ?? session.agentId}（会话 #${session.id.slice(0, 6)}）`;
+  const labelOf = (session: Session, bot: string | null): string => `${bot ?? session.agentId}（会话 #${session.id.slice(0, 6)}）`;
 
   const nameOf = async (userId: string): Promise<string> => {
     const principal = await deps.principalOf(userId);
@@ -319,17 +319,17 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       }
 
       let target: Session | null = null;
-      let role: AgentRole | null = null;
+      let bot: PersistentAgent | null = null;
       if (address.kind === 'session') {
         const there = await sessionAndProject(address.sessionId);
         target = there?.session ?? null;
         if (!target || there?.project.id !== project.id) return deny('unresolvable', '同一个项目里没有这条会话');
         if (target.id === from.id) return err(invalid('不能给自己发消息'));
       } else {
-        role = config.roles.find((r) => r.name === address.role) ?? null;
-        if (!role) return deny('unresolvable', `项目里没有定义角色 ${address.role}`);
-        if (role.reuse !== 'always-new') {
-          const spawns = (await deps.messages.spawnsForRole(project.id, role.name)).filter((s) => role!.reuse === 'sticky' || s.traceId === traceId);
+        bot = config.roles.find((r) => r.name === address.role) ?? null;
+        if (!bot) return deny('unresolvable', `项目里没有定义角色 ${address.role}`);
+        if (bot.reuse !== 'always-new') {
+          const spawns = (await deps.messages.spawnsForRole(project.id, bot.name)).filter((s) => bot!.reuse === 'sticky' || s.traceId === traceId);
           for (const spawn of spawns.sort((a, b) => b.createdAt - a.createdAt)) {
             const candidate = await deps.sessions.byId(spawn.sessionId);
             if (candidate && candidate.status !== 'failed' && (await isolationProblem(from, candidate)) === null && (await canReach(from, candidate))) {
@@ -361,7 +361,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         onBehalfOf,
         to: command.to.trim(),
         targetSessionId: target?.id ?? null,
-        role: role?.name ?? null,
+        role: bot?.name ?? null,
         replyTo: null,
         body,
         status: target ? 'queued' : 'awaiting_approval',
@@ -380,7 +380,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (target) {
         await pump(target.id);
       } else {
-        await audit(message, message, 'spawn_requested', from.id, `role:${role?.name}（${role?.ref.runtime}）等人批准`);
+        await audit(message, message, 'spawn_requested', from.id, `role:${bot?.name}（${bot?.ref.runtime}）等人批准`);
       }
       const saved = (await deps.messages.byId(message.id)) ?? message;
       return ok({ messageId: saved.id, traceId, status: saved.status, targetSessionId: saved.targetSessionId });
@@ -437,18 +437,18 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         return ok(denied);
       }
       const config = await loadConfig(project.id);
-      const role = config.roles.find((r) => r.name === message.role);
-      if (!role) {
+      const bot = config.roles.find((r) => r.name === message.role);
+      if (!bot) {
         await fail(message, 'config', `角色 ${message.role ?? ''} 已不存在`);
         return err(conflict(`角色 ${message.role ?? ''} 已不存在`));
       }
-      await audit(message, message, 'spawn_approved', `user:${actor.user.id}`, `role:${role.name}`);
-      const spawned = await deps.spawn({ project, role, actor, title: `[${role.name}] ${summary(message.body)}` });
+      await audit(message, message, 'spawn_approved', `user:${actor.user.id}`, `role:${bot.name}`);
+      const spawned = await deps.spawn({ project, role: bot, actor, title: `[${bot.name}] ${summary(message.body)}` });
       if (!spawned.ok) {
         await fail(message, 'config', spawned.error.message);
         return err(spawned.error);
       }
-      await deps.messages.saveSpawn({ sessionId: spawned.value.id, projectId: project.id, role: role.name, spawnerSessionId: message.fromSessionId, traceId: message.traceId, createdAt: now });
+      await deps.messages.saveSpawn({ sessionId: spawned.value.id, projectId: project.id, role: bot.name, spawnerSessionId: message.fromSessionId, traceId: message.traceId, createdAt: now });
       await audit(message, message, 'spawned', `user:${actor.user.id}`, `→ ${spawned.value.id}`);
       const queued = { ...message, status: 'queued' as const, targetSessionId: spawned.value.id, updatedAt: deps.now() };
       await deps.messages.save(queued);
@@ -478,8 +478,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         });
       }
       if (!(await deps.messages.spawnOf(from.id))) {
-        for (const role of (await loadConfig(project.id)).roles) {
-          entries.push({ address: `role:${role.name}`, label: `${role.name}（${role.ref.runtime}）`, status: role.reuse, description: role.description });
+        for (const bot of (await loadConfig(project.id)).roles) {
+          entries.push({ address: `role:${bot.name}`, label: `${bot.name}（${bot.ref.runtime}）`, status: bot.reuse, description: bot.description });
         }
       }
       return ok(entries);
@@ -532,10 +532,10 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (problem) return err(invalid(problem));
       const config: MessagingConfig = {
         projectId,
-        roles: input.roles.map((r) => ({
-          ...r,
-          name: r.name.trim(),
-          ref: { ...r.ref, runtime: r.ref.runtime.trim(), model: r.ref.model.trim() }
+        roles: input.roles.map((bot) => ({
+          ...bot,
+          name: bot.name.trim(),
+          ref: { ...bot.ref, runtime: bot.ref.runtime.trim(), model: bot.ref.model.trim() }
         })),
         limits: input.limits,
         updatedAt: deps.now()

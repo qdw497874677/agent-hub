@@ -110,10 +110,10 @@ export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAg
   const allowed = async (actor: Principal, projectId: ProjectId, permission: 'project.read' | 'project.update') =>
     authorizeProject(deps.policy, actor, await deps.projects.byId(projectId), permission);
 
-  const save = async (projectId: ProjectId, config: MessagingConfig, roles: readonly PersistentAgent[]) => {
-    const problem = configProblem({ roles, limits: config.limits });
+  const save = async (projectId: ProjectId, config: MessagingConfig, bots: readonly PersistentAgent[]) => {
+    const problem = configProblem({ roles: bots, limits: config.limits });
     if (problem) return err(invalid(problem));
-    return deps.saveConfig(projectId, { roles, limits: config.limits });
+    return deps.saveConfig(projectId, { roles: bots, limits: config.limits });
   };
 
   return {

@@ -108,8 +108,6 @@ export interface PersistentAgent {
   readonly ref: AgentRef;
   readonly reuse: RoleReuse;
 }
-/** @deprecated 旧名，等同 PersistentAgent。 */
-export type AgentRole = PersistentAgent;
 
 export const PERSISTENT_AGENT_DESCRIPTION_MAX = 4000;
 export const PERSISTENT_AGENT_DISPLAY_NAME_MAX = 40;
@@ -131,7 +129,8 @@ export const MAX_BODY_CHARS = 32_768;
 
 export interface MessagingConfig {
   readonly projectId: ProjectId;
-  readonly roles: readonly AgentRole[];
+  /** 键名沿用历史字段名 roles（已落库的 JSON），值是 bot 列表。 */
+  readonly roles: readonly PersistentAgent[];
   /** 只存项目改过的那几项。 */
   readonly limits: Partial<MessageLimits>;
   readonly updatedAt: number;
@@ -151,19 +150,19 @@ export function effectiveLimits(override: Partial<MessageLimits> | undefined): M
 }
 
 /** 配置校验：给人看的问题，没问题 null。超过 2 倍直接拒，不悄悄夹。 */
-export function configProblem(input: { roles: readonly AgentRole[]; limits: Partial<MessageLimits> }): string | null {
+export function configProblem(input: { roles: readonly PersistentAgent[]; limits: Partial<MessageLimits> }): string | null {
   const names = new Set<string>();
-  for (const role of input.roles) {
-    if (!ROLE_NAME.test(role.name)) return `@id ${role.name} 只能用小写字母、数字、- 和 _（最多 40 个字符）`;
-    if (names.has(role.name)) return `@${role.name} 已经有了`;
-    names.add(role.name);
-    if (!role.ref.runtime.trim()) return `角色 ${role.name} 要指定 agent`;
-    if (!['sticky', 'per-trace', 'always-new'].includes(role.reuse)) return `角色 ${role.name} 的复用方式不对`;
-    if (role.description.length > PERSISTENT_AGENT_DESCRIPTION_MAX) return `bot ${role.name} 的职责说明最多 ${PERSISTENT_AGENT_DESCRIPTION_MAX} 字`;
-    if (role.displayName !== undefined && role.displayName.length > PERSISTENT_AGENT_DISPLAY_NAME_MAX) return `bot ${role.name} 的名字最多 ${PERSISTENT_AGENT_DISPLAY_NAME_MAX} 字`;
-    if (role.color !== undefined && !(PERSISTENT_AGENT_COLORS as readonly string[]).includes(role.color)) return `bot ${role.name} 的颜色不对`;
-    const ref = validateAgentRef(role.ref);
-    if (!ref.ok) return `bot ${role.name} 的${ref.error.message}`;
+  for (const bot of input.roles) {
+    if (!ROLE_NAME.test(bot.name)) return `@id ${bot.name} 只能用小写字母、数字、- 和 _（最多 40 个字符）`;
+    if (names.has(bot.name)) return `@${bot.name} 已经有了`;
+    names.add(bot.name);
+    if (!bot.ref.runtime.trim()) return `角色 ${bot.name} 要指定 agent`;
+    if (!['sticky', 'per-trace', 'always-new'].includes(bot.reuse)) return `角色 ${bot.name} 的复用方式不对`;
+    if (bot.description.length > PERSISTENT_AGENT_DESCRIPTION_MAX) return `bot ${bot.name} 的职责说明最多 ${PERSISTENT_AGENT_DESCRIPTION_MAX} 字`;
+    if (bot.displayName !== undefined && bot.displayName.length > PERSISTENT_AGENT_DISPLAY_NAME_MAX) return `bot ${bot.name} 的名字最多 ${PERSISTENT_AGENT_DISPLAY_NAME_MAX} 字`;
+    if (bot.color !== undefined && !(PERSISTENT_AGENT_COLORS as readonly string[]).includes(bot.color)) return `bot ${bot.name} 的颜色不对`;
+    const ref = validateAgentRef(bot.ref);
+    if (!ref.ok) return `bot ${bot.name} 的${ref.error.message}`;
   }
   for (const [key, value] of Object.entries(input.limits)) {
     if (!(key in DEFAULT_MESSAGE_LIMITS)) return `不认识的限额 ${key}`;

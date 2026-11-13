@@ -155,7 +155,7 @@ interface StartPlan {
 | 阶段 | 状态 | 落点 |
 | --- | --- | --- |
 | P1 | 已落地 | `packages/domain/src/agent-ref.ts`（`AgentRef{runtime,model,options}`、`validateAgentRef(input, specs?)`、`mergeAgentRef`、`sessionRef`）；`AgentProfile.ref` / `PersistentAgent.ref`；`apps/server/src/agent-ref-dto.ts` 把 ref 映射回扁平 DTO（HTTP 协议未变）；存储列名未动。提交 `1e63b92`，验证 1164 / 1156 pass / 8 skipped / 0 fail |
-| P2a | 待做 | 删 `AgentRole` 别名、内部参数改名 `bot` |
+| P2a | 已落地 | 删 `AgentRole` 别名；域内 bot 语义的参数/局部变量改名 `bot`；`roles` JSON 字段、`role:` 地址、`GroupDelivery.role` 等持久化/协议键名保持不变 |
 | P3 | 待做 | `startSession` + `EnvironmentPlanner` |
 | P2b | 待做 | `role:` → `bot:` 迁移脚本 |
 

@@ -1,5 +1,5 @@
 import type { ProjectId, SessionId } from './ids.ts';
-import { type AgentRole } from './messaging.ts';
+import { type PersistentAgent } from './messaging.ts';
 
 /**
  * 群聊（ADR 0018 · IM 与群组）：一个群 = 项目里的几个角色 + 人。
@@ -128,14 +128,14 @@ export const effectiveGroupLimits = (limits: Partial<GroupLimits> | undefined): 
 const ROLE_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
 
 /** 建群 / 改群的校验。返回问题描述，没问题返回 null。 */
-export function groupProblem(input: GroupInput, roles: readonly AgentRole[]): string | null {
+export function groupProblem(input: GroupInput, bots: readonly PersistentAgent[]): string | null {
   const name = input.name?.trim() ?? '';
   if (!name) return '群名不能为空';
   if (name.length > 60) return '群名最多 60 个字';
   if (!Array.isArray(input.members) || input.members.length === 0) return '至少要有一个成员';
   if (input.members.length > MAX_GROUP_MEMBERS) return `成员最多 ${MAX_GROUP_MEMBERS} 个`;
   if (new Set(input.members).size !== input.members.length) return '成员重复了';
-  const known = new Map(roles.map((r) => [r.name, r]));
+  const known = new Map(bots.map((b) => [b.name, b]));
   for (const m of input.members) {
     if (!ROLE_NAME.test(m)) return `成员名不合法：${m}`;
     if (!known.has(m)) return `项目里没有角色 ${m}，先在「Bot」页新建`;
@@ -144,8 +144,8 @@ export function groupProblem(input: GroupInput, roles: readonly AgentRole[]): st
   if (strategy !== 'host' && strategy !== 'volunteer') return '发言策略只能是 host 或 volunteer';
   if (input.hostRole !== null && input.hostRole !== undefined) {
     if (!input.members.includes(input.hostRole)) return '主持人必须是群成员';
-    const role = known.get(input.hostRole);
-    const ref = role?.ref;
+    const bot = known.get(input.hostRole);
+    const ref = bot?.ref;
     if (!ref?.runtime?.trim() || !ref.model?.trim()) return '主持人角色要显式选择运行时和模型（没有隐式默认）';
   }
   const limits = input.limits ?? {};
@@ -219,7 +219,7 @@ export const isSilent = (text: string | null | undefined): boolean => {
   return t === '' || t.toUpperCase() === SILENT_TOKEN || t.toUpperCase().replace(/[`*_\s]/g, '') === SILENT_TOKEN;
 };
 
-export const isHeld = (group: Pick<Group, 'held'>, role: string): boolean => group.held.includes('*') || group.held.includes(role);
+export const isHeld = (group: Pick<Group, 'held'>, bot: string): boolean => group.held.includes('*') || group.held.includes(bot);
 
 /** 从文本里取第一个 JSON 对象。 */
 function firstJson(text: string): Record<string, unknown> | null {
@@ -311,8 +311,9 @@ const clip = (text: string, max: number): string => (text.length > max ? `${text
 
 export interface PromptContext {
   readonly group: Pick<Group, 'name' | 'members' | 'hostRole'>;
+  /** 这次发言的 bot 名字（对应 GroupDelivery.role）。 */
   readonly role: string;
-  readonly roles: readonly AgentRole[];
+  readonly roles: readonly PersistentAgent[];
   readonly history: readonly { author: string; body: string }[];
   readonly trigger: { author: string; body: string };
 }
@@ -325,8 +326,8 @@ const historyBlock = (ctx: PromptContext): string => {
 const rosterBlock = (ctx: PromptContext): string =>
   ctx.group.members
     .map((m) => {
-      const role = ctx.roles.find((r) => r.name === m);
-      return `- @${m}${m === ctx.group.hostRole ? '（主持人）' : ''}${role?.description ? `：${clip(role.description, 160)}` : ''}`;
+      const bot = ctx.roles.find((r) => r.name === m);
+      return `- @${m}${m === ctx.group.hostRole ? '（主持人）' : ''}${bot?.description ? `：${clip(bot.description, 160)}` : ''}`;
     })
     .join('\n');
 

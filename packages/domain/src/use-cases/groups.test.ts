@@ -6,7 +6,7 @@ import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
 import { asAgentId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
-import type { AgentRole } from '../messaging.ts';
+import type { PersistentAgent } from '../messaging.ts';
 import type { GroupStore } from '../ports/group-store.ts';
 import type { Group, GroupDelivery, GroupPost, GroupThread } from '../groups.ts';
 import {
@@ -77,7 +77,7 @@ function memoryGroups(): GroupStore & { deliveriesAll: () => GroupDelivery[] } {
 const user = (id: string, role: Role): User =>
   ({ id: id as UserId, email: `${id}@x.test`, displayName: id, role, passwordHash: null, emailVerifiedAt: 1, disabledAt: null, createdAt: 1, teamId: 'T', clusterAdmin: false, deletedAt: null }) as unknown as User;
 
-const ROLES: AgentRole[] = [
+const ROLES: PersistentAgent[] = [
   { name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky' },
   { name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' },
   { name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' },
@@ -86,7 +86,7 @@ const ROLES: AgentRole[] = [
 
 async function world() {
   const busyElsewhere = new Set<string>();
-  const roleList: AgentRole[] = [...ROLES];
+  const roleList: PersistentAgent[] = [...ROLES];
   let clock = 1000;
   const memory = inMemoryDeps({ now: () => clock });
   const deps = memory.deps;
