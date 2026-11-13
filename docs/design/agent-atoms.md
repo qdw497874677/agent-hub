@@ -150,6 +150,15 @@ interface StartPlan {
 - 四条路径（新建 / 续跑 / 分叉 / 换机）各自冒烟：会话 `status=running`、`options` 等于预期快照、`environmentRevision` 与库中一致。
 - 新增断言：fork 后 hub 重启，`ensureHosted` 用 `session.options` 恢复（当前 bug：落库写 `{}` 已修，需回归用例防止再退化）。
 
+## 5.4 进展（2026-11-13）
+
+| 阶段 | 状态 | 落点 |
+| --- | --- | --- |
+| P1 | 已落地 | `packages/domain/src/agent-ref.ts`（`AgentRef{runtime,model,options}`、`validateAgentRef(input, specs?)`、`mergeAgentRef`、`sessionRef`）；`AgentProfile.ref` / `PersistentAgent.ref`；`apps/server/src/agent-ref-dto.ts` 把 ref 映射回扁平 DTO（HTTP 协议未变）；存储列名未动。提交 `1e63b92`，验证 1164 / 1156 pass / 8 skipped / 0 fail |
+| P2a | 待做 | 删 `AgentRole` 别名、内部参数改名 `bot` |
+| P3 | 待做 | `startSession` + `EnvironmentPlanner` |
+| P2b | 待做 | `role:` → `bot:` 迁移脚本 |
+
 ## 6. 分期与排期
 
 | 阶段 | 内容 | 改动面 | 预估 | 回滚 |
