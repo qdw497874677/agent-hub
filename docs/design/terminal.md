@@ -190,6 +190,17 @@ createTerminalHost({
   - 页签在 `session.status === 'running'`、worker 在线、且未被探测为 `unsupported` 时渲染；
     手机宽度下不放进底部快捷栏。
 - 切走期间实例保留（不 dispose），只停 fit 与 resize 发送；`visited` 集合已存在（`focus.tsx:119`）。
+- **手机按键条**（`(pointer: coarse)` 才渲染，跟媒体查询 `change` 实时切换）：底部一条 `h-9` 的
+  `Esc / Tab / Ctrl / ↑ / ↓ / ← / → / Ctrl+C`，`flex-nowrap overflow-x-auto`，不遮挡 xterm
+  （独立 `shrink-0` 块，不用 absolute）。发货走 `term.input()` → `onData` → 现有 `encodeInput`
+  与断线缓存，不另开 socket；`onPointerDown` 只 `preventDefault()`（保住键盘），动作放 `onClick`
+  （拖动按键条滚动不会误发 Esc）。粘滞 `Ctrl` 只作用于方向键（`\x1b[1;5A/B/C/D`，readline/zsh
+  的跳词序列），一次性修饰：点任何别的键或软键盘直接敲字都吸掉，界面不会停在「灯亮着但没带
+  Control」的半成品状态。`visualViewport.resize` 额外触发一次 fit（120ms 节流），键盘弹出后
+  末行不被吃掉。testid：`terminal-keys`、`terminal-key-esc|tab|ctrl|up|down|left|right|ctrl-c`。
+- **布局前提**：`focus.tsx` 的根容器是 `flex min-h-0 flex-1 flex-col`（不是 `h-full`），
+  `app.tsx` 的内容列带 `min-h-0`；否则手机上 header + 100dvh 会多出一截，终端底部（含按键条）
+  落到可视区外。e2e `e2e/terminal-mobile.spec.ts` 用 390×844 与 390×500 两个高度守住这条。
 
 ## 8. 验证
 
