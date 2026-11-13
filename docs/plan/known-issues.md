@@ -101,6 +101,15 @@
 
 已知残留：C4 只做了读，触发器的新建/暂停仍在连接器页；`bot-connectors.tsx` 里的 testid 已改成 `bot-connectors-triggers` 以区别于 bot 编辑页的 `bot-triggers`。
 
+### 1.5 进展（2026-11-14 · CAP-3 发送反馈、CAP-4 环境提示、CAP-5 对比度、CD-1）
+
+- **CAP-3 发送反馈**：`POST /api/sessions/:id/prompt` 收 `clientMessageId`，立刻回 `202 {seq, deliveryId, state:'queued'}`；同一 id 在最近 200 条 prompt 里命中就直接回旧回执（`packages/domain/src/use-cases/conversation.ts` 的 `findClientMessage`）。派发改成后台跑：可重试失败退避重投（2s 起 ×2、封顶 60s、最多 10 次），不可重试或用尽落 `undelivered` 并结束会话（「未送达：…」），不再冒泡成 5xx。前端按 id 对账：气泡先出现，8 秒无回执变「未送达」+ 重试/放弃，重试复用同一 id，服务端幂等兜底。
+- **CAP-4 环境提示**：`GET /api/sessions/:id/environment` 回 `{revision, appliedRevision, pending, supported}`；focus 页在输入区正上方显示「环境已更新 · 下一轮对话生效」，30 秒 staleTime、不轮询。
+- **CAP-5 高对比度**：显示设置里「对比度：跟随系统 / 更高」，走 `data-contrast="more"`，颜色常量只留一份（`:root{--contrast-*}`），系统 `prefers-contrast: more` 与手开关共用同一张映射表。
+- **CD-1**：codec 的 `toolNames` 改成 `ReadonlyMap`，写入只在 `mapAcpUpdate` 内部一处（A2 的落地方式）；`childUpdate` 也收只读视图。
+- **离线 E2E**：新增 `e2e/offline.spec.ts`——弱网（回执超时 → 未送达 → 重试后 journal 只有一条）与机器离线（输入区提示并禁用发送）。
+- 踩坑记一笔：composer 的 `<textarea aria-label="发送消息">` 带 `aria-autocomplete="list"`，无障碍角色是 **combobox 不是 textbox**，E2E 要用 `getByLabel('发送消息')`；placeholder 还随指针类型变化（手机端不带「⌘↵ 发送」）。发送快捷键是 `Ctrl/⌘ + Enter`，单独 Enter 只是换行。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道
