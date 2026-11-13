@@ -7,7 +7,7 @@ import { api } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
-import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from '../../atoms/continue-elsewhere.tsx';
+import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { SessionDetails } from './inspector.tsx';
 import { localTime } from '../../shell/local-time.ts';
 import { StatusPill } from '../../atoms/status.tsx';

@@ -2,7 +2,7 @@
  * 模型选择器的纯计算：按提供方分组、模糊筛、最近用过的置顶。
  * 模型清单来自 agent（ADR 0003），这里只整理它报上来的东西，不增不减。
  */
-import { fuzzyScore } from '../surfaces/workbench/directory-path.ts';
+import { fuzzyScore } from '../shell/directory-path.ts';
 
 export interface ModelItem {
   readonly value: string;

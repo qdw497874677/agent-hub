@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { CanvasDto, SessionDto } from '../shell/api.ts';
-import { api } from '../shell/api.ts';
-import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../shell/dialog-shell.tsx';
-import { useWorkers } from '../shell/workers.tsx';
-import { WorkspaceChooser, choiceReady, longLivedRequest, useWorkspaceViews, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
+import type { CanvasDto, SessionDto } from '../../shell/api.ts';
+import { api } from '../../shell/api.ts';
+import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
+import { useWorkers } from '../../shell/workers.tsx';
+import { WorkspaceChooser, choiceReady, longLivedRequest, useWorkspaceViews, type WorkspaceChoice } from './workspace-chooser.tsx';
 
 /**
  * 换个地方继续（docs/design/workspaces.md §7）。说法要诚实：agent 自己的会话状态搬不走，

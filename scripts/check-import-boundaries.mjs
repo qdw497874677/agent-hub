@@ -75,6 +75,21 @@ const FILE_RULES = [
     files: /^packages\/connector-[^/]+\/src\//,
     only: /^(\.|@agent-hub\/domain$|node:)/,
     why: '连接器只实现端口，只依赖领域'
+  },
+  {
+    files: /^apps\/web\/src\/atoms\//,
+    forbid: /^\.\.\/surfaces\//,
+    why: '原子组件不认识产品面：共享的东西放 shell/，产品面的编排留在 surfaces/'
+  },
+  {
+    files: /^apps\/web\/src\/surfaces\/im\//,
+    forbid: /^\.\.\/workbench\//,
+    why: 'IM 面不得依赖工作台面：两面只共享 atoms/ 与 shell/'
+  },
+  {
+    files: /^apps\/web\/src\/surfaces\/workbench\//,
+    forbid: /^\.\.\/im\//,
+    why: '工作台面不得依赖 IM 面：两面只共享 atoms/ 与 shell/'
   }
 ];
 

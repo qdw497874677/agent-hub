@@ -152,6 +152,40 @@ await writeJson(join(good, 'package-lock.json'), {
   );
 }
 
+// --- 坏 fixture：前端产品面互相依赖 / 原子认识产品面 ----------------------------
+const layering = await makeTemp('hub-check-selftest-layering-');
+await scaffold(layering);
+await writeJson(join(layering, 'package.json'), { name: 'root', private: true });
+await writeJson(join(layering, 'packages/domain/package.json'), { name: '@agent-hub/domain', version: '0.0.0' });
+await mkdir(join(layering, 'apps/web'), { recursive: true });
+await writeJson(join(layering, 'apps/web/package.json'), { name: '@agent-hub/web', version: '0.0.0' });
+for (const sub of ['atoms', 'shell', 'surfaces/im', 'surfaces/workbench']) {
+  await mkdir(join(layering, 'apps/web/src', sub), { recursive: true });
+}
+await writeFile(join(layering, 'apps/web/src/shell/api.ts'), 'export const api = 1;\n');
+await writeFile(join(layering, 'apps/web/src/surfaces/workbench/canvas.ts'), 'export const canvas = 1;\n');
+await writeFile(join(layering, 'apps/web/src/surfaces/im/bots.ts'), "import { canvas } from '../workbench/canvas.ts';\nexport const bots = canvas;\n");
+await writeFile(join(layering, 'apps/web/src/atoms/composer.ts'), "import '../surfaces/im/bots.ts';\nexport const composer = 1;\n");
+await writeFile(join(layering, 'apps/web/src/atoms/options.ts'), "import { api } from '../shell/api.ts';\nexport const options = api;\n");
+{
+  const failures = await checkImportBoundaries(layering);
+  record(
+    'check-import-boundaries 拒绝 IM 面依赖工作台面',
+    failures.some((f) => f.includes('surfaces/im/bots.ts') && f.includes('../workbench/canvas.ts')),
+    JSON.stringify(failures)
+  );
+  record(
+    'check-import-boundaries 拒绝原子层依赖产品面',
+    failures.some((f) => f.includes('atoms/composer.ts') && f.includes('../surfaces/im/bots.ts')),
+    JSON.stringify(failures)
+  );
+  record(
+    'check-import-boundaries 允许原子层依赖 shell',
+    !failures.some((f) => f.includes('atoms/options.ts')),
+    JSON.stringify(failures)
+  );
+}
+
 await Promise.all(temps.map((dir) => rm(dir, { recursive: true, force: true })));
 
 const failed = results.filter((ok) => !ok).length;

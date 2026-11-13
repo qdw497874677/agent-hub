@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Command } from 'cmdk';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../../shell/api.ts';
-import { filterEntries, splitInput, visibleEntries, withSlash } from './directory-path.ts';
+import { filterEntries, splitInput, visibleEntries, withSlash } from '../../shell/directory-path.ts';
 
 const USE = '__use__';
 const UP = '__up__';
