@@ -4,9 +4,10 @@ import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProject } from '../project.ts';
 import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
-import { asAgentId, type SessionId } from '../ids.ts';
+import { asAgentId, asProjectId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import type { PersistentAgent } from '../messaging.ts';
+import type { BotRepository } from '../ports/bot-repository.ts';
 import type { GroupStore } from '../ports/group-store.ts';
 import type { Group, GroupDelivery, GroupPost, GroupThread } from '../groups.ts';
 import {
@@ -24,7 +25,7 @@ import {
 import { recordEvent } from './sessions.ts';
 import { createGroupChat } from './groups.ts';
 import { createPersistentAgents } from './persistent-agents.ts';
-import { configProblem, type MessagingConfig } from '../messaging.ts';
+import type { MessagingConfig } from '../messaging.ts';
 
 function memoryGroups(): GroupStore & { deliveriesAll: () => GroupDelivery[] } {
   const groups = new Map<string, Group>();
@@ -78,11 +79,31 @@ const user = (id: string, role: Role): User =>
   ({ id: id as UserId, email: `${id}@x.test`, displayName: id, role, passwordHash: null, emailVerifiedAt: 1, disabledAt: null, createdAt: 1, teamId: 'T', clusterAdmin: false, deletedAt: null }) as unknown as User;
 
 const ROLES: PersistentAgent[] = [
-  { name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky' },
-  { name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' },
-  { name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' },
-  { name: 'nomodel', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' }
+  { id: 'bot_host', projectId: asProjectId('p'), name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
+  { id: 'bot_coder', projectId: asProjectId('p'), name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
+  { id: 'bot_reviewer', projectId: asProjectId('p'), name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
+  { id: 'bot_nomodel', projectId: asProjectId('p'), name: 'nomodel', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 }
 ];
+
+/** 测试用内存 BotRepository：直接读写给定数组，方便断言。 */
+function botRepoOf(roles: PersistentAgent[], touched?: (roles: readonly PersistentAgent[]) => void): BotRepository {
+  return {
+    byId: async (id) => roles.find((b) => b.id === id) ?? null,
+    byName: async (_projectId, name) => roles.find((b) => b.name === name) ?? null,
+    list: async () => [...roles].sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name)),
+    save: async (bot) => {
+      const i = roles.findIndex((b) => b.id === bot.id);
+      if (i >= 0) roles[i] = bot;
+      else roles.push(bot);
+      touched?.(roles);
+    },
+    remove: async (id) => {
+      const i = roles.findIndex((b) => b.id === id);
+      if (i >= 0) roles.splice(i, 1);
+      touched?.(roles);
+    }
+  };
+}
 
 async function world() {
   const busyElsewhere = new Set<string>();
@@ -104,6 +125,8 @@ async function world() {
   const project = createProject({ name: 'p', now: 1, teamId: 'T', createdBy: 'alice' });
   assert.ok(project.ok);
   await deps.projects.save({ ...project.value, members: ['vicky'] } as never);
+  // bot 的 projectId 要是真实项目 id（用例会拿它去查项目做授权）
+  roleList.splice(0, roleList.length, ...ROLES.map((role) => ({ ...role, projectId: project.value.id })));
   const delivered: { sessionId: SessionId; text: string }[] = [];
   const interrupted: SessionId[] = [];
   const chat = createGroupChat({
@@ -454,15 +477,12 @@ test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删�
   const agents = createPersistentAgents({
     projects: w.deps.projects,
     sessions: w.deps.sessions,
+    now: w.deps.now,
     policy: { context: async () => ({ hubTeamId: 'T', settings: { membersCanAddMachines: false } }), worker: async () => ({}) as never } as never,
-    config: async () => config,
-    saveConfig: async (_p, input) => {
-      const problem = configProblem(input);
-      if (problem) return { ok: false, error: { code: 'invalid', message: problem } } as never;
-      config = { ...config, roles: input.roles, limits: input.limits };
-      w.roleList.splice(0, w.roleList.length, ...input.roles);
-      return { ok: true, value: config };
-    },
+    bots: botRepoOf(w.roleList, (roles) => {
+      config = { ...config, roles: [...roles] };
+    }),
+    messages: { config: async () => config },
     groupsOf: (p) => w.groups.groupsOf(p),
     detach: (actor, p, name) => w.chat.detachAgent(actor, p, name)
   });
@@ -474,9 +494,10 @@ test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删�
   const qa = await agents.create(w.alice, w.project.id, { name: 'qa', displayName: '  测试  ', color: 'rose', agentId: 'hermes', description: 'y'.repeat(4000) });
   assert.ok(qa.ok, qa.ok ? '' : qa.error.message);
   assert.equal(qa.value.displayName, '测试');
-  const edited = await agents.update(w.alice, w.project.id, 'qa', { displayName: '质检', model: 'm1', name: 'renamed' } as never);
+  assert.ok(!(await agents.update(w.alice, w.project.id, 'qa', { name: 'renamed' } as never)).ok, '@id 建好不能改');
+  const edited = await agents.update(w.alice, w.project.id, 'qa', { displayName: '质检', model: 'm1' });
   assert.ok(edited.ok);
-  assert.equal(edited.value.name, 'qa', '@id 不随 patch 改');
+  assert.equal(edited.value.name, 'qa');
   assert.equal(edited.value.displayName, '质检');
   assert.ok(!(await agents.update(w.alice, w.project.id, 'nope', {})).ok);
 
@@ -535,16 +556,13 @@ test('未读：别人发的才算、自己发的不算；标已读清零、不�
 test('bot 的启动选项：能存能改，形状不对就拒', async () => {
   const w = await world();
   let config: MessagingConfig = { projectId: w.project.id, roles: [], limits: {}, updatedAt: 0 };
+  const roles: PersistentAgent[] = [];
   const agents = createPersistentAgents({
     projects: w.deps.projects,
     sessions: w.deps.sessions,
-    config: async () => config,
-    saveConfig: async (_p, input) => {
-      const problem = configProblem(input);
-      if (problem) return { ok: false, error: { code: 'invalid', message: problem } } as never;
-      config = { ...config, roles: input.roles, limits: input.limits };
-      return { ok: true, value: config };
-    },
+    now: w.deps.now,
+    bots: botRepoOf(roles),
+    messages: { config: async () => config },
     groupsOf: async () => [],
     detach: async () => []
   });

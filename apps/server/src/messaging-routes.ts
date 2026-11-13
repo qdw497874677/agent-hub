@@ -13,7 +13,7 @@ import {
   type Deps,
   type MessageBus,
   type MessageStore,
-  type PersistentAgent
+  type BotDefinition
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { messagingConfigDto } from './agent-ref-dto.ts';
@@ -51,7 +51,7 @@ const roleBody = z.object({
   options: optionsBody.optional()
 });
 /** body 仍是扁平字段；进 domain 前归一成 ref。 */
-const toRole = (role: z.infer<typeof roleBody>): PersistentAgent => ({
+const toRole = (role: z.infer<typeof roleBody>): BotDefinition => ({
   name: role.name,
   description: role.description,
   reuse: role.reuse,

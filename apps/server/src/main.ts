@@ -28,6 +28,11 @@ import { createModelDistiller } from './model-distiller.ts';
 import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
+  createBotUseCase,
+  getBotUseCase,
+  listBotsUseCase,
+  removeBotUseCase,
+  updateBotUseCase,
   interruptSessionUseCase,
   createGroupChat,
   createPersistentAgents,
@@ -161,6 +166,7 @@ const deps: Deps = {
   layout: store.layout,
   links: store.links,
   agentProfiles: store.agentProfiles,
+  bots: store.bots,
   toolGrants: store.toolGrants,
   // 环境端口在资产依赖就绪后才构造；这里用委托保持组合根的单向初始化。
   environment: {
@@ -255,6 +261,7 @@ const messageBus = createMessageBus({
   projects: deps.projects,
   tasks: deps.tasks,
   messages: store.messages,
+  bots: store.bots,
   links: store.links,
   policy: deps.access,
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
@@ -283,13 +290,14 @@ const groupChat = createGroupChat({
   lane: sessionLane,
   occupied: async (sessionId) => (await store.messages.deliveredTo(sessionId)).length > 0
 });
-// 持久智能体（界面上叫 bot）：按条读写项目的 agent 消息配置；删除时从所有群移出。
+// 持久智能体（界面上叫 bot）：按条读写 bots 表；删除时从所有群移出。
 const persistentAgents = createPersistentAgents({
   projects: deps.projects,
   sessions: deps.sessions,
+  now: deps.now,
   policy: deps.access,
-  config: (projectId) => messageBus.config(projectId),
-  saveConfig: (projectId, input) => messageBus.saveConfig(projectId, input),
+  bots: store.bots,
+  messages: store.messages,
   groupsOf: (projectId) => store.groups.groupsOf(projectId),
   detach: (actor, projectId, name) => groupChat.detachAgent(actor, projectId, name)
 });
@@ -936,6 +944,7 @@ const envNumber = (name: string): number | undefined => {
 };
 
 const observeEnabled = readEnv('OBSERVE') !== '0';
+const botDeps = { ...deps, messages: store.messages };
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
   observe: {
     enabled: observeEnabled,
@@ -983,6 +992,13 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   activity: { audit: store.audit, users: store.users, provenance: store.provenance },
   attention: { store: store.attention, pullRequests: pullRequestRepo },
   messaging: { bus: messageBus, messages: store.messages },
+  bots: {
+    listBots: (actor, projectId) => listBotsUseCase(botDeps, actor, projectId),
+    getBot: (actor, id) => getBotUseCase(botDeps, actor, id),
+    createBot: (actor, projectId, input) => createBotUseCase(botDeps, actor, projectId, input),
+    updateBot: (actor, id, patch) => updateBotUseCase(botDeps, actor, id, patch),
+    removeBot: (actor, id) => removeBotUseCase(botDeps, actor, id)
+  },
   groups: { groups: groupChat, agents: persistentAgents, agentTokens: apiTokenDeps.apiTokens },
   context: contextService,
   files: filesService,

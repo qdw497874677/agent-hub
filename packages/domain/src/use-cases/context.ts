@@ -74,6 +74,27 @@ export interface SessionContextView {
 const info = (s: (typeof BUILTIN_STRATEGIES)[number]): StrategyInfo => ({ id: s.id, version: s.version, title: s.title, modes: s.modes });
 const enabledOf = (project: ContextSetting | null) => project?.enabled ?? [DEFAULT_STRATEGY_ID];
 
+/**
+ * 角色（bot）层的上下文策略键。
+ *
+ * C3b 起新写入用 `bot:<projectId>:<name>`；旧库里的 `role:<projectId>:<name>` 仍然读，
+ * 读的时候 bot 优先、旧键兜底，迁移脚本（`scripts/migrate-bots.mjs`）负责把键搬过来。
+ * 注意：团队级的 `role:<teamId>:<role>` 是**人的角色**，与本函数无关。
+ */
+const botSettingKey = (projectId: string, name: string): string => `bot:${projectId}:${name}`;
+const legacyBotSettingKey = (projectId: string, name: string): string => `role:${projectId}:${name}`;
+
+/** 一次读新键 + 旧键，新键优先。 */
+async function botSettingOf(
+  store: { get(key: string): Promise<ContextSetting | null> },
+  projectId: string,
+  name: string
+): Promise<ContextSetting | null> {
+  const fresh = await store.get(botSettingKey(projectId, name));
+  if (fresh) return fresh;
+  return store.get(legacyBotSettingKey(projectId, name));
+}
+
 export function createContextService(deps: ContextDeps) {
   const store = deps.contextSettings;
   const audit = (subject: Subject | null, action: 'context.strategy.set' | 'session.context.set' | 'session.context.compact' | 'session.approval.respond' | 'role.context.set', target: string, detail: string, teamId: string | null) => {
@@ -88,15 +109,31 @@ export function createContextService(deps: ContextDeps) {
     async project(subject: Subject | null, projectId: string): Promise<Result<ProjectContextView, DomainError>> {
       const allowed = await authorizeProject(deps.access, subject, await deps.projects.byId(asProjectId(projectId)), 'project.read');
       if (!allowed.ok) return allowed;
-      const prefix = `role:${allowed.value.id}:`;
-      const [mine, hub, roles] = await Promise.all([store.get(`project:${allowed.value.id}`), store.get('hub'), store.list(prefix)]);
+      const prefix = `bot:${allowed.value.id}:`;
+      const legacyPrefix = `role:${allowed.value.id}:`;
+      const [mine, hub, fresh, legacy] = await Promise.all([
+        store.get(`project:${allowed.value.id}`),
+        store.get('hub'),
+        store.list(prefix),
+        store.list(legacyPrefix)
+      ]);
+      // 同一个 bot 两边都有时以新键为准（迁移脚本会删旧键，这里只是过渡期去重）。
+      const byName = new Map<string, ContextSetting>();
+      for (const row of fresh) byName.set(row.key.slice(prefix.length), row.setting);
+      for (const row of legacy) {
+        const name = row.key.slice(legacyPrefix.length);
+        if (!byName.has(name)) byName.set(name, row.setting);
+      }
+      const roles = [...byName.entries()]
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, setting]) => ({ role: name, strategy: setting.strategy }));
       return ok({
         strategy: mine?.strategy ?? hub?.strategy ?? DEFAULT_STRATEGY_ID,
         enabled: enabledOf(mine),
         inherited: !mine,
         installed: BUILTIN_STRATEGIES.map(info),
         candidates: CANDIDATE_STRATEGIES,
-        roles: roles.map((r) => ({ role: r.key.slice(prefix.length), strategy: r.setting.strategy }))
+        roles
       });
     },
 
@@ -107,7 +144,9 @@ export function createContextService(deps: ContextDeps) {
       if (!/^[\p{L}\p{N}_-]{1,40}$/u.test(role)) return err(invalid('角色名只能是字母、数字、_ 和 -（最多 40 个）'));
       if (strategy !== null && !enabledOf(await store.get(`project:${allowed.value.id}`)).includes(strategy)) return err(invalid('只能从项目已启用的策略里选'));
       const me = principalOfSubject(subject);
-      await store.set(`role:${allowed.value.id}:${role}`, strategy === null ? null : { strategy, updatedAt: deps.now(), updatedBy: me?.user.id ?? 'system' });
+      await store.set(botSettingKey(allowed.value.id, role), strategy === null ? null : { strategy, updatedAt: deps.now(), updatedBy: me?.user.id ?? 'system' });
+      // 旧键一并清掉：否则迁移脚本跑完后老键会「复活」（下次有人读旧键时又看到过期策略）。
+      await store.set(legacyBotSettingKey(allowed.value.id, role), null);
       await audit(subject, 'role.context.set', `${allowed.value.id}:${role}`, strategy === null ? `角色 ${role} 跟随项目` : `角色 ${role} 策略 ${strategy}（下一代生效）`, allowed.value.teamId ?? null);
       return this.project(subject, projectId);
     },
@@ -135,7 +174,7 @@ export function createContextService(deps: ContextDeps) {
       const role = deps.roleOf ? await deps.roleOf(session.id) : null;
       const [own, roleSetting, project, hub] = await Promise.all([
         store.get(`session:${session.id}`),
-        role ? store.get(`role:${projectId}:${role}`) : Promise.resolve(null),
+        role ? botSettingOf(store, projectId, role) : Promise.resolve(null),
         store.get(`project:${projectId}`),
         store.get('hub')
       ]);
@@ -214,7 +253,7 @@ export function createContextService(deps: ContextDeps) {
     const role = deps.roleOf ? await deps.roleOf(session.id) : null;
     const [own, roleSetting, project, hub] = await Promise.all([
       store.get(`session:${session.id}`),
-      role ? store.get(`role:${projectId}:${role}`) : Promise.resolve(null),
+      role ? botSettingOf(store, projectId, role) : Promise.resolve(null),
       store.get(`project:${projectId}`),
       store.get('hub')
     ]);

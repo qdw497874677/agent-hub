@@ -1,4 +1,5 @@
 import { decide, type Permission } from '../access.ts';
+import { botIdFrom, type Bot, type BotDefinition } from '../bot.ts';
 import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
@@ -8,10 +9,11 @@ import {
   MAX_BODY_CHARS,
   configProblem,
   effectiveLimits,
-  emptyConfig,
   isActive,
   newMessageId,
   newTraceId,
+  addressName,
+  botAddress,
   parseAddress,
   wrapUntrusted,
   type AgentMessage,
@@ -30,13 +32,14 @@ import { isBusy, type Session } from '../session.ts';
 import { otherEnd } from '../session-link.ts';
 import { projectAsResource, type AccessPolicy } from './authorization.ts';
 import type { Deps } from './deps.ts';
+import { loadBotConfig } from './bots.ts';
 
 /**
  * 消息总线（ADR 0018 · P2P 内核）：
  * 接收（权限 ∩、限额、幂等、审计）→ 解析地址 → 对方空闲就投、忙就排队 → 回合结束时收回复（agent_reply 优先，最后一轮文字兜底）并投下一条。
  * 派生新会话要 agent.spawn，且要人批。
  */
-export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'projects' | 'tasks'> {
+export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'projects' | 'tasks' | 'bots'> {
   readonly messages: MessageStore;
   readonly policy?: AccessPolicy;
   /** userId → 带上自定义角色和显式授权的 Principal；停用 / 不存在是 null。 */
@@ -95,7 +98,7 @@ export interface MessageBus {
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   config(projectId: ProjectId): Promise<MessagingConfig>;
-  saveConfig(projectId: ProjectId, input: { roles: readonly PersistentAgent[]; limits: Partial<MessageLimits> }): Promise<Result<MessagingConfig, DomainError>>;
+  saveConfig(projectId: ProjectId, input: { roles: readonly BotDefinition[]; limits: Partial<MessageLimits> }): Promise<Result<MessagingConfig, DomainError>>;
 }
 
 const summary = (text: string): string => (text.length > 80 ? `${text.slice(0, 80)}…` : text).replaceAll('\n', ' ');
@@ -150,7 +153,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     return { session, project };
   };
 
-  const loadConfig = async (projectId: ProjectId): Promise<MessagingConfig> => (await deps.messages.config(projectId)) ?? emptyConfig(projectId);
+  // bot 列表从 bots 表读（表空时回落旧 roles JSON）；限额仍来自旧的配置行。
+  const loadConfig = async (projectId: ProjectId): Promise<MessagingConfig> => loadBotConfig({ bots: deps.bots, messages: deps.messages }, projectId);
 
   const labelOf = (session: Session, bot: string | null): string => `${bot ?? session.agentId}（会话 #${session.id.slice(0, 6)}）`;
 
@@ -280,7 +284,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (typeof body !== 'string' || body.trim() === '') return err(invalid('消息不能为空'));
       if (body.length > MAX_BODY_CHARS) return err(invalid(`消息太长（最多 ${MAX_BODY_CHARS} 字符）`));
       const address = parseAddress(command.to);
-      if (!address) return err(invalid('地址要写成 session:<id> 或 role:<name>'));
+      if (!address) return err(invalid('地址要写成 session:<id> 或 bot:<name>（旧写法 role:<name> 仍然认）'));
       const here = await sessionAndProject(command.fromSessionId);
       if (!here) return err(notFound('发送方会话不存在'));
       const { session: from, project } = here;
@@ -326,8 +330,9 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         if (!target || there?.project.id !== project.id) return deny('unresolvable', '同一个项目里没有这条会话');
         if (target.id === from.id) return err(invalid('不能给自己发消息'));
       } else {
-        bot = config.roles.find((r) => r.name === address.role) ?? null;
-        if (!bot) return deny('unresolvable', `项目里没有定义角色 ${address.role}`);
+        const name = addressName(address);
+        bot = config.roles.find((r) => r.name === name) ?? null;
+        if (!bot) return deny('unresolvable', `项目里没有定义 bot ${name}`);
         if (bot.reuse !== 'always-new') {
           const spawns = (await deps.messages.spawnsForRole(project.id, bot.name)).filter((s) => bot!.reuse === 'sticky' || s.traceId === traceId);
           for (const spawn of spawns.sort((a, b) => b.createdAt - a.createdAt)) {
@@ -347,7 +352,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         const unlinked = await linkProblem(from, target);
         if (unlinked) return deny('denied', unlinked);
       } else if (!(await allowed(onBehalfOf, 'agent.spawn', project)) || !(await allowed(caller, 'agent.spawn', project))) {
-        return deny('denied', `没有现成的 ${address.kind === 'role' ? address.role : ''} 会话，派生新会话要 agent.spawn 权限`);
+        return deny('denied', `没有现成的 ${addressName(address)} 会话，派生新会话要 agent.spawn 权限`);
       }
 
       const now = deps.now();
@@ -380,7 +385,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (target) {
         await pump(target.id);
       } else {
-        await audit(message, message, 'spawn_requested', from.id, `role:${bot?.name}（${bot?.ref.runtime}）等人批准`);
+        await audit(message, message, 'spawn_requested', from.id, `${bot ? botAddress(bot.name) : 'bot'}（${bot?.ref.runtime}）等人批准`);
       }
       const saved = (await deps.messages.byId(message.id)) ?? message;
       return ok({ messageId: saved.id, traceId, status: saved.status, targetSessionId: saved.targetSessionId });
@@ -442,7 +447,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         await fail(message, 'config', `角色 ${message.role ?? ''} 已不存在`);
         return err(conflict(`角色 ${message.role ?? ''} 已不存在`));
       }
-      await audit(message, message, 'spawn_approved', `user:${actor.user.id}`, `role:${bot.name}`);
+      await audit(message, message, 'spawn_approved', `user:${actor.user.id}`, botAddress(bot.name));
       const spawned = await deps.spawn({ project, role: bot, actor, title: `[${bot.name}] ${summary(message.body)}` });
       if (!spawned.ok) {
         await fail(message, 'config', spawned.error.message);
@@ -479,7 +484,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       }
       if (!(await deps.messages.spawnOf(from.id))) {
         for (const bot of (await loadConfig(project.id)).roles) {
-          entries.push({ address: `role:${bot.name}`, label: `${bot.name}（${bot.ref.runtime}）`, status: bot.reuse, description: bot.description });
+          entries.push({ address: botAddress(bot.name), label: `${bot.name}（${bot.ref.runtime}）`, status: bot.reuse, description: bot.description });
         }
       }
       return ok(entries);
@@ -530,17 +535,32 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     async saveConfig(projectId, input) {
       const problem = configProblem(input);
       if (problem) return err(invalid(problem));
-      const config: MessagingConfig = {
-        projectId,
-        roles: input.roles.map((bot) => ({
-          ...bot,
-          name: bot.name.trim(),
-          ref: { ...bot.ref, runtime: bot.ref.runtime.trim(), model: bot.ref.model.trim() }
-        })),
-        limits: input.limits,
-        updatedAt: deps.now()
-      };
-      await deps.messages.saveConfig(config);
+      const now = deps.now();
+      const existing = await deps.bots.list(projectId);
+      const byName = new Map(existing.map((bot) => [bot.name, bot]));
+      const roles: Bot[] = [];
+      for (const draft of input.roles) {
+        const name = draft.name.trim();
+        const current = byName.get(name);
+        const bot: Bot = {
+          ...draft,
+          name,
+          ref: { ...draft.ref, runtime: draft.ref.runtime.trim(), model: draft.ref.model.trim() },
+          id: current?.id ?? botIdFrom(`${projectId}\0${name}`),
+          projectId,
+          createdAt: current?.createdAt ?? now,
+          updatedAt: now
+        };
+        await deps.bots.save(bot);
+        roles.push(bot);
+      }
+      // 整表 PUT：payload 里没有的 bot 删掉（群里/会话里的引用不在这里清）。
+      const keep = new Set(roles.map((bot) => bot.name));
+      for (const bot of existing) if (!keep.has(bot.name)) await deps.bots.remove(bot.id);
+      // limits 仍写旧的配置行；roles 列保持不动（遗留列，C3b 迁移后再也不读）。
+      const legacy = await deps.messages.config(projectId);
+      const config: MessagingConfig = { projectId, roles, limits: input.limits, updatedAt: now };
+      await deps.messages.saveConfig({ ...config, roles: legacy?.roles ?? [] });
       return ok(config);
     }
   };

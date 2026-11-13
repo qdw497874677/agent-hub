@@ -39,6 +39,20 @@ export interface BotDto extends MessagingRoleDto {
 }
 export type BotInputDto = Partial<Omit<MessagingRoleDto, 'name'>>;
 
+/**
+ * 一等 bot（C3a）：项目里的常驻成员，`/api/bots` 的返回形状。
+ * ref 拍平成 agentId / model / options，与 `MessagingRoleDto` 一致；另带 id、projectId 和时间戳。
+ *
+ * 注意与上面的 `BotDto` 区分：那个是「项目 bot 列表 + 群 / 凭据」的视图，web 在用；
+ * 这里是一条 bot 记录本身。
+ */
+export interface BotRecordDto {
+  id: string; projectId: string; name: string; agentId: string; model: string;
+  options?: Record<string, string | boolean>;
+  displayName?: string; color?: BotColorDto; description: string; reuse: 'sticky' | 'per-trace' | 'always-new';
+  createdAt: number; updatedAt: number;
+}
+
 // ---- 传递 / 送达（ADR 0031 D2） ----
 
 export interface DeliveryDto {

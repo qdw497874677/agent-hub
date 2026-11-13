@@ -47,6 +47,7 @@ function harness() {
     workspaces: store.workspaces,
     artifacts: store.artifacts,
     layout: store.layout,
+    bots: store.bots,
     stream: hub.stream,
     gateway: {
       status: async () => [],

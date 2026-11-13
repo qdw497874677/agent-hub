@@ -124,6 +124,7 @@ import { installAdmin } from './admin.ts';
 import { installTeam } from './team.ts';
 import { installAccessRoutes } from './access-routes.ts';
 import { installMessagingRoutes, type MessagingRouteDeps } from './messaging-routes.ts';
+import { installBotRoutes, type BotsApi } from './bot-routes.ts';
 import { agentProfileDto } from './agent-ref-dto.ts';
 import { installMemoryRoutes, type MemoryRouteDeps } from './memory-routes.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
@@ -195,6 +196,8 @@ export interface AppOptions {
   readonly memory?: Omit<MemoryRouteDeps, 'deps'>;
   /** 群聊（ADR 0018 · 群组）。 */
   readonly groups?: GroupRouteDeps;
+  /** 一等 bot（C3a）：/api/bots。 */
+  readonly bots?: BotsApi;
   /** 上下文策略（ADR 0020）。 */
   readonly context?: ContextService;
   /** 工作空间文件浏览（ADR 0025）。 */
@@ -278,6 +281,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.observe) installObserveRoutes(app, options.observe, subjectOf);
     if (options.memory) installMemoryRoutes(app, { ...options.memory, deps }, subjectOf);
     if (options.groups) installGroupRoutes(app, options.groups, subjectOf);
+    if (options.bots) installBotRoutes(app, options.bots, subjectOf);
     if (options.context) installContextRoutes(app, options.context, subjectOf);
     if (options.files) installFilesRoutes(app, options.files, subjectOf);
     if (options.git) installGitRoutes(app, options.git, subjectOf);

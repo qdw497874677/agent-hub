@@ -150,9 +150,26 @@ test('服务：角色层（会话 > 角色 > 项目）和手动压缩（不支�
   assert.ok(view.ok);
   assert.equal(view.value.source, 'role');
   assert.equal(view.value.role, 'coder');
+  // C3b：写入用 bot: 前缀，旧 role: 键只读；旧键存在时读得到，写一次就清掉。
+  assert.ok(rows.has(`bot:${project.value.id}:coder`));
+  assert.equal(rows.has(`role:${project.value.id}:coder`), false);
+  rows.set(`role:${project.value.id}:legacy`, { strategy: 'compaction', updatedAt: 1, updatedBy: 'u' } as ContextSetting);
+  const legacyView = await svc.project(null, project.value.id);
+  assert.ok(legacyView.ok);
+  assert.deepEqual(legacyView.value.roles, [
+    { role: 'coder', strategy: 'compaction' },
+    { role: 'legacy', strategy: 'compaction' }
+  ]);
+  const moved = await svc.setRole(null, project.value.id, 'legacy', 'compaction');
+  assert.ok(moved.ok);
+  assert.equal(rows.has(`role:${project.value.id}:legacy`), false);
+  assert.ok(rows.has(`bot:${project.value.id}:legacy`));
   const cleared = await svc.setRole(null, project.value.id, 'coder', null);
   assert.ok(cleared.ok);
-  assert.deepEqual(cleared.value.roles, []);
+  assert.deepEqual(cleared.value.roles, [{ role: 'legacy', strategy: 'compaction' }]);
+  const clearedLegacy = await svc.setRole(null, project.value.id, 'legacy', null);
+  assert.ok(clearedLegacy.ok);
+  assert.deepEqual(clearedLegacy.value.roles, []);
 
   const acp = await mk('opencode');
   const no = await svc.compact(null, acp.id);

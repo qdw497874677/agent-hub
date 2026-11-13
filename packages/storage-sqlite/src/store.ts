@@ -13,7 +13,7 @@ import { asProjectId, asSessionId, asTaskId } from '@agent-hub/domain';
 import { createSearch } from './search.ts';
 import { createAccountRepositories } from './accounts.ts';
 import type { AssetRepository, AssetReviewRepository, NotificationRepository, AssetSyncBoard, AuditLog, EnrollmentRepository, ToolGrantRepository, MessageStore, GroupStore, ContextSettingsStore, SessionBaseStore, CheckpointStore,
-  TurnRefStore, DeliveryQueue, ProvenanceStore, AttentionStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository, SessionLinkRepository, AgentProfileRepository } from '@agent-hub/domain';
+  TurnRefStore, DeliveryQueue, ProvenanceStore, AttentionStore, MemoryStore, MemoryIndex, MemorySettingsStore, LoginRepository, OneTimeTokenRepository, InviteRepository, SettingsRepository, TeamRepository, UserRepository, SessionLinkRepository, AgentProfileRepository, BotRepository } from '@agent-hub/domain';
 import { createSqliteAccess } from './access.ts';
 import type { AccessRepos } from '@agent-hub/domain';
 import { SCHEMA } from './schema.ts';
@@ -22,6 +22,7 @@ import { createToolGrantRepository } from './tool-grants.ts';
 import { createSqliteMessageStore } from './messages.ts';
 import { createSqliteSessionLinks } from './session-links.ts';
 import { createSqliteAgentProfiles } from './agent-profiles.ts';
+import { createSqliteBotRepository } from './bots.ts';
 import { createSqliteGroupStore } from './groups.ts';
 import { createSqliteContextSettings } from './context-settings.ts';
 import { createSqliteSessionBases } from './session-bases.ts';
@@ -52,6 +53,7 @@ export interface SqliteStore extends RepositorySet {
   readonly toolGrants: ToolGrantRepository;
   /** agent 间通信（ADR 0018）：消息队列、派生记录、项目配置、审计。 */
   readonly messages: MessageStore;
+  readonly bots: BotRepository;
   readonly groups: GroupStore;
   /** 上下文策略的选择（ADR 0020）。 */
   readonly contextSettings: ContextSettingsStore;
@@ -549,6 +551,7 @@ export function openSqliteStore(file: string): SqliteStore {
     layout,
     links: createSqliteSessionLinks(db),
     agentProfiles: createSqliteAgentProfiles(db),
+    bots: createSqliteBotRepository(db),
     search: createSearch(db),
     ...accountRepos,
     access: createSqliteAccess(db),

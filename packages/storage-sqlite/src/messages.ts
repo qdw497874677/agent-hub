@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { AgentMessage, MessageAuditEntry, MessageStore, MessagingConfig, PersistentAgent, SpawnRecord } from '@agent-hub/domain';
-import { asProjectId, asSessionId } from '@agent-hub/domain';
+import type { AgentMessage, Bot, BotDefinition, MessageAuditEntry, MessageStore, MessagingConfig, SpawnRecord } from '@agent-hub/domain';
+import { asProjectId, asSessionId, botIdFrom } from '@agent-hub/domain';
 
 type Row = Record<string, unknown>;
 
@@ -21,28 +21,39 @@ function sanitizeOptions(raw: unknown): Record<string, string | boolean> {
  * 库里的 roles 还是 JSON，历史形状是扁平的 `agentId/model/options`。
  * 读的时候两种都认：有 `ref` 用 `ref`（缺的字段回落到扁平列），没有就按扁平列拼。
  */
-function toRole(raw: unknown): PersistentAgent {
+function toRole(raw: unknown, projectId: string, updatedAt: number): Bot {
   const value = isPlainObject(raw) ? raw : {};
   const nested = isPlainObject(value['ref']) ? value['ref'] : null;
   const { agentId, model, options, ref, ...rest } = value;
+  const name = String(value['name'] ?? '');
   return {
     ...rest,
+    name,
     ref: {
       runtime: String(nested?.['runtime'] ?? value['agentId'] ?? ''),
       model: String(nested?.['model'] ?? value['model'] ?? ''),
       options: sanitizeOptions(nested?.['options'] ?? value['options'])
-    }
-  } as PersistentAgent;
+    },
+    // 旧 JSON 没有 id / 时间戳：按 (projectId, name) 算，与迁移脚本、回落路径同一个 seed。
+    id: botIdFrom(`${projectId}\0${name}`),
+    projectId,
+    createdAt: updatedAt,
+    updatedAt
+  } as Bot;
 }
 
 /** 写回老形状（agentId/model/options）：老版本代码、老备份都还能读。 */
-function fromRole(role: PersistentAgent): Record<string, unknown> {
-  const { ref, ...rest } = role;
+function fromRole(role: BotDefinition): Record<string, unknown> {
+  // 只写定义字段：id / projectId / 时间戳属于 bots 表，不塞回旧 roles JSON。
   return {
-    ...rest,
-    agentId: ref.runtime,
-    model: ref.model,
-    ...(Object.keys(ref.options).length > 0 ? { options: ref.options } : {})
+    name: role.name,
+    ...(role.displayName !== undefined ? { displayName: role.displayName } : {}),
+    ...(role.color !== undefined ? { color: role.color } : {}),
+    description: role.description,
+    reuse: role.reuse,
+    agentId: role.ref.runtime,
+    model: role.ref.model,
+    ...(Object.keys(role.ref.options).length > 0 ? { options: role.ref.options } : {})
   };
 }
 
@@ -209,7 +220,7 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
       const roles = JSON.parse(row.roles as string) as unknown;
       return {
         projectId,
-        roles: Array.isArray(roles) ? roles.map(toRole) : [],
+        roles: Array.isArray(roles) ? roles.map((role) => toRole(role, projectId, row.updated_at as number)) : [],
         limits: JSON.parse(row.limits as string),
         updatedAt: row.updated_at as number
       } as MessagingConfig;

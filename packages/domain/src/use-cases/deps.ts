@@ -20,6 +20,7 @@ import type { LayoutStore } from '../ports/layout-store.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
 import type { ToolGrantRepository } from '../ports/tool-grant-repository.ts';
 import type { AgentProfileRepository } from '../ports/agent-profile-repository.ts';
+import type { BotRepository } from '../ports/bot-repository.ts';
 import type { SessionEventStream } from '../ports/event-stream.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { WorkspaceGit } from '../ports/workspace-git.ts';
@@ -69,6 +70,8 @@ export interface Deps {
   readonly links?: SessionLinkRepository;
   /** Agent 配置（可复用的启动组合）。不给 = 不启用。 */
   readonly agentProfiles?: AgentProfileRepository;
+  /** 项目里的一等 bot（C3a）。 */
+  readonly bots: BotRepository;
   readonly stream: SessionEventStream;
   readonly gateway: NodeGateway;
   readonly agents: AgentCatalog;

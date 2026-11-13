@@ -1,5 +1,9 @@
 import { newId, type ProjectId, type SessionId } from './ids.ts';
-import { validateAgentRef, type AgentRef } from './agent-ref.ts';
+import { validateAgentRef } from './agent-ref.ts';
+import type { Bot, BotDefinition } from './bot.ts';
+
+// bot 的定义搬到 bot.ts（一等聚合）；这里保留老名字 PersistentAgent 供既有代码继续用。
+export type { PersistentAgent } from './bot.ts';
 
 /**
  * agent 间通信 · P2P 内核（ADR 0018，docs/design/agent-messaging.md）。
@@ -68,7 +72,12 @@ export const isActive = (message: Pick<AgentMessage, 'status'>): boolean => ACTI
 
 // ───────────── 地址 ─────────────
 
-export type Address = { readonly kind: 'session'; readonly sessionId: SessionId } | { readonly kind: 'role'; readonly role: string };
+export type Address =
+  | { readonly kind: 'session'; readonly sessionId: SessionId }
+  /** 一等 bot（C3b 起的写法）：`bot:<name>`。 */
+  | { readonly kind: 'bot'; readonly name: string }
+  /** 旧写法 `role:<name>`：只读兼容，写入一律用 `bot:`。 */
+  | { readonly kind: 'role'; readonly role: string };
 
 const ROLE_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/;
 
@@ -80,9 +89,19 @@ export function parseAddress(raw: string): Address | null {
   const rest = value.slice(at + 1).trim();
   if (rest === '') return null;
   if (scheme === 'session') return { kind: 'session', sessionId: rest as SessionId };
+  if (scheme === 'bot') return ROLE_NAME.test(rest) ? { kind: 'bot', name: rest } : null;
+  // 旧写法（C3b 之前落库的消息、老客户端）：读的时候照样认，写入不再产生。
   if (scheme === 'role') return ROLE_NAME.test(rest) ? { kind: 'role', role: rest } : null;
   return null;
 }
+
+/** 地址的名字部分（session 地址没有名字，返回空串）。 */
+export function addressName(address: Address): string {
+  return address.kind === 'session' ? '' : address.kind === 'bot' ? address.name : address.role;
+}
+
+/** bot 地址的唯一写法。 */
+export const botAddress = (name: string): string => `bot:${name}`;
 
 // ───────────── 角色与限额（项目级配置） ─────────────
 
@@ -92,23 +111,8 @@ export type RoleReuse = 'sticky' | 'per-trace' | 'always-new';
 /**
  * 持久智能体（界面上叫「bot」）：项目里常驻的 AI 成员，可以私聊、拉进群、互相 @。
  * 历史上叫「角色」（role），存储和 `role:<name>` 地址都沿用旧名以兼容老数据。
- * - name：@id，建好不改（群成员、主持人、会话归属都按它引用）；
- * - displayName / color：只影响显示，缺省时显示 name、按 name 算颜色；
- * - description：职责说明，作为它在群里的系统提示（最多 PERSISTENT_AGENT_DESCRIPTION_MAX 字）。
+ * 形状见 bot.ts：Bot 多了 id / projectId / 时间戳，定义部分（name / ref / 职责 / 复用）是 BotDefinition。
  */
-export interface PersistentAgent {
-  readonly name: string;
-  readonly displayName?: string;
-  readonly color?: string;
-  readonly description: string;
-  /**
-   * runtime + model + 启动选项（如 `thought_level: 'medium'`）。建会话时垫进去；
-   * 会话创建后仍可在会话里覆盖，这里的值只是默认值——与会话的 `options` 是同一套 key。
-   */
-  readonly ref: AgentRef;
-  readonly reuse: RoleReuse;
-}
-
 export const PERSISTENT_AGENT_DESCRIPTION_MAX = 4000;
 export const PERSISTENT_AGENT_DISPLAY_NAME_MAX = 40;
 export const PERSISTENT_AGENT_COLORS = ['amber', 'sage', 'sky', 'rose', 'olive', 'slate'] as const;
@@ -130,7 +134,7 @@ export const MAX_BODY_CHARS = 32_768;
 export interface MessagingConfig {
   readonly projectId: ProjectId;
   /** 键名沿用历史字段名 roles（已落库的 JSON），值是 bot 列表。 */
-  readonly roles: readonly PersistentAgent[];
+  readonly roles: readonly Bot[];
   /** 只存项目改过的那几项。 */
   readonly limits: Partial<MessageLimits>;
   readonly updatedAt: number;
@@ -150,7 +154,7 @@ export function effectiveLimits(override: Partial<MessageLimits> | undefined): M
 }
 
 /** 配置校验：给人看的问题，没问题 null。超过 2 倍直接拒，不悄悄夹。 */
-export function configProblem(input: { roles: readonly PersistentAgent[]; limits: Partial<MessageLimits> }): string | null {
+export function configProblem(input: { roles: readonly BotDefinition[]; limits: Partial<MessageLimits> }): string | null {
   const names = new Set<string>();
   for (const bot of input.roles) {
     if (!ROLE_NAME.test(bot.name)) return `@id ${bot.name} 只能用小写字母、数字、- 和 _（最多 40 个字符）`;
@@ -248,7 +252,7 @@ export interface SpawnRecord {
  * bot（持久智能体）的职责说明 → 系统提示块。会话开头垫一次（ADR 0020 角色层），续聊不再重复。
  * 空说明返回 null。
  */
-export function agentInstructionsBlock(agent: Pick<PersistentAgent, 'description'> | null | undefined): string | null {
+export function agentInstructionsBlock(agent: Pick<BotDefinition, 'description'> | null | undefined): string | null {
   const text = agent?.description.trim().slice(0, PERSISTENT_AGENT_DESCRIPTION_MAX);
   return text ? `<agent-instructions>\n${text}\n</agent-instructions>` : null;
 }

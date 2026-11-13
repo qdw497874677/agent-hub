@@ -91,6 +91,7 @@ async function world(options: { askTimeoutMs?: number; links?: SessionLinkReposi
     projects: deps.projects,
     tasks: deps.tasks,
     messages,
+    bots: deps.bots,
     policy: { context: async () => ({ hubTeamId: 'T', settings: { membersCanAddMachines: false } }), worker: async () => ({ kind: 'worker', id: 'w', teamId: 'T', createdBy: null }) as never },
     principalOf: async (id) => principal(id),
     deliver: async (sessionId, text) => {

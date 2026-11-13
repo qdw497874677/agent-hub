@@ -1,4 +1,4 @@
-import type { AgentProfile, AgentRef, MessagingConfig, PersistentAgent } from '@agent-hub/domain';
+import type { AgentProfile, AgentRef, Bot, MessagingConfig, PersistentAgent } from '@agent-hub/domain';
 
 /**
  * HTTP / DTO 边界：domain 内部统一用 `ref`，对外的 JSON 仍是老的扁平形状
@@ -27,5 +27,19 @@ export const botDto = (agent: PersistentAgent) => {
   const { ref, ...rest } = agent;
   return { ...rest, ...refDto(ref) };
 };
+
+/** `/api/bots` 的一条：扁平 ref + id / projectId / 时间戳（contract 的 BotRecordDto）。 */
+export const botRecordDto = (bot: Bot) => ({
+  id: bot.id,
+  projectId: bot.projectId,
+  name: bot.name,
+  ...refDto(bot.ref),
+  displayName: bot.displayName,
+  color: bot.color,
+  description: bot.description,
+  reuse: bot.reuse,
+  createdAt: bot.createdAt,
+  updatedAt: bot.updatedAt
+});
 
 export const messagingConfigDto = (config: MessagingConfig) => ({ ...config, roles: config.roles.map(botDto) });

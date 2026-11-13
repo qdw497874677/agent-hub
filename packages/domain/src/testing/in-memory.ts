@@ -1,5 +1,6 @@
 import * as assetModule from '../asset.ts';
 import type { ApiToken } from '../api-token.ts';
+import type { Bot, BotId } from '../bot.ts';
 import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
 import type { AccessGrantRepository, TeamRoleRepository } from '../ports/access-repository.ts';
 import { accessGrantActive, type AccessGrant, type CustomRole } from '../access.ts';
@@ -47,7 +48,8 @@ import type {
   Team,
   LoginActivity,
   AgentProfile,
-  AgentProfileRepository
+  AgentProfileRepository,
+  BotRepository
 } from '../index.ts';import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
 import type { CommitPreview, GitStatus, RemotePullRequest, WorkspaceGit } from '../index.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
@@ -316,6 +318,31 @@ export function fakeAgentProfiles(): AgentProfileRepository & { rows: Map<string
   };
 }
 
+/** 项目 bot（C3a）。按 created_at 再按 name 排序，和 SQLite 实现一致。 */
+export function fakeBots(): BotRepository & { rows: Map<BotId, Bot> } {
+  const rows = new Map<BotId, Bot>();
+  return {
+    rows,
+    async byId(id) {
+      return rows.get(id) ?? null;
+    },
+    async byName(projectId, name) {
+      return [...rows.values()].find((bot) => bot.projectId === projectId && bot.name === name) ?? null;
+    },
+    async list(projectId) {
+      return [...rows.values()]
+        .filter((bot) => bot.projectId === projectId)
+        .sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name));
+    },
+    async save(bot) {
+      rows.set(bot.id, bot);
+    },
+    async remove(id) {
+      rows.delete(id);
+    }
+  };
+}
+
 export function fakeFs(): WorkspaceFS & { files: Map<string, Uint8Array> } {
   const files = new Map<string, Uint8Array>();
   return {
@@ -535,6 +562,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
     workspaces: fakeWorkspaces(),
     artifacts: fakeArtifacts(),
     layout: fakeLayout(),
+    bots: fakeBots(),
     stream: { publish: (frame: SessionStreamFrame) => void frames.push(frame), subscribe: () => () => {} },
     gateway,
     agents: {
