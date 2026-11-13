@@ -135,6 +135,7 @@ import { installEnrollment } from './enrollment.ts';
 import { installRuntimeInstall } from './runtime-install.ts';
 import { installComponents } from './components.ts';
 import { installWorkerResources } from './worker-resources.ts';
+import { installWorkerAgentRoutes, type WorkerAgentsApi } from './worker-agents-routes.ts';
 import type { ComponentDeps, ResourceDeps, RuntimeInstallDeps } from '@agent-hub/domain';
 import { installProjectDeletion } from './project-delete.ts';
 import { installAccess } from './access.ts';
@@ -170,6 +171,8 @@ export interface AppOptions {
   readonly components?: ComponentDeps;
   /** 机器资源历史与「满了拒绝新会话」开关（ADR 0014）。 */
   readonly resources?: ResourceDeps;
+  /** 每台 Worker 的自定义运行时别名（CAP-1）：/api/workers/:workerId/agents。 */
+  readonly workerAgents?: WorkerAgentsApi;
   /** 删除项目（要登录态记审计，所以同样只在有账号体系时装）。 */
   readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'> & {
     /** 彻底删除项目连带删会话时，收掉这些会话的终端等资源。 */
@@ -294,6 +297,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.runtimeInstall) installRuntimeInstall(app, options.runtimeInstall, principalOf);
     if (options.components) installComponents(app, options.components, principalOf);
     if (options.resources) installWorkerResources(app, options.resources, principalOf);
+    if (options.workerAgents) installWorkerAgentRoutes(app, options.workerAgents, principalOf);
     if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf, options.projectDeletion.onSessionsPurged);
     if (options.openApi) {
       installApiTokens(app, options.openApi.manage, principalOf);

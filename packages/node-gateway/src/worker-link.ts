@@ -7,6 +7,7 @@ import { createProviderRelay } from './provider-relay.ts';
 import { authHeaders } from './provider-proxy.ts';
 import { agentToDto } from '@agent-hub/contract/codec';
 import type {
+  AgentAlias,
   AgentRuntime,
   BuildInfo,
   ResourceProbe,
@@ -42,6 +43,11 @@ export interface WorkerLinkOptions {
    */
   readonly onCredentialRotate?: (credential: string) => Promise<boolean>;
   readonly runtimes: readonly AgentRuntime[];
+  /**
+   * hub 下发了新的运行时别名（CAP-1）。worker 自己重建 harness 注册表并就地替换 runtimes：
+   * 新建会话用新别名，正在跑的会话不受影响。不给 = 不支持热更新（老 worker 行为）。
+   */
+  readonly onAgentConfig?: (aliases: readonly AgentAlias[]) => void;
   /**
    * 各 harness 的就绪探测（端口适配器的组合）。连上后、每 `probeIntervalMs`、收到 hub 的 probe 指令时各跑一次，
    * 结果叠在 agent 清单上报给 hub。不给 = 不探测，hub 一律当 ready（和老 worker 一样）。
@@ -144,7 +150,7 @@ export interface WorkerLink {
  */
 type SessionCommand = Exclude<
   ServerToWorker,
-  { kind: 'update' | 'update_commit' | 'update_abort' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' | 'terminal_input' }
+  { kind: 'update' | 'update_commit' | 'update_abort' | 'rpc' | 'enrolled' | 'welcome' | 'probe' | 'runtime_job' | 'credential_rotate' | 'terminal_input' | 'agent_config' }
 >;
 
 export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
@@ -545,6 +551,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         nativeBranch = command.accepts?.includes(WORKER_CAPABILITY_NATIVE_BRANCH) ?? false;
         granted = command.capabilities ?? null;
       }
+      else if (command.kind === 'agent_config') options.onAgentConfig?.(command.aliases);
       else if (command.kind === 'probe') void probe(true);
       else if (command.kind === 'runtime_job') void runtimeJob(command);
       else if (command.kind === 'provider_update') providerRelay.update(command.sessionId, { models: command.models });

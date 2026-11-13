@@ -318,6 +318,16 @@ export const startSessionCommandSchema = z.object({
     .optional()
 });
 
+/** 自定义运行时别名（CAP-1）的 wire 结构：和领域里的 AgentAlias 同形，五个字段。不带 env。 */
+export const agentAliasSchema = z.object({
+  id: z.string().min(1).max(41),
+  label: z.string().min(1).max(80),
+  command: z.string().min(1).max(512),
+  args: z.array(z.string().max(512)).max(64),
+  models: z.array(z.string().max(200)).max(128).optional(),
+  defaultModel: z.string().max(200).optional()
+});
+
 export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('rpc'), frame: rpcFrameSchema }),
   /** 配对码换到的专属凭据：只出现在 enroll 握手的那条连接上，发完就关。 */
@@ -371,6 +381,11 @@ export const serverToWorkerSchema = z.discriminatedUnion('kind', [
   }),
   /** 「重新检测」：让 worker 立刻重新探测各 harness 是否可用。老 worker 不认，只记一条日志。 */
   z.object({ kind: z.literal('probe') }),
+  /**
+   * 自定义运行时别名（CAP-1）：worker 用它重建 harness 注册表，新建会话生效、正在跑的会话不动。
+   * 空数组 = 回到 ACP_AGENTS 环境变量。老 worker 不认，只记一条日志（现有逻辑）。
+   */
+  z.object({ kind: z.literal('agent_config'), aliases: z.array(agentAliasSchema).max(16) }),
   z.object({
     kind: z.literal('set_option'),
     sessionId: id,

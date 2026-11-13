@@ -195,6 +195,7 @@ export type AuditAction =
   | 'worker.revoke'
   | 'worker.rotate'
   | 'worker.resource_policy'
+  | 'worker.agents'
   | 'runtime.install'
   | 'runtime.uninstall'
   | 'runtime.switch'

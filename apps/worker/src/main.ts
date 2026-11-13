@@ -9,7 +9,8 @@ import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
 import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
-import type { AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
+import type { AgentAlias, AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
+import { applyAgentAliases, readAgentAliases, type BuiltAliasHarness } from './agent-aliases.ts';
 
 /**
  * worker 的组合根。单机安装时由 server 拉起（HUB_SPAWN_WORKER=1），
@@ -148,24 +149,65 @@ const toolShim = {
 const componentsRoot = join(runtimeStore.root, 'components');
 const componentsEnabled = env['WORKER_COMPONENTS'] !== '0';
 
-/** 统一运行时适配器（ADR 0013 D8）：组合根只遍历注册表，不认得具体 agent。 */
-const prepared: PreparedRuntime[] = [];
-for (const adapter of RUNTIME_ADAPTERS) {
-  prepared.push(
-    ...(await adapter.prepare({
-      env,
-      home: homedir(),
-      toolShim,
-      command: harnessCommand,
-      log,
-      onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
-      onOptions: (sessionId, reported) => notifyOptions(sessionId, reported),
-      onTurnRef: (sessionId, turnRef) => notifyTurnRef(sessionId, turnRef),
-      ...(componentsEnabled ? { components: (runtime: string) => hubComponentDirs(componentsRoot, runtime) } : {})
-    }))
-  );
+/** 自更新标记所在目录（和 worker-id 同一处）；hub 下发的 agents.json 也放这里。 */
+const stateDir = env['WORKER_STATE_DIR'] ?? join(homedir(), '.config', 'agent-hub');
+/** hub 存过的自定义运行时别名（CAP-1）：文件不存在 = 从没配过，走 ACP_AGENTS。 */
+const agentsFile = join(stateDir, 'agents.json');
+const storedAliases = readAgentAliases(agentsFile, log);
+
+/**
+ * 统一运行时适配器（ADR 0013 D8）：组合根只遍历注册表，不认得具体 agent。
+ * `aliasConfig` 非空时覆盖 ACP_AGENTS（别名来自 hub）；null = 用本机 env。
+ * 热应用时重新调它：新 runtime 换进 runtimes 数组，正在跑的会话仍拿着旧的。
+ */
+async function buildHarness(
+  aliasConfig: readonly AgentAlias[] | null
+): Promise<BuiltAliasHarness & { readonly prepared: readonly PreparedRuntime[] }> {
+  const prepared: PreparedRuntime[] = [];
+  for (const adapter of RUNTIME_ADAPTERS) {
+    prepared.push(
+      ...(await adapter.prepare({
+        env,
+        home: homedir(),
+        toolShim,
+        command: harnessCommand,
+        log,
+        onAgentSessionRef: (sessionId, ref) => notifyAgentSessionRef(sessionId, ref),
+        onOptions: (sessionId, reported) => notifyOptions(sessionId, reported),
+        onTurnRef: (sessionId, turnRef) => notifyTurnRef(sessionId, turnRef),
+        ...(componentsEnabled ? { components: (runtime: string) => hubComponentDirs(componentsRoot, runtime) } : {}),
+        ...(aliasConfig && aliasConfig.length > 0 ? { aliases: aliasConfig } : {})
+      }))
+    );
+  }
+  return {
+    prepared,
+    runtimes: prepared.map((entry) => entry.runtime),
+    probes: prepared.map((entry) => withMissingHint(entry.readiness, entry.hint)),
+    // 启动后的模型自检（WORKER_MODEL_CHECK=0 关掉）：每个进程一次、后台跑、有超时，结果显示在控制台
+    selfChecks:
+      env['WORKER_MODEL_CHECK'] === '0'
+        ? []
+        : prepared
+            // 一台机器都没装（hint 非空 = 调度垫片后面既没有 hub 版本也没有机器自带）就没什么可自检的：
+            // 现在跑只会拿到垫片的 127，日志里变成「检测失败（退出码 127）」，不如老实地报未安装。
+            .filter((entry) => entry.selfCheck === true && entry.hint === null)
+            .map((entry) => runtimeSelfCheck(entry.runtime, { timeoutMs: Number(env['WORKER_MODEL_CHECK_TIMEOUT_MS'] ?? '') || 45_000 })),
+    summaries: prepared.map((entry) => entry.summary)
+  };
 }
-const runtimes: AgentRuntime[] = prepared.map((entry) => entry.runtime);
+
+let initial: BuiltAliasHarness & { readonly prepared: readonly PreparedRuntime[] };
+try {
+  initial = await buildHarness(storedAliases);
+} catch (error) {
+  // 落盘的别名把 harness 建挂了（例如命令解析出意外）：扔掉它、用 ACP_AGENTS 起步，别让 worker 起不来
+  log(`按落盘的运行时别名建 harness 失败：${error instanceof Error ? error.message : String(error)}；改用 ACP_AGENTS`);
+  initial = await buildHarness(null);
+}
+const prepared = initial.prepared;
+/** 可变数组：热应用时就地 splice，link 里的 find / map 立刻看到新内容；正在跑的会话不受影响。 */
+const runtimes: AgentRuntime[] = [...initial.runtimes];
 /**
  * 机器自带那份的版本：启动时各探测一次，给 hub 的机器页显示（现在一律 unknown 的那种）。
  * 探测失败 / 超时 / 版本号认不出都记 null —— 绝不能让 Worker 起不来。
@@ -180,24 +222,11 @@ for (const [agentId, command] of machineCommands) {
     machineVersions.set(agentId, null);
   }
 }
-// 启动后的模型自检（WORKER_MODEL_CHECK=0 关掉）：每个进程一次、后台跑、有超时，结果显示在控制台
-const selfChecks =
-  env['WORKER_MODEL_CHECK'] === '0'
-    ? []
-    : prepared
-        // 一台机器都没装（hint 非空 = 调度垫片后面既没有 hub 版本也没有机器自带）就没什么可自检的：
-        // 现在跑只会拿到垫片的 127，日志里变成「检测失败（退出码 127）」，不如老实地报未安装。
-        .filter((entry) => entry.selfCheck === true && entry.hint === null)
-        .map((entry) => runtimeSelfCheck(entry.runtime, { timeoutMs: Number(env['WORKER_MODEL_CHECK_TIMEOUT_MS'] ?? '') || 45_000 }));
-const readiness = createHarnessRegistry(
-  prepared.map((entry) => withMissingHint(entry.readiness, entry.hint)),
-  { selfChecks }
-);
+// 启动后的模型自检由 buildHarness 一起算好；换别名时 replace 会清掉旧结果
+const readiness = createHarnessRegistry(initial.probes, { selfChecks: initial.selfChecks });
 const probeIntervalMs = Number(env['HARNESS_PROBE_INTERVAL_MS'] ?? '') || undefined;
 for (const entry of prepared) log(entry.summary);
 
-/** 自更新标记所在目录（和 worker-id 同一处）。 */
-const stateDir = process.env['WORKER_STATE_DIR'] ?? join(homedir(), '.config', 'agent-hub');
 /** 连上 hub 后稳定这么久，才算新版本健康。 */
 const HEALTHY_AFTER_MS = 15_000;
 let healthTimer: NodeJS.Timeout | null = null;
@@ -353,6 +382,21 @@ const link = connectWorkerLink({
   origin,
   runtimes,
   readiness,
+  /**
+   * 自定义运行时别名热应用（CAP-1）：hub 保存后推一帧下来。重建失败就保持旧的、只记日志；
+   * 成功则就地替换 runtimes 与就绪探测——新建会话用新别名，正在跑的会话不受影响。
+   */
+  onAgentConfig: (aliases) => {
+    void applyAgentAliases(aliases, {
+      stateFile: agentsFile,
+      rebuild: buildHarness,
+      replaceRuntimes: (next) => {
+        runtimes.splice(0, runtimes.length, ...next);
+      },
+      replaceProbes: (probes, selfChecks) => readiness.replace(probes, selfChecks),
+      log
+    });
+  },
   ...(probeIntervalMs !== undefined ? { probeIntervalMs } : {}),
   host: { hostname: hostname(), platform: platform(), arch: arch() },
   files,

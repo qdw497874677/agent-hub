@@ -1,4 +1,4 @@
-import type { RuntimeAdapter, RuntimeAdapterContext } from '@agent-hub/domain';
+import type { AgentAlias, RuntimeAdapter, RuntimeAdapterContext } from '@agent-hub/domain';
 import { ACP_AGENT_DEFAULTS, acpDescriptor, opencodeLaunch, type AcpAgentConfig } from './config.ts';
 import { createAcpRuntime } from './acp-runtime.ts';
 import { discoverAcpModels } from './discover-models.ts';
@@ -53,11 +53,32 @@ export function commandEnvVar(id: string): string {
   return `${id.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_COMMAND`;
 }
 
-export function acpConfigsFor(ctx: Pick<RuntimeAdapterContext, 'env' | 'log' | 'components'>): AcpAgentConfig[] {
+export function acpConfigsFor(
+  ctx: Pick<RuntimeAdapterContext, 'env' | 'log' | 'components'>,
+  aliases?: readonly AgentAlias[]
+): AcpAgentConfig[] {
+  // 自定义运行时别名（CAP-1）非空时覆盖 ACP_AGENTS：hub 上声明的就是这台机器的 agent 清单。
+  // 空列表 / 没配过 = 走 env，老行为不变。别名是声明，不带 env，密钥留在本机。
+  if (aliases && aliases.length > 0) return acpConfigsFromAliases(aliases);
   const configs = acpConfigsFromEnv(ctx);
   // ADR 0022 D7：要 hub MCP 的 Hermes 会话走 ACP（共用网关分不清会话，见 hermes-acp.ts）
   const hermes = configs.some((config) => config.id === 'hermes-acp') ? null : hermesAcpConfig(ctx.env);
   return hermes ? [...configs, hermes] : configs;
+}
+
+/**
+ * 别名 → ACP 配置。显式入口，不动 `acpAgents`（ACP_AGENTS）的语义：
+ * hub 下发的别名不带 env / codec / launch，密钥和登录态仍从本机环境取。
+ */
+export function acpConfigsFromAliases(aliases: readonly AgentAlias[]): AcpAgentConfig[] {
+  return aliases.map((alias) => ({
+    id: alias.id,
+    label: alias.label,
+    command: alias.command,
+    args: [...alias.args],
+    ...(alias.models !== undefined ? { models: [...alias.models] } : {}),
+    ...(alias.defaultModel !== undefined ? { defaultModel: alias.defaultModel } : {})
+  }));
 }
 
 function acpConfigsFromEnv(ctx: Pick<RuntimeAdapterContext, 'env' | 'log' | 'components'>): AcpAgentConfig[] {
@@ -84,7 +105,7 @@ export function acpAdapter(): RuntimeAdapter {
   return {
     id: 'acp',
     async prepare(ctx) {
-      const resolved = acpConfigsFor(ctx).map((config) => {
+      const resolved = acpConfigsFor(ctx, ctx.aliases).map((config) => {
         const found = ctx.command(config.command, commandEnvVar(config.id), config.id);
         return { config: { ...config, command: found.command }, hint: found.hint };
       });

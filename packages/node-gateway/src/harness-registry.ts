@@ -14,6 +14,12 @@ export interface HarnessRegistry {
    * 结果并进 latest() 的 ready.check；返回本次新得到的结果（没跑任何自检是空表）。
    */
   selfCheckOnce(): Promise<ReadonlyMap<string, ModelCheck>>;
+  /**
+   * 换一套 harness（自定义运行时别名热应用，CAP-1）：重建探测列表并立刻探测一轮。
+   * 旧的模型自检结果、进行中的探测 / 自检一起清掉——不能把上一个配置的结论串到新配置上。
+   * 正在跑的会话不受影响：它们拿着的 runtime 对象不会被换。
+   */
+  replace(probes: readonly HarnessReadiness[], selfChecks?: readonly HarnessSelfCheck[]): Promise<void>;
 }
 
 export function createHarnessRegistry(
@@ -21,6 +27,8 @@ export function createHarnessRegistry(
   options: { readonly timeoutMs?: number; readonly selfChecks?: readonly HarnessSelfCheck[] } = {}
 ): HarnessRegistry {
   const timeoutMs = options.timeoutMs ?? 20_000;
+  let sources = probes;
+  let selfChecks = options.selfChecks ?? [];
   let current: ReadonlyMap<string, HarnessProbe> = new Map();
   let inflight: Promise<ReadonlyMap<string, HarnessProbe>> | null = null;
   const checks = new Map<string, ModelCheck>();
@@ -58,7 +66,7 @@ export function createHarnessRegistry(
         const fresh = new Map<string, ModelCheck>();
         const ready = (id: string) => current.get(id)?.readiness.state === 'ready';
         // 一个一个跑：同时拉起几个 agent 会抢启动资源，而且自检不急
-        for (const check of options.selfChecks ?? []) {
+        for (const check of selfChecks) {
           if (!ready(check.agentId)) continue;
           const result = await check.run().catch((error: unknown) => ({ ok: false, model: '', reason: `自检出错：${error instanceof Error ? error.message : String(error)}`, at: Date.now() }));
           checks.set(check.agentId, result);
@@ -69,7 +77,7 @@ export function createHarnessRegistry(
       return selfChecking;
     },
     probeAll() {
-      inflight ??= Promise.all(probes.map(async (probe) => [probe.agentId, await one(probe)] as const))
+      inflight ??= Promise.all(sources.map(async (probe) => [probe.agentId, await one(probe)] as const))
         .then((entries) => {
           current = new Map(entries);
           return merged();
@@ -78,6 +86,15 @@ export function createHarnessRegistry(
           inflight = null;
         });
       return inflight;
+    },
+    async replace(next, nextChecks) {
+      sources = next;
+      selfChecks = nextChecks ?? [];
+      checks.clear();
+      selfChecking = null;
+      inflight = null;
+      current = new Map();
+      await (this as HarnessRegistry).probeAll();
     }
   };
 }

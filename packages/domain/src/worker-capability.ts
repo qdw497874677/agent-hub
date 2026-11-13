@@ -85,7 +85,9 @@ export const COMMAND_CAPABILITY: Readonly<Record<string, WorkerMethodCapability>
   update_commit: 'update',
   update_abort: 'update',
   runtime_job: 'runtimes',
-  probe: 'control'
+  probe: 'control',
+  /** 自定义运行时别名（CAP-1）：连接管理级，任何能连上的 worker 都收。老 worker 不认这个 kind，只记日志。 */
+  agent_config: 'control'
 };
 
 export const commandCapability = (kind: string): WorkerMethodCapability => COMMAND_CAPABILITY[kind] ?? 'control';

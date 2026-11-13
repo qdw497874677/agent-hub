@@ -1,4 +1,5 @@
 import type { AgentRuntime } from './agent-runtime.ts';
+import type { AgentAlias } from '../agent-alias.ts';
 import type { HarnessReadiness } from './harness-readiness.ts';
 import type { HarnessInstaller } from './harness-installer.ts';
 import type { RuntimeOption } from '../option.ts';
@@ -38,6 +39,11 @@ export interface RuntimeAdapterContext {
   onTurnRef?(sessionId: string, turnRef: string): void;
   /** hub 装的组件（ADR 0021 P2）在这台机器上的包目录（真实路径）。每次开会话时现查：升级只影响新会话。 */
   components?(runtime: string): readonly string[];
+  /**
+   * 自定义运行时别名（CAP-1）：hub 下发的 ACP agent 声明（不带 env）。
+   * 非空时覆盖 `ACP_AGENTS`——env 里的密钥仍留在本机，别名只决定「有哪些 agent」。
+   */
+  aliases?: readonly AgentAlias[];
 }
 
 /** 一个 agent 在这台机器上的全部组件。 */

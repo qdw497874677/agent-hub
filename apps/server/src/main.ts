@@ -774,6 +774,8 @@ serverGateway = createServerGateway({
     // 重新探测的结果：只换清单，不重跑上线流程（同步资产、接回会话）。
     catalog.upsert(worker.workerId, agents);
   },
+  /** 自定义运行时别名（CAP-1）：连上就把这台机器存着的配置推下去。没配过 = null，不发帧。 */
+  agentConfig: (workerId) => store.workerAgents.get(workerId),
   onHello(worker, agents, sessions) {
     catalog.upsert(worker.workerId, agents);
     syncAssets(worker.workerId);
@@ -969,6 +971,13 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   assets: { deps: assetDeps, audit: store.audit },
   providers: providerWiring,
   resources: { metrics: workerMetrics, settings: store.settings, workers: workerControl, audit: store.audit, now: () => Date.now(), access: deps.access },
+  /** 每台 Worker 的自定义运行时别名（CAP-1）：存库 + 推给在线 Worker（离线就等它下次连上自动推）。 */
+  workerAgents: {
+    repo: store.workerAgents,
+    send: (workerId, aliases) => serverGateway?.sendAgentConfig(workerId, aliases) ?? false,
+    audit: store.audit,
+    now: () => Date.now()
+  },
   ...(deps.access ? { components: {
     catalog: componentStore.catalog,
     pins: componentStore.pins,

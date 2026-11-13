@@ -37,6 +37,7 @@ import {
 import { DEFAULT_HEARTBEAT, decideTrial, initialLink, linkIsDead, reduceLink } from '@agent-hub/domain';
 import type { HeartbeatPolicy, LinkEvent, LinkHealth } from '@agent-hub/domain';
 import type {
+  AgentAlias,
   AssetDelivery,
   BuildInfo,
   DomainError,
@@ -118,6 +119,11 @@ export interface GatewayHooks {
   onRuntimeJob?(workerId: string, job: RuntimeJob): void;
   /** 这台 Worker 期望装着的组件（hub 的 component_pins，ADR 0021 P2 才写入）；不给 = 没有期望。 */
   expectedComponents?(workerId: string): readonly ComponentPin[];
+  /**
+   * 这台 Worker 存着的自定义运行时别名（CAP-1）。连接建立后推一帧让它热应用；
+   * 不给 / 返回 null = 没配过，不发帧（老 hub 行为）。
+   */
+  agentConfig?(workerId: string): Promise<readonly AgentAlias[] | null> | readonly AgentAlias[] | null;
   onLog?(message: string): void;
   /**
    * 每条通过认证的连接一条 RPC 通道（端口）：组合根在这里挂 worker→hub 的方法（如 mcp.message），
@@ -257,6 +263,11 @@ export interface ServerGateway {
   rotateCredential(workerId: string, credential: string): boolean;
   /** 让在线的 Worker 立刻重新探测各 harness 是否可用。不在线返回 false；老 Worker 收到会忽略。 */
   requestProbe(workerId: string): boolean;
+  /**
+   * 下发这台 Worker 的自定义运行时别名（CAP-1）。不在线返回 false，不抛错。
+   * 老 Worker 收到不认这个帧，只会记一行日志；空数组 = 让它回到 ACP_AGENTS。
+   */
+  sendAgentConfig(workerId: string, aliases: readonly AgentAlias[]): boolean;
   /** 下发运行时安装 / 卸载任务，记为 running。不在线返回 false；老 Worker 收到只记日志（界面上它不报 provision，根本不会发）。 */
   requestRuntimeJob(workerId: string, job: RuntimeJob): boolean;
   /** 资产中心的投递端口：把清单推下去（assets.sync），Worker 回头经 assets.fetch 取内容。 */
@@ -691,6 +702,12 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           } satisfies ServerToWorker)
         );
         if (frame.dropped) hooks.onLog?.(`Worker「${frame.label}」上次断线期间丢了 ${frame.dropped} 帧输出`);
+        // 自定义运行时别名（CAP-1）：这台机器存过就推一帧，worker 自己热应用（新建会话生效）。
+        // 老 hub 没有这个钩子 = 不发；老 worker 不认 = 记一行日志，连接照旧。
+        // 存过就推，**空的也推**：清空别名时如果 worker 离线，下次连上来要能被拉回 ACP_AGENTS，
+        // 否则它还在用 agents.json 里的旧别名。null = 从没配过，不发。
+        const storedAliases = await hooks.agentConfig?.(frame.workerId);
+        if (storedAliases !== null && storedAliases !== undefined) sendAgentConfig(frame.workerId, storedAliases);
         if (policy.echoMs > 0) void echo(entry);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         void reconcileTerminals(entry.workerId);
@@ -918,6 +935,28 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     return true;
   }
 
+  /**
+   * 自定义运行时别名（CAP-1）：连上就推一帧给 worker 热应用。
+   * 尽力而为——离线 / 老 worker 不认都只返回 false，不抛错。
+   */
+  function sendAgentConfig(workerId: string, aliases: readonly AgentAlias[]): boolean {
+    const entry = online(workerId);
+    if (!entry?.socket) return false;
+    const frame: ServerToWorker = {
+      kind: 'agent_config',
+      aliases: aliases.map((alias) => ({
+        id: alias.id,
+        label: alias.label,
+        command: alias.command,
+        args: [...alias.args],
+        ...(alias.models !== undefined ? { models: [...alias.models] } : {}),
+        ...(alias.defaultModel !== undefined ? { defaultModel: alias.defaultModel } : {})
+      }))
+    };
+    entry.socket.send(JSON.stringify(frame));
+    return true;
+  }
+
   const gateway: NodeGateway = {
     async status(): Promise<WorkerStatus[]> {
       return statuses();
@@ -1053,6 +1092,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return true;
     },
     requestProbe,
+    sendAgentConfig,
     requestRuntimeJob(workerId: string, job: RuntimeJob): boolean {
       const entry = online(workerId);
       if (!entry?.socket) return false;
