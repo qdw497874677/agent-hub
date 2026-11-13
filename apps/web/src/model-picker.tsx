@@ -37,7 +37,8 @@ export function ModelPicker({
   disabled = false,
   className = '',
   id,
-  short = false
+  short = false,
+  note
 }: {
   items: readonly ModelItem[];
   value: string;
@@ -50,6 +51,8 @@ export function ModelPicker({
   id?: string;
   /** 窄屏底栏只显示模型名本身，不把提供方前缀也塞进去。 */
   short?: boolean;
+  /** 清单底部的一行说明：这轮有哪些模型被收起来了（不可选、也不能聚焦）。 */
+  note?: string;
 }) {
   const [open, setOpen] = useState(false);
   const current = items.find((item) => item.value === value);
@@ -84,6 +87,7 @@ export function ModelPicker({
               value={value}
               label={label}
               scope={scope}
+              note={note}
               onClose={() => setOpen(false)}
               onPick={(picked) => {
                 setOpen(false);
@@ -102,6 +106,7 @@ function ModelSheet({
   value,
   label,
   scope,
+  note,
   onPick,
   onClose
 }: {
@@ -109,6 +114,7 @@ function ModelSheet({
   value: string;
   label: string;
   scope: string;
+  note?: string;
   onPick: (value: string) => void;
   onClose: () => void;
 }) {
@@ -220,6 +226,20 @@ function ModelSheet({
                 ))}
               </Command.Group>
             ))}
+            {note === undefined ? null : (
+              // 说明行不是候选项：disabled 让 cmdk 跳过它（键盘不聚焦、点了也不选），
+              // value 用不可能跟模型 id 撞的值，免得它被当成「当前选中」。
+              <Command.Item
+                value="scope-note"
+                disabled
+                className="flex min-h-[40px] items-center gap-2 px-3 pt-1 text-meta text-tertiary sm:min-h-0"
+              >
+                <span aria-hidden className="w-4 shrink-0 text-center">
+                  ·
+                </span>
+                <span className="min-w-0 flex-1">{note}</span>
+              </Command.Item>
+            )}
           </Command.List>
         </Command>
       </div>

@@ -1,6 +1,8 @@
+import type { ReactNode } from 'react';
 import type { RuntimeOptionDto } from './api.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from './model-picker.tsx';
 import type { ModelItem } from './model-list.ts';
+import { filterModelsByScope, scopeNote } from './model-scope.ts';
 
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
@@ -66,26 +68,33 @@ export function OptionControls({ options, values, onChange, compact = false, dis
           );
         }
         const items = flatChoices(option);
-        if (option.category === 'model' && items.length > SEARCHABLE_AFTER) {
+        // 模型清单里 hub 提供商模型和原生模型是混着来的；先按当前值的类别收口，
+        // 别让人选了另一类、再收到「换模型提供商需新开会话」的报错。
+        const scoped = option.category === 'model' ? filterModelsByScope(items, String(current)) : null;
+        const note = scoped !== null && scoped.hidden > 0 ? scopeNote(String(current)) : undefined;
+        if (scoped !== null && scoped.items.length > SEARCHABLE_AFTER) {
           return (
             <ModelPicker
               key={option.id}
               label={option.label}
               scope={option.id}
-              items={items}
+              items={scoped.items}
               value={String(current)}
               disabled={disabled}
+              note={note}
               onChange={(value) => onChange(option.id, value)}
               short={compact}
               className={`${compact ? 'min-w-[80px] flex-1' : ''} max-w-[128px] ${compact ? 'option-control' : 'py-0.5'} rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             />
           );
         }
+        // 短清单走原生 <select>，塞不进额外一行说明，就把说明放进控件的 title。
+        const title = note === undefined ? (option.description ?? option.label) : `${option.description ?? option.label}（${note}）`;
         return (
           <select
             key={option.id}
             aria-label={option.label}
-            title={option.description ?? option.label}
+            title={title}
             data-category={option.category}
             className={`${compact ? (option.category === 'model' ? 'min-w-[80px] flex-1' : 'shrink-0') : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[56px] sm:max-w-[132px]'} ${compact ? 'option-control appearance-none' : 'py-0.5'} truncate rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
             value={String(current)}
@@ -95,21 +104,27 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             onDoubleClick={(event) => event.stopPropagation()}
             onChange={(event) => onChange(option.id, event.target.value)}
           >
-            {option.choices.length === 0 ? <option value={String(current)}>{String(current)}</option> : null}
-            {option.choices.map((choice, index) =>
-              choice.kind === 'group' ? (
-                <optgroup key={`${option.id}-${index}`} label={choice.label}>
-                  {choice.values.map((value) => (
-                    <option key={value.value} value={value.value} disabled={value.metadata?.selectable === false}>
-                      {value.label}
+            {scoped !== null ? (
+              modelSelectOptions(scoped.items, String(current))
+            ) : (
+              <>
+                {option.choices.length === 0 ? <option value={String(current)}>{String(current)}</option> : null}
+                {option.choices.map((choice, index) =>
+                  choice.kind === 'group' ? (
+                    <optgroup key={`${option.id}-${index}`} label={choice.label}>
+                      {choice.values.map((value) => (
+                        <option key={value.value} value={value.value} disabled={value.metadata?.selectable === false}>
+                          {value.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ) : (
+                    <option key={choice.value.value} value={choice.value.value} disabled={choice.value.metadata?.selectable === false}>
+                      {choice.value.label}
                     </option>
-                  ))}
-                </optgroup>
-              ) : (
-                <option key={choice.value.value} value={choice.value.value} disabled={choice.value.metadata?.selectable === false}>
-                  {choice.value.label}
-                </option>
-              )
+                  )
+                )}
+              </>
             )}
           </select>
         );
@@ -139,6 +154,46 @@ export function flatChoices(option: RuntimeOptionDto): ModelItem[] {
       ? choice.values.map((value) => item(value, choice.label))
       : [item(choice.value)]
   );
+}
+
+/**
+ * 短清单走原生 <select> 时用的候选项：按作用域过滤之后分组可能只剩一部分，
+ * 所以由摊平后的 ModelItem 重新拼 optgroup（同组的项本来就排在一起）。
+ */
+function modelSelectOptions(items: readonly ModelItem[], current: string): ReactNode[] {
+  if (items.length === 0) return [<option key="current" value={current}>{current}</option>];
+  const nodes: ReactNode[] = [];
+  let index = 0;
+  while (index < items.length) {
+    const item = items[index];
+    if (item === undefined) break;
+    if (item.group === undefined) {
+      nodes.push(
+        <option key={`${index}:${item.value}`} value={item.value} disabled={item.disabled === true}>
+          {item.label}
+        </option>
+      );
+      index += 1;
+      continue;
+    }
+    const run: ModelItem[] = [];
+    while (index < items.length && items[index]?.group === item.group) {
+      const each = items[index];
+      if (each === undefined) break;
+      run.push(each);
+      index += 1;
+    }
+    nodes.push(
+      <optgroup key={`${item.group}:${index}`} label={item.group}>
+        {run.map((each) => (
+          <option key={each.value} value={each.value} disabled={each.disabled === true}>
+            {each.label}
+          </option>
+        ))}
+      </optgroup>
+    );
+  }
+  return nodes;
 }
 
 function compactTokens(tokens: number): string {
