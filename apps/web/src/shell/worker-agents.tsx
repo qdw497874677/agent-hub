@@ -96,6 +96,10 @@ export function AgentAliasesSection({ worker }: { worker: WorkerInfoDto }) {
         <p className="text-meta text-tertiary">
           这些是可执行命令，属于操作者信任边界；保存后对新会话生效，正在跑的会话不变。
         </p>
+        <p className="mt-1 text-meta text-tertiary">
+          填了别名就<strong className="font-normal text-secondary">只按别名里的清单</strong>
+          提供 ACP agent（OpenCode 这类内置 ACP agent 会被替换，Pi / Grok 这类独立适配器不受影响）；留空则回到这台机器自己的配置。
+        </p>
 
         {config.isPending ? <p className="mt-1.5 text-meta text-tertiary">加载中…</p> : null}
         {config.isError ? (
