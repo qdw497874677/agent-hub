@@ -984,6 +984,13 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   }
 });
 
+// 页面壳引用的是带哈希的资源名：它自己不能长缓存，否则发版之后手机上还在跑旧 bundle
+// （Android Chrome 对没有 cache-control 的 HTML 会启发式缓存）。
+app.use('/*', async (c, next) => {
+  await next();
+  const type = c.res.headers.get('content-type') ?? '';
+  if (type.startsWith('text/html')) c.res.headers.set('cache-control', 'no-cache');
+});
 app.use('/*', serveStatic({ root: webDist }));
 app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));
 
