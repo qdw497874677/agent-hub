@@ -31,26 +31,31 @@ export interface GlobalNavGroup {
   readonly id: GlobalNavGroupId;
   readonly label: string;
   readonly items: readonly GlobalNavItem[];
+  /** 整组只对管理员出现：非管理员连组标题都不渲染。 */
+  readonly adminOnly?: true;
 }
 
-/** 顺序即界面顺序：工作 → 我的 → 团队 → 管理。 */
-const GROUP_ORDER: readonly GlobalNavGroupId[] = ['work', 'mine', 'team', 'manage'];
+/** 顺序即界面顺序：工作台 → 消息 → 库 → 运维。 */
+const GROUP_ORDER: readonly GlobalNavGroupId[] = ['workbench', 'messages', 'library', 'ops'];
 const GROUP_LABELS: Readonly<Record<GlobalNavGroupId, string>> = {
-  work: '工作',
-  mine: '我的',
-  team: '团队',
-  manage: '管理'
+  workbench: '工作台',
+  messages: '消息',
+  library: '库',
+  ops: '运维'
 };
+/** 运维组整组只对管理员出现：组里现在只有「运营后台」，非管理员连组标题都不渲染。 */
+const ADMIN_ONLY_GROUPS: ReadonlySet<GlobalNavGroupId> = new Set<GlobalNavGroupId>(['ops']);
 
 /** 壳自己的入口：不属于任何产品形态，跨形态共用。 */
 export const SHELL_NAV: readonly SurfaceNavItem[] = [
-  { id: 'memory', label: '记忆', href: '#/memory', page: 'memory', group: 'mine', order: 10 },
-  { id: 'workspaces', label: '工作空间', href: '#/workspaces', page: 'workspaces', group: 'team', order: 10 },
+  { id: 'memory', label: '记忆', href: '#/memory', page: 'memory', group: 'library', order: 10 },
+  { id: 'workspaces', label: '工作空间', href: '#/workspaces', page: 'workspaces', group: 'library', order: 20 },
   // 资产市场的真实路由是 `#/assets/<tab>`（route.ts），没有 `#/market`。
-  { id: 'market', label: '资产市场', href: '#/assets/catalog', page: 'assets', group: 'team', order: 20 },
-  // 可观测对所有人开放（observe.tsx 与服务端都没有角色门禁），不属于管理组。
-  { id: 'observe', label: '可观测', href: '#/observe', page: 'observe', group: 'team', order: 30 },
-  { id: 'admin', label: '运营后台', href: '#/admin/overview', page: 'admin', group: 'manage', order: 10, adminOnly: true }
+  { id: 'market', label: '资产市场', href: '#/assets/catalog', page: 'assets', group: 'library', order: 30 },
+  // 可观测没有角色门禁（observe.tsx 与服务端都没有），所以不能藏进运维组——那只是看起来收口了。
+  // 归在库里：它读的是所有人自己的连接器链路，和资产市场一样是「看东西」的入口。
+  { id: 'observe', label: '可观测', href: '#/observe', page: 'observe', group: 'library', order: 40 },
+  { id: 'admin', label: '运营后台', href: '#/admin/overview', page: 'admin', group: 'ops', order: 20, adminOnly: true }
 ];
 
 /** 壳的入口 + 所有形态贡献的入口，按组内 order 排序（同 order 保持声明顺序）。 */
@@ -62,6 +67,7 @@ export const GLOBAL_NAV_ITEMS: readonly SurfaceNavItem[] = [
 export const GLOBAL_NAV_GROUPS: readonly GlobalNavGroup[] = GROUP_ORDER.map((id) => ({
   id,
   label: GROUP_LABELS[id],
+  ...(ADMIN_ONLY_GROUPS.has(id) ? { adminOnly: true as const } : {}),
   items: GLOBAL_NAV_ITEMS.filter((item) => item.group === id)
     .slice()
     .sort((a, b) => (a.order ?? 100) - (b.order ?? 100))
@@ -74,12 +80,12 @@ export const GLOBAL_NAV_GROUPS: readonly GlobalNavGroup[] = GROUP_ORDER.map((id)
     }))
 })).filter((group) => group.items.length > 0);
 
-/** 去掉当前账号看不到的项，顺手丢掉空组（非管理员没有「管理」组就整组不出现）。 */
+/** 去掉当前账号看不到的组与项（非管理员没有「运维」组，整组连标题都不出现）。 */
 export function globalNavGroups(clusterAdmin: boolean): GlobalNavGroup[] {
   return GLOBAL_NAV_GROUPS.map((group) => ({
     ...group,
     items: group.items.filter((item) => item.adminOnly !== true || clusterAdmin)
-  })).filter((group) => group.items.length > 0);
+  })).filter((group) => (group.adminOnly !== true || clusterAdmin) && group.items.length > 0);
 }
 
 /** 地址栏的页名 → 高亮的项；不在导航里（项目页 / 没解析出来）就是 null。 */

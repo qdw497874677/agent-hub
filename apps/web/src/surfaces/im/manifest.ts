@@ -8,8 +8,9 @@ import type { Route } from '../../shell/route.ts';
 import type { Surface, SurfaceNavItem } from '../../shell/surface.ts';
 
 export const IM_NAV: readonly SurfaceNavItem[] = [
-  { id: 'messages', label: '消息', href: '#/messages', page: 'messages', group: 'mine' },
-  { id: 'bots', label: 'Bot', href: '#/bots', page: 'bots', group: 'mine' }
+  // 导航项叫「群聊」是因为这一页本来就是群列表；组标题仍叫「消息」，和「Bot」一起归在那一组。
+  { id: 'messages', label: '群聊', href: '#/messages', page: 'messages', group: 'messages' },
+  { id: 'bots', label: 'Bot', href: '#/bots', page: 'bots', group: 'messages' }
 ];
 
 export function parseImRoute(parts: readonly string[]): Route | null {

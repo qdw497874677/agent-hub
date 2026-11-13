@@ -8,7 +8,7 @@ import type { Route, View } from '../../shell/route.ts';
 import type { Surface, SurfaceNavItem } from '../../shell/surface.ts';
 
 export const WORKBENCH_NAV: readonly SurfaceNavItem[] = [
-  { id: 'home', label: '首页', href: '#/home', page: 'home', group: 'work' }
+  { id: 'home', label: '首页', href: '#/home', page: 'home', group: 'workbench' }
 ];
 
 const VIEWS: readonly View[] = ['canvas', 'list', 'focus'];

@@ -108,10 +108,12 @@ export const imSurface: Surface = {
 
 - **工作台**：首页、项目（当前项目内的画布/列表/会话）
 - **消息**：群聊、Bot
-- **库**：记忆、资产市场、工作空间
-- **运维**：可观测、运营后台（`clusterAdmin`）
+- **库**：记忆、工作空间、资产市场、可观测
+- **运维**：运营后台（`clusterAdmin`，非管理员整组不渲染）
 
-`memory` 从「我的」挪到「库」——它是跨会话的共享资产，不属于 IM。
+`memory` 从「我的」挪到「库」——它是跨会话的共享资产，不属于 IM。**可观测留在「库」**：`/observe` 在服务端没有角色门禁，放进运维组只会「看起来收口」，实际敲 URL 还能进；要真收口得先给路由加门禁。
+
+组 id 同步为 `workbench | messages | library | ops`（`apps/web/src/shell/surface.ts`）。导航项「消息」在 UI 上叫「群聊」（组标题仍叫「消息」，避免同名），`data-testid` 仍是 `nav-messages`。窄屏 `<md` 时首页把全站导航排在项目列表之前（`order-*`），桌面顺序不变。
 
 ## 7. 迁移分期
 
@@ -135,7 +137,7 @@ export const imSurface: Surface = {
 | M2 | 已落地 | `packages/contract/src/messaging.ts`，web 只做同名转发（提交 `53107c0`） |
 | M3 | 已落地 | `surfaces/{im,workbench}/manifest.ts` 声明导航与路由，`route.ts` 只留注册表与壳自己的页（提交 `b94867f`） |
 | M4 | 已落地 | bot 启动配置，见第 4 节第 1 条（`packages/domain/src/messaging.ts:110`、`apps/web/src/surfaces/im/bot-options.ts`） |
-| M5 | 待做 | 导航重排（第 6 节），需要设计确认后再动 |
+| M5 | 已落地 | 导航四组（工作台/消息/库/运维）、文案统一（会话/机器）；窄屏首页导航前置 |
 
 M3 之后「加一个产品面」的步骤是：建 `surfaces/<id>/manifest.ts` → 在 `route.ts` 的 `SURFACES` 加一行。壳的导航表、路由解析、门禁规则都不用改。
 

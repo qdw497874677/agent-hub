@@ -57,7 +57,8 @@ export function HomePage({
         className="flex max-h-[40dvh] w-full shrink-0 flex-col overflow-y-auto border-b border-hair px-3 py-4 md:max-h-none md:w-[220px] md:border-b-0 md:border-r"
         aria-label="首页侧栏"
       >
-        <div className="mb-4 flex items-start justify-between gap-2">
+        {/* 窄屏顺序：招牌 → 导航 → 项目；md 起（侧栏成 220px 固定栏）仍是招牌 → 项目 → 导航，DOM 不动、只换 order。 */}
+        <div className="order-1 mb-4 flex items-start justify-between gap-2">
           <div>
             <p className="text-head text-primary">agent-hub</p>
             <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
@@ -70,7 +71,7 @@ export function HomePage({
           </div>
         </div>
 
-        <div className="mb-1 flex items-baseline justify-between">
+        <div className="order-3 mb-1 flex items-baseline justify-between md:order-2">
           <p className="text-meta text-tertiary">项目</p>
           <button
             className="text-meta text-secondary hover:text-accent"
@@ -81,7 +82,7 @@ export function HomePage({
           </button>
         </div>
 
-        <ul className="mb-4 space-y-0.5">
+        <ul className="order-4 mb-4 space-y-0.5 md:order-3">
           {projects.map((project) => (
             <li key={project.id} className="group flex items-start">
               <button
@@ -109,13 +110,15 @@ export function HomePage({
           ) : null}
         </ul>
 
-        <div className="mb-3 border-y border-hair">
+        <div className="order-2 mb-3 border-y border-hair md:order-4">
           <GlobalNav />
         </div>
 
-        <TrashList />
+        <div className="order-5">
+          <TrashList />
+        </div>
         {deleting ? <DeleteProjectDialog project={deleting} onClose={() => setDeleting(null)} /> : null}
-        <div className="mt-auto border-t border-hair pt-3">
+        <div className="order-6 mt-auto border-t border-hair pt-3">
           <WorkersBadge placement="up" />
         </div>
       </aside>

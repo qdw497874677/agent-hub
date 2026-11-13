@@ -10,8 +10,11 @@ import type { Route } from './route.ts';
 
 export type SurfaceId = 'im' | 'workbench';
 
-/** 导航分组由壳统一排序与命名，形态只说自己属于哪一组。 */
-export type SurfaceNavGroupId = 'work' | 'mine' | 'team' | 'manage';
+/**
+ * 导航分组由壳统一排序与命名，形态只说自己属于哪一组：
+ * 工作台 → 消息 → 库 → 运维。`ops` 整组只对管理员出现。
+ */
+export type SurfaceNavGroupId = 'workbench' | 'messages' | 'library' | 'ops';
 
 export interface SurfaceNavItem {
   /** 稳定 id：也是 `data-testid="nav-<id>"` 的后半段。 */

@@ -3,7 +3,7 @@ import { activeGlobalNavId, globalNavGroups } from './global-nav.ts';
 import { useRoute } from './use-route.ts';
 
 /**
- * 全站导航：工作 / 我的 / 团队 / 管理，四组只放路由链接。
+ * 全站导航：工作台 / 消息 / 库 / 运维，四组只放路由链接。运维组整组只对管理员出现。
  *
  * 刻意做成「小标题 + 一排小链接」而不是卡片或图标墙：侧栏和首页左栏都是窄栏，
  * 任务/会话树才是主角，这组入口要能一眼扫完、不抢高度。
@@ -19,7 +19,8 @@ export function GlobalNav() {
     <nav aria-label="全站导航" data-testid="global-nav" className="divide-y divide-hair">
       {groups.map((group) => (
         <div key={group.id} className="flex items-start gap-2 px-1.5 py-1">
-          <p className="w-7 shrink-0 pt-2.5 text-meta text-tertiary lg:pt-1">{group.label}</p>
+          {/* 组标题占 40px：「工作台」三个字在 11px 下约 33px，w-7 会折成两行。 */}
+          <p className="w-10 shrink-0 whitespace-nowrap pt-2.5 text-meta text-tertiary lg:pt-1">{group.label}</p>
           <div className="flex min-w-0 flex-wrap items-center gap-0.5">
             {group.items.map((item) => {
               const on = item.id === active;
