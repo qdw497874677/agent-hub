@@ -145,6 +145,21 @@ test('open：同一终端重开只改尺寸，不重新 spawn', async () => {
   assert.deepEqual(harness.host.list(), [{ terminalId: 't1', sessionId: 's1' }]);
 });
 
+test('复用还活着的终端：回放最近的输出，刷新页面能接上滚屏', async () => {
+  const harness = buildHarness({ tickMs: 5 });
+  await harness.host.open({ terminalId: 't1', sessionId: 's1', cols: 80, rows: 24 });
+  harness.spawns[0]!.pty.emitData('hello ');
+  harness.spawns[0]!.pty.emitData('终端');
+  await sleep(30);
+  const again = await harness.host.open({ terminalId: 't1', sessionId: 's1', cols: 80, rows: 24 });
+  assert.equal(again.reused, true);
+  assert.equal(Buffer.from(again.scrollback ?? '', 'base64').toString('utf8'), 'hello 终端');
+  // 没有输出时不多带一个空串，前端也不必处理。
+  const empty = buildHarness();
+  await empty.host.open({ terminalId: 't1', sessionId: 's1', cols: 80, rows: 24 });
+  assert.deepEqual(await empty.host.open({ terminalId: 't1', sessionId: 's1', cols: 80, rows: 24 }), { cols: 80, rows: 24, reused: true });
+});
+
 test('spawn：登录 shell、会话 cwd、剥掉 worker 自己的环境变量', async () => {
   const harness = buildHarness({
     env: { HUB_TOKEN: 'secret', HUB_URL: 'ws://hub/worker', HUB_WORKER_CREDENTIAL: 'c', HUB_LOCAL_SECRET: 'l', HUB_PARENT_PID: '1', TERM: 'dumb', COLORTERM: '24bit', PATH: '/usr/bin', KEEP: 'yes' }

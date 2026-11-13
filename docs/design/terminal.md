@@ -54,7 +54,7 @@
 
 | 方法 | 入参 | 返回 | 语义 |
 | --- | --- | --- | --- |
-| `terminal.open` | `{ terminalId, sessionId, cols, rows }` | `{ cols, rows, reused }` 或错误 `unsupported` | 开 PTY；同 id 存活则复用（幂等） |
+| `terminal.open` | `{ terminalId, sessionId, cols, rows, cwd? }` | `{ cols, rows, reused, scrollback? }` 或错误 `unsupported` | 开 PTY；同 id 存活则复用（幂等）。复用时带最近 256 KB 输出（base64），供刷新后回放 |
 | `terminal.resize` | `{ terminalId, cols, rows }` | `{ ok: true }` | 0 或 >1000 的尺寸拒绝 |
 | `terminal.close` | `{ terminalId }` | `{ ok: true }` | 结束并回收；不存在也算成功 |
 | `terminal.list` | `{}` | `{ terminals: [{ terminalId, sessionId }] }` | 对账用（见 §3 的 hub 重启） |
@@ -110,7 +110,7 @@ WS 限制：单帧 128 KB；心跳 25s，两次不回就关。
 | 事件 | 行为 |
 | --- | --- |
 | 首次打开页签 | hub 生成/复用 terminalId → `terminal.open` → 回 `ready` |
-| 页签切走 / 刷新 / 断网 | WS 关闭；PTY 保留，worker 起 linger 计时 |
+| 页签切走 / 刷新 / 断网 | WS 关闭；PTY 保留，worker 起 linger 计时。状态（含最近 256 KB 输出）留在 worker，刷新重连时随 `terminal.open` 的 `scrollback` 回放 |
 | 重新打开 | 同 terminalId 重连；PTY 还在 → `ready`；worker 重启过 → 重新 `open`，前端提示「终端已重启」 |
 | 空闲 `TERMINAL_LINGER_MS`（默认 30 分钟） | worker 结束进程并回收 |
 | 会话 ended（hub 收到 `ended` 事件） | hub 对这条会话发 `terminal.close`，并关掉 WS（回 `exit`） |
@@ -153,7 +153,8 @@ createTerminalHost({
 - `node-pty` 用动态 `import()`：装不上（缺编译产物）就返回 `null`，`terminal.open` 回 `unsupported`，
   UI 不显示页签——**降级不能拖垮 worker 启动**。
 - `open`：拿 session 的 root → `check()` → 上限 → `pty.spawn(shell, ['-l'], { name:'xterm-256color', cols, rows, cwd, env })`；
-  同 id 存活则 `resize` 后回 `reused: true`。
+  同 id 存活则 `resize` 后回 `reused: true`，并附上 `scrollback`（最近 256 KB 输出的 base64）。
+  历史在 worker 内存里按环形裁剪、切在 UTF-8 边界上；hub 在发完 `ready` 后把它当作一帧 `data` 补发给浏览器。
 - 输出：16ms 合并；`backpressure()` 超阈值 `pause()`。
 - 关闭：`kill()` 之后用 `pidtree` 兜底（交互式 shell 可能还有前台进程组）；清 Map 与计时器。
 - `closeSession(sessionId)`：会话结束时一次回收该会话的所有终端。

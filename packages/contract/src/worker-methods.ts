@@ -283,7 +283,16 @@ export const terminalOpen = method(
     /** hub 已算好的会话工作空间目录；给了就用它，省得 worker 依赖本进程的 sessions 表（会话结束后仍在）。 */
     cwd: z.string().min(1).max(4096).optional()
   }),
-  z.object({ cols: z.number(), rows: z.number(), reused: z.boolean() })
+  z.object({
+    cols: z.number(),
+    rows: z.number(),
+    reused: z.boolean(),
+    /**
+     * 复用一个还活着的终端时，带上最近的输出（base64，≤256 KB 原始数据），
+     * 让刷新后的页面能把滚屏接上。新开的终端没有这个字段。
+     */
+    scrollback: z.string().max(400_000).optional()
+  })
 );
 
 export const terminalResize = method(

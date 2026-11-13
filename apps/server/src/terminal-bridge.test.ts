@@ -251,6 +251,25 @@ test('第二个窗口被拒，旧的终端保持可用', async () => {
   }
 });
 
+test('复用还活着的终端：ready 之后补发最近的输出', async () => {
+  const fake = fakeGateway();
+  const world = await harness({
+    gateway: {
+      ...fake.gateway,
+      async openTerminal(_workerId: string, input: { cols: number; rows: number }) {
+        return { ok: true as const, value: { cols: input.cols, rows: input.rows, reused: true, scrollback: 'aGk=' } };
+      }
+    }
+  });
+  try {
+    const { reader } = await open(world.port, 'hub_login=good');
+    assert.deepEqual(await reader.next(), { t: 'ready', terminalId: 's1:1' });
+    assert.deepEqual(await reader.next(), { t: 'data', d: 'aGk=' });
+  } finally {
+    await world.close();
+  }
+});
+
 test('会话结束：浏览器收到 exit，worker 收到 terminal.close', async () => {
   const world = await harness();
   try {

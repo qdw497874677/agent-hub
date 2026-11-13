@@ -234,6 +234,8 @@ export interface TerminalOpened {
   readonly cols: number;
   readonly rows: number;
   readonly reused: boolean;
+  /** 复用终端时的最近输出（base64）：回调给新连上的浏览器，接上滚屏。 */
+  readonly scrollback?: string;
 }
 
 export interface ServerGateway {

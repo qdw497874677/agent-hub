@@ -58,6 +58,8 @@ export interface TerminalOpenResult {
   readonly cols: number;
   readonly rows: number;
   readonly reused: boolean;
+  /** 复用已有终端时回放的最近输出（base64）；新开或太旧时没有。 */
+  readonly scrollback?: string;
 }
 
 /**
@@ -119,6 +121,8 @@ export interface TerminalHost {
   disposeAll(): Promise<void>;
 }
 
+/** 每个终端留多少历史输出用于重连回放（原始字节）。 */
+const HISTORY_BYTES = 256 * 1024;
 /** 单帧最多 64 KB 原始输出（base64 后约 87 KB，契约上限 131 072 字符）。 */
 const MAX_FRAME_BYTES = 64 * 1024;
 /** 出站积压超过 4 MB 暂停读 PTY，降到 512 KB 再恢复。 */
@@ -147,6 +151,9 @@ interface Entry {
   poll: NodeJS.Timeout | null;
   paused: boolean;
   closed: boolean;
+  /** 最近的输出（环形，≤ HISTORY_BYTES）：刷新后重连时回放，页面不至于一片空白。 */
+  readonly history: Buffer[];
+  historyBytes: number;
   readonly disposables: PtyDisposable[];
   warnedOverflow: boolean;
 }
@@ -242,6 +249,25 @@ export function createTerminalHost(options: TerminalHostOptions): TerminalHost |
     }
   }
 
+  /** 记住最近的输出（粘 UTF-8 边界，回放时起点不会花屏）。 */
+  function remember(entry: Entry, chunk: Buffer): void {
+    entry.history.push(chunk);
+    entry.historyBytes += chunk.length;
+    while (entry.historyBytes > HISTORY_BYTES && entry.history.length > 0) {
+      const head = entry.history[0]!;
+      const excess = entry.historyBytes - HISTORY_BYTES;
+      if (head.length <= excess) {
+        entry.history.shift();
+        entry.historyBytes -= head.length;
+        continue;
+      }
+      let skip = excess;
+      while (skip < head.length && (head[skip]! & 0xc0) === 0x80) skip += 1;
+      entry.history[0] = head.subarray(skip);
+      entry.historyBytes -= skip;
+    }
+  }
+
   /** 空闲计时：有输出 / 输入 / 重连都会重新开始，到点回收。 */
   function armLinger(entry: Entry): void {
     if (entry.closed) return;
@@ -278,6 +304,8 @@ export function createTerminalHost(options: TerminalHostOptions): TerminalHost |
     unbind(entry);
     entry.chunks.length = 0;
     entry.pending = 0;
+    entry.history.length = 0;
+    entry.historyBytes = 0;
     const pid = typeof entry.pty.pid === 'number' ? entry.pty.pid : 0;
     try {
       entry.pty.kill();
@@ -405,6 +433,7 @@ export function createTerminalHost(options: TerminalHostOptions): TerminalHost |
     }
     entry.chunks.push(chunk);
     entry.pending += chunk.length;
+    remember(entry, chunk);
     armLinger(entry);
     scheduleFlush(entry);
   }
@@ -451,7 +480,8 @@ export function createTerminalHost(options: TerminalHostOptions): TerminalHost |
       live.cols = cols;
       live.rows = rows;
       armLinger(live);
-      return { cols, rows, reused: true };
+      const scrollback = live.historyBytes > 0 ? Buffer.concat(live.history, live.historyBytes).toString('base64') : '';
+      return { cols, rows, reused: true, ...(scrollback === '' ? {} : { scrollback }) };
     }
     const root = params.cwd ?? options.cwdOf(sessionId);
     if (root === undefined) throw new TerminalNotReadyError('会话不在这台机器上运行');
@@ -481,6 +511,8 @@ export function createTerminalHost(options: TerminalHostOptions): TerminalHost |
       poll: null,
       paused: false,
       closed: false,
+      history: [],
+      historyBytes: 0,
       disposables: [],
       warnedOverflow: false
     };

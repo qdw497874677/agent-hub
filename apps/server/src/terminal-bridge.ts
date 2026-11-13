@@ -35,7 +35,16 @@ export interface TerminalGateway {
       readonly cwd?: string;
     }
   ): Promise<
-    | { readonly ok: true; readonly value: { readonly cols: number; readonly rows: number; readonly reused: boolean } }
+    | {
+        readonly ok: true;
+        readonly value: {
+          readonly cols: number;
+          readonly rows: number;
+          readonly reused: boolean;
+          /** 复用终端时的最近输出（base64）：ready 之后补发给浏览器。 */
+          readonly scrollback?: string;
+        };
+      }
     | { readonly ok: false; readonly code?: string; readonly message: string }
   >;
   resizeTerminal(workerId: string, terminalId: string, cols: number, rows: number): Promise<{ readonly ok: boolean }>;
@@ -273,6 +282,10 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
     }
     if (entries.get(sessionId) !== entry) return; // 打开期间窗口关了：PTY 留着，等下次复用
     send(socket, { t: 'ready', terminalId });
+    // 复用还活着的 PTY：先把最近输出补回去，页面刷新后不会只剩一个空屏。
+    if (opened.value.scrollback !== undefined && opened.value.scrollback !== '') {
+      send(socket, { t: 'data', d: opened.value.scrollback });
+    }
   }
 
   async function upgrade(request: IncomingMessage, socket: Duplex, head: Buffer, sessionId: string): Promise<void> {
