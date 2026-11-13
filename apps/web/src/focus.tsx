@@ -602,7 +602,8 @@ export function FocusView({
         <RewindDialog sessionId={session.id} promptSeq={rewindAt} onClose={() => setRewindAt(null)}
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
       ) : null}
-      <div role="tablist" aria-label="会话视图" className="flex shrink-0 gap-1 border-b border-hair px-2 py-1.5 md:px-3" data-testid="session-tabs">
+      {/* 右侧 pr 是给绝对定位的刷新指示器留的固定位置：它永远占这么宽，指示器出现或消失都不会让页签重排 */}
+      <div role="tablist" aria-label="会话视图" className="relative flex shrink-0 gap-1 border-b border-hair py-1.5 pl-2 pr-5 md:pl-3 md:pr-6" data-testid="session-tabs">
         {tabs.map((t) => (
           <button
             key={t}
@@ -627,7 +628,20 @@ export function FocusView({
           </button>
         ))}
         {tab !== 'chat' && tab !== 'terminal' && refreshing ? (
-          <span className="ml-auto self-center px-2 text-meta text-tertiary" aria-live="polite" data-testid="files-refreshing">刷新中…</span>
+          <span
+            role="status"
+            aria-live="polite"
+            aria-label="正在刷新文件列表"
+            title="正在刷新文件列表"
+            data-testid="files-refreshing"
+            className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-tertiary md:right-3"
+          >
+            {/* 6px 圆环转圈；系统开了「减少动态效果」就停转、变成实心小点，别让指示彻底消失 */}
+            <span
+              aria-hidden
+              className="block size-1.5 animate-spin rounded-full border-[1.5px] border-tertiary/35 border-t-tertiary motion-reduce:animate-none motion-reduce:border-transparent motion-reduce:bg-tertiary"
+            />
+          </span>
         ) : null}
       </div>
       {(['files', 'changes'] as const).map((t) =>
