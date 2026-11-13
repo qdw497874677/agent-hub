@@ -340,11 +340,11 @@ ALIYUN_ENV_FILE=/tmp/opencode/aliyun-tailscale.env scripts/deploy-bundle.sh <old
 
 | 项 | 设计文档 | 开工前提 |
 |---|---|---|
-| CAP-1 P5 别名 UI + 热加载 | `docs/plan/agent-runtime-roadmap.md:100-102` | 需要新增 Worker 命令 + 持久化 + 运行时重建；`ACP_AGENTS` 能执行任意命令，属信任边界，UI 必须限 Owner |
-| CAP-2 第二个 codec | `docs/design/acp-runtime-codec.md:212` | 拿到 Claude Code / Codex 的具体私有格式；先落地 CD-1（`toolNames` 改只读，`docs/design/acp-runtime-codec.md:90`） |
-| CAP-3 发送反馈 P1 | `docs/design/message-send-feedback.md:143-199` | 依赖顺序 MS-1（协议）→ MS-2（domain 两段）→ MS-3（幂等）→ MS-4（对账）；验收见 `:243-248` |
-| CAP-4 环境刷新 P1/P2 | `docs/design/session-environment-refresh.md:293-307` | 先做 SE-0.4 只读接口（`:275`，成本最低、UI 已设计好），再 P1-1 目录缓存 |
-| CAP-5 小项 | — | 高对比度手开关、右侧详情抽屉、离线/弱网 E2E |
+| ~~CAP-1 P5 别名 UI + 热加载~~ ✅ | `docs/plan/agent-runtime-roadmap.md:100-102` | 已落地，见 §1.6；UI 限 Owner 写、owner/admin 读 |
+| CAP-2 第二个 codec ⏸ | `docs/design/acp-runtime-codec.md:212` | **待规格**：需要 Claude Code / Codex 的私有事件格式样本，没有就只能是猜；CD-1 已落地 |
+| ~~CAP-3 发送反馈 P1~~ ✅ | `docs/design/message-send-feedback.md:143-199` | MS-1..MS-4 全部落地，见 §1.5 |
+| ~~CAP-4 环境刷新 SE-0.4~~ ✅ | `docs/design/session-environment-refresh.md:275` | 只读接口 + 前端「下一轮生效」提示已落地；P1-1 目录缓存仍未做（没有真实痛点） |
+| ~~CAP-5 小项~~ ✅ | — | 高对比度手开关、离线/弱网 E2E 已落地；会话详情本来就是右侧抽屉（`inspector.tsx` 的 `md:justify-end`），无需改 |
 
 **明确不做**：持久 MCP 连接 + `list_changed`（`docs/design/session-environment-refresh.md:305-307`，需要真实需求）；更多 OAuth / Passkey（`docs/design/accounts.md:323`）；限流落库（`:194`，触发条件是多实例部署）。
 
