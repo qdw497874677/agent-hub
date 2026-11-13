@@ -101,11 +101,13 @@ function executablePath(name: string): string | null {
 
 function harnessCommand(name: string, envVar: string, agentId: string = name): { command: string; hint: string | null } {
   const found = resolveCommand(name, { explicit: env[envVar], path: env['PATH'], home: homedir(), env });
-  const target = runtimeStore.shimPath(name);
+  // 垫片 / 调度目录用 **agentId** 而不是命令：自定义别名的 command 可以是绝对路径（`/opt/foo/bar`），
+  // 而 runtime store 只接受安全段名。内置 agent 两者同名，行为不变。
+  const target = runtimeStore.shimPath(agentId);
   if (found.source === 'missing') {
     machineProvided.set(agentId, false);
     runtimeStore.setMachine(agentId, null);
-    runtimeStore.writeDispatch(agentId, name);
+    runtimeStore.writeDispatch(agentId, agentId);
     // 机器上没有：指向调度垫片。现在装没装都行——装好后探测立刻认得，不用重启 Worker
     return { command: target, hint: runtimeStore.installed(agentId) ? null : missingCommandHint(name, envVar) };
   }
@@ -117,7 +119,7 @@ function harnessCommand(name: string, envVar: string, agentId: string = name): {
   machineProvided.set(agentId, true);
   machineCommands.set(agentId, absolute);
   runtimeStore.setMachine(agentId, absolute);
-  runtimeStore.writeDispatch(agentId, name);
+  runtimeStore.writeDispatch(agentId, agentId);
   return { command: target, hint: null };
 }
 const log = (message: string): void => {
@@ -395,6 +397,9 @@ const link = connectWorkerLink({
       },
       replaceProbes: (probes, selfChecks) => readiness.replace(probes, selfChecks),
       log
+    }).then((applied) => {
+      // 换完之后把新清单报一次：hub 的机器页与模型选择器不能还停在旧的那套 agent 上。
+      if (applied) link.reportInventory();
     });
   },
   ...(probeIntervalMs !== undefined ? { probeIntervalMs } : {}),

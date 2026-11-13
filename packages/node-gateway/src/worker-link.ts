@@ -141,6 +141,8 @@ export interface WorkerLink {
   bufferedAmount(): number;
   /** 会话在这台机器上的工作目录；不在这台机器上跑 = undefined（终端据此报错）。 */
   workspaceOf(sessionId: string): string | undefined;
+  /** 重新报一次 agent 清单（别名热应用之后调：hub 的机器页 / 模型选择器要立刻看到新清单）。 */
+  reportInventory(): void;
   close(): Promise<void>;
 }
 
@@ -945,6 +947,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     workspaceOf(sessionId: string): string | undefined {
       return workspaces.get(sessionId);
     },
+    reportInventory,
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
