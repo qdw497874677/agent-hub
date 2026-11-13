@@ -9,13 +9,13 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `1adf3c0 docs: 分层设计补 M0–M3 进展与 bot 能力路线` |
-| origin/master | 已同步到 `1adf3c0` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `1adf3c0`（2026-11-13 14:28 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261113-142824-pre-4a97444.db`） |
+| 本地 HEAD | `768ef14 feat(bot): bot 拥有独立凭据，只能在自己的项目里做事` |
+| origin/master | 已同步到 `768ef14` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `768ef14`（2026-11-13 17:25 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261113-172534-pre-fb0f46e.db`） |
 | 阿里云 health | `{"ok":true}` |
 | 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online，代码 `558179b`（worker 侧本轮无改动） |
 | 本地工作区 | 干净（本轮修复已提交） |
-| 最近完整验证 | `npm test` 1130 单测：1122 pass / 8 skipped / 0 fail（默认并发，不含 `e2e/**`）；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0 |
+| 最近完整验证 | `npm test` 1159 单测：1151 pass / 8 skipped / 0 fail（不含 `e2e/**`）；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
 
@@ -36,6 +36,8 @@
 2026-11-13 下午（`646fd85` → `1adf3c0`）：思考强度归位与前端分层。`provider-proxy` 的 `mergeModelExtra` 遇到 `reasoning_effort/reasoning/thinking/thinking_config` 时，若 agent 已经发了值就以 agent 为准（配置只当默认值）；模型选择器按提供商收口（hub 模型会话只列同提供商，跨类收进不可点说明）；文件页的「刷新中…」改成不占位的圆角指示器。前端按 `atoms / shell / surfaces` 三层拆分（`apps/web/src/atoms` 55 个、`shell` 58 个、`surfaces/workbench` 36 个、`surfaces/im` 3 个），`FILE_RULES` 加三条反向依赖规则并进 selftest；IM/运行态 DTO 上提到 `packages/contract/src/messaging.ts`；产品形态用 `surfaces/<形态>/manifest.ts` 声明导航与路由，壳只在 `route.ts` 的 `SURFACES` 注册表加一行。设计与后续能力路线见 `docs/design/front-end-layering.md`（§7.1 进展、§10 bot 凭据/options/触发器/资源 API）。
 
 2026-11-13 傍晚（未推送）：C2 bot 启动选项。`PersistentAgent.options` 是建会话时的 seed，四处派生（P2P / 群聊 / 连接器 / 调度器，`apps/server/src/main.ts:262,279,342,375`）都会带上；fork / rewind / continue-elsewhere 现在把 `source.options` 快照进新会话，重启后 `ensureHosted` 不会再丢。bot 页加了「启动选项」编辑区（键建议 `effort`/`thinking`/`mode`——必须是 agent 上报的 configId，`thought_level` 是分类名填不得）。启动侧：ACP 先落模型、未知键告警后跳过，已知键的非法值仍让本次启动失败；Pi 之前根本不应用非 model 选项（等于静默丢弃），现在逐项 `change_option`。
+
+2026-11-13 傍晚（`fb0f46e` + `768ef14`，已部署）：bot 的两块能力。C2 见上一段。C1 给 bot 独立凭据：`ApiToken` 加 `kind:'bot'`（`ahb_` 前缀、`bot:{projectId,name}`），不新开接口面，仍走 `/api` 与 `/openapi/v1`；`decide()` 第 2b 步把权限收窄成「`BOT_PERMISSIONS` 之内 + 资源归属必须是自己的项目」（reason `bot_scope`），只问能力的检查只查上限。新增 scope `groups:write` / `files:read` / `memory:read` / `memory:write`；签发、可见、吊销按项目 owner·admin；同一 bot 重新生成即轮换（旧凭据立刻失效）；`botName` 必须在项目里存在。审计与来历写「以 bot「name」身份」。前端在 bot 编辑页加了「凭据」区（前缀 / 创建时间 / 最近使用 / 生成 / 吊销，明文只显示一次）。注意开放 API 本来就不许用 hub 同机机器，bot 同样，所以 bot 要跑只能落在远端 worker。
 
 ## 2. 已完成的主线
 
