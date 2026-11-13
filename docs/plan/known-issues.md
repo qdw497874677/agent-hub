@@ -119,6 +119,20 @@
 - 踩坑记两笔：① 调度垫片/调度目录必须按 **agent id** 命名，别名的 command 可能是绝对路径（`/opt/foo/bar`），直接拿命令当文件名会被 runtime store 的安全段检查拒掉；② 本地冒烟要把 `WORKER_STATE_DIR` 指到临时目录，否则 `agents.json` 会写进真实的 `~/.config/agent-hub/`，把本机 worker 的 agent 清单也换掉。
 - 验证：`check`/`typecheck`/`typecheck:web`/`npm test`（1265 tests / 1257 pass / 8 skipped）/`build`/`test:e2e-node` 全 0；本地端到端冒烟（hub + 内嵌 worker）确认 PUT → 热应用 → 清单里出现新 agent、清空 → 回到 `ACP_AGENTS`。热应用要重建模型清单，约 20 秒才在日志里收尾，期间界面已保存成功。
 
+### 1.7 进展（2026-11-14 · worktree 机制 W1+W2）
+
+设计见 `docs/design/worktree.md`（T3 Code 调研见 `docs/design/interaction-borrowing.md`）。
+
+- 项目级配置：`Project.worktree = { mode: 'shared'|'isolated', setup: { command, waitForSetup, timeoutSeconds } }`；`PATCH /api/projects/:id` 保存（`project.update`，审计 `project.worktree`）。默认 `shared`——所有项目默认共用长期空间，隔离必须显式选（理由：默认隔离会让单人流凭空多一步合并）。
+- 开会话：`POST /api/sessions/derive` 新增 `workspaceMode`。`workspaceId` 为空时才按档位现建空间；显式 `workspaceId` 优先（选了临时空间的会话不再另开 worktree）。界面勾「这个任务用隔离 worktree」时会跳过本地建空间，交给 server 建并跑准备命令。
+- 准备命令：平台建的临时空间才会跑（长期目录是人的，不碰）。`/bin/sh -lc <command>`，env 走允许列表并强制剔除 `HUB_TOKEN`/`HUB_WORKER_CREDENTIAL`/`HUB_LOCAL_SECRET`/`HUB_URL`/`HUB_PARENT_PID`；输出只留最后 8KB 并抹 `user:token@`；超时按进程组 SIGTERM→3s→SIGKILL、`exitCode 124`；默认 600 秒、可配 30..1800。
+- 状态机：`Workspace.setup = { state: none|running|ready|failed, exitCode, message, output, startedAt, finishedAt }`；失败目录保留（不删），`POST /api/workspaces/:id/setup/retry` 只对 `failed` 生效（审计 `workspace.setup` 只记 state + exitCode）。`waitForSetup` 时 `failed` 直接拒绝派发，`running` 也会拦。
+- 显式「新建临时空间」（`POST /api/projects/:id/workspaces` `kind:'temporary'`）默认 `isolated`，保持「一次性目录」的原语义；`derive` 自动准备才用项目档位。
+- 界面：项目设置「工作空间」页顶部配档位/命令/超时（非 owner·admin 只读）；derive 对话框一行复选框（选临时空间时禁用并说明）；会话页页签行下方按 `setup.state` 显示准备中/失败重试/准备日志。
+- 验证：`check`/`typecheck`/`typecheck:web`/`npm test`（1289 pass / 8 skipped）/`build`/`test:e2e-node` 全 0；新增 `e2e/worktree.spec.ts` 三条（准备成功、失败后重试、显式空间优先）全过；`workspace-cleanup`、`workspace-create`、`shared-workspaces` 回归通过。
+- 顺手修两处旧 e2e 的定位失效（都是早先 IA 改动留下的，与 worktree 无关）：项目设置分页后关联入口在「工作空间」页；桌面/移动两份侧栏同时在 DOM 里，设置按钮要用 `:visible`。
+- 残留：`waitForSetup=false` 目前仍是同步执行（要真后台得把准备命令挪进队列）；W3（清理活动判定 + 孤儿目录泛化）与 W4（`session.handoffWorktree` + 工具）未做。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道

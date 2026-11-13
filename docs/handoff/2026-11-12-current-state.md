@@ -9,13 +9,13 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `c15bcfc docs: 更新能力缺口清单的完成状态`（2026-11-14 01:10 之后） |
-| origin/master | 已同步到 `c15bcfc` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `f56489f`（2026-11-14 01:09 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261114-010319-pre-bd0b534.db`）；其后两个提交只改文档 |
+| 本地 HEAD | `54ec357 test(e2e): worktree 准备命令全链路，修两处旧定位` |
+| origin/master | 已同步到 `54ec357` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `54ec357`（2026-11-14 07:35 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261114-073522-pre-32c3a2d.db`） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `bf4114c`（运行时代码，别名热应用需要它） |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `54ec357`（准备命令 `ws.run_setup` 需要它） |
 | 本地工作区 | 干净（本轮修复已提交） |
-| 最近完整验证 | `npm test` 1265 单测：1257 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0 |
+| 最近完整验证 | `npm test` 1297 单测：1289 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/worktree.spec.ts` 3/3 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
 
@@ -234,3 +234,6 @@ npx playwright test e2e/canvas.spec.ts --reporter=list
 4. 每完成一项：提交 → 推送 GitHub → bundle 部署阿里云 → health/Worker 检查 → 更新本交接文档。
 
 2026-11-14 凌晨（`f56489f`，已部署；本地 worker 在 `bf4114c`）：CAP-1 运行时别名。机器页可以给某台 Worker 声明 ACP 运行时别名（`GET/PUT /api/workers/:id/agents`，owner 写、owner/admin 读），保存即推 `agent_config` 帧热应用——worker 重建 harness、就地替换 runtimes 与就绪探测、原子写 `$WORKER_STATE_DIR/agents.json`，重建失败保持旧值，成功后主动重报 agent 清单。别名是声明、不带 env（密钥仍在本机）。语义：填了别名就只按别名提供 ACP agent，OpenCode 这类内置 ACP agent 会被替换，Pi / Grok 是独立适配器不受影响；留空回到 `ACP_AGENTS`。热应用要重建模型清单，约 20 秒才在日志里收尾。
+
+2026-11-14 早（`54ec357`，已部署；本地 worker 同版本）：worktree 机制 W1+W2，设计见 `docs/design/worktree.md`。项目可配「默认共用长期空间 / 每个任务开隔离 worktree」与准备命令（`command` / `waitForSetup` / `timeoutSeconds`，默认 600 秒、30..1800）；`POST /api/sessions/derive` 的 `workspaceMode` 在没给 `workspaceId` 时现建空间并同步跑准备命令，`workspaceId` 显式优先；平台建的临时空间才有 `setup` 状态（`none/running/ready/failed` + 退出码 + 输出尾 8KB），失败目录保留、`POST /api/workspaces/:id/setup/retry` 重跑，`waitForSetup` 时 `failed/running` 拒绝派发。程序只走 `/bin/sh -lc`，env 用允许列表并强制剔除 `HUB_TOKEN`/`HUB_WORKER_CREDENTIAL`/`HUB_LOCAL_SECRET`/`HUB_URL`/`HUB_PARENT_PID`，超时按进程组 SIGTERM→3s→SIGKILL（`exitCode 124`），输出抹 `user:token@`。界面：项目设置「工作空间」页配档位与命令（非 owner·admin 只读），derive 对话框一行复选框（选了临时空间时禁用），会话页页签行下显示准备中/失败重试/准备日志。T3 Code 的调研与可借鉴清单在同目录 `docs/design/interaction-borrowing.md`（I1 列表状态 + settle 尚未做）。
+
