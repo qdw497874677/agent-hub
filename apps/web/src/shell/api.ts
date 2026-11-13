@@ -75,6 +75,9 @@ import type {
   AttentionDto,
   TriggerRunDto,
   BindingDto,
+  BotTriggerDto,
+  BotTriggerSourceDto,
+  BotTriggersDto,
   ConnectorNoticeDto,
   L1LevelDto,
   SessionContextDto,
@@ -748,6 +751,9 @@ export type {
   AttentionDto,
   TriggerRunDto,
   BindingDto,
+  BotTriggerDto,
+  BotTriggerSourceDto,
+  BotTriggersDto,
   ConnectorNoticeDto,
   L1LevelDto,
   SessionContextDto,
@@ -769,9 +775,24 @@ export interface BotCreateInputDto {
 }
 export type BotPatchInputDto = Omit<BotCreateInputDto, 'projectId' | 'name'>;
 
+/**
+ * 一个 bot 身上挂的触发器（`GET /api/bots/:idOrName/triggers`，只读汇总，形状见 contract）。
+ * 后端还没这条路由时页面不能红：404 / 501 当成「没有触发器」，返回空表（每次新对象，别共享数组）。
+ */
+const emptyTriggers = (): BotTriggersDto => ({ sources: [], bindings: [] });
+
 export const botsApi = {
   list: (projectId: string) => call<{ bots: BotRecordDto[] }>(`/api/bots?projectId=${encodeURIComponent(projectId)}`),
   create: (input: BotCreateInputDto) => post<BotRecordDto>('/api/bots', input),
+  /** 只读：挂在它身上的连接器触发器；接口不在（404/501）时返回空表。 */
+  triggers: async (id: string): Promise<BotTriggersDto> => {
+    try {
+      return await call<BotTriggersDto>(`/api/bots/${encodeURIComponent(id)}/triggers`);
+    } catch (error) {
+      if (error instanceof RequestFailed && (error.status === 404 || error.status === 501)) return emptyTriggers();
+      throw error;
+    }
+  },
   /** PATCH 不接受 name（建好不改），只传要改的字段；传 {} 的 options 表示清空启动选项。 */
   update: (id: string, input: BotPatchInputDto) =>
     call<BotRecordDto>(`/api/bots/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),

@@ -1,11 +1,12 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, botsApi, groupApi, tokensApi, type BotColorDto, type BotRecordDto, type MessagingRoleDto } from '../../shell/api.ts';
+import { api, botsApi, groupApi, tokensApi, type BotColorDto, type BotRecordDto, type BotTriggerDto, type BotTriggerSourceDto, type MessagingRoleDto } from '../../shell/api.ts';
 import { AccountMenu, useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
 import { DialogShell } from '../../shell/dialog-shell.tsx';
 import { BotConnectors } from './bot-connectors.tsx';
+import { BOT_TRIGGERS_EMPTY, BOT_TRIGGERS_EMPTY_HINT, latestRun, nextRunView, runView, sourceText, triggerStateView } from './bot-triggers.ts';
 import { BOT_CREDENTIAL_ACTIVE_NOTE, botCredentialBody, botCredentialRevokeConfirm, botCredentialView } from './bot-credential.ts';
 import {
   BOT_OPTION_KEY_SUGGESTIONS, BOT_OPTION_VALUE_SUGGESTIONS, BOT_OPTION_VALUE_MAX,
@@ -157,16 +158,76 @@ function BotCredential({ projectId, bot }: { projectId: string; bot: BotRecordDt
 }
 
 /**
- * 触发器（只读占位）：`GET /api/bots/:id/triggers` 还没落地（C4 开放），
- * 所以这里不编接口调用，只渲染空态。真有了再换成查询。
+ * 触发器（只读）：`GET /api/bots/:id/triggers` 回来的绑定 + 最近一次 run。
+ * 创建 / 暂停在连接器页；这里只读。接口没上线（404/501）时 api 层给空表，落空态。
+ * 窄屏靠 flex-wrap + min-w-0 + break-words 分行，不出现横向滚动。
  */
-function BotTriggers() {
+function BotTriggers({ bot }: { bot: BotRecordDto }) {
+  const now = Date.now();
+  const triggers = useQuery({ queryKey: ['bot-triggers', bot.id], queryFn: () => botsApi.triggers(bot.id), refetchInterval: 30_000 });
+  const bindings = triggers.data?.bindings ?? [];
   return (
-    <div data-testid="bot-triggers" className="flex flex-col gap-1 rounded-sm border border-hair bg-card p-2">
-      <p className="text-meta text-secondary">触发器</p>
-      <p className="text-meta text-tertiary" data-testid="bot-triggers-empty">还没有触发器</p>
-      <p className="text-meta text-tertiary">触发器在 C4 开放。</p>
+    <div data-testid="bot-triggers" className="flex min-w-0 flex-col gap-2 rounded-sm border border-hair bg-card p-2">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <p className="text-meta text-secondary">触发器</p>
+        <p className="text-meta text-tertiary">来自连接器页 · 只读</p>
+      </div>
+      {triggers.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
+      {!triggers.isLoading && !triggers.error && !bindings.length ? (
+        <div className="flex flex-col gap-0.5">
+          <p data-testid="bot-triggers-empty" className="text-meta text-tertiary">{BOT_TRIGGERS_EMPTY}</p>
+          <p className="text-meta text-tertiary">{BOT_TRIGGERS_EMPTY_HINT}</p>
+        </div>
+      ) : null}
+      {bindings.length ? (
+        <ul className="flex min-w-0 flex-col gap-1.5">
+          {bindings.map((t) => <BotTriggerRow key={t.id} trigger={t} projectId={bot.projectId} now={now} sources={triggers.data?.sources} />)}
+        </ul>
+      ) : null}
+      {triggers.error ? <p className="text-meta text-rust">{errorText(triggers.error)}</p> : null}
     </div>
+  );
+}
+
+function BotTriggerRow({ trigger, projectId, now, sources }: {
+  trigger: BotTriggerDto;
+  projectId: string;
+  now: number;
+  sources?: readonly BotTriggerSourceDto[];
+}) {
+  const state = triggerStateView(trigger);
+  const next = nextRunView(trigger, now);
+  const run = latestRun(trigger.runs);
+  const tone = state.tone === 'on'
+    ? 'border-accent/60 text-accent'
+    : state.tone === 'paused' ? 'border-rust/60 text-rust' : 'border-hair text-tertiary';
+  return (
+    <li data-testid="bot-trigger" data-id={trigger.id} data-connector={trigger.connector}
+      className="flex min-w-0 flex-col gap-1 rounded-sm border border-hair p-2">
+      <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+        <span className="min-w-0 break-words text-body text-primary">{trigger.name}</span>
+        <span className="min-w-0 break-words text-meta text-tertiary">{sourceText(trigger, sources)}</span>
+        <span data-testid="bot-trigger-state" data-tone={state.tone}
+          className={`shrink-0 rounded-full border px-1.5 py-px text-meta ${tone}`}>{state.label}</span>
+      </div>
+      {trigger.pausedReason ? <p className="min-w-0 break-words text-meta text-rust">{trigger.pausedReason}</p> : null}
+      <p data-testid="bot-trigger-next" data-tone={next.tone} className={`min-w-0 break-words text-meta ${next.tone === 'overdue' ? 'text-rust' : 'text-secondary'}`}>
+        {next.prefix ? `${next.prefix} ` : ''}{next.text}
+      </p>
+      <div data-testid="bot-trigger-run" data-state={run?.state ?? 'none'}
+        className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 text-meta text-tertiary">
+        {run ? (
+          <>
+            <span className="min-w-0 break-words">最近 {runView(run, now)}</span>
+            {run.reason ? <span className="min-w-0 break-words">{run.reason}</span> : null}
+            {run.sessionId ? (
+              <a className="shrink-0 text-accent hover:underline"
+                href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: run.sessionId })}>打开会话</a>
+            ) : null}
+          </>
+        ) : <span>还没跑过</span>}
+      </div>
+    </li>
   );
 }
 
@@ -319,8 +380,8 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecord
           </div>
         </>
       ) : null}
-      {/* 触发器（C4 前只读空态）与凭据只在编辑已有 bot 时给：新建时还没有 bot 记录。 */}
-      {bot ? <BotTriggers /> : null}
+      {/* 触发器与凭据只在编辑已有 bot 时给：新建时还没有 bot 记录。 */}
+      {bot ? <BotTriggers bot={bot} /> : null}
       {bot ? <BotCredential projectId={projectId} bot={bot} /> : null}
       <div className="flex items-center gap-2">
         <button type="submit" data-testid="bot-save" className={SMALL} disabled={save.isPending || (!bot && !name.trim()) || optionsError !== null}>{bot ? '保存' : '新建 bot'}</button>

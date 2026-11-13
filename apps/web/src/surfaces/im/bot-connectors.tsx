@@ -55,7 +55,7 @@ function Triggers({ projectId, name }: { projectId: string; name: string }) {
   const [adding, setAdding] = useState<false | 'timer' | 'github'>(false);
   const items = list.data?.bindings ?? [];
   return (
-    <div data-testid="bot-triggers">
+    <div data-testid="bot-connectors-triggers">
       <div className="flex items-center gap-2">
         <p className="text-meta text-secondary">触发 <span className="text-tertiary">· 到点或有新 issue 时叫醒它</span></p>
         {!adding ? (
