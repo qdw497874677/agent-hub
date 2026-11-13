@@ -164,7 +164,12 @@ export const continueElsewhereRequest = z.object({
 });
 
 export const promptRequest = z
-  .object({ text: z.string(), attachments: z.array(attachmentInputSchema).default([]) })
+  .object({
+    text: z.string(),
+    attachments: z.array(attachmentInputSchema).default([]),
+    /** 客户端生成的消息 id：同一条消息重试（超时、断网）时带着它，服务端不会重复落库。 */
+    clientMessageId: z.string().min(1).max(80).optional()
+  })
   .refine((value) => value.text.trim() !== '' || value.attachments.length > 0, { message: '消息不能为空' });
 
 /** `@` 引用选择器：项目内文件的相对路径。 */
@@ -183,6 +188,18 @@ export const createSessionLinkRequest = z.object({ aSessionId: id, bSessionId: i
 export const apiErrorSchema = z.object({
   error: z.object({ code: z.string(), message: z.string() })
 });
+
+/**
+ * 发送回执（design/message-send-feedback.md §5.1）：202 只表示「已接收」，
+ * 不代表 agent 已经跑完；真实送达状态看 /deliveries。
+ */
+export const promptAckSchema = z.object({
+  ok: z.literal(true),
+  seq: z.number().int(),
+  deliveryId: z.string().nullable(),
+  state: z.enum(['queued', 'sending'])
+});
+export type PromptAckDto = z.infer<typeof promptAckSchema>;
 
 /**
  * 会话环境（资产 / MCP / 启动配置）的状态：

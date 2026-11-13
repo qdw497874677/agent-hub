@@ -2,7 +2,7 @@ import type { HandoffStats } from '../handoff.ts';
 import { locationOf } from './workspaces.ts';
 import { routeOf } from './machine-dirs.ts';
 import type { Session } from '../session.ts';
-import type { SessionEvent } from '../event.ts';
+import type { JournalEntry, SessionEvent } from '../event.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { SessionId } from '../ids.ts';
 import { asSessionId } from '../ids.ts';
@@ -33,6 +33,47 @@ export interface PromptCommand {
   readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
   /** 交接简报的统计（ADR 0029），存在 prompt 事件上给界面画提示条。 */
   readonly handoff?: HandoffStats;
+  /** 客户端生成的幂等键：同一 (sessionId, clientMessageId) 重试只会落一条 prompt。 */
+  readonly clientMessageId?: string;
+}
+
+/**
+ * 发送回执（design/message-send-feedback.md §5.1）。domain 自己定义一份，
+ * 不依赖 contract：协议层再把它映射成 DTO。
+ * `state` 是「接收时这条消息在队列里的位置」，不是最终送达结果。
+ */
+export interface PromptAck {
+  readonly seq: number;
+  readonly deliveryId: string | null;
+  readonly state: 'queued' | 'sending';
+}
+
+/** 幂等只看最近这么多条事件：更早的同名 id 当成新消息（重放窗口够用，也不扫全表）。 */
+const CLIENT_MESSAGE_WINDOW = 200;
+
+/**
+ * 在 journal 事件里找同一 clientMessageId 的 prompt（从新往旧，取最近一条）。
+ * 纯函数，方便单测；没带 id 的老事件不会被命中。
+ */
+export function findClientMessage(events: readonly JournalEntry[], clientMessageId: string): JournalEntry | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const entry = events[i]!;
+    if (entry.event.kind === 'prompt' && entry.event.clientMessageId === clientMessageId) return entry;
+  }
+  return null;
+}
+
+/** 幂等命中后回填 delivery id：只认同样 seq 的 prompt 记录，查不到就给 null。 */
+async function deliveryIdOf(
+  deps: Pick<Deps, 'deliveries'>,
+  sessionId: SessionId,
+  seq: number
+): Promise<string | null> {
+  if (!deps.deliveries) return null;
+  const rows = await deps.deliveries.recent(sessionId, CLIENT_MESSAGE_WINDOW);
+  let found: string | null = null;
+  for (const row of rows) if (row.kind === 'prompt' && row.seq === seq) found = row.id;
+  return found;
 }
 
 /**
@@ -105,10 +146,20 @@ export async function promptSessionUseCase(
     'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
   > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links'>>,
   command: PromptCommand
-): Promise<Result<void, DomainError>> {
+): Promise<Result<PromptAck, DomainError>> {
   const sessionId = asSessionId(command.sessionId);
   const session = await deps.sessions.byId(sessionId);
   if (!session) return err(notFound('会话不存在'));
+
+  // 幂等（§5.3）：客户端超时重试用同一个 clientMessageId。已经收过就只回执，
+  // 不再写 journal、不再派发；没带 id 的老调用方行为完全不变。
+  if (command.clientMessageId !== undefined) {
+    const hit = findClientMessage(await deps.sessions.tail(sessionId, CLIENT_MESSAGE_WINDOW), command.clientMessageId);
+    if (hit) {
+      return ok({ seq: hit.seq, deliveryId: await deliveryIdOf(deps, sessionId, hit.seq), state: 'queued' });
+    }
+  }
+
   const attachments = command.attachments ?? [];
   if (command.text.trim() === '' && attachments.length === 0) return err(invalid('消息不能为空'));
   const prepared = await prepareAttachments(deps, session, attachments);
@@ -129,7 +180,8 @@ export async function promptSessionUseCase(
         text: command.text,
         ...(stored.length > 0 ? { attachments: stored } : {}),
         ...(command.author ? { author: { id: command.author.id, name: command.author.name, ...(command.author.via ? { via: command.author.via } : {}) } } : {}),
-        ...(command.handoff ? { handoff: command.handoff } : {})
+        ...(command.handoff ? { handoff: command.handoff } : {}),
+        ...(command.clientMessageId !== undefined ? { clientMessageId: command.clientMessageId } : {})
       } })
   );
   if (!logged.ok) return logged;
@@ -148,8 +200,14 @@ export async function promptSessionUseCase(
       id: randomDeliveryId(), sessionId, seq: logged.value.lastSeq, kind: 'prompt', payload: { text, parts },
       state: 'queued', attempt: 0, nextAt: now, lastError: null, createdAt: now, updatedAt: now
     });
-    if (!claimed.send) return ok(undefined);
-    return attemptDelivery({ ...deps, deliveries }, claimed.delivery);
+    const ack: PromptAck = {
+      seq: logged.value.lastSeq,
+      deliveryId: claimed.delivery.id,
+      state: claimed.send ? 'sending' : 'queued'
+    };
+    if (!claimed.send) return ok(ack);
+    const sent = await attemptDelivery({ ...deps, deliveries }, claimed.delivery);
+    return sent.ok ? ok(ack) : sent;
   }
 
   const hosted = await ensureHosted(deps, session);
@@ -159,7 +217,7 @@ export async function promptSessionUseCase(
   const text = [instructions, guidance?.text, briefing, peers, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
   if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
   const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
-  return sent.ok ? ok(undefined) : failTurn(deps, sessionId, sent.error);
+  return sent.ok ? ok({ seq: logged.value.lastSeq, deliveryId: null, state: 'sending' }) : failTurn(deps, sessionId, sent.error);
 }
 
 /**
@@ -170,7 +228,7 @@ async function failTurn(
   deps: Pick<Deps, 'artifacts' | 'now' | 'queue' | 'sessions' | 'stream'>,
   sessionId: SessionId,
   error: DomainError
-): Promise<Result<void, DomainError>> {
+): Promise<Result<PromptAck, DomainError>> {
   await deps.queue.run(sessionId, () =>
     recordEvent(deps, { sessionId, event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${error.message}` } })
   );

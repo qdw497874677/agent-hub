@@ -44,6 +44,11 @@ export type SessionEvent =
       readonly author?: { readonly id: string; readonly name: string; /** 经开放 API 令牌发的：令牌名（ADR 0015）。 */ readonly via?: string };
       /** 这句是平台写的交接简报时：带了多少、省略多少（ADR 0029）。 */
       readonly handoff?: HandoffStats;
+      /**
+       * 客户端生成的幂等键（design/message-send-feedback.md §5.3）。
+       * 客户端重试同一条消息时带着它，服务端据此判断「已经收过了」，不再落第二条。
+       */
+      readonly clientMessageId?: string;
     }
   | { readonly kind: 'text'; readonly delta: string; readonly subagentId?: string }
   /** 模型的思考过程（推理文字）。只进专注对话，默认折叠；卡片不渲染。 */

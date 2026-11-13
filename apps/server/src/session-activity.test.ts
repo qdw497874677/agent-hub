@@ -67,12 +67,12 @@ async function setup() {
 
 test('每条 prompt 记下发送人；读出时按账号现在的名字，删除匿名化后显示匿名名', async () => {
   const { accounts, david, member, project, session } = await setup();
-  assert.equal((await david(`/api/sessions/${session.id}/prompt`, post({ text: '你好' }))).status, 200);
+  assert.equal((await david(`/api/sessions/${session.id}/prompt`, post({ text: '你好' }))).status, 202);
   // 会话跑在本机 Worker 上：说话 = 用本机，团队 admin 也不行（1A），升为集群管理员后才行
   assert.equal((await member(`/api/sessions/${session.id}/prompt`, post({ text: '我也来' }))).status, 403);
   const asAdmin = await accounts.users.byEmail('m@b.co');
   await accounts.users.save({ ...asAdmin!, clusterAdmin: true });
-  assert.equal((await member(`/api/sessions/${session.id}/prompt`, post({ text: '我也来' }))).status, 200);
+  assert.equal((await member(`/api/sessions/${session.id}/prompt`, post({ text: '我也来' }))).status, 202);
   const prompts = (await david(`/api/sessions/${session.id}/events`)).body.filter((e: any) => e.event.kind === 'prompt');
   const davidUser = await accounts.users.byEmail('david@b.co');
   const memberUser = await accounts.users.byEmail('m@b.co');

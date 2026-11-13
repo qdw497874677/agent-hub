@@ -174,7 +174,7 @@ test('会话不在 worker 手上时，prompt 先 resume 再发（S7.1）', async
     method: 'POST',
     body: JSON.stringify({ text: '接着说' })
   });
-  assert.equal(prompted.status, 200);
+  assert.equal(prompted.status, 202);
   assert.deepEqual(
     dispatched.map((command) => command.kind),
     ['start_session', 'prompt']
@@ -189,6 +189,45 @@ test('会话不在 worker 手上时，prompt 先 resume 再发（S7.1）', async
   // 用户说了什么必须留在 journal 里：专注对话重开后要能看到自己问过什么。
   const entries = (await call(`/api/sessions/${sessionId}/events`)).body as JournalEntry[];
   assert.deepEqual(entries.at(-1)?.event, { kind: 'prompt', text: '接着说' });
+});
+
+test('prompt 返回 202 和发送回执；同一 clientMessageId 重发不再落库', async () => {
+  const { deps, call } = harness();
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'demo', rootPath: '/tmp/demo' }) });
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId: (project.body as { id: string }).id, title: 't' }) });
+  const derived = await call('/api/sessions/derive', {
+    method: 'POST',
+    body: JSON.stringify({ taskId: (task.body as { id: string }).id, agentId: 'fake', model: 'fake-1' })
+  });
+  const sessionId = (derived.body as { id: string }).id;
+
+  const prompted = await call(`/api/sessions/${sessionId}/prompt`, {
+    method: 'POST',
+    body: JSON.stringify({ text: '回执', clientMessageId: 'cm-http-1' })
+  });
+  assert.equal(prompted.status, 202, JSON.stringify(prompted.body));
+  const ack = prompted.body as { ok: boolean; seq: number; deliveryId: string | null; state: string };
+  assert.equal(ack.ok, true);
+  assert.equal(typeof ack.seq, 'number');
+  // 这个 harness 没接送达队列：ack 里的 deliveryId 为 null，state 是「已尝试派发」
+  assert.equal(ack.deliveryId, null);
+  assert.equal(ack.state, 'sending');
+
+  // 客户端超时重试：同一个 clientMessageId 再发一次，返回同一 seq，journal 只有一条
+  const again = await call(`/api/sessions/${sessionId}/prompt`, {
+    method: 'POST',
+    body: JSON.stringify({ text: '回执', clientMessageId: 'cm-http-1' })
+  });
+  assert.equal(again.status, 202);
+  assert.equal((again.body as { seq: number }).seq, ack.seq);
+
+  const entries = (await call(`/api/sessions/${sessionId}/events`)).body as JournalEntry[];
+  const prompts = entries.filter((entry) => entry.event.kind === 'prompt');
+  assert.equal(prompts.length, 1);
+  assert.equal(prompts[0]?.seq, ack.seq);
+  assert.ok(prompts[0]?.event.kind === 'prompt' && prompts[0].event.clientMessageId === 'cm-http-1');
 });
 
 test('分叉一个不存在的会话返回 404，还没内容的会话分叉返回 409', async () => {
@@ -342,7 +381,7 @@ test('附件：发图 + @ 引用走通；缩略图可回取且只放行本会话
       ]
     })
   });
-  assert.equal(prompted.status, 200, JSON.stringify(prompted.body));
+  assert.equal(prompted.status, 202, JSON.stringify(prompted.body));
   const sent = dispatched.at(-1);
   assert.equal(sent?.kind === 'prompt' ? sent.parts.length : 0, 2);
   // 附件由会话所在的 Worker 落盘（hub 不碰那台机器的文件系统）：这里替 worker 写一下

@@ -714,9 +714,11 @@ export function createApp(options: AppOptions): Hono {
       sessionId: c.req.param('sessionId'),
       text: input.value.text,
       attachments: input.value.attachments,
-      ...authorOf(senders.get(c) ?? null)
+      ...authorOf(senders.get(c) ?? null),
+      ...(input.value.clientMessageId !== undefined ? { clientMessageId: input.value.clientMessageId } : {})
     });
-    return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+    // 202 = 已接收（journal + delivery 已落库），不代表 agent 已经跑完；送达状态看 /deliveries。
+    return result.ok ? c.json({ ok: true as const, ...result.value }, 202) : fail(c, result.error);
   }
   );
 
