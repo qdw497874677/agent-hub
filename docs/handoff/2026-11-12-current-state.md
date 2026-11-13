@@ -9,9 +9,9 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `768ef14 feat(bot): bot 拥有独立凭据，只能在自己的项目里做事` |
-| origin/master | 已同步到 `768ef14` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `768ef14`（2026-11-13 17:25 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261113-172534-pre-fb0f46e.db`） |
+| 本地 HEAD | `83f61f5 fix(bot): 凭据收窄不再误伤 worker，记忆写入保留项目归属` |
+| origin/master | 已同步到 `83f61f5` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `83f61f5`（2026-11-13 17:51 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261113-175141-pre-768ef14.db`） |
 | 阿里云 health | `{"ok":true}` |
 | 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online，代码 `558179b`（worker 侧本轮无改动） |
 | 本地工作区 | 干净（本轮修复已提交） |
