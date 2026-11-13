@@ -19,7 +19,7 @@ const SUBJECT = { kind: 'user' } as unknown as Subject;
 
 interface FakeGateway {
   readonly calls: {
-    open: Array<{ workerId: string; terminalId: string; sessionId: string; cols: number; rows: number }>;
+    open: Array<{ workerId: string; terminalId: string; sessionId: string; cols: number; rows: number; cwd?: string }>;
     resize: Array<{ workerId: string; terminalId: string; cols: number; rows: number }>;
     close: Array<{ workerId: string; terminalId: string }>;
     input: Array<{ workerId: string; terminalId: string; data: string }>;
@@ -243,6 +243,8 @@ test('第二个窗口被拒，旧的终端保持可用', async () => {
     assert.deepEqual(await first.reader.next(), { t: 'data', d: 'aGk=' });
     assert.equal(first.socket.readyState, WebSocket.OPEN);
     assert.equal(world.calls.open.length, 1);
+    // hub 自己算好的工作目录随 open 下发：worker 不必再查本进程的会话表（已结束的会话也能开）。
+    assert.equal(world.calls.open[0]!.cwd, '/tmp/demo');
     first.socket.close();
   } finally {
     await world.close();

@@ -35,6 +35,8 @@ interface Props {
   readonly workerId: string | null;
   /** 页签是否在前台：决定要不要 fit / 抢焦点；切走时实例保留。 */
   readonly active: boolean;
+  /** 会话已结束时的一句话：终端只是 shell，不会把 agent 拉起来。 */
+  readonly notice?: string | null;
 }
 
 function prefersLight(): boolean {
@@ -69,7 +71,7 @@ function subscribeCoarsePointer(onChange: () => void): () => void {
  * xterm 只负责画和收键；WS 的建/断/退避/尺寸都在一个 effect 里，一处说了算。
  * 页签切走不 dispose：PTY 在机器上还活着，回来要接回原现场（连滚回去的历史一起）。
  */
-export function TerminalPanel({ sessionId, workerId, active }: Props) {
+export function TerminalPanel({ sessionId, workerId, active, notice = null }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const [state, dispatch] = useReducer(terminalReducer, TERMINAL_INITIAL);
@@ -438,6 +440,14 @@ export function TerminalPanel({ sessionId, workerId, active }: Props) {
               </button>
             );
           })}
+        </div>
+      ) : null}
+      {notice ? (
+        <div
+          data-testid="terminal-notice"
+          className="flex shrink-0 items-center border-t border-hair bg-panel px-2.5 py-1.5 text-meta text-tertiary"
+        >
+          {notice}
         </div>
       ) : null}
       <div

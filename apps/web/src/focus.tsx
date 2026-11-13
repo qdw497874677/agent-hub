@@ -176,7 +176,8 @@ export function FocusView({
   // 机器列表还没拿到时先当在线：页签不该在首屏闪一下才出现。
   const workerOnline = workers.list.length === 0 || worker?.state === 'online';
   const terminalUnavailable = useSyncExternalStore(subscribeTerminalSupport, () => terminalBlocked(supportKeys));
-  const terminalAvailable = status === 'running' && workerOnline && !terminalUnavailable;
+  // 跑完的会话也能开：shell 直接开在会话工作目录里（hub 侧算好 cwd），不重启 agent。
+  const terminalAvailable = workerOnline && !terminalUnavailable;
   const tabs = useMemo(
     () => SESSION_TABS.filter((candidate) => candidate !== 'terminal' || terminalAvailable),
     [terminalAvailable]
@@ -615,7 +616,12 @@ export function FocusView({
       {/* 终端和文件页一样：首访后保持挂载（hidden 不卸载），切回来还是同一个 shell 画面 */}
       {terminalAvailable && visited.has('terminal') ? (
         <div key={`${session.id}-terminal`} className={tab === 'terminal' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          <TerminalPanel sessionId={session.id} workerId={session.workerId} active={tab === 'terminal'} />
+          <TerminalPanel
+            sessionId={session.id}
+            workerId={session.workerId}
+            active={tab === 'terminal'}
+            notice={status === 'running' ? null : '这条会话已经结束：终端只开一个 shell，不会重新启动 agent。'}
+          />
         </div>
       ) : null}
       {profileOpen ? (

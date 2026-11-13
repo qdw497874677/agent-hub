@@ -275,7 +275,14 @@ const terminalId = z.string().min(1).max(120);
 
 export const terminalOpen = method(
   'terminal.open', 'sessions',
-  z.object({ terminalId, sessionId: terminalId, cols: z.number().int().min(1).max(1000), rows: z.number().int().min(1).max(1000) }),
+  z.object({
+    terminalId,
+    sessionId: terminalId,
+    cols: z.number().int().min(1).max(1000),
+    rows: z.number().int().min(1).max(1000),
+    /** hub 已算好的会话工作空间目录；给了就用它，省得 worker 依赖本进程的 sessions 表（会话结束后仍在）。 */
+    cwd: z.string().min(1).max(4096).optional()
+  }),
   z.object({ cols: z.number(), rows: z.number(), reused: z.boolean() })
 );
 

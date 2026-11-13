@@ -27,7 +27,13 @@ type HubFrame =
 export interface TerminalGateway {
   openTerminal(
     workerId: string,
-    input: { readonly terminalId: string; readonly sessionId: string; readonly cols: number; readonly rows: number }
+    input: {
+      readonly terminalId: string;
+      readonly sessionId: string;
+      readonly cols: number;
+      readonly rows: number;
+      readonly cwd?: string;
+    }
   ): Promise<
     | { readonly ok: true; readonly value: { readonly cols: number; readonly rows: number; readonly reused: boolean } }
     | { readonly ok: false; readonly code?: string; readonly message: string }
@@ -187,7 +193,14 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
     }
   }
 
-  async function start(socket: WebSocket, sessionId: string, workerId: string, cols: number, rows: number): Promise<void> {
+  async function start(
+    socket: WebSocket,
+    sessionId: string,
+    workerId: string,
+    root: string,
+    cols: number,
+    rows: number
+  ): Promise<void> {
     const duplicate = entries.get(sessionId);
     if (duplicate) {
       // 设计稿 §2.2：同一个终端已经有窗口，拒绝新来的，**不踢旧的**。
@@ -244,11 +257,13 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
 
     const openRetryMs = options.openRetryMs ?? DEFAULT_OPEN_RETRY_MS;
     const deadline = now() + openRetryMs;
-    let opened = await gateway.openTerminal(workerId, { terminalId, sessionId, cols, rows });
+    // 目录由 hub 算好（domain 的 terminalTarget）：会话跑完、worker 内存里已经查不到它时，旧会话的终端也能开。
+    const openInput = { terminalId, sessionId, cols, rows, cwd: root };
+    let opened = await gateway.openTerminal(workerId, openInput);
     while (!opened.ok && opened.code === 'not_ready' && now() < deadline && entries.get(sessionId) === entry) {
       await new Promise((resolve) => setTimeout(resolve, 300));
       if (entries.get(sessionId) !== entry) return;
-      opened = await gateway.openTerminal(workerId, { terminalId, sessionId, cols, rows });
+      opened = await gateway.openTerminal(workerId, openInput);
     }
     if (!opened.ok) {
       forget(sessionId, entry);
@@ -290,7 +305,7 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
     const rows = Math.max(1, Math.min(1000, Math.trunc(Number(query.get('rows')) || 24)));
     try {
       wss.handleUpgrade(request, socket, head, (ws) => {
-        void start(ws, sessionId, target.value.workerId ?? 'local', cols, rows).catch((error: unknown) => {
+        void start(ws, sessionId, target.value.workerId ?? 'local', target.value.root, cols, rows).catch((error: unknown) => {
           log(`终端启动失败（${sessionId}）：${error instanceof Error ? error.message : String(error)}`);
           send(ws, { t: 'error', message: '终端启动失败' });
           ws.close(1011, 'open failed');

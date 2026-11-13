@@ -355,10 +355,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const terminalUnavailable = (): never => {
     throw new RpcFailure('unsupported', '这台 Worker 不支持终端');
   };
-  channel.handle(terminalOpen, async ({ terminalId, sessionId, cols, rows }) => {
+  channel.handle(terminalOpen, async ({ terminalId, sessionId, cols, rows, cwd }) => {
     if (!terminal) return terminalUnavailable();
     try {
-      return await terminal.open({ terminalId, sessionId, cols, rows });
+      return await terminal.open({ terminalId, sessionId, cols, rows, cwd });
     } catch (error) {
       throw new RpcFailure(error instanceof TerminalNotReadyError ? 'not_ready' : 'failed', message(error));
     }

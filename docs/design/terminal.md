@@ -17,8 +17,11 @@
 - **不新增 worker 能力**：终端与 `sessions` 等价（能开 agent 会话就是能在机器上执行代码），
   权限就用 `session.read` + `sessions`；worker 是否支持用 `terminal.open` 返回 `unsupported` 探测，
   探测结果在 hub 按 worker 缓存，UI 据此隐藏页签。省掉能力闭集、预设、`drift.ts`、老凭据迁移的连带改动。
-- **cwd 不进协议**：worker 用自己进程内的 `workspaces: Map<sessionId, root>`（`worker-link.ts:800`），
-  再过 `WorkerFiles.check()`（realpath + `WORKER_ROOTS` 边界）；会话不在这台 worker 上跑就报错，不猜目录。
+- **cwd 由 hub 算好随 `terminal.open` 下发**（`terminal.open` 的可选 `cwd`）：目录来自
+  domain 的 `terminalTarget`（权限 + `locationOf` 的项目/工作空间回退），worker 仍要过
+  `WorkerFiles.check()`（realpath + `WORKER_ROOTS` 边界）。不传时 worker 回落到自己进程内的
+  `workspaces: Map<sessionId, root>`——会话已结束、状态早就回收的情况下这条映射是空的，所以
+  已结束的会话也能开终端（shell 直接开在会话工作目录，不重启 agent）。
 - 依赖实测：`node-pty@1.1.0` 在 Node v26.8.2（本机）与 v26.12.1 / npm 11.20.0（阿里云）都能
   `spawn('/bin/bash')` 并拿到 `/dev/pts/N`；前端 `@xterm/xterm@6.0.0` + `@xterm/addon-fit@0.11.0`。
 - 一条会话一个终端（v1）；断线后 PTY 保留 30 分钟，切页签/刷新能接回原现场。
@@ -123,8 +126,9 @@ WS 限制：单帧 128 KB；心跳 25s，两次不回就关。
 
 - **权限**：`session.read` + worker 的 `sessions` 能力。不新增能力闭集项（见 §0）。
   只读凭据没有 `sessions`，天然开不了终端。
-- **cwd**：worker 用 `workspaces.get(sessionId)`，再过 `WorkerFiles.check()`（`worker-files.ts:62`，
-  realpath + 边界 + TOCTOU 防护）。会话不在这台 worker 上跑 → 明确报错。
+- **cwd**：优先用 hub 下发的 `cwd`（domain 已做 `session.read` 授权与工作空间回退），没有才用
+  `workspaces.get(sessionId)`；两者都要过 `WorkerFiles.check()`（`worker-files.ts:62`，
+  realpath + 边界 + TOCTOU 防护）。cwd 越界 → 明确报错，不猜目录。
 - **env**：spawn 前剔除 `HUB_TOKEN`、`HUB_WORKER_CREDENTIAL`、`HUB_LOCAL_SECRET`、`HUB_PARENT_PID`、`HUB_URL`；
   设 `TERM=xterm-256color`、`COLORTERM=truecolor`；`LANG`/`PATH`/`HOME` 沿用。
 - **资源**：worker 全局最多 `TERMINAL_MAX`（默认 16）个 PTY，超过回错误；单会话 v1 只允许 1 个。
@@ -187,7 +191,8 @@ createTerminalHost({
   - 断线：一行提示 +「重连」；`exit`：`[进程已退出（code N）]` +「新开一个」；
     `error`：显示原因，退避最多 5 次，不无限重试。
   - 主题跟现有 token（深/浅两套），字体 `ui-monospace, SFMono-Regular, Menlo, monospace`，字号 13。
-  - 页签在 `session.status === 'running'`、worker 在线、且未被探测为 `unsupported` 时渲染；
+  - 页签在 worker 在线、且未被探测为 `unsupported` 时渲染（**不要求 `status === 'running'`**：跑完的
+    会话也能开 shell，顶栏加一行 `terminal-notice` 说明「只开 shell，不会重启 agent」）；
     手机宽度下不放进底部快捷栏。
 - 切走期间实例保留（不 dispose），只停 fit 与 resize 发送；`visited` 集合已存在（`focus.tsx:119`）。
 - **手机按键条**（`(pointer: coarse)` 才渲染，跟媒体查询 `change` 实时切换）：底部一条 `h-9` 的

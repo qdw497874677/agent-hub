@@ -174,6 +174,18 @@ test('open：会话不在这台机器上 / cwd 不在允许范围都报错', asy
   assert.equal(harness.spawns.length, 0);
 });
 
+test('open：hub 给了 cwd 就用它——会话已结束、本进程查不到这条会话时也能开', async () => {
+  const harness = buildHarness();
+  const opened = await harness.host.open({ terminalId: 't1', sessionId: 'done-session', cols: 80, rows: 24, cwd: '/tmp/agent-hub-t1' });
+  assert.deepEqual(opened, { cols: 80, rows: 24, reused: false });
+  assert.equal(harness.spawns[0]!.options.cwd, '/tmp/agent-hub-t1');
+  harness.rejections.set('/tmp/agent-hub-t9', '不在 WORKER_ROOTS 里');
+  await assert.rejects(
+    harness.host.open({ terminalId: 't2', sessionId: 'done-2', cols: 80, rows: 24, cwd: '/tmp/agent-hub-t9' }),
+    /目录不在允许的范围内/
+  );
+});
+
 test('open：超过上限拒绝，关掉一个就又能开', async () => {
   const harness = buildHarness({ max: 2 });
   harness.cwds.set('s3', '/tmp/agent-hub-t3');

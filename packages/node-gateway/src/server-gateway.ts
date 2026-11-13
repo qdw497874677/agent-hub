@@ -276,7 +276,13 @@ export interface ServerGateway {
    */
   openTerminal(
     workerId: string,
-    input: { readonly terminalId: string; readonly sessionId: string; readonly cols: number; readonly rows: number }
+    input: {
+      readonly terminalId: string;
+      readonly sessionId: string;
+      readonly cols: number;
+      readonly rows: number;
+      readonly cwd?: string;
+    }
   ): Promise<TerminalOutcome<TerminalOpened>>;
   resizeTerminal(workerId: string, terminalId: string, cols: number, rows: number): Promise<TerminalOutcome<{ readonly ok: true }>>;
   closeTerminal(workerId: string, terminalId: string): Promise<TerminalOutcome<{ readonly ok: true }>>;
@@ -401,7 +407,13 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
 
   async function openTerminal(
     workerId: string,
-    input: { readonly terminalId: string; readonly sessionId: string; readonly cols: number; readonly rows: number }
+    input: {
+      readonly terminalId: string;
+      readonly sessionId: string;
+      readonly cols: number;
+      readonly rows: number;
+      readonly cwd?: string;
+    }
   ): Promise<TerminalOutcome<TerminalOpened>> {
     const blocked = terminalBlocked(workerId);
     if (blocked) return blocked;
@@ -409,7 +421,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       terminalId: input.terminalId,
       sessionId: input.sessionId,
       cols: input.cols,
-      rows: input.rows
+      rows: input.rows,
+      ...(input.cwd === undefined ? {} : { cwd: input.cwd })
     });
     return outcome.ok ? { ok: true, value: outcome.value } : { ok: false, code: outcome.error.code, message: outcome.error.message };
   }

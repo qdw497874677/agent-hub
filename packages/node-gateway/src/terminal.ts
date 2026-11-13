@@ -50,6 +50,8 @@ export interface TerminalOpenParams {
   readonly sessionId: string;
   readonly cols: number;
   readonly rows: number;
+  /** hub 指定的工作目录（会话结束后 hub 仍知道它）；不给就从本进程的 sessions 表取。 */
+  readonly cwd?: string;
 }
 
 export interface TerminalOpenResult {
@@ -451,7 +453,7 @@ export function createTerminalHost(options: TerminalHostOptions): TerminalHost |
       armLinger(live);
       return { cols, rows, reused: true };
     }
-    const root = options.cwdOf(sessionId);
+    const root = params.cwd ?? options.cwdOf(sessionId);
     if (root === undefined) throw new TerminalNotReadyError('会话不在这台机器上运行');
     // v1 一条会话只给一个终端：同会话换 id 再开说明前端状态乱了，直接拒绝比留个孤儿 shell 好。
     if ([...entries.values()].some((entry) => entry.sessionId === sessionId)) throw new Error('这条会话已经有一个终端了');
