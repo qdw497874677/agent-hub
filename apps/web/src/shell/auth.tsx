@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { ProvidersDialog } from './providers-dialog.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { accessApi, authApi, teamApi, RequestFailed, type RoleKey, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
@@ -11,8 +11,9 @@ import { GitHostTokenPanel } from '../surfaces/workbench/git-dialog.tsx';
 /**
  * 登录闸门：没登录只渲染登录/注册页；登录后把当前账号放进 context。
  */
-const AccountContext = createContext<AccountDto | null>(null);
-export const useAccount = (): AccountDto | null => useContext(AccountContext);
+import { AccountContext, useAccount } from './account-context.ts';
+
+export { useAccount };
 
 const STATE_KEY = ['auth'] as const;
 

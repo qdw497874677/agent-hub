@@ -508,6 +508,20 @@ export const adminApi = {
     call<{ workerId: string; revokedAt: number }>(`/api/workers/${encodeURIComponent(workerId)}`, { method: 'DELETE' })
 };
 
+/**
+ * 一台机器的运行时别名（ACP agent 声明，`ACP_AGENTS` 的界面版）。
+ * owner 能改；admin 只能看。保存后 hub 推给在线 worker，只对之后新建的会话生效。
+ * 形状先声明在 web 内的纯逻辑模块里（要和它一起被根 tsconfig 编译），等 contract 落定再换过去。
+ */
+export type { AgentAliasDto } from '../surfaces/workbench/agent-aliases.ts';
+import type { AgentAliasDto } from '../surfaces/workbench/agent-aliases.ts';
+
+export const workerApi = {
+  agents: (workerId: string) => call<{ aliases: AgentAliasDto[] }>(`/api/workers/${encodeURIComponent(workerId)}/agents`),
+  saveAgents: (workerId: string, aliases: AgentAliasDto[]) =>
+    call<{ aliases: AgentAliasDto[] }>(`/api/workers/${encodeURIComponent(workerId)}/agents`, { method: 'PUT', body: JSON.stringify({ aliases }) })
+};
+
 /** 资产中心（docs/design/asset-hub.md）：技能与指令，按机器安装。文件内容一律 base64。 */
 export type AssetUploadFile = { readonly path: string; readonly data: string };
 const assetPath = (id: string) => `/api/admin/assets/${encodeURIComponent(id)}`;

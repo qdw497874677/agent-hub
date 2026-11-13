@@ -4,6 +4,7 @@ import { adminApi, api, type WorkerInfoDto } from './api.ts';
 import { AddMachineDialog } from './add-machine.tsx';
 import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
 import { InventorySection, RuntimeSection } from './runtimes.tsx';
+import { AgentAliasesSection } from './worker-agents.tsx';
 import { ResourceDetails, ResourceSummary } from './resources.tsx';
 import { LinkBadge } from './link-badge.tsx';
 
@@ -238,6 +239,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
           <ResourceDetails worker={worker} />
           {online ? <RuntimeSection worker={worker} /> : null}
           {online ? <InventorySection worker={worker} /> : null}
+          <AgentAliasesSection worker={worker} />
           {worker.origin === 'remote' ? <RotateCredential worker={worker} online={online} /> : null}
           {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
         </dl>
