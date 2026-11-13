@@ -8,13 +8,16 @@ export function DialogShell({
   title,
   onClose,
   children,
-  wide = false
+  wide = false,
+  testId
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   /** 放 diff、文件这类宽内容：更宽，且内容区自己滚动。 */
   wide?: boolean;
+  /** 面板上的 data-testid：弹窗自己的名字，别拿标题去猜。 */
+  testId?: string;
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -32,6 +35,7 @@ export function DialogShell({
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        data-testid={testId}
         className={`w-full rounded-md border border-strong bg-panel p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-h-[88dvh] max-w-[420px] overflow-y-auto overscroll-contain'}`}
         onClick={(event) => event.stopPropagation()}
       >
@@ -55,5 +59,7 @@ export const INPUT =
 export const SECONDARY_BUTTON =
   'min-h-11 rounded-sm border border-hair px-3 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary md:min-h-0';
 export const PRIMARY_BUTTON = 'min-h-11 rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
+/** 真会丢东西的操作：实心 rust 按钮 + 深色字，和普通确认拉开距离。 */
+export const DANGER_BUTTON = 'min-h-11 rounded-sm bg-rust px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
 export const SMALL_BUTTON = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
 

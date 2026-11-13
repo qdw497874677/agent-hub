@@ -34,6 +34,14 @@ function clip(text: string): string {
   return text.length <= PREVIEW_CHARS ? text : `${text.slice(0, PREVIEW_CHARS - 1)}…`;
 }
 
+/** 会话名：起过名用名字，没起名用首句，再没有才「未命名会话」。列表、芯片、删除确认共用这一套。 */
+export function sessionDisplayName(
+  title: string | null | undefined,
+  opening: string | null | undefined
+): string {
+  return tidy(title) || tidy(opening) || '未命名会话';
+}
+
 export function sessionLinkInfo(input: {
   readonly session: SessionDto;
   /** canvas.openings[id]：这条会话开口说的第一句。 */
@@ -52,7 +60,7 @@ export function sessionLinkInfo(input: {
   const source = session.origin.kind === 'fork' ? tidy(input.forkedFromName) || '来源会话' : null;
   return {
     id: session.id,
-    name: title || opening || '未命名会话',
+    name: sessionDisplayName(session.title, input.opening),
     status: session.status,
     lastSeq: session.lastSeq,
     runtime,

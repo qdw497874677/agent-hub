@@ -98,6 +98,7 @@ import {
   renameSessionUseCase,
   continueElsewhereUseCase,
   interruptSessionUseCase,
+  deleteSessionUseCase,
   listProjectFiles,
   listProjects,
   listWorkers,
@@ -780,6 +781,17 @@ export function createApp(options: AppOptions): Hono {
   app.post('/api/sessions/:sessionId/interrupt', async (c) => {
     const result = await interruptSessionUseCase(deps, c.req.param('sessionId'));
     if (result.ok) await recordSessionAction(deps, options.activity, c, subjectOf(c), 'session.interrupt', c.req.param('sessionId'), '');
+    return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+  });
+
+  /** 彻底删除会话：库里的数据一起清掉（不可恢复）；磁盘工作空间目录和 Task 不动。跑着的拒绝。 */
+  app.delete('/api/sessions/:sessionId', async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const result = await deleteSessionUseCase(deps, principalOf(c), asSessionId(sessionId));
+    if (result.ok) {
+      const detail = result.value.title ? `彻底删除「${result.value.title}」` : '彻底删除';
+      await recordSessionAction(deps, options.activity, c, subjectOf(c), 'session.delete', sessionId, detail);
+    }
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
   });
 

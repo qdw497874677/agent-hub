@@ -25,4 +25,9 @@ export interface SessionRepository {
   setTitle(sessionId: SessionId, title: string | null, at: number): Promise<void>;
   /** 只改环境版本；和 save 分开，避免启动时拿旧会话对象覆盖 lastSeq/status。 */
   setEnvironmentRevision(sessionId: SessionId, revision: string | null, at: number): Promise<void>;
+  /**
+   * 彻底删除一条会话：会话行和所有按 session_id 关联的数据（journal、搜索投影、entry_map、artifacts、
+   * 连线等）在同一事务里级联清掉。不删工作空间目录，不动 Task。调用方负责先停会话、检查权限。
+   */
+  remove(id: SessionId): Promise<void>;
 }

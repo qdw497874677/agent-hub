@@ -82,6 +82,13 @@ const rows: Row[] = [
   [member, 'session.prompt', session('own'), false, '共享项目里别人的会话不能说话'],
   [member, 'session.interrupt', session('own'), false, '也不能打断'],
   [member, 'session.continue', session('own'), false, '也不能换机继续'],
+  [member, 'session.delete', session('own'), false, '更不能删别人的会话'],
+  [member, 'session.delete', session('mem'), true, '会话创建者能彻底删除'],
+  [viewer, 'session.delete', session('vw'), false, 'viewer 不能删会话'],
+  [admin, 'session.delete', session('mem'), true, 'admin 能删团队会话'],
+  [owner, 'session.delete', session('mem'), true, 'owner 能删团队会话'],
+  [otherOwner, 'session.delete', session('own'), false, '别的团队 owner 不能删'],
+  [david, 'session.delete', session('o2', 'other'), false, '集群管理员默认不能删别的团队会话'],
   [admin, 'session.prompt', session('mem'), true, 'admin 能接管'],
   [owner, 'session.interrupt', session('mem'), true, 'owner 能打断'],
   // hub 级：只认集群管理员
@@ -263,6 +270,7 @@ test('令牌：hub 级、team.roles、本机 Worker 永远授不出去，哪怕�
   const all = permissionsOf([...API_SCOPES]);
   for (const permission of TOKEN_NEVER_GRANTABLE) assert.ok(!all.includes(permission), permission);
   assert.equal(permissionsOf(['sessions:write']).includes('provider.use'), false);
+  assert.equal(permissionsOf(['sessions:write']).includes('session.delete'), false, '会话写令牌也不能删会话');
   assert.ok(permissionsOf(['providers:use']).includes('provider.use'));
   assert.ok(permissionsOf(['providers:use']).includes('provider.read'));
   assert.equal(permissionsOf(['providers:use']).includes('provider.manage'), false);

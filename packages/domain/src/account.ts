@@ -230,6 +230,7 @@ export type AuditAction =
   | 'session.start'
   | 'session.fork'
   | 'session.interrupt'
+  | 'session.delete'
   | 'session.continue'
   | 'invite.revoke'
   | 'auth.register'

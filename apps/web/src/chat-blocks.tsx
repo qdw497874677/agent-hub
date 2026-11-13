@@ -1,6 +1,6 @@
 import { DeliveryNote } from './delivery-note.tsx';
 import { AuthorTag } from './author.tsx';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { api, attachmentUrl } from './api.ts';
 import { useAccount } from './auth.tsx';
 import {
@@ -80,11 +80,14 @@ export function Dropdown({
   label,
   icon,
   width = 'w-60',
+  triggerRef,
   children
 }: {
   label: string;
   icon: ReactNode;
   width?: string;
+  /** 外面要收回焦点时（例如关掉选项打开的弹窗后）能找到这个「⋯」按钮。 */
+  triggerRef?: Ref<HTMLButtonElement>;
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -92,6 +95,7 @@ export function Dropdown({
   return (
     <div ref={root} className="relative">
       <button
+        ref={triggerRef}
         className="flex h-11 min-w-9 items-center justify-center rounded-sm px-1.5 text-meta text-tertiary hover:text-primary md:h-9"
         aria-label={label}
         aria-haspopup="menu"
@@ -113,17 +117,25 @@ export function MenuItem({
   title,
   hint,
   disabled,
+  danger = false,
+  testId,
   onClick
 }: {
   title: string;
   hint?: string;
   disabled?: boolean;
+  /** 危险操作：标题用 rust，悬停时淡淡染一层，别和普通项长得一样。 */
+  danger?: boolean;
+  testId?: string;
   onClick: () => void;
 }) {
   return (
     <button
       role="menuitem"
-      className="block w-full px-3 py-2.5 text-left text-sub text-secondary hover:text-primary disabled:opacity-40"
+      data-testid={testId}
+      className={`block w-full px-3 py-2.5 text-left text-sub disabled:opacity-40 ${
+        danger ? 'text-rust hover:bg-rust/10 hover:text-rust' : 'text-secondary hover:text-primary'
+      }`}
       disabled={disabled}
       onClick={onClick}
     >

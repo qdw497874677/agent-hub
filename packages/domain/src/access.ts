@@ -17,7 +17,7 @@ export const PERMISSION_CATALOG = {
   worker: ['worker.read', 'worker.use', 'worker.enroll', 'worker.manage', 'worker.policy', 'worker.delete', 'runtime.install', 'runtime.component.install'],
   project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post', 'workspace.files.read', 'git.push'],
   task: ['task.read', 'task.create', 'task.update', 'task.delete'],
-  session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.fork', 'session.continue'],
+  session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.delete', 'session.fork', 'session.continue'],
   provider: ['provider.read', 'provider.use', 'provider.manage'],
   token: ['token.service'],
   audit: ['audit.read'],
@@ -104,6 +104,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
     // 会话自己的创建者（或显式授权）才能说话 / 中断 / 换机继续；分叉看项目。
     'session.prompt': 'own',
     'session.interrupt': 'own',
+    // 彻底删除会话：只有会话创建者（或显式授权）能做；owner / admin 由 teamAll() 覆盖
+    'session.delete': 'own',
     'session.fork': 'own',
     'session.continue': 'own',
     'worker.read': 'team',

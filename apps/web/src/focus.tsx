@@ -37,6 +37,8 @@ import { SessionLinkChip } from './session-link-popover.tsx';
 import { sessionLinkInfo } from './session-link-info.ts';
 import { SaveAgentProfileDialog } from './agent-profile-dialog.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
+import { DeleteSessionDialog } from './delete-session-dialog.tsx';
+import { deleteSessionBlockedHint, edgeSurvivesSession } from './delete-session.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -108,6 +110,9 @@ export function FocusView({
   const [linksOpen, setLinksOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profilesOpen, setProfilesOpen] = useState(false);
+  // 删除确认框；关掉后焦点要回到「⋯」。
+  const [deleting, setDeleting] = useState(false);
+  const moreRef = useRef<HTMLButtonElement | null>(null);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [linkOverrides, setLinkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -119,6 +124,7 @@ export function FocusView({
   useEffect(() => {
     setRenaming(false);
     setLinkInfoId(null);
+    setDeleting(false);
   }, [session.id]);
   const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>('chat');
@@ -166,6 +172,8 @@ export function FocusView({
     blocks.filter((block) => block.kind === 'prompt' && block.text === text).length;
   const status = live?.status ?? session.status;
   const reason = live?.reason ?? null;
+  // 删除会话：跑着的时候服务端会拒（409），菜单里先把原因写出来，别点下去才知道。
+  const deleteHint = deleteSessionBlockedHint({ status });
   // 终端页签：会话跑着、机器在线、且没被探测成「不支持」才出现（docs/design/terminal.md §7）。
   const workers = useWorkers();
   const worker = resolveWorker(workers.list, session.workerId);
@@ -485,7 +493,7 @@ export function FocusView({
           <span className="hidden sm:flex">
             <DisplayMenu settings={settings} onChange={changeSettings} />
           </span>
-          <Dropdown label="更多" icon="⋯">
+          <Dropdown label="更多" icon="⋯" triggerRef={moreRef}>
             {(close) => (
               <>
                 {/* 手机上 header 只留标题、状态和「⋯」（连接 / 详情 / Aa 都在 sm 以上才显示），
@@ -533,6 +541,17 @@ export function FocusView({
                     onClick={() => {
                       close();
                       setContinuing(true);
+                    }}
+                  />
+                  <MenuItem
+                    title="删除会话…"
+                    hint={deleteHint ?? '永久删除这条会话的对话记录、产物引用和连线；工作空间里的文件保留'}
+                    disabled={deleteHint !== null}
+                    danger
+                    testId="session-delete"
+                    onClick={() => {
+                      close();
+                      setDeleting(true);
                     }}
                   />
                 </MenuGroup>
@@ -662,6 +681,32 @@ export function FocusView({
             setContinuing(false);
             onChanged();
             onOpenSession(created.id);
+          }}
+        />
+      ) : null}
+
+      {deleting ? (
+        <DeleteSessionDialog
+          session={session}
+          opening={canvas.openings[session.id]}
+          onClose={() => {
+            setDeleting(false);
+            // 焦点还给「⋯」：不然焦点落回 body，键盘用户得从头 Tab。
+            moreRef.current?.focus();
+          }}
+          onDeleted={() => {
+            // 先就地摘掉，画布窗口、打开的会话都立刻跟着消失；再让外层重拉服务端的真数据。
+            queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
+              current
+                ? {
+                    ...current,
+                    sessions: current.sessions.filter((item) => item.id !== session.id),
+                    edges: current.edges.filter((edge) => edgeSurvivesSession(edge, session.id))
+                  }
+                : current
+            );
+            setDeleting(false);
+            onChanged();
           }}
         />
       ) : null}

@@ -230,6 +230,10 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
     async linkEntry() {},
     async entryIdAt() {
       return null;
+    },
+    async remove(id) {
+      rows.delete(id);
+      journal.delete(id);
     }
   };
 }

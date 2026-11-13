@@ -258,6 +258,51 @@ export function openSqliteStore(file: string): SqliteStore {
     'DELETE FROM projects WHERE id = ?'
   ].map((sql) => db.prepare(sql));
 
+  // 彻底删除单条会话：所有按 session_id 关联的行一起清掉（外键开着，子表先删）。
+  // 可空的历史引用（工作日志、派发、连接器、PR 回链）置 NULL，保留记录本身。
+  // 这些模块的表由组合根单独建（在 openSqliteStore 之后），worker / 单测里可能没有，
+  // 所以每张表执行前探测，不能在建库时把语句一次性准备好。
+  const removeSessionStatements: ReadonlyArray<{ readonly sql: string; readonly bindings: 1 | 2 }> = [
+    { sql: 'DELETE FROM entry_map WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM session_text WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM journal WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM artifacts WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM session_links WHERE a_session_id = ? OR b_session_id = ?', bindings: 2 },
+    { sql: 'DELETE FROM session_git_bases WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM session_assets WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM turn_refs WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM turn_checkpoints WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM tool_calls WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM tool_grants WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM message_delivery WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM attention_ack WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM agent_group_deliveries WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM agent_group_sessions WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM agent_messages WHERE from_session_id = ? OR target_session_id = ?', bindings: 2 },
+    { sql: 'DELETE FROM agent_spawns WHERE session_id = ? OR spawner_session_id = ?', bindings: 2 },
+    { sql: 'DELETE FROM agent_task_request WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM session_provenance WHERE session_id = ?', bindings: 1 },
+    // 显式授权按资源键关联（审核人共用这张表），也要跟着会话清掉
+    { sql: "DELETE FROM access_grants WHERE resource_type = 'session' AND resource_id = ?", bindings: 1 },
+    { sql: 'UPDATE task_log_entries SET session_id = NULL WHERE session_id = ?', bindings: 1 },
+    { sql: 'UPDATE task_dispatch SET session_id = NULL WHERE session_id = ?', bindings: 1 },
+    { sql: 'UPDATE task_dispatch SET notify_session_id = NULL WHERE notify_session_id = ?', bindings: 1 },
+    { sql: 'UPDATE connector_binding SET main_session_id = NULL WHERE main_session_id = ?', bindings: 1 },
+    { sql: 'UPDATE trigger_run SET session_id = NULL WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM sessions WHERE id = ?', bindings: 1 }
+  ];
+  const hasTable = (table: string): boolean =>
+    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !== undefined;
+  const runSessionCascade = (id: string): void => {
+    for (const { sql, bindings } of removeSessionStatements) {
+      const table = /(?:FROM|UPDATE) (\w+)/.exec(sql)?.[1];
+      if (table === undefined || !hasTable(table)) continue;
+      const params = bindings === 2 ? [id, id] : [id];
+      db.prepare(sql).run(...params);
+    }
+    if (hasTable('task_pull_requests')) db.prepare('DELETE FROM task_pull_requests WHERE session_id = ?').run(id);
+  };
+
   function transaction(work: () => void): void {
     db.exec('BEGIN IMMEDIATE');
     try {
@@ -426,6 +471,10 @@ export function openSqliteStore(file: string): SqliteStore {
       at: number
     ): Promise<void> {
       updateSessionEnvironment.run(revision, at, sessionId);
+    },
+    /** 彻底删除：子表先删，同一事务；工作空间目录和 Task 不动。 */
+    async remove(id: Parameters<typeof asSessionId>[0]): Promise<void> {
+      transaction(() => runSessionCascade(id));
     }
   };
 

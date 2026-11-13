@@ -11,7 +11,7 @@ export interface SessionActivityOptions {
   readonly provenance?: ProvenanceStore;
 }
 
-export type SessionAction = 'session.start' | 'session.fork' | 'session.interrupt' | 'session.continue';
+export type SessionAction = 'session.start' | 'session.fork' | 'session.interrupt' | 'session.delete' | 'session.continue';
 
 export function ipOf(c: Context): string | null {
   try {

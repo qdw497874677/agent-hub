@@ -296,6 +296,12 @@ export const api = {
     ),
   renameSession: (sessionId: string, title: string) =>
     call<SessionDto>(`/api/sessions/${encodeURIComponent(sessionId)}/title`, { method: 'PUT', body: JSON.stringify({ title }) }),
+  /**
+   * 删除一条会话：对话记录、产物引用、连线一起没；工作空间里的文件保留。
+   * 会话还在跑服务端回 409，没权限 403，已经没了 404。
+   */
+  deleteSession: (sessionId: string) =>
+    call<{ ok: true }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),

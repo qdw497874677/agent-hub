@@ -47,6 +47,8 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
   };
   const writePermission = (kind: ResourceRef['kind'], path: string, method: string): Permission => {
     if (kind === 'session') {
+      // 删会话本身：DELETE /sessions/:id；其余动作看路径末尾
+      if (method === 'DELETE') return 'session.delete';
       const action = /\/sessions\/[^/]+\/([^/]+)$/.exec(path)?.[1] ?? '';
       if (action === 'interrupt') return 'session.interrupt';
       if (action === 'continue') return 'session.continue';
@@ -120,4 +122,4 @@ const KIND: Record<string, ResourceRef['kind']> = { projects: 'project', tasks: 
 const RESERVED = new Set(['derive', 'fork', 'sweep']);
 
 /** 这些权限按会话本身判断（不是按项目）。 */
-const SESSION_SCOPED: ReadonlySet<Permission> = new Set<Permission>(['session.prompt', 'session.interrupt', 'session.continue']);
+const SESSION_SCOPED: ReadonlySet<Permission> = new Set<Permission>(['session.prompt', 'session.interrupt', 'session.delete', 'session.continue']);
