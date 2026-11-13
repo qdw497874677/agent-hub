@@ -110,6 +110,15 @@
 - **离线 E2E**：新增 `e2e/offline.spec.ts`——弱网（回执超时 → 未送达 → 重试后 journal 只有一条）与机器离线（输入区提示并禁用发送）。
 - 踩坑记一笔：composer 的 `<textarea aria-label="发送消息">` 带 `aria-autocomplete="list"`，无障碍角色是 **combobox 不是 textbox**，E2E 要用 `getByLabel('发送消息')`；placeholder 还随指针类型变化（手机端不带「⌘↵ 发送」）。发送快捷键是 `Ctrl/⌘ + Enter`，单独 Enter 只是换行。
 
+### 1.6 进展（2026-11-14 · CAP-1 运行时别名）
+
+- 机器页可给某台 Worker 声明 ACP 运行时别名（`GET/PUT /api/workers/:id/agents`，owner 写、owner/admin 读，审计 `worker.agents`）。别名 = `{id,label,command,args,models?,defaultModel?}`，最多 16 个，id 不能占用内置 `pi/opencode/grok/hermes`。
+- 保存即热应用：hub 推 `agent_config` 帧 → worker 重建 harness 注册表 → 就地替换 `runtimes` 与就绪探测 → 原子写 `$WORKER_STATE_DIR/agents.json`（下次启动直接按它起）。重建失败保持旧值并记日志；换完主动重报一次 agent 清单，hub 的机器页会立刻看到新 agent。Worker 离线时配置留在 hub，连上来在 hello 后补推（**清空也会推**，否则离线期间改名会被旧文件顶回来）。
+- 别名是**声明**，不带 env：密钥与登录态仍只在那台机器的 `worker.env` / agent 自己的配置里。
+- 语义要点：填了别名就只按别名提供 ACP agent（内置的 OpenCode 这类 ACP agent 会被替换；Pi / Grok 是独立适配器不受影响）；留空 = 回到 `ACP_AGENTS`。界面上已用一行字说清。
+- 踩坑记两笔：① 调度垫片/调度目录必须按 **agent id** 命名，别名的 command 可能是绝对路径（`/opt/foo/bar`），直接拿命令当文件名会被 runtime store 的安全段检查拒掉；② 本地冒烟要把 `WORKER_STATE_DIR` 指到临时目录，否则 `agents.json` 会写进真实的 `~/.config/agent-hub/`，把本机 worker 的 agent 清单也换掉。
+- 验证：`check`/`typecheck`/`typecheck:web`/`npm test`（1265 tests / 1257 pass / 8 skipped）/`build`/`test:e2e-node` 全 0；本地端到端冒烟（hub + 内嵌 worker）确认 PUT → 热应用 → 清单里出现新 agent、清空 → 回到 `ACP_AGENTS`。热应用要重建模型清单，约 20 秒才在日志里收尾，期间界面已保存成功。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道
