@@ -1,7 +1,7 @@
 import { principalOfSubject, type Subject } from '../access.ts';
 import { applyEvent, deriveSession, forkSession, isNeverPrompted, markInterrupted, withOptions } from '../session.ts';
 import type { Session } from '../session.ts';
-import type { RuntimeOption } from '../option.ts';
+import { findOption, optionValues, type RuntimeOption } from '../option.ts';
 import type { Seq, SessionId } from '../ids.ts';
 import { asAgentId, asSessionId, asTaskId, asWorkspaceId } from '../ids.ts';
 import { isUsable } from '../workspace.ts';
@@ -322,6 +322,11 @@ export async function changeSessionOption(
   const session = await deps.sessions.byId(asSessionId(command.sessionId));
   if (!session) return err(notFound('会话不存在'));
 
+  // 会话没在跑（这一轮已经结束）时，改选项是给「下一轮」预备的：
+  // 不为了写一个值把 agent 进程拉起来（拉起也会被下一轮启动冲掉），直接落库并改本地的
+  // optionSpec.current，界面立刻能看到新值，下次启动按 session.options 应用。
+  if (session.status !== 'running') return changeSavedOption(deps, session, command);
+
   // 改模型也是在改一条会话的运行状态；它没在跑就先拉起来，否则指令会打空。
   const hosted = await ensureHosted(deps, session);
   if (!hosted.ok) return hosted;
@@ -338,6 +343,40 @@ export async function changeSessionOption(
   // 只有 agent 知道换完之后整体长什么样。落库交给它的回报（recordSessionOptions），
   // 那一步走 per-session 串行队列，所以不会和我们抢。
   return ok((await deps.sessions.byId(session.id)) ?? session);
+}
+
+/**
+ * 已经结束的会话改选项：按它上次上报的 optionSpec 校验，然后写回会话。
+ * 传进来的 spec 是 agent 上次说的，选值范围以它为准；agent 不认的 Id 直接拒，
+ * 免得写进库里一个下次启动会被丢掉的值。
+ */
+async function changeSavedOption(
+  deps: Pick<Deps, 'sessions'>,
+  session: Session,
+  command: ChangeOptionCommand
+): Promise<Result<Session, DomainError>> {
+  const option = findOption(session.optionSpec, command.id);
+  if (!option) {
+    return err(invalid(`这台机器没上报可调项 ${command.id}：先跑一轮，看它到底有哪些`));
+  }
+  if (option.kind === 'boolean') {
+    if (typeof command.value !== 'boolean') return err(invalid(`${option.label} 只有开和关`));
+  } else if (typeof command.value !== 'string' || !optionValues(option).some((choice) => choice.value === command.value)) {
+    const choices = optionValues(option).join(' / ');
+    return err(invalid(`${option.label} 只能是 ${choices || '它上报的候选'} 之一`));
+  }
+
+  const optionSpec = session.optionSpec.map((entry) =>
+    entry.id === option.id ? { ...entry, current: command.value } : entry
+  );
+  const next: Session = {
+    ...session,
+    model: option.id === 'model' && typeof command.value === 'string' ? command.value : session.model,
+    options: { ...session.options, [option.id]: command.value },
+    optionSpec
+  };
+  await deps.sessions.save(next);
+  return ok(next);
 }
 
 /**

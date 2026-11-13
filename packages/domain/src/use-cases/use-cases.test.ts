@@ -221,6 +221,37 @@ test('改可调项：不在跑就先 resume，再 set_option；不写乐观值',
   assert.equal(changed.value.model, 'm1', '新值要等 agent 回报才落库');
 });
 
+test('改可调项：会话已结束就直接落库，不为了写值再拉一个进程', async () => {
+  const w = await world();
+  const session = await derived(w);
+  const done: Session = {
+    ...session,
+    status: 'done',
+    optionSpec: [
+      { id: 'model', label: '模型', category: 'model', kind: 'select', current: 'm1', choices: [{ kind: 'value', value: { value: 'm1', label: 'M1' } }, { kind: 'value', value: { value: 'm2', label: 'M2' } }] }
+    ]
+  };
+  await w.deps.sessions.save(done);
+  w.deps.hosting.clear();
+  w.dispatched.length = 0;
+
+  const changed = await changeSessionOption(w.deps, { sessionId: session.id, id: 'model', value: 'm2' });
+  assert.ok(changed.ok);
+  assert.deepEqual(w.dispatched, [], '结束的会话不该被拉起来');
+  assert.equal(changed.value.model, 'm2');
+  assert.equal(changed.value.optionSpec[0]?.current, 'm2');
+
+  const saved = await w.deps.sessions.byId(session.id);
+  assert.equal(saved?.model, 'm2');
+  assert.deepEqual(saved?.options, { model: 'm2' });
+
+  // agent 上次没上报过的 Id、以及不在候选里的值，都要拒
+  const unknown = await changeSessionOption(w.deps, { sessionId: session.id, id: 'effort', value: 'low' });
+  assert.ok(!unknown.ok && unknown.error.code === 'invalid');
+  const badValue = await changeSessionOption(w.deps, { sessionId: session.id, id: 'model', value: 'm9' });
+  assert.ok(!badValue.ok && badValue.error.code === 'invalid');
+});
+
 test('ensureHosted：项目没了就拒绝，而不是对空气发指令', async () => {
   const w = await world();
   const session = await derived(w);
