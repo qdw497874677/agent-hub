@@ -10,6 +10,7 @@ import {
   PERSISTENT_AGENT_DESCRIPTION_MAX,
   PERSISTENT_AGENT_DISPLAY_NAME_MAX,
   principalOfSubject,
+  type ApiToken,
   type Bot,
   type BotId,
   type BotInput,
@@ -21,6 +22,7 @@ import {
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { botRecordDto } from './agent-ref-dto.ts';
+import type { BotTokenSource } from './persistent-agent-routes.ts';
 import { fail } from './http-error.ts';
 
 /** 路由只认这几个用例函数，装配由 main.ts 决定。 */
@@ -42,6 +44,9 @@ export interface BotsApi {
  *
  * 鉴权在用例里做（读 project.read、写 project.share），这里只负责解析、身份与 DTO。
  * 老的 /api/projects/:id/agents 仍在 persistent-agent-routes.ts，内部走同一套用例。
+ *
+ * C3c：列表 / 单条顺带回填 `token`（凭据摘要），形状与 `BotDto.token` 一致。
+ * 凭据来源是可选的 `botTokens`；没接时一律 null，前端按「还没发过」显示。
  */
 const optionsBody = z
   .record(
@@ -62,13 +67,20 @@ const fields = {
 const createBody = z.object({ projectId: z.string().min(1), name: z.string().min(1).max(40), ...fields });
 const patchBody = z.object({ ...fields, agentId: fields.agentId.optional(), name: z.string().min(1).max(40).optional() });
 
-export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: SubjectOf): void {
+export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: SubjectOf, botTokens?: BotTokenSource): void {
   const me = (c: Parameters<SubjectOf>[0]) => principalOfSubject(subjectOf(c));
   const needUser = { code: 'forbidden' as const, message: '要以账号身份管理 bot' };
   const issue = (e: z.ZodError) => {
     const first = e.issues[0];
     return first ? `${first.path.join('.')}: ${first.message}` : 'bot 格式不对';
   };
+  // 一个 bot 同时只有一条有效凭据；按 bot 的 @id 匹配（与 /agents 的口径一致）。
+  const tokenOf = (tokens: readonly ApiToken[], name: string) => {
+    const token = tokens.find((row) => row.revokedAt === null && row.bot?.name === name);
+    return token ? { id: token.id, prefix: token.prefix, createdAt: token.createdAt, lastUsedAt: token.lastUsedAt } : null;
+  };
+  const tokensOf = async (projectId: ProjectId) => (botTokens ? botTokens.listBotsByProject(projectId) : []);
+  const recordOf = async (bot: Bot) => ({ ...botRecordDto(bot), token: tokenOf(await tokensOf(bot.projectId), bot.name) });
 
   app.get('/api/bots', async (c) => {
     const actor = me(c);
@@ -77,7 +89,9 @@ export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: Subje
     if (!projectId) return fail(c, { code: 'invalid', message: '缺少 projectId' });
     const list = await bots.listBots(actor, asProjectId(projectId));
     if (!list.ok) return fail(c, list.error);
-    return c.json({ bots: list.value.map(botRecordDto) });
+    // 一次查完这个项目的 bot 令牌，避免每个 bot 一次查询。
+    const tokens = await tokensOf(asProjectId(projectId));
+    return c.json({ bots: list.value.map((bot) => ({ ...botRecordDto(bot), token: tokenOf(tokens, bot.name) })) });
   });
 
   app.post('/api/bots', async (c) => {
@@ -87,14 +101,14 @@ export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: Subje
     if (!parsed.success) return fail(c, { code: 'invalid', message: issue(parsed.error) });
     const { projectId, ...input } = parsed.data;
     const created = await bots.createBot(actor, asProjectId(projectId), input);
-    return created.ok ? c.json(botRecordDto(created.value), 201) : fail(c, created.error);
+    return created.ok ? c.json({ ...botRecordDto(created.value), token: null }, 201) : fail(c, created.error);
   });
 
   app.get('/api/bots/:id', async (c) => {
     const actor = me(c);
     if (!actor) return fail(c, needUser);
     const bot = await bots.getBot(actor, c.req.param('id') as BotId);
-    return bot.ok ? c.json(botRecordDto(bot.value)) : fail(c, bot.error);
+    return bot.ok ? c.json(await recordOf(bot.value)) : fail(c, bot.error);
   });
 
   app.patch('/api/bots/:id', async (c) => {
@@ -103,7 +117,7 @@ export function installBotRoutes(app: Hono<any>, bots: BotsApi, subjectOf: Subje
     const parsed = patchBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, { code: 'invalid', message: issue(parsed.error) });
     const updated = await bots.updateBot(actor, c.req.param('id') as BotId, parsed.data);
-    return updated.ok ? c.json(botRecordDto(updated.value)) : fail(c, updated.error);
+    return updated.ok ? c.json(await recordOf(updated.value)) : fail(c, updated.error);
   });
 
   app.delete('/api/bots/:id', async (c) => {

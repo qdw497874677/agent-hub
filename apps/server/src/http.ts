@@ -281,7 +281,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.observe) installObserveRoutes(app, options.observe, subjectOf);
     if (options.memory) installMemoryRoutes(app, { ...options.memory, deps }, subjectOf);
     if (options.groups) installGroupRoutes(app, options.groups, subjectOf);
-    if (options.bots) installBotRoutes(app, options.bots, subjectOf);
+    if (options.bots) installBotRoutes(app, options.bots, subjectOf, options.groups?.agentTokens);
     if (options.context) installContextRoutes(app, options.context, subjectOf);
     if (options.files) installFilesRoutes(app, options.files, subjectOf);
     if (options.git) installGitRoutes(app, options.git, subjectOf);

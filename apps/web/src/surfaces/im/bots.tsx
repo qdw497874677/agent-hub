@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, botApi, tokensApi, type BotColorDto, type BotDto, type MessagingRoleDto } from '../../shell/api.ts';
+import { api, botsApi, groupApi, tokensApi, type BotColorDto, type BotRecordDto, type MessagingRoleDto } from '../../shell/api.ts';
 import { AccountMenu, useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
@@ -105,18 +105,16 @@ function CredentialSecret({ secret, onClose }: { secret: string; onClose: () => 
  * bot 的独立凭据（ApiToken · kind:'bot'）：签发、看状态、吊销。明文只弹一次。
  * 已签发时状态行是「前缀 · 创建时间 · 最近使用」，窄屏自己折行，前缀允许断字。
  */
-function BotCredential({ projectId, bot }: { projectId: string; bot: BotDto }) {
+function BotCredential({ projectId, bot }: { projectId: string; bot: BotRecordDto }) {
   const client = useQueryClient();
   const [secret, setSecret] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const view = botCredentialView(bot.token, Date.now());
   const refresh = () => client.invalidateQueries({ queryKey: BOTS_KEY });
   const issue = useMutation({
-    // shell/api.ts 的 tokensApi.create 还只声明 personal / service；kind:'bot' 已在契约里，
-    // 这里按请求体原样透传（post 只做 JSON.stringify），等 api.ts 的签名跟上再删这层 cast。
-    mutationFn: () =>
-      tokensApi.create(botCredentialBody(projectId, bot.name)),
-    onSuccess: (result) => setSecret(result.token)
+    mutationFn: () => tokensApi.create(botCredentialBody(projectId, bot.name)),
+    // 凭据摘要随 bot 列表回来：签发后立刻重拉，关掉明文弹窗时状态已经是「已签发」。
+    onSuccess: (result) => { setSecret(result.token); void refresh(); }
   });
   const revoke = useMutation({
     mutationFn: tokensApi.revoke,
@@ -158,7 +156,21 @@ function BotCredential({ projectId, bot }: { projectId: string; bot: BotDto }) {
   );
 }
 
-function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | null; onDone: () => void }) {
+/**
+ * 触发器（只读占位）：`GET /api/bots/:id/triggers` 还没落地（C4 开放），
+ * 所以这里不编接口调用，只渲染空态。真有了再换成查询。
+ */
+function BotTriggers() {
+  return (
+    <div data-testid="bot-triggers" className="flex flex-col gap-1 rounded-sm border border-hair bg-card p-2">
+      <p className="text-meta text-secondary">触发器</p>
+      <p className="text-meta text-tertiary" data-testid="bot-triggers-empty">还没有触发器</p>
+      <p className="text-meta text-tertiary">触发器在 C4 开放。</p>
+    </div>
+  );
+}
+
+function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecordDto | null; onDone: () => void }) {
   const [name, setName] = useState(bot?.name ?? '');
   const [displayName, setDisplayName] = useState(bot?.displayName ?? '');
   const [color, setColor] = useState<BotColorDto>(bot?.color ?? 'amber');
@@ -176,7 +188,8 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
   const save = useMutation({
     mutationFn: () => {
       const input = { displayName: displayName.trim(), color, agentId, model: model.trim(), description, reuse, ...botOptionsInput(options, !!bot) };
-      return bot ? botApi.update(projectId, bot.name, input) : botApi.create(projectId, { name: name.trim(), ...input });
+      // 编辑只发可改字段（name 建好不改，带了会 400）；新建才带 name。
+      return bot ? botsApi.update(bot.id, input) : botsApi.create({ projectId, name: name.trim(), ...input });
     },
     onSuccess: () => { void client.invalidateQueries({ queryKey: BOTS_KEY }); void client.invalidateQueries({ queryKey: ['groups'] }); onDone(); }
   });
@@ -204,6 +217,7 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
       <label className="flex flex-col gap-1 text-meta text-secondary">
         @id {bot ? <span className="text-tertiary">（建好后不能改）</span> : <span className="text-tertiary">（小写字母、数字、- _，群里用 @它 叫它）</span>}
         <input data-testid="bot-name" className={INPUT} maxLength={40} placeholder="reviewer" value={name} disabled={!!bot} onChange={(e) => setName(e.target.value.toLowerCase())} />
+        {bot ? <span className="text-tertiary">@id 建好后只读；要换名字请另建一个 bot，再把旧的删掉。</span> : null}
       </label>
       <fieldset className="flex flex-col gap-1 text-meta text-secondary">
         <legend className="mb-1">运行时</legend>
@@ -305,7 +319,8 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
           </div>
         </>
       ) : null}
-      {/* 凭据只在编辑已有 bot 时给：新建时还没有 bot 记录，后端也没法把令牌绑到它身上。 */}
+      {/* 触发器（C4 前只读空态）与凭据只在编辑已有 bot 时给：新建时还没有 bot 记录。 */}
+      {bot ? <BotTriggers /> : null}
       {bot ? <BotCredential projectId={projectId} bot={bot} /> : null}
       <div className="flex items-center gap-2">
         <button type="submit" data-testid="bot-save" className={SMALL} disabled={save.isPending || (!bot && !name.trim()) || optionsError !== null}>{bot ? '保存' : '新建 bot'}</button>
@@ -316,21 +331,24 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
   );
 }
 
-function DeleteConfirm({ projectId, bot, onDone }: { projectId: string; bot: BotDto; onDone: () => void }) {
+/** 群里引用 bot 的最小信息（groups 不再由 bot 接口给，改为从群列表推导）。 */
+type BotGroupRef = { id: string; name: string; host: boolean };
+
+function DeleteConfirm({ bot, groups, onDone }: { bot: BotRecordDto; groups: BotGroupRef[]; onDone: () => void }) {
   const client = useQueryClient();
   const remove = useMutation({
-    mutationFn: () => botApi.remove(projectId, bot.name),
+    mutationFn: () => botsApi.remove(bot.id),
     onSuccess: () => { void client.invalidateQueries({ queryKey: BOTS_KEY }); void client.invalidateQueries({ queryKey: ['groups'] }); onDone(); }
   });
   return (
     <div className="fixed inset-0 z-40 flex items-end bg-black/30 md:items-center md:justify-center" onClick={onDone}>
       <div data-testid="bot-delete-dialog" role="dialog" aria-label="删除 bot" className="w-full rounded-t-md border border-strong bg-panel p-4 md:w-[420px] md:rounded-md" onClick={(e) => e.stopPropagation()}>
         <p className="text-body text-primary">删除 bot「{botLabel(bot)}」（@{bot.name}）？</p>
-        {bot.groups.length ? (
+        {groups.length ? (
           <>
             <p className="mt-2 text-meta text-secondary">它会从这些群里移出：</p>
             <ul data-testid="bot-delete-groups" className="mt-1 list-disc pl-5 text-meta text-secondary">
-              {bot.groups.map((g) => <li key={g.id}>{g.name}{g.host ? '（主持人，删除后这个群没有主持人）' : ''}</li>)}
+              {groups.map((g) => <li key={g.id}>{g.name}{g.host ? '（主持人，删除后这个群没有主持人）' : ''}</li>)}
             </ul>
           </>
         ) : <p className="mt-2 text-meta text-tertiary">它不在任何群里。</p>}
@@ -349,11 +367,19 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
   const account = useAccount();
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects, enabled: !!account });
   const pid = projectId ?? projects.data?.[0]?.id ?? null;
-  const bots = useQuery({ queryKey: [...BOTS_KEY, pid], queryFn: () => botApi.list(pid!), enabled: !!pid });
+  const bots = useQuery({ queryKey: [...BOTS_KEY, pid], queryFn: () => botsApi.list(pid!), enabled: !!pid });
+  // bot 接口不再带 groups：从群列表里按成员推导（与消息页共用一个查询键）。
+  const groups = useQuery({ queryKey: ['groups', 'list', pid], queryFn: () => groupApi.list(pid!), enabled: !!pid });
+  const groupsOf = (name: string): BotGroupRef[] =>
+    (groups.data?.groups ?? []).filter((g) => g.members.includes(name)).map((g) => ({ id: g.id, name: g.name, host: g.hostRole === name }));
+  const groupsText = (name: string) => {
+    const gs = groupsOf(name);
+    return gs.length ? `在 ${gs.map((g) => g.name).join('、')}` : '还没进群';
+  };
   const [editing, setEditing] = useState<'new' | string | null>(() => (window.location.hash.endsWith('/new') ? 'new' : null));
-  const [deleting, setDeleting] = useState<BotDto | null>(null);
+  const [deleting, setDeleting] = useState<BotRecordDto | null>(null);
   if (!account) return null;
-  const list = bots.data?.agents ?? [];
+  const list = bots.data?.bots ?? [];
   const runtime = (id: string) => RUNTIMES.find((r) => r.id === id)?.label ?? id;
   return (
     <div className="flex h-full flex-col">
@@ -381,20 +407,20 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
           }} />
         ) : null}
         <ul data-testid="bot-list" className="flex flex-col gap-2">
-          {list.map((b) => editing === b.name && pid ? (
-            <li key={b.name}><BotForm projectId={pid} bot={b} onDone={() => setEditing(null)} /></li>
+          {list.map((b) => editing === b.id && pid ? (
+            <li key={b.id}><BotForm projectId={pid} bot={b} onDone={() => setEditing(null)} /></li>
           ) : (
-            <li key={b.name} data-testid="bot-item" data-name={b.name} className="flex items-start gap-3 rounded-md border border-hair bg-card p-3">
+            <li key={b.id} data-testid="bot-item" data-name={b.name} className="flex items-start gap-3 rounded-md border border-hair bg-card p-3">
               <BotAvatar bot={b} size={36} />
               <div className="min-w-0 flex-1">
                 <p className="text-body text-primary">{botLabel(b)} <span className="text-meta text-tertiary">@{b.name}</span></p>
                 <p className="text-meta text-secondary">{runtime(b.agentId)} · {b.model || '默认模型'}</p>
                 {b.description ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{b.description}</p> : null}
-                <p className="mt-1 text-meta text-tertiary" data-testid="bot-groups">{b.groups.length ? `在 ${b.groups.map((g) => g.name).join('、')}` : '还没进群'}</p>
+                <p className="mt-1 text-meta text-tertiary" data-testid="bot-groups">{groupsText(b.name)}</p>
                 {pid ? <BotConnectors projectId={pid} name={b.name} /> : null}
               </div>
               <div className="flex shrink-0 flex-col gap-1 sm:flex-row">
-                <button className={SMALL} data-testid="bot-edit" onClick={() => setEditing(b.name)}>编辑</button>
+                <button className={SMALL} data-testid="bot-edit" onClick={() => setEditing(b.id)}>编辑</button>
                 <button className={DANGER} data-testid="bot-delete" onClick={() => setDeleting(b)}>删除</button>
               </div>
             </li>
@@ -406,7 +432,7 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
           </div>
         ) : null}
       </main>
-      {deleting && pid ? <DeleteConfirm projectId={pid} bot={deleting} onDone={() => setDeleting(null)} /> : null}
+      {deleting ? <DeleteConfirm bot={deleting} groups={groupsOf(deleting.name)} onDone={() => setDeleting(null)} /> : null}
     </div>
   );
 }

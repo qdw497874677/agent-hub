@@ -68,8 +68,7 @@ import type {
   GroupUnreadDto,
   BotColorDto,
   MessagingRoleDto,
-  BotDto,
-  BotInputDto,
+  BotRecordDto,
   DeliveryDto,
   AttentionPhase,
   AttentionItemDto,
@@ -742,8 +741,7 @@ export type {
   GroupUnreadDto,
   BotColorDto,
   MessagingRoleDto,
-  BotDto,
-  BotInputDto,
+  BotRecordDto,
   DeliveryDto,
   AttentionPhase,
   AttentionItemDto,
@@ -756,14 +754,28 @@ export type {
   ProjectContextDto
 };
 
-/** bot（持久智能体）按条增删改。 */
-export const botApi = {
-  list: (projectId: string) => call<{ agents: BotDto[] }>(`/api/projects/${encodeURIComponent(projectId)}/agents`),
-  create: (projectId: string, input: BotInputDto & { name: string; agentId: string }) => post<MessagingRoleDto>(`/api/projects/${encodeURIComponent(projectId)}/agents`, input),
-  update: (projectId: string, name: string, input: BotInputDto) =>
-    call<MessagingRoleDto>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(input) }),
-  remove: (projectId: string, name: string) =>
-    call<{ removedFrom: { id: string; name: string }[] }>(`/api/projects/${encodeURIComponent(projectId)}/agents/${encodeURIComponent(name)}`, { method: 'DELETE' })
+/** 一等 bot（C3c）：`/api/bots` 的增删改查；id 是稳定键，@id（name）建好不改。 */
+export interface BotCreateInputDto {
+  projectId: string;
+  /** 就是 @id：小写字母、数字、- _；建好不改。 */
+  name: string;
+  agentId: string;
+  model?: string;
+  options?: Record<string, string | boolean>;
+  displayName?: string;
+  color?: BotColorDto;
+  description?: string;
+  reuse?: MessagingRoleDto['reuse'];
+}
+export type BotPatchInputDto = Omit<BotCreateInputDto, 'projectId' | 'name'>;
+
+export const botsApi = {
+  list: (projectId: string) => call<{ bots: BotRecordDto[] }>(`/api/bots?projectId=${encodeURIComponent(projectId)}`),
+  create: (input: BotCreateInputDto) => post<BotRecordDto>('/api/bots', input),
+  /** PATCH 不接受 name（建好不改），只传要改的字段；传 {} 的 options 表示清空启动选项。 */
+  update: (id: string, input: BotPatchInputDto) =>
+    call<BotRecordDto>(`/api/bots/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  remove: (id: string) => call<{ ok: true }>(`/api/bots/${encodeURIComponent(id)}`, { method: 'DELETE' })
 };
 
 /** 群聊（ADR 0018 · 群组）。 */

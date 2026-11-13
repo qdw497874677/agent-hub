@@ -51,6 +51,8 @@ export interface BotRecordDto {
   options?: Record<string, string | boolean>;
   displayName?: string; color?: BotColorDto; description: string; reuse: 'sticky' | 'per-trace' | 'always-new';
   createdAt: number; updatedAt: number;
+  /** 这个 bot 的独立凭据（C1）：没有就是 null。列表 / 单条会回填。 */
+  token?: { id: string; prefix: string; createdAt: number; lastUsedAt: number | null } | null;
 }
 
 // ---- 传递 / 送达（ADR 0031 D2） ----

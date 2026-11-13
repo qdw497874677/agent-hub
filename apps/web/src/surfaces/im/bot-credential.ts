@@ -3,14 +3,14 @@
  * 单测在 bot-credential.test.ts。
  *
  * 契约（packages/contract/src/api-tokens.ts）：
- * - bot 列表里 `BotDto.token` 是它已签发的那条，null = 还没发过；
+ * - bot 列表里 `BotRecordDto.token` 是它已签发的那条，null = 还没发过；
  * - 发放走 POST /api/tokens，多带 kind:'bot' + projectId + botName，明文只回一次；
  * - 越界的权限范围后端会裁掉（不报错），projectId 必填，只有项目主人 / 管理员能发。
  *
  * 时间全部由调用方给 now（组件传 Date.now()，单测传固定值），这里不读时钟。
  */
 
-/** 用得到的 token 字段；结构上兼容 `BotDto['token']`。 */
+/** 用得到的 token 字段；结构上兼容 `BotRecordDto['token']`。 */
 export interface BotTokenDto {
   readonly id: string;
   readonly prefix: string;
