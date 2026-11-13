@@ -90,6 +90,15 @@ import type { ProviderModelSpec } from './provider-models.ts';
 export type { TeamDto, InviteDto, InvitePreviewDto, AgentProfileDto, AgentProfileInput };
 export type { TeamWorkspaceViewDto, CreateTeamWorkspaceRequest, WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
 
+/**
+ * 派生会话的请求体：直接用契约里的形状（`workspaceMode` 由后端线落在 deriveSessionRequest 上）。
+ */
+
+/** 项目级 worktree 配置（PATCH /api/projects/:id）。形状取契约里 ProjectDto.worktree，只有一份真源。 */
+export interface ProjectWorktreePatch {
+  worktree: NonNullable<ProjectDto['worktree']>;
+}
+
 /** 组件目录里的一个版本（ADR 0021 §8）：制品由 hub 解析钉死，scripts 是审核时要看的安装脚本原文。 */
 export interface CatalogComponentDto {
   id: string;
@@ -272,6 +281,12 @@ export const api = {
   }) => post<ProjectDto>('/api/projects', input),
   setProjectDescription: (projectId: string, description: string | null) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}/description`, { method: 'PUT', body: JSON.stringify({ description }) }),
+  /** 项目级 worktree 配置（docs/design/worktree.md §3）：PATCH 只改这一块，不碰名字和说明。 */
+  saveProjectWorktree: (projectId: string, input: ProjectWorktreePatch) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  /** setup 失败后重跑同一条命令（只对 failed 生效）。 */
+  retryWorkspaceSetup: (workspaceId: string) =>
+    post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/setup/retry`, {}),
   workspaces: (projectId: string) => call<WorkspaceViewDto[]>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`),
   createWorkspace: (projectId: string, input: CreateWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`, input),

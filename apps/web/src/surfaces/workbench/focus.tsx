@@ -44,6 +44,7 @@ import { environmentNotice } from '../../atoms/environment-notice.ts';
 import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
 import { heldPromptSeqs, splitTimeline } from '../../atoms/prompt-delivery.ts';
 import { PendingPrompts, QueuedPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
+import { WorktreeStatusLine } from './worktree-status.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -621,6 +622,7 @@ export function FocusView({
         </span>
       </header>
       <ProvenanceRow sessionId={session.id} />
+      <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />
       <AttentionAutoAck sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
       {gitOpen ? <GitDialog sessionId={session.id} workspaceId={session.workspaceId} taskId={session.taskId} onClose={() => setGitOpen(false)} /> : null}
