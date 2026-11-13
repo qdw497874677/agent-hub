@@ -40,6 +40,7 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
       : await authorizeProject(policy, actor, project, permission);
     if (!allowed.ok) return fail(c, allowed.error);
     if (session && DISPATCHING.test(c.req.path) && c.req.method === 'POST') {
+      // bot 令牌也走同一条：worker.use 已放进 BOT_PERMISSIONS，本机仍然只给集群管理员。
       const worker = await authorizeWorker(policy, actor, session.workerId);
       if (!worker.ok) return fail(c, worker.error);
     }

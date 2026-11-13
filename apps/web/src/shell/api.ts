@@ -633,7 +633,16 @@ export type ApiTokenDto = import('@agent-hub/contract').ApiTokenInfo;
 export type ApiScopeDto = ApiTokenDto['scopes'][number];
 export const tokensApi = {
   list: () => call<ApiTokenDto[]>('/api/tokens'),
-  create: (input: { name: string; kind: 'personal' | 'service'; scopes: ApiScopeDto[]; expiresAt: number | null }) =>
+  create: (input: {
+    name: string;
+    kind: 'personal' | 'service' | 'bot';
+    scopes: readonly ApiScopeDto[];
+    /** kind = 'bot' 必填：凭据绑定的项目。 */
+    projectId?: string;
+    /** kind = 'bot' 可选：bot 的 @id（不给就用令牌名）。 */
+    botName?: string;
+    expiresAt?: number | null;
+  }) =>
     post<{ token: string; info: ApiTokenDto }>('/api/tokens', input),
   revoke: (id: string) => call<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' })
 };

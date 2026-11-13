@@ -29,7 +29,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
   const access = createAccessPolicy({ users: accounts.users, settings: accounts.settings, enrollment: { credentialFor: async () => null }, gateway: world.deps.gateway });
   const deps = { ...world.deps, access };
   const apiTokens = inMemoryApiTokens();
-  const tokenDeps = { apiTokens, users: accounts.users, tokens: accounts.tokens, audit: accounts.audit, now: () => Date.now() };
+  const tokenDeps = { apiTokens, users: accounts.users, projects: world.deps.projects, tokens: accounts.tokens, audit: accounts.audit, now: () => Date.now() };
   const hub = createStreamHub();
   const app = createApp({
     deps,

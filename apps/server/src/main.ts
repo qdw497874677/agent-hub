@@ -921,7 +921,15 @@ if (assetCheckMs > 0) {
 }
 
 // 开放 API 令牌（ADR 0015）：只存哈希。
-const apiTokenDeps = { apiTokens: createSqliteApiTokens(store.db), users: store.users, tokens: createTokenIssuer(), audit: store.audit, now: () => Date.now() };
+const apiTokenDeps = {
+  apiTokens: createSqliteApiTokens(store.db),
+  users: store.users,
+  projects: store.projects,
+  tokens: createTokenIssuer(),
+  audit: store.audit,
+  botExists: async (projectId: string, name: string) => (await messageBus.config(projectId as never)).roles.some((role) => role.name === name),
+  now: () => Date.now()
+};
 const envNumber = (name: string): number | undefined => {
   const value = readEnv(name);
   return value === null || value === undefined ? undefined : Number(value);
@@ -975,7 +983,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   activity: { audit: store.audit, users: store.users, provenance: store.provenance },
   attention: { store: store.attention, pullRequests: pullRequestRepo },
   messaging: { bus: messageBus, messages: store.messages },
-  groups: { groups: groupChat, agents: persistentAgents },
+  groups: { groups: groupChat, agents: persistentAgents, agentTokens: apiTokenDeps.apiTokens },
   context: contextService,
   files: filesService,
   git: gitService,

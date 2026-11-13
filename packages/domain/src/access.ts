@@ -65,8 +65,31 @@ export const TOKEN_NEVER_GRANTABLE: ReadonlySet<Permission> = new Set<Permission
   'memory.purge'
 ]);
 
-export type BuiltinRole = 'owner' | 'admin' | 'member' | 'viewer';
-export const BUILTIN_ROLES: readonly BuiltinRole[] = ['owner', 'admin', 'member', 'viewer'];
+/**
+ * bot 令牌能做的事（C1）：跑自己的会话、在自己的项目 / 群里说话、读文件。
+ * 不含建项目、管机器、管令牌、批派生。
+ * 这是上限：有效权限 = permissionsOf(scopes) ∩ BOT_PERMISSIONS，见 domain 的 effectivePermissions。
+ */
+export const BOT_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>([
+  'project.read',
+  'workspace.files.read',
+  'task.read',
+  'task.create',
+  'task.update',
+  'session.read',
+  'session.create',
+  'session.prompt',
+  'session.interrupt',
+  'session.delete',
+  'agent.message.send',
+  'group.post',
+  'memory.read',
+  'memory.write',
+  // 派发到自己项目的会话：worker.use 只用来过派发前那道检查；bot 令牌不许用 hub 本机，见 apps/server/src/access.ts
+  'worker.use',
+  'worker.read'
+]);
+export type BuiltinRole = 'owner' | 'admin' | 'member' | 'viewer';export const BUILTIN_ROLES: readonly BuiltinRole[] = ['owner', 'admin', 'member', 'viewer'];
 export const isBuiltinRole = (role: string): role is BuiltinRole => (BUILTIN_ROLES as readonly string[]).includes(role);
 
 const teamAll = (except: readonly Permission[] = []): RolePermissions =>
@@ -210,6 +233,8 @@ export const isSystem = (subject: Subject | null | undefined): subject is System
 export interface Resource {
   readonly kind?: ResourceKind;
   readonly id?: string;
+  /** 所属项目：bot 令牌只能碰自己项目里的东西。project 资源自身用 id。 */
+  readonly projectId?: string;
   /** 所属团队；null = 不属于任何团队（hub 资源）。 */
   readonly teamId: string | null;
   /** 建的人 / 接入人；null = 无主（老数据），只有 'team' 范围的人能碰。 */
@@ -259,7 +284,7 @@ export const visiting = (principal: Principal, teamId: string): boolean =>
   (principal.grants ?? []).some((g) => g.permission === 'hub.visit' && g.resourceKind === 'team' && g.resourceId === teamId && g.revokedAt === null);
 
 /** 拒绝原因：错误文案和测试用。 */
-export type DenyReason = 'anonymous' | 'disabled' | 'token' | 'hub_only' | 'local_worker' | 'team' | 'role' | 'relation' | 'setting';
+export type DenyReason = 'anonymous' | 'disabled' | 'token' | 'bot_scope' | 'hub_only' | 'local_worker' | 'team' | 'role' | 'relation' | 'setting';
 export type Decision = { readonly allow: true } | { readonly allow: false; readonly reason: DenyReason };
 const ALLOW: Decision = { allow: true };
 const deny = (reason: DenyReason): Decision => ({ allow: false, reason });
@@ -278,6 +303,16 @@ export function decide(subject: Subject | null | undefined, permission: Permissi
   if (subject.via) {
     if (TOKEN_NEVER_GRANTABLE.has(permission) || !subject.via.permissions.includes(permission)) return deny('token');
     if (resource?.local) return deny('local_worker');
+  }
+  // 2b. bot 令牌：权限上限之外再收窄到它自己的项目（C1）。
+  //     只问能力（resource 不给，如「令牌有没有 projects:read」）只查上限；真碰资源时必须同项目。
+  if (subject.via?.bot) {
+    const bot = subject.via.bot;
+    if (!BOT_PERMISSIONS.has(permission)) return deny('bot_scope');
+    if (resource !== undefined) {
+      const owner = resource.kind === 'project' ? resource.id : resource.projectId;
+      if (owner !== bot.projectId) return deny('bot_scope');
+    }
   }
   // 3. hub 级
   if (HUB_PERMISSIONS.has(permission)) return user.clusterAdmin ? ALLOW : deny('hub_only');
@@ -326,6 +361,7 @@ export const DENY_MESSAGES: Readonly<Record<DenyReason, string>> = {
   anonymous: '请先登录',
   disabled: '账号已停用',
   token: '这个令牌没有这项权限',
+  bot_scope: '这个 bot 令牌只能碰它自己的项目',
   hub_only: '只有集群管理员能这么做',
   local_worker: '本机 Worker（hub 主机）只对集群管理员开放',
   team: '不在你的团队里',

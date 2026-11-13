@@ -34,7 +34,12 @@ export async function recordProvenance(deps: ProvenanceDeps, input: RecordProven
   const parent = input.parent ?? (origin.kind === 'fork' ? { sessionId: origin.fromSessionId, atSeq: origin.atSeq } : null);
   const actor: SessionProvenance['actor'] = principal
     ? via
-      ? { kind: 'api_token', id: via.tokenId, name: `${principal.user.displayName ?? principal.user.email} · 令牌「${via.name}」` }
+      ? {
+          kind: 'api_token',
+          id: via.tokenId,
+          // bot 令牌看得出是谁：`<签发人> · bot「<name>」`；其余仍是令牌名。
+          name: `${principal.user.displayName ?? principal.user.email} · ${via.bot ? `bot「${via.bot.name}」` : `令牌「${via.name}」`}`
+        }
       : { kind: 'user', id: principal.user.id, name: principal.user.displayName ?? principal.user.email }
     : { kind: 'system', id: isSystem(input.subject) ? input.subject.reason : 'system', name: '系统' };
   const scope = input.scope ?? (via ? [...via.permissions] : null);
@@ -61,7 +66,7 @@ export async function recordProvenance(deps: ProvenanceDeps, input: RecordProven
         actorEmail: principal.user.email,
         action: 'session.created',
         target: p.sessionId,
-        detail: `来历 ${p.id} · ${p.via}${p.parent ? ` · 来自 ${p.parent.sessionId}` : ''}${via ? ` · via 令牌「${via.name}」` : ''}`,
+        detail: `来历 ${p.id} · ${p.via}${p.parent ? ` · 来自 ${p.parent.sessionId}` : ''}${via ? ` · ${via.bot ? `以 bot「${via.bot.name}」身份` : `via 令牌「${via.name}」`}` : ''}`,
         at: p.createdAt,
         ip: input.ip ?? null,
         teamId: input.teamId ?? principal.user.teamId ?? null

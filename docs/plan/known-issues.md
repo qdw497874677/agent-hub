@@ -73,6 +73,21 @@
 - **选项键是 configId 不是 category**：opencode 的思考强度 id 是 `effort`（且只在模型有 variants 时上报），Pi 是 `thinking`；填 `thought_level` 会被服务端按「没有这个可调项」拒。UI 建议已改成 `effort`/`thinking`/`mode`。
 - **本机 opencode 不暴露思考强度**：`~/.cache/opencode/models.json` 里 my-codex 的模型 variants 全为 0，端到端只能拿 `mode` 验证。
 
+### 1.3 进展（2026-11-13 · C1 bot 独立凭据）
+
+已做：
+- **bot 有自己的身份**：`ApiToken` 加 `kind:'bot'` + `bot:{projectId,name}`（`ahb_` 前缀，只存哈希）；`decide()` 的 2b 步把权限收窄成「`BOT_PERMISSIONS` 之内 + 资源归属必须是自己的项目」，越界 reason `bot_scope`。不新开接口面，仍走 `/api` 与 `/openapi/v1`。
+- **新 scope**：`groups:write`（群发言）、`files:read`（会话工作空间文件）、`memory:read` / `memory:write`。旧 scope 打包出来的越界权限（如 `projects:write` 里的 `project.create`）被上限滤掉，不会放大。
+- **签发 / 可见 / 吊销**按项目 owner·admin（`project.update`）；一个 bot 同时只有一条有效凭据——重新生成即轮换，旧值立刻失效；`botName` 必须在这个项目里存在（`deps.botExists`，服务端用 messageBus 的 roles 校验）。
+- **审计 / 来历**：actor 写成 `<签发人> · bot「name」`，detail 写「以 bot「name」身份」。
+- **前端**：bot 编辑页「凭据」区（前缀 / 创建时间 / 最近使用 / 生成 / 吊销；明文只显示一次，带复制与警告），纯逻辑在 `apps/web/src/surfaces/im/bot-credential.ts`。
+- 存储：`api_tokens` 加 `bot_project_id` / `bot_name`，老库自动重建表放开 kind CHECK。
+- 验证：`npm test` 1159 tests / 1151 pass / 8 skipped / 0 fail；`test:e2e-node` 6/6；冒烟 `/tmp/opencode/bot-token-smoke/smoke.mjs`（bot 只见自己项目、越界 403、不能建令牌、吊销失效、轮换旧值失效）。
+
+已知残留：
+- 开放 API 本来就不允许使用 hub 同机机器，bot 同样；单机部署下 bot 只能跑在远端 worker 上。
+- 轮换是「先生成新的、旧的同时失效」，没有宽限期（不需要人工吊销）。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道

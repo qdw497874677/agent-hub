@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { asProjectId, principalOfSubject, MAX_GROUP_LIMITS, MAX_POST_CHARS, type GroupChat, type PersistentAgents } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
-import { installPersistentAgentRoutes } from './persistent-agent-routes.ts';
+import { installPersistentAgentRoutes, type BotTokenSource } from './persistent-agent-routes.ts';
 
 /**
  * 群聊的 HTTP 外壳（ADR 0018 · 群组）：
@@ -35,11 +35,13 @@ const postBody = z.object({ body: z.string().min(1).max(MAX_POST_CHARS) });
 export interface GroupRouteDeps {
   readonly groups: GroupChat;
   readonly agents?: PersistentAgents;
+  /** bot 的独立凭据（C1）：给 bot 列表带 token 摘要。 */
+  readonly agentTokens?: BotTokenSource;
 }
 
 export function installGroupRoutes(app: Hono<any>, options: GroupRouteDeps, subjectOf: SubjectOf): void {
   const { groups } = options;
-  if (options.agents) installPersistentAgentRoutes(app, options.agents, subjectOf);
+  if (options.agents) installPersistentAgentRoutes(app, options.agents, subjectOf, options.agentTokens);
   const me = (c: Parameters<SubjectOf>[0]) => principalOfSubject(subjectOf(c));
   const needUser = { code: 'forbidden' as const, message: '要以账号身份使用群聊' };
   const parseGroup = (raw: unknown) => {

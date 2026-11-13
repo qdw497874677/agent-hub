@@ -7,9 +7,9 @@ import { fail } from './http-error.ts';
 
 /**
  * 设置页里管 API 令牌（ADR 0015），只走登录态（cookie + CSRF，由 installAuth 守）：
- * - GET    /api/tokens       我的个人令牌 + （团队主人）服务账号
- * - POST   /api/tokens       新建；明文只在这次响应里出现
- * - DELETE /api/tokens/:id   吊销（服务账号连账号一起停用）
+ * - GET    /api/tokens       我的个人令牌 + （团队主人）服务账号 + （项目 admin）bot 凭据
+ * - POST   /api/tokens       新建；kind='bot' 要 projectId，明文只在这次响应里出现
+ * - DELETE /api/tokens/:id   吊销（服务账号连账号一起停用；bot 只作废凭据）
  */
 export function installApiTokens(app: Hono, deps: ApiTokenDeps, principalOf: PrincipalOf): void {
   const need = (c: Parameters<PrincipalOf>[0]) => principalOf(c);

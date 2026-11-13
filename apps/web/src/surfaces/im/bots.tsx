@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, botApi, type BotColorDto, type BotDto, type MessagingRoleDto } from '../../shell/api.ts';
+import { api, botApi, tokensApi, type BotColorDto, type BotDto, type MessagingRoleDto } from '../../shell/api.ts';
 import { AccountMenu, useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
+import { DialogShell } from '../../shell/dialog-shell.tsx';
 import { BotConnectors } from './bot-connectors.tsx';
+import { BOT_CREDENTIAL_ACTIVE_NOTE, botCredentialBody, botCredentialRevokeConfirm, botCredentialView } from './bot-credential.ts';
 import {
   BOT_OPTION_KEY_SUGGESTIONS, BOT_OPTION_VALUE_SUGGESTIONS, BOT_OPTION_VALUE_MAX,
   botOptionRows, botOptionsProblem, botOptionRowProblem, botOptionsInput, flipBotOptionRow,
@@ -51,6 +53,108 @@ export function HubTabs({ active, projectId }: { active: 'messages' | 'bots'; pr
       <a data-testid="tab-messages" className={tab(active === 'messages')} aria-current={active === 'messages' ? 'page' : undefined} href={formatRoute({ page: 'messages', projectId, groupId: null })}>群聊</a>
       <a data-testid="tab-bots" className={tab(active === 'bots')} aria-current={active === 'bots' ? 'page' : undefined} href={formatRoute({ page: 'bots', projectId })}>Bot</a>
     </nav>
+  );
+}
+
+/** 弹窗按钮：跟 tokens-dialog 一个手感（细边，hover 才亮）。 */
+const CRED_BTN =
+  'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+
+/** 明文只露一次的弹窗：遮罩 / Esc / 「我已保存」都算关，关掉就把 bot 重新拉一遍。 */
+function CredentialSecret({ secret, onClose }: { secret: string; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+  const code = useRef<HTMLElement | null>(null);
+  // navigator.clipboard 只在安全上下文里有（tailnet 上走 http 时没有）；写不进去就选中文本，让人自己按快捷键。
+  const copy = async () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(secret);
+        setCopied(true);
+        return;
+      }
+    } catch {
+      // 落到下面：退回选中文本
+    }
+    const node = code.current;
+    if (!node) return;
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    setHint('浏览器不让直接写剪贴板，已经帮你选中了：按 Ctrl+C（Mac 上 ⌘C）复制。');
+  };
+  return (
+    <DialogShell title="凭据" onClose={onClose} testId="bot-credential-dialog">
+      <p className="text-body text-primary">凭据只显示这一次，现在复制保存好</p>
+      <p className="mt-1 text-meta text-rust">关掉就再也看不到了；没存下只能重新生成一条。</p>
+      <code data-testid="bot-credential-secret" ref={code} className="mt-3 block break-all rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-[12px] text-primary select-all">{secret}</code>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button type="button" data-testid="bot-credential-copy" className={CRED_BTN} onClick={() => void copy()}>
+          {copied ? '已复制' : '复制'}
+        </button>
+        <button type="button" className={CRED_BTN} onClick={onClose}>我已保存</button>
+      </div>
+      {hint ? <p className="mt-2 text-meta text-tertiary">{hint}</p> : null}
+    </DialogShell>
+  );
+}
+
+/**
+ * bot 的独立凭据（ApiToken · kind:'bot'）：签发、看状态、吊销。明文只弹一次。
+ * 已签发时状态行是「前缀 · 创建时间 · 最近使用」，窄屏自己折行，前缀允许断字。
+ */
+function BotCredential({ projectId, bot }: { projectId: string; bot: BotDto }) {
+  const client = useQueryClient();
+  const [secret, setSecret] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const view = botCredentialView(bot.token, Date.now());
+  const refresh = () => client.invalidateQueries({ queryKey: BOTS_KEY });
+  const issue = useMutation({
+    // shell/api.ts 的 tokensApi.create 还只声明 personal / service；kind:'bot' 已在契约里，
+    // 这里按请求体原样透传（post 只做 JSON.stringify），等 api.ts 的签名跟上再删这层 cast。
+    mutationFn: () =>
+      tokensApi.create(botCredentialBody(projectId, bot.name)),
+    onSuccess: (result) => setSecret(result.token)
+  });
+  const revoke = useMutation({
+    mutationFn: tokensApi.revoke,
+    onSuccess: () => { setConfirming(false); void refresh(); }
+  });
+  const error = issue.error ?? revoke.error;
+  return (
+    <div data-testid="bot-credential" className="flex flex-col gap-2 rounded-sm border border-hair bg-card p-2">
+      <div className="min-w-0">
+        <p className="text-meta text-secondary">凭据</p>
+        <p className="text-meta text-tertiary">{view.state === 'issued' ? BOT_CREDENTIAL_ACTIVE_NOTE : view.hint}</p>
+      </div>
+      {view.state === 'issued' ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <code data-testid="bot-credential-prefix" className="min-w-0 break-all font-mono text-[12px] text-primary select-all">{view.prefix}…</code>
+            <span className="text-meta text-tertiary">{view.created}</span>
+            <span data-testid="bot-credential-last-used" className="text-meta text-tertiary">{view.lastUsed}</span>
+            {confirming ? null : (
+              <button type="button" data-testid="bot-credential-revoke" className={`${DANGER} shrink-0 sm:ml-auto`} onClick={() => setConfirming(true)}>吊销</button>
+            )}
+          </div>
+          {confirming ? (
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="min-w-0 basis-full text-meta text-rust">{botCredentialRevokeConfirm(bot.name)}</p>
+              <button type="button" data-testid="bot-credential-revoke" className={`${DANGER} shrink-0`} disabled={revoke.isPending} onClick={() => revoke.mutate(view.id)}>确认吊销</button>
+              <button type="button" className={SMALL} onClick={() => setConfirming(false)}>取消</button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <button type="button" data-testid="bot-credential-generate" className={`${SMALL} self-start`} disabled={issue.isPending} onClick={() => issue.mutate()}>
+          {issue.isPending ? '生成中…' : '生成凭据'}
+        </button>
+      )}
+      {error ? <p data-testid="bot-credential-error" className="text-meta text-rust">{errorText(error)}</p> : null}
+      {secret ? <CredentialSecret secret={secret} onClose={() => { setSecret(null); void refresh(); }} /> : null}
+    </div>
   );
 }
 
@@ -201,6 +305,8 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotDto | 
           </div>
         </>
       ) : null}
+      {/* 凭据只在编辑已有 bot 时给：新建时还没有 bot 记录，后端也没法把令牌绑到它身上。 */}
+      {bot ? <BotCredential projectId={projectId} bot={bot} /> : null}
       <div className="flex items-center gap-2">
         <button type="submit" data-testid="bot-save" className={SMALL} disabled={save.isPending || (!bot && !name.trim()) || optionsError !== null}>{bot ? '保存' : '新建 bot'}</button>
         <button type="button" className={SMALL} onClick={onDone}>取消</button>

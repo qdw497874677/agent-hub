@@ -8,10 +8,20 @@ import {
   PERSISTENT_AGENT_DISPLAY_NAME_MAX,
   PERSISTENT_AGENT_OPTIONS_MAX,
   principalOfSubject,
-  type PersistentAgents
+  type ApiToken,
+  type PersistentAgents,
+  type ProjectId
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
+
+/** bot 凭据的只读来源（C1）：列表时一次查完项目的 bot 令牌，避免每个 bot 一次查询。 */
+export interface BotTokenSource {
+  listBotsByProject(projectId: ProjectId): Promise<readonly ApiToken[]>;
+}
+
+const tokenDto = (token: ApiToken | undefined): { id: string; prefix: string; createdAt: number; lastUsedAt: number | null } | null =>
+  token ? { id: token.id, prefix: token.prefix, createdAt: token.createdAt, lastUsedAt: token.lastUsedAt } : null;
 
 /**
  * 持久智能体（界面上叫「bot」）的 HTTP 外壳：
@@ -37,7 +47,7 @@ const fields = {
 const createBody = z.object({ name: z.string().min(1).max(40), ...fields });
 const patchBody = z.object({ ...fields, agentId: fields.agentId.optional() });
 
-export function installPersistentAgentRoutes(app: Hono<any>, agents: PersistentAgents, subjectOf: SubjectOf): void {
+export function installPersistentAgentRoutes(app: Hono<any>, agents: PersistentAgents, subjectOf: SubjectOf, botTokens?: BotTokenSource): void {
   const me = (c: Parameters<SubjectOf>[0]) => principalOfSubject(subjectOf(c));
   const needUser = { code: 'forbidden' as const, message: '要以账号身份管理 bot' };
   const issue = (e: z.ZodError) => {
@@ -48,8 +58,12 @@ export function installPersistentAgentRoutes(app: Hono<any>, agents: PersistentA
   app.get('/api/projects/:id/agents', async (c) => {
     const actor = me(c);
     if (!actor) return fail(c, needUser);
-    const list = await agents.list(actor, asProjectId(c.req.param('id')));
-    return list.ok ? c.json({ agents: list.value }) : fail(c, list.error);
+    const projectId = asProjectId(c.req.param('id'));
+    const list = await agents.list(actor, projectId);
+    if (!list.ok) return fail(c, list.error);
+    // 一次查完这个项目的 bot 令牌，再按 bot 名匹配（C1：BotDto.token）。
+    const tokens = botTokens ? await botTokens.listBotsByProject(projectId) : [];
+    return c.json({ agents: list.value.map((agent) => ({ ...agent, token: tokenDto(tokens.find((token) => token.revokedAt === null && token.bot?.name === agent.name)) })) });
   });
 
   app.post('/api/projects/:id/agents', async (c) => {

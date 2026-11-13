@@ -1016,6 +1016,7 @@ export function inMemoryApiTokens(): ApiTokenRepository & { readonly rows: Map<s
     byId: async (id) => rows.get(id) ?? null,
     byHash: async (hash) => [...rows.values()].find((row) => row.tokenHash === hash) ?? null,
     listByTeam: async (teamId) => [...rows.values()].filter((row) => row.teamId === teamId),
+    listBotsByProject: async (projectId) => [...rows.values()].filter((row) => row.kind === 'bot' && row.bot?.projectId === projectId),
     touch: async (id, at) => {
       const row = rows.get(id);
       if (row) rows.set(id, { ...row, lastUsedAt: at });

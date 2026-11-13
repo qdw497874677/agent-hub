@@ -57,7 +57,7 @@ export function createAccessPolicy(deps: AccessPolicyDeps): AccessPolicy {
 
 /** 项目当资源：老数据 team_id 为 NULL 时算 hub 管理员团队的。项目下的任务、会话、工作空间都用它。 */
 export function projectAsResource(project: Project, ctx: AccessContext): Resource {
-  return { kind: 'project', id: project.id, teamId: project.teamId ?? ctx.hubTeamId, createdBy: project.createdBy, sharedWith: project.members };
+  return { kind: 'project', id: project.id, projectId: project.id, teamId: project.teamId ?? ctx.hubTeamId, createdBy: project.createdBy, sharedWith: project.members };
 }
 
 /**
@@ -68,6 +68,7 @@ export function sessionAsResource(session: Session, project: Project, ctx: Acces
   return {
     kind: 'session',
     id: session.id,
+    projectId: project.id,
     teamId: project.teamId ?? ctx.hubTeamId,
     createdBy: session.createdBy ?? project.createdBy
   };

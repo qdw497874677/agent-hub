@@ -185,7 +185,7 @@ M3 之后「加一个产品面」的步骤是：建 `surfaces/<id>/manifest.ts` 
 
 | # | 缺口 | 现状证据 | 落点 | 验收 |
 | --- | --- | --- | --- | --- |
-| C1 | bot 没有独立身份与凭据 | `PersistentAgent`（`packages/domain/src/messaging.ts:94-105`）挂在 `projectId` 下；bot 起的会话借创建者权限 | 给 bot 发 `ahp_` 同族 token，作用域 = 该 bot 的群/项目 + 声明的工具集；审计带 bot 身份 | 用 bot token 调 `/api/...` 只能碰自己的群；越权 403 且审计可查 |
+| C1 | ~~bot 没有独立身份与凭据~~（已落地） | `ApiToken` 加 `kind:'bot'` + `bot:{projectId,name}`（`ahb_` 前缀，只存哈希）；`decide()` 里做项目内收窄（`bot_scope`），有效权限 = scopes ∩ `BOT_PERMISSIONS`；签发 / 可见 / 吊销按项目 owner·admin；审计与来历写「以 bot「name」身份」 | 完成 | 冒烟：bot 令牌只能看见自己的项目、越界 403、不能建令牌、吊销即失效；bot 编辑页显示凭据（前缀 / 最近使用 / 生成 / 吊销） |
 | C2 | ~~bot 没有启动配置~~（已落地） | `PersistentAgent.options` + 四处派生透传（第 4 节第 1 条） | 完成 | 新建 bot 会话带上 `effort`/`thinking`/`mode` 等可调项；真机冒烟 4/4 通过 |
 | C3 | 触发器不是 bot 的一等属性 | 连接器按 `projectId` 挂（ADR 0032），bot 借用项目的 | 连接器加 `botName?` 归属；触发时按 bot 的 runtime binding 建会话 | bot 自己配一个定时/PR 触发，不依赖项目连接器 |
 | C4 | 没有稳定的 bot 资源 API | 只有 `/api/projects/:id/agents` | `/api/bots`、`/api/bots/:name`（跨项目寻址，名字即 `@id`） | 外部集成方按名字引用 bot 不随项目迁移失效 |
@@ -198,3 +198,11 @@ M3 之后「加一个产品面」的步骤是：建 `surfaces/<id>/manifest.ts` 
 产品形态只做三件事：入口、编排（拿哪些原子拼在一起）、呈现。任何一面都不许新增「策略类」设置，也不许绕过用例直接读写库——否则「配置出形态」就退化成「配置出分支」。
 
 与第 9 节三条原则的对应：C1/C2/C4 是原则 3（持久智能体与临时会话是 N:1 两个资源）的基建；C3 是原则 2（触发器属于 agent，本次覆盖属于会话）；「会话唯一持久」由 manifest 化（原则 1）保证——形态不持有会话状态。
+
+### 10.1 C1 实现要点（2026-11-13）
+
+- 身份不新开接口面：bot 凭据就是 `ApiToken` 的 `kind:'bot'`，走同一套 `/api` 与 `/openapi/v1`；`ahb_` 前缀只用来一眼认出来源。
+- 收窄只有一处：`decide()` 的 2b 步——权限必须在 `BOT_PERMISSIONS` 内，碰资源时归属项目必须等于 `bot.projectId`（`Resource.projectId`）。只问能力的检查（如「令牌有没有 projects:read」）不要求项目。
+- 新增 scope：`groups:write`（群发言）、`files:read`（会话工作空间文件）、`memory:read` / `memory:write`；旧的 `projects:write` 之类不会因为交集而放大。
+- `worker.use` 在 bot 上限内（要过派发前最后一道），但开放 API 本来就不允许使用 hub 同机机器，bot 同样如此。
+- 审计 / 来历：actor 名字写成 `<签发人> · bot「name」`，审计 detail 写「以 bot「name」身份」。

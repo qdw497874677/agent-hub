@@ -32,7 +32,11 @@ export interface MessagingRoleDto {
   /** 建会话时垫进去的启动选项（会话内仍可覆盖）；键与会话的可调项同源。 */
   options?: Record<string, string | boolean>;
 }
-export interface BotDto extends MessagingRoleDto { groups: { id: string; name: string; host: boolean }[] }
+export interface BotDto extends MessagingRoleDto {
+  groups: { id: string; name: string; host: boolean }[];
+  /** 这个 bot 的独立凭据（C1）：没有就是 null。 */
+  token: { id: string; prefix: string; createdAt: number; lastUsedAt: number | null } | null;
+}
 export type BotInputDto = Partial<Omit<MessagingRoleDto, 'name'>>;
 
 // ---- 传递 / 送达（ADR 0031 D2） ----
