@@ -13,7 +13,7 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
  * 3) squash 合并：PR（假 gh 报 MERGED，head = HEAD）合并后远端分支被删，本地提交「只在本分支」也照样删；
  * 4) 孤儿目录只列出来；规则开关、清理记录（含大小）在项目设置里。
  */
-const SHOTS = '/workspace/shots/git-workflow/3-cleanup';
+const SHOTS = process.env.SHOTS_DIR ?? '/tmp/opencode/shots/git-workflow/3-cleanup';
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 
 async function waitTurns(page: Page, sid: string, count: number): Promise<void> {
@@ -156,7 +156,10 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: width > 500 ? 860 : 844 });
       await page.goto(`/#/p/${project.id}`);
-      await page.getByRole('button', { name: '项目设置' }).click();
+      // 窄屏侧栏是收起的：设置入口在里面（sidebar.tsx 底部 ⚙）。
+      if (width <= 768) await page.getByRole('button', { name: '打开侧栏' }).click();
+      // 桌面与移动两份侧栏同时在 DOM 里（lg 隐藏一份），`:visible` 才能点到当前那份。
+      await page.locator('button[title="项目设置"]:visible').first().click();
       const panel = page.getByTestId('workspace-cleanup');
       await panel.scrollIntoViewIfNeeded();
       await expect(panel.getByTestId('cleanup-item')).toHaveCount(4);
