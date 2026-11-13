@@ -48,7 +48,7 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     const tabs = page.getByTestId('session-tabs');
     await expect(tabs).toBeVisible();
     await expect(page.getByTestId('session-tab-chat')).toHaveAttribute('aria-selected', 'true');
-    await expect(page.getByRole('log', { name: '对话记录' })).toBeVisible();
+    await expect(page.getByRole('log', { name: '会话记录' })).toBeVisible();
     await expect(page.getByTestId('session-tab-changes')).toHaveText('改动 1');
     const fits = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
     expect(await fits()).toBe(true);
@@ -56,7 +56,7 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
 
     await page.getByTestId('session-tab-files').click();
     const files = page.getByTestId('files-panel-files');
-    await expect(page.getByRole('log', { name: '对话记录' })).toBeHidden();
+    await expect(page.getByRole('log', { name: '会话记录' })).toBeHidden();
     await files.locator('[data-path="src"]').click();
     await files.locator('[data-path="src/app.ts"]').click();
     await expect(files.getByTestId('file-content')).toContainText('answer = 42');
@@ -80,7 +80,7 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     await page.keyboard.press('ArrowLeft');
     await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
     await page.getByTestId('session-tab-chat').click();
-    await expect(page.getByRole('log', { name: '对话记录' })).toBeVisible();
+    await expect(page.getByRole('log', { name: '会话记录' })).toBeVisible();
     await expect(page.getByTestId('files-panel-files')).toBeHidden();
 
     // 详情 → 浏览文件：切到会话的「文件」标签页，详情关掉，旧浮层不再出现

@@ -50,14 +50,14 @@ export function RewindDialog({ sessionId, promptSeq, onClose, onDone }: {
           </p>
         ) : p?.mode === 'summary' ? (
           <p className="rounded-md bg-ochre/10 px-2 py-1.5 text-meta text-ochre" data-testid="rewind-mode" data-mode="summary">
-            新会话会收到一段之前对话的摘要（{p.modeReason ?? `${p.agentLabel} 不支持从中间某条消息分叉`}）
+            新会话会收到一段之前会话的摘要（{p.modeReason ?? `${p.agentLabel} 不支持从中间某条消息分叉`}）
           </p>
         ) : null}
         <fieldset className="flex flex-col gap-2" disabled={!p || busy}>
           <label className="flex items-start gap-2 text-sub text-primary">
             <input type="radio" name="rewind" className="mt-1" checked={!files} onChange={() => setFiles(false)} />
             <span>
-              只回滚对话
+              只回滚会话
               <span className="block text-meta text-tertiary">新开一条会话，从这条消息之前接着聊；工作区文件保持现在的样子。</span>
             </span>
           </label>

@@ -541,7 +541,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title="换个地方继续…"
-                    hint={canContinueElsewhere(session) ? '换台机器或工作空间，带着对话摘要接着做' : CONTINUE_DISABLED_HINT}
+                    hint={canContinueElsewhere(session) ? '换台机器或工作空间，带着会话摘要接着做' : CONTINUE_DISABLED_HINT}
                     disabled={!canContinueElsewhere(session)}
                     onClick={() => {
                       close();
@@ -550,7 +550,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title="删除会话…"
-                    hint={deleteHint ?? '永久删除这条会话的对话记录、产物引用和连线；工作空间里的文件保留'}
+                    hint={deleteHint ?? '永久删除这条会话的会话记录、产物引用和连线；工作空间里的文件保留'}
                     disabled={deleteHint !== null}
                     danger
                     testId="session-delete"
@@ -733,12 +733,12 @@ export function FocusView({
       <div ref={scroller} className={`min-h-0 flex-1 overflow-y-auto ${tab === 'chat' ? '' : 'hidden'}`}>
         <div
           role="log"
-          aria-label="对话记录"
+          aria-label="会话记录"
           data-compact={settings.compact ? 'true' : undefined}
           className={`mx-auto flex max-w-[760px] flex-col ${settings.compact ? 'gap-2 px-3 py-3 text-[0.95em]' : 'gap-4 px-4 py-6'}`}
         >
           {origin.kind === 'fork' && inherited.length > 0 ? (
-            <section aria-label="分叉前的对话" className="flex flex-col gap-4 opacity-60" data-testid="fork-inherited">
+            <section aria-label="分叉前的会话" className="flex flex-col gap-4 opacity-60" data-testid="fork-inherited">
               {inherited.map((block, index) => (
                 <ChatBlock key={index} block={block} agentLabel={agentLabel} sessionId={origin.fromSessionId} settings={settings} last={false} running={false} showAuthor={showAuthor} />
               ))}

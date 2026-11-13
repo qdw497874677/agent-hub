@@ -33,9 +33,9 @@ async function openFromCanvas(page: Page, baseURL: string, say?: string) {
   const node = page.locator('.react-flow__node-session');
   await expect(node).toHaveCount(1);
   await node.locator('header, p').first().click();
-  await expect(page.getByRole('log', { name: '对话记录' }), '单击卡片只选中，不进对话').toHaveCount(0);
+  await expect(page.getByRole('log', { name: '会话记录' }), '单击卡片只选中，不进对话').toHaveCount(0);
   await node.getByRole('button', { name: '打开' }).click();
-  const log = page.getByRole('log', { name: '对话记录' });
+  const log = page.getByRole('log', { name: '会话记录' });
   await expect(log, '点「打开」进对话').toBeVisible();
   return { log, headers, project, sessionId: id };
 }
@@ -104,7 +104,7 @@ test('显示设置：每个选项都能切，刷新后还在', async ({ page, ba
   await panel.getByRole('switch', { name: '命令输出默认展开' }).check();
   await panel.getByRole('switch', { name: '文件改动默认展开' }).uncheck();
   await panel.getByRole('switch', { name: '紧凑模式' }).check();
-  await expect(page.getByRole('log', { name: '对话记录' })).toHaveAttribute('data-compact', 'true');
+  await expect(page.getByRole('log', { name: '会话记录' })).toHaveAttribute('data-compact', 'true');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-display-settings.png` });
 
   await page.reload();
@@ -114,7 +114,7 @@ test('显示设置：每个选项都能切，刷新后还在', async ({ page, ba
   await expect(panel.getByRole('switch', { name: '命令输出默认展开' })).toBeChecked();
   await expect(panel.getByRole('switch', { name: '文件改动默认展开' })).not.toBeChecked();
   await expect(panel.getByRole('switch', { name: '紧凑模式' })).toBeChecked();
-  await expect(page.getByRole('log', { name: '对话记录' })).toHaveAttribute('data-compact', 'true');
+  await expect(page.getByRole('log', { name: '会话记录' })).toHaveAttribute('data-compact', 'true');
   // 还原，别影响别的用例
   await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('agent-hub.display.')).forEach((k) => localStorage.removeItem(k)));
 });

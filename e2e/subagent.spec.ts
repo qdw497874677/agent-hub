@@ -78,7 +78,7 @@ test('子代理事件折叠成会话内的卡片，并显示完成状态', async
 
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
-    const log = page.getByRole('log', { name: '对话记录' });
+    const log = page.getByRole('log', { name: '会话记录' });
     const card = log.getByTestId('subagent-card');
     await expect(card).toBeVisible({ timeout: 30_000 });
     await expect(card).toHaveAttribute('data-status', 'completed');

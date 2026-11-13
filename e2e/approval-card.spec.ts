@@ -45,7 +45,7 @@ test('批准卡：显示、手机尺寸、点允许发出回答；不存在的�
   });
   await page.route(`**/api/sessions/${id}/approvals/**`, (route) => route.fulfill({ status: 202, json: { requested: true } }));
   await page.goto(`/#/p/${project.id}/focus/${id}`);
-  const card = page.getByRole('log', { name: '对话记录' }).getByTestId('msg-approval').last();
+  const card = page.getByRole('log', { name: '会话记录' }).getByTestId('msg-approval').last();
   await expect(card).toBeVisible();
   await expect(card).toContainText('rm -rf build/');
   await expect(card.getByTestId('approval-countdown')).toContainText('秒内不回答就当拒绝');

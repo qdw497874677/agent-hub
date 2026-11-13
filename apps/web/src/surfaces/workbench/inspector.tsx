@@ -135,7 +135,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
             {agent ? (
               capabilityNames.map((name) => <CapabilityRow key={name} name={name} capability={agent.capabilities[name]!} />)
             ) : (
-              <p className="text-meta text-tertiary">该 agent 当前没有在线节点</p>
+              <p className="text-meta text-tertiary">该 agent 当前没有在线机器</p>
             )}
           </section>
           <SessionContext sessionId={session.id} lastSeq={live?.lastSeq ?? session.lastSeq} />

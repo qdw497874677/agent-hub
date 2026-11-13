@@ -46,7 +46,7 @@ export function TaskQueue() {
               )
             ))}
           </div>
-          <div className="mt-2 text-meta text-tertiary">每台机器 {caps.perWorker} · 每个项目 {caps.perProject}（你在对话里让 bot 建的不受这两条限制）</div>
+          <div className="mt-2 text-meta text-tertiary">每台机器 {caps.perWorker} · 每个项目 {caps.perProject}（你在会话里让 bot 建的不受这两条限制）</div>
         </div>
         <div className="rounded-md border border-hair bg-card p-3">
           <div className="mb-1 text-body font-medium text-primary">排队 · {data.queued.length + data.pending.length}</div>

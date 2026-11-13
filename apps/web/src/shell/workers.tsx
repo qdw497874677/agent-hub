@@ -220,7 +220,7 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
                     {root}
                   </span>
                 ))}
-                <span className="mt-1 block font-sans text-xs text-tertiary" title="在那台机器上改 WORKER_ROOTS（冒号分隔；装成服务的在 ~/.config/agent-hub/worker.env），然后重启 Worker（systemd：systemctl --user restart agent-hub-worker；脚本/前台启动：停掉重跑）">
+                <span className="mt-1 block font-sans text-xs text-tertiary" title="在那台机器上改 WORKER_ROOTS（冒号分隔；装成服务的在 ~/.config/agent-hub/worker.env），然后重启 agent-hub-worker 服务（systemd：systemctl --user restart agent-hub-worker；脚本/前台启动：停掉重跑）">
                   hub 只能访问这些目录；要放开改那台的 WORKER_ROOTS
                 </span>
               </dd>

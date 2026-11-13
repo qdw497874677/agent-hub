@@ -213,7 +213,7 @@ test.describe('画布交互分区', () => {
         // 窗口对话区：滚轮、鼠标拖都不动画布；标题栏拖窗口也不动画布
         const vp = await viewport(page);
         const s = await scale(page);
-        const log = opened.getByRole('log', { name: '对话记录' });
+        const log = opened.getByRole('log', { name: '会话记录' });
         const at = await center(log);
         await page.mouse.move(at.x, at.y);
         await page.mouse.wheel(0, 200);
@@ -228,7 +228,7 @@ test.describe('画布交互分区', () => {
         await opened.getByRole('button', { name: '关闭窗口' }).click();
       } else {
         // 手机：全屏；窗口里单指滑对话不动画布（画布被盖住），‹ 画布 回去
-        await touch(page, [opened.getByRole('log', { name: '对话记录' })], [{ x: 0, y: -60 }]);
+        await touch(page, [opened.getByRole('log', { name: '会话记录' })], [{ x: 0, y: -60 }]);
         await page.getByRole('button', { name: '关闭窗口' }).click();
       }
       await expect(opened).toHaveCount(0);

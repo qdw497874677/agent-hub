@@ -7,10 +7,10 @@ import { DialogShell } from './dialog-shell.tsx';
 const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string }[] = [
   { id: 'projects:read', label: '读项目和任务', hint: '项目、任务、工作日志、代码改动' },
   { id: 'projects:write', label: '改项目和任务', hint: '建项目 / 任务，改状态，写日志' },
-  { id: 'sessions:read', label: '读对话', hint: '会话详情、事件、实时流' },
-  { id: 'sessions:write', label: '发起对话', hint: '开会话、发消息、打断、分叉' },
+  { id: 'sessions:read', label: '读会话', hint: '会话详情、事件、实时流' },
+  { id: 'sessions:write', label: '发起会话', hint: '开会话、发消息、打断、分叉' },
   { id: 'workers:read', label: '看机器', hint: '可用的远程机器（本机永远不开放）' },
-  { id: 'providers:use', label: '使用模型提供商', hint: '看见并选用已配置的模型。不含在「发起对话」里，不能管理提供商，也不包含本机机器' },
+  { id: 'providers:use', label: '使用模型提供商', hint: '看见并选用已配置的模型。不含在「发起会话」里，不能管理提供商，也不包含本机机器' },
   { id: 'assets:submit', label: '提交资产新版本', hint: '只能给自己维护的资产提交新版本，进审核队列；不能批准、发布或安装' },
   { id: 'groups:write', label: '在群里发言', hint: '以这个身份往项目群里发消息（含接活）；不能管理群成员' },
   { id: 'files:read', label: '读会话文件', hint: '会话工作空间里的文件列表与内容；不能写、不能执行命令' },

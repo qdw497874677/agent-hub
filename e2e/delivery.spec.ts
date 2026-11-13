@@ -57,7 +57,7 @@ test('送达状态：未送达 / 排队中 / 撤回 / 重连后送达', async ({
     await say('第一句');
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.goto(`/#/p/${project.id}/focus/${session.id}`);
-    const log = page.getByRole('log', { name: '对话记录' });
+    const log = page.getByRole('log', { name: '会话记录' });
     await expect(log.getByText('第一句')).toBeVisible({ timeout: 30_000 });
     await page.waitForTimeout(1_500);
     await expect(log.getByTestId('delivery-note')).toHaveCount(0); // 送达了就安静

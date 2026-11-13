@@ -42,7 +42,7 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
   const dialog = page.getByRole('dialog', { name: '访问令牌' });
   const name = `e2e-bot-${Date.now().toString(36)}`;
   await dialog.getByTestId('token-name').fill(name);
-  const scopeLabels = ['改项目和任务', '发起对话', '看机器', ...(e2eHubModel() ? ['使用模型提供商'] : [])];
+  const scopeLabels = ['改项目和任务', '发起会话', '看机器', ...(e2eHubModel() ? ['使用模型提供商'] : [])];
   for (const label of scopeLabels) await dialog.getByText(label, { exact: true }).click();
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'tokens-create-390.png') });
   await dialog.getByTestId('token-create').click();

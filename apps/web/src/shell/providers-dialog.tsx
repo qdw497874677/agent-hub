@@ -86,7 +86,7 @@ function ProviderRow({ provider, onEdit, onChanged }: { provider: ProviderDto; o
         <span className="text-meta text-tertiary">hub-{provider.slug}</span>
         <span className="rounded-sm border border-hair px-1.5 text-meta text-secondary">{SCOPE_LABEL[provider.scope]}</span>
         <span className="text-meta text-tertiary">{PROTOCOL_LABEL[provider.protocol]}</span>
-        <span className="text-meta text-tertiary">{provider.routing === 'hub' ? '经 hub 中转' : 'worker 直连'}</span>
+        <span className="text-meta text-tertiary">{provider.routing === 'hub' ? '经 hub 中转' : '机器直连'}</span>
         {!provider.enabled ? <span className="text-meta text-rust">已停用</span> : null}
         {!provider.hasKey ? <span className="text-meta text-rust">未配置密钥</span> : null}
       </div>
@@ -225,8 +225,8 @@ function ProviderForm({ existing, canHub, canTeam, onDone }: { existing: Provide
       ) : null}
       <label className={label} htmlFor="provider-routing">请求怎么走</label>
       <select id="provider-routing" className={INPUT} value={form.routing} onChange={(event) => set('routing', event.target.value as typeof form.routing)}>
-        <option value="direct">worker 直连（默认：密钥下发到 worker 的本机中继）</option>
-        <option value="hub">经 hub 中转（密钥不离开 hub；worker 要能连到 hub）</option>
+        <option value="direct">机器直连（默认：密钥下发到机器的本机中继）</option>
+        <option value="hub">经 hub 中转（密钥不离开 hub；机器要能连到 hub）</option>
       </select>
       <label className="mt-3 flex items-center gap-2 text-meta text-secondary">
         <input type="checkbox" checked={form.enabled} onChange={(event) => set('enabled', event.target.checked)} /> 启用

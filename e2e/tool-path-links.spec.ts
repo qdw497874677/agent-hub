@@ -58,7 +58,7 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     const { project, id } = await setup(page, baseURL!);
     await page.goto(`/#/p/${project.id}/focus/${id}`);
-    const log = page.getByRole('log', { name: '对话记录' });
+    const log = page.getByRole('log', { name: '会话记录' });
     await expect(log.getByTestId('tool-card')).toHaveCount(4);
     await log.getByTestId('tool-card').evaluateAll((cards) => cards.forEach((card) => ((card as HTMLDetailsElement).open = true)));
     const links = log.getByTestId('tool-path-link');

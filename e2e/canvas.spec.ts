@@ -127,8 +127,8 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 
   // 点卡片上的「打开」进专注对话（单击卡片只选中）。
   await sessionNode(page).getByRole('button', { name: '打开' }).click();
-  // 收窄到对话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
-  await expect(page.getByRole('log', { name: '对话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
+  // 收窄到会话记录里：输入框的「文本内容」就是它的 value，直接 getByText 会假通过
+  await expect(page.getByRole('log', { name: '会话记录' })).toContainText(`只回这段文字，不要用工具：${ECHO}`);
   // 输入框上方贴着运行时报的上下文占用；Pi 在 agent_settled 后会补一条 get_session_stats。
   await expect(page.getByTestId('context-meter')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId('context-meter')).toHaveAttribute('title', /上下文：.*token/);

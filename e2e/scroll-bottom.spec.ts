@@ -81,7 +81,7 @@ test('长对话：画布卡片和专注对话默认在最后；翻上去时新�
 
   // 专注对话：打开就在最后
   await card.getByRole('button', { name: '打开' }).click();
-  const log = page.getByRole('log', { name: '对话记录' });
+  const log = page.getByRole('log', { name: '会话记录' });
   await expect(log).toContainText(`第 ${n} 句`);
   const chatScroll = log.locator('xpath=..');
   await expect.poll(() => gap(chatScroll), { message: '专注对话默认停在最后' }).toBeLessThan(4);
@@ -149,12 +149,12 @@ for (const width of [1280, 390]) {
 
     // 单击只选中：卡片描边变色、「打开」按钮露出来，但不进对话
     await card.locator('header').click({ position: { x: 8, y: 8 } });
-    await expect(page.getByRole('log', { name: '对话记录' })).toHaveCount(0);
+    await expect(page.getByRole('log', { name: '会话记录' })).toHaveCount(0);
     const open = card.getByRole('button', { name: '打开' });
     await expect(open).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/canvas-card-selected-${width}.png` });
     await open.click();
-    await expect(page.getByRole('log', { name: '对话记录' }), '点「打开」进对话').toBeVisible();
+    await expect(page.getByRole('log', { name: '会话记录' }), '点「打开」进对话').toBeVisible();
   });
 }
 });

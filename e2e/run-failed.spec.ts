@@ -29,7 +29,7 @@ test('运行失败后输入框显示「发送」而不是「中断」', async ({
   const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers });
   await page.goto(`/#/p/${project.id}/canvas`);
   await page.locator('.react-flow__node-session').getByRole('button', { name: '打开' }).click();
-  const log = page.getByRole('log', { name: '对话记录' });
+  const log = page.getByRole('log', { name: '会话记录' });
   await expect(log).toBeVisible();
   const composer = page.getByLabel('发送消息');
   await composer.fill('你好');

@@ -59,7 +59,7 @@ test.describe('画布中展开会话', () => {
     await expect(win(page, a)).toBeVisible();
     expect(page.url(), '双击不离开画布').toBe(url);
     await expect(card(page, a).getByTestId('card-expanded')).toBeVisible();
-    await expect(win(page, a).getByRole('log', { name: '对话记录' })).toContainText('窗口第 40 行', { timeout: 30000 });
+    await expect(win(page, a).getByRole('log', { name: '会话记录' })).toContainText('窗口第 40 行', { timeout: 30000 });
     // 再双击同一张 = 聚焦，不重复开
     await card(page, a).locator('header').dblclick({ position: { x: 60, y: 8 } });
     await expect(windows(page)).toHaveCount(1);
@@ -79,7 +79,7 @@ test.describe('画布中展开会话', () => {
 
     // 对话区：滚轮只滚对话，不缩放、不平移画布
     {
-      const log = win(page, a).getByRole('log', { name: '对话记录' });
+      const log = win(page, a).getByRole('log', { name: '会话记录' });
       const scroller = log.locator('xpath=..');
       const vp = await viewport(page);
       const lb = (await log.boundingBox())!;
@@ -190,7 +190,7 @@ test.describe('画布中展开会话', () => {
     const box = (await shown.boundingBox())!;
     expect(box.width, '手机上全屏').toBeGreaterThanOrEqual(389);
     await expect(page.getByTestId('window-count')).toHaveText('1/1');
-    await expect(shown.getByRole('log', { name: '对话记录' })).toContainText('窗口第 40 行', { timeout: 30000 });
+    await expect(shown.getByRole('log', { name: '会话记录' })).toContainText('窗口第 40 行', { timeout: 30000 });
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/mobile-window.png` });
 
     await page.getByRole('button', { name: '‹ 画布' }).click();

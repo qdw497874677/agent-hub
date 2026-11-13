@@ -42,7 +42,7 @@ test('结果未知的一轮：说明卡 + 重发 / 不用了', async ({ page, ba
   });
   await page.goto(`/#/p/${project.id}/canvas`);
   await page.locator('.react-flow__node-session').getByRole('button', { name: '打开' }).click();
-  const log = page.getByRole('log', { name: '对话记录' });
+  const log = page.getByRole('log', { name: '会话记录' });
   const card = log.getByTestId('msg-unknown').last();
   await expect(card).toBeVisible();
   await expect(card).toContainText('这一轮结果不确定');

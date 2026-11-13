@@ -74,7 +74,7 @@ test('来历：网页开的、分叉的都有一行来历，可展开；审计�
 
     // 分叉：先说一句让来源有内容
     expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '第一句' }, headers })).ok()).toBe(true);
-    const log = page.getByRole('log', { name: '对话记录' });
+    const log = page.getByRole('log', { name: '会话记录' });
     await expect(log.getByText('第一句')).toBeVisible({ timeout: 30_000 });
     await page.waitForTimeout(1_500);
     const forked = await page.request.post('/api/sessions/fork', { data: { sessionId: session.id, agentId: 'fakeacp', model: '' }, headers });
