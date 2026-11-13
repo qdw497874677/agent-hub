@@ -1,0 +1,460 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import type { CanvasDto, ProjectDto, TaskDto } from './api.ts';
+import { api } from './api.ts';
+import { HomePage } from '../surfaces/workbench/home.tsx';
+import { AdminPage } from './admin/page.tsx';
+import { resolveLive, useLiveStream } from '../atoms/live.ts';
+import { CanvasView, type LayoutPatch } from '../surfaces/workbench/canvas.tsx';
+import { NoTasksHint } from '../surfaces/workbench/empty-tasks.tsx';
+import { ListView, SearchPalette } from '../surfaces/workbench/views.tsx';
+import { FocusView } from '../surfaces/workbench/focus.tsx';
+import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
+import { ProjectHeader } from '../surfaces/workbench/header.tsx';
+import { ProjectSidebar } from '../surfaces/workbench/sidebar.tsx';
+import { useRoute } from './use-route.ts';
+import { MemoryPage } from './memory.tsx';
+import { TeamWorkspacesPage } from '../surfaces/workbench/team-workspaces.tsx';
+import { MessagesPage } from '../surfaces/im/messages.tsx';
+import { BotsPage } from '../surfaces/im/bots.tsx';
+import { ObservePage } from './observe.tsx';
+import { MarketPage } from './market/page.tsx';
+import { useNarrow } from './device.ts';
+import { TaskDetail } from '../surfaces/workbench/task-detail.tsx';
+import type { View } from './route.ts';
+
+const LAST_PROJECT = 'agent-hub:last-project';
+
+/** 运营后台与工作台互不相干：分开渲染，各自的数据各自拉。 */
+export function App() {
+  const [route] = useRoute();
+  if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
+  if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
+  if (route?.page === 'bots') return <BotsPage projectId={route.projectId} />;
+  if (route?.page === 'observe') return <ObservePage source={route.source} id={route.id} />;
+  if (route?.page === 'messages') return <MessagesPage projectId={route.projectId} groupId={route.groupId} />;
+  if (route?.page === 'assets') return <MarketPage tab={route.tab} reviewId={route.reviewId} />;
+  return route?.page === 'admin' ? <AdminPage tab={route.tab} /> : <Workspace />;
+}
+
+function Workspace() {
+  const [route, navigate] = useRoute();
+  // 手机上画布没法用手指精确拖拽，默认进列表；桌面默认进画布。
+  const narrow = useNarrow();
+  const homeView: View = narrow ? 'list' : 'canvas';
+  const [newTask, setNewTask] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [deriveFor, setDeriveFor] = useState<string | null>(null);
+  const [taskDetail, setTaskDetail] = useState<string | null>(null);
+  const [search, setSearch] = useState(false);
+  // 草稿存在 App 层而不是 Inspector 里：S6.4 要求切视图不丢草稿，
+  // 组件一卸载 useState 就没了，所以它必须活在两者之上。
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // 跳到某个节点：nonce 让「同一条命中点第二次」也能重新居中。
+  const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
+  const queryClient = useQueryClient();
+
+  const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
+  const projectRoute = route?.page === 'project' ? route : null;
+  const project = useMemo(
+    () => (projectRoute ? (projects.data ?? []).find((candidate) => candidate.id === projectRoute.projectId) ?? null : null),
+    [projectRoute, projects.data]
+  );
+  // 三种视图是同一份数据的三层分辨率（S6.4）：画布看关系，列表看清单，专注对话看内容。
+  // 视图和选中的会话都住在地址栏里（route.ts），刷新、返回手势都不丢。
+  const view: View = projectRoute?.view ?? homeView;
+  const selected = projectRoute?.sessionId ?? null;
+
+  useEffect(() => {
+    if (!projects.data) return;
+    if (route === null) {
+      // 只认「上次打开的那个」。没有就停在首页——不替用户挑一个看起来像的项目。
+      const remembered = projects.data.find((candidate) => candidate.id === localStorage.getItem(LAST_PROJECT));
+      navigate(
+        remembered ? { page: 'project', projectId: remembered.id, view: homeView, sessionId: null } : { page: 'home' },
+        'replace'
+      );
+    } else if (projectRoute && !project && !projects.isFetching) {
+      // 刚建好的项目可能还没进缓存：等这轮拉取结束再判「不存在」，否则会被踢回首页。
+      navigate({ page: 'home' }, 'replace');
+    }
+  }, [route, projectRoute, project, projects.data, projects.isFetching, navigate, homeView]);
+
+  const goProject = useCallback(
+    (picked: ProjectDto, next: View, sessionId: string | null) => {
+      localStorage.setItem(LAST_PROJECT, picked.id);
+      navigate({ page: 'project', projectId: picked.id, view: next, sessionId });
+    },
+    [navigate]
+  );
+
+  const setView = useCallback(
+    (next: View) => {
+      if (projectRoute) navigate({ ...projectRoute, view: next });
+    },
+    [projectRoute, navigate]
+  );
+
+  const canvas = useQuery({
+    queryKey: ['canvas', project?.id],
+    queryFn: () => api.canvas(project?.id ?? ''),
+    enabled: project !== null,
+    // Worker 还没上线时自己轮询：别让「等 worker」变成用户要记住的手动刷新
+    refetchInterval: (query) => ((query.state.data?.agents.length ?? 0) === 0 ? 2000 : false)
+  });
+
+  const refresh = useCallback(() => {
+    if (project) void queryClient.invalidateQueries({ queryKey: ['canvas', project.id] });
+  }, [project, queryClient]);
+
+  // 内存里的会话流：先用画布投影的历史播种，之后只吃比它新的帧；断线重连后补帧并刷新画布。
+  const { live, seed, loadHistory, state: stream } = useLiveStream(refresh);
+
+  const seedRef = useRef(seed);
+  seedRef.current = seed;
+  useEffect(() => {
+    const data = canvas.data;
+    if (!data) return;
+    seedRef.current(data.sessions, data.previews ?? {});
+  });
+
+  // 画布卡片上就地说话：发完清掉这张卡的草稿，不走「先选中再进对话」那条路。
+  const sendPrompt = useCallback(
+    async (sessionId: string, text: string) => {
+      // 先清草稿再等回复：等的这段时间卡片若被画布重新挂载，不该把刚发出去的话又填回输入框
+      // （e2e 偶发失败就是它：模型慢时输入框里又出现了原话，看着像没发出去）。没发出去再放回来。
+      setDrafts((current) => ({ ...current, [sessionId]: '' }));
+      try {
+        await api.prompt(sessionId, text);
+      } catch (failure) {
+        setDrafts((current) => ({ ...current, [sessionId]: current[sessionId] || text }));
+        throw failure;
+      }
+      refresh();
+    },
+    [refresh]
+  );
+
+  // 改可调项：候选清单是 agent 报的，服务端把新值交给 agent 后才落库。
+  const changeOption = useCallback(
+    async (sessionId: string, optionId: string, value: string | boolean) => {
+      await api.changeOption(sessionId, optionId, value);
+      refresh();
+    },
+    [refresh]
+  );
+
+  const interruptSession = useCallback(
+    async (sessionId: string) => {
+      await api.interrupt(sessionId);
+      refresh();
+    },
+    [refresh]
+  );
+
+  // 会话状态变化时刷新画布：卡片状态位由 canvas 数据 + live 帧共同决定。
+  useEffect(() => {
+    if (Object.keys(live).length === 0) return;
+    const timer = setTimeout(refresh, 900);
+    return () => clearTimeout(timer);
+  }, [live, refresh]);
+
+  /** 进会话说话。画布卡上的「对话」/双击、列表里点行、首页点最近会话，都走这里。 */
+  const openSession = useCallback(
+    (sessionId: string) => {
+      if (projectRoute) navigate({ ...projectRoute, view: 'focus', sessionId });
+    },
+    [projectRoute, navigate]
+  );
+
+  const setTaskStatus = useCallback(
+    (taskId: string, status: TaskDto['status']) => {
+      void api.setTaskStatus(taskId, status).then(refresh, () => undefined);
+    },
+    [refresh]
+  );
+
+  const saveLayout = useMemo(
+    () => (patch: LayoutPatch) => {
+      if (!project) return;
+      void api.saveLayout(project.id, patch);
+    },
+    [project]
+  );
+
+  // 连线只改画布上的边：直接补缓存，别再拉一次整张画布（大项目一次 400KB+）。
+  const linkSessions = useCallback(
+    async (aSessionId: string, bSessionId: string) => {
+      if (!project) return;
+      const link = await api.createSessionLink(project.id, aSessionId, bSessionId);
+      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) => {
+        if (!current || current.edges.some((edge) => edge.kind === 'link' && edge.aSessionId === link.aSessionId && edge.bSessionId === link.bSessionId)) return current;
+        return { ...current, edges: [...current.edges, { kind: 'link' as const, aSessionId: link.aSessionId, bSessionId: link.bSessionId }] };
+      });
+    },
+    [project, queryClient]
+  );
+
+  const unlinkSessions = useCallback(
+    async (aSessionId: string, bSessionId: string) => {
+      if (!project) return;
+      await api.deleteSessionLink(project.id, aSessionId, bSessionId);
+      queryClient.setQueryData<CanvasDto>(['canvas', project.id], (current) =>
+        current
+          ? {
+              ...current,
+              edges: current.edges.filter(
+                (edge) =>
+                  !(
+                    edge.kind === 'link' &&
+                    ((edge.aSessionId === aSessionId && edge.bSessionId === bSessionId) || (edge.aSessionId === bSessionId && edge.bSessionId === aSessionId))
+                  )
+              )
+            }
+          : current
+      );
+    },
+    [project, queryClient]
+  );
+
+  const selectedSession = useMemo(
+    () => canvas.data?.sessions.find((session) => session.id === selected) ?? null,
+    [canvas.data, selected]
+  );
+
+  // 专注对话要整段历史：投影只带最后几十条事件，长一点的思考就把正文挤出去了。
+  const focusedSession = view === 'focus' ? selectedSession : null;
+  const loadHistoryRef = useRef(loadHistory);
+  loadHistoryRef.current = loadHistory;
+  useEffect(() => {
+    if (focusedSession) void loadHistoryRef.current(focusedSession);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在换会话时拉一次，之后靠 SSE
+  }, [focusedSession?.id]);
+
+  // 画布卡片与画布窗口也要整段历史（#105 说卡片能往上翻）：投影只带最后 24 条事件，
+  // 一段回复就是几十个 delta，只靠它刷新后卡片上只剩最后一句的半截、前面的提问全没了。
+  // 每条会话拉一次，之后靠 SSE；withFullHistory 不会让更新的内存倒退。
+  const fullLoaded = useRef(new Set<string>());
+  useEffect(() => {
+    for (const session of canvas.data?.sessions ?? []) {
+      if (fullLoaded.current.has(session.id)) continue;
+      fullLoaded.current.add(session.id);
+      void loadHistoryRef.current(session);
+    }
+  }, [canvas.data?.sessions]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearch((open) => !open);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const jump = useCallback(
+    (taskId: string, sessionId: string | null) => {
+      setSearch(false);
+      if (!projectRoute) return;
+      // 窄屏没有可用的画布，命中会话就直接进对话。
+      const next: View = narrow ? (sessionId ? 'focus' : 'list') : 'canvas';
+      navigate({ ...projectRoute, view: next, sessionId });
+      setFocus({ id: sessionId ?? taskId, nonce: Date.now() });
+    },
+    [projectRoute, navigate, narrow]
+  );
+
+  if (projectRoute && !project) {
+    return <div className="flex h-full items-center justify-center text-meta text-tertiary">载入中…</div>;
+  }
+
+  if (project === null) {
+    return (
+      <HomePage
+        onOpen={(picked, sessionId) => {
+          // 「接着干」= 直接进那条会话说话，不是先看画布再自己找。
+          goProject(picked, sessionId ? 'focus' : homeView, sessionId ?? null);
+          if (sessionId) setFocus({ id: sessionId, nonce: Date.now() });
+        }}
+      />
+    );
+  }
+
+  const sidebar = (onClose?: () => void) => (
+    <ProjectSidebar
+      project={project}
+      projects={projects.data ?? []}
+      view={view}
+      canFocus={selectedSession !== null}
+      selectedId={selected}
+      canvas={canvas.data ?? null}
+      onHome={() => {
+        onClose?.();
+        setDrafts({});
+        navigate({ page: 'home' });
+      }}
+      onSwitchProject={(picked) => {
+        onClose?.();
+        setDrafts({});
+        goProject(picked, view === 'focus' ? homeView : view, null);
+      }}
+      onView={(next) => {
+        onClose?.();
+        setView(next);
+      }}
+      onOpenSession={(sessionId) => {
+        onClose?.();
+        openSession(sessionId);
+      }}
+      onSearch={() => {
+        onClose?.();
+        setSearch(true);
+      }}
+      onNewTask={() => {
+        onClose?.();
+        setNewTask(true);
+      }}
+      onClose={onClose}
+    />
+  );
+
+  return (
+    <div className="flex h-full">
+      <div className="hidden h-full lg:flex">{sidebar()}</div>
+      {sidebarOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex bg-canvas/60 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        >
+          <div className="h-full w-[min(86vw,320px)]" onClick={(event) => event.stopPropagation()}>
+            {sidebar(() => setSidebarOpen(false))}
+          </div>
+        </div>
+      ) : null}
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="lg:hidden">
+          <ProjectHeader
+            project={project}
+            projects={projects.data ?? []}
+            stream={stream}
+            onMenu={() => setSidebarOpen(true)}
+            onSwitchProject={(picked) => {
+              setDrafts({});
+              goProject(picked, view === 'focus' ? homeView : view, null);
+            }}
+            onSearch={() => setSearch(true)}
+            onNewTask={() => setNewTask(true)}
+          />
+        </div>
+
+      {canvas.data && view === 'focus' && selectedSession ? (
+        <FocusView
+          canvas={canvas.data}
+          session={selectedSession}
+          live={resolveLive(selectedSession, canvas.data.previews[selectedSession.id] ?? [], live[selectedSession.id])}
+          draft={drafts[selectedSession.id] ?? ''}
+          onDraftChange={(text) => setDrafts((current) => ({ ...current, [selectedSession.id]: text }))}
+          onBack={() => setView(homeView)}
+          onChanged={refresh}
+          onOpenSession={openSession}
+          onSeedDraft={(id, text) => setDrafts((current) => ({ ...current, [id]: text }))}
+          artifacts={canvas.data.artifacts.filter((artifact) => artifact.sessionId === selectedSession.id)}
+          onChangeOption={(optionId, value) =>
+            changeOption(selectedSession.id, optionId, value)
+          }
+        />
+      ) : (
+      <div className="flex min-h-0 flex-1">
+        <div className="relative flex-1">
+          {canvas.data && view === 'list' ? (
+            <ListView
+              canvas={canvas.data}
+              live={live}
+              onOpen={openSession}
+              onDerive={setDeriveFor}
+              onTaskDetail={setTaskDetail}
+              onNewTask={() => setNewTask(true)}
+            />
+          ) : canvas.data ? (
+            <CanvasView
+              canvas={{ ...canvas.data, layout: canvas.data.layout }}
+              live={live}
+              onDerive={setDeriveFor}
+              onOpen={openSession}
+              onChanged={refresh}
+              onLayoutChange={saveLayout}
+              onTaskStatus={setTaskStatus}
+              onTaskDetail={setTaskDetail}
+              focus={focus}
+              drafts={drafts}
+              onDraftChange={(sessionId, text) =>
+                setDrafts((current) => ({ ...current, [sessionId]: text }))
+              }
+              onSend={sendPrompt}
+              onInterrupt={interruptSession}
+              onChangeOption={changeOption}
+              onLink={linkSessions}
+              onUnlink={unlinkSessions}
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center text-meta text-tertiary">
+              {canvas.isError ? (canvas.error as Error).message : '载入中…'}
+            </div>
+          )}
+          {view === 'canvas' && canvas.data && canvas.data.tasks.length === 0 ? (
+            <NoTasksHint floating onNewTask={() => setNewTask(true)} />
+          ) : null}
+          <div
+            className={`pointer-events-none absolute bottom-3 left-3 space-y-1 text-meta text-tertiary ${view === 'canvas' ? '' : 'hidden'}`}
+          >
+            <p>
+              <span className="mr-2 inline-block h-px w-6 bg-strong align-middle" />
+              派生
+            </p>
+            <p>
+              <span className="mr-2 inline-block w-6 border-t border-dashed border-sage align-middle" />
+              分叉
+            </p>
+          </div>
+        </div>
+
+      </div>
+      )}
+
+      {search ? (
+        <SearchPalette
+          projectId={project.id}
+          onJump={(hit) => jump(hit.taskId, hit.sessionId)}
+          onClose={() => setSearch(false)}
+        />
+      ) : null}
+      {newTask ? <NewTaskDialog projectId={project.id} onDone={() => setNewTask(false)} /> : null}
+      {taskDetail && canvas.data ? (
+        <TaskDetail
+          canvas={canvas.data}
+          taskId={taskDetail}
+          onClose={() => setTaskDetail(null)}
+          onOpenSession={(sessionId) => {
+            setTaskDetail(null);
+            openSession(sessionId);
+          }}
+        />
+      ) : null}
+      {deriveFor && canvas.data ? (
+        <DeriveDialog
+          canvas={canvas.data}
+          taskId={deriveFor}
+          onDone={() => setDeriveFor(null)}
+          onDerived={(session) => {
+            // 刚开的会话直接进对话：开它就是为了说话。
+            setDeriveFor(null);
+            openSession(session.id);
+          }}
+        />
+      ) : null}
+      </div>
+    </div>
+  );
+}

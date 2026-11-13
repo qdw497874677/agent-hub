@@ -1,0 +1,254 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { localTime } from '../../shell/local-time.ts';
+import { useQuery } from '@tanstack/react-query';
+import type { CanvasDto, SearchHitDto, SessionDto } from '../../shell/api.ts';
+import { api } from '../../shell/api.ts';
+import { sessionListLabel } from '../../atoms/session-label.ts';
+import type { LiveMap } from '../../atoms/live.ts';
+import { StatusPill } from '../../atoms/status.tsx';
+import { NoTasksHint } from './empty-tasks.tsx';
+import { resolveWorker, useWorkers, WorkerChip } from '../../shell/workers.tsx';
+import { workspaceName } from '../../atoms/workspace-format.ts';
+
+
+function statusOf(session: SessionDto, live: LiveMap): SessionDto['status'] {
+  return live[session.id]?.status ?? session.status;
+}
+
+/**
+ * 列表视图：画布的低成本降级形态（S6.4）。
+ *
+ * 它不替代画布，只回答画布回答得慢的两个问题：「今天一共几个会话在跑」
+ * 和「那条我想不起来的会话叫什么」。这里不做看板——按状态分列会诱导人
+ * 用列来管理流程，那是另一套产品的入口。
+ */
+export function ListView({
+  canvas,
+  live,
+  onOpen,
+  onDerive,
+  onTaskDetail,
+  onNewTask
+}: {
+  canvas: CanvasDto;
+  live: LiveMap;
+  onOpen: (sessionId: string) => void;
+  onDerive: (taskId: string) => void;
+  onTaskDetail: (taskId: string) => void;
+  onNewTask: () => void;
+}) {
+  const groups = useMemo(() => groupSessions(canvas), [canvas]);
+  const workers = useWorkers();
+  const workspaces = useMemo(
+    () => new Map(canvas.workspaces.map((workspace) => [workspace.id, workspace])),
+    [canvas.workspaces]
+  );
+  const agentLabel = (agentId: string) => canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
+
+  return (
+    <div className="h-full overflow-y-auto px-3 py-4 md:px-6" data-testid="list-view">
+      <div className="mb-3 border-b border-hair pb-2" data-testid="list-context">
+        <div className="flex items-baseline gap-2">
+          <span className="shrink-0 text-meta text-tertiary">项目</span>
+          <span className="min-w-0 truncate text-sub text-primary" title={canvas.project.name}>{canvas.project.name}</span>
+        </div>
+        <div className="mt-0.5 text-meta text-tertiary">
+          {groups.length} 个任务 · {canvas.sessions.length} 条会话
+        </div>
+      </div>
+      {canvas.sessions.length === 0 ? (
+        <p className="py-6 text-meta text-tertiary">还没有会话。点下面的任务（或画布上任务卡的「＋ 会话」）就能派生一条。</p>
+      ) : null}
+      {groups.map((group) => (
+        <section key={group.taskId} className="mb-4" aria-label={`任务：${group.title}`} data-testid="list-task-group">
+          <h3 className="sticky top-0 z-10 flex items-baseline gap-2 border-b border-hair bg-canvas/95 py-2 text-sub text-primary backdrop-blur">
+            <span className="shrink-0 text-meta text-tertiary">任务</span>
+            <span className="min-w-0 truncate">{group.title}</span>
+            <span className="shrink-0 text-meta text-tertiary">{group.sessions.length} 条会话</span>
+          </h3>
+          <ul>
+            {group.sessions.map(({ session, label }) => {
+              const status = statusOf(session, live);
+              const seq = live[session.id]?.lastSeq ?? session.lastSeq;
+              const origin = session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '派生';
+              const worker = resolveWorker(workers.list, session.workerId);
+              const workspace = session.workspaceId ? workspaces.get(session.workspaceId) : undefined;
+              return (
+                <li key={session.id}>
+                  <button
+                    type="button"
+                    data-testid="list-session-row"
+                    className="flex min-h-[44px] w-full items-center gap-3 border-b border-hair/60 py-2 pl-3 text-left hover:bg-card focus-visible:bg-card"
+                    onClick={() => onOpen(session.id)}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-body text-primary" data-testid="list-session-label">{label}</span>
+                      <span className="block truncate text-meta text-tertiary" data-testid="list-session-meta">
+                        {localTime(session.createdAt)} · {origin} · {agentLabel(session.agentId)}
+                      </span>
+                      <span className="mt-1 flex min-w-0 items-center gap-1.5" data-testid="list-session-place">
+                        <WorkerChip
+                          worker={worker}
+                          fallback={session.workerId ? session.workerId.slice(0, 8) : '本机'}
+                        />
+                        {workspace ? (
+                          <span className="min-w-0 truncate text-meta text-tertiary" title={workspace.path}>
+                            {workspaceName(workspace)}
+                          </span>
+                        ) : null}
+                        <span className="hidden shrink-0 text-meta text-tertiary md:inline">
+                          {session.model === '' ? '默认模型' : session.model} · #{seq}
+                        </span>
+                      </span>
+                    </span>
+                    <span className="shrink-0">
+                      <StatusPill status={status} reason={live[session.id]?.reason} lastSeq={seq} />
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ))}
+
+      <div className="mt-6 border-t border-hair pt-3">
+        <p className="mb-2 text-meta text-secondary">任务 · 点一下从它再开一条会话</p>
+        {canvas.tasks.length === 0 ? (
+          <NoTasksHint onNewTask={onNewTask} />
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          {canvas.tasks.map((task) => (
+            <span key={task.id} className="inline-flex items-stretch">
+              <button
+                className="rounded-l-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-accent hover:text-accent"
+                onClick={() => onDerive(task.id)}
+                title="从这个任务派生一条会话"
+              >
+                {task.title}
+                {task.status === 'abandoned' ? '（已放弃）' : ''}
+              </button>
+              <button
+                className="rounded-r-sm border border-l-0 border-hair px-2 text-meta text-tertiary hover:border-accent hover:text-accent"
+                onClick={() => onTaskDetail(task.id)}
+                aria-label={`${task.title} 的日志`}
+              >
+                日志
+              </button>
+            </span>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Cmd+K。搜的是任务标题与会话正文，命中会话就直接跳到画布上那个节点——
+ * 「搜到了但找不到」比搜不到更让人烦。
+ */
+export function SearchPalette({
+  projectId,
+  onJump,
+  onClose
+}: {
+  projectId: string;
+  onJump: (hit: SearchHitDto) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [cursor, setCursor] = useState(0);
+  const input = useRef<HTMLInputElement | null>(null);
+  const trimmed = query.trim();
+
+  useEffect(() => {
+    input.current?.focus();
+  }, []);
+
+  const results = useQuery({
+    queryKey: ['search', projectId, trimmed],
+    queryFn: () => api.search(projectId, trimmed),
+    enabled: trimmed.length > 0
+  });
+
+  const hits = results.data?.hits ?? [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-canvas/80 px-3 pt-16 md:pt-24" onClick={onClose}>
+      <div
+        className="w-full max-w-[560px] rounded-md border border-strong bg-panel shadow-lg"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <input
+          ref={input}
+          className="min-h-11 w-full border-b border-hair bg-transparent px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary"
+          placeholder="搜任务标题，或者你记得的那句话"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setCursor(0);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') onClose();
+            if (event.key === 'ArrowDown') setCursor((current) => Math.min(current + 1, hits.length - 1));
+            if (event.key === 'ArrowUp') setCursor((current) => Math.max(current - 1, 0));
+            if (event.key === 'Enter') {
+              const hit = hits[cursor];
+              if (hit) onJump(hit);
+            }
+          }}
+        />
+        <div className="max-h-[320px] overflow-y-auto">
+          {trimmed === '' ? (
+            <p className="px-3 py-4 text-meta text-tertiary">输入关键词开始搜。回车打开，Esc 关掉。</p>
+          ) : hits.length === 0 ? (
+            <p className="px-3 py-4 text-meta text-tertiary">{results.isFetching ? '搜索中…' : '没有命中。'}</p>
+          ) : (
+            hits.map((hit, index) => (
+              <button
+                key={`${hit.kind}-${hit.sessionId ?? hit.taskId}-${index}`}
+                className={`block w-full px-3 py-2 text-left ${index === cursor ? 'bg-card' : ''}`}
+                onMouseEnter={() => setCursor(index)}
+                onClick={() => onJump(hit)}
+              >
+                <span className="flex items-baseline gap-2">
+                  <span className={`font-mono text-meta ${hit.kind === 'task' ? 'text-secondary' : 'text-sage'}`}>
+                    {hit.kind === 'task' ? '任务' : '会话'}
+                  </span>
+                  <span className="max-w-[380px] truncate text-body text-primary">{hit.title}</span>
+                </span>
+                {hit.snippet === '' ? null : (
+                  <span className="mt-0.5 block max-w-[480px] truncate text-meta text-tertiary">{hit.snippet}</span>
+                )}
+              </button>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 列表按任务分组；组内按开始时间排。行标题用第一句话；预览只有最近几条，第一句另存在 openings 里。 */
+export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'previews' | 'openings'>) {
+  const byTask = new Map<string, CanvasDto['sessions'][number][]>();
+  for (const session of canvas.sessions) byTask.set(session.taskId, [...(byTask.get(session.taskId) ?? []), session]);
+  const order = [...canvas.tasks.map((task) => task.id), ...[...byTask.keys()].filter((id) => !canvas.tasks.some((task) => task.id === id))];
+  return order
+    .filter((taskId) => byTask.has(taskId))
+    .map((taskId) => {
+      const sessions = [...(byTask.get(taskId) ?? [])].sort((a, b) => a.createdAt - b.createdAt);
+      return {
+        taskId,
+        title: canvas.tasks.find((task) => task.id === taskId)?.title ?? '—',
+        sessions: sessions.map((session, index) => {
+          const prompt = (canvas.previews[session.id] ?? []).find((entry) => entry.event.kind === 'prompt');
+          const previewText = prompt && prompt.event.kind === 'prompt' ? prompt.event.text : '';
+          return {
+            session,
+            label: sessionListLabel({ title: session.title, previewText, opening: canvas.openings[session.id], index })
+          };
+        })
+      };
+    });
+}
