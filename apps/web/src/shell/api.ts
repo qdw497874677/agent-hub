@@ -20,6 +20,7 @@ import type {
   HomeDto,
   ProjectDto,
   ProjectSummaryDto,
+  PromptAckDto,
   RecentSessionDto,
   RuntimeOptionDto,
   SearchHitDto,
@@ -314,8 +315,12 @@ export const api = {
   /** 回答运行时的批准请求（ADR 0023）。已结束（已回答 / 超时）返回 409。 */
   respondApproval: (sessionId: string, approvalId: string, decision: 'allow' | 'deny') =>
     call<{ requested: true }>(`/api/sessions/${encodeURIComponent(sessionId)}/approvals/${encodeURIComponent(approvalId)}`, { method: 'POST', body: JSON.stringify({ decision }) }),
-  prompt: (sessionId: string, text: string, attachments: readonly AttachmentInputDto[] = []) =>
-    post<{ ok: true }>(`/api/sessions/${sessionId}/prompt`, { text, attachments }),
+  prompt: (sessionId: string, text: string, attachments: readonly AttachmentInputDto[] = [], clientMessageId?: string) =>
+    post<PromptAckDto>(`/api/sessions/${sessionId}/prompt`, {
+      text,
+      attachments,
+      ...(clientMessageId ? { clientMessageId } : {})
+    }),
   projectFiles: (projectId: string, q: string, sessionId?: string) =>
     call<ProjectFilesDto>(
       `/api/projects/${projectId}/files?q=${encodeURIComponent(q)}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ''}`

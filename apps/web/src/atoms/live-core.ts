@@ -24,6 +24,8 @@ export type Block = Sequenced &
         readonly author?: { readonly id: string; readonly name: string; readonly via?: string };
         /** 平台写的交接简报（ADR 0029）：带了多少、省略多少。 */
         readonly handoff?: HandoffDto;
+        /** 客户端幂等键：本地 pending 气泡靠它对账（老事件、别的客户端没有）。 */
+        readonly clientMessageId?: string;
       }
     | { readonly kind: 'text'; readonly text: string }
     /** 模型的思考过程；专注对话按显示设置折叠或隐藏，卡片不显示。 */
@@ -227,7 +229,7 @@ function withoutStall(blocks: readonly Block[]): readonly Block[] {
 function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   switch (event.kind) {
     case 'prompt':
-      return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], ...(event.author ? { author: event.author } : {}), ...(event.handoff ? { handoff: event.handoff } : {}), seq }];
+      return [...blocks, { kind: 'prompt', text: event.text, attachments: event.attachments ?? [], ...(event.author ? { author: event.author } : {}), ...(event.handoff ? { handoff: event.handoff } : {}), ...(event.clientMessageId ? { clientMessageId: event.clientMessageId } : {}), seq }];
     case 'text': {
       const last = blocks[blocks.length - 1];
       if (last?.kind === 'text') {
