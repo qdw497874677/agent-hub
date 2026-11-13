@@ -48,6 +48,30 @@ for (const [index, step] of FIXTURE.entries()) {
   });
 }
 
+// 只读契约：codec / mapAcpUpdate 只读 toolNames，传纯只读视图不得抛错（写入由 runtime 的 Map 完成）。
+test('OpenCode 只读契约：ReadonlyMap 视图可用，写入静默跳过', () => {
+  const inner = new Map<string, string>();
+  const readonlyView: ReadonlyMap<string, string> = {
+    get: (id) => inner.get(id),
+    has: (id) => inner.has(id),
+    get size() {
+      return inner.size;
+    },
+    forEach: (fn) => inner.forEach(fn),
+    entries: () => inner.entries(),
+    keys: () => inner.keys(),
+    values: () => inner.values(),
+    [Symbol.iterator]: () => inner.entries()
+  };
+  assert.deepEqual(mapAcpUpdate({ sessionUpdate: 'tool_call', toolCallId: 'r1', title: 'Read' }, readonlyView), [
+    { kind: 'tool_call', name: 'Read', input: '{}' }
+  ]);
+  assert.deepEqual(mapAcpUpdate({ sessionUpdate: 'tool_call_update', toolCallId: 'r1', status: 'completed' }, readonlyView), [
+    { kind: 'tool_result', name: 'tool', ok: true, durationMs: 0 }
+  ]);
+  assert.equal(inner.size, 0);
+});
+
 test('OpenCode 子代理：读取 child meta，事件带 subagentId', () => {
   assert.deepEqual(
     readSubagentMeta({ 'opencode/child-session': { id: 'c1', parentID: 'p1', depth: 1, title: 'child' } }),

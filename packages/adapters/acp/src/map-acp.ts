@@ -4,10 +4,13 @@ import { clipToolOutput, invalid } from '@agent-hub/domain';
 /**
  * ACP（Agent Client Protocol）→ 平台归一化事件。
  * 纯函数，与 mapPiEvent 形状对称：所有 ACP agent（OpenCode、Grok……）共用这一份映射。
+ *
+ * `toolNames` 对外是只读视图：codec 拿到的就是 `ReadonlyMap`，类型上无法 `set`；
+ * 写入收敛在本文件内部（`rememberToolName`），只有持有真实 `Map` 的 runtime 会生效。
  */
 export function mapAcpUpdate(
   update: unknown,
-  toolNames: Map<string, string>,
+  toolNames: ReadonlyMap<string, string>,
   subagentId?: string
 ): SessionEvent[] {
   if (typeof update !== 'object' || update === null) return [];
@@ -32,7 +35,7 @@ export function mapAcpUpdate(
     case 'tool_call': {
       const id = String(u['toolCallId'] ?? '');
       const name = String(u['title'] ?? u['kind'] ?? 'tool');
-      if (id) toolNames.set(id, name);
+      if (id) rememberToolName(toolNames, id, name);
       const raw = u['rawInput'];
       return [{ kind: 'tool_call', name, input: typeof raw === 'string' ? raw : safeJson(raw), ...sub }];
     }
@@ -66,6 +69,15 @@ export function mapAcpUpdate(
     default:
       return [];
   }
+}
+
+/**
+ * 工具名写入的唯一入口：`toolNames` 对外只读，真实存储是 runtime 的 `Map`。
+ * codec 若传进纯只读视图（没有 `set`）就静默跳过——读路径不受影响。
+ */
+function rememberToolName(store: ReadonlyMap<string, string>, id: string, name: string): void {
+  const writable = store as { set?: (id: string, name: string) => unknown };
+  if (typeof writable.set === 'function') writable.set(id, name);
 }
 
 /**

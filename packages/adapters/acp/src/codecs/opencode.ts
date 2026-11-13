@@ -77,7 +77,7 @@ export class OpenCodeSessionCodec implements AcpSessionCodec {
     return { events: [...ended, ...mapped] };
   }
 
-  childUpdate(update: AcpChildUpdate, toolNames: Map<string, string>): readonly SessionEvent[] {
+  childUpdate(update: AcpChildUpdate, toolNames: ReadonlyMap<string, string>): readonly SessionEvent[] {
     const meta: AcpSubagentMeta = {
       id: update.childSessionId,
       parentId: update.parentSessionId,

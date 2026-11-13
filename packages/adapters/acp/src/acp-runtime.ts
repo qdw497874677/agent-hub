@@ -41,6 +41,8 @@ class AcpSession implements RuntimeSession {
   readonly sessionId: RuntimeSession['sessionId'];
   private readonly queue = new AsyncQueue<SessionEvent>();
   private readonly toolNames = new Map<string, string>();
+  /** 传给 codec 的只读视图：codec 类型上拿不到 `set`，写入只发生在 map-acp 内部。 */
+  private readonly toolNameView: ReadonlyMap<string, string> = this.toolNames;
   /** runtime 私有的 ACP 语义 codec；没有就走通用 mapper。 */
   private readonly codec: AcpSessionCodec | null;
   private codecWarned = false;
@@ -129,7 +131,7 @@ class AcpSession implements RuntimeSession {
 
     if (this.codec) {
       try {
-        const decoded = this.codec.decode({ update, meta, toolNames: this.toolNames });
+        const decoded = this.codec.decode({ update, meta, toolNames: this.toolNameView });
         if (decoded) {
           for (const event of decoded.events) {
             if (PRODUCING.has(event.kind)) this.produced = true;
@@ -159,7 +161,7 @@ class AcpSession implements RuntimeSession {
   private onChildUpdate(update: AcpChildUpdate): void {
     if (this.replaying || !this.codec?.childUpdate) return;
     try {
-      for (const event of this.codec.childUpdate(update, this.toolNames)) {
+      for (const event of this.codec.childUpdate(update, this.toolNameView)) {
         if (PRODUCING.has(event.kind)) this.produced = true;
         this.queue.push(event);
       }

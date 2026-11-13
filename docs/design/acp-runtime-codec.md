@@ -87,7 +87,8 @@ export interface AcpSessionCodec {
 }
 ```
 
-注意 `toolNames` 目前是可变 `Map`，设计上改成只读；codec 只读，不负责维护它。
+`toolNames` 已改成 `ReadonlyMap`（`AcpCodecContext.toolNames` 与 `AcpSessionCodec.childUpdate` 的第二个参数都是），
+codec 只读、不负责维护；写入收敛在 `map-acp.ts` 内部的 `rememberToolName()`，只有持有真实 `Map` 的 runtime 会生效。
 
 ### 3.3 配置选择
 

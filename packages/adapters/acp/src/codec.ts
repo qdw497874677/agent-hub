@@ -8,8 +8,8 @@ export interface AcpCodecContext {
   readonly update: AcpUpdate;
   /** `session/update` 的 `params._meta`；标准 ACP 没有，vendor 扩展放这里。 */
   readonly meta: unknown;
-  /** 本会话已见过的工具 id → 展示名。codec 可以读，不要替换。 */
-  readonly toolNames: Map<string, string>;
+  /** 本会话已见过的工具 id → 展示名。只读视图：codec 读，不负责维护。 */
+  readonly toolNames: ReadonlyMap<string, string>;
 }
 
 export interface AcpCodecResult {
@@ -52,7 +52,7 @@ export interface AcpSessionCodec {
    */
   decode(context: AcpCodecContext): AcpCodecResult | null;
   /** 处理 runtime 自己的子会话扩展通知；没有这个扩展的 runtime 不实现。 */
-  childUpdate?(update: AcpChildUpdate, toolNames: Map<string, string>): readonly SessionEvent[];
+  childUpdate?(update: AcpChildUpdate, toolNames: ReadonlyMap<string, string>): readonly SessionEvent[];
   /** 本轮结束/进程退出时收尾，例如给所有 running 子代理发 end。 */
   finish(status: 'completed' | 'failed' | 'cancelled'): readonly SessionEvent[];
 }
