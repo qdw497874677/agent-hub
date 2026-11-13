@@ -227,3 +227,63 @@ interface StartPlan {
 - 不改成「无 Task 的裸 agent」：我们的派工、工作日志、产物都挂在 Task 上。
 - 不引入 worktree 引用计数式回收：我们的工作空间生命周期已由 `kind` 与项目清理承担。
 - 不把 tab 状态当持久生命周期（我们已用 `sessionStorage` 只记页签，符合它的「视角不是生命周期」）。
+
+## 11. C3：bot 升级为一等聚合（含 P2b 迁移）
+
+### 11.1 现状与问题
+
+- bot 存在项目的 `agent_messaging_config.roles`（JSON 数组），以 `name` 为键；没有稳定 ID，所以：
+  地址 `role:<name>`、群成员、连接器 Binding（`agentProjectId` + `agentName`）、spawn 记录（`role` 列）四处都靠「项目 + 名字」定位；改名不可能，删除时也没有引用检查。
+- 地址方案 `role:` 与团队 RBAC 的 `role` 撞词（`packages/domain/src/memory.ts:119` 的 `role:<team>/<role>` 是**人的角色记忆**，不是 bot）。
+- 触发器（ADR 0032 的 `ConnectorBinding`）已经挂在「项目 + bot 名」上，但没有 bot 维度的读接口。
+
+### 11.2 目标形状
+
+```ts
+export type BotId = string; // 'bot_<16hex>'
+
+export interface Bot {
+  readonly id: BotId;
+  readonly projectId: ProjectId;
+  /** @id：建好不改；地址、群成员、spawn 记录、连接器都继续用它（不改名是刻意约束）。 */
+  readonly name: string;
+  readonly ref: AgentRef;
+  readonly displayName?: string;
+  readonly color?: string;
+  readonly description: string;
+  readonly reuse: RoleReuse;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+```
+
+- 存储：新表 `bots(id PK, project_id, name, doc JSON, created_at, updated_at)` + `UNIQUE(project_id, name)`；`agent_messaging_config` 只保留 `limits`（`roles` 列转为只读遗留）。
+- 端口：`BotRepository { byId; byName(projectId, name); list(projectId); save; remove }`。
+- 地址：`bot:<name>`（新写法）；解析同时认 `role:<name>`（双读），写入一律 `bot:`。**`memory` 的 `role:<team>/<role>` 不动**。
+- 上下文设置键：`bot:<projectId>:<name>`，读时回落 `role:<projectId>:<name>`。
+- HTTP：`GET/POST /api/bots`、`GET/PATCH/DELETE /api/bots/:id`、`GET /api/bots/:id/triggers`（读现有 `ConnectorBinding` 中 `agentProjectId + agentName` 匹配的那些）。`/api/projects/:id/agents` 保留为兼容别名，内部转调同一用例。
+- bot 名不可改：`PATCH` 拒绝改 `name`（要改名就新建 + 迁移引用，留到以后）。
+
+### 11.3 迁移（`scripts/migrate-bots.mjs`）
+
+顺序固定，每步可单独重跑：
+1. 备份：`node apps/server/src/main.ts backup`（复用部署脚本同一命令）。
+2. 建表（幂等，`CREATE TABLE IF NOT EXISTS`）。
+3. `agent_messaging_config.roles` → `bots` 行：`id` 由 `sha256(projectId + '\0' + name)` 前 16 位生成（**确定性**，重复跑得到同一 id，便于回滚与对账）。
+4. 重写 `agent_messages.to_address`：`role:` → `bot:`（只改前缀，名字与其余不变）。
+5. 重写 settings 键：`role:<pid>:<name>` → `bot:<pid>:<name>`（只处理 `<pid>` 是真实项目 id 的键；`memory` 的 `role:` 键保持不动）。
+6. 报告：每个项目迁移了几个 bot、改了多少条消息地址、改了多少个设置键；`--dry-run` 只打印；`--revert` 按 3/4/5 反向执行（bots 行删除、`bot:` 前缀改回、设置键改回）。
+
+### 11.4 分期
+
+| 阶段 | 内容 | 谁 |
+| --- | --- | --- |
+| C3a | `bots` 表 + `BotRepository` + 域用例（list/create/update/remove）+ `/api/bots` 路由 + 组装根注入；`MessageBus.config()` 改从 repo 读；保留兼容别名 | 后端 lane |
+| C3b | 地址/设置键 `bot:` 双读 + `scripts/migrate-bots.mjs`（含 dry-run/revert） | 我自己 |
+| C3c | web 切到 `/api/bots`；bot 详情页加「触发器」只读列表 | designer lane |
+
+### 11.5 明确不做（本轮）
+
+- 不改 bot 名（改名 = 新建 + 迁移引用，单独设计）。
+- 不做 bot 级权限（凭据已是项目内收窄，够用）。
+- 不把触发器存储搬到 bot 表（Binding 仍是「项目 + 名字」寻址，只是多一个读接口）。
