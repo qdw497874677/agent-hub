@@ -25,6 +25,7 @@ import type {
   SearchHitDto,
   SearchResponseDto,
   SessionDto,
+  SessionEnvironmentDto,
   SessionEventDto,
   TaskDto,
   WorkLogEntryDto,
@@ -331,6 +332,12 @@ export const api = {
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
   sessionAssets: (sessionId: string) => call<SessionAssetsDto>(`/api/sessions/${sessionId}/assets`),
+  /**
+   * 会话环境（资产 / MCP / 启动配置）是否改过但还没生效：只读、很轻。
+   * `supported: false` 表示这个部署没有环境适配器（单测 / 老部署），前端什么都不显示。
+   */
+  sessionEnvironment: (sessionId: string) =>
+    call<SessionEnvironmentDto>(`/api/sessions/${encodeURIComponent(sessionId)}/environment`),
   activity: (sessionId: string) => call<SessionActivityDto[]>(`/api/sessions/${sessionId}/activity`),
   provenance: (sessionId: string) => call<ProvenanceDto | null>(`/api/sessions/${sessionId}/provenance`),
   attention: () => call<AttentionDto>('/api/attention'),

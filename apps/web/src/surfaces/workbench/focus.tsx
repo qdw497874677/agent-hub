@@ -16,7 +16,7 @@ import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
 import { sessionCommands } from '../../atoms/commands.ts';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
-import { filesInvalidationKeys, filesKeys, gitKeys, taskKeys } from '../../shell/query-keys.ts';
+import { filesInvalidationKeys, filesKeys, gitKeys, sessionKeys, taskKeys } from '../../shell/query-keys.ts';
 import { filesApi } from '../../shell/api.ts';
 import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
@@ -40,6 +40,7 @@ import { SaveAgentProfileDialog } from '../../shell/agent-profile-dialog.tsx';
 import { AgentProfilesDialog } from '../../shell/agent-profiles-dialog.tsx';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
 import { deleteSessionBlockedHint, edgeSurvivesSession } from '../../atoms/delete-session.ts';
+import { environmentNotice } from '../../atoms/environment-notice.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -324,6 +325,8 @@ export function FocusView({
       void queries.invalidateQueries({ queryKey: [...prefix, 'changes'] }, { cancelRefetch: false });
     }
     void queries.invalidateQueries({ queryKey: gitKeys.state(session.workspaceId, session.id) }, { cancelRefetch: false });
+    // 下一轮开始后才生效，所以回合结束时重问一次环境版本：提示该消失时就消失。
+    void queries.invalidateQueries({ queryKey: sessionKeys.environment(session.id) }, { cancelRefetch: false });
   }, [status, session.id, session.workspaceId, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
   const changeCount = shown(useQuery({
@@ -370,6 +373,19 @@ export function FocusView({
   };
   // 任务上的 PR（打开任务时服务端顺手同步状态）
   const taskPrs = useQuery({ queryKey: taskKeys.pullRequests(session.taskId), queryFn: () => gitApi.taskPullRequests(session.taskId), staleTime: 60_000, retry: false }).data ?? [];
+  /**
+   * 环境（资产 / MCP / 启动配置）改过但没有重新托管：只用来说一句「下一轮生效」。
+   * 30s 内不重复问；切回窗口时问一次（在别处改完设置回来就能看到）。
+   * 不做轮询：这是慢变量，变了也不会自己变回去，多问只是噪声。
+   */
+  const environment = useQuery({
+    queryKey: sessionKeys.environment(session.id),
+    queryFn: () => api.sessionEnvironment(session.id),
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: false
+  });
+  const envNotice = environmentNotice(environment.data);
   const origin = session.origin;
   const forkSource = origin.kind === 'fork' ? canvas.sessions.find((candidate) => candidate.id === origin.fromSessionId) ?? null : null;
   const sourceName = forkSource ? sessionName(canvas, forkSource) : '来源会话';
@@ -903,6 +919,18 @@ export function FocusView({
                 </div>
               </section>
             </DeliveryContext.Provider>
+          ) : null}
+          {envNotice ? (
+            <p
+              role="status"
+              data-testid="environment-pending"
+              title={envNotice.detail}
+              className="mb-1.5 flex items-center gap-1.5 text-meta text-tertiary"
+            >
+              {/* 中性小点：读起来是「知道一下」，不是告警色块 */}
+              <span aria-hidden className="size-1 shrink-0 rounded-full bg-tertiary/70" />
+              <span className="min-w-0">{envNotice.text}</span>
+            </p>
           ) : null}
           <Composer
             large

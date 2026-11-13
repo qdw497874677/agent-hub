@@ -69,6 +69,12 @@ export const taskKeys = {
   pullRequests: (taskId: string) => ['task-prs', taskId] as const
 };
 
+/** 会话自有、但和文件树无关的那几份：只有这条会话知道。 */
+export const sessionKeys = {
+  /** 环境（资产 / MCP / 启动配置）是否改过还没生效：按会话查，别跨会话共用。 */
+  environment: (sessionId: string) => ['session', sessionId, 'environment'] as const
+};
+
 export const workspaceKeys = {
   /** 工作空间列表里的「有没有未提交 / 没推的改动」：git 操作成功后要一起失效。 */
   changes: (workspaceId: string) => ['workspace-changes', workspaceId] as const
