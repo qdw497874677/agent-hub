@@ -9,13 +9,13 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `2962810 feat(terminal): 已结束的会话也能开终端，cwd 由 hub 下发` |
-| origin/master | 已同步到 `2962810` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `2962810`（2026-11-13 09:37 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261113-093726-pre-1b0017b.db`） |
+| 本地 HEAD | `57df14a fix(web): 手机键盘弹起时输入栏不再被顶出屏幕` |
+| origin/master | 已同步到 `57df14a` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `57df14a`（2026-11-13 10:10 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261113-101040-pre-2962810.db`） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online，代码 `1b0017b`（worker 侧无本轮改动） |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online，代码 `558179b`（worker 侧本轮无改动） |
 | 本地工作区 | 干净（本轮修复已提交） |
-| 最近完整验证 | `npm test` 1095 单测：1087 pass / 8 skipped / 0 fail，27.5s（默认并发，不含 `e2e/**`）；`check`、`typecheck`、`typecheck:web`、`build` 全 0；`/tmp/opencode/term-done-run/smoke.mjs` 冒烟：`interrupt` 后状态 `stopped` 的会话能开终端、`echo` 回显、cwd = 会话工作空间 |
+| 最近完整验证 | `npm test` 1114 单测：1106 pass / 8 skipped / 0 fail（默认并发，不含 `e2e/**`）；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0（日志 `/tmp/opencode/verify-delete-kb.log`） |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
 
@@ -30,6 +30,8 @@
 2026-11-13 上午（`d364086` + `407d9ec`）：终端补移动端。粗指针设备（`(pointer: coarse)`）在终端底部显示一条按键条 `Esc / Tab / Ctrl / ↑ ↓ ← → / Ctrl+C`——手机软键盘没有这些键，vim / opencode 这类全屏 TUI 否则没法用。按键走 `term.input()` 复用现有输入管线（含断线缓存），不另开 socket；粘滞 Ctrl 只作用于方向键（`\x1b[1;5A/B/C/D`），一次性修饰；`onPointerDown` 只 `preventDefault()`，拖动滚动不会误发 Esc；软键盘弹出时 `visualViewport.resize` 补一次 fit。顺带修掉移动端高度溢出：`focus.tsx` 根容器改 `flex min-h-0 flex-1 flex-col`、`app.tsx` 内容列加 `min-h-0`，否则手机上终端的底部（含按键条）会落到可视区外。e2e `e2e/terminal-mobile.spec.ts` 覆盖 390×844（按键条不越界、点 Esc/Ctrl+C 不断线）、390×500（键盘高度）与「窄屏但鼠标语义不显示按键条」；`e2e/files-tabs.spec.ts` 的手机分支改成从「更多」菜单开详情。
 
 2026-11-13 上午（`2962810`）：终端对**已结束的会话**开放。原来页签要求 `session.status === 'running'`，而生产库里 39 条会话全是 `done`，等于没人看得到入口。现在 `terminal.open` 多一个可选 `cwd`：hub 侧 `terminalTarget`（`session.read` + `locationOf` 的项目/工作空间回退）算好目录随 RPC 下发，worker 仍过 `WorkerFiles.check`；不传时仍回落到 `workspaces` 映射（兼容老 hub）。前端页签条件改为「机器在线且未被探测为不支持」，跑完的会话在终端上方多一行 `terminal-notice`：只开 shell，不会重启 agent。`docs/design/terminal.md` §0/§4/§7 已同步。
+
+2026-11-13 上午（`0a4c3b7` + `57df14a`）：会话支持**彻底删除**——「⋯ → 删除会话…」二次确认，服务端在同一个事务里清掉会话行与所有按 `session_id` 关联的数据（journal、产物、连线、检查点、工具授权、消息投递等），Task、项目与工作空间里的文件保留；跑着的会话 409「会话还在跑，先停止再删除」。新增 `session.delete` 权限（owner/admin 全队、member 限自己的会话、viewer 无），审计记 `session.delete`。另修 Android Chrome 键盘弹起时输入栏被顶出屏幕：不再依赖 `100dvh`，改为 `apps/web/src/app-viewport.ts` 把 `visualViewport` 的可见高度/上移量写进 `--app-height` / `--app-offset`，`html, body` 不再可滚、唯一滚动容器是消息列表；同时修 `use-stick-to-bottom.ts` 在容器变矮时误判「用户往上翻」而弹回顶部。iOS Safari 上的键盘动画与惯性仍需真机确认。
 
 ## 2. 已完成的主线
 
