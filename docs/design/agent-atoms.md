@@ -1,7 +1,19 @@
 # agent 原子抽象优化方案
 
-> 状态：设计稿（2026-11-13）。目标是把「同一个概念四种叫法」「启动配置四套表达」「启动一条会话要拼五处」三件事收敛掉，不动产品形态与协议。
+> 状态：设计稿已定稿（2026-11-13）。7 个关键决策已拍板，见 §0。目标是把「同一个概念四种叫法」「启动配置四套表达」「启动一条会话要拼五处」三件事收敛掉，不动产品形态与协议。
 > 前置阅读：`docs/design/front-end-layering.md`（前端分层）、`docs/adr/0001`（四聚合）、`docs/adr/0007`（选项来自 agent）。
+
+## 0. 决策记录（2026-11-13）
+
+| # | 议题 | 决定 |
+| --- | --- | --- |
+| 1 | `AgentRef` 里表示 runtime 的字段名 | **`runtime`**（不叫 `agentId`；`Session.agentId` 作为已存在的快照字段保留，读的时候由 `sessionRef()` 映射） |
+| 2 | `AgentRef` 是否内嵌 | **直接内嵌**：`AgentProfile.ref`、`PersistentAgent.ref`，不再保留扁平的 `agentId/model/options` |
+| 3 | `Session` 是否加快照字段 | **不加**，只提供纯函数 `sessionRef(session)` |
+| 4 | `buildEnvironment` 归属 | **端口在 domain、实现在 server**（`EnvironmentPlanner`），domain 保持零外部依赖 |
+| 5 | `rewind` 归类 | **算 `startSession` 的一种 origin**（它本来就是 fork 新会话 + 摘要交接） |
+| 6 | `role:` → `bot:` 历史键 | **一次性迁移脚本**（上下文策略 / 群会话绑定 / 派工记录三处），迁移前必须备份 `hub.db` |
+| 7 | bot 是否升级为一等聚合 | **留到 C3 再做**；本轮只收敛启动配置与入口 |
 
 ## 1. 现状与问题
 
@@ -34,7 +46,7 @@
 ```ts
 // packages/domain/src/agent-ref.ts
 export interface AgentRef {
-  readonly agentId: AgentId;      // runtime：opencode / pi / grok / hermes
+  readonly runtime: string;       // opencode / pi / grok / hermes —— 代码里常叫 agentId，对外统一叫 runtime
   readonly model: string;         // '' = runtime 默认
   readonly options: Readonly<Record<string, string | boolean>>;
 }
@@ -45,7 +57,7 @@ export const AGENT_REF_OPTION_VALUE_MAX = 200;
 
 /** 唯一校验点：形状 + 条数 + 键名；spec 校验是可选参数（见 3.3）。 */
 export function validateAgentRef(
-  input: { agentId: string; model?: string; options?: Record<string, string | boolean> },
+  input: { runtime: string; model?: string; options?: Record<string, string | boolean> },
   specs?: readonly RuntimeOption[]
 ): Result<AgentRef, DomainError>;
 
@@ -53,13 +65,13 @@ export function validateAgentRef(
 export function mergeAgentRef(base: AgentRef, override: Partial<AgentRef>): AgentRef;
 ```
 
-### 3.2 迁移步骤（每步可独立提交、独立验证）
+### 3.2 迁移步骤（每步独立提交、独立验证）
 
-1. 新增 `agent-ref.ts` + 单测（键形状、条数上限、值长度、`mergeAgentRef`、`specs` 缺省）。
-2. `AgentProfile` 改为内嵌 `ref: AgentRef`，**字段名与落库保持不变**（存储层仍写 `agent_id`/`model`/`options` 三列，读时组装 `ref`）——零迁移。
-3. `PersistentAgent` 同样内嵌 `ref`，删除 `persistentAgentOptionsProblem`/`persistentAgentOptionsSpecProblem`，改由 `validateAgentRef` + `specs` 承担；`apps/server/src/persistent-agent-routes.ts:22`、`messaging-routes.ts:37` 的 zod 保留（HTTP 层仍要 400），但正则与上限从 `agent-ref.ts` 导出，避免两处漂移。
-4. `DeriveCommand` 改为 `ref?: AgentRef` + 兼容字段（`agentId`/`model`/`options` 暂留，标 `@deprecated`），`deriveSessionUseCase` 内部立即归一到 `ref`。
-5. `Session.options` 保持现状（它是快照，不是配置）；但新增 `Session.ref: AgentRef` 只读 getter（`agentId` + `model` + `options` 组合），调用方不再各拼三个字段。
+1. 新增 `agent-ref.ts` + 单测（键形状、条数上限、值长度、`mergeAgentRef`、`specs` 缺省、`sessionRef()`）。
+2. `AgentProfile` 改为 `ref: AgentRef` **内嵌**；存储层保持 `agent_id`/`model`/`options` 三列不动，读写时在 domain 组装/拆开（零迁移）。
+3. `PersistentAgent` 同样内嵌 `ref`；删除 `persistentAgentOptionsProblem`/`persistentAgentOptionsSpecProblem`，改由 `validateAgentRef`（可带 `specs`）承担。
+4. `DeriveCommand` 改为 `ref?: AgentRef`，`agentId`/`model`/`options` 三个旧字段保留一个版本并标 `@deprecated`，入口处归一成 `ref`（HTTP/工具调用点逐步迁移）。
+5. `Session` 不动字段；新增 `sessionRef(session)` 纯函数，调用方不再手拼 `{agentId, model, options}`。
 
 ### 3.3 校验策略（明确「什么时候知道键存在」）
 
@@ -80,11 +92,12 @@ export function mergeAgentRef(base: AgentRef, override: Partial<AgentRef>): Agen
 - `groups.ts:59-61`、`messaging.ts:47,98`、`messaging.ts:322` 的 `role`/`roles` 参数改名 `bot`/`bots`（纯重命名，`saveConfig` 的 HTTP body 字段 `roles` 暂不改，避免破坏已发布客户端）。
 - 团队 RBAC 的 `Role`/`CustomRole` 保持不动；在 `messaging.ts` 顶部注释写明「本文件的 role 一律指 bot」。
 
-### 4.2 第二步：地址前缀与持久键（需要迁移）
+### 4.2 第二步：地址前缀与持久键（一次性迁移脚本）
 
-- 持久化里有一批 `role:` 键：上下文策略 `packages/domain/src/ports/context-settings.ts:3`（`'role:<projectId>:<role>'`）、群会话绑定 `group-store.ts:23-27`、派工记录 `message-store.ts:27`。
-- 方案：**读双格式、写新格式**。引入 `botKey(projectId, name)` / `parseBotKey(key)`，读时 `role:` 与 `bot:` 都认，写一律 `bot:`；上下文策略加一次惰性搬迁（读到 `role:` 时顺手写回 `bot:` 并删旧键），不写迁移脚本、不动表结构。
-- 时机：等其他两项稳定后单独做，避免与 P1/P3 的 diff 交叉。
+- 涉及三处持久键：上下文策略 `packages/domain/src/ports/context-settings.ts:3`（`'role:<projectId>:<role>'`）、群会话绑定 `group-store.ts:23-27`、派工记录 `message-store.ts:27`。
+- 迁移方式（已定）：新增 `scripts/migrate-role-to-bot.mjs`——只读遍历三处键，事务内写 `bot:` 版本、删 `role:` 版本；支持 `--dry-run` 与 `--report`，跑前强制 `hub backup`（脚本自己检查最近快照是否在 10 分钟内）。
+- 代码侧同时**读双格式**一个版本（迁移脚本失败时不至于全挂），迁移验证通过后保留双读、不删。
+- 执行窗口：迁移脚本只在部署后手动跑一次，不挂启动钩子。
 
 ### 4.3 验收
 
@@ -141,12 +154,12 @@ interface StartPlan {
 
 | 阶段 | 内容 | 改动面 | 预估 | 回滚 |
 | --- | --- | --- | --- | --- |
-| P1 | `AgentRef` + 校验单点 | domain + storage 读组装 + 2 条路由导出常量 | 1–1.5 天 | 独立提交，可 revert |
-| P2a | 类型/参数重命名 | domain + tests | 0.5 天 | 纯重命名，可 revert |
-| P3 | `startSession` + build 阶段 | domain 用例 + `apps/server` 编排 | 2–3 天 | 旧函数保留薄壳，可回退入口 |
-| P2b | `role:` → `bot:` 双读 | domain 键 + 上下文策略惰性搬迁 | 1 天 | 双读保证回退安全 |
+| P1 | `AgentRef{runtime,model,options}` + 内嵌 + 校验单点 + `sessionRef()` | domain、storage 读组装、2 条路由导出常量、`sessions.ts` 归一处 | 1 天 | 独立提交，可 revert |
+| P3 | `startSession` + `EnvironmentPlanner` 端口 + `buildEnvironment` 抽离 | domain 用例 + `apps/server` 编排 + `session-environment.ts` | 2–3 天 | 旧函数保留薄壳，可回退入口 |
+| P2a | 删 `AgentRole`，domain 内统一 `bot` | domain + tests | 0.5 天 | 纯重命名，可 revert |
+| P2b | `role:` → `bot:` 一次性迁移脚本 + 双读 | `scripts/`、三处键读写 | 1 天 | 先备份库；脚本可反向重跑 |
 
-顺序建议：**P1 → P2a → P3 → P2b**。P2b 最后，因为它是唯一碰历史数据的。
+顺序：**P1 → P2a（可与 P3 并行）→ P3 → P2b（最后，唯一动历史数据）**。
 
 ## 7. 门禁与防回退
 
@@ -166,5 +179,6 @@ interface StartPlan {
 ## 9. 明确不做
 
 - 不合并 profile 与 bot 两个资源（归属不同：人 vs 项目）。
+- 本轮不把 bot 升级成一等聚合（`Bot{id,triggers,credentialRef}`）——按决策 7 留到 C3，避免与启动链改造交叉。
 - 不把「对话/会话」的持久性做成 `Session` 字段（临时性属于 workspace 的 `kind`，会话本身全落库）。
 - 不为 bot 新增独立 API 面（见 `front-end-layering.md` §10.1）。
