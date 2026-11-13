@@ -21,7 +21,7 @@ import { FilesBrowser, type Reveal } from './files-browser.tsx';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
 import { gitApi } from './api.ts';
 import { FileLinksContext, type FileLinks } from './file-links.tsx';
-import { SESSION_TABS, sessionTabLabel, stepTab, type SessionTab } from './session-tabs.ts';
+import { SESSION_TABS, readStoredTab, sessionTabLabel, stepTab, storeTab, type SessionTab } from './session-tabs.ts';
 import { TerminalPanel } from './terminal-panel.tsx';
 import {
   subscribeTerminalSupport,
@@ -127,15 +127,20 @@ export function FocusView({
     setDeleting(false);
   }, [session.id]);
   const queries = useQueryClient();
-  const [tab, setTab] = useState<SessionTab>('chat');
+  const [tab, setTab] = useState<SessionTab>(() => readStoredTab(session.id) ?? 'chat');
   // 访问过的文件 / 改动页保持挂载（隐藏），切回时状态和内容都还在；换会话才重置
   const [visited, setVisited] = useState<ReadonlySet<SessionTab>>(() => new Set(['chat']));
   const [reveal, setReveal] = useState<Reveal | null>(null);
   useEffect(() => {
-    setTab('chat');
-    setVisited(new Set(['chat']));
+    const restored = readStoredTab(session.id) ?? 'chat';
+    setTab(restored);
+    setVisited(new Set(restored === 'chat' ? ['chat'] : ['chat', restored]));
     setReveal(null);
   }, [session.id]);
+  // 刷新 / 重进时回到上次那一页；记不住的存储（隐私模式）就按默认走。
+  useEffect(() => {
+    storeTab(session.id, tab);
+  }, [session.id, tab]);
   // 工具参数里的路径可点：只认这条会话工作空间里的（老会话没有工作空间就只认相对路径）
   const workspaceRoot = canvas.workspaces.find((w) => w.id === session.workspaceId)?.path ?? null;
   const fileLinks = useMemo<FileLinks>(() => ({

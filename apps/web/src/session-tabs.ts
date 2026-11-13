@@ -18,3 +18,41 @@ export function stepTab(current: SessionTab, delta: 1 | -1): SessionTab {
   const index = SESSION_TABS.indexOf(current);
   return SESSION_TABS[(index + delta + SESSION_TABS.length) % SESSION_TABS.length]!;
 }
+
+/** 只用得上这两个方法的存储接口：不把 DOM 的 Storage 类型拖进根 tsconfig。 */
+interface TabStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+const TAB_STORE = 'hub:session-tab';
+
+function tabStorage(): TabStorage | null {
+  try {
+    return (globalThis as { sessionStorage?: TabStorage }).sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isTab(value: string): value is SessionTab {
+  return (SESSION_TABS as readonly string[]).includes(value);
+}
+
+/** 上次停在哪一页：刷新后回到终端，而不是被安静地打回对话。 */
+export function readStoredTab(sessionId: string, storage: TabStorage | null = tabStorage()): SessionTab | null {
+  try {
+    const raw = storage?.getItem(`${TAB_STORE}:${sessionId}`) ?? null;
+    return raw !== null && isTab(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+export function storeTab(sessionId: string, tab: SessionTab, storage: TabStorage | null = tabStorage()): void {
+  try {
+    storage?.setItem(`${TAB_STORE}:${sessionId}`, tab);
+  } catch {
+    // 隐私模式或配额满：记不住就算了，行为退回默认。
+  }
+}
