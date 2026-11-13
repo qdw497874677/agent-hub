@@ -2,11 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   TERMINAL_INITIAL,
+  TERMINAL_KEYS,
   TERMINAL_MAX_RETRIES,
   base64FromBytes,
   bytesFromBase64,
   encodeInput,
   isUnsupportedTerminal,
+  keyBarCtrlAfter,
+  keyBarSequence,
   markTerminalUnsupported,
   parseTerminalFrame,
   resetTerminalSupport,
@@ -19,6 +22,7 @@ import {
   terminalStatus,
   terminalSupportKeys,
   terminalUnsupported,
+  type TerminalKeyId,
   type TerminalState
 } from './terminal-core.ts';
 
@@ -215,4 +219,46 @@ test('配色：深浅两套都齐，且确实不一样', () => {
   }
   assert.notEqual(dark.background, light.background);
   assert.notEqual(dark.foreground, light.foreground);
+});
+
+test('按键条：键位顺序与键面文字固定（中文与符号混排）', () => {
+  assert.deepEqual(
+    TERMINAL_KEYS.map((key) => key.id),
+    ['esc', 'tab', 'ctrl', 'up', 'down', 'left', 'right', 'ctrl-c']
+  );
+  assert.deepEqual(
+    TERMINAL_KEYS.map((key) => key.label),
+    ['Esc', 'Tab', 'Ctrl', '↑', '↓', '←', '→', 'Ctrl+C']
+  );
+});
+
+test('按键条：发码走 xterm 的既有输入管线，粘滞 Ctrl 只作用于方向键', () => {
+  assert.equal(keyBarSequence('esc'), '\x1b');
+  assert.equal(keyBarSequence('tab'), '\t');
+  assert.equal(keyBarSequence('ctrl-c'), '\x03');
+  // 修饰键自己不发字节；Ctrl+C 本来就是 ETX，再叠一次 Ctrl 还是它
+  assert.equal(keyBarSequence('ctrl'), '');
+  assert.equal(keyBarSequence('ctrl-c', true), '\x03');
+
+  const arrows: readonly TerminalKeyId[] = ['up', 'down', 'right', 'left'];
+  assert.deepEqual(arrows.map((key) => keyBarSequence(key)), ['\x1b[A', '\x1b[B', '\x1b[C', '\x1b[D']);
+  assert.deepEqual(arrows.map((key) => keyBarSequence(key, true)), [
+    '\x1b[1;5A',
+    '\x1b[1;5B',
+    '\x1b[1;5C',
+    '\x1b[1;5D'
+  ]);
+
+  // Esc / Tab 没有有意义的 Ctrl 变体，带着修饰也还是原样
+  assert.equal(keyBarSequence('esc', true), '\x1b');
+  assert.equal(keyBarSequence('tab', true), '\t');
+});
+
+test('按键条：粘滞 Ctrl 是一次性修饰，点 Ctrl 自己才切换', () => {
+  assert.equal(keyBarCtrlAfter('ctrl', false), true);
+  assert.equal(keyBarCtrlAfter('ctrl', true), false);
+  for (const key of ['esc', 'tab', 'up', 'down', 'left', 'right', 'ctrl-c'] as const) {
+    assert.equal(keyBarCtrlAfter(key, true), false, `${key} 应该把 Ctrl 吸掉`);
+    assert.equal(keyBarCtrlAfter(key, false), false, `${key} 不该点亮 Ctrl`);
+  }
 });

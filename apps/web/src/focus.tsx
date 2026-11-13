@@ -421,7 +421,7 @@ export function FocusView({
   }
 
   return (
-    <div className="flex h-full flex-col bg-canvas">
+    <div className="flex min-h-0 flex-1 flex-col bg-canvas">
       <header
         className={`flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
         data-testid={windowChrome ? 'window-titlebar' : undefined}

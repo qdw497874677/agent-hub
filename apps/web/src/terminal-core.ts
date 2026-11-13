@@ -76,6 +76,76 @@ export function encodeInput(text: string): string {
   return base64FromBytes(new TextEncoder().encode(text));
 }
 
+// ---------------------------------------------------------------- 手机按键条 ----------------------------------------------------------------
+
+/** 触屏按键条的键；数组顺序就是渲染顺序。`ctrl` 是修饰键，自己不发货。 */
+export type TerminalKeyId = 'esc' | 'tab' | 'ctrl' | 'up' | 'down' | 'left' | 'right' | 'ctrl-c';
+
+export interface TerminalKeyDef {
+  readonly id: TerminalKeyId;
+  /** 键面文字：中文与符号混排，别一边写 Esc 一边写「上」。 */
+  readonly label: string;
+}
+
+/** Esc / Tab 在软键盘上没有，方向键要长按才出；补一条按顺序排好的常用键。 */
+export const TERMINAL_KEYS: readonly TerminalKeyDef[] = [
+  { id: 'esc', label: 'Esc' },
+  { id: 'tab', label: 'Tab' },
+  { id: 'ctrl', label: 'Ctrl' },
+  { id: 'up', label: '↑' },
+  { id: 'down', label: '↓' },
+  { id: 'left', label: '←' },
+  { id: 'right', label: '→' },
+  { id: 'ctrl-c', label: 'Ctrl+C' }
+];
+
+/** CSI 方向键的收尾字母（↑ A、↓ B、→ C、← D，顺序和 vim 的 hjkl 无关，是 DEC 的老约定）。 */
+function arrowKey(final: 'A' | 'B' | 'C' | 'D', ctrl: boolean): string {
+  // xterm 省略修饰参数时 `\x1b[A` 就是裸方向键；带 Ctrl 要显式写 1;5（5 = Ctrl）。
+  return ctrl ? `\x1b[1;5${final}` : `\x1b[${final}`;
+}
+
+/**
+ * 按键 → 喂给 xterm 的字节串。调用方用 `term.input(...)` 灌进去，
+ * 走的是 `term.onData` → `encodeInput` → 现有的断线缓存，不另开 socket。
+ *
+ * 粘滞 Ctrl 只作用于方向键：`\x1b[1;5C` / `1;5D` 是终端里 Ctrl+左右跳词的标准写法，
+ * readline / zsh 都认；Esc、Tab、Ctrl+C 没有有意义的 Ctrl 变体，带不带都发原样。
+ */
+export function keyBarSequence(key: TerminalKeyId, ctrl = false): string {
+  switch (key) {
+    case 'ctrl':
+      return '';
+    case 'esc':
+      return '\x1b';
+    case 'tab':
+      return '\t';
+    case 'ctrl-c':
+      // 0x03 = ETX，就是 Ctrl+C；已经带 Control 了，粘滞 Ctrl 再叠一次也还是它。
+      return '\x03';
+    case 'up':
+      return arrowKey('A', ctrl);
+    case 'down':
+      return arrowKey('B', ctrl);
+    case 'right':
+      return arrowKey('C', ctrl);
+    case 'left':
+      return arrowKey('D', ctrl);
+    default:
+      return '';
+  }
+}
+
+/**
+ * 按完这个键之后粘滞 Ctrl 还亮不亮。
+ *
+ * 一次性修饰键：点 Ctrl 自己切换开关，点别的键一律吸掉——不管那个键吃不吃 Control。
+ * 「下一次按键自动复位」写死在这里，界面上就不会出现「灯亮着但敲出来的东西没带 Control」的半成品状态。
+ */
+export function keyBarCtrlAfter(key: TerminalKeyId, ctrl: boolean): boolean {
+  return key === 'ctrl' ? !ctrl : false;
+}
+
 // ---------------------------------------------------------------- 连接地址 ----------------------------------------------------------------
 
 /**

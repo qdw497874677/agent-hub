@@ -1,13 +1,16 @@
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import {
   TERMINAL_INITIAL,
+  TERMINAL_KEYS,
   TERMINAL_MAX_RETRIES,
   bytesFromBase64,
   encodeInput,
   isUnsupportedTerminal,
+  keyBarCtrlAfter,
+  keyBarSequence,
   markTerminalUnsupported,
   parseTerminalFrame,
   retryDelay,
@@ -16,7 +19,8 @@ import {
   terminalSocketUrl,
   terminalStatus,
   terminalSupportKeys,
-  type TerminalClientFrame
+  type TerminalClientFrame,
+  type TerminalKeyId
 } from './terminal-core.ts';
 
 /** 断线时最多缓这么多字符（base64）；再长的按键丢掉，重连后一口气灌回去也不会有意义。 */
@@ -39,11 +43,24 @@ function prefersLight(): boolean {
     : false;
 }
 
+const COARSE_QUERY = '(pointer: coarse)';
+
 /** 手机上抢焦点会把键盘顶起来，挡住刚打开的终端；交给用户自己点。 */
 function coarsePointer(): boolean {
   return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-    ? window.matchMedia('(pointer: coarse)').matches
+    ? window.matchMedia(COARSE_QUERY).matches
     : false;
+}
+
+/**
+ * 粗指针订阅：桌面外接/拔掉触屏、浏览器开手机模拟都会跨过这条线，
+ * 只在渲染时读一次会让按键条卡在错误的那一边，所以跟着媒体查询走。
+ */
+function subscribeCoarsePointer(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {};
+  const media = window.matchMedia(COARSE_QUERY);
+  media.addEventListener?.('change', onChange);
+  return () => media.removeEventListener?.('change', onChange);
 }
 
 /**
@@ -54,7 +71,12 @@ function coarsePointer(): boolean {
  */
 export function TerminalPanel({ sessionId, workerId, active }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const termRef = useRef<Terminal | null>(null);
   const [state, dispatch] = useReducer(terminalReducer, TERMINAL_INITIAL);
+  /** 手机上要不要显示按键条：跟媒体查询同步，桌面完全看不到。 */
+  const coarse = useSyncExternalStore(subscribeCoarsePointer, coarsePointer, () => false);
+  /** 按键条上的粘滞 Ctrl：一次性修饰，发完就灭。 */
+  const [ctrlArmed, setCtrlArmed] = useState(false);
   const fitRef = useRef<(force?: boolean) => void>(() => {});
   const restartRef = useRef<(reset: boolean) => void>(() => {});
   const activeRef = useRef(active);
@@ -85,6 +107,9 @@ export function TerminalPanel({ sessionId, workerId, active }: Props) {
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    termRef.current = term;
+    // 换了会话就是新 shell，上一局的粘滞修饰别带过来。
+    setCtrlArmed(false);
 
     const lightMedia = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: light)') : null;
     const applyTheme = () => {
@@ -268,6 +293,8 @@ export function TerminalPanel({ sessionId, workerId, active }: Props) {
     // ------------------------------------------------------------ 输入 ------------------------------------------------------------
     const dataSub = term.onData((text) => {
       if (text === '') return;
+      // 软键盘上直接敲的字符也把粘滞 Ctrl 吸掉：否则灯还亮着，敲出来的东西却没带 Control。
+      setCtrlArmed((prev) => (prev ? false : prev));
       const payload = encodeInput(text);
       if (socket !== null && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ t: 'input', d: payload } satisfies TerminalClientFrame));
@@ -289,6 +316,7 @@ export function TerminalPanel({ sessionId, workerId, active }: Props) {
       lightMedia?.removeEventListener?.('change', applyTheme);
       fitRef.current = () => {};
       restartRef.current = () => {};
+      termRef.current = null;
       const ws = socket;
       socket = null;
       if (ws !== null) {
@@ -332,6 +360,47 @@ export function TerminalPanel({ sessionId, workerId, active }: Props) {
     return () => cancelAnimationFrame(frame);
   }, [active]);
 
+  /**
+   * 软键盘弹出/收起：visualViewport 先变，容器不一定会立刻重排（尤其 iOS 上 dvh 还在跟手），
+   * 补一次 fit（沿用 120ms 节流），不然下半屏被键盘吃掉、末行看不见。
+   */
+  useEffect(() => {
+    const viewport = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!viewport) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onResize = () => {
+      if (timer !== null) return;
+      timer = setTimeout(() => {
+        timer = null;
+        fitRef.current();
+      }, RESIZE_THROTTLE_MS);
+    };
+    viewport.addEventListener('resize', onResize);
+    return () => {
+      viewport.removeEventListener('resize', onResize);
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, []);
+
+  /**
+   * 按键条唯一出口：喂给 xterm 自己（`term.input` → `onData` → `encodeInput` + 断线缓存），
+   * 不另开 socket；发完把焦点还给终端，但不主动把键盘顶起来。
+   */
+  const pressKey = (key: TerminalKeyId) => {
+    const armed = ctrlArmed;
+    setCtrlArmed(keyBarCtrlAfter(key, armed));
+    const term = termRef.current;
+    if (term === null) return;
+    try {
+      const text = keyBarSequence(key, armed);
+      if (text !== '') term.input(text, true);
+      // Ctrl 只是修饰，点它不抢焦点（否则收起键盘时按一下又弹回来）。
+      if (key !== 'ctrl') term.focus();
+    } catch {
+      /* 实例刚好被 dispose：按键条还在收尾，按了没反应就行，别抛错 */
+    }
+  };
+
   const status = terminalStatus(state);
   const retryLabel = state.phase === 'exited' ? '新开一个' : state.phase === 'reconnecting' ? '立即重连' : '重连';
   const showRetry =
@@ -340,6 +409,37 @@ export function TerminalPanel({ sessionId, workerId, active }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-canvas" data-testid="terminal-pane">
       <div ref={hostRef} className="terminal-host min-h-0 min-w-0 flex-1 overflow-hidden px-2 py-1.5" />
+      {/* 按键条是独立一块（不是盖在 xterm 上）：xterm 少几行，末行永远露得出来。只在粗指针出现。 */}
+      {coarse ? (
+        <div
+          data-testid="terminal-keys"
+          className="flex shrink-0 flex-nowrap items-center gap-1 overflow-x-auto overscroll-x-contain border-t border-hair bg-panel px-2 py-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {TERMINAL_KEYS.map((key) => {
+            const armed = key.id === 'ctrl' && ctrlArmed;
+            return (
+              <button
+                key={key.id}
+                type="button"
+                data-testid={`terminal-key-${key.id}`}
+                aria-pressed={key.id === 'ctrl' ? ctrlArmed : undefined}
+                className={`flex h-9 min-w-9 shrink-0 select-none items-center justify-center rounded-sm border px-3 font-mono text-body leading-none ${
+                  armed
+                    ? 'border-accent bg-accent text-canvas'
+                    : 'border-strong bg-card text-secondary active:border-accent active:text-accent'
+                }`}
+                // 按下只做 preventDefault：一夺焦软键盘就收起来，终端也跟着失去光标。
+                // 发货放在 click 上——横着拖动按键条是滚动，不能一路把 Esc/Tab 敲出去。
+                onPointerDown={(event) => event.preventDefault()}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => pressKey(key.id)}
+              >
+                {key.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       <div
         data-testid="terminal-status"
         className="flex h-8 shrink-0 items-center gap-2 border-t border-hair bg-panel px-2.5 text-meta"
