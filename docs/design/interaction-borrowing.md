@@ -15,7 +15,15 @@ T3：侧栏每条 thread 直接标 `working / 等我批准 / 等我回答 / 完�
 1. **列表里就能看到，不用进收件箱**：项目列表 / 画布的会话卡片补一行状态 + 已跑时长（`relativeTime` 已有），和 attention 的 phase 用同一套词。
 2. **settle 语义**：我们的「稍后」是**时间性**的（同一 phase 再看一次就收起），没有「这件事我不再关注」的显式动作。补一个 `session.settle`（可 unsettle），列表默认折叠已 settle 的会话；自动 settle 条件先只做一条：**PR 已合并**。闲置自动 settle 先不做（我们还没稳定的「最后活动时间」口径）。
 
-落点：`packages/domain/src/use-cases/sessions.ts`（settle/unsettle 用例）、`packages/domain/src/session.ts`（`settledAt`）、`apps/web/src/surfaces/workbench/{home,canvas,nodes}.tsx`、`e2e` 补一条。
+### 1.1 I1 已落地（2026-11-14）
+
+用户可见的叫法是**收起 / 已收起**（不叫「沉淀」：容易被理解成记忆，见下）。
+
+- 数据：`Session.settledAt`（`packages/domain/src/session.ts`，只表示「移出活跃列表」，不改状态、不杀进程）；SQLite 加 `sessions.settled_at` 列；`recentSessionSchema` 与画布投影都带上，首页最近会话对已收起的行做 `opacity-60` + 「已收起」。
+- 用例：`packages/domain/src/use-cases/settle-session.ts` 的 `settleSessionUseCase`——`session.settle` 权限（默认 `own`）、跑着的会话拒绝（409「会话还在跑，先停止再收起」）、写审计 `session.settle`（detail 收起/恢复）。接口 `POST /api/sessions/:id/settle` `{settled: boolean}`。
+- UI：会话菜单「收起：移出活跃列表」（运行中禁用并给原因）「移回活跃列表」；侧栏活跃列表与底部「已收起 N」两段；画布卡片 `data-settled` + 状态点 + 「已跑 N 分钟」（只在 working 时 30 秒推进）。
+- 测试：`e2e/settle.spec.ts` 两条（收起→画布退到背景→从侧栏移回；运行中收起 409）。
+- 口径：自动收起先不做（T3 的「PR 合并 / 闲置 7 天」我们等有稳定的「最后活动时间」口径再加）。
 
 ## 2. 借：控件贴着 composer，能力不匹配就诚实降级
 

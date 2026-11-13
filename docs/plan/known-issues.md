@@ -133,6 +133,16 @@
 - 顺手修两处旧 e2e 的定位失效（都是早先 IA 改动留下的，与 worktree 无关）：项目设置分页后关联入口在「工作空间」页；桌面/移动两份侧栏同时在 DOM 里，设置按钮要用 `:visible`。
 - 残留：`waitForSetup=false` 目前仍是同步执行（要真后台得把准备命令挪进队列）；W3（清理活动判定 + 孤儿目录泛化）与 W4（`session.handoffWorktree` + 工具）未做。
 
+### 1.8 进展（2026-11-14 · I1 会话「收起」）
+
+按 `docs/design/interaction-borrowing.md` 的 I1 落地（借自 T3 Code 的 settle，改名「收起」避免与记忆混淆）：
+
+- 领域/存储：`Session.settledAt`、`settleSessionUseCase`、`session.settle` 权限（默认 own）、`sessions.settled_at` 列与迁移、审计 `session.settle`。
+- HTTP：`POST /api/sessions/:id/settle` `{settled}`；运行中 409。
+- 前端：侧栏活跃 / 已收起两段（`sidebar-settled-toggle`）、画布卡片状态点与「已跑 N 分钟」、会话菜单收起/移回、首页最近会话对已收起的行弱化。
+- 验证：`npm test` 1310 tests / 1302 pass / 8 skipped / 0 fail；`e2e/settle.spec.ts` 2/2。
+- 残留意向：自动收起（PR 合并 / 陈旧）留到有稳定「最后活动时间」口径之后；I2 composer 手势、I3 三档 diff、I4 侧聊仍未做。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道
