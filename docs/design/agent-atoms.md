@@ -191,3 +191,39 @@ interface StartPlan {
 - 本轮不把 bot 升级成一等聚合（`Bot{id,triggers,credentialRef}`）——按决策 7 留到 C3，避免与启动链改造交叉。
 - 不把「对话/会话」的持久性做成 `Session` 字段（临时性属于 workspace 的 `kind`，会话本身全落库）。
 - 不为 bot 新增独立 API 面（见 `front-end-layering.md` §10.1）。
+
+## 10. 参考：Paseo（`getpaseo/paseo`）
+
+外部对照（2026-11-13 调研，来源：`github.com/getpaseo/paseo`、`paseo.sh/docs`、仓库内 `docs/architecture.md` / `docs/data-model.md` / `docs/agent-lifecycle.md` / `docs/permissions.md` / `docs/product.md`）。它自称 agentic development environment，形态是「本地 daemon + 多客户端（Electron / Expo iOS-Android-Web / CLI / 内嵌 Web UI / VS Code 扩展 / TS SDK / MCP）」，与我们的 server + worker + web 同构，值得对照的是它的**分层规则**而不是功能清单。
+
+### 10.1 它怎么分层（有来源）
+
+- 三层名词互不混用：**Project**（`prj_` 不透明 ID）→ **Workspace**（任务的「发生地」，持 `cwd` / `worktreeRoot` / `isolation` / `baseBranch`）→ **Agent（session）**（只持 `provider` + `workspaceId` + `lastStatus`，**归属只信 `workspaceId`，不从目录反推**）。
+- 持久 vs 临时：workspace/agent 记录持久；**tab 是客户端本地布局，不是生命周期**（唯一例外：关 root agent 的 tab = 归档）；idle runtime 1 小时后释放但可 resume，有活跃工作/后代/待发通知时阻止回收。
+- 血缘：`create_agent` 异步且写 `parent-agent-id`；**Subagent**（随父归档）与 **Detached**（显式脱离变 root）两种；父归档时跨 workspace 或仍开着 tab 的子 agent 被 detach 而非归档。
+- 客户端状态二分：目录派生的数据（git status/diff/PR/文件预览）用 `(serverId, cwd)` 做 key，工作单元拥有的数据（timeline、agent 列表）用 `workspaceId`。两个 workspace 共用一个 cwd 时，git 状态共享、会话不共享。
+- 配置四层：daemon（`config.json`，区分 reload 生效 vs 需重启）→ host 级 agent profile（provider + model + mode + thinking + **机器可读的 "when to use" notes**）→ 单 agent 创建时的快照（改 profile 不回溯）→ 单次运行 flags；项目级只有 triggers-as-code。权限是语义动作的 additive allow、principal 与 credential 分离、UI 的 Owner/operator/viewer 只是预设**不落库**，并明确承认 agent 与 terminal 共用 `workspace.write` 无法真隔离。
+- 刻意不做：不直接调模型 API（只包第一方 CLI）、不遥测、不做「关 tab 不归档」的通用开关、暂不做 workspace 级权限。
+
+### 10.2 与我们的对应关系（我的类比，非其文档说法）
+
+| Paseo | agent-hub | 差异 |
+| --- | --- | --- |
+| Workspace | `Workspace`（`kind: long_lived/temporary`、`workerId`、`path`） | 我们已有持久/临时两级，比它多「机器绑定」 |
+| Agent (session) | `Session`（`taskId` + `workerId` + `workspaceId` + `ref`） | 我们把会话必须挂 Task（S5.1），它允许无 task 的裸 agent |
+| Timeline | `session_events` + `artifacts` | 我们多一层产物/工作日志 |
+| profile notes | `AgentProfile.notes` | 我们只有人读的备注，没有给编排 agent 读的「何时用」 |
+
+### 10.3 值得抄的五条（按性价比排序）
+
+1. **放置是唯一权威**：`Session` 不带 cwd，归属只信 `workspaceId`；这一条我们已经成立（`locationOf` 从项目/工作空间算根），P3 只须保证新入口不把 root 抄进会话。
+2. **前端 query key 二分**：git/diff/PR/文件用 `(workerId, cwd)`，timeline/会话用 `sessionId`（或 `workspaceId`）。我们没有这条规约，`apps/web` 里若干缓存键按目录算的地方要统一，否则同一目录两个会话会互相污染。
+3. **血缘只对子会话解耦**：parent 关闭 = 归档；subagent 关 tab 只是布局；另给「脱离」动作。我们有 `fork` 血缘但没有 detach 语义，可作为 C3 的一部分。
+4. **profile 里带机器可读的委派说明**（"when to use"）：编排 agent 选 provider/model 前先读这段，选不到就回退并告知。成本极低，正好补上我们「原子能力怎么被选中」缺的声明式一环。
+5. **权限做成语义动作 + 只增不减 + principal/credential 分离**：我们已经有 `decide()` 九步与 `bot_scope`，短期不必改；但「UI 预设不落库成 role」值得记下，避免以后把 Owner/admin 写进存储。
+
+### 10.4 明确不照抄
+
+- 不改成「无 Task 的裸 agent」：我们的派工、工作日志、产物都挂在 Task 上。
+- 不引入 worktree 引用计数式回收：我们的工作空间生命周期已由 `kind` 与项目清理承担。
+- 不把 tab 状态当持久生命周期（我们已用 `sessionStorage` 只记页签，符合它的「视角不是生命周期」）。
