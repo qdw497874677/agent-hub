@@ -21,11 +21,11 @@ import { loadActor, openRoleSession } from './role-session.ts';
 import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
-import { createSessionEnvironment, type SessionEnvironment } from './session-environment.ts';
+import { createSessionEnvironment } from './session-environment.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
 import { createGitHubApi } from './github-api.ts';
 import { createModelDistiller } from './model-distiller.ts';
-import type { AssetReviewDeps, Deps, EnrollmentDeps, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics } from '@agent-hub/domain';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
   interruptSessionUseCase,
@@ -147,7 +147,7 @@ const catalog = createLiveCatalog();
 let serverGateway: ServerGateway | null = null;
 /** 会话终端桥接：浏览器 WS ↔ worker PTY。装配在 serverGateway 之后。 */
 let terminalBridge: TerminalBridge | null = null;
-let sessionEnvironment: SessionEnvironment | null = null;
+let sessionEnvironment: EnvironmentPlanner | null = null;
 const optionWaiters = createOptionWaiters();
 
 const deps: Deps = {
@@ -164,6 +164,7 @@ const deps: Deps = {
   toolGrants: store.toolGrants,
   // 环境端口在资产依赖就绪后才构造；这里用委托保持组合根的单向初始化。
   environment: {
+    prepare: async (command) => (sessionEnvironment ? sessionEnvironment.prepare(command) : { command, revision: null }),
     revision: async (session) => (sessionEnvironment ? sessionEnvironment.revision(session) : null)
   },
   workerPresence: {
@@ -191,23 +192,22 @@ const deps: Deps = {
       let effective = toolGateway
         ? await withToolAccess(toolGateway, toolEndpoint, granted.value)
         : granted.value;
+      // 环境准备（资产/MCP）必须排在工具令牌之后：MCP 启动配置以 command.tools 为准。
+      // 全仓只有这一处 prepare；domain 的启动入口只负责把回执里的版本落库。
       let environmentRevision: string | null = null;
-      if (sessionEnvironment) {
-        const prepared = await sessionEnvironment.prepare(effective);
+      const prepared = await deps.environment?.prepare(effective);
+      if (prepared) {
         effective = prepared.command;
         environmentRevision = prepared.revision;
       }
       const sent = await serverGateway.gateway.dispatch(effective);
+      if (!sent.ok) return sent;
       // 记下会话开始时的 HEAD（ADR 0025 决定 7）：diff 默认对它比；失败不影响会话
-      if (sent.ok && command.kind === 'start_session') {
+      if (command.kind === 'start_session') {
         void filesService.recordBase(command.sessionId).catch(() => undefined);
-        if (environmentRevision) {
-          void store.sessions
-            .setEnvironmentRevision(command.sessionId, environmentRevision, Date.now())
-            .catch(() => undefined);
-        }
+        return ok({ environmentRevision });
       }
-      return sent;
+      return ok(undefined);
     },
     listDirectories: async (workerId, path) =>
       serverGateway

@@ -20,7 +20,7 @@ import {
   frameAccepted
 } from './conversation.ts';
 import { placeSession } from '../worker.ts';
-import type { NodeGateway } from '../ports/node-gateway.ts';
+import type { NodeGateway, WorkerCommand } from '../ports/node-gateway.ts';
 import { loadHome } from './home.ts';
 import { saveLayoutUseCase } from './canvas.ts';
 import { listWorkers } from './workers.ts';
@@ -259,26 +259,44 @@ test('ensureHosted：工具授权过期后重新托管换新令牌', async () =>
 
 test('ensureHosted：环境版本没变不重托管，变了才重托管', async () => {
   let revision = 'r1';
-  const w = await world({ environment: { revision: async () => revision } });
+  const sent: WorkerCommand[] = [];
+  const w = await world({
+    environment: {
+      prepare: async (command) => ({ command, revision }),
+      revision: async () => revision
+    },
+    gateway: {
+      ...localGateway,
+      dispatch: async (command) => {
+        sent.push(command);
+        return ok({ environmentRevision: revision });
+      }
+    }
+  });
   const session = await derived(w);
-  // 实际组合根在 dispatch 成功后落这个版本；内存网关不经过组合根，测试直接模拟。
-  await w.deps.sessions.setEnvironmentRevision(session.id, 'r1', w.deps.now());
+  // 派生也走同一个启动入口：首次启动就把回执里的版本落库。
+  assert.equal((await w.deps.sessions.byId(session.id))?.environmentRevision, 'r1');
   const current = await w.deps.sessions.byId(session.id);
   assert.ok(current);
 
-  w.dispatched.length = 0;
+  sent.length = 0;
   assert.ok((await ensureHosted(w.deps, current)).ok);
-  assert.equal(w.dispatched.length, 0);
+  assert.equal(sent.length, 0);
 
   revision = 'r2';
   assert.ok((await ensureHosted(w.deps, current)).ok);
-  assert.equal(w.dispatched[0]?.kind, 'start_session');
+  assert.equal(sent[0]?.kind, 'start_session');
   assert.equal((await w.deps.sessions.byId(session.id))?.environmentRevision, 'r2');
 });
 
 test('ensureHosted：旧会话没有环境版本时不强制刷新', async () => {
   let revision = 'r1';
-  const w = await world({ environment: { revision: async () => revision } });
+  const w = await world({
+    environment: {
+      prepare: async (command) => ({ command, revision }),
+      revision: async () => revision
+    }
+  });
   const session = await derived(w);
   await w.deps.sessions.setEnvironmentRevision(session.id, null, w.deps.now());
   const legacy = await w.deps.sessions.byId(session.id);

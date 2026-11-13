@@ -4,38 +4,9 @@ import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
-import type { WorkerCommand } from '../ports/node-gateway.ts';
 import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
-
-type StartCommand = Extract<WorkerCommand, { kind: 'start_session' }>;
-
-/**
- * 拼一条 start_session 指令。派生、分叉、重新托管三处都走这里，
- * 所以「模型既是一列、也是一个可调项」这件事只在一个地方处理：
- * 会话的 model 总会并进 options.model，worker 只认 options。
- */
-export function startCommand(
-  session: Session & { readonly workerId: string },
-  workspaceRoot: string,
-  resume: StartCommand['resume'],
-  inherited: Readonly<Record<string, string | boolean>> = session.options,
-  branch?: StartCommand['branch']
-): StartCommand {
-  const options = session.model === '' ? { ...inherited } : { ...inherited, model: session.model };
-  return {
-    kind: 'start_session',
-    sessionId: session.id,
-    workerId: session.workerId,
-    taskId: session.taskId,
-    agentId: session.agentId,
-    workspaceRoot,
-    origin: session.origin,
-    resume,
-    options,
-    ...(branch ? { branch } : {})
-  };
-}
+import { startSessionUseCase } from './start-session.ts';
 
 export async function projectOf(
   deps: Pick<Deps, 'tasks' | 'projects'>,
@@ -103,18 +74,15 @@ export async function ensureHosted(
     }
   }
   const { root } = await locationOf(deps, project, placed);
-  const resumed = await deps.gateway.dispatch(
-    startCommand(placed, root, { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq })
-  );
-  if (!resumed.ok) return resumed;
-  deps.hosting.add(session.id, placed.workerId);
-  // 只有启动成功后才把环境版本记成「已应用」。失败时保留旧值，下一次还能重试。
-  if (currentRevision !== null) {
-    await deps.sessions
-      .setEnvironmentRevision(placed.id, currentRevision, deps.now())
-      .catch(() => undefined);
-  }
-  return ok(undefined);
+  const started = await startSessionUseCase(deps, {
+    session: placed,
+    workspaceRoot: root,
+    resume: { agentSessionRef: session.agentSessionRef, cursor: session.lastSeq },
+    // 重新托管失败不改写状态：会话可能早就 done，只是这次拉不起来，下一次还能重试。
+    markFailed: false
+  });
+  // 环境版本由启动入口按 server 回执统一落库：失败时保留旧值，下一次还能重试。
+  return started.ok ? ok(undefined) : err(started.error);
 }
 
 

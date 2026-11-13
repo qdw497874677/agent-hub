@@ -11,8 +11,8 @@ import { err, ok, type Result } from '../result.ts';
 import { createArtifact } from '../artifact.ts';
 import type { SessionEvent } from '../event.ts';
 import type { Deps } from './deps.ts';
-import { ensureHosted, startCommand } from './hosting.ts';
-import type { WorkerCommand } from '../ports/node-gateway.ts';
+import { ensureHosted } from './hosting.ts';
+import { startSessionUseCase } from './start-session.ts';
 import type { ProviderProtocol } from '../provider.ts';
 import { mergeAgentRef, type AgentRef } from '../agent-ref.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
@@ -121,27 +121,9 @@ export async function deriveSessionUseCase(
 
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
-  const started = await startSavedSession(deps, session, startCommand(session, workspace.path, null, session.options));
+  const started = await startSessionUseCase(deps, { session, workspaceRoot: workspace.path, resume: null });
   if (!started.ok) return started;
   await noteSessionStarted(deps, session, `开了 ${session.agentId} 会话${session.model ? `（${session.model}）` : ''}`);
-  return ok(session);
-}
-
-/**
- * 会话行已经保存。派发 start；失败把状态改成 failed，并且不托管。
- * 成功后才 hosting.add。调用方若要在保存和派发之间做别的事（例如倒带先 plan），自己留在外面。
- */
-export async function startSavedSession(
-  deps: Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions'>,
-  session: Session,
-  command: WorkerCommand
-): Promise<Result<Session, DomainError>> {
-  const dispatched = await deps.gateway.dispatch(command);
-  if (!dispatched.ok) {
-    await deps.sessions.save({ ...session, status: 'failed', updatedAt: deps.now() });
-    return err(dispatched.error);
-  }
-  deps.hosting.add(session.id, session.workerId);
   return ok(session);
 }
 
@@ -232,11 +214,12 @@ export async function forkSessionUseCase(
   await deps.sessions.save(session);
 
   const { root } = await locationOf(deps, project, session);
-  const started = await startSavedSession(
-    deps,
+  const started = await startSessionUseCase(deps, {
     session,
-    startCommand(session, root, { agentSessionRef: source.agentSessionRef, cursor: atSeq }, source.options)
-  );
+    workspaceRoot: root,
+    resume: { agentSessionRef: source.agentSessionRef, cursor: atSeq },
+    inheritedOptions: source.options
+  });
   if (!started.ok) return started;
   await noteSessionStarted(deps, session, `从会话 ${source.id.slice(0, 8)} 的最新处（第 ${atSeq} 步）分叉出 ${session.agentId} 会话`);
   return ok(session);
@@ -377,7 +360,8 @@ export async function interruptSessionUseCase(
     );
     return ended.ok ? ok(undefined) : ended;
   }
-  return deps.gateway.dispatch({ kind: 'interrupt', sessionId: id });
+  const stopped = await deps.gateway.dispatch({ kind: 'interrupt', sessionId: id });
+  return stopped.ok ? ok(undefined) : err(stopped.error);
 }
 
 export const SESSION_TITLE_MAX = 80;

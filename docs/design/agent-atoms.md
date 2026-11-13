@@ -156,7 +156,7 @@ interface StartPlan {
 | --- | --- | --- |
 | P1 | 已落地 | `packages/domain/src/agent-ref.ts`（`AgentRef{runtime,model,options}`、`validateAgentRef(input, specs?)`、`mergeAgentRef`、`sessionRef`）；`AgentProfile.ref` / `PersistentAgent.ref`；`apps/server/src/agent-ref-dto.ts` 把 ref 映射回扁平 DTO（HTTP 协议未变）；存储列名未动。提交 `1e63b92`，验证 1164 / 1156 pass / 8 skipped / 0 fail |
 | P2a | 已落地 | 删 `AgentRole` 别名；域内 bot 语义的参数/局部变量改名 `bot`；`roles` JSON 字段、`role:` 地址、`GroupDelivery.role` 等持久化/协议键名保持不变 |
-| P3 | 待做 | `startSession` + `EnvironmentPlanner` |
+| P3 | 已落地 | `packages/domain/src/use-cases/start-session.ts`（`startCommand` / `StartPlan` / `startSessionUseCase`，五种来源统一入口）；`packages/domain/src/ports/environment.ts`（`EnvironmentPlanner`）；`dispatch` 回执 `DispatchOutcome` 携带 `environmentRevision`；`ensureHosted` 用 `markFailed: false` 保持「拉不起来不改写状态」 |
 | P2b | 待做 | `role:` → `bot:` 迁移脚本 |
 
 ## 6. 分期与排期

@@ -159,7 +159,7 @@ export async function promptSessionUseCase(
   const text = [instructions, guidance?.text, briefing, peers, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
   if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
   const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
-  return sent.ok ? sent : failTurn(deps, sessionId, sent.error);
+  return sent.ok ? ok(undefined) : failTurn(deps, sessionId, sent.error);
 }
 
 /**

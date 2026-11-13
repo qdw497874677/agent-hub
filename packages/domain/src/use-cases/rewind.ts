@@ -10,8 +10,8 @@ import { err, ok, type Result } from '../result.ts';
 import { placeSession } from '../worker.ts';
 import { authorizeProject, authorizeSession, authorizeWorker } from './authorization.ts';
 import type { Deps } from './deps.ts';
-import { startCommand } from './hosting.ts';
-import { interruptSessionUseCase, recordEvent, startSavedSession } from './sessions.ts';
+import { startSessionUseCase } from './start-session.ts';
+import { interruptSessionUseCase, recordEvent } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
 import { buildHandoff, type HandoffResult } from '../handoff.ts';
 import { locationOf } from './workspaces.ts';
@@ -210,11 +210,13 @@ export function createRewindService(deps: RewindDeps) {
       const planned = await plan(found.value, placed.value);
       // 原生分叉（ADR 0028）：worker 从原 agent 会话的这条消息之前分出去；不行就新开（resume = null），之前的对话用摘要交接
       // plan 留在保存之后、派发之前：plan 抛错时会话已在，但还不是 failed，也不托管。
-      const started = await startSavedSession(
-        deps,
+      const started = await startSessionUseCase(deps, {
         session,
-        startCommand(session, found.value.root || workspace?.path || '', null, source.options, planned.branch ?? undefined)
-      );
+        workspaceRoot: found.value.root || workspace?.path || '',
+        resume: null,
+        ...(planned.branch ? { branch: planned.branch } : {}),
+        inheritedOptions: source.options
+      });
       if (!started.ok) return started;
 
       if (planned.mode !== 'none') {

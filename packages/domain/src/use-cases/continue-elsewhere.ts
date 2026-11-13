@@ -14,8 +14,8 @@ import { authorizeWorker } from './authorization.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { carryModelTo, placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
-import { startCommand } from './hosting.ts';
-import { interruptSessionUseCase, startSavedSession } from './sessions.ts';
+import { startSessionUseCase } from './start-session.ts';
+import { interruptSessionUseCase } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
 
 /**
@@ -115,7 +115,12 @@ export async function continueElsewhereUseCase(
   await deps.sessions.save(session);
 
   // resume = null：目标机器上没有原来的 agent 会话文件，只能新开
-  const started = await startSavedSession(deps, session, startCommand(session, target.path, null, source.options));
+  const started = await startSessionUseCase(deps, {
+    session,
+    workspaceRoot: target.path,
+    resume: null,
+    inheritedOptions: source.options
+  });
   if (!started.ok) return started;
 
   const label = (id: string | null) => workers.find((w) => w.workerId === (id ?? placedLocal(workers)))?.label ?? id ?? '原来的机器';

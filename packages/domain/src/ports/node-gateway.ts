@@ -69,9 +69,15 @@ export type WorkerCommand =
     }
   | { readonly kind: 'dispose'; readonly sessionId: SessionId };
 
+/**
+ * 派发回执。只有 start_session 会带环境版本：server 在挂好工具令牌、算完资产/MCP 之后才派发，
+ * 这个版本由 domain 的启动入口统一落库。`void` 只为兼容「只关心成败」的旧调用方与测试替身。
+ */
+export type DispatchOutcome = void | { readonly environmentRevision?: string | null };
+
 export interface NodeGateway {
   status(): Promise<WorkerStatus[]>;
-  dispatch(command: WorkerCommand): Promise<Result<void, DomainError>>;
+  dispatch(command: WorkerCommand): Promise<Result<DispatchOutcome, DomainError>>;
   /**
    * 浏览某台 Worker 上的目录（只列子目录）。项目目录在哪台机器上，就得问那台机器——
    * Server 自己的文件系统只对和它同机的 Worker 有意义。

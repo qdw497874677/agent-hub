@@ -1,24 +1,21 @@
 import { createHash } from 'node:crypto';
-import {
-  sessionAssetPlan,
-  sessionMcpLaunch,
-  type AssetDeps,
-  type McpLaunch,
-  type Project,
-  type ProjectId,
-  type Session,
-  type SessionAssetEntry,
-  type Task,
-  type TaskId,
-  type WorkerCommand
+import type {
+  AssetDeps,
+  EnvironmentPlanner,
+  McpLaunch,
+  PreparedStart,
+  Project,
+  ProjectId,
+  SessionAssetEntry,
+  Task,
+  TaskId,
+  WorkerCommand
 } from '@agent-hub/domain';
+import { sessionAssetPlan, sessionMcpLaunch } from '@agent-hub/domain';
+
+export type { PreparedStart };
 
 type StartCommand = Extract<WorkerCommand, { kind: 'start_session' }>;
-
-export interface PreparedStart {
-  readonly command: WorkerCommand;
-  readonly revision: string | null;
-}
 
 /**
  * 一次会话的环境版本。
@@ -26,10 +23,6 @@ export interface PreparedStart {
  * prepare 是「真的给 Worker 下发资产/MCP」的唯一入口；revision 复用同一套计算，
  * 只把结果压成 opaque hash。两者分开，避免 ensureHosted 去理解资产细节。
  */
-export interface SessionEnvironment {
-  prepare(command: WorkerCommand): Promise<PreparedStart>;
-  revision(session: Session): Promise<string | null>;
-}
 
 export interface SessionEnvironmentOptions {
   readonly assetDeps: AssetDeps;
@@ -88,7 +81,7 @@ function stableRevision(
   return createHash('sha256').update(JSON.stringify(material)).digest('hex');
 }
 
-export function createSessionEnvironment(options: SessionEnvironmentOptions): SessionEnvironment {
+export function createSessionEnvironment(options: SessionEnvironmentOptions): EnvironmentPlanner {
   const { assetDeps, tasks, projects, log } = options;
 
   async function resolve(
