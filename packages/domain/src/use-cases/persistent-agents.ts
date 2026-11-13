@@ -4,12 +4,12 @@ import type { ProjectId } from '../ids.ts';
 import {
   configProblem,
   isPersistentAgentName,
-  persistentAgentOptionsSpecProblem,
   type MessageLimits,
   type MessagingConfig,
   type PersistentAgent,
   type RoleReuse
 } from '../messaging.ts';
+import { validateAgentRef } from '../agent-ref.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { Group } from '../groups.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -68,19 +68,43 @@ async function observedOptions(deps: PersistentAgentsDeps, projectId: ProjectId,
   return [...seen.values()];
 }
 
-const clean = (a: PersistentAgent): PersistentAgent => {
+/** 输入的扁平形状（HTTP body 保持 agentId/model/options）；落库前统一成 ref。 */
+interface CleanInput {
+  readonly name: string;
+  readonly displayName?: string;
+  readonly color?: string;
+  readonly description: string;
+  readonly agentId: string;
+  readonly model: string;
+  readonly reuse: RoleReuse;
+  readonly options?: Readonly<Record<string, string | boolean>>;
+}
+
+const clean = (a: CleanInput): PersistentAgent => {
   const displayName = a.displayName?.trim();
   return {
     name: a.name.trim(),
     ...(displayName ? { displayName } : {}),
     ...(a.color ? { color: a.color } : {}),
     description: a.description,
-    agentId: a.agentId.trim(),
-    model: a.model.trim(),
-    reuse: a.reuse,
-    ...(a.options && Object.keys(a.options).length > 0 ? { options: { ...a.options } } : {})
+    ref: {
+      runtime: (a.agentId ?? '').trim(),
+      model: (a.model ?? '').trim(),
+      options: { ...(a.options ?? {}) }
+    },
+    reuse: a.reuse
   };
 };
+
+/**
+ * 拿这个 agent 上报过的可调项再校一遍 ref。runtime 为空时跳过后端选项校验，
+ * 让 configProblem 报「角色 x 要指定 agent」这种更好懂的错。
+ */
+async function refProblem(deps: PersistentAgentsDeps, projectId: ProjectId, agent: PersistentAgent): Promise<string | null> {
+  if (agent.ref.runtime === '') return null;
+  const checked = validateAgentRef(agent.ref, await observedOptions(deps, projectId, agent.ref.runtime));
+  return checked.ok ? null : checked.error.message;
+}
 
 export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAgents {
   const allowed = async (actor: Principal, projectId: ProjectId, permission: 'project.read' | 'project.update') =>
@@ -122,7 +146,7 @@ export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAg
         reuse: input.reuse ?? 'sticky',
         ...(input.options !== undefined ? { options: input.options } : {})
       });
-      const specProblem = persistentAgentOptionsSpecProblem(agent.options, await observedOptions(deps, projectId, agent.agentId));
+      const specProblem = await refProblem(deps, projectId, agent);
       if (specProblem) return err(invalid(`bot ${name} 的${specProblem}`));
       const saved = await save(projectId, config, [...config.roles, agent]);
       return saved.ok ? ok(agent) : saved;
@@ -136,16 +160,16 @@ export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAg
       if (!current) return err(notFound(`没有 bot @${name}`));
       const next = clean({
         ...current,
-        ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
-        ...(patch.color !== undefined ? { color: patch.color } : {}),
-        ...(patch.description !== undefined ? { description: patch.description } : {}),
-        ...(patch.agentId !== undefined ? { agentId: patch.agentId } : {}),
-        ...(patch.model !== undefined ? { model: patch.model } : {}),
-        ...(patch.reuse !== undefined ? { reuse: patch.reuse } : {}),
-        ...(patch.options !== undefined ? { options: patch.options } : {}),
+        displayName: patch.displayName !== undefined ? patch.displayName : current.displayName,
+        color: patch.color !== undefined ? patch.color : current.color,
+        description: patch.description !== undefined ? patch.description : current.description,
+        agentId: patch.agentId ?? current.ref.runtime,
+        model: patch.model ?? current.ref.model,
+        reuse: patch.reuse ?? current.reuse,
+        options: patch.options ?? current.ref.options,
         name
       });
-      const specProblem = persistentAgentOptionsSpecProblem(next.options, await observedOptions(deps, projectId, next.agentId));
+      const specProblem = await refProblem(deps, projectId, next);
       if (specProblem) return err(invalid(`bot ${name} 的${specProblem}`));
       const saved = await save(projectId, config, config.roles.map((r) => (r.name === name ? next : r)));
       return saved.ok ? ok(next) : saved;

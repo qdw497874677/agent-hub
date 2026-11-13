@@ -1,18 +1,22 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
 import {
+  AGENT_REF_MODEL_MAX,
+  AGENT_REF_OPTION_KEY,
+  AGENT_REF_OPTIONS_MAX,
+  AGENT_REF_OPTION_VALUE_MAX,
   asProjectId,
   asSessionId,
   authorizeProject,
   messageView,
-  OPTION_KEY,
-  PERSISTENT_AGENT_OPTIONS_MAX,
   principalOfSubject,
   type Deps,
   type MessageBus,
-  type MessageStore
+  type MessageStore,
+  type PersistentAgent
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
+import { messagingConfigDto } from './agent-ref-dto.ts';
 import { fail } from './http-error.ts';
 
 /**
@@ -32,16 +36,26 @@ const sendBody = z.object({
 });
 // 与 domain 的 configProblem 用同一套规则；前端逐条提示也照这份，别在三处各写一遍。
 const optionsBody = z
-  .record(z.string().regex(OPTION_KEY, '选项键要小写字母开头，只含 a-z 0-9 _ . -'), z.union([z.string().max(200), z.boolean()]))
-  .refine((value) => Object.keys(value).length <= PERSISTENT_AGENT_OPTIONS_MAX, `启动选项最多 ${PERSISTENT_AGENT_OPTIONS_MAX} 个`);
+  .record(
+    z.string().regex(AGENT_REF_OPTION_KEY, '选项键要小写字母开头，只含 a-z 0-9 _ . -'),
+    z.union([z.string().max(AGENT_REF_OPTION_VALUE_MAX), z.boolean()])
+  )
+  .refine((value) => Object.keys(value).length <= AGENT_REF_OPTIONS_MAX, `启动选项最多 ${AGENT_REF_OPTIONS_MAX} 个`);
 
 const roleBody = z.object({
   name: z.string().max(40),
   description: z.string().max(500).default(''),
   agentId: z.string().min(1).max(80),
-  model: z.string().max(200).default(''),
+  model: z.string().max(AGENT_REF_MODEL_MAX).default(''),
   reuse: z.enum(['sticky', 'per-trace', 'always-new']).default('sticky'),
   options: optionsBody.optional()
+});
+/** body 仍是扁平字段；进 domain 前归一成 ref。 */
+const toRole = (role: z.infer<typeof roleBody>): PersistentAgent => ({
+  name: role.name,
+  description: role.description,
+  reuse: role.reuse,
+  ref: { runtime: role.agentId, model: role.model, options: role.options ?? {} }
 });
 const configBody = z.object({
   roles: z.array(roleBody).max(50),
@@ -89,7 +103,7 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     const projectId = allowed.value.id;
     const config = await bus.config(projectId);
     const pending = await messages.awaitingApproval(projectId);
-    return c.json({ ...config, awaitingApproval: pending.map(messageView) });
+    return c.json({ ...messagingConfigDto(config), awaitingApproval: pending.map(messageView) });
   });
 
   app.put('/api/projects/:id/messaging', async (c) => {
@@ -97,8 +111,8 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     const allowed = await projectFor(c, 'project.update');
     if (!allowed.ok) return fail(c, allowed.error);
     if (!parsed.success) return fail(c, { code: 'invalid', message: parsed.error.issues[0]?.message ?? '配置格式不对' });
-    const saved = await bus.saveConfig(allowed.value.id, parsed.data);
-    return saved.ok ? c.json(saved.value) : fail(c, saved.error);
+    const saved = await bus.saveConfig(allowed.value.id, { roles: parsed.data.roles.map(toRole), limits: parsed.data.limits });
+    return saved.ok ? c.json(messagingConfigDto(saved.value)) : fail(c, saved.error);
   });
 
   app.post('/api/messages/:id/decision', async (c) => {

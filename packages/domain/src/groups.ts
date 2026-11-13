@@ -145,7 +145,8 @@ export function groupProblem(input: GroupInput, roles: readonly AgentRole[]): st
   if (input.hostRole !== null && input.hostRole !== undefined) {
     if (!input.members.includes(input.hostRole)) return '主持人必须是群成员';
     const role = known.get(input.hostRole);
-    if (!role?.agentId || !role.model?.trim()) return '主持人角色要显式选择运行时和模型（没有隐式默认）';
+    const ref = role?.ref;
+    if (!ref?.runtime?.trim() || !ref.model?.trim()) return '主持人角色要显式选择运行时和模型（没有隐式默认）';
   }
   const limits = input.limits ?? {};
   for (const [key, max] of Object.entries(MAX_GROUP_LIMITS) as [keyof GroupLimits, number][]) {

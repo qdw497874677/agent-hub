@@ -16,6 +16,7 @@ export * from './session.ts';
 export * from './artifact.ts';
 export * from './canvas.ts';
 export * from './session-link.ts';
+export * from './agent-ref.ts';
 export * from './agent-profile.ts';
 export * from './worker.ts';
 export * from './resources.ts';

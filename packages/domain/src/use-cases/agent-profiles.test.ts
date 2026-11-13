@@ -68,7 +68,7 @@ test('Agent 配置：按 owner 隔离，增删改查', async () => {
   });
   assert.ok(updated.ok);
   assert.equal(updated.value.name, '探索 2');
-  assert.equal(updated.value.options.mode, 'plan');
+  assert.equal(updated.value.ref.options.mode, 'plan');
 
   const removed = await deleteAgentProfile(w.deps, 'u1', made.value.id);
   assert.ok(removed.ok);

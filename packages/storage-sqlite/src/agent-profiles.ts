@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { asAgentId, type AgentProfile, type AgentProfileRepository } from '@agent-hub/domain';
+import type { AgentProfile, AgentProfileRepository } from '@agent-hub/domain';
 
 interface ProfileRow {
   id: string;
@@ -27,13 +27,16 @@ function parseOptions(raw: string): Record<string, string | boolean> {
   }
 }
 
+/** 库里仍是 agent_id / model / options 三列；读出来拼成 ref。 */
 const toProfile = (row: ProfileRow): AgentProfile => ({
   id: row.id,
   ownerId: row.owner_id,
   name: row.name,
-  agentId: asAgentId(row.agent_id),
-  model: row.model,
-  options: parseOptions(row.options),
+  ref: {
+    runtime: row.agent_id,
+    model: row.model,
+    options: parseOptions(row.options)
+  },
   notes: row.notes,
   createdAt: row.created_at,
   updatedAt: row.updated_at
@@ -67,9 +70,9 @@ export function createSqliteAgentProfiles(db: DatabaseSync): AgentProfileReposit
         profile.id,
         profile.ownerId,
         profile.name,
-        profile.agentId,
-        profile.model,
-        JSON.stringify(profile.options),
+        profile.ref.runtime,
+        profile.ref.model,
+        JSON.stringify(profile.ref.options),
         profile.notes,
         profile.createdAt,
         profile.updatedAt

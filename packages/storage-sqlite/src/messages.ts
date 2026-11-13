@@ -1,8 +1,50 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { AgentMessage, MessageAuditEntry, MessageStore, MessagingConfig, SpawnRecord } from '@agent-hub/domain';
+import type { AgentMessage, MessageAuditEntry, MessageStore, MessagingConfig, PersistentAgent, SpawnRecord } from '@agent-hub/domain';
 import { asProjectId, asSessionId } from '@agent-hub/domain';
 
 type Row = Record<string, unknown>;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  !!value && typeof value === 'object' && !Array.isArray(value);
+
+/** 只留文本与开关；脏值丢掉，不让一条坏数据把整份配置读崩。 */
+function sanitizeOptions(raw: unknown): Record<string, string | boolean> {
+  if (!isPlainObject(raw)) return {};
+  const out: Record<string, string | boolean> = {};
+  for (const [key, item] of Object.entries(raw)) {
+    if (typeof item === 'string' || typeof item === 'boolean') out[key] = item;
+  }
+  return out;
+}
+
+/**
+ * 库里的 roles 还是 JSON，历史形状是扁平的 `agentId/model/options`。
+ * 读的时候两种都认：有 `ref` 用 `ref`（缺的字段回落到扁平列），没有就按扁平列拼。
+ */
+function toRole(raw: unknown): PersistentAgent {
+  const value = isPlainObject(raw) ? raw : {};
+  const nested = isPlainObject(value['ref']) ? value['ref'] : null;
+  const { agentId, model, options, ref, ...rest } = value;
+  return {
+    ...rest,
+    ref: {
+      runtime: String(nested?.['runtime'] ?? value['agentId'] ?? ''),
+      model: String(nested?.['model'] ?? value['model'] ?? ''),
+      options: sanitizeOptions(nested?.['options'] ?? value['options'])
+    }
+  } as PersistentAgent;
+}
+
+/** 写回老形状（agentId/model/options）：老版本代码、老备份都还能读。 */
+function fromRole(role: PersistentAgent): Record<string, unknown> {
+  const { ref, ...rest } = role;
+  return {
+    ...rest,
+    agentId: ref.runtime,
+    model: ref.model,
+    ...(Object.keys(ref.options).length > 0 ? { options: ref.options } : {})
+  };
+}
 
 /** agent 间通信（ADR 0018）：消息即队列（status 一列），派生记录、项目配置、按 trace 的审计。 */
 export const MESSAGE_SCHEMA = `
@@ -164,10 +206,21 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
     async config(projectId) {
       const row = getConfig.get(projectId) as Row | undefined;
       if (!row) return null;
-      return { projectId, roles: JSON.parse(row.roles as string), limits: JSON.parse(row.limits as string), updatedAt: row.updated_at as number } as MessagingConfig;
+      const roles = JSON.parse(row.roles as string) as unknown;
+      return {
+        projectId,
+        roles: Array.isArray(roles) ? roles.map(toRole) : [],
+        limits: JSON.parse(row.limits as string),
+        updatedAt: row.updated_at as number
+      } as MessagingConfig;
     },
     async saveConfig(config) {
-      putConfig.run(config.projectId, JSON.stringify(config.roles), JSON.stringify(config.limits), config.updatedAt);
+      putConfig.run(
+        config.projectId,
+        JSON.stringify(config.roles.map(fromRole)),
+        JSON.stringify(config.limits),
+        config.updatedAt
+      );
     },
     async saveSpawn(r) {
       putSpawn.run(r.sessionId, r.projectId, r.role, r.spawnerSessionId, r.traceId, r.createdAt);

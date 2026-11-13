@@ -29,7 +29,7 @@ test('消息存储往返：排队 / 投递 / trace / 幂等 / 超时 / 配置 / 
     assert.deepEqual((await store.messages.overdue(9)).map((m) => m.id), []);
     assert.equal((await store.messages.byTrace('t1')).length, 2);
     assert.equal((await store.messages.forSession(asSessionId('a'), 10))[0]?.id, 'm2');
-    await store.messages.saveConfig({ projectId: asProjectId('p'), roles: [{ name: 'qa', description: '', agentId: 'pi', model: '', reuse: 'sticky' }], limits: { maxDepth: 6 }, updatedAt: 1 });
+    await store.messages.saveConfig({ projectId: asProjectId('p'), roles: [{ name: 'qa', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' }], limits: { maxDepth: 6 }, updatedAt: 1 });
     await store.messages.saveSpawn({ sessionId: asSessionId('c'), projectId: asProjectId('p'), role: 'qa', spawnerSessionId: asSessionId('a'), traceId: 't1', createdAt: 1 });
     await store.messages.audit({ id: 'e1', traceId: 't1', messageId: 'm1', projectId: asProjectId('p'), action: 'accepted', actor: 'a', onBehalfOf: 'alice', detail: 'x', at: 1 });
     const reopened = openSqliteStore(path);

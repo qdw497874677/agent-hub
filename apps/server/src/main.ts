@@ -260,7 +260,7 @@ const messageBus = createMessageBus({
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
   spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, options: role.options, actor, via: 'bot'
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, actor, via: 'bot'
   })
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
@@ -277,7 +277,7 @@ const groupChat = createGroupChat({
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-group'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
   spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.agentId, model: role.model, options: role.options, actor, via: 'group'
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, actor, via: 'group'
   }),
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
@@ -340,7 +340,7 @@ const connectorHub = createConnectorHub({
     const actor = await loadActor(store.users, store.access, ownerId, 'agent-connector');
     if (!actor) return err(forbidden('建这个触发的账号已停用'));
     return openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-      projectId, title, ownerId, agentId: role.agentId, model: role.model, options: role.options, actor, via: 'bot',
+      projectId, title, ownerId, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, actor, via: 'bot',
       afterDerive: async (session) => {
         // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去。先于来历。
         await store.messages.saveSpawn({ sessionId: session.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: session.id, traceId: `connector:${session.id}`, createdAt: Date.now() });
@@ -381,7 +381,7 @@ const dispatcher = createDispatcher({
       agentId: d.agentId,
       model: d.model ?? '',
       actor,
-      ...(role?.options ? { options: role.options } : {})
+      ...(role?.ref.options ? { options: role.ref.options } : {})
     });
     if (!created.ok) return created;
     await recordProvenance({ provenance: store.provenance, audit: store.audit, now: deps.now }, { session: created.value, subject: actor, via: 'bot' }).catch(() => undefined);
@@ -419,7 +419,7 @@ const enqueueDispatch = async (r: AgentTaskRequest) => {
   const creator = await deps.sessions.byId(r.sessionId as SessionId);
   const bot = await botOfSession(r.sessionId as SessionId);
   const role = bot ? (await messageBus.config(bot.projectId as ProjectId)).roles.find((x) => x.name === bot.name) : null;
-  await dispatcher.enqueue(r, { agentId: role?.agentId ?? creator?.agentId ?? null, model: role?.model ?? creator?.model ?? null });
+  await dispatcher.enqueue(r, { agentId: role?.ref.runtime ?? creator?.agentId ?? null, model: role?.ref.model ?? creator?.model ?? null });
   void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`));
 };
 setInterval(() => void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`)), 10_000).unref();

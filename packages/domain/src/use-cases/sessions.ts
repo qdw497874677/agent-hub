@@ -14,6 +14,7 @@ import type { Deps } from './deps.ts';
 import { ensureHosted, startCommand } from './hosting.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
 import type { ProviderProtocol } from '../provider.ts';
+import { mergeAgentRef, type AgentRef } from '../agent-ref.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
@@ -23,8 +24,12 @@ import { agentProfileForUse } from './agent-profiles.ts';
 
 export interface DeriveCommand {
   readonly taskId: string;
-  readonly agentId: string;
-  readonly model: string;
+  /** 三件套：runtime + model + 启动选项。新调用点用它，旧字段只为兼容保留。 */
+  readonly ref?: AgentRef;
+  /** @deprecated 用 `ref`；给了就覆盖 `ref.runtime`。 */
+  readonly agentId?: string;
+  /** @deprecated 用 `ref`；给了就覆盖 `ref.model`。 */
+  readonly model?: string;
   /** 人在对话框里点名的 Worker；不点名就由落点规则挑。 */
   readonly workerId?: string | null;
   /** 运行面板里选定的工作空间：会话就落在它所在的机器、在它的目录里干活。 */
@@ -35,9 +40,9 @@ export interface DeriveCommand {
   readonly requires?: readonly string[];
   /** 派生前已核对的 hub 提供商协议。用来拒绝 agent 不认的协议；不是 hub 模型就不传。 */
   readonly hubProtocol?: ProviderProtocol;
-  /** 用一份 Agent 配置启动；profile 里的 agent/model/options 作为默认，command.options 可覆盖选项。 */
+  /** 用一份 Agent 配置启动；profile 里的 ref 作为默认，command.options 可覆盖选项。 */
   readonly profileId?: string;
-  /** 直接指定启动选项（例如从 Agent 配置套用后用户又改过）。 */
+  /** 直接指定启动选项（例如从 Agent 配置套用后用户又改过）。@deprecated 用 `ref.options`。 */
   readonly options?: Readonly<Record<string, string | boolean>>;
   /** 谁拥有新会话；工具派生时继承父会话主人，人类请求默认取 actor。 */
   readonly createdBy?: string | null;
@@ -53,20 +58,23 @@ export async function deriveSessionUseCase(
   const project = await deps.projects.byId(task.projectId);
   if (!project) return err(notFound('项目不存在'));
 
-  let agentIdValue = command.agentId;
-  let modelValue = command.model;
-  let initialOptions = { ...(command.options ?? {}) };
+  // 归一成 ref：旧字段（agentId/model/options）优先，保持既有调用点语义。
+  const commandRef: AgentRef = {
+    runtime: command.agentId ?? command.ref?.runtime ?? '',
+    model: command.model ?? command.ref?.model ?? '',
+    options: { ...(command.ref?.options ?? {}), ...(command.options ?? {}) }
+  };
+  // profile 打底：runtime / model 听 profile 的，选项让 command 覆盖（与旧行为一致）。
+  let ref = commandRef;
   if (command.profileId) {
     const profile = await agentProfileForUse(deps, principalOfSubject(command.actor)?.user.id ?? null, command.profileId);
     if (!profile.ok) return profile;
-    agentIdValue = profile.value.agentId;
-    modelValue = profile.value.model;
-    initialOptions = { ...profile.value.options, ...initialOptions };
+    ref = mergeAgentRef(profile.value.ref, { options: commandRef.options });
   }
 
-  const agentId = asAgentId(agentIdValue);
+  const agentId = asAgentId(ref.runtime);
   const descriptor = deps.agents.descriptor(agentId);
-  if (!descriptor) return err(conflict(`没有在线节点提供 ${agentIdValue}`));
+  if (!descriptor) return err(conflict(`没有在线节点提供 ${ref.runtime}`));
   if (descriptor.capabilities.prompt.state === 'denied') {
     return err(conflict(descriptor.capabilities.prompt.reason ?? '该 agent 不可发送消息'));
   }
@@ -91,13 +99,13 @@ export async function deriveSessionUseCase(
     agentId,
     requested: chosen ? chosen.workerId : (command.workerId ?? null),
     projectWorker: workspace.workerId,
-    model: modelValue,
+    model: ref.model,
     ...(command.requires?.length ? { requires: command.requires } : {})
   });
   if (!placed.ok) return placed;
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, placed.value);
   if (!allowed.ok) return allowed;
-  const model = checkModelOn(workers, placed.value, agentId, modelValue, command.hubProtocol);
+  const model = checkModelOn(workers, placed.value, agentId, ref.model, command.hubProtocol);
   if (!model.ok) return model;
   const created = deriveSession({
     task,
@@ -107,7 +115,7 @@ export async function deriveSessionUseCase(
     workerId: placed.value,
     workspaceId: workspace.id,
     createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
-    options: initialOptions
+    options: ref.options
   });
   if (!created.ok) return created;
 

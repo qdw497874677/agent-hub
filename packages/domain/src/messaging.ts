@@ -1,5 +1,5 @@
 import { newId, type ProjectId, type SessionId } from './ids.ts';
-import { optionValues, type RuntimeOption } from './option.ts';
+import { validateAgentRef, type AgentRef } from './agent-ref.ts';
 
 /**
  * agent 间通信 · P2P 内核（ADR 0018，docs/design/agent-messaging.md）。
@@ -101,20 +101,16 @@ export interface PersistentAgent {
   readonly displayName?: string;
   readonly color?: string;
   readonly description: string;
-  readonly agentId: string;
-  readonly model: string;
-  readonly reuse: RoleReuse;
   /**
-   * 建会话时垫进去的启动选项（如 `thought_level: 'medium'`）。会话创建后仍可在会话里覆盖，
-   * 这里的值只是默认值——与会话的 `options` 是同一套 key，不新增一套定义。
+   * runtime + model + 启动选项（如 `thought_level: 'medium'`）。建会话时垫进去；
+   * 会话创建后仍可在会话里覆盖，这里的值只是默认值——与会话的 `options` 是同一套 key。
    */
-  readonly options?: Readonly<Record<string, string | boolean>>;
+  readonly ref: AgentRef;
+  readonly reuse: RoleReuse;
 }
 /** @deprecated 旧名，等同 PersistentAgent。 */
 export type AgentRole = PersistentAgent;
 
-/** 一个 bot 最多带多少个启动选项；太多了说明该用 Agent 配置而不是 bot。 */
-export const PERSISTENT_AGENT_OPTIONS_MAX = 16;
 export const PERSISTENT_AGENT_DESCRIPTION_MAX = 4000;
 export const PERSISTENT_AGENT_DISPLAY_NAME_MAX = 40;
 export const PERSISTENT_AGENT_COLORS = ['amber', 'sage', 'sky', 'rose', 'olive', 'slate'] as const;
@@ -154,49 +150,6 @@ export function effectiveLimits(override: Partial<MessageLimits> | undefined): M
   return { maxDepth: pick('maxDepth'), maxConcurrent: pick('maxConcurrent'), maxFanOut: pick('maxFanOut') };
 }
 
-export const OPTION_KEY = /^[a-z][a-z0-9_.-]{0,40}$/;
-
-/** bot 启动选项的体检：key 形状、值的类型与长度、条数。没问题返回 null。 */
-export function persistentAgentOptionsProblem(options: Readonly<Record<string, string | boolean>> | undefined): string | null {
-  if (!options) return null;
-  const keys = Object.keys(options);
-  if (keys.length > PERSISTENT_AGENT_OPTIONS_MAX) return `启动选项最多 ${PERSISTENT_AGENT_OPTIONS_MAX} 个`;
-  for (const key of keys) {
-    if (!OPTION_KEY.test(key)) return `启动选项 ${key} 的键只能用小写字母、数字、-、_ 和 .`;
-    const value = options[key];
-    if (typeof value === 'boolean') continue;
-    if (typeof value !== 'string') return `启动选项 ${key} 只能是文本或开关`;
-    if (value.length > 200) return `启动选项 ${key} 最多 200 字`;
-  }
-  return null;
-}
-
-/**
- * 有 agent 上报过的可调项时，再拿它校一遍：键必须是这个 agent 真有的项，值必须落在候选里。
- *
- * 为什么要这一步：`acp-runtime.ts` 开跑时逐个 `changeOption`，值不合法会让会话直接失败。
- * 保存时拦住，比每条消息都新开一条 failed 会话强。清单为空（新 agent 还没上报过）时只做形状校验。
- */
-export function persistentAgentOptionsSpecProblem(
-  options: Readonly<Record<string, string | boolean>> | undefined,
-  specs: readonly RuntimeOption[]
-): string | null {
-  const shape = persistentAgentOptionsProblem(options);
-  if (shape !== null || options === undefined || specs.length === 0) return shape;
-  for (const [id, value] of Object.entries(options)) {
-    const spec = specs.find((option) => option.id === id);
-    if (!spec) return `agent 没有可调项 ${id}（先开一条会话，看它上报了哪些项）`;
-    if (spec.kind === 'boolean') {
-      if (typeof value !== 'boolean') return `${id} 只能是开关`;
-      continue;
-    }
-    if (typeof value !== 'string') return `${id} 要选一个候选值`;
-    const allowed = optionValues(spec).map((choice) => choice.value);
-    if (allowed.length > 0 && !allowed.includes(value)) return `${id} 只能是 ${allowed.slice(0, 6).join(' / ')}`;
-  }
-  return null;
-}
-
 /** 配置校验：给人看的问题，没问题 null。超过 2 倍直接拒，不悄悄夹。 */
 export function configProblem(input: { roles: readonly AgentRole[]; limits: Partial<MessageLimits> }): string | null {
   const names = new Set<string>();
@@ -204,13 +157,13 @@ export function configProblem(input: { roles: readonly AgentRole[]; limits: Part
     if (!ROLE_NAME.test(role.name)) return `@id ${role.name} 只能用小写字母、数字、- 和 _（最多 40 个字符）`;
     if (names.has(role.name)) return `@${role.name} 已经有了`;
     names.add(role.name);
-    if (!role.agentId.trim()) return `角色 ${role.name} 要指定 agent`;
+    if (!role.ref.runtime.trim()) return `角色 ${role.name} 要指定 agent`;
     if (!['sticky', 'per-trace', 'always-new'].includes(role.reuse)) return `角色 ${role.name} 的复用方式不对`;
     if (role.description.length > PERSISTENT_AGENT_DESCRIPTION_MAX) return `bot ${role.name} 的职责说明最多 ${PERSISTENT_AGENT_DESCRIPTION_MAX} 字`;
     if (role.displayName !== undefined && role.displayName.length > PERSISTENT_AGENT_DISPLAY_NAME_MAX) return `bot ${role.name} 的名字最多 ${PERSISTENT_AGENT_DISPLAY_NAME_MAX} 字`;
     if (role.color !== undefined && !(PERSISTENT_AGENT_COLORS as readonly string[]).includes(role.color)) return `bot ${role.name} 的颜色不对`;
-    const optionsProblem = persistentAgentOptionsProblem(role.options);
-    if (optionsProblem) return `bot ${role.name} 的${optionsProblem}`;
+    const ref = validateAgentRef(role.ref);
+    if (!ref.ok) return `bot ${role.name} 的${ref.error.message}`;
   }
   for (const [key, value] of Object.entries(input.limits)) {
     if (!(key in DEFAULT_MESSAGE_LIMITS)) return `不认识的限额 ${key}`;

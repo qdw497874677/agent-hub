@@ -380,7 +380,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (target) {
         await pump(target.id);
       } else {
-        await audit(message, message, 'spawn_requested', from.id, `role:${role?.name}（${role?.agentId}）等人批准`);
+        await audit(message, message, 'spawn_requested', from.id, `role:${role?.name}（${role?.ref.runtime}）等人批准`);
       }
       const saved = (await deps.messages.byId(message.id)) ?? message;
       return ok({ messageId: saved.id, traceId, status: saved.status, targetSessionId: saved.targetSessionId });
@@ -479,7 +479,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       }
       if (!(await deps.messages.spawnOf(from.id))) {
         for (const role of (await loadConfig(project.id)).roles) {
-          entries.push({ address: `role:${role.name}`, label: `${role.name}（${role.agentId}）`, status: role.reuse, description: role.description });
+          entries.push({ address: `role:${role.name}`, label: `${role.name}（${role.ref.runtime}）`, status: role.reuse, description: role.description });
         }
       }
       return ok(entries);
@@ -530,7 +530,16 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     async saveConfig(projectId, input) {
       const problem = configProblem(input);
       if (problem) return err(invalid(problem));
-      const config: MessagingConfig = { projectId, roles: input.roles.map((r) => ({ ...r, name: r.name.trim(), agentId: r.agentId.trim() })), limits: input.limits, updatedAt: deps.now() };
+      const config: MessagingConfig = {
+        projectId,
+        roles: input.roles.map((r) => ({
+          ...r,
+          name: r.name.trim(),
+          ref: { ...r.ref, runtime: r.ref.runtime.trim(), model: r.ref.model.trim() }
+        })),
+        limits: input.limits,
+        updatedAt: deps.now()
+      };
       await deps.messages.saveConfig(config);
       return ok(config);
     }

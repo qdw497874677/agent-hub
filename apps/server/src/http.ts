@@ -124,6 +124,7 @@ import { installAdmin } from './admin.ts';
 import { installTeam } from './team.ts';
 import { installAccessRoutes } from './access-routes.ts';
 import { installMessagingRoutes, type MessagingRouteDeps } from './messaging-routes.ts';
+import { agentProfileDto } from './agent-ref-dto.ts';
 import { installMemoryRoutes, type MemoryRouteDeps } from './memory-routes.ts';
 import { installAssetRoutes, type AssetRouteOptions } from './assets.ts';
 import { installAssetMarket } from './asset-market.ts';
@@ -614,7 +615,7 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/agent-profiles', async (c) => {
     const ownerId = principalOf(c)?.user.id ?? null;
     const result = await listAgentProfiles(deps, ownerId);
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    return result.ok ? c.json(result.value.map(agentProfileDto)) : fail(c, result.error);
   });
 
   app.post('/api/agent-profiles', async (c) => {
@@ -622,7 +623,7 @@ export function createApp(options: AppOptions): Hono {
     if (!input.ok) return input.response;
     const ownerId = principalOf(c)?.user.id ?? null;
     const result = await createAgentProfile(deps, ownerId, input.value);
-    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+    return result.ok ? c.json(agentProfileDto(result.value), 201) : fail(c, result.error);
   });
 
   app.patch('/api/agent-profiles/:profileId', async (c) => {
@@ -630,7 +631,7 @@ export function createApp(options: AppOptions): Hono {
     if (!input.ok) return input.response;
     const ownerId = principalOf(c)?.user.id ?? null;
     const result = await updateAgentProfile(deps, ownerId, c.req.param('profileId'), input.value);
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    return result.ok ? c.json(agentProfileDto(result.value)) : fail(c, result.error);
   });
 
   app.delete('/api/agent-profiles/:profileId', async (c) => {
@@ -647,7 +648,7 @@ export function createApp(options: AppOptions): Hono {
     if (input.value.profileId) {
       const profile = await agentProfileForUse(deps, principalOf(c)?.user.id ?? null, input.value.profileId);
       if (!profile.ok) return fail(c, profile.error);
-      modelForCheck = profile.value.model;
+      modelForCheck = profile.value.ref.model;
     }
     const allowed = await options.providers?.checkModel(actor, modelForCheck, input.value.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);

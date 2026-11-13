@@ -103,7 +103,7 @@ async function world(options: { askTimeoutMs?: number; links?: SessionLinkReposi
       const t = createTask({ projectId: p.id, title: 'spawned', goal: '', now: clock });
       assert.ok(t.ok);
       await deps.tasks.save(t.value);
-      const s = deriveSession({ task: t.value, agentId: asAgentId(role.agentId), model: role.model, now: clock, createdBy: 'olga' });
+      const s = deriveSession({ task: t.value, agentId: asAgentId(role.ref.runtime), model: role.ref.model, now: clock, createdBy: 'olga' });
       assert.ok(s.ok);
       await deps.sessions.save(s.value);
       return s;
@@ -236,7 +236,7 @@ test('并发上限 8：同一条链同时进行中的消息', async () => {
 
 test('派生新会话：要 agent.spawn、要人批；批完投递，派生会话默认隔离', async () => {
   const w = await world();
-  assert.ok((await w.bus.saveConfig(w.project.id, { roles: [{ name: 'reviewer', description: '审代码', agentId: 'pi', model: '', reuse: 'sticky' }], limits: {} })).ok);
+  assert.ok((await w.bus.saveConfig(w.project.id, { roles: [{ name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' }], limits: {} })).ok);
   const a = await w.newSession('alice');
   // alice 是 member，没有 agent.spawn
   const denied = await w.bus.accept({ fromSessionId: a.id, kind: 'ask', to: 'role:reviewer', body: 'review' });
@@ -270,7 +270,7 @@ test('派生新会话：要 agent.spawn、要人批；批完投递，派生会�
 
 test('拒绝派生：提问方收到一条 denied 的失败回复', async () => {
   const w = await world();
-  assert.ok((await w.bus.saveConfig(w.project.id, { roles: [{ name: 'qa', description: '', agentId: 'pi', model: '', reuse: 'always-new' }], limits: {} })).ok);
+  assert.ok((await w.bus.saveConfig(w.project.id, { roles: [{ name: 'qa', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'always-new' }], limits: {} })).ok);
   const o = await w.newSession('olga');
   const asked = await w.bus.accept({ fromSessionId: o.id, kind: 'ask', to: 'role:qa', body: 'test' });
   assert.ok(asked.ok);

@@ -45,9 +45,7 @@ export async function updateAgentProfile(
   const next: AgentProfile = {
     ...current,
     name: valid.value.name,
-    agentId: valid.value.agentId,
-    model: valid.value.model,
-    options: valid.value.options,
+    ref: valid.value.ref,
     notes: valid.value.notes,
     updatedAt: deps.now()
   };

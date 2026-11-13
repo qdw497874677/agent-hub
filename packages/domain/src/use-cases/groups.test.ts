@@ -78,10 +78,10 @@ const user = (id: string, role: Role): User =>
   ({ id: id as UserId, email: `${id}@x.test`, displayName: id, role, passwordHash: null, emailVerifiedAt: 1, disabledAt: null, createdAt: 1, teamId: 'T', clusterAdmin: false, deletedAt: null }) as unknown as User;
 
 const ROLES: AgentRole[] = [
-  { name: 'host', description: '分派', agentId: 'pi', model: 'm-host', reuse: 'sticky' },
-  { name: 'coder', description: '写代码', agentId: 'pi', model: '', reuse: 'sticky' },
-  { name: 'reviewer', description: '审代码', agentId: 'pi', model: '', reuse: 'sticky' },
-  { name: 'nomodel', description: '', agentId: 'pi', model: '', reuse: 'sticky' }
+  { name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky' },
+  { name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' },
+  { name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' },
+  { name: 'nomodel', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky' }
 ];
 
 async function world() {
@@ -124,7 +124,7 @@ async function world() {
       const t = createTask({ projectId: p.id, title: 'g', goal: '', now: clock });
       assert.ok(t.ok);
       await deps.tasks.save(t.value);
-      const s = deriveSession({ task: t.value, agentId: asAgentId(role.agentId), model: role.model, now: clock, createdBy: actor.user.id });
+      const s = deriveSession({ task: t.value, agentId: asAgentId(role.ref.runtime), model: role.ref.model, now: clock, createdBy: actor.user.id });
       assert.ok(s.ok);
       await deps.sessions.save(s.value);
       return s;
@@ -552,8 +552,8 @@ test('bot 的启动选项：能存能改，形状不对就拒', async () => {
   assert.ok(!(await agents.create(w.alice, w.project.id, { name: 'bad', agentId: 'pi', options: { thought_level: 'x'.repeat(201) } })).ok, '值太长');
   const ok = await agents.create(w.alice, w.project.id, { name: 'slow', agentId: 'pi', options: { thought_level: 'high', sandbox: true } });
   assert.ok(ok.ok, ok.ok ? '' : ok.error.message);
-  assert.deepEqual(ok.value.options, { thought_level: 'high', sandbox: true });
+  assert.deepEqual(ok.value.ref.options, { thought_level: 'high', sandbox: true });
   const cleared = await agents.update(w.alice, w.project.id, 'slow', { options: {} });
   assert.ok(cleared.ok, cleared.ok ? '' : cleared.error.message);
-  assert.equal(cleared.value.options, undefined, '清空后不落空对象');
+  assert.deepEqual(cleared.value.ref.options, {}, '清空后是空对象，不再是 undefined');
 });

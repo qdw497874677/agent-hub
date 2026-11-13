@@ -223,9 +223,9 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
         if (profileId) {
           const profile = await agentProfileForUse(deps, me.createdBy ?? null, profileId);
           if (!profile.ok) return profile;
-          agentId = profile.value.agentId;
-          model = profile.value.model;
-          options = ok({ ...profile.value.options, ...options.value });
+          agentId = profile.value.ref.runtime;
+          model = profile.value.ref.model;
+          options = ok({ ...profile.value.ref.options, ...options.value });
         }
         if (!deps.agents.descriptor(asAgentId(agentId))) return err(notFound(`没有在线节点提供 ${agentId}`));
 

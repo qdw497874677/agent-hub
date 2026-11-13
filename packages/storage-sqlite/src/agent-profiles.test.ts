@@ -1,15 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { asAgentId, type AgentProfile } from '@agent-hub/domain';
+import { type AgentProfile } from '@agent-hub/domain';
 import { openSqliteStore } from './store.ts';
 
 const profile = (id: string, ownerId: string | null, name: string): AgentProfile => ({
   id,
   ownerId,
   name,
-  agentId: asAgentId('opencode'),
-  model: 'my-codex/go-glm-5.3',
-  options: { mode: 'build', effort: 'high' },
+  ref: { runtime: 'opencode', model: 'my-codex/go-glm-5.3', options: { mode: 'build', effort: 'high' } },
   notes: 'notes',
   createdAt: 10,
   updatedAt: 10
@@ -26,7 +24,7 @@ test('Agent 配置存储：按 owner 查、保存覆盖、删除', async () => {
   assert.equal((await store.agentProfiles.listByOwner(null)).length, 0);
 
   const found = await store.agentProfiles.byId('p1');
-  assert.equal(found?.options.mode, 'build');
+  assert.equal(found?.ref.options.mode, 'build');
 
   await store.agentProfiles.save({ ...profile('p1', 'u1', '探索 v2'), updatedAt: 20 });
   assert.equal((await store.agentProfiles.byId('p1'))?.name, '探索 v2');
