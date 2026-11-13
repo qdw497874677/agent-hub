@@ -167,7 +167,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, drafts, onDra
           onBack={() => act((current) => minimizeWindow(current, shown.sessionId))}
           onClose={() => act((current) => closeWindow(current, shown.sessionId))}
         />
-        <div className="min-h-0 flex-1">{pane(shown.sessionId, null)}</div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{pane(shown.sessionId, null)}</div>
       </div>
     );
   }
