@@ -24,6 +24,7 @@ export type { McpEndpoint } from './mcp-endpoint.ts';
 export { serveWorkerFiles } from './worker-fs-rpc.ts';
 export { enrollOverLink, type EnrollOutcome } from './worker-enroll.ts';
 export { createGitWorkspace, keepReason, relocateWorktree, type GitWorkspaceOptions } from './git-workspace.ts';
+export { runSetupScript, setupEnv, scrubCredentials, tailOutput, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENIED, SETUP_OUTPUT_MAX, type SetupScriptInput, type SetupScriptOutcome } from './setup-script.ts';
 export { createRuntimeStore, defaultRuntimesRoot, readInstalledEntry, type RuntimeStore } from './runtime-store.ts';
 export { createRuntimeManager, installEnv, type RuntimeManager, type RuntimeJobCommand, type RuntimeJobReport } from './runtime-jobs.ts';
 export { createProviderRelay, type ProviderRelay, type RelaySession } from './provider-relay.ts';

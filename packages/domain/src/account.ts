@@ -165,6 +165,8 @@ export type AuditAction =
   | 'git.text'
   | 'git.push'
   | 'git.pr'
+  | 'project.worktree'
+  | 'workspace.setup'
   | 'git.host_token.set'
   | 'git.host_token.remove'
   | 'context.strategy.set'

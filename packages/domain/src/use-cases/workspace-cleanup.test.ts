@@ -14,7 +14,7 @@ async function world(repoUrl?: string) {
   assert.ok(project.ok);
   const task = await createTaskUseCase(w.deps, { projectId: project.value.id, title: 'fix' });
   assert.ok(task.ok);
-  const temp = await prepareTemporaryWorkspaceUseCase(w.deps, { projectId: project.value.id, taskId: task.value.id, workerId: 'remote-1', home: '/home/me' });
+  const temp = await prepareTemporaryWorkspaceUseCase(w.deps, { projectId: project.value.id, taskId: task.value.id, workerId: 'remote-1', home: '/home/me', mode: 'isolated' });
   assert.ok(temp.ok, temp.ok ? '' : temp.error.message);
   const finish = () => setTaskStatusUseCase(w.deps, task.value.id, 'done', 'user');
   return { ...w, project: project.value, task: task.value, temp: temp.value, finish };
@@ -196,7 +196,7 @@ test('删工作空间时删检查点；记录可查；任务再开始时从分�
   const records = await cleanupRecordsUseCase(w.deps, null, w.project.id);
   assert.ok(records.ok && records.value.items.length === 1);
   await setTaskStatusUseCase(w.deps, w.task.id, 'in_progress', 'user');
-  const again = await prepareTemporaryWorkspaceUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, workerId: 'remote-1', home: '/home/me' });
+  const again = await prepareTemporaryWorkspaceUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, workerId: 'remote-1', home: '/home/me', mode: 'isolated' });
   assert.ok(again.ok, again.ok ? '' : again.error.message);
   assert.equal(again.value.path, w.temp.path);
   assert.equal(again.value.branch, w.temp.branch);

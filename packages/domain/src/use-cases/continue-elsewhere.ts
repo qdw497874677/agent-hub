@@ -92,7 +92,8 @@ export async function continueElsewhereUseCase(
       taskId: task.id,
       workerId: targetWorker,
       home: command.home,
-      ...(branch ? (sameMachine ? { base: branch } : { branch }) : {})
+      // 要「从 WIP 分支长个新分支」只能靠 worktree；shared 是直接复用长期目录，没有分支这一步
+      ...(branch ? (sameMachine ? { base: branch, mode: 'isolated' as const } : { branch }) : {})
     });
     if (!made.ok) return made;
     chosen = made.value;

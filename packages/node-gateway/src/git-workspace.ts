@@ -4,6 +4,7 @@ import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
 import type { CommitPreview, DomainError, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
 import { conflict, folderNameProblem, invalid, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
+import { runSetupScript } from './setup-script.ts';
 
 /**
  * WorkspaceGit 的 git 实现（simple-git，跑这台机器上的 git 和它自己的凭据）。
@@ -266,6 +267,13 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
       await rm(path, { recursive: true, force: true });
       return { ok: true, value: { removed: true } };
+    },
+
+    async runSetup({ path, command, timeoutMs, env }) {
+      const blocked = await guard(path);
+      if (blocked) return { ok: false, error: blocked };
+      if (!(await exists(path))) return { ok: false, error: invalid(`准备命令要用的目录不存在：${path}`) };
+      return { ok: true, value: await runSetupScript({ path, command, timeoutMs, ...(env ? { env } : {}) }) };
     }
   };
 }

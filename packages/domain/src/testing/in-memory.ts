@@ -435,6 +435,8 @@ export interface FakeGit {
   readonly previews: Map<string, CommitPreview>;
   /** gh 的行为：null = 没装；否则建出来的 PR 编号从这里递增。 */
   gh: { next: number; state: RemotePullRequest['state'] } | null;
+  /** 准备命令的结果；没登记 = 成功（exit 0、无输出），'*' = 所有路径的默认值。 */
+  readonly setups: Map<string, { exitCode: number; output: string; timedOut: boolean }>;
   on(machine: string): WorkspaceGit;
 }
 
@@ -443,6 +445,7 @@ export function fakeGit(): FakeGit {
   const statuses = new Map<string, GitStatus>();
   const repos = new Set<string>();
   const previews = new Map<string, CommitPreview>();
+  const setups = new Map<string, { exitCode: number; output: string; timedOut: boolean }>();
   const state: FakeGit = {
     calls,
     statuses,
@@ -450,6 +453,7 @@ export function fakeGit(): FakeGit {
     failNext: null,
     previews,
     gh: null,
+    setups,
     on(machine) {
       const fail = () => {
         const reason = state.failNext;
@@ -524,6 +528,12 @@ export function fakeGit(): FakeGit {
           const squashed = options?.mergedHead !== undefined && status.head === options.mergedHead;
           if (status.dirty || status.untracked > 0 || (status.unpushed > 0 && !squashed)) return ok({ removed: false, reason: '有未保存的改动' });
           return ok({ removed: true });
+        },
+        runSetup: async ({ path, command, timeoutMs }) => {
+          calls.push(`${machine}:run_setup:${path}:${command}:${timeoutMs}`);
+          const reason = fail();
+          if (reason) return err(unavailable(reason));
+          return ok(setups.get(path) ?? setups.get('*') ?? { exitCode: 0, output: '', timedOut: false });
         }
       };
     }

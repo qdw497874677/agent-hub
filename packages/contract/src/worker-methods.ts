@@ -79,6 +79,13 @@ export const wsAddWorktree = method(
   z.object({ path: z.string(), branch: z.string() })
 );
 
+/** 在工作空间里跑项目配置的准备命令（docs/design/worktree.md §4）。只认项目配置，不接受逐次传入。 */
+export const wsRunSetup = method(
+  'ws.run_setup', 'git',
+  z.object({ path: z.string(), command: z.string().min(1), timeoutMs: z.number().int().positive(), env: z.record(z.string(), z.string()).optional() }),
+  z.object({ exitCode: z.number().int(), output: z.string(), timedOut: z.boolean() })
+);
+
 export const wsStatus = method(
   'ws.status', 'files.read',
   z.object({ path: z.string() }),

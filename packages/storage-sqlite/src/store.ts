@@ -134,6 +134,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'description')) {
     db.exec('ALTER TABLE projects ADD COLUMN description TEXT');
   }
+  // 项目级 worktree 配置（docs/design/worktree.md §3）：JSON；NULL = 没配，按 shared 处理。
+  if (!projectColumns.some((column) => column.name === 'worktree_config')) {
+    db.exec('ALTER TABLE projects ADD COLUMN worktree_config TEXT');
+  }
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
@@ -144,6 +148,11 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'title')) db.exec('ALTER TABLE sessions ADD COLUMN title TEXT');
   upgradeWorkspaceTable(db);
   db.exec(WORKSPACE_SCHEMA);
+  // 准备命令状态（docs/design/worktree.md §4）：老库补列；v2 表也要补（upgradeWorkspaceTable 不会再加列）。
+  const workspaceColumns = db.prepare('PRAGMA table_info(workspaces)').all() as { name: string }[];
+  if (!workspaceColumns.some((column) => column.name === 'setup')) {
+    db.exec('ALTER TABLE workspaces ADD COLUMN setup TEXT');
+  }
   migrateTasksV2(db);
   migrateWorkspaces(db);
   cleanLegacyLogText(db);
@@ -153,10 +162,11 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, description, created_at, team_id, created_by, members, deleted_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, description, worktree_config, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
       'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, description = excluded.description, ' +
+      'worktree_config = excluded.worktree_config, ' +
       'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
@@ -336,6 +346,7 @@ export function openSqliteStore(file: string): SqliteStore {
         project.repo?.url ?? null,
         project.repo?.defaultBranch ?? null,
         project.description,
+        project.worktree ? JSON.stringify(project.worktree) : null,
         project.createdAt,
         project.teamId,
         project.createdBy,

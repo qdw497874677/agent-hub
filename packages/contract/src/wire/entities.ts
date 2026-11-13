@@ -145,6 +145,21 @@ export const agentSchema = z.object({
   providers: z.array(z.enum(['openai-chat', 'openai-responses', 'anthropic'])).optional()
 });
 
+export const projectSetupSchema = z.object({
+  /** 建好 worktree 后自动跑的准备命令。只来自项目配置。 */
+  command: z.string(),
+  /** true = 阻塞 agent 启动，直到命令退出。 */
+  waitForSetup: z.boolean(),
+  /** 30..1800 秒，默认 600。 */
+  timeoutSeconds: z.number().int()
+});
+
+/** 项目级 worktree 配置（docs/design/worktree.md §3）。null = 没配，按 shared 处理。 */
+export const projectWorktreeSchema = z.object({
+  mode: z.enum(['shared', 'isolated']),
+  setup: projectSetupSchema.nullable().default(null)
+});
+
 export const projectSchema = z.object({
   id,
   name: z.string(),
@@ -152,6 +167,8 @@ export const projectSchema = z.object({
   repo: z.object({ url: z.string(), defaultBranch: z.string().nullable() }).nullable().default(null),
   /** 项目说明（markdown）。 */
   description: z.string().nullable().default(null),
+  /** 新任务默认档位 + 准备命令；null = 没配。 */
+  worktree: projectWorktreeSchema.nullable().default(null),
   createdAt: epochMs
 });
 
@@ -174,6 +191,18 @@ export const workspaceSchema = z.object({
   isGit: z.boolean().nullable(),
   state: z.enum(['preparing', 'ready', 'failed', 'kept', 'removed']),
   keptReason: z.string().nullable(),
+  /** 准备命令状态（docs/design/worktree.md §4）；null = 没配 / 从没跑过。 */
+  setup: z
+    .object({
+      state: z.enum(['none', 'running', 'ready', 'failed']),
+      exitCode: z.number().int().nullable(),
+      message: z.string().nullable(),
+      output: z.string().nullable(),
+      startedAt: epochMs.nullable(),
+      finishedAt: epochMs.nullable()
+    })
+    .nullable()
+    .default(null),
   createdAt: epochMs,
   updatedAt: epochMs
 });

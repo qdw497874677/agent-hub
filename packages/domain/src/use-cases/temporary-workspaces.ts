@@ -1,15 +1,15 @@
 import type { Subject } from '../access.ts';
-import type { Project } from '../project.ts';
+import type { Project, ProjectSetup } from '../project.ts';
 import { isUsable, newWorkspace, type Workspace } from '../workspace.ts';
-import { asProjectId, asTaskId, newId, type TaskId } from '../ids.ts';
+import { asProjectId, asTaskId, asWorkspaceId, newId, type TaskId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
-import { invalid, notFound } from '../errors.ts';
+import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { createDirectory, gitOn, parentOf, resolveMachine, rootsOf, type Machine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
 import { MANAGED_DIR } from '../directories.ts';
-import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
+import { defaultWorkspaceFor, prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 
 /** 分支和目录名里用的短 slug：只留 ascii 字母数字，中文标题退回 task。 */
 export function branchSlug(title: string): string {
@@ -38,6 +38,8 @@ export interface PrepareTemporaryCommand {
   readonly branch?: string | null;
   /** 新分支从哪儿长（换个地方继续到同一台机器：从刚推送的 WIP 分支长）。 */
   readonly base?: string | null;
+  /** 档位：shared = 复用项目的长期空间（不建 worktree）；isolated = 新开 worktree。缺省按 project.worktree?.mode ?? 'shared'。 */
+  readonly mode?: 'shared' | 'isolated';
   readonly actor?: Subject | null;
 }
 
@@ -61,16 +63,27 @@ export async function prepareTemporaryWorkspaceUseCase(
   const allowed = await authorizeWorker(deps.access, command.actor ?? null, resolved.value.workerId);
   if (!allowed.ok) return allowed;
   const machine = resolved.value;
+  // 选了档位就用选定的；没选按项目配置，老项目保持 shared。要沿用已有分支（继续干活）只能是 worktree。
+  const mode: 'shared' | 'isolated' = command.branch ? 'isolated' : (command.mode ?? project.worktree?.mode ?? 'shared');
+  const setup = project.worktree?.setup ?? null;
 
   // ADR 0027 §3：清理只删了 checkout，分支还在 → 同一台机器上按原分支、原目录重建，会话历史 / 检查点接得上
-  if (!command.branch) {
+  if (mode === 'isolated' && !command.branch) {
     const revived = await reviveRemovedWorktree(deps, task.id, machine);
     if (revived) return ok(revived);
   }
 
+  // shared：直接复用项目在这台机器上的长期空间（不建 worktree，也不跑准备命令——那是人自己的目录）
+  if (mode === 'shared') {
+    const shared = await sharedWorkspace(deps, project, machine, command);
+    if (!shared.ok) return shared;
+    if (shared.value) return ok(shared.value);
+    // 没有长期空间、也没有仓库可 clone（非 git 项目）：退回下面的临时目录
+  }
+
   const id = shortId();
   const name = `${branchSlug(task.title)}-${id}`;
-  const base = await gitBase(deps, project, machine, command);
+  const base = mode === 'isolated' ? await gitBase(deps, project, machine, command) : ok(null);
   if (!base.ok) return base;
 
   let path: string;
@@ -113,11 +126,126 @@ export async function prepareTemporaryWorkspaceUseCase(
     baseWorkspaceId: base.value?.id ?? null,
     branch,
     isGit: base.value !== null,
+    // 有准备命令：先 preparing，跑完变 ready / failed（§4 状态机）；没有就直接能用
+    state: setup ? 'preparing' : 'ready',
     now: deps.now()
   });
   if (!created.ok) return created;
-  await deps.workspaces.save(created.value);
-  return ok(created.value);
+  if (!setup) {
+    await deps.workspaces.save(created.value);
+    return ok(created.value);
+  }
+  const prepared = await runWorkspaceSetup(deps, machine, created.value, setup);
+  return ok(prepared);
+}
+
+/** shared 档：项目在这台机器上的长期空间；没有但项目有仓库 → 先 clone 一个（复用 gitBase）。都没有 = null。 */
+async function sharedWorkspace(
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces'>,
+  project: Project,
+  machine: Machine,
+  command: PrepareTemporaryCommand
+): Promise<Result<Workspace | null, DomainError>> {
+  const existing = await defaultWorkspaceFor(deps, project.id, machine.workerId);
+  if (existing) return ok(existing);
+  return gitBase(deps, project, machine, command);
+}
+
+/**
+ * 跑项目的准备命令并把结果写进 workspace.setup（docs/design/worktree.md §4）：
+ * 同步跑（waitForSetup=false 的异步化留给后续），失败不抛、写 state='failed' + 中文原因，目录保留。
+ */
+async function runWorkspaceSetup(
+  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces'>,
+  machine: Machine,
+  workspace: Workspace,
+  setup: ProjectSetup
+): Promise<Workspace> {
+  const startedAt = deps.now();
+  const running: Workspace = {
+    ...workspace,
+    state: 'preparing',
+    updatedAt: startedAt,
+    setup: { state: 'running', exitCode: null, message: null, output: null, startedAt, finishedAt: null }
+  };
+  await deps.workspaces.save(running);
+  const base = workspace.baseWorkspaceId ? await deps.workspaces.byId(workspace.baseWorkspaceId) : null;
+  const env: Record<string, string> = {
+    AGENT_HUB_PROJECT_ROOT: base?.path ?? workspace.path,
+    AGENT_HUB_WORKTREE_PATH: workspace.path,
+    ...(workspace.branch ? { AGENT_HUB_BRANCH: workspace.branch } : {})
+  };
+  const ran = await gitOn(deps, machine.route).runSetup({
+    path: workspace.path,
+    command: setup.command,
+    timeoutMs: setup.timeoutSeconds * 1000,
+    env
+  });
+  const finishedAt = deps.now();
+  if (!ran.ok) {
+    const failed: Workspace = {
+      ...running,
+      state: 'failed',
+      keptReason: '准备失败',
+      updatedAt: finishedAt,
+      setup: { state: 'failed', exitCode: null, message: ran.error.message, output: null, startedAt, finishedAt }
+    };
+    await deps.workspaces.save(failed);
+    return failed;
+  }
+  const { exitCode, output, timedOut } = ran.value;
+  const tail = output.length > 8192 ? output.slice(-8192) : output;
+  const passed = !timedOut && exitCode === 0;
+  const next: Workspace = passed
+    ? {
+        ...running,
+        state: 'ready',
+        keptReason: null,
+        updatedAt: finishedAt,
+        setup: { state: 'ready', exitCode, message: null, output: tail, startedAt, finishedAt }
+      }
+    : {
+        ...running,
+        state: 'failed',
+        keptReason: '准备失败',
+        updatedAt: finishedAt,
+        setup: {
+          state: 'failed',
+          exitCode,
+          message: timedOut ? `准备命令超时（${setup.timeoutSeconds} 秒）` : `准备命令退出码 ${exitCode}`,
+          output: tail,
+          startedAt,
+          finishedAt
+        }
+      };
+  await deps.workspaces.save(next);
+  return next;
+}
+
+export interface RetryWorkspaceSetupCommand {
+  readonly workspaceId: string;
+  readonly actor?: Subject | null;
+}
+
+/** 重跑准备命令：只对 setup.state==='failed' 的工作空间有效（§4「重试」）。项目没配命令 = 没得重试。 */
+export async function retryWorkspaceSetupUseCase(
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access'>,
+  command: RetryWorkspaceSetupCommand
+): Promise<Result<Workspace, DomainError>> {
+  const workspace = await deps.workspaces.byId(asWorkspaceId(command.workspaceId));
+  if (!workspace) return err(notFound('工作空间不存在'));
+  if (workspace.state === 'removed') return err(conflict('工作空间已经删除了'));
+  if (workspace.setup?.state !== 'failed') return err(conflict('只有准备失败的工作空间可以重试'));
+  if (!workspace.projectId) return err(conflict('这个工作空间不属于任何项目'));
+  const project = await deps.projects.byId(workspace.projectId);
+  if (!project) return err(notFound('项目不存在'));
+  const setup = project.worktree?.setup;
+  if (!setup) return err(conflict('这个项目没有配置准备命令'));
+  const resolved = await resolveMachine(deps, workspace.workerId);
+  if (!resolved.ok) return resolved;
+  const allowed = await authorizeWorker(deps.access, command.actor ?? null, resolved.value.workerId);
+  if (!allowed.ok) return allowed;
+  return ok(await runWorkspaceSetup(deps, resolved.value, workspace, setup));
 }
 
 /** 这个任务在这台机器上被清理掉的 worktree（最近的那个）：按原分支检出回原路径。失败（分支被删了…）= null，调用方照常新开。 */

@@ -26,6 +26,24 @@ export const createProjectRequest = z.object({
 /** 改项目说明：null 或空串 = 清掉。 */
 export const setProjectDescriptionRequest = z.object({ description: z.string().max(8000).nullable() });
 
+/** 改项目级 worktree 配置（docs/design/worktree.md §3）：null = 没配，按 shared 处理。 */
+export const setProjectWorktreeRequest = z.object({
+  worktree: z
+    .object({
+      mode: z.enum(['shared', 'isolated']),
+      setup: z
+        .object({
+          /** 准备命令（项目管理员写，worker 用户执行）。 */
+          command: z.string().max(4000),
+          waitForSetup: z.boolean().default(false),
+          timeoutSeconds: z.number().int().min(30).max(1800).default(600)
+        })
+        .nullable()
+        .default(null)
+    })
+    .nullable()
+});
+
 /** 绑定 / 改 / 解除项目仓库：repoUrl 为 null 或空串 = 解除。 */
 export const setProjectRepoRequest = z.object({
   repoUrl: z.string().max(500).nullable(),
@@ -84,6 +102,8 @@ export const deriveSessionRequest = z.object({
   workerId: z.string().min(1).nullable().optional(),
   /** 运行面板里选的工作空间；会话跟着它落到那台机器、那个目录。 */
   workspaceId: z.string().min(1).nullable().optional(),
+  /** 新建临时工作空间时的档位：shared = 复用长期空间；isolated = 新开 worktree。不给按项目配置。 */
+  workspaceMode: z.enum(['shared', 'isolated']).optional(),
   /** 要求的能力（ADR 0021 §8）：只落到这些能力可信的机器上。 */
   requires: z.array(z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128)).max(16).optional(),
   /** 用一份 Agent 配置启动；profile 里的 agent/model/options 作为默认。 */
@@ -103,7 +123,9 @@ export const createWorkspaceRequest = z.discriminatedUnion('kind', [
   z.object({
     workerId: z.string().min(1).nullable().default(null),
     kind: z.literal('temporary'),
-    taskId: id
+    taskId: id,
+    /** 显式要一个临时空间时默认隔离（现建 worktree）；要共用长期目录才写 shared。 */
+    mode: z.enum(['shared', 'isolated']).optional()
   })
 ]);
 

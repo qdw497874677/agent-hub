@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   is_git            INTEGER,
   state             TEXT NOT NULL CHECK (state IN ('preparing','ready','failed','kept','removed')),
   kept_reason       TEXT,
+  setup             TEXT,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL,
   CHECK ((kind = 'temporary') = (owner_task_id IS NOT NULL))
@@ -43,7 +44,7 @@ CREATE INDEX IF NOT EXISTS project_workspaces_by_workspace ON project_workspaces
 `;
 
 const WORKSPACE_COLUMNS =
-  'id, project_id, team_id, repo_url, worker_id, path, kind, source, base_workspace_id, branch, owner_task_id, label, is_git, state, kept_reason, created_at, updated_at';
+  'id, project_id, team_id, repo_url, worker_id, path, kind, source, base_workspace_id, branch, owner_task_id, label, is_git, state, kept_reason, setup, created_at, updated_at';
 
 /**
  * ADR 0026 表结构升级（幂等、可回滚）：老表 project_id 是 NOT NULL、没有 team_id / repo_url。
@@ -76,6 +77,24 @@ export function upgradeWorkspaceTable(db: DatabaseSync): boolean {
 
 const bool = (value: unknown): boolean | null => (value === null || value === undefined ? null : Number(value) === 1);
 
+/** 准备命令状态（JSON）。解析不了 → 记日志、按 null 处理（老库 / 手改过的行不该让工作空间读不出来）。 */
+function parseSetup(raw: string | null): Workspace['setup'] {
+  if (raw === null) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (typeof value !== 'object' || value === null) return null;
+    const state = (value as Record<string, unknown>)['state'];
+    if (state !== 'none' && state !== 'running' && state !== 'ready' && state !== 'failed') {
+      console.warn('[storage] workspace.setup 状态不合法，按 null 处理');
+      return null;
+    }
+    return value as Workspace['setup'];
+  } catch {
+    console.warn('[storage] workspace.setup 不是合法 JSON，按 null 处理');
+    return null;
+  }
+}
+
 export function toWorkspace(row: Row): Workspace {
   const nullable = (key: string): string | null => (row[key] as string | null) ?? null;
   const base = nullable('base_workspace_id');
@@ -96,6 +115,7 @@ export function toWorkspace(row: Row): Workspace {
     isGit: bool(row['is_git']),
     state: row['state'] as Workspace['state'],
     keptReason: nullable('kept_reason'),
+    setup: parseSetup(nullable('setup')),
     createdAt: row['created_at'] as number,
     updatedAt: row['updated_at'] as number
   };
@@ -103,11 +123,11 @@ export function toWorkspace(row: Row): Workspace {
 
 export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository {
   const upsert = db.prepare(
-    `INSERT INTO workspaces(${WORKSPACE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ` +
+    `INSERT INTO workspaces(${WORKSPACE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ` +
       'ON CONFLICT(id) DO UPDATE SET worker_id = excluded.worker_id, path = excluded.path, branch = excluded.branch, ' +
       'team_id = excluded.team_id, repo_url = excluded.repo_url, ' +
       'label = excluded.label, is_git = excluded.is_git, state = excluded.state, kept_reason = excluded.kept_reason, ' +
-      'updated_at = excluded.updated_at'
+      'setup = excluded.setup, updated_at = excluded.updated_at'
   );
   const byId = db.prepare('SELECT * FROM workspaces WHERE id = ?');
   const byProject = db.prepare(
@@ -127,7 +147,7 @@ export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository
       const fresh = exists.get(w.id) === undefined;
       upsert.run(
         w.id, w.projectId, w.teamId, w.repoUrl, w.workerId, w.path, w.kind, w.source, w.baseWorkspaceId, w.branch, w.ownerTaskId, w.label,
-        w.isGit === null ? null : w.isGit ? 1 : 0, w.state, w.keptReason, w.createdAt, w.updatedAt
+        w.isGit === null ? null : w.isGit ? 1 : 0, w.state, w.keptReason, w.setup ? JSON.stringify(w.setup) : null, w.createdAt, w.updatedAt
       );
       if (fresh && w.kind === 'long_lived' && w.projectId !== null) link.run(w.projectId, w.id, null, w.createdAt);
     },

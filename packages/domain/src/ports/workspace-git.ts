@@ -121,6 +121,23 @@ export interface RemoveOptions {
 /** 删除的结果：被拒（有改动）不是错误，原因写在 reason 里，hub 据此标 kept。 */
 export type RemoveOutcome = { readonly removed: true } | { readonly removed: false; readonly reason: string };
 
+/** 准备命令的输入：目录、命令、超时。 */
+export interface RunSetupInput {
+  readonly path: string;
+  readonly command: string;
+  readonly timeoutMs: number;
+  /** 额外注入的环境变量（AGENT_HUB_PROJECT_ROOT 等）；worker 只放行白名单里的键。 */
+  readonly env?: Readonly<Record<string, string>>;
+}
+
+/** 准备命令的结果：超时也走 ok，timedOut=true + exitCode 124。 */
+export interface RunSetupOutcome {
+  readonly exitCode: number;
+  /** 最后 8KB（已抹 `user:token@`）。 */
+  readonly output: string;
+  readonly timedOut: boolean;
+}
+
 /**
  * 工作空间的 git / 目录操作（docs/design/workspaces.md §3）。
  * 在目录所在的那台机器上执行：本机直接跑，远端 Worker 走 ws.* RPC。
@@ -143,4 +160,9 @@ export interface WorkspaceGit {
   gh(path: string, request: GhRequest): Promise<Result<GhOutcome, DomainError>>;
   /** worktree 用 `git worktree remove`（不 --force，分支保留）；directory 只删平台建的临时目录。删之前再查一次。 */
   remove(path: string, kind: RemoveKind, options?: RemoveOptions): Promise<Result<RemoveOutcome, DomainError>>;
+  /**
+   * 在 path 里跑项目的准备命令（docs/design/worktree.md §4）：
+   * worker 用户身份、`sh -lc`、超时杀整个进程组、输出只留最后 8KB 并抹掉 `user:token@`。
+   */
+  runSetup(input: RunSetupInput): Promise<Result<RunSetupOutcome, DomainError>>;
 }

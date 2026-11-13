@@ -145,11 +145,14 @@ test('启动：没有 environment 端口也按原指令派发（环境准备不�
   });
   const { environment: _dropped, ...withoutEnvironment } = w.deps;
 
-  const started = await startSessionUseCase(withoutEnvironment as Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions'>, {
-    session,
-    workspaceRoot: '',
-    resume: null
-  });
+  const started = await startSessionUseCase(
+    withoutEnvironment as Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions' | 'workspaces'>,
+    {
+      session,
+      workspaceRoot: '',
+      resume: null
+    }
+  );
 
   assert.ok(started.ok);
   assert.equal(sent.length, 1);

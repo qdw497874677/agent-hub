@@ -21,6 +21,7 @@ import {
   makeDirectoryRequest,
   setProjectRepoRequest,
   setProjectDescriptionRequest,
+  setProjectWorktreeRequest,
   homeSchema,
   searchResponseSchema,
   createTaskRequest,
@@ -49,7 +50,7 @@ import {
   workerInfoSchema
 } from '@agent-hub/contract';
 import type { SessionEnvironmentDto } from '@agent-hub/contract';
-import type { Deps, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
+import type { AuditAction, Deps, LogAuthor, Principal, Subject, TaskStatus } from '@agent-hub/domain';
 import { systemSubject, isSystem, loadAttention, NEEDS_HUMAN } from '@agent-hub/domain';
 import type { AttentionStore, PullRequestRepository } from '@agent-hub/domain';
 const NO_AUTH_SUBJECT = systemSubject('no-auth');
@@ -117,7 +118,12 @@ import {
   saveLayoutUseCase,
   searchUseCase,
   setTaskStatusUseCase,
-  setTaskSummaryUseCase
+  setTaskSummaryUseCase,
+  setProjectWorktreeUseCase,
+  retryWorkspaceSetupUseCase,
+  asWorkspaceId,
+  newId,
+  principalOfSubject
 } from '@agent-hub/domain';
 import type { StreamHub } from './stream-hub.ts';
 import { installAuth, type SubjectOf } from './auth.ts';
@@ -143,7 +149,7 @@ import type { DeleteProjectDeps } from '@agent-hub/domain';
 import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
-import { noteProvenance, viaOfClient, recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity } from './session-activity.ts';
+import { noteProvenance, viaOfClient, recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity, ipOf, viaSuffix } from './session-activity.ts';
 import type { SessionActivityOptions } from './session-activity.ts';
 import type { AuthOptions } from './auth.ts';
 import { installApiTokens } from './api-tokens.ts';
@@ -248,6 +254,24 @@ function mimeOf(path: string): string {
 export function createApp(options: AppOptions): Hono {
   const { deps, hub } = options;
   const app = new Hono();
+
+  /** 项目级配置的审计（工作空间档位、准备命令重试）：目标是项目 / 工作空间，不是会话。 */
+  const auditResource = async (c: Context, subject: Subject | null, action: AuditAction, target: string, detail: string): Promise<void> => {
+    const audit = options.activity?.audit;
+    const actor = principalOfSubject(subject);
+    if (!audit || !actor) return;
+    await audit.append({
+      id: newId(),
+      actorId: actor.user.id,
+      actorEmail: actor.user.email,
+      action,
+      target,
+      detail: viaSuffix(actor, detail),
+      at: deps.now(),
+      ip: ipOf(c),
+      teamId: actor.user.teamId ?? null
+    });
+  };
 
   // 先于一切路由（包括静态页）：DNS 重绑定来的页面连 index.html 都不该拿到。
   // 只读请求不查 Origin（<img> 等跨站嵌入无害），会改东西的请求必须同站。
@@ -413,6 +437,43 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
+  // 改项目的工作空间档位 / 准备命令（docs/design/worktree.md §3）：只影响以后新建的临时工作空间。
+  app.patch('/api/projects/:projectId', async (c) => {
+    const input = await body(c, setProjectWorktreeRequest);
+    if (!input.ok) return input.response;
+    const projectId = c.req.param('projectId');
+    const subject = subjectOf(c);
+    const project = await deps.projects.byId(asProjectId(projectId));
+    const allowed = await authorizeProject(deps.access, subject, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const result = await setProjectWorktreeUseCase(deps, { projectId, worktree: input.value.worktree });
+    if (result.ok) {
+      const config = result.value.worktree;
+      const detail = config ? `${config.mode}${config.setup ? ` · 准备命令 ${config.setup.command.slice(0, 40)}` : ''}` : '清空';
+      await auditResource(c, subject, 'project.worktree', projectId, detail);
+    }
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  // 重跑准备命令（docs/design/worktree.md §4）：只对准备失败的工作空间有效，要能改它所属的项目。
+  app.post('/api/workspaces/:workspaceId/setup/retry', async (c) => {
+    const workspaceId = c.req.param('workspaceId');
+    const subject = subjectOf(c);
+    const workspace = await deps.workspaces.byId(asWorkspaceId(workspaceId));
+    if (!workspace) return fail(c, notFound('工作空间不存在'));
+    const project = workspace.projectId ? await deps.projects.byId(workspace.projectId) : null;
+    const allowed = await authorizeProject(deps.access, subject, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const result = await retryWorkspaceSetupUseCase(deps, { workspaceId, actor: subject });
+    if (result.ok) {
+      const setup = result.value.setup;
+      // 审计只记结果和退出码，不记完整输出（里面可能有命令打印的东西）
+      const detail = setup ? `${setup.state}${setup.exitCode === null ? '' : ` · exit ${setup.exitCode}`}` : '';
+      await auditResource(c, subject, 'workspace.setup', workspaceId, detail);
+    }
+    return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
+  });
+
   // 运行面板：项目名下的工作空间 + 谁正在里面跑（并发警告）。
   app.get('/api/projects/:projectId/workspaces', async (c) => {
     const result = await workspaceViewsUseCase(deps, c.req.param('projectId'));
@@ -431,6 +492,8 @@ export function createApp(options: AppOptions): Hono {
             taskId: request.taskId,
             workerId: request.workerId,
             home: homedir(),
+            // 显式「新建临时空间」= 要一个一次性目录：默认隔离；derive 自己按项目档位走。
+            mode: request.mode ?? 'isolated',
             actor: subjectOf(c)
           })
         : await prepareLongLivedWorkspaceUseCase(deps, {
@@ -653,15 +716,32 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, deriveSessionRequest);
     if (!input.ok) return input.response;
     const actor = subjectOf(c);
-    let modelForCheck = input.value.model;
-    if (input.value.profileId) {
-      const profile = await agentProfileForUse(deps, principalOf(c)?.user.id ?? null, input.value.profileId);
+    // workspaceMode 是「现建一个临时工作空间」的档位；指定了 workspaceId 就用指定那个。
+    const { workspaceMode, ...derive } = input.value;
+    let workspaceId = derive.workspaceId ?? null;
+    if (!workspaceId && workspaceMode) {
+      const task = await deps.tasks.byId(asTaskId(derive.taskId));
+      if (!task) return fail(c, notFound('任务不存在'));
+      const prepared = await prepareTemporaryWorkspaceUseCase(deps, {
+        projectId: task.projectId,
+        taskId: task.id,
+        workerId: derive.workerId ?? null,
+        home: homedir(),
+        mode: workspaceMode,
+        actor
+      });
+      if (!prepared.ok) return fail(c, prepared.error);
+      workspaceId = prepared.value.id;
+    }
+    let modelForCheck = derive.model;
+    if (derive.profileId) {
+      const profile = await agentProfileForUse(deps, principalOf(c)?.user.id ?? null, derive.profileId);
       if (!profile.ok) return fail(c, profile.error);
       modelForCheck = profile.value.ref.model;
     }
-    const allowed = await options.providers?.checkModel(actor, modelForCheck, input.value.taskId);
+    const allowed = await options.providers?.checkModel(actor, modelForCheck, derive.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
-    const result = await deriveSessionUseCase(deps, { ...input.value, actor, ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {}) });
+    const result = await deriveSessionUseCase(deps, { ...derive, workspaceId, actor, ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {}) });
     if (result.ok) {
       await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, options.activity, c, actor, result.value, viaOfClient(c));

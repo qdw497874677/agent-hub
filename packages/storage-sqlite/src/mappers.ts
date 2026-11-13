@@ -19,7 +19,7 @@ import type {
   TaskRepository,
   WorkspaceRepository
 } from '@agent-hub/domain';
-import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId } from '@agent-hub/domain';
+import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId, normalizeWorktree } from '@agent-hub/domain';
 
 /**
  * 行映射层。`as` 在这里是本职：数据库只给 `string | number | null`，
@@ -42,12 +42,30 @@ function parseMembers(raw: string | null): string[] {
   }
 }
 
+/**
+ * 项目级 worktree 配置（JSON）。解析不了 / 不合规 → 记一条日志、按「没配过」处理：
+ * 老库、手改过的行不该让整个项目读不出来。
+ */
+function parseWorktree(raw: string | null): Project['worktree'] {
+  if (raw === null) return null;
+  try {
+    const normalized = normalizeWorktree(JSON.parse(raw) as unknown);
+    if (normalized.ok) return normalized.value;
+    console.warn(`[storage] 项目 worktree 配置不合规，按「没配过」处理：${normalized.error.message}`);
+    return null;
+  } catch {
+    console.warn('[storage] 项目 worktree 配置不是合法 JSON，按「没配过」处理');
+    return null;
+  }
+}
+
 export function toProject(row: Row): Project {
   return {
     id: asProjectId(str(row, 'id')),
     name: str(row, 'name'),
     repo: nullableStr(row, 'repo_url') === null ? null : { url: str(row, 'repo_url'), defaultBranch: nullableStr(row, 'repo_default_branch') },
     description: nullableStr(row, 'description'),
+    worktree: parseWorktree(nullableStr(row, 'worktree_config')),
     teamId: nullableStr(row, 'team_id'),
     createdBy: nullableStr(row, 'created_by'),
     members: parseMembers(nullableStr(row, 'members')),

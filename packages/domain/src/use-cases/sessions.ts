@@ -4,7 +4,7 @@ import type { Session } from '../session.ts';
 import { findOption, optionValues, type RuntimeOption } from '../option.ts';
 import type { Seq, SessionId } from '../ids.ts';
 import { asAgentId, asSessionId, asTaskId, asWorkspaceId } from '../ids.ts';
-import { isUsable } from '../workspace.ts';
+import { isUsable, setupNotReady } from '../workspace.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -80,14 +80,19 @@ export async function deriveSessionUseCase(
   }
 
   const chosen = command.workspaceId ? await deps.workspaces.byId(asWorkspaceId(command.workspaceId)) : null;
+  const waitForSetup = project.worktree?.setup?.waitForSetup ?? true;
   if (command.workspaceId) {
     if (!chosen || !(await usableByProject(deps, chosen, project.id))) return err(notFound('工作空间不存在'));
+    const blocked = chosen ? setupNotReady(chosen, waitForSetup) : null;
+    if (blocked) return err(conflict(blocked));
     if (!isUsable(chosen)) return err(conflict('这个工作空间现在用不了（准备中、失败或已删除）'));
     if (chosen.kind === 'temporary' && chosen.ownerTaskId !== task.id) return err(conflict('这个临时工作空间属于别的任务'));
   }
   // 机器跟着工作空间走（null = Server 本机）；没选就用项目的默认工作空间
   const workspace = chosen ?? (await defaultWorkspaceFor(deps, project.id));
   if (!workspace) return err(conflict('这个项目还没有工作空间：先选在哪台机器、哪个工作空间干活'));
+  const notReady = setupNotReady(workspace, waitForSetup);
+  if (notReady) return err(conflict(notReady));
   const workers = await deps.gateway.status();
   // 令牌永远不能用本机。先于就绪检查拒绝，避免「未配置模型」把本机拒绝盖成 503。
   const homeWorker = workspace.workerId ?? workers.find((worker) => worker.origin === 'local')?.workerId ?? null;

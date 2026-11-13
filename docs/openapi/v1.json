@@ -1180,6 +1180,48 @@
                         ],
                         "default": null
                       },
+                      "worktree": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "properties": {
+                          "mode": {
+                            "type": "string",
+                            "enum": [
+                              "shared",
+                              "isolated"
+                            ]
+                          },
+                          "setup": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "properties": {
+                              "command": {
+                                "type": "string"
+                              },
+                              "waitForSetup": {
+                                "type": "boolean"
+                              },
+                              "timeoutSeconds": {
+                                "type": "integer"
+                              }
+                            },
+                            "default": null,
+                            "required": [
+                              "command",
+                              "waitForSetup",
+                              "timeoutSeconds"
+                            ]
+                          }
+                        },
+                        "default": null,
+                        "required": [
+                          "mode"
+                        ]
+                      },
                       "createdAt": {
                         "type": "integer",
                         "minimum": 0
@@ -1355,6 +1397,48 @@
                       ],
                       "default": null
                     },
+                    "worktree": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "isolated"
+                          ]
+                        },
+                        "setup": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "command": {
+                              "type": "string"
+                            },
+                            "waitForSetup": {
+                              "type": "boolean"
+                            },
+                            "timeoutSeconds": {
+                              "type": "integer"
+                            }
+                          },
+                          "default": null,
+                          "required": [
+                            "command",
+                            "waitForSetup",
+                            "timeoutSeconds"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "mode"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1519,6 +1603,48 @@
                       ],
                       "default": null
                     },
+                    "worktree": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "isolated"
+                          ]
+                        },
+                        "setup": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "command": {
+                              "type": "string"
+                            },
+                            "waitForSetup": {
+                              "type": "boolean"
+                            },
+                            "timeoutSeconds": {
+                              "type": "integer"
+                            }
+                          },
+                          "default": null,
+                          "required": [
+                            "command",
+                            "waitForSetup",
+                            "timeoutSeconds"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "mode"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1675,6 +1801,48 @@
                         "null"
                       ],
                       "default": null
+                    },
+                    "worktree": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "isolated"
+                          ]
+                        },
+                        "setup": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "command": {
+                              "type": "string"
+                            },
+                            "waitForSetup": {
+                              "type": "boolean"
+                            },
+                            "timeoutSeconds": {
+                              "type": "integer"
+                            }
+                          },
+                          "default": null,
+                          "required": [
+                            "command",
+                            "waitForSetup",
+                            "timeoutSeconds"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "mode"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -4281,6 +4449,13 @@
                       "null"
                     ],
                     "minLength": 1
+                  },
+                  "workspaceMode": {
+                    "type": "string",
+                    "enum": [
+                      "shared",
+                      "isolated"
+                    ]
                   },
                   "requires": {
                     "type": "array",

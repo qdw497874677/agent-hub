@@ -5,6 +5,7 @@ import {
   fsMakeDirectory,
   fsReadFile,
   wsAddWorktree,
+  wsRunSetup,
   wsClone,
   wsInspect,
   wsRemove,
@@ -78,6 +79,7 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
   port.handle(wsInspect, async ({ path }) => unwrap(await need().inspect(path)));
   port.handle(wsClone, async (input) => unwrap(await need().clone(input)));
   port.handle(wsAddWorktree, async (input) => unwrap(await need().addWorktree(input)));
+  port.handle(wsRunSetup, async (input) => unwrap(await need().runSetup(input)));
   port.handle(wsStatus, async ({ path }) => unwrap(await need().status(path)));
   port.handle(wsSaveWip, async ({ path, message }) => unwrap(await need().saveWip(path, message)));
   port.handle(wsPreview, async ({ path, maxPatchBytes }) => {

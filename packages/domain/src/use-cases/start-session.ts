@@ -1,6 +1,8 @@
 import type { Session } from '../session.ts';
 import type { DomainError } from '../errors.ts';
+import { conflict } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
+import { setupNotReady } from '../workspace.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
 import type { Deps } from './deps.ts';
 
@@ -58,10 +60,18 @@ export interface StartPlan {
  * 所以不在这里做；这里只负责把 server 回执里的环境版本统一落库（落库失败不影响启动）。
  */
 export async function startSessionUseCase(
-  deps: Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions'>,
+  deps: Pick<Deps, 'gateway' | 'hosting' | 'now' | 'sessions' | 'workspaces'>,
   plan: StartPlan
 ): Promise<Result<Session, DomainError>> {
   const { session } = plan;
+  // 准备命令失败（docs/design/worktree.md §4）：目录还在但没准备好，不派发。
+  // 只挡 failed；running 可能是 waitForSetup=false 的后台准备，允许会话先跑。
+  if (session.workspaceId) {
+    const workspace = await deps.workspaces.byId(session.workspaceId);
+    if (workspace?.setup?.state === 'failed') {
+      return err(conflict(setupNotReady(workspace, true) ?? '工作空间没有准备好（可以在机器页重试准备）'));
+    }
+  }
   const command = startCommand(
     session,
     plan.workspaceRoot,

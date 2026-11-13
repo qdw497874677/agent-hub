@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, normalizeDescription, parseRepo } from '../project.ts';
+import { createProject, normalizeDescription, normalizeWorktree, parseRepo } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project } from '../project.ts';
 import type { DomainError } from '../errors.ts';
@@ -161,6 +161,20 @@ export async function setProjectRepoUseCase(
   const repo = parseRepo(command.repoUrl, command.defaultBranch);
   if (!repo.ok) return repo;
   const next: Project = { ...project, repo: repo.value };
+  await deps.projects.save(next);
+  return ok(next);
+}
+
+/** 改项目的工作空间档位 / 准备命令（null = 没配，按 shared 处理）。只影响以后新建的临时工作空间。 */
+export async function setProjectWorktreeUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly worktree: unknown }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const worktree = normalizeWorktree(command.worktree);
+  if (!worktree.ok) return worktree;
+  const next: Project = { ...project, worktree: worktree.value };
   await deps.projects.save(next);
   return ok(next);
 }

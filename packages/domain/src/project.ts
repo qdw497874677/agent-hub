@@ -18,6 +18,8 @@ export interface Project {
   readonly createdBy: string | null;
   /** 共享给的团队成员（看得到、能在里面干活）。 */
   readonly members: readonly string[];
+  /** 新任务默认用哪种工作空间、建好后跑不跑准备命令（docs/design/worktree.md §3）。null = 没配，按 shared 处理。 */
+  readonly worktree: ProjectWorktree | null;
   /** 进了回收站的时间；null = 正常。 */
   readonly deletedAt: number | null;
 }
@@ -45,6 +47,60 @@ export interface ProjectRepo {
   readonly defaultBranch: string | null;
 }
 
+/** 建好 worktree 后自动跑的准备命令（docs/design/worktree.md §3）。 */
+export interface ProjectSetup {
+  /** 例：npm ci && npm run db:migrate。只来自项目配置，不接受每次运行时由客户端传。 */
+  readonly command: string;
+  /** true = 阻塞 agent 启动，直到命令退出；false = 后台跑。 */
+  readonly waitForSetup: boolean;
+  /** 30..1800 秒，默认 600。 */
+  readonly timeoutSeconds: number;
+}
+
+/** 项目级 worktree 配置：新任务默认档位 + 准备命令。 */
+export interface ProjectWorktree {
+  readonly mode: 'shared' | 'isolated';
+  readonly setup: ProjectSetup | null;
+}
+
+export const PROJECT_SETUP_COMMAND_MAX = 4000;
+export const PROJECT_SETUP_TIMEOUT_DEFAULT = 600;
+export const PROJECT_SETUP_TIMEOUT_MIN = 30;
+export const PROJECT_SETUP_TIMEOUT_MAX = 1800;
+
+/**
+ * 校验并规范化项目级 worktree 配置（PATCH /api/projects/:id 的 worktree 字段）。
+ * - mode 只认 shared / isolated；
+ * - command trim 后为空 = 不跑准备命令（setup: null）；
+ * - timeoutSeconds 缺省 600，范围 30..1800；
+ * - waitForSetup 只有明确的 true 才算 true。
+ */
+export function normalizeWorktree(input: unknown): Result<ProjectWorktree | null, DomainError> {
+  if (input === null || input === undefined) return ok(null);
+  if (typeof input !== 'object') return err(invalid('工作空间配置应该是一个对象'));
+  const raw = input as Record<string, unknown>;
+  const mode = raw.mode;
+  if (mode !== 'shared' && mode !== 'isolated') {
+    return err(invalid('默认工作空间档位只能是 shared（共用长期空间）或 isolated（隔离 worktree）'));
+  }
+  const setupInput = raw.setup;
+  if (setupInput === null || setupInput === undefined) return ok({ mode, setup: null });
+  if (typeof setupInput !== 'object') return err(invalid('准备命令配置应该是一个对象'));
+  const setupRaw = setupInput as Record<string, unknown>;
+  const command = typeof setupRaw.command === 'string' ? setupRaw.command.trim() : '';
+  if (command.length > PROJECT_SETUP_COMMAND_MAX) {
+    return err(invalid(`准备命令太长了（最多 ${PROJECT_SETUP_COMMAND_MAX} 字）`));
+  }
+  if (command === '') return ok({ mode, setup: null });
+  const timeoutRaw = setupRaw.timeoutSeconds;
+  const timeoutSeconds =
+    typeof timeoutRaw === 'number' && Number.isFinite(timeoutRaw) ? Math.trunc(timeoutRaw) : PROJECT_SETUP_TIMEOUT_DEFAULT;
+  if (timeoutSeconds < PROJECT_SETUP_TIMEOUT_MIN || timeoutSeconds > PROJECT_SETUP_TIMEOUT_MAX) {
+    return err(invalid(`准备超时要在 ${PROJECT_SETUP_TIMEOUT_MIN}～${PROJECT_SETUP_TIMEOUT_MAX} 秒之间`));
+  }
+  return ok({ mode, setup: { command, waitForSetup: setupRaw.waitForSetup === true, timeoutSeconds } });
+}
+
 /** 认得出的仓库地址：https / ssh / git@host:path / file:// / 本机绝对路径。只做形状检查，能不能拉由那台机器的 git 说了算。 */
 export function parseRepo(url: string | null | undefined, branch?: string | null): Result<ProjectRepo | null, DomainError> {
   const trimmed = url?.trim() ?? '';
@@ -69,6 +125,7 @@ export interface CreateProjectInput {
   readonly id?: ProjectId;
   readonly repo?: ProjectRepo | null;
   readonly description?: string | null;
+  readonly worktree?: ProjectWorktree | null;
   readonly teamId?: string | null;
   readonly createdBy?: string | null;
 }
@@ -81,6 +138,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     name,
     repo: input.repo ?? null,
     description: input.description ?? null,
+    worktree: input.worktree ?? null,
     createdAt: input.now,
     teamId: input.teamId ?? null,
     createdBy: input.createdBy ?? null,

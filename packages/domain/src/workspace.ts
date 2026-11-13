@@ -13,6 +13,20 @@ export type WorkspaceKind = 'long_lived' | 'temporary';
 export type WorkspaceSource = 'linked' | 'created' | 'cloned' | 'worktree';
 export type WorkspaceState = 'preparing' | 'ready' | 'failed' | 'kept' | 'removed';
 
+/** 准备命令（项目配置的 setup）在这个目录上跑到哪一步了（docs/design/worktree.md §4）。 */
+export type WorkspaceSetupState = 'none' | 'running' | 'ready' | 'failed';
+
+export interface WorkspaceSetup {
+  readonly state: WorkspaceSetupState;
+  readonly exitCode: number | null;
+  /** 失败时给人看的一句中文；其余是 null。 */
+  readonly message: string | null;
+  /** 命令输出（只留最后 8KB，已抹掉 user:token@）。 */
+  readonly output: string | null;
+  readonly startedAt: number | null;
+  readonly finishedAt: number | null;
+}
+
 export interface Workspace {
   readonly id: WorkspaceId;
   /**
@@ -42,6 +56,8 @@ export interface Workspace {
   readonly state: WorkspaceState;
   /** 清理被拒时的原因（有未提交 / 未推送的改动……）。 */
   readonly keptReason: string | null;
+  /** 准备命令的状态；null = 这个目录没配准备命令 / 从没跑过。 */
+  readonly setup: WorkspaceSetup | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -60,6 +76,7 @@ export interface NewWorkspaceInput {
   readonly label?: string | null;
   readonly isGit?: boolean | null;
   readonly state?: WorkspaceState;
+  readonly setup?: WorkspaceSetup | null;
   readonly now: number;
   readonly id?: WorkspaceId;
 }
@@ -92,6 +109,7 @@ export function newWorkspace(input: NewWorkspaceInput): Result<Workspace, Domain
     isGit: input.isGit ?? null,
     state: input.state ?? 'ready',
     keptReason: null,
+    setup: input.setup ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -100,6 +118,19 @@ export function newWorkspace(input: NewWorkspaceInput): Result<Workspace, Domain
 /** 还能用来跑会话的（没删、没失败、没在准备中）。kept 的临时空间还在，能继续用。 */
 export function isUsable(workspace: Workspace): boolean {
   return workspace.state === 'ready' || workspace.state === 'kept';
+}
+
+/**
+ * 派发会话前的准备命令检查（docs/design/worktree.md §4）：
+ * - failed：返回一句原因（含「可以在机器页重试准备」），调用方翻成 conflict；
+ * - running 且 waitForSetup：让调用方拒绝（没有异步等待实现，先挡一下）；
+ * - 其余 null。
+ */
+export function setupNotReady(workspace: Pick<Workspace, 'setup'>, waitForSetup: boolean): string | null {
+  const setup = workspace.setup;
+  if (setup?.state === 'failed') return `工作空间没有准备好：${setup.message ?? '准备命令失败'}（可以在机器页重试准备）`;
+  if (setup?.state === 'running' && waitForSetup) return '工作空间还在准备中：等准备命令跑完再开会话（可以在机器页看进度）';
+  return null;
 }
 
 /** 平台建的目录才允许平台删（workspaces.md §5；linked 的是人的目录，只解除登记）。 */
