@@ -235,6 +235,7 @@ export type AuditAction =
   | 'session.interrupt'
   | 'session.delete'
   | 'session.continue'
+  | 'session.settle'
   | 'invite.revoke'
   | 'auth.register'
   | 'auth.login'

@@ -55,6 +55,11 @@ export interface Session {
    * null / 缺省 = 旧会话或还没算过，不因此强制重托管。
    */
   readonly environmentRevision?: string | null;
+  /**
+   * 收起时间（不该再关注这条会话了）：只表示「移出活跃列表」，不影响会话状态，
+   * 也不影响进程是否还在跑。null / 缺省 = 仍在活跃列表里。
+   */
+  readonly settledAt?: number | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

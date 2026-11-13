@@ -17,7 +17,8 @@ export const PERMISSION_CATALOG = {
   worker: ['worker.read', 'worker.use', 'worker.enroll', 'worker.manage', 'worker.policy', 'worker.delete', 'runtime.install', 'runtime.component.install'],
   project: ['project.read', 'project.create', 'project.update', 'project.share', 'project.delete', 'project.restore', 'project.purge', 'agent.message.send', 'agent.ask', 'agent.spawn', 'group.manage', 'group.post', 'workspace.files.read', 'git.push'],
   task: ['task.read', 'task.create', 'task.update', 'task.delete'],
-  session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.delete', 'session.fork', 'session.continue'],
+  // session.settle：把做完的会话移出活跃列表（可恢复），不改会话状态、不影响进程
+  session: ['session.read', 'session.create', 'session.prompt', 'session.interrupt', 'session.delete', 'session.fork', 'session.continue', 'session.settle'],
   provider: ['provider.read', 'provider.use', 'provider.manage'],
   token: ['token.service'],
   audit: ['audit.read'],
@@ -131,6 +132,8 @@ export const ROLE_PERMISSIONS: Readonly<Record<BuiltinRole, RolePermissions>> = 
     'session.delete': 'own',
     'session.fork': 'own',
     'session.continue': 'own',
+    // 收起 / 恢复和打断同一档：自己的会话自己收拾；owner / admin 由 teamAll() 覆盖
+    'session.settle': 'own',
     'worker.read': 'team',
     'worker.use': 'team',
     'worker.enroll': 'team',

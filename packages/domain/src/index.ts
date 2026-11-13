@@ -64,6 +64,7 @@ export * from './use-cases/deps.ts';
 export * from './use-cases/projects.ts';
 export * from './use-cases/delete-project.ts';
 export * from './use-cases/delete-session.ts';
+export * from './use-cases/settle-session.ts';
 export * from './use-cases/tasks.ts';
 export * from './use-cases/work-log.ts';
 export * from './use-cases/sessions.ts';

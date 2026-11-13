@@ -18,6 +18,7 @@ export interface RecentSession {
   readonly agentId: AgentId;
   readonly status: SessionStatus;
   readonly lastSeq: number;
+  readonly settledAt?: number | null;
   readonly updatedAt: number;
 }
 
@@ -73,6 +74,7 @@ export async function loadHome(
           agentId: session.agentId,
           status: session.status,
           lastSeq: session.lastSeq,
+          ...(session.settledAt === null || session.settledAt === undefined ? {} : { settledAt: session.settledAt }),
           updatedAt: session.updatedAt
         }
       ];

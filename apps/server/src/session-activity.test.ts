@@ -122,3 +122,32 @@ test('4A：普通成员在共享项目里也不能在别人的会话里说话 / 
   // 仍然看得见（项目是自己的）
   assert.equal((await member(`/api/sessions/${session.id}/events`)).status, 200);
 });
+
+test('会话收起 / 恢复：只改 settledAt，审计记一条；跑着的拒绝', async () => {
+  const { accounts, david, member, session } = await setup();
+
+  // 刚派生出来的会话还在跑：拒绝收起，什么都不改
+  const running = await david(`/api/sessions/${session.id}/settle`, post({ settled: true }));
+  assert.equal(running.status, 409);
+  assert.equal(running.body.error.code, 'conflict');
+
+  // 先停下再收起：团队 admin 也能收拾别人的会话
+  assert.equal((await david(`/api/sessions/${session.id}/interrupt`, post({}))).status, 200);
+  const settled = await member(`/api/sessions/${session.id}/settle`, post({ settled: true }));
+  assert.equal(settled.status, 200, JSON.stringify(settled.body));
+  assert.equal(typeof settled.body.settledAt, 'number');
+  const row = accounts.auditRows.find((entry) => entry.action === 'session.settle' && entry.target === session.id);
+  assert.ok(row, '要有一条 session.settle 审计');
+  assert.equal(row!.detail, '收起');
+
+  // 恢复无条件允许：settledAt 写回 null
+  const restored = await david(`/api/sessions/${session.id}/settle`, post({ settled: false }));
+  assert.equal(restored.status, 200, JSON.stringify(restored.body));
+  assert.equal(restored.body.settledAt, null);
+
+  // 请求体不合法 → 400；会话不存在 → 404
+  const bad = await david(`/api/sessions/${session.id}/settle`, post({}));
+  assert.equal(bad.status, 400);
+  const missing = await david('/api/sessions/nope/settle', post({ settled: true }));
+  assert.equal(missing.status, 404);
+});

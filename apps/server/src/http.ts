@@ -37,6 +37,8 @@ import {
   forkSessionRequest,
   renameSessionRequest,
   continueElsewhereRequest,
+  settleSessionRequest,
+  sessionSchema,
   projectFilesSchema,
   promptRequest,
   saveLayoutRequest,
@@ -101,6 +103,7 @@ import {
   continueElsewhereUseCase,
   interruptSessionUseCase,
   deleteSessionUseCase,
+  settleSessionUseCase,
   listProjectFiles,
   listProjects,
   listWorkers,
@@ -874,6 +877,26 @@ export function createApp(options: AppOptions): Hono {
     const result = await interruptSessionUseCase(deps, c.req.param('sessionId'));
     if (result.ok) await recordSessionAction(deps, options.activity, c, subjectOf(c), 'session.interrupt', c.req.param('sessionId'), '');
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+  });
+
+  /**
+   * 收起 / 恢复会话（I1）：只改 settledAt，移出活跃列表但可恢复。
+   * 守门中间件按 session.settle 判权限（与打断同一档）。
+   */
+  app.post('/api/sessions/:sessionId/settle', async (c) => {
+    const input = await body(c, settleSessionRequest);
+    if (!input.ok) return input.response;
+    const sessionId = c.req.param('sessionId');
+    const result = await settleSessionUseCase(
+      options.activity ? { ...deps, audit: options.activity.audit } : deps,
+      {
+        sessionId: asSessionId(sessionId),
+        settled: input.value.settled,
+        actor: principalOf(c),
+        now: deps.now()
+      }
+    );
+    return result.ok ? c.json(sessionSchema.parse(result.value)) : fail(c, result.error);
   });
 
   /** 彻底删除会话：库里的数据一起清掉（不可恢复）；磁盘工作空间目录和 Task 不动。跑着的拒绝。 */

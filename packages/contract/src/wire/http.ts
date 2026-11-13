@@ -167,6 +167,9 @@ export const workspaceChangesSchema = z.object({
 /** 会话改名；空串 = 清掉。长度上限和领域层一致（SESSION_TITLE_MAX）。 */
 export const renameSessionRequest = z.object({ title: z.string().max(200) });
 
+/** 收起 / 恢复一条会话（docs/design/interaction-borrowing.md §1）。 */
+export const settleSessionRequest = z.object({ settled: z.boolean() });
+
 export const forkSessionRequest = z.object({
   sessionId: id,
   /** 已忽略：服务端一律从来源的最新处分叉。留着只为老客户端不报错。 */
@@ -268,6 +271,8 @@ export const recentSessionSchema = z.object({
   agentId: id,
   status: sessionStatusSchema,
   lastSeq: z.number().int().nonnegative(),
+  /** 收起时间（I1）：首页仍列出来，但视觉上退到背景。 */
+  settledAt: epochMs.nullable().optional(),
   updatedAt: epochMs
 });
 

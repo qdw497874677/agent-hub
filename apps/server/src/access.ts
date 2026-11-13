@@ -53,6 +53,7 @@ export function installAccess(app: Hono<any>, deps: AccessDeps, subjectOf: Subje
       const action = /\/sessions\/[^/]+\/([^/]+)$/.exec(path)?.[1] ?? '';
       if (action === 'interrupt') return 'session.interrupt';
       if (action === 'continue') return 'session.continue';
+      if (action === 'settle') return 'session.settle';
       return 'session.prompt';
     }
     if (kind === 'task') return method === 'DELETE' ? 'task.delete' : 'task.update';
@@ -123,4 +124,4 @@ const KIND: Record<string, ResourceRef['kind']> = { projects: 'project', tasks: 
 const RESERVED = new Set(['derive', 'fork', 'sweep']);
 
 /** 这些权限按会话本身判断（不是按项目）。 */
-const SESSION_SCOPED: ReadonlySet<Permission> = new Set<Permission>(['session.prompt', 'session.interrupt', 'session.delete', 'session.continue']);
+const SESSION_SCOPED: ReadonlySet<Permission> = new Set<Permission>(['session.prompt', 'session.interrupt', 'session.delete', 'session.continue', 'session.settle']);

@@ -3064,6 +3064,13 @@
                               "null"
                             ]
                           },
+                          "settledAt": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "minimum": 0
+                          },
                           "createdAt": {
                             "type": "integer",
                             "minimum": 0
@@ -4806,6 +4813,13 @@
                         "null"
                       ]
                     },
+                    "settledAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -5245,6 +5259,13 @@
                         "null"
                       ]
                     },
+                    "settledAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -5661,6 +5682,13 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "settledAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
                     },
                     "createdAt": {
                       "type": "integer",
@@ -6413,6 +6441,13 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "settledAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 0
                     },
                     "createdAt": {
                       "type": "integer",

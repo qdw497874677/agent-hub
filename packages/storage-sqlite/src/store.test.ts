@@ -318,3 +318,15 @@ test('会话名：setTitle 落库；之后的 save（跑着的会话拿旧对象
   assert.equal((await store.sessions.byId(session.id))?.title, undefined);
   store.close();
 });
+
+test('收起时间存得下、恢复后读回不带这个字段（和没收起的会话一样）', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  await store.sessions.save({ ...session, settledAt: now + 5 });
+  assert.equal((await store.sessions.byId(session.id))?.settledAt, now + 5);
+  await store.sessions.save({ ...session, settledAt: null });
+  const restored = await store.sessions.byId(session.id);
+  assert.equal(restored?.settledAt, undefined);
+  assert.deepEqual(restored, session);
+  store.close();
+});

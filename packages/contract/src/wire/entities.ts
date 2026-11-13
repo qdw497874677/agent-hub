@@ -269,6 +269,8 @@ export const sessionSchema = z.object({
   workspaceId: z.string().nullable().default(null),
   /** 用户起的会话名；null = 没起（界面回退到首句 / 「会话 N」）。 */
   title: z.string().nullable().optional(),
+  /** 收起：做完的会话移出活跃列表，随时可恢复。null = 还在活跃列表里。 */
+  settledAt: epochMs.nullable().optional(),
   createdAt: epochMs,
   updatedAt: epochMs
 });
