@@ -44,7 +44,7 @@ test.beforeEach(async ({ page }) => {
 test('对话页选择器和画布拖线连的是同一份会话关系', async ({ page }) => {
   await page.goto('/');
 
-  const nav = page.getByRole('navigation');
+  const nav = page.getByRole('complementary', { name: '首页侧栏' });
   await nav.getByTitle('新建项目').click();
   const panel = page.getByLabel('新建项目');
   await panel.getByLabel('项目名').fill(PROJECT_NAME);

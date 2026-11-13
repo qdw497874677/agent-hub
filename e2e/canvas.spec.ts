@@ -27,7 +27,7 @@ async function enterProject(page: Page, name: string): Promise<void> {
     await sidebar.getByRole('combobox', { name: '切换项目' }).selectOption({ label: name });
     return;
   }
-  const nav = page.getByRole('navigation');
+  const nav = page.getByRole('complementary', { name: '首页侧栏' });
   await nav.getByRole('button', { name: new RegExp(`^${name}`) }).first().click();
 }
 
@@ -43,7 +43,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await page.goto('/');
 
   // 首页是门厅：左栏是「在哪儿干」，右栏是「接着干哪条」
-  const nav = page.getByRole('navigation');
+  const nav = page.getByRole('complementary', { name: '首页侧栏' });
   await expect(nav.getByText('agent-hub')).toBeVisible();
   await expect(nav.getByText('项目', { exact: true })).toBeVisible();
 
@@ -142,7 +142,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
 test('刷新之后画布还在，布局被记住', async ({ page }) => {
   await page.goto('/');
   // 新浏览器没有 localStorage：从左栏回到自己刚建的那个项目
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
+  await page.getByRole('complementary', { name: '首页侧栏' }).getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
   await expect(sessionNode(page)).toHaveCount(1);
   await expect(taskNode(page, TASK_TITLE)).toContainText('1 个会话');
 
@@ -171,7 +171,7 @@ test('刷新之后画布还在，布局被记住', async ({ page }) => {
 
 test('搜索能搜到会话里说过的话，列表能给画布降级', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: '首页侧栏' }).getByText('项目', { exact: true })).toBeVisible();
   // 首页右栏直接列最近会话：点一条就进那条会话说话（「接着干」不是「先看画布」）
   await page.getByRole('button', { name: new RegExp(TASK_TITLE) }).first().click();
   const composer = page.getByLabel('发送消息');
@@ -292,8 +292,8 @@ test('任务详情：日志按作者区分、写日志刷新当前进展、可�
  */
 test('会话卡片能改模型与思考强度，改完不回弹', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('navigation').getByText('项目', { exact: true })).toBeVisible();
-  await page.getByRole('navigation').getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
+  await expect(page.getByRole('complementary', { name: '首页侧栏' }).getByText('项目', { exact: true })).toBeVisible();
+  await page.getByRole('complementary', { name: '首页侧栏' }).getByRole('button', { name: new RegExp(`^${PROJECT_NAME}`) }).first().click();
   await expect(sessionNode(page)).toHaveCount(1);
 
   const card = sessionNode(page);
@@ -356,6 +356,31 @@ test('会话页窄屏 header 只留标题、状态和更多', async ({ page }, t
   await expect(dialog.getByTestId('display-settings')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
+});
+
+test('窄屏画布窗口：输入框在视口内可见可点', async ({ page }) => {
+  const height = 844;
+  await page.setViewportSize({ width: 390, height });
+  await enterProject(page, PROJECT_NAME);
+  const sidebar = page.getByRole('complementary', { name: '项目导航' });
+  if (!(await sidebar.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: '打开侧栏' }).click();
+  }
+  await sidebar.getByRole('button', { name: '画布', exact: true }).click();
+  await expect(sessionNode(page)).toHaveCount(1);
+  await sessionNode(page).locator('header').click();
+  await sessionNode(page).getByRole('button', { name: '在画布中展开' }).click();
+
+  const window = page.getByTestId('canvas-window');
+  await expect(window).toBeVisible();
+  // 窗口的内层包裹必须是 flex 列，否则 FocusView 的 flex-1 不生效、输入框被推到视口外（曾出现过）。
+  const input = window.locator('textarea').first();
+  await expect(input).toBeVisible();
+  const box = await input.boundingBox();
+  expect(box, '输入框应有可测的盒子').not.toBeNull();
+  expect(box!.y + box!.height).toBeLessThanOrEqual(height);
+  await input.click();
+  await expect(input).toBeFocused();
 });
 
 test('侧栏：桌面常驻，手机上从菜单滑出', async ({ page }, testInfo) => {

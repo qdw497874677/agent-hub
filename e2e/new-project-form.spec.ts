@@ -12,7 +12,7 @@ const SHOTS = process.env.SHOTS_DIR;
 async function open(page: Page, width: number) {
   await page.setViewportSize({ width, height: 844 });
   await page.goto('/');
-  await page.getByRole('navigation').getByTitle('新建项目').click();
+  await page.getByRole('complementary', { name: '首页侧栏' }).getByTitle('新建项目').click();
   return page.getByLabel('新建项目');
 }
 
