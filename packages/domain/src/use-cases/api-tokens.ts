@@ -80,7 +80,7 @@ async function botAdmin(deps: Pick<ApiTokenDeps, 'projects'>, actor: Principal, 
   const projectId = token.bot?.projectId;
   if (!projectId) return false;
   const project = await deps.projects.byId(asProjectId(projectId));
-  return project !== null && project.deletedAt === null && can(actor, 'project.update', projectResource(project));
+  return project !== null && project.deletedAt === null && can(actor, 'project.share', projectResource(project));
 }
 
 export async function createApiToken(
@@ -126,18 +126,13 @@ export async function createApiToken(
     if (!projectId) return err(invalid('bot 令牌要指定项目'));
     const project = await deps.projects.byId(asProjectId(projectId));
     if (!project || project.deletedAt !== null || project.teamId !== teamId) return err(forbidden('只有项目主人能给 bot 发凭据'));
-    if (!can(actor, 'project.update', projectResource(project))) return err(forbidden('只有项目主人能给 bot 发凭据'));
+    // project.share 是「只有创建者 / owner·admin」的权限；project.update 对共享成员也放行，太宽。
+    if (!can(actor, 'project.share', projectResource(project))) return err(forbidden('只有项目主人能给 bot 发凭据'));
     // 请求的 scope 照旧记下来，但有效权限一律与 BOT_PERMISSIONS 取交集（见 effectivePermissions），
     // 所以 projects:write 里的 project.create / project.delete 这类越界权限不会生效，这里不需要额外拒绝。
     bot = { projectId: project.id, name: input.botName?.trim() || name };
     if (deps.botExists && !(await deps.botExists(bot.projectId, bot.name))) {
       return err(invalid(`这个项目里没有 bot「${bot.name}」`));
-    }
-    // 一个 bot 同时只有一条有效凭据：重新生成即轮换（旧的那条立刻失效）。
-    for (const existing of await deps.apiTokens.listBotsByProject(project.id)) {
-      if (existing.revokedAt === null && existing.bot?.name === bot.name) {
-        await deps.apiTokens.save({ ...existing, revokedAt: now });
-      }
     }
   }
 
@@ -161,6 +156,14 @@ export async function createApiToken(
     revokedAt: null
   };
   await deps.apiTokens.save(token);
+  if (token.kind === 'bot' && token.bot) {
+    // 一个 bot 同时只有一条有效凭据：新的先落库，再把旧的掐掉（中途失败也不会两个都没）。
+    for (const existing of await deps.apiTokens.listBotsByProject(asProjectId(token.bot.projectId))) {
+      if (existing.id !== token.id && existing.revokedAt === null && existing.bot?.name === token.bot.name) {
+        await deps.apiTokens.save({ ...existing, revokedAt: now });
+      }
+    }
+  }
   await audit(deps, actor, 'token.create', token);
   return ok({ token: raw, info: view(token, now) });
 }

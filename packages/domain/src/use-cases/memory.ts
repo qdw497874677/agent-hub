@@ -233,7 +233,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       case 'role': {
         const sameTeam = scope.teamId === (me.principal.user.teamId ?? 'hub');
         const related = permission === 'memory.read' ? sameTeam : me.session !== null && me.role === scope.role;
-        return ok({ kind: 'memory', id, teamId: scope.teamId, createdBy: null, sharedWith: related ? [me.principal.user.id] : [] });
+        return ok({ kind: 'memory', id, teamId: scope.teamId, createdBy: null, sharedWith: related ? [me.principal.user.id] : [], projectId: me.project?.id });
       }
       case 'session': {
         const session = await deps.sessions.byId(asSessionId(scope.sessionId));
@@ -244,7 +244,8 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
         if (permission === 'memory.read') return ok({ ...base, kind: 'memory', id });
         // 写 / 忘：只有这条会话自己（或团队范围的人）
         const self = me.session?.id === session.id;
-        return ok({ kind: 'memory', id, teamId: base.teamId, createdBy: self ? me.principal.user.id : null, sharedWith: [] });
+        // 保留项目归属：bot 令牌的收窄要看 projectId，写路径不能把它丢掉。
+        return ok({ ...base, kind: 'memory', id, createdBy: self ? me.principal.user.id : null, sharedWith: [] });
       }
       case 'group':
         return err(invalid('群作用域要等群聊上线（P1 还没有群）'));

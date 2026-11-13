@@ -310,8 +310,12 @@ export function decide(subject: Subject | null | undefined, permission: Permissi
     const bot = subject.via.bot;
     if (!BOT_PERMISSIONS.has(permission)) return deny('bot_scope');
     if (resource !== undefined) {
-      const owner = resource.kind === 'project' ? resource.id : resource.projectId;
-      if (owner !== bot.projectId) return deny('bot_scope');
+      // worker 不属于某个项目（团队共享的机器），派发前的项目归属已由会话那一关判定；
+      // workspace 走 ADR 0026 的「任一关联项目可见」语义，这里不重复收紧。
+      if (resource.kind !== 'worker') {
+        const owner = resource.kind === 'project' ? resource.id : resource.projectId;
+        if (owner !== bot.projectId) return deny('bot_scope');
+      }
     }
   }
   // 3. hub 级
