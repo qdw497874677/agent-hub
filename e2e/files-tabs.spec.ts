@@ -84,13 +84,19 @@ for (const [name, width, height] of [['mobile-390', 390, 844], ['desktop-1280', 
     await expect(page.getByTestId('files-panel-files')).toBeHidden();
 
     // 详情 → 浏览文件：切到会话的「文件」标签页，详情关掉，旧浮层不再出现
-    await page.getByRole('button', { name: '详情' }).click();
+    // 桌面走 header 的「详情」按钮；手机上 header 收起来了，入口在「更多」菜单第一组。
+    if (width < 640) {
+      await page.getByRole('button', { name: '更多' }).click();
+      await page.getByRole('menuitem', { name: /^详情/ }).click();
+    } else {
+      await page.getByRole('button', { name: '详情' }).click();
+    }
     await page.getByTestId('open-files').click();
     await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByTestId('files-panel-files')).toBeVisible();
     await expect(page.getByTestId('open-files')).toHaveCount(0);
     await expect(page.getByTestId('files-browser')).toHaveCount(0);
-    await page.screenshot({ path: `/workspace/shots/details-browse-files/${name}.png` });
+    await page.screenshot({ path: `${SHOTS}/details-browse-${name}.png` });
   });
 }
 
