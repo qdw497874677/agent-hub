@@ -184,6 +184,19 @@ export const apiErrorSchema = z.object({
   error: z.object({ code: z.string(), message: z.string() })
 });
 
+/**
+ * 会话环境（资产 / MCP / 启动配置）的状态：
+ * revision 是「现在重新托管会用的版本」，appliedRevision 是「上次派发成功时记下的版本」。
+ * supported=false 表示这个部署没有环境适配器（单测 / 老部署），此时 pending 恒为 false。
+ */
+export const sessionEnvironmentSchema = z.object({
+  revision: z.string().nullable(),
+  appliedRevision: z.string().nullable(),
+  pending: z.boolean(),
+  supported: z.boolean()
+});
+export type SessionEnvironmentDto = z.infer<typeof sessionEnvironmentSchema>;
+
 export const sessionStreamFrameSchema = z.object({
   type: z.literal('event'),
   sessionId: id,

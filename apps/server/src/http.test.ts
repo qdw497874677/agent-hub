@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { agentToDto } from '@agent-hub/contract/codec';
-import type { AgentDescriptor, JournalEntry, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
+import type { AgentDescriptor, EnvironmentPlanner, JournalEntry, Session, SessionEvent, SessionId, Task } from '@agent-hub/domain';
 import { asAgentId, asSessionId, recordEvent } from '@agent-hub/domain';
 import { fakeHosting, fakeSessions, fakeTasks, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
@@ -54,7 +54,7 @@ const descriptor: AgentDescriptor = {
   ]
 };
 
-function harness(token: string | null = null) {
+function harness(token: string | null = null, environment?: EnvironmentPlanner) {
   const tasks = fakeTasks();
   const sessions = fakeSessions(tasks.rows);
   const hosting = fakeHosting();
@@ -84,7 +84,7 @@ function harness(token: string | null = null) {
   const { deps, dispatched } = world;
   const hub = createStreamHub();
   const live = hosting.live;
-  const app = createApp({ deps, hub, token });
+  const app = createApp({ deps: environment ? { ...deps, environment } : deps, hub, token });
 
   const call = async (path: string, init?: RequestInit): Promise<{ status: number; body: unknown }> => {
     const response = await app.fetch(
@@ -372,4 +372,71 @@ test('附件：发图 + @ 引用走通；缩略图可回取且只放行本会话
     body: JSON.stringify({ text: 'x', attachments: [{ kind: 'image', name: 'a.svg', mimeType: 'image/svg+xml', data }] })
   });
   assert.equal(svg.status, 400);
+});
+
+/** 只关心版本计算的环境适配器：prepare 原样放行（派生路由不走它）。 */
+const fixedPlanner = (revision: string | null): EnvironmentPlanner => ({
+  prepare: async (command) => ({ command, revision: null }),
+  revision: async () => revision
+});
+
+type HarnessCall = (path: string, init?: RequestInit) => Promise<{ status: number; body: unknown }>;
+
+/** 走真的派生路由造一条会话，只读接口的测试就不用重复铺项目 / 任务。 */
+async function seedSession(call: HarnessCall, deps: ReturnType<typeof harness>['deps']): Promise<SessionId> {
+  (deps.agents as ReturnType<typeof createLiveCatalog>).upsert('w1', [agentToDto(descriptor)]);
+  const project = await call('/api/projects', { method: 'POST', body: JSON.stringify({ name: 'demo', rootPath: '/tmp/demo' }) });
+  const projectId = (project.body as { id: string }).id;
+  const task = await call('/api/tasks', { method: 'POST', body: JSON.stringify({ projectId, title: 't' }) });
+  const taskId = (task.body as { id: string }).id;
+  const derived = await call('/api/sessions/derive', {
+    method: 'POST',
+    body: JSON.stringify({ taskId, agentId: 'fake', model: 'fake-1' })
+  });
+  assert.equal(derived.status, 201);
+  return (derived.body as { id: string }).id as SessionId;
+}
+
+test('环境状态：没有环境适配器时 supported=false，会话上记的版本照返回', async () => {
+  const { deps, call, sessions } = harness();
+  const sessionId = await seedSession(call, deps);
+  await sessions.setEnvironmentRevision(sessionId, 'rev-applied', 1);
+
+  const status = await call(`/api/sessions/${sessionId}/environment`);
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body, { revision: null, appliedRevision: 'rev-applied', pending: false, supported: false });
+
+  // 不存在的会话：404，而不是编一个空状态出来
+  const missing = await call('/api/sessions/nope/environment');
+  assert.equal(missing.status, 404);
+});
+
+test('环境状态：算出来的版本和已应用的一致时 pending=false', async () => {
+  const { deps, call, sessions } = harness(null, fixedPlanner('rev-1'));
+  const sessionId = await seedSession(call, deps);
+  await sessions.setEnvironmentRevision(sessionId, 'rev-1', 1);
+
+  const status = await call(`/api/sessions/${sessionId}/environment`);
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body, { revision: 'rev-1', appliedRevision: 'rev-1', pending: false, supported: true });
+});
+
+test('环境状态：资产 / MCP 变了以后 pending=true', async () => {
+  const { deps, call, sessions } = harness(null, fixedPlanner('rev-2'));
+  const sessionId = await seedSession(call, deps);
+  await sessions.setEnvironmentRevision(sessionId, 'rev-1', 1);
+
+  const status = await call(`/api/sessions/${sessionId}/environment`);
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body, { revision: 'rev-2', appliedRevision: 'rev-1', pending: true, supported: true });
+});
+
+test('环境状态：现在算不出来（revision=null）时 pending=false，不吓唬人', async () => {
+  const { deps, call, sessions } = harness(null, fixedPlanner(null));
+  const sessionId = await seedSession(call, deps);
+  await sessions.setEnvironmentRevision(sessionId, 'rev-1', 1);
+
+  const status = await call(`/api/sessions/${sessionId}/environment`);
+  assert.equal(status.status, 200);
+  assert.deepEqual(status.body, { revision: null, appliedRevision: 'rev-1', pending: false, supported: true });
 });

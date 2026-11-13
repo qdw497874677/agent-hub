@@ -48,6 +48,7 @@ import {
   workLogPage,
   workerInfoSchema
 } from '@agent-hub/contract';
+import type { SessionEnvironmentDto } from '@agent-hub/contract';
 import type { Deps, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
 import { systemSubject, isSystem, loadAttention, NEEDS_HUMAN } from '@agent-hub/domain';
 import type { AttentionStore, PullRequestRepository } from '@agent-hub/domain';
@@ -810,6 +811,28 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/sessions/:sessionId/activity', async (c) =>
     c.json(options.activity ? await sessionActivity(options.activity, c.req.param('sessionId')) : [])
   );
+
+  // 会话环境（资产 / MCP / 启动配置）是否有更新还没生效：只读，前端拿来提示「重新托管」。
+  // 没有环境适配器（单测 / 老部署）就诚实地说不支持，不假装一切都没变。
+  app.get('/api/sessions/:sessionId/environment', async (c) => {
+    const session = await deps.sessions.byId(asSessionId(c.req.param('sessionId')));
+    if (!session) return fail(c, notFound('没有这条会话'));
+    const appliedRevision = session.environmentRevision ?? null;
+    const planner = deps.environment;
+    if (!planner) {
+      const unsupported: SessionEnvironmentDto = { revision: null, appliedRevision, pending: false, supported: false };
+      return c.json(unsupported);
+    }
+    // 算不出来（null）时 pending 必须是 false：宁可不说，也别吓唬人。
+    const revision = await planner.revision(session).catch(() => null);
+    const status: SessionEnvironmentDto = {
+      revision,
+      appliedRevision,
+      pending: revision !== null && appliedRevision !== null && revision !== appliedRevision,
+      supported: true
+    };
+    return c.json(status);
+  });
 
   // 等我处理（ADR 0031 D1）：只看我发起的、或我负责的任务；不推送，前端拿来画角标和收件箱。
   app.get('/api/attention', async (c) => {
