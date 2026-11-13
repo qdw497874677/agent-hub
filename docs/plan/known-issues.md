@@ -88,6 +88,19 @@
 - 开放 API 本来就不允许使用 hub 同机机器，bot 同样；单机部署下 bot 只能跑在远端 worker 上。
 - 轮换是「先生成新的、旧的同时失效」，没有宽限期（不需要人工吊销）。
 
+### 1.4 进展（2026-11-14 · C3 收尾、小口子、C4 触发器）
+
+已做：
+- **C3c**：前端 bot 管理整体切到 `/api/bots`，`BotRecordDto` 成为唯一类型（`id` 取代 `name` 当 key）；凭据状态由列表接口按 @id 回填 `token`（`apps/server/src/bot-routes.ts` + `apps/server/src/http.ts:284` 传 `groups.agentTokens`）；`apps/web` 里 bot CRUD 的 `/agents` 调用点归零。
+- **结束的会话改选项**：`packages/domain/src/use-cases/sessions.ts` 的 `changeSessionOption` 在 `status !== 'running'` 时不再 `ensureHosted`，直接按上次上报的 `optionSpec` 校验并落库（同时改 `optionSpec.current`）。修掉了 `e2e/canvas.spec.ts` 里「改思考强度不回弹」那条长期失败——它是真实缺陷，不是测试问题。候选值是 `{value,label}` 对象，比较要用 `choice.value`。
+- **整表 `PUT /roles` 走净化**：`packages/domain/src/use-cases/messaging.ts` 的 `saveConfig` 先补 ref 形状再 `configProblem` + `validateAgentRef`，空壳 role 整单 400（选「拒绝」而不是静默修正）。
+- **终端 linger 收尾**：`apps/server/src/terminal-bridge.ts` 记 linger 台账，客户端断开后再 `closeSession` 也会发 `terminal.close`；worker 离线直接丢弃台账；`knownTerminals` 把 linger 算进去，避免对账误关。
+- **直连会话也带模型 extra**：`packages/adapters/acp/src/opencode-provider.ts` 把 `extra` 合并进生成的 provider 配置（按 `PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS` 过滤，`name`/`limit` 不被覆盖）。
+- **C4 触发器（读）**：`GET /api/bots/:idOrName/triggers` 回 `{sources, bindings(+最近 5 条 runs)}`；`GET /api/bots/:idOrName` 支持 `bot_` 前缀按 id、否则 `?projectId=` + 名字；未注入 `ConnectorHub` 时回空表。`InboundSource` 加可选 `label`，timer 显示「定时」、GitHub 显示「GitHub」。前端 bot 编辑页只读展示（30s 轮询），创建/暂停仍在连接器页。
+- 顺手纠正两条早先的误判：`/observe` **有**服务端项目级授权（`apps/server/src/observe-connector.ts:80-100` 的 `authorizeProject(..., 'project.read')`），不是「人人可看」；`apps/web/src/shell/route.ts` 的 `ADMIN_TABS` 保留 `settings` 是**故意**的旧书签兼容（`resolveAdminTab` 落回概览），不是漏改。
+
+已知残留：C4 只做了读，触发器的新建/暂停仍在连接器页；`bot-connectors.tsx` 里的 testid 已改成 `bot-connectors-triggers` 以区别于 bot 编辑页的 `bot-triggers`。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道
