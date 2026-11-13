@@ -56,6 +56,20 @@ test('extra 里的保护键绝不覆盖请求体', () => {
   assert.equal(body['temperature'], 0.1);
 });
 
+test('思考强度：agent 已经报了值就以 agent 为准，配置只当默认值', () => {
+  const thinking = [{ id: 'm', extra: { reasoning_effort: 'high', thinking: { type: 'enabled' }, temperature: 0.3 } }];
+  const withAgent = dec(
+    mergeModelExtra(request({ model: 'm', reasoning_effort: 'low', thinking: { type: 'disabled' } }), thinking)
+  ) as Record<string, unknown>;
+  assert.equal(withAgent['reasoning_effort'], 'low');
+  assert.deepEqual(withAgent['thinking'], { type: 'disabled' });
+  assert.equal(withAgent['temperature'], 0.3);
+
+  const withoutAgent = dec(mergeModelExtra(request({ model: 'm' }), thinking)) as Record<string, unknown>;
+  assert.equal(withoutAgent['reasoning_effort'], 'high');
+  assert.deepEqual(withoutAgent['thinking'], { type: 'enabled' });
+});
+
 test('query 串不影响路径匹配', () => {
   const out = mergeModelExtra(request({ model: 'm-1' }, { subpath: '/v1/chat/completions?x=1' }), models);
   assert.equal((dec(out) as Record<string, unknown>)['temperature'], 0.2);

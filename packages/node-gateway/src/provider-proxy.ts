@@ -80,6 +80,13 @@ const MERGE_PATHS = ['/chat/completions', '/completions', '/responses', '/messag
 
 const EXTRA_FORBIDDEN = new Set(PROVIDER_MODEL_EXTRA_FORBIDDEN_KEYS);
 
+/**
+ * 思考强度这类「用户在会话里可以自己选」的键：agent 已经发了值就以它为准，
+ * 提供商配置里的同名键只当默认值。别的键（max_tokens、temperature 之类）仍是提供商说了算：
+ * 那些多是为了让模型能跑，不是用户当场能表达的意图。
+ */
+const AGENT_PREFERRED = new Set(['reasoning_effort', 'reasoning', 'thinking', 'thinking_config']);
+
 /** 请求体里的 model 去掉 hub-<slug>/ 前缀：agent 可能拿到的是 hub 模型 id。 */
 function bareModel(model: string): string {
   const parsed = parseHubModel(model);
@@ -94,7 +101,7 @@ function bareModel(model: string): string {
 /**
  * 把提供商为该模型配置的 extra 合并进上游请求体（纯函数）：
  * 只有 POST + JSON 对象 + 命中会话式路径且 model 对得上时才改；顶层浅合并，extra 覆盖同名键，
- * 但绝不覆盖 model/messages/input/stream/stream_options/tools。
+ * 但绝不覆盖 model/messages/input/stream/stream_options/tools；思考强度类的键在 agent 已发值时让位给 agent。
  * 任何不命中或解析失败都原样返回入参，不抛错。
  */
 export function mergeModelExtra(
@@ -121,6 +128,8 @@ export function mergeModelExtra(
   const entries = Object.entries(body);
   for (const [key, value] of Object.entries(extra)) {
     if (EXTRA_FORBIDDEN.has(key)) continue;
+    // 思考强度：agent 报过（会话里能切）就听 agent 的，配置只补它没报的
+    if (AGENT_PREFERRED.has(key) && body[key] !== undefined) continue;
     entries.push([key, value]);
   }
   // Object.fromEntries 按数据属性写入：即使 extra 里混进 __proto__ 也不会改原型。
