@@ -39,6 +39,9 @@ import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, typ
 import { ContextMeter } from '../../atoms/context-meter.tsx';
 import { SessionLinksDialog } from '../../atoms/session-links-dialog.tsx';
 import { SessionLinkChip } from '../../atoms/session-link-popover.tsx';
+import { SubagentTrack } from '../../atoms/subagent-track.tsx';
+import { SubagentPanel } from '../../atoms/subagent-panel.tsx';
+import { resolveSubagentPath } from '../../atoms/subagent-track.ts';
 import { sessionLinkInfo } from '../../atoms/session-link-info.ts';
 import { SaveAgentProfileDialog } from '../../shell/agent-profile-dialog.tsx';
 import { AgentProfilesDialog } from '../../shell/agent-profiles-dialog.tsx';
@@ -121,6 +124,9 @@ export function FocusView({
   const [profilesOpen, setProfilesOpen] = useState(false);
   // 删除确认框；关掉后焦点要回到「⋯」。
   const [deleting, setDeleting] = useState(false);
+  // 子代理面板的返回栈（最后一个是正在看的子代理）；空数组就是关着。轨道和面板共用。
+  const [subagentPath, setSubagentPath] = useState<readonly string[]>([]);
+  const subagentTrackRef = useRef<HTMLButtonElement | null>(null);
   const moreRef = useRef<HTMLButtonElement | null>(null);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [linkOverrides, setLinkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -134,6 +140,7 @@ export function FocusView({
     setRenaming(false);
     setLinkInfoId(null);
     setDeleting(false);
+    setSubagentPath([]);
   }, [session.id]);
   const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>(() => readStoredTab(session.id) ?? 'chat');
@@ -245,6 +252,17 @@ export function FocusView({
     element.scrollTo({ top: element.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
     element.focus({ preventScroll: true });
   }
+  /** 子代理面板：push 进栈、pop 出栈；出栈到空就是关掉，焦点还给轨道。 */
+  function navigateSubagent(next: readonly string[]): void {
+    setSubagentPath(next);
+    if (next.length === 0) requestAnimationFrame(() => subagentTrackRef.current?.focus());
+  }
+  // 块没了（换会话、重连后历史对不上）：面板别停在空页上。
+  useEffect(() => {
+    if (subagentPath.length === 0) return;
+    if (resolveSubagentPath(blocks, subagentPath).length === subagentPath.length) return;
+    setSubagentPath([]);
+  }, [blocks, subagentPath]);
   const deliveriesBySeq = useDeliveries(session.id, lastSeq);
   const canvasLinkedIds = useMemo(
     () =>
@@ -756,6 +774,16 @@ export function FocusView({
       <AttentionAutoAck sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
       {gitOpen ? <GitDialog sessionId={session.id} workspaceId={session.workspaceId} taskId={session.taskId} onClose={() => setGitOpen(false)} /> : null}
+      {subagentPath.length > 0 ? (
+        <SubagentPanel
+          blocks={blocks}
+          path={subagentPath}
+          sessionId={session.id}
+          agentLabel={agentLabel}
+          settings={settings}
+          onNavigate={navigateSubagent}
+        />
+      ) : null}
       {rewindAt !== null ? (
         <RewindDialog sessionId={session.id} workspaceId={session.workspaceId} promptSeq={rewindAt} onClose={() => setRewindAt(null)}
           onDone={(id, prompt) => { setRewindAt(null); onSeedDraft?.(id, prompt); onChanged(); onOpenSession(id); }} />
@@ -1036,6 +1064,7 @@ export function FocusView({
               {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
             </div>
           ) : null}
+          <SubagentTrack blocks={blocks} onSelect={(id) => setSubagentPath([id])} triggerRef={subagentTrackRef} />
           {backgroundNotice ? (
             <div
               data-testid="background-activity"
