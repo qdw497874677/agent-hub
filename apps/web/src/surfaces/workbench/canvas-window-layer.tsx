@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type
 import { Rnd } from 'react-rnd';
 import type { CanvasDto, SessionDto } from '../../shell/api.ts';
 import { FocusView } from './focus.tsx';
-import { resolveLive, waitingForReply, type LiveMap } from '../../atoms/live.ts';
+import { resolveLive, waitingForReply, type Block, type LiveMap } from '../../atoms/live.ts';
+import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
 import { statusStyle } from '../../atoms/status.tsx';
 import { useAccount } from '../../shell/auth.tsx';
 import {
@@ -143,7 +144,16 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, drafts, onDra
     <WindowBar
       items={minimized(set).flatMap((w) => {
         const session = byId.get(w.sessionId);
-        return session ? [{ session, title: sessionTitle(canvas, session), waiting: waitingForReply(live[session.id] ?? null, live[session.id]?.status ?? session.status) }] : [];
+        if (!session) return [];
+        const local = live[session.id];
+        const agentLabel = canvas.agents.find((candidate) => candidate.id === session.agentId)?.label ?? session.agentId;
+        return [{
+          session,
+          title: sessionTitle(canvas, session),
+          waiting: waitingForReply(local ?? null, local?.status ?? session.status),
+          blocks: local?.blocks ?? [],
+          agentLabel
+        }];
       })}
       onRestore={(id) => act((current, cap) => restoreWindow(current, id, cap))}
       onClose={(id) => act((current) => closeWindow(current, id))}
@@ -251,7 +261,7 @@ function WindowBar({
   onRestore,
   onClose
 }: {
-  items: { session: SessionDto; title: string; waiting: boolean }[];
+  items: { session: SessionDto; title: string; waiting: boolean; blocks: readonly Block[]; agentLabel: string }[];
   onRestore: (sessionId: string) => void;
   onClose: (sessionId: string) => void;
 }) {
@@ -262,14 +272,14 @@ function WindowBar({
       data-testid="window-bar"
       className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-w-[calc(100%-8rem)] -translate-x-1/2 gap-1.5 overflow-x-auto rounded-md border border-hair bg-card p-1 shadow-sm"
     >
-      {items.map(({ session, title, waiting }) => {
+      {items.map(({ session, title, waiting, blocks, agentLabel }) => {
         const style = statusStyle(session.status, session.lastSeq);
         return (
           <span key={session.id} className="flex shrink-0 items-center rounded-sm border border-hair">
             <button className="flex h-9 max-w-[14rem] items-center gap-1.5 px-2 text-meta text-secondary hover:text-primary" onClick={() => onRestore(session.id)} title={title}>
               <span className={`block size-[7px] shrink-0 ${style.dot} ${style.shape}`} />
               <span className="truncate">{title}</span>
-              {waiting ? <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" aria-label="正在回复" /> : null}
+              {waiting ? <WaitingDot sessionId={session.id} blocks={blocks} agentLabel={agentLabel} /> : null}
             </button>
             <button className="h-9 px-1.5 text-meta text-tertiary hover:text-primary" aria-label={`关闭 ${title}`} onClick={() => onClose(session.id)}>
               ×
@@ -278,6 +288,18 @@ function WindowBar({
         );
       })}
     </nav>
+  );
+}
+
+/** 窗口条上的脉冲点：形状照旧，悬停时补一句「<agent> 正在回复 · N 秒」。 */
+function WaitingDot({ sessionId, blocks, agentLabel }: { sessionId: string; blocks: readonly Block[]; agentLabel: string }) {
+  const progress = useTurnProgress(sessionId, blocks, true, agentLabel);
+  return (
+    <span
+      className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+      aria-label="正在回复"
+      title={progress ? `${agentLabel} 正在回复 · ${progress.seconds} 秒` : undefined}
+    />
   );
 }
 

@@ -15,6 +15,7 @@ import { attachmentsCapability } from '../../atoms/attachments.ts';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
 import { backgroundActivityText } from '../../atoms/background-activity.ts';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
+import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
 import { sessionCommands } from '../../atoms/commands.ts';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
@@ -369,6 +370,8 @@ export function FocusView({
     }
   }
   const turnRunning = waitingForReply(live, status);
+  // 发了消息之后的那段空窗：说出「在启动 / 在等 / 在写 / 在用哪个工具」，秒数自己往前走。
+  const progress = useTurnProgress(session.id, blocks, turnRunning, agentLabel);
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
   useEffect(() => {
@@ -997,10 +1000,19 @@ export function FocusView({
             {reason && timelineBlocks[timelineBlocks.length - 1]?.kind !== 'error' ? (
               <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
             ) : null}
-            {turnRunning ? (
-              <p className="text-meta text-tertiary" aria-live="polite">
-                {agentLabel} 正在回复…
-              </p>
+            {progress ? (
+              <div
+                className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-meta text-tertiary"
+                aria-live="polite"
+                aria-label={progress.detail}
+                title={progress.detail}
+                data-testid="turn-progress"
+              >
+                <span className="size-1.5 shrink-0 rounded-full bg-accent motion-safe:animate-pulse" aria-hidden />
+                <span className="min-w-0 truncate" data-testid="turn-progress-phase">{progress.label}</span>
+                {/* 秒数只给眼睛：读屏别每秒被打断一次，完整说明在 title / aria-label 里。 */}
+                <span className="shrink-0 tabular-nums text-tertiary" aria-hidden data-testid="turn-progress-elapsed">· {progress.seconds} 秒</span>
+              </div>
             ) : null}
             </DeliveryContext.Provider>
             </FileLinksContext.Provider>
