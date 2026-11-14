@@ -10,7 +10,8 @@ import { piModel } from './hub-model.ts';
  * ADR 0025 · 工作空间文件浏览 P1（390px 手机）：目录下钻、预览、敏感文件确认、被忽略的灰显、
  * 改动列表 + diff、实时刷新（新建文件后列表自己出现）、路径越界拒绝。
  */
-const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/workspace/shots/files';
+const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/files';
+mkdirSync(SHOTS, { recursive: true });
 
 test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新', async ({ page, baseURL }) => {
   await loginByApi(page);
@@ -64,7 +65,9 @@ test('文件浏览：下钻、预览、敏感确认、改动 diff、实时刷新
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${project.id}/focus/${sid}`);
-  await page.getByRole('button', { name: '详情' }).click();
+  // 手机上「详情」收进了「更多」菜单（IA 分层改动之后）。
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: /^详情/ }).click();
   await page.getByTestId('open-files').click();
   // 详情 → 浏览文件：关掉详情，切到会话的「文件」标签页（不再是全屏浮层）
   await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');
