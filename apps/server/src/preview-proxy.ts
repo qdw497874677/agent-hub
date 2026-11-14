@@ -23,8 +23,13 @@ const HOP_BY_HOP = new Set([
   'upgrade'
 ]);
 
-/** 客户端发来的、不该转给上游的头（除了 hop-by-hop）。 */
-const REQUEST_DROP = new Set(['host', 'expect']);
+/**
+ * 客户端发来的、不该转给上游的头（除了 hop-by-hop）。
+ *
+ * Hub 的登录 cookie 与 Authorization 是**给 hub 的**，上游 dev server 既不该看到、也不该拿它
+ * 去冒充用户（预览链接可能指向任何本机服务）。分享令牌走查询串，也不转发（见 `stripShareParam`）。
+ */
+const REQUEST_DROP = new Set(['host', 'expect', 'cookie', 'authorization', 'proxy-authorization']);
 
 const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
 const DEFAULT_HEADER_TIMEOUT_MS = 10_000;
@@ -32,8 +37,6 @@ const DEFAULT_HOST = '127.0.0.1';
 
 /** 上游不可达时的固定文案（设计稿 §7）。 */
 export const PREVIEW_DOWN_TEXT = '服务没在跑：在会话终端里重新启动，或换一个端口';
-
-const LOOPBACKS = new Set(['127.0.0.1', '::1', 'localhost']);
 
 function normalizeAddress(address: string | undefined): string {
   return (address ?? '').replace(/^::ffff:/, '');
@@ -43,11 +46,11 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isLoopbackAddress(address: string | undefined): boolean {
-  return LOOPBACKS.has(normalizeAddress(address));
-}
-
-/** 去掉 CSP 里的 `frame-ancestors`：我们自己的页面要 iframe 它，其余指令原样保留。 */
+/**
+ * 去掉 CSP 里的 `frame-ancestors`：我们自己的页面要 iframe 它，其余指令原样保留。
+ *
+ * 只剥不补：预览页允许被嵌（P4 前缀模式下由 `preview-prefix.ts` 自己补 `'self'`）。
+ */
 export function stripFrameAncestors(policy: string): string {
   return policy
     .split(';')
@@ -98,10 +101,12 @@ function requestHeaders(request: IncomingMessage, link: PreviewLink, proto: stri
 /** 响应的头：剥 `x-frame-options` / CSP `frame-ancestors` / hop-by-hop，其余原样。 */
 function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<[string, string]> {
   const out: Array<[string, string]> = [];
+  let hasReferrerPolicy = false;
   for (const [name, value] of head.headers) {
     const lower = name.toLowerCase();
     if (lower === 'x-frame-options') continue;
     if (lower.startsWith('proxy-')) continue;
+    if (lower === 'referrer-policy') hasReferrerPolicy = true;
     if (lower === 'content-security-policy' || lower === 'content-security-policy-report-only') {
       const cleaned = stripFrameAncestors(value);
       if (cleaned !== '') out.push([name, cleaned]);
@@ -115,6 +120,8 @@ function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<
     if (HOP_BY_HOP.has(lower)) continue;
     out.push([name, value]);
   }
+  // 分享令牌在查询串里（`?share=`），别让它通过 Referer 漏给页面里的第三方资源。
+  if (!hasReferrerPolicy) out.push(['referrer-policy', 'no-referrer']);
   if (keepUpgradeHeaders) {
     const names = new Set(out.map(([name]) => name.toLowerCase()));
     if (!names.has('connection')) out.push(['connection', 'Upgrade']);
@@ -147,6 +154,30 @@ function shareTokenOf(request: IncomingMessage): string | null {
   if (start === -1) return null;
   const value = new URLSearchParams(raw.slice(start + 1)).get('share');
   return value === null || value === '' ? null : value;
+}
+
+/**
+ * 从 URL 的查询串里删掉 `share` 参数（只用于 hub 鉴权，不能漏给 dev server）。
+ *
+ * 按 `&` 分段、只比较 key，其余段**原样拼回**——不用 `URLSearchParams.toString()` 重组，
+ * 否则既会重排顺序，也会把上游依赖的原始编码/`+` 改掉。
+ */
+export function stripShareParam(url: string): string {
+  const start = url.indexOf('?');
+  if (start === -1) return url;
+  const segments = url.slice(start + 1).split('&');
+  const kept = segments.filter((segment) => {
+    const equals = segment.indexOf('=');
+    const rawKey = equals === -1 ? segment : segment.slice(0, equals);
+    if (rawKey === 'share') return false;
+    try {
+      return decodeURIComponent(rawKey) !== 'share';
+    } catch {
+      return true;
+    }
+  });
+  if (kept.length === segments.length) return url;
+  return kept.length === 0 ? url.slice(0, start) : `${url.slice(0, start)}?${kept.join('&')}`;
 }
 
 function headerTimeoutText(milliseconds: number): string {
@@ -218,8 +249,6 @@ export interface PreviewProxyOptions {
   readonly proto?: string;
   /** 未授权时的跳转地址；默认相对 `/login?next=<原地址>`。 */
   readonly loginUrl?: (request: IncomingMessage, link: PreviewLink, target: string) => string;
-  /** 测试用：默认按 remoteAddress 判回环。回环请求免鉴权（本机 dogfood / 健康检查）。 */
-  readonly isLoopback?: (request: IncomingMessage) => boolean;
 }
 
 export interface PreviewProxy {
@@ -258,8 +287,6 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
   }
 
   async function allowed(request: IncomingMessage, link: PreviewLink): Promise<boolean> {
-    const loopback = options.isLoopback ?? ((candidate: IncomingMessage) => isLoopbackAddress(candidate.socket.remoteAddress));
-    if (loopback(request)) return true;
     if (options.matchShare !== undefined) {
       const token = shareTokenOf(request);
       if (token !== null) {
@@ -326,7 +353,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
       stream = await options.channel.open(link.workerId, {
         port: link.port,
         method,
-        path: request.url ?? '/',
+        path: stripShareParam(request.url ?? '/'),
         headers: requestHeaders(request, link, proto, false)
       });
     } catch (error) {
@@ -447,7 +474,7 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
       stream = await options.channel.open(link.workerId, {
         port: link.port,
         method: request.method ?? 'GET',
-        path: request.url ?? '/',
+        path: stripShareParam(request.url ?? '/'),
         headers: requestHeaders(request, link, proto, true),
         upgrade: { protocol: typeof protocol === 'string' ? protocol : null }
       });

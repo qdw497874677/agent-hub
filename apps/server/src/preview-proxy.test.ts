@@ -271,7 +271,13 @@ test('GET 正常：改 Host、补 x-forwarded-*、删逐跳头、剥 x-frame-opt
   };
 
   const response = await request(port, '/index.html?x=1', {
-    headers: { accept: 'text/plain', cookie: 'hub_login=abc', connection: 'keep-alive' }
+    headers: {
+      accept: 'text/plain',
+      cookie: 'hub_login=abc',
+      authorization: 'Bearer hub-secret',
+      'proxy-authorization': 'Basic abc',
+      connection: 'keep-alive'
+    }
   });
   assert.equal(response.status, 200);
   assert.equal(response.body, 'hello');
@@ -290,7 +296,10 @@ test('GET 正常：改 Host、补 x-forwarded-*、删逐跳头、剥 x-frame-opt
   assert.equal(forwarded.get('host'), '127.0.0.1:3000');
   assert.equal(forwarded.get('x-forwarded-proto'), 'http');
   assert.match(forwarded.get('x-forwarded-for') ?? '', /127\.0\.0\.1/);
-  assert.equal(forwarded.get('cookie'), 'hub_login=abc');
+  // Hub 的登录凭据不能漏给上游 dev server。
+  assert.equal(forwarded.get('cookie'), undefined);
+  assert.equal(forwarded.get('authorization'), undefined);
+  assert.equal(forwarded.get('proxy-authorization'), undefined);
   assert.equal(forwarded.get('connection'), undefined);
   assert.equal(forwarded.get('keep-alive'), undefined);
 
@@ -336,9 +345,8 @@ test('CSP 里的 frame-ancestors 被剥掉，其余指令保留', async (t) => {
   assert.equal(response.headers['cache-control'], 'no-cache');
 });
 
-test('未登录：非回环请求 302 到登录页并带上原地址', async (t) => {
+test('回环来源也不再免鉴权：连 127.0.0.1、无 cookie → 302 到登录页', async (t) => {
   const { port } = await setup(t, {
-    isLoopback: () => false,
     authorize: async () => false
   });
 
@@ -355,7 +363,6 @@ test('未登录：非回环请求 302 到登录页并带上原地址', async (t)
 test('公开分享：带有效 share、无 cookie 也放行，不查 cookie', async (t) => {
   const calls: string[] = [];
   const { fake, port } = await setup(t, {
-    isLoopback: () => false,
     authorize: async () => {
       calls.push('cookie');
       return false;
@@ -375,13 +382,46 @@ test('公开分享：带有效 share、无 cookie 也放行，不查 cookie', as
   assert.equal(response.status, 200);
   assert.equal(response.body, 'shared');
   assert.deepEqual(calls, ['share:pvs_good']);
-  // 查询串原样透传给上游（dev server 自己决定怎么处理）。
-  assert.equal(fake.calls[0]!.request.path, '/index.html?share=pvs_good');
+  // 分享令牌只给 hub 用，转发给上游前要删掉；其余参数原样保留。
+  assert.equal(fake.calls[0]!.request.path, '/index.html');
+  assert.equal(response.headers['referrer-policy'], 'no-referrer');
+});
+
+test('分享令牌不转发上游：按 & 删 share 段，其余参数与编码原样保留', async (t) => {
+  const { fake, port } = await setup(t, {
+    matchShare: async (_link, token) => token === 'pvs_good'
+  });
+  fake.onOpen = (stream) => {
+    stream.emitHead({ status: 200, statusText: 'OK', headers: [['content-type', 'text/plain']] });
+    stream.emitEnd();
+  };
+
+  const response = await request(port, '/path?share=pvs_good&a=1&b=%2Fkeep&empty=');
+  assert.equal(response.status, 200);
+  assert.equal(fake.calls[0]!.request.path, '/path?a=1&b=%2Fkeep&empty=');
+
+  const only = await request(port, '/only?share=pvs_good');
+  assert.equal(only.status, 200);
+  assert.equal(fake.calls[1]!.request.path, '/only');
+
+  // 上游自己设了 referrer-policy 就不覆盖。
+  fake.onOpen = (stream) => {
+    stream.emitHead({
+      status: 200,
+      statusText: 'OK',
+      headers: [
+        ['content-type', 'text/plain'],
+        ['referrer-policy', 'same-origin']
+      ]
+    });
+    stream.emitEnd();
+  };
+  const kept = await request(port, '/keep', { headers: { cookie: 'hub_login=abc' } });
+  assert.equal(kept.headers['referrer-policy'], 'same-origin');
 });
 
 test('公开分享：令牌不对/过期仍能靠 cookie 进来，最终才 302', async (t) => {
   const { fake, port } = await setup(t, {
-    isLoopback: () => false,
     authorize: async (request) => String(request.headers.cookie ?? '').includes('hub_login=ok'),
     matchShare: async () => false,
   });
@@ -404,7 +444,6 @@ test('公开分享：令牌不对/过期仍能靠 cookie 进来，最终才 302'
 
 test('公开分享：没有 share 时 cookie 鉴权行为不变', async (t) => {
   const { fake, port } = await setup(t, {
-    isLoopback: () => false,
     authorize: async (request) => String(request.headers.cookie ?? '').includes('hub_login=ok'),
     matchShare: async () => {
       throw new Error('无 share 时不该调用');
@@ -508,12 +547,14 @@ test('WS upgrade：101 原样回写，双向桥接', async (t) => {
     });
   };
 
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/socket`);
+  const socket = new WebSocket(`ws://127.0.0.1:${port}/socket?share=pvs_x&v=1`);
   t.after(() => socket.terminate());
   await once(socket, 'open');
 
   const call = fake.calls[0]!;
   assert.deepEqual(call.request.upgrade, { protocol: null });
+  // upgrade 与 HTTP 一样删掉 share，其余查询串原样。
+  assert.equal(call.request.path, '/socket?v=1');
   const forwarded = new Map(call.request.headers.map(([name, value]) => [name.toLowerCase(), value]));
   assert.equal(forwarded.get('upgrade'), 'websocket');
   assert.equal(forwarded.get('sec-websocket-extensions'), undefined);

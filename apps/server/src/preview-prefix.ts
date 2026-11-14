@@ -1,5 +1,5 @@
 import type { PreviewLink } from '@agent-hub/domain';
-import { PREVIEW_DOWN_TEXT } from './preview-proxy.ts';
+import { PREVIEW_DOWN_TEXT, stripShareParam } from './preview-proxy.ts';
 import type { PreviewChannel, PreviewStream } from './preview-channel.ts';
 
 /**
@@ -42,7 +42,10 @@ const HOP_BY_HOP = new Set([
   'transfer-encoding',
   'upgrade',
   'host',
-  'content-length'
+  'content-length',
+  // Hub 的登录 cookie / Authorization 不转给上游 dev server（同端口模式）。
+  'cookie',
+  'authorization'
 ]);
 
 const stripHopByHop = (headers: Headers): Array<[string, string]> => {
@@ -86,7 +89,7 @@ export function createPreviewPrefix(options: PreviewPrefixOptions): PreviewPrefi
     }
     if (link.state === 'offline') return downPage();
 
-    const path = `/${tail.join('/')}${url.search}`;
+    const path = `/${tail.join('/')}${stripShareParam(url.search)}`;
     const headers = stripHopByHop(request.headers);
     headers.push(['host', `127.0.0.1:${link.port}`]);
     headers.push(['x-forwarded-proto', url.protocol.replace(':', '')]);
@@ -133,6 +136,7 @@ export function createPreviewPrefix(options: PreviewPrefixOptions): PreviewPrefi
     }
 
     const out = new Headers();
+    let hasReferrerPolicy = false;
     for (const [key, value] of head.headers) {
       const lower = key.toLowerCase();
       if (lower === 'x-frame-options') continue;
@@ -140,6 +144,7 @@ export function createPreviewPrefix(options: PreviewPrefixOptions): PreviewPrefi
       if (lower === 'content-encoding') continue;
       if (lower === 'connection' || lower === 'transfer-encoding') continue;
       if (lower === 'frame-ancestors') continue;
+      if (lower === 'referrer-policy') hasReferrerPolicy = true;
       if (lower === 'content-security-policy') {
         const kept = value
           .split(';')
@@ -151,6 +156,8 @@ export function createPreviewPrefix(options: PreviewPrefixOptions): PreviewPrefi
       }
       out.append(key, value);
     }
+    // 分享令牌在查询串里，别让 `?share=` 跟着 Referer 漏出去。
+    if (!hasReferrerPolicy) out.set('referrer-policy', 'no-referrer');
     if (request.method === 'HEAD' || head.status === 204 || head.status === 304) {
       stream.close();
       return new Response(null, { status: head.status, headers: out });

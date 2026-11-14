@@ -77,14 +77,24 @@ const prefix = (channel: PreviewChannel, extra: Partial<Parameters<typeof create
 test('前缀模式：路径透传到 worker 并透传响应体', async () => {
   const harness = fakeChannel({ body: 'hello' });
   const handler = prefix(harness.channel);
-  const response = await handler.handle(new Request('http://hub:17900/preview/pv_1/assets/a.js?v=1'));
+  const response = await handler.handle(
+    new Request('http://hub:17900/preview/pv_1/assets/a.js?share=pvs_x&v=1', {
+      headers: { cookie: 'hub_login=abc', authorization: 'Bearer hub-secret' }
+    })
+  );
   assert.ok(response !== null);
   assert.equal(response.status, 200);
   assert.equal(await response.text(), 'hello');
   assert.equal(harness.opened[0]?.port, 5173);
+  // share 只给 hub 鉴权；其余查询串原样。
   assert.equal(harness.opened[0]?.path, '/assets/a.js?v=1');
   assert.ok(harness.opened[0]?.headers.some(([key, value]) => key === 'host' && value === '127.0.0.1:5173'));
+  // Hub 的凭据头不转给上游。
+  const forwarded = new Map(harness.opened[0]!.headers.map(([key, value]) => [key.toLowerCase(), value]));
+  assert.equal(forwarded.get('cookie'), undefined);
+  assert.equal(forwarded.get('authorization'), undefined);
   assert.equal(response.headers.get('x-frame-options'), null);
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
 });
 
 test('前缀模式：不命中前缀返回 null，未知链接 404，未授权 302 回登录页', async () => {

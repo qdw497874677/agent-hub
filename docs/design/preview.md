@@ -133,7 +133,8 @@ interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } 
 - 每个 `hub_port` 起一个独立 `http.Server`（`apps/server/src/preview-proxy.ts` 新增），与主 server
   共享鉴权工具，不共享 Hono 的中间件（避免 CSRF 与 SPA 兜底）。
 - HTTP：逐跳头（`connection`/`transfer-encoding`/`keep-alive`/`upgrade`）不透传；`Host` 改写成
-  `127.0.0.1:<worker_port>`；补 `x-forwarded-for/proto/host`；**剥掉**上游的
+  `127.0.0.1:<worker_port>`；补 `x-forwarded-for/proto/host`；Hub 的 `cookie` / `authorization` 只用于
+  鉴权、不转给上游；分享令牌 `?share=` 转发前删掉；**剥掉**上游的
   `x-frame-options` 与 CSP 里的 `frame-ancestors`（我们自己的页面要 iframe 它），其余 CSP 原样。
 - 流式：`text/event-stream` 与 chunked 直接边收边写，不缓冲整包；HTML 回包加 `cache-control: no-cache`。
 - WS：`upgrade` 事件里按同一套鉴权后建立隧道，`permessage-deflate` 关闭（透传更简单）。
@@ -185,7 +186,7 @@ interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } 
 
 - P1 只有手动登记端口；输出探测（`detected`）与失效检测留给 P2。
 - 未授权一律 302 回 hub 登录页（`HUB_PUBLIC_URL` 优先，否则按 `HUB_HOST`/`HUB_PORT` 拼）。
-- 回环来源免鉴权（本机 dogfood / 健康检查）；公网访问按 cookie + `session.read`。
+- 所有来源（含 `127.0.0.1` / 本机）一律按 cookie + `session.read` 或分享令牌鉴权；没有再开回环免鉴权口子。
 - 浏览器侧背压只做了窗口计数，没发 `preview_pause`/`preview_resume`（P2 一起做）。
 - 每条链接的并发上限 8 未实现，只有每 worker 32。
 
@@ -215,7 +216,7 @@ interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } 
 | `packages/domain/src/use-cases/preview-share.ts` | `sharePreviewLinkUseCase` / `revokePreviewShareUseCase` / `matchPreviewShare` / `previewLinkPublic`；令牌 `pvs_` + 24 字节随机、只存 sha256、默认 24h、上限 720h、重新分享即轮换 |
 | `packages/storage-sqlite/src/preview-links.ts` | `share_token_hash` / `share_expires_at` 两列（老库 ALTER），`shared` 现算 |
 | `apps/server/src/preview-routes.ts` | `POST/DELETE /api/sessions/:id/previews/:linkId/share`，返回 `{ok,url,expiresAt}`，审计 `preview.share` / `preview.unshare` |
-| `apps/server/src/preview-proxy.ts` | 查询串 `?share=` 命中即放行（跳过 cookie），失败照常回退 cookie 登录 |
+| `apps/server/src/preview-proxy.ts` | 查询串 `?share=` 命中即放行（跳过 cookie），失败照常回退 cookie 登录；转发前删掉 `share`，不交给上游 |
 | `apps/web/src/atoms/preview-panel.tsx` | 「自动发现」徽标、公开标签、生成/复制/撤销分享链接（令牌只在生成时出现一次） |
 | `apps/web/src/surfaces/workbench/nodes.tsx` | 画布卡片「预览」入口（单个直开新标签，多个弹选择；不用 iframe） |
 
