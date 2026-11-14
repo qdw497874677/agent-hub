@@ -205,6 +205,8 @@ test('UI：隔离 worktree 是工作空间里的一个选项，勾它机器照�
   await linkGitWorkspace(page, headers, project.id, dir);
   const task = await makeTask(page, headers, project.id);
 
+  // 手机视口：底部操作区要常驻（内容区自己滚），不能被滚出屏幕
+  await page.setViewportSize({ width: 369, height: 668 });
   await page.goto(`/#/p/${project.id}/canvas`);
   const node = page.locator('.react-flow__node-task').filter({ hasText: 'worktree' });
   await expect(node).toContainText('0 个会话');
@@ -220,6 +222,7 @@ test('UI：隔离 worktree 是工作空间里的一个选项，勾它机器照�
   const region = run.getByTestId('derive-workspace-region');
   await expect(region).not.toHaveCSS('pointer-events', 'none');
   await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
+  await expect(run.getByRole('button', { name: '开始' })).toBeInViewport();
   await run.getByRole('button', { name: '开始' }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
   // 空间是按项目配置现建的隔离 worktree，准备命令跑过

@@ -51,12 +51,17 @@ export const CONCURRENT_HINT = '另一个任务也在这里干活，改动可能
 const ROW = 'flex min-h-[56px] w-full items-start gap-2 rounded-sm border px-3 py-2 text-left';
 const rowClass = (selected: boolean) => `${ROW} ${selected ? 'border-accent bg-card' : 'border-hair hover:border-strong'}`;
 
+/** 单选圆点：选中的除了描边还给一个实心点 + 一圈很淡的外环，深色屏上一眼能看出选了哪个。 */
 function Radio({ on }: { on: boolean }) {
   return (
     <span
       aria-hidden
-      className={`mt-1 inline-block h-3 w-3 shrink-0 rounded-full border ${on ? 'border-accent bg-accent' : 'border-strong'}`}
-    />
+      className={`mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border ${
+        on ? 'border-accent ring-2 ring-accent/20' : 'border-strong'
+      }`}
+    >
+      {on ? <span className="block h-2 w-2 rounded-full bg-accent" /> : null}
+    </span>
   );
 }
 
@@ -84,6 +89,8 @@ export function WorkspaceChooser({
   hubProtocols?: readonly string[];
 }) {
   const views = useWorkspaceViews(canvas.project.id);
+  // 「这台机器没有 git 基座」时那个动作按钮：加一就让下面的关联面板展开并滚进视野
+  const [linkSignal, setLinkSignal] = useState(0);
   const agentLabel = canvas.agents.find((agent) => agent.id === agentId)?.label ?? agentId;
   const local = resolveWorker(workers, null);
   const offers = (worker: WorkerInfoDto) => (worker.agentIds ?? [agentId]).includes(agentId);
@@ -218,12 +225,6 @@ export function WorkspaceChooser({
                 </button>
               );
             })}
-            <LinkWorkspaces
-              projectId={canvas.project.id}
-              linked={(views.data ?? []).map(({ workspace }) => workspace.id)}
-              workerId={machine}
-              onLinked={(workspaceId) => onChoice({ type: 'existing', workspaceId })}
-            />
             <NewTemporary
               canvas={canvas}
               taskId={taskId}
@@ -240,6 +241,7 @@ export function WorkspaceChooser({
               gitHere={gitHere}
               selected={choice?.type === 'new_worktree'}
               onSelect={() => onChoice({ type: 'new_worktree' })}
+              onFixGit={() => setLinkSignal((value) => value + 1)}
             />
             <NewLongLived
               canvas={canvas}
@@ -249,6 +251,14 @@ export function WorkspaceChooser({
               onChoice={onChoice}
             />
           </div>
+          {/* 关联入口放在所有 radio 之后：单选组要连续，它是组外的补充（样式也就轻一层）。 */}
+          <LinkWorkspaces
+            projectId={canvas.project.id}
+            linked={(views.data ?? []).map(({ workspace }) => workspace.id)}
+            workerId={machine}
+            expandSignal={linkSignal}
+            onLinked={(workspaceId) => onChoice({ type: 'existing', workspaceId })}
+          />
         </>
       )}
     </section>
@@ -394,21 +404,25 @@ function NewTemporary({
       <Radio on={selected} />
       <span className="min-w-0 flex-1">
         <span className="block text-body text-primary">新建临时工作空间</span>
-        <span className="block text-meta text-tertiary">为这个任务单独开一份，用完自动清理；有未保存的改动会保留并提醒</span>
-        {gitHere ? <span className="block text-meta text-tertiary">git 项目常用：每个任务一个分支，互不干扰</span> : null}
-        {existing > 0 ? <span className="mt-0.5 block text-meta text-rust">这个任务已经有 {existing} 个临时工作空间</span> : null}
+        {/* 未选中只有一行：挑东西的时候不用读完每个选项的说明书 */}
+        <span className="block text-meta text-tertiary">
+          {gitHere ? '每个任务一个分支，用完自动清理' : '为这个任务单独开一份，用完自动清理'}
+        </span>
+        {existing > 0 ? (
+          <span className="mt-0.5 block text-meta text-rust">这个任务已经有 {existing} 个临时工作空间</span>
+        ) : null}
         {selected ? (
           <span className="mt-1 block text-meta text-secondary">
             {gitHere ? (
               <>
-                将为这个任务新开分支 <span className="font-mono">{branchPreview(title)}</span>
-                （在 {machineName} 上）
+                新开分支 <span className="font-mono">{branchPreview(title)}</span>（在 {machineName} 上）
               </>
             ) : (
               <>
-                将在 {machineName} 的 <span className="font-mono">~/agent-hub-workspaces/.tmp/</span> 下新建一个空目录
+                在 {machineName} 的 <span className="font-mono">~/agent-hub-workspaces/.tmp/</span> 下建空目录
               </>
             )}
+            <span className="block text-tertiary">有未保存的改动会保留并提醒你</span>
           </span>
         ) : null}
       </span>
@@ -427,7 +441,8 @@ function NewWorktree({
   machineName,
   gitHere,
   selected,
-  onSelect
+  onSelect,
+  onFixGit
 }: {
   canvas: CanvasDto;
   taskId: string;
@@ -435,40 +450,58 @@ function NewWorktree({
   gitHere: boolean;
   selected: boolean;
   onSelect: () => void;
+  /** 「关联 git 目录」：就地展开下面的关联面板。 */
+  onFixGit: () => void;
 }) {
   const title = canvas.tasks.find((task) => task.id === taskId)?.title ?? '';
   const setup = canvas.project.worktree?.setup ?? null;
   return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={selected}
-      data-testid="ws-new-worktree"
-      className={`${rowClass(selected)} ${gitHere ? '' : 'opacity-60'}`}
-      onClick={() => {
-        if (!gitHere) return;
-        onSelect();
-      }}
-      title={gitHere ? undefined : '这台机器上还没有可用的 git 仓库：先关联一个 git 工作空间，或给项目绑定仓库'}
-    >
-      <Radio on={selected} />
-      <span className="min-w-0 flex-1">
-        <span className="block text-body text-primary">新建隔离 worktree（新分支）</span>
-        <span className="block text-meta text-tertiary">
-          在 {machineName} 上按项目配置现建，分支互不干扰；用完按清理策略处理
+    <div className={`${rowClass(selected)} flex-col`}>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        aria-disabled={gitHere ? undefined : true}
+        data-testid="ws-new-worktree"
+        className="flex w-full items-start gap-2 text-left"
+        onClick={() => {
+          if (!gitHere) return;
+          onSelect();
+        }}
+        title={gitHere ? undefined : '这台机器上还没有可用的 git 目录：先在下面关联一个，或给项目绑定仓库'}
+      >
+        <Radio on={selected} />
+        <span className={`min-w-0 flex-1 ${gitHere ? '' : 'opacity-60'}`}>
+          <span className="block text-body text-primary">新建隔离 worktree（新分支）</span>
+          <span className="block text-meta text-tertiary">
+            {gitHere ? '按项目配置现建，分支互不干扰' : '按项目配置在这台机器上现建一个隔离目录'}
+          </span>
+          {gitHere && selected ? (
+            <span className="mt-1 block text-meta text-secondary">
+              在 {machineName} 上新开分支 <span className="font-mono">{branchPreview(title)}</span>
+              {setup?.command ? '，先跑项目配置的准备命令，跑完才起 agent' : ''}
+            </span>
+          ) : null}
         </span>
-        {!gitHere ? (
-          <span className="mt-0.5 block text-meta text-rust">
-            这台机器上还没有可用的 git 仓库：先关联一个 git 工作空间，或给项目绑定仓库
-          </span>
-        ) : selected ? (
-          <span className="mt-1 block text-meta text-secondary">
-            将在 {machineName} 上新建分支 <span className="font-mono">{branchPreview(title)}</span>
-            {setup?.command ? '，先跑项目配置的准备命令，跑完才起 agent' : ''}
-          </span>
-        ) : null}
-      </span>
-    </button>
+      </button>
+      {/* 不可用不只是一行灰字：留着这一行（用户会来这儿找），说清缺什么，再给一个能点的动作。 */}
+      {gitHere ? null : (
+        <div data-testid="ws-new-worktree-blocked" className="mt-1.5 w-full border-l border-rust pl-2 text-meta">
+          <p className="text-rust">这台机器上还没有可用的 git 目录</p>
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <button
+              type="button"
+              data-testid="ws-new-worktree-fix"
+              className="min-h-[32px] shrink-0 rounded-sm border border-hair px-2 text-meta text-secondary hover:border-accent hover:text-accent"
+              onClick={onFixGit}
+            >
+              关联 git 目录
+            </button>
+            <span className="text-tertiary">或在项目设置里绑定仓库</span>
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 

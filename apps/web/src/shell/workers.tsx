@@ -416,7 +416,14 @@ export function WorkerPicker({
   unavailable?: (worker: WorkerInfoDto) => string | null;
 }) {
   if (workers.length < 2) return null;
-  const option = (id: string | null, text: string, online: boolean, disabled = false, why: string | null = null) => (
+  const option = (
+    id: string | null,
+    text: string,
+    online: boolean,
+    disabled = false,
+    why: string | null = null,
+    origin?: WorkerInfoDto['origin']
+  ) => (
     <button
       key={id ?? 'auto'}
       type="button"
@@ -431,6 +438,12 @@ export function WorkerPicker({
     >
       {id === null ? null : <Dot online={online} />}
       <span className="truncate">{text}</span>
+      {/* 中性标签：机器名的风格不统一（「xxx-本机」和「omarchy」），一眼能看出哪台是 hub 自己 */}
+      {origin ? (
+        <span className="shrink-0 rounded-sm border border-hair px-1 text-meta leading-[1.4] text-tertiary">
+          {origin === 'local' ? 'hub 本机' : '远程'}
+        </span>
+      ) : null}
       {why ? <span className="shrink-0 text-rust">{why}</span> : null}
     </button>
   );
@@ -441,7 +454,7 @@ export function WorkerPicker({
         {allowAuto ? option(null, '自动', true) : null}
         {workers.map((worker) => {
           const why = worker.state === 'online' ? unavailable(worker) : null;
-          return option(worker.workerId, worker.label, worker.state === 'online', worker.state !== 'online' || why !== null, why);
+          return option(worker.workerId, worker.label, worker.state === 'online', worker.state !== 'online' || why !== null, why, worker.origin);
         })}
       </div>
     </div>

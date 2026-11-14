@@ -3,17 +3,24 @@ import { useEffect, type ReactNode } from 'react';
 /**
  * 对话框共用的壳：遮罩点一下或按 Esc 就关；窄屏上贴底（拇指够得着），宽屏居中。
  * role=dialog + aria-modal，读屏能知道背后的画布暂时不可操作。
+ *
+ * 给了 footer 就成了「粘底」结构：标题/内容区自己滚，footer 常驻在面板底部。
+ * 手机上内容再长，取消/开始也不会被滚出去或被浏览器工具栏挤掉（安全区仍由外层遮罩的
+ * pb-[max(0.75rem,env(safe-area-inset-bottom))] 兜住）。
  */
 export function DialogShell({
   title,
   onClose,
   children,
+  footer,
   wide = false,
   testId
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  /** 常驻底部的操作区（取消/开始这类）。有它时内容区自己滚动，footer 不跟着滚。 */
+  footer?: ReactNode;
   /** 放 diff、文件这类宽内容：更宽，且内容区自己滚动。 */
   wide?: boolean;
   /** 面板上的 data-testid：弹窗自己的名字，别拿标题去猜。 */
@@ -36,7 +43,11 @@ export function DialogShell({
         aria-modal="true"
         aria-label={title}
         data-testid={testId}
-        className={`w-full rounded-md border border-strong bg-panel p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-h-[88dvh] max-w-[420px] overflow-y-auto overscroll-contain'}`}
+        className={`w-full rounded-md border border-strong bg-panel ${
+          footer === undefined
+            ? `p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-h-[88dvh] max-w-[420px] overflow-y-auto overscroll-contain'}`
+            : `relative flex max-h-[88dvh] flex-col overflow-hidden ${wide ? 'max-w-[820px]' : 'max-w-[420px]'}`
+        }`}
         onClick={(event) => event.stopPropagation()}
       >
         {wide ? (
@@ -48,7 +59,20 @@ export function DialogShell({
             ×
           </button>
         ) : null}
-        {children}
+        {footer === undefined ? (
+          children
+        ) : (
+          <>
+            {/* 唯一会滚的东西：内容。min-h-0 让 flex 子项真的能缩下去，不然它会把 footer 顶出面板。 */}
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">{children}</div>
+            <div
+              data-testid={testId === undefined ? undefined : `${testId}-footer`}
+              className="shrink-0 border-t border-hair bg-panel px-4 pb-3 pt-2"
+            >
+              {footer}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

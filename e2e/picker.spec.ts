@@ -166,7 +166,7 @@ async function newFolderButton(page: Page, width: number, tag: string) {
   // ↵ 建好、进入、「使用」选中它
   const folder = `new-${tag}`;
   await name.fill(folder);
-  await page.screenshot({ path: `/workspace/screenshots/picker-new-folder-${tag}.png` });
+  await page.screenshot({ path: `${process.env.SHOTS_DIR ?? '/tmp/opencode/shots'}/picker-new-folder-${tag}.png` });
   await name.press("Enter");
   await expect(input).toHaveValue(`${MANAGED}/${folder}/`);
   expect(existsSync(`${MANAGED}/${folder}`)).toBe(true);

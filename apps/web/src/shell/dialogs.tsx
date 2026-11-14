@@ -5,7 +5,7 @@ import { api, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, 
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
-import { canSelectMachine, startBlockReason } from './harness-gate.ts';
+import { canSelectMachine, startHint } from './harness-gate.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from '../atoms/model-picker.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 
@@ -122,6 +122,17 @@ export function DeriveDialog({
     hubModels.data ?? []
   );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
+  // 「开始」点不了时的原因：一行话放在按钮上方，手机上不用去猜、也没有 hover 可看
+  const hint = startHint({
+    agentId,
+    agentLabel: agent?.label ?? agentId,
+    machine,
+    worker: workers.byId(machine),
+    model,
+    protocol: selectedHub?.protocol ?? null,
+    workspaceReady: choiceReady(choice),
+    workspaceNeedsPath: choice?.type === 'new_long_lived' && !choice.path
+  });
   // 项目默认隔离（docs/design/worktree.md §2 §3）：没选过任何东西时，替用户选上「新建隔离 worktree」。
   const projectIsolated = canvas.project.worktree?.mode === 'isolated';
   const [modeTouched, setModeTouched] = useState(false);
@@ -200,7 +211,31 @@ export function DeriveDialog({
   }, [agentId, canvas.agents]);
 
   return (
-    <DialogShell title="在哪台机器、哪个工作空间干活？" onClose={onDone}>
+    <DialogShell
+      title="在哪台机器、哪个工作空间干活？"
+      onClose={onDone}
+      footer={
+        <div className="flex flex-col gap-1.5">
+          {/* 不可用就说清缺什么；能用时这一行不渲染，footer 只剩按钮 */}
+          {hint === null ? null : (
+            <p data-testid="derive-start-hint" className="text-meta text-secondary">
+              {hint}
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
+              取消
+            </button>
+            <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || derive.isPending} onClick={() => derive.mutate()}>
+              {phase === 'preparing'
+                ? choice?.type === 'new_long_lived' && choice.mode === 'create' && canvas.project.repo
+                  ? '正在下载仓库…'
+                  : '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
+            </button>
+          </div>
+        </div>
+      }
+    >
         <p className="mb-3 text-head text-primary">在哪台机器、哪个工作空间干活？</p>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
@@ -334,22 +369,6 @@ export function DeriveDialog({
         </div>
         </div>
         {derive.error ? <p className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}
-        <div className="sticky bottom-0 -mx-1 flex justify-end gap-2 bg-panel px-1 pb-[env(safe-area-inset-bottom)] pt-2">
-          <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
-            取消
-          </button>
-          <button
-            type="button"
-            className={PRIMARY_BUTTON}
-            disabled={agentId === '' || machine === null || startBlockReason(workers.byId(machine), agentId, model, selectedHub?.protocol ?? null) !== null || !choiceReady(choice) || derive.isPending}
-            onClick={() => derive.mutate()}
-          >
-            {phase === 'preparing'
-              ? choice?.type === 'new_long_lived' && choice.mode === 'create' && canvas.project.repo
-                ? '正在下载仓库…'
-                : '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
-          </button>
-        </div>
         {profilesOpen ? <AgentProfilesDialog agents={canvas.agents} onClose={() => setProfilesOpen(false)} /> : null}
     </DialogShell>
   );

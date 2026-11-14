@@ -37,3 +37,34 @@ export function startBlockReason(worker: GateWorker | undefined, agentId: string
   if (!protocolsOf(worker, agentId).includes(protocol)) return reason;
   return null;
 }
+
+/** 「开始」为什么点不了。派生对话框底部的说明行直接念它；能用时返回 null（那行不渲染）。 */
+export interface StartHintInput {
+  readonly agentId: string;
+  readonly agentLabel: string;
+  /** 选中的机器；null = 还没选。 */
+  readonly machine: string | null;
+  readonly worker: GateWorker | undefined;
+  readonly model: string;
+  readonly protocol: string | null;
+  /** choiceReady 的结果。 */
+  readonly workspaceReady: boolean;
+  /** 选了「新建持久工作空间」但还没挑目录。 */
+  readonly workspaceNeedsPath?: boolean;
+}
+
+/**
+ * 按人头先说最挡路的那个：机器 → agent → 这台机器上的运行时 → 工作空间。
+ * 一句人话，不重复按钮上的灰，也不把原因藏在 title 里（手机上根本没有 hover）。
+ */
+export function startHint(input: StartHintInput): string | null {
+  if (input.machine === null) return '先选一台机器';
+  if (input.agentId.trim() === '') return '先选一个 agent';
+  const reason = startBlockReason(input.worker, input.agentId, input.model, input.protocol);
+  if (reason !== null) {
+    const label = input.agentLabel.trim() === '' ? input.agentId : input.agentLabel.trim();
+    return reason.trim() === '' ? `这台机器上的 ${label} 用不了` : `这台机器上的 ${label} 用不了：${reason.trim()}`;
+  }
+  if (!input.workspaceReady) return input.workspaceNeedsPath === true ? '先选一个目录' : '先选一个工作空间';
+  return null;
+}
