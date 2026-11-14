@@ -9,15 +9,15 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `ba7ac92 fix(runtime): 后台子代理结束后回补遗漏的总结` |
-| origin/master | 已同步到 `ba7ac92` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `ba7ac92`（2026-11-14 20:47 用 `deploy-aliyun.sh --bundle` 部署） |
+| 本地 HEAD | `abecaf7 feat(web): 处理中显示阶段和计时，不再只有一句静态灰字` |
+| origin/master | 已同步到 `abecaf7` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `abecaf7`（2026-11-14 21:25 用 `deploy-aliyun.sh --bundle` 部署） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `ba7ac92` |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `abecaf7` |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` 1570 单测：1562 pass / 8 skipped / 0 fail（`npm test` 汇总 1508/0/8）；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/multi-repo` 1/1、`worktree` 4/4、`settle` 2/2、`side-chat` 1/1 |
+| 最近完整验证 | `npm test` **1584 / 1576 pass / 8 skipped / 0 fail**；`check`、`typecheck`、`typecheck:web`、`build` 全 0 |
 
-当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时、会话保活（回合结束后进程仍在，后台子代理不被杀）、子代理常驻轨道与实时面板、后台子代理结束后回补遗漏总结（`session/load` 重放）。
+当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时、会话保活（回合结束后进程仍在，后台子代理不被杀）、子代理常驻轨道与实时面板、后台子代理结束后回补遗漏总结（`session/load` 重放）、处理中阶段与计时。
 
 ### 预览怎么用
 
