@@ -235,6 +235,47 @@ test('acp runtime: child session updates → subagent start/子事件/end，父�
   assert.deepEqual(seen.at(-1), { kind: 'ended', outcome: 'done' });
 });
 
+test('acp runtime: 回合结束后 resync 重放只补后台子代理的新总结，不重发历史', async (t) => {
+  const runtime = createAcpRuntime({ ...config, codec: opencodeCodec });
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok, started.ok ? '' : started.error.message);
+  const session = started.value as RuntimeSession & {
+    resync(): Promise<readonly { key: string; event: SessionEvent }[]>;
+    pendingSubagents(): number;
+  };
+  t.after(() => session.dispose());
+
+  const turn = collectUntilEnded(session);
+  assert.ok((await session.prompt({ text: 'please-backlog', parts: [] })).ok);
+  const seen = await turn;
+  const liveTexts = seen.flatMap((event) => (event.kind === 'text' ? [event.delta] : []));
+  assert.ok(liveTexts.includes('已交给子代理'));
+  assert.equal(session.pendingSubagents(), 1, '回合结束时后台子代理还没结束');
+
+  // opencode 之后不再推 session/update；总结只有 session/load 的重放里才有
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  const first = await session.resync();
+  const summarized = first.flatMap((entry) => (entry.event.kind === 'text' ? [entry.event.delta] : []));
+  assert.deepEqual(summarized, ['子代理已完成：child-done'], '只补新总结；重放里的旧 thought / 旧工具 / 旧文本都不该再发');
+  assert.ok(first.every((entry) => entry.key.length > 0));
+
+  // 再拉一次：整段历史都见过了，不该返回任何事件（worker 侧还有一层指纹兜底）
+  assert.deepEqual(await session.resync(), []);
+
+  // 重放的事件不能进正常队列：队列里只剩收尾（未结束的子代理 + dispose 的 stopped）
+  const tail = session.events()[Symbol.asyncIterator]();
+  await session.dispose();
+  const rest: SessionEvent[] = [];
+  for (;;) {
+    const next = await tail.next();
+    if (next.done) break;
+    rest.push(next.value);
+    if (next.value.kind === 'ended') break;
+  }
+  assert.deepEqual(rest.at(-1), { kind: 'ended', outcome: 'stopped' });
+  assert.ok(!rest.some((event) => event.kind === 'text'), '重放过的历史没有重新进队列');
+});
+
 test('acp runtime: refusal / max_tokens 各自报失败原因，不再当成完成', async (t) => {
   const runtime = createAcpRuntime(config);
   const started = await runtime.start(await spec(t));

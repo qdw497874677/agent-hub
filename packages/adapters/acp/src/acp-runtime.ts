@@ -37,6 +37,15 @@ const CLIENT_CAPABILITIES = { fs: { readTextFile: false, writeTextFile: false },
 /** 这些事件算「agent 有回应」。 */
 const PRODUCING: ReadonlySet<SessionEvent['kind']> = new Set(['text', 'thinking', 'tool_call', 'tool_result', 'artifact', 'approval']);
 
+/**
+ * resync() 重放出来的一条**新**事件 + 跨重放稳定的去重指纹。
+ * 重放会带整段历史，worker 还要再按 key 兜一层，避免断线重试时重复上报。
+ */
+export interface ResyncEntry {
+  readonly key: string;
+  readonly event: SessionEvent;
+}
+
 class AcpSession implements RuntimeSession {
   readonly sessionId: RuntimeSession['sessionId'];
   private readonly queue = new AsyncQueue<SessionEvent>();
@@ -48,8 +57,22 @@ class AcpSession implements RuntimeSession {
   private codecWarned = false;
   private readonly connection: ClientConnection;
   private agentSessionId = '';
-  /** session/load 时 agent 会用 session/update 回放历史；平台已有这些事件，回放期间丢掉。 */
+  /** open() 记下的工作目录：resync 重放时要原样带上（ACP 没有单独的 history 接口）。 */
+  private cwd = '';
+  /**
+   * session/load 时 agent 会用 session/update 回放历史；平台已有这些事件，回放期间不进正常队列。
+   * resync() 的回复进 `replayBuffer`，其余（open 的基线重放）只记去重指纹。
+   */
   private replaying = false;
+  private replayBuffer: ResyncEntry[] | null = null;
+  /** 一次重放里同一 messageId 的 chunk 序号；每次重放从 0 起（见 seenChunks）。 */
+  private replayChunks: Map<string, number> | null = null;
+  /** 已经发出去（或基线里已知）的正文/思考 chunk 高水位：`kind|subagentId|messageId` → 条数。 */
+  private readonly seenChunks = new Map<string, number>();
+  /** 已经发出去（或基线里已知）的 tool_call / subagent / commands 指纹。 */
+  private readonly seenKeys = new Set<string>();
+  /** 同一时刻只允许一次 session/load：和 prompt 并发会打乱两边的 session/update。 */
+  private resyncing: Promise<readonly ResyncEntry[]> | null = null;
   /** 主动 dispose 导致的进程退出记 stopped，不是 failed。 */
   private disposed = false;
   private current: readonly RuntimeOption[] = [];
@@ -130,21 +153,31 @@ class AcpSession implements RuntimeSession {
       this.setOptions(update['configOptions']);
       return;
     }
-    // session/load 会回放历史，但也会重新上报当前命令表；命令不是历史，不能一起丢。
-    if (this.replaying && update['sessionUpdate'] !== 'available_commands_update') return;
+    if (this.replaying) {
+      const fresh = this.replayEvents(this.decode(update, meta, false), update);
+      // session/load 会回放历史，但也会重新上报当前命令表；命令不是历史，恢复会话时不能一起丢。
+      if (this.replayBuffer === null && update['sessionUpdate'] === 'available_commands_update') {
+        for (const entry of fresh) this.queue.push(entry.event);
+      }
+      return;
+    }
 
+    const events = this.decode(update, meta, true);
+    this.recordLive(events, update);
+    for (const event of events) {
+      if (PRODUCING.has(event.kind)) this.produced = true;
+      this.queue.push(event);
+    }
+  }
+
+  /** 把一条 session/update 翻译成平台事件；codec 能处理就不走通用 mapper。 */
+  private decode(update: Json, meta: unknown, reportErrors: boolean): readonly SessionEvent[] {
     if (this.codec) {
       try {
         const decoded = this.codec.decode({ update, meta, toolNames: this.toolNameView });
-        if (decoded) {
-          for (const event of decoded.events) {
-            if (PRODUCING.has(event.kind)) this.produced = true;
-            this.queue.push(event);
-          }
-          return;
-        }
+        if (decoded) return decoded.events;
       } catch (error) {
-        if (!this.codecWarned) {
+        if (reportErrors && !this.codecWarned) {
           this.codecWarned = true;
           this.queue.push({
             kind: 'diagnostic',
@@ -154,23 +187,30 @@ class AcpSession implements RuntimeSession {
         }
       }
     }
+    // 重放里不更新 lastMessageId：那是「当前这一轮」的概念，历史不属于这一轮。
+    if (reportErrors) this.noteMessageId(update);
+    return mapAcpUpdate(update, this.toolNames);
+  }
 
-    this.noteMessageId(update);
-    for (const event of mapAcpUpdate(update, this.toolNames)) {
+  private onChildUpdate(update: AcpChildUpdate): void {
+    if (this.replaying) {
+      this.replayEvents(this.decodeChild(update, false), update.update ?? {});
+      return;
+    }
+    const events = this.decodeChild(update, true);
+    this.recordLive(events, update.update ?? {});
+    for (const event of events) {
       if (PRODUCING.has(event.kind)) this.produced = true;
       this.queue.push(event);
     }
   }
 
-  private onChildUpdate(update: AcpChildUpdate): void {
-    if (this.replaying || !this.codec?.childUpdate) return;
+  private decodeChild(update: AcpChildUpdate, reportErrors: boolean): readonly SessionEvent[] {
+    if (!this.codec?.childUpdate) return [];
     try {
-      for (const event of this.codec.childUpdate(update, this.toolNameView)) {
-        if (PRODUCING.has(event.kind)) this.produced = true;
-        this.queue.push(event);
-      }
+      return this.codec.childUpdate(update, this.toolNameView);
     } catch (error) {
-      if (!this.codecWarned) {
+      if (reportErrors && !this.codecWarned) {
         this.codecWarned = true;
         this.queue.push({
           kind: 'diagnostic',
@@ -178,6 +218,75 @@ class AcpSession implements RuntimeSession {
           text: `${this.config.label} 的 ACP codec 处理子会话更新失败：${(error as Error).message}`
         });
       }
+      return [];
+    }
+  }
+
+  /**
+   * 重放里的事件算不算「新」：正文/思考按 `kind|subagentId|messageId` 的 chunk 高水位
+   * （重放可能把多块合并成一块，所以按序号而不是按文本），tool / subagent / commands 按
+   * 稳定指纹。open() 的基线重放也走这里——只记指纹、不进 `resync()` 的返回。
+   */
+  private replayEvents(events: readonly SessionEvent[], update: Json): readonly ResyncEntry[] {
+    const chunks = this.replayChunks;
+    if (!chunks) return [];
+    const fresh: ResyncEntry[] = [];
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index]!;
+      if (event.kind === 'text' || event.kind === 'thinking') {
+        const messageId = typeof update['messageId'] === 'string' && update['messageId'] ? update['messageId'] : null;
+        // 没有稳定键就不重发：宁可漏，也不能把整段历史再灌一遍。
+        if (messageId === null) continue;
+        const base = `${event.kind}|${event.subagentId ?? ''}|${messageId}`;
+        const nth = chunks.get(base) ?? 0;
+        chunks.set(base, nth + 1);
+        const seen = this.seenChunks.get(base) ?? 0;
+        if (nth < seen) continue;
+        this.seenChunks.set(base, nth + 1);
+        fresh.push({ key: `${base}#${nth}`, event });
+        continue;
+      }
+      const key = this.eventKey(event, update, index);
+      if (key === null || this.seenKeys.has(key)) continue;
+      this.seenKeys.add(key);
+      fresh.push({ key, event });
+    }
+    for (const entry of fresh) this.replayBuffer?.push(entry);
+    return fresh;
+  }
+
+  /** 实时事件也要记指纹，否则 resync 会把已发过的内容当成「重放里的新事件」再发一遍。 */
+  private recordLive(events: readonly SessionEvent[], update: Json): void {
+    for (let index = 0; index < events.length; index += 1) {
+      const event = events[index]!;
+      if (event.kind === 'text' || event.kind === 'thinking') {
+        const messageId = typeof update['messageId'] === 'string' && update['messageId'] ? update['messageId'] : null;
+        if (messageId === null) continue;
+        const base = `${event.kind}|${event.subagentId ?? ''}|${messageId}`;
+        this.seenChunks.set(base, (this.seenChunks.get(base) ?? 0) + 1);
+        continue;
+      }
+      const key = this.eventKey(event, update, index);
+      if (key !== null) this.seenKeys.add(key);
+    }
+  }
+
+  private eventKey(event: SessionEvent, update: Json, index: number): string | null {
+    switch (event.kind) {
+      case 'subagent':
+        return `subagent|${event.id}|${event.phase}`;
+      case 'tool_call':
+      case 'tool_result':
+      case 'artifact': {
+        const toolCallId = typeof update['toolCallId'] === 'string' ? update['toolCallId'] : '';
+        if (!toolCallId) return null;
+        return `tool|${event.subagentId ?? ''}|${toolCallId}|${String(update['status'] ?? '')}|${event.kind}|${index}`;
+      }
+      case 'commands':
+        return `commands|${event.commands.map((command) => command.name).join(',')}`;
+      default:
+        // 诊断/用量/批准这类在重放里没有稳定身份，宁可不重发。
+        return null;
     }
   }
 
@@ -295,6 +404,8 @@ class AcpSession implements RuntimeSession {
 
   async open(cwd: string, agentSessionRef: string | null, branch: BranchSpec | null = null): Promise<void> {
     await this.handshake();
+    // resync 的 session/load 要原样带上同一个 cwd，这里记一次，调用方不用再传。
+    this.cwd = cwd;
     if (branch) {
       const caps = (this.init['agentCapabilities'] as Json | undefined)?.['sessionCapabilities'] as Json | undefined;
       if (!caps?.['fork']) throw new Error(`${this.config.label} 没有声明 session/fork`);
@@ -320,13 +431,65 @@ class AcpSession implements RuntimeSession {
       return;
     }
     this.replaying = true;
+    this.beginReplay(null);
     try {
       const session = await this.request('session/load', { sessionId: agentSessionRef, ...this.sessionParams(cwd) });
       this.setReported(session);
     } finally {
+      this.finishReplay();
       this.replaying = false;
     }
     this.agentSessionId = agentSessionRef;
+  }
+
+  /**
+   * 重放一遍当前 agent 会话历史，只返回平台还没有的**新**事件。
+   *
+   * 为什么需要：opencode 在后台子代理还在跑时也会给 `session/prompt` 回 end_turn，
+   * 之后不再推任何 `session/update`；子代理完成时注入的总结只有再 `session/load`
+   * 才会在重放里出现。ACP 没有 history 读取方法，load 是唯一补洞手段。
+   */
+  async resync(): Promise<readonly ResyncEntry[]> {
+    if (this.disposed) return [];
+    if (!this.agentSessionId) return [];
+    // 同一时刻只允许一次：两次 load 的 session/update 会交错，chunk 顺序就乱了。
+    if (this.resyncing) return this.resyncing;
+    const run = (async (): Promise<readonly ResyncEntry[]> => {
+      this.replaying = true;
+      this.beginReplay([]);
+      try {
+        await this.request('session/load', { sessionId: this.agentSessionId, ...this.sessionParams(this.cwd) });
+        return this.replayBuffer ? [...this.replayBuffer] : [];
+      } finally {
+        this.finishReplay();
+        this.replaying = false;
+      }
+    })();
+    this.resyncing = run;
+    try {
+      return await run;
+    } finally {
+      if (this.resyncing === run) this.resyncing = null;
+    }
+  }
+
+  private beginReplay(buffer: ResyncEntry[] | null): void {
+    this.replayBuffer = buffer;
+    this.replayChunks = new Map();
+  }
+
+  private finishReplay(): void {
+    this.replayBuffer = null;
+    this.replayChunks = null;
+  }
+
+  /** 还没结束的子代理数量；>0 说明后台还有活，worker 该继续 resync。 */
+  pendingSubagents(): number {
+    try {
+      return this.codec?.pendingSubagents?.() ?? 0;
+    } catch {
+      return 0;
+    }
   }
 
   get agentRef(): string {

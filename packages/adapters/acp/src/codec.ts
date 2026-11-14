@@ -53,6 +53,11 @@ export interface AcpSessionCodec {
   decode(context: AcpCodecContext): AcpCodecResult | null;
   /** 处理 runtime 自己的子会话扩展通知；没有这个扩展的 runtime 不实现。 */
   childUpdate?(update: AcpChildUpdate, toolNames: ReadonlyMap<string, string>): readonly SessionEvent[];
+  /**
+   * 还没结束的子代理数量。回合已结束但 >0 时，worker 会周期性 `session/load`
+   * 重放，把后台子代理完成后的总结拉回来（ACP 没有 history 接口，也没有完成通知）。
+   */
+  pendingSubagents?(): number;
   /** 本轮结束/进程退出时收尾，例如给所有 running 子代理发 end。 */
   finish(status: 'completed' | 'failed' | 'cancelled'): readonly SessionEvent[];
 }

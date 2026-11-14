@@ -18,6 +18,7 @@ import {
   type AgentRuntime,
   type Capability,
   type CapabilityName,
+  type RuntimeSession,
   type RuntimeStatus,
   type SessionEvent,
   type StartSpec,
@@ -250,6 +251,130 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
   await rec.until(() => rec.refs.length === 1);
   assert.equal(rec.refs[0], 'agent-ref-1');
   await stop(link);
+});
+
+/**
+ * 回合结束后仍有「后台子代理」的 agent：`resync()` 每次重放都返回同一条新总结
+ * （真实 opencode 的 session/load 也会带整段历史，由 adapter 先按指纹筛过），
+ * 用来验证 worker 只在真拿到新事件时上报、且子代理结束后立刻停轮询。
+ */
+function resyncRuntime(state: { pending: number; calls: number; stopAfter: number | null; resyncing: boolean; concurrent: boolean }): AgentRuntime {
+  const all = Object.fromEntries(CAPABILITY_NAMES.map((name) => [name, available])) as Record<CapabilityName, Capability>;
+  return {
+    descriptor: {
+      id: asAgentId('echo'),
+      label: 'Echo',
+      capabilities: capabilityMatrix(all),
+      models: [],
+      defaultModel: '',
+      options: [],
+      providers: ['openai-chat']
+    },
+    async start(spec) {
+      const queue = new AsyncQueue<SessionEvent>();
+      const session = {
+        sessionId: spec.sessionId,
+        async prompt({ text }: { text: string }) {
+          // prompt 进来时不该还有 session/load 在飞：两者并发会让 session/update 交错
+          if (state.resyncing) state.concurrent = true;
+          queue.push({ kind: 'text', delta: text });
+          queue.push({ kind: 'ended', outcome: 'done' as const });
+          return { ok: true as const, value: undefined };
+        },
+        async interrupt() {},
+        events: () => queue,
+        async adopt() {},
+        options: () => [],
+        async changeOption() {
+          return { ok: true as const, value: [] };
+        },
+        async dispose() {
+          queue.close();
+        },
+        pendingSubagents: () => state.pending,
+        async resync() {
+          state.calls += 1;
+          state.resyncing = true;
+          try {
+            // 拉一次要一会儿，给「发新 prompt 前必须等它落地」制造真实并发窗口
+            await new Promise((resolve) => setTimeout(resolve, 40));
+          } finally {
+            state.resyncing = false;
+          }
+          if (state.stopAfter !== null && state.calls >= state.stopAfter) state.pending = 0;
+          return [{ key: 'text||summary', event: { kind: 'text' as const, delta: '子代理已完成' } }];
+        }
+      } as RuntimeSession & {
+        pendingSubagents(): number;
+        resync(): Promise<readonly { key: string; event: SessionEvent }[]>;
+      };
+      return { ok: true, value: session };
+    }
+  };
+}
+
+test('回合结束后仍有后台子代理：worker 周期性 resync，只转发新增事件，子代理结束即停', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const state = { pending: 1, calls: 0, stopAfter: 3 as number | null, resyncing: false, concurrent: false };
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    runtimes: [resyncRuntime(state)],
+    resyncIntervalMs: 20
+  });
+  await rec.until(() => rec.hellos.length === 1);
+
+  const sessionId = asSessionId('s1');
+  assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '派给子代理' });
+  await rec.until(() => rec.statuses.includes('idle'));
+
+  // 重放里每次都有同一条总结：只该上报一次
+  await rec.until(() => rec.events.some((event) => event.kind === 'text' && event.delta === '子代理已完成'));
+  await rec.until(() => state.calls >= 3);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await stop(link);
+  assert.equal(state.calls, 3, '子代理全结束之后不再 session/load');
+  const summaries = rec.events.filter((event) => event.kind === 'text' && event.delta === '子代理已完成');
+  assert.equal(summaries.length, 1, '重放重复的事件按指纹去重，只发给 hub 一次');
+  assert.deepEqual(
+    rec.events.map((event) => event.kind),
+    ['text', 'ended', 'text'],
+    '补拉的事件照常走事件通道，hub 那边会落盘并推给前端'
+  );
+});
+
+test('后台子代理还没结束时会话又收到 prompt：先停拉取，等 session/load 落地再发 prompt', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const state = { pending: 1, calls: 0, stopAfter: null as number | null, resyncing: false, concurrent: false };
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    runtimes: [resyncRuntime(state)],
+    resyncIntervalMs: 20
+  });
+  await rec.until(() => rec.hellos.length === 1);
+
+  const sessionId = asSessionId('s1');
+  assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '第一句' });
+  await rec.until(() => rec.statuses.includes('idle'));
+
+  // 正好在一次重放在飞的时候发下一句（真实的竞态窗口）
+  await rec.until(() => state.resyncing);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '第二句' });
+  await rec.until(() => rec.events.some((event) => event.kind === 'text' && event.delta === '第二句'));
+  await rec.until(() => rec.statuses.filter((status) => status === 'idle').length === 2);
+  await stop(link);
+  assert.equal(state.concurrent, false, 'prompt 和 session/load 不并发');
+  assert.ok(
+    rec.events.some((event) => event.kind === 'text' && event.delta === '第二句'),
+    '拉取被取消之后 prompt 照常走'
+  );
 });
 
 test('provider_update：会话进行中热更新 extra，下一个请求立刻生效', async () => {

@@ -38,6 +38,14 @@ const options = () => [
 const seen = [];
 let pendingPrompt;
 let cwd = process.cwd();
+// --please-backlog：回合在后台子代理还在跑时就 end_turn；总结只出现在之后的 session/load 重放里
+// （opencode 的 ACP 适配器真实行为：prompt 返回后不再推 session/update）。
+let backlogSummary = null;
+
+const backlogText = (sessionId, messageId, text) =>
+  send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }, messageId } } });
+const backlogThought = (sessionId, messageId, text) =>
+  send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text }, messageId } } });
 
 createInterface({ input: process.stdin }).on('line', (line) => {
   const msg = JSON.parse(line);
@@ -63,12 +71,23 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       if (typeof msg.params?.cwd === 'string') cwd = msg.params.cwd;
       if (LEGACY) model = 'custom:a';
       return send({ id: msg.id, result: { sessionId: 's1', ...reported() } });
-    case 'session/load':
-      say(msg.params.sessionId, 'replayed history');
+    case 'session/load': {
+      const sid = msg.params.sessionId;
+      if (backlogSummary) {
+        // 真实 opencode 会把整段历史重放一遍：旧 thought 被合并成一块、旧文本原样再来、
+        // 后台子代理完成后的总结只在最后出现（并**没有**子代理的 child_update）。
+        backlogThought(sid, 'b-thought', '先看看');
+        send({ method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'tool_call', toolCallId: 'p1', title: 'subagent', kind: 'other', rawInput: {} } } });
+        send({ method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'tool_call_update', toolCallId: 'p1', status: 'completed', content: [{ type: 'text', text: '后台子代理还在跑（sessionID: c9）' }] } } });
+        backlogText(sid, 'b-msg', '已交给子代理');
+        backlogText(sid, 'b-sum', backlogSummary);
+      } else {
+        say(sid, 'replayed history');
+      }
       send({
         method: 'session/update',
         params: {
-          sessionId: msg.params.sessionId,
+          sessionId: sid,
           update: {
             sessionUpdate: 'available_commands_update',
             availableCommands: [{ name: 'init', description: 'guided setup' }]
@@ -76,6 +95,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         }
       });
       return send({ id: msg.id, result: { configOptions: options() } });
+    }
     case 'session/set_config_option': {
       if (LEGACY) return send({ id: msg.id, result: { configOptions: [] } });
       const known = new Set([...options().map((option) => option.id), 'mode', 'thinking', 'effort']);
@@ -162,6 +182,24 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         say(lateSessionId, 'late:先回一句');
         send({ id: msg.id, result: { stopReason: 'end_turn' } });
         setTimeout(() => say(lateSessionId, 'late:我还在'), 600);
+        return;
+      }
+      // please-backlog：后台子代理还没跑完，父回合先 end_turn；总结要等之后 session/load 重放才看得到
+      if (all.includes('please-backlog')) {
+        const sessionId = msg.params.sessionId;
+        backlogThought(sessionId, 'b-thought', '先看看');
+        send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call', toolCallId: 'p1', title: 'subagent', kind: 'other', rawInput: {} } } });
+        send({
+          method: 'opencode/session/child_update',
+          params: { rootSessionId: sessionId, childSessionId: 'c9', parentSessionId: sessionId, depth: 1, title: 'bg task', type: 'status', status: 'running' }
+        });
+        backlogText(sessionId, 'b-msg', '已交给子代理');
+        send({ method: 'session/update', params: { sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId: 'p1', status: 'completed', content: [{ type: 'text', text: '后台子代理还在跑（sessionID: c9）' }] } } });
+        send({ id: msg.id, result: { stopReason: 'end_turn' } });
+        // 之后不会有任何 session/update —— 只有历史里多了一条总结
+        setTimeout(() => {
+          backlogSummary = '子代理已完成：child-done';
+        }, 150);
         return;
       }
       if (text.includes('OK')) {

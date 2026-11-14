@@ -130,6 +130,16 @@ export class OpenCodeSessionCodec implements AcpSessionCodec {
     return events;
   }
 
+  /**
+   * 后台子代理：父回合已 end_turn，但 child 还在跑。opencode 那之后不再推任何
+   * `session/update`，只能靠 worker 周期性 `session/load` 把新总结拉回来。
+   */
+  pendingSubagents(): number {
+    let pending = 0;
+    for (const state of this.subagents.values()) if (!state.ended) pending += 1;
+    return pending;
+  }
+
   /** 第一次看到某个 child session：发 start，并把正在跑的父工具锚点记下来。 */
   private noteSubagent(meta: AcpSubagentMeta): SessionEvent | null {
     if (this.subagents.has(meta.id)) return null;

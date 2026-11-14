@@ -137,10 +137,29 @@ export interface WorkerLinkOptions {
    * 同样报 `status:'ended'`。
    */
   readonly keepAliveMax?: number;
+  /**
+   * 回合结束后仍有后台子代理在跑时，多久 `session/load` 重放一次把新输出拉回来
+   * （opencode 的 ACP 适配器在那之后不再推 session/update）。默认 5000。
+   */
+  readonly resyncIntervalMs?: number;
   /** 套件清单采集（ADR 0021 §7）：连上时、运行时任务结束后、每 `inventoryIntervalMs` 报一次。不给 = 不报。 */
   readonly inventory?: () => WorkerInventory;
   /** 默认 6 小时。 */
   readonly inventoryIntervalMs?: number;
+}
+
+/**
+ * 可选能力：ACP 适配器的会话能再 `session/load` 重放一遍历史。
+ * node-gateway 不 import 具体 adapter，按结构判断，没有就当作不支持（其他 runtime 不受影响）。
+ */
+interface ResyncEntryLike {
+  readonly key: string;
+  readonly event: SessionEvent;
+}
+interface ResyncCapable {
+  resync?(): Promise<readonly ResyncEntryLike[]>;
+  /** 还没结束的后台子代理数量；0 就不用再拉。 */
+  pendingSubagents?(): number;
 }
 
 export interface WorkerLink {
@@ -730,6 +749,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     lastActivity.delete(sessionId);
     sessionAgents.delete(sessionId);
     sessionProviders.delete(sessionId);
+    // 会话没了就别再 session/load 了（也顺带避免调已 dispose 的进程）。
+    stopResync(sessionId);
   }
 
   /**
@@ -769,6 +790,116 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (absolute === null) return event;
     const bytes = await options.files.stat(absolute);
     return bytes === null ? event : { ...event, bytes };
+  }
+
+  /**
+   * 后台子代理的补洞循环。
+   *
+   * opencode 在后台子代理还在跑时也会给 `session/prompt` 回 end_turn，之后它的 ACP 适配器
+   * 不再推任何 `session/update`；子代理完成时注入的总结只有再 `session/load`（重放历史）
+   * 才看得到。ACP 没有 history 接口，所以只能周期性重放——每轮把重放里**新**的事件按
+   * 稳定指纹去重后照常发给 hub（hub 那边 ingest 会落盘 + 发帧）。
+   */
+  const RESYNC_INTERVAL_MS = options.resyncIntervalMs ?? 5_000;
+  const resyncLoops = new Map<
+    string,
+    {
+      cancelled: boolean;
+      timer: NodeJS.Timeout | null;
+      /** 在途的 resync：发新 prompt 前要等它落地，session/load 不能和 session/prompt 并发。 */
+      inFlight: Promise<void> | null;
+      /** 已经发出去的重放事件指纹（重放会带整段历史）。 */
+      readonly seen: Set<string>;
+    }
+  >();
+
+  function pendingSubagents(session: RuntimeSession): number {
+    try {
+      return (session as RuntimeSession & ResyncCapable).pendingSubagents?.() ?? 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  function stopResync(sessionId: string): void {
+    const loop = resyncLoops.get(sessionId);
+    if (!loop) return;
+    loop.cancelled = true;
+    if (loop.timer) {
+      clearTimeout(loop.timer);
+      loop.timer = null;
+    }
+    resyncLoops.delete(sessionId);
+  }
+
+  /** 用户又说话了：先停拉取，并等在途的 session/load 结束，再发 prompt。 */
+  async function pauseResync(sessionId: string): Promise<void> {
+    const loop = resyncLoops.get(sessionId);
+    stopResync(sessionId);
+    if (loop?.inFlight) await loop.inFlight.catch(() => undefined);
+  }
+
+  function startResync(sessionId: string, session: RuntimeSession): void {
+    if (resyncLoops.has(sessionId)) return;
+    const probe = session as RuntimeSession & ResyncCapable;
+    if (typeof probe.resync !== 'function') return;
+    const loop = {
+      cancelled: false,
+      timer: null as NodeJS.Timeout | null,
+      inFlight: null as Promise<void> | null,
+      seen: new Set<string>()
+    };
+    resyncLoops.set(sessionId, loop);
+
+    const schedule = (): void => {
+      loop.timer = setTimeout(() => {
+        loop.timer = null;
+        void tick();
+      }, RESYNC_INTERVAL_MS);
+      loop.timer.unref?.();
+    };
+
+    const tick = async (): Promise<void> => {
+      // 会话被回收 / 被同 id 的新 start 顶替：立刻停，别调已 dispose 的进程。
+      if (loop.cancelled || sessions.get(sessionId) !== session) {
+        stopResync(sessionId);
+        return;
+      }
+      if (pendingSubagents(session) === 0) {
+        stopResync(sessionId);
+        return;
+      }
+      const run = (async () => {
+        const entries = await probe.resync!();
+        if (loop.cancelled || sessions.get(sessionId) !== session) return;
+        const fresh = entries.filter((entry) => !loop.seen.has(entry.key));
+        for (const entry of fresh) loop.seen.add(entry.key);
+        if (fresh.length === 0) return;
+        options.onLog?.(`会话 ${sessionId} 补拉到 ${fresh.length} 条后台子代理输出`);
+        for (const entry of fresh) {
+          const enriched = await withBytes(sessionId, entry.event);
+          send({ type: 'event', sessionId, event: enriched as SessionEventDto });
+        }
+      })();
+      loop.inFlight = run;
+      try {
+        await run;
+      } catch (error) {
+        // session/load 也可能因为 agent 正忙而失败：记一行，下一轮再试。
+        // 已经被取消（会话回收 / 用户发新 prompt）就不要报噪声了。
+        if (!loop.cancelled) options.onLog?.(`会话 ${sessionId} 拉取后台子代理输出失败：${message(error)}`);
+      } finally {
+        if (loop.inFlight === run) loop.inFlight = null;
+      }
+      if (loop.cancelled || sessions.get(sessionId) !== session) return;
+      if (pendingSubagents(session) === 0) {
+        stopResync(sessionId);
+        return;
+      }
+      schedule();
+    };
+
+    schedule();
   }
 
   connect();
@@ -829,6 +960,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         if (seenDeliveries.size > 1000) seenDeliveries.delete(seenDeliveries.values().next().value as string);
       }
       await persistParts(command.parts);
+      // session/load 和 session/prompt 并发会让两边的 session/update 交错：先停补洞、等在途的重放落地。
+      await pauseResync(sessionId);
       prompting.add(sessionId);
       touch(sessionId);
       try {
@@ -1037,6 +1170,9 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           // 真结束（进程退出 / dispose_session / 空闲回收）才发 status:'ended'。
           if (event.kind === 'ended' && sessions.get(command.sessionId) === session) {
             send({ type: 'status', sessionId: command.sessionId, status: 'idle' });
+            // 回合结束了但后台子代理还在跑：opencode 之后不再推任何 update，
+            // 只能周期性重放历史把完成总结拉回来（收到全部 end / 回收时循环自己停）。
+            if (pendingSubagents(session) > 0) startResync(command.sessionId, session);
           }
         }
       } finally {
@@ -1100,6 +1236,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await options.terminal?.disposeAll().catch((error: unknown) => options.onLog?.(`回收终端失败：${message(error)}`));
       for (const timer of idleTimers.values()) clearTimeout(timer);
       idleTimers.clear();
+      for (const sessionId of [...resyncLoops.keys()]) stopResync(sessionId);
       for (const session of sessions.values()) await session.dispose();
       sessions.clear();
       workspaces.clear();
