@@ -9,13 +9,13 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `a518b96 docs: 记录 I1 会话收起已落地` |
-| origin/master | 已同步到 `a518b96` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `a518b96`（2026-11-14 07:59 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261114-075937-pre-54ec357.db`） |
+| 本地 HEAD | `0123821 docs: 记录 worktree 清理侧落地，W4 不做` |
+| origin/master | 已同步到 `0123821` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `0123821`（2026-11-14 09:06 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261114-090646-pre-df543fb.db`） |
 | 阿里云 health | `{"ok":true}` |
 | 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `54ec357`（准备命令 `ws.run_setup` 需要它） |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` 1310 单测：1302 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/settle.spec.ts` 2/2、`e2e/worktree.spec.ts` 3/3 |
+| 最近完整验证 | `npm test` 1312 单测：1304 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/settle.spec.ts` 2/2、`e2e/worktree.spec.ts` 3/3 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
 
