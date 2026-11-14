@@ -42,6 +42,22 @@ export const setProjectWorktreeRequest = z.object({
         .default(null)
     })
     .nullable()
+    .optional(),
+  /**
+   * 仓库清单（docs/design/multi-repo.md §11.2）：空数组 = 不绑仓库。
+   * 与 worktree 至少给一个；name / id 可省略（服务端派生）。
+   */
+  repos: z
+    .array(
+      z.object({
+        id: z.string().max(64).optional(),
+        name: z.string().max(41).optional(),
+        url: z.string().min(1).max(500),
+        defaultBranch: z.string().max(200).nullable().optional()
+      })
+    )
+    .max(8)
+    .optional()
 });
 
 /** 绑定 / 改 / 解除项目仓库：repoUrl 为 null 或空串 = 解除。 */

@@ -1,6 +1,7 @@
 import { installConnectorRoutes, type ConnectorRouteDeps } from './connector-routes.ts';
 import { installObserveRoutes, type ObserveRouteOptions } from './observe-routes.ts';
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
+import { installWorkspaceGroupRoutes } from './workspace-group-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
 import { installGitRoutes } from './git-routes.ts';
@@ -52,7 +53,7 @@ import {
   workerInfoSchema
 } from '@agent-hub/contract';
 import type { SessionEnvironmentDto } from '@agent-hub/contract';
-import type { AuditAction, Deps, LogAuthor, Principal, Subject, TaskStatus } from '@agent-hub/domain';
+import type { AuditAction, Deps, DomainError, LogAuthor, Principal, Project, Result, Subject, TaskStatus } from '@agent-hub/domain';
 import { systemSubject, isSystem, loadAttention, NEEDS_HUMAN } from '@agent-hub/domain';
 import type { AttentionStore, PullRequestRepository } from '@agent-hub/domain';
 const NO_AUTH_SUBJECT = systemSubject('no-auth');
@@ -123,6 +124,7 @@ import {
   setTaskStatusUseCase,
   setTaskSummaryUseCase,
   setProjectWorktreeUseCase,
+  updateProjectReposUseCase,
   retryWorkspaceSetupUseCase,
   asWorkspaceId,
   newId,
@@ -441,6 +443,7 @@ export function createApp(options: AppOptions): Hono {
   });
 
   // 改项目的工作空间档位 / 准备命令（docs/design/worktree.md §3）：只影响以后新建的临时工作空间。
+  // 同一请求也可以带仓库清单（docs/design/multi-repo.md §11.2）。
   app.patch('/api/projects/:projectId', async (c) => {
     const input = await body(c, setProjectWorktreeRequest);
     if (!input.ok) return input.response;
@@ -449,13 +452,23 @@ export function createApp(options: AppOptions): Hono {
     const project = await deps.projects.byId(asProjectId(projectId));
     const allowed = await authorizeProject(deps.access, subject, project, 'project.update');
     if (!allowed.ok) return fail(c, allowed.error);
-    const result = await setProjectWorktreeUseCase(deps, { projectId, worktree: input.value.worktree });
-    if (result.ok) {
-      const config = result.value.worktree;
-      const detail = config ? `${config.mode}${config.setup ? ` · 准备命令 ${config.setup.command.slice(0, 40)}` : ''}` : '清空';
-      await auditResource(c, subject, 'project.worktree', projectId, detail);
+    let current: Result<Project, DomainError> = allowed;
+    if (input.value.worktree !== undefined) {
+      current = await setProjectWorktreeUseCase(deps, { projectId, worktree: input.value.worktree });
+      if (current.ok) {
+        const config = current.value.worktree;
+        const detail = config ? `${config.mode}${config.setup ? ` · 准备命令 ${config.setup.command.slice(0, 40)}` : ''}` : '清空';
+        await auditResource(c, subject, 'project.worktree', projectId, detail);
+      }
     }
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    if (current.ok && input.value.repos !== undefined) {
+      current = await updateProjectReposUseCase(deps, { projectId, repos: input.value.repos });
+      if (current.ok) {
+        const detail = current.value.repos.length === 0 ? '清空' : current.value.repos.map((repo) => repo.name).join(', ');
+        await auditResource(c, subject, 'project.repos', projectId, detail);
+      }
+    }
+    return current.ok ? c.json(current.value) : fail(c, current.error);
   });
 
   // 重跑准备命令（docs/design/worktree.md §4）：只对准备失败的工作空间有效，要能改它所属的项目。
@@ -553,6 +566,8 @@ export function createApp(options: AppOptions): Hono {
     const result = await unlinkWorkspaceUseCase(deps, { actor: subjectOf(c), projectId: c.req.param('projectId'), workspaceId: c.req.param('workspaceId') });
     return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
   });
+  // 组合工作空间（多仓库）：建组 / 重试 / 删组（docs/design/multi-repo.md §4–§6）
+  installWorkspaceGroupRoutes(app, { deps, audit: auditResource }, subjectOf);
 
   // 立刻清理一次（项目设置里「重新检查」）
   app.post('/api/workspaces/sweep', async (c) => c.json(await sweepTemporaryWorkspacesUseCase(deps)));

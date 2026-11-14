@@ -1173,6 +1173,36 @@
                           "defaultBranch"
                         ]
                       },
+                      "repos": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "id": {
+                              "type": "string"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            },
+                            "defaultBranch": {
+                              "type": [
+                                "string",
+                                "null"
+                              ],
+                              "default": null
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "name",
+                            "url"
+                          ]
+                        },
+                        "default": []
+                      },
                       "description": {
                         "type": [
                           "string",
@@ -1390,6 +1420,36 @@
                         "defaultBranch"
                       ]
                     },
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "defaultBranch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "url"
+                        ]
+                      },
+                      "default": []
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -1596,6 +1656,36 @@
                         "defaultBranch"
                       ]
                     },
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "defaultBranch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "url"
+                        ]
+                      },
+                      "default": []
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -1794,6 +1884,36 @@
                         "url",
                         "defaultBranch"
                       ]
+                    },
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "defaultBranch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "url"
+                        ]
+                      },
+                      "default": []
                     },
                     "description": {
                       "type": [

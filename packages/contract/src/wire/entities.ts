@@ -160,11 +160,23 @@ export const projectWorktreeSchema = z.object({
   setup: projectSetupSchema.nullable().default(null)
 });
 
+/** 项目绑定的单个仓库（docs/design/multi-repo.md §2 / §11.2）。name 也是组合工作空间里的子目录名。 */
+export const projectRepoSchema = z.object({
+  /** 'repo_<8hex>'，项目内稳定。 */
+  id: z.string(),
+  /** `^[a-z][a-z0-9-]{0,40}$`，项目内唯一。 */
+  name: z.string(),
+  url: z.string(),
+  defaultBranch: z.string().nullable().default(null)
+});
+
 export const projectSchema = z.object({
   id,
   name: z.string(),
-  /** 项目的 git 仓库；没有是 null。 */
+  /** 项目的 git 仓库；没有是 null。过渡期字段，= repos[0] 的 url/branch。 */
   repo: z.object({ url: z.string(), defaultBranch: z.string().nullable() }).nullable().default(null),
+  /** 项目绑定的仓库清单（0..8，第一个是 primary）。 */
+  repos: z.array(projectRepoSchema).default([]),
   /** 项目说明（markdown）。 */
   description: z.string().nullable().default(null),
   /** 新任务默认档位 + 准备命令；null = 没配。 */

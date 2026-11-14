@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentAlias, AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 import { applyAgentAliases, readAgentAliases, type BuiltAliasHarness } from './agent-aliases.ts';
@@ -132,6 +132,18 @@ const worktreesDir = worktreesDirRaw && roots.some((root) => worktreesDirRaw ===
 log(`允许访问的目录（WORKER_ROOTS${env['WORKER_ROOTS'] === undefined ? '，未配置，默认 $HOME' : ''}）：${roots.join(':')}`);
 if (worktreesDirRaw && !worktreesDir) log(`WORKER_WORKTREES_DIR=${worktreesDirRaw} 不在 WORKER_ROOTS 里，忽略；新建 worktree 仍放在仓库旁 .worktrees/`);
 else log(`新建 worktree 放在：${worktreesDir ? `${worktreesDir}/<仓库名>/<目录名>（WORKER_WORKTREES_DIR）` : '仓库旁 .worktrees/<仓库名>/<目录名>（默认，可设 WORKER_WORKTREES_DIR）'}`);
+
+/**
+ * 组合工作空间（docs/design/multi-repo.md §12.5）：容器目录与成员 worktree 只允许落在这下面。
+ * 默认 `<WORKER_ROOTS 第一个>/agent-hub-groups`；显式配置的必须在某个 root 里面，否则回落默认并警告。
+ */
+const groupsDirEnv = env['WORKER_GROUPS_DIR']?.trim();
+const groupsDirRaw = groupsDirEnv ? resolve(groupsDirEnv.startsWith('~/') ? join(homedir(), groupsDirEnv.slice(2)) : groupsDirEnv) : undefined;
+/** 严格在 root 里面（等于 root 不算：容器不能就是 root 本身）。 */
+const underRoots = (path: string): boolean => roots.some((root) => path !== root && path.startsWith(`${root}/`));
+const groupsDir = groupsDirRaw && underRoots(groupsDirRaw) ? groupsDirRaw : defaultGroupsDir(roots);
+if (groupsDirRaw && groupsDir !== groupsDirRaw) log(`警告：WORKER_GROUPS_DIR=${groupsDirRaw} 不在 WORKER_ROOTS 里，回落到 ${groupsDir}`);
+else log(`组合工作空间目录：${groupsDir}${groupsDirRaw ? '（WORKER_GROUPS_DIR）' : '（默认，可设 WORKER_GROUPS_DIR）'}`);
 
 // 先接住 adapter 的回调，等 link 就绪后转给它——adapter 在构造时就要拿到这个函数。
 let notifyAgentSessionRef: (sessionId: string, ref: string) => void = () => undefined;
@@ -406,6 +418,7 @@ const link = connectWorkerLink({
   host: { hostname: hostname(), platform: platform(), arch: arch() },
   files,
   ...(worktreesDir ? { worktreesDir } : {}),
+  groupsDir,
   assets,
   ...(terminal ? { terminal } : {}),
   build,

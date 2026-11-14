@@ -6,6 +6,7 @@ import type {
   JournalEntry,
   LayoutStore,
   Project,
+  ProjectRepo,
   ProjectRepository,
   Seq,
   Session,
@@ -19,7 +20,7 @@ import type {
   TaskRepository,
   WorkspaceRepository
 } from '@agent-hub/domain';
-import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId, normalizeWorktree } from '@agent-hub/domain';
+import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId, normalizeRepos, normalizeWorktree, primaryRepo } from '@agent-hub/domain';
 
 /**
  * 行映射层。`as` 在这里是本职：数据库只给 `string | number | null`，
@@ -43,6 +44,24 @@ function parseMembers(raw: string | null): string[] {
 }
 
 /**
+ * 仓库清单（JSON）。解析不了 / 不合规 → 记一条日志、当作没有（回落到老的 repo_url 单仓库），
+ * 手改过的行不该让整个项目读不出来。
+ */
+function parseRepos(raw: string | null): ProjectRepo[] | null {
+  if (raw === null) return null;
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) throw new Error('not an array');
+    const normalized = normalizeRepos(value as Partial<ProjectRepo>[]);
+    if (!normalized.ok) throw new Error(normalized.error.message);
+    return [...normalized.value];
+  } catch (error) {
+    console.warn(`[storage] 项目仓库清单不合规，按没有处理：${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+/**
  * 项目级 worktree 配置（JSON）。解析不了 / 不合规 → 记一条日志、按「没配过」处理：
  * 老库、手改过的行不该让整个项目读不出来。
  */
@@ -60,10 +79,18 @@ function parseWorktree(raw: string | null): Project['worktree'] {
 }
 
 export function toProject(row: Row): Project {
+  const link =
+    nullableStr(row, 'repo_url') === null
+      ? null
+      : { url: str(row, 'repo_url'), defaultBranch: nullableStr(row, 'repo_default_branch') };
+  // 新列优先；老库（没有 / 坏了）回落到单仓库列，id / name 确定性派生。
+  const repos = parseRepos(nullableStr(row, 'repos')) ?? (link === null ? [] : [primaryRepo({ repo: link, repos: [] })!]);
+  const primary = repos[0] ?? null;
   return {
     id: asProjectId(str(row, 'id')),
     name: str(row, 'name'),
-    repo: nullableStr(row, 'repo_url') === null ? null : { url: str(row, 'repo_url'), defaultBranch: nullableStr(row, 'repo_default_branch') },
+    repo: primary === null ? null : { url: primary.url, defaultBranch: primary.defaultBranch },
+    repos,
     description: nullableStr(row, 'description'),
     worktree: parseWorktree(nullableStr(row, 'worktree_config')),
     teamId: nullableStr(row, 'team_id'),

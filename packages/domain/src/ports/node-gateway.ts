@@ -9,6 +9,7 @@ import type { DirectoryEntry } from './workspace-fs.ts';
 import type { ToolAccess } from '../tool.ts';
 import type { McpLaunch } from '../mcp.ts';
 import type { WorkspaceGit } from './workspace-git.ts';
+import type { WorkspaceGroupGit } from './workspace-group-git.ts';
 import type { BranchSpec } from './agent-runtime.ts';
 
 /**
@@ -105,6 +106,8 @@ export interface NodeGateway {
   readFile(workerId: string, path: string, maxBytes: number): Promise<Result<Uint8Array | null, DomainError>>;
   /** 那台 Worker 上的工作空间 git / 目录操作（ws.*）。 */
   git(workerId: string): WorkspaceGit;
+  /** 那台 Worker 上的组合工作空间容器操作（ws.group_* / ws.new_worktree）。可选：老网关没有。 */
+  groups?(workerId: string): WorkspaceGroupGit;
   /**
    * 「重新检测」：让那台 Worker 立刻重新探测各 harness 是否可用，结果异步经它的 agent 清单回来。
    * 不在线返回 false。可选：不支持的网关 = 无从检测。

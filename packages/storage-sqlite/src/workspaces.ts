@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Workspace, WorkspaceRepository } from '@agent-hub/domain';
-import { asProjectId, asTaskId, asWorkspaceId, newWorkspaceId, normalizePath } from '@agent-hub/domain';
+import { asProjectId, asTaskId, asWorkspaceGroupId, asWorkspaceId, newWorkspaceId, normalizePath } from '@agent-hub/domain';
 
 type Row = Record<string, unknown>;
 
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
   state             TEXT NOT NULL CHECK (state IN ('preparing','ready','failed','kept','removed')),
   kept_reason       TEXT,
   setup             TEXT,
+  group_id          TEXT,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL,
   CHECK ((kind = 'temporary') = (owner_task_id IS NOT NULL))
@@ -44,7 +45,7 @@ CREATE INDEX IF NOT EXISTS project_workspaces_by_workspace ON project_workspaces
 `;
 
 const WORKSPACE_COLUMNS =
-  'id, project_id, team_id, repo_url, worker_id, path, kind, source, base_workspace_id, branch, owner_task_id, label, is_git, state, kept_reason, setup, created_at, updated_at';
+  'id, project_id, team_id, repo_url, worker_id, path, kind, source, base_workspace_id, branch, owner_task_id, label, is_git, state, kept_reason, setup, group_id, created_at, updated_at';
 
 /**
  * ADR 0026 表结构升级（幂等、可回滚）：老表 project_id 是 NOT NULL、没有 team_id / repo_url。
@@ -116,6 +117,7 @@ export function toWorkspace(row: Row): Workspace {
     state: row['state'] as Workspace['state'],
     keptReason: nullable('kept_reason'),
     setup: parseSetup(nullable('setup')),
+    groupId: nullable('group_id') === null ? null : asWorkspaceGroupId(row['group_id'] as string),
     createdAt: row['created_at'] as number,
     updatedAt: row['updated_at'] as number
   };
@@ -123,11 +125,11 @@ export function toWorkspace(row: Row): Workspace {
 
 export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository {
   const upsert = db.prepare(
-    `INSERT INTO workspaces(${WORKSPACE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ` +
+    `INSERT INTO workspaces(${WORKSPACE_COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ` +
       'ON CONFLICT(id) DO UPDATE SET worker_id = excluded.worker_id, path = excluded.path, branch = excluded.branch, ' +
       'team_id = excluded.team_id, repo_url = excluded.repo_url, ' +
       'label = excluded.label, is_git = excluded.is_git, state = excluded.state, kept_reason = excluded.kept_reason, ' +
-      'setup = excluded.setup, updated_at = excluded.updated_at'
+      'setup = excluded.setup, group_id = excluded.group_id, updated_at = excluded.updated_at'
   );
   const byId = db.prepare('SELECT * FROM workspaces WHERE id = ?');
   const byProject = db.prepare(
@@ -147,7 +149,8 @@ export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository
       const fresh = exists.get(w.id) === undefined;
       upsert.run(
         w.id, w.projectId, w.teamId, w.repoUrl, w.workerId, w.path, w.kind, w.source, w.baseWorkspaceId, w.branch, w.ownerTaskId, w.label,
-        w.isGit === null ? null : w.isGit ? 1 : 0, w.state, w.keptReason, w.setup ? JSON.stringify(w.setup) : null, w.createdAt, w.updatedAt
+        w.isGit === null ? null : w.isGit ? 1 : 0, w.state, w.keptReason, w.setup ? JSON.stringify(w.setup) : null, w.groupId ?? null,
+        w.createdAt, w.updatedAt
       );
       if (fresh && w.kind === 'long_lived' && w.projectId !== null) link.run(w.projectId, w.id, null, w.createdAt);
     },

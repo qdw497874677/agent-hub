@@ -1,5 +1,5 @@
 export { createServerGateway } from './server-gateway.ts';
-export type { GatewayHooks, ServerGateway } from './server-gateway.ts';
+export type { GatewayHooks, ServerGateway, WorkspaceGroupOps } from './server-gateway.ts';
 export { connectWorkerLink } from './worker-link.ts';
 export { createResourceProbe, type ResourceProbeOptions } from './resource-probe.ts';
 export { createHarnessRegistry, sameReadiness, withMissingHint } from './harness-registry.ts';
@@ -23,7 +23,17 @@ export { createMcpEndpoint } from './mcp-endpoint.ts';
 export type { McpEndpoint } from './mcp-endpoint.ts';
 export { serveWorkerFiles } from './worker-fs-rpc.ts';
 export { enrollOverLink, type EnrollOutcome } from './worker-enroll.ts';
-export { createGitWorkspace, keepReason, relocateWorktree, type GitWorkspaceOptions } from './git-workspace.ts';
+export { createGitWorkspace, createGroupWorktrees, addWorktreeOnNewBranch, keepReason, relocateWorktree, type GitWorkspaceOptions, type GroupWorktrees } from './git-workspace.ts';
+export {
+  createGroupDir,
+  insideGroups,
+  defaultGroupsDir,
+  GROUP_MARKER_DIR,
+  GROUP_MARKER_FILE,
+  DEFAULT_GROUPS_DIR_NAME,
+  type GroupDir,
+  type GroupDirOptions
+} from './group-dir.ts';
 export { runSetupScript, setupEnv, scrubCredentials, tailOutput, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENIED, SETUP_OUTPUT_MAX, type SetupScriptInput, type SetupScriptOutcome } from './setup-script.ts';
 export { createRuntimeStore, defaultRuntimesRoot, readInstalledEntry, type RuntimeStore } from './runtime-store.ts';
 export { createRuntimeManager, installEnv, type RuntimeManager, type RuntimeJobCommand, type RuntimeJobReport } from './runtime-jobs.ts';

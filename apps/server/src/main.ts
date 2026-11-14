@@ -25,7 +25,7 @@ import { createSessionEnvironment } from './session-environment.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
 import { createGitHubApi } from './github-api.ts';
 import { createModelDistiller } from './model-distiller.ts';
-import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics } from '@agent-hub/domain';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
   createBotUseCase,
@@ -157,6 +157,13 @@ let terminalBridge: TerminalBridge | null = null;
 let sessionEnvironment: EnvironmentPlanner | null = null;
 const optionWaiters = createOptionWaiters();
 
+/** 通道没起来 / 老网关没有 groups 时的替身：每个方法都返回可读的失败，不抛。 */
+const missingGroups: WorkspaceGroupGit = {
+  init: async () => err(unavailable('worker 通道尚未就绪')),
+  remove: async () => err(unavailable('worker 通道尚未就绪')),
+  newWorktree: async () => err(unavailable('worker 通道尚未就绪'))
+};
+
 const deps: Deps = {
   handoffTokenCap: handoffCapFromEnv(readEnv('HUB_HANDOFF_TOKEN_CAP') ?? undefined),
   projects: store.projects,
@@ -164,6 +171,8 @@ const deps: Deps = {
   workLog: store.workLog,
   sessions: store.sessions,
   workspaces: store.workspaces,
+  // 组合工作空间的组行（docs/design/multi-repo.md §11.2）。
+  workspaceGroups: store.workspaceGroups,
   artifacts: store.artifacts,
   layout: store.layout,
   links: store.links,
@@ -227,7 +236,10 @@ const deps: Deps = {
       serverGateway ? serverGateway.gateway.listFiles(workerId, root, limit) : err(unavailable('worker 通道尚未就绪')),
     readFile: async (workerId, path, maxBytes) =>
       serverGateway ? serverGateway.gateway.readFile(workerId, path, maxBytes) : err(unavailable('worker 通道尚未就绪')),
-    git: (workerId) => (serverGateway ? serverGateway.gateway.git(workerId) : createGitWorkspace(async () => 'worker 通道尚未就绪'))
+    git: (workerId) => (serverGateway ? serverGateway.gateway.git(workerId) : createGitWorkspace(async () => 'worker 通道尚未就绪')),
+    // 组合工作空间要的是容器 / worktree 的组级操作（§11.1）。通道没起来时和 git 一样直接抛，
+    // 用例只在拿不到 groups 时才回「这台机器不支持组合工作空间」。
+    groups: (workerId) => (serverGateway ? (serverGateway.gateway.groups?.(workerId) ?? missingGroups) : missingGroups)
   },
   agents: catalog,
   fs: createLocalFs(),

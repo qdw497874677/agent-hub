@@ -83,7 +83,8 @@ test('项目仓库字段往返：保存、读回、清空；onMachine 只给这�
   assert.ok(made.ok);
   await store.projects.save(made.value);
   assert.deepEqual((await store.projects.byId(made.value.id))?.repo, { url: 'git@github.com:me/x.git', defaultBranch: 'dev' });
-  await store.projects.save({ ...made.value, repo: null });
+  // repos 是权威字段，repo 由它派生（不变量 repo === repos[0] ?? null）：清仓库要一起清。
+  await store.projects.save({ ...made.value, repo: null, repos: [] });
   assert.equal((await store.projects.byId(made.value.id))?.repo, null);
   await store.projects.save({ ...made.value, description: '# 说明\n- 用 pnpm' });
   assert.equal((await store.projects.byId(made.value.id))?.description, '# 说明\n- 用 pnpm');

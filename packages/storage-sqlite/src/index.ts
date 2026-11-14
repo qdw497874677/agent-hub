@@ -8,4 +8,5 @@ export { createSqliteAccess, ACCESS_SCHEMA } from './access.ts';
 export { createSqliteComponents, COMPONENT_SCHEMA } from './components.ts';
 export { createSqlitePullRequests, createSqliteGitHostTokens } from './pull-requests.ts';
 export { createSqliteWorkspaceSweeps } from './workspace-sweeps.ts';
+export { createSqliteWorkspaceGroups, groupIdOfWorkspace } from './workspace-groups.ts';
 export { createSqliteWorkerAgents } from './worker-agents.ts';

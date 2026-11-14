@@ -28,6 +28,7 @@ const projectOf = (id: string, createdBy: string, teamId = 'team-1'): Project =>
   id: asProjectId(id),
   name: id,
   repo: null,
+  repos: [],
   description: null,
   createdAt: 1,
   teamId,

@@ -1,7 +1,7 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, normalizeDescription, normalizeWorktree, parseRepo } from '../project.ts';
+import { createProject, deriveRepoId, normalizeDescription, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, withProjectRepos } from '../project.ts';
 import { asProjectId } from '../ids.ts';
-import type { Project } from '../project.ts';
+import type { Project, ProjectRepo } from '../project.ts';
 import type { DomainError } from '../errors.ts';
 import { invalid, notFound } from '../errors.ts';
 import type { Result } from '../result.ts';
@@ -151,16 +151,50 @@ export async function browseDirectories(
 
 
 
-/** 绑定 / 改 / 解除项目仓库（url 为空 = 解除）。只影响以后新建的工作空间，已有的不动。 */
+/**
+ * 绑定 / 改 / 解除项目仓库（url 为空 = 解除）。只影响以后新建的工作空间，已有的不动。
+ * 多仓库项目里这是「改 primary」：替换第一个成员，保留其后的仓库（旧客户端不该顺手清掉别的仓库）。
+ */
 export async function setProjectRepoUseCase(
   deps: Pick<Deps, 'projects'>,
   command: { readonly projectId: string; readonly repoUrl: string | null; readonly defaultBranch?: string | null }
 ): Promise<Result<Project, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project) return err(notFound('项目不存在'));
-  const repo = parseRepo(command.repoUrl, command.defaultBranch);
-  if (!repo.ok) return repo;
-  const next: Project = { ...project, repo: repo.value };
+  const parsed = parseRepo(command.repoUrl, command.defaultBranch);
+  if (!parsed.ok) return parsed;
+  if (parsed.value === null) {
+    const cleared = withProjectRepos(project, []);
+    await deps.projects.save(cleared);
+    return ok(cleared);
+  }
+  const existing = project.repos[0] ?? null;
+  // name 是组合工作空间的子目录名，跟着旧 primary 走，不随 URL 变化；没有旧 primary 时从 URL 派生。
+  const name = existing?.name ?? repoNameFromUrl(parsed.value.url);
+  const primary: ProjectRepo = {
+    id: existing?.id ?? deriveRepoId(name, parsed.value.url),
+    name,
+    url: parsed.value.url,
+    defaultBranch: parsed.value.defaultBranch
+  };
+  const next = withProjectRepos(project, [primary, ...project.repos.slice(1)]);
+  await deps.projects.save(next);
+  return ok(next);
+}
+
+/**
+ * 改项目的仓库清单（PATCH /api/projects/:id 的 repos 字段，docs/design/multi-repo.md §11.2）。
+ * 空数组 = 不绑仓库；同时维护过渡期的 `repo`（= 第一个）。
+ */
+export async function updateProjectReposUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly repos: readonly Partial<ProjectRepo>[] }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const repos = normalizeRepos(command.repos);
+  if (!repos.ok) return repos;
+  const next = withProjectRepos(project, repos.value);
   await deps.projects.save(next);
   return ok(next);
 }

@@ -1,4 +1,4 @@
-import type { ProjectId, TaskId, WorkspaceId } from './ids.ts';
+import type { ProjectId, TaskId, WorkspaceId, WorkspaceGroupId } from './ids.ts';
 import { newWorkspaceId } from './ids.ts';
 import { conflict, invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
@@ -39,6 +39,11 @@ export interface Workspace {
   readonly teamId: string | null;
   /** 这个目录从哪个仓库下载的（ADR 0026 Q3：仓库配方在工作空间上）；不是 clone 来的是 null。 */
   readonly repoUrl: string | null;
+  /**
+   * 属于哪个组合工作空间（docs/design/multi-repo.md）：多仓库会话的每个成员仓库都是一个真实工作空间行，
+   * 用这个字段归组。null / 缺省 = 独立工作空间。
+   */
+  readonly groupId?: WorkspaceGroupId | null;
   /** 哪台 Worker 的文件系统。null = 和 Server 同机（多机之前迁移过来的老目录）。 */
   /** 在哪台 Worker 上（本机也记真实 id）。null 只出现在老数据 / 没有本机 Worker 时，按 Server 本机处理。 */
   readonly workerId: string | null;
@@ -77,6 +82,7 @@ export interface NewWorkspaceInput {
   readonly isGit?: boolean | null;
   readonly state?: WorkspaceState;
   readonly setup?: WorkspaceSetup | null;
+  readonly groupId?: WorkspaceGroupId | null;
   readonly now: number;
   readonly id?: WorkspaceId;
 }
@@ -110,6 +116,7 @@ export function newWorkspace(input: NewWorkspaceInput): Result<Workspace, Domain
     state: input.state ?? 'ready',
     keptReason: null,
     setup: input.setup ?? null,
+    groupId: input.groupId ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });

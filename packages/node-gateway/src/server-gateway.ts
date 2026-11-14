@@ -26,6 +26,9 @@ import {
   wsRunSetup,
   wsClone,
   wsInspect,
+  wsGroupInit,
+  wsGroupRemove,
+  wsNewWorktree,
   wsRemove,
   wsSaveWip,
   wsPreview,
@@ -307,7 +310,34 @@ export interface ServerGateway {
   reconcileTerminals(workerId: string): Promise<void>;
   /** 远端 Worker 上的工作空间文件浏览（ADR 0025）。 */
   browser(workerId: string): WorkspaceBrowser;
+  /**
+   * 组合工作空间（docs/design/multi-repo.md §12.1 / §12.5）：容器目录 + 成员 worktree。
+   * 还没进 domain 的 NodeGateway 端口（那一步在别的 lane 做），先挂在网关自己身上给用例用。
+   */
+  groups(workerId: string): WorkspaceGroupOps;
   close(): void;
+}
+
+/**
+ * 组合工作空间的三个 RPC（`ws.group_init` / `ws.group_remove` / `ws.new_worktree`）。
+ * 和 `WorkspaceGit` 一样：离线 / 超时 / 对端报错都折成 `Result`，不抛错。
+ *
+ * `init` 只传段名（slug / name）：容器根由那台 Worker 的 `WORKER_GROUPS_DIR` 算，
+ * 网关这一侧不拼路径——运维改过配置后 hub 猜出来的路径必然错。
+ */
+export interface WorkspaceGroupOps {
+  init(input: {
+    readonly slug: string;
+    readonly name: string;
+    readonly id: string;
+  }): Promise<Result<{ readonly root: string }, DomainError>>;
+  remove(input: { readonly root: string; readonly id: string }): Promise<Result<{ readonly removed: boolean }, DomainError>>;
+  newWorktree(input: {
+    readonly repoPath: string;
+    readonly path: string;
+    readonly branch: string;
+    readonly base?: string | null;
+  }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
 }
 
 /**
@@ -1047,6 +1077,20 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     },
     browser(workerId: string): WorkspaceBrowser {
       return remoteBrowsers.browser(workerId);
+    },
+    groups(workerId: string): WorkspaceGroupOps {
+      const call = async <T>(run: (channel: RpcChannel) => Promise<RpcOutcome<T>>, what: string): Promise<Result<T, DomainError>> => {
+        const channel = channelOf(workerId);
+        if (!channel) return offline(workerId);
+        return toDomain(await run(channel), what, workerId);
+      };
+      // 本地文件操作，但可能撞上慢盘 / 大量小文件；统一 120 秒，和删除工作空间一个量级
+      const limit = { timeoutMs: 120_000 };
+      return {
+        init: (input) => call((c) => c.request(wsGroupInit, { slug: input.slug, name: input.name, id: input.id }, limit), '建组合工作空间目录'),
+        remove: (input) => call((c) => c.request(wsGroupRemove, { root: input.root, id: input.id }, limit), '删组合工作空间目录'),
+        newWorktree: (input) => call((c) => c.request(wsNewWorktree, { ...input, base: input.base ?? null }, limit), '在组合工作空间里开分支')
+      };
     },
     metrics(workerId: string): readonly ResourceSample[] {
       return [...(usage.get(workerId)?.samples ?? [])];

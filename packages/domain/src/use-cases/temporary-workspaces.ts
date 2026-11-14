@@ -27,7 +27,7 @@ export function taskBranch(title: string, shortId: string): string {
   return `agent-hub/${branchSlug(title)}-${shortId}`;
 }
 
-const shortId = (): string => newId().replace(/-/g, '').slice(0, 4);
+export const shortId = (): string => newId().replace(/-/g, '').slice(0, 4);
 
 export interface PrepareTemporaryCommand {
   readonly projectId: string;
@@ -155,7 +155,7 @@ async function sharedWorkspace(
  * 跑项目的准备命令并把结果写进 workspace.setup（docs/design/worktree.md §4）：
  * 同步跑（waitForSetup=false 的异步化留给后续），失败不抛、写 state='failed' + 中文原因，目录保留。
  */
-async function runWorkspaceSetup(
+export async function runWorkspaceSetup(
   deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces'>,
   machine: Machine,
   workspace: Workspace,

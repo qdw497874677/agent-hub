@@ -4,6 +4,7 @@ import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
 import type { CommitPreview, DomainError, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
 import { conflict, folderNameProblem, invalid, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
+import { insideGroups } from './group-dir.ts';
 import { runSetupScript } from './setup-script.ts';
 
 /**
@@ -18,6 +19,11 @@ export interface GitWorkspaceOptions {
    * 沿用原分支重建（existing）照旧用登记的路径，老记录是绝对路径不迁移。
    */
   readonly worktreesDir?: string;
+  /**
+   * 组合工作空间（docs/design/multi-repo.md §12.1）：`ws.new_worktree` 的成员目录只允许落在这下面。
+   * 省略 = 这台 Worker 不支持组合工作空间。
+   */
+  readonly groupsDir?: string;
 }
 
 /**
@@ -278,8 +284,73 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
   };
 }
 
-/** 从主工作区摘掉 worktree。common dir 解析不到目录时，就在这个 worktree 里摘掉自己（git 允许）。 */
-async function detachWorktree(path: string, force: boolean): Promise<void> {
+/* ── 组合工作空间（docs/design/multi-repo.md §12.1）：在容器里给成员开新分支的 worktree ── */
+
+/** 组合工作空间成员的 worktree 端口：只有 `ws.new_worktree` 这一件事。 */
+export interface GroupWorktrees {
+  newWorktree(input: {
+    readonly repoPath: string;
+    readonly path: string;
+    readonly branch: string;
+    readonly base?: string | null;
+  }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
+}
+
+/**
+ * `ws.new_worktree`：和 `addWorktree`（existing 为假）走同一套「新开分支」逻辑，但**不经过
+ * `relocateWorktree`**——成员目录由 domain 按容器根算好，Worker 只校验它在 groups 目录下。
+ * `check` 与 git 同一个边界（WORKER_ROOTS）。
+ */
+export function createGroupWorktrees(check: (path: string) => Promise<string | null>, options: { readonly groupsDir: string }): GroupWorktrees {
+  const groupsDir = resolve(options.groupsDir);
+  return {
+    async newWorktree({ repoPath, path: requested, branch, base }) {
+      if (!requested.startsWith('/')) return { ok: false, error: invalid('成员目录必须是绝对路径') };
+      const path = resolve(requested);
+      const repo = resolve(repoPath);
+      for (const place of [repo, path]) {
+        const problem = await check(place);
+        if (problem !== null) return { ok: false, error: invalid(problem) };
+      }
+      if (!insideGroups(groupsDir, path)) return { ok: false, error: invalid(`成员目录必须放在 ${groupsDir} 下面：${path}`) };
+      if (branch.trim() === '') return { ok: false, error: invalid('分支名不能为空') };
+      if (await lstat(path).catch(() => null)) return { ok: false, error: conflict(`「${path}」已经存在`) };
+      return addWorktreeOnNewBranch({ repoPath: repo, path, branch, base });
+    }
+  };
+}
+
+/**
+ * 在 `repoPath` 上新建 `branch` 并检出到 `path`。
+ * 远端有同名分支时跟踪 `origin/<branch>`（成员要能直接 push / 看远端状态），否则从 `base ?? HEAD` 开。
+ * 分支本地已存在一律 conflict：那是「复用已有工作空间」的路径，不是这里。
+ */
+export async function addWorktreeOnNewBranch(input: {
+  readonly repoPath: string;
+  readonly path: string;
+  readonly branch: string;
+  readonly base?: string | null;
+}): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>> {
+  const { repoPath, path, branch, base } = input;
+  const git = networkGit(repoPath);
+  if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
+  const remotes = await git.getRemotes().catch(() => []);
+  const hasOrigin = remotes.some((remote) => remote.name === 'origin');
+  if (hasOrigin) await git.fetch('origin').catch(() => undefined); // 离线也能开分支，只是基于本地的
+  const local = await git.raw(['branch', '--list', branch]).catch(() => '');
+  if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
+  const remoteHas = hasOrigin && (await git.raw(['branch', '-r', '--list', `origin/${branch}`]).catch(() => '')).trim() !== '';
+  try {
+    await mkdir(dirname(path), { recursive: true });
+    if (remoteHas) await git.raw(['worktree', 'add', '--track', '-b', branch, path, `origin/${branch}`]);
+    else await git.raw(['worktree', 'add', '--no-track', '-b', branch, path, base || 'HEAD']);
+  } catch (error) {
+    return { ok: false, error: unavailable(`新开分支失败：${gitMessage(error)}`) };
+  }
+  return { ok: true, value: { path, branch } };
+}
+
+/** 从主工作区摘掉 worktree。common dir 解析不到目录时，就在这个 worktree 里摘掉自己（git 允许）。 */async function detachWorktree(path: string, force: boolean): Promise<void> {
   const raw = (await simpleGit(path).raw(['rev-parse', '--git-common-dir'])).trim();
   const main = mainWorktreeDir(path, raw);
   const args = ['worktree', 'remove', ...(force ? ['--force'] : []), path];

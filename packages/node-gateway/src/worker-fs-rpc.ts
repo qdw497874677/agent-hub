@@ -5,6 +5,9 @@ import {
   fsMakeDirectory,
   fsReadFile,
   wsAddWorktree,
+  wsGroupInit,
+  wsGroupRemove,
+  wsNewWorktree,
   wsRunSetup,
   wsClone,
   wsInspect,
@@ -30,7 +33,8 @@ import {
   type RpcPort
 } from '@agent-hub/contract';
 import type { DomainError, Result } from '@agent-hub/domain';
-import { createGitWorkspace, type GitWorkspaceOptions } from './git-workspace.ts';
+import { createGitWorkspace, createGroupWorktrees, type GitWorkspaceOptions } from './git-workspace.ts';
+import { createGroupDir } from './group-dir.ts';
 import { createWorkspaceBrowser } from './workspace-browser.ts';
 import type { WorkerFiles } from './worker-files.ts';
 
@@ -62,6 +66,7 @@ export function serveWorkerFiles(port: RpcPort, files: WorkerFiles | undefined, 
   });
 
   serveWorkspaceGit(port, files, gitOptions);
+  serveWorkspaceGroups(port, files, gitOptions);
   serveWorkspaceBrowser(port, files);
 }
 
@@ -90,6 +95,31 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
   port.handle(wsPush, async ({ path }) => unwrap(await need().push(path)));
   port.handle(wsGh, async ({ path, request }) => unwrap(await need().gh(path, request)));
   port.handle(wsRemove, async ({ path, kind, force, mergedHead }) => unwrap(await need().remove(path, kind, { force: force === true, ...(mergedHead ? { mergedHead } : {}) })));
+}
+
+/**
+ * ws.group_* / ws.new_worktree：组合工作空间（docs/design/multi-repo.md §12.1 / §12.5）。
+ * 没配 WORKER_GROUPS_DIR 的 Worker 整组回 unsupported——老 Worker 上 hub 会退回单仓库路径。
+ */
+function serveWorkspaceGroups(port: RpcPort, files: WorkerFiles | undefined, gitOptions: GitWorkspaceOptions): void {
+  const groupsDir = gitOptions.groupsDir;
+  const dir = files && groupsDir ? createGroupDir({ groupsDir, check: (path) => files.check(path) }) : null;
+  const trees = files && groupsDir ? createGroupWorktrees((path) => files.check(path), { groupsDir }) : null;
+  const needDir = () => {
+    if (!dir) throw new RpcFailure('unsupported', '这台 Worker 不支持组合工作空间（没有配置 WORKER_GROUPS_DIR）');
+    return dir;
+  };
+  const needTrees = () => {
+    if (!trees) throw new RpcFailure('unsupported', '这台 Worker 不支持组合工作空间（没有配置 WORKER_GROUPS_DIR）');
+    return trees;
+  };
+  const unwrap = <T>(result: Result<T, DomainError>): T => {
+    if (result.ok) return result.value;
+    throw new RpcFailure(result.error.code === 'invalid' || result.error.code === 'conflict' ? result.error.code : 'failed', result.error.message);
+  };
+  port.handle(wsGroupInit, async ({ slug, name, id }) => unwrap(await needDir().init({ slug, name, id })));
+  port.handle(wsGroupRemove, async ({ root, id }) => unwrap(await needDir().remove({ root, id })));
+  port.handle(wsNewWorktree, async (input) => unwrap(await needTrees().newWorktree(input)));
 }
 
 /**

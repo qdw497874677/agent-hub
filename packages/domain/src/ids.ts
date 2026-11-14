@@ -26,5 +26,8 @@ export const asSessionId = (value: string): SessionId => value as SessionId;
 export const asArtifactId = (value: string): ArtifactId => value as ArtifactId;
 export const asAgentId = (value: string): AgentId => value as AgentId;
 export type WorkspaceId = string & { readonly __brand: 'WorkspaceId' };
+/** 组合工作空间（docs/design/multi-repo.md）：`group_<16hex>`，由 seed 确定性生成（重试/迁移可复现）。 */
+export type WorkspaceGroupId = string & { readonly __brand: 'WorkspaceGroupId' };
+export const asWorkspaceGroupId = (value: string): WorkspaceGroupId => value as WorkspaceGroupId;
 export const newWorkspaceId = (): WorkspaceId => newId() as WorkspaceId;
 export const asWorkspaceId = (value: string): WorkspaceId => value as WorkspaceId;

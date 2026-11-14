@@ -30,11 +30,14 @@ export * from './agent-alias.ts';
 export * from './backup-plan.ts';
 export * from './directories.ts';
 export * from './workspace.ts';
+export * from './workspace-group.ts';
 export * from './runtime-install.ts';
 
 export type { TaskRepository } from './ports/task-repository.ts';
 export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repository.ts';
 export type { WorkspaceRepository } from './ports/workspace-repository.ts';
+export type { WorkspaceGroupRepository } from './ports/workspace-groups.ts';
+export type { WorkspaceGroupGit } from './ports/workspace-group-git.ts';
 export type { ComponentCatalogRepository, ComponentPinStore } from './ports/component-store.ts';
 export type { HarnessProbe, HarnessReadiness, HarnessSelfCheck } from './ports/harness-readiness.ts';
 export type { ProjectRepository } from './ports/project-repository.ts';
@@ -86,6 +89,7 @@ export * from './use-cases/terminal.ts';
 export * from './use-cases/temporary-workspaces.ts';
 export * from './use-cases/workspace-cleanup.ts';
 export * from './use-cases/workspace-cleanup-admin.ts';
+export * from './use-cases/workspace-groups.ts';
 export * from './use-cases/team-workspaces.ts';
 
 export * from './account.ts';

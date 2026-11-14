@@ -38,6 +38,7 @@ import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
 import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
+import { createSqliteWorkspaceGroups } from './workspace-groups.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
 
@@ -55,6 +56,8 @@ export interface SqliteStore extends RepositorySet {
   /** agent 间通信（ADR 0018）：消息队列、派生记录、项目配置、审计。 */
   readonly messages: MessageStore;
   readonly bots: BotRepository;
+  /** 组合工作空间（docs/design/multi-repo.md）。 */
+  readonly workspaceGroups: ReturnType<typeof createSqliteWorkspaceGroups>;
   /** 每台 Worker 的自定义运行时别名（CAP-1）。 */
   readonly workerAgents: WorkerAgentsRepository;
   readonly groups: GroupStore;
@@ -138,6 +141,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'worktree_config')) {
     db.exec('ALTER TABLE projects ADD COLUMN worktree_config TEXT');
   }
+  // 项目仓库清单（docs/design/multi-repo.md §11.2）：JSON 数组；NULL = 老数据，读时从 repo_url 单仓库回填。
+  if (!projectColumns.some((column) => column.name === 'repos')) {
+    db.exec('ALTER TABLE projects ADD COLUMN repos TEXT');
+  }
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
@@ -155,6 +162,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!workspaceColumns.some((column) => column.name === 'setup')) {
     db.exec('ALTER TABLE workspaces ADD COLUMN setup TEXT');
   }
+  // 组合工作空间归属（docs/design/multi-repo.md §11.2）：老库补列。
+  if (!workspaceColumns.some((column) => column.name === 'group_id')) {
+    db.exec('ALTER TABLE workspaces ADD COLUMN group_id TEXT');
+  }
   migrateTasksV2(db);
   migrateWorkspaces(db);
   cleanLegacyLogText(db);
@@ -164,10 +175,10 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, description, worktree_config, created_at, team_id, created_by, members, deleted_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
-      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, description = excluded.description, ' +
+      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, description = excluded.description, ' +
       'worktree_config = excluded.worktree_config, ' +
       'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
   );
@@ -339,14 +350,17 @@ export function openSqliteStore(file: string): SqliteStore {
 
   const projects = {
     async save(project: Project): Promise<void> {
+      const primary = project.repos[0] ?? null;
       insertProject.run(
         project.id,
         project.name,
         '',
         null,
         '{}',
-        project.repo?.url ?? null,
-        project.repo?.defaultBranch ?? null,
+        // 双写：老列只留给还没看 repos 的读路径（worker / 前端过渡期），新列是权威。
+        primary?.url ?? null,
+        primary?.defaultBranch ?? null,
+        JSON.stringify(project.repos),
         project.description,
         project.worktree ? JSON.stringify(project.worktree) : null,
         project.createdAt,
@@ -558,6 +572,7 @@ export function openSqliteStore(file: string): SqliteStore {
     attention: createSqliteAttention(db),
     memory: { store: createSqliteMemoryStore(db), index: createSqliteMemoryIndex(db), settings: createSqliteMemorySettings(db) },
     workspaces: createWorkspaceRepository(db),
+    workspaceGroups: createSqliteWorkspaceGroups(db),
     enrollment: createEnrollmentRepository(db),
     assets: createAssetRepository(db),
     assetSync: createAssetSyncBoard(db),

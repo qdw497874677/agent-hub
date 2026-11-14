@@ -1,4 +1,4 @@
-import type { AgentId, Seq, SessionId, TaskId, WorkspaceId } from './ids.ts';
+import type { AgentId, Seq, SessionId, TaskId, WorkspaceId, WorkspaceGroupId } from './ids.ts';
 import { newSessionId } from './ids.ts';
 import { conflict, invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
@@ -45,6 +45,11 @@ export interface Session {
   readonly workerId: string | null;
   /** 在哪个工作空间里干活（workspaces.md）。null = 迁移前的老会话，按项目目录推算。 */
   readonly workspaceId: WorkspaceId | null;
+  /**
+   * 组合工作空间（docs/design/multi-repo.md）：多仓库会话绑一整组。
+   * 有值时 `workspaceId` 是 primary 成员的镜像；null / 缺省 = 单仓库会话。
+   */
+  readonly groupId?: WorkspaceGroupId | null;
   /** 谁开的这条会话（ADR 0017：说话 / 中断 / 换机继续默认只有他）。null = 老会话或系统开的。 */
   readonly createdBy?: string | null;
   /** 用户起的会话名（null = 没起，界面回退到首句 / 「会话 N」）。只能经 SessionRepository.setTitle 改，save 不覆盖它。 */

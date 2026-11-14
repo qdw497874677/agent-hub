@@ -79,6 +79,39 @@ export const wsAddWorktree = method(
   z.object({ path: z.string(), branch: z.string() })
 );
 
+/* ── 组合工作空间（docs/design/multi-repo.md §11.3 / §12.1 / §12.5）：容器目录 + 成员 worktree。 ── */
+
+const groupRoot = z.string().min(1).max(4096);
+const groupId = z.string().min(1).max(200);
+
+/**
+ * 建容器目录：根路径**由 Worker 算**（`<WORKER_GROUPS_DIR>/<slug>/<name>`），hub 不猜——
+ * `WORKER_GROUPS_DIR` 只有那台机器知道，运维随时可能改。段名的字符集由 Worker 严格校验
+ * （`[a-z0-9-]`、非空、无 `..`/`/`）。目录已存在（哪怕空）回 conflict；重试走「继续用已有容器」。
+ */
+export const wsGroupInit = method(
+  'ws.group_init', 'git',
+  z.object({ slug: z.string().min(1).max(64), name: z.string().min(1).max(64), id: groupId }),
+  z.object({ root: z.string() })
+);
+
+/** 删容器目录：只删 WORKER_GROUPS_DIR 下的、group.json 的 id 对得上的真实目录（不跟符号链接）。 */
+export const wsGroupRemove = method(
+  'ws.group_remove', 'git',
+  z.object({ root: groupRoot, id: groupId }),
+  z.object({ removed: z.boolean() })
+);
+
+/**
+ * 在容器里给成员开新分支的 worktree：path 必须在 WORKER_GROUPS_DIR 下、且当时不存在。
+ * 与 ws.add_worktree 的区别：不经过 relocateWorktree（落点只信调用方算好的容器路径）。
+ */
+export const wsNewWorktree = method(
+  'ws.new_worktree', 'git',
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional() }),
+  z.object({ path: z.string(), branch: z.string() })
+);
+
 /** 在工作空间里跑项目配置的准备命令（docs/design/worktree.md §4）。只认项目配置，不接受逐次传入。 */
 export const wsRunSetup = method(
   'ws.run_setup', 'git',

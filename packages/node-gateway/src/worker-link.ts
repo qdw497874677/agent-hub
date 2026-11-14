@@ -83,6 +83,8 @@ export interface WorkerLinkOptions {
   readonly files?: WorkerFiles;
   /** ADR 0027 D10：新建 worktree 的位置（WORKER_WORKTREES_DIR）；省略 = 仓库旁 `.worktrees/`。 */
   readonly worktreesDir?: string;
+  /** 组合工作空间（docs/design/multi-repo.md §12.5）：容器与成员只能落在这下面（WORKER_GROUPS_DIR）。省略 = 不支持。 */
+  readonly groupsDir?: string;
   /** hub 下发的技能与指令落在这里（专属目录）。不给就回「这台不支持」，会话也不带资产。 */
   readonly assets?: WorkerAssets;
   /**
@@ -304,7 +306,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return true;
     }
   });
-  serveWorkerFiles(channel, options.files, options.roots ?? [], options.worktreesDir ? { worktreesDir: options.worktreesDir } : {});
+  serveWorkerFiles(channel, options.files, options.roots ?? [], {
+    ...(options.worktreesDir ? { worktreesDir: options.worktreesDir } : {}),
+    ...(options.groupsDir ? { groupsDir: options.groupsDir } : {})
+  });
   channel.handle(linkEcho, async ({ at }) => ({ at }));
   channel.handle(assetsSync, async ({ entries }) => {
     if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');

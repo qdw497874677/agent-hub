@@ -1,12 +1,14 @@
 import { principalOfSubject, type Subject } from '../access.ts';
 import type { Location, Project } from '../project.ts';
+import type { WorkspaceGroup } from '../workspace-group.ts';
+import { groupMemberRoot, primaryMember } from '../workspace-group.ts';
 import type { Session } from '../session.ts';
 import { concurrencyOf, isUsable, newWorkspace, normalizePath, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
 import { claimOf, createDirectory, gitOn, isEmptyDirectory, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
-import type { ProjectId } from '../ids.ts';
+import type { ProjectId, WorkspaceGroupId, WorkspaceId } from '../ids.ts';
 import { asProjectId, asWorkspaceId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
@@ -18,10 +20,17 @@ import type { Deps } from './deps.ts';
  * 都没有 root 为空串，调用方必须拒绝，不能把它当成 /。
  */
 export async function locationOf(
-  deps: Pick<Deps, 'workspaces'>,
+  deps: Pick<Deps, 'workspaces'> & Partial<Pick<Deps, 'workspaceGroups'>>,
   project: Project,
-  session: Pick<Session, 'workerId' | 'workspaceId'> | null
+  session: Pick<Session, 'workerId' | 'workspaceId'> & { readonly groupId?: WorkspaceGroupId | null } | null
 ): Promise<Location> {
+  if (session?.groupId && deps.workspaceGroups) {
+    // 组合工作空间：容器不是仓库，指到 primary 成员的目录，git / 文件 / 终端都还在真实仓库里干活。
+    const group = await deps.workspaceGroups.byId(session.groupId);
+    const primary = group === null ? null : primaryMember(group);
+    const primaryRoot = group === null || primary === null ? null : groupMemberRoot(group, primary.workspaceId);
+    if (group !== null && primaryRoot !== null) return { workerId: group.workerId, root: primaryRoot };
+  }
   if (session?.workspaceId) {
     const workspace = await deps.workspaces.byId(session.workspaceId);
     if (workspace && workspace.state !== 'removed') return { workerId: workspace.workerId, root: workspace.path };
@@ -43,6 +52,58 @@ export async function defaultWorkspaceFor(
     .filter((workspace) => workspace.kind === 'long_lived' && isUsable(workspace) && (workerId === undefined || workspace.workerId === workerId))
     .sort((a, b) => a.createdAt - b.createdAt);
   return candidates[0] ?? null;
+}
+
+export interface SessionLocationMember {
+  readonly workspaceId: WorkspaceId;
+  readonly name: string;
+  /** 成员仓库的绝对路径（`<group.root>/<name>`）。 */
+  readonly root: string;
+  readonly state: 'ready' | 'preparing' | 'failed';
+}
+
+export interface SessionLocation {
+  /** 容器目录：多仓库时是组合根，单仓库时就是那个工作空间的路径。空串 = 没有可用位置，调用方必须拒绝。 */
+  readonly root: string;
+  readonly workerId: string | null;
+  /** 多仓库才有；单仓库为 null。 */
+  readonly group: WorkspaceGroup | null;
+  readonly members: readonly SessionLocationMember[];
+}
+
+/**
+ * 这条会话能碰到的所有目录（docs/design/multi-repo.md §5）：组合工作空间返回容器 + 每个成员仓库，
+ * 单仓库会话返回一项。`root === ''` 表示没有可用位置——不要把它当成 `/`。
+ */
+export async function locationsOf(
+  deps: Pick<Deps, 'workspaces'> & Partial<Pick<Deps, 'workspaceGroups'>>,
+  project: Project,
+  session: Pick<Session, 'workerId' | 'workspaceId'> & { readonly groupId?: WorkspaceGroupId | null } | null
+): Promise<SessionLocation> {
+  if (session?.groupId && deps.workspaceGroups) {
+    const group = await deps.workspaceGroups.byId(session.groupId);
+    if (group !== null) {
+      return {
+        root: group.root,
+        workerId: group.workerId,
+        group,
+        members: group.members.flatMap((member) => {
+          const root = groupMemberRoot(group, member.workspaceId);
+          return root === null ? [] : [{ workspaceId: member.workspaceId, name: member.name, root, state: member.state }];
+        })
+      };
+    }
+  }
+  const single = await locationOf(deps, project, session);
+  if (single.root === '') return { root: '', workerId: single.workerId, group: null, members: [] };
+  const name = single.root.split('/').filter(Boolean).pop() ?? '';
+  const workspaceId = session?.workspaceId ?? null;
+  return {
+    root: single.root,
+    workerId: single.workerId,
+    group: null,
+    members: [{ workspaceId: workspaceId ?? asWorkspaceId(name), name, root: single.root, state: 'ready' }]
+  };
 }
 
 /** 项目名下还在的工作空间（不含已删除的），长期在前、临时在后，各自按新旧排。 */
