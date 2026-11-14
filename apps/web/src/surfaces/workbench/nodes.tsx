@@ -8,6 +8,7 @@ import { sessionKeys } from '../../shell/query-keys.ts';
 import { previewUrlFor } from '../../atoms/preview-links.ts';
 import { WorkerChip } from '../../shell/workers.tsx';
 import { ResourceBadge, SessionUsage } from '../../shell/resources.tsx';
+import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { CardComposer } from './card-composer.tsx';
 import { OptionControls } from '../../atoms/options.tsx';
 import { PHASE_DOT, elapsedLabel, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
@@ -267,6 +268,8 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const failed = status === 'failed' || status === 'interrupted';
   const failureReason = failed ? (live?.reason ?? null) : null;
   const blocks = live?.blocks ?? [];
+  // 回合结束、后台还在跑（会话保活）：状态徽标说的是「完成」，这里只补一个安静的小点。
+  const background = useBackgroundActivity(session.id, blocks, status, live?.lastSeq ?? session.lastSeq);
   const showAuthor = multipleAuthors(blocks);
   const dimmed = status === 'stopped';
   // 工作中才数时长；半分钟一跳就够（秒级数字会一直抓眼睛）。
@@ -458,6 +461,12 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <SessionUsage resources={resources} sessionId={session.id} />
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
+          {background.active ? (
+            <span data-testid="card-background" title="后台任务还在跑" className="flex shrink-0 items-center">
+              <span aria-hidden className="block size-1.5 rounded-full bg-sage motion-safe:animate-pulse" />
+              <span className="sr-only">后台任务还在跑</span>
+            </span>
+          ) : null}
           <CardStatus phase={phase} startedAt={session.createdAt} now={now} reason={failureReason} />
           {expanded ? <span className="text-meta text-accent" title="已在画布中展开" data-testid="card-expanded">◫</span> : null}
           <button

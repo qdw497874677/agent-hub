@@ -13,6 +13,8 @@ import { localTime } from '../../shell/local-time.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { attachmentsCapability } from '../../atoms/attachments.ts';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
+import { backgroundActivityText } from '../../atoms/background-activity.ts';
+import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { sessionCommands } from '../../atoms/commands.ts';
 import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
@@ -232,6 +234,17 @@ export function FocusView({
   }, [tab, terminalAvailable]);
   const agentLabel = agent?.label ?? session.agentId;
   const lastSeq = live?.lastSeq ?? session.lastSeq;
+  // 这一轮结束了、后台还在跑（会话保活）：块序列里还在陆续有东西来，就低调说一句。
+  const background = useBackgroundActivity(session.id, blocks, status, lastSeq);
+  const backgroundNotice = backgroundActivityText(background, Date.now());
+  /** 「查看」：滚到对话末尾，再把焦点交给记录区——键盘用户从这里接着往下读。 */
+  function jumpToConversationEnd(): void {
+    const element = scroller.current;
+    if (!element) return;
+    const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+    element.scrollTo({ top: element.scrollHeight, behavior: reduced ? 'auto' : 'smooth' });
+    element.focus({ preventScroll: true });
+  }
   const deliveriesBySeq = useDeliveries(session.id, lastSeq);
   const canvasLinkedIds = useMemo(
     () =>
@@ -881,7 +894,12 @@ export function FocusView({
         />
       ) : null}
 
-      <div ref={scroller} className={`min-h-0 flex-1 overflow-y-auto ${tab === 'chat' ? '' : 'hidden'}`}>
+      <div
+        ref={scroller}
+        // 程序化聚焦的落点（「查看」跳转过来）：不是 Tab 停靠站，但焦点环要看得见。
+        tabIndex={-1}
+        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${tab === 'chat' ? '' : 'hidden'}`}
+      >
         <div
           role="log"
           aria-label="会话记录"
@@ -1016,6 +1034,26 @@ export function FocusView({
                 </button>
               ) : <span />}
               {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
+            </div>
+          ) : null}
+          {backgroundNotice ? (
+            <div
+              data-testid="background-activity"
+              className="mb-1.5 flex items-center gap-1.5 text-meta text-tertiary"
+            >
+              <p role="status" title={backgroundNotice.detail} className="flex min-w-0 items-center gap-1.5">
+                {/* 中性小点：读起来是「还在动」，不是告警 */}
+                <span aria-hidden className="size-1 shrink-0 rounded-full bg-tertiary/70" />
+                <span className="min-w-0 truncate">{backgroundNotice.text}</span>
+              </p>
+              <button
+                type="button"
+                data-testid="background-activity-jump"
+                onClick={jumpToConversationEnd}
+                className="ml-auto shrink-0 rounded-sm px-1 text-meta text-tertiary hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+              >
+                查看
+              </button>
             </div>
           ) : null}
           {envNotice ? (
