@@ -72,7 +72,9 @@ export const taskKeys = {
 /** 会话自有、但和文件树无关的那几份：只有这条会话知道。 */
 export const sessionKeys = {
   /** 环境（资产 / MCP / 启动配置）是否改过还没生效：按会话查，别跨会话共用。 */
-  environment: (sessionId: string) => ['session', sessionId, 'environment'] as const
+  environment: (sessionId: string) => ['session', sessionId, 'environment'] as const,
+  /** 预览链接（docs/design/preview.md §4）：只有这条会话知道，增删后整体失效。 */
+  previews: (sessionId: string) => ['session', sessionId, 'previews'] as const
 };
 
 export const workspaceKeys = {

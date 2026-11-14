@@ -25,6 +25,7 @@ import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
 import { SESSION_TABS, readStoredTab, sessionTabLabel, stepTab, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
 import { TerminalPanel } from '../../atoms/terminal-panel.tsx';
+import { PreviewPanel } from '../../atoms/preview-panel.tsx';
 import {
   subscribeTerminalSupport,
   terminalSupportKeys,
@@ -178,7 +179,7 @@ export function FocusView({
   const fileKeys = filesKeys(session.workspaceId, session.id);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
   useEffect(() => {
-    if (tab === 'chat') return;
+    if (tab !== 'files' && tab !== 'changes') return;
     const keys = filesKeys(session.workspaceId, session.id);
     for (const prefix of filesInvalidationKeys(keys)) {
       void queries.invalidateQueries({ queryKey: prefix });
@@ -221,11 +222,11 @@ export function FocusView({
   const terminalUnavailable = useSyncExternalStore(subscribeTerminalSupport, () => terminalBlocked(supportKeys));
   // 跑完的会话也能开：shell 直接开在会话工作目录里（hub 侧算好 cwd），不重启 agent。
   const terminalAvailable = workerOnline && !terminalUnavailable;
+  // 终端要看机器在线与探测结果；预览只要有会话就能看（机器离线时列表里那几行自己说清楚）。
   const tabs = useMemo(
     () => SESSION_TABS.filter((candidate) => candidate !== 'terminal' || terminalAvailable),
     [terminalAvailable]
-  );
-  // 终端变得不可用（会话结束 / 机器掉线 / 探测到不支持）时退回对话，别停在空页上。
+  );  // 终端变得不可用（会话结束 / 机器掉线 / 探测到不支持）时退回对话，别停在空页上。
   useEffect(() => {
     if (tab === 'terminal' && !terminalAvailable) setTab('chat');
   }, [tab, terminalAvailable]);
@@ -772,7 +773,7 @@ export function FocusView({
             {sessionTabLabel(t, t === 'changes' ? changeCount : undefined)}
           </button>
         ))}
-        {tab !== 'chat' && tab !== 'terminal' && refreshing ? (
+        {tab !== 'chat' && tab !== 'terminal' && tab !== 'preview' && refreshing ? (
           <span
             role="status"
             aria-live="polite"
@@ -805,6 +806,12 @@ export function FocusView({
             active={tab === 'terminal'}
             notice={status === 'running' ? null : '这条会话已经结束：终端只开一个 shell，不会重新启动 agent。'}
           />
+        </div>
+      ) : null}
+      {/* 预览和终端一样：首访后保持挂载（hidden 不卸载），切回来表单里没提交的内容还在 */}
+      {visited.has('preview') ? (
+        <div key={`${session.id}-preview`} className={tab === 'preview' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
+          <PreviewPanel sessionId={session.id} active={tab === 'preview'} />
         </div>
       ) : null}
       {profileOpen ? (

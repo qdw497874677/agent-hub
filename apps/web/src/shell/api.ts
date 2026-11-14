@@ -18,6 +18,7 @@ import type {
   DirectoryListingDto,
   OptionValueDto,
   HomeDto,
+  PreviewLinkDto,
   ProjectDto,
   ProjectSummaryDto,
   PromptAckDto,
@@ -244,6 +245,19 @@ export const filesApi = {
   diff: (id: string, path: string, base: DiffBaseSpec) => call<FileDiffDto>(`${sq(id)}/git/diff?path=${encodeURIComponent(path)}&${baseQuery(base)}`),
   turns: (id: string) => call<{ turns: TurnCheckpointDto[] }>(`${sq(id)}/git/turns`).then((r) => r.turns),
   eventsUrl: (id: string, paths: readonly string[]) => `${sq(id)}/files/events?paths=${paths.map(encodeURIComponent).join(',')}`
+};
+
+/**
+ * 预览链接（docs/design/preview.md §4）：把 worker 上的回环端口挂到 hub 的一个监听端口上。
+ * 只登记端口，不碰用户代码；返回的 `hubPort` 拼上当前 location 就是可打开的链接。
+ */
+export const previewsApi = {
+  list: (sessionId: string) =>
+    call<{ links: PreviewLinkDto[] }>(`${sq(sessionId)}/previews`).then((r) => r.links),
+  create: (sessionId: string, body: { port: number; label?: string }) =>
+    post<{ link: PreviewLinkDto }>(`${sq(sessionId)}/previews`, body).then((r) => r.link),
+  remove: (sessionId: string, linkId: string) =>
+    call<{ ok: true }>(`${sq(sessionId)}/previews/${encodeURIComponent(linkId)}`, { method: 'DELETE' })
 };
 
 export const api = {
@@ -640,6 +654,7 @@ export type {
   JournalEntryDto,
   DirectoryListingDto,
   HomeDto,
+  PreviewLinkDto,
   ProjectDto,
   ProjectSummaryDto,
   PromptAckDto,
