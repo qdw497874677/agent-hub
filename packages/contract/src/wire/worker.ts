@@ -105,12 +105,16 @@ export const workerOptionsSchema = z.object({
 
 /**
  * worker 关于「这条会话还在不在我这儿」的汇报。
- * `running` / `ended` / `gone` 说的是**托管状态**，不是领域状态——领域状态由事件决定。
+ * `running` / `idle` / `ended` / `gone` 说的是**托管状态**，不是领域状态——领域状态由事件决定。
+ *
+ * `idle`：这一轮结束了，但 agent 进程还活着、还能接着提问（保活）。
+ * 回合结束的事件仍然是 `ended`（那是回合事件）；`status:'ended'` 留给真结束：
+ * 进程退出、dispose、worker 关闭、空闲回收。
  */
 export const workerStatusSchema = z.object({
   type: z.literal('status'),
   sessionId: id,
-  status: z.enum(['running', 'ended', 'gone']),
+  status: z.enum(['running', 'idle', 'ended', 'gone']),
   reason: z.string().optional()
 });
 

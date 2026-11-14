@@ -814,8 +814,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         hooks.onOptions(from, frame.sessionId as SessionId, frame.options);
       } else if (frame.type === 'status') {
         // 路由只由 start_session / adopt 建立；一台 Worker 报「running」不能把别人的会话改道到自己身上，
-        // 报「结束」也只能划掉确实路由到它的那条。
-        if (frame.status !== 'running' && placement.get(frame.sessionId) === from) placement.delete(frame.sessionId);
+        // 报「结束」也只能划掉确实路由到它的那条。`idle` 是「这一轮结束了、进程还在」，路由得留着。
+        if ((frame.status === 'ended' || frame.status === 'gone') && placement.get(frame.sessionId) === from) placement.delete(frame.sessionId);
         hooks.onStatus(from, frame.sessionId as SessionId, frame.status, frame.reason);
       }
     };

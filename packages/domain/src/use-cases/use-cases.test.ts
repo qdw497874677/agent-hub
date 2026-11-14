@@ -363,6 +363,26 @@ test('运行状态：ended 划掉托管，并以库里的状态推给界面', as
   assert.equal(w.frames.at(-1)?.status, 'running');
 });
 
+test('运行状态：idle 只是回合结束，托管留着；ended / gone 才划掉', async () => {
+  const w = await world();
+  const session = await derived(w);
+  assert.equal(w.deps.hosting.has(session.id), true);
+
+  // idle：这一轮结束了，进程还活着，下一句还能直接发过去 —— 托管必须留着
+  await ingestRuntimeStatus(w.deps, session.id, 'idle');
+  assert.equal(w.deps.hosting.has(session.id), true, 'idle 不撤托管');
+  assert.equal(w.frames.at(-1)?.status, session.status, 'idle 不外泄成会话状态');
+
+  await ingestRuntimeStatus(w.deps, session.id, 'running');
+  assert.equal(w.frames.at(-1)?.status, 'running', '又是进行中，界面跟着亮');
+  await ingestRuntimeStatus(w.deps, session.id, 'idle');
+
+  await ingestRuntimeStatus(w.deps, session.id, 'ended');
+  assert.equal(w.deps.hosting.has(session.id), false, 'ended 才撤托管');
+  await ingestRuntimeStatus(w.deps, session.id, 'gone');
+  assert.equal(w.deps.hosting.has(session.id), false);
+});
+
 test('agent 会话号落库，resume 时原样带回', async () => {
   const w = await world();
   const session = await derived(w);

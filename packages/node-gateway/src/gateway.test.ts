@@ -75,6 +75,8 @@ interface Recorder {
   hellos: { worker: WorkerStatus; agents: AgentDto[] }[];
   events: SessionEvent[];
   statuses: RuntimeStatus[];
+  /** 带上 sessionId 的状态帧，用于区分「哪条会话被收掉了」。 */
+  statusFrames: { sessionId: string; status: RuntimeStatus }[];
   refs: string[];
   gone: string[];
   goneReasons: string[];
@@ -87,6 +89,7 @@ function recorder(token: string | null): Recorder {
     hellos: [],
     events: [],
     statuses: [],
+    statusFrames: [],
     refs: [],
     gone: [],
     goneReasons: [],
@@ -100,7 +103,10 @@ function recorder(token: string | null): Recorder {
       onEvent: (_worker, _id, event) => r.events.push(event),
       onAgentSession: (_worker, _id, ref) => r.refs.push(ref),
       onOptions: () => {},
-      onStatus: (_worker, _id, status) => r.statuses.push(status),
+      onStatus: (_worker, id, status) => {
+        r.statuses.push(status);
+        r.statusFrames.push({ sessionId: String(id), status });
+      },
       onWorkerGone: (id, reason) => {
         r.gone.push(id);
         r.goneReasons.push(reason);
@@ -226,13 +232,19 @@ test('start + prompt 连发：worker 串行执行，事件与状态回到 server
   assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
   await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId, text: '你好' });
 
-  await rec.until(() => rec.statuses.includes('ended'));
+  await rec.until(() => rec.statuses.includes('idle'));
   assert.deepEqual(seen[0]?.options, { model: 'm-1' });
   assert.deepEqual(
     rec.events.map((event) => event.kind),
     ['text', 'ended']
   );
-  assert.deepEqual(rec.statuses, ['running', 'ended']);
+  // 回合结束报 idle（进程还活着），不是 ended（进程结束）
+  assert.deepEqual(rec.statuses, ['running', 'idle']);
+
+  // 同一会话再 start：复用活着的进程，不重新 spawn
+  await gateway.gateway.dispatch(start('s1', 'w1'));
+  await rec.until(() => rec.statuses.filter((status) => status === 'running').length === 2);
+  assert.equal(seen.length, 1, '复用了活着的 agent 进程');
 
   link.notifyAgentSessionRef('s1', 'agent-ref-1');
   await rec.until(() => rec.refs.length === 1);
@@ -581,22 +593,20 @@ test('连上不说 hello 的连接会被关掉', async () => {
   await stop();
 });
 
-test('同一会话重复 start：旧 agent 被收掉，旧的结束不会把新会话报成 ended', async () => {
-  const { rec, gateway, url, stop } = await harness(null);
-  const disposed: string[] = [];
+/** 每次 start 起一个「进程」：prompt 回 `<agent>:<text>` 再 end，dispose 记名字。 */
+function labeledRuntime(agentId: string, disposed: string[]): AgentRuntime {
   const all = Object.fromEntries(CAPABILITY_NAMES.map((name) => [name, available])) as Record<CapabilityName, Capability>;
-  let generation = 0;
-  const runtime: AgentRuntime = {
-    descriptor: { id: asAgentId('echo'), label: 'Echo', capabilities: capabilityMatrix(all), models: [], defaultModel: '', options: [] },
+  return {
+    descriptor: { id: asAgentId(agentId), label: agentId, capabilities: capabilityMatrix(all), models: [], defaultModel: '', options: [] },
     async start(spec) {
-      const name = `g${++generation}`;
       const queue = new AsyncQueue<SessionEvent>();
       return {
         ok: true,
         value: {
           sessionId: spec.sessionId,
-          async prompt({ text }) {
-            queue.push({ kind: 'text', delta: `${name}:${text}` });
+          async prompt({ text }: { text: string }) {
+            queue.push({ kind: 'text', delta: `${agentId}:${text}` });
+            queue.push({ kind: 'ended', outcome: 'done' });
             return { ok: true, value: undefined };
           },
           async interrupt() {},
@@ -607,27 +617,128 @@ test('同一会话重复 start：旧 agent 被收掉，旧的结束不会把新�
             return { ok: true, value: [] };
           },
           async dispose() {
-            disposed.push(name);
-            queue.close(); // 旧 agent 的事件流随之结束，走到 finally
+            disposed.push(agentId);
+            queue.close(); // 进程没了，事件流随之结束，走到 finally
           }
         }
-      };
+      } as never;
     }
   };
-  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [runtime] });
+}
+
+test('同一会话重复 start：复用活着的 agent 进程，不重新 spawn', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const disposed: string[] = [];
+  const base = labeledRuntime('echo', disposed);
+  let spawns = 0;
+  const counting: AgentRuntime = {
+    ...base,
+    async start(spec) {
+      spawns += 1;
+      return base.start(spec);
+    }
+  };
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [counting] });
   await rec.until(() => rec.hellos.length === 1);
 
   await gateway.gateway.dispatch(start('s1', 'w1'));
-  await rec.until(() => rec.statuses.length === 1);
-  await gateway.gateway.dispatch(start('s1', 'w1'));
-  await rec.until(() => rec.statuses.length === 2);
   await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '在吗' });
-  await rec.until(() => rec.events.length === 1);
+  await rec.until(() => rec.statuses.includes('idle'));
+  await gateway.gateway.dispatch(start('s1', 'w1'));
+  await rec.until(() => rec.statuses.filter((status) => status === 'running').length === 2);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '还在吗' });
+  await rec.until(() => rec.statuses.filter((status) => status === 'idle').length === 2);
+
+  assert.equal(spawns, 1, '同一 agent / 工作目录：复用活着的进程');
+  assert.deepEqual(disposed, [], '没有收掉进程');
+  assert.deepEqual(
+    rec.events.flatMap((event) => (event.kind === 'text' ? [event.delta] : [])),
+    ['echo:在吗', 'echo:还在吗']
+  );
+  assert.deepEqual(rec.statuses, ['running', 'idle', 'running', 'idle']);
+  await stop(link);
+});
+
+test('同一会话换 agent：旧进程被收掉，旧事件流结束不会给新会话报 ended', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const disposed: string[] = [];
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    runtimes: [labeledRuntime('echo', disposed), labeledRuntime('echo2', disposed)]
+  });
+  await rec.until(() => rec.hellos.length === 1);
+
+  await gateway.gateway.dispatch(start('s1', 'w1'));
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '一' });
+  await rec.until(() => rec.statuses.includes('idle'));
+  await gateway.gateway.dispatch({ ...start('s1', 'w1'), agentId: asAgentId('echo2') });
+  await rec.until(() => rec.statuses.filter((status) => status === 'running').length === 2);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '二' });
+  await rec.until(() => rec.statuses.filter((status) => status === 'idle').length === 2);
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  assert.deepEqual(disposed, ['g1']);
-  assert.deepEqual(rec.statuses, ['running', 'running']);
-  assert.deepEqual(rec.events, [{ kind: 'text', delta: 'g2:在吗' }]);
+  assert.deepEqual(disposed, ['echo'], '旧 agent 的进程被收掉');
+  assert.deepEqual(rec.statuses, ['running', 'idle', 'running', 'idle'], '旧进程收掉不额外报 ended（那是新会话的托管）');
+  assert.deepEqual(
+    rec.events.flatMap((event) => (event.kind === 'text' ? [event.delta] : [])),
+    ['echo:一', 'echo2:二']
+  );
+  await stop(link);
+});
+
+test('回合结束后保活：闲置到 HUB_SESSION_IDLE_MS 才收进程，中途再 start 复用', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], sessionIdleMs: 150 });
+  await rec.until(() => rec.hellos.length === 1);
+
+  assert.ok((await gateway.gateway.dispatch(start('s1', 'w1'))).ok);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: 'hi' });
+  await rec.until(() => rec.statuses.includes('idle'));
+  assert.equal(seen.length, 1);
+
+  // 闲置还没到点：再 start 复用（顺便刷新计时），不该重新 spawn
+  await gateway.gateway.dispatch(start('s1', 'w1'));
+  await rec.until(() => rec.statuses.filter((status) => status === 'running').length === 2);
+  assert.equal(seen.length, 1, '复用活着的进程');
+
+  // 到点：收掉进程并报 ended
+  await rec.until(() => rec.statuses.includes('ended'));
+  assert.deepEqual(
+    rec.statusFrames.map((frame) => `${frame.sessionId}:${frame.status}`),
+    ['s1:running', 's1:idle', 's1:running', 's1:ended']
+  );
+  await stop(link);
+});
+
+test('保活上限：超过 HUB_KEEPALIVE_MAX 时先收最久没活动的进程', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], keepAliveMax: 1 });
+  await rec.until(() => rec.hellos.length === 1);
+
+  assert.ok((await gateway.gateway.dispatch(start('s1', 'w1'))).ok);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '一' });
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'idle'));
+
+  // 第二条会话保活起来就超限了：先收 s1（最久没活动）
+  assert.ok((await gateway.gateway.dispatch(start('s2', 'w1'))).ok);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '二' });
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's2' && frame.status === 'idle'));
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'ended'));
+
+  // s2 还活着：接着问不会重新 spawn
+  const again = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '三' });
+  assert.ok(again.ok, JSON.stringify(again));
+  await rec.until(() => rec.events.filter((event) => event.kind === 'text').length === 3);
+  assert.equal(seen.length, 2);
+  assert.deepEqual(
+    rec.statusFrames.filter((frame) => frame.status === 'ended').map((frame) => frame.sessionId),
+    ['s1']
+  );
   await stop(link);
 });
 

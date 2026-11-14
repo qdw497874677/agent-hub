@@ -127,6 +127,16 @@ export interface WorkerLinkOptions {
   readonly resources?: ResourceProbe;
   /** 资源上报间隔，默认 15 秒。 */
   readonly metricsIntervalMs?: number;
+  /**
+   * 回合结束后保活（CAP keep-alive）：进程闲置这么久（最后一次事件 / 最后一次 prompt 起算）就收掉，
+   * 并报 `status:'ended'`。默认 15 分钟（900_000）；<= 0 = 不按空闲回收。
+   */
+  readonly sessionIdleMs?: number;
+  /**
+   * 每台 worker 同时保活的进程上限（默认 8）。新会话起来后超过上限，先收最久没活动的那个，
+   * 同样报 `status:'ended'`。
+   */
+  readonly keepAliveMax?: number;
   /** 套件清单采集（ADR 0021 §7）：连上时、运行时任务结束后、每 `inventoryIntervalMs` 报一次。不给 = 不报。 */
   readonly inventory?: () => WorkerInventory;
   /** 默认 6 小时。 */
@@ -168,6 +178,18 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const sessions = new Map<string, RuntimeSession>();
   /** 会话的工作目录：解析产出物的相对路径用。 */
   const workspaces = new Map<string, string>();
+  /** 每条活进程的 agentId：同 id 再次 start 时判断能不能直接复用。 */
+  const sessionAgents = new Map<string, string>();
+  /** 活进程拿到的 provider 中转身份（slug|baseUrl|token）：换了就不能复用旧进程。 */
+  const sessionProviders = new Map<string, string>();
+  /** 最后一次活动（收到事件 / 收到 prompt）的时间，空闲回收与上限回收都按它排序。 */
+  const lastActivity = new Map<string, number>();
+  const idleTimers = new Map<string, NodeJS.Timeout>();
+  /** 正在跑一轮的会话：这期间不算空闲，prompt 收尾后再起算。 */
+  const prompting = new Set<string>();
+  /** 保活参数（ADR：回合结束 ≠ 进程结束）。 */
+  const SESSION_IDLE_MS = options.sessionIdleMs ?? 900_000;
+  const KEEPALIVE_MAX = options.keepAliveMax ?? 8;
   /**
    * 每条会话一条串行队列。server 会连着发 start_session + prompt，
    * 而 start 是异步的（要拉起 agent 进程）——不排队的话 prompt 会先到，
@@ -683,6 +705,62 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   }
 
+  /**
+   * 保活（回合结束 ≠ 进程结束）：每个事件 / 每句 prompt 都算一次活动，重置空闲计时。
+   * 到点由 `retire` 收掉进程并报 `status:'ended'`。
+   */
+  function touch(sessionId: string): void {
+    lastActivity.set(sessionId, Date.now());
+    const existing = idleTimers.get(sessionId);
+    if (existing) clearTimeout(existing);
+    idleTimers.delete(sessionId);
+    // 正在跑一轮：这期间不算空闲（prompt 收尾时会重新起算）
+    if (prompting.has(sessionId)) return;
+    if (!(SESSION_IDLE_MS > 0) || !sessions.has(sessionId)) return;
+    const timer = setTimeout(() => void retire(sessionId, `${Math.round(SESSION_IDLE_MS / 1000)} 秒没有活动`), SESSION_IDLE_MS);
+    timer.unref?.();
+    idleTimers.set(sessionId, timer);
+  }
+
+  /** 清掉这条会话的活动记录与计时器（进程已经交出去 / 已经收掉）。 */
+  function forget(sessionId: string): void {
+    const timer = idleTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    idleTimers.delete(sessionId);
+    lastActivity.delete(sessionId);
+    sessionAgents.delete(sessionId);
+    sessionProviders.delete(sessionId);
+  }
+
+  /**
+   * 真正收掉一条会话的进程：先把它从 `sessions` 里摘掉，事件循环的 finally 看到「已经不是它」
+   * 就不会再报一遍 ended；然后关终端 / 关 provider 中转 / 报 `status:'ended'` / dispose。
+   */
+  async function retire(sessionId: string, reason: string): Promise<void> {
+    const session = sessions.get(sessionId);
+    if (!session) return;
+    sessions.delete(sessionId);
+    workspaces.delete(sessionId);
+    forget(sessionId);
+    await closeTerminals(sessionId);
+    send({ type: 'status', sessionId, status: 'ended', reason });
+    providerRelay.close(sessionId);
+    options.onLog?.(`会话 ${sessionId} 回收：${reason}`);
+    await session.dispose().catch(() => undefined);
+  }
+
+  /** 保活上限：超过 `KEEPALIVE_MAX` 时按最久没活动先收（`protect` = 刚起来的这条）。 */
+  async function trimKeepAlive(protect: string): Promise<void> {
+    if (!(KEEPALIVE_MAX > 0)) return;
+    while (sessions.size > KEEPALIVE_MAX) {
+      const victim = [...sessions.keys()]
+        .filter((id) => id !== protect)
+        .sort((left, right) => (lastActivity.get(left) ?? 0) - (lastActivity.get(right) ?? 0))[0];
+      if (!victim) return;
+      await retire(victim, `超过保活上限（${KEEPALIVE_MAX} 个进程）`);
+    }
+  }
+
   /** 产出物大小只有这台机器量得到：相对路径按会话的工作目录解析。 */
   async function withBytes(sessionId: string, event: SessionEvent): Promise<SessionEvent> {
     if (event.kind !== 'artifact' || !options.files) return event;
@@ -711,6 +789,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         event: { kind: 'ended', outcome: 'failed', reason: `${command.kind} 失败：${reason}` }
       });
       sessions.delete(command.sessionId);
+      workspaces.delete(command.sessionId);
+      forget(command.sessionId);
       await closeTerminals(command.sessionId);
     }
   }
@@ -749,19 +829,27 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         if (seenDeliveries.size > 1000) seenDeliveries.delete(seenDeliveries.values().next().value as string);
       }
       await persistParts(command.parts);
-      const result = await session.prompt({ text: command.text, parts: command.parts });
-      if (!result.ok) {
-        send({
-          type: 'event',
-          sessionId,
-          event: { kind: 'diagnostic', level: 'error', text: result.error.message }
-        });
-        // 只报诊断的话这一轮永远不收尾：界面一直挂着「运行中」。补一条 ended，进程留着，下一句照常能发。
-        send({
-          type: 'event',
-          sessionId,
-          event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` }
-        });
+      prompting.add(sessionId);
+      touch(sessionId);
+      try {
+        const result = await session.prompt({ text: command.text, parts: command.parts });
+        if (!result.ok) {
+          send({
+            type: 'event',
+            sessionId,
+            event: { kind: 'diagnostic', level: 'error', text: result.error.message }
+          });
+          // 只报诊断的话这一轮永远不收尾：界面一直挂着「运行中」。补一条 ended，进程留着，下一句照常能发。
+          send({
+            type: 'event',
+            sessionId,
+            event: { kind: 'ended', outcome: 'failed', reason: `发送失败：${result.error.message}` }
+          });
+        }
+      } finally {
+        prompting.delete(sessionId);
+        // 这一轮结束了：空闲从此刻起算（事件循环收到 ended 时也会再刷新一次）
+        touch(sessionId);
       }
       return;
     }
@@ -804,6 +892,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
     await session.dispose();
     sessions.delete(sessionId);
+    workspaces.delete(sessionId);
+    forget(sessionId);
     providerRelay.close(sessionId);
     await closeTerminals(sessionId);
   }
@@ -862,12 +952,33 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     const assets = await options.assets?.current(command.assetIds ? new Set(command.assetIds) : undefined).catch(() => undefined);
     if (assets) spec = { ...spec, assets };
 
-    // 同一会话又来一次 start（比如断线后 server 重新托管）：先收掉旧的那份 agent。
-    // 否则旧进程成了孤儿，它结束时还会把新会话的托管和工具令牌一起带走。
+    // 同一会话又来一次 start（比如断线后 server 重新托管）：进程还活着、agent 和工作目录都没变，
+    // 就直接复用——不能 spawn 第二个进程抢同一份会话文件。复用不了（分叉 / 换了 agent 或目录）
+    // 才收掉旧的；被顶替的旧进程结束时不许给新会话报 ended（见事件循环的 finally）。
     const previous = sessions.get(command.sessionId);
     if (previous) {
+      const providerKey = spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '';
+      const reusable = !spec.branch && sessionAgents.get(command.sessionId) === command.agentId
+        && workspaces.get(command.sessionId) === command.workspaceRoot
+        && sessionProviders.get(command.sessionId) === providerKey;
+      if (reusable) {
+        // 复用也要把这次 start 带来的选项（模型等）落上去，别沿用进程里上一轮的
+        for (const [optionId, value] of Object.entries(spec.options ?? {})) {
+          const changed = await previous.changeOption(optionId, value).catch(() => null);
+          if (changed && !changed.ok) options.onLog?.(`复用会话 ${command.sessionId} 时选项 ${optionId} 没落上：${changed.error.message}`);
+          else if (changed) send({ type: 'options', sessionId: command.sessionId, options: [...changed.value] });
+        }
+        touch(command.sessionId);
+        send({
+          type: 'status',
+          sessionId: command.sessionId,
+          status: 'running'
+        });
+        return;
+      }
       sessions.delete(command.sessionId);
       workspaces.delete(command.sessionId);
+      forget(command.sessionId);
       await previous.dispose().catch(() => {});
     }
 
@@ -904,25 +1015,37 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     const session = started.value;
     sessions.set(command.sessionId, session);
     workspaces.set(command.sessionId, command.workspaceRoot);
+    sessionAgents.set(command.sessionId, command.agentId);
+    sessionProviders.set(command.sessionId, spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '');
     send({
       type: 'status',
       sessionId: command.sessionId,
       status: 'running'
     });
+    // 保活上限：新进程起来后如果超了，先收最久没活动的那个（同样报 ended）。
+    await trimKeepAlive(command.sessionId);
+    // 空闲计时从现在起算；之后每个事件 / 每句 prompt 都刷新。
+    touch(command.sessionId);
 
     void (async () => {
       try {
         for await (const event of session.events()) {
+          if (sessions.get(command.sessionId) === session) touch(command.sessionId);
           const enriched = await withBytes(command.sessionId, event);
           send({ type: 'event', sessionId: command.sessionId, event: enriched as SessionEventDto });
-          if (event.kind === 'ended') break;
+          // ended 只是**这一轮**结束：进程留着（保活），下一句 prompt 直接发，只告诉 hub 它还活着。
+          // 真结束（进程退出 / dispose_session / 空闲回收）才发 status:'ended'。
+          if (event.kind === 'ended' && sessions.get(command.sessionId) === session) {
+            send({ type: 'status', sessionId: command.sessionId, status: 'idle' });
+          }
         }
       } finally {
-        // 已被同 id 的新 start 顶掉：新的那份才是这条会话，旧的不许再报 ended
+        // 已被同 id 的新 start 顶掉 / 已被回收：新的那份才是这条会话，旧的不许再报 ended
         // （否则 server 会撤掉新会话的托管和刚签的工具令牌）；dispose 由顶替方做过了。
         if (sessions.get(command.sessionId) === session) {
           sessions.delete(command.sessionId);
           workspaces.delete(command.sessionId);
+          forget(command.sessionId);
           await closeTerminals(command.sessionId);
           // 必须报「结束了」：不报的话 server 会一直以为这条会话还有人托管，
           // 下次提问就不再拉起 agent，只把 prompt 发给一个不存在的会话。
@@ -975,8 +1098,15 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await mcpEndpoint.close();
       await providerRelay.stop();
       await options.terminal?.disposeAll().catch((error: unknown) => options.onLog?.(`回收终端失败：${message(error)}`));
+      for (const timer of idleTimers.values()) clearTimeout(timer);
+      idleTimers.clear();
       for (const session of sessions.values()) await session.dispose();
       sessions.clear();
+      workspaces.clear();
+      sessionAgents.clear();
+      sessionProviders.clear();
+      lastActivity.clear();
+      prompting.clear();
       if (socket) socket.close();
       else options.onClose?.();
     }

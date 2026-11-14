@@ -384,10 +384,6 @@ const connectorHub = createConnectorHub({
 });
 connectorHub.start();
 setInterval(() => void connectorHub.tick().catch((error: unknown) => log(`连接器重试失败：${String(error)}`)), 15_000).unref();
-hub.stream.subscribe((frame) => {
-  const event = frame.event;
-  if (event?.kind === 'ended') void connectorHub.turnEnded(frame.sessionId, event.outcome).catch(() => undefined);
-});
 // 调度器（ADR 0032 R3）：task.create 建出的任务排队 → 按上限开任务智能体会话 → 一轮结束经送达队列通知建它的 bot。
 // 只经端口：开会话 / 发消息复用现有派生 + 送达流程；人直接开的会话不经过这里。
 const sessionOwner = (ownerId: string) => loadActor(store.users, store.access, ownerId, 'agent-dispatch');
@@ -454,18 +450,6 @@ const enqueueDispatch = async (r: AgentTaskRequest) => {
   void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`));
 };
 setInterval(() => void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`)), 10_000).unref();
-hub.stream.subscribe((frame) => {
-  if (frame.event?.kind === 'ended') void dispatcher.sessionEnded(frame.sessionId).catch(() => undefined);
-});
-// 回合结束：先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
-hub.stream.subscribe((frame) => {
-  const event = frame.event;
-  if (event?.kind !== 'ended') return;
-  void (async () => {
-    await messageBus.turnEnded(frame.sessionId, event.outcome).catch((error: unknown) => log(`agent 消息回合收尾失败：${String(error)}`));
-    await groupChat.turnEnded(frame.sessionId).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
-  })();
-});
 const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit, gateway: deps.gateway,
   // 角色层（ADR 0020 §8）：派生出来的角色会话 → 角色；否则群里的成员 → 角色
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId as SessionId))?.role ?? (await store.groups.memberOfSession(sessionId as SessionId))?.role ?? null,
@@ -482,14 +466,26 @@ const filesService = createWorkspaceFilesService({
   now: () => Date.now()
 });
 const rewindService = createRewindService({ ...deps, files: filesService, turnRefs: store.turnRefs });
-// 回合结束后拍「之后」那张（ADR 0027 D2）；保留期清理每小时一次（D1）
+type TurnOutcome = 'done' | 'stopped' | 'interrupted' | 'failed';
+/**
+ * 一轮结束的收尾。回合结束（event `ended`）与进程保活（status `idle`）都会到这里：
+ * 各钩子自己幂等（开放的投递 / 未收尾的检查点处理过一次就空转），重复调用无害。
+ */
+const turnFinished = (sessionId: SessionId, outcome: TurnOutcome): void => {
+  void connectorHub.turnEnded(sessionId, outcome).catch(() => undefined);
+  void dispatcher.sessionEnded(sessionId).catch(() => undefined);
+  // 先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
+  void (async () => {
+    await messageBus.turnEnded(sessionId, outcome).catch((error: unknown) => log(`agent 消息回合收尾失败：${String(error)}`));
+    await groupChat.turnEnded(sessionId).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
+  })();
+  // 回合结束后拍「之后」那张（ADR 0027 D2）
+  void filesService.endTurn(sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
+  // 等上一轮的那条消息（人在定时触发跑着时发的话等）马上送，不等下一次泵
+  void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, sessionId).catch((error: unknown) => log(`送达队列收尾失败：${String(error)}`));
+};
 hub.stream.subscribe((frame) => {
-  if (frame.event?.kind === 'ended') void filesService.endTurn(frame.sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
-});
-// 回合结束：等上一轮的那条消息（人在定时触发跑着时发的话等）马上送，不等下一次泵
-hub.stream.subscribe((frame) => {
-  if (frame.event?.kind !== 'ended') return;
-  void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, frame.sessionId).catch((error: unknown) => log(`送达队列收尾失败：${String(error)}`));
+  if (frame.event?.kind === 'ended') turnFinished(frame.sessionId, frame.event.outcome);
 });
 // 送达队列（ADR 0031 D2）：重启时把上次停在「发送中」的退回排队，之后每秒泵一次
 void store.deliveries.recoverSending(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条上次没送完，重新排队`));
@@ -842,11 +838,8 @@ serverGateway = createServerGateway({
   },
   // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 里。
   onEvent(workerId, sessionId, event) {
-    // 会话真的结束了：收掉 direct 会话登记和 hub 中转句柄（dispose 帧不是每条会话都会发）
-    if (event.kind === 'ended') {
-      providerWiring.revoke(sessionId);
-      terminalBridge?.closeSession(sessionId);
-    }
+    // 注意：`ended` 是**回合**事件（且进程会保活），不能在这里收 provider 句柄 / 终端；
+    // 那些等真正的进程结束（onStatus 的 'ended'）再做。
     fromWorker(workerId, sessionId, () =>
       void ingestWorkerEvent(deps, sessionId, event).then((result) => {
         if (!result.ok) log(`落盘事件失败：${result.error.message}`);
@@ -872,9 +865,24 @@ serverGateway = createServerGateway({
   },
   onStatus(workerId, sessionId, status) {
     fromWorker(workerId, sessionId, () => {
-      void ingestRuntimeStatus(deps, sessionId, status);
-      // 一轮结束/进程消失都不回收工具令牌：ACP 进程只在 session/new|load 时拿到
-      // MCP Authorization，后续 prompt 无法热换 token。授权随会话保留，dispose 时再作废。
+      void (async () => {
+        await ingestRuntimeStatus(deps, sessionId, status);
+        // idle / ended 都意味着「这一轮结束了」：补一遍回合收尾（幂等）。
+        // idle 时进程还活着、托管不撤；ended 才是真结束，额外撤 provider 句柄与终端。
+        if (status === 'idle' || status === 'ended') {
+          // 事件帧和状态帧是两条路：这里先排一次这条会话的队，等已经到达的 ended 事件落盘，
+          // 再照库里的结果补一遍收尾——否则可能把正常回合判成 failed。
+          await deps.queue.run(sessionId, async () => undefined);
+          const session = await deps.sessions.byId(sessionId);
+          turnFinished(sessionId, session?.status === 'done' ? 'done' : 'failed');
+        }
+        if (status === 'ended') {
+          providerWiring.revoke(sessionId);
+          terminalBridge?.closeSession(sessionId);
+        }
+        // 一轮结束/进程消失都不回收工具令牌：ACP 进程只在 session/new|load 时拿到
+        // MCP Authorization，后续 prompt 无法热换 token。授权随会话保留，dispose 时再作废。
+      })();
     });
   },
   onWorkerGone(workerId, reason) {

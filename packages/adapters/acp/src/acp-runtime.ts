@@ -64,6 +64,8 @@ class AcpSession implements RuntimeSession {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly config: AcpAgentConfig;
   private readonly onOptions: (options: readonly RuntimeOption[]) => void;
+  /** true（默认）：一轮结束只推 ended 事件，进程与事件队列都留着，下一句 prompt 直接复用。 */
+  private readonly keepAlive: boolean;
 
   pid(): number | null {
     return this.child.pid ?? null;
@@ -73,12 +75,14 @@ class AcpSession implements RuntimeSession {
     sessionId: RuntimeSession['sessionId'],
     child: ChildProcessWithoutNullStreams,
     config: AcpAgentConfig,
-    onOptions: (options: readonly RuntimeOption[]) => void
+    onOptions: (options: readonly RuntimeOption[]) => void,
+    keepAlive = true
   ) {
     this.sessionId = sessionId;
     this.child = child;
     this.config = config;
     this.onOptions = onOptions;
+    this.keepAlive = keepAlive;
     this.codec = config.codec?.session() ?? null;
     // 一定要读 stderr：不读会写满管道把 agent 卡住；最后几行留着给空回合当线索（已脱敏）。
     child.stderr.setEncoding('utf8');
@@ -396,7 +400,11 @@ class AcpSession implements RuntimeSession {
       if (!this.produced) await new Promise((resolve) => setTimeout(resolve, 200));
       if (this.lastMessageId) this.onTurnRef?.(this.lastMessageId);
       this.finishCodec('completed');
+      // ended 是**回合**事件：提示这一轮完了，不是进程完了。
       this.queue.push(endedFromStopReason(result['stopReason'], { produced: this.produced, stderrTail: this.produced ? [] : this.stderr.tail() }));
+      // 保活（默认）：队列不关，后续 session/update（比如后台子代理的进展）继续产出事件。
+      // dispose() 仍是唯一真正关闭的路径；要回到「一轮一个进程」的老行为才传 keepAlive: false。
+      if (!this.keepAlive) this.queue.close();
       return { ok: true, value: undefined };
     } catch (error) {
       return { ok: false, error: unavailable((error as Error).message) };
@@ -428,6 +436,11 @@ class AcpSession implements RuntimeSession {
 export interface AcpRuntimeOptions {
   /** 覆盖默认能力矩阵（例如 Grok 的模型清单在启动前就问得出来）。 */
   readonly descriptor?: AgentDescriptor;
+  /**
+   * 回合结束后保留进程（默认 true）：ended 只是回合事件，事件队列不关，
+   * 后台子代理这类跨回合的 session/update 还能推上来；dispose() 仍是唯一真正关闭的路径。
+   */
+  readonly keepAlive?: boolean;
   readonly onAgentSessionRef?: (sessionId: string, agentSessionRef: string) => void;
   /** agent 报上来的可调项（含当前值），worker 用它告诉 server。 */
   readonly onOptions?: (sessionId: string, options: readonly RuntimeOption[]) => void;
@@ -464,7 +477,7 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
 
       const session = new AcpSession(spec.sessionId, child, config, (reported) => {
         options.onOptions?.(spec.sessionId, reported);
-      });
+      }, options.keepAlive ?? true);
       session.tools = spec.tools;
       session.mcp = spec.mcp;
       session.toolShim = options.toolShim;

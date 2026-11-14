@@ -154,6 +154,16 @@ createInterface({ input: process.stdin }).on('line', (line) => {
         say(msg.params.sessionId, '写了一半');
         return send({ id: msg.id, result: { stopReason: 'max_tokens' } });
       }
+      // please-late：先 end_turn（这一轮结束），再延迟推一条 update —— 用来验证回合结束后
+      // 进程仍活着、后续 session/update 还能映射成事件（保活）。延迟要超过 prompt 收尾时
+      // 等 stderr 的 200ms，才真的落在 ended 之后。
+      if (all.includes('please-late')) {
+        const lateSessionId = msg.params.sessionId;
+        say(lateSessionId, 'late:先回一句');
+        send({ id: msg.id, result: { stopReason: 'end_turn' } });
+        setTimeout(() => say(lateSessionId, 'late:我还在'), 600);
+        return;
+      }
       if (text.includes('OK')) {
         say(msg.params.sessionId, 'OK');
         return send({ id: msg.id, result: { stopReason: 'end_turn' } });

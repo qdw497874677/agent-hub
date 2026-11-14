@@ -308,10 +308,11 @@ export function ingestAgentSessionRef(
   });
 }
 
-export type RuntimeStatus = 'running' | 'ended' | 'gone';
+/** `idle` = 这一轮结束了，进程还活着（保活），托管不撤。 */
+export type RuntimeStatus = 'running' | 'idle' | 'ended' | 'gone';
 
 /**
- * worker 报运行状态。跑完 / 消失就不再算托管；状态也要推给界面：
+ * worker 报运行状态。只有真结束（ended / gone）才不再算托管；状态也要推给界面：
  * 从「发出提问」到「agent 说出第一个字」之间可能十几秒，界面不能还挂着上一次的「完成」。
  */
 export async function ingestRuntimeStatus(
@@ -319,10 +320,11 @@ export async function ingestRuntimeStatus(
   sessionId: SessionId,
   status: RuntimeStatus
 ): Promise<void> {
-  if (status !== 'running') deps.hosting.drop(sessionId);
+  if (status === 'ended' || status === 'gone') deps.hosting.drop(sessionId);
   const session = await deps.sessions.byId(sessionId);
   if (!session) return;
-  // worker 只说 running / ended；除了 running，其余以库里已落盘的状态为准。
+  // worker 说 running / idle / ended / gone；除了 running，其余以库里已落盘的状态为准
+  // （idle 是回合结束了，会话状态语义仍是 done / running，不外泄成新的状态）。
   const next = status === 'running' ? 'running' : session.status;
   deps.stream.publish({ sessionId, seq: session.lastSeq, event: null, status: next });
 }

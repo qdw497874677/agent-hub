@@ -385,6 +385,9 @@ const positiveInt = (raw: string | undefined): number | undefined => {
 };
 const terminalMax = positiveInt(env['TERMINAL_MAX']);
 const terminalLingerMs = positiveInt(env['TERMINAL_LINGER_MS']);
+/** 回合结束后保活：空闲多久收掉进程（默认 15 分钟）、每台机器最多保活几个进程（默认 8）。 */
+const sessionIdleMs = positiveInt(env['HUB_SESSION_IDLE_MS']);
+const keepAliveMax = positiveInt(env['HUB_KEEPALIVE_MAX']);
 const terminal = createTerminalHost({
   shell: terminalShell(),
   ...(terminalMax !== undefined ? { max: terminalMax } : {}),
@@ -447,6 +450,8 @@ const link = connectWorkerLink({
   provisioner,
   ...(resources ? { resources } : {}),
   ...(metricsIntervalMs ? { metricsIntervalMs } : {}),
+  ...(sessionIdleMs !== undefined ? { sessionIdleMs } : {}),
+  ...(keepAliveMax !== undefined ? { keepAliveMax } : {}),
   onAccepted: markHealthySoon,
   ...(trial
     ? {

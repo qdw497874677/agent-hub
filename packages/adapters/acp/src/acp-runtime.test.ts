@@ -90,6 +90,56 @@ test('acp runtime: 恢复时丢掉回放、权限请求自动选 allow、dispose
   assert.deepEqual((await rest).at(-1), { kind: 'ended', outcome: 'stopped' });
 });
 
+test('acp runtime: 回合结束后进程保活，后续 update 仍产出事件，dispose 才真关闭', async (t) => {
+  const runtime = createAcpRuntime(config);
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  const session = started.value;
+  const events = session.events()[Symbol.asyncIterator]();
+
+  assert.ok((await session.prompt({ text: 'please-late', parts: [] })).ok);
+  // 先把这一轮读到底：最后一条是回合事件 ended
+  const seen: SessionEvent[] = [];
+  while (seen.at(-1)?.kind !== 'ended') {
+    const next = await events.next();
+    assert.ok(!next.done, '回合结束后队列不该关');
+    seen.push(next.value);
+  }
+  assert.deepEqual(seen.at(-1), { kind: 'ended', outcome: 'done' });
+  assert.ok(seen.some((event) => event.kind === 'text' && event.delta === 'late:先回一句'));
+
+  // 回合结束后进程还活着：迟到的 session/update 继续映射成事件
+  const late = await events.next();
+  assert.ok(!late.done, '保活时队列还开着');
+  assert.equal(late.value.kind === 'text' ? late.value.delta : null, 'late:我还在');
+
+  // dispose 是唯一真正关闭的路径：报 stopped，之后队列结束
+  const stopped = events.next();
+  await session.dispose();
+  const tail = await stopped;
+  assert.ok(!tail.done);
+  assert.deepEqual(tail.value, { kind: 'ended', outcome: 'stopped' });
+  assert.equal((await events.next()).done, true, 'dispose 之后不再产出事件');
+});
+
+test('acp runtime: keepAlive=false 时回合结束就关队列（老行为）', async (t) => {
+  const runtime = createAcpRuntime(config, { keepAlive: false });
+  const started = await runtime.start(await spec(t));
+  assert.ok(started.ok);
+  const session = started.value;
+  const events = session.events()[Symbol.asyncIterator]();
+
+  assert.ok((await session.prompt({ text: 'hi', parts: [] })).ok);
+  const seen: SessionEvent[] = [];
+  while (seen.at(-1)?.kind !== 'ended') {
+    const next = await events.next();
+    assert.ok(!next.done);
+    seen.push(next.value);
+  }
+  assert.equal((await events.next()).done, true, '回合结束就关队列');
+  await session.dispose();
+});
+
 test('acp runtime: 命令不存在时返回 unavailable，不崩', async (t) => {
   const runtime = createAcpRuntime({ ...config, command: '/nonexistent/agent' });
   const started = await runtime.start(await spec(t));
