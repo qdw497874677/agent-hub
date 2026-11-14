@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { OpenCodeSessionCodec, readSubagentMeta } from './opencode.ts';
+import { OpenCodeSessionCodec, readSubagentMeta, subagentEndFromToolContent } from './opencode.ts';
 
 const toolNames = new Map<string, string>();
 const childMeta = (id = 'c1', parentID = 'p1') => ({
@@ -87,6 +87,66 @@ test('OpenCode codec：父 subagent 工具完成时发 end', () => {
     status: 'completed'
   });
   assert.equal(done?.events[1]?.kind, 'tool_result');
+});
+
+test('OpenCode codec：父工具先返回时不能替后台子代理收尾', () => {
+  const codec = new OpenCodeSessionCodec();
+  codec.decode({
+    update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'subagent', rawInput: { agent: 'explorer' } },
+    meta: undefined,
+    toolNames
+  });
+  codec.decode({
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working' } },
+    meta: childMeta(),
+    toolNames
+  });
+
+  // 后台 task：父工具先完成，内容里没有 <subagent state="completed">，子代理还在跑。
+  const early = codec.decode({
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 't1',
+      status: 'completed',
+      content: [{ type: 'text', text: 'task dispatched' }]
+    },
+    meta: undefined,
+    toolNames
+  });
+  assert.deepEqual(early?.events.map((event) => event.kind), ['tool_result']);
+
+  // 之后子代理自己的事件照样折进来。
+  const later = codec.childUpdate(
+    {
+      rootSessionId: 's1',
+      childSessionId: 'c1',
+      parentSessionId: 'p1',
+      depth: 1,
+      title: 'child',
+      type: 'update',
+      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'child-done' } }
+    },
+    toolNames
+  );
+  assert.deepEqual(later, [{ kind: 'text', delta: 'child-done', subagentId: 'c1' }]);
+
+  // 子代理真正结束时才发 end。
+  const end = codec.childUpdate(
+    { rootSessionId: 's1', childSessionId: 'c1', parentSessionId: 'p1', depth: 1, title: 'child', type: 'status', status: 'completed' },
+    toolNames
+  );
+  assert.deepEqual(end, [
+    { kind: 'subagent', phase: 'end', id: 'c1', parentId: 'p1', depth: 1, title: 'child', agent: 'explorer', status: 'completed' }
+  ]);
+});
+
+test('subagentEndFromToolContent：只有终态才算子代理结束', () => {
+  const wrap = (attrs: string) => [{ type: 'text', text: `<subagent ${attrs}>...</subagent>` }];
+  assert.equal(subagentEndFromToolContent(wrap('sessionID="c1" state="running"')), null);
+  assert.equal(subagentEndFromToolContent(wrap('sessionID="c1"')), null);
+  assert.deepEqual(subagentEndFromToolContent(wrap('sessionID="c1" state="completed"')), { id: 'c1', failed: false });
+  assert.deepEqual(subagentEndFromToolContent(wrap('sessionID="c1" state="error"')), { id: 'c1', failed: true });
+  assert.equal(subagentEndFromToolContent([]), null);
 });
 
 test('OpenCode codec：finish 收尾未结束的子代理', () => {

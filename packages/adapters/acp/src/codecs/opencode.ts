@@ -28,14 +28,32 @@ export function readSubagentMeta(meta: unknown): AcpSubagentMeta | null {
   };
 }
 
-/** 父工具的完成内容里会带 `<subagent sessionID="…" state="completed">`；这是子代理结束的权威信号。 */
-export function subagentIdFromToolContent(content: unknown): string | null {
+export interface SubagentToolEnd {
+  readonly id: string;
+  readonly failed: boolean;
+}
+
+const SUBAGENT_END_STATES = new Set(['completed', 'failed', 'error', 'aborted']);
+
+/**
+ * 父工具内容里的 `<subagent sessionID="…" state="…">`。
+ *
+ * 只有 `state` 是终态才算子代理结束：后台 task 的父工具在派发时就返回，
+ * 同一个标签那时也可能是 `state="running"`，不能一见 sessionID 就收尾。
+ */
+export function subagentEndFromToolContent(content: unknown): SubagentToolEnd | null {
   if (!Array.isArray(content)) return null;
   for (const item of content) {
     const block = item as Record<string, unknown> | null;
     if (block?.['type'] !== 'text' || typeof block['text'] !== 'string') continue;
-    const match = /<subagent\b[^>]*\bsessionID="([^"]+)"/.exec(block['text']);
-    if (match?.[1]) return match[1];
+    for (const match of block['text'].matchAll(/<subagent\b([^>]*)>/g)) {
+      const attrs = match[1] ?? '';
+      const id = /\bsessionID="([^"]+)"/.exec(attrs)?.[1];
+      if (!id) continue;
+      const state = /\bstate="([^"]+)"/.exec(attrs)?.[1];
+      if (!state || !SUBAGENT_END_STATES.has(state)) continue;
+      return { id, failed: state !== 'completed' };
+    }
   }
   return null;
 }
@@ -148,8 +166,11 @@ export class OpenCodeSessionCodec implements AcpSessionCodec {
     }
     const status = update['status'];
     if (status !== 'completed' && status !== 'failed') return [];
-    const childId = subagentIdFromToolContent(update['content']) ?? this.activeSubagent?.childId;
-    const end = childId ? this.endSubagent(childId, status === 'completed' ? 'completed' : 'failed') : null;
+    // 只认「父工具内容里写着终态 state」这一个权威信号。
+    // 不能用 activeSubagent.childId 兜底：后台 task 那一轮父工具会先返回、子代理还在跑，
+    // 兜底会把子代理提前标成结束，之后的事件就只能挂在一个已完成的组下面。
+    const ended = subagentEndFromToolContent(update['content']);
+    const end = ended ? this.endSubagent(ended.id, ended.failed ? 'failed' : 'completed') : null;
     if (this.activeSubagent?.toolCallId === toolCallId) this.activeSubagent = null;
     return end ? [end] : [];
   }

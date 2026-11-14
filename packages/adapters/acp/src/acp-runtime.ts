@@ -399,7 +399,9 @@ class AcpSession implements RuntimeSession {
       // 空回合时 agent 往往刚在 stderr 上写了原因：等一小会儿让管道里的那几行到齐
       if (!this.produced) await new Promise((resolve) => setTimeout(resolve, 200));
       if (this.lastMessageId) this.onTurnRef?.(this.lastMessageId);
-      this.finishCodec('completed');
+      // 保活时不要在这一轮收尾 codec：子代理可能还在跑（后台 task），
+      // 让它们的 end 由真实信号（child_update 终态 / 父工具终态内容）决定。
+      if (!this.keepAlive) this.finishCodec('completed');
       // ended 是**回合**事件：提示这一轮完了，不是进程完了。
       this.queue.push(endedFromStopReason(result['stopReason'], { produced: this.produced, stderrTail: this.produced ? [] : this.stderr.tail() }));
       // 保活（默认）：队列不关，后续 session/update（比如后台子代理的进展）继续产出事件。
