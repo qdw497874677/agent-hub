@@ -42,8 +42,8 @@ export interface WorkspaceFilesDeps {
   readonly now: () => number;
 }
 
-/** session：会话开始时的 HEAD → 工作区；head：当前 HEAD → 工作区；turn：某一轮开始前 → 这一轮结束后（没结束 = 工作区）。 */
-export type DiffBase = 'session' | 'head' | 'turn';
+/** session：会话开始时的 HEAD → 工作区；head：当前 HEAD → 工作区；turn：某一轮开始前 → 这一轮结束后（没结束 = 工作区）；branch：默认分支的 merge-base → 工作区（只算这条分支自己的改动）。 */
+export type DiffBase = 'session' | 'head' | 'turn' | 'branch';
 
 export interface FilesContextMember {
   readonly workspaceId: string;
@@ -171,9 +171,15 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
     return ok(undefined);
   }
 
-  async function rangeFor(found: Located, base: DiffBase, turn?: number): Promise<Result<{ base: string | null; target: string | null; turn: TurnCheckpoint | null }, DomainError>> {
+  async function rangeFor(found: Located, base: DiffBase, turn?: number): Promise<Result<{ base: string | null; target: string | null; turn: TurnCheckpoint | null; branch?: string | null }, DomainError>> {
     if (base === 'head') return ok({ base: null, target: null, turn: null });
     if (base === 'session') return ok({ base: await deps.bases.get(baseKey(found)), target: null, turn: null });
+    if (base === 'branch') {
+      // 「相对它长出来的地方」：默认分支的 merge-base，不是默认分支的最新提交。
+      const info = await found.browser.branchBase(found.root);
+      if (!info.ok) return info;
+      return ok({ base: info.value.commit, target: null, turn: null, branch: info.value.branch });
+    }
     const turns = deps.checkpoints ? await deps.checkpoints.list(found.session.id) : [];
     const picked = turn === undefined ? turns.at(-1) : turns.find((t) => t.turn === turn);
     if (!picked) return err(notFound(turns.length === 0 ? '这条会话还没有回合检查点' : '没有这一轮'));
@@ -263,15 +269,19 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       if (!hits.ok || found.value.location.group === null) return hits;
       return ok(hits.value.filter((path) => !insideAgentHub(path)));
     },
-    async changes(subject: Subject | null, sessionId: string, base: DiffBase, turn?: number, member?: string): Promise<Result<{ base: DiffBase; commit: string | null; target: string | null; turn: number | null; files: readonly ChangedFile[] }, DomainError>> {
+    async changes(subject: Subject | null, sessionId: string, base: DiffBase, turn?: number, member?: string): Promise<Result<{ base: DiffBase; commit: string | null; target: string | null; turn: number | null; branch?: string | null; files: readonly ChangedFile[] }, DomainError>> {
       const found = await locate(subject, sessionId, { member });
       if (!found.ok) return found;
       // 容器根不是 git 仓库：没选成员时没有「整体改动」，直接给空（前端按成员分别查）。
       if (found.value.container) return ok({ base, commit: null, target: null, turn: null, files: [] });
       const range = await rangeFor(found.value, base, turn);
       if (!range.ok) return range;
+      // 没有默认分支（或与 HEAD 无共同祖先）：空改动 + branch: null，让前端说「没有可对比的分支」而不是报错。
+      if (base === 'branch' && range.value.base === null) return ok({ base, commit: null, target: null, turn: null, branch: range.value.branch ?? null, files: [] });
       const files = await found.value.browser.changes(found.value.root, range.value.base, range.value.target);
-      return files.ok ? ok({ base, commit: range.value.base, target: range.value.target, turn: range.value.turn?.turn ?? null, files: files.value }) : files;
+      return files.ok
+        ? ok({ base, commit: range.value.base, target: range.value.target, turn: range.value.turn?.turn ?? null, ...(range.value.branch !== undefined ? { branch: range.value.branch } : {}), files: files.value })
+        : files;
     },
     async diff(subject: Subject | null, sessionId: string, path: string, base: DiffBase, turn?: number, member?: string): Promise<Result<FileDiff, DomainError>> {
       const bad = checkPath(path);
@@ -283,6 +293,8 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       if (isSensitivePath(path)) return err(invalid('敏感文件不显示 diff'));
       const range = await rangeFor(found.value, base, turn);
       if (!range.ok) return range;
+      // 没有可对比的默认分支：这个文件不属于任何分支改动，空 diff（和 changes 的空列表对上）。
+      if (base === 'branch' && range.value.base === null) return ok({ path, patch: '', truncated: false, binary: false });
       return found.value.browser.diff(found.value.root, path, range.value.base, FILES_LIMITS.diffBytes, range.value.target);
     },
     /** 这条会话的回合列表（新的在后）。 */

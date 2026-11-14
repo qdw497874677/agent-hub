@@ -65,6 +65,7 @@ function fakeBrowser(tag: string, calls: string[]): WorkspaceBrowser {
     dropRefs: async () => ok(0),
     restore: async (root, commit) => (calls.push(`${tag}:restore:${root}:${commit}`), ok({ safety: 'safe', restored: 1, removed: 0 })),
     head: async (root) => (calls.push(`${tag}:head:${root}`), ok(root === CONTAINER ? 'container' : 'member-head')),
+    branchBase: async (root) => (calls.push(`${tag}:branchBase:${root}`), ok({ branch: 'main', commit: 'merge-base' })),
     watch: async (root, paths) => (calls.push(`${tag}:watch:${root}:${paths.join(',')}`), ok(() => calls.push(`${tag}:unwatch`)))
   };
 }

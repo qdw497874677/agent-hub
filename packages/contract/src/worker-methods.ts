@@ -292,6 +292,13 @@ export const filesRestore = method(
 );
 export const filesHead = method('files.head', 'files.read', z.object({ root: z.string() }), z.object({ head: z.string().nullable() }));
 
+/** 「这条分支长出来的地方」：默认分支名 + 与 HEAD 的 merge-base；都没有 = 两个 null（不是错误）。 */
+export const filesBranchBase = method(
+  'files.branch_base', 'files.read',
+  z.object({ root: z.string() }),
+  z.object({ branch: z.string().nullable(), commit: z.string().nullable() })
+);
+
 /** 开始盯：watchId 由 hub 起，变化用 files.changed 回报。 */
 export const filesWatch = method(
   'files.watch', 'files.read',

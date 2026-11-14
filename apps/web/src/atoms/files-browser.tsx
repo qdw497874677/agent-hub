@@ -12,7 +12,7 @@ import 'diff2html/bundles/css/diff2html.min.css';
  * - 敏感文件默认藏起；打开要确认（服务端记审计）。被忽略的灰显但能展开；.git 不列。
  * - 不缓存（决定 8）：机器不在线就如实显示「机器离线」。
  */
-type Base = string; // 'session' | 'head' | 'turn' | 'turn:<n>'
+type Base = string; // 'session' | 'head' | 'branch' | 'turn' | 'turn:<n>'
 type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null };
 /** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
 export type Reveal = { path: string; line: number | null; nonce: number };
@@ -204,11 +204,19 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                   <select value={base} onChange={(e) => setBase(e.target.value as Base)} className="rounded bg-card px-1 py-0.5 text-sub text-secondary" data-testid="changes-base">
                     <option value="session">整个会话</option>
                     <option value="head">对比 HEAD</option>
+                    <option value="branch">对比分支起点</option>
                     {(turns.data?.length ?? 0) > 0 ? <option value="turn">本轮（第 {turns.data!.at(-1)!.turn} 轮）</option> : null}
                     {[...(turns.data ?? [])].reverse().slice(1).map((t) => (
                       <option key={t.turn} value={`turn:${t.turn}`}>第 {t.turn} 轮{t.files !== null ? ` · ${t.files} 个文件` : ''}</option>
                     ))}
                   </select>
+                  {base === 'branch' ? (
+                    changed?.branch === undefined || changed.branch === null ? (
+                      <span className="text-tertiary" data-testid="branch-none">这条会话没有可对比的分支</span>
+                    ) : (
+                      <span className="font-mono" data-testid="branch-base" title={changed.branch}>{changed.branch}</span>
+                    )
+                  ) : null}
                   {base.startsWith('turn') && changed?.target === null ? <span className="text-accent" data-testid="turn-live">进行中</span> : null}
                   {changed?.commit ? <span className="font-mono">{changed.commit.slice(0, 8)}</span> : null}
                 </div>

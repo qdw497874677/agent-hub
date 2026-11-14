@@ -58,6 +58,17 @@ export interface FileDiff {
   readonly binary: boolean;
 }
 
+/**
+ * 分支的「长出来的地方」：默认分支（origin/HEAD → origin/main → origin/master → main → master）
+ * 与 HEAD 的 merge-base。没有默认分支 / 不是 git 仓库 = 两个 null（不是错误）。
+ */
+export interface BranchBase {
+  /** 默认分支名（不带 origin/ 前缀）；找不到 = null。 */
+  readonly branch: string | null;
+  /** `git merge-base HEAD <默认分支>`；没有默认分支 / 无共同祖先 = null。 */
+  readonly commit: string | null;
+}
+
 /** 变化通知：paths 是变了的目录 / 文件（相对根）；reset = 连接断过，订阅要重开、全部刷新。 */
 export interface FileChangeNotice {
   readonly paths: readonly string[];
@@ -87,6 +98,11 @@ export interface WorkspaceBrowser {
   restore(root: string, commit: string, safetyRef: string): Promise<Result<RestoreOutcome, DomainError>>;
   /** 当前 HEAD 提交号；不是 git 仓库或还没提交是 null。 */
   head(root: string): Promise<Result<string | null, DomainError>>;
+  /**
+   * 「这条分支相对长出来的地方」的基准：默认分支和 HEAD 的 merge-base（不是默认分支的最新提交）。
+   * 没有默认分支 / 不是 git 仓库 = { branch: null, commit: null }，不是错误。
+   */
+  branchBase(root: string): Promise<Result<BranchBase, DomainError>>;
   /** 盯住这些相对路径（目录只看一层、文件看自己）；返回取消订阅。 */
   watch(root: string, paths: readonly string[], onChange: (notice: FileChangeNotice) => void): Promise<Result<() => void, DomainError>>;
 }

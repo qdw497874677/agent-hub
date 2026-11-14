@@ -11,12 +11,12 @@ import { fail } from './http-error.ts';
  * - GET /api/sessions/:id/files/content?path=&confirm=1   预览（≤1 MB，base64），敏感文件要 confirm 并记审计
  * - GET /api/sessions/:id/files/download?path=&confirm=1  下载单个文件（≤20 MB）
  * - GET /api/sessions/:id/files/find?q=             模糊找文件（≤50 条）
- * - GET /api/sessions/:id/git/changes?base=session|head
+ * - GET /api/sessions/:id/git/changes?base=session|head|turn|branch
  * - GET /api/sessions/:id/git/diff?path=&base=
  * - GET /api/sessions/:id/files/events?paths=a,b    SSE：这些目录 / 文件变了就推 {paths, reset?}
  * 会话可见性由 installAccess（session.read）把关，workspace.files.read 在用例里判。Worker 不在线 → 503，不缓存。
  */
-const baseOf = (raw: string | undefined) => (raw === 'head' ? 'head' : raw === 'turn' ? 'turn' : 'session');
+const baseOf = (raw: string | undefined) => (raw === 'head' ? 'head' : raw === 'turn' ? 'turn' : raw === 'branch' ? 'branch' : 'session');
 /** turn=n：第几轮；不给 = 最近一轮。 */
 const turnOf = (raw: string | undefined) => (raw && /^\d{1,6}$/.test(raw) ? Number(raw) : undefined);
 const noStore = { 'cache-control': 'no-store' };

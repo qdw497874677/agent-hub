@@ -125,6 +125,65 @@ test('changes / diff / head：相对会话开始的提交，未跟踪文件也�
   }
 });
 
+test('branchBase：只算这条分支自己的提交（merge-base，不含默认分支后来前进的部分）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wsb-branch-'));
+  try {
+    git(root, 'init', '-q', '-b', 'main');
+    await writeFile(join(root, 'base.txt'), 'base\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'init');
+    const fork = git(root, 'rev-parse', 'HEAD').toString().trim();
+    git(root, 'checkout', '-qb', 'feature');
+    await writeFile(join(root, 'feature.txt'), 'f\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'feature work');
+    git(root, 'checkout', '-q', 'main');
+    await writeFile(join(root, 'later.txt'), 'l\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'main moved on');
+    git(root, 'checkout', '-q', 'feature');
+    await writeFile(join(root, 'wip.txt'), 'w\n'); // 未跟踪也算
+    const b = createWorkspaceBrowser();
+    const base = await b.branchBase(root);
+    assert.ok(base.ok);
+    assert.equal(base.value.branch, 'main'); // 没有 origin，退到本地 main
+    assert.equal(base.value.commit, fork);
+    const files = await b.changes(root, base.value.commit);
+    assert.ok(files.ok);
+    assert.deepEqual(files.value.map((f) => [f.path, f.status]), [['feature.txt', 'added'], ['wip.txt', 'untracked']]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('branchBase：没有远端 / 本地默认分支时退化，不报错', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wsb-nobase-'));
+  try {
+    git(root, 'init', '-q', '-b', 'feature');
+    await writeFile(join(root, 'a.txt'), 'a\n');
+    git(root, 'add', '.');
+    git(root, 'commit', '-qm', 'only feature');
+    const b = createWorkspaceBrowser();
+    const r = await b.branchBase(root);
+    assert.ok(r.ok);
+    assert.deepEqual(r.value, { branch: null, commit: null });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('branchBase：非 git 目录返回空而不是错误', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'wsb-plain-'));
+  try {
+    const b = createWorkspaceBrowser();
+    const r = await b.branchBase(dir);
+    assert.ok(r.ok);
+    assert.deepEqual(r.value, { branch: null, commit: null });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('watch：防抖后报变化的目录，取消后不再报', async () => {
   const root = await repo();
   try {

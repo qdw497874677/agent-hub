@@ -23,6 +23,7 @@ import {
   filesDiff,
   filesFind,
   filesHead,
+  filesBranchBase,
   filesRestore,
   filesCheckpoint,
   filesDropRefs,
@@ -153,6 +154,7 @@ function serveWorkspaceBrowser(port: RpcPort, files: WorkerFiles | undefined): v
   port.handle(filesDropRefs, async ({ root, prefix }) => ({ dropped: unwrap(await need().dropRefs(root, prefix)) }));
   port.handle(filesRestore, async ({ root, commit, safetyRef }) => unwrap(await need().restore(root, commit, safetyRef)));
   port.handle(filesHead, async ({ root }) => ({ head: unwrap(await need().head(root)) }));
+  port.handle(filesBranchBase, async ({ root }) => unwrap(await need().branchBase(root)));
   port.handle(filesWatch, async ({ watchId, root, paths }) => {
     watches.get(watchId)?.();
     const stop = unwrap(

@@ -33,6 +33,7 @@ function fakeBrowser(tag: string, calls: string[]): WorkspaceBrowser {
     dropRefs: async (_root, prefix) => (calls.push(`${tag}:drop:${prefix.split('/').length}`), ok(2)),
     restore: async (_root, commit) => (calls.push(`${tag}:restore:${commit}`), ok({ safety: 'safe', restored: 1, removed: 0 })),
     head: async () => ok('abc1234'),
+    branchBase: async () => (calls.push(`${tag}:branchBase`), ok({ branch: 'main', commit: 'abc1234' })),
     watch: async (_root, paths) => (calls.push(`${tag}:watch:${paths.join(',')}`), ok(() => calls.push(`${tag}:unwatch`)))
   };
 }
@@ -120,6 +121,19 @@ test('diff 基准：session = 开始时记下的 HEAD（没记就 null=当前 HE
   assert.deepEqual(w.calls, ['local:changes:null', 'local:changes:abc1234', 'local:diff:a.ts:null']);
   const ctx = await w.svc.context(null, w.session.id);
   assert.ok(ctx.ok && ctx.value.sessionBase === 'abc1234' && ctx.value.root === '/tmp/demo');
+});
+
+test('branch 基准：用默认分支的 merge-base 比工作区，响应带上分支名', async () => {
+  const w = await world();
+  const got = await w.svc.changes(null, w.session.id, 'branch');
+  assert.ok(got.ok);
+  assert.equal(got.value.base, 'branch');
+  assert.equal(got.value.commit, 'abc1234');
+  assert.equal(got.value.branch, 'main');
+  assert.ok(w.calls.includes('local:branchBase'));
+  const d = await w.svc.diff(null, w.session.id, 'a.ts', 'branch');
+  assert.ok(d.ok);
+  assert.ok(w.calls.includes('local:diff:a.ts:abc1234'));
 });
 
 test('限流：开头可连续 40 次，第 41 次拒绝；每秒补 20；watch 最多 200 个点', async () => {

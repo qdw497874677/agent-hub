@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import { rm } from 'node:fs/promises';
 import { watch as chokidarWatch, type FSWatcher } from 'chokidar';
 import fuzzysort from 'fuzzysort';
-import type { BrowserEntry, ChangedFile, DirectoryPage, DomainError, FileChangeNotice, FileGitStatus, Result, WorkspaceBrowser } from '@agent-hub/domain';
+import type { BranchBase, BrowserEntry, ChangedFile, DirectoryPage, DomainError, FileChangeNotice, FileGitStatus, Result, WorkspaceBrowser } from '@agent-hub/domain';
 import { FILES_LIMITS, conflict, isCheckpointPrefix, isCheckpointRef, invalid, isBrowsablePath, isCommitId, isSensitivePath, looksBinary, notFound, unavailable } from '@agent-hub/domain';
 
 /**
@@ -425,6 +425,21 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
         }
       }),
 
+    /* 「这条分支长出来的地方」：默认分支（origin/HEAD → origin/main → origin/master → main → master）与 HEAD 的 merge-base。 */
+    branchBase: (root) =>
+      attempt(async (): Promise<BranchBase> => {
+        const real = await rootOf(root);
+        const git = gitIn(real);
+        if (!(await isRepo(git))) return { branch: null, commit: null };
+        const candidates = await defaultBranchRefs(git);
+        for (const candidate of candidates) {
+          const merged = (await git(['merge-base', 'HEAD', candidate.ref], { allowExit: [1] })).trim();
+          if (merged !== '') return { branch: candidate.name, commit: merged };
+        }
+        // 有默认分支但没有共同祖先（无关历史）：如实给分支名 + 空基准；一个都没有 = 全空。
+        return { branch: candidates[0]?.name ?? null, commit: null };
+      }),
+
     watch: (root, paths, onChange) =>
       attempt(async () => {
         const real = await rootOf(root);
@@ -472,6 +487,27 @@ export function createWorkspaceBrowser(options: BrowserOptions = {}): WorkspaceB
       })
   };
   return browser;
+}
+
+/**
+ * 默认分支的候选 ref，按优先级：origin/HEAD → origin/main → origin/master → main → master。
+ * origin/HEAD 解析出来的符号引用也能直接用（merge-base 认 refs/remotes/origin/main）。
+ */
+async function defaultBranchRefs(git: Git): Promise<Array<{ name: string; ref: string }>> {
+  const out: Array<{ name: string; ref: string }> = [];
+  const sym = (await git(['symbolic-ref', '--short', '-q', 'refs/remotes/origin/HEAD'], { allowExit: [1] })).trim();
+  if (sym !== '') out.push({ name: sym.replace(/^origin\//, ''), ref: sym });
+  for (const [name, ref] of [
+    ['main', 'refs/remotes/origin/main'],
+    ['master', 'refs/remotes/origin/master'],
+    ['main', 'refs/heads/main'],
+    ['master', 'refs/heads/master']
+  ] as const) {
+    if (out.some((item) => item.ref === ref)) continue;
+    const found = (await git(['rev-parse', '--verify', '--quiet', ref], { allowExit: [1] })).trim();
+    if (found !== '') out.push({ name, ref });
+  }
+  return out;
 }
 
 /** 未跟踪的新文件：git diff 不算它，自己数行数（和 diff 里的 +N 对上）；二进制/太大/读不了的记 0。 */

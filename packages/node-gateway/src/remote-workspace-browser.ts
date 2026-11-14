@@ -1,4 +1,4 @@
-import { RpcFailure, filesCheckpoint, filesDropRefs, filesChanged, filesChanges, filesDiff, filesFind, filesHead, filesList, filesRead, filesRestore, filesUnwatch, filesWatch, type RpcChannel, type RpcOutcome } from '@agent-hub/contract';
+import { RpcFailure, filesCheckpoint, filesDropRefs, filesChanged, filesChanges, filesDiff, filesFind, filesHead, filesBranchBase, filesList, filesRead, filesRestore, filesUnwatch, filesWatch, type RpcChannel, type RpcOutcome } from '@agent-hub/contract';
 import type { DomainError, FileChangeNotice, Result, WorkspaceBrowser } from '@agent-hub/domain';
 import { newId } from '@agent-hub/domain';
 
@@ -59,6 +59,7 @@ export function createRemoteBrowsers(deps: {
         dropRefs: async (root, prefix) => map(await call((c) => c.request(filesDropRefs, { root, prefix }, timeout), '清理检查点'), (v) => v.dropped),
         restore: async (root, commit, safetyRef) => map(await call((c) => c.request(filesRestore, { root, commit, safetyRef }, { timeoutMs: 60_000 }), '回滚文件'), (v) => v),
         head: async (root) => map(await call((c) => c.request(filesHead, { root }, timeout), 'HEAD'), (v) => v.head),
+        branchBase: async (root) => call((c) => c.request(filesBranchBase, { root }, timeout), '分支基准'),
         watch: async (root, paths, onChange) => {
           const watchId = newId();
           watches.set(watchId, { workerId, onChange });
@@ -83,5 +84,5 @@ export function createRemoteBrowsers(deps: {
 /** 通道还没就绪时的占位：每个调用都如实报不可用（决定 8：不缓存、不假装）。 */
 export function offlineWorkspaceBrowser(message: string): WorkspaceBrowser {
   const no = async () => ({ ok: false as const, error: { code: 'unavailable' as const, message } });
-  return { list: no, read: no, find: no, changes: no, diff: no, checkpoint: no, dropRefs: no, restore: no, head: no, watch: no };
+  return { list: no, read: no, find: no, changes: no, diff: no, checkpoint: no, dropRefs: no, restore: no, head: no, branchBase: no, watch: no };
 }
