@@ -27,7 +27,8 @@ for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop'
     await page.setViewportSize({ width: vp.width, height: vp.height });
     const w = await setup(page, baseURL!);
     await page.goto(`/#/p/${w.project}`);
-    const entry = page.getByTestId('messages-entry');
+    if (vp.width < 1024) await page.getByRole('button', { name: '打开侧栏' }).click();
+    const entry = page.locator('[data-testid="project-sidebar"]:visible').getByTestId('messages-entry');
     await expect(entry).toBeVisible();
     await expect(page.getByTestId('messages-unread')).toHaveCount(0);
     const box = await entry.boundingBox();
@@ -38,16 +39,17 @@ for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop'
     expect(g.ok(), await g.text()).toBe(true);
     const group = ((await g.json()) as { id: string }).id;
     // 轮询兜底 10s；切回页面也会刷，这里直接等
-    await expect(page.getByTestId('messages-unread')).toBeVisible({ timeout: 20_000 });
+    await expect(entry.getByTestId('messages-unread')).toBeVisible({ timeout: 20_000 });
     await expect(entry).toHaveAttribute('aria-label', /未读/);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(vp.width);
     await page.screenshot({ path: `${SHOTS}/${vp.name}-unread.png` });
 
     // 首页也有入口
     await page.goto('/#/');
-    await expect(page.getByTestId('messages-unread')).toBeVisible();
+    const homeEntry = page.getByTestId('messages-entry');
+    await expect(homeEntry.getByTestId('messages-unread')).toBeVisible();
 
-    await entry.click();
+    await homeEntry.click();
     await expect(page).toHaveURL(/#\/messages/);
     await page.goto(`/#/messages/${w.project}`);
     if (vp.width >= 768) await expect(page.getByTestId('group-unread')).toBeVisible();

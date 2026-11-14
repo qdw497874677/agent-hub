@@ -217,13 +217,14 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, drafts, onDra
               )
             }
           >
+            {/* 窗口本身要是 flex 容器：pane 的滚动区靠 flex-1 + min-h-0 收缩，block 父级下会塌成内容高度（#215）。 */}
             <section
               aria-label={`会话窗口：${sessionTitle(canvas, session)}`}
               data-testid="canvas-window"
               data-session-id={w.sessionId}
               data-mode={w.mode}
               data-focused={isTop ? 'true' : undefined}
-              className={`h-full overflow-hidden rounded-md border bg-canvas shadow-lg ${isTop ? 'border-accent' : 'border-hair'}`}
+              className={`flex h-full flex-col overflow-hidden rounded-md border bg-canvas shadow-lg ${isTop ? 'border-accent' : 'border-hair'}`}
             >
               {pane(
                 w.sessionId,

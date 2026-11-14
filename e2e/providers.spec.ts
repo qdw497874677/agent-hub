@@ -31,9 +31,10 @@ test('模型提供商：添加 → 直连测试 → 改成经 hub 中转再测 �
   await page.getByLabel(/^标识/).fill(slug);
   await page.getByLabel('Base URL').fill(`http://127.0.0.1:${port}/v1`);
   await page.getByLabel(/^API Key/).fill('fake-key');
-  await page.getByLabel(/^模型 id/).fill('m-1');
+  await page.getByLabel('手动添加模型 id').fill('m-1');
+  await page.getByLabel('手动添加模型 id').press('Enter');
   await page.screenshot({ path: test.info().outputPath('providers-form.png') });
-  await page.getByRole('button', { name: /^(保存|添加|创建)/ }).click();
+  await page.getByRole('button', { name: /^保存/ }).click();
   const row = page.getByTestId(`provider-${slug}`);
   await expect(row).toBeVisible();
   await row.getByRole('button', { name: '测试连接' }).click();
@@ -43,7 +44,7 @@ test('模型提供商：添加 → 直连测试 → 改成经 hub 中转再测 �
 
   await row.getByRole('button', { name: '编辑' }).click();
   await page.getByLabel('请求怎么走').selectOption('hub');
-  await page.getByRole('button', { name: /^(保存|添加|创建)/ }).click();
+  await page.getByRole('button', { name: /^保存/ }).click();
   await row.getByRole('button', { name: '测试连接' }).click();
   await expect(row.getByTestId('provider-check')).toContainText('worker→hub→提供商');
   await expect(row.getByTestId('provider-check')).toContainText('✓');

@@ -791,7 +791,12 @@ export function createApp(options: AppOptions): Hono {
     const allowed = await options.providers?.checkModel(actor, modelForCheck, derive.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
     const result = await deriveSessionUseCase(deps, { ...derive, workspaceId, actor, ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {}) });
-    if (result.ok) {
+    if (!result.ok) {
+      // 线上只看得见状态码，derive 连续被拒时得靠这条日志还原原因（E2E 里也会打出来）。
+      console.warn(
+        `[derive] 派生会话失败：task=${derive.taskId} agent=${derive.agentId} worker=${derive.workerId ?? '-'} profile=${derive.profileId ?? '-'} → ${result.error.code}: ${result.error.message}`
+      );
+    } else {
       await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, options.activity, c, actor, result.value, viaOfClient(c));
     }

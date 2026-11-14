@@ -32,8 +32,9 @@ async function world(page: Page, baseURL: string) {
     return ((await derived.json()) as { id: string }).id;
   };
   const send = (from: string, data: { kind: 'send' | 'ask'; to: string; body: string }) => page.request.post(`/api/sessions/${from}/messages`, { data, headers });
+  const link = (aSessionId: string, bSessionId: string) => page.request.post(`/api/projects/${project.id}/session-links`, { data: { aSessionId, bSessionId }, headers });
   const messages = async (id: string): Promise<{ messages: Msg[]; awaitingApproval: Msg[] }> => (await page.request.get(`/api/sessions/${id}/messages`)).json();
-  return { agentId: agentId!, project: project.id, headers, session, send, messages };
+  return { agentId: agentId!, project: project.id, headers, session, send, link, messages };
 }
 
 const TERMINAL = ['answered', 'done', 'failed', 'denied'];
@@ -43,6 +44,7 @@ test('A ask B：B 这一轮结束后回复排回 A；审计按 traceId 串起来
   const w = await world(page, baseURL!);
   const a = await w.session();
   const b = await w.session();
+  expect((await w.link(a, b)).status()).toBe(201);
   const asked = await w.send(a, { kind: 'ask', to: `session:${b}`, body: '只回复四个字母：PONG' });
   expect(asked.status(), await asked.text()).toBe(201);
   const { messageId } = (await asked.json()) as { messageId: string };
@@ -61,7 +63,8 @@ test('A ask B：B 这一轮结束后回复排回 A；审计按 traceId 串起来
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${w.project}/focus/${a}`);
-  await page.getByRole('button', { name: '详情' }).click();
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: /^详情/ }).click();
   const panel = page.getByRole('complementary', { name: '会话详情' }).getByTestId('session-messages');
   await expect(panel.getByTestId('agent-message-row').first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
@@ -73,6 +76,8 @@ test('B 忙：第二条排队，等第一轮结束后才投', async ({ page, bas
   test.setTimeout(240_000);
   const w = await world(page, baseURL!);
   const [a, b, c] = [await w.session(), await w.session(), await w.session()];
+  expect((await w.link(a, b)).status()).toBe(201);
+  expect((await w.link(c, b)).status()).toBe(201);
   const first = await w.send(a, { kind: 'ask', to: `session:${b}`, body: '只回复：1' });
   expect(first.status()).toBe(201);
   expect(((await first.json()) as { status: string }).status).toBe('delivered');
@@ -109,7 +114,8 @@ test('没权限 / 找不到 / 派生要人批：拒绝有审计；批准卡片�
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${w.project}/focus/${a}`);
-  await page.getByRole('button', { name: '详情' }).click();
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: /^详情/ }).click();
   const card = page.getByRole('complementary', { name: '会话详情' }).getByTestId('spawn-approval');
   await expect(card).toContainText('role:reviewer');
   await card.scrollIntoViewIfNeeded();

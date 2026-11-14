@@ -28,7 +28,7 @@ async function setup(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 作者 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '谁说的' }, headers })).json()) as { id: string };
   const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers })).json()) as { id: string };
-  expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '我是本人' }, headers })).status()).toBe(200);
+  expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '我是本人' }, headers })).status()).toBe(202);
   await page.request.post(`/api/sessions/${session.id}/interrupt`, { headers });
   return { project: project.id, session: session.id };
 }
@@ -65,7 +65,12 @@ for (const width of [1280, 390]) {
     await expect(page.getByTestId('msg-user').first()).toContainText('我是本人');
     await expect(page.getByTestId('msg-author'), '只有一个人说过话：不标').toHaveCount(0);
 
-    await page.getByRole('button', { name: '详情' }).click();
+    if (width < 640) {
+      await page.getByRole('button', { name: '更多' }).click();
+      await page.getByRole('menuitem', { name: /^详情/ }).click();
+    } else {
+      await page.getByRole('button', { name: '详情' }).click();
+    }
     const sheet = page.getByRole('complementary', { name: '会话详情' });
     const rows = sheet.getByTestId('activity-row');
     await expect(rows.filter({ hasText: '开了会话' })).toHaveCount(1);

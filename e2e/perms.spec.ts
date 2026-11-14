@@ -128,7 +128,7 @@ test('4A + 1A：同团队成员不能在别人的会话里说话 / 打断（会�
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 权限 ${currentRun()}`, rootPath: dir }, headers: h })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '共享项目' }, headers: h })).json()) as { id: string };
   const session = (await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel() }, headers: h })).json()) as { id: string };
-  expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '我是创建者' }, headers: h })).status()).toBe(200);
+  expect((await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '我是创建者' }, headers: h })).status()).toBe(202);
 
   const member = await invite(page, browser, 'peer', 'member');
   const mh = await headers(member.context, baseURL);

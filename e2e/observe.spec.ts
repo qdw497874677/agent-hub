@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -9,6 +9,8 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /** 可观测页：真实页面、测试库里的一条连接器链。1280×800。 */
 const DATA = process.env['E2E_DATA_DIR'] ?? '/tmp/agent-hub-e2e-data';
+const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/observe';
+mkdirSync(SHOTS, { recursive: true });
 
 test('可观测：列表和树（测试数据，1280×800）', async ({ page, baseURL }) => {
   await page.setViewportSize({ width: 1280, height: 800 });
@@ -51,7 +53,7 @@ test('可观测：列表和树（测试数据，1280×800）', async ({ page, ba
   await page.getByTestId('observe-needs-look').check();
   await expect(page.getByTestId('observe-row').filter({ hasText: `e2e acme/demo ${tag}` })).toBeVisible();
   await expect(page.getByTestId('observe-scan')).toContainText('先取最近 500 条');
-  await page.screenshot({ path: '/opt/cursor/artifacts/observe-impl-list-1280.png' });
+  await page.screenshot({ path: `${SHOTS}/observe-impl-list-1280.png` });
   await page.getByTestId('observe-row').filter({ hasText: `e2e acme/demo ${tag}` }).getByRole('link', { name: '打开树' }).click();
   await expect(page.getByTestId('observe-tree')).toBeVisible();
   await expect(page.getByTestId('observe-node').filter({ hasText: '回写' })).toBeVisible();
@@ -64,7 +66,7 @@ test('可观测：列表和树（测试数据，1280×800）', async ({ page, ba
   await expect(page.getByText('由这次唤醒建下')).toHaveCount(0);
   await trigger.click();
   await expect(page.getByText('由这次唤醒建下')).toBeVisible();
-  await page.screenshot({ path: '/opt/cursor/artifacts/observe-impl-tree-1280.png' });
+  await page.screenshot({ path: `${SHOTS}/observe-impl-tree-1280.png` });
 });
 
 test('未登录调用可观测接口被拒绝，不是空列表', async ({ browser, baseURL }) => {
@@ -144,7 +146,7 @@ test('可观测树含送达节点（假 ACP 会话 + 测试送达行，1280×800
     await expect(page.getByTestId('observe-node-detail')).toContainText('无外键，只是时间窗里的候选');
     await expect(page.getByTestId('observe-node-detail')).toContainText('送达用时');
     await expect(page.getByTestId('observe-node-detail')).not.toContainText('测试送达');
-    await page.screenshot({ path: '/opt/cursor/artifacts/observe-impl-tree-delivery-1280.png' });
+    await page.screenshot({ path: `${SHOTS}/observe-impl-tree-delivery-1280.png` });
   } finally {
     worker.kill();
     await page.request.delete(`/api/workers/${encodeURIComponent(workerId)}`, { headers }).catch(() => undefined);

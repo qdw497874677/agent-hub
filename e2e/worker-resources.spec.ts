@@ -65,7 +65,26 @@ async function setupCanvas(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 资源 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '资源' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true });
-  const derive = async () => ((await (await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: worker!.agentIds[0], model: piModel() }, headers })).json()) as { id: string }).id;
+  // 派生会话：worker 刚上线 / 工作空间还在准备时，derive 会瞬时被拒（409 冲突或 5xx），给两三次机会；
+  // 最终失败时断言 201 并把真实响应体带进报错和 annotations，别让状态码被吞掉。
+  const derive = async () => {
+    const data = { taskId: task.id, agentId: worker!.agentIds[0], model: piModel() };
+    let status = 0;
+    let text = '';
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const res = await page.request.post('/api/sessions/derive', { data, headers });
+      status = res.status();
+      text = await res.text();
+      if (status === 201) return (JSON.parse(text) as { id: string }).id;
+      const transient = status === 409 || status >= 500;
+      console.warn(`[e2e] POST /api/sessions/derive 第 ${attempt} 次被拒：${status} ${text}`);
+      if (!transient || attempt === 3) break;
+      await page.waitForTimeout(1000 * attempt);
+    }
+    test.info().annotations.push({ type: 'derive-failed', description: `${status} ${text}` });
+    expect(status, text).toBe(201);
+    throw new Error(`POST /api/sessions/derive 被拒：${status} ${text}`);
+  };
   const a = await derive();
   const b = await derive();
   const now = Date.now();

@@ -57,7 +57,8 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/#/p/${project.id}/focus/${sid}`);
-  await page.getByRole('button', { name: '详情' }).click();
+  await page.getByRole('button', { name: '更多' }).click();
+  await page.getByRole('menuitem', { name: /^详情/ }).click();
   const panel = page.getByRole('complementary', { name: '会话详情' }).getByTestId('session-context');
   await expect(panel.getByTestId('context-strategy')).toContainText('自动压缩');
   await expect(panel.getByTestId('context-strategy')).toContainText('来自会话设置');
@@ -70,7 +71,9 @@ test('上下文策略：默认 compaction，会话详情显示用量和缺口；
 
   // 项目设置 · 上下文策略：给角色单独设置，再改回跟随项目
   await page.getByRole('complementary', { name: '会话详情' }).getByRole('button', { name: '关闭' }).click();
+  await page.getByRole('button', { name: '打开侧栏' }).click();
   await page.getByRole('button', { name: '项目设置' }).click();
+  await page.getByRole('tab', { name: '上下文' }).click();
   const box = page.getByTestId('project-context');
   await expect(box.getByTestId('project-context-strategy')).toHaveValue('compaction');
   await box.getByTestId('project-context-role-input').fill('coder');

@@ -82,11 +82,24 @@ test.describe('画布中展开会话', () => {
       const log = win(page, a).getByRole('log', { name: '会话记录' });
       const scroller = log.locator('xpath=..');
       const vp = await viewport(page);
-      const lb = (await log.boundingBox())!;
+      const geom = (n: Element) => {
+        const e = n as HTMLElement;
+        return { sh: e.scrollHeight, ch: e.clientHeight, st: e.scrollTop };
+      };
       await scroller.evaluate((n) => (n.scrollTop = 0));
-      await page.mouse.move(lb.x + lb.width / 2, Math.max(lb.y + 40, boxes[0]!.y + 120));
+      const before = await scroller.evaluate(geom);
+      // issue #215：桌面窗口里滚动容器的父级 <section> 是 display:block（h-full overflow-hidden），
+      // FocusView 根节点的 min-h-0 flex-1 在 block 父级里不生效 → 滚动容器高度等于内容高度（sh === ch），
+      // 多出来的内容被 section 的 overflow-hidden 裁掉，滚轮无处可滚。这里把「没得滚」和「滚了没」分开报。
+      expect(before.sh, `对话区没有可滚空间（容器高度没被窗口约束）before=${JSON.stringify(before)}`).toBeGreaterThan(before.ch);
+      await log.hover();
       await page.mouse.wheel(0, 300);
-      await expect.poll(() => scroller.evaluate((n) => n.scrollTop), { message: '滚轮滚动窗口对话' }).toBeGreaterThan(0);
+      let after = await scroller.evaluate(geom);
+      for (let k = 0; k < 10 && after.st === 0; k++) {
+        await page.waitForTimeout(100);
+        after = await scroller.evaluate(geom);
+      }
+      expect(after.st, `滚轮滚动窗口对话 before=${JSON.stringify(before)} after=${JSON.stringify(after)}`).toBeGreaterThan(0);
       expect(await viewport(page), '窗口里滚轮不动画布').toBe(vp);
     }
 

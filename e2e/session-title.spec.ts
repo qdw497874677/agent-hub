@@ -26,8 +26,14 @@ async function seed(page: Page, baseURL: string, tag: string) {
 }
 
 async function openList(page: Page, projectId: string) {
-  await page.goto(`/#/p/${projectId}`);
-  await page.getByRole('button', { name: '列表' }).click();
+  const width = page.viewportSize()?.width ?? 1280;
+  // 窄屏侧栏是抽屉，里面的「列表」按钮点不到；地址栏直接进列表。桌面默认画布，还得点一下。
+  if (width < 768) await page.goto(`/#/p/${projectId}/list`);
+  else {
+    await page.goto(`/#/p/${projectId}`);
+    await page.getByRole('button', { name: '列表' }).click();
+  }
+  await expect(page.getByTestId('list-context')).toBeVisible();
   return page.getByRole('region', { name: '任务：改名任务' }).getByTestId('list-session-row');
 }
 
