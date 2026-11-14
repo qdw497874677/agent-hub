@@ -158,3 +158,156 @@ interface Session {
 1. **容器位置（已定）**：统一容器目录 `<roots[0]>/agent-hub-groups/<project-slug>/<group-name>/`，成员都在里面；孤儿扫描只认这个前缀。
 2. **默认勾选（已定）**：多仓项目派生时默认全选；逐仓可以取消（取消的仓库这次不建）。
 3. **分支名（按推荐执行）**：所有成员用同一 slug `agent-hub/<slug>-<4位id>`，PR 之间能对上。
+
+## 11. 实现规格
+
+### 11.1 领域
+
+新增 `packages/domain/src/workspace-group.ts`：
+
+```ts
+export type WorkspaceGroupId = string & { readonly __brand: 'WorkspaceGroupId' };
+export interface WorkspaceGroupMember {
+  readonly workspaceId: WorkspaceId;
+  readonly repoId: string;
+  readonly name: string;
+  readonly role: 'primary' | 'attached';
+}
+export interface WorkspaceGroup {
+  readonly id: WorkspaceGroupId;
+  readonly projectId: ProjectId;
+  readonly workerId: string | null;
+  readonly root: string;
+  readonly members: readonly WorkspaceGroupMember[];
+  readonly state: 'preparing' | 'ready' | 'failed';
+  readonly ownerTaskId: TaskId | null;
+  readonly createdAt: number;
+  /** 最近一次准备失败的原因（给人看，不进任务背景）。 */
+  readonly error: string | null;
+}
+export const WORKSPACE_GROUP_MEMBERS_MAX = 8;
+export const groupMemberRoot = (group: WorkspaceGroup, workspaceId: WorkspaceId): string | null;
+export const primaryMember = (group: WorkspaceGroup): WorkspaceGroupMember | null;
+```
+
+- `packages/domain/src/ids.ts` 加 `newWorkspaceGroupId`（`group_<8hex>`）。
+- `project.ts`：删 `repo`，加 `repos: readonly ProjectRepo[]`，`ProjectRepo.id`；`primaryRepo(project)`；`normalizeRepos(input)`（数量 0..8、名字唯一且合规、URL 非空、id 缺失时生成）。
+- 端口 `packages/domain/src/ports/workspace-groups.ts`：`WorkspaceGroupRepository { byId, listByProject, save, remove }`。
+- `use-cases/workspaces.ts`：新增
+
+```ts
+export interface SessionLocation {
+  readonly root: string;             // 容器根（组合）或空间根
+  readonly workerId: string | null;
+  readonly group: WorkspaceGroup | null;
+  readonly members: readonly { workspaceId: WorkspaceId; name: string; path: string; role: 'primary'|'attached' }[];
+}
+export async function locationsOf(deps, project, session): Promise<SessionLocation>;
+```
+
+`locationOf` 改成 `(await locationsOf(...)).root` 的薄封装，签名不变（15 个调用点先不动）。
+
+### 11.2 存储
+
+- `projects` 加列 `repos TEXT`（JSON 数组）。读：有 `repos` 用之，否则用 `repo_url/repo_default_branch` 拼单成员。写：`repos` 与两列同时写（`repo_url = repos[0].url`）。
+- 新表：
+
+```sql
+CREATE TABLE workspace_groups (
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, worker_id TEXT, root TEXT NOT NULL,
+  state TEXT NOT NULL, owner_task_id TEXT, error TEXT, created_at INTEGER NOT NULL
+);
+CREATE TABLE workspace_group_members (
+  group_id TEXT NOT NULL, workspace_id TEXT NOT NULL, repo_id TEXT NOT NULL,
+  name TEXT NOT NULL, role TEXT NOT NULL, position INTEGER NOT NULL,
+  PRIMARY KEY (group_id, workspace_id)
+);
+```
+
+- `packages/storage-sqlite/src/workspace-groups.ts`：mapper + 事务里 `save` 覆盖成员表（先 delete 再 insert，组很小）。
+- `packages/storage-sqlite/src/mappers.ts` 的 project mapper 兼容旧列。
+
+### 11.3 worker / 契约
+
+- `ws.add_worktree` 已支持 `existing: true` 时用调用方给的绝对路径（跳过 `relocateWorktree`），组合成员直接复用它，不新增建 worktree 的 RPC。
+- 新增两个 RPC（`packages/contract/src/worker-methods.ts`）：
+
+```ts
+export const wsGroupInit = method('ws.group_init', 'git',
+  z.object({ root: z.string(), marker: z.string().max(4000) }),
+  z.object({ root: z.string() }));
+export const wsGroupRemove = method('ws.group_remove', 'git',
+  z.object({ root: z.string() }),
+  z.object({ removed: z.boolean() }));
+```
+
+  - `ws.group_init`：`guard(root)` → `mkdir -p root/.agent-hub` → 写 `group.json`（写到临时文件再 rename）→ 目录已存在且非空则 `conflict`。
+  - `ws.group_remove`：只允许删 `WORKER_GROUPS_DIR` 前缀下的目录；删前 `lstat` 不再跟随符号链接。
+- 节点侧：`packages/node-gateway/src/group-dir.ts`（两个方法的实现），`server-gateway.ts` 超时 120s。
+- 准备命令复用 `ws.run_setup`，`env` 加 `AGENT_HUB_REPO`。
+
+### 11.4 用例
+
+`packages/domain/src/use-cases/workspace-groups.ts`：
+
+```ts
+prepareWorkspaceGroupUseCase(deps, { projectId, taskId, workerId, home, repoIds?, actor })
+retryWorkspaceGroupUseCase(deps, { groupId, actor })
+removeWorkspaceGroupUseCase(deps, { groupId, actor })
+workspaceGroupsUseCase(deps, projectId)
+```
+
+- 准备流程：取项目 repos（`repoIds` 缺省 = 全部，顺序按项目清单，第一个为 primary）→ 每仓找一个 `gitBase`（同 worker 的 isGit 长期空间；没有则 clone，与 `temporary-workspaces.ts:143` 同逻辑）→ `ws.group_init` → 逐个 `ws.add_worktree { repoPath: base.path, path: `${root}/${name}`, branch, existing: true }` → 并行 `ws.run_setup`。
+- 失败语义：任一成员建不出来 → 整组 `failed`，已建成的保留；`retry` 只重试 `failed` 成员（建 + 准备）。
+- 分支：`agent-hub/<slug>-<4位id>`，slug 由任务标题或会话名生成（复用现有 slug 规则）；若某仓已存在同名分支 → 该成员用 `<branch>-<2位随机>` 并把新名字记进成员背景（极端情况）。
+- `remove`：先对所有成员跑现有 `unsavedReason`；任一脏 → 整组 `kept` 返回 `conflict('api 还有未提交的改动')`；全干净 → 逐个 `removeWorkspaceUseCase`，最后 `ws.group_remove`，删组行。
+- `workspaceId` 与组的双向：准备完成后写 `Session.workspaceId` 只在 derive 时做（`workspaceId = primary.workspaceId`）。
+
+### 11.5 HTTP / 契约
+
+- `packages/contract/src/wire/entities.ts`：`projectSchema.repos`、`workspaceGroupSchema`；`packages/contract/src/wire/http.ts`：`createWorkspaceGroupRequest { taskId, workerId, repoIds? }`、`deriveSessionRequest.groupId?`。
+- 路由：
+  - `GET /api/projects/:id/workspace-groups`
+  - `POST /api/projects/:id/workspace-groups` → 201 + 组（`state` 先 `preparing`，同步准备完再返回 `ready/failed`）
+  - `POST /api/workspace-groups/:id/retry`
+  - `DELETE /api/workspace-groups/:id`
+  - `GET /api/sessions/:id/workspaces/changes` → `{ members: [{ workspaceId, name, changes: ChangeDto[], summary: {files, insertions, deletions} }] }`
+- derive：`groupId` 存在时校验组属于同项目、`state === 'ready'`、worker 一致；`workspaceRoot = group.root`，`workspaceId = primary.workspaceId`。
+- 文件 / git / diff / checkpoint 接口统一加可选 `workspaceId`，缺省 primary；服务端校验它属于该会话的组。
+- 审计：`workspace.group.create|retry|remove`。
+
+### 11.6 前端
+
+- 项目设置「仓库」区块：`apps/web/src/surfaces/workbench/project-repos.tsx` + DOM-free `project-repos.ts`，testid `project-repos` / `project-repo-add|row|name|url|branch|remove|error|save`。
+- 派生对话框：`workspace-chooser` 增 `{ type: 'new_group' }`（仅 `project.repos.length > 1`），展开列出成员与分支，`repoIds` 可逐项取消；选中后 `dialogs.tsx` 先 `POST …/workspace-groups` 再 derive（组失败时就地显示失败成员与重试，不关对话框）。
+- 改动页：`apps/web/src/shell/query-keys.ts` 加 `changesAll(sessionId)`；`focus.tsx` 的 `ChangesPane` 有组时走聚合接口按成员分组渲染。
+- 提交：`git-dialog.tsx` 顶部成员切换（`git-workspace-switch`），切成员时 key 变化重查。
+- 文件页：`files-browser.tsx` 根显示成员列表；进入某成员后走现有逻辑（`workspaceId` 参数）。
+- 会话页一行「组合 · N 个仓库」：`worktree-status.tsx` 旁边。
+
+### 11.7 迁移与兼容
+
+- 无数据迁移：`projects.repos` 空 + 旧列有值 → 读时派生一个成员；写入时双写。
+- `Session.groupId` 为空 = 今天的行为，全部旧接口不变。
+- 组合功能对单仓库项目不可见（`repos.length <= 1` 时 UI 与逻辑都走老路）。
+- `PROTOCOL_VERSION` 不变：新增 RPC 属于向后兼容的方法表；老 worker 收到未知方法返回 unsupported，组创建失败并在组上写明「目标机器 Worker 需要升级」。
+
+### 11.8 测试
+
+- domain：`project-repos.test.ts`（校验/上限/重名）、`workspace-group.test.ts`（primary、memberRoot）、`workspace-groups.test.ts`（准备顺序、失败保留、重试只重试失败成员、remove 脏则整组 kept）、`locations.test.ts`（组 → 容器根；无组 → 老路径）。
+- storage：`workspace-groups.test.ts` 往返、projects repos 双写与旧列回填。
+- server：路由 201/preparing→ready、derive 组未 ready 400、`workspaceId` 越权 403。
+- e2e `multi-repo.spec.ts`：两个本地 bare 仓库 → 绑进项目 → 派生 → agent 在两个子目录各改一行 → 改动页两组 → 分别提交 → 删组（脏时被拒）。用 `git init --bare` + `commit --allow-empty` 造基座（worktree 需要 `main` ref）。
+
+### 11.9 任务拆分
+
+| 任务 | 内容 | 依赖 |
+| --- | --- | --- |
+| T1 | `Project.repos` + 存储列 + 兼容派生 + 项目设置 API/UI | — |
+| T2 | `WorkspaceGroup` 领域 + 存储 + `locationsOf` | T1 |
+| T3 | worker `ws.group_init/remove` + 节点侧实现 + 契约 | — |
+| T4 | 准备 / 重试 / 删除用例 + HTTP + 审计 | T2,T3 |
+| T5 | derive 接 `groupId`、启动背景注入、终端 cwd | T4 |
+| T6 | 按成员的 git/文件/checkpoint/rewind | T2 |
+| T7 | 前端：派生对话框组选项、改动分组、提交切换、文件根 | T4,T5 |
+| T8 | e2e + 文档 | 全部 |
