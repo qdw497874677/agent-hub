@@ -9,15 +9,22 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `0123821 docs: 记录 worktree 清理侧落地，W4 不做` |
-| origin/master | 已同步到 `0123821` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `0123821`（2026-11-14 09:06 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261114-090646-pre-df543fb.db`） |
+| 本地 HEAD | `2c2d49c test(e2e): 多仓库项目全链路，修文件用例的手机入口与截图目录` |
+| origin/master | 已同步到 `2c2d49c` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `2c2d49c`（2026-11-14 11:36 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261114-113618-pre-c60df95.db`） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `54ec357`（准备命令 `ws.run_setup` 需要它） |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `c60df95`（组合工作空间需要它） |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` 1312 单测：1304 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/settle.spec.ts` 2/2、`e2e/worktree.spec.ts` 3/3 |
+| 最近完整验证 | `npm test` 1376 单测：1368 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/multi-repo` 1/1、`worktree` 4/4、`settle` 2/2、`files` 1/1 |
 
-当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制。
+当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）。
+
+### 组合工作空间（多仓库）怎么用
+
+1. 项目设置 →「仓库」填 2–8 个（第一个是主仓库）。
+2. 会话里「新建会话」→ 工作空间选「新建组合工作空间」，会按项目配置在目标机器上建容器、逐个仓库建 worktree 并跑准备命令。
+3. 会话跑起来后，文件页默认是容器目录（只列成员）；改动/提交要先在顶栏选仓库。组合会话不支持回滚（各自提交）。
+4. 清理按整组走：工作空间页不允许单删成员。
 
 2026-11-12 夜补丁（已部署 `88ceb7a`）：供应商模型可一键从上游拉取、逐模型配置上下文/最大输出与「额外参数 JSON」（中继顶层浅合并，`hub` 与 `direct` 两条链路都生效），改动对已建立会话走 `provider_update` 热更新；会话里的「连接 N」芯片改为先弹小窗预览再跳转；文件 tab 标出工作空间根路径与完整相对路径（手机端原先看不到路径）。
 

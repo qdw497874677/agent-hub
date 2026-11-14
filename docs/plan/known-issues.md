@@ -167,7 +167,13 @@
 - **派生**：`deriveSessionRequest.groupId`，给了就整组跟随（`workspaceId` 被组覆盖成 primary）；组未 ready 直接 `conflict('这组工作空间还没准备好')`。
 - 验证：`npm test` 1350 tests / 1342 pass / 8 skipped / 0 fail；`check`/`typecheck`/`typecheck:web`/`build`/`test:e2e-node` 全 0。
 
-已知残留：组合会话的文件/改动目前只看得到 primary 仓库（T6 在做「按成员仓库查看」）；rewind 对组合直接拒绝（设计有意）；工作空间页不允许单删成员，只能整组删。
+已知残留：rewind 对组合直接拒绝（设计有意）；工作空间页不允许单删成员，只能整组删；建组失败时接口不回组 id（前端按「同任务 + 之后登记」反查，建议后端改成回 201 + failed 组）。
+
+M1 后续（`49d73c8`、`1dc9aa1`、`2c2d49c`，已部署）：
+- **文件/改动按成员（T6）**：`GET /api/sessions/:id/files*`、`/git/*`、`/api/workspaces/:id/changes` 都认 `?member=<workspaceId>`。不给时文件根是容器目录（只列成员目录、隐藏 `.agent-hub`），改动/提交/删除要求先选仓库；容器上的 `changes` 回空数组、`diff` 报「请选择要查看改动的仓库」、`type=changes` 的 rewind 直接拒绝。
+- **多仓库前端（T7）**：项目设置的「仓库」清单（`project-repos.tsx`，主仓库标记、只读态）；派生对话框在项目有多个仓库时出现「新建组合工作空间」（`ws-new-group`），建组完成带 `groupId` 派生；会话页页签行上方显示「组合工作空间 · N 个仓库」（`session-group`），preparing 时 3 秒轮询。
+- **修正**：`ServerGateway.groups()` 在 `ServerGateway` 外层而不是 `gateway` 对象上（`apps/server/src/main.ts:242` 调错层级导致永远 503「worker 通道尚未就绪」）；`createWorkspaceFilesService` 必须注入 `workspaceGroups`（否则永远走单仓库路径）；建组选基座认 `link` 登记目录时按 origin 比对（`git inspect` 的 `remoteUrl`），不再盲目 clone；契约补 `sessionSchema.groupId` / `workspaceSchema.groupId`。
+- 验证：`npm test` 1376 tests / 1368 pass / 8 skipped / 0 fail；`check`/`typecheck`/`typecheck:web`/`build`/`test:e2e-node` 全 0；`e2e/multi-repo.spec.ts` 1/1、`e2e/worktree.spec.ts` 4/4、`e2e/settle.spec.ts` 2/2、`e2e/files.spec.ts` 1/1。
 
 ## 2. B1 · 安全收口
 
