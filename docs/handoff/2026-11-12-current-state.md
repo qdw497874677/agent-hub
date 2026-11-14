@@ -9,13 +9,13 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `22fa10e fix(terminal): 交互式终端要求 session.prompt，viewer 不能再输入（#213）` |
-| origin/master | 已同步到 `abecaf7` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `22fa10e`（2026-11-14 22:12 用 `deploy-aliyun.sh --bundle` 部署） |
+| 本地 HEAD | `2d5a0e2 fix(bots): 删除 bot 时自动从群里移出` |
+| origin/master | 已同步到 `2d5a0e2` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `2d5a0e2`（2026-11-14 23:04 用 `deploy-aliyun.sh --bundle` 部署） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `22fa10e` |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `2d5a0e2` |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` **1589 / 1581 pass / 8 skipped / 0 fail**；`check`、`typecheck`、`typecheck:web`、`build` 全 0；`e2e/preview.spec.ts` 2/2 |
+| 最近完整验证 | `npm test` **1602 / 1594 pass / 8 skipped / 0 fail**；`check`、`typecheck`、`typecheck:web`、`build` 全 0；`e2e/preview.spec.ts` 2/2 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时、会话保活（回合结束后进程仍在，后台子代理不被杀）、子代理常驻轨道与实时面板、后台子代理结束后回补遗漏总结（`session/load` 重放）、处理中阶段与计时。
 
@@ -252,3 +252,6 @@ npx playwright test e2e/canvas.spec.ts --reporter=list
 
 
 2026-11-14 上午（`a518b96`，已部署）：会话**收起**（I1，借自 T3 Code 的 settle，改名避免与记忆混淆）。做法是给 `Session` 加 `settledAt`——只表示「移出活跃列表」，不改状态、不杀进程、不删数据；`POST /api/sessions/:id/settle {settled}`，权限 `session.settle`（默认 own），跑着的会话 409「会话还在跑，先停止再收起」，写审计 `session.settle`。前端：会话菜单「收起：移出活跃列表 / 移回活跃列表」，侧栏拆成活跃与底部「已收起 N」，画布卡片补状态点与「已跑 N 分钟」（只在 working 时 30 秒推进）、已收起的卡片与首页最近会话都弱化到背景。自动收起（PR 合并 / 陈旧）等有稳定的「最后活动时间」口径再做。设计与后续 I2–I4（composer 手势、三档 diff、侧聊）见 `docs/design/interaction-borrowing.md`，worktree 机制见 `docs/design/worktree.md`（W1+W2 已上线，W3/W4 未做）。
+
+
+2026-11-14 深夜（`2d5a0e2`，已部署；本地 worker 同版本）：群聊页按体验清单改完。主持人不再要求 bot 写明模型（`packages/domain/src/groups.ts` 只要求 `ref.runtime`，留空即该运行时默认模型；下拉里显示「（默认模型）」）；输入框支持 `@` 补全（`apps/web/src/atoms/mention-suggest.ts`，成员带主持人/已暂停角标，`@all`/`@user` 固定在后，↑↓ 环绕、Enter/Tab 插入、Esc 关闭、输入法组字时不干预，插入后补空格）；主持人 chip 常驻输入区上方，点一下打开设置并直接展开主持人字段；390px 下页面头只留标题+项目选择（`messages-more`），聊天头收成「成员 / 停止 / ⋯」，停止要二次确认（`group-stop` → `group-stop-confirm`）；消息带首字母头像与 `HH:mm`，同作者连续消息只首条显示；placeholder 缩短、窄屏发送按钮只留图标；群列表补主持人标记（未读与「需要你」保留）。另外修掉一条真实缺陷：从「Bot」页删除 bot 时不会移出群（老 `/agents` 路径有 detach，一等 bot 的 `DELETE /api/bots/:id` 没有），现在 `apps/server/src/main.ts` 的 `removeBot` 会先 `detachAgent` 再删行。
