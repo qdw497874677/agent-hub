@@ -85,7 +85,7 @@
 定位层面只承诺四条原则，细节见 [ADR 0001](../adr/0001-rewrite-hexagonal-core-four-aggregates.md)：
 
 1. **六边形架构。** 依赖方向只有一条：适配器 → 端口 → 领域。领域层不认识 HTTP、不认识数据库、不认识 Server/Worker。
-2. **领域核心只有四个聚合：Task / Session / Agent / Artifact。** Server 与 Worker 是**适配器**，是「状态存在哪、进程跑在哪台机器上」的部署细节。这条最贵：wemux-lite 把 Server/Worker 当架构一等公民，于是它的领域层被安装形态污染，画布上会混进「机器」这种与产品价值无关的节点。
+2. **领域骨架是 Task 与 Session，Session 必须挂在恰好一个 Task 上。** Agent 与 Artifact 是记录而非聚合根，Workspace 等是后来长出的一等对象（见 [ADR 0001](../adr/0001-rewrite-hexagonal-core-four-aggregates.md) 文末）。Server 与 Worker 是**适配器**，是「状态存在哪、进程跑在哪台机器上」的部署细节。这条最贵：wemux-lite 把 Server/Worker 当架构一等公民，于是它的领域层被安装形态污染，画布上会混进「机器」这种与产品价值无关的节点。
 3. **扩展性由端口承载，不由分支承载。** 新增一个 agent = 写一个 adapter + 填一张能力矩阵，**不改内核、不改 UI 判断**。UI 按能力矩阵渲染，不按 agent 名字渲染。
 4. **端口清单先于实现定稿。** 打底子 = 把边界划在正确的位置，而不是把代码写多：
 

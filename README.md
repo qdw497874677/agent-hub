@@ -135,12 +135,12 @@ apps/server   ── 控制面：HTTP + SSE，组合根，持有 SQLite
 apps/worker   ── 数据面：跑在本机（或远程机器），持有 agent 进程
 apps/web      ── 画布
 
-packages/domain       零依赖。四个聚合 + 11 个端口 + 用例
+packages/domain       零依赖。Task 与 Session 两个聚合根，加上一批一等对象、约 70 个端口与用例
 packages/contract     Zod 定边界，z.infer 出类型
 packages/storage-sqlite、node-gateway、adapters/{acp,pi,grok}
 ```
 
-四个聚合是 `Task / Session / Agent / Artifact`。**Server 与 Worker 不是领域概念**，它们是适配器：内核里没有「进程」「节点」「连接」这些词。`packages/domain` 的 `dependencies` 为空，由 `npm run check:domain` 强制。
+聚合根是 `Task` 与 `Session`：Session 必须挂在恰好一个 Task 上。`Agent` 是适配器上报的能力描述符，`Artifact` 是挂在 Session 与 Task 上的产出记录，二者都没有自己的状态机。除此之外 Workspace、Delivery、Message、Memory 等也是一等对象，各有自己的端口。**Server 与 Worker 不是领域概念**，它们是适配器。`packages/domain` 的 `dependencies` 为空，由 `npm run check:domain` 强制。
 
 判据是可机械检查的：**删掉任一适配器包，`packages/domain` 仍能编译。**
 
@@ -242,7 +242,7 @@ npm run e2e    # Playwright：真浏览器 + 真 agent，从建项目到模型�
 
 | ADR | 决定 |
 | --- | --- |
-| [0001](docs/adr/0001-rewrite-hexagonal-core-four-aggregates.md) | 重写：六边形内核与四个聚合 |
+| [0001](docs/adr/0001-rewrite-hexagonal-core-four-aggregates.md) | 重写：六边形内核（四个聚合的说法已被后续实现超越，见该 ADR 文末） |
 | [0002](docs/adr/0002-typescript-node-everywhere.md) | TypeScript + Node 全栈 |
 | [0003](docs/adr/0003-model-list-comes-from-the-agent.md) | 模型列表来自 agent |
 | [0004](docs/adr/0004-serialize-events-per-session.md) | 每条会话的事件串行落盘 |

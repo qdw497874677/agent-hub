@@ -1,6 +1,6 @@
 # 重写 agent-hub：六边形架构，领域核心只有四个聚合
 
-**Status**: accepted
+**Status**: accepted，部分已被后续实现超越（见文末「后续」）
 
 ## 背景与决定
 
@@ -35,3 +35,13 @@ v1 的两个空实现端口：`NodeProvisioner`（自动下发安装）与 `Capa
 - 新增一个 agent = 一个 adapter + 一张能力矩阵，内核与 UI 判断零改动（用户故事 X1）。
 - 领域层依赖图 CI 可检查，Server / Worker 只出现在适配器层与装配处（用户故事 X2）。
 - 代价：六个端口与四个聚合的边界必须在写第一行业务代码前定稿，前期设计成本高于「先写起来再说」。这是这次刻意买的单。
+
+## 后续
+
+上面是重写时的决定，保留原文。对照现在的 `packages/domain/src`，有三处已经不成立，读代码时以代码为准：
+
+- **骨架只剩 Task 与 Session。** Task 有转换表（`task.ts` 的 `setTaskStatus`），Session 只由 `applyEvent` 推进终态。Agent 退成没有状态、没有仓储的 `AgentDescriptor`（`agent.ts`），由适配器经 `AgentRuntime` 上报；Artifact 退成挂在 Session 与 Task 上的记录（`artifact.ts`），没有自己的状态。
+- **一等对象已经不止四个。** Workspace、Delivery、AgentMessage、Memory 等都有自己的 id、状态与端口。Project 仍如上文所说是作用域容器。
+- **端口从 6 个长到约 70 个**（`packages/domain/src/ports/`）。「端口在、实现空」的原则还在，数量不再是 6。
+
+没有被推翻的部分：依赖方向单向且由 `npm run check` 强制；Server 与 Worker 仍是适配器；Session 必须挂在恰好一个 Task 上。

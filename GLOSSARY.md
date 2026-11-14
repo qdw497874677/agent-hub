@@ -17,9 +17,10 @@ Session 是可恢复的：关闭客户端后重新打开，历史与运行状态
 _Avoid_: 会话（作动词时含糊）、Chat、Conversation、Thread
 
 **Agent**：
-一个可被调用的 agent 实例，由「接入档 + 具体 agent + 模型配置」三部分组成。
-Agent 声明自己支持什么（见**能力矩阵**），平台按声明渲染能力，不按 agent 名字写死判断。
-_Avoid_: Bot、助手、Model、Provider
+一种可被调用的 agent 运行时的自我描述（`AgentDescriptor`）：能力矩阵、模型清单与可调项，由适配器上报，没有自己的生命周期状态。
+运行中的一次调用是 **Session**，不是 Agent。可复用的启动配置是 AgentProfile，按项目登记的自动代理是 Bot，三者不要混称。
+平台按能力矩阵渲染能力，不按 agent 名字写死判断。
+_Avoid_: Bot、助手、Model、Provider、实例
 
 **Artifact**：
 Session 或 Task 的产出物（文件、diff、报告、链接）。
@@ -27,9 +28,20 @@ Artifact 挂在产生它的 Session 上，可被所属 Task 汇总；它是产�
 _Avoid_: 附件、Output、Result
 
 **Project**：
-绑定一个本地目录的作用域容器，容纳 Task。
-它是**作用域边界**，不是行为丰富的聚合：除了「Task 属于哪个 Project」，它不承载领域行为。
+容纳 Task 的作用域容器。
+它是**作用域边界**，不是行为丰富的聚合：除了「Task 属于哪个 Project」，它不承载领域行为。它不绑定目录——目录是 **Workspace** 的事。
 _Avoid_: 仓库、Repo、Workspace
+
+**Workspace**：
+某台 Worker 上的一个真实目录，Session 在里面干活。
+`long_lived` 由人建立、跨 Task 复用，平台不删；`temporary` 归一个 Task，任务结束后确认没有未保存改动才清理。
+一个长期 Workspace 可以被多个 Project 使用，关联记在 `ProjectWorkspaceLink` 上，不靠类型字段。
+_Avoid_: 仓库、Repo、Project、工作区（含糊）
+
+**Preview**：
+把 Session 所在 Worker 上的一个回环端口映射到 hub 的一个监听端口，让人打开正在跑的本地服务。
+一条 Session 最多挂 8 条，每条有自己的 id 与 `ready / stale / offline` 状态，不进会话 journal。
+_Avoid_: 端口转发、Tunnel、分享链接
 
 ### 关系
 
@@ -38,7 +50,8 @@ _Avoid_: 仓库、Repo、Workspace
 _Avoid_: 新建会话（丢失去向）、启动、Run
 
 **Fork**：
-从一个 Session 复制出新的 Session，血缘上记录来源 Session 与**固定的事件游标**。
+从一个 Session 的**最新处**复制出新的 Session，血缘上记录来源 Session 与当时的 `lastSeq`。
+传入的游标会被忽略：底层 agent 不能按中间某一步分叉，挑中间会让上下文和标记对不上（ADR 0012）。
 来源 Session 之后的续写不会自动进入 Fork 目标的上下文。
 _Avoid_: 复制、Clone、Branch
 
