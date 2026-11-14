@@ -145,6 +145,15 @@
 
 补充（2026-11-14）：worktree 档位现在三个入口都通——`POST /api/sessions/derive { workspaceMode }`、前端派生对话框的「隔离 worktree」勾选（勾上时不再要求选工作空间，也不发送 `workspaceId`），以及 agent 工具 `agent.spawn { workspace_mode: 'isolated' }`（走同一条 `prepareTemporaryWorkspaceUseCase`，会按项目配置跑准备命令）。这样 bot 或会话里的 agent 可以自己开一个隔离兄弟会话来并行干活。
 
+### 1.9 进展（2026-11-14 · worktree W3 清理侧）
+
+- **终端算活动**：`CleanupExtras.liveSessions`（domain 端口，缺省不检查），`busy()` 在「有 running 会话」之外再看「会话已结束但 PTY 还开着」。服务端装配成晚绑定钩子（`terminalBridge.knownTerminals()` 的 `terminalId` 取 `:` 前一段），因为清理依赖先于终端桥建好。
+- **孤儿目录不再按路径片段猜**：`cleanupRecordsUseCase` 原来只认父目录含 `/.worktrees/`，自定义 `WORKER_WORKTREES_DIR=<dir>/<repo>/` 的部署永远扫不到孤儿。改成「由登记的 worktree 路径反推父目录」，默认布局与自定义布局都成立。
+- 单测：`packages/domain/src/use-cases/workspace-cleanup.test.ts` 新增「终端还开着的会话 → 记成跳过；关掉终端才清」与「自定义 worktrees 目录也能认出孤儿」。
+- 验证：`npm test` 1312 tests / 1304 pass / 8 skipped / 0 fail；`check` / `typecheck` / `typecheck:web` / `build` / `test:e2e-node` 全 0。
+- W4（运行中 `handoffWorktree`）按用户意见不做（「不用管已经开启的会话了」）。
+
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道

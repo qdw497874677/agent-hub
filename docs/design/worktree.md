@@ -125,8 +125,8 @@ prepareTemporaryWorkspace
 | --- | --- | --- |
 | W1 | `Project.worktree` 字段 + 校验 + 设置页 + 审计 | 0.5 天 |
 | W2 | `ws.run_setup` + 执行/超时/截断 + `workspace.setup` 状态 + 创建流程与等待 | 1 天 |
-| W3 | 清理活动判定 + 孤儿目录泛化 + 会话页状态行 | 0.5 天 |
-| W4 | `session.handoffWorktree` + 两个 agent 工具 + 选择器收尾 | 1.5 天 |
+| W3 | 清理活动判定 + 孤儿目录泛化 + 会话页状态行 · **已落地 2026-11-14**（终端算活动、孤儿按登记路径反推父目录） | 0.5 天 |
+| W4 | `session.handoffWorktree` + 两个 agent 工具 + 选择器收尾 · **不做**（用户明确不迁已在跑的会话） | 1.5 天 |
 
 ## 11. 与 T3 Code 的差异（有意的）
 
