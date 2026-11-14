@@ -78,6 +78,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   migrateAssetOwnership,
   sweepGitForReview,
   revokeLegacyLocalWorkerGrants,
+  terminalAccess,
   terminalTarget,
   createPreviewLinkUseCase,
   markWorkerPreviewsOfflineUseCase,
@@ -926,12 +927,14 @@ serverGateway = createServerGateway({
   onLog: log
 });
 
-// 会话终端（docs/design/terminal.md）：浏览器 WS 的鉴权沿用 cookie + session.read；
+// 会话终端（docs/design/terminal.md）：浏览器 WS 的鉴权沿用 cookie + session.prompt
+// （能往 PTY 里打字等于能以会话身份执行命令，viewer 不该有，issue #213）；
 // 目标机器 / 目录由 domain 的 terminalTarget 决定，桥接只管帧和生命周期。
 terminalBridge = createTerminalBridge({
   gateway: serverGateway,
   authenticate: async (value) => withAccess(store.access, await authenticate(accounts, value), accounts.now()),
   target: (subject, sessionId) => terminalTarget(deps, subject, sessionId),
+  access: (subject, sessionId) => terminalAccess(deps, subject, sessionId),
   hostAllowed: (hostname) => guard.hostAllowed(hostname),
   log
 });
@@ -1265,6 +1268,9 @@ if (previewPrefixActive && previewChannel !== null) {
   });
   app.all(`${previewPrefixPath}/*`, async (c) => (await previewPrefix.handle(c.req.raw)) ?? c.notFound());
   log(`预览路径前缀模式：${previewPrefixPath}/<链接 id>/（不支持 WebSocket / HMR）`);
+  // 前缀模式和 hub 同源：预览页里的脚本能读到 hub_csrf，等于拿到了以用户身份发请求的能力。
+  // 只建议在「预览的就是自己写的页面」时开启。
+  log('注意：前缀模式与 Hub 同源，预览页脚本能读到 hub_csrf');
 }
 
 const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {

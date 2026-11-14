@@ -11,7 +11,7 @@ import { createAccessPolicy as createAccessPolicyForTests } from './authorizatio
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
-import { terminalTarget } from './terminal.ts';
+import { terminalAccess, terminalTarget } from './terminal.ts';
 
 const fake: AgentDescriptor = {
   id: asAgentId('fake'),
@@ -96,8 +96,23 @@ test('终端授权：没登录一律拒绝', async () => {
   assert.equal(target.error.code, 'not_found');
 });
 
-test('终端目标：没有可用工作空间时报「这条会话还没有工作空间」', async () => {
+test('终端授权：只读成员能看会话，但打不开交互式终端（issue #213）', async () => {
   const w = await world();
+  const viewer = principalOf(userOf('viewer', 'team-1', { role: 'viewer' }));
+  const read = await terminalTarget({ ...w.deps, access: w.policy }, viewer, w.session.id);
+  assert.ok(read.ok, JSON.stringify(read));
+  const write = await terminalAccess({ ...w.deps, access: w.policy }, viewer, w.session.id);
+  assert.equal(write.ok, false);
+  assert.equal(write.error.code, 'forbidden');
+});
+
+test('终端授权：成员对自己的会话通过 session.prompt 检查', async () => {
+  const w = await world();
+  const own = await terminalAccess({ ...w.deps, access: w.policy }, w.owner, w.session.id);
+  assert.ok(own.ok, JSON.stringify(own));
+});
+
+test('终端目标：没有可用工作空间时报「这条会话还没有工作空间」', async () => {  const w = await world();
   const workspace = w.session.workspaceId ? await w.deps.workspaces.byId(w.session.workspaceId) : null;
   assert.ok(workspace);
   await w.deps.workspaces.save({ ...workspace, state: 'removed' });

@@ -15,7 +15,7 @@
   （`terminal_input` / `terminal_data` / `terminal_exit`，与 `event`/`metrics` 同型）。
   老 worker 对未知帧只在 `safeParse` 阶段丢弃并记日志（`worker-link.ts:470-481`），不升协议版本、不误伤会话。
 - **不新增 worker 能力**：终端与 `sessions` 等价（能开 agent 会话就是能在机器上执行代码），
-  权限就用 `session.read` + `sessions`；worker 是否支持用 `terminal.open` 返回 `unsupported` 探测，
+  权限就用 `session.prompt` + `sessions`；worker 是否支持用 `terminal.open` 返回 `unsupported` 探测，
   探测结果在 hub 按 worker 缓存，UI 据此隐藏页签。省掉能力闭集、预设、`drift.ts`、老凭据迁移的连带改动。
 - **cwd 由 hub 算好随 `terminal.open` 下发**（`terminal.open` 的可选 `cwd`）：目录来自
   domain 的 `terminalTarget`（权限 + `locationOf` 的项目/工作空间回退），worker 仍要过
@@ -100,8 +100,8 @@ WS 限制：单帧 128 KB；心跳 25s，两次不回就关。
    不要复用 `request-guard.ts:33-34` 的 `originAllowed`——它对缺 Origin 返回 `true`（worker/curl 的语义），
    照抄等于公网无 Origin 全放行。
 3. **cookie**：同时认 `hub_login` 与 `__Host-hub_login`（`auth.ts:68-80`，HTTPS 部署是后者），
-   值用常量时间比较；解析出登录态后按 `session.read` 授权
-   （`terminalTarget(subject, sessionId)`，见 §6）。失败回 401/403 并 `socket.end`。
+   值用常量时间比较；解析出登录态后先按 `session.read` 取目标（`terminalTarget`），
+  再过一次 `session.prompt`（`terminalAccess`，见 §6）。失败回 401/403 并 `socket.end`。
 4. 通过后交给 `terminalBridge.attach(...)`，自己 `new WebSocketServer({ noServer: true })`；
    与 worker 通道各用各的 `WebSocketServer`。
 
@@ -124,8 +124,9 @@ WS 限制：单帧 128 KB；心跳 25s，两次不回就关。
 
 ## 4. 安全
 
-- **权限**：`session.read` + worker 的 `sessions` 能力。不新增能力闭集项（见 §0）。
-  只读凭据没有 `sessions`，天然开不了终端。
+- **权限**：`session.prompt` + worker 的 `sessions` 能力。不新增能力闭集项（见 §0）。
+  能往 PTY 里打字等于能以会话身份执行命令，所以只读角色（viewer 只有 `session.read`）
+  不能开终端——issue #213。预览链接这类只读用途仍传默认的 `session.read`。
 - **cwd**：优先用 hub 下发的 `cwd`（domain 已做 `session.read` 授权与工作空间回退），没有才用
   `workspaces.get(sessionId)`；两者都要过 `WorkerFiles.check()`（`worker-files.ts:62`，
   realpath + 边界 + TOCTOU 防护）。cwd 越界 → 明确报错，不猜目录。
@@ -167,9 +168,10 @@ createTerminalHost({
 
 ## 6. hub 侧
 
-- 新增 `packages/domain/src/use-cases/terminal.ts`：`terminalTarget(subject, sessionId)` → `{ root, workerId }`；
-  授权只到 `session.read`，内部用 `locationOf`（`use-cases/workspaces.ts:20-31`），`root === ''` 报
-  「这条会话还没有工作空间」。
+- 新增 `packages/domain/src/use-cases/terminal.ts`：`terminalTarget(subject, sessionId, permission)` → `{ root, workerId }`；
+  授权是 `session.read`，内部用 `locationOf`（`use-cases/workspaces.ts:20-31`），`root === ''` 报
+  「这条会话还没有工作空间」。另加 `terminalAccess(subject, sessionId)` 只查 `session.prompt`，
+  由终端桥接在 `target` 之后调用（预览链接仍只走 `terminalTarget`）。
 - 新增 `apps/server/src/terminal-bridge.ts`：
   - `attach(request, socket, head)`：握手已鉴权 → 取会话与 terminalId →
     `gateway.openTerminal(...)`（首次会探测 `unsupported` 并缓存）→ 建 WS → 桥接。
