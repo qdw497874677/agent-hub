@@ -8,6 +8,7 @@ import {
   type PreviewDownFrame,
   type PreviewUpFrame
 } from '@agent-hub/contract';
+import { portsInOutput, scanListeningPorts } from './preview-scan.ts';
 
 /**
  * 预览通道（docs/design/preview.md §6）：worker 主动连 hub 的 `/preview`，
@@ -36,6 +37,8 @@ export interface PreviewClientOptions {
   readonly maxStreams?: number;
   /** 等上游响应头的超时，默认 10 秒。 */
   readonly headerTimeoutMs?: number;
+  /** 读本机正在监听的端口；测试注入，默认 `scanListeningPorts`。 */
+  readonly scanPorts?: () => number[];
 }
 
 export interface PreviewClient {
@@ -43,6 +46,11 @@ export interface PreviewClient {
   stop(): Promise<void>;
   /** 当前打开的流数量（观测 / 测试用）。 */
   activeStreams(): number;
+  /**
+   * 从会话的终端输出里发现端口（docs/design/preview.md §5）。
+   * 只有端口确实在 `/proc` 里 LISTEN 才发 `preview_detected`；同一 `sessionId+port` 只发一次。
+   */
+  detect(sessionId: string, text: string): void;
 }
 
 /** 单条预览链接（这里只能按端口区分）的并发上限。 */
@@ -54,6 +62,10 @@ const INITIAL_CREDITS = 8;
 const BACKOFF_BASE_MS = 2_000;
 const BACKOFF_CAP_MS = 30_000;
 const MAX_TUNNEL_HEAD_BYTES = 64 * 1024;
+/** 监听端口的刷新间隔（端口随 agent 起服务而变，10 秒足够，也不至于频繁读 /proc）。 */
+const SCAN_INTERVAL_MS = 10_000;
+/** 契约 `preview_ports.ports` 的上限；本机监听端口再多也只报前 256 个。 */
+const MAX_REPORTED_PORTS = 256;
 
 /** 逐跳头：不透传给上游（也不能透传回 hub）。 */
 const HOP_BY_HOP = new Set([
@@ -99,10 +111,44 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
 
   const streams = new Map<string, StreamState>();
   const perPort = new Map<number, number>();
+  const scanPorts = options.scanPorts ?? ((): number[] => scanListeningPorts());
+  /** 最近一次扫到的监听端口：`detect` 只上报在里面的（/proc 是唯一可信来源）。 */
+  const listening = new Set<number>();
+  /** 已经报过的 `sessionId+port`：一个客户端生命周期内只报一次。 */
+  const announced = new Set<string>();
+  let scanTimer: NodeJS.Timeout | null = null;
   let ws: WebSocket | null = null;
   let stopped = false;
   let attempt = 0;
   let reconnectTimer: NodeJS.Timeout | null = null;
+
+  function isOpen(): boolean {
+    return ws !== null && ws.readyState === WebSocket.OPEN;
+  }
+
+  /** 刷新监听端口并上报；连接没建立时 `send` 自己会跳过，本地集合照常更新。 */
+  function scanAndReport(): void {
+    try {
+      const ports = scanPorts();
+      listening.clear();
+      for (const port of ports) listening.add(port);
+    } catch (error) {
+      log(`扫描监听端口失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    send({ kind: 'preview_ports', ports: [...listening].sort((a, b) => a - b).slice(0, MAX_REPORTED_PORTS) });
+  }
+
+  function startScanTimer(): void {
+    if (scanTimer !== null) return;
+    scanTimer = setInterval(scanAndReport, SCAN_INTERVAL_MS);
+    scanTimer.unref?.();
+  }
+
+  function stopScanTimer(): void {
+    if (scanTimer === null) return;
+    clearInterval(scanTimer);
+    scanTimer = null;
+  }
 
   function send(frame: PreviewDownFrame): void {
     if (ws === null || ws.readyState !== WebSocket.OPEN) return;
@@ -129,6 +175,8 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     socket.on('open', () => {
       attempt = 0;
       log(`预览通道已连上 ${options.url}`);
+      // 重连成功后立刻补一次端口清单：断线期间端口可能已经变了。
+      scanAndReport();
     });
 
     socket.on('message', (raw: Buffer | string) => {
@@ -533,9 +581,11 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
       if (ws !== null || stopped) return;
       stopped = false;
       connect();
+      startScanTimer();
     },
     async stop(): Promise<void> {
       stopped = true;
+      stopScanTimer();
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
@@ -568,6 +618,17 @@ export function createPreviewClient(options: PreviewClientOptions): PreviewClien
     },
     activeStreams(): number {
       return streams.size;
+    },
+    detect(sessionId: string, text: string): void {
+      // 连接断了先攒着不发：发不出去就别消耗「只报一次」的名额，重连后还会再看到输出。
+      if (stopped || !isOpen()) return;
+      for (const hit of portsInOutput(text)) {
+        if (!listening.has(hit.port)) continue;
+        const key = `${sessionId}\u0000${hit.port}`;
+        if (announced.has(key)) continue;
+        announced.add(key);
+        send({ kind: 'preview_detected', sessionId, port: hit.port, label: hit.label.slice(0, 60) });
+      }
     }
   };
 }

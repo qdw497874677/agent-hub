@@ -394,6 +394,8 @@ const terminal = createTerminalHost({
   cwdOf: (sessionId) => link.workspaceOf(sessionId),
   onData: (terminalId, chunk) => link.sendTerminalData(terminalId, chunk),
   onExit: (terminalId, code, signal) => link.sendTerminalExit(terminalId, code, signal),
+  // 终端输出旁路一份给预览通道：只有在 /proc 里真的 LISTEN 的端口才会被提议。
+  onOutput: (sessionId, text) => link.forwardTerminalOutput(sessionId, text),
   log
 });
 
@@ -435,6 +437,11 @@ const link = connectWorkerLink({
   groupsDir,
   assets,
   ...(terminal ? { terminal } : {}),
+  /**
+   * 终端输出里认出的端口 → 预览通道（P2 端口发现）。preview 在下面才建，
+   * 这个回调只在会话真的开终端后才被调用，那时 preview 已经就绪。
+   */
+  onTerminalOutput: (sessionId, text) => preview?.detect(sessionId, text),
   build,
   onUpdate,
   provisioner,

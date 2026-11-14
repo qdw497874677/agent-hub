@@ -92,6 +92,11 @@ export interface WorkerLinkOptions {
    * `terminal.*` 一律回 unsupported，界面不显示终端页签。
    */
   readonly terminal?: TerminalHost;
+  /**
+   * 终端原始输出旁路（docs/design/preview.md §5）：组合根拿它做预览端口发现。
+   * 不给 = 什么都不做（老调用方 / 测试）。
+   */
+  readonly onTerminalOutput?: (sessionId: string, text: string) => void;
   /** 连接（最终）关闭了：`reconnect: false` 时每次断线、或 `close()` 之后。 */
   readonly onClose?: (why?: { readonly code: number }) => void;
   /** 每次连上（含重连）。 */
@@ -139,6 +144,8 @@ export interface WorkerLink {
   sendTerminalData(terminalId: string, data: Uint8Array): void;
   /** 终端里的进程退出了。 */
   sendTerminalExit(terminalId: string, code: number, signal?: number): void;
+  /** 终端原始输出转给组合根（预览端口发现用）；没配 `onTerminalOutput` = 丢弃。 */
+  forwardTerminalOutput(sessionId: string, text: string): void;
   /** 当前链路还有多少字节没发出去（终端背压用）。 */
   bufferedAmount(): number;
   /** 会话在这台机器上的工作目录；不在这台机器上跑 = undefined（终端据此报错）。 */
@@ -945,6 +952,9 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     sendTerminalExit(terminalId: string, code: number, signal?: number): void {
       if (!socket || socket.readyState !== WebSocket.OPEN || !accepted) return;
       socket.send(JSON.stringify({ type: 'terminal_exit', terminalId, code, ...(signal === undefined ? {} : { signal }) } satisfies WorkerToServer));
+    },
+    forwardTerminalOutput(sessionId: string, text: string): void {
+      options.onTerminalOutput?.(sessionId, text);
     },
     bufferedAmount(): number {
       return socket?.bufferedAmount ?? 0;

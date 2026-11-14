@@ -434,3 +434,33 @@ test('preview_close：中止上游、不再发数据帧', async () => {
     await upstream.close();
   }
 });
+
+test('detect：只有 scanPorts 里的端口才上报，同一会话同一端口只发一次', async () => {
+  const hub = await startHub();
+  // 假 /proc：只有 5173 在监听；8000 是「输出里写了但根本没起服务」。
+  const client = createPreviewClient({ url: hub.url, credential: 'ahw_test', scanPorts: () => [5173] });
+  client.start();
+  try {
+    const ports = await waitForFrame(hub.frames, (frame) => frame.kind === 'preview_ports', 'ports');
+    if (ports.kind !== 'preview_ports') throw new Error('unreachable');
+    assert.deepEqual(ports.ports, [5173]);
+
+    client.detect('ses_1', '  Local:   http://localhost:5173/');
+    client.detect('ses_1', '再写一遍 127.0.0.1:5173 也只报一次');
+    client.detect('ses_1', 'not listening http://localhost:8000/');
+
+    const detected = await waitForFrame(hub.frames, (frame) => frame.kind === 'preview_detected', 'detected');
+    if (detected.kind !== 'preview_detected') throw new Error('unreachable');
+    assert.equal(detected.sessionId, 'ses_1');
+    assert.equal(detected.port, 5173);
+    assert.equal(detected.label, 'Local:   http://localhost:5173/');
+
+    await delay(80);
+    const all = hub.frames.filter((frame) => frame.kind === 'preview_detected');
+    assert.equal(all.length, 1, '重复的 detect 不应再发帧');
+    assert.ok(!hub.frames.some((frame) => frame.kind === 'preview_detected' && frame.port === 8000), '没监听的端口不该上报');
+  } finally {
+    await stopClient(client);
+    await hub.close();
+  }
+});

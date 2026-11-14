@@ -88,6 +88,11 @@ export interface TerminalHostOptions {
   readonly cwdOf: (sessionId: string) => string | undefined;
   readonly onData: (terminalId: string, chunk: Uint8Array) => void;
   readonly onExit: (terminalId: string, code: number, signal?: number) => void;
+  /**
+   * 原始输出旁路一份（base64 之前），给预览的端口发现用（docs/design/preview.md §5）。
+   * 回调抛错只记日志：发现端口坏了不能影响终端本身。
+   */
+  readonly onOutput?: (sessionId: string, text: string) => void;
   /** 注入 pty 实现（测试 / 嵌入式）；不给就动态 import('node-pty')。 */
   readonly pty?: PtyModuleLike;
   /** 自定义加载器：返回 null = 这台机器用不了。默认 `import('node-pty')`。 */
@@ -424,6 +429,13 @@ export function createTerminalHost(options: TerminalHostOptions): TerminalHost |
     if (entry.closed || data === '') return;
     const chunk = Buffer.from(data, 'utf8');
     if (chunk.length === 0) return;
+    if (options.onOutput) {
+      try {
+        options.onOutput(entry.sessionId, chunk.toString('utf8'));
+      } catch (error) {
+        log(`转发终端 ${entry.terminalId} 输出给端口发现失败：${reasonOf(error)}`);
+      }
+    }
     if (entry.pending + chunk.length > MAX_PENDING_BYTES) {
       if (!entry.warnedOverflow) {
         entry.warnedOverflow = true;

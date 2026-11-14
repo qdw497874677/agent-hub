@@ -39,6 +39,15 @@ export const previewDownSchema = z.discriminatedUnion('kind', [
   }),
   z.object({ kind: z.literal('preview_data'), streamId: streamIdSchema, data: base64Schema }),
   z.object({ kind: z.literal('preview_end'), streamId: streamIdSchema }),
+  /** 这台机器上正在监听的回环端口（定期上报，hub 用来标 ready / stale）。 */
+  z.object({ kind: z.literal('preview_ports'), ports: z.array(z.number().int().min(1).max(65535)).max(256) }),
+  /** 从终端输出里认出来的端口；`port` 已经过 worker 侧 /proc 校验。 */
+  z.object({
+    kind: z.literal('preview_detected'),
+    sessionId: z.string().min(1).max(200),
+    port: z.number().int().min(1).max(65535),
+    label: z.string().max(60).optional()
+  }),
   z.object({
     kind: z.literal('preview_failed'),
     streamId: streamIdSchema,
@@ -61,9 +70,17 @@ export const previewLinkSchema = z.object({
   source: z.enum(['detected', 'manual']),
   state: z.enum(['ready', 'stale', 'offline']),
   createdAt: z.number().int().nonnegative(),
-  lastSeenAt: z.number().int().nonnegative()
+  lastSeenAt: z.number().int().nonnegative(),
+  /** 是否签了公开分享令牌（令牌本身只存哈希，不回传）。 */
+  shared: z.boolean(),
+  shareExpiresAt: z.number().int().nonnegative().nullable()
 });
 export type PreviewLinkDto = z.infer<typeof previewLinkSchema>;
+
+export const sharePreviewRequest = z.object({
+  /** 有效期（小时），默认 24，上限 24 * 30。 */
+  hours: z.number().int().min(1).max(720).optional()
+});
 
 export const createPreviewRequest = z.object({
   port: z.number().int().min(1).max(65535),
