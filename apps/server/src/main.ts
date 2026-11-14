@@ -490,7 +490,13 @@ const projectTeamOf = async (projectId: string) => (await store.projects.byId(pr
 const pullRequestRepo = pullRequestRepoEarly;
 const workspaceSweeps = createSqliteWorkspaceSweeps(store.db);
 // 清理（ADR 0027 阶段 3）：按 PR 合并 / 任务结束判断，删工作空间时一起删检查点 ref
-(deps as { cleanup?: Deps["cleanup"] }).cleanup = { sweeps: workspaceSweeps, pullRequests: pullRequestRepo, dropCheckpoints: (sessionId: string) => filesService.dropSession(sessionId) };
+(deps as { cleanup?: Deps["cleanup"] }).cleanup = {
+  sweeps: workspaceSweeps,
+  pullRequests: pullRequestRepo,
+  dropCheckpoints: (sessionId: string) => filesService.dropSession(sessionId),
+  // 终端桥在下面才装配，这里留一个晚绑定的钩子：terminalId 形如 `<sessionId>:<n>`。
+  liveSessions: () => (terminalBridge === null ? [] : [...terminalBridge.knownTerminals()].map((id) => id.split(':')[0] ?? '').filter(Boolean))
+};
 // 提交 / 推送 / PR（ADR 0027 阶段 2）：文字由提炼模型写（D4），PR 走团队 token → gh → 链接（D3）
 const gitService = createGitWorkflowService({
   projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,

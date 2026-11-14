@@ -6,6 +6,9 @@ import { createTaskUseCase, setTaskStatusUseCase } from './tasks.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { removeWorkspaceUseCase, sweepTemporaryWorkspacesUseCase, unsavedReason } from './workspace-cleanup.ts';
+import { deriveSessionUseCase } from './sessions.ts';
+import { systemSubject } from '../access.ts';
+import { asAgentId } from '../ids.ts';
 
 async function world(repoUrl?: string) {
   const w = inMemoryDeps();
@@ -34,6 +37,51 @@ test('任务没结束不清理；结束且干净就删', async () => {
   const report = await sweepTemporaryWorkspacesUseCase(w.deps, { taskId: w.task.id });
   assert.deepEqual(report.removed, [w.temp.id]);
   assert.equal((await w.deps.workspaces.byId(w.temp.id))?.state, 'removed');
+});
+
+test('终端还开着的会话：目录不清，记成跳过', async () => {
+  const w = await world('https://example.com/demo.git');
+  w.agents.push({
+    id: asAgentId('fake'),
+    label: 'Fake',
+    capabilities: { prompt: { state: 'available' }, interrupt: { state: 'available' }, fork: { state: 'available' }, resume: { state: 'available' }, tool_calls: { state: 'available' }, artifacts: { state: 'available' }, structured_events: { state: 'available' }, attachments: { state: 'available' } },
+    models: ['m1'],
+    defaultModel: 'm1',
+    options: []
+  });
+  const session = await deriveSessionUseCase(w.deps, {
+    taskId: w.task.id,
+    agentId: 'fake',
+    model: 'm1',
+    actor: systemSubject('test'),
+    workspaceId: w.temp.id
+  });
+  assert.ok(session.ok, session.ok ? '' : session.error.message);
+  // 会话已经结束（不然「在跑」就先拦住了），只剩终端还开着。
+  await w.deps.sessions.save({ ...session.value, status: 'done' });
+  await setTaskStatusUseCase(w.deps, w.task.id, 'done', 'user');
+  const cleanup = { ...(w.deps.cleanup as NonNullable<typeof w.deps.cleanup>), liveSessions: () => [session.value.id] };
+  const guarded = await sweepTemporaryWorkspacesUseCase({ ...w.deps, cleanup });
+  assert.deepEqual(guarded.removed, []);
+  assert.deepEqual(guarded.skipped, [w.temp.id]);
+  // 关掉终端后就照常清
+  const open = await sweepTemporaryWorkspacesUseCase(w.deps);
+  assert.deepEqual(open.removed, [w.temp.id]);
+});
+
+test('孤儿目录：按登记的 worktree 父目录反推，自定义 WORKER_WORKTREES_DIR 也认', async () => {
+  const w = await world('https://example.com/demo.git');
+  const parent = w.temp.path.slice(0, w.temp.path.lastIndexOf('/'));
+  const gateway = w.deps.gateway as { listDirectories: (workerId: string | null, path: string) => Promise<unknown> };
+  const original = gateway.listDirectories;
+  gateway.listDirectories = async (_workerId, path) => ({
+    ok: true as const,
+    value: { path, exists: true, entries: [{ name: 'ghost', path: `${path}/ghost`, kind: 'directory' }] }
+  });
+  const records = await cleanupRecordsUseCase(w.deps, systemSubject('test'), w.project.id);
+  gateway.listDirectories = original;
+  assert.ok(records.ok, records.ok ? '' : records.error.message);
+  assert.deepEqual(records.value.orphans.map((item) => item.path), [`${parent}/ghost`]);
 });
 
 test('有没推送的提交：不删，标已保留并写明原因；强制删除才删', async () => {

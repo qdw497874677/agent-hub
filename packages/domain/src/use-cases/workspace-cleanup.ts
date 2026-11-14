@@ -30,9 +30,15 @@ export const nonGitReason = (files: number) => `不是 git 仓库，目录里还
 const FINISHED = new Set(['done', 'abandoned']);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-async function busy(deps: Pick<Deps, 'sessions'>, workspace: Workspace): Promise<boolean> {
+async function busy(deps: Pick<Deps, 'sessions'> & Partial<Pick<Deps, 'cleanup'>>, workspace: Workspace): Promise<boolean> {
   // ADR 0026：长期工作空间被多个项目共用，所有项目的会话都算
-  return (await deps.sessions.listByWorkspace(workspace.id)).some((session) => session.status === 'running');
+  const sessions = await deps.sessions.listByWorkspace(workspace.id);
+  if (sessions.some((session) => session.status === 'running')) return true;
+  // 会话可能已经 done，但终端还开着：删目录会把正在用的 shell 抽掉。
+  const live = deps.cleanup?.liveSessions?.() ?? [];
+  if (live.length === 0) return false;
+  const open = new Set(live);
+  return sessions.some((session) => open.has(session.id));
 }
 
 const removeKind = (workspace: Workspace) => (workspace.source === 'worktree' ? 'worktree' : 'directory');

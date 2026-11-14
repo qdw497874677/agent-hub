@@ -113,6 +113,11 @@ export interface CleanupExtras {
   readonly pullRequests: Pick<PullRequestRepository, 'byWorkspace' | 'byTask'>;
   /** 删工作空间（人点的）时把它会话的检查点 ref 一起删；自动清理只删 checkout，不调它。 */
   readonly dropCheckpoints?: (sessionId: string) => Promise<void>;
+  /**
+   * 此刻还有 PTY 开着的会话 id（终端页签）。这些会话所在的空间不自动清理：
+   * 会话状态可能是 done，但用户手里那条 shell 还站着，删目录会把它抽掉。
+   */
+  readonly liveSessions?: () => readonly string[];
 }
 
 export interface MemoryGuidance {

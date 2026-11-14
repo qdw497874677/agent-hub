@@ -62,8 +62,10 @@ export async function cleanupRecordsUseCase(
   const parents = new Map<string, string | null>();
   for (const w of await deps.workspaces.byProject(project.value.id)) {
     if (w.source !== 'worktree' || w.kind !== 'temporary') continue;
+    // 父目录就是这台机器上「放 worktree 的容器」——不管是默认的仓库旁 `.worktrees/<repo>/`
+    // 还是 `WORKER_WORKTREES_DIR=<dir>/<repo>/`，都由登记的 worktree 路径反推，不再按路径片段猜。
     const parent = w.path.slice(0, w.path.lastIndexOf('/'));
-    if (parent.includes('/.worktrees/')) parents.set(`${w.workerId ?? ''}\u0000${parent}`, w.workerId);
+    if (parent !== '') parents.set(`${w.workerId ?? ''}\u0000${parent}`, w.workerId);
   }
   for (const [key, workerId] of parents) {
     const parent = key.split('\u0000')[1] ?? '';
