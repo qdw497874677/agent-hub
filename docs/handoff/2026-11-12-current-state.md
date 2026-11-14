@@ -9,13 +9,13 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `2c2d49c test(e2e): 多仓库项目全链路，修文件用例的手机入口与截图目录` |
-| origin/master | 已同步到 `2c2d49c` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `2c2d49c`（2026-11-14 11:36 用 `deploy-aliyun.sh --bundle` 部署，快照 `hub-20261114-113618-pre-c60df95.db`） |
+| 本地 HEAD | `d18433e test(e2e): 侧聊从菜单打开、不进画布、能返回主会话` |
+| origin/master | 已同步到 `d18433e` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `d18433e`（2026-11-14 12:12 用 `deploy-aliyun.sh --bundle` 部署） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `c60df95`（组合工作空间需要它） |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `d18433e` |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` 1376 单测：1368 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/multi-repo` 1/1、`worktree` 4/4、`settle` 2/2、`files` 1/1 |
+| 最近完整验证 | `npm test` 1403 单测：1395 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/multi-repo` 1/1、`worktree` 4/4、`settle` 2/2、`side-chat` 1/1 |
 
 当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）。
 
