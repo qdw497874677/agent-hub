@@ -62,3 +62,38 @@ export function previewAge(now: number, lastSeenAt: number): string {
 export function sortPreviews(links: readonly PreviewLinkDto[]): PreviewLinkDto[] {
   return [...links].sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
+
+/**
+ * 公开分享的有效期档位（小时）。1 小时用来临时给同事看一眼，7 天是常用上限；
+ * 真正的天花板由后端兜（`sharePreviewRequest` 的 max 720）。
+ */
+export const shareHoursOptions = [1, 24, 72, 168] as const;
+
+/** 档位的人话（1 小时 / 1 天 / 3 天 / 7 天），界面上不出现「24 小时」这种要心算的写法。 */
+export function shareHoursLabel(hours: number): string {
+  if (hours === 1) return '1 小时';
+  if (hours % 24 === 0) return `${hours / 24} 天`;
+  return `${hours} 小时`;
+}
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * 分享状态那一行：只说「还开着多久」或「已经过期」，没分享就什么都不说（返回 null）。
+ *
+ * 有 `expiresAt` 才谈得上剩多久；后端理论上两者一起给，但缺一个就当没有（宁可少说一句，
+ * 也不要在界面上编一个到期时间）。
+ */
+export function shareStateText(link: { shared: boolean; shareExpiresAt: number | null }, now: number): string | null {
+  if (!link.shared || link.shareExpiresAt === null) return null;
+  const left = link.shareExpiresAt - now;
+  if (left <= 0) return '分享已过期';
+  if (left < HOUR_MS) return '公开分享 · 不到 1 小时';
+  // 向上取整：还剩 23 小时 10 分时说「还有 24 小时」，别让人以为少算了一截。
+  return `公开分享 · 还有 ${Math.ceil(left / HOUR_MS)} 小时`;
+}
+
+/** 分享是否仍然有效（行上的「公开」标签只在有效时亮）。 */
+export function shareActive(link: { shared: boolean; shareExpiresAt: number | null }, now: number): boolean {
+  return link.shared && link.shareExpiresAt !== null && link.shareExpiresAt > now;
+}

@@ -257,7 +257,19 @@ export const previewsApi = {
   create: (sessionId: string, body: { port: number; label?: string }) =>
     post<{ link: PreviewLinkDto }>(`${sq(sessionId)}/previews`, body).then((r) => r.link),
   remove: (sessionId: string, linkId: string) =>
-    call<{ ok: true }>(`${sq(sessionId)}/previews/${encodeURIComponent(linkId)}`, { method: 'DELETE' })
+    call<{ ok: true }>(`${sq(sessionId)}/previews/${encodeURIComponent(linkId)}`, { method: 'DELETE' }),
+  /**
+   * 签一条公开分享链接（P3）：没登录的人拿着返回的 url 也能看。
+   * `url` 里带一次性令牌，**只在这一次响应里出现**，页面关掉就找不回来——要留给人就当场复制。
+   */
+  share: (sessionId: string, linkId: string, hours?: number) =>
+    post<{ ok: true; url: string; expiresAt: number }>(
+      `${sq(sessionId)}/previews/${encodeURIComponent(linkId)}/share`,
+      hours === undefined ? {} : { hours }
+    ),
+  /** 撤销公开分享：令牌立刻作废，链接回到「只有登录用户能看」。 */
+  unshare: (sessionId: string, linkId: string) =>
+    call<{ ok: true }>(`${sq(sessionId)}/previews/${encodeURIComponent(linkId)}/share`, { method: 'DELETE' })
 };
 
 export const api = {
@@ -317,6 +329,9 @@ export const api = {
   /** 项目级 worktree 配置（docs/design/worktree.md §3）：PATCH 只改这一块，不碰名字和说明。 */
   saveProjectWorktree: (projectId: string, input: ProjectWorktreePatch) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  /** 项目默认预览端口（docs/design/preview.md §10）：同一个 PATCH，只带 previewPort。 */
+  saveProjectPreviewPort: (projectId: string, previewPort: number | null) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ previewPort }) }),
   /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
   saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),

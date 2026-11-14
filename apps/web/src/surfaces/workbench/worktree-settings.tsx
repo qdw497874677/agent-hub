@@ -35,6 +35,25 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
     setDraft(worktreeDraft(project));
   }, [stored]);
 
+  const [portText, setPortText] = useState(project.previewPort == null ? '' : String(project.previewPort));
+  useEffect(() => {
+    setPortText(project.previewPort == null ? '' : String(project.previewPort));
+  }, [project.previewPort]);
+  const portValue = portText.trim() === '' ? null : Number(portText.trim());
+  const portProblem =
+    portText.trim() !== '' && (portValue === null || !Number.isInteger(portValue) || portValue < 1024 || portValue > 65535)
+      ? '端口要是 1024–65535 的整数'
+      : null;
+  const portDirty = (project.previewPort ?? null) !== portValue;
+  const savePort = useMutation({
+    mutationFn: () => api.saveProjectPreviewPort(project.id, portValue),
+    onSuccess: (next) => {
+      queryClient.setQueryData(['canvas', next.id], (old: unknown) =>
+        old !== null && typeof old === 'object' && 'project' in old ? { ...(old as object), project: next } : old
+      );
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    }
+  });
   const problem = editable ? worktreeDraftProblem(draft) : null;
   const dirty = editable && JSON.stringify(worktreeDraft(project)) !== JSON.stringify(draft);
   const save = useMutation({
@@ -140,6 +159,37 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
           {error ? (
             <p className="mt-1 text-meta text-rust" data-testid="worktree-error">{error}</p>
           ) : null}
+
+          <label className="mt-4 block text-meta text-secondary" htmlFor="preview-port">预览默认端口（可留空）</label>
+          <p className="mb-1 text-meta text-tertiary">
+            只用来在会话「预览」页签里预填端口，不会自动开链接。比如 Vite 的 5173。
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              id="preview-port"
+              type="text"
+              inputMode="numeric"
+              placeholder="5173"
+              className="w-20 rounded-sm border border-hair bg-card px-2 py-1 text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent"
+              data-testid="preview-port"
+              value={portText}
+              onChange={(event) => setPortText(event.target.value)}
+            />
+            <button
+              type="button"
+              className={SECONDARY_BUTTON}
+              data-testid="preview-port-save"
+              disabled={portProblem !== null || !portDirty || savePort.isPending}
+              onClick={() => savePort.mutate()}
+            >
+              {savePort.isPending ? '保存中…' : '保存端口'}
+            </button>
+            {portProblem !== null ? (
+              <span className="text-meta text-rust" data-testid="preview-port-error">{portProblem}</span>
+            ) : savePort.isSuccess && !portDirty ? (
+              <span className="text-meta text-tertiary">已保存</span>
+            ) : null}
+          </div>
           <div className="mt-2 flex items-center justify-end gap-2">
             {save.isSuccess && !dirty ? <span className="text-meta text-tertiary">已保存</span> : null}
             <button

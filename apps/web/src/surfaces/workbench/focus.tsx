@@ -811,7 +811,7 @@ export function FocusView({
       {/* 预览和终端一样：首访后保持挂载（hidden 不卸载），切回来表单里没提交的内容还在 */}
       {visited.has('preview') ? (
         <div key={`${session.id}-preview`} className={tab === 'preview' ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-          <PreviewPanel sessionId={session.id} active={tab === 'preview'} />
+          <PreviewPanel sessionId={session.id} active={tab === 'preview'} defaultPort={canvas.project.previewPort ?? null} />
         </div>
       ) : null}
       {profileOpen ? (

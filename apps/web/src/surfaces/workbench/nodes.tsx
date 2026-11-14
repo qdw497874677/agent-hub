@@ -1,8 +1,11 @@
 import { AuthorTag } from '../../atoms/author.tsx';
 import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '@xyflow/react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { createPortal } from 'react-dom';
-import type { AttachmentInputDto, PromptAckDto, SessionDto, TaskDto, WorkerInfoDto } from '../../shell/api.ts';
+import { previewsApi, type AttachmentInputDto, type PreviewLinkDto, type PromptAckDto, type SessionDto, type TaskDto, type WorkerInfoDto } from '../../shell/api.ts';
+import { sessionKeys } from '../../shell/query-keys.ts';
+import { previewUrlFor } from '../../atoms/preview-links.ts';
 import { WorkerChip } from '../../shell/workers.tsx';
 import { ResourceBadge, SessionUsage } from '../../shell/resources.tsx';
 import { CardComposer } from './card-composer.tsx';
@@ -233,6 +236,37 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
   const scroller = useStickToBottom<HTMLDivElement>(session.id);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
+  /**
+   * 卡片上的「预览」入口（docs/design/preview.md §10）：只在会话有能打开的链接时出现。
+   * 列表和预览页签共用同一份缓存（`sessionKeys.previews`），那边增删会一起失效；
+   * 30 秒内不重复问——画布上几十张卡同时拉一次就够了。
+   */
+  const previews = useQuery({
+    queryKey: sessionKeys.previews(session.id),
+    queryFn: () => previewsApi.list(session.id),
+    staleTime: 30_000
+  });
+  const readyPreviews = (previews.data ?? []).filter((link) => link.state === 'ready');
+  const onlyPreview = readyPreviews.length === 1 ? (readyPreviews[0] ?? null) : null;
+  const [previewMenu, setPreviewMenu] = useState<{ x: number; y: number } | null>(null);
+  const previewButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  // 菜单开着时 Esc 收起，焦点回到「预览」按钮：和会话页里的分享面板一个规矩。
+  useEffect(() => {
+    if (!previewMenu) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setPreviewMenu(null);
+      previewButtonRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewMenu]);
+
+  const openPreview = (link: PreviewLinkDto) => {
+    window.open(previewUrlFor(window.location, link.hubPort), '_blank', 'noopener');
+  };
+
   // 发出去的反馈和专注对话是同一份实现：乐观气泡、8 秒未送达重试/放弃、和 journal 回显对账。
   const deliveriesBySeq = useDeliveries(session.id, live?.lastSeq ?? session.lastSeq);
   const delivery = usePromptDelivery({
@@ -318,6 +352,37 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             <button role="menuitem" className="px-3 py-1.5 text-left text-meta text-primary hover:bg-hair/40" onClick={(event) => { event.stopPropagation(); setMenu(null); onOpen(); }}>
               打开会话页
             </button>
+          </div>
+        </>,
+        document.body,
+      ) : null}
+      {/* 多个预览时的极简选择：菜单挂到 body、用屏幕坐标，和右键菜单一样不受画布缩放影响。 */}
+      {previewMenu ? createPortal(
+        <>
+          <div className="nodrag fixed inset-0 z-[60]" onPointerDown={() => setPreviewMenu(null)} />
+          <div
+            data-testid="card-preview-menu"
+            role="menu"
+            aria-label="选择要打开的预览"
+            className="nodrag fixed z-[61] flex min-w-40 max-w-52 flex-col rounded-sm border border-hair bg-card py-1 shadow-md"
+            style={{ left: previewMenu.x, top: previewMenu.y }}
+          >
+            {readyPreviews.map((link) => (
+              <button
+                key={link.id}
+                data-testid="card-preview-item"
+                role="menuitem"
+                className="truncate px-3 py-1.5 text-left text-meta text-primary hover:bg-hair/40"
+                title={`在新标签打开 ${previewUrlFor(window.location, link.hubPort)}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPreviewMenu(null);
+                  openPreview(link);
+                }}
+              >
+                {link.label || `端口 ${link.port}`}
+              </button>
+            ))}
           </div>
         </>,
         document.body,
@@ -471,9 +536,44 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         error={error}
       />
 
-      <footer className="mt-2 flex items-center justify-between border-t border-hair pt-1.5 text-meta text-tertiary">
+      <footer className="mt-2 flex min-w-0 items-center justify-between gap-2 border-t border-hair pt-1.5 text-meta text-tertiary">
         <span className="font-mono">#{live?.lastSeq ?? session.lastSeq}</span>
-        <span>{session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '从任务派生'}</span>
+        <span className="flex min-w-0 items-center gap-2">
+          {readyPreviews.length > 0 ? (
+            <button
+              ref={previewButtonRef}
+              data-testid="card-preview"
+              className="nodrag inline-flex min-h-6 shrink-0 items-center rounded-sm border border-hair px-1.5 text-meta text-secondary hover:border-accent hover:text-accent [@media(pointer:coarse)]:min-h-8"
+              aria-label={
+                readyPreviews.length > 1 ? `预览（${readyPreviews.length} 个链接）` : '在新标签打开预览'
+              }
+              title={
+                onlyPreview
+                  ? `在新标签打开 ${previewUrlFor(window.location, onlyPreview.hubPort)}`
+                  : `选择要打开的预览（${readyPreviews.map((link) => link.label || `端口 ${link.port}`).join('、')}）`
+              }
+              onClick={(event) => {
+                event.stopPropagation();
+                if (onlyPreview) {
+                  openPreview(onlyPreview);
+                  return;
+                }
+                // 菜单往上展开：按钮在卡片底部，往下会被屏幕边裁掉。
+                const box = event.currentTarget.getBoundingClientRect();
+                const height = readyPreviews.length * 32 + 8;
+                setPreviewMenu({
+                  x: Math.max(4, Math.min(box.left, window.innerWidth - 208)),
+                  y: Math.max(4, box.top - height)
+                });
+              }}
+            >
+              预览{readyPreviews.length > 1 ? ` ${readyPreviews.length}` : ''}
+            </button>
+          ) : null}
+          <span className="truncate">
+            {session.origin.kind === 'fork' ? `分叉自 #${session.origin.atSeq}` : '从任务派生'}
+          </span>
+        </span>
       </footer>
 
       <Handle id="link-source" type="source" position={Position.Bottom} title="拖到另一条会话，建立连接" isConnectable={data.online !== false} className="!size-2 !border-0 !bg-accent" />
