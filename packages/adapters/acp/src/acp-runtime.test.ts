@@ -262,6 +262,10 @@ test('acp runtime: 回合结束后 resync 重放只补后台子代理的新总�
   // 再拉一次：整段历史都见过了，不该返回任何事件（worker 侧还有一层指纹兜底）
   assert.deepEqual(await session.resync(), []);
 
+  // opencode 每次 session/load 之后都会重发同一份命令表：内容没变就不该再进队列
+  const commandEvents = seen.filter((event) => event.kind === 'commands').length;
+  assert.ok(commandEvents <= 1, `命令表只报一次，实际 ${commandEvents} 次`);
+
   // 重放的事件不能进正常队列：队列里只剩收尾（未结束的子代理 + dispose 的 stopped）
   const tail = session.events()[Symbol.asyncIterator]();
   await session.dispose();

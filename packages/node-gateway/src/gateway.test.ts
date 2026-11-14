@@ -346,6 +346,31 @@ test('回合结束后仍有后台子代理：worker 周期性 resync，只转发
   );
 });
 
+test('重放里一直没有子代理终态：连续几轮没新东西就停止拉取', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const state = { pending: 1, calls: 0, stopAfter: null as number | null, resyncing: false, concurrent: false };
+  const link = connectWorkerLink({
+    url,
+    token: '',
+    workerId: 'w1',
+    label: 'x',
+    runtimes: [resyncRuntime(state)],
+    resyncIntervalMs: 10,
+    resyncQuietRounds: 3
+  });
+  await rec.until(() => rec.hellos.length === 1);
+  assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '派给子代理' });
+  await rec.until(() => rec.statuses.includes('idle'));
+  await rec.until(() => state.calls >= 4);
+  const settled = state.calls;
+  // pendingSubagents 永远是 1（opencode 的重放里没有终态），靠「连续几轮没新事件」收手
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await stop(link);
+  assert.equal(state.calls, settled, '安静下来之后不再空转 session/load');
+  assert.equal(rec.events.filter((event) => event.kind === 'text' && event.delta === '子代理已完成').length, 1);
+});
+
 test('后台子代理还没结束时会话又收到 prompt：先停拉取，等 session/load 落地再发 prompt', async () => {
   const { rec, gateway, url, stop } = await harness(null);
   const state = { pending: 1, calls: 0, stopAfter: null as number | null, resyncing: false, concurrent: false };

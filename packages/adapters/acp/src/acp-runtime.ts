@@ -73,6 +73,8 @@ class AcpSession implements RuntimeSession {
   private readonly seenKeys = new Set<string>();
   /** 同一时刻只允许一次 session/load：和 prompt 并发会打乱两边的 session/update。 */
   private resyncing: Promise<readonly ResyncEntry[]> | null = null;
+  /** 上一次报给 hub 的命令表指纹：opencode 每次 session/load 都会重播一次，同名就别再发。 */
+  private commandsKey: string | null = null;
   /** 主动 dispose 导致的进程退出记 stopped，不是 failed。 */
   private disposed = false;
   private current: readonly RuntimeOption[] = [];
@@ -157,17 +159,28 @@ class AcpSession implements RuntimeSession {
       const fresh = this.replayEvents(this.decode(update, meta, false), update);
       // session/load 会回放历史，但也会重新上报当前命令表；命令不是历史，恢复会话时不能一起丢。
       if (this.replayBuffer === null && update['sessionUpdate'] === 'available_commands_update') {
-        for (const entry of fresh) this.queue.push(entry.event);
+        for (const entry of fresh) this.push(entry.event);
       }
       return;
     }
 
     const events = this.decode(update, meta, true);
     this.recordLive(events, update);
-    for (const event of events) {
-      if (PRODUCING.has(event.kind)) this.produced = true;
-      this.queue.push(event);
+    for (const event of events) this.push(event);
+  }
+
+  /**
+   * 进队列前去掉重复的命令表：session/load 之后 opencode 会再发一次 `available_commands_update`，
+   * 内容没变就不该在每个 resync 周期往 journal 里加一行。
+   */
+  private push(event: SessionEvent): void {
+    if (event.kind === 'commands') {
+      const key = event.commands.map((command) => command.name).join(',');
+      if (key === this.commandsKey) return;
+      this.commandsKey = key;
     }
+    if (PRODUCING.has(event.kind)) this.produced = true;
+    this.queue.push(event);
   }
 
   /** 把一条 session/update 翻译成平台事件；codec 能处理就不走通用 mapper。 */

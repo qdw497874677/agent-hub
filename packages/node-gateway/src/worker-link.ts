@@ -142,6 +142,8 @@ export interface WorkerLinkOptions {
    * （opencode 的 ACP 适配器在那之后不再推 session/update）。默认 5000。
    */
   readonly resyncIntervalMs?: number;
+  /** 连续多少轮没补到新事件就停止拉取（默认 12；`resyncIntervalMs` 5000 时约一分钟）。 */
+  readonly resyncQuietRounds?: number;
   /** 套件清单采集（ADR 0021 §7）：连上时、运行时任务结束后、每 `inventoryIntervalMs` 报一次。不给 = 不报。 */
   readonly inventory?: () => WorkerInventory;
   /** 默认 6 小时。 */
@@ -801,6 +803,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
    * 稳定指纹去重后照常发给 hub（hub 那边 ingest 会落盘 + 发帧）。
    */
   const RESYNC_INTERVAL_MS = options.resyncIntervalMs ?? 5_000;
+  /** 连续这么多轮没补到新东西就停：重放里没有子代理终态，pendingSubagents 可能永远不归零。 */
+  const RESYNC_QUIET_ROUNDS = options.resyncQuietRounds ?? 12;
   const resyncLoops = new Map<
     string,
     {
@@ -847,6 +851,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       cancelled: false,
       timer: null as NodeJS.Timeout | null,
       inFlight: null as Promise<void> | null,
+      quiet: 0,
       seen: new Set<string>()
     };
     resyncLoops.set(sessionId, loop);
@@ -874,7 +879,17 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         if (loop.cancelled || sessions.get(sessionId) !== session) return;
         const fresh = entries.filter((entry) => !loop.seen.has(entry.key));
         for (const entry of fresh) loop.seen.add(entry.key);
-        if (fresh.length === 0) return;
+        if (fresh.length === 0) {
+          // opencode 的重放里没有子代理终态，pendingSubagents 可能一直 >0；
+          // 一分钟都没新东西就当后台已经安静了，别再每 5 秒 session/load 一次。
+          loop.quiet += 1;
+          if (loop.quiet >= RESYNC_QUIET_ROUNDS) {
+            options.onLog?.(`会话 ${sessionId} 连续 ${loop.quiet} 轮没有新的后台输出，停止拉取`);
+            stopResync(sessionId);
+          }
+          return;
+        }
+        loop.quiet = 0;
         options.onLog?.(`会话 ${sessionId} 补拉到 ${fresh.length} 条后台子代理输出`);
         for (const entry of fresh) {
           const enriched = await withBytes(sessionId, entry.event);
