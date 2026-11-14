@@ -60,6 +60,35 @@ export function emptyRepoRow(): ProjectRepoRow {
 }
 
 /**
+ * 从仓库地址猜一个子目录名（`https://host/acme/api.git` / `git@host:acme/api.git` → `api`）。
+ * 只在「用户还没自己起名」时用它预填，猜不出来就返回空串。
+ */
+export function repoNameFromUrl(url: string): string {
+  const tail = url.trim().replace(/\/+$/, '').split(/[/:]/).filter(Boolean).pop() ?? '';
+  const bare = tail.replace(/\.git$/i, '');
+  // 剩下带点的说明这不是仓库名（比如只写了主机 `github.com`），别猜
+  if (bare.includes('.')) return '';
+  const name = bare
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 41);
+  return /^[a-z][a-z0-9-]*$/.test(name) ? name : '';
+}
+
+/**
+ * 改地址时的补丁：仓库名还是空的、或者正好等于上一个地址猜出来的名字，就跟着新地址走；
+ * 用户自己改过名字之后就不再动它。
+ */
+export function repoUrlPatch(row: ProjectRepoRow, url: string): Partial<ProjectRepoRow> {
+  const name = row.name.trim();
+  const auto = name === '' || name === repoNameFromUrl(row.url);
+  const next = auto ? repoNameFromUrl(url) : '';
+  return next === '' ? { url } : { url, name: next };
+}
+
+/**
  * 就地校验一行；null = 没问题。错误文案直接给用户看，别只标红一个框。
  * 重名按整份清单判断，所以同一份清单里两个同名行都会报（不猜用户想留哪个）。
  */

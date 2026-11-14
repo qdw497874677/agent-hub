@@ -8,6 +8,8 @@ import {
   repoRowsProblem,
   repoRowsFrom,
   repoRowsValue,
+  repoUrlPatch,
+  repoNameFromUrl,
   reposDirty,
   type ProjectRepoRow
 } from './project-repos.ts';
@@ -88,4 +90,28 @@ test('emptyRepoRow：新行没有 id，保存时才带上名字和地址', () =>
   assert.equal(repoRowProblem(blank, [blank]), '写上仓库名（会用作组合工作空间里的子目录名）');
   // 0 个仓库是合法状态（不绑仓库）
   assert.equal(repoRowsProblem([]), null);
+});
+
+test('repoNameFromUrl：https / scp 写法都能猜出子目录名，猜不出就空', () => {
+  assert.equal(repoNameFromUrl('https://github.com/acme/api.git'), 'api');
+  assert.equal(repoNameFromUrl('git@github.com:acme/api.git'), 'api');
+  assert.equal(repoNameFromUrl('ssh://git@host/acme/web-app.git/'), 'web-app');
+  assert.equal(repoNameFromUrl('https://github.com/acme/My_Repo.git'), 'my-repo');
+  assert.equal(repoNameFromUrl(''), '');
+  assert.equal(repoNameFromUrl('https://github.com/'), '');
+});
+
+test('repoUrlPatch：名字还空着或还是自动填的，就跟着地址走；自己改过就不动', () => {
+  assert.deepEqual(repoUrlPatch(row({ name: '', url: '' }), 'https://h/acme/api.git'), {
+    url: 'https://h/acme/api.git',
+    name: 'api'
+  });
+  assert.deepEqual(repoUrlPatch(row({ name: 'api', url: 'https://h/acme/api.git' }), 'https://h/acme/web.git'), {
+    url: 'https://h/acme/web.git',
+    name: 'web'
+  });
+  assert.deepEqual(repoUrlPatch(row({ name: 'backend', url: 'https://h/acme/api.git' }), 'https://h/acme/web.git'), {
+    url: 'https://h/acme/web.git'
+  });
+  assert.deepEqual(repoUrlPatch(row({ name: '', url: '' }), 'https://github.com/'), { url: 'https://github.com/' });
 });

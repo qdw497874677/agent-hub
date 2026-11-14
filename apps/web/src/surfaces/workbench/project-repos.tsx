@@ -13,6 +13,7 @@ import {
   repoRowsFrom,
   repoRowProblem,
   reposDirty,
+  repoUrlPatch,
   type ProjectRepoRow
 } from './project-repos.ts';
 
@@ -129,7 +130,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                         aria-label="仓库地址"
                         placeholder="git@github.com:acme/api.git"
                         value={row.url}
-                        onChange={(event) => update(index, { url: event.target.value })}
+                        onChange={(event) => update(index, repoUrlPatch(row, event.target.value))}
                       />
                     </label>
                     <label className="block text-meta text-secondary">
