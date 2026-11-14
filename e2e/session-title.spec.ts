@@ -5,7 +5,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
-const SHOTS = '/workspace/shots/session-title';
+const SHOTS = '/tmp/opencode/shots/session-title';
 
 async function seed(page: Page, baseURL: string, tag: string) {
   await loginByApi(page);

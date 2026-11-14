@@ -14,7 +14,7 @@ test('团队主人邀请成员 → 点信里的链接设密码加入 → 主人�
   await page.getByRole('button', { name: '发送邀请' }).click();
   await expect(page.getByText('邀请已发出。')).toBeVisible();
   await expect(page.getByTestId('team-invite').filter({ hasText: email })).toBeVisible();
-  await page.screenshot({ path: '/workspace/shots/users/team-invite.png' });
+  await page.screenshot({ path: '/tmp/opencode/shots/users/team-invite.png' });
 
   const guest = await browser.newContext();
   const invitee = await guest.newPage();
@@ -23,7 +23,7 @@ test('团队主人邀请成员 → 点信里的链接设密码加入 → 主人�
   await invitee.getByLabel('名字（可留空）').fill('受邀者');
   await invitee.getByLabel('密码（至少 10 位）').fill(PASSWORD);
   await invitee.getByLabel('再输一遍').fill(PASSWORD);
-  await invitee.screenshot({ path: '/workspace/shots/users/invite-accept.png' });
+  await invitee.screenshot({ path: '/tmp/opencode/shots/users/invite-accept.png' });
   await invitee.getByRole('button', { name: '加入并登录' }).click();
   await invitee.getByRole('button', { name: '账号' }).click();
   await expect(invitee.getByText('受邀者').first()).toBeVisible();
@@ -72,7 +72,7 @@ test('个人设置：改显示名；改密码要原密码，其他设备掉线',
   await tab.getByLabel('原密码').fill(PASSWORD);
   await tab.getByRole('button', { name: '修改密码' }).click();
   await expect(tab.getByText('密码已修改，其他设备已退出。')).toBeVisible();
-  await tab.screenshot({ path: '/workspace/shots/users/settings.png' });
+  await tab.screenshot({ path: '/tmp/opencode/shots/users/settings.png' });
   expect((await tab.request.get('/api/projects')).status()).toBe(200);
   expect((await other.request.get('/api/projects')).status()).toBe(401);
   await me.close();
@@ -107,5 +107,5 @@ test('审计带 IP，可按动作 / IP 过滤', async ({ page, request }) => {
   await page.getByRole('button', { name: '清空' }).click();
   await page.getByLabel('动作').selectOption('auth.login_failed');
   await expect(rows.first()).toContainText('登录失败');
-  await page.screenshot({ path: '/workspace/shots/users/audit-filter.png', fullPage: true });
+  await page.screenshot({ path: '/tmp/opencode/shots/users/audit-filter.png', fullPage: true });
 });

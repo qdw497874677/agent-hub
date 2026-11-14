@@ -10,7 +10,7 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
  * 空回合（ACP agent 一句话没回就 end_turn）要显示成红色错误，不能静默成「完成」；
  * Worker 启动后的模型自检要把「模型不通」报到控制台。用假 ACP agent（test-fixtures/fake-agent.mjs），不调真模型。
  */
-const SHOTS = '/workspace/shots/empty-turn-error';
+const SHOTS = '/tmp/opencode/shots/empty-turn-error';
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 
 test('空回合显示红色错误，模型自检失败显示在机器列表', async ({ page, baseURL }) => {

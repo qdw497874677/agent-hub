@@ -5,7 +5,7 @@ import { test, expect } from '@playwright/test';
 import { loginByApi } from './login.ts';
 
 /** ADR 0024 · 模型版提炼：项目设置里选提炼模型；默认规则版；只能选已注册、项目能用的 hub 模型（390px）。 */
-const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/workspace/shots/distill';
+const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/distill';
 
 test('会后提炼：默认规则版；乱填的模型被拒；项目设置里有下拉框', async ({ page, baseURL }) => {
   await loginByApi(page);

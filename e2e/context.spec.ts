@@ -9,7 +9,7 @@ import { piModel } from './hub-model.ts';
  * ADR 0020 · 上下文策略 P1：会话详情显示生效策略（默认 compaction / 运行时原生）、估算用量和 L1 缺口；
  * 项目 / 会话选择的接口校验和 404（390px 手机宽度）。
  */
-const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/workspace/shots/context';
+const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/context';
 
 test('上下文策略：默认 compaction，会话详情显示用量和缺口；只能从启用的里选', async ({ page, baseURL }) => {
   await loginByApi(page);

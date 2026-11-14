@@ -6,7 +6,7 @@ import { currentRun } from './run-id.ts';
  * ADR 0016 资产提交与审核：成员提交团队资产 → 不能自批 → 主人逐行评论、要求修改 → 成员改了再提 →
  * 主人通过上架；hub 管理员自批会被标记；新版本先进待审、旧版本照常用；本机只给 hub 管理员；手机宽度可用。
  */
-const SHOTS = '/workspace/shots/asset-review';
+const SHOTS = '/tmp/opencode/shots/asset-review';
 const PASSWORD = 'reviewer pw 12345';
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 const skill = (name: string, body: string) => Buffer.from(`---\nname: ${name}\ndescription: 审核 e2e ${name}\n---\n\n${body}\n`);

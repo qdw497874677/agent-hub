@@ -9,7 +9,7 @@ import { piModel } from './hub-model.ts';
 /**
  * PR #156 方案 A：会话头部「对话 / 文件 / 改动」标签切换，手机 390 与桌面 1280 都要好用。
  */
-const SHOTS = process.env['E2E_SCREENSHOTS_TABS'] ?? '/workspace/shots/files-tabs';
+const SHOTS = process.env['E2E_SCREENSHOTS_TABS'] ?? '/tmp/opencode/shots/files-tabs';
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);

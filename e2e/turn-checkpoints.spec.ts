@@ -11,7 +11,7 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
  * 远端 Worker（files.checkpoint RPC）+ 假 ACP agent 真的在工作区里写文件，两轮对话；
  * 每轮前后各一个 refs/agent-hub/checkpoints/<会话>/<n>；「本轮」只看到这一轮的改动；用户自己暂存的东西不被碰。
  */
-const SHOTS = '/workspace/shots/git-workflow/1-checkpoints';
+const SHOTS = '/tmp/opencode/shots/git-workflow/1-checkpoints';
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 
 /** 检查点用例的无密钥时点。只记状态、error.code、error.message、阶段和 worker 进程时点。 */

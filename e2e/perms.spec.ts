@@ -7,7 +7,7 @@ import { currentRun } from './run-id.ts';
 import { piModel } from './hub-model.ts';
 
 /** ADR 0017 权限模型：角色、自定义角色、viewer 只读、admin 边界、4A 会话说话、5A 临时进入。全部 390px 手机宽度。 */
-const SHOTS = '/workspace/shots/perms';
+const SHOTS = '/tmp/opencode/shots/perms';
 const PASSWORD = 'perms e2e pw 123';
 test.use({ viewport: { width: 390, height: 844 } });
 

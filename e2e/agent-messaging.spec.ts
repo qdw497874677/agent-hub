@@ -9,7 +9,7 @@ import { piModel } from './hub-model.ts';
  * ADR 0018 · agent 间通信 P2P：A ask B 拿到回复、B 忙时排队、没权限 / 找不到被拒、派生要人批（批准卡片，390px 手机宽度）。
  * 深度 / 扇出 / 并发上限和隔离在 domain 单测里逐条测。
  */
-const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/workspace/shots/agent-messaging';
+const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/agent-messaging';
 type Msg = { messageId: string; kind: string; status: string; reply: string | null; failure: string | null; replyTo: string | null; from: string };
 
 async function world(page: Page, baseURL: string) {

@@ -12,7 +12,7 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
  * 2) 临时工作空间：连文件一起回滚——这一轮写的文件没了，之前的还在；新会话从这条之前分叉，原消息回填输入框；原会话不动；
  * 3) 非 git 临时目录：任务结束时目录里还有文件 → 保留并在清理记录写明原因，清空后才删。
  */
-const SHOTS = '/workspace/shots/git-workflow/4-rollback';
+const SHOTS = '/tmp/opencode/shots/git-workflow/4-rollback';
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 
 async function waitTurns(page: Page, sid: string, count: number): Promise<void> {

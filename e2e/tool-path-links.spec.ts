@@ -10,7 +10,7 @@ import { piModel } from './hub-model.ts';
  * 只认工具参数（不扫正文）；工作空间外的路径不可点。390 手机 + 1280 桌面各走一遍。
  * 真 worker（假 agent）不会调工具：跑一轮真的，再往历史接口里插几条 tool_call。
  */
-const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/workspace/shots/tool-path-links';
+const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/tool-path-links';
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);

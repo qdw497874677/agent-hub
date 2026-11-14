@@ -106,7 +106,7 @@ test('hermes-acp：真 hermes acp 会话调到 hub MCP 工具（task_get），�
   await page.setViewportSize({ width: 1280, height: 800 });
   await page.goto(`/#/p/${project.id}/focus/${session.id}`);
   await expect(page.getByText(/HUB_TOOL_OK|NO_HUB_TOOL/).first()).toBeVisible({ timeout: 180_000 });
-  await page.screenshot({ path: '/workspace/shots/hermes-acp/session.png' });
+  await page.screenshot({ path: '/tmp/opencode/shots/hermes-acp/session.png' });
   await expect(page.getByText('HUB_TOOL_OK title-matched').first()).toBeVisible();
   expect(toolSeen).toContain('hermes 工具任务');
   // Hermes 回报的是 custom:m-1；hub 这边仍应记成 hub 模型，重开会话才配得上提供商

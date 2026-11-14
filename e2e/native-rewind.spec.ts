@@ -12,7 +12,7 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
  * - fakeforkfail：声明了但分叉报错 → worker 退成新开会话，hub 补发摘要并在新会话里说明；
  * - fakeacp：不支持 → 黄条，摘要交接。
  */
-const SHOTS = '/workspace/shots/native-rewind';
+const SHOTS = '/tmp/opencode/shots/native-rewind';
 const FAKE = resolve('packages/adapters/acp/test-fixtures/fake-agent.mjs');
 
 type Entry = { seq: number; kind?: string; event?: { kind?: string; text?: string; delta?: string } };

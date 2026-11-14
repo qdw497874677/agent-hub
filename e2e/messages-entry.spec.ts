@@ -5,7 +5,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 
 /** 顶栏常驻「消息」入口：有未读时红点，点进群看过就清掉；手机 390 和桌面 1280 都要在。 */
-const SHOTS = process.env['SHOTS_DIR'] ?? '/workspace/shots/messages-entry';
+const SHOTS = process.env['SHOTS_DIR'] ?? '/tmp/opencode/shots/messages-entry';
 
 async function setup(page: Page, baseURL: string) {
   await loginByApi(page);
