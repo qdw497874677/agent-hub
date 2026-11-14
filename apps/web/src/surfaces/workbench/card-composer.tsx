@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { SessionDto } from '../../shell/api.ts';
 import { useOfflineNotice } from '../../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from '../../atoms/composer-parts.tsx';
+import { composerKeyAction } from '../../atoms/composer-keys.ts';
 
 /**
  * 画布卡片里的输入行：不等你进专注对话，就地能说一句。
@@ -14,6 +15,7 @@ export function CardComposer({
   draft,
   onDraftChange,
   onSend,
+  onSendAndNew,
   onInterrupt,
   busy,
   error,
@@ -23,6 +25,11 @@ export function CardComposer({
   readonly draft: string;
   readonly onDraftChange: (text: string) => void;
   readonly onSend: (text: string) => void;
+  /**
+   * ⌘/Ctrl+Shift+Enter：这一句照样发，发成功后宿主在同一张画布上再开一张卡。
+   * 不传就退回普通发送（和专注对话那边同一条规矩）。
+   */
+  readonly onSendAndNew?: (text: string) => void | Promise<void>;
   readonly onInterrupt: () => void;
   readonly busy: boolean;
   readonly error: string | null;
@@ -57,6 +64,20 @@ export function CardComposer({
     onSend(value);
   }
 
+  /** 先发这一句，发成功了才请宿主去开新卡；失败由宿主的 error 行说，草稿不还回来（卡片上没地方放草稿状态）。 */
+  async function sendAndNew(): Promise<void> {
+    const element = area.current;
+    const value = element?.value.trim() ?? '';
+    if (value === '' || busy || offline !== null) return;
+    if (element) element.value = '';
+    setFilled(false);
+    if (onSendAndNew === undefined) {
+      onSend(value);
+      return;
+    }
+    await onSendAndNew(value);
+  }
+
   return (
     // nodrag：拖卡片和选文字是两种手势，不隔开的话选中一句话会把节点拖走。
     // nowheel：卡片内容滚动不能变成画布缩放。
@@ -68,6 +89,11 @@ export function CardComposer({
       <div className="mt-1 flex items-end gap-1.5 rounded-md border border-hair bg-canvas/40 px-2 py-1.5 focus-within:border-strong">
         <textarea
           aria-label={`对 ${session.id.slice(0, 4)} 说一句`}
+          aria-keyshortcuts={
+            onSendAndNew === undefined
+              ? 'Enter Meta+Enter Control+Enter'
+              : 'Enter Meta+Enter Control+Enter Meta+Shift+Enter Control+Shift+Enter'
+          }
           rows={1}
           className="max-h-24 min-h-[20px] w-full resize-none bg-transparent text-sub text-primary outline-none placeholder:text-tertiary"
           placeholder={running ? '在跑…（■ 停下）' : '说一句…（Enter 发送）'}
@@ -80,7 +106,13 @@ export function CardComposer({
           onKeyDown={(event) => {
             // 卡片上的双击是「打开专注对话」，在输入框里双击只是选词。
             event.stopPropagation();
-            if (event.key === 'Enter' && !event.shiftKey) {
+            const action = composerKeyAction(event);
+            if (action === 'send-and-new') {
+              event.preventDefault();
+              void sendAndNew();
+              return;
+            }
+            if (action === 'send' || (event.key === 'Enter' && !event.shiftKey)) {
               event.preventDefault();
               send();
             }

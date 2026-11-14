@@ -70,6 +70,8 @@ export type SessionNode = Node<
       clientMessageId: string,
       attachments?: readonly AttachmentInputDto[]
     ) => Promise<PromptAckDto>;
+    /** 发完这一句之后，在同一张画布上再开一张卡（沿用「新建会话」那条路，不另写一套派生）。 */
+    onSendAndNew: () => void;
     onInterrupt: () => Promise<void>;
     onChangeOption: (optionId: string, value: string | boolean) => Promise<void>;
   } & Resizable,
@@ -196,7 +198,7 @@ function CardPromptBubble({ text, count = 0, testId }: { text: string; count?: n
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, worker, resources, place, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onInterrupt, onChangeOption, size, onResized } =
+  const { session, live, agentLabel, worker, resources, place, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onSendAndNew, onInterrupt, onChangeOption, size, onResized } =
     data;
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
@@ -252,6 +254,24 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     } finally {
       setBusy(false);
     }
+  }
+
+  /**
+   * 发送并新开：这一句先走同一条发送路径（乐观气泡、回执、失败就地报错），
+   * 真的发出去了才请画布再开一张卡（复用现有的「新建会话」入口，派生逻辑只有一份）。
+   */
+  async function sendAndNew(text: string): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await delivery.deliver(text);
+    } catch (failure) {
+      setError((failure as Error).message);
+      return;
+    } finally {
+      setBusy(false);
+    }
+    onSendAndNew();
   }
 
   async function retry(pending: PendingPrompt): Promise<void> {
@@ -445,6 +465,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         draft={draft}
         onDraftChange={onDraftChange}
         onSend={send}
+        onSendAndNew={sendAndNew}
         onInterrupt={() => void run(onInterrupt)}
         busy={busy}
         error={error}

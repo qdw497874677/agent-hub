@@ -413,6 +413,7 @@ export function CanvasView({
         onDraftChange: (text: string) => onDraftChange(session.id, text),
         onSend: (text: string, clientMessageId: string, attachments?: readonly AttachmentInputDto[]) =>
           onSend(session.id, text, clientMessageId, attachments),
+        onSendAndNew: () => onDerive(session.taskId),
         onInterrupt: () => onInterrupt(session.id),
         onChangeOption: (optionId: string, value: string | boolean) => onChangeOption(session.id, optionId, value)
       }

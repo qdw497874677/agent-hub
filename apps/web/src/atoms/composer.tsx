@@ -7,6 +7,7 @@ import { OptionControls } from './options.tsx';
 import { coarsePointer } from '../shell/device.ts';
 import { useOfflineNotice } from '../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from './composer-parts.tsx';
+import { composerKeyAction } from './composer-keys.ts';
 
 interface Props {
   readonly session: SessionDto;
@@ -15,6 +16,11 @@ interface Props {
   readonly onDraftChange: (text: string) => void;
   /** 返回 false 表示没发出去：输入框和附件都原样留着，别让人重写一遍。 */
   readonly onSend: (text: string, attachments: readonly AttachmentInputDto[]) => Promise<boolean>;
+  /**
+   * 「发送并新建会话」（⌘/Ctrl+Shift+Enter）：草稿先照常走 onSend 发出去，发成功了才调它。
+   * 宿主不传就退回普通发送，并在输入框下面说一句——手势只对硬件键盘有意义，不额外出按钮。
+   */
+  readonly onSendAndNew?: () => void | Promise<void>;
   readonly onInterrupt: () => void;
   readonly busy: boolean;
   readonly error: string | null;
@@ -47,6 +53,7 @@ export function Composer({
   draft,
   onDraftChange,
   onSend,
+  onSendAndNew,
   onInterrupt,
   busy,
   error,
@@ -190,13 +197,37 @@ export function Composer({
   }
 
   async function send(): Promise<void> {
+    await dispatch(onSend);
+  }
+
+  /**
+   * 先发、再新建：发送走的是同一条 onSend（排队、回执、失败把文字还回来都不绕开），
+   * 只有真的发出去了才请宿主去派生新会话。失败就留在原地，草稿不丢。
+   */
+  async function sendAndNew(): Promise<void> {
+    const sent = await dispatch(onSend);
+    if (!sent) return;
+    if (onSendAndNew === undefined) {
+      // 没有这个能力的会话（比如还没接上的旧入口）：照常发送，但明说一句，别让人以为新建了
+      setNotice('这条会话不支持「发送后新建」，已经照常发送');
+      return;
+    }
+    try {
+      await onSendAndNew();
+    } catch (failure) {
+      setNotice((failure as Error).message);
+    }
+  }
+
+  /** 发出去的那一下：清空输入框与附件；没发出去就原样还回去。 */
+  async function dispatch(action: (text: string, attachments: readonly AttachmentInputDto[]) => Promise<boolean>): Promise<boolean> {
     const element = area.current;
     const value = element?.value.trim() ?? '';
-    if ((value === '' && items.length === 0) || busy || offline !== null) return;
+    if ((value === '' && items.length === 0) || busy || offline !== null) return false;
     if (element) element.value = '';
     setFilled(false);
     setTrigger(null);
-    const sent = await onSend(value, items.map(toInput));
+    const sent = await action(value, items.map(toInput));
     if (sent) {
       setItems([]);
       setNotice(null);
@@ -204,6 +235,7 @@ export function Composer({
       element.value = value;
       setFilled(value !== '');
     }
+    return sent;
   }
 
   function onPaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
@@ -297,6 +329,11 @@ export function Composer({
         <textarea
           aria-label="发送消息"
           aria-autocomplete="list"
+          aria-keyshortcuts={
+            onSendAndNew === undefined
+              ? 'Meta+Enter Control+Enter'
+              : 'Meta+Enter Control+Enter Meta+Shift+Enter Control+Shift+Enter'
+          }
           className={`w-full resize-none bg-transparent text-body text-primary outline-none placeholder:text-tertiary ${
             large ? 'min-h-[52px] max-h-56' : 'min-h-[44px] max-h-40'
           }`}
@@ -312,6 +349,13 @@ export function Composer({
           onBlur={() => setTrigger(null)}
           onPaste={onPaste}
           onKeyDown={(event) => {
+            const action = composerKeyAction(event);
+            // 发送并新建排在命令面板前面：这是明确要发消息的手势，不该被弹出列表吃掉
+            if (action === 'send-and-new') {
+              event.preventDefault();
+              void sendAndNew();
+              return;
+            }
             if (options.length > 0) {
               if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
                 event.preventDefault();
@@ -330,7 +374,7 @@ export function Composer({
                 return;
               }
             }
-            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+            if (action === 'send') {
               event.preventDefault();
               void send();
             }

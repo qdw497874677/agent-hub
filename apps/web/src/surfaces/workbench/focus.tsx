@@ -488,6 +488,25 @@ export function FocusView({
     }
   }
 
+  /**
+   * 发送并新建：这一句已经由 Composer 走 sendMessage 发出去了，这里只负责用同一条会话的参数
+   * 派生下一条、跳过去。派生失败就留在原地——草稿不会因为跳走而消失。
+   */
+  async function sendAndNew(): Promise<void> {
+    await run(async () => {
+      const created = await api.derive({
+        taskId: session.taskId,
+        agentId: session.agentId,
+        model: session.model,
+        ...(groupId !== null ? { groupId } : { workspaceId: session.workspaceId }),
+        ...(session.workerId === null ? {} : { workerId: session.workerId })
+      });
+      // 先把画布缓存换成含新会话的那一份再跳：专注页按 id 在画布里找会话，找不到会退回画布。
+      await queries.invalidateQueries({ queryKey: ['canvas', canvas.project.id] });
+      onOpenSession(created.id);
+    });
+  }
+
   /** 未送达：用同一个 clientMessageId 重发，服务端幂等，重发不会变成两条。 */
   async function retryPending(pending: PendingPrompt): Promise<void> {
     setError(null);
@@ -977,6 +996,7 @@ export function FocusView({
             draft={draft}
             onDraftChange={onDraftChange}
             onSend={sendMessage}
+            onSendAndNew={sendAndNew}
             onInterrupt={() => void run(() => api.interrupt(session.id))}
             busy={busy}
             error={error}
