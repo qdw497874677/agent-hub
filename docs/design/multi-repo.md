@@ -311,3 +311,82 @@ workspaceGroupsUseCase(deps, projectId)
 | T6 | 按成员的 git/文件/checkpoint/rewind | T2 |
 | T7 | 前端：派生对话框组选项、改动分组、提交切换、文件根 | T4,T5 |
 | T8 | e2e + 文档 | 全部 |
+
+## 12. 审查修订（覆盖 §11 对应条目）
+
+oracle 只读审查对着 `git-workspace.ts`、`workspaces.ts`、`workspace-cleanup*.ts`、`workspace-files.ts`、`rewind.ts`、`sessions.ts`、`http.ts` 指出六处会真分叉的地方。下面逐条改成可实施的版本，未提到的 §11 条目保持。
+
+### 12.1 新建 worktree 用新 RPC，不复用 `ws.add_worktree`
+
+`existing: true` 的语义是「检出已有分支」，不是「用我给的路由」；`existing` 为假时路径又被 `relocateWorktree` 改写（`packages/node-gateway/src/git-workspace.ts:91-124`）。两条都不能用来在容器里开新分支。新增：
+
+```ts
+export const wsNewWorktree = method('ws.new_worktree', 'git',
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional() }),
+  z.object({ path: z.string(), branch: z.string() }));
+```
+
+实现复用 `addWorktree` 的主体，但**不调 `relocateWorktree`**，且额外校验：`path` 规范化后必须落在 `WORKER_GROUPS_DIR` 下、`path` 当时不存在、`repoPath` 是仓库、分支本地不存在。`ws.add_worktree` 保持原语义不动。
+
+### 12.2 落点只信 `groupId`
+
+- `groupId` 非空时，cwd / 文件 / git / checkpoint / fork / spawn 一律从组解析；`workspaceId` 只是「primary 成员的镜像」，不参与定位。
+- **不改** `locationOf` 的现有语义（仍返回 `workspaceId` 指向的路径），避免 15 个调用点在没改完时把 cwd 指到非 git 容器。新增 `locationsOf` 只给新代码用；把调用点逐个迁到显式形态（T5/T6 的任务），最后一个调用点迁完才把 `locationOf` 改成容器根。
+- 迁移期间在组合会话上 `locationOf` 返回 primary 的路径（正确、只是不完整），不是容器根。
+
+### 12.3 v1 明确不支持组合的文件回滚
+
+checkpoint 是单 root 打一个 ref（`workspace-files.ts:237`、`workspace-browser.ts:329-350`）；在容器根上 `git add -A` 会写进外层仓库或直接失败。v1 决定：
+
+- 组合会话**不支持** `beginTurn` / `restoreTurn`：`rewind` 入口对 `groupId` 非空直接 `invalid('组合工作空间暂不支持回滚，请在成员仓库里各自提交')`。
+- 不给 `turn_checkpoints` 加成员维度（等真的需要再做，那时按成员各打一份、任一失败全部不回滚）。
+
+### 12.4 清理以组为原子
+
+- `workspaces` 加列 `group_id TEXT`（成员行写组 id，非成员为 null）。**这是清理/删除判断组归属的唯一依据**，不靠路径猜。
+- `sweepOnce` 遇 `group_id` 非空的成员：整组判断（任一成员脏 / 任一成员上有 running 会话 / 任一成员有 live terminal → 整组跳过），不要逐个成员删。
+- `busy()` 对组成员的要求：组内**任一** workspace 上有 running 会话或 live terminal 都算忙。
+- 工作空间页删除组成员 → `conflict('这是组合工作空间里的仓库，请整组删除')`。
+- 组删除：先全部成员 `unsavedReason` 与 `protectedReason`，任一不过 → 整组 `kept`；全过 → 逐成员 `git.remove` → 最后 `ws.group_remove`；组删除可重入（成员已不存在视为成功）。
+
+### 12.5 容器与删除的安全边界
+
+- `ws.group_init`：父目录必须规范化后落在 `WORKER_GROUPS_DIR` 内；容器路径的任一祖先不得是 git toplevel（`rev-parse --show-toplevel` 与 path 前缀比较）；`root` 已存在（哪怕空）→ `conflict`，重试走"继续用已有容器"的单独分支，不再 init。
+- `ws.group_remove`：`relative(WORKER_GROUPS_DIR, root)` 不以 `..` 开头且非空；`lstat(root)` 必须是目录且不是链接；读 `.agent-hub/group.json` 核 `id` 与待删组 id 一致；**不调用 realpath**（避免把链接指到别处）；`rm -rf` 只作用于该 root。
+- 文件 API：`workspaceId` 属于该会话时，路径必须落在**该成员子树**内（`inside(memberPath, …)`），不是容器根；`.agent-hub` 加入 `WALK_SKIP`，列出/读取都拒绝。
+- git/commit/push/PR：只在成员路径上跑；再在入口处拒绝「path 的 toplevel ≠ path 自己」（复用 `ownRepo` 的判定），容器根永远进不来。
+
+### 12.6 派生 / 继承 / 并发
+
+- `derive` 奖励 `groupId`：校验同项目、`state==='ready'`、worker 一致；写 `session.groupId`、`session.workspaceId = primary`。组未 ready → 400 并回组的状态。
+- `forkSession`：`groupId` 非空时**新建一组**（同 repo 清单、新 slug、新分支），不共用一组的 worktree；v1 不允许两条会话共用一组写同一批工作区。
+- `agent.spawn`：不传 `workspace_mode` 时若父会话有 `groupId`，**继承父组**（子会话是只读派生工作，允许共用）；`isolated` 时新建一组（不是 `prepareTemporaryWorkspaceUseCase` 的单仓 worktree）。
+- 并发：同一组同时最多一条 `running` 会话（derive 时若组内已有 running → 400「这组还在跑」）。`ownerTaskId` 只用于清理归属。
+- 单仓库项目仍走 `project.repo` 的读路径，直到全部调用点迁完再删字段；双写两列只为回滚服务。
+
+### 12.7 成员状态与重试
+
+- `workspace_group_members` 加 `state TEXT NOT NULL`（`preparing|ready|failed`）与 `error TEXT`。
+- `retry` 只处理 `failed` 成员：成员目录已存在且是同一分支的 worktree → 直接进入准备命令；否则先删残目录再 `ws.new_worktree`。
+- 分支冲突（某仓已有同名分支）：v1 **直接失败**并把冲突仓库写进 `group.error`，让用户改任务名/另开；不做随机后缀（后缀不进 `Workspace.branch` 会让 PR 合并判定漏掉）。
+
+### 12.8 砍掉的东西（v1 不做）
+
+- 聚合 `GET /api/sessions/:id/workspaces/changes`：前端按成员并行调现有 changes 接口即可。
+- 长期组合（`ownerTaskId=null`）的创建入口。
+- `role` 字段：由 `position === 0` 派生。
+- `group.json` 不做清单，只做 `{ id }` 标记用于删前核对。
+- 前端整段（T7）推迟到后端能跑之后，先只做「派生后看得到成员、改动页按成员分组」。
+
+### 12.9 修订后的任务拆分
+
+| 任务 | 内容 |
+| --- | --- |
+| T1 | `Project.repos` + 存储列 + 读时派生 + 项目设置 API |
+| T2 | `WorkspaceGroup` 领域 + 存储（含成员 state）+ `workspaces.group_id` 列 + `locationsOf` |
+| T3 | worker `ws.group_init` / `ws.group_remove` / `ws.new_worktree` + 节点侧安全校验 + 契约 |
+| T4 | 准备 / 重试 / 删组用例 + HTTP + 审计 + 清理整组判断 |
+| T5 | derive 接 `groupId`、fork 新建组、spawn 继承、启动背景注入 |
+| T6 | 按成员的 git/文件/checkpoint（checkpoint 明确禁用）|
+| T7 | 前端：派生对话框组选项、改动分组、提交成员切换、文件根 |
+| T8 | e2e + 文档 |
