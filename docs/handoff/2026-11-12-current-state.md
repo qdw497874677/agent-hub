@@ -9,15 +9,21 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `d18433e test(e2e): 侧聊从菜单打开、不进画布、能返回主会话` |
-| origin/master | 已同步到 `d18433e` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `d18433e`（2026-11-14 12:12 用 `deploy-aliyun.sh --bundle` 部署） |
+| 本地 HEAD | `82235b7 docs: 记录预览 P2/P3/P4 落地与取舍` |
+| origin/master | 已同步到 `82235b7` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `82235b7`（2026-11-14 17:00 用 `deploy-aliyun.sh --bundle` 部署） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `d18433e` |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `82235b7` |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` 1403 单测：1395 pass / 8 skipped / 0 fail；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/multi-repo` 1/1、`worktree` 4/4、`settle` 2/2、`side-chat` 1/1 |
+| 最近完整验证 | `npm test` 1508 单测：1508 pass / 8 skipped / 0 fail（`npm test` 汇总 1508/0/8）；`check`、`typecheck`、`typecheck:web`、`build`、`test:e2e-node` 6/6 全 0；`e2e/multi-repo` 1/1、`worktree` 4/4、`settle` 2/2、`side-chat` 1/1 |
 
-当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）。
+当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时。
+
+### 预览怎么用
+
+1. 会话里跑一个 dev server（比如 `npm run dev`），终端输出里出现 `localhost:5173` 就自动出现在「预览」页签；也可以手动填端口。
+2. 打开链接 = `http://<hub 主机>:<17901–17920 之一>/`。**阿里云要先在安全组放通 17901–17920**；不想放通就设 `HUB_PREVIEW_PREFIX=/preview`，链接改成 `<hub>/preview/<链接 id>/`（仅 HTTP，没有 HMR）。
+3. 「预览」页签里可以「分享…」生成 `?share=pvs_…` 公开链接（1 小时 / 1 天 / 3 天 / 7 天，可撤销，令牌只显示一次）；画布卡片底部也有「预览」入口。
 
 ### 组合工作空间（多仓库）怎么用
 
