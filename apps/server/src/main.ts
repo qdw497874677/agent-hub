@@ -1,10 +1,10 @@
 import { backupArgs, runBackup } from './backup.ts';
 import { createInstallArtifacts } from './install-artifacts.ts';
-import { STALL_NOTICE_MARKER } from '@agent-hub/contract';
+import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createTimerSource } from '@agent-hub/connector-timer';
 import { createGithubClient, createGithubSink, createGithubSource, createGithubToolProvider, githubParams, parseIssueKey } from '@agent-hub/connector-github';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -78,7 +78,10 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   migrateAssetOwnership,
   sweepGitForReview,
   revokeLegacyLocalWorkerGrants,
-  terminalTarget
+  terminalTarget,
+  markWorkerPreviewsOfflineUseCase,
+  parsePreviewPortRange,
+  authorizeSession
 } from '@agent-hub/domain';
 import {
   authenticate,
@@ -108,9 +111,11 @@ import { createSessionQueue } from './session-queue.ts';
 import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
-import { createTerminalBridge, type TerminalBridge } from './terminal-bridge.ts';
+import { createTerminalBridge, loginTokenOf, type TerminalBridge } from './terminal-bridge.ts';
+import { createPreviewChannel, type PreviewChannel } from './preview-channel.ts';
+import { createPreviewProxy, type PreviewProxy } from './preview-proxy.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
-import type { AccountDeps } from '@agent-hub/domain';
+import type { AccountDeps, PreviewLinkId } from '@agent-hub/domain';
 import { componentJobFinished, createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
 import { seedTestAccount } from './account-setup.ts';
 
@@ -918,6 +923,90 @@ terminalBridge = createTerminalBridge({
   hostAllowed: (hostname) => guard.hostAllowed(hostname),
   log
 });
+
+/**
+ * 预览转发（docs/design/preview.md）：每一条预览链接在 hub 上占一个端口，
+ * 浏览器访问那个端口时按帧转发给 worker 的 `/preview` 通道，再由 worker 打到本机回环端口。
+ * `HUB_PREVIEW_PORTS` 为空串或 `0` 时整块关闭。
+ */
+const previewPorts = parsePreviewPortRange(readEnv('HUB_PREVIEW_PORTS'), port);
+let previewChannel: PreviewChannel | null = null;
+let previewProxy: PreviewProxy | null = null;
+if (previewPorts !== null) {
+  const previewLog = (message: string) => log(`[preview] ${message}`);
+  const sameSecret = (given: string, expected: string): boolean => {
+    const left = Buffer.from(given);
+    const right = Buffer.from(expected);
+    return left.length === right.length && timingSafeEqual(left, right);
+  };
+  previewChannel = createPreviewChannel({
+    verifyWorker: async (request) => {
+      const header = request.headers.authorization;
+      if (typeof header === 'string' && header.startsWith('Bearer ')) {
+        const credential = header.slice('Bearer '.length).trim();
+        if (credential === '') return null;
+        const found = await enrollmentDeps.enrollment.credentialByHash(enrollmentDeps.tokens.hashOf(credential));
+        if (found === null || found.revokedAt !== null) return null;
+        return { workerId: found.workerId };
+      }
+      // 本机 Worker 没有专属凭据：用它自报的 workerId + hub 生成的 localSecret。
+      const secret = request.headers['x-hub-local-secret'];
+      const workerId = request.headers['x-hub-worker-id'];
+      if (spawnWorker !== '1' || typeof secret !== 'string' || typeof workerId !== 'string') return null;
+      return sameSecret(secret, localSecret) ? { workerId } : null;
+    },
+    onWorkerDown: (workerId) => {
+      void markWorkerPreviewsOfflineUseCase({ previewLinks: store.previewLinks }, workerId)
+        .then((changed) => {
+          if (changed > 0) log(`${changed} 条预览链接随机器离线（${workerId}）`);
+        })
+        .catch((failure: unknown) => previewLog(`标记离线失败：${(failure as Error).message}`));
+    },
+    onLog: previewLog
+  });
+  // 预览端口上的 302 要跳回 hub 自己的登录页（预览 origin 上没有 SPA）。
+  const hubOrigin =
+    readEnv('HUB_PUBLIC_URL') ??
+    `http://${host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host}:${port}`;
+  previewProxy = createPreviewProxy({
+    resolve: (hubPort) => store.previewLinks.byHubPort(hubPort),
+    loginUrl: (_request, _link, target) => `${hubOrigin}/login?next=${encodeURIComponent(target)}`,
+    authorize: async (request, link) => {
+      const token = loginTokenOf(request.headers.cookie);
+      if (token === '') return false;
+      const subject = await withAccess(store.access, await authenticate(accounts, token), accounts.now());
+      if (subject === null) return false;
+      const session = await store.sessions.byId(link.sessionId);
+      if (session === null) return false;
+      const task = await store.tasks.byId(session.taskId);
+      const project = task === null ? null : await store.projects.byId(task.projectId);
+      return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
+    },
+    channel: previewChannel,
+    host,
+    onConflict: (linkId) => {
+      void (async () => {
+        const link = await store.previewLinks.byId(linkId as PreviewLinkId);
+        if (link !== null && link.state !== 'stale') await store.previewLinks.save({ ...link, state: 'stale' });
+      })().catch((failure: unknown) => previewLog(`端口冲突处理失败：${(failure as Error).message}`));
+    },
+    onLog: previewLog
+  });
+}
+
+/** 预览端口和库里的链接对齐：新加的开监听、删掉的关掉。启动时一次，之后每 30 秒一次。 */
+const reconcilePreviews = async (): Promise<void> => {
+  if (previewProxy === null) return;
+  const links = await store.previewLinks.listAll();
+  const wanted = new Set<string>(links.map((link) => link.id));
+  for (const listening of previewProxy.listening()) {
+    if (!wanted.has(listening.linkId)) await previewProxy.unlisten(listening.linkId as PreviewLinkId);
+  }
+  const active = new Set(previewProxy.listening().map((entry) => entry.linkId));
+  for (const link of links) {
+    if (!active.has(link.id)) await previewProxy.listen(link);
+  }
+};
 void loadResourcePolicy({ metrics: workerMetrics, settings: store.settings }).catch((failure: unknown) => log(`同步资源策略失败：${(failure as Error).message}`));
 
 const recovered = await reconcileInterrupted(deps);
@@ -1008,6 +1097,8 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   },
   assets: { deps: assetDeps, audit: store.audit },
   providers: providerWiring,
+  // 预览链接（docs/design/preview.md §4）：只装 `/api/sessions/:id/previews` 三条路由，转发在代理层。
+  ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews() } }),
   resources: { metrics: workerMetrics, settings: store.settings, workers: workerControl, audit: store.audit, now: () => Date.now(), access: deps.access },
   /** 每台 Worker 的自定义运行时别名（CAP-1）：存库 + 推给在线 Worker（离线就等它下次连上自动推）。 */
   workerAgents: {
@@ -1079,6 +1170,14 @@ const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
   log(`控制台：http://${host}:${info.port}`);
 });
 // 端口被占是最常见的一种「起不来」，不该打一坨堆栈了事
+if (previewProxy !== null) {
+  void reconcilePreviews().catch((failure: unknown) => log(`预览端口对齐失败：${(failure as Error).message}`));
+  const previewTimer = setInterval(() => {
+    void reconcilePreviews().catch((failure: unknown) => log(`预览端口对齐失败：${(failure as Error).message}`));
+  }, 30_000);
+  previewTimer.unref();
+}
+
 server.on('error', (error: NodeJS.ErrnoException) => {
   if (error.code === 'EADDRINUSE') {
     console.error(`端口 ${port} 已被占用：先停掉上一个 agent-hub（或者换 HUB_PORT）`);
@@ -1092,6 +1191,12 @@ server.on('upgrade', (request, socket, head) => {
   // Host 校验对所有升级请求先做（防 DNS rebinding）。
   if (!guard.hostAllowed(hostHeader)) {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  // 预览通道：worker 主动连上来（凭据或本机口令在 verifyWorker 里校验）。
+  if (path === PREVIEW_WS_PATH) {
+    if (previewChannel !== null) previewChannel.handleUpgrade(request, socket, head);
+    else socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
     return;
   }
   // 会话终端：Origin / 双 cookie / session.read 由桥接按设计稿 §2.3 的顺序自己校验。
@@ -1149,6 +1254,8 @@ if (spawnWorker === '1') {
     stopping = true;
     child.kill('SIGTERM');
     terminalBridge?.close();
+    void previewProxy?.close();
+    previewChannel?.close();
     serverGateway?.close();
     store.close();
     server.close();

@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentAlias, AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 import { applyAgentAliases, readAgentAliases, type BuiltAliasHarness } from './agent-aliases.ts';
@@ -53,6 +53,20 @@ function stableWorkerId(): string {
     // 写不了就用一次性的：能跑，只是重启后会换身份
   }
   return fresh;
+}
+
+/** 预览通道和 `/worker` 同源：`ws(s)://host:port/worker` → `ws(s)://host:port/preview`（contract 的 PREVIEW_WS_PATH）。 */
+function previewUrlFrom(workerUrl: string): string | null {
+  try {
+    const url = new URL(workerUrl);
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return null;
+    url.pathname = '/preview';
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 /** 目录选择器的起点：`WORKER_ROOTS=/srv/code:/data`，默认 $HOME。 */
@@ -456,6 +470,32 @@ const link = connectWorkerLink({
 });
 
 /**
+ * 预览通道（docs/design/preview.md §6）：浏览器的请求经 hub 转发到这台机器的回环端口。
+ * 单独一条 WS，和 `/worker` 用同一份凭据；连不上 / 断了只记日志，预览不可用不影响 agent。
+ * HUB_PREVIEW=0 整条关掉。
+ */
+const previewUrl = previewUrlFrom(hubUrl);
+const preview =
+  env['HUB_PREVIEW'] === '0' || previewUrl === null
+    ? null
+    : createPreviewClient({
+        url: previewUrl,
+        credential: credential !== '' ? credential : null,
+        ...(localSecret ? { localSecret } : {}),
+        workerId,
+        onLog: (message) => log(`[preview] ${message}`)
+      });
+if (env['HUB_PREVIEW'] === '0') log('预览通道已关闭（HUB_PREVIEW=0）');
+else if (previewUrl === null) log(`预览通道未启动：HUB_URL=${hubUrl} 不是 ws(s):// 地址`);
+else {
+  try {
+    preview?.start();
+  } catch (error) {
+    log(`预览通道启动失败（不影响 agent）：${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
  * 由 server 拉起的本机 Worker 跟着 server 走：server 没了它也退出。
  * 否则它会一直重连，下一代 server 起来时又拉起一个——界面上就是两台「本机」。
  * 独立部署的 Worker（systemd、远程机器）不设这个变量，断了就重连。
@@ -487,6 +527,7 @@ log(`已装 agent：${runtimes.map((runtime) => runtime.descriptor.label).join('
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
+    void preview?.stop();
     void link.close().finally(() => process.exit(0));
   });
 }

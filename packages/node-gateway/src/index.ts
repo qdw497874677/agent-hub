@@ -46,3 +46,4 @@ export { createWorkspaceBrowser, type BrowserOptions } from './workspace-browser
 export { createTerminalHost, TerminalNotReadyError } from './terminal.ts';
 export type { TerminalHost, TerminalHostOptions, TerminalOpenParams, TerminalOpenResult, PtyModuleLike, PtyProcessLike } from './terminal.ts';
 export { createRemoteBrowsers, offlineWorkspaceBrowser } from './remote-workspace-browser.ts';
+export { createPreviewClient, type PreviewClient, type PreviewClientOptions } from './preview-client.ts';

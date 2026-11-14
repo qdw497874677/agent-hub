@@ -175,6 +175,8 @@ export type AuditAction =
   | 'git.host_token.remove'
   | 'context.strategy.set'
   | 'session.context.set'
+  | 'preview.create'
+  | 'preview.remove'
   | 'session.context.compact'
   | 'workspace.files.sensitive'
   | 'session.approval.respond'

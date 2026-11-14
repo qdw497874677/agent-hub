@@ -1,4 +1,5 @@
 export * from './wire.ts';
+export * from './wire/preview.ts';
 export * from './jsonl.ts';
 export * from './async-queue.ts';
 export * from './auth.ts';

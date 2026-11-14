@@ -2,6 +2,7 @@ import { installConnectorRoutes, type ConnectorRouteDeps } from './connector-rou
 import { installObserveRoutes, type ObserveRouteOptions } from './observe-routes.ts';
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installWorkspaceGroupRoutes } from './workspace-group-routes.ts';
+import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
 import { installGitRoutes } from './git-routes.ts';
@@ -221,6 +222,15 @@ export interface AppOptions {
   readonly rewind?: RewindService;
   /** 开放 API（/openapi/v1 + MCP，ADR 0015）与设置页的令牌管理；要有账号体系。 */
   readonly openApi?: OpenApiOptions & { readonly manage: ApiTokenDeps };
+  /**
+   * 预览链接（docs/design/preview.md §4）：`/api/sessions/:sessionId/previews`。
+   * 不给就不装这三条路由（预览转发本身由代理层负责）。
+   *
+   * 传法：`{ deps: { ...deps, previewLinks: store.previewLinks }, ports }`，
+   * `ports` 一般来自 `parsePreviewPortRange(process.env.HUB_PREVIEW_PORTS, hubPort)`。
+   * 可选再给 `deps.previewPortFree`（区间里被别的进程占住的端口跳过去）。
+   */
+  readonly previews?: PreviewApiOptions;
 }
 
 /** prompt 路由里 bodyLimit 之前认出的发送人。 */
@@ -355,6 +365,18 @@ export function createApp(options: AppOptions): Hono {
 
   app.get('/api/health', (c) => c.json({ ok: true }));
   options.providers?.install(app, subjectOf);
+  if (options.previews) {
+    installPreviewRoutes(
+      app,
+      {
+        deps: options.previews.deps,
+        ports: options.previews.ports,
+        ...(options.previews.afterChange === undefined ? {} : { afterChange: options.previews.afterChange }),
+        audit: (c, subject, action, target, detail) => auditResource(c, subject, action, target, detail),
+      },
+      subjectOf,
+    );
+  }
 
   app.get('/api/home', async (c) =>
     c.json(homeSchema.parse(await loadHome(deps, undefined, await projectReader(deps.access, subjectOf(c)))))
