@@ -40,7 +40,7 @@ function harness() {
       return { status: response.status, body: (await response.json().catch(() => null)) as any };
     };
   };
-  return { accounts, browser };
+  return { accounts, browser, world };
 }
 
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
@@ -108,8 +108,7 @@ test('PATCH /api/projects/:id：viewer（非 admin）403', async () => {
   assert.equal(res.status, 403, JSON.stringify(res.body));
 });
 
-test('PATCH /api/projects/:id：超上限 / 重名 / 非法名 → 400', async () => {
-  const { david } = await setup();
+test('PATCH /api/projects/:id：超上限 / 重名 / 非法名 → 400', async () => {  const { david } = await setup();
   const project = (await david('/api/projects', post({ name: 'p' }))).body;
   const tooMany = await david(
     `/api/projects/${project.id}`,
@@ -123,4 +122,61 @@ test('PATCH /api/projects/:id：超上限 / 重名 / 非法名 → 400', async (
   assert.equal(dup.status, 400);
   const badName = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'API', url: 'https://x.test/a.git' }] }));
   assert.equal(badName.status, 400);
+});
+
+test('POST /api/projects/:id/repos/check：没有在线机器 → 200 + unavailable，不报错', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  world.workers.length = 0;
+
+  const res = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: 'https://x.test/a.git', defaultBranch: 'main' }] }));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.workerId, null);
+  assert.equal(res.body.workerLabel, null);
+  assert.deepEqual(res.body.results, []);
+  assert.match(res.body.unavailable, /没有在线的机器/);
+});
+
+test('POST /api/projects/:id/repos/check：指定离线的机器 → 409', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  world.workers.push({ workerId: 'gone', label: '远端', origin: 'remote', state: 'offline' });
+
+  const res = await david(
+    `/api/projects/${project.id}/repos/check`,
+    post({ repos: [{ name: 'api', url: 'https://x.test/a.git', defaultBranch: 'main' }], workerId: 'gone' })
+  );
+  assert.equal(res.status, 409, JSON.stringify(res.body));
+  assert.match(res.body.error.message, /不在线/);
+});
+
+test('POST /api/projects/:id/repos/check：正常检查走本机 git，返回结果并记审计', async () => {
+  const { david, accounts, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+
+  const res = await david(
+    `/api/projects/${project.id}/repos/check`,
+    post({ repos: [{ name: 'api', url: 'https://x.test/a.git', defaultBranch: 'main' }, { name: 'web', url: 'git@x.test:me/web.git' }] })
+  );
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.workerId, null);
+  assert.equal(res.body.workerLabel, '本机');
+  assert.equal(res.body.unavailable, null);
+  assert.deepEqual(
+    res.body.results.map((row: { name: string; branch: string | null; ok: boolean }) => [row.name, row.branch, row.ok]),
+    [['api', 'main', true], ['web', null, true]]
+  );
+  assert.ok(world.git.calls.some((call) => call === 'local:check_repo:https://x.test/a.git@main'));
+  assert.ok(accounts.auditRows.some((row) => row.action === 'project.repos_check' && row.target === project.id));
+});
+
+test('POST /api/projects/:id/repos/check：viewer 403；形状不合法 400', async () => {
+  const { david, viewer } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+
+  const denied = await viewer(`/api/projects/${project.id}/repos/check`, post({ repos: [] }));
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+
+  const invalid = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: '' }] }));
+  assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
 });

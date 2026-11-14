@@ -4,6 +4,9 @@ import {
   PROJECT_REPOS_MAX,
   REPO_DEFAULT_BRANCH,
   emptyRepoRow,
+  repoCheckBlocksSave,
+  repoCheckLine,
+  repoCheckSummary,
   repoRowProblem,
   repoRowsProblem,
   repoRowsFrom,
@@ -12,7 +15,9 @@ import {
   repoNameFromUrl,
   cloneErrorHint,
   reposDirty,
-  type ProjectRepoRow
+  type ProjectRepoRow,
+  type RepoCheckResult,
+  type ReposCheck
 } from './project-repos.ts';
 
 const row = (over: Partial<ProjectRepoRow> = {}): ProjectRepoRow => ({
@@ -125,4 +130,67 @@ test('cloneErrorHint：分支不存在 / 域名解析不了 / 没凭据各给一
   assert.match(cloneErrorHint('fatal: Could not resolve host: github.com') ?? '', /镜像地址|clone 好/);
   assert.match(cloneErrorHint('fatal: Authentication failed for repo') ?? '', /凭据/);
   assert.equal(cloneErrorHint('下载仓库失败：磁盘满了'), null);
+});
+
+const checked = (over: Partial<RepoCheckResult> = {}): RepoCheckResult => ({
+  name: 'api',
+  url: 'git@github.com:acme/api.git',
+  branch: null,
+  ok: true,
+  defaultBranch: 'master',
+  message: null,
+  ...over
+});
+
+const checkOf = (over: Partial<ReposCheck> = {}): ReposCheck => ({
+  workerId: 'worker-1',
+  workerLabel: '本机',
+  unavailable: null,
+  results: [checked()],
+  ...over
+});
+
+test('仓库检查 · 全部通过：报出真正的默认分支，不挡保存', () => {
+  const check = checkOf();
+  // 用户没指定分支时顺手告诉实际用的是哪个 —— 这就是「写死 main」踩过的坑
+  assert.equal(repoCheckLine(checked()), '可以访问，默认分支是 master');
+  assert.equal(repoCheckLine(checked({ defaultBranch: null })), '可以访问，默认分支是 未知');
+  // 用户自己填了分支就没什么好补充的
+  assert.equal(repoCheckLine(checked({ branch: 'main' })), null);
+  assert.equal(repoCheckSummary(check), null);
+  assert.equal(repoCheckBlocksSave(check), false);
+  // 空清单（项目不绑仓库）也照常能存
+  assert.equal(repoCheckSummary(checkOf({ results: [] })), null);
+  assert.equal(repoCheckBlocksSave(checkOf({ results: [] })), false);
+});
+
+test('仓库检查 · 有失败：行内直接用后端那句话，总结说数量，挡住保存', () => {
+  const failed = checked({ ok: false, branch: 'main', message: '远端没有 main 分支' });
+  const check = checkOf({ results: [failed] });
+  assert.equal(repoCheckLine(failed), '远端没有 main 分支');
+  // 后端没给原因时行内不编话
+  assert.equal(repoCheckLine(checked({ ok: false, message: null })), null);
+  assert.equal(repoCheckSummary(check), '有 1 个仓库需要先处理');
+  assert.equal(repoCheckBlocksSave(check), true);
+});
+
+test('仓库检查 · unavailable：原样转述没检查成，绝不能挡保存', () => {
+  const unavailable = '现在没有在线的机器可以检查仓库';
+  const check = checkOf({ unavailable, results: [checked({ ok: false, message: 'x' })] });
+  assert.equal(repoCheckSummary(check), unavailable);
+  // 没检查成 ≠ 仓库有问题：离线也要能改项目设置
+  assert.equal(repoCheckBlocksSave(check), false);
+});
+
+test('仓库检查 · 混合：通过的那条不打扰，失败的那条仍然挡住保存', () => {
+  const check = checkOf({
+    results: [
+      checked({ name: 'api' }),
+      checked({ name: 'web', url: 'https://x/web.git', ok: false, message: '远端没有 main 分支' })
+    ]
+  });
+  assert.equal(repoCheckSummary(check), '有 1 个仓库需要先处理');
+  assert.equal(repoCheckBlocksSave(check), true);
+  assert.equal(repoCheckLine(check.results[0]!), '可以访问，默认分支是 master');
+  assert.equal(repoCheckLine(check.results[1]!), '远端没有 main 分支');
 });

@@ -110,6 +110,24 @@ export interface ProjectReposPatch {
   repos: readonly { id?: string; name?: string; url: string; defaultBranch?: string | null }[];
 }
 
+/**
+ * 保存前的仓库检查（POST /api/projects/:id/repos/check）：在 Worker 上试 clone / 试分支，
+ * 免得等到派生任务才报「Remote branch main not found」。`unavailable` 非空 = 这台机器没查成。
+ */
+export interface ProjectReposCheckDto {
+  workerId: string | null;
+  workerLabel: string | null;
+  unavailable: string | null;
+  results: {
+    name: string;
+    url: string;
+    branch: string | null;
+    ok: boolean;
+    defaultBranch: string | null;
+    message: string | null;
+  }[];
+}
+
 /** 组件目录里的一个版本（ADR 0021 §8）：制品由 hub 解析钉死，scripts 是审核时要看的安装脚本原文。 */
 export interface CatalogComponentDto {
   id: string;
@@ -335,6 +353,12 @@ export const api = {
   /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
   saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),
+  /** 保存前检查仓库能不能访问：返回每条的结论，`unavailable` 说明这次没查成。 */
+  checkProjectRepos: (projectId: string, repos: ProjectReposPatch['repos'], workerId: string | null = null) =>
+    post<ProjectReposCheckDto>(`/api/projects/${encodeURIComponent(projectId)}/repos/check`, {
+      repos,
+      ...(workerId === null ? {} : { workerId })
+    }),
   /**
    * 组合工作空间（docs/design/multi-repo.md §11.5）：一个任务在项目的每个仓库里各开一个 worktree，
    * agent 在总目录里干活。建组本身就 clone / 开分支，可能要几十秒；前端按「准备中」显示。

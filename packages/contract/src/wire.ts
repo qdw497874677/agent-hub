@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 import type { agentSchema, agentProfileSchema, agentProfileInputSchema, artifactSchema, attachmentInputSchema, canvasSchema, capabilitySchema, journalEntrySchema, layoutSchema, optionValueSchema, projectSchema, runtimeOptionSchema, searchHitSchema, searchResponseSchema, sessionEventSchema, sessionSchema, storedAttachmentSchema, taskSchema, teamWorkspaceViewSchema, workspaceSchema, workspaceViewSchema } from './wire/entities.ts';
-import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, createSessionLinkRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
+import type { continueElsewhereRequest, createProjectRequest, createWorkspaceRequest, createTeamWorkspaceRequest, createTaskRequest, checkProjectReposRequest, projectReposCheckDto, removeWorkspaceRequest, workspaceChangesSchema, deriveSessionRequest, directoryEntrySchema, directoryListingSchema, forkSessionRequest, homeSchema, projectFilesSchema, projectSummarySchema, recentSessionSchema, saveLayoutRequest, createSessionLinkRequest, sessionStreamFrameSchema, workerInfoSchema } from './wire/http.ts';
 import type { resourceSampleSchema, workerMetricsHistorySchema, workerResourcesSchema } from './wire/resources.ts';
 import type { serverToWorkerSchema, workerToServerSchema } from './wire/worker.ts';
 
@@ -47,6 +47,8 @@ export type RecentSessionDto = z.infer<typeof recentSessionSchema>;
 export type DirectoryEntryDto = z.infer<typeof directoryEntrySchema>;
 export type DirectoryListingDto = z.infer<typeof directoryListingSchema>;
 export type CreateProjectRequest = z.infer<typeof createProjectRequest>;
+export type CheckProjectReposRequest = z.infer<typeof checkProjectReposRequest>;
+export type ProjectReposCheckDto = z.infer<typeof projectReposCheckDto>;
 export type CreateTaskRequest = z.infer<typeof createTaskRequest>;
 export type DeriveSessionRequest = z.infer<typeof deriveSessionRequest>;
 export type ForkSessionRequest = z.infer<typeof forkSessionRequest>;

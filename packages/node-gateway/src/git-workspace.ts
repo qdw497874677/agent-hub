@@ -1,4 +1,5 @@
 import { lstat, mkdir, readdir, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
@@ -92,6 +93,30 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         return failed('下载仓库', error);
       }
       return { ok: true, value: { path: target, branch: await currentBranch(simpleGit(target)) } };
+    },
+
+    async checkRepo(repoUrl, branch) {
+      const url = repoUrl.trim();
+      if (url === '') return { ok: true, value: { reachable: false, defaultBranch: null, branchExists: false, message: '仓库地址不能为空' } };
+      try {
+        // 只读：ls-remote 不进本地目录、不 clone。20 秒够了，慢网络 / 私有仓库也别把保存请求挂住。
+        const git = networkGit(tmpdir(), 20_000);
+        const head = await git.raw(['ls-remote', '--symref', url, 'HEAD']);
+        // 第一行形如 `ref: refs/heads/master\tHEAD`；没有 symref（裸提交号 / 老服务端）时按未知处理。
+        const defaultBranch = /^ref:\s+refs\/heads\/(.+?)\s+HEAD$/m.exec(head)?.[1]?.trim() ?? null;
+        const heads = await git.raw(['ls-remote', '--heads', url]);
+        const names = heads
+          .split('\n')
+          .slice(0, 500)
+          .map((line) => /^[0-9a-f]+\s+refs\/heads\/(.+)$/i.exec(line.trim())?.[1] ?? null)
+          .filter((name): name is string => name !== null);
+        const wanted = branch?.trim() ?? '';
+        return { ok: true, value: { reachable: true, defaultBranch, branchExists: wanted === '' || names.includes(wanted), message: null } };
+      } catch (error) {
+        // 失败不抛：回 reachable=false，原因抹掉 URL 里的凭据；截到 2000 与 RPC 契约一致。
+        const reason = gitMessage(error).slice(0, 2000);
+        return { ok: true, value: { reachable: false, defaultBranch: null, branchExists: false, message: reason || '连不上这个仓库' } };
+      }
     },
 
     async addWorktree({ repoPath, path: requested, branch, base, existing }) {
@@ -366,14 +391,15 @@ export async function addWorktreeOnNewBranch(input: {
 const CREDENTIAL_ENV = ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_ASKPASS', 'GIT_TERMINAL_PROMPT'] as const;
 const PASS_THROUGH = ['PATH', 'HOME', 'USER', 'LANG', 'SSH_AUTH_SOCK', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'];
 
-/** 要走网络的 git（clone / fetch）：不许弹交互式密码提示把进程挂住，没凭据就直接失败。 */
-function networkGit(baseDir: string): SimpleGit {
+/** 要走网络的 git（clone / fetch / ls-remote）：不许弹交互式密码提示把进程挂住，没凭据就直接失败。 */
+function networkGit(baseDir: string, timeoutMs?: number): SimpleGit {
   const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' };
   for (const key of [...PASS_THROUGH, ...CREDENTIAL_ENV.slice(0, 3)]) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
-  return simpleGit({ baseDir, allowEnvironment: CREDENTIAL_ENV }).env(env);
+  const timeout = timeoutMs === undefined ? {} : { timeout: { block: timeoutMs } };
+  return simpleGit({ baseDir, allowEnvironment: CREDENTIAL_ENV, ...timeout }).env(env);
 }
 
 type GhRun = (args: string[]) => Promise<{ ok: true; out: string } | { ok: false; reason: string }>;

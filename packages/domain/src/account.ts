@@ -168,6 +168,7 @@ export type AuditAction =
   | 'project.worktree'
   | 'project.preview_port'
   | 'project.repos'
+  | 'project.repos_check'
   | 'workspace.setup'
   | 'workspace.group.create'
   | 'workspace.group.retry'

@@ -11,6 +11,7 @@ import {
   wsRunSetup,
   wsClone,
   wsInspect,
+  wsCheckRepo,
   wsRemove,
   wsSaveWip,
   wsPreview,
@@ -83,6 +84,7 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
     throw new RpcFailure(result.error.code === 'invalid' || result.error.code === 'conflict' ? result.error.code : 'failed', result.error.message);
   };
   port.handle(wsInspect, async ({ path }) => unwrap(await need().inspect(path)));
+  port.handle(wsCheckRepo, async ({ repoUrl, branch }) => unwrap(await need().checkRepo(repoUrl, branch ?? null)));
   port.handle(wsClone, async (input) => unwrap(await need().clone(input)));
   port.handle(wsAddWorktree, async (input) => unwrap(await need().addWorktree(input)));
   port.handle(wsRunSetup, async (input) => unwrap(await need().runSetup(input)));

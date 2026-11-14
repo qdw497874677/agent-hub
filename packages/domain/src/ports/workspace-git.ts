@@ -138,6 +138,17 @@ export interface RunSetupOutcome {
   readonly timedOut: boolean;
 }
 
+/** 保存前检查远端仓库（ws.check_repo）：连不连得上、默认分支是什么、填的分支在不在。 */
+export interface RepoProbe {
+  readonly reachable: boolean;
+  /** 远端的默认分支（`git ls-remote --symref <url> HEAD`）；拿不到 = null。 */
+  readonly defaultBranch: string | null;
+  /** 没填分支 = true（用远端默认分支，永远成立）。 */
+  readonly branchExists: boolean;
+  /** reachable=false 时的原因（已抹掉 URL 里的凭据）；正常是 null。 */
+  readonly message: string | null;
+}
+
 /**
  * 工作空间的 git / 目录操作（docs/design/workspaces.md §3）。
  * 在目录所在的那台机器上执行：本机直接跑，远端 Worker 走 ws.* RPC。
@@ -145,6 +156,8 @@ export interface RunSetupOutcome {
  */
 export interface WorkspaceGit {
   inspect(path: string): Promise<Result<GitInspection, DomainError>>;
+  /** 只读地问远端：不 clone、不碰本地目录。连不上不是错误：reachable=false + message。 */
+  checkRepo(repoUrl: string, branch: string | null): Promise<Result<RepoProbe, DomainError>>;
   clone(input: CloneInput): Promise<Result<{ readonly path: string; readonly branch: string | null }, DomainError>>;
   addWorktree(input: WorktreeInput): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
   status(path: string): Promise<Result<GitStatus, DomainError>>;

@@ -51,7 +51,7 @@ import type {
   AgentProfileRepository,
   BotRepository
 } from '../index.ts';import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
-import type { CommitPreview, GitStatus, RemotePullRequest, WorkspaceGit } from '../index.ts';
+import type { CommitPreview, GitStatus, RemotePullRequest, RepoProbe, WorkspaceGit } from '../index.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
 import { canonicalLink, type SessionLink } from '../session-link.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
@@ -437,6 +437,8 @@ export interface FakeGit {
   gh: { next: number; state: RemotePullRequest['state'] } | null;
   /** 准备命令的结果；没登记 = 成功（exit 0、无输出），'*' = 所有路径的默认值。 */
   readonly setups: Map<string, { exitCode: number; output: string; timedOut: boolean }>;
+  /** 仓库检查：键是 `url@branch`（branch 为空时是 `url@`）；没登记 = 可达、默认分支 main、分支必须叫 main。 */
+  readonly repoChecks: Map<string, RepoProbe>;
   on(machine: string): WorkspaceGit;
 }
 
@@ -446,6 +448,7 @@ export function fakeGit(): FakeGit {
   const repos = new Set<string>();
   const previews = new Map<string, CommitPreview>();
   const setups = new Map<string, { exitCode: number; output: string; timedOut: boolean }>();
+  const repoChecks = new Map<string, RepoProbe>();
   const state: FakeGit = {
     calls,
     statuses,
@@ -454,6 +457,7 @@ export function fakeGit(): FakeGit {
     previews,
     gh: null,
     setups,
+    repoChecks,
     on(machine) {
       const fail = () => {
         const reason = state.failNext;
@@ -467,6 +471,12 @@ export function fakeGit(): FakeGit {
           calls.push(`${machine}:inspect:${path}`);
           const isGit = repos.has(path);
           return ok({ exists: true, isGit, remoteUrl: isGit ? 'https://example.com/demo.git' : null, branch: isGit ? 'main' : null });
+        },
+        checkRepo: async (repoUrl, branch) => {
+          calls.push(`${machine}:check_repo:${repoUrl}${branch ? `@${branch}` : ''}`);
+          const reason = fail();
+          if (reason) return err(unavailable(reason));
+          return ok(repoChecks.get(`${repoUrl}@${branch ?? ''}`) ?? { reachable: true, defaultBranch: 'main', branchExists: branch === null || branch === 'main', message: null });
         },
         clone: async (input) => {
           calls.push(`${machine}:clone:${input.repoUrl}->${input.parent}/${input.name}`);

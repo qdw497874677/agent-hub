@@ -155,5 +155,54 @@ export function reposDirty(draft: readonly ProjectRepoRow[], saved: readonly Pro
   return JSON.stringify(repoRowsValue(draft)) !== JSON.stringify(repoRowsValue(saved));
 }
 
+/**
+ * 保存前的一次仓库检查（POST /api/projects/:id/repos/check）里一项的结果。
+ * 形状跟后端约定好的字段一一对应；`message` 已经是能直接给用户看的话。
+ */
+export interface RepoCheckResult {
+  readonly name: string;
+  readonly url: string;
+  readonly branch: string | null;
+  readonly ok: boolean;
+  readonly defaultBranch: string | null;
+  readonly message: string | null;
+}
+
+/** 整份检查结果。`unavailable` 非空 = 没检查成（比如没有在线的机器），不代表仓库有问题。 */
+export interface ReposCheck {
+  readonly workerId: string | null;
+  readonly workerLabel: string | null;
+  readonly unavailable: string | null;
+  readonly results: readonly RepoCheckResult[];
+}
+
+/**
+ * 一条检查结果 → 一行状态文字（null = 没有要说的）。
+ * 成功且本来就没指定分支时顺手告诉用户实际用的是哪个默认分支 —— 这正是「写死 main」踩过的坑。
+ */
+export function repoCheckLine(result: RepoCheckResult): string | null {
+  const branch = result.branch?.trim() ?? '';
+  if (result.ok && branch === '') {
+    return `可以访问，默认分支是 ${result.defaultBranch ?? '未知'}`;
+  }
+  return result.message;
+}
+
+/** 检查结果的总结：没检查成原样转述；有失败就说几个要处理；全通过返回 null。 */
+export function repoCheckSummary(check: ReposCheck): string | null {
+  if (check.unavailable !== null && check.unavailable !== '') return check.unavailable;
+  const failed = check.results.filter((result) => !result.ok).length;
+  return failed === 0 ? null : `有 ${failed} 个仓库需要先处理`;
+}
+
+/**
+ * 检查结果要不要挡保存：只有「确实查了、且有仓库失败」才算。
+ * 没机器可用（unavailable）时不能挡 —— 否则离线就等于不能改项目设置。
+ */
+export function repoCheckBlocksSave(check: ReposCheck): boolean {
+  if (check.unavailable !== null && check.unavailable !== '') return false;
+  return check.results.some((result) => !result.ok);
+}
+
 /** 契约里的仓库形状 → 草稿行（项目列表拿到的就是完整的 ProjectDto）。 */
 export type ProjectReposFromProject = ProjectDto['repos'];

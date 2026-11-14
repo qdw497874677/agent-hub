@@ -26,6 +26,7 @@ import {
   wsRunSetup,
   wsClone,
   wsInspect,
+  wsCheckRepo,
   wsGroupInit,
   wsGroupRemove,
   wsNewWorktree,
@@ -1030,6 +1031,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const slow = { timeoutMs: 10 * 60_000 };
       return {
         inspect: (path) => call((c) => c.request(wsInspect, { path }), '目录探测'),
+        checkRepo: (repoUrl, branch) => call((c) => c.request(wsCheckRepo, { repoUrl, branch }, { timeoutMs: 30_000 }), '检查仓库'),
         clone: (input) => call((c) => c.request(wsClone, { ...input, branch: input.branch ?? null }, slow), '下载仓库'),
         addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null }, slow), '新开分支'),
         status: (path) => call((c) => c.request(wsStatus, { path }), '检查改动'),

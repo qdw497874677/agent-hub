@@ -73,6 +73,21 @@ export const wsClone = method(
   z.object({ path: z.string(), branch: z.string().nullable() })
 );
 
+/**
+ * 保存项目仓库前先问一下远端（docs/design/multi-repo.md §11.2）：地址连不连得上、默认分支是什么、
+ * 填的分支存不存在。只读、不改任何东西；失败不抛，reachable=false + message 说原因。
+ */
+export const wsCheckRepo = method(
+  'ws.check_repo', 'git',
+  z.object({ repoUrl: z.string().min(1).max(2000), branch: z.string().max(200).nullable().optional() }),
+  z.object({
+    reachable: z.boolean(),
+    defaultBranch: z.string().nullable(),
+    branchExists: z.boolean(),
+    message: z.string().max(2000).nullable()
+  })
+);
+
 export const wsAddWorktree = method(
   'ws.add_worktree', 'git',
   z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), existing: z.boolean().optional() }),

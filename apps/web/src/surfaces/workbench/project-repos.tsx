@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
@@ -8,13 +8,18 @@ import { INPUT, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import {
   PROJECT_REPOS_MAX,
   emptyRepoRow,
+  repoCheckBlocksSave,
+  repoCheckLine,
+  repoCheckSummary,
   repoRowsProblem,
   repoRowsValue,
   repoRowsFrom,
   repoRowProblem,
   reposDirty,
   repoUrlPatch,
-  type ProjectRepoRow
+  type ProjectRepoRow,
+  type ProjectRepoValue,
+  type ReposCheck
 } from './project-repos.ts';
 
 /**
@@ -37,9 +42,19 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
 
   const problem = editable ? repoRowsProblem(rows) : null;
   const dirty = editable && reposDirty(rows, repoRowsFrom(project));
+  // 上一次「检查仓库」的结论；unavailable 时另一条提示说明这次没查成
+  const [check, setCheck] = useState<ReposCheck | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [skipped, setSkipped] = useState<string | null>(null);
+  // 检查是异步的：回来时草稿可能又被改过，这时存的是旧值，宁可不存
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+
   const save = useMutation({
-    mutationFn: () => api.saveProjectRepos(project.id, repoRowsValue(rows)),
+    mutationFn: (repos: readonly ProjectRepoValue[]) => api.saveProjectRepos(project.id, repos),
     onSuccess: async () => {
+      // 结论已经被用掉了：别让过期的检查结果继续挂在界面上
+      setCheck(null);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['projects'] }),
         queryClient.invalidateQueries({ queryKey: ['home'] }),
@@ -48,20 +63,62 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
     }
   });
 
+  /** 检查结论只对当时的值有效：一改草稿（或开始下一轮）就清掉。 */
+  const resetCheck = () => {
+    setCheck(null);
+    setSkipped(null);
+  };
+  // 点「仍然保存」= 跳过检查，直接走原来的保存
+  const forceSave = () => {
+    resetCheck();
+    save.mutate(repoRowsValue(rows));
+  };
+  /**
+   * 「保存仓库」= 先检查再保存（仓库能不能 clone、分支存不存在，别等派生任务才报错）。
+   * 检查接口自己失败（网络 / 500）不挡保存：让 PATCH 去给结论，总比卡住人强。
+   */
+  const checkThenSave = async () => {
+    if (checking || save.isPending) return;
+    if (save.isError || save.isSuccess) save.reset();
+    resetCheck();
+    const snapshot = repoRowsValue(rows);
+    const serialized = JSON.stringify(snapshot);
+    setChecking(true);
+    let result: ReposCheck | null = null;
+    try {
+      result = await api.checkProjectRepos(project.id, snapshot);
+    } catch {
+      result = null;
+    }
+    setChecking(false);
+    // 等结果的这段时间里又改了草稿：这次检查说的不是眼前的值，留着下次再存
+    if (JSON.stringify(repoRowsValue(rowsRef.current)) !== serialized) return;
+    if (result !== null && repoCheckBlocksSave(result)) {
+      setCheck(result);
+      return;
+    }
+    if (result !== null) setSkipped(result.unavailable);
+    save.mutate(snapshot);
+  };
+
   const update = (index: number, patch: Partial<ProjectRepoRow>) => {
     // 一改就清掉上一次保存的失败 / 成功提示：那是针对旧值的结论
     if (save.isError || save.isSuccess) save.reset();
+    resetCheck();
     setRows((current) => current.map((row, at) => (at === index ? { ...row, ...patch } : row)));
   };
   const add = () => {
     if (save.isError || save.isSuccess) save.reset();
+    resetCheck();
     setRows((current) => (current.length >= PROJECT_REPOS_MAX ? current : [...current, emptyRepoRow()]));
   };
   const remove = (index: number) => {
     if (save.isError || save.isSuccess) save.reset();
+    resetCheck();
     setRows((current) => current.filter((_, at) => at !== index));
   };
   const error = problem ?? save.error?.message ?? null;
+  const checkSummary = check === null ? null : repoCheckSummary(check);
 
   return (
     <section data-testid="project-repos">
@@ -83,6 +140,9 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
             ) : null}
             {rows.map((row, index) => {
               const rowProblem = repoRowProblem(row, rows);
+              // 检查失败的仓库把后端的话原样贴在行下面（成功的不打扰）
+              const checked = check?.results[index];
+              const checkError = checked !== undefined && !checked.ok ? (repoCheckLine(checked) ?? '仓库检查没通过') : null;
               return (
                 <div
                   key={row.id === '' ? `new-${index}` : row.id}
@@ -146,10 +206,23 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                     </label>
                   </div>
                   {rowProblem !== null ? <p className="mt-1 text-meta text-rust">{rowProblem}</p> : null}
+                  {checkError !== null ? (
+                    <p className="mt-1 text-meta text-rust" data-testid="repo-check-error">
+                      {checkError}
+                    </p>
+                  ) : null}
                 </div>
               );
             })}
           </div>
+
+          <p
+            className={`text-meta text-rust ${checkSummary === null ? '' : 'mt-2'}`}
+            aria-live="polite"
+            data-testid="repo-check-summary"
+          >
+            {checkSummary ?? ''}
+          </p>
 
           <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
             <button
@@ -163,17 +236,27 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
             </button>
             <div className="flex flex-wrap items-center gap-2">
               {save.isSuccess && !dirty ? <span className="text-meta text-tertiary">已保存</span> : null}
+              {checkSummary !== null ? (
+                <button type="button" className={SECONDARY_BUTTON} data-testid="repo-check-force" onClick={forceSave}>
+                  仍然保存
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={SECONDARY_BUTTON}
                 data-testid="repos-save"
-                disabled={!dirty || problem !== null || save.isPending}
-                onClick={() => save.mutate()}
+                disabled={!dirty || problem !== null || save.isPending || checking}
+                onClick={() => void checkThenSave()}
               >
-                {save.isPending ? '保存中…' : '保存仓库'}
+                {checking ? '检查中…' : save.isPending ? '保存中…' : '保存仓库'}
               </button>
             </div>
           </div>
+          {skipped !== null && save.isSuccess ? (
+            <p className="mt-1 text-meta text-tertiary" data-testid="repo-check-skipped">
+              {skipped}
+            </p>
+          ) : null}
           {error !== null ? (
             <p className="mt-1 text-meta text-rust" data-testid="repos-error">{error}</p>
           ) : null}

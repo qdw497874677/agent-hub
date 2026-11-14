@@ -68,6 +68,41 @@ export const setProjectRepoRequest = z.object({
   defaultBranch: z.string().max(200).nullable().optional()
 });
 
+/**
+ * 保存前检查仓库清单（POST /api/projects/:projectId/repos/check）。
+ * 形状与 PATCH 的 repos 一致；workerId 省略 = 自动挑一台在线的、有 git 能力的机器。
+ */
+export const checkProjectReposRequest = z.object({
+  repos: z
+    .array(
+      z.object({
+        id: z.string().max(64).optional(),
+        name: z.string().max(41).optional(),
+        url: z.string().min(1).max(500),
+        defaultBranch: z.string().max(200).nullable().optional()
+      })
+    )
+    .max(8),
+  workerId: z.string().min(1).max(120).nullable().optional()
+});
+
+/** 检查结果：不可用（没有在线机器）不是错误，unavailable 给文案、results 为空。 */
+export const projectReposCheckDto = z.object({
+  workerId: z.string().nullable(),
+  workerLabel: z.string().nullable(),
+  unavailable: z.string().nullable(),
+  results: z.array(
+    z.object({
+      name: z.string(),
+      url: z.string(),
+      branch: z.string().nullable(),
+      ok: z.boolean(),
+      defaultBranch: z.string().nullable(),
+      message: z.string().nullable()
+    })
+  )
+});
+
 export const createTaskRequest = z.object({
   projectId: id,
   title: z.string().min(1).max(200),

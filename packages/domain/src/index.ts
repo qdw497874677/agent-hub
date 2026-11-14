@@ -58,7 +58,7 @@ export type { NodeGateway, WorkerCommand, DispatchOutcome } from './ports/node-g
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
-export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
+export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
 export type { SessionHosting } from './ports/session-hosting.ts';
@@ -67,6 +67,7 @@ export type { SessionQueue } from './ports/session-queue.ts';
 
 export * from './use-cases/deps.ts';
 export * from './use-cases/projects.ts';
+export * from './use-cases/repo-check.ts';
 export * from './use-cases/delete-project.ts';
 export * from './use-cases/delete-session.ts';
 export * from './use-cases/settle-session.ts';

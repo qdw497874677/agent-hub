@@ -297,3 +297,28 @@ test('D10 worktreesDir：新建放到配置的位置（<dir>/<仓库名>/<目录
   const revived = await git.addWorktree({ repoPath: cloned.value.path, path: old, branch: 'agent-hub/fix-1', existing: true });
   assert.ok(revived.ok && revived.value.path === old, JSON.stringify(revived));
 });
+
+test('checkRepo：ls-remote 读默认分支和分支存在性；坏地址不抛', async () => {
+  const { url } = await origin();
+  const git = createGitWorkspace();
+
+  const main = await git.checkRepo(url, 'main');
+  assert.ok(main.ok, main.ok ? '' : main.error.message);
+  assert.deepEqual(main.value, { reachable: true, defaultBranch: 'main', branchExists: true, message: null });
+
+  const missing = await git.checkRepo(url, 'master');
+  assert.ok(missing.ok);
+  assert.equal(missing.value.reachable, true);
+  assert.equal(missing.value.defaultBranch, 'main');
+  assert.equal(missing.value.branchExists, false);
+
+  // 不填分支 = 用远端默认分支，永远成立
+  const any = await git.checkRepo(url, null);
+  assert.ok(any.ok && any.value.branchExists === true);
+
+  const broken = await git.checkRepo(join(url, 'nope'), 'main');
+  assert.ok(broken.ok);
+  assert.equal(broken.value.reachable, false);
+  assert.equal(broken.value.defaultBranch, null);
+  assert.ok((broken.value.message ?? '').length > 0);
+});

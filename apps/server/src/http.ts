@@ -2,6 +2,7 @@ import { installConnectorRoutes, type ConnectorRouteDeps } from './connector-rou
 import { installObserveRoutes, type ObserveRouteOptions } from './observe-routes.ts';
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installWorkspaceGroupRoutes } from './workspace-group-routes.ts';
+import { installProjectReposRoutes } from './project-repos-routes.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
@@ -596,6 +597,7 @@ export function createApp(options: AppOptions): Hono {
   });
   // 组合工作空间（多仓库）：建组 / 重试 / 删组（docs/design/multi-repo.md §4–§6）
   installWorkspaceGroupRoutes(app, { deps, audit: auditResource }, subjectOf);
+  installProjectReposRoutes(app, { deps, audit: auditResource }, subjectOf);
 
   // 立刻清理一次（项目设置里「重新检查」）
   app.post('/api/workspaces/sweep', async (c) => c.json(await sweepTemporaryWorkspacesUseCase(deps)));
