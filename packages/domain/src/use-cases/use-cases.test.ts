@@ -410,7 +410,7 @@ test('worker 掉线：只有它名下的会话不再算托管', async () => {
   assert.ok(there.ok);
   assert.equal(here.workerId, 'local');
   assert.equal(there.value.workerId, 'remote-1');
-  assert.equal(workerGone(w.deps, 'remote-1'), 1);
+  assert.equal(await workerGone(w.deps, 'remote-1'), 1);
   assert.ok(w.deps.hosting.has(here.id));
   assert.ok(!w.deps.hosting.has(there.value.id));
 });
@@ -429,10 +429,23 @@ test('Worker 秒重连：先接回、后到的掉线不会把刚接回的会话�
   const w = await world();
   const here = await derived(w);
   w.deps.hosting.clear();
-  // 旧连接的掉线和新连接的 hello 交错：掉线是同步的，接回发生在它之后就留得住
-  workerGone(w.deps, 'local');
+  // 旧连接的掉线和新连接的 hello 交错：掉线把托管划掉，接回发生在它之后就要留得住
+  await workerGone(w.deps, 'local');
   await workerAttached(w.deps, 'local', [here.id]);
   assert.ok(w.deps.hosting.has(here.id));
+});
+
+test('机器掉线：还挂着 running 的会话降级成 interrupted，接回后恢复', async () => {
+  const w = await world();
+  const here = await derived(w);
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(here.id))!, status: 'running' });
+  await workerGone(w.deps, 'local');
+  assert.equal((await w.deps.sessions.byId(here.id))?.status, 'interrupted');
+  assert.equal(w.frames.at(-1)?.status, 'interrupted', '界面要跟着变，不能一直显示正在回复');
+  // 网络抖动、Worker 秒回且进程还活着：接回来继续算 running
+  await workerAttached(w.deps, 'local', [here.id]);
+  assert.equal((await w.deps.sessions.byId(here.id))?.status, 'running');
+  assert.equal(w.frames.at(-1)?.status, 'running');
 });
 
 test('Worker 发来的会话帧只在会话落在它身上时算数', async () => {

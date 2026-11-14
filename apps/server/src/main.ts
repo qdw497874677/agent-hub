@@ -887,7 +887,8 @@ serverGateway = createServerGateway({
   },
   onWorkerGone(workerId, reason) {
     catalog.removeWorker(workerId);
-    workerGone(deps, workerId);
+    // 异步收尾：把挂在这台机器上还停着 running 的会话降级成 interrupted（表里不留假运行）。
+    void workerGone(deps, workerId).catch((error: unknown) => log(`worker 离线收尾失败：${String(error)}`));
     // 机器没了，它上面的 PTY 也没了：只关对应的浏览器 WS，不发 terminal.close。
     terminalBridge?.closeWorker(workerId);
     log(`worker 离线：${workerId}（${reason}）`);

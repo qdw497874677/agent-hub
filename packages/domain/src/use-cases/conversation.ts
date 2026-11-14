@@ -359,8 +359,22 @@ export async function frameAccepted(
  * 必须同步划：以前先 await 一次 listAll 再逐条 drop，Worker 秒重连时
  * `workerAttached` 刚接回的会话会被这次迟到的掉线清掉，下一句话又 resume 出第二个 agent 进程。
  */
-export function workerGone(deps: Pick<Deps, 'hosting'>, workerId: string): number {
-  return deps.hosting.dropWorker(workerId);
+export async function workerGone(
+  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now'>,
+  workerId: string
+): Promise<number> {
+  const dropped = deps.hosting.dropWorker(workerId);
+  // 托管撤了，但库里的 status 还挂着 running（提问时置的）——进程已经随这台机器没了，
+  // 不收回来界面会永远显示「正在回复」，删除/收起也一直被 409 挡着。
+  // 若是网络抖动、Worker 秒回，`workerAttached` 会把真还活着的会话再拉回 running。
+  for (const session of await deps.sessions.listAll()) {
+    if (session.status !== 'running') continue;
+    if (session.workerId !== null && session.workerId !== workerId) continue;
+    const next = markInterrupted(session, deps.now());
+    await deps.sessions.save(next);
+    deps.stream.publish({ sessionId: next.id, seq: next.lastSeq, event: null, status: next.status });
+  }
+  return dropped;
 }
 
 /**
@@ -370,7 +384,7 @@ export function workerGone(deps: Pick<Deps, 'hosting'>, workerId: string): numbe
  * 返回核对过的那些，组合根据此让网关恢复路由（网关自己不信 hello 里报的清单）。
  */
 export async function workerAttached(
-  deps: Pick<Deps, 'hosting' | 'sessions'>,
+  deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now'>,
   workerId: string,
   sessionIds: readonly string[]
 ): Promise<string[]> {
@@ -379,6 +393,12 @@ export async function workerAttached(
     const session = await deps.sessions.byId(id as SessionId);
     if (!session || (session.workerId !== null && session.workerId !== workerId)) continue;
     deps.hosting.add(session.id, workerId);
+    // 刚才掉线时被降级成 interrupted 的，进程其实还活着：接回来，界面继续显示「正在回复」。
+    if (session.status === 'interrupted') {
+      const next = { ...session, status: 'running' as const, updatedAt: deps.now() };
+      await deps.sessions.save(next);
+      deps.stream.publish({ sessionId: next.id, seq: next.lastSeq, event: null, status: next.status });
+    }
     attached.push(session.id);
   }
   return attached;
