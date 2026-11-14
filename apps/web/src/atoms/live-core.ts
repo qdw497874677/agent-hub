@@ -471,8 +471,9 @@ export function forkBlockedHint({ lastSeq, turnRunning, denied }: { lastSeq: num
 
 /**
  * 画布卡片上显示哪些块：和对话页同一套块（用户的话也在），只省掉思考过程——卡片太窄，思考在对话页看。
+ * 泛型是为了让调用方挂在块上的标（比如 `queued`）跟着过来，不被擦成裸 Block。
  */
-export function cardBlocks(blocks: readonly Block[]): readonly Block[] {
+export function cardBlocks<B extends Block>(blocks: readonly B[]): readonly B[] {
   return blocks.filter((block) => block.kind !== 'thinking');
 }
 

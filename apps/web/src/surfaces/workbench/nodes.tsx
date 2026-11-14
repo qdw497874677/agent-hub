@@ -16,12 +16,11 @@ import {
   multipleAuthors,
   waitingForReply,
   subagentStepCount,
-  type Block,
   type LiveSession
 } from '../../atoms/live.ts';
 import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
-import { heldPromptSeqs, splitTimeline } from '../../atoms/prompt-delivery.ts';
-import { PendingPrompts, QueuedPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
+import { heldPromptSeqs, markQueued } from '../../atoms/prompt-delivery.ts';
+import { PendingPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
 import { useDeliveries } from '../../atoms/delivery-note.tsx';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
@@ -105,7 +104,16 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
   );
 }
 
-function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]; showAuthor: boolean }) {
+function BlockView({
+  block,
+  showAuthor,
+  queued = false
+}: {
+  block: LiveSession['blocks'][number];
+  showAuthor: boolean;
+  /** 这条用户消息还在等（排队 / 发送中 / 未送达）：淡一点，并在右下角点一个小圆点。 */
+  queued?: boolean;
+}) {
   if (block.kind === 'thinking') return null;
   if (block.kind === 'prompt') {
     // 和对话页一样：用户的话靠右的气泡，卡片上收紧一点。附件只列名字。
@@ -114,9 +122,16 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
       <div className="flex flex-col items-end gap-0.5" data-testid="card-msg-user">
         {showAuthor ? <AuthorTag author={block.author} size="sm" /> : null}
         {block.text !== '' ? (
-          <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary">{block.text}</p>
+          <p
+            className={`max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary transition-opacity duration-150 ${
+              queued ? 'opacity-70' : ''
+            }`}
+          >
+            {block.text}
+          </p>
         ) : null}
         {names.length > 0 ? <p className="max-w-[85%] truncate font-mono text-meta text-tertiary">{names.join(' · ')}</p> : null}
+        {queued ? <CardQueuedDot /> : null}
       </div>
     );
   }
@@ -185,14 +200,42 @@ function BlockView({ block, showAuthor }: { block: LiveSession['blocks'][number]
   );
 }
 
+/** 卡片太窄，写不下「排队中」三个字：右下角一个小圆点，点上去（title）才说明白。 */
+function CardQueuedDot() {
+  return (
+    <span
+      data-testid="card-msg-queued"
+      data-state="queued"
+      title="排队中 · 还没轮到它"
+      className="flex items-center justify-end gap-1 pr-0.5"
+    >
+      <span aria-hidden className="block size-1.5 rounded-full bg-tertiary" />
+      <span className="sr-only">排队中</span>
+    </span>
+  );
+}
+
 /** 卡片上的单行气泡：一条消息只占一行，长了省略；完整内容在打开的对话里看。 */
-function CardPromptBubble({ text, count = 0, testId }: { text: string; count?: number; testId: string }) {
+function CardPromptBubble({
+  text,
+  count = 0,
+  testId,
+  queued = false
+}: {
+  text: string;
+  count?: number;
+  testId: string;
+  /** 还在等的那条：淡一点，位置不变。 */
+  queued?: boolean;
+}) {
   const label = text !== '' ? text : count > 0 ? `${count} 个附件` : '（空消息）';
   return (
     <div className="flex justify-end" data-testid={testId}>
       <p
         title={text !== '' ? text : undefined}
-        className="max-w-[85%] truncate rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary"
+        className={`max-w-[85%] truncate rounded-md rounded-br-sm bg-card-raised px-2 py-1 text-meta text-primary transition-opacity duration-150 ${
+          queued ? 'opacity-70' : ''
+        }`}
       >
         {label}
       </p>
@@ -274,9 +317,9 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
     blocks,
     send: (text, attachments, clientMessageId) => onSend(text, clientMessageId, attachments)
   });
-  // 排队中的用户消息不留在日志里，贴着 composer 显示，否则会被后续输出顶到上面看不见。
-  const { timeline, queued } = splitTimeline(blocks, heldPromptSeqs(deliveriesBySeq));
-  const queuedBlocks = queued.filter((block): block is Extract<Block, { kind: 'prompt' }> => block.kind === 'prompt');
+  // 排队 / 发送中 / 未送达的用户消息只在原处淡一点、多一个圆点，不搬家：
+  // 以前它们被抽到 composer 上方的独立区块，一条消息会来回跳三次。
+  const timeline = cardBlocks(markQueued(blocks, heldPromptSeqs(deliveriesBySeq)));
 
   async function send(text: string): Promise<void> {
     setBusy(true);
@@ -488,7 +531,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         {failureReason ? (
           <p className="border-l border-rust pl-2 text-meta text-rust">{failureReason}</p>
         ) : null}
-        {blocks.length === 0 ? (
+        {blocks.length === 0 && delivery.pending.length === 0 ? (
           <p className="text-meta text-tertiary">
             {status === 'running' && (live?.lastSeq ?? session.lastSeq) === 0
               ? session.origin.kind === 'fork'
@@ -497,32 +540,28 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
               : '尚无输出'}
           </p>
         ) : (
-          cardBlocks(timeline).map((block, index) => <BlockView key={index} block={block} showAuthor={showAuthor} />)
+          timeline.map((block, index) => (
+            <BlockView key={index} block={block} showAuthor={showAuthor} queued={block.queued === true} />
+          ))
         )}
-        {/* 排队区贴在滚动区底部：滚上去了也还看得见刚发的那条在等什么。 */}
-        {queuedBlocks.length > 0 ? (
-          <div className="sticky bottom-0 -mx-0.5 bg-card">
-            <QueuedPrompts
-              blocks={queuedBlocks}
-              compact
-              testIdPrefix="card-"
-              renderPrompt={(block) => <CardPromptBubble text={block.text} testId="card-msg-queued" />}
+        {/* 还没写进对话的消息就是日志末尾的普通一行：发完立刻看得到「已收到 · 排队中」还是「未送达」。 */}
+        <PendingPrompts
+          pending={delivery.pending}
+          onRetry={(pending) => void retry(pending)}
+          onDiscard={delivery.discard}
+          compact
+          testIdPrefix="card-"
+          className="gap-1.5"
+          renderPrompt={(pending) => (
+            <CardPromptBubble
+              text={pending.text}
+              count={pending.attachments.length}
+              testId="card-msg-pending"
+              queued={pending.state === 'queued'}
             />
-          </div>
-        ) : null}
+          )}
+        />
       </div>
-
-      {/* 还没写进对话的消息：就贴在 composer 上方，发完立刻看得到「已收到 · 排队中」还是「未送达」。 */}
-      <PendingPrompts
-        pending={delivery.pending}
-        onRetry={(pending) => void retry(pending)}
-        onDiscard={delivery.discard}
-        compact
-        testIdPrefix="card-"
-        renderPrompt={(pending) => (
-          <CardPromptBubble text={pending.text} count={pending.attachments.length} testId="card-msg-pending" />
-        )}
-      />
 
       <CardComposer
         session={{ ...session, status }}

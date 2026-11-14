@@ -441,7 +441,8 @@ export function ChatBlock({
   settings,
   last,
   running,
-  showAuthor = false
+  showAuthor = false,
+  queued = false
 }: {
   block: Block;
   sessionId: string;
@@ -452,6 +453,8 @@ export function ChatBlock({
   running: boolean;
   /** 不止一个人说过话时，用户气泡旁标出是谁。 */
   showAuthor?: boolean;
+  /** 这条用户消息还在等（排队 / 发送中 / 未送达）：气泡淡一点，位置不变。 */
+  queued?: boolean;
 }) {
   if (block.kind === 'subagent') {
     const label = block.agent ?? '子代理';
@@ -526,7 +529,13 @@ export function ChatBlock({
           </ul>
         ) : null}
         {block.text !== '' ? (
-          <p className="max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-3 py-2 text-body text-primary">{block.text}</p>
+          <p
+            className={`max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-3 py-2 text-body text-primary transition-opacity duration-150 ${
+              queued ? 'opacity-80' : ''
+            }`}
+          >
+            {block.text}
+          </p>
         ) : null}
         <DeliveryNote seq={block.seq} />
       </div>

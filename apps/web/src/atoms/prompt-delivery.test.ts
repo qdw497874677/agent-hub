@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import {
   ACK_GRACE_MS,
   heldPromptSeqs,
+  markQueued,
   nextAckDelay,
-  pendingBubbles,
-  splitTimeline
+  pendingBubbles
 } from './prompt-delivery.ts';
 import { ACK_TIMEOUT_MS, type PendingPrompt } from './pending-prompt.ts';
 
@@ -31,7 +31,7 @@ test('没有送达状态时是空集合，不误伤任何一条', () => {
   assert.equal(heldPromptSeqs(new Map()).size, 0);
 });
 
-test('拆分时间线：只把排队中的 prompt 拿走，其余顺序原样', () => {
+test('排队只打标，不改变顺序：块还在原来的位置，只是多了 queued', () => {
   const blocks: Item[] = [
     { kind: 'prompt', seq: 1 },
     { kind: 'text', seq: 2 },
@@ -39,27 +39,27 @@ test('拆分时间线：只把排队中的 prompt 拿走，其余顺序原样', 
     { kind: 'tool', seq: 4 },
     { kind: 'prompt', seq: 5 }
   ];
-  const { timeline, queued } = splitTimeline(blocks, new Set([3, 5]));
-  assert.deepEqual(timeline.map((block) => block.seq), [1, 2, 4]);
-  assert.deepEqual(queued.map((block) => block.seq), [3, 5]);
+  const marked = markQueued(blocks, new Set([3, 5]));
+  // 一条都不许挪位置：以前排队中的消息会被抽到输入框上方，来回跳三次。
+  assert.deepEqual(marked.map((block) => block.seq), [1, 2, 3, 4, 5]);
+  assert.deepEqual(marked.map((block) => block.kind), ['prompt', 'text', 'prompt', 'tool', 'prompt']);
+  assert.deepEqual(marked.map((block) => block.queued === true), [false, false, true, false, true]);
+  // 打了标的块只多一个字段，正文照旧。
+  assert.equal(marked[2]!.text, blocks[2]!.text);
 });
 
-test('同一个 seq 上的非 prompt 块永远留在时间线里', () => {
-  const blocks: Item[] = [{ kind: 'text', seq: 3 }];
-  const { timeline, queued } = splitTimeline(blocks, new Set([3]));
-  assert.equal(queued.length, 0);
-  assert.equal(timeline.length, 1);
+test('同一个 seq 上的非 prompt 块不打标', () => {
+  const blocks: Item[] = [{ kind: 'text', seq: 3 }, { kind: 'prompt', seq: 3 }];
+  const marked = markQueued(blocks, new Set([3]));
+  assert.equal(marked[0]!.queued, undefined);
+  assert.equal(marked[1]!.queued, true);
 });
 
-test('没东西可拆时返回原数组（下游 memo 不用重算）', () => {
+test('没东西可标时返回原数组（下游 memo 不用重算）', () => {
   const blocks: Item[] = [{ kind: 'prompt', seq: 1 }];
-  const result = splitTimeline(blocks, new Set());
-  assert.equal(result.timeline, blocks);
-  assert.equal(result.queued.length, 0);
+  assert.equal(markQueued(blocks, new Set()), blocks);
   // 有 held 但没有一条命中：也还是原数组。
-  const other = splitTimeline(blocks, new Set([9]));
-  assert.equal(other.timeline, blocks);
-  assert.equal(other.queued.length, 0);
+  assert.equal(markQueued(blocks, new Set([9])), blocks);
 });
 
 const pending = (id: string, sentAt = 1_000, state: PendingPrompt['state'] = 'sending'): PendingPrompt => ({

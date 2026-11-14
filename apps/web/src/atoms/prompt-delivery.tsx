@@ -13,6 +13,8 @@ import { ACK_GRACE_MS, nextAckDelay, pendingBubbles } from './prompt-delivery.ts
  * 发送回执这一层：乐观气泡、8 秒超时、重试/放弃、和 journal 回显对账。
  *
  * 专注对话和画布卡片走同一套：卡片不该再有一份「点了禁用一下」的简化版。
+ * 一条消息从头到尾只占一个位置：乐观气泡先挂在消息列表末尾，回执到了原地换行小字，
+ * 进了 journal 再由那条真实消息接管——不搬到别的区块去。
  * 纯逻辑在 prompt-delivery.ts（可单测），这里只管状态和展示。
  */
 
@@ -34,7 +36,7 @@ export interface UsePromptDeliveryOptions {
 }
 
 export interface PromptDelivery {
-  /** 还没写进对话的消息，按发送顺序。 */
+  /** 还没写进对话的消息，按发送顺序。它们画在消息列表末尾（不是独立区块）。 */
   readonly pending: readonly PendingPrompt[];
   /** 发一条：先插气泡，回执到了标 queued，出错就撤掉气泡并把错误抛给调用方。 */
   readonly deliver: (text: string, attachments?: readonly AttachmentInputDto[]) => Promise<PromptAckDto>;
@@ -113,7 +115,9 @@ export function usePromptDelivery({ sessionId, blocks, send }: UsePromptDelivery
     setPending((previous) => previous.filter((item) => item.id !== id));
   }, []);
 
-  return { pending, deliver, retry, discard };
+  // 同 id 的 prompt 已经在 journal 里了：这一帧就别画气泡。只靠上面的 effect 对账，
+  // 会多出一帧「气泡和真实消息同时在」，看着像闪了一下。
+  return { pending: reconcilePending(pending, blocks), deliver, retry, discard };
 }
 
 export interface PendingPromptsProps {
@@ -124,18 +128,27 @@ export interface PendingPromptsProps {
   readonly renderPrompt: (prompt: PendingPrompt, index: number, seq: number) => ReactNode;
   /** 同一页有多条会话时用前缀分开（卡片用 `card-`）。 */
   readonly testIdPrefix?: string;
-  /** 卡片上收紧：单行、小间距、限高滚动。 */
+  /** 卡片上收紧：单行、小间距。 */
   readonly compact?: boolean;
+  /**
+   * 调用方控制间距：要贴在同一份消息列表里，就得和列表用同一个 gap。
+   * 传了就以它为准（不再叠默认 gap，Tailwind 的同类工具类谁排在后面谁赢，不能靠拼接顺序）。
+   */
+  readonly className?: string;
 }
 
-/** 输入框上方的「还没写进对话的消息」。文案和 testid 两边一致（只看前缀）。 */
+/**
+ * 「还没写进对话的消息」。它不是一个独立的区块，而是消息列表末尾的正常气泡：
+ * 里面的人马上会变成 journal 里的那条 prompt，所以这里只补一行状态字，不换外壳、不换位置。
+ */
 export function PendingPrompts({
   pending,
   onRetry,
   onDiscard,
   renderPrompt,
   testIdPrefix = '',
-  compact = false
+  compact = false,
+  className = ''
 }: PendingPromptsProps) {
   if (pending.length === 0) return null;
   return (
@@ -143,90 +156,77 @@ export function PendingPrompts({
       aria-label="还没写进对话的消息"
       aria-live="polite"
       data-testid={`${testIdPrefix}pending-prompts`}
-      className={
-        compact
-          ? 'nowheel nopan nodrag mt-1 max-h-[120px] shrink-0 overflow-y-auto overscroll-contain border-t border-dashed border-hair pt-1'
-          : 'mb-2 border-t border-dashed border-hair pt-2'
-      }
+      className={`flex min-w-0 flex-col ${className || (compact ? 'gap-1.5' : 'gap-3')}`}
     >
-      <div className={compact ? 'flex flex-col gap-1' : 'flex flex-col gap-2'}>
-        {pendingBubbles(pending).map(({ prompt, seq }, index) => (
-          <div key={prompt.id} className="flex min-w-0 flex-col gap-1">
-            {renderPrompt(prompt, index, seq)}
-            {prompt.state === 'unknown' ? (
-              <div
-                className="flex flex-wrap items-center gap-1 text-meta text-tertiary"
-                data-testid={`${testIdPrefix}pending-unknown`}
-              >
-                <span className="mr-1 text-rust">未送达</span>
-                <button
-                  type="button"
-                  data-testid={`${testIdPrefix}pending-retry`}
-                  onClick={() => onRetry(prompt)}
-                  className="inline-flex min-h-8 items-center rounded-sm border border-hair px-2.5 text-meta text-secondary hover:border-strong hover:text-primary active:bg-card"
-                >
-                  重试
-                </button>
-                <button
-                  type="button"
-                  data-testid={`${testIdPrefix}pending-discard`}
-                  onClick={() => onDiscard(prompt.id)}
-                  className="inline-flex min-h-8 items-center rounded-sm px-2.5 text-meta text-tertiary hover:text-primary active:bg-card"
-                >
-                  放弃
-                </button>
-              </div>
-            ) : (
-              <p className="truncate text-meta text-tertiary">{pendingLabel(prompt.state)}</p>
-            )}
-          </div>
-        ))}
-      </div>
+      {pendingBubbles(pending).map(({ prompt, seq }, index) => (
+        <div
+          key={prompt.id}
+          data-testid={`${testIdPrefix}pending-msg`}
+          data-state={prompt.state}
+          className={`flex min-w-0 flex-col ${compact ? 'gap-0.5' : 'gap-1.5'}`}
+        >
+          {renderPrompt(prompt, index, seq)}
+          <PendingStateLine
+            prompt={prompt}
+            onRetry={onRetry}
+            onDiscard={onDiscard}
+            testIdPrefix={testIdPrefix}
+          />
+        </div>
+      ))}
     </section>
   );
 }
 
-/** 至少带 kind / seq 的 prompt 块；真实 Block 结构化兼容。 */
-export interface QueuedPromptLike {
-  readonly kind: 'prompt';
-  readonly seq: number;
-}
-
-export interface QueuedPromptsProps<B extends QueuedPromptLike> {
-  /** 从时间线里拆出来的 prompt 块（见 prompt-delivery.ts 的 splitTimeline）。 */
-  readonly blocks: readonly B[];
-  readonly renderPrompt: (block: B, index: number) => ReactNode;
-  readonly testIdPrefix?: string;
-  readonly compact?: boolean;
-}
-
-/** 贴在输入框上方的「排队中的消息」。卡片的滚动区在这里限高，别把整张卡撑大。 */
-export function QueuedPrompts<B extends QueuedPromptLike>({
-  blocks,
-  renderPrompt,
-  testIdPrefix = '',
-  compact = false
-}: QueuedPromptsProps<B>) {
-  if (blocks.length === 0) return null;
-  return (
-    <section
-      aria-label="排队中的消息"
-      aria-live="polite"
-      data-testid={`${testIdPrefix}queued-prompts`}
-      className={
-        compact
-          ? 'nowheel nopan nodrag mt-1 max-h-[120px] shrink-0 overflow-y-auto overscroll-contain border-t border-dashed border-hair pt-1'
-          : 'mb-2 max-h-[40vh] overflow-y-auto border-t border-dashed border-hair pt-2'
-      }
-    >
-      <p className="mb-1 truncate text-meta text-tertiary">待发送 · 当前回复结束后自动发出</p>
-      <div className={compact ? 'flex flex-col gap-1' : 'flex flex-col gap-2'}>
-        {blocks.map((block, index) => (
-          <div key={`queued-${block.seq}`} className="min-w-0">
-            {renderPrompt(block, index)}
-          </div>
-        ))}
+/**
+ * 气泡下面那行 11px 的小字。和 journal 里真实消息的送达说明同一套写法
+ * （右对齐、`text-meta`、`data-state`），所以气泡从「正在发送」变成「排队中」只是换字，不换形。
+ */
+function PendingStateLine({
+  prompt,
+  onRetry,
+  onDiscard,
+  testIdPrefix
+}: {
+  readonly prompt: PendingPrompt;
+  readonly onRetry: (prompt: PendingPrompt) => void;
+  readonly onDiscard: (id: string) => void;
+  readonly testIdPrefix: string;
+}) {
+  if (prompt.state === 'unknown') {
+    return (
+      <div
+        className="flex max-w-[85%] flex-wrap items-center justify-end gap-1 self-end text-meta text-tertiary"
+        data-testid={`${testIdPrefix}pending-unknown`}
+        data-state="unknown"
+      >
+        <span className="mr-1 text-rust">未送达</span>
+        <button
+          type="button"
+          data-testid={`${testIdPrefix}pending-retry`}
+          onClick={() => onRetry(prompt)}
+          className="inline-flex min-h-8 items-center rounded-sm border border-hair px-2.5 text-meta text-secondary hover:border-strong hover:text-primary active:bg-card"
+        >
+          重试
+        </button>
+        <button
+          type="button"
+          data-testid={`${testIdPrefix}pending-discard`}
+          onClick={() => onDiscard(prompt.id)}
+          className="inline-flex min-h-8 items-center rounded-sm px-2.5 text-meta text-tertiary hover:text-primary active:bg-card"
+        >
+          放弃
+        </button>
       </div>
-    </section>
+    );
+  }
+  return (
+    <p
+      className="max-w-[85%] self-end truncate text-right text-meta text-tertiary transition-opacity duration-150"
+      data-testid={`${testIdPrefix}pending-state`}
+      data-state={prompt.state}
+    >
+      {pendingLabel(prompt.state)}
+    </p>
   );
 }

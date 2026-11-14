@@ -44,8 +44,8 @@ import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
 import { deleteSessionBlockedHint, edgeSurvivesSession } from '../../atoms/delete-session.ts';
 import { environmentNotice } from '../../atoms/environment-notice.ts';
 import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
-import { heldPromptSeqs, splitTimeline } from '../../atoms/prompt-delivery.ts';
-import { PendingPrompts, QueuedPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
+import { heldPromptSeqs, markQueued } from '../../atoms/prompt-delivery.ts';
+import { PendingPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
 import { WorktreeStatusLine } from './worktree-status.tsx';
 import { SessionGroupLine } from './session-group.tsx';
 
@@ -371,12 +371,11 @@ export function FocusView({
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
   const turns = shown(useQuery({ ...FILES_QUERY, queryKey: fileKeys.turns(), queryFn: () => filesApi.turns(session.id) })) ?? [];
   const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
-  // 排队中的用户消息不留在时间线里：它们要一直贴在对话底部，不能因为 agent 继续输出而被顶到上面。
+  // 排队 / 发送中 / 未送达的用户消息：只在原地淡一点、多一行小字，不搬家。
+  // 以前它们会被抽到输入框上方的独立区块，一条消息在「列表末尾 → 底部区块 → 列表中间」
+  // 跳三次，观感很碎，所以现在只打标不改变顺序。
   const held = heldPromptSeqs(deliveriesBySeq);
-  const { timeline: timelineBlocks, queued } = splitTimeline(blocks, held);
-  const queuedBlocks = queued.filter(
-    (block): block is Extract<Block, { kind: 'prompt' }> => block.kind === 'prompt'
-  );
+  const timelineBlocks = markQueued(blocks, held);
   const promptSeqs = timelineBlocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
   /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
   const badgeBefore = (seq: number) => {
@@ -909,7 +908,7 @@ export function FocusView({
               <span className="h-px flex-1 border-t border-dashed border-sage" />
             </div>
           ) : null}
-          {blocks.length === 0 ? (
+          {blocks.length === 0 && delivery.pending.length === 0 ? (
             <p className="text-meta text-tertiary">这条会话还没有说话。在下面写一句，交给 {agentLabel}。</p>
           ) : (
             <FileLinksContext.Provider value={fileLinks}>
@@ -925,10 +924,30 @@ export function FocusView({
                 last={index === timelineBlocks.length - 1}
                 running={turnRunning}
                 showAuthor={showAuthor}
+                queued={block.queued === true}
               />
               </TurnFrag>
             ))}
             {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
+            {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
+            <PendingPrompts
+              pending={delivery.pending}
+              onRetry={(pending) => void retryPending(pending)}
+              onDiscard={delivery.discard}
+              className={settings.compact ? 'gap-2' : 'gap-4'}
+              renderPrompt={(pending, _index, seq) => (
+                <ChatBlock
+                  block={{ kind: 'prompt', text: pending.text, attachments: [], seq }}
+                  agentLabel={agentLabel}
+                  sessionId={session.id}
+                  settings={settings}
+                  last={false}
+                  running={false}
+                  showAuthor={showAuthor}
+                  queued={pending.state === 'queued'}
+                />
+              )}
+            />
             {reason && timelineBlocks[timelineBlocks.length - 1]?.kind !== 'error' ? (
               <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
             ) : null}
@@ -998,40 +1017,6 @@ export function FocusView({
               ) : <span />}
               {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
             </div>
-          ) : null}
-          <PendingPrompts
-            pending={delivery.pending}
-            onRetry={(pending) => void retryPending(pending)}
-            onDiscard={delivery.discard}
-            renderPrompt={(pending, _index, seq) => (
-              <ChatBlock
-                block={{ kind: 'prompt', text: pending.text, attachments: [], seq }}
-                agentLabel={agentLabel}
-                sessionId={session.id}
-                settings={settings}
-                last={false}
-                running={false}
-                showAuthor={showAuthor}
-              />
-            )}
-          />
-          {queuedBlocks.length > 0 ? (
-            <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
-              <QueuedPrompts
-                blocks={queuedBlocks}
-                renderPrompt={(block) => (
-                  <ChatBlock
-                    block={block}
-                    agentLabel={agentLabel}
-                    sessionId={session.id}
-                    settings={settings}
-                    last={false}
-                    running={turnRunning}
-                    showAuthor={showAuthor}
-                  />
-                )}
-              />
-            </DeliveryContext.Provider>
           ) : null}
           {envNotice ? (
             <p
