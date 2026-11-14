@@ -72,6 +72,8 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   pumpDeliveries,
   releaseAfterTurn,
   sweepTemporaryWorkspacesUseCase,
+  prepareTemporaryWorkspaceUseCase,
+  asTaskId,
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
   sweepGitForReview,
@@ -561,11 +563,28 @@ toolGateway = createToolGateway({
       agents: deps.agents,
       now: deps.now,
       spawn: async (input) => {
+        // 档位：agent 要求隔离时现建 worktree（按项目配置跑准备命令），与 /api/sessions/derive 同一条路径。
+        let workspaceId: string | undefined;
+        if (input.workspaceMode) {
+          const task = await deps.tasks.byId(asTaskId(input.taskId));
+          if (!task) return err(notFound('任务不存在'));
+          const prepared = await prepareTemporaryWorkspaceUseCase(deps, {
+            projectId: task.projectId,
+            taskId: task.id,
+            workerId: null,
+            home: homedir(),
+            mode: input.workspaceMode,
+            actor: systemSubject('agent.spawn')
+          });
+          if (!prepared.ok) return prepared;
+          workspaceId = prepared.value.id;
+        }
         const created = await deriveSessionUseCase(deps, {
           taskId: input.taskId,
           agentId: input.agentId,
           model: input.model,
           options: input.options,
+          ...(workspaceId === undefined ? {} : { workspaceId }),
           actor: systemSubject('agent.spawn'),
           createdBy: input.createdBy
         });

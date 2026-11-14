@@ -95,6 +95,19 @@ test('编排工具：列 profile、运行时和同项目活动', async () => {
   assert.equal(got.options.mode, 'plan');
   assert.equal(got.createdBy, 'u1');
   assert.equal(got.prompt, '看看 /tmp');
+
+  // 档位透传：agent 可以要求新开会话落在隔离 worktree 里。
+  const isolated = await tools.call(
+    'agent.spawn',
+    { agent_id: 'fake', workspace_mode: 'isolated' },
+    grant(session.id, session.taskId)
+  );
+  assert.ok(isolated.ok, JSON.stringify(isolated));
+  assert.equal((spawned as SpawnAgentAction | null)?.workspaceMode, 'isolated');
+
+  const bogus = await tools.call('agent.spawn', { workspace_mode: 'worktree' }, grant(session.id, session.taskId));
+  assert.equal(bogus.ok, false);
+  if (!bogus.ok) assert.equal(bogus.error.code, 'invalid');
 });
 
 test('编排工具：set_option 只能改同项目同 owner 的会话', async () => {

@@ -14,6 +14,8 @@ export interface SpawnAgentAction {
   readonly agentId: string;
   readonly model: string;
   readonly options: Readonly<Record<string, string | boolean>>;
+  /** 现建临时空间的档位：`isolated` = 新开 worktree（按项目配置跑准备命令），`shared` = 每次现建一个落在长期目录旁的临时空间。不传 = 用项目默认工作空间。 */
+  readonly workspaceMode?: 'shared' | 'isolated';
   readonly prompt?: string;
   /** 父会话的主人：新会话继承它，profile 和权限都按它算。 */
   readonly createdBy: string | null;
@@ -132,7 +134,7 @@ export const AGENT_ORCHESTRATION_TOOLS: readonly ToolDescriptor[] = [
     scope: 'agent:message',
     perMinute: 6,
     description:
-      'Start a sibling session in the same task (optionally from an Agent Profile) and optionally send it an initial prompt. This is a thin wrapper around the normal session/derive + prompt flow: the same worker, workspace and permission rules apply. Returns the new session id.',
+      'Start a sibling session in the same task (optionally from an Agent Profile) and optionally send it an initial prompt. This is a thin wrapper around the normal session/derive + prompt flow: the same worker, workspace and permission rules apply. Pass workspace_mode=isolated to run it in a fresh git worktree (the project setup command runs first) instead of the shared workspace. Returns the new session id.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -140,6 +142,7 @@ export const AGENT_ORCHESTRATION_TOOLS: readonly ToolDescriptor[] = [
         agent_id: { type: 'string', minLength: 1, maxLength: 120 },
         model: { type: 'string', maxLength: 2000 },
         options: { type: 'object', additionalProperties: { type: ['string', 'boolean'] } },
+        workspace_mode: { type: 'string', enum: ['shared', 'isolated'] },
         prompt: { type: 'string', minLength: 1, maxLength: 32768 }
       },
       additionalProperties: false
@@ -229,12 +232,17 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
         }
         if (!deps.agents.descriptor(asAgentId(agentId))) return err(notFound(`没有在线节点提供 ${agentId}`));
 
+        const rawMode = args['workspace_mode'];
+        if (rawMode !== undefined && rawMode !== 'shared' && rawMode !== 'isolated') {
+          return err(invalid('workspace_mode 只能是 shared 或 isolated'));
+        }
         const prompt = str(args['prompt'], 32768);
         const started = await deps.spawn({
           taskId,
           agentId,
           model,
           options: options.value,
+          ...(rawMode === undefined ? {} : { workspaceMode: rawMode }),
           ...(prompt ? { prompt } : {}),
           createdBy: me.createdBy ?? null,
           callerSessionId: me.id

@@ -143,6 +143,8 @@
 - 验证：`npm test` 1310 tests / 1302 pass / 8 skipped / 0 fail；`e2e/settle.spec.ts` 2/2。
 - 残留意向：自动收起（PR 合并 / 陈旧）留到有稳定「最后活动时间」口径之后；I2 composer 手势、I3 三档 diff、I4 侧聊仍未做。
 
+补充（2026-11-14）：worktree 档位现在三个入口都通——`POST /api/sessions/derive { workspaceMode }`、前端派生对话框的「隔离 worktree」勾选（勾上时不再要求选工作空间，也不发送 `workspaceId`），以及 agent 工具 `agent.spawn { workspace_mode: 'isolated' }`（走同一条 `prepareTemporaryWorkspaceUseCase`，会按项目配置跑准备命令）。这样 bot 或会话里的 agent 可以自己开一个隔离兄弟会话来并行干活。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道
