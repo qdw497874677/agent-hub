@@ -49,7 +49,12 @@ export function ContinueDialog({
       let target: { kind: 'workspace'; workspaceId: string } | { kind: 'temporary'; workerId: string | null };
       if (choice.type === 'existing') target = { kind: 'workspace', workspaceId: choice.workspaceId };
       else if (choice.type === 'new_temporary') target = { kind: 'temporary', workerId: machine };
-      else {
+      else if (choice.type === 'new_worktree') {
+        // 隔离 worktree：先按项目配置在目标机器上现建（准备命令跑完），再把它当普通空间继续
+        const made = await api.createWorkspace(canvas.project.id, { workerId: machine, kind: 'temporary', taskId: session.taskId, mode: 'isolated' });
+        setChoice({ type: 'existing', workspaceId: made.id });
+        target = { kind: 'workspace', workspaceId: made.id };
+      } else {
         const made = await api.createWorkspace(canvas.project.id, longLivedRequest(machine, choice));
         setChoice({ type: 'existing', workspaceId: made.id });
         target = { kind: 'workspace', workspaceId: made.id };

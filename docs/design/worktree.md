@@ -100,7 +100,7 @@ prepareTemporaryWorkspace
 
 ## 7. UI
 
-- **workspace chooser**（`workspace-chooser.tsx`）：三档变成显式单选，`isolated` 那档显示「新分支：agent-hub/…」「基座：main」；已存在本任务的 worktree 时优先给「继续用这个」。
+- **workspace chooser**（`workspace-chooser.tsx`）：机器 + 工作空间一起选；单选里多一项「新建隔离 worktree（新分支）」（`ws-new-worktree`），选中时说明「在 <机器> 上新建分支 agent-hub/…，先跑项目配置的准备命令」。它不遮住机器选择——档位是工作空间的一种，不是对话框上的额外开关。项目默认 isolated 时打开即选中；没有可用 git 基座时这一项置灰并说明原因。
 - **会话页**：标题区一行小字「worktree · agent-hub/foo-1a2b · 就绪」；准备中显示进度、失败显示原因 + 「看输出」「重试」「在终端打开」。
 - **项目设置 · 工作空间**：默认档位 + 准备命令 + 等待开关 + 超时；旁边是现有清理策略。
 - **机器页**：显示该 worker 的 `worktreesDir`（已有日志，提到 UI）。

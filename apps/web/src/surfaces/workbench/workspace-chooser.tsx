@@ -18,7 +18,9 @@ import { canSelectMachine } from '../../shell/harness-gate.ts';
 export type WorkspaceChoice =
   | { readonly type: 'existing'; readonly workspaceId: string }
   | { readonly type: 'new_long_lived'; readonly mode: 'create' | 'link'; readonly path: string | null }
-  | { readonly type: 'new_temporary' };
+  | { readonly type: 'new_temporary' }
+  /** 按项目配置在这台机器上现建一个隔离 worktree（新分支），准备命令跑完才起 agent。 */
+  | { readonly type: 'new_worktree' };
 
 /** 选完了没有：「选已有目录」还没点目录不算。 */
 export function choiceReady(choice: WorkspaceChoice | null): boolean {
@@ -231,6 +233,14 @@ export function WorkspaceChooser({
               selected={choice?.type === 'new_temporary'}
               onSelect={() => onChoice({ type: 'new_temporary' })}
             />
+            <NewWorktree
+              canvas={canvas}
+              taskId={taskId}
+              machineName={machineName}
+              gitHere={gitHere}
+              selected={choice?.type === 'new_worktree'}
+              onSelect={() => onChoice({ type: 'new_worktree' })}
+            />
             <NewLongLived
               canvas={canvas}
               machine={machine}
@@ -399,6 +409,62 @@ function NewTemporary({
                 将在 {machineName} 的 <span className="font-mono">~/agent-hub-workspaces/.tmp/</span> 下新建一个空目录
               </>
             )}
+          </span>
+        ) : null}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * 隔离 worktree：和「新建临时工作空间」是同一件事的两种口径——
+ * 临时空间是「随便一个目录」，worktree 是「按项目配置开的分支目录 + 准备命令」。
+ * 放在工作空间选择里而不是对话框上的复选框：机器和工作空间本来就是一起选的。
+ */
+function NewWorktree({
+  canvas,
+  taskId,
+  machineName,
+  gitHere,
+  selected,
+  onSelect
+}: {
+  canvas: CanvasDto;
+  taskId: string;
+  machineName: string;
+  gitHere: boolean;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const title = canvas.tasks.find((task) => task.id === taskId)?.title ?? '';
+  const setup = canvas.project.worktree?.setup ?? null;
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      data-testid="ws-new-worktree"
+      className={`${rowClass(selected)} ${gitHere ? '' : 'opacity-60'}`}
+      onClick={() => {
+        if (!gitHere) return;
+        onSelect();
+      }}
+      title={gitHere ? undefined : '这台机器上还没有可用的 git 仓库：先关联一个 git 工作空间，或给项目绑定仓库'}
+    >
+      <Radio on={selected} />
+      <span className="min-w-0 flex-1">
+        <span className="block text-body text-primary">新建隔离 worktree（新分支）</span>
+        <span className="block text-meta text-tertiary">
+          在 {machineName} 上按项目配置现建，分支互不干扰；用完按清理策略处理
+        </span>
+        {!gitHere ? (
+          <span className="mt-0.5 block text-meta text-rust">
+            这台机器上还没有可用的 git 仓库：先关联一个 git 工作空间，或给项目绑定仓库
+          </span>
+        ) : selected ? (
+          <span className="mt-1 block text-meta text-secondary">
+            将在 {machineName} 上新建分支 <span className="font-mono">{branchPreview(title)}</span>
+            {setup?.command ? '，先跑项目配置的准备命令，跑完才起 agent' : ''}
           </span>
         ) : null}
       </span>

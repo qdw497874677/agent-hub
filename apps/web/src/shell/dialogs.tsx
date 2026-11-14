@@ -122,18 +122,13 @@ export function DeriveDialog({
     hubModels.data ?? []
   );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
-  // 隔离档（docs/design/worktree.md §2 §3）：默认跟随项目设置，勾上就是 isolated
+  // 项目默认隔离（docs/design/worktree.md §2 §3）：没选过任何东西时，替用户选上「新建隔离 worktree」。
   const projectIsolated = canvas.project.worktree?.mode === 'isolated';
-  const [isolated, setIsolated] = useState(projectIsolated);
   const [modeTouched, setModeTouched] = useState(false);
   useEffect(() => {
-    // 项目设置可能在对话框开着的时候才刷到（画布晚一拍）：没动过就跟着走
-    if (!modeTouched) setIsolated(projectIsolated);
-  }, [projectIsolated, modeTouched]);
-  // 显式选中的空间赢：挑了一次性/临时空间，这次就不再另开 worktree（复选框禁用并说明）
-  const chosenWorkspace =
-    choice?.type === 'existing' ? canvas.workspaces.find((candidate) => candidate.id === choice.workspaceId) : undefined;
-  const temporaryChoice = choice?.type === 'new_temporary' || chosenWorkspace?.kind === 'temporary';
+    if (modeTouched || !projectIsolated || choice !== null) return;
+    setChoice({ type: 'new_worktree' });
+  }, [projectIsolated, modeTouched, choice]);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
   const selectedProfile = (profiles.data ?? []).find((profile) => profile.id === profileId) ?? null;
   const profileAgent = selectedProfile === null ? null : (canvas.agents.find((candidate) => candidate.id === selectedProfile.agentId) ?? null);
@@ -149,16 +144,16 @@ export function DeriveDialog({
   const projectId = canvas.project.id;
   const derive = useMutation({
     mutationFn: async () => {
-      // 勾了隔离：不在这里建空间，交给 server 按项目配置现建 worktree 并跑准备命令（workspaceId 为空才会走档位）。
-      const isolateNew = isolated && !temporaryChoice;
       if (machine === null) throw new Error('先选机器');
-      if (!isolateNew && !choice) throw new Error('先选机器和工作空间');
+      if (!choice) throw new Error('先选机器和工作空间');
+      // 选了「新建隔离 worktree」：不在这里建空间，交给 server 按项目配置现建并跑准备命令
+      // （workspaceId 为空、workspaceMode=isolated 才会走档位）。
+      const isolateNew = choice.type === 'new_worktree';
       let workspaceId: string | null = null;
       if (isolateNew) workspaceId = null;
-      else if (choice?.type === 'existing') workspaceId = choice.workspaceId;
+      else if (choice.type === 'existing') workspaceId = choice.workspaceId;
       else {
         setPhase('preparing');
-        if (choice === null) throw new Error('先选机器和工作空间');
         const made = await api.createWorkspace(
           projectId,
           choice.type === 'new_temporary'
@@ -171,9 +166,7 @@ export function DeriveDialog({
         await queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] });
       }
       setPhase(isolateNew ? 'preparing' : 'starting');
-      // 勾上 = 明确要 isolated；没勾但项目默认是 isolated = 明确要 shared。与项目默认一致就不发，让 server 用它自己的默认。
-      // 选了临时空间就不发档位：显式选中的 workspaceId 赢，别让一句话的复选框把它盖掉。
-      const workspaceMode: 'shared' | 'isolated' | null = temporaryChoice ? null : isolated ? 'isolated' : projectIsolated ? 'shared' : null;
+      const workspaceMode: 'shared' | 'isolated' | null = isolateNew ? 'isolated' : null;
       return api.derive({
         taskId,
         agentId,
@@ -220,11 +213,7 @@ export function DeriveDialog({
             </button>
           </p>
         ) : null}
-        <div
-          className={isolated && !temporaryChoice ? 'pointer-events-none opacity-40' : ''}
-          aria-disabled={isolated && !temporaryChoice ? true : undefined}
-          data-testid="derive-workspace-region"
-        >
+        <div data-testid="derive-workspace-region">
           <WorkspaceChooser
             canvas={canvas}
             taskId={taskId}
@@ -233,31 +222,13 @@ export function DeriveDialog({
             machine={machine}
             onMachine={setMachine}
             choice={choice}
-            onChoice={setChoice}
+            onChoice={(next) => {
+              setModeTouched(true);
+              setChoice(next);
+            }}
             hubProtocols={hubProtocols}
           />
         </div>
-        <label className={`mb-3 flex items-start gap-2 text-meta ${temporaryChoice ? 'text-tertiary' : 'text-secondary'}`}>
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            data-testid="derive-isolated"
-            checked={isolated && !temporaryChoice}
-            disabled={temporaryChoice}
-            onChange={(event) => {
-              setModeTouched(true);
-              setIsolated(event.target.checked);
-            }}
-          />
-          <span className="min-w-0">
-            <span className="block text-primary">这个任务用隔离 worktree（新分支）</span>
-            <span className="block text-tertiary">
-              {temporaryChoice
-                ? '已经选了临时空间，这次不会再开 worktree。想换成就地新开，把上面改回长期空间或先不选。'
-                : `会新开分支 agent-hub/…，结束后按策略清理；这次不占用上面选的工作空间。并行任务、会开 PR 时选这个；不勾就在上面选的空间里直接干。${projectIsolated ? '（项目默认已开隔离）' : ''}`}
-            </span>
-          </span>
-        </label>
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <label className="block text-meta text-secondary" htmlFor="derive-profile">Agent 配置（可留空）</label>

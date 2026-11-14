@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -41,6 +42,15 @@ async function makeProject(page: Page, headers: Record<string, string>) {
     })
   ).json()) as { id: string };
   return project;
+}
+
+/** UI 用：把这台机器上的一个 git 目录登记成长期工作空间，好让「新建隔离 worktree」可选。 */
+async function linkGitWorkspace(page: Page, headers: Record<string, string>, projectId: string, path: string) {
+  const res = await page.request.post(`/api/projects/${projectId}/workspaces`, {
+    data: { workerId: null, kind: 'long_lived', mode: 'link', path },
+    headers
+  });
+  expect(res.status(), await res.text()).toBe(201);
 }
 
 function worktreeBody(command: string) {
@@ -173,4 +183,48 @@ test('显式选定的工作空间优先于档位', async ({ page, baseURL }) => 
   const session = (await derived.json()) as { workspaceId: string | null };
   expect(session.workspaceId).toBe(shared.id);
   expect(await temporaryWorkspaces(page, headers, project.id)).toHaveLength(0);
+});
+
+test('UI：隔离 worktree 是工作空间里的一个选项，勾它机器照样能选', async ({ page, baseURL }) => {
+  test.setTimeout(120_000);
+  const headers = await login(page, baseURL ?? '');
+  const agentId = await onlineAgent(page);
+  test.skip(!agentId, '这台机器上没有可用的 agent');
+
+  const dir = mkdtempSync(join(tmpdir(), 'e2e-worktree-ui-'));
+  execFileSync('git', ['init', '-q', '-b', 'main', dir]);
+  // 空仓库没有 main 这个 ref，worktree 会报 `fatal: invalid reference: main`
+  execFileSync('git', ['-C', dir, '-c', 'user.email=e2e@example.invalid', '-c', 'user.name=e2e', 'commit', '-q', '--allow-empty', '-m', 'init']);
+  const project = (await (
+    await page.request.post('/api/projects', {
+      data: { name: `e2e worktree ui ${Date.now().toString(36)}`, rootPath: dir },
+      headers
+    })
+  ).json()) as { id: string };
+  await configure(page, headers, project.id, `node -e "console.log('ui-setup-ok')"`);
+  await linkGitWorkspace(page, headers, project.id, dir);
+  const task = await makeTask(page, headers, project.id);
+
+  await page.goto(`/#/p/${project.id}/canvas`);
+  const node = page.locator('.react-flow__node-task').filter({ hasText: 'worktree' });
+  await expect(node).toContainText('0 个会话');
+  await node.getByRole('button', { name: '＋ 会话' }).click();
+
+  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
+  const worktree = run.getByTestId('ws-new-worktree');
+  await expect(worktree).toContainText('新建隔离 worktree');
+  // 项目默认 isolated：打开就替用户选上，不用再点一下
+  await expect(worktree).toHaveAttribute('aria-checked', 'true');
+  await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
+  // 选了隔离档之后，机器和工作空间那块不该被禁用（机器始终可选）
+  const region = run.getByTestId('derive-workspace-region');
+  await expect(region).not.toHaveCSS('pointer-events', 'none');
+  await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
+  await run.getByRole('button', { name: '开始' }).click();
+  await expect(page.getByLabel('发送消息')).toBeVisible();
+  // 空间是按项目配置现建的隔离 worktree，准备命令跑过
+  const spaces = await temporaryWorkspaces(page, headers, project.id);
+  expect(spaces).toHaveLength(1);
+  expect(spaces[0]?.source).toBe('worktree');
+  expect(spaces[0]?.setup?.state).toBe('ready');
 });

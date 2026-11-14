@@ -128,7 +128,7 @@
 - 准备命令：平台建的临时空间才会跑（长期目录是人的，不碰）。`/bin/sh -lc <command>`，env 走允许列表并强制剔除 `HUB_TOKEN`/`HUB_WORKER_CREDENTIAL`/`HUB_LOCAL_SECRET`/`HUB_URL`/`HUB_PARENT_PID`；输出只留最后 8KB 并抹 `user:token@`；超时按进程组 SIGTERM→3s→SIGKILL、`exitCode 124`；默认 600 秒、可配 30..1800。
 - 状态机：`Workspace.setup = { state: none|running|ready|failed, exitCode, message, output, startedAt, finishedAt }`；失败目录保留（不删），`POST /api/workspaces/:id/setup/retry` 只对 `failed` 生效（审计 `workspace.setup` 只记 state + exitCode）。`waitForSetup` 时 `failed` 直接拒绝派发，`running` 也会拦。
 - 显式「新建临时空间」（`POST /api/projects/:id/workspaces` `kind:'temporary'`）默认 `isolated`，保持「一次性目录」的原语义；`derive` 自动准备才用项目档位。
-- 界面：项目设置「工作空间」页顶部配档位/命令/超时（非 owner·admin 只读）；derive 对话框一行复选框（选临时空间时禁用并说明）；会话页页签行下方按 `setup.state` 显示准备中/失败重试/准备日志。
+- 界面：项目设置「工作空间」页顶部配档位/命令/超时（非 owner·admin 只读）；derive 对话框的「选择工作空间」里多一项「新建隔离 worktree（新分支）」（机器仍然可选，项目默认 isolated 时打开即选中）；会话页页签行下方按 `setup.state` 显示准备中/失败重试/准备日志。
 - 验证：`check`/`typecheck`/`typecheck:web`/`npm test`（1289 pass / 8 skipped）/`build`/`test:e2e-node` 全 0；新增 `e2e/worktree.spec.ts` 三条（准备成功、失败后重试、显式空间优先）全过；`workspace-cleanup`、`workspace-create`、`shared-workspaces` 回归通过。
 - 顺手修两处旧 e2e 的定位失效（都是早先 IA 改动留下的，与 worktree 无关）：项目设置分页后关联入口在「工作空间」页；桌面/移动两份侧栏同时在 DOM 里，设置按钮要用 `:visible`。
 - 残留：`waitForSetup=false` 目前仍是同步执行（要真后台得把准备命令挪进队列）；W3（清理活动判定 + 孤儿目录泛化）与 W4（`session.handoffWorktree` + 工具）未做。
@@ -143,7 +143,7 @@
 - 验证：`npm test` 1310 tests / 1302 pass / 8 skipped / 0 fail；`e2e/settle.spec.ts` 2/2。
 - 残留意向：自动收起（PR 合并 / 陈旧）留到有稳定「最后活动时间」口径之后；I2 composer 手势、I3 三档 diff、I4 侧聊仍未做。
 
-补充（2026-11-14）：worktree 档位现在三个入口都通——`POST /api/sessions/derive { workspaceMode }`、前端派生对话框的「隔离 worktree」勾选（勾上时不再要求选工作空间，也不发送 `workspaceId`），以及 agent 工具 `agent.spawn { workspace_mode: 'isolated' }`（走同一条 `prepareTemporaryWorkspaceUseCase`，会按项目配置跑准备命令）。这样 bot 或会话里的 agent 可以自己开一个隔离兄弟会话来并行干活。
+补充（2026-11-14）：worktree 档位现在三个入口都通——`POST /api/sessions/derive { workspaceMode }`、前端派生对话框里「新建隔离 worktree」这一项（选它时不建额外空间、只发 `workspaceMode: 'isolated'`），以及 agent 工具 `agent.spawn { workspace_mode: 'isolated' }`（走同一条 `prepareTemporaryWorkspaceUseCase`，会按项目配置跑准备命令）。这样 bot 或会话里的 agent 可以自己开一个隔离兄弟会话来并行干活。
 
 ### 1.9 进展（2026-11-14 · worktree W3 清理侧）
 
@@ -152,6 +152,8 @@
 - 单测：`packages/domain/src/use-cases/workspace-cleanup.test.ts` 新增「终端还开着的会话 → 记成跳过；关掉终端才清」与「自定义 worktrees 目录也能认出孤儿」。
 - 验证：`npm test` 1312 tests / 1304 pass / 8 skipped / 0 fail；`check` / `typecheck` / `typecheck:web` / `build` / `test:e2e-node` 全 0。
 - W4（运行中 `handoffWorktree`）按用户意见不做（「不用管已经开启的会话了」）。
+
+补充（2026-11-14 · worktree 档位放进「选择工作空间」）：原来「隔离 worktree」是对话框上一个复选框，勾上后整块工作空间选择被 `pointer-events-none` 遮住——机器也跟着不能改，看起来像「只能用 hub 本机」。现在它是单选里的一项（`data-testid="ws-new-worktree"`，和「新建临时工作空间」「新建持久工作空间」并列），机器选择在任何档位下都可用；选已有 / 新建临时 / 新建持久都不发 `workspaceMode`，只有选它才发 `isolated`。「换个地方继续」也支持这一项（先在目标机器上建好 worktree，再挂成普通空间继续）。e2e 新增 UI 用例：「项目默认 isolated 时打开即选中、机器区可交互、开始可用」，真实建出的空间 `source=worktree`、`setup.state=ready`。
 
 
 ## 2. B1 · 安全收口
