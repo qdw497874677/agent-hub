@@ -8,6 +8,19 @@ export function authorHue(id: string): string {
   return PALETTE[h % PALETTE.length] ?? PALETTE[0]!;
 }
 
+/** 群聊 / 列表里的小圆点头像：首字母 + 按名字稳定取色（和 AuthorTag 同一套色板）。 */
+export function NameDot({ name, size = 20 }: { name: string; size?: number }) {
+  return (
+    <span
+      aria-hidden
+      style={{ width: size, height: size }}
+      className={`flex shrink-0 items-center justify-center rounded-full text-[10px] font-medium leading-none text-primary ${authorHue(name)}`}
+    >
+      {[...name.trim()][0]?.toUpperCase() ?? '?'}
+    </span>
+  );
+}
+
 export function AuthorTag({ author, size = 'md' }: { author: { id: string; name: string; via?: string } | undefined; size?: 'md' | 'sm' }) {
   const name = author?.name ?? '不知道是谁';
   const via = author?.via;

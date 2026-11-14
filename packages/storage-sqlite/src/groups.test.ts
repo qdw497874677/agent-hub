@@ -75,3 +75,34 @@ test('群已读位置：未读不算自己发的；标已读只进不退；重�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('表情反应：往返、去重、按 createdAt 升序；重开库还在', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-grp-react-'));
+  try {
+    const path = join(dir, 'hub.db');
+    const alice = { kind: 'user' as const, name: 'alice' };
+    const coder = { kind: 'agent' as const, name: 'coder' };
+    {
+      const store = openSqliteStore(path);
+      await store.groups.saveGroup(group);
+      await store.groups.appendPost({ id: 'p1', groupId: 'g1', threadId: null, round: 0, author: { kind: 'user', id: 'alice', name: 'alice' }, body: 'a', mentions: [], needsUser: false, createdAt: 1 });
+      await store.groups.addReaction('g1', 'p1', alice, '👍', 10);
+      await store.groups.addReaction('g1', 'p1', coder, '✅', 11);
+      await store.groups.addReaction('g1', 'p1', alice, '👍', 12); // 幂等
+      await store.groups.addReaction('g1', 'p1', coder, '👀', 9);
+      const map = await store.groups.reactions('g1', ['p1', 'p2']);
+      assert.deepEqual(map.get('p1')!.map((r) => [r.emoji, r.actor.name, r.createdAt]), [['👀', 'coder', 9], ['👍', 'alice', 10], ['✅', 'coder', 11]]);
+      assert.equal(map.has('p2'), false);
+      assert.equal((await store.groups.reactions('g1', [])).size, 0);
+      await store.groups.removeReaction('g1', 'p1', alice, '👍');
+      store.close?.();
+    }
+    const store = openSqliteStore(path);
+    const map = await store.groups.reactions('g1', ['p1']);
+    assert.deepEqual(map.get('p1')!.map((r) => r.emoji), ['👀', '✅']);
+    await store.groups.removeReaction('g1', 'p1', alice, '👍'); // 撤不存在的也算成功
+    store.close?.();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

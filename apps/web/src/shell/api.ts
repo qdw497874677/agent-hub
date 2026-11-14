@@ -64,6 +64,7 @@ import type {
   GroupDto,
   GroupAuthorDto,
   GroupPostDto,
+  GroupReactionDto,
   GroupThreadDto,
   GroupDeliveryDto,
   GroupViewDto,
@@ -873,6 +874,7 @@ export type {
   GroupDto,
   GroupAuthorDto,
   GroupPostDto,
+  GroupReactionDto,
   GroupThreadDto,
   GroupDeliveryDto,
   GroupViewDto,
@@ -944,6 +946,14 @@ export const groupApi = {
   posts: (id: string) => call<{ posts: GroupPostDto[] }>(`/api/groups/${encodeURIComponent(id)}/posts?limit=200`),
   post: (id: string, body: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/posts`, { body }),
   stop: (id: string) => post<unknown>(`/api/groups/${encodeURIComponent(id)}/stop`, {}),
+  /** 表情反应：PUT 加、DELETE 撤；两种情况都回这条帖子最新的聚合值（以服务端为准）。 */
+  react: (id: string, postId: string, emoji: string) =>
+    post<{ reactions: GroupReactionDto[] }>(`/api/groups/${encodeURIComponent(id)}/posts/${encodeURIComponent(postId)}/reactions`, { emoji }),
+  unreact: (id: string, postId: string, emoji: string) =>
+    call<{ reactions: GroupReactionDto[] }>(
+      `/api/groups/${encodeURIComponent(id)}/posts/${encodeURIComponent(postId)}/reactions?emoji=${encodeURIComponent(emoji)}`,
+      { method: 'DELETE' }
+    ),
   addMember: (id: string, role: string) => post<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members`, { role }),
   addMembers: (id: string, roles: string[]) => post<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members`, { roles }),
   removeMember: (id: string, role: string) => call<GroupDto>(`/api/groups/${encodeURIComponent(id)}/members/${encodeURIComponent(role)}`, { method: 'DELETE' }),

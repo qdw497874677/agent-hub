@@ -14,10 +14,13 @@ export interface GroupDto {
   createdBy: string; createdAt: number; updatedAt: number;
 }
 export type GroupAuthorDto = { kind: 'user'; id: string; name: string } | { kind: 'agent'; role: string; sessionId: string } | { kind: 'system' };
-export interface GroupPostDto { id: string; seq: number; threadId: string | null; round: number; author: GroupAuthorDto; body: string; mentions: string[]; needsUser: boolean; createdAt: number }
+export interface GroupReactionDto { emoji: string; actors: { kind: 'user' | 'agent'; name: string }[] }
+export interface GroupPostDto { id: string; seq: number; threadId: string | null; round: number; author: GroupAuthorDto; body: string; mentions: string[]; needsUser: boolean; createdAt: number; reactions: GroupReactionDto[] }
+/** 正在输入的成员：来自还没收尾的投递（status === 'delivered'）。 */
+export interface GroupTypingDto { role: string; sessionId: string; since: number }
 export interface GroupThreadDto { id: string; status: string; round: number; messages: number; createdAt: number; updatedAt: number }
 export interface GroupDeliveryDto { id: string; round: number; purpose: 'host' | 'member' | 'bid'; role: string; sessionId: string | null; status: string; result: string | null; score: number | null; note?: string | null; promptChars: number; createdAt?: number }
-export interface GroupViewDto { group: GroupDto; sessions: { role: string; sessionId: string; status: string }[]; running: GroupThreadDto[]; canManage: boolean }
+export interface GroupViewDto { group: GroupDto; sessions: { role: string; sessionId: string; status: string }[]; running: GroupThreadDto[]; canManage: boolean; typing: GroupTypingDto[] }
 export interface GroupInputDto { name: string; members: string[]; hostRole: string | null; speakingStrategy: 'host' | 'volunteer'; limits: Partial<GroupLimitsDto> }
 export interface GroupUnreadDto {
   total: number;

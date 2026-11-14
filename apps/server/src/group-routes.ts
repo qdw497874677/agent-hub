@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
-import { asProjectId, principalOfSubject, MAX_GROUP_LIMITS, MAX_POST_CHARS, type GroupChat, type PersistentAgents } from '@agent-hub/domain';
+import { asProjectId, principalOfSubject, summarizeReactions, MAX_GROUP_LIMITS, MAX_POST_CHARS, type GroupChat, type PersistentAgents } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
 import { installPersistentAgentRoutes, type BotTokenSource } from './persistent-agent-routes.ts';
@@ -12,6 +12,8 @@ import { installPersistentAgentRoutes, type BotTokenSource } from './persistent-
  * - PUT  /api/groups/:id                   改设置（group.manage）
  * - GET  /api/groups/:id/posts?after=&limit=
  * - POST /api/groups/:id/posts             人发言（group.post）
+ * - PUT  /api/groups/:id/posts/:postId/reactions       加表情（body { emoji }，group.post）→ { reactions }
+ * - DELETE /api/groups/:id/posts/:postId/reactions     撤表情（?emoji=，group.post）→ { reactions }
  * - POST /api/groups/:id/stop              停止：取消排队，成员暂停到人再次发言
  * - POST /api/groups/:id/members           把 bot 加进群：{ role } 或 { roles: [] }（group.manage），不重放消息
  * - DELETE /api/groups/:id/members/:role   把 bot 移出群（group.manage）；主持人要先换人
@@ -115,6 +117,24 @@ export function installGroupRoutes(app: Hono<any>, options: GroupRouteDeps, subj
     if (!parsed.success) return fail(c, { code: 'invalid', message: `要给 body（1–${MAX_POST_CHARS} 字符）` });
     const posted = await groups.post(actor, c.req.param('id'), parsed.data.body);
     return posted.ok ? c.json(posted.value, 201) : fail(c, posted.error);
+  });
+
+  app.put('/api/groups/:id/posts/:postId/reactions', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const body = z.object({ emoji: z.string().min(1).max(16) }).safeParse(await c.req.json().catch(() => null));
+    if (!body.success) return fail(c, { code: 'invalid', message: '要给 emoji' });
+    const reacted = await groups.react(actor, c.req.param('id'), c.req.param('postId'), body.data.emoji);
+    return reacted.ok ? c.json({ reactions: summarizeReactions(reacted.value) }) : fail(c, reacted.error);
+  });
+
+  app.delete('/api/groups/:id/posts/:postId/reactions', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const emoji = c.req.query('emoji');
+    if (!emoji) return fail(c, { code: 'invalid', message: '要给 emoji' });
+    const reacted = await groups.unreact(actor, c.req.param('id'), c.req.param('postId'), emoji);
+    return reacted.ok ? c.json({ reactions: summarizeReactions(reacted.value) }) : fail(c, reacted.error);
   });
 
   app.post('/api/groups/:id/stop', async (c) => {

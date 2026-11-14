@@ -15,6 +15,10 @@ import {
   parseStopCommand,
   pickVolunteer,
   validateDispatch,
+  GROUP_EMOJI,
+  GROUP_REACTION_AUTO,
+  isGroupEmoji,
+  summarizeReactions,
   HOST_PER_MINUTE,
   HOST_TIMEOUT_MS,
   HOST_UNAVAILABLE_LINE,
@@ -25,6 +29,8 @@ import {
   type GroupDelivery,
   type GroupInput,
   type GroupPost,
+  type GroupPostView,
+  type GroupReaction,
   type GroupThread,
   type HostDecision,
   type PostAuthor,
@@ -73,6 +79,16 @@ export interface GroupView {
   readonly running: readonly GroupThread[];
   /** 当前用户能不能改群设置（group.manage）：界面据此决定显示「加入群组」。 */
   readonly canManage: boolean;
+  /** 正在输入的成员（投递已送达、会话还在跑）；不落库，空数组也很常见。 */
+  readonly typing: readonly GroupTyping[];
+}
+
+/** 「正在输入」的成员：从还开着的投递算出来（docs/design/group-live.md §4）。 */
+export interface GroupTyping {
+  readonly role: string;
+  readonly sessionId: SessionId;
+  /** 投递送达的时间（没有就用投递最后更新时间）。 */
+  readonly since: number;
 }
 
 export interface ChainView {
@@ -90,9 +106,19 @@ export interface GroupChat {
   create(actor: Principal, projectId: ProjectId, input: GroupInput): Promise<Result<Group, DomainError>>;
   update(actor: Principal, groupId: string, input: GroupInput): Promise<Result<Group, DomainError>>;
   view(actor: Principal, groupId: string): Promise<Result<GroupView, DomainError>>;
-  posts(actor: Principal, groupId: string, afterSeq: number | null, limit: number): Promise<Result<GroupPost[], DomainError>>;
+  /** 帖子列表，每条带聚合后的 reactions（顺序 = 表情首次出现的先后）。 */
+  posts(actor: Principal, groupId: string, afterSeq: number | null, limit: number): Promise<Result<GroupPostView[], DomainError>>;
   chains(actor: Principal, groupId: string, limit: number): Promise<Result<ChainView[], DomainError>>;
-  post(actor: Principal, groupId: string, body: string): Promise<Result<GroupPost, DomainError>>;
+  post(actor: Principal, groupId: string, body: string): Promise<Result<GroupPostView, DomainError>>;
+  /**
+   * 给一条帖子加表情（group.post）；emoji 为 null = 撤掉自己在这条上的全部表情。
+   * 返回这条帖子当前的原始反应（按 createdAt 升序），聚合交给路由 / 界面。
+   */
+  react(actor: Principal, groupId: string, postId: string, emoji: string | null): Promise<Result<readonly GroupReaction[], DomainError>>;
+  /** 撤掉我在这一条上的某个表情；null = 全撤。 */
+  unreact(actor: Principal, groupId: string, postId: string, emoji: string | null): Promise<Result<readonly GroupReaction[], DomainError>>;
+  /** 正在输入的成员：该群 status === 'delivered' 且会话仍在跑的投递；只读，不落库。 */
+  typing(groupId: string): Promise<readonly GroupTyping[]>;
   stop(actor: Principal, groupId: string): Promise<Result<Group, DomainError>>;
   /** 把一个项目 bot 加进群（group.manage）。只能 @ 成员：@ 到群外的项目 bot 时界面给「加入群组」按钮调这个；加完不自动重放那条消息。 */
   addMember(actor: Principal, groupId: string, bot: string): Promise<Result<Group, DomainError>>;
@@ -190,9 +216,27 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     return next;
   };
 
+  /**
+   * 自动反应（best-effort，设计 §5）：成员被派到 → 在被回复的帖子上挂 👀；收尾时撤 👀，done 再挂 ✅。
+   * 只影响触发的帖子，失败只记日志，不影响投递。
+   */
+  const autoReact = async (d: GroupDelivery, action: 'watch' | 'unwatch' | 'done'): Promise<void> => {
+    if (!d.reactTo) return;
+    const actor = { kind: 'agent' as const, name: d.role };
+    try {
+      if (action === 'unwatch') await deps.groups.removeReaction(d.groupId, d.reactTo, actor, GROUP_REACTION_AUTO.watching);
+      else await deps.groups.addReaction(d.groupId, d.reactTo, actor, action === 'watch' ? GROUP_REACTION_AUTO.watching : GROUP_REACTION_AUTO.done, deps.now());
+    } catch (error) {
+      console.warn(`群聊自动反应失败（${action}，帖子 ${d.reactTo}）：${String(error)}`);
+    }
+  };
+
   const settle = async (d: GroupDelivery, status: GroupDelivery['status'], result: string | null, score: number | null = null): Promise<GroupDelivery> => {
     const next: GroupDelivery = { ...d, status, result: result ?? d.result, score: score ?? d.score, updatedAt: deps.now() };
     await deps.groups.saveDelivery(next);
+    // 收尾：先撤 👀；真回了话就把 ✅ 挂上，让「谁要回 / 回完了」在触发消息上可见。
+    await autoReact(next, 'unwatch');
+    if (status === 'done') await autoReact(next, 'done');
     return next;
   };
 
@@ -200,6 +244,74 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     (await deps.groups.posts(group.id, null, 30))
       .filter((p) => p.author.kind !== 'system' && (beforeSeq === null || p.seq < beforeSeq))
       .map((p) => ({ author: author(p.author), body: p.body }));
+
+  /** 按 seq 翻页找一条帖子（存储只提供「某 seq 之后」的查询，没有按 id 查）。 */
+  const findPost = async (groupId: string, postId: string): Promise<GroupPost | null> => {
+    let after = 0;
+    for (;;) {
+      const page = await deps.groups.posts(groupId, after, 200);
+      const hit = page.find((p) => p.id === postId);
+      if (hit) return hit;
+      if (page.length < 200) return null;
+      after = page[page.length - 1]!.seq;
+    }
+  };
+
+  /** 帖子 + 反应：一次查完这一页的反应再组合，存储形状（GroupPost）不动。 */
+  const withReactions = async (groupId: string, list: readonly GroupPost[]): Promise<GroupPostView[]> => {
+    if (list.length === 0) return [];
+    const byPost = await deps.groups.reactions(groupId, list.map((p) => p.id));
+    return list.map((p) => ({ ...p, reactions: summarizeReactions(byPost.get(p.id) ?? []) }));
+  };
+
+  /** 单条帖子 + 反应（发帖的返回也是同一形状）。 */
+  const withReactionOf = async (groupId: string, post: GroupPost): Promise<GroupPostView> => (await withReactions(groupId, [post]))[0]!;
+
+  /** react / unreact 的共同部分：权限、系统消息、白名单、加或撤。返回这条上剩下的原始反应。 */
+  const pickReaction = async (
+    actor: Principal,
+    groupId: string,
+    postId: string,
+    emoji: string | null,
+    op: 'add' | 'remove' = 'add'
+  ): Promise<Result<readonly GroupReaction[], DomainError>> => {
+    const found = await authorize(actor, await deps.groups.group(groupId), 'group.post');
+    if (!found.ok) return found;
+    const post = await findPost(groupId, postId);
+    if (!post) return err(notFound('找不到这条消息'));
+    if (post.author.kind === 'system') return err(invalid('系统消息不能加表情'));
+    if (emoji !== null && !isGroupEmoji(emoji)) return err(invalid(`不支持的表情，可选：${GROUP_EMOJI.join(' ')}`));
+    return run(groupId, async () => {
+      const me = { kind: 'user' as const, name: actor.user.displayName || actor.user.email };
+      if (emoji === null) {
+        // 全撤：把我在这一条上的表情都撤了
+        for (const r of (await deps.groups.reactions(groupId, [postId])).get(postId) ?? []) {
+          if (r.actor.kind === 'user' && r.actor.name === me.name) await deps.groups.removeReaction(groupId, postId, r.actor, r.emoji);
+        }
+      } else if (op === 'remove') {
+        await deps.groups.removeReaction(groupId, postId, me, emoji);
+      } else {
+        await deps.groups.addReaction(groupId, postId, me, emoji, deps.now());
+      }
+      return ok((await deps.groups.reactions(groupId, [postId])).get(postId) ?? []);
+    });
+  };
+
+  /** 正在输入：群里 delivered 的投递 + 会话还在跑（不落库）。 */
+  const typingOf = async (groupId: string): Promise<GroupTyping[]> => {
+    const out: GroupTyping[] = [];
+    const seen = new Set<string>();
+    for (const thread of await deps.groups.threads(groupId, 50)) {
+      for (const d of await deps.groups.deliveries(thread.id)) {
+        if (d.status !== 'delivered' || !d.sessionId || seen.has(d.sessionId)) continue;
+        const session = await deps.sessions.byId(d.sessionId);
+        if (!session || !isBusy(session)) continue;
+        seen.add(d.sessionId);
+        out.push({ role: d.role, sessionId: d.sessionId, since: d.deliveredAt ?? d.updatedAt });
+      }
+    }
+    return out.sort((a, b) => a.since - b.since);
+  };
 
   /** bot 在这个群里的常驻会话：有就用，没有（或已结束）就用 actor 的身份派生一条。 */
   const ensureSession = async (group: Group, botName: string, actor: Principal): Promise<Result<SessionId, DomainError>> => {
@@ -231,7 +343,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     round: number,
     purpose: DeliveryPurpose,
     bots: readonly string[],
-    trigger: { author: string; body: string; seq: number | null },
+    trigger: { author: string; body: string; seq: number | null; postId: string | null },
     pending: Set<SessionId>,
     note = ''
   ): Promise<number> => {
@@ -274,7 +386,9 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         note,
         createdAt: now,
         deliveredAt: null,
-        updatedAt: now
+        updatedAt: now,
+        // 自动反应挂在被回复的帖子上；主持人和竞价不直接发言，不挂。
+        reactTo: purpose === 'member' ? trigger.postId : null
       });
       pending.add(sid.value);
       count++;
@@ -300,6 +414,8 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
       const now = deps.now();
       const delivering: GroupDelivery = { ...next, status: 'delivered', deliveredAt: now, updatedAt: now };
       await deps.groups.saveDelivery(delivering);
+      // 「接到了」的信号：在它要回的那条消息上挂 👀。
+      await autoReact(delivering, 'watch');
       const sent = await deps.deliver(sid, next.prompt, { id: `group:${group.id}`, name: `群「${group.name}」`, via: 'group' });
       if (!sent.ok) {
         const current = (await deps.groups.deliveries(thread.id)).find((d) => d.id === delivering.id);
@@ -335,7 +451,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     await system(group, thread, `主持人 @${d.role} 派给 ${decision.assignees.map((a) => `@${a}`).join('、')}${decision.note ? `：${decision.note}` : ''}`);
     const root = (await deps.groups.posts(group.id, null, 200)).find((p) => p.id === thread.rootPostId);
     const next = await saveThread(thread, { round: 1 });
-    const n = await schedule(group, next, 1, 'member', decision.assignees, { author: root ? author(root.author) : '用户', body: root?.body ?? '', seq: root?.seq ?? null }, pending, decision.note);
+    const n = await schedule(group, next, 1, 'member', decision.assignees, { author: root ? author(root.author) : '用户', body: root?.body ?? '', seq: root?.seq ?? null, postId: root?.id ?? null }, pending, decision.note);
     if (n === 0) await end(group, next, 'done', '派到的成员都暂停或起不来，没人回');
   };
 
@@ -376,7 +492,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         return;
       }
       thread = await saveThread(thread, { round: round + 1 });
-      const n = await schedule(group, thread, round + 1, 'bid', group.members, { author: `@${winner.role}`, body: winner.bid.message, seq: post.seq }, pending);
+      const n = await schedule(group, thread, round + 1, 'bid', group.members, { author: `@${winner.role}`, body: winner.bid.message, seq: post.seq, postId: post.id }, pending);
       if (n === 0) await end(group, thread, 'done', null);
       return;
     }
@@ -406,7 +522,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     }
     thread = await saveThread(thread, { round: round + 1 });
     const last = posts[posts.length - 1]!;
-    const trigger = { author: posts.map((p) => author(p.author)).join('、'), body: posts.map((p) => `[${author(p.author)}] ${p.body}`).join('\n\n'), seq: last.seq };
+    const trigger = { author: posts.map((p) => author(p.author)).join('、'), body: posts.map((p) => `[${author(p.author)}] ${p.body}`).join('\n\n'), seq: last.seq, postId: last.id };
     const n = await schedule(group, thread, round + 1, 'member', next, trigger, pending);
     if (n === 0) await end(group, thread, 'done', null);
   };
@@ -534,7 +650,13 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         sessions.push({ ...s, status: session ? (isBusy(session) ? 'busy' : session.status) : 'missing' });
       }
       const canManage = (await authorizeProject(deps.policy, actor, found.value.project, 'group.manage')).ok;
-      return ok({ group: found.value.group, sessions, running: await deps.groups.runningThreads(groupId), canManage });
+      return ok({
+        group: found.value.group,
+        sessions,
+        running: await deps.groups.runningThreads(groupId),
+        canManage,
+        typing: await typingOf(groupId)
+      });
     },
 
     async unread(actor) {
@@ -561,7 +683,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     async posts(actor, groupId, afterSeq, limit) {
       const found = await authorize(actor, await deps.groups.group(groupId), 'project.read');
       if (!found.ok) return found;
-      return ok(await deps.groups.posts(groupId, afterSeq, Math.min(Math.max(limit, 1), 200)));
+      return ok(await withReactions(groupId, await deps.groups.posts(groupId, afterSeq, Math.min(Math.max(limit, 1), 200))));
     },
 
     async chains(actor, groupId, limit) {
@@ -600,7 +722,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
           }
           await interruptBusy(groupId, stopped);
           await system(group, null, `已暂停 ${stopped.map((s) => `@${s}`).join('、')}，你下次发言时恢复`);
-          return ok(post);
+          return ok(await withReactionOf(groupId, post));
         }
 
         // 人说话了：解除暂停、清掉「需要你」
@@ -610,7 +732,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         let thread: GroupThread = { id: newId(), groupId, rootPostId: root.id, status: 'running', round: 0, messages: 0, createdAt: now, updatedAt: now };
         await deps.groups.saveThread(thread);
         const mentions = parseMentions(text, group.members);
-        const trigger = { author: me.name, body: text, seq: root.seq };
+        const trigger = { author: me.name, body: text, seq: root.seq, postId: root.id };
         if (mentions.outsiders.length > 0) {
           const botNames = (await deps.roles(group.projectId)).map((r) => r.name);
           const known = mentions.outsiders.filter((o) => botNames.includes(o));
@@ -620,7 +742,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
           // 有 @ 的消息不经过主持人：只 @ 了群外的人就停在这里，不派生、不重放
           if (mentions.members.length === 0) {
             await end(group, thread, 'done', null);
-            return ok(root);
+            return ok(await withReactionOf(groupId, root));
           }
         }
 
@@ -628,30 +750,43 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
           thread = await saveThread(thread, { round: 1 });
           const n = await schedule(group, thread, 1, 'member', mentions.members, trigger, pending);
           if (n === 0) await end(group, thread, 'done', '点名的成员都起不来');
-          return ok(root);
+          return ok(await withReactionOf(groupId, root));
         }
 
         if (group.speakingStrategy === 'volunteer') {
           thread = await saveThread(thread, { round: 1 });
           const n = await schedule(group, thread, 1, 'bid', group.members, trigger, pending);
           if (n === 0) await end(group, thread, 'done', '没有可以接话的成员');
-          return ok(root);
+          return ok(await withReactionOf(groupId, root));
         }
 
         // 主持人：没配 / 限流 → 只记录不分派
         if (!group.hostRole || !group.members.includes(group.hostRole)) {
           await end(group, thread, 'fallback', `${HOST_UNAVAILABLE_LINE}（没有设置主持人，@ 成员可以直接叫人）`);
-          return ok(root);
+          return ok(await withReactionOf(groupId, root));
         }
         const recent = (await deps.groups.threads(groupId, HOST_PER_MINUTE + 5)).filter((t) => t.id !== thread.id && t.createdAt > now - 60_000 && t.status !== 'rate_limited');
         if (recent.length >= HOST_PER_MINUTE) {
           await end(group, thread, 'rate_limited', `这一分钟消息太多（上限 ${HOST_PER_MINUTE} 条），只记录不分派`);
-          return ok(root);
+          return ok(await withReactionOf(groupId, root));
         }
         const n = await schedule(group, thread, 0, 'host', [group.hostRole], trigger, pending);
         if (n === 0) await end(group, thread, 'fallback', HOST_UNAVAILABLE_LINE);
-        return ok(root);
+        return ok(await withReactionOf(groupId, root));
       });
+    },
+
+    async react(actor, groupId, postId, emoji) {
+      return pickReaction(actor, groupId, postId, emoji);
+    },
+
+    /** 撤掉我在这一条上的某个表情（null = 全撤）。 */
+    async unreact(actor, groupId, postId, emoji) {
+      return pickReaction(actor, groupId, postId, emoji, 'remove');
+    },
+
+    async typing(groupId) {
+      return typingOf(groupId);
     },
 
     async stop(actor, groupId) {

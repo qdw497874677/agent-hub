@@ -1,5 +1,5 @@
 import type { ProjectId, SessionId } from '../ids.ts';
-import type { Group, GroupDelivery, GroupPost, GroupThread } from '../groups.ts';
+import type { Group, GroupDelivery, GroupPost, GroupReaction, GroupThread } from '../groups.ts';
 
 /** 群聊存储（ADR 0018 · 群组）。 */
 export interface GroupStore {
@@ -31,4 +31,10 @@ export interface GroupStore {
   unreadCount(groupId: string, userId: string): Promise<number>;
   /** 群里最新一条的 seq（没有消息为 0）。 */
   latestSeq(groupId: string): Promise<number>;
+  /** 一次查完这些帖子的反应，按 createdAt 升序；没有反应的不在 map 里。 */
+  reactions(groupId: string, postIds: readonly string[]): Promise<Map<string, GroupReaction[]>>;
+  /** 加一条反应；同一个 (帖子, 人, 表情) 重复加是幂等的。 */
+  addReaction(groupId: string, postId: string, actor: GroupReaction['actor'], emoji: string, now: number): Promise<void>;
+  /** 撤一条反应；没有就算了。 */
+  removeReaction(groupId: string, postId: string, actor: GroupReaction['actor'], emoji: string): Promise<void>;
 }

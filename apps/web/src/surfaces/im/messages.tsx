@@ -5,7 +5,14 @@ import { AccountMenu, useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { MessagesEntry, useGroupUnread, useMarkGroupRead } from '../../atoms/messages-entry.tsx';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
-import { authorHue } from '../../atoms/author.tsx';
+import { NameDot } from '../../atoms/author.tsx';
+import { BUBBLE_MD, LogMarkdown } from '../../atoms/log-markdown.tsx';
+import { useLiveStream } from '../../atoms/live.ts';
+import { liveDrafts, typingLine, typingRoles } from '../../atoms/group-live.ts';
+import { useReactions } from '../../atoms/use-reactions.ts';
+import { ReactionBar } from '../../atoms/group-reactions.tsx';
+import { DraftBubble } from '../../atoms/group-draft.tsx';
+import { TypingLine } from '../../atoms/group-typing.tsx';
 import { insertMention, mentionItems, mentionRange, stepMention, type MentionItem, type MentionMember } from '../../atoms/mention-suggest.ts';
 import { useCompact } from '../../shell/device.ts';
 import { BotAvatar, HubTabs, botLabel } from './bots.tsx';
@@ -28,19 +35,6 @@ function authorLabel(post: GroupPostDto): string {
 function clock(at: number): string {
   const d = new Date(at);
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
-/** 群里的小头像：首字母 + 按名字稳定取色（和 AuthorTag 同一套色板）。 */
-function AgentDot({ name, size = 20 }: { name: string; size?: number }) {
-  return (
-    <span
-      aria-hidden
-      style={{ width: size, height: size }}
-      className={`flex shrink-0 items-center justify-center rounded-full text-[10px] font-medium leading-none text-primary ${authorHue(name)}`}
-    >
-      {[...name.trim()][0]?.toUpperCase() ?? '?'}
-    </span>
-  );
 }
 
 /** 成员是不是被暂停了：`*` 是全体。 */
@@ -259,7 +253,22 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
   const bottom = useRef<HTMLDivElement>(null);
   const count = posts.data?.posts.length ?? 0;
   useMarkGroupRead(group.id, posts.data ? (posts.data.posts.at(-1)?.seq ?? 0) : null);
-  useEffect(() => { bottom.current?.scrollIntoView({ block: 'end' }); }, [count]);
+  // 反应里「我」的名字：和帖子作者名同源（displayName || email，见 groups.ts:584）
+  const account = useAccount();
+  const meName = account ? account.displayName || account.email : null;
+  // 消息页没有 Workspace 那份 live map（路由切过来时它已卸载），所以这里单独挂同一条全局 SSE；
+  // 只用来看草稿，草稿不落库，也不额外轮询
+  const { live } = useLiveStream();
+  const list = posts.data?.posts ?? [];
+  const typing = view.data?.typing ?? [];
+  // 契约里 running thread 没有 sessionId，没法逐个成员对轮次；群同一时刻只有一条活跃 thread
+  const round = view.data?.running[0]?.round ?? 0;
+  const drafts = liveDrafts({ typing, blocksOf: (id) => live[id]?.blocks ?? [], round, posts: list });
+  const typingText = typingLine(typingRoles(typing, drafts));
+  useEffect(() => { bottom.current?.scrollIntoView({ block: 'end' }); }, [count, drafts.length]);
+
+  // 表情反应：请求、乐观更新、回滚都在 useReactions 里，这里只接线
+  const { reactTo, error: reactError } = useReactions({ groupId: group.id, me: meName, key: KEY });
 
   // 手机聊天头的「⋯」：点外面就收起
   const [menu, setMenu] = useState(false);
@@ -356,7 +365,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
         </div>
       ) : null}
       <ol data-testid="group-posts" className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-        {(posts.data?.posts ?? []).map((p, i, all) => {
+        {list.map((p, i, all) => {
           const label = authorLabel(p);
           const prev = all[i - 1];
           // 同一个人连着说：只有第一条带头像和名字，后面的缩进对齐
@@ -371,7 +380,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
           const mine = p.author.kind === 'user';
           return (
             <li key={p.id} data-testid="group-post" data-author={p.author.kind} className={`my-1.5 flex items-start gap-2 ${mine ? 'flex-row-reverse' : ''}`}>
-              {mine ? null : run ? <span aria-hidden className="h-5 w-5 shrink-0" /> : <AgentDot name={label} />}
+              {mine ? null : run ? <span aria-hidden className="h-5 w-5 shrink-0" /> : <NameDot name={label} />}
               <div className={`flex min-w-0 max-w-[85%] flex-col gap-0.5 ${mine ? 'items-end' : 'items-start'}`}>
                 {run ? null : (
                   <span className="flex items-center gap-1.5 text-meta text-tertiary">
@@ -379,7 +388,14 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
                     <time dateTime={new Date(p.createdAt).toISOString()} className="tabular-nums">{clock(p.createdAt)}</time>
                   </span>
                 )}
-                <p className={`whitespace-pre-wrap break-words rounded-md px-3 py-1.5 text-body text-primary ${mine ? 'bg-accent/15' : 'bg-card'}`}>{p.body}</p>
+                <LogMarkdown body={p.body} className={`${BUBBLE_MD} rounded-md px-3 py-1.5 ${mine ? 'bg-accent/15' : 'bg-card'}`} />
+                <ReactionBar
+                  reactions={p.reactions}
+                  me={meName}
+                  align={mine ? 'end' : 'start'}
+                  error={reactError?.postId === p.id ? reactError.message : null}
+                  onToggle={(emoji) => reactTo(p, emoji)}
+                />
                 {mine && outsidersOf(p.body).length ? (
                   <span className="flex flex-col gap-1">
                     {outsidersOf(p.body).map((role) => (
@@ -399,6 +415,10 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
             </li>
           );
         })}
+        {typingText ? <TypingLine line={typingText} /> : null}
+        {drafts.map((draft) => (
+          <DraftBubble key={draft.sessionId} role={draft.role} body={draft.body} />
+        ))}
         <div ref={bottom} />
       </ol>
       <div className="flex items-center gap-2 border-t border-hair px-2 pt-1.5">
@@ -417,7 +437,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
         >
           {group.hostRole ? (
             <>
-              <AgentDot name={group.hostRole} size={14} />
+              <NameDot name={group.hostRole} size={14} />
               <span className="shrink-0">主持人</span>
               <span className="min-w-0 truncate text-primary">@{group.hostRole}</span>
             </>
@@ -446,7 +466,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
                     onMouseEnter={() => setPick(i)}
                   >
                     {item.kind === 'member' ? (
-                      <AgentDot name={item.token} size={18} />
+                      <NameDot name={item.token} size={18} />
                     ) : (
                       <span aria-hidden className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full bg-card-raised text-[10px] text-tertiary">{item.kind === 'all' ? '∗' : '我'}</span>
                     )}

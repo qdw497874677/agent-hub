@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { Group, GroupDelivery, GroupPost, GroupStore, GroupThread } from '@agent-hub/domain';
+import type { Group, GroupDelivery, GroupPost, GroupReaction, GroupStore, GroupThread } from '@agent-hub/domain';
 import { asSessionId } from '@agent-hub/domain';
 
 type Row = Record<string, unknown>;
@@ -55,6 +55,16 @@ CREATE TABLE IF NOT EXISTS agent_group_reads (
   seq INTEGER NOT NULL,
   PRIMARY KEY (group_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS agent_group_reactions (
+  group_id TEXT NOT NULL,
+  post_id TEXT NOT NULL,
+  actor_kind TEXT NOT NULL,
+  actor_name TEXT NOT NULL,
+  emoji TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (post_id, actor_kind, actor_name, emoji)
+);
+CREATE INDEX IF NOT EXISTS agent_group_reactions_post ON agent_group_reactions(group_id, post_id);
 `;
 
 const doc = <T>(row: Row | undefined): T | null => (row ? (JSON.parse(row.doc as string) as T) : null);
@@ -87,6 +97,23 @@ export function createSqliteGroupStore(db: DatabaseSync): GroupStore {
   const unread = db.prepare(
     "SELECT COUNT(*) AS n FROM agent_group_posts WHERE group_id = ? AND seq > COALESCE((SELECT seq FROM agent_group_reads WHERE group_id = ? AND user_id = ?), 0) AND NOT (json_extract(doc, '$.author.kind') = 'user' AND json_extract(doc, '$.author.id') = ?)"
   );
+  const putReaction = db.prepare(
+    'INSERT INTO agent_group_reactions (group_id, post_id, actor_kind, actor_name, emoji, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(post_id, actor_kind, actor_name, emoji) DO NOTHING'
+  );
+  const dropReaction = db.prepare('DELETE FROM agent_group_reactions WHERE post_id = ? AND actor_kind = ? AND actor_name = ? AND emoji = ?');
+  // 帖数不定：按 IN 里占位符个数缓存语句（node:sqlite 的语句可重复执行）。
+  const reactionsByPosts = new Map<number, ReturnType<DatabaseSync['prepare']>>();
+  const reactionsOf = (count: number): ReturnType<DatabaseSync['prepare']> => {
+    let stmt = reactionsByPosts.get(count);
+    if (!stmt) {
+      const holes = Array.from({ length: count }, () => '?').join(', ');
+      stmt = db.prepare(
+        `SELECT post_id, actor_kind, actor_name, emoji, created_at FROM agent_group_reactions WHERE group_id = ? AND post_id IN (${holes}) ORDER BY created_at, rowid`
+      );
+      reactionsByPosts.set(count, stmt);
+    }
+    return stmt;
+  };
   return {
     async saveGroup(g) {
       putGroup.run(g.id, g.projectId, JSON.stringify(g), g.createdAt);
@@ -130,6 +157,28 @@ export function createSqliteGroupStore(db: DatabaseSync): GroupStore {
       putRead.run(groupId, userId, seq);
     },
     unreadCount: async (groupId, userId) => (unread.get(groupId, groupId, userId, userId) as Row).n as number,
-    latestSeq: async (groupId) => (maxSeq.get(groupId) as Row).seq as number
+    latestSeq: async (groupId) => (maxSeq.get(groupId) as Row).seq as number,
+    async reactions(groupId, postIds) {
+      const out = new Map<string, GroupReaction[]>();
+      const ids = [...new Set(postIds)];
+      if (ids.length === 0) return out;
+      for (const row of reactionsOf(ids.length).all(groupId, ...ids) as Row[]) {
+        const postId = row.post_id as string;
+        const list = out.get(postId) ?? [];
+        list.push({
+          emoji: row.emoji as string,
+          actor: { kind: row.actor_kind as 'user' | 'agent', name: row.actor_name as string },
+          createdAt: row.created_at as number
+        });
+        out.set(postId, list);
+      }
+      return out;
+    },
+    async addReaction(groupId, postId, actor, emoji, now) {
+      putReaction.run(groupId, postId, actor.kind, actor.name, emoji, now);
+    },
+    async removeReaction(_groupId, postId, actor, emoji) {
+      dropReaction.run(postId, actor.kind, actor.name, emoji);
+    }
   };
 }

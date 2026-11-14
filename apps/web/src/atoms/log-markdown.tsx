@@ -35,6 +35,12 @@ const components: Components = {
   img: ({ alt }) => <span className="opacity-70">[图片{alt ? `：${alt}` : ''}]</span>
 };
 
+/**
+ * 聊天气泡里的 markdown：段落默认带 `my-1`，气泡里首尾两段要贴边，否则气泡上下忽高忽低。
+ * 群里自己的气泡和成员的草稿气泡共用这一份，别各写一套。
+ */
+export const BUBBLE_MD = 'text-body text-primary [&>*:first-child]:mt-0 [&>*:last-child]:mb-0';
+
 export function LogMarkdown({ body, className }: { body: string; className?: string }) {
   return (
     <div className={`break-words ${className ?? ''}`} data-testid="log-body">

@@ -9,7 +9,7 @@ import type { Principal, Role, User, UserId } from '../account.ts';
 import type { PersistentAgent } from '../messaging.ts';
 import type { BotRepository } from '../ports/bot-repository.ts';
 import type { GroupStore } from '../ports/group-store.ts';
-import type { Group, GroupDelivery, GroupPost, GroupThread } from '../groups.ts';
+import type { Group, GroupDelivery, GroupPost, GroupReaction, GroupThread } from '../groups.ts';
 import {
   groupProblem,
   parseMentions,
@@ -34,9 +34,28 @@ function memoryGroups(): GroupStore & { deliveriesAll: () => GroupDelivery[] } {
   const deliveries = new Map<string, GroupDelivery>();
   const sessions: { groupId: string; role: string; sessionId: SessionId }[] = [];
   const reads = new Map<string, number>();
+  const reactions: { groupId: string; postId: string; actor: { kind: 'user' | 'agent'; name: string }; emoji: string; createdAt: number }[] = [];
   const ds = () => [...deliveries.values()].sort((a, b) => a.createdAt - b.createdAt);
   return {
     deliveriesAll: ds,
+    reactions: async (g, ids) => {
+      const out = new Map<string, GroupReaction[]>();
+      for (const r of reactions.filter((x) => x.groupId === g && ids.includes(x.postId)).sort((a, b) => a.createdAt - b.createdAt)) {
+        const list = out.get(r.postId) ?? [];
+        list.push({ emoji: r.emoji, actor: r.actor, createdAt: r.createdAt });
+        out.set(r.postId, list);
+      }
+      return out;
+    },
+    addReaction: async (g, postId, actor, emoji, now) => {
+      if (!reactions.some((r) => r.postId === postId && r.actor.kind === actor.kind && r.actor.name === actor.name && r.emoji === emoji)) {
+        reactions.push({ groupId: g, postId, actor, emoji, createdAt: now });
+      }
+    },
+    removeReaction: async (_g, postId, actor, emoji) => {
+      const i = reactions.findIndex((r) => r.postId === postId && r.actor.kind === actor.kind && r.actor.name === actor.name && r.emoji === emoji);
+      if (i >= 0) reactions.splice(i, 1);
+    },
     markRead: async (g, u, seq) => void reads.set(`${g}|${u}`, Math.max(reads.get(`${g}|${u}`) ?? 0, seq)),
     unreadCount: async (g, u) => posts.filter((x) => x.groupId === g && x.seq > (reads.get(`${g}|${u}`) ?? 0) && !(x.author.kind === 'user' && x.author.id === u)).length,
     latestSeq: async (g) => posts.filter((x) => x.groupId === g).length,
@@ -577,4 +596,93 @@ test('bot 的启动选项：能存能改，形状不对就拒', async () => {
   const cleared = await agents.update(w.alice, w.project.id, 'slow', { options: {} });
   assert.ok(cleared.ok, cleared.ok ? '' : cleared.error.message);
   assert.deepEqual(cleared.value.ref.options, {}, '清空后是空对象，不再是 undefined');
+});
+
+test('表情反应：加 / 撤、聚合顺序、权限与校验', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['coder'], hostRole: null });
+  assert.ok(g.ok);
+  await w.chat.post(w.alice, g.value.id, '@coder 写个函数');
+  const coder = await w.sessionOf(g.value.id, 'coder');
+  await w.finish(coder, '写好了');
+  const list = await w.posts(g.value.id);
+  const reply = list.find((p) => p.author.kind === 'agent')!;
+  const sys = list.find((p) => p.author.kind === 'system');
+
+  // 加：返回这条上的原始反应
+  const added = await w.chat.react(w.alice, g.value.id, reply.id, '🎉');
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.deepEqual(added.value.map((r) => [r.emoji, r.actor.kind, r.actor.name]), [['🎉', 'user', 'alice']]);
+  const withReaction = (await w.posts(g.value.id)).find((p) => p.id === reply.id)!;
+  assert.deepEqual(withReaction.reactions, [{ emoji: '🎉', actors: [{ kind: 'user', name: 'alice' }] }]);
+
+  // 同一条再加一个表情：按首次出现排序
+  assert.ok((await w.chat.react(w.alice, g.value.id, reply.id, '👍')).ok);
+  const two = (await w.posts(g.value.id)).find((p) => p.id === reply.id)!;
+  assert.deepEqual(two.reactions.map((r) => r.emoji), ['🎉', '👍']);
+  // 重复加是幂等的
+  assert.ok((await w.chat.react(w.alice, g.value.id, reply.id, '🎉')).ok);
+  assert.deepEqual((await w.posts(g.value.id)).find((p) => p.id === reply.id)!.reactions.map((r) => r.emoji), ['🎉', '👍']);
+
+  // 撤一个
+  assert.ok((await w.chat.unreact(w.alice, g.value.id, reply.id, '🎉')).ok);
+  const left = (await w.posts(g.value.id)).find((p) => p.id === reply.id)!;
+  assert.deepEqual(left.reactions.map((r) => r.emoji), ['👍']);
+  // 撤全部
+  assert.ok((await w.chat.react(w.alice, g.value.id, reply.id, null)).ok);
+  assert.deepEqual((await w.posts(g.value.id)).find((p) => p.id === reply.id)!.reactions, []);
+
+  // 没有 group.post 的看客不能加
+  const denied = await w.chat.react(w.principal('vicky')!, g.value.id, reply.id, '❤️');
+  assert.ok(!denied.ok && denied.error.code === 'forbidden');
+  // 系统消息不能加
+  assert.ok(sys, '有系统消息');
+  const onSystem = await w.chat.react(w.alice, g.value.id, sys!.id, '👍');
+  assert.ok(!onSystem.ok && onSystem.error.code === 'invalid');
+  // 白名单外的表情
+  assert.ok(!(await w.chat.react(w.alice, g.value.id, reply.id, '🦄')).ok);
+  // 不存在的帖子
+  assert.ok(!(await w.chat.react(w.alice, g.value.id, 'nope', '👍')).ok);
+});
+
+test('自动反应：成员被派到 → 触发帖挂 👀，回复落地后换 ✅', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['host', 'coder'], hostRole: 'host' });
+  assert.ok(g.ok);
+  await w.chat.post(w.alice, g.value.id, '帮我加个登录页');
+  const host = await w.sessionOf(g.value.id, 'host');
+  await w.chat.dispatch(host, { assignees: ['coder'] });
+  await w.finish(host, '');
+  const coder = await w.sessionOf(g.value.id, 'coder');
+  const delivery = [...w.groups.deliveriesAll()].find((d) => d.role === 'coder')!;
+  assert.ok(delivery.reactTo, '投递记下了被回复的帖子');
+  const root = (await w.posts(g.value.id)).find((p) => p.id === delivery.reactTo)!;
+  const watching = root.reactions.find((r) => r.emoji === '👀');
+  assert.deepEqual(watching?.actors, [{ kind: 'agent', name: 'coder' }]);
+
+  await w.finish(coder, '写好了');
+  const after = (await w.posts(g.value.id)).find((p) => p.id === delivery.reactTo)!;
+  assert.ok(!after.reactions.some((r) => r.emoji === '👀'), '收尾撤掉 👀');
+  assert.deepEqual(after.reactions.find((r) => r.emoji === '✅')?.actors, [{ kind: 'agent', name: 'coder' }]);
+});
+
+test('正在输入：只有 delivered 且会话还在跑的投递', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['coder', 'reviewer'], hostRole: null });
+  assert.ok(g.ok);
+  assert.deepEqual(await w.chat.typing(g.value.id), [], '没派活就没人正在输入');
+  await w.chat.post(w.alice, g.value.id, '@coder @reviewer 一起看');
+  const coder = await w.sessionOf(g.value.id, 'coder');
+  const reviewer = await w.sessionOf(g.value.id, 'reviewer');
+  const typing = await w.chat.typing(g.value.id);
+  assert.deepEqual(typing.map((t) => [t.role, t.sessionId]).sort(), [['coder', coder], ['reviewer', reviewer]].sort());
+  assert.ok(typing.every((t) => t.since > 0));
+  const view = await w.chat.view(w.alice, g.value.id);
+  assert.ok(view.ok && view.value.typing.length === 2, 'view 里带 typing');
+
+  await w.finish(coder, '看完了');
+  const one = await w.chat.typing(g.value.id);
+  assert.deepEqual(one.map((t) => t.role), ['reviewer'], '回了话的不再显示');
+  await w.finish(reviewer, '');
+  assert.deepEqual(await w.chat.typing(g.value.id), []);
 });

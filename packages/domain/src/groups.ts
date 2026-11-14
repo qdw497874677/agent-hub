@@ -37,6 +37,14 @@ export const HOST_UNAVAILABLE_LINE = '主持人不可用，未自动分派';
 export const MAX_GROUP_MEMBERS = 12;
 export const MAX_POST_CHARS = 16_000;
 
+/** 允许的表情（docs/design/group-live.md §2）：不做自定义表情。 */
+export const GROUP_EMOJI = ['👍', '👀', '🎉', '✅', '❤️', '😄', '🤔'] as const;
+export type GroupEmoji = (typeof GROUP_EMOJI)[number];
+/** 自动反应：成员被派到时在被回复的帖子上挂 👀，回复落地后换成 ✅。 */
+export const GROUP_REACTION_AUTO = { watching: '👀', done: '✅' } as const;
+
+export const isGroupEmoji = (emoji: string): emoji is GroupEmoji => (GROUP_EMOJI as readonly string[]).includes(emoji);
+
 export interface Group {
   readonly id: string;
   readonly projectId: ProjectId;
@@ -72,6 +80,35 @@ export interface GroupPost {
   /** 这条 @user 了。 */
   readonly needsUser: boolean;
   readonly createdAt: number;
+}
+
+/** 一条表情反应（存储形状）。同一个 (帖子, 人, 表情) 只有一条。 */
+export interface GroupReaction {
+  readonly emoji: string;
+  readonly actor: { readonly kind: 'user' | 'agent'; readonly name: string };
+  readonly createdAt: number;
+}
+
+/** 聚合后给界面的形状：同一表情一组；顺序 = 该表情首次出现的先后。 */
+export interface GroupReactionSummary {
+  readonly emoji: string;
+  readonly actors: readonly { readonly kind: 'user' | 'agent'; readonly name: string }[];
+}
+
+/** 原始反应 → 按表情聚合。输入顺序不要求，内部按 createdAt 升序排；表情按首次出现排列。 */
+export function summarizeReactions(reactions: readonly GroupReaction[]): GroupReactionSummary[] {
+  const byEmoji = new Map<string, { emoji: string; actors: { kind: 'user' | 'agent'; name: string }[] }>();
+  for (const r of [...reactions].sort((a, b) => a.createdAt - b.createdAt)) {
+    const existing = byEmoji.get(r.emoji);
+    if (existing) existing.actors.push(r.actor);
+    else byEmoji.set(r.emoji, { emoji: r.emoji, actors: [r.actor] });
+  }
+  return [...byEmoji.values()];
+}
+
+/** 返回给路由 / 界面的帖子：存储形状 + 聚合反应。`GroupPost` 本体保持存储形状，不做改动。 */
+export interface GroupPostView extends GroupPost {
+  readonly reactions: readonly GroupReactionSummary[];
 }
 
 /** 一条人类消息引发的整段对话（调用链）。 */
@@ -110,6 +147,8 @@ export interface GroupDelivery {
   readonly createdAt: number;
   readonly deliveredAt: number | null;
   readonly updatedAt: number;
+  /** 自动反应挂在哪个帖子上（被回复的那条）。老数据没有这个字段，读出来是 undefined。 */
+  readonly reactTo?: string | null;
 }
 
 export interface GroupInput {
