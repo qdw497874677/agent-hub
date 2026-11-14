@@ -199,6 +199,8 @@ export const workspaceSchema = z.object({
   baseWorkspaceId: z.string().nullable(),
   branch: z.string().nullable(),
   ownerTaskId: z.string().nullable(),
+  /** 属于哪个组合工作空间（多仓库）；null = 普通单仓库空间。 */
+  groupId: z.string().nullable().optional(),
   label: z.string().nullable(),
   isGit: z.boolean().nullable(),
   state: z.enum(['preparing', 'ready', 'failed', 'kept', 'removed']),
@@ -279,6 +281,8 @@ export const sessionSchema = z.object({
   workerId: z.string().nullable().default(null),
   /** 在哪个工作空间里干活；null = 迁移前的老会话。 */
   workspaceId: z.string().nullable().default(null),
+  /** 组合工作空间（多仓库）：给了就整组跟随，workspaceId 是 primary 成员的镜像。 */
+  groupId: z.string().nullable().optional(),
   /** 用户起的会话名；null = 没起（界面回退到首句 / 「会话 N」）。 */
   title: z.string().nullable().optional(),
   /** 收起：做完的会话移出活跃列表，随时可恢复。null = 还在活跃列表里。 */

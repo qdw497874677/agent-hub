@@ -87,18 +87,27 @@ async function baseForRepo(
   command: { readonly home: string; readonly actor: Subject | null }
 ): Promise<Result<Workspace, DomainError>> {
   const candidates = (await deps.workspaces.byProject(project.id))
-    .filter((workspace) => workspace.kind === 'long_lived' && isUsable(workspace) && workspace.workerId === machine.workerId)
+    // 本机的老登记 workerId 可能是 null，而 resolveMachine 给的是本机 worker 的记账 id。
+    .filter(
+      (workspace) =>
+        workspace.kind === 'long_lived' &&
+        isUsable(workspace) &&
+        (workspace.workerId === machine.workerId || (machine.route === null && workspace.workerId === null))
+    )
     .sort((a, b) => b.createdAt - a.createdAt);
   const known = candidates.find((workspace) => workspace.repoUrl === repo.url && workspace.isGit === true);
   if (known) return ok(known);
-  // 老登记没探测过 isGit：问一下那台机器，别再 clone 一份
+  // 老登记没探测过 isGit / repoUrl 是空的（本机 link 进来的目录）：问一下那台机器，认 origin 再采纳，别再 clone 一份
   const git = gitOn(deps, machine.route);
   for (const workspace of candidates) {
-    if (workspace.repoUrl !== repo.url || workspace.isGit !== null) continue;
+    if (workspace.repoUrl !== null && workspace.repoUrl !== repo.url) continue;
+    if (workspace.repoUrl === repo.url && workspace.isGit === true) continue;
     const inspected = await git.inspect(workspace.path);
     if (!inspected.ok || !inspected.value.isGit) continue;
+    if (inspected.value.remoteUrl !== repo.url) continue;
     const updated: Workspace = {
       ...workspace,
+      repoUrl: repo.url,
       isGit: true,
       branch: inspected.value.branch ?? workspace.branch,
       updatedAt: deps.now()

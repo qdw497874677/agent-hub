@@ -239,7 +239,8 @@ const deps: Deps = {
     git: (workerId) => (serverGateway ? serverGateway.gateway.git(workerId) : createGitWorkspace(async () => 'worker 通道尚未就绪')),
     // 组合工作空间要的是容器 / worktree 的组级操作（§11.1）。通道没起来时和 git 一样直接抛，
     // 用例只在拿不到 groups 时才回「这台机器不支持组合工作空间」。
-    groups: (workerId) => (serverGateway ? (serverGateway.gateway.groups?.(workerId) ?? missingGroups) : missingGroups)
+    // groups 挂在网关外层（不是 gateway 对象上）：ServerGateway 的 gateway 只实现 domain 端口那部分。
+    groups: (workerId) => (serverGateway ? serverGateway.groups(workerId) : missingGroups)
   },
   agents: catalog,
   fs: createLocalFs(),
@@ -465,7 +466,7 @@ const contextService = createContextService({ projects: deps.projects, tasks: de
 (deps as { sessionInstructions?: (sessionId: string) => Promise<string | null> }).sessionInstructions = (sessionId) => contextService.instructionsFor(sessionId);
 const offlineBrowser = offlineWorkspaceBrowser('worker 通道尚未就绪');
 const filesService = createWorkspaceFilesService({
-  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,
+  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, workspaceGroups: store.workspaceGroups, gateway: deps.gateway, access: deps.access, audit: store.audit,
   local: createWorkspaceBrowser(),
   remote: (workerId) => (serverGateway ? serverGateway.browser(workerId) : offlineBrowser),
   bases: store.sessionBases,

@@ -14,7 +14,7 @@ import { startSessionUseCase } from './start-session.ts';
 import { interruptSessionUseCase, recordEvent } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
 import { buildHandoff, type HandoffResult } from '../handoff.ts';
-import { locationOf } from './workspaces.ts';
+import { locationsOf } from './workspaces.ts';
 
 /**
  * 回滚到某条消息（ADR 0027 阶段 4）：「⋯ → 从这里重来」。
@@ -132,13 +132,15 @@ export function createRewindService(deps: RewindDeps) {
     const entry = (await deps.sessions.eventsAfter(seen.value.id, (promptSeq - 1) as never)).find((e) => e.seq === promptSeq);
     if (!entry || entry.event.kind !== 'prompt') return err(notFound('找不到这条消息'));
     const workspace = seen.value.workspaceId ? await deps.workspaces.byId(seen.value.workspaceId) : null;
-    const location = project ? await locationOf(deps, project, seen.value) : { root: '' };
+    const location = project ? await locationsOf(deps, project, seen.value) : { root: '' };
     return ok({ session: seen.value, promptSeq, prompt: entry.event.text, projectId: project!.id, workspace, root: location.root });
   }
 
   /** 连文件回滚为什么不行；null = 可以。 */
   async function filesBlocked(actor: Subject | null, found: Found): Promise<string | null> {
     const { session, workspace } = found;
+    // 组合工作空间（§12.3 v1）：容器不是 git 仓库，不做跨仓回滚。
+    if (session.groupId) return '组合工作空间暂不支持回滚，请在成员仓库里各自提交';
     if (!workspace) return '这条会话没有工作空间';
     if (workspace.kind !== 'temporary') return '只有临时工作空间能连文件一起回滚；长期工作空间请只回滚对话';
     if (!workspace.isGit) return '工作空间不是 git 仓库，没有检查点';

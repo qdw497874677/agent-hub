@@ -23,22 +23,24 @@ const noStore = { 'cache-control': 'no-store' };
 
 export function installFilesRoutes(app: Hono<any>, files: WorkspaceFilesService, subjectOf: SubjectOf): void {
   const sid = (c: { req: { param(k: string): string } }) => c.req.param('id');
+  /** 组合工作空间必须带 ?member=<workspaceId>；单仓库会话忽略。 */
+  const memberOf = (raw: string | undefined) => (raw && raw.trim() !== '' ? raw : undefined);
   app.get('/api/sessions/:id/files/context', async (c) => {
-    const r = await files.context(subjectOf(c), sid(c));
+    const r = await files.context(subjectOf(c), sid(c), memberOf(c.req.query('member')));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/files', async (c) => {
-    const r = await files.list(subjectOf(c), sid(c), c.req.query('path') ?? '');
+    const r = await files.list(subjectOf(c), sid(c), c.req.query('path') ?? '', memberOf(c.req.query('member')));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/files/content', async (c) => {
-    const r = await files.read(subjectOf(c), sid(c), c.req.query('path') ?? '', c.req.query('confirm') === '1');
+    const r = await files.read(subjectOf(c), sid(c), c.req.query('path') ?? '', c.req.query('confirm') === '1', memberOf(c.req.query('member')));
     if (!r.ok) return fail(c, r.error);
     const { bytes, ...meta } = r.value;
     return c.json({ ...meta, data: Buffer.from(bytes).toString('base64') }, 200, noStore);
   });
   app.get('/api/sessions/:id/files/download', async (c) => {
-    const r = await files.download(subjectOf(c), sid(c), c.req.query('path') ?? '', c.req.query('confirm') === '1');
+    const r = await files.download(subjectOf(c), sid(c), c.req.query('path') ?? '', c.req.query('confirm') === '1', memberOf(c.req.query('member')));
     if (!r.ok) return fail(c, r.error);
     const name = r.value.path.split('/').pop() || 'file';
     return new Response(r.value.bytes, {
@@ -51,11 +53,11 @@ export function installFilesRoutes(app: Hono<any>, files: WorkspaceFilesService,
     });
   });
   app.get('/api/sessions/:id/files/find', async (c) => {
-    const r = await files.find(subjectOf(c), sid(c), c.req.query('q') ?? '');
+    const r = await files.find(subjectOf(c), sid(c), c.req.query('q') ?? '', memberOf(c.req.query('member')));
     return r.ok ? c.json({ files: r.value }, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/git/changes', async (c) => {
-    const r = await files.changes(subjectOf(c), sid(c), baseOf(c.req.query('base')), turnOf(c.req.query('turn')));
+    const r = await files.changes(subjectOf(c), sid(c), baseOf(c.req.query('base')), turnOf(c.req.query('turn')), memberOf(c.req.query('member')));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/git/turns', async (c) => {
@@ -63,7 +65,7 @@ export function installFilesRoutes(app: Hono<any>, files: WorkspaceFilesService,
     return r.ok ? c.json({ turns: r.value }, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/git/diff', async (c) => {
-    const r = await files.diff(subjectOf(c), sid(c), c.req.query('path') ?? '', baseOf(c.req.query('base')), turnOf(c.req.query('turn')));
+    const r = await files.diff(subjectOf(c), sid(c), c.req.query('path') ?? '', baseOf(c.req.query('base')), turnOf(c.req.query('turn')), memberOf(c.req.query('member')));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/sessions/:id/files/events', async (c) => {
@@ -74,7 +76,7 @@ export function installFilesRoutes(app: Hono<any>, files: WorkspaceFilesService,
     const watched = await files.watch(subjectOf(c), sid(c), paths, (notice) => {
       queue.push(notice);
       wake?.();
-    });
+    }, memberOf(c.req.query('member')));
     if (!watched.ok) return fail(c, watched.error);
     const stop = watched.value;
     return streamSSE(c, async (stream) => {

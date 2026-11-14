@@ -5,6 +5,7 @@ import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
+import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
 import type { GitHostApi, GitHostTokenStore, GitText, GitTextWriter, PullRequestLink, PullRequestRepository } from '../ports/pull-requests.ts';
@@ -18,7 +19,7 @@ import { err, ok, type Result } from '../result.ts';
 import { GIT_LIMITS, compareUrl, githubRepoOf, templateGitText } from '../git-workflow.ts';
 import { authorizeProject, authorizeSession, type AccessPolicy } from './authorization.ts';
 import { gitFor } from './machine-dirs.ts';
-import { locationOf } from './workspaces.ts';
+import { locationsOf } from './workspaces.ts';
 
 /**
  * 提交 / 推送 / 开 PR（ADR 0027 阶段 2）。会话 → 工作空间 → 那台机器上的 git。
@@ -30,6 +31,8 @@ export interface GitWorkflowDeps {
   readonly tasks: Pick<TaskRepository, 'byId'>;
   readonly sessions: Pick<SessionRepository, 'byId'>;
   readonly workspaces: WorkspaceRepository;
+  /** 组合工作空间（多仓库）；不给 = 只会落到单仓库路径。 */
+  readonly workspaceGroups?: WorkspaceGroupRepository;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
   readonly audit: Pick<AuditLog, 'append'>;
@@ -94,7 +97,7 @@ interface Located {
 }
 
 export function createGitWorkflowService(deps: GitWorkflowDeps) {
-  async function locate(subject: Subject | null, sessionId: string, permission: 'session.read' | 'session.prompt'): Promise<Result<Located, DomainError>> {
+  async function locate(subject: Subject | null, sessionId: string, permission: 'session.read' | 'session.prompt', member?: string): Promise<Result<Located, DomainError>> {
     const session = await deps.sessions.byId(asSessionId(sessionId));
     const task = session ? await deps.tasks.byId(session.taskId) : null;
     const project = task ? await deps.projects.byId(task.projectId) : null;
@@ -102,10 +105,18 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     if (!seen.ok) return seen;
     const files = await authorizeProject(deps.access, subject, project, 'workspace.files.read');
     if (!files.ok) return files;
-    const location = await locationOf(deps, files.value, seen.value);
+    const location = await locationsOf(deps, files.value, seen.value);
     if (location.root === '') return err(invalid('这条会话还没有工作空间'));
+    let root = location.root;
+    // 组合工作空间（§12.5）：git 只在成员仓库里跑，容器根不是仓库。
+    if (location.group !== null) {
+      if (!member) return err(invalid('请选择要提交的仓库'));
+      const picked = location.members.find((item) => item.workspaceId === member);
+      if (!picked) return err(invalid('这颗仓库不属于这条会话的组合工作空间'));
+      root = picked.root;
+    }
     const workspace = seen.value.workspaceId ? await deps.workspaces.byId(seen.value.workspaceId) : null;
-    return ok({ git: await gitFor(deps, location.workerId), root: location.root, session: seen.value, project: files.value, workspace });
+    return ok({ git: await gitFor(deps, location.workerId), root, session: seen.value, project: files.value, workspace });
   }
 
   const canPush = async (subject: Subject | null, project: Project): Promise<boolean> => (await authorizeProject(deps.access, subject, project, 'git.push')).ok;
@@ -121,8 +132,8 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     return null;
   }
 
-  async function state(subject: Subject | null, sessionId: string): Promise<Result<GitState, DomainError>> {
-    const found = await locate(subject, sessionId, 'session.read');
+  async function state(subject: Subject | null, sessionId: string, member?: string): Promise<Result<GitState, DomainError>> {
+    const found = await locate(subject, sessionId, 'session.read', member);
     if (!found.ok) return found;
     const preview = await found.value.git.preview(found.value.root, 0);
     if (!preview.ok) return preview;
@@ -146,8 +157,8 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
   }
 
   /** D4：提炼模型写；没配 / 失败 / 被拒用模板。 */
-  async function draft(subject: Subject | null, sessionId: string): Promise<Result<GitText & { source: 'model' | 'template' }, DomainError>> {
-    const found = await locate(subject, sessionId, 'session.prompt');
+  async function draft(subject: Subject | null, sessionId: string, member?: string): Promise<Result<GitText & { source: 'model' | 'template' }, DomainError>> {
+    const found = await locate(subject, sessionId, 'session.prompt', member);
     if (!found.ok) return found;
     const preview = await found.value.git.preview(found.value.root, GIT_LIMITS.patchBytes);
     if (!preview.ok) return preview;
@@ -165,10 +176,10 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     return ok(written ? { ...written, source: 'model' as const } : { ...templateGitText(input), source: 'template' as const });
   }
 
-  async function run(subject: Subject | null, sessionId: string, input: GitRunInput): Promise<Result<GitRunOutcome, DomainError>> {
+  async function run(subject: Subject | null, sessionId: string, input: GitRunInput, member?: string): Promise<Result<GitRunOutcome, DomainError>> {
     const message = input.message.trim();
     if (message.length > GIT_LIMITS.messageChars) return err(invalid('提交说明太长'));
-    const found = await locate(subject, sessionId, 'session.prompt');
+    const found = await locate(subject, sessionId, 'session.prompt', member);
     if (!found.ok) return found;
     const { git, root, project, session, workspace } = found.value;
     if (input.action !== 'commit' && !(await canPush(subject, project))) return err(conflict('你没有这个项目的推送权限（git.push）'));
@@ -290,8 +301,9 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       else if (!workspace && link.sessionId && project) {
         const session = await deps.sessions.byId(asSessionId(link.sessionId));
         if (session) {
-          const location = await locationOf(deps, project, session).catch(() => null);
-          if (location && location.root !== '') where = { workerId: location.workerId, root: location.root };
+          const location = await locationsOf(deps, project, session).catch(() => null);
+          // 组合工作空间：容器根不是 git 仓库，这里的 gh 兜底不适用（有 workspaceId 的链接走上面）。
+          if (location && location.group === null && location.root !== '') where = { workerId: location.workerId, root: location.root };
         }
       }
       if (where) {

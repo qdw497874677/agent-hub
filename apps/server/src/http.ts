@@ -524,7 +524,8 @@ export function createApp(options: AppOptions): Hono {
 
   // 删之前看看会丢什么（强制删除的二次确认里列出来）
   app.get('/api/workspaces/:workspaceId/changes', async (c) => {
-    const result = await workspaceChangesUseCase(deps, c.req.param('workspaceId'));
+    const member = c.req.query('member');
+    const result = await workspaceChangesUseCase(deps, c.req.param('workspaceId'), member && member.trim() !== '' ? member : undefined);
     return result.ok ? c.json(workspaceChangesSchema.parse(result.value)) : fail(c, result.error);
   });
 

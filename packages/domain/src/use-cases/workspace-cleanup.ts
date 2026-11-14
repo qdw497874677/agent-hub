@@ -8,6 +8,7 @@ import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { gitFor } from './machine-dirs.ts';
+import { groupMemberRoot } from '../workspace-group.ts';
 
 type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'> & Partial<Pick<Deps, 'projects' | 'cleanup'>>;
 
@@ -201,12 +202,24 @@ async function sweepOnce(
 
 /** 删之前给人看的：会丢什么（「强制删除」的二次确认里列出来）。 */
 export async function workspaceChangesUseCase(
-  deps: Pick<Deps, 'git' | 'gateway' | 'workspaces'>,
-  workspaceId: string
+  deps: Pick<Deps, 'git' | 'gateway' | 'workspaces'> & Partial<Pick<Deps, 'workspaceGroups'>>,
+  workspaceId: string,
+  member?: string
 ): Promise<Result<{ readonly status: GitStatus; readonly reason: string | null }, DomainError>> {
   const workspace = await deps.workspaces.byId(asWorkspaceId(workspaceId));
   if (!workspace || workspace.state === 'removed') return err(notFound('工作空间不存在'));
-  const status = await (await gitFor(deps, workspace.workerId)).status(workspace.path);
+  let path = workspace.path;
+  // 组合工作空间：容器根不是 git 仓库，按成员仓库查（§12.5）。
+  if (workspace.groupId) {
+    if (!member) return err(invalid('请选择要查看改动的仓库'));
+    const group = deps.workspaceGroups ? await deps.workspaceGroups.byId(workspace.groupId) : null;
+    const target = group?.members.find((item) => item.workspaceId === member) ?? null;
+    if (!group || !target) return err(invalid('这颗仓库不属于这个组合工作空间'));
+    const root = groupMemberRoot(group, target.workspaceId);
+    if (root === null) return err(invalid('这颗仓库还没有准备好'));
+    path = root;
+  }
+  const status = await (await gitFor(deps, workspace.workerId)).status(path);
   if (!status.ok) return status;
   return ok({ status: status.value, reason: unsavedReason(status.value) });
 }

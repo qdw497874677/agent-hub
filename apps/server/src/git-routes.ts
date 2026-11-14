@@ -21,18 +21,23 @@ const RunBody = z.object({
 const noStore = { 'cache-control': 'no-store' };
 
 export function installGitRoutes(app: Hono<any>, git: GitWorkflowService, subjectOf: SubjectOf): void {
+  /** 组合工作空间必须带 ?member=<workspaceId>；单仓库会话忽略。 */
+  const memberOf = (c: { req: { query(k: string): string | undefined } }) => {
+    const raw = c.req.query('member');
+    return raw && raw.trim() !== '' ? raw : undefined;
+  };
   app.get('/api/sessions/:id/git/state', async (c) => {
-    const r = await git.state(subjectOf(c), c.req.param('id'));
+    const r = await git.state(subjectOf(c), c.req.param('id'), memberOf(c));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.post('/api/sessions/:id/git/draft', async (c) => {
-    const r = await git.draft(subjectOf(c), c.req.param('id'));
+    const r = await git.draft(subjectOf(c), c.req.param('id'), memberOf(c));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.post('/api/sessions/:id/git/run', async (c) => {
     const body = RunBody.safeParse(await c.req.json().catch(() => null));
     if (!body.success) return c.json({ error: { code: 'invalid', message: '参数不对' } }, 400);
-    const r = await git.run(subjectOf(c), c.req.param('id'), { action: body.data.action, message: body.data.message, ...(body.data.title !== undefined ? { title: body.data.title } : {}), ...(body.data.body !== undefined ? { body: body.data.body } : {}) });
+    const r = await git.run(subjectOf(c), c.req.param('id'), { action: body.data.action, message: body.data.message, ...(body.data.title !== undefined ? { title: body.data.title } : {}), ...(body.data.body !== undefined ? { body: body.data.body } : {}) }, memberOf(c));
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/tasks/:id/pull-requests', async (c) => {

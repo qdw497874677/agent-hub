@@ -3178,6 +3178,12 @@
                             ],
                             "default": null
                           },
+                          "groupId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "title": {
                             "type": [
                               "string",
@@ -4931,6 +4937,12 @@
                       ],
                       "default": null
                     },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "title": {
                       "type": [
                         "string",
@@ -5377,6 +5389,12 @@
                       ],
                       "default": null
                     },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "title": {
                       "type": [
                         "string",
@@ -5800,6 +5818,12 @@
                         "null"
                       ],
                       "default": null
+                    },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "title": {
                       "type": [
@@ -6559,6 +6583,12 @@
                         "null"
                       ],
                       "default": null
+                    },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "title": {
                       "type": [
