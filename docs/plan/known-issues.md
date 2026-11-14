@@ -193,6 +193,17 @@ M1 后续（`49d73c8`、`1dc9aa1`、`2c2d49c`，已部署）：
 - 验证：`check` / `typecheck` / `typecheck:web` / `npm test`（1438/1430/8/0）/ `build` / `test:e2e-node` 全 0。
 - 待办：本机 worker 配 `OPENAI_API_KEY`（或 `codex login`）后真实联调；阿里云不装 codex。
 
+### 1.12 进展（2026-11-14 · 预览 P1：端口映射）
+
+- 设计稿 `docs/design/preview.md`（端口映射：hub 每条预览占一个监听端口，转发到 worker 回环端口，路径零重写）。
+- 链路：`packages/contract/src/wire/preview.ts`（`/preview` 帧）→ `apps/server/src/preview-channel.ts`（worker 通道，`open()` 不等 head）→ `apps/server/src/preview-proxy.ts`（逐 link 反代，剥 `x-frame-options`/`frame-ancestors`，WS 101 原样回写）→ `packages/node-gateway/src/preview-client.ts`（worker 侧）。
+- 数据：`packages/domain/src/use-cases/previews.ts`（幂等、≤8、区间用尽）、`preview_links` 表、`GET/POST/DELETE /api/sessions/:sessionId/previews`（审计 `preview.create/remove`）。
+- UI：会话页「预览」页签（端口 + 备注、打开/复制/移除、离线提示）。
+- 装配：`HUB_PREVIEW_PORTS` 默认 `HUB_PORT+1..+20`；`/preview` 走升级分支；链接增删后立刻对齐监听，另有 30 秒对账。
+- 修过两处装配级缺陷：`http.ts` 没把 `afterChange` 透给路由（新建的链接要等一个对账周期才有端口）；预览端口 302 默认落到预览 origin 上没有的 `/login`（改成 `HUB_PUBLIC_URL` 或 hub 的 host:port）。
+- 验证：`npm test` 1483 / 1475 pass / 8 skipped / 0 fail；`check`/`typecheck`/`typecheck:web`/`build`/`test:e2e-node` 全 0；`e2e/preview.spec.ts` 2/2（登记/幂等/列出/移除、上游没在跑时回说明页）。
+- 残留：P2 输出探测与失效检测、P3 公开分享与画布入口、P4 路径前缀兼容；`preview_pause/resume` 与单 link 并发 8 未做。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道

@@ -1,6 +1,6 @@
 # 预览：把 worker 上的本地服务暴露到页面里
 
-状态：设计稿（待确认）
+状态：P1 已落地（2026-11-14，端口映射链路 + 会话页「预览」页签）
 日期：2026-11-14
 
 ## 1. 要解决的问题
@@ -90,24 +90,40 @@ export interface PreviewLink {
 
 新增路径 `ws://<hub>/preview`：worker 启动时按 `HUB_URL` 推出地址与 `/worker` 同源，用**同一份
 worker 凭据**握手（`Authorization: Bearer <ahw_…>`，与 `worker-enroll` 一致），hub 侧校验后
-把它挂到 `workerId` 上。协议（`packages/contract/src/wire/preview.ts`，新增）：
+把它挂到 `workerId` 上。协议（`packages/contract/src/wire/preview.ts`，新增，全部 JSON 文本帧）：
 
 ```ts
-// hub → worker
-{ kind: 'preview_open';  streamId: string; port: number; host?: string }
-{ kind: 'preview_pause'; streamId: string }
+// hub → worker（一个 HTTP 请求 / 一条 WS 隧道 = 一个 stream）
+interface PreviewOpen {
+  kind: 'preview_open';
+  streamId: string;          // 16 hex
+  port: number;              // 只允许回环
+  method: string;
+  path: string;              // 含 query，原样
+  headers: Array<[string, string]>;   // 已剔除 hop-by-hop
+  upgrade?: { protocol: string | null };  // 有它就是 WS 隧道
+}
+interface PreviewBody { kind: 'preview_body'; streamId: string; data: string; end: boolean } // base64 ≤ 64KiB 原始
+interface PreviewClose { kind: 'preview_close'; streamId: string }   // hub 主动中止（客户端断开 / 超时）
+interface PreviewPause { kind: 'preview_pause'; streamId: string }   // hub 侧缓冲超过高水位
+interface PreviewResume { kind: 'preview_resume'; streamId: string }
+
 // worker → hub
-{ kind: 'preview_data';  streamId: string; data: string }   // base64，单帧 ≤ 64KiB 原始
-{ kind: 'preview_end';   streamId: string; status?: number; message?: string }
-{ kind: 'preview_ack';   streamId: string }                  // 允许再发（简单窗口=1）
+interface PreviewHead { kind: 'preview_head'; streamId: string; status: number; statusText: string; headers: Array<[string, string]> }
+interface PreviewData { kind: 'preview_data'; streamId: string; data: string }  // base64 ≤ 64KiB 原始
+interface PreviewEnd { kind: 'preview_end'; streamId: string }                 // 响应体结束
+interface PreviewFailed { kind: 'preview_failed'; streamId: string; message: string; code?: 'refused' | 'timeout' | 'forbidden' }
+interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } // 允许再发多少帧（窗口计数）
 ```
 
-- 每个 HTTP 请求/WS 连接 = 一个 `streamId`，`preview_open` 里带原始路径、方法、头、body 摘要
-  （或分块 `preview_body`），worker 用 `node:http` 连 `127.0.0.1:port` 转发；
-  WS 升级则 worker 建一条 `net.connect` 双向隧道，二进制帧 base64 包一层。
-- 背压：worker 侧同一时刻只允许 4 个 in-flight 帧，hub 侧看 `socket.bufferedAmount`，超 1MiB 发
-  `preview_pause`，降到 256KiB 发 `preview_resume`。
-- 连接断开：hub 标记该 worker 所有链接 `offline`；worker 重连后按需重开流，历史链接的 `hub_port` 不变。
+- 窗口：hub 建流时给初始 `credits = 8`；worker 每发一帧 `preview_data` 扣 1，收到 `preview_ack` 补；
+  credits 为 0 时停读上游 socket（TCP 自然背压）。hub 侧对浏览器 `write` 返回 false 或
+  `bufferedAmount > 1MiB` 时发 `preview_pause`，降到 256KiB 发 `preview_resume`。
+- WS 隧道：`preview_open.upgrade` 存在时，worker `net.connect` 后先发 `preview_head { status: 101 }`，
+  之后双向都用 `preview_data`（二进制帧 base64）；任一侧关闭发 `preview_end`。
+- 帧上限：单帧原始数据 ≤ 64KiB（base64 后 ≤ 88KiB），整条 WS 设 `maxPayload: 2MiB`。
+- 超时：`preview_open` 后 10s 内没有 `preview_head` → hub 回 504 并 `preview_close`。
+- 每 worker 并发流上限 32，单 link 并发 8，超出回 429。
 
 如果之后发现「多开一条 WS」在 worker 侧不可行（比如某些反向代理只放行 `/worker`），退回单连接
 模式（`preview_*` 帧走 `/worker`），但要接受队头阻塞，并把预览限流到 1 个并发流。
@@ -151,11 +167,33 @@ worker 凭据**握手（`Authorization: Bearer <ahw_…>`，与 `worker-enroll` 
 - 空态给两条路：「在终端里跑起来，我们会自动发现」+「手动填端口」。
 - 画布卡片（P3）：卡片底部一个「预览」按钮，点开新标签；不在卡片里塞 iframe（卡片太小、移动端更差）。
 
+## 10.1 P1 落地记录（2026-11-14）
+
+| 位置 | 内容 |
+| --- | --- |
+| `packages/contract/src/wire/preview.ts` | `/preview` 帧（`preview_open/body/close/pause/resume/ack` ↔ `preview_head/data/end/failed`）、`previewLinkSchema`、`createPreviewRequest` |
+| `packages/domain/src/preview.ts` + `ports/preview-links.ts` + `use-cases/previews.ts` | `PreviewLink`、`parsePreviewPortRange`、建/列/删/机器离线标记（幂等、≤8 条、区间用尽报错） |
+| `packages/storage-sqlite/src/preview-links.ts` | 表 `preview_links`（`hub_port` UNIQUE），随会话级联删除 |
+| `apps/server/src/preview-routes.ts` | `GET/POST/DELETE /api/sessions/:sessionId/previews`，审计 `preview.create/remove` |
+| `apps/server/src/preview-channel.ts` | worker `/preview` 通道：凭据或本机口令、每 worker 32 流、credits 窗口、`open()` 不等 head（10s 保险丝） |
+| `apps/server/src/preview-proxy.ts` | 每 link 一个监听端口：302 回 hub 登录页、剥 `x-frame-options`/`frame-ancestors`、SSE 不缓冲、101 原样回写 + 双向桥接、502/504 中文页 |
+| `packages/node-gateway/src/preview-client.ts` | worker 侧客户端：HTTP 走 `http.request` 打回环、WS 用 `net.connect` 手写 upgrade、8 credits/帧 64KiB |
+| `apps/web/src/atoms/preview-panel.tsx` | 会话页「预览」页签：端口 + 备注、打开/复制/移除、离线提示 |
+| `apps/server/src/main.ts` | 装配：`HUB_PREVIEW_PORTS`（默认 `HUB_PORT+1..+20`）、`/preview` 升级分支、30s 端口对账、增删后立刻对齐 |
+
+已知取舍：
+
+- P1 只有手动登记端口；输出探测（`detected`）与失效检测留给 P2。
+- 未授权一律 302 回 hub 登录页（`HUB_PUBLIC_URL` 优先，否则按 `HUB_HOST`/`HUB_PORT` 拼）。
+- 回环来源免鉴权（本机 dogfood / 健康检查）；公网访问按 cookie + `session.read`。
+- 浏览器侧背压只做了窗口计数，没发 `preview_pause`/`preview_resume`（P2 一起做）。
+- 每条链接的并发上限 8 未实现，只有每 worker 32。
+
 ## 11. 分期
 
 | 阶段 | 内容 | 预估 |
 | --- | --- | --- |
-| P1 | 端口映射链路（手动登记 + 单/多端口监听 + HTTP/WS 转发 + 私有鉴权）+ 会话页页签 | 1.5 天 |
+| P1 ✅ | 端口映射链路（手动登记 + 单/多端口监听 + HTTP/WS 转发 + 私有鉴权）+ 会话页页签 | 1.5 天 |
 | P2 | 输出探测 + `/proc` 校验 + 失效检测（`stale`/`offline`） | 1 天 |
 | P3 | 公开分享令牌 + 画布入口 + iframe 框架页 | 1 天 |
 | P4 | 路径前缀兼容模式（只在只放通单端口的环境启用）+ 项目级 `previewPort` 声明 | 1.5 天 |
