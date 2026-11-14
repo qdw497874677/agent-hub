@@ -49,6 +49,9 @@ export interface DeriveCommand {
   readonly options?: Readonly<Record<string, string | boolean>>;
   /** 谁拥有新会话；工具派生时继承父会话主人，人类请求默认取 actor。 */
   readonly createdBy?: string | null;
+  /** `side` = 侧聊：挂在 parentSessionId 上，继承父会话的落点与运行参数，不进常规列表。 */
+  readonly kind?: 'side';
+  readonly parentSessionId?: string | null;
 }
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
@@ -60,6 +63,32 @@ export async function deriveSessionUseCase(
   if (!task) return err(notFound('任务不存在'));
   const project = await deps.projects.byId(task.projectId);
   if (!project) return err(notFound('项目不存在'));
+
+  // 侧聊（I4）：只为顺口问一句，完全继承父会话的落点与运行参数。
+  // 调用方给的 workspaceId / workerId / agentId / model / options / groupId 一律忽略。
+  let parent: Session | null = null;
+  if (command.kind === 'side') {
+    const found = command.parentSessionId ? await deps.sessions.byId(asSessionId(command.parentSessionId)) : null;
+    const parentTask = found ? await deps.tasks.byId(found.taskId) : null;
+    if (!found || !parentTask || parentTask.projectId !== project.id || !found.workspaceId || !found.workerId) {
+      return err(invalid('侧聊要挂在一条已有会话上'));
+    }
+    parent = found;
+    command = {
+      ...command,
+      agentId: parent.agentId,
+      model: parent.model,
+      ref: undefined,
+      profileId: undefined,
+      options: parent.options,
+      workspaceId: parent.workspaceId,
+      workerId: parent.workerId,
+      groupId: parent.groupId ?? null,
+      requires: undefined,
+      hubProtocol: undefined,
+      createdBy: principalOfSubject(command.actor)?.user.id ?? command.createdBy ?? parent.createdBy ?? null
+    };
+  }
 
   // 归一成 ref：旧字段（agentId/model/options）优先，保持既有调用点语义。
   const commandRef: AgentRef = {
@@ -130,6 +159,8 @@ export async function deriveSessionUseCase(
     task,
     agentId,
     model: model.value,
+    kind: parent ? 'side' : 'chat',
+    parentSessionId: parent ? parent.id : null,
     now: deps.now(),
     workerId: placed.value,
     workspaceId: workspace.id,

@@ -127,7 +127,10 @@ export const deriveSessionRequest = z.object({
   /** 用一份 Agent 配置启动；profile 里的 agent/model/options 作为默认。 */
   profileId: z.string().min(1).optional(),
   /** 直接指定启动选项；会覆盖 profile 里的同名选项。 */
-  options: optionValuesSchema.optional()
+  options: optionValuesSchema.optional(),
+  /** 侧聊（I4）：挂在一条已有会话上，继承它的工作空间 / 机器 / agent / model / 选项。 */
+  kind: z.literal('side').optional(),
+  parentSessionId: id.optional()
 });
 
 /** 新建工作空间：持久的（新建托管目录 / 关联已有目录）或临时的（为某个任务开 worktree / 临时目录）。 */

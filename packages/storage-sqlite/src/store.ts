@@ -156,6 +156,11 @@ export function openSqliteStore(file: string): SqliteStore {
   // 收起时间（I1）：只表示移出活跃列表，不影响状态与进程。NULL = 仍在活跃列表里。
   if (!columns.some((column) => column.name === 'settled_at')) db.exec('ALTER TABLE sessions ADD COLUMN settled_at INTEGER');
   if (!columns.some((column) => column.name === 'group_id')) db.exec('ALTER TABLE sessions ADD COLUMN group_id TEXT');
+  // 会话类型（I4 侧聊）：老库补列；NULL = 老会话，读回时按缺省（chat）处理。
+  if (!columns.some((column) => column.name === 'kind')) db.exec('ALTER TABLE sessions ADD COLUMN kind TEXT');
+  if (!columns.some((column) => column.name === 'parent_session_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
+  }
   upgradeWorkspaceTable(db);
   db.exec(WORKSPACE_SCHEMA);
   // 准备命令状态（docs/design/worktree.md §4）：老库补列；v2 表也要补（upgradeWorkspaceTable 不会再加列）。
@@ -205,12 +210,13 @@ export function openSqliteStore(file: string): SqliteStore {
   );
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
       'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
       'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
       'environment_revision = excluded.environment_revision, settled_at = excluded.settled_at, group_id = excluded.group_id, ' +
+      'kind = excluded.kind, parent_session_id = excluded.parent_session_id, ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -437,6 +443,8 @@ export function openSqliteStore(file: string): SqliteStore {
         session.title ?? null,
         session.settledAt ?? null,
         session.groupId ?? null,
+        session.kind ?? null,
+        session.parentSessionId ?? null,
         session.createdAt,
         session.updatedAt
       );

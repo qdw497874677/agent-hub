@@ -8,15 +8,23 @@ import { conflict, invalid, notFound, notImplemented } from '../errors.ts';
 import type { JournalEntry } from '../event.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
 
+export interface LoadCanvasOptions {
+  /** 侧聊默认不进画布；显式要看才带出来。 */
+  readonly includeSide?: boolean;
+}
+
 export async function loadCanvas(
   deps: Pick<Deps, 'agents' | 'artifacts' | 'layout' | 'links' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workspaces'>,
-  projectId: string
+  projectId: string,
+  options: LoadCanvasOptions = {}
 ): Promise<Result<CanvasProjection, DomainError>> {
   const project = await deps.projects.byId(asProjectId(projectId));
   if (!project) return err(notFound('项目不存在'));
 
   const tasks = await deps.tasks.listByProject(project.id);
-  const sessions = await deps.sessions.listByProject(project.id);
+  const allSessions = await deps.sessions.listByProject(project.id);
+  // 侧聊是「顺口问一句」的临时会话：默认不画进画布，也不给预览占位。
+  const sessions = options.includeSide ? allSessions : allSessions.filter((session) => session.kind !== 'side');
   const layout = (await deps.layout.load(project.id)) ?? emptyLayout(project.id, deps.now());
   const links = (await deps.links?.listByProject(project.id)) ?? [];
 

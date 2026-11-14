@@ -8,6 +8,7 @@ import {
   applyEvent,
   asAgentId,
   asProjectId,
+  asSessionId,
   createArtifact,
   createProject,
   createTask,
@@ -53,6 +54,20 @@ test('project / task / session 往返无损，含可调项', async () => {
   assert.deepEqual(await store.sessions.byId(session.id), session);
   assert.deepEqual(await store.sessions.listByTask(task.id), [session]);
   assert.deepEqual(await store.sessions.listByProject(project.id), [session]);
+  store.close();
+});
+
+test('侧聊会话往返：kind 与 parentSessionId 不丢', async () => {
+  const store = openSqliteStore(':memory:');
+  const w = await seeded(store);
+  const side: Session = {
+    ...w.session,
+    id: asSessionId('side-1'),
+    kind: 'side',
+    parentSessionId: w.session.id
+  };
+  await store.sessions.save(side);
+  assert.deepEqual(await store.sessions.byId(side.id), side);
   store.close();
 });
 

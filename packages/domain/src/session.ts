@@ -13,6 +13,12 @@ import type { RuntimeOption } from './option.ts';
  */
 export type SessionStatus = 'running' | 'stopped' | 'done' | 'interrupted' | 'failed';
 
+/**
+ * 会话类型。`chat`（缺省）是常规会话；`side` 是挂在某条会话上的「侧聊」：
+ * 只为顺口问一句，不进画布 / 项目列表的常规列表，也不影响父会话的消息流。
+ */
+export type SessionKind = 'chat' | 'side';
+
 export type SessionOrigin =
   | { readonly kind: 'derive' }
   | { readonly kind: 'fork'; readonly fromSessionId: SessionId; readonly atSeq: Seq };
@@ -22,6 +28,10 @@ export interface Session {
   readonly taskId: TaskId;
   readonly agentId: AgentId;
   readonly model: string;
+  /** 缺省 / 老数据 = `chat`。侧聊是 `side`，挂在 `parentSessionId` 上。 */
+  readonly kind?: SessionKind;
+  /** 侧聊的父会话；常规会话为 null。 */
+  readonly parentSessionId?: SessionId | null;
   readonly origin: SessionOrigin;
   readonly status: SessionStatus;
   readonly lastSeq: Seq;
@@ -82,6 +92,9 @@ export interface DeriveSessionInput {
   readonly createdBy?: string | null;
   /** 来自 Agent 配置的启动选项；模型仍以 model 字段为准。 */
   readonly options?: Readonly<Record<string, string | boolean>>;
+  /** 侧聊用：不落进常规列表，继承父会话的落点与运行参数。 */
+  readonly kind?: SessionKind;
+  readonly parentSessionId?: SessionId | null;
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
@@ -96,6 +109,8 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     taskId: input.task.id,
     agentId: input.agentId,
     model,
+    kind: input.kind ?? 'chat',
+    parentSessionId: input.parentSessionId ?? null,
     origin: { kind: 'derive' },
     status: 'running',
     lastSeq: 0,
@@ -140,6 +155,8 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     taskId: input.source.taskId,
     agentId: input.agentId,
     model,
+    kind: 'chat',
+    parentSessionId: null,
     origin: { kind: 'fork', fromSessionId: input.source.id, atSeq: input.atSeq },
     status: 'running',
     lastSeq: 0,

@@ -277,6 +277,10 @@ export const sessionSchema = z.object({
   agentSessionRef: z.string().nullable(),
   options: optionValuesSchema,
   optionSpec: z.array(runtimeOptionSchema),
+  /** 会话类型：缺省 = 常规聊天；side = 侧聊（不进常规列表）。 */
+  kind: z.enum(['chat', 'side']).optional(),
+  /** 侧聊的父会话；常规会话为 null / 缺省。 */
+  parentSessionId: z.string().nullable().optional(),
   /** 落点：会话绑在哪台 Worker 上。null = 多机之前的老会话。 */
   workerId: z.string().nullable().default(null),
   /** 在哪个工作空间里干活；null = 迁移前的老会话。 */

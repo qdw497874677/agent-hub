@@ -3164,6 +3164,19 @@
                               ]
                             }
                           },
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "chat",
+                              "side"
+                            ]
+                          },
+                          "parentSessionId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "workerId": {
                             "type": [
                               "string",
@@ -4619,6 +4632,16 @@
                         }
                       ]
                     }
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "side"
+                    ]
+                  },
+                  "parentSessionId": {
+                    "type": "string",
+                    "minLength": 1
                   }
                 },
                 "required": [
@@ -4922,6 +4945,19 @@
                           "choices"
                         ]
                       }
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "side"
+                      ]
+                    },
+                    "parentSessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "workerId": {
                       "type": [
@@ -5375,6 +5411,19 @@
                         ]
                       }
                     },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "side"
+                      ]
+                    },
+                    "parentSessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "workerId": {
                       "type": [
                         "string",
@@ -5804,6 +5853,19 @@
                           "choices"
                         ]
                       }
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "side"
+                      ]
+                    },
+                    "parentSessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "workerId": {
                       "type": [
@@ -6569,6 +6631,19 @@
                           "choices"
                         ]
                       }
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "chat",
+                        "side"
+                      ]
+                    },
+                    "parentSessionId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "workerId": {
                       "type": [

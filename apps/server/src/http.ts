@@ -593,7 +593,8 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.get('/api/projects/:projectId/canvas', async (c) => {
-    const result = await loadCanvas(deps, c.req.param('projectId'));
+    const includeSide = c.req.query('includeSide') === '1' || c.req.query('includeSide') === 'true';
+    const result = await loadCanvas(deps, c.req.param('projectId'), { includeSide });
     if (!result.ok) return fail(c, result.error);
     return c.json({ ...result.value, previews: await refreshPreviewAuthors(options.activity, result.value.previews) });
   });

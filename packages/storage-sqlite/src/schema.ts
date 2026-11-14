@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   origin_kind      TEXT NOT NULL,
   origin_session   TEXT,
   origin_seq       INTEGER,
+  kind             TEXT,
+  parent_session_id TEXT,
   status           TEXT NOT NULL,
   last_seq         INTEGER NOT NULL,
   agent_session    TEXT,

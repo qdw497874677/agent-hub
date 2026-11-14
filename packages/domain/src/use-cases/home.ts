@@ -60,6 +60,8 @@ export async function loadHome(
   summaries.sort((left, right) => (right.lastActivityAt ?? right.createdAt) - (left.lastActivityAt ?? left.createdAt));
 
   const recentSessions = (await deps.sessions.listAll())
+    // 侧聊只是顺口问一句，不该占首页「接着干哪条」的位置。
+    .filter((session) => session.kind !== 'side')
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .flatMap((session): RecentSession[] => {
       const owner = owners.get(session.taskId);

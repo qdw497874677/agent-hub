@@ -170,6 +170,11 @@ export function toSession(row: Row): Session {
     // 没收起 / 恢复后库里是 NULL：不带这个字段，和刚派生出来的领域对象一模一样（往返测试的护栏）
     ...(row['settled_at'] !== null && row['settled_at'] !== undefined ? { settledAt: num(row, 'settled_at') } : {}),
     ...(row['group_id'] === undefined ? {} : { groupId: nullableStr(row, 'group_id') as Session['groupId'] }),
+    // 老库补列后是 NULL：kind 没有 null 语义，缺省即 chat，所以读回 undefined。
+    ...(nullableStr(row, 'kind') !== null ? { kind: nullableStr(row, 'kind') as Session['kind'] } : {}),
+    ...(row['parent_session_id'] === undefined
+      ? {}
+      : { parentSessionId: nullableStr(row, 'parent_session_id') as Session['parentSessionId'] }),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };
