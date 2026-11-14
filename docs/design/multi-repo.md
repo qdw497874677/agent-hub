@@ -390,3 +390,15 @@ checkpoint 是单 root 打一个 ref（`workspace-files.ts:237`、`workspace-bro
 | T6 | 按成员的 git/文件/checkpoint（checkpoint 明确禁用）|
 | T7 | 前端：派生对话框组选项、改动分组、提交成员切换、文件根 |
 | T8 | e2e + 文档 |
+
+### 12.10 与代码逐条核对后的补正（explorer）
+
+1. **`WORKER_GROUPS_DIR` 是新增的**：`WORKER_ROOTS` 里已有即可通过 `worker-files.ts:62-67` 的 realpath 校验，但「组前缀」本身没有载体。落地时在 `apps/worker/src/main.ts` 加 `WORKER_GROUPS_DIR`（默认 `<roots[0]>/agent-hub-groups`，必须落在某个 root 内，否则回落到默认并记一条警告），并写进 `scripts/install.sh` / `update-worker.sh` 的 env 模板。
+2. **不改 `worker-files.ts` 的边界**：容器在 roots 内已经放行；成员在容器内，天然在 roots 内。只把 `.agent-hub` 加进 `WALK_SKIP`，并在文件 API 入口按成员路径收紧（§12.5）。
+3. **权限不新增**：`PERMISSION_CATALOG` 里没有 `workspace.create` / `workspace.use`。建组沿用「建临时空间」的实际门槛（项目内可写 + `worker.use`），删组要求 `workspace.manage`；不新增权限项，避免动自定义角色基线。审计仍写 `workspace.group.*`。
+4. **清理由「组行」驱动**：`workspaces.temporaries()` 只返回 workspace 行，容器不在其中。新增 `sweepWorkspaceGroupsUseCase`（按组遍历成员），并让现有 `sweepTemporaryWorkspacesUseCase` 跳过 `group_id` 非空的成员；空容器（组行不存在但目录在）由孤儿扫描按 `WORKER_GROUPS_DIR` 前缀回收。
+5. **derive 需要改领域签名**：`deriveSessionUseCase` 现在强制要有 workspace 行（`sessions.ts:82-93`）并写 `workspaceId`（`:121`）。组合场景传 `workspaceId = primary`（行存在，满足前置），另加 `groupId` 字段并落库；`StartPlan` 不用改（`workspaceRoot` 就是容器根）。
+6. **改动页不是 `ChangesPane`**：实际是 `apps/web/src/atoms/files-browser.tsx` 的 `tab='changes'`（`focus.tsx:723`），数据 `filesApi.changes(session.id,'session')`（`focus.tsx:331-336`）。多成员时按成员并行查，`gitKeys.state(workspaceId, sessionId)` 已经按 workspace 分键，成员切换只需换 `workspaceId`，不用新键。
+7. **项目仓库设置入口**：`project-repos.tsx` 新增，挂在 `worktree-settings.tsx` 同一页（workspaces 对话框「工作空间」tab）的上面，复用 `settings` 的输入样式；非 owner/admin 只读。
+8. **`group.json` 只存 `{ id }`**：删前核对用，不做成员清单（DB 是唯一真相）。
+9. **checkpoint（再次确认）**：ref 是 `refs/agent-hub/checkpoints/<sessionId>/<n>`（`workspace-browser.ts:144-146`），物理落在各自仓库；`turn_checkpoints` 单 before/after sha。v1 组合禁用（§12.3），表结构不改。
