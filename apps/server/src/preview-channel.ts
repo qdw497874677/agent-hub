@@ -27,6 +27,9 @@ const HEARTBEAT_MS = 25_000;
 
 const STREAM_ID_HEX_BYTES = 8;
 
+/** `preview_ports` 最多记这么多端口（契约同值，这里再兜一次）。 */
+const MAX_REPORTED_PORTS = 256;
+
 export type PreviewFailureCode = 'refused' | 'timeout' | 'forbidden';
 
 /** 建流失败 / 流中断：`status` 直接给反代当 HTTP 状态码用。 */
@@ -87,6 +90,10 @@ export interface PreviewChannelOptions {
   readonly verifyWorker: (request: IncomingMessage) => Promise<{ workerId: string } | null>;
   readonly onWorkerUp?: (workerId: string) => void;
   readonly onWorkerDown?: (workerId: string) => void;
+  /** worker 定期上报的「本机正在监听的回环端口」（已去重 / 裁剪）。 */
+  readonly onPorts?: (workerId: string, ports: readonly number[]) => void;
+  /** worker 从终端输出里认出的端口；hub 不再二次判断（worker 已用 /proc 校验）。 */
+  readonly onDetected?: (workerId: string, event: { sessionId: string; port: number; label?: string }) => void;
   readonly onLog?: (message: string) => void;
   /** `preview_open` 之后多久没 `preview_head` 就 504 + `preview_close`（保险丝），默认 10 秒。 */
   readonly headerTimeoutMs?: number;
@@ -302,6 +309,17 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 端口表兜底：只留 1–65535 的整数、去重、最多 256 个（顺序按首次出现）。 */
+export function normalizePorts(ports: readonly number[]): number[] {
+  const unique = new Set<number>();
+  for (const port of ports) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
+    unique.add(port);
+    if (unique.size >= MAX_REPORTED_PORTS) break;
+  }
+  return [...unique];
+}
+
 function deny(socket: Duplex, status: number, message: string): void {
   if (socket.writableEnded) return;
   const reason = status === 401 ? 'Unauthorized' : status === 404 ? 'Not Found' : 'Bad Request';
@@ -358,6 +376,32 @@ export function createPreviewChannel(options: PreviewChannelOptions): PreviewCha
       return;
     }
     const frame = parsed.data;
+    // 这两类帧没有 streamId：必须在查流表之前分流，回调抛错也不能打断 WS。
+    if (frame.kind === 'preview_ports') {
+      const callback = options.onPorts;
+      if (callback) {
+        try {
+          callback(conn.workerId, normalizePorts(frame.ports));
+        } catch (error) {
+          log(`预览端口回调失败（${conn.workerId}）：${messageOf(error)}`);
+        }
+      }
+      return;
+    }
+    if (frame.kind === 'preview_detected') {
+      const callback = options.onDetected;
+      if (callback) {
+        const event = frame.label === undefined
+          ? { sessionId: frame.sessionId, port: frame.port }
+          : { sessionId: frame.sessionId, port: frame.port, label: frame.label };
+        try {
+          callback(conn.workerId, event);
+        } catch (error) {
+          log(`预览端口识别回调失败（${conn.workerId}）：${messageOf(error)}`);
+        }
+      }
+      return;
+    }
     const stream = conn.streams.get(frame.streamId);
     if (!stream) {
       log(`预览帧指向未知流（${frame.streamId} / ${frame.kind}），忽略`);

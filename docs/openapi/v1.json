@@ -1252,6 +1252,14 @@
                           "mode"
                         ]
                       },
+                      "previewPort": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "minimum": 1024,
+                        "maximum": 65535
+                      },
                       "createdAt": {
                         "type": "integer",
                         "minimum": 0
@@ -1499,6 +1507,14 @@
                         "mode"
                       ]
                     },
+                    "previewPort": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1024,
+                      "maximum": 65535
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1735,6 +1751,14 @@
                         "mode"
                       ]
                     },
+                    "previewPort": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1024,
+                      "maximum": 65535
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1963,6 +1987,14 @@
                       "required": [
                         "mode"
                       ]
+                    },
+                    "previewPort": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1024,
+                      "maximum": 65535
                     },
                     "createdAt": {
                       "type": "integer",

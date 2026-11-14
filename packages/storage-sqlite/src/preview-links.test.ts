@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import {
   asAgentId,
   asSessionId,
@@ -9,6 +10,7 @@ import {
   previewLinkIdFrom,
   type PreviewLink,
 } from '@agent-hub/domain';
+import { createSqlitePreviewLinks } from './preview-links.ts';
 import { openSqliteStore } from './store.ts';
 
 const linkOf = (patch: Partial<PreviewLink> & Pick<PreviewLink, 'id' | 'sessionId' | 'hubPort'>): PreviewLink => ({
@@ -19,6 +21,8 @@ const linkOf = (patch: Partial<PreviewLink> & Pick<PreviewLink, 'id' | 'sessionI
   state: 'ready',
   createdAt: 10,
   lastSeenAt: 10,
+  shareTokenHash: null,
+  shareExpiresAt: null,
   ...patch,
 });
 
@@ -69,6 +73,46 @@ test('预览链接存储：hub_port 全库唯一', async () => {
     /UNIQUE|constraint/i,
   );
   store.close();
+});
+
+test('预览链接存储：分享哈希/到期时间往返，撤销后清空', async () => {
+  const store = openSqliteStore(':memory:');
+  const base = linkOf({ id: previewLinkIdFrom('0a1b2c3d'), sessionId: asSessionId('s-1'), hubPort: 17901 });
+  await store.previewLinks.save({ ...base, shareTokenHash: 'a'.repeat(64), shareExpiresAt: 1_700_000_000_000 });
+  const stored = await store.previewLinks.byId(base.id);
+  assert.equal(stored?.shareTokenHash, 'a'.repeat(64));
+  assert.equal(stored?.shareExpiresAt, 1_700_000_000_000);
+
+  // 重新分享 = 覆盖哈希，旧令牌的哈希不残留。
+  await store.previewLinks.save({ ...stored!, shareTokenHash: 'b'.repeat(64), shareExpiresAt: 1_800_000_000_000 });
+  assert.equal((await store.previewLinks.byId(base.id))?.shareTokenHash, 'b'.repeat(64));
+
+  // 撤销：两列都清空，能读回 null。
+  await store.previewLinks.save({ ...stored!, shareTokenHash: null, shareExpiresAt: null });
+  const cleared = await store.previewLinks.byId(base.id);
+  assert.equal(cleared?.shareTokenHash, null);
+  assert.equal(cleared?.shareExpiresAt, null);
+  store.close();
+});
+
+test('预览链接存储：老表缺分享列时用 ALTER TABLE 补齐', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`CREATE TABLE preview_links (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, worker_id TEXT NOT NULL,
+    port INTEGER NOT NULL, hub_port INTEGER NOT NULL UNIQUE, label TEXT NOT NULL,
+    source TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL)`);
+  // 老行先塞进去，补列后不应该丢。
+  db.prepare(`INSERT INTO preview_links
+    (id, session_id, worker_id, port, hub_port, label, source, state, created_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run('pv_0a1b2c3d', 's-1', 'local', 3000, 17901, '端口 3000', 'manual', 'ready', 10, 10);
+  const repo = createSqlitePreviewLinks(db);
+  const old = await repo.byId(previewLinkIdFrom('0a1b2c3d'));
+  assert.equal(old?.shareTokenHash, null);
+  assert.equal(old?.shareExpiresAt, null);
+  await repo.save({ ...old!, shareTokenHash: 'c'.repeat(64), shareExpiresAt: 123 });
+  assert.equal((await repo.byId(previewLinkIdFrom('0a1b2c3d')))?.shareExpiresAt, 123);
+  db.close();
 });
 
 test('彻底删除会话：预览链接跟着清掉', async () => {

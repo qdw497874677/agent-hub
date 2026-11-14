@@ -17,6 +17,8 @@ interface PreviewLinkRow {
   state: string;
   created_at: number;
   last_seen_at: number;
+  share_token_hash: string | null;
+  share_expires_at: number | null;
 }
 
 const toLink = (row: PreviewLinkRow): PreviewLink => ({
@@ -31,6 +33,8 @@ const toLink = (row: PreviewLinkRow): PreviewLink => ({
   state: row.state as PreviewLink['state'],
   createdAt: row.created_at,
   lastSeenAt: row.last_seen_at,
+  shareTokenHash: row.share_token_hash ?? null,
+  shareExpiresAt: row.share_expires_at ?? null,
 });
 
 /**
@@ -43,7 +47,13 @@ export function createSqlitePreviewLinks(db: DatabaseSync): PreviewLinkRepositor
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, worker_id TEXT NOT NULL,
     port INTEGER NOT NULL, hub_port INTEGER NOT NULL UNIQUE, label TEXT NOT NULL,
     source TEXT NOT NULL, state TEXT NOT NULL, created_at INTEGER NOT NULL,
-    last_seen_at INTEGER NOT NULL)`);
+    last_seen_at INTEGER NOT NULL, share_token_hash TEXT, share_expires_at INTEGER)`);
+  // 老库补列：只存哈希，`shared` 由「有哈希且未过期」现算，不落库。
+  const columns = new Set(
+    (db.prepare('PRAGMA table_info(preview_links)').all() as { name: string }[]).map((column) => column.name),
+  );
+  if (!columns.has('share_token_hash')) db.exec('ALTER TABLE preview_links ADD COLUMN share_token_hash TEXT');
+  if (!columns.has('share_expires_at')) db.exec('ALTER TABLE preview_links ADD COLUMN share_expires_at INTEGER');
   db.exec('CREATE INDEX IF NOT EXISTS preview_links_by_session ON preview_links(session_id)');
 
   const byIdStmt = db.prepare('SELECT * FROM preview_links WHERE id = ?');
@@ -51,12 +61,14 @@ export function createSqlitePreviewLinks(db: DatabaseSync): PreviewLinkRepositor
   const bySessionStmt = db.prepare('SELECT * FROM preview_links WHERE session_id = ? ORDER BY created_at ASC, id ASC');
   const allStmt = db.prepare('SELECT * FROM preview_links ORDER BY created_at ASC, id ASC');
   const upsertStmt = db.prepare(`INSERT INTO preview_links
-    (id, session_id, worker_id, port, hub_port, label, source, state, created_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, session_id, worker_id, port, hub_port, label, source, state, created_at, last_seen_at,
+     share_token_hash, share_expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id, worker_id = excluded.worker_id,
       port = excluded.port, hub_port = excluded.hub_port, label = excluded.label,
       source = excluded.source, state = excluded.state, created_at = excluded.created_at,
-      last_seen_at = excluded.last_seen_at`);
+      last_seen_at = excluded.last_seen_at, share_token_hash = excluded.share_token_hash,
+      share_expires_at = excluded.share_expires_at`);
   const deleteStmt = db.prepare('DELETE FROM preview_links WHERE id = ?');
   const deleteBySessionStmt = db.prepare('DELETE FROM preview_links WHERE session_id = ?');
 
@@ -87,6 +99,8 @@ export function createSqlitePreviewLinks(db: DatabaseSync): PreviewLinkRepositor
         link.state,
         link.createdAt,
         link.lastSeenAt,
+        link.shareTokenHash ?? null,
+        link.shareExpiresAt ?? null,
       );
     },
     async remove(id: PreviewLinkId): Promise<void> {

@@ -352,6 +352,75 @@ test('未登录：非回环请求 302 到登录页并带上原地址', async (t)
   );
 });
 
+test('公开分享：带有效 share、无 cookie 也放行，不查 cookie', async (t) => {
+  const calls: string[] = [];
+  const { fake, port } = await setup(t, {
+    isLoopback: () => false,
+    authorize: async () => {
+      calls.push('cookie');
+      return false;
+    },
+    matchShare: async (_link, token) => {
+      calls.push(`share:${token}`);
+      return token === 'pvs_good';
+    },
+  });
+  fake.onOpen = (stream) => {
+    stream.emitHead({ status: 200, statusText: 'OK', headers: [['content-type', 'text/plain']] });
+    stream.emitData('shared');
+    stream.emitEnd();
+  };
+
+  const response = await request(port, '/index.html?share=pvs_good');
+  assert.equal(response.status, 200);
+  assert.equal(response.body, 'shared');
+  assert.deepEqual(calls, ['share:pvs_good']);
+  // 查询串原样透传给上游（dev server 自己决定怎么处理）。
+  assert.equal(fake.calls[0]!.request.path, '/index.html?share=pvs_good');
+});
+
+test('公开分享：令牌不对/过期仍能靠 cookie 进来，最终才 302', async (t) => {
+  const { fake, port } = await setup(t, {
+    isLoopback: () => false,
+    authorize: async (request) => String(request.headers.cookie ?? '').includes('hub_login=ok'),
+    matchShare: async () => false,
+  });
+  fake.onOpen = (stream) => {
+    stream.emitHead({ status: 200, statusText: 'OK', headers: [['content-type', 'text/plain']] });
+    stream.emitData('cooked');
+    stream.emitEnd();
+  };
+
+  // share 失效但 cookie 有效：照常放行，share 前缀不会把人挡在外面。
+  const withCookie = await request(port, '/?share=pvs_expired', { headers: { cookie: 'hub_login=ok' } });
+  assert.equal(withCookie.status, 200);
+  assert.equal(withCookie.body, 'cooked');
+
+  // 两个都不行：还是 302 到登录页。
+  const anonymous = await request(port, '/?share=pvs_expired');
+  assert.equal(anonymous.status, 302);
+  assert.ok(String(anonymous.headers.location ?? '').startsWith('/login?next='));
+});
+
+test('公开分享：没有 share 时 cookie 鉴权行为不变', async (t) => {
+  const { fake, port } = await setup(t, {
+    isLoopback: () => false,
+    authorize: async (request) => String(request.headers.cookie ?? '').includes('hub_login=ok'),
+    matchShare: async () => {
+      throw new Error('无 share 时不该调用');
+    },
+  });
+  fake.onOpen = (stream) => {
+    stream.emitHead({ status: 200, statusText: 'OK', headers: [['content-type', 'text/plain']] });
+    stream.emitData('cookie-only');
+    stream.emitEnd();
+  };
+
+  const response = await request(port, '/app', { headers: { cookie: 'hub_login=ok' } });
+  assert.equal(response.status, 200);
+  assert.equal(response.body, 'cookie-only');
+});
+
 test('上游起不来：502 中文文案；超时 504', async (t) => {
   const { fake, port } = await setup(t);
   fake.failure = new PreviewStreamError(502, '机器不在线');

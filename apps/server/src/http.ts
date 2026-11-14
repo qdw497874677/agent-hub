@@ -124,6 +124,7 @@ import {
   searchUseCase,
   setTaskStatusUseCase,
   setTaskSummaryUseCase,
+  setProjectPreviewPortUseCase,
   setProjectWorktreeUseCase,
   updateProjectReposUseCase,
   retryWorkspaceSetupUseCase,
@@ -482,6 +483,10 @@ export function createApp(options: AppOptions): Hono {
         const detail = config ? `${config.mode}${config.setup ? ` · 准备命令 ${config.setup.command.slice(0, 40)}` : ''}` : '清空';
         await auditResource(c, subject, 'project.worktree', projectId, detail);
       }
+    }
+    if (current.ok && input.value.previewPort !== undefined) {
+      current = await setProjectPreviewPortUseCase(deps, { projectId, previewPort: input.value.previewPort });
+      if (current.ok) await auditResource(c, subject, 'project.preview_port', projectId, current.value.previewPort === null || current.value.previewPort === undefined ? '清空' : String(current.value.previewPort));
     }
     if (current.ok && input.value.repos !== undefined) {
       current = await updateProjectReposUseCase(deps, { projectId, repos: input.value.repos });

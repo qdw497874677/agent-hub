@@ -79,7 +79,9 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   sweepGitForReview,
   revokeLegacyLocalWorkerGrants,
   terminalTarget,
+  createPreviewLinkUseCase,
   markWorkerPreviewsOfflineUseCase,
+  matchPreviewShare,
   parsePreviewPortRange,
   authorizeSession
 } from '@agent-hub/domain';
@@ -114,8 +116,9 @@ import { createRequestGuard } from './request-guard.ts';
 import { createTerminalBridge, loginTokenOf, type TerminalBridge } from './terminal-bridge.ts';
 import { createPreviewChannel, type PreviewChannel } from './preview-channel.ts';
 import { createPreviewProxy, type PreviewProxy } from './preview-proxy.ts';
+import { createPreviewPrefix } from './preview-prefix.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
-import type { AccountDeps, PreviewLinkId } from '@agent-hub/domain';
+import type { AccountDeps, PreviewLink, PreviewLinkId } from '@agent-hub/domain';
 import { componentJobFinished, createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
 import { seedTestAccount } from './account-setup.ts';
 
@@ -955,6 +958,54 @@ if (previewPorts !== null) {
       if (spawnWorker !== '1' || typeof secret !== 'string' || typeof workerId !== 'string') return null;
       return sameSecret(secret, localSecret) ? { workerId } : null;
     },
+    // P2：worker 每 10 秒报一次自己回环上在监听的端口，用来把链接标 ready / stale。
+    onPorts: (workerId, ports) => {
+      void (async () => {
+        const listening = new Set(ports);
+        const links = (await store.previewLinks.listAll()).filter((link) => link.workerId === workerId);
+        let changed = 0;
+        for (const link of links) {
+          const wanted = listening.has(link.port);
+          const state: PreviewLink['state'] = wanted ? 'ready' : link.state === 'offline' ? 'offline' : 'stale';
+          if (state === link.state && !wanted) continue;
+          await store.previewLinks.save({
+            ...link,
+            state,
+            ...(wanted ? { lastSeenAt: accounts.now() } : {})
+          });
+          changed += 1;
+        }
+        if (changed > 0) previewLog(`端口状态更新：${changed} 条（${workerId}）`);
+      })().catch((failure: unknown) => previewLog(`同步端口状态失败：${(failure as Error).message}`));
+    },
+    // P2：终端输出里认出端口就自动挂一条预览（幂等、上限与端口分配都走领域用例）。
+    onDetected: (workerId, event) => {
+      void (async () => {
+        if (previewProxy === null || previewPorts === null) return;
+        const created = await createPreviewLinkUseCase(
+          {
+            projects: deps.projects,
+            tasks: deps.tasks,
+            sessions: deps.sessions,
+            workspaces: deps.workspaces,
+            access: deps.access,
+            previewLinks: store.previewLinks,
+            previewPorts,
+            now: accounts.now
+          },
+          systemSubject('preview.detected'),
+          { sessionId: event.sessionId, port: event.port, source: 'detected', ...(event.label === undefined ? {} : { label: event.label }) }
+        );
+        if (!created.ok) {
+          // 「最多 8 条」「端口用完了」这类是正常上限，不打扰日志。
+          if (created.error.code !== 'conflict') previewLog(`自动挂预览失败：${created.error.message}`);
+          return;
+        }
+        if (created.value.workerId !== workerId) return;
+        await previewProxy.listen(created.value);
+        previewLog(`自动发现端口 ${created.value.port}（会话 ${event.sessionId.slice(0, 8)}）`);
+      })().catch((failure: unknown) => previewLog(`自动挂预览失败：${(failure as Error).message}`));
+    },
     onWorkerDown: (workerId) => {
       void markWorkerPreviewsOfflineUseCase({ previewLinks: store.previewLinks }, workerId)
         .then((changed) => {
@@ -982,6 +1033,10 @@ if (previewPorts !== null) {
       const project = task === null ? null : await store.projects.byId(task.projectId);
       return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
     },
+    matchShare: (link, token) =>
+      matchPreviewShare({ previewLinks: store.previewLinks }, link.id, token, accounts.now()).then(
+        (result) => result.ok
+      ),
     channel: previewChannel,
     host,
     onConflict: (linkId) => {
@@ -1098,7 +1153,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   assets: { deps: assetDeps, audit: store.audit },
   providers: providerWiring,
   // 预览链接（docs/design/preview.md §4）：只装 `/api/sessions/:id/previews` 三条路由，转发在代理层。
-  ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews() } }),
+  ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews(), ...(readEnv('HUB_PUBLIC_URL') === null ? {} : { publicHost: new URL(readEnv('HUB_PUBLIC_URL') as string).hostname, https: new URL(readEnv('HUB_PUBLIC_URL') as string).protocol === 'https:' }) } }),
   resources: { metrics: workerMetrics, settings: store.settings, workers: workerControl, audit: store.audit, now: () => Date.now(), access: deps.access },
   /** 每台 Worker 的自定义运行时别名（CAP-1）：存库 + 推给在线 Worker（离线就等它下次连上自动推）。 */
   workerAgents: {
@@ -1165,6 +1220,43 @@ app.use('/*', async (c, next) => {
 });
 app.use('/*', serveStatic({ root: webDist }));
 app.get('/*', serveStatic({ root: webDist, path: 'index.html' }));
+
+// 预览的路径前缀模式（docs/design/preview.md §5，P4）：云上只放通 hub 一个端口时用。
+// WebSocket（HMR）不走这条路，需要它就用端口模式。
+const previewPrefixPath = (readEnv('HUB_PREVIEW_PREFIX') ?? '').trim().replace(/\/+$/, '');
+const previewPrefixActive = previewPrefixPath !== '' && previewPrefixPath !== '/' && previewChannel !== null;
+if (previewPrefixActive && previewChannel !== null) {
+  const prefixChannel = previewChannel;
+  const previewPrefix = createPreviewPrefix({
+    prefix: previewPrefixPath,
+    resolve: async (linkId) => store.previewLinks.byId(linkId as PreviewLinkId),
+    authorize: async (request, link) => {
+      const shared = new URL(request.url).searchParams.get('share');
+      if (shared !== null && shared !== '') {
+        const matched = await matchPreviewShare(
+          { previewLinks: store.previewLinks },
+          link.id,
+          shared,
+          accounts.now()
+        );
+        if (matched.ok) return true;
+      }
+      const token = loginTokenOf(request.headers.get('cookie') ?? '');
+      if (token === '') return false;
+      const subject = await withAccess(store.access, await authenticate(accounts, token), accounts.now());
+      if (subject === null) return false;
+      const session = await store.sessions.byId(link.sessionId);
+      if (session === null) return false;
+      const task = await store.tasks.byId(session.taskId);
+      const project = task === null ? null : await store.projects.byId(task.projectId);
+      return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
+    },
+    channel: prefixChannel,
+    onLog: (message) => log(`[preview] ${message}`)
+  });
+  app.all(`${previewPrefixPath}/*`, async (c) => (await previewPrefix.handle(c.req.raw)) ?? c.notFound());
+  log(`预览路径前缀模式：${previewPrefixPath}/<链接 id>/（不支持 WebSocket / HMR）`);
+}
 
 const server = serve({ fetch: app.fetch, port, hostname: host }, (info) => {
   log(`控制台：http://${host}:${info.port}`);

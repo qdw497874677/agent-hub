@@ -28,6 +28,8 @@ export const setProjectDescriptionRequest = z.object({ description: z.string().m
 
 /** 改项目级 worktree 配置（docs/design/worktree.md §3）：null = 没配，按 shared 处理。 */
 export const setProjectWorktreeRequest = z.object({
+  /** 预览表单的默认端口；`null` 清空。 */
+  previewPort: z.number().int().min(1024).max(65535).nullable().optional(),
   worktree: z
     .object({
       mode: z.enum(['shared', 'isolated']),

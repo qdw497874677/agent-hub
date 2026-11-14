@@ -93,6 +93,7 @@ export function toProject(row: Row): Project {
     repos,
     description: nullableStr(row, 'description'),
     worktree: parseWorktree(nullableStr(row, 'worktree_config')),
+    ...(row['preview_port'] == null ? {} : { previewPort: Number(row['preview_port']) }),
     teamId: nullableStr(row, 'team_id'),
     createdBy: nullableStr(row, 'created_by'),
     members: parseMembers(nullableStr(row, 'members')),

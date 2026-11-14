@@ -5,6 +5,7 @@ import { createServer, type Server } from 'node:http';
 import { WebSocket } from 'ws';
 import {
   createPreviewChannel,
+  normalizePorts,
   PreviewStreamError,
   type PreviewChannel,
   type PreviewChannelOptions,
@@ -366,4 +367,68 @@ test('非 JSON / 未知流 / 不符合协议的帧都忽略，不影响正常帧
 
   await until(() => h.logs.some((line) => line.includes('非 JSON')), '非 JSON 日志');
   await until(() => h.logs.some((line) => line.includes('未知流')), '未知流日志');
+});
+
+test('preview_ports：去重后带 workerId 回调 onPorts', async (t) => {
+  const calls: Array<{ workerId: string; ports: readonly number[] }> = [];
+  const h = await harness({ onPorts: (workerId, ports) => calls.push({ workerId, ports }) });
+  t.after(() => h.close());
+  const worker = await h.connect('w1');
+
+  worker.send({ kind: 'preview_ports', ports: [3000, 5173, 3000, 8080, 5173] });
+  await until(() => calls.length === 1, 'onPorts 回调');
+  assert.equal(calls[0]!.workerId, 'w1');
+  assert.deepEqual([...calls[0]!.ports], [3000, 5173, 8080]);
+});
+
+test('normalizePorts：丢掉越界 / 非整数，去重，最多 256 个', () => {
+  assert.deepEqual(
+    normalizePorts([0, -1, 65_536, 1.5, 3000, 3000, '5173' as unknown as number, 5173]),
+    [3000, 5173]
+  );
+
+  const many = Array.from({ length: 400 }, (_item, index) => index + 1);
+  const trimmed = normalizePorts(many);
+  assert.equal(trimmed.length, 256);
+  assert.equal(trimmed[0], 1);
+  assert.equal(trimmed[255], 256);
+});
+
+test('preview_detected：回调收到 sessionId / port / label', async (t) => {
+  const calls: Array<{ workerId: string; event: { sessionId: string; port: number; label?: string } }> = [];
+  const h = await harness({ onDetected: (workerId, event) => calls.push({ workerId, event }) });
+  t.after(() => h.close());
+  const worker = await h.connect('w1');
+
+  // 即使没上报过 preview_ports，也照常回调（hub 不替 worker 二次判断）。
+  worker.send({ kind: 'preview_detected', sessionId: 's-1', port: 5173, label: 'vite' });
+  await until(() => calls.length === 1, 'onDetected 回调');
+  assert.equal(calls[0]!.workerId, 'w1');
+  assert.deepEqual(calls[0]!.event, { sessionId: 's-1', port: 5173, label: 'vite' });
+
+  worker.send({ kind: 'preview_detected', sessionId: 's-2', port: 3000 });
+  await until(() => calls.length === 2, '无 label 的 onDetected 回调');
+  assert.deepEqual(calls[1]!.event, { sessionId: 's-2', port: 3000 });
+});
+
+test('回调抛错：记一条 onLog，WS 不断且后续帧照常处理', async (t) => {
+  const detected: Array<{ sessionId: string; port: number; label?: string }> = [];
+  const h = await harness({
+    onPorts: () => {
+      throw new Error('boom');
+    },
+    onDetected: (_workerId, event) => detected.push(event)
+  });
+  t.after(() => h.close());
+  const worker = await h.connect('w1');
+
+  worker.send({ kind: 'preview_ports', ports: [3000] });
+  await until(() => h.logs.some((line) => line.includes('预览端口回调失败')), 'onPorts 失败日志');
+  assert.ok(h.logs.some((line) => line.includes('boom')));
+
+  worker.send({ kind: 'preview_detected', sessionId: 's-1', port: 3001 });
+  await until(() => detected.length === 1, '抛错后的下一帧');
+  assert.deepEqual(detected[0], { sessionId: 's-1', port: 3001 });
+  assert.equal(worker.socket.readyState, WebSocket.OPEN);
+  assert.equal(h.channel.hasWorker('w1'), true);
 });

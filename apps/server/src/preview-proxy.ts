@@ -140,6 +140,15 @@ function sanitizeStatusText(text: string): string {
   return text.replace(/[\r\n]/g, ' ').trim();
 }
 
+/** 从查询串里取 `share`（不解析整条 URL，预览路径是原样透传的）。 */
+function shareTokenOf(request: IncomingMessage): string | null {
+  const raw = request.url ?? '';
+  const start = raw.indexOf('?');
+  if (start === -1) return null;
+  const value = new URLSearchParams(raw.slice(start + 1)).get('share');
+  return value === null || value === '' ? null : value;
+}
+
 function headerTimeoutText(milliseconds: number): string {
   return `预览超时：上游 ${Math.round(milliseconds / 1000)} 秒没有响应，服务可能还在启动`;
 }
@@ -190,6 +199,11 @@ export interface PreviewProxyOptions {
   readonly resolve: (hubPort: number) => Promise<PreviewLink | null>;
   /** 未登录 / 无权访问 → false（反代 302 到登录页）。 */
   readonly authorize: (request: IncomingMessage, link: PreviewLink) => Promise<boolean>;
+  /**
+   * `?share=<令牌>` 校验（公开分享）。命中即放行、跳过 cookie；失败不否决 cookie，
+   * 继续走 `authorize`。不传 = 只认 cookie。
+   */
+  readonly matchShare?: (link: PreviewLink, token: string) => boolean | Promise<boolean>;
   readonly channel: PreviewChannel;
   /** 与 hub 相同的绑定地址（HUB_HOST），默认 127.0.0.1。 */
   readonly host?: string;
@@ -246,6 +260,16 @@ export function createPreviewProxy(options: PreviewProxyOptions): PreviewProxy {
   async function allowed(request: IncomingMessage, link: PreviewLink): Promise<boolean> {
     const loopback = options.isLoopback ?? ((candidate: IncomingMessage) => isLoopbackAddress(candidate.socket.remoteAddress));
     if (loopback(request)) return true;
+    if (options.matchShare !== undefined) {
+      const token = shareTokenOf(request);
+      if (token !== null) {
+        try {
+          if (await options.matchShare(link, token)) return true;
+        } catch (error) {
+          log(`预览分享令牌校验失败（${link.id}）：${messageOf(error)}`);
+        }
+      }
+    }
     try {
       return await options.authorize(request, link);
     } catch (error) {

@@ -7,6 +7,11 @@ export const PREVIEW_LABELS_MAX = 60;
 export const PREVIEW_LINKS_MAX = 8;
 /** 默认端口区间宽度（HUB_PORT+1 .. HUB_PORT+20）。 */
 export const PREVIEW_PORT_SPAN = 20;
+/** 公开分享令牌的默认/最长有效期（小时）。 */
+export const PREVIEW_SHARE_DEFAULT_HOURS = 24;
+export const PREVIEW_SHARE_MAX_HOURS = 24 * 30;
+/** 公开分享令牌的前缀（链接 id 是 `pv_`，令牌是 `pvs_`，避免混）。 */
+export const PREVIEW_SHARE_PREFIX = 'pvs_';
 
 export interface PreviewLink {
   readonly id: PreviewLinkId;
@@ -21,6 +26,10 @@ export interface PreviewLink {
   readonly state: 'ready' | 'stale' | 'offline';
   readonly createdAt: number;
   readonly lastSeenAt: number;
+  /** 公开分享令牌的哈希（只存哈希；没有就是私有）。 */
+  readonly shareTokenHash?: string | null;
+  /** 分享到期时间（毫秒）；`null` 表示没分享或已撤销。 */
+  readonly shareExpiresAt?: number | null;
 }
 
 /**

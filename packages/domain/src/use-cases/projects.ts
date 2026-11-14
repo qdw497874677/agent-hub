@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, deriveRepoId, normalizeDescription, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, withProjectRepos } from '../project.ts';
+import { createProject, deriveRepoId, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, withProjectRepos } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
 import type { DomainError } from '../errors.ts';
@@ -200,6 +200,19 @@ export async function updateProjectReposUseCase(
 }
 
 /** 改项目的工作空间档位 / 准备命令（null = 没配，按 shared 处理）。只影响以后新建的临时工作空间。 */
+export async function setProjectPreviewPortUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly previewPort: unknown }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const port = normalizePreviewPort(command.previewPort);
+  if (!port.ok) return port;
+  const next: Project = { ...project, previewPort: port.value };
+  await deps.projects.save(next);
+  return ok(next);
+}
+
 export async function setProjectWorktreeUseCase(
   deps: Pick<Deps, 'projects'>,
   command: { readonly projectId: string; readonly worktree: unknown }

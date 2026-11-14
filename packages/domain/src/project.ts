@@ -25,6 +25,11 @@ export interface Project {
   readonly members: readonly string[];
   /** 新任务默认用哪种工作空间、建好后跑不跑准备命令（docs/design/worktree.md §3）。null = 没配，按 shared 处理。 */
   readonly worktree: ProjectWorktree | null;
+  /**
+   * 项目约定的开发服务器端口（docs/design/preview.md §7）：只用来在预览表单里预填，
+   * 不会自动建链接。null / 省略 = 没约定。
+   */
+  readonly previewPort?: number | null;
   /** 进了回收站的时间；null = 正常。 */
   readonly deletedAt: number | null;
 }
@@ -38,6 +43,15 @@ export const projectResource = (project: Project) => ({
 
 /** 说明的长度上限：会进 agent 的上下文，太长没意义。 */
 export const PROJECT_DESCRIPTION_MAX = 8000;
+
+/** 预览默认端口：1024–65535；空/0 当成没配。 */
+export function normalizePreviewPort(value: unknown): Result<number | null, DomainError> {
+  if (value === null || value === undefined || value === '') return ok(null);
+  if (value === 0) return ok(null);
+  const port = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) return err(invalid('预览端口要是 1024–65535 的整数'));
+  return ok(port);
+}
 
 /** 空白 = 没写。 */
 export function normalizeDescription(text: string | null | undefined): Result<string | null, DomainError> {

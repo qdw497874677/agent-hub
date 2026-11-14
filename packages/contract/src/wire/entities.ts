@@ -181,6 +181,8 @@ export const projectSchema = z.object({
   description: z.string().nullable().default(null),
   /** 新任务默认档位 + 准备命令；null = 没配。 */
   worktree: projectWorktreeSchema.nullable().default(null),
+  /** 约定的开发服务器端口（只用于预览表单预填）。 */
+  previewPort: z.number().int().min(1024).max(65535).nullable().optional(),
   createdAt: epochMs
 });
 
