@@ -204,6 +204,24 @@ M1 后续（`49d73c8`、`1dc9aa1`、`2c2d49c`，已部署）：
 - 验证：`npm test` 1483 / 1475 pass / 8 skipped / 0 fail；`check`/`typecheck`/`typecheck:web`/`build`/`test:e2e-node` 全 0；`e2e/preview.spec.ts` 2/2（登记/幂等/列出/移除、上游没在跑时回说明页）。
 - 残留：P2 输出探测与失效检测、P3 公开分享与画布入口、P4 路径前缀兼容；`preview_pause/resume` 与单 link 并发 8 未做。
 
+### 1.13 进展（2026-11-14 · 预览 P2/P3/P4）
+
+已做：
+- **P2 自动发现**：worker 每 10 秒把 `/proc/net/tcp{,6}` 里 LISTEN 的回环端口报给 hub；PTY 输出里认出 `localhost:PORT` 后再用这份清单校验，确认在监听才发 `preview_detected`。hub 收到就自动建 `source:'detected'` 的链接并立刻监听（幂等、每会话 ≤8 条），端口不再监听时把链接标 `stale`，机器掉线标 `offline`。
+- **P3 公开分享**：`POST/DELETE /api/sessions/:id/previews/:linkId/share`。令牌 `pvs_` + 24 字节随机（base64url），库里只存 sha256，默认 24 小时、上限 30 天，重新分享即轮换、撤销幂等。访问带 `?share=` 时跳过 cookie，校验失败仍回退 cookie 登录（公开链接不会把人挡在自己的 hub 外）。
+  - 领域层为了满足「domain 禁止 node: import」的纯净性门禁，随机数与 SHA-256 用 Web Crypto（`previewShareTokenHash` 因此是 async）。
+- **P3 前端**：预览行有「自动发现」徽标和「公开」标签；分享面板支持 1 小时 / 1 天 / 3 天 / 7 天、复制、撤销二次确认（令牌只在生成时显示一次，回访只能看到剩余时间）；画布卡片有「预览」入口（单个直开新标签，多个弹选择，不用 iframe）。
+- **P4 路径前缀**：`HUB_PREVIEW_PREFIX=/preview` 时链接挂在 `…/preview/<linkId>/…`，只走 hub 一个端口（云上安全组不用额外放通）；**不支持 WebSocket**，HMR 要端口模式。
+- **P4 项目默认端口**：`Project.previewPort`（1024–65535，可空），项目设置「工作空间」页可填，只用于预览表单预填。
+
+验证：`check` / `typecheck` / `typecheck:web` / `npm test`（1508 pass / 8 skipped / 0 fail）/ `build` / `test:e2e-node` 全 0。
+
+已知残留：
+- 前缀模式不支持 WS（含 Vite HMR）；需要就在端口模式跑。
+- 分享链接没做「只读」限制——它等于该 dev server 的全部能力，泄露就撤销。
+- 画布卡片各自查一次 `sessionKeys.previews`，几十张卡会有扇出；要收敛得加一条批量接口。
+- 失效检测依赖 worker 周期上报（10 秒），机器断连时靠 `onWorkerDown` 兜。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道

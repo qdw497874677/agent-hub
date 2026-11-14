@@ -147,7 +147,7 @@ interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } 
   Origin 校验复用 `originMatches`（缺 Origin 只认回环，防 DNS rebinding）。
 - 未登录 → 302 到 hub 的登录页，带上 `next=<preview url>`。
 - 公开分享（P3）：`POST /api/sessions/:id/previews/:linkId/share` 签发 `pv_` 开头的一次性令牌
-  （HMAC + 过期时间，默认 24h，可撤销），链接形如 `…/__hub?share=pv_…`；令牌只对该 linkId 有效。
+  （HMAC + 过期时间，默认 24h，可撤销），链接形如 `…/?share=pvs_…`；令牌只对该 linkId 有效（链接 id 是 `pv_`，令牌是 `pvs_`，避免混）。
 - iframe 用的同源页面（可选）：`…/__hub/frame?session=<id>` 里做一个带工具栏的框架，避免第三方
   页面自己设 `X-Frame-Options` 时整块空白（工具栏里给「在新标签打开」）。
 
@@ -194,9 +194,40 @@ interface PreviewAck { kind: 'preview_ack'; streamId: string; credits: number } 
 | 阶段 | 内容 | 预估 |
 | --- | --- | --- |
 | P1 ✅ | 端口映射链路（手动登记 + 单/多端口监听 + HTTP/WS 转发 + 私有鉴权）+ 会话页页签 | 1.5 天 |
-| P2 | 输出探测 + `/proc` 校验 + 失效检测（`stale`/`offline`） | 1 天 |
-| P3 | 公开分享令牌 + 画布入口 + iframe 框架页 | 1 天 |
-| P4 | 路径前缀兼容模式（只在只放通单端口的环境启用）+ 项目级 `previewPort` 声明 | 1.5 天 |
+| P2 ✅ | 输出探测 + `/proc` 校验 + 失效检测（`stale`/`offline`） | 1 天 |
+| P3 ✅ | 公开分享令牌 + 画布入口（iframe 框架页未做，按需再加） | 1 天 |
+| P4 ✅ | 路径前缀模式（`HUB_PREVIEW_PREFIX`，仅 HTTP）+ 项目级 `previewPort` 声明 | 1.5 天 |
+
+## 10.2 P2 落地记录（2026-11-14）
+
+| 位置 | 内容 |
+| --- | --- |
+| `packages/node-gateway/src/preview-scan.ts` | `scanListeningPorts()` 读 `/proc/net/tcp{,6}` 取 LISTEN（回环/全接口）、`portsInOutput(text)` 认 `localhost:PORT` 这类输出 |
+| `packages/node-gateway/src/preview-client.ts` | 每 10 秒上报 `preview_ports`；`detect(sessionId, text)` 只对「/proc 里确实在监听」的端口发 `preview_detected`（同 session+port 一次） |
+| `packages/node-gateway/src/terminal.ts` + `worker-link.ts` | PTY 原始输出旁路给端口发现（base64 之前、异常吞掉） |
+| `apps/server/src/preview-channel.ts` | `preview_ports` / `preview_detected` 在查流表之前分流，回调 `onPorts` / `onDetected` |
+| `apps/server/src/main.ts` | 端口变化 → 该机器链接标 `ready` / `stale`（离线保持 `offline`）；认出新端口 → 自动建 `source:'detected'` 链接并立刻监听（幂等、≤8 条） |
+
+## 10.3 P3 落地记录（2026-11-14）
+
+| 位置 | 内容 |
+| --- | --- |
+| `packages/domain/src/use-cases/preview-share.ts` | `sharePreviewLinkUseCase` / `revokePreviewShareUseCase` / `matchPreviewShare` / `previewLinkPublic`；令牌 `pvs_` + 24 字节随机、只存 sha256、默认 24h、上限 720h、重新分享即轮换 |
+| `packages/storage-sqlite/src/preview-links.ts` | `share_token_hash` / `share_expires_at` 两列（老库 ALTER），`shared` 现算 |
+| `apps/server/src/preview-routes.ts` | `POST/DELETE /api/sessions/:id/previews/:linkId/share`，返回 `{ok,url,expiresAt}`，审计 `preview.share` / `preview.unshare` |
+| `apps/server/src/preview-proxy.ts` | 查询串 `?share=` 命中即放行（跳过 cookie），失败照常回退 cookie 登录 |
+| `apps/web/src/atoms/preview-panel.tsx` | 「自动发现」徽标、公开标签、生成/复制/撤销分享链接（令牌只在生成时出现一次） |
+| `apps/web/src/surfaces/workbench/nodes.tsx` | 画布卡片「预览」入口（单个直开新标签，多个弹选择；不用 iframe） |
+
+已知取舍：分享令牌不落明文，回访只能看到「还有 N 小时」；撤销幂等；代理层对分享失败的请求仍走 cookie。
+
+## 10.4 P4 落地记录（2026-11-14）
+
+| 位置 | 内容 |
+| --- | --- |
+| `apps/server/src/preview-prefix.ts` | `HUB_PREVIEW_PREFIX=/preview` 时把 `…/preview/<linkId>/<path>` 转发到 worker 回环端口；剥 `x-frame-options`、CSP 只补 `frame-ancestors 'self'`、流式返回、请求体 ≤10MiB |
+| 限制 | **不支持 WebSocket**（HMR 会退化成整页刷新）；需要 HMR / 双向 WS 就用端口模式 |
+| `Project.previewPort` | 项目设置里填默认端口，只用于会话「预览」表单预填，不自动建链接 |
 
 ## 12. 验证
 
