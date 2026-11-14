@@ -32,7 +32,8 @@ test('建群：限额越界 400；没主持人时贴系统行；停止后成员�
   const tooMany = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: ['writer'], limits: { maxRounds: 6 } } });
   expect(tooMany.status()).toBe(400);
   const noModelHost = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: ['writer'], hostRole: 'writer' } });
-  expect(noModelHost.status()).toBe(400);
+  // 主持人不再要求写明模型：留空用运行时默认模型
+  expect(noModelHost.status()).toBe(201);
 
   // 界面建群（390px）
   await page.setViewportSize({ width: 390, height: 844 });
@@ -51,6 +52,7 @@ test('建群：限额越界 400；没主持人时贴系统行；停止后成员�
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 
   await page.getByTestId('group-stop').click();
+  await page.getByTestId('group-stop-confirm').click();
   await page.getByTestId('open-members').click();
   await expect(page.getByTestId('group-drawer').getByTestId('member-held')).toHaveCount(2);
   await page.screenshot({ path: 'test-results/groups-mobile.png' });

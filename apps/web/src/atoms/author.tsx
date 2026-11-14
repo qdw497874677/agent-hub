@@ -1,7 +1,8 @@
 /** 用户气泡旁的头像 + 名字（多人在同一条会话里说话时才显示）。 */
 const PALETTE = ['bg-sage/30', 'bg-accent/30', 'bg-rust/25', 'bg-card-raised'];
 
-function hue(id: string): string {
+/** 名字 → 色板（同名同色，跨页面稳定）。群聊的小圆点也用它。 */
+export function authorHue(id: string): string {
   let h = 0;
   for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return PALETTE[h % PALETTE.length] ?? PALETTE[0]!;
@@ -20,8 +21,7 @@ export function AuthorTag({ author, size = 'md' }: { author: { id: string; name:
           {via === 'agent' ? 'agent 消息' : `via ${via}`}
         </span>
       )}
-      <span aria-hidden className={`inline-flex shrink-0 items-center justify-center rounded-full font-medium text-primary ${box} ${author ? hue(author.id) : 'bg-card-raised'}`}>
-        {initial.toUpperCase()}
+      <span aria-hidden className={`inline-flex shrink-0 items-center justify-center rounded-full font-medium text-primary ${box} ${author ? authorHue(author.id) : 'bg-card-raised'}`}>        {initial.toUpperCase()}
       </span>
     </span>
   );
