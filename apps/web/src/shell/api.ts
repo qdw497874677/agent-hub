@@ -338,6 +338,8 @@ export const api = {
   removeWorkspace: (workspaceId: string, input: RemoveWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/remove`, input),
   canvas: (projectId: string) => call<CanvasDto>(`/api/projects/${projectId}/canvas`),
+  /** 单条会话：侧聊这类不进画布的会话要单独取。 */
+  session: (id: string) => call<SessionDto>(`/api/sessions/${id}`),
   createTask: (input: CreateTaskRequest) => post<TaskDto>('/api/tasks', input),
   setTaskStatus: (taskId: string, status: TaskDto['status'], note?: string) =>
     call<TaskDto>(`/api/tasks/${taskId}/status`, { method: 'PATCH', body: JSON.stringify({ status, note }) }),

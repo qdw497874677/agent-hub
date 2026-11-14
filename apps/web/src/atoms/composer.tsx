@@ -36,6 +36,11 @@ interface Props {
   readonly commands: readonly SlashCommand[];
   /** `@` 选择器去哪个项目里找文件。 */
   readonly projectId: string;
+  /**
+   * 从 diff 里「引用到对话」：宿主已经算好了新草稿（原有文字一个字没动），
+   * 这里负责写回输入框、收起还开着的 `@` 菜单、光标落到末尾。nonce 变了才做一次。
+   */
+  readonly quote?: { readonly text: string; readonly nonce: number } | null;
 }
 
 /**
@@ -62,7 +67,8 @@ export function Composer({
   onChangeOption,
   capability,
   commands,
-  projectId
+  projectId,
+  quote
 }: Props) {
   // 输入框不受控，原因见 CardComposer 上的注释：React Flow 节点里受控 textarea 会丢字。
   const area = useRef<HTMLTextAreaElement>(null);
@@ -91,6 +97,23 @@ export function Composer({
     setItems([]);
     setNotice(null);
   }, [session.id]);
+
+  // diff 里引用了段代码：草稿由宿主拼好（保住原有文字、末尾补空格），这里把它推回不受控的输入框。
+  // 顺带把 `@` 菜单收掉——引用里本来就带 `@`，菜单再浮着会让人以为还要挑文件。
+  // 记下已经落过的那次 nonce：换会话重挂载时不能把上一条会话的引用又写一遍。
+  const appliedQuote = useRef(quote?.nonce ?? null);
+  const quoteNonce = quote?.nonce ?? null;
+  const quoted = quote?.text;
+  useEffect(() => {
+    const element = area.current;
+    if (!element || quoted === undefined || quoteNonce === null || appliedQuote.current === quoteNonce) return;
+    appliedQuote.current = quoteNonce;
+    element.value = quoted;
+    element.selectionStart = element.selectionEnd = quoted.length;
+    setFilled(quoted.trim() !== '');
+    setTrigger(null);
+    element.focus();
+  }, [quoteNonce, quoted]);
 
   // `@` 选择器：每次查询变了就去问服务端；慢的旧回答不能盖掉新的。
   const mentionQuery = trigger?.kind === '@' ? trigger.query : null;

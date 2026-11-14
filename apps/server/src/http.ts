@@ -883,6 +883,14 @@ export function createApp(options: AppOptions): Hono {
   });
 
   /** 会话改名。守门中间件按 session.prompt 判权限（能在这条会话里说话的人才能改名）。 */
+  /** 单条会话（侧聊这种不进画布的会话要靠它取）。 */
+  app.get('/api/sessions/:sessionId', async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const session = await deps.sessions.byId(asSessionId(sessionId));
+    // 权限由守门中间件按 session.read 判过了（apps/server/src/access.ts 的 ROUTE 匹配）。
+    return session === null ? fail(c, notFound('会话不存在')) : c.json(sessionSchema.parse(session));
+  });
+
   app.put('/api/sessions/:sessionId/title', async (c) => {
     const input = await body(c, renameSessionRequest);
     if (!input.ok) return input.response;

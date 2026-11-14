@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
 import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
 import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
-import 'diff2html/bundles/css/diff2html.min.css';
+import { inSelection, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
 
 /**
  * 工作空间文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
@@ -45,10 +45,12 @@ type Props = {
   tab: FilesTab;
   reveal?: Reveal | null;
   base?: { base: string; nonce: number } | null;
+  /** diff 里选了行之后「引用到对话」：给回一句 `@path:start-end`。没接这个回调就不显示那个按钮。 */
+  onQuote?: (ref: string) => void;
 };
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = null, base: wanted = null }: Props) {
+export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = null, base: wanted = null, onQuote }: Props) {
   const client = useQueryClient();
   const keys = filesKeys(workspaceId, sessionId);
   const wide = useWide();
@@ -239,7 +241,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
         {wide || opened ? (
           <main className="min-w-0 flex-1 overflow-auto">
             {opened ? (
-              opened.diff ? <DiffView sessionId={sessionId} keys={keys} path={opened.path} base={base} wide={wide} root={root} onBack={() => setOpened(null)} /> :
+              opened.diff ? <DiffView sessionId={sessionId} keys={keys} path={opened.path} base={base} wide={wide} root={root} onQuote={onQuote} onBack={() => setOpened(null)} /> :
               <FileView sessionId={sessionId} keys={keys} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
             ) : (
               <p className="p-6 text-sub text-tertiary">选一个文件查看</p>
@@ -383,28 +385,122 @@ function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { se
   );
 }
 
-function DiffView({ sessionId, keys, path, base, wide, root, onBack }: { sessionId: string; keys: FilesKeys; path: string; base: Base; wide: boolean; root: string | undefined; onBack: () => void }) {
+/**
+ * 单文件补丁：自带一条可点的行号 gutter（ADR 0025 的 diff 视图）。
+ *
+ * 以前这里交给 diff2html 出 HTML。行号要能点、选中的段要高亮、手机上点按区不能太小，
+ * 而外来 HTML 只能靠命令式打补丁，所以改成自己画行——代价是不再区分并排 / 单列两种版式，
+ * 一律单列，宽度交给横向滚动。
+ */
+function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: {
+  sessionId: string;
+  keys: FilesKeys;
+  path: string;
+  base: Base;
+  wide: boolean;
+  root: string | undefined;
+  onBack: () => void;
+  onQuote?: (ref: string) => void;
+}) {
   const diff = useQuery({ ...fresh, queryKey: keys.diff(path, base), queryFn: () => filesApi.diff(sessionId, path, base) });
   const data = shown(diff);
-  const [html, setHtml] = useState<string | null>(null);
-  useEffect(() => {
-    setHtml(null);
-    if (!data || data.patch === '') return;
-    let live = true;
-    const patch = data.patch;
-    void import('diff2html').then((d2h) => live && setHtml(d2h.html(patch, { outputFormat: wide ? 'side-by-side' : 'line-by-line', drawFileList: false, matching: 'lines', colorScheme: 'dark' as never })));
-    return () => { live = false; };
-  }, [data, wide]);
+  const rows = useMemo(() => (data && !data.binary ? parsePatchLines(data.patch) : []), [data]);
+  const [picked, setPicked] = useState<LineSelection | null>(null);
+  // 换文件 / 换对比基准之后，旧的行号就不指同一段代码了
+  useEffect(() => setPicked(null), [path, base]);
+  const range = selectionRange(picked);
+  const ref = selectionRef(path, picked);
+  const pick = (side: DiffSide, line: number) => setPicked((current) => toggleLine(current, side, line));
+  const quote = () => {
+    if (!ref) return;
+    onQuote?.(ref);
+    setPicked(null);
+  };
   return (
-    <div data-testid="diff-view">
+    <div className="flex h-full min-h-0 flex-col" data-testid="diff-view">
       <PathBar path={path} root={root} wide={wide} onBack={onBack} />
       {diff.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {diff.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(diff.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件有改动</p> : null}
       {data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">diff 超过 512 KB，只显示前一部分</p> : null}
       {data && data.patch === '' && !data.binary ? <p className="p-4 text-sub text-tertiary">没有差异</p> : null}
-      {html && data ? <div className="files-diff text-meta" dangerouslySetInnerHTML={{ __html: html }} /> : null}
+      {rows.length > 0 ? (
+        <>
+          {/* 工具条在滚动区外面：不悬停、不浮在代码上，手机上换行也压不到内容 */}
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-hair px-3 py-1.5" data-testid="diff-toolbar">
+            {picked && range ? (
+              <>
+                <span className="font-mono text-meta text-accent">
+                  {range.start === range.end ? `第 ${range.start} 行` : `第 ${range.start}–${range.end} 行`}
+                  <span className="text-tertiary"> · {picked.side === 'old' ? '改前' : '改后'}</span>
+                </span>
+                {onQuote && ref ? (
+                  <button type="button" onClick={quote} data-testid="diff-quote"
+                    className="min-h-6 cursor-pointer rounded bg-accent px-2 text-meta font-medium text-canvas transition-colors hover:bg-accent-dim [@media(pointer:coarse)]:min-h-8 [@media(pointer:coarse)]:px-3">
+                    引用到对话
+                  </button>
+                ) : null}
+                <button type="button" onClick={() => setPicked(null)} data-testid="diff-quote-clear"
+                  className="min-h-6 cursor-pointer rounded px-2 text-meta text-tertiary transition-colors hover:bg-card-raised hover:text-primary [@media(pointer:coarse)]:min-h-8 [@media(pointer:coarse)]:px-3">
+                  清除
+                </button>
+              </>
+            ) : (
+              <span className="text-meta text-tertiary">点行号选起止行{onQuote ? '，可引用到对话' : ''}</span>
+            )}
+          </div>
+          <div className="files-diff min-h-0 flex-1 overflow-auto pb-4 font-mono text-meta" data-testid="diff-lines">
+            {rows.map((row, i) => (
+              <PatchLine key={i} row={row} picked={picked} pick={pick} />
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
+  );
+}
+
+/** 一行补丁：两个行号槽（改前 / 改后）+ 正文。没号的那一侧留空位，对齐不乱。 */
+function PatchLine({ row, picked, pick }: { row: DiffRow; picked: LineSelection | null; pick: (side: DiffSide, line: number) => void }) {
+  if (row.kind === 'meta') {
+    return <div className="whitespace-pre px-3 text-meta leading-6 text-tertiary/80">{row.text}</div>;
+  }
+  if (row.kind === 'hunk') {
+    return (
+      <div className="mt-2 whitespace-pre border-y border-hair/60 bg-card/70 px-3 text-meta leading-6 text-secondary">
+        {row.text}
+      </div>
+    );
+  }
+  const tone = row.kind === 'added' ? 'bg-sage/10' : row.kind === 'removed' ? 'bg-rust/10' : '';
+  const mark = row.kind === 'added' ? 'text-sage' : row.kind === 'removed' ? 'text-rust' : 'text-tertiary';
+  const sign = row.kind === 'added' ? '+' : row.kind === 'removed' ? '−' : ' ';
+  const oldOn = row.oldLine !== undefined && inSelection(picked, 'old', row.oldLine);
+  const newOn = row.newLine !== undefined && inSelection(picked, 'new', row.newLine);
+  const highlighted = oldOn || newOn;
+  return (
+    <div className={`flex min-w-full w-max leading-6 ${highlighted ? 'bg-accent/15' : tone}`}>
+      <Gutter side="old" line={row.oldLine} selected={oldOn} pick={pick} />
+      <Gutter side="new" line={row.newLine} selected={newOn} pick={pick} />
+      <span aria-hidden className={`w-4 shrink-0 select-none whitespace-pre text-center ${mark}`}>{sign}</span>
+      <span className="whitespace-pre pr-6 text-secondary">{row.text === '' ? ' ' : row.text}</span>
+    </div>
+  );
+}
+
+/**
+ * 行号按钮：就是选段的把手，所以自己占满 24px 高——手机上不用悬停也知道能点。
+ * 同一侧点两下成段：改前的行号只跟改前的配，两边行号本来就不是一套数。
+ */
+function Gutter({ side, line, selected, pick }: { side: DiffSide; line: number | undefined; selected: boolean; pick: (side: DiffSide, line: number) => void }) {
+  if (line === undefined) return <span aria-hidden className="w-10 shrink-0 border-r border-hair/40" />;
+  return (
+    <button type="button" data-testid="diff-line" data-side={side} data-line={line}
+      aria-pressed={selected} aria-label={`选择第 ${line} 行`} title={`从第 ${line} 行开始选`}
+      onClick={() => pick(side, line)}
+      className={`flex min-h-6 w-10 shrink-0 cursor-pointer items-center justify-end border-r border-hair/40 px-1 text-right text-[11px] tabular-nums transition-colors ${selected ? 'bg-accent/30 text-accent' : 'text-tertiary hover:bg-card-raised hover:text-primary'} [@media(pointer:coarse)]:min-h-8`}>
+      {line}
+    </button>
   );
 }
 

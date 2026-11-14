@@ -19,6 +19,7 @@ import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
 import { filesInvalidationKeys, filesKeys, gitKeys, sessionKeys, taskKeys } from '../../shell/query-keys.ts';
 import { filesApi } from '../../shell/api.ts';
 import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
+import { appendRef } from '../../atoms/diff-selection.ts';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
@@ -146,6 +147,23 @@ export function FocusView({
   useEffect(() => {
     storeTab(session.id, tab);
   }, [session.id, tab]);
+  /**
+   * diff 里选了段代码要引用到对话：草稿在宿主这层拼（输入框不受控，只能拼好再推回去），
+   * nonce 让 Composer 知道「这是新引用，去同步一次」。切回对话页，人接着写问题。
+   */
+  const [quote, setQuote] = useState<{ text: string; nonce: number } | null>(null);
+  const quoteSeq = useRef(0);
+  const quoteToChat = (ref: string) => {
+    const text = appendRef(draft, ref);
+    onDraftChange(text);
+    quoteSeq.current += 1;
+    setQuote({ text, nonce: quoteSeq.current });
+    setTab('chat');
+  };
+  // 换会话：上一条会话的引用不该再往新草稿里写
+  useEffect(() => {
+    setQuote(null);
+  }, [session.id]);
   // 工具参数里的路径可点：只认这条会话工作空间里的（老会话没有工作空间就只认相对路径）
   const workspaceRoot = canvas.workspaces.find((w) => w.id === session.workspaceId)?.path ?? null;
   const fileLinks = useMemo<FileLinks>(() => ({
@@ -624,6 +642,25 @@ export function FocusView({
                     }}
                   />
                   <MenuItem
+                    title="开一条侧聊…"
+                    hint={session.kind === 'side' ? '侧聊不能再生侧聊' : '用同一个工作空间和模型，单独问一轮，不打断这条会话'}
+                    testId="session-side-open"
+                    disabled={session.kind === 'side' || !('workspaceId' in session && session.workspaceId !== null)}
+                    onClick={() => {
+                      close();
+                      void run(async () => {
+                        const created = await api.derive({
+                          taskId: session.taskId,
+                          agentId: session.agentId,
+                          model: session.model,
+                          kind: 'side',
+                          parentSessionId: session.id
+                        });
+                        onOpenSession(created.id);
+                      });
+                    }}
+                  />
+                  <MenuItem
                     title="换个地方继续…"
                     hint={canContinueElsewhere(session) ? '换台机器或工作空间，带着会话摘要接着做' : CONTINUE_DISABLED_HINT}
                     disabled={!canContinueElsewhere(session)}
@@ -688,6 +725,18 @@ export function FocusView({
           {windowChrome?.actions}
         </span>
       </header>
+      {session.kind === 'side' ? (
+        <button
+          type="button"
+          onClick={() => session.parentSessionId && onOpenSession(session.parentSessionId)}
+          className="flex shrink-0 items-center gap-2 border-b border-hair px-3 py-2 text-left text-sub text-secondary hover:bg-card"
+          data-testid="side-session-banner"
+        >
+          <span className="rounded bg-card px-1.5 py-0.5 text-meta text-tertiary">侧聊</span>
+          <span className="min-w-0 flex-1 truncate">这条会话是侧聊：用主会话的工作空间单独问了一轮</span>
+          <span className="shrink-0 text-accent">返回主会话</span>
+        </button>
+      ) : null}
       <ProvenanceRow sessionId={session.id} />
       <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />
       {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
@@ -743,7 +792,7 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} workspaceId={session.workspaceId} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} />
+            <FilesBrowser tab={t} sessionId={session.id} workspaceId={session.workspaceId} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} />
           </div>
         ) : null
       )}
@@ -1005,6 +1054,7 @@ export function FocusView({
             capability={attachmentsCapability(agent?.capabilities)}
             commands={sessionCommands(session, runtimeCommands, forkHint)}
             projectId={canvas.project.id}
+            quote={quote}
           />
         </div>
       </div>

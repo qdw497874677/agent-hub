@@ -225,10 +225,19 @@ function Workspace() {
     [project, queryClient]
   );
 
-  const selectedSession = useMemo(
+  const inCanvas = useMemo(
     () => canvas.data?.sessions.find((session) => session.id === selected) ?? null,
     [canvas.data, selected]
   );
+  // 侧聊不进画布，单开一条查询取它；其它会话一律以画布为准。
+  const sideSession = useQuery({
+    queryKey: ['session', selected],
+    queryFn: () => api.session(selected ?? ''),
+    enabled: selected !== null && inCanvas === null,
+    retry: false,
+    staleTime: 5_000
+  });
+  const selectedSession = inCanvas ?? sideSession.data ?? null;
 
   // 专注对话要整段历史：投影只带最后几十条事件，长一点的思考就把正文挤出去了。
   const focusedSession = view === 'focus' ? selectedSession : null;
