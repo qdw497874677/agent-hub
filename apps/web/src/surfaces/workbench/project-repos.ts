@@ -9,8 +9,12 @@ import type { ProjectDto } from '@agent-hub/contract';
 export const PROJECT_REPOS_MAX = 8;
 /** 仓库名 = 组合工作空间里的子目录名，所以形状和后端一致：小写字母开头，最多 41 个字符。 */
 export const REPO_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
-/** 留空默认分支时写这个：后端把空串读成 null，但界面上「默认就是 main」更好懂。 */
-export const REPO_DEFAULT_BRANCH = 'main';
+/**
+ * 留空默认分支时写 null：让 git 用仓库自己的默认分支。
+ * 早先这里写死 `main`，克隆 `master` 为默认分支的仓库会报
+ * 「fatal: Remote branch main not found in upstream origin」。
+ */
+export const REPO_DEFAULT_BRANCH: null = null;
 
 /** 设置页手里的一行草稿：id 空 = 还没保存过的新行。 */
 export interface ProjectRepoRow {
@@ -25,7 +29,7 @@ export interface ProjectRepoValue {
   readonly id?: string;
   readonly name: string;
   readonly url: string;
-  readonly defaultBranch: string;
+  readonly defaultBranch: string | null;
 }
 
 /**
@@ -106,6 +110,23 @@ export function repoRowProblem(row: ProjectRepoRow, rows: readonly ProjectRepoRo
   return null;
 }
 
+/**
+ * 克隆/准备失败的常见原因 → 一句能照着做的话。原文照旧展示，这句只是补在下面。
+ * 最常踩的是「默认分支写死成 main」而仓库用的是 master。
+ */
+export function cloneErrorHint(message: string): string | null {
+  if (/Remote branch \S+ not found/i.test(message)) {
+    return '仓库里没有这个分支：把项目设置的「默认分支」清空（就会用仓库自己的默认分支），或者填成实际存在的分支。';
+  }
+  if (/Could not resolve host|Temporary failure in name resolution/i.test(message)) {
+    return '机器解析不了这个域名：换成能访问的镜像地址，或者先在机器上把仓库 clone 好，再「关联 git 目录」。';
+  }
+  if (/Authentication failed|could not read Username|Permission denied \(publickey\)/i.test(message)) {
+    return '这台机器上没有可用的 git 凭据：先在 worker 机器上配好 SSH key / token。';
+  }
+  return null;
+}
+
 /** 整份草稿的第一个问题；null = 可以保存。 */
 export function repoRowsProblem(rows: readonly ProjectRepoRow[]): string | null {
   for (const row of rows) {
@@ -115,7 +136,7 @@ export function repoRowsProblem(rows: readonly ProjectRepoRow[]): string | null 
   return null;
 }
 
-/** 草稿 → PATCH `{ repos }` 的数组；默认分支留空按 main 写。 */
+/** 草稿 → PATCH `{ repos }` 的数组；默认分支留空写 null（= 用仓库自己的默认分支）。 */
 export function repoRowsValue(rows: readonly ProjectRepoRow[]): readonly ProjectRepoValue[] {
   return rows.map((row) => {
     const id = row.id.trim();

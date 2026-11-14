@@ -8,6 +8,7 @@ import { harnessReason } from './harness.tsx';
 import { canSelectMachine, startHint } from './harness-gate.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from '../atoms/model-picker.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
+import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
 import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
@@ -433,7 +434,16 @@ export function DeriveDialog({
         )}
         </div>
         </div>
-        {derive.error ? <p data-testid="derive-error" className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}
+        {derive.error ? (
+          <div className="mb-2" data-testid="derive-error">
+            <p className="text-meta text-rust">{(derive.error as Error).message}</p>
+            {cloneErrorHint((derive.error as Error).message) !== null ? (
+              <p className="mt-1 text-meta text-tertiary" data-testid="derive-error-hint">
+                {cloneErrorHint((derive.error as Error).message)}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {group !== null && choice?.type === 'new_group' && group.state !== 'ready' ? (
           <div className="mb-2 border-l border-rust pl-2" data-testid="derive-group">
             <p className="text-meta text-rust">{groupStateNote(group) ?? '组合工作空间还没准备好'}</p>

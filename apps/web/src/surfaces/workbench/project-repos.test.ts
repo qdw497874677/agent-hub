@@ -10,6 +10,7 @@ import {
   repoRowsValue,
   repoUrlPatch,
   repoNameFromUrl,
+  cloneErrorHint,
   reposDirty,
   type ProjectRepoRow
 } from './project-repos.ts';
@@ -67,8 +68,8 @@ test('repoRowProblem：最多 8 个仓库', () => {
   assert.equal(repoRowProblem(rows[0]!, rows), `一个项目最多 ${PROJECT_REPOS_MAX} 个仓库`);
 });
 
-test('repoRowsValue：默认分支留空写 main，原本有 id 就带上', () => {
-  assert.deepEqual(repoRowsValue([row({ id: 'repo_1', defaultBranch: '' }), row({ name: 'web', url: 'https://x/web.git' })]), [
+test('repoRowsValue：默认分支留空写 null（用仓库自己的默认分支），原本有 id 就带上', () => {
+  assert.deepEqual(repoRowsValue([row({ id: 'repo_1', defaultBranch: '' }), row({ name: 'web', url: 'https://x/web.git', defaultBranch: '' })]), [
     { id: 'repo_1', name: 'api', url: 'git@github.com:acme/api.git', defaultBranch: REPO_DEFAULT_BRANCH },
     { name: 'web', url: 'https://x/web.git', defaultBranch: REPO_DEFAULT_BRANCH }
   ]);
@@ -114,4 +115,14 @@ test('repoUrlPatch：名字还空着或还是自动填的，就跟着地址走�
     url: 'https://h/acme/web.git'
   });
   assert.deepEqual(repoUrlPatch(row({ name: '', url: '' }), 'https://github.com/'), { url: 'https://github.com/' });
+});
+
+test('cloneErrorHint：分支不存在 / 域名解析不了 / 没凭据各给一句可执行的建议', () => {
+  assert.match(
+    cloneErrorHint("下载仓库失败：Cloning into 'agent-hub'... fatal: Remote branch main not found in upstream origin") ?? '',
+    /默认分支/
+  );
+  assert.match(cloneErrorHint('fatal: Could not resolve host: github.com') ?? '', /镜像地址|clone 好/);
+  assert.match(cloneErrorHint('fatal: Authentication failed for repo') ?? '', /凭据/);
+  assert.equal(cloneErrorHint('下载仓库失败：磁盘满了'), null);
 });
