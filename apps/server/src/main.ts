@@ -1202,7 +1202,13 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
     getBot: (actor, id) => getBotUseCase(botDeps, actor, id),
     createBot: (actor, projectId, input) => createBotUseCase(botDeps, actor, projectId, input),
     updateBot: (actor, id, patch) => updateBotUseCase(botDeps, actor, id, patch),
-    removeBot: (actor, id) => removeBotUseCase(botDeps, actor, id)
+    // 删 bot 时自动从群里移出（老 /agents 路径在 createPersistentAgents 里做，这里补一等 bot 的路径）
+    removeBot: async (actor, id) => {
+      const current = await store.bots.byId(id);
+      const removed = await removeBotUseCase(botDeps, actor, id);
+      if (removed.ok && current && actor) await groupChat.detachAgent(actor, current.projectId, current.name);
+      return removed;
+    }
   },
   groups: { groups: groupChat, agents: persistentAgents, agentTokens: apiTokenDeps.apiTokens },
   context: contextService,
