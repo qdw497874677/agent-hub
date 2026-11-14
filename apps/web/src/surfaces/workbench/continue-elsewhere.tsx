@@ -54,10 +54,13 @@ export function ContinueDialog({
         const made = await api.createWorkspace(canvas.project.id, { workerId: machine, kind: 'temporary', taskId: session.taskId, mode: 'isolated' });
         setChoice({ type: 'existing', workspaceId: made.id });
         target = { kind: 'workspace', workspaceId: made.id };
-      } else {
+      } else if (choice.type === 'new_long_lived') {
         const made = await api.createWorkspace(canvas.project.id, longLivedRequest(machine, choice));
         setChoice({ type: 'existing', workspaceId: made.id });
         target = { kind: 'workspace', workspaceId: made.id };
+      } else {
+        // 组合工作空间只在派生时能选（这里 groups=false 不显示），防御一下
+        return;
       }
       const created = await api.continueElsewhere(session.id, { target, saveWip: saveWip && from?.isGit === true });
       await Promise.all([

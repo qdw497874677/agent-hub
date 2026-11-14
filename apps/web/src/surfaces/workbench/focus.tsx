@@ -3,7 +3,7 @@ import { ProvenanceRow } from '../../atoms/provenance-row.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
-import { api } from '../../shell/api.ts';
+import { api, sessionGroupId } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
@@ -45,6 +45,7 @@ import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
 import { heldPromptSeqs, splitTimeline } from '../../atoms/prompt-delivery.ts';
 import { PendingPrompts, QueuedPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
 import { WorktreeStatusLine } from './worktree-status.tsx';
+import { SessionGroupLine } from './session-group.tsx';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -102,6 +103,8 @@ export function FocusView({
   windowChrome
 }: Props) {
   const [busy, setBusy] = useState(false);
+  // 组合工作空间（多仓库项目）：只有这种会话才有 groupId
+  const groupId = sessionGroupId(session);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
@@ -668,6 +671,7 @@ export function FocusView({
       </header>
       <ProvenanceRow sessionId={session.id} />
       <WorktreeStatusLine workspace={workspace} projectId={canvas.project.id} />
+      {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
       <AttentionAutoAck sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
       {gitOpen ? <GitDialog sessionId={session.id} workspaceId={session.workspaceId} taskId={session.taskId} onClose={() => setGitOpen(false)} /> : null}

@@ -8,6 +8,7 @@ import { harnessReason } from './harness.tsx';
 import { canSelectMachine, startHint } from './harness-gate.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from '../atoms/model-picker.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
+import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
 
 /** 两个创建对话框：新建任务、从任务派生会话。窄屏下撑满宽度（留 12px 边）。 */
 export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone: () => void }) {
@@ -122,6 +123,8 @@ export function DeriveDialog({
     hubModels.data ?? []
   );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
+  // 组合工作空间：建好的那组留着，准备失败时可以原地重试，不必再建一组
+  const [group, setGroup] = useState<WorkspaceGroupView | null>(null);
   // 「开始」点不了时的原因：一行话放在按钮上方，手机上不用去猜、也没有 hover 可看
   const hint = startHint({
     agentId,
@@ -141,6 +144,8 @@ export function DeriveDialog({
     setChoice({ type: 'new_worktree' });
   }, [projectIsolated, modeTouched, choice]);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
+  /** 组合工作空间准备失败时，主按钮不重复建组：让下面的「重试准备」处理这一组。 */
+  const groupFailed = choice?.type === 'new_group' && group !== null && group.state === 'failed';
   const selectedProfile = (profiles.data ?? []).find((profile) => profile.id === profileId) ?? null;
   const profileAgent = selectedProfile === null ? null : (canvas.agents.find((candidate) => candidate.id === selectedProfile.agentId) ?? null);
   const profileOptionIds = new Set((profileAgent?.options ?? []).map((option) => option.id));
@@ -153,6 +158,18 @@ export function DeriveDialog({
     !offered.models.includes(selectedProfile.model);
   const queryClient = useQueryClient();
   const projectId = canvas.project.id;
+  /** 建组失败后把那一组找回来（见 failedGroupIdFromWorkspaces）；找不回来就只留错误，不再抛新错盖住它。 */
+  const adoptFailedGroup = async (taskIdForGroup: string, since: number): Promise<WorkspaceGroupView | null> => {
+    try {
+      const canvasNow = await api.canvas(projectId);
+      const id = failedGroupIdFromWorkspaces(canvasNow.workspaces, taskIdForGroup, since);
+      if (id === null) return null;
+      const found = await api.workspaceGroup(id);
+      return found.state === 'failed' ? found : null;
+    } catch {
+      return null;
+    }
+  };
   const derive = useMutation({
     mutationFn: async () => {
       if (machine === null) throw new Error('先选机器');
@@ -160,10 +177,11 @@ export function DeriveDialog({
       // 选了「新建隔离 worktree」：不在这里建空间，交给 server 按项目配置现建并跑准备命令
       // （workspaceId 为空、workspaceMode=isolated 才会走档位）。
       const isolateNew = choice.type === 'new_worktree';
+      const groupNew = choice.type === 'new_group';
       let workspaceId: string | null = null;
       if (isolateNew) workspaceId = null;
       else if (choice.type === 'existing') workspaceId = choice.workspaceId;
-      else {
+      else if (!groupNew) {
         setPhase('preparing');
         const made = await api.createWorkspace(
           projectId,
@@ -176,7 +194,36 @@ export function DeriveDialog({
         setChoice({ type: 'existing', workspaceId });
         await queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] });
       }
-      setPhase(isolateNew ? 'preparing' : 'starting');
+      // 组合工作空间（docs/design/multi-repo.md §11.5）：先把每个仓库的 worktree 备好，再派生会话；
+      // 只把 groupId 交给 derive，整组跟随。失败留在这页：原因 + 重试准备，不静默吞掉。
+      let groupId: string | null = null;
+      if (groupNew) {
+        if (group !== null && group.state === 'ready') {
+          groupId = group.id;
+        } else {
+          setPhase('preparing');
+          const since = Date.now();
+          let made: WorkspaceGroupView;
+          try {
+            made = await api.createWorkspaceGroup(projectId, { taskId, workerId: machine });
+          } catch (failure) {
+            // 后端建组失败时只回错误：成员的工作空间已经登记，带着 groupId。
+            // 把那一组找回来，对话框里才能显示原因、并给出「重试准备」。
+            const recovered = await adoptFailedGroup(taskId, since);
+            if (recovered) setGroup(recovered);
+            throw failure;
+          }
+          setGroup(made);
+          if (made.state !== 'ready') {
+            throw new Error(made.error?.trim() || '组合工作空间准备失败');
+          }
+          groupId = made.id;
+        }
+        await queryClient.invalidateQueries({ queryKey: ['workspace-group', groupId] });
+        setPhase('starting');
+      } else {
+        setPhase(isolateNew ? 'preparing' : 'starting');
+      }
       const workspaceMode: 'shared' | 'isolated' | null = isolateNew ? 'isolated' : null;
       return api.derive({
         taskId,
@@ -184,6 +231,7 @@ export function DeriveDialog({
         model,
         workerId: machine,
         ...(workspaceId === null ? {} : { workspaceId }),
+        ...(groupId === null ? {} : { groupId }),
         ...(workspaceMode === null ? {} : { workspaceMode }),
         ...(profileId ? { profileId } : {})
       });
@@ -196,6 +244,18 @@ export function DeriveDialog({
       ]);
       if (onDerived) onDerived(session);
       else onDone();
+    }
+  });
+  const retryGroup = useMutation({
+    mutationFn: (groupId: string) => api.retryWorkspaceGroup(groupId),
+    onSuccess: async (next) => {
+      setGroup(next);
+      // 上一次失败的结论作废：这一组已经重新跑过了
+      derive.reset();
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['workspace-group', next.id] }),
+        queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] })
+      ]);
     }
   });
 
@@ -226,11 +286,13 @@ export function DeriveDialog({
             <button type="button" className={SECONDARY_BUTTON} onClick={onDone}>
               取消
             </button>
-            <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || derive.isPending} onClick={() => derive.mutate()}>
+            <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || derive.isPending || groupFailed} onClick={() => derive.mutate()}>
               {phase === 'preparing'
-                ? choice?.type === 'new_long_lived' && choice.mode === 'create' && canvas.project.repo
-                  ? '正在下载仓库…'
-                  : '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
+                ? choice?.type === 'new_group'
+                  ? '正在准备组合工作空间…'
+                  : choice?.type === 'new_long_lived' && choice.mode === 'create' && canvas.project.repo
+                    ? '正在下载仓库…'
+                    : '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
             </button>
           </div>
         </div>
@@ -259,9 +321,12 @@ export function DeriveDialog({
             choice={choice}
             onChoice={(next) => {
               setModeTouched(true);
+              // 上一次「重试准备」的错误只针对旧的选项
+              if (next?.type !== 'new_group') retryGroup.reset();
               setChoice(next);
             }}
             hubProtocols={hubProtocols}
+            groups
           />
         </div>
         <div className="mb-3">
@@ -368,7 +433,34 @@ export function DeriveDialog({
         )}
         </div>
         </div>
-        {derive.error ? <p className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}
+        {derive.error ? <p data-testid="derive-error" className="mb-2 text-meta text-rust">{(derive.error as Error).message}</p> : null}
+        {group !== null && choice?.type === 'new_group' && group.state !== 'ready' ? (
+          <div className="mb-2 border-l border-rust pl-2" data-testid="derive-group">
+            <p className="text-meta text-rust">{groupStateNote(group) ?? '组合工作空间还没准备好'}</p>
+            {group.members.length > 0 ? (
+              <ul className="mt-1 space-y-0.5 text-meta text-tertiary">
+                {group.members.map((member) => (
+                  <li key={member.workspaceId}>
+                    <span className="font-mono text-secondary">{member.name}</span> · {memberStateLabel(member)}
+                    {member.error ? `：${member.error}` : ''}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {group.state === 'failed' ? (
+              <button
+                type="button"
+                className="mt-1 min-h-[32px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40"
+                data-testid="derive-group-retry"
+                disabled={retryGroup.isPending}
+                onClick={() => retryGroup.mutate(group.id)}
+              >
+                {retryGroup.isPending ? '正在重试…' : '重试准备'}
+              </button>
+            ) : null}
+            {retryGroup.error ? <p className="mt-1 text-meta text-rust">{(retryGroup.error as Error).message}</p> : null}
+          </div>
+        ) : null}
         {profilesOpen ? <AgentProfilesDialog agents={canvas.agents} onClose={() => setProfilesOpen(false)} /> : null}
     </DialogShell>
   );

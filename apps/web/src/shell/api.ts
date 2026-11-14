@@ -86,9 +86,11 @@ import type {
   ProjectContextDto
 } from '@agent-hub/contract';
 import type { ProviderModelSpec } from './provider-models.ts';
+import type { WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
 
 export type { TeamDto, InviteDto, InvitePreviewDto, AgentProfileDto, AgentProfileInput };
 export type { TeamWorkspaceViewDto, CreateTeamWorkspaceRequest, WorkspaceChangesDto, SaveLayoutRequest, WorkerInfoDto, WorkspaceDto, WorkspaceViewDto, AccountDto, AuthState, CreateWorkspaceRequest, LoginDeviceDto };
+export type { WorkspaceGroupView, WorkspaceGroupMemberView } from '../surfaces/workbench/workspace-group.ts';
 
 /**
  * 派生会话的请求体：直接用契约里的形状（`workspaceMode` 由后端线落在 deriveSessionRequest 上）。
@@ -97,6 +99,14 @@ export type { TeamWorkspaceViewDto, CreateTeamWorkspaceRequest, WorkspaceChanges
 /** 项目级 worktree 配置（PATCH /api/projects/:id）。形状取契约里 ProjectDto.worktree，只有一份真源。 */
 export interface ProjectWorktreePatch {
   worktree: NonNullable<ProjectDto['worktree']>;
+}
+
+/**
+ * 项目仓库清单（PATCH /api/projects/:id 的 repos，docs/design/multi-repo.md §11.2）。
+ * 有 id 就带上：后端按 id 保留老仓库的身份，组合工作空间的成员才不会指丢。
+ */
+export interface ProjectReposPatch {
+  repos: readonly { id?: string; name?: string; url: string; defaultBranch?: string | null }[];
 }
 
 /** 组件目录里的一个版本（ADR 0021 §8）：制品由 hub 解析钉死，scripts 是审核时要看的安装脚本原文。 */
@@ -203,6 +213,15 @@ export interface AgentMessageDto {
 
 const sq = (sessionId: string) => `/api/sessions/${encodeURIComponent(sessionId)}`;
 
+/**
+ * 会话所属的组合工作空间。`session.groupId` 后端已经返回，契约的 sessionSchema 还没补这个字段，
+ * 所以在这里做一次结构化读取，等契约补上后换成直接 `session.groupId` 即可。
+ */
+export function sessionGroupId(session: SessionDto | null | undefined): string | null {
+  const value = (session as unknown as { groupId?: unknown } | null | undefined)?.groupId;
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
 /** 工作空间文件浏览（ADR 0025，只读）。 */
 export interface FileEntryDto { name: string; path: string; type: 'file' | 'dir' | 'symlink'; size: number; modifiedAt: number; ignored: boolean; sensitive: boolean; git: string | null }
 export interface DirectoryPageDto { path: string; entries: FileEntryDto[]; truncated: boolean; isGit: boolean }
@@ -284,6 +303,19 @@ export const api = {
   /** 项目级 worktree 配置（docs/design/worktree.md §3）：PATCH 只改这一块，不碰名字和说明。 */
   saveProjectWorktree: (projectId: string, input: ProjectWorktreePatch) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify(input) }),
+  /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
+  saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),
+  /**
+   * 组合工作空间（docs/design/multi-repo.md §11.5）：一个任务在项目的每个仓库里各开一个 worktree，
+   * agent 在总目录里干活。建组本身就 clone / 开分支，可能要几十秒；前端按「准备中」显示。
+   */
+  workspaceGroup: (groupId: string) => call<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}`),
+  createWorkspaceGroup: (projectId: string, body: { taskId: string; workerId?: string | null }) =>
+    post<WorkspaceGroupView>(`/api/projects/${encodeURIComponent(projectId)}/workspace-groups`, body),
+  /** 只对 failed 的组生效：重跑没准备好的成员。 */
+  retryWorkspaceGroup: (groupId: string) =>
+    post<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}/retry`, {}),
   /** setup 失败后重跑同一条命令（只对 failed 生效）。 */
   retryWorkspaceSetup: (workspaceId: string) =>
     post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/setup/retry`, {}),

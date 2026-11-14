@@ -20,7 +20,9 @@ export type WorkspaceChoice =
   | { readonly type: 'new_long_lived'; readonly mode: 'create' | 'link'; readonly path: string | null }
   | { readonly type: 'new_temporary' }
   /** 按项目配置在这台机器上现建一个隔离 worktree（新分支），准备命令跑完才起 agent。 */
-  | { readonly type: 'new_worktree' };
+  | { readonly type: 'new_worktree' }
+  /** 多仓库项目：每个仓库各开一个 worktree，agent 在总目录里工作（docs/design/multi-repo.md §11.5）。 */
+  | { readonly type: 'new_group' };
 
 /** 选完了没有：「选已有目录」还没点目录不算。 */
 export function choiceReady(choice: WorkspaceChoice | null): boolean {
@@ -74,7 +76,8 @@ export function WorkspaceChooser({
   onMachine,
   choice,
   onChoice,
-  hubProtocols = []
+  hubProtocols = [],
+  groups = false
 }: {
   canvas: CanvasDto;
   taskId: string;
@@ -87,6 +90,11 @@ export function WorkspaceChooser({
   onChoice: (choice: WorkspaceChoice | null) => void;
   /** 已有 hub 模型的协议。未配置原生模型时，同协议的机器仍可选，用来再选 hub 模型。 */
   hubProtocols?: readonly string[];
+  /**
+   * 显示「新建组合工作空间」：只有派生（新会话）能建组，「换个地方继续」是同一个会话，
+   * 整组跟随会换掉它的工作空间，所以那儿不出现。
+   */
+  groups?: boolean;
 }) {
   const views = useWorkspaceViews(canvas.project.id);
   // 「这台机器没有 git 基座」时那个动作按钮：加一就让下面的关联面板展开并滚进视野
@@ -243,6 +251,14 @@ export function WorkspaceChooser({
               onSelect={() => onChoice({ type: 'new_worktree' })}
               onFixGit={() => setLinkSignal((value) => value + 1)}
             />
+            {groups && canvas.project.repos.length > 1 ? (
+              <NewGroup
+                canvas={canvas}
+                machineName={machineName}
+                selected={choice?.type === 'new_group'}
+                onSelect={() => onChoice({ type: 'new_group' })}
+              />
+            ) : null}
             <NewLongLived
               canvas={canvas}
               machine={machine}
@@ -501,6 +517,56 @@ function NewWorktree({
           </p>
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * 组合工作空间：项目有多个仓库时才会出现。每个仓库在新目录里各开一个 worktree，
+ * 子目录名就是仓库名；agent 在总目录里工作，跨仓库的改动一次提交。
+ * 只在 repos.length > 1 时挂载：单仓库项目用上面的隔离 worktree 就够了。
+ */
+function NewGroup({
+  canvas,
+  machineName,
+  selected,
+  onSelect
+}: {
+  canvas: CanvasDto;
+  machineName: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  const repos = canvas.project.repos;
+  return (
+    <div className={`${rowClass(selected)} flex-col`}>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={selected}
+        data-testid="ws-new-group"
+        className="flex w-full items-start gap-2 text-left"
+        onClick={onSelect}
+      >
+        <Radio on={selected} />
+        <span className="min-w-0 flex-1">
+          <span className="block text-body text-primary">新建组合工作空间 · {repos.length} 个仓库</span>
+          <span className="block text-meta text-tertiary">每个仓库在新目录里各开一个 worktree，agent 在总目录里工作</span>
+          {selected ? (
+            <span className="mt-1 block text-meta text-secondary">
+              在 {machineName} 上准备 {repos.length} 个子目录：
+              <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-tertiary">
+                {repos.map((repo) => (
+                  <span key={repo.id} className="font-mono">
+                    {repo.name}
+                    {repo.defaultBranch ? `@${repo.defaultBranch}` : ''}
+                  </span>
+                ))}
+              </span>
+            </span>
+          ) : null}
+        </span>
+      </button>
     </div>
   );
 }
