@@ -13,6 +13,7 @@ import type { Deps } from './deps.ts';
 import { createProjectUseCase, updateProjectReposUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { buildWorkspaceGroupUseCase, removeWorkspaceGroupUseCase, retryWorkspaceGroupUseCase } from './workspace-groups.ts';
+import { deriveSessionUseCase } from './sessions.ts';
 
 function fakeGroups(): WorkspaceGroupRepository & { rows: Map<string, WorkspaceGroup> } {
   const rows = new Map<string, WorkspaceGroup>();
@@ -112,7 +113,7 @@ async function world() {
       workerId: 'remote-1',
       home: '/home/me'
     });
-  return { deps, groups, groupGit, project: withRepos.value, task: task.value, build };
+  return { deps, groups, groupGit, memory, project: withRepos.value, task: task.value, build };
 }
 
 test('建组：每个仓库一个成员，路径 <root>/<name>，全部就绪', async () => {
@@ -217,4 +218,39 @@ test('删组：有 running 会话拒绝；没有就删容器、成员登记与�
     assert.equal((await w.deps.workspaces.byId(each.workspaceId))?.state, 'removed');
   }
   assert.equal(w.groups.rows.size, 0);
+});
+
+test('派生会话：给 groupId 就跟着整组走，workspaceId 取 primary 成员', async () => {
+  const w = await world();
+  w.memory.agents.push({
+    id: asAgentId('fake'),
+    label: 'Fake',
+    capabilities: {
+      prompt: { state: 'available' },
+      interrupt: { state: 'available' },
+      fork: { state: 'available' },
+      resume: { state: 'available' },
+      tool_calls: { state: 'available' },
+      artifacts: { state: 'available' },
+      structured_events: { state: 'available' },
+      attachments: { state: 'available' }
+    },
+    models: [],
+    defaultModel: '',
+    options: []
+  });
+  const built = await w.build();
+  assert.ok(built.ok);
+  const primary = built.value.members[0]!;
+  const derived = await deriveSessionUseCase(w.deps, {
+    taskId: w.task.id,
+    agentId: 'fake',
+    model: '',
+    groupId: built.value.id,
+    // 传了别的 workspaceId 也该被组覆盖
+    workspaceId: built.value.members[1]?.workspaceId ?? null
+  });
+  assert.ok(derived.ok);
+  assert.equal(derived.value.groupId, built.value.id);
+  assert.equal(derived.value.workspaceId, primary.workspaceId);
 });

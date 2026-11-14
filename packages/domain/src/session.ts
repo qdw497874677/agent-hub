@@ -77,6 +77,8 @@ export interface DeriveSessionInput {
   readonly id?: SessionId;
   readonly workerId?: string | null;
   readonly workspaceId?: WorkspaceId | null;
+  /** 组合工作空间（多仓库）：有值时 workspaceId 是 primary 成员的镜像。 */
+  readonly groupId?: WorkspaceGroupId | null;
   readonly createdBy?: string | null;
   /** 来自 Agent 配置的启动选项；模型仍以 model 字段为准。 */
   readonly options?: Readonly<Record<string, string | boolean>>;
@@ -102,6 +104,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     optionSpec: [],
     workerId: input.workerId ?? null,
     workspaceId: input.workspaceId ?? null,
+    groupId: input.groupId ?? null,
     createdBy: input.createdBy ?? null,
     createdAt: input.now,
     updatedAt: input.now

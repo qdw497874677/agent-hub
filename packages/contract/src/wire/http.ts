@@ -120,6 +120,8 @@ export const deriveSessionRequest = z.object({
   workspaceId: z.string().min(1).nullable().optional(),
   /** 新建临时工作空间时的档位：shared = 复用长期空间；isolated = 新开 worktree。不给按项目配置。 */
   workspaceMode: z.enum(['shared', 'isolated']).optional(),
+  /** 组合工作空间（多仓库）：跟着整组走，workspaceId 会被忽略。 */
+  groupId: z.string().min(1).optional(),
   /** 要求的能力（ADR 0021 §8）：只落到这些能力可信的机器上。 */
   requires: z.array(z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128)).max(16).optional(),
   /** 用一份 Agent 配置启动；profile 里的 agent/model/options 作为默认。 */

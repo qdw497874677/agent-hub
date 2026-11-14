@@ -2,8 +2,9 @@ import { principalOfSubject, type Subject } from '../access.ts';
 import { applyEvent, deriveSession, forkSession, isNeverPrompted, markInterrupted, withOptions } from '../session.ts';
 import type { Session } from '../session.ts';
 import { findOption, optionValues, type RuntimeOption } from '../option.ts';
-import type { Seq, SessionId } from '../ids.ts';
-import { asAgentId, asSessionId, asTaskId, asWorkspaceId } from '../ids.ts';
+import type { Seq, SessionId, WorkspaceGroupId } from '../ids.ts';
+import { asAgentId, asSessionId, asTaskId, asWorkspaceGroupId, asWorkspaceId } from '../ids.ts';
+import { groupReady } from '../workspace-group.ts';
 import { isUsable, setupNotReady } from '../workspace.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
@@ -34,6 +35,8 @@ export interface DeriveCommand {
   readonly workerId?: string | null;
   /** 运行面板里选定的工作空间：会话就落在它所在的机器、在它的目录里干活。 */
   readonly workspaceId?: string | null;
+  /** 组合工作空间（多仓库）：给了就跟着它的 primary 成员走，忽略 workspaceId。 */
+  readonly groupId?: string | null;
   /** 谁发起的：开跑前要过 authorizeWorker（本机 Worker 单独授权）。 */
   readonly actor?: Subject | null;
   /** 要求的能力：只落到这些能力可信的机器上（ADR 0021 §8）。 */
@@ -50,7 +53,7 @@ export interface DeriveCommand {
 
 /** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
 export async function deriveSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
   const task = await deps.tasks.byId(asTaskId(command.taskId));
@@ -79,6 +82,17 @@ export async function deriveSessionUseCase(
     return err(conflict(descriptor.capabilities.prompt.reason ?? '该 agent 不可发送消息'));
   }
 
+  // 组合工作空间优先：会话跟着整组走，workspaceId 由 primary 成员决定（多仓库时前端不再传 workspaceId）。
+  let groupId: WorkspaceGroupId | null = null;
+  if (command.groupId) {
+    const group = deps.workspaceGroups ? await deps.workspaceGroups.byId(asWorkspaceGroupId(command.groupId)) : null;
+    if (!group || group.projectId !== project.id) return err(notFound('组合工作空间不存在'));
+    if (!groupReady(group)) return err(conflict('这组工作空间还没准备好'));
+    const primary = group.members[0];
+    if (!primary) return err(conflict('这组工作空间还没有成员仓库'));
+    groupId = group.id;
+    command = { ...command, workspaceId: primary.workspaceId };
+  }
   const chosen = command.workspaceId ? await deps.workspaces.byId(asWorkspaceId(command.workspaceId)) : null;
   const waitForSetup = project.worktree?.setup?.waitForSetup ?? true;
   if (command.workspaceId) {
@@ -119,6 +133,7 @@ export async function deriveSessionUseCase(
     now: deps.now(),
     workerId: placed.value,
     workspaceId: workspace.id,
+    groupId,
     createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
     options: ref.options
   });

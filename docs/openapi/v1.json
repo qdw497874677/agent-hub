@@ -4584,6 +4584,10 @@
                       "isolated"
                     ]
                   },
+                  "groupId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "requires": {
                     "type": "array",
                     "items": {

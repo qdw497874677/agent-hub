@@ -156,6 +156,19 @@
 补充（2026-11-14 · worktree 档位放进「选择工作空间」）：原来「隔离 worktree」是对话框上一个复选框，勾上后整块工作空间选择被 `pointer-events-none` 遮住——机器也跟着不能改，看起来像「只能用 hub 本机」。现在它是单选里的一项（`data-testid="ws-new-worktree"`，和「新建临时工作空间」「新建持久工作空间」并列），机器选择在任何档位下都可用；选已有 / 新建临时 / 新建持久都不发 `workspaceMode`，只有选它才发 `isolated`。「换个地方继续」也支持这一项（先在目标机器上建好 worktree，再挂成普通空间继续）。e2e 新增 UI 用例：「项目默认 isolated 时打开即选中、机器区可交互、开始可用」，真实建出的空间 `source=worktree`、`setup.state=ready`。
 
 
+### 1.10 进展（2026-11-14 · 多仓库：项目 `repos` + 组合工作空间 M1）
+
+设计见 `docs/design/multi-repo.md`（组合工作空间，容器根 + 每个仓库一个 worktree 成员；v1 不做跨仓回滚/原子提交）。已落地（提交 `c60df95`，阿里云已部署、本地 worker 已升级）：
+
+- **项目侧**：`Project.repos: ProjectRepo[]`（`id` 由 FNV-1a 确定性派生、`name` 小写短名、`url`、`defaultBranch`，≤8 个），`repo` 降级为 `repos[0] ?? null` 的派生值；`PATCH /api/projects/:id` 收 `{ worktree?, repos? }`；存储 `projects.repos` 双写，老行按 `repo_url` 派生单成员。
+- **worker 侧**：`WORKER_GROUPS_DIR`（默认 `<roots[0]>/agent-hub-groups`，必须在 roots 内）；三个新 RPC：`ws.group_init`（入参 `{slug,name,id}`，**根由 worker 定**，段名只允许 `[a-z0-9-]+`）、`ws.group_remove`、`ws.new_worktree`（专用，不复用 `ws.add_worktree` 的 `existing` 语义）。
+- **领域/存储**：`WorkspaceGroup` 聚合（`state: preparing|ready|failed`、失败保留容器并给未轮到仓库补 failed 占位以便重试）、`Workspace.groupId` + `workspaces.group_id` 列、`workspace_groups`/`workspace_group_members` 两表、`Deps.workspaceGroups`。
+- **用例/路由**：`buildWorkspaceGroupUseCase` / `retryWorkspaceGroupUseCase` / `removeWorkspaceGroupUseCase`；`POST /api/projects/:projectId/workspace-groups`、`GET|DELETE /api/workspace-groups/:groupId`、`POST /api/workspace-groups/:groupId/retry`（**路径避开聊天群的 `/api/projects/:id/groups`**），审计 `workspace.group.create|retry|remove`。
+- **派生**：`deriveSessionRequest.groupId`，给了就整组跟随（`workspaceId` 被组覆盖成 primary）；组未 ready 直接 `conflict('这组工作空间还没准备好')`。
+- 验证：`npm test` 1350 tests / 1342 pass / 8 skipped / 0 fail；`check`/`typecheck`/`typecheck:web`/`build`/`test:e2e-node` 全 0。
+
+已知残留：组合会话的文件/改动目前只看得到 primary 仓库（T6 在做「按成员仓库查看」）；rewind 对组合直接拒绝（设计有意）；工作空间页不允许单删成员，只能整组删。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道

@@ -16,6 +16,7 @@ import { fail } from './http-error.ts';
 
 /**
  * 组合工作空间（docs/design/multi-repo.md §4–§6）的 HTTP 外壳：
+ * - GET    /api/workspace-groups/:groupId                   读组（前端展示成员/状态）
  * - POST   /api/projects/:projectId/workspace-groups        建组（沿用「建临时空间」权限）
  * - POST   /api/workspace-groups/:groupId/retry             重试 failed 成员
  * - DELETE /api/workspace-groups/:groupId                   删组（workspace.manage）
@@ -59,6 +60,13 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
     if (!built.ok) return fail(c, built.error);
     await audit?.(c, subject, 'workspace.group.create', built.value.id, `项目 ${projectId} · ${built.value.members.length} 个仓库`);
     return c.json(built.value, 201);
+  });
+
+  app.get('/api/workspace-groups/:groupId', async (c) => {
+    const subject = subjectOf(c);
+    if (!subject) return fail(c, needUser);
+    const group = await deps.workspaceGroups?.byId(asWorkspaceGroupId(c.req.param('groupId')));
+    return group ? c.json(group) : fail(c, { code: 'not_found', message: '组合工作空间不存在' });
   });
 
   app.post('/api/workspace-groups/:groupId/retry', async (c) => {
