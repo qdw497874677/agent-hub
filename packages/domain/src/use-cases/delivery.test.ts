@@ -141,6 +141,8 @@ test('撤回：不再送，journal 记一条说明', async () => {
   const [d] = await w.deliveries.pendingFor(w.sid);
   assert.ok((await cancelDelivery(w.deps, d!.id)).ok);
   assert.equal((await w.deliveries.pendingFor(w.sid)).length, 0);
+  // 撤回最后一条之后这一轮没有下文了：状态要收回来，别一直挂着「正在回复」并挡住删除。
+  assert.equal((await w.deps.sessions.byId(w.sid))?.status, 'interrupted');
   w.online();
   w.tick(10_000);
   assert.equal(await pumpDeliveries(w.deps), 0);

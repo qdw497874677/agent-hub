@@ -1,7 +1,7 @@
 import type { HandoffStats } from '../handoff.ts';
 import { locationOf } from './workspaces.ts';
 import { routeOf } from './machine-dirs.ts';
-import type { Session } from '../session.ts';
+import { markInterrupted, type Session } from '../session.ts';
 import type { JournalEntry, SessionEvent } from '../event.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { SessionId } from '../ids.ts';
@@ -316,13 +316,21 @@ export type RuntimeStatus = 'running' | 'idle' | 'ended' | 'gone';
  * 从「发出提问」到「agent 说出第一个字」之间可能十几秒，界面不能还挂着上一次的「完成」。
  */
 export async function ingestRuntimeStatus(
-  deps: Pick<Deps, 'sessions' | 'hosting' | 'stream'>,
+  deps: Pick<Deps, 'sessions' | 'hosting' | 'stream' | 'now'>,
   sessionId: SessionId,
   status: RuntimeStatus
 ): Promise<void> {
   if (status === 'ended' || status === 'gone') deps.hosting.drop(sessionId);
   const session = await deps.sessions.byId(sessionId);
   if (!session) return;
+  // 提问会把状态置成 running（applyEvent），所以进程没来得及发 ended 事件就退出时，
+  // 不能继续挂着 running——否则界面一直显示「正在回复」，删除/收起也一直被 409 挡住。
+  if ((status === 'ended' || status === 'gone') && session.status === 'running') {
+    const next = markInterrupted(session, deps.now());
+    await deps.sessions.save(next);
+    deps.stream.publish({ sessionId, seq: next.lastSeq, event: null, status: next.status });
+    return;
+  }
   // worker 说 running / idle / ended / gone；除了 running，其余以库里已落盘的状态为准
   // （idle 是回合结束了，会话状态语义仍是 done / running，不外泄成新的状态）。
   const next = status === 'running' ? 'running' : session.status;

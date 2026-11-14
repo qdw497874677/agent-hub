@@ -353,12 +353,13 @@ test('worker 事件：相对路径的产出物按项目根补上字节数', asyn
   assert.deepEqual(entry?.event, { kind: 'artifact', path: 'out/a.md', bytes: 42 });
 });
 
-test('运行状态：ended 划掉托管，并以库里的状态推给界面', async () => {
+test('运行状态：ended 划掉托管；还停在 running 的会话降级为 interrupted', async () => {
   const w = await world();
   const session = await derived(w);
   await ingestRuntimeStatus(w.deps, session.id, 'ended');
   assert.equal(w.deps.hosting.has(session.id), false);
-  assert.equal(w.frames.at(-1)?.status, session.status);
+  // 提问过的会话靠 ended 事件收尾；进程直接没了的时候，running 是错觉，必须收回来。
+  assert.equal(w.frames.at(-1)?.status, 'interrupted');
   await ingestRuntimeStatus(w.deps, session.id, 'running');
   assert.equal(w.frames.at(-1)?.status, 'running');
 });

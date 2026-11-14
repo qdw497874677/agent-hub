@@ -171,9 +171,16 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
   });
 }
 
-/** 事件推进会话状态。ended 是唯一能改变终态的变体。 */
+/**
+ * 事件推进会话状态。
+ *
+ * 提问 = 新的一轮开始：状态回到 running。不这么做的话，只有「建会话」和 worker
+ * 的 start_session 会把状态改成 running，第二回合起库里一直是上一轮的 done——
+ * 界面据此不显示「正在回复」、输入框不切成「中断」，服务端删除会话的 409 保护也失效。
+ */
 export function applyEvent(session: Session, event: SessionEvent, now: number): Session {
   const lastSeq = session.lastSeq + 1;
+  if (event.kind === 'prompt') return { ...session, lastSeq, status: 'running', updatedAt: now };
   if (event.kind !== 'ended') return { ...session, lastSeq, updatedAt: now };
   const status: SessionStatus =
     event.outcome === 'done'

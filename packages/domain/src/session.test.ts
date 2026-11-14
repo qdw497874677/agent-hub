@@ -67,6 +67,19 @@ test('fork 切点必须为正整数——0 等于派生，不该走 fork', () =>
   assert.equal(forked.error.code, 'invalid');
 });
 
+test('提问把结束过的会话拉回 running', () => {
+  const source = deriveSession({ task: openTask(), agentId, model: 'm', now });
+  assert.ok(source.ok);
+  let session = applyEvent(source.value, { kind: 'ended', outcome: 'done' }, now);
+  assert.equal(session.status, 'done');
+
+  session = applyEvent(session, { kind: 'prompt', text: '再问一句' }, now);
+  assert.equal(session.status, 'running', '第二回合起状态不能还停在上一轮的 done');
+
+  session = applyEvent(session, { kind: 'ended', outcome: 'done' }, now);
+  assert.equal(session.status, 'done');
+});
+
 test('每个事件推进一次 seq，只有 ended 改状态', () => {
   const source = deriveSession({ task: openTask(), agentId, model: 'm', now });
   assert.ok(source.ok);

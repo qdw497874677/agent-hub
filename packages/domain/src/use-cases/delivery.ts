@@ -1,4 +1,5 @@
 import { afterFailure, type Delivery } from '../delivery.ts';
+import { markInterrupted } from '../session.ts';
 import { notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { SessionId } from '../ids.ts';
@@ -127,5 +128,15 @@ export async function cancelDelivery(deps: DeliveryDeps, id: string): Promise<Re
   await deps.queue.run(sessionId, () =>
     recordEvent(deps, { sessionId, event: { kind: 'diagnostic', level: 'info', text: `已撤回第 ${d.seq} 步那条未送达的消息` } })
   );
+  // 提问会把会话置成 running（见 applyEvent）；撤回最后一条待送达的消息后，
+  // 这一轮已经没有下文了，不能让它一直显示「正在回复」、也挡住删除与收起。
+  if ((await deps.deliveries.pendingFor(sessionId)).length === 0) {
+    const session = await deps.sessions.byId(sessionId);
+    if (session && session.status === 'running') {
+      const next = markInterrupted(session, deps.now());
+      await deps.sessions.save(next);
+      deps.stream.publish({ sessionId, seq: next.lastSeq, event: null, status: next.status });
+    }
+  }
   return ok(undefined);
 }
