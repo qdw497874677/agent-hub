@@ -12,6 +12,8 @@ import { LinkWorkspaces } from './link-workspaces.tsx';
 import { WorkspaceCleanup } from './workspace-cleanup.tsx';
 import { WorktreeSettings } from './worktree-settings.tsx';
 import { ProjectRepos } from './project-repos.tsx';
+import { projectWorktree } from './worktree-config.ts';
+import { workspaceSummary, workspaceSummaryTone } from './workspace-summary.ts';
 import { workspaceKeys } from '../../shell/query-keys.ts';
 
 type Pending = { workspace: WorkspaceDto; mode: 'unlink' | 'unregister' | 'delete' | 'force' };
@@ -21,7 +23,8 @@ const SOURCE: Record<WorkspaceDto['source'], string> = { linked: '已有目录',
 type ProjectTab = 'project' | 'context' | 'assets' | 'workspaces';
 
 /**
- * 项目设置（workspaces.md §7）：四块话题各占一栏——说明与清理、上下文、资产（仅管理员）、工作空间。
+ * 项目设置（workspaces.md §7）：四块话题各占一栏——说明与清理、上下文、资产（仅管理员）、
+ * 代码与空间（仓库 → 隔离与准备 → 已有空间，三段有先后）。
  * 面板都挂着只切显示：在「项目」里改了一半的说明，去看别的 tab 再回来还在。
  */
 export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; onClose: () => void }) {
@@ -35,16 +38,26 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
     { id: 'project', label: '项目' },
     { id: 'context', label: '上下文' },
     ...(isAdmin ? [{ id: 'assets' as const, label: '资产' }] : []),
-    { id: 'workspaces', label: '工作空间' }
+    { id: 'workspaces', label: '代码与空间' }
   ];
   // 隐藏用 class 而不是 hidden 属性：面板里自己的 flex/grid 类不会把它顶回可见。
   const panel = (id: ProjectTab) => (tab === id ? '' : 'hidden');
   const groups = new Map<string, WorkspaceViewDto[]>();
+  let spaces = 0;
   for (const view of list.data ?? []) {
     if (view.workspace.state === 'removed') continue;
+    spaces += 1;
     const key = view.workspace.workerId ?? '';
     groups.set(key, [...(groups.get(key) ?? []), view]);
   }
+  // 页顶那句总结：仓库数 / 默认档位 / 已有空间。接口还没回就不说空间那句。
+  const summary = workspaceSummary({
+    repos: (project.repos ?? []).length,
+    mode: projectWorktree(project)?.mode ?? 'shared',
+    spaces: list.data === undefined ? undefined : spaces,
+    machines: groups.size
+  });
+  const summaryTone = workspaceSummaryTone({ repos: (project.repos ?? []).length });
   return (
     <DialogShell title="项目设置" onClose={onClose}>
       <h2 className="mb-3 text-body text-primary">项目设置 · {project.name}</h2>
@@ -87,25 +100,43 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
             <ProjectAssets projectId={project.id} />
           </div>
         ) : null}
-        <div className={panel('workspaces')}>
-          <h3 className="mb-1 text-sub text-primary">工作空间</h3>
-          <p className="mb-2 text-meta text-tertiary">本项目能在这些目录里开任务。取消关联不会删目录，也不影响其他项目。</p>
+        <div className={panel('workspaces')} data-testid="project-code-spaces">
+          {/* 这页回答三件事：代码从哪来、目录怎么开、现在有哪些空间。答案先说在顶上。 */}
+          <p
+            data-testid="workspace-summary"
+            className={`mb-4 rounded-sm border-l-2 bg-card px-2.5 py-2 text-sub leading-relaxed text-secondary ${
+              summaryTone === 'warn' ? 'border-rust' : 'border-accent'
+            }`}
+          >
+            {summary}
+          </p>
           <ProjectRepos project={project} />
           <WorktreeSettings project={project} />
-          {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
-          {list.data && groups.size === 0 ? <p className="text-meta text-tertiary">还没有工作空间。</p> : null}
-          {[...groups].map(([workerId, views]) => (
-            <section key={workerId} className="mb-3">
-              <h3 className="mb-1 text-meta text-secondary">{workers.byId(workerId || null)?.label ?? (workerId ? '未知机器' : '本机')}</h3>
-              <ul className="space-y-1">
-                {views.map((view) => (
-                  <WorkspaceRow key={view.workspace.id} view={view} onAct={(mode) => setPending({ workspace: view.workspace, mode })} />
-                ))}
-              </ul>
-            </section>
-          ))}
-          <LinkWorkspaces projectId={project.id} linked={(list.data ?? []).map((view) => view.workspace.id)} />
-          {pending ? <ConfirmRemove pending={pending} projectId={project.id} onDone={() => setPending(null)} /> : null}
+          <section data-testid="project-spaces" className="mt-5 border-t border-hair pt-4">
+            <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
+              已有空间
+              <span className="text-meta text-tertiary">现在有哪些</span>
+            </h3>
+            <p className="mb-2 text-meta text-tertiary">
+              工作空间 = 机器上的一个目录；worktree = 从仓库开出的隔离目录。取消关联不会删目录，也不影响其他项目。
+            </p>
+            {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
+            {list.data && groups.size === 0 ? (
+              <p className="text-meta text-tertiary" data-testid="workspaces-empty">这台项目还没有登记空间。</p>
+            ) : null}
+            {[...groups].map(([workerId, views]) => (
+              <section key={workerId} className="mb-3">
+                <h4 className="mb-1 text-meta text-secondary">{workers.byId(workerId || null)?.label ?? (workerId ? '未知机器' : '本机')}</h4>
+                <ul className="space-y-1">
+                  {views.map((view) => (
+                    <WorkspaceRow key={view.workspace.id} view={view} onAct={(mode) => setPending({ workspace: view.workspace, mode })} />
+                  ))}
+                </ul>
+              </section>
+            ))}
+            <LinkWorkspaces projectId={project.id} linked={(list.data ?? []).map((view) => view.workspace.id)} />
+            {pending ? <ConfirmRemove pending={pending} projectId={project.id} onDone={() => setPending(null)} /> : null}
+          </section>
         </div>
       </div>
     </DialogShell>

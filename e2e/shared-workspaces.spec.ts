@@ -51,8 +51,8 @@ test('团队工作空间：新建 → 项目关联 → 开始任务只列已关�
     await page.goto(`/#/p/${a.id}`);
     await page.getByTitle('项目设置').first().click();
     const dialog = page.getByRole('dialog');
-    // 项目设置分页后，关联入口在「工作空间」页里（结构见 workspaces-dialog.tsx）。
-    await dialog.getByRole('tab', { name: '工作空间' }).click();
+    // 项目设置分页后，关联入口在「代码与空间」页里（结构见 workspaces-dialog.tsx）。
+    await dialog.getByRole('tab', { name: '代码与空间' }).click();
     await dialog.getByTestId('ws-link-open').click();
     const pick = dialog.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` });
     await pick.getByTestId('ws-link-one').click();

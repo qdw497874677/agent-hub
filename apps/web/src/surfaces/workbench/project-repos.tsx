@@ -17,7 +17,7 @@ import {
 } from './project-repos.ts';
 
 /**
- * 项目设置 · 工作空间 · 「仓库」（docs/design/multi-repo.md §7）。
+ * 项目设置 · 代码与空间 · 「仓库」（docs/design/multi-repo.md §7）。
  *
  * 一个项目最多 8 个仓库；第一行是主仓库（组合工作空间的入口 / 老 `repo` 字段的来源），
  * 能改不能删。仓库名就是组合工作空间里的子目录名，所以这里同时给出名字规则。
@@ -63,8 +63,11 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
   const error = problem ?? save.error?.message ?? null;
 
   return (
-    <section className="mb-3 border-b border-hair pb-3" data-testid="project-repos">
-      <h3 className="mb-1 text-sub text-primary">仓库</h3>
+    <section data-testid="project-repos">
+      <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
+        仓库
+        <span className="text-meta text-tertiary">代码从哪来</span>
+      </h3>
       <p className="mb-2 text-meta text-tertiary">
         项目绑定的代码仓库，最多 {PROJECT_REPOS_MAX} 个。第一条是主仓库；仓库名会用作组合工作空间里的子目录名。
       </p>
@@ -73,7 +76,9 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
         <>
           <div className="space-y-2">
             {rows.length === 0 ? (
-              <p className="text-meta text-tertiary">还没绑仓库：这个项目开出来的工作空间不带仓库。加一个仓库就能用组合工作空间。</p>
+              <p className="text-meta text-tertiary" data-testid="repos-empty">
+                这个项目还没绑仓库。绑上之后，派生任务时就能在仓库上开 worktree 或组合工作空间。
+              </p>
             ) : null}
             {rows.map((row, index) => {
               const rowProblem = repoRowProblem(row, rows);
@@ -145,7 +150,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
             })}
           </div>
 
-          <div className="mt-2 flex items-center justify-between gap-2">
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
             <button
               type="button"
               className="text-meta text-secondary hover:text-primary disabled:opacity-40"
@@ -155,7 +160,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
             >
               添加仓库
             </button>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {save.isSuccess && !dirty ? <span className="text-meta text-tertiary">已保存</span> : null}
               <button
                 type="button"
@@ -164,7 +169,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                 disabled={!dirty || problem !== null || save.isPending}
                 onClick={() => save.mutate()}
               >
-                {save.isPending ? '保存中…' : '保存'}
+                {save.isPending ? '保存中…' : '保存仓库'}
               </button>
             </div>
           </div>

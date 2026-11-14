@@ -18,7 +18,7 @@ import {
 } from './worktree-config.ts';
 
 /**
- * 项目设置 · 工作空间 · 「隔离与准备」（docs/design/worktree.md §3 §7）。
+ * 项目设置 · 代码与空间 · 「隔离与准备」（docs/design/worktree.md §3 §7）。
  *
  * 只放两件事：新任务默认在哪种目录里干活（共用长期空间 / 每个任务开独立 worktree），
  * 以及 worktree 建好之后自动跑什么命令。命令只来自项目配置、不来自每次请求——这是
@@ -75,16 +75,23 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
   const error = problem ?? save.error?.message ?? null;
 
   return (
-    <section className="mb-3 border-b border-hair pb-3" data-testid="worktree-config">
-      <h3 className="mb-1 text-sub text-primary">隔离与准备</h3>
+    <section className="mt-5 border-t border-hair pt-4" data-testid="worktree-config">
+      <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
+        隔离与准备
+        <span className="text-meta text-tertiary">怎么开目录</span>
+      </h3>
       <p className="mb-2 text-meta text-tertiary">
         每个任务在哪种目录里干活。隔离档会在项目仓库旁边开一个独立的 worktree 和新分支，任务之间互不踩脚。
       </p>
 
       {editable ? (
         <>
-          <div role="radiogroup" aria-label="默认目录档位" className="mb-2 space-y-1">
-            <label className="flex items-start gap-2 text-sub text-secondary">
+          <div role="radiogroup" aria-label="默认目录档位" className="mb-3 space-y-1.5">
+            <label
+              className={`flex items-start gap-2 rounded-sm border px-2 py-1.5 text-sub text-secondary ${
+                draft.mode === 'shared' ? 'border-accent/60 bg-card' : 'border-hair'
+              }`}
+            >
               <input
                 type="radio"
                 name="worktree-mode"
@@ -95,10 +102,14 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
               />
               <span className="min-w-0">
                 <span className="block text-primary">共用长期空间（默认）</span>
-                <span className="block text-meta text-tertiary">单人顺序干活、要看到别人未提交的改动时选这个。</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-tertiary">单人顺序干活、要看到别人未提交的改动时选这个。</span>
               </span>
             </label>
-            <label className="flex items-start gap-2 text-sub text-secondary">
+            <label
+              className={`flex items-start gap-2 rounded-sm border px-2 py-1.5 text-sub text-secondary ${
+                draft.mode === 'isolated' ? 'border-accent/60 bg-card' : 'border-hair'
+              }`}
+            >
               <input
                 type="radio"
                 name="worktree-mode"
@@ -109,16 +120,18 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
               />
               <span className="min-w-0">
                 <span className="block text-primary">每个任务开独立 worktree</span>
-                <span className="block text-meta text-tertiary">并行任务 / 会开 PR 时选这个。</span>
+                <span className="mt-0.5 block text-meta leading-relaxed text-tertiary">并行任务 / 会开 PR 时选这个。</span>
               </span>
             </label>
           </div>
 
           <label className="mb-1 block text-meta text-secondary" htmlFor="worktree-command">准备命令（可留空）</label>
           <p className="mb-1 text-meta text-tertiary">
-            建好 worktree 后在这台机器上、以 worker 用户身份执行；比如装依赖、跑迁移。留空就什么都不跑。
-            {draft.mode === 'shared' ? '当前档位是共用空间，命令只在开了 worktree 的任务里跑。' : ''}
+            建好 worktree 后在这台机器上、以 worker 用户身份执行，比如装依赖、跑迁移。留空就什么都不跑。
           </p>
+          {draft.mode === 'shared' ? (
+            <p className="mb-1 text-meta text-tertiary">当前档位是共用长期空间，命令只在开了 worktree 的任务里跑。</p>
+          ) : null}
           <textarea
             id="worktree-command"
             data-testid="worktree-setup-command"
@@ -142,55 +155,32 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
             </span>
           </label>
 
-          <label className="mt-2 flex flex-wrap items-center gap-2 text-meta text-secondary" htmlFor="worktree-timeout">
-            超时
-            <input
-              id="worktree-timeout"
-              type="text"
-              inputMode="numeric"
-              data-testid="worktree-timeout"
-              className="w-16 rounded-sm border border-hair bg-card px-1.5 py-0.5 text-meta text-primary outline-none focus:border-accent"
-              value={draft.timeout}
-              onChange={(event) => update({ timeout: event.target.value })}
-            />
-            秒（{WORKTREE_TIMEOUT_MIN}–{WORKTREE_TIMEOUT_MAX}，默认 {WORKTREE_TIMEOUT_DEFAULT}）
+          {/* 超时和单位分成几块，窄屏会折行而不是把「600 秒」挤成一团。 */}
+          <label className="mt-3 block text-meta text-secondary" htmlFor="worktree-timeout">
+            准备命令超时
+            <span className="mt-1 flex flex-wrap items-center gap-1.5">
+              <input
+                id="worktree-timeout"
+                type="text"
+                inputMode="numeric"
+                data-testid="worktree-timeout"
+                className="w-16 rounded-sm border border-hair bg-card px-1.5 py-0.5 text-meta text-primary outline-none focus:border-accent"
+                value={draft.timeout}
+                onChange={(event) => update({ timeout: event.target.value })}
+              />
+              <span>秒</span>
+              <span className="text-tertiary">
+                （{WORKTREE_TIMEOUT_MIN}–{WORKTREE_TIMEOUT_MAX}，默认 {WORKTREE_TIMEOUT_DEFAULT}）
+              </span>
+            </span>
           </label>
 
           {error ? (
-            <p className="mt-1 text-meta text-rust" data-testid="worktree-error">{error}</p>
+            <p className="mt-2 text-meta text-rust" data-testid="worktree-error">{error}</p>
           ) : null}
 
-          <label className="mt-4 block text-meta text-secondary" htmlFor="preview-port">预览默认端口（可留空）</label>
-          <p className="mb-1 text-meta text-tertiary">
-            只用来在会话「预览」页签里预填端口，不会自动开链接。比如 Vite 的 5173。
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              id="preview-port"
-              type="text"
-              inputMode="numeric"
-              placeholder="5173"
-              className="w-20 rounded-sm border border-hair bg-card px-2 py-1 text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent"
-              data-testid="preview-port"
-              value={portText}
-              onChange={(event) => setPortText(event.target.value)}
-            />
-            <button
-              type="button"
-              className={SECONDARY_BUTTON}
-              data-testid="preview-port-save"
-              disabled={portProblem !== null || !portDirty || savePort.isPending}
-              onClick={() => savePort.mutate()}
-            >
-              {savePort.isPending ? '保存中…' : '保存端口'}
-            </button>
-            {portProblem !== null ? (
-              <span className="text-meta text-rust" data-testid="preview-port-error">{portProblem}</span>
-            ) : savePort.isSuccess && !portDirty ? (
-              <span className="text-meta text-tertiary">已保存</span>
-            ) : null}
-          </div>
-          <div className="mt-2 flex items-center justify-end gap-2">
+          {/* 保存按钮紧跟着它保存的那几项，别让它落在「预览端口」后面。 */}
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
             {save.isSuccess && !dirty ? <span className="text-meta text-tertiary">已保存</span> : null}
             <button
               type="button"
@@ -199,8 +189,39 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
               disabled={!dirty || problem !== null || save.isPending}
               onClick={() => save.mutate()}
             >
-              {save.isPending ? '保存中…' : '保存'}
+              {save.isPending ? '保存中…' : '保存隔离与准备'}
             </button>
+          </div>
+
+          <div className="mt-4 border-t border-hair pt-4">
+            <label className="block text-meta text-secondary" htmlFor="preview-port">预览默认端口（可留空）</label>
+            <p className="mb-1 text-meta text-tertiary">只用来在会话「预览」页签里预填端口，不会自动开链接。比如 Vite 的 5173。</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                id="preview-port"
+                type="text"
+                inputMode="numeric"
+                placeholder="5173"
+                className="w-20 rounded-sm border border-hair bg-card px-2 py-1 text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent"
+                data-testid="preview-port"
+                value={portText}
+                onChange={(event) => setPortText(event.target.value)}
+              />
+              <button
+                type="button"
+                className={SECONDARY_BUTTON}
+                data-testid="preview-port-save"
+                disabled={portProblem !== null || !portDirty || savePort.isPending}
+                onClick={() => savePort.mutate()}
+              >
+                {savePort.isPending ? '保存中…' : '保存端口'}
+              </button>
+              {portProblem !== null ? (
+                <span className="text-meta text-rust" data-testid="preview-port-error">{portProblem}</span>
+              ) : savePort.isSuccess && !portDirty ? (
+                <span className="text-meta text-tertiary">已保存</span>
+              ) : null}
+            </div>
           </div>
         </>
       ) : (
