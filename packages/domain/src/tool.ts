@@ -6,13 +6,17 @@ import type { SessionId, TaskId } from './ids.ts';
  */
 /** agent:message = agent 间通信（ADR 0018）；真正能不能发还要过消息总线的权限交集。 */
 /** connector = 连接器带的外部工具（ADR 0032 R4），细粒度能力由连接器自己按 Worker 预设再查。 */
-/** memory = 记忆工具（ADR 0019）；能读写哪个作用域还要过记忆服务的 can()。 */
-export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector';
+/**
+ * memory = 记忆工具（ADR 0019）；能读写哪个作用域还要过记忆服务的 can()。
+ * git = 提交 / 推送 / 开 PR（issue #216）；scope 只决定这条会话能不能看到这些工具并把它们列给模型，
+ * 实际写入仍由工作流里的 git.push 项目权限与工作流判定（见 docs/design/agent-git-tools.md §4）。
+ */
+export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector' | 'git';
 
-export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector'];
+export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git'];
 
-/** 默认授权：读任务 + 写日志 + 改状态（agent 只能走到 进行中/受阻/待验收，done 仍由人确认）。 */
-export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector'];
+/** 默认授权：读任务 + 写日志 + 改状态（agent 只能走到 进行中/受阻/待验收，done 仍由人确认）+ git 工作流入口。 */
+export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git'];
 
 /**
  * 授权是滑动有效期：签发后 7 天内没有用就过期；每次认证成功续到「现在 + 7 天」，

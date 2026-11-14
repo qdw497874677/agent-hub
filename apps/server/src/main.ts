@@ -25,7 +25,7 @@ import { createSessionEnvironment } from './session-environment.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
 import { createGitHubApi } from './github-api.ts';
 import { createModelDistiller } from './model-distiller.ts';
-import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, SessionId, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, SessionId, Subject, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
   createBotUseCase,
@@ -51,6 +51,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createContextToolProvider,
   createSessionToolProvider,
   createAgentOrchestrationToolProvider,
+  createGitToolProvider,
   changeSessionOption,
   systemSubject,
   createConnectorHub,
@@ -334,6 +335,19 @@ const botOfSession = async (sessionId: SessionId): Promise<{ projectId: string; 
   const task = session ? await deps.tasks.byId(session.taskId) : null;
   return task ? { projectId: task.projectId, name: role } : null;
 };
+/**
+ * git 工具的权限主体（docs/design/agent-git-tools.md §3）：bot 没有自己的账号，
+ * 用任务 owner（bot 代表的那个人）/ 会话创建者的用户 principal；普通会话用会话创建者。
+ * 找不到人时返回 null，工作流按匿名拒绝，工具不在这里崩。
+ */
+const subjectOf = async (sessionId: SessionId): Promise<Subject | null> => {
+  const session = await deps.sessions.byId(sessionId);
+  if (!session) return null;
+  const bot = await botOfSession(sessionId);
+  const task = await deps.tasks.byId(session.taskId);
+  const userId = bot ? task?.ownerId ?? session.createdBy ?? null : session.createdBy ?? task?.ownerId ?? null;
+  return userId ? loadActor(store.users, store.access, userId, bot ? 'agent-bot' : 'agent-git') : null;
+};
 // GitHub 连接器（ADR 0032 R4）：规则全在 @agent-hub/connector-github；这里只给它项目绑定的 token、PR 和会话的对应。
 const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
 const gitHostTokens = createSqliteGitHostTokens(store.db, secretKey);
@@ -579,6 +593,8 @@ toolGateway = createToolGateway({
   tokens: createTokenIssuer(),
   providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
     createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
+    // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
+    createGitToolProvider({ workflow: gitService, subjectOf }),
     createAgentOrchestrationToolProvider({
       agentProfiles: deps.agentProfiles,
       sessions: deps.sessions,

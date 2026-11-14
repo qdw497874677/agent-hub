@@ -3,12 +3,15 @@ import assert from 'node:assert/strict';
 import type { AgentDescriptor } from '@agent-hub/domain';
 import {
   asAgentId,
+  createGitToolProvider,
   createProjectUseCase,
   createTaskToolProvider,
   createTaskUseCase,
   createToolGateway,
   deriveSessionUseCase,
-  withToolAccess
+  withToolAccess,
+  type GitWorkflow,
+  type ToolProvider
 } from '@agent-hub/domain';
 import { fakeToolGrants, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createRpcChannel, mcpMessage, type RpcChannel } from '@agent-hub/contract';
@@ -32,7 +35,7 @@ function linked(): [RpcChannel, RpcChannel] {
   return [ends[0]!, ends[1]!];
 }
 
-async function setup() {
+async function setup(extraProviders: readonly ToolProvider[] = []) {
   const w = inMemoryDeps();
   w.agents.push(fake);
   const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo' });
@@ -46,7 +49,7 @@ async function setup() {
     now: w.deps.now,
     toolGrants: fakeToolGrants(),
     tokens: { issue: () => ({ token: `tok-${++n}`, hash: `h-tok-${n}` }), hashOf: (t: string) => `h-${t}` },
-    providers: [createTaskToolProvider(w.deps)]
+    providers: [createTaskToolProvider(w.deps), ...extraProviders]
   });
   const command = await withToolAccess(gateway, { url: '', transport: 'relay' }, {
     kind: 'start_session',
@@ -75,6 +78,17 @@ test('hub MCP 中转：令牌对、会话在这台 Worker 上 → 交给 MCP 服
   // 通知：无状态，没有回复
   const note = await worker.request(mcpMessage, { token: s.token, message: { jsonrpc: '2.0', method: 'notifications/initialized' } });
   assert.deepEqual(note, { ok: true, value: { message: null } });
+});
+
+test('hub MCP 中转：默认授权下 git.* 对模型可见', async () => {
+  const git = createGitToolProvider({ workflow: {} as GitWorkflow, subjectOf: async () => null });
+  const s = await setup([git]);
+  const [worker, hub] = linked();
+  serveMcpRelay(hub, 'w1', { gateway: s.gateway, hostOf: (id) => (id === s.sessionId ? 'w1' : null) });
+  const listed = await worker.request(mcpMessage, { token: s.token, message: call(1, 'tools/list') });
+  assert.ok(listed.ok);
+  const names = ((listed.value.message?.['result'] as { tools: { name: string }[] }).tools ?? []).map((t) => t.name);
+  for (const name of ['git_state', 'git_commit', 'git_push', 'git_pr', 'git_pull_requests']) assert.ok(names.includes(name), name);
 });
 
 test('hub MCP 中转：假令牌、别的 Worker、会话已不在这台上，一律 forbidden；会话结束令牌作废', async () => {
