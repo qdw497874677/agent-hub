@@ -12,6 +12,7 @@ export function migrateTasksV2(db: DatabaseSync): void {
   const columns = new Set((db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[]).map((c) => c.name));
   if (!columns.has('owner_id')) db.exec('ALTER TABLE tasks ADD COLUMN owner_id TEXT');
   if (!columns.has('branch')) db.exec('ALTER TABLE tasks ADD COLUMN branch TEXT');
+  if (!columns.has('base_branch')) db.exec('ALTER TABLE tasks ADD COLUMN base_branch TEXT');
   if (!columns.has('summary')) db.exec('ALTER TABLE tasks ADD COLUMN summary TEXT');
   if (!columns.has('log_seq')) db.exec('ALTER TABLE tasks ADD COLUMN log_seq INTEGER NOT NULL DEFAULT 0');
   db.exec(

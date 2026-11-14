@@ -112,6 +112,7 @@ export function toTask(row: Row): Task {
     status: str(row, 'status') as Task['status'],
     ownerId: nullableStr(row, 'owner_id'),
     branch: nullableStr(row, 'branch'),
+    baseBranch: nullableStr(row, 'base_branch'),
     summary: nullableStr(row, 'summary'),
     logSeq: nullableNum(row, 'log_seq') ?? 0,
     createdAt: num(row, 'created_at'),

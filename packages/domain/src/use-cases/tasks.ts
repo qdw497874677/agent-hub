@@ -13,6 +13,7 @@ export interface CreateTaskCommand {
   readonly title: string;
   readonly goal?: string;
   readonly ownerId?: string | null;
+  readonly baseBranch?: string | null;
 }
 
 export async function createTaskUseCase(
@@ -26,6 +27,7 @@ export async function createTaskUseCase(
     title: command.title,
     goal: command.goal,
     ownerId: command.ownerId ?? null,
+    baseBranch: command.baseBranch ?? null,
     now: deps.now()
   });
   if (!created.ok) return created;

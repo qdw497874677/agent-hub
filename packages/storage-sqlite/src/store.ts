@@ -199,10 +199,10 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectDeletedProjects = db.prepare('SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC');
 
   const upsertTask = db.prepare(
-    'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, summary, log_seq, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, base_branch, summary, log_seq, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET title = excluded.title, goal = excluded.goal, ' +
-      'status = excluded.status, owner_id = excluded.owner_id, branch = excluded.branch, summary = excluded.summary, ' +
+      'status = excluded.status, owner_id = excluded.owner_id, branch = excluded.branch, base_branch = excluded.base_branch, summary = excluded.summary, ' +
       'log_seq = MAX(tasks.log_seq, excluded.log_seq), updated_at = excluded.updated_at'
   );
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
@@ -413,6 +413,7 @@ export function openSqliteStore(file: string): SqliteStore {
         task.status,
         task.ownerId,
         task.branch,
+        task.baseBranch,
         task.summary,
         task.logSeq,
         task.createdAt,

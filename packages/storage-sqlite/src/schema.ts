@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status     TEXT NOT NULL,
   owner_id   TEXT,
   branch     TEXT,
+  base_branch TEXT,
   summary    TEXT,
   log_seq    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,

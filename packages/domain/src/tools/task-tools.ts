@@ -134,6 +134,7 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
             status: task.status,
             summary: task.summary,
             branch: task.branch,
+            baseBranch: task.baseBranch,
             logSeq: task.logSeq,
             sessions,
             latestEntry: latest ? { seq: latest.seq, at: latest.createdAt, author: latest.author, body: latest.body } : null,

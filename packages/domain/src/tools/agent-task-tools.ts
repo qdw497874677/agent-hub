@@ -33,6 +33,7 @@ export const AGENT_TASK_TOOLS: readonly ToolDescriptor[] = [
       type: 'object',
       properties: {
         title: { type: 'string', minLength: 1, maxLength: 200 }, goal: { type: 'string', maxLength: 8000 }, project: { type: 'string' },
+        base_branch: { type: 'string', minLength: 1, maxLength: 200 },
         source: { type: 'object', properties: { connector: { type: 'string' }, externalId: { type: 'string' } }, required: ['connector', 'externalId'] }
       },
       required: ['title'], additionalProperties: false
@@ -132,6 +133,7 @@ export function createAgentTaskToolProvider(deps: AgentTaskToolDeps): ToolProvid
           if (src && (!connector || !externalId)) return err(invalid('source 要有 connector 和 externalId'));
           const owner = session?.createdBy ?? null;
           if (!owner) return err(forbidden('这条会话没有主人，不能建任务'));
+          if (args.base_branch !== undefined && typeof args.base_branch !== 'string') return err(invalid('base_branch 必须是字符串'));
           const wake = await deps.wakeOf(ctx.grant.sessionId);
           const counted = wake !== null || deps.countHuman === true;
           const tz = wake?.timeZone ?? deps.defaultTimeZone ?? 'UTC';
@@ -151,7 +153,7 @@ export function createAgentTaskToolProvider(deps: AgentTaskToolDeps): ToolProvid
           const saved = await deps.requests.insert(draft);
           if (saved.id !== draft.id) return ok({ ...reqView(saved), deduplicated: true, message: '这个来源的任务已经建过了，没有重复建' });
           if (approval === 'pending') return ok({ ...reqView(saved), message: `超出配额（${reason}），已交给人批准；批准后才会建任务` });
-          const task = await createTaskUseCase(deps, { projectId: project.value, title, goal: draft.goal, ownerId: owner });
+          const task = await createTaskUseCase(deps, { projectId: project.value, title, goal: draft.goal, ownerId: owner, ...(typeof args.base_branch === 'string' ? { baseBranch: args.base_branch } : {}) });
           if (!task.ok) { await deps.requests.save({ ...saved, approval: 'cancelled', counted: false, updatedAt: deps.now() }); return task; }
           const created = { ...saved, taskId: task.value.id, updatedAt: deps.now() };
           await deps.requests.save(created);

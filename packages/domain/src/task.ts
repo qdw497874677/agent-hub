@@ -21,6 +21,8 @@ export interface Task {
   readonly ownerId: string | null;
   /** git 项目的任务分支（workspaces.md）；首次运行时定下。 */
   readonly branch: string | null;
+  /** 任务从哪个远端分支开工（agent-git-tools.md §5）；隔离 worktree 的起点，null = 按项目默认分支。 */
+  readonly baseBranch: string | null;
   /** 「当前进展」一句话：最近一条人或 agent 写的日志自动刷新，也可手改。 */
   readonly summary: string | null;
   /** 工作日志当前最大序号；追加日志时 +1。 */
@@ -34,13 +36,29 @@ export interface CreateTaskInput {
   readonly title: string;
   readonly goal?: string;
   readonly ownerId?: string | null;
+  /** 远端分支名（不含 `origin/` 也接受，worktree 起点由 use case 规范化）。 */
+  readonly baseBranch?: string | null;
   readonly now: number;
   readonly id?: TaskId;
+}
+
+const BASE_BRANCH_MAX = 200;
+
+/** 分支名的基本合法性：1–200 字符，不含空白 / `..` / `~` / 首尾 `/`。 */
+function parseBaseBranch(raw: string | null | undefined): Result<string | null, DomainError> {
+  if (raw === null || raw === undefined) return ok(null);
+  const value = raw.trim();
+  if (value.length === 0 || value.length > BASE_BRANCH_MAX) return err(invalid('base_branch 不合法'));
+  if (/\s/.test(value) || value.includes('..') || value.includes('~')) return err(invalid('base_branch 不合法'));
+  if (value.startsWith('/') || value.endsWith('/')) return err(invalid('base_branch 不合法'));
+  return ok(value);
 }
 
 export function createTask(input: CreateTaskInput): Result<Task, DomainError> {
   const title = input.title.trim();
   if (!title) return err(invalid('任务标题不能为空'));
+  const baseBranch = parseBaseBranch(input.baseBranch);
+  if (!baseBranch.ok) return baseBranch;
   return ok({
     id: input.id ?? newTaskId(),
     projectId: input.projectId,
@@ -49,6 +67,7 @@ export function createTask(input: CreateTaskInput): Result<Task, DomainError> {
     status: 'todo',
     ownerId: input.ownerId ?? null,
     branch: null,
+    baseBranch: baseBranch.value,
     summary: null,
     logSeq: 0,
     createdAt: input.now,

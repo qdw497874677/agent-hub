@@ -1,5 +1,6 @@
 import type { Subject } from '../access.ts';
 import type { Project, ProjectSetup } from '../project.ts';
+import type { Task } from '../task.ts';
 import { isUsable, newWorkspace, type Workspace } from '../workspace.ts';
 import { asProjectId, asTaskId, asWorkspaceId, newId, type TaskId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
@@ -28,6 +29,22 @@ export function taskBranch(title: string, shortId: string): string {
 }
 
 export const shortId = (): string => newId().replace(/-/g, '').slice(0, 4);
+
+/** 任务的 baseBranch 是远端分支名：worktree 需要 `origin/<name>`（已经是 `origin/` 的原样）。 */
+export function originBranchRef(branch: string | null | undefined): string | null {
+  const name = branch?.trim();
+  if (!name) return null;
+  return name.startsWith('origin/') ? name : `origin/${name}`;
+}
+
+/** 多仓库项目：base 工作空间是哪个仓库的，就用那个仓库的默认分支；认不出来退回主仓库。 */
+function defaultBranchFor(project: Project, base: Workspace | null): string | null {
+  if (base?.repoUrl) {
+    const repo = project.repos.find((candidate) => candidate.url === base.repoUrl);
+    if (repo) return repo.defaultBranch;
+  }
+  return project.repo?.defaultBranch ?? null;
+}
 
 export interface PrepareTemporaryCommand {
   readonly projectId: string;
@@ -70,7 +87,10 @@ export async function prepareTemporaryWorkspaceUseCase(
   // ADR 0027 §3：清理只删了 checkout，分支还在 → 同一台机器上按原分支、原目录重建，会话历史 / 检查点接得上
   if (mode === 'isolated' && !command.branch) {
     const revived = await reviveRemovedWorktree(deps, task.id, machine);
-    if (revived) return ok(revived);
+    if (revived) {
+      await writeBackBranch(deps, task, revived.branch);
+      return ok(revived);
+    }
   }
 
   // shared：直接复用项目在这台机器上的长期空间（不建 worktree，也不跑准备命令——那是人自己的目录）
@@ -95,7 +115,7 @@ export async function prepareTemporaryWorkspaceUseCase(
       repoPath: base.value.path,
       path: `${repoParent === '/' ? '' : repoParent}/.worktrees/${repoName}/${name}`,
       branch: command.branch ?? taskBranch(task.title, id),
-      base: command.base ?? project.repo?.defaultBranch ?? base.value.branch,
+      base: command.base ?? originBranchRef(task.baseBranch) ?? defaultBranchFor(project, base.value) ?? base.value.branch,
       ...(command.branch ? { existing: true } : {})
     });
     if (!made.ok) return made;
@@ -131,12 +151,29 @@ export async function prepareTemporaryWorkspaceUseCase(
     now: deps.now()
   });
   if (!created.ok) return created;
+  // 实际分支回写任务（task.branch 只在这里写）；写失败不影响工作空间创建，只记一条日志
+  await writeBackBranch(deps, task, branch);
   if (!setup) {
     await deps.workspaces.save(created.value);
     return ok(created.value);
   }
   const prepared = await runWorkspaceSetup(deps, machine, created.value, setup);
   return ok(prepared);
+}
+
+/** 把 worktree 实际分支回写任务；分支没变或没有分支就不写，失败只记日志、不拖垮创建。 */
+async function writeBackBranch(
+  deps: Pick<Deps, 'now' | 'tasks'>,
+  task: Task,
+  branch: string | null
+): Promise<void> {
+  if (!branch || task.branch === branch) return;
+  try {
+    const latest = (await deps.tasks.byId(task.id)) ?? task;
+    await deps.tasks.save({ ...latest, branch, updatedAt: deps.now() });
+  } catch (error) {
+    console.warn(`[workspace] 任务 ${task.id} 回写分支 ${branch} 失败：${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 /** shared 档：项目在这台机器上的长期空间；没有但项目有仓库 → 先 clone 一个（复用 gitBase）。都没有 = null。 */

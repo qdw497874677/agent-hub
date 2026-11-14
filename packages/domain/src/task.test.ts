@@ -48,3 +48,25 @@ test('标题不能为空', () => {
   assert.ok(!task.ok);
   assert.equal(task.error.code, 'invalid');
 });
+
+test('baseBranch 默认 null；合法值去掉首尾空白后保存', () => {
+  const plain = createTask({ projectId: asProjectId('p1'), title: 't', now });
+  assert.ok(plain.ok);
+  assert.equal(plain.value.baseBranch, null);
+
+  const given = createTask({ projectId: asProjectId('p1'), title: 't', baseBranch: ' release/1.2 ', now });
+  assert.ok(given.ok);
+  assert.equal(given.value.baseBranch, 'release/1.2');
+
+  const prefixed = createTask({ projectId: asProjectId('p1'), title: 't', baseBranch: 'origin/main', now });
+  assert.ok(prefixed.ok);
+  assert.equal(prefixed.value.baseBranch, 'origin/main');
+});
+
+test('baseBranch 不合法：空、超 200、含空白 / .. / ~、首尾斜杠', () => {
+  for (const baseBranch of ['', '   ', 'x'.repeat(201), 'bad branch', 'a..b', 'a~b', '/main', 'main/']) {
+    const task = createTask({ projectId: asProjectId('p1'), title: 't', baseBranch, now });
+    assert.equal(task.ok, false, JSON.stringify(baseBranch));
+    if (!task.ok) assert.equal(task.error.code, 'invalid');
+  }
+});

@@ -4,7 +4,7 @@ import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase, setProjectWorktreeUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
-import { branchSlug, prepareTemporaryWorkspaceUseCase, retryWorkspaceSetupUseCase, taskBranch } from './temporary-workspaces.ts';
+import { branchSlug, originBranchRef, prepareTemporaryWorkspaceUseCase, retryWorkspaceSetupUseCase, taskBranch } from './temporary-workspaces.ts';
 
 async function world(repoUrl?: string) {
   const w = inMemoryDeps();
@@ -43,8 +43,57 @@ test('git 项目：从这台机器上的持久工作空间开 worktree，放在�
   assert.notEqual(again.value.branch, made.value.branch);
 });
 
-test('有仓库但这台机器上还没下载：先 clone 一个持久的，再开 worktree', async () => {
+test('分支起点：task.baseBranch 规范成 origin/<name>，建好后回写任务的实际分支', async () => {
   const w = await world('https://example.com/demo.git');
+  const long = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create' }, home: '/home/me' });
+  assert.ok(long.ok);
+  await w.deps.tasks.save({ ...w.task, baseBranch: 'release' });
+  const made = await w.temp('isolated');
+  assert.ok(made.ok, made.ok ? '' : made.error.message);
+  assert.ok(
+    w.git.calls.some((call) => call.includes(':worktree:') && call.endsWith('<origin/release')),
+    `git 收到的 base 应该是 origin/release：${w.git.calls.join('\n')}`
+  );
+  const stored = await w.deps.tasks.byId(w.task.id);
+  assert.equal(stored?.branch, made.value.branch);
+  assert.equal(stored?.baseBranch, 'release');
+});
+
+test('显式 command.base 优先于 task.baseBranch；已带 origin/ 的原样传', async () => {
+  const w = await world('https://example.com/demo.git');
+  const long = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create' }, home: '/home/me' });
+  assert.ok(long.ok);
+  await w.deps.tasks.save({ ...w.task, baseBranch: 'release' });
+  const made = await prepareTemporaryWorkspaceUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-1',
+    home: '/home/me',
+    mode: 'isolated',
+    base: 'origin/hotfix'
+  });
+  assert.ok(made.ok, made.ok ? '' : made.error.message);
+  assert.ok(w.git.calls.some((call) => call.includes(':worktree:') && call.endsWith('<origin/hotfix')));
+  assert.equal(originBranchRef('origin/main'), 'origin/main');
+  assert.equal(originBranchRef(' maintain '), 'origin/maintain');
+  assert.equal(originBranchRef(null), null);
+});
+
+test('shared 档不受 task.baseBranch 影响：复用长期空间、不建 worktree、不回写分支', async () => {
+  const w = await world('https://example.com/demo.git');
+  const long = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create' }, home: '/home/me' });
+  assert.ok(long.ok);
+  await w.deps.tasks.save({ ...w.task, baseBranch: 'release' });
+  const before = w.git.calls.length;
+  const made = await w.temp('shared');
+  assert.ok(made.ok, made.ok ? '' : made.error.message);
+  assert.equal(made.value.id, long.value.id);
+  assert.equal(w.git.calls.slice(before).some((call) => call.includes(':worktree:')), false);
+  const stored = await w.deps.tasks.byId(w.task.id);
+  assert.equal(stored?.branch, null);
+});
+
+test('有仓库但这台机器上还没下载：先 clone 一个持久的，再开 worktree', async () => {  const w = await world('https://example.com/demo.git');
   const made = await w.temp('isolated');
   assert.ok(made.ok, made.ok ? '' : made.error.message);
   assert.equal(made.value.source, 'worktree');

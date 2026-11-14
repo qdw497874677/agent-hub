@@ -18,7 +18,7 @@ import {
 import { authorizeWorker, canManageTeamWorkspaces } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { gitOn, resolveMachine, type Machine } from './machine-dirs.ts';
-import { branchSlug, runWorkspaceSetup, shortId } from './temporary-workspaces.ts';
+import { branchSlug, originBranchRef, runWorkspaceSetup, shortId } from './temporary-workspaces.ts';
 import { actorId, prepareTeamWorkspace } from './workspaces.ts';
 
 /**
@@ -211,6 +211,7 @@ export async function buildWorkspaceGroupUseCase(
   };
 
   const members: WorkspaceGroupMember[] = [];
+  const baseRef = originBranchRef(task.baseBranch);
   for (let index = 0; index < repos.length; index++) {
     const repo = repos[index];
     if (!repo) continue;
@@ -220,7 +221,7 @@ export async function buildWorkspaceGroupUseCase(
       repoPath: base.value.path,
       path: `${root}/${repo.name}`,
       branch: groupBranch(repo),
-      base: repo.defaultBranch ?? undefined
+      base: baseRef ?? repo.defaultBranch ?? undefined
     });
     if (!made.ok) return abort(members, repos.slice(index), made.error);
     const created = newWorkspace({
@@ -288,6 +289,8 @@ export async function retryWorkspaceGroupUseCase(
   const groupGit = machine.workerId ? deps.gateway.groups?.(machine.workerId) : undefined;
   if (!groupGit) return err(invalid('这台机器不支持组合工作空间'));
   const setup = project.worktree?.setup ?? null;
+  const ownerTask = existing.ownerTaskId ? await deps.tasks.byId(existing.ownerTaskId) : null;
+  const baseRef = originBranchRef(ownerTask?.baseBranch ?? null);
   const retried = new Map<string, WorkspaceGroupMember>();
   const retryOne = async (member: WorkspaceGroupMember): Promise<WorkspaceGroupMember> => {
     const repo = project.repos.find((candidate) => candidate.id === member.repoId);
@@ -305,7 +308,7 @@ export async function retryWorkspaceGroupUseCase(
       repoPath: base.value.path,
       path,
       branch,
-      base: repo.defaultBranch ?? undefined
+      base: baseRef ?? repo.defaultBranch ?? undefined
     });
     // 目录已经是同分支的 worktree 就算建成（§12.7），别因为「已经存在」整组失败
     if (!made.ok && !/已存在|exists/i.test(made.error.message)) {
