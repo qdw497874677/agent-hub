@@ -146,7 +146,9 @@ export function groupProblem(input: GroupInput, bots: readonly PersistentAgent[]
     if (!input.members.includes(input.hostRole)) return '主持人必须是群成员';
     const bot = known.get(input.hostRole);
     const ref = bot?.ref;
-    if (!ref?.runtime?.trim() || !ref.model?.trim()) return '主持人角色要显式选择运行时和模型（没有隐式默认）';
+    // 模型可以留空：留空就是该运行时的默认模型（start-session 只在非空时覆盖 options.model）。
+    // 运行时不能空，否则起会话时没有可执行的 agent。
+    if (!ref?.runtime?.trim()) return '主持人角色要选运行时（模型可以留空，用默认模型）';
   }
   const limits = input.limits ?? {};
   for (const [key, max] of Object.entries(MAX_GROUP_LIMITS) as [keyof GroupLimits, number][]) {

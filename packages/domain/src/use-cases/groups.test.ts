@@ -213,10 +213,13 @@ test('纯函数：主持人分派只能派群成员、最多 3 个、不能派�
   assert.equal(parseHostText('嗯……', members, 'host').kind, 'invalid');
 });
 
-test('纯函数：建群校验——主持人要显式模型、上限 5 轮 / 20 条', () => {
+test('纯函数：建群校验——主持人要选运行时、模型可留空，上限 5 轮 / 20 条', () => {
   const base = { name: 'g', members: ['host', 'coder'], hostRole: 'host' };
   assert.equal(groupProblem(base, ROLES), null);
-  assert.match(groupProblem({ ...base, members: ['host', 'nomodel'], hostRole: 'nomodel' }, ROLES) ?? '', /显式/);
+  // 模型留空 = 用运行时默认模型，现在允许
+  assert.equal(groupProblem({ ...base, members: ['host', 'nomodel'], hostRole: 'nomodel' }, ROLES), null);
+  const bare = ROLES.map((r) => (r.name === 'nomodel' ? { ...r, ref: { runtime: '', model: '', options: {} } } : r));
+  assert.match(groupProblem({ ...base, members: ['host', 'nomodel'], hostRole: 'nomodel' }, bare) ?? '', /运行时/);
   assert.match(groupProblem({ ...base, hostRole: 'reviewer' }, ROLES) ?? '', /群成员/);
   assert.match(groupProblem({ ...base, members: ['ghost'], hostRole: null }, ROLES) ?? '', /没有角色/);
   assert.match(groupProblem({ ...base, limits: { maxRounds: 6 } }, ROLES) ?? '', /最多 5/);
