@@ -149,13 +149,16 @@ export function DeriveDialog({
   const projectId = canvas.project.id;
   const derive = useMutation({
     mutationFn: async () => {
-      if (!choice || machine === null) throw new Error('先选机器和工作空间');
       // 勾了隔离：不在这里建空间，交给 server 按项目配置现建 worktree 并跑准备命令（workspaceId 为空才会走档位）。
       const isolateNew = isolated && !temporaryChoice;
+      if (machine === null) throw new Error('先选机器');
+      if (!isolateNew && !choice) throw new Error('先选机器和工作空间');
       let workspaceId: string | null = null;
-      if (choice.type === 'existing') workspaceId = choice.workspaceId;
-      else if (!isolateNew) {
+      if (isolateNew) workspaceId = null;
+      else if (choice?.type === 'existing') workspaceId = choice.workspaceId;
+      else {
         setPhase('preparing');
+        if (choice === null) throw new Error('先选机器和工作空间');
         const made = await api.createWorkspace(
           projectId,
           choice.type === 'new_temporary'
@@ -217,17 +220,23 @@ export function DeriveDialog({
             </button>
           </p>
         ) : null}
-        <WorkspaceChooser
-          canvas={canvas}
-          taskId={taskId}
-          agentId={agentId}
-          workers={workers.list}
-          machine={machine}
-          onMachine={setMachine}
-          choice={choice}
-          onChoice={setChoice}
-          hubProtocols={hubProtocols}
-        />
+        <div
+          className={isolated && !temporaryChoice ? 'pointer-events-none opacity-40' : ''}
+          aria-disabled={isolated && !temporaryChoice ? true : undefined}
+          data-testid="derive-workspace-region"
+        >
+          <WorkspaceChooser
+            canvas={canvas}
+            taskId={taskId}
+            agentId={agentId}
+            workers={workers.list}
+            machine={machine}
+            onMachine={setMachine}
+            choice={choice}
+            onChoice={setChoice}
+            hubProtocols={hubProtocols}
+          />
+        </div>
         <label className={`mb-3 flex items-start gap-2 text-meta ${temporaryChoice ? 'text-tertiary' : 'text-secondary'}`}>
           <input
             type="checkbox"
@@ -245,7 +254,7 @@ export function DeriveDialog({
             <span className="block text-tertiary">
               {temporaryChoice
                 ? '已经选了临时空间，这次不会再开 worktree。想换成就地新开，把上面改回长期空间或先不选。'
-                : `会新开分支 agent-hub/…，结束后按策略清理。并行任务、会开 PR 时选这个；不勾就在上面选的空间里直接干。${projectIsolated ? '（项目默认已开隔离）' : ''}`}
+                : `会新开分支 agent-hub/…，结束后按策略清理；这次不占用上面选的工作空间。并行任务、会开 PR 时选这个；不勾就在上面选的空间里直接干。${projectIsolated ? '（项目默认已开隔离）' : ''}`}
             </span>
           </span>
         </label>

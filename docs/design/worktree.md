@@ -79,6 +79,7 @@ prepareTemporaryWorkspace
 ## 5. 会话与空间绑定
 
 - 一期：**开场就定**。会话创建时选定档位；`Session.workspaceId` 之后不改。
+- 一期就有的两条入口：`POST /api/sessions/derive { workspaceMode }`（人/脚本）与 agent 工具 `agent.spawn { workspace_mode: 'isolated' }`（会话内的 agent 给自己开一个隔离兄弟会话，调度器/bot 触发同样适用）。前端 derive 对话框里勾「隔离 worktree」等价于前者，勾上时不发送 `workspaceId`，以档位为准。
 - 二期：`session.handoffWorktree`（会话迁入 worktree）。会话必须空闲（非 running）；建/复用 worktree → 改 `workspaceId` → `startSessionUseCase({markFailed:false})` 重新托管；同时暴露两个 agent 工具：
   - `session.worktree.status` — 我现在在哪个目录/分支、是否已隔离；
   - `session.worktree.handoff({baseRef?, branch?, path?})` — 请 hub 把我迁进 worktree。
