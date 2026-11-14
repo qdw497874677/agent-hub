@@ -20,7 +20,7 @@ test('别名：id 形状（小写字母开头，只含 a-z 0-9 -，≤41 字符�
 });
 
 test('别名：内置运行时的 id 不能占用', () => {
-  for (const id of ['pi', 'opencode', 'grok', 'hermes']) {
+  for (const id of ['pi', 'opencode', 'grok', 'hermes', 'codex']) {
     assert.match(agentAliasProblem({ ...ok, id }) ?? '', /内置运行时的名字/);
   }
 });

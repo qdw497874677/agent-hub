@@ -8,7 +8,7 @@ import { runtimeView, versionError } from './runtime-view.ts';
 type Harness = NonNullable<WorkerInfoDto['agentModels']>[number];
 type Job = NonNullable<WorkerInfoDto['runtimeJob']>;
 
-const AGENT_NAME: Record<string, string> = { pi: 'Pi', opencode: 'OpenCode', grok: 'Grok' };
+const AGENT_NAME: Record<string, string> = { pi: 'Pi', opencode: 'OpenCode', grok: 'Grok', hermes: 'Hermes', codex: 'Codex' };
 const nameOf = (id: string): string => AGENT_NAME[id] ?? id;
 
 /** 已经在等着确认的按钮亮起来；其余用 SMALL_BUTTON。 */

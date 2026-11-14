@@ -21,7 +21,7 @@ export const AGENT_ALIAS_MAX = 16;
 export const AGENT_ALIAS_ID = /^[a-z][a-z0-9-]{0,40}$/;
 
 /** 内置运行时的 id：别名不能占用，否则会和适配器自己的 agent 抢同一个 id。 */
-export const AGENT_ALIAS_RESERVED: readonly string[] = ['pi', 'opencode', 'grok', 'hermes'];
+export const AGENT_ALIAS_RESERVED: readonly string[] = ['pi', 'opencode', 'grok', 'hermes', 'codex'];
 
 const LABEL_MAX = 80;
 const COMMAND_MAX = 512;

@@ -25,7 +25,8 @@ export const BOT_COLORS: Record<BotColorDto, string> = {
 };
 const COLOR_KEYS = Object.keys(BOT_COLORS) as BotColorDto[];
 const RUNTIMES = [
-  { id: 'pi', label: 'Pi' }, { id: 'opencode', label: 'OpenCode' }, { id: 'grok', label: 'Grok' }, { id: 'hermes', label: 'Hermes' }
+  { id: 'pi', label: 'Pi' }, { id: 'opencode', label: 'OpenCode' }, { id: 'grok', label: 'Grok' }, { id: 'hermes', label: 'Hermes' },
+  { id: 'codex', label: 'Codex' }
 ];
 const DESCRIPTION_MAX = 4000;
 export const BOTS_KEY = ['bots'] as const;

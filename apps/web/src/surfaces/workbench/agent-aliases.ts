@@ -27,8 +27,8 @@ export interface AgentAliasRow {
 
 /** 一台机器最多配这么多别名（服务端同值）。 */
 export const MAX_ALIASES = 16;
-/** 内置的四个运行时，别名不能顶掉它们的名字。 */
-export const RESERVED_ALIAS_IDS: readonly string[] = ['pi', 'opencode', 'grok', 'hermes'];
+/** 内置的运行时，别名不能顶掉它们的名字。 */
+export const RESERVED_ALIAS_IDS: readonly string[] = ['pi', 'opencode', 'grok', 'hermes', 'codex'];
 /** 小写字母开头，后面只能是小写字母、数字、-，总长 1–41。 */
 export const ALIAS_ID_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
 
@@ -68,7 +68,7 @@ export function aliasRowProblem(row: AgentAliasRow): string | null {
   const id = row.id.trim();
   if (id === '') return 'id 不能为空';
   if (!ALIAS_ID_PATTERN.test(id)) return 'id 用小写字母开头，只能有小写字母、数字和 -，最长 41 位';
-  if (RESERVED_ALIAS_IDS.includes(id)) return 'pi / opencode / grok / hermes 是内置的';
+  if (RESERVED_ALIAS_IDS.includes(id)) return 'pi / opencode / grok / hermes / codex 是内置的';
   if (row.label.trim().length > LIMIT.label) return `名称最多 ${LIMIT.label} 个字`;
 
   const command = row.command.trim();

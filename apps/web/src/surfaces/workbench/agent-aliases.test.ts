@@ -31,8 +31,8 @@ test('id 形状：必须小写字母开头，只允许小写字母 / 数字 / -�
 });
 
 test('保留 id：内置四个运行时不能拿来当别名', () => {
-  for (const id of ['pi', 'opencode', 'grok', 'hermes']) {
-    assert.equal(aliasRowProblem(row({ id })), 'pi / opencode / grok / hermes 是内置的');
+  for (const id of ['pi', 'opencode', 'grok', 'hermes', 'codex']) {
+    assert.equal(aliasRowProblem(row({ id })), 'pi / opencode / grok / hermes / codex 是内置的');
   }
   // 只是前缀相同不受影响
   assert.equal(aliasRowProblem(row({ id: 'pi-pro' })), null);

@@ -22,6 +22,7 @@ const ALLOWED = new Map([
   ['@agent-hub/adapter-grok', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-acp']],
   ['@agent-hub/adapter-hermes', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/adapter-acp']],
   ['@agent-hub/adapter-acp', ['@agent-hub/domain', '@agent-hub/contract']],
+  ['@agent-hub/adapter-codex', ['@agent-hub/domain']],
   ['@agent-hub/adapter-accounts', ['@agent-hub/domain']],
   ['@agent-hub/adapter-assets', ['@agent-hub/domain']],
   ['@agent-hub/observe', []],
@@ -29,7 +30,7 @@ const ALLOWED = new Map([
   // GitHub 的所有规则只在这个包里；domain 不得 import 它（上面 domain 的允许表为空）。
   ['@agent-hub/connector-github', ['@agent-hub/domain']],
   ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts', '@agent-hub/adapter-assets', '@agent-hub/connector-timer', '@agent-hub/connector-github', '@agent-hub/observe']],
-  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok', '@agent-hub/adapter-hermes']],
+  ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok', '@agent-hub/adapter-hermes', '@agent-hub/adapter-codex']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
 

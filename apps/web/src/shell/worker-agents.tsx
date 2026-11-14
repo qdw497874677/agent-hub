@@ -98,7 +98,7 @@ export function AgentAliasesSection({ worker }: { worker: WorkerInfoDto }) {
         </p>
         <p className="mt-1 text-meta text-tertiary">
           填了别名就<strong className="font-normal text-secondary">只按别名里的清单</strong>
-          提供 ACP agent（OpenCode 这类内置 ACP agent 会被替换，Pi / Grok 这类独立适配器不受影响）；留空则回到这台机器自己的配置。
+          提供 ACP agent（OpenCode 这类内置 ACP agent 会被替换，Pi / Grok / Codex 这类独立适配器不受影响）；留空则回到这台机器自己的配置。
         </p>
 
         {config.isPending ? <p className="mt-1.5 text-meta text-tertiary">加载中…</p> : null}

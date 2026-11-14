@@ -184,6 +184,15 @@ M1 后续（`49d73c8`、`1dc9aa1`、`2c2d49c`，已部署）：
 - 验证：`npm test` 1403 tests / 1395 pass / 8 skipped / 0 fail；`check`/`typecheck`/`typecheck:web`/`build`/`test:e2e-node` 全 0；`e2e/side-chat.spec.ts` 1/1。
 - 部署：阿里云 hub 与本地 worker 均到 `d18433e`。
 
+### 1.12 进展（2026-11-14 · Codex 运行时）
+
+- 新增第 5 个运行时 `packages/adapters/codex/`，走 `codex app-server` 的 JSON-RPC/stdio（不是 ACP、不是 `exec --json`）：每会话一进程，`initialize` → `thread/start|resume` → `turn/start`，通知映射成 `text` / `thinking` / `tool_call` / `tool_result` / `approval` / `context_usage` / `ended`；审批走 `createApprovalGate`；`turn/interrupt` 与 dispose 用进程组 SIGTERM→3s→SIGKILL。
+- options：`model` / `effort`(minimal|low|medium|high) / `approval`(on-request|untrusted|never) / `sandbox`(read-only|workspace-write|danger-full-access)，默认 `on-request` + `workspace-write`；选项下一轮生效（与其它运行时一致）。
+- 门禁：`scripts/check-import-boundaries.mjs` 的 `ALLOWED` 加 `@agent-hub/adapter-codex`，`apps/worker/package.json` 声明依赖，`package-lock.json` 同步（17 workspaces）。
+- 前端把 Codex 加进：bot 的运行时下拉（`apps/web/src/surfaces/im/bots.tsx`）、机器名映射（`apps/web/src/shell/runtimes.tsx`）、别名保留 id（`apps/web/src/surfaces/workbench/agent-aliases.ts`、`packages/domain/src/agent-alias.ts`）。
+- 验证：`check` / `typecheck` / `typecheck:web` / `npm test`（1438/1430/8/0）/ `build` / `test:e2e-node` 全 0。
+- 待办：本机 worker 配 `OPENAI_API_KEY`（或 `codex login`）后真实联调；阿里云不装 codex。
+
 ## 2. B1 · 安全收口
 
 ### SEC-1 关闭 `HUB_TOKEN` 过渡通道
