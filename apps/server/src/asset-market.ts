@@ -39,6 +39,7 @@ import {
   setAssetOnWorker,
   setReviewSettings,
   setScopedSecret,
+  parseGitSourceUrl,
   submissionDetail,
   submitAssetRevision,
   submitNewAsset,
@@ -119,7 +120,12 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
   app.post('/api/assets/git', async (c) => {
     const input = await body(c, marketGitRequest);
     if (!input) return bad(c);
-    const result = await submitNewAsset(deps, me(c), { from: 'git', ...input, url: input.url.trim(), ref: input.ref?.trim() || null });
+    // 允许直接粘 GitHub 的 tree/blob 网址：拆出仓库、分支与目录，用户不用手填三栏。
+    const parsed = parseGitSourceUrl(input.url);
+    const url = parsed?.url ?? input.url.trim();
+    const ref = input.ref?.trim() || parsed?.ref || null;
+    const path = input.path.trim() === '' ? parsed?.path ?? '' : input.path;
+    const result = await submitNewAsset(deps, me(c), { from: 'git', ...input, url, ref, path });
     return result.ok ? c.json({ assetId: result.value.asset.id, submissionId: result.value.submission.id, status: result.value.submission.status }, 201) : fail(c, result.error);
   });
 

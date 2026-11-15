@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryAdmin, inMemoryAssetReviewDeps, inMemoryAssets, inMemoryDeps, addTeamMember } from '@agent-hub/domain/testing';
 import { createApp } from './http.ts';
+import type { AssetRouteOptions } from './assets.ts';
 import { createStreamHub } from './stream-hub.ts';
 
 const PASSWORD = 'long enough pw';
@@ -11,7 +12,7 @@ const skillFiles = (body: string) => [
 ];
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness() {
+function harness(extra: Partial<Pick<AssetRouteOptions, 'sessions' | 'environment'>> = {}) {
   const admin = inMemoryAdmin();
   const assets = inMemoryAssets();
   const { deps } = inMemoryDeps();
@@ -22,7 +23,7 @@ function harness() {
     token: null,
     auth: { accounts: admin.accounts },
     admin: { deps: admin.deps },
-    assets: { deps: review.deps, audit: admin.deps.audit }
+    assets: { deps: review.deps, audit: admin.deps.audit, ...extra }
   });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -112,6 +113,56 @@ test('会话资产清单 API：成员也能读（只读）；没记过的返回�
   await h.assets.deps.assets.recordSessionAssets({ sessionId: 's1', workerId: 'w1', entries: [entry], at: 5 });
   assert.deepEqual((await member('/api/sessions/s1/assets')).body.entries, [entry]);
   assert.equal((await h.browser()('/api/sessions/s1/assets')).status, 401);
+});
+
+test('#226：升级会话资产 API：返回新旧 digest 并写审计；没有快照 409', async () => {
+  const entry = (digest: string) => ({ assetId: 'a1', kind: 'skill' as const, name: 'greeter', digest, scope: 'global' as const });
+  let upgraded = 0;
+  const h = harness({
+    sessions: { byId: async (id: string) => ({ id, workerId: 'w1', taskId: null }) } as never,
+    environment: {
+      prepare: async (command: unknown) => ({ command, revision: null }),
+      revision: async () => null,
+      upgrade: async () => {
+        upgraded += 1;
+        return {
+          sessionId: 's1',
+          workerId: 'w1',
+          projectId: 'p1',
+          from: [entry('d1')],
+          to: [entry('d2')],
+          fromDigests: ['d1'],
+          toDigests: ['d2'],
+          changed: true
+        };
+      }
+    } as never
+  });
+  const owner = h.browser();
+  assert.equal((await owner('/api/auth/register', { method: 'POST', body: JSON.stringify({ email: 'boss@b.co', password: PASSWORD }) })).status, 200);
+  const result = await owner('/api/sessions/s1/assets/upgrade', { method: 'POST' });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.fromDigests, ['d1']);
+  assert.deepEqual(result.body.toDigests, ['d2']);
+  assert.equal(result.body.changed, true);
+  assert.equal(upgraded, 1);
+  // owner / member 都按 session.prompt 放行（沿用现有 access 模型）。
+  await addTeamMember(h.admin.accounts, 'm@b.co', PASSWORD);
+  const member = h.browser();
+  assert.equal((await member('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'm@b.co', password: PASSWORD }) })).status, 200);
+  assert.equal((await member('/api/sessions/s1/assets/upgrade', { method: 'POST' })).status, 200);
+  assert.equal(upgraded, 2);
+  const entryAudit = (await owner('/api/admin/audit')).body.find((row: { action: string }) => row.action === 'asset.session_upgrade');
+  assert.ok(entryAudit);
+  assert.match(entryAudit.detail, /1 → 1 项/);
+
+  const none = harness({
+    sessions: { byId: async (id: string) => ({ id, workerId: 'w1', taskId: null }) } as never,
+    environment: { prepare: async (command: unknown) => ({ command, revision: null }), revision: async () => null, upgrade: async () => null } as never
+  });
+  const other = none.browser();
+  assert.equal((await other('/api/auth/register', { method: 'POST', body: JSON.stringify({ email: 'boss@b.co', password: PASSWORD }) })).status, 200);
+  assert.equal((await other('/api/sessions/s1/assets/upgrade', { method: 'POST' })).status, 409);
 });
 
 test('资产权限：主人能增删改、分配；成员只能用（所有 /api/admin/assets* 一律 403，没登录 401）', async () => {

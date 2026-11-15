@@ -24,6 +24,44 @@ export type AssetSource =
   /** ref = 分支 / 标签 / 提交（null = 远端默认分支）；path = 仓库里那个技能目录或指令文件（'' = 仓库根）。 */
   | { readonly type: 'git'; readonly url: string; readonly ref: string | null; readonly path: string };
 
+/** 从 GitHub 网址里拆出的来源：`https://github.com/o/r/tree/<ref>/<path>` 之类直接能用。 */
+export interface GitSourceLocation {
+  readonly url: string;
+  readonly ref: string | null;
+  readonly path: string;
+}
+
+/**
+ * 把「粘一个 GitHub 网址」拆成 `{url, ref, path}`。只认 github.com，其它返回 null，交给上层报错。
+ * `ref` 里本身可能带 `/`（例如 `release/1.0`），此时用 `knownRefs`（一般来自 `ls-remote`）按最长前缀消歧；
+ * 没给 knownRefs 时只取第一段，剩下的算 path —— 宁可少拆，不要猜错仓库路径。
+ */
+export function parseGitSourceUrl(input: string, knownRefs: readonly string[] = []): GitSourceLocation | null {
+  const raw = input.trim();
+  if (raw === '') return null;
+  const match = /^(?:https?:\/\/|ssh:\/\/)?(?:git@)?(?:www\.)?github\.com[/:]([^/]+)\/([^/]+?)(?:\.git)?(?:\/(tree|blob)\/([^/]+)(?:\/(.*))?)?\/?$/.exec(raw);
+  if (!match) return null;
+  const owner = match[1] ?? '';
+  const repo = match[2] ?? '';
+  if (owner === '' || repo === '') return null;
+  const url = `https://github.com/${owner}/${repo}.git`;
+  const mode = match[3];
+  const firstRef = match[4];
+  if (mode === undefined || firstRef === undefined) return { url, ref: null, path: '' };
+  const rest = (match[5] ?? '').replace(/\/+$/, '');
+  const decoded = decodeURIComponent(firstRef);
+  const candidates = knownRefs
+    .filter((ref) => ref === decoded || ref.startsWith(`${decoded}/`))
+    .sort((a, b) => b.length - a.length);
+  const ref = candidates[0] ?? decoded;
+  const extra = ref === decoded ? '' : ref.slice(decoded.length + 1);
+  // knownRefs 选中的分支比第一段长：多出来的段已经在 rest 头部，别重复拼回去。
+  const remainder = extra === ''
+    ? rest
+    : rest === extra ? '' : rest.startsWith(`${extra}/`) ? rest.slice(extra.length + 1) : rest;
+  return { url, ref, path: remainder };
+}
+
 export interface AssetFile {
   /** 相对资产根的路径，`/` 分隔。 */
   readonly path: string;
@@ -193,6 +231,39 @@ export interface SessionAssetManifest {
   readonly at: number;
   /** 本次启动的环境版本输入（#225）；旧数据没有这一项。 */
   readonly revision?: SessionEnvironmentRevisionInputs;
+}
+
+/** 首次快照是哪来的（#226）：资产集 / bot 自带 / 项目生效集。P2 还没有资产集，一律 project。 */
+export type SessionAssetSource = 'set' | 'bot' | 'project';
+
+/**
+ * 会话首次启动时钉下的权威资产快照（#226 P2）。
+ *
+ * 与 SessionAssetManifest 的区别：manifest 是「最近一次启动实际下发了什么」的展示记录，
+ * 每次启动都会覆盖；snapshot 一旦写下就是这段会话的权威清单，resume / 重新托管只认它，
+ * 直到显式升级。mode 固定为 'snapshot'，读库时用来和旧数据区分。
+ */
+export interface SessionAssetSnapshot {
+  readonly sessionId: string;
+  readonly mode: 'snapshot';
+  readonly source: SessionAssetSource;
+  /** 首次写下快照的那台 Worker（会话固定落点，仅作记录）。 */
+  readonly workerId: string;
+  readonly projectId: string | null;
+  readonly entries: readonly SessionAssetEntry[];
+  readonly at: number;
+}
+
+/** 显式升级本会话资产的结果：from = 旧快照，to = 重新解析出的当前生效集。 */
+export interface SessionAssetUpgrade {
+  readonly sessionId: string;
+  readonly workerId: string;
+  readonly projectId: string | null;
+  readonly from: readonly SessionAssetEntry[];
+  readonly to: readonly SessionAssetEntry[];
+  readonly fromDigests: readonly string[];
+  readonly toDigests: readonly string[];
+  readonly changed: boolean;
 }
 
 export type AssetSyncState = 'pending' | 'syncing' | 'synced' | 'failed';

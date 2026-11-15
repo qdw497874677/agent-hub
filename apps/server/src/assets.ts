@@ -16,14 +16,17 @@ import {
   secretPutRequest,
   secretsOverviewSchema
 } from '@agent-hub/contract';
-import type { AssetReviewDeps, AuditLog, IncomingFile, Principal } from '@agent-hub/domain';
+import type { AssetReviewDeps, AuditLog, EnvironmentPlanner, IncomingFile, Principal, Session, SessionRepository } from '@agent-hub/domain';
 import {
   ASSET_KIND_LABEL,
   ASSET_LIMITS,
   assetFileText,
   assetRevisions,
   assetsOverview,
+  asSessionId,
   checkGitForReview,
+  conflict,
+  notFound,
   recordAdminPublish,
   submitAssetRevision,
   deleteAsset,
@@ -33,12 +36,14 @@ import {
   diffAssetRevisions,
   importGitAsset,
   invalid,
+  parseGitSourceUrl,
   pinAssetRevision,
   projectAssets,
   setProjectAsset,
   recordAssetAudit,
   scanGitSource,
   setAssetInstalled,
+  unavailable,
   uploadAsset
 } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
@@ -51,6 +56,9 @@ import { fail } from './http-error.ts';
 export interface AssetRouteOptions {
   readonly deps: AssetReviewDeps;
   readonly audit: AuditLog;
+  /** #226 P2：升级会话资产快照要读会话与重新解析环境（server 组装时注入）。 */
+  readonly sessions?: Pick<SessionRepository, 'byId'>;
+  readonly environment?: EnvironmentPlanner;
 }
 
 interface Schema<T> {
@@ -92,6 +100,26 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
   app.get('/api/sessions/:sessionId/assets', async (c) => {
     const manifest = await deps.assets.sessionAssets(c.req.param('sessionId'));
     return c.json(manifest ?? { sessionId: c.req.param('sessionId'), workerId: null, entries: [], at: null });
+  });
+
+  // #226 P2：显式升级本会话资产。重新解析当前生效集、写新快照，下一次重新托管时生效。
+  // 权限沿用 access 模型（session.prompt：owner/member 都可）；升级本身不改 environmentRevision。
+  app.post('/api/sessions/:sessionId/assets/upgrade', async (c) => {
+    const sessions = options.sessions;
+    const upgrade = options.environment?.upgrade;
+    if (!sessions || !upgrade) return fail(c, unavailable('会话环境升级尚未就绪'));
+    const sessionId = asSessionId(c.req.param('sessionId'));
+    const session: Session | null = await sessions.byId(sessionId);
+    if (!session) return fail(c, notFound('会话不存在'));
+    const result = await upgrade(session);
+    if (!result) return fail(c, conflict('会话还没有资产快照，不能升级（先启动一次）'));
+    await audit(
+      c,
+      'asset.session_upgrade',
+      sessionId,
+      `资产快照升级：${result.from.length} → ${result.to.length} 项（${result.changed ? '有变化' : '无变化'}）`
+    );
+    return c.json(result);
   });
 
   // 运营后台只管 hub 运营的资产（全局 / 项目级）；团队、个人资产在资产市场里（ADR 0016）。
@@ -156,18 +184,20 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
   app.post('/api/admin/assets/git/scan', async (c) => {
     const input = await parse(c, gitScanRequest);
     if (!input.ok) return input.response;
-    const scanned = await scanGitSource(deps, input.value.url.trim(), input.value.ref?.trim() || null);
+    const parsed = parseGitSourceUrl(input.value.url);
+    const scanned = await scanGitSource(deps, parsed?.url ?? input.value.url.trim(), input.value.ref?.trim() || parsed?.ref || null);
     return scanned.ok ? c.json(gitScanSchema.parse(scanned.value)) : fail(c, scanned.error);
   });
 
   app.post('/api/admin/assets/git/import', async (c) => {
     const input = await parse(c, gitImportRequest);
     if (!input.ok) return input.response;
+    const parsed = parseGitSourceUrl(input.value.url);
     const made = await importGitAsset(deps, {
       kind: input.value.kind,
-      url: input.value.url.trim(),
-      ref: input.value.ref?.trim() || null,
-      path: input.value.path,
+      url: parsed?.url ?? input.value.url.trim(),
+      ref: input.value.ref?.trim() || parsed?.ref || null,
+      path: input.value.path.trim() === '' ? parsed?.path ?? '' : input.value.path,
       name: input.value.name ?? null,
       projectId: input.value.projectId ?? null,
       ...adminOwnership(c, input.value.projectId ?? null)
