@@ -23,6 +23,17 @@ _Avoid_: 会话（作动词时含糊）、Chat、Conversation、Thread
 界面上不把 Agent 当名词用——只说「由 OpenCode 驱动」「模型是 X」。具名、常驻、可授权的是 **Bot**；可复用的启动配置是 AgentProfile。
 _Avoid_: Bot、助手、Model、Provider、实例、成员
 
+**Runtime（运行时）**：
+被 hub 拉起的真实 agent 进程（OpenCode / Pi / Grok / Hermes / Codex），有版本、自己的配置目录与插件，能力由它自己决定。
+运行时不是 Agent：Agent 是「运行时 + 协议适配 + 模型选项」的组合；换运行时只换进程与 adapter，不换领域模型。
+_Avoid_: Agent、模型、引擎（口语可以，文档用运行时）
+
+**协议适配（Adapter / Codec）**：
+把运行时线协议翻成 Hub 的 `SessionEvent`、工具调用与选项，并把能力上报成 `AgentDescriptor`。
+ACP（JSON-RPC）是默认协议，标准语义在 `map-acp.ts`，vendor 私有扩展在 `codecs/<vendor>.ts`；Codex 走自己的 `app-server` 适配。
+适配层不做策略：权限、配额、投递都在 domain。
+_Avoid_: Agent、插件、驱动
+
 **Bot**：
 团队级的一等成员：由 Agent 驱动，有自己的 @id、运行时、启动选项与记忆，**不隶属任何项目**；通过「项目授权」进入项目（可分别指定每个项目里的默认工作空间）。界面词就是「Bot」（见 ADR 0037）。
 授权到项目后才能被 `bot:<name>` 寻址、进该项目的群、在该项目的任务里开会话；撤销授权等于把它移出该项目。

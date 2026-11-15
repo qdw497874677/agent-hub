@@ -51,6 +51,23 @@
 
 代码里现有 `Workspace` 暂不改名；先加 `export type WorkDir = Workspace` 别名，界面文案统一用「工作目录」。等 #221 收尾后做一次性改名（含 `AgentDescriptor → RuntimeDescriptor`）。
 
+### 4. Agent 的构成：协议 + 适配 + 运行时
+
+Agent 不是「一个 agent 程序」，而是三层拼起来的：
+
+| 层 | 是什么 | 代码位置 |
+| --- | --- | --- |
+| **运行时 Runtime** | 真正被拉起的进程（OpenCode / Pi / Grok / Hermes / Codex），有版本、有自己的配置目录与插件 | `packages/adapters/<runtime>/` |
+| **协议 Protocol** | 进程与 hub 之间的线协议：ACP（JSON-RPC）是默认；Codex 走自己的 `app-server` 协议 | `packages/adapters/acp/src/`、`packages/adapters/codex/` |
+| **适配 Adapter** | 把协议消息翻成 Hub 的 `SessionEvent` / 工具调用 / 选项，并把运行时能力上报成 `AgentDescriptor` | `codec.ts`（接口）、`map-acp.ts`（标准 ACP）、`codecs/opencode.ts`（vendor 私有语义） |
+
+规则：
+
+- **协议适配是通用的，运行时是具体的**。新增一个运行时 = 新增一个 adapter（或复用 ACP + 一个 codec），不改 domain / hub / 前端。
+- Adapter 只做协议映射与能力上报，**不做策略**（权限、配额、投递都在 domain）。
+- 标准 ACP 不写进 vendor codec：`decode` 返回 `null` 就回退通用 mapper；只有 vendor 扩展（如 opencode 的 `child_update`）才在 `codecs/<vendor>.ts` 里实现。
+- 命名上：说「运行时」时指引擎（OpenCode），说「模型」时指具体模型（`opencode/iceman-free`），**不要用运行时名指 Agent**。
+
 ## 后果
 
 - 界面：导航分组为「工作台 / 消息 / 库 / 运维」；Bot 页标题用「Bot」；工作台不再出现「智能体」作为名词。
