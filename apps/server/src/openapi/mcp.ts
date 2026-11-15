@@ -28,6 +28,10 @@ const ALLOWED = {
   updateProject: { module: 'projects', readOnly: false, expose: 'project_update', idempotent: true },
   deleteProject: { module: 'projects', readOnly: false, expose: 'project_archive' },
   createAsset: { module: 'assets', readOnly: false, expose: 'asset_create', idempotent: true },
+  // 资产自动化（导入 → 发布 → 分配）：发布与分配要 assets:publish 范围
+  importAsset: { module: 'assets', readOnly: false, expose: 'asset_import', idempotent: true },
+  publishAsset: { module: 'assets', readOnly: false, expose: 'asset_publish', idempotent: true },
+  assignAsset: { module: 'assets', readOnly: false, expose: 'asset_assign', idempotent: true },
   getSession: { module: 'sessions', readOnly: true },
   listTasks: { module: 'tasks', readOnly: true },
   getTask: { module: 'tasks', readOnly: true },

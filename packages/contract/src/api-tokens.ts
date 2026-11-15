@@ -10,6 +10,7 @@ export const apiScopeSchema = z.enum([
   'assets:submit',
   'assets:read',
   'assets:write',
+  'assets:publish',
   'providers:use',
   'groups:write',
   'files:read',

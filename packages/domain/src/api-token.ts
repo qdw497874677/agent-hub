@@ -16,6 +16,7 @@ export type ApiScope =
   | 'assets:submit'
   | 'assets:read'
   | 'assets:write'
+  | 'assets:publish'
   | 'providers:use'
   | 'groups:write'
   | 'files:read'
@@ -30,6 +31,7 @@ export const API_SCOPES: readonly ApiScope[] = [
   'assets:submit',
   'assets:read',
   'assets:write',
+  'assets:publish',
   'providers:use',
   'groups:write',
   'files:read',
@@ -53,13 +55,17 @@ export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>
   // 记忆：读 / 写分成两个 scope，读不给写
   'memory:read': ['project.read', 'memory.read'],
   'memory:write': ['project.read', 'memory.read', 'memory.write'],
-  // ADR 0016：令牌只能提交资产版本（进审核队列），审核 / 发布 / 分配 / 下架 / 用密钥都不行
+  // ADR 0016：令牌默认只能提交资产版本（进审核队列），审核 / 发布 / 分配 / 下架 / 用密钥都不行。
+  // 要自动化发布与分配，得显式给 assets:publish（见下）——仍然是令牌，审计里留痕。
   // 能交版本就得能看见自己在交哪一份（否则拿不到 assetId）
   'assets:submit': ['asset.read', 'asset.submit'],
   // 读资产：可见范围仍按归属判断（全局 / 团队 / 项目 / 个人）
   'assets:read': ['asset.read'],
   // 建资产与交新版本：默认只进审核队列（publish=false），审核通过才可用
-  'assets:write': ['asset.read', 'asset.submit']
+  'assets:write': ['asset.read', 'asset.submit'],
+  // 自动化发布与分配（ADR 0016 的显式例外）：仅个人令牌 / 团队服务账号可用，审计留痕。
+  // 这是唯一映射审核 / 分配这几个点的 scope —— 其余 scope 都不映射它们。
+  'assets:publish': ['asset.read', 'asset.submit', 'asset.review', 'asset.assign']
 };
 
 

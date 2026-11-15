@@ -14,6 +14,7 @@ import {
   authorizeProject,
   can,
   changeSessionOption,
+  conflict,
   createProjectUseCase,
   createTaskUseCase,
   deleteProjectUseCase,
@@ -22,11 +23,15 @@ import {
   editWorkLogUseCase,
   forbidden,
   forkSessionUseCase,
+  importGitAsset,
   interruptSessionUseCase,
   invalid,
   isServiceAccount,
   listProjects,
   assetRevisions,
+  pinAssetRevision,
+  recordAssetAudit,
+  setAssetInstalled,
   uploadAsset,
   listWorkers,
   notFound,
@@ -71,7 +76,7 @@ interface V1Context {
   readonly providers?: ProviderWiringApi;
   readonly projectDeletion?: Pick<DeleteProjectDeps, 'toolGrants' | 'audit'>;
   readonly waitOptions?: (sessionId: string) => Promise<void>;
-  /** 资产审核（ADR 0016）：令牌只能交新版本（assets:submit）。 */
+  // 资产审核（ADR 0016）：令牌默认只能交新版本（assets:submit）；显式给 assets:publish 才能发布 / 分配。
   readonly assetReview?: AssetReviewDeps;
 }
 
@@ -95,6 +100,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     }
   });
   const principal = (c: Context): Principal => c.get('principal') as Principal;
+  /** 审计里标出「经哪个令牌做的」：自动化发布 / 分配要能追到令牌。 */
+  const viaNote = (actor: Principal): string => (actor.via ? `（经令牌 ${actor.via.name} / ${actor.via.tokenId}）` : '');
 
   const general = createRateLimiter({ max: options.rate?.general ?? 120, windowMs: 60_000, now });
   const prompts = createRateLimiter({ max: options.rate?.prompt ?? 20, windowMs: 60_000, now });
@@ -172,7 +179,16 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const actor = principal(c);
     if (!can(actor, 'asset.submit') || !can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:write'));
     if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
-    const input = valid<{ kind: 'skill' | 'instruction' | 'mcp'; name?: string | null; scope: 'personal' | 'team' | 'project'; projectId?: string | null; files: { path: string; data: string }[] }>(c, 'json');
+    const input = valid<{
+      kind: 'skill' | 'instruction' | 'mcp';
+      name?: string | null;
+      scope: 'personal' | 'team' | 'project';
+      projectId?: string | null;
+      publish: boolean;
+      files: { path: string; data: string }[];
+    }>(c, 'json');
+    // 直接发布是 assets:publish 的事：只有它映射了 asset.review，其余 scope 都发不了
+    if (input.publish && !can(actor, 'asset.review')) return fail(c, forbidden('直接发布资产要 assets:publish 范围'));
     const files = input.files.map((file) => ({ path: file.path, data: new Uint8Array(Buffer.from(file.data, 'base64')) }));
     const made = await uploadAsset(ctx.assetReview, {
       kind: input.kind,
@@ -182,9 +198,79 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       scope: input.scope,
       ownerId: actor.user.id,
       teamId: actor.user.teamId ?? null,
-      publish: false
+      publish: input.publish
     });
     return made.ok ? c.json(made.value, 201) : fail(c, made.error);
+  });
+  on(routes.importAsset, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.submit') || !can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:write'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const input = valid<{
+      kind: 'skill' | 'instruction' | 'mcp';
+      url: string;
+      ref?: string | null;
+      path?: string;
+      name?: string | null;
+      scope: 'personal' | 'team' | 'project';
+      projectId?: string | null;
+      publish: boolean;
+    }>(c, 'json');
+    if (input.publish && !can(actor, 'asset.review')) return fail(c, forbidden('直接发布资产要 assets:publish 范围'));
+    // 空路径对 skill 会变成「整个仓库」：显式拒绝，别让人把整仓拖进来
+    const path = (input.path ?? '').trim();
+    if (path === '') return fail(c, invalid('要给出仓库里的路径：技能目录（如 skills/foo）、指令文件（如 AGENTS.md）或 mcp 文件'));
+    const made = await importGitAsset(ctx.assetReview, {
+      kind: input.kind,
+      url: input.url,
+      ref: input.ref ?? null,
+      path,
+      name: input.name ?? null,
+      projectId: input.scope === 'project' ? input.projectId ?? null : null,
+      scope: input.scope,
+      ownerId: actor.user.id,
+      teamId: actor.user.teamId ?? null,
+      publish: input.publish
+    });
+    if (!made.ok) return fail(c, made.error);
+    await recordAssetAudit(ctx.assetReview, actor, 'asset.create', made.value.name, `${made.value.kind} 从 ${input.url}@${path} 导入${made.value.pinned === '' ? '（待审核）' : '并发布'}${viaNote(actor)}`);
+    return c.json(made.value, 201);
+  });
+  on(routes.publishAsset, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.review')) return fail(c, forbidden('令牌没有 assets:publish：不能发布资产'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const asset = await ctx.assetReview.assets.get(c.req.param('assetId') ?? '');
+    if (!asset) return fail(c, notFound('资产不存在'));
+    const readable = createAssetVisibility({ access: deps.access, projects: deps.projects }, actor);
+    if (!(await readable(asset))) return fail(c, notFound('资产不存在'));
+    if (asset.scope === 'global' && !actor.user.clusterAdmin) return fail(c, forbidden('只有集群管理员能发布全局资产'));
+    if (asset.latest === '' || asset.latest === asset.pinned) return fail(c, conflict('没有待发布的新版本：latest 已经是线上版本'));
+    const published = await pinAssetRevision(ctx.assetReview, asset.id, asset.latest);
+    if (!published.ok) return fail(c, published.error);
+    const next = published.value;
+    await recordAssetAudit(ctx.assetReview, actor, 'asset.publish', next.name, `${next.kind} ${next.scope} 发布 ${next.pinned.slice(0, 12)}${viaNote(actor)}`);
+    return c.json(next);
+  });
+  on(routes.assignAsset, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.assign')) return fail(c, forbidden('令牌没有 assets:publish：不能分配资产'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const asset = await ctx.assetReview.assets.get(c.req.param('assetId') ?? '');
+    if (!asset) return fail(c, notFound('资产不存在'));
+    const readable = createAssetVisibility({ access: deps.access, projects: deps.projects }, actor);
+    if (!(await readable(asset))) return fail(c, notFound('资产不存在'));
+    const input = valid<{ workerId: string; installed: boolean }>(c, 'json');
+    const done = await setAssetInstalled(ctx.assetReview, { workerId: input.workerId, assetId: asset.id, installed: input.installed });
+    if (!done.ok) return fail(c, done.error);
+    await recordAssetAudit(
+      ctx.assetReview,
+      actor,
+      input.installed ? 'asset.install' : 'asset.uninstall',
+      asset.name,
+      `${asset.kind} ${input.installed ? '装到' : '从'}机器 ${input.workerId}${input.installed ? ' 上' : ' 卸下'}${viaNote(actor)}`
+    );
+    return c.json({ assetId: asset.id, workerId: input.workerId, installed: input.installed });
   });
   on(routes.submitAssetRevision, async (c) => {
     if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });

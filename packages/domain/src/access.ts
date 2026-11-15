@@ -50,13 +50,12 @@ export const HUB_PERMISSIONS: ReadonlySet<Permission> = new Set<Permission>(PERM
 export const NEVER_GRANTABLE: ReadonlySet<Permission> = new Set<Permission>([...PERMISSION_CATALOG.hub, 'team.roles', 'runtime.component.install']);
 
 /**
- * 令牌额外拿不到的（ADR 0016）：审核 / 分配 / 下架 / 用密钥只能本人在界面里做。
- * 这些可以进自定义角色（比如「资产评审员」），但不能进令牌。
+ * 令牌额外拿不到的（ADR 0016）：下架 / 用密钥只能本人在界面里做。
+ * 审核 / 分配不在这里：它们只能由 assets:publish scope 显式打包（个人令牌 / 团队服务账号，
+ * 审计留痕），其余 scope 都不映射它们。这些都能进自定义角色（比如「资产评审员」）。
  */
 export const TOKEN_NEVER_GRANTABLE: ReadonlySet<Permission> = new Set<Permission>([
   ...NEVER_GRANTABLE,
-  'asset.review',
-  'asset.assign',
   'asset.retire',
   'asset.secret.use',
   // 派生新会话要花钱、要人点头（ADR 0018）：只能本人在界面里批，令牌拿不到

@@ -419,7 +419,8 @@ export async function approveSubmission(
   submissionId: string,
   options: { acknowledgeHigh?: boolean; note?: string } = {}
 ): Promise<Result<{ submission: AssetSubmission; published: boolean; selfApproved: boolean }, DomainError>> {
-  if (actor.via) return err(forbidden('令牌不能审核资产'));
+  // 令牌默认不能审核；只有带 assets:publish（映射了 asset.review）的令牌可以，审计里留痕。
+  if (actor.via && !can(actor, 'asset.review')) return err(forbidden('令牌不能审核资产'));
   const loaded = await loadSubmission(deps, submissionId);
   if (!loaded.ok) return loaded;
   const { submission, asset } = loaded.value;

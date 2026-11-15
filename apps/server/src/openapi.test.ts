@@ -2,8 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { addTeamMember, inMemoryAccounts, inMemoryApiTokens, inMemoryDeps } from '@agent-hub/domain/testing';
-import { asAgentId, createAccessPolicy, newWorkspace, type AgentDescriptor } from '@agent-hub/domain';
+import { addTeamMember, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
+import { asAgentId, createAccessPolicy, newWorkspace, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
 import { journalEntrySchema, projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -31,12 +31,25 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
   const apiTokens = inMemoryApiTokens();
   const tokenDeps = { apiTokens, users: accounts.users, projects: world.deps.projects, tokens: accounts.tokens, audit: accounts.audit, now: () => Date.now() };
   const hub = createStreamHub();
+  // 资产自动化（导入 → 发布 → 分配）要资产中心在场：MCP 的 asset_* 工具靠它干活
+  const assetsStore = inMemoryAssets(() => Date.now());
+  const reviewStore = inMemoryAssetReview();
+  const assetReview: AssetReviewDeps = {
+    ...assetsStore.deps,
+    review: reviewStore.review,
+    notifications: reviewStore.notifications,
+    audit: accounts.audit!,
+    users: accounts.users,
+    teams: accounts.teams,
+    policy: access
+  };
   const app = createApp({
     deps,
     hub,
     token: null,
     auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users },
+    assets: { deps: assetReview, audit: accounts.audit! },
     openApi: { tokens: tokenDeps, manage: tokenDeps, rate }
   });
   const browser = () => {
@@ -60,7 +73,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
     );
     return { status: response.status, headers: response.headers, body: (await response.json().catch(() => null)) as any };
   };
-  return { accounts, world, app, hub, apiTokens, browser, api };
+  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api };
 }
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
 
@@ -291,6 +304,11 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['get_task', 'list_task_log', 'list_tasks']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project']);
   assert.equal(mcpTools({ readOnly: true }).length, 9);
+  // 资产自动化：三个新写工具只在开了写开关时出现，且都可重放
+  const assetWrites = mcpTools({ modules: new Set(['assets']), writes: true });
+  assert.deepEqual(assetWrites.map((t) => t.name).sort(), ['asset_assign', 'asset_create', 'asset_import', 'asset_publish', 'get_asset', 'list_assets']);
+  assert.ok(assetWrites.filter((t) => !t.readOnly).every((t) => t.idempotent));
+  assert.equal(assetWrites.filter((t) => t.readOnly).length, 2);
   const projected = projectEvents([
     { seq: 1, at: 1, event: { kind: 'prompt', text: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 2, at: 2, event: { kind: 'tool_call', name: 'bash', input: { command: 'echo AWS_SECRET_ACCESS_KEY=abc' } } },
@@ -352,4 +370,108 @@ test('MCP 委派：写工具默认不出现，MCP_WRITE 打开后可建任务，
   // 只读闸门压过写开关。
   const readOnly = await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} }, { readOnly: true });
   assert.ok(!readOnly.result.tools.some((t: { name: string }) => t.name === 'task_create'));
+});
+
+const b64 = (text: string) => Buffer.from(text).toString('base64');
+const skillFiles = (body: string) => [{ path: 'SKILL.md', data: b64(`---\nname: greeter\ndescription: Greets people\n---\n${body}\n`) }];
+
+test('资产自动化：assets:publish 能导入 → 发布 → 分配；没有该 scope 时 403；非集群管理员发布全局 403', async () => {
+  const { david, mint, app, accounts, assetsStore, browser } = await setup();
+  const replays = new Map<string, string>();
+  const store = {
+    async get(key: string) {
+      return replays.get(key) ?? null;
+    },
+    async put(key: string, body: string) {
+      replays.set(key, body);
+    }
+  };
+  const mcp = (token: string) => async (name: string, args: Record<string, unknown>) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })
+      }),
+      { mcpReplays: store, mcpPolicy: { modules: new Set(['assets']), readOnly: false, writes: true } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+
+  const publishToken = (await mint(david, ['assets:read', 'assets:write', 'assets:publish'])).token;
+  const plainToken = (await mint(david, ['assets:read', 'assets:write'])).token;
+  const publish = mcp(publishToken);
+  const plain = mcp(plainToken);
+
+  // 1) 导入：publish=true 要 assets:publish；没给就在碰仓库之前 403
+  const blocked = await plain('asset_import', { kind: 'skill', url: 'https://example.com/x.git', path: 'skills/foo', publish: true, clientRequestId: 'imp-0' });
+  assert.equal(blocked.result.isError, true, JSON.stringify(blocked.result));
+  assert.match(blocked.result.content[0].text, /403/);
+  assert.match(blocked.result.content[0].text, /assets:publish/);
+  // 空 path 也拒（否则技能会把整个仓库拖进来）—— 复用 create 之外的分支，走的是 400
+  const noPath = await publish('asset_import', { kind: 'skill', url: 'https://example.com/x.git', clientRequestId: 'imp-1' });
+  assert.equal(noPath.result.isError, true, JSON.stringify(noPath.result));
+  assert.match(noPath.result.content[0].text, /400/);
+
+  // 2) 建资产（待审核）→ 发布 → 分配
+  const created = await publish('asset_create', { kind: 'skill', files: skillFiles('v1'), clientRequestId: 'create-1' });
+  assert.equal(created.result.isError, false, JSON.stringify(created.result));
+  const asset = created.result.structuredContent as { id: string; pinned: string; latest: string };
+  assert.equal(asset.pinned, '');
+  assert.notEqual(asset.latest, '');
+
+  const published = await publish('asset_publish', { assetId: asset.id, clientRequestId: 'publish-1' });
+  assert.equal(published.result.isError, false, JSON.stringify(published.result));
+  assert.equal(published.result.structuredContent.pinned, asset.latest);
+  // 再发一次：没有待发布的新版本 → 409
+  const again = await publish('asset_publish', { assetId: asset.id, clientRequestId: 'publish-2' });
+  assert.equal(again.result.isError, true);
+  assert.match(again.result.content[0].text, /409/);
+
+  const assigned = await publish('asset_assign', { assetId: asset.id, workerId: 'w1', clientRequestId: 'assign-1' });
+  assert.equal(assigned.result.isError, false, JSON.stringify(assigned.result));
+  assert.deepEqual(assigned.result.structuredContent, { assetId: asset.id, workerId: 'w1', installed: true });
+  assert.ok(assetsStore.installs.some((row) => row.assetId === asset.id && row.workerId === 'w1'));
+
+  // 3) 没有 assets:publish：发布 / 分配都 403
+  const publishDenied = await plain('asset_publish', { assetId: asset.id, clientRequestId: 'publish-3' });
+  assert.equal(publishDenied.result.isError, true);
+  assert.match(publishDenied.result.content[0].text, /403/);
+  const assignDenied = await plain('asset_assign', { assetId: asset.id, workerId: 'w1', clientRequestId: 'assign-2' });
+  assert.equal(assignDenied.result.isError, true);
+  assert.match(assignDenied.result.content[0].text, /403/);
+  // 没 assets:write 的令牌连导入都进不去
+  const readOnlyToken = (await mint(david, ['assets:read'])).token;
+  const importDenied = await mcp(readOnlyToken)('asset_import', { kind: 'skill', url: 'https://example.com/x.git', path: 'skills/foo', clientRequestId: 'imp-2' });
+  assert.equal(importDenied.result.isError, true);
+  assert.match(importDenied.result.content[0].text, /403/);
+
+  // 4) 全局资产：非集群管理员发布 403（全局发布只有集群管理员能做）
+  // 管理后台要另装 admin 路由，这里直接用领域用例造一个全局资产
+  const boss = (await accounts.users.firstClusterAdmin())!;
+  const globalMade = await uploadAsset(assetsStore.deps, {
+    kind: 'skill',
+    projectId: null,
+    files: [{ path: 'SKILL.md', data: new Uint8Array(Buffer.from(`---\nname: greeter\ndescription: Greets people\n---\nglobal\n`)) }],
+    scope: 'global',
+    ownerId: boss.id,
+    teamId: null,
+    publish: true
+  });
+  assert.ok(globalMade.ok, JSON.stringify(globalMade));
+  const global = { id: globalMade.value.id };
+  assert.equal(globalMade.value.scope, 'global');
+  await addTeamMember(accounts, 'a@b.co', PASSWORD, 'owner');
+  const adminBrowser = browser();
+  assert.equal((await adminBrowser('/api/auth/login', post({ email: 'a@b.co', password: PASSWORD }))).status, 200);
+  const adminToken = (await mint(adminBrowser, ['assets:read', 'assets:write', 'assets:publish'])).token;
+  const globalDenied = await mcp(adminToken)('asset_publish', { assetId: global.id, clientRequestId: 'publish-global' });
+  assert.equal(globalDenied.result.isError, true, JSON.stringify(globalDenied.result));
+  assert.match(globalDenied.result.content[0].text, /403/);
+  assert.match(globalDenied.result.content[0].text, /集群管理员/);
+  // 审计留痕：发布 / 分配都写进了活动日志，且看得出是经哪个令牌做的
+  const actions = accounts.auditRows.map((row) => row.action);
+  assert.ok(actions.includes('asset.publish'));
+  assert.ok(actions.includes('asset.install'));
+  assert.ok(accounts.auditRows.some((row) => row.action === 'asset.publish' && row.detail.includes('经令牌')));
 });
