@@ -177,6 +177,8 @@ export function toSession(row: Row): Session {
     ...(row['parent_session_id'] === undefined
       ? {}
       : { parentSessionId: nullableStr(row, 'parent_session_id') as Session['parentSessionId'] }),
+    // #221 步骤 4：老库补列后是 NULL；派生对象里 botId 缺省也是 null，往返一致。
+    ...(row['bot_id'] === undefined ? {} : { botId: nullableStr(row, 'bot_id') }),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };

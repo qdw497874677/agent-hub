@@ -5,6 +5,7 @@ import { err, ok, type Result } from './result.ts';
 import type { SessionEvent } from './event.ts';
 import type { Task } from './task.ts';
 import type { RuntimeOption } from './option.ts';
+import type { BotId } from './bot.ts';
 
 /**
  * 会话状态。`stopped`（人按的停止）与 `interrupted`（进程没了）必须分开：
@@ -62,6 +63,11 @@ export interface Session {
   readonly groupId?: WorkspaceGroupId | null;
   /** 谁开的这条会话（ADR 0017：说话 / 中断 / 换机继续默认只有他）。null = 老会话或系统开的。 */
   readonly createdBy?: string | null;
+  /**
+   * 这条会话是哪个 bot 开的（Bot 按 id 引用，#221）。null / 缺省 = 老会话或人开的；
+   * 老会话仍靠派生记录 / 群成员里的名字反查，兼容路径见 server 的 botOfSession。
+   */
+  readonly botId?: BotId | null;
   /** 用户起的会话名（null = 没起，界面回退到首句 / 「会话 N」）。只能经 SessionRepository.setTitle 改，save 不覆盖它。 */
   readonly title?: string | null;
   /**
@@ -90,6 +96,8 @@ export interface DeriveSessionInput {
   /** 组合工作空间（多仓库）：有值时 workspaceId 是 primary 成员的镜像。 */
   readonly groupId?: WorkspaceGroupId | null;
   readonly createdBy?: string | null;
+  /** 开这条会话的 bot（按 id，不按名字）。人开的 / 老入口没有。 */
+  readonly botId?: BotId | null;
   /** 来自 Agent 配置的启动选项；模型仍以 model 字段为准。 */
   readonly options?: Readonly<Record<string, string | boolean>>;
   /** 侧聊用：不落进常规列表，继承父会话的落点与运行参数。 */
@@ -121,6 +129,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     workspaceId: input.workspaceId ?? null,
     groupId: input.groupId ?? null,
     createdBy: input.createdBy ?? null,
+    botId: input.botId ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -136,6 +145,8 @@ export interface ForkSessionInput {
   readonly workerId?: string | null;
   readonly workspaceId?: WorkspaceId | null;
   readonly createdBy?: string | null;
+  /** 分叉出来的会话默认不再算 bot 会话（和老行为一致：分叉记录里没有 bot）；需要时应显式传。 */
+  readonly botId?: BotId | null;
   /** 「从这里重来」回到第一条消息之前：允许 atSeq = 0（什么都不继承）。 */
   readonly allowEmpty?: boolean;
   /** 启动选项快照：分叉出来的会话用它重启，缺省为空（老调用方行为不变）。 */
@@ -166,6 +177,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     workerId: input.workerId ?? null,
     workspaceId: input.workspaceId === undefined ? input.source.workspaceId : input.workspaceId,
     createdBy: input.createdBy ?? null,
+    botId: input.botId ?? null,
     createdAt: input.now,
     updatedAt: input.now
   });

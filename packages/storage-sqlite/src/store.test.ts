@@ -71,6 +71,32 @@ test('侧聊会话往返：kind 与 parentSessionId 不丢', async () => {
   store.close();
 });
 
+test('bot 会话往返：botId 不丢，后续保存不会把它清掉（#221）', async () => {
+  const store = openSqliteStore(':memory:');
+  const w = await seeded(store);
+  const botSession: Session = { ...w.session, id: asSessionId('bot-1'), botId: 'bot_0123456789abcdef' };
+  await store.sessions.save(botSession);
+  assert.deepEqual(await store.sessions.byId(botSession.id), botSession);
+  // 老代码重新保存一份没有 botId 的对象：bot_id 只在 insert 时写，不能被 NULL 覆盖。
+  await store.sessions.save({ ...botSession, botId: null, updatedAt: now + 1 });
+  assert.equal((await store.sessions.byId(botSession.id))?.botId, 'bot_0123456789abcdef');
+  store.close();
+});
+
+test('sessions.bot_id 迁移幂等：同一个库连开两次不报错（#221）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-hub-bot-migrate-'));
+  const file = join(dir, 'hub.db');
+  try {
+    openSqliteStore(file).close();
+    const store = openSqliteStore(file);
+    const columns = store.db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+    assert.ok(columns.some((column) => column.name === 'bot_id'));
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('save 是 upsert：再次保存覆盖而不是新增', async () => {
   const store = openSqliteStore(':memory:');
   const { task } = await seeded(store);

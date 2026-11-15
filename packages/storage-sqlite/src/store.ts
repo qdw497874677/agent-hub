@@ -169,6 +169,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'parent_session_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN parent_session_id TEXT');
   }
+  // #221 步骤 4：会话按 id 记开它的 bot（名字仍用于 @ 解析）。NULL = 老会话或人开的。
+  if (!columns.some((column) => column.name === 'bot_id')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN bot_id TEXT');
+  }
   upgradeWorkspaceTable(db);
   db.exec(WORKSPACE_SCHEMA);
   // 准备命令状态（docs/design/worktree.md §4）：老库补列；v2 表也要补（upgradeWorkspaceTable 不会再加列）。
@@ -220,8 +224,8 @@ export function openSqliteStore(file: string): SqliteStore {
   );
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
@@ -452,6 +456,7 @@ export function openSqliteStore(file: string): SqliteStore {
         session.groupId ?? null,
         session.kind ?? null,
         session.parentSessionId ?? null,
+        session.botId ?? null,
         session.createdAt,
         session.updatedAt
       );

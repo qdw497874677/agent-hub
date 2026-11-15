@@ -6,8 +6,11 @@ import type { ProjectId } from '../ids.ts';
 import { configProblem, isPersistentAgentName, type MessagingConfig, type RoleReuse } from '../messaging.ts';
 import type { RuntimeOption } from '../option.ts';
 import type { MessageStore } from '../ports/message-store.ts';
+import type { ConnectorStore } from '../ports/connector-store.ts';
+import type { ContextSettingsStore } from '../ports/context-settings.ts';
 import { err, ok, type Result } from '../result.ts';
 import { authorizeProject, type AccessPolicy } from './authorization.ts';
+import { botContextSettingKeys } from './context.ts';
 import type { Deps } from './deps.ts';
 
 /**
@@ -38,6 +41,10 @@ export interface BotReadDeps extends Pick<Deps, 'bots'> {
 
 export interface BotsDeps extends BotReadDeps, Pick<Deps, 'projects' | 'sessions' | 'now'> {
   readonly policy?: AccessPolicy;
+  /** 删除 bot 时顺手清掉的连接器 binding；不给 = 只删 bot 行（老调用方行为不变）。 */
+  readonly connectors?: Pick<ConnectorStore, 'bindingsOf' | 'deleteBinding'>;
+  /** 删除 bot 时清掉它的上下文设置；不给 = 保留（老调用方行为不变）。 */
+  readonly contextSettings?: Pick<ContextSettingsStore, 'set'>;
 }
 
 const isBotNameProblem = (name: string): string | null =>
@@ -231,6 +238,14 @@ export async function removeBotUseCase(deps: BotsDeps, actor: Principal | null, 
   if (!project.ok) return project;
   // 有会话 / 群引用也不拦：只删 bot 行，引用由上层决定怎么收尾（群聊会调 detachAgent）。
   await deps.bots.remove(current.id);
+  // #221 步骤 4：@id 建好不能改，按 (projectId, name) 就能找全剩下的名字引用。
+  // 被删的 bot 不该继续触发连接器，也不该留上下文设置（重建同名 bot 用的是同一个确定 id，
+  // 所以这里清掉的只是旧配置，不会让新 bot 串数据）。
+  const bindings = await deps.connectors?.bindingsOf(current.projectId, current.name);
+  for (const binding of bindings ?? []) await deps.connectors?.deleteBinding(binding.id);
+  for (const key of botContextSettingKeys(current.projectId, current.name)) {
+    await deps.contextSettings?.set(key, null);
+  }
   return ok({ removed: true });
 }
 

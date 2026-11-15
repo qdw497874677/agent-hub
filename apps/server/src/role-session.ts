@@ -44,6 +44,8 @@ export async function openRoleSession(
     readonly ownerId: string;
     readonly agentId: string;
     readonly model: string;
+    /** 这个会话是哪个 bot 开的（按 id）。连接器 / P2P / 群派生的 bot 会话都该给。 */
+    readonly botId?: string;
     /** bot 配的启动选项：建会话时垫进去（会话内仍可覆盖）。 */
     readonly options?: Readonly<Record<string, string | boolean>>;
     readonly actor: Subject;
@@ -57,6 +59,7 @@ export async function openRoleSession(
     taskId: task.value.id,
     agentId: input.agentId,
     model: input.model,
+    ...(input.botId ? { botId: input.botId } : {}),
     ...(input.options ? { options: input.options } : {}),
     actor: input.actor
   });

@@ -18,6 +18,7 @@ import { createMemorySources } from './memory-sources.ts';
 import { createAssetReader } from '@agent-hub/adapter-assets';
 import { createWorkerEnroll } from './worker-enroll.ts';
 import { loadActor, openRoleSession } from './role-session.ts';
+import { createBotOfSession } from './bot-session.ts';
 import { createSecretVault, createSqliteApiTokens, createSqliteComponents, createSqliteProviders, createSqlitePullRequests, createSqliteGitHostTokens, createSqliteWorkspaceSweeps, loadSecretKey, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createNpmResolver } from './components.ts';
 import { createProviderWiring } from './providers.ts';
@@ -298,7 +299,7 @@ const messageBus = createMessageBus({
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
   spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, actor, via: 'bot'
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'bot'
   })
 });
 setInterval(() => void messageBus.sweep().catch(() => undefined), 30_000).unref();
@@ -315,7 +316,7 @@ const groupChat = createGroupChat({
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-group'),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
   spawn: ({ project, role, actor, title }) => openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, actor, via: 'group'
+    projectId: project.id, title, ownerId: actor.user.id, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'group'
   }),
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
@@ -329,18 +330,20 @@ const persistentAgents = createPersistentAgents({
   policy: deps.access,
   bots: store.bots,
   messages: store.messages,
+  connectors: store.connectors,
+  contextSettings: store.contextSettings,
   groupsOf: (projectId) => store.groups.groupsOf(projectId),
   detach: (actor, projectId, name) => groupChat.detachAgent(actor, projectId, name)
 });
 // 连接器（ADR 0032 R1）：入站来源只经 InboundSource 端口接进来；核心不认识具体连接器。
-// bot 的会话：派生出来的 → 角色；群成员 → 角色；项目 = 那条会话所在任务的项目（bot 定义在那个项目里，即默认项目）。
-const botOfSession = async (sessionId: SessionId): Promise<{ projectId: string; name: string } | null> => {
-  const role = (await store.messages.spawnOf(sessionId))?.role ?? (await store.groups.memberOfSession(sessionId))?.role ?? null;
-  if (!role) return null;
-  const session = await deps.sessions.byId(sessionId);
-  const task = session ? await deps.tasks.byId(session.taskId) : null;
-  return task ? { projectId: task.projectId, name: role } : null;
-};
+// bot 的会话：优先按 sessions.bot_id 查；老会话没有 botId，按派生记录 / 群成员里的名字反查（兼容路径）。
+const botOfSession = createBotOfSession({
+  sessions: deps.sessions,
+  tasks: deps.tasks,
+  bots: store.bots,
+  spawnOf: (sessionId) => store.messages.spawnOf(sessionId),
+  memberOfSession: (sessionId) => store.groups.memberOfSession(sessionId)
+});
 /**
  * git 工具的权限主体（docs/design/agent-git-tools.md §3）：bot 没有自己的账号，
  * 用任务 owner（bot 代表的那个人）/ 会话创建者的用户 principal；普通会话用会话创建者。
@@ -396,7 +399,7 @@ const connectorHub = createConnectorHub({
     const actor = await loadActor(store.users, store.access, ownerId, 'agent-connector');
     if (!actor) return err(forbidden('建这个触发的账号已停用'));
     return openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
-      projectId, title, ownerId, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, actor, via: 'bot',
+      projectId, title, ownerId, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'bot',
       afterDerive: async (session) => {
         // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去。先于来历。
         await store.messages.saveSpawn({ sessionId: session.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: session.id, traceId: `connector:${session.id}`, createdAt: Date.now() });
@@ -501,13 +504,13 @@ type TurnOutcome = 'done' | 'stopped' | 'interrupted' | 'failed';
  * 一轮结束的收尾。回合结束（event `ended`）与进程保活（status `idle`）都会到这里：
  * 各钩子自己幂等（开放的投递 / 未收尾的检查点处理过一次就空转），重复调用无害。
  */
-const turnFinished = (sessionId: SessionId, outcome: TurnOutcome): void => {
+const turnFinished = (sessionId: SessionId, outcome: TurnOutcome, reason?: string): void => {
   void connectorHub.turnEnded(sessionId, outcome).catch(() => undefined);
   void dispatcher.sessionEnded(sessionId).catch(() => undefined);
   // 先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
   void (async () => {
     await messageBus.turnEnded(sessionId, outcome).catch((error: unknown) => log(`agent 消息回合收尾失败：${String(error)}`));
-    await groupChat.turnEnded(sessionId).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
+    await groupChat.turnEnded(sessionId, outcome, reason).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
   })();
   // 回合结束后拍「之后」那张（ADR 0027 D2）
   void filesService.endTurn(sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
@@ -515,7 +518,7 @@ const turnFinished = (sessionId: SessionId, outcome: TurnOutcome): void => {
   void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, sessionId).catch((error: unknown) => log(`送达队列收尾失败：${String(error)}`));
 };
 hub.stream.subscribe((frame) => {
-  if (frame.event?.kind === 'ended') turnFinished(frame.sessionId, frame.event.outcome);
+  if (frame.event?.kind === 'ended') turnFinished(frame.sessionId, frame.event.outcome, frame.event.reason);
 });
 // 送达队列（ADR 0031 D2）：重启时把上次停在「发送中」的退回排队，之后每秒泵一次
 void store.deliveries.recoverSending(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条上次没送完，重新排队`));
@@ -1171,7 +1174,7 @@ const envNumber = (name: string): number | undefined => {
 };
 
 const observeEnabled = readEnv('OBSERVE') !== '0';
-const botDeps = { ...deps, messages: store.messages };
+const botDeps = { ...deps, messages: store.messages, connectors: store.connectors, contextSettings: store.contextSettings };
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
   observe: {
     enabled: observeEnabled,

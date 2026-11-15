@@ -136,3 +136,25 @@ test('任务建不成或没有这个运行时：不写来历、不写派生记�
   assert.equal(spawned, 0);
   assert.deepEqual(w.order, []);
 });
+
+test('botId 落进会话（#221 步骤 4）', async () => {
+  const w = await world();
+  const actor = await loadActor(w.users, undefined, 'u1', 'agent-message');
+  assert.ok(actor);
+  const provenance = {
+    provenance: { record: async () => true, get: async () => null },
+    now: () => 9
+  };
+  const created = await openRoleSession(w.w.deps, provenance, {
+    projectId: w.project.id, title: 'bot', ownerId: 'u1', agentId: 'fake', model: 'm', botId: 'bot_0123456789abcdef', actor, via: 'bot'
+  });
+  assert.ok(created.ok, created.ok ? '' : created.error.message);
+  assert.equal(created.value.botId, 'bot_0123456789abcdef');
+  assert.equal((await w.w.deps.sessions.byId(created.value.id))?.botId, 'bot_0123456789abcdef');
+  // 人开的会话 / 老入口不传 botId：落库是 null，不是空串
+  const human = await openRoleSession(w.w.deps, provenance, {
+    projectId: w.project.id, title: 'human', ownerId: 'u1', agentId: 'fake', model: 'm', actor, via: 'bot'
+  });
+  assert.ok(human.ok);
+  assert.equal((await w.w.deps.sessions.byId(human.value.id))?.botId, null);
+});

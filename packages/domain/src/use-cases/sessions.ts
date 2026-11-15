@@ -49,6 +49,8 @@ export interface DeriveCommand {
   readonly options?: Readonly<Record<string, string | boolean>>;
   /** 谁拥有新会话；工具派生时继承父会话主人，人类请求默认取 actor。 */
   readonly createdBy?: string | null;
+  /** 这个会话是哪个 bot 开的（按 id，不按名字）。人开的 / 老入口不传。 */
+  readonly botId?: string | null;
   /** `side` = 侧聊：挂在 parentSessionId 上，继承父会话的落点与运行参数，不进常规列表。 */
   readonly kind?: 'side';
   readonly parentSessionId?: string | null;
@@ -166,6 +168,7 @@ export async function deriveSessionUseCase(
     workspaceId: workspace.id,
     groupId,
     createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
+    botId: command.botId ?? null,
     options: ref.options
   });
   if (!created.ok) return created;

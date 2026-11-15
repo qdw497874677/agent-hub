@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { botIdFrom, type Bot, type MessagingConfig } from '../index.ts';
+import { botIdFrom, type Bot, type ConnectorBinding, type MessagingConfig } from '../index.ts';
 import { createProject } from '../project.ts';
 import type { Principal, User } from '../account.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
@@ -97,6 +97,60 @@ test('bot 用例：删除只删 bot 行', async () => {
   assert.deepEqual(removed, { ok: true, value: { removed: true } });
   assert.equal(await deps.bots.byId(created.value.id), null);
   assert.ok(!(await getBotUseCase(deps, alice, created.value.id)).ok);
+});
+
+test('bot 用例：删除顺手清掉连接器 binding 与上下文设置（#221）', async () => {
+  const { deps, project } = await withProject();
+  const created = await createBotUseCase(deps, alice, project.id, { name: 'qa', agentId: 'pi' });
+  assert.ok(created.ok);
+  const asked: { projectId: string; name: string }[] = [];
+  const deleted: string[] = [];
+  const cleared: { key: string; value: unknown }[] = [];
+  const wired = {
+    ...deps,
+    connectors: {
+      bindingsOf: async (projectId: string, name: string) => {
+        asked.push({ projectId, name });
+        return name === 'qa' ? ([{ id: 'b1' }, { id: 'b2' }] as unknown as ConnectorBinding[]) : [];
+      },
+      deleteBinding: async (id: string) => void deleted.push(id)
+    },
+    contextSettings: { set: async (key: string, value: unknown) => void cleared.push({ key, value }) }
+  };
+  const removed = await removeBotUseCase(wired, alice, created.value.id);
+  assert.ok(removed.ok, removed.ok ? '' : removed.error.message);
+  assert.deepEqual(asked, [{ projectId: project.id, name: 'qa' }]);
+  assert.deepEqual(deleted, ['b1', 'b2']);
+  // 新旧两套键都清（旧库还有 role:<pid>:<name>）
+  assert.deepEqual(cleared, [
+    { key: `bot:${project.id}:qa`, value: null },
+    { key: `role:${project.id}:qa`, value: null }
+  ]);
+  // 别的 bot 的 binding 不动
+  const coder = await createBotUseCase(deps, alice, project.id, { name: 'coder', agentId: 'pi' });
+  assert.ok(coder.ok);
+  await removeBotUseCase(wired, alice, coder.value.id);
+  assert.deepEqual(deleted, ['b1', 'b2']);
+});
+
+test('bot 用例：改名被拒；同名重建沿用确定 id，不同名字不会拿到同一个 id（#221）', async () => {
+  const { deps, project } = await withProject();
+  const first = await createBotUseCase(deps, alice, project.id, { name: 'qa', agentId: 'pi' });
+  assert.ok(first.ok);
+  const rename = await updateBotUseCase(deps, alice, first.value.id, { name: 'qc' });
+  assert.ok(!rename.ok && /建好就不能改/.test(rename.error.message));
+
+  const other = await createBotUseCase(deps, alice, project.id, { name: 'coder', agentId: 'pi' });
+  assert.ok(other.ok);
+  assert.notEqual(other.value.id, first.value.id);
+
+  // 删掉再建同名：id 只由 (projectId, name) 决定，仍会得到同一个 id（bot.ts 有意为之），
+  // 所以不会把旧会话串到「另一个 bot」上；想彻底隔离只能换 id 生成策略。
+  assert.ok((await removeBotUseCase(deps, alice, first.value.id)).ok);
+  const again = await createBotUseCase(deps, alice, project.id, { name: 'qa', agentId: 'pi' });
+  assert.ok(again.ok);
+  assert.equal(again.value.id, first.value.id);
+  assert.notEqual(again.value.id, other.value.id);
 });
 
 test('消息配置从 bots 表读，不再读旧 roles JSON', async () => {

@@ -83,6 +83,11 @@ const enabledOf = (project: ContextSetting | null) => project?.enabled ?? [DEFAU
  */
 const botSettingKey = (projectId: string, name: string): string => `bot:${projectId}:${name}`;
 const legacyBotSettingKey = (projectId: string, name: string): string => `role:${projectId}:${name}`;
+/** 删 bot 时清理上下文设置要用同一套键（#221 步骤 4）。 */
+export const botContextSettingKeys = (projectId: string, name: string): readonly string[] => [
+  botSettingKey(projectId, name),
+  legacyBotSettingKey(projectId, name)
+];
 
 /** 一次读新键 + 旧键，新键优先。 */
 async function botSettingOf(
