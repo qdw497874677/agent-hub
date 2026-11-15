@@ -56,16 +56,20 @@ function runtimeModels(workers: readonly WorkerInfoDto[], agentId: string): stri
 
 /**
  * 模型一栏：显式的「默认模型（留空）」+ 运行时上报的清单（≤ 8 原生下拉，> 8 可搜索选择器）。
- * 清单里没有的模型留了手填兜底；值始终写回同一个字段，空串继续合法（= 运行时默认）。
+ * 手填入口常开：清单只覆盖运行时自报的那几个，自建模型、没上报的机器都得能直接写。
+ * 值始终写回同一个字段，空串继续合法（= 运行时默认）。
  */
 function BotModelField({ agentId, model, onChange }: { agentId: string; model: string; onChange: (value: string) => void }) {
   const workers = useWorkers();
   const models = useMemo(() => runtimeModels(workers.list, agentId), [workers.list, agentId]);
-  const [manual, setManual] = useState(false);
   const choices = useMemo(() => botModelChoices(models, model), [models, model]);
   const offList = offListModel(models, model);
+  // 手填 / 列表是「在这台运行时上的一次点击」：跟着 agentId 记，换运行时重新判断，别把上一台的口径带过来。
+  // 没点过时看值：清单外的老值直接进手填，能看见也能改（别只剩下拉里一条「清单外」）。
+  const [manualPref, setManualPref] = useState<{ agentId: string; manual: boolean } | null>(null);
+  const pref = manualPref?.agentId === agentId ? manualPref.manual : null;
   // 清单空（机器没上报、或这个运行时没配模型）：没有可点的东西，直接给手填，也不给没用的切换链接。
-  const showManual = manual || models.length === 0;
+  const showManual = models.length === 0 || (pref ?? offList !== null);
   return (
     <div data-testid="bot-model-field" className="flex min-w-0 flex-col gap-1 text-meta text-secondary">
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -74,7 +78,7 @@ function BotModelField({ agentId, model, onChange }: { agentId: string; model: s
           <button
             type="button" data-testid="bot-model-manual" aria-pressed={showManual}
             className="ml-auto shrink-0 text-meta text-tertiary hover:text-secondary hover:underline"
-            onClick={() => setManual((on) => !on)}
+            onClick={() => setManualPref({ agentId, manual: !showManual })}
           >{showManual ? '从清单里选' : '手动输入模型 id'}</button>
         ) : null}
       </div>
@@ -83,7 +87,7 @@ function BotModelField({ agentId, model, onChange }: { agentId: string; model: s
           data-testid="bot-model" aria-label="模型" className={INPUT} maxLength={200}
           placeholder="比如：deepseek-v3" value={model}
           // 开始手填就钉在手填模式：清单可能还在路上（worker 没回），别把人正打字时的框换成下拉。
-          onChange={(event) => { setManual(true); onChange(event.target.value); }}
+          onChange={(event) => { setManualPref({ agentId, manual: true }); onChange(event.target.value); }}
         />
       ) : choices.items.length > SEARCHABLE_AFTER ? (
         <div data-testid="bot-model-select" className="min-w-0">

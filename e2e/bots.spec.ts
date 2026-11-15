@@ -32,32 +32,56 @@ for (const width of [390, 1280]) {
 
     // 新建两个 bot（界面），再用 API 加一个
     await page.getByTestId('bot-display-name').fill('写手');
-    await page.getByTestId('bot-name').fill('writer');
+    // bot @id 在团队里唯一：两个宽度各用一套名字，别互相撞
+    const tag = String(width);
+    await page.getByTestId('bot-name').fill(`writer${tag}`);
     await page.locator('[data-testid="bot-color"][data-color="sage"]').click();
     await page.locator('[data-testid="bot-runtime"][data-runtime="grok"]').click();
-    await page.getByTestId('bot-model').fill('m-writer');
+    // 模型：机器上报了清单就是下拉，旁边「手动输入模型 id」随时能切回手填；没上报清单就直接是手填框。
+    // 清单可能比表单晚到：整段重试，等它真到位再点。
+    const manualToggle = page.getByTestId('bot-model-manual');
+    const modelInput = page.getByTestId('bot-model');
+    await expect(async () => {
+      if (await modelInput.isVisible()) return;
+      if ((await manualToggle.count()) === 0) throw new Error('模型清单还没到');
+      // 先走一遍下拉（原生 select 时挑第二个模型），再点手填
+      const modelSelect = page.getByTestId('bot-model-select');
+      if ((await modelSelect.count()) > 0 && (await modelSelect.evaluate((el) => el.tagName)) === 'SELECT') {
+        await modelSelect.selectOption({ index: 1 });
+      }
+      await manualToggle.click();
+      await expect(modelInput).toBeVisible();
+    }).toPass({ timeout: 20_000 });
+    await modelInput.fill('m-writer');
+    if ((await manualToggle.count()) > 0) {
+      // 手填入口常开：切回清单看得见，再切回手填时刚填的值不丢
+      await manualToggle.click();
+      await expect(page.getByTestId('bot-model-select')).toBeVisible();
+      await manualToggle.click();
+      await expect(modelInput).toHaveValue('m-writer');
+    }
     await page.getByTestId('bot-description').fill('你负责写初稿。');
     await expect(page.getByTestId('bot-description-count')).toHaveText('7 / 4000');
     await shot('02-bot-new');
     await page.getByTestId('bot-save').click();
-    await expect(page.locator('[data-testid="bot-item"][data-name="writer"]')).toBeVisible();
-    for (const [name, displayName, color] of [['critic', '挑刺', 'rose'], ['editor', '编辑', 'sky']]) {
+    await expect(page.locator(`[data-testid="bot-item"][data-name="writer${tag}"]`)).toBeVisible();
+    for (const [name, displayName, color] of [[`critic${tag}`, '挑刺', 'rose'], [`editor${tag}`, '编辑', 'sky']]) {
       const r = await page.request.post(`/api/projects/${w.project}/agents`, { headers: w.headers, data: { name, displayName, color, agentId: 'pi', description: '' } });
       expect(r.ok(), await r.text()).toBe(true);
     }
     // @id 重复 / 职责过长 会被拒
-    expect((await page.request.post(`/api/projects/${w.project}/agents`, { headers: w.headers, data: { name: 'writer', agentId: 'pi' } })).status()).toBe(400);
-    expect((await page.request.post(`/api/projects/${w.project}/agents`, { headers: w.headers, data: { name: 'long', agentId: 'pi', description: 'x'.repeat(4001) } })).status()).toBe(400);
+    expect((await page.request.post(`/api/projects/${w.project}/agents`, { headers: w.headers, data: { name: `writer${tag}`, agentId: 'pi' } })).status()).toBe(400);
+    expect((await page.request.post(`/api/projects/${w.project}/agents`, { headers: w.headers, data: { name: `long${tag}`, agentId: 'pi', description: 'x'.repeat(4001) } })).status()).toBe(400);
     await page.reload();
     await expect(page.getByTestId('bot-item')).toHaveCount(3);
     await shot('03-bots');
 
     // 编辑：@id 不能改
-    await page.locator('[data-testid="bot-item"][data-name="critic"]').getByTestId('bot-edit').click();
+    await page.locator(`[data-testid="bot-item"][data-name="critic${tag}"]`).getByTestId('bot-edit').click();
     await expect(page.getByTestId('bot-name')).toBeDisabled();
     await page.getByTestId('bot-display-name').fill('挑刺的');
     await page.getByTestId('bot-save').click();
-    await expect(page.locator('[data-testid="bot-item"][data-name="critic"]')).toContainText('挑刺的');
+    await expect(page.locator(`[data-testid="bot-item"][data-name="critic${tag}"]`)).toContainText('挑刺的');
 
     // 建群：只勾成员，高级设置收起
     await page.getByTestId('tab-messages').click();
@@ -83,7 +107,7 @@ for (const width of [390, 1280]) {
     await panel.getByTestId('member-add-confirm').click();
     await expect(panel.getByTestId('group-member-row')).toHaveCount(3);
     page.once('dialog', (d) => void d.accept());
-    await panel.locator('[data-testid="member-remove"][data-role="critic"]').click();
+    await panel.locator(`[data-testid="member-remove"][data-role="critic${tag}"]`).click();
     await expect(panel.getByTestId('group-member-row')).toHaveCount(2);
     await shot('07-members');
     if (width === 390) await page.keyboard.press('Escape');
@@ -91,13 +115,53 @@ for (const width of [390, 1280]) {
 
     // 删除 bot：确认框列出所在的群，删完自动出群
     await page.goto(`/#/bots/${w.project}`);
-    await page.locator('[data-testid="bot-item"][data-name="writer"]').getByTestId('bot-delete').click();
+    await page.locator(`[data-testid="bot-item"][data-name="writer${tag}"]`).getByTestId('bot-delete').click();
     await expect(page.getByTestId('bot-delete-groups')).toContainText('写作组');
     await shot('08-bot-delete');
     await page.getByTestId('bot-delete-confirm').click();
-    await expect(page.locator('[data-testid="bot-item"][data-name="writer"]')).toHaveCount(0);
+    await expect(page.locator(`[data-testid="bot-item"][data-name="writer${tag}"]`)).toHaveCount(0);
     const groups = (await (await page.request.get(`/api/projects/${w.project}/groups`)).json()) as { groups: { members: string[] }[] };
-    expect(groups.groups[0]?.members).toEqual(['editor']);
+    expect(groups.groups[0]?.members).toEqual([`editor${tag}`]);
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
   });
 }
+
+// 机器上不一定装了 grok：把 workers 接口补一份模型清单，专门验「有清单」这条路径——
+// 下拉旁边的手填入口常开（自建模型、清单没收的口径都靠它），切来切去值不丢。
+test('模型：清单在手时是下拉，手填入口常开——能切到手填、也能切回清单，值不丢', async ({ page, baseURL }) => {
+  await loginByApi(page);
+  await page.route('**/api/workers', async (route) => {
+    const response = await route.fetch();
+    const workers = (await response.json()) as { workerId?: string | null; [key: string]: unknown }[];
+    await route.fulfill({
+      response,
+      json: workers.map((worker) => ({
+        ...worker,
+        workerId: worker.workerId ?? 'w-test',
+        state: 'online',
+        origin: 'local',
+        agentModels: [{ agentId: 'grok', models: ['grok-4.6', 'grok-4.5'], defaultModel: 'grok-4.6' }]
+      }))
+    });
+  });
+  const w = await world(page, baseURL!);
+  await page.goto(`/#/bots/${w.project}/new`);
+  await expect(page.getByTestId('bot-form')).toBeVisible();
+  await page.locator('[data-testid="bot-runtime"][data-runtime="grok"]').click();
+
+  const toggle = page.getByTestId('bot-model-manual');
+  await expect(toggle).toHaveText('手动输入模型 id');
+  await expect(page.getByTestId('bot-model-select')).toBeVisible();
+  await expect(page.getByTestId('bot-model')).toHaveCount(0);
+
+  await toggle.click();                        // 手填入口常开
+  await expect(toggle).toHaveText('从清单里选');
+  await page.getByTestId('bot-model').fill('m-writer');
+
+  await toggle.click();                        // 切回清单：值落在「清单外」那一条上
+  await expect(page.getByTestId('bot-model-select')).toBeVisible();
+  await expect(page.getByTestId('bot-model-select')).toContainText('m-writer');
+
+  await toggle.click();                        // 再切回手填：刚填的值不丢
+  await expect(page.getByTestId('bot-model')).toHaveValue('m-writer');
+});
