@@ -32,6 +32,7 @@ import type { AssetReader, GitCandidate } from '../ports/asset-reader.ts';
 import type { AssetDelivery, AssetSyncBoard } from '../ports/asset-delivery.ts';
 import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
 import { isHubSecretKey, secretLookupOrder } from '../asset-review.ts';
+import { checkGitSourceUrl } from '../asset-git-host.ts';
 import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpConfig, type McpConfig, type McpLaunch } from '../mcp.ts';
 
 /** 资产中心是独立的限界上下文：不塞进 Deps。 */
@@ -206,14 +207,13 @@ export function uploadAsset(
   return createAsset(deps, input.kind, { type: 'upload' }, input.files, input.name ?? null, null, input.projectId ?? null, input);
 }
 
-const GIT_URL = /^(https:\/\/|ssh:\/\/|git@)[^\s]+$/;
-
 export async function scanGitSource(
   deps: Pick<AssetDeps, 'reader'>,
   url: string,
   ref: string | null
 ): Promise<Result<{ commit: string; candidates: GitCandidate[] }, DomainError>> {
-  if (!GIT_URL.test(url)) return err(invalid('只支持 https://、ssh:// 或 git@ 开头的仓库地址'));
+  const allowed = checkGitSourceUrl(url);
+  if (!allowed.ok) return allowed;
   return deps.reader.scanGit(url, ref);
 }
 
@@ -221,7 +221,8 @@ export async function importGitAsset(
   deps: CreateDeps,
   input: { kind: AssetKind; url: string; ref: string | null; path: string; name?: string | null; projectId?: string | null } & AssetOwnership
 ): Promise<Result<Asset, DomainError>> {
-  if (!GIT_URL.test(input.url)) return err(invalid('只支持 https://、ssh:// 或 git@ 开头的仓库地址'));
+  const allowed = checkGitSourceUrl(input.url);
+  if (!allowed.ok) return allowed;
   const checkout = await deps.reader.readGit(input.url, input.ref, input.path, input.kind);
   if (!checkout.ok) return checkout;
   const source: AssetSource = { type: 'git', url: input.url, ref: input.ref, path: input.path };
@@ -266,6 +267,9 @@ export async function checkAssetUpdate(
   const asset = await deps.assets.get(assetId);
   if (!asset) return err(notFound('没有这个资产'));
   if (asset.source.type !== 'git') return err(invalid('上传来的资产没有来源可查：直接传新版本'));
+  // 老资产可能存着策略收紧前的地址：巡检时同样按当前策略再拦一次。
+  const allowed = checkGitSourceUrl(asset.source.url);
+  if (!allowed.ok) return allowed;
   const checkout = await deps.reader.readGit(asset.source.url, asset.source.ref, asset.source.path, asset.kind);
   if (!checkout.ok) return checkout;
   return offerRevision(deps, asset, checkout.value.files, checkout.value.commit);

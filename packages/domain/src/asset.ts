@@ -167,12 +167,32 @@ export interface SessionAssetEntry {
   readonly scope: AssetScope;
 }
 
+/**
+ * 一次会话启动时环境版本（`environmentRevision`）的输入快照（#225）。
+ *
+ * 只记哈希原语：MCP 启动配置里已经展开的密钥只以 digest 形式出现，明文不落库。
+ * prepare 写下它，revision 之后按同一份输入重算（资产部分用当前状态），
+ * 不再去展开密钥——否则「工具这次没给」和「工具可用」两种情况下版本永远对不上。
+ */
+export interface SessionEnvironmentRevisionInputs {
+  readonly projectId: string | null;
+  readonly workerId: string;
+  /** [assetId, kind, name, digest, scope]，已排序。 */
+  readonly assets: readonly (readonly string[])[];
+  /** MCP 启动配置的哈希原语（stdio 的 env 只留 digest），已排序。 */
+  readonly mcp: readonly (readonly string[])[];
+  /** [name, reason]，已排序。 */
+  readonly skipped: readonly (readonly string[])[];
+}
+
 /** 一次会话启动时实际给出的资产清单（落库，会话界面展示；之后改资产不影响已记下的）。 */
 export interface SessionAssetManifest {
   readonly sessionId: string;
   readonly workerId: string;
   readonly entries: readonly SessionAssetEntry[];
   readonly at: number;
+  /** 本次启动的环境版本输入（#225）；旧数据没有这一项。 */
+  readonly revision?: SessionEnvironmentRevisionInputs;
 }
 
 export type AssetSyncState = 'pending' | 'syncing' | 'synced' | 'failed';

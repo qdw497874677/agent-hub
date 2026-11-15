@@ -642,7 +642,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         if (frame.build && frame.build.protocol !== PROTOCOL_VERSION) {
           socket.close(
             PROTOCOL_MISMATCH_CLOSE,
-            `协议版本不兼容：worker v${frame.build.protocol}，hub v${PROTOCOL_VERSION}，请在 worker 上运行 scripts/update-worker.sh`
+            // WebSocket 的关闭原因最多 123 字节（UTF-8），这段中文很容易超；超了 socket.close 会抛，连接反而不关。
+            `协议版本不兼容：worker v${frame.build.protocol}，hub v${PROTOCOL_VERSION}，请运行 scripts/update-worker.sh（v4 起资产不再默认全给）`
           );
           return;
         }

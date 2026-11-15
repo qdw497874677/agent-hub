@@ -22,7 +22,10 @@ export interface WorkerAssets {
   readonly root: string;
   /** 让目录与清单一致；缺的内容用 fetch 按哈希取（每批 ≤ 200 个）。 */
   sync(entries: readonly AssetManifestEntryWire[], fetch: FetchBlobs): Promise<{ root: string; installed: Record<string, string> }>;
-  /** 此刻装着的东西；什么都没装时返回 undefined（会话照旧启动，不加任何参数）。 */
+  /**
+   * 此刻装着、且在这次会话清单（`only`）里的东西。
+   * 没给清单 = 什么都不给（#223 fail-closed）；旧语义「没给 = 全给」已废弃。
+   */
   current(only?: ReadonlySet<string>): Promise<SessionAssets | undefined>;
 }
 
@@ -176,9 +179,11 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
       queue = run.catch(() => {});
       return run;
     },
-    async current(only) {
+    async current(only = new Set<string>()) {
       await queue;
-      const entries = (await readManifest()).filter((entry) => !only || only.has(entry.assetId));
+      // 清单为空 = 一个都不给（#223）。历史上 `only` 缺省表示「全给」，那等于把
+      // hub 的解析失败放大成「把机器上所有资产塞进会话」——现在一律按显式清单过滤。
+      const entries = (await readManifest()).filter((entry) => only.has(entry.assetId));
       if (entries.length === 0) return undefined;
       const skills = entries
         .filter((entry) => entry.kind === 'skill')

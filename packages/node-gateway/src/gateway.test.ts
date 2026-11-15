@@ -1055,7 +1055,8 @@ test('资产经长连接下发：hub 推清单，Worker 按哈希回取、落进
     assert.deepEqual(asked, [[sha]]);
     assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /PINEAPPLE/);
 
-    assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
+    // v4（#223）：hub 必须显式给 assetIds；不带 = 一个都不给，不再等于「全给」。
+    assert.equal((await gateway.gateway.dispatch({ ...start('s1', 'w1'), assetIds: ['a1'] })).ok, true);
     await rec.until(() => seen.length === 1);
     assert.equal(seen[0]?.assets?.skills[0]?.path, join(root, 'skills/greeter/SKILL.md'));
     assert.equal((await gateway.assets.push('nobody', [])).ok, false, '不在线的机器推不了');

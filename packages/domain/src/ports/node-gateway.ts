@@ -39,7 +39,11 @@ export type WorkerCommand =
       readonly tools?: ToolAccess;
       /** MCP 资产（hub 在发出前才填，见 sessionMcpLaunch）。stdio 的 env 含密钥明文：不落库、不进日志。 */
       readonly mcp?: readonly McpLaunch[];
-      /** 这次会话生效的资产 id（项目作用域，见 sessionAssetPlan）；没有 = 机器上装着的全给。 */
+      /**
+       * 这次会话生效的资产 id（项目作用域，见 sessionAssetPlan）。
+       * v4 起 hub 总是显式给出（可能是空数组）；缺省 = 一个都不给（fail-closed）。
+       * 旧语义「没有 = 机器上装着的全给」已废弃（#223）。
+       */
       readonly assetIds?: readonly string[];
       /** hub 模型提供商（选了 hub-<slug>/… 模型时 hub 在发出前才填）。apiKey 不落库、不进日志。 */
       readonly provider?: ProviderGrant;

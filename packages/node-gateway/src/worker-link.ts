@@ -1097,7 +1097,13 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       spec = { ...spec, provider: { slug: grant.slug, name: grant.name, protocol: grant.protocol, models: grant.models, baseUrl: relay.baseUrl, token: relay.token } };
       options.onLog?.(`会话 ${command.sessionId} 用 hub 模型提供商「${grant.slug}」（${grant.via === 'hub' ? '经 hub 中转' : '本机直连'}）`);
     }
-    const assets = await options.assets?.current(command.assetIds ? new Set(command.assetIds) : undefined).catch(() => undefined);
+    const assets = await options.assets
+      ?.current(new Set(command.assetIds ?? []))
+      .catch((failure: Error) => {
+        // 读不到本机资产清单 = 这次一个都不给（fail-closed），别把整条会话拖死。
+        options.onLog?.(`读取本机资产清单失败，会话 ${command.sessionId} 这次不带资产：${failure.message}`);
+        return undefined;
+      });
     if (assets) spec = { ...spec, assets };
 
     // 同一会话又来一次 start（比如断线后 server 重新托管）：进程还活着、agent 和工作目录都没变，

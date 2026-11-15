@@ -49,7 +49,7 @@ test('Worker 资产目录：落地、只取缺的、升级换整份、清单外�
     assert.deepEqual(first.installed, { 'a-greeter': 'a'.repeat(64), 'a-rules': 'c'.repeat(64) });
     assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /v1/);
     assert.equal(await readFile(join(root, 'instructions/house-rules.md'), 'utf8'), 'Always answer in haiku.');
-    const now = await assets.current();
+    const now = await assets.current(new Set(['a-greeter', 'a-rules']));
     assert.deepEqual(now?.skills.map((s) => s.path), [join(root, 'skills/greeter/SKILL.md')]);
     assert.deepEqual(now?.instructions.map((s) => s.path), [join(root, 'instructions/house-rules.md')]);
 
@@ -87,6 +87,23 @@ test('Worker 资产目录：路径越界、哈希不对都拒绝，旧的一版�
   }
 });
 
+test('Worker 资产目录：没给资产清单 = 一个都不给，不再等于「全给」（#223）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-failclosed-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    await assets.sync([skill('greeter', 'v1', 'a'.repeat(64)), rule], fetch);
+    // 缺省 / 显式空集都按空集过滤：hub 解析失败时不能把机器上装着的全塞给会话。
+    assert.equal(await assets.current(), undefined);
+    assert.equal(await assets.current(new Set()), undefined);
+    // 只有白名单里的才给。
+    const only = await assets.current(new Set(['a-greeter']));
+    assert.deepEqual(only?.skills.map((s) => s.name), ['greeter']);
+    assert.deepEqual(only?.instructions, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Worker 资产目录：项目级同名技能落到 project-skills/<id8>/<name>，current 只给这次会话生效的', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wa-scope-'));
   try {
@@ -99,7 +116,7 @@ test('Worker 资产目录：项目级同名技能落到 project-skills/<id8>/<na
     const only = await assets.current(new Set(['a-local', 'a-rules']));
     assert.deepEqual(only?.skills.map((s) => s.path), [join(root, 'project-skills/abcd1234/greeter/SKILL.md')]);
     assert.equal(only?.instructions.length, 1);
-    assert.equal((await assets.current())?.skills.length, 2);
+    assert.equal((await assets.current(new Set(['a-greeter', 'a-local', 'a-rules'])))?.skills.length, 2);
     await assets.sync([global], fetch);
     assert.deepEqual(await readdir(join(root, 'project-skills')), []);
   } finally {

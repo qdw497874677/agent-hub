@@ -13,7 +13,9 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
 // v3（#221 步骤 7）：start_session / session 帧的 taskId 允许为 null（容器会话）。
 // 旧 Worker 会把这帧判成非法并「未知会话」，会话因此静默不响应——所以必须换版本，
 // 让旧 Worker 连不上并在日志里说清「运行 scripts/update-worker.sh」。
-export const PROTOCOL_VERSION = 3;
+// v4（#223）：start_session 的 assetIds 缺省不再表示「机器上装着的全给」，而是一个都不给；
+// hub 总是显式下发（可能是空数组）。v3 Worker 仍按旧语义全给，所以必须换版本让它们先升级。
+export const PROTOCOL_VERSION = 4;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
@@ -310,7 +312,7 @@ export const startSessionCommandSchema = z.object({
   tools: toolAccessSchema.optional(),
   /** MCP 资产（旧 worker 忽略）。stdio 的 env 含密钥明文：只进 agent 进程，不落盘、不进日志。 */
   mcp: z.array(mcpLaunchSchema).max(50).optional(),
-  /** 这次会话生效的资产（项目作用域算好的）；没有 = 旧 hub，机器上装着的全给。 */
+  /** 这次会话生效的资产（项目作用域算好的）。v4 起缺省 = 一个都不给；旧 hub 不带就按空集处理。 */
   assetIds: z.array(z.string()).max(500).optional(),
   /** hub 模型提供商（旧 worker 忽略）。apiKey 只交给 worker 本机中继：不进 agent、不落盘、不进日志。 */
   provider: z

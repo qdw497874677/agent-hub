@@ -160,6 +160,7 @@ export * from './memory-adapters/builtin.ts';
 export * from './memory-adapters/registry.ts';
 
 export * from './asset.ts';
+export * from './asset-git-host.ts';
 export * from './mcp.ts';
 export type { SecretVault, SecretInfo } from './ports/secret-vault.ts';
 export type { AssetRepository } from './ports/asset-repository.ts';

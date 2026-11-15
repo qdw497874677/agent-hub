@@ -5,6 +5,11 @@ import type { WorkerCommand } from './node-gateway.ts';
 export interface PreparedStart {
   readonly command: WorkerCommand;
   readonly revision: string | null;
+  /**
+   * 环境展开失败（#223）：这次不允许下发。
+   * 调用方应当把这条消息当成启动失败转告用户，而不是拿回原命令按「机器上装着的全给」下发。
+   */
+  readonly blocked?: string;
 }
 
 /**
