@@ -104,6 +104,8 @@ export function createGithubSource(deps: GithubSourceDeps): InboundSource {
     id: 'github',
     label: 'GitHub',
     kinds: ['issue'],
+    // GitHub 既有轮询（issue 列表）也有推送（webhook）：webhook 丢掉就永久丢了，按 push 排队。
+    delivery: 'push',
     validate: validateGithubParams,
     describe: (b) => { const p = githubParams(b.params); return `${p.repo} · 标签 ${p.label} · 每 ${p.everyMin} 分钟`; },
     // 任务在别的会话里做，bot 这一轮只是分派；按 1 小时算超时

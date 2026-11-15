@@ -47,14 +47,24 @@ export interface ConnectorNotice { readonly kind: 'binding_paused' | 'inbound_qu
 
 export const QUARANTINE_NOTICE_MS = 7 * 24 * 60 * 60_000;
 
+/**
+ * 这条失败是不是「外部系统这次不通」，而不是「这条触发配错了」（#221 步骤 6）。
+ * 基础设施中断照实记进 run，但不计入 consecutiveFailures，否则一次平台故障会把所有触发暂停。
+ */
+export function isInfrastructureFailure(message: string): boolean {
+  return /(fetch failed|network|socket hang up|ECONN\w*|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|timed out|timeout|rate limit|too many requests|\b(?:429|500|502|503|504)\b)/i.test(message);
+}
+
 export function createConnectorHub(deps: ConnectorHubDeps) {
   const sources = new Map(deps.sources.map((s) => [s.id, s]));
   const can = async (actor: Principal, projectId: string, permission: 'project.read' | 'project.update') =>
     authorizeProject(deps.policy, actor, await deps.projects.byId(projectId as ProjectId), permission);
 
-  const fail = async (binding: ConnectorBinding, run: TriggerRun, reason: string, state: 'failed' | 'timeout' = 'failed') => {
+  const fail = async (binding: ConnectorBinding, run: TriggerRun, reason: string, state: 'failed' | 'timeout' = 'failed', counted = true) => {
     const now = deps.now();
     await deps.store.saveRun({ ...run, state, reason, updatedAt: now });
+    // 基础设施中断（网络、5xx、限流）不是这条触发配置的错：记失败原因，但不算连续失败、不因此暂停。
+    if (!counted) return;
     const fresh = (await deps.store.binding(binding.id)) ?? binding;
     const failures = fresh.consecutiveFailures + 1;
     const pause = failures >= BINDING_MAX_FAILURES;
@@ -98,7 +108,7 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     const sent = await deps.deliver(sessionId, run.text, { id: binding.createdBy, name: `${binding.connector} · ${binding.name}`, via: 'connector' });
     if (!sent.ok) {
       const current = (await deps.store.runs(run.bindingId, 5)).find((r) => r.id === run.id);
-      if (!current || current.state === 'delivered') return fail(binding, delivered, sent.error.message);
+      if (!current || current.state === 'delivered') return fail(binding, delivered, sent.error.message, 'failed', !isInfrastructureFailure(sent.error.message));
     }
   };
 
@@ -130,9 +140,15 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       await deps.store.insertRun({ ...run, state: 'skipped', reason: '群目标还没接线，本次不投递' });
       return;
     }
+    const push = (sources.get(binding.connector)?.delivery ?? 'poll') === 'push';
     const open = await deps.store.openRuns(bindingId);
     if (open.length > 0) {
-      // 不是按计划时刻来的（轮询到的外部事件）：不记跳过、不占去重键，下次轮询再来
+      // 推送型来源不能丢：排队成 waiting，回合结束后由 turnEnded 接着投。
+      // 轮询型按计划时刻来的，本来就会再来一次，记 skipped 说明这次没投。
+      if (push) {
+        await deps.store.insertRun({ ...run, state: 'waiting', reason: '上一条还在处理，排队等它结束' });
+        return;
+      }
       if (event.plannedAt === undefined) return;
       await deps.store.insertRun({ ...run, state: 'skipped', reason: '上一次还没结束，本次跳过' });
       return;
@@ -191,6 +207,9 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
         await deps.store.saveRun({ ...run, state: 'done', updatedAt: deps.now() });
         if (binding.consecutiveFailures > 0) await deps.store.saveBinding({ ...binding, consecutiveFailures: 0, updatedAt: deps.now() });
       } else await fail(binding, run, outcome === 'failed' ? '这一轮失败了' : '这一轮被打断了');
+      // 排队的下一条（推送型来源在忙时入队的）现在可以投了，一次只放一条。
+      const queued = (await deps.store.openRuns(binding.id)).find((r) => r.state === 'waiting');
+      if (queued) await attempt(queued);
     },
     async list(actor: Principal, projectId: string, agentName: string): Promise<Result<BindingView[], DomainError>> {
       const allowed = await can(actor, projectId, 'project.read');

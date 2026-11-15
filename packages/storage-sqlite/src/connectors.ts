@@ -1,9 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { AgentTaskRequest, AgentTaskStore, ConnectorBinding, ConnectorStore, TriggerRun } from '@agent-hub/domain';
+import type { AgentTaskRequest, AgentTaskStore, ChannelOutboxMessage, ConnectorBinding, ConnectorStore, OutboxStore, TriggerRun } from '@agent-hub/domain';
 import { upsertSql } from './upsert.ts';
 
-/** 连接器（ADR 0032 R1/R2）：connector_binding、trigger_run、agent_project（bot 关联项目）、agent_task_request。 */
-export function createSqliteConnectors(db: DatabaseSync): { connectors: ConnectorStore; agentTasks: AgentTaskStore } {
+/** 连接器（ADR 0032 R1/R2）：connector_binding、trigger_run、agent_project（bot 关联项目）、agent_task_request、channel_outbox（#221 C2b）。 */
+export function createSqliteConnectors(db: DatabaseSync): { connectors: ConnectorStore; agentTasks: AgentTaskStore; outbox: OutboxStore } {
   db.exec(`CREATE TABLE IF NOT EXISTS connector_binding (
     id TEXT PRIMARY KEY, connector TEXT NOT NULL, kind TEXT NOT NULL, agent_project_id TEXT NOT NULL, agent_name TEXT NOT NULL,
     project_id TEXT, name TEXT NOT NULL, target TEXT NOT NULL, params TEXT NOT NULL, enabled INTEGER NOT NULL, paused_reason TEXT,
@@ -23,6 +23,15 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
     thread_key TEXT NOT NULL DEFAULT '', target_kind TEXT NOT NULL, session_id TEXT, group_id TEXT,
     last_inbound_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
     PRIMARY KEY (binding_id, external_conversation_id, thread_key))`);
+  // 出站队列（#221 步骤 6 / 设计 C2b）：租约 + 重试 + 回声比对。状态机见 domain/channel-outbox.ts。
+  db.exec(`CREATE TABLE IF NOT EXISTS channel_outbox (
+    id TEXT PRIMARY KEY, target_kind TEXT NOT NULL, target_id TEXT NOT NULL, body TEXT NOT NULL,
+    author_kind TEXT NOT NULL, author_name TEXT NOT NULL, reply_to_external_id TEXT,
+    external_conversation_id TEXT, external_thread_id TEXT, state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, lease_until INTEGER, next_attempt_at INTEGER NOT NULL,
+    external_message_id TEXT, origin TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+  db.exec('CREATE INDEX IF NOT EXISTS channel_outbox_due ON channel_outbox(state, next_attempt_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS channel_outbox_target ON channel_outbox(target_kind, target_id, updated_at)');
   db.exec(`CREATE TABLE IF NOT EXISTS agent_project (agent_project_id TEXT NOT NULL, agent_name TEXT NOT NULL, project_id TEXT NOT NULL,
     PRIMARY KEY (agent_project_id, agent_name, project_id))`);
   db.exec(`CREATE TABLE IF NOT EXISTS agent_task_request (
@@ -57,6 +66,16 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
     externalConversationId: r.external_conversation_id ?? null, externalThreadId: r.external_thread_id ?? null, postId: r.post_id ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
   type Q = { id: string; task_id: string | null; account_id: string; agent: string | null; session_id: string; project_id: string; title: string; goal: string; origin_connector: string | null; origin_external_id: string | null; wake_key: string | null; counted: number; approval: string; created_at: number; updated_at: number };
   const toQ = (r: Q): AgentTaskRequest => ({ id: r.id, taskId: r.task_id, accountId: r.account_id, agent: r.agent, sessionId: r.session_id, projectId: r.project_id, title: r.title, goal: r.goal, originConnector: r.origin_connector, originExternalId: r.origin_external_id, wakeKey: r.wake_key, counted: r.counted === 1, approval: r.approval as AgentTaskRequest['approval'], createdAt: r.created_at, updatedAt: r.updated_at });
+  type O = { id: string; target_kind: string; target_id: string; body: string; author_kind: string; author_name: string; reply_to_external_id: string | null;
+    external_conversation_id: string | null; external_thread_id: string | null; state: string; attempts: number; lease_until: number | null;
+    next_attempt_at: number; external_message_id: string | null; origin: string; created_at: number; updated_at: number };
+  const toO = (r: O): ChannelOutboxMessage => ({
+    id: r.id, target: { kind: r.target_kind as ChannelOutboxMessage['target']['kind'], id: r.target_id }, body: r.body,
+    author: { kind: r.author_kind as ChannelOutboxMessage['author']['kind'], name: r.author_name },
+    replyToExternalId: r.reply_to_external_id ?? null, externalConversationId: r.external_conversation_id ?? null, externalThreadId: r.external_thread_id ?? null,
+    state: r.state as ChannelOutboxMessage['state'], attempts: r.attempts, leaseUntil: r.lease_until ?? null, nextAttemptAt: r.next_attempt_at,
+    externalMessageId: r.external_message_id ?? null, origin: r.origin as ChannelOutboxMessage['origin'], createdAt: r.created_at, updatedAt: r.updated_at
+  });
 
   const bindingFields = ['id', 'connector', 'kind', 'agent_project_id', 'agent_name', 'project_id', 'name', 'target', 'params', 'enabled', 'paused_reason',
     'consecutive_failures', 'next_run_at', 'main_session_id', 'created_by', 'time_zone', 'created_at', 'updated_at', 'target_kind', 'group_id'] as const;
@@ -72,6 +91,11 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
   const qArgs = (r: AgentTaskRequest) => [r.id, r.taskId, r.accountId, r.agent, r.sessionId, r.projectId, r.title, r.goal, r.originConnector, r.originExternalId, r.wakeKey, r.counted ? 1 : 0, r.approval, r.createdAt, r.updatedAt] as const;
   const insQ = db.prepare(`INSERT OR IGNORE INTO agent_task_request ${qCols}`);
   const upQ = db.prepare(upsertSql('agent_task_request', qColumns));
+  const outboxFields = ['id', 'target_kind', 'target_id', 'body', 'author_kind', 'author_name', 'reply_to_external_id', 'external_conversation_id',
+    'external_thread_id', 'state', 'attempts', 'lease_until', 'next_attempt_at', 'external_message_id', 'origin', 'created_at', 'updated_at'] as const;
+  const upO = db.prepare(upsertSql('channel_outbox', outboxFields));
+  const oArgs = (m: ChannelOutboxMessage) => [m.id, m.target.kind, m.target.id, m.body, m.author.kind, m.author.name, m.replyToExternalId,
+    m.externalConversationId, m.externalThreadId, m.state, m.attempts, m.leaseUntil, m.nextAttemptAt, m.externalMessageId, m.origin, m.createdAt, m.updatedAt] as const;
 
   const connectors: ConnectorStore = {
     async saveBinding(b) { upsertB.run(b.id, b.connector, b.kind, b.agentProjectId, b.agentName, b.projectId, b.name, b.target, JSON.stringify(b.params), b.enabled ? 1 : 0, b.pausedReason, b.consecutiveFailures, b.nextRunAt, b.mainSessionId, b.createdBy, b.timeZone, b.createdAt, b.updatedAt,
@@ -120,6 +144,37 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
       } catch (e) { db.exec('ROLLBACK'); throw e; }
     }
   };
+  const outbox: OutboxStore = {
+    /**
+     * CAS 认领：一条 UPDATE 里完成「选一条到期行 + 置 sending + 写租约」。
+     * 子查询和 WHERE 各判一次 `state/lease/next_attempt_at`，保证并发调用同一行只有一个
+     * 能把 WHERE 命中（SQLite 单条语句原子），另一个拿到 0 行 / undefined。
+     */
+    async claim(due, now, leaseMs) {
+      if (due.kinds.length === 0) return null;
+      const marks = due.kinds.map(() => '?').join(',');
+      const leaseUntil = now + Math.max(0, leaseMs);
+      const row = db.prepare(`UPDATE channel_outbox SET state = 'sending', lease_until = ?, updated_at = ?
+        WHERE id = (SELECT id FROM channel_outbox
+          WHERE state IN ('queued','sending') AND (lease_until IS NULL OR lease_until <= ?)
+            AND next_attempt_at <= ? AND target_kind IN (${marks})
+          ORDER BY next_attempt_at, created_at LIMIT 1)
+          AND state IN ('queued','sending') AND (lease_until IS NULL OR lease_until <= ?) AND next_attempt_at <= ?
+        RETURNING *`).get(leaseUntil, now, now, now, ...due.kinds, now, now) as O | undefined;
+      return row ? toO(row) : null;
+    },
+    async save(m) { upO.run(...oArgs(m)); },
+    async expiring(now) {
+      return (db.prepare("SELECT * FROM channel_outbox WHERE state = 'sending' AND lease_until IS NOT NULL AND lease_until <= ? ORDER BY lease_until").all(now) as O[]).map(toO);
+    },
+    async requeue(now) {
+      // 只回收过期的 sending；attempts 不在这里加（真正的失败计数在 pump 的 settle 里）。
+      return Number(db.prepare("UPDATE channel_outbox SET state = 'queued', lease_until = NULL, next_attempt_at = ?, updated_at = ? WHERE state = 'sending' AND lease_until IS NOT NULL AND lease_until <= ?").run(now, now, now).changes);
+    },
+    async echoCandidates(target, since) {
+      return (db.prepare("SELECT * FROM channel_outbox WHERE target_kind = ? AND target_id = ? AND state IN ('sending','sent') AND updated_at >= ? ORDER BY updated_at").all(target.kind, target.id, since) as O[]).map(toO);
+    }
+  };
   const agentTasks: AgentTaskStore = {
     async insert(r) {
       if (Number(insQ.run(...qArgs(r)).changes) > 0) return r;
@@ -141,5 +196,5 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
       return (db.prepare(`SELECT * FROM agent_task_request WHERE wake_key IN (${marks}) ORDER BY created_at`).all(...keys) as Q[]).map(toQ);
     }
   };
-  return { connectors, agentTasks };
+  return { connectors, agentTasks, outbox };
 }

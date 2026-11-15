@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ConnectorBinding, InboundContext, InboundEvent, ToolContext } from '@agent-hub/domain';
+import type { ChannelOutboxMessage, ConnectorBinding, InboundContext, InboundEvent, OutboxStore, ToolContext } from '@agent-hub/domain';
 import type { GhComment, GhIssue, GithubClient } from './client.ts';
 import { createGithubSink, createGithubToolProvider, detectInjection, githubCapabilitiesOf, githubPoll, GITHUB_PRESET_CAPABILITIES, lastLabeler, mentions, parseIssueKey, validateGithubParams } from './index.ts';
 
@@ -111,6 +111,29 @@ test('回程：完成回 PR 链接、失败回原因；没绑在项目上的仓�
   assert.equal(gh.calls.length, 2);
   assert.match(gh.calls[0]!, /^comment acme\/app#7 ✅ 已完成，PR：\n- https:\/\/github.com\/acme\/app\/pull\/5/);
   assert.match(gh.calls[1]!, /^comment acme\/app#8 ❌ 没做成：\n\n> 测试挂了/);
+});
+
+test('回程：配了 outbox 就入队（external 目标），不再直调平台 API；没绑的仓库照样不排队', async () => {
+  const gh = fakeGithub();
+  const rows: ChannelOutboxMessage[] = [];
+  const outbox = { save: async (m: ChannelOutboxMessage) => { rows.push(m); } } as unknown as OutboxStore;
+  const sink = createGithubSink({
+    client: gh.client, tokenFor: async () => 'tok', boundRepos: async () => ['acme/app'],
+    prLinks: async () => ['https://github.com/acme/app/pull/5'], outbox, now: () => 42
+  });
+  await sink.deliver({ kind: 'task.finished', bindingId: '', externalId: 'acme/app#7', detail: '好了', projectId: 'p1', taskId: 't1' });
+  await sink.deliver({ kind: 'task.failed', bindingId: '', externalId: 'evil/repo#1', detail: 'x', projectId: 'p1', taskId: 't3' });
+  assert.deepEqual(gh.calls, []);
+  assert.equal(rows.length, 1);
+  const m = rows[0]!;
+  assert.equal(m.state, 'queued');
+  assert.equal(m.origin, 'reply');
+  assert.deepEqual(m.target, { kind: 'external', id: 'github:acme/app#7' });
+  assert.equal(m.replyToExternalId, 'acme/app#7');
+  assert.equal(m.externalConversationId, 'acme/app');
+  assert.equal(m.externalThreadId, '#7');
+  assert.equal(m.createdAt, 42);
+  assert.match(m.body, /✅ 已完成，PR：\n- https:\/\/github.com\/acme\/app\/pull\/5/);
 });
 
 const ctxOf = (sessionId: string) => ({ grant: { sessionId }, now: 0 }) as unknown as ToolContext;

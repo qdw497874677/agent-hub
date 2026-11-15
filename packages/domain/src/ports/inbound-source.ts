@@ -6,6 +6,12 @@ export interface InboundSource {
   /** 给人看的名字（如「定时」「GitHub」）；不填时界面回落到 id。 */
   readonly label?: string;
   readonly kinds: readonly string[];
+  /**
+   * 这个来源怎么交付（#221 步骤 6）：
+   * - `poll`（缺省）：自己按周期来取，上一轮没结束就这次不取，丢掉的只是「这一拍」；
+   * - `push`：外部主动推送，丢掉就永久丢了，所以上一轮没结束时要排队等着，不能丢。
+   */
+  readonly delivery?: 'poll' | 'push';
   /** 建 / 改 Binding 时校验参数；返回问题描述，没问题是 null。 */
   validate(kind: string, params: Readonly<Record<string, unknown>>): string | null;
   /** 显示用：一行说明（如「每 15 分钟」）。 */

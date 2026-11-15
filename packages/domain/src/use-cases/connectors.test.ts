@@ -56,7 +56,7 @@ const source: InboundSource = {
   start: () => ({ stop: () => undefined })
 };
 
-const harness = () => {
+const harness = (opts: { delivery?: 'poll' | 'push'; busy?: boolean; deliverError?: string } = {}) => {
   const { store, bindings, runs } = memoryStore();
   const delivered: Array<{ sessionId: string; text: string }> = [];
   const hub = createConnectorHub({
@@ -64,15 +64,17 @@ const harness = () => {
     projects: { byId: async (id: string) => (id === 'p1' ? project : null) },
     sessions: {},
     store,
-    sources: [source],
+    sources: [{ ...source, ...(opts.delivery ? { delivery: opts.delivery } : {}) }],
     agentExists: async () => true,
-    spawn: async () => {
-      throw new Error('群目标不该走到派生会话这一步');
-    },
-    busy: async () => false,
+    spawn: async () => ({
+      ok: true as const,
+      value: { id: 's1', status: 'running', lastSeq: 0, taskId: null, projectId: 'p1', createdBy: 'u1' } as never
+    }),
+    busy: async () => opts.busy ?? false,
     deliver: async (sessionId: string, text: string) => {
+      if (opts.deliverError) return { ok: false as const, error: { code: 'unavailable', message: opts.deliverError } };
       delivered.push({ sessionId, text });
-      return { ok: true, value: null };
+      return { ok: true as const, value: null };
     }
   } as never);
   return { hub, bindings, runs, delivered };
@@ -102,4 +104,35 @@ test('C1.1 兜底：旧数据里的群目标 binding 也不会投进私聊会话
   const [run] = runs.get('b1') ?? [];
   assert.equal(run?.state, 'skipped');
   assert.match(run?.reason ?? '', /群目标还没接线/);
+});
+
+
+test('推送型来源遇到忙不丢消息：排成 waiting，而不是像轮询那样跳过（#221 步骤 6）', async () => {
+  const { hub, bindings, runs, delivered } = harness({ delivery: 'push', busy: true });
+  await bindings.set('b1', groupBinding({ targetKind: 'session', groupId: null, target: 'new' }));
+  await hub.emit('b1', { kind: 'message', externalId: 'x1', title: 'a', text: 'first' });
+  await hub.emit('b1', { kind: 'message', externalId: 'x2', title: 'b', text: 'second' });
+  assert.equal(delivered.length, 0);
+  const queued = (runs.get('b1') ?? []).filter((r) => r.state === 'waiting');
+  assert.equal(queued.length, 2, '两条推送都要留在队列里，不能丢');
+  assert.deepEqual(queued.map((r) => r.externalId), ['x1', 'x2']);
+});
+
+test('轮询型来源按计划来的，忙时仍记 skipped（下次本来就还会再来）', async () => {
+  const { hub, bindings, runs } = harness({ delivery: 'poll', busy: true });
+  await bindings.set('b1', groupBinding({ targetKind: 'session', groupId: null, target: 'new' }));
+  await hub.emit('b1', { kind: 'message', externalId: 'x1', title: 'a', text: 'first', plannedAt: 1_000 });
+  await hub.emit('b1', { kind: 'message', externalId: 'x2', title: 'b', text: 'second', plannedAt: 1_000 });
+  const states = (runs.get('b1') ?? []).map((r) => r.state);
+  assert.deepEqual(states, ['waiting', 'skipped']);
+});
+
+test('基础设施中断记失败原因，但不计入连续失败（不会把触发暂停）', async () => {
+  const { hub, bindings, runs } = harness({ deliverError: 'fetch failed: ECONNRESET' });
+  await bindings.set('b1', groupBinding({ targetKind: 'session', groupId: null, target: 'new' }));
+  await hub.emit('b1', { kind: 'message', externalId: 'x1', title: 'a', text: 'first' });
+  const [run] = runs.get('b1') ?? [];
+  assert.equal(run?.state, 'failed');
+  assert.match(run?.reason ?? '', /ECONNRESET/);
+  assert.equal((await bindings.get('b1'))?.consecutiveFailures, 0);
 });
