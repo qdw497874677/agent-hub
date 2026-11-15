@@ -1,5 +1,4 @@
 import type { Session } from '../session.ts';
-import type { Project } from '../project.ts';
 import { defaultWorkspaceFor, locationOf, projectOfSession } from './workspaces.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
@@ -8,12 +7,6 @@ import { placeSession } from '../worker.ts';
 import type { Deps } from './deps.ts';
 import { startSessionUseCase } from './start-session.ts';
 
-export async function projectOf(
-  deps: Pick<Deps, 'tasks' | 'projects'> & Partial<Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>>,
-  session: Session
-): Promise<Project | null> {
-  return projectOfSession(deps, session);
-}
 
 /**
  * 会话跑完就没人托管它了（worker 那边已经 dispose）。
@@ -45,7 +38,7 @@ export async function ensureHosted(
     }
     deps.hosting.drop(session.id);
   }
-  const project = await projectOf(deps, session);
+  const project = await projectOfSession(deps, session);
   if (!project) return err(notFound('会话所属任务或项目不存在'));
   // resume 必须回到原来那台：agent 的会话文件只在那台机器上。
   // 老会话（多机之前建的）没有落点，这里补落一次并记下来，以后就钉在那台上了。

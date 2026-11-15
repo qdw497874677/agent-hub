@@ -5,6 +5,18 @@
  * 否则换个模式就等于换个安全边界。
  */
 
+/** HTTP 逐跳头：只在单条连接上有意义，代理不该转发（两种模式共用）。 */
+export const PREVIEW_HOP_BY_HOP: ReadonlySet<string> = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade'
+]);
+
 /** 客户端发来的、不该转给上游的头（hop-by-hop 以外的部分；两种模式共用）。 */
 export const PREVIEW_REQUEST_DROP: ReadonlySet<string> = new Set([
   'host',

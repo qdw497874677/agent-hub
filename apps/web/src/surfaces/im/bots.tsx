@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, botsApi, groupApi, tokensApi, type BotColorDto, type BotRecordDto, type BotTriggerDto, type BotTriggerSourceDto, type MessagingRoleDto, type WorkerInfoDto } from '../../shell/api.ts';
+import { api, botsApi, groupApi, teamApi, tokensApi, type BotColorDto, type BotRecordDto, type BotTriggerDto, type BotTriggerSourceDto, type MessagingRoleDto, type WorkerInfoDto } from '../../shell/api.ts';
 import { AccountMenu, useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
@@ -12,6 +12,11 @@ import { useWorkers } from '../../shell/workers.tsx';
 import { BOT_MODEL_DEFAULT_ITEM, BOT_MODEL_DEFAULT_LABEL, botModelChoices, offListModel } from './bot-models.ts';
 import { BOT_TRIGGERS_EMPTY, BOT_TRIGGERS_EMPTY_HINT, latestRun, nextRunView, runView, sourceText, triggerStateView } from './bot-triggers.ts';
 import { BOT_CREDENTIAL_ACTIVE_NOTE, botCredentialBody, botCredentialRevokeConfirm, botCredentialView } from './bot-credential.ts';
+import {
+  BOT_GRANTS_EMPTY, BOT_GRANTS_HINT, BOT_GRANT_PICKER_TITLE, BOT_SCOPE_NOTE,
+  grantPickerView, grantRevokeConfirm, grantRowView, projectGrant
+} from '../../atoms/bot-grants.ts';
+import { workspaceName } from '../../atoms/workspace-format.ts';
 import {
   BOT_OPTION_KEY_SUGGESTIONS, BOT_OPTION_VALUE_SUGGESTIONS, BOT_OPTION_VALUE_MAX,
   botOptionRows, botOptionsProblem, botOptionRowProblem, botOptionsInput, flipBotOptionRow,
@@ -308,6 +313,140 @@ function BotTriggerRow({ trigger, projectId, now, sources }: {
   );
 }
 
+/**
+ * 项目授权（bot 归团队，项目只是授权）：列出这个 bot 的每条授权，只有本项目那条能撤销。
+ * 撤销要二次确认——它会被移出本项目的群，@ 也不再响应，而群成员是快照，不会自己跟着变。
+ * 窄屏一行一块（项目名 / 工作空间 / 按钮各占整行），不出现横向滚动。
+ */
+function BotGrants({ bot, projectId }: { bot: BotRecordDto; projectId: string }) {
+  const client = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+  const grants = useQuery({ queryKey: ['bot-grants', bot.id], queryFn: () => botsApi.grants(bot.id) });
+  const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
+  // 键与工作空间页共用：同一份团队工作空间清单，不重复拉。
+  const workspaces = useQuery({ queryKey: ['team-workspaces'], queryFn: api.teamWorkspaces });
+  const rows = grants.data?.grants ?? [];
+  const projectNames = useMemo(() => new Map((projects.data ?? []).map((p) => [p.id, p.name])), [projects.data]);
+  const workspaceNames = useMemo(
+    () => new Map((workspaces.data ?? []).map((row) => [row.workspace.id, workspaceName(row.workspace)])),
+    [workspaces.data]
+  );
+  // 本项目已有授权 = 不显示「授权到这个项目」，那条授权行上才有「撤销」。
+  const here = projectGrant(rows, projectId);
+  const hereName = projectNames.get(projectId)?.trim() || projectId;
+  const refresh = () => {
+    void client.invalidateQueries({ queryKey: BOTS_KEY });
+    void client.invalidateQueries({ queryKey: ['bot-grants', bot.id] });
+    void client.invalidateQueries({ queryKey: ['groups'] });
+  };
+  const add = useMutation({ mutationFn: () => botsApi.grant(bot.id, projectId), onSuccess: refresh });
+  const revoke = useMutation({
+    mutationFn: () => botsApi.revoke(bot.id, projectId),
+    onSuccess: () => { setConfirming(false); refresh(); }
+  });
+  const error = add.error ?? revoke.error;
+  return (
+    <div data-testid="bot-grants" className="flex min-w-0 flex-col gap-2 rounded-sm border border-hair bg-card p-2">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <p className="text-meta text-secondary">项目授权</p>
+        <p className="min-w-0 text-meta text-tertiary">{BOT_GRANTS_HINT}</p>
+      </div>
+      {grants.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
+      {!grants.isLoading && !rows.length ? (
+        <p data-testid="bot-grants-empty" className="text-meta text-tertiary">{BOT_GRANTS_EMPTY}</p>
+      ) : null}
+      {rows.length ? (
+        <ul className="flex min-w-0 flex-col gap-1.5">
+          {rows.map((grant) => {
+            const view = grantRowView(grant, projectNames.get(grant.projectId), workspaceNames);
+            const isHere = grant.projectId === projectId;
+            return (
+              <li key={grant.projectId} data-testid="bot-grant-row" data-project={grant.projectId}
+                className="flex min-w-0 flex-col gap-1 rounded-sm border border-hair p-2 sm:flex-row sm:items-center sm:gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="min-w-0 break-words text-body text-primary">
+                    {view.project}{isHere ? <span className="ml-1 text-meta text-tertiary">（本项目）</span> : null}
+                  </p>
+                  <p className="min-w-0 break-words text-meta text-tertiary">{view.workspace}</p>
+                </div>
+                {isHere ? (confirming ? (
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <p className="min-w-0 basis-full text-meta text-rust">{grantRevokeConfirm(botLabel(bot), view.project)}</p>
+                    <button type="button" data-testid="bot-grant-revoke" className={DANGER} disabled={revoke.isPending} onClick={() => revoke.mutate()}>
+                      {revoke.isPending ? '撤销中…' : '确认撤销'}
+                    </button>
+                    <button type="button" className={SMALL} onClick={() => setConfirming(false)}>取消</button>
+                  </div>
+                ) : (
+                  <button type="button" data-testid="bot-grant-revoke" className={`${DANGER} self-start sm:shrink-0`} onClick={() => setConfirming(true)}>
+                    撤销本项目
+                  </button>
+                )) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {grants.error ? <p className="text-meta text-rust">{errorText(grants.error)}</p> : null}
+      {!here && !grants.isLoading ? (
+        <button type="button" data-testid="bot-grant-add" className={`${SMALL} self-start`} disabled={add.isPending} onClick={() => add.mutate()}>
+          {add.isPending ? '授权中…' : `授权到「${hereName}」`}
+        </button>
+      ) : null}
+      {error ? <p data-testid="bot-grant-error" className="text-meta text-rust">{errorText(error)}</p> : null}
+    </div>
+  );
+}
+
+/**
+ * 「授权已有 bot」：团队里还没授权到本项目的 bot，点一个就授权。
+ * 只从团队清单里挑——本项目的列表里已经没有它们了（授权撤销后就不在）。
+ */
+function GrantPicker({ teamId, projectId, grantedIds, onClose }: {
+  teamId: string;
+  projectId: string;
+  grantedIds: readonly string[];
+  onClose: () => void;
+}) {
+  const client = useQueryClient();
+  const team = useQuery({ queryKey: ['team-bots', teamId], queryFn: () => botsApi.team(teamId) });
+  const view = grantPickerView(team.data?.bots ?? [], grantedIds, team.isLoading);
+  const grant = useMutation({
+    mutationFn: (botId: string) => botsApi.grant(botId, projectId),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: BOTS_KEY }); onClose(); }
+  });
+  const runtime = (id: string) => RUNTIMES.find((r) => r.id === id)?.label ?? id;
+  return (
+    <DialogShell title={BOT_GRANT_PICKER_TITLE} onClose={onClose} testId="bot-grant-picker">
+      <p className="text-meta text-tertiary">从团队里挑一个 bot，授权到这个项目；授权后它才出现在这个列表里，也能拉进本项目的群。</p>
+      {team.isLoading ? <p className="mt-2 text-meta text-tertiary">加载中…</p> : null}
+      {view.empty && !team.isError ? <p data-testid="bot-grant-picker-empty" className="mt-2 text-meta text-tertiary">{view.empty}</p> : null}
+      {view.items.length ? (
+        <ul data-testid="bot-grant-picker-list" className="mt-2 flex max-h-[60dvh] min-w-0 flex-col gap-1.5 overflow-y-auto overscroll-contain">
+          {view.items.map((b) => (
+            <li key={b.id} className="min-w-0">
+              <button type="button" data-testid="bot-grant-option" data-id={b.id} data-name={b.name}
+                className="flex w-full min-w-0 items-start gap-2 rounded-sm border border-hair bg-card p-2 text-left hover:border-accent disabled:opacity-40"
+                disabled={grant.isPending} onClick={() => grant.mutate(b.id)}>
+                <BotAvatar bot={b} size={28} />
+                <span className="min-w-0 flex-1">
+                  <span className="block min-w-0 break-words text-body text-primary">
+                    {botLabel(b)} <span className="text-meta text-tertiary">@{b.name}</span>
+                  </span>
+                  <span className="block min-w-0 break-words text-meta text-tertiary">{runtime(b.agentId)} · {b.model || '默认模型'}</span>
+                </span>
+                <span className="shrink-0 text-meta text-tertiary">{grant.isPending && grant.variables === b.id ? '授权中…' : '授权'}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {team.error ? <p className="mt-2 text-meta text-rust">{errorText(team.error)}</p> : null}
+      {grant.error ? <p data-testid="bot-grant-picker-error" className="mt-2 text-meta text-rust">{errorText(grant.error)}</p> : null}
+    </DialogShell>
+  );
+}
+
 function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecordDto | null; onDone: () => void }) {
   const [name, setName] = useState(bot?.name ?? '');
   const [displayName, setDisplayName] = useState(bot?.displayName ?? '');
@@ -455,6 +594,8 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecord
         </>
       ) : null}
       {/* 触发器与凭据只在编辑已有 bot 时给：新建时还没有 bot 记录。 */}
+      {/* 授权段要有团队上下文：拿不到 teamId 就整段不出现，不留死按钮。 */}
+      {bot && bot.teamId ? <BotGrants bot={bot} projectId={projectId} /> : null}
       {bot ? <BotTriggers bot={bot} /> : null}
       {bot ? <BotCredential projectId={projectId} bot={bot} /> : null}
       <div className="flex items-center gap-2">
@@ -503,6 +644,9 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects, enabled: !!account });
   const pid = projectId ?? projects.data?.[0]?.id ?? null;
   const bots = useQuery({ queryKey: [...BOTS_KEY, pid], queryFn: () => botsApi.list(pid!), enabled: !!pid });
+  // 团队上下文（项目授权、团队 bot 清单都要它）：拿不到就不显示任何授权入口。
+  const team = useQuery({ queryKey: ['team'], queryFn: teamApi.team, enabled: !!account });
+  const teamId = team.data?.id ?? null;
   // bot 接口不再带 groups：从群列表里按成员推导（与消息页共用一个查询键）。
   const groups = useQuery({ queryKey: ['groups', 'list', pid], queryFn: () => groupApi.list(pid!), enabled: !!pid });
   const groupsOf = (name: string): BotGroupRef[] =>
@@ -513,6 +657,7 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
   };
   const [editing, setEditing] = useState<'new' | string | null>(() => (window.location.hash.endsWith('/new') ? 'new' : null));
   const [deleting, setDeleting] = useState<BotRecordDto | null>(null);
+  const [picking, setPicking] = useState(false);
   if (!account) return null;
   const list = bots.data?.bots ?? [];
   const runtime = (id: string) => RUNTIMES.find((r) => r.id === id)?.label ?? id;
@@ -530,9 +675,17 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
         <AccountMenu />
       </header>
       <main className="mx-auto flex w-full max-w-3xl min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
-        <div className="flex items-center">
-          <p className="text-meta text-tertiary">bot 是这个项目里常驻的智能体：建好后可以拉进任意群，@它 就能叫它。</p>
-          {pid && editing !== 'new' ? <button data-testid="bot-new" className={`${SMALL} ml-auto shrink-0`} onClick={() => setEditing('new')}>新建 bot</button> : null}
+        <div className="flex flex-wrap items-start gap-2">
+          <p data-testid="bots-scope-note" className="min-w-0 text-meta text-tertiary">{BOT_SCOPE_NOTE}</p>
+          <div className="ml-auto flex shrink-0 flex-wrap gap-1.5">
+            {/* 列表非空时也要能「把团队里已有的拿过来」，否则第 N 个 bot 没入口。 */}
+            {pid && teamId && !bots.isLoading ? (
+              <button data-testid="bot-grant-open" className={SMALL} onClick={() => setPicking(true)}>
+                {BOT_GRANT_PICKER_TITLE}
+              </button>
+            ) : null}
+            {pid && editing !== 'new' ? <button data-testid="bot-new" className={SMALL} onClick={() => setEditing('new')}>新建 bot</button> : null}
+          </div>
         </div>
         {editing === 'new' && pid ? (
           <BotForm projectId={pid} bot={null} onDone={() => {
@@ -563,11 +716,14 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
         </ul>
         {!list.length && editing !== 'new' ? (
           <div data-testid="bots-empty" className="flex flex-col items-center gap-2 py-10 text-center">
-            <Empty text={bots.isLoading ? '加载中…' : pid ? '还没有 bot。新建一个，再把它拉进群。' : '先建一个项目'} />
+            <Empty text={bots.isLoading ? '加载中…' : pid ? '本项目还没有授权任何 bot。新建一个，或授权一个团队里已有的。' : '先建一个项目'} />
           </div>
         ) : null}
       </main>
       {deleting ? <DeleteConfirm bot={deleting} groups={groupsOf(deleting.name)} onDone={() => setDeleting(null)} /> : null}
+      {picking && pid && teamId ? (
+        <GrantPicker teamId={teamId} projectId={pid} grantedIds={list.map((b) => b.id)} onClose={() => setPicking(false)} />
+      ) : null}
     </div>
   );
 }

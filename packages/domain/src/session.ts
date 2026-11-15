@@ -226,9 +226,6 @@ export function applyEvent(session: Session, event: SessionEvent, now: number): 
   return { ...session, lastSeq, status, updatedAt: now };
 }
 
-export function isTerminal(session: Session): boolean {
-  return session.status !== 'running';
-}
 
 /**
  * 还没收到过任何一句话的会话（lastSeq = 0）：进程起来了，但从没开过一轮。

@@ -4,7 +4,7 @@ import { invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import { ATTACHMENT_LIMITS, isSafeRelativePath } from '../attachment.ts';
 import type { Deps } from './deps.ts';
-import { projectOf } from './hosting.ts';
+import { projectOfSession } from './workspaces.ts';
 import { locationOf } from './workspaces.ts';
 import { routeOf } from './machine-dirs.ts';
 
@@ -75,7 +75,7 @@ export async function readSessionAttachment(
   }
   const session = await deps.sessions.byId(sessionId);
   if (!session) return err(notFound('会话不存在'));
-  const project = await projectOf(deps, session);
+  const project = await projectOfSession(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
   const location = await locationOf(deps, project, session);
   const { root } = location;

@@ -19,9 +19,14 @@ _Avoid_: 会话（作动词时含糊）、Chat、Conversation、Thread
 
 **Agent**：
 一种可被调用的 agent 运行时的自我描述（`AgentDescriptor`）：能力矩阵、模型清单与可调项，由适配器上报，没有自己的生命周期状态。
-运行中的一次调用是 **Session**，不是 Agent。可复用的启动配置是 AgentProfile，按项目登记的自动代理是 Bot，三者不要混称。
+运行中的一次调用是 **Session**，不是 Agent。可复用的启动配置是 AgentProfile，团队级、按项目授权的自动代理是 Bot，三者不要混称。
 平台按能力矩阵渲染能力，不按 agent 名字写死判断。
 _Avoid_: Bot、助手、Model、Provider、实例
+
+**Bot**：
+团队级的一等智能体：有自己的 @id、运行时与启动选项，**不隶属任何项目**；通过「项目授权」进入项目（可分别指定每个项目里的默认工作空间）。
+授权到项目后才能被 `bot:<name>` 寻址、进该项目的群、在该项目的任务里开会话；撤销授权等于把它移出该项目。
+_Avoid_: 项目 bot、角色（role 是群里的发言身份，不是实体）
 
 **Artifact**：
 Session 或 Task 的产出物（文件、diff、报告、链接）。

@@ -355,7 +355,7 @@ const persistentAgents = createPersistentAgents({
   connectors: store.connectors,
   contextSettings: store.contextSettings,
   groupsOf: (projectId) => store.groups.groupsOf(projectId),
-  detach: (actor, projectId, name) => groupChat.detachAgent(actor, projectId, name)
+  detach: (actor: Parameters<typeof groupChat.detachAgent>[0], projectId: Parameters<typeof groupChat.detachAgent>[1], name: string) => groupChat.detachAgent(actor, projectId, name)
 });
 // 连接器（ADR 0032 R1）：入站来源只经 InboundSource 端口接进来；核心不认识具体连接器。
 // bot 的会话：优先按 sessions.bot_id 查；老会话没有 botId，按派生记录 / 群成员里的名字反查（兼容路径）。
@@ -1265,7 +1265,13 @@ const envNumber = (name: string): number | undefined => {
 };
 
 const observeEnabled = readEnv('OBSERVE') !== '0';
-const botDeps = { ...deps, messages: store.messages, connectors: store.connectors, contextSettings: store.contextSettings };
+const botDeps = {
+  ...deps,
+  messages: store.messages,
+  connectors: store.connectors,
+  contextSettings: store.contextSettings,
+  detach: (actor: Parameters<typeof groupChat.detachAgent>[0], projectId: Parameters<typeof groupChat.detachAgent>[1], name: string) => groupChat.detachAgent(actor, projectId, name)
+};
 const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agentTasks: store.agentTasks, dispatcher, onCreated: enqueueDispatch }, waitOptions: optionWaiters.wait, guard,
   observe: {
     enabled: observeEnabled,

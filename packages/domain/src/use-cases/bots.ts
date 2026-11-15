@@ -46,8 +46,10 @@ export interface BotsDeps extends BotReadDeps, Pick<Deps, 'projects' | 'sessions
   readonly policy?: AccessPolicy;
   /** 删除 bot 时顺手清掉的连接器 binding；不给 = 只删 bot 行（老调用方行为不变）。 */
   readonly connectors?: Pick<ConnectorStore, 'bindingsOf' | 'deleteBinding'>;
-  /** 删除 bot 时清掉它的上下文设置；不给 = 保留（老调用方行为不变）。 */
+  /** 删除 bot / 撤销授权时清掉它的上下文设置；不给 = 保留（老调用方行为不变）。 */
   readonly contextSettings?: Pick<ContextSettingsStore, 'set'>;
+  /** 撤销项目授权时把它从该项目的群里移出；不给 = 只撤授权。 */
+  readonly detach?: (actor: Principal, projectId: ProjectId, name: string) => Promise<unknown>;
 }
 
 const isBotNameProblem = (name: string): string | null =>
@@ -335,6 +337,14 @@ export async function revokeBotUseCase(
   const project = await authorize(deps, actor, projectId, 'project.share');
   if (!project.ok) return project;
   await deps.bots.revoke(bot.id, projectId);
+  // 撤销授权 = 这个 bot 不再属于该项目：从群里移出、停掉连接器、清掉项目内上下文。
+  if (actor) await deps.detach?.(actor, projectId, bot.name);
+  for (const binding of (await deps.connectors?.bindingsOf(projectId, bot.name)) ?? []) {
+    await deps.connectors?.deleteBinding(binding.id);
+  }
+  for (const key of botContextSettingKeys(projectId, bot.name)) {
+    await deps.contextSettings?.set(key, null);
+  }
   return ok(true);
 }
 

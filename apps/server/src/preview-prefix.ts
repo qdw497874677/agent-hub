@@ -1,6 +1,6 @@
 import type { PreviewLink } from '@agent-hub/domain';
 import { PREVIEW_DOWN_TEXT, stripShareParam } from './preview-proxy.ts';
-import { PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } from './preview-headers.ts';
+import { PREVIEW_HOP_BY_HOP, PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } from './preview-headers.ts';
 import type { PreviewChannel, PreviewStream } from './preview-channel.ts';
 
 /**
@@ -33,21 +33,7 @@ export interface PreviewPrefix {
   handle(request: Request): Promise<Response | null>;
 }
 
-const HOP_BY_HOP = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-  'host',
-  'content-length',
-  // Hub 的登录 cookie / Authorization 不转给上游 dev server（同端口模式）。
-  'cookie',
-  'authorization'
-]);
+const HOP_BY_HOP = PREVIEW_HOP_BY_HOP;
 
 const stripHopByHop = (headers: Headers): Array<[string, string]> => {
   const out: Array<[string, string]> = [];

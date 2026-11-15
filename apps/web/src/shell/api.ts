@@ -919,8 +919,32 @@ export type BotPatchInputDto = Omit<BotCreateInputDto, 'projectId' | 'name'>;
  */
 const emptyTriggers = (): BotTriggersDto => ({ sources: [], bindings: [] });
 
+/**
+ * 一条「bot 在某个项目里被授权」的记录（`GET /api/bots/:id/grants`）。
+ * bot 归团队，项目只是授权；`workspaceId` 为 null 表示跟随项目默认工作空间。
+ */
+export interface BotGrantDto {
+  readonly botId: string;
+  readonly projectId: string;
+  readonly workspaceId: string | null;
+  readonly createdAt: number;
+  readonly createdBy: string | null;
+}
+
 export const botsApi = {
+  /** 只要「已授权到该项目」的 bot（授权撤销后不再出现）。 */
   list: (projectId: string) => call<{ bots: BotRecordDto[] }>(`/api/bots?projectId=${encodeURIComponent(projectId)}`),
+  /** 团队里的全部 bot（不管授权），给「授权已有 bot」用。 */
+  team: (teamId: string) => call<{ bots: BotRecordDto[] }>(`/api/bots/team/${encodeURIComponent(teamId)}`),
+  grants: (botId: string) => call<{ grants: BotGrantDto[] }>(`/api/bots/${encodeURIComponent(botId)}/grants`),
+  /** 授权（重复 PUT 幂等）；不传 workspaceId 就是跟随项目默认工作空间。 */
+  grant: (botId: string, projectId: string, workspaceId?: string) =>
+    call<{ ok: true; grant: BotGrantDto }>(
+      `/api/bots/${encodeURIComponent(botId)}/grants/${encodeURIComponent(projectId)}`,
+      { method: 'PUT', body: JSON.stringify(workspaceId ? { workspaceId } : {}) }
+    ),
+  revoke: (botId: string, projectId: string) =>
+    call<{ ok: true }>(`/api/bots/${encodeURIComponent(botId)}/grants/${encodeURIComponent(projectId)}`, { method: 'DELETE' }),
   create: (input: BotCreateInputDto) => post<BotRecordDto>('/api/bots', input),
   /** 只读：挂在它身上的连接器触发器；接口不在（404/501）时返回空表。 */
   triggers: async (id: string): Promise<BotTriggersDto> => {

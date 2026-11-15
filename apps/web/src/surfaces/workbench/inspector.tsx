@@ -1,3 +1,4 @@
+import { modelLabel } from '../../atoms/model-label.ts';
 import { localTime } from '../../shell/local-time.ts';
 import { useEffect, useState } from 'react';
 import type { AgentDto, ArtifactDto, CanvasDto, JournalEntryDto, SessionActivityDto, SessionDto } from '../../shell/api.ts';
@@ -111,7 +112,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
           </div>
           <p className="mt-0.5 flex min-w-0 items-center gap-1.5 font-mono text-meta text-tertiary">
             <span className="truncate">
-              {agent?.label ?? session.agentId} · {session.model === '' ? '默认模型' : session.model}
+              {agent?.label ?? session.agentId} · {modelLabel(session.model)}
             </span>
             {workers.multi ? <WorkerChip worker={resolveWorker(workers.list, session.workerId)} /> : null}
             {session.origin.kind === 'fork' ? <span className="shrink-0">· 分叉自 #{session.origin.atSeq}</span> : null}

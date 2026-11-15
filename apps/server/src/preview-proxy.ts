@@ -3,7 +3,7 @@ import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { PreviewLink } from '@agent-hub/domain';
 import { PreviewStreamError, type PreviewChannel, type PreviewHead, type PreviewStream } from './preview-channel.ts';
-import { PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } from './preview-headers.ts';
+import { PREVIEW_HOP_BY_HOP, PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } from './preview-headers.ts';
 
 /**
  * 预览反代（docs/design/preview.md §7）：每个预览链接在 hub 的绑定地址上多开一个监听端口，
@@ -13,16 +13,7 @@ import { PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } 
  * redirect、cookie path、HMR 全都自然正确。这里只做鉴权、头改写与流式搬运。
  */
 
-const HOP_BY_HOP = new Set([
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade'
-]);
+const HOP_BY_HOP = PREVIEW_HOP_BY_HOP;
 
 /**
  * 客户端发来的、不该转给上游的头（除了 hop-by-hop）见 `preview-headers.ts`：

@@ -13,7 +13,8 @@ import { attachmentPath, base64Bytes, validateAttachments } from '../attachment.
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
 import { attemptDelivery } from './delivery.ts';
-import { ensureHosted, projectOf } from './hosting.ts';
+import { ensureHosted } from './hosting.ts';
+import { projectOfSession } from './workspaces.ts';
 import { recordEvent, recordSessionOptions } from './sessions.ts';
 import { otherEnd } from '../session-link.ts';
 import { taskBriefing } from '../task-briefing.ts';
@@ -93,7 +94,7 @@ async function prepareAttachments(
   const descriptor = deps.agents.descriptor(session.agentId);
   const capability = descriptor?.capabilities.attachments;
   if (capability?.state === 'denied') return err(invalid(capability.reason ?? '这个 agent 不接收附件'));
-  const project = await projectOf(deps, session);
+  const project = await projectOfSession(deps, session);
   if (!project) return err(notFound('会话所属项目不存在'));
   const { root } = await locationOf(deps, project, session);
   const at = deps.now();
@@ -261,7 +262,7 @@ async function withBytes(
 ): Promise<SessionEvent> {
   if (event.kind !== 'artifact') return event;
   const session = await deps.sessions.byId(sessionId);
-  const project = session ? await projectOf(deps, session) : null;
+  const project = session ? await projectOfSession(deps, session) : null;
   if (!project || !session) return event;
   const workspace = await locationOf(deps, project, session);
   if ((await routeOf(deps, workspace.workerId)) !== null) return event;

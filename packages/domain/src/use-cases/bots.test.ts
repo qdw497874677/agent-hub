@@ -194,3 +194,32 @@ test('bots 表为空时回落到旧 roles JSON（只读、不写回）', async (
   // 回落是只读的：表里仍然没有
   assert.deepEqual(await deps.bots.listForProject(w.project.id), []);
 });
+
+test('授权：可授到同团队的另一个项目；撤销后该项目列表不再有它，并把它从那个项目的群里移出', async () => {
+  const w = await withProject();
+  const other = createProject({ name: 'q', now: 2, teamId: 'T', createdBy: 'u1' });
+  assert.ok(other.ok);
+  await w.deps.projects.save(other.value);
+  const created = await createBotUseCase(w.deps, alice, w.project.id, { name: 'qa', agentId: 'pi' });
+  assert.ok(created.ok);
+
+  const detached: string[] = [];
+  const deps = {
+    ...w.deps,
+    detach: async (_actor: unknown, projectId: string, name: string) => {
+      detached.push(`${projectId}:${name}`);
+      return [];
+    }
+  };
+  const { grantBotUseCase, revokeBotUseCase } = await import('./bots.ts');
+  const granted = await grantBotUseCase(deps as never, alice, created.value.id, other.value.id, null);
+  assert.ok(granted.ok, granted.ok ? '' : granted.error.message);
+  assert.deepEqual((await deps.bots.listForProject(other.value.id)).map((bot) => bot.name), ['qa']);
+
+  const revoked = await revokeBotUseCase(deps as never, alice, created.value.id, other.value.id);
+  assert.ok(revoked.ok);
+  assert.deepEqual(await deps.bots.listForProject(other.value.id), []);
+  assert.deepEqual(detached, [`${other.value.id}:qa`]);
+  // 原来的授权不受影响。
+  assert.deepEqual((await deps.bots.listForProject(w.project.id)).map((bot) => bot.name), ['qa']);
+});

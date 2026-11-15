@@ -1,3 +1,4 @@
+import { modelLabel } from '../../atoms/model-label.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { localTime } from '../../shell/local-time.ts';
 import { useQuery } from '@tanstack/react-query';
@@ -97,7 +98,7 @@ export function ListView({
                           </span>
                         ) : null}
                         <span className="hidden shrink-0 text-meta text-tertiary md:inline">
-                          {session.model === '' ? '默认模型' : session.model} · #{seq}
+                          {modelLabel(session.model)} · #{seq}
                         </span>
                       </span>
                     </span>

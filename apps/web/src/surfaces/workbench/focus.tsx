@@ -1,3 +1,4 @@
+import { modelLabel } from '../../atoms/model-label.ts';
 import { DeliveryContext, useDeliveries } from '../../atoms/delivery-note.tsx';
 import { ProvenanceRow } from '../../atoms/provenance-row.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
@@ -642,7 +643,7 @@ export function FocusView({
             </button>
           )}
           <p className="truncate font-mono text-meta text-tertiary">
-            {session.title ? `${task?.title ?? session.taskId} · ` : ''}{agentLabel} · {session.model === '' ? '默认模型' : session.model}
+            {session.title ? `${task?.title ?? session.taskId} · ` : ''}{agentLabel} · {modelLabel(session.model)}
             {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
           </p>
         </div>

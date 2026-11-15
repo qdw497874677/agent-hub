@@ -1,3 +1,4 @@
+import { modelLabel } from '../../atoms/model-label.ts';
 import { AuthorTag } from '../../atoms/author.tsx';
 import { Handle, NodeResizeControl, Position, type NodeProps, type Node } from '@xyflow/react';
 import { useEffect, useRef, useState } from 'react';
@@ -454,7 +455,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           {/* 没有可调项清单（老会话还没人报过）时退回显示模型名 */}
           {session.optionSpec.length === 0 ? (
             <span className="truncate font-mono text-meta text-tertiary">
-              {session.model === '' ? '默认模型' : session.model}
+              {modelLabel(session.model)}
             </span>
           ) : null}
           {worker ? <WorkerChip worker={worker} /> : null}
