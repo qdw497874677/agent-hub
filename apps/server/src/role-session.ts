@@ -1,5 +1,4 @@
 import {
-  createTaskUseCase,
   deriveSessionUseCase,
   recordProvenance,
   withAccess,
@@ -31,9 +30,9 @@ export async function loadActor(
 }
 
 /**
- * bot 会话：建任务、派生、可选的派生记录、再写来历。
+ * bot / 群会话（容器会话，ADR 0036）：直接派生，不再合成假任务。
+ * 归属靠 `botId`（以及调用方已记的群成员关系）；派生失败原样返回，不写来历、不写派生记录。
  * 连接器要先 saveSpawn 再写来历；P2P / 群没有这一步。via 仍由调用方给（bot 或 group）。
- * 任务或派生失败原样返回，不写来历、不写派生记录。
  */
 export async function openRoleSession(
   deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access'>,
@@ -53,10 +52,9 @@ export async function openRoleSession(
     readonly afterDerive?: (session: Session) => Promise<void>;
   }
 ): Promise<Result<Session, DomainError>> {
-  const task = await createTaskUseCase(deps, { projectId: input.projectId, title: input.title, ownerId: input.ownerId });
-  if (!task.ok) return task;
   const created = await deriveSessionUseCase(deps, {
-    taskId: task.value.id,
+    projectId: input.projectId,
+    createdBy: input.ownerId,
     agentId: input.agentId,
     model: input.model,
     ...(input.botId ? { botId: input.botId } : {}),

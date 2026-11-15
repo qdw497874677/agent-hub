@@ -61,7 +61,7 @@ export function SessionLinksDialog({
           session,
           title: session.title?.trim() || openings[session.id]?.trim() || '未命名会话',
           agent: agentLabel.get(session.agentId) ?? session.agentId,
-          task: taskTitle.get(session.taskId) ?? '未命名任务',
+          task: (session.taskId === null ? '' : taskTitle.get(session.taskId)) ?? '未命名任务',
           worker: worker?.label ?? '未知机器',
           online,
           workspace: session.workspaceId ? (workspaceName.get(session.workspaceId) ?? '未知工作空间') : '未选工作空间',

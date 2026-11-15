@@ -60,18 +60,19 @@ export function ProjectSidebar({
   const sessions = useMemo(() => {
     const grouped = new Map<string, SessionDto[]>();
     for (const session of active) {
-      const list = grouped.get(session.taskId) ?? [];
+      const key = session.taskId ?? 'container';
+      const list = grouped.get(key) ?? [];
       list.push(session);
-      grouped.set(session.taskId, list);
+      grouped.set(key, list);
     }
     return grouped;
   }, [active]);
   // 任务下一条都没有 / 只是都收起来了，说法不一样。
-  const tasksWithSessions = useMemo(() => new Set((canvas?.sessions ?? []).map((session) => session.taskId)), [canvas?.sessions]);
+  const tasksWithSessions = useMemo(() => new Set((canvas?.sessions ?? []).map((session) => session.taskId ?? 'container')), [canvas?.sessions]);
   const taskTitle = useMemo(() => new Map(tasks.map((task) => [task.id, task.title])), [tasks]);
 
   const titleOf = (session: SessionDto): string =>
-    session.title?.trim() || canvas?.openings[session.id]?.trim() || taskTitle.get(session.taskId) || session.id.slice(-8);
+    session.title?.trim() || canvas?.openings[session.id]?.trim() || (session.taskId === null ? '' : taskTitle.get(session.taskId)) || session.id.slice(-8);
 
   return (
     <aside

@@ -1,5 +1,5 @@
 import type { Subject } from '../access.ts';
-import { invalid, notFound, type DomainError } from '../errors.ts';
+import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import type { SessionId } from '../ids.ts';
 import type { ToolContext, ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -141,7 +141,10 @@ export function createGitToolProvider(deps: GitToolDeps): ToolProvider {
       if (unknown.length > 0) return err(invalid(`不认识的参数：${unknown.join(', ')}`));
 
       const subject = await deps.subjectOf(ctx.grant.sessionId);
-      if (name === 'git.pull_requests') return deps.workflow.listForTask(subject, ctx.grant.taskId);
+      if (name === 'git.pull_requests') {
+        if (ctx.grant.taskId === null) return err(forbidden('这条会话不属于任何任务，没有任务级的 PR 清单'));
+        return deps.workflow.listForTask(subject, ctx.grant.taskId);
+      }
 
       const workspace = optionalWorkspace(args);
       if (!workspace.ok) return workspace;

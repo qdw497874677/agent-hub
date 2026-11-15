@@ -205,7 +205,7 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
       return [...rows.values()].filter((session) => session.taskId === taskId);
     },
     async listByProject(projectId) {
-      return [...rows.values()].filter((session) => tasks.get(session.taskId)?.projectId === projectId);
+      return [...rows.values()].filter((session) => session.taskId !== null && tasks.get(session.taskId)?.projectId === projectId);
     },
     async listByWorkspace(workspaceId) {
       return [...rows.values()].filter((session) => session.workspaceId === workspaceId);

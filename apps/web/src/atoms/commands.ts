@@ -14,7 +14,8 @@ export function sessionCommands(
     {
       name: 'new',
       hint: '同一任务、同一 agent 再开一条会话',
-      run: () => api.derive({ taskId: session.taskId, agentId: session.agentId, model: session.model })
+      // 容器会话没有任务，不能在「同一任务」下再开一条。
+      run: () => session.taskId === null ? Promise.resolve() : api.derive({ taskId: session.taskId, agentId: session.agentId, model: session.model })
     }
   ];
   if (session.lastSeq > 0) {

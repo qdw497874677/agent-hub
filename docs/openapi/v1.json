@@ -2916,7 +2916,10 @@
                             "minLength": 1
                           },
                           "taskId": {
-                            "type": "string",
+                            "type": [
+                              "string",
+                              "null"
+                            ],
                             "minLength": 1
                           },
                           "agentId": {
@@ -4698,7 +4701,10 @@
                       "minLength": 1
                     },
                     "taskId": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1
                     },
                     "agentId": {
@@ -5163,7 +5169,10 @@
                       "minLength": 1
                     },
                     "taskId": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1
                     },
                     "agentId": {
@@ -5606,7 +5615,10 @@
                       "minLength": 1
                     },
                     "taskId": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1
                     },
                     "agentId": {
@@ -6384,7 +6396,10 @@
                       "minLength": 1
                     },
                     "taskId": {
-                      "type": "string",
+                      "type": [
+                        "string",
+                        "null"
+                      ],
                       "minLength": 1
                     },
                     "agentId": {

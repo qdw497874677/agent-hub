@@ -45,6 +45,7 @@ import { err, ok, type Result } from '../result.ts';
 import type { Session } from '../session.ts';
 import { projectAsResource, type AccessPolicy } from './authorization.ts';
 import type { Deps } from './deps.ts';
+import { projectOfSession } from './workspaces.ts';
 
 /**
  * 记忆服务（ADR 0019 · P1）：唯一入口。MCP 工具、HTTP 路由、界面都只调它；它只调端口。
@@ -64,7 +65,9 @@ export interface DistillSettings {
 
 export type MemoryCaller = { readonly kind: 'session'; readonly sessionId: SessionId } | { readonly kind: 'user'; readonly principal: Principal };
 
-export interface MemoryServiceDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' | 'projects'> {
+export interface MemoryServiceDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' | 'projects'>,
+  // 容器会话（#221 步骤 7）没有任务，得靠组合工作空间 / bot 找回项目；不给就只有任务会话能用记忆。
+  Partial<Pick<Deps, 'bots' | 'workspaceGroups' | 'workspaces'>> {
   readonly store: MemoryStore;
   readonly index: MemoryIndex;
   readonly settings: MemorySettingsStore;
@@ -173,10 +176,8 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
 
   const context = async (): Promise<AccessContext> => (deps.access ? deps.access.context() : FALLBACK_CONTEXT);
 
-  const projectOfSession = async (session: Session): Promise<Project | null> => {
-    const task = await deps.tasks.byId(session.taskId);
-    if (!task) return null;
-    const project = await deps.projects.byId(task.projectId);
+  const projectOf = async (session: Session): Promise<Project | null> => {
+    const project = await projectOfSession(deps, session);
     return project && project.deletedAt === null ? project : null;
   };
 
@@ -184,7 +185,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
     if (caller.kind === 'user') return ok({ principal: caller.principal, author: 'human', session: null, project: null, role: null });
     const session = await deps.sessions.byId(caller.sessionId);
     if (!session) return err(notFound('会话不存在'));
-    const project = await projectOfSession(session);
+    const project = await projectOf(session);
     if (!project) return err(notFound('会话所属项目不存在'));
     const owner = session.createdBy ?? project.createdBy;
     const principal = owner ? await deps.principalOf(owner) : null;
@@ -238,7 +239,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       case 'session': {
         const session = await deps.sessions.byId(asSessionId(scope.sessionId));
         if (!session) return err(notFound('会话不存在'));
-        const project = await projectOfSession(session);
+        const project = await projectOf(session);
         if (!project) return err(notFound('会话所属项目不存在'));
         const base = projectAsResource(project, ctx);
         if (permission === 'memory.read') return ok({ ...base, kind: 'memory', id });
@@ -374,7 +375,7 @@ export function createMemoryService(deps: MemoryServiceDeps): MemoryService {
       if (summary === '') return { written: 0, skipped: '没有摘要' };
       const session = await deps.sessions.byId(sessionId);
       if (!session) return { written: 0, skipped: '会话不存在' };
-      const project = await projectOfSession(session);
+      const project = await projectOf(session);
       if (!project) return { written: 0, skipped: '会话所属项目不存在' };
       const traceId = `compaction:${generation}`;
       const existing = await deps.store.list([{ kind: 'session', sessionId }], { limit: 200 });

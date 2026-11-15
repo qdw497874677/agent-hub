@@ -14,6 +14,48 @@ import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
+import type { BotRepository } from '../ports/bot-repository.ts';
+import type { ProjectRepository } from '../ports/project-repository.ts';
+import type { TaskRepository } from '../ports/task-repository.ts';
+import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
+import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
+
+/**
+ * 会话属于哪个项目：
+ * - 有任务的会话跟着任务走；
+ * - 容器会话（#221 步骤 7）没有任务，按归属兜底：组合工作空间 → bot → 工作空间登记的项目。
+ * 三样都没有就返回 null，调用方必须当成「落不了地」拒绝，而不是猜。
+ */
+export interface ProjectLookupDeps {
+  readonly tasks: Pick<TaskRepository, 'byId'>;
+  readonly projects: Pick<ProjectRepository, 'byId'>;
+  readonly workspaceGroups?: Pick<WorkspaceGroupRepository, 'byId'>;
+  readonly bots?: Pick<BotRepository, 'byId'>;
+  readonly workspaces?: Pick<WorkspaceRepository, 'byId'>;
+}
+
+export async function projectOfSession(
+  deps: ProjectLookupDeps,
+  session: Pick<Session, 'taskId' | 'workspaceId'> & { readonly groupId?: WorkspaceGroupId | null; readonly botId?: string | null }
+): Promise<Project | null> {
+  if (session.taskId !== null) {
+    const task = await deps.tasks.byId(session.taskId);
+    return task ? deps.projects.byId(task.projectId) : null;
+  }
+  if (session.groupId && deps.workspaceGroups) {
+    const group = await deps.workspaceGroups.byId(session.groupId);
+    if (group) return deps.projects.byId(group.projectId);
+  }
+  if (session.botId && deps.bots) {
+    const bot = await deps.bots.byId(session.botId);
+    if (bot) return deps.projects.byId(bot.projectId);
+  }
+  if (session.workspaceId && deps.workspaces) {
+    const workspace = await deps.workspaces.byId(session.workspaceId);
+    if (workspace?.projectId) return deps.projects.byId(workspace.projectId);
+  }
+  return null;
+}
 
 /**
  * 一条会话实际在哪个目录干活：听它的工作空间。没有工作空间（或已删除）时退回项目的默认工作空间；
@@ -154,8 +196,9 @@ export async function workspaceConcurrency(
   const running = (await deps.sessions.listByWorkspace(asWorkspaceId(workspaceId))).filter((session) => session.status === 'running');
   const withProject: { taskId: string; projectId: string | null }[] = [];
   for (const session of running) {
-    const task = await deps.tasks.byId(session.taskId);
-    withProject.push({ taskId: session.taskId, projectId: task?.projectId ?? null });
+    const task = session.taskId === null ? null : await deps.tasks.byId(session.taskId);
+    // 容器会话（#221 步骤 7）没有任务：记成空串，projectId 为 null 时只会落进「别的项目的会话」计数。
+    withProject.push({ taskId: session.taskId ?? '', projectId: task?.projectId ?? null });
   }
   return concurrencyOf(withProject, projectId);
 }

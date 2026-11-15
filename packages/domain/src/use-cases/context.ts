@@ -296,7 +296,8 @@ export function createContextService(deps: ContextDeps) {
 
   async function locate(sessionId: string) {
     const session = await deps.sessions.byId(asSessionId(sessionId));
-    const task = session ? await deps.tasks.byId(session.taskId) : null;
+    // 容器会话（#221 步骤 7）没有任务，拿不到项目：角色层说明就按「没有」处理。
+    const task = session && session.taskId !== null ? await deps.tasks.byId(session.taskId) : null;
     const project = task ? await deps.projects.byId(task.projectId) : null;
     return { session, project };
   }

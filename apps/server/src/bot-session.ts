@@ -1,4 +1,4 @@
-import type { BotId, BotRepository, ProjectId, SessionId, SessionRepository, TaskRepository } from '@agent-hub/domain';
+import type { BotId, BotRepository, ProjectId, Session, SessionId, SessionRepository, TaskRepository } from '@agent-hub/domain';
 
 /** 这条会话是哪个 bot 开的：项目 + @id（名字）+ bot id。 */
 export interface BotOfSession {
@@ -30,22 +30,31 @@ export interface BotOfSessionDeps {
  * 存的是 @id。反查只是过渡，等老会话都过期 / 迁移后可删。
  */
 export function createBotOfSession(deps: BotOfSessionDeps): (sessionId: SessionId) => Promise<BotOfSession | null> {
+  const projectOf = async (session: Session): Promise<string | null> => {
+    if (session.taskId !== null) {
+      const task = await deps.tasks.byId(session.taskId);
+      if (task) return task.projectId;
+    }
+    if (session.botId) return (await deps.bots.byId(session.botId))?.projectId ?? null;
+    return null;
+  };
   return async (sessionId) => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return null;
-    const task = await deps.tasks.byId(session.taskId);
-    if (!task) return null;
+    // 容器会话（群/bot 常驻）没有任务，项目从群/bot/工作空间反推（#221 步骤 7）。
+    const projectId = await projectOf(session);
+    if (projectId === null) return null;
 
     if (session.botId) {
       const bot = await deps.bots.byId(session.botId);
       // bot 已删：会话仍可能在跑，但不再代表任何 bot（bindings 删除时也清过了）。
-      return bot ? { projectId: task.projectId, name: bot.name, botId: bot.id } : null;
+      return bot ? { projectId, name: bot.name, botId: bot.id } : null;
     }
 
     // --- 兼容路径：没有 bot_id 的老会话，只能按名字推导 ---
     const role = (await deps.spawnOf(sessionId))?.role ?? (await deps.memberOfSession(sessionId))?.role ?? null;
     if (!role) return null;
-    const bot = await deps.bots.byName(task.projectId as ProjectId, role);
-    return { projectId: task.projectId, name: role, botId: bot?.id ?? null };
+    const bot = await deps.bots.byName(projectId as ProjectId, role);
+    return { projectId, name: role, botId: bot?.id ?? null };
   };
 }

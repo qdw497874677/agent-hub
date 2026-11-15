@@ -84,6 +84,8 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   terminalTarget,
   asSessionId,
   createPreviewLinkUseCase,
+  createOutboxPump,
+  projectOfSession,
   createSessionInbox,
   markWorkerPreviewsOfflineUseCase,
   matchPreviewShare,
@@ -370,7 +372,7 @@ const subjectOf = async (sessionId: SessionId): Promise<Subject | null> => {
   const frozen = grant?.actor?.userId ?? null;
   if (frozen !== null) return loadActor(store.users, store.access, frozen, 'agent-git');
   const bot = await botOfSession(sessionId);
-  const task = await deps.tasks.byId(session.taskId);
+  const task = session.taskId === null ? null : await deps.tasks.byId(session.taskId);
   const userId = bot ? task?.ownerId ?? session.createdBy ?? null : session.createdBy ?? task?.ownerId ?? null;
   return userId ? loadActor(store.users, store.access, userId, bot ? 'agent-bot' : 'agent-git') : null;
 };
@@ -485,7 +487,7 @@ const dispatcher = createDispatcher({
   },
   notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
   abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
-  sinks: [createGithubSink({ client: githubClient, tokenFor: teamTokenOf, boundRepos: githubReposFor, prLinks: async (taskId) => (await pullRequestRepoEarly.byTask(taskId)).map((l) => l.url), log })],
+  sinks: [createGithubSink({ outbox: store.outbox, now: () => Date.now(), client: githubClient, tokenFor: teamTokenOf, boundRepos: githubReposFor, prLinks: async (taskId) => (await pullRequestRepoEarly.byTask(taskId)).map((l) => l.url), log })],
   log
 });
 const enqueueDispatch = async (r: AgentTaskRequest) => {
@@ -496,6 +498,35 @@ const enqueueDispatch = async (r: AgentTaskRequest) => {
   void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`));
 };
 setInterval(() => void dispatcher.tick().catch((error: unknown) => log(`调度失败：${String(error)}`)), 10_000).unref();
+
+// 出站队列（#221 步骤 6）：会话要发到外部渠道的回复先落库，再按租约投递。
+// 目前只消费 session 目标；github 等 external 行保持 queued，等平台发送侧接线。
+const outboxPump = createOutboxPump({
+  store: store.outbox,
+  now: () => Date.now(),
+  deliver: async (message) => {
+    const sent = await promptSessionUseCase(deps, {
+      sessionId: message.target.id as SessionId,
+      text: message.body,
+      author: { id: 'outbox', name: message.author.name, via: 'connector' }
+    });
+    return sent.ok ? { ok: true } : { ok: false, error: sent.error };
+  }
+});
+let outboxBusy = false;
+setInterval(() => {
+  if (outboxBusy) return;
+  outboxBusy = true;
+  void (async () => {
+    try {
+      for (let i = 0; i < 10; i++) if ((await outboxPump.tick()) === 0) break;
+    } catch (error) {
+      log(`出站队列失败：${String(error)}`);
+    } finally {
+      outboxBusy = false;
+    }
+  })();
+}, 1_000).unref();
 const contextService = createContextService({ projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, access: deps.access, now: () => Date.now(), contextSettings: store.contextSettings, audit: store.audit, gateway: deps.gateway,
   // 角色层（ADR 0020 §8）：派生出来的角色会话 → 角色；否则群里的成员 → 角色
   roleOf: async (sessionId) => (await store.messages.spawnOf(sessionId as SessionId))?.role ?? (await store.groups.memberOfSession(sessionId as SessionId))?.role ?? null,
@@ -839,6 +870,12 @@ sessionEnvironment = createSessionEnvironment({
   assetDeps,
   tasks: store.tasks,
   projects: store.projects,
+  containerProject: async (sessionId) => {
+    const session = await store.sessions.byId(sessionId as SessionId);
+    if (!session) return null;
+    const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces }, session);
+    return project ? { projectId: project.id as ProjectId, ownerId: session.createdBy ?? null } : null;
+  },
   log
 });
 const syncAssets = (workerId: string) =>
@@ -1081,8 +1118,7 @@ if (previewPorts !== null) {
       if (subject === null) return false;
       const session = await store.sessions.byId(link.sessionId);
       if (session === null) return false;
-      const task = await store.tasks.byId(session.taskId);
-      const project = task === null ? null : await store.projects.byId(task.projectId);
+      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces }, session);
       return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
     },
     matchShare: (link, token) =>
@@ -1305,8 +1341,7 @@ if (previewPrefixActive && previewChannel !== null) {
       if (subject === null) return false;
       const session = await store.sessions.byId(link.sessionId);
       if (session === null) return false;
-      const task = await store.tasks.byId(session.taskId);
-      const project = task === null ? null : await store.projects.byId(task.projectId);
+      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces }, session);
       return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
     },
     channel: prefixChannel,

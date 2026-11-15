@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentDescriptor } from '../agent.ts';
-import { asAgentId } from '../ids.ts';
+import { asAgentId, type TaskId } from '../ids.ts';
 import { fakeAgentProfiles, inMemoryDeps } from '../testing/in-memory.ts';
 import type { ToolGrant } from '../tool.ts';
 import { createProjectUseCase } from '../use-cases/projects.ts';
@@ -42,7 +42,7 @@ async function world() {
     createdBy: 'u1'
   });
   assert.ok(session.ok);
-  const grant = (sessionId: string, taskId: string) => ({
+  const grant = (sessionId: string, taskId: TaskId | null) => ({
     grant: { sessionId, taskId, scopes: ['agent:message'] } as unknown as ToolGrant,
     now: 0
   });
@@ -130,7 +130,7 @@ test('编排工具：set_option 只能改同项目同 owner 的会话', async ()
   assert.deepEqual(called, { sessionId: session.id, optionId: 'mode', value: 'plan' });
 
   const other = await deriveSessionUseCase(w.deps, {
-    taskId: session.taskId,
+    taskId: session.taskId ?? undefined,
     agentId: 'fake',
     model: 'm1',
     createdBy: 'u2'

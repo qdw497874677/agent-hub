@@ -270,7 +270,8 @@ export const sessionOriginSchema = z.discriminatedUnion('kind', [
 
 export const sessionSchema = z.object({
   id,
-  taskId: id,
+  /** 归属任务；null = 容器会话（群角色 / bot P2P，#221 步骤 7），靠 groupId / botId 归属。 */
+  taskId: id.nullable(),
   agentId: id,
   model: z.string(),
   origin: sessionOriginSchema,

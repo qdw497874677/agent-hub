@@ -11,7 +11,8 @@ import type { McpLaunch } from '../mcp.ts';
 
 export interface StartSpec {
   readonly sessionId: SessionId;
-  readonly taskId: TaskId;
+  /** 容器会话（#221 步骤 7）没有任务：运行时目前不读这个字段，给 null 只是把事实传下去。 */
+  readonly taskId: TaskId | null;
   readonly workspaceRoot: string;
   /** 双权威：知道 agent 自己的会话 id 和平台已确认的游标，才能接着聊。 */
   readonly resume: { readonly agentSessionRef: string | null; readonly cursor: Seq } | null;

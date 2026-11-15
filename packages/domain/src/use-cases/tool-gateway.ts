@@ -171,7 +171,11 @@ export async function withToolAccess(
   if (endpoint === null) return command;
   try {
     if (command.kind === 'start_session') {
-      const { token } = await gateway.issue({ id: command.sessionId, taskId: asTaskId(command.taskId), workerId: command.workerId }, DEFAULT_TOOL_SCOPES, actor);
+      const { token } = await gateway.issue(
+        { id: command.sessionId, taskId: command.taskId === null ? null : asTaskId(command.taskId), workerId: command.workerId },
+        DEFAULT_TOOL_SCOPES,
+        actor
+      );
       return { ...command, tools: { transport: endpoint.transport, url: endpoint.url, token } };
     }
     if (command.kind === 'dispose') await gateway.revoke({ id: command.sessionId });

@@ -79,7 +79,8 @@ export function buildLineage(
   const knownSessions = new Set(sessions.map((s) => s.id));
   const edges: LineageEdge[] = [];
   for (const session of sessions) {
-    if (!knownTasks.has(session.taskId)) continue;
+    // 容器会话（#221 步骤 7）不挂在任务上：画布只画任务相关的血缘，它们照旧不出 derive 边。
+    if (session.taskId === null || !knownTasks.has(session.taskId)) continue;
     edges.push({ kind: 'derive', taskId: session.taskId, sessionId: session.id });
     if (session.origin.kind === 'fork') {
       edges.push({

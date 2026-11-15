@@ -146,10 +146,12 @@ function parseOptionSpec(raw: string | null): Session['optionSpec'] {
 
 export function toSession(row: Row): Session {
   const originSession = nullableStr(row, 'origin_session');
+  // #221 步骤 7：容器会话没有任务。空串是当年某些写入路径的哨兵，一起读成 null。
+  const rawTaskId = nullableStr(row, 'task_id');
   const originSeq = nullableNum(row, 'origin_seq');
   return {
     id: asSessionId(str(row, 'id')),
-    taskId: asTaskId(str(row, 'task_id')),
+    taskId: rawTaskId === null || rawTaskId === '' ? null : asTaskId(rawTaskId),
     agentId: asAgentId(str(row, 'agent_id')),
     model: str(row, 'model'),
     origin:

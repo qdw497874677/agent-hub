@@ -76,6 +76,8 @@ export interface SqliteStore extends RepositorySet {
   readonly provenance: ProvenanceStore;
   readonly connectors: import('@agent-hub/domain').ConnectorStore;
   readonly agentTasks: import('@agent-hub/domain').AgentTaskStore;
+  /** 出站队列（#221 C2b）：外部回写先进这里，pump 带租约重试。 */
+  readonly outbox: import('@agent-hub/domain').OutboxStore;
   readonly dispatches: import('@agent-hub/domain').TaskDispatchStore;
   readonly attention: AttentionStore;
   readonly memory: { readonly store: MemoryStore; readonly index: MemoryIndex; readonly settings: MemorySettingsStore };
@@ -173,6 +175,8 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'bot_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN bot_id TEXT');
   }
+  // #221 步骤 7：容器会话没有任务，task_id 要允许 NULL（老库只能重建表）。
+  relaxSessionsTaskId(db);
   upgradeWorkspaceTable(db);
   db.exec(WORKSPACE_SCHEMA);
   // 准备命令状态（docs/design/worktree.md §4）：老库补列；v2 表也要补（upgradeWorkspaceTable 不会再加列）。
@@ -619,6 +623,50 @@ export function openSqliteStore(file: string): SqliteStore {
 }
 
 /** 老项目（team_id 为 NULL）归 hub 管理员的团队、算 hub 管理员建的。幂等；还没有 hub 管理员时什么也不做。 */
+/**
+ * #221 步骤 7：容器会话（群角色 / bot P2P）不属于任何任务，sessions.task_id 要允许 NULL。
+ * 旧库那一列是 NOT NULL，SQLite 不能原地改列约束 —— 按「建新表 → 复制 → 换名 → 重建索引」重建。
+ * 幂等：notnull 已经是 0 就直接返回。PRAGMA foreign_keys 只能在事务外改，所以临时关掉，
+ * 否则 DROP TABLE sessions 会被 artifacts 等子表的外键挡住。
+ */
+function relaxSessionsTaskId(db: DatabaseSync): void {
+  type Column = {
+    readonly name: string;
+    readonly type: string;
+    readonly notnull: number;
+    readonly dflt_value: string | null;
+    readonly pk: number;
+  };
+  const info = db.prepare('PRAGMA table_info(sessions)').all() as Column[];
+  const taskId = info.find((column) => column.name === 'task_id');
+  if (!taskId || taskId.notnull === 0) return;
+  const names = info.map((column) => `"${column.name}"`).join(', ');
+  // 除 task_id 去掉 NOT NULL 外，其它列按原样重建（类型 / 主键 / 默认值都不变）。
+  const definitions = info.map((column) => {
+    if (column.name === 'task_id') return 'task_id TEXT REFERENCES tasks(id)';
+    const parts = [`"${column.name}" ${column.type}`];
+    if (column.pk === 1) parts.push('PRIMARY KEY');
+    if (column.notnull === 1) parts.push('NOT NULL');
+    if (column.dflt_value !== null) parts.push(`DEFAULT ${column.dflt_value}`);
+    return parts.join(' ');
+  });
+  const indexes = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'sessions' AND sql IS NOT NULL")
+    .all() as { sql: string }[];
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    inTransaction(db, () => {
+      db.exec(`CREATE TABLE sessions_rebuild (${definitions.join(', ')})`);
+      db.exec(`INSERT INTO sessions_rebuild (${names}) SELECT ${names} FROM sessions`);
+      db.exec('DROP TABLE sessions');
+      db.exec('ALTER TABLE sessions_rebuild RENAME TO sessions');
+      for (const index of indexes) db.exec(index.sql);
+    });
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+}
+
 export function backfillProjectTeams(db: DatabaseSync): void {
   const admin = db.prepare('SELECT id, team_id FROM users WHERE hub_admin = 1 AND team_id IS NOT NULL ORDER BY created_at ASC LIMIT 1').get() as
     | { id: string; team_id: string }

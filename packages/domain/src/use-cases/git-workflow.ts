@@ -5,6 +5,7 @@ import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
+import type { BotRepository } from '../ports/bot-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
@@ -19,7 +20,7 @@ import { err, ok, type Result } from '../result.ts';
 import { GIT_LIMITS, compareUrl, githubRepoOf, templateGitText } from '../git-workflow.ts';
 import { authorizeProject, authorizeSession, type AccessPolicy } from './authorization.ts';
 import { gitFor } from './machine-dirs.ts';
-import { locationsOf } from './workspaces.ts';
+import { locationsOf, projectOfSession } from './workspaces.ts';
 
 /**
  * 提交 / 推送 / 开 PR（ADR 0027 阶段 2）。会话 → 工作空间 → 那台机器上的 git。
@@ -33,6 +34,8 @@ export interface GitWorkflowDeps {
   readonly workspaces: WorkspaceRepository;
   /** 组合工作空间（多仓库）；不给 = 只会落到单仓库路径。 */
   readonly workspaceGroups?: WorkspaceGroupRepository;
+  /** 容器会话（没有任务）靠 bot 归属找回项目（#221 步骤 7）；不给 = 只有群会话 / 工作空间能定位。 */
+  readonly bots?: Pick<BotRepository, 'byId'>;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
   readonly audit: Pick<AuditLog, 'append'>;
@@ -99,8 +102,7 @@ interface Located {
 export function createGitWorkflowService(deps: GitWorkflowDeps) {
   async function locate(subject: Subject | null, sessionId: string, permission: 'session.read' | 'session.prompt', member?: string): Promise<Result<Located, DomainError>> {
     const session = await deps.sessions.byId(asSessionId(sessionId));
-    const task = session ? await deps.tasks.byId(session.taskId) : null;
-    const project = task ? await deps.projects.byId(task.projectId) : null;
+    const project = session ? await projectOfSession(deps, session) : null;
     const seen = await authorizeSession(deps.access, subject, project, session, permission);
     if (!seen.ok) return seen;
     const files = await authorizeProject(deps.access, subject, project, 'workspace.files.read');
@@ -152,7 +154,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       canPush: await canPush(subject, found.value.project),
       prBlocked: prBlocked(p, found.value.workspace),
       prVia: token.configured ? 'token' : 'gh',
-      pullRequests: await deps.pullRequests.byTask(found.value.session.taskId)
+      pullRequests: found.value.session.taskId === null ? [] : await deps.pullRequests.byTask(found.value.session.taskId)
     });
   }
 
@@ -163,8 +165,11 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     const preview = await found.value.git.preview(found.value.root, GIT_LIMITS.patchBytes);
     if (!preview.ok) return preview;
     if (!preview.value.isGit) return err(invalid('这个工作空间不是 git 仓库'));
-    const task = await deps.tasks.byId(found.value.session.taskId);
-    const log = await deps.workLog.list(found.value.session.taskId, { limit: 8, excludeSystem: true });
+    // 容器会话（#221 步骤 7）没有任务日志可读：标题和工作日志留空，用模板写。
+    const task = found.value.session.taskId === null ? null : await deps.tasks.byId(found.value.session.taskId);
+    const log = found.value.session.taskId === null
+      ? []
+      : await deps.workLog.list(found.value.session.taskId, { limit: 8, excludeSystem: true });
     const input = {
       projectId: found.value.project.id,
       taskTitle: task?.title ?? '',
@@ -248,29 +253,33 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       }
       if (created) {
         const now = deps.now();
-        pullRequest = {
-          id: newId(),
-          taskId: session.taskId,
-          workspaceId: workspace?.id ?? null,
-          sessionId: session.id,
-          provider: 'github',
-          via: created.via,
-          repo,
-          number: created.pr.number,
-          url: created.pr.url,
-          branch,
-          base,
-          state: created.pr.state,
-          headSha: created.pr.headSha ?? sha,
-          mergedAt: created.pr.mergedAt,
-          createdBy: me?.user.id ?? 'system',
-          createdAt: now,
-          lastSyncedAt: now
-        };
-        await deps.pullRequests.save(pullRequest);
         await audit(subject, project, 'git.pr', session.id, `${repo}#${created.pr.number} via ${created.via}`);
-        const entry = draftLogEntry({ id: newId(), taskId: asTaskId(session.taskId), author: { kind: 'system' }, body: `开了 PR [${repo}#${created.pr.number}](${created.pr.url})：${title}`, links: [{ kind: 'pr', ref: created.pr.url, label: `#${created.pr.number}` }], sessionId: session.id, now });
-        if (entry.ok) await deps.workLog.append(entry.value).catch(() => undefined);
+        // PR 行和工作日志都按任务汇总；容器会话没有任务，PR 只回到本次结果里（#221 步骤 7）。
+        if (session.taskId !== null) {
+          const taskId = session.taskId;
+          pullRequest = {
+            id: newId(),
+            taskId,
+            workspaceId: workspace?.id ?? null,
+            sessionId: session.id,
+            provider: 'github',
+            via: created.via,
+            repo,
+            number: created.pr.number,
+            url: created.pr.url,
+            branch,
+            base,
+            state: created.pr.state,
+            headSha: created.pr.headSha ?? sha,
+            mergedAt: created.pr.mergedAt,
+            createdBy: me?.user.id ?? 'system',
+            createdAt: now,
+            lastSyncedAt: now
+          };
+          await deps.pullRequests.save(pullRequest);
+          const entry = draftLogEntry({ id: newId(), taskId: asTaskId(taskId), author: { kind: 'system' }, body: `开了 PR [${repo}#${created.pr.number}](${created.pr.url})：${title}`, links: [{ kind: 'pr', ref: created.pr.url, label: `#${created.pr.number}` }], sessionId: session.id, now });
+          if (entry.ok) await deps.workLog.append(entry.value).catch(() => undefined);
+        }
       } else {
         link = compareUrl(repo, base, branch);
       }

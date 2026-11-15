@@ -34,6 +34,7 @@ import { otherEnd } from '../session-link.ts';
 import { projectAsResource, type AccessPolicy } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { loadBotConfig } from './bots.ts';
+import { projectOfSession } from './workspaces.ts';
 
 /**
  * 消息总线（ADR 0018 · P2P 内核）：
@@ -147,9 +148,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
   const sessionAndProject = async (sessionId: SessionId): Promise<{ session: Session; project: Project } | null> => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return null;
-    const task = await deps.tasks.byId(session.taskId);
-    if (!task) return null;
-    const project = await deps.projects.byId(task.projectId);
+    // 容器会话没有任务：按 bot 归属找回项目（#221 步骤 7）。
+    const project = await projectOfSession(deps, session);
     if (!project || project.deletedAt !== null) return null;
     return { session, project };
   };

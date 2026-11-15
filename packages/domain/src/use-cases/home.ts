@@ -64,6 +64,8 @@ export async function loadHome(
     .filter((session) => session.kind !== 'side')
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .flatMap((session): RecentSession[] => {
+      // 容器会话（#221 步骤 7）不属于任何任务：首页「接着干」靠任务标题定位，它们暂不在这里出现。
+      if (session.taskId === null) return [];
       const owner = owners.get(session.taskId);
       if (!owner) return [];
       return [

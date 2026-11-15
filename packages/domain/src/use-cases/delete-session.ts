@@ -8,8 +8,11 @@ import { isBusy } from '../session.ts';
 import type { Session } from '../session.ts';
 import type { Deps } from './deps.ts';
 import { authorizeSession } from './authorization.ts';
+import { projectOfSession } from './workspaces.ts';
 
-export interface DeleteSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'> {}
+export interface DeleteSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
+  // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
+  Partial<Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>> {}
 
 const signedIn = (actor: Principal | null): Result<Principal, DomainError> =>
   !actor || actor.user.disabledAt !== null || actor.user.deletedAt !== null ? err(forbidden('需要登录')) : ok(actor);
@@ -30,8 +33,7 @@ export async function deleteSessionUseCase(
   if (!who.ok) return who;
   const session = await deps.sessions.byId(sessionId);
   if (!session) return err(notFound('会话不存在'));
-  const task = await deps.tasks.byId(session.taskId);
-  const project = task ? await deps.projects.byId(task.projectId) : null;
+  const project = await projectOfSession(deps, session);
   const allowed = await authorizeSession(deps.access, who.value, project, session, 'session.delete');
   if (!allowed.ok) return allowed;
   if (isBusy(allowed.value)) return err(conflict('会话还在跑，先停止再删除'));

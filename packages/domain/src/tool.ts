@@ -43,7 +43,8 @@ export interface GrantActor {
 export interface ToolGrant {
   readonly id: string;
   readonly tokenHash: string;
-  readonly taskId: TaskId;
+  /** 归属任务；null = 容器会话（群角色 / bot P2P，见 isContainerSession），`task.*` 工具对它一律拒绝。 */
+  readonly taskId: TaskId | null;
   readonly sessionId: SessionId;
   readonly workerId: string | null;
   readonly scopes: readonly ToolScope[];
@@ -72,7 +73,8 @@ export interface ToolAccess {
 export interface ToolCallRecord {
   readonly id: string;
   readonly grantId: string;
-  readonly taskId: TaskId;
+  /** null = 容器会话的调用（这条调用不属于任何任务）。 */
+  readonly taskId: TaskId | null;
   readonly sessionId: SessionId;
   readonly tool: string;
   readonly version: number;

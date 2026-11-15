@@ -4,6 +4,7 @@ import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
+import type { BotRepository } from '../ports/bot-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, type ChangedFile, type CheckpointStore, type DirectoryPage, type FileChangeNotice, type FileContent, type FileDiff, type RestoreOutcome, type SessionBaseStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
@@ -15,7 +16,7 @@ import { err, ok, type Result } from '../result.ts';
 import { FILES_LIMITS, isBrowsablePath, isSensitivePath } from '../workspace-files.ts';
 import { authorizeProject, authorizeSession, type AccessPolicy } from './authorization.ts';
 import { routeOf } from './machine-dirs.ts';
-import { locationsOf, type SessionLocation, type SessionLocationMember } from './workspaces.ts';
+import { locationsOf, projectOfSession, type SessionLocation, type SessionLocationMember } from './workspaces.ts';
 
 /**
  * 工作空间文件浏览（ADR 0025 · P1，只读 + 单文件下载）。会话 → 工作空间 → 那台机器上的 WorkspaceBrowser。
@@ -29,6 +30,8 @@ export interface WorkspaceFilesDeps {
   readonly workspaces: WorkspaceRepository;
   /** 组合工作空间（多仓库）的落点；不给 = 只会落到单仓库路径。 */
   readonly workspaceGroups?: WorkspaceGroupRepository;
+  /** 容器会话（没有任务）靠 bot 归属找回项目（#221 步骤 7）。 */
+  readonly bots?: Pick<BotRepository, 'byId'>;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
   readonly audit: Pick<AuditLog, 'append'>;
@@ -116,8 +119,8 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       if (!limited.ok) return limited;
     }
     const session = await deps.sessions.byId(asSessionId(sessionId));
-    const task = session ? await deps.tasks.byId(session.taskId) : null;
-    const project = task ? await deps.projects.byId(task.projectId) : null;
+    // 容器会话（#221 步骤 7）没有任务：按组合工作空间找回项目。
+    const project = session ? await projectOfSession(deps, session) : null;
     const seen = await authorizeSession(deps.access, subject, project, session, 'session.read');
     if (!seen.ok) return seen;
     const allowed = await authorizeProject(deps.access, subject, project, 'workspace.files.read');
@@ -189,8 +192,8 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
   /** 后台记账用的定位：不走权限（组合根在会话指令发出时调）。 */
   async function locateSystem(sessionId: string): Promise<{ browser: WorkspaceBrowser; root: string; session: Session; group: SessionLocation['group'] } | null> {
     const session = await deps.sessions.byId(asSessionId(sessionId));
-    const task = session ? await deps.tasks.byId(session.taskId) : null;
-    const project = task ? await deps.projects.byId(task.projectId) : null;
+    // 容器会话（#221 步骤 7）没有任务：按组合工作空间找回项目。
+    const project = session ? await projectOfSession(deps, session) : null;
     if (!session || !project) return null;
     const location = await locationsOf(deps, project, session);
     if (location.root === '') return null;
@@ -218,8 +221,9 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       if (workspaceId) {
         for (const other of await deps.sessions.listByWorkspace(workspaceId)) {
           if (other.status !== 'running' || other.id === found.value.session.id) continue;
-          const task = await deps.tasks.byId(other.taskId);
-          if (task && task.projectId !== found.value.project.id) otherProjectSessions += 1;
+          // 容器会话（#221 步骤 7）没有任务：按组合工作空间 / bot 找回项目。
+          const owner = await projectOfSession(deps, other);
+          if (owner && owner.id !== found.value.project.id) otherProjectSessions += 1;
         }
       }
       const group = found.value.location.group;
@@ -393,8 +397,7 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
     /** 会话开跑时记下工作空间的 HEAD（决定 7）；已记过不覆盖，失败不影响会话。 */
     async recordBase(sessionId: string): Promise<void> {
       const session = await deps.sessions.byId(asSessionId(sessionId));
-      const task = session ? await deps.tasks.byId(session.taskId) : null;
-      const project = task ? await deps.projects.byId(task.projectId) : null;
+      const project = session ? await projectOfSession(deps, session) : null;
       if (!session || !project) return;
       const location = await locationsOf(deps, project, session);
       if (location.root === '') return;

@@ -1,6 +1,6 @@
 # 外部 IM 与连接器的收敛：渠道、目标、投递内核
 
-状态：C1 已落地（目标与外部会话字段先落存储，零行为变化）；C2a 起未实现。回答的问题：**外部 IM 聊天和连接器怎么把逻辑收敛起来，群聊能复用多少。**
+状态：C1 已落地；C2a 推送排队与失败分类已落地（占用粒度仍是 binding，待 C0 收窄）；C2b 出站队列已落地（pump 只消费 session 目标，github 行为 queued 待接线）；C3/C4 未实现。回答的问题：**外部 IM 聊天和连接器怎么把逻辑收敛起来，群聊能复用多少。**
 
 相关：`docs/design/group-delivery-kernel.md`（投递内核，本文的 C0）。
 
@@ -171,14 +171,16 @@ CREATE TABLE channel_outbox (
 - 回滚保护：v1 群目标只允许新渠道 connector；启动时打印群目标数量；回滚手册写明「先禁用 group-target binding」。
 - 验收：旧 binding 全量回归；群 binding 手工往返不丢字段；两个 DTO 仍只出 `main|new`。
 
-**C2a 入站改造（新增，C3/C4 的硬前提）**：
+**C2a 入站改造（新增，C3/C4 的硬前提）——部分落地**：
 - `InboundSource` 增加 `delivery: 'poll' | 'push'`；推送型来源遇到占用时写 `waiting` 排队而不是丢弃（`use-cases/connectors.ts:126-128` 现在直接 `return`，webhook 不会重发）；
 - 占用粒度从 binding 改为目标会话 / 外部会话；
 - `externalId = ${conversationId}:${messageId}`（Slack `ts` 只在频道内唯一）；thread 归一化只在 store 一处做；
 - 基础设施 4xx/5xx 不计入 `consecutiveFailures`，只有业务失败才算；
 - 外部作者白名单（谁能把消息交给 bot），对齐 GitHub 的 `rules.ts:3`。
 
-**C2b outbox**：先补 storage 的同步事务 helper（SAVEPOINT、禁止事务体 `await`），再加 `sending` lease + CAS 认领；`binding_id` 可空、加 `origin_kind/origin_id` 容纳 dispatcher 任务出站；保留 github sink 的「只回本项目仓库」检查；`deleteBinding` 级联处理 outbox / `channel_conversation` / `trigger_run`。
+已落地（`packages/domain/src/use-cases/connectors.ts`）：`delivery: 'push'` 的来源忙时入队 `waiting`、回合结束由 `turnEnded` 投队首；`isInfrastructureFailure()` 让网络/5xx/429 记原因但不计 `consecutiveFailures`。**未做**：占用粒度降到目标会话、`externalId` 规范化 helper、白名单。
+
+**C2b outbox——已落地**：`packages/domain/src/channel-outbox.ts`（租约、退避 1s/5s/30s/2min/10min、`isTransient` 分流、三层回声、`createOutboxPump`）+ `channel_outbox` 表与单语句 CAS 认领（`UPDATE … WHERE id = (SELECT …) … RETURNING *`）+ GitHub 回评入队（`target.kind='external'`，pump 不认领）。同步事务 helper `packages/storage-sqlite/src/tx.ts` 的 `inTransaction` 已在步骤 2 落地。原计划细节：再加 `sending` lease + CAS 认领；`binding_id` 可空、加 `origin_kind/origin_id` 容纳 dispatcher 任务出站；保留 github sink 的「只回本项目仓库」检查；`deleteBinding` 级联处理 outbox / `channel_conversation` / `trigger_run`。
 
 **C4 DM 渠道（先于 C3）**：外部 DM → 常驻会话 → outbox，复用现有 `sessionFor`/`attempt`，语义最少，用它验证渠道包、outbox、回声、授权四件事。回声按三层：平台身份过滤 → `external_message_id` 精确匹配 → 正文指纹只比本会话 `sending`/刚 `sent` 的 outbox 行（人类重复发言不受影响）。
 

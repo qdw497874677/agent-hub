@@ -24,7 +24,8 @@ export interface SpawnAgentAction {
 
 export interface SpawnedAgent {
   readonly sessionId: string;
-  readonly taskId: string;
+  /** 派生出的会话挂在哪个任务上；容器会话（#221 步骤 7）没有任务，为 null。 */
+  readonly taskId: string | null;
   readonly agentId: string;
   readonly model: string;
   readonly status: string;
@@ -200,6 +201,7 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
       }
 
       if (name === 'agent.activity') {
+        if (me.taskId === null) return err(forbidden('这条会话不属于任何任务，看不到任务级活动'));
         const task = await deps.tasks.byId(me.taskId);
         if (!task) return err(notFound('当前任务不存在'));
         const sessions = await deps.sessions.listByProject(task.projectId);
@@ -212,6 +214,7 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
       if (name === 'agent.spawn') {
         if (!deps.spawn) return err(notImplemented('派生会话'));
         const taskId = me.taskId;
+        if (taskId === null) return err(forbidden('这条会话不属于任何任务，不能按任务派生会话'));
         const task = await deps.tasks.byId(asTaskId(taskId));
         if (!task) return err(notFound('当前任务不存在'));
         const project = await deps.projects.byId(task.projectId);
@@ -259,8 +262,8 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
         if (typeof value !== 'string' && typeof value !== 'boolean') return err(invalid('value 只能是字符串或布尔值'));
         const target = await deps.sessions.byId(asSessionId(sessionId));
         if (!target) return err(notFound('会话不存在'));
-        const mine = await deps.tasks.byId(me.taskId);
-        const theirs = await deps.tasks.byId(target.taskId);
+        const mine = me.taskId === null ? null : await deps.tasks.byId(me.taskId);
+        const theirs = target.taskId === null ? null : await deps.tasks.byId(target.taskId);
         if (!mine || !theirs || mine.projectId !== theirs.projectId) return err(forbidden('只能改同项目会话的选项'));
         if (target.createdBy !== me.createdBy) return err(forbidden('只能改自己开的会话的选项'));
         return deps.setOption(target.id, optionId, value);

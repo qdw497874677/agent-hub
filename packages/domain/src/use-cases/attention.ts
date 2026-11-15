@@ -52,6 +52,8 @@ export async function loadAttention(
     const tasks = new Map((await deps.tasks.listByProject(project.id)).map((t) => [t.id as string, t]));
     for (const session of await deps.sessions.listByProject(project.id)) {
       if (session.updatedAt < input.now - ATTENTION_WINDOW_MS) continue;
+      // 容器会话不属于任务：没有任务就没有「任务负责人」可判断，不进待办（#221 步骤 7）。
+      if (session.taskId === null) continue;
       const task = tasks.get(session.taskId);
       if (!task) continue;
       if (session.createdBy !== input.accountId && task.ownerId !== input.accountId) continue;

@@ -99,15 +99,15 @@ test('派生会话：点名的模型落点机器上没有，直接拒绝，不�
   const there = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'studio', plan: { mode: 'link', path: '/srv/demo' }, home: '/home/me' });
   assert.ok(there.ok, JSON.stringify(there));
   const before = w.dispatched.length;
-  const denied = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId, agentId: 'fake', model: 'm1', workspaceId: there.value.id });
+  const denied = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId ?? undefined, agentId: 'fake', model: 'm1', workspaceId: there.value.id });
   assert.ok(!denied.ok && denied.error.code === 'conflict');
   assert.match(denied.error.message, /工作站.*没有模型 m1/);
   assert.equal(w.dispatched.length, before);
-  const fine = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId, agentId: 'fake', model: 'far-a', workspaceId: there.value.id });
+  const fine = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId ?? undefined, agentId: 'fake', model: 'far-a', workspaceId: there.value.id });
   assert.ok(fine.ok, JSON.stringify(fine));
   assert.equal(fine.value.workerId, 'studio');
   // 空串 = 用 agent 自己的默认，总是放行
-  const blank = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId, agentId: 'fake', model: '', workspaceId: there.value.id });
+  const blank = await deriveSessionUseCase(w.deps, { taskId: w.session.taskId ?? undefined, agentId: 'fake', model: '', workspaceId: there.value.id });
   assert.ok(blank.ok, JSON.stringify(blank));
 });
 

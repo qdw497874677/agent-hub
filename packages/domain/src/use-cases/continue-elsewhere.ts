@@ -4,7 +4,7 @@ import type { Session } from '../session.ts';
 import { forkSession } from '../session.ts';
 import { buildHandoff } from '../handoff.ts';
 import type { DomainError } from '../errors.ts';
-import { conflict, notFound, unavailable } from '../errors.ts';
+import { conflict, invalid, notFound, unavailable } from '../errors.ts';
 import { asSessionId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isUsable, type Workspace } from '../workspace.ts';
@@ -50,7 +50,12 @@ export async function continueElsewhereUseCase(
   const source = await deps.sessions.byId(asSessionId(command.sessionId));
   if (!source) return err(notFound('来源会话不存在'));
   if (source.lastSeq === 0) return err(conflict('这条会话还没有任何内容，直接在目标工作空间新开就好'));
-  const task = await deps.tasks.byId(source.taskId);
+  if (source.taskId === null) {
+    // 边界（#221 步骤 7）：接着干要按来源任务算项目、写任务日志，容器会话没有这些。
+    return err(invalid('容器会话（不属于任何任务）暂不支持接着干到别处'));
+  }
+  const taskId = source.taskId;
+  const task = await deps.tasks.byId(taskId);
   if (!task) return err(notFound('来源会话所属的任务不存在'));
   const project = await deps.projects.byId(task.projectId);
   if (!project) return err(notFound('项目不存在'));

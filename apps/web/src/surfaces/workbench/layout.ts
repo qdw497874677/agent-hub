@@ -18,7 +18,8 @@ export interface LayoutTask {
 }
 export interface LayoutSession {
   readonly id: string;
-  readonly taskId: string;
+  /** 容器会话（群/bot）没有任务：画布按「未归属」一栏放，不隐藏会话。 */
+  readonly taskId: string | null;
   readonly origin: { readonly kind: string; readonly fromSessionId?: string };
   /** 跑在哪台 worker 上；null 是本机（或还没分到）。同一台的会话在画布上同框。 */
   readonly workerId?: string | null;

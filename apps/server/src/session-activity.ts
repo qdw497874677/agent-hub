@@ -1,7 +1,7 @@
 import type { Context } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { asTaskId, newId, principalOfSubject, recordProvenance } from '@agent-hub/domain';
-import type { ProvenanceStore, ProvenanceVia, Session, AuditLog, Deps, JournalEntry, Principal, Subject, UserId, UserRepository } from '@agent-hub/domain';
+import { newId, principalOfSubject, projectOfSession, recordProvenance } from '@agent-hub/domain';
+import type { ProvenanceStore, ProvenanceVia, Session, WorkspaceGroupId, AuditLog, Deps, JournalEntry, Principal, Subject, UserId, UserRepository } from '@agent-hub/domain';
 
 /** 会话里「谁做了什么」：审计 + 读出时把作者名刷新成账号当前的名字。 */
 export interface SessionActivityOptions {
@@ -40,7 +40,7 @@ export async function recordSessionAction(
   let teamId: string | null = actor.user.teamId ?? null;
   try {
     const session = await deps.sessions.byId(sessionId as never);
-    const task = session ? await deps.tasks.byId(asTaskId(session.taskId)) : null;
+    const task = session && session.taskId !== null ? await deps.tasks.byId(session.taskId) : null;
     const project = task ? await deps.projects.byId(task.projectId) : null;
     if (project) teamId = project.teamId ?? teamId;
   } catch {
@@ -133,15 +133,14 @@ export async function noteProvenance(
   options: SessionActivityOptions | undefined,
   c: Context | null,
   subject: Subject | null,
-  session: Pick<Session, 'id' | 'taskId' | 'origin'>,
+  session: Pick<Session, 'id' | 'taskId' | 'origin' | 'workspaceId'> & { readonly groupId?: WorkspaceGroupId | null; readonly botId?: string | null },
   via: ProvenanceVia,
   parent?: { readonly sessionId: string; readonly atSeq?: number } | null
 ): Promise<void> {
   if (!options?.provenance) return;
   let teamId: string | null = null;
   try {
-    const task = await deps.tasks.byId(asTaskId(session.taskId));
-    const project = task ? await deps.projects.byId(task.projectId) : null;
+    const project = await projectOfSession(deps, session);
     teamId = project?.teamId ?? null;
   } catch {
     // 查不到就用操作人的团队

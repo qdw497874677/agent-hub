@@ -22,7 +22,8 @@ export type WorkerCommand =
       readonly sessionId: SessionId;
       /** 落点：交给哪台 Worker。后续 prompt / interrupt 都按会话跟着它走。 */
       readonly workerId: string;
-      readonly taskId: TaskId;
+      /** 归属任务；null = 容器会话（群角色 / bot P2P），worker 不按任务做事。 */
+      readonly taskId: TaskId | null;
       readonly agentId: string;
       readonly workspaceRoot: string;
       readonly origin: SessionOrigin;

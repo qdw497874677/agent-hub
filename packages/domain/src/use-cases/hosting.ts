@@ -1,6 +1,6 @@
 import type { Session } from '../session.ts';
 import type { Project } from '../project.ts';
-import { defaultWorkspaceFor, locationOf } from './workspaces.ts';
+import { defaultWorkspaceFor, locationOf, projectOfSession } from './workspaces.ts';
 import type { DomainError } from '../errors.ts';
 import { notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -9,11 +9,10 @@ import type { Deps } from './deps.ts';
 import { startSessionUseCase } from './start-session.ts';
 
 export async function projectOf(
-  deps: Pick<Deps, 'tasks' | 'projects'>,
+  deps: Pick<Deps, 'tasks' | 'projects'> & Partial<Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>>,
   session: Session
 ): Promise<Project | null> {
-  const task = await deps.tasks.byId(session.taskId);
-  return task ? deps.projects.byId(task.projectId) : null;
+  return projectOfSession(deps, session);
 }
 
 /**

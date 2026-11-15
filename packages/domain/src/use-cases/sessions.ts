@@ -3,7 +3,7 @@ import { applyEvent, deriveSession, forkSession, isNeverPrompted, markInterrupte
 import type { Session } from '../session.ts';
 import { findOption, optionValues, type RuntimeOption } from '../option.ts';
 import type { Seq, SessionId, WorkspaceGroupId } from '../ids.ts';
-import { asAgentId, asSessionId, asTaskId, asWorkspaceGroupId, asWorkspaceId } from '../ids.ts';
+import { asAgentId, asProjectId, asSessionId, asTaskId, asWorkspaceGroupId, asWorkspaceId } from '../ids.ts';
 import { groupReady } from '../workspace-group.ts';
 import { isUsable, setupNotReady } from '../workspace.ts';
 import type { DomainError } from '../errors.ts';
@@ -24,7 +24,10 @@ import { authorizeWorker } from './authorization.ts';
 import { agentProfileForUse } from './agent-profiles.ts';
 
 export interface DeriveCommand {
-  readonly taskId: string;
+  /** 归属任务。容器会话（群角色 / bot P2P，#221 步骤 7）不传，改用 `projectId` 定位项目。 */
+  readonly taskId?: string;
+  /** 容器会话用的项目归属：没有任务时靠它决定工作空间 / 落点规则。 */
+  readonly projectId?: string;
   /** 三件套：runtime + model + 启动选项。新调用点用它，旧字段只为兼容保留。 */
   readonly ref?: AgentRef;
   /** @deprecated 用 `ref`；给了就覆盖 `ref.runtime`。 */
@@ -56,24 +59,31 @@ export interface DeriveCommand {
   readonly parentSessionId?: string | null;
 }
 
-/** 派生会话：唯一入口，且必须落到一个 Task 上（S5.1）。 */
+/**
+ * 派生会话：唯一入口。
+ * 常规会话必须落到一个真实任务上；容器会话（群角色 / bot P2P）没有任务，靠 `projectId` 落项目。
+ */
 export async function deriveSessionUseCase(
   deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
-  const task = await deps.tasks.byId(asTaskId(command.taskId));
-  if (!task) return err(notFound('任务不存在'));
-  const project = await deps.projects.byId(task.projectId);
-  if (!project) return err(notFound('项目不存在'));
+  const task = command.taskId ? await deps.tasks.byId(asTaskId(command.taskId)) : null;
+  if (command.taskId && !task) return err(notFound('任务不存在'));
+  let projectId = task ? task.projectId : command.projectId ? asProjectId(command.projectId) : null;
 
   // 侧聊（I4）：只为顺口问一句，完全继承父会话的落点与运行参数。
   // 调用方给的 workspaceId / workerId / agentId / model / options / groupId 一律忽略。
   let parent: Session | null = null;
   if (command.kind === 'side') {
     const found = command.parentSessionId ? await deps.sessions.byId(asSessionId(command.parentSessionId)) : null;
-    const parentTask = found ? await deps.tasks.byId(found.taskId) : null;
-    if (!found || !parentTask || parentTask.projectId !== project.id || !found.workspaceId || !found.workerId) {
+    // 父会话是容器会话时没有任务可继承项目：侧聊只挂在有任务的会话上（边界见 #221 步骤 7）。
+    const parentTask = found && found.taskId !== null ? await deps.tasks.byId(found.taskId) : null;
+    if (!found || !parentTask || !found.workspaceId || !found.workerId) {
       return err(invalid('侧聊要挂在一条已有会话上'));
+    }
+    if (projectId === null) projectId = parentTask.projectId;
+    if (parentTask.projectId !== projectId) {
+      return err(invalid('侧聊要挂在一条已有会话上，而且要和它同一个项目'));
     }
     parent = found;
     command = {
@@ -91,6 +101,10 @@ export async function deriveSessionUseCase(
       createdBy: principalOfSubject(command.actor)?.user.id ?? command.createdBy ?? parent.createdBy ?? null
     };
   }
+
+  if (projectId === null) return err(invalid('派生会话要落到一个项目上：给 taskId（有任务的会话）或 projectId（容器会话）'));
+  const project = await deps.projects.byId(projectId);
+  if (!project) return err(notFound('项目不存在'));
 
   // 归一成 ref：旧字段（agentId/model/options）优先，保持既有调用点语义。
   const commandRef: AgentRef = {
@@ -131,7 +145,7 @@ export async function deriveSessionUseCase(
     const blocked = chosen ? setupNotReady(chosen, waitForSetup) : null;
     if (blocked) return err(conflict(blocked));
     if (!isUsable(chosen)) return err(conflict('这个工作空间现在用不了（准备中、失败或已删除）'));
-    if (chosen.kind === 'temporary' && chosen.ownerTaskId !== task.id) return err(conflict('这个临时工作空间属于别的任务'));
+    if (chosen.kind === 'temporary' && (task === null || chosen.ownerTaskId !== task.id)) return err(conflict('这个临时工作空间属于别的任务'));
   }
   // 机器跟着工作空间走（null = Server 本机）；没选就用项目的默认工作空间
   const workspace = chosen ?? (await defaultWorkspaceFor(deps, project.id));
@@ -181,18 +195,20 @@ export async function deriveSessionUseCase(
   return ok(session);
 }
 
-/** 会话开跑：todo 推到 in_progress，并记一条系统日志。 */
+/** 会话开跑：todo 推到 in_progress，并记一条系统日志。容器会话没有任务，什么都不做。 */
 async function noteSessionStarted(
   deps: Pick<Deps, 'now' | 'tasks' | 'workLog'>,
   session: Session,
   body: string
 ): Promise<void> {
-  const task = await deps.tasks.byId(session.taskId);
+  const taskId = session.taskId;
+  if (taskId === null) return;
+  const task = await deps.tasks.byId(taskId);
   if (task) {
     const started = markStarted(task, deps.now());
     if (started !== task) await deps.tasks.save(started);
   }
-  await recordSystemLog(deps, session.taskId, body, session.id);
+  await recordSystemLog(deps, taskId, body, session.id);
 }
 
 export interface ForkCommand {
@@ -223,7 +239,12 @@ export async function forkSessionUseCase(
   if (source.lastSeq < 1) return err(conflict('来源会话还没有内容，没有可以分叉的地方'));
   const atSeq = source.lastSeq;
 
-  const sourceTask = await deps.tasks.byId(source.taskId);
+  const sourceTaskId = source.taskId;
+  if (sourceTaskId === null) {
+    // 边界（#221 步骤 7）：容器会话不挂在任务上，分叉要按任务算项目与落点，这里先明确拒绝。
+    return err(invalid('容器会话（不属于任何任务）暂不支持分叉'));
+  }
+  const sourceTask = await deps.tasks.byId(sourceTaskId);
   if (!sourceTask) return err(notFound('来源会话所属的任务不存在'));
   const project = await deps.projects.byId(sourceTask.projectId);
   if (!project) return err(notFound('项目不存在'));
@@ -296,16 +317,19 @@ export async function recordEvent(
   const next = applyEvent(session, command.event, now);
   await deps.sessions.append(next, command.event, now);
 
-  if (command.event.kind === 'artifact') {
+  const artifactTaskId = session.taskId;
+  if (command.event.kind === 'artifact' && artifactTaskId !== null) {
     const artifact = createArtifact({
       sessionId: session.id,
-      taskId: session.taskId,
+      taskId: artifactTaskId,
       path: command.event.path,
       bytes: command.event.bytes,
       now
     });
     if (artifact.ok) await deps.artifacts.save(artifact.value);
   }
+  // 容器会话（#221 步骤 7）：产出物目前按任务汇总（artifacts.task_id NOT NULL），
+  // 没有任务的会话先不落 artifact 行，事件本身照常广播。
 
   deps.stream.publish({
     sessionId: session.id,

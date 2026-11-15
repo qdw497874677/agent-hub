@@ -51,7 +51,7 @@ export function ContinueDialog({
       else if (choice.type === 'new_temporary') target = { kind: 'temporary', workerId: machine };
       else if (choice.type === 'new_worktree') {
         // 隔离 worktree：先按项目配置在目标机器上现建（准备命令跑完），再把它当普通空间继续
-        const made = await api.createWorkspace(canvas.project.id, { workerId: machine, kind: 'temporary', taskId: session.taskId, mode: 'isolated' });
+        const made = await api.createWorkspace(canvas.project.id, { workerId: machine, kind: 'temporary', taskId: session.taskId ?? '', mode: 'isolated' });
         setChoice({ type: 'existing', workspaceId: made.id });
         target = { kind: 'workspace', workspaceId: made.id };
       } else if (choice.type === 'new_long_lived') {
@@ -83,7 +83,7 @@ export function ContinueDialog({
       </p>
       <WorkspaceChooser
         canvas={canvas}
-        taskId={session.taskId}
+        taskId={session.taskId ?? ''}
         agentId={session.agentId}
         workers={workers.list}
         machine={machine}

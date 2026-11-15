@@ -28,6 +28,8 @@ export interface SessionEnvironmentOptions {
   readonly assetDeps: AssetDeps;
   readonly tasks: { byId(id: TaskId): Promise<Task | null> };
   readonly projects: { byId(id: ProjectId): Promise<Project | null> };
+  /** 容器会话（无任务）的项目来源（#221 步骤 7）；返回 null 时按「解析失败」处理，不下发资产。 */
+  readonly containerProject?: (sessionId: string) => Promise<{ projectId: ProjectId; ownerId: string | null } | null>;
   readonly log?: (message: string) => void;
 }
 
@@ -86,13 +88,17 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
 
   async function resolve(
     workerId: string,
-    taskId: TaskId,
-    withMcp: boolean
+    taskId: TaskId | null,
+    withMcp: boolean,
+    container?: { projectId: ProjectId | null; ownerId: string | null }
   ): Promise<Resolved | null> {
-    const task = await tasks.byId(taskId);
-    if (!task) return null;
-    const project = await projects.byId(task.projectId);
-    const viewer = task.ownerId ? { userId: task.ownerId, teamId: project?.teamId ?? null } : null;
+    const task = taskId === null ? null : await tasks.byId(taskId);
+    if (taskId !== null && !task) return null;
+    if (taskId === null && !container?.projectId) return null;
+    const projectId = (task ? task.projectId : container?.projectId) ?? null;
+    const ownerId = task ? task.ownerId : container?.ownerId ?? null;
+    const project = projectId === null ? null : await projects.byId(projectId as ProjectId);
+    const viewer = ownerId ? { userId: ownerId, teamId: project?.teamId ?? null } : null;
     const plan = await sessionAssetPlan(assetDeps, workerId, project?.id ?? null, viewer);
     let launch: readonly McpLaunch[] = [];
     let skipped: readonly { name: string; reason: string }[] = [];
@@ -114,7 +120,8 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     async prepare(command) {
       if (command.kind !== 'start_session') return { command, revision: null };
       try {
-        const resolved = await resolve(command.workerId, command.taskId, Boolean(command.tools));
+        const container = command.taskId === null ? await options.containerProject?.(command.sessionId) ?? null : undefined;
+        const resolved = await resolve(command.workerId, command.taskId, Boolean(command.tools), container ?? undefined);
         if (!resolved) return { command, revision: null };
         const launched = new Set(resolved.launch.map((item) => item.name));
         for (const item of resolved.skipped) {
@@ -145,7 +152,8 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     async revision(session) {
       if (!session.workerId) return null;
       try {
-        const resolved = await resolve(session.workerId, session.taskId, true);
+        const container = session.taskId === null ? await options.containerProject?.(session.id) ?? null : undefined;
+        const resolved = await resolve(session.workerId, session.taskId, true, container ?? undefined);
         return resolved?.revision ?? null;
       } catch (failure) {
         log?.(`会话环境版本计算失败：${(failure as Error).message}`);

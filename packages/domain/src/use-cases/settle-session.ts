@@ -9,8 +9,11 @@ import { err, ok } from '../result.ts';
 import type { Session } from '../session.ts';
 import type { Deps } from './deps.ts';
 import { authorizeSession } from './authorization.ts';
+import { projectOfSession } from './workspaces.ts';
 
-export interface SettleSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'> {
+export interface SettleSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
+  // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
+  Partial<Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>> {
   /** 没登录态（或测试里没接审计）就不记。 */
   readonly audit?: AuditLog;
 }
@@ -39,8 +42,7 @@ export async function settleSessionUseCase(
   if (!who.ok) return who;
   const session = await deps.sessions.byId(command.sessionId);
   if (!session) return err(notFound('会话不存在'));
-  const task = await deps.tasks.byId(session.taskId);
-  const project = task ? await deps.projects.byId(task.projectId) : null;
+  const project = await projectOfSession(deps, session);
   const allowed = await authorizeSession(deps.access, who.value, project, session, 'session.settle');
   if (!allowed.ok) return allowed;
   const current = allowed.value;

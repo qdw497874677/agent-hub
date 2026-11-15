@@ -455,7 +455,7 @@ export function FocusView({
     setTab('changes');
   };
   // 任务上的 PR（打开任务时服务端顺手同步状态）
-  const taskPrs = useQuery({ queryKey: taskKeys.pullRequests(session.taskId), queryFn: () => gitApi.taskPullRequests(session.taskId), staleTime: 60_000, retry: false }).data ?? [];
+  const taskPrs = useQuery({ queryKey: taskKeys.pullRequests(session.taskId ?? ''), queryFn: () => gitApi.taskPullRequests(session.taskId ?? ''), staleTime: 60_000, retry: false }).data ?? [];
   /**
    * 环境（资产 / MCP / 启动配置）改过但没有重新托管：只用来说一句「下一轮生效」。
    * 30s 内不重复问；切回窗口时问一次（在别处改完设置回来就能看到）。
@@ -578,7 +578,7 @@ export function FocusView({
   async function sendAndNew(): Promise<void> {
     await run(async () => {
       const created = await api.derive({
-        taskId: session.taskId,
+        taskId: session.taskId ?? '',
         agentId: session.agentId,
         model: session.model,
         ...(groupId !== null ? { groupId } : { workspaceId: session.workspaceId }),
@@ -715,7 +715,7 @@ export function FocusView({
                       close();
                       void run(async () => {
                         const created = await api.derive({
-                          taskId: session.taskId,
+                          taskId: session.taskId ?? '',
                           agentId: session.agentId,
                           model: session.model,
                           kind: 'side',

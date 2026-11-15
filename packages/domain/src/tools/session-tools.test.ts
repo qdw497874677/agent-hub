@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { AgentDescriptor } from '../agent.ts';
-import { asAgentId } from '../ids.ts';
+import { asAgentId, type TaskId } from '../ids.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase } from '../use-cases/projects.ts';
 import { createTaskUseCase } from '../use-cases/tasks.ts';
@@ -41,7 +41,7 @@ async function world() {
     await recordEvent(w.deps, { sessionId: a.session.id, event: { kind: 'prompt', text: `问${i}` } });
     await recordEvent(w.deps, { sessionId: a.session.id, event: { kind: 'text', delta: `答${i}`.repeat(i === 5 ? 3000 : 1) } });
   }
-  const grant = (sessionId: string, taskId: string) => ({ grant: { sessionId, taskId, scopes: ['context'] } as unknown as ToolGrant, now: 0 });
+  const grant = (sessionId: string, taskId: TaskId | null) => ({ grant: { sessionId, taskId, scopes: ['context'] } as unknown as ToolGrant, now: 0 });
   return { w, a, b, a2: a2.value, grant, tools: createSessionToolProvider(w.deps) };
 }
 

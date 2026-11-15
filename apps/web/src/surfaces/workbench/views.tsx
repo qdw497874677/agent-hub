@@ -232,7 +232,10 @@ export function SearchPalette({
 /** 列表按任务分组；组内按开始时间排。行标题用第一句话；预览只有最近几条，第一句另存在 openings 里。 */
 export function groupSessions(canvas: Pick<CanvasDto, 'tasks' | 'sessions' | 'previews' | 'openings'>) {
   const byTask = new Map<string, CanvasDto['sessions'][number][]>();
-  for (const session of canvas.sessions) byTask.set(session.taskId, [...(byTask.get(session.taskId) ?? []), session]);
+  for (const session of canvas.sessions) {
+    const key = session.taskId ?? 'container';
+    byTask.set(key, [...(byTask.get(key) ?? []), session]);
+  }
   const order = [...canvas.tasks.map((task) => task.id), ...[...byTask.keys()].filter((id) => !canvas.tasks.some((task) => task.id === id))];
   return order
     .filter((taskId) => byTask.has(taskId))

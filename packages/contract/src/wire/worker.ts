@@ -282,7 +282,8 @@ export const providerModelsSchema = z
 export const startSessionCommandSchema = z.object({
   kind: z.literal('start_session'),
   sessionId: id,
-  taskId: id,
+  /** 容器会话（#221 步骤 7）不属于任何任务；运行时不读这个字段。 */
+  taskId: id.nullable(),
   agentId: id,
   workspaceRoot: z.string(),
   origin: sessionOriginSchema,

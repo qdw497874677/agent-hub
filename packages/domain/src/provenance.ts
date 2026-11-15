@@ -13,7 +13,8 @@ export type ProvenanceActorKind = 'user' | 'api_token' | 'agent' | 'system';
 export interface SessionProvenance {
   readonly id: string;
   readonly sessionId: string;
-  readonly taskId: string;
+  /** 归属任务；null = 容器会话（#221 步骤 7），来历行本身没有任务可挂。 */
+  readonly taskId: string | null;
   readonly actor: { readonly kind: ProvenanceActorKind; readonly id: string; readonly name: string };
   readonly via: ProvenanceVia;
   /** fork / rewind / handoff / 换机继续的来源。 */
@@ -37,7 +38,8 @@ export const PARENT_REQUIRED: ReadonlySet<ProvenanceVia> = new Set(['fork', 'rew
  * - agent 发起的、或 fork/rewind/交接/换机继续，必须带 parent。
  */
 export function validateProvenance(p: SessionProvenance, held: readonly Permission[] | null): Result<SessionProvenance, DomainError> {
-  if (!p.sessionId || !p.taskId) return err(invalid('来历缺会话或任务'));
+  // taskId 允许为 null：容器会话（#221 步骤 7）不挂在任务上。
+  if (!p.sessionId) return err(invalid('来历缺会话'));
   if ((p.actor.kind === 'agent' || PARENT_REQUIRED.has(p.via)) && !p.parent?.sessionId) {
     return err(invalid(`来历「${p.via}」必须注明来源会话`));
   }

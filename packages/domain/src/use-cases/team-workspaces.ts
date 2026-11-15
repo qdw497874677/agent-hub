@@ -7,7 +7,7 @@ import type { Workspace } from '../workspace.ts';
 import { authorizeProject, authorizeWorkspace, canManageTeamWorkspaces, projectReader } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { removeWorkspaceUseCase, type RemoveWorkspaceCommand } from './workspace-cleanup.ts';
-import { actorId, prepareTeamWorkspace, type LongLivedPlan } from './workspaces.ts';
+import { actorId, prepareTeamWorkspace, projectOfSession, type LongLivedPlan } from './workspaces.ts';
 
 /**
  * 团队工作空间（ADR 0026）：长期工作空间属于团队，项目通过关联来用。
@@ -131,8 +131,8 @@ export async function unlinkWorkspaceUseCase(
   if (!workspace || !links.some((l) => l.projectId === project.value.id)) return err(notFound('这个项目没有关联这个工作空间'));
   for (const session of await deps.sessions.listByWorkspace(workspace.id)) {
     if (session.status !== 'running') continue;
-    const task = await deps.tasks.byId(session.taskId);
-    if (task?.projectId === project.value.id) return err(conflict('本项目还有会话在这个工作空间里运行，先停掉它'));
+    const owner = await projectOfSession({ tasks: deps.tasks, projects: deps.projects }, session);
+    if (owner?.id === project.value.id) return err(conflict('本项目还有会话在这个工作空间里运行，先停掉它'));
   }
   await deps.workspaces.unlink(project.value.id, workspace.id);
   return ok(workspace);

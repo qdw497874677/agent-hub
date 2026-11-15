@@ -33,10 +33,16 @@ CREATE TABLE IF NOT EXISTS tool_calls (
 CREATE INDEX IF NOT EXISTS tool_calls_at ON tool_calls(at);
 `;
 
+/** #221 步骤 7：容器会话没有任务，tool_grants / tool_calls 的 task_id 用空串当哨兵（列是 NOT NULL，不改表）。 */
+const taskIdOf = (value: unknown): ToolGrant['taskId'] => {
+  const raw = typeof value === 'string' ? value : '';
+  return raw === '' ? null : asTaskId(raw);
+};
+
 const toGrant = (row: Row): ToolGrant => ({
   id: row.id as string,
   tokenHash: row.token_hash as string,
-  taskId: asTaskId(row.task_id as string),
+  taskId: taskIdOf(row.task_id),
   sessionId: asSessionId(row.session_id as string),
   workerId: (row.worker_id as string | null) ?? null,
   scopes: JSON.parse(row.scopes as string) as ToolScope[],
@@ -49,7 +55,7 @@ const toGrant = (row: Row): ToolGrant => ({
 const toCall = (row: Row): ToolCallRecord => ({
   id: row.id as string,
   grantId: row.grant_id as string,
-  taskId: asTaskId(row.task_id as string),
+  taskId: taskIdOf(row.task_id),
   sessionId: asSessionId(row.session_id as string),
   tool: row.tool as string,
   version: row.version as number,
@@ -88,7 +94,7 @@ export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository
       upsert.run(
         grant.id,
         grant.tokenHash,
-        grant.taskId,
+        grant.taskId ?? '',
         grant.sessionId,
         grant.workerId,
         JSON.stringify(grant.scopes),
@@ -123,7 +129,7 @@ export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository
       insertCall.run(
         record.id,
         record.grantId,
-        record.taskId,
+        record.taskId ?? '',
         record.sessionId,
         record.tool,
         record.version,

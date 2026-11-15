@@ -59,7 +59,10 @@ export async function canReadSession(
     cursor = await deps.sessions.byId(asSessionId(cursor.origin.fromSessionId));
   }
   if (!caller) return false;
-  const [mine, theirs] = await Promise.all([deps.tasks.byId(caller.taskId), deps.tasks.byId(target.taskId)]);
+  const [mine, theirs] = await Promise.all([
+    caller.taskId === null ? null : deps.tasks.byId(caller.taskId),
+    target.taskId === null ? null : deps.tasks.byId(target.taskId)
+  ]);
   if (!mine || !theirs) return false;
   if (mine.projectId === theirs.projectId) return true;
   return extraProjects ? (await extraProjects(callerId)).includes(theirs.projectId) : false;

@@ -1,7 +1,7 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
 import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema, terminalClose, terminalList, terminalOpen, terminalResize } from '@agent-hub/contract';
-import { RECONNECT_POLICY, canInvoke, capabilityDenied, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
+import { RECONNECT_POLICY, asTaskId, canInvoke, capabilityDenied, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
 import type { WorkerCapability } from '@agent-hub/domain';
 import { createProviderRelay } from './provider-relay.ts';
 import { authHeaders } from './provider-proxy.ts';
@@ -1078,7 +1078,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
 
     let spec: StartSpec = {
       sessionId: asSessionId(command.sessionId),
-      taskId: command.taskId as StartSpec['taskId'],
+      taskId: command.taskId === null ? null : asTaskId(command.taskId),
       workspaceRoot: command.workspaceRoot,
       resume: command.resume,
       options: command.options,

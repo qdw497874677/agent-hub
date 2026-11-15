@@ -14,7 +14,7 @@ import { startSessionUseCase } from './start-session.ts';
 import { interruptSessionUseCase, recordEvent } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
 import { buildHandoff, type HandoffResult } from '../handoff.ts';
-import { locationsOf } from './workspaces.ts';
+import { locationsOf, projectOfSession } from './workspaces.ts';
 
 /**
  * 回滚到某条消息（ADR 0027 阶段 4）：「⋯ → 从这里重来」。
@@ -125,8 +125,8 @@ export function createRewindService(deps: RewindDeps) {
   async function find(actor: Subject | null, sessionId: string, promptSeq: number): Promise<Result<Found, DomainError>> {
     if (!Number.isInteger(promptSeq) || promptSeq < 1) return err(invalid('消息序号不对'));
     const session = await deps.sessions.byId(asSessionId(sessionId));
-    const task = session ? await deps.tasks.byId(session.taskId) : null;
-    const project = task ? await deps.projects.byId(task.projectId) : null;
+    // 容器会话（#221 步骤 7）没有任务：按组合工作空间 / bot 找回项目。
+    const project = session ? await projectOfSession(deps, session) : null;
     const seen = await authorizeSession(deps.access, actor, project, session, 'session.prompt');
     if (!seen.ok) return seen;
     const entry = (await deps.sessions.eventsAfter(seen.value.id, (promptSeq - 1) as never)).find((e) => e.seq === promptSeq);

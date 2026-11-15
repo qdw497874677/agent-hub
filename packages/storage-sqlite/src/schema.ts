@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS task_log_entries (
 
 CREATE TABLE IF NOT EXISTS sessions (
   id               TEXT PRIMARY KEY,
-  task_id          TEXT NOT NULL REFERENCES tasks(id),
+  -- #221 步骤 7：容器会话（群角色 / bot P2P）不属于任何任务，task_id 可以是 NULL；
+  -- 老库由 store.ts 的 relaxSessionsTaskId 重建表迁移。
+  task_id          TEXT REFERENCES tasks(id),
   agent_id         TEXT NOT NULL,
   model            TEXT NOT NULL,
   origin_kind      TEXT NOT NULL,

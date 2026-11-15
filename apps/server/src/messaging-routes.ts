@@ -10,6 +10,7 @@ import {
   authorizeProject,
   messageView,
   principalOfSubject,
+  projectOfSession,
   type Deps,
   type MessageBus,
   type MessageStore,
@@ -66,7 +67,7 @@ const decisionBody = z.object({ approve: z.boolean() });
 export interface MessagingRouteDeps {
   readonly bus: MessageBus;
   readonly messages: MessageStore;
-  readonly deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>;
+  readonly deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access' | 'bots' | 'workspaces'>;
 }
 
 export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDeps, subjectOf: SubjectOf): void {
@@ -76,12 +77,13 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     const sessionId = asSessionId(c.req.param('id'));
     const session = await deps.sessions.byId(sessionId);
     if (!session) return fail(c, { code: 'not_found', message: '会话不存在' });
-    const task = await deps.tasks.byId(session.taskId);
-    if (!task) return fail(c, { code: 'not_found', message: '会话不存在' });
-    const visible = await authorizeProject(deps.access, subjectOf(c), await deps.projects.byId(task.projectId), 'project.read');
+    // 容器会话没有任务：项目按归属反推（#221 步骤 7）。
+    const project = await projectOfSession(deps, session);
+    if (!project) return fail(c, { code: 'not_found', message: '会话不存在' });
+    const visible = await authorizeProject(deps.access, subjectOf(c), project, 'project.read');
     if (!visible.ok) return fail(c, visible.error);
     const list = await bus.inbox(sessionId, 50);
-    const pending = task ? (await messages.awaitingApproval(task.projectId)).filter((m) => m.fromSessionId === sessionId) : [];
+    const pending = (await messages.awaitingApproval(asProjectId(project.id as string))).filter((m) => m.fromSessionId === sessionId);
     return c.json({ messages: list.map(messageView), awaitingApproval: pending.map(messageView) });
   });
 

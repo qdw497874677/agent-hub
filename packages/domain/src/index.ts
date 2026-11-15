@@ -196,6 +196,7 @@ export { derivePhase, needsHuman, isAskTool, NEEDS_HUMAN, PHASE_RANK, type Phase
 export type { AttentionStore, AttentionAck } from './ports/attention-store.ts';
 export { loadAttention, ATTENTION_WINDOW_MS, type AttentionItem, type AttentionView, type AttentionDeps } from './use-cases/attention.ts';
 export * from './connector.ts';
+export * from './channel-outbox.ts';
 export type { InboundSource, InboundContext } from './ports/inbound-source.ts';
 export type { OutputSink, OutputSinkEvent } from './ports/output-sink.ts';
 export type { ConnectorStore } from './ports/connector-store.ts';

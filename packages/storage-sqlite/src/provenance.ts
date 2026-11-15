@@ -23,7 +23,8 @@ export function createSqliteProvenance(db: DatabaseSync): ProvenanceStore {
   const byId = db.prepare('SELECT * FROM session_provenance WHERE session_id = ?');
   return {
     async record(p) {
-      const r = insert.run(p.sessionId, p.id, p.taskId, p.actor.kind, p.actor.id, p.actor.name, p.via,
+      // #221 步骤 7：容器会话没有任务；列是 NOT NULL，用空串当哨兵。
+      const r = insert.run(p.sessionId, p.id, p.taskId ?? '', p.actor.kind, p.actor.id, p.actor.name, p.via,
         p.parent?.sessionId ?? null, p.parent?.atSeq ?? null, JSON.stringify(p.authority), p.backfilled ? 1 : 0, p.createdAt);
       return Number(r.changes) > 0;
     },
@@ -31,7 +32,7 @@ export function createSqliteProvenance(db: DatabaseSync): ProvenanceStore {
       const r = byId.get(sessionId) as Row | undefined;
       if (!r) return null;
       return {
-        id: r.id, sessionId: r.session_id, taskId: r.task_id,
+        id: r.id, sessionId: r.session_id, taskId: r.task_id === '' ? null : r.task_id,
         actor: { kind: r.actor_kind as SessionProvenance['actor']['kind'], id: r.actor_id, name: r.actor_name },
         via: r.via as SessionProvenance['via'],
         parent: r.parent_session ? { sessionId: r.parent_session, ...(r.parent_seq !== null ? { atSeq: r.parent_seq } : {}) } : null,
@@ -47,7 +48,7 @@ export function createSqliteProvenance(db: DatabaseSync): ProvenanceStore {
 function backfill(db: DatabaseSync): void {
   const rows = db.prepare(`SELECT s.id, s.task_id, s.origin_kind, s.origin_session, s.origin_seq, s.created_at FROM sessions s
     WHERE NOT EXISTS (SELECT 1 FROM session_provenance p WHERE p.session_id = s.id)`).all() as
-    { id: string; task_id: string; origin_kind: string; origin_session: string | null; origin_seq: number | null; created_at: number }[];
+    { id: string; task_id: string | null; origin_kind: string; origin_session: string | null; origin_seq: number | null; created_at: number }[];
   if (!rows.length) return;
   const insert = db.prepare(`INSERT OR IGNORE INTO session_provenance
     (session_id, id, task_id, actor_kind, actor_id, actor_name, via, parent_session, parent_seq, authority, backfilled, created_at)
@@ -56,7 +57,7 @@ function backfill(db: DatabaseSync): void {
   try {
     for (const r of rows) {
       const fork = r.origin_kind === 'fork' && r.origin_session;
-      insert.run(r.id, randomUUID(), r.task_id, fork ? 'fork' : 'web', fork ? r.origin_session : null, fork ? r.origin_seq : null, r.created_at);
+      insert.run(r.id, randomUUID(), r.task_id ?? '', fork ? 'fork' : 'web', fork ? r.origin_session : null, fork ? r.origin_seq : null, r.created_at);
     }
     db.exec('COMMIT');
   } catch (e) {

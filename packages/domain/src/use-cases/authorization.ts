@@ -203,6 +203,8 @@ export async function projectOfRef(
   if (ref.kind === 'session') {
     session = await deps.sessions.byId(asSessionId(ref.id));
     if (!session) return { project: null, session: null };
+    // 容器会话没有任务，也就没有可推的项目——调用方按「无项目」处理（#221 步骤 7）。
+    if (session.taskId === null) return { project: null, session };
     taskId = session.taskId;
   }
   const task = await deps.tasks.byId(asTaskId(taskId));

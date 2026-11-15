@@ -26,7 +26,14 @@ export type SessionOrigin =
 
 export interface Session {
   readonly id: SessionId;
-  readonly taskId: TaskId;
+  /**
+   * 归属的任务；null = **容器会话**（#221 步骤 7）：群角色会话靠 `groupId`、bot P2P 会话靠 `botId`
+   * 归属，不再为它们的出生合成一条假任务。任务列表 / 配额 / 调度 / `task.*` 工具只认真实任务，
+   * 对容器会话一律视为「不属于任何任务」并跳过。
+   *
+   * 判定统一走 `isContainerSession`，不要各处散写 `taskId === null`。
+   */
+  readonly taskId: TaskId | null;
   readonly agentId: AgentId;
   readonly model: string;
   /** 缺省 / 老数据 = `chat`。侧聊是 `side`，挂在 `parentSessionId` 上。 */
@@ -85,8 +92,20 @@ export interface Session {
   readonly updatedAt: number;
 }
 
+/**
+ * 容器会话判定（#221 步骤 7）：没有归属任务 = 群角色 / bot P2P 这类常驻会话。
+ * 领域里所有「按任务」的行为（task.* 工具、配额、调度、任务日志）都要先过这一关。
+ */
+export function isContainerSession<T extends { readonly taskId: TaskId | null }>(session: T): session is T & { readonly taskId: null } {
+  return session.taskId === null;
+}
+
 export interface DeriveSessionInput {
-  readonly task: Task;
+  /**
+   * 归属任务；null / 缺省 = 给容器会话（群角色 / bot P2P）用的派生，不再需要假任务。
+   * 派生与任务相关的校验（已放弃的任务不能再派生）只在有任务时做。
+   */
+  readonly task?: Task | null;
   readonly agentId: AgentId;
   readonly model: string;
   readonly now: number;
@@ -106,7 +125,8 @@ export interface DeriveSessionInput {
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
-  if (input.task.status === 'abandoned') {
+  const task = input.task ?? null;
+  if (task?.status === 'abandoned') {
     return err(conflict('不能从已放弃的任务派生新会话——死路不该再长出分支'));
   }
   // 空 model 是合法值：意思是「用这个 agent 自己的默认模型」。
@@ -114,7 +134,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
   const model = input.model.trim();
   return ok({
     id: input.id ?? newSessionId(),
-    taskId: input.task.id,
+    taskId: task ? task.id : null,
     agentId: input.agentId,
     model,
     kind: input.kind ?? 'chat',
@@ -163,6 +183,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
   const model = input.model.trim();
   return ok({
     id: input.id ?? newSessionId(),
+    // 从容器会话分叉出来的仍是容器会话（taskId 为 null），不需要另外给任务。
     taskId: input.source.taskId,
     agentId: input.agentId,
     model,

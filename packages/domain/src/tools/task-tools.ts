@@ -1,4 +1,4 @@
-import { invalid, notFound, type DomainError } from '../errors.ts';
+import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import { type LogLink } from '../work-log.ts';
 import type { TaskStatus } from '../task.ts';
@@ -113,7 +113,12 @@ export function createTaskToolProvider(deps: Pick<Deps, 'now' | 'tasks' | 'workL
     tools: () => TASK_TOOLS,
     async call(name, input, ctx) {
       const args = record(input);
-      const taskId = ctx.grant.taskId;
+      // 容器会话（#221 步骤 7）：没有归属任务，任务级工具一律拒绝，并给模型一句能转述给人听的话。
+      const grantTaskId = ctx.grant.taskId;
+      if (grantTaskId === null) {
+        return err(forbidden('这条会话不属于任何任务：任务日志和状态都挂在真实任务上，这里没有可读写的任务'));
+      }
+      const taskId = grantTaskId;
       switch (name) {
         case 'task.get': {
           const task = await deps.tasks.byId(taskId);

@@ -354,7 +354,7 @@ test('会话名：setTitle 落库；之后的 save（跑着的会话拿旧对象
   assert.equal((await store.sessions.byId(session.id))?.title, '查登录 bug');
   await store.sessions.save({ ...session, updatedAt: now + 2 });
   assert.equal((await store.sessions.byId(session.id))?.title, '查登录 bug');
-  assert.equal((await store.sessions.listByTask(session.taskId))[0]?.title, '查登录 bug');
+  assert.equal((await store.sessions.listByTask(session.taskId!))[0]?.title, '查登录 bug');
   await store.sessions.setTitle(session.id, null, now + 3);
   assert.equal((await store.sessions.byId(session.id))?.title, undefined);
   store.close();
@@ -394,4 +394,72 @@ test('收起时间存得下、恢复后读回不带这个字段（和没收起�
   assert.equal(restored?.settledAt, undefined);
   assert.deepEqual(restored, session);
   store.close();
+});
+
+/** 把 sessions 表改回旧形状（task_id NOT NULL），模拟 #221 步骤 7 之前的库。 */
+function rebuildSessionsWithNotNullTaskId(file: string) {
+  const raw = new DatabaseSync(file);
+  const columns = raw.prepare('PRAGMA table_info(sessions)').all() as {
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }[];
+  const defs = columns.map((column) =>
+    column.name === 'task_id'
+      ? 'task_id TEXT NOT NULL REFERENCES tasks(id)'
+      : `${column.name} ${column.type}${column.notnull ? ' NOT NULL' : ''}${
+          column.dflt_value === null ? '' : ` DEFAULT ${column.dflt_value}`
+        }${column.pk ? ' PRIMARY KEY' : ''}`
+  );
+  const names = columns.map((column) => column.name).join(', ');
+  raw.exec('PRAGMA foreign_keys = OFF');
+  raw.exec(`CREATE TABLE sessions_old (${defs.join(', ')})`);
+  raw.exec(`INSERT INTO sessions_old (${names}) SELECT ${names} FROM sessions`);
+  raw.exec('DROP TABLE sessions');
+  raw.exec('ALTER TABLE sessions_old RENAME TO sessions');
+  raw.exec('CREATE INDEX IF NOT EXISTS sessions_by_task ON sessions(task_id)');
+  raw.close();
+}
+
+test('sessions.task_id 迁移：旧库 NOT NULL 放宽为可空，旧会话与任务都不丢（#221 步骤 7）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-hub-container-migrate-'));
+  const file = join(dir, 'hub.db');
+  try {
+    const before = openSqliteStore(file);
+    const seededWorld = await seeded(before);
+    before.close();
+
+    rebuildSessionsWithNotNullTaskId(file);
+    const old = new DatabaseSync(file);
+    const oldTaskId = old.prepare('PRAGMA table_info(sessions)').all() as { name: string; notnull: number }[];
+    assert.equal(oldTaskId.find((column) => column.name === 'task_id')?.notnull, 1);
+    old.close();
+
+    const store = openSqliteStore(file);
+    const columns = store.db.prepare('PRAGMA table_info(sessions)').all() as { name: string; notnull: number }[];
+    assert.equal(columns.find((column) => column.name === 'task_id')?.notnull, 0);
+    // 旧数据原样可读，任务行不变。
+    assert.deepEqual(await store.sessions.byId(seededWorld.session.id), seededWorld.session);
+    assert.deepEqual(await store.tasks.byId(seededWorld.task.id), seededWorld.task);
+    assert.deepEqual(await store.sessions.listByTask(seededWorld.task.id), [seededWorld.session]);
+
+    // 迁移之后可以插入不属于任何任务的会话。
+    const container = deriveSession({ agentId: asAgentId('grok'), model: 'grok-4', now: now + 10 });
+    assert.ok(container.ok);
+    await store.sessions.save(container.value);
+    const restored = await store.sessions.byId(container.value.id);
+    assert.equal(restored?.taskId, null);
+    assert.deepEqual(await store.sessions.listByTask(seededWorld.task.id), [seededWorld.session]);
+    assert.equal((await store.sessions.listAll()).length, 2);
+    store.close();
+
+    // 再开一次是幂等的：不会再重建，也不会丢新写入的容器会话。
+    const again = openSqliteStore(file);
+    assert.equal((await again.sessions.byId(container.value.id))?.taskId, null);
+    again.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
