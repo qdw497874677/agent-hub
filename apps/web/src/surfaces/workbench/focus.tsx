@@ -54,6 +54,8 @@ import { heldPromptSeqs, markQueued } from '../../atoms/prompt-delivery.ts';
 import { PendingPrompts, usePromptDelivery } from '../../atoms/prompt-delivery.tsx';
 import { WorktreeStatusLine } from './worktree-status.tsx';
 import { SessionGroupLine } from './session-group.tsx';
+import { FindInSession } from '../../atoms/find-in-session.tsx';
+import { isTypingTarget } from '../../atoms/find-in-text.ts';
 
 interface Props {
   readonly canvas: CanvasDto;
@@ -129,6 +131,10 @@ export function FocusView({
   const [subagentPath, setSubagentPath] = useState<readonly string[]>([]);
   const subagentTrackRef = useRef<HTMLButtonElement | null>(null);
   const moreRef = useRef<HTMLButtonElement | null>(null);
+  // 这棵会话视图的根：⌘F 只归焦点所在的那一个（画布上可能同时开着几条会话窗口）。
+  const viewRef = useRef<HTMLDivElement | null>(null);
+  // 会话内搜索条开着没有；查询本身和命中由 FindInSession 自己管。
+  const [findOpen, setFindOpen] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [linkOverrides, setLinkOverrides] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [linkError, setLinkError] = useState<string | null>(null);
@@ -142,6 +148,7 @@ export function FocusView({
     setLinkInfoId(null);
     setDeleting(false);
     setSubagentPath([]);
+    setFindOpen(false);
   }, [session.id]);
   const queries = useQueryClient();
   const [tab, setTab] = useState<SessionTab>(() => readStoredTab(session.id) ?? 'chat');
@@ -158,6 +165,30 @@ export function FocusView({
   useEffect(() => {
     storeTab(session.id, tab);
   }, [session.id, tab]);
+  /**
+   * 会话内搜索的入口：只接管这条会话视图里的 ⌘F / Ctrl+F。
+   * - 输入框里不拦：用户可能正在 composer 里改字，那里的 ⌘F 该留给浏览器。
+   * - 别的页签 / 别的页面不管，画布上开着多条会话时也只有焦点所在的那一个响应。
+   */
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent): void {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'f') return;
+      if (isTypingTarget(event.target) || tab !== 'chat') return;
+      const host = viewRef.current;
+      if (host === null) return;
+      const owner = event.target instanceof Node ? event.target : document.activeElement;
+      const inside = owner !== null && host.contains(owner);
+      // 焦点还挂在 body 上（刚进页面、刚点过空白处）也算：这时没有「别人的输入框」要保护，
+      // 但画布上可能同时开着几条会话，所以只让唯一的那一个会话视图接。
+      const idle = document.activeElement === null || document.activeElement === document.body;
+      const alone = idle && document.querySelectorAll('[data-focus-view]').length === 1;
+      if (!inside && !alone) return;
+      event.preventDefault();
+      setFindOpen(true);
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [tab]);
   /**
    * diff 里选了段代码要引用到对话：草稿在宿主这层拼（输入框不受控，只能拼好再推回去），
    * nonce 让 Composer 知道「这是新引用，去同步一次」。切回对话页，人接着写问题。
@@ -571,7 +602,7 @@ export function FocusView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-canvas">
+    <div ref={viewRef} data-focus-view className="flex min-h-0 flex-1 flex-col bg-canvas">
       <header
         className={`flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
         data-testid={windowChrome ? 'window-titlebar' : undefined}
@@ -924,6 +955,9 @@ export function FocusView({
           }}
         />
       ) : null}
+
+      {/* 会话内搜索：夹在页签和对话区之间，只有对话页签用得上；命中数由它直接写在下面这个滚动容器上 */}
+      <FindInSession open={findOpen && tab === 'chat'} onOpenChange={setFindOpen} scrollerRef={scroller} resetKey={session.id} />
 
       <div
         ref={scroller}
