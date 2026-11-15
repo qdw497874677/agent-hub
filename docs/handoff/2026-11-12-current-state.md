@@ -9,19 +9,19 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `9f6ad38 fix(assets): 下发 fail-closed、导入不借调用者凭据、版本记录与实际一致` |
-| origin/master | 已同步到 `9f6ad38` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `9f6ad38`（2026-11-15 19:24 用 `deploy-aliyun.sh --bundle` 部署） |
+| 本地 HEAD | `3ff2d9c feat(connectors): 外部消息可以落成群帖，群目标先做入站（#219 C3）` |
+| origin/master | 已同步到 `3ff2d9c` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `3ff2d9c`（2026-11-15 21:07 用 `deploy-aliyun.sh --bundle` 部署） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker `9f6ad38`（**协议 v4**） |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker `3ff2d9c`（**协议 v4**） |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` **1789 / 1781 pass / 8 skipped / 0 fail**；`check`、`typecheck`、`typecheck:web`、`build` 全 0 |
+| 最近完整验证 | `npm test` **1810 / 1802 pass / 8 skipped / 0 fail**；`check`、`typecheck`、`typecheck:web`、`build` 全 0；`e2e/groups.spec.ts` 4/4 |
 
 > 协议 v4：`assetIds` 不再默认「全给」。旧 Worker 会被 4426 拒连并提示跑 `scripts/update-worker.sh`；
 > 升级 hub 后要同步升级本地 worker，否则该机器上的会话全部不可用。
 
 
-当前部署已经包含（截至 `9f6ad38`）：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时、会话保活（回合结束后进程仍在，后台子代理不被杀）、子代理常驻轨道与实时面板、后台子代理结束后回补遗漏总结（`session/load` 重放）、处理中阶段与计时。
+当前部署已经包含（截至 `3ff2d9c`）：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时、会话保活（回合结束后进程仍在，后台子代理不被杀）、子代理常驻轨道与实时面板、后台子代理结束后回补遗漏总结（`session/load` 重放）、处理中阶段与计时。
 
 ### 预览怎么用
 
@@ -281,3 +281,10 @@ npx playwright test e2e/canvas.spec.ts --reporter=list
 | `ASSET_GIT_ALLOW_ANY_HOST=1` | 放开主机限制（仅自建环境，启动时打警告） |
 
 下一步（未做）：#225 M2/M3（不可变版本目录 + 适配器版本化路径）、#226 资产市场、#219 C3 群目标、#220 回帖、#217 剩余、Bot 记忆（只有设计）。
+
+## 2026-11-15 夜：部署 3ff2d9c
+
+- **#217 竞态与语义**：会话状态改条件写（`markRunning` 只从 interrupted 拉回、`markInterrupted` 只从 running 降级）；`workerTurn` 按 workerId 串行；撤回时 `sending` 不算落地；终端握手「不存在」与「无权限」统一 404；resync 退避上限 60s；`setBranch` 只写分支。
+- **#219 C3 群目标（入站）**：binding 可指向群，外部消息落成群帖（`posting → posted`），创建与投递都校验 `group.post`；同一 externalId 去重、回声、每分钟 30 条额度；跳过记录本身也限流（超限暂停 binding）；崩溃窗口按原轮次补调度并补收尾；外部正文与主持人转述都标 untrusted，外部帖不产生 mentions。
+- 已知边界：群回复还没回写外部渠道；`InboundEvent` 无发送者身份；后续轮次 actor 回退群创建者。
+- 下一步顺序：oracle 清理批次 3–5 → `SessionInbox` 统一占用判断 → Bot 长期记忆（仅设计）；#226 资产市场、#216 P2 排队；飞书真实收发等 `FEISHU_APP_ID`/`FEISHU_APP_SECRET`。
