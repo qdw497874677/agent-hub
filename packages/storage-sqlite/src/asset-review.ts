@@ -119,17 +119,21 @@ const toRequest = (row: Row): InstallRequest => ({
 const REVIEW = 'asset.review';
 const resourceOf = (key: string): [string, string] => (key === 'hub' ? ['hub', 'hub'] : ['team', key]);
 
+import { upsertSql } from './upsert.ts';
+import { inTransaction } from './tx.ts';
+
 export function createAssetReviewRepository(db: DatabaseSync): AssetReviewRepository {
   db.exec(ASSET_REVIEW_SCHEMA);
-  const putSub = db.prepare(`INSERT OR REPLACE INTO asset_submissions
-    (id, asset_id, digest, previous, submitted_by, origin, token_id, target_scope, status, required, approvals, decided_by, reason, report, created_at, decided_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const putSub = db.prepare(upsertSql('asset_submissions', [
+    'id', 'asset_id', 'digest', 'previous', 'submitted_by', 'origin', 'token_id', 'target_scope', 'status', 'required', 'approvals', 'decided_by', 'reason', 'report', 'created_at', 'decided_at'
+  ]));
   const getSub = db.prepare('SELECT * FROM asset_submissions WHERE id = ?');
   const allSubs = db.prepare('SELECT * FROM asset_submissions ORDER BY created_at DESC, rowid DESC');
   const putComment = db.prepare('INSERT INTO asset_review_comments (id, submission_id, author_id, path, line, body, at) VALUES (?, ?, ?, ?, ?, ?, ?)');
   const commentsOf = db.prepare('SELECT * FROM asset_review_comments WHERE submission_id = ? ORDER BY at, rowid');
-  const putRequest = db.prepare(`INSERT OR REPLACE INTO asset_install_requests
-    (id, asset_id, worker_id, requested_by, status, decided_by, reason, created_at, decided_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+  const putRequest = db.prepare(upsertSql('asset_install_requests', [
+    'id', 'asset_id', 'worker_id', 'requested_by', 'status', 'decided_by', 'reason', 'created_at', 'decided_at'
+  ]));
   const getRequest = db.prepare('SELECT * FROM asset_install_requests WHERE id = ?');
   const allRequests = db.prepare('SELECT * FROM asset_install_requests ORDER BY created_at DESC, rowid DESC');
   const getSettings = db.prepare('SELECT * FROM asset_review_settings WHERE key = ?');
@@ -183,16 +187,11 @@ export function createAssetReviewRepository(db: DatabaseSync): AssetReviewReposi
     },
     setSettings: async (key, settings: AssetReviewSettings) => {
       const [type, id] = resourceOf(key);
-      db.exec('BEGIN IMMEDIATE');
-      try {
+      inTransaction(db, () => {
         putSettings.run(key, settings.twoReviewers.global ? 1 : 0, settings.twoReviewers.mcpStdio ? 1 : 0);
         clearGrants.run(REVIEW, type, id);
         for (const subject of settings.reviewers) addGrant.run(subject, REVIEW, type, id, Date.now());
-        db.exec('COMMIT');
-      } catch (error) {
-        db.exec('ROLLBACK');
-        throw error;
-      }
+      });
     }
   };
 }

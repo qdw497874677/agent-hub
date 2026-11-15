@@ -1,4 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
+import { upsertSql } from './upsert.ts';
+import { inTransaction } from './tx.ts';
 import type {
   Artifact,
   CanvasLayout,
@@ -202,7 +204,9 @@ export function openSqliteStore(file: string): SqliteStore {
     'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, base_branch, summary, log_seq, created_at, updated_at) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET title = excluded.title, goal = excluded.goal, ' +
-      'status = excluded.status, owner_id = excluded.owner_id, branch = excluded.branch, base_branch = excluded.base_branch, summary = excluded.summary, ' +
+      // branch 只有写方知道时才覆盖：派生/更新任务时常拿到一份 branch 为 null 的旧对象，
+      // 直接覆盖会把 worktree 已经回写的分支清掉。
+      'status = excluded.status, owner_id = excluded.owner_id, branch = COALESCE(excluded.branch, tasks.branch), base_branch = excluded.base_branch, summary = excluded.summary, ' +
       'log_seq = MAX(tasks.log_seq, excluded.log_seq), updated_at = excluded.updated_at'
   );
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
@@ -218,8 +222,11 @@ export function openSqliteStore(file: string): SqliteStore {
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
       'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, created_at, updated_at) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
-      'ON CONFLICT(id) DO UPDATE SET model = excluded.model, status = excluded.status, ' +
-      'last_seq = excluded.last_seq, agent_session = excluded.agent_session, ' +
+      'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
+      // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
+      // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
+      'status = CASE WHEN excluded.last_seq >= sessions.last_seq THEN excluded.status ELSE sessions.status END, ' +
+      'last_seq = MAX(sessions.last_seq, excluded.last_seq), agent_session = excluded.agent_session, ' +
       'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
       'environment_revision = excluded.environment_revision, settled_at = excluded.settled_at, group_id = excluded.group_id, ' +
       'kind = excluded.kind, parent_session_id = excluded.parent_session_id, ' +
@@ -255,9 +262,7 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectEventsAfter = db.prepare(
     'SELECT seq, payload, at FROM journal WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
   );
-  const insertEntryMap = db.prepare(
-    'INSERT OR REPLACE INTO entry_map(session_id, seq, entry_id) VALUES (?, ?, ?)'
-  );
+  const insertEntryMap = db.prepare(upsertSql('entry_map', ['session_id', 'seq', 'entry_id'], 'session_id, seq'));
   const selectEntryId = db.prepare(
     'SELECT entry_id FROM entry_map WHERE session_id = ? AND seq = ?'
   );
@@ -346,14 +351,7 @@ export function openSqliteStore(file: string): SqliteStore {
   };
 
   function transaction(work: () => void): void {
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      work();
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
+    inTransaction(db, work);
   }
 
   function originColumns(session: Session): [string, string | null, number | null] {

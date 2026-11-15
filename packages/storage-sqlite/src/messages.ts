@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentMessage, Bot, BotDefinition, MessageAuditEntry, MessageStore, MessagingConfig, SpawnRecord } from '@agent-hub/domain';
 import { asProjectId, asSessionId, botIdFrom } from '@agent-hub/domain';
+import { upsertSql } from './upsert.ts';
 
 type Row = Record<string, unknown>;
 
@@ -186,7 +187,8 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
     `INSERT INTO agent_messaging_config (project_id, roles, limits, updated_at) VALUES (?, ?, ?, ?)
      ON CONFLICT(project_id) DO UPDATE SET roles = excluded.roles, limits = excluded.limits, updated_at = excluded.updated_at`
   );
-  const putSpawn = db.prepare('INSERT OR REPLACE INTO agent_spawns (session_id, project_id, role, spawner_session_id, trace_id, created_at) VALUES (?, ?, ?, ?, ?, ?)');
+  const spawnFields = ['session_id', 'project_id', 'role', 'spawner_session_id', 'trace_id', 'created_at'] as const;
+  const putSpawn = db.prepare(upsertSql('agent_spawns', spawnFields, 'session_id'));
   const spawnOf = db.prepare('SELECT * FROM agent_spawns WHERE session_id = ?');
   const spawnsForRole = db.prepare('SELECT * FROM agent_spawns WHERE project_id = ? AND role = ? ORDER BY created_at DESC');
   const putAudit = db.prepare(

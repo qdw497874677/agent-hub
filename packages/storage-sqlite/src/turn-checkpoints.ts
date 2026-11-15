@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { CheckpointStore, TurnCheckpoint, TurnRefStore } from '@agent-hub/domain';
+import { upsertSql } from './upsert.ts';
 
 /** 回合检查点（ADR 0027 D1/D2）：每轮一行，开始前 / 结束后两个提交。ref 本身在工作空间的仓库里。 */
 export function createSqliteCheckpoints(db: DatabaseSync): CheckpointStore {
@@ -9,7 +10,8 @@ export function createSqliteCheckpoints(db: DatabaseSync): CheckpointStore {
     files INTEGER, additions INTEGER, deletions INTEGER,
     PRIMARY KEY (session_id, turn))`);
   const list = db.prepare('SELECT * FROM turn_checkpoints WHERE session_id = ? ORDER BY turn');
-  const begin = db.prepare('INSERT OR REPLACE INTO turn_checkpoints (session_id, turn, prompt_seq, before_sha, started_at) VALUES (?, ?, ?, ?, ?)');
+  const checkpointFields = ['session_id', 'turn', 'prompt_seq', 'before_sha', 'started_at'] as const;
+  const begin = db.prepare(upsertSql('turn_checkpoints', checkpointFields, 'session_id, turn'));
   const end = db.prepare('UPDATE turn_checkpoints SET after_sha = ?, ended_at = ?, files = ?, additions = ?, deletions = ? WHERE session_id = ? AND turn = ?');
   const stale = db.prepare('SELECT session_id FROM turn_checkpoints GROUP BY session_id HAVING MAX(COALESCE(ended_at, started_at)) < ?');
   const remove = db.prepare('DELETE FROM turn_checkpoints WHERE session_id = ?');
@@ -42,7 +44,7 @@ export function createSqliteTurnRefs(db: DatabaseSync): TurnRefStore {
   db.exec(`CREATE TABLE IF NOT EXISTS turn_refs (
     session_id TEXT NOT NULL, prompt_seq INTEGER NOT NULL, turn_ref TEXT NOT NULL,
     PRIMARY KEY (session_id, prompt_seq))`);
-  const put = db.prepare('INSERT OR REPLACE INTO turn_refs (session_id, prompt_seq, turn_ref) VALUES (?, ?, ?)');
+  const put = db.prepare(upsertSql('turn_refs', ['session_id', 'prompt_seq', 'turn_ref'], 'session_id, prompt_seq'));
   const list = db.prepare('SELECT prompt_seq, turn_ref FROM turn_refs WHERE session_id = ?');
   return {
     async record(sessionId, promptSeq, turnRef) {

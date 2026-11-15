@@ -334,6 +334,30 @@ test('会话名：setTitle 落库；之后的 save（跑着的会话拿旧对象
   store.close();
 });
 
+test('会话状态按 last_seq 单调写回：更旧的会话对象不会把 done 翻回 running', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  // 模拟两个写方：一个已经把这个会话推到 done（游标 12），另一个手里还是游标 3 的 running
+  await store.sessions.save({ ...session, status: 'done', lastSeq: 12, updatedAt: now + 10 });
+  await store.sessions.save({ ...session, status: 'running', lastSeq: 3, updatedAt: now + 11 });
+  const after = await store.sessions.byId(session.id);
+  assert.equal(after?.status, 'done');
+  assert.equal(after?.lastSeq, 12);
+  store.close();
+});
+
+test('任务分支只写不抹：branch 为 null 的旧对象不会清掉已经回写的分支', async () => {
+  const store = openSqliteStore(':memory:');
+  const { project, task } = await seeded(store);
+  await store.tasks.save({ ...task, branch: 'agent-hub/feat-x', updatedAt: now + 1 });
+  await store.tasks.save({ ...task, branch: null, summary: '换了说明', updatedAt: now + 2 });
+  const after = await store.tasks.byId(task.id);
+  assert.equal(after?.branch, 'agent-hub/feat-x');
+  assert.equal(after?.summary, '换了说明');
+  assert.equal((await store.tasks.listByProject(project.id))[0]?.branch, 'agent-hub/feat-x');
+  store.close();
+});
+
 test('收起时间存得下、恢复后读回不带这个字段（和没收起的会话一样）', async () => {
   const store = openSqliteStore(':memory:');
   const { session } = await seeded(store);

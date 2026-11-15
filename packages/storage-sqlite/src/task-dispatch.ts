@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { TaskDispatch, TaskDispatchStore } from '@agent-hub/domain';
+import { upsertSql } from './upsert.ts';
 
 /** 调度队列（ADR 0032 R3）：task_dispatch，一个任务只入队一次。 */
 export function createSqliteTaskDispatch(db: DatabaseSync): TaskDispatchStore {
@@ -20,12 +21,13 @@ export function createSqliteTaskDispatch(db: DatabaseSync): TaskDispatchStore {
     state: r.state as TaskDispatch['state'], workerId: r.worker_id, sessionId: r.session_id, waitReason: r.wait_reason, result: r.result,
     notified: r.notified === 1, createdAt: r.created_at, startedAt: r.started_at, updatedAt: r.updated_at
   });
-  const cols = `(id, task_id, account_id, project_id, title, goal, human, notify_session_id, agent_id, model, origin_connector, origin_external_id,
-    state, worker_id, session_id, wait_reason, result, notified, created_at, started_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`;
+  const columns = ['id', 'task_id', 'account_id', 'project_id', 'title', 'goal', 'human', 'notify_session_id', 'agent_id', 'model', 'origin_connector', 'origin_external_id',
+    'state', 'worker_id', 'session_id', 'wait_reason', 'result', 'notified', 'created_at', 'started_at', 'updated_at'] as const;
+  const cols = `(${columns.join(', ')}) VALUES (${columns.map(() => '?').join(',')})`;
   const args = (d: TaskDispatch) => [d.id, d.taskId, d.accountId, d.projectId, d.title, d.goal, d.human ? 1 : 0, d.notifySessionId, d.agentId, d.model,
     d.originConnector, d.originExternalId, d.state, d.workerId, d.sessionId, d.waitReason, d.result, d.notified ? 1 : 0, d.createdAt, d.startedAt, d.updatedAt] as const;
   const ins = db.prepare(`INSERT OR IGNORE INTO task_dispatch ${cols}`);
-  const up = db.prepare(`INSERT OR REPLACE INTO task_dispatch ${cols}`);
+  const up = db.prepare(upsertSql('task_dispatch', columns));
   const one = (sql: string, ...a: (string | number)[]) => { const r = db.prepare(sql).get(...a) as D | undefined; return r ? to(r) : null; };
   const many = (sql: string, ...a: (string | number)[]) => (db.prepare(sql).all(...a) as D[]).map(to);
   return {

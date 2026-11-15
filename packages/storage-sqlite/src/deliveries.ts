@@ -1,5 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { Delivery, DeliveryQueue } from '@agent-hub/domain';
+import { upsertSql } from './upsert.ts';
+import { inTransaction } from './tx.ts';
 
 /** 送达队列（ADR 0031 D2）。payload 是 JSON（附件只存引用，不存二进制以外的东西）。 */
 export function createSqliteDeliveries(db: DatabaseSync): DeliveryQueue {
@@ -14,8 +16,9 @@ export function createSqliteDeliveries(db: DatabaseSync): DeliveryQueue {
     id: r.id, sessionId: r.session_id, seq: r.seq, kind: r.kind as Delivery['kind'], payload: JSON.parse(r.payload) as unknown,
     state: r.state as Delivery['state'], attempt: r.attempt, nextAt: r.next_at, lastError: r.last_error, createdAt: r.created_at, updatedAt: r.updated_at
   });
-  const upsert = db.prepare(`INSERT OR REPLACE INTO message_delivery
-    (id, session_id, seq, kind, payload, state, attempt, next_at, last_error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  const upsert = db.prepare(upsertSql('message_delivery', [
+    'id', 'session_id', 'seq', 'kind', 'payload', 'state', 'attempt', 'next_at', 'last_error', 'created_at', 'updated_at'
+  ]));
   const byId = db.prepare('SELECT * FROM message_delivery WHERE id = ?');
   const pending = db.prepare(`SELECT * FROM message_delivery WHERE session_id = ? AND kind = 'prompt'
     AND state IN ('queued','sending','undelivered') ORDER BY created_at, seq`);
@@ -37,20 +40,15 @@ export function createSqliteDeliveries(db: DatabaseSync): DeliveryQueue {
     },
     async claimPrompt(incoming) {
       // 读和写之间不能让出事件循环：否则两条 prompt 都会看见空队列，各派一次。
-      db.exec('BEGIN IMMEDIATE');
-      try {
+      return inTransaction(db, () => {
         const open = (pending.all(incoming.sessionId) as Row[]).map(toDelivery);
         const head = open[0];
         if (head?.state === 'undelivered') write({ ...head, state: 'queued', attempt: 0, nextAt: incoming.updatedAt, updatedAt: incoming.updatedAt });
         const ahead = (pending.all(incoming.sessionId) as Row[]).length > 0;
         const stored: Delivery = { ...incoming, state: 'queued', nextAt: ahead ? null : incoming.nextAt };
         write(stored);
-        db.exec('COMMIT');
         return { delivery: stored, send: !ahead };
-      } catch (error) {
-        db.exec('ROLLBACK');
-        throw error;
-      }
+      });
     },
     async byId(id) {
       const r = byId.get(id) as Row | undefined;

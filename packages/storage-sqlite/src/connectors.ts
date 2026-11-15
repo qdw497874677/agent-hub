@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import type { AgentTaskRequest, AgentTaskStore, ConnectorBinding, ConnectorStore, TriggerRun } from '@agent-hub/domain';
+import { upsertSql } from './upsert.ts';
 
 /** 连接器（ADR 0032 R1/R2）：connector_binding、trigger_run、agent_project（bot 关联项目）、agent_task_request。 */
 export function createSqliteConnectors(db: DatabaseSync): { connectors: ConnectorStore; agentTasks: AgentTaskStore } {
@@ -57,17 +58,20 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
   type Q = { id: string; task_id: string | null; account_id: string; agent: string | null; session_id: string; project_id: string; title: string; goal: string; origin_connector: string | null; origin_external_id: string | null; wake_key: string | null; counted: number; approval: string; created_at: number; updated_at: number };
   const toQ = (r: Q): AgentTaskRequest => ({ id: r.id, taskId: r.task_id, accountId: r.account_id, agent: r.agent, sessionId: r.session_id, projectId: r.project_id, title: r.title, goal: r.goal, originConnector: r.origin_connector, originExternalId: r.origin_external_id, wakeKey: r.wake_key, counted: r.counted === 1, approval: r.approval as AgentTaskRequest['approval'], createdAt: r.created_at, updatedAt: r.updated_at });
 
-  const upsertB = db.prepare(`INSERT OR REPLACE INTO connector_binding (id, connector, kind, agent_project_id, agent_name, project_id, name, target, params, enabled, paused_reason,
-    consecutive_failures, next_run_at, main_session_id, created_by, time_zone, created_at, updated_at, target_kind, group_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  const runCols = '(id, binding_id, external_id, planned_at, catchup, state, reason, session_id, text, created_at, updated_at, external_conversation_id, external_thread_id, post_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)';
+  const bindingFields = ['id', 'connector', 'kind', 'agent_project_id', 'agent_name', 'project_id', 'name', 'target', 'params', 'enabled', 'paused_reason',
+    'consecutive_failures', 'next_run_at', 'main_session_id', 'created_by', 'time_zone', 'created_at', 'updated_at', 'target_kind', 'group_id'] as const;
+  const upsertB = db.prepare(upsertSql('connector_binding', bindingFields));
+  const runFields = ['id', 'binding_id', 'external_id', 'planned_at', 'catchup', 'state', 'reason', 'session_id', 'text', 'created_at', 'updated_at', 'external_conversation_id', 'external_thread_id', 'post_id'] as const;
+  const runCols = `(${runFields.join(', ')}) VALUES (${runFields.map(() => '?').join(',')})`;
   const insR = db.prepare(`INSERT OR IGNORE INTO trigger_run ${runCols}`);
-  const upR = db.prepare(`INSERT OR REPLACE INTO trigger_run ${runCols}`);
+  const upR = db.prepare(upsertSql('trigger_run', runFields));
   const runArgs = (r: TriggerRun) => [r.id, r.bindingId, r.externalId, r.plannedAt, r.catchup ? 1 : 0, r.state, r.reason, r.sessionId, r.text, r.createdAt, r.updatedAt,
     r.externalConversationId ?? null, r.externalThreadId ?? null, r.postId ?? null] as const;
-  const qCols = '(id, task_id, account_id, agent, session_id, project_id, title, goal, origin_connector, origin_external_id, wake_key, counted, approval, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)';
+  const qColumns = ['id', 'task_id', 'account_id', 'agent', 'session_id', 'project_id', 'title', 'goal', 'origin_connector', 'origin_external_id', 'wake_key', 'counted', 'approval', 'created_at', 'updated_at'] as const;
+  const qCols = `(${qColumns.join(', ')}) VALUES (${qColumns.map(() => '?').join(',')})`;
   const qArgs = (r: AgentTaskRequest) => [r.id, r.taskId, r.accountId, r.agent, r.sessionId, r.projectId, r.title, r.goal, r.originConnector, r.originExternalId, r.wakeKey, r.counted ? 1 : 0, r.approval, r.createdAt, r.updatedAt] as const;
   const insQ = db.prepare(`INSERT OR IGNORE INTO agent_task_request ${qCols}`);
-  const upQ = db.prepare(`INSERT OR REPLACE INTO agent_task_request ${qCols}`);
+  const upQ = db.prepare(upsertSql('agent_task_request', qColumns));
 
   const connectors: ConnectorStore = {
     async saveBinding(b) { upsertB.run(b.id, b.connector, b.kind, b.agentProjectId, b.agentName, b.projectId, b.name, b.target, JSON.stringify(b.params), b.enabled ? 1 : 0, b.pausedReason, b.consecutiveFailures, b.nextRunAt, b.mainSessionId, b.createdBy, b.timeZone, b.createdAt, b.updatedAt,

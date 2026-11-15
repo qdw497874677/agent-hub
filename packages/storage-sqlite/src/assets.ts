@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { inTransaction } from './tx.ts';
 import { assetScopeRef } from '@agent-hub/domain';
 import type { Asset, AssetFile, AssetKind, AssetScope, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, SessionAssetManifest, WorkerAssetSync } from '@agent-hub/domain';
 
@@ -217,14 +218,7 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
   const deleteSettings = db.prepare('DELETE FROM asset_project_settings WHERE asset_id = ?');
 
   const transaction = (work: () => void): void => {
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      work();
-      db.exec('COMMIT');
-    } catch (error) {
-      db.exec('ROLLBACK');
-      throw error;
-    }
+    inTransaction(db, work);
   };
   const putRevision = (revision: AssetRevision, blobs: ReadonlyMap<string, Uint8Array>): void => {
     for (const [sha, data] of blobs) insertBlob.run(sha, data);

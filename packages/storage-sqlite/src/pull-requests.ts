@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { upsertSql } from './upsert.ts';
 import type { GitHostTokenStore, PullRequestLink, PullRequestRepository } from '@agent-hub/domain';
 import { createSecretVault } from './secrets.ts';
 
@@ -46,7 +47,7 @@ export function createSqliteGitHostTokens(db: DatabaseSync, key: Uint8Array): Gi
   const vault = createSecretVault(db, key, 'git_host_secrets');
   db.exec('CREATE TABLE IF NOT EXISTS git_host_token_meta (team_id TEXT PRIMARY KEY, last4 TEXT NOT NULL, updated_at INTEGER NOT NULL)');
   const meta = db.prepare('SELECT last4, updated_at FROM git_host_token_meta WHERE team_id = ?');
-  const putMeta = db.prepare('INSERT OR REPLACE INTO git_host_token_meta (team_id, last4, updated_at) VALUES (?, ?, ?)');
+  const putMeta = db.prepare(upsertSql('git_host_token_meta', ['team_id', 'last4', 'updated_at'], 'team_id'));
   const dropMeta = db.prepare('DELETE FROM git_host_token_meta WHERE team_id = ?');
   return {
     async status(teamId) {
