@@ -213,6 +213,33 @@ task.create({
 
 `check` / `review` 作为 v2 的 `code` 预设（`checks:true` / `baseRef`），不单列。
 
+### 5.1.5 运行感知：别让会话「静悄悄地卡住」
+
+外部调用方看不到终端，必须能从 `task.get` 判断「在干活 / 慢 / 卡住 / 机器没了」。这些
+全部由 hub 侧的既有事件推导，不改协议：
+
+- 每条 journal 事件落库时更新 `lastEventAt`；`task.get` 返回
+  `{ phase, lastEventAt, idleMs, lastSeq, workerOnline, processAlive }`。
+- `phase`：`starting | thinking | tool:<name> | waiting_user | ended`（复用现有 attention 推导）。
+- `liveness` 四档：
+  - `active`：60s 内有事件；
+  - `slow`：60s–5min 没有事件，但回合未结束（模型可能在想）；
+  - `stalled`：>5min 没有事件且回合未结束（`HUB_STALL_MS=300000`）；
+  - `detached`：worker 离线、或会话在 worker 上没有进程（`hosting.has` 为假）。
+
+处理策略（按可恢复性，不是一律杀）：
+
+1. `detached` + 投递仍 `delivered`：由 `recoverOrphanedTurns`（2 分钟）收尾并在 journal
+   写 `ended{failed, reason:'这一轮没有在机器上跑起来…'}`，同时把 `task.get` 标 `stalled`。
+2. `stalled` 且正在跑工具：先发一条 `diagnostic{warn}` 进 journal（调用方在 `task.messages`
+   能看到「已 6 分钟没有输出，可能卡在 <tool>」），不打断。
+3. `stalled` 超过 `HUB_STALL_INTERRUPT_MS=1200000`（20 分钟）：打断会话、写 `ended{failed,
+   reason:'20 分钟没有输出，已停止'}`，调用方从 `task.get` 立刻看到终态，不必轮询到超时。
+4. 用户/调用方主动 `task.cancel` 永远优先。
+
+这样「卡住」有确定语义和时间上限，而不是靠外部猜测。阈值做成环境变量，默认值偏保守
+（编译、`npm ci` 这类长工具在 5 分钟内仍算 `slow`）。
+
 ### 5.2 提示词与交付
 
 - `prompt` 是任务的全部输入（markdown，≤ 32 KB），服务端只在前后补「交付要求」与
