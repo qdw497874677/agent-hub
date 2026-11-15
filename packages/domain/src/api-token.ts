@@ -54,7 +54,8 @@ export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>
   'memory:read': ['project.read', 'memory.read'],
   'memory:write': ['project.read', 'memory.read', 'memory.write'],
   // ADR 0016：令牌只能提交资产版本（进审核队列），审核 / 发布 / 分配 / 下架 / 用密钥都不行
-  'assets:submit': ['asset.submit'],
+  // 能交版本就得能看见自己在交哪一份（否则拿不到 assetId）
+  'assets:submit': ['asset.read', 'asset.submit'],
   // 读资产：可见范围仍按归属判断（全局 / 团队 / 项目 / 个人）
   'assets:read': ['asset.read'],
   // 建资产与交新版本：默认只进审核队列（publish=false），审核通过才可用
