@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS agent_group_posts (
   group_id TEXT NOT NULL,
   seq INTEGER NOT NULL,
   doc TEXT NOT NULL,
+  external_id TEXT,
   UNIQUE(group_id, seq)
 );
 CREATE TABLE IF NOT EXISTS agent_group_threads (
@@ -72,11 +73,16 @@ const docs = <T>(rows: unknown[]): T[] => (rows as Row[]).map((r) => JSON.parse(
 
 export function createSqliteGroupStore(db: DatabaseSync): GroupStore {
   db.exec(GROUP_SCHEMA);
+  // 老库补列（#219 C3）：SQLite 不能直接 ADD COLUMN 带 UNIQUE，先补列再建部分唯一索引。
+  const postColumns = db.prepare('PRAGMA table_info(agent_group_posts)').all() as Row[];
+  if (!postColumns.some((c) => c.name === 'external_id')) db.exec('ALTER TABLE agent_group_posts ADD COLUMN external_id TEXT');
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS agent_group_posts_external ON agent_group_posts(group_id, external_id) WHERE external_id IS NOT NULL');
   const putGroup = db.prepare('INSERT INTO agent_groups (id, project_id, doc, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET doc = excluded.doc');
   const getGroup = db.prepare('SELECT doc FROM agent_groups WHERE id = ?');
   const groupsOf = db.prepare('SELECT doc FROM agent_groups WHERE project_id = ? ORDER BY created_at, rowid');
   const maxSeq = db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM agent_group_posts WHERE group_id = ?');
-  const putPost = db.prepare('INSERT INTO agent_group_posts (id, group_id, seq, doc) VALUES (?, ?, ?, ?)');
+  const putPost = db.prepare('INSERT INTO agent_group_posts (id, group_id, seq, doc, external_id) VALUES (?, ?, ?, ?, ?)');
+  const postByExternal = db.prepare('SELECT doc FROM agent_group_posts WHERE group_id = ? AND external_id = ? LIMIT 1');
   const latestPosts = db.prepare('SELECT doc FROM (SELECT doc, seq FROM agent_group_posts WHERE group_id = ? ORDER BY seq DESC LIMIT ?) ORDER BY seq');
   const postsAfter = db.prepare('SELECT doc FROM agent_group_posts WHERE group_id = ? AND seq > ? ORDER BY seq LIMIT ?');
   const putThread = db.prepare('INSERT INTO agent_group_threads (id, group_id, status, doc, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status, doc = excluded.doc');
@@ -124,9 +130,10 @@ export function createSqliteGroupStore(db: DatabaseSync): GroupStore {
       // 单连接同步执行：取最大 seq + 插入之间不会被别的写插进来
       const seq = ((maxSeq.get(p.groupId) as Row).seq as number) + 1;
       const post: GroupPost = { ...p, seq };
-      putPost.run(post.id, post.groupId, seq, JSON.stringify(post));
+      putPost.run(post.id, post.groupId, seq, JSON.stringify(post), post.externalId ?? null);
       return post;
     },
+    postByExternalId: async (groupId, externalId) => doc<GroupPost>(postByExternal.get(groupId, externalId) as Row | undefined),
     posts: async (groupId, afterSeq, limit) => docs<GroupPost>(afterSeq === null ? latestPosts.all(groupId, limit) : postsAfter.all(groupId, afterSeq, limit)),
     async saveThread(t) {
       putThread.run(t.id, t.groupId, t.status, JSON.stringify(t), t.createdAt);

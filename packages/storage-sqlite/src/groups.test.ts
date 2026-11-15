@@ -106,3 +106,30 @@ test('表情反应：往返、去重、按 createdAt 升序；重开库还在', 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('群帖 external_id：同 externalId 幂等查到同一条，重复插入被唯一索引挡住；重开库还在（#219 C3）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-grp-ext-'));
+  try {
+    const path = join(dir, 'hub.db');
+    {
+      const store = openSqliteStore(path);
+      await store.groups.saveGroup(group);
+      const a = await store.groups.appendPost({ id: 'e1', groupId: 'g1', threadId: null, round: 0, author: { kind: 'external', name: 'Ada' }, body: 'hi', mentions: [], needsUser: false, createdAt: 1, externalId: 'x1' });
+      assert.equal(a.seq, 1);
+      assert.equal(a.externalId, 'x1');
+      assert.equal((await store.groups.postByExternalId('g1', 'x1'))?.id, 'e1');
+      assert.equal(await store.groups.postByExternalId('g1', 'nope'), null);
+      const plain = await store.groups.appendPost({ id: 'p2', groupId: 'g1', threadId: null, round: 0, author: { kind: 'user', id: 'alice', name: 'alice' }, body: 'b', mentions: [], needsUser: false, createdAt: 2 });
+      assert.equal(plain.externalId, undefined, '普通帖不带 external_id');
+      // 部分唯一索引只作用于 external_id 非空的帖
+      await assert.rejects(() => store.groups.appendPost({ id: 'e2', groupId: 'g1', threadId: null, round: 0, author: { kind: 'external', name: 'Ada' }, body: 'again', mentions: [], needsUser: false, createdAt: 3, externalId: 'x1' }));
+      store.close?.();
+    }
+    const store = openSqliteStore(path);
+    assert.equal((await store.groups.postByExternalId('g1', 'x1'))?.body, 'hi');
+    assert.deepEqual((await store.groups.posts('g1', 0, 10)).map((p) => p.id), ['e1', 'p2']);
+    store.close?.();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

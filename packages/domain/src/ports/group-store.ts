@@ -8,6 +8,8 @@ export interface GroupStore {
   groupsOf(projectId: ProjectId): Promise<Group[]>;
   /** 追加一条群消息，seq 由存储分配（群内递增）。 */
   appendPost(post: Omit<GroupPost, 'seq'>): Promise<GroupPost>;
+  /** 按外部消息 id 找已经落过的帖（#219 C3 幂等）；没有返回 null。 */
+  postByExternalId(groupId: string, externalId: string): Promise<GroupPost | null>;
   /** seq 大于 afterSeq 的消息，按 seq 升序，最多 limit 条；afterSeq 为 null 时取最新的 limit 条。 */
   posts(groupId: string, afterSeq: number | null, limit: number): Promise<GroupPost[]>;
   saveThread(thread: GroupThread): Promise<void>;

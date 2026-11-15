@@ -28,6 +28,7 @@ type Drawer = null | 'members' | 'chains' | 'settings';
 function authorLabel(post: GroupPostDto): string {
   if (post.author.kind === 'user') return post.author.name;
   if (post.author.kind === 'agent') return post.author.role;
+  if (post.author.kind === 'external') return post.author.name;
   return '系统';
 }
 
@@ -380,7 +381,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
           const mine = p.author.kind === 'user';
           return (
             <li key={p.id} data-testid="group-post" data-author={p.author.kind} className={`my-1.5 flex items-start gap-2 ${mine ? 'flex-row-reverse' : ''}`}>
-              {mine ? null : run ? <span aria-hidden className="h-5 w-5 shrink-0" /> : <NameDot name={label} />}
+              {mine ? null : run ? <span aria-hidden className="h-5 w-5 shrink-0" /> : <NameDot name={label} external={p.author.kind === 'external'} />}
               <div className={`flex min-w-0 max-w-[85%] flex-col gap-0.5 ${mine ? 'items-end' : 'items-start'}`}>
                 {run ? null : (
                   <span className="flex items-center gap-1.5 text-meta text-tertiary">

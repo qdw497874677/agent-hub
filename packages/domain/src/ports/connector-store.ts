@@ -19,9 +19,13 @@ export interface ConnectorStore {
   /** 这些绑定上、创建时间不早于 since 的运行，新的在前。limit 是上限。 */
   runsSince(bindingIds: readonly string[], since: number, limit: number): Promise<TriggerRun[]>;
   countRunsByState(bindingIds: readonly string[], since: number): Promise<Record<TriggerRunState, number>>;
+  /** 这个 binding 上、创建时间不早于 since 的运行条数（外部入站限流用）。 */
+  countSince(bindingId: string, since: number): Promise<number>;
   openRuns(bindingId: string): Promise<TriggerRun[]>;
   waitingRuns(): Promise<TriggerRun[]>;
   deliveredRuns(): Promise<TriggerRun[]>;
+  /** 还停在 posting 且更新时间早于 before 的运行（入群超时重放用，#219 C3）。 */
+  postingBefore(before: number): Promise<TriggerRun[]>;
   deliveredRunFor(sessionId: string): Promise<TriggerRun | null>;
   /** 智能体关联的项目（默认项目 = 定义它的项目，不在表里）。 */
   agentProjects(agentProjectId: string, agentName: string): Promise<string[]>;

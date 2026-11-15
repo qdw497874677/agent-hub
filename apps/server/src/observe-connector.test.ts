@@ -33,7 +33,7 @@ function stores(seed: { bindings?: ConnectorBinding[]; runs?: TriggerRun[]; requ
       binding: async (id: string) => bindings.find((item) => item.id === id) ?? null,
       run: async (id: string) => runs.find((item) => item.id === id) ?? null,
       runsSince: async (ids: readonly string[], since: number, limit: number) => runs.filter((item) => ids.includes(item.bindingId) && item.createdAt >= since).sort((a, b) => b.createdAt - a.createdAt).slice(0, limit),
-      countRunsByState: async () => ({ waiting: 0, delivered: 0, done: 0, failed: 0, timeout: 0, skipped: 0 })
+      countRunsByState: async () => ({ waiting: 0, delivered: 0, done: 0, failed: 0, timeout: 0, skipped: 0, posting: 0, posted: 0 })
     },
     requestsStore: {
       byWakeKeys: async (keys: readonly string[]) => requests.filter((item) => item.wakeKey !== null && keys.includes(item.wakeKey)),
@@ -221,7 +221,7 @@ test('两个团队：别人的触发不进我的列表', async () => {
       binding: async (id: string) => bindings.find((item) => item.id === id) ?? null,
       run: async (id: string) => runs.find((item) => item.id === id) ?? null,
       runsSince: async (ids: readonly string[], since: number) => runs.filter((item) => ids.includes(item.bindingId) && item.createdAt >= since),
-      countRunsByState: async () => ({ waiting: 0, delivered: 0, done: 0, failed: 0, timeout: 0, skipped: 0 })
+      countRunsByState: async () => ({ waiting: 0, delivered: 0, done: 0, failed: 0, timeout: 0, skipped: 0, posting: 0, posted: 0 })
     } as never,
     requests: { byWakeKeys: async () => [], countSince: async () => 0 } as never,
     dispatches: { byTaskIds: async () => [] } as never,

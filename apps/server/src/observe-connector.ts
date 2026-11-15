@@ -29,7 +29,7 @@ const SCAN = 500;
 const QUOTA_CAP = 20;
 
 const TRIGGER_LABEL: Record<TriggerRun['state'], string> = {
-  waiting: '等待中', delivered: '已交给回合', done: '回合结束', failed: '回合失败', timeout: '超时', skipped: '跳过'
+  waiting: '等待中', delivered: '已交给回合', done: '回合结束', failed: '回合失败', timeout: '超时', skipped: '跳过', posting: '入群中', posted: '已入群'
 };
 const SESSION_LABEL: Record<Session['status'], string> = {
   running: '运行中', stopped: '已停止', done: '完成', interrupted: '中断', failed: '失败'

@@ -2,19 +2,21 @@
 const PALETTE = ['bg-sage/30', 'bg-accent/30', 'bg-rust/25', 'bg-card-raised'];
 
 /** 名字 → 色板（同名同色，跨页面稳定）。群聊的小圆点也用它。 */
-export function authorHue(id: string): string {
+export function authorHue(id: string, external = false): string {
+  // 外部渠道的人（#219 C3）用固定色，一眼能看出不是项目里的人。
+  if (external) return 'bg-accent/30';
   let h = 0;
   for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return PALETTE[h % PALETTE.length] ?? PALETTE[0]!;
 }
 
 /** 群聊 / 列表里的小圆点头像：首字母 + 按名字稳定取色（和 AuthorTag 同一套色板）。 */
-export function NameDot({ name, size = 20 }: { name: string; size?: number }) {
+export function NameDot({ name, size = 20, external = false }: { name: string; size?: number; external?: boolean }) {
   return (
     <span
       aria-hidden
       style={{ width: size, height: size }}
-      className={`flex shrink-0 items-center justify-center rounded-full text-[10px] font-medium leading-none text-primary ${authorHue(name)}`}
+      className={`flex shrink-0 items-center justify-center rounded-full text-[10px] font-medium leading-none text-primary ${authorHue(name, external)}`}
     >
       {[...name.trim()][0]?.toUpperCase() ?? '?'}
     </span>

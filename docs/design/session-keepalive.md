@@ -46,6 +46,7 @@ ACP 的 `session/prompt` 是**回合作用域**的：opencode 在后台子代理
 
 - 触发：收到 `ended` 且 `pendingSubagents() > 0`（codec 统计未结束的子代理）。
 - 节奏：每 `resyncIntervalMs`（默认 5000）调一次 `AcpSession.resync()` → `session/load({sessionId, ...sessionParams(cwd)})`，重放期间 `replaying=true`，事件进独立 `replayBuffer`，不混进正常队列。
+- 退避：连续几轮重放都没新事件就把间隔翻倍（5s → 10s → 20s → 40s，封顶 60s）；只要 `pendingSubagents() > 0` 就一直等，不再「几十秒没新东西就放弃」（#217），日志写明「还在等 N 个子代理，间隔 Xs」。
 - 去重：正文/思考按 `kind|subagentId|messageId` 的 **chunk 序号高水位**（重放会把多块合并，按文本或按块数都不稳）；tool 按 `subagentId|toolCallId|status|kind|index`；subagent 按 `id|phase`；commands 按名字。实时事件也记同一套指纹（`recordLive`）。
 - 停止：子代理真实结束（父工具终态内容 / `child_update` 终态）、空闲回收、保活淘汰、`retire`、用户又发消息（`pauseResync` 先停并在途 load 落地再 `session/prompt`，因为 load 与 prompt 并发的 `session/update` 会交错）。
 - 前端不需要轮询：新事件照常走现有 SSE，断线补帧已由 `api.events(sessionId, lastSeq)` 覆盖。

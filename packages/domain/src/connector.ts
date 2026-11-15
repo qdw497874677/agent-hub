@@ -59,7 +59,8 @@ export interface ConnectorBinding {
   readonly updatedAt: number;
 }
 
-export type TriggerRunState = 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped';
+/** posting/posted 是群目标的入群两步（#219 C3）：都不占会话回合，不算 open。 */
+export type TriggerRunState = 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped' | 'posting' | 'posted';
 
 export interface TriggerRun {
   readonly id: string;

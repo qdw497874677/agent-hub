@@ -101,6 +101,25 @@ export interface UnreadSummary {
   readonly groups: readonly { readonly groupId: string; readonly projectId: string; readonly count: number }[];
 }
 
+/** 外部渠道消息进群（#219 C3）：actor 是 binding 的创建者，只用来派生成员会话，不代表作者。 */
+export interface ExternalPostInput {
+  readonly groupId: string;
+  /** 接到哪段对话；为空（或那段已经收尾）就开新 thread，root 就是这条帖。 */
+  readonly threadId?: string | null;
+  /** 外部作者显示名（IM 昵称 / GitHub 登录名）。 */
+  readonly author: string;
+  readonly text: string;
+  /** 外部消息 id：同一个 id 只落一条帖（幂等）。 */
+  readonly externalId: string;
+  readonly actor: Principal;
+}
+
+export interface ExternalPostResult {
+  readonly post: GroupPost;
+  /** false = 这个 externalId 之前已经落过帖，返回的是原来那条。 */
+  readonly created: boolean;
+}
+
 export interface GroupChat {
   list(actor: Principal, projectId: ProjectId): Promise<Result<Group[], DomainError>>;
   create(actor: Principal, projectId: ProjectId, input: GroupInput): Promise<Result<Group, DomainError>>;
@@ -110,6 +129,11 @@ export interface GroupChat {
   posts(actor: Principal, groupId: string, afterSeq: number | null, limit: number): Promise<Result<GroupPostView[], DomainError>>;
   chains(actor: Principal, groupId: string, limit: number): Promise<Result<ChainView[], DomainError>>;
   post(actor: Principal, groupId: string, body: string): Promise<Result<GroupPostView, DomainError>>;
+  /**
+   * 外部渠道的消息落成群帖（#219 C3）：作者是 `{kind:'external'}`，不冒充人；
+   * 按群策略起一轮（volunteer 竞价 / host 分派 / 无主持人就只记录）。同 externalId 幂等。
+   */
+  postExternal(input: ExternalPostInput): Promise<Result<ExternalPostResult, DomainError>>;
   /**
    * 给一条帖子加表情（group.post）；emoji 为 null = 撤掉自己在这条上的全部表情。
    * 返回这条帖子当前的原始反应（按 createdAt 升序），聚合交给路由 / 界面。
@@ -179,7 +203,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     return ok({ group, project: allowed.value });
   };
 
-  const author = (a: PostAuthor): string => (a.kind === 'user' ? a.name : a.kind === 'agent' ? `@${a.role}` : '系统');
+  const author = (a: PostAuthor): string => (a.kind === 'user' || a.kind === 'external' ? a.name : a.kind === 'agent' ? `@${a.role}` : '系统');
 
   const append = async (group: Group, thread: GroupThread | null, round: number, a: PostAuthor, body: string): Promise<GroupPost> => {
     const mentions = parseMentions(body, group.members);
@@ -337,6 +361,14 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     return root?.author.kind === 'user' ? deps.principalOf(root.author.id) : null;
   };
 
+  /** 外部渠道开出来的根本来没有 user 作者，后续轮次用群创建者的身份继续（v1）。 */
+  const actorFor = async (group: Group, thread: GroupThread): Promise<Principal | null> => {
+    const actor = await actorOf(thread);
+    if (actor) return actor;
+    const root = (await deps.groups.posts(thread.groupId, null, 200)).find((p) => p.id === thread.rootPostId);
+    return root?.author.kind === 'external' ? deps.principalOf(group.createdBy) : null;
+  };
+
   /** 给这几个 bot 建这一轮的投递。被暂停的跳过；会话起不来的记一行系统消息。返回建了几条。 */
   const schedule = async (
     group: Group,
@@ -344,11 +376,13 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     round: number,
     purpose: DeliveryPurpose,
     bots: readonly string[],
-    trigger: { author: string; body: string; seq: number | null; postId: string | null },
+    trigger: { author: string; body: string; seq: number | null; postId: string | null; external?: boolean },
     pending: Set<SessionId>,
-    note = ''
+    note = '',
+    /** 外部消息进群（#219 C3）：用 binding 创建者身份派生会话，不走根帖作者。 */
+    actorOverride?: Principal | null
   ): Promise<number> => {
-    const actor = await actorOf(thread);
+    const actor = actorOverride ?? (await actorFor(group, thread));
     if (!actor) return 0;
     const botList = await deps.roles(group.projectId);
     const past = await history(group, trigger.seq);
@@ -452,7 +486,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     await system(group, thread, `主持人 @${d.role} 派给 ${decision.assignees.map((a) => `@${a}`).join('、')}${decision.note ? `：${decision.note}` : ''}`);
     const root = (await deps.groups.posts(group.id, null, 200)).find((p) => p.id === thread.rootPostId);
     const next = await saveThread(thread, { round: 1 });
-    const n = await schedule(group, next, 1, 'member', decision.assignees, { author: root ? author(root.author) : '用户', body: root?.body ?? '', seq: root?.seq ?? null, postId: root?.id ?? null }, pending, decision.note);
+    const n = await schedule(group, next, 1, 'member', decision.assignees, { author: root ? author(root.author) : '用户', body: root?.body ?? '', seq: root?.seq ?? null, postId: root?.id ?? null, external: root?.author.kind === 'external' }, pending, decision.note);
     if (n === 0) await end(group, next, 'done', '派到的成员都暂停或起不来，没人回');
   };
 
@@ -774,6 +808,86 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         const n = await schedule(group, thread, 0, 'host', [group.hostRole], trigger, pending);
         if (n === 0) await end(group, thread, 'fallback', HOST_UNAVAILABLE_LINE);
         return ok(await withReactionOf(groupId, root));
+      });
+    },
+
+    async postExternal(input) {
+      const groupId = input.groupId;
+      const externalId = String(input.externalId ?? '').trim();
+      if (!externalId) return err(invalid('外部消息要带 externalId'));
+      const text = typeof input.text === 'string' ? input.text.trim() : '';
+      if (!text) return err(invalid('消息不能为空'));
+      if (text.length > MAX_POST_CHARS) return err(invalid(`消息太长（最多 ${MAX_POST_CHARS} 字符）`));
+      // 用 binding 创建者鉴权：人还在这个项目上、还有 group.post，才允许外部消息进群。
+      const found = await authorize(input.actor, await deps.groups.group(groupId), 'group.post');
+      if (!found.ok) return found;
+      return run(groupId, async (pending) => {
+        const existing = await deps.groups.postByExternalId(groupId, externalId);
+        if (existing) {
+          // 崩溃窗口：帖已经落库、调度还没来得及跑（进程死在两步之间）。
+          // 线程还在 running 且一条投递都没有 ⇒ 补一次，别让群里只挂一条没人接的话。
+          const group = (await deps.groups.group(groupId))!;
+          const thread = existing.threadId ? await deps.groups.thread(existing.threadId) : null;
+          if (thread && thread.status === 'running' && (await deps.groups.deliveries(thread.id)).length === 0) {
+            const trigger = {
+              author: existing.author.kind === 'external' ? existing.author.name : '',
+              body: existing.body,
+              seq: existing.seq,
+              postId: existing.id,
+              external: true
+            };
+            // 轮次沿用线程当前轮（崩溃前已写进 thread）：volunteer 首次创建是 round=1，
+            // 这里用 thread.round 而不是 +1，避免同一轮在两个不同编号上调度。
+            if (group.speakingStrategy === 'volunteer') {
+              const n = group.members.length > 0
+                ? await schedule(group, thread, thread.round, 'bid', group.members, trigger, pending, '', input.actor)
+                : 0;
+              // 与首次创建一致：没人接就收尾，不能把线程永久留在 running。
+              if (n === 0) await end(group, thread, 'done', '没有可以接话的成员');
+            } else if (group.hostRole && group.members.includes(group.hostRole)) {
+              const n = await schedule(group, thread, thread.round, 'host', [group.hostRole], trigger, pending, '', input.actor);
+              if (n === 0) await end(group, thread, 'fallback', HOST_UNAVAILABLE_LINE);
+            } else {
+              await end(group, thread, 'fallback', `${HOST_UNAVAILABLE_LINE}（没有设置主持人，@ 成员可以直接叫人）`);
+            }
+          }
+          return ok({ post: existing, created: false });
+        }
+        const group = (await deps.groups.group(groupId))!;
+        const authorName = String(input.author ?? '').trim().slice(0, 80) || '外部渠道';
+        const me: PostAuthor = { kind: 'external', name: authorName };
+        const now = deps.now();
+        // 外部作者不冒充人：不动 held / needsUser；mentions 留空，@all 不会扩成全体成员。
+        const prior = input.threadId ? await deps.groups.thread(input.threadId) : null;
+        const target = prior && prior.groupId === groupId && prior.status === 'running' ? prior : null;
+        if (target) {
+          // 接到已有对话：只落帖补充上下文，不另起一轮（下一轮调度由主持人/成员正常推进）。
+          const post = await deps.groups.appendPost({
+            id: newId(), groupId, threadId: target.id, round: target.round, author: me, body: text, mentions: [], needsUser: false, createdAt: now, externalId
+          });
+          return ok({ post, created: true });
+        }
+        const threadId = newId();
+        const root = await deps.groups.appendPost({
+          id: newId(), groupId, threadId, round: 0, author: me, body: text, mentions: [], needsUser: false, createdAt: now, externalId
+        });
+        let thread: GroupThread = { id: threadId, groupId, rootPostId: root.id, status: 'running', round: 0, messages: 0, createdAt: now, updatedAt: now };
+        await deps.groups.saveThread(thread);
+        const trigger = { author: authorName, body: text, seq: root.seq, postId: root.id, external: true };
+        if (group.speakingStrategy === 'volunteer') {
+          thread = await saveThread(thread, { round: 1 });
+          const n = await schedule(group, thread, 1, 'bid', group.members, trigger, pending, '', input.actor);
+          if (n === 0) await end(group, thread, 'done', '没有可以接话的成员');
+          return ok({ post: root, created: true });
+        }
+        if (!group.hostRole || !group.members.includes(group.hostRole)) {
+          await end(group, thread, 'fallback', `${HOST_UNAVAILABLE_LINE}（没有设置主持人，@ 成员可以直接叫人）`);
+          return ok({ post: root, created: true });
+        }
+        // 外部入站有自己的每分钟额度（连接器层），这里不再叠加 HOST_PER_MINUTE。
+        const n = await schedule(group, thread, 0, 'host', [group.hostRole], trigger, pending, '', input.actor);
+        if (n === 0) await end(group, thread, 'fallback', HOST_UNAVAILABLE_LINE);
+        return ok({ post: root, created: true });
       });
     },
 

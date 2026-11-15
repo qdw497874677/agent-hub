@@ -1,6 +1,7 @@
 import { BINDING_MAX_FAILURES, staleAfterMs, formatInbound, type BindingTargetKind, type ConnectorBinding, type InboundEvent, type TriggerRun } from '../connector.ts';
 import type { Principal } from '../account.ts';
-import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
+import { forbidden, invalid, notFound, unavailable, type DomainError } from '../errors.ts';
+import type { OutboxStore } from '../channel-outbox.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
 import type { ConnectorStore } from '../ports/connector-store.ts';
 import type { InboundContext, InboundSource } from '../ports/inbound-source.ts';
@@ -26,14 +27,29 @@ export interface ConnectorHubDeps extends Pick<Deps, 'now' | 'projects' | 'sessi
   readonly busy: (sessionId: SessionId) => Promise<boolean>;
   /** 经 ADR 0031 送达队列投一轮。 */
   readonly deliver: (sessionId: SessionId, text: string, author: { id: string; name: string; via: string }) => Promise<Result<unknown, DomainError>>;
+  /** 群目标（#219 C3）：把外部消息落成群帖，同 externalId 幂等。 */
+  readonly postExternal?: (input: { groupId: string; author: string; text: string; externalId: string; actor: Principal }) => Promise<Result<{ postId: string }, DomainError>>;
+  /** 群的存在与所属项目（创建时校验、投递前再校验）。 */
+  readonly groupOf?: (groupId: string) => Promise<{ readonly id: string; readonly projectId: string } | null>;
+  /** 把 binding.createdBy 还原成 Principal：群帖要用创建者身份派生成员会话。 */
+  readonly principalOf?: (userId: string) => Promise<Principal | null>;
+  /** 外部渠道出站记录：用来识别「自己发出去的消息又回流」的回声。 */
+  readonly outbox?: Pick<OutboxStore, 'echoCandidates'>;
 }
+
+/** 同一 binding 每分钟最多收这么多条外部消息（#219 C3）。 */
+export const EXTERNAL_PER_MINUTE = 30;
+/** posting 停这么久还没落帖就重放一次：postExternal 幂等，不会重复落帖。 */
+export const GROUP_POST_TIMEOUT_MS = 60_000;
+/** 同一 binding 每分钟最多记这么多条 skipped：否则换个 externalId 就能无限插行。 */
+export const SKIPPED_PER_MINUTE = 60;
 
 export interface BindingInput {
   readonly connector: string;
   readonly kind: string;
   readonly name: string;
   readonly target?: 'main' | 'new';
-  /** C1：群目标（尚未接线）。`targetKind='group'` 必须同时给 `groupId`。 */
+  /** C3：群目标。`targetKind='group'` 必须同时给 `groupId`，群要属于这个 bot 能用的项目。 */
   readonly targetKind?: BindingTargetKind;
   readonly groupId?: string | null;
   readonly projectId?: string | null;
@@ -124,7 +140,79 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       await fail(binding, run, `超过 ${Math.round(limit / 60_000)} 分钟没等到这一轮结束，按超时处理`, 'timeout');
       n++;
     }
+    // 群目标：posting 超过 60s 还没落帖（进程在调群聊时挂了），重放一次。postExternal 按 externalId 幂等。
+    for (const stale of await deps.store.postingBefore(now - GROUP_POST_TIMEOUT_MS)) {
+      const fresh = (await deps.store.run(stale.id)) ?? stale;
+      if (fresh.state !== 'posting') continue;
+      const binding = await deps.store.binding(fresh.bindingId);
+      if (!binding || binding.targetKind !== 'group') continue;
+      await postIntoGroup(binding, { ...fresh, updatedAt: now });
+      n++;
+    }
     return n;
+  };
+
+  /** 群目标能不能用这个项目：binding 限定的项目，或 bot 关联的项目。 */
+  const projectAllowed = async (agentProjectId: string, agentName: string, scope: string | null, projectId: string): Promise<boolean> => {
+    if (scope) return scope === projectId;
+    if (agentProjectId === projectId) return true;
+    return (await deps.store.agentProjects(agentProjectId, agentName)).includes(projectId);
+  };
+
+  /** 这条外部消息是不是我们自己刚发出去的（channel_outbox 里 sending/sent）→ 回声，直接丢。 */
+  const echoed = async (binding: ConnectorBinding, externalId: string): Promise<boolean> => {
+    const outbox = deps.outbox;
+    if (!outbox || !binding.groupId) return false;
+    const since = deps.now() - 10 * 60_000;
+    // 群里 agent 的回复要回到外部渠道时，outbox 的目标是渠道地址（例如 feishu:<chatId>），
+    // 不是群 id —— 两边都要查，否则回声永远匹配不上。v1 群目标还不做出站镜像，
+    // 这里先按同一套地址查，等出站接上就能直接生效（见 docs/design/channel-convergence.md）。
+    const chatId = typeof binding.params['chatId'] === 'string' ? binding.params['chatId'].trim() : '';
+    const targets: { kind: 'group' | 'session' | 'external'; id: string }[] = [{ kind: 'group', id: binding.groupId }];
+    if (binding.mainSessionId) targets.push({ kind: 'session', id: binding.mainSessionId });
+    if (chatId !== '') targets.push({ kind: 'external', id: `${binding.connector}:${chatId}` });
+    for (const target of targets) {
+      const rows = await outbox.echoCandidates(target, since);
+      if (rows.some((m) => m.externalMessageId === externalId)) return true;
+    }
+    return false;
+  };
+
+  /** 外部消息进群的正文：去掉投递用的抬头，保留链接/出处。 */
+  const externalBody = (event: InboundEvent): string => {
+    const base = typeof event.text === 'string' ? event.text : event.text.value;
+    return [base, event.url ?? '', event.note ?? ''].filter((x) => x !== '').join('\n');
+  };
+
+  /** posting → posted：调群聊落帖。群/权限变了就记在 run 上，不重建会话。 */
+  const postIntoGroup = async (binding: ConnectorBinding, run: TriggerRun): Promise<void> => {
+    const groupId = binding.groupId;
+    if (!groupId) {
+      await deps.store.saveRun({ ...run, state: 'failed', reason: '群目标没有绑群', updatedAt: deps.now() });
+      return;
+    }
+    if (!deps.postExternal || !deps.groupOf) {
+      await deps.store.saveRun({ ...run, state: 'failed', reason: '群聊还没接线', updatedAt: deps.now() });
+      return;
+    }
+    const group = await deps.groupOf(groupId);
+    if (!group) return fail(binding, run, '这个群已经不存在了', 'failed', false);
+    if (!(await projectAllowed(binding.agentProjectId, binding.agentName, binding.projectId, group.projectId))) {
+      return fail(binding, run, '群不属于这个触发能用的项目', 'failed', false);
+    }
+    const actor = deps.principalOf ? await deps.principalOf(binding.createdBy) : null;
+    if (!actor) {
+      await deps.store.saveRun({ ...run, state: 'failed', reason: '创建者账号已不可用，外部消息不再入群', updatedAt: deps.now() });
+      await deps.store.saveBinding({ ...binding, enabled: false, pausedReason: '创建者账号已不可用，外部消息不再入群', updatedAt: deps.now() });
+      return;
+    }
+    const posted = await deps.postExternal({ groupId, author: binding.connector, text: run.text, externalId: run.externalId, actor });
+    if (!posted.ok) {
+      if (posted.error.code === 'forbidden') return fail(binding, run, `创建者已无权在群里发言：${posted.error.message}`);
+      return fail(binding, run, posted.error.message, 'failed', false);
+    }
+    await deps.store.saveRun({ ...run, state: 'posted', postId: posted.value.postId, reason: null, updatedAt: deps.now() });
+    if (binding.consecutiveFailures > 0) await deps.store.saveBinding({ ...binding, consecutiveFailures: 0, updatedAt: deps.now() });
   };
 
   const emit = async (bindingId: string, event: InboundEvent): Promise<void> => {
@@ -135,9 +223,38 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       id: newId(), bindingId, externalId: event.externalId, plannedAt: event.plannedAt ?? null, catchup: event.catchup === true,
       state: 'waiting', reason: null, sessionId: event.targetSessionId ?? null, text: formatInbound(binding, event), createdAt: now, updatedAt: now
     };
-    // #221 步骤 0：群目标即便从旧数据里冒出来也不能投——按私聊会话投会以创建者身份说话。
+    // 群目标（#219 C3）：外部消息落成群帖，不走会话回合。posting → posted 不占 openRuns。
+    // 跳过原因要能看见，但记录本身也被限流：否则换个 externalId 就能无限往 trigger_run 插行。
+    const skipRun = async (reason: string): Promise<void> => {
+      const counts = await deps.store.countRunsByState([bindingId], now - 60_000);
+      if (counts.skipped >= SKIPPED_PER_MINUTE) {
+        await deps.store.saveBinding({
+          ...binding,
+          enabled: false,
+          pausedReason: '外部消息被大量跳过（回声或无效消息），已暂停；确认渠道配置后再启用',
+          updatedAt: deps.now()
+        });
+        return;
+      }
+      await deps.store.insertRun({ ...run, state: 'skipped', reason });
+    };
     if (binding.targetKind === 'group') {
-      await deps.store.insertRun({ ...run, state: 'skipped', reason: '群目标还没接线，本次不投递' });
+      if (!binding.groupId) {
+        await skipRun('群目标没有绑群，本次不投递');
+        return;
+      }
+      if (await deps.store.hasRun(bindingId, event.externalId)) return; // 同一个外部消息只处理一次
+      if (await echoed(binding, event.externalId)) {
+        await skipRun('这条是本连接器自己发出去的消息（回声），不入群');
+        return;
+      }
+      if ((await deps.store.countSince(bindingId, now - 60_000)) >= EXTERNAL_PER_MINUTE) {
+        await skipRun(`超过每分钟 ${EXTERNAL_PER_MINUTE} 条外部消息上限，本次跳过`);
+        return;
+      }
+      const posting: TriggerRun = { ...run, state: 'posting', text: externalBody(event) };
+      if (!(await deps.store.insertRun(posting))) return; // 去重：同一个 externalId 已经有一条运行
+      await postIntoGroup(binding, posting);
       return;
     }
     const push = (sources.get(binding.connector)?.delivery ?? 'poll') === 'push';
@@ -150,7 +267,7 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
         return;
       }
       if (event.plannedAt === undefined) return;
-      await deps.store.insertRun({ ...run, state: 'skipped', reason: '上一次还没结束，本次跳过' });
+      await skipRun('上一次还没结束，本次跳过');
       return;
     }
     if (!(await deps.store.insertRun(run))) return; // 去重
@@ -231,14 +348,22 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       const now = deps.now();
       const targetKind: BindingTargetKind = input.targetKind === 'group' ? 'group' : 'session';
       const groupId = String(input.groupId ?? '').trim();
-      if (targetKind === 'group' && !groupId) return err(invalid('群目标要给出群 id'));
-      // #221 步骤 0（C1.1）：群目标还没接线，先拒绝创建——否则它会以创建者身份
-      // 投进一个新的私聊会话，看起来像bot在群里说话，实际权限和上下文都不对。
-      if (targetKind === 'group') return err(invalid('群目标还没实现，暂时不能创建；先选主会话或新会话'));
+      if (targetKind === 'group') {
+        if (!groupId) return err(invalid('群目标要给出群 id'));
+        if (!deps.groupOf) return err(unavailable('群聊还没接线，暂时不能建群目标'));
+        const group = await deps.groupOf(groupId);
+        if (!group) return err(invalid('找不到这个群'));
+        if (!(await projectAllowed(projectId, agentName, scope, group.projectId))) return err(invalid('群必须属于这个 bot 能用的项目'));
+        // 建 binding 的人必须真的能在目标群里发言：否则外部消息永远投不进去，
+        // 只会一直计 consecutiveFailures，看起来像「连接器坏了」。
+        const groupProject = await deps.projects.byId(group.projectId as ProjectId);
+        const postable = await authorizeProject(deps.policy, actor, groupProject, 'group.post');
+        if (!postable.ok) return err(forbidden('你没有在这个群里发言的权限，不能把外部消息投进来'));
+      }
       const b: ConnectorBinding = {
         id: newId(), connector: source.id, kind: input.kind, agentProjectId: projectId, agentName, projectId: scope, name,
         target: input.target === 'new' ? 'new' : 'main',
-        targetKind, groupId: null,
+        targetKind, groupId: targetKind === 'group' ? groupId : null,
         params: input.params ?? {}, enabled: true, pausedReason: null,
         consecutiveFailures: 0, nextRunAt: null, mainSessionId: null, createdBy: actor.user.id, timeZone: input.timeZone || 'UTC', createdAt: now, updatedAt: now
       };

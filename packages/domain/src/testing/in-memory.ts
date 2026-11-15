@@ -145,6 +145,13 @@ export function taskOps(rows: Map<string, Task>): TaskRepository {
     async save(task) {
       rows.set(task.id, task);
     },
+    async setBranch(id, branch) {
+      if (branch === null) return false;
+      const existing = rows.get(id);
+      if (!existing) return false;
+      rows.set(id, { ...existing, branch });
+      return true;
+    },
     async byId(id) {
       return rows.get(id) ?? null;
     },
@@ -202,6 +209,18 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
     async setEnvironmentRevision(id, revision, at) {
       const existing = rows.get(id);
       if (existing) rows.set(id, { ...existing, environmentRevision: revision, updatedAt: at });
+    },
+    async markInterrupted(id, at) {
+      const existing = rows.get(id);
+      if (!existing || existing.status !== 'running') return false;
+      rows.set(id, { ...existing, status: 'interrupted', updatedAt: at });
+      return true;
+    },
+    async markRunning(id, at) {
+      const existing = rows.get(id);
+      if (!existing || existing.status !== 'interrupted') return false;
+      rows.set(id, { ...existing, status: 'running', updatedAt: at });
+      return true;
     },
     async byId(id) {
       return rows.get(id) ?? null;

@@ -17,6 +17,7 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
     external_conversation_id TEXT, external_thread_id TEXT, post_id TEXT,
     UNIQUE(binding_id, external_id))`);
   db.exec('CREATE INDEX IF NOT EXISTS trigger_run_state ON trigger_run(state, session_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS trigger_run_posting ON trigger_run(state, updated_at)');
   // 收敛设计 C1（docs/design/channel-convergence.md）：外部会话 → 目标。只建表，暂不接读写路径。
   db.exec(`CREATE TABLE IF NOT EXISTS channel_conversation (
     binding_id TEXT NOT NULL, external_conversation_id TEXT NOT NULL, external_thread_id TEXT,
@@ -122,14 +123,22 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
       return (db.prepare(`SELECT * FROM trigger_run WHERE binding_id IN (${marks}) AND created_at >= ? ORDER BY created_at DESC LIMIT ?`).all(...ids, since, limit) as R[]).map(toR);
     },
     async countRunsByState(ids, since) {
-      const counts: Record<TriggerRun['state'], number> = { waiting: 0, delivered: 0, done: 0, failed: 0, timeout: 0, skipped: 0 };
+      const counts: Record<TriggerRun['state'], number> = { waiting: 0, delivered: 0, done: 0, failed: 0, timeout: 0, skipped: 0, posting: 0, posted: 0 };
       if (ids.length === 0) return counts;
       const marks = ids.map(() => '?').join(',');
       const rows = db.prepare(`SELECT state, COUNT(*) AS n FROM trigger_run WHERE binding_id IN (${marks}) AND created_at >= ? GROUP BY state`).all(...ids, since) as { state: string; n: number }[];
       for (const row of rows) if (row.state in counts) counts[row.state as TriggerRun['state']] = row.n;
       return counts;
     },
+    // 只数真的进了群/真在跑的行：skipped（回声、超限、无效）不该继续吃每分钟额度，
+    // 否则攻击者用一批空消息就能把正常消息挤掉。
+    async countSince(b, since) {
+      return Number((db.prepare(
+        "SELECT COUNT(*) AS n FROM trigger_run WHERE binding_id = ? AND created_at >= ? AND state IN ('posting','posted','waiting','delivered')"
+      ).get(b, since) as { n: number }).n);
+    },
     async openRuns(b) { return (db.prepare("SELECT * FROM trigger_run WHERE binding_id = ? AND state IN ('waiting','delivered')").all(b) as R[]).map(toR); },
+    async postingBefore(before) { return (db.prepare("SELECT * FROM trigger_run WHERE state = 'posting' AND updated_at < ? ORDER BY created_at").all(before) as R[]).map(toR); },
     async waitingRuns() { return (db.prepare("SELECT * FROM trigger_run WHERE state = 'waiting' ORDER BY created_at").all() as R[]).map(toR); },
     async deliveredRuns() { return (db.prepare("SELECT * FROM trigger_run WHERE state = 'delivered' ORDER BY created_at").all() as R[]).map(toR); },
     async deliveredRunFor(s) { const r = db.prepare("SELECT * FROM trigger_run WHERE session_id = ? AND state = 'delivered' ORDER BY created_at DESC LIMIT 1").get(s) as R | undefined; return r ? toR(r) : null; },

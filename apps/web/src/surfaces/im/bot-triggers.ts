@@ -16,7 +16,9 @@ export const TRIGGER_RUN_LABEL: Record<BotTriggerDto['runs'][number]['state'], s
   done: '完成',
   failed: '失败',
   timeout: '超时',
-  skipped: '跳过'
+  skipped: '跳过',
+  posting: '入群中',
+  posted: '已入群'
 };
 
 const MINUTE = 60_000;

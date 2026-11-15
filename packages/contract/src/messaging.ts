@@ -13,7 +13,7 @@ export interface GroupDto {
   speakingStrategy: 'host' | 'volunteer'; limits: Partial<GroupLimitsDto>; held: string[]; needsUser: boolean;
   createdBy: string; createdAt: number; updatedAt: number;
 }
-export type GroupAuthorDto = { kind: 'user'; id: string; name: string } | { kind: 'agent'; role: string; sessionId: string } | { kind: 'system' };
+export type GroupAuthorDto = { kind: 'user'; id: string; name: string } | { kind: 'agent'; role: string; sessionId: string } | { kind: 'system' } | { kind: 'external'; name: string };
 export interface GroupReactionDto { emoji: string; actors: { kind: 'user' | 'agent'; name: string }[] }
 export interface GroupPostDto { id: string; seq: number; threadId: string | null; round: number; author: GroupAuthorDto; body: string; mentions: string[]; needsUser: boolean; createdAt: number; reactions: GroupReactionDto[] }
 /** 正在输入的成员：来自还没收尾的投递（status === 'delivered'）。 */
@@ -90,7 +90,7 @@ export interface AttentionDto {
 
 // ---- 连接器（ADR 0032）：bot 的触发、运行记录、关联项目、等我处理 ----
 
-export interface TriggerRunDto { id: string; bindingId: string; externalId: string; plannedAt: number | null; catchup: boolean; state: 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped'; reason: string | null; sessionId: string | null; createdAt: number; updatedAt: number }
+export interface TriggerRunDto { id: string; bindingId: string; externalId: string; plannedAt: number | null; catchup: boolean; state: 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped' | 'posting' | 'posted'; reason: string | null; sessionId: string | null; createdAt: number; updatedAt: number }
 export interface BindingDto {
   id: string; connector: string; kind: string; agentProjectId: string; agentName: string; projectId: string | null; name: string; target: 'main' | 'new';
   /** 收敛设计 C1：群目标。旧前端忽略这两个字段；`target` 对群 binding 固定为 `'main'`。 */
@@ -105,7 +105,7 @@ export interface ConnectorNoticeDto { kind: 'binding_paused' | 'inbound_quaranti
 /** 一次触发运行。不带 `text`：投进去的内容可能很大、也可能是外部不可信文本，读接口不复制它。 */
 export interface BotTriggerRunDto {
   id: string; bindingId: string; externalId: string;
-  state: 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped';
+  state: 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped' | 'posting' | 'posted';
   plannedAt: number | null; catchup: boolean; reason: string | null; sessionId: string | null;
   createdAt: number; updatedAt: number;
 }

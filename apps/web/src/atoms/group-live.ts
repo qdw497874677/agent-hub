@@ -96,7 +96,7 @@ export function draftText(blocks: readonly Block[]): string | null {
 /** 判定草稿可见性需要的最小帖子形状（不绑 DTO，单测里造两条就够）。 */
 export interface DraftPost {
   readonly round: number;
-  readonly author: { readonly kind: 'user' | 'agent' | 'system'; readonly role?: string };
+  readonly author: { readonly kind: 'user' | 'agent' | 'system' | 'external'; readonly role?: string };
 }
 
 /**

@@ -1,6 +1,6 @@
 # 外部 IM 与连接器的收敛：渠道、目标、投递内核
 
-状态：C1 已落地；C2a 推送排队与失败分类已落地（占用粒度仍是 binding，待 C0 收窄）；C2b 出站队列已落地（pump 只消费 session 目标，github 行为 queued 待接线）；C3/C4 未实现。回答的问题：**外部 IM 聊天和连接器怎么把逻辑收敛起来，群聊能复用多少。**
+状态：C1 已落地；C2a 推送排队与失败分类已落地（占用粒度仍是 binding，待 C0 收窄）；C2b 出站队列已落地（pump 只消费 session 目标，github 与飞书入站已接线）；C3 群目标已落地（入站 → 群帖，出站回外部渠道尚未接）；C4 DM 渠道已有飞书包，真实凭据待接。回答的问题：**外部 IM 聊天和连接器怎么把逻辑收敛起来，群聊能复用多少。**
 
 相关：`docs/design/group-delivery-kernel.md`（投递内核，本文的 C0）。
 
@@ -184,13 +184,17 @@ CREATE TABLE channel_outbox (
 
 **C4 DM 渠道（先于 C3）**：外部 DM → 常驻会话 → outbox，复用现有 `sessionFor`/`attempt`，语义最少，用它验证渠道包、outbox、回声、授权四件事。回声按三层：平台身份过滤 → `external_message_id` 精确匹配 → 正文指纹只比本会话 `sending`/刚 `sent` 的 outbox 行（人类重复发言不受影响）。
 
-**C3 群目标**：
-- run 状态加 `posting → posted`（不复用 `done`）：`posting` 已占去重键、未落帖，`posted` 回填 `post_id`；两者都不算 `isOpenRun`；`sweep` 超时重放；
+**C3 群目标——已落地（入站方向）**：
+- 落点：`packages/domain/src/use-cases/connectors.ts` 的 `emit` 群分支 + `postIntoGroup`；`packages/domain/src/use-cases/groups.ts` 的 `postExternal`；作者 `Kind:'external'`，正文在三种 prompt 里都进 `<group-message untrusted>`，主持人转述进 `<host-note untrusted>`。
+- 崩溃补偿：`postExternal` 命中既有帖时，若线程仍 `running` 且没有任何投递，补一次 `schedule`（帖子与调度不在同一事务，重放只补缺的那一步）。
+- 限流：`countSince` 只数真正生效的行（`posting|posted|waiting|delivered`），`skipped` 不吃额度；`trigger_run_posting(state, updated_at)` 支撑 `postingBefore` 重放。
+- **未做（已知边界）**：群目标的 agent 回复还不回写外部渠道（需要在群帖落库后入 outbox，并按 `feishu:<chatId>` 认领）；`echoed()` 已按 `group`/`session`/`external` 三个目标查，等出站接上即生效；`InboundEvent` 没有发送者身份，帖作者暂用连接器名；后续轮次的 actor 回退到群创建者，若 binding 创建者不同需在授权层统一（见 §7）。
+- 原计划项：run 状态加 `posting → posted`（不复用 `done`）：`posting` 已占去重键、未落帖，`posted` 回填 `post_id`；两者都不算 `isOpenRun`；`sweep` 超时重放；
 - 帖 id 由 run id 派生，重放碰到主键冲突即视为已落；
 - `GroupDelivery` 带 `originRunId`，`wakeOf` 回落查「源自外部 run 的群投递」，否则配额与「人工任务」判定被绕过；
-- 外部正文在 host/member/bid 三种 prompt 里都标 untrusted（现在 `memberPrompt` 只认 `@` 前缀，`hostPrompt`/`bidPrompt` 不标）；`'external'` 作者在 `author()` 里显示为自己，不是「系统」；
-- 外部作者的「停止 @x」无效；`actorOf` 按 id 直查（`findPost`；
-- 外部入站与人的主持人配额分开计；Slack thread 根消息与回复要映射到同一目标。
+- 外部作者的「停止 @x」无效（`postExternal` 写死 `mentions: []`，不走 `parseMentions`/`parseStopCommand`）；
+- 外部入站与人的主持人配额分开计（当前按 binding 计，C0 收窄到目标）；
+- thread 根消息与回复映射到同一目标（飞书 `externalId = <chatId>:<messageId>`，Slack 需 `conversationId:messageId`）。
 
 **C0 投递内核**：先只抽 CAS 状态迁移与统一的 `occupied` 谓词（现在三处不对称：`main.ts:396-397` 查队列+messages+groups，`:283` 只查群，`:316` 只查私聊），再视情况合并泵。
 
@@ -210,7 +214,8 @@ CREATE TABLE channel_outbox (
 - **回声与编辑**：平台回推自己消息的 id 未必稳定；outbox 存 `external_message_id`，入站时先查它，再加「binding + conversation + 正文指纹」短 TTL 去重；同 id 的编辑按丢弃处理。
 - **限流**：入站配额（webhook 风暴）与出站配额（成员回复扇出）分开算——`HOST_PER_MINUTE`（`packages/domain/src/groups.ts:28`，限流在 `use-cases/groups.ts:768-771`）只约束「不带 @ 的入站交给主持人」，不是出站配额。
 - **生命周期**：群删除 / bot 被移出群 / 渠道凭据失效 / `createdBy` 失去 `group.post` → binding 立即暂停（不等连续失败 5 次）；恢复后手动启用。
-- **推送型来源丢消息（评审 H1）**：`emit` 在占用时对无 `plannedAt` 的事件直接返回且不记 run（`use-cases/connectors.ts:126-128`）；轮询源能重拉，webhook 不能。占用粒度还必须从 binding 降到外部会话，否则一个 bot 绑几十个频道时互相饿死。
+- **推送型来源丢消息（评审 H1）——已修一部分**：`InboundSource.delivery === 'push'` 时占用不再丢弃，而是写 `waiting` 排队（C2a）；占用粒度仍是 binding，降到外部会话留给 C0，否则一个 bot 绑几十个频道会互相饿死。
 - **配额绕过（评审 H2）**：`wakeOf` 靠 `deliveredRunFor`（`main.ts:649`）；群目标写 `posted` 而不写 delivered 时，外部消息引起的回合会被当成「人发起」，不计配额、任务按 human 不受项目上限。必须带 `originRunId` 回落。
-- **可信度标记（评审 H3）**：`memberPrompt` 只对 `@` 开头的作者名标 untrusted（`groups.ts:381`）；`hostPrompt`/`bidPrompt` 根本不标。外部文本在三种 prompt 里都要显式标 untrusted。
-- **授权模型（评审 H4）**：外部消息一律用 `binding.createdBy` 开会话，等于频道里任何人（含 Slack Connect 外部成员）获得创建者能力；叠加 #217 的 git 工具 owner 权限，风险更大。需要外部作者白名单 + 每次投递前重新校验。
+- **可信度标记（评审 H3）——已修**：`triggerBlock` 把外部正文包成 `<group-message untrusted="true">`，三种 prompt 共用；主持人转述包成 `<host-note untrusted="true">`；外部帖 `mentions` 固定为空，`@all`/「停止 @x」进不来。
+- **授权模型（评审 H4）——部分落地**：建 binding 时校验创建者对目标群有 `group.post`（C3）；投递仍旧一律用 `binding.createdBy` 开会话，等于频道里任何人（含 Slack Connect 外部成员）获得创建者能力——白名单与「每次投递前重新校验」未做，这是上线真实 IM 前必须补的。
+- **actor 一致性**：外部根帖用 `binding.createdBy` 开首轮会话，后续轮次 `actorFor` 回退到 `group.createdBy`；两者可能不是同一个人。上线前要么统一为 binding 创建者，要么在 `postExternal` 拒绝「群创建者 ≠ binding 创建者」。
