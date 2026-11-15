@@ -20,7 +20,7 @@ async function resetSettings(page: Page): Promise<void> {
   expect(response.ok()).toBe(true);
 }
 
-/** 运营后台：主人从账号菜单进入，管用户、看机器、改设置，每一步都进审计。 */
+/** 运营后台：主人从全站导航的「运维」组进入，管用户、看机器、改设置，每一步都进审计。 */
 test("主人在后台停用并启用一个成员、关开注册，审计里都有记录", async ({
   page,
   baseURL,
@@ -42,8 +42,11 @@ test("主人在后台停用并启用一个成员、关开注册，审计里都�
 
   try {
     await page.goto("/");
-    await page.getByRole("button", { name: "账号" }).click();
-    await page.getByRole("link", { name: "运营后台" }).click();
+    // 全站导航把运营后台放在「运维」组（#221 之前它在账号菜单里）
+    await page
+      .getByRole("navigation", { name: "全站导航" })
+      .getByRole("link", { name: "运营后台" })
+      .click();
     await expect(page.getByRole("heading", { name: "概览" })).toBeVisible();
     await expect(page.getByText("在线机器")).toBeVisible();
 
