@@ -133,7 +133,7 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
 
 | 工具 | 说明 |
 | --- | --- |
-| `task.create` | 给项目下派任务：`{projectId, prompt, baseBranch?, assetSetId?, deliver?}`；返回 `{taskId, sessionId}` |
+| `task.create` | 给项目下派任务：`{projectId, prompt, kind:'code'\|'serve', assetSetId?, baseBranch?, deliver?}`；返回 `{taskId, sessionId}` |
 | `task.get` | 状态、分支、commit、PR URL、`lastSeq`、最后一句话 |
 | `task.messages` | `after=seq` 拉消息（text / question / tool 摘要 / ended），`limit≤200` |
 | `task.reply` | 给运行中的会话补一句话；走送达队列，不新开会话 |
@@ -161,6 +161,57 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
 
 资产模块**不**做：导入/上传/审核/删除资产、改资产内容、签发密钥——这些涉及供应链与密钥，
 必须留在界面与人工审核流程里。MCP 只能组合「已经审过的资产」。
+
+### 5.1.4 场景剧本（建项目 → 绑仓库 → 装资产 → 开发 → 本地起服务）
+
+一次完整的「从零到能看」在 MCP 上是一条直线，不需要切界面：
+
+```jsonc
+// 1. 建项目：一次给齐多个仓库（第一个是主仓库）
+project.create({
+  "name": "agent-hub",
+  "repos": [
+    {"name":"agent-hub","url":"https://github.com/o/agent-hub.git","defaultBranch":"main"},
+    {"name":"web-kit","url":"https://github.com/o/web-kit.git"}
+  ],
+  "description": "运行时无关的 agent 工作台"
+})
+// → { projectId, repos:[...], primary:"agent-hub" }
+
+// 2. 建两个场景资产包（技能 + 指令的组合，只能选已发布资产）
+assetSet.create({ "name":"开发", "items":[{"assetId":"a_ts","pin":"follow"},{"assetId":"a_review"}] })
+assetSet.create({ "name":"本地部署", "items":[{"assetId":"a_deploy"},{"assetId":"a_ops"}] })
+
+// 3. 绑默认：项目默认用「开发」；部署任务显式用「本地部署」
+assetSet.bind({ "assetSetId":"as_dev", "projectId":"p_1" })
+
+// 4. 开发任务（隔离 worktree，产出分支/PR）
+task.create({
+  "projectId":"p_1", "kind":"code", "assetSetId":"as_dev",
+  "prompt":"把会话页的预览面板接上自动发现……",
+  "deliver": {"branch":"agent-hub/preview-autodetect","openPr":true}
+})
+
+// 5. 本地部署任务（同一项目，共享目录，起服务并登记预览）
+task.create({
+  "projectId":"p_1", "kind":"serve", "assetSetId":"as_deploy",
+  "prompt":"用 pnpm dev 起前端与 server，确认 /api/health 200；把端口登记为预览"
+})
+// → 6. task.get(taskId) 里出现 previewLink { port, url, state }
+
+// 7. 过程中反问
+//    会话调用 task.ask("要 npm ci 还是复用现有 node_modules？")
+//    → task.messages 看到 question → task.reply("复用") → 同一会话继续
+```
+
+`kind` 的差别只在于默认值与收尾动作，不是新实体：
+
+| kind | 工作目录 | 收尾 |
+| --- | --- | --- |
+| `code` | 隔离 worktree（可指定 shared） | 提交 → 推送分支 → 可选开 PR |
+| `serve` | 共享目录 | 起服务 → 登记预览链接 → 保持进程；`task.get` 返回 `previewLink` |
+
+`check` / `review` 作为 v2 的 `code` 预设（`checks:true` / `baseRef`），不单列。
 
 ### 5.2 提示词与交付
 
