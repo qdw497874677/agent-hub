@@ -26,6 +26,11 @@ export interface DispatcherDeps {
   readonly notify: (sessionId: string, text: string) => Promise<Result<unknown, DomainError>>;
   /** 取消排队时把任务置为放弃（system 身份）。 */
   readonly abandonTask: (taskId: string, reason: string) => Promise<void>;
+  /**
+   * 任务进展：开始 / 阶段 / 结束。谁在听由组合根决定（任务日志、来源群、连接器 sink、订阅方），
+   * 领域只负责在正确的时刻说一句。
+   */
+  readonly progress?: (d: TaskDispatch, kind: 'started' | 'milestone' | 'finished', detail?: string) => Promise<void>;
   readonly sinks?: readonly OutputSink[];
   readonly caps?: typeof DISPATCH_CAPS;
   readonly log?: (line: string) => void;
@@ -62,6 +67,7 @@ export function createDispatcher(deps: DispatcherDeps) {
     const next: TaskDispatch = { ...d, state, result: clip(result, 4000), waitReason: null, updatedAt: deps.now() };
     await deps.store.save(next);
     await sink(next);
+    await deps.progress?.(next, 'finished', next.result ?? undefined).catch(() => undefined);
     deps.log?.(`调度：任务 ${d.taskId} ${state}`);
   };
 
@@ -110,7 +116,9 @@ export function createDispatcher(deps: DispatcherDeps) {
       await deps.store.save(claimed);
       const started = await deps.start(claimed).catch((e: unknown) => err(invalid(String(e))));
       if (!started.ok) { await finish(claimed, 'failed', `开任务会话失败：${started.error.message}`); continue; }
-      await deps.store.save({ ...claimed, sessionId: started.value.sessionId, workerId: started.value.workerId, updatedAt: deps.now() });
+      const startedRow = { ...claimed, sessionId: started.value.sessionId, workerId: started.value.workerId, updatedAt: deps.now() };
+      await deps.store.save(startedRow);
+      await deps.progress?.(startedRow, 'started').catch(() => undefined);
       deps.log?.(`调度：任务 ${q.taskId} → 会话 ${started.value.sessionId}`);
     }
     await notifyAll();

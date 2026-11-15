@@ -133,6 +133,7 @@ import { createMemoryHosting } from './session-hosting.ts';
 import { createOptionWaiters } from './option-waiters.ts';
 import { createRequestGuard } from './request-guard.ts';
 import { createTerminalBridge, loginTokenOf, type TerminalBridge } from './terminal-bridge.ts';
+import { createTaskProgress } from './task-progress.ts';
 import { createPreviewChannel, type PreviewChannel } from './preview-channel.ts';
 import { createPreviewProxy, type PreviewProxy } from './preview-proxy.ts';
 import { createPreviewPrefix } from './preview-prefix.ts';
@@ -493,9 +494,21 @@ setInterval(() => void connectorHub.tick().catch((error: unknown) => log(`连接
 // 调度器（ADR 0032 R3）：task.create 建出的任务排队 → 按上限开任务智能体会话 → 一轮结束经送达队列通知建它的 bot。
 // 只经端口：开会话 / 发消息复用现有派生 + 送达流程；人直接开的会话不经过这里。
 const sessionOwner = (ownerId: string) => loadActor(store.users, store.access, ownerId, 'agent-dispatch');
+const taskProgress = createTaskProgress({
+  now: deps.now,
+  workLog: store.workLog,
+  groupOfSession: async (sessionId) => {
+    const member = await groupChat.memberOf(asSessionId(sessionId));
+    return member ? { groupId: member.groupId } : null;
+  },
+  postToGroup: (groupId, body) => groupChat.postSystem(groupId, body),
+  log
+});
+
 const dispatcher = createDispatcher({
   now: deps.now,
   store: store.dispatches,
+  progress: (d, kind, detail) => taskProgress.emit(d, kind, detail),
   placement: async (projectId) => {
     const ws = await defaultWorkspaceFor(deps, projectId as ProjectId);
     const workerId = ws?.workerId ?? null;
@@ -1084,6 +1097,12 @@ serverGateway = createServerGateway({
   },
   // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 里。
   onEvent(workerId, sessionId, event) {
+    if (event.kind === 'tool_call') {
+      void store.dispatches
+        .bySession(sessionId)
+        .then((d) => taskProgress.emit(d, 'milestone', event.name))
+        .catch(() => undefined);
+    }
     // 注意：`ended` 是**回合**事件（且进程会保活），不能在这里收 provider 句柄 / 终端；
     // 那些等真正的进程结束（onStatus 的 'ended'）再做。
     fromWorker(workerId, sessionId, () =>

@@ -210,3 +210,5 @@ export { createAgentTaskToolProvider, decideAgentTask, AGENT_TASK_TOOLS, ROUTER_
 export * from './dispatch.ts';
 export type { TaskDispatch, TaskDispatchStore, DispatchState } from './ports/task-dispatch-store.ts';
 export { createDispatcher, type Dispatcher, type DispatcherDeps, type DispatchView } from './use-cases/dispatcher.ts';
+
+export * from './task-progress.ts';
