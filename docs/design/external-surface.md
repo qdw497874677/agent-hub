@@ -128,6 +128,10 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
 - 传输层只做「MCP 调用 → 工具定义 → 领域用例」；HTTP 路由如需同类能力，复用同一批工具
   定义，不复制校验。
 - 每个模块可单独下线（配置 `MCP_MODULES=tasks,projects`），便于灰度与事故止损。
+- 工具默认暴露面 ≤20 个（本设计 17 个）；`X-MCP-Toolsets` 式的 `?surfaces=` 可进一步收窄。
+- 每个工具必须声明 MCP `ToolAnnotations`：`title`、`readOnlyHint`、`destructiveHint`、
+  `idempotentHint`；只读工具（`get/list/messages`）一律 `readOnlyHint: true`，写工具默认
+  `destructiveHint: false` 但不可幂等（除 `task.create`，见 §5.4）。
 
 ### 5.1.1 任务模块（五件）
 
@@ -213,6 +217,21 @@ task.create({
 
 `check` / `review` 作为 v2 的 `code` 预设（`checks:true` / `baseRef`），不单列。
 
+### 5.1.6 状态模型：五态 + 明细
+
+对齐 MCP tasks 扩展与 Devin 的 `status`/`status_detail` 双层，`task.get` 主状态固定五个：
+
+| status | 含义 | 对应我们的内部状态 |
+| --- | --- | --- |
+| `working` | 会话在干活（含 `slow`） | `running` + `liveness: active/slow` |
+| `input_required` | 会话问了一个问题，等调用方 `task.reply` | 有一条未回答的 `question` |
+| `completed` | 正常结束，产物可取 | `done` |
+| `failed` | 失败/打断/超时，`reason` 给原因 | `failed` / `interrupted` / 卡住后打断 |
+| `cancelled` | 调用方取消 | `cancelled` |
+
+`detail` 放细分原因（如 `tool:bash`、`stuck_no_events`、`worker_offline`、
+`usage_limit`），不扩主状态枚举。`task.get` 同时返回 `liveness` 与 `lastSeq`。
+
 ### 5.1.5 运行感知：别让会话「静悄悄地卡住」
 
 外部调用方看不到终端，必须能从 `task.get` 判断「在干活 / 慢 / 卡住 / 机器没了」。这些
@@ -276,7 +295,8 @@ task.create(prompt) ──► 会话开跑
 - token 绑定单个项目（v1）；越权访问其他项目一律 404，不泄露存在性。
 - `prompt` 与 `reply` 按不可信文本注入（`<untrusted>` 包裹），不能触发 `@all`、不能指定
   `createdBy`、workspace 路径或 workerId。
-- 写调用带 `idempotencyKey`（24h），重复提交返回同一个 `taskId`。
+- 写调用带 `idempotencyKey`：作用域 `(token, tool, key)`，默认 24h；**同键不同参数返回 409**，
+  不静默复用旧结果；只对 `task.create` 强制，其余写工具可选。
 - 配额：每 token 并发任务数、每分钟创建数；`task.reply` 计入消息速率。
 - 审计：`mcp.task.create` / `mcp.task.reply` / `mcp.task.cancel`，记 token、项目、taskId。
 
@@ -322,6 +342,21 @@ task.create(prompt) ──► 会话开跑
 
 v2 才考虑：资产导入/审核、项目删除、成员与权限变更、任意 git 操作、`kind` 多形态
 （check/serve/review）。这些不阻塞 v1 的三个模块。
+
+业界校准（2025–2026 官方 MCP server 对照后的修订）：
+
+- 单端点 + surface/toolset 收窄（GitHub toolset、Sentry skills、Atlassian Primary 同构）；
+  默认暴露面 ≤20 个，本设计 17 个。
+- 工具注解必填（GitHub/Sentry/Cloudflare 都显式声明）；只读与写工具分开定义，避免
+  `readOnlyHint` 失真。
+- 状态用五态 + `detail` 双层（Devin `status`/`status_detail`、MCP tasks 扩展）。
+- 分页：业务列表工具自己带 `nextCursor`（协议分页只管 `tools/list` 等），页大小 ≤50。
+- 长轮询：保留 `task.get` 轮询模型；`task.progress` 若做，服务端每 15–20s 发心跳，
+  并支持「客户端断开 = 取消当前等待」。
+- 幂等键业界普遍没有（GitHub 连 `create_repository` 都标 `idempotentHint:false`），
+  我们只在 `task.create` 强制，属于可用性增强而非协议要求。
+- `project.create` 开放与 GitHub/Linear/Atlassian/Sentry 一致；前提：独立写 scope、
+  可整体只读（`MCP_READ_ONLY=1`）、创建时即做 `repos/check`。
 
 待拍板：
 
