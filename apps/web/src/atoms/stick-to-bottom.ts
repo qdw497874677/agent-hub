@@ -19,6 +19,8 @@ export const END_EPSILON = 0.5;
  * 可能比 scrollHeight - clientHeight 少 4px。这 4px 不能当成「离开底部」。
  */
 export const ZOOM_SLACK = 4;
+/** 没有接触时，向上位移超过这么多像素才算读者离开（小位移是浏览器在补偿内容尺寸）。 */
+export const UNOWNED_DETACH_PX = 24;
 
 /** 可滚范围小于等于这个值就算没有溢出（内容不足一屏）。 */
 export const MIN_OVERFLOW = 1;
@@ -219,10 +221,13 @@ function scrolled(state: FollowState, metrics: ScrollMetrics): FollowState {
   const atEnd = maxScroll <= MIN_OVERFLOW || (reachedBottom && maxScroll - metrics.scrollTop <= END_EPSILON);
 
   if (state.type !== 'detached') {
-    // 没有接触的向上位移是浏览器在补偿尺寸变化（上面的图片加载完之类），不是读者要走。
+    // 没有接触的向上位移：小的算浏览器补偿尺寸变化（上面的图片加载完之类），不动；
+    // 大的只可能是程序化滚动、拖滚动条或惯性滚动——读者已经离开底部，必须脱离，
+    // 否则下一次内容变高会把人拽回底部（scroll-bottom 用例走的就是这条）。
     const trigger = contactTrigger(metrics.contact);
+    const jumped = metrics.previousTop - metrics.scrollTop >= UNOWNED_DETACH_PX;
 
-    return !atEnd && movedUp && trigger !== null ? detachedFrom(state, trigger, false) : state;
+    return !atEnd && movedUp && (trigger !== null || jumped) ? detachedFrom(state, trigger, false) : state;
   }
 
   if (atEnd) return FOLLOWING;

@@ -53,10 +53,15 @@ test('只有真的到达底部才恢复跟随：差一个像素也是读者要�
   assert.equal(transitionFollow(away, { type: 'scroll' }, metrics(geometry(MAX), geometry(MAX - 40))).type, 'following');
 });
 
-test('没有接触的向上位移是浏览器在补偿尺寸，不算读者离开', () => {
+test('没有接触的上移：几个像素是浏览器补偿，大跳转算读者离开', () => {
   const following = createFollowState();
 
-  assert.equal(transitionFollow(following, { type: 'scroll' }, metrics(geometry(MAX - 120), geometry(MAX))), following);
+  // 内容补偿是几像素级别
+  assert.equal(transitionFollow(following, { type: 'scroll' }, metrics(geometry(MAX - 3), geometry(MAX))), following);
+
+  // 程序化滚动 / 拖滚动条 / 惯性：没有接触也会离开底部
+  const jumped = expectDetached(transitionFollow(following, { type: 'scroll' }, metrics(geometry(MAX - 120), geometry(MAX))));
+  assert.equal(jumped.trigger, null);
 
   // 手按着就相反：往上拖是读者自己的意思
   const byTouch = expectDetached(

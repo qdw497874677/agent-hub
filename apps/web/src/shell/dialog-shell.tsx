@@ -53,6 +53,9 @@ function useSheetMotion(onClose: () => void) {
   const [closing, setClosing] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [offset, setOffset] = useState(0);
+  // 入场动画结束后把 transform 去掉：`transform` 会让后代的 `position: fixed` 以抽屉为参照，
+  // 目录选择器这类「全屏」浮层就会变成抽屉大小（390×632 而不是 390×844）。
+  const [settled, setSettled] = useState(false);
   const offsetRef = useRef(0);
   const dragRef = useRef<{ pointerId: number; from: number } | null>(null);
   const movedRef = useRef(false);
@@ -175,9 +178,22 @@ function useSheetMotion(onClose: () => void) {
   };
 
   const open = entered && !closing;
+  useEffect(() => {
+    if (!open) {
+      setSettled(false);
+      return;
+    }
+    if (reduced) {
+      setSettled(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setSettled(true), SHEET_IN_MS);
+    return () => window.clearTimeout(timer);
+  }, [open, reduced]);
+
   const translate = open ? (dragging ? `${offset}px` : '0px') : '100%';
   const style: CSSProperties = {
-    transform: `translateY(${translate})`,
+    transform: open && settled && !dragging ? undefined : `translateY(${translate})`,
     transition: dragging || reduced ? 'none' : `transform ${closing ? SHEET_OUT_MS : SHEET_IN_MS}ms ${SHEET_EASE}`
   };
 
@@ -241,7 +257,7 @@ export function Sheet({
       <div
         data-testid="dialog-sheet"
         style={motion.style}
-        className={`absolute inset-x-0 bottom-0 flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-x border-strong bg-panel ${maxHeightClassName} ${panelClassName}`}
+        className={`absolute inset-x-0 bottom-0 flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-strong bg-panel ${maxHeightClassName} ${panelClassName}`}
       >
         <div
           ref={motion.panelRef}
@@ -321,7 +337,7 @@ export function InlineSheet({
           transform: offset === 0 ? undefined : `translateY(${offset}px)`,
           transition: offset === 0 ? `transform ${SHEET_OUT_MS}ms ${SHEET_EASE}` : 'none'
         }}
-        className={`flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-x border-strong bg-panel ${
+        className={`flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-strong bg-panel ${
           collapsed ? '' : maxHeightClassName
         }`}
       >
