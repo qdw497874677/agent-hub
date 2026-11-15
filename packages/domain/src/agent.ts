@@ -10,6 +10,9 @@ import type { RuntimeOption } from './option.ts';
  * 界面只渲染清单里的东西。`models` / `defaultModel` 是它在 `category: 'model'`
  * 上的投影，留着是因为派生会话时要用——但**不许**和 options 说不一样的话。
  */
+/** 规范名（ADR 0036）：AgentDescriptor 描述运行时，以后叫 RuntimeDescriptor。 */
+export type RuntimeDescriptor = AgentDescriptor;
+
 export interface AgentDescriptor {
   readonly id: AgentId;
   readonly label: string;

@@ -27,6 +27,9 @@ export interface WorkspaceSetup {
   readonly finishedAt: number | null;
 }
 
+/** 规范名（ADR 0036）：目录义的 Workspace 以后叫 WorkDir；这里先加别名，不改行为。 */
+export type WorkDir = Workspace;
+
 export interface Workspace {
   readonly id: WorkspaceId;
   /**

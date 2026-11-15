@@ -5,6 +5,9 @@
 export type DeliveryState = 'queued' | 'sending' | 'delivered' | 'undelivered' | 'cancelled' | 'held';
 export type DeliveryKind = 'prompt' | 'handoff_brief';
 
+/** 规范名（ADR 0036）：ADR 0031 的 Delivery 只是「提示词送达」，以后叫 PromptDelivery。 */
+export type PromptDelivery = Delivery;
+
 export interface Delivery {
   readonly id: string;
   readonly sessionId: string;
