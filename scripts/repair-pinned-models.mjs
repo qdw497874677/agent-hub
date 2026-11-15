@@ -33,13 +33,34 @@ if (write && !backupDir) {
 }
 
 const db = new DatabaseSync(resolve(dbPath));
+// 两类都要修：bot 直接开的会话（按 bot_id）、群角色会话（按 agent_group_sessions 的成员关系）。
+// 老会话可能没写 bot_id，所以不能只按 bot_id 关联。
 const rows = db
   .prepare(
-    `SELECT s.id, s.model, s.options, b.name AS bot
-       FROM sessions s JOIN bots b ON b.id = s.bot_id
-      WHERE b.ref LIKE '%"model":""%' AND s.model <> ''`
+    `SELECT s.id, s.model, s.options, b.name AS bot, b.doc
+       FROM sessions s LEFT JOIN bots b ON b.id = s.bot_id
+      WHERE s.model <> ''
+        AND (
+          (b.doc IS NOT NULL AND s.bot_id IS NOT NULL)
+          OR EXISTS (SELECT 1 FROM agent_group_sessions g WHERE g.session_id = s.id)
+        )`
   )
-  .all();
+  .all()
+  // 只有「模型留空」的 bot 才该跟随运行时；群角色会话托管在某个 bot 上，按成员关系找它的 bot。
+  .filter((row) => {
+    try {
+      if (row.doc !== null) return (JSON.parse(row.doc)?.ref?.model ?? '') === '';
+      const member = db
+        .prepare(
+          `SELECT b.doc FROM agent_group_sessions g JOIN bots b ON b.name = g.role
+            WHERE g.session_id = ? LIMIT 1`
+        )
+        .get(row.id);
+      return member === undefined || (JSON.parse(member.doc)?.ref?.model ?? '') === '';
+    } catch {
+      return false;
+    }
+  });
 
 if (rows.length === 0) {
   console.log('没有需要修复的会话');
