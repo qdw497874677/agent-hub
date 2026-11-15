@@ -18,13 +18,13 @@ Session 是可恢复的：关闭客户端后重新打开，历史与运行状态
 _Avoid_: 会话（作动词时含糊）、Chat、Conversation、Thread
 
 **Agent**：
-一种可被调用的 agent 运行时的自我描述（`AgentDescriptor`）：能力矩阵、模型清单与可调项，由适配器上报，没有自己的生命周期状态。
-运行中的一次调用是 **Session**，不是 Agent。可复用的启动配置是 AgentProfile，团队级、按项目授权的自动代理是 Bot，三者不要混称。
-平台按能力矩阵渲染能力，不按 agent 名字写死判断。
-_Avoid_: Bot、助手、Model、Provider、实例
+**底层执行者**：运行时（Runtime）+ 模型 + 选项构成的一次执行，匿名、随 Session 生灭，没有自己的身份或生命周期。
+运行时对能力的自我描述是 `AgentDescriptor`（能力矩阵、模型清单、可调项），由适配器上报。
+界面上不把 Agent 当名词用——只说「由 OpenCode 驱动」「模型是 X」。具名、常驻、可授权的是 **Bot**；可复用的启动配置是 AgentProfile。
+_Avoid_: Bot、助手、Model、Provider、实例、成员
 
 **Bot**：
-团队级的一等智能体：有自己的 @id、运行时与启动选项，**不隶属任何项目**；通过「项目授权」进入项目（可分别指定每个项目里的默认工作空间）。
+团队级的一等成员：由 Agent 驱动，有自己的 @id、运行时、启动选项与记忆，**不隶属任何项目**；通过「项目授权」进入项目（可分别指定每个项目里的默认工作空间）。界面词就是「Bot」（见 ADR 0037）。
 授权到项目后才能被 `bot:<name>` 寻址、进该项目的群、在该项目的任务里开会话；撤销授权等于把它移出该项目。
 _Avoid_: 项目 bot、角色（role 是群里的发言身份，不是实体）
 
@@ -34,12 +34,13 @@ Artifact 挂在产生它的 Session 上，可被所属 Task 汇总；它是产�
 _Avoid_: 附件、Output、Result
 
 **Project**：
-容纳 Task 的作用域容器。
-它是**作用域边界**，不是行为丰富的聚合：除了「Task 属于哪个 Project」，它不承载领域行为。它不绑定目录——目录是 **Workspace** 的事。
-_Avoid_: 仓库、Repo、Workspace
+代码与权限边界：声明 `Repos`、配置、成员与 Bot 授权，容纳 Task。
+它是**作用域边界**，不是行为丰富的聚合：它不承载领域行为，也不绑定目录——目录是 **WorkDir** 的事。
+项目工作台（Project Workbench）是它在产品上的入口：按项目开工，为同一份代码分别建会话并行推进。
+_Avoid_: 仓库、Repo、Workspace、团队
 
-**Workspace**：
-某台 Worker 上的一个真实目录，Session 在里面干活。
+**WorkDir（工作目录，代码里仍叫 `Workspace`）**：
+某台 Worker 上的一个真实目录，Session 在里面干活。界面文案统一用「工作目录」；代码先加 `WorkDir` 别名，暂不改名（ADR 0037）。
 `long_lived` 由人建立、跨 Task 复用，平台不删；`temporary` 归一个 Task，任务结束后确认没有未保存改动才清理。
 一个长期 Workspace 可以被多个 Project 使用，关联记在 `ProjectWorkspaceLink` 上，不靠类型字段。
 _Avoid_: 仓库、Repo、Project、工作区（含糊）

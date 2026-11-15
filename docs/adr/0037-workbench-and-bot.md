@@ -1,0 +1,59 @@
+# ADR 0037：项目工作台与 Bot —— 三层词汇
+
+- 状态：接受
+- 日期：2026-11-15
+- 相关：ADR 0036（渠道 / 目标 / 投递内核）、ADR 0018（群聊）、ADR 0032（连接器）
+
+## 背景
+
+平台里「智能体」这个词被三种东西共用：
+
+1. 引擎（OpenCode / Pi / Codex 这类运行时）；
+2. 一次会话里的执行者（运行时 + 模型 + 选项，匿名、按会话生灭）；
+3. 团队级、有名字、有记忆、可授权到项目、可进群、可被 @ 的实体（代码里的 `Bot`）。
+
+同时「项目 / 工作空间 / 仓库」也被混用：项目是权限与代码边界，仓库是代码来源声明，工作空间是某台机器上的真实目录。
+
+结果是：界面上一会儿叫「智能体」、一会儿叫「bot」，用户分不清「工作台里的智能体和 bot 有什么区别」；文档里 Project / Workspace / Repo 互相替代。
+
+业界（2026）已经收敛到两层：`Agent` 指执行单元（OpenAI ChatGPT agent、Cursor agent、GitHub cloud agent），持久成员用另一个词（OpenAI `Workspace Agents`、xAI `Grok Bot` = durable AI teammate、Slack `AI teammates`、Atlassian `Rovo agents` = configurable AI teammates）。`Assistant` 已被 OpenAI 下线，不再承担成员语义。
+
+## 决策
+
+### 1. 三层词汇（自下而上）
+
+| 层 | 规范名 | 含义 | 界面上怎么出现 |
+| --- | --- | --- | --- |
+| 引擎 | **Runtime 运行时** | OpenCode / Pi / Codex / Grok 等可执行体 | 「由 OpenCode 驱动」 |
+| 执行者 | **Agent 智能体** | 一次会话里的运行时 + 模型 + 选项；匿名、随会话生灭 | 不单独当名词；只显示运行时与模型 |
+| 成员 | **Bot** | 具名、常驻、有记忆、按项目授权、可进群、可被 @ 的实体；**由 Agent 驱动** | 就叫「Bot」 |
+| 执行单元 | **Session 会话** | 唯一持久的工作单元；属于 Task，或容器会话 | 「会话」 |
+
+规则：`Agent` 是底层定义，任何界面文案都不用它指「人/成员」；`Bot` 是成员，界面词就是「Bot」。工作台里的开发由 Agent 驱动，但用户看到的是「会话 + 运行时 + 模型」。
+
+### 2. 两个产品面
+
+| 面 | 定位 | 核心对象 |
+| --- | --- | --- |
+| **项目工作台（Project Workbench）** | 以项目为入口，为同一份代码分别创建多个会话，并行推进开发 | Project / Repo / WorkDir / Task / Session |
+| **Bot（与消息）** | 有身份、可授权的常驻成员：私聊、进群、接外部渠道、被定时/事件唤醒 | Bot / BotGrant / Group / Channel |
+
+两者不是上下级：**Bot 是「谁在干」，工作台是「在哪干活」**。工作台里的会话可以指定由哪个 Bot 驱动；Bot 也可以被叫进项目的群或项目任务。
+
+`Team` 只是**权限边界**（谁被允许进来、谁能授权），不作为任何产品面的名字。
+
+### 3. 目录相关名词
+
+- **Project 项目**：代码与权限边界，只声明 `Repos`，不绑定目录。
+- **Repo 仓库**：代码来源（url + 默认分支）。
+- **WorkDir 工作目录**：某台 Worker 上的一次检出（`path` + `workerId` + `long_lived` / `temporary`）。
+- **WorkDirGroup 组合工作目录**：多仓库一次检出（成员按 position，0 是主仓库）。
+
+代码里现有 `Workspace` 暂不改名；先加 `export type WorkDir = Workspace` 别名，界面文案统一用「工作目录」。等 #221 收尾后做一次性改名（含 `AgentDescriptor → RuntimeDescriptor`）。
+
+## 后果
+
+- 界面：导航分组为「工作台 / 消息 / 库 / 运维」；Bot 页标题用「Bot」；工作台不再出现「智能体」作为名词。
+- 文档：GLOSSARY 的 Agent / Bot / Project / Workspace 四条按本 ADR 重写；新文档不再用「持久智能体」这个说法（写 Bot）。
+- 代码：领域实体仍是 `Bot`；`Agent` 保持「执行者」语义（`AgentDescriptor` 描述运行时能力，不是成员）。
+- 不做：不引入 `Teammate` / `Coworker` 作为代码或界面主词——业界用它是因为要出现在「@ 谁」的地方，而我们的 `Bot` 已经是那个 handle，改名只增加迁移成本。
