@@ -367,13 +367,16 @@ export async function recordSessionOptions(
   const session = await deps.sessions.byId(asSessionId(command.sessionId));
   if (!session) return err(notFound('会话不存在'));
   const values: Record<string, string | boolean> = {};
-  for (const option of command.options) values[option.id] = option.current;
-  // 模型多存一列：重开会话时要拿它传 --model。它同样只能由 agent 的回报来定，
-  // 平台自己改的「当前模型」和 agent 真在用的模型会悄悄分叉。
-  const reported = values['model'];
-  const model = typeof reported === 'string' && reported !== '' ? reported : session.model;
+  for (const option of command.options) {
+    // 模型不跟 agent 的回报走：回报的是「这次启动它自己解析出来的默认值」，
+    // 会被机器上的插件 / 配置影响，也可能随版本变。把它钉进会话之后，下次启动
+    // 就会拿这个旧值去覆盖运行时的真实默认——机器上换了配置，会话却还指着一个不再用的模型。
+    // 只有用户显式选过（session.model 非空）才写；否则留给运行时每次启动自己决定。
+    if (option.id === 'model' && session.model === '') continue;
+    values[option.id] = option.current;
+  }
   const next = {
-    ...withOptions({ ...session, model }, values, deps.now()),
+    ...withOptions(session, values, deps.now()),
     optionSpec: command.options
   };
   await deps.sessions.save(next);
