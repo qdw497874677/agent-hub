@@ -44,8 +44,8 @@ Capability Surface ── Actor（谁授权、以谁名义、经哪条渠道）
   （`task:create`、`git`、`memory.write`）必须显式授权，且按项目边界校验。
 - **一条调用链一个 correlation id**：`taskId` 作为回执，`sessionId` 与 `assetRevision`
   挂在任务详情上，调用方不需要理解会话。
-- **v1 对外只开「任务委派 + 消息」五件**（§5.1）。建项目、改配置、资产集仍由界面/HTTP
-  完成；等 v1 稳定、安全评审通过后再考虑把它们包成 MCP 工具。
+- **v1 对外开三个模块**（§5.1）：任务、项目、资产，各自独立 scope 与审计前缀。
+  资产模块只组合已审核资产，不做导入/审核/密钥。
 
 ## 3. 资产：AssetSet 是外部调用方唯一需要理解的单位
 
@@ -109,22 +109,58 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
 - 资产访问遵循 §3.5；MCP 端点不直接改资产内容，只读 catalog 与引用。
 - 写调用带 `idempotencyKey`（客户端生成，24h 内同键返回首次结果），避免重试造成重复项目/任务。
 
-### 5.1 v1 只做五件事
+### 5.1 模块划分
 
-外部调用方真正要的是「把活交给工作台、知道它干到哪、能回答它的问题、最后拿到 PR」。
-其余（建项目、配资产集、改项目设置）不需要经过 MCP。
+对外 MCP 按 领域模块 拆，一个端点（`/api/mcp`）挂全部工具，靠 token scope 决定可见性；
+代码上每个模块独立文件、独立 scope、独立审计前缀，互不依赖：
+
+| 模块 | 文件 | scope | 工具 |
+| --- | --- | --- | --- |
+| 任务 | `tools/external/tasks.ts` | `task:read` / `task:create` | `task.create`、`task.get`、`task.messages`、`task.reply`、`task.cancel` |
+| 项目 | `tools/external/projects.ts` | `project:read` / `project:create` / `project:update` | `project.list`、`project.get`、`project.create`、`project.update`、`project.repos.set` |
+| 资产 | `tools/external/assets.ts` | `asset:read` / `asset:write` | `asset.list`、`asset.get`、`assetSet.list`、`assetSet.get`、`assetSet.create`、`assetSet.update`、`assetSet.bind` |
+
+规则：
+
+- **一个模块 = 一个文件 + 一组 scope + 一份审计前缀**；模块之间不互相 import，只用领域用例。
+- 工具名前缀即模块名；客户端看到多少个工具由 token scope 决定（没有 `asset:write` 就看不到
+  `assetSet.create`），而不是调用时才 403。
+- 传输层只做「MCP 调用 → 工具定义 → 领域用例」；HTTP 路由如需同类能力，复用同一批工具
+  定义，不复制校验。
+- 每个模块可单独下线（配置 `MCP_MODULES=tasks,projects`），便于灰度与事故止损。
+
+### 5.1.1 任务模块（五件）
 
 | 工具 | 说明 |
 | --- | --- |
-| `task.create` | 给项目下派一个任务：`{projectId, prompt, baseBranch?, deliver?}`；返回 `{taskId, sessionId}` |
-| `task.get` | 任务详情：状态、分支、commit、PR、`lastSeq`、最后一句话 |
-| `task.messages` | `after=seq` 拉会话消息与工具摘要（复用 journal，分页 `limit≤200`） |
-| `task.reply` | 给运行中的会话补一句话（回答反问、追加约束）；走现有送达队列，不新开会话 |
+| `task.create` | 给项目下派任务：`{projectId, prompt, baseBranch?, assetSetId?, deliver?}`；返回 `{taskId, sessionId}` |
+| `task.get` | 状态、分支、commit、PR URL、`lastSeq`、最后一句话 |
+| `task.messages` | `after=seq` 拉消息（text / question / tool 摘要 / ended），`limit≤200` |
+| `task.reply` | 给运行中的会话补一句话；走送达队列，不新开会话 |
 | `task.cancel` | 取消排队或打断运行中的会话 |
 
-`deliver` 只表达交付意图：`{branch: string, openPr: boolean}`（分支名不合法时由服务端
-规范化，PR 目标固定为 `baseBranch`）。不提供任意 git 操作；需要 review/部署的后续用
-会话里已有的工具完成，或作为 v2 扩展。
+### 5.1.2 项目模块
+
+| 工具 | 说明 |
+| --- | --- |
+| `project.list` / `project.get` | 可见项目与配置摘要（仓库、检查命令、预览端口、默认资产集、成员数） |
+| `project.create` | `{name, repos[], description?}`；第一个仓库为主仓库；需 `project:create` |
+| `project.update` | `{projectId, description?, previewPort?, worktree?}`；不动代码、不动成员 |
+| `project.repos.set` | 整体替换仓库清单（≤8）；保存前跑 `repos/check`，不可达/分支不存在则整单拒绝并给出逐项原因 |
+
+项目模块**不**做：删除项目、成员/权限变更、集群级设置（仍走界面，需二次确认）。
+
+### 5.1.3 资产模块
+
+| 工具 | 说明 |
+| --- | --- |
+| `asset.list` / `asset.get` | 可引用资产（skill / instruction / mcp）与版本摘要 |
+| `assetSet.list` / `assetSet.get` | 资产集与 items（`assetId` + `pin`） |
+| `assetSet.create` / `assetSet.update` | 新建/修改资产集；只能引用已发布且 `assetVisibleIn` 通过的资产 |
+| `assetSet.bind` | 绑定到项目默认或 Bot 默认（`{assetSetId, projectId?|botId?}`） |
+
+资产模块**不**做：导入/上传/审核/删除资产、改资产内容、签发密钥——这些涉及供应链与密钥，
+必须留在界面与人工审核流程里。MCP 只能组合「已经审过的资产」。
 
 ### 5.2 提示词与交付
 
@@ -173,8 +209,10 @@ task.create(prompt) ──► 会话开跑
 | E1 | #226 P1 剩余（track/locked、显式凭据、批量导入、审核报告） | URL 拆分已完成 | 一次导入多个技能并锁定 commit |
 | E2 | 资产协议级冻结 + 不可变版本库/每会话视图 | E1 的 digest 语义 | 两个并发会话用同名资产不同版本互不干扰 |
 | E3 | AssetSet 实体与绑定（界面内使用；暂不开放给 MCP） | E2 | 同项目两个会话选不同资产集，注入互不相同 |
-| E4 | **MCP v1：`task.create` / `task.get` / `task.messages` / `task.reply` / `task.cancel`** + 审计/限流/幂等 | `836fd63` 的进展流、`task.ask` 工具 | 外部 agent 派编码任务、回答反问、拿到分支与 PR |
-| E5 | 会话内 `task.ask`（反问）+ 交付收尾（PR URL 回写）打磨 | E4 | 双向消息闭环，不需要外部轮询会话事件 |
+| E4a | MCP 传输层 + **任务模块**（5 工具）+ 审计/限流/幂等 | `836fd63` 进展流 | 外部 agent 派编码任务、回答反问、拿到分支与 PR |
+| E4b | **项目模块**（5 工具，含 `repos.set` 前置检查） | E4a 的工具注册骨架 | 外部 agent 能建项目、改配置、绑仓库 |
+| E4c | **资产模块**（7 工具，只组合已发布资产） | E2 的 digest 语义；E4a 骨架 | 外部 agent 能建资产集并绑到项目/Bot，不能导入或改内容 |
+| E5 | 会话内 `task.ask` 反问与交付收尾（PR URL 回写）打磨 | E4a | 双向消息闭环，不需要外部轮询事件全集 |
 
 ## 6.1 现状差距（要写代码的部分）
 
@@ -204,8 +242,8 @@ task.create(prompt) ──► 会话开跑
 - 进展以工作日志为规范流，MCP 用长轮询而不是第二条 SSE。
 - 资产集必须先上线 E2（协议冻结），才能对外开放自选。
 
-v2 才考虑（不阻塞 v1）：`project.create` / `project.update` / `assetSet.*` 经由 MCP 开放；
-需要团队管理员 scope 与安全评审。v1 明确不做，避免把「建项目、配资产」变成外部 agent 的写面。
+v2 才考虑：资产导入/审核、项目删除、成员与权限变更、任意 git 操作、`kind` 多形态
+（check/serve/review）。这些不阻塞 v1 的三个模块。
 
 待拍板：
 
