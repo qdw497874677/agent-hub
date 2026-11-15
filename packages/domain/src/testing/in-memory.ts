@@ -50,7 +50,10 @@ import type {
   LoginActivity,
   AgentProfile,
   AgentProfileRepository,
-  BotRepository
+  BotRepository,
+  WorkspaceGroup,
+  WorkspaceGroupId,
+  WorkspaceGroupRepository
 } from '../index.ts';import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
 import type { CommitPreview, GitStatus, RemotePullRequest, RepoProbe, WorkspaceGit } from '../index.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
@@ -319,8 +322,27 @@ export function fakeAgentProfiles(): AgentProfileRepository & { rows: Map<string
   };
 }
 
-/** 团队级 bot + 项目授权（C3a / bot-as-agent）。排序与 SQLite 实现一致：created_at，再按 name。 */
-export function fakeBots(): BotRepository & { rows: Map<BotId, Bot>; grants: Map<string, BotGrant> } {
+/** 组合工作空间仓储（只存归属；成员是 workspaces 表的行）。 */
+export function fakeWorkspaceGroups(): WorkspaceGroupRepository & { rows: Map<WorkspaceGroupId, WorkspaceGroup> } {
+  const rows = new Map<WorkspaceGroupId, WorkspaceGroup>();
+  return {
+    rows,
+    async byId(id) {
+      return rows.get(id) ?? null;
+    },
+    async listByProject(projectId) {
+      return [...rows.values()].filter((group) => group.projectId === projectId).toSorted((a, b) => b.createdAt - a.createdAt);
+    },
+    async save(group) {
+      rows.set(group.id, group);
+    },
+    async remove(id) {
+      rows.delete(id);
+    }
+  };
+}
+
+/** 团队级 bot + 项目授权（C3a / bot-as-agent）。排序与 SQLite 实现一致：created_at，再按 name。 */export function fakeBots(): BotRepository & { rows: Map<BotId, Bot>; grants: Map<string, BotGrant> } {
   const rows = new Map<BotId, Bot>();
   const grants = new Map<string, BotGrant>();
   const key = (botId: string, projectId: string) => `${botId}\u0000${projectId}`;
@@ -604,6 +626,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
     workLog: fakeWorkLog(),
     sessions: fakeSessions(tasks.rows),
     workspaces: fakeWorkspaces(),
+    workspaceGroups: fakeWorkspaceGroups(),
     artifacts: fakeArtifacts(),
     layout: fakeLayout(),
     bots: fakeBots(),

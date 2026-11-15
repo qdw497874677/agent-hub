@@ -12,7 +12,7 @@ function shortId(id: string): string {
 /**
  * 会话连线选择器：和画布上拖出来的边是同一份关系。
  * 只列同项目里还能说话的会话；已连接的置顶，方便一眼看到和断开。
- * 行内给出任务 / 机器 / 工作空间 / 短号，避免同名会话分不清。
+ * 行内给出任务 / 机器 / 工作目录 / 短号，避免同名会话分不清。
  */
 export function SessionLinksDialog({
   sessions,
@@ -64,7 +64,7 @@ export function SessionLinksDialog({
           task: (session.taskId === null ? '' : taskTitle.get(session.taskId)) ?? '未命名任务',
           worker: worker?.label ?? '未知机器',
           online,
-          workspace: session.workspaceId ? (workspaceName.get(session.workspaceId) ?? '未知工作空间') : '未选工作空间',
+          workspace: session.workspaceId ? (workspaceName.get(session.workspaceId) ?? '未知工作目录') : '未选工作目录',
           connected: linked.has(session.id)
         };
       })

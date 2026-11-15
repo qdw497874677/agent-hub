@@ -41,9 +41,6 @@ export interface Bot extends BotDefinition {
   readonly updatedAt: number;
 }
 
-/** @deprecated 老名字，等价于 `Bot`；新代码用 `Bot`。 */
-export type PersistentAgent = Bot;
-
 /**
  * 由 seed 算稳定的 bot id：两轮 FNV-1a 拼成 16 位 hex（纯 JS，不依赖宿主）。
  *

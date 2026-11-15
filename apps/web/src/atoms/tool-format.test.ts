@@ -56,7 +56,7 @@ test('长输出截断，报告藏了几行', () => {
   assert.deepEqual(clipLines('a\n', 3), { shown: 'a', hidden: 0 });
 });
 
-test('工具参数里的路径：工作空间内可点，外面不可点', () => {
+test('工具参数里的路径：工作目录内可点，外面不可点', () => {
   const root = '/home/u/proj';
   assert.deepEqual(toolFileTarget('{"path":"src/a.ts"}', root), { path: 'src/a.ts', line: null });
   assert.deepEqual(toolFileTarget('{"file_path":"/home/u/proj/src/a.ts","offset":12}', root), { path: 'src/a.ts', line: 12 });

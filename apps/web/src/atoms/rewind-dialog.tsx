@@ -6,11 +6,11 @@ import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../shell/dialog-s
 
 /**
  * 「⋯ → 从这里重来」（ADR 0027 阶段 4）：从这条消息之前分叉一条新会话（原会话不动），原消息回填到新会话输入框。
- * 连文件一起回滚只给临时工作空间（D9）；不能时把原因摆出来，而不是藏掉选项。
+ * 连文件一起回滚只给临时工作目录（D9）；不能时把原因摆出来，而不是藏掉选项。
  */
 export function RewindDialog({ sessionId, workspaceId = null, promptSeq, onClose, onDone }: {
   sessionId: string;
-  /** 目录维度：文件数据按工作空间缓存，回滚后同目录的会话都要刷新。 */
+  /** 目录维度：文件数据按工作目录缓存，回滚后同目录的会话都要刷新。 */
   workspaceId?: string | null;
   promptSeq: number;
   onClose: () => void;

@@ -65,8 +65,8 @@ export interface Deps {
   readonly sessions: SessionRepository;
   /** 工作空间登记（workspaces.md）。 */
   readonly workspaces: WorkspaceRepository;
-  /** 组合工作空间（docs/design/multi-repo.md）。T4 接线后改成必填。 */
-  readonly workspaceGroups?: WorkspaceGroupRepository;
+  /** 组合工作空间（docs/design/multi-repo.md）。T4 已接线，必填。 */
+  readonly workspaceGroups: WorkspaceGroupRepository;
   readonly artifacts: ArtifactRepository;
   readonly layout: LayoutStore;
   /** 会话连线（无向、项目级）。不给 = 没启用画布关系，消息仍按旧的全项目可见。 */

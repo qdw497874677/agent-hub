@@ -8,8 +8,8 @@ import { WorkspaceChooser, choiceReady, longLivedRequest, useWorkspaceViews, typ
 
 /**
  * 换个地方继续（docs/design/workspaces.md §7）。说法要诚实：agent 自己的会话状态搬不走，
- * 搬过去的是平台记下的对话摘要和任务工作日志——在目标工作空间开一条新会话，挂成这条的分叉。
- * 代码不会自己过去：git 工作空间可以先提交 WIP 并推送分支，否则改动留在原处。
+ * 搬过去的是平台记下的对话摘要和任务工作日志——在目标工作目录开一条新会话，挂成这条的分叉。
+ * 代码不会自己过去：git 工作目录可以先提交 WIP 并推送分支，否则改动留在原处。
  */
 /** 没说过话的会话没有可搬的上下文。 */
 export function canContinueElsewhere(session: Pick<SessionDto, 'lastSeq'>): boolean {
@@ -59,7 +59,7 @@ export function ContinueDialog({
         setChoice({ type: 'existing', workspaceId: made.id });
         target = { kind: 'workspace', workspaceId: made.id };
       } else {
-        // 组合工作空间只在派生时能选（这里 groups=false 不显示），防御一下
+        // 组合工作目录只在派生时能选（这里 groups=false 不显示），防御一下
         return;
       }
       const created = await api.continueElsewhere(session.id, { target, saveWip: saveWip && from?.isGit === true });
@@ -97,14 +97,14 @@ export function ContinueDialog({
           <span>
             先提交 WIP 并推送分支{from.branch ? <span className="font-mono"> {from.branch}</span> : null}
             <span className="block text-tertiary">
-              新开临时工作空间时会直接检出这个分支。不勾：代码改动留在原来的工作空间里。
+              新开临时工作目录时会直接检出这个分支。不勾：代码改动留在原来的工作目录里。
             </span>
           </span>
         </label>
       ) : (
-        <p className="mb-3 text-meta text-tertiary">原来的工作空间不是 git 仓库：文件不会搬过去，改动留在原处。</p>
+        <p className="mb-3 text-meta text-tertiary">原来的工作目录不是 git 仓库：文件不会搬过去，改动留在原处。</p>
       )}
-      {same ? <p className="mb-2 text-meta text-rust">会话已经在这个工作空间里了，换一个。</p> : null}
+      {same ? <p className="mb-2 text-meta text-rust">会话已经在这个工作目录里了，换一个。</p> : null}
       {error ? <p className="mb-2 text-meta text-rust">{error}</p> : null}
       <div className="sticky bottom-0 -mx-1 flex justify-end gap-2 bg-panel px-1 pb-[env(safe-area-inset-bottom)] pt-2">
         <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>

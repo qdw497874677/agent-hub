@@ -16,23 +16,20 @@ import {
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { botDto } from './agent-ref-dto.ts';
+import type { BotTokenSource } from './bot-routes.ts';
 import { fail } from './http-error.ts';
-
-/** bot 凭据的只读来源（C1）：列表时一次查完项目的 bot 令牌，避免每个 bot 一次查询。 */
-export interface BotTokenSource {
-  listBotsByProject(projectId: ProjectId): Promise<readonly ApiToken[]>;
-}
 
 const tokenDto = (token: ApiToken | undefined): { id: string; prefix: string; createdAt: number; lastUsedAt: number | null } | null =>
   token ? { id: token.id, prefix: token.prefix, createdAt: token.createdAt, lastUsedAt: token.lastUsedAt } : null;
 
 /**
- * 持久智能体（界面上叫「bot」）的 HTTP 外壳：
+ * 旧路径别名，逐步下线（ADR 0037）：
  * - GET    /api/projects/:id/agents          列表（带所在的群）
  * - POST   /api/projects/:id/agents          新建（name 即 @id，建好不改）
  * - PUT    /api/projects/:id/agents/:name    改显示名 / 颜色 / 职责 / 运行时 / 模型 / 复用
  * - DELETE /api/projects/:id/agents/:name    删除，同时从所有群移出
- * 旧的整表接口 /api/projects/:id/messaging 保留。
+ * 一等实体是 `Bot`，新调用方用 `/api/bots`（`bot-routes.ts`）；这里路径保持不变避免破坏调用方，
+ * 内部走同一套 `PersistentAgents` 用例。旧的整表接口 /api/projects/:id/messaging 也保留。
  */
 // 键名 / 条数 / 值长度的正则与上限从 domain 导出，别在这里再写一份。
 const optionsBody = z
@@ -54,7 +51,7 @@ const fields = {
 const createBody = z.object({ name: z.string().min(1).max(40), ...fields });
 const patchBody = z.object({ ...fields, agentId: fields.agentId.optional() });
 
-export function installPersistentAgentRoutes(app: Hono<any>, agents: PersistentAgents, subjectOf: SubjectOf, botTokens?: BotTokenSource): void {
+export function installLegacyBotRoutes(app: Hono<any>, agents: PersistentAgents, subjectOf: SubjectOf, botTokens?: BotTokenSource): void {
   const me = (c: Parameters<SubjectOf>[0]) => principalOfSubject(subjectOf(c));
   const needUser = { code: 'forbidden' as const, message: '要以账号身份管理 bot' };
   const issue = (e: z.ZodError) => {

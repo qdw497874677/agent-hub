@@ -110,7 +110,7 @@ export function DeriveDialog({
   const [profilesOpen, setProfilesOpen] = useState(false);
   const profiles = useQuery({ queryKey: ['agent-profiles'], queryFn: () => api.agentProfiles(), retry: false });
   const workers = useWorkers();
-  // 运行面板（workspaces.md §9.3）：先选机器，再选工作空间；不预选，没选之前「开始」是灰的
+  // 运行面板（workspaces.md §9.3）：先选机器，再选工作目录；不预选，没选之前「开始」是灰的
   const [machine, setMachine] = useState<string | null>(null);
   // 模型清单按机器来：两台机器的 Pi 配的 provider 可能完全不同
   const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.models(taskId), retry: false });
@@ -124,7 +124,7 @@ export function DeriveDialog({
     hubModels.data ?? []
   );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
-  // 组合工作空间：建好的那组留着，准备失败时可以原地重试，不必再建一组
+  // 组合工作目录：建好的那组留着，准备失败时可以原地重试，不必再建一组
   const [group, setGroup] = useState<WorkspaceGroupView | null>(null);
   // 「开始」点不了时的原因：一行话放在按钮上方，手机上不用去猜、也没有 hover 可看
   const hint = startHint({
@@ -145,7 +145,7 @@ export function DeriveDialog({
     setChoice({ type: 'new_worktree' });
   }, [projectIsolated, modeTouched, choice]);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
-  /** 组合工作空间准备失败时，主按钮不重复建组：让下面的「重试准备」处理这一组。 */
+  /** 组合工作目录准备失败时，主按钮不重复建组：让下面的「重试准备」处理这一组。 */
   const groupFailed = choice?.type === 'new_group' && group !== null && group.state === 'failed';
   const selectedProfile = (profiles.data ?? []).find((profile) => profile.id === profileId) ?? null;
   const profileAgent = selectedProfile === null ? null : (canvas.agents.find((candidate) => candidate.id === selectedProfile.agentId) ?? null);
@@ -174,7 +174,7 @@ export function DeriveDialog({
   const derive = useMutation({
     mutationFn: async () => {
       if (machine === null) throw new Error('先选机器');
-      if (!choice) throw new Error('先选机器和工作空间');
+      if (!choice) throw new Error('先选机器和工作目录');
       // 选了「新建隔离 worktree」：不在这里建空间，交给 server 按项目配置现建并跑准备命令
       // （workspaceId 为空、workspaceMode=isolated 才会走档位）。
       const isolateNew = choice.type === 'new_worktree';
@@ -195,7 +195,7 @@ export function DeriveDialog({
         setChoice({ type: 'existing', workspaceId });
         await queryClient.invalidateQueries({ queryKey: ['workspaces', projectId] });
       }
-      // 组合工作空间（docs/design/multi-repo.md §11.5）：先把每个仓库的 worktree 备好，再派生会话；
+      // 组合工作目录（docs/design/multi-repo.md §11.5）：先把每个仓库的 worktree 备好，再派生会话；
       // 只把 groupId 交给 derive，整组跟随。失败留在这页：原因 + 重试准备，不静默吞掉。
       let groupId: string | null = null;
       if (groupNew) {
@@ -208,7 +208,7 @@ export function DeriveDialog({
           try {
             made = await api.createWorkspaceGroup(projectId, { taskId, workerId: machine });
           } catch (failure) {
-            // 后端建组失败时只回错误：成员的工作空间已经登记，带着 groupId。
+            // 后端建组失败时只回错误：成员的工作目录已经登记，带着 groupId。
             // 把那一组找回来，对话框里才能显示原因、并给出「重试准备」。
             const recovered = await adoptFailedGroup(taskId, since);
             if (recovered) setGroup(recovered);
@@ -216,7 +216,7 @@ export function DeriveDialog({
           }
           setGroup(made);
           if (made.state !== 'ready') {
-            throw new Error(made.error?.trim() || '组合工作空间准备失败');
+            throw new Error(made.error?.trim() || '组合工作目录准备失败');
           }
           groupId = made.id;
         }
@@ -273,7 +273,7 @@ export function DeriveDialog({
 
   return (
     <DialogShell
-      title="在哪台机器、哪个工作空间干活？"
+      title="在哪台机器、哪个工作目录干活？"
       onClose={onDone}
       footer={
         <div className="flex flex-col gap-1.5">
@@ -290,16 +290,16 @@ export function DeriveDialog({
             <button type="button" className={PRIMARY_BUTTON} disabled={hint !== null || derive.isPending || groupFailed} onClick={() => derive.mutate()}>
               {phase === 'preparing'
                 ? choice?.type === 'new_group'
-                  ? '正在准备组合工作空间…'
+                  ? '正在准备组合工作目录…'
                   : choice?.type === 'new_long_lived' && choice.mode === 'create' && canvas.project.repo
                     ? '正在下载仓库…'
-                    : '正在准备工作空间…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
+                    : '正在准备工作目录…' : derive.isPending ? '启动中…' : derive.error ? '重试' : '开始'}
             </button>
           </div>
         </div>
       }
     >
-        <p className="mb-3 text-head text-primary">在哪台机器、哪个工作空间干活？</p>
+        <p className="mb-3 text-head text-primary">在哪台机器、哪个工作目录干活？</p>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
             还没有机器上线。它起来后，这里会出现它装了的 agent。
@@ -446,7 +446,7 @@ export function DeriveDialog({
         ) : null}
         {group !== null && choice?.type === 'new_group' && group.state !== 'ready' ? (
           <div className="mb-2 border-l border-rust pl-2" data-testid="derive-group">
-            <p className="text-meta text-rust">{groupStateNote(group) ?? '组合工作空间还没准备好'}</p>
+            <p className="text-meta text-rust">{groupStateNote(group) ?? '组合工作目录还没准备好'}</p>
             {group.members.length > 0 ? (
               <ul className="mt-1 space-y-0.5 text-meta text-tertiary">
                 {group.members.map((member) => (

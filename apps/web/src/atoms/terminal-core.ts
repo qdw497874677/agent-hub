@@ -279,7 +279,8 @@ export function terminalErrorMessage(message: string | undefined): string {
   if (isUnsupportedTerminal(text)) return '这台机器不支持终端';
   if (/离线|offline/i.test(text)) return '机器离线，终端暂时不可用';
   if (/另一个窗口|另一处|already open|already in use/i.test(text)) return '这个终端已在另一个窗口打开';
-  if (/没有工作空间|no workspace/i.test(text)) return '这条会话还没有工作空间，终端没有落脚的地方';
+  // 后端（packages/domain）这条错误里仍是「工作空间」，正则跟着后端说法走，只改给人看的输出。
+  if (/没有工作空间|没有工作目录|no workspace/i.test(text)) return '这条会话还没有工作目录，终端没有落脚的地方';
   return text;
 }
 

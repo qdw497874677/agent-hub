@@ -18,9 +18,9 @@ import {
 } from './worktree-config.ts';
 
 /**
- * 项目设置 · 代码与空间 · 「隔离与准备」（docs/design/worktree.md §3 §7）。
+ * 项目设置 · 代码与工作目录 · 「隔离与准备」（docs/design/worktree.md §3 §7）。
  *
- * 只放两件事：新任务默认在哪种目录里干活（共用长期空间 / 每个任务开独立 worktree），
+ * 只放两件事：新任务默认在哪种目录里干活（共用长期工作目录 / 每个任务开独立 worktree），
  * 以及 worktree 建好之后自动跑什么命令。命令只来自项目配置、不来自每次请求——这是
  * 「项目管理员能在机器上跑一条命令」的同一信任级别，所以只有 owner / admin 能改。
  */
@@ -101,7 +101,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
                 onChange={() => update({ mode: 'shared' })}
               />
               <span className="min-w-0">
-                <span className="block text-primary">共用长期空间（默认）</span>
+                <span className="block text-primary">共用长期工作目录（默认）</span>
                 <span className="mt-0.5 block text-meta leading-relaxed text-tertiary">单人顺序干活、要看到别人未提交的改动时选这个。</span>
               </span>
             </label>
@@ -130,7 +130,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
             建好 worktree 后在这台机器上、以 worker 用户身份执行，比如装依赖、跑迁移。留空就什么都不跑。
           </p>
           {draft.mode === 'shared' ? (
-            <p className="mb-1 text-meta text-tertiary">当前档位是共用长期空间，命令只在开了 worktree 的任务里跑。</p>
+            <p className="mb-1 text-meta text-tertiary">当前档位是共用长期工作目录，命令只在开了 worktree 的任务里跑。</p>
           ) : null}
           <textarea
             id="worktree-command"
@@ -235,7 +235,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
 function ReadonlyWorktree({ config }: { config: ProjectWorktreeConfig | null }) {
   return (
     <div className="space-y-1 text-meta text-secondary" data-testid="worktree-readonly">
-      <p>默认：{(config?.mode ?? 'shared') === 'isolated' ? '每个任务开独立 worktree' : '共用长期空间（默认）'}</p>
+      <p>默认：{(config?.mode ?? 'shared') === 'isolated' ? '每个任务开独立 worktree' : '共用长期工作目录（默认）'}</p>
       <p>
         准备命令：
         {config?.setup ? (

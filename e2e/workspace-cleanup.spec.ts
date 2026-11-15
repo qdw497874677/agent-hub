@@ -7,7 +7,7 @@ import { loginByApi } from './login.ts';
 import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
- * ADR 0027 阶段 3：临时工作空间清理，整条真路径——远端 Worker 上真的 git worktree。
+ * ADR 0027 阶段 3：临时工作目录清理，整条真路径——远端 Worker 上真的 git worktree。
  * 1) 任务结束 + 有未跟踪文件 → 保留并写明原因；清掉后再清理 → 删目录、分支留着、检查点 ref 一起删；
  * 2) 任务重新开始 → 按分支在原路径重建；
  * 3) squash 合并：PR（假 gh 报 MERGED，head = HEAD）合并后远端分支被删，本地提交「只在本分支」也照样删；

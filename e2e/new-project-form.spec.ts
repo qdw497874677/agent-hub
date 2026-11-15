@@ -4,7 +4,7 @@ import { loginByApi } from './login.ts';
 
 /**
  * 新建项目表单：项目只是 hub 里的一条记录，不绑机器——表单里只有项目名、说明，和收起的「git 仓库（可选）」。
- * 没有机器选择、没有目录框、没有目录选择器；工作空间在开始任务时再选。桌面 1280 和手机 390 都走一遍。
+ * 没有机器选择、没有目录框、没有目录选择器；工作目录在开始任务时再选。桌面 1280 和手机 390 都走一遍。
  */
 const RUN = currentRun();
 const SHOTS = process.env.SHOTS_DIR;
@@ -55,7 +55,7 @@ for (const width of [1280, 390]) {
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/${width}-expanded.png`, fullPage: true });
     await git.click();
 
-    // 只填名字 → 建成，没有工作空间
+    // 只填名字 → 建成，没有工作目录
     const projectName = `e2e-form-${width}-${RUN}`;
     await name.fill(projectName);
     const created = page.waitForResponse((r) => r.url().endsWith('/api/projects') && r.request().method() === 'POST');

@@ -48,6 +48,9 @@ test('新会话按 botId 解析；派生记录里是不同的名字也不会串�
     sessions: w.deps.sessions,
     tasks: w.deps.tasks,
     bots: w.deps.bots,
+    projects: w.deps.projects,
+    workspaces: w.deps.workspaces,
+    workspaceGroups: w.deps.workspaceGroups,
     // 故意给一个别的角色名：新会话必须信 bot_id，而不是名字
     spawnOf: async () => ({ role: 'coder' }),
     memberOfSession: async () => ({ role: 'coder' })
@@ -63,6 +66,9 @@ test('bot 被删后，持有它 botId 的会话不再解析成 bot', async () =>
     sessions: w.deps.sessions,
     tasks: w.deps.tasks,
     bots: w.deps.bots,
+    projects: w.deps.projects,
+    workspaces: w.deps.workspaces,
+    workspaceGroups: w.deps.workspaceGroups,
     spawnOf: async () => ({ role: 'host' }),
     memberOfSession: async () => null
   });
@@ -79,6 +85,9 @@ test('老会话没有 botId：回落按派生记录 / 群成员里的名字反�
     sessions: w.deps.sessions,
     tasks: w.deps.tasks,
     bots: w.deps.bots,
+    projects: w.deps.projects,
+    workspaces: w.deps.workspaces,
+    workspaceGroups: w.deps.workspaceGroups,
     spawnOf: async () => ({ role: 'host' }),
     memberOfSession: async () => null
   });
@@ -88,6 +97,9 @@ test('老会话没有 botId：回落按派生记录 / 群成员里的名字反�
     sessions: w.deps.sessions,
     tasks: w.deps.tasks,
     bots: w.deps.bots,
+    projects: w.deps.projects,
+    workspaces: w.deps.workspaces,
+    workspaceGroups: w.deps.workspaceGroups,
     spawnOf: async () => null,
     memberOfSession: async () => ({ role: 'host' })
   });
@@ -98,6 +110,9 @@ test('老会话没有 botId：回落按派生记录 / 群成员里的名字反�
     sessions: w.deps.sessions,
     tasks: w.deps.tasks,
     bots: w.deps.bots,
+    projects: w.deps.projects,
+    workspaces: w.deps.workspaces,
+    workspaceGroups: w.deps.workspaceGroups,
     spawnOf: async () => null,
     memberOfSession: async () => null
   });
@@ -112,6 +127,9 @@ test('老会话反查时 bot 表里没有这个名字：仍按名字归属，bot
     sessions: w.deps.sessions,
     tasks: w.deps.tasks,
     bots: w.deps.bots,
+    projects: w.deps.projects,
+    workspaces: w.deps.workspaces,
+    workspaceGroups: w.deps.workspaceGroups,
     spawnOf: async () => ({ role: 'host' }),
     memberOfSession: async () => null
   });
@@ -124,6 +142,9 @@ test('会话不存在 / 任务不存在：返回 null', async () => {
     sessions: w.deps.sessions,
     tasks: w.deps.tasks,
     bots: w.deps.bots,
+    projects: w.deps.projects,
+    workspaces: w.deps.workspaces,
+    workspaceGroups: w.deps.workspaceGroups,
     spawnOf: async () => ({ role: 'host' }),
     memberOfSession: async () => null
   });

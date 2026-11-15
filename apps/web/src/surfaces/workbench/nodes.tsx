@@ -58,7 +58,7 @@ export type SessionNode = Node<
     online?: boolean | undefined;
     /** 会话所在机器的资源（单机也有），用来显示这条会话的用量。 */
     resources?: WorkerInfoDto['resources'];
-    /** 「机器 · 工作空间 · 分支」（§4，卡片上）；老会话没有工作空间时不显示。 */
+    /** 「机器 · 工作目录 · 分支」（§4，卡片上）；老会话没有工作目录时不显示。 */
     place?: { readonly machine: string; readonly workspace: string; readonly path: string; readonly branch: string | null; readonly kept: string | null } | undefined;
     onOpen: () => void;
     /** 在画布里展开成窗口（双击卡片、⤢、右键）。 */

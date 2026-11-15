@@ -24,7 +24,7 @@ import {
 } from './bot-options.ts';
 
 /**
- * Bot 页（#/bots[/<项目>]）：持久智能体在界面上就叫 bot。
+ * Bot 页（#/bots[/<项目>]）：常驻成员（Bot）在界面上就叫 bot。
  * 每个 bot 一行：彩色首字头像、显示名、@id、运行时 · 模型、在哪些群。
  * 新建 / 编辑在同一张表单里；@id 建好不改；职责说明 ≤ 4000 字，作为它的系统提示。
  * 删除会先列出它所在的群，确认后从这些群里移出。
@@ -316,14 +316,14 @@ function BotTriggerRow({ trigger, projectId, now, sources }: {
 /**
  * 项目授权（bot 归团队，项目只是授权）：列出这个 bot 的每条授权，只有本项目那条能撤销。
  * 撤销要二次确认——它会被移出本项目的群，@ 也不再响应，而群成员是快照，不会自己跟着变。
- * 窄屏一行一块（项目名 / 工作空间 / 按钮各占整行），不出现横向滚动。
+ * 窄屏一行一块（项目名 / 工作目录 / 按钮各占整行），不出现横向滚动。
  */
 function BotGrants({ bot, projectId }: { bot: BotRecordDto; projectId: string }) {
   const client = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const grants = useQuery({ queryKey: ['bot-grants', bot.id], queryFn: () => botsApi.grants(bot.id) });
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
-  // 键与工作空间页共用：同一份团队工作空间清单，不重复拉。
+  // 键与工作目录页共用：同一份团队工作目录清单，不重复拉。
   const workspaces = useQuery({ queryKey: ['team-workspaces'], queryFn: api.teamWorkspaces });
   const rows = grants.data?.grants ?? [];
   const projectNames = useMemo(() => new Map((projects.data ?? []).map((p) => [p.id, p.name])), [projects.data]);

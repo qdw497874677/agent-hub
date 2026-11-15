@@ -1,6 +1,6 @@
 import type { WorkspaceDto } from '../shell/api.ts';
 
-/** 工作空间的人话名字：有标签用标签，否则用文件夹名。 */
+/** 工作目录的人话名字：有标签用标签，否则用文件夹名。 */
 export function workspaceName(workspace: Pick<WorkspaceDto, 'label' | 'path'>): string {
   return workspace.label ?? (workspace.path.split('/').filter(Boolean).at(-1) || workspace.path);
 }

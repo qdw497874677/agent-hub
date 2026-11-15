@@ -25,7 +25,8 @@ import {
   type ContextMode,
   type StrategyEvent
 } from '../context-strategy.ts';
-import { agentInstructionsBlock, type PersistentAgent } from '../messaging.ts';
+import { agentInstructionsBlock } from '../messaging.ts';
+import type { Bot } from '../bot.ts';
 
 /** hub-managed 一次改写的结果：运行时照着 keep / clear 改自己的消息；apply=false 就原样发。 */
 export interface HubTransformResult {
@@ -44,7 +45,7 @@ export interface ContextDeps extends Pick<Deps, 'projects' | 'tasks' | 'sessions
   /** 会话属于哪个角色（ADR 0018 角色表）；没有就跳过角色层。 */
   readonly roleOf?: (sessionId: string) => Promise<string | null>;
   /** 项目里某个 bot（持久智能体）的定义；给了才有职责说明这一层。 */
-  readonly agentOf?: (projectId: string, role: string) => Promise<Pick<PersistentAgent, 'description'> | null>;
+  readonly agentOf?: (projectId: string, role: string) => Promise<Pick<Bot, 'description'> | null>;
   /** 手动压缩要把命令发到 worker；没有就不支持。 */
   readonly gateway?: Pick<NodeGateway, 'dispatch'>;
 }

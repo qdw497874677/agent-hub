@@ -6,7 +6,7 @@ import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
 import { asAgentId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
-import type { PersistentAgent } from '../messaging.ts';
+import type { Bot } from '../bot.ts';
 import type { BotRepository } from '../ports/bot-repository.ts';
 import type { BotGrant } from '../bot-grant.ts';
 import type { GroupStore } from '../ports/group-store.ts';
@@ -98,7 +98,7 @@ function memoryGroups(): GroupStore & { deliveriesAll: () => GroupDelivery[] } {
 const user = (id: string, role: Role): User =>
   ({ id: id as UserId, email: `${id}@x.test`, displayName: id, role, passwordHash: null, emailVerifiedAt: 1, disabledAt: null, createdAt: 1, teamId: 'T', clusterAdmin: false, deletedAt: null }) as unknown as User;
 
-const ROLES: PersistentAgent[] = [
+const ROLES: Bot[] = [
   { id: 'bot_host', teamId: 'T', name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
   { id: 'bot_coder', teamId: 'T', name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
   { id: 'bot_reviewer', teamId: 'T', name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
@@ -106,7 +106,7 @@ const ROLES: PersistentAgent[] = [
 ];
 
 /** 测试用内存 BotRepository：直接读写给定数组，方便断言。 */
-function botRepoOf(roles: PersistentAgent[], touched?: (roles: readonly PersistentAgent[]) => void): BotRepository {
+function botRepoOf(roles: Bot[], touched?: (roles: readonly Bot[]) => void): BotRepository {
   // bot 归团队 'T'，全部授权到夹具里的项目（world() 的 project.id）。
   const grants = new Map<string, BotGrant>();
   const granted = (projectId: string): BotGrant[] => [...grants.values()].filter((g) => g.projectId === projectId);
@@ -148,7 +148,7 @@ function botRepoOf(roles: PersistentAgent[], touched?: (roles: readonly Persiste
 
 async function world() {
   const busyElsewhere = new Set<string>();
-  const roleList: PersistentAgent[] = [...ROLES];
+  const roleList: Bot[] = [...ROLES];
   let clock = 1000;
   const memory = inMemoryDeps({ now: () => clock });
   const deps = memory.deps;

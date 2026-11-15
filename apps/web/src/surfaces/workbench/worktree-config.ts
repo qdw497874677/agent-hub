@@ -20,7 +20,7 @@ export type ProjectWorktreeConfig = NonNullable<ProjectDto['worktree']>;
 
 export type WorktreeSetupConfig = NonNullable<ProjectWorktreeConfig['setup']>;
 
-/** 某个工作空间这一刻的准备状态（Workspace.setup），形状直接取契约。 */
+/** 某个工作目录这一刻的准备状态（Workspace.setup），形状直接取契约。 */
 export type WorkspaceSetup = NonNullable<WorkspaceDto['setup']>;
 
 /** 设置页手里的编辑草稿：超时留 string，让人可以清空重打，而不是被 number 输入框吞成 0。 */
@@ -63,7 +63,7 @@ export function projectWorktree(project: unknown): ProjectWorktreeConfig | null 
   };
 }
 
-/** 从工作空间（或任意 JSON）里读准备状态；没有 setup 字段返回 null。 */
+/** 从工作目录（或任意 JSON）里读准备状态；没有 setup 字段返回 null。 */
 export function workspaceSetup(workspace: unknown): WorkspaceSetup | null {
   const raw = record(record(workspace)?.setup);
   if (raw === null) return null;

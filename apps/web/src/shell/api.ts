@@ -105,7 +105,7 @@ export interface ProjectWorktreePatch {
 
 /**
  * 项目仓库清单（PATCH /api/projects/:id 的 repos，docs/design/multi-repo.md §11.2）。
- * 有 id 就带上：后端按 id 保留老仓库的身份，组合工作空间的成员才不会指丢。
+ * 有 id 就带上：后端按 id 保留老仓库的身份，组合工作目录的成员才不会指丢。
  */
 export interface ProjectReposPatch {
   repos: readonly { id?: string; name?: string; url: string; defaultBranch?: string | null }[];
@@ -234,7 +234,7 @@ export interface AgentMessageDto {
 const sq = (sessionId: string) => `/api/sessions/${encodeURIComponent(sessionId)}`;
 
 /**
- * 会话所属的组合工作空间。`session.groupId` 后端已经返回，契约的 sessionSchema 还没补这个字段，
+ * 会话所属的组合工作目录。`session.groupId` 后端已经返回，契约的 sessionSchema 还没补这个字段，
  * 所以在这里做一次结构化读取，等契约补上后换成直接 `session.groupId` 即可。
  */
 export function sessionGroupId(session: SessionDto | null | undefined): string | null {
@@ -242,7 +242,7 @@ export function sessionGroupId(session: SessionDto | null | undefined): string |
   return typeof value === 'string' && value !== '' ? value : null;
 }
 
-/** 工作空间文件浏览（ADR 0025，只读）。 */
+/** 工作目录文件浏览（ADR 0025，只读）。 */
 export interface FileEntryDto { name: string; path: string; type: 'file' | 'dir' | 'symlink'; size: number; modifiedAt: number; ignored: boolean; sensitive: boolean; git: string | null }
 export interface DirectoryPageDto { path: string; entries: FileEntryDto[]; truncated: boolean; isGit: boolean }
 export interface FileContentDto { path: string; size: number; modifiedAt: number; binary: boolean; truncated: boolean; data: string }
@@ -361,7 +361,7 @@ export const api = {
       ...(workerId === null ? {} : { workerId })
     }),
   /**
-   * 组合工作空间（docs/design/multi-repo.md §11.5）：一个任务在项目的每个仓库里各开一个 worktree，
+   * 组合工作目录（docs/design/multi-repo.md §11.5）：一个任务在项目的每个仓库里各开一个 worktree，
    * agent 在总目录里干活。建组本身就 clone / 开分支，可能要几十秒；前端按「准备中」显示。
    */
   workspaceGroup: (groupId: string) => call<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}`),
@@ -437,7 +437,7 @@ export const api = {
   settleSession: (sessionId: string, settled: boolean) =>
     post<SessionDto>(`/api/sessions/${encodeURIComponent(sessionId)}/settle`, { settled }),
   /**
-   * 删除一条会话：对话记录、产物引用、连线一起没；工作空间里的文件保留。
+   * 删除一条会话：对话记录、产物引用、连线一起没；工作目录里的文件保留。
    * 会话还在跑服务端回 409，没权限 403，已经没了 404。
    */
   deleteSession: (sessionId: string) =>
@@ -921,7 +921,7 @@ const emptyTriggers = (): BotTriggersDto => ({ sources: [], bindings: [] });
 
 /**
  * 一条「bot 在某个项目里被授权」的记录（`GET /api/bots/:id/grants`）。
- * bot 归团队，项目只是授权；`workspaceId` 为 null 表示跟随项目默认工作空间。
+ * bot 归团队，项目只是授权；`workspaceId` 为 null 表示跟随项目默认工作目录。
  */
 export interface BotGrantDto {
   readonly botId: string;
@@ -937,7 +937,7 @@ export const botsApi = {
   /** 团队里的全部 bot（不管授权），给「授权已有 bot」用。 */
   team: (teamId: string) => call<{ bots: BotRecordDto[] }>(`/api/bots/team/${encodeURIComponent(teamId)}`),
   grants: (botId: string) => call<{ grants: BotGrantDto[] }>(`/api/bots/${encodeURIComponent(botId)}/grants`),
-  /** 授权（重复 PUT 幂等）；不传 workspaceId 就是跟随项目默认工作空间。 */
+  /** 授权（重复 PUT 幂等）；不传 workspaceId 就是跟随项目默认工作目录。 */
   grant: (botId: string, projectId: string, workspaceId?: string) =>
     call<{ ok: true; grant: BotGrantDto }>(
       `/api/bots/${encodeURIComponent(botId)}/grants/${encodeURIComponent(projectId)}`,

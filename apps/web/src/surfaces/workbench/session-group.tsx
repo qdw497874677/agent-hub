@@ -4,8 +4,8 @@ import { api } from '../../shell/api.ts';
 import { groupHeadline, groupStateNote, memberStateLabel, workspaceGroupFrom } from './workspace-group.ts';
 
 /**
- * 会话页页签行上方那一行（docs/design/multi-repo.md §7）：这条会话在组合工作空间里干活时，
- * 显示「组合工作空间 · N 个仓库」，点开看每个仓库的子目录名和准备状态。
+ * 会话页页签行上方那一行（docs/design/multi-repo.md §7）：这条会话在组合工作目录里干活时，
+ * 显示「组合工作目录 · N 个仓库」，点开看每个仓库的子目录名和准备状态。
  *
  * 只有多仓库派生的会话才有 groupId；单仓库会话整行不出现（和 worktree-status 同一个思路：
  * 常态不占屏）。准备中的组每 3 秒刷新一次，ready / failed 之后不再轮询。
@@ -22,7 +22,7 @@ export function SessionGroupLine({ groupId }: { groupId: string }) {
     // 查不到就说一句；准备中的组还没回来时保持安静，别闪一条「加载中」
     return query.error ? (
       <p className="shrink-0 border-b border-hair px-2 py-1 text-meta text-rust md:px-3" data-testid="session-group">
-        组合工作空间信息读取失败：{(query.error as Error).message}
+        组合工作目录信息读取失败：{(query.error as Error).message}
       </p>
     ) : null;
   }

@@ -1,7 +1,7 @@
 /**
  * 全站导航的纯逻辑：分组、按权限过滤、当前路由高亮，界面只负责渲染。
  *
- * 导航项由两处合成：壳自己的跨形态入口（记忆 / 工作空间 / 资产市场 / 可观测 / 运营后台）与
+ * 导航项由两处合成：壳自己的跨形态入口（记忆 / 工作目录 / 资产市场 / 可观测 / 运营后台）与
  * 各产品形态 manifest（`surfaces` 下每个形态一个 `manifest.ts`）贡献的项。加一个产品面只改 manifest，
  * 不改这个文件。
  *
@@ -49,7 +49,7 @@ const ADMIN_ONLY_GROUPS: ReadonlySet<GlobalNavGroupId> = new Set<GlobalNavGroupI
 /** 壳自己的入口：不属于任何产品形态，跨形态共用。 */
 export const SHELL_NAV: readonly SurfaceNavItem[] = [
   { id: 'memory', label: '记忆', href: '#/memory', page: 'memory', group: 'library', order: 10 },
-  { id: 'workspaces', label: '工作空间', href: '#/workspaces', page: 'workspaces', group: 'library', order: 20 },
+  { id: 'workspaces', label: '工作目录', href: '#/workspaces', page: 'workspaces', group: 'library', order: 20 },
   // 资产市场的真实路由是 `#/assets/<tab>`（route.ts），没有 `#/market`。
   { id: 'market', label: '资产市场', href: '#/assets/catalog', page: 'assets', group: 'library', order: 30 },
   // 可观测没有角色门禁（observe.tsx 与服务端都没有），所以不能藏进运维组——那只是看起来收口了。

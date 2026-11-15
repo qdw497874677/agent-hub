@@ -170,7 +170,7 @@ export function clipLines(text: string, max = OUTPUT_PREVIEW_LINES): { readonly 
 }
 
 export interface FileTarget {
-  /** 相对工作空间根的路径（不以 / 开头、不含 ..）。 */
+  /** 相对工作目录根的路径（不以 / 开头、不含 ..）。 */
   readonly path: string;
   /** 1 起的行号；不知道就是 null。 */
   readonly line: number | null;
@@ -194,8 +194,8 @@ function inside(relative: string): string | null {
 
 /**
  * 工具调用参数里的文件路径 → 「文件」页能打开的目标。只认参数里的路径字段（不扫消息正文）。
- * 相对路径按工作空间根解析；绝对路径必须落在 root 下（root 不知道就不认绝对路径）；
- * 越出工作空间、~、带协议的一律不可点。
+ * 相对路径按工作目录根解析；绝对路径必须落在 root 下（root 不知道就不认绝对路径）；
+ * 越出工作目录、~、带协议的一律不可点。
  */
 export function toolFileTarget(input: string, root: string | null): FileTarget | null {
   const args = parse(input);

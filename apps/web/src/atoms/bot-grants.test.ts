@@ -42,21 +42,21 @@ test('能否撤销：只有本项目上的那条授权能撤销', () => {
   assert.equal(projectGrant([], 'p_1'), null);
 });
 
-test('工作空间名称兜底：null 说跟随项目默认，查不到就说 id', () => {
+test('工作目录名称兜底：null 说跟随项目默认，查不到就说 id', () => {
   const names = new Map([['w_1', '主仓库']]);
   assert.equal(grantedWorkspaceText(null, names), BOT_GRANT_WORKSPACE_DEFAULT);
-  assert.equal(BOT_GRANT_WORKSPACE_DEFAULT, '工作空间：跟随项目默认');
-  assert.equal(grantedWorkspaceText('w_1', names), '工作空间：主仓库');
-  assert.equal(grantedWorkspaceText('w_gone', names), '工作空间：w_gone');
+  assert.equal(BOT_GRANT_WORKSPACE_DEFAULT, '工作目录：跟随项目默认');
+  assert.equal(grantedWorkspaceText('w_1', names), '工作目录：主仓库');
+  assert.equal(grantedWorkspaceText('w_gone', names), '工作目录：w_gone');
   const empty = new Map<string, string>();
-  assert.equal(grantedWorkspaceText('w_1', empty), '工作空间：w_1');
+  assert.equal(grantedWorkspaceText('w_1', empty), '工作目录：w_1');
 });
 
 test('授权行文案：项目名缺了就退回项目 id', () => {
   const names = new Map([['w_1', '主仓库']]);
   assert.deepEqual(grantRowView({ projectId: 'p_1', workspaceId: 'w_1' }, '编译器', names), {
     project: '编译器',
-    workspace: '工作空间：主仓库'
+    workspace: '工作目录：主仓库'
   });
   assert.deepEqual(grantRowView({ projectId: 'p_1', workspaceId: null }, null, names), {
     project: 'p_1',

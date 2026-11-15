@@ -1,5 +1,5 @@
 /**
- * 项目设置 · 「代码与空间」页顶那一句状态总结（docs/design/workspaces.md §7）。
+ * 项目设置 · 「代码与工作目录」页顶那一句状态总结（docs/design/workspaces.md §7）。
  *
  * 纯函数，不碰 DOM，也不 import shell/api.ts —— 根 tsconfig 会编 `apps/web/src/**\/*.test.ts`，
  * 那边没有 DOM 类型。页面只负责把项目 / 空间读成三个数，怎么说话在这里定，方便单测。
@@ -35,22 +35,22 @@ export function workspaceSummary(input: WorkspaceSummaryInput): string {
     sentences.push('还没绑仓库：现在只能在线关联已有目录，开不了 worktree。');
   } else {
     const work = `在 ${repos} 个仓库上工作`;
-    const room = input.mode === 'isolated' ? '每个任务开独立 worktree' : '任务共用长期空间';
-    // 多仓库才谈得上「组合工作空间」；共用档是它最主要的用处，独立档只是顺带能选。
+    const room = input.mode === 'isolated' ? '每个任务开独立 worktree' : '任务共用长期工作目录';
+    // 多仓库才谈得上「组合工作目录」；共用档是它最主要的用处，独立档只是顺带能选。
     const hint =
       repos > 1
         ? input.mode === 'isolated'
-          ? '；派生时可以把几个仓库一起开成组合工作空间'
-          : '；需要并行时可在派生时选组合工作空间'
+          ? '；派生时可以把几个仓库一起开成组合工作目录'
+          : '；需要并行时可在派生时选组合工作目录'
         : '';
     sentences.push(`${work}，${room}${hint}。`);
   }
   if (input.spaces !== undefined) {
     const spaces = positive(input.spaces);
     const machines = positive(input.machines ?? 1);
-    if (spaces === 0) sentences.push('这台项目还没有登记空间。');
-    else if (machines > 1) sentences.push(`在 ${machines} 台机器上共有 ${spaces} 个空间。`);
-    else sentences.push(`现在有 ${spaces} 个空间。`);
+    if (spaces === 0) sentences.push('这个项目还没有登记工作目录。');
+    else if (machines > 1) sentences.push(`在 ${machines} 台机器上共有 ${spaces} 个工作目录。`);
+    else sentences.push(`现在有 ${spaces} 个工作目录。`);
   }
   return sentences.join('');
 }

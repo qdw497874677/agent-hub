@@ -22,9 +22,9 @@ import {
   type MessageAuditAction,
   type MessageKind,
   type MessageLimits,
-  type MessagingConfig,
-  type PersistentAgent
+  type MessagingConfig
 } from '../messaging.ts';
+import type { Bot } from '../bot.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
 import type { Project } from '../project.ts';
@@ -49,7 +49,7 @@ export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'project
   /** 把一段话作为一轮提问送进会话（组合根接到 promptSessionUseCase）。 */
   readonly deliver: (sessionId: SessionId, text: string, author: { id: string; name: string; via: string }) => Promise<Result<unknown, DomainError>>;
   /** 按 bot 开一条新会话（组合根：建任务 + 派生会话）。actor 是批准的人。 */
-  readonly spawn: (input: { project: Project; role: PersistentAgent; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
+  readonly spawn: (input: { project: Project; role: Bot; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
   readonly askTimeoutMs?: number;
   /** 同一条会话的投递闸（组合根里两边共用一个）；occupied = 别的通道在这条会话上还有没收尾的投递。 */
   readonly lane?: SessionLane;
@@ -324,7 +324,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       }
 
       let target: Session | null = null;
-      let bot: PersistentAgent | null = null;
+      let bot: Bot | null = null;
       if (address.kind === 'session') {
         const there = await sessionAndProject(address.sessionId);
         target = there?.session ?? null;

@@ -2,9 +2,6 @@ import { newId, type ProjectId, type SessionId } from './ids.ts';
 import { validateAgentRef } from './agent-ref.ts';
 import type { Bot, BotDefinition } from './bot.ts';
 
-// bot 的定义搬到 bot.ts（一等聚合）；这里保留老名字 PersistentAgent 供既有代码继续用。
-export type { PersistentAgent } from './bot.ts';
-
 /**
  * agent 间通信 · P2P 内核（ADR 0018，docs/design/agent-messaging.md）。
  * 纯值与纯函数：地址解析、限额、不可信包裹、失败码。投递、排队、审计在 use-cases/messaging.ts。

@@ -13,7 +13,7 @@ export function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
 }
 
-/** 项目设置 · 临时工作空间清理（ADR 0027 阶段 3）：规则开关、立即清理、清理记录、孤儿目录。只删检出目录，分支和检查点历史都留着。 */
+/** 项目设置 · 临时工作目录清理（ADR 0027 阶段 3）：规则开关、立即清理、清理记录、孤儿目录。只删检出目录，分支和检查点历史都留着。 */
 export function WorkspaceCleanup({ projectId }: { projectId: string }) {
   const queryClient = useQueryClient();
   const policy = useQuery({ queryKey: ['cleanup-policy', projectId], queryFn: () => api.cleanupPolicy(projectId) });
@@ -36,7 +36,7 @@ export function WorkspaceCleanup({ projectId }: { projectId: string }) {
   const p = policy.data;
   return (
     <section className="mb-3" data-testid="workspace-cleanup">
-      <h3 className="mb-1 text-sub text-primary">临时工作空间清理</h3>
+      <h3 className="mb-1 text-sub text-primary">临时工作目录清理</h3>
       <p className="mb-2 text-meta text-tertiary">只删检出目录；分支、提交和检查点历史都留着，下次开任务会从分支重新检出。有未提交、未跟踪或未推送内容的一律保留。</p>
       {p ? (
         <div className="mb-2 space-y-1 text-meta text-secondary">

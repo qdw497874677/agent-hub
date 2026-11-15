@@ -1,5 +1,5 @@
 /**
- * 组合工作空间（docs/design/multi-repo.md §3 §7 §12）的读法：把接口返回的 JSON 读成界面能用的形状，
+ * 组合工作目录（docs/design/multi-repo.md §3 §7 §12）的读法：把接口返回的 JSON 读成界面能用的形状，
  * 以及那一行文案。纯函数，不碰 DOM、不 import shell/api.ts —— 根 tsconfig 会编同目录的 *.test.ts。
  *
  * 类型目前在这里本地声明：`@agent-hub/contract` 还只有 derive 请求上的 `groupId`，
@@ -39,7 +39,7 @@ const memberState = (value: unknown): WorkspaceGroupMemberState =>
   value === 'ready' || value === 'failed' ? value : 'preparing';
 
 /**
- * 任意 JSON → 组合工作空间；形状不对返回 null（界面上就是「查不到」，不崩）。
+ * 任意 JSON → 组合工作目录；形状不对返回 null（界面上就是「查不到」，不崩）。
  * 成员名后端叫 `name`，设计文档早期草稿叫 `repoName`：两个都认，省一次联调。
  */
 export function workspaceGroupFrom(input: unknown): WorkspaceGroupView | null {
@@ -73,14 +73,14 @@ export function workspaceGroupFrom(input: unknown): WorkspaceGroupView | null {
   };
 }
 
-/** 会话页那一行 / 派生对话框里的标题：「组合工作空间 · 3 个仓库」。 */
+/** 会话页那一行 / 派生对话框里的标题：「组合工作目录 · 3 个仓库」。 */
 export function groupHeadline(memberCount: number): string {
-  return `组合工作空间 · ${memberCount} 个仓库`;
+  return `组合工作目录 · ${memberCount} 个仓库`;
 }
 
 /**
- * 建组失败时后端只回错误、不回组 id（成员的工作空间已经登记好，也带着 groupId）。
- * 从画布的工作空间里把这一组的 id 找回来，才能显示原因并原地重试。
+ * 建组失败时后端只回错误、不回组 id（成员的工作目录已经登记好，也带着 groupId）。
+ * 从画布的工作目录里把这一组的 id 找回来，才能显示原因并原地重试。
  *
  * 只认同一任务、刚登记过（`updatedAt >= since`）的成员，免得拿到这个任务上一次失败的那一组。
  * 契约的 WorkspaceDto 还没有 groupId，所以按 unknown 读。
@@ -110,8 +110,8 @@ export function memberStateLabel(member: WorkspaceGroupMemberView): string {
 export function groupStateNote(group: WorkspaceGroupView): string | null {
   if (group.state === 'failed') {
     const detail = group.error?.trim() ?? '';
-    return detail === '' ? '组合工作空间准备失败' : `组合工作空间准备失败：${detail}`;
+    return detail === '' ? '组合工作目录准备失败' : `组合工作目录准备失败：${detail}`;
   }
-  if (group.state === 'preparing') return '正在准备组合工作空间…';
+  if (group.state === 'preparing') return '正在准备组合工作目录…';
   return null;
 }

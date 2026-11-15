@@ -28,7 +28,7 @@ export function DeleteProjectDialog({ project, onClose, onDeleted }: { project: 
         项目会进回收站：从列表里消失，任务、会话记录都还在，随时能在首页「回收站」里还原；在回收站里「彻底删除」才会真的删掉。还在运行的会话要先停止。
       </p>
       <p className="mb-3 text-sub text-secondary">
-        磁盘上的文件不会动：工作空间的目录都原样保留（要清理临时工作空间，到项目设置里删）。
+        磁盘上的文件不会动：工作目录的目录都原样保留（要清理临时工作目录，到项目设置里删）。
       </p>
       <label className="mb-1 block text-meta text-tertiary" htmlFor="delete-project-name">
         输入项目名 <span className="font-mono text-secondary">{project.name}</span> 确认

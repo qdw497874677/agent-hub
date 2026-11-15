@@ -145,7 +145,8 @@ test('错误文案：认得的翻成统一说法，不认得的原样透出', ()
   assert.equal(terminalErrorMessage('这台机器不支持终端'), '这台机器不支持终端');
   assert.equal(terminalErrorMessage('机器离线'), '机器离线，终端暂时不可用');
   assert.equal(terminalErrorMessage('这个终端已在另一个窗口打开'), '这个终端已在另一个窗口打开');
-  assert.equal(terminalErrorMessage('这条会话还没有工作空间'), '这条会话还没有工作空间，终端没有落脚的地方');
+  assert.equal(terminalErrorMessage('这条会话还没有工作空间'), '这条会话还没有工作目录，终端没有落脚的地方');
+  assert.equal(terminalErrorMessage('这条会话还没有工作目录'), '这条会话还没有工作目录，终端没有落脚的地方');
   assert.equal(terminalErrorMessage('PTY 开不出来'), 'PTY 开不出来');
   assert.equal(terminalErrorMessage(''), '终端连接出错，稍后再试');
   assert.equal(terminalErrorMessage(undefined), '终端连接出错，稍后再试');

@@ -7,8 +7,8 @@ import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
 /**
- * 共享工作空间（ADR 0026）：团队页建一个不关联的工作空间 → 项目设置里关联 → 另一个项目开始任务时
- * 只列已关联的、没有就给「🔗 关联工作空间…」入口，关联完直接选中。桌面 1280 + 手机 390。
+ * 共享工作目录（ADR 0026）：团队页建一个不关联的工作目录 → 项目设置里关联 → 另一个项目开始任务时
+ * 只列已关联的、没有就给「🔗 关联工作目录…」入口，关联完直接选中。桌面 1280 + 手机 390。
  */
 const RUN = currentRun();
 const SHOTS = process.env.SHOTS_DIR;
@@ -18,7 +18,7 @@ async function csrfHeaders(page: Page, baseURL: string) {
   return { origin: baseURL, 'x-hub-csrf': csrf };
 }
 
-test('团队工作空间：新建 → 项目关联 → 开始任务只列已关联的，可就地关联', async ({ page, baseURL }) => {
+test('团队工作目录：新建 → 项目关联 → 开始任务只列已关联的，可就地关联', async ({ page, baseURL }) => {
   await loginByApi(page);
   const headers = await csrfHeaders(page, baseURL!);
   const dir = join(tmpdir(), `shared-ws-${RUN}`);
@@ -37,11 +37,11 @@ test('团队工作空间：新建 → 项目关联 → 开始任务只列已关�
   expect(ws.teamId).not.toBeNull();
 
   try {
-    // 首页「工作空间」入口 → 团队页，未关联
+    // 首页「工作目录」入口 → 团队页，未关联
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto('/');
     await page.getByTestId('nav-workspaces').click();
-    await expect(page.getByRole('heading', { name: '团队工作空间' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '团队工作目录' })).toBeVisible();
     const row = page.getByTestId('team-ws-row').filter({ hasText: `shared-ws-${RUN}` });
     await expect(row).toContainText('未关联项目');
     await expect(page.getByTestId('team-ws-new')).toBeVisible();
@@ -51,8 +51,8 @@ test('团队工作空间：新建 → 项目关联 → 开始任务只列已关�
     await page.goto(`/#/p/${a.id}`);
     await page.getByTitle('项目设置').first().click();
     const dialog = page.getByRole('dialog');
-    // 项目设置分页后，关联入口在「代码与空间」页里（结构见 workspaces-dialog.tsx）。
-    await dialog.getByRole('tab', { name: '代码与空间' }).click();
+    // 项目设置分页后，关联入口在「代码与工作目录」页里（结构见 workspaces-dialog.tsx）。
+    await dialog.getByRole('tab', { name: '代码与工作目录' }).click();
     await dialog.getByTestId('ws-link-open').click();
     const pick = dialog.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` });
     await pick.getByTestId('ws-link-one').click();
@@ -73,7 +73,7 @@ test('团队工作空间：新建 → 项目关联 → 开始任务只列已关�
       await page.goto(`/#/p/${b.id}`);
       await page.reload();
       await page.locator('.react-flow__node-task').filter({ hasText: title }).getByRole('button', { name: '＋ 会话' }).click();
-      const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
+      const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
       {
         await expect(run.getByTestId('ws-none-linked')).toBeVisible();
         await expect(run.getByRole('radio', { name: new RegExp(`shared-ws-${RUN}`) })).toHaveCount(0);
@@ -109,7 +109,7 @@ test('团队工作空间：新建 → 项目关联 → 开始任务只列已关�
   }
 });
 
-test('关联的团队工作空间里真的能开会话，也能「换个工作空间继续」进去', async ({ page, baseURL }) => {
+test('关联的团队工作目录里真的能开会话，也能「换个工作目录继续」进去', async ({ page, baseURL }) => {
   await loginByApi(page);
   const headers = await csrfHeaders(page, baseURL!);
   let agentId: string | undefined;
@@ -134,14 +134,14 @@ test('关联的团队工作空间里真的能开会话，也能「换个工作�
       const linked = await page.request.put(`/api/projects/${project.id}/workspaces/${value.id}`, { headers });
       expect(linked.ok(), await linked.text()).toBe(true);
     }
-    const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '共享工作空间里干活' }, headers })).json()) as { id: string };
+    const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '共享工作目录里干活' }, headers })).json()) as { id: string };
     const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId, model: piModel(), workspaceId: made[0]!.id }, headers });
     expect(derived.status(), await derived.text()).toBe(201);
     const session = (await derived.json()) as { id: string; workspaceId: string };
     sessionIds.push(session.id);
     expect(session.workspaceId).toBe(made[0]!.id);
     // 说一句，让会话有内容（e2e 里没有真 agent，有事件落库就行）
-    await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '在共享工作空间里看看', attachments: [] }, headers });
+    await page.request.post(`/api/sessions/${session.id}/prompt`, { data: { text: '在共享工作目录里看看', attachments: [] }, headers });
     await expect
       .poll(async () => {
         const events = (await (await page.request.get(`/api/sessions/${session.id}/events`)).json()) as Array<{ kind?: string; event?: { kind?: string } }>;

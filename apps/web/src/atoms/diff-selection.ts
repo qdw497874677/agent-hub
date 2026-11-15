@@ -160,7 +160,7 @@ export function diffWindowRange(
   return { start, end };
 }
 
-/** 引用里的路径是相对工作空间根的：去掉前导 `./`，反斜杠统一成正斜杠。 */
+/** 引用里的路径是相对工作目录根的：去掉前导 `./`，反斜杠统一成正斜杠。 */
 export function normalizeRefPath(path: string): string {
   return path
     .trim()

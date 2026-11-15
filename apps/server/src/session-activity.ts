@@ -27,7 +27,7 @@ export const viaSuffix = (actor: Principal, detail: string): string =>
 
 /** 记一条会话操作审计（带 IP、团队）。没登录态（共享 token、单测）就不记——不知道是谁。 */
 export async function recordSessionAction(
-  deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'now'>,
+  deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'workspaceGroups' | 'bots' | 'workspaces' | 'now'>,
   options: SessionActivityOptions | undefined,
   c: Context,
   subject: Subject | null,
@@ -40,8 +40,8 @@ export async function recordSessionAction(
   let teamId: string | null = actor.user.teamId ?? null;
   try {
     const session = await deps.sessions.byId(sessionId as never);
-    const task = session && session.taskId !== null ? await deps.tasks.byId(session.taskId) : null;
-    const project = task ? await deps.projects.byId(task.projectId) : null;
+    // 项目归属统一走 projectOfSession：有任务跟任务，容器会话按组合工作空间 / 工作空间反推。
+    const project = session ? await projectOfSession(deps, session) : null;
     if (project) teamId = project.teamId ?? teamId;
   } catch {
     // 查不到就用操作人自己的团队
@@ -129,7 +129,7 @@ export function viaOfClient(c: Context): ProvenanceVia {
 
 /** 会话建好后写一次来历 + session.created 审计（ADR 0031 D3）。失败只记日志，不影响会话本身。 */
 export async function noteProvenance(
-  deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'now'>,
+  deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'workspaceGroups' | 'bots' | 'workspaces' | 'now'>,
   options: SessionActivityOptions | undefined,
   c: Context | null,
   subject: Subject | null,

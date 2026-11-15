@@ -31,8 +31,12 @@ import {
 import type { BotTriggerDto, BotTriggerRunDto, BotTriggersDto } from '@agent-hub/contract';
 import type { SubjectOf } from './auth.ts';
 import { botRecordDto } from './agent-ref-dto.ts';
-import type { BotTokenSource } from './persistent-agent-routes.ts';
 import { fail } from './http-error.ts';
+
+/** bot 凭据的只读来源（C1）：列表时一次查完项目的 bot 令牌，避免每个 bot 一次查询。 */
+export interface BotTokenSource {
+  listBotsByProject(projectId: ProjectId): Promise<readonly ApiToken[]>;
+}
 
 /** 路由只认这几个用例函数，装配由 main.ts 决定。 */
 export interface BotsApi {
@@ -57,7 +61,7 @@ export interface BotsApi {
  * - GET    /api/bots/:idOrName/triggers   这个 bot 的触发器 + 每个最近 5 条运行（C4）
  *
  * 鉴权在用例里做（读 project.read、写 project.share），这里只负责解析、身份与 DTO。
- * 老的 /api/projects/:id/agents 仍在 persistent-agent-routes.ts，内部走同一套用例。
+ * 老的 /api/projects/:id/agents 在 `bot-legacy-routes.ts`（旧路径别名，逐步下线），内部走同一套用例。
  *
  * C3c：列表 / 单条顺带回填 `token`（凭据摘要），形状与 `BotDto.token` 一致。
  * 凭据来源是可选的 `botTokens`；没接时一律 null，前端按「还没发过」显示。

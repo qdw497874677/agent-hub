@@ -3,7 +3,7 @@
  *
  * 目录派生（同一目录被多条会话共用，以 git / 文件系统为准）：
  *   git 状态、文件树 / 文件内容 / 搜索 / context、对比 HEAD 的改动与 diff。
- *   → workspaceId；老会话没有工作空间时回退 sessionId（此时它就是这个目录的唯一标识）。
+ *   → workspaceId；老会话没有工作目录时回退 sessionId（此时它就是这个目录的唯一标识）。
  * 会话自有（只有这条会话知道）：
  *   turns、以会话 / 某一轮为基准的改动与 diff、deliveries、canvas。
  *   → sessionId。
@@ -13,7 +13,7 @@
  * 所以统一从这里生成；新代码不要再手写 `['files', ...]` 这类数组。
  */
 
-/** 目录维度 key 的作用域：优先工作空间，没有工作空间的老会话退回 sessionId。 */
+/** 目录维度 key 的作用域：优先工作目录，没有工作目录的老会话退回 sessionId。 */
 export function directoryScope(workspaceId: string | null | undefined, sessionId: string): string {
   return workspaceId ?? sessionId;
 }
@@ -59,7 +59,7 @@ export type FilesKeys = ReturnType<typeof filesKeys>;
 
 /**
  * 刷新文件数据时两条前缀都要失效：目录维度的共享缓存 + 本会话自有的 turns / 基准。
- * 没有工作空间时两者是同一个前缀，只返回一条，避免重复触发同一批请求。
+ * 没有工作目录时两者是同一个前缀，只返回一条，避免重复触发同一批请求。
  */
 export function filesInvalidationKeys(keys: FilesKeys): readonly (readonly unknown[])[] {
   return keys.dir[1] === keys.session[1] ? [keys.dir] : [keys.dir, keys.session];
@@ -78,7 +78,7 @@ export const sessionKeys = {
 };
 
 export const workspaceKeys = {
-  /** 工作空间列表里的「有没有未提交 / 没推的改动」：git 操作成功后要一起失效。 */
+  /** 工作目录列表里的「有没有未提交 / 没推的改动」：git 操作成功后要一起失效。 */
   changes: (workspaceId: string) => ['workspace-changes', workspaceId] as const
 };
 

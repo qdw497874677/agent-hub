@@ -132,7 +132,7 @@ import { createPreviewProxy, type PreviewProxy } from './preview-proxy.ts';
 import { createPreviewPrefix } from './preview-prefix.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps, PreviewLink, PreviewLinkId } from '@agent-hub/domain';
-import { componentJobFinished, createAccessPolicy, loadResourcePolicy } from '@agent-hub/domain';
+import { componentJobFinished, createAccessPolicy, isContainerSession, loadResourcePolicy } from '@agent-hub/domain';
 import { seedTestAccount } from './account-setup.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -381,7 +381,7 @@ const subjectOf = async (sessionId: SessionId): Promise<Subject | null> => {
   const frozen = grant?.actor?.userId ?? null;
   if (frozen !== null) return loadActor(store.users, store.access, frozen, 'agent-git');
   const bot = await botOfSession(sessionId);
-  const task = session.taskId === null ? null : await deps.tasks.byId(session.taskId);
+  const task = isContainerSession(session) ? null : await deps.tasks.byId(session.taskId);
   const userId = bot ? task?.ownerId ?? session.createdBy ?? null : session.createdBy ?? task?.ownerId ?? null;
   return userId ? loadActor(store.users, store.access, userId, bot ? 'agent-bot' : 'agent-git') : null;
 };

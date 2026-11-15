@@ -6,7 +6,7 @@ import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query
 import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
 
 /**
- * 工作空间文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
+ * 工作目录文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
  * - 手机：目录列表 → 点文件进全屏查看，左上「返回」；桌面：左树右看。
  * - 「文件 | 改动(n)」两页；改动的基准可切（会话开始 / 当前 HEAD）。
  * - 敏感文件默认藏起；打开要确认（服务端记审计）。被忽略的灰显但能展开；.git 不列。
@@ -98,7 +98,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
   useEffect(() => {
     if (typeof EventSource === 'undefined') return;
     // 事件源仍按会话订阅（服务端只知道会话的 cwd），但失效前缀必须跟查询 key 的归属一致：
-    // 目录维度的缓存按工作空间存，只失效 sessionId 前缀会让实时更新悄悄失效。
+    // 目录维度的缓存按工作目录存，只失效 sessionId 前缀会让实时更新悄悄失效。
     const keys = filesKeys(workspaceId, sessionId);
     const dir = keys.dir[1];
     const inScope = (key: readonly unknown[]) => key[0] === 'files' && (key[1] === dir || key[1] === sessionId);
@@ -169,10 +169,10 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
   const showList = wide || opened === null;
   const root = context.data?.root;
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作空间文件" data-testid={`files-panel-${tab}`}>
+    <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作目录文件" data-testid={`files-panel-${tab}`}>
       {others > 0 ? (
         <p data-testid="files-other-projects" className="shrink-0 border-b border-hair px-3 py-1 text-meta text-rust">
-          ⚠ 其他项目有 {others} 个会话也在这个工作空间里干活，这里的改动可能不全是本会话的
+          ⚠ 其他项目有 {others} 个会话也在这个工作目录里干活，这里的改动可能不全是本会话的
         </p>
       ) : null}
       <div className="flex min-h-0 flex-1">
@@ -286,7 +286,7 @@ function Directory(props: { sessionId: string; keys: FilesKeys; path: string; de
   );
 }
 
-/** 工作空间根路径：文件路径都相对它，太长时只留末尾几段（全文在 title 里，手机也撑不破布局）。 */
+/** 工作目录根路径：文件路径都相对它，太长时只留末尾几段（全文在 title 里，手机也撑不破布局）。 */
 function RootPath({ root, wide }: { root: string | undefined; wide: boolean }) {
   if (!root) return null;
   return (
@@ -318,7 +318,7 @@ function PathBar({ path, root, wide, download, size, onCrumb, onBack }: {
         ) : null}
         {wide && onCrumb ? (
           <span className="flex min-w-0 flex-1 select-text flex-wrap items-baseline font-mono text-sub leading-tight" title={path} data-testid="file-path">
-            <button className="shrink-0 text-tertiary hover:text-primary" onClick={() => onCrumb('')} title="工作空间根目录" data-testid="file-crumb">根目录</button>
+            <button className="shrink-0 text-tertiary hover:text-primary" onClick={() => onCrumb('')} title="工作目录根目录" data-testid="file-crumb">根目录</button>
             {trail.map((c, i) => (
               <span key={c.path} className="flex min-w-0 items-baseline">
                 <span aria-hidden className="px-0.5 text-tertiary">/</span>

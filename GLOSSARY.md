@@ -17,11 +17,12 @@ _Avoid_: 任务单、Ticket、Issue、Job
 Session 是可恢复的：关闭客户端后重新打开，历史与运行状态仍在。
 _Avoid_: 会话（作动词时含糊）、Chat、Conversation、Thread
 
-**Agent**：
-**底层执行者**：运行时（Runtime）+ 模型 + 选项构成的一次执行，匿名、随 Session 生灭，没有自己的身份或生命周期。
-运行时对能力的自我描述是 `AgentDescriptor`（能力矩阵、模型清单、可调项），由适配器上报。
-界面上不把 Agent 当名词用——只说「由 OpenCode 驱动」「模型是 X」。具名、常驻、可授权的是 **Bot**；可复用的启动配置是 AgentProfile。
-_Avoid_: Bot、助手、Model、Provider、实例、成员
+**Agent（智能体）**：
+上位词：运行时（Runtime）+ 模型 + 选项构成的执行者。按**职责**分两类（ADR 0037）：
+- **持久智能体（Persistent Agent = Bot）**：有身份、有长期记忆、可被 @、可按项目授权、可被定时/事件唤醒；团队级、跨会话。
+- **任务智能体（Task Agent）**：为一次会话干一件活；匿名、随 Session 生灭，不携带跨会话身份。项目工作台里的执行者就是它。
+两者共用同一套 Runtime / Adapter / ToolGateway，差别在职责与生命周期，不是两套技术栈。
+_Avoid_: Bot（那是持久智能体）、助手、Model、Provider、实例
 
 **Runtime（运行时）**：
 被 hub 拉起的真实 agent 进程（OpenCode / Pi / Grok / Hermes / Codex），有版本、自己的配置目录与插件，能力由它自己决定。
@@ -35,7 +36,7 @@ ACP（JSON-RPC）是默认协议，标准语义在 `map-acp.ts`，vendor 私有�
 _Avoid_: Agent、插件、驱动
 
 **Bot**：
-团队级的一等成员：由 Agent 驱动，有自己的 @id、运行时、启动选项与记忆，**不隶属任何项目**；通过「项目授权」进入项目（可分别指定每个项目里的默认工作空间）。界面词就是「Bot」（见 ADR 0037）。
+**持久智能体**：团队级的一等成员，有自己的 @id、运行时、启动选项与长期记忆，**不隶属任何项目**；通过「项目授权」进入项目（可分别指定每个项目里的默认工作空间）。界面词就是「Bot」（见 ADR 0037）。
 授权到项目后才能被 `bot:<name>` 寻址、进该项目的群、在该项目的任务里开会话；撤销授权等于把它移出该项目。
 _Avoid_: 项目 bot、角色（role 是群里的发言身份，不是实体）
 

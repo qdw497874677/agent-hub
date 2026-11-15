@@ -65,7 +65,7 @@ async function setupCanvas(page: Page, baseURL: string) {
   const project = (await (await page.request.post('/api/projects', { data: { name: `e2e 资源 ${Date.now().toString(36)}`, rootPath: dir }, headers })).json()) as { id: string };
   const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '资源' }, headers })).json()) as { id: string };
   rmSync(dir, { recursive: true, force: true });
-  // 派生会话：worker 刚上线 / 工作空间还在准备时，derive 会瞬时被拒（409 冲突或 5xx），给两三次机会；
+  // 派生会话：worker 刚上线 / 工作目录还在准备时，derive 会瞬时被拒（409 冲突或 5xx），给两三次机会；
   // 最终失败时断言 201 并把真实响应体带进报错和 annotations，别让状态码被吞掉。
   const derive = async () => {
     const data = { taskId: task.id, agentId: worker!.agentIds[0], model: piModel() };

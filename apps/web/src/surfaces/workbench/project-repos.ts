@@ -7,7 +7,7 @@ import type { ProjectDto } from '@agent-hub/contract';
  * 那边没有 DOM 类型。字段形状直接取契约（ProjectDto.repos），读取仍然防御：老项目没有 repos。
  */
 export const PROJECT_REPOS_MAX = 8;
-/** 仓库名 = 组合工作空间里的子目录名，所以形状和后端一致：小写字母开头，最多 41 个字符。 */
+/** 仓库名 = 组合工作目录里的子目录名，所以形状和后端一致：小写字母开头，最多 41 个字符。 */
 export const REPO_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
 /**
  * 留空默认分支时写 null：让 git 用仓库自己的默认分支。
@@ -34,7 +34,7 @@ export interface ProjectRepoValue {
 
 /**
  * 能接受的仓库地址：http(s)://、ssh://，以及 `git@host:path` 这类 scp 写法（本质也是 ssh）。
- * 不认本地路径 —— 组合工作空间要在 Worker 上 clone，路径只在某台机器上有意义。
+ * 不认本地路径 —— 组合工作目录要在 Worker 上 clone，路径只在某台机器上有意义。
  */
 const REPO_URL_PATTERN = /^(?:https?:\/\/|ssh:\/\/|[a-z0-9._-]+@[a-z0-9.-]+:)/i;
 
@@ -99,7 +99,7 @@ export function repoUrlPatch(row: ProjectRepoRow, url: string): Partial<ProjectR
 export function repoRowProblem(row: ProjectRepoRow, rows: readonly ProjectRepoRow[]): string | null {
   if (rows.length > PROJECT_REPOS_MAX) return `一个项目最多 ${PROJECT_REPOS_MAX} 个仓库`;
   const name = row.name.trim();
-  if (name === '') return '写上仓库名（会用作组合工作空间里的子目录名）';
+  if (name === '') return '写上仓库名（会用作组合工作目录里的子目录名）';
   if (!REPO_NAME_PATTERN.test(name)) return '仓库名只能用小写字母、数字和 -，并且以字母开头';
   if (rows.filter((item) => item.name.trim() === name).length > 1) return `仓库名重复：${name}`;
   const url = row.url.trim();

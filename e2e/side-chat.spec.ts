@@ -6,7 +6,7 @@ import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
 /**
- * I4 侧聊（docs/design/interaction-borrowing.md §5）：用主会话的工作空间单独问一轮，
+ * I4 侧聊（docs/design/interaction-borrowing.md §5）：用主会话的工作目录单独问一轮，
  * 不进画布，页面上从「⋯ → 开一条侧聊…」进，顶部有一条能返回主会话的横幅。
  */
 async function setup(page: Page, baseURL: string) {

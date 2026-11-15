@@ -12,7 +12,7 @@ import { piModel } from './hub-model.ts';
  * - 配了 `mode: isolated` 时，开会话会现建一个临时空间并跑准备命令；
  * - 准备命令跑完才起 agent（waitForSetup），状态写进 workspace.setup；
  * - 准备失败时 derive 直接拒绝并说清原因，修好后可以在会话页重试，不必删空间。
- * - 显式选了工作空间的会话不受档位影响（workspaceId 优先）。
+ * - 显式选了工作目录的会话不受档位影响（workspaceId 优先）。
  */
 type Setup = { state: string; exitCode: number | null; message: string | null; output: string | null };
 type Workspace = { id: string; kind: string; source: string; setup: Setup | null; path: string };
@@ -44,7 +44,7 @@ async function makeProject(page: Page, headers: Record<string, string>) {
   return project;
 }
 
-/** UI 用：把这台机器上的一个 git 目录登记成长期工作空间，好让「新建隔离 worktree」可选。 */
+/** UI 用：把这台机器上的一个 git 目录登记成长期工作目录，好让「新建隔离 worktree」可选。 */
 async function linkGitWorkspace(page: Page, headers: Record<string, string>, projectId: string, path: string) {
   const res = await page.request.post(`/api/projects/${projectId}/workspaces`, {
     data: { workerId: null, kind: 'long_lived', mode: 'link', path },
@@ -149,7 +149,7 @@ test('准备失败：derive 被拒并说清原因，修好后重试即就绪', a
   expect(after.setup?.state).toBe('ready');
   expect(after.setup?.output).toContain('retry-ok');
 
-  // 修好后同一个空间可以用了。
+  // 修好后同一个工作目录可以用了。
   const derived = await page.request.post('/api/sessions/derive', {
     data: { taskId: task.id, agentId, model: piModel(), workspaceMode: 'isolated' },
     headers
@@ -157,7 +157,7 @@ test('准备失败：derive 被拒并说清原因，修好后重试即就绪', a
   expect(derived.status(), await derived.text()).toBe(201);
 });
 
-test('显式选定的工作空间优先于档位', async ({ page, baseURL }) => {
+test('显式选定的工作目录优先于档位', async ({ page, baseURL }) => {
   test.setTimeout(120_000);
   const headers = await login(page, baseURL ?? '');
   const agentId = await onlineAgent(page);
@@ -185,7 +185,7 @@ test('显式选定的工作空间优先于档位', async ({ page, baseURL }) => 
   expect(await temporaryWorkspaces(page, headers, project.id)).toHaveLength(0);
 });
 
-test('UI：隔离 worktree 是工作空间里的一个选项，勾它机器照样能选', async ({ page, baseURL }) => {
+test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照样能选', async ({ page, baseURL }) => {
   test.setTimeout(120_000);
   const headers = await login(page, baseURL ?? '');
   const agentId = await onlineAgent(page);
@@ -212,13 +212,13 @@ test('UI：隔离 worktree 是工作空间里的一个选项，勾它机器照�
   await expect(node).toContainText('0 个会话');
   await node.getByRole('button', { name: '＋ 会话' }).click();
 
-  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
+  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
   const worktree = run.getByTestId('ws-new-worktree');
   await expect(worktree).toContainText('新建隔离 worktree');
   // 项目默认 isolated：打开就替用户选上，不用再点一下
   await expect(worktree).toHaveAttribute('aria-checked', 'true');
   await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
-  // 选了隔离档之后，机器和工作空间那块不该被禁用（机器始终可选）
+  // 选了隔离档之后，机器和工作目录那块不该被禁用（机器始终可选）
   const region = run.getByTestId('derive-workspace-region');
   await expect(region).not.toHaveCSS('pointer-events', 'none');
   await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();

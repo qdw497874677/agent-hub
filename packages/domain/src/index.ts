@@ -18,7 +18,7 @@ export * from './canvas.ts';
 export * from './session-link.ts';
 export * from './agent-ref.ts';
 export * from './agent-profile.ts';
-// bot 与 messaging.ts 都导出 PersistentAgent 这个老名字，这里显式列出，避免 star export 冲突把它吃掉。
+// bot.ts 不被 `export *` 覆盖，这里显式列出（实体就叫 Bot）。
 export type { Bot, BotDefinition, BotId } from './bot.ts';
 export type { BotGrant } from './bot-grant.ts';
 export { botIdFrom } from './bot.ts';

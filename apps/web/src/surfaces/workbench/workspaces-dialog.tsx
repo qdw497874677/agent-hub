@@ -24,7 +24,7 @@ type ProjectTab = 'project' | 'context' | 'assets' | 'workspaces';
 
 /**
  * 项目设置（workspaces.md §7）：四块话题各占一栏——说明与清理、上下文、资产（仅管理员）、
- * 代码与空间（仓库 → 隔离与准备 → 已有空间，三段有先后）。
+ * 代码与工作目录（仓库 → 隔离与准备 → 已有工作目录，三段有先后）。
  * 面板都挂着只切显示：在「项目」里改了一半的说明，去看别的 tab 再回来还在。
  */
 export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; onClose: () => void }) {
@@ -38,7 +38,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
     { id: 'project', label: '项目' },
     { id: 'context', label: '上下文' },
     ...(isAdmin ? [{ id: 'assets' as const, label: '资产' }] : []),
-    { id: 'workspaces', label: '代码与空间' }
+    { id: 'workspaces', label: '代码与工作目录' }
   ];
   // 隐藏用 class 而不是 hidden 属性：面板里自己的 flex/grid 类不会把它顶回可见。
   const panel = (id: ProjectTab) => (tab === id ? '' : 'hidden');
@@ -50,7 +50,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
     const key = view.workspace.workerId ?? '';
     groups.set(key, [...(groups.get(key) ?? []), view]);
   }
-  // 页顶那句总结：仓库数 / 默认档位 / 已有空间。接口还没回就不说空间那句。
+  // 页顶那句总结：仓库数 / 默认档位 / 已有工作目录。接口还没回就不说目录那句。
   const summary = workspaceSummary({
     repos: (project.repos ?? []).length,
     mode: projectWorktree(project)?.mode ?? 'shared',
@@ -101,7 +101,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           </div>
         ) : null}
         <div className={panel('workspaces')} data-testid="project-code-spaces">
-          {/* 这页回答三件事：代码从哪来、目录怎么开、现在有哪些空间。答案先说在顶上。 */}
+          {/* 这页回答三件事：代码从哪来、目录怎么开、现在有哪些工作目录。答案先说在顶上。 */}
           <p
             data-testid="workspace-summary"
             className={`mb-4 rounded-sm border-l-2 bg-card px-2.5 py-2 text-sub leading-relaxed text-secondary ${
@@ -114,15 +114,15 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           <WorktreeSettings project={project} />
           <section data-testid="project-spaces" className="mt-5 border-t border-hair pt-4">
             <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
-              已有空间
+              已有工作目录
               <span className="text-meta text-tertiary">现在有哪些</span>
             </h3>
             <p className="mb-2 text-meta text-tertiary">
-              工作空间 = 机器上的一个目录；worktree = 从仓库开出的隔离目录。取消关联不会删目录，也不影响其他项目。
+              工作目录 = 机器上的一个目录；worktree = 从仓库开出的隔离目录。取消关联不会删目录，也不影响其他项目。
             </p>
             {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
             {list.data && groups.size === 0 ? (
-              <p className="text-meta text-tertiary" data-testid="workspaces-empty">这台项目还没有登记空间。</p>
+              <p className="text-meta text-tertiary" data-testid="workspaces-empty">这个项目还没有登记工作目录。</p>
             ) : null}
             {[...groups].map(([workerId, views]) => (
               <section key={workerId} className="mb-3">
@@ -214,7 +214,7 @@ function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; proje
         {mode === 'unlink'
           ? '本项目不再在这里开任务。目录、文件和其他项目的关联都不受影响。'
           : mode === 'unregister'
-          ? '从团队里移除这个工作空间，所有关联它的项目都不能再用它；目录和里面的文件原样保留。'
+          ? '从团队里移除这个工作目录，所有关联它的项目都不能再用它；目录和里面的文件原样保留。'
           : <>会删掉 <span className="break-all font-mono">{workspace.path}</span>，删了找不回来。</>}
       </p>
       {(changes.data?.reason ?? (mode === 'force' ? workspace.keptReason : null)) ? <p className="mb-2 text-meta text-rust">会丢掉：{changes.data?.reason ?? workspace.keptReason}</p> : null}

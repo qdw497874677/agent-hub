@@ -7,7 +7,7 @@ import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
 /**
- * ADR 0025 · 工作空间文件浏览 P1（390px 手机）：目录下钻、预览、敏感文件确认、被忽略的灰显、
+ * ADR 0025 · 工作目录文件浏览 P1（390px 手机）：目录下钻、预览、敏感文件确认、被忽略的灰显、
  * 改动列表 + diff、实时刷新（新建文件后列表自己出现）、路径越界拒绝。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/files';

@@ -56,10 +56,10 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await page.getByRole('button', { name: '创建任务' }).click();
   await expect(taskNode(page, TASK_TITLE)).toContainText('0 个会话');
 
-  // 第一条会话：把 /tmp 下的目录登记成持久工作空间。
+  // 第一条会话：把 /tmp 下的目录登记成持久工作目录。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const firstRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
-  await firstRun.getByRole('radio', { name: /新建持久工作空间/ }).click();
+  const firstRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  await firstRun.getByRole('radio', { name: /新建持久工作目录/ }).click();
   await firstRun.getByRole('radio', { name: '选已有目录' }).click();
   const picker = page.getByLabel('目录选择器');
   if ((await picker.count()) === 0) await firstRun.getByRole('button', { name: '浏览…' }).click();
@@ -76,9 +76,9 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await expect(page.getByLabel('发送消息')).toBeVisible();
   await page.getByRole('button', { name: '画布', exact: true }).click();
 
-  // 第二条会话：直接选刚登记的工作空间。
+  // 第二条会话：直接选刚登记的工作目录。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const secondRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
+  const secondRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
   const existing = secondRun.getByRole('radio').filter({ hasText: `agent-hub-e2e-links-${RUN}` }).first();
   await expect(existing).toBeVisible();
   await existing.click();
@@ -102,7 +102,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await expect(dialog).toBeVisible();
   const checkbox = dialog.locator('input[type="checkbox"]').first();
   await expect(checkbox).not.toBeChecked();
-  // 同名会话也能靠任务 / 机器 / 工作空间 / 短号区分。
+  // 同名会话也能靠任务 / 机器 / 工作目录 / 短号区分。
   const firstOption = dialog.getByTestId('session-link-options').locator('label').first();
   const workerLabel = ((await (await page.request.get('/api/workers')).json()) as Array<{ label: string }>)[0]?.label ?? '本机';
   await expect(firstOption).toContainText(TASK_TITLE);

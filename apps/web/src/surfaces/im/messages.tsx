@@ -612,7 +612,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
               groups.isLoading || !pid || roles.isLoading || roleList.length ? <Empty text={groups.isLoading ? '加载中…' : pid ? '还没有群' : '先建一个项目'} /> : (
                 <li data-testid="messages-empty" className="flex flex-col items-start gap-2 px-3 py-6 text-meta text-tertiary">
                   <span className="text-body text-secondary">还没有 bot，也还没有群</span>
-                  <span>先建一个 bot（常驻的智能体），再把它拉进群里聊。</span>
+                  <span>先建一个 bot（常驻成员），再把它拉进群里聊。</span>
                   <a className={SMALL} data-testid="empty-new-bot" href={`${formatRoute({ page: 'bots', projectId: pid })}/new`}>新建 bot</a>
                 </li>
               )

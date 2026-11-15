@@ -8,8 +8,8 @@ import { e2eWorkerPath, e2eWorkerRoots } from './isolation.ts';
 
 /**
  * ADR 0027 阶段 4：回滚到某条消息（「⋯ → 从这里重来」），远端 Worker 上真的 git worktree。
- * 1) 长期工作空间：只能回滚对话，文件选项灰掉并写明原因；
- * 2) 临时工作空间：连文件一起回滚——这一轮写的文件没了，之前的还在；新会话从这条之前分叉，原消息回填输入框；原会话不动；
+ * 1) 长期工作目录：只能回滚对话，文件选项灰掉并写明原因；
+ * 2) 临时工作目录：连文件一起回滚——这一轮写的文件没了，之前的还在；新会话从这条之前分叉，原消息回填输入框；原会话不动；
  * 3) 非 git 临时目录：任务结束时目录里还有文件 → 保留并在清理记录写明原因，清空后才删。
  */
 const SHOTS = '/tmp/opencode/shots/git-workflow/4-rollback';
@@ -87,14 +87,14 @@ test('从这里重来：长期只回滚对话；临时连文件一起回滚；�
     const promptSeqs = async (sid: string) =>
       (((await (await page.request.get(`/api/sessions/${sid}/git/turns`)).json()) as { turns?: { promptSeq: number }[] }).turns ?? []).map((t) => t.promptSeq);
 
-    // ── 1. 长期工作空间（项目目录）：文件选项灰掉，写明原因 ──
+    // ── 1. 长期工作目录（项目目录）：文件选项灰掉，写明原因 ──
     const t0 = await newTask(project.id, '长期');
     const s0 = await derive(t0);
     await say(s0, 'please-write:long.txt=one', 1);
     const [p0 = 0] = await promptSeqs(s0);
     const pre0 = (await (await page.request.get(`/api/sessions/${s0}/rewind?promptSeq=${p0}`)).json()) as { filesAllowed: boolean; filesBlocked: string };
     expect(pre0.filesAllowed).toBe(false);
-    expect(pre0.filesBlocked).toMatch(/临时工作空间/);
+    expect(pre0.filesBlocked).toMatch(/临时工作目录/);
     const refused = await page.request.post(`/api/sessions/${s0}/rewind`, { data: { promptSeq: p0, files: true }, headers });
     expect(refused.status()).toBe(409);
     await page.setViewportSize({ width: 390, height: 844 });
@@ -103,11 +103,11 @@ test('从这里重来：长期只回滚对话；临时连文件一起回滚；�
     await page.getByTestId('msg-rewind').click();
     const d0 = page.getByTestId('rewind-dialog');
     await expect(d0.getByTestId('rewind-files')).toBeDisabled();
-    await expect(d0.getByTestId('rewind-files-note')).toContainText('临时工作空间');
+    await expect(d0.getByTestId('rewind-files-note')).toContainText('临时工作目录');
     await page.screenshot({ path: join(SHOTS, 'dialog-long-lived-390.png') });
     await page.keyboard.press('Escape');
 
-    // ── 2. 临时工作空间：两轮各写一个文件，从第二条重来并回滚文件 ──
+    // ── 2. 临时工作目录：两轮各写一个文件，从第二条重来并回滚文件 ──
     const t1 = await newTask(project.id, '临时');
     const w1 = await temp(project.id, t1);
     const s1 = await derive(t1, w1.id);

@@ -530,7 +530,7 @@ function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>;
   );
 }
 
-/** 工具参数里的文件路径：在工作空间内就是按钮，点了跳到「文件」页那个文件（知道行号就到那一行）。 */
+/** 工具参数里的文件路径：在工作目录内就是按钮，点了跳到「文件」页那个文件（知道行号就到那一行）。 */
 function PathText({ path, input }: { path: string; input: string }) {
   const links = useFileLinks();
   const target = links ? toolFileTarget(input, links.root) : null;

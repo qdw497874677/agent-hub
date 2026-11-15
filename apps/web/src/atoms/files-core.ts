@@ -44,7 +44,7 @@ export function parentOf(path: string): string {
 
 /**
  * 路径的紧凑写法：放得下就给全文，放不下就留末尾几段、中间省略（`…/workspace/agent-hub`）。
- * 工作空间根路径通常很长，窄屏只留得住尾巴；保留开头会看不出是哪一层。
+ * 工作目录根路径通常很长，窄屏只留得住尾巴；保留开头会看不出是哪一层。
  */
 export function shortPath(path: string, max = 32): string {
   if (path.length <= max) return path;

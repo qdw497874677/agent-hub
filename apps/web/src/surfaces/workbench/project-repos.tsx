@@ -23,11 +23,11 @@ import {
 } from './project-repos.ts';
 
 /**
- * 项目设置 · 代码与空间 · 「仓库」（docs/design/multi-repo.md §7）。
+ * 项目设置 · 代码与工作目录 · 「仓库」（docs/design/multi-repo.md §7）。
  *
- * 一个项目最多 8 个仓库；第一行是主仓库（组合工作空间的入口 / 老 `repo` 字段的来源），
- * 能改不能删。仓库名就是组合工作空间里的子目录名，所以这里同时给出名字规则。
- * 和「隔离与准备」放在一起：两件事合起来才决定「这个项目开出来的空间长什么样」。
+ * 一个项目最多 8 个仓库；第一行是主仓库（组合工作目录的入口 / 老 `repo` 字段的来源），
+ * 能改不能删。仓库名就是组合工作目录里的子目录名，所以这里同时给出名字规则。
+ * 和「隔离与准备」放在一起：两件事合起来才决定「这个项目开出来的目录长什么样」。
  */
 export function ProjectRepos({ project }: { project: ProjectDto }) {
   const account = useAccount();
@@ -127,7 +127,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
         <span className="text-meta text-tertiary">代码从哪来</span>
       </h3>
       <p className="mb-2 text-meta text-tertiary">
-        项目绑定的代码仓库，最多 {PROJECT_REPOS_MAX} 个。第一条是主仓库；仓库名会用作组合工作空间里的子目录名。
+        项目绑定的代码仓库，最多 {PROJECT_REPOS_MAX} 个。第一条是主仓库；仓库名会用作组合工作目录里的子目录名。
       </p>
 
       {editable ? (
@@ -135,7 +135,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
           <div className="space-y-2">
             {rows.length === 0 ? (
               <p className="text-meta text-tertiary" data-testid="repos-empty">
-                这个项目还没绑仓库。绑上之后，派生任务时就能在仓库上开 worktree 或组合工作空间。
+                这个项目还没绑仓库。绑上之后，派生任务时就能在仓库上开 worktree 或组合工作目录。
               </p>
             ) : null}
             {rows.map((row, index) => {

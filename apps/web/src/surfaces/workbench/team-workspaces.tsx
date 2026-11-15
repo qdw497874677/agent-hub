@@ -10,7 +10,7 @@ import { errorText } from '../../shell/admin/shared.tsx';
 import { shortPath, workspaceName } from '../../atoms/workspace-format.ts';
 
 /**
- * 团队工作空间页（#/workspaces，ADR 0026 Q1）：机器上的目录，一个可以给多个项目用。
+ * 团队工作目录页（#/workspaces，ADR 0026 Q1）：机器上的目录，一个可以给多个项目用。
  * 有 workspace.manage 的人看全部、能新建/删除；其他人只看自己能读的项目关联的那些。
  * 390px 下单列，每行操作收进行内按钮。
  */
@@ -34,23 +34,23 @@ export function TeamWorkspacesPage() {
       <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
         <div className="min-w-0">
           <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← 项目</a>
-          <h1 className="text-head text-primary">团队工作空间</h1>
+          <h1 className="text-head text-primary">团队工作目录</h1>
         </div>
         <AccountMenu />
       </header>
       <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
         <div className="mx-auto flex max-w-[960px] flex-col gap-4">
           <div className="flex flex-wrap items-start justify-between gap-2">
-            <p className="text-meta text-tertiary">机器上的目录。一个工作空间可以给多个项目用；项目设置里关联了才能在里面开任务。</p>
+            <p className="text-meta text-tertiary">机器上的目录。一个工作目录可以给多个项目用；项目设置里关联了才能在里面开任务。</p>
             {canManage ? (
-              <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>＋ 新建工作空间</button>
+              <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>＋ 新建工作目录</button>
             ) : null}
           </div>
           {creating ? <CreateWorkspace onDone={() => setCreating(false)} /> : null}
           {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
           {list.error ? <p className="text-meta text-rust">{errorText(list.error)}</p> : null}
           {list.data && rows.length === 0 ? (
-            <p className="text-meta text-tertiary">{canManage ? '还没有工作空间。' : '你能看到的项目还没有关联工作空间。'}</p>
+            <p className="text-meta text-tertiary">{canManage ? '还没有工作目录。' : '你能看到的项目还没有关联工作目录。'}</p>
           ) : null}
           {[...groups].map(([workerId, views]) => (
             <section key={workerId}>
@@ -103,7 +103,7 @@ function TeamWorkspaceRow({ row, canManage }: { row: TeamWorkspaceViewDto; canMa
       {confirm ? (
         <div className="mt-2 rounded-sm border border-rust/60 p-2">
           <p className="mb-2 text-meta text-secondary">
-            从团队里移除这个工作空间{linked > 0 ? `，${linked} 个项目都不能再用它` : ''}。目录和文件原样保留。
+            从团队里移除这个工作目录{linked > 0 ? `，${linked} 个项目都不能再用它` : ''}。目录和文件原样保留。
           </p>
           {remove.error ? <p className="mb-2 text-meta text-rust">{errorText(remove.error)}</p> : null}
           <div className="flex justify-end gap-2">

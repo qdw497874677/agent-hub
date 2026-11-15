@@ -8,7 +8,7 @@ import { CreateWorkspace, TEAM_WORKSPACES_KEY, useTeamWorkspaces } from './team-
 import { shortPath, workspaceName } from '../../atoms/workspace-format.ts';
 
 /**
- * 关联工作空间（ADR 0026 Q4）：列团队里你看得见、本项目还没关联的持久工作空间，点一下关联；
+ * 关联工作目录（ADR 0026 Q4）：列团队里你看得见、本项目还没关联的持久工作目录，点一下关联；
  * 或者新建一个顺手关联。`workerId` 给了就只列那台机器上的（开始任务时用）。
  */
 export function LinkWorkspaces({
@@ -64,7 +64,7 @@ export function LinkWorkspaces({
     <div ref={box} className={open ? 'mt-2 rounded-sm border border-hair p-2' : 'mt-2'}>
       {open ? (
         <div data-testid="ws-link">
-          <p className="mb-1 text-meta text-secondary">关联团队里已有的工作空间</p>
+          <p className="mb-1 text-meta text-secondary">关联团队里已有的工作目录</p>
           {team.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
           {team.data && candidates.length === 0 ? <p className="text-meta text-tertiary">没有可以关联的了。</p> : null}
           <ul className="space-y-1">
@@ -93,9 +93,9 @@ export function LinkWorkspaces({
           ) : null}
         </div>
       ) : (
-        // 一行次要文字按钮：它是单选组之外的补充入口，别做得跟「新建工作空间」一样重
+        // 一行次要文字按钮：它是单选组之外的补充入口，别做得跟「新建工作目录」一样重
         <button type="button" data-testid="ws-link-open" className="text-meta text-secondary hover:text-accent hover:underline" onClick={() => setOpen(true)}>
-          🔗 关联工作空间…
+          🔗 关联工作目录…
         </button>
       )}
     </div>

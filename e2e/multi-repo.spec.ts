@@ -7,7 +7,7 @@ import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
 /**
- * 多仓库项目：项目挂多个仓库 → 组合工作空间（容器根 + 每仓一个 worktree）→ 派生跟着整组走
+ * 多仓库项目：项目挂多个仓库 → 组合工作目录（容器根 + 每仓一个 worktree）→ 派生跟着整组走
  * → 文件与改动按成员仓库查看（docs/design/multi-repo.md §4 §6 §7）。
  */
 async function login(page: Page, baseURL: string) {
@@ -45,14 +45,14 @@ type Group = {
   members: Array<{ workspaceId: string; name: string; position: number; state: string; error: string | null }>;
 };
 
-test('组合工作空间：两个仓库各开 worktree，派生跟着整组，文件按成员查看', async ({ page, baseURL }) => {
+test('组合工作目录：两个仓库各开 worktree，派生跟着整组，文件按成员查看', async ({ page, baseURL }) => {
   test.setTimeout(180_000);
   const headers = await login(page, baseURL ?? '');
   const agentId = await onlineAgent(page);
   test.skip(!agentId, '这台机器上没有可用的 agent');
 
   const root = mkdtempSync(join(tmpdir(), 'e2e-multi-repo-'));
-  // 项目自己的根目录和仓库目录分开：工作空间的「不嵌套」约束不允许把仓库放进项目根里。
+  // 项目自己的根目录和仓库目录分开：工作目录的「不嵌套」约束不允许把仓库放进项目根里。
   const projectRoot = join(root, 'project');
   mkdirSync(projectRoot, { recursive: true });
   const repos = [
@@ -77,7 +77,7 @@ test('组合工作空间：两个仓库各开 worktree，派生跟着整组，�
   expect(projectView.repos.map((repo) => repo.name)).toEqual(['web', 'api']);
 
   // 每个仓库在这台机器上登记一个长期 git 空间，作为组合建组的基座。
-  // 用团队工作空间的登记接口（能带 repoUrl），组合建组才找得到基座。
+  // 用团队工作目录的登记接口（能带 repoUrl），组合建组才找得到基座。
   for (const [index, repo] of repos.entries()) {
     const linked = await page.request.post('/api/workspaces', {
       data: {

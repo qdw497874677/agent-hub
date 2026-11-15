@@ -65,17 +65,17 @@ test('memberStateLabel：三种状态各自的说法', () => {
 });
 
 test('groupHeadline：按成员数说几个仓库', () => {
-  assert.equal(groupHeadline(3), '组合工作空间 · 3 个仓库');
-  assert.equal(groupHeadline(0), '组合工作空间 · 0 个仓库');
+  assert.equal(groupHeadline(3), '组合工作目录 · 3 个仓库');
+  assert.equal(groupHeadline(0), '组合工作目录 · 0 个仓库');
 });
 
 test('groupStateNote：失败带原因，准备中给一句话，就绪不占位', () => {
   const base = { id: 'grp_1', projectId: 'p1', workerId: 'w', root: '/r', members: [], error: null } as const;
   assert.equal(groupStateNote({ ...base, state: 'ready' }), null);
-  assert.equal(groupStateNote({ ...base, state: 'preparing' }), '正在准备组合工作空间…');
-  assert.equal(groupStateNote({ ...base, state: 'failed' }), '组合工作空间准备失败');
-  assert.equal(groupStateNote({ ...base, state: 'failed', error: '磁盘满了' }), '组合工作空间准备失败：磁盘满了');
-  assert.equal(groupStateNote({ ...base, state: 'failed', error: '  ' }), '组合工作空间准备失败');
+  assert.equal(groupStateNote({ ...base, state: 'preparing' }), '正在准备组合工作目录…');
+  assert.equal(groupStateNote({ ...base, state: 'failed' }), '组合工作目录准备失败');
+  assert.equal(groupStateNote({ ...base, state: 'failed', error: '磁盘满了' }), '组合工作目录准备失败：磁盘满了');
+  assert.equal(groupStateNote({ ...base, state: 'failed', error: '  ' }), '组合工作目录准备失败');
 });
 
 test('failedGroupIdFromWorkspaces：只认同任务、刚登记的成员', () => {

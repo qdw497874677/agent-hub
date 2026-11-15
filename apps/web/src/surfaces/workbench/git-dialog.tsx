@@ -12,7 +12,7 @@ const STATUS: Record<string, string> = { untracked: '新', added: '新', modifie
 
 export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClose }: {
   sessionId: string;
-  /** 目录维度：git 状态按工作空间缓存，同目录的会话共享（见 query-keys.ts）。 */
+  /** 目录维度：git 状态按工作目录缓存，同目录的会话共享（见 query-keys.ts）。 */
   workspaceId?: string | null;
   /** 提交 / 推送后刷新这个任务的 PR 列表；不知道就退化为旧的全前缀。 */
   taskId?: string | null;
@@ -52,7 +52,7 @@ export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClos
     try {
       const out = await gitApi.run(sessionId, { action, message, ...(action === 'pr' ? { title, body } : {}) });
       setResult(out);
-      // git 真相按目录归一：状态、文件页、工作空间改动都失效，三处显示同一份结果。
+      // git 真相按目录归一：状态、文件页、工作目录改动都失效，三处显示同一份结果。
       void queries.invalidateQueries({ queryKey: gitKeys.all(workspaceId, sessionId) });
       for (const prefix of filesInvalidationKeys(filesKeys(workspaceId, sessionId))) {
         void queries.invalidateQueries({ queryKey: prefix });
@@ -75,7 +75,7 @@ export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClos
       <div data-testid="git-dialog" className="flex flex-col gap-3">
         <p className="text-sub text-primary">提交与推送</p>
         {state.isLoading ? <p className="text-meta text-tertiary">读取中…</p> : null}
-        {s && !s.isGit ? <p className="text-meta text-tertiary">这个工作空间不是 git 仓库。</p> : null}
+        {s && !s.isGit ? <p className="text-meta text-tertiary">这个工作目录不是 git 仓库。</p> : null}
         {s?.isGit ? (
           <>
             <p className="font-mono text-meta text-secondary" data-testid="git-branch">

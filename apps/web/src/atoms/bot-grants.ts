@@ -29,8 +29,8 @@ export const BOT_GRANT_PICKER_TITLE = '授权已有 bot';
 /** 团队里的 bot 全都在这个项目里了（选择浮层的空态）。 */
 export const BOT_GRANT_PICKER_EMPTY = '团队里的 bot 都已经授权到这个项目了。';
 
-/** 没指定工作空间 = 跟随项目默认（后端的 workspaceId 为 null）。 */
-export const BOT_GRANT_WORKSPACE_DEFAULT = '工作空间：跟随项目默认';
+/** 没指定工作目录 = 跟随项目默认（后端的 workspaceId 为 null）。 */
+export const BOT_GRANT_WORKSPACE_DEFAULT = '工作目录：跟随项目默认';
 
 /**
  * 团队里还没授权到本项目的 bot，保持团队列表的顺序（授权浮层不重排，认位置靠记忆）。
@@ -66,7 +66,7 @@ export function projectGrant<T extends { readonly projectId: string }>(
 }
 
 /**
- * 工作空间那一行。null = 跟随项目默认；查不到名字（空间被删 / 还没拉清单）就退回 id，
+ * 工作目录那一行。null = 跟随项目默认；查不到名字（空间被删 / 还没拉清单）就退回 id，
  * 别显示一个空字符串让人以为没指定。
  */
 export function grantedWorkspaceText(
@@ -74,10 +74,10 @@ export function grantedWorkspaceText(
   names: ReadonlyMap<string, string>
 ): string {
   if (!workspaceId) return BOT_GRANT_WORKSPACE_DEFAULT;
-  return `工作空间：${names.get(workspaceId) ?? workspaceId}`;
+  return `工作目录：${names.get(workspaceId) ?? workspaceId}`;
 }
 
-/** 授权行上给人看的两行：项目名 + 工作空间。项目名缺了（项目被删 / 还没拉清单）退回 id。 */
+/** 授权行上给人看的两行：项目名 + 工作目录。项目名缺了（项目被删 / 还没拉清单）退回 id。 */
 export function grantRowView(
   grant: BotGrantRef,
   projectName: string | null | undefined,

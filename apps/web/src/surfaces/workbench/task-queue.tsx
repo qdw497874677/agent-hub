@@ -4,7 +4,7 @@ import { formatRoute } from '../../shell/route.ts';
 import { relativeTime } from '../../shell/workers.tsx';
 
 /**
- * 任务队列（ADR 0032 R3）：bot 用 task.create 建的任务在这里排队，调度器按上限开任务智能体会话。
+ * 任务队列（ADR 0032 R3）：bot 用 task.create 建的任务在这里排队，调度器按上限开任务会话。
  * 上限：全局 2 + 人工预留 1，每台机器 1、每个项目 1（人在对话里让 bot 建的只受全局 + 人工槽）。
  * 没有任何调度记录时不显示。
  */

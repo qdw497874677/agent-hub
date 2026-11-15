@@ -10,9 +10,9 @@ import { RecheckButton, harnessHint, harnessReason } from '../../shell/harness.t
 import { canSelectMachine } from '../../shell/harness-gate.ts';
 
 /**
- * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作空间干活？」
+ * 运行面板的核心（docs/design/workspaces.md §9.3）：「在哪台机器、哪个工作目录干活？」
  * - 第一行选机器（只有一台在线就直接用它）；
- * - 下面单选：已有的工作空间 / 新建持久工作空间 / 新建临时工作空间。
+ * - 下面单选：已有的工作目录 / 新建持久工作目录 / 新建临时工作目录。
  * - 不预选：持久和临时之间没有默认，也不记上次；没选之前「开始」是灰的。
  */
 export type WorkspaceChoice =
@@ -27,11 +27,11 @@ export type WorkspaceChoice =
 /** 选完了没有：「选已有目录」还没点目录不算。 */
 export function choiceReady(choice: WorkspaceChoice | null): boolean {
   if (choice === null) return false;
-  // 新建持久工作空间两种方式都得先选好目录（新建 = 选一个空文件夹 / 放仓库的地方；关联 = 已有目录）
+  // 新建持久工作目录两种方式都得先选好目录（新建 = 选一个空文件夹 / 放仓库的地方；关联 = 已有目录）
   return !(choice.type === 'new_long_lived' && !choice.path);
 }
 
-/** 新建持久工作空间的请求体：派生对话框和「换个地方继续」共用。 */
+/** 新建持久工作目录的请求体：派生对话框和「换个地方继续」共用。 */
 export function longLivedRequest(
   machine: string,
   choice: Extract<WorkspaceChoice, { type: 'new_long_lived' }>
@@ -91,8 +91,8 @@ export function WorkspaceChooser({
   /** 已有 hub 模型的协议。未配置原生模型时，同协议的机器仍可选，用来再选 hub 模型。 */
   hubProtocols?: readonly string[];
   /**
-   * 显示「新建组合工作空间」：只有派生（新会话）能建组，「换个地方继续」是同一个会话，
-   * 整组跟随会换掉它的工作空间，所以那儿不出现。
+   * 显示「新建组合工作目录」：只有派生（新会话）能建组，「换个地方继续」是同一个会话，
+   * 整组跟随会换掉它的工作目录，所以那儿不出现。
    */
   groups?: boolean;
 }) {
@@ -115,7 +115,7 @@ export function WorkspaceChooser({
     if (machine !== null && !usable.some((worker) => worker.workerId === machine)) onMachine(null);
   }, [machine, usable, onMachine]);
 
-  // 工作空间的 workerId null = hub 本机 → 本机那台 Worker
+  // 工作目录的 workerId null = hub 本机 → 本机那台 Worker
   const hostOf = (workspace: WorkspaceDto) => workspace.workerId ?? local?.workerId ?? null;
   const lastUsed = useMemo(() => {
     const at = new Map<string, number>();
@@ -133,12 +133,12 @@ export function WorkspaceChooser({
         (lastUsed.get(b.workspace.id) ?? b.workspace.createdAt) - (lastUsed.get(a.workspace.id) ?? a.workspace.createdAt)
     );
 
-  // 换机器：之前选的工作空间不在这台上了，清掉，免得误开到别处
+  // 换机器：之前选的工作目录不在这台上了，清掉，免得误开到别处
   useEffect(() => {
     if (choice?.type === 'existing' && !here.some(({ workspace }) => workspace.id === choice.workspaceId)) onChoice(null);
   }, [choice, here, onChoice]);
 
-  // 这台机器上能不能开 worktree：有 git 的持久工作空间，或者项目绑了仓库（会先下载）
+  // 这台机器上能不能开 worktree：有 git 的持久工作目录，或者项目绑了仓库（会先下载）
   const sameMachine = (views.data ?? []).filter(({ workspace }) => machine !== null && hostOf(workspace) === machine);
   const gitHere =
     canvas.project.repo !== null ||
@@ -150,7 +150,7 @@ export function WorkspaceChooser({
   const machineName = machines.find((worker) => worker.workerId === machine)?.label ?? '这台机器';
 
   return (
-    <section aria-label="工作空间" className="mb-3">
+    <section aria-label="工作目录" className="mb-3">
       {machines.length < 2 || usable.length === 0 ? (
         <p className="mb-1 text-meta text-secondary" title="干活的那台电脑。agent 在它上面读写文件、执行命令。">机器</p>
       ) : null}
@@ -187,11 +187,11 @@ export function WorkspaceChooser({
 
       {machine === null ? null : (
         <>
-          <p className="mb-1 text-meta text-secondary" title="机器上的一个文件夹，agent 只在这里面干活。">工作空间</p>
-          <div role="radiogroup" aria-label="选择工作空间" className="flex flex-col gap-1.5">
-            {views.isLoading ? <p className="text-meta text-tertiary">正在读取工作空间…</p> : null}
+          <p className="mb-1 text-meta text-secondary" title="机器上的一个文件夹，agent 只在这里面干活。">工作目录</p>
+          <div role="radiogroup" aria-label="选择工作目录" className="flex flex-col gap-1.5">
+            {views.isLoading ? <p className="text-meta text-tertiary">正在读取工作目录…</p> : null}
             {!views.isLoading && here.length === 0 ? (
-              <p data-testid="ws-none-linked" className="text-meta text-tertiary">本项目在这台机器上还没有关联工作空间。关联一个团队里已有的，或者新建一个。</p>
+              <p data-testid="ws-none-linked" className="text-meta text-tertiary">本项目在这台机器上还没有关联工作目录。关联一个团队里已有的，或者新建一个。</p>
             ) : null}
             {here.map(({ workspace, runningTaskIds, otherProjectSessions }) => {
               const selected = choice?.type === 'existing' && choice.workspaceId === workspace.id;
@@ -311,7 +311,7 @@ function NewLongLived({
       >
         <Radio on={selected} />
         <span className="min-w-0 flex-1">
-          <span className="block text-body text-primary">新建持久工作空间</span>
+          <span className="block text-body text-primary">新建持久工作目录</span>
           <span className="block text-meta text-tertiary">一直保留，下次还能接着用</span>
         </span>
       </button>
@@ -355,7 +355,7 @@ function NewLongLived({
               )
             ) : choice.mode === 'link' ? (
               <>
-                将把 <span className="font-mono">{shortPath(choice.path)}</span> 登记成持久工作空间（不会删它）
+                将把 <span className="font-mono">{shortPath(choice.path)}</span> 登记成持久工作目录（不会删它）
               </>
             ) : canvas.project.repo ? (
               <>
@@ -364,7 +364,7 @@ function NewLongLived({
               </>
             ) : (
               <>
-                将在 {machineName} 的 <span className="font-mono">{shortPath(choice.path)}</span> 新建持久工作空间
+                将在 {machineName} 的 <span className="font-mono">{shortPath(choice.path)}</span> 新建持久工作目录
               </>
             )}
             <button type="button" className="ml-2 text-accent hover:underline" onClick={() => setPicking((open) => !open)}>
@@ -419,13 +419,13 @@ function NewTemporary({
     <button type="button" role="radio" aria-checked={selected} className={rowClass(selected)} onClick={onSelect}>
       <Radio on={selected} />
       <span className="min-w-0 flex-1">
-        <span className="block text-body text-primary">新建临时工作空间</span>
+        <span className="block text-body text-primary">新建临时工作目录</span>
         {/* 未选中只有一行：挑东西的时候不用读完每个选项的说明书 */}
         <span className="block text-meta text-tertiary">
           {gitHere ? '每个任务一个分支，用完自动清理' : '为这个任务单独开一份，用完自动清理'}
         </span>
         {existing > 0 ? (
-          <span className="mt-0.5 block text-meta text-rust">这个任务已经有 {existing} 个临时工作空间</span>
+          <span className="mt-0.5 block text-meta text-rust">这个任务已经有 {existing} 个临时工作目录</span>
         ) : null}
         {selected ? (
           <span className="mt-1 block text-meta text-secondary">
@@ -447,9 +447,9 @@ function NewTemporary({
 }
 
 /**
- * 隔离 worktree：和「新建临时工作空间」是同一件事的两种口径——
+ * 隔离 worktree：和「新建临时工作目录」是同一件事的两种口径——
  * 临时空间是「随便一个目录」，worktree 是「按项目配置开的分支目录 + 准备命令」。
- * 放在工作空间选择里而不是对话框上的复选框：机器和工作空间本来就是一起选的。
+ * 放在工作目录选择里而不是对话框上的复选框：机器和工作目录本来就是一起选的。
  */
 function NewWorktree({
   canvas,
@@ -522,7 +522,7 @@ function NewWorktree({
 }
 
 /**
- * 组合工作空间：项目有多个仓库时才会出现。每个仓库在新目录里各开一个 worktree，
+ * 组合工作目录：项目有多个仓库时才会出现。每个仓库在新目录里各开一个 worktree，
  * 子目录名就是仓库名；agent 在总目录里工作，跨仓库的改动一次提交。
  * 只在 repos.length > 1 时挂载：单仓库项目用上面的隔离 worktree 就够了。
  */
@@ -550,7 +550,7 @@ function NewGroup({
       >
         <Radio on={selected} />
         <span className="min-w-0 flex-1">
-          <span className="block text-body text-primary">新建组合工作空间 · {repos.length} 个仓库</span>
+          <span className="block text-body text-primary">新建组合工作目录 · {repos.length} 个仓库</span>
           <span className="block text-meta text-tertiary">每个仓库在新目录里各开一个 worktree，agent 在总目录里工作</span>
           {selected ? (
             <span className="mt-1 block text-meta text-secondary">

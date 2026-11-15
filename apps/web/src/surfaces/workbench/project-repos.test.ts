@@ -39,7 +39,7 @@ test('repoRowsFrom：老项目没有 repos / 形状不对 → 空清单', () => 
 });
 
 test('repoRowProblem：空 name / url 各自说清', () => {
-  assert.equal(repoRowProblem(row({ name: '' }), [row({ name: '' })]), '写上仓库名（会用作组合工作空间里的子目录名）');
+  assert.equal(repoRowProblem(row({ name: '' }), [row({ name: '' })]), '写上仓库名（会用作组合工作目录里的子目录名）');
   assert.equal(repoRowProblem(row({ url: '' }), [row({ url: '' })]), '写上仓库地址');
 });
 
@@ -93,7 +93,7 @@ test('reposDirty：空默认分支和 main 等价，不算改动', () => {
 test('emptyRepoRow：新行没有 id，保存时才带上名字和地址', () => {
   const blank = emptyRepoRow();
   assert.deepEqual(blank, { id: '', name: '', url: '', defaultBranch: '' });
-  assert.equal(repoRowProblem(blank, [blank]), '写上仓库名（会用作组合工作空间里的子目录名）');
+  assert.equal(repoRowProblem(blank, [blank]), '写上仓库名（会用作组合工作目录里的子目录名）');
   // 0 个仓库是合法状态（不绑仓库）
   assert.equal(repoRowsProblem([]), null);
 });

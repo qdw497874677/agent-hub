@@ -40,9 +40,9 @@ test('「开始」的说明行：先说最挡路的那一个，能用时不说',
   assert.equal(startHint(ready), '这台机器上的 Pi 用不了：未登录');
   // 没原因的不可用也不能念出半截冒号
   assert.equal(startHint({ ...ready, worker: bare('') }), '这台机器上的 Pi 用不了');
-  // 机器和运行时都过了，才轮到工作空间
+  // 机器和运行时都过了，才轮到工作目录
   const open = { ...ready, worker: undefined, workspaceReady: false };
-  assert.equal(startHint(open), '先选一个工作空间');
+  assert.equal(startHint(open), '先选一个工作目录');
   assert.equal(startHint({ ...open, workspaceNeedsPath: true }), '先选一个目录');
   // 都齐了：不渲染说明行
   assert.equal(startHint({ ...ready, worker: undefined }), null);

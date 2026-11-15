@@ -17,7 +17,7 @@ function protocolsOf(worker: GateWorker | undefined, agentId: string): readonly 
 }
 
 /**
- * 没配原生模型时，只要这台机器的 agent 报了协议，并且已经有同协议的 hub 模型，就可以先选机器和工作空间。
+ * 没配原生模型时，只要这台机器的 agent 报了协议，并且已经有同协议的 hub 模型，就可以先选机器和工作目录。
  * 不把空模型改成 hub 默认：没选模型时「开始」仍然不可用。
  * 未安装、检测失败等其他原因照旧不能选。
  */
@@ -49,12 +49,12 @@ export interface StartHintInput {
   readonly protocol: string | null;
   /** choiceReady 的结果。 */
   readonly workspaceReady: boolean;
-  /** 选了「新建持久工作空间」但还没挑目录。 */
+  /** 选了「新建持久工作目录」但还没挑目录。 */
   readonly workspaceNeedsPath?: boolean;
 }
 
 /**
- * 按人头先说最挡路的那个：机器 → agent → 这台机器上的运行时 → 工作空间。
+ * 按人头先说最挡路的那个：机器 → agent → 这台机器上的运行时 → 工作目录。
  * 一句人话，不重复按钮上的灰，也不把原因藏在 title 里（手机上根本没有 hover）。
  */
 export function startHint(input: StartHintInput): string | null {
@@ -65,6 +65,6 @@ export function startHint(input: StartHintInput): string | null {
     const label = input.agentLabel.trim() === '' ? input.agentId : input.agentLabel.trim();
     return reason.trim() === '' ? `这台机器上的 ${label} 用不了` : `这台机器上的 ${label} 用不了：${reason.trim()}`;
   }
-  if (!input.workspaceReady) return input.workspaceNeedsPath === true ? '先选一个目录' : '先选一个工作空间';
+  if (!input.workspaceReady) return input.workspaceNeedsPath === true ? '先选一个目录' : '先选一个工作目录';
   return null;
 }

@@ -114,7 +114,7 @@ export function FocusView({
   windowChrome
 }: Props) {
   const [busy, setBusy] = useState(false);
-  // 组合工作空间（多仓库项目）：只有这种会话才有 groupId
+  // 组合工作目录（多仓库项目）：只有这种会话才有 groupId
   const groupId = sessionGroupId(session);
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -207,7 +207,7 @@ export function FocusView({
   useEffect(() => {
     setQuote(null);
   }, [session.id]);
-  // 工具参数里的路径可点：只认这条会话工作空间里的（老会话没有工作空间就只认相对路径）
+  // 工具参数里的路径可点：只认这条会话工作目录里的（老会话没有工作目录就只认相对路径）
   const workspaceRoot = canvas.workspaces.find((w) => w.id === session.workspaceId)?.path ?? null;
   const fileLinks = useMemo<FileLinks>(() => ({
     root: workspaceRoot,
@@ -217,7 +217,7 @@ export function FocusView({
     }
   }), [workspaceRoot]);
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
-  // 目录派生的文件 / git 状态按工作空间归一：同目录的多条会话共享缓存（见 query-keys.ts）。
+  // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
   const fileKeys = filesKeys(session.workspaceId, session.id);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
   useEffect(() => {
@@ -674,7 +674,7 @@ export function FocusView({
                 <MenuGroup label="详情与显示" className="sm:hidden">
                   <MenuItem
                     title="详情"
-                    hint="查看会话、工作空间和用量"
+                    hint="查看会话、工作目录和用量"
                     onClick={() => {
                       close();
                       setDetails(true);
@@ -709,7 +709,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title="开一条侧聊…"
-                    hint={session.kind === 'side' ? '侧聊不能再生侧聊' : '用同一个工作空间和模型，单独问一轮，不打断这条会话'}
+                    hint={session.kind === 'side' ? '侧聊不能再生侧聊' : '用同一个工作目录和模型，单独问一轮，不打断这条会话'}
                     testId="session-side-open"
                     disabled={session.kind === 'side' || !('workspaceId' in session && session.workspaceId !== null)}
                     onClick={() => {
@@ -728,7 +728,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title="换个地方继续…"
-                    hint={canContinueElsewhere(session) ? '换台机器或工作空间，带着会话摘要接着做' : CONTINUE_DISABLED_HINT}
+                    hint={canContinueElsewhere(session) ? '换台机器或工作目录，带着会话摘要接着做' : CONTINUE_DISABLED_HINT}
                     disabled={!canContinueElsewhere(session)}
                     onClick={() => {
                       close();
@@ -747,7 +747,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title="删除会话…"
-                    hint={deleteHint ?? '永久删除这条会话的会话记录、产物引用和连线；工作空间里的文件保留'}
+                    hint={deleteHint ?? '永久删除这条会话的会话记录、产物引用和连线；工作目录里的文件保留'}
                     disabled={deleteHint !== null}
                     danger
                     testId="session-delete"
@@ -799,7 +799,7 @@ export function FocusView({
           data-testid="side-session-banner"
         >
           <span className="rounded bg-card px-1.5 py-0.5 text-meta text-tertiary">侧聊</span>
-          <span className="min-w-0 flex-1 truncate">这条会话是侧聊：用主会话的工作空间单独问了一轮</span>
+          <span className="min-w-0 flex-1 truncate">这条会话是侧聊：用主会话的工作目录单独问了一轮</span>
           <span className="shrink-0 text-accent">返回主会话</span>
         </button>
       ) : null}

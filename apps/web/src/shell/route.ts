@@ -1,5 +1,5 @@
 /**
- * 地址栏就是导航状态：`#/home` 首页，`#/p/<项目>/<视图>[/<会话>]`，`#/admin/<分页>` 运营后台，`#/assets/<分页>` / `#/assets/review/<提交>` 资产市场与审核，`#/memory[/<作用域>]` 记忆，`#/bots[/<项目>]` bot（持久智能体）。
+ * 地址栏就是导航状态：`#/home` 首页，`#/p/<项目>/<视图>[/<会话>]`，`#/admin/<分页>` 运营后台，`#/assets/<分页>` / `#/assets/review/<提交>` 资产市场与审核，`#/memory[/<作用域>]` 记忆，`#/bots[/<项目>]` Bot（常驻成员）。
  *
  * `#/observe` 可观测列表，`#/observe/<来源>/<id>` 一条链。
  * 为什么用 hash 而不是 history 路由：server 只托管一个 index.html，hash 不需要它配合回退；
@@ -37,7 +37,7 @@ export type Route =
   | { readonly page: 'observe'; readonly source: string | null; readonly id: string | null }
   | { readonly page: 'project'; readonly projectId: string; readonly view: View; readonly sessionId: string | null };
 
-/** 壳自己的页（跨形态的基础设施：工作空间、记忆、资产市场、可观测、运营后台）。 */
+/** 壳自己的页（跨形态的基础设施：工作目录、记忆、资产市场、可观测、运营后台）。 */
 function parseShellRoute(parts: readonly string[]): Route | null {
   if (parts[0] === 'admin') return { page: 'admin', tab: ADMIN_TABS.find((tab) => tab === parts[1]) ?? 'overview' };
   if (parts[0] === 'workspaces') return { page: 'workspaces' };

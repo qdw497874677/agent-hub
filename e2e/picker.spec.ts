@@ -9,7 +9,7 @@ const NAME = `picker-${RUN}`;
 const MANAGED = `/tmp/agent-hub-workspaces/${NAME}`;
 const SCRATCH = `/tmp/agent-hub-e2e-pick-${RUN}`;
 
-// 目录选择器的宿主：开始任务时的「新建持久工作空间」（建项目表单不再选目录）。
+// 目录选择器的宿主：开始任务时的「新建持久工作目录」（建项目表单不再选目录）。
 // 项目名就是 NAME，托管目录按它算。项目 / 任务走 API 建一次，之后每段重新打开对话框。
 let projectId: string | null = null;
 const TASK = `选目录-${RUN}`;
@@ -29,8 +29,8 @@ async function openPickerFor(page: Page, name: string) {
   await page.goto(`/#/p/${projectId}`);
   await page.reload();
   await page.locator(".react-flow__node-task").filter({ hasText: TASK }).getByRole("button", { name: "＋ 会话" }).click();
-  const panel = page.getByRole("dialog", { name: "在哪台机器、哪个工作空间干活？" });
-  await panel.getByRole("radio", { name: /新建持久工作空间/ }).click();
+  const panel = page.getByRole("dialog", { name: "在哪台机器、哪个工作目录干活？" });
+  await panel.getByRole("radio", { name: /新建持久工作目录/ }).click();
   const picker = page.getByLabel("目录选择器");
   await expect(picker).toBeVisible();
   return { panel, picker };

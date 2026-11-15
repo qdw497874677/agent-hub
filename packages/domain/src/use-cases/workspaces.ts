@@ -2,7 +2,7 @@ import { principalOfSubject, type Subject } from '../access.ts';
 import type { Location, Project } from '../project.ts';
 import type { WorkspaceGroup } from '../workspace-group.ts';
 import { groupMemberRoot, primaryMember } from '../workspace-group.ts';
-import type { Session } from '../session.ts';
+import { isContainerSession, type Session } from '../session.ts';
 import { concurrencyOf, isUsable, newWorkspace, normalizePath, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
 import type { Machine } from './machine-dirs.ts';
@@ -23,31 +23,35 @@ import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 /**
  * 会话属于哪个项目：
  * - 有任务的会话跟着任务走；
- * - 容器会话（#221 步骤 7）没有任务，按归属兜底：组合工作空间 → bot → 工作空间登记的项目。
+ * - 容器会话（#221 步骤 7）没有任务，按归属兜底：组合工作空间 → 工作空间登记的项目。
  * 三样都没有就返回 null，调用方必须当成「落不了地」拒绝，而不是猜。
+ *
+ * 依赖一律必填：每个调用方都得明确给出这三样查找端口，避免「忘了传 → 静默返回 null」。
+ * `bots` 目前不参与判定（bot 不隶属项目，项目从会话实际落的工作空间反推），但保留在依赖里
+ * 让「会话 → 项目」只有一个入口，调用方不用猜哪些端口与归属有关。
  */
 export interface ProjectLookupDeps {
   readonly tasks: Pick<TaskRepository, 'byId'>;
   readonly projects: Pick<ProjectRepository, 'byId'>;
-  readonly workspaceGroups?: Pick<WorkspaceGroupRepository, 'byId'>;
-  readonly bots?: Pick<BotRepository, 'byId'>;
-  readonly workspaces?: Pick<WorkspaceRepository, 'byId'>;
+  readonly workspaceGroups: Pick<WorkspaceGroupRepository, 'byId'>;
+  readonly bots: Pick<BotRepository, 'byId'>;
+  readonly workspaces: Pick<WorkspaceRepository, 'byId'>;
 }
 
 export async function projectOfSession(
   deps: ProjectLookupDeps,
-  session: Pick<Session, 'taskId' | 'workspaceId'> & { readonly groupId?: WorkspaceGroupId | null; readonly botId?: string | null }
+  session: Pick<Session, 'taskId' | 'workspaceId' | 'groupId' | 'botId'>
 ): Promise<Project | null> {
-  if (session.taskId !== null) {
+  if (!isContainerSession(session)) {
     const task = await deps.tasks.byId(session.taskId);
     return task ? deps.projects.byId(task.projectId) : null;
   }
-  if (session.groupId && deps.workspaceGroups) {
+  if (session.groupId) {
     const group = await deps.workspaceGroups.byId(session.groupId);
     if (group) return deps.projects.byId(group.projectId);
   }
   // bot 不再隶属单个项目，项目从会话实际落的工作空间反推（同一 bot 可在多个项目里跑）。
-  if (session.workspaceId && deps.workspaces) {
+  if (session.workspaceId) {
     const workspace = await deps.workspaces.byId(session.workspaceId);
     if (workspace?.projectId) return deps.projects.byId(workspace.projectId);
   }

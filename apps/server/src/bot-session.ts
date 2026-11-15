@@ -1,4 +1,15 @@
-import type { BotId, BotRepository, ProjectId, ProjectRepository, Session, SessionId, SessionRepository, TaskRepository, WorkspaceRepository } from '@agent-hub/domain';
+import {
+  projectOfSession,
+  type BotId,
+  type BotRepository,
+  type ProjectRepository,
+  type Session,
+  type SessionId,
+  type SessionRepository,
+  type TaskRepository,
+  type WorkspaceGroupRepository,
+  type WorkspaceRepository
+} from '@agent-hub/domain';
 
 /** 这条会话是哪个 bot 开的：项目 + @id（名字）+ bot id。 */
 export interface BotOfSession {
@@ -13,10 +24,12 @@ export interface BotOfSessionDeps {
   readonly sessions: Pick<SessionRepository, 'byId'>;
   readonly tasks: Pick<TaskRepository, 'byId'>;
   readonly bots: Pick<BotRepository, 'byId' | 'byName'>;
+  /** 组合工作空间：容器会话的项目优先从它反推。 */
+  readonly workspaceGroups: Pick<WorkspaceGroupRepository, 'byId'>;
   /** 容器会话的项目从实际落的工作空间反推（bot 不再隶属项目）。 */
-  readonly workspaces?: Pick<WorkspaceRepository, 'byId'>;
+  readonly workspaces: Pick<WorkspaceRepository, 'byId'>;
   /** 按名字反查老会话时，名字在团队内唯一，要先由项目找到团队。 */
-  readonly projects?: Pick<ProjectRepository, 'byId'>;
+  readonly projects: Pick<ProjectRepository, 'byId'>;
   /** 历史派生记录（agent_spawns）里的角色名，兼容老会话用。 */
   readonly spawnOf: (sessionId: SessionId) => Promise<{ role: string } | null>;
   /** 群成员会话映射里的角色名，兼容老会话用。 */
@@ -34,23 +47,19 @@ export interface BotOfSessionDeps {
  * 存的是 @id。反查只是过渡，等老会话都过期 / 迁移后可删。
  */
 export function createBotOfSession(deps: BotOfSessionDeps): (sessionId: SessionId) => Promise<BotOfSession | null> {
-  const projectOf = async (session: Session): Promise<string | null> => {
-    if (session.taskId !== null) {
-      const task = await deps.tasks.byId(session.taskId);
-      if (task) return task.projectId;
-    }
-    if (session.workspaceId && deps.workspaces) {
-      const workspace = await deps.workspaces.byId(session.workspaceId);
-      if (workspace?.projectId) return workspace.projectId;
-    }
-    return null;
-  };
+  // 项目归属只有一套判据：任务 → 组合工作空间 → 工作空间（`projectOfSession`）。
+  const projectOf = (session: Session) =>
+    projectOfSession(
+      { tasks: deps.tasks, projects: deps.projects, workspaceGroups: deps.workspaceGroups, bots: deps.bots, workspaces: deps.workspaces },
+      session
+    );
   return async (sessionId) => {
     const session = await deps.sessions.byId(sessionId);
     if (!session) return null;
-    // 容器会话（群/bot 常驻）没有任务，项目从群/bot/工作空间反推（#221 步骤 7）。
-    const projectId = await projectOf(session);
-    if (projectId === null) return null;
+    // 容器会话（群/bot 常驻）没有任务，项目从群/工作空间反推（#221 步骤 7）。
+    const project = await projectOf(session);
+    if (project === null) return null;
+    const projectId = project.id;
 
     if (session.botId) {
       const bot = await deps.bots.byId(session.botId);
@@ -61,7 +70,7 @@ export function createBotOfSession(deps: BotOfSessionDeps): (sessionId: SessionI
     // --- 兼容路径：没有 bot_id 的老会话，只能按名字推导 ---
     const role = (await deps.spawnOf(sessionId))?.role ?? (await deps.memberOfSession(sessionId))?.role ?? null;
     if (!role) return null;
-    const teamId = (await deps.projects?.byId(projectId as ProjectId))?.teamId ?? 'team_legacy';
+    const teamId = project.teamId ?? 'team_legacy';
     const bot = await deps.bots.byName(teamId, role);
     return { projectId, name: role, botId: bot?.id ?? null };
   };

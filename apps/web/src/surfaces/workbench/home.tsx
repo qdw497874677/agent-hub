@@ -297,7 +297,7 @@ function CreateProjectPanel({
         onChange={(event) => setDescription(event.target.value)}
       />
 
-      {/* 项目只是 hub 里的一条记录，不绑机器；工作空间在开始任务时（选机器 → 选工作空间）再定。 */}
+      {/* 项目只是 hub 里的一条记录，不绑机器；工作目录在开始任务时（选机器 → 选工作目录）再定。 */}
       <button
         type="button"
         aria-expanded={gitOpen}
@@ -333,7 +333,7 @@ function CreateProjectPanel({
               onChange={(event) => setDefaultBranch(event.target.value)}
             />
           </div>
-          <p className="mt-1.5 text-meta text-tertiary">新建工作空间时会把仓库下载到那台机器。</p>
+          <p className="mt-1.5 text-meta text-tertiary">新建工作目录时会把仓库下载到那台机器。</p>
         </div>
       ) : null}
 

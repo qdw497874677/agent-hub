@@ -58,7 +58,7 @@ test.describe('触摸设备', () => {
     await tab.click();
 
     await expect(page.getByTestId('terminal-pane')).toBeVisible();
-    // 新建会话要等 worker 登记工作空间，hub 侧会重试最多 10s
+    // 新建会话要等 worker 登记工作目录，hub 侧会重试最多 10s
     await expect(page.getByTestId('terminal-status')).toHaveText(/已连接/, { timeout: 30_000 });
 
     const keys = page.getByTestId('terminal-keys');

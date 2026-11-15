@@ -7,7 +7,7 @@ import { piModel } from './hub-model.ts';
 
 /**
  * 对话里工具调用参数的文件路径可点：点了切到会话「文件」页并打开那个文件，知道行号就滚到那一行。
- * 只认工具参数（不扫正文）；工作空间外的路径不可点。390 手机 + 1280 桌面各走一遍。
+ * 只认工具参数（不扫正文）；工作目录外的路径不可点。390 手机 + 1280 桌面各走一遍。
  * 真 worker（假 agent）不会调工具：跑一轮真的，再往历史接口里插几条 tool_call。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'] ?? '/tmp/opencode/shots/tool-path-links';
@@ -54,7 +54,7 @@ async function setup(page: Page, baseURL: string) {
 }
 
 for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width: 1280, height: 860, tag: 'desktop-1280' }]) {
-  test(`工具参数路径可点（${viewport.tag}）：跳到文件页对应行；工作空间外不可点`, async ({ page, baseURL }) => {
+  test(`工具参数路径可点（${viewport.tag}）：跳到文件页对应行；工作目录外不可点`, async ({ page, baseURL }) => {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
     const { project, id } = await setup(page, baseURL!);
     await page.goto(`/#/p/${project.id}/focus/${id}`);
@@ -66,7 +66,7 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     await expect(links.nth(0)).toHaveAttribute('data-path', 'src/app.ts');
     await expect(links.nth(0)).toHaveAttribute('data-line', '80');
     await expect(links.nth(1)).toHaveAttribute('data-path', 'README.md');
-    // 工作空间外：照样显示，但不是按钮
+    // 工作目录外：照样显示，但不是按钮
     await expect(log.getByTestId('tool-input').filter({ hasText: '/etc/hosts' })).toBeVisible();
     await expect(log.getByTestId('tool-input').filter({ hasText: '../outside.txt' })).toBeVisible();
     // 正文里的路径不可点
@@ -85,7 +85,7 @@ for (const viewport of [{ width: 390, height: 844, tag: 'mobile-390' }, { width:
     else await expect(panel.getByTestId('files-back')).toBeVisible();
     await page.screenshot({ path: `${SHOTS}/${viewport.tag}-file.png` });
 
-    // 回到对话点第二个（绝对路径、在工作空间内，没有行号）
+    // 回到对话点第二个（绝对路径、在工作目录内，没有行号）
     await page.getByTestId('session-tab-chat').click();
     await links.nth(1).click();
     await expect(page.getByTestId('session-tab-files')).toHaveAttribute('aria-selected', 'true');

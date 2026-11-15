@@ -14,8 +14,8 @@ const taskNode = (page: Page, title: string) => page.locator('.react-flow__node-
 const sessionNode = (page: Page) => page.locator('.react-flow__node-session');
 
 async function chooseWorkspace(_page: Page, dialog: Locator): Promise<void> {
-  // 这个测试只关心 profile 的保存/套用，不关心目录选择；用临时工作空间避免路径输入框。
-  await dialog.getByRole('radio', { name: /新建临时工作空间/ }).click();
+  // 这个测试只关心 profile 的保存/套用，不关心目录选择；用临时工作目录避免路径输入框。
+  await dialog.getByRole('radio', { name: /新建临时工作目录/ }).click();
 }
 
 test.beforeAll(() => {
@@ -41,7 +41,7 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
 
   // 第一条会话：保存成 profile。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const firstRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
+  const firstRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
   await chooseWorkspace(page, firstRun);
   await chooseHubModel(firstRun);
   await firstRun.getByRole('button', { name: '开始' }).click();
@@ -69,7 +69,7 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   // 回画布，派生第二条会话并选 profile。
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const secondRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作空间干活？' });
+  const secondRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
   await chooseWorkspace(page, secondRun);
   const profile = secondRun.getByLabel('Agent 配置（可留空）');
   const profileOption = profile.locator('option').filter({ hasText: `${PROFILE_NAME}-改` });

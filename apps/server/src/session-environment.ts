@@ -11,7 +11,7 @@ import type {
   TaskId,
   WorkerCommand
 } from '@agent-hub/domain';
-import { sessionAssetPlan, sessionMcpLaunch } from '@agent-hub/domain';
+import { isContainerSession, sessionAssetPlan, sessionMcpLaunch } from '@agent-hub/domain';
 
 export type { PreparedStart };
 
@@ -152,7 +152,7 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     async revision(session) {
       if (!session.workerId) return null;
       try {
-        const container = session.taskId === null ? await options.containerProject?.(session.id) ?? null : undefined;
+        const container = isContainerSession(session) ? await options.containerProject?.(session.id) ?? null : undefined;
         const resolved = await resolve(session.workerId, session.taskId, true, container ?? undefined);
         return resolved?.revision ?? null;
       } catch (failure) {

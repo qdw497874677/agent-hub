@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
 
-/** Bot（持久智能体）页 + 建群只选成员 + 成员增删；390 / 1280 两种宽度都走一遍并截图。 */
+/** Bot（常驻成员）页 + 建群只选成员 + 成员增删；390 / 1280 两种宽度都走一遍并截图。 */
 const SHOTS = process.env['BOTS_SHOTS_DIR'] ?? 'test-results/bots';
 mkdirSync(SHOTS, { recursive: true });
 

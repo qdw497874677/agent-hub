@@ -1,4 +1,4 @@
-import type { AgentProfile, AgentRef, Bot, MessagingConfig, PersistentAgent } from '@agent-hub/domain';
+import type { AgentProfile, AgentRef, Bot, MessagingConfig } from '@agent-hub/domain';
 
 /**
  * HTTP / DTO 边界：domain 内部统一用 `ref`，对外的 JSON 仍是老的扁平形状
@@ -23,7 +23,7 @@ export const agentProfileDto = (profile: AgentProfile) => ({
   updatedAt: profile.updatedAt
 });
 
-export const botDto = (agent: PersistentAgent) => {
+export const botDto = (agent: Bot) => {
   const { ref, ...rest } = agent;
   return { ...rest, ...refDto(ref) };
 };

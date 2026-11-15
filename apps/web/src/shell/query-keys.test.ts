@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { directoryScope, filesInvalidationKeys, filesKeys, gitKeys, projectKeys, taskKeys, workspaceKeys } from './query-keys.ts';
 
-test('目录归属：有工作空间用 workspaceId，老会话回退 sessionId', () => {
+test('目录归属：有工作目录用 workspaceId，老会话回退 sessionId', () => {
   assert.equal(directoryScope('wsp-1', 'ses-1'), 'wsp-1');
   assert.equal(directoryScope(null, 'ses-1'), 'ses-1');
   assert.equal(directoryScope(undefined, 'ses-1'), 'ses-1');
@@ -20,7 +20,7 @@ test('文件树 / 内容 / 搜索 / context 跟着目录走', () => {
   assert.deepEqual(shared.context(), ['files', 'wsp-1', 'context']);
   assert.deepEqual(shared.dir, ['files', 'wsp-1']);
 
-  // 没有工作空间：目录维度就是 sessionId
+  // 没有工作目录：目录维度就是 sessionId
   const solo = filesKeys(null, 'ses-1');
   assert.deepEqual(solo.list('src'), ['files', 'ses-1', 'list', 'src']);
   assert.deepEqual(solo.read('src/a.ts', false), ['files', 'ses-1', 'read', 'src/a.ts', false]);
@@ -42,7 +42,7 @@ test('基准决定归属：HEAD 是目录的，会话 / 某一轮是会话自有
   assert.deepEqual(keys.turns(), ['files', 'ses-1', 'turns']);
 });
 
-test('失效前缀：共享目录时两条，没有工作空间时只有一条', () => {
+test('失效前缀：共享目录时两条，没有工作目录时只有一条', () => {
   const shared = filesInvalidationKeys(filesKeys('wsp-1', 'ses-1'));
   assert.deepEqual(shared, [['files', 'wsp-1'], ['files', 'ses-1']]);
 
