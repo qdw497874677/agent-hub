@@ -74,6 +74,30 @@ test('@ 成员直达：成员在群里回话，调用链能链到会话', async 
   expect(chains.chains[0]?.deliveries.some((d) => d.role === 'echo' && d.sessionId)).toBe(true);
 });
 
+test('主持人分派：不 @ 任何人，主持人自己接话并落帖', async ({ page, baseURL }) => {
+  test.setTimeout(240_000);
+  const w = await world(page, baseURL!);
+  test.skip(!w.agentId, '这台机器上没有可用的 agent');
+  await page.request.put(`/api/projects/${w.project}/messaging`, {
+    headers: w.headers,
+    data: { roles: [{ name: 'host', agentId: w.agentId, model: piModel() }], limits: {} }
+  });
+  const g = await page.request.post(`/api/projects/${w.project}/groups`, {
+    headers: w.headers,
+    data: { name: '主持组', members: ['host'], hostRole: 'host', speakingStrategy: 'host' }
+  });
+  expect(g.ok(), await g.text()).toBe(true);
+  const group = (await g.json()) as { id: string };
+  await page.goto(`/#/messages/${w.project}/${group.id}`);
+  await expect(page.getByTestId('group-host-chip')).toBeVisible();
+  // 不 @ 任何人：分派应该轮到主持人
+  await page.getByTestId('group-input').fill('只回复一个词：pong');
+  await page.getByTestId('group-send').click();
+  await expect(page.locator('[data-testid="group-post"][data-author="agent"]').first()).toBeVisible({ timeout: 200_000 });
+  const chains = (await (await page.request.get(`/api/groups/${group.id}/chains`)).json()) as { chains: { deliveries: { role: string; sessionId: string | null }[] }[] };
+  expect(chains.chains[0]?.deliveries.some((d) => d.role === 'host' && d.sessionId)).toBe(true);
+});
+
 test('只能 @ 群成员：@ 群外角色只给提示和「加入群组」，加进来后不重放，再 @ 才算', async ({ page, baseURL }) => {
   const w = await world(page, baseURL!);
   await page.request.put(`/api/projects/${w.project}/messaging`, {
