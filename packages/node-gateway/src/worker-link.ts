@@ -1105,6 +1105,18 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         return undefined;
       });
     if (assets) spec = { ...spec, assets };
+    if (command.assetIds && command.assetIds.length > 0) {
+      const gone = await options.assets
+        ?.missing(new Set(command.assetIds))
+        .catch(() => [] as readonly string[]);
+      if (gone && gone.length > 0) {
+        send({
+          type: 'event',
+          sessionId: command.sessionId,
+          event: { kind: 'diagnostic', level: 'warn', text: `这台机器上缺少 ${gone.length} 个资产：${gone.join('、')}；本次会话没有带上它们` }
+        });
+      }
+    }
 
     // 同一会话又来一次 start（比如断线后 server 重新托管）：进程还活着、agent 和工作目录都没变，
     // 就直接复用——不能 spawn 第二个进程抢同一份会话文件。复用不了（分叉 / 换了 agent 或目录）

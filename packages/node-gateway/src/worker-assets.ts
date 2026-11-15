@@ -39,6 +39,11 @@ export interface WorkerAssets {
    * 没给清单 = 什么都不给（#223 fail-closed）；旧语义「没给 = 全给」已废弃。
    */
   current(only?: ReadonlySet<string>): Promise<SessionAssets | undefined>;
+  /**
+   * 清单里点了名、但这台机器上找不到版本目录的资产（名字）。
+   * 会话照常启动，由调用方把「degraded」说给用户听——不能静默继续（#225 M3）。
+   */
+  missing(only?: ReadonlySet<string>): Promise<readonly string[]>;
 }
 
 export type FetchBlobs = (hashes: readonly string[]) => Promise<readonly { sha256: string; data: string }[]>;
@@ -237,7 +242,11 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
       await queue;
       // 清单为空 = 一个都不给（#223）。历史上 `only` 缺省表示「全给」，那等于把
       // hub 的解析失败放大成「把机器上所有资产塞进会话」——现在一律按显式清单过滤。
-      const entries = (await readManifest()).filter((entry) => only.has(entry.assetId));
+      const listed = (await readManifest()).filter((entry) => only.has(entry.assetId));
+      if (listed.length === 0) return undefined;
+      // 版本目录被清掉/磁盘丢了：不给路径，由 missing() 说给用户听（#225 M3）。
+      const entries: AssetManifestEntryWire[] = [];
+      for (const entry of listed) if (await exists(versionPath(entry))) entries.push(entry);
       if (entries.length === 0) return undefined;
       const skills = entries
         .filter((entry) => entry.kind === 'skill')
@@ -246,6 +255,15 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
         .filter((entry) => entry.kind === 'instruction')
         .map((entry) => ({ name: entry.name, path: versionPath(entry) }));
       return { root, skills, instructions };
+    },
+    async missing(only = new Set<string>()) {
+      await queue;
+      const entries = (await readManifest()).filter((entry) => only.has(entry.assetId));
+      const gone: string[] = [];
+      for (const entry of entries) {
+        if (!(await exists(versionPath(entry)))) gone.push(entry.name);
+      }
+      return gone;
     }
   };
 }

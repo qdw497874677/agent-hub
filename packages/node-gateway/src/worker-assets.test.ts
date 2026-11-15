@@ -197,6 +197,20 @@ test('Worker 资产目录：没给资产清单 = 一个都不给，不再等于�
   }
 });
 
+test('Worker 资产目录：清单里点名但版本目录不在了 = missing 报出来，current 不给（#225 M3）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-missing-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    await assets.sync([skill('greeter', 'v1', 'a'.repeat(64)), rule], fetch);
+    assert.deepEqual(await assets.missing(new Set(['a-greeter', 'a-rules'])), []);
+    await rm(join(root, 'assets', a12), { recursive: true, force: true });
+    assert.deepEqual(await assets.missing(new Set(['a-greeter'])), ['greeter']);
+    assert.equal(await assets.current(new Set(['a-greeter'])), undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('Worker 资产目录：项目级同名技能落到 project-skills/<id8>/<name> 链接，current 只给这次会话生效的', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wa-scope-'));
   try {
