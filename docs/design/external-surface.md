@@ -44,6 +44,8 @@ Capability Surface ── Actor（谁授权、以谁名义、经哪条渠道）
   （`task:create`、`git`、`memory.write`）必须显式授权，且按项目边界校验。
 - **一条调用链一个 correlation id**：`taskId` 作为回执，`sessionId` 与 `assetRevision`
   挂在任务详情上，调用方不需要理解会话。
+- **v1 对外只开「任务委派 + 消息」五件**（§5.1）。建项目、改配置、资产集仍由界面/HTTP
+  完成；等 v1 稳定、安全评审通过后再考虑把它们包成 MCP 工具。
 
 ## 3. 资产：AssetSet 是外部调用方唯一需要理解的单位
 
@@ -107,109 +109,72 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
 - 资产访问遵循 §3.5；MCP 端点不直接改资产内容，只读 catalog 与引用。
 - 写调用带 `idempotencyKey`（客户端生成，24h 内同键返回首次结果），避免重试造成重复项目/任务。
 
-### 5.1 工具面
+### 5.1 v1 只做五件事
 
-三层，按 scope 开放；默认 token 只有第 1 层。
-
-**第 1 层：只读 / 交付物**
-
-| 工具 | 说明 |
-| --- | --- |
-| `project.list` / `project.get` | 我可见的项目、配置摘要（仓库、检查命令、默认资产集） |
-| `asset.list` / `asset.get` / `assetSet.list` | 可引用的资产与资产集 |
-| `task.get` / `task.log` / `task.progress` | 任务详情、工作日志（`after=seq`）、长轮询进展 |
-| `session.get` / `session.events` | 会话状态与事件（只读，`after=seq`） |
-| `preview.list` | 预览端口与链接（不含分享令牌） |
-
-**第 2 层：组织与配置（`project.update` / `asset.write`）**
+外部调用方真正要的是「把活交给工作台、知道它干到哪、能回答它的问题、最后拿到 PR」。
+其余（建项目、配资产集、改项目设置）不需要经过 MCP。
 
 | 工具 | 说明 |
 | --- | --- |
-| `project.create` | 建项目：名称、仓库清单（`repos[]`，第一个为主仓库）、默认分支、可见性；需 `project.create` |
-| `project.update` | 改说明、检查命令、默认分支、预览默认端口、worktree 策略；不动代码 |
-| `project.repo.add/remove` | 改仓库清单（≤8），保存前跑 `repos/check`，失败即拒 |
-| `assetSet.create` / `assetSet.update` | 建/改资产集（引用已发布资产；越权引用拒绝） |
-| `assetSet.bind` | 绑定到项目默认、Bot 默认，或作为任务默认 |
-| `bot.list` / `bot.get` | 团队内可委派的 Bot（只读；改 Bot 仍走界面） |
+| `task.create` | 给项目下派一个任务：`{projectId, prompt, baseBranch?, deliver?}`；返回 `{taskId, sessionId}` |
+| `task.get` | 任务详情：状态、分支、commit、PR、`lastSeq`、最后一句话 |
+| `task.messages` | `after=seq` 拉会话消息与工具摘要（复用 journal，分页 `limit≤200`） |
+| `task.reply` | 给运行中的会话补一句话（回答反问、追加约束）；走现有送达队列，不新开会话 |
+| `task.cancel` | 取消排队或打断运行中的会话 |
 
-**第 3 层：委派与执行（`task.create` / `session:control` / `git`）**
+`deliver` 只表达交付意图：`{branch: string, openPr: boolean}`（分支名不合法时由服务端
+规范化，PR 目标固定为 `baseBranch`）。不提供任意 git 操作；需要 review/部署的后续用
+会话里已有的工具完成，或作为 v2 扩展。
 
-| 工具 | 说明 |
-| --- | --- |
-| `task.create` | 派活：见 §5.2 的任务形态；返回 `taskId`，后续靠 `task.progress` 跟 |
-| `task.cancel` | 取消排队或打断运行中的任务（与界面同一套 409 语义） |
-| `session.derive` | 从某会话分叉（保留上下文、换机器/工作目录） |
-| `session.stop` | 停掉跑偏的会话 |
-| `run.checks` | 跑项目声明的检查命令，返回 exit code 与失败摘要 |
-| `git.state` / `git.commit` / `git.push` / `git.pr` | 提交与推送（默认禁止推默认分支）、建 PR |
+### 5.2 提示词与交付
 
-### 5.2 任务形态：编码、校验、起服务
+- `prompt` 是任务的全部输入（markdown，≤ 32 KB），服务端只在前后补「交付要求」与
+  「遇到阻塞就提问」两段固定说明，不替调用方写实现细节。
+- `deliver.branch` 给定时写进任务，任务结束前由 agent 在 worktree 里提交并推送；
+  `openPr` 为真时建 PR 并把 URL 写回 `task.get`。默认分支仍禁止直接推送。
+- `kind` 字段不要了：v1 只有一种「编码任务」。起服务/跑检查由提示词决定，agent 用现有
+  工具（`run.checks`、终端、预览）自行完成，产物在 `task.get` 里可见。
 
-外部调用方不需要理解「会话/工作目录」，只需要说清「要产出什么」。`task.create` 用
-`kind` 描述形态，服务端决定 worktree 策略、资产集、检查与预览：
+### 5.3 反问与消息（关键交互）
 
-| kind | 干什么 | 工作目录 | 产出 |
-| --- | --- | --- | --- |
-| `code`（默认） | 改代码、跑检查、提交 | `isolated` worktree（或调用方指定 `shared`） | 分支 + commit（可要求 `openPr`） |
-| `check` | 只跑检查/测试，不改代码 | `shared`，只读优先 | 检查报告（exit code、失败摘要、日志 seq 区间） |
-| `serve` | 本地起服务供预览 | `shared` 或调用方指定 | `previewLink`（端口、URL、存活状态） |
-| `review` | 审一个分支/PR，输出意见 | `isolated`（按 base 检出） | 审阅结论 + 行内引用 |
-
-请求形状（示意）：
-
-```json
-{
-  "projectId": "p_...",
-  "kind": "code",
-  "title": "补外部 MCP 的 task.progress",
-  "goal": "...markdown...",
-  "baseBranch": "main",
-  "assetSetId": "as_...",
-  "agent": { "runtime": "opencode", "model": "" },
-  "workspace": { "mode": "isolated" },
-  "checks": true,
-  "deliver": { "branch": "agent-hub/xxx", "openPr": true }
-}
-```
-
-- `kind` 只是默认值的组合，不新增领域实体；后续可以加 `TaskTemplate`（团队保存的预设），
-  复用同一字段。
-- `serve` 的预览链接沿用现有 preview link（端口映射 / 前缀两种模式），权限是
-  `preview.create`；MCP 不签发分享令牌，只返回会话内可见的链接。
-- `checks: true` 时，任务结束前自动跑 `Project.checks`，结果写进任务日志最后一段。
-
-### 5.3 一次完整委派
+工作台里的会话本来就能多轮交谈，不需要新的阻塞式问答协议：
 
 ```
-1. project.get / project.list          → 找到项目，确认仓库与检查命令
-2. assetSet.list（可选）               → 选一套资产
-3. task.create({kind:'code', ...})     → {taskId}
-4. task.progress({taskId, after, wait})→ 阶段进展（正在改文件 / 正在跑命令）
-5. task.get                            → 分支、commit、检查结果、失败原因
-6. git.pr（可选）或 preview.list（serve 任务）
+task.create(prompt) ──► 会话开跑
+        │
+        ├─ agent 需要确认：调用 `task.ask(question)`
+        │     → 作为一条 outbound 消息写进 journal（kind:'question'）
+        │     → 本轮结束，会话进入 idle（进程保活）
+        │
+        └─ 调用方 task.messages(after) 看到 question
+              → task.reply(text)
+              → 送达队列把这句话投给同一个会话，开启下一轮
 ```
 
-任何一步失败都返回结构化 `{code, message, hint}`，且同一个 `taskId` 在 `task.get` 里能
-看到完整原因（包括超时、模型无额度、资产缺失）。
+- `task.ask` 不是阻塞调用：agent 问完就结束本轮，避免长时间占用模型与 worker。
+- `task.reply` 复用 ADR 0031 的送达队列：会话在跑时排队、空闲时立刻投递；同一任务多条
+  回复按序执行，不会打架。
+- `task.messages` 是唯一读通道，`seq` 单调，断线重连用 `after` 补齐；消息里带
+  `{kind:'text'|'question'|'tool'|'ended', author, text, at}`，调用方不需要理解事件类型全集。
 
 ### 5.4 安全与配额
 
-- `project.create` 需要团队级 `project.create`；个人 token 只在个人空间建项目。
-- 外部调用方的写能力受项目配额约束：并发任务数、每分钟创建数、每项目资产集数。
-- 不可信输入：`goal` / 外部消息一律按不可信文本注入（`<untrusted>` 包裹、禁 `@all`）；
-  外部调用方不能通过 MCP 指定 `createdBy`、workspace 绝对路径或 workerId（由放置策略决定）。
-- 审计：`mcp.project.create`、`mcp.task.create`、`mcp.assetSet.bind`、`mcp.git.push` 等
-  动作记 token、项目、taskId；git 推送仍受「禁止推默认分支」与 `git.push` 权限约束。
+- token 绑定单个项目（v1）；越权访问其他项目一律 404，不泄露存在性。
+- `prompt` 与 `reply` 按不可信文本注入（`<untrusted>` 包裹），不能触发 `@all`、不能指定
+  `createdBy`、workspace 路径或 workerId。
+- 写调用带 `idempotencyKey`（24h），重复提交返回同一个 `taskId`。
+- 配额：每 token 并发任务数、每分钟创建数；`task.reply` 计入消息速率。
+- 审计：`mcp.task.create` / `mcp.task.reply` / `mcp.task.cancel`，记 token、项目、taskId。
 
 ## 6. 分期
 
 | 期 | 内容 | 依赖 | 验收 |
 | --- | --- | --- | --- |
-| E1 | #226 P1 剩余（track/locked、显式凭据、批量、稀疏检出、审核报告） | 已完成的 URL 拆分 | 一次导入多个技能并锁定 commit |
-| E2 | 协议级冻结（§3.4）+ P4 不可变版本库/每会话视图 | E1 的 digest 语义 | 两个并发会话用同名资产不同版本互不干扰 |
-| E3 | AssetSet 实体 + 绑定优先级 + 会话创建界面 | E2 | 同项目两个会话选不同资产集，注入互不相同 |
-| E4 | 对外 MCP 端点的第 1–2 层（只读 + 项目/资产配置）+ 审计/限流 | E2、Actor | 外部 agent 用自己的 token 建项目、配资产集、读进展 |
-| E5 | 第 3 层（`task.create` 的 code/check/serve/review、derive/stop、git 分支策略） | E4 + 安全评审 | 外部调用方能派编码任务、拿到分支/PR 与预览链接 |
+| E1 | #226 P1 剩余（track/locked、显式凭据、批量导入、审核报告） | URL 拆分已完成 | 一次导入多个技能并锁定 commit |
+| E2 | 资产协议级冻结 + 不可变版本库/每会话视图 | E1 的 digest 语义 | 两个并发会话用同名资产不同版本互不干扰 |
+| E3 | AssetSet 实体与绑定（界面内使用；暂不开放给 MCP） | E2 | 同项目两个会话选不同资产集，注入互不相同 |
+| E4 | **MCP v1：`task.create` / `task.get` / `task.messages` / `task.reply` / `task.cancel`** + 审计/限流/幂等 | `836fd63` 的进展流、`task.ask` 工具 | 外部 agent 派编码任务、回答反问、拿到分支与 PR |
+| E5 | 会话内 `task.ask`（反问）+ 交付收尾（PR URL 回写）打磨 | E4 | 双向消息闭环，不需要外部轮询会话事件 |
 
 ## 6.1 现状差距（要写代码的部分）
 
@@ -238,6 +203,9 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
 - 会话默认 snapshot，`follow` 需显式声明。
 - 进展以工作日志为规范流，MCP 用长轮询而不是第二条 SSE。
 - 资产集必须先上线 E2（协议冻结），才能对外开放自选。
+
+v2 才考虑（不阻塞 v1）：`project.create` / `project.update` / `assetSet.*` 经由 MCP 开放；
+需要团队管理员 scope 与安全评审。v1 明确不做，避免把「建项目、配资产」变成外部 agent 的写面。
 
 待拍板：
 
