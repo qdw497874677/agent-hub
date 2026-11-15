@@ -351,6 +351,9 @@ export const api = {
   /** 项目默认预览端口（docs/design/preview.md §10）：同一个 PATCH，只带 previewPort。 */
   saveProjectPreviewPort: (projectId: string, previewPort: number | null) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ previewPort }) }),
+  /** 项目检查命令（issue #216 P1）：同一个 PATCH，只带 checks；空数组 = 清掉。 */
+  saveProjectChecks: (projectId: string, checks: readonly string[]) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ checks }) }),
   /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
   saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),
