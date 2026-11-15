@@ -50,12 +50,16 @@ export interface ChannelBinding {
   // 不变：id, connector, kind, agentProjectId, agentName, projectId, name, enabled,
   //       pausedReason, consecutiveFailures, params, timeZone, createdBy, mainSessionId
   readonly target: BindingTarget;
-  /** 外部会话 id（channel 侧）→ 目标。为空时按 target 的默认值（main 会话 / 指定群）。 */
-  readonly conversation?: string | null;
 }
 ```
 
-存储沿用 `connector_binding` 表：`target` 列保留旧语义（`main|new`），新增 `target_kind`、`group_id`、`conversation`。`toB` 先读新列，读不到回落旧值（`packages/storage-sqlite/src/connectors.ts:6-15,30`）。DTO 只加可选字段，旧前端不受影响（`packages/contract/src/messaging.ts:94,121`）。
+存储沿用 `connector_binding` 表：`target` 列保留旧语义（`main|new`），新增 `target_kind`、`group_id`。默认目标只放在 binding 上，**外部会话到目标的映射只放 `channel_conversation`**——两处都写会在更新时分叉。
+
+读路径（`packages/storage-sqlite/src/connectors.ts:6-15`）必须**先看 `target_kind`，为空才回落 `target`**。现状是 `target === 'new' ? 'new' : 'main'`（`:30`），任何非 `new` 的值（包括 `group`）都会被压成 `main`，照文档「读不到就回落」实现会让群 binding 被 `sessionFor`（`:66-74`）当私聊去开会话。
+
+写路径同样危险：`saveBinding` 是整行 `INSERT OR REPLACE`（`:38-39,50`），列清单不含新列；`fail`（`:58`）、`sessionFor`（`:73`）、`update`（`:229`）每次成功/失败都会整行替换。C1 必须同时把这些写入改成带新列的 upsert，或改成 `UPDATE` 只动变更列，否则 `target_kind`/`group_id` 会在第一次 tick 后变 NULL。
+
+DTO 兼容（`packages/contract/src/messaging.ts:93-96,120-124`）：`target` 字段保留 `'main' | 'new'`，群 binding 填 `'main'`（只为旧前端不崩），新增可选 `targetKind?: 'session' | 'group'` 与 `groupId?: string`。`bot-routes.ts:90` 原样透传，旧前端 `bot-connectors.tsx:159` 会把群显示成「主会话」——可接受但不理想，前端在同一版里读新字段。
 
 ### 3.2 会话映射：`channel_conversation`
 
@@ -64,16 +68,19 @@ CREATE TABLE channel_conversation (
   binding_id TEXT NOT NULL,
   external_conversation_id TEXT NOT NULL,   -- slack channel / feishu chat / github repo#issue
   external_thread_id TEXT,                  -- thread / reply chain，可空
+  thread_key TEXT NOT NULL DEFAULT '',      -- 归一化后的 external_thread_id（空串）
   target_kind TEXT NOT NULL,                -- 'session' | 'group'
   session_id TEXT,                          -- target_kind='session'
   group_id TEXT,                            -- target_kind='group'
   last_inbound_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  PRIMARY KEY (binding_id, external_conversation_id, COALESCE(external_thread_id, ''))
+  -- SQLite 不允许表达式出现在主键里（COALESCE(...) 会直接建表失败），所以单列存储 thread_key
+  PRIMARY KEY (binding_id, external_conversation_id, thread_key)
 );
 ```
 
+- **键语义**：一个外部会话在一个 binding 下**只能映射到一种目标**。同一 Slack 频道既私聊又进群时，第二次写入冲突（返回 409 提示「这个会话已经绑到群 X」），v1 不支持一分为二。
 - **DM**：一条外部会话 → 一条常驻会话（懒创建，等价于今天的 `main`）；`session_id` 写回。
 - **群**：一条外部会话 → 一个群（binding 创建时指定；或按频道 id 自动建群，v1 只支持指定）。
 - **thread**：IM 的 thread 映射成群里的 `GroupThread`（群侧已有 `threadId`），私聊侧映射成 `AgentMessage.traceId`／`replyTo`，不新造概念。
@@ -100,11 +107,17 @@ export interface InboundEvent {
 }
 ```
 
-IM 的 `externalId` = 平台消息 id；`author` 只用于展示与审计，**开会话的身份仍用 `binding.createdBy`**（群侧 `actorOf` 只认 user 根帖，`groups.ts:334-341`）。
+IM 的 `externalId` = 平台消息 id；`author` 只用于展示与审计，**开会话的身份仍用 `binding.createdBy`**（群侧 `actorOf` 只认 user 根帖，`use-cases/groups.ts:334-336`）。
+
+**群目标不经过 `attempt`/`turnEnded`。** 现在 `openRuns` 把 `waiting|delivered` 当占用（`use-cases/connectors.ts:125-131`、`storage-sqlite/src/connectors.ts:80`），`turnEnded` 只按 `session_id` 收口（`:177-186`）。若群消息先走 `attempt` 标 `delivered`，群会话的回合结束不一定对应这条 run，binding 会一直留 open run，后续无 `plannedAt` 的入站会被 `emit` 静默丢掉（`:117-133`），同一 binding 上的 timer/github 也会被堵。正确路径：插入 run 时直接写 `done`，落帖后回填 `post_id`，`openRuns` 不把群目标算占用。`serial(groupId)`（`use-cases/groups.ts:152-167`）管的是群内顺序，与 `openRuns` 不是同一把锁，不能互相替代。
+
+**外部帖走 `postExternal`，不走 `post(actor)`。** `actorOf`（`:334-336`）非 user 根帖返回 null，`schedule` 直接 `return 0`（`:350-351`）；`post`（`:728-729`）还会在人发言时清 `held`/`needsUser`。`postExternal` 使用作者 kind `'external'`（`PostAuthor` 在 `packages/domain/src/groups.ts:66-69`，目前只有 user/agent/system），principal 取 `binding.createdBy`，并在每次投递前重新校验「binding 仍 enabled 且 createdBy 对该群仍有 `group.post`」——失败就暂停 binding，而不是用过期 principal 继续发。外部作者不能伪装成 `user`，否则未读（`storage-sqlite/src/groups.ts:97-98`，只认 `author.kind === 'user'` 且 id 相等）会吞掉创建者的未读、`@all` 的语义也会被外部消息污染。
+
+**`@all` 在入站规范化阶段就拒绝/删除**（`@everyone` 同理），不能指望引用块：`formatInbound`（`packages/domain/src/connector.ts:79-83`）把外部文本包成引用块，`parseMentions` 的 `stripQuoted`（`packages/domain/src/groups.ts:202-209`）碰巧挡住；但 `postExternal` 若把原文当正文，`parseMentions` 会把 `members` 设成全体（`:232`）。
 
 ### 3.4 出站：`channel_outbox`（新增）
 
-现在的 `OutputSink` 是 best-effort：失败只打日志（`packages/connector-github/src/sink.ts:33`）。IM 不能这样——发不出去要重试、要能看见。
+现在的 `OutputSink` 是 best-effort：失败只打日志（`packages/connector-github/src/sink.ts:35`）。IM 不能这样——发不出去要重试、要能看见。
 
 ```sql
 CREATE TABLE channel_outbox (
@@ -125,8 +138,8 @@ CREATE TABLE channel_outbox (
 );
 ```
 
-- 群帖落库、私聊回合结束 → 写一行 outbox（同一事务外，失败可重放）；
-- worker 每 10–30 秒扫 `queued` 且到点的一批，调 channel 的 `send`，成功写 `external_message_id`（回声去重用），失败按指数退避，超过 N 次标 `failed` 并进「等我处理」；
+- 群帖落库 / 私聊回合结束 **与 outbox 行在同一事务里写**（`INSERT` 帖 + `INSERT ... status='queued'`）：先落帖后写 outbox 会在崩溃窗口丢出站，先写 outbox 后落帖会发出不存在的帖。群帖表目前只是 `INSERT`（`storage-sqlite/src/groups.ts:79`），没有出站标记，必须靠事务把两者绑在一起；
+- worker 每 10–30 秒扫 `queued` 且到点的一批，调 channel 的 `send`，成功写 `external_message_id`（回声去重用），失败按指数退避，超过 N 次标 `failed` 并进「等我处理」；重放只扫 `queued`，已 `sent` 的不重发；
 - 现有 `OutputSink` 保留为「任务生命周期 → outbox 行」的适配器，github 的 PR 评论改成 outbox 的一个 writer，行为不变但获得重试。
 
 ## 4. 复用关系（谁复用谁）
@@ -147,7 +160,7 @@ CREATE TABLE channel_outbox (
 
 **C0 投递内核**（见 `group-delivery-kernel.md`）：纯函数 + 泵，群聊 / 私聊 / 连接器三处接线。先做，因为后面每一步都靠它。
 
-**C1 拆渠道与目标**：`BindingTarget` union + `channel_conversation` + `InboundEvent` 扩字段；timer/github 行为不变（`target` 仍是 session）。验收：旧 binding 全量回归，`connectors.test.ts` 不改断言。
+**C1 拆渠道与目标（建议先做，范围只到存储与类型）**：`BindingTarget` union + `channel_conversation` + `InboundEvent` 扩字段 + `toB`/`saveBinding` 读改成「先 `target_kind` 再回落」并让整行替换带上新列。此时**不接任何群行为**，只保证数据模型能无损表达群目标——C2/C3/C4 都依赖这一步的键和读写正确，三处里任一处按旧写法落地，后面每步都会在错误数据上继续写。验收：旧 binding 全量回归；手工插入群 binding 后读写往返不丢字段；DTO 的 `target` 仍只出 `main|new`。
 
 **C2 出站 outbox**：先把 github sink 迁到 outbox（同样的 PR 评论，失败可重试），再加一个假渠道包用于测试。验收：断网重试、回声 id 不重复回帖。
 
@@ -163,11 +176,11 @@ CREATE TABLE channel_outbox (
 - 不给「群 × 成员」建 binding；
 - 不让群调度器认识渠道 / webhook / 平台 id；
 - 不在 v1 合并 `trigger_run`、`agent_group_deliveries`、`agent_messages` 三张表（先共用代码，不共用存储）；
-- 不做附件、编辑/撤回、跨频道广播；外部消息「改过会再投一次」写在文档里。
+- 不做附件、编辑/撤回、跨频道广播。**编辑后的消息按「同 id 丢弃」处理**：`UNIQUE(binding_id, external_id)` 会把同 id 的再次投递挡掉，不要为了「修改可见」把 `externalId` 拼上编辑版本号——那会把去重打穿。
 
 ## 7. 风险
 
-- **身份与权限**：外部作者不是 User，不能触发 `needsUser`；外部文本里的 `@all` 必须在解析前拒绝（`parseMentions` 先剥引用块，`groups.ts:223-241`）。
-- **回声**：平台回推自己的消息 id 未必稳定；outbox 存 `external_message_id` 做尽力去重，改过的消息不保证。
-- **限流**：每个 binding 的入站与出站都要有配额（群侧 `HOST_PER_MINUTE` 已有，`groups.ts:768-771`），否则 webhook 风暴会把群的分派配额打满。
-- **生命周期**：群删除 / bot 被移出群 / 渠道凭据失效 → binding 立即暂停（不等连续失败 5 次）；恢复后手动启用。
+- **身份与权限**：外部作者不是 User，不能触发 `needsUser`；不能用 `post(actor)` 的路径；`@all`/`@everyone` 在入站规范化阶段拒绝（不能依赖引用块碰巧挡住）。
+- **回声与编辑**：平台回推自己消息的 id 未必稳定；outbox 存 `external_message_id`，入站时先查它，再加「binding + conversation + 正文指纹」短 TTL 去重；同 id 的编辑按丢弃处理。
+- **限流**：入站配额（webhook 风暴）与出站配额（成员回复扇出）分开算——`HOST_PER_MINUTE`（`packages/domain/src/groups.ts:28`，限流在 `use-cases/groups.ts:768-771`）只约束「不带 @ 的入站交给主持人」，不是出站配额。
+- **生命周期**：群删除 / bot 被移出群 / 渠道凭据失效 / `createdBy` 失去 `group.post` → binding 立即暂停（不等连续失败 5 次）；恢复后手动启用。
