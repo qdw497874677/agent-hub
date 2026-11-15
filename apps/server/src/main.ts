@@ -92,6 +92,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   parsePreviewPortRange,
   authorizeSession
 } from '@agent-hub/domain';
+import { createFakeChannel, createFakeOutbound, createFakeReplies } from './fake-channel.ts';
 import {
   authenticate,
   err,
@@ -403,23 +404,33 @@ const githubSource = createGithubSource({
   },
   log
 });
+// 假渠道（#221 步骤 8）：只在 HUB_FAKE_CHANNEL=1 时注册，用来跑通入站/出站/回声整条链。
+const fakeChannel = readEnv('HUB_FAKE_CHANNEL') === '1' ? createFakeChannel() : null;
+const fakeOutbound = fakeChannel ? createFakeOutbound() : null;
+const fakeReplies = fakeChannel
+  ? createFakeReplies({ enqueue: (input) => fakeOutboxPump!.enqueue(input as never), tail: (sessionId, limit) => store.sessions.tail(sessionId as never, limit) })
+  : null;
+if (fakeChannel) log('假渠道已启用：connector=fake（仅测试用，不要在生产打开）');
 const connectorHub = createConnectorHub({
   now: deps.now, projects: deps.projects, sessions: deps.sessions, policy: deps.access,
   store: store.connectors,
-  sources: [createTimerSource(), githubSource],
+  sources: [...(fakeChannel ? [fakeChannel.source] : []), createTimerSource(), githubSource],
   agentExists: async (projectId, name) => (await messageBus.config(projectId)).roles.some((r) => r.name === name),
-  spawn: async ({ projectId, agentName, ownerId, title }) => {
+  spawn: async ({ bindingId, connector, projectId, agentName, ownerId, title }) => {
     const role = (await messageBus.config(projectId)).roles.find((r) => r.name === agentName);
     if (!role) return err(notFound(`bot @${agentName} 已不存在`));
     const actor = await loadActor(store.users, store.access, ownerId, 'agent-connector');
     if (!actor) return err(forbidden('建这个触发的账号已停用'));
-    return openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
+    const opened = await openRoleSession(deps, { provenance: store.provenance, audit: store.audit, now: deps.now }, {
       projectId, title, ownerId, agentId: role.ref.runtime, model: role.ref.model, options: role.ref.options, botId: role.id, actor, via: 'bot',
       afterDerive: async (session) => {
         // 记成这个 bot 的派生会话：职责说明（系统提示）照常垫进去。先于来历。
         await store.messages.saveSpawn({ sessionId: session.id, projectId: projectId as ProjectId, role: agentName, spawnerSessionId: session.id, traceId: `connector:${session.id}`, createdAt: Date.now() });
       }
     });
+    // 假渠道（步骤 8）：记下这条会话从哪来，回合结束后把回复投进出站队列。
+    if (opened.ok && fakeReplies && connector === 'fake') fakeReplies.remember(opened.value.id, bindingId);
+    return opened;
   },
   busy: async (sessionId) => (await store.deliveries.pendingFor(sessionId)).length > 0
     || (await store.messages.deliveredTo(sessionId)).length > 0 || (await store.groups.deliveredTo(sessionId)).length > 0,
@@ -513,6 +524,24 @@ const outboxPump = createOutboxPump({
     return sent.ok ? { ok: true } : { ok: false, error: sent.error };
   }
 });
+// 假渠道的出站：只消费 external 目标（真实渠道的 external 行仍保持 queued）。
+const fakeOutboxPump = fakeOutbound
+  ? createOutboxPump({ store: store.outbox, now: () => Date.now(), kinds: ['external'], deliver: fakeOutbound.deliver })
+  : null;
+let fakeOutboxBusy = false;
+setInterval(() => {
+  if (!fakeOutboxPump || fakeOutboxBusy) return;
+  fakeOutboxBusy = true;
+  void (async () => {
+    try {
+      for (let i = 0; i < 10; i++) if ((await fakeOutboxPump.tick()) === 0) break;
+    } catch (error) {
+      log(`假渠道出站失败：${String(error)}`);
+    } finally {
+      fakeOutboxBusy = false;
+    }
+  })();
+}, 1_000).unref();
 let outboxBusy = false;
 setInterval(() => {
   if (outboxBusy) return;
@@ -553,6 +582,8 @@ const turnFinished = (sessionId: SessionId, outcome: TurnOutcome, reason?: strin
   void inbox.end(sessionId, outcome, reason).catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
   // 回合结束后拍「之后」那张（ADR 0027 D2）
   void filesService.endTurn(sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
+  // 假渠道：把这轮回复投进出站队列（只在 HUB_FAKE_CHANNEL=1 时有路由）。
+  void fakeReplies?.finish(sessionId).catch((error: unknown) => log(`假渠道回程失败：${String(error)}`));
 };
 hub.stream.subscribe((frame) => {
   if (frame.event?.kind === 'ended') turnFinished(frame.sessionId, frame.event.outcome, frame.event.reason);

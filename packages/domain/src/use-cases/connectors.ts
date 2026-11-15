@@ -21,7 +21,7 @@ export interface ConnectorHubDeps extends Pick<Deps, 'now' | 'projects' | 'sessi
   /** bot 是否存在（定义它的项目 + @id）。 */
   readonly agentExists: (projectId: ProjectId, name: string) => Promise<boolean>;
   /** 给 bot 开一条新会话（组合根：建任务 + 派生 + 记派生和来历），归 ownerId。 */
-  readonly spawn: (input: { projectId: ProjectId; agentName: string; ownerId: string; title: string }) => Promise<Result<Session, DomainError>>;
+  readonly spawn: (input: { bindingId: string; connector: string; projectId: ProjectId; agentName: string; ownerId: string; title: string }) => Promise<Result<Session, DomainError>>;
   /** 这条会话现在能不能接新的一轮（没在跑、没有排队的消息）。 */
   readonly busy: (sessionId: SessionId) => Promise<boolean>;
   /** 经 ADR 0031 送达队列投一轮。 */
@@ -80,7 +80,7 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       const s = await deps.sessions.byId(binding.mainSessionId as SessionId);
       if (s && s.status !== 'failed') return ok(s);
     }
-    const spawned = await deps.spawn({ projectId: binding.agentProjectId as ProjectId, agentName: binding.agentName, ownerId: binding.createdBy, title: `${binding.name}${binding.target === 'new' ? ` · ${new Date(run.plannedAt ?? deps.now()).toISOString().slice(0, 16)}` : ''}` });
+    const spawned = await deps.spawn({ bindingId: binding.id, connector: binding.connector, projectId: binding.agentProjectId as ProjectId, agentName: binding.agentName, ownerId: binding.createdBy, title: `${binding.name}${binding.target === 'new' ? ` · ${new Date(run.plannedAt ?? deps.now()).toISOString().slice(0, 16)}` : ''}` });
     if (spawned.ok && binding.target === 'main') {
       const fresh = (await deps.store.binding(binding.id)) ?? binding;
       await deps.store.saveBinding({ ...fresh, mainSessionId: spawned.value.id, updatedAt: deps.now() });
