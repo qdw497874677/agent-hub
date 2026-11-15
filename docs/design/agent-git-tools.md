@@ -61,3 +61,18 @@ P1（不在本次）：`project.update`、`session.derive/stop`、`run.checks`�
 - 不做 `git checkout` / reset / rebase / 合并请求的合并——这些仍然该由人操作或后续单独设计。
 - 不给 shell 里的 `git push` 做拦截（本轮只把正确路径铺好）。
 - 不改 HTTP 路由与前端 git 面板。
+
+## 7. P1（已落地，2026-11-15，提交 87e6fa8）
+
+issue #216 的 P1 三项也做成工具，装配在同一层（`createProjectToolProvider` / `createSessionControlToolProvider`）：
+
+| 工具 | scope | 入参 | 返回 |
+| --- | --- | --- | --- |
+| `project.update` | `project` | `{ description?, checks? }` | `{ id, name, description, checks }` |
+| `run.checks` | `project` | `{}` | `{ ran, checks: [{ command, exit_code, timed_out, output }], passed }` |
+| `session.derive` | `session:control` | `{ title? }` | `{ session_id, task_id, project_id, title }` |
+| `session.stop` | `session:control` | `{ session_id? }` | `{ session_id, stopped }` |
+
+- `Project.checks`：最多 5 条、每条 ≤300 字、不能换行；只能通过 `PATCH /api/projects/:id` 由项目所有者配置，agent 不能随手跑任意命令——`run.checks` 只跑项目声明过的命令，按顺序、遇非 0 即停，输出取末尾 8KB（`ws.run_setup` 已抹凭据），超时 10 分钟。
+- `project.update` 只允许改 `description` 与 `checks`，权限实时求值 `project.update`；`session.stop` 只能停同一项目里的会话（或自己），`session.derive` 继承调用方的任务/项目/工作目录/运行时与模型，写成一次普通派生（同任务下的另一条会话），不复制对话。
+- 手段与边界：`run.checks` 跑在会话所在机器（`gateway.git(workerId).runSetup`），因此需要该机器 `git` 能力；机器离线/工作目录不可用时明确报错，不退回 hub 本机。
