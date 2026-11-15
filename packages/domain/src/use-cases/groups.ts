@@ -161,6 +161,11 @@ export interface GroupChat {
   turnEnded(sessionId: SessionId, outcome?: 'done' | 'stopped' | 'interrupted' | 'failed', reason?: string): Promise<void>;
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
+  /**
+   * 系统公告：任务进度这类「不是某个成员说的话」也进群（#226 / 调度进展）。
+   * 不走调度、不产生投递，只落一条 system 帖；群不存在时静默跳过。
+   */
+  postSystem(groupId: string, body: string): Promise<void>;
   /** 这个人看得到的所有群里的未读（顶栏消息图标的红点）。 */
   unread(actor: Principal): Promise<Result<UnreadSummary, DomainError>>;
   /** 标成已读：读到 seq（不给就读到最新）。 */
@@ -1038,12 +1043,26 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
       });
     },
 
+    async postSystem(groupId, body) {
+      const text = (body ?? '').trim();
+      if (text === '') return;
+      await run(groupId, async () => {
+        const group = await deps.groups.group(groupId);
+        if (!group) return;
+        await system(group, null, text.slice(0, MAX_POST_CHARS));
+      });
+    },
+
     async sweep() {
       const now = deps.now();
       let n = 0;
       for (const d of await deps.groups.openBefore(now - HOST_TIMEOUT_MS)) {
         const timeout = d.purpose === 'host' ? HOST_TIMEOUT_MS : MEMBER_TIMEOUT_MS;
         if (d.createdAt > now - timeout) continue;
+        // 还在动就不算超时：慢模型常在两分钟之后才调 group_dispatch，
+        // 只要会话还在出事件（updatedAt 在走），就应该让它把这一轮走完。
+        const session = d.sessionId === null ? null : await deps.sessions.byId(d.sessionId);
+        if (session && session.updatedAt > now - timeout) continue;
         n++;
         await run(d.groupId, async (pending) => {
           const current = (await deps.groups.deliveries(d.threadId)).find((x) => x.id === d.id);
@@ -1054,7 +1073,10 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
             await settle(current, 'canceled', null);
             return;
           }
-          await failed(group, thread, current, d.purpose === 'host' ? `${Math.round(HOST_TIMEOUT_MS / 60_000)} 分钟没有结果` : '超时没回', pending);
+          // 判超时就先打断：不然慢模型可能在群回合结束后才吐出文本，
+          // 结果既进不了群（回合已不是 running），又白跑一轮。
+          if (d.sessionId) await deps.interrupt?.(d.sessionId).catch(() => undefined);
+          await failed(group, thread, current, d.purpose === 'host' ? `${Math.round(HOST_TIMEOUT_MS / 60_000)} 分钟没有动静` : '超时没回', pending);
         });
       }
       return n;

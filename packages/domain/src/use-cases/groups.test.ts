@@ -334,7 +334,7 @@ test('主持人：工具分派 → 成员回复 → @ 接力；没配主持人�
   assert.ok((await w.posts(g2.value.id)).some((p) => p.author.kind === 'system' && p.body.startsWith(HOST_UNAVAILABLE_LINE)));
 });
 
-test('主持人 2 分钟没结果 → 兜底系统行；文字回复也能认出分派', async () => {
+test('主持人一直没有动静 → 兜底系统行；文字回复也能认出分派', async () => {
   const w = await world();
   const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['host', 'coder'], hostRole: 'host' });
   assert.ok(g.ok);
@@ -349,6 +349,24 @@ test('主持人 2 分钟没结果 → 兜底系统行；文字回复也能认出
   await w.chat.post(w.alice, g.value.id, '二');
   await w.finish(host, '{"assignees":["coder"]}');
   assert.ok(await w.groups.sessionFor(g.value.id, 'coder'), '文字 JSON 也能分派');
+});
+
+test('主持人还在动就不算超时：慢模型超过窗口也能把这一轮走完', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['host', 'coder'], hostRole: 'host' });
+  assert.ok(g.ok);
+  await w.chat.post(w.alice, g.value.id, '一');
+  const host = await w.sessionOf(g.value.id, 'host');
+  // 主持人先查了几个工具，超过「从投递算起」的窗口但仍在出事件
+  w.tick(HOST_TIMEOUT_MS - 1_000);
+  await w.recordPrompt(host, '(still working)');
+  w.tick(1_000);
+  assert.equal(await w.chat.sweep(), 0, '会话还在动，不能判它不可用');
+
+  // 之后再没动静，才落兜底
+  w.tick(HOST_TIMEOUT_MS + 1);
+  assert.equal(await w.chat.sweep(), 1);
+  assert.ok((await w.posts(g.value.id)).some((p) => p.body.startsWith(HOST_UNAVAILABLE_LINE)));
 });
 
 test('防失控：轮数上限、条数上限', async () => {

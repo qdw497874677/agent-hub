@@ -26,8 +26,14 @@ export const MAX_GROUP_LIMITS: GroupLimits = { maxRounds: 5, maxMessages: 20 };
 export const HOST_MAX_ASSIGNEES = 3;
 /** 每个群每分钟最多几条不带 @ 的消息交给主持人；超了就只记下来不分派。 */
 export const HOST_PER_MINUTE = 10;
-/** 主持人这么久没给结果就当它不可用。 */
-export const HOST_TIMEOUT_MS = 2 * 60_000;
+/**
+ * 主持人这么久没「动静」就当它不可用。
+ *
+ * 不是从投递开始计时：主持人常常要先调几个工具（查任务、看历史）再分派，
+ * 慢模型动不动就超过两分钟。只要它还在往外出事件（会话的 updatedAt 在走），
+ * 就不算超时；真正卡死（进程没了、一直没输出）才会落到兜底。
+ */
+export const HOST_TIMEOUT_MS = 5 * 60_000;
 /** 成员这么久没回完就当它沉默。 */
 export const MEMBER_TIMEOUT_MS = 10 * 60_000;
 export const VOLUNTEER_THRESHOLD = 0.5;
@@ -408,7 +414,9 @@ export function hostPrompt(ctx: PromptContext, status: readonly { role: string; 
     `You are the host (@${ctx.role}) of the group chat "${ctx.group.name}". Your only job is to decide who answers the new message. Members:\n${rosterBlock(ctx)}\nState:\n${state}`,
     historyBlock(ctx) + `New message from ${ctx.trigger.author}:\n` + triggerBlock(ctx, false),
     `Call the group_dispatch tool with {"assignees": [up to ${HOST_MAX_ASSIGNEES} member names], "note": "..."} or {"decline": true, "reply": "short answer"}. ` +
-      `If you cannot call tools, reply with only that JSON object. Never assign yourself. Do not do the work yourself.`
+      `Do it now, before any other tool call: you have a short window, and a long silence is treated as "host unavailable". ` +
+      `Never assign yourself. Do not create tasks, write code, or do the work yourself — dispatch it. ` +
+      `If you cannot call tools, reply with only that JSON object.`
   ].join('\n\n');
 }
 
