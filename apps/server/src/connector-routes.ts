@@ -1,6 +1,7 @@
 import type { Hono } from 'hono';
 import { z } from 'zod';
-import { decideAgentTask, principalOfSubject, type AgentTaskRequest, type AgentTaskStore, type ConnectorHub, type Deps, type Dispatcher } from '@agent-hub/domain';
+import { decideAgentTask, principalOfSubject, type AgentTaskRequest, type AgentTaskStore, type BindingView, type ConnectorHub, type Deps, type Dispatcher, type TriggerRun } from '@agent-hub/domain';
+import type { BindingDto } from '@agent-hub/contract';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -25,8 +26,17 @@ export interface ConnectorRouteDeps {
 
 const createBody = z.object({
   connector: z.string().min(1).max(40), kind: z.string().min(1).max(40), name: z.string().min(1).max(60),
-  target: z.enum(['main', 'new']).optional(), projectId: z.string().max(100).nullable().optional(),
+  target: z.enum(['main', 'new']).optional(), targetKind: z.enum(['session', 'group']).optional(), groupId: z.string().min(1).max(100).optional(),
+  projectId: z.string().max(100).nullable().optional(),
   params: z.record(z.string(), z.unknown()).default({}), timeZone: z.string().max(60).optional()
+});
+/** 领域对象 → DTO：`/api/.../bindings` 过去直接 `c.json(out.value)`，领域加字段会漏到 API。 */
+const runDto = (run: TriggerRun) => ({ id: run.id, bindingId: run.bindingId, externalId: run.externalId, plannedAt: run.plannedAt, catchup: run.catchup, state: run.state, reason: run.reason, sessionId: run.sessionId, createdAt: run.createdAt, updatedAt: run.updatedAt });
+const bindingDto = (b: BindingView): BindingDto => ({
+  id: b.id, connector: b.connector, kind: b.kind, agentProjectId: b.agentProjectId, agentName: b.agentName, projectId: b.projectId, name: b.name,
+  target: b.target, ...(b.targetKind === 'group' ? { targetKind: b.targetKind, groupId: b.groupId ?? null } : {}),
+  params: b.params, enabled: b.enabled, pausedReason: b.pausedReason, consecutiveFailures: b.consecutiveFailures, nextRunAt: b.nextRunAt, mainSessionId: b.mainSessionId,
+  timeZone: b.timeZone, summary: b.summary, lastRun: b.lastRun ? runDto(b.lastRun) : null, createdAt: b.createdAt
 });
 const patchBody = z.object({ enabled: z.boolean().optional(), name: z.string().min(1).max(60).optional(), target: z.enum(['main', 'new']).optional(), params: z.record(z.string(), z.unknown()).optional() });
 const projectsBody = z.object({ projectIds: z.array(z.string().min(1).max(100)).max(50) });
@@ -41,21 +51,21 @@ export function installConnectorRoutes(app: Hono<any>, r: ConnectorRouteDeps, su
   app.get('/api/projects/:id/agents/:name/bindings', async (c) => {
     const actor = me(c); if (!actor) return fail(c, needUser);
     const out = await r.hub.list(actor, c.req.param('id'), c.req.param('name'));
-    return out.ok ? c.json({ bindings: out.value }) : fail(c, out.error);
+    return out.ok ? c.json({ bindings: out.value.map(bindingDto) }) : fail(c, out.error);
   });
   app.post('/api/projects/:id/agents/:name/bindings', async (c) => {
     const actor = me(c); if (!actor) return fail(c, needUser);
     const p = createBody.safeParse(await c.req.json().catch(() => null));
     if (!p.success) return fail(c, bad(p.error));
     const out = await r.hub.create(actor, c.req.param('id'), c.req.param('name'), { ...p.data, timeZone: validZone(p.data.timeZone) });
-    return out.ok ? c.json(out.value, 201) : fail(c, out.error);
+    return out.ok ? c.json(bindingDto(out.value), 201) : fail(c, out.error);
   });
   app.patch('/api/bindings/:id', async (c) => {
     const actor = me(c); if (!actor) return fail(c, needUser);
     const p = patchBody.safeParse(await c.req.json().catch(() => null));
     if (!p.success) return fail(c, bad(p.error));
     const out = await r.hub.update(actor, c.req.param('id'), p.data);
-    return out.ok ? c.json(out.value) : fail(c, out.error);
+    return out.ok ? c.json(bindingDto(out.value)) : fail(c, out.error);
   });
   app.delete('/api/bindings/:id', async (c) => {
     const actor = me(c); if (!actor) return fail(c, needUser);

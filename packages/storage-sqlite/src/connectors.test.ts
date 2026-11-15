@@ -251,3 +251,35 @@ test('R4：轮询来的事件（无计划时刻）上一次没完不记跳过、
   const notices = await x.hub.notices('u1');
   assert.deepEqual(notices.map((n) => n.kind), ['inbound_quarantined']);
 });
+
+test('C1：群目标与外部会话字段读写往返不丢；旧行默认 session', async () => {
+  const { connectors } = createSqliteConnectors(new DatabaseSync(':memory:'));
+  const now = 1_700_000_000_000;
+  const binding = (id: string, patch: Partial<ConnectorBinding> = {}): ConnectorBinding => ({
+    id, connector: 'slack', kind: 'message', agentProjectId: 'p1', agentName: 'bot', projectId: null, name: 'bot',
+    target: 'main', params: {}, enabled: true, pausedReason: null, consecutiveFailures: 0, nextRunAt: null,
+    mainSessionId: null, createdBy: 'u1', timeZone: 'UTC', createdAt: now, updatedAt: now, ...patch
+  });
+  await connectors.saveBinding(binding('b-old'));
+  await connectors.saveBinding(binding('b-group', { targetKind: 'group', groupId: 'g1' }));
+  const old = await connectors.binding('b-old');
+  const group = await connectors.binding('b-group');
+  assert.equal(old?.targetKind, 'session');
+  assert.equal(old?.groupId, null);
+  assert.equal(group?.targetKind, 'group');
+  assert.equal(group?.groupId, 'g1');
+  // saveBinding 是整行替换：连写两次后新列仍在
+  await connectors.saveBinding({ ...group!, updatedAt: now + 1 });
+  assert.equal((await connectors.binding('b-group'))?.groupId, 'g1');
+
+  const run = { id: 'r1', bindingId: 'b-group', externalId: 'C1:1', plannedAt: null, catchup: false, state: 'done' as const, reason: null,
+    sessionId: null, text: 'x', externalConversationId: 'C1', externalThreadId: 't1', postId: 'p1', createdAt: now, updatedAt: now };
+  await connectors.saveRun(run);
+  const back = await connectors.run('r1');
+  assert.equal(back?.externalConversationId, 'C1');
+  assert.equal(back?.externalThreadId, 't1');
+  assert.equal(back?.postId, 'p1');
+  // saveRun 同样是整行替换，再写一次不能把新列抹掉
+  await connectors.saveRun({ ...back!, updatedAt: now + 1 });
+  assert.equal((await connectors.run('r1'))?.postId, 'p1');
+});

@@ -88,6 +88,7 @@ const runDto = (run: TriggerRun): BotTriggerRunDto => ({
 
 const triggerDto = (binding: ConnectorBinding, runs: readonly TriggerRun[]): BotTriggerDto => ({
   id: binding.id, connector: binding.connector, kind: binding.kind, name: binding.name, target: binding.target,
+  ...(binding.targetKind === 'group' ? { targetKind: binding.targetKind, groupId: binding.groupId ?? null } : {}),
   projectId: binding.projectId, enabled: binding.enabled, pausedReason: binding.pausedReason,
   consecutiveFailures: binding.consecutiveFailures, nextRunAt: binding.nextRunAt, mainSessionId: binding.mainSessionId,
   createdAt: binding.createdAt, updatedAt: binding.updatedAt, runs: runs.map(runDto)

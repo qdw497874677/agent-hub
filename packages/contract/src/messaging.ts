@@ -92,6 +92,8 @@ export interface AttentionDto {
 export interface TriggerRunDto { id: string; bindingId: string; externalId: string; plannedAt: number | null; catchup: boolean; state: 'waiting' | 'delivered' | 'done' | 'failed' | 'timeout' | 'skipped'; reason: string | null; sessionId: string | null; createdAt: number; updatedAt: number }
 export interface BindingDto {
   id: string; connector: string; kind: string; agentProjectId: string; agentName: string; projectId: string | null; name: string; target: 'main' | 'new';
+  /** 收敛设计 C1：群目标。旧前端忽略这两个字段；`target` 对群 binding 固定为 `'main'`。 */
+  targetKind?: 'session' | 'group'; groupId?: string | null;
   params: Record<string, unknown>; enabled: boolean; pausedReason: string | null; consecutiveFailures: number; nextRunAt: number | null; mainSessionId: string | null;
   timeZone: string; summary: string; lastRun: TriggerRunDto | null; createdAt: number
 }
@@ -119,6 +121,7 @@ export interface BotTriggerSourceDto {
 /** 挂在 bot 下的一条触发器（ConnectorBinding）＋ 最近几条运行。 */
 export interface BotTriggerDto {
   id: string; connector: string; kind: string; name: string; target: 'main' | 'new';
+  targetKind?: 'session' | 'group'; groupId?: string | null;
   projectId: string | null; enabled: boolean; pausedReason: string | null; consecutiveFailures: number;
   nextRunAt: number | null; mainSessionId: string | null;
   createdAt: number; updatedAt: number; runs: BotTriggerRunDto[];

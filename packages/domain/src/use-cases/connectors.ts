@@ -1,4 +1,4 @@
-import { BINDING_MAX_FAILURES, staleAfterMs, formatInbound, type ConnectorBinding, type InboundEvent, type TriggerRun } from '../connector.ts';
+import { BINDING_MAX_FAILURES, staleAfterMs, formatInbound, type BindingTargetKind, type ConnectorBinding, type InboundEvent, type TriggerRun } from '../connector.ts';
 import type { Principal } from '../account.ts';
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
@@ -33,6 +33,9 @@ export interface BindingInput {
   readonly kind: string;
   readonly name: string;
   readonly target?: 'main' | 'new';
+  /** C1：群目标（尚未接线）。`targetKind='group'` 必须同时给 `groupId`。 */
+  readonly targetKind?: BindingTargetKind;
+  readonly groupId?: string | null;
   readonly projectId?: string | null;
   readonly params: Record<string, unknown>;
   readonly timeZone?: string;
@@ -202,9 +205,14 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       const scope = input.projectId ?? null;
       if (scope && scope !== projectId && !(await deps.store.agentProjects(projectId, agentName)).includes(scope)) return err(invalid('限定的项目必须是这个 bot 关联的项目'));
       const now = deps.now();
+      const targetKind: BindingTargetKind = input.targetKind === 'group' ? 'group' : 'session';
+      const groupId = String(input.groupId ?? '').trim();
+      if (targetKind === 'group' && !groupId) return err(invalid('群目标要给出群 id'));
       const b: ConnectorBinding = {
         id: newId(), connector: source.id, kind: input.kind, agentProjectId: projectId, agentName, projectId: scope, name,
-        target: input.target === 'new' ? 'new' : 'main', params: input.params ?? {}, enabled: true, pausedReason: null,
+        target: targetKind === 'group' ? 'main' : input.target === 'new' ? 'new' : 'main',
+        targetKind, groupId: targetKind === 'group' ? groupId : null,
+        params: input.params ?? {}, enabled: true, pausedReason: null,
         consecutiveFailures: 0, nextRunAt: null, mainSessionId: null, createdBy: actor.user.id, timeZone: input.timeZone || 'UTC', createdAt: now, updatedAt: now
       };
       await deps.store.saveBinding(b);

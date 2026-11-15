@@ -26,6 +26,9 @@ export interface InboundEvent {
   readonly targetSessionId?: string;
 }
 
+/** 目标种类：v1 的 `target` 只区分「主会话 / 新会话」；群目标由 `targetKind` + `groupId` 表达，暂未接线。 */
+export type BindingTargetKind = 'session' | 'group';
+
 /** Binding 挂在智能体下（ADR 0032 定稿）：agent = 定义它的项目 + @id；project 只是可选过滤字段。 */
 export interface ConnectorBinding {
   readonly id: string;
@@ -36,6 +39,12 @@ export interface ConnectorBinding {
   readonly projectId: string | null;
   readonly name: string;
   readonly target: 'main' | 'new';
+  /**
+   * 收敛设计 C1（docs/design/channel-convergence.md）：`targetKind='group'` 时投递目标是群，
+   * `target` 仅为旧前端保留（填 `'main'`）。缺省视为 `'session'`，路由行为不变。
+   */
+  readonly targetKind?: BindingTargetKind;
+  readonly groupId?: string | null;
   readonly params: Readonly<Record<string, unknown>>;
   readonly enabled: boolean;
   readonly pausedReason: string | null;
@@ -62,6 +71,10 @@ export interface TriggerRun {
   readonly reason: string | null;
   readonly sessionId: string | null;
   readonly text: string;
+  /** 收敛设计 C1：外部会话/线程与落点帖，暂未接线。 */
+  readonly externalConversationId?: string | null;
+  readonly externalThreadId?: string | null;
+  readonly postId?: string | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

@@ -398,6 +398,11 @@ const connectorHub = createConnectorHub({
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author })
 });
 connectorHub.start();
+// 回滚保护（C1）：旧二进制不认识 target_kind，会把群目标读成主会话；回滚前先禁用这些 binding。
+void store.connectors.allBindings().then((all) => {
+  const groups = all.filter((b) => b.targetKind === 'group').length;
+  if (groups > 0) log(`连接器：有 ${groups} 条群目标 binding；回滚到旧版本前请先禁用它们`);
+}).catch(() => undefined);
 setInterval(() => void connectorHub.tick().catch((error: unknown) => log(`连接器重试失败：${String(error)}`)), 15_000).unref();
 // 调度器（ADR 0032 R3）：task.create 建出的任务排队 → 按上限开任务智能体会话 → 一轮结束经送达队列通知建它的 bot。
 // 只经端口：开会话 / 发消息复用现有派生 + 送达流程；人直接开的会话不经过这里。

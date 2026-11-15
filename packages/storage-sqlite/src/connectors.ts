@@ -7,13 +7,21 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
     id TEXT PRIMARY KEY, connector TEXT NOT NULL, kind TEXT NOT NULL, agent_project_id TEXT NOT NULL, agent_name TEXT NOT NULL,
     project_id TEXT, name TEXT NOT NULL, target TEXT NOT NULL, params TEXT NOT NULL, enabled INTEGER NOT NULL, paused_reason TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0, next_run_at INTEGER, main_session_id TEXT, created_by TEXT NOT NULL,
-    time_zone TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+    time_zone TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    target_kind TEXT, group_id TEXT)`);
   db.exec('CREATE INDEX IF NOT EXISTS connector_binding_agent ON connector_binding(agent_project_id, agent_name)');
   db.exec(`CREATE TABLE IF NOT EXISTS trigger_run (
     id TEXT PRIMARY KEY, binding_id TEXT NOT NULL, external_id TEXT NOT NULL, planned_at INTEGER, catchup INTEGER NOT NULL,
     state TEXT NOT NULL, reason TEXT, session_id TEXT, text TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    external_conversation_id TEXT, external_thread_id TEXT, post_id TEXT,
     UNIQUE(binding_id, external_id))`);
   db.exec('CREATE INDEX IF NOT EXISTS trigger_run_state ON trigger_run(state, session_id)');
+  // 收敛设计 C1（docs/design/channel-convergence.md）：外部会话 → 目标。只建表，暂不接读写路径。
+  db.exec(`CREATE TABLE IF NOT EXISTS channel_conversation (
+    binding_id TEXT NOT NULL, external_conversation_id TEXT NOT NULL, external_thread_id TEXT,
+    thread_key TEXT NOT NULL DEFAULT '', target_kind TEXT NOT NULL, session_id TEXT, group_id TEXT,
+    last_inbound_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (binding_id, external_conversation_id, thread_key))`);
   db.exec(`CREATE TABLE IF NOT EXISTS agent_project (agent_project_id TEXT NOT NULL, agent_name TEXT NOT NULL, project_id TEXT NOT NULL,
     PRIMARY KEY (agent_project_id, agent_name, project_id))`);
   db.exec(`CREATE TABLE IF NOT EXISTS agent_task_request (
@@ -23,31 +31,47 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS agent_task_request_origin ON agent_task_request(project_id, origin_connector, origin_external_id)
     WHERE origin_connector IS NOT NULL AND approval NOT IN ('rejected','cancelled')`);
 
+  // 旧库补列：只加列，不迁移数据（ADR 约定）。
+  const bindingColumns = db.prepare('PRAGMA table_info(connector_binding)').all() as { name: string }[];
+  if (!bindingColumns.some((c) => c.name === 'target_kind')) db.exec('ALTER TABLE connector_binding ADD COLUMN target_kind TEXT');
+  if (!bindingColumns.some((c) => c.name === 'group_id')) db.exec('ALTER TABLE connector_binding ADD COLUMN group_id TEXT');
+  const runColumns = db.prepare('PRAGMA table_info(trigger_run)').all() as { name: string }[];
+  if (!runColumns.some((c) => c.name === 'external_conversation_id')) db.exec('ALTER TABLE trigger_run ADD COLUMN external_conversation_id TEXT');
+  if (!runColumns.some((c) => c.name === 'external_thread_id')) db.exec('ALTER TABLE trigger_run ADD COLUMN external_thread_id TEXT');
+  if (!runColumns.some((c) => c.name === 'post_id')) db.exec('ALTER TABLE trigger_run ADD COLUMN post_id TEXT');
+
   type B = { id: string; connector: string; kind: string; agent_project_id: string; agent_name: string; project_id: string | null; name: string; target: string; params: string;
-    enabled: number; paused_reason: string | null; consecutive_failures: number; next_run_at: number | null; main_session_id: string | null; created_by: string; time_zone: string; created_at: number; updated_at: number };
+    enabled: number; paused_reason: string | null; consecutive_failures: number; next_run_at: number | null; main_session_id: string | null; created_by: string; time_zone: string; created_at: number; updated_at: number;
+    target_kind: string | null; group_id: string | null };
   const toB = (r: B): ConnectorBinding => ({
     id: r.id, connector: r.connector, kind: r.kind, agentProjectId: r.agent_project_id, agentName: r.agent_name, projectId: r.project_id, name: r.name,
-    target: r.target === 'new' ? 'new' : 'main', params: JSON.parse(r.params) as Record<string, unknown>, enabled: r.enabled === 1, pausedReason: r.paused_reason,
+    // C1：先看 target_kind，只有它为空才回落旧的 target（旧库里的 group 不会被压成 main）。
+    target: r.target === 'new' ? 'new' : 'main',
+    targetKind: r.target_kind === 'group' ? 'group' : 'session', groupId: r.group_id ?? null, params: JSON.parse(r.params) as Record<string, unknown>, enabled: r.enabled === 1, pausedReason: r.paused_reason,
     consecutiveFailures: r.consecutive_failures, nextRunAt: r.next_run_at, mainSessionId: r.main_session_id, createdBy: r.created_by, timeZone: r.time_zone, createdAt: r.created_at, updatedAt: r.updated_at
   });
-  type R = { id: string; binding_id: string; external_id: string; planned_at: number | null; catchup: number; state: string; reason: string | null; session_id: string | null; text: string; created_at: number; updated_at: number };
-  const toR = (r: R): TriggerRun => ({ id: r.id, bindingId: r.binding_id, externalId: r.external_id, plannedAt: r.planned_at, catchup: r.catchup === 1, state: r.state as TriggerRun['state'], reason: r.reason, sessionId: r.session_id, text: r.text, createdAt: r.created_at, updatedAt: r.updated_at });
+  type R = { id: string; binding_id: string; external_id: string; planned_at: number | null; catchup: number; state: string; reason: string | null; session_id: string | null; text: string; created_at: number; updated_at: number;
+    external_conversation_id: string | null; external_thread_id: string | null; post_id: string | null };
+  const toR = (r: R): TriggerRun => ({ id: r.id, bindingId: r.binding_id, externalId: r.external_id, plannedAt: r.planned_at, catchup: r.catchup === 1, state: r.state as TriggerRun['state'], reason: r.reason, sessionId: r.session_id, text: r.text,
+    externalConversationId: r.external_conversation_id ?? null, externalThreadId: r.external_thread_id ?? null, postId: r.post_id ?? null, createdAt: r.created_at, updatedAt: r.updated_at });
   type Q = { id: string; task_id: string | null; account_id: string; agent: string | null; session_id: string; project_id: string; title: string; goal: string; origin_connector: string | null; origin_external_id: string | null; wake_key: string | null; counted: number; approval: string; created_at: number; updated_at: number };
   const toQ = (r: Q): AgentTaskRequest => ({ id: r.id, taskId: r.task_id, accountId: r.account_id, agent: r.agent, sessionId: r.session_id, projectId: r.project_id, title: r.title, goal: r.goal, originConnector: r.origin_connector, originExternalId: r.origin_external_id, wakeKey: r.wake_key, counted: r.counted === 1, approval: r.approval as AgentTaskRequest['approval'], createdAt: r.created_at, updatedAt: r.updated_at });
 
   const upsertB = db.prepare(`INSERT OR REPLACE INTO connector_binding (id, connector, kind, agent_project_id, agent_name, project_id, name, target, params, enabled, paused_reason,
-    consecutive_failures, next_run_at, main_session_id, created_by, time_zone, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-  const runCols = '(id, binding_id, external_id, planned_at, catchup, state, reason, session_id, text, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)';
+    consecutive_failures, next_run_at, main_session_id, created_by, time_zone, created_at, updated_at, target_kind, group_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const runCols = '(id, binding_id, external_id, planned_at, catchup, state, reason, session_id, text, created_at, updated_at, external_conversation_id, external_thread_id, post_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)';
   const insR = db.prepare(`INSERT OR IGNORE INTO trigger_run ${runCols}`);
   const upR = db.prepare(`INSERT OR REPLACE INTO trigger_run ${runCols}`);
-  const runArgs = (r: TriggerRun) => [r.id, r.bindingId, r.externalId, r.plannedAt, r.catchup ? 1 : 0, r.state, r.reason, r.sessionId, r.text, r.createdAt, r.updatedAt] as const;
+  const runArgs = (r: TriggerRun) => [r.id, r.bindingId, r.externalId, r.plannedAt, r.catchup ? 1 : 0, r.state, r.reason, r.sessionId, r.text, r.createdAt, r.updatedAt,
+    r.externalConversationId ?? null, r.externalThreadId ?? null, r.postId ?? null] as const;
   const qCols = '(id, task_id, account_id, agent, session_id, project_id, title, goal, origin_connector, origin_external_id, wake_key, counted, approval, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)';
   const qArgs = (r: AgentTaskRequest) => [r.id, r.taskId, r.accountId, r.agent, r.sessionId, r.projectId, r.title, r.goal, r.originConnector, r.originExternalId, r.wakeKey, r.counted ? 1 : 0, r.approval, r.createdAt, r.updatedAt] as const;
   const insQ = db.prepare(`INSERT OR IGNORE INTO agent_task_request ${qCols}`);
   const upQ = db.prepare(`INSERT OR REPLACE INTO agent_task_request ${qCols}`);
 
   const connectors: ConnectorStore = {
-    async saveBinding(b) { upsertB.run(b.id, b.connector, b.kind, b.agentProjectId, b.agentName, b.projectId, b.name, b.target, JSON.stringify(b.params), b.enabled ? 1 : 0, b.pausedReason, b.consecutiveFailures, b.nextRunAt, b.mainSessionId, b.createdBy, b.timeZone, b.createdAt, b.updatedAt); },
+    async saveBinding(b) { upsertB.run(b.id, b.connector, b.kind, b.agentProjectId, b.agentName, b.projectId, b.name, b.target, JSON.stringify(b.params), b.enabled ? 1 : 0, b.pausedReason, b.consecutiveFailures, b.nextRunAt, b.mainSessionId, b.createdBy, b.timeZone, b.createdAt, b.updatedAt,
+      b.targetKind ?? 'session', b.groupId ?? null); },
     async binding(id) { const r = db.prepare('SELECT * FROM connector_binding WHERE id = ?').get(id) as B | undefined; return r ? toB(r) : null; },
     async bindingsOf(p, n) { return (db.prepare('SELECT * FROM connector_binding WHERE agent_project_id = ? AND agent_name = ? ORDER BY created_at').all(p, n) as B[]).map(toB); },
     async bindingsFor(c) { return (db.prepare('SELECT * FROM connector_binding WHERE connector = ?').all(c) as B[]).map(toB); },

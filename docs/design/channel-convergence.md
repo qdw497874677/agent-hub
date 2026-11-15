@@ -1,6 +1,6 @@
 # 外部 IM 与连接器的收敛：渠道、目标、投递内核
 
-状态：设计草案（未实现）。回答的问题：**外部 IM 聊天和连接器怎么把逻辑收敛起来，群聊能复用多少。**
+状态：C1 已落地（目标与外部会话字段先落存储，零行为变化）；C2a 起未实现。回答的问题：**外部 IM 聊天和连接器怎么把逻辑收敛起来，群聊能复用多少。**
 
 相关：`docs/design/group-delivery-kernel.md`（投递内核，本文的 C0）。
 
@@ -163,7 +163,7 @@ CREATE TABLE channel_outbox (
 
 评审（issue #219 评论）指出 4 个高风险缺口，顺序已改为：**C1（收窄，零行为变化）→ C2a 入站改造 → C2b outbox → C4 DM 渠道 → C3 群目标 → C0 投递内核 → C5**。C0 不再前置：群目标本来就不走 `attempt`，而 C0 改的是三条热路径，在 #215 的 E2E 基线变绿前动它风险最高。
 
-**C1 拆渠道与目标（收窄成真正的零行为变化）**：
+**C1 拆渠道与目标（收窄成真正的零行为变化）——已落地**：
 - 领域保留 `target: 'main' | 'new'`，新增可选 `targetKind?`/`groupId?`，不把 `target` 改成联合对象；
 - `channel_conversation` 建表，但先不接任何读写路径；
 - `saveBinding` **和 `saveRun`** 都改成带新列（两者都是整行 `INSERT OR REPLACE`，`storage-sqlite/src/connectors.ts:38-43,50,64`），状态迁移改按列 `UPDATE`；
