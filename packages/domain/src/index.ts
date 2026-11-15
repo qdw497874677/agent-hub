@@ -143,6 +143,7 @@ export * from './tools/agent-orchestration-tools.ts';
 export * from './tools/git-tools.ts';
 export * from './messaging.ts';
 export * from './groups.ts';
+export * from './session-inbox.ts';
 export * from './use-cases/groups.ts';
 export * from './use-cases/persistent-agents.ts';
 export * from './use-cases/bots.ts';

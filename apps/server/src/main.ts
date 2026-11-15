@@ -82,7 +82,9 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   revokeLegacyLocalWorkerGrants,
   terminalAccess,
   terminalTarget,
+  asSessionId,
   createPreviewLinkUseCase,
+  createSessionInbox,
   markWorkerPreviewsOfflineUseCase,
   matchPreviewShare,
   parsePreviewPortRange,
@@ -287,7 +289,7 @@ if (readEnv('HUB_TOOLS_TRANSPORT') === 'http') log('HUB_TOOLS_TRANSPORT=http 已
 const sessionLane = createSessionLane();
 const messageBus = createMessageBus({
   lane: sessionLane,
-  occupied: async (sessionId) => (await store.groups.deliveredTo(sessionId)).length > 0,
+  occupied: (sessionId) => inbox.occupied(sessionId),
   now: deps.now,
   sessions: deps.sessions,
   projects: deps.projects,
@@ -320,7 +322,18 @@ const groupChat = createGroupChat({
   }),
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
-  occupied: async (sessionId) => (await store.messages.deliveredTo(sessionId)).length > 0
+  occupied: (sessionId) => inbox.occupied(sessionId)
+});
+// 会话收件箱（#221 步骤 5）：各投递来源共用「占用」判断与回合结束归属。
+// 顺序即优先级：P2P / 群聊先收（它们要在本轮文字上做判断），连接器与调度随后，最后才放开送达队列投下一条。
+const inbox = createSessionInbox({
+  sources: [
+    { id: 'p2p', open: async (sid: string) => (await store.messages.deliveredTo(asSessionId(sid))).length > 0, end: async (sid, outcome) => { await messageBus.turnEnded(asSessionId(sid), outcome); } },
+    { id: 'group', open: async (sid: string) => (await store.groups.deliveredTo(asSessionId(sid))).length > 0, end: async (sid, outcome, reason) => { await groupChat.turnEnded(asSessionId(sid), outcome, reason); } },
+    { id: 'connector', open: async () => false, end: async (sid, outcome) => { await connectorHub.turnEnded(asSessionId(sid), outcome); } },
+    { id: 'dispatch', open: async () => false, end: async (sid) => { await dispatcher.sessionEnded(asSessionId(sid)); } },
+    { id: 'delivery', open: async (sid: string) => (await store.deliveries.pendingFor(sid)).length > 0, end: async (sid) => { await releaseAfterTurn({ ...deps, deliveries: store.deliveries }, asSessionId(sid)); } }
+  ]
 });
 // 持久智能体（界面上叫 bot）：按条读写 bots 表；删除时从所有群移出。
 const persistentAgents = createPersistentAgents({
@@ -505,17 +518,10 @@ type TurnOutcome = 'done' | 'stopped' | 'interrupted' | 'failed';
  * 各钩子自己幂等（开放的投递 / 未收尾的检查点处理过一次就空转），重复调用无害。
  */
 const turnFinished = (sessionId: SessionId, outcome: TurnOutcome, reason?: string): void => {
-  void connectorHub.turnEnded(sessionId, outcome).catch(() => undefined);
-  void dispatcher.sessionEnded(sessionId).catch(() => undefined);
-  // 先让 P2P 收尾（它投的就收它的），再让群聊收尾；两边各自收完都会试着投下一条，闸保证只投进一个。
-  void (async () => {
-    await messageBus.turnEnded(sessionId, outcome).catch((error: unknown) => log(`agent 消息回合收尾失败：${String(error)}`));
-    await groupChat.turnEnded(sessionId, outcome, reason).catch((error: unknown) => log(`群聊回合收尾失败：${String(error)}`));
-  })();
+  // 各来源自己幂等：先让它们收这一轮（P2P/群聊要读本轮的最后一句话），送达队列最后放开投下一条。
+  void inbox.end(sessionId, outcome, reason).catch((error: unknown) => log(`回合收尾失败：${String(error)}`));
   // 回合结束后拍「之后」那张（ADR 0027 D2）
   void filesService.endTurn(sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
-  // 等上一轮的那条消息（人在定时触发跑着时发的话等）马上送，不等下一次泵
-  void releaseAfterTurn({ ...deps, deliveries: store.deliveries }, sessionId).catch((error: unknown) => log(`送达队列收尾失败：${String(error)}`));
 };
 hub.stream.subscribe((frame) => {
   if (frame.event?.kind === 'ended') turnFinished(frame.sessionId, frame.event.outcome, frame.event.reason);
