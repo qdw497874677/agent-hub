@@ -416,6 +416,24 @@ test('同一条会话被 P2P 消息占着时，群投递排队，对方收尾后
   assert.match(w.lastDelivery(coder)!.text, /第二件/);
 });
 
+test('回合失败且没留下文字：群里明说原因，不装作「没有要补充的」', async () => {
+  const w = await world();
+  const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['coder'], hostRole: null });
+  assert.ok(g.ok);
+  await w.chat.post(w.alice, g.value.id, '@coder 看看这个');
+  const coder = await w.sessionOf(g.value.id, 'coder');
+  const open = w.lastDelivery(coder);
+  assert.ok(open);
+  await w.chat.turnEnded(coder, 'failed', '发送失败：Internal error: Free usage limit reached.');
+  const posts = await w.posts(g.value.id);
+  const line = posts.find((p) => p.author.kind === 'system' && /没能回复/.test(p.body));
+  assert.ok(line, '失败要落一条系统消息');
+  assert.match(line.body, /Free usage limit reached/);
+  const view = await w.chat.view(w.alice, g.value.id);
+  assert.ok(view.ok);
+  assert.equal(view.value.running.length, 0, '这一段对话收尾，不再挂着');
+});
+
 test('只能 @ 群成员：@ 群外角色只给提示、不派生；有 group.manage 的人把它加进群，加完不重放', async () => {
   const w = await world();
   const g = await w.chat.create(w.alice, w.project.id, { name: 'g', members: ['host', 'coder'], hostRole: 'host' });
@@ -496,6 +514,8 @@ test('成员管理：一次加多个、移出（主持人和最后一个不能�
 test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删除时从群移出并清主持人', async () => {
   const w = await world();
   let config: MessagingConfig = { projectId: w.project.id, roles: w.roleList, limits: {}, updatedAt: 0 };
+  const bindingsDeleted: string[] = [];
+  const settingsCleared: string[] = [];
   const agents = createPersistentAgents({
     projects: w.deps.projects,
     sessions: w.deps.sessions,
@@ -505,6 +525,16 @@ test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删�
       config = { ...config, roles: [...roles] };
     }),
     messages: { config: async () => config },
+    connectors: {
+      bindingsOf: async (projectId: string, name: string) =>
+        projectId === w.project.id && name === 'host' ? ([{ id: 'trig-host' }] as never) : [],
+      deleteBinding: async (id: string) => void bindingsDeleted.push(id)
+    },
+    contextSettings: {
+      set: async (key: string, value: unknown) => {
+        if (value === null) settingsCleared.push(key);
+      }
+    },
     groupsOf: (p) => w.groups.groupsOf(p),
     detach: (actor, p, name) => w.chat.detachAgent(actor, p, name)
   });
@@ -535,6 +565,8 @@ test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删�
   assert.deepEqual(after.members, ['coder']);
   assert.equal(after.hostRole, null);
   assert.ok(!config.roles.some((r) => r.name === 'host'));
+  assert.deepEqual(bindingsDeleted, ['trig-host']);
+  assert.deepEqual(settingsCleared, [`bot:${w.project.id}:host`, `role:${w.project.id}:host`]);
   assert.ok((await w.posts(g.value.id)).some((p) => p.author.kind === 'system' && /删除了 bot @host/.test(p.body)));
 });
 

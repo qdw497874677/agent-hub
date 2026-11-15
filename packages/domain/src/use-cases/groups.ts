@@ -133,7 +133,8 @@ export interface GroupChat {
   /** 主持人工具 group_dispatch。 */
   dispatch(sessionId: SessionId, input: Record<string, unknown>): Promise<Result<{ assignees: readonly string[] } | { declined: true }, DomainError>>;
   /** 会话一轮结束（组合根接 hub.stream 'ended'）。 */
-  turnEnded(sessionId: SessionId): Promise<void>;
+  /** `outcome` 缺省时按「正常结束」处理；失败/中断要带原因，群里要看得见（#221 之后补的可观测）。 */
+  turnEnded(sessionId: SessionId, outcome?: 'done' | 'stopped' | 'interrupted' | 'failed', reason?: string): Promise<void>;
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   /** 这个人看得到的所有群里的未读（顶栏消息图标的红点）。 */
@@ -894,7 +895,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
       });
     },
 
-    async turnEnded(sessionId) {
+    async turnEnded(sessionId, outcome, reason) {
       const member = await deps.groups.memberOfSession(sessionId);
       if (!member) return;
       await run(member.groupId, async (pending) => {
@@ -902,7 +903,20 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         const open = await deps.groups.deliveredTo(sessionId);
         if (open.length === 0) return;
         const text = await lastTurnText(sessionId);
-        for (const d of open) await handleResult(d, text, pending);
+        for (const d of open) {
+          // 回合失败/中断且没留下任何文字：不装作「没有要补充的」，把原因放进群里。
+          if (outcome !== undefined && outcome !== 'done' && isSilent(text)) {
+            const group = await deps.groups.group(d.groupId);
+            const thread = await deps.groups.thread(d.threadId);
+            if (!group || !thread) return;
+            const line = `${outcome === 'failed' ? '没能回复' : '这一轮被中断了'}：${summary(reason ?? '运行时没有给出原因')}`;
+            await settle(d, 'failed', line);
+            if (d.purpose === 'host') await end(group, thread, 'fallback', `${HOST_UNAVAILABLE_LINE}（${summary(reason ?? '运行时没有给出原因')}）`);
+            else await end(await saveGroup(group, { needsUser: true }), thread, 'stopped', `@${d.role} ${line}`);
+            continue;
+          }
+          await handleResult(d, text, pending);
+        }
       });
     },
 
