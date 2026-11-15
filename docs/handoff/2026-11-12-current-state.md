@@ -9,15 +9,19 @@
 |---|---|
 | 仓库 | `/home/qdw/Projects/workspace/agent-hub` |
 | 分支 | `master` |
-| 本地 HEAD | `2d5a0e2 fix(bots): 删除 bot 时自动从群里移出` |
-| origin/master | 已同步到 `2d5a0e2` |
-| 阿里云 app | `/root/ahub-server/app`，HEAD `2d5a0e2`（2026-11-14 23:04 用 `deploy-aliyun.sh --bundle` 部署） |
+| 本地 HEAD | `9f6ad38 fix(assets): 下发 fail-closed、导入不借调用者凭据、版本记录与实际一致` |
+| origin/master | 已同步到 `9f6ad38` |
+| 阿里云 app | `/root/ahub-server/app`，HEAD `9f6ad38`（2026-11-15 19:24 用 `deploy-aliyun.sh --bundle` 部署） |
 | 阿里云 health | `{"ok":true}` |
-| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker 已升到 `2d5a0e2` |
+| 阿里云 Worker | `local-074cfa87`、`remote-7ecd5a47` 均 online；本地 worker `9f6ad38`（**协议 v4**） |
 | 本地工作区 | 干净（本轮改动已提交并部署） |
-| 最近完整验证 | `npm test` **1602 / 1594 pass / 8 skipped / 0 fail**；`check`、`typecheck`、`typecheck:web`、`build` 全 0；`e2e/preview.spec.ts` 2/2 |
+| 最近完整验证 | `npm test` **1789 / 1781 pass / 8 skipped / 0 fail**；`check`、`typecheck`、`typecheck:web`、`build` 全 0 |
 
-当前部署已经包含：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时、会话保活（回合结束后进程仍在，后台子代理不被杀）、子代理常驻轨道与实时面板、后台子代理结束后回补遗漏总结（`session/load` 重放）、处理中阶段与计时。
+> 协议 v4：`assetIds` 不再默认「全给」。旧 Worker 会被 4426 拒连并提示跑 `scripts/update-worker.sh`；
+> 升级 hub 后要同步升级本地 worker，否则该机器上的会话全部不可用。
+
+
+当前部署已经包含（截至 `9f6ad38`）：侧边栏、移动端 header 收口、对比度/触控优化、会话环境刷新、发送乐观反馈、工具授权跨轮次、会话连线可辨识性与离线限制、会话终端（含手机按键条与刷新回放）、会话删除、会话「收起」、worktree 档位与准备命令、多仓库项目与组合工作空间（M1）、预览（端口映射 + 自动发现 + 公开分享 + 路径前缀模式）、Codex 运行时、会话保活（回合结束后进程仍在，后台子代理不被杀）、子代理常驻轨道与实时面板、后台子代理结束后回补遗漏总结（`session/load` 重放）、处理中阶段与计时。
 
 ### 预览怎么用
 
@@ -255,3 +259,25 @@ npx playwright test e2e/canvas.spec.ts --reporter=list
 
 
 2026-11-14 深夜（`2d5a0e2`，已部署；本地 worker 同版本）：群聊页按体验清单改完。主持人不再要求 bot 写明模型（`packages/domain/src/groups.ts` 只要求 `ref.runtime`，留空即该运行时默认模型；下拉里显示「（默认模型）」）；输入框支持 `@` 补全（`apps/web/src/atoms/mention-suggest.ts`，成员带主持人/已暂停角标，`@all`/`@user` 固定在后，↑↓ 环绕、Enter/Tab 插入、Esc 关闭、输入法组字时不干预，插入后补空格）；主持人 chip 常驻输入区上方，点一下打开设置并直接展开主持人字段；390px 下页面头只留标题+项目选择（`messages-more`），聊天头收成「成员 / 停止 / ⋯」，停止要二次确认（`group-stop` → `group-stop-confirm`）；消息带首字母头像与 `HH:mm`，同作者连续消息只首条显示；placeholder 缩短、窄屏发送按钮只留图标；群列表补主持人标记（未读与「需要你」保留）。另外修掉一条真实缺陷：从「Bot」页删除 bot 时不会移出群（老 `/agents` 路径有 detach，一等 bot 的 `DELETE /api/bots/:id` 没有），现在 `apps/server/src/main.ts` 的 `removeBot` 会先 `detachAgent` 再删行。
+
+## 2. 2026-11-15 晚：资产安全与版本一致性、飞书渠道、#216 P1
+
+已提交并部署（`9f6ad38`）：
+
+- **#222 符号链接越界**：导入时逐层 `realpath` 判越界（中间目录是软链也算），越界跳过并记日志；目录与文件两条路径同一判据。
+- **#223 资产下发 fail-open**：`prepare()` 失败返回 `blocked` + 显式空 `assetIds`，会话不启动并说明原因；Worker `current()` 缺省 = 一个都不给；协议升到 **v4**。
+- **#224 借用凭据 / SSRF**：git 只拿最小环境（无 `SSH_AUTH_SOCK`/`GIT_ASKPASS`/代理，一次性 `HOME`），stderr 先抹凭据再分类；`asset-git-host.ts` 统一校验回环/内网/保留地址。
+- **#225 M1**：`environmentRevision` 用 `prepare` 落库的输入快照重算，不再解密 MCP 密钥，资产升版仍会重新托管（M2/M3 只有设计）。
+- **#216 P1**：新增工具 `project.update`、`run.checks`（按项目声明的检查命令在 Worker 上跑）、`session.derive`、`session.stop`；项目设置可编辑检查命令。
+- **#219 C4 飞书**：`packages/connector-feishu/`（长连接入站 + outbox 出站 + 回合回复），`FEISHU_APP_ID`/`FEISHU_APP_SECRET` 同时设置才启用。
+- **命名**：领域实体改 `PersistentAgent`（`Bot` 保留为产品名别名）；术语见 `docs/adr/0037-workbench-and-bot.md`；资产总计划见 `docs/design/assets.md`。
+
+新增环境变量（都可以不设，默认关闭）：
+
+| 变量 | 作用 |
+| --- | --- |
+| `FEISHU_APP_ID` / `FEISHU_APP_SECRET` | 飞书连接器开关（两者必须同时设置，只设一个启动报错） |
+| `ASSET_GIT_ALLOWED_HOSTS` | 资产 git 导入放行的主机（逗号分隔，支持 `.suffix`） |
+| `ASSET_GIT_ALLOW_ANY_HOST=1` | 放开主机限制（仅自建环境，启动时打警告） |
+
+下一步（未做）：#225 M2/M3（不可变版本目录 + 适配器版本化路径）、#226 资产市场、#219 C3 群目标、#220 回帖、#217 剩余、Bot 记忆（只有设计）。
