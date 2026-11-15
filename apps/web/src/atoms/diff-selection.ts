@@ -114,6 +114,52 @@ export function parsePatchLines(patch: string): DiffRow[] {
   return rows;
 }
 
+/** hunk 头里旧侧的起点和行数：`@@ -0,0 +1,3 @@` → `{ start: 0, count: 0 }`。 */
+const HUNK_OLD = /^@@ -(\d+)(?:,(\d+))? /;
+
+/**
+ * 整个文件都是新增的：每个 hunk 的旧侧都为空（`@@ -0,0 +1,N @@`）。
+ *
+ * 这种 diff 里每一行都是「加进来的」，整片绿反而看不清代码，渲染时把新增底色去掉。
+ * 只认 hunk 头：判断不依赖任何渲染状态，才好测。
+ */
+export function isWholeFileAddition(rows: readonly DiffRow[]): boolean {
+  let hunks = 0;
+  for (const row of rows) {
+    if (row.kind !== 'hunk') continue;
+    const old = HUNK_OLD.exec(row.text);
+    if (!old) return false;
+    hunks++;
+    const start = Number(old[1]);
+    const count = old[2] === undefined ? 1 : Number(old[2]);
+    if (start !== 0 || count !== 0) return false;
+  }
+  return hunks > 0;
+}
+
+/**
+ * 窗口化时该渲染哪一段行：`[start, end)`，上下各留 `overscan` 行，滚动时不至于露出空白。
+ * 行高由渲染层给定（现在统一 24px）；这里只算数字，不碰 DOM。
+ */
+export function diffWindowRange(
+  total: number,
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  overscan: number
+): { start: number; end: number } {
+  if (total <= 0) return { start: 0, end: 0 };
+  const height = rowHeight > 0 ? rowHeight : 24;
+  const view = Math.max(0, viewportHeight);
+  // 内容比视口短时浏览器不会滚动：先把 scrollTop 夹到可能的最大值，再算行号
+  const top = Math.min(Math.max(0, scrollTop), Math.max(0, total * height - view));
+  const first = Math.floor(top / height);
+  const visible = Math.ceil(view / height);
+  const start = Math.max(0, first - overscan);
+  const end = Math.min(total, Math.max(first + 1, first + visible + overscan));
+  return { start, end };
+}
+
 /** 引用里的路径是相对工作空间根的：去掉前导 `./`，反斜杠统一成正斜杠。 */
 export function normalizeRefPath(path: string): string {
   return path

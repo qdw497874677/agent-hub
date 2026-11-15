@@ -3,7 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
 import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
 import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
-import { inSelection, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
+import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
 
 /**
  * 工作空间文件浏览（ADR 0025 · P1，只读）。嵌在会话的「文件 / 改动」标签页里（页签由会话头部管）：
@@ -192,7 +192,9 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                   {query.trim() !== '' ? (
                     found.error ? <p className="px-3 text-meta text-rust">{problem(found.error)}</p> :
                     (shown(found) ?? []).map((p) => (
-                      <button key={p} className="block w-full truncate px-3 py-1.5 text-left font-mono text-sub text-secondary hover:bg-card" onClick={() => open({ path: p, sensitive: /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(p) })}>{p}</button>
+                      <button key={p} className="flex h-7 w-full items-center rounded-md px-3 text-left font-mono text-sub text-secondary transition-colors [scroll-margin-block:8px] hover:bg-hair/40" onClick={() => open({ path: p, sensitive: /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(p) })}>
+                        <span className="min-w-0 truncate">{p}</span>
+                      </button>
                     ))
                   ) : (
                     <Directory sessionId={sessionId} keys={keys} path="" depth={0} expanded={expanded} toggle={toggle} open={open} showSensitive={showSensitive} selected={opened?.path ?? null} />
@@ -227,7 +229,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                 {changed?.files.length === 0 ? <p className="px-3 py-2 text-meta text-tertiary">没有改动</p> : null}
                 {changed?.files.map((f) => (
                   <button key={f.path} onClick={() => open({ path: f.path }, true)} data-testid="change-row"
-                    className={`flex w-full items-baseline gap-2 px-3 py-2 text-left hover:bg-card ${opened?.path === f.path ? 'bg-card' : ''}`}>
+                    className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened?.path === f.path ? 'bg-hair/60' : ''}`}>
                     <span className="w-3 shrink-0 font-mono text-meta text-accent">{GIT_LABEL[f.status] ?? '?'}</span>
                     <span className="min-w-0 flex-1 truncate font-mono text-sub text-secondary">{f.path}</span>
                     <span className="shrink-0 font-mono text-meta text-sage">+{f.additions}</span>
@@ -267,7 +269,7 @@ function Directory(props: { sessionId: string; keys: FilesKeys; path: string; de
         return (
           <div key={e.path}>
             <button onClick={() => (isDir ? props.toggle(e.path) : props.open(e))} data-testid="file-row" data-path={e.path}
-              className={`flex w-full items-baseline gap-1.5 py-1.5 pr-3 text-left hover:bg-card ${props.selected === e.path ? 'bg-card' : ''} ${e.ignored ? 'opacity-50' : ''}`}
+              className={`flex h-7 w-full items-center gap-1.5 rounded-md pr-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${props.selected === e.path ? 'bg-hair/60' : ''} ${e.ignored ? 'opacity-50' : ''}`}
               style={{ paddingLeft: 12 + depth * 14 }}>
               <span className="w-3 shrink-0 text-meta text-tertiary">{isDir ? (isOpen ? '▾' : '▸') : ''}</span>
               <span className={`min-w-0 flex-1 truncate text-sub ${isDir ? 'text-primary' : 'text-secondary'}`}>{e.name}{e.type === 'symlink' ? ' ↗' : ''}</span>
@@ -386,6 +388,21 @@ function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { se
 }
 
 /**
+ * 所有 diff 行统一 24px 高（`min-h-6` / `leading-6` 都是 1.5rem）：窗口化的 spacer 按 `DIFF_ROW_HEIGHT` 算高度，
+ * 行高只改这两处，别在行里散落 `py-*`。hunk 行也是 24px，靠上下边框和底色分隔。
+ * 用 `min-h-6` 而不是 `h-6`：触屏上行号按钮是 32px，行要跟着长。
+ */
+const DIFF_ROW_HEIGHT = 24;
+const DIFF_ROW = 'min-h-6 leading-6';
+/**
+ * 超过这么多行才窗口化：200 行以内全量渲染更快，也省掉滚动时的状态更新
+ * （参照 opencode pierre 的 `virtualizeLineThreshold`，约 200 行是收益打平点）。
+ */
+const DIFF_VIRTUALIZE_THRESHOLD = 200;
+/** 视口上下各多渲染 20 行：滚动时边缘不会先露出空白。 */
+const DIFF_WINDOW_OVERSCAN = 20;
+
+/**
  * 单文件补丁：自带一条可点的行号 gutter（ADR 0025 的 diff 视图）。
  *
  * 以前这里交给 diff2html 出 HTML。行号要能点、选中的段要高亮、手机上点按区不能太小，
@@ -405,6 +422,9 @@ function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: 
   const diff = useQuery({ ...fresh, queryKey: keys.diff(path, base), queryFn: () => filesApi.diff(sessionId, path, base) });
   const data = shown(diff);
   const rows = useMemo(() => (data && !data.binary ? parsePatchLines(data.patch) : []), [data]);
+  // 整文件新增：不铺绿底，读起来像普通代码
+  const plain = useMemo(() => isWholeFileAddition(rows), [rows]);
+
   const [picked, setPicked] = useState<LineSelection | null>(null);
   // 换文件 / 换对比基准之后，旧的行号就不指同一段代码了
   useEffect(() => setPicked(null), [path, base]);
@@ -449,37 +469,102 @@ function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: 
               <span className="text-meta text-tertiary">点行号选起止行{onQuote ? '，可引用到对话' : ''}</span>
             )}
           </div>
-          <div className="files-diff min-h-0 flex-1 overflow-auto pb-4 font-mono text-meta" data-testid="diff-lines">
-            {rows.map((row, i) => (
-              <PatchLine key={i} row={row} picked={picked} pick={pick} />
-            ))}
-          </div>
+          <DiffLines key={`${path}\u0000${base}`} rows={rows} picked={picked} pick={pick} plain={plain} />
         </>
       ) : null}
     </div>
   );
 }
 
+/**
+ * 触屏（粗指针）上行号按钮要更高才好点（见 Gutter 的 `min-h-8`），行高就不再是固定值。
+ */
+function useCoarsePointer(): boolean {
+  const query = '(pointer: coarse)';
+  const [coarse, setCoarse] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches);
+  useEffect(() => {
+    const m = window.matchMedia(query);
+    const on = () => setCoarse(m.matches);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, []);
+  return coarse;
+}
+
+/**
+ * diff 的行区。超过 `DIFF_VIRTUALIZE_THRESHOLD` 行只渲染可视窗口 ±`DIFF_WINDOW_OVERSCAN` 行，
+ * 上下用等高 spacer 占位：大的补丁不再一次挂几千个行号按钮。
+ *
+ * 只对固定行高成立——触屏行号是 32px，高度不再一致，所以那边全量渲染（手机上 diff 也小）。
+ */
+function DiffLines({ rows, picked, pick, plain }: {
+  rows: readonly DiffRow[];
+  picked: LineSelection | null;
+  pick: (side: DiffSide, line: number) => void;
+  plain: boolean;
+}) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const coarse = useCoarsePointer();
+  const virtual = rows.length > DIFF_VIRTUALIZE_THRESHOLD && !coarse;
+  const [range, setRange] = useState<{ start: number; end: number } | null>(null);
+
+  useEffect(() => {
+    if (!virtual) {
+      setRange(null);
+      return;
+    }
+    const el = scroller.current;
+    if (!el) return;
+    const measure = () => {
+      const next = diffWindowRange(rows.length, el.scrollTop, el.clientHeight, DIFF_ROW_HEIGHT, DIFF_WINDOW_OVERSCAN);
+      setRange((current) => (current && current.start === next.start && current.end === next.end ? current : next));
+    };
+    measure();
+    el.addEventListener('scroll', measure, { passive: true });
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure);
+    observer?.observe(el);
+    return () => {
+      el.removeEventListener('scroll', measure);
+      observer?.disconnect();
+    };
+  }, [virtual, rows.length]);
+
+  const from = Math.min(range ? range.start : 0, rows.length);
+  const to = Math.min(range ? range.end : rows.length, rows.length);
+  const head = from * DIFF_ROW_HEIGHT;
+  const tail = (rows.length - to) * DIFF_ROW_HEIGHT;
+  return (
+    <div ref={scroller} className="files-diff min-h-0 flex-1 overflow-auto pb-4 font-mono text-meta" data-testid="diff-lines">
+      {head > 0 ? <div aria-hidden style={{ height: head }} /> : null}
+      {rows.slice(from, to).map((row, i) => (
+        <PatchLine key={from + i} row={row} picked={picked} pick={pick} plain={plain} />
+      ))}
+      {tail > 0 ? <div aria-hidden style={{ height: tail }} /> : null}
+    </div>
+  );
+}
+
 /** 一行补丁：两个行号槽（改前 / 改后）+ 正文。没号的那一侧留空位，对齐不乱。 */
-function PatchLine({ row, picked, pick }: { row: DiffRow; picked: LineSelection | null; pick: (side: DiffSide, line: number) => void }) {
+function PatchLine({ row, picked, pick, plain }: { row: DiffRow; picked: LineSelection | null; pick: (side: DiffSide, line: number) => void; plain: boolean }) {
   if (row.kind === 'meta') {
-    return <div className="whitespace-pre px-3 text-meta leading-6 text-tertiary/80">{row.text}</div>;
+    return <div className={`${DIFF_ROW} whitespace-pre px-3 text-meta text-tertiary/80`}>{row.text}</div>;
   }
   if (row.kind === 'hunk') {
     return (
-      <div className="mt-2 whitespace-pre border-y border-hair/60 bg-card/70 px-3 text-meta leading-6 text-secondary">
+      <div className={`${DIFF_ROW} whitespace-pre border-y border-hair/60 bg-card/70 px-3 text-meta text-secondary`}>
         {row.text}
       </div>
     );
   }
-  const tone = row.kind === 'added' ? 'bg-sage/10' : row.kind === 'removed' ? 'bg-rust/10' : '';
+  // 整文件新增时不给新增行铺底色：满屏绿反而看不清代码
+  const tone = plain ? '' : row.kind === 'added' ? 'bg-sage/10' : row.kind === 'removed' ? 'bg-rust/10' : '';
   const mark = row.kind === 'added' ? 'text-sage' : row.kind === 'removed' ? 'text-rust' : 'text-tertiary';
   const sign = row.kind === 'added' ? '+' : row.kind === 'removed' ? '−' : ' ';
   const oldOn = row.oldLine !== undefined && inSelection(picked, 'old', row.oldLine);
   const newOn = row.newLine !== undefined && inSelection(picked, 'new', row.newLine);
   const highlighted = oldOn || newOn;
   return (
-    <div className={`flex min-w-full w-max leading-6 ${highlighted ? 'bg-accent/15' : tone}`}>
+    <div className={`flex min-w-full w-max ${DIFF_ROW} ${highlighted ? 'bg-accent/15' : tone}`}>
       <Gutter side="old" line={row.oldLine} selected={oldOn} pick={pick} />
       <Gutter side="new" line={row.newLine} selected={newOn} pick={pick} />
       <span aria-hidden className={`w-4 shrink-0 select-none whitespace-pre text-center ${mark}`}>{sign}</span>

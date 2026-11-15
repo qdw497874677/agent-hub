@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { previewsApi, type PreviewLinkDto } from '../shell/api.ts';
 import { sessionKeys } from '../shell/query-keys.ts';
-import { SMALL_BUTTON } from '../shell/dialog-shell.tsx';
+import { InlineSheet, SMALL_BUTTON } from '../shell/dialog-shell.tsx';
+import { useNarrow } from '../shell/device.ts';
 import {
   PREVIEW_LABEL_LIMIT,
   previewAge,
@@ -29,6 +30,11 @@ const INPUT =
 const BUTTON = `${SMALL_BUTTON} inline-flex min-h-8 items-center justify-center`;
 /** 行上的小标签（「自动发现」/「公开」）：高度和按钮对齐，不抢视线。 */
 const TAG = 'inline-flex shrink-0 items-center rounded-sm border px-1 text-[10px] leading-4';
+/** 桌面：内容区自己滚，和页签等高。 */
+const PREVIEW_WIDE = 'min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-2.5 md:px-4';
+/** 窄屏：装在内联抽屉里，底部安全区自己兜（抽屉本身贴到屏幕底边）。 */
+const PREVIEW_NARROW =
+  'min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]';
 
 const message = (error: unknown): string | null =>
   error instanceof Error ? error.message : error ? '网络出错了，再试一次' : null;
@@ -43,6 +49,7 @@ interface Props {
 
 export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
   const queryClient = useQueryClient();
+  const narrow = useNarrow();
   const key = sessionKeys.previews(sessionId);
   const links = useQuery({ queryKey: key, queryFn: () => previewsApi.list(sessionId), enabled: active, retry: false });
 
@@ -248,8 +255,8 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
     return () => window.removeEventListener('keydown', onKey);
   }, [shareId]);
 
-  return (
-    <div data-testid="preview-panel" className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-2.5 md:px-4">
+  const panel = (
+    <div data-testid="preview-panel" className={narrow ? PREVIEW_NARROW : PREVIEW_WIDE}>
       <p data-testid="preview-note" className="text-meta text-tertiary">
         这些链接对登录这台 hub 的人可见；分享出去的链接不用登录，到期自动失效
       </p>
@@ -545,5 +552,14 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
         </p>
       ) : null}
     </div>
+  );
+
+  if (!narrow) return panel;
+  // 窄屏：预览在会话页签里，不能当模态挡住整个会话 —— 用贴底但不遮罩的内联抽屉。
+  // 填端口、分享这些控件就在手边，收起把手还能把页签空间让出来。
+  return (
+    <InlineSheet title="预览" testId="preview-sheet">
+      {panel}
+    </InlineSheet>
   );
 }

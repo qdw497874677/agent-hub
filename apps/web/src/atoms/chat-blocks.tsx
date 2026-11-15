@@ -1,6 +1,6 @@
 import { DeliveryNote } from './delivery-note.tsx';
 import { AuthorTag } from './author.tsx';
-import { useEffect, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type Ref } from 'react';
 import { api, attachmentUrl } from '../shell/api.ts';
 import { useAccount } from '../shell/auth.tsx';
 import {
@@ -18,7 +18,8 @@ import type { Block } from './live.ts';
 import type { HandoffDto } from './live-core.ts';
 import { formatRoute, parseRoute } from '../shell/route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
-import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine } from './tool-format.ts';
+import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine, type ToolView } from './tool-format.ts';
+import { runLength, startsRun, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
 import { subagentStepCount } from './live.ts';
 import { useFileLinks } from './file-links.tsx';
 
@@ -296,77 +297,233 @@ function OutputView({ text, failed }: { text: string; failed: boolean }) {
   );
 }
 
-function ToolCard({ block, settings }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings }) {
+/** 从同层的一个元素读出「这是什么工具、成没成」。不是工具行就返回 null（它同样会打断一组）。 */
+function probeOf(node: Element | null): ToolRowProbe | null {
+  if (node === null || !(node instanceof HTMLElement)) return null;
+  const kind = node.dataset['toolKind'];
+  if (kind === undefined) return null;
+  const ok = node.dataset['toolOk'];
+  return { kind: kind as ToolRowProbe['kind'], ok: ok === 'true' ? true : ok === 'false' ? false : null };
+}
+
+/** 同层后面每一行的探针；读到第一行不是工具的为止（生成器，`runLength` 自己会停）。 */
+function* followingProbes(el: Element): Generator<ToolRowProbe | null> {
+  for (let node = el.nextElementSibling; node !== null; node = node.nextElementSibling) yield probeOf(node);
+}
+
+/** 展开后看的参数本体。只有一行，所以永远挂着（不懒挂）：折叠时也得能读到「跑了什么」。 */
+function ToolInput({ view, input }: { view: ToolView; input: string }) {
+  return view.kind === 'shell' ? (
+    <pre className="overflow-x-auto whitespace-pre-wrap rounded-sm bg-card-raised px-2 py-1.5 font-mono text-meta text-primary" data-testid="tool-input">
+      <span className="select-none text-tertiary">$ </span>
+      {view.command}
+    </pre>
+  ) : view.kind === 'edit' ? (
+    <>
+      <p className="min-w-0 font-mono text-meta text-tertiary">
+        <PathText path={view.path} input={input} />
+      </p>
+      <DiffView lines={view.diff} />
+    </>
+  ) : view.kind === 'read' ? (
+    <p className="min-w-0 font-mono text-meta text-tertiary" data-testid="tool-input">
+      <PathText path={view.path} input={input} />
+      {view.detail ? ` · ${view.detail}` : ''}
+    </p>
+  ) : view.kind === 'search' ? (
+    <p className="min-w-0 font-mono text-meta text-tertiary" data-testid="tool-input">
+      <span className="text-accent">⌕ </span>
+      {view.query}
+      {view.path ? ` · ${view.path}` : ''}
+    </p>
+  ) : view.kind === 'fetch' ? (
+    <p className="min-w-0 break-all font-mono text-meta text-tertiary" data-testid="tool-input">
+      {view.url}
+    </p>
+  ) : view.kind === 'worktree' ? (
+    <p className="min-w-0 font-mono text-meta text-tertiary" data-testid="tool-input">
+      {view.path}
+      {view.branch ? ` · ${view.branch}` : ''}
+    </p>
+  ) : view.kind === 'subagent' ? (
+    <p className="min-w-0 text-meta text-secondary" data-testid="tool-input">
+      <span className="text-accent">◈ </span>
+      {view.agent ?? '子代理'}
+      {view.description ? ` · ${view.description}` : ''}
+    </p>
+  ) : view.kind === 'plan' ? (
+    <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-meta text-tertiary" data-testid="tool-input">
+      {view.text}
+    </pre>
+  ) : view.kind === 'file' ? (
+    <p className="min-w-0 font-mono text-meta text-tertiary" data-testid="tool-input">
+      <PathText path={view.path} input={input} />
+      {view.detail ? ` · ${view.detail}` : ''}
+    </p>
+  ) : (
+    <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-meta text-tertiary" data-testid="tool-input">
+      {view.text}
+    </pre>
+  );
+}
+
+/**
+ * 组头的「×N」。同一类多出一行时才出现，所以要有进出场：从 0fr 撑到 1fr 让它在行尾让出位置，
+ * 里层同时从模糊+微缩淡入，看起来像「长出来」而不是突然插一个方块。
+ * 只用 Tailwind 的 transition（不外挂 keyframes），reduce 时直接跳过。
+ */
+function RunChip({ kind, count }: { kind: ToolRowKind; count: number }) {
+  const chip = toolRunChip(kind, count);
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    if (chip === '') return;
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+    // 只在「有没有 chip」这件事翻转时重放，数字变化（×2→×3）就让它原地改字。
+  }, [chip === '']);
+  if (chip === '') return null;
+  return (
+    <span
+      aria-label={chip}
+      data-testid="tool-run"
+      className="grid shrink-0 text-meta tabular-nums text-tertiary transition-[grid-template-columns] duration-[480ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+      style={{ gridTemplateColumns: grown ? '1fr' : '0fr' }}
+    >
+      <span className="min-w-0 overflow-hidden">
+        <span
+          className={`inline-block whitespace-nowrap rounded-sm border border-hair px-1 transition duration-[480ms] ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+            grown ? 'scale-100 opacity-100 blur-none' : 'scale-[0.985] opacity-0 blur-[2px]'
+          }`}
+        >
+          ×{count}
+        </span>
+      </span>
+    </span>
+  );
+}
+
+/**
+ * 一次工具调用 = 一行（13px/16px）。展开才挂输出：输出可能几百行，行本身只占一行。
+ *
+ * 「同类聚合」不改数据结构，只看同层相邻的行：这一行前面是不是同类且没失败（决定它是不是一组的开头），
+ * 往后数到第一行不是同类为止（决定组头写 ×几）。时间线里每一块都是同一层的兄弟节点，
+ * 所以读取 `previousElementSibling` / `nextElementSibling` 就够了；万一结构变了（比如以后按轮包一层），
+ * 相邻关系断掉，最坏也只是退回「每行一条」，不会画错。
+ *
+ * 没用 `content-visibility: auto`：折叠的 `<details>` 本来就不渲染内容，真正的开销已经被挡住了；
+ * 而自动跳过屏幕外的行会让里面的元素量出零尺寸，e2e 里「参数可见」的断言会随机挂。
+ */
+function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings }) {
   const view = toolView(block.name, block.input);
   const family = toolFamily(block.name, view);
-  const mark = block.result === null ? '⋯' : block.result.ok ? '✓' : '✗';
+  const kind = toolRowKind(block.name, view);
+  const ok = block.result === null ? null : block.result.ok;
+  const line = toolRowLine(view, block.input);
+  const probe: ToolRowProbe = { kind, ok };
+  const ref = useRef<HTMLDetailsElement | null>(null);
+  const probeRef = useRef(probe);
+  probeRef.current = probe;
+  const [run, setRun] = useState<{ first: boolean; count: number }>({ first: true, count: 1 });
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const measure = () => {
+      const self = probeRef.current;
+      const first = startsRun(probeOf(el.previousElementSibling), self);
+      return { first, count: first ? runLength(self, followingProbes(el)) : 1 };
+    };
+    const apply = () => {
+      const next = measure();
+      setRun((current) => (current.first === next.first && current.count === next.count ? current : next));
+    };
+    // 先量一次（挂载时可能夹在已有的一组中间），流式追加的行再靠观察者补上 ×N。
+    apply();
+    const parent = el.parentElement;
+    if (parent === null) return;
+    // 只盯直接子节点的增删：行内文字变化（比如 chip 从 ×1 变 ×3）不会反过来触发它。
+    const observer = new MutationObserver(apply);
+    observer.observe(parent, { childList: true });
+    return () => observer.disconnect();
+  }, [kind, ok]);
+
+  // 「显示设置」给默认值，用户点过就以用户为准（流式刷新不该把他刚展开的那一行又关回去）。
+  const defaultOpen = toolOpenByDefault(settings, family);
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? defaultOpen;
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (open) setMounted(true);
+  }, [open]);
+
+  const failed = ok === false;
+  const mark = ok === null ? '⋯' : ok ? '✓' : '✗';
   const spent = block.result === null ? '运行中' : block.result.durationMs > 0 ? `${block.result.durationMs}ms` : '';
   const output = block.result?.output;
+  // 有东西可展开才画那个尖角：单行 bash 还在跑的时候就没什么可看的。
+  const expandable = block.result !== null || view.kind !== 'shell';
+  const chip = toolRunChip(kind, run.count);
   return (
-    <details className="group border-l border-hair pl-3" open={toolOpenByDefault(settings, family)} data-testid="tool-card">
-      <summary className="flex cursor-pointer list-none items-baseline gap-2 text-meta text-secondary">
-        <span className={block.result?.ok === false ? 'text-rust' : 'text-tertiary'}>{mark}</span>
-        <span className="shrink-0 font-mono text-sage">{block.name}</span>
-        <span className="min-w-0 truncate font-mono opacity-70">{toolSummary(view)}</span>
-        <span className="ml-auto shrink-0 text-tertiary">{spent}</span>
-      </summary>
-      <div className="mt-1.5 space-y-1.5">
-        {view.kind === 'shell' ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap rounded-sm bg-card-raised px-2 py-1.5 font-mono text-meta text-primary" data-testid="tool-input">
-            <span className="select-none text-tertiary">$ </span>
-            {view.command}
-          </pre>
-        ) : view.kind === 'edit' ? (
-          <>
-            <p className="font-mono text-meta text-tertiary"><PathText path={view.path} input={block.input} /></p>
-            <DiffView lines={view.diff} />
-          </>
-        ) : view.kind === 'read' ? (
-          <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
-            <PathText path={view.path} input={block.input} />
-            {view.detail ? ` · ${view.detail}` : ''}
-          </p>
-        ) : view.kind === 'search' ? (
-          <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
-            <span className="text-accent">⌕ </span>
-            {view.query}
-            {view.path ? ` · ${view.path}` : ''}
-          </p>
-        ) : view.kind === 'fetch' ? (
-          <p className="break-all font-mono text-meta text-tertiary" data-testid="tool-input">
-            {view.url}
-          </p>
-        ) : view.kind === 'worktree' ? (
-          <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
-            {view.path}
-            {view.branch ? ` · ${view.branch}` : ''}
-          </p>
-        ) : view.kind === 'subagent' ? (
-          <p className="text-meta text-secondary" data-testid="tool-input">
-            <span className="text-accent">◈ </span>
-            {view.agent ?? '子代理'}
-            {view.description ? ` · ${view.description}` : ''}
-          </p>
-        ) : view.kind === 'plan' ? (
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-meta text-tertiary" data-testid="tool-input">
-            {view.text}
-          </pre>
-        ) : view.kind === 'file' ? (
-          <p className="font-mono text-meta text-tertiary" data-testid="tool-input">
-            <PathText path={view.path} input={block.input} />
-            {view.detail ? ` · ${view.detail}` : ''}
-          </p>
-        ) : (
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap font-mono text-meta text-tertiary" data-testid="tool-input">
-            {view.text}
-          </pre>
+    <details
+      ref={ref}
+      className={`group/tool min-w-0 border-l border-hair pl-3 ${run.first ? '' : '-mt-2'}`}
+      open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open;
+        if (next !== open) setUserOpen(next);
+      }}
+      data-testid="tool-card"
+      data-tool-kind={kind}
+      data-tool-ok={ok === null ? 'running' : String(ok)}
+      data-tool-run={run.first ? (run.count > 1 ? 'start' : 'single') : 'cont'}
+      data-tool-count={run.count > 1 ? run.count : undefined}
+    >
+      <summary
+        className="flex min-w-0 cursor-pointer list-none items-center gap-2 py-0.5 text-[13px] leading-4 text-secondary"
+        title={toolRowTitle(block.name, line)}
+      >
+        <span
+          aria-hidden
+          className={`w-2.5 shrink-0 text-tertiary motion-reduce:transition-none ${
+            expandable ? 'transition-transform group-open/tool:rotate-90' : 'opacity-0'
+          }`}
+        >
+          ›
+        </span>
+        <span aria-hidden className={`shrink-0 text-meta ${failed ? 'text-rust' : 'text-tertiary'}`}>
+          {mark}
+        </span>
+        {run.first ? <span className="shrink-0 font-medium text-sage">{block.name}</span> : null}
+        <span className="min-w-0 truncate font-mono text-sub text-tertiary" data-testid="tool-params">
+          {line.pairs.length === 0 ? (
+            toolSummary(view)
+          ) : (
+            line.pairs.map((param, index) => (
+              <span key={`${param.key}:${index}`}>
+                {index > 0 ? ' ' : null}
+                {param.key === '' ? null : <span>{param.key}=</span>}
+                <span className="text-secondary">{param.value}</span>
+              </span>
+            ))
+          )}
+          {line.hidden > 0 ? <span className="text-tertiary"> +{line.hidden}</span> : null}
+        </span>
+        {chip === '' ? null : (
+          // 组头从 0fr 撑到 1fr：同一类多出一行时它慢慢露出来，不跳。
+          <RunChip kind={kind} count={run.count} />
         )}
-        {output !== undefined && !(view.kind === 'edit' && block.result?.ok) ? (
-          <OutputView text={output} failed={block.result?.ok === false} />
-        ) : output !== undefined ? (
-          <p className="text-meta text-tertiary">{output.split('\n')[0]}</p>
-        ) : block.result !== null ? (
-          <p className="text-meta text-tertiary">（没有输出）</p>
+        <span className="ml-auto shrink-0 whitespace-nowrap text-meta text-tertiary">{spent}</span>
+      </summary>
+      <div className="mt-1 min-w-0 space-y-1.5 pb-0.5">
+        <ToolInput view={view} input={block.input} />
+        {mounted ? (
+          output !== undefined && !(view.kind === 'edit' && block.result?.ok) ? (
+            <OutputView text={output} failed={failed} />
+          ) : output !== undefined ? (
+            <p className="text-meta text-tertiary">{output.split('\n')[0]}</p>
+          ) : block.result !== null ? (
+            <p className="text-meta text-tertiary">（没有输出）</p>
+          ) : null
         ) : null}
       </div>
     </details>
@@ -569,7 +726,7 @@ export function ChatBlock({
   }
   if (block.kind === 'tool') {
     if (settings.tools === 'hidden') return null;
-    return <ToolCard block={block} settings={settings} />;
+    return <ToolRow block={block} settings={settings} />;
   }
   return (
     <p className="flex items-baseline gap-2 text-meta">

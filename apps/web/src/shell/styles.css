@@ -69,6 +69,20 @@ body {
   color: var(--color-primary);
 }
 
+/*
+ * 会话内搜索的命中（CSS Custom Highlight API）。名字和 find-in-session.tsx 里的常量一一对应。
+ * 底色比 ::selection 淡一档，当前那条用实心 accent 压在上面——输入时一眼能分出「所有命中」和「我正在看的那条」。
+ */
+::highlight(timeline-search-hit) {
+  background-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  color: var(--color-primary);
+}
+
+::highlight(timeline-search-hit-active) {
+  background-color: var(--color-accent);
+  color: var(--color-canvas);
+}
+
 /* 触屏去掉 300ms 点击延迟；视觉尺寸不动，只让点击更快。 */
 @media (pointer: coarse) {
   button,

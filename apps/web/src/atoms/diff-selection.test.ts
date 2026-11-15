@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { appendRef, inSelection, normalizeRefPath, parsePatchLines, selectionRange, selectionRef, toggleLine, type LineSelection } from './diff-selection.ts';
+import { appendRef, diffWindowRange, inSelection, isWholeFileAddition, normalizeRefPath, parsePatchLines, selectionRange, selectionRef, toggleLine, type LineSelection } from './diff-selection.ts';
 
 const PATCH = [
   'diff --git a/src/a.ts b/src/a.ts',
@@ -166,4 +166,64 @@ test('引用接到草稿末尾：原有文字不动，补齐空格', () => {
   assert.equal(appendRef('帮我看下  ', 'src/a.ts:3-9'), '帮我看下 @src/a.ts:3-9 ');
   // 已经是 @ 开头的就不会变成 @@
   assert.equal(appendRef('', '@src/a.ts:3'), '@src/a.ts:3 ');
+});
+
+test('整文件新增：所有 hunk 的旧侧都是 `-0,0`', () => {
+  const added = [
+    'diff --git a/src/new.ts b/src/new.ts',
+    'new file mode 100644',
+    '--- /dev/null',
+    '+++ b/src/new.ts',
+    '@@ -0,0 +1,3 @@',
+    '+const a = 1;',
+    '+const b = 2;',
+    '+const c = 3;',
+    ''
+  ].join('\n');
+  assert.equal(isWholeFileAddition(parsePatchLines(added)), true);
+
+  // 多段 hunk 也认：只要每段旧侧都为空
+  const split = [
+    '--- /dev/null',
+    '+++ b/src/new.ts',
+    '@@ -0,0 +1,2 @@',
+    '+a',
+    '+b',
+    '@@ -0,0 +5,2 @@',
+    '+e',
+    '+f',
+    ''
+  ].join('\n');
+  assert.equal(isWholeFileAddition(parsePatchLines(split)), true);
+});
+
+test('不是整文件新增：有一段 hunk 动了老文件', () => {
+  assert.equal(isWholeFileAddition(parsePatchLines(PATCH)), false);
+  // 老文件存在但被清空（`@@ -1,3 +0,0 @@`）也不算整文件新增
+  const emptied = ['--- a/x.ts', '+++ b/x.ts', '@@ -1,3 +0,0 @@', '-a', '-b', '-c', ''].join('\n');
+  assert.equal(isWholeFileAddition(parsePatchLines(emptied)), false);
+  // 没有 hunk 的补丁（只有文件头 / 空补丁）不猜
+  assert.equal(isWholeFileAddition([]), false);
+  assert.equal(isWholeFileAddition(parsePatchLines('--- a/x.ts\n+++ b/x.ts\n')), false);
+});
+
+test('窗口区间：视口 + 上下 overscan，滚动后跟着走', () => {
+  // 顶部：从 0 开始，往下多渲染一屏 + overscan
+  assert.deepEqual(diffWindowRange(1000, 0, 600, 24, 20), { start: 0, end: 45 });
+  // 滚到第 100 行起：上留 20 行
+  assert.deepEqual(diffWindowRange(1000, 100 * 24, 600, 24, 20), { start: 80, end: 145 });
+  // 到底：不越过总行数
+  const bottom = diffWindowRange(1000, 1000 * 24 + 500, 600, 24, 20);
+  assert.equal(bottom.end, 1000);
+  assert.ok(bottom.start > 900);
+});
+
+test('窗口区间：内容比视口短 / 空文件 / 负数都不出错', () => {
+  assert.deepEqual(diffWindowRange(10, 0, 600, 24, 20), { start: 0, end: 10 });
+  assert.deepEqual(diffWindowRange(0, 0, 600, 24, 20), { start: 0, end: 0 });
+  assert.deepEqual(diffWindowRange(5, -100, 600, 24, 20), { start: 0, end: 5 });
+  // 视口还没量到（clientHeight 0）：至少给 overscan + 1 行，等 ResizeObserver 再补
+  const measureLater = diffWindowRange(1000, 0, 0, 24, 20);
+  assert.equal(measureLater.start, 0);
+  assert.ok(measureLater.end >= 1);
 });

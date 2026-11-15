@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Command } from 'cmdk';
+import { Sheet } from '../shell/dialog-shell.tsx';
+import { useNarrow } from '../shell/device.ts';
 import { groupModels, pushRecent, type ModelItem } from './model-list.ts';
 
 /** 清单短的时候原生下拉就够了；超过这个数才换成可搜索的选择器。 */
@@ -26,7 +28,8 @@ function readRecent(scope: string): string[] {
 /**
  * 可搜索的模型选择器：照 VS Code Quick Pick / Raycast 的做法，一个按钮打开「搜索框 + 分组列表」。
  * cmdk 管键盘和无障碍；按提供方分组，最近用过的置顶（按 agent 记在本机浏览器里）。
- * 宽屏是居中的浮层，窄屏贴底、占满宽度，行高够手指点。用 portal 挂到 body，画布的缩放变换不影响它。
+ * 宽屏是居中的浮层，窄屏走底部抽屉（Sheet：贴底、占满宽度、可拖把手关），行高够手指点。
+ * 用 portal 挂到 body，画布的缩放变换不影响它。
  */
 export function ModelPicker({
   items,
@@ -119,6 +122,7 @@ function ModelSheet({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState('');
+  const narrow = useNarrow();
   const recent = useMemo(() => readRecent(scope), [scope]);
   const groups = useMemo(() => groupModels(items, query, recent), [items, query, recent]);
   // 同一个模型可能同时在「最近用过」和它的提供方组里，cmdk 的 value 用「组:模型」保证唯一
@@ -141,26 +145,14 @@ function ModelSheet({
     onPick(picked);
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-end justify-center bg-canvas/75 sm:items-start sm:pt-[12vh]"
-      onClick={onClose}
-      onPointerDown={(event) => event.stopPropagation()}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`选择${label}`}
-        className="flex max-h-[80dvh] w-full flex-col rounded-t-md border border-strong bg-panel pb-[env(safe-area-inset-bottom)] sm:max-h-[60vh] sm:max-w-[440px] sm:rounded-md sm:pb-0"
-        onClick={(event) => event.stopPropagation()}
-      >
+  const command = (
         <Command
           label={`选择${label}`}
           shouldFilter={false}
           value={selected}
           onValueChange={setSelected}
           loop
-          className="flex min-h-0 flex-1 flex-col"
+          className={`flex min-h-0 flex-1 flex-col ${narrow ? 'pb-[env(safe-area-inset-bottom)]' : ''}`}
           onKeyDown={(event) => {
             if (event.key === 'Escape') {
               // 别让外层对话框（DialogShell 在 window 上听 Esc）跟着一起关
@@ -242,6 +234,31 @@ function ModelSheet({
             )}
           </Command.List>
         </Command>
+  );
+
+  // 窄屏：底部抽屉，把手能拖、遮罩能点、Esc 能关（都收在 dialog-shell 里）
+  if (narrow) {
+    return (
+      <Sheet title={`选择${label}`} onClose={onClose} testId="model-sheet" scroll={false} zClassName="z-[60]">
+        {command}
+      </Sheet>
+    );
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-canvas/75 sm:items-start sm:pt-[12vh]"
+      onClick={onClose}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`选择${label}`}
+        className="flex max-h-[60vh] w-full flex-col rounded-md border border-strong bg-panel sm:max-w-[440px]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {command}
       </div>
     </div>
   );
