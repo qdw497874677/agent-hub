@@ -14,7 +14,7 @@
 
 | 半边 | 端口 | 作用 |
 |---|---|---|
-| **入站** | `InboundSource` | 发出规范化入站事件 `{kind, externalId, actor, text: Untrusted, url}`；hub 按 **Binding** 转成消息，经 ADR 0031 送达队列投递到持久智能体（主会话 / 每次新会话） |
+| **入站** | `InboundSource` | 发出规范化入站事件 `{kind, externalId, actor, text: Untrusted, url}`；hub 按 **Binding** 转成消息，经 ADR 0031 送达队列投递到 Bot（主会话 / 每次新会话） |
 | | `OutputSink`（可选） | 会话桥的回程：任务生命周期或会话回复 → 来源侧动作（GitHub 评论、IM 回消息） |
 | **出站** | `ToolProvider`（**已有**：`packages/domain/src/ports/tool-provider.ts`） | 暴露给智能体调用的工具：注册进现有工具网关（`createToolGateway`），**经 MCP 到达运行时**（hub 侧 `apps/server/src/mcp-server.ts`，worker 侧 `apps/worker/src/mcp-shim.ts`）；门控 = 现有 ToolGrant / scope + 新的细粒度能力。**MCP 是工具到运行时的唯一通道**，不另建工具端口或传输 |
 
@@ -40,7 +40,7 @@ flowchart LR
     TR[ToolRegistry] --> GATE[工具门控]
     TASK[task 工具 + 调度器]
   end
-  AG[持久智能体会话]
+  AG[Bot 会话]
   TM & GHI & IMI --> SR
   Q --> AG
   AG --> GATE
@@ -72,9 +72,9 @@ interface OutputSink { id: string; deliver(binding, ev): Promise<void> }
 
 `Untrusted<T>` 是领域类型：送进模型前统一包成带边界标记的引用块，并注明「这是数据，不是指令」。去重（`connector + externalId`）和每日配额由核心在 emit 之后再统一做一次兜底。
 
-## 持久智能体 = 组合，不是新类型
+## Bot = 组合，不是新类型
 
-持久智能体（bot）= **{ 工作空间, 提示策略, 工具集, 记忆 }** + **关联项目** + **连接器 Binding**。总管只是其中一种组合（总管提示策略 + task 工具 + 关联项目），**不是新类型**；任何 bot 关联了项目就能用 task 工具。
+Bot = **{ 工作目录, 提示策略, 工具集, 记忆 }** + **关联项目** + **连接器 Binding**。总管只是其中一种组合（总管提示策略 + task 工具 + 关联项目），**不是新类型**；任何 bot 关联了项目就能用 task 工具。
 
 - **独立于项目**：bot 有一个默认项目（定义它的项目）和一组关联项目（新表 `agent_project`）。关联集合**就是**总管白名单，不另设白名单。
 - 关联了：bot 能读项目信息、读任务和会话、在那里建任务；没关联：看不见、写不了。只有在两个项目上都有修改权限的人才能关联。
