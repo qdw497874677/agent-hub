@@ -29,7 +29,9 @@ const ALLOWED = new Map([
   ['@agent-hub/connector-timer', ['@agent-hub/domain']],
   // GitHub 的所有规则只在这个包里；domain 不得 import 它（上面 domain 的允许表为空）。
   ['@agent-hub/connector-github', ['@agent-hub/domain']],
-  ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts', '@agent-hub/adapter-assets', '@agent-hub/connector-timer', '@agent-hub/connector-github', '@agent-hub/observe']],
+  // 飞书用官方 SDK 的长连接（WSClient）收事件；同样只依赖领域。
+  ['@agent-hub/connector-feishu', ['@agent-hub/domain']],
+  ['@agent-hub/server', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/storage-sqlite', '@agent-hub/node-gateway', '@agent-hub/adapter-accounts', '@agent-hub/adapter-assets', '@agent-hub/connector-timer', '@agent-hub/connector-github', '@agent-hub/connector-feishu', '@agent-hub/observe']],
   ['@agent-hub/worker', ['@agent-hub/domain', '@agent-hub/contract', '@agent-hub/node-gateway', '@agent-hub/adapter-pi', '@agent-hub/adapter-acp', '@agent-hub/adapter-grok', '@agent-hub/adapter-hermes', '@agent-hub/adapter-codex']],
   ['@agent-hub/web', ['@agent-hub/contract']]
 ]);
@@ -73,7 +75,12 @@ const FILE_RULES = [
     why: '核心不认识任何具体连接器（ADR 0032）：只认 InboundSource / OutputSink / ToolProvider 端口'
   },
   {
-    files: /^packages\/connector-[^/]+\/src\//,
+    files: /^packages\/connector-feishu\/src\//,
+    only: /^(\.|@agent-hub\/domain$|@larksuiteoapi\/node-sdk$|node:)/,
+    why: '飞书连接器只实现端口：依赖领域与飞书官方 SDK，不认识核心'
+  },
+  {
+    files: /^packages\/connector-(?!feishu\/)[^/]+\/src\//,
     only: /^(\.|@agent-hub\/domain$|node:)/,
     why: '连接器只实现端口，只依赖领域'
   },

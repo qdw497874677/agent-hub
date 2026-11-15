@@ -47,6 +47,8 @@ export interface ChannelOutboxMessage {
 export interface OutboxClaim {
   /** 只领这些目标类型；未接线的类型（如 github 的 external）留在队列里。 */
   kinds: readonly OutboxTargetKind[];
+  /** 同一种目标类型下按地址前缀分渠道（`external` 里区分 `feishu:` / `github:`）。 */
+  targetPrefixes?: readonly string[];
 }
 
 /**
@@ -96,6 +98,11 @@ function statusOf(error: unknown): number | null {
  * 拿不到状态码时按瞬时处理——宁可多试几次，也不要因为一个临时抖动丢消息。
  */
 export function isTransient(error: unknown): boolean {
+  // 渠道自己给出明确判定时以它为准（飞书业务码不是 HTTP 状态码）。
+  if (typeof error === 'object' && error !== null && 'retryable' in error) {
+    const retryable = (error as { retryable?: unknown }).retryable;
+    if (typeof retryable === 'boolean') return retryable;
+  }
   const status = statusOf(error);
   if (status === null || status === 0) return true;
   if (RETRYABLE_4XX.has(status)) return true;
@@ -184,6 +191,8 @@ export interface OutboxPumpDeps {
   maxAttempts?: number;
   /** 默认只处理 `session`；github 等未接线的目标类型继续保持 queued。 */
   kinds?: readonly OutboxTargetKind[];
+  /** 只领这些地址前缀的行（多个平台共用 `external` 时必填）。 */
+  targetPrefixes?: readonly string[];
 }
 
 export interface OutboxPump {
@@ -202,7 +211,7 @@ export function createOutboxPump(deps: OutboxPumpDeps): OutboxPump {
     async tick() {
       const at = now();
       await deps.store.requeue(at); // 租约过期的行先归队，再参与本轮领取
-      const message = await deps.store.claim({ kinds }, at, leaseMs);
+      const message = await deps.store.claim({ kinds, ...(deps.targetPrefixes ? { targetPrefixes: deps.targetPrefixes } : {}) }, at, leaseMs);
       if (message === null) return 0;
 
       let result: OutboxDeliverResult;

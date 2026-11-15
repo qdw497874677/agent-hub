@@ -22,6 +22,7 @@
     "@agent-hub/observe": "*",
     "@agent-hub/connector-timer": "*",
     "@agent-hub/connector-github": "*",
+    "@agent-hub/connector-feishu": "*",
     "ws": "^8.18.3"
   }
 }

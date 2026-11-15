@@ -153,14 +153,17 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
     async claim(due, now, leaseMs) {
       if (due.kinds.length === 0) return null;
       const marks = due.kinds.map(() => '?').join(',');
+      const prefixes = due.targetPrefixes ?? [];
+      const prefixSql = prefixes.length === 0 ? '' : ` AND (${prefixes.map(() => 'target_id LIKE ?').join(' OR ')})`;
+      const prefixParams = prefixes.map((prefix) => `${prefix}%`);
       const leaseUntil = now + Math.max(0, leaseMs);
       const row = db.prepare(`UPDATE channel_outbox SET state = 'sending', lease_until = ?, updated_at = ?
         WHERE id = (SELECT id FROM channel_outbox
           WHERE state IN ('queued','sending') AND (lease_until IS NULL OR lease_until <= ?)
-            AND next_attempt_at <= ? AND target_kind IN (${marks})
+            AND next_attempt_at <= ? AND target_kind IN (${marks})${prefixSql}
           ORDER BY next_attempt_at, created_at LIMIT 1)
           AND state IN ('queued','sending') AND (lease_until IS NULL OR lease_until <= ?) AND next_attempt_at <= ?
-        RETURNING *`).get(leaseUntil, now, now, now, ...due.kinds, now, now) as O | undefined;
+        RETURNING *`).get(leaseUntil, now, now, now, ...due.kinds, ...prefixParams, now, now) as O | undefined;
       return row ? toO(row) : null;
     },
     async save(m) { upO.run(...oArgs(m)); },

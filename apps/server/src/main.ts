@@ -4,6 +4,7 @@ import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createTimerSource } from '@agent-hub/connector-timer';
 import { createGithubClient, createGithubSink, createGithubSource, createGithubToolProvider, githubParams, parseIssueKey } from '@agent-hub/connector-github';
+import { createFeishuClient, createFeishuSink, createFeishuSource, createFeishuTurnReplies } from '@agent-hub/connector-feishu';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -246,6 +247,8 @@ const deps: Deps = {
       let environmentRevision: string | null = null;
       const prepared = await deps.environment?.prepare(effective);
       if (prepared) {
+        // #223：资产/MCP 没准备好就不下发——不能退回「不带 assetIds = 全给」。
+        if (prepared.blocked) return err(unavailable(prepared.blocked));
         effective = prepared.command;
         environmentRevision = prepared.revision;
       }
@@ -420,6 +423,23 @@ const githubSource = createGithubSource({
   },
   log
 });
+// 飞书（issue #219 C4 的第一个真实 IM 渠道）：长连接入站，不需要公网回调；出站走已有 channel_outbox。
+// 两个环境变量都非空才启用；只配一个是配置错误，启动时就报出来。
+const feishuAppId = readEnv('FEISHU_APP_ID');
+const feishuAppSecret = readEnv('FEISHU_APP_SECRET');
+if (Boolean(feishuAppId) !== Boolean(feishuAppSecret)) throw new Error('飞书连接器：FEISHU_APP_ID 与 FEISHU_APP_SECRET 要同时设置');
+const feishuCreds = feishuAppId && feishuAppSecret ? { appId: feishuAppId, appSecret: feishuAppSecret } : null;
+const feishuClient = feishuCreds ? createFeishuClient({ ...feishuCreds, log }) : null;
+const feishuSink = feishuClient ? createFeishuSink({ outbox: store.outbox, client: feishuClient, now: () => Date.now(), log }) : null;
+const feishuSource = feishuCreds ? createFeishuSource({ ...feishuCreds, log }) : null;
+const feishuReplies = feishuSink
+  ? createFeishuTurnReplies({
+    runs: store.connectors,
+    tail: (sessionId, limit) => store.sessions.tail(sessionId as SessionId, limit),
+    enqueueReply: feishuSink.enqueueReply
+  })
+  : null;
+if (feishuCreds) log('飞书连接器已启用（长连接）');
 // 假渠道（#221 步骤 8）：只在 HUB_FAKE_CHANNEL=1 时注册，用来跑通入站/出站/回声整条链。
 const fakeChannel = readEnv('HUB_FAKE_CHANNEL') === '1' ? createFakeChannel() : null;
 const fakeOutbound = fakeChannel ? createFakeOutbound() : null;
@@ -430,7 +450,7 @@ if (fakeChannel) log('假渠道已启用：connector=fake（仅测试用，不�
 const connectorHub = createConnectorHub({
   now: deps.now, projects: deps.projects, sessions: deps.sessions, policy: deps.access,
   store: store.connectors,
-  sources: [...(fakeChannel ? [fakeChannel.source] : []), createTimerSource(), githubSource],
+  sources: [...(fakeChannel ? [fakeChannel.source] : []), createTimerSource(), githubSource, ...(feishuSource ? [feishuSource] : [])],
   agentExists: async (projectId, name) => (await messageBus.config(projectId)).roles.some((r) => r.name === name),
   spawn: async ({ bindingId, connector, projectId, agentName, ownerId, title }) => {
     const role = (await messageBus.config(projectId)).roles.find((r) => r.name === agentName);
@@ -558,6 +578,24 @@ setInterval(() => {
     }
   })();
 }, 1_000).unref();
+// 飞书出站：只认领 `feishu:` 前缀的 external 行，github 的回帖继续留在队列里等各自的发送侧。
+const feishuOutboxPump = feishuSink
+  ? createOutboxPump({ store: store.outbox, now: () => Date.now(), kinds: ['external'], targetPrefixes: ['feishu:'], deliver: feishuSink.deliver })
+  : null;
+let feishuOutboxBusy = false;
+setInterval(() => {
+  if (!feishuOutboxPump || feishuOutboxBusy) return;
+  feishuOutboxBusy = true;
+  void (async () => {
+    try {
+      for (let i = 0; i < 10; i++) if ((await feishuOutboxPump.tick()) === 0) break;
+    } catch (error) {
+      log(`飞书出站失败：${String(error)}`);
+    } finally {
+      feishuOutboxBusy = false;
+    }
+  })();
+}, 1_000).unref();
 let outboxBusy = false;
 setInterval(() => {
   if (outboxBusy) return;
@@ -600,6 +638,8 @@ const turnFinished = (sessionId: SessionId, outcome: TurnOutcome, reason?: strin
   void filesService.endTurn(sessionId).catch((error: unknown) => log(`回合检查点失败：${String(error)}`));
   // 假渠道：把这轮回复投进出站队列（只在 HUB_FAKE_CHANNEL=1 时有路由）。
   void fakeReplies?.finish(sessionId).catch((error: unknown) => log(`假渠道回程失败：${String(error)}`));
+  // 飞书：这一轮若由飞书消息触发，把回复写进 outbox 并回在原消息下面。
+  void feishuReplies?.finish(sessionId).catch((error: unknown) => log(`飞书回程失败：${String(error)}`));
 };
 hub.stream.subscribe((frame) => {
   if (frame.event?.kind === 'ended') turnFinished(frame.sessionId, frame.event.outcome, frame.event.reason);
