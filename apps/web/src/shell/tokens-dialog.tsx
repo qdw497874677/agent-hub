@@ -12,6 +12,7 @@ const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string }[] = [
   { id: 'workers:read', label: '看机器', hint: '可用的远程机器（本机永远不开放）' },
   { id: 'providers:use', label: '使用模型提供商', hint: '看见并选用已配置的模型。不含在「发起会话」里，不能管理提供商，也不包含本机机器' },
   { id: 'assets:submit', label: '提交资产新版本', hint: '只能给自己维护的资产提交新版本，进审核队列；不能批准、发布或安装' },
+  { id: 'assets:publish', label: '自动发布与分配资产', hint: '导入 / 创建资产时直接发布（免审核队列），把资产装到机器上；每次操作都写审计（经令牌 xxx）。只给脚本、CI、外部 agent 的个人令牌或团队服务账号' },
   { id: 'groups:write', label: '在群里发言', hint: '以这个身份往项目群里发消息（含接活）；不能管理群成员' },
   { id: 'files:read', label: '读会话文件', hint: '会话工作目录里的文件列表与内容；不能写、不能执行命令' },
   { id: 'memory:read', label: '读记忆', hint: '项目与团队记忆的读取' },
