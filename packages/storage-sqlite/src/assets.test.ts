@@ -102,6 +102,22 @@ test('资产作用域：旧库迁移后原有资产成全局；同名可分属�
   }
 });
 
+test('按机器汇总仍在用的版本 digest（#225 M2）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-asset-digests-'));
+  try {
+    const store = openSqliteStore(join(dir, 'hub.db'));
+    const entry = (digest: string) => ({ assetId: 'a1', kind: 'skill' as const, name: 'greeter', digest, scope: 'global' as const });
+    await store.assets.recordSessionAssets({ sessionId: 's1', workerId: 'w1', entries: [entry('d1')], at: 1 });
+    await store.assets.recordSessionAssets({ sessionId: 's2', workerId: 'w1', entries: [entry('d2'), entry('d1')], at: 2 });
+    await store.assets.recordSessionAssets({ sessionId: 's3', workerId: 'w2', entries: [entry('d3')], at: 3 });
+    assert.deepEqual([...(await store.assets.digestsForWorker('w1'))].sort(), ['d1', 'd2']);
+    assert.deepEqual(await store.assets.digestsForWorker('w9'), []);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('会话资产清单：按会话记下，再启动覆盖成最新一次，跨重开保留', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hub-session-assets-'));
   try {

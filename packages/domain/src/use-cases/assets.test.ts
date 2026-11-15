@@ -68,6 +68,29 @@ test('上传技能：名字来自 frontmatter，同名冲突', async () => {
   assert.equal(unnamed.ok, false);
 });
 
+test('同步带上这台机器上仍在用的旧版本 digest（#225 M2）', async () => {
+  const { deps, pushes } = inMemoryAssets();
+  const made = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(made.ok);
+  const old = made.value.pinned;
+  await deps.assets.recordSessionAssets({
+    sessionId: 's1',
+    workerId: 'w1',
+    entries: [{ assetId: made.value.id, kind: 'skill', name: 'greeter', digest: old, scope: 'global' }],
+    at: 1
+  });
+  const upgraded = await uploadAssetRevision(deps, made.value.id, skill('say hello'));
+  assert.ok(upgraded.ok);
+  const pinned = await pinAssetRevision(deps, made.value.id, upgraded.value.asset.latest);
+  assert.ok(pinned.ok);
+  assert.ok((await setAssetInstalled(deps, { workerId: 'w1', assetId: made.value.id, installed: true })).ok);
+  await flush();
+  const last = pushes.at(-1);
+  assert.ok(last);
+  assert.deepEqual(last.retain, [old]);
+  assert.notEqual(last.manifest[0]?.digest, old);
+});
+
 test('新版本只是「可升级」，确认后才换钉并重新同步', async () => {
   const { deps, pushes } = inMemoryAssets();
   const made = await uploadAsset(deps, { kind: 'skill', files: skill() });

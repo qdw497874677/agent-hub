@@ -186,6 +186,8 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     'INSERT INTO session_assets (session_id, manifest) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET manifest = excluded.manifest'
   );
   const sessionAssetsOf = db.prepare('SELECT manifest FROM session_assets WHERE session_id = ?');
+  // #225 M2：这台机器上还有会话记着的版本。新库 SQLite 都带 JSON1；解析失败的行跳过（旧数据/坏数据）。
+  const sessionAssetsByWorker = db.prepare("SELECT manifest FROM session_assets WHERE json_extract(manifest, '$.workerId') = ?");
   const byName = db.prepare("SELECT * FROM assets WHERE kind = ? AND name = ? AND project_id = ? AND scope IN ('global', 'project')");
   const inScope = db.prepare('SELECT * FROM assets WHERE kind = ? AND name = ? AND scope = ? AND scope_ref = ?');
   const insertAsset = db.prepare(
@@ -327,6 +329,25 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     sessionAssets: async (sessionId) => {
       const row = sessionAssetsOf.get(sessionId) as Row | undefined;
       return row ? (JSON.parse(String(row['manifest'])) as SessionAssetManifest) : null;
+    },
+    digestsForWorker: async (workerId) => {
+      const out = new Set<string>();
+      let rows: Row[] = [];
+      try {
+        rows = sessionAssetsByWorker.all(workerId) as Row[];
+      } catch {
+        return [];
+      }
+      for (const row of rows) {
+        let manifest: SessionAssetManifest;
+        try {
+          manifest = JSON.parse(String(row['manifest'])) as SessionAssetManifest;
+        } catch {
+          continue;
+        }
+        for (const entry of manifest.entries) out.add(entry.digest);
+      }
+      return [...out];
     }
   };
 }

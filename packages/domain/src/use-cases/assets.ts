@@ -432,7 +432,9 @@ export async function syncWorkerAssets(deps: AssetDeps, workerId: string): Promi
     return status;
   }
   deps.board.set({ ...base, state: 'syncing', error: null });
-  const report = await deps.delivery.push(workerId, manifest);
+  // 这台机器上还有会话记着的旧版本：必须保留，否则在跑的会话读到已删的目录（#225 M2）。
+  const retain = await deps.assets.digestsForWorker(workerId).catch(() => []);
+  const report = await deps.delivery.push(workerId, manifest, retain);
   const status: WorkerAssetSync = report.ok
     ? { workerId, state: 'synced', root: report.value.root, installed: report.value.installed, error: null, at: startedAt }
     : { ...base, state: 'failed', error: report.error.message };

@@ -1051,12 +1051,16 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   const remoteBrowsers = createRemoteBrowsers({ channelOf, offline, toDomain });
 
   const assets: AssetDelivery = {
-    async push(workerId, manifest) {
+    async push(workerId, manifest, retain) {
       const channel = channelOf(workerId);
       if (!channel) return offline(workerId);
       const entries = manifest.map((entry) => ({ ...entry, files: [...entry.files] }));
       // 首次同步要把内容一批批取回来，给足时间
-      return toDomain(await channel.request(assetsSync, { entries }, { timeoutMs: 5 * 60_000 }), '资产同步', workerId);
+      return toDomain(
+        await channel.request(assetsSync, retain === undefined || retain.length === 0 ? { entries } : { entries, retain: [...retain] }, { timeoutMs: 5 * 60_000 }),
+        '资产同步',
+        workerId
+      );
     }
   };
 

@@ -361,7 +361,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     ...(options.groupsDir ? { groupsDir: options.groupsDir } : {})
   });
   channel.handle(linkEcho, async ({ at }) => ({ at }));
-  channel.handle(assetsSync, async ({ entries }) => {
+  channel.handle(assetsSync, async ({ entries, retain }) => {
     if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');
     const fetchBlobs = async (hashes: readonly string[]) => {
       const got = await channel.request(assetsFetch, { hashes: [...hashes] }, { timeoutMs: 120_000 });
@@ -369,7 +369,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return got.value.blobs;
     };
     try {
-      const report = await options.assets.sync(entries, fetchBlobs);
+      const report = await options.assets.sync(entries, fetchBlobs, retain);
       options.onLog?.(`资产已同步：${entries.length} 项 → ${report.root}`);
       return report;
     } catch (error) {

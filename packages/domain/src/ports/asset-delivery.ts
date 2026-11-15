@@ -11,7 +11,12 @@ export interface DeliveryReport {
 
 /** 把一台 Worker 该有的资产清单推下去；Worker 按哈希回来取缺的 blob，落地后回报。 */
 export interface AssetDelivery {
-  push(workerId: string, manifest: readonly AssetManifestEntry[]): Promise<Result<DeliveryReport, DomainError>>;
+  /** `retain`：这台机器上仍有会话在用的旧版本 digest，Worker 不能清（#225 M2）。 */
+  push(
+    workerId: string,
+    manifest: readonly AssetManifestEntry[],
+    retain?: readonly string[]
+  ): Promise<Result<DeliveryReport, DomainError>>;
 }
 
 /** 每台 Worker 最近一次同步的情况。 */

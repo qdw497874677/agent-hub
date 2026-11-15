@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readlink, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AssetManifestEntryWire } from '@agent-hub/contract';
@@ -38,50 +38,143 @@ const rule: AssetManifestEntryWire = {
   digest: 'c'.repeat(64),
   files: [{ path: 'AGENTS.md', ...put('Always answer in haiku.') }]
 };
+const a12 = 'a'.repeat(12);
+const b12 = 'b'.repeat(12);
+const c12 = 'c'.repeat(12);
+const d12 = 'd'.repeat(12);
 
-test('Worker 资产目录：落地、只取缺的、升级换整份、清单外的删掉、外人放的也清', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'wa-'));
+test('Worker 资产目录：不可变版本目录、.digest、相对兼容链接，清单外的删掉', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-layout-'));
   try {
     const assets = createWorkerAssets({ root });
     assert.equal(await assets.current(), undefined);
 
     const first = await assets.sync([skill('greeter', 'v1', 'a'.repeat(64)), rule], fetch);
     assert.deepEqual(first.installed, { 'a-greeter': 'a'.repeat(64), 'a-rules': 'c'.repeat(64) });
-    assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /v1/);
-    assert.equal(await readFile(join(root, 'instructions/house-rules.md'), 'utf8'), 'Always answer in haiku.');
-    const now = await assets.current(new Set(['a-greeter', 'a-rules']));
-    assert.deepEqual(now?.skills.map((s) => s.path), [join(root, 'skills/greeter/SKILL.md')]);
-    assert.deepEqual(now?.instructions.map((s) => s.path), [join(root, 'instructions/house-rules.md')]);
 
-    // 外人丢进来的东西，下次同步清掉（目录是 hub 专属的）
-    await mkdir(join(root, 'skills/stray'), { recursive: true });
-    await writeFile(join(root, 'skills/stray/SKILL.md'), 'x');
+    // 版本目录按内容寻址，写一次；.digest 记完整哈希，用来发现 12 位前缀撞车。
+    assert.match(await readFile(join(root, 'assets', a12, 'greeter', 'SKILL.md'), 'utf8'), /v1/);
+    assert.equal(await readFile(join(root, 'assets', a12, 'greeter', 'refs', 'notes.md'), 'utf8'), 'shared notes');
+    assert.equal((await readFile(join(root, 'assets', a12, '.digest'), 'utf8')).trim(), 'a'.repeat(64));
+    assert.equal(await readFile(join(root, 'assets', c12, 'house-rules.md'), 'utf8'), 'Always answer in haiku.');
+    assert.equal((await readFile(join(root, 'assets', c12, '.digest'), 'utf8')).trim(), 'c'.repeat(64));
+
+    // 兼容链接用相对路径指向当前版本。
+    assert.equal(await readlink(join(root, 'skills', 'greeter')), join('..', 'assets', a12, 'greeter'));
+    assert.equal(await readlink(join(root, 'instructions', 'house-rules.md')), join('..', 'assets', c12, 'house-rules.md'));
+    assert.match(await readFile(join(root, 'skills', 'greeter', 'SKILL.md'), 'utf8'), /v1/);
+
+    // current 返回版本化绝对路径，不是兼容链接。
+    const now = await assets.current(new Set(['a-greeter', 'a-rules']));
+    assert.deepEqual(now?.skills.map((s) => s.path), [join(root, 'assets', a12, 'greeter', 'SKILL.md')]);
+    assert.deepEqual(now?.instructions.map((s) => s.path), [join(root, 'assets', c12, 'house-rules.md')]);
+
+    // 外人丢进来的东西，下次同步清掉（目录是 hub 专属的）；旧版本靠 retain 保住。
+    await mkdir(join(root, 'skills', 'stray'), { recursive: true });
+    await writeFile(join(root, 'skills', 'stray', 'SKILL.md'), 'x');
     fetched.length = 0;
-    await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch);
+    await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch, ['a'.repeat(64)]);
     assert.equal(fetched.flat().length, 1, '只有改了的 SKILL.md 要取');
-    assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /v2/);
+    assert.equal(await readFile(now!.skills[0]!.path, 'utf8').then((text) => /v1/.test(text)), true, '旧版本内容不变');
+    assert.equal(await readlink(join(root, 'skills', 'greeter')), join('..', 'assets', b12, 'greeter'));
+    assert.match(await readFile(join(root, 'skills', 'greeter', 'SKILL.md'), 'utf8'), /v2/);
     assert.deepEqual(await readdir(join(root, 'skills')), ['greeter']);
     assert.deepEqual(await readdir(join(root, 'instructions')), []);
     assert.equal((await readdir(join(root, '.blobs'))).length, 2, '旧版本的内容回收了');
 
     await assets.sync([], fetch);
     assert.equal(await assets.current(), undefined);
+    assert.deepEqual(await readdir(join(root, 'assets')), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test('Worker 资产目录：路径越界、哈希不对都拒绝，旧的一版保持不动', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'wa-'));
+test('Worker 资产目录：retain 保住旧版本目录，不带 retain 就清掉', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-retain-'));
   try {
     const assets = createWorkerAssets({ root });
     await assets.sync([skill('greeter', 'v1', 'a'.repeat(64))], fetch);
+    const oldPath = join(root, 'assets', a12, 'greeter', 'SKILL.md');
+
+    const second = await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch, ['a'.repeat(64)]);
+    assert.deepEqual(second.installed, { 'a-greeter': 'b'.repeat(64) });
+    assert.match(await readFile(oldPath, 'utf8'), /v1/, 'retain 里的旧版本仍然可读');
+    assert.deepEqual((await readdir(join(root, 'assets'))).sort(), [a12, b12]);
+
+    await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch);
+    assert.deepEqual(await readdir(join(root, 'assets')), [b12], '不带 retain 的旧版本被清掉');
+    await assert.rejects(readFile(oldPath), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Worker 资产目录：指令同样落到版本化 .md + 兼容链接', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-instruction-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    await assets.sync([rule], fetch);
+    const oldPath = join(root, 'assets', c12, 'house-rules.md');
+    assert.equal(await readFile(oldPath, 'utf8'), 'Always answer in haiku.');
+    assert.equal(await readlink(join(root, 'instructions', 'house-rules.md')), join('..', 'assets', c12, 'house-rules.md'));
+
+    const rulesV2: AssetManifestEntryWire = {
+      ...rule,
+      digest: 'd'.repeat(64),
+      files: [{ path: 'AGENTS.md', ...put('Always answer in limerick.') }]
+    };
+    const now = await assets.sync([rulesV2], fetch, ['c'.repeat(64)]);
+    assert.deepEqual(now.installed, { 'a-rules': 'd'.repeat(64) });
+    assert.equal(await readFile(oldPath, 'utf8'), 'Always answer in haiku.', '旧指令内容不变');
+    assert.equal(await readFile(join(root, 'assets', d12, 'house-rules.md'), 'utf8'), 'Always answer in limerick.');
+    assert.equal(await readlink(join(root, 'instructions', 'house-rules.md')), join('..', 'assets', d12, 'house-rules.md'));
+
+    const current = await assets.current(new Set(['a-rules']));
+    assert.deepEqual(current?.instructions.map((s) => s.path), [join(root, 'assets', d12, 'house-rules.md')]);
+
+    await assets.sync([rulesV2], fetch);
+    assert.deepEqual(await readdir(join(root, 'assets')), [d12]);
+    await assert.rejects(readFile(oldPath), /ENOENT/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Worker 资产目录：同一 digest12 目录里 .digest 不一致 = 前缀冲突，拒绝', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-collision-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    await mkdir(join(root, 'assets', a12), { recursive: true });
+    await writeFile(join(root, 'assets', a12, '.digest'), 'f'.repeat(64));
+    await assert.rejects(assets.sync([skill('greeter', 'v1', 'a'.repeat(64))], fetch), /前缀冲突/);
+    assert.equal(await readFile(join(root, 'assets', a12, '.digest'), 'utf8'), 'f'.repeat(64));
+    assert.deepEqual(await readdir(join(root, 'assets', a12)), ['.digest'], '冲突时不写入内容');
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Worker 资产目录：清单重复 / 缺 SKILL.md / 路径越界 / 哈希不对都拒绝，旧的一版保持不动', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-invalid-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    await assets.sync([skill('greeter', 'v1', 'a'.repeat(64))], fetch);
+
+    await assert.rejects(
+      assets.sync([skill('greeter', 'x', 'b'.repeat(64)), skill('greeter', 'y', 'd'.repeat(64))], fetch),
+      /重复了/
+    );
+    const noSkillMd = { ...skill('greeter', 'v2', 'b'.repeat(64)), files: [{ path: 'other.md', ...put('x') }] };
+    await assert.rejects(assets.sync([noSkillMd], fetch), /缺 SKILL.md/);
     const evil = skill('greeter', 'v2', 'b'.repeat(64));
     const escape = { ...evil, files: [...evil.files, { path: '../../x.md', ...put('x') }] };
     await assert.rejects(assets.sync([escape], fetch), /路径不合法/);
     const lying: FetchBlobs = async (hashes) => hashes.map((sha256) => ({ sha256, data: Buffer.from('nope').toString('base64') }));
     await assert.rejects(assets.sync([skill('greeter', 'v3', 'd'.repeat(64))], lying), /哈希不对/);
-    assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /v1/);
+
+    assert.match(await readFile(join(root, 'skills', 'greeter', 'SKILL.md'), 'utf8'), /v1/);
+    assert.deepEqual(await readdir(join(root, 'assets')), [a12], '失败的同步不留下半个版本');
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -104,21 +197,26 @@ test('Worker 资产目录：没给资产清单 = 一个都不给，不再等于�
   }
 });
 
-test('Worker 资产目录：项目级同名技能落到 project-skills/<id8>/<name>，current 只给这次会话生效的', async () => {
+test('Worker 资产目录：项目级同名技能落到 project-skills/<id8>/<name> 链接，current 只给这次会话生效的', async () => {
   const root = await mkdtemp(join(tmpdir(), 'wa-scope-'));
   try {
     const assets = createWorkerAssets({ root });
     const global = skill('greeter', 'global', 'a'.repeat(64));
     const local = { ...skill('greeter', 'local', 'b'.repeat(64)), assetId: 'a-local', slot: 'greeter--abcd1234' };
     await assets.sync([global, local, rule], fetch);
-    assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /global/);
-    assert.match(await readFile(join(root, 'project-skills/abcd1234/greeter/SKILL.md'), 'utf8'), /local/);
+    assert.match(await readFile(join(root, 'skills', 'greeter', 'SKILL.md'), 'utf8'), /global/);
+    assert.match(await readFile(join(root, 'project-skills', 'abcd1234', 'greeter', 'SKILL.md'), 'utf8'), /local/);
+    assert.equal(
+      await readlink(join(root, 'project-skills', 'abcd1234', 'greeter')),
+      join('..', '..', 'assets', b12, 'greeter--abcd1234')
+    );
     const only = await assets.current(new Set(['a-local', 'a-rules']));
-    assert.deepEqual(only?.skills.map((s) => s.path), [join(root, 'project-skills/abcd1234/greeter/SKILL.md')]);
+    assert.deepEqual(only?.skills.map((s) => s.path), [join(root, 'assets', b12, 'greeter--abcd1234', 'SKILL.md')]);
     assert.equal(only?.instructions.length, 1);
     assert.equal((await assets.current(new Set(['a-greeter', 'a-local', 'a-rules'])))?.skills.length, 2);
     await assets.sync([global], fetch);
     assert.deepEqual(await readdir(join(root, 'project-skills')), []);
+    assert.deepEqual(await readdir(join(root, 'assets')), [a12], '项目级旧版本被清掉');
   } finally {
     await rm(root, { recursive: true, force: true });
   }

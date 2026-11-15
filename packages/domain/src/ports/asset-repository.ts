@@ -30,4 +30,6 @@ export interface AssetRepository {
   /** 记下一次会话启动时给出的资产清单（同一会话再启动 = 覆盖成最新那次）。 */
   recordSessionAssets(manifest: SessionAssetManifest): Promise<void>;
   sessionAssets(sessionId: string): Promise<SessionAssetManifest | null>;
+  /** 这台机器上还有会话记着的资产版本（#225 M2：清旧版本时不能清掉在跑的会话要用的那些）。 */
+  digestsForWorker(workerId: string): Promise<readonly string[]>;
 }

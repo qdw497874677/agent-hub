@@ -227,10 +227,12 @@ const assetEntry = z.object({
 });
 export type AssetManifestEntryWire = z.infer<typeof assetEntry>;
 
-/** hub→worker：这台机器该有的全部资产（不在清单里的就删）。回报落地后的目录与版本。 */
+/** hub→worker：这台机器该有的全部资产（不在清单里的就改指向新版本）。
+ * `retain` = 这台机器上还有会话在用、但已不在清单里的版本 digest（#225 M2）：
+ * Worker 保留这些版本目录，其余旧版本清掉；不传 = 只保证当前清单可用（旧 hub 行为）。 */
 export const assetsSync = method(
   'assets.sync', 'control',
-  z.object({ entries: z.array(assetEntry).max(500) }),
+  z.object({ entries: z.array(assetEntry).max(500), retain: z.array(sha).max(2000).optional() }),
   z.object({ root: z.string(), installed: z.record(z.string(), sha) })
 );
 

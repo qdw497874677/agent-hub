@@ -1040,10 +1040,21 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     recordSessionAssets: async (manifest) => {
       sessionManifests.set(manifest.sessionId, manifest);
     },
-    sessionAssets: async (sessionId) => sessionManifests.get(sessionId) ?? null
+    sessionAssets: async (sessionId) => sessionManifests.get(sessionId) ?? null,
+    digestsForWorker: async (workerId) => [
+      ...new Set(
+        [...sessionManifests.values()]
+          .filter((manifest) => manifest.workerId === workerId)
+          .flatMap((manifest) => manifest.entries.map((entry) => entry.digest))
+      )
+    ]
   };
   const board = new Map<string, import('../asset.ts').WorkerAssetSync>();
-  const pushes: { workerId: string; manifest: readonly import('../asset.ts').AssetManifestEntry[] }[] = [];
+  const pushes: {
+    workerId: string;
+    manifest: readonly import('../asset.ts').AssetManifestEntry[];
+    retain?: readonly string[];
+  }[] = [];
   const workers: WorkerStatus[] = [{ workerId: 'w1', label: 'local', origin: 'local', state: 'online' }];
   const git = { commit: 'c1', files: [] as import('../asset.ts').IncomingFile[] };
   const decode = (data: Uint8Array): string => new TextDecoder().decode(data);
@@ -1061,8 +1072,8 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     workers: { list: async () => workers },
     projects: { byId: async (id) => projectList.get(id) ?? null },
     delivery: {
-      push: async (workerId, manifest) => {
-        pushes.push({ workerId, manifest });
+      push: async (workerId, manifest, retain) => {
+        pushes.push({ workerId, manifest, ...(retain === undefined ? {} : { retain }) });
         return { ok: true, value: { root: '/home/x/.agent-hub/assets', installed: Object.fromEntries(manifest.map((m) => [m.assetId, m.digest])) } };
       }
     },
