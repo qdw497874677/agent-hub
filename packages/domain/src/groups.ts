@@ -1,5 +1,5 @@
 import type { ProjectId, SessionId } from './ids.ts';
-import { type Bot } from './bot.ts';
+import { type PersistentAgent } from './bot.ts';
 
 /**
  * 群聊（ADR 0018 · IM 与群组）：一个群 = 项目里的几个角色 + 人。
@@ -167,7 +167,7 @@ export const effectiveGroupLimits = (limits: Partial<GroupLimits> | undefined): 
 const ROLE_NAME = /^[a-z0-9][a-z0-9_-]{0,39}$/i;
 
 /** 建群 / 改群的校验。返回问题描述，没问题返回 null。 */
-export function groupProblem(input: GroupInput, bots: readonly Bot[]): string | null {
+export function groupProblem(input: GroupInput, bots: readonly PersistentAgent[]): string | null {
   const name = input.name?.trim() ?? '';
   if (!name) return '群名不能为空';
   if (name.length > 60) return '群名最多 60 个字';
@@ -354,7 +354,7 @@ export interface PromptContext {
   readonly group: Pick<Group, 'name' | 'members' | 'hostRole'>;
   /** 这次发言的 bot 名字（对应 GroupDelivery.role）。 */
   readonly role: string;
-  readonly roles: readonly Bot[];
+  readonly roles: readonly PersistentAgent[];
   readonly history: readonly { author: string; body: string }[];
   readonly trigger: { author: string; body: string };
 }

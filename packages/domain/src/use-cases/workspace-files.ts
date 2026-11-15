@@ -4,7 +4,7 @@ import type { NodeGateway } from '../ports/node-gateway.ts';
 import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
-import type { BotRepository } from '../ports/bot-repository.ts';
+import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import { CHECKPOINT_REF_PREFIX, CHECKPOINT_RETENTION_MS, checkpointRef, type ChangedFile, type CheckpointStore, type DirectoryPage, type FileChangeNotice, type FileContent, type FileDiff, type RestoreOutcome, type SessionBaseStore, type TurnCheckpoint, type WorkspaceBrowser } from '../ports/workspace-browser.ts';
@@ -31,7 +31,7 @@ export interface WorkspaceFilesDeps {
   /** 组合工作空间（多仓库），容器会话按它反推项目。 */
   readonly workspaceGroups: WorkspaceGroupRepository;
   /** 容器会话（没有任务）的 bot 归属。 */
-  readonly bots: Pick<BotRepository, 'byId'>;
+  readonly bots: Pick<PersistentAgentRepository, 'byId'>;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
   readonly audit: Pick<AuditLog, 'append'>;

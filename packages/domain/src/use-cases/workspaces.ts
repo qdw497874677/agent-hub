@@ -14,7 +14,7 @@ import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
-import type { BotRepository } from '../ports/bot-repository.ts';
+import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
 import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
@@ -34,7 +34,7 @@ export interface ProjectLookupDeps {
   readonly tasks: Pick<TaskRepository, 'byId'>;
   readonly projects: Pick<ProjectRepository, 'byId'>;
   readonly workspaceGroups: Pick<WorkspaceGroupRepository, 'byId'>;
-  readonly bots: Pick<BotRepository, 'byId'>;
+  readonly bots: Pick<PersistentAgentRepository, 'byId'>;
   readonly workspaces: Pick<WorkspaceRepository, 'byId'>;
 }
 

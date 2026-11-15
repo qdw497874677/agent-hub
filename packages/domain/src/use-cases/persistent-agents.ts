@@ -1,5 +1,5 @@
 import type { Principal } from '../account.ts';
-import type { Bot } from '../bot.ts';
+import type { PersistentAgent } from '../bot.ts';
 import { notFound, type DomainError } from '../errors.ts';
 import type { ProjectId } from '../ids.ts';
 import type { RoleReuse } from '../messaging.ts';
@@ -8,8 +8,8 @@ import { err, ok, type Result } from '../result.ts';
 import { createBotUseCase, listBotsUseCase, removeBotUseCase, updateBotUseCase, type BotPatch, type BotsDeps } from './bots.ts';
 
 /**
- * 持久智能体的按条读写 API —— 「持久智能体」按 ADR 0037 就是 `Bot` 这一类别名（`bot.ts`），
- * 这里只是 **Bot 的用例层**；`persistent-agents` 描述的是「团队级 bot 的 CRUD 用例」，
+ * 持久智能体的按条读写 API —— 「持久智能体」按 ADR 0037 就是 `PersistentAgent` 这一类别名（`bot.ts`），
+ * 这里只是 **PersistentAgent 的用例层**；`persistent-agents` 描述的是「团队级 bot 的 CRUD 用例」，
  * 不是另一个实体，保留是为了不让 HTTP 路由 / 装配一次性大改。
  *
  * C3a 起 bot 存在 `bots` 表（按条读写，避免整表覆盖）；这里只是 `use-cases/bots.ts`
@@ -28,7 +28,7 @@ export interface PersistentAgentInput {
 }
 export type PersistentAgentPatch = Partial<Omit<PersistentAgentInput, 'name'>>;
 
-export interface PersistentAgentView extends Bot {
+export interface PersistentAgentView extends PersistentAgent {
   /** 引用它的群（id + 名字）。 */
   readonly groups: readonly { id: string; name: string; host: boolean }[];
 }
@@ -40,13 +40,13 @@ export interface PersistentAgentsDeps extends BotsDeps {
 
 export interface PersistentAgents {
   list(actor: Principal, projectId: ProjectId): Promise<Result<readonly PersistentAgentView[], DomainError>>;
-  create(actor: Principal, projectId: ProjectId, input: PersistentAgentInput): Promise<Result<Bot, DomainError>>;
-  update(actor: Principal, projectId: ProjectId, name: string, patch: PersistentAgentPatch): Promise<Result<Bot, DomainError>>;
+  create(actor: Principal, projectId: ProjectId, input: PersistentAgentInput): Promise<Result<PersistentAgent, DomainError>>;
+  update(actor: Principal, projectId: ProjectId, name: string, patch: PersistentAgentPatch): Promise<Result<PersistentAgent, DomainError>>;
   remove(actor: Principal, projectId: ProjectId, name: string): Promise<Result<{ removedFrom: readonly { id: string; name: string }[] }, DomainError>>;
 }
 
 export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAgents {
-  const locate = async (actor: Principal, projectId: ProjectId, name: string): Promise<Result<Bot, DomainError>> => {
+  const locate = async (actor: Principal, projectId: ProjectId, name: string): Promise<Result<PersistentAgent, DomainError>> => {
     const bots = await listBotsUseCase(deps, actor, projectId);
     if (!bots.ok) return bots;
     const found = bots.value.find((bot) => bot.name === name);

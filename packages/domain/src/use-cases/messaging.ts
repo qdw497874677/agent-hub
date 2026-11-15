@@ -1,6 +1,6 @@
 import { decide, type Permission } from '../access.ts';
 import { validateAgentRef } from '../agent-ref.ts';
-import { botIdFrom, type Bot, type BotDefinition } from '../bot.ts';
+import { botIdFrom, type PersistentAgent, type PersistentAgentDefinition } from '../bot.ts';
 import type { Principal } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
@@ -48,7 +48,7 @@ export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'project
   /** 把一段话作为一轮提问送进会话（组合根接到 promptSessionUseCase）。 */
   readonly deliver: (sessionId: SessionId, text: string, author: { id: string; name: string; via: string }) => Promise<Result<unknown, DomainError>>;
   /** 按 bot 开一条新会话（组合根：建任务 + 派生会话）。actor 是批准的人。 */
-  readonly spawn: (input: { project: Project; role: Bot; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
+  readonly spawn: (input: { project: Project; role: PersistentAgent; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
   readonly askTimeoutMs?: number;
   /** 同一条会话的投递闸（组合根里两边共用一个）；occupied = 别的通道在这条会话上还有没收尾的投递。 */
   readonly lane?: SessionLane;
@@ -99,7 +99,7 @@ export interface MessageBus {
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   config(projectId: ProjectId): Promise<MessagingConfig>;
-  saveConfig(projectId: ProjectId, input: { roles: readonly BotDefinition[]; limits: Partial<MessageLimits> }): Promise<Result<MessagingConfig, DomainError>>;
+  saveConfig(projectId: ProjectId, input: { roles: readonly PersistentAgentDefinition[]; limits: Partial<MessageLimits> }): Promise<Result<MessagingConfig, DomainError>>;
 }
 
 const summary = (text: string): string => (text.length > 80 ? `${text.slice(0, 80)}…` : text).replaceAll('\n', ' ');
@@ -323,7 +323,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       }
 
       let target: Session | null = null;
-      let bot: Bot | null = null;
+      let bot: PersistentAgent | null = null;
       if (address.kind === 'session') {
         const there = await sessionAndProject(address.sessionId);
         target = there?.session ?? null;
@@ -536,8 +536,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       // 整表保存也走单条保存的净化：ref 先补成合法形状交给 configProblem 报好懂的错，
       // 再用 validateAgentRef 返回的规范值落库（trim 过的 runtime/model + 过滤后的 options）。
       // 不这么做，`{name:'x'}` 这种没有 ref 的空壳会直接 TypeError，ref 里的空白 / 脏值也会原样进库。
-      const drafted: BotDefinition[] = input.roles.map((role) => {
-        const raw = role as Partial<BotDefinition>;
+      const drafted: PersistentAgentDefinition[] = input.roles.map((role) => {
+        const raw = role as Partial<PersistentAgentDefinition>;
         const ref = raw.ref;
         return {
           ...role,
@@ -547,7 +547,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       });
       const problem = configProblem({ roles: drafted, limits: input.limits });
       if (problem) return err(invalid(problem));
-      const normalized: BotDefinition[] = [];
+      const normalized: PersistentAgentDefinition[] = [];
       for (const draft of drafted) {
         const checked = validateAgentRef(draft.ref);
         if (!checked.ok) return err(invalid(`bot ${draft.name} 的${checked.error.message}`));
@@ -557,7 +557,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const existing = await deps.bots.listForProject(projectId);
       const teamId = (await deps.projects.byId(projectId))?.teamId ?? 'team_legacy';
       const byName = new Map(existing.map((bot) => [bot.name, bot]));
-      const roles: Bot[] = [];
+      const roles: PersistentAgent[] = [];
       for (const draft of normalized) {
         const name = draft.name;
         let current = byName.get(name);
@@ -578,7 +578,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
             current = shared;
           }
         }
-        const bot: Bot = {
+        const bot: PersistentAgent = {
           ...draft,
           name,
           ref: draft.ref,

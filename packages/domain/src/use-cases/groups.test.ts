@@ -6,9 +6,9 @@ import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
 import { asAgentId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
-import type { Bot } from '../bot.ts';
-import type { BotRepository } from '../ports/bot-repository.ts';
-import type { BotGrant } from '../bot-grant.ts';
+import type { PersistentAgent } from '../bot.ts';
+import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
+import type { PersistentAgentGrant } from '../bot-grant.ts';
 import type { GroupStore } from '../ports/group-store.ts';
 import type { Group, GroupDelivery, GroupPost, GroupReaction, GroupThread } from '../groups.ts';
 import {
@@ -98,18 +98,18 @@ function memoryGroups(): GroupStore & { deliveriesAll: () => GroupDelivery[] } {
 const user = (id: string, role: Role): User =>
   ({ id: id as UserId, email: `${id}@x.test`, displayName: id, role, passwordHash: null, emailVerifiedAt: 1, disabledAt: null, createdAt: 1, teamId: 'T', clusterAdmin: false, deletedAt: null }) as unknown as User;
 
-const ROLES: Bot[] = [
+const ROLES: PersistentAgent[] = [
   { id: 'bot_host', teamId: 'T', name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
   { id: 'bot_coder', teamId: 'T', name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
   { id: 'bot_reviewer', teamId: 'T', name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
   { id: 'bot_nomodel', teamId: 'T', name: 'nomodel', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 }
 ];
 
-/** 测试用内存 BotRepository：直接读写给定数组，方便断言。 */
-function botRepoOf(roles: Bot[], touched?: (roles: readonly Bot[]) => void): BotRepository {
+/** 测试用内存 PersistentAgentRepository：直接读写给定数组，方便断言。 */
+function botRepoOf(roles: PersistentAgent[], touched?: (roles: readonly PersistentAgent[]) => void): PersistentAgentRepository {
   // bot 归团队 'T'，全部授权到夹具里的项目（world() 的 project.id）。
-  const grants = new Map<string, BotGrant>();
-  const granted = (projectId: string): BotGrant[] => [...grants.values()].filter((g) => g.projectId === projectId);
+  const grants = new Map<string, PersistentAgentGrant>();
+  const granted = (projectId: string): PersistentAgentGrant[] => [...grants.values()].filter((g) => g.projectId === projectId);
   return {
     byId: async (id) => roles.find((b) => b.id === id) ?? null,
     byName: async (teamId, name) => roles.find((b) => b.teamId === teamId && b.name === name) ?? null,
@@ -148,7 +148,7 @@ function botRepoOf(roles: Bot[], touched?: (roles: readonly Bot[]) => void): Bot
 
 async function world() {
   const busyElsewhere = new Set<string>();
-  const roleList: Bot[] = [...ROLES];
+  const roleList: PersistentAgent[] = [...ROLES];
   let clock = 1000;
   const memory = inMemoryDeps({ now: () => clock });
   const deps = memory.deps;
@@ -633,7 +633,7 @@ test('未读：别人发的才算、自己发的不算；标已读清零、不�
 test('bot 的启动选项：能存能改，形状不对就拒', async () => {
   const w = await world();
   let config: MessagingConfig = { projectId: w.project.id, roles: [], limits: {}, updatedAt: 0 };
-  const roles: Bot[] = [];
+  const roles: PersistentAgent[] = [];
   const agents = createPersistentAgents({
     projects: w.deps.projects,
     sessions: w.deps.sessions,

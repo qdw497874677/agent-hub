@@ -8,7 +8,7 @@ import { asAgentId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { AgentMessage, MessageAuditEntry, MessagingConfig, SpawnRecord } from '../messaging.ts';
-import type { BotDefinition } from '../bot.ts';
+import type { PersistentAgentDefinition } from '../bot.ts';
 import { wrapUntrusted } from '../messaging.ts';
 import { recordEvent } from './sessions.ts';
 import { createMessageBus } from './messaging.ts';
@@ -242,7 +242,7 @@ test('整表保存也走 ref 净化：空壳 role 被拒，ref 归一后再落�
   const w = await world();
   // 没有 ref 的空壳（老客户端 / 直接调域层）：要按校验错误拒掉，不能 TypeError，也不能把 `{}` 写进 bots 表。
   const shell = await w.bus.saveConfig(w.project.id, {
-    roles: [{ name: 'x', description: '', reuse: 'sticky' } as unknown as BotDefinition],
+    roles: [{ name: 'x', description: '', reuse: 'sticky' } as unknown as PersistentAgentDefinition],
     limits: {}
   });
   assert.equal(shell.ok, false);

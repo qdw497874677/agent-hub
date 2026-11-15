@@ -1,6 +1,6 @@
 import { newId, type ProjectId, type SessionId } from './ids.ts';
 import { validateAgentRef } from './agent-ref.ts';
-import type { Bot, BotDefinition } from './bot.ts';
+import type { PersistentAgent, PersistentAgentDefinition } from './bot.ts';
 
 /**
  * agent 间通信 · P2P 内核（ADR 0018，docs/design/agent-messaging.md）。
@@ -108,7 +108,7 @@ export type RoleReuse = 'sticky' | 'per-trace' | 'always-new';
 /**
  * 持久智能体（界面上叫「bot」）：项目里常驻的 AI 成员，可以私聊、拉进群、互相 @。
  * 历史上叫「角色」（role），存储和 `role:<name>` 地址都沿用旧名以兼容老数据。
- * 形状见 bot.ts：Bot 多了 id / projectId / 时间戳，定义部分（name / ref / 职责 / 复用）是 BotDefinition。
+ * 形状见 bot.ts：Bot 多了 id / projectId / 时间戳，定义部分（name / ref / 职责 / 复用）是 PersistentAgentDefinition。
  */
 export const PERSISTENT_AGENT_DESCRIPTION_MAX = 4000;
 export const PERSISTENT_AGENT_DISPLAY_NAME_MAX = 40;
@@ -131,7 +131,7 @@ export const MAX_BODY_CHARS = 32_768;
 export interface MessagingConfig {
   readonly projectId: ProjectId;
   /** 键名沿用历史字段名 roles（已落库的 JSON），值是 bot 列表。 */
-  readonly roles: readonly Bot[];
+  readonly roles: readonly PersistentAgent[];
   /** 只存项目改过的那几项。 */
   readonly limits: Partial<MessageLimits>;
   readonly updatedAt: number;
@@ -151,7 +151,7 @@ export function effectiveLimits(override: Partial<MessageLimits> | undefined): M
 }
 
 /** 配置校验：给人看的问题，没问题 null。超过 2 倍直接拒，不悄悄夹。 */
-export function configProblem(input: { roles: readonly BotDefinition[]; limits: Partial<MessageLimits> }): string | null {
+export function configProblem(input: { roles: readonly PersistentAgentDefinition[]; limits: Partial<MessageLimits> }): string | null {
   const names = new Set<string>();
   for (const bot of input.roles) {
     if (!ROLE_NAME.test(bot.name)) return `@id ${bot.name} 只能用小写字母、数字、- 和 _（最多 40 个字符）`;
@@ -249,7 +249,7 @@ export interface SpawnRecord {
  * bot（持久智能体）的职责说明 → 系统提示块。会话开头垫一次（ADR 0020 角色层），续聊不再重复。
  * 空说明返回 null。
  */
-export function agentInstructionsBlock(agent: Pick<BotDefinition, 'description'> | null | undefined): string | null {
+export function agentInstructionsBlock(agent: Pick<PersistentAgentDefinition, 'description'> | null | undefined): string | null {
   const text = agent?.description.trim().slice(0, PERSISTENT_AGENT_DESCRIPTION_MAX);
   return text ? `<agent-instructions>\n${text}\n</agent-instructions>` : null;
 }

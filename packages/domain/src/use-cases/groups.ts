@@ -39,7 +39,7 @@ import {
 } from '../groups.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
 import { createSessionLane, type SessionLane } from '../session-lane.ts';
-import type { Bot } from '../bot.ts';
+import type { PersistentAgent } from '../bot.ts';
 import type { GroupStore } from '../ports/group-store.ts';
 import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -62,9 +62,9 @@ export interface GroupChatDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' |
   readonly groups: GroupStore;
   readonly policy?: AccessPolicy;
   /** 项目里配置的 bot（agent 消息设置里的那份）。 */
-  readonly roles: (projectId: ProjectId) => Promise<readonly Bot[]>;
+  readonly roles: (projectId: ProjectId) => Promise<readonly PersistentAgent[]>;
   readonly deliver: (sessionId: SessionId, text: string, author: { id: string; name: string; via: string }) => Promise<Result<unknown, DomainError>>;
-  readonly spawn: (input: { project: Project; role: Bot; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
+  readonly spawn: (input: { project: Project; role: PersistentAgent; actor: Principal; title: string }) => Promise<Result<Session, DomainError>>;
   readonly principalOf: (userId: string) => Promise<Principal | null>;
   /** 停止时尽量打断正在跑的回合（可选）。 */
   readonly interrupt?: (sessionId: SessionId) => Promise<unknown>;

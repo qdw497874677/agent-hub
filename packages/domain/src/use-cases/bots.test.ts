@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { botIdFrom, type Bot, type ConnectorBinding, type MessagingConfig } from '../index.ts';
+import { botIdFrom, type PersistentAgent, type ConnectorBinding, type MessagingConfig } from '../index.ts';
 import { createProject } from '../project.ts';
 import type { Principal, User } from '../account.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
@@ -181,7 +181,7 @@ test('bots 表为空时回落到旧 roles JSON（只读、不写回）', async (
   const listed = await listBotsUseCase(deps, alice, w.project.id);
   assert.ok(listed.ok);
   assert.deepEqual(listed.value.map((bot) => bot.name), ['reviewer']);
-  const fallback: Bot = listed.value[0]!;
+  const fallback: PersistentAgent = listed.value[0]!;
   assert.equal(fallback.id, botIdFrom(`${w.project.id}\0reviewer`));
   assert.equal(fallback.teamId, w.project.teamId ?? 'team_legacy');
   assert.equal(fallback.createdAt, 42);

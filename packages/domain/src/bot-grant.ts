@@ -11,7 +11,7 @@ import type { ProjectId, WorkspaceId } from './ids.ts';
  * `workspaceId` 是这个 bot 在该项目里的默认落点（可空 = 用项目默认工作空间）。
  * 放在授权上而不是 bot 上：同一个 bot 在不同项目里可能该跑在不同机器/目录。
  */
-export interface BotGrant {
+export interface PersistentAgentGrant {
   readonly botId: BotId;
   readonly projectId: ProjectId;
   /** 该项目里默认落在哪个工作空间；null = 跟随项目默认。 */
@@ -19,3 +19,6 @@ export interface BotGrant {
   readonly createdAt: number;
   readonly createdBy: string | null;
 }
+
+/** 兼容名：新代码用 `PersistentAgentGrant`。 */
+export type BotGrant = PersistentAgentGrant;

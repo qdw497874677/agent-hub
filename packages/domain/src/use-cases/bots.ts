@@ -1,6 +1,6 @@
 import type { Principal } from '../account.ts';
 import { validateAgentRef } from '../agent-ref.ts';
-import { botIdFrom, type Bot, type BotDefinition, type BotId } from '../bot.ts';
+import { botIdFrom, type PersistentAgent, type PersistentAgentDefinition, type BotId } from '../bot.ts';
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import type { ProjectId } from '../ids.ts';
 import { configProblem, isPersistentAgentName, type MessagingConfig, type RoleReuse } from '../messaging.ts';
@@ -11,7 +11,7 @@ import type { ContextSettingsStore } from '../ports/context-settings.ts';
 import { err, ok, type Result } from '../result.ts';
 import { authorizeProject, type AccessPolicy } from './authorization.ts';
 import { botContextSettingKeys } from './context.ts';
-import type { BotGrant } from '../bot-grant.ts';
+import type { PersistentAgentGrant } from '../bot-grant.ts';
 import type { Deps } from './deps.ts';
 
 /**
@@ -65,7 +65,7 @@ function definitionOf(input: {
   readonly model: string;
   readonly reuse: RoleReuse;
   readonly options?: Readonly<Record<string, string | boolean>>;
-}): BotDefinition {
+}): PersistentAgentDefinition {
   const displayName = input.displayName?.trim();
   return {
     name: input.name.trim(),
@@ -81,7 +81,7 @@ function definitionOf(input: {
   };
 }
 
-function shapeProblem(bot: BotDefinition): string | null {
+function shapeProblem(bot: PersistentAgentDefinition): string | null {
   return configProblem({ roles: [bot], limits: {} });
 }
 
@@ -99,7 +99,7 @@ async function observedOptions(deps: Pick<Deps, 'sessions'>, projectId: ProjectI
 }
 
 /** 拿这个 agent 上报过的可调项再校一遍 ref；runtime 为空时交给 configProblem 报更好懂的错。 */
-async function refProblem(deps: Pick<Deps, 'sessions'>, projectId: ProjectId, bot: BotDefinition): Promise<string | null> {
+async function refProblem(deps: Pick<Deps, 'sessions'>, projectId: ProjectId, bot: PersistentAgentDefinition): Promise<string | null> {
   if (bot.ref.runtime === '') return null;
   const checked = validateAgentRef(bot.ref, await observedOptions(deps, projectId, bot.ref.runtime));
   return checked.ok ? null : checked.error.message;
@@ -108,8 +108,8 @@ async function refProblem(deps: Pick<Deps, 'sessions'>, projectId: ProjectId, bo
 /** 同一个 (projectId, name) 在迁移前后必须得到同一个 id，所以这里只用 name 作 seed。 */
 const idFor = (projectId: ProjectId, name: string): BotId => botIdFrom(`${projectId}\0${name}`);
 
-/** 旧 roles JSON → Bot。id 由 (projectId, name) 决定，迁移/C3b 落库时用同一个 seed。 */
-export function botsFromLegacy(config: MessagingConfig | null, projectId: ProjectId, teamId: string): readonly Bot[] {
+/** 旧 roles JSON → PersistentAgent。id 由 (projectId, name) 决定，迁移/C3b 落库时用同一个 seed。 */
+export function botsFromLegacy(config: MessagingConfig | null, projectId: ProjectId, teamId: string): readonly PersistentAgent[] {
   if (!config || config.roles.length === 0) return [];
   return config.roles.map((role) => ({
     ...role,
@@ -120,7 +120,7 @@ export function botsFromLegacy(config: MessagingConfig | null, projectId: Projec
   }));
 }
 
-export async function legacyBots(deps: BotReadDeps & Pick<Deps, 'projects'>, projectId: ProjectId): Promise<readonly Bot[]> {
+export async function legacyBots(deps: BotReadDeps & Pick<Deps, 'projects'>, projectId: ProjectId): Promise<readonly PersistentAgent[]> {
   const project = await deps.projects.byId(projectId);
   return botsFromLegacy(await deps.messages.config(projectId), projectId, project?.teamId ?? 'team_legacy');
 }
@@ -131,7 +131,7 @@ export async function legacyBots(deps: BotReadDeps & Pick<Deps, 'projects'>, pro
  * ⚠ 过渡期兼容（C3b 迁移前）：部署顺序是「先上新代码、再迁移数据」，所以表为空时必须
  * 还能看见旧 bot。迁移脚本跑完后这段可以删掉；回落映射只在 `legacyBots()` 一处。
  */
-export async function ensureBots(deps: BotReadDeps & Pick<Deps, 'projects'>, projectId: ProjectId): Promise<readonly Bot[]> {
+export async function ensureBots(deps: BotReadDeps & Pick<Deps, 'projects'>, projectId: ProjectId): Promise<readonly PersistentAgent[]> {
   const stored = await deps.bots.listForProject(projectId);
   if (stored.length > 0) return stored;
   return legacyBots(deps, projectId);
@@ -153,13 +153,13 @@ async function adoptBots(deps: BotReadDeps & Pick<Deps, 'projects' | 'now'>, pro
 const authorize = async (deps: BotsDeps, actor: Principal | null, projectId: ProjectId, permission: 'project.read' | 'project.share') =>
   authorizeProject(deps.policy, actor, await deps.projects.byId(projectId), permission);
 
-export async function listBotsUseCase(deps: BotsDeps, actor: Principal | null, projectId: ProjectId): Promise<Result<readonly Bot[], DomainError>> {
+export async function listBotsUseCase(deps: BotsDeps, actor: Principal | null, projectId: ProjectId): Promise<Result<readonly PersistentAgent[], DomainError>> {
   const project = await authorize(deps, actor, projectId, 'project.read');
   if (!project.ok) return project;
   return ok(await ensureBots(deps, projectId));
 }
 
-export async function createBotUseCase(deps: BotsDeps, actor: Principal | null, projectId: ProjectId, input: BotInput): Promise<Result<Bot, DomainError>> {
+export async function createBotUseCase(deps: BotsDeps, actor: Principal | null, projectId: ProjectId, input: BotInput): Promise<Result<PersistentAgent, DomainError>> {
   const project = await authorize(deps, actor, projectId, 'project.share');
   if (!project.ok) return project;
   const teamId = project.value.teamId ?? 'team_legacy';
@@ -184,7 +184,7 @@ export async function createBotUseCase(deps: BotsDeps, actor: Principal | null, 
   if (specProblem) return err(invalid(`bot ${name} 的${specProblem}`));
   const now = deps.now();
   // id 只由 (projectId, name) 决定：迁移脚本按同一 seed 生成，重建/重跑都不会换 id。
-  const bot: Bot = { ...definition, id: idFor(projectId, name), teamId, createdAt: now, updatedAt: now };
+  const bot: PersistentAgent = { ...definition, id: idFor(projectId, name), teamId, createdAt: now, updatedAt: now };
   // 先补写旧数据，再插新 bot，避免旧 bot 被挡住。
   await adoptBots(deps, projectId);
   await deps.bots.save(bot);
@@ -197,7 +197,7 @@ export async function createBotUseCase(deps: BotsDeps, actor: Principal | null, 
  * 按 id 找 bot。bots 表里没有时，在旧 roles JSON 的回落里按确定的 id 找，
  * 找到就顺手把该项目旧 bot 补写进表（迁移前过渡；正式迁移后走不到这一步）。
  */
-async function findBot(deps: BotsDeps, id: BotId): Promise<Bot | null> {
+async function findBot(deps: BotsDeps, id: BotId): Promise<PersistentAgent | null> {
   const direct = await deps.bots.byId(id);
   if (direct) return direct;
   for (const project of await deps.projects.list()) {
@@ -210,7 +210,7 @@ async function findBot(deps: BotsDeps, id: BotId): Promise<Bot | null> {
   return null;
 }
 
-export async function getBotUseCase(deps: BotsDeps, actor: Principal | null, id: BotId): Promise<Result<Bot, DomainError>> {
+export async function getBotUseCase(deps: BotsDeps, actor: Principal | null, id: BotId): Promise<Result<PersistentAgent, DomainError>> {
   const current = await findBot(deps, id);
   if (!current) return err(notFound('没有这个 bot'));
   const allowed = authorizeBot(actor, current);
@@ -222,7 +222,7 @@ export async function getBotUseCase(deps: BotsDeps, actor: Principal | null, id:
  * bot 的团队级操作：同一个团队才能看 / 改 / 删；团队管理员也可以。
  * 授权到项目另有 `project.share` 检查（见 `grantBotUseCase`）。
  */
-function authorizeBot(actor: Principal | null, bot: Bot): Result<true, DomainError> {
+function authorizeBot(actor: Principal | null, bot: PersistentAgent): Result<true, DomainError> {
   if (!actor) return err(forbidden('要以账号身份管理 bot'));
   const teamId = actor.user.teamId ?? '';
   if (teamId !== '' && teamId === bot.teamId) return ok(true);
@@ -230,7 +230,7 @@ function authorizeBot(actor: Principal | null, bot: Bot): Result<true, DomainErr
   return err(forbidden('这个 bot 属于别的团队'));
 }
 
-export async function updateBotUseCase(deps: BotsDeps, actor: Principal | null, id: BotId, patch: BotPatch): Promise<Result<Bot, DomainError>> {
+export async function updateBotUseCase(deps: BotsDeps, actor: Principal | null, id: BotId, patch: BotPatch): Promise<Result<PersistentAgent, DomainError>> {
   const current = await findBot(deps, id);
   if (!current) return err(notFound('没有这个 bot'));
   const allowed = authorizeBot(actor, current);
@@ -254,7 +254,7 @@ export async function updateBotUseCase(deps: BotsDeps, actor: Principal | null, 
   const sample = grants[0]?.projectId;
   const specProblem = sample === undefined ? null : await refProblem(deps, sample, definition);
   if (specProblem) return err(invalid(`bot ${current.name} 的${specProblem}`));
-  const next: Bot = { ...current, ...definition, updatedAt: deps.now() };
+  const next: PersistentAgent = { ...current, ...definition, updatedAt: deps.now() };
   await deps.bots.save(next);
   return ok(next);
 }
@@ -288,7 +288,7 @@ export async function removeBotUseCase(
 }
 
 /** 团队里的全部 bot（管理页用）。 */
-export async function listTeamBotsUseCase(deps: BotsDeps, actor: Principal | null, teamId: string): Promise<Result<readonly Bot[], DomainError>> {
+export async function listTeamBotsUseCase(deps: BotsDeps, actor: Principal | null, teamId: string): Promise<Result<readonly PersistentAgent[], DomainError>> {
   if (!actor) return err(forbidden('要以账号身份查看 bot'));
   if (actor.user.role !== 'admin' && (actor.user.teamId ?? '') !== teamId) return err(forbidden('只能查看本团队的 bot'));
   return ok(await deps.bots.listByTeam(teamId));
@@ -304,7 +304,7 @@ export async function grantBotUseCase(
   botId: BotId,
   projectId: ProjectId,
   workspaceId: string | null = null
-): Promise<Result<BotGrant, DomainError>> {
+): Promise<Result<PersistentAgentGrant, DomainError>> {
   const bot = await findBot(deps, botId);
   if (!bot) return err(notFound('没有这个 bot'));
   const project = await authorize(deps, actor, projectId, 'project.share');
@@ -314,7 +314,7 @@ export async function grantBotUseCase(
     const workspace = await deps.workspaces.byId(workspaceId as never);
     if (!workspace || workspace.projectId !== projectId) return err(invalid('这个工作空间不属于该项目'));
   }
-  const grant: BotGrant = {
+  const grant: PersistentAgentGrant = {
     botId: bot.id,
     projectId,
     workspaceId: workspaceId === null ? null : (workspaceId as never),
@@ -348,7 +348,7 @@ export async function revokeBotUseCase(
   return ok(true);
 }
 
-export async function botGrantsUseCase(deps: BotsDeps, actor: Principal | null, botId: BotId): Promise<Result<readonly BotGrant[], DomainError>> {
+export async function botGrantsUseCase(deps: BotsDeps, actor: Principal | null, botId: BotId): Promise<Result<readonly PersistentAgentGrant[], DomainError>> {
   const bot = await findBot(deps, botId);
   if (!bot) return err(notFound('没有这个 bot'));
   const allowed = authorizeBot(actor, bot);

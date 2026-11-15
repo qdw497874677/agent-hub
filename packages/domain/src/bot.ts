@@ -13,7 +13,7 @@ export type BotId = string;
  * bot 是**团队级**的独立智能体，不隶属某个项目：它能进哪些项目由 `BotGrant` 决定
  * （见 `bot-grant.ts`）。历史数据里 bot 是项目级的，迁移时把原来的项目转成一条授权。
  */
-export interface BotDefinition {
+export interface PersistentAgentDefinition {
   /** @id：建好不改（地址、群成员、spawn 记录、连接器都按它引用）；团队内唯一。 */
   readonly name: string;
   /**
@@ -33,7 +33,7 @@ export interface BotDefinition {
  * 一等 bot：团队里常驻的 AI 成员（历史上一部分存储在 agent 消息配置的 `roles` 里，
  * 界面上一直叫「bot」）。C3a 起按条存进 `bots` 表；团队级归属见 `BotDefinition`。
  */
-export interface Bot extends BotDefinition {
+export interface PersistentAgent extends PersistentAgentDefinition {
   readonly id: BotId;
   /** 归属团队：bot 由团队管理，不隶属任何项目。 */
   readonly teamId: string;
@@ -42,10 +42,17 @@ export interface Bot extends BotDefinition {
 }
 
 /**
- * 持久智能体（ADR 0037）：`Bot` 的类别名——团队级、具名、有记忆、可授权、可 @ 的 AI 成员。
- * 与 `TaskAgent`（一次会话里的执行者，随会话生灭）相对；实体本身就是 `Bot`。
+ * 产品名：Bot（ADR 0037）。领域里这个实体叫 `PersistentAgent`——团队级、具名、有记忆、
+ * 可授权、可 @ 的智能体；与 `TaskAgent`（一次会话里的执行者，随会话生灭）相对。
+ * 契约层（表名 `bots`、路由 `/api/bots`、`bot_` 前缀）继续用 bot，不跟着改。
  */
-export type PersistentAgent = Bot;
+export type Bot = PersistentAgent;
+
+/** 持久智能体的 id 与 `BotId` 是同一个东西（标识用 bot，类型名用领域词）。 */
+export type PersistentAgentId = BotId;
+
+/** 兼容名：定义形状。新代码用 `PersistentAgentDefinition`。 */
+export type BotDefinition = PersistentAgentDefinition;
 
 /**
  * 由 seed 算稳定的 bot id：两轮 FNV-1a 拼成 16 位 hex（纯 JS，不依赖宿主）。

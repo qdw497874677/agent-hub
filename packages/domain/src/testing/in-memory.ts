@@ -1,7 +1,7 @@
 import * as assetModule from '../asset.ts';
 import type { ApiToken } from '../api-token.ts';
-import type { BotGrant } from "../bot-grant.ts";
-import type { Bot, BotId } from '../bot.ts';
+import type { PersistentAgentGrant } from "../bot-grant.ts";
+import type { PersistentAgent, BotId } from '../bot.ts';
 import { isContainerSession } from '../session.ts';
 import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
 import type { AccessGrantRepository, TeamRoleRepository } from '../ports/access-repository.ts';
@@ -51,7 +51,7 @@ import type {
   LoginActivity,
   AgentProfile,
   AgentProfileRepository,
-  BotRepository,
+  PersistentAgentRepository,
   WorkspaceGroup,
   WorkspaceGroupId,
   WorkspaceGroupRepository
@@ -343,9 +343,9 @@ export function fakeWorkspaceGroups(): WorkspaceGroupRepository & { rows: Map<Wo
   };
 }
 
-/** 团队级 bot + 项目授权（C3a / bot-as-agent）。排序与 SQLite 实现一致：created_at，再按 name。 */export function fakeBots(): BotRepository & { rows: Map<BotId, Bot>; grants: Map<string, BotGrant> } {
-  const rows = new Map<BotId, Bot>();
-  const grants = new Map<string, BotGrant>();
+/** 团队级 bot + 项目授权（C3a / bot-as-agent）。排序与 SQLite 实现一致：created_at，再按 name。 */export function fakeBots(): PersistentAgentRepository & { rows: Map<BotId, PersistentAgent>; grants: Map<string, PersistentAgentGrant> } {
+  const rows = new Map<BotId, PersistentAgent>();
+  const grants = new Map<string, PersistentAgentGrant>();
   const key = (botId: string, projectId: string) => `${botId}\u0000${projectId}`;
   const granted = (botId: string) => [...grants.values()].filter((grant) => grant.botId === botId);
   return {

@@ -5,7 +5,7 @@ import type { ProjectRepository } from '../ports/project-repository.ts';
 import type { SessionRepository } from '../ports/session-repository.ts';
 import type { TaskRepository } from '../ports/task-repository.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
-import type { BotRepository } from '../ports/bot-repository.ts';
+import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
@@ -36,7 +36,7 @@ export interface GitWorkflowDeps {
   /** 组合工作空间（多仓库）；容器会话按它 / 工作空间反推项目（#221 步骤 7）。 */
   readonly workspaceGroups: WorkspaceGroupRepository;
   /** 容器会话（没有任务）的 bot 归属（#221 步骤 7）。 */
-  readonly bots: Pick<BotRepository, 'byId'>;
+  readonly bots: Pick<PersistentAgentRepository, 'byId'>;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
   readonly audit: Pick<AuditLog, 'append'>;
