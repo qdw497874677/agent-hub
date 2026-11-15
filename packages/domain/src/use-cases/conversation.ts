@@ -359,6 +359,10 @@ export async function frameAccepted(
  *
  * 必须同步划：以前先 await 一次 listAll 再逐条 drop，Worker 秒重连时
  * `workerAttached` 刚接回的会话会被这次迟到的掉线清掉，下一句话又 resume 出第二个 agent 进程。
+ *
+ * 库里只在「该机 + 仍是 running」时才条件降级（`markInterrupted` 带 WHERE status='running'），
+ * 不整行 save：listAll 到写回之间重连把状态改回 running 的，不会被这里的一次旧快照覆盖。
+ * 落点为 null 的老会话不知道归哪台，跳过——只由 `hosting.dropWorker` 清托管。
  */
 export async function workerGone(
   deps: Pick<Deps, 'hosting' | 'sessions' | 'stream' | 'now'>,
@@ -370,10 +374,9 @@ export async function workerGone(
   // 若是网络抖动、Worker 秒回，`workerAttached` 会把真还活着的会话再拉回 running。
   for (const session of await deps.sessions.listAll()) {
     if (session.status !== 'running') continue;
-    if (session.workerId !== null && session.workerId !== workerId) continue;
-    const next = markInterrupted(session, deps.now());
-    await deps.sessions.save(next);
-    deps.stream.publish({ sessionId: next.id, seq: next.lastSeq, event: null, status: next.status });
+    if (session.workerId === null || session.workerId !== workerId) continue;
+    if (!(await deps.sessions.markInterrupted(session.id, deps.now()))) continue;
+    deps.stream.publish({ sessionId: session.id, seq: session.lastSeq, event: null, status: 'interrupted' });
   }
   return dropped;
 }
@@ -396,9 +399,11 @@ export async function workerAttached(
     deps.hosting.add(session.id, workerId);
     // 刚才掉线时被降级成 interrupted 的，进程其实还活着：接回来，界面继续显示「正在回复」。
     if (session.status === 'interrupted') {
-      const next = { ...session, status: 'running' as const, updatedAt: deps.now() };
-      await deps.sessions.save(next);
-      deps.stream.publish({ sessionId: next.id, seq: next.lastSeq, event: null, status: next.status });
+      // 条件写：只有「此刻仍是 interrupted」才拉回 running，别用 listAll/byId 的旧快照整行覆盖
+      //（那会把并发的 done 或更新的 options 盖回去）。
+      if (await deps.sessions.markRunning(session.id, deps.now())) {
+        deps.stream.publish({ sessionId: session.id, seq: session.lastSeq, event: null, status: 'running' });
+      }
     }
     attached.push(session.id);
   }

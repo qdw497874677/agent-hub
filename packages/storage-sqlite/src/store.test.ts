@@ -384,6 +384,38 @@ test('任务分支只写不抹：branch 为 null 的旧对象不会清掉已经�
   store.close();
 });
 
+test('sessions.markInterrupted 是条件写：只有库里还是 running 才降级，返回是否真的改了', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  await store.sessions.save({ ...session, status: 'running', updatedAt: now + 1 });
+  assert.equal(await store.sessions.markInterrupted(session.id, now + 2), true);
+  const after = await store.sessions.byId(session.id);
+  assert.equal(after?.status, 'interrupted');
+  assert.equal(after?.updatedAt, now + 2);
+  // 已经结束的会话（agent 的 ended 先落地）：迟到的掉线收尾不能把它翻回 interrupted
+  await store.sessions.save({ ...session, status: 'done', lastSeq: 9, updatedAt: now + 3 });
+  assert.equal(await store.sessions.markInterrupted(session.id, now + 4), false);
+  const done = await store.sessions.byId(session.id);
+  assert.equal(done?.status, 'done');
+  assert.equal(done?.updatedAt, now + 3, '没改就不该动 updatedAt');
+  store.close();
+});
+
+test('tasks.setBranch 只写 branch：并发改过的 status / 标题不会被旧快照回滚', async () => {
+  const store = openSqliteStore(':memory:');
+  const { task } = await seeded(store);
+  const stale = { ...task, status: 'in_progress' as const, branch: null };
+  // 另一个事务先把任务标成 done，然后掉线/工作空间那一路拿旧快照只回写 branch
+  await store.tasks.save({ ...task, status: 'done', title: '改过的标题', updatedAt: now + 1 });
+  await store.tasks.setBranch(task.id, 'agent-hub/fix-login-ab12');
+  const after = await store.tasks.byId(task.id);
+  assert.equal(after?.branch, 'agent-hub/fix-login-ab12');
+  assert.equal(after?.status, 'done', 'setBranch 不碰 status');
+  assert.equal(after?.title, '改过的标题');
+  assert.notEqual(stale.branch, after?.branch);
+  store.close();
+});
+
 test('收起时间存得下、恢复后读回不带这个字段（和没收起的会话一样）', async () => {
   const store = openSqliteStore(':memory:');
   const { session } = await seeded(store);

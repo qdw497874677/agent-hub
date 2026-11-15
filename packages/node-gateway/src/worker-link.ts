@@ -142,8 +142,8 @@ export interface WorkerLinkOptions {
    * （opencode 的 ACP 适配器在那之后不再推 session/update）。默认 5000。
    */
   readonly resyncIntervalMs?: number;
-  /** 连续多少轮没补到新事件就停止拉取（默认 12；`resyncIntervalMs` 5000 时约一分钟）。 */
-  readonly resyncQuietRounds?: number;
+  /** 连续多少轮没补到新事件就把间隔翻倍（5s → 10s → 20s → 40s，封顶 60s）；子代理没结束就一直拉。 */
+  readonly resyncMaxIntervalMs?: number;
   /** 套件清单采集（ADR 0021 §7）：连上时、运行时任务结束后、每 `inventoryIntervalMs` 报一次。不给 = 不报。 */
   readonly inventory?: () => WorkerInventory;
   /** 默认 6 小时。 */
@@ -803,8 +803,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
    * 稳定指纹去重后照常发给 hub（hub 那边 ingest 会落盘 + 发帧）。
    */
   const RESYNC_INTERVAL_MS = options.resyncIntervalMs ?? 5_000;
-  /** 连续这么多轮没补到新东西就停：重放里没有子代理终态，pendingSubagents 可能永远不归零。 */
-  const RESYNC_QUIET_ROUNDS = options.resyncQuietRounds ?? 12;
+  /**
+   * 空闲轮次指数退避的上限。以前是「连续 12 轮没新东西就彻底停」，但 opencode 的重放里
+   * 不一定带子代理终态：子代理其实还在跑，停拉之后它的总结就永远收不到。现在只要
+   * `pendingSubagents() > 0` 就继续，只是把间隔翻倍到封顶，既不放弃也不空转。
+   */
+  const RESYNC_MAX_INTERVAL_MS = Math.max(RESYNC_INTERVAL_MS, options.resyncMaxIntervalMs ?? 60_000);
   const resyncLoops = new Map<
     string,
     {
@@ -812,6 +816,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       timer: NodeJS.Timeout | null;
       /** 在途的 resync：发新 prompt 前要等它落地，session/load 不能和 session/prompt 并发。 */
       inFlight: Promise<void> | null;
+      /** 当前调度间隔（毫秒）；空闲轮次把它翻倍。 */
+      interval: number;
       /** 已经发出去的重放事件指纹（重放会带整段历史）。 */
       readonly seen: Set<string>;
     }
@@ -851,7 +857,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       cancelled: false,
       timer: null as NodeJS.Timeout | null,
       inFlight: null as Promise<void> | null,
-      quiet: 0,
+      interval: RESYNC_INTERVAL_MS,
       seen: new Set<string>()
     };
     resyncLoops.set(sessionId, loop);
@@ -860,8 +866,14 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       loop.timer = setTimeout(() => {
         loop.timer = null;
         void tick();
-      }, RESYNC_INTERVAL_MS);
+      }, loop.interval);
       loop.timer.unref?.();
+    };
+
+    /** 后台子代理都收尾了：停轮询（日志留着，方便对着 `还在等 N 个子代理` 看它是什么时候停的）。 */
+    const finish = (): void => {
+      options.onLog?.(`会话 ${sessionId} 子代理都结束了，停止重放`);
+      stopResync(sessionId);
     };
 
     const tick = async (): Promise<void> => {
@@ -871,7 +883,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         return;
       }
       if (pendingSubagents(session) === 0) {
-        stopResync(sessionId);
+        finish();
         return;
       }
       const run = (async () => {
@@ -880,16 +892,16 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
         const fresh = entries.filter((entry) => !loop.seen.has(entry.key));
         for (const entry of fresh) loop.seen.add(entry.key);
         if (fresh.length === 0) {
-          // opencode 的重放里没有子代理终态，pendingSubagents 可能一直 >0；
-          // 一分钟都没新东西就当后台已经安静了，别再每 5 秒 session/load 一次。
-          loop.quiet += 1;
-          if (loop.quiet >= RESYNC_QUIET_ROUNDS) {
-            options.onLog?.(`会话 ${sessionId} 连续 ${loop.quiet} 轮没有新的后台输出，停止拉取`);
-            stopResync(sessionId);
-          }
+          // 重放里没新东西：子代理还在跑（pendingSubagents 还没归零），但别每 5 秒
+          // `session/load` 一次——间隔翻倍到 60 秒封顶，一直等它报终态。
+          loop.interval = Math.min(loop.interval * 2, RESYNC_MAX_INTERVAL_MS);
+          const waiting = pendingSubagents(session);
+          options.onLog?.(
+            `会话 ${sessionId} 还在等 ${waiting} 个子代理，间隔 ${(loop.interval / 1000).toFixed(1)}s 后重放`
+          );
           return;
         }
-        loop.quiet = 0;
+        loop.interval = RESYNC_INTERVAL_MS;
         options.onLog?.(`会话 ${sessionId} 补拉到 ${fresh.length} 条后台子代理输出`);
         for (const entry of fresh) {
           const enriched = await withBytes(sessionId, entry.event);
@@ -908,7 +920,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       }
       if (loop.cancelled || sessions.get(sessionId) !== session) return;
       if (pendingSubagents(session) === 0) {
-        stopResync(sessionId);
+        finish();
         return;
       }
       schedule();

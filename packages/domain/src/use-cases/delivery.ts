@@ -1,5 +1,4 @@
 import { afterFailure, type Delivery } from '../delivery.ts';
-import { markInterrupted } from '../session.ts';
 import { notFound, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { SessionId } from '../ids.ts';
@@ -180,12 +179,16 @@ export async function cancelDelivery(deps: DeliveryDeps, id: string): Promise<Re
   );
   // 提问会把会话置成 running（见 applyEvent）；撤回最后一条待送达的消息后，
   // 这一轮已经没有下文了，不能让它一直显示「正在回复」、也挡住删除与收起。
-  if ((await deps.deliveries.pendingFor(sessionId)).length === 0) {
+  // 但只有「真的没有任何在途回合」才降级：journal 里还有一轮已送出却没 ended 的 prompt
+  // （定时触发或人上一句还在跑）就继续 running。不能用 `hosting.has`——派生的会话一建好
+  // 就登记了托管，那样永远降不了级。
+  // `pendingFor` 含 sending；sending 是「已经交给运行时、还没进 journal」的在途回合，
+  // 不能只因为队列里没有 queued 就降级（`turnInProgress` 会跳过 sending 的 prompt）。
+  const queued = (await deps.deliveries.pendingFor(sessionId)).filter((d) => d.state !== 'sending');
+  if (queued.length === 0 && !(await turnInProgress(deps, sessionId))) {
     const session = await deps.sessions.byId(sessionId);
-    if (session && session.status === 'running') {
-      const next = markInterrupted(session, deps.now());
-      await deps.sessions.save(next);
-      deps.stream.publish({ sessionId, seq: next.lastSeq, event: null, status: next.status });
+    if (session && (await deps.sessions.markInterrupted(sessionId, deps.now()))) {
+      deps.stream.publish({ sessionId, seq: session.lastSeq, event: null, status: 'interrupted' });
     }
   }
   return ok(undefined);

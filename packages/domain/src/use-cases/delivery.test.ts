@@ -149,8 +149,31 @@ test('撤回：不再送，journal 记一条说明', async () => {
   assert.ok(ok(undefined).ok);
 });
 
-test('上一轮还在跑（如定时触发）：人发的话排队、不扣次数，回合结束立刻送达', async () => {
+test('撤回排队消息：前面还有一轮在跑，就不能标成 interrupted', async () => {
   const w = await world();
+  w.online();
+  // 定时触发的那一轮已经送到运行时，正在跑
+  assert.ok((await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '定时触发：扫一遍', author: { id: 'u', name: 'timer', via: 'connector' } })).ok);
+  await settle();
+  assert.equal(w.sent.length, 1);
+  assert.equal((await w.deps.sessions.byId(w.sid))?.status, 'running');
+
+  // 人插的一句排在这一轮后面，随后被撤回
+  assert.ok((await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '人插一句' })).ok);
+  await settle();
+  const [q] = await w.deliveries.pendingFor(w.sid);
+  assert.equal(q!.state, 'queued');
+  assert.ok((await cancelDelivery(w.deps, q!.id)).ok);
+
+  assert.equal((await w.deliveries.pendingFor(w.sid)).length, 0);
+  assert.equal((await w.deps.sessions.byId(w.sid))?.status, 'running', '撤的是排队的那条，前面那轮还在跑');
+
+  // 那一轮真结束之后才收尾
+  await recordEvent(w.deps, { sessionId: w.sid, event: { kind: 'ended', outcome: 'done' } });
+  await releaseAfterTurn(w.deps, w.sid);
+});
+
+test('上一轮还在跑（如定时触发）：人发的话排队、不扣次数，回合结束立刻送达', async () => {  const w = await world();
   w.online();
   const first = await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '定时触发：扫一遍', author: { id: 'u', name: 'timer', via: 'connector' } });
   assert.ok(first.ok);

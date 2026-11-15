@@ -59,9 +59,10 @@ export interface TerminalBridgeOptions {
   /**
    * 交互式终端额外的授权（domain 的 terminalAccess，要求 session.prompt）。
    * `target` 过了之后还要过这一关：能往 PTY 里打字等于能以会话身份执行命令，
-   * viewer 只有 session.read，不该有（issue #213）。
+   * viewer 只有 session.read，不该有（issue #213）。必填——漏传等于整台机器的 shell
+   * 对所有能看这个会话的人开放，没有「退回 session.read」这种默认。
    */
-  readonly access?: (subject: Subject | null, sessionId: string) => Promise<Result<void, DomainError>>;
+  readonly access: (subject: Subject | null, sessionId: string) => Promise<Result<void, DomainError>>;
   /** cookie 里的登录令牌 → 主体；没登录 / 过期返回 null。 */
   readonly authenticate: (token: string) => Promise<Subject | null>;
   /** 和 HTTP 路由同一套 Host 校验（缺 Host 的老客户端由 guard 放行）。 */
@@ -345,14 +346,16 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
       deny(socket, 401, '请先登录');
       return;
     }
+    // 先判「能不能开终端」（session.prompt）。会话不存在与「看得见但没权限」必须回同一个状态码，
+    // 否则能读不能开的人可以靠 404/403 差异探知会话是否存在 —— 这里统一 404，文案也不区分。
+    const access = await options.access(subject, sessionId);
+    if (!access.ok) {
+      deny(socket, 404, '会话不存在，或你不能在这条会话里开终端');
+      return;
+    }
     const target = await options.target(subject, sessionId);
     if (!target.ok) {
       deny(socket, target.error.code === 'not_found' ? 404 : 403, target.error.message);
-      return;
-    }
-    const access = await options.access?.(subject, sessionId);
-    if (access !== undefined && !access.ok) {
-      deny(socket, access.error.code === 'not_found' ? 404 : 403, access.error.message);
       return;
     }
     const query = new URL(request.url ?? '/', 'http://hub').searchParams;

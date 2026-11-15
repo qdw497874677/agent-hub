@@ -346,29 +346,47 @@ test('回合结束后仍有后台子代理：worker 周期性 resync，只转发
   );
 });
 
-test('重放里一直没有子代理终态：连续几轮没新东西就停止拉取', async () => {
+test('重放里一直没有子代理终态：子代理没结束就继续拉，间隔翻倍，结束后停', async () => {
   const { rec, gateway, url, stop } = await harness(null);
   const state = { pending: 1, calls: 0, stopAfter: null as number | null, resyncing: false, concurrent: false };
+  const logs: string[] = [];
+  const waiting = () => logs.filter((line) => line.includes('还在等 1 个子代理'));
   const link = connectWorkerLink({
     url,
     token: '',
     workerId: 'w1',
     label: 'x',
     runtimes: [resyncRuntime(state)],
-    resyncIntervalMs: 10,
-    resyncQuietRounds: 3
+    resyncIntervalMs: 50,
+    onLog: (line) => logs.push(line)
   });
-  await rec.until(() => rec.hellos.length === 1);
-  assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
-  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '派给子代理' });
-  await rec.until(() => rec.statuses.includes('idle'));
-  await rec.until(() => state.calls >= 4);
-  const settled = state.calls;
-  // pendingSubagents 永远是 1（opencode 的重放里没有终态），靠「连续几轮没新事件」收手
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  await stop(link);
-  assert.equal(state.calls, settled, '安静下来之后不再空转 session/load');
-  assert.equal(rec.events.filter((event) => event.kind === 'text' && event.delta === '子代理已完成').length, 1);
+  try {
+    await rec.until(() => rec.hellos.length === 1);
+    assert.equal((await gateway.gateway.dispatch(start('s1', 'w1'))).ok, true);
+    await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '派给子代理' });
+    await rec.until(() => rec.statuses.includes('idle'));
+
+    // pendingSubagents 一直是 1（opencode 的重放里没有终态）：不能像以前那样「几十秒没新东西就放弃」，
+    // 否则子代理真正的总结永远收不到。改成空闲轮次指数退避：50ms → 100 → 200 → 400 …
+    await rec.until(() => waiting().length >= 3);
+    const intervals = waiting().map((line) => line.slice(line.indexOf('间隔')));
+    assert.ok(
+      intervals.some((line) => line.includes('0.1s')) &&
+        intervals.some((line) => line.includes('0.2s')) &&
+        intervals.some((line) => line.includes('0.4s')),
+      `空转轮次间隔应逐轮翻倍：${intervals.join(' / ')}`
+    );
+
+    // 子代理终态到了：pendingSubagents 归零，立刻停止拉取，不再空转 session/load
+    state.pending = 0;
+    await rec.until(() => logs.some((line) => line.includes('子代理都结束了')));
+    const settled = state.calls;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(state.calls, settled, '子代理结束后不再 session/load');
+    assert.equal(rec.events.filter((event) => event.kind === 'text' && event.delta === '子代理已完成').length, 1);
+  } finally {
+    await stop(link);
+  }
 });
 
 test('后台子代理还没结束时会话又收到 prompt：先停拉取，等 session/load 落地再发 prompt', async () => {

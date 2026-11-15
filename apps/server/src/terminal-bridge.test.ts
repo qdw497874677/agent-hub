@@ -4,7 +4,7 @@ import { createServer, type Server } from 'node:http';
 import { connect } from 'node:net';
 import { WebSocket } from 'ws';
 import type { Subject } from '@agent-hub/domain';
-import { notFound } from '@agent-hub/domain';
+import { forbidden, notFound } from '@agent-hub/domain';
 import {
   createTerminalBridge,
   loginTokenOf,
@@ -83,6 +83,8 @@ async function harness(overrides: Partial<TerminalBridgeOptions> = {}): Promise<
     gateway: fake.gateway,
     target: async (_subject, sessionId) =>
       sessionId === 's1' ? { ok: true, value: { workerId: 'w1', root: '/tmp/demo' } } : { ok: false, error: notFound('会话不存在') },
+    // 默认放行；授权本身由 terminalAccess 在 main.ts 接上，这里只验证桥接层有没有真的过这一关。
+    access: async () => ({ ok: true, value: undefined }),
     authenticate: async (token) => (token === 'good' ? SUBJECT : null),
     hostAllowed: (value) => value === host,
     log: (message) => logs.push(message),
@@ -195,7 +197,7 @@ test('cookie：两种名字都认，两个都在时必须一致', () => {
   assert.equal(loginTokenOf(undefined), '');
 });
 
-test('握手：Host / Origin / cookie / session.read 四步，按顺序拒绝', async () => {
+test('握手：Host / Origin / cookie / session.read 四步（外加 access 的 session.prompt），按顺序拒绝', async () => {
   const world = await harness();
   try {
     const host = `127.0.0.1:${world.port}`;
@@ -232,6 +234,19 @@ test('握手：不存在的会话返回 404', async () => {
       );
     });
     assert.match(missing, /^HTTP\/1\.1 404 /);
+  } finally {
+    await world.close();
+  }
+});
+
+test('viewer 只有 session.read：被 access 拒掉，且与「会话不存在」返回同一状态码（不泄露存在性）', async () => {
+  const world = await harness({
+    access: async () => ({ ok: false, error: forbidden('没有 session.prompt 权限') })
+  });
+  try {
+    const text = await rawUpgrade(world.port, { Cookie: 'hub_login=good', Origin: `http://127.0.0.1:${world.port}` });
+    assert.match(text, /^HTTP\/1\.1 404 /);
+    assert.equal(world.calls.open.length, 0, '被拒的请求不能真的起 shell');
   } finally {
     await world.close();
   }

@@ -230,6 +230,14 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateSessionEnvironment = db.prepare(
     'UPDATE sessions SET environment_revision = ?, updated_at = ? WHERE id = ?'
   );
+  // 条件降级：只有库里还是 running 才改。Worker 掉线逐条收尾时不能整行回写旧快照。
+  const markSessionInterrupted = db.prepare(
+    "UPDATE sessions SET status = 'interrupted', updated_at = ? WHERE id = ? AND status = 'running'"
+  );
+  const markSessionRunning = db.prepare(
+    "UPDATE sessions SET status = 'running', updated_at = ? WHERE id = ? AND status = 'interrupted'"
+  );
+  const updateTaskBranch = db.prepare('UPDATE tasks SET branch = ? WHERE id = ? AND ? IS NOT NULL');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
       'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, created_at, updated_at) ' +
@@ -431,6 +439,11 @@ export function openSqliteStore(file: string): SqliteStore {
         task.updatedAt
       );
     },
+    async setBranch(id: Parameters<typeof asTaskId>[0], branch: string | null): Promise<boolean> {
+      // 只写 branch 一列：并发改了 status/摘要的任务不会被整行 save 盖回去。
+      // null = 不动（保持既有约定：空分支不落库），返回是否真的写到。
+      return Number(updateTaskBranch.run(branch, id, branch).changes) > 0;
+    },
     async byId(id: Parameters<typeof asTaskId>[0]): Promise<Task | null> {
       const row = selectTask.get(id);
       return row ? toTask(row) : null;
@@ -535,6 +548,14 @@ export function openSqliteStore(file: string): SqliteStore {
       at: number
     ): Promise<void> {
       updateSessionEnvironment.run(revision, at, sessionId);
+    },
+    async markInterrupted(sessionId: Parameters<typeof asSessionId>[0], at: number): Promise<boolean> {
+      const result = markSessionInterrupted.run(at, sessionId);
+      return Number(result.changes) > 0;
+    },
+    async markRunning(sessionId: Parameters<typeof asSessionId>[0], at: number): Promise<boolean> {
+      const result = markSessionRunning.run(at, sessionId);
+      return Number(result.changes) > 0;
     },
     /** 彻底删除：子表先删，同一事务；工作空间目录和 Task 不动。 */
     async remove(id: Parameters<typeof asSessionId>[0]): Promise<void> {

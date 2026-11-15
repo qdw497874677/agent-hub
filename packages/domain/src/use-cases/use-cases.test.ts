@@ -448,6 +448,58 @@ test('机器掉线：还挂着 running 的会话降级成 interrupted，接回�
   assert.equal(w.frames.at(-1)?.status, 'running');
 });
 
+test('掉线收尾：只降级该机 running 的会话，别的会话（含 updatedAt）一行都不动', async () => {
+  const w = await world();
+  w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });
+  const here = await derived(w);
+  for (const workspace of await w.deps.workspaces.byProject(w.project.id)) {
+    await w.deps.workspaces.save({ ...workspace, workerId: 'remote-1' });
+  }
+  const there = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: 'm1', workerId: 'remote-1' });
+  assert.ok(there.ok);
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(here.id))!, status: 'running', updatedAt: 111 });
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(there.value.id))!, status: 'running', updatedAt: 222 });
+
+  await workerGone(w.deps, 'local');
+
+  const mine = await w.deps.sessions.byId(here.id);
+  assert.equal(mine?.status, 'interrupted');
+  assert.ok(mine!.updatedAt > 111, '被降级的那行要更新 updatedAt');
+  const theirs = await w.deps.sessions.byId(there.value.id);
+  assert.equal(theirs?.status, 'running', '别的机器上的会话不受影响');
+  assert.equal(theirs?.updatedAt, 222, '别的机器的行一个字段都不能碰');
+});
+
+test('掉线收尾：不知道归哪台的 running 会话（workerId=null）不会被任意掉线误标', async () => {
+  const w = await world();
+  const session = await derived(w);
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(session.id))!, workerId: null, status: 'running' });
+
+  await workerGone(w.deps, 'local');
+
+  assert.equal((await w.deps.sessions.byId(session.id))?.status, 'running', '落点不明的会话不能替谁背锅');
+  assert.equal(w.frames.filter((frame) => frame.status === 'interrupted').length, 0);
+  assert.ok(!w.deps.hosting.has(session.id), '托管还是照常清掉');
+});
+
+test('掉线收尾用条件写：快照之后会话已经结束，不会被旧快照翻回 interrupted', async () => {
+  const w = await world();
+  const session = await derived(w);
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(session.id))!, status: 'running' });
+  // 掉线收尾先 listAll 拿到的就是这一份；写库之前 agent 的 ended 已经到了（或接回的 attached 改过状态）。
+  const stale = await w.deps.sessions.listAll();
+  const realList = w.deps.sessions.listAll;
+  w.deps.sessions.listAll = async () => stale;
+  try {
+    await w.deps.sessions.save({ ...(stale.find((row) => row.id === session.id))!, status: 'done' });
+    await workerGone(w.deps, 'local');
+  } finally {
+    w.deps.sessions.listAll = realList;
+  }
+  assert.equal((await w.deps.sessions.byId(session.id))?.status, 'done', '已结束的状态不能被迟到的掉线写回');
+  assert.equal(w.frames.filter((frame) => frame.status === 'interrupted').length, 0, '没真的降级就不该发帧');
+});
+
 test('Worker 发来的会话帧只在会话落在它身上时算数', async () => {
   const w = await world();
   w.workers.push({ workerId: 'remote-1', label: '服务器', origin: 'remote', state: 'online' });

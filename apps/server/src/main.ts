@@ -470,7 +470,18 @@ const connectorHub = createConnectorHub({
   },
   busy: async (sessionId) => (await store.deliveries.pendingFor(sessionId)).length > 0
     || (await store.messages.deliveredTo(sessionId)).length > 0 || (await store.groups.deliveredTo(sessionId)).length > 0,
-  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author })
+  deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
+  // #219 C3：外部消息可以直接以群为目标。落帖走群聊用例（外部作者 + 创建者身份派生会话）。
+  outbox: store.outbox,
+  groupOf: async (groupId) => {
+    const group = await store.groups.group(groupId);
+    return group ? { id: group.id, projectId: group.projectId } : null;
+  },
+  principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-connector-group'),
+  postExternal: async ({ groupId, author, text, externalId, actor }) => {
+    const posted = await groupChat.postExternal({ groupId, author, text, externalId, actor });
+    return posted.ok ? ok({ postId: posted.value.post.id }) : posted;
+  }
 });
 connectorHub.start();
 // 回滚保护（C1）：旧二进制不认识 target_kind，会把群目标读成主会话；回滚前先禁用这些 binding。
@@ -931,6 +942,26 @@ function fromWorker(workerId: string, sessionId: SessionId, ingest: () => void):
     .catch((failure: unknown) => log(`处理 worker 帧失败：${(failure as Error).message}`));
 }
 
+/**
+ * 同一台 Worker 的 attached / gone 串行。两条路各自异步查库、写库，交错时后写的一方会拿
+ * 旧快照把状态写回去（重连刚接回的 running 被迟到的掉线覆盖）。按 workerId 排成一条链，
+ * 回调到达的顺序就是执行顺序。
+ */
+const workerTurns = new Map<string, Promise<void>>();
+function workerTurn(workerId: string, run: () => Promise<unknown>): Promise<unknown> {
+  const previous = workerTurns.get(workerId) ?? Promise.resolve();
+  const executed = previous.then(() => run());
+  const settled = executed.then(
+    () => undefined,
+    () => undefined
+  );
+  workerTurns.set(workerId, settled);
+  void settled.then(() => {
+    if (workerTurns.get(workerId) === settled) workerTurns.delete(workerId);
+  });
+  return executed;
+}
+
 /** 装了 MCP 资产的机器：这些机器上缺 MCP 适配器的 harness（Pi）判为不可用。 */
 async function mcpWorkers(): Promise<Set<string>> {
   const rows = await store.assets.installations();
@@ -1047,10 +1078,11 @@ serverGateway = createServerGateway({
     // 机器回来了：排队的消息不等退避，马上再试（ADR 0031）
     void store.deliveries.wakeAll(Date.now()).then((n) => n > 0 && log(`送达队列：${n} 条因 ${worker.label} 上线提前重试`));
     if (sessions.length > 0) {
-      void workerAttached(deps, worker.workerId, sessions).then((ids) => {
+      void workerTurn(worker.workerId, async () => {
+        const ids = await workerAttached(deps, worker.workerId, sessions);
         serverGateway?.adopt(worker.workerId, ids);
         log(`接回 ${ids.length} 个还在跑的会话`);
-      });
+      }).catch((failure: unknown) => log(`接回会话失败：${(failure as Error).message}`));
     }
   },
   // 组合根只负责「把回调接到用例上、失败了打日志」，业务规则都在 domain 里。
@@ -1105,7 +1137,7 @@ serverGateway = createServerGateway({
   onWorkerGone(workerId, reason) {
     catalog.removeWorker(workerId);
     // 异步收尾：把挂在这台机器上还停着 running 的会话降级成 interrupted（表里不留假运行）。
-    void workerGone(deps, workerId).catch((error: unknown) => log(`worker 离线收尾失败：${String(error)}`));
+    void workerTurn(workerId, () => workerGone(deps, workerId)).catch((error: unknown) => log(`worker 离线收尾失败：${String(error)}`));
     // 机器没了，它上面的 PTY 也没了：只关对应的浏览器 WS，不发 terminal.close。
     terminalBridge?.closeWorker(workerId);
     log(`worker 离线：${workerId}（${reason}）`);

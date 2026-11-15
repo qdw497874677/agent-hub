@@ -26,6 +26,17 @@ export interface SessionRepository {
   /** 只改环境版本；和 save 分开，避免启动时拿旧会话对象覆盖 lastSeq/status。 */
   setEnvironmentRevision(sessionId: SessionId, revision: string | null, at: number): Promise<void>;
   /**
+   * 条件写：仅当库里还是 running 时降级为 interrupted（`UPDATE ... WHERE id=? AND status='running'`）。
+   * Worker 掉线用它逐条收尾——先 listAll 再整行 save 会把重连时刚接回的状态写回旧值。
+   * 返回 true = 确实改了这一行（之前不是 running 就不动，也不推帧）。
+   */
+  markInterrupted(sessionId: SessionId, at: number): Promise<boolean>;
+  /**
+   * 条件写：仅当库里还是 interrupted 时拉回 running（Worker 重连、进程其实还活着）。
+   * 返回 true = 确实改了这一行；已经 done / 被删的会话不会被旧快照盖回 running。
+   */
+  markRunning(sessionId: SessionId, at: number): Promise<boolean>;
+  /**
    * 彻底删除一条会话：会话行和所有按 session_id 关联的数据（journal、搜索投影、entry_map、artifacts、
    * 连线等）在同一事务里级联清掉。不删工作空间目录，不动 Task。调用方负责先停会话、检查权限。
    */

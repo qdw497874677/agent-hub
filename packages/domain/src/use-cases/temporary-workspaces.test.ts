@@ -59,6 +59,41 @@ test('分支起点：task.baseBranch 规范成 origin/<name>，建好后回写�
   assert.equal(stored?.baseBranch, 'release');
 });
 
+test('回写分支只改 branch：并发把任务标成 done 之后，状态不会被旧快照回滚', async () => {
+  const w = await world('https://example.com/demo.git');
+  const long = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create' }, home: '/home/me' });
+  assert.ok(long.ok);
+
+  // worktree 建好、还没回写分支的窗口里，另一条路（人点完成 / 定时巡检）把任务标成 done
+  const realGit = w.deps.gateway.git;
+  w.deps.gateway.git = (workerId) => {
+    const port = realGit(workerId);
+    return {
+      ...port,
+      async addWorktree(input) {
+        const made = await port.addWorktree(input);
+        const live = w.deps.tasks.rows.get(w.task.id);
+        if (live) w.deps.tasks.rows.set(w.task.id, { ...live, status: 'done' });
+        return made;
+      }
+    };
+  };
+  let saves = 0;
+  const realSave = w.deps.tasks.save;
+  w.deps.tasks.save = async (task) => {
+    saves += 1;
+    return realSave(task);
+  };
+
+  const made = await w.temp('isolated');
+  assert.ok(made.ok, made.ok ? '' : made.error.message);
+
+  const stored = await w.deps.tasks.byId(w.task.id);
+  assert.equal(stored?.branch, made.value.branch, 'branch 照常回写');
+  assert.equal(stored?.status, 'done', '回写分支不能把并发改掉的状态覆盖回旧值');
+  assert.equal(saves, 0, '只该走 setBranch，不整行 save');
+});
+
 test('显式 command.base 优先于 task.baseBranch；已带 origin/ 的原样传', async () => {
   const w = await world('https://example.com/demo.git');
   const long = await prepareLongLivedWorkspaceUseCase(w.deps, { projectId: w.project.id, workerId: 'remote-1', plan: { mode: 'create' }, home: '/home/me' });

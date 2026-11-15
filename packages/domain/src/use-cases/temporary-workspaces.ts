@@ -162,15 +162,10 @@ export async function prepareTemporaryWorkspaceUseCase(
 }
 
 /** 把 worktree 实际分支回写任务；分支没变或没有分支就不写，失败只记日志、不拖垮创建。 */
-async function writeBackBranch(
-  deps: Pick<Deps, 'now' | 'tasks'>,
-  task: Task,
-  branch: string | null
-): Promise<void> {
+async function writeBackBranch(deps: Pick<Deps, 'tasks'>, task: Task, branch: string | null): Promise<void> {
   if (!branch || task.branch === branch) return;
   try {
-    const latest = (await deps.tasks.byId(task.id)) ?? task;
-    await deps.tasks.save({ ...latest, branch, updatedAt: deps.now() });
+    await deps.tasks.setBranch(task.id, branch);
   } catch (error) {
     console.warn(`[workspace] 任务 ${task.id} 回写分支 ${branch} 失败：${error instanceof Error ? error.message : String(error)}`);
   }
