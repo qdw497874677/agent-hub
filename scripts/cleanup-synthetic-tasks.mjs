@@ -54,11 +54,32 @@ if (taskIdColumn && taskIdColumn.notnull === 1) {
 
 const has = (table) => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table) !== undefined;
 const containerIds = new Set();
+// 群角色会话：属于某个群的成员，一定是常驻容器。
 if (has('agent_group_sessions')) {
   for (const row of db.prepare('SELECT session_id FROM agent_group_sessions').all()) containerIds.add(row.session_id);
 }
-if (has('session_provenance')) {
-  for (const row of db.prepare("SELECT session_id FROM session_provenance WHERE via IN ('group','bot','connector')").all()) containerIds.add(row.session_id);
+// bot / 连接器会话：旧库里也记 via='bot'。但调度器开的「工作任务」同样记 'bot'，
+// 所以排除调度器登记过的任务，并且只认 goal 为空（真任务一定有验收目标）。
+if (has('session_provenance') && has('task_dispatch')) {
+  const rows = db.prepare(`
+    SELECT p.session_id AS id FROM session_provenance p
+    JOIN sessions s ON s.id = p.session_id
+    JOIN tasks t ON t.id = s.task_id
+    WHERE p.via IN ('bot','connector','group')
+      AND t.goal IS NULL
+      AND NOT EXISTS (SELECT 1 FROM task_dispatch d WHERE d.task_id = t.id)
+  `).all();
+  for (const row of rows) containerIds.add(row.id);
+}
+if (has('session_provenance') && !has('task_dispatch')) {
+  // 没有调度器表的老库：只能靠 via + goal 为空判断。
+  const rows = db.prepare(`
+    SELECT p.session_id AS id FROM session_provenance p
+    JOIN sessions s ON s.id = p.session_id
+    JOIN tasks t ON t.id = s.task_id
+    WHERE p.via IN ('bot','connector','group') AND t.goal IS NULL
+  `).all();
+  for (const row of rows) containerIds.add(row.id);
 }
 
 const rows = [...containerIds]
