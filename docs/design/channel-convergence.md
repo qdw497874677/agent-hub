@@ -109,7 +109,7 @@ export interface InboundEvent {
 
 IM 的 `externalId` = 平台消息 id；`author` 只用于展示与审计，**开会话的身份仍用 `binding.createdBy`**（群侧 `actorOf` 只认 user 根帖，`use-cases/groups.ts:334-336`）。
 
-**群目标不经过 `attempt`/`turnEnded`。** 现在 `openRuns` 把 `waiting|delivered` 当占用（`use-cases/connectors.ts:125-131`、`storage-sqlite/src/connectors.ts:80`），`turnEnded` 只按 `session_id` 收口（`:177-186`）。若群消息先走 `attempt` 标 `delivered`，群会话的回合结束不一定对应这条 run，binding 会一直留 open run，后续无 `plannedAt` 的入站会被 `emit` 静默丢掉（`:117-133`），同一 binding 上的 timer/github 也会被堵。正确路径：插入 run 时直接写 `done`，落帖后回填 `post_id`，`openRuns` 不把群目标算占用。`serial(groupId)`（`use-cases/groups.ts:152-167`）管的是群内顺序，与 `openRuns` 不是同一把锁，不能互相替代。
+**群目标不经过 `attempt`/`turnEnded`。** 现在 `openRuns` 把 `waiting|delivered` 当占用（`use-cases/connectors.ts:125-131`、`storage-sqlite/src/connectors.ts:80`），`turnEnded` 只按 `session_id` 收口（`:177-186`）。群消息若先走 `attempt` 标 `delivered`，群会话的回合结束不一定对应这条 run，binding 会一直留 open run。正确路径：run 先插 `posting`（占去重键、不算 open）→ `postExternal` 落帖 → CAS 改 `posted` 并回填 `post_id`；帖 id 由 run id 派生，重放碰到主键冲突即视为已落。`posting` 由 `sweep` 超时重放。不复用 `done`——`done` 今天的含义是「智能体这一轮做完了」，复用会污染 `countRunsByState`、`consecutiveFailures` 清零与面板统计（评审 Q2）。
 
 **外部帖走 `postExternal`，不走 `post(actor)`。** `actorOf`（`:334-336`）非 user 根帖返回 null，`schedule` 直接 `return 0`（`:350-351`）；`post`（`:728-729`）还会在人发言时清 `held`/`needsUser`。`postExternal` 使用作者 kind `'external'`（`PostAuthor` 在 `packages/domain/src/groups.ts:66-69`，目前只有 user/agent/system），principal 取 `binding.createdBy`，并在每次投递前重新校验「binding 仍 enabled 且 createdBy 对该群仍有 `group.post`」——失败就暂停 binding，而不是用过期 principal 继续发。外部作者不能伪装成 `user`，否则未读（`storage-sqlite/src/groups.ts:97-98`，只认 `author.kind === 'user'` 且 id 相等）会吞掉创建者的未读、`@all` 的语义也会被外部消息污染。
 
@@ -122,14 +122,17 @@ IM 的 `externalId` = 平台消息 id；`author` 只用于展示与审计，**�
 ```sql
 CREATE TABLE channel_outbox (
   id TEXT PRIMARY KEY,
-  binding_id TEXT NOT NULL,
-  external_conversation_id TEXT NOT NULL,
+  binding_id TEXT,                  -- 可空：dispatcher 任务出站没有 binding
+  origin_kind TEXT NOT NULL,        -- 'binding' | 'dispatcher'
+  origin_id TEXT,                   -- bindingId / dispatchId
+  external_conversation_id TEXT,    -- origin_kind='binding' 时必填
   external_thread_id TEXT,
   source_kind TEXT NOT NULL,        -- 'group_post' | 'session_turn' | 'task'
   source_id TEXT NOT NULL,          -- postId / sessionId / taskId
   body TEXT NOT NULL,
-  status TEXT NOT NULL,             -- queued | sent | failed | dropped
+  status TEXT NOT NULL,             -- queued | sending | sent | failed | dropped
   attempts INTEGER NOT NULL DEFAULT 0,
+  claimed_at INTEGER,               -- sending 的 lease 起点
   next_attempt_at INTEGER,
   last_error TEXT,
   external_message_id TEXT,
@@ -139,7 +142,7 @@ CREATE TABLE channel_outbox (
 ```
 
 - 群帖落库 / 私聊回合结束 **与 outbox 行在同一事务里写**（`INSERT` 帖 + `INSERT ... status='queued'`）：先落帖后写 outbox 会在崩溃窗口丢出站，先写 outbox 后落帖会发出不存在的帖。群帖表目前只是 `INSERT`（`storage-sqlite/src/groups.ts:79`），没有出站标记，必须靠事务把两者绑在一起；
-- worker 每 10–30 秒扫 `queued` 且到点的一批，调 channel 的 `send`，成功写 `external_message_id`（回声去重用），失败按指数退避，超过 N 次标 `failed` 并进「等我处理」；重放只扫 `queued`，已 `sent` 的不重发；
+- worker 每 10–30 秒用 CAS `queued→sending` 认领一批（避免 `setInterval` 重叠时同一行被发两次），lease（`claimed_at`）过期自动回收；调 channel 的 `send`，成功写 `external_message_id`，失败按指数退避，超过 N 次标 `failed` 并进「等我处理」。支持幂等键的平台（飞书 `uuid`）直接把行 id 带上；Slack / GitHub 没有幂等键，按「至少一次」接受并在文档写明；
 - 现有 `OutputSink` 保留为「任务生命周期 → outbox 行」的适配器，github 的 PR 评论改成 outbox 的一个 writer，行为不变但获得重试。
 
 ## 4. 复用关系（谁复用谁）
@@ -156,19 +159,40 @@ CREATE TABLE channel_outbox (
 
 一句话：**群聊复用「投递 + 串行 + 出站」，不碰连接器的 binding 模型；连接器复用「会话投递」与「群」作为目标；外部 IM 只是连接器的一种渠道实现。**
 
-## 5. 分步落地（每步独立可发布）
+## 5. 分步落地（按 #219 评审修订）
 
-**C0 投递内核**（见 `group-delivery-kernel.md`）：纯函数 + 泵，群聊 / 私聊 / 连接器三处接线。先做，因为后面每一步都靠它。
+评审（issue #219 评论）指出 4 个高风险缺口，顺序已改为：**C1（收窄，零行为变化）→ C2a 入站改造 → C2b outbox → C4 DM 渠道 → C3 群目标 → C0 投递内核 → C5**。C0 不再前置：群目标本来就不走 `attempt`，而 C0 改的是三条热路径，在 #215 的 E2E 基线变绿前动它风险最高。
 
-**C1 拆渠道与目标（建议先做，范围只到存储与类型）**：`BindingTarget` union + `channel_conversation` + `InboundEvent` 扩字段 + `toB`/`saveBinding` 读改成「先 `target_kind` 再回落」并让整行替换带上新列。此时**不接任何群行为**，只保证数据模型能无损表达群目标——C2/C3/C4 都依赖这一步的键和读写正确，三处里任一处按旧写法落地，后面每步都会在错误数据上继续写。验收：旧 binding 全量回归；手工插入群 binding 后读写往返不丢字段；DTO 的 `target` 仍只出 `main|new`。
+**C1 拆渠道与目标（收窄成真正的零行为变化）**：
+- 领域保留 `target: 'main' | 'new'`，新增可选 `targetKind?`/`groupId?`，不把 `target` 改成联合对象；
+- `channel_conversation` 建表，但先不接任何读写路径；
+- `saveBinding` **和 `saveRun`** 都改成带新列（两者都是整行 `INSERT OR REPLACE`，`storage-sqlite/src/connectors.ts:38-43,50,64`），状态迁移改按列 `UPDATE`；
+- 连接器路由补 `toBindingDto`：`connector-routes.ts:43/50/57` 现在直接 `c.json(out.value)`，领域对象变化会漏到 API；
+- 回滚保护：v1 群目标只允许新渠道 connector；启动时打印群目标数量；回滚手册写明「先禁用 group-target binding」。
+- 验收：旧 binding 全量回归；群 binding 手工往返不丢字段；两个 DTO 仍只出 `main|new`。
 
-**C2 出站 outbox**：先把 github sink 迁到 outbox（同样的 PR 评论，失败可重试），再加一个假渠道包用于测试。验收：断网重试、回声 id 不重复回帖。
+**C2a 入站改造（新增，C3/C4 的硬前提）**：
+- `InboundSource` 增加 `delivery: 'poll' | 'push'`；推送型来源遇到占用时写 `waiting` 排队而不是丢弃（`use-cases/connectors.ts:126-128` 现在直接 `return`，webhook 不会重发）；
+- 占用粒度从 binding 改为目标会话 / 外部会话；
+- `externalId = ${conversationId}:${messageId}`（Slack `ts` 只在频道内唯一）；thread 归一化只在 store 一处做；
+- 基础设施 4xx/5xx 不计入 `consecutiveFailures`，只有业务失败才算；
+- 外部作者白名单（谁能把消息交给 bot），对齐 GitHub 的 `rules.ts:3`。
 
-**C3 群目标**：`target: {kind:'group'}` + 外部作者 `PostAuthor.external` + 外部帖落库即 `run.done`。验收：外部消息 → 群帖 → 主持人分派 → 成员回复；同一消息重投 3 次只有 1 帖；`@all` 默认拒绝。
+**C2b outbox**：先补 storage 的同步事务 helper（SAVEPOINT、禁止事务体 `await`），再加 `sending` lease + CAS 认领；`binding_id` 可空、加 `origin_kind/origin_id` 容纳 dispatcher 任务出站；保留 github sink 的「只回本项目仓库」检查；`deleteBinding` 级联处理 outbox / `channel_conversation` / `trigger_run`。
 
-**C4 DM 渠道**：一个真实渠道（Slack 或飞书，二选一）的 `InboundSource` + `ChannelSink`；外部 DM → 常驻会话 → 回复回 outbox。验收：端到端一问一答，线程内连续对话不串。
+**C4 DM 渠道（先于 C3）**：外部 DM → 常驻会话 → outbox，复用现有 `sessionFor`/`attempt`，语义最少，用它验证渠道包、outbox、回声、授权四件事。回声按三层：平台身份过滤 → `external_message_id` 精确匹配 → 正文指纹只比本会话 `sending`/刚 `sent` 的 outbox 行（人类重复发言不受影响）。
 
-**C5 观测与运营**：observe 增加 `channel` reader（会话维度：最后入站、卡住的 outbox、失败原因）；群设置页显示「外部渠道」；bot 触发器页的目标选择器支持「群 / 私聊 / 新会话」。
+**C3 群目标**：
+- run 状态加 `posting → posted`（不复用 `done`）：`posting` 已占去重键、未落帖，`posted` 回填 `post_id`；两者都不算 `isOpenRun`；`sweep` 超时重放；
+- 帖 id 由 run id 派生，重放碰到主键冲突即视为已落；
+- `GroupDelivery` 带 `originRunId`，`wakeOf` 回落查「源自外部 run 的群投递」，否则配额与「人工任务」判定被绕过；
+- 外部正文在 host/member/bid 三种 prompt 里都标 untrusted（现在 `memberPrompt` 只认 `@` 前缀，`hostPrompt`/`bidPrompt` 不标）；`'external'` 作者在 `author()` 里显示为自己，不是「系统」；
+- 外部作者的「停止 @x」无效；`actorOf` 按 id 直查（`findPost`；
+- 外部入站与人的主持人配额分开计；Slack thread 根消息与回复要映射到同一目标。
+
+**C0 投递内核**：先只抽 CAS 状态迁移与统一的 `occupied` 谓词（现在三处不对称：`main.ts:396-397` 查队列+messages+groups，`:283` 只查群，`:316` 只查私聊），再视情况合并泵。
+
+**C5 观测与运营**：observe 增加 `channel` reader；群设置显示外部渠道；触发器页目标选择器支持「群 / 私聊 / 新会话」。
 
 ## 6. 不做什么
 
@@ -184,3 +208,7 @@ CREATE TABLE channel_outbox (
 - **回声与编辑**：平台回推自己消息的 id 未必稳定；outbox 存 `external_message_id`，入站时先查它，再加「binding + conversation + 正文指纹」短 TTL 去重；同 id 的编辑按丢弃处理。
 - **限流**：入站配额（webhook 风暴）与出站配额（成员回复扇出）分开算——`HOST_PER_MINUTE`（`packages/domain/src/groups.ts:28`，限流在 `use-cases/groups.ts:768-771`）只约束「不带 @ 的入站交给主持人」，不是出站配额。
 - **生命周期**：群删除 / bot 被移出群 / 渠道凭据失效 / `createdBy` 失去 `group.post` → binding 立即暂停（不等连续失败 5 次）；恢复后手动启用。
+- **推送型来源丢消息（评审 H1）**：`emit` 在占用时对无 `plannedAt` 的事件直接返回且不记 run（`use-cases/connectors.ts:126-128`）；轮询源能重拉，webhook 不能。占用粒度还必须从 binding 降到外部会话，否则一个 bot 绑几十个频道时互相饿死。
+- **配额绕过（评审 H2）**：`wakeOf` 靠 `deliveredRunFor`（`main.ts:649`）；群目标写 `posted` 而不写 delivered 时，外部消息引起的回合会被当成「人发起」，不计配额、任务按 human 不受项目上限。必须带 `originRunId` 回落。
+- **可信度标记（评审 H3）**：`memberPrompt` 只对 `@` 开头的作者名标 untrusted（`groups.ts:381`）；`hostPrompt`/`bidPrompt` 根本不标。外部文本在三种 prompt 里都要显式标 untrusted。
+- **授权模型（评审 H4）**：外部消息一律用 `binding.createdBy` 开会话，等于频道里任何人（含 Slack Connect 外部成员）获得创建者能力；叠加 #217 的 git 工具 owner 权限，风险更大。需要外部作者白名单 + 每次投递前重新校验。
