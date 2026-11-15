@@ -11,9 +11,10 @@ import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
 import type { GitHostApi, GitHostTokenStore, GitText, GitTextWriter, PullRequestLink, PullRequestRepository } from '../ports/pull-requests.ts';
 import type { Project } from '../project.ts';
-import type { Session } from '../session.ts';
+import { isContainerSession, type Session } from '../session.ts';
 import type { Workspace } from '../workspace.ts';
 import { asSessionId, asTaskId, newId } from '../ids.ts';
+import type { TaskId } from '../ids.ts';
 import { conflict, forbidden, invalid, type DomainError } from '../errors.ts';
 import { draftLogEntry } from '../work-log.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -154,7 +155,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       canPush: await canPush(subject, found.value.project),
       prBlocked: prBlocked(p, found.value.workspace),
       prVia: token.configured ? 'token' : 'gh',
-      pullRequests: found.value.session.taskId === null ? [] : await deps.pullRequests.byTask(found.value.session.taskId)
+      pullRequests: isContainerSession(found.value.session) ? [] : await deps.pullRequests.byTask(found.value.session.taskId as TaskId)
     });
   }
 
@@ -166,10 +167,10 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     if (!preview.ok) return preview;
     if (!preview.value.isGit) return err(invalid('这个工作空间不是 git 仓库'));
     // 容器会话（#221 步骤 7）没有任务日志可读：标题和工作日志留空，用模板写。
-    const task = found.value.session.taskId === null ? null : await deps.tasks.byId(found.value.session.taskId);
-    const log = found.value.session.taskId === null
+    const task = isContainerSession(found.value.session) ? null : await deps.tasks.byId(found.value.session.taskId as TaskId);
+    const log = isContainerSession(found.value.session)
       ? []
-      : await deps.workLog.list(found.value.session.taskId, { limit: 8, excludeSystem: true });
+      : await deps.workLog.list(found.value.session.taskId as TaskId, { limit: 8, excludeSystem: true });
     const input = {
       projectId: found.value.project.id,
       taskTitle: task?.title ?? '',
@@ -255,8 +256,8 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
         const now = deps.now();
         await audit(subject, project, 'git.pr', session.id, `${repo}#${created.pr.number} via ${created.via}`);
         // PR 行和工作日志都按任务汇总；容器会话没有任务，PR 只回到本次结果里（#221 步骤 7）。
-        if (session.taskId !== null) {
-          const taskId = session.taskId;
+        if (!isContainerSession(session)) {
+          const taskId = session.taskId as TaskId;
           pullRequest = {
             id: newId(),
             taskId,

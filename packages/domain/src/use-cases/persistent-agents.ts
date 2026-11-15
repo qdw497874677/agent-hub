@@ -8,9 +8,9 @@ import { err, ok, type Result } from '../result.ts';
 import { createBotUseCase, listBotsUseCase, removeBotUseCase, updateBotUseCase, type BotPatch, type BotsDeps } from './bots.ts';
 
 /**
- * 持久智能体的按条读写 API —— 这里只是 **Bot 的用例层**，实体是 `Bot`（`bot.ts`）；
- * 老名字 `persistent-agents` 描述的是「团队级 bot 的 CRUD 用例」，不是另一个实体，保留是为了
- * 不让 HTTP 路由 / 装配一次性大改。
+ * 持久智能体的按条读写 API —— 「持久智能体」按 ADR 0037 就是 `Bot` 这一类别名（`bot.ts`），
+ * 这里只是 **Bot 的用例层**；`persistent-agents` 描述的是「团队级 bot 的 CRUD 用例」，
+ * 不是另一个实体，保留是为了不让 HTTP 路由 / 装配一次性大改。
  *
  * C3a 起 bot 存在 `bots` 表（按条读写，避免整表覆盖）；这里只是 `use-cases/bots.ts`
  * 的适配层：把「按 name」换成「按 id」，删除后顺手把它从项目里所有群移出。

@@ -1,8 +1,8 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { applyEvent, deriveSession, forkSession, isNeverPrompted, markInterrupted, withOptions } from '../session.ts';
+import { applyEvent, deriveSession, forkSession, isContainerSession, isNeverPrompted, markInterrupted, withOptions } from '../session.ts';
 import type { Session } from '../session.ts';
 import { findOption, optionValues, type RuntimeOption } from '../option.ts';
-import type { Seq, SessionId, WorkspaceGroupId } from '../ids.ts';
+import type { Seq, SessionId, TaskId, WorkspaceGroupId } from '../ids.ts';
 import { asAgentId, asProjectId, asSessionId, asTaskId, asWorkspaceGroupId, asWorkspaceId } from '../ids.ts';
 import { groupReady } from '../workspace-group.ts';
 import { isUsable, setupNotReady } from '../workspace.ts';
@@ -77,7 +77,7 @@ export async function deriveSessionUseCase(
   if (command.kind === 'side') {
     const found = command.parentSessionId ? await deps.sessions.byId(asSessionId(command.parentSessionId)) : null;
     // 父会话是容器会话时没有任务可继承项目：侧聊只挂在有任务的会话上（边界见 #221 步骤 7）。
-    const parentTask = found && found.taskId !== null ? await deps.tasks.byId(found.taskId) : null;
+    const parentTask = found && !isContainerSession(found) ? await deps.tasks.byId(found.taskId as TaskId) : null;
     if (!found || !parentTask || !found.workspaceId || !found.workerId) {
       return err(invalid('侧聊要挂在一条已有会话上'));
     }

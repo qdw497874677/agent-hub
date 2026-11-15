@@ -2,6 +2,7 @@ import * as assetModule from '../asset.ts';
 import type { ApiToken } from '../api-token.ts';
 import type { BotGrant } from "../bot-grant.ts";
 import type { Bot, BotId } from '../bot.ts';
+import { isContainerSession } from '../session.ts';
 import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
 import type { AccessGrantRepository, TeamRoleRepository } from '../ports/access-repository.ts';
 import { accessGrantActive, type AccessGrant, type CustomRole } from '../access.ts';
@@ -209,7 +210,7 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
       return [...rows.values()].filter((session) => session.taskId === taskId);
     },
     async listByProject(projectId) {
-      return [...rows.values()].filter((session) => session.taskId !== null && tasks.get(session.taskId)?.projectId === projectId);
+      return [...rows.values()].filter((session) => !isContainerSession(session) && tasks.get(session.taskId as string)?.projectId === projectId);
     },
     async listByWorkspace(workspaceId) {
       return [...rows.values()].filter((session) => session.workspaceId === workspaceId);

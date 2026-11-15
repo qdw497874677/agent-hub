@@ -1,5 +1,6 @@
 import type { Project } from '../project.ts';
 import type { SessionStatus } from '../session.ts';
+import { isContainerSession } from '../session.ts';
 import type { AgentId, ProjectId, SessionId, TaskId } from '../ids.ts';
 import type { Deps } from './deps.ts';
 
@@ -65,8 +66,8 @@ export async function loadHome(
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .flatMap((session): RecentSession[] => {
       // 容器会话（#221 步骤 7）不属于任何任务：首页「接着干」靠任务标题定位，它们暂不在这里出现。
-      if (session.taskId === null) return [];
-      const owner = owners.get(session.taskId);
+      if (isContainerSession(session)) return [];
+      const owner = owners.get(session.taskId as TaskId);
       if (!owner) return [];
       return [
         {

@@ -8,7 +8,7 @@ import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../dir
 import type { Machine } from './machine-dirs.ts';
 import { authorizeWorker } from './authorization.ts';
 import { claimOf, createDirectory, gitOn, isEmptyDirectory, listOn, normalize, parentOf, resolveMachine, rootsOf } from './machine-dirs.ts';
-import type { ProjectId, WorkspaceGroupId, WorkspaceId } from '../ids.ts';
+import type { ProjectId, TaskId, WorkspaceGroupId, WorkspaceId } from '../ids.ts';
 import { asProjectId, asWorkspaceId } from '../ids.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
@@ -197,7 +197,7 @@ export async function workspaceConcurrency(
   const running = (await deps.sessions.listByWorkspace(asWorkspaceId(workspaceId))).filter((session) => session.status === 'running');
   const withProject: { taskId: string; projectId: string | null }[] = [];
   for (const session of running) {
-    const task = session.taskId === null ? null : await deps.tasks.byId(session.taskId);
+    const task = isContainerSession(session) ? null : await deps.tasks.byId(session.taskId as TaskId);
     // 容器会话（#221 步骤 7）没有任务：记成空串，projectId 为 null 时只会落进「别的项目的会话」计数。
     withProject.push({ taskId: session.taskId ?? '', projectId: task?.projectId ?? null });
   }

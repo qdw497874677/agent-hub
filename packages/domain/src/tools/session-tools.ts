@@ -1,9 +1,10 @@
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { handoffItems } from '../handoff.ts';
 import { asSessionId } from '../ids.ts';
+import type { TaskId } from '../ids.ts';
 import type { ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import { err, ok, type Result } from '../result.ts';
-import type { Session } from '../session.ts';
+import { isContainerSession, type Session } from '../session.ts';
 import type { Deps } from '../use-cases/deps.ts';
 
 /**
@@ -60,8 +61,8 @@ export async function canReadSession(
   }
   if (!caller) return false;
   const [mine, theirs] = await Promise.all([
-    caller.taskId === null ? null : deps.tasks.byId(caller.taskId),
-    target.taskId === null ? null : deps.tasks.byId(target.taskId)
+    isContainerSession(caller) ? null : deps.tasks.byId(caller.taskId as TaskId),
+    isContainerSession(target) ? null : deps.tasks.byId(target.taskId as TaskId)
   ]);
   if (!mine || !theirs) return false;
   if (mine.projectId === theirs.projectId) return true;

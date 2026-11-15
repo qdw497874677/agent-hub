@@ -1,9 +1,10 @@
 import { forbidden, invalid, notFound, notImplemented, type DomainError } from '../errors.ts';
 import { asAgentId, asSessionId, asTaskId } from '../ids.ts';
+import type { TaskId } from '../ids.ts';
 import type { AgentProfileRepository } from '../ports/agent-profile-repository.ts';
 import type { ToolContext, ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import { err, ok, type Result } from '../result.ts';
-import type { Session } from '../session.ts';
+import { isContainerSession, type Session } from '../session.ts';
 import type { AgentDescriptor } from '../agent.ts';
 import type { Deps } from '../use-cases/deps.ts';
 import { agentProfileForUse } from '../use-cases/agent-profiles.ts';
@@ -201,8 +202,8 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
       }
 
       if (name === 'agent.activity') {
-        if (me.taskId === null) return err(forbidden('这条会话不属于任何任务，看不到任务级活动'));
-        const task = await deps.tasks.byId(me.taskId);
+        if (isContainerSession(me)) return err(forbidden('这条会话不属于任何任务，看不到任务级活动'));
+        const task = await deps.tasks.byId(me.taskId as TaskId);
         if (!task) return err(notFound('当前任务不存在'));
         const sessions = await deps.sessions.listByProject(task.projectId);
         const limit = typeof args['limit'] === 'number' && Number.isInteger(args['limit'])
@@ -213,8 +214,7 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
 
       if (name === 'agent.spawn') {
         if (!deps.spawn) return err(notImplemented('派生会话'));
-        const taskId = me.taskId;
-        if (taskId === null) return err(forbidden('这条会话不属于任何任务，不能按任务派生会话'));
+        const taskId = me.taskId as TaskId;
         const task = await deps.tasks.byId(asTaskId(taskId));
         if (!task) return err(notFound('当前任务不存在'));
         const project = await deps.projects.byId(task.projectId);
@@ -262,8 +262,8 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
         if (typeof value !== 'string' && typeof value !== 'boolean') return err(invalid('value 只能是字符串或布尔值'));
         const target = await deps.sessions.byId(asSessionId(sessionId));
         if (!target) return err(notFound('会话不存在'));
-        const mine = me.taskId === null ? null : await deps.tasks.byId(me.taskId);
-        const theirs = target.taskId === null ? null : await deps.tasks.byId(target.taskId);
+        const mine = isContainerSession(me) ? null : await deps.tasks.byId(me.taskId as TaskId);
+        const theirs = isContainerSession(target) ? null : await deps.tasks.byId(target.taskId as TaskId);
         if (!mine || !theirs || mine.projectId !== theirs.projectId) return err(forbidden('只能改同项目会话的选项'));
         if (target.createdBy !== me.createdBy) return err(forbidden('只能改自己开的会话的选项'));
         return deps.setOption(target.id, optionId, value);

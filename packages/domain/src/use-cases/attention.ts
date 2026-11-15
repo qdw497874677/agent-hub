@@ -1,5 +1,6 @@
 import { derivePhase, needsHuman, PHASE_RANK, type Phase } from '../attention.ts';
 import type { Delivery } from '../delivery.ts';
+import { isContainerSession } from '../session.ts';
 import type { Project } from '../project.ts';
 import type { AttentionStore } from '../ports/attention-store.ts';
 import type { PullRequestRepository } from '../ports/pull-requests.ts';
@@ -53,8 +54,8 @@ export async function loadAttention(
     for (const session of await deps.sessions.listByProject(project.id)) {
       if (session.updatedAt < input.now - ATTENTION_WINDOW_MS) continue;
       // 容器会话不属于任务：没有任务就没有「任务负责人」可判断，不进待办（#221 步骤 7）。
-      if (session.taskId === null) continue;
-      const task = tasks.get(session.taskId);
+      if (isContainerSession(session)) continue;
+      const task = tasks.get(session.taskId as string);
       if (!task) continue;
       if (session.createdBy !== input.accountId && task.ownerId !== input.accountId) continue;
       const events = await deps.sessions.eventsAfter(session.id, Math.max(0, session.lastSeq - ATTENTION_TAIL) as never);

@@ -18,8 +18,8 @@ export * from './canvas.ts';
 export * from './session-link.ts';
 export * from './agent-ref.ts';
 export * from './agent-profile.ts';
-// bot.ts 不被 `export *` 覆盖，这里显式列出（实体就叫 Bot）。
-export type { Bot, BotDefinition, BotId } from './bot.ts';
+// bot.ts 不被 `export *` 覆盖，这里显式列出（实体就叫 Bot；`PersistentAgent` 是它的类别名）。
+export type { Bot, BotDefinition, BotId, PersistentAgent } from './bot.ts';
 export type { BotGrant } from './bot-grant.ts';
 export { botIdFrom } from './bot.ts';
 export * from './worker.ts';

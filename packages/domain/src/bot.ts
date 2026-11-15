@@ -42,6 +42,12 @@ export interface Bot extends BotDefinition {
 }
 
 /**
+ * 持久智能体（ADR 0037）：`Bot` 的类别名——团队级、具名、有记忆、可授权、可 @ 的 AI 成员。
+ * 与 `TaskAgent`（一次会话里的执行者，随会话生灭）相对；实体本身就是 `Bot`。
+ */
+export type PersistentAgent = Bot;
+
+/**
  * 由 seed 算稳定的 bot id：两轮 FNV-1a 拼成 16 位 hex（纯 JS，不依赖宿主）。
  *
  * - seed 一律是 `projectId + '\0' + name`：创建、迁移、回落旧 roles JSON 三处算出同一个 id，

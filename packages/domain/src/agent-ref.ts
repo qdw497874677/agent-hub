@@ -15,6 +15,12 @@ export interface AgentRef {
   readonly options: Readonly<Record<string, string | boolean>>;
 }
 
+/**
+ * 任务智能体（ADR 0037）：一次会话里的执行者——runtime + model + options，匿名、随会话生灭。
+ * 与持久智能体（`PersistentAgent` = `Bot`）相对；这里不另建字段，直接别名到 `AgentRef`。
+ */
+export type TaskAgent = AgentRef;
+
 /** 选项键：小写字母开头，后面可跟小写字母、数字、`-`、`_`、`.`。 */
 export const AGENT_REF_OPTION_KEY = /^[a-z][a-z0-9_.-]{0,40}$/;
 /** 一份 ref 最多带多少个启动选项。 */
