@@ -195,6 +195,20 @@ test('开 PR：token 失败 → gh；gh 也没有 → 只推送 + 链接', async
   assert.equal(out.value.compareUrl, 'https://github.com/o/r/compare/main...feat%2Fy?expand=1');
 });
 
+test('推送：默认分支直接拒绝（#217 / #221 步骤 0）', async () => {
+  const w = await world();
+  w.git.previews.set(w.root, dirty('main', 'https://github.com/o/r.git'));
+  const blocked = await w.svc.run(null, w.session.id, { action: 'push', message: 'x' });
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.ok ? '' : blocked.error.message, /默认分支/);
+
+  // 功能分支照常推送；PR 仍然走原来的路径。
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  const pushed = await w.svc.run(null, w.session.id, { action: 'push', message: 'x' });
+  assert.ok(pushed.ok);
+  assert.equal(pushed.value.pushed, true);
+});
+
 test('开 PR：默认分支上拒绝；要标题', async () => {
   const w = await world();
   w.git.previews.set(w.root, dirty('main', 'https://github.com/o/r.git'));

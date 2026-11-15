@@ -188,6 +188,10 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     if (!preview.ok) return preview;
     if (!preview.value.isGit) return err(invalid('这个工作空间不是 git 仓库'));
     if (input.action !== 'commit' && !preview.value.remoteUrl) return err(conflict('没有 origin 远端，只能提交'));
+    // #217 / #221 步骤 0：不许把默认分支推上去——绕过 PR 直接改主干，审查与回滚都失效。
+    if (input.action !== 'commit' && preview.value.defaultBranch !== null && preview.value.branch === preview.value.defaultBranch) {
+      return err(conflict(`不能推送默认分支 ${preview.value.branch}：先切到功能分支，再走 PR`));
+    }
     if (input.action === 'pr') {
       const blocked = prBlocked(preview.value, workspace);
       if (blocked) return err(conflict(blocked));

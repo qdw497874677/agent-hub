@@ -125,6 +125,11 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       id: newId(), bindingId, externalId: event.externalId, plannedAt: event.plannedAt ?? null, catchup: event.catchup === true,
       state: 'waiting', reason: null, sessionId: event.targetSessionId ?? null, text: formatInbound(binding, event), createdAt: now, updatedAt: now
     };
+    // #221 步骤 0：群目标即便从旧数据里冒出来也不能投——按私聊会话投会以创建者身份说话。
+    if (binding.targetKind === 'group') {
+      await deps.store.insertRun({ ...run, state: 'skipped', reason: '群目标还没接线，本次不投递' });
+      return;
+    }
     const open = await deps.store.openRuns(bindingId);
     if (open.length > 0) {
       // 不是按计划时刻来的（轮询到的外部事件）：不记跳过、不占去重键，下次轮询再来
@@ -208,10 +213,13 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       const targetKind: BindingTargetKind = input.targetKind === 'group' ? 'group' : 'session';
       const groupId = String(input.groupId ?? '').trim();
       if (targetKind === 'group' && !groupId) return err(invalid('群目标要给出群 id'));
+      // #221 步骤 0（C1.1）：群目标还没接线，先拒绝创建——否则它会以创建者身份
+      // 投进一个新的私聊会话，看起来像bot在群里说话，实际权限和上下文都不对。
+      if (targetKind === 'group') return err(invalid('群目标还没实现，暂时不能创建；先选主会话或新会话'));
       const b: ConnectorBinding = {
         id: newId(), connector: source.id, kind: input.kind, agentProjectId: projectId, agentName, projectId: scope, name,
-        target: targetKind === 'group' ? 'main' : input.target === 'new' ? 'new' : 'main',
-        targetKind, groupId: targetKind === 'group' ? groupId : null,
+        target: input.target === 'new' ? 'new' : 'main',
+        targetKind, groupId: null,
         params: input.params ?? {}, enabled: true, pausedReason: null,
         consecutiveFailures: 0, nextRunAt: null, mainSessionId: null, createdBy: actor.user.id, timeZone: input.timeZone || 'UTC', createdAt: now, updatedAt: now
       };

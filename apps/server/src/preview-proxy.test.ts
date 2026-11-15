@@ -404,20 +404,23 @@ test('分享令牌不转发上游：按 & 删 share 段，其余参数与编码�
   assert.equal(only.status, 200);
   assert.equal(fake.calls[1]!.request.path, '/only');
 
-  // 上游自己设了 referrer-policy 就不覆盖。
+  // 上游自己设了 referrer-policy 也要覆盖成 no-referrer（#213/#221）。
   fake.onOpen = (stream) => {
     stream.emitHead({
       status: 200,
       statusText: 'OK',
       headers: [
         ['content-type', 'text/plain'],
-        ['referrer-policy', 'same-origin']
+        ['referrer-policy', 'same-origin'],
+        // 上游想在 hub 的 origin 上写 cookie：必须在出口丢掉。
+        ['set-cookie', 'upstream=1; Path=/']
       ]
     });
     stream.emitEnd();
   };
   const kept = await request(port, '/keep', { headers: { cookie: 'hub_login=abc' } });
-  assert.equal(kept.headers['referrer-policy'], 'same-origin');
+  assert.equal(kept.headers['referrer-policy'], 'no-referrer');
+  assert.equal(kept.headers['set-cookie'], undefined);
 });
 
 test('公开分享：令牌不对/过期仍能靠 cookie 进来，最终才 302', async (t) => {

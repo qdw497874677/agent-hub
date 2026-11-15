@@ -24,7 +24,7 @@ interface Harness {
   readonly channel: PreviewChannel;
 }
 
-const fakeChannel = (options: { status?: number; body?: string; offline?: boolean } = {}): Harness => {
+const fakeChannel = (options: { status?: number; body?: string; offline?: boolean; headers?: Array<[string, string]> } = {}): Harness => {
   const opened: PreviewOpenRequest[] = [];
   const closed = { value: 0 };
 
@@ -53,7 +53,7 @@ const fakeChannel = (options: { status?: number; body?: string; offline?: boolea
         }
       };
       setTimeout(() => {
-        for (const cb of head) cb({ status: options.status ?? 200, statusText: 'OK', headers: [['content-type', 'text/html'], ['x-frame-options', 'DENY']] });
+        for (const cb of head) cb({ status: options.status ?? 200, statusText: 'OK', headers: [['content-type', 'text/html'], ['x-frame-options', 'DENY'], ...(options.headers ?? [])] });
         setTimeout(() => {
           for (const cb of data) cb(Buffer.from(options.body ?? 'hi'));
           for (const cb of end) cb();
@@ -108,4 +108,19 @@ test('前缀模式：不命中前缀返回 null，未知链接 404，未授权 3
   const redirect = await denied.handle(new Request('http://hub:17900/preview/pv_1/x?y=1'));
   assert.equal(redirect?.status, 302);
   assert.match(redirect?.headers.get('location') ?? '', /^\/login\?next=/);
+});
+
+
+test('前缀模式：上游 set-cookie 与自带 referrer-policy 都在出口被覆盖（#213/#221）', async () => {
+  const harness = fakeChannel({
+    body: 'x',
+    headers: [
+      ['referrer-policy', 'same-origin'],
+      ['set-cookie', 'upstream=1; Path=/']
+    ]
+  });
+  const response = await prefix(harness.channel).handle(new Request('http://hub:17900/preview/pv_1/'));
+  assert.ok(response !== null);
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+  assert.equal(response.headers.get('set-cookie'), null);
 });

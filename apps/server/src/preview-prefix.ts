@@ -1,5 +1,6 @@
 import type { PreviewLink } from '@agent-hub/domain';
 import { PREVIEW_DOWN_TEXT, stripShareParam } from './preview-proxy.ts';
+import { PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } from './preview-headers.ts';
 import type { PreviewChannel, PreviewStream } from './preview-channel.ts';
 
 /**
@@ -51,7 +52,8 @@ const HOP_BY_HOP = new Set([
 const stripHopByHop = (headers: Headers): Array<[string, string]> => {
   const out: Array<[string, string]> = [];
   headers.forEach((value, key) => {
-    if (HOP_BY_HOP.has(key.toLowerCase())) return;
+    const lower = key.toLowerCase();
+    if (HOP_BY_HOP.has(lower) || PREVIEW_REQUEST_DROP.has(lower)) return;
     out.push([key, value]);
   });
   return out;
@@ -136,15 +138,16 @@ export function createPreviewPrefix(options: PreviewPrefixOptions): PreviewPrefi
     }
 
     const out = new Headers();
-    let hasReferrerPolicy = false;
     for (const [key, value] of head.headers) {
       const lower = key.toLowerCase();
       if (lower === 'x-frame-options') continue;
+      if (PREVIEW_RESPONSE_DROP.has(lower)) continue;
       if (lower === 'content-length') continue;
       if (lower === 'content-encoding') continue;
       if (lower === 'connection' || lower === 'transfer-encoding') continue;
       if (lower === 'frame-ancestors') continue;
-      if (lower === 'referrer-policy') hasReferrerPolicy = true;
+      // 固定成 no-referrer：上游自己设的也要覆盖（见 preview-headers.ts）。
+      if (lower === 'referrer-policy') continue;
       if (lower === 'content-security-policy') {
         const kept = value
           .split(';')
@@ -157,7 +160,7 @@ export function createPreviewPrefix(options: PreviewPrefixOptions): PreviewPrefi
       out.append(key, value);
     }
     // 分享令牌在查询串里，别让 `?share=` 跟着 Referer 漏出去。
-    if (!hasReferrerPolicy) out.set('referrer-policy', 'no-referrer');
+    out.set('referrer-policy', PREVIEW_REFERRER_POLICY);
     if (request.method === 'HEAD' || head.status === 204 || head.status === 304) {
       stream.close();
       return new Response(null, { status: head.status, headers: out });

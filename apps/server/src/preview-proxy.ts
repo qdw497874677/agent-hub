@@ -3,6 +3,7 @@ import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { PreviewLink } from '@agent-hub/domain';
 import { PreviewStreamError, type PreviewChannel, type PreviewHead, type PreviewStream } from './preview-channel.ts';
+import { PREVIEW_REFERRER_POLICY, PREVIEW_REQUEST_DROP, PREVIEW_RESPONSE_DROP } from './preview-headers.ts';
 
 /**
  * 预览反代（docs/design/preview.md §7）：每个预览链接在 hub 的绑定地址上多开一个监听端口，
@@ -24,12 +25,11 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /**
- * 客户端发来的、不该转给上游的头（除了 hop-by-hop）。
- *
+ * 客户端发来的、不该转给上游的头（除了 hop-by-hop）见 `preview-headers.ts`：
  * Hub 的登录 cookie 与 Authorization 是**给 hub 的**，上游 dev server 既不该看到、也不该拿它
  * 去冒充用户（预览链接可能指向任何本机服务）。分享令牌走查询串，也不转发（见 `stripShareParam`）。
  */
-const REQUEST_DROP = new Set(['host', 'expect', 'cookie', 'authorization', 'proxy-authorization']);
+const REQUEST_DROP = PREVIEW_REQUEST_DROP;
 
 const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
 const DEFAULT_HEADER_TIMEOUT_MS = 10_000;
@@ -101,12 +101,13 @@ function requestHeaders(request: IncomingMessage, link: PreviewLink, proto: stri
 /** 响应的头：剥 `x-frame-options` / CSP `frame-ancestors` / hop-by-hop，其余原样。 */
 function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<[string, string]> {
   const out: Array<[string, string]> = [];
-  let hasReferrerPolicy = false;
   for (const [name, value] of head.headers) {
     const lower = name.toLowerCase();
     if (lower === 'x-frame-options') continue;
+    if (PREVIEW_RESPONSE_DROP.has(lower)) continue;
     if (lower.startsWith('proxy-')) continue;
-    if (lower === 'referrer-policy') hasReferrerPolicy = true;
+    // 固定成 no-referrer：上游自己设的也要覆盖（分享令牌不能经 Referer 外泄）。
+    if (lower === 'referrer-policy') continue;
     if (lower === 'content-security-policy' || lower === 'content-security-policy-report-only') {
       const cleaned = stripFrameAncestors(value);
       if (cleaned !== '') out.push([name, cleaned]);
@@ -121,7 +122,8 @@ function responseHeaders(head: PreviewHead, keepUpgradeHeaders: boolean): Array<
     out.push([name, value]);
   }
   // 分享令牌在查询串里（`?share=`），别让它通过 Referer 漏给页面里的第三方资源。
-  if (!hasReferrerPolicy) out.push(['referrer-policy', 'no-referrer']);
+  // 101 握手上不加（不是页面响应，加了也没意义）。
+  if (!keepUpgradeHeaders) out.push(['referrer-policy', PREVIEW_REFERRER_POLICY]);
   if (keepUpgradeHeaders) {
     const names = new Set(out.map(([name]) => name.toLowerCase()));
     if (!names.has('connection')) out.push(['connection', 'Upgrade']);
