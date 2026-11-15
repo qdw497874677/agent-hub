@@ -10,7 +10,10 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
  * Worker 通道的协议版本。帧格式有不兼容的改动才加一；hub 只接受同一个协议版本的 Worker，
  * 不一致时用关闭码 4426 拒绝并说明原因（Worker 收到后停止重连，提示手动更新）。
  */
-export const PROTOCOL_VERSION = 2;
+// v3（#221 步骤 7）：start_session / session 帧的 taskId 允许为 null（容器会话）。
+// 旧 Worker 会把这帧判成非法并「未知会话」，会话因此静默不响应——所以必须换版本，
+// 让旧 Worker 连不上并在日志里说清「运行 scripts/update-worker.sh」。
+export const PROTOCOL_VERSION = 3;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
