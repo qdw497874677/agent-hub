@@ -555,7 +555,8 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         normalized.push({ ...draft, ref: checked.value });
       }
       const now = deps.now();
-      const existing = await deps.bots.list(projectId);
+      const existing = await deps.bots.listForProject(projectId);
+      const teamId = (await deps.projects.byId(projectId))?.teamId ?? 'team_legacy';
       const byName = new Map(existing.map((bot) => [bot.name, bot]));
       const roles: Bot[] = [];
       for (const draft of normalized) {
@@ -566,11 +567,16 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
           name,
           ref: draft.ref,
           id: current?.id ?? botIdFrom(`${projectId}\0${name}`),
-          projectId,
+          teamId,
           createdAt: current?.createdAt ?? now,
           updatedAt: now
         };
         await deps.bots.save(bot);
+        // 整表保存是项目视角的：出现在这份配置里就等于「授权到本项目」。
+        const grants = await deps.bots.grantsOf(bot.id);
+        if (!grants.some((grant) => grant.projectId === projectId)) {
+          await deps.bots.grant({ botId: bot.id, projectId, workspaceId: null, createdAt: now, createdBy: null });
+        }
         roles.push(bot);
       }
       // 整表 PUT：payload 里没有的 bot 删掉（群里/会话里的引用不在这里清）。

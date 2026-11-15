@@ -1,5 +1,4 @@
 import type { AgentRef } from './agent-ref.ts';
-import type { ProjectId } from './ids.ts';
 import type { RoleReuse } from './messaging.ts';
 
 /** bot 的 id：`bot_<16 hex>`，由创建方按 seed 算出来（域内不读时钟、不用 node:crypto）。 */
@@ -9,10 +8,13 @@ export type BotId = string;
  * 一个 bot 的定义（不含身份与时间戳）。
  *
  * 地址、群成员、spawn 记录、连接器都按 `name` 引用；整表保存与从旧 roles JSON 读出来的
- * 都是这个形状，落库前再由用例补上 id / projectId / 时间戳。
+ * 都是这个形状，落库前再由用例补上 id / teamId / 时间戳。
+ *
+ * bot 是**团队级**的独立智能体，不隶属某个项目：它能进哪些项目由 `BotGrant` 决定
+ * （见 `bot-grant.ts`）。历史数据里 bot 是项目级的，迁移时把原来的项目转成一条授权。
  */
 export interface BotDefinition {
-  /** @id：建好不改（地址、群成员、spawn 记录、连接器都按它引用）。 */
+  /** @id：建好不改（地址、群成员、spawn 记录、连接器都按它引用）；团队内唯一。 */
   readonly name: string;
   /**
    * runtime + model + 启动选项（如 `thought_level: 'medium'`）。建会话时垫进去；
@@ -28,12 +30,13 @@ export interface BotDefinition {
 }
 
 /**
- * 一等 bot：项目里常驻的 AI 成员（历史上一部分存储在 agent 消息配置的 `roles` 里，
- * 界面上一直叫「bot」）。C3a 起按项目存进 `bots` 表。
+ * 一等 bot：团队里常驻的 AI 成员（历史上一部分存储在 agent 消息配置的 `roles` 里，
+ * 界面上一直叫「bot」）。C3a 起按条存进 `bots` 表；团队级归属见 `BotDefinition`。
  */
 export interface Bot extends BotDefinition {
   readonly id: BotId;
-  readonly projectId: ProjectId;
+  /** 归属团队：bot 由团队管理，不隶属任何项目。 */
+  readonly teamId: string;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

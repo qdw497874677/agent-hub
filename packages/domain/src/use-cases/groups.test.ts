@@ -4,10 +4,11 @@ import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProject } from '../project.ts';
 import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
-import { asAgentId, asProjectId, type SessionId } from '../ids.ts';
+import { asAgentId, type SessionId } from '../ids.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import type { PersistentAgent } from '../messaging.ts';
 import type { BotRepository } from '../ports/bot-repository.ts';
+import type { BotGrant } from '../bot-grant.ts';
 import type { GroupStore } from '../ports/group-store.ts';
 import type { Group, GroupDelivery, GroupPost, GroupReaction, GroupThread } from '../groups.ts';
 import {
@@ -98,18 +99,28 @@ const user = (id: string, role: Role): User =>
   ({ id: id as UserId, email: `${id}@x.test`, displayName: id, role, passwordHash: null, emailVerifiedAt: 1, disabledAt: null, createdAt: 1, teamId: 'T', clusterAdmin: false, deletedAt: null }) as unknown as User;
 
 const ROLES: PersistentAgent[] = [
-  { id: 'bot_host', projectId: asProjectId('p'), name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
-  { id: 'bot_coder', projectId: asProjectId('p'), name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
-  { id: 'bot_reviewer', projectId: asProjectId('p'), name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
-  { id: 'bot_nomodel', projectId: asProjectId('p'), name: 'nomodel', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 }
+  { id: 'bot_host', teamId: 'T', name: 'host', description: '分派', ref: { runtime: 'pi', model: 'm-host', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
+  { id: 'bot_coder', teamId: 'T', name: 'coder', description: '写代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
+  { id: 'bot_reviewer', teamId: 'T', name: 'reviewer', description: '审代码', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 },
+  { id: 'bot_nomodel', teamId: 'T', name: 'nomodel', description: '', ref: { runtime: 'pi', model: '', options: {} }, reuse: 'sticky', createdAt: 1, updatedAt: 1 }
 ];
 
 /** 测试用内存 BotRepository：直接读写给定数组，方便断言。 */
 function botRepoOf(roles: PersistentAgent[], touched?: (roles: readonly PersistentAgent[]) => void): BotRepository {
+  // bot 归团队 'T'，全部授权到夹具里的项目（world() 的 project.id）。
+  const grants = new Map<string, BotGrant>();
+  const granted = (projectId: string): BotGrant[] => [...grants.values()].filter((g) => g.projectId === projectId);
   return {
     byId: async (id) => roles.find((b) => b.id === id) ?? null,
-    byName: async (_projectId, name) => roles.find((b) => b.name === name) ?? null,
-    list: async () => [...roles].sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name)),
+    byName: async (teamId, name) => roles.find((b) => b.teamId === teamId && b.name === name) ?? null,
+    listByTeam: async (teamId) => [...roles].filter((b) => b.teamId === teamId).sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name)),
+    listForProject: async (projectId) => {
+      // 夹具兼容：从未授权过的 bot 视为对本项目可见（等价于旧「项目内 bot」）。
+      const ids = new Set(granted(projectId).map((g) => g.botId));
+      const anyGrant = new Set([...grants.values()].map((g) => g.botId));
+      const visible = roles.filter((b) => ids.has(b.id) || !anyGrant.has(b.id));
+      return [...visible].sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name));
+    },
     save: async (bot) => {
       const i = roles.findIndex((b) => b.id === bot.id);
       if (i >= 0) roles[i] = bot;
@@ -119,7 +130,18 @@ function botRepoOf(roles: PersistentAgent[], touched?: (roles: readonly Persiste
     remove: async (id) => {
       const i = roles.findIndex((b) => b.id === id);
       if (i >= 0) roles.splice(i, 1);
+      for (const [key, grant] of grants) if (grant.botId === id) grants.delete(key);
       touched?.(roles);
+    },
+    grantsOf: async (botId) => [...grants.values()].filter((g) => g.botId === botId),
+    grantsForProject: async (projectId) => granted(projectId),
+    grant: async (grant) => {
+      grants.set(`${grant.botId}\u0000${grant.projectId}`, grant);
+      // 夹具里的 bot 默认可见于所有项目，否则历史用例按名字查不到。
+      if (!granted(grant.projectId).some((g) => g.botId === grant.botId)) return;
+    },
+    revoke: async (botId, projectId) => {
+      grants.delete(`${botId}\u0000${projectId}`);
     }
   };
 }
@@ -519,6 +541,7 @@ test('持久智能体：按条增删改，@id 不可改，职责 4000 字；删�
   const agents = createPersistentAgents({
     projects: w.deps.projects,
     sessions: w.deps.sessions,
+    workspaces: w.deps.workspaces,
     now: w.deps.now,
     policy: { context: async () => ({ hubTeamId: 'T', settings: { membersCanAddMachines: false } }), worker: async () => ({}) as never } as never,
     bots: botRepoOf(w.roleList, (roles) => {
@@ -614,6 +637,7 @@ test('bot 的启动选项：能存能改，形状不对就拒', async () => {
   const agents = createPersistentAgents({
     projects: w.deps.projects,
     sessions: w.deps.sessions,
+    workspaces: w.deps.workspaces,
     now: w.deps.now,
     bots: botRepoOf(roles),
     messages: { config: async () => config },

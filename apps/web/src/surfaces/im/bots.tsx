@@ -258,7 +258,7 @@ function BotTriggers({ bot }: { bot: BotRecordDto }) {
       ) : null}
       {bindings.length ? (
         <ul className="flex min-w-0 flex-col gap-1.5">
-          {bindings.map((t) => <BotTriggerRow key={t.id} trigger={t} projectId={bot.projectId} now={now} sources={triggers.data?.sources} />)}
+          {bindings.map((t) => <BotTriggerRow key={t.id} trigger={t} projectId={bot.projectId ?? ''} now={now} sources={triggers.data?.sources} />)}
         </ul>
       ) : null}
       {triggers.error ? <p className="text-meta text-rust">{errorText(triggers.error)}</p> : null}

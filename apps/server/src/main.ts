@@ -32,6 +32,10 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createBotUseCase,
   getBotUseCase,
   listBotsUseCase,
+  botGrantsUseCase,
+  listTeamBotsUseCase,
+  grantBotUseCase,
+  revokeBotUseCase,
   removeBotUseCase,
   updateBotUseCase,
   interruptSessionUseCase,
@@ -347,6 +351,7 @@ const persistentAgents = createPersistentAgents({
   policy: deps.access,
   bots: store.bots,
   messages: store.messages,
+  workspaces: store.workspaces,
   connectors: store.connectors,
   contextSettings: store.contextSettings,
   groupsOf: (projectId) => store.groups.groupsOf(projectId),
@@ -358,6 +363,8 @@ const botOfSession = createBotOfSession({
   sessions: deps.sessions,
   tasks: deps.tasks,
   bots: store.bots,
+  workspaces: store.workspaces,
+  projects: store.projects,
   spawnOf: (sessionId) => store.messages.spawnOf(sessionId),
   memberOfSession: (sessionId) => store.groups.memberOfSession(sessionId)
 });
@@ -1317,14 +1324,20 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   messaging: { bus: messageBus, messages: store.messages },
   bots: {
     listBots: (actor, projectId) => listBotsUseCase(botDeps, actor, projectId),
+    botGrants: (actor, id) => botGrantsUseCase(botDeps, actor, id),
+    teamBots: (actor, teamId) => listTeamBotsUseCase(botDeps, actor, teamId),
+    grantBot: (actor, id, projectId, workspaceId) => grantBotUseCase(botDeps, actor, id, projectId, workspaceId),
+    revokeBot: (actor, id, projectId) => revokeBotUseCase(botDeps, actor, id, projectId),
     getBot: (actor, id) => getBotUseCase(botDeps, actor, id),
     createBot: (actor, projectId, input) => createBotUseCase(botDeps, actor, projectId, input),
     updateBot: (actor, id, patch) => updateBotUseCase(botDeps, actor, id, patch),
     // 删 bot 时自动从群里移出（老 /agents 路径在 createPersistentAgents 里做，这里补一等 bot 的路径）
     removeBot: async (actor, id) => {
       const current = await store.bots.byId(id);
+      const grants = current ? await store.bots.grantsOf(id) : [];
       const removed = await removeBotUseCase(botDeps, actor, id);
-      if (removed.ok && current && actor) await groupChat.detachAgent(actor, current.projectId, current.name);
+      // 授权是「这个 bot 在哪些项目里可用」：删 bot 时逐个项目把它从群里移出。
+      if (removed.ok && current && actor) for (const grant of grants) await groupChat.detachAgent(actor, grant.projectId, current.name);
       return removed;
     }
   },

@@ -78,7 +78,7 @@ export function createPersistentAgents(deps: PersistentAgentsDeps): PersistentAg
     async remove(actor, projectId, name) {
       const current = await locate(actor, projectId, name);
       if (!current.ok) return current;
-      const removed = await removeBotUseCase(deps, actor, current.value.id);
+      const removed = await removeBotUseCase(deps, actor, current.value.id, projectId);
       if (!removed.ok) return removed;
       // bot 行删掉后再从群里移出（群聊用例负责串行与系统消息）；有会话引用不拦。
       const affected = await deps.detach(actor, projectId, name);

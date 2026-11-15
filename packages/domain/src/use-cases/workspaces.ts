@@ -46,10 +46,7 @@ export async function projectOfSession(
     const group = await deps.workspaceGroups.byId(session.groupId);
     if (group) return deps.projects.byId(group.projectId);
   }
-  if (session.botId && deps.bots) {
-    const bot = await deps.bots.byId(session.botId);
-    if (bot) return deps.projects.byId(bot.projectId);
-  }
+  // bot 不再隶属单个项目，项目从会话实际落的工作空间反推（同一 bot 可在多个项目里跑）。
   if (session.workspaceId && deps.workspaces) {
     const workspace = await deps.workspaces.byId(session.workspaceId);
     if (workspace?.projectId) return deps.projects.byId(workspace.projectId);

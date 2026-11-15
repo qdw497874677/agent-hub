@@ -1,4 +1,4 @@
-import type { BotId, BotRepository, ProjectId, Session, SessionId, SessionRepository, TaskRepository } from '@agent-hub/domain';
+import type { BotId, BotRepository, ProjectId, ProjectRepository, Session, SessionId, SessionRepository, TaskRepository, WorkspaceRepository } from '@agent-hub/domain';
 
 /** 这条会话是哪个 bot 开的：项目 + @id（名字）+ bot id。 */
 export interface BotOfSession {
@@ -13,6 +13,10 @@ export interface BotOfSessionDeps {
   readonly sessions: Pick<SessionRepository, 'byId'>;
   readonly tasks: Pick<TaskRepository, 'byId'>;
   readonly bots: Pick<BotRepository, 'byId' | 'byName'>;
+  /** 容器会话的项目从实际落的工作空间反推（bot 不再隶属项目）。 */
+  readonly workspaces?: Pick<WorkspaceRepository, 'byId'>;
+  /** 按名字反查老会话时，名字在团队内唯一，要先由项目找到团队。 */
+  readonly projects?: Pick<ProjectRepository, 'byId'>;
   /** 历史派生记录（agent_spawns）里的角色名，兼容老会话用。 */
   readonly spawnOf: (sessionId: SessionId) => Promise<{ role: string } | null>;
   /** 群成员会话映射里的角色名，兼容老会话用。 */
@@ -35,7 +39,10 @@ export function createBotOfSession(deps: BotOfSessionDeps): (sessionId: SessionI
       const task = await deps.tasks.byId(session.taskId);
       if (task) return task.projectId;
     }
-    if (session.botId) return (await deps.bots.byId(session.botId))?.projectId ?? null;
+    if (session.workspaceId && deps.workspaces) {
+      const workspace = await deps.workspaces.byId(session.workspaceId);
+      if (workspace?.projectId) return workspace.projectId;
+    }
     return null;
   };
   return async (sessionId) => {
@@ -54,7 +61,8 @@ export function createBotOfSession(deps: BotOfSessionDeps): (sessionId: SessionI
     // --- 兼容路径：没有 bot_id 的老会话，只能按名字推导 ---
     const role = (await deps.spawnOf(sessionId))?.role ?? (await deps.memberOfSession(sessionId))?.role ?? null;
     if (!role) return null;
-    const bot = await deps.bots.byName(projectId as ProjectId, role);
+    const teamId = (await deps.projects?.byId(projectId as ProjectId))?.teamId ?? 'team_legacy';
+    const bot = await deps.bots.byName(teamId, role);
     return { projectId, name: role, botId: bot?.id ?? null };
   };
 }

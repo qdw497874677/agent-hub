@@ -1,7 +1,7 @@
 import type { Principal } from '../account.ts';
 import { validateAgentRef } from '../agent-ref.ts';
 import { botIdFrom, type Bot, type BotDefinition, type BotId } from '../bot.ts';
-import { invalid, notFound, type DomainError } from '../errors.ts';
+import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import type { ProjectId } from '../ids.ts';
 import { configProblem, isPersistentAgentName, type MessagingConfig, type RoleReuse } from '../messaging.ts';
 import type { RuntimeOption } from '../option.ts';
@@ -11,14 +11,17 @@ import type { ContextSettingsStore } from '../ports/context-settings.ts';
 import { err, ok, type Result } from '../result.ts';
 import { authorizeProject, type AccessPolicy } from './authorization.ts';
 import { botContextSettingKeys } from './context.ts';
+import type { BotGrant } from '../bot-grant.ts';
 import type { Deps } from './deps.ts';
 
 /**
- * 一等 bot（C3a）：项目级、按条读写。
+ * 一等 bot（C3a）：团队级实体 + 项目授权（bot 不隶属项目）。
  *
- * - 读要 `project.read`，改要 `project.share`（与「管理项目成员」同级，bot 是项目的一等成员）；
+ * - 读某个项目的 bot：要 `project.read`，返回「已授权到该项目」的那些；
+ * - 建 / 改 / 删：要求同一个团队（团队管理员或成员；见 `authorizeBot`）；
+ * - 授权 / 撤销：要目标项目的 `project.share`（项目管理员邀请 bot 进项目）；
  * - `name` 是 @id，建好不改：地址、群成员、spawn 记录、连接器都按它引用；
- * - 删除只删 bot 行，群里/会话里的引用不拦也不清（沿用今天的行为，由调用方决定是否 detach）。
+ * - 删除只删 bot 行与授权，群里/会话里的引用由调用方 detach（沿用今天的收尾方式）。
  */
 export interface BotInput {
   readonly name: string;
@@ -39,7 +42,7 @@ export interface BotReadDeps extends Pick<Deps, 'bots'> {
   readonly messages: Pick<MessageStore, 'config'>;
 }
 
-export interface BotsDeps extends BotReadDeps, Pick<Deps, 'projects' | 'sessions' | 'now'> {
+export interface BotsDeps extends BotReadDeps, Pick<Deps, 'projects' | 'sessions' | 'now' | 'workspaces'> {
   readonly policy?: AccessPolicy;
   /** 删除 bot 时顺手清掉的连接器 binding；不给 = 只删 bot 行（老调用方行为不变）。 */
   readonly connectors?: Pick<ConnectorStore, 'bindingsOf' | 'deleteBinding'>;
@@ -104,19 +107,20 @@ async function refProblem(deps: Pick<Deps, 'sessions'>, projectId: ProjectId, bo
 const idFor = (projectId: ProjectId, name: string): BotId => botIdFrom(`${projectId}\0${name}`);
 
 /** 旧 roles JSON → Bot。id 由 (projectId, name) 决定，迁移/C3b 落库时用同一个 seed。 */
-export function botsFromLegacy(config: MessagingConfig | null, projectId: ProjectId): readonly Bot[] {
+export function botsFromLegacy(config: MessagingConfig | null, projectId: ProjectId, teamId: string): readonly Bot[] {
   if (!config || config.roles.length === 0) return [];
   return config.roles.map((role) => ({
     ...role,
     id: idFor(projectId, role.name),
-    projectId,
+    teamId,
     createdAt: config.updatedAt,
     updatedAt: config.updatedAt
   }));
 }
 
-export async function legacyBots(deps: BotReadDeps, projectId: ProjectId): Promise<readonly Bot[]> {
-  return botsFromLegacy(await deps.messages.config(projectId), projectId);
+export async function legacyBots(deps: BotReadDeps & Pick<Deps, 'projects'>, projectId: ProjectId): Promise<readonly Bot[]> {
+  const project = await deps.projects.byId(projectId);
+  return botsFromLegacy(await deps.messages.config(projectId), projectId, project?.teamId ?? 'team_legacy');
 }
 
 /**
@@ -125,8 +129,8 @@ export async function legacyBots(deps: BotReadDeps, projectId: ProjectId): Promi
  * ⚠ 过渡期兼容（C3b 迁移前）：部署顺序是「先上新代码、再迁移数据」，所以表为空时必须
  * 还能看见旧 bot。迁移脚本跑完后这段可以删掉；回落映射只在 `legacyBots()` 一处。
  */
-export async function ensureBots(deps: BotReadDeps, projectId: ProjectId): Promise<readonly Bot[]> {
-  const stored = await deps.bots.list(projectId);
+export async function ensureBots(deps: BotReadDeps & Pick<Deps, 'projects'>, projectId: ProjectId): Promise<readonly Bot[]> {
+  const stored = await deps.bots.listForProject(projectId);
   if (stored.length > 0) return stored;
   return legacyBots(deps, projectId);
 }
@@ -135,10 +139,13 @@ export async function ensureBots(deps: BotReadDeps, projectId: ProjectId): Promi
  * 改动前先把旧 roles JSON 落进 bots 表，避免「新建一条 → 表不再为空 → 旧 bot 从列表里消失」。
  * 只在表为空时有动作，是迁移前的懒补写；C3b 正式迁移后不会再有旧数据。
  */
-async function adoptBots(deps: BotReadDeps, projectId: ProjectId): Promise<void> {
-  const stored = await deps.bots.list(projectId);
+async function adoptBots(deps: BotReadDeps & Pick<Deps, 'projects' | 'now'>, projectId: ProjectId): Promise<void> {
+  const stored = await deps.bots.listForProject(projectId);
   if (stored.length > 0) return;
-  for (const bot of await legacyBots(deps, projectId)) await deps.bots.save(bot);
+  for (const bot of await legacyBots(deps, projectId)) {
+    await deps.bots.save(bot);
+    await deps.bots.grant({ botId: bot.id, projectId, workspaceId: null, createdAt: deps.now(), createdBy: null });
+  }
 }
 
 const authorize = async (deps: BotsDeps, actor: Principal | null, projectId: ProjectId, permission: 'project.read' | 'project.share') =>
@@ -153,10 +160,11 @@ export async function listBotsUseCase(deps: BotsDeps, actor: Principal | null, p
 export async function createBotUseCase(deps: BotsDeps, actor: Principal | null, projectId: ProjectId, input: BotInput): Promise<Result<Bot, DomainError>> {
   const project = await authorize(deps, actor, projectId, 'project.share');
   if (!project.ok) return project;
+  const teamId = project.value.teamId ?? 'team_legacy';
   const name = String(input.name ?? '').trim();
   const nameProblem = isBotNameProblem(name);
   if (nameProblem) return err(invalid(nameProblem));
-  const existing = await ensureBots(deps, projectId);
+  const existing = await deps.bots.listByTeam(teamId);
   if (existing.some((bot) => bot.name === name)) return err(invalid(`@${name} 已经有了，换一个 @id`));
   const definition = definitionOf({
     name,
@@ -174,10 +182,12 @@ export async function createBotUseCase(deps: BotsDeps, actor: Principal | null, 
   if (specProblem) return err(invalid(`bot ${name} 的${specProblem}`));
   const now = deps.now();
   // id 只由 (projectId, name) 决定：迁移脚本按同一 seed 生成，重建/重跑都不会换 id。
-  const bot: Bot = { ...definition, id: idFor(projectId, name), projectId, createdAt: now, updatedAt: now };
+  const bot: Bot = { ...definition, id: idFor(projectId, name), teamId, createdAt: now, updatedAt: now };
   // 先补写旧数据，再插新 bot，避免旧 bot 被挡住。
   await adoptBots(deps, projectId);
   await deps.bots.save(bot);
+  // 在这个项目里建 = 顺带授权到该项目；以后可以在其它项目里另行授权。
+  await deps.bots.grant({ botId: bot.id, projectId, workspaceId: null, createdAt: now, createdBy: actor?.user.id ?? null });
   return ok(bot);
 }
 
@@ -201,16 +211,28 @@ async function findBot(deps: BotsDeps, id: BotId): Promise<Bot | null> {
 export async function getBotUseCase(deps: BotsDeps, actor: Principal | null, id: BotId): Promise<Result<Bot, DomainError>> {
   const current = await findBot(deps, id);
   if (!current) return err(notFound('没有这个 bot'));
-  const project = await authorize(deps, actor, current.projectId, 'project.read');
-  if (!project.ok) return project;
+  const allowed = authorizeBot(actor, current);
+  if (!allowed.ok) return allowed;
   return ok(current);
+}
+
+/**
+ * bot 的团队级操作：同一个团队才能看 / 改 / 删；团队管理员也可以。
+ * 授权到项目另有 `project.share` 检查（见 `grantBotUseCase`）。
+ */
+function authorizeBot(actor: Principal | null, bot: Bot): Result<true, DomainError> {
+  if (!actor) return err(forbidden('要以账号身份管理 bot'));
+  const teamId = actor.user.teamId ?? '';
+  if (teamId !== '' && teamId === bot.teamId) return ok(true);
+  if (actor.user.role === 'admin') return ok(true);
+  return err(forbidden('这个 bot 属于别的团队'));
 }
 
 export async function updateBotUseCase(deps: BotsDeps, actor: Principal | null, id: BotId, patch: BotPatch): Promise<Result<Bot, DomainError>> {
   const current = await findBot(deps, id);
   if (!current) return err(notFound('没有这个 bot'));
-  const project = await authorize(deps, actor, current.projectId, 'project.share');
-  if (!project.ok) return project;
+  const allowed = authorizeBot(actor, current);
+  if (!allowed.ok) return allowed;
   if (patch.name !== undefined && patch.name.trim() !== current.name) return err(invalid('bot 的名字建好就不能改'));
   const definition = definitionOf({
     name: current.name,
@@ -224,42 +246,121 @@ export async function updateBotUseCase(deps: BotsDeps, actor: Principal | null, 
   });
   const problem = shapeProblem(definition);
   if (problem) return err(invalid(problem));
-  const specProblem = await refProblem(deps, current.projectId, definition);
+  // 启动选项的可调项只能从「这个 agent 在本团队已授权项目里跑过的会话」学到；
+  // 还没授权到任何项目时无从校验，先放过（第一次进项目时再由会话握手校准）。
+  const grants = await deps.bots.grantsOf(current.id);
+  const sample = grants[0]?.projectId;
+  const specProblem = sample === undefined ? null : await refProblem(deps, sample, definition);
   if (specProblem) return err(invalid(`bot ${current.name} 的${specProblem}`));
   const next: Bot = { ...current, ...definition, updatedAt: deps.now() };
   await deps.bots.save(next);
   return ok(next);
 }
 
-export async function removeBotUseCase(deps: BotsDeps, actor: Principal | null, id: BotId): Promise<Result<{ removed: true }, DomainError>> {
+export async function removeBotUseCase(
+  deps: BotsDeps,
+  actor: Principal | null,
+  id: BotId,
+  /** 迁移前的老 bot 可能一条授权都没有：由调用方给出它当前所在的项目，收尾才找得到引用。 */
+  fallbackProjectId?: ProjectId
+): Promise<Result<{ removed: true }, DomainError>> {
   const current = await findBot(deps, id);
   if (!current) return err(notFound('没有这个 bot'));
-  const project = await authorize(deps, actor, current.projectId, 'project.share');
-  if (!project.ok) return project;
+  const allowed = authorizeBot(actor, current);
+  if (!allowed.ok) return allowed;
+  const grants = await deps.bots.grantsOf(current.id);
+  const projects = grants.length > 0 ? grants.map((grant) => grant.projectId) : fallbackProjectId ? [fallbackProjectId] : [];
   // 有会话 / 群引用也不拦：只删 bot 行，引用由上层决定怎么收尾（群聊会调 detachAgent）。
   await deps.bots.remove(current.id);
-  // #221 步骤 4：@id 建好不能改，按 (projectId, name) 就能找全剩下的名字引用。
+  // #221 步骤 4：@id 建好不能改，按 (项目, name) 就能找全剩下的名字引用。
   // 被删的 bot 不该继续触发连接器，也不该留上下文设置（重建同名 bot 用的是同一个确定 id，
   // 所以这里清掉的只是旧配置，不会让新 bot 串数据）。
-  const bindings = await deps.connectors?.bindingsOf(current.projectId, current.name);
-  for (const binding of bindings ?? []) await deps.connectors?.deleteBinding(binding.id);
-  for (const key of botContextSettingKeys(current.projectId, current.name)) {
-    await deps.contextSettings?.set(key, null);
+  for (const projectId of projects) {
+    const bindings = await deps.connectors?.bindingsOf(projectId, current.name);
+    for (const binding of bindings ?? []) await deps.connectors?.deleteBinding(binding.id);
+    for (const key of botContextSettingKeys(projectId, current.name)) {
+      await deps.contextSettings?.set(key, null);
+    }
   }
   return ok({ removed: true });
+}
+
+/** 团队里的全部 bot（管理页用）。 */
+export async function listTeamBotsUseCase(deps: BotsDeps, actor: Principal | null, teamId: string): Promise<Result<readonly Bot[], DomainError>> {
+  if (!actor) return err(forbidden('要以账号身份查看 bot'));
+  if (actor.user.role !== 'admin' && (actor.user.teamId ?? '') !== teamId) return err(forbidden('只能查看本团队的 bot'));
+  return ok(await deps.bots.listByTeam(teamId));
+}
+
+/**
+ * 把一个 bot 授权到项目（项目管理员邀请 bot 进项目）。
+ * 只能授权到 bot 所属团队的项目；workspaceId 可选，作为它在这个项目里的默认落点。
+ */
+export async function grantBotUseCase(
+  deps: BotsDeps,
+  actor: Principal | null,
+  botId: BotId,
+  projectId: ProjectId,
+  workspaceId: string | null = null
+): Promise<Result<BotGrant, DomainError>> {
+  const bot = await findBot(deps, botId);
+  if (!bot) return err(notFound('没有这个 bot'));
+  const project = await authorize(deps, actor, projectId, 'project.share');
+  if (!project.ok) return project;
+  if ((project.value.teamId ?? 'team_legacy') !== bot.teamId) return err(invalid('bot 和项目不在同一个团队'));
+  if (workspaceId !== null) {
+    const workspace = await deps.workspaces.byId(workspaceId as never);
+    if (!workspace || workspace.projectId !== projectId) return err(invalid('这个工作空间不属于该项目'));
+  }
+  const grant: BotGrant = {
+    botId: bot.id,
+    projectId,
+    workspaceId: workspaceId === null ? null : (workspaceId as never),
+    createdAt: deps.now(),
+    createdBy: actor?.user.id ?? null
+  };
+  await deps.bots.grant(grant);
+  return ok(grant);
+}
+
+/** 撤销授权：只删授权行，不 detach（群/连接器由路由层的收尾逻辑处理）。 */
+export async function revokeBotUseCase(
+  deps: BotsDeps,
+  actor: Principal | null,
+  botId: BotId,
+  projectId: ProjectId
+): Promise<Result<true, DomainError>> {
+  const bot = await findBot(deps, botId);
+  if (!bot) return err(notFound('没有这个 bot'));
+  const project = await authorize(deps, actor, projectId, 'project.share');
+  if (!project.ok) return project;
+  await deps.bots.revoke(bot.id, projectId);
+  return ok(true);
+}
+
+export async function botGrantsUseCase(deps: BotsDeps, actor: Principal | null, botId: BotId): Promise<Result<readonly BotGrant[], DomainError>> {
+  const bot = await findBot(deps, botId);
+  if (!bot) return err(notFound('没有这个 bot'));
+  const allowed = authorizeBot(actor, bot);
+  if (!allowed.ok) return allowed;
+  return ok(await deps.bots.grantsOf(bot.id));
 }
 
 /**
  * 项目消息配置：bot 列表来自 bots 表（表空时回落旧 roles JSON），限额仍读旧的配置行。
  * 这是消息总线 `config()` 的唯一读路径，也是回落逻辑在用例层唯一的使用者。
  */
-export async function loadBotConfig(deps: BotReadDeps, projectId: ProjectId): Promise<MessagingConfig> {
+export async function loadBotConfig(
+  deps: BotReadDeps & Partial<Pick<Deps, 'projects'>>,
+  projectId: ProjectId
+): Promise<MessagingConfig> {
   const legacy = await deps.messages.config(projectId);
-  const stored = await deps.bots.list(projectId);
+  const stored = await deps.bots.listForProject(projectId);
+  const teamId = (await deps.projects?.byId(projectId))?.teamId ?? 'team_legacy';
   return {
     projectId,
     // 表为空 = 还没迁移：回落到旧 roles JSON（只读，不写回）。
-    roles: stored.length > 0 ? stored : botsFromLegacy(legacy, projectId),
+    roles: stored.length > 0 ? stored : botsFromLegacy(legacy, projectId, teamId),
     limits: legacy?.limits ?? {},
     updatedAt: legacy?.updatedAt ?? 0
   };

@@ -28,10 +28,11 @@ export const botDto = (agent: PersistentAgent) => {
   return { ...rest, ...refDto(ref) };
 };
 
-/** `/api/bots` 的一条：扁平 ref + id / projectId / 时间戳（contract 的 BotRecordDto）。 */
-export const botRecordDto = (bot: Bot) => ({
+/** `/api/bots` 的一条：扁平 ref + id / 请求语境里的项目 / 时间戳（contract 的 BotRecordDto）。 */
+export const botRecordDto = (bot: Bot, projectId: string | null) => ({
   id: bot.id,
-  projectId: bot.projectId,
+  projectId,
+  teamId: bot.teamId,
   name: bot.name,
   ...refDto(bot.ref),
   displayName: bot.displayName,

@@ -37,6 +37,10 @@ function harness(extra: Partial<AppOptions> = {}) {
     token: null,
     auth: { accounts },
     bots: {
+      botGrants: async (_actor, id) => ok([{ botId: id, projectId: 'proj_1' as never, workspaceId: null, createdAt: 1, createdBy: null }]),
+      teamBots: async () => ok([]),
+      grantBot: async (_actor, id, projectId) => ok({ botId: id, projectId, workspaceId: null, createdAt: 1, createdBy: null }),
+      revokeBot: async () => ok(true),
       listBots: (actor, projectId) => listBotsUseCase(botDeps, actor, projectId),
       getBot: (actor, id) => getBotUseCase(botDeps, actor, id),
       createBot: (actor, projectId, input) => createBotUseCase(botDeps, actor, projectId, input),

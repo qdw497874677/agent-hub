@@ -245,7 +245,7 @@ test('整表保存也走 ref 净化：空壳 role 被拒，ref 归一后再落�
   });
   assert.equal(shell.ok, false);
   assert.match(!shell.ok ? shell.error.message : '', /要指定 agent/);
-  assert.deepEqual(await w.deps.bots.list(w.project.id), []);
+  assert.deepEqual(await w.deps.bots.listForProject(w.project.id), []);
 
   // 合法 role 的 ref 与单条保存同一条净化路径：runtime / model 去空白，options 取规范副本。
   const saved = await w.bus.saveConfig(w.project.id, {

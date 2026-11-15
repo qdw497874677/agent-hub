@@ -49,7 +49,7 @@ test('bot 用例：创建、查重、按项目列、按 id 取', async () => {
   const created = await createBotUseCase(deps, alice, project.id, { name: 'qa', agentId: 'pi', description: '测试' });
   assert.ok(created.ok, created.ok ? '' : created.error.message);
   assert.match(created.value.id, /^bot_[0-9a-f]{16}$/);
-  assert.equal(created.value.projectId, project.id);
+  assert.equal(created.value.teamId, project.teamId ?? 'team_legacy');
   assert.equal(created.value.reuse, 'sticky');
 
   const duplicate = await createBotUseCase(deps, alice, project.id, { name: 'qa', agentId: 'pi' });
@@ -183,7 +183,7 @@ test('bots 表为空时回落到旧 roles JSON（只读、不写回）', async (
   assert.deepEqual(listed.value.map((bot) => bot.name), ['reviewer']);
   const fallback: Bot = listed.value[0]!;
   assert.equal(fallback.id, botIdFrom(`${w.project.id}\0reviewer`));
-  assert.equal(fallback.projectId, w.project.id);
+  assert.equal(fallback.teamId, w.project.teamId ?? 'team_legacy');
   assert.equal(fallback.createdAt, 42);
 
   const config = await loadBotConfig(deps, w.project.id);
@@ -192,5 +192,5 @@ test('bots 表为空时回落到旧 roles JSON（只读、不写回）', async (
   assert.equal(config.updatedAt, 42);
 
   // 回落是只读的：表里仍然没有
-  assert.deepEqual(await deps.bots.list(w.project.id), []);
+  assert.deepEqual(await deps.bots.listForProject(w.project.id), []);
 });

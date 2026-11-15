@@ -23,7 +23,7 @@ async function world() {
   await w.deps.tasks.save(task.value);
   const bot: Bot = {
     id: 'bot_0123456789abcdef',
-    projectId: project.value.id,
+    teamId: project.value.teamId ?? 'team_legacy',
     name: 'host',
     description: '主持',
     ref: { runtime: 'pi', model: 'm', options: {} },

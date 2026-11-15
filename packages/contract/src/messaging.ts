@@ -50,7 +50,8 @@ export type BotInputDto = Partial<Omit<MessagingRoleDto, 'name'>>;
  * 这里是一条 bot 记录本身。
  */
 export interface BotRecordDto {
-  id: string; projectId: string; name: string; agentId: string; model: string;
+  id: string; /** 请求语境里的项目（列表/创建必填；单条按 id 查时可能没有）。 */ projectId: string | null;
+  teamId: string; name: string; agentId: string; model: string;
   options?: Record<string, string | boolean>;
   displayName?: string; color?: BotColorDto; description: string; reuse: 'sticky' | 'per-trace' | 'always-new';
   createdAt: number; updatedAt: number;

@@ -1,5 +1,6 @@
 import * as assetModule from '../asset.ts';
 import type { ApiToken } from '../api-token.ts';
+import type { BotGrant } from "../bot-grant.ts";
 import type { Bot, BotId } from '../bot.ts';
 import type { ApiTokenRepository } from '../ports/api-token-repository.ts';
 import type { AccessGrantRepository, TeamRoleRepository } from '../ports/access-repository.ts';
@@ -318,20 +319,30 @@ export function fakeAgentProfiles(): AgentProfileRepository & { rows: Map<string
   };
 }
 
-/** 项目 bot（C3a）。按 created_at 再按 name 排序，和 SQLite 实现一致。 */
-export function fakeBots(): BotRepository & { rows: Map<BotId, Bot> } {
+/** 团队级 bot + 项目授权（C3a / bot-as-agent）。排序与 SQLite 实现一致：created_at，再按 name。 */
+export function fakeBots(): BotRepository & { rows: Map<BotId, Bot>; grants: Map<string, BotGrant> } {
   const rows = new Map<BotId, Bot>();
+  const grants = new Map<string, BotGrant>();
+  const key = (botId: string, projectId: string) => `${botId}\u0000${projectId}`;
+  const granted = (botId: string) => [...grants.values()].filter((grant) => grant.botId === botId);
   return {
     rows,
+    grants,
     async byId(id) {
       return rows.get(id) ?? null;
     },
-    async byName(projectId, name) {
-      return [...rows.values()].find((bot) => bot.projectId === projectId && bot.name === name) ?? null;
+    async byName(teamId, name) {
+      return [...rows.values()].find((bot) => bot.teamId === teamId && bot.name === name) ?? null;
     },
-    async list(projectId) {
+    async listByTeam(teamId) {
       return [...rows.values()]
-        .filter((bot) => bot.projectId === projectId)
+        .filter((bot) => bot.teamId === teamId)
+        .sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name));
+    },
+    async listForProject(projectId) {
+      const ids = new Set([...grants.values()].filter((g) => g.projectId === projectId).map((g) => g.botId));
+      return [...rows.values()]
+        .filter((bot) => ids.has(bot.id))
         .sort((a, b) => a.createdAt - b.createdAt || a.name.localeCompare(b.name));
     },
     async save(bot) {
@@ -339,6 +350,19 @@ export function fakeBots(): BotRepository & { rows: Map<BotId, Bot> } {
     },
     async remove(id) {
       rows.delete(id);
+      for (const [k, grant] of grants) if (grant.botId === id) grants.delete(k);
+    },
+    async grantsOf(botId) {
+      return granted(botId).sort((a, b) => a.createdAt - b.createdAt);
+    },
+    async grantsForProject(projectId) {
+      return [...grants.values()].filter((grant) => grant.projectId === projectId).sort((a, b) => a.createdAt - b.createdAt);
+    },
+    async grant(grant) {
+      grants.set(key(grant.botId, grant.projectId), grant);
+    },
+    async revoke(botId, projectId) {
+      grants.delete(key(botId, projectId));
     }
   };
 }

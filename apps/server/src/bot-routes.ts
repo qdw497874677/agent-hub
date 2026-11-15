@@ -16,6 +16,7 @@ import {
   principalOfSubject,
   type ApiToken,
   type Bot,
+  type BotGrant,
   type BotId,
   type BotInput,
   type BotPatch,
@@ -36,6 +37,10 @@ import { fail } from './http-error.ts';
 /** 路由只认这几个用例函数，装配由 main.ts 决定。 */
 export interface BotsApi {
   listBots(actor: Principal | null, projectId: ProjectId): Promise<Result<readonly Bot[], DomainError>>;
+  botGrants(actor: Principal | null, id: BotId): Promise<Result<readonly BotGrant[], DomainError>>;
+  teamBots(actor: Principal | null, teamId: string): Promise<Result<readonly Bot[], DomainError>>;
+  grantBot(actor: Principal | null, id: BotId, projectId: ProjectId, workspaceId: string | null): Promise<Result<BotGrant, DomainError>>;
+  revokeBot(actor: Principal | null, id: BotId, projectId: ProjectId): Promise<Result<true, DomainError>>;
   getBot(actor: Principal | null, id: BotId): Promise<Result<Bot, DomainError>>;
   createBot(actor: Principal | null, projectId: ProjectId, input: BotInput): Promise<Result<Bot, DomainError>>;
   updateBot(actor: Principal | null, id: BotId, patch: BotPatch): Promise<Result<Bot, DomainError>>;
@@ -113,7 +118,16 @@ export function installBotRoutes(
     return token ? { id: token.id, prefix: token.prefix, createdAt: token.createdAt, lastUsedAt: token.lastUsedAt } : null;
   };
   const tokensOf = async (projectId: ProjectId) => (botTokens ? botTokens.listBotsByProject(projectId) : []);
-  const recordOf = async (bot: Bot) => ({ ...botRecordDto(bot), token: tokenOf(await tokensOf(bot.projectId), bot.name) });
+  // bot 不再隶属单个项目：接口仍按「这条请求所在的项目」回填 projectId，缺省取第一条授权。
+  const projectOf = async (actor: Principal, bot: Bot, explicit: string | undefined): Promise<ProjectId | null> => {
+    if (explicit) return asProjectId(explicit);
+    const grants = await bots.botGrants(actor, bot.id);
+    return grants.ok ? (grants.value[0]?.projectId ?? null) : null;
+  };
+  const recordOf = async (actor: Principal, bot: Bot, explicit?: string) => {
+    const projectId = await projectOf(actor, bot, explicit);
+    return { ...botRecordDto(bot, projectId), token: projectId ? tokenOf(await tokensOf(projectId), bot.name) : null };
+  };
 
   /**
    * 单条寻址：`bot_` 开头按 id；否则当名字，必须带 projectId（同名 bot 只在项目内唯一）。
@@ -137,7 +151,7 @@ export function installBotRoutes(
     if (!list.ok) return fail(c, list.error);
     // 一次查完这个项目的 bot 令牌，避免每个 bot 一次查询。
     const tokens = await tokensOf(asProjectId(projectId));
-    return c.json({ bots: list.value.map((bot) => ({ ...botRecordDto(bot), token: tokenOf(tokens, bot.name) })) });
+    return c.json({ bots: list.value.map((bot) => ({ ...botRecordDto(bot, projectId), token: tokenOf(tokens, bot.name) })) });
   });
 
   app.post('/api/bots', async (c) => {
@@ -147,14 +161,14 @@ export function installBotRoutes(
     if (!parsed.success) return fail(c, { code: 'invalid', message: issue(parsed.error) });
     const { projectId, ...input } = parsed.data;
     const created = await bots.createBot(actor, asProjectId(projectId), input);
-    return created.ok ? c.json({ ...botRecordDto(created.value), token: null }, 201) : fail(c, created.error);
+    return created.ok ? c.json({ ...botRecordDto(created.value, projectId), token: null }, 201) : fail(c, created.error);
   });
 
   app.get('/api/bots/:idOrName', async (c) => {
     const actor = me(c);
     if (!actor) return fail(c, needUser);
     const bot = await resolve(actor, c.req.param('idOrName'), c.req.query('projectId')?.trim());
-    return bot.ok ? c.json(await recordOf(bot.value)) : fail(c, bot.error);
+    return bot.ok ? c.json(await recordOf(actor, bot.value, c.req.query('projectId')?.trim())) : fail(c, bot.error);
   });
 
   app.get('/api/bots/:idOrName/triggers', async (c) => {
@@ -165,7 +179,9 @@ export function installBotRoutes(
     const bot = found.value;
     // 老部署 / 没接连接器：空列表，前端按「还没有触发」显示。
     if (!hub) return c.json({ sources: [], bindings: [] } satisfies BotTriggersDto);
-    const listed = await hub.list(actor, bot.projectId, bot.name);
+    const projectId = await projectOf(actor, bot, c.req.query('projectId')?.trim());
+    if (!projectId) return c.json({ sources: [], bindings: [] } satisfies BotTriggersDto);
+    const listed = await hub.list(actor, projectId, bot.name);
     if (!listed.ok) return fail(c, listed.error);
     const bindings = await Promise.all(
       listed.value.map(async (binding) => {
@@ -184,7 +200,38 @@ export function installBotRoutes(
     const parsed = patchBody.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) return fail(c, { code: 'invalid', message: issue(parsed.error) });
     const updated = await bots.updateBot(actor, c.req.param('id') as BotId, parsed.data);
-    return updated.ok ? c.json(await recordOf(updated.value)) : fail(c, updated.error);
+    return updated.ok ? c.json(await recordOf(actor, updated.value, c.req.query('projectId')?.trim())) : fail(c, updated.error);
+  });
+
+  // 团队视角：bot 归团队，项目只是授权（#221 / bot-as-agent）。
+  app.get('/api/bots/team/:teamId', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const listed = await bots.teamBots(actor, c.req.param('teamId'));
+    return listed.ok ? c.json({ bots: listed.value.map((bot) => botRecordDto(bot, null)) }) : fail(c, listed.error);
+  });
+
+  app.get('/api/bots/:id/grants', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const grants = await bots.botGrants(actor, c.req.param('id') as BotId);
+    return grants.ok ? c.json({ grants: grants.value }) : fail(c, grants.error);
+  });
+
+  app.put('/api/bots/:id/grants/:projectId', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const body = await c.req.json().catch(() => ({}));
+    const workspaceId = typeof body?.workspaceId === 'string' && body.workspaceId.trim() !== '' ? body.workspaceId.trim() : null;
+    const granted = await bots.grantBot(actor, c.req.param('id') as BotId, asProjectId(c.req.param('projectId')), workspaceId);
+    return granted.ok ? c.json({ ok: true, grant: granted.value }, 201) : fail(c, granted.error);
+  });
+
+  app.delete('/api/bots/:id/grants/:projectId', async (c) => {
+    const actor = me(c);
+    if (!actor) return fail(c, needUser);
+    const revoked = await bots.revokeBot(actor, c.req.param('id') as BotId, asProjectId(c.req.param('projectId')));
+    return revoked.ok ? c.json({ ok: true }) : fail(c, revoked.error);
   });
 
   app.delete('/api/bots/:id', async (c) => {

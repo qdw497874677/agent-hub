@@ -20,6 +20,7 @@ export * from './agent-ref.ts';
 export * from './agent-profile.ts';
 // bot 与 messaging.ts 都导出 PersistentAgent 这个老名字，这里显式列出，避免 star export 冲突把它吃掉。
 export type { Bot, BotDefinition, BotId } from './bot.ts';
+export type { BotGrant } from './bot-grant.ts';
 export { botIdFrom } from './bot.ts';
 export * from './worker.ts';
 export * from './resources.ts';

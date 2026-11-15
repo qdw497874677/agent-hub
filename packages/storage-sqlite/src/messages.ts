@@ -37,7 +37,8 @@ function toRole(raw: unknown, projectId: string, updatedAt: number): Bot {
     },
     // 旧 JSON 没有 id / 时间戳：按 (projectId, name) 算，与迁移脚本、回落路径同一个 seed。
     id: botIdFrom(`${projectId}\0${name}`),
-    projectId,
+    // 旧 roles 是项目内的配置行，团队在回落映射（botsFromLegacy）里才知道；这里给哨兵值。
+    teamId: 'team_legacy',
     createdAt: updatedAt,
     updatedAt
   } as Bot;
