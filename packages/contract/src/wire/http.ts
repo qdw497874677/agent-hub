@@ -26,6 +26,12 @@ export const createProjectRequest = z.object({
 /** 改项目说明：null 或空串 = 清掉。 */
 export const setProjectDescriptionRequest = z.object({ description: z.string().max(8000).nullable() });
 
+/** 开放 API：一次改项目说明与检查命令（至少给一项）。 */
+export const updateProjectRequest = z
+  .object({ description: z.string().max(8000).nullable().optional(), checks: z.array(z.string().max(300)).max(5).optional() })
+  .refine((v) => v.description !== undefined || v.checks !== undefined, { message: '至少给 description 或 checks' });
+
+
 /** 改项目级 worktree 配置（docs/design/worktree.md §3）：null = 没配，按 shared 处理。 */
 export const setProjectWorktreeRequest = z.object({
   /** 预览表单的默认端口；`null` 清空。 */

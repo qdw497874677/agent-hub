@@ -13,6 +13,7 @@ import {
   promptRequest,
   sessionSchema,
   setProjectDescriptionRequest,
+  updateProjectRequest,
   setProjectRepoRequest,
   setTaskStatusRequest,
   setTaskSummaryRequest,
@@ -86,8 +87,36 @@ export const routes = {
   }),
   createProject: route('projects:write', {
     method: 'post', path: `${V1}/projects`, tags: ['projects'], summary: '新建项目',
+    description:
+      '新建一个项目（代码与任务的边界）。\n' +
+      '参数：name（1–60）、rootPath（这台 hub 上已存在的目录）。\n' +
+      '返回：项目对象（id、name、rootPath）。记下 id。\n' +
+      '下一步：用 task_create 在项目里建任务，再 session_start 派一台机器。\n' +
+      '错误：401 令牌无效；403 无 projects:write；409 同名或目录不合法。',
     request: body(createProjectRequest),
     responses: { 201: json(projectSchema, '已创建') }
+  }),
+  getProject: route('projects:read', {
+    method: 'get', path: `${V1}/projects/{projectId}`, tags: ['projects'], summary: '看一个项目',
+    description:
+      '按 id 看项目详情。\n' +
+      '参数：projectId（路径）。\n' +
+      '返回：项目对象（description、repo/repos、checks、previewPort…）。\n' +
+      '下一步：用 list_tasks 看任务，或用 project_update 改说明/检查命令。\n' +
+      '错误：401 令牌无效；404 项目不存在或你看不见。',
+    request: { params: projectId },
+    responses: { 200: json(projectSchema) }
+  }),
+  updateProject: route('projects:write', {
+    method: 'patch', path: `${V1}/projects/{projectId}`, tags: ['projects'], summary: '改项目说明或检查命令',
+    description:
+      '改项目的说明（description）和/或检查命令（checks，最多 5 条、每条 ≤300 字、不能换行；空数组=清掉）。\n' +
+      '参数：projectId（路径）；body 至少给 description 或 checks 之一。\n' +
+      '返回：更新后的项目对象。\n' +
+      '下一步：用 get_project 复核；检查命令由 agent 的 run_checks 执行。\n' +
+      '错误：400 参数不合法（含换行、超长）；403 无 projects:write 或不是项目管理员；404 项目不存在。',
+    request: { params: projectId, ...body(updateProjectRequest) },
+    responses: { 200: json(projectSchema) }
   }),
   setProjectRepo: route('projects:write', {
     method: 'put', path: `${V1}/projects/{projectId}/repo`, tags: ['projects'], summary: '绑定 / 解除项目仓库',
@@ -101,7 +130,12 @@ export const routes = {
   }),
   deleteProject: route('projects:write', {
     method: 'delete', path: `${V1}/projects/{projectId}`, tags: ['projects'], summary: '把项目放进回收站',
-    description: '要输项目名确认；只有团队主人或建项目的人能删。磁盘目录保留。',
+    description:
+      '把项目放进回收站（磁盘目录保留，可恢复）。\n' +
+      '参数：projectId（路径）、confirmName（必须等于项目名，防误删）。\n' +
+      '返回：{ id, deleted: true }。\n' +
+      '下一步：任务与会话不再出现在列表里；恢复要回工作台。\n' +
+      '错误：400 名字对不上；403 不是团队主人或建项目的人；404 项目不存在。',
     request: { params: projectId, ...body(deleteProjectRequest) },
     responses: { 200: json(z.object({ id: z.string(), deleted: z.literal(true) })) }
   }),

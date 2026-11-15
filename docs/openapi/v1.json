@@ -3,7 +3,7 @@
   "info": {
     "title": "Agent Hub 开放 API",
     "version": "1.0.0",
-    "description": "给内部 / 外部 agent 和脚本用的稳定接口（ADR 0015）。\n\n- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。对外只暴露一组只读工具（项目、任务、工作日志、会话事件），写操作仍走这里的 HTTP。\n- 错误统一为 `{ error: { code, message } }`。"
+    "description": "给内部 / 外部 agent 和脚本用的稳定接口（ADR 0015）。\n\n- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。对外只暴露显式登记的工具（项目、任务、工作日志、会话事件；写工具要 `MCP_WRITE=1`，且必须带 `clientRequestId`）。\n- 错误统一为 `{ error: { code, message } }`。"
   },
   "servers": [
     {
@@ -1340,6 +1340,7 @@
           "projects"
         ],
         "summary": "新建项目",
+        "description": "新建一个项目（代码与任务的边界）。\n参数：name（1–60）、rootPath（这台 hub 上已存在的目录）。\n返回：项目对象（id、name、rootPath）。记下 id。\n下一步：用 task_create 在项目里建任务，再 session_start 派一台机器。\n错误：401 令牌无效；403 无 projects:write；409 同名或目录不合法。\n\n权限范围：`projects:write`",
         "security": [
           {
             "bearer": [
@@ -1347,7 +1348,6 @@
             ]
           }
         ],
-        "description": "权限范围：`projects:write`",
         "requestBody": {
           "required": true,
           "content": {
@@ -1540,6 +1540,598 @@
                     "id",
                     "name",
                     "createdAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/projects/{projectId}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "看一个项目",
+        "description": "按 id 看项目详情。\n参数：projectId（路径）。\n返回：项目对象（description、repo/repos、checks、previewPort…）。\n下一步：用 list_tasks 看任务，或用 project_update 改说明/检查命令。\n错误：401 令牌无效；404 项目不存在或你看不见。\n\n权限范围：`projects:read`",
+        "security": [
+          {
+            "bearer": [
+              "projects:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "repo": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string"
+                        },
+                        "defaultBranch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "url",
+                        "defaultBranch"
+                      ]
+                    },
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "defaultBranch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "url"
+                        ]
+                      },
+                      "default": []
+                    },
+                    "description": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "worktree": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "isolated"
+                          ]
+                        },
+                        "setup": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "command": {
+                              "type": "string"
+                            },
+                            "waitForSetup": {
+                              "type": "boolean"
+                            },
+                            "timeoutSeconds": {
+                              "type": "integer"
+                            }
+                          },
+                          "default": null,
+                          "required": [
+                            "command",
+                            "waitForSetup",
+                            "timeoutSeconds"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "mode"
+                      ]
+                    },
+                    "previewPort": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1024,
+                      "maximum": 65535
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "default": []
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "createdAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "改项目说明或检查命令",
+        "description": "改项目的说明（description）和/或检查命令（checks，最多 5 条、每条 ≤300 字、不能换行；空数组=清掉）。\n参数：projectId（路径）；body 至少给 description 或 checks 之一。\n返回：更新后的项目对象。\n下一步：用 get_project 复核；检查命令由 agent 的 run_checks 执行。\n错误：400 参数不合法（含换行、超长）；403 无 projects:write 或不是项目管理员；404 项目不存在。\n\n权限范围：`projects:write`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "description": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 8000
+                  },
+                  "checks": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "maxLength": 300
+                    },
+                    "maxItems": 5
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "repo": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string"
+                        },
+                        "defaultBranch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "url",
+                        "defaultBranch"
+                      ]
+                    },
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "defaultBranch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "url"
+                        ]
+                      },
+                      "default": []
+                    },
+                    "description": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "worktree": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "isolated"
+                          ]
+                        },
+                        "setup": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "command": {
+                              "type": "string"
+                            },
+                            "waitForSetup": {
+                              "type": "boolean"
+                            },
+                            "timeoutSeconds": {
+                              "type": "integer"
+                            }
+                          },
+                          "default": null,
+                          "required": [
+                            "command",
+                            "waitForSetup",
+                            "timeoutSeconds"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "mode"
+                      ]
+                    },
+                    "previewPort": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1024,
+                      "maximum": 65535
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "default": []
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "createdAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "把项目放进回收站",
+        "description": "把项目放进回收站（磁盘目录保留，可恢复）。\n参数：projectId（路径）、confirmName（必须等于项目名，防误删）。\n返回：{ id, deleted: true }。\n下一步：任务与会话不再出现在列表里；恢复要回工作台。\n错误：400 名字对不上；403 不是团队主人或建项目的人；404 项目不存在。\n\n权限范围：`projects:write`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "confirmName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "confirmName"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "deleted": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "deleted"
                   ]
                 }
               }
@@ -2037,129 +2629,6 @@
                     "id",
                     "name",
                     "createdAt"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "请求不合法",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "缺少或无效的令牌",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "令牌的权限范围或账号权限不够",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "不存在或看不见",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "太频繁（看 Retry-After）",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/openapi/v1/projects/{projectId}": {
-      "delete": {
-        "tags": [
-          "projects"
-        ],
-        "summary": "把项目放进回收站",
-        "description": "要输项目名确认；只有团队主人或建项目的人能删。磁盘目录保留。\n\n权限范围：`projects:write`",
-        "security": [
-          {
-            "bearer": [
-              "projects:write"
-            ]
-          }
-        ],
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "required": true,
-            "name": "projectId",
-            "in": "path"
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "confirmName": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 500
-                  }
-                },
-                "required": [
-                  "confirmName"
-                ]
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "成功",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "deleted": {
-                      "type": "boolean",
-                      "enum": [
-                        true
-                      ]
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "deleted"
                   ]
                 }
               }

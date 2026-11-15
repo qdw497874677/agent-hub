@@ -30,6 +30,7 @@ import {
   notFound,
   projectReader,
   promptSessionUseCase,
+  setProjectChecksUseCase,
   setProjectDescriptionUseCase,
   setProjectRepoUseCase,
   setTaskStatusUseCase,
@@ -171,11 +172,41 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const readable = await projectReader(deps.access, actor);
     return result.ok ? c.json(result.value.filter(readable)) : fail(c, result.error);
   });
+  on(routes.getProject, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.read')) return fail(c, forbidden('令牌没有 projects:read'));
+    const project = await deps.projects.byId(asProjectId(c.req.param('projectId') ?? ''));
+    if (!project) return fail(c, notFound('项目不存在'));
+    const readable = await projectReader(deps.access, actor);
+    if (!readable(project)) return fail(c, notFound('项目不存在'));
+    return c.json(project);
+  });
   on(routes.createProject, async (c) => {
     const actor = principal(c);
     if (!can(actor, 'project.create')) return fail(c, forbidden('令牌不能新建项目（要 projects:write，且账号有建项目的权限）'));
     const result = await createProjectUseCase(deps, { ...valid<z.output<typeof createProjectRequest>>(c, 'json'), actor });
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+  on(routes.updateProject, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const project = await deps.projects.byId(asProjectId(c.req.param('projectId') ?? ''));
+    if (!project) return fail(c, notFound('项目不存在'));
+    const readable = await projectReader(deps.access, actor);
+    if (!readable(project)) return fail(c, notFound('项目不存在'));
+    const input = valid<{ description?: string | null; checks?: string[] }>(c, 'json');
+    let next = project;
+    if (input.description !== undefined) {
+      const result = await setProjectDescriptionUseCase(deps, { projectId: next.id, description: input.description });
+      if (!result.ok) return fail(c, result.error);
+      next = result.value;
+    }
+    if (input.checks !== undefined) {
+      const result = await setProjectChecksUseCase(deps, { projectId: next.id, checks: input.checks });
+      if (!result.ok) return fail(c, result.error);
+      next = result.value;
+    }
+    return c.json(next);
   });
   on(routes.setProjectRepo, async (c) => {
     const result = await setProjectRepoUseCase(deps, { projectId: c.req.param('projectId') ?? '', ...valid<z.output<typeof setProjectRepoRequest>>(c, 'json') });
@@ -409,7 +440,7 @@ export const openApiInfo = {
       '- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n' +
       '- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n' +
       '- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n' +
-      '- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。对外只暴露一组只读工具（项目、任务、工作日志、会话事件），写操作仍走这里的 HTTP。\n' +
+      '- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。对外只暴露显式登记的工具（项目、任务、工作日志、会话事件；写工具要 `MCP_WRITE=1`，且必须带 `clientRequestId`）。\n' +
       '- 错误统一为 `{ error: { code, message } }`。'
   },
   servers: [{ url: '/' }]

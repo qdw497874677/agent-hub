@@ -21,6 +21,10 @@ export type McpModuleName = 'tasks' | 'projects' | 'sessions';
  */
 const ALLOWED = {
   listProjects: { module: 'projects', readOnly: true },
+  getProject: { module: 'projects', readOnly: true },
+  createProject: { module: 'projects', readOnly: false, expose: 'project_create', idempotent: true },
+  updateProject: { module: 'projects', readOnly: false, expose: 'project_update', idempotent: true },
+  deleteProject: { module: 'projects', readOnly: false, expose: 'project_archive' },
   getSession: { module: 'sessions', readOnly: true },
   listTasks: { module: 'tasks', readOnly: true },
   getTask: { module: 'tasks', readOnly: true },
