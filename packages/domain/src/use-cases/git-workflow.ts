@@ -33,10 +33,10 @@ export interface GitWorkflowDeps {
   readonly tasks: Pick<TaskRepository, 'byId'>;
   readonly sessions: Pick<SessionRepository, 'byId'>;
   readonly workspaces: WorkspaceRepository;
-  /** 组合工作空间（多仓库）；不给 = 只会落到单仓库路径。 */
-  readonly workspaceGroups?: WorkspaceGroupRepository;
-  /** 容器会话（没有任务）靠 bot 归属找回项目（#221 步骤 7）；不给 = 只有群会话 / 工作空间能定位。 */
-  readonly bots?: Pick<BotRepository, 'byId'>;
+  /** 组合工作空间（多仓库）；容器会话按它 / 工作空间反推项目（#221 步骤 7）。 */
+  readonly workspaceGroups: WorkspaceGroupRepository;
+  /** 容器会话（没有任务）的 bot 归属（#221 步骤 7）。 */
+  readonly bots: Pick<BotRepository, 'byId'>;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
   readonly audit: Pick<AuditLog, 'append'>;

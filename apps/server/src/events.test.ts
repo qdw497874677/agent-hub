@@ -45,6 +45,7 @@ function harness() {
     workLog: store.workLog,
     sessions: store.sessions,
     workspaces: store.workspaces,
+    workspaceGroups: store.workspaceGroups,
     artifacts: store.artifacts,
     layout: store.layout,
     bots: store.bots,

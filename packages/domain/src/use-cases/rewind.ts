@@ -32,7 +32,7 @@ export interface RewindFiles {
 
 export type RewindDeps = Pick<
   Deps,
-  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access' | 'deliveries'
+  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access' | 'deliveries' | 'workspaceGroups' | 'bots'
 > & { readonly files: RewindFiles; readonly turnRefs: TurnRefStore };
 
 /** 对话怎么接上（ADR 0028）：native = 原生从这条消息分叉；summary = 新开会话 + 摘要交接；none = 第一条消息，不用交接。 */

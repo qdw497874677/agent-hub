@@ -66,7 +66,7 @@ export async function listProjectFiles(
  * 只放行这条会话自己的附件目录，别的路径一律拒——这不是通用文件服务器。
  */
 export async function readSessionAttachment(
-  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions' | 'tasks' | 'workspaces'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'projects' | 'sessions' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'>,
   sessionId: SessionId,
   path: string
 ): Promise<Result<Uint8Array, DomainError>> {

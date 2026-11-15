@@ -121,7 +121,7 @@ export async function linkWorkspaceUseCase(deps: Pick<Deps, 'projects' | 'worksp
 }
 
 export async function unlinkWorkspaceUseCase(
-  deps: Pick<Deps, 'projects' | 'workspaces' | 'sessions' | 'tasks' | 'access'>,
+  deps: Pick<Deps, 'projects' | 'workspaces' | 'sessions' | 'tasks' | 'access' | 'workspaceGroups' | 'bots'>,
   command: LinkCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await authorizeProject(deps.access, command.actor, await deps.projects.byId(asProjectId(command.projectId)), 'project.update');
@@ -131,7 +131,7 @@ export async function unlinkWorkspaceUseCase(
   if (!workspace || !links.some((l) => l.projectId === project.value.id)) return err(notFound('这个项目没有关联这个工作空间'));
   for (const session of await deps.sessions.listByWorkspace(workspace.id)) {
     if (session.status !== 'running') continue;
-    const owner = await projectOfSession({ tasks: deps.tasks, projects: deps.projects }, session);
+    const owner = await projectOfSession(deps, session);
     if (owner?.id === project.value.id) return err(conflict('本项目还有会话在这个工作空间里运行，先停掉它'));
   }
   await deps.workspaces.unlink(project.value.id, workspace.id);

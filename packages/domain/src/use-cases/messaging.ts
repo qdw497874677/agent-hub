@@ -24,7 +24,6 @@ import {
   type MessageLimits,
   type MessagingConfig
 } from '../messaging.ts';
-import type { Bot } from '../bot.ts';
 import type { MessageStore } from '../ports/message-store.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
 import type { Project } from '../project.ts';
@@ -41,7 +40,7 @@ import { projectOfSession } from './workspaces.ts';
  * 接收（权限 ∩、限额、幂等、审计）→ 解析地址 → 对方空闲就投、忙就排队 → 回合结束时收回复（agent_reply 优先，最后一轮文字兜底）并投下一条。
  * 派生新会话要 agent.spawn，且要人批。
  */
-export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'projects' | 'tasks' | 'bots'> {
+export interface MessageBusDeps extends Pick<Deps, 'now' | 'sessions' | 'projects' | 'tasks' | 'bots' | 'workspaces' | 'workspaceGroups'> {
   readonly messages: MessageStore;
   readonly policy?: AccessPolicy;
   /** userId → 带上自定义角色和显式授权的 Principal；停用 / 不存在是 null。 */
@@ -561,7 +560,24 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       const roles: Bot[] = [];
       for (const draft of normalized) {
         const name = draft.name;
-        const current = byName.get(name);
+        let current = byName.get(name);
+        if (current === undefined) {
+          // bot 的名字在团队内唯一：别的项目已经建过同名 bot 时，只能复用它，
+          // 不能悄悄改掉它的运行时/模型（会连带影响那个项目）。
+          const shared = (await deps.bots.byName(teamId, name)) ?? undefined;
+          if (shared !== undefined) {
+            const same =
+              shared.ref.runtime === draft.ref.runtime &&
+              shared.ref.model === draft.ref.model &&
+              (shared.ref.options === undefined || JSON.stringify(shared.ref.options) === JSON.stringify(draft.ref.options));
+            if (!same) {
+              return err(
+                invalid(`团队里已经有同名 bot「${name}」，它的运行时或模型和这里不一样；先在 Bot 页面统一配置，或者换个名字`)
+              );
+            }
+            current = shared;
+          }
+        }
         const bot: Bot = {
           ...draft,
           name,

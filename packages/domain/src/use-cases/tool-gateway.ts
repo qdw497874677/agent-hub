@@ -172,6 +172,7 @@ export async function withToolAccess(
   try {
     if (command.kind === 'start_session') {
       const { token } = await gateway.issue(
+        // 这里在构造 grant 的会话描述（不是 Session 对象），null 即容器会话。
         { id: command.sessionId, taskId: command.taskId === null ? null : asTaskId(command.taskId), workerId: command.workerId },
         DEFAULT_TOOL_SCOPES,
         actor

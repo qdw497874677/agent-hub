@@ -67,12 +67,13 @@ export async function loadHome(
     .flatMap((session): RecentSession[] => {
       // 容器会话（#221 步骤 7）不属于任何任务：首页「接着干」靠任务标题定位，它们暂不在这里出现。
       if (isContainerSession(session)) return [];
-      const owner = owners.get(session.taskId as TaskId);
+      const taskId = session.taskId as TaskId;
+      const owner = owners.get(taskId);
       if (!owner) return [];
       return [
         {
           sessionId: session.id,
-          taskId: session.taskId,
+          taskId,
           taskTitle: owner.title,
           projectId: owner.project.id,
           projectName: owner.project.name,

@@ -304,6 +304,8 @@ const messageBus = createMessageBus({
   tasks: deps.tasks,
   messages: store.messages,
   bots: store.bots,
+  workspaces: deps.workspaces,
+  workspaceGroups: store.workspaceGroups,
   links: store.links,
   policy: deps.access,
   principalOf: (userId) => loadActor(store.users, store.access, userId, 'agent-message'),
@@ -364,6 +366,7 @@ const botOfSession = createBotOfSession({
   tasks: deps.tasks,
   bots: store.bots,
   workspaces: store.workspaces,
+  workspaceGroups: store.workspaceGroups,
   projects: store.projects,
   spawnOf: (sessionId) => store.messages.spawnOf(sessionId),
   memberOfSession: (sessionId) => store.groups.memberOfSession(sessionId)
@@ -381,7 +384,7 @@ const subjectOf = async (sessionId: SessionId): Promise<Subject | null> => {
   const frozen = grant?.actor?.userId ?? null;
   if (frozen !== null) return loadActor(store.users, store.access, frozen, 'agent-git');
   const bot = await botOfSession(sessionId);
-  const task = isContainerSession(session) ? null : await deps.tasks.byId(session.taskId);
+  const task = isContainerSession(session) ? null : await deps.tasks.byId(session.taskId as TaskId);
   const userId = bot ? task?.ownerId ?? session.createdBy ?? null : session.createdBy ?? task?.ownerId ?? null;
   return userId ? loadActor(store.users, store.access, userId, bot ? 'agent-bot' : 'agent-git') : null;
 };
@@ -572,7 +575,7 @@ const contextService = createContextService({ projects: deps.projects, tasks: de
 (deps as { sessionInstructions?: (sessionId: string) => Promise<string | null> }).sessionInstructions = (sessionId) => contextService.instructionsFor(sessionId);
 const offlineBrowser = offlineWorkspaceBrowser('worker 通道尚未就绪');
 const filesService = createWorkspaceFilesService({
-  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, workspaceGroups: store.workspaceGroups, gateway: deps.gateway, access: deps.access, audit: store.audit,
+  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, workspaceGroups: store.workspaceGroups, bots: store.bots, gateway: deps.gateway, access: deps.access, audit: store.audit,
   local: createWorkspaceBrowser(),
   remote: (workerId) => (serverGateway ? serverGateway.browser(workerId) : offlineBrowser),
   bases: store.sessionBases,
@@ -635,7 +638,7 @@ const workspaceSweeps = createSqliteWorkspaceSweeps(store.db);
 };
 // 提交 / 推送 / PR（ADR 0027 阶段 2）：文字由提炼模型写（D4），PR 走团队 token → gh → 链接（D3）
 const gitService = createGitWorkflowService({
-  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, gateway: deps.gateway, access: deps.access, audit: store.audit,
+  projects: deps.projects, tasks: deps.tasks, sessions: deps.sessions, workspaces: deps.workspaces, workspaceGroups: store.workspaceGroups, bots: store.bots, gateway: deps.gateway, access: deps.access, audit: store.audit,
   workLog: store.workLog, git: deps.git,
   pullRequests: pullRequestRepo,
   tokens: gitHostTokens,
@@ -657,6 +660,9 @@ const memoryService = createMemoryService({
   sessions: deps.sessions,
   projects: deps.projects,
   tasks: deps.tasks,
+  bots: store.bots,
+  workspaceGroups: store.workspaceGroups,
+  workspaces: deps.workspaces,
   ...store.memory,
   ...memoryRegistry.build({ index: store.memory.index, store: store.memory.store }),
   audit: store.audit,
@@ -922,7 +928,7 @@ sessionEnvironment = createSessionEnvironment({
   containerProject: async (sessionId) => {
     const session = await store.sessions.byId(sessionId as SessionId);
     if (!session) return null;
-    const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces }, session);
+    const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces, workspaceGroups: store.workspaceGroups }, session);
     return project ? { projectId: project.id as ProjectId, ownerId: session.createdBy ?? null } : null;
   },
   log
@@ -1167,7 +1173,7 @@ if (previewPorts !== null) {
       if (subject === null) return false;
       const session = await store.sessions.byId(link.sessionId);
       if (session === null) return false;
-      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces }, session);
+      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces, workspaceGroups: store.workspaceGroups }, session);
       return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
     },
     matchShare: (link, token) =>
@@ -1402,7 +1408,7 @@ if (previewPrefixActive && previewChannel !== null) {
       if (subject === null) return false;
       const session = await store.sessions.byId(link.sessionId);
       if (session === null) return false;
-      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces }, session);
+      const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces, workspaceGroups: store.workspaceGroups }, session);
       return (await authorizeSession(deps.access, subject, project, session, 'session.read')).ok;
     },
     channel: prefixChannel,

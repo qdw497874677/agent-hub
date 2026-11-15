@@ -11,8 +11,7 @@ import {
   PERSISTENT_AGENT_DISPLAY_NAME_MAX,
   principalOfSubject,
   type ApiToken,
-  type PersistentAgents,
-  type ProjectId
+  type PersistentAgents
 } from '@agent-hub/domain';
 import type { SubjectOf } from './auth.ts';
 import { botDto } from './agent-ref-dto.ts';

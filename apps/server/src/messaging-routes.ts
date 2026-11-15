@@ -67,7 +67,7 @@ const decisionBody = z.object({ approve: z.boolean() });
 export interface MessagingRouteDeps {
   readonly bus: MessageBus;
   readonly messages: MessageStore;
-  readonly deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access' | 'bots' | 'workspaces'>;
+  readonly deps: Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access' | 'bots' | 'workspaces' | 'workspaceGroups'>;
 }
 
 export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDeps, subjectOf: SubjectOf): void {

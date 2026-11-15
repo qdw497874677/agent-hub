@@ -14,7 +14,7 @@ import { startSessionUseCase } from './start-session.ts';
  * 这就是 S7.1「重开浏览器还能接着干活」。
  */
 export async function ensureHosted(
-  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'now'> &
+  deps: Pick<Deps, 'hosting' | 'tasks' | 'projects' | 'gateway' | 'sessions' | 'workspaces' | 'bots' | 'workspaceGroups' | 'now'> &
     Partial<Pick<Deps, 'toolGrants' | 'environment'>>,
   session: Session
 ): Promise<Result<void, DomainError>> {

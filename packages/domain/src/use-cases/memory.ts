@@ -65,9 +65,8 @@ export interface DistillSettings {
 
 export type MemoryCaller = { readonly kind: 'session'; readonly sessionId: SessionId } | { readonly kind: 'user'; readonly principal: Principal };
 
-export interface MemoryServiceDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' | 'projects'>,
-  // 容器会话（#221 步骤 7）没有任务，得靠组合工作空间 / bot 找回项目；不给就只有任务会话能用记忆。
-  Partial<Pick<Deps, 'bots' | 'workspaceGroups' | 'workspaces'>> {
+export interface MemoryServiceDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' | 'projects' | 'bots' | 'workspaceGroups' | 'workspaces'> {
+  // 容器会话（#221 步骤 7）没有任务，得靠组合工作空间 / bot 找回项目；这三样依赖一律必填。
   readonly store: MemoryStore;
   readonly index: MemoryIndex;
   readonly settings: MemorySettingsStore;

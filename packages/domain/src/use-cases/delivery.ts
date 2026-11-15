@@ -15,7 +15,7 @@ import { recordEvent } from './sessions.ts';
  */
 export type DeliveryDeps = Pick<
   Deps,
-  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
+  'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'
 > & { readonly deliveries: DeliveryQueue; readonly random?: () => number };
 
 export interface PromptPayload {

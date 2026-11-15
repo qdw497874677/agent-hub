@@ -84,7 +84,7 @@ async function deliveryIdOf(
  * 能力矩阵里 attachments 为 denied 的 agent 直接拒，原因原样给用户看。
  */
 async function prepareAttachments(
-  deps: Pick<Deps, 'agents' | 'now' | 'projects' | 'tasks' | 'workspaces'>,
+  deps: Pick<Deps, 'agents' | 'now' | 'projects' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'>,
   session: Session,
   inputs: readonly AttachmentInput[]
 ): Promise<Result<{ stored: StoredAttachment[]; parts: PromptPart[] }, DomainError>> {
@@ -144,7 +144,7 @@ async function peerBriefingFor(
 export async function promptSessionUseCase(
   deps: Pick<
     Deps,
-    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'
+    'agents' | 'artifacts' | 'fs' | 'gateway' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'
   > & Partial<Pick<Deps, 'workLog' | 'memoryGuidance' | 'sessionInstructions' | 'deliveries' | 'links'>>,
   command: PromptCommand
 ): Promise<Result<PromptAck, DomainError>> {
@@ -256,7 +256,7 @@ async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workL
  * 只有目录在 Server 本机的项目才由 Server 自己 stat。
  */
 async function withBytes(
-  deps: Pick<Deps, 'fs' | 'gateway' | 'sessions' | 'tasks' | 'projects' | 'workspaces'>,
+  deps: Pick<Deps, 'fs' | 'gateway' | 'sessions' | 'tasks' | 'projects' | 'workspaces' | 'workspaceGroups' | 'bots'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<SessionEvent> {
@@ -273,7 +273,7 @@ async function withBytes(
 
 /** worker 推上来一条事件：补字节数，然后按会话串行落盘（并发会撞 seq，见 ADR 0004）。 */
 export function ingestWorkerEvent(
-  deps: Pick<Deps, 'artifacts' | 'fs' | 'gateway' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces'>,
+  deps: Pick<Deps, 'artifacts' | 'fs' | 'gateway' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots'>,
   sessionId: SessionId,
   event: SessionEvent
 ): Promise<Result<Session, DomainError>> {

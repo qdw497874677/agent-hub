@@ -633,7 +633,7 @@ test('未读：别人发的才算、自己发的不算；标已读清零、不�
 test('bot 的启动选项：能存能改，形状不对就拒', async () => {
   const w = await world();
   let config: MessagingConfig = { projectId: w.project.id, roles: [], limits: {}, updatedAt: 0 };
-  const roles: PersistentAgent[] = [];
+  const roles: Bot[] = [];
   const agents = createPersistentAgents({
     projects: w.deps.projects,
     sessions: w.deps.sessions,

@@ -28,10 +28,10 @@ export interface WorkspaceFilesDeps {
   readonly tasks: Pick<TaskRepository, 'byId'>;
   readonly sessions: Pick<SessionRepository, 'byId' | 'listByWorkspace'>;
   readonly workspaces: WorkspaceRepository;
-  /** 组合工作空间（多仓库）的落点；不给 = 只会落到单仓库路径。 */
-  readonly workspaceGroups?: WorkspaceGroupRepository;
-  /** 容器会话（没有任务）靠 bot 归属找回项目（#221 步骤 7）。 */
-  readonly bots?: Pick<BotRepository, 'byId'>;
+  /** 组合工作空间（多仓库），容器会话按它反推项目。 */
+  readonly workspaceGroups: WorkspaceGroupRepository;
+  /** 容器会话（没有任务）的 bot 归属。 */
+  readonly bots: Pick<BotRepository, 'byId'>;
   readonly gateway: NodeGateway;
   readonly access?: AccessPolicy;
   readonly audit: Pick<AuditLog, 'append'>;

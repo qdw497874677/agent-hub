@@ -13,7 +13,7 @@ import { projectOfSession } from './workspaces.ts';
 
 export interface SettleSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
   // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
-  Partial<Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>> {
+  Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'> {
   /** 没登录态（或测试里没接审计）就不记。 */
   readonly audit?: AuditLog;
 }

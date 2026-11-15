@@ -12,8 +12,7 @@ import { projectOfSession } from './workspaces.ts';
 
 export interface DeleteSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
   // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
-  Partial<Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>> {}
-
+  Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'> {}
 const signedIn = (actor: Principal | null): Result<Principal, DomainError> =>
   !actor || actor.user.disabledAt !== null || actor.user.deletedAt !== null ? err(forbidden('需要登录')) : ok(actor);
 

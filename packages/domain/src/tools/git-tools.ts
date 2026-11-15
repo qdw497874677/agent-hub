@@ -142,6 +142,7 @@ export function createGitToolProvider(deps: GitToolDeps): ToolProvider {
 
       const subject = await deps.subjectOf(ctx.grant.sessionId);
       if (name === 'git.pull_requests') {
+        // grant 不是 Session，保留 null 判据。
         if (ctx.grant.taskId === null) return err(forbidden('这条会话不属于任何任务，没有任务级的 PR 清单'));
         return deps.workflow.listForTask(subject, ctx.grant.taskId);
       }

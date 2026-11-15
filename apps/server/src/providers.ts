@@ -266,6 +266,7 @@ export function createProviderWiring(wiring: ProviderWiring) {
     if (!parsed) return ok(command);
     const provider = await deps.providers.bySlug(parsed.slug);
     if (!provider) return err(invalid(`没有模型提供商「${parsed.slug}」`));
+    // command 是 WorkerCommand，不是 Session：容器判据仍是 taskId === null。
     const projectTeam = command.taskId === null ? null : await wiring.projectTeam(command.taskId);
     const usable = providerUsableIn(provider, projectTeam, await ownerTeam(provider));
     if (!usable.ok) return usable;

@@ -62,6 +62,10 @@ async function world(extra: { distiller?: MemoryDistiller; checkDistillModel?: M
     sessions: deps.sessions,
     tasks: deps.tasks,
     projects: deps.projects,
+    // projectOfSession 现在要这些端口（容器会话的项目反推）；测试世界来自 inMemoryDeps。
+    bots: deps.bots,
+    workspaceGroups: deps.workspaceGroups,
+    workspaces: deps.workspaces,
     ...store.memory,
     ...defaultMemoryRegistry().source(source).build({ index: store.memory.index, store: store.memory.store }),
     ...(extra.distiller ? { distiller: extra.distiller } : {}),

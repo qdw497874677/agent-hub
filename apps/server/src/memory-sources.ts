@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { asProjectId, isContainerSession, locationOf, projectOfSession, type Deps, type GroupStore, type JournalEntry, type MemoryScope, type MemorySource, type SourceDoc } from '@agent-hub/domain';
+import { asProjectId, isContainerSession, locationOf, projectOfSession, type Deps, type GroupStore, type JournalEntry, type MemoryScope, type MemorySource, type SourceDoc, type TaskId } from '@agent-hub/domain';
 
 /**
  * 记忆来源（ADR 0019 §5 · P1）：就地索引，不复制、不搬家。
@@ -25,7 +25,7 @@ const isAdr = (path: string) => /^docs\/(adr|decisions)\/.+\.md$/i.test(path);
 const isMarkdown = (path: string) => /\.(md|markdown)$/i.test(path) && !/(^|\/)(node_modules|vendor|dist|build)\//.test(path) && !/(^|\/)CHANGELOG\.md$/i.test(path);
 const titleOf = (path: string, text: string) => text.match(/^#\s+(.+)$/m)?.[1]?.trim().slice(0, 200) ?? path;
 
-type FileDeps = Pick<Deps, 'projects' | 'workspaces' | 'gateway' | 'fs' | 'tasks' | 'bots'>;
+type FileDeps = Pick<Deps, 'projects' | 'workspaces' | 'workspaceGroups' | 'gateway' | 'fs' | 'tasks' | 'bots'>;
 
 async function projectRoot(deps: FileDeps, scope: MemoryScope) {
   if (scope.kind !== 'project') return null;
@@ -147,7 +147,7 @@ function transcriptSource(deps: FileDeps & Pick<Deps, 'sessions'>): MemorySource
       for (const session of sessions.slice(0, TRANSCRIPT_SESSIONS)) {
         const text = await load(session.id);
         if (text === '') continue;
-        const task = isContainerSession(session) ? null : await deps.tasks.byId(session.taskId);
+        const task = isContainerSession(session) ? null : await deps.tasks.byId(session.taskId as TaskId);
         docs.push({ ref: { source: 'transcript', uri: session.id, hash: sha(text) }, title: `会话记录 · ${task?.title ?? session.id}`, text, updatedAt: session.updatedAt });
       }
       return { docs, partial: sessions.length > TRANSCRIPT_SESSIONS };
@@ -157,7 +157,7 @@ function transcriptSource(deps: FileDeps & Pick<Deps, 'sessions'>): MemorySource
       const session = await deps.sessions.byId(ref.uri as never);
       if (!session) return null;
       if (!isContainerSession(session)) {
-        const task = await deps.tasks.byId(session.taskId);
+        const task = await deps.tasks.byId(session.taskId as TaskId);
         if (!task || task.projectId !== scope.projectId) return null;
       } else {
         // 容器会话（群/bot）没有任务：项目按归属反推。

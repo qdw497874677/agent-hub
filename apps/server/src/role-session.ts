@@ -35,7 +35,7 @@ export async function loadActor(
  * 连接器要先 saveSpawn 再写来历；P2P / 群没有这一步。via 仍由调用方给（bot 或 group）。
  */
 export async function openRoleSession(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'workspaceGroups'>,
   provenance: ProvenanceDeps,
   input: {
     readonly projectId: string;

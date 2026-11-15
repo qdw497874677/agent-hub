@@ -43,7 +43,7 @@ export interface ContinueElsewhereCommand {
 export async function continueElsewhereUseCase(
   deps: Pick<
     Deps,
-    'agents' | 'artifacts' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaces' | 'workLog' | 'access'
+    'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access'
   >,
   command: ContinueElsewhereCommand
 ): Promise<Result<Session, DomainError>> {

@@ -90,6 +90,8 @@ async function world(options: { askTimeoutMs?: number; links?: SessionLinkReposi
     now: () => clock,
     sessions: deps.sessions,
     projects: deps.projects,
+    workspaces: deps.workspaces,
+    workspaceGroups: deps.workspaceGroups,
     tasks: deps.tasks,
     messages,
     bots: deps.bots,
@@ -255,6 +257,39 @@ test('整表保存也走 ref 净化：空壳 role 被拒，ref 归一后再落�
   assert.ok(saved.ok);
   assert.deepEqual(saved.value.roles[0]!.ref, { runtime: 'pi', model: 'm-1', options: { effort: 'high' } });
   assert.deepEqual((await w.bus.config(w.project.id)).roles.map((bot) => bot.name), ['qa']);
+});
+
+test('同名 bot 在团队内唯一：别的项目已建过就复用，配置不一致要明说', async () => {
+  const w = await world();
+  const other = createProject({ name: 'p2', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(other.ok);
+  await w.deps.projects.save(other.value);
+  const role = (model: string) => ({
+    roles: [{ name: 'qa', description: '', reuse: 'sticky' as const, ref: { runtime: 'pi', model, options: {} } }],
+    limits: {}
+  });
+
+  const first = await w.bus.saveConfig(w.project.id, role('m-1'));
+  assert.ok(first.ok);
+  // 第二个项目写同样的名字、同样的运行时/模型：复用同一个 bot，只补一条授权。
+  const second = await w.bus.saveConfig(other.value.id, role('m-1'));
+  assert.ok(second.ok);
+  const team = await w.deps.bots.listByTeam('T');
+  assert.deepEqual(team.map((bot) => bot.name), ['qa']);
+  assert.deepEqual((await w.deps.bots.grantsOf(team[0]!.id)).map((grant) => grant.projectId).sort(), [other.value.id, w.project.id].sort());
+
+  // 已经授权到本项目的 bot：允许在本项目的配置里改模型。
+  assert.ok((await w.bus.saveConfig(other.value.id, role('m-2'))).ok);
+  assert.equal((await w.deps.bots.listByTeam('T'))[0]?.ref.model, 'm-2');
+
+  // 没授权给本项目、但团队里已有同名 bot：不能悄悄改掉别人的配置。
+  const third = createProject({ name: 'p3', now: 1, teamId: 'T', createdBy: 'alice' });
+  assert.ok(third.ok);
+  await w.deps.projects.save(third.value);
+  const conflict = await w.bus.saveConfig(third.value.id, role('m-1'));
+  assert.equal(conflict.ok, false);
+  assert.match(!conflict.ok ? conflict.error.message : '', /团队里已经有同名 bot/);
+  assert.equal((await w.deps.bots.listByTeam('T'))[0]?.ref.model, 'm-2');
 });
 
 test('派生新会话：要 agent.spawn、要人批；批完投递，派生会话默认隔离', async () => {

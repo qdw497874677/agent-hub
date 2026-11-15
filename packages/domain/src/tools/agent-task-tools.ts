@@ -68,6 +68,7 @@ export function createAgentTaskToolProvider(deps: AgentTaskToolDeps): ToolProvid
     const session = await deps.sessions.byId(ctx.grant.sessionId);
     const agent = await deps.agentOf(ctx.grant.sessionId);
     if (agent) return { session, agent, ids: [agent.projectId, ...(await deps.associations(agent.projectId, agent.name)).filter((p) => p !== agent.projectId)] };
+    // grant 不是 Session，保留 null 判据。
     const task = ctx.grant.taskId === null ? null : await deps.tasks.byId(ctx.grant.taskId);
     return { session, agent, ids: task ? [task.projectId as string] : [] };
   };

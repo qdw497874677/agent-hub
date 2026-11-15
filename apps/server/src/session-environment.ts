@@ -92,6 +92,7 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     withMcp: boolean,
     container?: { projectId: ProjectId | null; ownerId: string | null }
   ): Promise<Resolved | null> {
+    // 这里的 taskId 是 prepare 的参数而不是 Session 对象，保留 null 判据。
     const task = taskId === null ? null : await tasks.byId(taskId);
     if (taskId !== null && !task) return null;
     if (taskId === null && !container?.projectId) return null;
@@ -120,6 +121,7 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     async prepare(command) {
       if (command.kind !== 'start_session') return { command, revision: null };
       try {
+        // command 是 StartCommand（不是 Session）：容器门禁仍以 taskId === null 为准。
         const container = command.taskId === null ? await options.containerProject?.(command.sessionId) ?? null : undefined;
         const resolved = await resolve(command.workerId, command.taskId, Boolean(command.tools), container ?? undefined);
         if (!resolved) return { command, revision: null };

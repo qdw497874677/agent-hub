@@ -43,7 +43,7 @@ export async function projectOfSession(
   session: Pick<Session, 'taskId' | 'workspaceId' | 'groupId' | 'botId'>
 ): Promise<Project | null> {
   if (!isContainerSession(session)) {
-    const task = await deps.tasks.byId(session.taskId);
+    const task = await deps.tasks.byId(session.taskId as TaskId);
     return task ? deps.projects.byId(task.projectId) : null;
   }
   if (session.groupId) {

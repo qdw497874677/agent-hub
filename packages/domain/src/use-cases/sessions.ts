@@ -201,6 +201,7 @@ async function noteSessionStarted(
   session: Session,
   body: string
 ): Promise<void> {
+  // 手上只有 session 上取下来的 taskId，不是 Session 对象：保留 null 判据。
   const taskId = session.taskId;
   if (taskId === null) return;
   const task = await deps.tasks.byId(taskId);
@@ -397,7 +398,7 @@ export interface ChangeOptionCommand {
  * 「平台以为在跑 A、其实跑的是 B」的谎话。
  */
 export async function changeSessionOption(
-  deps: Pick<Deps, 'gateway' | 'hosting' | 'projects' | 'sessions' | 'tasks' | 'workspaces' | 'now'>,
+  deps: Pick<Deps, 'gateway' | 'hosting' | 'projects' | 'sessions' | 'tasks' | 'workspaces' | 'workspaceGroups' | 'bots' | 'now'>,
   command: ChangeOptionCommand
 ): Promise<Result<Session, DomainError>> {
   const session = await deps.sessions.byId(asSessionId(command.sessionId));
