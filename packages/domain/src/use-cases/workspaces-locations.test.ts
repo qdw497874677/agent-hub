@@ -14,6 +14,7 @@ const project = {
   repos: [],
   description: null,
   worktree: null,
+  checks: [],
   createdAt: 1,
   teamId: null,
   createdBy: null,

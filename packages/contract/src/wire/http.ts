@@ -59,7 +59,9 @@ export const setProjectWorktreeRequest = z.object({
       })
     )
     .max(8)
-    .optional()
+    .optional(),
+  /** 项目声明的检查命令（issue #216 P1）：空数组 = 清掉，最多 5 条，一条一行（不能有换行）。 */
+  checks: z.array(z.string()).max(5).optional()
 });
 
 /** 绑定 / 改 / 解除项目仓库：repoUrl 为 null 或空串 = 解除。 */

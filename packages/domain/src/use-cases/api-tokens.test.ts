@@ -35,6 +35,7 @@ const projectOf = (id: string, createdBy: string, teamId = 'team-1'): Project =>
   createdBy,
   members: [createdBy],
   worktree: null,
+  checks: [],
   deletedAt: null
 });
 

@@ -1260,6 +1260,14 @@
                         "minimum": 1024,
                         "maximum": 65535
                       },
+                      "checks": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "maxItems": 5,
+                        "default": []
+                      },
                       "createdAt": {
                         "type": "integer",
                         "minimum": 0
@@ -1515,6 +1523,14 @@
                       "minimum": 1024,
                       "maximum": 65535
                     },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "default": []
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1759,6 +1775,14 @@
                       "minimum": 1024,
                       "maximum": 65535
                     },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "default": []
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1995,6 +2019,14 @@
                       ],
                       "minimum": 1024,
                       "maximum": 65535
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "default": []
                     },
                     "createdAt": {
                       "type": "integer",

@@ -39,6 +39,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   removeBotUseCase,
   updateBotUseCase,
   interruptSessionUseCase,
+  renameSessionUseCase,
   createGroupChat,
   createPersistentAgents,
   createSessionLane,
@@ -57,6 +58,10 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createSessionToolProvider,
   createAgentOrchestrationToolProvider,
   createGitToolProvider,
+  createSessionControlToolProvider,
+  createProjectToolProvider,
+  setProjectChecksUseCase,
+  setProjectDescriptionUseCase,
   changeSessionOption,
   systemSubject,
   createConnectorHub,
@@ -705,6 +710,45 @@ toolGateway = createToolGateway({
     createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
     // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
     createGitToolProvider({ workflow: gitService, subjectOf }),
+    // issue #216 P1：agent 可以改项目约定、在机器上跑项目声明的检查命令。
+    createProjectToolProvider({
+      sessions: deps.sessions,
+      tasks: deps.tasks,
+      projects: deps.projects,
+      workspaceGroups: deps.workspaceGroups,
+      bots: deps.bots,
+      workspaces: deps.workspaces,
+      gateway: deps.gateway,
+      access: deps.access,
+      subjectOf,
+      update: async ({ projectId, description, checks }) => {
+        let current = await deps.projects.byId(projectId as never);
+        if (!current) return err(notFound('项目不存在'));
+        if (description !== undefined) {
+          const next = await setProjectDescriptionUseCase(deps, { projectId, description });
+          if (!next.ok) return next;
+          current = next.value;
+        }
+        if (checks !== undefined) {
+          const next = await setProjectChecksUseCase(deps, { projectId, checks });
+          if (!next.ok) return next;
+          current = next.value;
+        }
+        return ok(current);
+      }
+    }),
+    // issue #216 P1：agent 可以派生子会话、收掉跑偏的会话（同项目才允许）。
+    createSessionControlToolProvider({
+      sessions: deps.sessions,
+      tasks: deps.tasks,
+      projects: deps.projects,
+      workspaceGroups: deps.workspaceGroups,
+      bots: deps.bots,
+      workspaces: deps.workspaces,
+      derive: (command) => deriveSessionUseCase(deps, command),
+      interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
+      rename: (command) => renameSessionUseCase(deps, command)
+    }),
     createAgentOrchestrationToolProvider({
       agentProfiles: deps.agentProfiles,
       sessions: deps.sessions,

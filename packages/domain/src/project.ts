@@ -30,6 +30,11 @@ export interface Project {
    * 不会自动建链接。null / 省略 = 没约定。
    */
   readonly previewPort?: number | null;
+  /**
+   * 项目声明的检查命令（issue #216 P1）：例如 `npm run typecheck`、`npm test`，由 `run.checks` 工具读取后逐条执行。
+   * 最多 `CHECK_COMMANDS_MAX` 条，每条最长 `CHECK_COMMAND_MAX` 字；空数组 = 没配。
+   */
+  readonly checks: readonly string[];
   /** 进了回收站的时间；null = 正常。 */
   readonly deletedAt: number | null;
 }
@@ -58,6 +63,37 @@ export function normalizeDescription(text: string | null | undefined): Result<st
   const trimmed = text?.trim() ?? '';
   if (trimmed.length > PROJECT_DESCRIPTION_MAX) return err(invalid(`项目说明太长了（最多 ${PROJECT_DESCRIPTION_MAX} 字）`));
   return ok(trimmed === '' ? null : trimmed);
+}
+
+/** 项目检查命令最多几条（issue #216 P1）。 */
+export const CHECK_COMMANDS_MAX = 5;
+
+/** 单条检查命令最长多少字（issue #216 P1）。 */
+export const CHECK_COMMAND_MAX = 300;
+
+/**
+ * 校验并规范化项目的检查命令（PATCH /api/projects/:id 的 checks 字段，issue #216 P1）。
+ * - 只接受字符串数组；空数组合法（= 没配）；
+ * - 逐条 trim，空串丢弃；非字符串元素丢弃（手改过的库不该让项目读不出来）；
+ * - 一条命令占一行：含换行直接报错；
+ * - 单条最多 `CHECK_COMMAND_MAX` 字，总共最多 `CHECK_COMMANDS_MAX` 条。
+ */
+export function normalizeChecks(value: unknown): Result<readonly string[], DomainError> {
+  if (!Array.isArray(value)) return err(invalid('检查命令要给一个字符串数组'));
+  const checks: string[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'string') continue;
+    const command = raw.trim();
+    if (command === '') continue;
+    // 检查的是原始值：`npm test\r` 这种末尾带回车的也要拦下来（trim 会把它吃掉）。
+    if (raw.includes('\n') || raw.includes('\r')) return err(invalid('检查命令不能换行：一条命令占一行'));
+    if (command.length > CHECK_COMMAND_MAX) {
+      return err(invalid(`检查命令太长了（一条最多 ${CHECK_COMMAND_MAX} 字）`));
+    }
+    checks.push(command);
+  }
+  if (checks.length > CHECK_COMMANDS_MAX) return err(invalid(`检查命令最多 ${CHECK_COMMANDS_MAX} 条`));
+  return ok(checks);
 }
 
 /** 过渡期的单仓库字段（`Project.repo`）：与 `Project.repos[0]` 的 url/branch 保持一致。 */
@@ -244,6 +280,8 @@ export interface CreateProjectInput {
   readonly repos?: readonly ProjectRepo[] | null;
   readonly description?: string | null;
   readonly worktree?: ProjectWorktree | null;
+  /** 已规范化的检查命令；不传 = 没配。 */
+  readonly checks?: readonly string[];
   readonly teamId?: string | null;
   readonly createdBy?: string | null;
 }
@@ -260,6 +298,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     repos,
     description: input.description ?? null,
     worktree: input.worktree ?? null,
+    checks: input.checks ?? [],
     createdAt: input.now,
     teamId: input.teamId ?? null,
     createdBy: input.createdBy ?? null,

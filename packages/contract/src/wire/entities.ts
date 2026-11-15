@@ -183,6 +183,8 @@ export const projectSchema = z.object({
   worktree: projectWorktreeSchema.nullable().default(null),
   /** 约定的开发服务器端口（只用于预览表单预填）。 */
   previewPort: z.number().int().min(1024).max(65535).nullable().optional(),
+  /** 项目声明的检查命令（issue #216 P1，最多 5 条）；空数组 = 没配。 */
+  checks: z.array(z.string()).max(5).default([]),
   createdAt: epochMs
 });
 

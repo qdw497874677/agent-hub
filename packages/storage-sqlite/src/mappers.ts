@@ -20,7 +20,7 @@ import type {
   TaskRepository,
   WorkspaceRepository
 } from '@agent-hub/domain';
-import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId, normalizeRepos, normalizeWorktree, primaryRepo } from '@agent-hub/domain';
+import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId, CHECK_COMMANDS_MAX, normalizeRepos, normalizeWorktree, primaryRepo } from '@agent-hub/domain';
 
 /**
  * 行映射层。`as` 在这里是本职：数据库只给 `string | number | null`，
@@ -78,6 +78,29 @@ function parseWorktree(raw: string | null): Project['worktree'] {
   }
 }
 
+/**
+ * 项目的检查命令（JSON 字符串数组，issue #216 P1）。读取尽量宽容：解析失败 / 不是数组 → 空；
+ * 非字符串元素和 trim 后为空的丢弃；最多 `CHECK_COMMANDS_MAX` 条。手改过的库不该让项目读不出来。
+ */
+function parseChecks(raw: string | null): readonly string[] {
+  if (raw === null) return [];
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return [];
+    const checks: string[] = [];
+    for (const entry of value) {
+      if (typeof entry !== 'string') continue;
+      const command = entry.trim();
+      if (command === '') continue;
+      checks.push(command);
+      if (checks.length === CHECK_COMMANDS_MAX) break;
+    }
+    return checks;
+  } catch {
+    return [];
+  }
+}
+
 export function toProject(row: Row): Project {
   const link =
     nullableStr(row, 'repo_url') === null
@@ -94,6 +117,7 @@ export function toProject(row: Row): Project {
     description: nullableStr(row, 'description'),
     worktree: parseWorktree(nullableStr(row, 'worktree_config')),
     ...(row['preview_port'] == null ? {} : { previewPort: Number(row['preview_port']) }),
+    checks: parseChecks(nullableStr(row, 'checks')),
     teamId: nullableStr(row, 'team_id'),
     createdBy: nullableStr(row, 'created_by'),
     members: parseMembers(nullableStr(row, 'members')),

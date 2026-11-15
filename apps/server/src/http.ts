@@ -127,6 +127,7 @@ import {
   setTaskSummaryUseCase,
   setProjectPreviewPortUseCase,
   setProjectWorktreeUseCase,
+  setProjectChecksUseCase,
   updateProjectReposUseCase,
   retryWorkspaceSetupUseCase,
   asWorkspaceId,
@@ -494,6 +495,15 @@ export function createApp(options: AppOptions): Hono {
       if (current.ok) {
         const detail = current.value.repos.length === 0 ? '清空' : current.value.repos.map((repo) => repo.name).join(', ');
         await auditResource(c, subject, 'project.repos', projectId, detail);
+      }
+    }
+    // 项目声明的检查命令（issue #216 P1）：空数组 = 清掉。
+    // 审计沿用现有的 project.worktree（项目开发配置），不新增审计动作。
+    if (current.ok && input.value.checks !== undefined) {
+      current = await setProjectChecksUseCase(deps, { projectId, checks: input.value.checks });
+      if (current.ok) {
+        const detail = current.value.checks.length === 0 ? '清空检查命令' : `检查命令：${current.value.checks.join(' · ').slice(0, 200)}`;
+        await auditResource(c, subject, 'project.worktree', projectId, detail);
       }
     }
     return current.ok ? c.json(current.value) : fail(c, current.error);

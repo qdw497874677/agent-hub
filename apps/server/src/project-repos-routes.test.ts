@@ -180,3 +180,33 @@ test('POST /api/projects/:id/repos/check：viewer 403；形状不合法 400', as
   const invalid = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: '' }] }));
   assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
 });
+
+test('PATCH /api/projects/:id：写检查命令（issue #216 P1），空数组清空，换行 400', async () => {
+  const { david, accounts } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  assert.deepEqual(project.checks, []);
+
+  const written = await david(
+    `/api/projects/${project.id}`,
+    patch({ checks: ['npm run typecheck', ' npm test '] })
+  );
+  assert.equal(written.status, 200, JSON.stringify(written.body));
+  assert.deepEqual(written.body.checks, ['npm run typecheck', 'npm test']);
+  assert.ok(accounts.auditRows.some((row) => row.action === 'project.worktree' && row.target === project.id));
+
+  // 只改别的字段不能把 checks 冲掉
+  const worktree = await david(`/api/projects/${project.id}`, patch({ worktree: { mode: 'isolated' } }));
+  assert.equal(worktree.status, 200, JSON.stringify(worktree.body));
+  assert.deepEqual(worktree.body.checks, ['npm run typecheck', 'npm test']);
+
+  const cleared = await david(`/api/projects/${project.id}`, patch({ checks: [] }));
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.deepEqual(cleared.body.checks, []);
+
+  const newline = await david(`/api/projects/${project.id}`, patch({ checks: ['npm test\nnpm run build'] }));
+  assert.equal(newline.status, 400, JSON.stringify(newline.body));
+  assert.match(newline.body.error.message, /不能换行/);
+
+  const tooMany = await david(`/api/projects/${project.id}`, patch({ checks: Array.from({ length: 6 }, (_, i) => `cmd-${i}`) }));
+  assert.equal(tooMany.status, 400, JSON.stringify(tooMany.body));
+});

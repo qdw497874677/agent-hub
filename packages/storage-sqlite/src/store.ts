@@ -151,6 +151,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'preview_port')) {
     db.exec('ALTER TABLE projects ADD COLUMN preview_port INTEGER');
   }
+  // 项目声明的检查命令（issue #216 P1）：JSON 字符串数组；NULL = 老数据 / 没配，读时统一成 []。
+  if (!projectColumns.some((column) => column.name === 'checks')) {
+    db.exec('ALTER TABLE projects ADD COLUMN checks TEXT');
+  }
   // 项目仓库清单（docs/design/multi-repo.md §11.2）：JSON 数组；NULL = 老数据，读时从 repo_url 单仓库回填。
   if (!projectColumns.some((column) => column.name === 'repos')) {
     db.exec('ALTER TABLE projects ADD COLUMN repos TEXT');
@@ -197,11 +201,11 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, created_at, team_id, created_by, members, deleted_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, checks, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
       'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, description = excluded.description, ' +
-      'worktree_config = excluded.worktree_config, preview_port = excluded.preview_port, ' +
+      'worktree_config = excluded.worktree_config, preview_port = excluded.preview_port, checks = excluded.checks, ' +
       'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
@@ -384,6 +388,7 @@ export function openSqliteStore(file: string): SqliteStore {
         project.description,
         project.worktree ? JSON.stringify(project.worktree) : null,
         project.previewPort ?? null,
+        JSON.stringify(project.checks),
         project.createdAt,
         project.teamId,
         project.createdBy,

@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, deriveRepoId, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, withProjectRepos } from '../project.ts';
+import { createProject, deriveRepoId, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, withProjectRepos } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
 import type { DomainError } from '../errors.ts';
@@ -209,6 +209,20 @@ export async function setProjectPreviewPortUseCase(
   const port = normalizePreviewPort(command.previewPort);
   if (!port.ok) return port;
   const next: Project = { ...project, previewPort: port.value };
+  await deps.projects.save(next);
+  return ok(next);
+}
+
+/** 改项目的检查命令（issue #216 P1）：空数组 = 清掉；逐条校验后写回。 */
+export async function setProjectChecksUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly checks: unknown }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const checks = normalizeChecks(command.checks);
+  if (!checks.ok) return checks;
+  const next: Project = { ...project, checks: checks.value };
   await deps.projects.save(next);
   return ok(next);
 }
