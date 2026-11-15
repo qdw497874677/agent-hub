@@ -402,7 +402,7 @@ export const openApiInfo = {
       '- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n' +
       '- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n' +
       '- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n' +
-      '- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP），工具与这里的接口一一对应。\n' +
+      '- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。对外只暴露一组只读工具（项目、任务、工作日志、会话事件），写操作仍走这里的 HTTP。\n' +
       '- 错误统一为 `{ error: { code, message } }`。'
   },
   servers: [{ url: '/' }]

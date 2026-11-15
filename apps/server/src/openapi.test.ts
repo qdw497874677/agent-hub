@@ -8,7 +8,7 @@ import { journalEntrySchema, projectSchema, sessionSchema, taskSchema } from '@a
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { buildSpecApp, openApiInfo } from './openapi/app.ts';
-import { mcpTools } from './openapi/mcp.ts';
+import { mcpTools, projectEvents } from './openapi/mcp.ts';
 
 const PASSWORD = 'long enough pw';
 const fake: AgentDescriptor = {
@@ -243,12 +243,18 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   assert.equal(init.status, 200, JSON.stringify(init.body));
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
-  assert.ok(names.includes('list_projects') && names.includes('prompt') && names.includes('create_task'));
+  assert.deepEqual(names.sort(), ['events', 'get_session', 'get_task', 'list_projects', 'list_task_log', 'list_tasks']);
+  // 写工具不进清单；注解标成只读。
+  assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
+  const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
+  assert.equal(project.annotations.readOnlyHint, true);
+  assert.match(project.description, /下一步/);
   const called = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'list_projects', arguments: {} } });
   assert.equal(called.body.result.isError, false, JSON.stringify(called.body));
-  const denied = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'create_project', arguments: { name: 'x' } } });
+  // 白名单外：不是 403，而是「没有这个工具」（连存在性都不确认）。
+  const denied = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'create_task', arguments: { projectId: 'p', title: 'x' } } });
   assert.equal(denied.body.result.isError, true);
-  assert.match(denied.body.result.content[0].text, /403/);
+  assert.match(denied.body.result.content[0].text, /没有这个工具/);
   // 没令牌：401
   const anonymous = await app.fetch(new Request('http://hub/openapi/v1/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
   assert.equal(anonymous.status, 401);
@@ -264,7 +270,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.ok(mcpTools().length >= 24);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions']) }).length, 6);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -278,4 +284,23 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
   const user = (await accounts.users.byId(row.userId as never))!;
   await accounts.users.save({ ...user, disabledAt: Date.now() });
   assert.equal((await api(token)('/projects')).status, 401);
+});
+
+
+test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
+  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['get_task', 'list_task_log', 'list_tasks']);
+  assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects']);
+  assert.equal(mcpTools({ readOnly: true }).length, 6);
+  const projected = projectEvents([
+    { seq: 1, at: 1, event: { kind: 'prompt', text: 'AWS_SECRET_ACCESS_KEY=abc' } },
+    { seq: 2, at: 2, event: { kind: 'tool_call', name: 'bash', input: { command: 'echo AWS_SECRET_ACCESS_KEY=abc' } } },
+    { seq: 3, at: 3, event: { kind: 'tool_result', ok: true, output: 'AWS_SECRET_ACCESS_KEY=abc' } },
+    { seq: 4, at: 4, event: { kind: 'text', text: '好了' } },
+    { seq: 5, at: 5, event: { kind: 'thinking', text: '密钥是 abc' } },
+    { seq: 6, at: 6, event: { kind: 'ended', outcome: 'done', reason: 'ok' } }
+  ]) as { event: Record<string, unknown> }[];
+  const text = JSON.stringify(projected);
+  assert.ok(!text.includes('AWS_SECRET'), text);
+  assert.deepEqual(projected.map((p) => p.event['kind']), ['tool', 'tool_result', 'text', 'ended']);
+  assert.deepEqual(projected[0]!.event, { kind: 'tool', name: 'bash' });
 });

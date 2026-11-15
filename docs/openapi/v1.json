@@ -3,7 +3,7 @@
   "info": {
     "title": "Agent Hub 开放 API",
     "version": "1.0.0",
-    "description": "给内部 / 外部 agent 和脚本用的稳定接口（ADR 0015）。\n\n- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP），工具与这里的接口一一对应。\n- 错误统一为 `{ error: { code, message } }`。"
+    "description": "给内部 / 外部 agent 和脚本用的稳定接口（ADR 0015）。\n\n- 认证：`Authorization: Bearer ahp_…`，令牌在「设置 → API 令牌」里创建，只显示一次。\n- 权限 = 令牌的权限范围 ∩ 账号在团队里的权限；hub 本机的机器永远用不了。\n- 限流：每个令牌每分钟 120 次请求、20 次 prompt，超了 429 + Retry-After。\n- MCP：同一个令牌 POST `/openapi/v1/mcp`（streamable HTTP）。对外只暴露一组只读工具（项目、任务、工作日志、会话事件），写操作仍走这里的 HTTP。\n- 错误统一为 `{ error: { code, message } }`。"
   },
   "servers": [
     {
@@ -1125,7 +1125,8 @@
         "tags": [
           "projects"
         ],
-        "summary": "项目列表",
+        "summary": "我可见的项目",
+        "description": "列出令牌账号能看见的项目（不含回收站）。\n参数：无。\n返回：项目数组（id、name、description、repo/repos、previewPort…）。\n下一步：用 list_tasks 传 projectId 看任务；用 get_session 看某条会话。\n错误：401 令牌无效。\n\n权限范围：`projects:read`",
         "security": [
           {
             "bearer": [
@@ -1133,7 +1134,6 @@
             ]
           }
         ],
-        "description": "权限范围：`projects:read`",
         "responses": {
           "200": {
             "description": "成功",
@@ -2511,6 +2511,7 @@
           "tasks"
         ],
         "summary": "项目下的任务",
+        "description": "列出某个项目里的任务。\n参数：projectId（必填）；没有分页，按更新时间倒序。\n返回：任务数组（id、title、status、branch、updatedAt…）。\n下一步：用 get_task 取详情与会话列表，list_task_log 看进展。\n错误：401 令牌无效；403 无 projects:read；404 项目不存在或看不见。\n\n权限范围：`projects:read`",
         "security": [
           {
             "bearer": [
@@ -2518,7 +2519,6 @@
             ]
           }
         ],
-        "description": "权限范围：`projects:read`",
         "parameters": [
           {
             "schema": {
@@ -2854,6 +2854,7 @@
           "tasks"
         ],
         "summary": "任务详情（带会话列表）",
+        "description": "取一条任务的详情和它下面的会话。\n参数：taskId。\n返回：任务对象 + sessions[]（id、status、model、updatedAt）。\n下一步：用 events 传入会话 id 读这条会话说了什么。\n错误：404 任务不存在、或属于看不见的项目（响应里不会有标题或目标）。\n\n权限范围：`projects:read`",
         "security": [
           {
             "bearer": [
@@ -2861,7 +2862,6 @@
             ]
           }
         ],
-        "description": "权限范围：`projects:read`",
         "parameters": [
           {
             "schema": {
@@ -3751,6 +3751,7 @@
           "tasks"
         ],
         "summary": "工作日志（倒序分页）",
+        "description": "任务进展的规范流：开始、阶段里程碑、结束都在这里，可按 seq 重放。\n参数：taskId；limit（1-200，默认 50）；beforeSeq（翻页游标）。\n返回：{ entries[], nextBeforeSeq }。\n下一步：要原始会话事件用 events；要交付物看任务详情里的分支与 PR。\n错误：404 任务不存在或看不见。\n\n权限范围：`projects:read`",
         "security": [
           {
             "bearer": [
@@ -3758,7 +3759,6 @@
             ]
           }
         ],
-        "description": "权限范围：`projects:read`",
         "parameters": [
           {
             "schema": {
@@ -5616,6 +5616,7 @@
           "sessions"
         ],
         "summary": "会话详情",
+        "description": "取一条会话的状态与配置。\n参数：sessionId。\n返回：会话对象（status、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n下一步：用 events 读它的时间线。\n错误：404 会话不存在或属于看不见的项目。\n\n权限范围：`sessions:read`",
         "security": [
           {
             "bearer": [
@@ -5623,7 +5624,6 @@
             ]
           }
         ],
-        "description": "权限范围：`sessions:read`",
         "parameters": [
           {
             "schema": {
@@ -6843,6 +6843,7 @@
           "sessions"
         ],
         "summary": "会话事件（after 之后的）",
+        "description": "读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n参数：sessionId；after（只取 seq > after 的事件，便于轮询）。\n返回：[{ seq, at, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n错误：404 会话不存在或看不见。\n\n权限范围：`sessions:read`",
         "security": [
           {
             "bearer": [
@@ -6850,7 +6851,6 @@
             ]
           }
         ],
-        "description": "权限范围：`sessions:read`",
         "parameters": [
           {
             "schema": {

@@ -75,7 +75,13 @@ export const routes = {
   }),
 
   listProjects: route('projects:read', {
-    method: 'get', path: `${V1}/projects`, tags: ['projects'], summary: '项目列表',
+    method: 'get', path: `${V1}/projects`, tags: ['projects'], summary: '我可见的项目',
+    description:
+      '列出令牌账号能看见的项目（不含回收站）。\n' +
+      '参数：无。\n' +
+      '返回：项目数组（id、name、description、repo/repos、previewPort…）。\n' +
+      '下一步：用 list_tasks 传 projectId 看任务；用 get_session 看某条会话。\n' +
+      '错误：401 令牌无效。',
     responses: { 200: json(z.array(projectSchema)) }
   }),
   createProject: route('projects:write', {
@@ -119,6 +125,12 @@ export const routes = {
 
   listTasks: route('projects:read', {
     method: 'get', path: `${V1}/tasks`, tags: ['tasks'], summary: '项目下的任务',
+    description:
+      '列出某个项目里的任务。\n' +
+      '参数：projectId（必填）；没有分页，按更新时间倒序。\n' +
+      '返回：任务数组（id、title、status、branch、updatedAt…）。\n' +
+      '下一步：用 get_task 取详情与会话列表，list_task_log 看进展。\n' +
+      '错误：401 令牌无效；403 无 projects:read；404 项目不存在或看不见。',
     request: { query: z.object({ projectId: z.string().min(1) }) },
     responses: { 200: json(z.array(taskSchema)) }
   }),
@@ -129,6 +141,12 @@ export const routes = {
   }),
   getTask: route('projects:read', {
     method: 'get', path: `${V1}/tasks/{taskId}`, tags: ['tasks'], summary: '任务详情（带会话列表）',
+    description:
+      '取一条任务的详情和它下面的会话。\n' +
+      '参数：taskId。\n' +
+      '返回：任务对象 + sessions[]（id、status、model、updatedAt）。\n' +
+      '下一步：用 events 传入会话 id 读这条会话说了什么。\n' +
+      '错误：404 任务不存在、或属于看不见的项目（响应里不会有标题或目标）。',
     request: { params: taskId },
     responses: { 200: json(taskSchema.extend({ sessions: z.array(sessionSchema) })) }
   }),
@@ -144,6 +162,12 @@ export const routes = {
   }),
   listTaskLog: route('projects:read', {
     method: 'get', path: `${V1}/tasks/{taskId}/log`, tags: ['tasks'], summary: '工作日志（倒序分页）',
+    description:
+      '任务进展的规范流：开始、阶段里程碑、结束都在这里，可按 seq 重放。\n' +
+      '参数：taskId；limit（1-200，默认 50）；beforeSeq（翻页游标）。\n' +
+      '返回：{ entries[], nextBeforeSeq }。\n' +
+      '下一步：要原始会话事件用 events；要交付物看任务详情里的分支与 PR。\n' +
+      '错误：404 任务不存在或看不见。',
     request: { params: taskId, query: z.object({ limit: z.coerce.number().int().min(1).max(200).optional(), beforeSeq: z.coerce.number().int().optional() }) },
     responses: { 200: json(workLogPage) }
   }),
@@ -171,6 +195,12 @@ export const routes = {
   }),
   getSession: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}`, tags: ['sessions'], summary: '会话详情',
+    description:
+      '取一条会话的状态与配置。\n' +
+      '参数：sessionId。\n' +
+      '返回：会话对象（status、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n' +
+      '下一步：用 events 读它的时间线。\n' +
+      '错误：404 会话不存在或属于看不见的项目。',
     request: { params: sessionId },
     responses: { 200: json(sessionSchema) }
   }),
@@ -192,6 +222,12 @@ export const routes = {
   }),
   events: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}/events`, tags: ['sessions'], summary: '会话事件（after 之后的）',
+    description:
+      '读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n' +
+      '参数：sessionId；after（只取 seq > after 的事件，便于轮询）。\n' +
+      '返回：[{ seq, at, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n' +
+      '下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n' +
+      '错误：404 会话不存在或看不见。',
     request: { params: sessionId, query: z.object({ after: z.coerce.number().int().min(0).optional() }) },
     responses: { 200: json(z.array(journalEntrySchema)) }
   }),

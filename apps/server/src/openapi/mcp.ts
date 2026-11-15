@@ -9,6 +9,32 @@ import { routes } from './routes.ts';
 export const INTERNAL: unique symbol = Symbol('openapi-internal');
 
 type RouteDef = (typeof routes)[keyof typeof routes];
+
+export type McpModuleName = 'tasks' | 'projects' | 'sessions';
+
+/**
+ * 对外 MCP 的白名单：先白名单、再分组、再只读闸门。
+ * 新增 v1 路由默认**不**进 MCP——要在这里显式加一行，避免「加个路由就悄悄对外」。
+ * 描述写在 routes.ts 的路由上（何时用 / 参数 / 返回 / 下一步），这里只管放行与投影。
+ */
+const ALLOWED = {
+  listProjects: { module: 'projects', readOnly: true },
+  getSession: { module: 'sessions', readOnly: true },
+  listTasks: { module: 'tasks', readOnly: true },
+  getTask: { module: 'tasks', readOnly: true },
+  listTaskLog: { module: 'tasks', readOnly: true },
+  events: { module: 'sessions', readOnly: true, project: projectEvents }
+} as const satisfies Record<string, { module: McpModuleName; readOnly: boolean; project?: (value: unknown) => unknown }>;
+
+export interface McpPolicy {
+  /** 允许的分组；缺省 = 全部允许的分组。 */
+  readonly modules?: ReadonlySet<McpModuleName>;
+  /** 只暴露只读工具（并且拒绝调用写工具）。 */
+  readonly readOnly?: boolean;
+}
+
+const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions'];
+
 interface ToolDef {
   readonly name: string;
   readonly description: string;
@@ -18,10 +44,27 @@ interface ToolDef {
   readonly queryKeys: readonly string[];
   /** 'flat' = 请求体字段直接摊在参数里；'nested' = 放在 body 里；null = 没有请求体。 */
   readonly body: 'flat' | 'nested' | null;
+  readonly module: McpModuleName;
+  readonly readOnly: boolean;
+  readonly project?: (value: unknown) => unknown;
 }
 
 /** SSE 不适合做工具（MCP 客户端用 session_events 轮询）。 */
 const SKIP = new Set(['health', 'stream']);
+
+const envFlag = (name: string): boolean => {
+  const raw = typeof process === 'undefined' ? undefined : process.env[name];
+  return raw === '1' || raw?.toLowerCase() === 'true';
+};
+
+const envModules = (): ReadonlySet<McpModuleName> => {
+  const raw = typeof process === 'undefined' ? undefined : process.env['MCP_MODULES'];
+  const listed = (raw ?? '').split(',').map((m) => m.trim()).filter(Boolean);
+  const known = ALL_MODULES.filter((m) => listed.includes(m));
+  return new Set(known.length > 0 ? known : ALL_MODULES);
+};
+
+export const policyFromEnv = (): McpPolicy => ({ modules: envModules(), readOnly: envFlag('MCP_READ_ONLY') });
 const snake = (key: string) => key.replace(/[A-Z]/g, (ch) => `_${ch.toLowerCase()}`);
 
 type Shape = Record<string, z.ZodType>;
@@ -31,7 +74,7 @@ const shapeOf = (schema: unknown): Shape | null => {
 };
 const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as Record<string, unknown>;
 
-function toolOf(key: string, route: RouteDef): ToolDef {
+function toolOf(key: string, route: RouteDef, allow: (typeof ALLOWED)[keyof typeof ALLOWED]): ToolDef {
   const request = (route as { request?: { params?: unknown; query?: unknown; body?: { content: Record<string, { schema: z.ZodType }> } } }).request ?? {};
   const params = shapeOf(request.params) ?? {};
   const query = shapeOf(request.query) ?? {};
@@ -56,29 +99,66 @@ function toolOf(key: string, route: RouteDef): ToolDef {
     route,
     pathKeys: Object.keys(params),
     queryKeys: Object.keys(query),
-    body
+    body,
+    module: allow.module,
+    readOnly: allow.readOnly,
+    ...('project' in allow && typeof allow.project === 'function' ? { project: allow.project } : {})
   };
 }
 
-let cached: ToolDef[] | null = null;
-export function mcpTools(): ToolDef[] {
+let cached: readonly ToolDef[] | null = null;
+export function mcpTools(policy: McpPolicy = {}): ToolDef[] {
   cached ??= Object.entries(routes)
-    .filter(([key]) => !SKIP.has(key))
-    .map(([key, route]) => toolOf(key, route));
-  return cached;
+    .filter(([key]) => !SKIP.has(key) && key in ALLOWED)
+    .map(([key, route]) => toolOf(key, route, ALLOWED[key as keyof typeof ALLOWED]));
+  const modules = policy.modules ?? envModules();
+  const readOnly = policy.readOnly ?? envFlag('MCP_READ_ONLY');
+  return cached.filter((tool) => modules.has(tool.module) && (!readOnly || tool.readOnly));
+}
+
+/** 会话事件投影：工具输入/输出、思考、提示词原文都不出去（只留工具名与成败）。 */
+export function projectEvents(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const out: Record<string, unknown>[] = [];
+  for (const raw of value) {
+    const entry = raw as { seq?: number; at?: number; event?: Record<string, unknown> };
+    const event = entry.event ?? {};
+    const kind = typeof event['kind'] === 'string' ? event['kind'] : '';
+    const base = { seq: entry.seq ?? 0, at: entry.at ?? 0 };
+    if (kind === 'text') {
+      out.push({ ...base, event: { kind: 'text', text: typeof event['text'] === 'string' ? event['text'] : '' } });
+    } else if (kind === 'tool_call') {
+      out.push({ ...base, event: { kind: 'tool', name: String(event['name'] ?? 'tool') } });
+    } else if (kind === 'tool_result') {
+      out.push({ ...base, event: { kind: 'tool_result', ok: event['ok'] === true } });
+    } else if (kind === 'ended') {
+      out.push({ ...base, event: { kind: 'ended', outcome: String(event['outcome'] ?? 'done'), ...(typeof event['reason'] === 'string' ? { reason: event['reason'] } : {}) } });
+    } else if (kind === 'diagnostic') {
+      out.push({ ...base, event: { kind: 'diagnostic', level: String(event['level'] ?? 'info'), text: '诊断细节已省略' } });
+    }
+    // 其余（thinking / prompt / commands / approval / artifact…）一律不出。
+  }
+  return out;
 }
 
 /**
  * 开放 API 的 MCP 端点：无状态 streamable HTTP，每个请求一个 SDK Server。
  * 工具调用原样转成对 v1 接口的内部请求（同一个 Authorization），所以权限、审计、校验与 HTTP 完全一致。
  */
+const routeTitle = (route: RouteDef): string => (route as { summary?: string }).summary ?? '工具';
+
 export async function handleMcp(c: Context, v1: Hono): Promise<Response> {
   const authorization = c.req.header('authorization') ?? '';
-  const tools = mcpTools();
+  const tools = mcpTools(policyFromEnv());
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   const server = new Server({ name: 'agent-hub-openapi', version: '1.0.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: tools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema as { type: 'object' } }))
+    tools: tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema as { type: 'object' },
+      annotations: { title: routeTitle(tool.route), readOnlyHint: tool.readOnly, destructiveHint: false, idempotentHint: true }
+    }))
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const tool = byName.get(request.params.name);
@@ -110,6 +190,7 @@ export async function handleMcp(c: Context, v1: Hono): Promise<Response> {
     } catch {
       // 不是 JSON 就原样给
     }
+    if (response.ok && tool.project) value = tool.project(value);
     const structured = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : { result: value };
     return {
       isError: !response.ok,

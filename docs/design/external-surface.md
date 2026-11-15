@@ -100,205 +100,111 @@ Worker 只按 digest 加载，缺什么就按哈希取；取不到就报 `missin
   通知、连接器走 outbox（已在 `836fd63` 落地）。
 - 节流属于产出端：stage 级进展 90s / 8 条上限，`started` / `finished` 不受限。
 
-## 5. 对外 MCP 端点
+## 5. 对外 MCP：在现有端点上收窄，不新写一套
 
-- 传输：Streamable HTTP，`POST/GET /api/mcp`，`Authorization: Bearer <token>`。
-- 认签：`ApiToken` → `ToolGrant`（按项目 + scope 预置），每次调用实时求值；
-  审计记 `mcp.tool`（token、tool、taskId、耗时、结果码）。
-- 限流：每 token 每分钟 60 次；单次 `wait` 只占一个连接；响应体上限 1 MB。
-- 资产访问遵循 §3.5；MCP 端点不直接改资产内容，只读 catalog 与引用。
-- 写调用带 `idempotencyKey`（客户端生成，24h 内同键返回首次结果），避免重试造成重复项目/任务。
+现状（审查确认）：`POST /openapi/v1/mcp`（`apps/server/src/openapi/app.ts:386`）已经存在，
+无状态 Streamable HTTP，工具由 v1 路由自动生成，并把调用原样转成内部 HTTP
+（`apps/server/src/openapi/mcp.ts:75-125`）。问题不是「没有传输」，而是**全量投影 239 条路由**：
+删项目、交资产版本、开会话、分叉都在里面。
 
-### 5.1 模块划分
+因此 v1 的做法是**白名单 + 注解 + 描述 + 出参投影**，继续复用内部 HTTP 转调：
 
-对外 MCP 按 领域模块 拆，一个端点（`/api/mcp`）挂全部工具，靠 token scope 决定可见性；
-代码上每个模块独立文件、独立 scope、独立审计前缀，互不依赖：
+- 鉴权、404 语义、审计只有一套（`installAccess` + 各路由 `can()`），不在工具层重判。
+- 令牌 scope 沿用现有 `api-token.ts` 的 `projects:read|write` 等，不新造 `task:read`。
+- 不接内部 agent 的 38 个 `ToolGrant` 工具——那是会话内身份，和外部令牌不是一条链。
 
-| 模块 | 文件 | scope | 工具 |
-| --- | --- | --- | --- |
-| 任务 | `tools/external/tasks.ts` | `task:read` / `task:create` | `task.create`、`task.get`、`task.messages`、`task.reply`、`task.cancel` |
-| 项目 | `tools/external/projects.ts` | `project:read` / `project:create` / `project:update` | `project.list`、`project.get`、`project.create`、`project.update`、`project.repos.set` |
-| 资产 | `tools/external/assets.ts` | `asset:read` / `asset:write` | `asset.list`、`asset.get`、`assetSet.list`、`assetSet.get`、`assetSet.create`、`assetSet.update`、`assetSet.bind` |
+### 5.1 模块 = 白名单分组
 
-规则：
-
-- **一个模块 = 一个文件 + 一组 scope + 一份审计前缀**；模块之间不互相 import，只用领域用例。
-- 工具名前缀即模块名；客户端看到多少个工具由 token scope 决定（没有 `asset:write` 就看不到
-  `assetSet.create`），而不是调用时才 403。
-- 传输层只做「MCP 调用 → 工具定义 → 领域用例」；HTTP 路由如需同类能力，复用同一批工具
-  定义，不复制校验。
-- 每个模块可单独下线（配置 `MCP_MODULES=tasks,projects`），便于灰度与事故止损。
-- 工具默认暴露面 ≤20 个（本设计 17 个）；`X-MCP-Toolsets` 式的 `?surfaces=` 可进一步收窄。
-- 每个工具必须声明 MCP `ToolAnnotations`：`title`、`readOnlyHint`、`destructiveHint`、
-  `idempotentHint`；只读工具（`get/list/messages`）一律 `readOnlyHint: true`，写工具默认
-  `destructiveHint: false` 但不可幂等（除 `task.create`，见 §5.4）。
-
-### 5.1.1 任务模块（五件）
-
-| 工具 | 说明 |
-| --- | --- |
-| `task.create` | 给项目下派任务：`{projectId, prompt, kind:'code'\|'serve', assetSetId?, baseBranch?, deliver?}`；返回 `{taskId, sessionId}` |
-| `task.get` | 状态、分支、commit、PR URL、`lastSeq`、最后一句话 |
-| `task.messages` | `after=seq` 拉消息（text / question / tool 摘要 / ended），`limit≤200` |
-| `task.reply` | 给运行中的会话补一句话；走送达队列，不新开会话 |
-| `task.cancel` | 取消排队或打断运行中的会话 |
-
-### 5.1.2 项目模块
-
-| 工具 | 说明 |
-| --- | --- |
-| `project.list` / `project.get` | 可见项目与配置摘要（仓库、检查命令、预览端口、默认资产集、成员数） |
-| `project.create` | `{name, repos[], description?}`；第一个仓库为主仓库；需 `project:create` |
-| `project.update` | `{projectId, description?, previewPort?, worktree?}`；不动代码、不动成员 |
-| `project.repos.set` | 整体替换仓库清单（≤8）；保存前跑 `repos/check`，不可达/分支不存在则整单拒绝并给出逐项原因 |
-
-项目模块**不**做：删除项目、成员/权限变更、集群级设置（仍走界面，需二次确认）。
-
-### 5.1.3 资产模块
-
-| 工具 | 说明 |
-| --- | --- |
-| `asset.list` / `asset.get` | 可引用资产（skill / instruction / mcp）与版本摘要 |
-| `assetSet.list` / `assetSet.get` | 资产集与 items（`assetId` + `pin`） |
-| `assetSet.create` / `assetSet.update` | 新建/修改资产集；只能引用已发布且 `assetVisibleIn` 通过的资产 |
-| `assetSet.bind` | 绑定到项目默认或 Bot 默认（`{assetSetId, projectId?|botId?}`） |
-
-资产模块**不**做：导入/上传/审核/删除资产、改资产内容、签发密钥——这些涉及供应链与密钥，
-必须留在界面与人工审核流程里。MCP 只能组合「已经审过的资产」。
-
-### 5.1.4 场景剧本（建项目 → 绑仓库 → 装资产 → 开发 → 本地起服务）
-
-一次完整的「从零到能看」在 MCP 上是一条直线，不需要切界面：
-
-```jsonc
-// 1. 建项目：一次给齐多个仓库（第一个是主仓库）
-project.create({
-  "name": "agent-hub",
-  "repos": [
-    {"name":"agent-hub","url":"https://github.com/o/agent-hub.git","defaultBranch":"main"},
-    {"name":"web-kit","url":"https://github.com/o/web-kit.git"}
-  ],
-  "description": "运行时无关的 agent 工作台"
-})
-// → { projectId, repos:[...], primary:"agent-hub" }
-
-// 2. 建两个场景资产包（技能 + 指令的组合，只能选已发布资产）
-assetSet.create({ "name":"开发", "items":[{"assetId":"a_ts","pin":"follow"},{"assetId":"a_review"}] })
-assetSet.create({ "name":"本地部署", "items":[{"assetId":"a_deploy"},{"assetId":"a_ops"}] })
-
-// 3. 绑默认：项目默认用「开发」；部署任务显式用「本地部署」
-assetSet.bind({ "assetSetId":"as_dev", "projectId":"p_1" })
-
-// 4. 开发任务（隔离 worktree，产出分支/PR）
-task.create({
-  "projectId":"p_1", "kind":"code", "assetSetId":"as_dev",
-  "prompt":"把会话页的预览面板接上自动发现……",
-  "deliver": {"branch":"agent-hub/preview-autodetect","openPr":true}
-})
-
-// 5. 本地部署任务（同一项目，共享目录，起服务并登记预览）
-task.create({
-  "projectId":"p_1", "kind":"serve", "assetSetId":"as_deploy",
-  "prompt":"用 pnpm dev 起前端与 server，确认 /api/health 200；把端口登记为预览"
-})
-// → 6. task.get(taskId) 里出现 previewLink { port, url, state }
-
-// 7. 过程中反问
-//    会话调用 task.ask("要 npm ci 还是复用现有 node_modules？")
-//    → task.messages 看到 question → task.reply("复用") → 同一会话继续
-```
-
-`kind` 的差别只在于默认值与收尾动作，不是新实体：
-
-| kind | 工作目录 | 收尾 |
+| 分组 | 放行的 v1 路由 | 说明 |
 | --- | --- | --- |
-| `code` | 隔离 worktree（可指定 shared） | 提交 → 推送分支 → 可选开 PR |
-| `serve` | 共享目录 | 起服务 → 登记预览链接 → 保持进程；`task.get` 返回 `previewLink` |
+| `tasks` | `listTasks`、`getTask`、`listTaskLog` | 只读；进度走工作日志 |
+| `projects` | `listProjects` | 只读；写项目（create/update/repos）v2 再开 |
+| `sessions` | `getSession`、`events` | 只读；`events` 必须投影（见 §5.4） |
 
-`check` / `review` 作为 v2 的 `code` 预设（`checks:true` / `baseRef`），不单列。
+`getProject`、`listAssets`、`getAsset` 目前在 v1 路由表里还没有，等补路由后再进白名单——
+白名单只认「已存在且显式登记」的路由。
 
-### 5.1.6 状态模型：五态 + 明细
+明确排除（无论 scope）：`deleteProject`、`startSession`、`forkSession`、`stream`、
+`submitAssetRevision`、任何密钥/成员/集群路由。白名单是**代码里的一张表**，新增 v1 路由
+默认不进 MCP，避免「加个路由就悄悄对外」。
 
-对齐 MCP tasks 扩展与 Devin 的 `status`/`status_detail` 双层，`task.get` 主状态固定五个：
+`MCP_MODULES` 用上表的分组名做灰度；`MCP_READ_ONLY=1` 在 `tools/list` 与 `tools/call`
+两边同时生效（list 不返回写工具，call 直接「没有这个工具」）。
 
-| status | 含义 | 对应我们的内部状态 |
+### 5.2 描述与注解：给调用方 agent 看的
+
+现有描述只有 `summary + METHOD path`（`openapi/mcp.ts:51-54`），不够。最小改法是在路由定义
+上补 `description`，`toolOf()` 拼进去，并补注解：
+
+```ts
+description:
+  '列出我可见的任务，按更新时间倒序。\n' +
+  '参数：projectId（可选，过滤单个项目）、limit（1-200，默认 50）。\n' +
+  '返回：{tasks:[{id,title,status,projectId,updatedAt}]}。\n' +
+  '下一步：用 get_task 取详情，list_task_log 看进展。\n' +
+  '错误：401 令牌无效；403 无 projects:read。'
+
+annotations: {
+  title: summary,
+  readOnlyHint: true,          // 白名单里显式标，不用 method 猜
+  destructiveHint: false,
+  idempotentHint: true
+}
+```
+
+描述统一四段：**何时用 → 参数 → 返回 → 下一步/错误**。写工具另加「会改变什么、能不能撤销」。
+`readOnlyHint` 在表里显式声明，因为「只读但 POST」的路由用 method 推导会标错。
+
+### 5.3 任务状态：只做投影，不改领域
+
+任务与会话是两套状态，不能混：
+
+- 任务：`todo | in_progress | blocked | in_review | done | abandoned`（`packages/domain/src/task.ts:10`）
+- 会话：`running | stopped | done | interrupted | failed`（`packages/domain/src/session.ts:15`）
+
+对外 `get_task` 返回 `{status, session:{status, phase, liveness}}`，`phase` 复用
+`derivePhase`（`working | needs_answer | idle | failed`）。**不发明 `cancelled` 主状态**；
+人取消是 `stopped`，进程消失是 `interrupted`。`input_required` 只在 MCP tasks 扩展
+（v2）里出现，v1 用 `needs_answer` 表达。
+
+### 5.4 消息投影：不能原样返回 journal
+
+`GET /api/sessions/:id/events` 原样返回事件（`openapi/app.ts:329`），里面有
+`tool_call.input`、`tool_result.output`（截断到 16k）、`prompt.text`、`thinking`、
+`diagnostic`、审批详情。外部只给投影后的四类：
+
+| 对外 kind | 来自 | 保留字段 |
 | --- | --- | --- |
-| `working` | 会话在干活（含 `slow`） | `running` + `liveness: active/slow` |
-| `input_required` | 会话问了一个问题，等调用方 `task.reply` | 有一条未回答的 `question` |
-| `completed` | 正常结束，产物可取 | `done` |
-| `failed` | 失败/打断/超时，`reason` 给原因 | `failed` / `interrupted` / 卡住后打断 |
-| `cancelled` | 调用方取消 | `cancelled` |
+| `text` | text delta 合并 | `text`, `at` |
+| `tool` | tool_call / tool_result | `name`, `ok`, `durationMs`（**丢弃 input/output**） |
+| `ended` | ended | `outcome`, `reason` |
+| `diagnostic` | diagnostic | 只保留 `level` 与「已脱敏」的通用文案 |
 
-`detail` 放细分原因（如 `tool:bash`、`stuck_no_events`、`worker_offline`、
-`usage_limit`），不扩主状态枚举。`task.get` 同时返回 `liveness` 与 `lastSeq`。
+`?after=seq` 的分页保持现有语义；投影在 MCP 层做，HTTP v1 保持不变。
 
-### 5.1.5 运行感知：别让会话「静悄悄地卡住」
+### 5.5 运行感知：只报告，不自动杀
 
-外部调用方看不到终端，必须能从 `task.get` 判断「在干活 / 慢 / 卡住 / 机器没了」。这些
-全部由 hub 侧的既有事件推导，不改协议：
+已有 `HUB_STALL_MS=300000` 与 `flagStalledSessions`，但它只写一条 warn、不打断
+（`packages/domain/src/use-cases/stall.ts:12-16`）。v1 把它投影成四档，阈值沿用：
 
-- 每条 journal 事件落库时更新 `lastEventAt`；`task.get` 返回
-  `{ phase, lastEventAt, idleMs, lastSeq, workerOnline, processAlive }`。
-- `phase`：`starting | thinking | tool:<name> | waiting_user | ended`（复用现有 attention 推导）。
-- `liveness` 四档：
-  - `active`：60s 内有事件；
-  - `slow`：60s–5min 没有事件，但回合未结束（模型可能在想）；
-  - `stalled`：>5min 没有事件且回合未结束（`HUB_STALL_MS=300000`）；
-  - `detached`：worker 离线、或会话在 worker 上没有进程（`hosting.has` 为假）。
+- `active`：60s 内有事件；
+- `slow`：60s–5min 无事件、回合未结束；
+- `stalled`：>5min 无事件、回合未结束（已有 warn 事件）；
+- `detached`：worker 离线，或 `hosting.has` 为假（2 分钟 `recoverOrphanedTurns` 会收尾成 `failed`）。
 
-处理策略（按可恢复性，不是一律杀）：
+**不自动打断**：20 分钟杀进程会误伤 `npm ci` / 长测试；打断只由 `task.cancel`（v1 走
+`promptSessionUseCase` 的 stop 语义）或人触发。文档里原先的 `HUB_STALL_INTERRUPT_MS` 撤销。
 
-1. `detached` + 投递仍 `delivered`：由 `recoverOrphanedTurns`（2 分钟）收尾并在 journal
-   写 `ended{failed, reason:'这一轮没有在机器上跑起来…'}`，同时把 `task.get` 标 `stalled`。
-2. `stalled` 且正在跑工具：先发一条 `diagnostic{warn}` 进 journal（调用方在 `task.messages`
-   能看到「已 6 分钟没有输出，可能卡在 <tool>」），不打断。
-3. `stalled` 超过 `HUB_STALL_INTERRUPT_MS=1200000`（20 分钟）：打断会话、写 `ended{failed,
-   reason:'20 分钟没有输出，已停止'}`，调用方从 `task.get` 立刻看到终态，不必轮询到超时。
-4. 用户/调用方主动 `task.cancel` 永远优先。
+### 5.6 交付与幂等
 
-这样「卡住」有确定语义和时间上限，而不是靠外部猜测。阈值做成环境变量，默认值偏保守
-（编译、`npm ci` 这类长工具在 5 分钟内仍算 `slow`）。
-
-### 5.2 提示词与交付
-
-- `prompt` 是任务的全部输入（markdown，≤ 32 KB），服务端只在前后补「交付要求」与
-  「遇到阻塞就提问」两段固定说明，不替调用方写实现细节。
-- `deliver.branch` 给定时写进任务，任务结束前由 agent 在 worktree 里提交并推送；
-  `openPr` 为真时建 PR 并把 URL 写回 `task.get`。默认分支仍禁止直接推送。
-- `kind` 字段不要了：v1 只有一种「编码任务」。起服务/跑检查由提示词决定，agent 用现有
-  工具（`run.checks`、终端、预览）自行完成，产物在 `task.get` 里可见。
-
-### 5.3 反问与消息（关键交互）
-
-工作台里的会话本来就能多轮交谈，不需要新的阻塞式问答协议：
-
-```
-task.create(prompt) ──► 会话开跑
-        │
-        ├─ agent 需要确认：调用 `task.ask(question)`
-        │     → 作为一条 outbound 消息写进 journal（kind:'question'）
-        │     → 本轮结束，会话进入 idle（进程保活）
-        │
-        └─ 调用方 task.messages(after) 看到 question
-              → task.reply(text)
-              → 送达队列把这句话投给同一个会话，开启下一轮
-```
-
-- `task.ask` 不是阻塞调用：agent 问完就结束本轮，避免长时间占用模型与 worker。
-- `task.reply` 复用 ADR 0031 的送达队列：会话在跑时排队、空闲时立刻投递；同一任务多条
-  回复按序执行，不会打架。
-- `task.messages` 是唯一读通道，`seq` 单调，断线重连用 `after` 补齐；消息里带
-  `{kind:'text'|'question'|'tool'|'ended', author, text, at}`，调用方不需要理解事件类型全集。
-
-### 5.4 安全与配额
-
-- token 绑定单个项目（v1）；越权访问其他项目一律 404，不泄露存在性。
-- `prompt` 与 `reply` 按不可信文本注入（`<untrusted>` 包裹），不能触发 `@all`、不能指定
-  `createdBy`、workspace 路径或 workerId。
-- 写调用带 `idempotencyKey`：作用域 `(token, tool, key)`，默认 24h；**同键不同参数返回 409**，
-  不静默复用旧结果；只对 `task.create` 强制，其余写工具可选。
-- 配额：每 token 并发任务数、每分钟创建数；`task.reply` 计入消息速率。
-- 审计：`mcp.task.create` / `mcp.task.reply` / `mcp.task.cancel`，记 token、项目、taskId。
+- 交付意图仍可用现有字段表达：任务 `branch`、`pullRequests`（`task.get` 聚合 PR URL）。
+  没有 `kind: code|serve` —— v1 不发明任务形态；起服务/跑检查由提示词与现有工具决定。
+- `task.cancel`：包 `interruptSessionUseCase`，语义与会话页一致。
+- 外部补话：复用 `promptSessionUseCase`（送达队列、`releaseAfterTurn`、`clientMessageId`
+  都在），幂等键是 `(sessionId, clientMessageId)`，不是 `(token,tool,key)`。
+- 真正的「会话内提问工具」`task.ask` 不存在，也不在 v1：`needs_answer` 目前来自启发式
+  （`attention.ts` 的工具名正则 / 问号结尾）。v2 再设计「提问 → 结束本轮 → 外部回答」的
+  显式协议。
 
 ## 6. 分期
 
