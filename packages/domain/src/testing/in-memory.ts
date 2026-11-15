@@ -1014,6 +1014,7 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
   const installs: { workerId: string; assetId: string }[] = [];
   const projectSettings = new Map<string, Record<string, boolean>>();
   const sessionManifests = new Map<string, import('../asset.ts').SessionAssetManifest>();
+  const sessionSnapshots = new Map<string, import('../asset.ts').SessionAssetSnapshot>();
   const projectList = new Map<string, { id: string; name: string }>([['p1', { id: 'p1', name: 'demo' }]]);
   const repo: import('../ports/asset-repository.ts').AssetRepository = {
     list: async () => [...assets.values()],
@@ -1060,6 +1061,15 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
       sessionManifests.set(manifest.sessionId, manifest);
     },
     sessionAssets: async (sessionId) => sessionManifests.get(sessionId) ?? null,
+    recordSessionAssetSnapshot: async (snapshot) => {
+      if (sessionSnapshots.has(snapshot.sessionId)) return false;
+      sessionSnapshots.set(snapshot.sessionId, snapshot);
+      return true;
+    },
+    setSessionAssetSnapshot: async (snapshot) => {
+      sessionSnapshots.set(snapshot.sessionId, snapshot);
+    },
+    sessionAssetSnapshot: async (sessionId) => sessionSnapshots.get(sessionId) ?? null,
     digestsForWorker: async (workerId) => [
       ...new Set(
         [...sessionManifests.values()]

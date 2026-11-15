@@ -19,7 +19,10 @@ import {
   type AssetViewer,
   type AssetScope,
   type WorkerAssetSync,
-  type SessionAssetEntry
+  type SessionAssetEntry,
+  type SessionAssetSnapshot,
+  type SessionAssetSource,
+  type SessionAssetUpgrade
 } from '../asset.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
@@ -703,4 +706,83 @@ export async function sessionAssetPlan(
   }
   entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
   return { assetIds: entries.map((entry) => entry.assetId), entries };
+}
+
+const sessionAssetKey = (entry: SessionAssetEntry): string =>
+  JSON.stringify([entry.assetId, entry.kind, entry.name, entry.digest, entry.scope]);
+
+/** 两份会话资产清单是否完全一致（升级用来判断要不要写新快照）。 */
+export function sameSessionAssetEntries(a: readonly SessionAssetEntry[], b: readonly SessionAssetEntry[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((entry, index) => sessionAssetKey(entry) === sessionAssetKey(b[index] as SessionAssetEntry));
+}
+
+/**
+ * #226 P2：显式升级本会话资产。
+ *
+ * 调用方负责重新解析「当前生效集」（sessionAssetPlan），这里只做权威快照的替换：
+ * 已有快照 → 比较后写入新快照；没有快照 → 返回 null（没启动过的会话没有可升级的东西）。
+ * 升级不改 session.environmentRevision：下一次 ensureHosted 发现版本不同，再按新快照重新托管。
+ */
+export async function upgradeSessionAssets(
+  deps: Pick<AssetDeps, 'assets' | 'now'>,
+  input: {
+    readonly sessionId: string;
+    readonly workerId: string;
+    readonly projectId: string | null;
+    readonly entries: readonly SessionAssetEntry[];
+  }
+): Promise<SessionAssetUpgrade | null> {
+  const existing = await deps.assets.sessionAssetSnapshot(input.sessionId);
+  if (!existing) return null;
+  const changed = !sameSessionAssetEntries(existing.entries, input.entries);
+  if (changed) {
+    const next: SessionAssetSnapshot = {
+      sessionId: input.sessionId,
+      mode: 'snapshot',
+      source: existing.source,
+      workerId: input.workerId,
+      projectId: input.projectId,
+      entries: input.entries,
+      at: deps.now()
+    };
+    await deps.assets.setSessionAssetSnapshot(next);
+  }
+  return {
+    sessionId: input.sessionId,
+    workerId: input.workerId,
+    projectId: input.projectId,
+    from: existing.entries,
+    to: input.entries,
+    fromDigests: existing.entries.map((entry) => entry.digest),
+    toDigests: input.entries.map((entry) => entry.digest),
+    changed
+  };
+}
+
+/** #226 P2：首次启动写快照；已有快照时保持原样。返回实际生效的那份快照。 */
+export async function ensureSessionAssetSnapshot(
+  deps: Pick<AssetDeps, 'assets' | 'now'>,
+  input: {
+    readonly sessionId: string;
+    readonly workerId: string;
+    readonly projectId: string | null;
+    readonly entries: readonly SessionAssetEntry[];
+    readonly source?: SessionAssetSource;
+  }
+): Promise<SessionAssetSnapshot> {
+  const existing = await deps.assets.sessionAssetSnapshot(input.sessionId);
+  if (existing) return existing;
+  const snapshot: SessionAssetSnapshot = {
+    sessionId: input.sessionId,
+    mode: 'snapshot',
+    source: input.source ?? 'project',
+    workerId: input.workerId,
+    projectId: input.projectId,
+    entries: input.entries,
+    at: deps.now()
+  };
+  await deps.assets.recordSessionAssetSnapshot(snapshot);
+  // 并发首次启动：别人先写成功就用别人的，保证同一会话只有一个权威快照。
+  return (await deps.assets.sessionAssetSnapshot(input.sessionId)) ?? snapshot;
 }

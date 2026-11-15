@@ -1196,6 +1196,7 @@ function toWire(command: WorkerCommand): ServerToWorker {
           ? { mcp: command.mcp.map((entry) => (entry.transport === 'stdio' ? { ...entry, args: [...entry.args], env: { ...entry.env } } : { ...entry })) }
           : {}),
         ...(command.assetIds ? { assetIds: [...command.assetIds] } : {}),
+        ...(command.assetDigests ? { assetDigests: { ...command.assetDigests } } : {}),
         ...(command.provider ? { provider: { ...command.provider, models: command.provider.models.map((model) => ({ ...model })) } } : {})
       };
     case 'prompt':

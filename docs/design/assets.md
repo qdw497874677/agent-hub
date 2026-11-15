@@ -135,3 +135,12 @@
 - 已启动会话的资产热更新（换版本 = 新会话）。
 - 资产内可执行钩子 / 插件清单（`hooks/`、`.claude-plugin/`、`bin/` 永远拒绝）。
 - 资产内容的运行时下载（如 skill 运行时再去拉数据）。
+
+### E4c 落地：协议级冻结
+
+- `start_session` 增加 `assetDigests`（assetId → digest）；hub 从会话快照生成，Worker 按 digest
+  取不可变版本目录（`worker-assets.current(only, digests)`），换钉后旧版本仍可读。
+- `digestsForWorker` 同时扫 `session_assets` 与 `session_asset_snapshots`，保证 retain 不会把
+  在跑会话冻结的旧版本清掉。
+- 升级（`POST /api/sessions/:id/assets/upgrade`）只写新快照：**下一次重新托管/启动生效**；
+  运行中的进程不会热换文件（D10 不做热更新）。界面提示应写「下次启动生效」。

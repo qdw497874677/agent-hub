@@ -235,3 +235,27 @@ test('Worker 资产目录：项目级同名技能落到 project-skills/<id8>/<na
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('按 digest 取版本：换钉后仍读到旧版；旧版被清则算缺失（#226 E4c）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-pin-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    const kept = await assets.sync([skill('greeter', 'v1', 'a'.repeat(64))], fetch);
+    assert.deepEqual(kept.installed, { 'a-greeter': 'a'.repeat(64) });
+    // 换钉：同一 assetId 换成新 digest，旧版本靠 retain 留着。
+    await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch, ['a'.repeat(64)]);
+
+    const pinned = await assets.current(new Set(['a-greeter']), { 'a-greeter': 'a'.repeat(64) });
+    assert.ok(pinned);
+    assert.match(pinned!.skills[0]!.path, new RegExp(`assets/${a12}/greeter/SKILL\\.md$`));
+    assert.match(await readFile(pinned!.skills[0]!.path, 'utf8'), /v1/);
+    // 没给 digest 仍是当前版本。
+    const latest = await assets.current(new Set(['a-greeter']));
+    assert.match(latest!.skills[0]!.path, new RegExp(`assets/${b12}/greeter/SKILL\\.md$`));
+    // 点名一个不存在的版本：不给路径，missing 说得出名字。
+    assert.equal(await assets.current(new Set(['a-greeter']), { 'a-greeter': 'd'.repeat(64) }), undefined);
+    assert.deepEqual(await assets.missing(new Set(['a-greeter']), { 'a-greeter': 'd'.repeat(64) }), ['greeter']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

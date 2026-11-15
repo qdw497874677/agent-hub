@@ -65,6 +65,7 @@ test('彻底删除会话：所有按 session_id 关联的行清掉，可空的�
     run('INSERT INTO session_links (project_id, a_session_id, b_session_id, created_by, created_at) VALUES (?, ?, ?, ?, ?)', project.value.id, s2.value.id, 's3', 'u1', 1);
     run('INSERT INTO session_git_bases (session_id, head) VALUES (?, ?)', s1.value.id, 'sha1');
     run('INSERT INTO session_assets (session_id, manifest) VALUES (?, ?)', s1.value.id, '{}');
+    run('INSERT INTO session_asset_snapshots (session_id, snapshot) VALUES (?, ?)', s1.value.id, '{}');
     run('INSERT INTO turn_checkpoints (session_id, turn, prompt_seq, before_sha, started_at) VALUES (?, ?, ?, ?, ?)', s1.value.id, 1, 1, 'sha0', 1);
     run('INSERT INTO turn_refs (session_id, prompt_seq, turn_ref) VALUES (?, ?, ?)', s1.value.id, 1, 'refs/agents/x');
     run('INSERT INTO tool_grants (id, token_hash, task_id, session_id, scopes, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)', 'g1', 'h1', task.value.id, s1.value.id, '[]', 1, 9);
@@ -95,7 +96,7 @@ test('彻底删除会话：所有按 session_id 关联的行清掉，可空的�
 
     assert.equal(await store.sessions.byId(s1.value.id), null);
     assert.ok(await store.sessions.byId(s2.value.id));
-    for (const table of ['journal', 'session_text', 'entry_map', 'artifacts', 'session_git_bases', 'session_assets', 'turn_checkpoints', 'turn_refs', 'tool_grants', 'tool_calls', 'message_delivery', 'attention_ack', 'agent_group_deliveries', 'agent_group_sessions', 'agent_task_request', 'session_provenance']) {
+    for (const table of ['journal', 'session_text', 'entry_map', 'artifacts', 'session_git_bases', 'session_assets', 'session_asset_snapshots', 'turn_checkpoints', 'turn_refs', 'tool_grants', 'tool_calls', 'message_delivery', 'attention_ack', 'agent_group_deliveries', 'agent_group_sessions', 'agent_task_request', 'session_provenance']) {
       assert.equal(count(db, table, 'session_id = ?', s1.value.id), 0, `${table} 应该清空`);
     }
     assert.equal(count(db, 'task_pull_requests', 'session_id = ?', s1.value.id), 0);

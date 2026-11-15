@@ -7,9 +7,11 @@ import {
   createTaskUseCase,
   deriveSession,
   ensureHosted,
+  pinAssetRevision,
   setSecret,
   startCommand,
-  uploadAsset
+  uploadAsset,
+  uploadAssetRevision
 } from '@agent-hub/domain';
 import { inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
 import { createSessionEnvironment } from './session-environment.ts';
@@ -150,6 +152,8 @@ test('#223：资产展开抛错时不下发会话（fail-closed，不是「全�
   assert.match(prepared.blocked ?? '', /会话资产没有准备好：密钥解密失败/);
   // 就算调用方漏看 blocked，命令也带显式空集——绝不退回「不带 assetIds = 全给」。
   assert.deepEqual(prepared.command.kind === 'start_session' ? prepared.command.assetIds : 'x', []);
+  // 被 blocked 的启动不算真正开始第一轮：不写权威快照。
+  assert.equal(await assets.deps.assets.sessionAssetSnapshot(session.id), null);
 });
 
 test('#223：容器会话解析不到项目时不下发会话', async () => {
@@ -165,4 +169,127 @@ test('#223：容器会话解析不到项目时不下发会话', async () => {
   assert.equal(prepared.revision, null);
   assert.match(prepared.blocked ?? '', /会话资产没有准备好/);
   assert.deepEqual(prepared.command.kind === 'start_session' ? prepared.command.assetIds : 'x', []);
+});
+
+test('#226：首次启动写权威快照；换钉后重新托管仍按旧 digest', async () => {
+  const { assets, hub, session } = await world();
+  const uploaded = await uploadAsset(assets.deps, { kind: 'skill', files: skillFiles() });
+  assert.ok(uploaded.ok);
+  const assetId = uploaded.value.id;
+  const oldDigest = uploaded.value.pinned;
+  await assets.deps.assets.install('w1', assetId, 1);
+  assets.board.set('w1', {
+    workerId: 'w1',
+    state: 'synced',
+    root: '/r',
+    installed: { [assetId]: oldDigest },
+    error: null,
+    at: 1
+  });
+
+  const environment = createSessionEnvironment({ assetDeps: assets.deps, tasks: hub.deps.tasks, projects: hub.deps.projects });
+  const command = startCommand({ ...session, workerId: 'w1' }, '/tmp/env', null);
+  const first = await environment.prepare(command);
+  assert.equal(first.blocked, undefined);
+  const snapshot = await assets.deps.assets.sessionAssetSnapshot(session.id);
+  assert.equal(snapshot?.mode, 'snapshot');
+  assert.equal(snapshot?.source, 'project');
+  assert.deepEqual(
+    snapshot?.entries.map((entry) => [entry.assetId, entry.digest]),
+    [[assetId, oldDigest]]
+  );
+
+  // 资产换了新版本并被钉住、Worker 也同步到了新版本。
+  const revised = await uploadAssetRevision(assets.deps, assetId, [
+    { path: 'SKILL.md', data: enc('---\nname: greeter\ndescription: Greets\n---\nnew\n') },
+    { path: 'scripts/x.txt', data: enc('helper') }
+  ]);
+  assert.ok(revised.ok);
+  const newDigest = revised.value.asset.latest;
+  assert.notEqual(newDigest, oldDigest);
+  assert.ok((await pinAssetRevision(assets.deps, assetId, newDigest)).ok);
+  assets.board.set('w1', {
+    workerId: 'w1',
+    state: 'synced',
+    root: '/r',
+    installed: { [assetId]: newDigest },
+    error: null,
+    at: 2
+  });
+
+  // 重新托管（再 prepare）：仍按首次快照，不跟随实时生效集。
+  const again = await environment.prepare(command);
+  assert.equal(again.blocked, undefined);
+  assert.equal(again.revision, first.revision);
+  assert.deepEqual(again.command.kind === 'start_session' ? again.command.assetIds : null, [assetId]);
+  const kept = await assets.deps.assets.sessionAssetSnapshot(session.id);
+  assert.equal(kept?.at, snapshot?.at);
+  assert.deepEqual(kept?.entries.map((entry) => entry.digest), [oldDigest]);
+  assert.equal(await environment.revision({ ...session, workerId: 'w1' }), first.revision);
+});
+
+test('#226：显式升级后切到新 digest，下一次 prepare 用新快照', async () => {
+  const { assets, hub, session } = await world();
+  const uploaded = await uploadAsset(assets.deps, { kind: 'skill', files: skillFiles() });
+  assert.ok(uploaded.ok);
+  const assetId = uploaded.value.id;
+  const oldDigest = uploaded.value.pinned;
+  await assets.deps.assets.install('w1', assetId, 1);
+  assets.board.set('w1', { workerId: 'w1', state: 'synced', root: '/r', installed: { [assetId]: oldDigest }, error: null, at: 1 });
+  const environment = createSessionEnvironment({ assetDeps: assets.deps, tasks: hub.deps.tasks, projects: hub.deps.projects });
+  const command = startCommand({ ...session, workerId: 'w1' }, '/tmp/env', null);
+  const first = await environment.prepare(command);
+  assert.ok(first.revision);
+
+  const revised = await uploadAssetRevision(assets.deps, assetId, [
+    { path: 'SKILL.md', data: enc('---\nname: greeter\ndescription: Greets\n---\nnew\n') },
+    { path: 'scripts/x.txt', data: enc('helper') }
+  ]);
+  assert.ok(revised.ok);
+  const newDigest = revised.value.asset.latest;
+  assert.ok((await pinAssetRevision(assets.deps, assetId, newDigest)).ok);
+  assets.board.set('w1', { workerId: 'w1', state: 'synced', root: '/r', installed: { [assetId]: newDigest }, error: null, at: 2 });
+
+  const sessionNow = { ...session, workerId: 'w1' };
+  const upgraded = await environment.upgrade?.(sessionNow);
+  assert.ok(upgraded);
+  assert.equal(upgraded.changed, true);
+  assert.deepEqual(upgraded.fromDigests, [oldDigest]);
+  assert.deepEqual(upgraded.toDigests, [newDigest]);
+  const afterUpgradeRevision = await environment.revision(sessionNow);
+  assert.notEqual(afterUpgradeRevision, first.revision);
+
+  const next = await environment.prepare(command);
+  assert.equal(next.revision, afterUpgradeRevision);
+  assert.deepEqual(next.command.kind === 'start_session' ? next.command.assetIds : null, [assetId]);
+  const snapshot = await assets.deps.assets.sessionAssetSnapshot(session.id);
+  assert.deepEqual(snapshot?.entries.map((entry) => entry.digest), [newDigest]);
+});
+
+test('#226：快照幂等；没有快照的会话不能升级', async () => {
+  const { assets, hub, session } = await world();
+  const uploaded = await uploadAsset(assets.deps, { kind: 'skill', files: skillFiles() });
+  assert.ok(uploaded.ok);
+  await assets.deps.assets.install('w1', uploaded.value.id, 1);
+  assets.board.set('w1', {
+    workerId: 'w1',
+    state: 'synced',
+    root: '/r',
+    installed: { [uploaded.value.id]: uploaded.value.pinned },
+    error: null,
+    at: 1
+  });
+  const environment = createSessionEnvironment({ assetDeps: assets.deps, tasks: hub.deps.tasks, projects: hub.deps.projects });
+  const sessionNow = { ...session, workerId: 'w1' };
+  assert.equal(await environment.upgrade?.(sessionNow), null);
+
+  const command = startCommand(sessionNow, '/tmp/env', null);
+  await environment.prepare(command);
+  const snapshot = await assets.deps.assets.sessionAssetSnapshot(session.id);
+  assert.ok(snapshot);
+  // 第二次写必须被忽略，返回 false。
+  assert.equal(await assets.deps.assets.recordSessionAssetSnapshot({ ...snapshot, at: 99 }), false);
+  assert.equal((await assets.deps.assets.sessionAssetSnapshot(session.id))?.at, snapshot.at);
+  await environment.prepare(command);
+  assert.equal((await assets.deps.assets.sessionAssetSnapshot(session.id))?.at, snapshot.at);
 });

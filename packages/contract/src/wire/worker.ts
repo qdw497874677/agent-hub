@@ -314,6 +314,8 @@ export const startSessionCommandSchema = z.object({
   mcp: z.array(mcpLaunchSchema).max(50).optional(),
   /** 这次会话生效的资产（项目作用域算好的）。v4 起缺省 = 一个都不给；旧 hub 不带就按空集处理。 */
   assetIds: z.array(z.string()).max(500).optional(),
+  /** #226 E4c：assetId → digest。给了就按这一版加载，不许漂到新版本。 */
+  assetDigests: z.record(z.string(), z.string()).optional(),
   /** hub 模型提供商（旧 worker 忽略）。apiKey 只交给 worker 本机中继：不进 agent、不落盘、不进日志。 */
   provider: z
     .object({

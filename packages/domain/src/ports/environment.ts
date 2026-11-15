@@ -1,4 +1,5 @@
 import type { Session } from '../session.ts';
+import type { SessionAssetUpgrade } from '../asset.ts';
 import type { WorkerCommand } from './node-gateway.ts';
 
 /** 环境准备的产物：可能被改写的指令 + 这次应用的环境版本。 */
@@ -21,4 +22,9 @@ export interface PreparedStart {
 export interface EnvironmentPlanner {
   prepare(command: WorkerCommand): Promise<PreparedStart>;
   revision(session: Session): Promise<string | null>;
+  /**
+   * #226 P2：显式升级本会话的资产快照。没有快照（从未真正启动过）返回 null。
+   * 升级只改快照；下一次 ensureHosted 发现 revision 变化后才会重新托管。
+   */
+  upgrade?(session: Session): Promise<SessionAssetUpgrade | null>;
 }

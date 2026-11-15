@@ -1110,7 +1110,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       options.onLog?.(`会话 ${command.sessionId} 用 hub 模型提供商「${grant.slug}」（${grant.via === 'hub' ? '经 hub 中转' : '本机直连'}）`);
     }
     const assets = await options.assets
-      ?.current(new Set(command.assetIds ?? []))
+      ?.current(new Set(command.assetIds ?? []), command.assetDigests)
       .catch((failure: Error) => {
         // 读不到本机资产清单 = 这次一个都不给（fail-closed），别把整条会话拖死。
         options.onLog?.(`读取本机资产清单失败，会话 ${command.sessionId} 这次不带资产：${failure.message}`);
@@ -1119,7 +1119,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (assets) spec = { ...spec, assets };
     if (command.assetIds && command.assetIds.length > 0) {
       const gone = await options.assets
-        ?.missing(new Set(command.assetIds))
+        ?.missing(new Set(command.assetIds), command.assetDigests)
         .catch(() => [] as readonly string[]);
       if (gone && gone.length > 0) {
         send({

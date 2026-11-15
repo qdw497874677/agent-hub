@@ -233,6 +233,7 @@ export type AuditAction =
   | 'provider.test'
   | 'provider.routing'
   | 'asset.project'
+  | 'asset.session_upgrade'
   | 'project.create'
   | 'project.restore'
   | 'project.purge'

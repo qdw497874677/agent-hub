@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { inTransaction } from './tx.ts';
 import { assetScopeRef } from '@agent-hub/domain';
-import type { Asset, AssetFile, AssetKind, AssetScope, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, SessionAssetManifest, WorkerAssetSync } from '@agent-hub/domain';
+import type { Asset, AssetFile, AssetKind, AssetScope, AssetRepository, AssetRevision, AssetSource, AssetSyncBoard, SessionAssetManifest, SessionAssetSnapshot, WorkerAssetSync } from '@agent-hub/domain';
 
 /**
  * 资产中心（docs/design/asset-hub.md）：资产、不可变的版本、按 sha256 寻址的内容、Worker 安装关系。
@@ -56,6 +56,11 @@ CREATE TABLE IF NOT EXISTS asset_project_settings (
 CREATE TABLE IF NOT EXISTS session_assets (
   session_id TEXT PRIMARY KEY,
   manifest   TEXT NOT NULL
+);
+-- #226 P2：会话首次启动的权威资产快照（与 session_assets 的展示清单分开）。
+CREATE TABLE IF NOT EXISTS session_asset_snapshots (
+  session_id TEXT PRIMARY KEY,
+  snapshot   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS asset_sync (
   worker_id TEXT PRIMARY KEY,
@@ -186,8 +191,14 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
     'INSERT INTO session_assets (session_id, manifest) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET manifest = excluded.manifest'
   );
   const sessionAssetsOf = db.prepare('SELECT manifest FROM session_assets WHERE session_id = ?');
+  const insertSessionSnapshot = db.prepare('INSERT OR IGNORE INTO session_asset_snapshots (session_id, snapshot) VALUES (?, ?)');
+  const putSessionSnapshot = db.prepare(
+    'INSERT INTO session_asset_snapshots (session_id, snapshot) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET snapshot = excluded.snapshot'
+  );
+  const sessionSnapshotOf = db.prepare('SELECT snapshot FROM session_asset_snapshots WHERE session_id = ?');
   // #225 M2：这台机器上还有会话记着的版本。新库 SQLite 都带 JSON1；解析失败的行跳过（旧数据/坏数据）。
   const sessionAssetsByWorker = db.prepare("SELECT manifest FROM session_assets WHERE json_extract(manifest, '$.workerId') = ?");
+  const sessionSnapshotsByWorker = db.prepare("SELECT snapshot FROM session_asset_snapshots WHERE json_extract(snapshot, '$.workerId') = ?");
   const byName = db.prepare("SELECT * FROM assets WHERE kind = ? AND name = ? AND project_id = ? AND scope IN ('global', 'project')");
   const inScope = db.prepare('SELECT * FROM assets WHERE kind = ? AND name = ? AND scope = ? AND scope_ref = ?');
   const insertAsset = db.prepare(
@@ -330,6 +341,17 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
       const row = sessionAssetsOf.get(sessionId) as Row | undefined;
       return row ? (JSON.parse(String(row['manifest'])) as SessionAssetManifest) : null;
     },
+    recordSessionAssetSnapshot: async (snapshot) => {
+      const result = insertSessionSnapshot.run(snapshot.sessionId, JSON.stringify(snapshot));
+      return Number(result.changes) > 0;
+    },
+    setSessionAssetSnapshot: async (snapshot) => {
+      putSessionSnapshot.run(snapshot.sessionId, JSON.stringify(snapshot));
+    },
+    sessionAssetSnapshot: async (sessionId) => {
+      const row = sessionSnapshotOf.get(sessionId) as Row | undefined;
+      return row ? (JSON.parse(String(row['snapshot'])) as SessionAssetSnapshot) : null;
+    },
     digestsForWorker: async (workerId) => {
       const out = new Set<string>();
       let rows: Row[] = [];
@@ -346,6 +368,22 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
           continue;
         }
         for (const entry of manifest.entries) out.add(entry.digest);
+      }
+      // #226 E4c：快照里冻结的版本也要保留，否则换钉后旧版本会被 prune 掉、在跑的会话读不到。
+      let snapshots: Row[] = [];
+      try {
+        snapshots = sessionSnapshotsByWorker.all(workerId) as Row[];
+      } catch {
+        snapshots = [];
+      }
+      for (const row of snapshots) {
+        let snapshot: SessionAssetSnapshot;
+        try {
+          snapshot = JSON.parse(String(row['snapshot'])) as SessionAssetSnapshot;
+        } catch {
+          continue;
+        }
+        for (const entry of snapshot.entries) out.add(entry.digest);
       }
       return [...out];
     }

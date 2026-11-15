@@ -1,4 +1,12 @@
-import type { Asset, AssetKind, AssetScope, AssetRevision, ProjectAssetSettings, SessionAssetManifest } from '../asset.ts';
+import type {
+  Asset,
+  AssetKind,
+  AssetScope,
+  AssetRevision,
+  ProjectAssetSettings,
+  SessionAssetManifest,
+  SessionAssetSnapshot
+} from '../asset.ts';
 
 /** 资产 + 版本 + 内容 blob + 「哪台 Worker 装了哪些」。blob 按 sha256 寻址，写入幂等。 */
 export interface AssetRepository {
@@ -30,6 +38,13 @@ export interface AssetRepository {
   /** 记下一次会话启动时给出的资产清单（同一会话再启动 = 覆盖成最新那次）。 */
   recordSessionAssets(manifest: SessionAssetManifest): Promise<void>;
   sessionAssets(sessionId: string): Promise<SessionAssetManifest | null>;
+  /**
+   * #226 P2：写下会话首次启动的权威快照。已存在则不动（幂等）；返回是否真的写入。
+   */
+  recordSessionAssetSnapshot(snapshot: SessionAssetSnapshot): Promise<boolean>;
+  /** #226 P2：显式升级时覆盖权威快照（只有升级用例该调它）。 */
+  setSessionAssetSnapshot(snapshot: SessionAssetSnapshot): Promise<void>;
+  sessionAssetSnapshot(sessionId: string): Promise<SessionAssetSnapshot | null>;
   /** 这台机器上还有会话记着的资产版本（#225 M2：清旧版本时不能清掉在跑的会话要用的那些）。 */
   digestsForWorker(workerId: string): Promise<readonly string[]>;
 }

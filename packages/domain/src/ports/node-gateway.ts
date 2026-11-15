@@ -45,6 +45,11 @@ export type WorkerCommand =
        * 旧语义「没有 = 机器上装着的全给」已废弃（#223）。
        */
       readonly assetIds?: readonly string[];
+      /**
+       * #226 E4c：每个 assetId 对应的**精确版本**（内容寻址 digest）。
+       * 有它时 Worker 只读这一版；不传 = 用机器上当前装的（旧行为）。
+       */
+      readonly assetDigests?: Readonly<Record<string, string>>;
       /** hub 模型提供商（选了 hub-<slug>/… 模型时 hub 在发出前才填）。apiKey 不落库、不进日志。 */
       readonly provider?: ProviderGrant;
     }

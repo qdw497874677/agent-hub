@@ -118,6 +118,37 @@ test('按机器汇总仍在用的版本 digest（#225 M2）', async () => {
   }
 });
 
+test('会话资产快照：首次写幂等，显式升级覆盖，跨重开保留（#226）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-session-snapshots-'));
+  try {
+    const path = join(dir, 'hub.db');
+    let store = openSqliteStore(path);
+    assert.equal(await store.assets.sessionAssetSnapshot('s1'), null);
+    const snap = (digest: string, at: number) => ({
+      sessionId: 's1',
+      mode: 'snapshot' as const,
+      source: 'project' as const,
+      workerId: 'w1',
+      projectId: 'p1',
+      entries: [{ assetId: 'a1', kind: 'skill' as const, name: 'greeter', digest, scope: 'project' as const }],
+      at
+    });
+    assert.equal(await store.assets.recordSessionAssetSnapshot(snap('d1', 1)), true);
+    // 已存在就不覆盖（幂等）。
+    assert.equal(await store.assets.recordSessionAssetSnapshot(snap('d2', 2)), false);
+    assert.deepEqual(await store.assets.sessionAssetSnapshot('s1'), snap('d1', 1));
+    // 只有显式升级能改。
+    await store.assets.setSessionAssetSnapshot(snap('d2', 2));
+    assert.deepEqual(await store.assets.sessionAssetSnapshot('s1'), snap('d2', 2));
+    store.close();
+    store = openSqliteStore(path);
+    assert.deepEqual(await store.assets.sessionAssetSnapshot('s1'), snap('d2', 2));
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('会话资产清单：按会话记下，再启动覆盖成最新一次，跨重开保留', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hub-session-assets-'));
   try {
@@ -130,6 +161,29 @@ test('会话资产清单：按会话记下，再启动覆盖成最新一次，�
     store.close();
     store = openSqliteStore(path);
     assert.deepEqual(await store.assets.sessionAssets('s1'), { sessionId: 's1', workerId: 'w2', entries: [{ ...entry, digest: 'd2' }], at: 2 });
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('按机器汇总版本：快照里冻结的 digest 也算仍在用（#226 E4c）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-assets-snap-'));
+  try {
+    const store = openSqliteStore(join(dir, 'hub.db'));
+    const v1 = await packAsset('skill', [{ path: 'SKILL.md', data: enc('one') }]);
+    assert.ok(v1.ok);
+    const asset: Asset = {
+      id: 'a1', kind: 'skill', name: 'greeter', description: 'd', source: { type: 'git', url: 'https://x/y.git', ref: 'main', path: 's' },
+      pinned: v1.value.digest, latest: v1.value.digest, projectId: null, scope: 'global', ownerId: '', teamId: null, createdAt: 1, updatedAt: 1
+    };
+    await store.assets.create(asset, { assetId: 'a1', digest: v1.value.digest, name: 'greeter', description: 'd', files: v1.value.files, commit: 'c', createdAt: 1 }, v1.value.blobs);
+    await store.assets.recordSessionAssetSnapshot({
+      sessionId: 's1', mode: 'snapshot', source: 'project', workerId: 'w1', projectId: 'p1', at: 1,
+      entries: [{ assetId: 'a1', kind: 'skill', name: 'greeter', digest: v1.value.digest, scope: 'global' }]
+    });
+    assert.deepEqual([...(await store.assets.digestsForWorker('w1'))].sort(), [v1.value.digest]);
+    assert.deepEqual(await store.assets.digestsForWorker('w2'), []);
     store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
