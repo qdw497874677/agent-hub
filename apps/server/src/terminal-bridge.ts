@@ -355,7 +355,8 @@ export function createTerminalBridge(options: TerminalBridgeOptions): TerminalBr
     }
     const target = await options.target(subject, sessionId);
     if (!target.ok) {
-      deny(socket, target.error.code === 'not_found' ? 404 : 403, target.error.message);
+      // 同上：解析目标失败也不区分「不存在」与「没权限」。
+      deny(socket, 404, '会话不存在，或现在不能打开终端');
       return;
     }
     const query = new URL(request.url ?? '/', 'http://hub').searchParams;

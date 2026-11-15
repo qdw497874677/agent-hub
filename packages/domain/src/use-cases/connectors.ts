@@ -224,8 +224,9 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       state: 'waiting', reason: null, sessionId: event.targetSessionId ?? null, text: formatInbound(binding, event), createdAt: now, updatedAt: now
     };
     // 群目标（#219 C3）：外部消息落成群帖，不走会话回合。posting → posted 不占 openRuns。
-    // 跳过原因要能看见，但记录本身也被限流：否则换个 externalId 就能无限往 trigger_run 插行。
-    const skipRun = async (reason: string): Promise<void> => {
+    // 群目标的跳过记录要限流（外部 externalId 由渠道方给，换 id 就能无限插行）；
+    // 轮询源不走这里——它本来就会按计划重来，忙时不该因为记了几条 skipped 被暂停。
+    const skipGroupRun = async (reason: string): Promise<void> => {
       const counts = await deps.store.countRunsByState([bindingId], now - 60_000);
       if (counts.skipped >= SKIPPED_PER_MINUTE) {
         await deps.store.saveBinding({
@@ -240,16 +241,16 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     };
     if (binding.targetKind === 'group') {
       if (!binding.groupId) {
-        await skipRun('群目标没有绑群，本次不投递');
+        await skipGroupRun('群目标没有绑群，本次不投递');
         return;
       }
       if (await deps.store.hasRun(bindingId, event.externalId)) return; // 同一个外部消息只处理一次
       if (await echoed(binding, event.externalId)) {
-        await skipRun('这条是本连接器自己发出去的消息（回声），不入群');
+        await skipGroupRun('这条是本连接器自己发出去的消息（回声），不入群');
         return;
       }
       if ((await deps.store.countSince(bindingId, now - 60_000)) >= EXTERNAL_PER_MINUTE) {
-        await skipRun(`超过每分钟 ${EXTERNAL_PER_MINUTE} 条外部消息上限，本次跳过`);
+        await skipGroupRun(`超过每分钟 ${EXTERNAL_PER_MINUTE} 条外部消息上限，本次跳过`);
         return;
       }
       const posting: TriggerRun = { ...run, state: 'posting', text: externalBody(event) };
@@ -267,7 +268,7 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
         return;
       }
       if (event.plannedAt === undefined) return;
-      await skipRun('上一次还没结束，本次跳过');
+      await deps.store.insertRun({ ...run, state: 'skipped', reason: '上一次还没结束，本次跳过' });
       return;
     }
     if (!(await deps.store.insertRun(run))) return; // 去重

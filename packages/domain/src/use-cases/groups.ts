@@ -838,16 +838,20 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
             };
             // 轮次沿用线程当前轮（崩溃前已写进 thread）：volunteer 首次创建是 round=1，
             // 这里用 thread.round 而不是 +1，避免同一轮在两个不同编号上调度。
+            // 补收尾前再确认一次：这条线程仍是刚建的空线程（没有投递、没有消息），
+            // 否则可能是别的进程/上一轮正在推进，提前 end 会把活着的对话收掉。
+            const stillFresh = async (): Promise<boolean> =>
+              thread.messages === 0 && (await deps.groups.deliveries(thread.id)).length === 0;
             if (group.speakingStrategy === 'volunteer') {
               const n = group.members.length > 0
                 ? await schedule(group, thread, thread.round, 'bid', group.members, trigger, pending, '', input.actor)
                 : 0;
               // 与首次创建一致：没人接就收尾，不能把线程永久留在 running。
-              if (n === 0) await end(group, thread, 'done', '没有可以接话的成员');
+              if (n === 0 && (await stillFresh())) await end(group, thread, 'done', '没有可以接话的成员');
             } else if (group.hostRole && group.members.includes(group.hostRole)) {
               const n = await schedule(group, thread, thread.round, 'host', [group.hostRole], trigger, pending, '', input.actor);
-              if (n === 0) await end(group, thread, 'fallback', HOST_UNAVAILABLE_LINE);
-            } else {
+              if (n === 0 && (await stillFresh())) await end(group, thread, 'fallback', HOST_UNAVAILABLE_LINE);
+            } else if (await stillFresh()) {
               await end(group, thread, 'fallback', `${HOST_UNAVAILABLE_LINE}（没有设置主持人，@ 成员可以直接叫人）`);
             }
           }

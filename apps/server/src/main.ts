@@ -468,8 +468,8 @@ const connectorHub = createConnectorHub({
     if (opened.ok && fakeReplies && connector === 'fake') fakeReplies.remember(opened.value.id, bindingId);
     return opened;
   },
-  busy: async (sessionId) => (await store.deliveries.pendingFor(sessionId)).length > 0
-    || (await store.messages.deliveredTo(sessionId)).length > 0 || (await store.groups.deliveredTo(sessionId)).length > 0,
+  // 占用判断统一走收件箱：新增通道只要注册一个 InboxSource，不必再维护第二份旗标。
+  busy: (sessionId) => inbox.occupied(asSessionId(sessionId)),
   deliver: (sessionId, text, author) => promptSessionUseCase(deps, { sessionId, text, author }),
   // #219 C3：外部消息可以直接以群为目标。落帖走群聊用例（外部作者 + 创建者身份派生会话）。
   outbox: store.outbox,
@@ -538,10 +538,7 @@ const dispatcher = createDispatcher({
     const s = await deps.sessions.byId(sid as SessionId);
     // 与连接器同一组旗标。isBusy 在第一轮 ended 之后经常为假，不能单独当互斥。
     // 群 / P2P 已经写成 delivered 的投递，调度不能再往同一条会话插一句。
-    return (s ? isBusy(s) : false)
-      || (await store.deliveries.pendingFor(sid)).length > 0
-      || (await store.messages.deliveredTo(sid as SessionId)).length > 0
-      || (await store.groups.deliveredTo(sid as SessionId)).length > 0;
+    return (s ? isBusy(s) : false) || (await inbox.occupied(asSessionId(sid)));
   },
   notify: (sid, text) => promptSessionUseCase(deps, { sessionId: sid, text, author: { id: 'dispatch', name: '调度器', via: 'dispatch' } }),
   abandonTask: async (taskId, reason) => { await setTaskStatusUseCase(deps, taskId as TaskId, 'abandoned', 'system', reason).catch(() => undefined); },
