@@ -23,6 +23,7 @@ import { cleanLegacyLogText, createWorkLogRepository, migrateTasksV2 } from './w
 import { createToolGrantRepository } from './tool-grants.ts';
 import { createSqliteMessageStore } from './messages.ts';
 import { createSqliteSessionLinks } from './session-links.ts';
+import { createMcpReplays } from './mcp-replays.ts';
 import { createSqlitePreviewLinks } from './preview-links.ts';
 import { createSqliteAgentProfiles } from './agent-profiles.ts';
 import { createSqliteBotRepository } from './bots.ts';
@@ -96,6 +97,8 @@ export interface SqliteStore extends RepositorySet {
   readonly links: SessionLinkRepository;
   /** 预览链接（docs/design/preview.md §4）：会话端口 → hub 端口的映射。 */
   readonly previewLinks: ReturnType<typeof createSqlitePreviewLinks>;
+  /** 对外 MCP 写工具的幂等回放（E4b）。 */
+  readonly mcpReplays: import('@agent-hub/domain').McpReplayStore;
   /** 可复用的 Agent 启动配置（按 owner 隔离）。 */
   readonly agentProfiles: AgentProfileRepository;
   /** 只给测试与 ops 用；内核永远拿不到它。 */
@@ -337,6 +340,7 @@ export function openSqliteStore(file: string): SqliteStore {
     { sql: 'DELETE FROM preview_links WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM session_git_bases WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM session_assets WHERE session_id = ?', bindings: 1 },
+    { sql: 'DELETE FROM session_asset_snapshots WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM turn_refs WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM turn_checkpoints WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM tool_calls WHERE session_id = ?', bindings: 1 },
@@ -635,6 +639,7 @@ export function openSqliteStore(file: string): SqliteStore {
     layout,
     links: createSqliteSessionLinks(db),
     previewLinks: createSqlitePreviewLinks(db),
+    mcpReplays: createMcpReplays(db),
     agentProfiles: createSqliteAgentProfiles(db),
     bots: createSqliteBotRepository(db),
     workerAgents: createSqliteWorkerAgents(db),

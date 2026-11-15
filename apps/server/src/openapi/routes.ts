@@ -136,6 +136,13 @@ export const routes = {
   }),
   createTask: route('projects:write', {
     method: 'post', path: `${V1}/tasks`, tags: ['tasks'], summary: '新建任务',
+    description:
+      '在项目下建一条任务（工作单元）。不会自动开会话。\n' +
+      '参数：projectId、title（≤200）、goal（可选，≤2000）。\n' +
+      '返回：任务对象（id、status=todo、projectId）。记下 id。\n' +
+      '下一步：用 session_start 给这条任务派一台机器上的会话，再用 session_reply 说话。\n' +
+      '错误：401 令牌无效；403 无 projects:write；404 项目不存在或看不见。\n' +
+      '重试：MCP 调用要给 clientRequestId，同一值重试返回同一任务。',
     request: body(createTaskRequest),
     responses: { 201: json(taskSchema, '已创建') }
   }),
@@ -184,7 +191,13 @@ export const routes = {
 
   startSession: route('sessions:write', {
     method: 'post', path: `${V1}/sessions`, tags: ['sessions'], summary: '在任务下开一条会话',
-    description: '派到指定机器（workerId）上跑；本机（hub 同机）的机器开放 API 永远用不了。',
+    description:
+      '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了。\n' +
+      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）。\n' +
+      '返回：会话对象（id、status、model、workspaceId）。\n' +
+      '下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n' +
+      '错误：400 参数不合法；403 无 sessions:write；409 机器不可用或没装该 runtime。\n' +
+      '重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。',
     request: body(deriveSessionRequest),
     responses: { 201: json(sessionSchema, '已开始') }
   }),
@@ -206,12 +219,23 @@ export const routes = {
   }),
   prompt: route('sessions:write', {
     method: 'post', path: `${V1}/sessions/{sessionId}/prompt`, tags: ['sessions'], summary: '对会话说话',
-    description: '立即返回；回复从 /events 拉或 /stream 订阅。',
+    description:
+      '给会话发一条消息，立即返回（202）；回合在后台跑。\n' +
+      '参数：text、clientMessageId（可选，同一条消息重试用同一个值，送达队列据此去重）。\n' +
+      '返回：{ ok: true }。\n' +
+      '下一步：轮询 events（传 after=最后一条 seq）或 list_task_log 看进展与结论。\n' +
+      '错误：404 会话不存在或看不见；409 会话不在运行（先 session_start）；429 太频繁。',
     request: { params: sessionId, ...body(promptRequest) },
     responses: { 202: json(okSchema, '已发出') }
   }),
   interrupt: route('sessions:write', {
     method: 'post', path: `${V1}/sessions/{sessionId}/interrupt`, tags: ['sessions'], summary: '打断正在跑的会话',
+    description:
+      '打断当前回合（相当于人点「停止」），会话本身保留，之后还能继续发消息。\n' +
+      '参数：sessionId。\n' +
+      '返回：{ ok: true }。\n' +
+      '下一步：要放弃任务用任务状态接口；要重跑直接 session_reply。\n' +
+      '错误：404 会话不存在或看不见。',
     request: { params: sessionId },
     responses: { 200: json(okSchema) }
   }),

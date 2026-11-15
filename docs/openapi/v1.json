@@ -2674,6 +2674,7 @@
           "tasks"
         ],
         "summary": "新建任务",
+        "description": "在项目下建一条任务（工作单元）。不会自动开会话。\n参数：projectId、title（≤200）、goal（可选，≤2000）。\n返回：任务对象（id、status=todo、projectId）。记下 id。\n下一步：用 session_start 给这条任务派一台机器上的会话，再用 session_reply 说话。\n错误：401 令牌无效；403 无 projects:write；404 项目不存在或看不见。\n重试：MCP 调用要给 clientRequestId，同一值重试返回同一任务。\n\n权限范围：`projects:write`",
         "security": [
           {
             "bearer": [
@@ -2681,7 +2682,6 @@
             ]
           }
         ],
-        "description": "权限范围：`projects:write`",
         "requestBody": {
           "required": true,
           "content": {
@@ -4623,7 +4623,7 @@
           "sessions"
         ],
         "summary": "在任务下开一条会话",
-        "description": "派到指定机器（workerId）上跑；本机（hub 同机）的机器开放 API 永远用不了。\n\n权限范围：`sessions:write`",
+        "description": "在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了。\n参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）。\n返回：会话对象（id、status、model、workspaceId）。\n下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n错误：400 参数不合法；403 无 sessions:write；409 机器不可用或没装该 runtime。\n重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。\n\n权限范围：`sessions:write`",
         "security": [
           {
             "bearer": [
@@ -6062,7 +6062,7 @@
           "sessions"
         ],
         "summary": "对会话说话",
-        "description": "立即返回；回复从 /events 拉或 /stream 订阅。\n\n权限范围：`sessions:write`",
+        "description": "给会话发一条消息，立即返回（202）；回合在后台跑。\n参数：text、clientMessageId（可选，同一条消息重试用同一个值，送达队列据此去重）。\n返回：{ ok: true }。\n下一步：轮询 events（传 after=最后一条 seq）或 list_task_log 看进展与结论。\n错误：404 会话不存在或看不见；409 会话不在运行（先 session_start）；429 太频繁。\n\n权限范围：`sessions:write`",
         "security": [
           {
             "bearer": [
@@ -6268,6 +6268,7 @@
           "sessions"
         ],
         "summary": "打断正在跑的会话",
+        "description": "打断当前回合（相当于人点「停止」），会话本身保留，之后还能继续发消息。\n参数：sessionId。\n返回：{ ok: true }。\n下一步：要放弃任务用任务状态接口；要重跑直接 session_reply。\n错误：404 会话不存在或看不见。\n\n权限范围：`sessions:write`",
         "security": [
           {
             "bearer": [
@@ -6275,7 +6276,6 @@
             ]
           }
         ],
-        "description": "权限范围：`sessions:write`",
         "parameters": [
           {
             "schema": {

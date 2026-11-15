@@ -56,6 +56,8 @@ export interface OpenApiOptions {
   readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'>;
   /** 每个令牌每分钟最多多少次请求 / 多少次 prompt；e2e 调小来验 429。 */
   readonly rate?: { readonly general?: number; readonly prompt?: number; readonly streams?: number };
+  /** 对外 MCP 写工具的幂等回放（E4b）；不给就只有只读工具。 */
+  readonly replays?: import('@agent-hub/domain').McpReplayStore;
 }
 
 interface V1Context {
@@ -383,7 +385,12 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   });
 
   // MCP（streamable HTTP，无状态）：工具 = 上面这些路由；同一个令牌、同一套权限。
-  v1.post(`${V1}/mcp`, (c) => handleMcp(c, v1 as unknown as Hono));
+  v1.post(`${V1}/mcp`, (c) =>
+    handleMcp(c, v1 as unknown as Hono, {
+      ...(options.replays === undefined ? {} : { replays: options.replays }),
+      now: options.tokens.now
+    })
+  );
   v1.on(['GET', 'DELETE'], `${V1}/mcp`, (c) => c.json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed（无状态，只收 POST）' }, id: null }, 405));
 
   v1.doc31(`${V1}/openapi.json`, openApiInfo);

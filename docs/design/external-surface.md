@@ -195,7 +195,30 @@ annotations: {
 **不自动打断**：20 分钟杀进程会误伤 `npm ci` / 长测试；打断只由 `task.cancel`（v1 走
 `promptSessionUseCase` 的 stop 语义）或人触发。文档里原先的 `HUB_STALL_INTERRUPT_MS` 撤销。
 
-### 5.6 交付与幂等
+### 5.6 委派开发（E4b，需 `MCP_WRITE=1`）
+
+外部 agent 委派工作台的最小闭环：
+
+```
+task_create  → session_start → session_reply → 轮询 list_task_log / events → session_cancel（可选）
+```
+
+| 工具 | v1 路由 | 幂等 |
+| --- | --- | --- |
+| `task_create` | `POST /tasks` | 需要 `clientRequestId`，24h 内返回同一任务 |
+| `session_start` | `POST /sessions` | 需要 `clientRequestId`，不会重复开会话 |
+| `session_reply` | `POST /sessions/:id/prompt` | 需要 `clientRequestId`，另有 `clientMessageId` 做送达去重 |
+| `session_cancel` | `POST /sessions/:id/interrupt` | 天然幂等（重复打断无副作用） |
+
+- 写工具默认**不出现**；`MCP_WRITE=1` 才暴露，`MCP_READ_ONLY=1` 仍可把整套压回只读。
+- `clientRequestId` 由 MCP 层取走、不转发给内部 HTTP；回放键是
+  `<令牌哈希>|<工具名>|<clientRequestId>`，存第一次成功的结果（`mcp_replays` 表，保留 24h）。
+- `session_start` 必须点名的机器不能是 hub 本机（开放 API 的既有约束）；调用方应先
+  `list_workers`（暂未开放）或由项目页告诉它用哪台。机器离线/没装 runtime 返回 409。
+- 已知欠缺：资产还没有协议级 digest 冻结（E4c），所以委派出去的会话在别人同步资产新版后
+  可能换内容；这一步完成前，「对外委派」适合内部可信调用方。
+
+### 5.7 交付与幂等
 
 - 交付意图仍可用现有字段表达：任务 `branch`、`pullRequests`（`task.get` 聚合 PR URL）。
   没有 `kind: code|serve` —— v1 不发明任务形态；起服务/跑检查由提示词与现有工具决定。

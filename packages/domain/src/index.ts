@@ -40,6 +40,7 @@ export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repositor
 export type { WorkspaceRepository } from './ports/workspace-repository.ts';
 export type { WorkspaceGroupRepository } from './ports/workspace-groups.ts';
 export type { WorkspaceGroupGit } from './ports/workspace-group-git.ts';
+export type { McpReplayStore } from './ports/mcp-replay.ts';
 export type { PreviewLinkRepository } from './ports/preview-links.ts';
 export type { ComponentCatalogRepository, ComponentPinStore } from './ports/component-store.ts';
 export type { HarnessProbe, HarnessReadiness, HarnessSelfCheck } from './ports/harness-readiness.ts';

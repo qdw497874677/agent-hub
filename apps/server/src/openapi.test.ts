@@ -304,3 +304,52 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
   assert.deepEqual(projected.map((p) => p.event['kind']), ['tool', 'tool_result', 'text', 'ended']);
   assert.deepEqual(projected[0]!.event, { kind: 'tool', name: 'bash' });
 });
+
+test('MCP 委派：写工具默认不出现，MCP_WRITE 打开后可建任务，clientRequestId 重放同一结果', async () => {
+  const { david, mint, app } = await setup();
+  const project = (await david('/api/projects', post({ name: '委派' }))).body as { id: string };
+  const token = (await mint(david, ['projects:read', 'projects:write'])).token;
+  const replays = new Map<string, string>();
+  const store = {
+    async get(key: string) {
+      return replays.get(key) ?? null;
+    },
+    async put(key: string, body: string) {
+      replays.set(key, body);
+    }
+  };
+  const rpc = async (body: unknown, policy?: { writes?: boolean; readOnly?: boolean }) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify(body)
+      }),
+      { mcpReplays: store, mcpPolicy: { modules: new Set(['tasks', 'sessions', 'projects']), readOnly: false, writes: true, ...policy } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+  const list = await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  const names = list.result.tools.map((t: { name: string }) => t.name);
+  assert.ok(names.includes('task_create') && names.includes('session_start') && names.includes('session_reply') && names.includes('session_cancel'));
+  const writeTool = list.result.tools.find((t: { name: string }) => t.name === 'task_create');
+  assert.equal(writeTool.annotations.readOnlyHint, false);
+  assert.equal(writeTool.annotations.idempotentHint, true);
+
+  const noKey = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'task_create', arguments: { projectId: project.id, title: '委派任务' } } });
+  assert.equal(noKey.result.isError, true);
+  assert.match(noKey.result.content[0].text, /clientRequestId/);
+
+  const call = { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'task_create', arguments: { projectId: project.id, title: '委派任务', clientRequestId: 'req-1' } } };
+  const first = await rpc(call);
+  assert.equal(first.result.isError, false, JSON.stringify(first.result));
+  const second = await rpc({ ...call, id: 4 });
+  assert.deepEqual(second.result.structuredContent, first.result.structuredContent);
+  const listed = await rpc({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'list_tasks', arguments: { projectId: project.id } } });
+  const tasks = JSON.parse(listed.result.content[0].text) as { id: string }[];
+  assert.equal(tasks.length, 1);
+
+  // 只读闸门压过写开关。
+  const readOnly = await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} }, { readOnly: true });
+  assert.ok(!readOnly.result.tools.some((t: { name: string }) => t.name === 'task_create'));
+});

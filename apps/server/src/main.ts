@@ -210,7 +210,8 @@ const deps: Deps = {
   // 环境端口在资产依赖就绪后才构造；这里用委托保持组合根的单向初始化。
   environment: {
     prepare: async (command) => (sessionEnvironment ? sessionEnvironment.prepare(command) : { command, revision: null }),
-    revision: async (session) => (sessionEnvironment ? sessionEnvironment.revision(session) : null)
+    revision: async (session) => (sessionEnvironment ? sessionEnvironment.revision(session) : null),
+    upgrade: async (session) => (sessionEnvironment?.upgrade ? sessionEnvironment.upgrade(session) : null)
   },
   workerPresence: {
     online: async (workerId) =>
@@ -1431,7 +1432,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
     },
     enrollment: enrollmentDeps
   },
-  assets: { deps: assetDeps, audit: store.audit },
+  assets: { deps: assetDeps, audit: store.audit, sessions: store.sessions, environment: sessionEnvironment ?? undefined },
   providers: providerWiring,
   // 预览链接（docs/design/preview.md §4）：只装 `/api/sessions/:id/previews` 三条路由，转发在代理层。
   ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews(), ...(readEnv('HUB_PUBLIC_URL') === null ? {} : { publicHost: new URL(readEnv('HUB_PUBLIC_URL') as string).hostname, https: new URL(readEnv('HUB_PUBLIC_URL') as string).protocol === 'https:' }) } }),
@@ -1494,6 +1495,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   openApi: {
     tokens: apiTokenDeps,
     manage: apiTokenDeps,
+    replays: store.mcpReplays,
     rate: { general: envNumber('HUB_API_RATE_MAX'), prompt: envNumber('HUB_API_PROMPT_RATE_MAX'), streams: envNumber('HUB_API_STREAM_MAX') }
   },
   enrollment: {
