@@ -9,7 +9,7 @@ import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { promptSessionUseCase } from './conversation.ts';
-import { cancelDelivery, pumpDeliveries, releaseAfterTurn, retryDeliveryNow, TURN_STALE_MS, TURN_WAIT_MS } from './delivery.ts';
+import { cancelDelivery, pumpDeliveries, recoverOrphanedTurns, releaseAfterTurn, retryDeliveryNow, ORPHAN_TURN_MS, TURN_STALE_MS, TURN_WAIT_MS } from './delivery.ts';
 import { recordEvent } from './sessions.ts';
 import type { WorkerCommand } from '../ports/node-gateway.ts';
 
@@ -195,4 +195,26 @@ test('撤回的那句不算开了一轮', async () => {
   await promptSessionUseCase(w.deps, { sessionId: w.sid, text: 'b' });
   await settle();
   assert.equal(w.sent.length, 1);
+});
+
+test('送出去就没有下文的那一轮：按失败收尾，并立刻放行排在后面的消息', async () => {
+  const w = await world();
+  w.online();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '第一句' });
+  await settle();
+  assert.equal(w.sent.length, 1);
+  // hub 重启或 Worker 丢帧：托管表里没有这条会话，之后也再没有事件。
+  w.deps.hosting.clear();
+  await promptSessionUseCase(w.deps, { sessionId: w.sid, text: '第二句' });
+  await settle();
+  assert.equal(w.sent.length, 1, '第一轮还占着队首，第二句只能排队');
+  w.tick(ORPHAN_TURN_MS + 1);
+  assert.equal(await recoverOrphanedTurns(w.deps), 1);
+  assert.equal(w.sent.length, 2, '收尾后马上放行第二句');
+  const tail = await w.deps.sessions.tail(w.sid, 10);
+  const ended = tail.filter((e) => e.event.kind === 'ended').at(-1);
+  assert.ok(ended?.event.kind === 'ended' && ended.event.outcome === 'failed');
+  const [second] = await w.deliveries.pendingFor(w.sid);
+  assert.equal(second, undefined, '排在后面的那条已经被放出去了');
+  assert.equal(await recoverOrphanedTurns(w.deps), 0, '同一条不会反复收尾');
 });

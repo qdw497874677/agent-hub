@@ -72,6 +72,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   deriveSessionUseCase,
   promptSessionUseCase,
   pumpDeliveries,
+  recoverOrphanedTurns,
   releaseAfterTurn,
   sweepTemporaryWorkspacesUseCase,
   prepareTemporaryWorkspaceUseCase,
@@ -598,6 +599,16 @@ setInterval(() => {
     .catch((error: unknown) => log(`送达队列失败：${String(error)}`))
     .finally(() => { pumping = false; });
 }, 1_000).unref();
+// 送出去却一直没下文的回合：Worker 丢过任务、掉线或旧协议不认这条会话时，别让队首永远堵着。
+let recovering = false;
+setInterval(() => {
+  if (recovering) return;
+  recovering = true;
+  void recoverOrphanedTurns({ ...deps, deliveries: store.deliveries })
+    .then((n) => n > 0 && log(`送达队列：${n} 条送出去没有下文，按失败收尾并放行后面的消息`))
+    .catch((error: unknown) => log(`回收没有下文的回合失败：${String(error)}`))
+    .finally(() => { recovering = false; });
+}, 10_000).unref();
 setInterval(() => void filesService.sweepCheckpoints().catch(() => undefined), 3_600_000).unref();
 setInterval(() => void groupChat.sweep().catch(() => undefined), 15_000).unref();
 

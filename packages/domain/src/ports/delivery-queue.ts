@@ -25,6 +25,11 @@ export interface DeliveryQueue {
   held(sessionId: string, kind: DeliveryKind): Promise<Delivery | null>;
   /** 某会话最近的送达记录（含已送达），给 UI 用。 */
   recent(sessionId: string, limit: number): Promise<Delivery[]>;
+  /**
+   * 送出去之后就再没动静的那些（state 仍是 delivered、updatedAt 早于 cutoff）。
+   * 用来收掉「分类没有在机器上跑起来」的回合：不然它一直占着队首，后面的消息永远排着。
+   */
+  deliveredBefore(cutoff: number, limit: number): Promise<Delivery[]>;
   /** Worker 重连：把 queued 的都改成现在就到期；返回改了几条。 */
   wakeAll(now: number): Promise<number>;
   /** 进程重启：上次停在 sending 的退回 queued。 */

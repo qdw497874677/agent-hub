@@ -110,6 +110,56 @@ export async function releaseAfterTurn(deps: DeliveryDeps, sessionId: string): P
   return true;
 }
 
+/** 送出去多久还没下文，就认定那一轮根本没跑起来。 */
+export const ORPHAN_TURN_MS = 2 * 60_000;
+
+/**
+ * 收掉「送出去了、但机器上根本没跑起来」的回合。
+ *
+ * 真实事故：Worker 升级后还留着旧协议，收到 `taskId: null` 的 start_session 直接丢帧，
+ * prompt 记成 delivered 之后永远没有事件。会话一直是 running，这一轮的 delivered 记录
+ * 永远占着队首，后面每句话都只能排队——界面上就是「一直没反应」。
+ *
+ * 判据（三条同时满足才动手，避免误伤在跑的长回合）：
+ * - 送达记录是 delivered，且已过去 ORPHAN_TURN_MS；
+ * - 会话还是 running；
+ * - 托管表里已经没有它（Worker 掉线或从未接住）。
+ * 收尾后立刻把队首那条放出去，不让用户再等 30 分钟。
+ */
+export async function recoverOrphanedTurns(
+  deps: DeliveryDeps & Pick<Deps, 'hosting'>,
+  now = deps.now()
+): Promise<number> {
+  const orphaned = await deps.deliveries.deliveredBefore(now - ORPHAN_TURN_MS, 50);
+  let recovered = 0;
+  for (const delivery of orphaned) {
+    const sessionId = delivery.sessionId as SessionId;
+    const session = await deps.sessions.byId(sessionId);
+    // 会话已经收尾、或者它的 Worker 还托着它，就别插手。
+    if (!session || session.status !== 'running' || deps.hosting.has(sessionId)) continue;
+    await deps.queue.run(sessionId, () =>
+      recordEvent(deps, {
+        sessionId,
+        event: {
+          kind: 'ended',
+          outcome: 'failed',
+          reason: '这一轮没有在机器上跑起来：连接的机器上没有它的进程。请重发一次。'
+        }
+      })
+    );
+    await deps.deliveries.save({
+      ...delivery,
+      state: 'cancelled',
+      nextAt: null,
+      lastError: '这一轮没有在机器上跑起来',
+      updatedAt: now
+    });
+    await releaseAfterTurn(deps, sessionId);
+    recovered += 1;
+  }
+  return recovered;
+}
+
 /** 人点「立即重试」：只对未送达、或排队中的会话队首有效；重新给满 10 次。 */
 export async function retryDeliveryNow(deps: DeliveryDeps, id: string): Promise<Result<void, DomainError>> {
   const d = await deps.deliveries.byId(id);

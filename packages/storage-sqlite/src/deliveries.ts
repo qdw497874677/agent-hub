@@ -29,6 +29,8 @@ export function createSqliteDeliveries(db: DatabaseSync): DeliveryQueue {
     AND COALESCE(d.next_at, 0) <= ? ORDER BY d.created_at LIMIT 50`);
   const held = db.prepare(`SELECT * FROM message_delivery WHERE session_id = ? AND kind = ? AND state = 'held' ORDER BY created_at DESC LIMIT 1`);
   const recent = db.prepare('SELECT * FROM message_delivery WHERE session_id = ? AND kind = \'prompt\' ORDER BY created_at DESC LIMIT ?');
+  const stale = db.prepare(`SELECT * FROM message_delivery WHERE kind = 'prompt' AND state = 'delivered'
+    AND updated_at <= ? ORDER BY updated_at LIMIT ?`);
   const wake = db.prepare(`UPDATE message_delivery SET next_at = ? WHERE kind = 'prompt' AND state = 'queued' AND COALESCE(next_at, 0) > ?`);
   const recover = db.prepare(`UPDATE message_delivery SET state = 'queued', next_at = ?, updated_at = ? WHERE state = 'sending'`);
   const write = (d: Delivery) => {
@@ -66,6 +68,9 @@ export function createSqliteDeliveries(db: DatabaseSync): DeliveryQueue {
     },
     async recent(sessionId, limit) {
       return (recent.all(sessionId, limit) as Row[]).map(toDelivery).reverse();
+    },
+    async deliveredBefore(cutoff, limit) {
+      return (stale.all(cutoff, limit) as Row[]).map(toDelivery);
     },
     async wakeAll(now) {
       return Number(wake.run(now, now).changes);

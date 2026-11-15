@@ -1152,6 +1152,7 @@ export function inMemoryDeliveries(): import('../ports/delivery-queue.ts').Deliv
     },
     async held(sid, kind) { return [...rows.values()].filter((d) => d.sessionId === sid && d.kind === kind && d.state === 'held').at(-1) ?? null; },
     async recent(sid, limit) { return [...rows.values()].filter((d) => d.sessionId === sid && d.kind === 'prompt').sort(order).slice(-limit); },
+    async deliveredBefore(cutoff, limit) { return [...rows.values()].filter((d) => d.kind === 'prompt' && d.state === 'delivered' && d.updatedAt <= cutoff).sort((a, b) => a.updatedAt - b.updatedAt).slice(0, limit); },
     async wakeAll(now) { let n = 0; for (const d of rows.values()) if (d.kind === 'prompt' && d.state === 'queued' && (d.nextAt ?? 0) > now) { rows.set(d.id, { ...d, nextAt: now }); n++; } return n; },
     async recoverSending(now) { let n = 0; for (const d of rows.values()) if (d.state === 'sending') { rows.set(d.id, { ...d, state: 'queued', nextAt: now, updatedAt: now }); n++; } return n; }
   };
