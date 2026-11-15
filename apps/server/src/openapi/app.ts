@@ -26,6 +26,8 @@ import {
   invalid,
   isServiceAccount,
   listProjects,
+  assetRevisions,
+  uploadAsset,
   listWorkers,
   notFound,
   projectReader,
@@ -51,6 +53,7 @@ import type { SessionActivityOptions } from '../session-activity.ts';
 import type { StreamHub } from '../stream-hub.ts';
 import type { ProviderWiringApi } from '../providers.ts';
 import { V1, routes } from './routes.ts';
+import { createAssetVisibility } from '../asset-visibility.ts';
 import { handleMcp, INTERNAL } from './mcp.ts';
 
 export interface OpenApiOptions {
@@ -139,6 +142,50 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   const valid = <T>(c: Context, target: 'json' | 'query'): T => (c.req as unknown as { valid(t: string): T }).valid(target);
 
   on(routes.health, (c) => c.json({ ok: true }));
+  on(routes.listAssets, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:read'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const kind = c.req.query('kind');
+    const readable = createAssetVisibility({ access: deps.access, projects: deps.projects }, actor);
+    const all = await ctx.assetReview.assets.list();
+    const visible = [];
+    for (const asset of all) {
+      if (kind !== undefined && asset.kind !== kind) continue;
+      if (await readable(asset)) visible.push(asset);
+    }
+    return c.json(visible);
+  });
+  on(routes.getAsset, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:read'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const asset = await ctx.assetReview.assets.get(c.req.param('assetId') ?? '');
+    if (!asset) return fail(c, notFound('资产不存在'));
+    const readable = createAssetVisibility({ access: deps.access, projects: deps.projects }, actor);
+    if (!(await readable(asset))) return fail(c, notFound('资产不存在'));
+    const revisions = await assetRevisions(ctx.assetReview, asset.id);
+    if (!revisions.ok) return fail(c, revisions.error);
+    return c.json({ asset, revisions: revisions.value });
+  });
+  on(routes.createAsset, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'asset.submit') || !can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:write'));
+    if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
+    const input = valid<{ kind: 'skill' | 'instruction' | 'mcp'; name?: string | null; scope: 'personal' | 'team' | 'project'; projectId?: string | null; files: { path: string; data: string }[] }>(c, 'json');
+    const files = input.files.map((file) => ({ path: file.path, data: new Uint8Array(Buffer.from(file.data, 'base64')) }));
+    const made = await uploadAsset(ctx.assetReview, {
+      kind: input.kind,
+      name: input.name ?? null,
+      projectId: input.scope === 'project' ? input.projectId ?? null : null,
+      files,
+      scope: input.scope,
+      ownerId: actor.user.id,
+      teamId: actor.user.teamId ?? null,
+      publish: false
+    });
+    return made.ok ? c.json(made.value, 201) : fail(c, made.error);
+  });
   on(routes.submitAssetRevision, async (c) => {
     if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
     const body = valid<{ files: { path: string; data: string }[] }>(c, 'json');

@@ -1,6 +1,8 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import {
   appendLogRequest,
+  assetRevisionSchema,
+  assetSchema,
   changeOptionRequest,
   createProjectRequest,
   createTaskRequest,
@@ -50,7 +52,7 @@ const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', 
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
 
 /** 每条路由要的权限范围（文档里写清楚；真正的判断在 can()）。 */
-export type ScopeNote = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | 'assets:submit' | null;
+export type ScopeNote = 'projects:read' | 'projects:write' | 'sessions:read' | 'sessions:write' | 'workers:read' | 'assets:submit' | 'assets:read' | 'assets:write' | null;
 
 const route = <R extends Parameters<typeof createRoute>[0]>(scope: ScopeNote, config: R) =>
   createRoute({
@@ -145,6 +147,47 @@ export const routes = {
     responses: { 200: json(workspaceChangesSchema) }
   }),
 
+  listAssets: route('assets:read', {
+    method: 'get', path: `${V1}/assets`, tags: ['assets'], summary: '我能用的资产',
+    description:
+      '列出令牌账号能看见的资产（全局、团队、可见项目、自己的个人资产）。\n' +
+      '参数：kind（可选，skill / instruction / mcp）。\n' +
+      '返回：资产数组（id、kind、name、scope、pinned/latest digest、描述）。\n' +
+      '下一步：用 get_asset 看某个资产的版本；会话要用它就先给会话配资产集。\n' +
+      '错误：401 令牌无效；403 无 assets:read。',
+    request: { query: z.object({ kind: z.enum(['skill', 'instruction', 'mcp']).optional() }) },
+    responses: { 200: json(z.array(assetSchema)) }
+  }),
+  getAsset: route('assets:read', {
+    method: 'get', path: `${V1}/assets/{assetId}`, tags: ['assets'], summary: '看一个资产与它的版本',
+    description:
+      '按 id 看资产详情与版本列表（不含文件内容）。\n' +
+      '参数：assetId（路径）。\n' +
+      '返回：{ asset, revisions: [{ digest, commit, createdAt }] }。\n' +
+      '下一步：要用某个版本就把 digest 记下来（会话资产集按 digest 钉）。\n' +
+      '错误：401 令牌无效；404 资产不存在或你看不见。',
+    request: { params: z.object({ assetId: z.string().openapi({ param: { name: 'assetId', in: 'path' } }) }) },
+    responses: { 200: json(z.object({ asset: assetSchema, revisions: z.array(assetRevisionSchema) })) }
+  }),
+  createAsset: route('assets:write', {
+    method: 'post', path: `${V1}/assets`, tags: ['assets'], summary: '新建资产（进审核）',
+    description:
+      '上传一个新资产（skill / instruction / mcp）。**默认只进审核队列**，审核通过后才可用于会话。\n' +
+      '参数：kind、name（可选，不给自己推）、scope（personal/team/project）、projectId（scope=project 时必填）、files（[{path, data(base64)}]，≤200 个、单文件 ≤1MB）。\n' +
+      '返回：资产对象（pinned 为空表示还没发布）。\n' +
+      '下一步：等审核通过；之后用 get_asset 看 pinned digest。\n' +
+      '错误：400 文件不合法或超限；403 无 assets:write；409 同范围同名已存在。',
+    request: body(
+      z.object({
+        kind: z.enum(['skill', 'instruction', 'mcp']),
+        name: z.string().max(64).nullable().optional(),
+        scope: z.enum(['personal', 'team', 'project']).default('personal'),
+        projectId: z.string().nullable().optional(),
+        files: z.array(z.object({ path: z.string().min(1).max(512), data: z.string() })).min(1).max(200)
+      })
+    ),
+    responses: { 201: json(assetSchema, '已创建（待审核）') }
+  }),
   submitAssetRevision: route('assets:submit', {
     method: 'post', path: `${V1}/assets/{assetId}/revisions`, tags: ['assets'], summary: '给资产交一个新版本（进审核）',
     description: '只有作者（或团队负责人）能交；新版本进待审队列，审核通过才上线。令牌不能审核、发布、装机或下架。文件内容 base64。',

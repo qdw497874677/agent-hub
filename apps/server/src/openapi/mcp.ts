@@ -12,7 +12,7 @@ export const INTERNAL: unique symbol = Symbol('openapi-internal');
 
 type RouteDef = (typeof routes)[keyof typeof routes];
 
-export type McpModuleName = 'tasks' | 'projects' | 'sessions';
+export type McpModuleName = 'tasks' | 'projects' | 'sessions' | 'assets';
 
 /**
  * 对外 MCP 的白名单：先白名单、再分组、再只读闸门。
@@ -22,9 +22,12 @@ export type McpModuleName = 'tasks' | 'projects' | 'sessions';
 const ALLOWED = {
   listProjects: { module: 'projects', readOnly: true },
   getProject: { module: 'projects', readOnly: true },
+  listAssets: { module: 'assets', readOnly: true },
+  getAsset: { module: 'assets', readOnly: true },
   createProject: { module: 'projects', readOnly: false, expose: 'project_create', idempotent: true },
   updateProject: { module: 'projects', readOnly: false, expose: 'project_update', idempotent: true },
   deleteProject: { module: 'projects', readOnly: false, expose: 'project_archive' },
+  createAsset: { module: 'assets', readOnly: false, expose: 'asset_create', idempotent: true },
   getSession: { module: 'sessions', readOnly: true },
   listTasks: { module: 'tasks', readOnly: true },
   getTask: { module: 'tasks', readOnly: true },
@@ -49,7 +52,7 @@ export interface McpPolicy {
   readonly writes?: boolean;
 }
 
-const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions'];
+const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions', 'assets'];
 
 interface ToolDef {
   readonly name: string;

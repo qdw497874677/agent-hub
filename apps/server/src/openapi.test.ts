@@ -243,7 +243,7 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   assert.equal(init.status, 200, JSON.stringify(init.body));
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
-  assert.deepEqual(names.sort(), ['events', 'get_project', 'get_session', 'get_task', 'list_projects', 'list_task_log', 'list_tasks']);
+  assert.deepEqual(names.sort(), ['events', 'get_asset', 'get_project', 'get_session', 'get_task', 'list_assets', 'list_projects', 'list_task_log', 'list_tasks']);
   // 写工具不进清单；注解标成只读。
   assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
   const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
@@ -270,7 +270,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions']) }).length, 7);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 9);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -290,7 +290,7 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
 test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
   assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['get_task', 'list_task_log', 'list_tasks']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project']);
-  assert.equal(mcpTools({ readOnly: true }).length, 7);
+  assert.equal(mcpTools({ readOnly: true }).length, 9);
   const projected = projectEvents([
     { seq: 1, at: 1, event: { kind: 'prompt', text: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 2, at: 2, event: { kind: 'tool_call', name: 'bash', input: { command: 'echo AWS_SECRET_ACCESS_KEY=abc' } } },
