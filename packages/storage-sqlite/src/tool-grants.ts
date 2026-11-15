@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS tool_grants (
   scopes TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
-  revoked_at INTEGER
+  revoked_at INTEGER,
+  actor TEXT
 );
 CREATE INDEX IF NOT EXISTS tool_grants_session ON tool_grants(session_id);
 CREATE TABLE IF NOT EXISTS tool_calls (
@@ -41,7 +42,8 @@ const toGrant = (row: Row): ToolGrant => ({
   scopes: JSON.parse(row.scopes as string) as ToolScope[],
   createdAt: row.created_at as number,
   expiresAt: row.expires_at as number,
-  revokedAt: (row.revoked_at as number | null) ?? null
+  revokedAt: (row.revoked_at as number | null) ?? null,
+  ...(typeof row.actor === 'string' ? { actor: JSON.parse(row.actor) as ToolGrant['actor'] } : {})
 });
 
 const toCall = (row: Row): ToolCallRecord => ({
@@ -59,10 +61,14 @@ const toCall = (row: Row): ToolCallRecord => ({
 
 export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository {
   db.exec(TOOL_SCHEMA);
+  // #221 步骤 3：旧库补列。放这儿而不是删表重建——授权行是热的，重建会把运行中的令牌弄丢。
+  if (!(db.prepare('PRAGMA table_info(tool_grants)').all() as { name: string }[]).some((c) => c.name === 'actor')) {
+    db.exec('ALTER TABLE tool_grants ADD COLUMN actor TEXT');
+  }
   const upsert = db.prepare(
-    `INSERT INTO tool_grants (id, token_hash, task_id, session_id, worker_id, scopes, created_at, expires_at, revoked_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT(id) DO UPDATE SET revoked_at = excluded.revoked_at, expires_at = excluded.expires_at`
+    `INSERT INTO tool_grants (id, token_hash, task_id, session_id, worker_id, scopes, created_at, expires_at, revoked_at, actor)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET revoked_at = excluded.revoked_at, expires_at = excluded.expires_at, actor = COALESCE(excluded.actor, tool_grants.actor)`
   );
   const byHash = db.prepare('SELECT * FROM tool_grants WHERE token_hash = ?');
   const activeBySession = db.prepare(
@@ -88,7 +94,8 @@ export function createToolGrantRepository(db: DatabaseSync): ToolGrantRepository
         JSON.stringify(grant.scopes),
         grant.createdAt,
         grant.expiresAt,
-        grant.revokedAt
+        grant.revokedAt,
+        grant.actor === undefined ? null : JSON.stringify(grant.actor)
       );
     },
     async byTokenHash(hash) {

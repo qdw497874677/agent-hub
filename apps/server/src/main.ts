@@ -216,9 +216,15 @@ const deps: Deps = {
       }
       const granted = await providerWiring.grantFor(command);
       if (!granted.ok) return granted;
-      let effective = toolGateway
-        ? await withToolAccess(toolGateway, toolEndpoint, granted.value)
-        : granted.value;
+      // #221 步骤 3：授权里冻结「以谁的名义、经哪条渠道」。群会话是群体授权，其余先记 web。
+      let effective = granted.value;
+      if (toolGateway) {
+        const live = await deps.sessions.byId(command.sessionId);
+        const actor = live
+          ? { userId: live.createdBy ?? null, via: live.groupId ? ('group' as const) : ('web' as const) }
+          : undefined;
+        effective = await withToolAccess(toolGateway, toolEndpoint, granted.value, actor);
+      }
       // 环境准备（资产/MCP）必须排在工具令牌之后：MCP 启动配置以 command.tools 为准。
       // 全仓只有这一处 prepare；domain 的启动入口只负责把回执里的版本落库。
       let environmentRevision: string | null = null;
@@ -343,6 +349,10 @@ const botOfSession = async (sessionId: SessionId): Promise<{ projectId: string; 
 const subjectOf = async (sessionId: SessionId): Promise<Subject | null> => {
   const session = await deps.sessions.byId(sessionId);
   if (!session) return null;
+  // #221 步骤 3：授权签发时冻了身份，工具调用优先读它；旧授权没有 actor 才回落下面的推导。
+  const grant = await deps.toolGrants?.activeForSession(sessionId, deps.now());
+  const frozen = grant?.actor?.userId ?? null;
+  if (frozen !== null) return loadActor(store.users, store.access, frozen, 'agent-git');
   const bot = await botOfSession(sessionId);
   const task = await deps.tasks.byId(session.taskId);
   const userId = bot ? task?.ownerId ?? session.createdBy ?? null : session.createdBy ?? task?.ownerId ?? null;

@@ -177,3 +177,11 @@ test('隐藏工具：不在 list 里、能按名调用、不占授权总配额',
   assert.ok((await gateway.call(grant, 'task.get', {})).ok !== undefined);
   assert.equal(calls, 5);
 });
+
+test('授权冻结来源身份：签发时带 actor 就存下来，不带就是 undefined（#221 步骤 3）', async () => {
+  const w = await world();
+  const withActor = await w.gateway.issue(w.session, ['task:read'], { userId: 'u-1', via: 'group' });
+  assert.deepEqual(withActor.grant.actor, { userId: 'u-1', via: 'group' });
+  const plain = await w.gateway.issue(w.session, ['task:read']);
+  assert.equal(plain.grant.actor, undefined);
+});

@@ -30,6 +30,15 @@ export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log
 export const TOOL_GRANT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const TOOL_GRANT_MAX_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
 
+/**
+ * 授权时的身份快照（#221 步骤 3）：谁授权、以谁的名义、经哪条渠道进来。
+ * 工具调用只读这一份——不再在每次调用时重新猜身份；权限本身仍然实时求值。
+ */
+export interface GrantActor {
+  readonly userId: string | null;
+  readonly via: 'web' | 'group' | 'bot' | 'connector' | 'dispatch' | 'tool';
+}
+
 /** 一次授权：令牌本身只交给 agent 一次，库里只存 hash。 */
 export interface ToolGrant {
   readonly id: string;
@@ -41,6 +50,8 @@ export interface ToolGrant {
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly revokedAt: number | null;
+  /** 旧授权没有这个字段：读不到时调用方回落到按会话推导（见 #221 步骤 3 的迁移说明）。 */
+  readonly actor?: GrantActor;
 }
 
 export function grantActive(grant: ToolGrant, now: number): boolean {

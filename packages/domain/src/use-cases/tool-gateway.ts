@@ -2,6 +2,7 @@ import { newId } from '../ids.ts';
 import type { Session } from '../session.ts';
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { err, type Result } from '../result.ts';
+import type { GrantActor } from '../tool.ts';
 import { DEFAULT_TOOL_SCOPES, TOOL_GRANT_MAX_LIFETIME_MS, TOOL_GRANT_TTL_MS, grantActive, type ToolGrant, type ToolScope } from '../tool.ts';
 import type { ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import type { ToolGrantRepository } from '../ports/tool-grant-repository.ts';
@@ -26,7 +27,7 @@ export interface IssuedGrant {
 
 export interface ToolGateway {
   /** 给一条会话签新授权，同时作废它旧的授权（每次重新托管换一把）。 */
-  issue(session: Pick<Session, 'id' | 'taskId' | 'workerId'>, scopes?: readonly ToolScope[]): Promise<IssuedGrant>;
+  issue(session: Pick<Session, 'id' | 'taskId' | 'workerId'>, scopes?: readonly ToolScope[], actor?: GrantActor): Promise<IssuedGrant>;
   revoke(session: Pick<Session, 'id'>): Promise<void>;
   /** 作废所有不属于 `running` 这些会话的授权（hub 启动时、或运维一键全作废时传空）。返回作废条数。 */
   revokeAllExcept(running: readonly Session['id'][]): Promise<number>;
@@ -73,7 +74,7 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
   };
 
   return {
-    async issue(session, scopes = DEFAULT_TOOL_SCOPES) {
+    async issue(session, scopes = DEFAULT_TOOL_SCOPES, actor) {
       const now = deps.now();
       await deps.toolGrants.revokeSession(session.id, now);
       const { token, hash } = deps.tokens.issue();
@@ -86,7 +87,8 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
         scopes: [...scopes],
         createdAt: now,
         expiresAt: now + TOOL_GRANT_TTL_MS,
-        revokedAt: null
+        revokedAt: null,
+        ...(actor ? { actor } : {})
       };
       await deps.toolGrants.save(grant);
       return { grant, token };
@@ -163,12 +165,13 @@ export function createToolGateway(deps: ToolGatewayDeps): ToolGateway {
 export async function withToolAccess(
   gateway: ToolGateway,
   endpoint: { readonly url: string; readonly transport: 'relay' } | null,
-  command: WorkerCommand
+  command: WorkerCommand,
+  actor?: GrantActor
 ): Promise<WorkerCommand> {
   if (endpoint === null) return command;
   try {
     if (command.kind === 'start_session') {
-      const { token } = await gateway.issue({ id: command.sessionId, taskId: asTaskId(command.taskId), workerId: command.workerId });
+      const { token } = await gateway.issue({ id: command.sessionId, taskId: asTaskId(command.taskId), workerId: command.workerId }, DEFAULT_TOOL_SCOPES, actor);
       return { ...command, tools: { transport: endpoint.transport, url: endpoint.url, token } };
     }
     if (command.kind === 'dispose') await gateway.revoke({ id: command.sessionId });
