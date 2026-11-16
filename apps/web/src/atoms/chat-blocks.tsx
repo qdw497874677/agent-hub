@@ -19,7 +19,7 @@ import type { HandoffDto } from './live-core.ts';
 import { formatRoute, parseRoute } from '../shell/route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
 import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine, type ToolView } from './tool-format.ts';
-import { runLength, startsRun, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
+import { runLength, startsRun, toolDisplayName, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
 import { subagentStepCount } from './live.ts';
 import { useFileLinks } from './file-links.tsx';
 
@@ -493,7 +493,7 @@ function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>;
         <span aria-hidden className={`shrink-0 text-meta ${failed ? 'text-rust' : 'text-tertiary'}`}>
           {mark}
         </span>
-        {run.first ? <span className="shrink-0 font-medium text-sage">{block.name}</span> : null}
+        {run.first ? <span className="shrink-0 font-medium text-sage" data-testid="tool-name" data-tool-name={block.name}>{toolDisplayName(block.name)}</span> : null}
         <span className="min-w-0 truncate font-mono text-sub text-tertiary" data-testid="tool-params">
           {line.pairs.length === 0 ? (
             toolSummary(view)

@@ -10,6 +10,7 @@ import {
   toolRowLine,
   toolRowTitle,
   toolRunChip,
+  toolDisplayName,
   type ToolRowProbe
 } from './tool-rows.ts';
 
@@ -106,4 +107,16 @@ test('组头文案：只有多行时才有', () => {
   assert.equal(toolRunChip('read', 1), '');
   assert.equal(toolRunChip('read', 2), 'read ×2');
   assert.equal(toolRunChip('grep', 12), 'grep ×12');
+});
+
+test('工具名：agent-hub 自己的 MCP 工具写中文名，别的 MCP 写「tool · server」，内建工具原样', () => {
+  assert.equal(toolDisplayName('mcp__agent_hub__memory_search'), '搜索记忆');
+  assert.equal(toolDisplayName('mcp__agent_hub__task_log_append'), '写任务日志');
+  // Hermes 给服务名加了前缀
+  assert.equal(toolDisplayName('mcp__editor_agent_hub__task_get'), '读任务');
+  // 以后新加、表里还没有的：至少把下划线换成空格
+  assert.equal(toolDisplayName('mcp__agent_hub__brand_new_tool'), 'brand new tool');
+  assert.equal(toolDisplayName('mcp__github__create_issue'), 'create_issue · github');
+  assert.equal(toolDisplayName('read'), 'read');
+  assert.equal(toolDisplayName('bash'), 'bash');
 });

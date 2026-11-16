@@ -30,6 +30,7 @@ import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
 import { LogMarkdown } from '../../atoms/log-markdown.tsx';
 import { StoppedDivider } from '../../atoms/chat-blocks.tsx';
+import { toolDisplayName } from '../../atoms/tool-rows.ts';
 import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
 
 /** 卡片里的 markdown：首尾段贴边；代码块收矮一点，长代码在卡片里自己横向滚。 */
@@ -176,7 +177,7 @@ function BlockView({
     return (
       <div className="flex items-baseline gap-2 border-l border-hair pl-2 text-meta text-secondary">
         <span className="text-tertiary">{mark}</span>
-        <span className="font-mono text-sage">{block.name}</span>
+        <span className="shrink-0 text-sage" title={block.name}>{toolDisplayName(block.name)}</span>
         <span className="truncate opacity-60">{block.input.slice(0, 80)}</span>
         <span className="text-tertiary">{spent}</span>
       </div>
