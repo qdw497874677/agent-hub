@@ -210,6 +210,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   const prompting = new Set<string>();
   /** 保活参数（ADR：回合结束 ≠ 进程结束）。 */
   const SESSION_IDLE_MS = options.sessionIdleMs ?? 900_000;
+  /** 常驻会话：不按空闲回收、不占保活上限（任务里长期用的那条）。 */
+  const pinnedSessions = new Set<string>();
   const KEEPALIVE_MAX = options.keepAliveMax ?? 8;
   /**
    * 每条会话一条串行队列。server 会连着发 start_session + prompt，
@@ -737,6 +739,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     idleTimers.delete(sessionId);
     // 正在跑一轮：这期间不算空闲（prompt 收尾时会重新起算）
     if (prompting.has(sessionId)) return;
+    // 常驻：用户明确要它一直留着，不按空闲收（仍会随 Worker 重启/退出消失）。
+    if (pinnedSessions.has(sessionId)) return;
     if (!(SESSION_IDLE_MS > 0) || !sessions.has(sessionId)) return;
     const timer = setTimeout(() => void retire(sessionId, `${Math.round(SESSION_IDLE_MS / 1000)} 秒没有活动`), SESSION_IDLE_MS);
     timer.unref?.();
@@ -749,6 +753,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (timer) clearTimeout(timer);
     idleTimers.delete(sessionId);
     lastActivity.delete(sessionId);
+    pinnedSessions.delete(sessionId);
     sessionAgents.delete(sessionId);
     sessionProviders.delete(sessionId);
     // 会话没了就别再 session/load 了（也顺带避免调已 dispose 的进程）。
@@ -777,7 +782,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (!(KEEPALIVE_MAX > 0)) return;
     while (sessions.size > KEEPALIVE_MAX) {
       const victim = [...sessions.keys()]
-        .filter((id) => id !== protect)
+        .filter((id) => id !== protect && !pinnedSessions.has(id))
         .sort((left, right) => (lastActivity.get(left) ?? 0) - (lastActivity.get(right) ?? 0))[0];
       if (!victim) return;
       await retire(victim, `超过保活上限（${KEEPALIVE_MAX} 个进程）`);
@@ -1136,6 +1141,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     const previous = sessions.get(command.sessionId);
     if (previous) {
       const providerKey = spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '';
+      if (command.pinned === true) pinnedSessions.add(command.sessionId);
+      else pinnedSessions.delete(command.sessionId);
       const reusable = !spec.branch && sessionAgents.get(command.sessionId) === command.agentId
         && workspaces.get(command.sessionId) === command.workspaceRoot
         && sessionProviders.get(command.sessionId) === providerKey;
@@ -1194,6 +1201,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     sessions.set(command.sessionId, session);
     workspaces.set(command.sessionId, command.workspaceRoot);
     sessionAgents.set(command.sessionId, command.agentId);
+    if (command.pinned === true) pinnedSessions.add(command.sessionId);
+    else pinnedSessions.delete(command.sessionId);
     sessionProviders.set(command.sessionId, spec.provider ? `${spec.provider.slug}|${spec.provider.baseUrl}|${spec.provider.token}` : '');
     send({
       type: 'status',

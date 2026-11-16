@@ -200,7 +200,20 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
     journal,
     async save(session) {
       const existing = rows.get(session.id);
-      rows.set(session.id, existing ? { ...session, title: existing.title ?? null } : session);
+      // 常驻只经 setPinned 改：整行 save 不能把它冲掉（SQL 那边同样不写这一列）。
+      const pinned = session.pinned ?? existing?.pinned;
+      rows.set(
+        session.id,
+        existing
+          ? { ...session, title: existing.title ?? null, ...(pinned === undefined ? {} : { pinned }) }
+          : session
+      );
+    },
+    async setPinned(id, pinned, at) {
+      const existing = rows.get(id);
+      if (!existing) return false;
+      rows.set(id, pinned ? { ...existing, pinned: true, updatedAt: at } : { ...existing, pinned: undefined, updatedAt: at });
+      return true;
     },
     async setTitle(id, title, at) {
       const existing = rows.get(id);

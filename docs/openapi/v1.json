@@ -5066,6 +5066,9 @@
                             ],
                             "minimum": 0
                           },
+                          "pinned": {
+                            "type": "boolean"
+                          },
                           "createdAt": {
                             "type": "integer",
                             "minimum": 0
@@ -6856,6 +6859,9 @@
                       ],
                       "minimum": 0
                     },
+                    "pinned": {
+                      "type": "boolean"
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -7329,6 +7335,9 @@
                       ],
                       "minimum": 0
                     },
+                    "pinned": {
+                      "type": "boolean"
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -7779,6 +7788,9 @@
                         "null"
                       ],
                       "minimum": 0
+                    },
+                    "pinned": {
+                      "type": "boolean"
                     },
                     "createdAt": {
                       "type": "integer",
@@ -8589,6 +8601,9 @@
                         "null"
                       ],
                       "minimum": 0
+                    },
+                    "pinned": {
+                      "type": "boolean"
                     },
                     "createdAt": {
                       "type": "integer",

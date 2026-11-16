@@ -25,6 +25,8 @@ export interface SessionRepository {
   setTitle(sessionId: SessionId, title: string | null, at: number): Promise<void>;
   /** 只改环境版本；和 save 分开，避免启动时拿旧会话对象覆盖 lastSeq/status。 */
   setEnvironmentRevision(sessionId: SessionId, revision: string | null, at: number): Promise<void>;
+  /** 只改常驻标记；和 save 分开，免得跑着的会话拿旧对象 save 时把标记冲掉。 */
+  setPinned(sessionId: SessionId, pinned: boolean, at: number): Promise<boolean>;
   /**
    * 条件写：仅当库里还是 running 时降级为 interrupted（`UPDATE ... WHERE id=? AND status='running'`）。
    * Worker 掉线用它逐条收尾——先 listAll 再整行 save 会把重连时刚接回的状态写回旧值。

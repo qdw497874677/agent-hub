@@ -31,6 +31,8 @@ export function startCommand(
     origin: session.origin,
     resume,
     options,
+    // 常驻靠指令带下去：Worker 拿到才知道这条别按空闲回收。
+    ...(session.pinned === true ? { pinned: true } : {}),
     ...(branch ? { branch } : {})
   };
 }

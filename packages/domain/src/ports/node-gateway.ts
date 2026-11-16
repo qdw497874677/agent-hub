@@ -39,6 +39,8 @@ export type WorkerCommand =
       readonly tools?: ToolAccess;
       /** MCP 资产（hub 在发出前才填，见 sessionMcpLaunch）。stdio 的 env 含密钥明文：不落库、不进日志。 */
       readonly mcp?: readonly McpLaunch[];
+      /** 常驻：Worker 不按空闲回收这条会话，也不占保活上限（任务里长期用的那条）。 */
+      readonly pinned?: boolean;
       /**
        * 这次会话生效的资产 id（项目作用域，见 sessionAssetPlan）。
        * v4 起 hub 总是显式给出（可能是空数组）；缺省 = 一个都不给（fail-closed）。

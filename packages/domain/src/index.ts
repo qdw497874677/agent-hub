@@ -73,6 +73,7 @@ export * from './use-cases/repo-check.ts';
 export * from './use-cases/delete-project.ts';
 export * from './use-cases/delete-session.ts';
 export * from './use-cases/settle-session.ts';
+export * from './use-cases/session-pin.ts';
 export * from './use-cases/tasks.ts';
 export * from './use-cases/work-log.ts';
 export * from './use-cases/sessions.ts';

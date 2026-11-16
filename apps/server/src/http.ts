@@ -40,6 +40,7 @@ import {
   forkSessionRequest,
   renameSessionRequest,
   continueElsewhereRequest,
+  pinSessionRequest,
   settleSessionRequest,
   sessionSchema,
   projectFilesSchema,
@@ -106,6 +107,7 @@ import {
   continueElsewhereUseCase,
   interruptSessionUseCase,
   deleteSessionUseCase,
+  pinSessionUseCase,
   settleSessionUseCase,
   listProjectFiles,
   listProjects,
@@ -961,6 +963,26 @@ export function createApp(options: AppOptions): Hono {
       {
         sessionId: asSessionId(sessionId),
         settled: input.value.settled,
+        actor: principalOf(c),
+        now: deps.now()
+      }
+    );
+    return result.ok ? c.json(sessionSchema.parse(result.value)) : fail(c, result.error);
+  });
+
+  /**
+   * 常驻 / 取消常驻：Worker 不按空闲回收这条会话，也不占保活上限。
+   * 守门中间件按 session.prompt 判权限（与说话同一档）。
+   */
+  app.post('/api/sessions/:sessionId/pin', async (c) => {
+    const input = await body(c, pinSessionRequest);
+    if (!input.ok) return input.response;
+    const sessionId = c.req.param('sessionId');
+    const result = await pinSessionUseCase(
+      options.activity ? { ...deps, audit: options.activity.audit } : deps,
+      {
+        sessionId: asSessionId(sessionId),
+        pinned: input.value.pinned,
         actor: principalOf(c),
         now: deps.now()
       }

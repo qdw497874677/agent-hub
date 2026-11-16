@@ -298,6 +298,8 @@ export const sessionSchema = z.object({
   title: z.string().nullable().optional(),
   /** 收起：做完的会话移出活跃列表，随时可恢复。null = 还在活跃列表里。 */
   settledAt: epochMs.nullable().optional(),
+  /** 常驻：Worker 不按空闲回收这条会话，也不占保活上限。 */
+  pinned: z.boolean().optional(),
   createdAt: epochMs,
   updatedAt: epochMs
 });

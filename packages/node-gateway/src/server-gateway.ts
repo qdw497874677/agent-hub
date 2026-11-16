@@ -1197,6 +1197,7 @@ function toWire(command: WorkerCommand): ServerToWorker {
           : {}),
         ...(command.assetIds ? { assetIds: [...command.assetIds] } : {}),
         ...(command.assetDigests ? { assetDigests: { ...command.assetDigests } } : {}),
+        ...(command.pinned === true ? { pinned: true } : {}),
         ...(command.provider ? { provider: { ...command.provider, models: command.provider.models.map((model) => ({ ...model })) } } : {})
       };
     case 'prompt':

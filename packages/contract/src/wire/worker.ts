@@ -15,7 +15,9 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
 // 让旧 Worker 连不上并在日志里说清「运行 scripts/update-worker.sh」。
 // v4（#223）：start_session 的 assetIds 缺省不再表示「机器上装着的全给」，而是一个都不给；
 // hub 总是显式下发（可能是空数组）。v3 Worker 仍按旧语义全给，所以必须换版本让它们先升级。
-export const PROTOCOL_VERSION = 4;
+// v5：start_session 可以带 pinned（常驻会话不按空闲回收）；旧 Worker 会忽略它，
+// 语义变成「不常驻」，所以换版本让它们先升级，别让界面上的常驻变成谎话。
+export const PROTOCOL_VERSION = 5;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
@@ -316,6 +318,8 @@ export const startSessionCommandSchema = z.object({
   assetIds: z.array(z.string()).max(500).optional(),
   /** #226 E4c：assetId → digest。给了就按这一版加载，不许漂到新版本。 */
   assetDigests: z.record(z.string(), z.string()).optional(),
+  /** 常驻：不按空闲回收、不占保活上限（任务里长期用的那条会话）。 */
+  pinned: z.boolean().optional(),
   /** hub 模型提供商（旧 worker 忽略）。apiKey 只交给 worker 本机中继：不进 agent、不落盘、不进日志。 */
   provider: z
     .object({

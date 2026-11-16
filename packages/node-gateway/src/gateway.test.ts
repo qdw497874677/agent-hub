@@ -1204,3 +1204,45 @@ test('能力（ADR 0030 D3）：Worker 自己也把关——welcome 说只读，
   await link.close();
   await new Promise((resolve) => wss.close(resolve));
 });
+
+test('常驻：pinned 的会话闲置到点也不回收', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime([])], sessionIdleMs: 120 });
+  await rec.until(() => rec.hellos.length === 1);
+
+  assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), pinned: true })).ok);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: 'hi' });
+  await rec.until(() => rec.statuses.includes('idle'));
+
+  // 普通会话到这个点已经该收了；常驻的一直留着。
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(rec.statusFrames.some((frame) => frame.status === 'ended'), false, '常驻会话不该被闲置回收');
+
+  // 还能继续用同一进程
+  const again = await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '再来' });
+  assert.ok(again.ok);
+  await rec.until(() => rec.events.filter((event) => event.kind === 'text').length === 2);
+  await stop(link);
+});
+
+test('常驻：不占保活上限，超限时先收普通的', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], keepAliveMax: 1 });
+  await rec.until(() => rec.hellos.length === 1);
+
+  assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), pinned: true })).ok);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s1'), text: '一' });
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'idle'));
+
+  // 第二条普通会话起来：上限只有 1，但能收的只有它自己（常驻不算），所以 s1 必须还活着。
+  assert.ok((await gateway.gateway.dispatch(start('s2', 'w1'))).ok);
+  await gateway.gateway.dispatch({ kind: 'prompt', parts: [], sessionId: asSessionId('s2'), text: '二' });
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's2' && frame.status === 'idle'));
+  assert.equal(
+    rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'ended'),
+    false,
+    '常驻会话不被保活上限挤掉'
+  );
+  await stop(link);
+});

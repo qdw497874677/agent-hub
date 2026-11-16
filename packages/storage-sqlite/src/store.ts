@@ -172,6 +172,7 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'title')) db.exec('ALTER TABLE sessions ADD COLUMN title TEXT');
   // 收起时间（I1）：只表示移出活跃列表，不影响状态与进程。NULL = 仍在活跃列表里。
   if (!columns.some((column) => column.name === 'settled_at')) db.exec('ALTER TABLE sessions ADD COLUMN settled_at INTEGER');
+  if (!columns.some((column) => column.name === 'pinned')) db.exec('ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
   if (!columns.some((column) => column.name === 'group_id')) db.exec('ALTER TABLE sessions ADD COLUMN group_id TEXT');
   // 会话类型（I4 侧聊）：老库补列；NULL = 老会话，读回时按缺省（chat）处理。
   if (!columns.some((column) => column.name === 'kind')) db.exec('ALTER TABLE sessions ADD COLUMN kind TEXT');
@@ -252,6 +253,8 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateSessionEnvironment = db.prepare(
     'UPDATE sessions SET environment_revision = ?, updated_at = ? WHERE id = ?'
   );
+  // 常驻只经这一条写：整行 save 不碰 pinned，跑着的会话拿旧快照回写也不会把标记冲掉。
+  const updateSessionPinned = db.prepare('UPDATE sessions SET pinned = ?, updated_at = ? WHERE id = ?');
   // 条件降级：只有库里还是 running 才改。Worker 掉线逐条收尾时不能整行回写旧快照。
   const markSessionInterrupted = db.prepare(
     "UPDATE sessions SET status = 'interrupted', updated_at = ? WHERE id = ? AND status = 'running'"
@@ -573,6 +576,10 @@ export function openSqliteStore(file: string): SqliteStore {
       at: number
     ): Promise<void> {
       updateSessionEnvironment.run(revision, at, sessionId);
+    },
+    async setPinned(sessionId: Parameters<typeof asSessionId>[0], pinned: boolean, at: number): Promise<boolean> {
+      const result = updateSessionPinned.run(pinned ? 1 : 0, at, sessionId);
+      return Number(result.changes) > 0;
     },
     async markInterrupted(sessionId: Parameters<typeof asSessionId>[0], at: number): Promise<boolean> {
       const result = markSessionInterrupted.run(at, sessionId);

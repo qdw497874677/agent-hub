@@ -96,6 +96,12 @@ export interface Session {
    * 也不影响进程是否还在跑。null / 缺省 = 仍在活跃列表里。
    */
   readonly settledAt?: number | null;
+  /**
+   * 常驻：Worker 不按空闲把它回收，也不占保活上限（同名任务下留一条长期用的会话）。
+   * 只影响进程生命周期，不影响状态；Worker 重启/升级仍会断（那是 cgroup 层面），
+   * 所以真正的长期本地服务要靠 service 原语，这一位只是「别被闲置回收」。
+   */
+  readonly pinned?: boolean;
   readonly createdAt: number;
   readonly updatedAt: number;
 }

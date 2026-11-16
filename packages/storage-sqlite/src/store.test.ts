@@ -538,3 +538,18 @@ test('打开库时把 sessions.turn 从 journal 回填：老会话下一句提�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('常驻：setPinned 落库；整行 save 拿旧对象回写也不会把标记冲掉', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  assert.equal(await store.sessions.setPinned(session.id, true, now + 1), true);
+  assert.equal((await store.sessions.byId(session.id))?.pinned, true);
+
+  // 跑着的会话拿着不含 pinned 的旧快照整行回写。
+  await store.sessions.save({ ...session });
+  assert.equal((await store.sessions.byId(session.id))?.pinned, true);
+
+  assert.equal(await store.sessions.setPinned(session.id, false, now + 2), true);
+  assert.equal((await store.sessions.byId(session.id))?.pinned, undefined);
+  store.close();
+});

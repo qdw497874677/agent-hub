@@ -70,6 +70,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   option_spec      TEXT NOT NULL DEFAULT '[]',
   worker_id        TEXT,
   environment_revision TEXT,
+  -- 常驻：Worker 不按空闲回收这条会话，也不占保活上限。
+  pinned           INTEGER NOT NULL DEFAULT 0,
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );

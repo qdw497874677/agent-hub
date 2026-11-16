@@ -235,6 +235,8 @@ export const renameSessionRequest = z.object({ title: z.string().max(200) });
 
 /** 收起 / 恢复一条会话（docs/design/interaction-borrowing.md §1）。 */
 export const settleSessionRequest = z.object({ settled: z.boolean() });
+/** 常驻 / 取消常驻：一个任务下留一条长期用的会话。 */
+export const pinSessionRequest = z.object({ pinned: z.boolean() });
 
 export const forkSessionRequest = z.object({
   sessionId: id,
