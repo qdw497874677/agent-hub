@@ -63,9 +63,14 @@ export function createFeishuSink(deps: FeishuSinkDeps): FeishuSink {
         return { ok: false, error: { message: `不是飞书目标：${message.target.id}`, retryable: false } };
       }
       const body = clipText(message.body);
+      // 群的出站镜像把根帖的 `<chatId>:<messageId>` 整个记在 replyToExternalId 上；
+      // 私聊回合写的是裸 messageId。两种都收，发给平台前只留 messageId。
+      const parent = message.replyToExternalId
+        ? (parseFeishuExternalId(message.replyToExternalId)?.messageId ?? message.replyToExternalId)
+        : '';
       try {
-        const sent = message.replyToExternalId
-          ? await deps.client.replyText(message.replyToExternalId, body)
+        const sent = parent !== ''
+          ? await deps.client.replyText(parent, body)
           : await deps.client.sendText({ chatId }, body);
         return { ok: true, externalMessageId: sent.messageId };
       } catch (error) {

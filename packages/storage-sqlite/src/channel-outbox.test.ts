@@ -94,3 +94,17 @@ test('save 按列 upsert：状态迁移不清空其它列，字段往返一致',
   assert.equal(sent.externalConversationId, 'c1');
   assert.equal(sent.replyToExternalId, 'ext-1');
 });
+
+test('byId 取回整行（入队幂等用）；没有就是 null', async () => {
+  const store = outboxOf();
+  const row = make('group-reply:p1', {
+    target: { kind: 'external', id: 'feishu:oc_1' },
+    origin: 'reply',
+    replyToExternalId: 'oc_1:om_9',
+    externalConversationId: 'oc_1',
+    externalThreadId: 'om_9'
+  });
+  await store.save(row);
+  assert.deepEqual(await store.byId('group-reply:p1'), row);
+  assert.equal(await store.byId('nope'), null);
+});

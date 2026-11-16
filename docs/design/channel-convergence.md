@@ -219,3 +219,10 @@ CREATE TABLE channel_outbox (
 - **可信度标记（评审 H3）——已修**：`triggerBlock` 把外部正文包成 `<group-message untrusted="true">`，三种 prompt 共用；主持人转述包成 `<host-note untrusted="true">`；外部帖 `mentions` 固定为空，`@all`/「停止 @x」进不来。
 - **授权模型（评审 H4）——部分落地**：建 binding 时校验创建者对目标群有 `group.post`（C3）；投递仍旧一律用 `binding.createdBy` 开会话，等于频道里任何人（含 Slack Connect 外部成员）获得创建者能力——白名单与「每次投递前重新校验」未做，这是上线真实 IM 前必须补的。
 - **actor 一致性**：外部根帖用 `binding.createdBy` 开首轮会话，后续轮次 `actorFor` 回退到 `group.createdBy`；两者可能不是同一个人。上线前要么统一为 binding 创建者，要么在 `postExternal` 拒绝「群创建者 ≠ binding 创建者」。
+
+## 8. 修订（2026-11-16）：群目标出站回写（C3 出站）
+
+- 触发点：`groups.ts` 的 `appendAgent`（主持人 decline、竞价 winner、成员回合回复三处）在帖子落库后调 `mirrorOutbound`。
+- 条件：根帖有 `externalId`、binding `targetKind === 'group'`、作者是 agent；目标 `external:<connector>:<chatId>`，`replyToExternalId` 为根帖 externalId。
+- 幂等：outbox id `group-reply:<帖子id>`，入队前 `byId` 命中即跳过；失败只 warn，不影响群回合。
+- 回声：`sameExternalMessage` 让裸 `messageId` 与 `<chatId>:<messageId>` 互认，飞书 sink 发送前只取裸 id。

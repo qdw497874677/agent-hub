@@ -41,6 +41,8 @@ import { newId, type ProjectId, type SessionId } from '../ids.ts';
 import { createSessionLane, type SessionLane } from '../session-lane.ts';
 import type { PersistentAgent } from '../bot.ts';
 import type { GroupStore } from '../ports/group-store.ts';
+import { newOutboxMessage, splitExternalId, type OutboxStore } from '../channel-outbox.ts';
+import type { ConnectorBinding } from '../connector.ts';
 import type { Project } from '../project.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isBusy, type Session } from '../session.ts';
@@ -71,6 +73,15 @@ export interface GroupChatDeps extends Pick<Deps, 'now' | 'sessions' | 'tasks' |
   /** 同一条会话的投递闸（组合根里两边共用一个）；occupied = 别的通道在这条会话上还有没收尾的投递。 */
   readonly lane?: SessionLane;
   readonly occupied?: (sessionId: SessionId) => Promise<boolean>;
+  /**
+   * #219 C3 出站：群帖里的 agent 回复镜回外部渠道。
+   * 组合根接 channel outbox 与「群 → 群目标 binding」查询；不接（纯站内部署）就只落群。
+   */
+  readonly external?: {
+    readonly outbox: Pick<OutboxStore, 'save' | 'byId'>;
+    /** 这个群对应的群目标 binding；没有就返回 null。 */
+    readonly bindingOf: (groupId: string) => Promise<ConnectorBinding | null>;
+  };
 }
 
 export interface GroupView {
@@ -287,6 +298,52 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     }
   };
 
+  /**
+   * 群帖 → 外部渠道（#219 C3 出站）：根帖来自外部、群又绑了外部群目标时，
+   * 把这条 agent 回复写进 channel_outbox，由 pump 发回原帖下面（飞书）：`replyToExternalId`
+   * 是根帖的 `<chatId>:<messageId>`，飞书 sink 负责拆 messageId 与截断 8000 字。
+   *
+   * 幂等：outbox id 由群帖 id 派生（`group-reply:<postId>`），同一帖只入队一次——
+   * 群回合重放、崩溃补偿都不会重复发。失败只记日志，群帖照常落库。
+   */
+  const mirrorOutbound = async (group: Group, thread: GroupThread | null, post: GroupPost): Promise<void> => {
+    const external = deps.external;
+    if (!external || !thread || post.author.kind !== 'agent') return;
+    try {
+      const root = await findPost(group.id, thread.rootPostId);
+      const rootExternalId = root?.externalId?.trim() ?? '';
+      if (rootExternalId === '') return;
+      const binding = await external.bindingOf(group.id);
+      if (!binding || binding.targetKind !== 'group') return;
+      const { chatId, messageId } = splitExternalId(rootExternalId);
+      if (chatId === '') return;
+      // 多个连接器绑同一个群时按根帖的 chatId 认领；binding 参数里有 chatId 就要求一致。
+      const boundChat = typeof binding.params['chatId'] === 'string' ? binding.params['chatId'].trim() : '';
+      if (boundChat !== '' && boundChat !== chatId) return;
+      const id = `group-reply:${post.id}`;
+      if (await external.outbox.byId(id)) return;
+      await external.outbox.save(newOutboxMessage({
+        target: { kind: 'external', id: `${binding.connector}:${chatId}` },
+        body: post.body,
+        author: { kind: 'agent', name: post.author.role },
+        origin: 'reply',
+        replyToExternalId: rootExternalId,
+        externalConversationId: chatId,
+        // 飞书的话题就是根消息；拆不出消息 id 时留空串。
+        externalThreadId: messageId
+      }, deps.now(), id));
+    } catch (error) {
+      console.warn(`群帖回写外部渠道失败（群 ${group.id}，帖子 ${post.id}）：${String(error)}`);
+    }
+  };
+
+  /** agent 回复落群 + 镜像（外部渠道没接线 / 失败都只影响镜像）。 */
+  const appendAgent = async (group: Group, thread: GroupThread | null, round: number, a: PostAuthor, body: string): Promise<GroupPost> => {
+    const post = await append(group, thread, round, a, body);
+    await mirrorOutbound(group, thread, post);
+    return post;
+  };
+
   /** 帖子 + 反应：一次查完这一页的反应再组合，存储形状（GroupPost）不动。 */
   const withReactions = async (groupId: string, list: readonly GroupPost[]): Promise<GroupPostView[]> => {
     if (list.length === 0) return [];
@@ -482,7 +539,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
     if (decision.kind === 'decline') {
       await settle(d, 'done', JSON.stringify({ decline: true, reply: decision.reply }));
       if (decision.reply && !isSilent(decision.reply)) {
-        await append(group, thread, 0, { kind: 'agent', role: d.role, sessionId: d.sessionId ?? '' }, decision.reply);
+        await appendAgent(group, thread, 0, { kind: 'agent', role: d.role, sessionId: d.sessionId ?? '' }, decision.reply);
         await end(group, await saveThread(thread, { messages: thread.messages + 1 }), 'done', null);
       } else await end(group, thread, 'silent', null);
       return;
@@ -520,7 +577,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         return;
       }
       const d = ds.find((x) => x.role === winner.role)!;
-      const post = await append(group, thread, round, { kind: 'agent', role: winner.role, sessionId: d.sessionId ?? '' }, winner.bid.message);
+      const post = await appendAgent(group, thread, round, { kind: 'agent', role: winner.role, sessionId: d.sessionId ?? '' }, winner.bid.message);
       if (post.needsUser) group = await saveGroup(group, { needsUser: true });
       thread = await saveThread(thread, { messages: thread.messages + 1 });
       if (round + 1 > limits.maxRounds || thread.messages >= limits.maxMessages) {
@@ -595,7 +652,7 @@ export function createGroupChat(deps: GroupChatDeps): GroupChat {
         await end(group, thread, 'limit', `已到 ${limits.maxMessages} 条消息上限，停下来等你`);
         return;
       }
-      const post = await append(group, thread, d.round, { kind: 'agent', role: d.role, sessionId: d.sessionId ?? '' }, text);
+      const post = await appendAgent(group, thread, d.round, { kind: 'agent', role: d.role, sessionId: d.sessionId ?? '' }, text);
       if (post.needsUser) group = await saveGroup(group, { needsUser: true });
       thread = await saveThread(thread, { messages: thread.messages + 1 });
       await settle(d, 'done', text);

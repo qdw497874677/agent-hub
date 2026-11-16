@@ -1,7 +1,7 @@
 import { BINDING_MAX_FAILURES, staleAfterMs, formatInbound, type BindingTargetKind, type ConnectorBinding, type InboundEvent, type TriggerRun } from '../connector.ts';
 import type { Principal } from '../account.ts';
 import { forbidden, invalid, notFound, unavailable, type DomainError } from '../errors.ts';
-import type { OutboxStore } from '../channel-outbox.ts';
+import { sameExternalMessage, splitExternalId, type OutboxStore } from '../channel-outbox.ts';
 import { newId, type ProjectId, type SessionId } from '../ids.ts';
 import type { ConnectorStore } from '../ports/connector-store.ts';
 import type { InboundContext, InboundSource } from '../ports/inbound-source.ts';
@@ -164,16 +164,19 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     const outbox = deps.outbox;
     if (!outbox || !binding.groupId) return false;
     const since = deps.now() - 10 * 60_000;
-    // 群里 agent 的回复要回到外部渠道时，outbox 的目标是渠道地址（例如 feishu:<chatId>），
-    // 不是群 id —— 两边都要查，否则回声永远匹配不上。v1 群目标还不做出站镜像，
-    // 这里先按同一套地址查，等出站接上就能直接生效（见 docs/design/channel-convergence.md）。
-    const chatId = typeof binding.params['chatId'] === 'string' ? binding.params['chatId'].trim() : '';
+    // 群里 agent 的回复镜回外部渠道（#219 C3 出站）时，outbox 的目标是渠道地址（例如 `feishu:<chatId>`），
+    // 不是群 id —— 群、主会话、外部渠道三个目标都要查，否则回声永远匹配不上。
+    const parts = splitExternalId(externalId);
+    const boundChat = typeof binding.params['chatId'] === 'string' ? binding.params['chatId'].trim() : '';
     const targets: { kind: 'group' | 'session' | 'external'; id: string }[] = [{ kind: 'group', id: binding.groupId }];
     if (binding.mainSessionId) targets.push({ kind: 'session', id: binding.mainSessionId });
-    if (chatId !== '') targets.push({ kind: 'external', id: `${binding.connector}:${chatId}` });
+    // chatId 优先用 binding 参数；入站 externalId 里的那段是权威，参数缺了也能认出外部目标。
+    const chats = new Set([boundChat, parts.messageId === '' ? '' : parts.chatId].filter((x) => x !== ''));
+    for (const chat of chats) targets.push({ kind: 'external', id: `${binding.connector}:${chat}` });
     for (const target of targets) {
       const rows = await outbox.echoCandidates(target, since);
-      if (rows.some((m) => m.externalMessageId === externalId)) return true;
+      // outbox 记的是平台消息 id（飞书是裸 messageId），入站是 `<chatId>:<messageId>`：两种形状都认。
+      if (rows.some((m) => sameExternalMessage(m.externalMessageId, externalId))) return true;
     }
     return false;
   };

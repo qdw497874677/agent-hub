@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   backoffFor, createOutboxPump, isTransient, looksLikeEcho, newOutboxMessage, OUTBOX_MAX_ATTEMPTS,
+  sameExternalMessage, splitExternalId,
   type ChannelOutboxMessage, type OutboxClaim, type OutboxStore, type OutboxTarget
 } from './channel-outbox.ts';
 
@@ -22,6 +23,8 @@ class MemoryOutbox implements OutboxStore {
   }
 
   async save(message: ChannelOutboxMessage): Promise<void> { this.rows.set(message.id, message); }
+
+  async byId(id: string): Promise<ChannelOutboxMessage | null> { return this.rows.get(id) ?? null; }
 
   async expiring(now: number): Promise<ChannelOutboxMessage[]> {
     return [...this.rows.values()].filter((m) => m.state === 'sending' && m.leaseUntil !== null && m.leaseUntil <= now);
@@ -181,4 +184,15 @@ test('租约过期的行由 tick 收回并重投；enqueue 落 queued', async ()
   assert.equal(fresh.leaseUntil, null);
   assert.equal(fresh.nextAttemptAt, 2_000);
   assert.equal(fresh.createdAt, 2_000);
+});
+
+test('externalId 拆分与「裸 messageId / 带 chat 前缀」对齐（#219 C3 出站回声）', () => {
+  assert.deepEqual(splitExternalId('oc_1:om_9'), { chatId: 'oc_1', messageId: 'om_9' });
+  assert.deepEqual(splitExternalId('om_9'), { chatId: 'om_9', messageId: '' }, '没有冒号就整串当 chatId');
+  assert.equal(sameExternalMessage('om_9', 'oc_1:om_9'), true, '飞书 outbox 存裸 id，入站带 chat 前缀');
+  assert.equal(sameExternalMessage('oc_1:om_9', 'oc_1:om_9'), true);
+  assert.equal(sameExternalMessage('oc_1:om_9', 'om_9'), true);
+  assert.equal(sameExternalMessage('om_8', 'oc_1:om_9'), false);
+  assert.equal(sameExternalMessage(null, 'oc_1:om_9'), false);
+  assert.equal(sameExternalMessage('', 'oc_1:om_9'), false);
 });

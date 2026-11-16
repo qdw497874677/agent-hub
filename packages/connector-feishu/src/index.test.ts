@@ -136,6 +136,18 @@ test('sink：有 replyTo 走 reply，没有就 send', async () => {
   assert.equal(calls[1]!.target, 'oc_1');
 });
 
+test('sink：群的出站镜像带 `<chatId>:<messageId>`，发出去时只留 messageId、正文按 text 截断', async () => {
+  const { outbox, saved } = memoryOutbox();
+  const { client, calls } = fakeClient();
+  const sink = createFeishuSink({ outbox, client, now: () => 1 });
+  await sink.enqueueReply({ chatId: 'oc_1', replyToExternalId: 'oc_1:om_9', body: '**结论**\n第一行\n第二行' });
+  const result = await sink.deliver(saved[0]!);
+  assert.deepEqual(result, { ok: true, externalMessageId: 'om_replied' });
+  assert.deepEqual(calls.map((c) => c.kind), ['reply']);
+  assert.equal(calls[0]!.target, 'om_9', 'replyText 收裸 messageId');
+  assert.equal(calls[0]!.text, '**结论**\n第一行\n第二行', 'v1 只发 text：原样保留换行，不做富文本');
+});
+
 test('sink：外部消息 id 形如 feishu:<chatId> 才处理，其余跳过', async () => {
   const { outbox, saved } = memoryOutbox();
   const { client, calls } = fakeClient();

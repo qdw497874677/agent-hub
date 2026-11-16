@@ -58,7 +58,7 @@ const source: InboundSource = {
   start: () => ({ stop: () => undefined })
 };
 
-const harness = (opts: { delivery?: 'poll' | 'push'; busy?: boolean; deliverError?: string; group?: { id: string; projectId: string } | null; echo?: string[]; postError?: { code: 'unavailable' | 'forbidden'; message: string } } = {}) => {
+const harness = (opts: { delivery?: 'poll' | 'push'; busy?: boolean; deliverError?: string; group?: { id: string; projectId: string } | null; echo?: string[]; echoTargets?: Record<string, string[]>; postError?: { code: 'unavailable' | 'forbidden'; message: string } } = {}) => {
   const { store, bindings, runs } = memoryStore();
   const clock = { now: 1_000 };
   const delivered: Array<{ sessionId: string; text: string }> = [];
@@ -85,7 +85,10 @@ const harness = (opts: { delivery?: 'poll' | 'push'; busy?: boolean; deliverErro
     groupOf: async (id: string) => (group && group.id === id ? group : null),
     principalOf: async () => principal,
     outbox: {
-      echoCandidates: async (target: { kind: string; id: string }) => (target.kind === 'group' && target.id === 'g1' ? opts.echo ?? [] : []).map((externalMessageId) => ({ externalMessageId }) as never)
+      echoCandidates: async (target: { kind: string; id: string }) => {
+        const ids = opts.echoTargets?.[`${target.kind}:${target.id}`] ?? (target.kind === 'group' && target.id === 'g1' ? opts.echo ?? [] : []);
+        return ids.map((externalMessageId) => ({ externalMessageId, state: 'sent' }) as never);
+      }
     },
     postExternal: async ({ author, text, externalId }: { author: string; text: string; externalId: string }) => {
       if (opts.postError) return { ok: false as const, error: opts.postError };
@@ -141,6 +144,18 @@ test('C3：自己发出去的消息回流算回声，直接 skipped', async () =
   const { hub, bindings, runs, posts } = harness({ echo: ['x1'] });
   await bindings.set('b1', groupBinding());
   await hub.emit('b1', { kind: 'message', externalId: 'x1', title: 'a', text: 'hi' });
+  assert.equal(posts.size, 0);
+  const [run] = runs.get('b1') ?? [];
+  assert.equal(run?.state, 'skipped');
+  assert.match(run?.reason ?? '', /回声/);
+});
+
+test('C3 出站：群回帖的回声按裸 messageId 命中外部目标，不再入群', async () => {
+  // outbox 里飞书记的是裸 messageId（om_9），入站 externalId 是 `<chatId>:<messageId>`；
+  // 目标 `slack:oc_1` 只能从 externalId 拆出来（binding.params 里没有 chatId）。
+  const { hub, bindings, runs, posts } = harness({ echoTargets: { 'external:slack:oc_1': ['om_9'] } });
+  await bindings.set('b1', groupBinding());
+  await hub.emit('b1', { kind: 'message', externalId: 'oc_1:om_9', title: 'a', text: 'hi' });
   assert.equal(posts.size, 0);
   const [run] = runs.get('b1') ?? [];
   assert.equal(run?.state, 'skipped');

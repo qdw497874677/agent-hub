@@ -800,6 +800,9 @@ toolGateway = createToolGateway({
     createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
     // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
     createGitToolProvider({ workflow: gitService, subjectOf }),
+    // issue #216 P2：产物列表 / 引用登记与工作空间文件只读。
+    createArtifactToolProvider({ sessions: deps.sessions, artifacts: deps.artifacts, tasks: deps.tasks, workLog: deps.workLog, now: deps.now }),
+    createWorkspaceToolProvider({ files: filesService, subjectOf }),
     // issue #216 P1：agent 可以改项目约定、在机器上跑项目声明的检查命令。
     createProjectToolProvider({
       sessions: deps.sessions,

@@ -176,6 +176,10 @@ export function createSqliteConnectors(db: DatabaseSync): { connectors: Connecto
       return row ? toO(row) : null;
     },
     async save(m) { upO.run(...oArgs(m)); },
+    async byId(id) {
+      const row = db.prepare('SELECT * FROM channel_outbox WHERE id = ?').get(id) as O | undefined;
+      return row ? toO(row) : null;
+    },
     async expiring(now) {
       return (db.prepare("SELECT * FROM channel_outbox WHERE state = 'sending' AND lease_until IS NOT NULL AND lease_until <= ? ORDER BY lease_until").all(now) as O[]).map(toO);
     },

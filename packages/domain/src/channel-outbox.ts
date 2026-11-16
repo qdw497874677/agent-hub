@@ -61,6 +61,8 @@ export interface OutboxStore {
   /** 取一条 `next_attempt_at <= now` 的行，置 `sending` 并写租约；没有则 null。 */
   claim(due: OutboxClaim, now: number, leaseMs: number): Promise<ChannelOutboxMessage | null>;
   save(message: ChannelOutboxMessage): Promise<void>;
+  /** 按 id 取一行；入队前用它做幂等（同一帖同一轮只投一次）。 */
+  byId(id: string): Promise<ChannelOutboxMessage | null>;
   /** 租约已过期、仍停在 `sending` 的行。 */
   expiring(now: number): Promise<ChannelOutboxMessage[]>;
   /** 把过期租约放回 `queued`，返回改动行数。 */
@@ -112,6 +114,31 @@ export function isTransient(error: unknown): boolean {
 }
 
 const sameTarget = (a: OutboxTarget, b: OutboxTarget) => a.kind === b.kind && a.id === b.id;
+
+/**
+ * 外部消息 id 的惯例形状是 `<chatId>:<messageId>`（飞书、GitHub 都这么拼）。
+ * 拆不出来（没有冒号）时整串当 chatId，messageId 留空。
+ */
+export function splitExternalId(externalId: string): { readonly chatId: string; readonly messageId: string } {
+  const at = externalId.indexOf(':');
+  if (at <= 0 || at === externalId.length - 1) return { chatId: externalId, messageId: '' };
+  return { chatId: externalId.slice(0, at), messageId: externalId.slice(at + 1) };
+}
+
+/**
+ * 出站行记的消息 id（飞书是裸 `messageId`，也有的渠道写成 `<chatId>:<messageId>`）
+ * 与入站的 externalId 是不是同一条。回声第 2 层靠它对齐两种形状。
+ */
+export function sameExternalMessage(stored: string | null, externalId: string): boolean {
+  if (stored === null || stored === '' || externalId === '') return false;
+  if (stored === externalId) return true;
+  // 一边是 `<chatId>:<messageId>`、另一边是裸 messageId：抽出消息段再比。
+  const bare = splitExternalId(externalId).messageId;
+  if (bare !== '' && stored === bare) return true;
+  const storedBare = splitExternalId(stored).messageId;
+  return storedBare !== '' && storedBare === externalId;
+}
+
 const normalizeName = (name: string) => name.trim().toLowerCase();
 /** 正文指纹：去掉所有空白再比，避免平台侧换行/缩进差异。 */
 const fingerprint = (body: string) => body.replace(/\s+/g, '');
@@ -134,7 +161,7 @@ export interface OutboxEchoInput {
 export function looksLikeEcho(message: OutboxEchoInput, candidate: ChannelOutboxMessage): boolean {
   if (candidate.state !== 'sending' && candidate.state !== 'sent') return false;
   if (!sameTarget(message.target, candidate.target)) return false;
-  if (message.externalMessageId !== null && message.externalMessageId === candidate.externalMessageId) return true;
+  if (message.externalMessageId !== null && sameExternalMessage(candidate.externalMessageId, message.externalMessageId)) return true;
 
   const name = normalizeName(message.author.name);
   const sameName = name !== '' && name === normalizeName(candidate.author.name);
