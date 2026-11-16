@@ -1391,10 +1391,21 @@ const autoDiscoverPreviews = async (): Promise<void> => {
       workerIds.add(space.workerId);
     }
   }
-  if (owners.length === 0) return;
+  if (owners.length === 0) {
+    if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：没有可挂的会话（空间 ${spaces.length} 个）`);
+    return;
+  }
   for (const workerId of workerIds) {
     const listed = await deps.gateway.processes?.(workerId);
-    if (listed === undefined || !listed.ok) continue;
+    if (listed === undefined) {
+      if (readEnv('HUB_PREVIEW_DEBUG') === '1') log('预览自动发现：网关没有提供进程清单');
+      continue;
+    }
+    if (!listed.ok) {
+      if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} 的进程清单拿不到：${listed.error.message}`);
+      continue;
+    }
+    if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} ${listed.value.length} 个进程，会话 ${owners.length} 条`);
     const candidates = autoLinkCandidates(
       listed.value.map((process) => ({ pid: process.pid, cwd: process.cwd, ports: process.ports })),
       owners,
