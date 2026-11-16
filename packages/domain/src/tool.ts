@@ -11,12 +11,16 @@ import type { SessionId, TaskId } from './ids.ts';
  * git = 提交 / 推送 / 开 PR（issue #216）；scope 只决定这条会话能不能看到这些工具并把它们列给模型，
  * 实际写入仍由工作流里的 git.push 项目权限与工作流判定（见 docs/design/agent-git-tools.md §4）。
  */
-export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector' | 'git' | 'session:control' | 'project';
+/**
+ * artifact = 任务/会话的产出物（issue #216 P2）：列、按 id 读、登记外部引用；
+ * files = 只读浏览会话工作空间（复用 WorkspaceFilesService 的路径与 workspace.files.read 校验）。
+ */
+export type ToolScope = 'task:read' | 'task:log:write' | 'task:status:write' | 'agent:message' | 'memory' | 'context' | 'task:create' | 'connector' | 'git' | 'session:control' | 'project' | 'artifact' | 'files';
 
-export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git', 'session:control', 'project'];
+export const TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git', 'session:control', 'project', 'artifact', 'files'];
 
-/** 默认授权：读任务 + 写日志 + 改状态（agent 只能走到 进行中/受阻/待验收，done 仍由人确认）+ git 工作流入口 + 派生/停止会话（#216 P1）。 */
-export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git', 'session:control', 'project'];
+/** 默认授权：读任务 + 写日志 + 改状态（agent 只能走到 进行中/受阻/待验收，done 仍由人确认）+ git 工作流入口 + 派生/停止会话（#216 P1）+ 产物与工作空间文件只读（#216 P2）。 */
+export const DEFAULT_TOOL_SCOPES: readonly ToolScope[] = ['task:read', 'task:log:write', 'task:status:write', 'agent:message', 'memory', 'context', 'task:create', 'connector', 'git', 'session:control', 'project', 'artifact', 'files'];
 
 /**
  * 授权是滑动有效期：签发后 7 天内没有用就过期；每次认证成功续到「现在 + 7 天」，

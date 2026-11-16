@@ -61,6 +61,8 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createSessionToolProvider,
   createAgentOrchestrationToolProvider,
   createGitToolProvider,
+  createArtifactToolProvider,
+  createWorkspaceToolProvider,
   createSessionControlToolProvider,
   createProjectToolProvider,
   setProjectChecksUseCase,
@@ -362,7 +364,13 @@ const groupChat = createGroupChat({
   }),
   interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
   lane: sessionLane,
-  occupied: (sessionId) => inbox.occupied(sessionId)
+  occupied: (sessionId) => inbox.occupied(sessionId),
+  // #219 C3 出站：群帖里的 agent 回复镜回外部渠道（群目标 binding，飞书优先）。
+  external: {
+    outbox: store.outbox,
+    bindingOf: async (groupId) =>
+      (await store.connectors.allBindings()).find((b) => b.groupId === groupId && b.targetKind === 'group' && b.enabled) ?? null
+  }
 });
 // 会话收件箱（#221 步骤 5）：各投递来源共用「占用」判断与回合结束归属。
 // 顺序即优先级：P2P / 群聊先收（它们要在本轮文字上做判断），连接器与调度随后，最后才放开送达队列投下一条。

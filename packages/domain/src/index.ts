@@ -149,6 +149,8 @@ export * from './tools/session-control-tools.ts';
 export * from './tools/agent-orchestration-tools.ts';
 export * from './tools/git-tools.ts';
 export * from './tools/project-tools.ts';
+export * from './tools/artifact-tools.ts';
+export * from './tools/files-tools.ts';
 export * from './messaging.ts';
 export * from './groups.ts';
 export * from './session-inbox.ts';
