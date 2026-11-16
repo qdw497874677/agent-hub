@@ -53,6 +53,7 @@ import type {
   SettingsDto,
   AssetsOverviewDto,
   ProjectAssetsDto,
+  ProjectAssetPlanDto,
   AssetRevisionDto,
   AssetDiffDto,
   GitScanDto,
@@ -668,6 +669,14 @@ export const assetsApi = {
     }),
   /** 项目级作用域：这个项目看得见的资产与开关；enabled=null 恢复默认。 */
   project: (projectId: string) => call<ProjectAssetsDto>(`/api/admin/assets/projects/${encodeURIComponent(projectId)}`),
+  /**
+   * 派生前预览：这台机器上这个项目实际会下发哪些资产。
+   * `workerId` 必填——下发什么取决于机器上装了 / 认哪些资产。
+   */
+  projectPlan: (projectId: string, workerId: string) =>
+    call<ProjectAssetPlanDto>(
+      `/api/projects/${encodeURIComponent(projectId)}/assets?workerId=${encodeURIComponent(workerId)}`
+    ),
   setProject: (projectId: string, assetId: string, enabled: boolean | null) =>
     call<{ ok: true }>(`/api/admin/assets/projects/${encodeURIComponent(projectId)}/${encodeURIComponent(assetId)}`, {
       method: 'PUT',

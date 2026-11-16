@@ -12,7 +12,7 @@ const skillFiles = (body: string) => [
 ];
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-function harness(extra: Partial<Pick<AssetRouteOptions, 'sessions' | 'environment'>> = {}) {
+function harness(extra: Partial<Pick<AssetRouteOptions, 'sessions' | 'environment' | 'planOf'>> = {}) {
   const admin = inMemoryAdmin();
   const assets = inMemoryAssets();
   const { deps } = inMemoryDeps();
@@ -253,7 +253,7 @@ test('资产市场 API：成员提交团队资产 → 自己批不了 → 主人
 
 test('派生前预览：列出这台机器上项目实际会带的资产；看不见项目 404；缺 workerId 400', async () => {
   const h = harness({
-    planOf: async (projectId, workerId, principal) =>
+    planOf: async (projectId, workerId) =>
       projectId === 'p1' && workerId === 'w1'
         ? [{ assetId: 'a1', kind: 'skill', name: 'grill-me', digest: 'd1', scope: 'personal' as const }]
         : 'forbidden'

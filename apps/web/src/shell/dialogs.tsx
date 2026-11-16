@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type WorkerInfoDto } from './api.ts';
+import { api, assetsApi, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type WorkerInfoDto } from './api.ts';
+import {
+  assetNote,
+  assetSelectionKey,
+  includedAssetIds,
+  isIncluded,
+  selectionFor,
+  submitAssetIds,
+  toggleAsset,
+  type AssetSelection
+} from '../atoms/derive-assets.ts';
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
@@ -112,6 +122,17 @@ export function DeriveDialog({
   const workers = useWorkers();
   // 运行面板（workspaces.md §9.3）：先选机器，再选工作目录；不预选，没选之前「开始」是灰的
   const [machine, setMachine] = useState<string | null>(null);
+  // 资产（asset-hub.md）：选中机器后看这一趟会带哪些技能 / 指令 / MCP；默认全选，取消即排除。
+  // 换机器 / 换项目就重新全选——不同机器下发的是不同的资产集。
+  const [assetSelection, setAssetSelection] = useState<AssetSelection | null>(null);
+  const selection = selectionFor(assetSelection, assetSelectionKey(canvas.project.id, machine));
+  const assetPlan = useQuery({
+    queryKey: ['project-assets', canvas.project.id, machine],
+    queryFn: () => assetsApi.projectPlan(canvas.project.id, machine ?? ''),
+    enabled: machine !== null,
+    retry: false
+  });
+  const assetEntries = assetPlan.data?.entries ?? [];
   // 模型清单按机器来：两台机器的 Pi 配的 provider 可能完全不同
   const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.models(taskId), retry: false });
   const hubProtocols = [...new Set((hubModels.data ?? []).map((provider) => provider.protocol))];
@@ -226,6 +247,8 @@ export function DeriveDialog({
         setPhase(isolateNew ? 'preparing' : 'starting');
       }
       const workspaceMode: 'shared' | 'isolated' | null = isolateNew ? 'isolated' : null;
+      // 资产：一项都没取消就不传（旧行为：用项目生效集全部）；取消了就传勾选后的 id（可能为空数组）。
+      const assetIds = submitAssetIds(assetEntries, selection);
       return api.derive({
         taskId,
         agentId,
@@ -234,6 +257,7 @@ export function DeriveDialog({
         ...(workspaceId === null ? {} : { workspaceId }),
         ...(groupId === null ? {} : { groupId }),
         ...(workspaceMode === null ? {} : { workspaceMode }),
+        ...(assetIds === undefined ? {} : { assetIds }),
         ...(profileId ? { profileId } : {})
       });
     },
@@ -433,6 +457,54 @@ export function DeriveDialog({
           </select>
         )}
         </div>
+        </div>
+        {/* 资产：这一趟要带哪些技能 / 指令 / MCP（默认全选，取消即不带）。手机上换行不横向滚。 */}
+        <div className="mb-3" data-testid="derive-assets">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="text-meta text-secondary">资产</span>
+            {machine !== null && assetPlan.data !== undefined ? (
+              <span className="text-meta text-tertiary" data-testid="derive-assets-count">
+                这次会话带哪些 · {includedAssetIds(assetEntries, selection).length} 项
+              </span>
+            ) : null}
+          </div>
+          {machine === null ? (
+            <p className="text-meta text-tertiary" data-testid="derive-assets-empty">
+              选好机器后可以看会带哪些资产
+            </p>
+          ) : assetPlan.isLoading ? (
+            <p className="text-meta text-tertiary">正在读取这台机器的资产…</p>
+          ) : assetPlan.error ? (
+            <p className="text-meta text-rust">{(assetPlan.error as Error).message}</p>
+          ) : assetEntries.length === 0 ? (
+            <p className="text-meta text-tertiary" data-testid="derive-assets-empty">
+              这台机器上还没有可下发的资产
+            </p>
+          ) : (
+            <ul className="flex flex-col">
+              {assetEntries.map((entry) => (
+                <li key={entry.assetId}>
+                  <label
+                    data-testid="derive-asset"
+                    data-asset-id={entry.assetId}
+                    className="flex cursor-pointer items-start gap-2 py-1"
+                  >
+                    <input
+                      type="checkbox"
+                      data-testid="derive-asset-toggle"
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+                      checked={isIncluded(selection, entry.assetId)}
+                      onChange={(event) => setAssetSelection(toggleAsset(selection, entry.assetId, event.target.checked))}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block break-words text-meta text-primary">{entry.name}</span>
+                      <span className="block break-words text-meta text-tertiary">{assetNote(entry)}</span>
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         {derive.error ? (
           <div className="mb-2" data-testid="derive-error">
