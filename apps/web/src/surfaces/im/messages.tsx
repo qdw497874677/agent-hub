@@ -92,18 +92,23 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
         <ul className="flex max-h-56 flex-col overflow-y-auto rounded-sm border border-hair">
           {roles.map((r) => (
             <li key={r.name}>
-              <label className="flex items-center gap-2 border-b border-hair px-2 py-1.5 last:border-0">
+              {/* 侧栏很窄：名字一行，「@id · 运行时 · 模型」一行，都可截断，不把行撑出侧栏 */}
+              <label className="flex min-w-0 items-center gap-2 border-b border-hair px-2 py-1.5 last:border-0">
                 <input
                   type="checkbox"
                   data-testid="group-member"
+                  className="shrink-0"
                   value={r.name}
                   checked={members.includes(r.name)}
                   onChange={(e) => setMembers((m) => (e.target.checked ? [...m, r.name] : m.filter((x) => x !== r.name)))}
                 />
                 <BotAvatar bot={r} size={22} />
-                <span className="text-primary">{botLabel(r)}</span>
-                <span className="text-tertiary">@{r.name}</span>
-                <span className="ml-auto truncate text-tertiary">{r.agentId}{r.model ? ` · ${r.model}` : ''}</span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-primary">{botLabel(r)}</span>
+                  <span className="truncate text-tertiary" title={`@${r.name} · ${r.agentId}${r.model ? ` · ${r.model}` : ''}`}>
+                    @{r.name} · {r.agentId}{r.model ? ` · ${r.model}` : ''}
+                  </span>
+                </span>
               </label>
             </li>
           ))}
@@ -580,7 +585,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
         )}
       </header>
       <div className="flex min-h-0 flex-1">
-        <aside className={`${current ? 'hidden md:flex' : 'flex'} w-full flex-col border-r border-hair md:w-64`}>
+        <aside className={`${current ? 'hidden md:flex' : 'flex'} w-full min-w-0 flex-col border-r border-hair md:w-64 md:shrink-0`}>
           <ul data-testid="group-list" className="min-h-0 flex-1 overflow-y-auto">
             {list.map((g) => (
               <li key={g.id}>
@@ -620,7 +625,8 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
             ) : null}
           </ul>
           {pid ? (
-            <div className="border-t border-hair">
+            // 建群表单展开后可能比侧栏剩下的高度还高：自己滚，不把群列表挤没，也不横向溢出
+            <div className={`min-w-0 border-t border-hair ${creating ? 'max-h-[75%] overflow-y-auto overscroll-contain' : ''}`}>
               {creating ? (
                 <GroupForm projectId={pid} roles={roleList} group={null} onDone={(g) => { setCreating(false); go(g.id); }} />
               ) : (
