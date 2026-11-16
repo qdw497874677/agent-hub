@@ -125,6 +125,7 @@ import {
   withAccess
 } from '@agent-hub/domain';
 import type { ServerGateway } from '@agent-hub/node-gateway';
+import { autoLinkCandidates, type WorkspaceOwner } from './preview-autolink.ts';
 import { createApp } from './http.ts';
 import { createConnectorObserveReader } from './observe-connector.ts';
 import { createStreamHub } from './stream-hub.ts';
@@ -1367,9 +1368,67 @@ if (previewPorts !== null) {
   });
 }
 
+/**
+ * 预览自动发现（docs/design/session-service.md §9）：进程的工作目录落在某条会话的工作目录里、
+ * 端口又在听，就替这条会话挂一条预览链接——人不用再手填端口。
+ * `HUB_PREVIEW_AUTO=0` 可以关掉；上限、去重、端口合法性都在 `preview-autolink.ts` 里。
+ */
+const autoDiscoverPreviews = async (): Promise<void> => {
+  if (previewProxy === null || previewPorts === null) return;
+  if (readEnv('HUB_PREVIEW_AUTO') === '0') return;
+  const links = await store.previewLinks.listAll();
+  const spaces = [...(await store.workspaces.temporaries()), ...(await store.workspaces.longLived())];
+  const owners: WorkspaceOwner[] = [];
+  const allowed = new Set<string>();
+  const workerIds = new Set<string>();
+  for (const space of spaces) {
+    if (space.workerId === null) continue;
+    for (const session of await store.sessions.listByWorkspace(space.id)) {
+      if (session.status !== 'running' && session.status !== 'done' && session.status !== 'interrupted') continue;
+      if (session.workerId !== space.workerId) continue;
+      owners.push({ sessionId: session.id, workerId: space.workerId, path: space.path });
+      allowed.add(session.id);
+      workerIds.add(space.workerId);
+    }
+  }
+  if (owners.length === 0) return;
+  for (const workerId of workerIds) {
+    const listed = await deps.gateway.processes?.(workerId);
+    if (listed === undefined || !listed.ok) continue;
+    const candidates = autoLinkCandidates(
+      listed.value.map((process) => ({ pid: process.pid, cwd: process.cwd, ports: process.ports })),
+      owners,
+      { links, allowedSessions: allowed }
+    );
+    for (const candidate of candidates) {
+      const created = await createPreviewLinkUseCase(
+        {
+          projects: deps.projects,
+          tasks: deps.tasks,
+          sessions: deps.sessions,
+          workspaces: deps.workspaces,
+          access: deps.access,
+          previewLinks: store.previewLinks,
+          previewPorts,
+          now: accounts.now
+        },
+        systemSubject('preview.detected'),
+        { sessionId: candidate.sessionId as SessionId, port: candidate.port, source: 'detected' }
+      );
+      if (!created.ok) {
+        if (created.error.code !== 'conflict') log(`按进程自动挂预览失败：${created.error.message}`);
+        continue;
+      }
+      await previewProxy.listen(created.value);
+      log(`按进程自动挂了预览：${candidate.sessionId} 端口 ${candidate.port}`);
+    }
+  }
+};
+
 /** 预览端口和库里的链接对齐：新加的开监听、删掉的关掉。启动时一次，之后每 30 秒一次。 */
 const reconcilePreviews = async (): Promise<void> => {
   if (previewProxy === null) return;
+  await autoDiscoverPreviews().catch((failure: unknown) => log(`自动发现预览失败：${(failure as Error).message}`));
   const links = await store.previewLinks.listAll();
   const wanted = new Set<string>(links.map((link) => link.id));
   for (const listening of previewProxy.listening()) {
