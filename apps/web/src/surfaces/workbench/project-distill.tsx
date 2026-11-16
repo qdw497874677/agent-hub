@@ -27,8 +27,8 @@ export function ProjectDistill({ projectId }: { projectId: string }) {
   return (
     <section data-testid="project-distill" className="mb-4">
       <h3 className="mb-1 text-sub text-primary">会后提炼</h3>
-      <p className="mb-2 text-meta text-tertiary">会话压缩后从摘要里提炼项目记忆。选了模型就由 hub 调它（按次计入该提供商用量）；不选用规则版。结果只进暂存 / 待确认。</p>
-      <label className="mb-1 flex min-h-[44px] items-center gap-2 text-meta text-secondary">
+      <p className="mb-2 text-meta text-tertiary">从会话摘要生成项目记忆，需人工确认。</p>
+      <label className="mb-1 flex min-h-[44px] items-center gap-2 text-meta text-secondary" title="选了模型就按次计入该提供商用量；不选用规则版">
         <input
           type="checkbox"
           data-testid="project-distill-enabled"
@@ -61,7 +61,7 @@ export function ProjectDistill({ projectId }: { projectId: string }) {
           ))}
         </select>
       </label>
-      {data.globalOff ? <p className="text-meta text-amber-500">全站已关闭提炼（HUB_MEMORY_DISTILL=0），这里的设置暂不生效。</p> : null}
+      {data.globalOff ? <p className="text-meta text-amber-500">全站已关闭会后提炼，这里的设置暂不生效。</p> : null}
       {error ? <p className="text-meta text-accent" role="alert">{error}</p> : null}
     </section>
   );

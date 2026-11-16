@@ -19,12 +19,9 @@ export function ProjectAssets({ projectId }: { projectId: string }) {
   const choices = view.data?.choices ?? [];
   return (
     <section data-testid="project-assets" className="mb-4">
-      <h3 className="mb-1 text-sub text-primary">资产</h3>
-      <p className="mb-2 text-meta text-tertiary">
-        这个项目的新会话用哪些技能、指令和 MCP。全局的默认开；只属于本项目的同名时优先。还要装在会话所在的机器上才会生效。
-      </p>
+      <h3 className="mb-2 text-sub text-primary" title="全局资产默认开；本项目的同名资产优先；还要装在会话所在的机器上才生效">资产</h3>
       {view.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
-      {view.data && choices.length === 0 ? <p className="text-meta text-tertiary">还没有资产，去「管理 · 资产」添加。</p> : null}
+      {view.data && choices.length === 0 ? <p className="text-meta text-tertiary">还没有资产。</p> : null}
       <ul className="space-y-1">
         {choices.map((choice) => {
           const asset = byId.get(choice.assetId);

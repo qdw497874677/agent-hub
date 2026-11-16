@@ -37,7 +37,7 @@ export function WorkspaceCleanup({ projectId }: { projectId: string }) {
   return (
     <section className="mb-3" data-testid="workspace-cleanup">
       <h3 className="mb-1 text-sub text-primary">临时工作目录清理</h3>
-      <p className="mb-2 text-meta text-tertiary">只删检出目录；分支、提交和检查点历史都留着，下次开任务会从分支重新检出。有未提交、未跟踪或未推送内容的一律保留。</p>
+      <p className="mb-2 text-meta text-tertiary">只删工作目录里的文件，分支和提交都保留。有未推送的改动不会删。</p>
       {p ? (
         <div className="mb-2 space-y-1 text-meta text-secondary">
           <label className="flex items-center gap-2">
