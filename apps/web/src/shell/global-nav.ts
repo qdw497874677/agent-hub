@@ -54,7 +54,7 @@ export const SHELL_NAV: readonly SurfaceNavItem[] = [
   { id: 'market', label: '资产市场', href: '#/assets/catalog', page: 'assets', group: 'library', order: 30 },
   // 可观测没有角色门禁（observe.tsx 与服务端都没有），所以不能藏进运维组——那只是看起来收口了。
   // 归在库里：它读的是所有人自己的连接器链路，和资产市场一样是「看东西」的入口。
-  { id: 'observe', label: '可观测', href: '#/observe', page: 'observe', group: 'library', order: 40 },
+  { id: 'observe', label: '运行记录', href: '#/observe', page: 'observe', group: 'library', order: 40 },
   { id: 'admin', label: '运营后台', href: '#/admin/overview', page: 'admin', group: 'ops', order: 20, adminOnly: true }
 ];
 

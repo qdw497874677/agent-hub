@@ -270,7 +270,7 @@ export function VisitPanel({ myTeamId }: { myTeamId: string | null }) {
   return (
     <section data-testid="visit-panel" className="mb-4 rounded-sm border border-hair bg-card p-3">
       <p className="text-sub text-primary">临时进入团队</p>
-      <p className="mt-1 text-meta text-tertiary">集群管理员默认看不到别的团队的数据。排查问题时可以只读进入一段时间，原因会写进 hub 审计和对方团队审计。</p>
+      <p className="mt-1 text-meta text-tertiary">进入后为只读，并记入双方审计。</p>
       {(visits.data ?? []).map((visit) => (
         <div key={visit.id} data-testid="active-visit" className="mt-2 flex items-center gap-2 rounded-sm border border-accent px-3 py-2">
           <p className="min-w-0 flex-1 truncate text-meta text-primary">

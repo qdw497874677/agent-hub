@@ -89,14 +89,13 @@ function PlatformSettings() {
           <>
             <Toggle
               label="开放注册"
-              hint="默认关闭。打开后任何人都能自助注册：验证邮箱后得到一个自己的空团队（仍受 HUB_MAX_USERS 限制），看不到别的团队，也用不了 hub 本机。"
+              hint="允许新用户注册并创建自己的团队。"
               checked={data.openRegistration}
               disabled={save.isPending}
               onChange={(openRegistration) => save.mutate({ openRegistration })}
             />
             <Toggle
-              label="成员可以加机器"
-              hint="关掉后只有主人能看到接入新机器的说明。"
+              label="允许成员接入机器"
               checked={data.membersCanAddMachines}
               disabled={save.isPending}
               onChange={(membersCanAddMachines) => save.mutate({ membersCanAddMachines })}
@@ -118,7 +117,7 @@ function Toggle({
   disabled
 }: {
   label: string;
-  hint: string;
+  hint?: string;
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled: boolean;
@@ -127,7 +126,7 @@ function Toggle({
     <label className="flex cursor-pointer items-start gap-3 border-b border-hair px-3 py-3 last:border-b-0">
       <span className="min-w-0 flex-1">
         <span className="block text-body text-primary">{label}</span>
-        <span className="block text-meta text-tertiary">{hint}</span>
+        {hint ? <span className="block text-meta text-tertiary">{hint}</span> : null}
       </span>
       <input
         type="checkbox"
