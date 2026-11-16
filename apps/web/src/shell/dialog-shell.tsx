@@ -9,6 +9,7 @@ import {
   type ReactNode
 } from 'react';
 import { useNarrow } from './device.ts';
+import { useModalFocus } from './focus-trap.ts';
 
 const REDUCED_MOTION = '(prefers-reduced-motion: reduce)';
 /** 进来稍慢读得出「面板抬起来了」，出去快一点不拖沓。 */
@@ -244,6 +245,8 @@ export function Sheet({
   overlay?: ReactNode;
 }) {
   const motion = useSheetMotion(onClose);
+  // 进框和还焦点 useSheetMotion 已经做了；这里只补「Tab 不出框」
+  useModalFocus(motion.panelRef, { initial: false, restore: false });
   return (
     <div className={`fixed inset-0 overflow-hidden ${zClassName}`}>
       <div
@@ -405,7 +408,8 @@ export function InlineSheet({
  * 给了 footer 就成了「粘底」结构：标题/内容区自己滚，footer 常驻在面板底部。
  * 手机上内容再长，取消/开始也不会被滚出去或被浏览器工具栏挤掉（安全区由抽屉/遮罩兜住）。
  *
- * `sheet`（默认开）只影响窄屏：走 Sheet，贴底 + 上圆角 + 把手拖拽关闭；桌面分支一个字节都没动。
+ * `sheet`（默认开）只影响窄屏：走 Sheet，贴底 + 上圆角 + 把手拖拽关闭。
+ * 两种形态都是真模态：焦点进框、Tab 不出框、关掉还焦点（见 focus-trap.ts）。
  */
 export function DialogShell({
   title,
@@ -430,16 +434,6 @@ export function DialogShell({
 }) {
   const narrow = useNarrow();
   const sheetMode = sheet && narrow;
-
-  useEffect(() => {
-    // 抽屉自己在 window 上听 Esc，别让一个按键关两层
-    if (sheetMode) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, sheetMode]);
 
   if (sheetMode) {
     return (
@@ -474,16 +468,54 @@ export function DialogShell({
   }
 
   return (
+    <DesktopDialog title={title} onClose={onClose} footer={footer} wide={wide} testId={testId}>
+      {children}
+    </DesktopDialog>
+  );
+}
+
+/**
+ * 宽屏居中的模态框。焦点规矩见 useModalFocus：打开时焦点进框（面板本身，下一下 Tab 是第一个控件），
+ * Tab / Shift+Tab 在框里循环，Esc 只关最上面那一层，关掉后焦点回到打开它的按钮。
+ */
+function DesktopDialog({
+  title,
+  onClose,
+  children,
+  footer,
+  wide,
+  testId
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+  footer?: ReactNode;
+  wide: boolean;
+  testId?: string;
+}) {
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const isTop = useModalFocus(panelRef);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && isTop()) onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, isTop]);
+
+  return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-canvas/75 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:pb-0"
       onClick={onClose}
     >
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        tabIndex={-1}
         data-testid={testId}
-        className={`w-full rounded-md border border-strong bg-panel ${
+        className={`w-full rounded-md border border-strong bg-panel outline-none ${
           footer === undefined
             ? `p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-h-[88dvh] max-w-[420px] overflow-y-auto overscroll-contain'}`
             : `relative flex max-h-[88dvh] flex-col overflow-hidden ${wide ? 'max-w-[820px]' : 'max-w-[420px]'}`
