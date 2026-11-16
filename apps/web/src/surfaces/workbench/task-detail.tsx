@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api, type CanvasDto, type TaskDto, type WorkLogEntryDto } from '../../shell/api.ts';
 import { LogMarkdown } from '../../atoms/log-markdown.tsx';
+import { SessionServices } from '../../atoms/services-section.tsx';
 import { localTime } from '../../shell/local-time.ts';
 import { NEXT_STATUS, TASK_STATUS_LABEL, TASK_STATUS_TONE } from './task-status.ts';
 import { projectKeys } from '../../shell/query-keys.ts';
@@ -181,6 +182,24 @@ export function TaskDetail({
             </div>
           ) : null}
         </header>
+
+        {/* 本地服务：没有服务、也起不了服务时整块渲染为空，靠 :empty 收起这条分隔线 */}
+        <div className="empty:hidden border-b border-hair px-4 py-1.5">
+          <SessionServices
+            taskId={taskId}
+            scope={{ kind: 'task', taskId }}
+            choices={sessions.map((session) => ({
+              id: session.id,
+              label: `${session.agentId} · ${session.id.slice(0, 6)}`,
+              root:
+                session.workspaceId === null
+                  ? null
+                  : (canvas.workspaces.find((workspace) => workspace.id === session.workspaceId)?.path ?? null)
+            }))}
+            defaultSessionId={sessions[0]?.id ?? null}
+            canCreate={sessions.length > 0}
+          />
+        </div>
 
         <ol className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3" data-testid="work-log">
           {entries.length === 0 && !log.isLoading ? <li className="text-meta text-tertiary">还没有日志。</li> : null}

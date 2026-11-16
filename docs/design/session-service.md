@@ -131,3 +131,10 @@ Worker 事件（worker → hub）：`service_state` `{ serviceId, state, pid?, d
 - 前置条件：Worker 凭据要有 `service` 能力（`proc.list` 归在它下面）。旧凭据存的是显式清单，
   启动时会把「有 `runtimes` 但没有 `service`」的补上；收窄过（没有 `runtimes`）的保持原样。
   新建接入码默认 `full` 预设，已包含 `service`。
+
+## 10. 前端（2026-11-16，S2）
+
+- 任务页与会话检查器加「本地服务」区（无服务时只留一行「＋ 在这台机器上起个服务」），展示命令/端口/状态/pid/时长，支持停止（行内确认）、日志尾 8 KiB、打开预览、新建。
+- 停止不信回包：`stopServiceUseCase` 返回的是停止前的行，前端只 invalidate 重拉，20 秒未回报给一句兜底提示。
+- 轮询：有 `starting`/停止中 2s，否则 5s；页面隐藏停止；进程清单只在展开时拉（只读旁证）。
+- 遗留：服务 DTO 没有 `stopping` 态；预览链接没有 `serviceId`，「打开预览」按端口猜；`offline` 由前端用机器在线状态叠加显示（`data-service-state` 仍是原始状态）。

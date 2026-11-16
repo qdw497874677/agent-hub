@@ -77,6 +77,19 @@ export const sessionKeys = {
   previews: (sessionId: string) => ['session', sessionId, 'previews'] as const
 };
 
+/**
+ * 会话服务（docs/design/session-service.md §4）：状态由机器回报，前端只负责问。
+ * 任务页看整个任务的，会话检查器看这条会话的；日志和进程清单各自独立。
+ */
+export const serviceKeys = {
+  forTask: (taskId: string) => ['task-services', taskId] as const,
+  forSession: (sessionId: string) => ['session-services', sessionId] as const,
+  /** 日志是服务自己的（一条服务一个尾巴），不随列表刷新。 */
+  logs: (serviceId: string) => ['service-logs', serviceId] as const,
+  /** 这台机器上还跑着哪些进程：按会话的工作目录过滤，只读。 */
+  processes: (sessionId: string) => ['session-processes', sessionId] as const
+};
+
 export const workspaceKeys = {
   /** 工作目录列表里的「有没有未提交 / 没推的改动」：git 操作成功后要一起失效。 */
   changes: (workspaceId: string) => ['workspace-changes', workspaceId] as const

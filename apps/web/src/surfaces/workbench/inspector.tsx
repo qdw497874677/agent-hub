@@ -8,6 +8,7 @@ import type { LiveSession } from '../../atoms/live.ts';
 import { SessionAssets } from '../../atoms/session-assets.tsx';
 import { SessionMessages } from '../../atoms/session-messages.tsx';
 import { SessionContext } from '../../atoms/session-context.tsx';
+import { SessionServices } from '../../atoms/services-section.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from '../../shell/workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -145,6 +146,23 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
             )}
           </section>
           <SessionContext sessionId={session.id} lastSeq={live?.lastSeq ?? session.lastSeq} />
+          {/* 本地服务：容器会话没有工作目录，起不了进程，只保留查看（列表本身就是空的）。 */}
+          <SessionServices
+            taskId={session.taskId ?? ''}
+            scope={{ kind: 'session', sessionId: session.id }}
+            choices={[
+              {
+                id: session.id,
+                label: session.agentId,
+                root:
+                  session.workspaceId === null
+                    ? null
+                    : (canvas.workspaces.find((workspace) => workspace.id === session.workspaceId)?.path ?? null)
+              }
+            ]}
+            defaultSessionId={session.id}
+            canCreate={session.taskId !== null}
+          />
           <section data-testid="session-activity">
             <p className="mb-1 text-meta text-tertiary">谁做了什么</p>
             {activity.length === 0 ? (
