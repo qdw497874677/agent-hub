@@ -38,7 +38,6 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
     ...assetsStore.deps,
     review: reviewStore.review,
     notifications: reviewStore.notifications,
-    assetSets: fakeAssetSets(),
     audit: accounts.audit!,
     users: accounts.users,
     teams: accounts.teams,
@@ -50,7 +49,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
     token: null,
     auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users },
-    assets: { deps: assetReview, audit: accounts.audit! },
+    assets: { deps: assetReview, audit: accounts.audit!, assetSets: fakeAssetSets() },
     openApi: { tokens: tokenDeps, manage: tokenDeps, rate }
   });
   const browser = () => {

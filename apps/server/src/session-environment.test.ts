@@ -365,7 +365,8 @@ test('资产组合：项目默认展开、后组合覆盖前组合、不可见�
   await hub.deps.projects.save({ ...project, assetSetIds: ['aset_a', 'aset_b'] });
 
   const environment = createSessionEnvironment({
-    assetDeps: { ...assets.deps, assetSets: sets },
+    assetDeps: assets.deps,
+    assetSets: sets,
     tasks: hub.deps.tasks,
     projects: hub.deps.projects
   });
@@ -374,11 +375,14 @@ test('资产组合：项目默认展开、后组合覆盖前组合、不可见�
   assert.equal(prepared.blocked, undefined);
   // 项目生效集里的 a0 被组合覆盖；后组合 B 再覆盖 A；personal 的 a3 不可见，被丢掉。
   assert.deepEqual(prepared.command.kind === 'start_session' ? prepared.command.assetIds : null, ['a2']);
+  // 有组合参与，快照来源记 'set'（升级/回溯能看出资产从哪来）。
+  assert.equal((await assets.deps.assets.sessionAssetSnapshot(session.id))?.source, 'set');
 
   // 会话显式组合优先于项目默认。
   const explicitSession = { ...session, id: 's-explicit' as never, assetSetIds: ['aset_a'], workerId: 'w1' };
   const explicit = createSessionEnvironment({
-    assetDeps: { ...assets.deps, assetSets: sets },
+    assetDeps: assets.deps,
+    assetSets: sets,
     tasks: hub.deps.tasks,
     projects: hub.deps.projects,
     selectedAssetSetIds: async (sessionId) => (sessionId === explicitSession.id ? explicitSession.assetSetIds ?? null : null)
@@ -388,11 +392,45 @@ test('资产组合：项目默认展开、后组合覆盖前组合、不可见�
 
   // assetIds 仍是最外层过滤：组合给了 a2，这次显式资产清单是空的。
   const filtered = createSessionEnvironment({
-    assetDeps: { ...assets.deps, assetSets: sets },
+    assetDeps: assets.deps,
+    assetSets: sets,
     tasks: hub.deps.tasks,
     projects: hub.deps.projects,
     selectedAssetIds: async () => []
   });
   const filteredPrepared = await filtered.prepare(startCommand({ ...session, id: 's-filter' as never, workerId: 'w1' }, '/tmp/env', null));
   assert.deepEqual(filteredPrepared.command.kind === 'start_session' ? filteredPrepared.command.assetIds : null, []);
+});
+
+test('个人资产按会话发起人给：预览与下发共用一个 owner', async () => {
+  const { assets, hub, session } = await world();
+  const mine = await uploadAsset(assets.deps, { kind: 'skill', files: skillFiles(), scope: 'personal', ownerId: 'u1' });
+  assert.ok(mine.ok);
+  await assets.deps.assets.install('w1', mine.value.id, 1);
+  assets.board.set('w1', {
+    workerId: 'w1',
+    state: 'synced',
+    root: '/r',
+    installed: { [mine.value.id]: mine.value.pinned },
+    error: null,
+    at: 1
+  });
+  const command = startCommand({ ...session, workerId: 'w1' }, '/tmp/env', null);
+  const asOwner = createSessionEnvironment({
+    assetDeps: assets.deps,
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects,
+    sessionOwner: async () => 'u1'
+  });
+  const owned = await asOwner.prepare(command);
+  assert.deepEqual(owned.command.kind === 'start_session' ? owned.command.assetIds : null, [mine.value.id]);
+
+  const asOther = createSessionEnvironment({
+    assetDeps: assets.deps,
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects,
+    sessionOwner: async () => 'u2'
+  });
+  const other = await asOther.prepare(startCommand({ ...session, id: 's-other' as never, workerId: 'w1' }, '/tmp/env', null));
+  assert.deepEqual(other.command.kind === 'start_session' ? other.command.assetIds : null, []);
 });

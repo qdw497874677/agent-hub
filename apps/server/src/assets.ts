@@ -19,7 +19,7 @@ import {
   secretPutRequest,
   secretsOverviewSchema
 } from '@agent-hub/contract';
-import type { AssetReviewDeps, AssetSet, AssetSetDeps, AuditLog, EnvironmentPlanner, IncomingFile, Principal, Session, SessionAssetEntry, SessionRepository } from '@agent-hub/domain';
+import type { AssetReviewDeps, AssetSet, AssetSetDeps, AssetSetRepository, AuditLog, EnvironmentPlanner, IncomingFile, Principal, Session, SessionAssetEntry, SessionRepository } from '@agent-hub/domain';
 import {
   ASSET_KIND_LABEL,
   ASSET_LIMITS,
@@ -63,6 +63,8 @@ import { fail } from './http-error.ts';
 export interface AssetRouteOptions {
   readonly deps: AssetReviewDeps;
   readonly audit: AuditLog;
+  /** 资产组合仓库：组合 CRUD 与项目绑定用（不属于资产中心本身）。 */
+  readonly assetSets?: AssetSetRepository;
   /** #226 P2：升级会话资产快照要读会话与重新解析环境（server 组装时注入）。 */
   readonly sessions?: Pick<SessionRepository, 'byId'>;
   readonly environment?: EnvironmentPlanner;
@@ -70,7 +72,7 @@ export interface AssetRouteOptions {
    * 派生前预览：这个项目在这台机器上实际会带哪些资产（#226 会话级资产选择）。
    * 返回 'forbidden' 表示调用方看不见该项目（路由转 404，不泄露存在）。
    */
-  readonly planOf?: (projectId: string, workerId: string, principal: Principal) => Promise<SessionAssetEntry[] | 'forbidden'>;
+  readonly planOf?: (projectId: string, workerId: string, principal: Principal) => Promise<readonly SessionAssetEntry[] | 'forbidden'>;
 }
 
 interface Schema<T> {
@@ -118,7 +120,7 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
     });
   }
   const setDeps = (): AssetSetDeps => ({
-    assetSets: deps.assetSets,
+    assetSets: options.assetSets as AssetSetRepository,
     assets: deps.assets,
     projects: deps.projects,
     audit: options.audit,

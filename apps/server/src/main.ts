@@ -98,7 +98,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   asSessionId,
   asProjectId,
   authorizeProject,
-  sessionAssetPlan,
+  resolveSessionAssets,
   createPreviewLinkUseCase,
   createOutboxPump,
   projectOfSession,
@@ -1049,7 +1049,6 @@ const assetDeps: AssetReviewDeps = {
   hubAdminId: async () => (await store.users.firstClusterAdmin())?.id ?? null,
   review: store.assetReview,
   notifications: store.notifications,
-  assetSets: store.assetSets,
   audit: store.audit,
   users: store.users,
   teams: store.teams,
@@ -1070,6 +1069,7 @@ const assetDeps: AssetReviewDeps = {
 const remoteMcpClients = createRemoteClients();
 sessionEnvironment = createSessionEnvironment({
   assetDeps,
+  assetSets: store.assetSets,
   tasks: store.tasks,
   projects: store.projects,
   containerProject: async (sessionId) => {
@@ -1078,6 +1078,8 @@ sessionEnvironment = createSessionEnvironment({
     const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces, workspaceGroups: store.workspaceGroups }, session);
     return project ? { projectId: project.id as ProjectId, ownerId: session.createdBy ?? null } : null;
   },
+  // 预览与下发必须用同一个人（会话发起人）：否则个人资产在勾选列表与真实清单之间分叉。
+  sessionOwner: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.createdBy ?? null,
   // 会话级资产选择（#226）：显式清单就只带那些，未选的（比如 grill-me）不会下发。
   selectedAssetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetIds ?? null,
   // 会话显式资产组合优先；没有就用项目默认（planFor 内处理）。
@@ -1555,32 +1557,24 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   assets: {
     deps: assetDeps,
     audit: store.audit,
+    assetSets: store.assetSets,
     sessions: store.sessions,
     environment: sessionEnvironment ?? undefined,
     // 派生前预览：这台机器上这个项目实际会带哪些资产（#226 会话级资产选择）。
+    // 派生前还没有会话：约定「发起这次派生的人就是未来的 owner」，预览按他算个人/团队资产。
+    // 下发时用会话自己的 createdBy（planFor 的 sessionOwner），两者不匹配时以会话为准。
     planOf: async (projectId, workerId, principal) => {
       const project = await store.projects.byId(asProjectId(projectId));
       const visible = await authorizeProject(deps.access, principal, project, 'session.read');
       if (!visible.ok) return 'forbidden';
-      const sets = [];
-      for (const id of project?.assetSetIds ?? []) {
-        const set = await store.assetSets.byId(id);
-        if (!set) {
-          log(`资产组合 ${id} 不存在，已忽略（项目 ${projectId} 预览）`);
-          continue;
-        }
-        sets.push(set);
-      }
-      const plan = await sessionAssetPlan(
-        assetDeps,
+      const plan = await resolveSessionAssets({ assets: assetDeps.assets, board: assetDeps.board, assetSets: store.assetSets }, {
+        sessionId: 'preview',
         workerId,
         projectId,
-        {
-          userId: principal.user.id,
-          teamId: visible.value.teamId ?? null
-        },
-        sets
-      );
+        viewer: { userId: principal.user.id, teamId: visible.value.teamId ?? null },
+        setIds: project?.assetSetIds ?? [],
+        log
+      });
       return plan.entries;
     }
   },

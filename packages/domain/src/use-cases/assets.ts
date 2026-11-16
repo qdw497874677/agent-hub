@@ -25,7 +25,6 @@ import {
   type SessionAssetUpgrade
 } from '../asset.ts';
 import { assetVisibleIn } from '../asset.ts';
-import type { AssetSet } from '../asset-set.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -39,7 +38,6 @@ import type { AssetDelivery, AssetSyncBoard } from '../ports/asset-delivery.ts';
 import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
 import { isHubSecretKey, secretLookupOrder } from '../asset-review.ts';
 import { checkGitSourceUrl } from '../asset-git-host.ts';
-import type { Project } from '../project.ts';
 import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpConfig, type McpConfig, type McpLaunch } from '../mcp.ts';
 
 /** 资产中心是独立的限界上下文：不塞进 Deps。 */
@@ -52,13 +50,7 @@ export interface AssetDeps {
   /** MCP 资产引用的密钥（加密存放）。 */
   readonly secrets: SecretVault;
   /** 项目级资产要认项目（只读）。 */
-  readonly projects: {
-    byId(id: string): Promise<{ readonly id: string; readonly name: string } | null>;
-    /** 资产组合绑定时要用完整项目（可选：只认项目的调用方不提供）。 */
-    list?(): Promise<readonly Project[]>;
-  };
-  /** 资产组合（团队级）：会话解析时按项目默认 / 显式选择展开。 */
-  readonly assetSets?: AssetSetRepository;
+  readonly projects: { byId(id: string): Promise<{ readonly id: string; readonly name: string } | null> };
   readonly now: () => number;
   /** hub 管理员是谁（决定资产能不能取 hub 级密钥，见 secretLookupOrder）。不给 = 单机 / 单测：老资产照旧取 hub 级。 */
   readonly hubAdminId?: () => Promise<string | null>;
@@ -591,7 +583,7 @@ export async function remoteMcpTarget(
   deps: Pick<AssetDeps, 'assets' | 'secrets'> & Partial<Pick<AssetDeps, 'hubAdminId'>>,
   workerId: string,
   name: string,
-  /** 会话的生效集合（见 sessionAssetPlan）；给了就只在里面找，否则同名时全局优先。 */
+  /** 会话的生效集合（见 resolveSessionAssets）；给了就只在里面找，否则同名时全局优先。 */
   only?: ReadonlySet<string>
 ): Promise<Result<{ assetId: string; digest: string; url: string; headers: Record<string, string> }, DomainError>> {
   const candidates = (await workerMcpConfigs(deps, workerId, only)).filter((entry) => entry.asset.name === name);
@@ -689,45 +681,79 @@ export async function setProjectAsset(
   return ok(undefined);
 }
 
-/**
- * 一次会话该用哪些资产：这个项目生效的（就近优先），再与这台 Worker 装了的取交集；
- * 文件类还得已经同步落地（以 Worker 回报的版本为准）。projectId = null（找不到任务）时只给全局的。
- */
-export async function sessionAssetPlan(
-  deps: Pick<AssetDeps, 'assets' | 'board'>,
-  workerId: string,
-  projectId: string | null,
-  /** 会话发起人：决定个人 / 团队资产给不给（null = 只给全局 + 项目）。 */
-  viewer: AssetViewer | null = null,
+/** 一次会话的资产请求：项目、发起人、组合与显式清单都在这里说清楚。 */
+export interface SessionAssetRequest {
+  readonly sessionId: string;
+  readonly workerId: string;
+  readonly projectId: string | null;
+  /** 会话发起人：决定个人 / 团队资产给不给（null / 缺省 = 只给全局 + 项目）。 */
+  readonly viewer?: AssetViewer | null;
   /** 这条会话用的资产组合（项目默认或显式选择），按数组顺序展开。 */
-  sets: readonly AssetSet[] = []
-): Promise<{ assetIds: string[]; entries: SessionAssetEntry[] }> {
+  readonly setIds?: readonly string[];
+  /** 显式清单：null / 缺省 = 按生效集；给了就只保留这些 id。 */
+  readonly assetIds?: readonly string[] | null;
+  readonly log?: (message: string) => void;
+}
+
+export interface SessionAssetResolution {
+  readonly assetIds: readonly string[];
+  readonly entries: readonly SessionAssetEntry[];
+  /** 真正展开成功的组合 id：快照来源据此记 'set'。 */
+  readonly setIds: readonly string[];
+}
+
+/**
+ * 一次会话该用哪些资产（唯一入口）：项目生效集（就近优先）→ 展开资产组合（同类同名后者覆盖）
+ * → 与这台 Worker 装了的取交集（文件类还得已同步落地，以 Worker 回报为准）→ 最后按会话显式清单过滤。
+ * projectId = null（找不到任务）时只给全局的，组合里的项目级资产也无处安放、直接跳过。
+ */
+export async function resolveSessionAssets(
+  deps: Pick<AssetDeps, 'assets' | 'board'> & { readonly assetSets?: Pick<AssetSetRepository, 'byId'> },
+  request: SessionAssetRequest
+): Promise<SessionAssetResolution> {
   const all = await deps.assets.list();
+  const projectId = request.projectId;
   const effective =
     projectId === null
-      ? resolveProjectAssets(all.filter((asset) => asset.scope !== 'project'), '', {}, viewer).effective
-      : resolveProjectAssets(all, projectId, await deps.assets.projectSettings(projectId), viewer).effective;
+      ? resolveProjectAssets(all.filter((asset) => asset.scope !== 'project'), '', {}, request.viewer ?? null).effective
+      : resolveProjectAssets(all, projectId, await deps.assets.projectSettings(projectId), request.viewer ?? null).effective;
   // 组合里的资产并入候选池：后面的组合覆盖前面的组合（同类同名），项目生效集先垫底。
   const bySlot = new Map<string, Asset>(effective.map((asset) => [`${asset.kind}:${asset.name}`, asset]));
-  for (const set of sets) {
+  const setIds: string[] = [];
+  for (const id of request.setIds ?? []) {
+    const set = await deps.assetSets?.byId(id);
+    if (!set) {
+      request.log?.(`资产组合 ${id} 不存在，已忽略（会话 ${request.sessionId}）`);
+      continue;
+    }
+    setIds.push(id);
     for (const item of set.items) {
       const asset = all.find((candidate) => candidate.id === item.assetId);
-      if (!asset || !assetVisibleIn(asset, projectId ?? '', viewer)) continue;
+      if (!asset) continue;
+      // 没有项目时项目级资产无处安放：显式跳过，别靠空串去碰。
+      if (asset.scope === 'project' && projectId === null) continue;
+      if (!assetVisibleIn(asset, projectId ?? '', request.viewer ?? null)) continue;
       bySlot.set(`${asset.kind}:${asset.name}`, asset);
     }
   }
   const candidates = [...bySlot.values()];
-  const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === workerId).map((row) => row.assetId));
-  const landed = deps.board.get(workerId)?.installed ?? {};
-  const entries: SessionAssetEntry[] = [];
+  const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === request.workerId).map((row) => row.assetId));
+  const landed = deps.board.get(request.workerId)?.installed ?? {};
+  let entries: SessionAssetEntry[] = [];
   for (const asset of candidates) {
     if (!installed.has(asset.id)) continue;
     const digest = isFileAssetKind(asset.kind) ? landed[asset.id] : asset.pinned;
     if (digest === undefined) continue;
     entries.push({ assetId: asset.id, kind: asset.kind, name: asset.name, digest, scope: assetScope(asset) });
   }
+  // 显式清单是白名单：选中但当前不可见（被停用 / 换了作用域）就当没选，不报错。
+  const selected = request.assetIds ?? null;
+  if (selected !== null) {
+    const keep = new Set(selected);
+    entries = entries.filter((entry) => keep.has(entry.assetId));
+  }
   entries.sort((a, b) => a.kind.localeCompare(b.kind) || a.name.localeCompare(b.name));
-  return { assetIds: entries.map((entry) => entry.assetId), entries };
+  return { assetIds: entries.map((entry) => entry.assetId), entries, setIds };
 }
 
 const sessionAssetKey = (entry: SessionAssetEntry): string =>
@@ -742,7 +768,7 @@ export function sameSessionAssetEntries(a: readonly SessionAssetEntry[], b: read
 /**
  * #226 P2：显式升级本会话资产。
  *
- * 调用方负责重新解析「当前生效集」（sessionAssetPlan），这里只做权威快照的替换：
+ * 调用方负责重新解析「当前生效集」（resolveSessionAssets），这里只做权威快照的替换：
  * 已有快照 → 比较后写入新快照；没有快照 → 返回 null（没启动过的会话没有可升级的东西）。
  * 升级不改 session.environmentRevision：下一次 ensureHosted 发现版本不同，再按新快照重新托管。
  */

@@ -256,7 +256,7 @@ function AssetSetDialog({ set, onClose }: { set: AssetSetDto | null; onClose: ()
             className={`${DANGER} mr-auto`}
             disabled={remove.isPending || save.isPending}
             onClick={() => {
-              if (window.confirm(`删除组合「${set.name}」？项目里对它的引用会一起失效。`)) remove.mutate(set.id);
+              if (window.confirm(`删除组合「${set.name}」？还有项目在用它时会被拦下，要先解绑。`)) remove.mutate(set.id);
             }}
           >
             {remove.isPending ? '删除中…' : '删除组合'}

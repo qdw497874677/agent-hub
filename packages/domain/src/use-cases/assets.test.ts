@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { inMemoryAssets } from '../testing/in-memory.ts';
+import { fakeAssetSets, inMemoryAssets } from '../testing/in-memory.ts';
 import { normalizeAssetPath, packAsset, checkAssetName } from '../asset.ts';
 import {
   assetBlobsForWorker,
@@ -23,7 +23,7 @@ import {
   deleteSecret,
   projectAssets,
   setProjectAsset,
-  sessionAssetPlan
+  resolveSessionAssets
 } from './assets.ts';
 import { assetSlot } from '../asset.ts';
 
@@ -244,19 +244,19 @@ test('项目级作用域：同名项目资产盖过全局，项目开关、别�
   for (const id of [global.value.id, local.value.id, rules.value.id, foreign.value.id]) await deps.assets.install('w1', id, 1);
   const landed = Object.fromEntries([global, local, rules, foreign].map((a) => [a.value.id, a.value.pinned]));
   deps.board.set({ workerId: 'w1', state: 'synced', root: '/r', installed: landed, error: null, at: 1 });
-  const plan = await sessionAssetPlan(deps, 'w1', 'p1');
+  const plan = await resolveSessionAssets(deps, { sessionId: 's1', workerId: 'w1', projectId: 'p1' });
   assert.deepEqual(new Set(plan.assetIds), new Set([local.value.id, rules.value.id]));
   assert.equal(plan.entries.find((e) => e.assetId === local.value.id)?.scope, 'project');
   // 关掉本项目的那个 → 全局的回来
   assert.ok((await setProjectAsset(deps, { projectId: 'p1', assetId: local.value.id, enabled: false })).ok);
-  assert.deepEqual(new Set((await sessionAssetPlan(deps, 'w1', 'p1')).assetIds), new Set([global.value.id, rules.value.id]));
+  assert.deepEqual(new Set((await resolveSessionAssets(deps, { sessionId: 's1', workerId: 'w1', projectId: 'p1' })).assetIds), new Set([global.value.id, rules.value.id]));
   assert.ok((await setProjectAsset(deps, { projectId: 'p1', assetId: rules.value.id, enabled: false })).ok);
-  assert.deepEqual((await sessionAssetPlan(deps, 'w1', 'p1')).assetIds, [global.value.id]);
+  assert.deepEqual((await resolveSessionAssets(deps, { sessionId: 's1', workerId: 'w1', projectId: 'p1' })).assetIds, [global.value.id]);
   assert.ok((await setProjectAsset(deps, { projectId: 'p1', assetId: rules.value.id, enabled: null })).ok);
   // 没有项目（找不到任务）只给全局的；还没落地的不给
-  assert.deepEqual(new Set((await sessionAssetPlan(deps, 'w1', null)).assetIds), new Set([global.value.id, rules.value.id]));
+  assert.deepEqual(new Set((await resolveSessionAssets(deps, { sessionId: 's1', workerId: 'w1', projectId: null })).assetIds), new Set([global.value.id, rules.value.id]));
   deps.board.set({ workerId: 'w1', state: 'synced', root: '/r', installed: {}, error: null, at: 2 });
-  assert.deepEqual((await sessionAssetPlan(deps, 'w1', null)).assetIds, []);
+  assert.deepEqual((await resolveSessionAssets(deps, { sessionId: 's1', workerId: 'w1', projectId: null })).assetIds, []);
   // 清单里带落地名：项目级的同名不撞
   const manifest = await workerAssetManifest(deps, 'w1');
   assert.equal(new Set(manifest.map((e) => `${e.kind}:${e.slot}`)).size, manifest.length);
@@ -283,4 +283,67 @@ test('定时检查更新：只查 Git 来源，记新版本和审计，不自动
   git.files = [{ path: 'README.md', data: enc('no skill') }];
   const broken = await checkAllAssetUpdates(deps);
   assert.equal(broken.failed[0]?.asset.name, 'greeter');
+});
+
+test('会话资产解析：组合按槽位覆盖、无项目丢项目级、显式清单是白名单', async () => {
+  const { deps } = inMemoryAssets();
+  const assetSets = fakeAssetSets();
+  // 全局 greeter + 团队 greeter（同名）：组合里的后者应该覆盖项目生效集里的前者。
+  const shared = await uploadAsset(deps, { kind: 'skill', files: skill('global', 'greeter') });
+  assert.ok(shared.ok);
+  const teamOne = await uploadAsset(deps, { kind: 'skill', files: skill('team', 'greeter'), scope: 'team', teamId: 't1' });
+  assert.ok(teamOne.ok);
+  const mine = await uploadAsset(deps, { kind: 'instruction', files: [{ path: 'a.md', data: enc('personal') }], name: 'personal-note', scope: 'personal', ownerId: 'u1' });
+  assert.ok(mine.ok);
+  const projectOne = await uploadAsset(deps, { kind: 'instruction', files: [{ path: 'b.md', data: enc('project') }], name: 'project-note', scope: 'project', projectId: 'p1' });
+  assert.ok(projectOne.ok);
+  const others = await uploadAsset(deps, { kind: 'instruction', files: [{ path: 'c.md', data: enc('other') }], name: 'other-note', scope: 'personal', ownerId: 'u2' });
+  assert.ok(others.ok);
+
+  await assetSets.save({
+    id: 'aset_t1',
+    teamId: 't1',
+    name: 'T1',
+    description: null,
+    items: [{ assetId: teamOne.value.id }, { assetId: mine.value.id }, { assetId: projectOne.value.id }],
+    createdBy: 'u1',
+    createdAt: 1,
+    updatedAt: 1
+  });
+
+  for (const asset of [shared, teamOne, mine, projectOne, others]) await deps.assets.install('w1', asset.value.id, 1);
+  const landed = Object.fromEntries([shared, teamOne, mine, projectOne, others].map((a) => [a.value.id, a.value.pinned]));
+  deps.board.set({ workerId: 'w1', state: 'synced', root: '/r', installed: landed, error: null, at: 1 });
+
+  const viewer = { userId: 'u1', teamId: 't1' };
+  const withProject = await resolveSessionAssets(
+    { assets: deps.assets, board: deps.board, assetSets },
+    { sessionId: 's1', workerId: 'w1', projectId: 'p1', viewer, setIds: ['aset_t1'] }
+  );
+  // 组合里的 team greeter 覆盖全局 greeter；别的个人资产不会出现。
+  assert.deepEqual(new Set(withProject.assetIds), new Set([teamOne.value.id, mine.value.id, projectOne.value.id]));
+  assert.deepEqual(withProject.setIds, ['aset_t1']);
+
+  // 没有项目：项目级资产无处安放，直接丢；个人资产仍按发起人给。
+  const noProject = await resolveSessionAssets(
+    { assets: deps.assets, board: deps.board, assetSets },
+    { sessionId: 's1', workerId: 'w1', projectId: null, viewer, setIds: ['aset_t1'] }
+  );
+  assert.deepEqual(new Set(noProject.assetIds), new Set([teamOne.value.id, mine.value.id]));
+
+  // 显式清单是白名单：空数组 = 一个都不带。
+  const empty = await resolveSessionAssets(
+    { assets: deps.assets, board: deps.board, assetSets },
+    { sessionId: 's1', workerId: 'w1', projectId: 'p1', viewer, assetIds: [] }
+  );
+  assert.deepEqual(empty.assetIds, []);
+
+  // 不存在/已删的组合被跳过，并留下日志。
+  const logged: string[] = [];
+  const missing = await resolveSessionAssets(
+    { assets: deps.assets, board: deps.board, assetSets },
+    { sessionId: 's9', workerId: 'w1', projectId: 'p1', viewer, setIds: ['aset_gone'], log: (line) => logged.push(line) }
+  );
+  assert.deepEqual(missing.setIds, []);
+  assert.equal(logged.length, 1);
 });

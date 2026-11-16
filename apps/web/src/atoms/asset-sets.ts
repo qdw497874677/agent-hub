@@ -1,5 +1,3 @@
-import type { AssetSetDto } from '@agent-hub/contract';
-
 /**
  * 资产组合（AssetSet）的纯逻辑：仓库里只放「顺序怎么叠」「哪几个是真的选中」「什么时候才传」。
  *
@@ -19,6 +17,7 @@ export const ASSET_SET_ITEMS_MAX = 50;
 /**
  * 顺序叠加去重：同一个 id 只留第一次出现的位置（顺序有意义，后面的不往前挪）。
  * 空串和重复项直接丢掉——服务端不认空 id，重复只会让同一组资产叠两遍。
+ * 上限不在这里砍：超了要让保存/提交显式报错（`setLimitProblem`），截断会让人以为第 9 个「保存成功」了。
  */
 export function orderedSetIds(ids: readonly string[]): string[] {
   const seen = new Set<string>();
@@ -27,7 +26,6 @@ export function orderedSetIds(ids: readonly string[]): string[] {
     if (id === '' || seen.has(id)) continue;
     seen.add(id);
     out.push(id);
-    if (out.length >= MAX_ASSET_SETS) break;
   }
   return out;
 }
@@ -52,26 +50,6 @@ export function moveSetId(ids: readonly string[], id: string, delta: -1 | 1): st
   if (moved === undefined) return current;
   next.splice(to, 0, moved);
   return next;
-}
-
-/** 组合里实际会带的资产：按组合顺序叠起来，同一个资产只留第一次出现的那个。 */
-export function mergeSetAssets(
-  sets: readonly Pick<AssetSetDto, 'id' | 'assetIds'>[],
-  ids: readonly string[]
-): string[] {
-  const byId = new Map(sets.map((set) => [set.id, set]));
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const id of orderedSetIds(ids)) {
-    const set = byId.get(id);
-    if (set === undefined) continue;
-    for (const assetId of set.assetIds) {
-      if (seen.has(assetId)) continue;
-      seen.add(assetId);
-      out.push(assetId);
-    }
-  }
-  return out;
 }
 
 const sameIds = (a: readonly string[], b: readonly string[]): boolean =>

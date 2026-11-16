@@ -23,7 +23,7 @@ function harness(extra: Partial<Pick<AssetRouteOptions, 'sessions' | 'environmen
     token: null,
     auth: { accounts: admin.accounts },
     admin: { deps: admin.deps },
-    assets: { deps: { ...review.deps, projects: deps.projects }, audit: admin.deps.audit, ...extra }
+    assets: { deps: { ...review.deps, projects: deps.projects }, audit: admin.deps.audit, assetSets: review.assetSets, ...extra }
   });
   const browser = () => {
     const jar = new Map<string, string>();

@@ -43,7 +43,7 @@ export type WorkerCommand =
       /** 常驻：Worker 不按空闲回收这条会话，也不占保活上限（任务里长期用的那条）。 */
       readonly pinned?: boolean;
       /**
-       * 这次会话生效的资产 id（项目作用域，见 sessionAssetPlan）。
+       * 这次会话生效的资产 id（项目作用域，见 resolveSessionAssets）。
        * v4 起 hub 总是显式给出（可能是空数组）；缺省 = 一个都不给（fail-closed）。
        * 旧语义「没有 = 机器上装着的全给」已废弃（#223）。
        */

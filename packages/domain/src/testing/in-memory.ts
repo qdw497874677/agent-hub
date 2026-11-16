@@ -1222,7 +1222,6 @@ export function inMemoryAssetReviewDeps(
       hubAdminId: async () => (await users.firstClusterAdmin())?.id ?? null,
       review,
       notifications,
-      assetSets,
       audit: admin.deps.audit,
       users,
       teams: admin.accounts.teams,

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type {
   AssetDeps,
-  AssetSet,
+  AssetSetRepository,
   EnvironmentPlanner,
   McpLaunch,
   PreparedStart,
@@ -19,7 +19,7 @@ import type {
 import {
   ensureSessionAssetSnapshot,
   isContainerSession,
-  sessionAssetPlan,
+  resolveSessionAssets,
   sessionMcpLaunch,
   upgradeSessionAssets
 } from '@agent-hub/domain';
@@ -43,6 +43,8 @@ type StartCommand = Extract<WorkerCommand, { kind: 'start_session' }>;
 
 export interface SessionEnvironmentOptions {
   readonly assetDeps: AssetDeps;
+  /** 资产组合仓库：会话解析时按项目默认 / 显式选择展开。项目带组合时必须给。 */
+  readonly assetSets?: Pick<AssetSetRepository, 'byId'>;
   readonly tasks: { byId(id: TaskId): Promise<Task | null> };
   readonly projects: { byId(id: ProjectId): Promise<Project | null> };
   /** 容器会话（无任务）的项目来源（#221 步骤 7）；返回 null 时按「解析失败」处理，不下发资产。 */
@@ -52,6 +54,11 @@ export interface SessionEnvironmentOptions {
    * 给了就只保留这些 id——想「这条会话不用某个技能」时，由调用方把完整清单减掉它。
    */
   readonly selectedAssetIds?: (sessionId: string) => Promise<readonly string[] | null>;
+  /**
+   * 这条会话的发起人（决定个人 / 团队资产给不给）。不给时回落到任务 owner。
+   * 预览与下发必须用同一个人，否则勾选列表和实际清单会分叉。
+   */
+  readonly sessionOwner?: (sessionId: string) => Promise<string | null>;
   /**
    * 会话显式选的资产组合：返回 null / undefined = 按项目默认组合。
    * 组合里的资产会并进项目生效集（同名后者覆盖前者），再按机器已安装过滤。
@@ -65,6 +72,8 @@ interface Plan {
   readonly projectId: string | null;
   readonly entries: readonly SessionAssetEntry[];
   readonly assetIds: readonly string[];
+  /** 真正展开的组合：有它快照来源才算 'set'。 */
+  readonly setIds: readonly string[];
 }
 
 type Skipped = readonly { readonly name: string; readonly reason: string }[];
@@ -129,27 +138,27 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     const projectId = (task ? task.projectId : container?.projectId) ?? null;
     const ownerId = task ? task.ownerId : container?.ownerId ?? null;
     const project = projectId === null ? null : await projects.byId(projectId as ProjectId);
-    const viewer = ownerId ? { userId: ownerId, teamId: project?.teamId ?? null } : null;
-    // 会话显式组合优先；否则用项目默认。取不到的 id 忽略（组合可能刚被删）。
+    // 发起人优先用会话自己的（预览也用它）；没有会话时回落到任务 owner。
+    const sessionOwner = (await options.sessionOwner?.(sessionId)) ?? null;
+    const viewerId = sessionOwner ?? ownerId;
+    const viewer = viewerId ? { userId: viewerId, teamId: project?.teamId ?? null } : null;
+    // 会话显式组合优先；否则用项目默认。取不到的 id 在解析里被忽略（组合可能刚被删）。
     const explicitSets = await options.selectedAssetSetIds?.(sessionId);
     const setIds = explicitSets ?? project?.assetSetIds ?? [];
-    const sets: AssetSet[] = [];
-    for (const id of setIds) {
-      const set = await assetDeps.assetSets?.byId(id);
-      if (!set) {
-        log?.(`资产组合 ${id} 不存在，已忽略（会话 ${sessionId}）`);
-        continue;
-      }
-      sets.push(set);
+    if (setIds.length > 0 && !options.assetSets) {
+      log?.(`会话 ${sessionId} 要用资产组合，但组合仓库没有就绪`);
+      return null;
     }
-    const plan = await sessionAssetPlan(assetDeps, workerId, project?.id ?? null, viewer, sets);
-    const selected = (await options.selectedAssetIds?.(sessionId)) ?? null;
-    if (selected === null) return { projectId: project?.id ?? null, entries: plan.entries, assetIds: plan.assetIds };
-    // 显式清单：只留选中的；选中但当前不可见（被停用 / 换了作用域）的就当没选，不报错——
-    // 会话快照仍会记下实际给出的那些，界面能看出少带了什么。
-    const keep = new Set(selected);
-    const entries = plan.entries.filter((entry) => keep.has(entry.assetId));
-    return { projectId: project?.id ?? null, entries, assetIds: entries.map((entry) => entry.assetId) };
+    const plan = await resolveSessionAssets({ assets: assetDeps.assets, board: assetDeps.board, ...(options.assetSets === undefined ? {} : { assetSets: options.assetSets }) }, {
+      sessionId,
+      workerId,
+      projectId: project?.id ?? null,
+      viewer,
+      setIds,
+      assetIds: (await options.selectedAssetIds?.(sessionId)) ?? null,
+      ...(log === undefined ? {} : { log })
+    });
+    return { projectId: project?.id ?? null, entries: plan.entries, assetIds: plan.assetIds, setIds: plan.setIds };
   }
 
   return {
@@ -173,7 +182,8 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
           candidate = {
             sessionId: command.sessionId,
             mode: 'snapshot',
-            source: 'project',
+            // 有组合参与就记 'set'：从快照能看出资产是「项目生效集」还是「组合」来的。
+            source: plan.setIds.length > 0 ? 'set' : 'project',
             workerId: command.workerId,
             projectId: plan.projectId,
             entries: plan.entries,

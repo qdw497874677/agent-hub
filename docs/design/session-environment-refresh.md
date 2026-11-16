@@ -49,7 +49,7 @@
 
 一条会话在某个 Worker、某个项目作用域下，**实际可用的能力集合**：
 
-- 生效资产：`sessionAssetPlan()` 返回的 `entries`（技能、指令、MCP）；
+- 生效资产：`resolveSessionAssets()` 返回的 `entries`（技能、指令、MCP）；
 - 实际启动的 MCP：`sessionMcpLaunch()` 返回的 `launch`（缺密钥/启动失败的只记 `skipped`）；
 - 作用域：项目、Worker、viewer（个人/团队可见性）；
 - 不包含：模型、Agent、思考强度、连线、权限、上下文策略。这些是热更新或调用时动态数据，不属于环境。
@@ -146,7 +146,7 @@ export interface SessionEnvironment {
 }
 ```
 
-- `prepare` 负责 `sessionAssetPlan` + `sessionMcpLaunch` + `recordSessionAssets`；
+- `prepare` 负责 `resolveSessionAssets` + `sessionMcpLaunch` + `recordSessionAssets`；
 - `revision` 复用同一套 plan/launch 计算，只返回哈希；
 - 失败只记日志并返回 `revision: null`，不阻塞启动。
 
@@ -200,7 +200,7 @@ derive/ensureHosted
   → startCommand()
   → gateway.dispatch
       → environment.prepare(command)
-          → sessionAssetPlan()
+          → resolveSessionAssets()
           → sessionMcpLaunch()
           → recordSessionAssets()
       → Worker start_session

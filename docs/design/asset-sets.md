@@ -40,6 +40,14 @@ interface AssetSet {
 4. 只有「已装到目标机器」的资产进入下发清单。
 5. 若会话显式给了 `assetIds`，最后再按它过滤（这是最外层，用于临时排除单项）。
 
+唯一的解析入口是 domain 的 `resolveSessionAssets`（`packages/domain/src/use-cases/assets.ts`）：
+下发（`session-environment.planFor`）与派生前预览（`GET /api/projects/:id/assets`）都走它，
+区别只在「谁是发起人」：
+
+- 下发：用会话的 `createdBy`（`sessionOwner`），与任务 owner 无关。
+- 派生预览：会话还不存在，按约定「发起这次派生的人就是未来的 owner」计算。
+  若实际创建的会话属于别人，以会话的 `createdBy` 为准。
+
 组合的来源优先级：
 
 ```
@@ -48,6 +56,10 @@ interface AssetSet {
 
 - 不传 `assetSetIds`：用项目默认组合。
 - 传空数组：这次不带任何组合（仍用项目生效集）。
+
+删除组合前只检查项目引用：仍被项目引用返回 409「还有 N 个项目在用它，先解绑」。
+会话里显式写下的 `assetSetIds` 不阻止删除；该组合不存在时解析会跳过它并记日志，
+下一次启动按剩余组合 + 项目生效集计算。
 - 组合里引用了当前项目看不见的资产（跨项目 project 作用域、别人的 personal）会被丢弃，不报错。
 
 ## 接口

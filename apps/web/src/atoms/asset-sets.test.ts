@@ -4,7 +4,6 @@ import {
   MAX_ASSET_SETS,
   assetSetChoiceKey,
   itemCountText,
-  mergeSetAssets,
   moveSetId,
   referenceText,
   setChoiceFor,
@@ -15,20 +14,6 @@ import {
   toggleSetChoice,
   toggleSetId
 } from './asset-sets.ts';
-
-const sets = [
-  { id: 's1', assetIds: ['a1', 'a2'] },
-  { id: 's2', assetIds: ['a2', 'a3'] },
-  { id: 's3', assetIds: ['a4'] }
-];
-
-test('组合按顺序叠加：同一个资产只留第一次出现的位置', () => {
-  assert.deepEqual(mergeSetAssets(sets, ['s2', 's1']), ['a2', 'a3', 'a1']);
-  assert.deepEqual(mergeSetAssets(sets, ['s1', 's3']), ['a1', 'a2', 'a4']);
-  // 不认识 / 重复的组合 id 直接跳过，不让它影响顺序
-  assert.deepEqual(mergeSetAssets(sets, ['s3', 'nope', 's3']), ['a4']);
-  assert.deepEqual(mergeSetAssets(sets, []), []);
-});
 
 test('勾选保持顺序、不重复；到上限就不再加', () => {
   assert.deepEqual(toggleSetId(['s1'], 's2', true), ['s1', 's2']);
