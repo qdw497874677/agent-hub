@@ -80,7 +80,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // M2：从任务派生会话（任务卡上的「＋ 会话」；双击在自动化的零间隔点击下会落到重渲染的空档里）
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
   // 运行面板：先选工作目录（不预选，没选「开始」是灰的）。新项目还没有工作目录：把已有目录登记成持久工作目录。
-  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const run = page.getByRole('dialog', { name: '开始会话' });
   await expect(run.getByRole('button', { name: '开始' })).toBeDisabled();
   await run.getByRole('radio', { name: /新建持久工作目录/ }).click();
   await run.getByRole('radio', { name: '选已有目录' }).click();

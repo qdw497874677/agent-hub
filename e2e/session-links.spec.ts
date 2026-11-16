@@ -58,7 +58,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
 
   // 第一条会话：把 /tmp 下的目录登记成持久工作目录。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const firstRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const firstRun = page.getByRole('dialog', { name: '开始会话' });
   await firstRun.getByRole('radio', { name: /新建持久工作目录/ }).click();
   await firstRun.getByRole('radio', { name: '选已有目录' }).click();
   const picker = page.getByLabel('目录选择器');
@@ -78,7 +78,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
 
   // 第二条会话：直接选刚登记的工作目录。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const secondRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const secondRun = page.getByRole('dialog', { name: '开始会话' });
   const existing = secondRun.getByRole('radio').filter({ hasText: `agent-hub-e2e-links-${RUN}` }).first();
   await expect(existing).toBeVisible();
   await existing.click();

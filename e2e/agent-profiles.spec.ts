@@ -41,7 +41,7 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
 
   // 第一条会话：保存成 profile。
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const firstRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const firstRun = page.getByRole('dialog', { name: '开始会话' });
   await chooseWorkspace(page, firstRun);
   await chooseHubModel(firstRun);
   await firstRun.getByRole('button', { name: '开始' }).click();
@@ -69,9 +69,9 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   // 回画布，派生第二条会话并选 profile。
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
-  const secondRun = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const secondRun = page.getByRole('dialog', { name: '开始会话' });
   await chooseWorkspace(page, secondRun);
-  const profile = secondRun.getByLabel('Agent 配置（可留空）');
+  const profile = secondRun.getByLabel('启动预设（可选）');
   const profileOption = profile.locator('option').filter({ hasText: `${PROFILE_NAME}-改` });
   await expect(profileOption).toHaveCount(1);
   const profileId = await profileOption.getAttribute('value');

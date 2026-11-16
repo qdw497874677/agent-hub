@@ -59,11 +59,11 @@ export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
-        <label className="mb-1 block text-meta text-secondary" htmlFor="task-goal">目标（可留空）</label>
+        <label className="mb-1 block text-meta text-secondary" htmlFor="task-goal">目标</label>
         <textarea
           id="task-goal"
           className={`mb-4 h-20 resize-none ${INPUT}`}
-          placeholder="想要达成什么、怎样算做完"
+          placeholder="怎样算做完（可选）"
           value={goal}
           onChange={(event) => setGoal(event.target.value)}
         />
@@ -321,7 +321,7 @@ export function DeriveDialog({
 
   return (
     <DialogShell
-      title="在哪台机器、哪个工作目录干活？"
+      title="开始会话"
       onClose={onDone}
       footer={
         <div className="flex flex-col gap-1.5">
@@ -347,10 +347,10 @@ export function DeriveDialog({
         </div>
       }
     >
-        <p className="mb-3 text-head text-primary">在哪台机器、哪个工作目录干活？</p>
+        <p className="mb-3 text-head text-primary">开始会话</p>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
-            还没有机器上线。它起来后，这里会出现它装了的 agent。
+            还没有在线的机器。
             <button
               className="ml-2 text-accent underline-offset-2 hover:underline"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
@@ -380,7 +380,7 @@ export function DeriveDialog({
         </div>
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <label className="block text-meta text-secondary" htmlFor="derive-profile">Agent 配置（可留空）</label>
+            <label className="block text-meta text-secondary" htmlFor="derive-profile">启动预设（可选）</label>
             <button type="button" className="text-meta text-accent underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
               管理
             </button>
@@ -551,7 +551,7 @@ export function DeriveDialog({
             <p className="text-meta text-rust">{(assetPlan.error as Error).message}</p>
           ) : assetEntries.length === 0 ? (
             <p className="text-meta text-tertiary" data-testid="derive-assets-empty">
-              这台机器上还没有可下发的资产
+              这台机器还没有资产
             </p>
           ) : (
             <ul className="flex flex-col">

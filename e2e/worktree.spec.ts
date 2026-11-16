@@ -212,9 +212,9 @@ test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照�
   await expect(node).toContainText('0 个会话');
   await node.getByRole('button', { name: '＋ 会话' }).click();
 
-  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const run = page.getByRole('dialog', { name: '开始会话' });
   const worktree = run.getByTestId('ws-new-worktree');
-  await expect(worktree).toContainText('新建隔离 worktree');
+  await expect(worktree).toContainText('新建隔离目录');
   // 项目默认 isolated：打开就替用户选上，不用再点一下
   await expect(worktree).toHaveAttribute('aria-checked', 'true');
   // 只有 Hub 模型的机器：模型框显式写「选择模型…」，不替人选（选好之后才轮到工作目录这一关）
