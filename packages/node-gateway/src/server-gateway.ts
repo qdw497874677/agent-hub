@@ -4,7 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { ProcessInfo, WorkspaceBrowser } from '@agent-hub/domain';
 import { createRemoteBrowsers } from './remote-workspace-browser.ts';
-import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
+import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, SessionAssetRequestWire, WorkerToServer } from '@agent-hub/contract';
 import {
   PROTOCOL_MISMATCH_CLOSE,
   PROTOCOL_VERSION,
@@ -1182,13 +1182,34 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
   const remoteBrowsers = createRemoteBrowsers({ channelOf, offline, toDomain });
 
   const assets: AssetDelivery = {
-    async push(workerId, manifest, retain) {
+    /**
+     * `sessions`（协议 v7，可选第 4 个参数）：hub 认为这台机器上还活着的会话 →
+     * 各自想要的 assetId / digest。Worker 据此原子重建每会话视图、清掉孤儿视图。
+     * 领域层还没接线时缺省 = 不动视图（会话启动时 Worker 自己按 start_session 的清单建）。
+     */
+    async push(workerId, manifest, retain, sessions?: readonly SessionAssetRequestWire[]) {
       const channel = channelOf(workerId);
       if (!channel) return offline(workerId);
       const entries = manifest.map((entry) => ({ ...entry, files: [...entry.files] }));
       // 首次同步要把内容一批批取回来，给足时间
       return toDomain(
-        await channel.request(assetsSync, retain === undefined || retain.length === 0 ? { entries } : { entries, retain: [...retain] }, { timeoutMs: 5 * 60_000 }),
+        await channel.request(
+          assetsSync,
+          {
+            entries,
+            ...(retain === undefined || retain.length === 0 ? {} : { retain: [...retain] }),
+            ...(sessions === undefined
+              ? {}
+              : {
+                  sessions: sessions.map((session) => ({
+                    sessionId: session.sessionId,
+                    assetIds: [...session.assetIds],
+                    ...(session.digests === undefined ? {} : { digests: { ...session.digests } })
+                  }))
+                })
+          },
+          { timeoutMs: 5 * 60_000 }
+        ),
         '资产同步',
         workerId
       );

@@ -19,10 +19,29 @@ export type FileAssetKind = Exclude<AssetKind, 'mcp'>;
 export const FILE_ASSET_KINDS: readonly FileAssetKind[] = ['skill', 'instruction'];
 export const isFileAssetKind = (kind: AssetKind): kind is FileAssetKind => kind !== 'mcp';
 
+/**
+ * 版本策略（#226）：
+ * - locked（默认）：导入时就把 ref 钉成解析出的完整提交 SHA，之后不检查更新 —— 来源不可变；
+ * - track：保留 ref（分支 / 标签），定时检查，内容变了就生成待审提交（标签被强推同样按内容 digest 判断）。
+ */
+export type AssetSourcePolicy = 'track' | 'locked';
+export const DEFAULT_ASSET_SOURCE_POLICY: AssetSourcePolicy = 'locked';
+
 export type AssetSource =
   | { readonly type: 'upload' }
   /** ref = 分支 / 标签 / 提交（null = 远端默认分支）；path = 仓库里那个技能目录或指令文件（'' = 仓库根）。 */
-  | { readonly type: 'git'; readonly url: string; readonly ref: string | null; readonly path: string };
+  | {
+      readonly type: 'git';
+      readonly url: string;
+      readonly ref: string | null;
+      readonly path: string;
+      /** 老数据没有这个字段：按 locked 处理（见 assetSourcePolicy）。 */
+      readonly policy?: AssetSourcePolicy;
+    };
+
+/** 来源的版本策略；缺省（老数据 / 未显式指定）一律 locked。 */
+export const assetSourcePolicy = (source: Pick<AssetSource, 'type'> & { readonly policy?: AssetSourcePolicy }): AssetSourcePolicy =>
+  source.policy ?? DEFAULT_ASSET_SOURCE_POLICY;
 
 /** 从 GitHub 网址里拆出的来源：`https://github.com/o/r/tree/<ref>/<path>` 之类直接能用。 */
 export interface GitSourceLocation {
@@ -243,6 +262,14 @@ export type SessionAssetSource = 'set' | 'bot' | 'project';
  * 每次启动都会覆盖；snapshot 一旦写下就是这段会话的权威清单，resume / 重新托管只认它，
  * 直到显式升级。mode 固定为 'snapshot'，读库时用来和旧数据区分。
  */
+/** 一台机器上某个会话此刻该用的资产（#226 P4）：Worker 据此建 sessions/<id> 视图。 */
+export interface SessionAssetDelivery {
+  readonly sessionId: string;
+  readonly assetIds: readonly string[];
+  /** assetId → 冻结的 digest；缺省时 Worker 用当前钉住的版本。 */
+  readonly digests?: Readonly<Record<string, string>>;
+}
+
 export interface SessionAssetSnapshot {
   readonly sessionId: string;
   readonly mode: 'snapshot';

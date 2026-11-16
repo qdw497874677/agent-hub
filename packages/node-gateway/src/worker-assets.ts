@@ -17,23 +17,32 @@ import { checkAssetName, normalizeAssetPath, type SessionAssets } from '@agent-h
  *   root/skills/<name>                      → …/assets/<digest12>/<slot>      兼容链接（指向当前）
  *   root/project-skills/<id8>/<name>        → …/assets/<digest12>/<slot>      兼容链接
  *   root/instructions/<slot>.md             → …/assets/<digest12>/<slot>.md   兼容链接
+ *   root/sessions/<sessionId>/skills/<slot> → …/assets/<digest12>/<slot>      每会话视图（#226 P4）
+ *   root/sessions/<sessionId>/instructions/<slot>.md → …/assets/<digest12>/<slot>.md
+ *   root/sessions/<sessionId>/.view.json    视图引用了哪些 digest（清理时算引用计数）
  *   root/.manifest.json                     当前落地的清单
  *
  * 内容一旦落地就只读：换钉 / 删除只换兼容链接、清不再被引用的版本目录，所以正在跑的会话
  * 拿到的版本化路径永远读得到当初那一版。`retain` 里的旧 digest 由 hub 按 session_assets 算出来。
  * 每个条目先在 .staging 里拼好，再整体改名换上去；同步串行执行。
+ *
+ * 视图（#226 P4）：同名资产的两个版本可以同时给两个会话用——视图目录里每个会话各有自己的一组
+ * 链接，会话只拿视图里的路径；换钉只改兼容链接与其它会话的视图，不碰这个会话。
  */
 export interface WorkerAssets {
   readonly root: string;
   /**
    * 让目录与清单一致；缺的内容用 fetch 按哈希取（每批 ≤ 200 个）。
    * `retain` = 这台机器上仍有会话在用的旧版本 digest：对应的版本目录不清理（缺省 = 不保留）。
+   * `sessions` = hub 认为这台机器上还活着的会话（会话 → 想要的 assetId）：一并原子重建视图，
+   * 并清掉不在列表里的孤儿视图；不传 = 不动视图（旧 hub）。
    */
   sync(
     entries: readonly AssetManifestEntryWire[],
     fetch: FetchBlobs,
-    retain?: readonly string[]
-  ): Promise<{ root: string; installed: Record<string, string> }>;
+    retain?: readonly string[],
+    sessions?: readonly SessionAssetRequest[]
+  ): Promise<{ root: string; installed: Record<string, string>; views: Record<string, SessionAssetView> }>;
   /**
    * 此刻装着、且在这次会话清单（`only`）里的东西，返回不可变的版本化绝对路径。
    * 没给清单 = 什么都不给（#223 fail-closed）；旧语义「没给 = 全给」已废弃。
@@ -44,6 +53,36 @@ export interface WorkerAssets {
    * 会话照常启动，由调用方把「degraded」说给用户听——不能静默继续（#225 M3）。
    */
   missing(only?: ReadonlySet<string>, digests?: Readonly<Record<string, string>>): Promise<readonly string[]>;
+  /**
+   * 给一个会话建/刷新视图（会话启动时用）：返回技能目录、指令目录与给 agent 的清单。
+   * `assetIds` 为空 = 删掉旧视图并返回 undefined。视图里的链接指向不可变版本目录，
+   * 与兼容链接（skills/<name> 等）互不影响，所以同名不同版本能同时给两个会话用。
+   */
+  view(request: SessionAssetRequest): Promise<SessionAssetView | undefined>;
+  /** 会话结束 / 归档：删掉它的视图（版本目录仍按 retain/视图引用清理）。返回是否真的删了。 */
+  dropSession(sessionId: string): Promise<boolean>;
+}
+
+/** 一个会话想要的资产：assetId 列表 + 可选的精确 digest（换钉后仍按会话钉住的那一版）。 */
+export interface SessionAssetRequest {
+  /** 会话 id：直接当目录名用（只允许字母数字与 . _ -，不以 . 开头）。 */
+  readonly sessionId: string;
+  readonly assetIds: readonly string[];
+  /** assetId → digest；缺省 = 清单里的当前版本。 */
+  readonly digests?: Readonly<Record<string, string>>;
+}
+
+/** 落在 sessions/<sessionId>/ 下的会话视图。 */
+export interface SessionAssetView {
+  readonly sessionId: string;
+  /** <root>/sessions/<sessionId>/skills 的绝对路径。 */
+  readonly skillsDir: string;
+  /** <root>/sessions/<sessionId>/instructions 的绝对路径。 */
+  readonly instructionsDir: string;
+  /** 交给 agent 的清单：skills[].path 是 <skillsDir>/<slot>/SKILL.md，instructions[].path 是 <instructionsDir>/<slot>.md。 */
+  readonly assets: SessionAssets;
+  /** 清单点了名、但本机没有对应版本目录的资产 id。 */
+  readonly missing: readonly string[];
 }
 
 export type FetchBlobs = (hashes: readonly string[]) => Promise<readonly { sha256: string; data: string }[]>;
@@ -66,6 +105,12 @@ const scopeOf = (entry: Pick<AssetManifestEntryWire, 'name' | 'slot'>): string |
   const slot = slotOf(entry);
   return slot === entry.name ? null : slot.slice(slot.lastIndexOf('--') + 2);
 };
+
+/** 会话 id 当目录名用：只接受能安全落在 sessions/ 下的写法。 */
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+function checkSessionId(sessionId: string): void {
+  if (!SESSION_ID.test(sessionId)) throw new Error(`会话 ID 不能用作目录名：${sessionId}`);
+}
 
 function validate(entries: readonly AssetManifestEntryWire[]): void {
   const seen = new Set<string>();
@@ -91,6 +136,7 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
   const blobs = join(root, '.blobs');
   const staging = join(root, '.staging');
   const versions = join(root, 'assets');
+  const viewRoot = join(root, 'sessions');
   const manifestPath = join(root, '.manifest.json');
   let queue: Promise<unknown> = Promise.resolve();
 
@@ -202,13 +248,149 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
     for (const name of names) if (!keep.has(name)) await rm(join(dir, name), { recursive: true, force: true });
   }
 
-  async function runSync(entries: readonly AssetManifestEntryWire[], fetch: FetchBlobs, retain: readonly string[]) {
+  /* ── 每会话视图（#226 P4）：sessions/<sessionId>/{skills,instructions}/… → 不可变版本目录 ── */
+
+  const viewDir = (sessionId: string): string => join(viewRoot, sessionId);
+
+  /**
+   * 把「会话想要的 assetId」翻译成版本化条目：assetId → 清单里的条目，digest 优先；
+   * 版本目录不在就算缺（调用方照常启动会话，把这些 id 报成 degraded）。
+   * `manifest` = 调用方手里那份清单（同步过程中清单文件还没写完，不能用旧文件）。
+   */
+  async function resolveRequest(
+    request: SessionAssetRequest,
+    manifest?: readonly AssetManifestEntryWire[]
+  ): Promise<{ entries: AssetManifestEntryWire[]; missing: string[] }> {
+    const listed = new Map((manifest ?? (await readManifest())).map((entry) => [entry.assetId, entry]));
+    const entries: AssetManifestEntryWire[] = [];
+    const missing: string[] = [];
+    const seen = new Set<string>();
+    for (const assetId of request.assetIds) {
+      const found = listed.get(assetId);
+      const digest = request.digests?.[assetId];
+      const entry = found === undefined ? undefined : digest === undefined ? found : { ...found, digest };
+      if (entry === undefined || !(await exists(versionPath(entry)))) {
+        missing.push(assetId);
+        continue;
+      }
+      // 同一落地名（kind:slot）只留一份：视图里两个链接写同一个位置没有意义。
+      const key = `${entry.kind}:${slotOf(entry)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push(entry);
+    }
+    return { entries, missing };
+  }
+
+  /**
+   * 在 .staging 里拼好整个视图，再整体改名换成 sessions/<sessionId>（原子替换，中途不会露出半个视图）。
+   * 链接一律用相对路径：整个 root 搬走/挂到别处仍然有效。
+   */
+  async function writeView(sessionId: string, entries: readonly AssetManifestEntryWire[]): Promise<void> {
+    const build = join(staging, randomUUID());
+    const skills = join(build, 'skills');
+    const instructions = join(build, 'instructions');
+    await mkdir(skills, { recursive: true });
+    await mkdir(instructions, { recursive: true });
+    const linkTo = async (link: string, target: string): Promise<void> => {
+      await symlink(relative(dirname(link), target), link);
+    };
+    for (const entry of entries) {
+      if (entry.kind === 'skill') await linkTo(join(skills, slotOf(entry)), versionPath(entry));
+      else await linkTo(join(instructions, `${slotOf(entry)}.md`), versionPath(entry));
+    }
+    // 记下视图引用的 digest：prune 版本目录时算引用计数（文件真被删了也不至于误判）。
+    const pinned = entries.map((entry) => ({ assetId: entry.assetId, digest: entry.digest, kind: entry.kind, slot: slotOf(entry) }));
+    await writeFile(join(build, '.view.json'), JSON.stringify({ sessionId, entries: pinned }, null, 2));
+
+    await mkdir(viewRoot, { recursive: true });
+    await mkdir(staging, { recursive: true });
+    const target = viewDir(sessionId);
+    const trash = join(staging, randomUUID());
+    if (await exists(target)) await rename(target, trash);
+    await rename(build, target);
+    await rm(trash, { recursive: true, force: true });
+  }
+
+  /** 删掉一个会话的视图；先挪进 staging 再删，读视图的人不会看到删到一半的目录。 */
+  async function removeView(sessionId: string): Promise<boolean> {
+    checkSessionId(sessionId);
+    const target = viewDir(sessionId);
+    if (!(await exists(target))) return false;
+    await mkdir(staging, { recursive: true });
+    const trash = join(staging, randomUUID());
+    await rename(target, trash);
+    await rm(trash, { recursive: true, force: true });
+    return true;
+  }
+
+  function toView(sessionId: string, entries: readonly AssetManifestEntryWire[], missing: readonly string[]): SessionAssetView {
+    const dir = viewDir(sessionId);
+    const skillsDir = join(dir, 'skills');
+    const instructionsDir = join(dir, 'instructions');
+    return {
+      sessionId,
+      skillsDir,
+      instructionsDir,
+      assets: {
+        root: dir,
+        skillsDir,
+        instructionsDir,
+        skills: entries
+          .filter((entry) => entry.kind === 'skill')
+          .map((entry) => ({ name: entry.name, description: entry.description, path: join(skillsDir, slotOf(entry), 'SKILL.md') })),
+        instructions: entries
+          .filter((entry) => entry.kind === 'instruction')
+          .map((entry) => ({ name: entry.name, path: join(instructionsDir, `${slotOf(entry)}.md`) }))
+      },
+      missing
+    };
+  }
+
+  /** 所有视图引用到的 digest：版本目录的保留集合要算上它们（运行中的会话还挂着旧版本）。 */
+  async function viewDigests(): Promise<string[]> {
+    const names = await readdir(viewRoot).catch(() => [] as string[]);
+    const digests: string[] = [];
+    for (const name of names) {
+      try {
+        const parsed = JSON.parse(await readFile(join(viewRoot, name, '.view.json'), 'utf8')) as {
+          entries?: { digest?: unknown }[];
+        };
+        for (const entry of parsed.entries ?? []) if (typeof entry.digest === 'string') digests.push(entry.digest);
+      } catch {
+        // 视图坏了：当作没有引用；下一次同步会重建它或按孤儿清掉。
+      }
+    }
+    return digests;
+  }
+
+  async function runSync(
+    entries: readonly AssetManifestEntryWire[],
+    fetch: FetchBlobs,
+    retain: readonly string[],
+    sessions?: readonly SessionAssetRequest[]
+  ) {
     validate(entries);
     await mkdir(root, { recursive: true });
     await rm(staging, { recursive: true, force: true });
     await ensureBlobs(entries, fetch);
     for (const entry of entries) await materialize(entry);
     for (const entry of entries) await replaceLink(linkPath(entry), versionPath(entry));
+
+    // 每会话视图：按 hub 给的活跃会话列表重建；列表外的是孤儿（会话早没了 / Worker 崩溃留下的），清掉。
+    // 旧 hub 不传 sessions = 不动视图（还能靠会话结束时的 dropSession / 下次同步收掉）。
+    const views: Record<string, SessionAssetView> = {};
+    if (sessions !== undefined) {
+      const keep = new Set<string>();
+      for (const request of sessions) {
+        checkSessionId(request.sessionId);
+        const resolved = await resolveRequest(request, entries);
+        await writeView(request.sessionId, resolved.entries);
+        keep.add(request.sessionId);
+        views[request.sessionId] = toView(request.sessionId, resolved.entries, resolved.missing);
+      }
+      await prune(viewRoot, keep);
+    }
 
     const skills = entries.filter((e) => e.kind === 'skill');
     await prune(join(root, 'skills'), new Set(skills.filter((e) => scopeOf(e) === null).map((e) => e.name)));
@@ -221,20 +403,25 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
     for (const [scope, names] of scoped) await prune(join(root, 'project-skills', scope), names);
     await prune(join(root, 'instructions'), new Set(entries.filter((e) => e.kind === 'instruction').map((e) => `${slotOf(e)}.md`)));
 
-    // 版本目录只保留「当前清单 ∪ retain」里的 digest；其余旧版本清掉。
-    const keepVersions = new Set([...entries.map((e) => prefixOf(e.digest)), ...retain.map(prefixOf)]);
+    // 版本目录只保留「当前清单 ∪ retain ∪ 视图引用」里的 digest；其余旧版本清掉。
+    const keepVersions = new Set([
+      ...entries.map((e) => prefixOf(e.digest)),
+      ...retain.map(prefixOf),
+      // 视图还挂着的旧版本（会话钉住的版本）不能删，否则运行中的会话读到空目录。
+      ...(await viewDigests()).map(prefixOf)
+    ]);
     await prune(versions, keepVersions);
 
     await prune(blobs, new Set(entries.flatMap((entry) => entry.files.map((file) => file.sha256))));
     await writeAtomic(manifestPath, JSON.stringify({ entries }, null, 2));
     await rm(staging, { recursive: true, force: true });
-    return { root, installed: Object.fromEntries(entries.map((entry) => [entry.assetId, entry.digest])) };
+    return { root, installed: Object.fromEntries(entries.map((entry) => [entry.assetId, entry.digest])), views };
   }
 
   return {
     root,
-    sync(entries, fetch, retain = []) {
-      const run = queue.then(() => runSync(entries, fetch, retain));
+    sync(entries, fetch, retain = [], sessions?) {
+      const run = queue.then(() => runSync(entries, fetch, retain, sessions));
       queue = run.catch(() => {});
       return run;
     },
@@ -272,6 +459,26 @@ export function createWorkerAssets(options: { readonly root?: string } = {}): Wo
         if (!(await exists(versionPath(probe)))) gone.push(entry.name);
       }
       return gone;
+    },
+    view(request) {
+      // 与 sync 共用一条队列：同步在跑的时候建视图会读到半新半旧的清单。
+      const run = queue.then(async () => {
+        checkSessionId(request.sessionId);
+        if (request.assetIds.length === 0) {
+          await removeView(request.sessionId);
+          return undefined;
+        }
+        const resolved = await resolveRequest(request);
+        await writeView(request.sessionId, resolved.entries);
+        return toView(request.sessionId, resolved.entries, resolved.missing);
+      });
+      queue = run.catch(() => {});
+      return run;
+    },
+    dropSession(sessionId) {
+      const run = queue.then(() => removeView(sessionId));
+      queue = run.catch(() => {});
+      return run;
     }
   };
 }

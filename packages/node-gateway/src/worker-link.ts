@@ -379,7 +379,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     ...(options.groupsDir ? { groupsDir: options.groupsDir } : {})
   });
   channel.handle(linkEcho, async ({ at }) => ({ at }));
-  channel.handle(assetsSync, async ({ entries, retain }) => {
+  channel.handle(assetsSync, async ({ entries, retain, sessions }) => {
     if (!options.assets) throw new RpcFailure('unsupported', '这台 Worker 不支持资产同步');
     const fetchBlobs = async (hashes: readonly string[]) => {
       const got = await channel.request(assetsFetch, { hashes: [...hashes] }, { timeoutMs: 120_000 });
@@ -387,8 +387,13 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return got.value.blobs;
     };
     try {
-      const report = await options.assets.sync(entries, fetchBlobs, retain);
-      options.onLog?.(`资产已同步：${entries.length} 项 → ${report.root}`);
+      // sessions（协议 v7）：hub 报上来还活着的会话；一并重建视图、清掉孤儿视图（#226 P4）。
+      // 旧 hub 不发 = 不动视图，会话启动时仍会自己按 start_session 的清单建/刷。
+      const report = await options.assets.sync(entries, fetchBlobs, retain, sessions);
+      const viewCount = Object.keys(report.views).length;
+      options.onLog?.(
+        `资产已同步：${entries.length} 项 → ${report.root}${viewCount > 0 ? `（${viewCount} 个会话视图）` : ''}`
+      );
       return report;
     } catch (error) {
       throw new RpcFailure('failed', error instanceof Error ? error.message : String(error));
@@ -1237,6 +1242,19 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await previous.dispose().catch(() => {});
     }
 
+    // 每会话视图（#226 P4）：把这次要带的资产钉进 sessions/<sessionId>/，agent 只拿视图里的路径。
+    // 别的会话换钉 / 卸载只改兼容链接和它们自己的视图，这条会话读到的那一版不受影响（D10：视图只在启动时建）。
+    // 建不出来（本机清单还没同步到等）就退回 current() 的版本化路径，会话照常启动。
+    if (assets && options.assets) {
+      const view = await options.assets
+        .view({ sessionId: command.sessionId, assetIds: command.assetIds ?? [], digests: command.assetDigests })
+        .catch((failure: Error) => {
+          options.onLog?.(`建会话视图失败，会话 ${command.sessionId} 改用版本化路径：${failure.message}`);
+          return undefined;
+        });
+      if (view && view.assets.skills.length + view.assets.instructions.length > 0) spec = { ...spec, assets: view.assets };
+    }
+
     let started = await runtime.start(spec);
     if (spec.branch) {
       // ADR 0028 Q5：原生分叉没成就退回「新开一条空会话」，告诉 hub 改用摘要交接——不能让用户卡在一条起不来的会话上
@@ -1259,6 +1277,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     if (!started.ok) {
       providerRelay.close(command.sessionId);
       options.onLog?.(`${command.agentId} 启动失败：${started.error.message}`);
+      // 视图白建了：删掉，别留着一个没人用的会话目录（retain 仍按 hub 的清单管版本）。
+      void options.assets?.dropSession(command.sessionId).catch(() => {});
       send({
         type: 'event',
         sessionId: command.sessionId,
@@ -1312,6 +1332,8 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
           send({ type: 'status', sessionId: command.sessionId, status: 'ended' });
           providerRelay.close(command.sessionId);
           await session.dispose();
+          // 会话真结束了：删掉它的视图（版本目录仍由 retain / 其它视图引用决定去留）。
+          await options.assets?.dropSession(command.sessionId).catch(() => false);
         }
       }
     })();

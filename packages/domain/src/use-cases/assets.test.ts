@@ -124,7 +124,13 @@ test('新版本只是「可升级」，确认后才换钉并重新同步', async
 test('git 来源：检查更新，内容没变就不记新版本', async () => {
   const { deps, git } = inMemoryAssets();
   git.files = skill();
-  const made = await importGitAsset(deps, { kind: 'skill', url: 'https://github.com/x/y.git', ref: null, path: 'skills/greeter' });
+  const made = await importGitAsset(deps, {
+    kind: 'skill',
+    url: 'https://github.com/x/y.git',
+    ref: null,
+    path: 'skills/greeter',
+    policy: 'track'
+  });
   assert.ok(made.ok);
   assert.equal((await importGitAsset(deps, { kind: 'skill', url: 'file:///etc', ref: null, path: '' })).ok, false);
   const same = await checkAssetUpdate(deps, made.value.id);
@@ -132,6 +138,41 @@ test('git 来源：检查更新，内容没变就不记新版本', async () => {
   git.files = skill('v2');
   git.commit = 'c2';
   const changed = await checkAssetUpdate(deps, made.value.id);
+  assert.ok(changed.ok && changed.value.changed);
+  assert.notEqual(changed.value.asset.latest, changed.value.asset.pinned);
+});
+
+test('版本策略：默认 locked 钉住解析出的提交、跳过检查更新；track 保留 ref 并跟随内容变化', async () => {
+  const { deps, git } = inMemoryAssets();
+  git.commit = 'c0ffee';
+  git.files = skill();
+  const locked = await importGitAsset(deps, { kind: 'skill', url: 'https://github.com/x/y.git', ref: 'main', path: 'skills/greeter' });
+  assert.ok(locked.ok);
+  assert.equal(locked.value.source.type, 'git');
+  if (locked.value.source.type !== 'git') return;
+  assert.equal(locked.value.source.ref, 'c0ffee', 'locked 把 ref 钉成完整提交');
+  assert.equal(locked.value.source.policy, 'locked');
+  const skipped = await checkAssetUpdate(deps, locked.value.id);
+  assert.equal(skipped.ok, false);
+  assert.match(skipped.ok ? '' : skipped.error.message, /locked/);
+  assert.equal((await checkAllAssetUpdates(deps)).checked, 0, '巡检不碰 locked 的资产');
+
+  git.files = skill('v2', 'tracker');
+  const tracked = await importGitAsset(deps, {
+    kind: 'skill',
+    url: 'https://github.com/x/z.git',
+    ref: 'main',
+    path: 'skills/tracker',
+    policy: 'track'
+  });
+  assert.ok(tracked.ok);
+  if (tracked.value.source.type !== 'git') return;
+  assert.equal(tracked.value.source.ref, 'main', 'track 保留分支名');
+  assert.equal(tracked.value.source.policy, 'track');
+  // 标签被强推到别的提交也走同一条路：内容变了 digest 就变，记成待审的新版本。
+  git.files = skill('v3', 'tracker');
+  git.commit = 'c2';
+  const changed = await checkAssetUpdate(deps, tracked.value.id);
   assert.ok(changed.ok && changed.value.changed);
   assert.notEqual(changed.value.asset.latest, changed.value.asset.pinned);
 });
@@ -161,6 +202,15 @@ test('同步：离线记待同步；blob 只给清单里有的；删除后重新
   const overview = await assetsOverview(deps);
   assert.deepEqual(overview.assets.map((x) => x.name), ['secret-tool']);
   assert.deepEqual(overview.workers[0]?.assetIds, []);
+});
+
+test('会话视图：这台机器上一条会话资产都没有时不传 sessions（避免 Worker 清空视图）', async () => {
+  const { deps, pushes } = inMemoryAssets();
+  const a = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(a.ok);
+  await deps.assets.install('w1', a.value.id, 1);
+  await syncWorkerAssets(deps, 'w1');
+  assert.equal(pushes.at(-1)?.sessions, undefined);
 });
 
 test('投递失败记 failed，带原因', async () => {
@@ -266,7 +316,13 @@ test('项目级作用域：同名项目资产盖过全局，项目开关、别�
 test('定时检查更新：只查 Git 来源，记新版本和审计，不自动升级；查不了的单列', async () => {
   const { deps, git } = inMemoryAssets();
   git.files = skill();
-  const fromGit = await importGitAsset(deps, { kind: 'skill', url: 'https://github.com/x/y.git', ref: null, path: 'skills/greeter' });
+  const fromGit = await importGitAsset(deps, {
+    kind: 'skill',
+    url: 'https://github.com/x/y.git',
+    ref: null,
+    path: 'skills/greeter',
+    policy: 'track'
+  });
   const uploaded = await uploadAsset(deps, { kind: 'skill', files: skill('x', 'local-tool') });
   assert.ok(fromGit.ok && uploaded.ok);
   const entries: { action: string; target: string; actorEmail: string }[] = [];

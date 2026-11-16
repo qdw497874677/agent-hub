@@ -259,3 +259,120 @@ test('按 digest 取版本：换钉后仍读到旧版；旧版被清则算缺失
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('Worker 会话视图：同名资产的两个版本同时给两个会话用，相对链接、互不覆盖（#226 P4）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-view-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    // 先落 v1；换钉到 v2，旧版本靠 retain 留着（hub 按 session_assets 算）。
+    await assets.sync([skill('greeter', 'v1', 'a'.repeat(64)), rule], fetch, ['a'.repeat(64)]);
+    await assets.sync([skill('greeter', 'v2', 'b'.repeat(64)), rule], fetch, ['a'.repeat(64)]);
+    const one = await assets.view({
+      sessionId: 's-one',
+      assetIds: ['a-greeter', 'a-rules'],
+      digests: { 'a-greeter': 'a'.repeat(64) }
+    });
+    const two = await assets.view({ sessionId: 's-two', assetIds: ['a-greeter', 'a-rules'] });
+    assert.ok(one && two);
+    assert.equal(one!.sessionId, 's-one');
+    assert.equal(one!.skillsDir, join(root, 'sessions', 's-one', 'skills'));
+    assert.equal(one!.instructionsDir, join(root, 'sessions', 's-one', 'instructions'));
+    assert.equal(one!.assets.root, join(root, 'sessions', 's-one'));
+    assert.deepEqual(one!.assets.skills.map((s) => s.path), [join(root, 'sessions', 's-one', 'skills', 'greeter', 'SKILL.md')]);
+    assert.deepEqual(one!.assets.instructions.map((s) => s.path), [join(root, 'sessions', 's-one', 'instructions', 'house-rules.md')]);
+
+    // 视图链接是相对路径：整个 root 搬走/挂到别处仍然有效。
+    assert.equal(
+      await readlink(join(root, 'sessions', 's-one', 'skills', 'greeter')),
+      join('..', '..', '..', 'assets', a12, 'greeter')
+    );
+    assert.equal(
+      await readlink(join(root, 'sessions', 's-one', 'instructions', 'house-rules.md')),
+      join('..', '..', '..', 'assets', c12, 'house-rules.md')
+    );
+    // 两个会话各读自己钉住的那一版；兼容链接照旧指向当前版本。
+    assert.match(await readFile(one!.assets.skills[0]!.path, 'utf8'), /v1/);
+    assert.match(await readFile(two!.assets.skills[0]!.path, 'utf8'), /v2/);
+    assert.match(await readFile(join(root, 'skills', 'greeter', 'SKILL.md'), 'utf8'), /v2/);
+    assert.equal(await readFile(one!.assets.instructions[0]!.path, 'utf8'), 'Always answer in haiku.');
+    assert.deepEqual(one!.missing, []);
+
+    // 项目级同名技能用 slot 当文件名，不会和全局的撞在同一处。
+    const local = { ...skill('greeter', 'local', 'd'.repeat(64)), assetId: 'a-local', slot: 'greeter--abcd1234' };
+    await assets.sync([skill('greeter', 'v2', 'b'.repeat(64)), local], fetch, ['a'.repeat(64)]);
+    const scoped = await assets.view({ sessionId: 's-scoped', assetIds: ['a-local'] });
+    assert.deepEqual(scoped!.assets.skills.map((s) => s.path), [
+      join(root, 'sessions', 's-scoped', 'skills', 'greeter--abcd1234', 'SKILL.md')
+    ]);
+    assert.equal(await readlink(join(root, 'sessions', 's-scoped', 'skills', 'greeter--abcd1234')), join('..', '..', '..', 'assets', d12, 'greeter--abcd1234'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Worker 会话视图：sync 带 sessions 时重建并回报路径、清孤儿视图，旧版本按视图引用保留', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-view-sync-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    await assets.sync([skill('greeter', 'v1', 'a'.repeat(64))], fetch);
+    await assets.view({ sessionId: 's-old', assetIds: ['a-greeter'], digests: { 'a-greeter': 'a'.repeat(64) } });
+    await mkdir(join(root, 'sessions', 's-orphan'), { recursive: true });
+
+    // 换钉到 v2，且 hub 没给 retain：只靠 s-old 的视图引用保住 a 那一版。
+    const report = await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch, [], [
+      { sessionId: 's-old', assetIds: ['a-greeter'], digests: { 'a-greeter': 'a'.repeat(64) } },
+      { sessionId: 's-new', assetIds: ['a-greeter'] }
+    ]);
+    assert.deepEqual(Object.keys(report.views).sort(), ['s-new', 's-old']);
+    assert.equal(report.views['s-old']!.skillsDir, join(root, 'sessions', 's-old', 'skills'));
+    assert.equal(report.views['s-old']!.instructionsDir, join(root, 'sessions', 's-old', 'instructions'));
+    assert.match(await readFile(report.views['s-old']!.assets.skills[0]!.path, 'utf8'), /v1/);
+    assert.match(await readFile(report.views['s-new']!.assets.skills[0]!.path, 'utf8'), /v2/);
+    assert.deepEqual((await readdir(join(root, 'sessions'))).sort(), ['s-new', 's-old'], '不在列表里的孤儿视图清掉');
+    assert.deepEqual((await readdir(join(root, 'assets'))).sort(), [a12, b12], '视图还引用着的旧版本不能清');
+
+    // 旧 hub 不发 sessions：不动视图，只回报空对象。
+    const legacy = await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch);
+    assert.deepEqual(legacy.views, {});
+    assert.deepEqual((await readdir(join(root, 'sessions'))).sort(), ['s-new', 's-old']);
+
+    // 会话都没了（视图删掉）以后，旧版本才允许被清。
+    assert.equal(await assets.dropSession('s-old'), true);
+    assert.equal(await assets.dropSession('s-new'), true);
+    assert.deepEqual(await readdir(join(root, 'sessions')), []);
+    await assets.sync([skill('greeter', 'v2', 'b'.repeat(64))], fetch);
+    assert.deepEqual(await readdir(join(root, 'assets')), [b12]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Worker 会话视图：空清单删视图、缺版本报 missing、非法会话 id 拒绝（#226 P4）', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wa-view-clean-'));
+  try {
+    const assets = createWorkerAssets({ root });
+    await assets.sync([skill('greeter', 'v1', 'a'.repeat(64))], fetch);
+
+    const view = await assets.view({ sessionId: 's1', assetIds: ['a-greeter'] });
+    assert.ok(view);
+    assert.match(await readFile(view!.assets.skills[0]!.path, 'utf8'), /v1/);
+    // 会话结束/归档：删视图（重复删返回 false）。
+    assert.equal(await assets.dropSession('s1'), true);
+    assert.equal(await assets.dropSession('s1'), false);
+    // 空清单 = 不建视图，并把旧视图收掉（drop_session 的等价写法）。
+    assert.equal(await assets.view({ sessionId: 's1', assetIds: [] }), undefined);
+    assert.deepEqual(await readdir(join(root, 'sessions')), []);
+
+    // 钉住的版本本机没有：视图照建，缺的 id 说得出名字（调用方报 degraded）。
+    const gone = await assets.view({ sessionId: 's2', assetIds: ['a-greeter'], digests: { 'a-greeter': 'd'.repeat(64) } });
+    assert.ok(gone);
+    assert.deepEqual(gone!.missing, ['a-greeter']);
+    assert.deepEqual(gone!.assets.skills, []);
+
+    // 会话 id 直接当目录名：不允许跳出 sessions/。
+    await assert.rejects(assets.view({ sessionId: '../evil', assetIds: ['a-greeter'] }), /不能用作目录名/);
+    await assert.rejects(assets.dropSession('a/b'), /不能用作目录名/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

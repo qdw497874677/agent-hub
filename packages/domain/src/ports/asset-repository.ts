@@ -4,6 +4,7 @@ import type {
   AssetScope,
   AssetRevision,
   ProjectAssetSettings,
+  SessionAssetDelivery,
   SessionAssetManifest,
   SessionAssetSnapshot
 } from '../asset.ts';
@@ -47,4 +48,6 @@ export interface AssetRepository {
   sessionAssetSnapshot(sessionId: string): Promise<SessionAssetSnapshot | null>;
   /** 这台机器上还有会话记着的资产版本（#225 M2：清旧版本时不能清掉在跑的会话要用的那些）。 */
   digestsForWorker(workerId: string): Promise<readonly string[]>;
+  /** #226 P4：这台机器上活着的会话各自该用哪些资产（Worker 以此重建/回收会话视图）。 */
+  sessionAssetsForWorker(workerId: string): Promise<readonly SessionAssetDelivery[]>;
 }

@@ -19,7 +19,10 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
 // 语义变成「不常驻」，所以换版本让它们先升级，别让界面上的常驻变成谎话。
 // v6：新增会话服务（ws.service_* 方法 + service_state / service_log 帧）。旧 Worker 不认识这些方法，
 // 会回 unsupported；hub 侧表现为「这台机器的 Worker 太旧」，所以一并换版本。
-export const PROTOCOL_VERSION = 6;
+// v7（#226 P4）：assets.sync 可以带 sessions（会话 → assetId 列表），Worker 在 sessions/<id>/ 下建
+// 每会话视图并回报 views；旧 Worker 会直接忽略这个字段、继续只维护兼容链接，会话仍能起来但
+// 换钉 / 卸载会影响到运行中的会话，所以换版本让它们先升级。
+export const PROTOCOL_VERSION = 7;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */

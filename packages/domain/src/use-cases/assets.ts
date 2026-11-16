@@ -18,6 +18,7 @@ import {
   type ProjectAssetChoice,
   type AssetViewer,
   type AssetScope,
+  type AssetSourcePolicy,
   type WorkerAssetSync,
   type SessionAssetEntry,
   type SessionAssetSnapshot,
@@ -25,6 +26,7 @@ import {
   type SessionAssetUpgrade
 } from '../asset.ts';
 import { assetVisibleIn } from '../asset.ts';
+import { assetSourcePolicy, DEFAULT_ASSET_SOURCE_POLICY } from '../asset.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -224,13 +226,32 @@ export async function scanGitSource(
 
 export async function importGitAsset(
   deps: CreateDeps,
-  input: { kind: AssetKind; url: string; ref: string | null; path: string; name?: string | null; projectId?: string | null } & AssetOwnership
+  input: {
+    kind: AssetKind;
+    url: string;
+    ref: string | null;
+    path: string;
+    name?: string | null;
+    projectId?: string | null;
+    /** 版本策略，默认 locked（钉在导入时的提交上）。 */
+    policy?: AssetSourcePolicy;
+  } & AssetOwnership
 ): Promise<Result<Asset, DomainError>> {
   const allowed = checkGitSourceUrl(input.url);
   if (!allowed.ok) return allowed;
-  const checkout = await deps.reader.readGit(input.url, input.ref, input.path, input.kind);
+  // 仓库根（path = ''）在 AssetSource 里用 '' 表示，但 readGit 的路径校验不接受空串：检出时用 '.'。
+  const checkout = await deps.reader.readGit(input.url, input.ref, input.path === '' ? '.' : input.path, input.kind);
   if (!checkout.ok) return checkout;
-  const source: AssetSource = { type: 'git', url: input.url, ref: input.ref, path: input.path };
+  const policy = input.policy ?? DEFAULT_ASSET_SOURCE_POLICY;
+  // locked：ref 直接记成解析出的完整提交 SHA —— 用现有字段表达「钉死的版本」，后续检查更新也跳过；
+  // track：保留原来的分支 / 标签，定时检查时按内容 digest 判断有没有新版本。
+  const source: AssetSource = {
+    type: 'git',
+    url: input.url,
+    ref: policy === 'locked' ? checkout.value.commit : input.ref,
+    path: input.path,
+    policy
+  };
   return createAsset(deps, input.kind, source, checkout.value.files, input.name ?? null, checkout.value.commit, input.projectId ?? null, input);
 }
 
@@ -272,11 +293,16 @@ export async function checkAssetUpdate(
   const asset = await deps.assets.get(assetId);
   if (!asset) return err(notFound('没有这个资产'));
   if (asset.source.type !== 'git') return err(invalid('上传来的资产没有来源可查：直接传新版本'));
+  // locked 的资产钉在导入时的提交上，本来就不该有新版：直接跳过，不要拉仓库。
+  if (assetSourcePolicy(asset.source) === 'locked') {
+    return err(invalid('这个资产锁定在导入时的提交上（locked），不检查更新'));
+  }
   // 老资产可能存着策略收紧前的地址：巡检时同样按当前策略再拦一次。
   const allowed = checkGitSourceUrl(asset.source.url);
   if (!allowed.ok) return allowed;
   const checkout = await deps.reader.readGit(asset.source.url, asset.source.ref, asset.source.path, asset.kind);
   if (!checkout.ok) return checkout;
+  // 标签被强推到别的提交时，只要文件内容一样就不算新版本；内容变了 digest 自然变，走待审提交。
   return offerRevision(deps, asset, checkout.value.files, checkout.value.commit);
 }
 
@@ -292,7 +318,10 @@ export async function checkAllAssetUpdates(
 ): Promise<AssetUpdateSweep> {
   const changed: Asset[] = [];
   const failed: { asset: Asset; message: string }[] = [];
-  const gitAssets = (await deps.assets.list()).filter((asset) => asset.source.type === 'git');
+  // 只巡检 track 的资产：locked 的钉死在导入时的提交上，没有「新版本」可说。
+  const gitAssets = (await deps.assets.list()).filter(
+    (asset) => asset.source.type === 'git' && assetSourcePolicy(asset.source) === 'track'
+  );
   for (const asset of gitAssets) {
     const result = await checkAssetUpdate(deps, asset.id).catch((error: unknown) => err(invalid((error as Error).message)));
     if (!result.ok) {
@@ -439,7 +468,11 @@ export async function syncWorkerAssets(deps: AssetDeps, workerId: string): Promi
   deps.board.set({ ...base, state: 'syncing', error: null });
   // 这台机器上还有会话记着的旧版本：必须保留，否则在跑的会话读到已删的目录（#225 M2）。
   const retain = await deps.assets.digestsForWorker(workerId).catch(() => []);
-  const report = await deps.delivery.push(workerId, manifest, retain);
+  // #226 P4：会话视图的真相。拿不到、或一台机器上一条都没有时传 undefined——
+  // Worker 收到空数组会当成「所有会话都没了」而清空视图，误伤还活着的进程。
+  const listed = await deps.assets.sessionAssetsForWorker(workerId).catch(() => undefined);
+  const sessions = listed !== undefined && listed.length > 0 ? listed : undefined;
+  const report = await deps.delivery.push(workerId, manifest, retain, sessions);
   const status: WorkerAssetSync = report.ok
     ? { workerId, state: 'synced', root: report.value.root, installed: report.value.installed, error: null, at: startedAt }
     : { ...base, state: 'failed', error: report.error.message };

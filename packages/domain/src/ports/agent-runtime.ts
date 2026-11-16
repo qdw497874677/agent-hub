@@ -50,6 +50,13 @@ export interface SessionAssets {
   readonly skills: readonly { readonly name: string; readonly description: string; readonly path: string }[];
   /** path 是 markdown 文件的绝对路径。 */
   readonly instructions: readonly { readonly name: string; readonly path: string }[];
+  /**
+   * 每会话视图（#226 P4）：<root>/sessions/<sessionId>/skills 的绝对路径。
+   * 给了就是这次会话专属的一组链接（不随兼容链接换钉）；没给 = 旧 Worker，按 skills[].path 用。
+   */
+  readonly skillsDir?: string;
+  /** 每会话视图里的指令目录（见 skillsDir）；给了就是 <root>/sessions/<sessionId>/instructions。 */
+  readonly instructionsDir?: string;
 }
 
 export interface RuntimeSession {

@@ -52,11 +52,30 @@ export interface SecretRefStatus {
   readonly from: 'personal' | 'team' | 'hub' | null;
 }
 
+/** Git 来源的溯源信息：仓库、提交、能点开的提交链接、导入时的 ref / 路径。 */
+export interface AssetSourceTrace {
+  readonly url: string;
+  readonly commit: string | null;
+  readonly commitUrl: string | null;
+  readonly ref: string | null;
+  readonly path: string;
+}
+
 export interface ReviewReport {
   readonly findings: readonly FindingLine[];
   readonly mcp: McpRiskSummary | null;
   readonly secrets: readonly SecretRefStatus[];
   readonly filesChanged: number;
+  /** SKILL.md frontmatter 里声明的 allowed-tools（没写 = 空）。 */
+  readonly allowedTools: readonly string[];
+  /** SKILL.md frontmatter 里声明的 license（没写 = null）。 */
+  readonly license: string | null;
+  /** 版本里带的脚本（.py / .sh / .mjs …）：审核时重点看。 */
+  readonly scripts: readonly string[];
+  /** 仓库根上有没有 LICENSE / LICENSE.md / COPYING。 */
+  readonly licenseFile: boolean;
+  /** git 来源的溯源；上传的为 null。 */
+  readonly source: AssetSourceTrace | null;
 }
 
 export interface AssetSubmission {
@@ -293,6 +312,60 @@ export function scanAssetFiles(files: readonly { readonly path: string; readonly
 
 export const hasHighFinding = (report: Pick<ReviewReport, 'findings' | 'mcp'>): boolean =>
   report.findings.some((finding) => finding.level === 'high') || report.mcp?.level === 'high';
+
+/** 版本里的脚本清单（审核时重点看）：只按路径认，不影响判级。 */
+export const scriptFilesOf = (files: readonly { readonly path: string }[]): readonly string[] =>
+  [...new Set(files.filter((file) => SCRIPT_PATH.test(file.path)).map((file) => file.path))].sort();
+
+export interface SkillAuditMeta {
+  readonly allowedTools: readonly string[];
+  readonly license: string | null;
+  readonly licenseFile: boolean;
+}
+
+/**
+ * 从 SKILL.md 的 frontmatter 里取审核关心的两行（allowed-tools / license），并看版本里有没有 LICENSE。
+ * domain 层不引 YAML 解析器：只按行读顶层键，复杂写法按「没写」处理（宁可不展示，也不猜错）。
+ */
+export function skillAuditMeta(files: readonly { readonly path: string; readonly text: string | null }[]): SkillAuditMeta {
+  const licenseFile = files.some((file) => /^(LICEN[SC]E|COPYING)(\.[A-Za-z0-9]+)?$/i.test(file.path));
+  const skill = files.find((file) => file.path === 'SKILL.md')?.text ?? null;
+  if (skill === null) return { allowedTools: [], license: null, licenseFile };
+  const front = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/.exec(skill);
+  if (!front) return { allowedTools: [], license: null, licenseFile };
+  const lines = (front[1] ?? '').split(/\r?\n/);
+  const unquote = (raw: string): string => raw.trim().replace(/^(['"])(.*)\1$/, '$2').trim();
+  const items = (raw: string): string[] =>
+    raw.trim().replace(/^\[|\]$/g, '').split(/[,\s]+/).map(unquote).filter((item) => item !== '');
+  let allowedTools: string[] = [];
+  let license: string | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const kv = /^\s*([A-Za-z0-9_-]+)\s*:\s*(.*)$/.exec(lines[index] ?? '');
+    if (!kv) continue;
+    const key = (kv[1] ?? '').toLowerCase();
+    const value = kv[2] ?? '';
+    if (key === 'license') license = unquote(value) || null;
+    if (key !== 'allowed-tools' && key !== 'allowed_tools') continue;
+    allowedTools = items(value);
+    // YAML 列表写法：紧跟其后的 `- item` 行
+    for (let next = index + 1; next < lines.length; next += 1) {
+      const item = /^\s*-\s+(.*)$/.exec(lines[next] ?? '');
+      if (!item) break;
+      const text = unquote(item[1] ?? '');
+      if (text !== '') allowedTools.push(text);
+    }
+  }
+  return { allowedTools: [...new Set(allowedTools)], license, licenseFile };
+}
+
+/** git 来源的溯源；提交链接按托管站拼（GitLab 多一段 `/-/`）。上传的资产返回 null。 */
+export function sourceTraceOf(asset: Pick<Asset, 'source'>, commit: string | null): AssetSourceTrace | null {
+  if (asset.source.type !== 'git') return null;
+  const base = asset.source.url.replace(/\.git$/i, '').replace(/\/+$/, '');
+  const commitUrl =
+    commit !== null && /^https:\/\//i.test(base) ? (/\bgitlab\b/i.test(base) ? `${base}/-/commit/${commit}` : `${base}/commit/${commit}`) : null;
+  return { url: asset.source.url, commit, commitUrl, ref: asset.source.ref, path: asset.source.path };
+}
 
 const RUNNERS = new Set(['npx', 'uvx', 'pnpm', 'bunx', 'pipx', 'docker', 'deno']);
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'cmd', 'powershell', 'pwsh']);

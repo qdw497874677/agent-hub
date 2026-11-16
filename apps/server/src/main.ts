@@ -1054,7 +1054,10 @@ const assetDeps: AssetReviewDeps = {
   teams: store.teams,
   policy: deps.access!,
   reader: createAssetReader(),
-  delivery: { push: async (workerId, manifest) => (serverGateway ? serverGateway.assets.push(workerId, manifest) : err(unavailable('worker 通道尚未就绪'))) },
+  delivery: {
+    push: async (workerId, manifest, retain, sessions) =>
+      serverGateway ? serverGateway.assets.push(workerId, manifest, retain, sessions) : err(unavailable('worker 通道尚未就绪'))
+  },
   board: store.assetSync,
   workers: workerControl,
   projects: store.projects,

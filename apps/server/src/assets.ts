@@ -272,6 +272,7 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
       url: parsed?.url ?? input.value.url.trim(),
       ref: input.value.ref?.trim() || parsed?.ref || null,
       path: input.value.path.trim() === '' ? parsed?.path ?? '' : input.value.path,
+      policy: input.value.policy,
       name: input.value.name ?? null,
       projectId: input.value.projectId ?? null,
       ...adminOwnership(c, input.value.projectId ?? null)

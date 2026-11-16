@@ -227,13 +227,34 @@ const assetEntry = z.object({
 });
 export type AssetManifestEntryWire = z.infer<typeof assetEntry>;
 
+/** 一个会话想要的资产（#226 P4）：Worker 在 sessions/<sessionId>/ 下建视图，链接指向不可变版本目录。 */
+const assetSession = z.object({
+  /** 会话 id：Worker 当目录名用（只允许字母数字与 . _ -，不以 . 开头）。 */
+  sessionId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+  assetIds: z.array(z.string().min(1)).max(500),
+  /** assetId → digest：换钉后仍按会话钉住的那一版；不传 = 清单里的当前版本。 */
+  digests: z.record(z.string(), sha).optional()
+});
+export type SessionAssetRequestWire = z.infer<typeof assetSession>;
+
 /** hub→worker：这台机器该有的全部资产（不在清单里的就改指向新版本）。
  * `retain` = 这台机器上还有会话在用、但已不在清单里的版本 digest（#225 M2）：
- * Worker 保留这些版本目录，其余旧版本清掉；不传 = 只保证当前清单可用（旧 hub 行为）。 */
+ * Worker 保留这些版本目录，其余旧版本清掉；不传 = 只保证当前清单可用（旧 hub 行为）。
+ * `sessions`（v7） = 这台机器上还活着的会话及其资产：Worker 一并原子重建每会话视图，
+ * 并清掉不在列表里的孤儿视图；不传 = 不动视图。 */
 export const assetsSync = method(
   'assets.sync', 'control',
-  z.object({ entries: z.array(assetEntry).max(500), retain: z.array(sha).max(2000).optional() }),
-  z.object({ root: z.string(), installed: z.record(z.string(), sha) })
+  z.object({
+    entries: z.array(assetEntry).max(500),
+    retain: z.array(sha).max(2000).optional(),
+    sessions: z.array(assetSession).max(200).optional()
+  }),
+  z.object({
+    root: z.string(),
+    installed: z.record(z.string(), sha),
+    /** 每个会话的视图位置（v7）；旧 hub 不看这个字段。 */
+    views: z.record(z.string(), z.object({ skillsDir: z.string(), instructionsDir: z.string() })).optional()
+  })
 );
 
 /** worker→hub：按 sha256 取内容（base64）。hub 只给这台机器清单里有的。 */

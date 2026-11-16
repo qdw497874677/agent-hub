@@ -162,7 +162,9 @@ test('6B：团队共享机器上装资产要申请，负责人批了才装；本
 test('5A：Git 来源有新版本 → 待审提交，老的已钉版本继续用', async () => {
   const w = await world();
   w.assets.git.files = skill('g', 'v1');
-  const made = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'git', kind: 'skill', scope: 'team', url: 'https://example.com/r.git', ref: null, path: '' }));
+  const made = ok(
+    await submitNewAsset(w.deps, w.p('M1'), { from: 'git', kind: 'skill', scope: 'team', url: 'https://example.com/r.git', ref: null, path: '', policy: 'track' })
+  );
   ok(await approveSubmission(w.deps, w.p('O'), made.submission.id));
   const pinned = (await w.deps.assets.get(made.asset.id))!.pinned;
   w.assets.git.commit = 'c2';
@@ -171,6 +173,47 @@ test('5A：Git 来源有新版本 → 待审提交，老的已钉版本继续用
   assert.equal(checked.submission?.origin, 'git');
   assert.equal(checked.submission?.status, 'pending');
   assert.equal((await w.deps.assets.get(made.asset.id))!.pinned, pinned);
+});
+
+test('审核报告带上 allowed-tools / license / 脚本清单 / LICENSE / 来源提交', async () => {
+  const w = await world();
+  const files = [
+    { path: 'SKILL.md', data: enc('---\nname: audited\ndescription: d\nallowed-tools: Read, Bash(git:*)\nlicense: MIT\n---\nhello\n') },
+    { path: 'scripts/run.sh', data: enc('echo hi\n') },
+    { path: 'LICENSE', data: enc('MIT\n') }
+  ];
+  const made = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'team', files }));
+  assert.deepEqual(made.submission.report.allowedTools, ['Read', 'Bash(git:*)']);
+  assert.equal(made.submission.report.license, 'MIT');
+  assert.deepEqual(made.submission.report.scripts, ['scripts/run.sh']);
+  assert.equal(made.submission.report.licenseFile, true);
+  assert.equal(made.submission.report.source, null, '上传的资产没有来源');
+
+  // git 来源：报告里记提交和能点开的提交链接；locked 时 ref 就是那个提交
+  const commit = 'a'.repeat(40);
+  w.assets.git.commit = commit;
+  w.assets.git.files = skill('audited-git');
+  const fromGit = ok(
+    await submitNewAsset(w.deps, w.p('M1'), { from: 'git', kind: 'skill', scope: 'team', url: 'https://github.com/x/y.git', ref: 'main', path: 'skills/g' })
+  );
+  assert.deepEqual(fromGit.submission.report.source, {
+    url: 'https://github.com/x/y.git',
+    commit,
+    commitUrl: `https://github.com/x/y/commit/${commit}`,
+    ref: commit,
+    path: 'skills/g'
+  });
+  assert.equal(fromGit.asset.source.type === 'git' && fromGit.asset.source.policy, 'locked');
+});
+
+test('locked 的 Git 资产不检查更新；track 的才查', async () => {
+  const w = await world();
+  w.assets.git.files = skill('locked-skill', 'v1');
+  const made = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'git', kind: 'skill', scope: 'team', url: 'https://example.com/r.git', ref: 'main', path: '' }));
+  assert.equal(made.asset.source.type === 'git' && made.asset.source.policy, 'locked');
+  const checked = await checkGitForReview(w.deps, null, made.asset.id);
+  assert.equal(checked.ok, false);
+  assert.match(checked.ok ? '' : checked.error.message, /locked/);
 });
 
 test('4A：全局资产可开双人审核；能批的人不够时降到实际人数并记审计', async () => {

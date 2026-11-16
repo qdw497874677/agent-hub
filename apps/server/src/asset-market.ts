@@ -3,6 +3,8 @@ import { bodyLimit } from 'hono/body-limit';
 import {
   approveRequest,
   commentRequest,
+  gitBatchImportRequest,
+  gitBatchImportResultSchema,
   installDecisionRequest,
   marketGitRequest,
   marketRevisionRequest,
@@ -36,6 +38,7 @@ import {
   reviewSettingsFor,
   revokeAsset,
   scopedSecrets,
+  scanGitSource,
   setAssetOnWorker,
   setReviewSettings,
   setScopedSecret,
@@ -127,6 +130,63 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
     const path = input.path.trim() === '' ? parsed?.path ?? '' : input.path;
     const result = await submitNewAsset(deps, me(c), { from: 'git', ...input, url, ref, path });
     return result.ok ? c.json({ assetId: result.value.asset.id, submissionId: result.value.submission.id, status: result.value.submission.status }, 201) : fail(c, result.error);
+  });
+
+  /**
+   * #226 批量导入：一次最多 20 项，逐项复用单条导入。
+   * 条目没带 kind：先扫一遍仓库按路径认（同一个仓库 + ref 只扫一次，不重复克隆）。
+   * 单项失败（解析、越权、超限…）只记在这一项上，不影响其它项。
+   */
+  app.post('/api/assets/git/batch', async (c) => {
+    const input = await body(c, gitBatchImportRequest);
+    if (!input) return bad(c);
+    const scans = new Map<string, ReturnType<typeof scanGitSource>>();
+    const results: { ok: boolean; id?: string; name?: string; error?: string }[] = [];
+    for (const item of input.items) {
+      try {
+        const parsed = parseGitSourceUrl(item.url);
+        const url = parsed?.url ?? item.url.trim();
+        const ref = item.ref?.trim() || parsed?.ref || null;
+        const given = (item.path ?? '').trim();
+        const path = given === '' ? parsed?.path ?? '' : given;
+        const key = `${url}\u0000${ref ?? ''}`;
+        let scanned = scans.get(key);
+        if (!scanned) {
+          scanned = scanGitSource(deps, url, ref);
+          scans.set(key, scanned);
+        }
+        const scan = await scanned;
+        if (!scan.ok) {
+          results.push({ ok: false, error: scan.error.message });
+          continue;
+        }
+        const candidate = scan.value.candidates.find((entry) => entry.path === path);
+        if (!candidate) {
+          results.push({ ok: false, error: `仓库里没有这个路径的资产：${path || '(根)'}` });
+          continue;
+        }
+        if (item.scope === 'project' && !item.projectId) {
+          results.push({ ok: false, error: '项目级导入要在项目里操作：没给项目 id' });
+          continue;
+        }
+        const made = await submitNewAsset(deps, me(c), {
+          from: 'git',
+          kind: candidate.kind,
+          scope: item.scope ?? 'team',
+          projectId: item.projectId ?? null,
+          name: item.name ?? null,
+          url,
+          ref,
+          path: candidate.path,
+          policy: item.policy
+        });
+        results.push(made.ok ? { ok: true, id: made.value.asset.id, name: made.value.asset.name } : { ok: false, error: made.error.message });
+      } catch (error) {
+        // 一项炸了也只记在它自己身上：批量导入的语义是「能进多少进多少」。
+        results.push({ ok: false, error: (error as Error).message || '导入失败' });
+      }
+    }
+    return c.json(results.map((entry) => gitBatchImportResultSchema.parse(entry)));
   });
 
   app.get('/api/assets/items/:assetId', async (c) => reply(c, await marketAssetDetail(deps, me(c), c.req.param('assetId'))));

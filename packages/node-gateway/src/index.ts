@@ -11,7 +11,7 @@ export type { WorkerLink, WorkerLinkOptions } from './worker-link.ts';
 export { createLocalFs } from './local-fs.ts';
 export { createWorkerFiles, boundaryHint, OutsideRootsError } from './worker-files.ts';
 export type { WorkerFiles } from './worker-files.ts';
-export { createWorkerAssets, defaultAssetsRoot, type WorkerAssets, type FetchBlobs } from './worker-assets.ts';
+export { createWorkerAssets, defaultAssetsRoot, type WorkerAssets, type FetchBlobs, type SessionAssetRequest, type SessionAssetView } from './worker-assets.ts';
 export { readBuildInfo } from './build-info.ts';
 export { runSelfUpdate, execRunner, downloadHubBundle, downloadHubArtifact, runTarballUpdate, COMMIT_FILE, hubHttpFrom, HUB_BUNDLE_REF } from './updater.ts';
 export { writeBootMarker, clearBootMarker, bootMarkerPath, rollbackNotePath, readRollbackNote, clearRollbackNote, rollbackReport } from './boot-marker.ts';

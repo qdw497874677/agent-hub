@@ -115,9 +115,11 @@ export type PairingDto = z.infer<typeof pairingSchema>;
 /* ── 资产中心（docs/design/asset-hub.md）：技能 / 指令，按 Worker 安装 ── */
 
 export const assetKindSchema = z.enum(['skill', 'instruction', 'mcp']);
+/** 版本策略：locked（默认）钉在导入时的提交上；track 跟随 ref 检查更新。 */
+export const assetSourcePolicySchema = z.enum(['track', 'locked']);
 export const assetSourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('upload') }),
-  z.object({ type: z.literal('git'), url: z.string(), ref: z.string().nullable(), path: z.string() })
+  z.object({ type: z.literal('git'), url: z.string(), ref: z.string().nullable(), path: z.string(), policy: assetSourcePolicySchema.optional() })
 ]);
 export const assetFileSchema = z.object({ path: z.string(), sha256: z.string(), size: z.number() });
 
@@ -194,8 +196,31 @@ export const gitImportRequest = gitScanRequest.extend({
   kind: assetKindSchema,
   path: z.string().max(1024),
   name: z.string().max(64).nullable().optional(),
+  projectId: z.string().nullable().optional(),
+  /** 默认 locked：钉在导入时的提交上。 */
+  policy: assetSourcePolicySchema.optional()
+});
+
+/** #226 批量导入：一次最多 20 项，逐项复用单条导入；一项失败不影响其它项。 */
+export const gitBatchItemSchema = z.object({
+  url: z.string().min(1).max(2048),
+  ref: z.string().max(256).nullable().optional(),
+  path: z.string().max(1024).optional(),
+  policy: assetSourcePolicySchema.optional(),
+  scope: z.enum(['personal', 'project', 'team', 'global']).optional(),
+  name: z.string().max(64).nullable().optional(),
+  /** scope=project 时指定项目；其它作用域忽略。 */
   projectId: z.string().nullable().optional()
 });
+export const gitBatchImportRequest = z.object({ items: z.array(gitBatchItemSchema).min(1).max(20) });
+export type GitBatchItem = z.infer<typeof gitBatchItemSchema>;
+export const gitBatchImportResultSchema = z.object({
+  ok: z.boolean(),
+  id: z.string().optional(),
+  name: z.string().optional(),
+  error: z.string().optional()
+});
+export type GitBatchImportResult = z.infer<typeof gitBatchImportResultSchema>;
 
 /* ── 项目级作用域：项目设置里的资产开关 ── */
 export const projectAssetsSchema = z.object({

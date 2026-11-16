@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
@@ -1069,14 +1069,19 @@ test('资产经长连接下发：hub 推清单，Worker 按哈希回取、落进
       files: [{ path: 'SKILL.md', sha256: sha, size: text.length }]
     };
     const pushed = await gateway.assets.push('w1', [entry]);
-    assert.deepEqual(pushed, { ok: true, value: { root, installed: { a1: 'd'.repeat(64) } } });
+    assert.deepEqual(pushed, { ok: true, value: { root, installed: { a1: 'd'.repeat(64) }, views: {} } });
     assert.deepEqual(asked, [[sha]]);
     assert.match(await readFile(join(root, 'skills/greeter/SKILL.md'), 'utf8'), /PINEAPPLE/);
 
     // v4（#223）：hub 必须显式给 assetIds；不带 = 一个都不给，不再等于「全给」。
     assert.equal((await gateway.gateway.dispatch({ ...start('s1', 'w1'), assetIds: ['a1'] })).ok, true);
     await rec.until(() => seen.length === 1);
-    assert.equal(seen[0]?.assets?.skills[0]?.path, join(root, 'assets', 'd'.repeat(12), 'greeter', 'SKILL.md'));
+    // #226 P4：会话拿到的是每会话视图里的路径（同名不同版本互不覆盖），不是版本目录的直接路径。
+    assert.equal(seen[0]?.assets?.skills[0]?.path, join(root, 'sessions', 's1', 'skills', 'greeter', 'SKILL.md'));
+    assert.equal(seen[0]?.assets?.skillsDir, join(root, 'sessions', 's1', 'skills'));
+    assert.equal(seen[0]?.assets?.instructionsDir, join(root, 'sessions', 's1', 'instructions'));
+    assert.equal(await readlink(join(root, 'sessions', 's1', 'skills', 'greeter')), join('..', '..', '..', 'assets', 'd'.repeat(12), 'greeter'));
+    assert.match(await readFile(seen[0]!.assets!.skills[0]!.path, 'utf8'), /PINEAPPLE/);
     assert.equal((await gateway.assets.push('nobody', [])).ok, false, '不在线的机器推不了');
   } finally {
     await link.close();

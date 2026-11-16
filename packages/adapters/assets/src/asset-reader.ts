@@ -155,8 +155,12 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
     GIT_LFS_SKIP_SMUDGE: '1'
   });
 
-  /** 浅取一个 ref（分支 / 标签 / 提交；null = 远端默认分支）到临时目录。调用方负责删。 */
-  async function checkout(url: string, ref: string | null): Promise<Result<{ dir: string; commit: string }, DomainError>> {
+  /**
+   * 浅取一个 ref（分支 / 标签 / 提交；null = 远端默认分支）到临时目录。调用方负责删。
+   * 只关心仓库的一小部分时（`sparse` 给了目录）走稀疏检出：`--filter=blob:none` 先不拉文件内容，
+   * 配合 `sparse-checkout` 只取需要的目录，导入大仓库时不必把整棵树拉下来。
+   */
+  async function checkout(url: string, ref: string | null, sparse: string | null = null): Promise<Result<{ dir: string; commit: string }, DomainError>> {
     if (ref !== null && (ref.startsWith('-') || /\s/.test(ref))) return err(invalid('ref 不合法'));
     // HOME 用一次性的空目录：不读用户配置，也不给 git 留凭据；导入结束随 checkout 一起删。
     const home = await mkdtemp(join(tmpdir(), 'hub-asset-home-'));
@@ -167,9 +171,14 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
       const steps: string[][] = [
         ['init', '-q'],
         ['remote', 'add', 'origin', url],
-        ['fetch', '-q', '--depth', '1', '--no-tags', 'origin', ref ?? 'HEAD'],
-        ['checkout', '-q', '--detach', 'FETCH_HEAD']
+        ['fetch', '-q', '--depth', '1', '--no-tags', '--filter=blob:none', 'origin', ref ?? 'HEAD']
       ];
+      if (sparse !== null && sparse !== '') {
+        // cone 模式只认目录：检出的入口是文件时由调用方传它所在的目录（根目录不稀疏）。
+        steps.push(['sparse-checkout', 'init', '--cone']);
+        steps.push(['sparse-checkout', 'set', sparse]);
+      }
+      steps.push(['checkout', '-q', '--detach', 'FETCH_HEAD']);
       for (const step of steps) {
         const done = await git(dir, step, env);
         if (!done.ok) {
@@ -197,6 +206,7 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
    */
   async function collect(start: string, rootReal: string): Promise<Result<IncomingFile[], DomainError>> {
     const out: IncomingFile[] = [];
+    let total = 0;
     const walk = async (relDir: string): Promise<DomainError | null> => {
       const realDir = await realInside(rootReal, relDir === '' ? start : join(start, relDir));
       if (realDir === null) {
@@ -219,14 +229,29 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
             continue;
           }
           const info = await lstat(realFile);
-          if (info.size > ASSET_LIMITS.maxFileBytes) return invalid(`文件太大：${relPath}`);
-          out.push({ path: relPath, data: new Uint8Array(await readFile(realFile)) });
+          if (info.size > ASSET_LIMITS.maxFileBytes) return invalid(`文件太大：${relPath}（单个文件上限 1 MB）`);
+          // 先按 stat 大小判断总量，避免把明显超限的文件读进内存；读完再按实际字节累加一次。
+          if (total + info.size > ASSET_LIMITS.maxTotalBytes) return invalid(`文件总大小超过 4 MB：累计到 ${relPath} 时超限`);
+          const data = new Uint8Array(await readFile(realFile));
+          total += data.byteLength;
+          if (total > ASSET_LIMITS.maxTotalBytes) return invalid(`文件总大小超过 4 MB：累计到 ${relPath} 时超限`);
+          out.push({ path: relPath, data });
         }
       }
       return null;
     };
     const failed = await walk('');
     return failed ? err(failed) : ok(out);
+  }
+
+  /**
+   * 扫描候选时只读小文本文件：先看 stat 大小，超过单文件上限（1 MB）的不读进来。
+   * 读不到的返回 null —— 候选照常列出来（导入时会给出清楚的错误），只是没有描述。
+   */
+  async function readSmallText(file: string): Promise<string | null> {
+    const info = await lstat(file).catch(() => null);
+    if (info === null || !info.isFile() || info.size > ASSET_LIMITS.maxFileBytes) return null;
+    return readFile(file, 'utf8');
   }
 
   async function candidates(root: string, rootReal: string): Promise<GitCandidate[]> {
@@ -243,22 +268,26 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
         const relPath = relDir === '' ? entry.name : `${relDir}/${entry.name}`;
         if (entry.isDirectory() && !SKIP_DIRS.has(entry.name)) await walk(relPath, depth + 1);
         else if (entry.isFile() && entry.name === 'SKILL.md') {
-          const meta = parseSkillFrontmatter(await readFile(join(realDir, entry.name), 'utf8'));
-          const name = meta.ok && meta.value.name ? meta.value.name : basename(relDir || 'skill');
-          found.push({ kind: 'skill', path: relDir, name, description: meta.ok ? meta.value.description : '' });
+          const text = await readSmallText(join(realDir, entry.name));
+          const meta = text === null ? null : parseSkillFrontmatter(text);
+          const name = meta?.ok && meta.value.name ? meta.value.name : basename(relDir || 'skill');
+          found.push({ kind: 'skill', path: relDir, name, description: meta?.ok ? meta.value.description : '' });
         } else if (entry.isFile() && /^(mcp|.+\.mcp)\.json$/i.test(entry.name)) {
           let name = slug(entry.name.replace(/\.json$/i, '').replace(/\.mcp$/i, '') || 'mcp');
           let description = '';
-          try {
-            const parsed = JSON.parse(await readFile(join(realDir, entry.name), 'utf8')) as { name?: unknown; description?: unknown };
-            if (typeof parsed.name === 'string') name = parsed.name;
-            if (typeof parsed.description === 'string') description = parsed.description;
-          } catch {
-            // 坏 JSON 也列出来：导入时会给出清楚的错误
+          const text = await readSmallText(join(realDir, entry.name));
+          if (text !== null) {
+            try {
+              const parsed = JSON.parse(text) as { name?: unknown; description?: unknown };
+              if (typeof parsed.name === 'string') name = parsed.name;
+              if (typeof parsed.description === 'string') description = parsed.description;
+            } catch {
+              // 坏 JSON 也列出来：导入时会给出清楚的错误
+            }
           }
           found.push({ kind: 'mcp', path: relPath, name, description });
         } else if (entry.isFile() && INSTRUCTION_FILES.test(entry.name)) {
-          const text = await readFile(join(realDir, entry.name), 'utf8');
+          const text = (await readSmallText(join(realDir, entry.name))) ?? '';
           const stem = /^(AGENTS|CLAUDE|GEMINI)\.md$/i.test(entry.name) ? (relDir ? basename(relDir) : entry.name) : entry.name.replace(/\.instructions\.md$/i, '');
           found.push({ kind: 'instruction', path: relPath, name: slug(stem), description: instructionSummary(text) });
         }
@@ -320,7 +349,11 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
     async readGit(url, ref, path, kind) {
       const rel = cleanPath(path);
       if (!rel.ok) return rel;
-      const got = await checkout(url, ref);
+      // 稀疏检出：skill 只要那个目录；instruction / mcp 只要所在目录（根上的文件不稀疏）。
+      // 目标就在仓库根时不做稀疏，否则会连根上的入口文件都拿不到。
+      const sparse =
+        kind === 'skill' ? (rel.value === '' ? null : rel.value) : rel.value === '' ? null : posix.dirname(rel.value) === '.' ? null : posix.dirname(rel.value);
+      const got = await checkout(url, ref, sparse);
       if (!got.ok) return got;
       try {
         // 检出目录也取真实路径：mkdtemp 在 /tmp 是符号链接的系统上仍能正确做前缀判断。

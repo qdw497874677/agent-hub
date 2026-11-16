@@ -91,6 +91,53 @@ test('git：中间目录符号链接指到检出目录外 → 导入失败，不
   assert.equal(text.includes('TOP SECRET'), false, '检出目录外的内容不应被读到');
 });
 
+test('git：稀疏检出与大小上限（单文件 1 MB / 累计 4 MB）', async (t) => {
+  const repo = mkdtempSync(join(tmpdir(), 'asset-repo-'));
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  mkdirSync(join(repo, 'skills/big'), { recursive: true });
+  mkdirSync(join(repo, 'skills/huge'), { recursive: true });
+  mkdirSync(join(repo, 'other'), { recursive: true });
+  writeFileSync(join(repo, 'skills/big/SKILL.md'), '---\nname: big\ndescription: Many files\n---\nx\n');
+  // 每个文件 < 1 MB，但合计 > 4 MB：导入要在读完整个目录前中止
+  for (let i = 0; i < 5; i += 1) writeFileSync(join(repo, `skills/big/part-${i}.bin`), 'x'.repeat(900 * 1024));
+  // 超过单文件上限的 SKILL.md：扫描不读它，导入时给出中文错误
+  writeFileSync(join(repo, 'skills/huge/SKILL.md'), `---\nname: huge\ndescription: ${'y'.repeat(1100 * 1024)}\n---\n`);
+  writeFileSync(join(repo, 'other/big.txt'), 'z'.repeat(1200 * 1024));
+  const run = (...args: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.email=a@b', '-c', 'user.name=t', ...args]);
+  run('init', '-q', '-b', 'main');
+  run('add', '-A');
+  run('commit', '-q', '-m', 'init');
+
+  const reader = createAssetReader({ gitTimeoutMs: 20_000, allowLocalRepos: true });
+  const url = `file://${repo}`;
+  const scan = await reader.scanGit(url, null);
+  assert.ok(scan.ok, scan.ok ? '' : scan.error.message);
+  const huge = scan.value.candidates.find((c) => c.path === 'skills/huge');
+  assert.ok(huge, '超大的 SKILL.md 仍然列成候选（导入时再报错）');
+  assert.equal(huge.description, '');
+
+  const total = await reader.readGit(url, null, 'skills/big', 'skill');
+  assert.equal(total.ok, false);
+  assert.match(total.ok ? '' : total.error.message, /文件总大小超过 4 MB/);
+
+  const single = await reader.readGit(url, null, 'other/big.txt', 'instruction');
+  assert.equal(single.ok, false);
+  assert.match(single.ok ? '' : single.error.message, /文件太大/);
+
+  const oversized = await reader.readGit(url, null, 'skills/huge', 'skill');
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.ok ? '' : oversized.error.message, /文件太大/);
+
+  // 稀疏检出只拉目标目录：同一仓库里别的目录再大也不影响这一项
+  mkdirSync(join(repo, 'skills/small'), { recursive: true });
+  writeFileSync(join(repo, 'skills/small/SKILL.md'), '---\nname: small\ndescription: Tiny\n---\nhi\n');
+  run('add', '-A');
+  run('commit', '-q', '-m', 'small');
+  const small = await reader.readGit(url, null, 'skills/small', 'skill');
+  assert.ok(small.ok, small.ok ? '' : small.error.message);
+  assert.deepEqual(small.value.files.map((f) => f.path), ['SKILL.md']);
+});
+
 test('git：cleanPath 拒绝空路径 / 绝对路径 / .. 段', async (t) => {
   const repo = mkdtempSync(join(tmpdir(), 'asset-repo-'));
   t.after(() => rmSync(repo, { recursive: true, force: true }));

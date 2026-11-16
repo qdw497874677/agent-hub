@@ -1110,13 +1110,34 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
           .filter((manifest) => manifest.workerId === workerId)
           .flatMap((manifest) => manifest.entries.map((entry) => entry.digest))
       )
-    ]
+    ],
+    sessionAssetsForWorker: async (workerId) => {
+      const out = new Map<string, import('../asset.ts').SessionAssetDelivery>();
+      for (const snapshot of sessionSnapshots.values()) {
+        if (snapshot.workerId !== workerId) continue;
+        out.set(snapshot.sessionId, {
+          sessionId: snapshot.sessionId,
+          assetIds: snapshot.entries.map((entry) => entry.assetId),
+          digests: Object.fromEntries(snapshot.entries.map((entry) => [entry.assetId, entry.digest]))
+        });
+      }
+      for (const manifest of sessionManifests.values()) {
+        if (manifest.workerId !== workerId || out.has(manifest.sessionId)) continue;
+        out.set(manifest.sessionId, {
+          sessionId: manifest.sessionId,
+          assetIds: manifest.entries.map((entry) => entry.assetId),
+          digests: Object.fromEntries(manifest.entries.map((entry) => [entry.assetId, entry.digest]))
+        });
+      }
+      return [...out.values()];
+    }
   };
   const board = new Map<string, import('../asset.ts').WorkerAssetSync>();
   const pushes: {
     workerId: string;
     manifest: readonly import('../asset.ts').AssetManifestEntry[];
     retain?: readonly string[];
+    sessions?: readonly import('../asset.ts').SessionAssetDelivery[];
   }[] = [];
   const workers: WorkerStatus[] = [{ workerId: 'w1', label: 'local', origin: 'local', state: 'online' }];
   const git = { commit: 'c1', files: [] as import('../asset.ts').IncomingFile[] };
@@ -1135,8 +1156,8 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     workers: { list: async () => workers },
     projects: { byId: async (id) => projectList.get(id) ?? null },
     delivery: {
-      push: async (workerId, manifest, retain) => {
-        pushes.push({ workerId, manifest, ...(retain === undefined ? {} : { retain }) });
+      push: async (workerId, manifest, retain, sessions) => {
+        pushes.push({ workerId, manifest, ...(retain === undefined ? {} : { retain }), ...(sessions === undefined ? {} : { sessions }) });
         return { ok: true, value: { root: '/home/x/.agent-hub/assets', installed: Object.fromEntries(manifest.map((m) => [m.assetId, m.digest])) } };
       }
     },

@@ -386,6 +386,50 @@ export function createAssetRepository(db: DatabaseSync): AssetRepository {
         for (const entry of snapshot.entries) out.add(entry.digest);
       }
       return [...out];
+    },
+    sessionAssetsForWorker: async (workerId) => {
+      // 快照是权威版本（#226 P2）；没有快照的会话退回 session_assets 记的清单。
+      const out = new Map<string, { sessionId: string; assetIds: string[]; digests: Record<string, string> }>();
+      let snapshots: Row[] = [];
+      try {
+        snapshots = sessionSnapshotsByWorker.all(workerId) as Row[];
+      } catch {
+        snapshots = [];
+      }
+      for (const row of snapshots) {
+        let snapshot: SessionAssetSnapshot;
+        try {
+          snapshot = JSON.parse(String(row['snapshot'])) as SessionAssetSnapshot;
+        } catch {
+          continue;
+        }
+        out.set(snapshot.sessionId, {
+          sessionId: snapshot.sessionId,
+          assetIds: snapshot.entries.map((entry) => entry.assetId),
+          digests: Object.fromEntries(snapshot.entries.map((entry) => [entry.assetId, entry.digest]))
+        });
+      }
+      let rows: Row[] = [];
+      try {
+        rows = sessionAssetsByWorker.all(workerId) as Row[];
+      } catch {
+        rows = [];
+      }
+      for (const row of rows) {
+        let manifest: SessionAssetManifest;
+        try {
+          manifest = JSON.parse(String(row['manifest'])) as SessionAssetManifest;
+        } catch {
+          continue;
+        }
+        if (out.has(manifest.sessionId)) continue;
+        out.set(manifest.sessionId, {
+          sessionId: manifest.sessionId,
+          assetIds: manifest.entries.map((entry) => entry.assetId),
+          digests: Object.fromEntries(manifest.entries.map((entry) => [entry.assetId, entry.digest]))
+        });
+      }
+      return [...out.values()];
     }
   };
 }

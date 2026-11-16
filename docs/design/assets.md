@@ -144,3 +144,11 @@
   在跑会话冻结的旧版本清掉。
 - 升级（`POST /api/sessions/:id/assets/upgrade`）只写新快照：**下一次重新托管/启动生效**；
   运行中的进程不会热换文件（D10 不做热更新）。界面提示应写「下次启动生效」。
+
+## 12. 修订（2026-11-16）：导入策略、批量、视图（#226 P1/P4）
+
+- **版本策略**：`AssetSource.policy = 'track' | 'locked'`，缺省 `locked`。locked 在导入时把 `ref` 改写成解析到的 commit，`checkAssetUpdate` 与定时巡检都跳过；track 保留 ref 并按内容 digest 生成待审提交（标签强推若内容没变不记版本）。
+- **批量导入**：`POST /api/assets/git/batch`，逐项复用单条导入，单项失败只回在该项。
+- **拉取上限**：`--filter=blob:none` + cone 稀疏检出（给了 path 时只取它所在目录）；单文件 1 MB、累计 4 MB，超限中止。
+- **审核报告**：补 `allowedTools`、`license`、`licenseFile`、`scripts`、`source{url,commit,commitUrl,ref,path}`，仍是 JSON 原文，无迁移。
+- **每会话视图（P4）**：Worker 上 `sessions/<sessionId>/skills|instructions` 用相对链接指向 `assets/<digest12>/<slot>`，按 slot 命名，同名不同版本互不覆盖；`.view.json` 记引用，`prune` 保留「当前清单 ∪ retain ∪ 视图引用」。会话结束 `dropSession`；hub 只在该机器拿得到活跃会话列表时下发 `sessions`（拿不到传 `undefined`，Worker 不动已有视图）。协议 v7。

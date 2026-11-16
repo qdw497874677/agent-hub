@@ -1,4 +1,4 @@
-import { isPublished, type Asset, type AssetKind, type AssetRevision, type AssetScope, type IncomingFile } from '../asset.ts';
+import { isPublished, type Asset, type AssetKind, type AssetRevision, type AssetScope, type AssetSourcePolicy, type IncomingFile } from '../asset.ts';
 import {
   DEFAULT_REVIEW_SETTINGS,
   HUB_REVIEW_KEY,
@@ -13,8 +13,11 @@ import {
   parseSecretKey,
   requiredApprovals,
   scanAssetFiles,
+  scriptFilesOf,
   secretKey,
   secretLookupOrder,
+  skillAuditMeta,
+  sourceTraceOf,
   type AssetReviewSettings,
   type AssetSubmission,
   type InstallRequest,
@@ -187,7 +190,16 @@ export async function buildReviewReport(
       });
     }
   }
-  return { findings, mcp, secrets, filesChanged: changed };
+  return {
+    findings,
+    mcp,
+    secrets,
+    filesChanged: changed,
+    // #226：审核页一眼要看到「这个版本能调什么工具、什么许可证、带哪些脚本、来自哪个提交」。
+    ...skillAuditMeta(files),
+    scripts: scriptFilesOf(revision?.files ?? []),
+    source: sourceTraceOf(asset, revision?.commit ?? null)
+  };
 }
 
 // ---------- 可见性与管理权 ----------
@@ -308,6 +320,8 @@ export type SubmitAssetInput =
       readonly url: string;
       readonly ref: string | null;
       readonly path: string;
+      /** 版本策略（默认 locked）：locked 钉在导入时的提交上；track 跟随 ref 检查更新。 */
+      readonly policy?: AssetSourcePolicy;
     };
 
 /**
@@ -331,6 +345,7 @@ export async function submitNewAsset(
           url: input.url,
           ref: input.ref,
           path: input.path,
+          policy: input.policy,
           name: input.name ?? null,
           projectId: input.projectId ?? null,
           ...ownership

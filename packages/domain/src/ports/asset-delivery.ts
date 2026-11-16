@@ -1,4 +1,4 @@
-import type { AssetManifestEntry, WorkerAssetSync } from '../asset.ts';
+import type { AssetManifestEntry, SessionAssetDelivery, WorkerAssetSync } from '../asset.ts';
 import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 
@@ -15,7 +15,9 @@ export interface AssetDelivery {
   push(
     workerId: string,
     manifest: readonly AssetManifestEntry[],
-    retain?: readonly string[]
+    retain?: readonly string[],
+    /** #226 P4：这台机器上活跃会话各自的资产清单；传了 Worker 才会重建/回收会话视图。 */
+    sessions?: readonly SessionAssetDelivery[]
   ): Promise<Result<DeliveryReport, DomainError>>;
 }
 
