@@ -19,7 +19,8 @@ const CAPABILITY_LABEL: Record<string, string> = {
   artifacts: '产出物',
   structured_events: '细粒度事件',
   attachments: '附件与 @ 引用',
-  branch_at_turn: '从中间消息分叉'
+  branch_at_turn: '从中间消息分叉',
+  subagent: '子代理'
 };
 
 type CapabilityName = keyof AgentDto['capabilities'];

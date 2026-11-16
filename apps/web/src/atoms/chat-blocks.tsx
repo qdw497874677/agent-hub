@@ -163,7 +163,7 @@ function Segmented<T extends string>({
   onChange
 }: {
   label: string;
-  /** 一句话说明这组开关管什么，跟 Toggle 的 hint 一样排在标签下面。 */
+  /** 一句话说明这组开关管什么，跟 Toggle 的 hint 一样放在标签的悬停提示里。 */
   hint?: string;
   value: T;
   options: readonly (readonly [T, string])[];
@@ -171,9 +171,8 @@ function Segmented<T extends string>({
 }) {
   return (
     <div role="radiogroup" aria-label={label} className="flex items-center justify-between gap-2 px-3 py-1.5">
-      <span className="text-meta text-secondary">
+      <span className="text-meta text-secondary" title={hint}>
         {label}
-        {hint ? <span className="block text-tertiary">{hint}</span> : null}
       </span>
       <span className="flex rounded-sm border border-hair">
         {options.map(([id, text]) => (
@@ -195,9 +194,8 @@ function Segmented<T extends string>({
 function Toggle({ label, hint, checked, disabled, onChange }: { label: string; hint?: string; checked: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className={`flex items-center justify-between gap-2 px-3 py-1.5 ${disabled ? 'opacity-40' : ''}`}>
-      <span className="text-meta text-secondary">
+      <span className="text-meta text-secondary" title={hint}>
         {label}
-        {hint ? <span className="block text-tertiary">{hint}</span> : null}
       </span>
       <input type="checkbox" role="switch" aria-label={label} checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 accent-[var(--color-accent)]" />
     </label>
@@ -230,9 +228,9 @@ export function DisplaySettingsPanel({ settings, onChange }: { settings: Display
         ]}
         onChange={(thinking) => onChange({ thinking })}
       />
-      <Toggle label="紧凑模式" hint="收紧行距，一屏多看几条" checked={settings.compact} onChange={(compact) => onChange({ compact })} />
+      <Toggle label="紧凑" hint="收紧行距，一屏多看几条" checked={settings.compact} onChange={(compact) => onChange({ compact })} />
       <Segmented<ContrastDisplay>
-        label="对比度"
+        label="增强对比"
         hint="提高次要文字与分隔线的对比度"
         value={settings.contrast}
         options={[
