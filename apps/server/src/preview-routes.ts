@@ -80,10 +80,23 @@ export function installPreviewRoutes(app: Hono<any>, options: PreviewRouteOption
     options.https ?? (c.req.header('x-forwarded-proto') ?? '').toLowerCase() === 'https';
   const dtoOf = (link: Parameters<typeof previewLinkPublic>[1]) =>
     previewLinkSchema.parse(previewLinkPublic(deps, link));
+  /**
+   * 列表里跳过坏行：一条不合约的数据（手工改库、旧版本写入）不该让整个预览页 500。
+   * 单条（创建/查询）仍然严格——坏数据要立刻暴露。
+   */
+  const linksOf = (links: readonly Parameters<typeof previewLinkPublic>[1][]) => {
+    const out: ReturnType<typeof dtoOf>[] = [];
+    for (const link of links) {
+      const parsed = previewLinkSchema.safeParse(previewLinkPublic(deps, link));
+      if (parsed.success) out.push(parsed.data);
+      else console.warn('[preview] 跳过一条不合契约的链接', link.id, parsed.error.issues[0]?.message);
+    }
+    return out;
+  };
 
   app.get('/api/sessions/:sessionId/previews', async (c) => {
     const result = await listPreviewLinksUseCase(deps, subjectOf(c), c.req.param('sessionId'));
-    return result.ok ? c.json({ links: result.value.map((link) => dtoOf(link)) }) : fail(c, result.error);
+    return result.ok ? c.json({ links: linksOf(result.value) }) : fail(c, result.error);
   });
 
   app.post('/api/sessions/:sessionId/previews', async (c) => {

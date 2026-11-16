@@ -120,6 +120,22 @@ test('GET 列表：未分享时 DTO 带 shared=false / shareExpiresAt=null', asy
   assert.equal('shareTokenHash' in body.links[0]!, false);
 });
 
+test('GET 列表：一条不合契约的旧数据被跳过，其它链接照常返回', async () => {
+  const { app, session, previewLinks } = await world();
+  const bad = {
+    ...([...previewLinks.rows.values()][0]!),
+    id: 'pv_21a70f2207ac64dd' as PreviewLinkId,
+    hubPort: 17902
+  };
+  await previewLinks.save(bad);
+
+  const res = await app.request(`http://hub.local:17900/api/sessions/${session.id}/previews`);
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { links: Array<{ id: string }> };
+  assert.equal(body.links.length, 1);
+  assert.notEqual(body.links[0]!.id, bad.id);
+});
+
 test('POST share：返回一次性的 url + expiresAt，列表随后 shared=true', async () => {
   const { app, audits, link, session } = await world({ publicHost: 'hub.example.com', https: true });
   const res = await app.request(`http://ignored/api/sessions/${session.id}/previews/${link.id}/share`, {
