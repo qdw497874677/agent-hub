@@ -28,7 +28,11 @@ import { useDeliveries } from '../../atoms/delivery-note.tsx';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
+import { LogMarkdown } from '../../atoms/log-markdown.tsx';
 import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
+
+/** 卡片里的 markdown：首尾段贴边；代码块收矮一点，长代码在卡片里自己横向滚。 */
+const CARD_MD = '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-h-40 [&_pre]:overflow-auto';
 
 /** 两种卡片共有：拖过的尺寸（没有 = 宽度默认、高度随内容），以及拖完后的回调。 */
 type Resizable = {
@@ -160,7 +164,9 @@ function BlockView({
     );
   }
   if (block.kind === 'text') {
-    return <p className="whitespace-pre-wrap text-body text-primary/90">{block.text}</p>;
+    // 和专注对话同一个渲染器（不渲染原始 HTML、不加载图片、链接新窗口）：同一段回复两处长得一样，
+    // 卡片上不再露出 `**`、反引号这些原始符号。首尾段贴边，卡片里不忽高忽低。
+    return <LogMarkdown body={block.text} className={`text-body text-primary/90 ${CARD_MD}`} />;
   }
   if (block.kind === 'tool') {
     const mark = block.result === null ? '⋯' : block.result.ok ? '✓' : '✗';
