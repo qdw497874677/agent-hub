@@ -72,6 +72,21 @@ function migrate(db: DatabaseSync): void {
   for (const [name, type] of ADDED_COLUMNS) if (!have.has(name)) db.exec(`ALTER TABLE worker_credentials ADD COLUMN ${name} ${type}`);
   const havePairing = new Set((db.prepare('PRAGMA table_info(pairing_codes)').all() as Row[]).map((r) => String(r['name'])));
   for (const [name, type] of PAIRING_ADDED_COLUMNS) if (!havePairing.has(name)) db.exec(`ALTER TABLE pairing_codes ADD COLUMN ${name} ${type}`);
+  // 老凭据存的是显式清单，新加的 capability 不会被自动带上：当时给了装卸/自更新的机器，补上「本地服务」。
+  // 收窄过的凭据（没有 runtimes/update）保持原样。
+  const rows = db.prepare('SELECT worker_id, capabilities FROM worker_credentials WHERE capabilities IS NOT NULL').all() as Row[];
+  const update = db.prepare('UPDATE worker_credentials SET capabilities = ? WHERE worker_id = ?');
+  for (const row of rows) {
+    let caps: unknown;
+    try {
+      caps = JSON.parse(String(row['capabilities']));
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(caps) || !caps.every((cap) => typeof cap === 'string')) continue;
+    if (!caps.includes('runtimes') || caps.includes('service')) continue;
+    update.run(JSON.stringify([...caps, 'service']), String(row['worker_id']));
+  }
 }
 
 export function createEnrollmentRepository(db: DatabaseSync): EnrollmentRepository {

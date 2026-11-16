@@ -64,6 +64,28 @@ test('ADR 0030 D3：凭据记下连接来历和能力；老库补列不丢数据
   }
 });
 
+test('老凭据的能力清单补上「本地服务」；收窄过的不动', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-enroll-'));
+  try {
+    const path = join(dir, 'hub.db');
+    const { DatabaseSync } = await import('node:sqlite');
+    const old = new DatabaseSync(path);
+    old.exec(`CREATE TABLE worker_credentials (worker_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, enrolled_by TEXT NOT NULL,
+      label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, capabilities TEXT);
+      INSERT INTO worker_credentials VALUES ('full', 'h1', 'u1', '整台', 1, NULL, '["sessions","files.read","files.write","git","git.remote","runtimes","update"]');
+      INSERT INTO worker_credentials VALUES ('ro', 'h2', 'u1', '只读', 1, NULL, '["files.read"]');`);
+    old.close();
+    const store = openSqliteStore(path);
+    const full = await store.enrollment.credentialFor('full');
+    const ro = await store.enrollment.credentialFor('ro');
+    assert.ok(full?.capabilities?.includes('service'));
+    assert.deepEqual(ro?.capabilities, ['files.read']);
+    store.close?.();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('ADR 0030 P4：码带能力集；轮换中新旧哈希都能查到，转正后旧的查不到，失败只清新的', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hub-enroll-'));
   try {

@@ -122,3 +122,12 @@ Worker 事件（worker → hub）：`service_state` `{ serviceId, state, pid?, d
    它不再是必经之路。
 
 预览的后续方向：优先按「端口在听 + 属于哪条会话的工作目录」自动出链接，而不是要求用户先登记服务。
+
+### 9.1 落地与前置条件
+
+- 进程清单与自动挂预览已经上线：`reconcilePreviews` 每 30 秒先跑一次 `autoDiscoverPreviews`，
+  端口在听且进程 cwd 落在某条未失败会话的工作目录里，就建一条 `source: 'detected'` 的预览链接；
+  `HUB_PREVIEW_AUTO=0` 关掉，`HUB_PREVIEW_DEBUG=1` 打诊断日志（拿不到清单时会说明原因）。
+- 前置条件：Worker 凭据要有 `service` 能力（`proc.list` 归在它下面）。旧凭据存的是显式清单，
+  启动时会把「有 `runtimes` 但没有 `service`」的补上；收窄过（没有 `runtimes`）的保持原样。
+  新建接入码默认 `full` 预设，已包含 `service`。
