@@ -46,6 +46,11 @@ export interface SessionEnvironmentOptions {
   readonly projects: { byId(id: ProjectId): Promise<Project | null> };
   /** 容器会话（无任务）的项目来源（#221 步骤 7）；返回 null 时按「解析失败」处理，不下发资产。 */
   readonly containerProject?: (sessionId: string) => Promise<{ projectId: ProjectId; ownerId: string | null } | null>;
+  /**
+   * 会话显式选的资产（#226 会话级选择）：返回 null = 按项目生效集。
+   * 给了就只保留这些 id——想「这条会话不用某个技能」时，由调用方把完整清单减掉它。
+   */
+  readonly selectedAssetIds?: (sessionId: string) => Promise<readonly string[] | null>;
   readonly log?: (message: string) => void;
 }
 
@@ -106,6 +111,7 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
   const { assetDeps, tasks, projects, log } = options;
 
   async function planFor(
+    sessionId: string,
     workerId: string,
     taskId: TaskId | null,
     container?: { projectId: ProjectId | null; ownerId: string | null }
@@ -119,7 +125,13 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     const project = projectId === null ? null : await projects.byId(projectId as ProjectId);
     const viewer = ownerId ? { userId: ownerId, teamId: project?.teamId ?? null } : null;
     const plan = await sessionAssetPlan(assetDeps, workerId, project?.id ?? null, viewer);
-    return { projectId: project?.id ?? null, entries: plan.entries, assetIds: plan.assetIds };
+    const selected = (await options.selectedAssetIds?.(sessionId)) ?? null;
+    if (selected === null) return { projectId: project?.id ?? null, entries: plan.entries, assetIds: plan.assetIds };
+    // 显式清单：只留选中的；选中但当前不可见（被停用 / 换了作用域）的就当没选，不报错——
+    // 会话快照仍会记下实际给出的那些，界面能看出少带了什么。
+    const keep = new Set(selected);
+    const entries = plan.entries.filter((entry) => keep.has(entry.assetId));
+    return { projectId: project?.id ?? null, entries, assetIds: entries.map((entry) => entry.assetId) };
   }
 
   return {
@@ -133,7 +145,7 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
         if (!snapshot) {
           // command 是 StartCommand（不是 Session）：容器门禁仍以 taskId === null 为准。
           const container = command.taskId === null ? await options.containerProject?.(command.sessionId) ?? null : undefined;
-          const plan = await planFor(command.workerId, command.taskId, container ?? undefined);
+          const plan = await planFor(command.sessionId, command.workerId, command.taskId, container ?? undefined);
           // #223：解析不到任务 / 项目 = 资产展开失败。不能再原样下发（那等于「全给」）。
           if (!plan) {
             log?.(`会话 ${command.sessionId} 的资产没有准备好：找不到所属的任务或项目`);
@@ -227,7 +239,7 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
       if (!session.workerId) return null;
       try {
         const container = isContainerSession(session) ? await options.containerProject?.(session.id) ?? null : undefined;
-        const plan = await planFor(session.workerId, session.taskId, container ?? undefined);
+        const plan = await planFor(session.id, session.workerId, session.taskId, container ?? undefined);
         if (!plan) return null;
         return await upgradeSessionAssets(assetDeps, {
           sessionId: session.id,

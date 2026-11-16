@@ -185,6 +185,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'bot_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN bot_id TEXT');
   }
+  // 会话级资产清单（#226 会话选择）：JSON 数组；NULL = 按项目生效集。
+  if (!columns.some((column) => column.name === 'asset_ids')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN asset_ids TEXT');
+  }
   // #221 步骤 7：容器会话没有任务，task_id 要允许 NULL（老库只能重建表）。
   relaxSessionsTaskId(db);
   upgradeWorkspaceTable(db);
@@ -267,8 +271,8 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateTaskBranch = db.prepare('UPDATE tasks SET branch = ? WHERE id = ? AND ? IS NOT NULL');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
@@ -277,6 +281,8 @@ export function openSqliteStore(file: string): SqliteStore {
       'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
       'environment_revision = excluded.environment_revision, settled_at = excluded.settled_at, group_id = excluded.group_id, ' +
       'kind = excluded.kind, parent_session_id = excluded.parent_session_id, ' +
+      // 资产清单只在显式给的时候写：旧快照回写不能把用户的选择冲掉。
+      'asset_ids = COALESCE(excluded.asset_ids, sessions.asset_ids), ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -508,6 +514,7 @@ export function openSqliteStore(file: string): SqliteStore {
         session.kind ?? null,
         session.parentSessionId ?? null,
         session.botId ?? null,
+        session.assetIds == null ? null : JSON.stringify(session.assetIds),
         session.createdAt,
         session.updatedAt
       );

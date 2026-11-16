@@ -1074,6 +1074,8 @@ sessionEnvironment = createSessionEnvironment({
     const project = await projectOfSession({ tasks: store.tasks, projects: store.projects, bots: store.bots, workspaces: store.workspaces, workspaceGroups: store.workspaceGroups }, session);
     return project ? { projectId: project.id as ProjectId, ownerId: session.createdBy ?? null } : null;
   },
+  // 会话级资产选择（#226）：显式清单就只带那些，未选的（比如 grill-me）不会下发。
+  selectedAssetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetIds ?? null,
   log
 });
 const syncAssets = (workerId: string) =>

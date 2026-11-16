@@ -57,6 +57,8 @@ export interface DeriveCommand {
   /** `side` = 侧聊：挂在 parentSessionId 上，继承父会话的落点与运行参数，不进常规列表。 */
   readonly kind?: 'side';
   readonly parentSessionId?: string | null;
+  /** 只带这些资产（asset id）；null / 缺省 = 项目生效集。 */
+  readonly assetIds?: readonly string[] | null;
 }
 
 /**
@@ -183,6 +185,7 @@ export async function deriveSessionUseCase(
     groupId,
     createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
     botId: command.botId ?? null,
+    ...(command.assetIds == null ? {} : { assetIds: command.assetIds }),
     options: ref.options
   });
   if (!created.ok) return created;

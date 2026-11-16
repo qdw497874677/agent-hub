@@ -330,7 +330,8 @@ export const routes = {
     method: 'post', path: `${V1}/sessions`, tags: ['sessions'], summary: '在任务下开一条会话',
     description:
       '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了。\n' +
-      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）。\n' +
+      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、assetIds（可选：只带这些资产）。\n' +
+      '资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n' +
       '返回：会话对象（id、status、model、workspaceId）。\n' +
       '下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n' +
       '错误：400 参数不合法；403 无 sessions:write；409 机器不可用或没装该 runtime。\n' +

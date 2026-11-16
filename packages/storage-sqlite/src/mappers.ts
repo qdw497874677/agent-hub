@@ -168,6 +168,17 @@ function parseOptionSpec(raw: string | null): Session['optionSpec'] {
   }
 }
 
+function parseAssetIds(raw: string | null): { assetIds?: readonly string[] } {
+  if (raw === null) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) return {};
+    return { assetIds: parsed };
+  } catch {
+    return {};
+  }
+}
+
 export function toSession(row: Row): Session {
   const originSession = nullableStr(row, 'origin_session');
   // #221 步骤 7：容器会话没有任务。空串是当年某些写入路径的哨兵，一起读成 null。
@@ -208,6 +219,8 @@ export function toSession(row: Row): Session {
       : { parentSessionId: nullableStr(row, 'parent_session_id') as Session['parentSessionId'] }),
     // #221 步骤 4：老库补列后是 NULL；派生对象里 botId 缺省也是 null，往返一致。
     ...(row['bot_id'] === undefined ? {} : { botId: nullableStr(row, 'bot_id') }),
+    // 会话级资产清单：NULL = 没选（按项目生效集）；坏 JSON 当没选，不让一条脏数据打挂会话页。
+    ...parseAssetIds(nullableStr(row, 'asset_ids')),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };

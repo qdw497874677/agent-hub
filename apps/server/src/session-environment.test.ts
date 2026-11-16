@@ -293,3 +293,33 @@ test('#226：快照幂等；没有快照的会话不能升级', async () => {
   await environment.prepare(command);
   assert.equal((await assets.deps.assets.sessionAssetSnapshot(session.id))?.at, snapshot.at);
 });
+
+test('会话级资产选择：没选的技能不下发，快照只记选中的（#226）', async () => {
+  const { assets, hub, session } = await world();
+  const skill = (name: string) => [{ path: 'SKILL.md', data: enc(`---\nname: ${name}\ndescription: ${name}\n---\nhi\n`) }];
+  const first = await uploadAsset(assets.deps, { kind: 'skill', files: skill('keep') });
+  const second = await uploadAsset(assets.deps, { kind: 'skill', files: skill('drop') });
+  assert.ok(first.ok && second.ok);
+  for (const id of [first.value.id, second.value.id]) await assets.deps.assets.install('w1', id, 1);
+  const board = {
+    workerId: 'w1',
+    state: 'synced' as const,
+    root: '/r',
+    installed: { [first.value.id]: first.value.pinned, [second.value.id]: second.value.pinned },
+    error: null,
+    at: 1
+  };
+  assets.board.set('w1', board);
+  const environment = createSessionEnvironment({
+    assetDeps: assets.deps,
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects,
+    selectedAssetIds: async (sessionId) => (sessionId === session.id ? [first.value.id] : null)
+  });
+  const command = startCommand({ ...session, workerId: 'w1' }, '/tmp/env', null);
+  const prepared = await environment.prepare(command);
+  assert.equal(prepared.blocked, undefined);
+  assert.deepEqual(prepared.command.kind === 'start_session' ? prepared.command.assetIds : null, [first.value.id]);
+  const snapshot = await assets.deps.assets.sessionAssetSnapshot(session.id);
+  assert.deepEqual(snapshot?.entries.map((entry) => entry.name), ['keep']);
+});

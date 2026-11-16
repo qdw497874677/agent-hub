@@ -102,6 +102,12 @@ export interface Session {
    * 所以真正的长期本地服务要靠 service 原语，这一位只是「别被闲置回收」。
    */
   readonly pinned?: boolean;
+  /**
+   * 这条会话显式选的资产（asset id）。缺省 / null = 按项目生效集（`resolveProjectAssets`）。
+   * 给了就只带这些——用来「这条会话不要某个技能」或「只带一组资产」。
+   * 选中但当时不可见的会在解析时丢掉，不会凭空多出来。
+   */
+  readonly assetIds?: readonly string[] | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -136,6 +142,8 @@ export interface DeriveSessionInput {
   /** 侧聊用：不落进常规列表，继承父会话的落点与运行参数。 */
   readonly kind?: SessionKind;
   readonly parentSessionId?: SessionId | null;
+  /** 本次会话显式选的资产；null / 缺省 = 按项目生效集。 */
+  readonly assetIds?: readonly string[] | null;
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
@@ -165,6 +173,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     groupId: input.groupId ?? null,
     createdBy: input.createdBy ?? null,
     botId: input.botId ?? null,
+    ...(input.assetIds == null ? {} : { assetIds: input.assetIds }),
     createdAt: input.now,
     updatedAt: input.now
   });

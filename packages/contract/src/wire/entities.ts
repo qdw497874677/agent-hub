@@ -300,6 +300,8 @@ export const sessionSchema = z.object({
   settledAt: epochMs.nullable().optional(),
   /** 常驻：Worker 不按空闲回收这条会话，也不占保活上限。 */
   pinned: z.boolean().optional(),
+  /** 这条会话显式选的资产；缺省 = 按项目生效集。 */
+  assetIds: z.array(z.string()).nullable().optional(),
   createdAt: epochMs,
   updatedAt: epochMs
 });

@@ -553,3 +553,16 @@ test('常驻：setPinned 落库；整行 save 拿旧对象回写也不会把标�
   assert.equal((await store.sessions.byId(session.id))?.pinned, undefined);
   store.close();
 });
+
+test('会话级资产：assetIds 落库往返；旧快照回写不会把选择冲掉', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  const chosen = { ...session, assetIds: ['a1', 'a2'] as const };
+  await store.sessions.save(chosen);
+  assert.deepEqual((await store.sessions.byId(session.id))?.assetIds, ['a1', 'a2']);
+
+  // 跑着的会话拿着不含 assetIds 的旧对象整行回写。
+  await store.sessions.save({ ...session });
+  assert.deepEqual((await store.sessions.byId(session.id))?.assetIds, ['a1', 'a2']);
+  store.close();
+});
