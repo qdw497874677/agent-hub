@@ -53,7 +53,7 @@ test('派生对话框：不重新选模型，模型框显示与「开始」是�
   const model = dialog.locator('#derive-model');
   await expect(model).toBeVisible();
   test.skip((await model.evaluate((el) => el.tagName)) !== 'SELECT', '桌面才是原生下拉');
-  const start = dialog.getByRole('button', { name: '开始' });
+  const start = dialog.getByRole('button', { name: '开始', exact: true });
   await page.waitForTimeout(1_000); // 机器 / 模型列表落定
   const value = await model.inputValue();
   const shown = await model.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent ?? '');

@@ -219,13 +219,13 @@ test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照�
   await expect(worktree).toHaveAttribute('aria-checked', 'true');
   // 只有 Hub 模型的机器：模型框显式写「选择模型…」，不替人选（选好之后才轮到工作目录这一关）
   await chooseHubModel(run);
-  await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeEnabled();
   // 选了隔离档之后，机器和工作目录那块不该被禁用（机器始终可选）
   const region = run.getByTestId('derive-workspace-region');
   await expect(region).not.toHaveCSS('pointer-events', 'none');
-  await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
-  await expect(run.getByRole('button', { name: '开始' })).toBeInViewport();
-  await run.getByRole('button', { name: '开始' }).click();
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeEnabled();
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeInViewport();
+  await run.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
   // 空间是按项目配置现建的隔离 worktree，准备命令跑过
   const spaces = await temporaryWorkspaces(page, headers, project.id);

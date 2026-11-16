@@ -72,7 +72,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await picker.getByRole('button', { name: '使用', exact: true }).click();
   await expect(firstRun).toContainText(`agent-hub-e2e-links-${RUN}`);
   await chooseHubModel(firstRun);
-  await firstRun.getByRole('button', { name: '开始' }).click();
+  await firstRun.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
   await page.getByRole('button', { name: '画布', exact: true }).click();
 
@@ -83,7 +83,7 @@ test('对话页选择器和画布拖线连的是同一份会话关系', async ({
   await expect(existing).toBeVisible();
   await existing.click();
   await chooseHubModel(secondRun);
-  await secondRun.getByRole('button', { name: '开始' }).click();
+  await secondRun.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
   await page.getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(2);

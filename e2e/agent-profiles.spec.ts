@@ -44,7 +44,7 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   const firstRun = page.getByRole('dialog', { name: '开始会话' });
   await chooseWorkspace(page, firstRun);
   await chooseHubModel(firstRun);
-  await firstRun.getByRole('button', { name: '开始' }).click();
+  await firstRun.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
 
   await page.getByRole('button', { name: '更多' }).click();
@@ -77,7 +77,7 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   const profileId = await profileOption.getAttribute('value');
   if (!profileId) throw new Error('Agent 配置没有 id');
   await profile.selectOption(profileId);
-  await secondRun.getByRole('button', { name: '开始' }).click();
+  await secondRun.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
 
   await page.getByRole('button', { name: '画布', exact: true }).click();

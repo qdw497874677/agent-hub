@@ -81,7 +81,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
   // 运行面板：先选工作目录（不预选，没选「开始」是灰的）。新项目还没有工作目录：把已有目录登记成持久工作目录。
   const run = page.getByRole('dialog', { name: '开始会话' });
-  await expect(run.getByRole('button', { name: '开始' })).toBeDisabled();
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeDisabled();
   await run.getByRole('radio', { name: /新建持久工作目录/ }).click();
   await run.getByRole('radio', { name: '选已有目录' }).click();
   // 目录可以点选，不必手打路径：路径框里打路径，Enter 进入选中的文件夹
@@ -96,7 +96,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await picker.getByRole('button', { name: '使用', exact: true }).click();
   await expect(run).toContainText(`agent-hub-e2e-project-${RUN}`);
   await chooseHubModel(run);
-  await run.getByRole('button', { name: '开始' }).click();
+  await run.getByRole('button', { name: '开始', exact: true }).click();
   // 派生完直接进这条会话的对话；回画布看卡片
   await expect(page.getByLabel('发送消息')).toBeVisible();
   await page.getByRole('button', { name: '画布', exact: true }).click();
