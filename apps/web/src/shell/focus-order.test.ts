@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isTopmost, trapTarget } from './focus-trap.ts';
+import { isTopmost, trapTarget } from './focus-order.ts';
 
 test('Tab 在框里循环：末尾回到开头，开头 Shift+Tab 去末尾', () => {
   assert.equal(trapTarget(3, 2, false), 0);
