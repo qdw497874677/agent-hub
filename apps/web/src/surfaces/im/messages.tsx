@@ -62,14 +62,15 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
   return (
     <form
       data-testid="group-form"
-      className="flex flex-col gap-2 p-3"
+      className="flex min-w-0 flex-col gap-2 p-3"
       onSubmit={(e) => {
         e.preventDefault();
         save.mutate({ name: name.trim(), members, hostRole: hostRole || null, speakingStrategy: strategy, limits: { maxRounds: rounds, maxMessages: msgs } });
       }}
     >
       <input aria-label="群名" data-testid="group-name" className={INPUT} placeholder="群名" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
-      <fieldset className="flex flex-col gap-1 text-meta text-secondary">
+      {/* fieldset 默认 min-width: min-content，不加 min-w-0 成员行再怎么截断也会把它撑出侧栏 */}
+      <fieldset className="flex min-w-0 flex-col gap-1 text-meta text-secondary">
         <legend className="mb-1 text-tertiary">选成员（项目里的 bot）</legend>
         {members.length ? (
           <div className="flex flex-wrap gap-1" data-testid="group-chips">
