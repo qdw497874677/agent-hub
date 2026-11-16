@@ -1384,7 +1384,7 @@ const autoDiscoverPreviews = async (): Promise<void> => {
   for (const space of spaces) {
     if (space.workerId === null) continue;
     for (const session of await store.sessions.listByWorkspace(space.id)) {
-      if (session.status !== 'running' && session.status !== 'done' && session.status !== 'interrupted') continue;
+      if (session.status === 'failed') continue;
       if (session.workerId !== space.workerId) continue;
       owners.push({ sessionId: session.id, workerId: space.workerId, path: space.path });
       allowed.add(session.id);
