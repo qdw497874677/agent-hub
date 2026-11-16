@@ -235,3 +235,20 @@ export const credentialStatusSchema = z.object({
   rotationFailedAt: z.number().nullable()
 });
 export type CredentialStatusDto = z.infer<typeof credentialStatusSchema>;
+
+/* ── 派生前预览：这台机器上这个项目实际会带上哪些资产 ── */
+export const projectAssetPlanSchema = z.object({
+  projectId: z.string(),
+  workerId: z.string(),
+  assetIds: z.array(z.string()),
+  entries: z.array(
+    z.object({
+      assetId: z.string(),
+      kind: assetKindSchema,
+      name: z.string(),
+      digest: z.string(),
+      scope: z.enum(['personal', 'project', 'team', 'global'])
+    })
+  )
+});
+export type ProjectAssetPlanDto = z.infer<typeof projectAssetPlanSchema>;

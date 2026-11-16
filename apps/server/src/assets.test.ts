@@ -250,3 +250,20 @@ test('资产市场 API：成员提交团队资产 → 自己批不了 → 主人
   const actions = (await owner('/api/admin/audit')).body.map((e: { action: string }) => e.action);
   for (const a of ['asset.submit', 'asset.comment', 'asset.request_changes', 'asset.approve']) assert.ok(actions.includes(a), a);
 });
+
+test('派生前预览：列出这台机器上项目实际会带的资产；看不见项目 404；缺 workerId 400', async () => {
+  const h = harness({
+    planOf: async (projectId, workerId, principal) =>
+      projectId === 'p1' && workerId === 'w1'
+        ? [{ assetId: 'a1', kind: 'skill', name: 'grill-me', digest: 'd1', scope: 'personal' as const }]
+        : 'forbidden'
+  });
+  const owner = h.browser();
+  assert.equal((await owner('/api/auth/register', { method: 'POST', body: JSON.stringify({ email: 'plan@b.co', password: PASSWORD }) })).status, 200);
+  const ok = await owner('/api/projects/p1/assets?workerId=w1');
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.body.assetIds, ['a1']);
+  assert.equal(ok.body.entries[0].name, 'grill-me');
+  assert.equal((await owner('/api/projects/p1/assets')).status, 400);
+  assert.equal((await owner('/api/projects/p1/assets?workerId=w2')).status, 404);
+});

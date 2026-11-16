@@ -11,12 +11,13 @@ import {
   gitImportRequest,
   gitScanRequest,
   gitScanSchema,
+  projectAssetPlanSchema,
   projectAssetRequest,
   projectAssetsSchema,
   secretPutRequest,
   secretsOverviewSchema
 } from '@agent-hub/contract';
-import type { AssetReviewDeps, AuditLog, EnvironmentPlanner, IncomingFile, Principal, Session, SessionRepository } from '@agent-hub/domain';
+import type { AssetReviewDeps, AuditLog, EnvironmentPlanner, IncomingFile, Principal, Session, SessionAssetEntry, SessionRepository } from '@agent-hub/domain';
 import {
   ASSET_KIND_LABEL,
   ASSET_LIMITS,
@@ -59,6 +60,11 @@ export interface AssetRouteOptions {
   /** #226 P2：升级会话资产快照要读会话与重新解析环境（server 组装时注入）。 */
   readonly sessions?: Pick<SessionRepository, 'byId'>;
   readonly environment?: EnvironmentPlanner;
+  /**
+   * 派生前预览：这个项目在这台机器上实际会带哪些资产（#226 会话级资产选择）。
+   * 返回 'forbidden' 表示调用方看不见该项目（路由转 404，不泄露存在）。
+   */
+  readonly planOf?: (projectId: string, workerId: string, principal: Principal) => Promise<SessionAssetEntry[] | 'forbidden'>;
 }
 
 interface Schema<T> {
@@ -100,6 +106,20 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
   app.get('/api/sessions/:sessionId/assets', async (c) => {
     const manifest = await deps.assets.sessionAssets(c.req.param('sessionId'));
     return c.json(manifest ?? { sessionId: c.req.param('sessionId'), workerId: null, entries: [], at: null });
+  });
+
+  // 派生前预览项目生效资产：派生对话框据此列出可取消勾选的技能/指令/MCP。
+  app.get('/api/projects/:projectId/assets', async (c) => {
+    const planOf = options.planOf;
+    if (!planOf) return fail(c, unavailable('资产预览尚未就绪'));
+    const workerId = c.req.query('workerId');
+    if (typeof workerId !== 'string' || workerId === '') return fail(c, invalid('workerId 必填：资产是否下发取决于机器'));
+    const principal = principalOf(c);
+    if (!principal) return fail(c, notFound('项目不存在'));
+    const projectId = c.req.param('projectId');
+    const entries = await planOf(projectId, workerId, principal);
+    if (entries === 'forbidden') return fail(c, notFound('项目不存在'));
+    return c.json(projectAssetPlanSchema.parse({ projectId, workerId, assetIds: entries.map((entry) => entry.assetId), entries }));
   });
 
   // #226 P2：显式升级本会话资产。重新解析当前生效集、写新快照，下一次重新托管时生效。

@@ -96,6 +96,9 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   terminalAccess,
   terminalTarget,
   asSessionId,
+  asProjectId,
+  authorizeProject,
+  sessionAssetPlan,
   createPreviewLinkUseCase,
   createOutboxPump,
   projectOfSession,
@@ -1546,7 +1549,23 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
     },
     enrollment: enrollmentDeps
   },
-  assets: { deps: assetDeps, audit: store.audit, sessions: store.sessions, environment: sessionEnvironment ?? undefined },
+  assets: {
+    deps: assetDeps,
+    audit: store.audit,
+    sessions: store.sessions,
+    environment: sessionEnvironment ?? undefined,
+    // 派生前预览：这台机器上这个项目实际会带哪些资产（#226 会话级资产选择）。
+    planOf: async (projectId, workerId, principal) => {
+      const project = await store.projects.byId(asProjectId(projectId));
+      const visible = await authorizeProject(deps.access, principal, project, 'session.read');
+      if (!visible.ok) return 'forbidden';
+      const plan = await sessionAssetPlan(assetDeps, workerId, projectId, {
+        userId: principal.user.id,
+        teamId: visible.value.teamId ?? null
+      });
+      return plan.entries;
+    }
+  },
   providers: providerWiring,
   // 预览链接（docs/design/preview.md §4）：只装 `/api/sessions/:id/previews` 三条路由，转发在代理层。
   ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews(), ...(readEnv('HUB_PUBLIC_URL') === null ? {} : { publicHost: new URL(readEnv('HUB_PUBLIC_URL') as string).hostname, https: new URL(readEnv('HUB_PUBLIC_URL') as string).protocol === 'https:' }) } }),
