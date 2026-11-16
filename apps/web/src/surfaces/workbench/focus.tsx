@@ -4,7 +4,7 @@ import { ProvenanceRow } from '../../atoms/provenance-row.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
-import { api, sessionGroupId } from '../../shell/api.ts';
+import { api, sessionGroupId, sessionsApi } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
@@ -39,6 +39,7 @@ import { resolveWorker, useWorkers } from '../../shell/workers.tsx';
 import { RewindDialog } from '../../atoms/rewind-dialog.tsx';
 import { forkBlockedHint, inheritedBlocks, multipleAuthors, waitingForReply, type Block, type LiveSession } from '../../atoms/live.ts';
 import { ContextMeter } from '../../atoms/context-meter.tsx';
+import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { SessionLinksDialog } from '../../atoms/session-links-dialog.tsx';
 import { SessionLinkChip } from '../../atoms/session-link-popover.tsx';
 import { SubagentTrack } from '../../atoms/subagent-track.tsx';
@@ -247,6 +248,8 @@ export function FocusView({
   const deleteHint = deleteSessionBlockedHint({ status });
   // 收起（interaction-borrowing §1）：做完的会话移出活跃列表；跑着的先别沉，停下来再说。
   const settled = session.settledAt != null;
+  // 常驻：Worker 不按空闲回收这条会话，也不占保活上限。
+  const pinned = session.pinned === true;
   const settleHint = settled
     ? '回到侧栏的活跃列表，随时可以再收起'
     : status === 'running'
@@ -537,6 +540,40 @@ export function FocusView({
     }
   }
 
+  /**
+   * 常驻开关：先把画布缓存和单条会话缓存里的 `pinned` 改成目标值，卡片上的小图钉和头部标记
+   * 立刻反应；成功后写回服务端版本，失败就翻回原值，错误落在 Composer 上方的就地提示里。
+   */
+  async function setPinned(next: boolean): Promise<void> {
+    setBusy(true);
+    setError(null);
+    const write = (value: boolean): void => {
+      queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
+        current
+          ? {
+              ...current,
+              sessions: current.sessions.map((item) => (item.id === session.id ? { ...item, pinned: value } : item))
+            }
+          : current
+      );
+      // 侧聊这类不进画布的会话：单条查询是它唯一的缓存。
+      queries.setQueryData<SessionDto>(['session', session.id], (current) =>
+        current === undefined ? current : { ...current, pinned: value }
+      );
+    };
+    write(next);
+    try {
+      const updated = await sessionsApi.pin(session.id, next);
+      write(updated.pinned === true);
+      onChanged();
+    } catch (failure) {
+      write(pinned);
+      setError((failure as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function run(action: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     setError(null);
@@ -642,9 +679,13 @@ export function FocusView({
               {session.title || task?.title || session.taskId}
             </button>
           )}
-          <p className="truncate font-mono text-meta text-tertiary">
-            {session.title ? `${task?.title ?? session.taskId} · ` : ''}{agentLabel} · {modelLabel(session.model)}
-            {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
+          <p className="flex min-w-0 items-center gap-1 font-mono text-meta text-tertiary">
+            <span className="truncate">
+              {session.title ? `${task?.title ?? session.taskId} · ` : ''}{agentLabel} · {modelLabel(session.model)}
+              {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
+            </span>
+            {/* 常驻标记放在状态行里：窄屏标题被截断时这一枚也不会换行 */}
+            {pinned ? <PinnedMark testId="session-pinned" className="size-3 text-accent" /> : null}
           </p>
         </div>
         <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
@@ -743,6 +784,15 @@ export function FocusView({
                     onClick={() => {
                       close();
                       void setSettled(!settled);
+                    }}
+                  />
+                  <MenuItem
+                    title={pinned ? '取消常驻' : '设为常驻'}
+                    hint={pinned ? '恢复按空闲回收' : '不按空闲回收，适合长期跑本地服务'}
+                    testId="session-pin"
+                    onClick={() => {
+                      close();
+                      void setPinned(!pinned);
                     }}
                   />
                   <MenuItem

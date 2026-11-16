@@ -10,6 +10,7 @@ import { previewUrlFor } from '../../atoms/preview-links.ts';
 import { WorkerChip } from '../../shell/workers.tsx';
 import { ResourceBadge, SessionUsage } from '../../shell/resources.tsx';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
+import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { OptionControls } from '../../atoms/options.tsx';
 import { PHASE_DOT, elapsedLabel, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
@@ -462,6 +463,8 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
           <SessionUsage resources={resources} sessionId={session.id} />
         </div>
         <span className="flex shrink-0 items-center gap-1.5">
+          {/* 常驻：和「后台还在跑」同一行，只占一枚小图钉，不挤标题 */}
+          {session.pinned === true ? <PinnedMark testId="card-pinned" className="size-2.5 text-tertiary" /> : null}
           {background.active ? (
             <span data-testid="card-background" title="后台任务还在跑" className="flex shrink-0 items-center">
               <span aria-hidden className="block size-1.5 rounded-full bg-sage motion-safe:animate-pulse" />

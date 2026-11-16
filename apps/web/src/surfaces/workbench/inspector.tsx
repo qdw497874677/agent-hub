@@ -123,6 +123,11 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
               {task?.title ?? session.taskId}
             </span>
           </p>
+          {/* 只读：常驻是个开关，改它去「⋯」菜单；这里只是让人确认这条会话会不会被空闲回收 */}
+          <p className="mt-1 flex min-w-0 items-baseline gap-1.5 text-meta" data-testid="session-details-pinned">
+            <span className="shrink-0 text-tertiary">常驻</span>
+            <span className="text-secondary">{session.pinned === true ? '是' : '否'}</span>
+          </p>
         </header>
 
         <div className="flex-1 space-y-3 overflow-y-auto px-3 py-2.5">

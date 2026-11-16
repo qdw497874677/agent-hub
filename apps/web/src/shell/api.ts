@@ -234,6 +234,14 @@ export interface AgentMessageDto {
 const sq = (sessionId: string) => `/api/sessions/${encodeURIComponent(sessionId)}`;
 
 /**
+ * 会话级的开关（和 `api` 里那些会话动作同一套写请求写法，单独放一处便于按会话成组）。
+ * `pin` = 常驻：Worker 不按空闲回收这条会话，也不占保活上限；权限与「说话」同一档。
+ */
+export const sessionsApi = {
+  pin: (sessionId: string, pinned: boolean) => post<SessionDto>(`${sq(sessionId)}/pin`, { pinned })
+};
+
+/**
  * 会话所属的组合工作目录。`session.groupId` 后端已经返回，契约的 sessionSchema 还没补这个字段，
  * 所以在这里做一次结构化读取，等契约补上后换成直接 `session.groupId` 即可。
  */
