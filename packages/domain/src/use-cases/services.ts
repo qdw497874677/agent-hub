@@ -32,7 +32,7 @@ import { locationOf } from './workspaces.ts';
  */
 export type ServiceDeps = Pick<Deps, 'projects' | 'tasks' | 'sessions' | 'workspaces' | 'access' | 'now'> & {
   readonly sessionServices: SessionServiceRepository;
-  readonly gateway: Pick<NodeGateway, 'services'>;
+  readonly gateway: Pick<NodeGateway, 'services' | 'processes'>;
 };
 
 export interface CreateServiceInput {

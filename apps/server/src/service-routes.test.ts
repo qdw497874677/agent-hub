@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import {
   asProjectId,
   asTaskId,
+  type ProcessInfo,
   type Project,
   type ServiceDeps,
   type ServiceGateway,
@@ -133,6 +134,59 @@ test('建服务 201，列表能看到；body 按 serviceSchema 出，命令进�
   const list = (await listed.json()) as { services?: unknown[] };
   assert.equal(list.services?.length, 1);
   assert.equal(serviceSchema.parse(list.services?.[0]).id, service.id);
+});
+
+test('进程清单：按 worker 返回全部，按会话只留 workspace 根之下的，root 前缀相同但不在其内的排除', async () => {
+  const processes: ProcessInfo[] = [
+    { pid: 10, ppid: 1, cmd: 'npm run dev', cwd: '/tmp/demo', ports: [3000] },
+    { pid: 11, ppid: 10, cmd: 'node server.js', cwd: '/tmp/demo/sub', ports: [] },
+    { pid: 12, ppid: 1, cmd: 'other', cwd: '/tmp/demo2', ports: [] }
+  ];
+  const deps = {
+    projects: { byId: async (id: string) => (id === project.id ? project : null) },
+    tasks: { byId: async (id: string) => (id === task.id ? task : null) },
+    sessions: {
+      byId: async (id: string) =>
+        id === 's-1'
+          ? { id: 's-1', taskId: task.id, workspaceId: 'w-1', workerId: 'w1', createdAt: 1, updatedAt: 1 }
+          : null,
+    },
+    workspaces: {
+      byId: async (id: string) =>
+        id === 'w-1' ? { id: 'w-1', workerId: 'w1', path: '/tmp/demo', state: 'ready' } : null,
+    },
+    access: undefined,
+    now: () => 1_700_000_000_000,
+    sessionServices: repo(),
+    gateway: {
+      services: () => gatewayOf([], []),
+      processes: async (workerId: string) =>
+        workerId === 'w1' ? { ok: true as const, value: processes } : { ok: false as const, error: { code: 'not_found', message: 'x' } },
+    },
+  } as unknown as ServiceDeps;
+  const app = new Hono();
+  installServiceRoutes(app, { deps }, () => null);
+
+  const byWorker = await app.request('/api/workers/w1/processes');
+  assert.equal(byWorker.status, 200);
+  const workerBody = (await byWorker.json()) as { processes?: ProcessInfo[] };
+  assert.deepEqual(workerBody.processes?.map((process) => process.pid), [10, 11, 12]);
+
+  const bySession = await app.request('/api/sessions/s-1/processes');
+  assert.equal(bySession.status, 200);
+  const sessionBody = (await bySession.json()) as { processes?: ProcessInfo[] };
+  assert.deepEqual(sessionBody.processes?.map((process) => process.pid), [10, 11]);
+
+  // 没有 workspace 的会话：空数组，不是错误
+  const orphan = {
+    ...deps,
+    sessions: { byId: async () => ({ id: 's-2', taskId: task.id, workspaceId: null, workerId: 'w1' }) },
+  } as unknown as ServiceDeps;
+  const orphanApp = new Hono();
+  installServiceRoutes(orphanApp, { deps: orphan }, () => null);
+  const empty = await orphanApp.request('/api/sessions/s-2/processes');
+  assert.equal(empty.status, 200);
+  assert.deepEqual(((await empty.json()) as { processes?: ProcessInfo[] }).processes, []);
 });
 
 test('请求体不合法 400；任务 / 服务不存在 404', async () => {

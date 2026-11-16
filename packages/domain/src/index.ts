@@ -58,7 +58,7 @@ export type { AgentRuntime, BranchSpec, RuntimeSession, SessionAssets, StartSpec
 export type { SessionEventStream, SessionStreamFrame } from './ports/event-stream.ts';
 export type { ResourceProbe } from './ports/resource-probe.ts';
 export type { WorkerMetrics } from './ports/worker-metrics.ts';
-export type { NodeGateway, WorkerCommand, DispatchOutcome, ServiceGateway, ServiceStartInput, ServiceRuntime } from './ports/node-gateway.ts';
+export type { NodeGateway, WorkerCommand, DispatchOutcome, ServiceGateway, ServiceStartInput, ServiceRuntime, ProcessInfo } from './ports/node-gateway.ts';
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';

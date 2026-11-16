@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
 import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { WorkspaceBrowser } from '@agent-hub/domain';
+import type { ProcessInfo, WorkspaceBrowser } from '@agent-hub/domain';
 import { createRemoteBrowsers } from './remote-workspace-browser.ts';
 import type { AgentDto, RpcChannel, RpcOutcome, RpcPort, ServerToWorker, WorkerToServer } from '@agent-hub/contract';
 import {
@@ -17,6 +17,7 @@ import {
   fsListFiles,
   fsMakeDirectory,
   fsReadFile,
+  procList,
   serviceList,
   serviceLogs,
   serviceStart,
@@ -329,6 +330,8 @@ export interface ServerGateway {
   reconcileTerminals(workerId: string): Promise<void>;
   /** 那台 Worker 上的会话服务（ws.service_*）。 */
   services(workerId: string): ServiceGateway;
+  /** 那台 Worker 上 cwd 落在允许目录里的进程 / 监听端口（只读，`proc.list`）。 */
+  processes(workerId: string): Promise<Result<readonly ProcessInfo[], DomainError>>;
   /** worker 重连后对账：hub 记着在跑、worker 上却没有的服务（机器重启后没拉起来）。 */
   reconcileServices(workerId: string): Promise<void>;
   /** 远端 Worker 上的工作空间文件浏览（ADR 0025）。 */
@@ -598,6 +601,18 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         return toDomain(outcome, '读取本地服务日志', workerId);
       }
     };
+  }
+
+  /**
+   * `proc.list`：只读进程 / 端口清单，不做任何状态推断。
+   * 和 services 用同一道闸门（在线 + `service` 能力）；返回结构就是 domain 的 ProcessInfo。
+   */
+  async function processes(workerId: string): Promise<Result<readonly ProcessInfo[], DomainError>> {
+    const gate = serviceGate(workerId);
+    if (!gate.ok) return gate;
+    const outcome = await gate.value.request(procList, {}, { timeoutMs: 15_000 });
+    if (!outcome.ok) return toDomain(outcome, '查看进程清单', workerId);
+    return { ok: true, value: outcome.value.processes };
   }
 
   /**
@@ -1196,6 +1211,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     sendTerminalInput,
     reconcileTerminals,
     services,
+    processes,
     reconcileServices,
     workers(): WorkerStatus[] {
       return statuses();

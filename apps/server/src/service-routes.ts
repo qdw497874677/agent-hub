@@ -1,12 +1,19 @@
 import type { Context, Hono } from 'hono';
 import { createServiceRequest, serviceSchema } from '@agent-hub/contract';
 import {
+  asSessionId,
+  asWorkspaceId,
+  authorizeSession,
   createServiceUseCase,
   listServicesUseCase,
+  notFound,
+  projectOfRef,
   readServiceLogsUseCase,
   removeServiceUseCase,
   servicePublic,
   stopServiceUseCase,
+  unavailable,
+  workerReader,
   type ServiceDeps,
   type Subject,
 } from '@agent-hub/domain';
@@ -96,6 +103,41 @@ export function installServiceRoutes(app: Hono<any>, options: ServiceRouteOption
   app.get('/api/sessions/:sessionId/services', async (c) => {
     const result = await listServicesUseCase(deps, subjectOf(c), { kind: 'session', sessionId: c.req.param('sessionId') });
     return result.ok ? c.json({ services: dtosOf(result.value) }) : fail(c, result.error);
+  });
+
+  /** 一台 Worker 上消过毒的进程清单（只读）：和机器列表一样用 worker.read 过滤，看不见就 404。 */
+  app.get('/api/workers/:workerId/processes', async (c) => {
+    const workerId = c.req.param('workerId');
+    const readable = await workerReader(deps.access, subjectOf(c));
+    if (!(await readable(workerId))) return fail(c, notFound('没有这台机器'));
+    if (!deps.gateway.processes) return fail(c, unavailable('这台 Worker 不支持进程清单'));
+    const result = await deps.gateway.processes(workerId);
+    return result.ok ? c.json({ processes: result.value }, 200, { 'cache-control': 'no-store' }) : fail(c, result.error);
+  });
+
+  /**
+   * 会话视角：只报这个会话工作空间根之下的进程。
+   * 拿不到工作空间（老会话 / 已删除）就回空数组，不让查看进程这件事本身变成错误。
+   */
+  app.get('/api/sessions/:sessionId/processes', async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const session = await deps.sessions.byId(asSessionId(sessionId));
+    if (!session) return fail(c, notFound('会话不存在'));
+    const { project } = await projectOfRef(deps, { kind: 'session', id: sessionId });
+    const allowed = await authorizeSession(deps.access, subjectOf(c), project, session, 'session.read');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const workspace = session.workspaceId === null ? null : await deps.workspaces.byId(asWorkspaceId(session.workspaceId));
+    const workerId = workspace === null ? null : workspace.workerId ?? session.workerId;
+    if (workspace === null || workerId === null) return c.json({ processes: [] }, 200, { 'cache-control': 'no-store' });
+    if (!deps.gateway.processes) return fail(c, unavailable('这台 Worker 不支持进程清单'));
+    const result = await deps.gateway.processes(workerId);
+    if (!result.ok) return fail(c, result.error);
+    const root = workspace.path.endsWith('/') ? workspace.path : `${workspace.path}/`;
+    return c.json(
+      { processes: result.value.filter((process) => process.cwd === workspace.path || process.cwd.startsWith(root)) },
+      200,
+      { 'cache-control': 'no-store' },
+    );
   });
 
   app.post('/api/services/:serviceId/stop', async (c) => {

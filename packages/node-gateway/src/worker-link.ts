@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema, serviceList, serviceLogs, serviceStart, serviceStop, terminalClose, terminalList, terminalOpen, terminalResize } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, procList, providerTest, serverToWorkerSchema, serviceList, serviceLogs, serviceStart, serviceStop, terminalClose, terminalList, terminalOpen, terminalResize } from '@agent-hub/contract';
 import { RECONNECT_POLICY, asTaskId, canInvoke, capabilityDenied, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
 import type { WorkerCapability } from '@agent-hub/domain';
 import { createProviderRelay } from './provider-relay.ts';
@@ -20,6 +20,7 @@ import type {
 import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
 import type { WorkerAssets } from './worker-assets.ts';
+import type { ProcessInfo } from './process-scan.ts';
 import { TerminalNotReadyError, type TerminalHost } from './terminal.ts';
 import { ServiceHostError, type ServiceHost, type ServiceStateEvent } from './service-host.ts';
 import type { UpdateReport } from './updater.ts';
@@ -98,6 +99,11 @@ export interface WorkerLinkOptions {
    * 不给 = `ws.service_*` 一律回 unsupported，hub 侧显示「这台机器的 Worker 太旧」。
    */
   readonly service?: ServiceHost;
+  /**
+   * 只读的进程 / 端口清单（proc.list）：worker 侧扫 /proc，只收 cwd 在 roots 里的。
+   * 不给 = 一律回 unsupported，hub 侧当作这台 Worker 不支持。
+   */
+  readonly processes?: () => readonly ProcessInfo[];
   /**
    * 终端原始输出旁路（docs/design/preview.md §5）：组合根拿它做预览端口发现。
    * 不给 = 什么都不做（老调用方 / 测试）。
@@ -502,6 +508,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     } catch (error) {
       throw serviceFailure(error);
     }
+  });
+
+  /** 只读进程清单：worker 侧扫描，hub 只展示；没有装配 = 老 Worker。 */
+  channel.handle(procList, async () => {
+    if (!options.processes) throw new RpcFailure('unsupported', '这台 Worker 不支持进程清单');
+    return { processes: [...options.processes()] };
   });
 
   const send = (frame: WorkerToServer): void => {

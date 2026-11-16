@@ -290,7 +290,10 @@ const deps: Deps = {
     // groups 挂在网关外层（不是 gateway 对象上）：ServerGateway 的 gateway 只实现 domain 端口那部分。
     groups: (workerId) => (serverGateway ? serverGateway.groups(workerId) : missingGroups),
     // 会话服务（docs/design/session-service.md）：和 groups 一样挂在网关外层，通道没起来时给替身。
-    services: (workerId) => (serverGateway ? serverGateway.services(workerId) : missingServices)
+    services: (workerId) => (serverGateway ? serverGateway.services(workerId) : missingServices),
+    // 只读进程 / 端口清单：同样挂在网关外层；通道没起来时按不可用处理。
+    processes: async (workerId) =>
+      serverGateway ? serverGateway.processes(workerId) : err(unavailable('worker 通道尚未就绪'))
   },
   agents: catalog,
   fs: createLocalFs(),

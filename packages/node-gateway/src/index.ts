@@ -45,6 +45,7 @@ export { installComponent, installBundle, uninstallComponent, hubComponentDirs, 
 export { createWorkspaceBrowser, type BrowserOptions } from './workspace-browser.ts';
 export { createTerminalHost, TerminalNotReadyError } from './terminal.ts';
 export { createServiceHost, ServiceHostError, SERVICE_PORT_TIMEOUT_MS, SERVICE_LOG_MAX } from './service-host.ts';
+export { scanProcesses, PROCESS_CMD_MAX, type ProcessInfo, type ScanProcessesOptions } from './process-scan.ts';
 export type { ServiceHost, ServiceHostOptions, ServiceSpec, ServiceStateEvent, ServiceRuntimeInfo } from './service-host.ts';
 export type { TerminalHost, TerminalHostOptions, TerminalOpenParams, TerminalOpenResult, PtyModuleLike, PtyProcessLike } from './terminal.ts';
 export { createRemoteBrowsers, offlineWorkspaceBrowser } from './remote-workspace-browser.ts';

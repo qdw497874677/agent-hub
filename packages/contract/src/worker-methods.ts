@@ -424,3 +424,26 @@ export const serviceLogs = method(
   z.object({ serviceId, maxBytes: z.number().int().min(0).max(65536).optional() }),
   z.object({ tail: z.string().max(65536) })
 );
+
+/**
+ * 只读的进程 / 端口清单：worker 只报 cwd 落在 WORKER_ROOTS 里的进程，命令行已脱敏并截断。
+ * 不登记、不托管，hub 拿了只展示。
+ */
+export const procList = method(
+  'proc.list', 'service',
+  z.object({}),
+  z.object({
+    processes: z
+      .array(
+        z.object({
+          pid: z.number().int().positive(),
+          ppid: z.number().int().nonnegative(),
+          /** 已过 scrubCredentials，长度 ≤ 200。 */
+          cmd: z.string().max(200),
+          cwd: z.string().max(8192),
+          ports: z.array(z.number().int().min(1).max(65535)).max(256)
+        })
+      )
+      .max(200)
+  })
+);

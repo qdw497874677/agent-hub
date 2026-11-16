@@ -115,6 +115,18 @@ export interface ServiceGateway {
   logs(serviceId: ServiceId, maxBytes?: number): Promise<Result<{ readonly tail: string }, DomainError>>;
 }
 
+/**
+ * 一台 Worker 上的一个进程（只读清单，不登记、不托管）。
+ * `cmd` 已过凭据脱敏并截断；`cwd` / `cmd` 都是不可信内容，展示前不要当 HTML。
+ */
+export interface ProcessInfo {
+  readonly pid: number;
+  readonly ppid: number;
+  readonly cmd: string;
+  readonly cwd: string;
+  readonly ports: readonly number[];
+}
+
 export interface NodeGateway {
   status(): Promise<WorkerStatus[]>;
   dispatch(command: WorkerCommand): Promise<Result<DispatchOutcome, DomainError>>;
@@ -149,6 +161,11 @@ export interface NodeGateway {
   groups?(workerId: string): WorkspaceGroupGit;
   /** 那台 Worker 上的长驻服务（ws.service_*）。可选：老网关没有。 */
   services?(workerId: string): ServiceGateway;
+  /**
+   * 那台 Worker 上 cwd 落在 WORKER_ROOTS 里的进程（proc.list，只读）。
+   * 可选：老网关没有；离线 / 没有 `service` 能力时返回 unavailable。
+   */
+  processes?(workerId: string): Promise<Result<readonly ProcessInfo[], DomainError>>;
   /**
    * 「重新检测」：让那台 Worker 立刻重新探测各 harness 是否可用，结果异步经它的 agent 清单回来。
    * 不在线返回 false。可选：不支持的网关 = 无从检测。
