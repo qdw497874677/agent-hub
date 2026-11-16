@@ -152,10 +152,11 @@ export function projectEvents(value: unknown): unknown {
   if (!Array.isArray(value)) return value;
   const out: Record<string, unknown>[] = [];
   for (const raw of value) {
-    const entry = raw as { seq?: number; at?: number; event?: Record<string, unknown> };
+    const entry = raw as { seq?: number; at?: number; turn?: number; event?: Record<string, unknown> };
     const event = entry.event ?? {};
     const kind = typeof event['kind'] === 'string' ? event['kind'] : '';
-    const base = { seq: entry.seq ?? 0, at: entry.at ?? 0 };
+    // turn 要带上：调用方靠它把「这一句」和「这一轮的事件」对上（events?sinceTurn=）。
+    const base = { seq: entry.seq ?? 0, at: entry.at ?? 0, ...(typeof entry.turn === 'number' ? { turn: entry.turn } : {}) };
     if (kind === 'text') {
       out.push({ ...base, event: { kind: 'text', text: typeof event['text'] === 'string' ? event['text'] : '' } });
     } else if (kind === 'tool_call') {
