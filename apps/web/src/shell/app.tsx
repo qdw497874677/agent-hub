@@ -383,8 +383,9 @@ function Workspace() {
           }
         />
       ) : (
-      <div className="flex min-h-0 flex-1">
-        <div className="relative flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1">
+        {/* min-w-0：不然行里截断的长标题会按 min-content 把这一栏撑出屏（390 宽下整页能横滑 200px） */}
+        <div className="relative min-w-0 flex-1">
           {canvas.data && view === 'list' ? (
             <ListView
               canvas={canvas.data}
