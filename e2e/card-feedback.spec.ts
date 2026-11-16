@@ -64,7 +64,7 @@ test('画布卡片：发出去先有气泡，回显后消失', async ({ page, ba
   });
 
   await area.fill(text);
-  await area.press('Enter');
+  await area.press('Control+Enter');
 
   const pending = page.getByTestId('card-pending-prompts');
   await expect(pending).toBeVisible();
@@ -87,7 +87,7 @@ test('画布卡片：弱网超时变未送达，重试不产生重复消息', as
   });
 
   await area.fill(text);
-  await area.press('Enter');
+  await area.press('Control+Enter');
 
   await expect(page.getByTestId('card-pending-prompts')).toBeVisible();
   await expect(page.getByTestId('card-pending-unknown')).toBeVisible({ timeout: 12_000 });

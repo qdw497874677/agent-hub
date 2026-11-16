@@ -110,7 +110,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // 冷启动时卡片会在「填好」和「按回车」之间被画布重新挂载一次：回车落在已卸下的旧输入框上就丢了，
   // 新输入框又按草稿把原话填回来（这就是偶发的「一直没输出」）。发出去的标志是输入框清空，没清空就再按一次。
   await expect(async () => {
-    await cardInput.press('Enter');
+    await cardInput.press('Control+Enter');
     await expect(cardInput).toHaveValue('', { timeout: 2_000 });
   }).toPass({ timeout: 30_000 });
 
