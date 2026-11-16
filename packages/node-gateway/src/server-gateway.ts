@@ -17,6 +17,10 @@ import {
   fsListFiles,
   fsMakeDirectory,
   fsReadFile,
+  serviceList,
+  serviceLogs,
+  serviceStart,
+  serviceStop,
   terminalClose,
   terminalList,
   terminalOpen,
@@ -67,6 +71,7 @@ import type {
 } from '@agent-hub/domain';
 import { canInvoke, capabilityDenied, commandCapability, forbidden } from '@agent-hub/domain';
 import type { WorkerCapability } from '@agent-hub/domain';
+import type { ServiceGateway, ServiceRuntime, ServiceState } from '@agent-hub/domain';
 import { assessPressure, detectDrift, conflict, debouncePressure, initialDebounce, invalid, unavailable } from '@agent-hub/domain';
 
 /** hub 留给每台机器的安装日志上限（字符，取末尾）。 */
@@ -118,6 +123,17 @@ export interface GatewayHooks {
   knownTerminals?(workerId: string): ReadonlySet<string>;
   onTerminalData?(workerId: string, terminalId: string, data: string): void;
   onTerminalExit?(workerId: string, terminalId: string, code: number, signal?: number): void;
+  /**
+   * 会话服务（docs/design/session-service.md）：
+   * - `onServiceState` / `onServiceLog`：worker 主动推的状态与输出，hub 据此落库。
+   * - `onServiceMissing`：重连对账时，hub 记着 running / starting 但 worker 上已经没有这条服务
+   *   （机器重启后没拉起来）。是否真的标 failed 由领域决定。
+   */
+  onServiceState?(workerId: string, event: { serviceId: string; state: ServiceState; pid?: number | null; detail?: string | null; port?: number | null }): void;
+  onServiceLog?(workerId: string, serviceId: string, chunk: string): void;
+  onServiceMissing?(workerId: string, serviceId: string): void;
+  /** hub 上还没结束（running / starting）的服务 id：对账时逐个问 worker 还在不在。 */
+  knownServices?(workerId: string): Promise<ReadonlySet<string>> | ReadonlySet<string>;
   /** Worker 报来更新进度（给日志用；状态本身网关会记着，出现在 workers() 里）。 */
   onUpdateStatus?(workerId: string, update: WorkerUpdate): void;
   /** 运行时任务结束（成功 / 失败 / 被拒）。 */
@@ -232,6 +248,8 @@ interface Registered {
   capabilities: readonly string[] | null;
   /** 这条连接做过终端对账没有（重连 / inventory 只做一次）。 */
   terminalReconciled: boolean;
+  /** 这条连接做过服务对账没有。 */
+  serviceReconciled: boolean;
   /** 这次连接的来历：给界面显示「上次连上 · 来自 · 版本」。 */
   connection: { at: number; address: string | null; version: string | null };
 }
@@ -309,6 +327,10 @@ export interface ServerGateway {
   sendTerminalInput(workerId: string, terminalId: string, data: string): boolean;
   /** worker 重连后对账：关掉 hub 不认识、worker 上还活着的 PTY。 */
   reconcileTerminals(workerId: string): Promise<void>;
+  /** 那台 Worker 上的会话服务（ws.service_*）。 */
+  services(workerId: string): ServiceGateway;
+  /** worker 重连后对账：hub 记着在跑、worker 上却没有的服务（机器重启后没拉起来）。 */
+  reconcileServices(workerId: string): Promise<void>;
   /** 远端 Worker 上的工作空间文件浏览（ADR 0025）。 */
   browser(workerId: string): WorkspaceBrowser;
   /**
@@ -522,6 +544,82 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     }
   }
 
+
+  /* ── 会话服务（docs/design/session-service.md §4） ── */
+
+  /** 服务 RPC 的前置闸门：离线、凭据没有 `service` 都在这里挡掉。 */
+  function serviceGate(workerId: string): Result<RpcChannel, DomainError> {
+    const entry = online(workerId);
+    if (!entry?.channel) return { ok: false, error: unavailable(`Worker「${labelOf(workerId)}」不在线`) };
+    if (!canInvoke(entry.capabilities, 'service')) return { ok: false, error: forbidden(capabilityDenied('service')) };
+    return { ok: true, value: entry.channel };
+  }
+
+  /**
+   * `ws.service.*`：只搬参数、折错误，不做任何状态推断——状态由 worker 的 `service_state` 推上来。
+   * stop 可能等 3 秒宽限再 SIGKILL，超时给足。
+   */
+  function services(workerId: string): ServiceGateway {
+    return {
+      async start(input) {
+        const gate = serviceGate(workerId);
+        if (!gate.ok) return gate;
+        const outcome = await gate.value.request(
+          serviceStart,
+          { serviceId: input.serviceId, root: input.root, command: input.command, port: input.port, env: input.env, restart: input.restart },
+          { timeoutMs: 20_000 }
+        );
+        if (!outcome.ok) return toDomain(outcome, '启动本地服务', workerId);
+        return { ok: true, value: { pid: outcome.value.pid, port: outcome.value.port ?? null } };
+      },
+      async stop(serviceId, signal) {
+        const gate = serviceGate(workerId);
+        if (!gate.ok) return gate;
+        const outcome = await gate.value.request(serviceStop, { serviceId, ...(signal === undefined ? {} : { signal }) }, { timeoutMs: 15_000 });
+        return toDomain(outcome, '停止本地服务', workerId);
+      },
+      async list() {
+        const gate = serviceGate(workerId);
+        if (!gate.ok) return gate;
+        const outcome = await gate.value.request(serviceList, {}, { timeoutMs: 15_000 });
+        if (!outcome.ok) return toDomain(outcome, '查看本地服务', workerId);
+        const list: ServiceRuntime[] = outcome.value.services.map((item) => ({
+          serviceId: item.serviceId as ServiceRuntime['serviceId'],
+          pid: item.pid,
+          state: item.state,
+          port: item.port ?? null
+        }));
+        return { ok: true, value: list };
+      },
+      async logs(serviceId, maxBytes) {
+        const gate = serviceGate(workerId);
+        if (!gate.ok) return gate;
+        const outcome = await gate.value.request(serviceLogs, { serviceId, ...(maxBytes === undefined ? {} : { maxBytes }) }, { timeoutMs: 15_000 });
+        return toDomain(outcome, '读取本地服务日志', workerId);
+      }
+    };
+  }
+
+  /**
+   * worker 重连后对账：hub 记着在跑、worker 上却没有的服务，按「机器重启后没拉起来」处理。
+   * 只报缺的，不凭 list 改状态——worker 会在状态真的变了的时候推 `service_state`。
+   */
+  async function reconcileServices(workerId: string): Promise<void> {
+    const entry = online(workerId);
+    if (!entry?.channel || !canInvoke(entry.capabilities, 'service') || entry.serviceReconciled) return;
+    entry.serviceReconciled = true;
+    const listed = await services(workerId).list();
+    if (!listed.ok) {
+      hooks.onLog?.(`服务对账失败（${workerId}）：${listed.error.message}`);
+      return;
+    }
+    const alive = new Set(listed.value.map((service) => service.serviceId));
+    const known = (await hooks.knownServices?.(workerId)) ?? new Set<string>();
+    for (const serviceId of known) {
+      if (!alive.has(serviceId as ServiceRuntime['serviceId'])) hooks.onServiceMissing?.(workerId, serviceId);
+    }
+  }
+
   function dispatchTo(command: WorkerCommand): Result<void, DomainError> {
     if (command.kind === 'start_session') {
       const sent = sendTo(command.workerId, toWire(command));
@@ -540,6 +638,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     if (entry.socket !== socket) return;
     entry.socket = null;
     entry.terminalReconciled = false;
+    entry.serviceReconciled = false;
     entry.reason = reason;
     feed(entry, { type: 'closed', rejected: entry.kicked });
     remoteBrowsers.workerGone(entry.workerId);
@@ -698,6 +797,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
           channel: null,
           capabilities: verdict.capabilities ?? null,
           terminalReconciled: false,
+          serviceReconciled: false,
           connection: { at: now(), address: clientAddress, version: build?.commit ?? null }
         };
         previous?.channel?.close('被同一台机器的新连接顶替');
@@ -744,6 +844,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         if (policy.echoMs > 0) void echo(entry);
         hooks.onHello(describe(entry), frame.agents, frame.sessions);
         void reconcileTerminals(entry.workerId);
+        void reconcileServices(entry.workerId);
         return;
       }
 
@@ -782,6 +883,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
         if (entry.trial) entry.trial.inventoryApplied = true;
         // hello 里没带上 terminal.list 的老 worker，等 inventory 落地后再对一次账
         void reconcileTerminals(entry.workerId);
+        void reconcileServices(entry.workerId);
         return;
       }
       if (frame.type === 'metrics') {
@@ -802,6 +904,20 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       }
       if (frame.type === 'terminal_exit') {
         hooks.onTerminalExit?.(from, frame.terminalId, frame.code, frame.signal);
+        return;
+      }
+      if (frame.type === 'service_state') {
+        hooks.onServiceState?.(from, {
+          serviceId: frame.serviceId,
+          state: frame.state,
+          pid: frame.pid ?? null,
+          detail: frame.detail ?? null,
+          port: frame.port ?? null
+        });
+        return;
+      }
+      if (frame.type === 'service_log') {
+        hooks.onServiceLog?.(from, frame.serviceId, frame.chunk);
         return;
       }
       if (frame.type === 'event') hooks.onEvent(from, frame.sessionId as SessionId, frame.event);
@@ -1079,6 +1195,8 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
     listTerminals,
     sendTerminalInput,
     reconcileTerminals,
+    services,
+    reconcileServices,
     workers(): WorkerStatus[] {
       return statuses();
     },

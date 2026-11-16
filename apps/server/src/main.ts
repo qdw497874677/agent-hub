@@ -27,7 +27,7 @@ import { createSessionEnvironment } from './session-environment.ts';
 import { createGitTextWriter } from './git-text-writer.ts';
 import { createGitHubApi } from './github-api.ts';
 import { createModelDistiller } from './model-distiller.ts';
-import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, SessionId, Subject, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
+import type { AssetReviewDeps, Deps, EnrollmentDeps, EnvironmentPlanner, ProjectId, RuntimeJob, ServiceGateway, SessionId, Subject, TaskId, ToolGateway, UserId, WorkerMetrics, WorkspaceGroupGit } from '@agent-hub/domain';
 import { authenticateWorker, createTaskToolProvider, createToolGateway, withToolAccess,
   createMessageBus,
   createBotUseCase,
@@ -49,6 +49,8 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   createGitWorkflowService,
   createRewindService,
   recordProvenance,
+  recordServiceLogUseCase,
+  recordServiceStateUseCase,
   createMessageToolProvider,
   createMemoryService,
   checkProviderModel,
@@ -192,6 +194,14 @@ const missingGroups: WorkspaceGroupGit = {
   newWorktree: async () => err(unavailable('worker 通道尚未就绪'))
 };
 
+/** 服务通道没起来时的替身：每个方法都返回可读的失败，不抛。 */
+const missingServices: ServiceGateway = {
+  start: async () => err(unavailable('worker 通道尚未就绪')),
+  stop: async () => err(unavailable('worker 通道尚未就绪')),
+  list: async () => err(unavailable('worker 通道尚未就绪')),
+  logs: async () => err(unavailable('worker 通道尚未就绪'))
+};
+
 const deps: Deps = {
   handoffTokenCap: handoffCapFromEnv(readEnv('HUB_HANDOFF_TOKEN_CAP') ?? undefined),
   projects: store.projects,
@@ -204,6 +214,7 @@ const deps: Deps = {
   artifacts: store.artifacts,
   layout: store.layout,
   links: store.links,
+  sessionServices: store.sessionServices,
   agentProfiles: store.agentProfiles,
   bots: store.bots,
   toolGrants: store.toolGrants,
@@ -277,7 +288,9 @@ const deps: Deps = {
     // 组合工作空间要的是容器 / worktree 的组级操作（§11.1）。通道没起来时和 git 一样直接抛，
     // 用例只在拿不到 groups 时才回「这台机器不支持组合工作空间」。
     // groups 挂在网关外层（不是 gateway 对象上）：ServerGateway 的 gateway 只实现 domain 端口那部分。
-    groups: (workerId) => (serverGateway ? serverGateway.groups(workerId) : missingGroups)
+    groups: (workerId) => (serverGateway ? serverGateway.groups(workerId) : missingGroups),
+    // 会话服务（docs/design/session-service.md）：和 groups 一样挂在网关外层，通道没起来时给替身。
+    services: (workerId) => (serverGateway ? serverGateway.services(workerId) : missingServices)
   },
   agents: catalog,
   fs: createLocalFs(),
@@ -1189,6 +1202,32 @@ serverGateway = createServerGateway({
   onTerminalExit(workerId, terminalId, code) {
     terminalBridge?.onWorkerExit(workerId, terminalId, code);
   },
+  // 会话服务（docs/design/session-service.md）：worker 推的状态 / 输出直接落库；hub 不做乐观状态。
+  knownServices: async (workerId) =>
+    new Set(
+      (await store.sessionServices.listByWorker(workerId))
+        .filter((service) => service.state === 'running' || service.state === 'starting')
+        .map((service) => service.id)
+    ),
+  onServiceState(workerId, event) {
+    void recordServiceStateUseCase({ sessionServices: store.sessionServices, now: deps.now }, event.serviceId, {
+      state: event.state,
+      pid: event.pid ?? null,
+      detail: event.detail ?? null
+    }).catch((error: unknown) => log(`记录服务状态失败（${workerId}/${event.serviceId}）：${String(error)}`));
+  },
+  onServiceLog(workerId, serviceId, chunk) {
+    void recordServiceLogUseCase({ sessionServices: store.sessionServices }, serviceId, chunk).catch((error: unknown) =>
+      log(`记录服务日志失败（${workerId}/${serviceId}）：${String(error)}`)
+    );
+  },
+  onServiceMissing(workerId, serviceId) {
+    void recordServiceStateUseCase({ sessionServices: store.sessionServices, now: deps.now }, serviceId, {
+      state: 'failed',
+      pid: null,
+      detail: '机器重启后没有拉起来'
+    }).catch((error: unknown) => log(`标记服务失联失败（${workerId}/${serviceId}）：${String(error)}`));
+  },
   onLog: log
 });
 
@@ -1436,6 +1475,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
   providers: providerWiring,
   // 预览链接（docs/design/preview.md §4）：只装 `/api/sessions/:id/previews` 三条路由，转发在代理层。
   ...(previewPorts === null ? {} : { previews: { deps: { ...deps, previewLinks: store.previewLinks }, ports: previewPorts, afterChange: () => reconcilePreviews(), ...(readEnv('HUB_PUBLIC_URL') === null ? {} : { publicHost: new URL(readEnv('HUB_PUBLIC_URL') as string).hostname, https: new URL(readEnv('HUB_PUBLIC_URL') as string).protocol === 'https:' }) } }),
+  services: { deps: { ...deps, sessionServices: store.sessionServices } },
   resources: { metrics: workerMetrics, settings: store.settings, workers: workerControl, audit: store.audit, now: () => Date.now(), access: deps.access },
   /** 每台 Worker 的自定义运行时别名（CAP-1）：存库 + 推给在线 Worker（离线就等它下次连上自动推）。 */
   workerAgents: {

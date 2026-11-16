@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import type { ServerToWorker, SessionEventDto, WorkerToServer } from '@agent-hub/contract';
-import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema, terminalClose, terminalList, terminalOpen, terminalResize } from '@agent-hub/contract';
+import { PROTOCOL_MISMATCH_CLOSE, WORKER_CAPABILITY_METRICS, WORKER_CAPABILITY_NATIVE_BRANCH, RpcFailure, assetsFetch, assetsSync, createRpcChannel, linkEcho, providerTest, serverToWorkerSchema, serviceList, serviceLogs, serviceStart, serviceStop, terminalClose, terminalList, terminalOpen, terminalResize } from '@agent-hub/contract';
 import { RECONNECT_POLICY, asTaskId, canInvoke, capabilityDenied, commandCapability, reconnectDelay, workerWatchdogMs } from '@agent-hub/domain';
 import type { WorkerCapability } from '@agent-hub/domain';
 import { createProviderRelay } from './provider-relay.ts';
@@ -21,6 +21,7 @@ import { asSessionId } from '@agent-hub/domain';
 import type { WorkerFiles } from './worker-files.ts';
 import type { WorkerAssets } from './worker-assets.ts';
 import { TerminalNotReadyError, type TerminalHost } from './terminal.ts';
+import { ServiceHostError, type ServiceHost, type ServiceStateEvent } from './service-host.ts';
 import type { UpdateReport } from './updater.ts';
 import type { RuntimeJobReport, RuntimeManager } from './runtime-jobs.ts';
 import { createMcpEndpoint } from './mcp-endpoint.ts';
@@ -92,6 +93,11 @@ export interface WorkerLinkOptions {
    * `terminal.*` 一律回 unsupported，界面不显示终端页签。
    */
   readonly terminal?: TerminalHost;
+  /**
+   * 会话服务（docs/design/session-service.md）：本地长驻进程的启停与日志。
+   * 不给 = `ws.service_*` 一律回 unsupported，hub 侧显示「这台机器的 Worker 太旧」。
+   */
+  readonly service?: ServiceHost;
   /**
    * 终端原始输出旁路（docs/design/preview.md §5）：组合根拿它做预览端口发现。
    * 不给 = 什么都不做（老调用方 / 测试）。
@@ -175,6 +181,10 @@ export interface WorkerLink {
   sendTerminalData(terminalId: string, data: Uint8Array): void;
   /** 终端里的进程退出了。 */
   sendTerminalExit(terminalId: string, code: number, signal?: number): void;
+  /** 服务状态变化（starting / running / failed / stopped）。 */
+  sendServiceState(event: ServiceStateEvent): void;
+  /** 服务输出（500ms 合批，只留尾部 16 KiB）。 */
+  sendServiceLog(serviceId: string, chunk: string): void;
   /** 终端原始输出转给组合根（预览端口发现用）；没配 `onTerminalOutput` = 丢弃。 */
   forwardTerminalOutput(sessionId: string, text: string): void;
   /** 当前链路还有多少字节没发出去（终端背压用）。 */
@@ -445,6 +455,54 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   });
   channel.handle(terminalList, async () => ({ terminals: terminal ? terminal.list() : [] }));
+
+  /**
+   * 会话服务 RPC（docs/design/session-service.md §4）：root 边界、端口就绪、重拉退避都在
+   * ServiceHost 里，这里只做「没有装配就 unsupported」和错误码翻译。
+   */
+  const service = options.service;
+  /** 500ms 合批：Docker 式的构建日志一刷就是几十行，逐条发会把链路打满。 */
+  const SERVICE_LOG_INTERVAL_MS = 500;
+  const SERVICE_LOG_FRAME_MAX = 16_384;
+  const serviceLogBuffers = new Map<string, string>();
+  const serviceLogTimers = new Map<string, NodeJS.Timeout>();
+  const serviceUnavailable = (): never => {
+    throw new RpcFailure('unsupported', '这台 Worker 不支持本地服务');
+  };
+  const serviceFailure = (error: unknown): RpcFailure =>
+    new RpcFailure(error instanceof ServiceHostError ? error.code : 'failed', message(error));
+  channel.handle(serviceStart, async (input) => {
+    if (!service) return serviceUnavailable();
+    try {
+      return await service.start({
+        serviceId: input.serviceId,
+        root: input.root,
+        command: input.command,
+        port: input.port ?? null,
+        env: input.env ?? {},
+        restart: input.restart
+      });
+    } catch (error) {
+      throw serviceFailure(error);
+    }
+  });
+  channel.handle(serviceStop, async ({ serviceId, signal }) => {
+    if (!service) return serviceUnavailable();
+    try {
+      return await service.stop(serviceId, signal);
+    } catch (error) {
+      throw serviceFailure(error);
+    }
+  });
+  channel.handle(serviceList, async () => ({ services: service ? [...service.list()] : [] }));
+  channel.handle(serviceLogs, async ({ serviceId, maxBytes }) => {
+    if (!service) return serviceUnavailable();
+    try {
+      return { tail: service.logs(serviceId, maxBytes) };
+    } catch (error) {
+      throw serviceFailure(error);
+    }
+  });
 
   const send = (frame: WorkerToServer): void => {
     if (socket && socket.readyState === WebSocket.OPEN && accepted) {
@@ -1266,6 +1324,31 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       if (!socket || socket.readyState !== WebSocket.OPEN || !accepted) return;
       socket.send(JSON.stringify({ type: 'terminal_exit', terminalId, code, ...(signal === undefined ? {} : { signal }) } satisfies WorkerToServer));
     },
+    sendServiceState(event: ServiceStateEvent): void {
+      send({
+        type: 'service_state',
+        serviceId: event.serviceId,
+        state: event.state,
+        ...(event.pid === null ? {} : { pid: event.pid }),
+        ...(event.detail === null ? {} : { detail: event.detail }),
+        ...(event.port === null ? {} : { port: event.port })
+      });
+    },
+    sendServiceLog(serviceId: string, chunk: string): void {
+      if (chunk === '') return;
+      const pending = (serviceLogBuffers.get(serviceId) ?? '') + chunk;
+      serviceLogBuffers.set(serviceId, pending.length > SERVICE_LOG_FRAME_MAX ? pending.slice(-SERVICE_LOG_FRAME_MAX) : pending);
+      if (serviceLogTimers.has(serviceId)) return;
+      const timer = setTimeout(() => {
+        serviceLogTimers.delete(serviceId);
+        const text = serviceLogBuffers.get(serviceId) ?? '';
+        serviceLogBuffers.delete(serviceId);
+        if (text === '') return;
+        send({ type: 'service_log', serviceId, chunk: text });
+      }, SERVICE_LOG_INTERVAL_MS);
+      timer.unref?.();
+      serviceLogTimers.set(serviceId, timer);
+    },
     forwardTerminalOutput(sessionId: string, text: string): void {
       options.onTerminalOutput?.(sessionId, text);
     },
@@ -1288,6 +1371,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       await mcpEndpoint.close();
       await providerRelay.stop();
       await options.terminal?.disposeAll().catch((error: unknown) => options.onLog?.(`回收终端失败：${message(error)}`));
+      options.service?.dispose();
+      for (const timer of serviceLogTimers.values()) clearTimeout(timer);
+      serviceLogTimers.clear();
+      serviceLogBuffers.clear();
       for (const timer of idleTimers.values()) clearTimeout(timer);
       idleTimers.clear();
       for (const sessionId of [...resyncLoops.keys()]) stopResync(sessionId);

@@ -4,7 +4,7 @@ import type { RpcMethod } from './rpc/port.ts';
  * 方法要的能力。与 domain 的 WorkerMethodCapability 同一组字面量（drift.ts 校验两边一致）；
  * 这里不 import domain：web 也吃 contract，不该被拖进 domain 的 node 依赖。
  */
-export type WorkerMethodCapability = 'sessions' | 'files.read' | 'files.write' | 'git' | 'git.remote' | 'runtimes' | 'update' | 'control';
+export type WorkerMethodCapability = 'sessions' | 'files.read' | 'files.write' | 'git' | 'git.remote' | 'runtimes' | 'update' | 'service' | 'control';
 
 /**
  * /worker 长连接上的 RPC 方法表：两端唯一的约定。新加请求-回复就在这里加一项，不再新造帧。
@@ -372,3 +372,55 @@ export const terminalList = method('terminal.list', 'sessions', z.object({}), z.
 
 /** 应用层回声（ADR 0030 D1）：hub 定时问一句，量的是「对端事件循环真的在处理帧」，不只是 TCP 活着。 */
 export const linkEcho = method('link.echo', 'control', z.object({ at: z.number() }), z.object({ at: z.number() }));
+
+/**
+ * 会话服务（docs/design/session-service.md §4）：hub 记账，worker 拉起 / 收起长驻进程。
+ * root 的合法性（必须落在 WORKER_ROOTS 内）由 worker realpath 后判定，hub 只做非空校验。
+ */
+const serviceId = z.string().regex(/^svc_[0-9a-f]{8}$/);
+const serviceEnv = z.record(z.string().min(1).max(200), z.string().max(4000));
+
+export const serviceStart = method(
+  'ws.service.start', 'service',
+  z.object({
+    serviceId,
+    root: z.string().min(1).max(4096),
+    command: z.string().min(1).max(2000),
+    port: z.number().int().min(1024).max(65535).nullable().optional(),
+    env: serviceEnv.optional(),
+    restart: z.enum(['always', 'on-demand', 'never'])
+  }),
+  z.object({
+    pid: z.number().int().positive(),
+    port: z.number().int().min(1024).max(65535).nullable().optional()
+  })
+);
+
+export const serviceStop = method(
+  'ws.service.stop', 'service',
+  z.object({ serviceId, signal: z.enum(['TERM', 'KILL']).optional() }),
+  z.object({ exited: z.boolean() })
+);
+
+export const serviceList = method(
+  'ws.service.list', 'service',
+  z.object({}),
+  z.object({
+    services: z
+      .array(
+        z.object({
+          serviceId,
+          pid: z.number().int().positive().nullable(),
+          state: z.enum(['starting', 'running', 'failed', 'stopped']),
+          port: z.number().int().min(1024).max(65535).nullable().optional()
+        })
+      )
+      .max(200)
+  })
+);
+
+export const serviceLogs = method(
+  'ws.service.logs', 'service',
+  z.object({ serviceId, maxBytes: z.number().int().min(0).max(65536).optional() }),
+  z.object({ tail: z.string().max(65536) })
+);

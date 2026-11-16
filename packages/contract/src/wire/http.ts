@@ -117,6 +117,21 @@ export const createTaskRequest = z.object({
   goal: z.string().max(2000).optional()
 });
 
+/** 起一条会话服务（docs/design/session-service.md §4）：root 必须落在 Worker 的 WORKER_ROOTS 内。 */
+export const createServiceRequest = z.object({
+  /** 从哪条会话发起；给了就按会话授权并复用它的机器与工作空间。 */
+  sessionId: id.nullable().optional(),
+  /** 不跟会话绑定时用它定位机器与目录。 */
+  workspaceId: id.nullable().optional(),
+  workerId: z.string().min(1).max(120).optional(),
+  root: z.string().min(1).max(4096).optional(),
+  command: z.string().min(1).max(2000),
+  port: z.number().int().min(1024).max(65535).nullable().optional(),
+  env: z.record(z.string().min(1).max(200), z.string().max(4000)).optional(),
+  restart: z.enum(['always', 'on-demand', 'never']).optional()
+});
+export type CreateServiceRequestDto = z.infer<typeof createServiceRequest>;
+
 export const setTaskSummaryRequest = z.object({ summary: z.string().max(2000) });
 export const setTaskStatusRequest = z.object({ status: taskStatusSchema, note: z.string().max(2000).optional() });
 
@@ -277,6 +292,27 @@ export const saveLayoutRequest = z.object({
 export const createSessionLinkRequest = z.object({ aSessionId: id, bSessionId: id });
 
 // ---- 响应 ----
+
+/** 一条会话服务（`logTail` 不进 HTTP DTO，日志单独走 /logs）。 */
+export const serviceSchema = z.object({
+  id: z.string().regex(/^svc_[0-9a-f]{8}$/),
+  projectId: id,
+  taskId: id.nullable(),
+  workspaceId: id.nullable(),
+  sessionId: id.nullable(),
+  workerId: z.string().min(1).max(120),
+  root: z.string().min(1).max(4096),
+  command: z.string().min(1).max(2000),
+  port: z.number().int().min(1024).max(65535).nullable(),
+  env: z.record(z.string(), z.string()),
+  restart: z.enum(['always', 'on-demand', 'never']),
+  state: z.enum(['starting', 'running', 'failed', 'stopped']),
+  pid: z.number().int().positive().nullable(),
+  detail: z.string().max(500).nullable(),
+  startedAt: epochMs.nullable(),
+  updatedAt: epochMs
+});
+export type ServiceDto = z.infer<typeof serviceSchema>;
 
 export const apiErrorSchema = z.object({
   error: z.object({ code: z.string(), message: z.string() })

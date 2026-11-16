@@ -7,7 +7,7 @@ import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNTIME_ADAPTERS } from './runtimes.ts';
 import { findNpm } from '@agent-hub/adapter-pi';
-import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient } from '@agent-hub/node-gateway';
+import { clearBootMarker, readRollbackNote, clearRollbackNote, rollbackReport, collectInventory, connectWorkerLink, createTerminalHost, createServiceHost, hubComponentDirs, createResourceProbe, createRuntimeManager, createRuntimeStore, defaultRuntimesRoot, createHarnessRegistry, runtimeSelfCheck, SELF_CHECK_PREFIX, createWorkerAssets, missingCommandHint, resolveCommand, withMissingHint, createWorkerFiles, defaultAssetsRoot, defaultGroupsDir, readBuildInfo, runSelfUpdate, runTarballUpdate, downloadHubArtifact, downloadHubBundle, hubHttpFrom, writeBootMarker, runReleaseUpdate, commitRelease, abortRelease, trialInProgress, defaultReleasesRoot, createPreviewClient } from '@agent-hub/node-gateway';
 import type { UpdateReport } from '@agent-hub/node-gateway';
 import type { AgentAlias, AgentRuntime, PreparedRuntime, RuntimeOption } from '@agent-hub/domain';
 import { applyAgentAliases, readAgentAliases, type BuiltAliasHarness } from './agent-aliases.ts';
@@ -402,6 +402,18 @@ const terminal = createTerminalHost({
   log
 });
 
+/**
+ * 会话服务（docs/design/session-service.md §5）：这台机器上长驻的本地服务（vite、dev server 之类）。
+ * 状态与输出经 link 回传；清单落在 `<WORKER_ROOTS 第一个>/../.agent-hub/services.json`，
+ * worker 重启后按 restart 策略重拉。
+ */
+const serviceHost = createServiceHost({
+  roots,
+  onState: (event) => link.sendServiceState(event),
+  onLog: (serviceId, chunk) => link.sendServiceLog(serviceId, chunk),
+  log
+});
+
 const link = connectWorkerLink({
   ...(inventory ? { inventory } : {}),
   url: hubUrl,
@@ -440,6 +452,7 @@ const link = connectWorkerLink({
   groupsDir,
   assets,
   ...(terminal ? { terminal } : {}),
+  service: serviceHost,
   /**
    * 终端输出里认出的端口 → 预览通道（P2 端口发现）。preview 在下面才建，
    * 这个回调只在会话真的开终端后才被调用，那时 preview 已经就绪。
@@ -480,6 +493,9 @@ const link = connectWorkerLink({
     process.exit(why?.code === 4401 ? REJECTED_EXIT_CODE : 0);
   }
 });
+
+// 机器重启后按 restart 策略重拉：always 拉起，on-demand / never 标 failed('机器重启后没有拉起来')。
+void serviceHost.revive();
 
 /**
  * 预览通道（docs/design/preview.md §6）：浏览器的请求经 hub 转发到这台机器的回环端口。

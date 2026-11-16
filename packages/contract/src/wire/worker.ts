@@ -17,7 +17,9 @@ import { agentSchema, optionValuesSchema, promptPartSchema, runtimeOptionSchema,
 // hub 总是显式下发（可能是空数组）。v3 Worker 仍按旧语义全给，所以必须换版本让它们先升级。
 // v5：start_session 可以带 pinned（常驻会话不按空闲回收）；旧 Worker 会忽略它，
 // 语义变成「不常驻」，所以换版本让它们先升级，别让界面上的常驻变成谎话。
-export const PROTOCOL_VERSION = 5;
+// v6：新增会话服务（ws.service_* 方法 + service_state / service_log 帧）。旧 Worker 不认识这些方法，
+// 会回 unsupported；hub 侧表现为「这台机器的 Worker 太旧」，所以一并换版本。
+export const PROTOCOL_VERSION = 6;
 export const PROTOCOL_MISMATCH_CLOSE = 4426;
 
 /** 一份代码的身份：package 版本 + git 提交（不在 git 仓库里就是 null）+ 协议版本。 */
@@ -239,10 +241,30 @@ export const workerTerminalExitSchema = z.object({
   signal: z.number().int().optional()
 });
 
+/** 会话服务（docs/design/session-service.md §4）：状态与日志都主动推，不走 RPC。 */
+const serviceId = z.string().regex(/^svc_[0-9a-f]{8}$/);
+
+export const workerServiceStateSchema = z.object({
+  type: z.literal('service_state'),
+  serviceId,
+  state: z.enum(['starting', 'running', 'failed', 'stopped']),
+  pid: z.number().int().positive().nullable().optional(),
+  detail: z.string().max(500).nullable().optional(),
+  port: z.number().int().min(1024).max(65535).nullable().optional()
+});
+
+export const workerServiceLogSchema = z.object({
+  type: z.literal('service_log'),
+  serviceId,
+  chunk: z.string().max(16_384)
+});
+
 export const workerToServerSchema = z.discriminatedUnion('type', [
   workerInventoryFrameSchema,
   workerTerminalDataSchema,
   workerTerminalExitSchema,
+  workerServiceStateSchema,
+  workerServiceLogSchema,
   workerHelloSchema,
   workerAgentsSchema,
   workerEnrollSchema,

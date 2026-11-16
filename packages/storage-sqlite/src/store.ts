@@ -25,6 +25,7 @@ import { createSqliteMessageStore } from './messages.ts';
 import { createSqliteSessionLinks } from './session-links.ts';
 import { createMcpReplays } from './mcp-replays.ts';
 import { createSqlitePreviewLinks } from './preview-links.ts';
+import { createSqliteSessionServices } from './services.ts';
 import { createSqliteAgentProfiles } from './agent-profiles.ts';
 import { createSqliteBotRepository } from './bots.ts';
 import { createSqliteWorkerAgents } from './worker-agents.ts';
@@ -97,6 +98,7 @@ export interface SqliteStore extends RepositorySet {
   readonly links: SessionLinkRepository;
   /** 预览链接（docs/design/preview.md §4）：会话端口 → hub 端口的映射。 */
   readonly previewLinks: ReturnType<typeof createSqlitePreviewLinks>;
+  readonly sessionServices: ReturnType<typeof createSqliteSessionServices>;
   /** 对外 MCP 写工具的幂等回放（E4b）。 */
   readonly mcpReplays: import('@agent-hub/domain').McpReplayStore;
   /** 可复用的 Agent 启动配置（按 owner 隔离）。 */
@@ -667,6 +669,7 @@ export function openSqliteStore(file: string): SqliteStore {
     layout,
     links: createSqliteSessionLinks(db),
     previewLinks: createSqlitePreviewLinks(db),
+    sessionServices: createSqliteSessionServices(db),
     mcpReplays: createMcpReplays(db),
     agentProfiles: createSqliteAgentProfiles(db),
     bots: createSqliteBotRepository(db),

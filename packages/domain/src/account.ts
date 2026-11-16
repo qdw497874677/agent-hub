@@ -181,6 +181,8 @@ export type AuditAction =
   | 'preview.remove'
   | 'preview.share'
   | 'preview.unshare'
+  | 'service.start'
+  | 'service.stop'
   | 'session.context.compact'
   | 'workspace.files.sensitive'
   | 'session.approval.respond'

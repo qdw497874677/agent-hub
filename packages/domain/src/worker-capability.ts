@@ -4,12 +4,12 @@
  * 诚实边界：`sessions` 本身就是在那台机器上跑任意代码的 agent，所以 readonly 预设不含它；
  * 「能跑 agent 但不能动 git」只是在限制 hub 自己的工具，不是沙箱。
  */
-export type WorkerCapability = 'sessions' | 'files.read' | 'files.write' | 'git' | 'git.remote' | 'runtimes' | 'update';
+export type WorkerCapability = 'sessions' | 'files.read' | 'files.write' | 'git' | 'git.remote' | 'runtimes' | 'update' | 'service';
 
 /** 方法 / 帧声明用：'control' = 连接本身的管理（回声、探测、资产清单），任何凭据都允许。 */
 export type WorkerMethodCapability = WorkerCapability | 'control';
 
-export const WORKER_CAPABILITIES: readonly WorkerCapability[] = ['sessions', 'files.read', 'files.write', 'git', 'git.remote', 'runtimes', 'update'];
+export const WORKER_CAPABILITIES: readonly WorkerCapability[] = ['sessions', 'files.read', 'files.write', 'git', 'git.remote', 'runtimes', 'update', 'service'];
 
 export const WORKER_CAPABILITY_LABELS: Readonly<Record<WorkerCapability, string>> = {
   sessions: '跑 agent 会话',
@@ -18,7 +18,8 @@ export const WORKER_CAPABILITY_LABELS: Readonly<Record<WorkerCapability, string>
   git: '本地 git',
   'git.remote': '推送 / 开 PR',
   runtimes: '装卸运行时',
-  update: '自更新'
+  update: '自更新',
+  service: '本地服务'
 };
 
 export type WorkerCapabilityPreset = 'full' | 'readonly' | 'no-remote' | 'no-install';

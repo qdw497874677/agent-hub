@@ -4,6 +4,7 @@ import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installWorkspaceGroupRoutes } from './workspace-group-routes.ts';
 import { installProjectReposRoutes } from './project-repos-routes.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
+import { installServiceRoutes, type ServiceApiOptions } from './service-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
 import { installFilesRoutes } from './files-routes.ts';
 import { installGitRoutes } from './git-routes.ts';
@@ -236,6 +237,13 @@ export interface AppOptions {
    * 可选再给 `deps.previewPortFree`（区间里被别的进程占住的端口跳过去）。
    */
   readonly previews?: PreviewApiOptions;
+  /**
+   * 会话服务（docs/design/session-service.md §4）：`/api/services/:serviceId` 与任务 / 会话下的列表。
+   * 不给就不装这些路由。
+   *
+   * 传法：`{ deps: { ...deps, sessionServices: store.sessionServices } }`。
+   */
+  readonly services?: ServiceApiOptions;
 }
 
 /** prompt 路由里 bodyLimit 之前认出的发送人。 */
@@ -367,6 +375,17 @@ export function createApp(options: AppOptions): Hono {
     }
     return next();
   });
+
+  if (options.services) {
+    installServiceRoutes(
+      app,
+      {
+        deps: options.services.deps,
+        audit: (c, subject, action, target, detail) => auditResource(c, subject, action, target, detail),
+      },
+      subjectOf,
+    );
+  }
 
   app.get('/api/health', (c) => c.json({ ok: true }));
   options.providers?.install(app, subjectOf);

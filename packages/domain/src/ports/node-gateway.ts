@@ -1,6 +1,7 @@
 import type { ProviderGrant } from '../provider.ts';
-import type { SessionId, TaskId } from '../ids.ts';
+import type { SessionId, TaskId, ServiceId } from '../ids.ts';
 import type { SessionOrigin } from '../session.ts';
+import type { ServiceRestart, ServiceState } from '../service.ts';
 import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
 import type { WorkerStatus } from '../worker.ts';
@@ -88,6 +89,32 @@ export type WorkerCommand =
  */
 export type DispatchOutcome = void | { readonly environmentRevision?: string | null };
 
+/** 交给 Worker 启动一条服务的参数（docs/design/session-service.md §5）。 */
+export interface ServiceStartInput {
+  readonly serviceId: ServiceId;
+  readonly root: string;
+  readonly command: string;
+  readonly port: number | null;
+  readonly env: Readonly<Record<string, string>>;
+  readonly restart: ServiceRestart;
+}
+
+/** Worker 上报的运行态（`service.list` 用）。 */
+export interface ServiceRuntime {
+  readonly serviceId: ServiceId;
+  readonly pid: number | null;
+  readonly state: ServiceState;
+  readonly port: number | null;
+}
+
+/** 那台 Worker 上的服务原语。只做转发，权限/落库都在 hub 用例里。 */
+export interface ServiceGateway {
+  start(input: ServiceStartInput): Promise<Result<{ readonly pid: number; readonly port: number | null }, DomainError>>;
+  stop(serviceId: ServiceId, signal?: 'TERM' | 'KILL'): Promise<Result<{ readonly exited: boolean }, DomainError>>;
+  list(): Promise<Result<readonly ServiceRuntime[], DomainError>>;
+  logs(serviceId: ServiceId, maxBytes?: number): Promise<Result<{ readonly tail: string }, DomainError>>;
+}
+
 export interface NodeGateway {
   status(): Promise<WorkerStatus[]>;
   dispatch(command: WorkerCommand): Promise<Result<DispatchOutcome, DomainError>>;
@@ -120,6 +147,8 @@ export interface NodeGateway {
   git(workerId: string): WorkspaceGit;
   /** 那台 Worker 上的组合工作空间容器操作（ws.group_* / ws.new_worktree）。可选：老网关没有。 */
   groups?(workerId: string): WorkspaceGroupGit;
+  /** 那台 Worker 上的长驻服务（ws.service_*）。可选：老网关没有。 */
+  services?(workerId: string): ServiceGateway;
   /**
    * 「重新检测」：让那台 Worker 立刻重新探测各 harness 是否可用，结果异步经它的 agent 清单回来。
    * 不在线返回 false。可选：不支持的网关 = 无从检测。

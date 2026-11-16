@@ -33,6 +33,7 @@ import type { WorkerPresence } from '../ports/worker-presence.ts';
 import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
+import type { SessionServiceRepository } from '../ports/session-service-repository.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -68,6 +69,8 @@ export interface Deps {
   /** 组合工作空间（docs/design/multi-repo.md）。T4 已接线，必填。 */
   readonly workspaceGroups: WorkspaceGroupRepository;
   readonly artifacts: ArtifactRepository;
+  /** 会话服务（docs/design/session-service.md）。不给 = 没启用本地服务。 */
+  readonly sessionServices?: SessionServiceRepository;
   readonly layout: LayoutStore;
   /** 会话连线（无向、项目级）。不给 = 没启用画布关系，消息仍按旧的全项目可见。 */
   readonly links?: SessionLinkRepository;

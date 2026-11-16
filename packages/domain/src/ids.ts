@@ -30,6 +30,9 @@ export type WorkspaceId = string & { readonly __brand: 'WorkspaceId' };
 export type WorkspaceGroupId = string & { readonly __brand: 'WorkspaceGroupId' };
 /** 预览链接：`pv_<8hex>`。 */
 export type PreviewLinkId = string & { readonly __brand: 'PreviewLinkId' };
+/** 会话服务（本地长驻进程）：`svc_<8hex>`。 */
+export type ServiceId = string & { readonly __brand: 'ServiceId' };
 export const asWorkspaceGroupId = (value: string): WorkspaceGroupId => value as WorkspaceGroupId;
+export const asServiceId = (value: string): ServiceId => value as ServiceId;
 export const newWorkspaceId = (): WorkspaceId => newId() as WorkspaceId;
 export const asWorkspaceId = (value: string): WorkspaceId => value as WorkspaceId;
