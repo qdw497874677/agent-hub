@@ -16,7 +16,7 @@ export interface BotGrantRef {
 }
 
 /** 列表标题下面那句：一句话说清「为什么这里只有一部分 bot」。 */
-export const BOT_SCOPE_NOTE = 'bot 归团队，按项目授权；这里显示已授权到本项目的 bot。';
+export const BOT_SCOPE_NOTE = '本项目已授权的 Bot';
 
 /** 授权段的小字：讲清授权的作用范围。 */
 export const BOT_GRANTS_HINT = '授权到项目后，才能把它拉进这个项目的群。';

@@ -31,7 +31,7 @@ function AgentProjects({ projectId, name }: { projectId: string; name: string })
   const toggle = (id: string) => { const next = new Set(linked); if (next.has(id)) next.delete(id); else next.add(id); save.mutate([...next]); };
   return (
     <div data-testid="agent-projects">
-      <p className="text-meta text-secondary">关联项目 <span className="text-tertiary">· 它能看见、能建任务的项目；没关联的看不见</span></p>
+      <p className="text-meta text-secondary" title="它能看见、能建任务的项目；没关联的看不见">关联项目</p>
       <div className="mt-1 flex flex-wrap gap-1">
         {(all.data ?? []).map((p) => {
           const isDefault = p.id === projectId;
@@ -57,7 +57,7 @@ function Triggers({ projectId, name }: { projectId: string; name: string }) {
   return (
     <div data-testid="bot-connectors-triggers">
       <div className="flex items-center gap-2">
-        <p className="text-meta text-secondary">触发 <span className="text-tertiary">· 到点或有新 issue 时叫醒它</span></p>
+        <p className="text-meta text-secondary">触发</p>
         {!adding ? (
           <span className="ml-auto flex gap-1">
             <button className={SMALL} data-testid="trigger-new" onClick={() => setAdding('timer')}>添加定时</button>
@@ -100,7 +100,7 @@ function TimerForm({ projectId, name, onDone }: { projectId: string; name: strin
         <label className="flex items-center gap-1"><input type="radio" checked={target === 'main'} onChange={() => setTarget('main')} />投到它的主会话</label>
         <label className="flex items-center gap-1"><input type="radio" checked={target === 'new'} onChange={() => setTarget('new')} />每次新开会话</label>
       </div>
-      <p className="text-meta text-tertiary">最短 5 分钟。上一次没结束就跳过；它正忙就等它；连续失败 5 次自动暂停。</p>
+      <p className="text-meta text-tertiary" title="上一次没结束就跳过；它正忙就等它">最短 5 分钟。连续失败 5 次会暂停。</p>
       <div className="flex gap-2">
         <button className={SMALL} type="submit" data-testid="timer-save" disabled={create.isPending || every < 5 || !prompt.trim()}>保存</button>
         <button className={SMALL} type="button" onClick={onDone}>取消</button>
@@ -132,9 +132,11 @@ function GithubForm({ projectId, name, onDone }: { projectId: string; name: stri
         <label className="flex items-center gap-1 text-meta text-secondary whitespace-nowrap">每
           <input className={`${INPUT} w-20`} type="number" min={5} max={1440} data-testid="github-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
       </div>
-      <p className="text-meta text-tertiary">
-        只看带这个标签、且标签由有写权限的人贴上的 issue；疑似注入的不交给 bot、进「等我处理」。开工贴 👀，完成回 PR 链接，失败回原因。
-        PR 上有写权限的人 @ bot 会回到开 PR 的会话。用这个项目所在团队的 GitHub token（团队设置里配）。
+      <p
+        className="text-meta text-tertiary"
+        title="疑似注入的不交给 Bot、进「等我处理」；开工贴 👀，完成回 PR 链接，失败回原因；PR 上有写权限的人 @ Bot 会回到开 PR 的会话；用团队设置里配的 GitHub 令牌"
+      >
+        只处理带该标签、且由有写权限的人标记的 issue。
       </p>
       <div className="flex gap-2">
         <button className={SMALL} type="submit" data-testid="github-save" disabled={create.isPending || every < 5 || !validRepo}>保存</button>

@@ -10,7 +10,7 @@ import { ModelPicker, SEARCHABLE_AFTER } from '../../atoms/model-picker.tsx';
 import { modelsFor } from '../../shell/dialogs.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { BOT_MODEL_DEFAULT_ITEM, BOT_MODEL_DEFAULT_LABEL, botModelChoices, offListModel } from './bot-models.ts';
-import { BOT_TRIGGERS_EMPTY, BOT_TRIGGERS_EMPTY_HINT, latestRun, nextRunView, runView, sourceText, triggerStateView } from './bot-triggers.ts';
+import { BOT_TRIGGERS_EMPTY, latestRun, nextRunView, runView, sourceText, triggerStateView } from './bot-triggers.ts';
 import { BOT_CREDENTIAL_ACTIVE_NOTE, botCredentialBody, botCredentialRevokeConfirm, botCredentialView } from './bot-credential.ts';
 import {
   BOT_GRANTS_EMPTY, BOT_GRANTS_HINT, BOT_GRANT_PICKER_TITLE, BOT_SCOPE_NOTE,
@@ -111,7 +111,7 @@ function BotModelField({ agentId, model, onChange }: { agentId: string; model: s
           {choices.note ? <p className="text-tertiary">{choices.note}</p> : null}
         </>
       )}
-      {models.length === 0 ? <p data-testid="bot-model-empty" className="text-tertiary">这台机器还没上报模型</p> : null}
+      {models.length === 0 ? <p data-testid="bot-model-empty" className="text-tertiary">这台机器还没有可用模型</p> : null}
     </div>
   );
 }
@@ -255,14 +255,13 @@ function BotTriggers({ bot }: { bot: BotRecordDto }) {
   return (
     <div data-testid="bot-triggers" className="flex min-w-0 flex-col gap-2 rounded-sm border border-hair bg-card p-2">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <p className="text-meta text-secondary">触发器</p>
-        <p className="text-meta text-tertiary">来自连接器页 · 只读</p>
+        <p className="text-meta text-secondary">触发</p>
+        <span className="rounded-sm border border-hair px-1 text-meta text-tertiary">只读</span>
       </div>
       {triggers.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
       {!triggers.isLoading && !triggers.error && !bindings.length ? (
         <div className="flex flex-col gap-0.5">
           <p data-testid="bot-triggers-empty" className="text-meta text-tertiary">{BOT_TRIGGERS_EMPTY}</p>
-          <p className="text-meta text-tertiary">{BOT_TRIGGERS_EMPTY_HINT}</p>
         </div>
       ) : null}
       {bindings.length ? (
@@ -514,7 +513,7 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecord
       <BotModelField agentId={agentId} model={model} onChange={setModel} />
       <label className="flex flex-col gap-1 text-meta text-secondary">
         <span className="flex">职责说明<span className="ml-auto text-tertiary" data-testid="bot-description-count">{description.length} / {DESCRIPTION_MAX}</span></span>
-        <textarea data-testid="bot-description" className={`${INPUT} min-h-28`} maxLength={DESCRIPTION_MAX} placeholder="它负责什么、怎么说话。会作为它的系统提示。" value={description} onChange={(e) => setDescription(e.target.value)} />
+        <textarea data-testid="bot-description" className={`${INPUT} min-h-28`} maxLength={DESCRIPTION_MAX} placeholder="它负责什么、怎么说话" title="会作为它的系统提示" value={description} onChange={(e) => setDescription(e.target.value)} />
       </label>
       <button type="button" className="self-start text-meta text-tertiary hover:text-secondary" data-testid="bot-more" aria-expanded={more} onClick={() => setMore((m) => !m)}>
         {more ? '▾' : '▸'} 高级 · 会话复用：{reuse === 'sticky' ? '一直用同一个会话' : reuse === 'per-trace' ? '每条对话链一个' : '每次新开'}
@@ -720,7 +719,7 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
         </ul>
         {!list.length && editing !== 'new' ? (
           <div data-testid="bots-empty" className="flex flex-col items-center gap-2 py-10 text-center">
-            <Empty text={bots.isLoading ? '加载中…' : pid ? '本项目还没有授权任何 bot。新建一个，或授权一个团队里已有的。' : '先建一个项目'} />
+            <Empty text={bots.isLoading ? '加载中…' : pid ? '还没有 Bot。' : '先建一个项目'} />
           </div>
         ) : null}
       </main>
