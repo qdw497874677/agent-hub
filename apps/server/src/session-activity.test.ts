@@ -151,3 +151,24 @@ test('会话收起 / 恢复：只改 settledAt，审计记一条；跑着的拒�
   const missing = await david('/api/sessions/nope/settle', post({ settled: true }));
   assert.equal(missing.status, 404);
 });
+
+test('会话常驻：自己的会话可以设/取消，审计记一条；请求体不合法 400', async () => {
+  const { accounts, member, session } = await setup();
+
+  const pinned = await member(`/api/sessions/${session.id}/pin`, post({ pinned: true }));
+  assert.equal(pinned.status, 200, JSON.stringify(pinned.body));
+  assert.equal(pinned.body.pinned, true);
+
+  const row = accounts.auditRows.find((entry) => entry.action === 'session.pin' && entry.target === session.id);
+  assert.ok(row, '要有一条 session.pin 审计');
+  assert.equal(row!.detail, '设为常驻');
+
+  const off = await member(`/api/sessions/${session.id}/pin`, post({ pinned: false }));
+  assert.equal(off.status, 200);
+  assert.equal(off.body.pinned, undefined);
+
+  const bad = await member(`/api/sessions/${session.id}/pin`, post({}));
+  assert.equal(bad.status, 400);
+  const missing = await member('/api/sessions/nope/pin', post({ pinned: true }));
+  assert.equal(missing.status, 404);
+});

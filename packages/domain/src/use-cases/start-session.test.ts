@@ -81,6 +81,34 @@ test('启动：正常派发后登记托管，指令带上工作目录与来源�
   assert.equal(w.deps.hosting.has(session.id), true);
 });
 
+test('启动：常驻会话在指令里带上 pinned，普通会话不带', async () => {
+  const sent: WorkerCommand[] = [];
+  const { w, session } = await setup({
+    gateway: {
+      ...localGateway,
+      dispatch: async (command) => {
+        sent.push(command);
+        return ok(undefined);
+      }
+    }
+  });
+
+  const pinned: Session & { readonly workerId: string } = { ...session, pinned: true };
+  await w.deps.sessions.save(pinned);
+
+  assert.ok((await startSessionUseCase(w.deps, { session: pinned, workspaceRoot: '/tmp/start', resume: null })).ok);
+  const first = sent[0];
+  assert.ok(first && first.kind === 'start_session');
+  assert.equal(first.pinned, true);
+
+  const plain: Session & { readonly workerId: string } = { ...session, pinned: undefined };
+  await w.deps.sessions.save(plain);
+  assert.ok((await startSessionUseCase(w.deps, { session: plain, workspaceRoot: '/tmp/start', resume: null })).ok);
+  const second = sent[1];
+  assert.ok(second && second.kind === 'start_session');
+  assert.equal(second.pinned, undefined);
+});
+
 test('启动：派发失败把会话标 failed，且不托管', async () => {
   const { w, session } = await setup({
     gateway: { ...localGateway, dispatch: async () => err(unavailable('worker 掉了')) }
