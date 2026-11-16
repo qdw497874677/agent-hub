@@ -16,7 +16,7 @@ test('没登录先看到登录页；测试账号登录后进主页，退出又�
 
   await page.getByLabel('密码').fill(testPassword());
   await page.getByRole('button', { name: '登录' }).click();
-  await expect(page.getByText('自带机器与 agent 的工作台')).toBeVisible();
+  await expect(page.getByRole('button', { name: '账号' })).toBeVisible();
   await page.getByRole('button', { name: '账号' }).click();
   await expect(page.getByText(TEST_EMAIL)).toBeVisible();
   await page.getByRole('button', { name: '退出登录' }).click();
@@ -66,7 +66,7 @@ test('忘记密码：发重置信 → 点链接设新密码 → 直接登录，�
   await expect(page.getByText('密码已更新')).toBeVisible();
   expect((await other.request.get('/api/auth/state').then((r) => r.json())).user).toBeNull();
   await page.getByRole('button', { name: '进入 agent-hub' }).click();
-  await expect(page.getByText('自带机器与 agent 的工作台')).toBeVisible(); // 重置即验证
+  await expect(page.getByRole('button', { name: '账号' })).toBeVisible(); // 重置即验证
   await other.close();
 });
 

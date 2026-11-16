@@ -33,7 +33,6 @@ export function ObservePage({ source, id }: { source: string | null; id: string 
         <div className="mb-4 flex items-start justify-between gap-2">
           <div>
             <a className="text-head text-primary" href="#/home">agent-hub</a>
-            <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
           </div>
           <AccountMenu />
         </div>

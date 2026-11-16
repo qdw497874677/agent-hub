@@ -121,8 +121,7 @@ function LoginPage({ state }: { state: AuthState }) {
   return (
     <main className="flex h-full min-h-full items-start justify-center overflow-y-auto overscroll-contain px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-[max(12vh,env(safe-area-inset-top))]">
       <div className="w-full max-w-[380px]">
-        <p className="text-head text-primary">agent-hub</p>
-        <p className="mb-6 mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
+        <p className="mb-6 text-head text-primary">agent-hub</p>
 
         <div role="tablist" className="mb-5 flex gap-1 border-b border-hair">
           {tabs.map((tab) => (
@@ -142,7 +141,7 @@ function LoginPage({ state }: { state: AuthState }) {
 
         {!state.registration && mode === 'login' && (
           <p className="mb-4 rounded-sm border border-hair bg-card px-3 py-2 text-meta text-tertiary">
-            这个 hub 暂不开放注册。想加入请联系管理员。
+            暂不开放注册，请联系管理员。
           </p>
         )}
         {mode === 'register' && registerSent ? (
@@ -412,7 +411,6 @@ function DevicesDialog({ onClose }: { onClose: () => void }) {
   return (
     <DialogShell title="登录设备" onClose={onClose}>
       <p className="text-sub text-primary">登录设备</p>
-      <p className="mt-1 text-meta text-tertiary">看到不认识的设备就登出它，然后改个密码。</p>
       {list.isPending ? (
         <p className="mt-4 text-meta text-tertiary">加载中…</p>
       ) : (
@@ -425,7 +423,7 @@ function DevicesDialog({ onClose }: { onClose: () => void }) {
                   {device.current && <span className="ml-2 rounded-sm bg-accent/15 px-1.5 py-0.5 text-[11px] text-accent">这台</span>}
                 </p>
                 <p className="truncate text-[11px] text-tertiary">
-                  {device.ip ?? '未知 IP'} · 最近 {when(device.lastSeenAt)} · {device.method === 'password' ? '密码登录' : 'HUB_TOKEN'}
+                  {device.ip ?? '未知 IP'} · 最近 {when(device.lastSeenAt)} · {device.method === 'password' ? '密码登录' : '令牌登录'}
                 </p>
               </div>
               <button
@@ -603,10 +601,9 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
   return (
     <DialogShell title="我的团队" onClose={onClose}>
       <p className="text-sub text-primary">{data?.name ?? '我的团队'}</p>
-      <p className="mt-1 text-meta text-tertiary">
-        成员能看到自己的项目和别人分享给他的；团队主人能看到团队里所有的项目。
-        {data?.seatsLeft !== null && data?.seatsLeft !== undefined ? ` 剩余名额 ${Math.max(0, data.seatsLeft)}。` : ''}
-      </p>
+      {data?.seatsLeft !== null && data?.seatsLeft !== undefined ? (
+        <p className="mt-1 text-meta text-tertiary">剩余名额 {Math.max(0, data.seatsLeft)}</p>
+      ) : null}
       {team.isPending ? (
         <p className="mt-4 text-meta text-tertiary">加载中…</p>
       ) : team.isError ? (
@@ -683,7 +680,7 @@ function TeamDialog({ onClose }: { onClose: () => void }) {
                   if (email.trim() && !invite.isPending) invite.mutate();
                 }}
               >
-                <label className="text-meta text-secondary" htmlFor="invite-email">邀请新成员（对方会收到一封邀请信，7 天内有效）</label>
+                <label className="text-meta text-secondary" htmlFor="invite-email">邀请成员</label>
                 <div className="flex gap-2">
                   <input
                     id="invite-email"
@@ -791,7 +788,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
           if (oldPassword && newPassword && !mismatch && !password.isPending) password.mutate();
         }}
       >
-        <p className="text-meta text-secondary">修改密码（改完后其他设备都会退出，这台保持登录，并给你发一封通知信）</p>
+        <p className="text-meta text-secondary" title="改完后其他设备会退出，并发一封通知">修改密码</p>
         <label className="text-meta text-secondary" htmlFor="settings-old">原密码</label>
         <input id="settings-old" type="password" autoComplete="current-password" className={INPUT} value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
         <label className="text-meta text-secondary" htmlFor="settings-new">新密码（至少 10 位）</label>

@@ -555,7 +555,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
       <header className="flex items-center gap-2 border-b border-hair px-3 py-2">
         <div className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
           <a className="block max-w-full shrink-0 truncate whitespace-nowrap text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
-          <h1 className="min-w-0 truncate text-head text-primary">消息</h1>
+          <h1 className="min-w-0 truncate text-head text-primary">群</h1>
         </div>
         <select aria-label="项目" data-testid="messages-project" className={`${INPUT} min-w-0 shrink-0 ${compact ? 'max-w-[45%]' : 'max-w-[40%]'}`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>
           {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}

@@ -8,7 +8,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
 import { WorkersBadge } from '../../shell/workers.tsx';
-import { coarsePointer } from '../../shell/device.ts';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
 import { GlobalNav } from '../../shell/global-nav.tsx';
 
@@ -61,7 +60,6 @@ export function HomePage({
         <div className="order-1 mb-4 flex items-start justify-between gap-2">
           <div>
             <p className="text-head text-primary">agent-hub</p>
-            <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
           </div>
           <div className="flex items-center gap-2">
             <AttentionBadge compact onClick={() => document.querySelector('[data-testid="attention-inbox"]')?.scrollIntoView({ behavior: 'smooth' })} />
@@ -212,11 +210,6 @@ export function HomePage({
             </p>
           ) : null}
 
-          <p className="mt-8 text-meta text-tertiary">
-            {coarsePointer()
-              ? '点任务卡上的「＋ 会话」派生会话 · 关掉浏览器，会话历史还在'
-              : '任务卡上点「＋ 会话」派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在'}
-          </p>
         </div>
       </main>
     </div>

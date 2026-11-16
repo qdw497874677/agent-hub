@@ -194,7 +194,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
 
   // 搜索：用会话正文里的词命中，回车跳到那个节点
   await page.getByRole('button', { name: /搜索/ }).click();
-  const palette = page.getByPlaceholder('搜任务标题，或者你记得的那句话');
+  const palette = page.getByPlaceholder('搜索任务或会话');
   await palette.fill(ECHO);
   await expect(page.getByRole('button', { name: new RegExp(ECHO) }).first()).toBeVisible();
   await palette.press('Enter');

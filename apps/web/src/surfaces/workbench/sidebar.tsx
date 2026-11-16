@@ -8,6 +8,7 @@ import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { WorkersBadge } from '../../shell/workers.tsx';
 import type { View } from '../../shell/route.ts';
+import { coarsePointer } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 
 const VIEWS: readonly { view: View; label: string; icon: string }[] = [
@@ -144,7 +145,7 @@ export function ProjectSidebar({
           onClick={onSearch}
           title="搜索任务与会话（⌘K）"
         >
-          搜索 ⌘K
+          {coarsePointer() ? '搜索' : '搜索 ⌘K'}
         </button>
         <button
           className="min-h-11 rounded-sm border border-hair px-2 py-1.5 text-meta text-secondary hover:border-accent hover:text-accent lg:min-h-0"
@@ -194,7 +195,7 @@ export function ProjectSidebar({
             aria-expanded={settled.length > 0 ? showSettled : undefined}
             disabled={settled.length === 0}
             className="flex min-h-11 w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-meta text-tertiary hover:bg-card hover:text-secondary disabled:hover:bg-transparent lg:min-h-0"
-            title={settled.length === 0 ? '做完的会话可以收起掉，安安静静留在这里' : undefined}
+            title={settled.length === 0 ? '已完成的会话会收在这里' : undefined}
             onClick={() => setShowSettled((open) => !open)}
           >
             <span aria-hidden className="w-3 shrink-0 text-center">{settled.length > 0 ? (showSettled ? '▾' : '▸') : ''}</span>

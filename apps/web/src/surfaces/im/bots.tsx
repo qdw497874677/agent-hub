@@ -132,12 +132,12 @@ export function BotAvatar({ bot, size = 32 }: { bot: Pick<MessagingRoleDto, 'nam
   );
 }
 
-/** 消息区顶部的「群聊 | Bot」切换。 */
+/** 消息区顶部的「群 | Bot」切换。 */
 export function HubTabs({ active, projectId }: { active: 'messages' | 'bots'; projectId: string | null }) {
   const tab = (on: boolean) => `rounded-sm px-2.5 py-1 text-meta ${on ? 'bg-card text-primary' : 'text-tertiary hover:text-secondary'}`;
   return (
     <nav className="flex gap-1" aria-label="消息区">
-      <a data-testid="tab-messages" className={tab(active === 'messages')} aria-current={active === 'messages' ? 'page' : undefined} href={formatRoute({ page: 'messages', projectId, groupId: null })}>群聊</a>
+      <a data-testid="tab-messages" className={tab(active === 'messages')} aria-current={active === 'messages' ? 'page' : undefined} href={formatRoute({ page: 'messages', projectId, groupId: null })}>群</a>
       <a data-testid="tab-bots" className={tab(active === 'bots')} aria-current={active === 'bots' ? 'page' : undefined} href={formatRoute({ page: 'bots', projectId })}>Bot</a>
     </nav>
   );
