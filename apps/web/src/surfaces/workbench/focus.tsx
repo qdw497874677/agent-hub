@@ -419,11 +419,13 @@ export function FocusView({
     void queries.invalidateQueries({ queryKey: sessionKeys.environment(session.id) }, { cancelRefetch: false });
   }, [status, session.id, session.workspaceId, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
-  const changeCount = shown(useQuery({
+  const sessionChanges = shown(useQuery({
     ...FILES_QUERY,
     queryKey: fileKeys.changes('session'),
     queryFn: () => filesApi.changes(session.id, 'session')
-  }))?.files.length;
+  }));
+  // 没有 git 基准（非 git 目录）时算不出改动：标签上不写「改动 0」，免得读成「agent 什么都没改」
+  const changeCount = sessionChanges === undefined || sessionChanges.commit === null ? undefined : sessionChanges.files.length;
   const workspace = canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
   // 和 OpenCode 一样把当前分支放在输入框旁边；分支可能被 agent 切换，所以回合结束后刷新。
   const gitState = shown(useQuery({
@@ -929,7 +931,7 @@ export function FocusView({
             sessionId={session.id}
             workerId={session.workerId}
             active={tab === 'terminal'}
-            notice={status === 'running' ? null : '这条会话已经结束：终端只开一个 shell，不会重新启动 agent。'}
+            notice={status === 'running' ? null : 'agent 现在没在跑：终端只开一个 shell，不会启动 agent。在对话里接着说一句，agent 会重新接上。'}
           />
         </div>
       ) : null}

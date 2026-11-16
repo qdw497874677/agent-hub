@@ -92,7 +92,7 @@ export function plainInline(text: string): string {
 
 export function summaryFromBody(body: string): string {
   const lines = body.split('\n').map((line) => plainInline(line.trim().replace(/^(?:#+\s*|>\s*|[-*+]\s+|\d+\.\s+)+/, ''))).filter(Boolean);
-  const meaningful = lines.find((line) => !/^(已完成|进行中|下一步|风险\/?待决|关键文件|done|next)\s*[:：]?$/i.test(line)) ?? lines[0] ?? '';
+  const meaningful = lines.find((line) => !/^(已完成|完成|进行中|进展|下一步|风险\/?待决|关键文件|总结|小结|done|next|summary)\s*[:：]?$/i.test(line)) ?? lines[0] ?? '';
   return meaningful.length > 200 ? `${meaningful.slice(0, 199)}…` : meaningful;
 }
 

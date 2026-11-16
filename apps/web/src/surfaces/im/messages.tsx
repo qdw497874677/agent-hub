@@ -111,7 +111,7 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
         {roles.length ? <a className="self-start text-tertiary hover:text-accent" href={`${formatRoute({ page: 'bots', projectId })}/new`}>＋ 新建 bot</a> : null}
       </fieldset>
       <button type="button" data-testid="group-advanced" aria-expanded={advanced} className="self-start text-meta text-tertiary hover:text-secondary" onClick={() => setAdvanced((v) => !v)}>
-        {advanced ? '▾' : '▸'} 高级设置 · {hostRole ? `主持人 @${hostRole}` : '无主持人'} · {strategy === 'host' ? '主持人分派' : '成员竞价'} · {rounds} 轮 / {msgs} 条
+        {advanced ? '▾' : '▸'} 高级设置 · {speakingSummary(hostRole, strategy)} · {rounds} 轮 / {msgs} 条
       </button>
       {advanced ? (
         <div data-testid="group-advanced-panel" className="flex flex-col gap-2">
@@ -662,4 +662,13 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
       ) : null}
     </div>
   );
+}
+
+/**
+ * 高级设置折叠时的那一句：说的是「不 @ 人时谁接话」，和服务端调度一致（use-cases/groups.ts）。
+ * 没设主持人时「主持人分派」根本分派不了，只有被 @ 的成员接话——别写成「无主持人 · 主持人分派」。
+ */
+function speakingSummary(hostRole: string, strategy: 'host' | 'volunteer'): string {
+  if (strategy === 'volunteer') return '成员竞价接话';
+  return hostRole ? `主持人 @${hostRole} 分派` : '无主持人 · 只有被 @ 的成员接话';
 }

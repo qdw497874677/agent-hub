@@ -703,7 +703,9 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
       {task.goal ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{task.goal}</p> : null}
       {task.summary ? (
         <p className="mt-1 line-clamp-2 text-meta text-secondary" data-testid="task-card-summary">
-          <span className="text-accent">▸</span> {task.summary}
+          {/* 写明这是「当前进展」（来自最新一条日志），不是状态：状态只看右上角的徽标 */}
+          <span className="text-tertiary">进展：</span>
+          {task.summary}
         </p>
       ) : null}
       <p className="mt-1.5 font-mono text-meta text-tertiary">

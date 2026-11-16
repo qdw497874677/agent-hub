@@ -226,7 +226,16 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                 </div>
                 <RootPath root={root} wide={wide} />
                 {changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
-                {changed?.files.length === 0 ? <p className="px-3 py-2 text-meta text-tertiary">没有改动</p> : null}
+                {changed?.files.length === 0 ? (
+                  // 「整个会话」要有会话开始时的 git 基准；没有基准时空列表不等于「没改」，照实说原因
+                  changed.base === 'session' && changed.commit === null ? (
+                    <p className="px-3 py-2 text-meta text-tertiary" data-testid="changes-no-git">
+                      没有 git 基准，算不出改动：这个工作目录不是 git 仓库（或会话开始时还没有任何提交）。新写的文件可以在「文件」里看。
+                    </p>
+                  ) : (
+                    <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
+                  )
+                ) : null}
                 {changed?.files.map((f) => (
                   <button key={f.path} onClick={() => open({ path: f.path }, true)} data-testid="change-row"
                     className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened?.path === f.path ? 'bg-hair/60' : ''}`}>
