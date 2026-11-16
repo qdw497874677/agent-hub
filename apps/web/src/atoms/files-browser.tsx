@@ -184,7 +184,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                   <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="找文件…" className="min-w-0 flex-1 rounded bg-card px-2 py-1 text-sub outline-none" data-testid="files-find" />
                   <label className="flex shrink-0 items-center gap-1 text-meta text-tertiary">
                     <input type="checkbox" checked={showSensitive} onChange={(e) => setShowSensitive(e.target.checked)} data-testid="files-show-sensitive" />
-                    敏感
+                    显示敏感文件
                   </label>
                 </div>
                 <RootPath root={root} wide={wide} />
@@ -230,7 +230,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                   // 「整个会话」要有会话开始时的 git 基准；没有基准时空列表不等于「没改」，照实说原因
                   changed.base === 'session' && changed.commit === null ? (
                     <p className="px-3 py-2 text-meta text-tertiary" data-testid="changes-no-git">
-                      没有 git 基准，算不出改动：这个工作目录不是 git 仓库（或会话开始时还没有任何提交）。新写的文件可以在「文件」里看。
+                      没有 git 改动（当前目录不是仓库）
                     </p>
                   ) : (
                     <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>

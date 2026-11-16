@@ -17,9 +17,9 @@ const CAPABILITY_LABEL: Record<string, string> = {
   resume: '恢复',
   tool_calls: '工具调用',
   artifacts: '产出物',
-  structured_events: '结构化事件',
+  structured_events: '细粒度事件',
   attachments: '附件与 @ 引用',
-  branch_at_turn: '从某条消息原生分叉'
+  branch_at_turn: '从中间消息分叉'
 };
 
 type CapabilityName = keyof AgentDto['capabilities'];
@@ -124,10 +124,11 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
             </span>
           </p>
           {/* 只读：常驻是个开关，改它去「⋯」菜单；这里只是让人确认这条会话会不会被空闲回收 */}
-          <p className="mt-1 flex min-w-0 items-baseline gap-1.5 text-meta" data-testid="session-details-pinned">
-            <span className="shrink-0 text-tertiary">常驻</span>
-            <span className="text-secondary">{session.pinned === true ? '是' : '否'}</span>
-          </p>
+          {session.pinned === true ? (
+            <p className="mt-1 flex min-w-0 items-baseline gap-1.5 text-meta" data-testid="session-details-pinned">
+              <span className="rounded-sm border border-hair px-1 text-secondary" title="不会因空闲被回收">常驻</span>
+            </p>
+          ) : null}
         </header>
 
         <div className="flex-1 space-y-3 overflow-y-auto px-3 py-2.5">

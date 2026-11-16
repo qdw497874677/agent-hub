@@ -108,7 +108,7 @@ test('从这里重来：长期工作空间不能连文件回滚，说清原因�
   const preview = await w.svc.preview(null, w.sid, w.seqs[1]!);
   assert.ok(preview.ok);
   assert.equal(preview.value.filesAllowed, false);
-  assert.match(preview.value.filesBlocked ?? '', /临时工作空间/);
+  assert.match(preview.value.filesBlocked ?? '', /临时工作目录/);
   assert.equal(preview.value.turnsAfter, 1);
   const refused = await w.svc.rewind(null, w.sid, w.seqs[1]!, true);
   assert.ok(!refused.ok && refused.error.code === 'conflict');

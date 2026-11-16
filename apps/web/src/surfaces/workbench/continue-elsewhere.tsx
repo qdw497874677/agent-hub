@@ -79,7 +79,7 @@ export function ContinueDialog({
     <DialogShell title="换个地方继续" onClose={onClose}>
       <p className="mb-1 text-head text-primary">换个地方继续</p>
       <p className="mb-3 text-meta text-tertiary">
-        agent 自己的会话状态带不过去：会在你选的地方新开一条会话，把这里的会话摘要和任务工作日志作为第一条消息发过去，并挂成这条的分叉。
+        会新开一条会话，并带上这里的摘要。原会话不受影响。
       </p>
       <WorkspaceChooser
         canvas={canvas}

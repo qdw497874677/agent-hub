@@ -140,18 +140,18 @@ export function createRewindService(deps: RewindDeps) {
   async function filesBlocked(actor: Subject | null, found: Found): Promise<string | null> {
     const { session, workspace } = found;
     // 组合工作空间（§12.3 v1）：容器不是 git 仓库，不做跨仓回滚。
-    if (session.groupId) return '组合工作空间暂不支持回滚，请在成员仓库里各自提交';
-    if (!workspace) return '这条会话没有工作空间';
-    if (workspace.kind !== 'temporary') return '只有临时工作空间能连文件一起回滚；长期工作空间请只回滚对话';
-    if (!workspace.isGit) return '工作空间不是 git 仓库，没有检查点';
+    if (session.groupId) return '组合工作目录暂不支持回滚，请在成员仓库里各自提交';
+    if (!workspace) return '这条会话没有工作目录';
+    if (workspace.kind !== 'temporary') return '只有临时工作目录能连文件一起回滚；持久工作目录请只回滚会话';
+    if (!workspace.isGit) return '当前目录不是 git 仓库，不能恢复文件';
     const project = await deps.projects.byId(found.projectId as never);
     const canRun = await authorizeProject(deps.access, actor, project, 'session.create');
     if (!canRun.ok) return '你没有在这个项目里跑任务的权限';
     const mine = principalOfSubject(actor)?.user.id;
     const isStarter = session.createdBy !== null && session.createdBy === mine;
     if (!isStarter && !(await authorizeProject(deps.access, actor, project, 'project.update')).ok) return '只有会话发起人或项目 owner 能回滚文件';
-    if (workspace.ownerTaskId !== session.taskId) return '工作空间被别的任务共用';
-    if ((await deps.workspaces.linksOf(workspace.id)).some((link) => link.projectId !== found.projectId)) return '工作空间还关联着别的项目';
+    if (workspace.ownerTaskId !== session.taskId) return '工作目录被别的任务共用';
+    if ((await deps.workspaces.linksOf(workspace.id)).some((link) => link.projectId !== found.projectId)) return '工作目录还关联着别的项目';
     const near = (await deps.workspaces.onMachine(workspace.workerId)).filter((w) => overlaps(w.path, workspace.path));
     for (const other of near) {
       const running = (await deps.sessions.listByWorkspace(other.id)).some((s) => s.id !== session.id && s.status === 'running');
@@ -225,11 +225,11 @@ export function createRewindService(deps: RewindDeps) {
         const earlier = (await deps.sessions.eventsAfter(source.id, 0 as never)).filter((e) => e.seq < promptSeq);
         const brief = buildHandoff(earlier, {
           from: '同一会话（从一条消息处重来）',
-          to: '同一个工作空间',
+          to: '同一个工作目录',
           root: found.value.root,
           code: files
             ? `文件已回滚到这条消息之前（第 ${files.turn} 轮开始前）的样子。`
-            : '注意：文件没有回滚，工作区里可能还留着之后那几轮的改动。'
+            : '注意：文件没有回滚，工作目录里可能还留着之后那几轮的改动。'
         }, { sourceSessionId: source.id, ...(handoffCap ? { cap: handoffCap } : {}) });
         if (planned.mode === 'native') {
           await pendingBriefs.set(session.id, brief);

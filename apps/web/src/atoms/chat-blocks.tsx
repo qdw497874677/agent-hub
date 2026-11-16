@@ -578,7 +578,7 @@ export function HandoffBar({ handoff }: { handoff: HandoffDto }) {
         {handoff.omitted > 0 ? `，省略 ${handoff.omitted} 条` : '，没有省略'} · 约 {k(handoff.tokens)} / {k(handoff.budget)} token
       </summary>
       <div className="mt-1.5 flex flex-col gap-1">
-        <p>这条是平台替你写给 agent 的交接简报：原来的 agent 会话状态带不过来，只带了平台记录的会话原文，按预算整条挑选（先保最近和第一句）。</p>
+        <p>这是自动生成的交接说明，不是原会话全文。</p>
         {handoff.omittedTurns.length > 0 ? <p>整轮省略：{rangeText(handoff.omittedTurns)}。agent 需要时可以用 session.read 查原文。</p> : null}
         {handoff.omitted > 0 && handoff.omittedTurns.length === 0 ? <p>省略的是部分轮次里较旧的条目（多是工具调用）；agent 需要时可以用 session.read 查原文。</p> : null}
         {sourceHref ? (
@@ -840,7 +840,7 @@ function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block
     <div role="status" className="flex flex-col gap-2 rounded-sm border-l-2 border-ochre bg-ochre/10 px-3 py-2 text-meta text-primary" data-testid="msg-unknown">
       <p className="font-medium text-ochre">这一轮结果不确定</p>
       <p className="text-secondary">
-        运行时中途重启过，没法确认这一轮做完了没有（可能已经改了文件、跑了命令）。平台不会自动重试——请先看看工作区，再决定要不要重发。
+        这一轮结果不确定，可能已经改过文件。请先查看工作目录，再决定是否重发。
       </p>
       {actionable && !resolved ? (
         <div className="flex flex-wrap items-center gap-2">

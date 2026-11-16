@@ -63,7 +63,7 @@ export function RewindDialog({ sessionId, workspaceId = null, promptSeq, onClose
             <input type="radio" name="rewind" className="mt-1" checked={!files} onChange={() => setFiles(false)} />
             <span>
               只回滚会话
-              <span className="block text-meta text-tertiary">新开一条会话，从这条消息之前接着聊；工作区文件保持现在的样子。</span>
+              <span className="block text-meta text-tertiary">只重开会话，不改文件</span>
             </span>
           </label>
           <label className={`flex items-start gap-2 text-sub ${p?.filesAllowed ? 'text-primary' : 'text-tertiary'}`}>
@@ -72,7 +72,7 @@ export function RewindDialog({ sessionId, workspaceId = null, promptSeq, onClose
               连文件一起回滚
               <span className="block text-meta text-tertiary" data-testid="rewind-files-note">
                 {p?.filesAllowed
-                  ? `工作区恢复到这条消息之前，撤掉之后 ${p.turnsAfter} 轮的改动；恢复前会先存一张快照。`
+                  ? `同时恢复文件（撤掉之后 ${p.turnsAfter} 轮的改动，先做快照）`
                   : (p?.filesBlocked ?? '')}
               </span>
             </span>
