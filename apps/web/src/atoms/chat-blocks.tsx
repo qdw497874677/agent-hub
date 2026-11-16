@@ -709,6 +709,7 @@ export function ChatBlock({
       </p>
     );
   }
+  if (block.kind === 'stopped') return <StoppedDivider text={block.text} />;
   if (block.kind === 'stall') {
     return (
       <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
@@ -857,6 +858,17 @@ function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block
         <p className="text-tertiary">已处理</p>
       ) : null}
       {error ? <p role="alert" className="text-rust">重发失败：{error}</p> : null}
+    </div>
+  );
+}
+
+/** 时间线里的系统分隔线：这一轮在这里停下了（参照 t3code TimelineSystemDivider）。画布卡片也用它。 */
+export function StoppedDivider({ text, compact = false }: { text: string; compact?: boolean }) {
+  return (
+    <div role="status" data-testid="turn-stopped" className={`flex items-center gap-2 text-meta text-tertiary ${compact ? '' : 'my-1'}`}>
+      <span aria-hidden className="h-px flex-1 bg-hair" />
+      <span className="shrink-0">■ {text}</span>
+      <span aria-hidden className="h-px flex-1 bg-hair" />
     </div>
   );
 }

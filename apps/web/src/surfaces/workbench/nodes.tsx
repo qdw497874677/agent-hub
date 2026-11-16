@@ -29,6 +29,7 @@ import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
 import { LogMarkdown } from '../../atoms/log-markdown.tsx';
+import { StoppedDivider } from '../../atoms/chat-blocks.tsx';
 import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
 
 /** 卡片里的 markdown：首尾段贴边；代码块收矮一点，长代码在卡片里自己横向滚。 */
@@ -156,6 +157,7 @@ function BlockView({
       </p>
     );
   }
+  if (block.kind === 'stopped') return <StoppedDivider text={block.text} compact />;
   if (block.kind === 'stall') {
     return (
       <p role="status" className="border-l border-rust pl-2 text-meta text-rust">

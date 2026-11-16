@@ -45,6 +45,11 @@ export type Block = Sequenced &
       }
     /** server 卡顿巡检记的提醒；一有新输出就撤掉（见 applyBlocks）。 */
     | { readonly kind: 'stall'; readonly text: string }
+    /**
+     * 这一轮被停下了（ended · stopped 是人点了中断，interrupted 是运行时 / 网关中途断了）：
+     * 时间线里留一条分隔线。否则那一轮只剩一个「思考过程」或一句用户的话，看着像「还没回」。
+     */
+    | { readonly kind: 'stopped'; readonly text: string }
     /** 这一轮失败了（ended · failed）：原因写进对话里，不只是状态点变红——否则看着就是「发了没回」。 */
     | { readonly kind: 'error'; readonly text: string }
     /**
@@ -274,7 +279,11 @@ function foldBlocks(blocks: readonly Block[], event: SessionEventDto, seq: numbe
         const prompt = [...blocks].reverse().find((block) => block.kind === 'prompt');
         return [...blocks, { kind: 'unknown', text: event.reason, prompt: prompt?.kind === 'prompt' ? prompt.text : null, seq }];
       }
-      return event.outcome === 'failed' ? [...blocks, { kind: 'error', text: event.reason ?? '这一轮失败了，agent 没有说原因', seq }] : blocks;
+      if (event.outcome === 'failed') return [...blocks, { kind: 'error', text: event.reason ?? '这一轮失败了，agent 没有说原因', seq }];
+      if (event.outcome === 'stopped' || event.outcome === 'interrupted') {
+        return [...withoutStall(blocks), { kind: 'stopped', text: stoppedText(event.outcome, event.reason), seq }];
+      }
+      return blocks;
     default:
       return blocks;
   }
@@ -473,6 +482,13 @@ export function forkBlockedHint({ lastSeq, turnRunning, denied }: { lastSeq: num
  * 画布卡片上显示哪些块：和对话页同一套块（用户的话也在），只省掉思考过程——卡片太窄，思考在对话页看。
  * 泛型是为了让调用方挂在块上的标（比如 `queued`）跟着过来，不被擦成裸 Block。
  */
+/** 分隔线上的那句话：人点的中断只说「已中断」；运行时断的把原因带上（原因本身就是人话）。 */
+export function stoppedText(outcome: 'stopped' | 'interrupted', reason: string | undefined): string {
+  const why = reason?.trim() ?? '';
+  if (outcome === 'stopped') return why === '' ? '已中断' : `已中断 · ${why}`;
+  return why === '' ? '这一轮被打断了' : `这一轮被打断了 · ${why}`;
+}
+
 export function cardBlocks<B extends Block>(blocks: readonly B[]): readonly B[] {
   return blocks.filter((block) => block.kind !== 'thinking');
 }
