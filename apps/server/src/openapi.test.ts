@@ -163,9 +163,18 @@ test('对话：开会话 → prompt（作者带 via）→ events / stream；审�
   sessionSchema.parse(session.body);
   const prompted = await call(`/sessions/${session.body.id}/prompt`, post({ text: 'hi' }));
   assert.equal(prompted.status, 202, JSON.stringify(prompted.body));
+  // 回执带轮次：调用方拿它配 sinceTurn 跟这一轮。
+  assert.equal(prompted.body.turn, 1);
   const events = (await call(`/sessions/${session.body.id}/events`)).body;
   const prompt = events.map((e: unknown) => journalEntrySchema.parse(e)).find((e: { event: { kind: string } }) => e.event.kind === 'prompt');
   assert.equal(prompt.event.author.via, 'bot');
+  assert.equal(prompt.turn, 1);
+
+  const second = await call(`/sessions/${session.body.id}/prompt`, post({ text: '再来一句' }));
+  assert.equal(second.body.turn, 2);
+  const secondOnly = (await call(`/sessions/${session.body.id}/events?sinceTurn=2`)).body.map((e: unknown) => journalEntrySchema.parse(e));
+  assert.ok(secondOnly.length > 0);
+  assert.ok(secondOnly.every((entry: { turn?: number }) => entry.turn === 2));
   assert.ok(accounts.auditRows.some((row) => row.action === 'session.start' && row.detail.includes('via 令牌「bot」')));
 
   // SSE：补发已有事件

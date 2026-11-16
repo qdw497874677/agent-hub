@@ -195,6 +195,18 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!workspaceColumns.some((column) => column.name === 'group_id')) {
     db.exec('ALTER TABLE workspaces ADD COLUMN group_id TEXT');
   }
+  const sessionColumns = db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+  if (!sessionColumns.some((column) => column.name === 'turn')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN turn INTEGER NOT NULL DEFAULT 0');
+  }
+  const journalColumns = db.prepare('PRAGMA table_info(journal)').all() as { name: string }[];
+  if (!journalColumns.some((column) => column.name === 'turn')) {
+    db.exec('ALTER TABLE journal ADD COLUMN turn INTEGER');
+    // 回填：按会话内 prompt 的累计条数算出每条事件属于第几轮。只跑一次。
+    db.exec(
+      "UPDATE journal SET turn = (SELECT COUNT(*) FROM journal p WHERE p.session_id = journal.session_id AND p.seq <= journal.seq AND p.type = 'prompt')"
+    );
+  }
   migrateTasksV2(db);
   migrateWorkspaces(db);
   cleanLegacyLogText(db);
@@ -243,13 +255,13 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateTaskBranch = db.prepare('UPDATE tasks SET branch = ? WHERE id = ? AND ? IS NOT NULL');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
       'status = CASE WHEN excluded.last_seq >= sessions.last_seq THEN excluded.status ELSE sessions.status END, ' +
-      'last_seq = MAX(sessions.last_seq, excluded.last_seq), agent_session = excluded.agent_session, ' +
+      'last_seq = MAX(sessions.last_seq, excluded.last_seq), turn = MAX(sessions.turn, excluded.turn), agent_session = excluded.agent_session, ' +
       'options = excluded.options, option_spec = excluded.option_spec, worker_id = excluded.worker_id, workspace_id = excluded.workspace_id, ' +
       'environment_revision = excluded.environment_revision, settled_at = excluded.settled_at, group_id = excluded.group_id, ' +
       'kind = excluded.kind, parent_session_id = excluded.parent_session_id, ' +
@@ -266,7 +278,7 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectSessionsByWorkspace = db.prepare('SELECT * FROM sessions WHERE workspace_id = ? ORDER BY created_at ASC');
   const selectAllSessions = db.prepare('SELECT * FROM sessions ORDER BY created_at ASC');
   const appendJournal = db.prepare(
-    'INSERT OR IGNORE INTO journal(session_id, seq, type, payload, at) VALUES (?, ?, ?, ?, ?)'
+    'INSERT OR IGNORE INTO journal(session_id, seq, type, payload, at, turn) VALUES (?, ?, ?, ?, ?, ?)'
   );
   // 文本投影跟着 append 走：搜索读的是「这个会话说过的话」，不是单条 delta。
   const appendSessionText = db.prepare(
@@ -274,16 +286,16 @@ export function openSqliteStore(file: string): SqliteStore {
       'ON CONFLICT(session_id) DO UPDATE SET text = session_text.text || excluded.text, updated_at = excluded.updated_at'
   );
   const updateSessionCursor = db.prepare(
-    'UPDATE sessions SET last_seq = ?, status = ?, updated_at = ? WHERE id = ?'
+    'UPDATE sessions SET last_seq = ?, status = ?, turn = ?, updated_at = ? WHERE id = ?'
   );
   const selectEventsTail = db.prepare(
-    'SELECT seq, payload, at FROM journal WHERE session_id = ? ORDER BY seq DESC LIMIT ?'
+    'SELECT seq, payload, at, turn FROM journal WHERE session_id = ? ORDER BY seq DESC LIMIT ?'
   );
   const selectFirstPrompt = db.prepare(
-    "SELECT seq, payload, at FROM journal WHERE session_id = ? AND type = 'prompt' ORDER BY seq ASC LIMIT 1"
+    "SELECT seq, payload, at, turn FROM journal WHERE session_id = ? AND type = 'prompt' ORDER BY seq ASC LIMIT 1"
   );
   const selectEventsAfter = db.prepare(
-    'SELECT seq, payload, at FROM journal WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
+    'SELECT seq, payload, at, turn FROM journal WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
   );
   const insertEntryMap = db.prepare(upsertSql('entry_map', ['session_id', 'seq', 'entry_id'], 'session_id, seq'));
   const selectEntryId = db.prepare(
@@ -470,6 +482,7 @@ export function openSqliteStore(file: string): SqliteStore {
         seq,
         session.status,
         session.lastSeq,
+        session.turn,
         session.agentSessionRef,
         JSON.stringify(session.options),
         JSON.stringify(session.optionSpec),
@@ -511,10 +524,11 @@ export function openSqliteStore(file: string): SqliteStore {
           session.lastSeq,
           event.kind,
           JSON.stringify(event),
-          at
+          at,
+          session.turn
         );
         if (event.kind === 'text') appendSessionText.run(session.id, event.delta, at);
-        updateSessionCursor.run(session.lastSeq, session.status, session.updatedAt, session.id);
+        updateSessionCursor.run(session.lastSeq, session.status, session.turn, session.updatedAt, session.id);
       });
     },
     async eventsAfter(sessionId: Parameters<typeof asSessionId>[0], seq: Seq): Promise<JournalEntry[]> {

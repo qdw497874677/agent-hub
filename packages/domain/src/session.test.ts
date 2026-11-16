@@ -111,3 +111,17 @@ test('taskId 由任务带来，不是外部传入', () => {
   assert.ok(created.ok);
   assert.equal(created.value.taskId, task.id);
 });
+
+test('提问把轮次 +1，其它事件不改轮次：调用方靠 turn 对上「我发的第几句」', () => {
+  const created = deriveSession({ task: openTask(), agentId, model: '', now });
+  assert.ok(created.ok);
+  let session = created.value;
+  assert.equal(session.turn, 0);
+  session = applyEvent(session, { kind: 'prompt', text: '第一句' }, now);
+  assert.equal(session.turn, 1);
+  session = applyEvent(session, { kind: 'text', delta: '回复中' }, now);
+  session = applyEvent(session, { kind: 'ended', outcome: 'done' }, now);
+  assert.equal(session.turn, 1);
+  session = applyEvent(session, { kind: 'prompt', text: '第二句' }, now);
+  assert.equal(session.turn, 2);
+});

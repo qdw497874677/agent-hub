@@ -184,6 +184,8 @@ export function toSession(row: Row): Session {
         : { kind: 'fork', fromSessionId: asSessionId(originSession), atSeq: originSeq },
     status: str(row, 'status') as Session['status'],
     lastSeq: num(row, 'last_seq'),
+    // 老库补列前读到的可能是 undefined：按 0 处理，和刚建出来的会话一致。
+    turn: row['turn'] === undefined || row['turn'] === null ? 0 : num(row, 'turn'),
     agentSessionRef: nullableStr(row, 'agent_session'),
     options: parseOptions(nullableStr(row, 'options')),
     optionSpec: parseOptionSpec(nullableStr(row, 'option_spec')),
@@ -226,7 +228,8 @@ export function toJournalEntry(row: Row): JournalEntry {
   return {
     seq: num(row, 'seq'),
     event: JSON.parse(str(row, 'payload')) as SessionEvent,
-    at: num(row, 'at')
+    at: num(row, 'at'),
+    ...(row['turn'] === undefined || row['turn'] === null ? {} : { turn: num(row, 'turn') })
   };
 }
 

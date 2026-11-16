@@ -43,6 +43,14 @@ export interface Session {
   readonly origin: SessionOrigin;
   readonly status: SessionStatus;
   readonly lastSeq: Seq;
+  /**
+   * 这是第几轮对话（每次 `prompt` 事件 +1，从 1 开始）。
+   *
+   * 状态只描述**最近一轮**，对外调用方要靠 turn 把「我发的那句」和「回来的内容」对上。
+   * 历史事件也带同一个 turn（见 `JournalEntry.turn`），所以 `events?sinceTurn=N` 就能拿到
+   * 某一轮的全部事件，不需要自己数 prompt。
+   */
+  readonly turn: number;
   /** 双权威：平台 journal 管血缘与检索，agent 自己的会话文件管送给模型的上下文。 */
   readonly agentSessionRef: string | null;
   /**
@@ -142,6 +150,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     origin: { kind: 'derive' },
     status: 'running',
     lastSeq: 0,
+    turn: 0,
     agentSessionRef: null,
     options: input.options ?? {},
     optionSpec: [],
@@ -192,6 +201,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     origin: { kind: 'fork', fromSessionId: input.source.id, atSeq: input.atSeq },
     status: 'running',
     lastSeq: 0,
+    turn: 0,
     agentSessionRef: null,
     options: { ...input.options },
     optionSpec: [],
@@ -213,7 +223,9 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
  */
 export function applyEvent(session: Session, event: SessionEvent, now: number): Session {
   const lastSeq = session.lastSeq + 1;
-  if (event.kind === 'prompt') return { ...session, lastSeq, status: 'running', updatedAt: now };
+  if (event.kind === 'prompt') {
+    return { ...session, lastSeq, status: 'running', turn: session.turn + 1, updatedAt: now };
+  }
   if (event.kind !== 'ended') return { ...session, lastSeq, updatedAt: now };
   const status: SessionStatus =
     event.outcome === 'done'

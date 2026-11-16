@@ -12,6 +12,7 @@ import {
   forkSessionRequest,
   journalEntrySchema,
   projectSchema,
+  promptAckSchema,
   promptRequest,
   sessionSchema,
   setProjectDescriptionRequest,
@@ -345,10 +346,11 @@ export const routes = {
   getSession: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}`, tags: ['sessions'], summary: '会话详情',
     description:
-      '取一条会话的状态与配置。\n' +
+      '取一条会话的状态与配置。**status 只描述最近一轮**：running = 这一轮在跑；done/stopped/interrupted/failed = 这一轮的结果。\n' +
       '参数：sessionId。\n' +
-      '返回：会话对象（status、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n' +
-      '下一步：用 events 读它的时间线。\n' +
+      '返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n' +
+      '轮询用法：记下 turn；调 events(sessionId, sinceTurn=turn) 或 events(sessionId, after=lastSeq)；未到终态就 3–5 秒后再看；看到本 turn 的 ended 事件即这一轮结束。\n' +
+      '下一步：用 events 读它的时间线；要发下一句用 session_reply。\n' +
       '错误：404 会话不存在或属于看不见的项目。',
     request: { params: sessionId },
     responses: { 200: json(sessionSchema) }
@@ -357,12 +359,13 @@ export const routes = {
     method: 'post', path: `${V1}/sessions/{sessionId}/prompt`, tags: ['sessions'], summary: '对会话说话',
     description:
       '给会话发一条消息，立即返回（202）；回合在后台跑。\n' +
-      '参数：text、clientMessageId（可选，同一条消息重试用同一个值，送达队列据此去重）。\n' +
-      '返回：{ ok: true }。\n' +
-      '下一步：轮询 events（传 after=最后一条 seq）或 list_task_log 看进展与结论。\n' +
+      '参数：text、clientMessageId（建议总是带；同一条消息重试用同一个值，服务端按它去重）。\n' +
+      '返回：{ ok, turn, seq, deliveryId, state }——turn 是这句开启的轮次。\n' +
+      '轮询用法：拿返回的 turn，反复调 events(sessionId, sinceTurn=turn)；读到的每条事件都带同一个 turn；看到 ended 就是这一轮结束（事件里 outcome 区分 done/stopped/interrupted/failed）。\n' +
+      '下一步：轮询 events 或 list_task_log 看进展与结论；要打断用 session_cancel。\n' +
       '错误：404 会话不存在或看不见；409 会话不在运行（先 session_start）；429 太频繁。',
     request: { params: sessionId, ...body(promptRequest) },
-    responses: { 202: json(okSchema, '已发出') }
+    responses: { 202: json(promptAckSchema, '已接收（回合在后台跑）') }
   }),
   interrupt: route('sessions:write', {
     method: 'post', path: `${V1}/sessions/{sessionId}/interrupt`, tags: ['sessions'], summary: '打断正在跑的会话',
@@ -384,18 +387,25 @@ export const routes = {
     method: 'get', path: `${V1}/sessions/{sessionId}/events`, tags: ['sessions'], summary: '会话事件（after 之后的）',
     description:
       '读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n' +
-      '参数：sessionId；after（只取 seq > after 的事件，便于轮询）。\n' +
-      '返回：[{ seq, at, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n' +
+      '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）。\n' +
+      '返回：[{ seq, at, turn, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n' +
+      '轮询用法：第一次 sinceTurn=turn；之后用 after=最后一条 seq 增量拉；本 turn 出现 ended 即结束；没结束时 3–5 秒后再拉（running 时密一点，卡住时退到 10 秒）。\n' +
       '下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n' +
       '错误：404 会话不存在或看不见。',
-    request: { params: sessionId, query: z.object({ after: z.coerce.number().int().min(0).optional() }) },
+    request: {
+      params: sessionId,
+      query: z.object({
+        after: z.coerce.number().int().min(0).optional(),
+        sinceTurn: z.coerce.number().int().min(0).optional()
+      })
+    },
     responses: { 200: json(z.array(journalEntrySchema)) }
   }),
   stream: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}/stream`, tags: ['sessions'], summary: '会话事件流（SSE）',
     description:
       '先补发 `after`（或 `Last-Event-ID`）之后的事件，再实时推。\n\n' +
-      '- `event: event`，`id` = 事件序号，`data` = `{ seq, event, at }`（同 /events 的一项）\n' +
+      '- `event: event`，`id` = 事件序号，`data` = `{ seq, event, at, turn }`（同 /events 的一项）\n' +
       '- `event: status`，`data` = `{ status }`：只有状态变了\n' +
       '- 每 15 秒一条 `: ping` 注释保活。每个令牌最多同时开 5 条。',
     request: { params: sessionId, query: z.object({ after: z.coerce.number().int().min(0).optional() }) },

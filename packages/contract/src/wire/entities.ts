@@ -279,6 +279,8 @@ export const sessionSchema = z.object({
   origin: sessionOriginSchema,
   status: sessionStatusSchema,
   lastSeq: z.number().int().nonnegative(),
+  /** 第几轮对话（每次 prompt +1）。状态只描述最近一轮，turn 用来把请求与回复对上。 */
+  turn: z.number().int().nonnegative().default(0),
   agentSessionRef: z.string().nullable(),
   options: optionValuesSchema,
   optionSpec: z.array(runtimeOptionSchema),
@@ -477,5 +479,7 @@ export const searchResponseSchema = z.object({ hits: z.array(searchHitSchema) })
 export const journalEntrySchema = z.object({
   seq: z.number().int().positive(),
   event: sessionEventSchema,
-  at: epochMs
+  at: epochMs,
+  /** 这条事件属于第几轮；老事件没有这一列时缺省。 */
+  turn: z.number().int().nonnegative().optional()
 });

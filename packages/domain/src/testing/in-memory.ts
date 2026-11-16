@@ -241,7 +241,7 @@ export function fakeSessions(tasks: Map<string, Task>): SessionRepository & { jo
       const existing = rows.get(session.id);
       rows.set(session.id, existing ? { ...session, title: existing.title ?? null } : session);
       const entries = journal.get(session.id) ?? [];
-      entries.push({ seq: session.lastSeq, event, at });
+      entries.push({ seq: session.lastSeq, event, at, turn: session.turn });
       journal.set(session.id, entries);
     },
     async eventsAfter(sessionId, afterSeq) {

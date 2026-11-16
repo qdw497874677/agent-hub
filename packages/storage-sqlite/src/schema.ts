@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   parent_session_id TEXT,
   status           TEXT NOT NULL,
   last_seq         INTEGER NOT NULL,
+  -- 第几轮对话：每次 prompt +1。状态只描述最近一轮，turn 让调用方把请求和回复对上。
+  turn             INTEGER NOT NULL DEFAULT 0,
   agent_session    TEXT,
   options          TEXT NOT NULL DEFAULT '{}',
   option_spec      TEXT NOT NULL DEFAULT '[]',
@@ -90,6 +92,8 @@ CREATE TABLE IF NOT EXISTS journal (
   type       TEXT NOT NULL,
   payload    TEXT NOT NULL,
   at         INTEGER NOT NULL,
+  -- 这条事件属于第几轮（老库由 store.ts 的 turn 迁移回填）。
+  turn       INTEGER,
   PRIMARY KEY (session_id, seq)
 );
 

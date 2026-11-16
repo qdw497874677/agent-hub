@@ -142,6 +142,11 @@ export interface JournalEntry {
   readonly seq: Seq;
   readonly event: SessionEvent;
   readonly at: number;
+  /**
+   * 这条事件属于第几轮（`prompt` 开启一轮）。老数据没有这一列时缺省，调用方按
+   * `event.kind === 'prompt'` 自己数即可。
+   */
+  readonly turn?: number;
 }
 
 /** 工具输出进 journal 前截到这么长（字符）：看个究竟够了，不让一次 cat 大文件撑爆数据库。 */

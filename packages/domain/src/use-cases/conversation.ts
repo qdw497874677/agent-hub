@@ -47,6 +47,8 @@ export interface PromptAck {
   readonly seq: number;
   readonly deliveryId: string | null;
   readonly state: 'queued' | 'sending';
+  /** 这句问话开启了第几轮：调用方拿它配 `events?sinceTurn=` 跟这一轮的进展。 */
+  readonly turn: number;
 }
 
 /** 幂等只看最近这么多条事件：更早的同名 id 当成新消息（重放窗口够用，也不扫全表）。 */
@@ -157,7 +159,7 @@ export async function promptSessionUseCase(
   if (command.clientMessageId !== undefined) {
     const hit = findClientMessage(await deps.sessions.tail(sessionId, CLIENT_MESSAGE_WINDOW), command.clientMessageId);
     if (hit) {
-      return ok({ seq: hit.seq, deliveryId: await deliveryIdOf(deps, sessionId, hit.seq), state: 'queued' });
+      return ok({ seq: hit.seq, deliveryId: await deliveryIdOf(deps, sessionId, hit.seq), state: 'queued', turn: session.turn });
     }
   }
 
@@ -204,7 +206,8 @@ export async function promptSessionUseCase(
     const ack: PromptAck = {
       seq: logged.value.lastSeq,
       deliveryId: claimed.delivery.id,
-      state: claimed.send ? 'sending' : 'queued'
+      state: claimed.send ? 'sending' : 'queued',
+      turn: logged.value.turn
     };
     if (!claimed.send) return ok(ack);
     // 已进 journal + 队列：先回执，派发在后台跑；失败由 delivery/ended 记录，不再变成 HTTP 错误
@@ -221,7 +224,7 @@ export async function promptSessionUseCase(
   const text = [instructions, guidance?.text, briefing, peers, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
   if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
   const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
-  return sent.ok ? ok({ seq: logged.value.lastSeq, deliveryId: null, state: 'sending' }) : failTurn(deps, sessionId, sent.error);
+  return sent.ok ? ok({ seq: logged.value.lastSeq, deliveryId: null, state: 'sending', turn: logged.value.turn }) : failTurn(deps, sessionId, sent.error);
 }
 
 /**

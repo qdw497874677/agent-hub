@@ -288,7 +288,9 @@ export const promptAckSchema = z.object({
   ok: z.literal(true),
   seq: z.number().int(),
   deliveryId: z.string().nullable(),
-  state: z.enum(['queued', 'sending'])
+  state: z.enum(['queued', 'sending']),
+  /** 这句问话开启了第几轮；配 `events?sinceTurn=` 跟这一轮。 */
+  turn: z.number().int().nonnegative()
 });
 export type PromptAckDto = z.infer<typeof promptAckSchema>;
 

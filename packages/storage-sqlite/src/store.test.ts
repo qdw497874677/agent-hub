@@ -495,3 +495,22 @@ test('sessions.task_id 迁移：旧库 NOT NULL 放宽为可空，旧会话与�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('轮次：每句提问开启一轮，journal 事件带所属轮次，会话记最近一轮', async () => {
+  const store = openSqliteStore(':memory:');
+  let { session } = await seeded(store);
+  const events: SessionEvent[] = [
+    { kind: 'prompt', text: '第一句' },
+    { kind: 'text', delta: '回一句' },
+    { kind: 'ended', outcome: 'done' },
+    { kind: 'prompt', text: '第二句' }
+  ];
+  for (const [index, event] of events.entries()) {
+    session = applyEvent(session, event, now + index);
+    await store.sessions.append(session, event, now + index);
+  }
+  const entries = await store.sessions.eventsAfter(session.id, 0);
+  assert.deepEqual(entries.map((entry) => entry.turn), [1, 1, 1, 2]);
+  const stored = await store.sessions.byId(session.id);
+  assert.equal(stored?.turn, 2);
+});

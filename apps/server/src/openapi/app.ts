@@ -461,14 +461,17 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   });
   on(routes.prompt, async (c) => {
     const actor = principal(c);
-    const input = valid<{ text: string; attachments?: never }>(c, 'json');
+    const input = valid<{ text: string; attachments?: never; clientMessageId?: string }>(c, 'json');
     const result = await promptSessionUseCase(deps, {
       sessionId: c.req.param('sessionId') ?? '',
       text: input.text,
       attachments: input.attachments,
+      ...(input.clientMessageId === undefined ? {} : { clientMessageId: input.clientMessageId }),
       author: { id: actor.user.id, name: actor.user.displayName, via: actor.via?.name }
     });
-    return result.ok ? c.json({ ok: true }, 202) : fail(c, result.error);
+    return result.ok
+      ? c.json({ ok: true, ...result.value }, 202)
+      : fail(c, result.error);
   });
   on(routes.interrupt, async (c) => {
     const sessionId = c.req.param('sessionId') ?? '';
@@ -492,7 +495,13 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   on(routes.events, async (c) => {
     const sessionId = asSessionId(c.req.param('sessionId') ?? '');
     if (!(await deps.sessions.byId(sessionId))) return fail(c, notFound('会话不存在'));
-    return c.json(await refreshAuthors(ctx.activity, await deps.sessions.eventsAfter(sessionId, valid<{ after?: number }>(c, 'query').after ?? 0)));
+    const query = valid<{ after?: number; sinceTurn?: number }>(c, 'query');
+    const entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
+    // 老事件没有 turn：保守地保留，宁可多给也不要让调用方漏掉内容。
+    const kept = query.sinceTurn === undefined
+      ? entries
+      : entries.filter((entry) => entry.turn === undefined || entry.turn >= query.sinceTurn!);
+    return c.json(await refreshAuthors(ctx.activity, kept));
   });
   on(routes.activity, async (c) => c.json(ctx.activity ? await sessionActivity(ctx.activity, c.req.param('sessionId') ?? '') : []));
 
