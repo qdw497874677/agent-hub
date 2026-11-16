@@ -52,6 +52,8 @@ import type {
   CredentialStatusDto,
   SettingsDto,
   AssetsOverviewDto,
+  AssetSetDto,
+  AssetSetInputDto,
   ProjectAssetsDto,
   ProjectAssetPlanDto,
   AssetRevisionDto,
@@ -363,6 +365,12 @@ export const api = {
   /** 项目检查命令（issue #216 P1）：同一个 PATCH，只带 checks；空数组 = 清掉。 */
   saveProjectChecks: (projectId: string, checks: readonly string[]) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ checks }) }),
+  /**
+   * 项目默认资产组合（asset-hub.md「资产组合」）：同一个 PATCH，只带 assetSetIds。
+   * 顺序有意义（后面的组合叠在前面之上），最多 8 个；空数组 = 不引用任何组合。
+   */
+  saveProjectAssetSets: (projectId: string, assetSetIds: readonly string[]) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ assetSetIds }) }),
   /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
   saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),
@@ -689,9 +697,25 @@ export const assetsApi = {
   removeSecret: (name: string) => call<{ ok: true }>(`/api/admin/assets/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' })
 };
 
+/**
+ * 资产组合（asset-hub.md「资产组合」）：把常用的技能 / 指令 / MCP 打包，项目里按顺序引用，
+ * 派生会话时整组带或整组不带。列表按团队返回；名字 1–60 字，说明 ≤300，项数上限见 contract。
+ * 被项目引用时删除会 409，`detail.message` 是后端给的原话（直接显示）。
+ */
+const assetSetPath = (id: string) => `/api/asset-sets/${encodeURIComponent(id)}`;
+export const assetSetsApi = {
+  list: () => call<{ sets: AssetSetDto[] }>('/api/asset-sets').then((result) => result.sets),
+  create: (input: AssetSetInputDto) => post<AssetSetDto>('/api/asset-sets', input),
+  update: (id: string, input: AssetSetInputDto) =>
+    call<AssetSetDto>(assetSetPath(id), { method: 'PATCH', body: JSON.stringify(input) }),
+  remove: (id: string) => call<{ ok: true }>(assetSetPath(id), { method: 'DELETE' })
+};
+
 export type {
   SecretsOverviewDto,
   AssetsOverviewDto,
+  AssetSetDto,
+  AssetSetInputDto,
   ProjectAssetsDto,
   AssetRevisionDto,
   AssetDiffDto,

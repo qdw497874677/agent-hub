@@ -5,6 +5,7 @@ import type { AssetsOverviewDto, GitScanDto } from '../api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../dialog-shell.tsx';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAction } from './shared.tsx';
 import { encodeFiles, formatBytes, readPicked, type PickedFile } from './asset-files.ts';
+import { AssetSets } from './asset-sets.tsx';
 
 /**
  * 资产中心：技能（SKILL.md）、指令和 MCP 服务器配置，钉在不可变版本上，按机器安装。
@@ -107,6 +108,7 @@ export function Assets() {
           )}
         </Panel>
       </Section>
+      <AssetSets />
       <Secrets />
       <Section title="机器同步" aside={<span className="text-meta text-tertiary">{workers.length} 台</span>}>
         <Panel>

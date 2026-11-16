@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api, assetsApi, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type WorkerInfoDto } from './api.ts';
+import { api, assetsApi, assetSetsApi, providersApi, type CanvasDto, type HubModelsDto, type SessionDto, type WorkerInfoDto } from './api.ts';
 import {
   assetNote,
   assetSelectionKey,
@@ -12,6 +12,13 @@ import {
   toggleAsset,
   type AssetSelection
 } from '../atoms/derive-assets.ts';
+import {
+  itemCountText,
+  setChoiceFor,
+  submitAssetSetIds,
+  toggleSetChoice,
+  type AssetSetChoice
+} from '../atoms/asset-sets.ts';
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
@@ -133,6 +140,17 @@ export function DeriveDialog({
     retry: false
   });
   const assetEntries = assetPlan.data?.entries ?? [];
+  // 资产组合（asset-hub.md「资产组合」）：项目默认带哪几组，这里可以整组取消，也可以换成别的组合。
+  // 用户没动过 → 不传 assetSetIds（后端按项目默认展开）；动过 → 传当前这组 id（可能为空）。
+  const setList = useQuery({ queryKey: ['asset-sets'], queryFn: () => assetSetsApi.list(), retry: false });
+  const [assetSetChoice, setAssetSetChoice] = useState<AssetSetChoice | null>(null);
+  const sets = setList.data ?? [];
+  const chosen = setChoiceFor(assetSetChoice, canvas.project.assetSetIds ?? []);
+  const chosenSets = chosen.ids.flatMap((id) => {
+    const set = sets.find((candidate) => candidate.id === id);
+    return set ? [set] : [];
+  });
+  const spareSets = sets.filter((set) => !chosen.ids.includes(set.id));
   // 模型清单按机器来：两台机器的 Pi 配的 provider 可能完全不同
   const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.models(taskId), retry: false });
   const hubProtocols = [...new Set((hubModels.data ?? []).map((provider) => provider.protocol))];
@@ -249,6 +267,8 @@ export function DeriveDialog({
       const workspaceMode: 'shared' | 'isolated' | null = isolateNew ? 'isolated' : null;
       // 资产：一项都没取消就不传（旧行为：用项目生效集全部）；取消了就传勾选后的 id（可能为空数组）。
       const assetIds = submitAssetIds(assetEntries, selection);
+      // 组合同理：没动过就不传（用项目默认），动过就传当前选中（可能为空数组）。
+      const assetSetIds = submitAssetSetIds(chosen);
       return api.derive({
         taskId,
         agentId,
@@ -258,6 +278,7 @@ export function DeriveDialog({
         ...(groupId === null ? {} : { groupId }),
         ...(workspaceMode === null ? {} : { workspaceMode }),
         ...(assetIds === undefined ? {} : { assetIds }),
+        ...(assetSetIds === undefined ? {} : { assetSetIds }),
         ...(profileId ? { profileId } : {})
       });
     },
@@ -468,6 +489,55 @@ export function DeriveDialog({
               </span>
             ) : null}
           </div>
+          {sets.length === 0 ? null : (
+            <div className="mb-2" data-testid="derive-asset-sets">
+              <div className="mb-1 flex flex-wrap items-baseline gap-x-2">
+                <span className="text-meta text-secondary">组合</span>
+                <span className="text-meta text-tertiary">
+                  {chosenSets.length ? `${chosenSets.length} 组 · 按序号叠加` : '这次不带组合'}
+                </span>
+              </div>
+              <ul className="flex flex-wrap gap-1.5">
+                {[...chosenSets.map((set, index) => ({ set, order: index + 1 })), ...spareSets.map((set) => ({ set, order: 0 }))].map(
+                  ({ set, order }) => {
+                    const on = order > 0;
+                    return (
+                      <li key={set.id} className="max-w-full">
+                        <label
+                          data-testid="derive-asset-set"
+                          data-set-id={set.id}
+                          className={`flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-meta ${
+                            on ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-tertiary'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid="derive-asset-set-toggle"
+                            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+                            checked={on}
+                            onChange={(event) => setAssetSetChoice(toggleSetChoice(chosen, set.id, event.target.checked))}
+                          />
+                          {on ? (
+                            <span aria-hidden className="shrink-0 font-mono text-meta text-accent">
+                              {order}
+                            </span>
+                          ) : null}
+                          <span className="min-w-0 break-words">
+                            {set.name} · {itemCountText(set.items.length)}
+                          </span>
+                        </label>
+                      </li>
+                    );
+                  }
+                )}
+              </ul>
+              {chosen.touched ? (
+                <p className="mt-1 text-meta text-tertiary" data-testid="derive-asset-sets-note">
+                  已改动：{chosen.ids.length ? `这次带 ${chosen.ids.length} 组` : '这次不带组合'}，下面的资产列表仍按项目默认组合显示。
+                </p>
+              ) : null}
+            </div>
+          )}
           {machine === null ? (
             <p className="text-meta text-tertiary" data-testid="derive-assets-empty">
               选好机器后可以看会带哪些资产

@@ -12,6 +12,7 @@ import { LinkWorkspaces } from './link-workspaces.tsx';
 import { WorkspaceCleanup } from './workspace-cleanup.tsx';
 import { WorktreeSettings } from './worktree-settings.tsx';
 import { ProjectChecksSettings } from './project-checks-settings.tsx';
+import { ProjectAssetSets } from './project-asset-sets.tsx';
 import { ProjectRepos } from './project-repos.tsx';
 import { projectWorktree } from './worktree-config.ts';
 import { workspaceSummary, workspaceSummaryTone } from './workspace-summary.ts';
@@ -114,6 +115,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           <ProjectRepos project={project} />
           <WorktreeSettings project={project} />
           <ProjectChecksSettings project={project} />
+          <ProjectAssetSets project={project} />
           <section data-testid="project-spaces" className="mt-5 border-t border-hair pt-4">
             <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
               已有工作目录
