@@ -322,13 +322,15 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
     { seq: 1, at: 1, event: { kind: 'prompt', text: 'AWS_SECRET_ACCESS_KEY=abc' } },
     { seq: 2, at: 2, turn: 1, event: { kind: 'tool_call', name: 'bash', input: { command: 'echo AWS_SECRET_ACCESS_KEY=abc' } } },
     { seq: 3, at: 3, event: { kind: 'tool_result', ok: true, output: 'AWS_SECRET_ACCESS_KEY=abc' } },
-    { seq: 4, at: 4, event: { kind: 'text', text: '好了' } },
+    { seq: 4, at: 4, event: { kind: 'text', delta: '好了' } },
     { seq: 5, at: 5, event: { kind: 'thinking', text: '密钥是 abc' } },
     { seq: 6, at: 6, event: { kind: 'ended', outcome: 'done', reason: 'ok' } }
   ]) as { event: Record<string, unknown>; turn?: number }[];
   const text = JSON.stringify(projected);
   assert.ok(!text.includes('AWS_SECRET'), text);
   assert.deepEqual(projected.map((p) => p.event['kind']), ['tool', 'tool_result', 'text', 'ended']);
+  // 正文在领域里叫 delta；投影后统一成 text，不能丢内容。
+  assert.deepEqual(projected[2]!.event, { kind: 'text', text: '好了' });
   assert.deepEqual(projected[0]!.event, { kind: 'tool', name: 'bash' });
   // turn 要留给调用方（events?sinceTurn= 对得上轮次）；没有 turn 的老事件不凭空生成。
   assert.equal(projected[0]!.turn, 1);
