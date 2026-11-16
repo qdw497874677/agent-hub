@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { chooseHubModel, piModel } from './hub-model.ts';
 
 /**
  * 隔离 worktree + 准备命令（docs/design/worktree.md §3 §4）。
@@ -217,6 +217,8 @@ test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照�
   await expect(worktree).toContainText('新建隔离 worktree');
   // 项目默认 isolated：打开就替用户选上，不用再点一下
   await expect(worktree).toHaveAttribute('aria-checked', 'true');
+  // 只有 Hub 模型的机器：模型框显式写「选择模型…」，不替人选（选好之后才轮到工作目录这一关）
+  await chooseHubModel(run);
   await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
   // 选了隔离档之后，机器和工作目录那块不该被禁用（机器始终可选）
   const region = run.getByTestId('derive-workspace-region');

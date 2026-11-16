@@ -22,7 +22,7 @@ import {
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
-import { canSelectMachine, startHint } from './harness-gate.ts';
+import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startHint } from './harness-gate.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from '../atoms/model-picker.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
@@ -174,8 +174,11 @@ export function DeriveDialog({
     model,
     protocol: selectedHub?.protocol ?? null,
     workspaceReady: choiceReady(choice),
-    workspaceNeedsPath: choice?.type === 'new_long_lived' && !choice.path
+    workspaceNeedsPath: choice?.type === 'new_long_lived' && !choice.path,
+    hubAvailable: hubCovers(workers.byId(machine), agentId, hubProtocols)
   });
+  // 模型框的空值项：状态为空时显式画出来，别让浏览器把第一项画成「已选」（见 emptyModelOption）
+  const emptyModel = emptyModelOption(offered.models, model, hubCovers(workers.byId(machine), agentId, hubProtocols));
   // 项目默认隔离（docs/design/worktree.md §2 §3）：没选过任何东西时，替用户选上「新建隔离 worktree」。
   const projectIsolated = canvas.project.worktree?.mode === 'isolated';
   const [modeTouched, setModeTouched] = useState(false);
@@ -432,10 +435,12 @@ export function DeriveDialog({
             // 选了机器：那台上不能用的 agent 变灰并写明原因（没选机器时由下面的机器列表说明）
             const worker = machine === null ? undefined : workers.byId(machine);
             const why = worker ? harnessReason(worker, candidate.id) : null;
-            const disabled = why !== null && !(why === '未配置模型' && canSelectMachine(worker, candidate.id, hubProtocols));
+            const covered = why === '未配置模型' && canSelectMachine(worker, candidate.id, hubProtocols);
+            const disabled = why !== null && !covered;
+            const note = agentNote(why, covered);
             return (
               <option key={candidate.id} value={candidate.id} disabled={disabled}>
-                {why ? `${candidate.label}（${why}）` : candidate.label}
+                {note ? `${candidate.label}（${note}）` : candidate.label}
               </option>
             );
           })}
@@ -454,6 +459,7 @@ export function DeriveDialog({
               setModel(value);
             }}
             items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
+            {...(emptyModel === null ? {} : { placeholder: emptyModel })}
           />
         ) : (
           <select
@@ -466,15 +472,12 @@ export function DeriveDialog({
               setModel(event.target.value);
             }}
           >
-            {offered.models.length === 0 ? (
-              <option value="">用 agent 自己的默认</option>
-            ) : (
-              offered.models.map((candidate) => (
-                <option key={candidate} value={candidate}>
-                  {candidate}
-                </option>
-              ))
-            )}
+            {emptyModel === null ? null : <option value="">{emptyModel}</option>}
+            {offered.models.map((candidate) => (
+              <option key={candidate} value={candidate}>
+                {candidate}
+              </option>
+            ))}
           </select>
         )}
         </div>

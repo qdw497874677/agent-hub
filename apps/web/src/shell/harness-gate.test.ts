@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canSelectMachine, startBlockReason, startHint, type GateWorker } from './harness-gate.ts';
+import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startBlockReason, startHint, type GateWorker } from './harness-gate.ts';
 
 const bare = (reason: string, providers?: readonly string[]): GateWorker => ({
   agentModels: [{ agentId: 'pi', readiness: { state: 'unavailable', reason }, ...(providers ? { providers } : {}) }]
@@ -46,4 +46,38 @@ test('「开始」的说明行：先说最挡路的那一个，能用时不说',
   assert.equal(startHint({ ...open, workspaceNeedsPath: true }), '先选一个目录');
   // 都齐了：不渲染说明行
   assert.equal(startHint({ ...ready, worker: undefined }), null);
+});
+
+test('模型框的空值项：状态为空就显式画出来，看到的和状态一致', () => {
+  // 只能用 hub 模型：写「选择模型…」，不替人选
+  assert.equal(emptyModelOption(['hub-cn-glm-flash/glm-5.3-flash'], '', true), '选择模型…');
+  // 有原生模型、agent 自己有默认：空值就是「用 agent 自己的默认」
+  assert.equal(emptyModelOption(['native/a', 'native/b'], '', false), '用 agent 自己的默认');
+  assert.equal(emptyModelOption([], '', false), '用 agent 自己的默认');
+  // 选中了清单里的值：不需要空值项
+  assert.equal(emptyModelOption(['hub-cn-glm-flash/glm-5.3-flash'], 'hub-cn-glm-flash/glm-5.3-flash', true), null);
+});
+
+test('hub 模型能顶上「未配置模型」时，agent 括注和说明行都不再说「用不了」', () => {
+  const worker = bare('未配置模型', ['openai-chat']);
+  assert.equal(hubCovers(worker, 'pi', ['openai-chat']), true);
+  assert.equal(hubCovers(worker, 'pi', []), false);
+  assert.equal(hubCovers(bare('未安装', ['openai-chat']), 'pi', ['openai-chat']), false);
+  assert.equal(agentNote('未配置模型', true), '选 Hub 模型');
+  assert.equal(agentNote('未配置模型', false), '未配置模型');
+  assert.equal(agentNote('未安装', false), '未安装');
+  assert.equal(agentNote(null, false), null);
+  assert.equal(agentNote('', false), null);
+  const base = {
+    agentId: 'pi',
+    agentLabel: 'Pi',
+    machine: 'local',
+    worker,
+    model: '',
+    protocol: null,
+    workspaceReady: true
+  };
+  assert.equal(startHint({ ...base, hubAvailable: true }), '先在「模型」里选一个 Hub 模型');
+  assert.equal(startHint({ ...base, hubAvailable: false }), '这台机器上的 Pi 用不了：未配置模型');
+  assert.equal(startHint({ ...base, hubAvailable: true, model: 'hub-cn-glm-flash/glm-5.3-flash', protocol: 'openai-chat' }), null);
 });

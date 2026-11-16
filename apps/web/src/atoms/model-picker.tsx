@@ -41,7 +41,8 @@ export function ModelPicker({
   className = '',
   id,
   short = false,
-  note
+  note,
+  placeholder = '默认'
 }: {
   items: readonly ModelItem[];
   value: string;
@@ -56,6 +57,8 @@ export function ModelPicker({
   short?: boolean;
   /** 清单底部的一行说明：这轮有哪些模型被收起来了（不可选、也不能聚焦）。 */
   note?: string;
+  /** 值为空时按钮上写什么（派生对话框里只能用 hub 模型时写「选择模型…」）。 */
+  placeholder?: string;
 }) {
   const [open, setOpen] = useState(false);
   const current = items.find((item) => item.value === value);
@@ -66,7 +69,7 @@ export function ModelPicker({
       <button
         type="button"
         id={id}
-        aria-label={`${label}：${full}`}
+        aria-label={`${label}：${full || placeholder}`}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
@@ -78,7 +81,7 @@ export function ModelPicker({
         }}
         onDoubleClick={(event) => event.stopPropagation()}
       >
-        <span className="min-w-0 truncate">{shown || '默认'}</span>
+        <span className="min-w-0 truncate">{shown || placeholder}</span>
         <span aria-hidden className="shrink-0 text-tertiary">
           ▾
         </span>
