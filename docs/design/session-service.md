@@ -108,3 +108,17 @@ Worker 事件（worker → hub）：`service_state` `{ serviceId, state, pid?, d
    日志尾部保留；`on-demand` 的服务标 `failed('机器重启后没有拉起来')` 并可由用户一键重启。
 3. 服务进程崩溃（`kill -9`）时 `restart: 'always'` 在 5 秒内重拉，`detail` 记录退出码；超过 5 次标 `failed`。
 4. 路径逃逸（`root='/etc'`）、命令带 `HUB_TOKEN`、端口不在 1024–65535 → 400 且不 spawn。
+
+## 9. 修订（2025-11-16）：观测优先，托管可选
+
+实践反馈：把「每个长驻进程」都登记成 hub 实体，进程一多（脚本、代理、watcher、隧道）就变成一张管不过来的清单，
+还会和会话终端里已有的子进程重复记账。因此把层次拆开：
+
+1. **执行**：进程活在 Worker 上，由会话终端（或 pin 住的会话）拉起；`setsid`/`tmux` 负责活过单轮对话。
+2. **观测（主路径）**：`ws.proc_list` 只读列出「工作目录在 WORKER_ROOTS 内」的进程——pid、ppid、命令行（脱敏+截断）、cwd、
+   监听端口（`/proc/net/tcp` inode ↔ `/proc/<pid>/fd`）。hub 提供 `GET /api/workers/:id/processes` 与
+   `GET /api/sessions/:id/processes`（按会话工作目录过滤）。不落库、不登记。
+3. **托管（可选）**：只有确实需要跨 Worker 重启保活的少数进程才用 §3 的 `session_services`（`restart: always`）；
+   它不再是必经之路。
+
+预览的后续方向：优先按「端口在听 + 属于哪条会话的工作目录」自动出链接，而不是要求用户先登记服务。
