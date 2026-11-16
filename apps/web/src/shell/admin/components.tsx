@@ -70,7 +70,7 @@ function Item({ item, all }: { item: CatalogComponentDto; all: readonly CatalogC
         {item.runtime === 'opencode' ? <span className="mr-1 rounded-sm border border-hair px-1 text-xs">OpenCode 插件</span> : null}
         {item.source === 'git' ? (
           <span data-testid="component-git">
-            git：<span className="font-mono">{item.gitUrl}</span> @ <span className="font-mono">{item.commit?.slice(0, 12)}</span>（安装脚本审核时看不到，装时一律不执行）
+            git：<span className="font-mono">{item.gitUrl}</span> @ <span className="font-mono">{item.commit?.slice(0, 12)}</span><span className="ml-1 rounded-sm border border-hair px-1 text-meta text-tertiary">不执行安装脚本</span>
           </span>
         ) : (
           <>npm：<span className="font-mono">{item.packageName}@{item.version}</span></>
@@ -148,10 +148,10 @@ function SubmitForm() {
         submit.mutate(undefined, { onSuccess: () => (setId(''), setPackageName(''), setVersion(''), setCaps(''), setGitUrl(''), setCommit('')) });
       }}
     >
-      <input className={INPUT} data-testid="component-id" placeholder="组件 id，如 web-search" value={id} onChange={(e) => setId(e.target.value)} required />
+      <input className={INPUT} data-testid="component-id" aria-label="名称" placeholder="名称，如 web-search" value={id} onChange={(e) => setId(e.target.value)} required />
       <input className={INPUT} data-testid="component-package" placeholder="npm 包名" value={packageName} onChange={(e) => setPackageName(e.target.value)} required />
-      <input className={INPUT} data-testid="component-version" placeholder="确切版本，如 1.2.3" value={version} onChange={(e) => setVersion(e.target.value)} required />
-      <input className={INPUT} data-testid="component-caps" placeholder="提供的能力，如 tool:web-search（逗号分隔）" value={caps} onChange={(e) => setCaps(e.target.value)} />
+      <input className={INPUT} data-testid="component-version" aria-label="版本" placeholder="版本，如 1.2.3" value={version} onChange={(e) => setVersion(e.target.value)} required />
+      <input className={INPUT} data-testid="component-caps" aria-label="能力" placeholder="能力，逗号分隔" value={caps} onChange={(e) => setCaps(e.target.value)} />
       <select className={INPUT} data-testid="component-runtime" value={runtime} onChange={(e) => setRuntime(e.target.value as 'pi' | 'opencode')}>
         <option value="pi">pi 扩展</option>
         <option value="opencode">OpenCode 插件（v2：默认导出 {'{ id, setup }'}）</option>
@@ -160,10 +160,9 @@ function SubmitForm() {
       <input className={INPUT} data-testid="component-git-url" placeholder="git 仓库 https 地址（留空 = 从 npm 装）" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />
       <input className={INPUT} data-testid="component-git-commit" placeholder="40 位提交号" value={commit} onChange={(e) => setCommit(e.target.value)} required={gitUrl.trim() !== ''} />
       <div className="flex items-center gap-2 sm:col-span-2">
-        <button className={`${SMALL} shrink-0 whitespace-nowrap`} data-testid="component-submit" disabled={submit.isPending} type="submit">
+        <button className={`${SMALL} shrink-0 whitespace-nowrap`} data-testid="component-submit" disabled={submit.isPending} type="submit" title="会先去 registry 解析并钉死这个版本的制品哈希，审的就是装的">
           {submit.isPending ? '查 registry…' : '提交审核'}
         </button>
-        <span className="text-meta text-tertiary">hub 会先去 registry 解析并钉死这个版本的制品哈希，审的就是装的。</span>
       </div>
       {submit.error ? <p role="alert" className="text-meta text-rust sm:col-span-2">{errorText(submit.error)}</p> : null}
     </form>

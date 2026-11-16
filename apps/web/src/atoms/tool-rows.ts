@@ -188,7 +188,7 @@ const HUB_TOOL_LABEL: Readonly<Record<string, string>> = {
   agent_directory: '查 agent 名录',
   agent_inbox: '看收件箱',
   agent_inspect_runtime: '查看运行时',
-  agent_list_profiles: '列 Agent 配置',
+  agent_list_profiles: '列启动预设',
   agent_peers: '列同伴 agent',
   agent_reply: '回复消息',
   agent_send: '发消息',

@@ -819,9 +819,9 @@ export function FocusView({
                     }}
                   />
                 </MenuGroup>
-                <MenuGroup label="Agent 配置" className="border-t border-hair">
+                <MenuGroup label="启动预设" className="border-t border-hair">
                   <MenuItem
-                    title="保存为 Agent 配置…"
+                    title="保存为启动预设…"
                     hint="把这条会话的 agent、模型和选项存成下次可直接套用的组合"
                     onClick={() => {
                       close();
@@ -829,7 +829,7 @@ export function FocusView({
                     }}
                   />
                   <MenuItem
-                    title="管理 Agent 配置…"
+                    title="管理启动预设…"
                     hint="改名、改模型、复制或删除已保存的启动组合"
                     onClick={() => {
                       close();

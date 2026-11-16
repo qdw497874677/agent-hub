@@ -39,8 +39,8 @@ export function ProvidersDialog({ onClose, me }: { onClose: () => void; me: Acco
   return (
     <DialogShell title="模型提供商" onClose={onClose} wide>
       <p className="text-sub text-primary">模型提供商</p>
-      <p className="mt-1 text-meta text-tertiary">
-        接一个 OpenAI / Anthropic 兼容的端点，它的模型就会出现在开会话的模型列表里（显示为 hub-标识/模型）。密钥只写不读，不会进 agent 的配置文件。
+      <p className="mt-1 text-meta text-tertiary" title="模型会出现在开会话的模型列表里（显示为 hub-标识/模型）；密钥不会进 agent 的配置文件">
+        添加兼容 OpenAI 或 Anthropic 的接口。密钥保存后不可再查看。
       </p>
       {editing ? (
         <ProviderForm

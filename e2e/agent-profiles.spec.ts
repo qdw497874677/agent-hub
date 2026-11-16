@@ -48,16 +48,16 @@ test('Agent 配置：保存当前会话，派生时套用', async ({ page }) => 
   await expect(page.getByLabel('发送消息')).toBeVisible();
 
   await page.getByRole('button', { name: '更多' }).click();
-  await page.getByRole('menuitem', { name: /保存为 Agent 配置/ }).click();
-  const saveDialog = page.getByRole('dialog', { name: '保存为 Agent 配置' });
+  await page.getByRole('menuitem', { name: /保存为启动预设/ }).click();
+  const saveDialog = page.getByRole('dialog', { name: '保存为启动预设' });
   await saveDialog.getByLabel('名字').fill(PROFILE_NAME);
   await saveDialog.getByRole('button', { name: '保存' }).click();
   await expect(saveDialog).toHaveCount(0);
 
   // 管理页：改名，确认管理 UI 与派生下拉同步。
   await page.getByRole('button', { name: '更多' }).click();
-  await page.getByRole('menuitem', { name: /管理 Agent 配置/ }).click();
-  const manage = page.getByRole('dialog', { name: 'Agent 配置' });
+  await page.getByRole('menuitem', { name: /管理启动预设/ }).click();
+  const manage = page.getByRole('dialog', { name: '启动预设' });
   const managedRow = manage.getByTestId('agent-profile-row').filter({ hasText: PROFILE_NAME });
   await expect(managedRow).toBeVisible();
   await managedRow.getByRole('button', { name: '编辑' }).click();

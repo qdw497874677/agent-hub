@@ -288,7 +288,7 @@ export function ModelEditor({
                   </label>
                   <div className="sm:col-span-2">
                     <label className="block text-xs text-secondary" htmlFor={`${fieldId}-extra`}>
-                      额外参数 JSON（可选）
+                      附加请求参数（JSON，可选）
                     </label>
                     <textarea
                       id={`${fieldId}-extra`}
@@ -299,9 +299,6 @@ export function ModelEditor({
                       onChange={(event) => onChange(updateDraft(drafts, draft.id, { extraText: event.target.value }))}
                       onBlur={() => touch(draft.id)}
                     />
-                    <p className="mt-1 text-xs text-tertiary">
-                      这段参数会合并进这个模型的请求体，用来开思考模式、调采样参数之类；留空就什么都不加，会自动校验 JSON。
-                    </p>
                     {showing && rowErrors?.extra ? <p className="mt-1 text-xs text-rust">{rowErrors.extra}</p> : null}
                     <details className="mt-1 text-xs text-tertiary">
                       <summary className="cursor-pointer hover:text-secondary">看示例</summary>
