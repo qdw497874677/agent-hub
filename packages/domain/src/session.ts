@@ -108,6 +108,8 @@ export interface Session {
    * 选中但当时不可见的会在解析时丢掉，不会凭空多出来。
    */
   readonly assetIds?: readonly string[] | null;
+  /** 这条会话显式选的资产组合（覆盖项目默认）；null / 缺省 = 用项目默认。 */
+  readonly assetSetIds?: readonly string[] | null;
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -144,6 +146,8 @@ export interface DeriveSessionInput {
   readonly parentSessionId?: SessionId | null;
   /** 本次会话显式选的资产；null / 缺省 = 按项目生效集。 */
   readonly assetIds?: readonly string[] | null;
+  /** 本次会话显式选的资产组合；null / 缺省 = 按项目默认组合。 */
+  readonly assetSetIds?: readonly string[] | null;
 }
 
 export function deriveSession(input: DeriveSessionInput): Result<Session, DomainError> {
@@ -174,6 +178,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     createdBy: input.createdBy ?? null,
     botId: input.botId ?? null,
     ...(input.assetIds == null ? {} : { assetIds: input.assetIds }),
+    ...(input.assetSetIds == null ? {} : { assetSetIds: input.assetSetIds }),
     createdAt: input.now,
     updatedAt: input.now
   });

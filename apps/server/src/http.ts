@@ -131,6 +131,8 @@ import {
   setProjectPreviewPortUseCase,
   setProjectWorktreeUseCase,
   setProjectChecksUseCase,
+  setProjectAssetSetsUseCase,
+  unavailable,
   updateProjectReposUseCase,
   retryWorkspaceSetupUseCase,
   asWorkspaceId,
@@ -525,6 +527,16 @@ export function createApp(options: AppOptions): Hono {
       if (current.ok) {
         const detail = current.value.checks.length === 0 ? '清空检查命令' : `检查命令：${current.value.checks.join(' · ').slice(0, 200)}`;
         await auditResource(c, subject, 'project.worktree', projectId, detail);
+      }
+    }
+    if (current.ok && input.value.assetSetIds !== undefined) {
+      if (!subject) return fail(c, forbidden('请先登录'));
+      const assetSets = options.assets?.deps.assetSets;
+      if (!assetSets) return fail(c, unavailable('资产组合尚未就绪'));
+      current = await setProjectAssetSetsUseCase({ assetSets, projects: deps.projects }, subject, projectId, input.value.assetSetIds);
+      if (current.ok) {
+        const ids = current.value.assetSetIds;
+        await auditResource(c, subject, 'project.asset_sets', projectId, ids.length === 0 ? '清空' : `资产组合：${ids.join(', ')}`);
       }
     }
     return current.ok ? c.json(current.value) : fail(c, current.error);

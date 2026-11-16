@@ -185,6 +185,8 @@ export const projectSchema = z.object({
   previewPort: z.number().int().min(1024).max(65535).nullable().optional(),
   /** 项目声明的检查命令（issue #216 P1，最多 5 条）；空数组 = 没配。 */
   checks: z.array(z.string()).max(5).default([]),
+  /** 项目默认引用的资产组合（按顺序叠加，最多 8 个）。 */
+  assetSetIds: z.array(z.string()).max(8).default([]),
   createdAt: epochMs
 });
 
@@ -302,6 +304,7 @@ export const sessionSchema = z.object({
   pinned: z.boolean().optional(),
   /** 这条会话显式选的资产；缺省 = 按项目生效集。 */
   assetIds: z.array(z.string()).nullable().optional(),
+  assetSetIds: z.array(z.string()).nullable().optional(),
   createdAt: epochMs,
   updatedAt: epochMs
 });

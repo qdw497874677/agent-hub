@@ -13,7 +13,7 @@ import {
   uploadAsset,
   uploadAssetRevision
 } from '@agent-hub/domain';
-import { inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
+import { inMemoryAssets, inMemoryDeps, fakeAssetSets } from '@agent-hub/domain/testing';
 import { createSessionEnvironment } from './session-environment.ts';
 
 const enc = (text: string) => new TextEncoder().encode(text);
@@ -322,4 +322,77 @@ test('会话级资产选择：没选的技能不下发，快照只记选中的�
   assert.deepEqual(prepared.command.kind === 'start_session' ? prepared.command.assetIds : null, [first.value.id]);
   const snapshot = await assets.deps.assets.sessionAssetSnapshot(session.id);
   assert.deepEqual(snapshot?.entries.map((entry) => entry.name), ['keep']);
+});
+
+test('资产组合：项目默认展开、后组合覆盖前组合、不可见资产被丢、会话显式覆盖项目默认', async () => {
+  const { assets, hub, project, session } = await world();
+  const forge = (id: string, name: string, digest: string, patch: Partial<Parameters<typeof assets.deps.assets.create>[0]> = {}) => ({
+    id,
+    kind: 'skill' as const,
+    name,
+    projectId: null,
+    scope: 'global' as const,
+    ownerId: 'u1',
+    teamId: null,
+    description: '',
+    source: null as never,
+    pinned: digest,
+    latest: digest,
+    createdAt: 1,
+    updatedAt: 1,
+    ...patch
+  });
+  const base = forge('a0', 'greeter', 'd0');
+  const first = forge('a1', 'greeter', 'd1');
+  const second = forge('a2', 'greeter', 'd2');
+  const hidden = forge('a3', 'secret', 'd3', { scope: 'personal', ownerId: 'u-other' });
+  for (const asset of [base, first, second, hidden]) {
+    await assets.deps.assets.create(asset as never, { assetId: asset.id, digest: asset.pinned, createdAt: 1, files: [] } as never, new Map());
+    await assets.deps.assets.install('w1', asset.id, 1);
+  }
+  assets.board.set('w1', {
+    workerId: 'w1',
+    state: 'synced',
+    root: '/r',
+    installed: Object.fromEntries([base, first, second, hidden].map((asset) => [asset.id, asset.pinned])),
+    error: null,
+    at: 1
+  });
+
+  const sets = fakeAssetSets();
+  await sets.save({ id: 'aset_a', teamId: 't1', name: 'A', description: null, items: [{ assetId: 'a1' }, { assetId: 'a3' }], createdBy: 'u1', createdAt: 1, updatedAt: 1 });
+  await sets.save({ id: 'aset_b', teamId: 't1', name: 'B', description: null, items: [{ assetId: 'a2' }], createdBy: 'u1', createdAt: 2, updatedAt: 2 });
+  await hub.deps.projects.save({ ...project, assetSetIds: ['aset_a', 'aset_b'] });
+
+  const environment = createSessionEnvironment({
+    assetDeps: { ...assets.deps, assetSets: sets },
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects
+  });
+  const command = startCommand({ ...session, workerId: 'w1' }, '/tmp/env', null);
+  const prepared = await environment.prepare(command);
+  assert.equal(prepared.blocked, undefined);
+  // 项目生效集里的 a0 被组合覆盖；后组合 B 再覆盖 A；personal 的 a3 不可见，被丢掉。
+  assert.deepEqual(prepared.command.kind === 'start_session' ? prepared.command.assetIds : null, ['a2']);
+
+  // 会话显式组合优先于项目默认。
+  const explicitSession = { ...session, id: 's-explicit' as never, assetSetIds: ['aset_a'], workerId: 'w1' };
+  const explicit = createSessionEnvironment({
+    assetDeps: { ...assets.deps, assetSets: sets },
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects,
+    selectedAssetSetIds: async (sessionId) => (sessionId === explicitSession.id ? explicitSession.assetSetIds ?? null : null)
+  });
+  const explicitPrepared = await explicit.prepare(startCommand({ ...explicitSession }, '/tmp/env', null));
+  assert.deepEqual(explicitPrepared.command.kind === 'start_session' ? explicitPrepared.command.assetIds : null, ['a1']);
+
+  // assetIds 仍是最外层过滤：组合给了 a2，这次显式资产清单是空的。
+  const filtered = createSessionEnvironment({
+    assetDeps: { ...assets.deps, assetSets: sets },
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects,
+    selectedAssetIds: async () => []
+  });
+  const filteredPrepared = await filtered.prepare(startCommand({ ...session, id: 's-filter' as never, workerId: 'w1' }, '/tmp/env', null));
+  assert.deepEqual(filteredPrepared.command.kind === 'start_session' ? filteredPrepared.command.assetIds : null, []);
 });

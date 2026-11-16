@@ -554,6 +554,24 @@ test('常驻：setPinned 落库；整行 save 拿旧对象回写也不会把标�
   store.close();
 });
 
+test('资产组合引用：项目 / 会话的 assetSetIds 往返；旧快照回写不会冲掉', async () => {
+  const store = openSqliteStore(':memory:');
+  const { project, session } = await seeded(store);
+  assert.deepEqual(project.assetSetIds, []);
+
+  await store.projects.save({ ...project, assetSetIds: ['aset_1', 'aset_2'] });
+  assert.deepEqual((await store.projects.byId(project.id))?.assetSetIds, ['aset_1', 'aset_2']);
+  // 旧项目对象（不含这一列）整行回写不能把绑定冲掉。
+  await store.projects.save({ ...project, assetSetIds: undefined as never });
+  assert.deepEqual((await store.projects.byId(project.id))?.assetSetIds, ['aset_1', 'aset_2']);
+
+  await store.sessions.save({ ...session, assetSetIds: ['aset_1'] });
+  assert.deepEqual((await store.sessions.byId(session.id))?.assetSetIds, ['aset_1']);
+  await store.sessions.save({ ...session });
+  assert.deepEqual((await store.sessions.byId(session.id))?.assetSetIds, ['aset_1']);
+  store.close();
+});
+
 test('会话级资产：assetIds 落库往返；旧快照回写不会把选择冲掉', async () => {
   const store = openSqliteStore(':memory:');
   const { session } = await seeded(store);

@@ -118,6 +118,7 @@ export function toProject(row: Row): Project {
     worktree: parseWorktree(nullableStr(row, 'worktree_config')),
     ...(row['preview_port'] == null ? {} : { previewPort: Number(row['preview_port']) }),
     checks: parseChecks(nullableStr(row, 'checks')),
+    assetSetIds: parseAssetSetIds(nullableStr(row, 'asset_set_ids')).assetSetIds ?? [],
     teamId: nullableStr(row, 'team_id'),
     createdBy: nullableStr(row, 'created_by'),
     members: parseMembers(nullableStr(row, 'members')),
@@ -179,6 +180,17 @@ function parseAssetIds(raw: string | null): { assetIds?: readonly string[] } {
   }
 }
 
+function parseAssetSetIds(raw: string | null): { assetSetIds?: readonly string[] } {
+  if (raw === null || raw === '') return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed) || !parsed.every((item) => typeof item === 'string')) return {};
+    return { assetSetIds: parsed };
+  } catch {
+    return {};
+  }
+}
+
 export function toSession(row: Row): Session {
   const originSession = nullableStr(row, 'origin_session');
   // #221 步骤 7：容器会话没有任务。空串是当年某些写入路径的哨兵，一起读成 null。
@@ -221,6 +233,8 @@ export function toSession(row: Row): Session {
     ...(row['bot_id'] === undefined ? {} : { botId: nullableStr(row, 'bot_id') }),
     // 会话级资产清单：NULL = 没选（按项目生效集）；坏 JSON 当没选，不让一条脏数据打挂会话页。
     ...parseAssetIds(nullableStr(row, 'asset_ids')),
+    // 会话显式选的组合：NULL = 用项目默认；有值才输出，和派生对象往返一致。
+    ...parseAssetSetIds(nullableStr(row, 'asset_set_ids')),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };

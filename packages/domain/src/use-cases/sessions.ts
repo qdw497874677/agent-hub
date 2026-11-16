@@ -59,6 +59,8 @@ export interface DeriveCommand {
   readonly parentSessionId?: string | null;
   /** 只带这些资产（asset id）；null / 缺省 = 项目生效集。 */
   readonly assetIds?: readonly string[] | null;
+  /** 只带这些资产组合（覆盖项目默认）；null / 缺省 = 项目默认组合。 */
+  readonly assetSetIds?: readonly string[] | null;
 }
 
 /**
@@ -186,6 +188,7 @@ export async function deriveSessionUseCase(
     createdBy: command.createdBy !== undefined ? command.createdBy : principalOfSubject(command.actor)?.user.id ?? null,
     botId: command.botId ?? null,
     ...(command.assetIds == null ? {} : { assetIds: command.assetIds }),
+    ...(command.assetSetIds == null ? {} : { assetSetIds: command.assetSetIds }),
     options: ref.options
   });
   if (!created.ok) return created;

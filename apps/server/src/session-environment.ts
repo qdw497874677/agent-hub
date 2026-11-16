@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type {
   AssetDeps,
+  AssetSet,
   EnvironmentPlanner,
   McpLaunch,
   PreparedStart,
@@ -51,6 +52,11 @@ export interface SessionEnvironmentOptions {
    * 给了就只保留这些 id——想「这条会话不用某个技能」时，由调用方把完整清单减掉它。
    */
   readonly selectedAssetIds?: (sessionId: string) => Promise<readonly string[] | null>;
+  /**
+   * 会话显式选的资产组合：返回 null / undefined = 按项目默认组合。
+   * 组合里的资产会并进项目生效集（同名后者覆盖前者），再按机器已安装过滤。
+   */
+  readonly selectedAssetSetIds?: (sessionId: string) => Promise<readonly string[] | null | undefined>;
   readonly log?: (message: string) => void;
 }
 
@@ -124,7 +130,19 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
     const ownerId = task ? task.ownerId : container?.ownerId ?? null;
     const project = projectId === null ? null : await projects.byId(projectId as ProjectId);
     const viewer = ownerId ? { userId: ownerId, teamId: project?.teamId ?? null } : null;
-    const plan = await sessionAssetPlan(assetDeps, workerId, project?.id ?? null, viewer);
+    // 会话显式组合优先；否则用项目默认。取不到的 id 忽略（组合可能刚被删）。
+    const explicitSets = await options.selectedAssetSetIds?.(sessionId);
+    const setIds = explicitSets ?? project?.assetSetIds ?? [];
+    const sets: AssetSet[] = [];
+    for (const id of setIds) {
+      const set = await assetDeps.assetSets?.byId(id);
+      if (!set) {
+        log?.(`资产组合 ${id} 不存在，已忽略（会话 ${sessionId}）`);
+        continue;
+      }
+      sets.push(set);
+    }
+    const plan = await sessionAssetPlan(assetDeps, workerId, project?.id ?? null, viewer, sets);
     const selected = (await options.selectedAssetIds?.(sessionId)) ?? null;
     if (selected === null) return { projectId: project?.id ?? null, entries: plan.entries, assetIds: plan.assetIds };
     // 显式清单：只留选中的；选中但当前不可见（被停用 / 换了作用域）的就当没选，不报错——

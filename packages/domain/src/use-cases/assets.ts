@@ -24,6 +24,8 @@ import {
   type SessionAssetSource,
   type SessionAssetUpgrade
 } from '../asset.ts';
+import { assetVisibleIn } from '../asset.ts';
+import type { AssetSet } from '../asset-set.ts';
 import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -31,11 +33,13 @@ import type { WorkerStatus } from '../worker.ts';
 import type { AuditAction, Principal, UserId } from '../account.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { AssetRepository } from '../ports/asset-repository.ts';
+import type { AssetSetRepository } from '../ports/asset-set-repository.ts';
 import type { AssetReader, GitCandidate } from '../ports/asset-reader.ts';
 import type { AssetDelivery, AssetSyncBoard } from '../ports/asset-delivery.ts';
 import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
 import { isHubSecretKey, secretLookupOrder } from '../asset-review.ts';
 import { checkGitSourceUrl } from '../asset-git-host.ts';
+import type { Project } from '../project.ts';
 import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpConfig, type McpConfig, type McpLaunch } from '../mcp.ts';
 
 /** 资产中心是独立的限界上下文：不塞进 Deps。 */
@@ -48,7 +52,13 @@ export interface AssetDeps {
   /** MCP 资产引用的密钥（加密存放）。 */
   readonly secrets: SecretVault;
   /** 项目级资产要认项目（只读）。 */
-  readonly projects: { byId(id: string): Promise<{ readonly id: string; readonly name: string } | null> };
+  readonly projects: {
+    byId(id: string): Promise<{ readonly id: string; readonly name: string } | null>;
+    /** 资产组合绑定时要用完整项目（可选：只认项目的调用方不提供）。 */
+    list?(): Promise<readonly Project[]>;
+  };
+  /** 资产组合（团队级）：会话解析时按项目默认 / 显式选择展开。 */
+  readonly assetSets?: AssetSetRepository;
   readonly now: () => number;
   /** hub 管理员是谁（决定资产能不能取 hub 级密钥，见 secretLookupOrder）。不给 = 单机 / 单测：老资产照旧取 hub 级。 */
   readonly hubAdminId?: () => Promise<string | null>;
@@ -688,17 +698,29 @@ export async function sessionAssetPlan(
   workerId: string,
   projectId: string | null,
   /** 会话发起人：决定个人 / 团队资产给不给（null = 只给全局 + 项目）。 */
-  viewer: AssetViewer | null = null
+  viewer: AssetViewer | null = null,
+  /** 这条会话用的资产组合（项目默认或显式选择），按数组顺序展开。 */
+  sets: readonly AssetSet[] = []
 ): Promise<{ assetIds: string[]; entries: SessionAssetEntry[] }> {
   const all = await deps.assets.list();
   const effective =
     projectId === null
       ? resolveProjectAssets(all.filter((asset) => asset.scope !== 'project'), '', {}, viewer).effective
       : resolveProjectAssets(all, projectId, await deps.assets.projectSettings(projectId), viewer).effective;
+  // 组合里的资产并入候选池：后面的组合覆盖前面的组合（同类同名），项目生效集先垫底。
+  const bySlot = new Map<string, Asset>(effective.map((asset) => [`${asset.kind}:${asset.name}`, asset]));
+  for (const set of sets) {
+    for (const item of set.items) {
+      const asset = all.find((candidate) => candidate.id === item.assetId);
+      if (!asset || !assetVisibleIn(asset, projectId ?? '', viewer)) continue;
+      bySlot.set(`${asset.kind}:${asset.name}`, asset);
+    }
+  }
+  const candidates = [...bySlot.values()];
   const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === workerId).map((row) => row.assetId));
   const landed = deps.board.get(workerId)?.installed ?? {};
   const entries: SessionAssetEntry[] = [];
-  for (const asset of effective) {
+  for (const asset of candidates) {
     if (!installed.has(asset.id)) continue;
     const digest = isFileAssetKind(asset.kind) ? landed[asset.id] : asset.pinned;
     if (digest === undefined) continue;

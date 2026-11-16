@@ -6,6 +6,8 @@ import {
   assetPinRequest,
   assetRevisionSchema,
   assetRevisionUploadRequest,
+  assetSetInput,
+  assetSetSchema,
   assetUploadRequest,
   assetsOverviewSchema,
   gitImportRequest,
@@ -17,7 +19,7 @@ import {
   secretPutRequest,
   secretsOverviewSchema
 } from '@agent-hub/contract';
-import type { AssetReviewDeps, AuditLog, EnvironmentPlanner, IncomingFile, Principal, Session, SessionAssetEntry, SessionRepository } from '@agent-hub/domain';
+import type { AssetReviewDeps, AssetSet, AssetSetDeps, AuditLog, EnvironmentPlanner, IncomingFile, Principal, Session, SessionAssetEntry, SessionRepository } from '@agent-hub/domain';
 import {
   ASSET_KIND_LABEL,
   ASSET_LIMITS,
@@ -27,9 +29,13 @@ import {
   asSessionId,
   checkGitForReview,
   conflict,
+  createAssetSetUseCase,
+  listAssetSetsUseCase,
   notFound,
   recordAdminPublish,
+  removeAssetSetUseCase,
   submitAssetRevision,
+  updateAssetSetUseCase,
   deleteAsset,
   deleteSecret,
   listSecrets,
@@ -101,6 +107,52 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
   };
   const audit = (c: Context, action: Parameters<typeof recordAssetAudit>[2], target: string, detail: string) =>
     recordAssetAudit({ audit: options.audit, now: deps.now }, actor(c), action, target, detail);
+
+  // 资产组合（团队级）：登录即可读，写操作由用例判权限。
+  for (const path of ['/api/asset-sets', '/api/asset-sets/*']) {
+    app.use(path, async (c, next) => {
+      const principal = principalOf(c);
+      if (!principal) return c.json({ error: { code: 'unauthenticated', message: '请先登录' } }, 401);
+      actors.set(c, principal);
+      return next();
+    });
+  }
+  const setDeps = (): AssetSetDeps => ({
+    assetSets: deps.assetSets,
+    assets: deps.assets,
+    projects: deps.projects,
+    audit: options.audit,
+    now: deps.now
+  });
+  const setDto = (set: AssetSet) => assetSetSchema.parse({ ...set, assetIds: set.items.map((item) => item.assetId) });
+
+  app.get('/api/asset-sets', async (c) => {
+    const result = await listAssetSetsUseCase(setDeps(), actor(c));
+    if (!result.ok) return fail(c, result.error);
+    return c.json({ sets: result.value.map(setDto) });
+  });
+
+  app.post('/api/asset-sets', async (c) => {
+    const parsed = await parse(c, assetSetInput);
+    if (!parsed.ok) return parsed.response;
+    const result = await createAssetSetUseCase(setDeps(), actor(c), parsed.value);
+    if (!result.ok) return fail(c, result.error);
+    return c.json(setDto(result.value), 201);
+  });
+
+  app.patch('/api/asset-sets/:id', async (c) => {
+    const parsed = await parse(c, assetSetInput);
+    if (!parsed.ok) return parsed.response;
+    const result = await updateAssetSetUseCase(setDeps(), actor(c), c.req.param('id'), parsed.value);
+    if (!result.ok) return fail(c, result.error);
+    return c.json(setDto(result.value));
+  });
+
+  app.delete('/api/asset-sets/:id', async (c) => {
+    const result = await removeAssetSetUseCase(setDeps(), actor(c), c.req.param('id'));
+    if (!result.ok) return fail(c, result.error);
+    return c.json({ ok: true });
+  });
 
   // 会话用了哪些资产（启动那一刻记下的清单）：成员也能看，只读。
   app.get('/api/sessions/:sessionId/assets', async (c) => {

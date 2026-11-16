@@ -1049,6 +1049,7 @@ const assetDeps: AssetReviewDeps = {
   hubAdminId: async () => (await store.users.firstClusterAdmin())?.id ?? null,
   review: store.assetReview,
   notifications: store.notifications,
+  assetSets: store.assetSets,
   audit: store.audit,
   users: store.users,
   teams: store.teams,
@@ -1057,7 +1058,7 @@ const assetDeps: AssetReviewDeps = {
   delivery: { push: async (workerId, manifest) => (serverGateway ? serverGateway.assets.push(workerId, manifest) : err(unavailable('worker 通道尚未就绪'))) },
   board: store.assetSync,
   workers: workerControl,
-  projects: { byId: (id) => store.projects.byId(id as ProjectId) },
+  projects: store.projects,
   secrets: createSecretVault(store.db, secretKey),
   now: () => Date.now()
 };
@@ -1079,6 +1080,8 @@ sessionEnvironment = createSessionEnvironment({
   },
   // 会话级资产选择（#226）：显式清单就只带那些，未选的（比如 grill-me）不会下发。
   selectedAssetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetIds ?? null,
+  // 会话显式资产组合优先；没有就用项目默认（planFor 内处理）。
+  selectedAssetSetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetSetIds ?? null,
   log
 });
 const syncAssets = (workerId: string) =>
@@ -1559,10 +1562,25 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
       const project = await store.projects.byId(asProjectId(projectId));
       const visible = await authorizeProject(deps.access, principal, project, 'session.read');
       if (!visible.ok) return 'forbidden';
-      const plan = await sessionAssetPlan(assetDeps, workerId, projectId, {
-        userId: principal.user.id,
-        teamId: visible.value.teamId ?? null
-      });
+      const sets = [];
+      for (const id of project?.assetSetIds ?? []) {
+        const set = await store.assetSets.byId(id);
+        if (!set) {
+          log(`资产组合 ${id} 不存在，已忽略（项目 ${projectId} 预览）`);
+          continue;
+        }
+        sets.push(set);
+      }
+      const plan = await sessionAssetPlan(
+        assetDeps,
+        workerId,
+        projectId,
+        {
+          userId: principal.user.id,
+          teamId: visible.value.teamId ?? null
+        },
+        sets
+      );
       return plan.entries;
     }
   },

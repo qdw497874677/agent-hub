@@ -23,7 +23,7 @@ function harness(extra: Partial<Pick<AssetRouteOptions, 'sessions' | 'environmen
     token: null,
     auth: { accounts: admin.accounts },
     admin: { deps: admin.deps },
-    assets: { deps: review.deps, audit: admin.deps.audit, ...extra }
+    assets: { deps: { ...review.deps, projects: deps.projects }, audit: admin.deps.audit, ...extra }
   });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -266,4 +266,45 @@ test('派生前预览：列出这台机器上项目实际会带的资产；看�
   assert.equal(ok.body.entries[0].name, 'grill-me');
   assert.equal((await owner('/api/projects/p1/assets')).status, 400);
   assert.equal((await owner('/api/projects/p1/assets?workerId=w2')).status, 404);
+});
+
+test('资产组合 API：登录可读；viewer 不能建；非创建者不能改；团队内重名 409', async () => {
+  const h = harness();
+  const owner = h.browser();
+  const member = h.browser();
+  const viewer = h.browser();
+  const register = (email: string) => ({ method: 'POST', body: JSON.stringify({ email, password: PASSWORD }) });
+  assert.equal((await owner('/api/auth/register', register('boss@b.co'))).status, 200);
+  const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
+
+  const made = await owner('/api/admin/assets/upload', post({ kind: 'skill', files: skillFiles('v1') }));
+  assert.equal(made.status, 201);
+  const assetId = made.body.id as string;
+
+  assert.equal((await h.browser()('/api/asset-sets')).status, 401);
+  const created = await owner('/api/asset-sets', post({ name: '基础', description: '日常', items: [{ assetId }] }));
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.body.assetIds, [assetId]);
+  assert.equal(created.body.name, '基础');
+  const id = created.body.id as string;
+  assert.equal((await owner('/api/asset-sets')).body.sets.length, 1);
+
+  const dup = await owner('/api/asset-sets', post({ name: '基础', items: [] }));
+  assert.equal(dup.status, 409);
+  assert.match(dup.body.error.message, /团队里已经有叫「基础」的资产组合/);
+
+  await addTeamMember(h.admin.accounts, 'm@b.co', PASSWORD);
+  await addTeamMember(h.admin.accounts, 'v@b.co', PASSWORD);
+  const viewerUser = await h.admin.accounts.users.byEmail('v@b.co');
+  assert.ok(viewerUser);
+  await h.admin.accounts.users.save({ ...viewerUser, role: 'viewer' });
+  assert.equal((await member('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'm@b.co', password: PASSWORD }) })).status, 200);
+  assert.equal((await viewer('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'v@b.co', password: PASSWORD }) })).status, 200);
+
+  assert.equal((await viewer('/api/asset-sets', post({ name: 'viewer', items: [] }))).status, 403);
+  assert.equal((await member('/api/asset-sets', post({ name: 'member', items: [] }))).status, 201);
+  assert.equal((await member(`/api/asset-sets/${id}`, { method: 'PATCH', body: JSON.stringify({ name: '改', items: [] }) })).status, 403);
+  assert.equal((await owner(`/api/asset-sets/${id}`, { method: 'PATCH', body: JSON.stringify({ name: '改名', items: [] }) })).body.name, '改名');
+  assert.equal((await owner(`/api/asset-sets/${id}`, { method: 'DELETE' })).status, 200);
+  assert.deepEqual((await owner('/api/asset-sets')).body.sets.map((set: { name: string }) => set.name), ['member']);
 });

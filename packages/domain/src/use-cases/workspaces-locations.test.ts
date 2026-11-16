@@ -19,6 +19,7 @@ const project = {
   teamId: null,
   createdBy: null,
   members: [],
+  assetSetIds: [],
   deletedAt: null
 };
 

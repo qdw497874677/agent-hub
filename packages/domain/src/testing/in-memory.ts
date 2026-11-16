@@ -54,7 +54,9 @@ import type {
   PersistentAgentRepository,
   WorkspaceGroup,
   WorkspaceGroupId,
-  WorkspaceGroupRepository
+  WorkspaceGroupRepository,
+  AssetSet,
+  AssetSetRepository
 } from '../index.ts';import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
 import type { CommitPreview, GitStatus, RemotePullRequest, RepoProbe, WorkspaceGit } from '../index.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
@@ -82,6 +84,25 @@ export function fakeProjects(): ProjectRepository {
     },
     async listDeleted() {
       return [...rows.values()].filter((p) => p.deletedAt !== null);
+    },
+    async remove(id) {
+      rows.delete(id);
+    }
+  };
+}
+
+export function fakeAssetSets(): AssetSetRepository & { rows: Map<string, AssetSet> } {
+  const rows = new Map<string, AssetSet>();
+  return {
+    rows,
+    async byId(id) {
+      return rows.get(id) ?? null;
+    },
+    async listByTeam(teamId) {
+      return [...rows.values()].filter((set) => set.teamId === teamId).sort((a, b) => b.updatedAt - a.updatedAt);
+    },
+    async save(set) {
+      rows.set(set.id, set);
     },
     async remove(id) {
       rows.delete(id);
@@ -1181,8 +1202,13 @@ export function inMemoryAssetReviewDeps(
   admin: ReturnType<typeof inMemoryAdmin>,
   assets: ReturnType<typeof inMemoryAssets>,
   enrolledBy: Map<string, string> = new Map()
-): { deps: import('../use-cases/asset-review.ts').AssetReviewDeps; notifications: ReturnType<typeof inMemoryAssetReview>['notifications'] } {
+): {
+  deps: import('../use-cases/asset-review.ts').AssetReviewDeps;
+  notifications: ReturnType<typeof inMemoryAssetReview>['notifications'];
+  assetSets: ReturnType<typeof fakeAssetSets>;
+} {
   const { review, notifications } = inMemoryAssetReview();
+  const assetSets = fakeAssetSets();
   const users = admin.accounts.users;
   const policy = createAccessPolicyForTests({
     users,
@@ -1196,12 +1222,14 @@ export function inMemoryAssetReviewDeps(
       hubAdminId: async () => (await users.firstClusterAdmin())?.id ?? null,
       review,
       notifications,
+      assetSets,
       audit: admin.deps.audit,
       users,
       teams: admin.accounts.teams,
       policy
     },
-    notifications
+    notifications,
+    assetSets
   };
 }
 

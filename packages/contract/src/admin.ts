@@ -252,3 +252,27 @@ export const projectAssetPlanSchema = z.object({
   )
 });
 export type ProjectAssetPlanDto = z.infer<typeof projectAssetPlanSchema>;
+
+/* ── 资产组合（AssetSet）：把常用资产打包，项目默认引用，派生时显式选择 ── */
+export const assetSetItemSchema = z.object({ assetId: z.string().min(1) });
+export type AssetSetItemDto = z.infer<typeof assetSetItemSchema>;
+export const assetSetSchema = z.object({
+  id: z.string(),
+  teamId: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  items: z.array(assetSetItemSchema),
+  assetIds: z.array(z.string()),
+  createdBy: z.string().nullable(),
+  createdAt: z.number(),
+  updatedAt: z.number()
+});
+export type AssetSetDto = z.infer<typeof assetSetSchema>;
+export const assetSetInput = z.object({
+  name: z.string().trim().min(1).max(60),
+  description: z.string().max(300).nullable().optional(),
+  items: z.array(assetSetItemSchema).max(50)
+});
+export type AssetSetInputDto = z.infer<typeof assetSetInput>;
+export const projectAssetSetsRequest = z.object({ assetSetIds: z.array(z.string().min(1)).max(8) });
+export type ProjectAssetSetsRequestDto = z.infer<typeof projectAssetSetsRequest>;

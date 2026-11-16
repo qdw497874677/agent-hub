@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { addTeamMember, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
+import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
 import { asAgentId, createAccessPolicy, newWorkspace, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
 import { journalEntrySchema, projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
@@ -38,6 +38,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
     ...assetsStore.deps,
     review: reviewStore.review,
     notifications: reviewStore.notifications,
+    assetSets: fakeAssetSets(),
     audit: accounts.audit!,
     users: accounts.users,
     teams: accounts.teams,

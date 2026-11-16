@@ -1,5 +1,6 @@
 import type { ProjectId } from './ids.ts';
 import { newProjectId } from './ids.ts';
+import { normalizeAssetSetIds } from './asset-set.ts';
 import { invalid, type DomainError } from './errors.ts';
 import { err, ok, type Result } from './result.ts';
 
@@ -35,6 +36,8 @@ export interface Project {
    * 最多 `CHECK_COMMANDS_MAX` 条，每条最长 `CHECK_COMMAND_MAX` 字；空数组 = 没配。
    */
   readonly checks: readonly string[];
+  /** 项目默认带上的资产组合（团队级），按顺序展开；空数组 = 不带。 */
+  readonly assetSetIds: readonly string[];
   /** 进了回收站的时间；null = 正常。 */
   readonly deletedAt: number | null;
 }
@@ -284,11 +287,15 @@ export interface CreateProjectInput {
   readonly checks?: readonly string[];
   readonly teamId?: string | null;
   readonly createdBy?: string | null;
+  /** 项目默认资产组合；不传 = 空。 */
+  readonly assetSetIds?: readonly string[] | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
   const name = input.name.trim();
   if (!name) return err(invalid('项目名称不能为空'));
+  const assetSetIds = normalizeAssetSetIds(input.assetSetIds);
+  if (!assetSetIds.ok) return assetSetIds;
   const repos = input.repos ?? (input.repo ? [primaryRepo({ repo: input.repo, repos: [] })!] : []);
   const primary = repos[0] ?? null;
   return ok({
@@ -299,6 +306,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     description: input.description ?? null,
     worktree: input.worktree ?? null,
     checks: input.checks ?? [],
+    assetSetIds: assetSetIds.value,
     createdAt: input.now,
     teamId: input.teamId ?? null,
     createdBy: input.createdBy ?? null,

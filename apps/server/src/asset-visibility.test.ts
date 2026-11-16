@@ -33,6 +33,7 @@ const project: Project = {
   members: [],
   worktree: { mode: 'shared', setup: null },
   previewPort: null,
+  assetSetIds: [],
   deletedAt: null
 };
 

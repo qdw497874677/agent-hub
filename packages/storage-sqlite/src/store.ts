@@ -42,6 +42,7 @@ import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemory
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
+import { createSqliteAssetSets } from './asset-sets.ts';
 import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
 import { createSqliteWorkspaceGroups } from './workspace-groups.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
@@ -91,6 +92,8 @@ export interface SqliteStore extends RepositorySet {
   readonly assetSync: AssetSyncBoard;
   /** 资产审核：提交、评论、安装申请、审核设置（ADR 0016）。 */
   readonly assetReview: AssetReviewRepository;
+  /** 团队级资产组合（项目默认 / 会话显式选择）。 */
+  readonly assetSets: import('@agent-hub/domain').AssetSetRepository;
   readonly notifications: NotificationRepository;
   /** ADR 0017：显式授权 + 团队自定义角色。 */
   readonly access: AccessRepos;
@@ -164,6 +167,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'repos')) {
     db.exec('ALTER TABLE projects ADD COLUMN repos TEXT');
   }
+  // 项目默认资产组合：JSON 字符串数组；NULL = 老数据，读时统一成 []。
+  if (!projectColumns.some((column) => column.name === 'asset_set_ids')) {
+    db.exec('ALTER TABLE projects ADD COLUMN asset_set_ids TEXT');
+  }
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
@@ -188,6 +195,10 @@ export function openSqliteStore(file: string): SqliteStore {
   // 会话级资产清单（#226 会话选择）：JSON 数组；NULL = 按项目生效集。
   if (!columns.some((column) => column.name === 'asset_ids')) {
     db.exec('ALTER TABLE sessions ADD COLUMN asset_ids TEXT');
+  }
+  // 会话显式选的资产组合：JSON 数组；NULL = 用项目默认组合。
+  if (!columns.some((column) => column.name === 'asset_set_ids')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN asset_set_ids TEXT');
   }
   // #221 步骤 7：容器会话没有任务，task_id 要允许 NULL（老库只能重建表）。
   relaxSessionsTaskId(db);
@@ -230,11 +241,13 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, checks, created_at, team_id, created_by, members, deleted_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, checks, asset_set_ids, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
       'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, description = excluded.description, ' +
       'worktree_config = excluded.worktree_config, preview_port = excluded.preview_port, checks = excluded.checks, ' +
+      // 组合引用只在显式给的时候写：旧快照回写不能把用户的绑定冲掉。
+      'asset_set_ids = COALESCE(excluded.asset_set_ids, projects.asset_set_ids), ' +
       'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
@@ -271,8 +284,8 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateTaskBranch = db.prepare('UPDATE tasks SET branch = ? WHERE id = ? AND ? IS NOT NULL');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
@@ -283,6 +296,7 @@ export function openSqliteStore(file: string): SqliteStore {
       'kind = excluded.kind, parent_session_id = excluded.parent_session_id, ' +
       // 资产清单只在显式给的时候写：旧快照回写不能把用户的选择冲掉。
       'asset_ids = COALESCE(excluded.asset_ids, sessions.asset_ids), ' +
+      'asset_set_ids = COALESCE(excluded.asset_set_ids, sessions.asset_set_ids), ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -431,6 +445,7 @@ export function openSqliteStore(file: string): SqliteStore {
         project.worktree ? JSON.stringify(project.worktree) : null,
         project.previewPort ?? null,
         JSON.stringify(project.checks),
+        project.assetSetIds == null ? null : JSON.stringify(project.assetSetIds),
         project.createdAt,
         project.teamId,
         project.createdBy,
@@ -515,6 +530,7 @@ export function openSqliteStore(file: string): SqliteStore {
         session.parentSessionId ?? null,
         session.botId ?? null,
         session.assetIds == null ? null : JSON.stringify(session.assetIds),
+        session.assetSetIds == null ? null : JSON.stringify(session.assetSetIds),
         session.createdAt,
         session.updatedAt
       );
@@ -670,6 +686,7 @@ export function openSqliteStore(file: string): SqliteStore {
     assets: createAssetRepository(db),
     assetSync: createAssetSyncBoard(db),
     assetReview: createAssetReviewRepository(db),
+    assetSets: createSqliteAssetSets(db),
     notifications: createNotificationRepository(db),
     sessions,
     artifacts,

@@ -10,3 +10,4 @@ export { createSqlitePullRequests, createSqliteGitHostTokens } from './pull-requ
 export { createSqliteWorkspaceSweeps } from './workspace-sweeps.ts';
 export { createSqliteWorkspaceGroups, groupIdOfWorkspace } from './workspace-groups.ts';
 export { createSqliteWorkerAgents } from './worker-agents.ts';
+export { createSqliteAssetSets, ASSET_SET_SCHEMA } from './asset-sets.ts';

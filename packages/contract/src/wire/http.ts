@@ -67,7 +67,9 @@ export const setProjectWorktreeRequest = z.object({
     .max(8)
     .optional(),
   /** 项目声明的检查命令（issue #216 P1）：空数组 = 清掉，最多 5 条，一条一行（不能有换行）。 */
-  checks: z.array(z.string()).max(5).optional()
+  checks: z.array(z.string()).max(5).optional(),
+  /** 项目默认引用的资产组合（按顺序叠加）：空数组 = 清掉。 */
+  assetSetIds: z.array(z.string().min(1)).max(8).optional()
 });
 
 /** 绑定 / 改 / 解除项目仓库：repoUrl 为 null 或空串 = 解除。 */
@@ -195,7 +197,9 @@ export const deriveSessionRequest = z.object({
    * 只带这些资产（asset id）：不传 = 按项目生效集。用来让「这条会话不用某个技能」，
    * 或只带一组资产。不可见 / 已停用的会在解析时被丢掉。
    */
-  assetIds: z.array(z.string().min(1)).max(200).optional()
+  assetIds: z.array(z.string().min(1)).max(200).optional(),
+  /** 显式选的资产组合（覆盖项目默认组合）；空数组 = 不带组合，只按项目生效集。 */
+  assetSetIds: z.array(z.string().min(1)).max(8).optional()
 });
 
 /** 新建工作空间：持久的（新建托管目录 / 关联已有目录）或临时的（为某个任务开 worktree / 临时目录）。 */

@@ -34,6 +34,7 @@ import { MCP_CONFIG_FILE, checkSecretName, mcpSecretRefs, parseMcpConfig, type M
 import { err, ok, type Result } from '../result.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { AssetReviewRepository, NotificationRepository } from '../ports/asset-review-repository.ts';
+import type { AssetSetRepository } from '../ports/asset-set-repository.ts';
 import type { UserRepository } from '../ports/user-repository.ts';
 import type { TeamRepository } from '../ports/team-repository.ts';
 import type { AccessPolicy } from './authorization.ts';
@@ -54,6 +55,7 @@ import {
  * 查谁、存什么、通知谁、审计怎么写。所有写操作都要一个 Principal（谁干的），审计里带上它（令牌来的再带令牌 id）。
  */
 export interface AssetReviewDeps extends AssetDeps {
+  readonly assetSets: AssetSetRepository;
   readonly review: AssetReviewRepository;
   readonly notifications: NotificationRepository;
   readonly audit: AuditLog;

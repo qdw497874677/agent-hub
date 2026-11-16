@@ -28,6 +28,7 @@ const project: Project = {
   members: [],
   worktree: null,
   checks: [],
+  assetSetIds: [],
   deletedAt: null,
 };
 
