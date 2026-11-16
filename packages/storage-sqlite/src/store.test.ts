@@ -514,3 +514,27 @@ test('轮次：每句提问开启一轮，journal 事件带所属轮次，会话
   const stored = await store.sessions.byId(session.id);
   assert.equal(stored?.turn, 2);
 });
+
+test('打开库时把 sessions.turn 从 journal 回填：老会话下一句提问不会从 1 重新数', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-turn-'));
+  const path = join(dir, 'hub.db');
+  try {
+    const store = openSqliteStore(path);
+    const { session } = await seeded(store);
+    const prompt = { kind: 'prompt', text: '第一句' } as SessionEvent;
+    await store.sessions.append(applyEvent(session, prompt, now), prompt, now);
+    store.close();
+
+    // 模拟引入 turn 列之前的老库：历史都在，但会话上的轮次还是 0。
+    const raw = new DatabaseSync(path);
+    raw.exec('UPDATE sessions SET turn = 0');
+    raw.close();
+
+    const reopened = openSqliteStore(path);
+    const after = await reopened.sessions.byId(session.id);
+    assert.equal(after?.turn, 1, '按 journal 里的最大轮次回填');
+    reopened.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -207,6 +207,13 @@ export function openSqliteStore(file: string): SqliteStore {
       "UPDATE journal SET turn = (SELECT COUNT(*) FROM journal p WHERE p.session_id = journal.session_id AND p.seq <= journal.seq AND p.type = 'prompt')"
     );
   }
+  // sessions.turn 的修复：新建库直接带 turn（初始 0），老库补列也是 0——两种情况下
+  // 已有历史的会话都要从 journal 找回当前轮次，否则下一句提问会从 1 重新数。
+  // 条件只在异常行上命中，修完就是空集，可以每次启动跑。
+  db.exec(
+    'UPDATE sessions SET turn = COALESCE((SELECT MAX(turn) FROM journal WHERE journal.session_id = sessions.id), 0) ' +
+      'WHERE sessions.turn = 0 AND sessions.last_seq > 0'
+  );
   migrateTasksV2(db);
   migrateWorkspaces(db);
   cleanLegacyLogText(db);
