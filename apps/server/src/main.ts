@@ -1658,6 +1658,16 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
         projectId,
         viewer: { userId: principal.user.id, teamId: visible.value.teamId ?? null },
         setIds: project?.assetSetIds ?? [],
+        // 和真正派生同一口径（允许清单）：文件类资产派生时会自动预热，预览按钉住的版本算；MCP 本来就不用装。
+        // 不给 ensure 会退回「必须已经装到这台机器」的老语义，预览里就看不到还没装的资产。
+        ensure: async (_worker, ids) => {
+          const out: Record<string, string> = {};
+          for (const id of ids) {
+            const asset = await assetDeps.assets.get(id);
+            if (asset) out[id] = asset.pinned;
+          }
+          return out;
+        },
         log
       });
       const problems = await mcpAssetProblems(assetDeps, plan.entries.filter((entry) => entry.kind === 'mcp').map((entry) => entry.assetId));
