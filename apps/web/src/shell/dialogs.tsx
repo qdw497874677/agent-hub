@@ -23,7 +23,7 @@ import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
 import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startHint } from './harness-gate.ts';
-import { ModelPicker, SEARCHABLE_AFTER } from '../atoms/model-picker.tsx';
+import { ModelPicker } from '../atoms/model-picker.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
 import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
@@ -450,38 +450,20 @@ export function DeriveDialog({
         </div>
         <div>
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-model">模型</label>
-        {offered.models.length > SEARCHABLE_AFTER ? (
-          <ModelPicker
-            id="derive-model"
-            className={`mb-3 ${INPUT}`}
-            scope={agentId}
-            value={model}
-            onChange={(value) => {
-              setProfileId('');
-              setModel(value);
-            }}
-            items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
-            {...(emptyModel === null ? {} : { placeholder: emptyModel })}
-          />
-        ) : (
-          <select
-            id="derive-model"
-            className={`mb-3 ${INPUT}`}
-            value={model}
-            disabled={offered.models.length === 0}
-            onChange={(event) => {
-              setProfileId('');
-              setModel(event.target.value);
-            }}
-          >
-            {emptyModel === null ? null : <option value="">{emptyModel}</option>}
-            {offered.models.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {candidate}
-              </option>
-            ))}
-          </select>
-        )}
+        {/* 和输入框、Bot 设置同一个选择器：按提供方分组、可搜索；不替人选，空着就写「选择模型…」 */}
+        <ModelPicker
+          id="derive-model"
+          className={`mb-3 ${INPUT}`}
+          scope={agentId}
+          value={model}
+          disabled={offered.models.length === 0}
+          onChange={(value) => {
+            setProfileId('');
+            setModel(value);
+          }}
+          items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
+          {...(emptyModel === null ? {} : { placeholder: emptyModel })}
+        />
         </div>
         {/* 为什么某个 hub 提供商没出现在上面：把它被剔掉的原因直接写出来，不要让人去猜。 */}
         {hubHidden.length === 0 ? null : (

@@ -1,6 +1,5 @@
-import type { ReactNode } from 'react';
 import type { RuntimeOptionDto } from '../shell/api.ts';
-import { ModelPicker, SEARCHABLE_AFTER } from './model-picker.tsx';
+import { ModelPicker } from './model-picker.tsx';
 import type { ModelItem } from './model-list.ts';
 import { filterModelsByScope, sameModelScope, scopeNote } from './model-scope.ts';
 
@@ -32,6 +31,9 @@ export function currentOf(
  * 报未知 category 也照画（收在「其它」里），换模型后候选项变了也跟着变。
  * 这与 ADR 0003「模型清单来自 agent」是同一条纪律。
  */
+/** 输入框底栏里的可调项画成小胶囊：透明底、细边、悬停才加深（参照 t3code 的 composer chips）。 */
+const CHIP = 'rounded-full border border-hair bg-transparent px-2.5 hover:bg-hover';
+
 export function OptionControls({ options, values, onChange, compact = false, disabled = false }: Props) {
   const visible = compact
     ? options
@@ -73,7 +75,8 @@ export function OptionControls({ options, values, onChange, compact = false, dis
         const scoped = option.category === 'model' ? filterModelsByScope(items, String(current)) : null;
         const crossesScope = scoped !== null && items.some((item) => !sameModelScope(item.value, String(current)));
         const note = crossesScope ? scopeNote(String(current)) : undefined;
-        if (scoped !== null && scoped.items.length > SEARCHABLE_AFTER) {
+        // 模型一律走同一个选择器（按提供方分组、可搜索），和派生对话框、Bot 设置一致
+        if (scoped !== null) {
           return (
             <ModelPicker
               key={option.id}
@@ -85,7 +88,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
               note={note}
               onChange={(value) => onChange(option.id, value)}
               short={compact}
-              className={`${compact ? 'min-w-[80px] flex-1' : ''} max-w-[128px] ${compact ? 'option-control' : 'py-0.5'} rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
+              className={`${compact ? `min-w-[80px] flex-1 option-control ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} max-w-[160px] text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             />
           );
         }
@@ -97,7 +100,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             aria-label={option.label}
             title={title}
             data-category={option.category}
-            className={`${compact ? (option.category === 'model' ? 'min-w-[80px] flex-1' : 'shrink-0') : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[56px] sm:max-w-[132px]'} ${compact ? 'option-control appearance-none' : 'py-0.5'} truncate rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
+            className={`${compact ? 'shrink-0' : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[72px] sm:max-w-[132px]'} ${compact ? `option-control appearance-none ${CHIP}` : 'rounded-sm border border-hair bg-card px-1 py-0.5'} truncate text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             value={String(current)}
             disabled={disabled}
             // 下拉里选东西不该顺手把卡片拖走
@@ -105,10 +108,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             onDoubleClick={(event) => event.stopPropagation()}
             onChange={(event) => onChange(option.id, event.target.value)}
           >
-            {scoped !== null ? (
-              modelSelectOptions(scoped.items, String(current))
-            ) : (
-              <>
+            <>
                 {option.choices.length === 0 ? <option value={String(current)}>{String(current)}</option> : null}
                 {option.choices.map((choice, index) =>
                   choice.kind === 'group' ? (
@@ -125,8 +125,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
                     </option>
                   )
                 )}
-              </>
-            )}
+            </>
           </select>
         );
       })}
@@ -155,46 +154,6 @@ export function flatChoices(option: RuntimeOptionDto): ModelItem[] {
       ? choice.values.map((value) => item(value, choice.label))
       : [item(choice.value)]
   );
-}
-
-/**
- * 短清单走原生 <select> 时用的候选项：按作用域过滤之后分组可能只剩一部分，
- * 所以由摊平后的 ModelItem 重新拼 optgroup（同组的项本来就排在一起）。
- */
-function modelSelectOptions(items: readonly ModelItem[], current: string): ReactNode[] {
-  if (items.length === 0) return [<option key="current" value={current}>{current}</option>];
-  const nodes: ReactNode[] = [];
-  let index = 0;
-  while (index < items.length) {
-    const item = items[index];
-    if (item === undefined) break;
-    if (item.group === undefined) {
-      nodes.push(
-        <option key={`${index}:${item.value}`} value={item.value} disabled={item.disabled === true}>
-          {item.label}
-        </option>
-      );
-      index += 1;
-      continue;
-    }
-    const run: ModelItem[] = [];
-    while (index < items.length && items[index]?.group === item.group) {
-      const each = items[index];
-      if (each === undefined) break;
-      run.push(each);
-      index += 1;
-    }
-    nodes.push(
-      <optgroup key={`${item.group}:${index}`} label={item.group}>
-        {run.map((each) => (
-          <option key={each.value} value={each.value} disabled={each.disabled === true}>
-            {each.label}
-          </option>
-        ))}
-      </optgroup>
-    );
-  }
-  return nodes;
 }
 
 function compactTokens(tokens: number): string {

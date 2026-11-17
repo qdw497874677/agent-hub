@@ -8,6 +8,7 @@ import { HubSwitchNote, useSessionOptions } from './session-options.tsx';
 import { coarsePointer } from '../shell/device.ts';
 import { useOfflineNotice } from '../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from './composer-parts.tsx';
+import { Icon } from './icons.tsx';
 import { composerKeyAction, currentPlatform, sendKeyHint } from './composer-keys.ts';
 
 interface Props {
@@ -293,16 +294,18 @@ export function Composer({
           aria-label={trigger?.kind === '/' ? '命令' : '项目文件'}
           className="absolute bottom-full left-0 z-20 mb-1 max-h-60 w-full overflow-y-auto rounded-lg border border-strong bg-overlay py-1 shadow-overlay"
         >
+          <li role="presentation" className="px-3 pt-1 pb-1 text-[11px] text-tertiary">{trigger?.kind === '/' ? '命令' : '文件'}</li>
           {options.map((option, index) => (
-            <li key={option.key} role="option" aria-selected={index === active}>
+            <li key={option.key} role="option" aria-selected={index === active} className="px-1">
               <button
                 type="button"
-                className={`flex min-h-11 w-full items-baseline gap-2 px-3 py-2.5 text-left text-sub md:min-h-0 md:py-1.5 ${
-                  index === active ? 'bg-selected text-primary' : 'text-secondary hover:bg-card'
+                className={`flex min-h-11 w-full items-center gap-2 rounded-control px-2 py-2.5 text-left text-sub md:min-h-0 md:py-1.5 ${
+                  index === active ? 'bg-selected text-primary' : 'text-secondary hover:bg-hover'
                 }`}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={option.pick}
               >
+                <Icon name={trigger?.kind === '/' ? 'command' : 'file'} size={13} className="text-tertiary" />
                 <span className={`font-mono ${trigger?.kind === '/' ? 'shrink-0' : 'truncate'}`}>{option.label}</span>
                 {option.hint ? (
                   <span className="ml-auto min-w-0 truncate text-right text-meta text-tertiary">{option.hint}</span>

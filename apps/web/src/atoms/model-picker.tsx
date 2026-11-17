@@ -5,9 +5,6 @@ import { Sheet } from '../shell/dialog-shell.tsx';
 import { useNarrow } from '../shell/device.ts';
 import { groupModels, pushRecent, type ModelItem } from './model-list.ts';
 
-/** 清单短的时候原生下拉就够了；超过这个数才换成可搜索的选择器。 */
-export const SEARCHABLE_AFTER = 8;
-
 const recentKey = (scope: string) => `agent-hub.recent-models.${scope}`;
 
 /** 底栏空间有限：`provider/model` 只留 `model`，完整值仍在 aria-label/title 里。 */
@@ -26,7 +23,8 @@ function readRecent(scope: string): string[] {
 }
 
 /**
- * 可搜索的模型选择器：照 VS Code Quick Pick / Raycast 的做法，一个按钮打开「搜索框 + 分组列表」。
+ * 全站唯一的模型选择器（输入框、派生对话框、Bot 设置共用）：照 VS Code Quick Pick / Raycast 的做法，一个按钮打开「搜索框 + 分组列表」。
+ * 不论清单长短都用它，不替人自动选：值为空就显示占位。
  * cmdk 管键盘和无障碍；按提供方分组，最近用过的置顶（按 agent 记在本机浏览器里）。
  * 宽屏是居中的浮层，窄屏走底部抽屉（Sheet：贴底、占满宽度、可拖把手关），行高够手指点。
  * 用 portal 挂到 body，画布的缩放变换不影响它。
@@ -202,7 +200,7 @@ function ModelSheet({
                     value={keyOf(group.heading, item.value)}
                     disabled={item.disabled === true}
                     onSelect={() => pick(item.value)}
-                    className="flex min-h-[48px] cursor-pointer items-center gap-2 rounded-sm px-3 text-body text-secondary data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-45 data-[selected=true]:bg-card-raised data-[selected=true]:text-primary sm:min-h-0 sm:py-1.5"
+                    className="flex min-h-[48px] cursor-pointer items-center gap-2 rounded-sm px-3 text-body text-secondary data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-45 data-[selected=true]:bg-selected data-[selected=true]:text-primary sm:min-h-0 sm:py-1.5"
                   >
                     <span aria-hidden className="w-4 shrink-0 text-center text-primary">
                       {item.value === value ? '✓' : ''}
@@ -250,7 +248,7 @@ function ModelSheet({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-end justify-center bg-canvas/75 sm:items-start sm:pt-[12vh]"
+      className="fixed inset-0 z-[60] flex items-end justify-center bg-black/55 sm:items-start sm:pt-[12vh]"
       onClick={onClose}
       onPointerDown={(event) => event.stopPropagation()}
     >
@@ -258,7 +256,7 @@ function ModelSheet({
         role="dialog"
         aria-modal="true"
         aria-label={`选择${label}`}
-        className="flex max-h-[60vh] w-full flex-col rounded-md border border-strong bg-panel sm:max-w-[440px]"
+        className="flex max-h-[60vh] w-full flex-col overflow-hidden rounded-overlay border border-strong bg-overlay shadow-overlay sm:max-w-[440px]"
         onClick={(event) => event.stopPropagation()}
       >
         {command}

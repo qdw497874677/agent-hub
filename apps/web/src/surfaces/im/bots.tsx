@@ -7,7 +7,7 @@ import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
 import { DialogShell } from '../../shell/dialog-shell.tsx';
 import { BotConnectors } from './bot-connectors.tsx';
-import { ModelPicker, SEARCHABLE_AFTER } from '../../atoms/model-picker.tsx';
+import { ModelPicker } from '../../atoms/model-picker.tsx';
 import { modelsFor } from '../../shell/dialogs.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { BOT_MODEL_DEFAULT_ITEM, BOT_MODEL_DEFAULT_LABEL, botModelChoices, offListModel } from './bot-models.ts';
@@ -56,63 +56,31 @@ function runtimeModels(workers: readonly WorkerInfoDto[], agentId: string): stri
 }
 
 /**
- * 模型一栏：显式的「默认模型（留空）」+ 运行时上报的清单（≤ 8 原生下拉，> 8 可搜索选择器）。
- * 手填入口常开：清单只覆盖运行时自报的那几个，自建模型、没上报的机器都得能直接写。
- * 值始终写回同一个字段，空串继续合法（= 运行时默认）。
+ * 模型一栏：和输入框、派生对话框同一个选择器（按提供方分组、可搜索），不再给手填框。
+ * 第一项是显式的「默认模型（留空）」；编辑老 bot 时清单外的旧值补一条「（清单外）」，看得见、也能换掉。
+ * 值始终写回同一个字段，空串继续合法（= 运行时默认），也不替人自动选一个模型。
  */
 function BotModelField({ agentId, model, onChange }: { agentId: string; model: string; onChange: (value: string) => void }) {
   const workers = useWorkers();
   const models = useMemo(() => runtimeModels(workers.list, agentId), [workers.list, agentId]);
   const choices = useMemo(() => botModelChoices(models, model), [models, model]);
   const offList = offListModel(models, model);
-  // 手填 / 列表是「在这台运行时上的一次点击」：跟着 agentId 记，换运行时重新判断，别把上一台的口径带过来。
-  // 没点过时看值：清单外的老值直接进手填，能看见也能改（别只剩下拉里一条「清单外」）。
-  const [manualPref, setManualPref] = useState<{ agentId: string; manual: boolean } | null>(null);
-  const pref = manualPref?.agentId === agentId ? manualPref.manual : null;
-  // 清单空（机器没上报、或这个运行时没配模型）：没有可点的东西，直接给手填，也不给没用的切换链接。
-  const showManual = models.length === 0 || (pref ?? offList !== null);
+  const items = [
+    BOT_MODEL_DEFAULT_ITEM,
+    ...choices.items,
+    ...(offList ? [{ value: offList, label: `${offList}（清单外）`, group: '清单外' }] : [])
+  ];
   return (
     <div data-testid="bot-model-field" className="flex min-w-0 flex-col gap-1 text-meta text-secondary">
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="min-w-0">模型 <span className="text-tertiary">（留空用运行时默认）</span></span>
-        {models.length > 0 ? (
-          <button
-            type="button" data-testid="bot-model-manual" aria-pressed={showManual}
-            className="ml-auto shrink-0 text-meta text-tertiary hover:text-secondary hover:underline"
-            onClick={() => setManualPref({ agentId, manual: !showManual })}
-          >{showManual ? '从清单里选' : '手动输入模型 id'}</button>
-        ) : null}
-      </div>
-      {showManual ? (
-        <input
-          data-testid="bot-model" aria-label="模型" className={INPUT} maxLength={200}
-          placeholder="比如：deepseek-v3" value={model}
-          // 开始手填就钉在手填模式：清单可能还在路上（worker 没回），别把人正打字时的框换成下拉。
-          onChange={(event) => { setManualPref({ agentId, manual: true }); onChange(event.target.value); }}
+      <span className="min-w-0">模型</span>
+      <div data-testid="bot-model-select" className="min-w-0">
+        <ModelPicker
+          id="bot-model-picker" className={INPUT} scope={agentId} label="模型"
+          value={model} items={items} note={choices.note} placeholder={BOT_MODEL_DEFAULT_LABEL}
+          onChange={onChange}
         />
-      ) : choices.items.length > SEARCHABLE_AFTER ? (
-        <div data-testid="bot-model-select" className="min-w-0">
-          <ModelPicker
-            id="bot-model-picker" className={INPUT} scope={agentId} label="模型"
-            value={model} items={[BOT_MODEL_DEFAULT_ITEM, ...choices.items]} note={choices.note}
-            onChange={onChange}
-          />
-        </div>
-      ) : (
-        <>
-          <select
-            data-testid="bot-model-select" aria-label="模型" className={INPUT} value={model}
-            onChange={(event) => onChange(event.target.value)}
-          >
-            <option data-testid="bot-model-default" value="">{BOT_MODEL_DEFAULT_LABEL}</option>
-            {choices.items.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-            {/* 清单外的旧值补一条：受控 select 找不到匹配项会显示成第一项，看着像被改成了默认 */}
-            {offList ? <option value={offList}>{offList}（清单外）</option> : null}
-          </select>
-          {choices.note ? <p className="text-tertiary">{choices.note}</p> : null}
-        </>
-      )}
-      {models.length === 0 ? <p data-testid="bot-model-empty" className="text-tertiary">这台机器还没有可用模型</p> : null}
+      </div>
+      {models.length === 0 ? <p data-testid="bot-model-empty" className="text-tertiary">这台机器还没有可用模型，先用运行时默认</p> : null}
     </div>
   );
 }
