@@ -1,46 +1,78 @@
+import { Icon, type IconName } from '../atoms/icons.tsx';
 import { useAccount } from './auth.tsx';
 import { activeGlobalNavId, globalNavGroups } from './global-nav.ts';
 import { useRoute } from './use-route.ts';
 
+const ICONS: Readonly<Record<string, IconName>> = {
+  home: 'home',
+  messages: 'chat',
+  bots: 'bot',
+  memory: 'brain',
+  workspaces: 'folder',
+  market: 'package',
+  observe: 'activity',
+  admin: 'shield'
+};
+
 /**
- * 全站导航：工作台 / 消息 / 库 / 运维，四组只放路由链接。运维组整组只对管理员出现。
+ * 全站导航：只放路由链接，运维组整组只对管理员出现。
  *
- * 刻意做成「小标题 + 一排小链接」而不是卡片或图标墙：侧栏和首页左栏都是窄栏，
- * 任务/会话树才是主角，这组入口要能一眼扫完、不抢高度。
- * 组与组之间只用 1px 分隔线，不再额外留白。
+ * - `list`（默认）：桌面是一列「图标 + 名字」的紧凑行，组与组之间只留一点空隙，不写组标题；
+ *   窄屏（抽屉 / 首页顶部）改成四列图标格，两行就能放下，不把任务列表挤到屏幕外。
+ * - `rail`：侧栏收起成图标栏时只剩图标，名字进 tooltip。
  */
-export function GlobalNav() {
+export function GlobalNav({ layout = 'list' }: { layout?: 'list' | 'rail' }) {
   const account = useAccount();
   const [route] = useRoute();
   const active = activeGlobalNavId(route?.page ?? null);
-  const groups = globalNavGroups(account?.clusterAdmin === true);
+  const items = globalNavGroups(account?.clusterAdmin === true).flatMap((group, index) =>
+    group.items.map((item, at) => ({ ...item, gap: index > 0 && at === 0 }))
+  );
+
+  if (layout === 'rail') {
+    return (
+      <nav aria-label="全站导航" data-testid="global-nav" className="flex flex-col items-center gap-0.5">
+        {items.map((item) => {
+          const on = item.id === active;
+          return (
+            <a
+              key={item.id}
+              href={item.href}
+              data-testid={`nav-${item.id}`}
+              aria-current={on ? 'page' : undefined}
+              aria-label={item.label}
+              title={item.label}
+              className={`flex size-9 items-center justify-center rounded-md ${item.gap ? 'mt-1.5' : ''} ${
+                on ? 'bg-selected text-primary' : 'text-tertiary hover:bg-hover hover:text-primary'
+              }`}
+            >
+              <Icon name={ICONS[item.id] ?? 'grid'} />
+            </a>
+          );
+        })}
+      </nav>
+    );
+  }
 
   return (
-    <nav aria-label="全站导航" data-testid="global-nav" className="divide-y divide-hair">
-      {groups.map((group) => (
-        <div key={group.id} className="flex items-start gap-2 px-1.5 py-1">
-          {/* 组标题占 40px：「工作台」三个字在 11px 下约 33px，w-7 会折成两行。 */}
-          <p className="w-10 shrink-0 whitespace-nowrap pt-2.5 text-meta text-tertiary lg:pt-1">{group.label}</p>
-          <div className="flex min-w-0 flex-wrap items-center gap-0.5">
-            {group.items.map((item) => {
-              const on = item.id === active;
-              return (
-                <a
-                  key={item.id}
-                  href={item.href}
-                  data-testid={`nav-${item.id}`}
-                  aria-current={on ? 'page' : undefined}
-                  className={`flex min-h-11 items-center rounded-sm px-1.5 text-meta lg:min-h-6 lg:px-1 ${
-                    on ? 'bg-card-raised text-primary' : 'text-secondary hover:bg-card hover:text-primary'
-                  }`}
-                >
-                  {item.label}
-                </a>
-              );
-            })}
-          </div>
-        </div>
-      ))}
+    <nav aria-label="全站导航" data-testid="global-nav" className="grid grid-cols-4 gap-0.5 lg:flex lg:flex-col">
+      {items.map((item) => {
+        const on = item.id === active;
+        return (
+          <a
+            key={item.id}
+            href={item.href}
+            data-testid={`nav-${item.id}`}
+            aria-current={on ? 'page' : undefined}
+            className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-md px-1 text-meta lg:min-h-7 lg:flex-row lg:justify-start lg:gap-2.5 lg:px-2 lg:text-sub ${
+              item.gap ? 'lg:mt-2' : ''
+            } ${on ? 'bg-selected text-primary' : 'text-secondary hover:bg-hover hover:text-primary'}`}
+          >
+            <Icon name={ICONS[item.id] ?? 'grid'} className={on ? 'text-primary' : 'text-tertiary'} />
+            <span className="truncate">{item.label}</span>
+          </a>
+        );
+      })}
     </nav>
   );
 }

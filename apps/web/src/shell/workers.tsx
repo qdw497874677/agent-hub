@@ -357,7 +357,7 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
   return (
     <div className="relative" ref={box}>
       <button
-        className="flex items-center gap-1.5 rounded-sm border border-hair px-2.5 py-1 text-meta text-secondary hover:border-accent hover:text-accent"
+        className="flex h-7 max-w-full items-center gap-1.5 rounded-md px-2 text-meta text-secondary hover:bg-hover hover:text-primary"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
         aria-label={`机器：${online.length}/${list.length} 在线`}

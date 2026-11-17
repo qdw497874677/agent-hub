@@ -4,7 +4,7 @@ import { marketApi } from '../api.ts';
 import { at } from '../admin/shared.tsx';
 
 /** 站内通知铃铛：审核请求 / 结果、评论、下架、安装申请。每分钟拉一次，打开即标已读。 */
-export function NotificationBell() {
+export function NotificationBell({ placement = 'down' }: { placement?: 'down' | 'up' } = {}) {
   const client = useQueryClient();
   const [open, setOpen] = useState(false);
   const notes = useQuery({ queryKey: ['notifications'], queryFn: marketApi.notifications, refetchInterval: 60_000 });
@@ -16,7 +16,7 @@ export function NotificationBell() {
         aria-label={unread ? `通知（${unread} 条未读）` : '通知'}
         aria-expanded={open}
         data-testid="notification-bell"
-        className="relative flex h-7 w-7 items-center justify-center rounded-full border border-hair text-meta text-secondary hover:border-accent hover:text-accent"
+        className="relative flex h-7 w-7 items-center justify-center rounded-md text-meta text-tertiary hover:bg-hover hover:text-primary"
         onClick={() => {
           setOpen(!open);
           if (!open && unread) read.mutate();
@@ -32,7 +32,7 @@ export function NotificationBell() {
         ) : null}
       </button>
       {open ? (
-        <div className="absolute right-0 top-9 z-40 max-h-[60vh] w-[min(320px,calc(100vw-24px))] overflow-y-auto rounded-md border border-strong bg-panel p-1 text-meta">
+        <div className={`absolute z-40 max-h-[60vh] w-[min(320px,calc(100vw-24px))] overflow-y-auto rounded-md border border-strong bg-panel p-1 text-meta shadow-lg ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`}>
           {(notes.data?.items ?? []).map((n) => (
             <a key={n.id} href={n.link} data-testid="notification" className="block rounded-sm px-2 py-1.5 hover:bg-card" onClick={() => setOpen(false)}>
               <p className={n.readAt ? 'text-secondary' : 'text-primary'}>{n.title}</p>
