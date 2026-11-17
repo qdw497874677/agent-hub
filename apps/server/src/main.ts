@@ -1100,6 +1100,34 @@ sessionEnvironment = createSessionEnvironment({
   selectedAssetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetIds ?? null,
   // 会话显式资产组合优先；没有就用项目默认（planFor 内处理）。
   selectedAssetSetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetSetIds ?? null,
+  // 允许清单 + 自动预热（#226）：候选资产先装到这台机器并同步，装不上就拦住启动。
+  preheat: async (workerId, assetIds) => {
+    try {
+      const installed = new Set(
+        (await store.assets.installations()).filter((row) => row.workerId === workerId).map((row) => row.assetId)
+      );
+      const missing = assetIds.filter((assetId) => !installed.has(assetId));
+      for (const assetId of missing) await store.assets.install(workerId, assetId, Date.now());
+      const status = await syncWorkerAssets(assetDeps, workerId);
+      if (status.state === 'failed') {
+        log(`资产预热失败（${workerId}）：${status.error ?? '同步失败'}`);
+        return null;
+      }
+      const landed: Record<string, string> = {};
+      for (const assetId of assetIds) {
+        const digest = status.installed[assetId];
+        if (digest === undefined) {
+          log(`资产预热没落地（${workerId}）：${assetId}`);
+          return null;
+        }
+        landed[assetId] = digest;
+      }
+      return landed;
+    } catch (failure) {
+      log(`资产预热失败（${workerId}）：${(failure as Error).message}`);
+      return null;
+    }
+  },
   log
 });
 const syncAssets = (workerId: string) =>

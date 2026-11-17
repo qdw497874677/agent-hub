@@ -64,6 +64,11 @@ export interface SessionEnvironmentOptions {
    * 组合里的资产会并进项目生效集（同名后者覆盖前者），再按机器已安装过滤。
    */
   readonly selectedAssetSetIds?: (sessionId: string) => Promise<readonly string[] | null | undefined>;
+  /**
+   * 允许清单 + 自动预热（#226）：把候选资产装到这台机器并同步，返回实际落地的 digest。
+   * 返回 null = 装不上；此时会话启动会被拦住并说明原因，而不是静默少几个资产。
+   */
+  readonly preheat?: (workerId: string, assetIds: readonly string[]) => Promise<Readonly<Record<string, string>> | null>;
   readonly log?: (message: string) => void;
 }
 
@@ -74,6 +79,8 @@ interface Plan {
   readonly assetIds: readonly string[];
   /** 真正展开的组合：有它快照来源才算 'set'。 */
   readonly setIds: readonly string[];
+  /** 预热失败原因：有值时启动要被拦住。 */
+  readonly blocked?: string;
 }
 
 type Skipped = readonly { readonly name: string; readonly reason: string }[];
@@ -156,8 +163,13 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
       viewer,
       setIds,
       assetIds: (await options.selectedAssetIds?.(sessionId)) ?? null,
+      ...(options.preheat === undefined ? {} : { ensure: options.preheat }),
       ...(log === undefined ? {} : { log })
     });
+    if (plan.blocked !== undefined) {
+      log?.(`会话 ${sessionId} 的资产没有准备好：${plan.blocked}`);
+      return { projectId: project?.id ?? null, entries: [], assetIds: [], setIds: plan.setIds, blocked: plan.blocked };
+    }
     return { projectId: project?.id ?? null, entries: plan.entries, assetIds: plan.assetIds, setIds: plan.setIds };
   }
 
@@ -178,6 +190,9 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
             log?.(`会话 ${command.sessionId} 的资产没有准备好：找不到所属的任务或项目`);
             // 连命令也带上显式空集：万一有调用方漏看 blocked，也不会退回 v3 的「缺省 = 全给」。
             return { command: { ...command, assetIds: [] }, revision: null, blocked: '会话资产没有准备好：找不到会话所属的任务或项目' };
+          }
+          if (plan.blocked !== undefined) {
+            return { command: { ...command, assetIds: [] }, revision: null, blocked: `会话资产没有准备好：${plan.blocked}` };
           }
           candidate = {
             sessionId: command.sessionId,

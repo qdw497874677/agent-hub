@@ -817,6 +817,12 @@ export interface SessionAssetRequest {
   readonly setIds?: readonly string[];
   /** 显式清单：null / 缺省 = 按生效集；给了就只保留这些 id。 */
   readonly assetIds?: readonly string[] | null;
+  /**
+   * 允许清单 + 自动预热（#226）：候选资产可能还没装在这台机器上。
+   * 给了这个钩子，解析前把候选 id 交给它安装并同步，返回「这台机器上实际落地的 digest」；
+   * 返回 null 表示装不上 —— 调用方会据此把启动标成 blocked，而不是静默少几个资产。
+   */
+  readonly ensure?: (workerId: string, assetIds: readonly string[]) => Promise<Readonly<Record<string, string>> | null>;
   readonly log?: (message: string) => void;
 }
 
@@ -825,6 +831,8 @@ export interface SessionAssetResolution {
   readonly entries: readonly SessionAssetEntry[];
   /** 真正展开成功的组合 id：快照来源据此记 'set'。 */
   readonly setIds: readonly string[];
+  /** 预热失败的原因（有值时 entries 为空，调用方要拦住启动）。 */
+  readonly blocked?: string;
 }
 
 /**
@@ -864,11 +872,22 @@ export async function resolveSessionAssets(
   const candidates = [...bySlot.values()];
   const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === request.workerId).map((row) => row.assetId));
   const landed = deps.board.get(request.workerId)?.installed ?? {};
+  // 允许清单 + 自动预热：候选先交给 ensure 装到这台机器上，再按返回的 digest 组成清单。
+  const preheated = request.ensure === undefined || candidates.length === 0
+    ? null
+    : await request.ensure(request.workerId, candidates.map((asset) => asset.id));
+  if (request.ensure !== undefined && candidates.length > 0 && preheated === null) {
+    return { assetIds: [], entries: [], setIds, blocked: '资产预热失败：这台机器上没有装上它们' };
+  }
   let entries: SessionAssetEntry[] = [];
   for (const asset of candidates) {
-    if (!installed.has(asset.id)) continue;
-    const digest = isFileAssetKind(asset.kind) ? landed[asset.id] : asset.pinned;
-    if (digest === undefined) continue;
+    if (request.ensure === undefined && !installed.has(asset.id)) continue;
+    // 旧语义（没有 ensure）：必须已经落地，否则视为「这台机器上没有」。
+    // 允许清单模式（有 ensure）：落地优先，其次用预热返回的 digest。
+    const digest = isFileAssetKind(asset.kind)
+      ? landed[asset.id] ?? (preheated === null ? undefined : preheated[asset.id])
+      : asset.pinned;
+    if (digest === undefined || digest === '') continue;
     entries.push({ assetId: asset.id, kind: asset.kind, name: asset.name, digest, scope: assetScope(asset) });
   }
   // 显式清单是白名单：选中但当前不可见（被停用 / 换了作用域）就当没选，不报错。

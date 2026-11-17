@@ -434,3 +434,39 @@ test('个人资产按会话发起人给：预览与下发共用一个 owner', as
   const other = await asOther.prepare(startCommand({ ...session, id: 's-other' as never, workerId: 'w1' }, '/tmp/env', null));
   assert.deepEqual(other.command.kind === 'start_session' ? other.command.assetIds : null, []);
 });
+
+test('允许清单：机器没装也先预热再下发；预热失败按 blocked 拦住启动（#226）', async () => {
+  const { assets, hub, session } = await world();
+  const uploaded = await uploadAsset(assets.deps, { kind: 'skill', files: skillFiles() });
+  assert.ok(uploaded.ok);
+  await pinAssetRevision(assets.deps, uploaded.value.id, uploaded.value.latest);
+
+  const seen: { workerId: string; assetIds: readonly string[] }[] = [];
+  const environment = createSessionEnvironment({
+    assetDeps: assets.deps,
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects,
+    preheat: async (workerId, assetIds) => {
+      seen.push({ workerId, assetIds });
+      // 模拟「装好并同步」：把落地 digest 报回来（不真动 board）。
+      return Object.fromEntries(assetIds.map((assetId) => [assetId, uploaded.value.latest]));
+    }
+  });
+  const prepared = await environment.prepare(startCommand({ ...session, workerId: 'w1' }, '/tmp/env', null));
+  assert.equal(prepared.blocked, undefined);
+  assert.deepEqual(seen, [{ workerId: 'w1', assetIds: [uploaded.value.id] }]);
+  assert.deepEqual(prepared.command.kind === 'start_session' ? prepared.command.assetIds : null, [uploaded.value.id]);
+
+  // 预热失败：启动被拦住，命令里是显式空集（不退回「全给」）。
+  const broken = createSessionEnvironment({
+    assetDeps: assets.deps,
+    tasks: hub.deps.tasks,
+    projects: hub.deps.projects,
+    preheat: async () => null
+  });
+  // 换一条会话 id：上一条已经落下快照，不会重新解析。
+  const otherSession = { ...session, id: 'session-b' as unknown as Session['id'] };
+  const blocked = await broken.prepare(startCommand({ ...otherSession, workerId: 'w1' }, '/tmp/env', null));
+  assert.match(blocked.blocked ?? '', /资产没有准备好/);
+  assert.deepEqual(blocked.command.kind === 'start_session' ? blocked.command.assetIds : null, []);
+});

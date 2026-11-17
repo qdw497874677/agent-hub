@@ -461,3 +461,39 @@ test('项目级资产：回收站里的项目不收', async () => {
   assert.equal(made.ok, false);
   assert.equal(made.ok ? '' : made.error.code, 'not_found');
 });
+
+test('允许清单：候选资产没装在这台机器时，靠 ensure 预热后照样下发；预热失败就拦住（#226）', async () => {
+  const { deps } = inMemoryAssets();
+  const made = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(made.ok);
+  const id = made.value.id;
+
+  // 没装、也没落地：没有 ensure 时按旧语义跳过。
+  const plain = await resolveSessionAssets(deps, { sessionId: 's1', workerId: 'w1', projectId: null });
+  assert.deepEqual(plain.assetIds, []);
+
+  // 有 ensure：预热钩子把它装好并给出落地 digest。
+  const asked: string[][] = [];
+  const warmed = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async (workerId, assetIds) => {
+      asked.push([workerId, ...assetIds]);
+      return Object.fromEntries(assetIds.map((assetId) => [assetId, made.value.pinned]));
+    }
+  });
+  assert.deepEqual(asked, [['w1', id]]);
+  assert.deepEqual(warmed.assetIds, [id]);
+  assert.equal(warmed.entries[0]?.digest, made.value.pinned);
+
+  // 预热失败：不给条目，并说明原因（调用方据此拦住启动）。
+  const failed = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async () => null
+  });
+  assert.deepEqual(failed.assetIds, []);
+  assert.match(failed.blocked ?? '', /预热失败/);
+});
