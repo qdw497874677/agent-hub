@@ -64,7 +64,7 @@ export function ResourceDetails({ worker }: { worker: WorkerInfoDto }) {
   const m = r.sample.machine;
   return (
     <>
-      <dt className="text-tertiary">资源</dt>
+      <dt className="text-tertiary">概况</dt>
       <dd className="min-w-0 text-secondary" data-testid="worker-resource-details">
         <span className={`block ${tone[r.pressure.level]}`}>{title(r)}</span>
         <span className="block">

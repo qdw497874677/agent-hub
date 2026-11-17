@@ -45,7 +45,7 @@ export function DeleteProjectDialog({ project, onClose, onDeleted }: { project: 
           取消
         </button>
         <button
-          className="rounded-sm bg-rust px-3 py-1.5 text-sub text-primary hover:brightness-110 disabled:opacity-40"
+          className="rounded-sm bg-rust px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40"
           disabled={!matches || remove.isPending}
           onClick={() => remove.mutate()}
         >

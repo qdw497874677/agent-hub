@@ -452,7 +452,7 @@ function DevicesDialog({ onClose }: { onClose: () => void }) {
 /** 头部的账号按钮：显示首字，点开是个人 / 组织两组入口和退出登录。 */
 const MENU_ROW = 'w-full rounded-sm px-2 py-1.5 text-left text-secondary hover:bg-card-raised hover:text-primary';
 
-export function AccountMenu() {
+export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' } = {}) {
   const account = useAccount();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -474,13 +474,13 @@ export function AccountMenu() {
       <button
         aria-label="账号"
         aria-expanded={open}
-        className="flex h-7 w-7 items-center justify-center rounded-full border border-hair text-meta text-secondary hover:border-accent hover:text-accent"
+        className="flex h-7 w-7 items-center justify-center rounded-full bg-selected text-meta text-secondary hover:text-primary"
         onClick={() => setOpen((value) => !value)}
       >
         {account.displayName.slice(0, 1).toUpperCase()}
       </button>
       {open && (
-        <div className="absolute right-0 top-9 z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta" data-testid="account-menu">
+        <div className={`absolute z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta shadow-lg ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`} data-testid="account-menu">
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
           <p className="mt-1 text-tertiary">{account.clusterAdmin ? '集群管理员' : roleLabel(account.role)}</p>

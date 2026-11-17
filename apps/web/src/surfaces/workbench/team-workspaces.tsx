@@ -111,7 +111,7 @@ function TeamWorkspaceRow({ row, canManage }: { row: TeamWorkspaceViewDto; canMa
           {remove.error ? <p className="mb-2 text-meta text-rust">{errorText(remove.error)}</p> : null}
           <div className="flex justify-end gap-2">
             <button className={SECONDARY_BUTTON} onClick={() => setConfirm(false)}>取消</button>
-            <button className="rounded-sm bg-rust px-3 py-1.5 text-sub text-primary disabled:opacity-40" disabled={remove.isPending} onClick={() => remove.mutate()}>确认取消登记</button>
+            <button className="rounded-sm bg-rust px-3 py-1.5 text-sub text-canvas disabled:opacity-40" disabled={remove.isPending} onClick={() => remove.mutate()}>确认取消登记</button>
           </div>
         </div>
       ) : null}

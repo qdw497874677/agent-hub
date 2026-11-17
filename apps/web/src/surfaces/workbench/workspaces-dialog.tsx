@@ -227,7 +227,7 @@ function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; proje
       {remove.error ? <p className="mb-2 text-meta text-rust">{remove.error.message}</p> : null}
       <div className="flex flex-wrap justify-end gap-2">
         <button className={SECONDARY_BUTTON} onClick={onDone}>取消</button>
-        <button className="rounded-sm bg-rust px-3 py-1.5 text-sub text-primary disabled:opacity-40" disabled={remove.isPending} onClick={() => remove.mutate()}>
+        <button className="rounded-sm bg-rust px-3 py-1.5 text-sub text-canvas disabled:opacity-40" disabled={remove.isPending} onClick={() => remove.mutate()}>
           {remove.isPending ? '处理中…' : `确认${title}`}
         </button>
       </div>
