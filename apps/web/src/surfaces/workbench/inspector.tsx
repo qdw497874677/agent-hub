@@ -9,6 +9,7 @@ import { SessionAssets } from '../../atoms/session-assets.tsx';
 import { SessionMessages } from '../../atoms/session-messages.tsx';
 import { SessionContext } from '../../atoms/session-context.tsx';
 import { SessionServices } from '../../atoms/services-section.tsx';
+import { SessionMcp } from '../../atoms/session-mcp-section.tsx';
 import { WorkerChip, resolveWorker, useWorkers } from '../../shell/workers.tsx';
 
 const CAPABILITY_LABEL: Record<string, string> = {
@@ -165,6 +166,9 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
             defaultSessionId={session.id}
             canCreate={session.taskId !== null}
           />
+          {/* MCP 服务器：和上面的本地服务一样是「启动时下发什么」的配置，放在一起看。
+              容器会话也显示——它的清单来自资产快照，和有没有工作目录无关。 */}
+          <SessionMcp sessionId={session.id} />
           <section data-testid="session-activity">
             <p className="mb-1 text-meta text-tertiary">谁做了什么</p>
             {activity.length === 0 ? (

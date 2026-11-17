@@ -260,6 +260,34 @@ export const sessionsApi = {
 };
 
 /**
+ * 会话能用的 MCP 服务器：会话资产快照里的 MCP 条目 ∩ 机器上已装的版本。
+ * `note` 有值表示拿不到清单的原因（机器不在线 / 还没落到机器上 / 机器上没有版本），
+ * 这时 `servers` 可能是空的，但 `disabled` 仍照常返回。
+ */
+export interface SessionMcpServerDto {
+  readonly name: string;
+  readonly transport: 'stdio' | 'http';
+  readonly assetId: string;
+  readonly assetName: string;
+}
+
+export interface SessionMcpViewDto {
+  readonly servers: readonly SessionMcpServerDto[];
+  readonly disabled: readonly string[];
+  readonly note: string | null;
+}
+
+/**
+ * 按会话关掉某些 MCP 服务器。只写会话上的名单，不重启进程、不改资产和机器安装：
+ * 下一次启动会话进程时才按新名单下发。
+ */
+export const sessionMcpApi = {
+  view: (sessionId: string) => call<SessionMcpViewDto>(`${sq(sessionId)}/mcp`),
+  set: (sessionId: string, disabled: readonly string[]) =>
+    call<SessionDto>(`${sq(sessionId)}/mcp`, { method: 'PATCH', body: JSON.stringify({ disabled }) })
+};
+
+/**
  * 会话所属的组合工作目录。`session.groupId` 后端已经返回，契约的 sessionSchema 还没补这个字段，
  * 所以在这里做一次结构化读取，等契约补上后换成直接 `session.groupId` 即可。
  */

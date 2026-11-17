@@ -73,6 +73,8 @@ export const taskKeys = {
 export const sessionKeys = {
   /** 环境（资产 / MCP / 启动配置）是否改过还没生效：按会话查，别跨会话共用。 */
   environment: (sessionId: string) => ['session', sessionId, 'environment'] as const,
+  /** 这条会话能用的 MCP 服务器 + 关掉了哪些；改完要跟着会话 DTO 一起刷新。 */
+  mcp: (sessionId: string) => ['session', sessionId, 'mcp'] as const,
   /** 预览链接（docs/design/preview.md §4）：只有这条会话知道，增删后整体失效。 */
   previews: (sessionId: string) => ['session', sessionId, 'previews'] as const
 };
