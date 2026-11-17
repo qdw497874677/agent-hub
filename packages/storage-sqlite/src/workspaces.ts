@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS project_workspaces (
   linked_at    INTEGER NOT NULL,
   PRIMARY KEY (project_id, workspace_id)
 );
-CREATE INDEX IF NOT EXISTS project_workspaces_by_workspace ON project_workspaces(workspace_id);
+-- workspace_id 的唯一索引由 ensureSingleWorkspaceOwner 在去重之后建（老库可能还有多条认领）。
 `;
 
 const WORKSPACE_COLUMNS =
@@ -138,7 +138,7 @@ export function createWorkspaceRepository(db: DatabaseSync): WorkspaceRepository
   );
   const exists = db.prepare('SELECT 1 FROM workspaces WHERE id = ?');
   const longLived = db.prepare("SELECT * FROM workspaces WHERE kind = 'long_lived' AND state <> 'removed' ORDER BY created_at ASC");
-  const link = db.prepare('INSERT OR IGNORE INTO project_workspaces(project_id, workspace_id, linked_by, linked_at) VALUES (?, ?, ?, ?)');
+  const link = db.prepare('INSERT OR REPLACE INTO project_workspaces(project_id, workspace_id, linked_by, linked_at) VALUES (?, ?, ?, ?)');
   const unlink = db.prepare('DELETE FROM project_workspaces WHERE project_id = ? AND workspace_id = ?');
   const linksOf = db.prepare('SELECT * FROM project_workspaces WHERE workspace_id = ? ORDER BY linked_at ASC');
   const byTask = db.prepare('SELECT * FROM workspaces WHERE owner_task_id = ? ORDER BY created_at ASC');
@@ -321,4 +321,40 @@ export function migrateSharedWorkspaces(db: DatabaseSync, now: number = Date.now
     throw error;
   }
   return { linked, teamed, merged };
+}
+
+/**
+ * 独占归属（2026-11）：一个长期工作空间同一时间只能被一个项目认领。
+ * 1. 兜底去重：每个 workspace_id 只保留 `linked_at` 最早的一行（老库 / 合并迁移可能留下多条）；
+ * 2. 建 `project_workspaces(workspace_id)` 唯一索引，之后由数据库兜底。
+ * 幂等：重复跑没有重复行就什么都不删，索引 IF NOT EXISTS。
+ */
+export function ensureSingleWorkspaceOwner(db: DatabaseSync): number {
+  let removed = 0;
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const dupes = db
+      .prepare('SELECT workspace_id FROM project_workspaces GROUP BY workspace_id HAVING COUNT(*) > 1')
+      .all() as Row[];
+    for (const dupe of dupes) {
+      const workspaceId = dupe['workspace_id'] as string;
+      const keep = db
+        .prepare('SELECT project_id FROM project_workspaces WHERE workspace_id = ? ORDER BY linked_at ASC, project_id ASC LIMIT 1')
+        .get(workspaceId) as Row | undefined;
+      if (keep === undefined) continue;
+      removed += Number(
+        db.prepare('DELETE FROM project_workspaces WHERE workspace_id = ? AND project_id <> ?').run(workspaceId, keep['project_id'] as string).changes
+      );
+    }
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS project_workspaces_workspace ON project_workspaces(workspace_id)');
+    db.exec('DROP INDEX IF EXISTS project_workspaces_by_workspace');
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+  if (removed > 0) {
+    console.log(`[storage] 工作空间独占归属迁移：清理了 ${removed} 条重复认领，每个目录只保留最早关联的项目`);
+  }
+  return removed;
 }

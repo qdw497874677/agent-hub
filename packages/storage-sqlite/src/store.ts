@@ -43,7 +43,7 @@ import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
 import { createSqliteAssetSets } from './asset-sets.ts';
-import { WORKSPACE_SCHEMA, createWorkspaceRepository, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
+import { WORKSPACE_SCHEMA, createWorkspaceRepository, ensureSingleWorkspaceOwner, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
 import { createSqliteWorkspaceGroups } from './workspace-groups.ts';
 import { toArtifact, toJournalEntry, toProject, toSession, toTask } from './mappers.ts';
 import type { RepositorySet } from './mappers.ts';
@@ -663,6 +663,8 @@ export function openSqliteStore(file: string): SqliteStore {
   if (shared.linked + shared.teamed + shared.merged > 0) {
     console.log(`[storage] 共享工作空间迁移（ADR 0026）：新增关联 ${shared.linked}，补团队 ${shared.teamed}，合并重复登记 ${shared.merged}`);
   }
+  // 独占归属：合并迁移可能给同一个工作空间留下多条关联，先兜底去重再建唯一索引。
+  ensureSingleWorkspaceOwner(db);
   return {
     projects,
     tasks,

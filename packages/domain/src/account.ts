@@ -171,6 +171,7 @@ export type AuditAction =
   | 'project.asset_sets'
   | 'project.repos_check'
   | 'workspace.setup'
+  | 'workspace.transfer'
   | 'workspace.group.create'
   | 'workspace.group.retry'
   | 'workspace.group.remove'

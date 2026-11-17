@@ -133,13 +133,13 @@ test('ADR 0026 迁移：老表重建（project_id 可空、加 team_id / repo_ur
   assert.ok(cols.some((c) => c.name === 'team_id') && cols.some((c) => c.name === 'repo_url'));
   assert.equal(cols.find((c) => c.name === 'project_id')?.notnull, 0);
   const links = store.db.prepare('SELECT project_id, workspace_id FROM project_workspaces ORDER BY project_id, workspace_id').all();
-  assert.deepEqual(links.map((l) => [l['project_id'], l['workspace_id']]), [['p1', 'ws-a'], ['p2', 'ws-a'], ['p2', 'ws-c']]);
+  assert.deepEqual(links.map((l) => [l['project_id'], l['workspace_id']]), [['p1', 'ws-a'], ['p2', 'ws-c']]);
   const state = (id: string) => store.db.prepare('SELECT state, team_id, base_workspace_id FROM workspaces WHERE id = ?').get(id);
   assert.equal(state('ws-b')?.['state'], 'removed');
   assert.equal(state('ws-a')?.['team_id'], 'team1');
   assert.equal(state('ws-t')?.['base_workspace_id'], 'ws-a');
   assert.equal(store.db.prepare("SELECT workspace_id FROM sessions WHERE id = 's1'").get()?.['workspace_id'], 'ws-a');
-  assert.deepEqual((await store.workspaces.byProject(asProjectId('p2'))).filter((w) => w.state !== 'removed').map((w) => w.id).sort(), ['ws-a', 'ws-c', 'ws-t']);
+  assert.deepEqual((await store.workspaces.byProject(asProjectId('p2'))).filter((w) => w.state !== 'removed').map((w) => w.id).sort(), ['ws-c', 'ws-t']);
   // 取消关联后重启不会被补回来
   await store.workspaces.unlink(asProjectId('p2'), 'ws-c' as never);
   store.close();
@@ -152,18 +152,52 @@ test('ADR 0026 迁移：老表重建（project_id 可空、加 team_id / repo_ur
   again.close();
 });
 
-test('删除项目：还关联着别的项目的长期工作空间留下，只关联它的连登记一起删', async () => {
+test('删除项目：没人认领的团队工作空间留下，只属于它的长期工作空间连登记一起删（独占归属）', async () => {
   const store = openSqliteStore(':memory:');
   store.db.exec("INSERT INTO projects(id, name, root_path, created_at) VALUES ('p1', 'a', '', 1), ('p2', 'b', '', 2)");
-  const shared = newWorkspace({ projectId: asProjectId('p1'), workerId: 'w1', path: '/s', kind: 'long_lived', source: 'linked', now });
+  const team = newWorkspace({ projectId: null, teamId: 'team1', workerId: 'w1', path: '/t', kind: 'long_lived', source: 'linked', now });
   const own = newWorkspace({ projectId: asProjectId('p1'), workerId: 'w1', path: '/o', kind: 'long_lived', source: 'linked', now });
-  assert.ok(shared.ok && own.ok);
-  await store.workspaces.save(shared.value);
+  assert.ok(team.ok && own.ok);
+  await store.workspaces.save(team.value);
   await store.workspaces.save(own.value);
-  await store.workspaces.link({ projectId: asProjectId('p2'), workspaceId: shared.value.id, linkedBy: null, linkedAt: now });
+  await store.workspaces.link({ projectId: asProjectId('p1'), workspaceId: team.value.id, linkedBy: null, linkedAt: now });
   await store.projects.remove(asProjectId('p1'));
-  assert.equal((await store.workspaces.byId(shared.value.id))?.projectId, null);
+  assert.equal((await store.workspaces.byId(team.value.id))?.projectId, null);
+  assert.deepEqual(await store.workspaces.linksOf(team.value.id), []);
   assert.equal(await store.workspaces.byId(own.value.id), null);
-  assert.deepEqual((await store.workspaces.byProject(asProjectId('p2'))).map((w) => w.id), [shared.value.id]);
+  assert.deepEqual((await store.workspaces.byProject(asProjectId('p2'))).map((w) => w.id), []);
+  store.close();
+});
+
+test('独占归属：同一工作空间第二次 link 会替换掉原来的认领（行数仍 1）', async () => {
+  const store = openSqliteStore(':memory:');
+  store.db.exec("INSERT INTO projects(id, name, root_path, created_at) VALUES ('p1', 'a', '', 1), ('p2', 'b', '', 2)");
+  const ws = newWorkspace({ projectId: asProjectId('p1'), workerId: 'w1', path: '/only', kind: 'long_lived', source: 'linked', now });
+  assert.ok(ws.ok);
+  await store.workspaces.save(ws.value);
+  await store.workspaces.link({ projectId: asProjectId('p2'), workspaceId: ws.value.id, linkedBy: 'me', linkedAt: now + 10 });
+  const rows = store.db.prepare('SELECT COUNT(*) AS n FROM project_workspaces WHERE workspace_id = ?').get(ws.value.id);
+  assert.equal(rows?.['n'], 1);
+  assert.deepEqual((await store.workspaces.linksOf(ws.value.id)).map((l) => [l.projectId, l.linkedBy]), [['p2', 'me']]);
+  store.close();
+});
+
+test('独占归属迁移：老库里同一个工作空间的多条认领只留 linked_at 最早的一条，并建唯一索引', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'ahub-own-')), 'hub.db');
+  const seed = openSqliteStore(file);
+  seed.db.exec("INSERT INTO projects(id, name, root_path, created_at) VALUES ('p1', 'a', '', 1), ('p2', 'b', '', 2)");
+  const ws = newWorkspace({ projectId: asProjectId('p1'), workerId: 'w1', path: '/legacy', kind: 'long_lived', source: 'linked', now });
+  assert.ok(ws.ok);
+  await seed.workspaces.save(ws.value);
+  // 模拟老库：先拿掉唯一索引，再塞第二条认领
+  seed.db.exec('DROP INDEX project_workspaces_workspace');
+  await seed.workspaces.link({ projectId: asProjectId('p2'), workspaceId: ws.value.id, linkedBy: null, linkedAt: now + 10 });
+  assert.equal(seed.db.prepare('SELECT COUNT(*) AS n FROM project_workspaces WHERE workspace_id = ?').get(ws.value.id)?.['n'], 2);
+  seed.close();
+
+  const store = openSqliteStore(file);
+  assert.deepEqual((await store.workspaces.linksOf(ws.value.id)).map((l) => l.projectId), ['p1']);
+  assert.ok(store.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'project_workspaces_workspace' AND sql LIKE '%UNIQUE%'").get());
+  assert.equal(store.db.prepare('SELECT COUNT(*) AS n FROM project_workspaces WHERE workspace_id = ?').get(ws.value.id)?.['n'], 1);
   store.close();
 });

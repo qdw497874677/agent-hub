@@ -172,6 +172,9 @@ export interface WorkspaceView {
   readonly runningTaskIds: readonly string[];
   /** 别的项目正在里面跑的会话数（ADR 0026 Q6：只给个数，不透露是哪个项目 / 任务）。 */
   readonly otherProjectSessions: number;
+  /** 独占归属：认领这个长期工作空间的项目；没人认领（团队页新建）时都是 null。 */
+  readonly ownerProjectId: string | null;
+  readonly ownerProjectName: string | null;
 }
 
 /** 同 listWorkspacesUseCase，另附每个工作空间里正在跑的任务——面板据此提示「另一个任务也在这里干活」。 */
@@ -183,7 +186,14 @@ export async function workspaceViewsUseCase(
   if (!listed.ok) return listed;
   const views: WorkspaceView[] = [];
   for (const workspace of listed.value) {
-    views.push({ workspace, ...(await workspaceConcurrency(deps, workspace.id, projectId)) });
+    const link = (await deps.workspaces.linksOf(workspace.id))[0] ?? null;
+    const owner = link === null ? null : await deps.projects.byId(link.projectId);
+    views.push({
+      workspace,
+      ...(await workspaceConcurrency(deps, workspace.id, projectId)),
+      ownerProjectId: link?.projectId ?? null,
+      ownerProjectName: owner?.name ?? null
+    });
   }
   return ok(views);
 }

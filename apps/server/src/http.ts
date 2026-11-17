@@ -99,6 +99,7 @@ import {
   createTeamWorkspaceUseCase,
   linkWorkspaceUseCase,
   unlinkWorkspaceUseCase,
+  transferWorkspaceUseCase,
   sweepTemporaryWorkspacesUseCase,
   cleanupPolicyUseCase,
   saveCleanupPolicyUseCase,
@@ -641,6 +642,13 @@ export function createApp(options: AppOptions): Hono {
   });
   app.delete('/api/projects/:projectId/workspaces/:workspaceId', async (c) => {
     const result = await unlinkWorkspaceUseCase(deps, { actor: subjectOf(c), projectId: c.req.param('projectId'), workspaceId: c.req.param('workspaceId') });
+    return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
+  });
+  // 转移归属：一个目录同一时间只属于一个项目（独占），换项目要走这里
+  app.post('/api/projects/:projectId/workspaces/:workspaceId/transfer', async (c) => {
+    const subject = subjectOf(c);
+    const result = await transferWorkspaceUseCase(deps, { actor: subject, projectId: c.req.param('projectId'), workspaceId: c.req.param('workspaceId') });
+    if (result.ok) await auditResource(c, subject, 'workspace.transfer', c.req.param('workspaceId'), `→ ${c.req.param('projectId')}`);
     return result.ok ? c.json(workspaceSchema.parse(result.value)) : fail(c, result.error);
   });
   // 组合工作空间（多仓库）：建组 / 重试 / 删组（docs/design/multi-repo.md §4–§6）

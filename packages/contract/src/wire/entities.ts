@@ -236,8 +236,11 @@ export const workspaceSchema = z.object({
 export const workspaceViewSchema = z.object({
   workspace: workspaceSchema,
   runningTaskIds: z.array(z.string()),
-  /** 别的项目此刻在里面跑的会话数（只给个数）。 */
-  otherProjectSessions: z.number().int().nonnegative().default(0)
+  /** 别的项目此刻在里面跑的会话数（只给个数）。独占归属后恒为 0，字段留给老前端。 */
+  otherProjectSessions: z.number().int().nonnegative().default(0),
+  /** 现在认领这个目录的项目（独占：最多一个）；null = 还没分配。 */
+  ownerProjectId: z.string().nullable().default(null),
+  ownerProjectName: z.string().nullable().default(null)
 });
 
 /** 团队工作空间页的一行（ADR 0026）。 */
