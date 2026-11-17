@@ -196,7 +196,7 @@ export function LinkWorkspaces({
                 <button className={SECONDARY_BUTTON} onClick={() => { setAsking(null); transfer.reset(); }} disabled={transfer.isPending}>取消</button>
                 <button
                   data-testid="ws-transfer-confirm"
-                  className="shrink-0 rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas disabled:opacity-40"
+                  className="shrink-0 rounded-control bg-action px-3 py-1.5 text-sub font-medium text-action-fg hover:bg-action/90 disabled:opacity-40"
                   disabled={transfer.isPending}
                   onClick={() => transfer.mutate(asking.claim.workspaceId)}
                 >
