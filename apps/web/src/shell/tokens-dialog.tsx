@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { tokensApi, RequestFailed, type AccountDto, type ApiScopeDto, type ApiTokenDto } from './api.ts';
 import { DialogShell } from './dialog-shell.tsx';
+import { McpGuidePanel } from './mcp-guide.tsx';
 
 /** 每个 scope 一句人话；本机 Worker 和 hub 管理权限永远不在这里（ADR 0014）。 */
 const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; detail?: string }[] = [
@@ -84,6 +85,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
               我已保存
             </button>
           </div>
+          <McpGuidePanel token={fresh} />
         </div>
       ) : (
         <form
@@ -194,6 +196,12 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
         </ul>
       )}
       {revoke.error && <p role="alert" className="mt-2 text-meta text-rust">{errorText(revoke.error)}</p>}
+      {!fresh && (
+        <details className="mt-5">
+          <summary className="cursor-pointer text-meta text-secondary">外部智能体怎么接 MCP（Claude Code / Cursor / Codex / 提示词）</summary>
+          <McpGuidePanel />
+        </details>
+      )}
     </DialogShell>
   );
 }
