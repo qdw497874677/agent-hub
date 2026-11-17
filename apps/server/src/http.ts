@@ -77,6 +77,8 @@ import {
   appendWorkLogUseCase,
   editWorkLogUseCase,
   changeSessionOption,
+  switchSessionModel,
+  projectOfSession,
   listAgentProfiles,
   createAgentProfile,
   updateAgentProfile,
@@ -944,8 +946,23 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, changeOptionRequest);
     if (!input.ok) return input.response;
     const sessionId = c.req.param('sessionId');
+    const current = await deps.sessions.byId(asSessionId(sessionId));
+    // 换提供商不是「选项值」：Base URL/密钥是启动时写进 agent 配置的，得重启进程再接回来。
+    if (
+      current !== null &&
+      input.value.optionId === 'model' &&
+      typeof input.value.value === 'string' &&
+      options.providers?.crossesProviders(current.model, input.value.value) === true
+    ) {
+      const teamId = (await projectOfSession(deps, current))?.teamId ?? null;
+      const allowed = await options.providers.modelSwitchable(subjectOf(c), input.value.value, teamId);
+      if (!allowed.ok) return fail(c, allowed.error);
+      const switched = await switchSessionModel(deps, { sessionId, model: input.value.value });
+      if (!switched.ok) return fail(c, switched.error);
+      await options.waitOptions?.(sessionId);
+      return c.json(switched.value);
+    }
     if (options.providers) {
-      const current = await deps.sessions.byId(asSessionId(sessionId));
       const allowed = options.providers.optionAllowed(current?.model ?? '', input.value.optionId, input.value.value);
       if (!allowed.ok) return fail(c, allowed.error);
     }

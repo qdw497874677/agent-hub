@@ -8,7 +8,7 @@ import { err, ok } from '../result.ts';
 import { fakeGit, fakeToolGrants, inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
-import { changeSessionOption, deriveSessionUseCase, forkSessionUseCase, recordEvent, renameSessionUseCase } from './sessions.ts';
+import { changeSessionOption, deriveSessionUseCase, forkSessionUseCase, recordEvent, renameSessionUseCase, switchSessionModel } from './sessions.ts';
 import { ensureHosted } from './hosting.ts';
 import {
   ingestAgentSessionRef,
@@ -219,6 +219,29 @@ test('改可调项：不在跑就先 resume，再 set_option；不写乐观值',
   assert.ok(changed.ok);
   assert.deepEqual(w.dispatched.map((command) => command.kind), ['start_session', 'set_option']);
   assert.equal(changed.value.model, 'm1', '新值要等 agent 回报才落库');
+});
+
+test('换提供商：停掉旧进程、按新模型重新托管，并用 resume 接回历史', async () => {
+  const w = await world();
+  const session = await derived(w);
+  const running: Session = { ...session, status: 'running', agentSessionRef: 'agent-s-1', lastSeq: 7 };
+  await w.deps.sessions.save(running);
+  w.deps.hosting.clear();
+  w.dispatched.length = 0;
+
+  const switched = await switchSessionModel(w.deps, { sessionId: session.id, model: 'hub-gw/glm-5' });
+  assert.ok(switched.ok);
+  assert.equal(switched.value.model, 'hub-gw/glm-5');
+
+  const kinds = w.dispatched.map((command) => command.kind);
+  assert.ok(kinds.includes('interrupt'), '正在跑就先收尾旧回合');
+  const start = w.dispatched.filter((command) => command.kind === 'start_session').at(-1);
+  assert.equal(start?.kind === 'start_session' ? start.options['model'] : null, 'hub-gw/glm-5');
+  assert.deepEqual(
+    start?.kind === 'start_session' ? start.resume : null,
+    { agentSessionRef: 'agent-s-1', cursor: 7 },
+    '重启要带 resume，不然历史就丢了'
+  );
 });
 
 test('改可调项：会话已结束就直接落库，不为了写值再拉一个进程', async () => {

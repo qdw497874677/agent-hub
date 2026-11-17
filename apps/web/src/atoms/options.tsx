@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import type { RuntimeOptionDto } from '../shell/api.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from './model-picker.tsx';
 import type { ModelItem } from './model-list.ts';
-import { filterModelsByScope, scopeNote } from './model-scope.ts';
+import { filterModelsByScope, sameModelScope, scopeNote } from './model-scope.ts';
 
 interface Props {
   readonly options: readonly RuntimeOptionDto[];
@@ -68,10 +68,11 @@ export function OptionControls({ options, values, onChange, compact = false, dis
           );
         }
         const items = flatChoices(option);
-        // 模型清单里 hub 提供商模型和原生模型是混着来的；先按当前值的类别收口，
-        // 别让人选了另一类、再收到「换模型提供商需新开会话」的报错。
+        // 模型清单里 hub 提供商模型和原生模型混着来。现在换提供商会重启这条会话的进程
+        // 并接回历史（`switchSessionModel`），所以两类都放出来，只在要跨类时提醒一句。
         const scoped = option.category === 'model' ? filterModelsByScope(items, String(current)) : null;
-        const note = scoped !== null && scoped.hidden > 0 ? scopeNote(String(current)) : undefined;
+        const crossesScope = scoped !== null && items.some((item) => !sameModelScope(item.value, String(current)));
+        const note = crossesScope ? scopeNote(String(current)) : undefined;
         if (scoped !== null && scoped.items.length > SEARCHABLE_AFTER) {
           return (
             <ModelPicker

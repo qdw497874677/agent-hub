@@ -20,18 +20,13 @@ test('还没定模型（当前值为空）：两类模型都留着，不做范�
   assert.equal(choices.note, undefined);
 });
 
-test('当前是原生模型：hub 提供商的模型收起来，并说清为什么要新开会话', () => {
-  const choices = botModelChoices(MIXED, 'cliproxy/kimi-k2');
-  assert.deepEqual(choices.items.map((item) => item.value), NATIVE);
-  assert.equal(choices.hidden, HUB.length);
-  assert.match(choices.note ?? '', /hub 提供商的模型需要新开会话/);
-});
-
-test('当前是 hub 模型：只留同一提供商的，其余提供商和原生都收起', () => {
-  const choices = botModelChoices(MIXED, 'hub-team-1/glm-5');
-  assert.deepEqual(choices.items.map((item) => item.value), HUB);
-  assert.equal(choices.hidden, NATIVE.length);
-  assert.match(choices.note ?? '', /其他提供商的模型需要新开会话/);
+test('换提供商不再收起来：两类模型都列出来（切换时重启进程）', () => {
+  const native = botModelChoices(MIXED, 'cliproxy/kimi-k2');
+  assert.deepEqual(native.items.map((item) => item.value), MIXED);
+  assert.equal(native.hidden, 0);
+  const hub = botModelChoices(MIXED, 'hub-team-1/glm-5');
+  assert.deepEqual(hub.items.map((item) => item.value), MIXED);
+  assert.equal(hub.hidden, 0);
 });
 
 test('清单里只有一个模型，且正是当前值：一条也不少、没有说明', () => {

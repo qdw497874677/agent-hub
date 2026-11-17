@@ -332,13 +332,30 @@ export function createProviderWiring(wiring: ProviderWiring) {
     return checked.ok ? ok(checked.value?.protocol ?? null) : checked;
   }
 
-  /** D3：换提供商 = 新开会话；同一提供商里换模型可以。 */
+  /**
+   * 换模型是否要重启进程：只有当「hub 提供商变了」或者「hub 模型 ↔ 原生模型」时。
+   * 同一个 hub 提供商里换模型、或者 agent 自己的原生模型之间互换，都能热改。
+   */
+  function crossesProviders(currentModel: string, nextModel: string): boolean {
+    const before = parseHubModel(currentModel)?.slug ?? null;
+    const after = parseHubModel(nextModel)?.slug ?? null;
+    return before !== after;
+  }
+
+  /** 换提供商前校验新模型能不能用（Hub 模型看团队/权限/密钥；原生模型交给运行时）。 */
+  async function modelSwitchable(principal: Subject | null, model: string, teamId: string | null): Promise<Result<true, DomainError>> {
+    if (!parseHubModel(model)) return ok(true);
+    const checked = await checkProviderModel(deps, principal, model, teamId);
+    return checked.ok ? ok(true) : checked;
+  }
+
+  /** D3 的修正：换提供商要重启进程（`switchSessionModel`），但不再禁止换。 */
   function optionAllowed(currentModel: string, optionId: string, value: unknown): Result<true, DomainError> {
     if (optionId !== 'model' || typeof value !== 'string') return ok(true);
-    const before = parseHubModel(currentModel)?.slug ?? null;
-    const after = parseHubModel(value)?.slug ?? null;
-    if (before === after) return ok(true);
-    return err(invalid('换模型提供商需新开会话（hub 提供商的模型只能在开会话时选）'));
+    if (crossesProviders(currentModel, value)) {
+      return err(invalid('换模型提供商要走切换（会重启会话进程），不能当成普通选项改动'));
+    }
+    return ok(true);
   }
 
   function install(app: Hono, principalOf: (c: Context) => Subject | null): void {
@@ -496,7 +513,7 @@ export function createProviderWiring(wiring: ProviderWiring) {
     });
   }
 
-  return { grantFor, relay, revoke, checkModel, optionAllowed, install, activeHandles: () => handles.size };
+  return { grantFor, relay, revoke, checkModel, optionAllowed, crossesProviders, modelSwitchable, install, activeHandles: () => handles.size };
 }
 
 export type ProviderWiringApi = ReturnType<typeof createProviderWiring>;

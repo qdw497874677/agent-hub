@@ -28,42 +28,12 @@ test('同类判定：hub 同 slug 才算同类，原生之间都同类，跨类�
   assert.equal(sameModelScope('local', 'openai/gpt-5'), true);
 });
 
-test('过滤：hub 当前值只留同一 slug 的模型', () => {
+test('过滤：换提供商要重启进程而不是藏起来，所以全部候选都放出来', () => {
   const items = [hub('hub-a/x'), hub('hub-a/y'), hub('hub-b/z'), hub('my-codex/glm-5.3')];
-  assert.deepEqual(filterModelsByScope(items, 'hub-a/x'), {
-    items: [hub('hub-a/x'), hub('hub-a/y')],
-    hidden: 2
-  });
-});
-
-test('过滤：原生当前值留全部原生模型，藏掉所有 hub 模型', () => {
-  const items = [hub('hub-a/x'), hub('hub-b/z'), hub('my-codex/glm-5.3'), hub('local')];
-  assert.deepEqual(filterModelsByScope(items, 'my-codex/glm-5.3'), {
-    items: [hub('my-codex/glm-5.3'), hub('local')],
-    hidden: 2
-  });
-  assert.equal(scopeNote('my-codex/glm-5.3'), 'hub 提供商的模型需要新开会话');
-  assert.equal(scopeNote('hub-a/x'), '其他提供商的模型需要新开会话');
-});
-
-test('过滤：当前值一定留着（哪怕清单里没有它，也不会凭空造一条）', () => {
-  const items = [hub('hub-a/x'), hub('hub-b/z')];
-  const result = filterModelsByScope(items, 'hub-a/current-only');
-  assert.deepEqual(result.items, [hub('hub-a/x')]);
-  assert.equal(result.hidden, 1);
-
-  const mixed = [hub('hub-a/x'), hub('my-codex/glm-5.3')];
-  assert.deepEqual(filterModelsByScope(mixed, 'my-codex/glm-5.3').items, [hub('my-codex/glm-5.3')]);
-});
-
-test('过滤：空清单不出错，也不会多算藏起来的个数', () => {
-  assert.deepEqual(filterModelsByScope([], 'my-codex/glm-5.3'), { items: [], hidden: 0 });
-  assert.deepEqual(filterModelsByScope([], 'hub-a/x'), { items: [], hidden: 0 });
-});
-
-test('过滤：全是同一类时一条都不藏', () => {
-  const items = [hub('my-codex/glm-5.3'), hub('opencode-go/glm-5.3')];
-  const result = filterModelsByScope(items, 'my-codex/glm-5.3');
-  assert.equal(result.hidden, 0);
+  const result = filterModelsByScope(items, 'hub-a/x');
   assert.deepEqual(result.items, items);
+  assert.equal(result.hidden, 0);
+  assert.match(scopeNote('hub-a/x'), /重启/);
+  assert.match(scopeNote('my-codex/glm-5.3'), /重启/);
+  assert.deepEqual(filterModelsByScope([], 'hub-a/x'), { items: [], hidden: 0 });
 });

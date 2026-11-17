@@ -434,6 +434,59 @@ export async function changeSessionOption(
 }
 
 /**
+ * 换模型提供商（或 hub 模型 ↔ agent 原生模型）：这不是一个「选项值」，
+ * 因为提供商的 Base URL 与密钥是在 agent 启动时写进配置里的，运行中改不了。
+ *
+ * 做法是停掉这条会话的进程，按新模型重新托管，靠 `start_session(resume)` 的
+ * `session/load` 把对话接回来（见 `ensureHosted`）。代价是切换瞬间会中断正在跑的
+ * 那一回合，并且思考过程/子代理会断一次；历史本身不丢。
+ *
+ * 校验新模型能不能用是调用方的事（hub 提供商要看团队与权限，原生模型要看运行时
+ * 上报名单）——这里只管「换、重启、接回」。
+ */
+export async function switchSessionModel(
+  deps: Pick<
+    Deps,
+    | 'artifacts'
+    | 'bots'
+    | 'gateway'
+    | 'hosting'
+    | 'now'
+    | 'projects'
+    | 'queue'
+    | 'sessions'
+    | 'stream'
+    | 'tasks'
+    | 'workspaceGroups'
+    | 'workspaces'
+  > &
+    Partial<Pick<Deps, 'environment' | 'toolGrants'>>,
+  command: { readonly sessionId: string; readonly model: string }
+): Promise<Result<Session, DomainError>> {
+  const session = await deps.sessions.byId(asSessionId(command.sessionId));
+  if (!session) return err(notFound('会话不存在'));
+  if (session.model === command.model) return ok(session);
+
+  // 正在跑就先收尾：不停的话，旧进程会在新进程起来之后继续往这条会话里写事件。
+  if (session.status === 'running') {
+    const stopped = await interruptSessionUseCase(deps, session.id);
+    if (!stopped.ok) return stopped;
+  }
+
+  const optionSpec = session.optionSpec.map((entry) =>
+    entry.id === 'model' ? { ...entry, current: command.model } : entry
+  );
+  const next: Session = { ...session, model: command.model, options: { ...session.options, model: command.model }, optionSpec };
+  await deps.sessions.save(next);
+
+  // 丢掉托管记录，下一次 ensureHosted 会按 session.model 重新算提供商配置并带 resume 启动。
+  deps.hosting.drop(session.id);
+  const hosted = await ensureHosted(deps, next);
+  if (!hosted.ok) return err(hosted.error);
+  return ok((await deps.sessions.byId(session.id)) ?? next);
+}
+
+/**
  * 已经结束的会话改选项：按它上次上报的 optionSpec 校验，然后写回会话。
  * 传进来的 spec 是 agent 上次说的，选值范围以它为准；agent 不认的 Id 直接拒，
  * 免得写进库里一个下次启动会被丢掉的值。

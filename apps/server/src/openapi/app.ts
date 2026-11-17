@@ -14,6 +14,8 @@ import {
   authorizeProject,
   can,
   changeSessionOption,
+  switchSessionModel,
+  projectOfSession,
   conflict,
   createProjectUseCase,
   createTaskUseCase,
@@ -506,8 +508,21 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   on(routes.changeOption, async (c) => {
     const sessionId = c.req.param('sessionId') ?? '';
     const input = valid<{ optionId: string; value: string }>(c, 'json');
+    const current = await deps.sessions.byId(asSessionId(sessionId));
+    if (
+      current !== null &&
+      input.optionId === 'model' &&
+      ctx.providers?.crossesProviders(current.model, input.value) === true
+    ) {
+      const teamId = (await projectOfSession(deps, current))?.teamId ?? null;
+      const allowed = await ctx.providers.modelSwitchable(principal(c), input.value, teamId);
+      if (!allowed.ok) return fail(c, allowed.error);
+      const switched = await switchSessionModel(deps, { sessionId, model: input.value });
+      if (!switched.ok) return fail(c, switched.error);
+      await ctx.waitOptions?.(sessionId);
+      return c.json(switched.value);
+    }
     if (ctx.providers) {
-      const current = await deps.sessions.byId(asSessionId(sessionId));
       const allowed = ctx.providers.optionAllowed(current?.model ?? '', input.optionId, input.value);
       if (!allowed.ok) return fail(c, allowed.error);
     }
