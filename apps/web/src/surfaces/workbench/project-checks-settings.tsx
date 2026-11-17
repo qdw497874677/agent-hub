@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
@@ -83,9 +84,7 @@ export function ProjectChecksSettings({ project }: { project: ProjectDto }) {
         <span className={`mr-auto text-meta ${overLimit ? 'text-rust' : 'text-tertiary'}`}>
           {checks.length} / {CHECK_COMMANDS_MAX} 条
         </span>
-        {save.isSuccess && !dirty ? (
-          <span className="text-meta text-tertiary" data-testid="project-checks-saved">已保存</span>
-        ) : null}
+        <SaveStatus dirty={dirty} saved={save.isSuccess} testId="project-checks-saved" />
         <button
           type="button"
           className={SECONDARY_BUTTON}

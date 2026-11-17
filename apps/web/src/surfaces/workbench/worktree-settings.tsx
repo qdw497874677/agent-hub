@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
@@ -165,7 +166,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
 
           {/* 保存按钮紧跟着它保存的那几项，别让它落在「预览端口」后面。 */}
           <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-            {save.isSuccess && !dirty ? <span className="text-meta text-tertiary">已保存</span> : null}
+            <SaveStatus dirty={dirty} saved={save.isSuccess} />
             <button
               type="button"
               className={SECONDARY_BUTTON}
@@ -201,9 +202,9 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
               </button>
               {portProblem !== null ? (
                 <span className="text-meta text-rust" data-testid="preview-port-error">{portProblem}</span>
-              ) : savePort.isSuccess && !portDirty ? (
-                <span className="text-meta text-tertiary">已保存</span>
-              ) : null}
+              ) : (
+                <SaveStatus dirty={portDirty} saved={savePort.isSuccess} />
+              )}
             </div>
           </div>
         </>

@@ -1,4 +1,5 @@
 import { AppShell, PageBody, PageHeader } from '../page-shell.tsx';
+import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { marketApi, teamApi, type AssetKindDto, type AssetScopeDto, type MarketAssetDto } from '../api.ts';
@@ -564,9 +565,9 @@ function ReviewSettingsForm({
           </label>
           <p className="text-meta text-tertiary" title="审核人不够两位时自动降到一位">审核人不够两位时降为一位。</p>
           {save.error ? <p className="text-meta text-rust">{errorText(save.error)}</p> : null}
-          {save.isSuccess ? <p className="text-meta text-sage">已保存</p> : null}
           {editable ? (
-            <div className="flex justify-end">
+            <div className="flex items-center justify-end gap-2">
+              <SaveStatus dirty={false} saved={save.isSuccess} />
               <button className={SMALL} disabled={save.isPending} onClick={() => save.mutate(undefined)}>
                 保存
               </button>

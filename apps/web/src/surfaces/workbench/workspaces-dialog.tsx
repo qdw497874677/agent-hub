@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, WorkspaceDto, WorkspaceViewDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
@@ -260,8 +261,8 @@ function DescriptionEditor({ project }: { project: ProjectDto }) {
       />
       {save.error ? <p className="mt-1 text-meta text-rust">{save.error.message}</p> : null}
       <div className="mt-2 flex items-center justify-end gap-2">
-        {save.isSuccess && !changed ? <span className="text-meta text-tertiary">已保存</span> : null}
-        <button className="rounded-sm bg-action px-3 py-1.5 text-sub text-action-fg disabled:opacity-40" disabled={!changed || save.isPending} onClick={() => save.mutate()}>
+        <SaveStatus dirty={changed} saved={save.isSuccess} />
+        <button className="rounded-control bg-action px-3 py-1.5 text-sub text-action-fg disabled:opacity-40" disabled={!changed || save.isPending} onClick={() => save.mutate()}>
           {save.isPending ? '保存中…' : '保存'}
         </button>
       </div>
