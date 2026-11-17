@@ -84,6 +84,17 @@ fi
 echo "==> 安装依赖（npm install --omit=dev，首次可能需要几分钟）"
 cd "$here"
 npm install --no-fund --no-audit --omit=dev
+if ! "$node_bin" -e "import('node-pty').then(() => process.exit(0), () => process.exit(1))" >/dev/null 2>&1; then
+  echo ""
+  echo "!! 交互式终端用不了：node-pty 没装上（它要编译原生模块，这台机器缺工具链）。"
+  echo "   其余功能不受影响；需要终端时二选一："
+  echo "   1) 装编译工具后再补装："
+  echo "        Debian/Ubuntu: sudo apt-get install -y build-essential python3"
+  echo "        RHEL/阿里云:   sudo dnf install -y gcc-c++ make python3"
+  echo "        sudo npm install -g node-gyp && cd $here && npm rebuild node-pty"
+  echo "   2) 接受没有终端，直接继续。"
+  echo ""
+fi
 echo "==> 依赖安装完成"
 
 label="${WORKER_LABEL:-$(hostname 2>/dev/null || uname -n)$suffix}"

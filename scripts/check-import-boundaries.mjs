@@ -197,7 +197,7 @@ export async function checkImportBoundaries(root = ROOT) {
       continue;
     }
     const declared = new Set(
-      ['dependencies', 'devDependencies', 'peerDependencies'].flatMap((field) => Object.keys(pkg[field] ?? {}))
+      ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies'].flatMap((field) => Object.keys(pkg[field] ?? {}))
     );
     const graph = new Map();
 
