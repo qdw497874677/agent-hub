@@ -101,7 +101,7 @@ test('主持人分派：不 @ 任何人，主持人自己接话并落帖', async
   await page.getByTestId('group-send').click();
   await expect(page.locator('[data-testid="group-post"][data-author="agent"]').first()).toBeVisible({ timeout: 200_000 });
   const chains = (await (await page.request.get(`/api/groups/${group.id}/chains`)).json()) as { chains: { deliveries: { role: string; sessionId: string | null }[] }[] };
-  expect(chains.chains[0]?.deliveries.some((d) => d.role === 'host' && d.sessionId)).toBe(true);
+  expect(chains.chains[0]?.deliveries.some((d) => d.role === host && d.sessionId)).toBe(true);
 });
 
 test('只能 @ 群成员：@ 群外角色只给提示和「加入群组」，加进来后不重放，再 @ 才算', async ({ page, baseURL }) => {
