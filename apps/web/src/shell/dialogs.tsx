@@ -152,15 +152,17 @@ export function DeriveDialog({
   });
   const spareSets = sets.filter((set) => !chosen.ids.includes(set.id));
   // 模型清单按机器来：两台机器的 Pi 配的 provider 可能完全不同
-  const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.models(taskId), retry: false });
-  const hubProtocols = [...new Set((hubModels.data ?? []).map((provider) => provider.protocol))];
-  const selectedHub = (hubModels.data ?? []).flatMap((provider) => provider.models.map((item) => ({ id: item.id, protocol: provider.protocol }))).find((item) => item.id === model) ?? null;
+  const hubModels = useQuery({ queryKey: ['hub-models', taskId], queryFn: () => providersApi.modelsExplained(taskId), retry: false });
+  const hubList = hubModels.data?.providers ?? [];
+  const hubHidden = hubModels.data?.hidden ?? [];
+  const hubProtocols = [...new Set(hubList.map((provider) => provider.protocol))];
+  const selectedHub = hubList.flatMap((provider) => provider.models.map((item) => ({ id: item.id, protocol: provider.protocol }))).find((item) => item.id === model) ?? null;
   const offered = withHubModels(
     modelsFor(workers.list, machine, agentId) ?? { models: agent?.models ?? [], defaultModel: agent?.defaultModel ?? '' },
     workers.list,
     machine,
     agentId,
-    hubModels.data ?? []
+    hubList
   );
   const [choice, setChoice] = useState<WorkspaceChoice | null>(null);
   // 组合工作目录：建好的那组留着，准备失败时可以原地重试，不必再建一组
@@ -481,6 +483,12 @@ export function DeriveDialog({
           </select>
         )}
         </div>
+        {/* 为什么某个 hub 提供商没出现在上面：把它被剔掉的原因直接写出来，不要让人去猜。 */}
+        {hubHidden.length === 0 ? null : (
+          <p className="mb-3 text-meta text-tertiary" data-testid="hub-models-hidden">
+            {hubHidden.map((item) => `${item.name || item.slug}：${item.reason}`).join('；')}
+          </p>
+        )}
         </div>
         {/* 资产：这一趟要带哪些技能 / 指令 / MCP（默认全选，取消即不带）。手机上换行不横向滚。 */}
         <div className="mb-3" data-testid="derive-assets">

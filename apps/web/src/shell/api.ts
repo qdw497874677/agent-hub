@@ -836,6 +836,7 @@ export interface ProviderInputDto {
   enabled: boolean;
 }
 export interface HubModelsDto { readonly slug: string; readonly name: string; readonly protocol: ProviderProtocolDto; readonly scope?: 'personal' | 'team' | 'hub'; readonly models: readonly { id: string; label: string }[] }
+export interface HubModelsHiddenDto { readonly slug: string; readonly name: string; readonly reason: string }
 /** 拉取模型：给了 workerId 就走那台机器的网络，否则 hub 直连；给了 providerId 就用服务器上已存的密钥。 */
 export interface ProviderProbeInputDto {
   protocol: ProviderProtocolDto;
@@ -855,6 +856,10 @@ const providerPath = (id: string) => `/api/providers/${encodeURIComponent(id)}`;
 export const providersApi = {
   list: () => call<{ providers: ProviderDto[]; workerRouting: Record<string, 'direct' | 'hub'> }>('/api/providers'),
   models: (taskId?: string) => call<HubModelsDto[]>(`/api/providers/models${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`),
+  modelsExplained: (taskId?: string) =>
+    call<{ providers: HubModelsDto[]; hidden: HubModelsHiddenDto[] }>(
+      `/api/providers/models?explain=1${taskId ? `&taskId=${encodeURIComponent(taskId)}` : ''}`
+    ),
   probe: (input: ProviderProbeInputDto) => post<ProviderProbeDto>('/api/providers/probe', input),
   create: (input: ProviderInputDto & { scope: 'personal' | 'team' | 'hub'; apiKey?: string }) => post<ProviderDto>('/api/providers', input),
   update: (id: string, input: ProviderInputDto) => call<ProviderDto>(providerPath(id), { method: 'PUT', body: JSON.stringify(input) }),

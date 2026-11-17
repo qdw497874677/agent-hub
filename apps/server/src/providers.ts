@@ -372,11 +372,17 @@ export function createProviderWiring(wiring: ProviderWiring) {
       const projectId = c.req.query('projectId') ?? '';
       const team = taskId ? await wiring.projectTeam(taskId) : projectId && wiring.projectTeamOf ? await wiring.projectTeamOf(projectId) : null;
       const out = [];
+      // explain=1：把被剔掉的提供商连同原因一起返回，界面上能直接说清「为什么没出现」。
+      const hidden: { slug: string; name: string; reason: string }[] = [];
       for (const provider of await deps.providers.list()) {
-        if (!canUseProvider(actor, provider, team).ok) continue;
+        const usable = canUseProvider(actor, provider, team);
+        if (!usable.ok) {
+          hidden.push({ slug: provider.slug, name: provider.name, reason: usable.error.message });
+          continue;
+        }
         out.push({ slug: provider.slug, name: provider.name, protocol: provider.protocol, scope: provider.scope, models: provider.models.map((model) => ({ id: hubModelId(provider.slug, model.id), label: model.name ?? model.id })) });
       }
-      return c.json(out);
+      return c.json(c.req.query('explain') === '1' ? { providers: out, hidden } : out);
     });
 
     /**

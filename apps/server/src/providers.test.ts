@@ -421,3 +421,19 @@ test('probe：给 providerId 用库里的密钥并校验管理权；worker 在�
     await upstream.close();
   }
 });
+
+test('explain：被剔掉的提供商连原因一起返回，默认仍是纯数组', async () => {
+  const { wiring, providers, provider } = await setup('direct', 'http://127.0.0.1:9/v1');
+  await providers.save({ ...provider, enabled: false });
+  const app = new Hono();
+  wiring.install(app, () => systemSubject('test'));
+  const plain = (await (await app.fetch(new Request('http://hub/api/providers/models'))).json()) as unknown;
+  assert.deepEqual(plain, []);
+  const explained = (await (await app.fetch(new Request('http://hub/api/providers/models?explain=1'))).json()) as {
+    providers: unknown[];
+    hidden: { slug: string; reason: string }[];
+  };
+  assert.equal(explained.providers.length, 0);
+  assert.equal(explained.hidden[0]?.slug, 'gw');
+  assert.match(explained.hidden[0]?.reason ?? '', /停用/);
+});
