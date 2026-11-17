@@ -3,27 +3,35 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { tokensApi, RequestFailed, type AccountDto, type ApiScopeDto, type ApiTokenDto } from './api.ts';
 import { DialogShell } from './dialog-shell.tsx';
 import { McpGuidePanel } from './mcp-guide.tsx';
+import { maskToken } from '../atoms/mcp-guide.ts';
 
-/** 每个 scope 一句人话；本机 Worker 和 hub 管理权限永远不在这里（ADR 0014）。 */
-const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; detail?: string }[] = [
+/**
+ * 每个 scope 一句人话 + 它实际带上的权限（detail 直接显示，不藏在悬停里）。
+ * 本机 Worker 和 hub 管理权限永远不在这里（ADR 0014）。
+ * assets:submit 是 assets:write 的旧名（权限完全一样），不再单列，老令牌照常可用。
+ */
+const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; detail?: string; risky?: boolean }[] = [
   { id: 'projects:read', label: '读项目和任务', hint: '项目、任务、日志、改动' },
-  { id: 'projects:write', label: '改项目和任务', hint: '建项目和任务，改状态，写日志' },
+  { id: 'projects:write', label: '改项目和任务', hint: '建项目和任务，改状态，写日志', detail: '含删除项目' },
   { id: 'sessions:read', label: '读会话', hint: '会话详情、事件、实时流' },
-  { id: 'sessions:write', label: '发起会话', hint: '开会话、发消息、打断、分叉' },
+  { id: 'sessions:write', label: '发起会话', hint: '开会话、发消息、打断、分叉', detail: '同时可以看和使用远程机器' },
   { id: 'workers:read', label: '看机器', hint: '可用的远程机器', detail: '本机永远不开放' },
-  { id: 'providers:use', label: '使用模型提供商', hint: '看见并选用已配置的模型', detail: '不含在「发起会话」里，不能管理提供商，也不包含本机机器' },
-  { id: 'assets:submit', label: '提交资产新版本', hint: '给自己维护的资产提交新版本', detail: '进审核队列；不能批准、发布或安装' },
-  { id: 'assets:publish', label: '自动发布与分配资产', hint: '跳过审核并安装到机器，记入审计', detail: '只给脚本、CI、外部 agent 的个人令牌或团队服务账号' },
+  { id: 'providers:use', label: '使用模型提供商', hint: '看见并选用已配置的模型', detail: '不能管理提供商' },
+  { id: 'assets:read', label: '读资产', hint: '资产列表和内容（按你能看到的范围）' },
+  { id: 'assets:write', label: '新建和更新资产', hint: '新建资产、交新版本', detail: '进审核队列，审核通过才可用' },
+  { id: 'assets:publish', label: '自动发布与分配资产', hint: '跳过审核直接生效，并装到机器', detail: '同时可以看和使用机器、读项目；记入审计', risky: true },
   { id: 'groups:write', label: '在群里发言', hint: '往项目群里发消息', detail: '含接活；不能管理群成员' },
   { id: 'files:read', label: '读会话文件', hint: '只读会话工作目录里的文件', detail: '不能写、不能执行命令' },
   { id: 'memory:read', label: '读记忆', hint: '读取项目与团队记忆' },
   { id: 'memory:write', label: '写记忆', hint: '追加与修改记忆（含读）' }
 ];
+/** 默认 30 天；永不过期放最后，选了会提示风险。 */
 const EXPIRY = [
-  { label: '永不过期', days: 0 },
+  { label: '7 天', days: 7 },
   { label: '30 天', days: 30 },
   { label: '90 天', days: 90 },
-  { label: '1 年', days: 365 }
+  { label: '1 年', days: 365 },
+  { label: '永不过期', days: 0 }
 ];
 const when = (ms: number) => new Date(ms).toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const errorText = (error: unknown) => (error instanceof RequestFailed ? error.detail.message : error ? "网络出错了，再试一次" : null);
@@ -37,9 +45,10 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
   const [name, setName] = useState('');
   const [kind, setKind] = useState<'personal' | 'service'>('personal');
   const [scopes, setScopes] = useState<ApiScopeDto[]>(['projects:read', 'sessions:read']);
-  const [days, setDays] = useState(0);
+  const [days, setDays] = useState(30);
   const [fresh, setFresh] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [shown, setShown] = useState(false);
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['api-tokens'] });
   const create = useMutation({
     mutationFn: () =>
@@ -47,6 +56,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
     onSuccess: async (result) => {
       setFresh(result.token);
       setCopied(false);
+      setShown(false);
       setName('');
       await refresh();
     }
@@ -69,8 +79,8 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
       {fresh ? (
         <div data-testid="token-fresh" className="mt-4 rounded-sm border border-accent/50 bg-accent/10 p-3">
           <p className="text-meta text-primary">新令牌只显示这一次，现在复制保存好：</p>
-          <code data-testid="token-value" className="mt-2 block break-all rounded-sm bg-card px-2 py-1.5 font-mono text-[12px] text-primary select-all">
-            {fresh}
+          <code data-testid="token-value" data-shown={shown} className="mt-2 block break-all rounded-sm bg-card px-2 py-1.5 font-mono text-[12px] text-primary select-all">
+            {shown ? fresh : maskToken(fresh)}
           </code>
           <div className="mt-2 flex gap-2">
             <button
@@ -81,11 +91,14 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
             >
               {copied ? '已复制' : '复制'}
             </button>
+            <button data-testid="token-reveal" className={BTN} onClick={() => setShown((v) => !v)}>
+              {shown ? '隐藏' : '显示'}
+            </button>
             <button className={BTN} onClick={() => setFresh(null)}>
               我已保存
             </button>
           </div>
-          <McpGuidePanel token={fresh} />
+          <McpGuidePanel />
         </div>
       ) : (
         <form
@@ -124,11 +137,17 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
           <fieldset className="flex flex-col gap-1.5">
             <legend className="mb-1 text-meta text-secondary">权限</legend>
             {SCOPES.map((scope) => (
-              <label key={scope.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-1 py-1 hover:bg-panel" title={scope.detail}>
+              <label key={scope.id} data-scope={scope.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-1 py-1 hover:bg-panel">
                 <input type="checkbox" className="mt-1 accent-[var(--color-accent)]" checked={scopes.includes(scope.id)} onChange={() => toggle(scope.id)} />
                 <span className="min-w-0">
-                  <span className="text-meta text-primary">{scope.label}</span>
-                  <span className="block text-[11px] text-tertiary">{scope.hint}</span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="text-meta text-primary">{scope.label}</span>
+                    {scope.risky && <span className="rounded-sm bg-rust/15 px-1.5 py-0.5 text-[11px] text-rust">高风险</span>}
+                  </span>
+                  <span className="block text-[11px] text-tertiary">
+                    {scope.hint}
+                    {scope.detail ? `；${scope.detail}` : ''}
+                  </span>
                 </span>
               </label>
             ))}
@@ -148,6 +167,11 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
               ))}
             </select>
           </label>
+          {days === 0 && (
+            <p data-testid="token-forever-warning" className="-mt-1 text-[11px] text-rust">
+              永不过期的令牌泄露后会一直有效，建议设个期限，到期再续。
+            </p>
+          )}
           {create.error && <p role="alert" className="text-meta text-rust">{errorText(create.error)}</p>}
           <button
             type="submit"
