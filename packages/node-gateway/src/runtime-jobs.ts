@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { basename, delimiter, dirname } from 'node:path';
+import { existsSync } from 'node:fs';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import type { ComponentAction, ComponentJobResult, ComponentJobSpec, HarnessInstaller, InstallRun, RuntimeAction, RuntimeJobState, RuntimeProvision } from '@agent-hub/domain';
 import { installBundle, installComponent, uninstallComponent } from './components.ts';
 import type { RuntimeStore } from './runtime-store.ts';
@@ -53,7 +54,7 @@ export interface RuntimeManagerOptions {
  * 安装命令只拿到最小的环境：PATH、HOME、语言、代理、npm 源。
  * Worker 进程里的 HUB_TOKEN 之类绝不能漏给第三方安装脚本（npm 包、官方脚本都会跑代码）。
  */
-const ENV_ALLOW = /^(PATH|HOME|USER|LOGNAME|LANG|LC_[A-Z]+|TMPDIR|TZ|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|NPM_CONFIG_REGISTRY|npm_config_registry|NODE_EXTRA_CA_CERTS|SSL_CERT_(FILE|DIR))$/;
+const ENV_ALLOW = /^(PATH|HOME|USER|LOGNAME|LANG|LC_[A-Z]+|TMPDIR|TZ|LD_LIBRARY_PATH|(HTTPS?|NO|ALL)_PROXY|(https?|no|all)_proxy|NPM_CONFIG_REGISTRY|npm_config_registry|NODE_EXTRA_CA_CERTS|SSL_CERT_(FILE|DIR))$/;
 
 export function installEnv(source: Readonly<Record<string, string | undefined>>, node: string = process.execPath): Record<string, string> {
   const env: Record<string, string> = {};
@@ -61,6 +62,18 @@ export function installEnv(source: Readonly<Record<string, string | undefined>>,
   // npm 的 `#!/usr/bin/env node` 要找到和 Worker 同一个 node
   env['PATH'] = [dirname(node), ...(env['PATH'] ?? '/usr/bin:/bin').split(delimiter).filter(Boolean)].join(delimiter);
   env['SHELL'] = '/bin/sh';
+  // bootstrap 的 node 壳把 libatomic 放在 <node>/../lib，并用 LD_LIBRARY_PATH 兜底；
+  // 安装脚本常常直接跑 node.real（官方 installer 用 /proc/self/exe 解析），
+  // 不带这个变量就会 `error while loading shared libraries: libatomic.so.1`（退出码 127）。
+  const libDir = resolve(dirname(node), '..', 'lib');
+  try {
+    if (existsSync(join(libDir, 'libatomic.so.1'))) {
+      const inherited = env['LD_LIBRARY_PATH'];
+      env['LD_LIBRARY_PATH'] = inherited === undefined || inherited === '' ? libDir : `${libDir}${delimiter}${inherited}`;
+    }
+  } catch {
+    // 目录不可读就当没有：安装脚本自己会给出缺库的错误
+  }
   return env;
 }
 

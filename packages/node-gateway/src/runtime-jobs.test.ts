@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -170,5 +170,22 @@ describe('运行时任务', () => {
     const env = installEnv({ PATH: '/usr/bin', HOME: '/h', HUB_TOKEN: 'x', HUB_WORKER_CREDENTIAL: 'y', HTTPS_PROXY: 'p' }, '/opt/node/bin/node');
     assert.deepEqual(Object.keys(env).sort(), ['HOME', 'HTTPS_PROXY', 'PATH', 'SHELL']);
     assert.equal(env['PATH'], '/opt/node/bin:/usr/bin');
+  });
+
+  it('安装环境带上 libatomic 所在目录：node.real 才不会因缺库退出 127', () => {
+    const root = tempRoot();
+    const bin = join(root, 'bin');
+    const lib = join(root, 'lib');
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(lib, { recursive: true });
+    writeFileSync(join(lib, 'libatomic.so.1'), '');
+    const env = installEnv({ PATH: '/usr/bin' }, join(bin, 'node.real'));
+    assert.equal(env['LD_LIBRARY_PATH'], lib);
+
+    // 没有 libatomic 就不该凭空造一个变量
+    const bare = tempRoot();
+    mkdirSync(join(bare, 'bin'), { recursive: true });
+    const none = installEnv({ PATH: '/usr/bin' }, join(bare, 'bin', 'node'));
+    assert.equal(none['LD_LIBRARY_PATH'], undefined);
   });
 });
