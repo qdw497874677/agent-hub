@@ -640,7 +640,8 @@ export function createAcpRuntime(config: AcpAgentConfig, options: AcpRuntimeOpti
       let child: ChildProcessWithoutNullStreams;
       let launch: AcpLaunch = {};
       try {
-        launch = spec.assets && config.launch ? await config.launch(spec.assets) : {};
+        // 没有资产也要调一次 launch：Hermes 靠它无条件设 HERMES_HOME，不能因为没装技能就去读 ~/.hermes。
+        launch = config.launch ? await config.launch(spec.assets) : {};
         if (spec.provider && config.providerLaunch) launch = await config.providerLaunch(spec.sessionId, spec.provider, launch);
         child = spawn(config.command, [...(launch.args ?? config.args)], {
           cwd: spec.workspaceRoot,

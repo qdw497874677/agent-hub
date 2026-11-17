@@ -14,7 +14,8 @@ export const GROK_ARGS = ['--no-auto-update', 'agent', 'stdio'] as const;
  * `grok agent stdio` 不认命令行的 `--rules`（只有 `-p`/交互模式认），ACP 下要放在 session/new 的 `_meta.rules`。
  * 只作用于这个会话，不写 Grok 的全局目录。
  */
-export async function grokRules(assets: SessionAssets): Promise<string> {
+export async function grokRules(assets: SessionAssets | undefined): Promise<string> {
+  if (!assets) return '';
   const parts: string[] = [];
   for (const instruction of assets.instructions) {
     const text = await readFile(instruction.path, 'utf8').catch(() => '');
@@ -32,7 +33,7 @@ export async function grokRules(assets: SessionAssets): Promise<string> {
   return parts.join('\n\n');
 }
 
-export async function grokLaunch(assets: SessionAssets): Promise<AcpLaunch> {
+export async function grokLaunch(assets: SessionAssets | undefined): Promise<AcpLaunch> {
   const rules = await grokRules(assets);
   if (!rules) return {};
   return { sessionMeta: { rules } };

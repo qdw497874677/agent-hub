@@ -146,6 +146,22 @@ test('acp runtime: 命令不存在时返回 unavailable，不崩', async (t) => 
   assert.equal(started.ok, false);
 });
 
+test('acp runtime: 没有资产时也调 launch（Hermes 靠它无条件隔离 HERMES_HOME）', async (t) => {
+  let called = 0;
+  const runtime = createAcpRuntime({
+    ...config,
+    launch: (assets) => {
+      called += 1;
+      assert.equal(assets, undefined, '没有资产时给 undefined，而不是不调');
+      return { env: { HERMES_HOME: '/tmp/isolated' } };
+    }
+  });
+  const started = await runtime.start(await spec(t, { assets: undefined }));
+  assert.ok(started.ok);
+  assert.equal(called, 1);
+  await started.value.dispose();
+});
+
 test('acp runtime: launch 给的 sessionMeta 叠加到 session/new 的 _meta 上（Grok 的 rules 走这里）', async (t) => {
   const assets = { root: '/x', skills: [], instructions: [] };
   const runtime = createAcpRuntime({ ...config, launch: () => ({ sessionMeta: { rules: 'R' } }) });

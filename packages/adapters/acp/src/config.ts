@@ -42,7 +42,8 @@ export interface AcpAgentConfig {
    * 可选：hub 下发了技能 / 指令时怎么告诉这个 agent（docs/design/asset-hub.md）。
    * `args` 整体替换 `config.args`，`env` 叠加到子进程环境。都只作用于这一次启动，不改全局配置。
    */
-  readonly launch?: (assets: SessionAssets) => Promise<AcpLaunch> | AcpLaunch;
+  /** 会话没带资产时也会被调用：有些运行时（Hermes）必须无条件隔离 home。 */
+  readonly launch?: (assets: SessionAssets | undefined) => Promise<AcpLaunch> | AcpLaunch;
   /** 认得的 hub 模型提供商协议（ADR 0013）；不给 = 不支持。 */
   readonly providerProtocols?: readonly ProviderProtocol[];
   /**
@@ -93,7 +94,7 @@ export interface AcpLaunch {
  * 原值不是 JSON 对象就没法合并，只用 hub 这一段（OpenCode 本来也读不了它）。
  */
 export function opencodeLaunch(
-  assets: SessionAssets,
+  assets: SessionAssets | undefined,
   existing: string | undefined = process.env['OPENCODE_CONFIG_CONTENT'],
   /** hub 装的 opencode 组件（ADR 0021 P3）：包目录的真实路径。v2 的 `plugins` 认 file:// 本地路径，插件默认导出 {id, setup}。 */
   plugins: readonly string[] = []
@@ -101,8 +102,8 @@ export function opencodeLaunch(
   const content: Record<string, unknown> = {};
   if (plugins.length > 0) content['plugins'] = plugins.map((dir) => pathToFileURL(dir).href);
   // 每个技能目录单独给（OpenCode 在每个 path 下找 **/SKILL.md）：会话只看得见这次生效的那些。
-  if (assets.skills.length > 0) content['skills'] = { paths: assets.skills.map((skill) => skill.path.replace(/\/SKILL\.md$/, '')) };
-  if (assets.instructions.length > 0) content['instructions'] = assets.instructions.map((item) => item.path);
+  if (assets && assets.skills.length > 0) content['skills'] = { paths: assets.skills.map((skill) => skill.path.replace(/\/SKILL\.md$/, '')) };
+  if (assets && assets.instructions.length > 0) content['instructions'] = assets.instructions.map((item) => item.path);
   const base = parseObject(existing);
   return { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify(base ? mergeConfig(base, content) : content) } };
 }
