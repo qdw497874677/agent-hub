@@ -149,7 +149,7 @@ import { createPreviewProxy, type PreviewProxy } from './preview-proxy.ts';
 import { createPreviewPrefix } from './preview-prefix.ts';
 import { createScryptHasher, createTokenIssuer, mailFromEnv } from '@agent-hub/adapter-accounts';
 import type { AccountDeps, PreviewLink, PreviewLinkId } from '@agent-hub/domain';
-import { componentJobFinished, createAccessPolicy, isContainerSession, loadResourcePolicy } from '@agent-hub/domain';
+import { componentJobFinished, createAccessPolicy, isContainerSession, isFileAssetKind, loadResourcePolicy } from '@agent-hub/domain';
 import { seedTestAccount } from './account-setup.ts';
 
 const LOOPBACKS = new Set(['127.0.0.1', 'localhost', '::1']);
@@ -1123,6 +1123,10 @@ sessionEnvironment = createSessionEnvironment({
       }
       const landed: Record<string, string> = {};
       for (const assetId of assetIds) {
+        // MCP 资产没有文件清单（它由会话启动时的 mcp 项下发），只要求安装记录；
+        // 把它当文件资产检查 landed 会让所有带 MCP 的会话都「预热失败」。
+        const asset = await store.assets.get(assetId);
+        if (asset !== null && !isFileAssetKind(asset.kind)) continue;
         const digest = status.installed[assetId];
         if (digest === undefined) {
           log(`资产预热没落地（${workerId}）：${assetId}`);

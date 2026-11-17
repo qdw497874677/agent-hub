@@ -497,3 +497,37 @@ test('允许清单：候选资产没装在这台机器时，靠 ensure 预热后
   assert.deepEqual(failed.assetIds, []);
   assert.match(failed.blocked ?? '', /预热失败/);
 });
+
+test('MCP 资产：一份 mcp.json 多台服务器，按服务器下发；跨资产撞名只留先到的', async () => {
+  const { deps } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const bundle = await uploadAsset(deps, {
+    kind: 'mcp',
+    name: 'toolbox',
+    files: json({
+      servers: [
+        { name: 'files', command: 'node', args: ['fs.js'], env: { FS_TOKEN: '${secret:FS_TOKEN}' } },
+        { name: 'vendor', url: 'https://e/mcp', tools: { deny: ['delete'] } }
+      ]
+    })
+  });
+  const clash = await uploadAsset(deps, {
+    kind: 'mcp',
+    files: json({ name: 'vendor', url: 'https://other/mcp' })
+  });
+  assert.ok(bundle.ok && clash.ok);
+  assert.equal(bundle.value.name, 'toolbox');
+  await setAssetInstalled(deps, { workerId: 'w1', assetId: bundle.value.id, installed: true });
+  await setAssetInstalled(deps, { workerId: 'w1', assetId: clash.value.id, installed: true });
+  await setSecret(deps, 'FS_TOKEN', 'fs-value');
+  const started = await sessionMcpLaunch(deps, 'w1');
+  assert.deepEqual(started.launch.map((entry) => entry.name), ['files', 'vendor']);
+  assert.ok(started.skipped.some((entry) => entry.name === 'vendor'));
+  const target = await remoteMcpTarget(deps, 'w1', 'vendor');
+  assert.ok(target.ok);
+  assert.equal(target.value.url, 'https://e/mcp');
+  assert.deepEqual(target.value.tools, { deny: ['delete'] });
+  const secrets = await listSecrets(deps);
+  assert.deepEqual(secrets.missing, []);
+  assert.ok(secrets.secrets.find((row) => row.name === 'FS_TOKEN')?.usedBy.includes('toolbox'));
+});

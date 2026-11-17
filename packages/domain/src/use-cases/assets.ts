@@ -42,7 +42,7 @@ import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
 import { isHubSecretKey, secretLookupOrder } from '../asset-review.ts';
 import { checkGitSourceUrl } from '../asset-git-host.ts';
 import { REPO_TOKEN_PREFIX } from '../project.ts';
-import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpConfig, type McpConfig, type McpLaunch } from '../mcp.ts';
+import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpAsset, type McpConfig, type McpLaunch, type McpOAuth } from '../mcp.ts';
 
 /** 资产中心是独立的限界上下文：不塞进 Deps。 */
 export interface AssetDeps {
@@ -152,12 +152,20 @@ async function describePacked(
   const packed = await packAsset(kind, files);
   if (!packed.ok) return packed;
   if (kind === 'mcp') {
-    const config = parseMcpConfig(new TextDecoder().decode(files[0]?.data ?? new Uint8Array()));
-    if (!config.ok) return config;
-    const checked = checkAssetName(config.value.name);
+    const parsed = parseMcpAsset(new TextDecoder().decode(files[0]?.data ?? new Uint8Array()));
+    if (!parsed.ok) return parsed;
+    const servers = parsed.value.servers;
+    const [only] = servers;
+    const name = servers.length === 1 && only ? only.name : givenName;
+    if (name === null || name === '') return err(invalid('这份 mcp.json 里有多个服务器：给它起个名字（也是资产名）'));
+    const checked = checkAssetName(name);
     if (!checked.ok) return checked;
-    if (config.value.description.length > MAX_DESCRIPTION) return err(invalid('description 超过 1024 个字符'));
-    return ok({ name: config.value.name, description: config.value.description.trim(), packed: packed.value });
+    const description =
+      servers.length === 1 && only
+        ? only.description
+        : `${servers.length} 个 MCP 服务器：${servers.map((server) => server.name).join('、')}`;
+    if (description.length > MAX_DESCRIPTION) return err(invalid('description 超过 1024 个字符'));
+    return ok({ name, description: description.trim(), packed: packed.value });
   }
   const meta = deps.reader.describe(kind, files);
   if (!meta.ok) return meta;
@@ -634,14 +642,18 @@ export async function recordAssetAudit(
 
 /* ── MCP 资产与密钥 ── */
 
-/** 一台 Worker 上生效的 MCP 资产（钉住的版本解析好的配置）。坏配置跳过（导入时已校验过，这里只防御）。 */
+/**
+ * 一台 Worker 上生效的 MCP 服务器（钉住的版本解析好的配置）。
+ * 一份 mcp.json 可以有多个服务器：这里摊平成「资产 × 服务器」。
+ * 坏配置整份跳过（导入时已校验过，这里只防御）。
+ */
 export async function workerMcpConfigs(
   deps: Pick<AssetDeps, 'assets'>,
   workerId: string,
   only?: ReadonlySet<string>
-): Promise<{ asset: Asset; digest: string; config: McpConfig }[]> {
+): Promise<{ asset: Asset; digest: string; server: McpConfig }[]> {
   const mine = (await deps.assets.installations()).filter((row) => row.workerId === workerId && (!only || only.has(row.assetId)));
-  const out: { asset: Asset; digest: string; config: McpConfig }[] = [];
+  const out: { asset: Asset; digest: string; server: McpConfig }[] = [];
   for (const { assetId } of mine) {
     const asset = await deps.assets.get(assetId);
     if (!asset || asset.kind !== 'mcp') continue;
@@ -649,10 +661,11 @@ export async function workerMcpConfigs(
     const file = revision?.files.find((candidate) => candidate.path === MCP_CONFIG_FILE);
     const data = file ? await deps.assets.blob(file.sha256) : null;
     if (!data) continue;
-    const config = parseMcpConfig(new TextDecoder().decode(data));
-    if (config.ok) out.push({ asset, digest: asset.pinned, config: config.value });
+    const parsed = parseMcpAsset(new TextDecoder().decode(data));
+    if (!parsed.ok) continue;
+    for (const server of parsed.value.servers) out.push({ asset, digest: asset.pinned, server });
   }
-  return out.sort((a, b) => a.asset.name.localeCompare(b.asset.name));
+  return out.sort((a, b) => a.asset.name.localeCompare(b.asset.name) || a.server.name.localeCompare(b.server.name));
 }
 
 /**
@@ -684,14 +697,24 @@ export async function revealAssetSecrets(
 export async function sessionMcpLaunch(
   deps: Pick<AssetDeps, 'assets' | 'secrets'> & Partial<Pick<AssetDeps, 'hubAdminId'>>,
   workerId: string,
-  only?: ReadonlySet<string>
+  only?: ReadonlySet<string>,
+  /** 这条会话关掉的服务器名（`Session.mcpDisabled`）。 */
+  disabled?: ReadonlySet<string>
 ): Promise<{ launch: McpLaunch[]; skipped: { name: string; reason: string }[] }> {
   const configs = await workerMcpConfigs(deps, workerId, only);
   const launch: McpLaunch[] = [];
   const skipped: { name: string; reason: string }[] = [];
-  for (const { asset, config } of configs) {
+  const taken = new Set<string>();
+  for (const { asset, config } of configs.map((entry) => ({ asset: entry.asset, config: entry.server }))) {
+    // 同一台机器上服务器名要唯一：先按资产名排序，撞名的后来者跳过并说明。
+    if (disabled?.has(config.name)) continue;
+    if (taken.has(config.name)) {
+      skipped.push({ name: config.name, reason: `和「${asset.name}」之外的另一份 MCP 服务器重名，这次没给` });
+      continue;
+    }
+    taken.add(config.name);
     if (config.transport === 'http') {
-      launch.push({ transport: 'http', name: asset.name, url: '' });
+      launch.push({ transport: 'http', name: config.name, url: '' });
       continue;
     }
     const secrets = await revealAssetSecrets(deps, asset, mcpSecretRefs(config));
@@ -699,12 +722,12 @@ export async function sessionMcpLaunch(
     const args = config.args.map((arg) => expandSecrets(arg, secrets));
     const bad = !env.ok ? env : args.find((arg) => !arg.ok);
     if (bad && !bad.ok) {
-      skipped.push({ name: asset.name, reason: bad.error.message });
+      skipped.push({ name: config.name, reason: bad.error.message });
       continue;
     }
     launch.push({
       transport: 'stdio',
-      name: asset.name,
+      name: config.name,
       command: config.command,
       args: args.map((arg) => (arg.ok ? arg.value : '')),
       env: env.ok ? env.value : {}
@@ -719,18 +742,47 @@ export async function remoteMcpTarget(
   workerId: string,
   name: string,
   /** 会话的生效集合（见 resolveSessionAssets）；给了就只在里面找，否则同名时全局优先。 */
-  only?: ReadonlySet<string>
-): Promise<Result<{ assetId: string; digest: string; url: string; headers: Record<string, string> }, DomainError>> {
-  const candidates = (await workerMcpConfigs(deps, workerId, only)).filter((entry) => entry.asset.name === name);
+  only?: ReadonlySet<string>,
+  disabled?: ReadonlySet<string>
+): Promise<
+  Result<
+    {
+      assetId: string;
+      digest: string;
+      url: string;
+      headers: Record<string, string>;
+      tools?: McpConfig['tools'];
+      oauth?: McpOAuth;
+    },
+    DomainError
+  >
+> {
+  if (disabled?.has(name)) return err(notFound(`这条会话关掉了 MCP「${name}」`));
+  const candidates = (await workerMcpConfigs(deps, workerId, only)).filter((entry) => entry.server.name === name);
   const found = candidates.find((entry) => entry.asset.scope === 'global') ?? candidates[0];
   if (!found) return err(notFound(`这台机器没装 MCP「${name}」`));
-  if (found.config.transport !== 'http') return err(invalid(`「${name}」是本机 stdio 服务器，不经 hub 代连`));
-  const secrets = await revealAssetSecrets(deps, found.asset, mcpSecretRefs(found.config));
-  const url = expandSecrets(found.config.url, secrets);
+  if (found.server.transport !== 'http') return err(invalid(`「${name}」是本机 stdio 服务器，不经 hub 代连`));
+  const secrets = await revealAssetSecrets(deps, found.asset, mcpSecretRefs(found.server));
+  const url = expandSecrets(found.server.url, secrets);
   if (!url.ok) return url;
-  const headers = expandRecord(found.config.headers, secrets);
+  const headers = expandRecord(found.server.headers, secrets);
   if (!headers.ok) return headers;
-  return ok({ assetId: found.asset.id, digest: found.digest, url: url.value, headers: headers.value });
+  let oauth: McpOAuth | undefined;
+  if (found.server.oauth) {
+    const clientId = expandSecrets(found.server.oauth.clientId, secrets);
+    if (!clientId.ok) return clientId;
+    const clientSecret = found.server.oauth.clientSecret ? expandSecrets(found.server.oauth.clientSecret, secrets) : ok('');
+    if (!clientSecret.ok) return clientSecret;
+    oauth = { ...found.server.oauth, clientId: clientId.value, ...(clientSecret.value ? { clientSecret: clientSecret.value } : {}) };
+  }
+  return ok({
+    assetId: found.asset.id,
+    digest: found.digest,
+    url: url.value,
+    headers: headers.value,
+    ...(found.server.tools ? { tools: found.server.tools } : {}),
+    ...(oauth ? { oauth } : {})
+  });
 }
 
 export interface SecretView extends SecretInfo {
@@ -746,9 +798,10 @@ export async function listSecrets(deps: Pick<AssetDeps, 'assets' | 'secrets'>): 
     const revision = await deps.assets.revision(asset.id, asset.pinned);
     const file = revision?.files.find((candidate) => candidate.path === MCP_CONFIG_FILE);
     const data = file ? await deps.assets.blob(file.sha256) : null;
-    const config = data ? parseMcpConfig(new TextDecoder().decode(data)) : null;
-    if (!config?.ok) continue;
-    for (const ref of mcpSecretRefs(config.value)) usedBy.set(ref, [...(usedBy.get(ref) ?? []), asset.name]);
+    const parsed = data ? parseMcpAsset(new TextDecoder().decode(data)) : null;
+    if (!parsed?.ok) continue;
+    const refs = new Set(parsed.value.servers.flatMap((server) => mcpSecretRefs(server)));
+    for (const ref of refs) usedBy.set(ref, [...(usedBy.get(ref) ?? []), asset.name]);
   }
   // 团队 / 个人命名空间的密钥不在 hub 级清单里（各自在资产市场里管）
   const stored = (await deps.secrets.list()).filter((secret) => isHubSecretKey(secret.name));

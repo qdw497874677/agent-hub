@@ -10,6 +10,7 @@ import {
   hasHighFinding,
   isMcpStdio,
   mcpRiskSummary,
+  type McpRiskSummary,
   parseSecretKey,
   requiredApprovals,
   scanAssetFiles,
@@ -33,7 +34,7 @@ import { can, type AccessContext, type Resource, type Subject } from '../access.
 import type { AuditAction, Principal, User, UserId, TeamId } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
-import { MCP_CONFIG_FILE, checkSecretName, mcpSecretRefs, parseMcpConfig, type McpConfig } from '../mcp.ts';
+import { MCP_CONFIG_FILE, checkSecretName, mcpSecretRefs, parseMcpAsset, type McpAsset } from '../mcp.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { AssetReviewRepository, NotificationRepository } from '../ports/asset-review-repository.ts';
@@ -147,13 +148,48 @@ export async function reviewerContext(
   return { hubAdminId: admin?.id ?? null, teamOwnerId: team?.ownerId ?? null, reviewers, hubReviewers };
 }
 
-async function mcpConfigAt(deps: Pick<AssetDeps, 'assets'>, assetId: string, digest: string): Promise<McpConfig | null> {
+async function mcpAssetAt(deps: Pick<AssetDeps, 'assets'>, assetId: string, digest: string): Promise<McpAsset | null> {
   if (!digest) return null;
   const revision = await deps.assets.revision(assetId, digest);
   const file = revision?.files.find((candidate) => candidate.path === MCP_CONFIG_FILE);
   const data = file ? await deps.assets.blob(file.sha256) : null;
-  const parsed = data ? parseMcpConfig(new TextDecoder().decode(data)) : null;
+  const parsed = data ? parseMcpAsset(new TextDecoder().decode(data)) : null;
   return parsed?.ok ? parsed.value : null;
+}
+
+const RISK_LEVEL = { low: 0, medium: 1, high: 2 } as const;
+
+/**
+ * 一份 mcp.json 可能有多个服务器：风险摘要取最重的那台，细节合并。
+ * `transport` 仍取第一台（stdio 优先），混用时在 notes 里点明。
+ */
+export function mcpAssetRiskSummary(asset: McpAsset, previous: McpAsset | null = null): McpRiskSummary | null {
+  const [first] = asset.servers;
+  if (!first) return null;
+  const before = new Map((previous?.servers ?? []).map((server) => [server.name, server]));
+  const summaries = asset.servers.map((server) => ({ server, summary: mcpRiskSummary(server, before.get(server.name) ?? null) }));
+  const head = summaries.find((entry) => entry.server.name === first.name)?.summary ?? summaries[0]?.summary;
+  if (!head) return null;
+  const many = summaries.length > 1;
+  const prefix = (name: string, note: string): string => (many ? `${name}：${note}` : note);
+  const mixed = new Set(asset.servers.map((server) => server.transport)).size > 1;
+  const worst = summaries.reduce<'low' | 'medium' | 'high'>((level, entry) => (RISK_LEVEL[entry.summary.level] > RISK_LEVEL[level] ? entry.summary.level : level), 'low');
+  return {
+    transport: first.transport,
+    level: worst,
+    command: head.command,
+    args: head.args,
+    url: head.url,
+    host: head.host,
+    packages: summaries.flatMap((entry) => entry.summary.packages.map((pkg) => ({ ...pkg, name: many ? `${entry.server.name}:${pkg.name}` : pkg.name }))),
+    secrets: [...new Set(summaries.flatMap((entry) => entry.summary.secrets))].sort(),
+    notes: [
+      ...summaries.flatMap((entry) => entry.summary.notes.map((note) => prefix(entry.server.name, note))),
+      ...(mixed ? ['同时有 stdio 与 http 两类服务器'] : []),
+      ...(many ? [`共 ${summaries.length} 个服务器：${asset.servers.map((server) => server.name).join('、')}`] : [])
+    ],
+    changed: [...new Set(summaries.flatMap((entry) => entry.summary.changed.map((field) => (many ? `${entry.server.name}.${field}` : field))))]
+  };
 }
 
 /** 提交时的自动检查：脚本 / 提示注入扫描、MCP 风险摘要、引用的密钥在哪一层取得到。 */
@@ -178,13 +214,14 @@ export async function buildReviewReport(
   let mcp = null;
   let secrets: SecretRefStatus[] = [];
   if (asset.kind === 'mcp') {
-    const config = await mcpConfigAt(deps, asset.id, digest);
+    const config = await mcpAssetAt(deps, asset.id, digest);
     if (config) {
-      mcp = mcpRiskSummary(config, await mcpConfigAt(deps, asset.id, previous));
+      mcp = mcpAssetRiskSummary(config, await mcpAssetAt(deps, asset.id, previous));
       const admin = await deps.users.firstClusterAdmin();
       const stored = new Set((await deps.secrets.list()).map((secret) => secret.name));
       const scoped = { ...asset, scope: targetScope ?? asset.scope };
-      secrets = mcpSecretRefs(config).map((name) => {
+      const refs = [...new Set(config.servers.flatMap((server) => mcpSecretRefs(server)))];
+      secrets = refs.map((name) => {
         const hit = secretLookupOrder(scoped, name, admin?.id ?? null).find((step) => stored.has(step.key));
         return { name, from: hit?.layer ?? null };
       });
@@ -242,7 +279,8 @@ async function openSubmission(
   }
   const scope = targetScope ?? asset.scope;
   const report = await buildReviewReport(deps, asset, digest, asset.pinned, targetScope);
-  const config = asset.kind === 'mcp' ? await mcpConfigAt(deps, asset.id, digest) : null;
+  const mcpAsset = asset.kind === 'mcp' ? await mcpAssetAt(deps, asset.id, digest) : null;
+  const config = mcpAsset?.servers.find((server) => server.transport === 'stdio') ?? mcpAsset?.servers[0] ?? null;
   const settings = await settingsFor(deps, scope, asset.teamId);
   const submission: AssetSubmission = {
     id: newId(),
