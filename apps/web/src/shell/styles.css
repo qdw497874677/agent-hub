@@ -19,7 +19,8 @@
   --color-accent: #d9a05b;
   --color-accent-dim: #b6894f;
   --color-sage: #82a394;
-  --color-rust: #c08a6a;
+  /* 失败 / 危险：明确的红，和「在跑」的琥珀拉开色相（旧值 #c08a6a 在小圆点上和琥珀几乎分不出）。 */
+  --color-rust: #eb6f63;
   /* 行级交互面：悬停 / 选中只抬一档底色，不再用琥珀描边（琥珀只表示「在跑」）。 */
   --color-hover: #22292c;
   --color-selected: #293134;
@@ -108,7 +109,7 @@ body {
   --contrast-strong: #77868a;
   --contrast-accent-dim: #d6a96b;
   --contrast-sage: #a6c8b9;
-  --contrast-rust: #e2ab8c;
+  --contrast-rust: #ff9b92;
 }
 
 /* 系统要求更高对比度时，别只依赖用户去挑主题。 */

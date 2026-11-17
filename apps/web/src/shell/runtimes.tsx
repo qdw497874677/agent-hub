@@ -13,7 +13,7 @@ const nameOf = (id: string): string => AGENT_NAME[id] ?? id;
 
 /** 已经在等着确认的按钮亮起来；其余用 SMALL_BUTTON。 */
 const ARMED_BUTTON = 'shrink-0 rounded-sm border border-accent bg-accent px-2 py-1 text-meta text-canvas';
-const ARMED_DANGER = 'shrink-0 rounded-sm border border-rust bg-rust px-2 py-1 text-meta text-primary';
+const ARMED_DANGER = 'shrink-0 rounded-sm border border-rust bg-rust px-2 py-1 text-meta text-canvas';
 
 /**
  * 运行时（ADR 0010）：每个 agent 在这台机器上从哪来、装的是哪一份。
