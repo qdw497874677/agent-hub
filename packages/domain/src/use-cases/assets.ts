@@ -873,6 +873,27 @@ export async function setProjectAsset(
   return ok(undefined);
 }
 
+/** 预热失败时说清楚：哪几项没装上（资产 id）、原因（可空）。 */
+export interface AssetEnsureFailure {
+  readonly failed: readonly string[];
+  readonly reason: string | null;
+}
+
+const isEnsureFailure = (value: unknown): value is AssetEnsureFailure =>
+  typeof value === 'object' && value !== null && Array.isArray((value as { failed?: unknown }).failed);
+
+/**
+ * 预热失败的人话：点名资产、给下一步。names 为空时退回笼统说法。
+ * 例：「code-review」没能装到这台机器（同步失败：磁盘已满）。去「资产」看这台机器的同步状态，或这次先不带它。
+ */
+export function describeEnsureFailure(names: readonly string[], reason: string | null): string {
+  const quoted = names.slice(0, 3).map((name) => `「${name}」`).join('、') + (names.length > 3 ? ` 等 ${names.length} 项` : '');
+  const why = reason ? `（${reason}）` : '';
+  return names.length
+    ? `${quoted}没能装到这台机器${why}。去「资产」看这台机器的同步状态，或这次先不带它`
+    : `资产没能装到这台机器${why}。去「资产」看这台机器的同步状态，或换一台机器`;
+}
+
 /** 一次会话的资产请求：项目、发起人、组合与显式清单都在这里说清楚。 */
 export interface SessionAssetRequest {
   readonly sessionId: string;
@@ -887,9 +908,11 @@ export interface SessionAssetRequest {
   /**
    * 允许清单 + 自动预热（#226）：候选资产可能还没装在这台机器上。
    * 给了这个钩子，解析前把候选 id 交给它安装并同步，返回「这台机器上实际落地的 digest」；
-   * 返回 null 表示装不上 —— 调用方会据此把启动标成 blocked，而不是静默少几个资产。
+   * 返回 null 表示装不上 —— 调用方会据此把启动标成 blocked，而不是静默少几个资产；
+   * 能说清是哪几项、为什么时返回 {@link AssetEnsureFailure}，错误里会点名。
+   * 只会收到文件类资产（技能 / 指令）：MCP 不下发到机器（http 由 hub 代连，stdio 随会话注入），不需要预热。
    */
-  readonly ensure?: (workerId: string, assetIds: readonly string[]) => Promise<Readonly<Record<string, string>> | null>;
+  readonly ensure?: (workerId: string, assetIds: readonly string[]) => Promise<Readonly<Record<string, string>> | AssetEnsureFailure | null>;
   readonly log?: (message: string) => void;
 }
 
@@ -939,13 +962,18 @@ export async function resolveSessionAssets(
   const candidates = [...bySlot.values()];
   const installed = new Set((await deps.assets.installations()).filter((row) => row.workerId === request.workerId).map((row) => row.assetId));
   const landed = deps.board.get(request.workerId)?.installed ?? {};
-  // 允许清单 + 自动预热：候选先交给 ensure 装到这台机器上，再按返回的 digest 组成清单。
-  const preheated = request.ensure === undefined || candidates.length === 0
+  // 允许清单 + 自动预热：只有文件类候选要装到机器上（MCP 不下发，直接用钉住的版本），
+  // 先交给 ensure 装好，再按返回的 digest 组成清单。
+  const fileCandidates = candidates.filter((asset) => isFileAssetKind(asset.kind));
+  const ensured = request.ensure === undefined || fileCandidates.length === 0
     ? null
-    : await request.ensure(request.workerId, candidates.map((asset) => asset.id));
-  if (request.ensure !== undefined && candidates.length > 0 && preheated === null) {
-    return { assetIds: [], entries: [], setIds, blocked: '资产预热失败：这台机器上没有装上它们' };
+    : await request.ensure(request.workerId, fileCandidates.map((asset) => asset.id));
+  if (request.ensure !== undefined && fileCandidates.length > 0 && (ensured === null || isEnsureFailure(ensured))) {
+    const failedIds = ensured === null ? [] : ensured.failed;
+    const names = failedIds.map((id) => all.find((asset) => asset.id === id)?.name ?? id);
+    return { assetIds: [], entries: [], setIds, blocked: describeEnsureFailure(names, ensured === null ? null : ensured.reason) };
   }
+  const preheated = ensured === null || isEnsureFailure(ensured) ? null : ensured;
   let entries: SessionAssetEntry[] = [];
   for (const asset of candidates) {
     if (request.ensure === undefined && !installed.has(asset.id)) continue;

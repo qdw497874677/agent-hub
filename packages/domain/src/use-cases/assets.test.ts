@@ -495,7 +495,51 @@ test('允许清单：候选资产没装在这台机器时，靠 ensure 预热后
     ensure: async () => null
   });
   assert.deepEqual(failed.assetIds, []);
-  assert.match(failed.blocked ?? '', /预热失败/);
+  assert.match(failed.blocked ?? '', /没能装到这台机器/);
+
+  // 能说清是哪一项时：错误点名资产，并给下一步。
+  const named = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async (_workerId, assetIds) => ({ failed: assetIds, reason: '同步失败：磁盘已满' })
+  });
+  assert.deepEqual(named.assetIds, []);
+  assert.match(named.blocked ?? '', new RegExp(`「${made.value.name}」没能装到这台机器（同步失败：磁盘已满）`));
+  assert.match(named.blocked ?? '', /去「资产」/);
+});
+
+test('允许清单：MCP 资产不需要预热（不下发到机器），不会因为「没落地」拦住启动', async () => {
+  const { deps } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const tool = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'echo', command: 'node', args: ['echo.js'] }) });
+  const sk = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(tool.ok && sk.ok);
+  const asked: string[][] = [];
+  const plan = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async (_workerId, assetIds) => {
+      asked.push([...assetIds]);
+      // 机器只会回报文件类资产：MCP 永远不在这里
+      return Object.fromEntries(assetIds.map((assetId) => [assetId, sk.value.pinned]));
+    }
+  });
+  assert.deepEqual(asked, [[sk.value.id]], 'ensure 只收到文件类资产');
+  assert.equal(plan.blocked, undefined);
+  assert.deepEqual(new Set(plan.assetIds), new Set([tool.value.id, sk.value.id]));
+  assert.equal(plan.entries.find((entry) => entry.kind === 'mcp')?.digest, tool.value.pinned);
+
+  // 只有 MCP：根本不调 ensure
+  const { deps: onlyMcp } = inMemoryAssets();
+  const lone = await uploadAsset(onlyMcp, { kind: 'mcp', files: json({ name: 'remote', url: 'https://e/mcp' }) });
+  assert.ok(lone.ok);
+  let called = false;
+  const solo = await resolveSessionAssets(onlyMcp, { sessionId: 's2', workerId: 'w1', projectId: null, ensure: async () => ((called = true), null) });
+  assert.equal(called, false);
+  assert.equal(solo.blocked, undefined);
+  assert.deepEqual(solo.assetIds, [lone.value.id]);
 });
 
 test('MCP 资产：一份 mcp.json 多台服务器，按服务器下发；跨资产撞名只留先到的', async () => {

@@ -1121,25 +1121,31 @@ sessionEnvironment = createSessionEnvironment({
       const status = await syncWorkerAssets(assetDeps, workerId);
       if (status.state === 'failed') {
         log(`资产预热失败（${workerId}）：${status.error ?? '同步失败'}`);
-        return null;
+        return { failed: assetIds, reason: status.error ? `同步失败：${status.error}` : '同步失败' };
+      }
+      if (status.state !== 'synced') {
+        log(`资产预热没完成（${workerId}）：${status.state}`);
+        return { failed: assetIds, reason: '机器不在线，资产没同步过去' };
       }
       const landed: Record<string, string> = {};
+      const notLanded: string[] = [];
       for (const assetId of assetIds) {
         // MCP 资产没有文件清单（它由会话启动时的 mcp 项下发），只要求安装记录；
         // 把它当文件资产检查 landed 会让所有带 MCP 的会话都「预热失败」。
         const asset = await store.assets.get(assetId);
         if (asset !== null && !isFileAssetKind(asset.kind)) continue;
         const digest = status.installed[assetId];
-        if (digest === undefined) {
-          log(`资产预热没落地（${workerId}）：${assetId}`);
-          return null;
-        }
-        landed[assetId] = digest;
+        if (digest === undefined) notLanded.push(assetId);
+        else landed[assetId] = digest;
+      }
+      if (notLanded.length) {
+        log(`资产预热没落地（${workerId}）：${notLanded.join(', ')}`);
+        return { failed: notLanded, reason: '机器没有回报装好' };
       }
       return landed;
     } catch (failure) {
       log(`资产预热失败（${workerId}）：${(failure as Error).message}`);
-      return null;
+      return { failed: assetIds, reason: (failure as Error).message };
     }
   },
   log
