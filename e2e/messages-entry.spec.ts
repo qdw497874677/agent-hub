@@ -14,12 +14,13 @@ async function setup(page: Page, baseURL: string) {
   const created = await page.request.post('/api/projects', { data: { name: `e2e 消息入口 ${Date.now().toString(36)}`, rootPath: mkdtempSync(join(tmpdir(), 'e2e-msg-')) }, headers });
   expect(created.ok(), await created.text()).toBe(true);
   const project = ((await created.json()) as { id: string }).id;
-  const roles = await page.request.put(`/api/projects/${project}/messaging`, { headers, data: { roles: [{ name: 'writer', agentId: 'grok', model: '' }], limits: {} } });
+  const writer = `writer${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const roles = await page.request.put(`/api/projects/${project}/messaging`, { headers, data: { roles: [{ name: writer, agentId: 'grok', model: '' }], limits: {} } });
   expect(roles.ok(), await roles.text()).toBe(true);
   // 先把之前用例留下的未读全部标掉，红点从 0 起算
   const before = (await (await page.request.get('/api/groups/unread')).json()) as { groups: { groupId: string }[] };
   for (const g of before.groups) expect((await page.request.post(`/api/groups/${g.groupId}/read`, { headers, data: {} })).ok()).toBe(true);
-  return { project, headers };
+  return { project, headers, writer };
 }
 
 for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop', width: 1280, height: 800 }]) {
@@ -35,7 +36,7 @@ for (const vp of [{ name: 'mobile', width: 390, height: 844 }, { name: 'desktop'
     expect(box && box.x + box.width).toBeLessThanOrEqual(vp.width);
 
     // 建群会贴一条系统消息——对我来说就是一条别人发的未读
-    const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: `入口 ${vp.name}`, members: ['writer'] } });
+    const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: `入口 ${vp.name}`, members: [w.writer] } });
     expect(g.ok(), await g.text()).toBe(true);
     const group = ((await g.json()) as { id: string }).id;
     // 轮询兜底 10s；切回页面也会刷，这里直接等

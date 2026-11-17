@@ -24,14 +24,18 @@ async function world(page: Page, baseURL: string) {
 
 test('建群：限额越界 400；没主持人时贴系统行；停止后成员暂停', async ({ page, baseURL }) => {
   const w = await world(page, baseURL!);
+  // bot 名字在团队里唯一：并行/重复跑时固定名字会撞 UNIQUE(team_id,name)。
+  const tag = Date.now().toString(36);
+  const writer = `writer${tag}`;
+  const critic = `critic${tag}`;
   const roles = await page.request.put(`/api/projects/${w.project}/messaging`, {
     headers: w.headers,
-    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: '' }, { name: 'critic', agentId: w.agentId ?? 'grok', model: '' }], limits: {} }
+    data: { roles: [{ name: writer, agentId: w.agentId ?? 'grok', model: '' }, { name: critic, agentId: w.agentId ?? 'grok', model: '' }], limits: {} }
   });
   expect(roles.ok(), await roles.text()).toBe(true);
-  const tooMany = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: ['writer'], limits: { maxRounds: 6 } } });
+  const tooMany = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: [writer], limits: { maxRounds: 6 } } });
   expect(tooMany.status()).toBe(400);
-  const noModelHost = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: ['writer'], hostRole: 'writer' } });
+  const noModelHost = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: 'x', members: [writer], hostRole: writer } });
   // 主持人不再要求写明模型：留空用运行时默认模型
   expect(noModelHost.status()).toBe(201);
 
@@ -62,29 +66,31 @@ test('@ 成员直达：成员在群里回话，调用链能链到会话', async 
   test.setTimeout(240_000);
   const w = await world(page, baseURL!);
   test.skip(!w.agentId, '这台机器上没有可用的 agent');
-  await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: 'echo', agentId: w.agentId, model: piModel() }], limits: {} } });
-  const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: '回声', members: ['echo'] } });
+  const echo = `echo${Date.now().toString(36)}`;
+  await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [{ name: echo, agentId: w.agentId, model: piModel() }], limits: {} } });
+  const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: '回声', members: [echo] } });
   expect(g.ok(), await g.text()).toBe(true);
   const group = (await g.json()) as { id: string };
   await page.goto(`/#/messages/${w.project}/${group.id}`);
-  await page.getByTestId('group-input').fill('@echo 只回复一个词：pong');
+  await page.getByTestId('group-input').fill(`@${echo} 只回复一个词：pong`);
   await page.getByTestId('group-send').click();
   await expect(page.locator('[data-testid="group-post"][data-author="agent"]').first()).toBeVisible({ timeout: 200_000 });
   const chains = (await (await page.request.get(`/api/groups/${group.id}/chains`)).json()) as { chains: { deliveries: { role: string; sessionId: string | null }[] }[] };
-  expect(chains.chains[0]?.deliveries.some((d) => d.role === 'echo' && d.sessionId)).toBe(true);
+  expect(chains.chains[0]?.deliveries.some((d) => d.role === echo && d.sessionId)).toBe(true);
 });
 
 test('主持人分派：不 @ 任何人，主持人自己接话并落帖', async ({ page, baseURL }) => {
   test.setTimeout(240_000);
   const w = await world(page, baseURL!);
   test.skip(!w.agentId, '这台机器上没有可用的 agent');
+  let host = '';
   await page.request.put(`/api/projects/${w.project}/messaging`, {
     headers: w.headers,
-    data: { roles: [{ name: 'host', agentId: w.agentId, model: piModel() }], limits: {} }
+    data: { roles: [{ name: (host = `host${Date.now().toString(36)}`), agentId: w.agentId, model: piModel() }], limits: {} }
   });
   const g = await page.request.post(`/api/projects/${w.project}/groups`, {
     headers: w.headers,
-    data: { name: '主持组', members: ['host'], hostRole: 'host', speakingStrategy: 'host' }
+    data: { name: '主持组', members: [host], hostRole: host, speakingStrategy: 'host' }
   });
   expect(g.ok(), await g.text()).toBe(true);
   const group = (await g.json()) as { id: string };
@@ -100,33 +106,36 @@ test('主持人分派：不 @ 任何人，主持人自己接话并落帖', async
 
 test('只能 @ 群成员：@ 群外角色只给提示和「加入群组」，加进来后不重放，再 @ 才算', async ({ page, baseURL }) => {
   const w = await world(page, baseURL!);
+  const tag = Date.now().toString(36);
+  const writer = `writer${tag}`;
+  const perf = `perf${tag}`;
   await page.request.put(`/api/projects/${w.project}/messaging`, {
     headers: w.headers,
-    data: { roles: [{ name: 'writer', agentId: w.agentId ?? 'grok', model: piModel() }, { name: 'perf', agentId: w.agentId ?? 'grok', model: piModel() }], limits: {} }
+    data: { roles: [{ name: writer, agentId: w.agentId ?? 'grok', model: piModel() }, { name: perf, agentId: w.agentId ?? 'grok', model: piModel() }], limits: {} }
   });
-  const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: '外援', members: ['writer'] } });
+  const g = await page.request.post(`/api/projects/${w.project}/groups`, { headers: w.headers, data: { name: '外援', members: [writer] } });
   expect(g.ok(), await g.text()).toBe(true);
   const group = (await g.json()) as { id: string };
   await page.goto(`/#/messages/${w.project}/${group.id}`);
-  await page.getByTestId('group-input').fill('@perf 看看这段为什么慢 @ghost');
+  await page.getByTestId('group-input').fill(`@${perf} 看看这段为什么慢 @ghost`);
   await page.getByTestId('group-send').click();
-  await expect(page.getByTestId('system-line').filter({ hasText: '@perf 不在这个群里，只能 @ 群成员' })).toBeVisible();
+  await expect(page.getByTestId('system-line').filter({ hasText: `@${perf} 不在这个群里，只能 @ 群成员` })).toBeVisible();
   await expect(page.getByTestId('system-line').filter({ hasText: '@ghost 不在这个群里，也不是这个项目的 bot' })).toBeVisible();
   await expect(page.getByTestId('system-line').filter({ hasText: '没有设置主持人' })).toHaveCount(0);
   await expect(page.getByTestId('group-invite')).toHaveCount(0);
   await expect(page.getByTestId('group-outsider')).toHaveCount(1);
   const add = page.getByTestId('group-add-member');
   await expect(add).toHaveCount(1);
-  await expect(add).toHaveAttribute('data-role', 'perf');
+  await expect(add).toHaveAttribute('data-role', perf);
   await add.click();
-  await expect(page.getByTestId('system-line').filter({ hasText: '把 @perf 加进了群' })).toBeVisible();
+  await expect(page.getByTestId('system-line').filter({ hasText: `把 @${perf} 加进了群` })).toBeVisible();
   await expect(page.getByTestId('group-add-member')).toHaveCount(0);
   const view = (await (await page.request.get(`/api/groups/${group.id}`)).json()) as { group: { members: string[] }; canManage: boolean };
-  expect(view.group.members).toEqual(['writer', 'perf']);
+  expect(view.group.members).toEqual([writer, perf]);
   expect(view.canManage).toBe(true);
   const chains = (await (await page.request.get(`/api/groups/${group.id}/chains`)).json()) as { chains: { deliveries: { role: string }[] }[] };
-  expect(chains.chains.flatMap((c) => c.deliveries).some((d) => d.role === 'perf'), '加完不自动重放').toBe(false);
+  expect(chains.chains.flatMap((c) => c.deliveries).some((d) => d.role === perf), '加完不自动重放').toBe(false);
   expect((await page.request.post(`/api/groups/${group.id}/invite`, { headers: w.headers, data: { postId: 'x', role: 'perf' } })).status()).toBe(404);
-  expect((await page.request.post(`/api/groups/${group.id}/members`, { headers: w.headers, data: { role: 'perf' } })).status()).toBe(400);
+  expect((await page.request.post(`/api/groups/${group.id}/members`, { headers: w.headers, data: { role: perf } })).status()).toBe(400);
   await page.request.post(`/api/groups/${group.id}/stop`, { headers: w.headers, data: {} });
 });

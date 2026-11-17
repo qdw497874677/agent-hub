@@ -24,8 +24,9 @@ test('可观测：列表和树（测试数据，1280×800）', async ({ page, ba
   const project = await page.request.post('/api/projects', { headers, data: { name: `e2e 可观测 ${tag}` } });
   expect(project.ok(), await project.text()).toBe(true);
   const projectId = ((await project.json()) as { id: string }).id;
-  expect((await page.request.post(`/api/projects/${projectId}/agents`, { headers, data: { name: 'router', displayName: '总管', agentId: 'pi', description: '拆任务' } })).ok()).toBe(true);
-  const binding = await page.request.post(`/api/projects/${projectId}/agents/router/bindings`, {
+  const botName = `router${tag}`;
+  expect((await page.request.post(`/api/projects/${projectId}/agents`, { headers, data: { name: botName, displayName: '总管', agentId: 'pi', description: '拆任务' } })).ok()).toBe(true);
+  const binding = await page.request.post(`/api/projects/${projectId}/agents/${botName}/bindings`, {
     headers,
     data: { connector: 'github', kind: 'issue', name: `e2e acme/demo ${tag}`, target: 'main', projectId: null, params: { repo: 'acme/demo', label: 'agent', everyMin: 15 }, timeZone: 'Asia/Shanghai' }
   });
@@ -123,8 +124,9 @@ test('可观测树含送达节点（假 ACP 会话 + 测试送达行，1280×800
     const derived = await page.request.post('/api/sessions/derive', { data: { taskId: task.id, agentId: 'fakeacp', model: '' }, headers });
     expect(derived.ok(), await derived.text()).toBe(true);
     const sessionId = ((await derived.json()) as { id: string }).id;
-    expect((await page.request.post(`/api/projects/${project.id}/agents`, { headers, data: { name: 'router', displayName: '总管', agentId: 'fakeacp', description: '测试' } })).ok()).toBe(true);
-    const binding = await page.request.post(`/api/projects/${project.id}/agents/router/bindings`, {
+    const name2 = `router${tag}2`;
+    expect((await page.request.post(`/api/projects/${project.id}/agents`, { headers, data: { name: name2, displayName: '总管', agentId: 'fakeacp', description: '测试' } })).ok()).toBe(true);
+    const binding = await page.request.post(`/api/projects/${project.id}/agents/${name2}/bindings`, {
       headers,
       data: { connector: 'github', kind: 'issue', name: `测试数据 假ACP ${tag}`, target: 'main', projectId: null, params: { repo: 'acme/demo', label: 'agent', everyMin: 15 }, timeZone: 'Asia/Shanghai' }
     });

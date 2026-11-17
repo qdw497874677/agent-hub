@@ -20,16 +20,18 @@ for (const width of [390, 1280]) {
       return ((await r.json()) as { id: string }).id;
     };
     const tag = Date.now().toString(36);
+    // Bot 名字在团队里唯一：同名会在第二个项目/并行用例里撞 UNIQUE(team_id,name)。
+    const botName = `router${tag}${width}`;
     const project = await mk(`e2e conn ${tag}`);
     await mk(`e2e conn other ${tag}`);
-    expect((await page.request.post(`/api/projects/${project}/agents`, { headers, data: { name: 'router', displayName: '总管', agentId: 'pi', description: '拆任务' } })).ok()).toBe(true);
+    expect((await page.request.post(`/api/projects/${project}/agents`, { headers, data: { name: botName, displayName: '总管', agentId: 'pi', description: '拆任务' } })).ok()).toBe(true);
 
     // 太短的间隔接口直接拒
-    const bad = await page.request.post(`/api/projects/${project}/agents/router/bindings`, { headers, data: { connector: 'timer', kind: 'tick', name: 'x', params: { everyMin: 1, prompt: 'hi' } } });
+    const bad = await page.request.post(`/api/projects/${project}/agents/${botName}/bindings`, { headers, data: { connector: 'timer', kind: 'tick', name: 'x', params: { everyMin: 1, prompt: 'hi' } } });
     expect(bad.status()).toBe(400);
 
     await page.goto(`/#/bots/${project}`);
-    const bot = page.locator('[data-testid="bot-item"][data-name="router"]');
+    const bot = page.locator(`[data-testid="bot-item"][data-name="${botName}"]`);
     const conn = bot.getByTestId('bot-connectors');
     await expect(conn).toBeVisible();
     // 默认项目锁定；关联另一个
@@ -61,7 +63,7 @@ for (const width of [390, 1280]) {
     await expect(conn.getByTestId('trigger-item')).toHaveCount(0);
 
     // GitHub 绑定（R4）：仓库格式不对不能存；存好显示 仓库 · 标签 · 间隔；接口拒绝 5 分钟以下
-    const badGh = await page.request.post(`/api/projects/${project}/agents/router/bindings`, { headers, data: { connector: 'github', kind: 'issue', name: 'x', params: { repo: 'acme/app', everyMin: 2 } } });
+    const badGh = await page.request.post(`/api/projects/${project}/agents/${botName}/bindings`, { headers, data: { connector: 'github', kind: 'issue', name: 'x', params: { repo: 'acme/app', everyMin: 2 } } });
     expect(badGh.status()).toBe(400);
     await conn.getByTestId('trigger-new-github').click();
     await conn.getByTestId('github-repo').fill('not a repo');
