@@ -1,5 +1,6 @@
 import { AppShell, PageBody, PageHeader } from '../page-shell.tsx';
 import { SaveStatus } from '../../atoms/save-status.tsx';
+import { BuiltinBadge } from '../builtin-badge.tsx';
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { marketApi, teamApi, type AssetKindDto, type AssetScopeDto, type MarketAssetDto } from '../api.ts';
@@ -89,6 +90,7 @@ function AssetCard({ item, showStatus }: { item: MarketAssetDto; showStatus: boo
         <span className="text-meta text-tertiary">{KIND_TEXT[item.asset.kind as AssetKindDto]}</span>
         <span className="min-w-0 break-all font-mono text-body text-primary">{item.asset.name}</span>
         <ScopeBadge scope={item.asset.scope} />
+        {item.asset.source.type === 'builtin' ? <BuiltinBadge version={item.asset.source.version} /> : null}
         {!item.published ? <span className="text-meta text-rust">未上架</span> : null}
       </div>
       <p className="mt-0.5 text-meta text-secondary">{item.asset.description || '（无描述）'}</p>

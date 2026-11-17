@@ -1288,3 +1288,15 @@ export const observeApi = {
   },
   get: (source: string, id: string) => call<{ enabled: boolean; trace: ObserveTraceDto | null; tree: ObserveTreeDto | null }>(`/api/observe/${encodeURIComponent(source)}/${encodeURIComponent(id)}`)
 };
+
+/* ── 内置资产（Hub 随代码带的清单，一键启用到项目） ── */
+export type BuiltinAssetDto = import('@agent-hub/contract').BuiltinAssetView;
+export type BrowserStatusDto = import('@agent-hub/contract').BrowserStatusDto;
+export const builtinApi = {
+  list: (projectId: string) => call<BuiltinAssetDto[]>(`/api/assets/builtin?projectId=${encodeURIComponent(projectId)}`),
+  enable: (builtinId: string, projectId: string, secrets?: Record<string, string>) =>
+    post<{ assetId: string; created: boolean }>(`/api/assets/builtin/${encodeURIComponent(builtinId)}/enable`, { projectId, ...(secrets ? { secrets } : {}) }),
+  update: (assetId: string) => post<{ assetId: string; version: string }>(`/api/assets/${encodeURIComponent(assetId)}/builtin-update`, {}),
+  browser: () => call<{ canInstall: boolean; workers: BrowserStatusDto[] }>('/api/builtin/browser'),
+  installBrowser: (workerId: string) => post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/builtin-browser`, {})
+};
