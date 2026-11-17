@@ -10,6 +10,9 @@ import { StatusPill } from '../../atoms/status.tsx';
 import { NoTasksHint } from './empty-tasks.tsx';
 import { resolveWorker, useWorkers, WorkerChip } from '../../shell/workers.tsx';
 import { workspaceName } from '../../atoms/workspace-format.ts';
+import { Icon } from '../../atoms/icons.tsx';
+import { filterActions, type PaletteAction } from './palette.ts';
+export type { PaletteAction } from './palette.ts';
 
 
 function statusOf(session: SessionDto, live: LiveMap): SessionDto['status'] {
@@ -145,17 +148,20 @@ export function ListView({
 }
 
 /**
- * Cmd+K。搜的是任务标题与会话正文，命中会话就直接跳到画布上那个节点——
- * 「搜到了但找不到」比搜不到更让人烦。
+ * ⌘K 命令面板：上面一个输入框，下面是「搜到的任务 / 会话」+「操作」两组。
+ * 空着时只列操作（跳转、切视图、新建、主题）；打字后先给搜索命中，再给名字对得上的操作。
+ * ↑↓ 在两组之间连续移动，回车执行，Esc 关。
  */
 export function SearchPalette({
   projectId,
   onJump,
-  onClose
+  onClose,
+  actions = []
 }: {
   projectId: string;
   onJump: (hit: SearchHitDto) => void;
   onClose: () => void;
+  actions?: readonly PaletteAction[];
 }) {
   const [query, setQuery] = useState('');
   const [cursor, setCursor] = useState(0);
@@ -172,59 +178,115 @@ export function SearchPalette({
     enabled: trimmed.length > 0
   });
 
-  const hits = results.data?.hits ?? [];
+  const hits = trimmed === '' ? [] : (results.data?.hits ?? []);
+  const matched = filterActions(actions, trimmed);
+  const total = hits.length + matched.length;
+  const pick = (index: number) => {
+    if (index < hits.length) {
+      const hit = hits[index];
+      if (hit) onJump(hit);
+      return;
+    }
+    const action = matched[index - hits.length];
+    if (action) {
+      onClose();
+      action.run();
+    }
+  };
+  // 操作按组排，组头只在换组时出现
+  let lastGroup = '';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-canvas/80 px-3 pt-16 md:pt-24" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/55 px-3 pt-16 md:pt-24" onClick={onClose}>
       <div
-        className="w-full max-w-[560px] rounded-lg border border-strong bg-overlay shadow-overlay"
+        role="dialog"
+        aria-label="命令面板"
+        className="flex max-h-[70vh] w-full max-w-[600px] flex-col overflow-hidden rounded-overlay border border-strong bg-overlay shadow-overlay"
         onClick={(event) => event.stopPropagation()}
       >
-        <input
-          ref={input}
-          className="min-h-11 w-full border-b border-hair bg-transparent px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary"
-          placeholder="搜索任务或会话"
-          value={query}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            setCursor(0);
-          }}
-          onKeyDown={(event) => {
-            if (event.key === 'Escape') onClose();
-            if (event.key === 'ArrowDown') setCursor((current) => Math.min(current + 1, hits.length - 1));
-            if (event.key === 'ArrowUp') setCursor((current) => Math.max(current - 1, 0));
-            if (event.key === 'Enter') {
-              const hit = hits[cursor];
-              if (hit) onJump(hit);
-            }
-          }}
-        />
-        <div className="max-h-[320px] overflow-y-auto">
-          {trimmed === '' ? (
-            <p className="px-3 py-4 text-meta text-tertiary">输入关键词开始搜。回车打开，Esc 关掉。</p>
-          ) : hits.length === 0 ? (
-            <p className="px-3 py-4 text-meta text-tertiary">{results.isFetching ? '搜索中…' : '没有命中。'}</p>
-          ) : (
-            hits.map((hit, index) => (
-              <button
-                key={`${hit.kind}-${hit.sessionId ?? hit.taskId}-${index}`}
-                className={`block w-full px-3 py-2 text-left ${index === cursor ? 'bg-card' : ''}`}
-                onMouseEnter={() => setCursor(index)}
-                onClick={() => onJump(hit)}
-              >
-                <span className="flex items-baseline gap-2">
-                  <span className={`font-mono text-meta ${hit.kind === 'task' ? 'text-secondary' : 'text-sage'}`}>
-                    {hit.kind === 'task' ? '任务' : '会话'}
-                  </span>
-                  <span className="max-w-[380px] truncate text-body text-primary">{hit.title}</span>
-                </span>
-                {hit.snippet === '' ? null : (
-                  <span className="mt-0.5 block max-w-[480px] truncate text-meta text-tertiary">{hit.snippet}</span>
-                )}
-              </button>
-            ))
-          )}
+        <div className="flex items-center gap-2 border-b border-hair px-3">
+          <Icon name="search" size={15} className="text-tertiary" />
+          <input
+            ref={input}
+            className="min-h-12 min-w-0 flex-1 bg-transparent py-2.5 text-body text-primary outline-none placeholder:text-tertiary"
+            placeholder="搜索任务或会话"
+            aria-label="搜索任务或会话"
+            value={query}
+            onChange={(event) => {
+              setQuery(event.target.value);
+              setCursor(0);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') onClose();
+              if (event.key === 'ArrowDown') {
+                event.preventDefault();
+                setCursor((current) => Math.min(current + 1, total - 1));
+              }
+              if (event.key === 'ArrowUp') {
+                event.preventDefault();
+                setCursor((current) => Math.max(current - 1, 0));
+              }
+              if (event.key === 'Enter') pick(cursor);
+            }}
+          />
+          <kbd className="hidden shrink-0 rounded-[4px] border border-hair px-1.5 font-sans text-[11px] text-tertiary sm:inline">Esc</kbd>
         </div>
+        <div className="min-h-0 flex-1 overflow-y-auto py-1">
+          {trimmed !== '' ? (
+            hits.length === 0 ? (
+              <p className="px-3 py-3 text-meta text-tertiary">{results.isFetching ? '搜索中…' : '没有命中的任务或会话。'}</p>
+            ) : (
+              <>
+                <p className="px-3 pb-1 pt-1.5 text-[11px] text-tertiary">任务与会话</p>
+                {hits.map((hit, index) => (
+                  <button
+                    key={`${hit.kind}-${hit.sessionId ?? hit.taskId}-${index}`}
+                    className={`mx-1 block w-[calc(100%-0.5rem)] rounded-control px-2.5 py-2 text-left ${index === cursor ? 'bg-selected' : ''}`}
+                    onMouseEnter={() => setCursor(index)}
+                    onClick={() => onJump(hit)}
+                  >
+                    <span className="flex items-baseline gap-2">
+                      <span className="shrink-0 text-meta text-tertiary">{hit.kind === 'task' ? '任务' : '会话'}</span>
+                      <span className="min-w-0 truncate text-body text-primary">{hit.title}</span>
+                    </span>
+                    {hit.snippet === '' ? null : (
+                      <span className="mt-0.5 block truncate text-meta text-tertiary">{hit.snippet}</span>
+                    )}
+                  </button>
+                ))}
+              </>
+            )
+          ) : null}
+          {matched.map((action, offset) => {
+            const index = hits.length + offset;
+            const header = action.group !== lastGroup ? action.group : null;
+            lastGroup = action.group;
+            return (
+              <div key={action.id}>
+                {header ? <p className="px-3 pb-1 pt-2 text-[11px] text-tertiary">{header}</p> : null}
+                <button
+                  data-testid="palette-action"
+                  className={`mx-1 flex w-[calc(100%-0.5rem)] items-center gap-2.5 rounded-control px-2.5 py-1.5 text-left text-body ${
+                    index === cursor ? 'bg-selected text-primary' : 'text-secondary'
+                  }`}
+                  onMouseEnter={() => setCursor(index)}
+                  onClick={() => pick(index)}
+                >
+                  <Icon name={action.icon ?? 'command'} size={14} className="text-tertiary" />
+                  <span className="min-w-0 flex-1 truncate">{action.label}</span>
+                  {action.keys ? (
+                    <kbd className="shrink-0 rounded-[4px] border border-hair px-1.5 font-sans text-[11px] text-tertiary">{action.keys}</kbd>
+                  ) : null}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <p className="hidden items-center gap-3 border-t border-hair px-3 py-1.5 text-[11px] text-tertiary sm:flex">
+          <span>↑↓ 选择</span>
+          <span>↵ 打开</span>
+          <span>⌘K 开关</span>
+        </p>
       </div>
     </div>
   );

@@ -11,6 +11,9 @@ import { WorkersBadge } from '../../shell/workers.tsx';
 import { coarsePointer } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 
+/** 桌面侧栏的收起开关事件：⌘K 面板派发，侧栏监听。 */
+export const TOGGLE_SIDEBAR_EVENT = 'agent-hub:toggle-sidebar';
+
 /** 桌面侧栏收起成图标栏：记在本机，刷新后保持。 */
 const COLLAPSED_KEY = 'agent-hub.sidebar.collapsed';
 const COLLAPSED_TASKS_KEY = 'agent-hub.sidebar.collapsed-tasks';
@@ -119,8 +122,14 @@ export function ProjectSidebar({
       event.preventDefault();
       toggleCollapsed();
     };
+    // ⌘K 面板里的「收起 / 展开侧栏」走同一个开关
+    const onToggle = () => toggleCollapsed();
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener(TOGGLE_SIDEBAR_EVENT, onToggle);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener(TOGGLE_SIDEBAR_EVENT, onToggle);
+    };
   }, [drawer, toggleCollapsed]);
 
   const toggleTask = (taskId: string) =>
