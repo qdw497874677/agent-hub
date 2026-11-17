@@ -7,6 +7,7 @@ import {
   assetCatalog,
   checkGitForReview,
   commentOnSubmission,
+  submissionDetail,
   decideInstallRequest,
   migrateAssetOwnership,
   myAssets,
@@ -259,4 +260,55 @@ test('迁移：老资产记到 hub 管理员名下，全局 / 项目级、已发
   assert.deepEqual(resolveProjectAssets(after, 'p1', {}).effective.map((a) => a.id), before);
   assert.equal((await migrateAssetOwnership(w.deps)).migrated, 0);
   assert.ok(g.id && pj.id);
+});
+
+test('项目级资产：跨团队的项目不能挂（#227）', async () => {
+  const w = await world();
+  w.assets.projectList.set('prj-t2', { id: 'prj-t2', name: '别人的项目', teamId: 't2', createdBy: 'u-S', members: [], deletedAt: null });
+  const denied = await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t2' as never, files: skill('leak') });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.ok ? '' : denied.error.code, 'not_found', '看不见的项目一律 not_found，不泄露存在');
+});
+
+test('项目级资产：同团队、有 project.update 的成员可以挂；回收站项目不行（#227）', async () => {
+  const w = await world();
+  w.assets.projectList.set('prj-t1', { id: 'prj-t1', name: '本团队项目', teamId: 't1', createdBy: 'u-O', members: ['u-M1'], deletedAt: null });
+  const made = await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1' as never, files: skill('mine') });
+  assert.equal(made.ok, true, made.ok ? '' : made.error.message);
+
+  w.assets.projectList.set('prj-gone', { id: 'prj-gone', name: '删了', teamId: 't1', createdBy: 'u-O', members: [], deletedAt: 2 });
+  const trash = await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-gone' as never, files: skill('gone') });
+  assert.equal(trash.ok, false);
+  assert.equal(trash.ok ? '' : trash.error.code, 'not_found');
+});
+
+test('项目级资产鉴权：owner 与共享成员可以，同团队非成员 403，projects:write 令牌可以（#227）', async () => {
+  const w = await world();
+  w.assets.projectList.set('prj-t1', { id: 'prj-t1', name: '本团队项目', teamId: 't1', createdBy: 'u-O', members: ['u-M1'], deletedAt: null });
+  const byOwner = await submitNewAsset(w.deps, w.p('O'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('o') });
+  assert.equal(byOwner.ok, true, byOwner.ok ? '' : byOwner.error.message);
+  const byMember = await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('m') });
+  assert.equal(byMember.ok, true, byMember.ok ? '' : byMember.error.message);
+  const byOutsider = await submitNewAsset(w.deps, w.p('M2'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('x') });
+  assert.equal(byOutsider.ok, false);
+  // 看不见项目 → 404（不泄露存在）；能看见但没 project.update 才是 403。
+  assert.equal(byOutsider.ok ? '' : byOutsider.error.code, 'not_found');
+  const scoped = w.token('M1', ['asset.submit', 'project.read', 'project.update']);
+  const byToken = await submitNewAsset(w.deps, scoped, { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('t') });
+  assert.equal(byToken.ok, true, byToken.ok ? '' : byToken.error.message);
+});
+
+test('项目进回收站：不能发新资产，但审核人仍能驳回、能看详情、能评论（#227）', async () => {
+  const w = await world();
+  w.assets.projectList.set('prj-t1', { id: 'prj-t1', name: '本团队项目', teamId: 't1', createdBy: 'u-O', members: ['u-M1'], deletedAt: null });
+  const made = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('p') }));
+  w.assets.projectList.set('prj-t1', { id: 'prj-t1', name: '本团队项目', teamId: 't1', createdBy: 'u-O', members: ['u-M1'], deletedAt: 2 });
+
+  assert.equal((await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('after') })).ok, false);
+  const detail = await submissionDetail(w.deps, w.p('O'), made.submission.id);
+  assert.equal(detail.ok, true, detail.ok ? '' : detail.error.message);
+  const comment = await commentOnSubmission(w.deps, w.p('O'), made.submission.id, { body: '项目归档了，先驳回' });
+  assert.equal(comment.ok, true, comment.ok ? '' : comment.error.message);
+  const rejected = await rejectSubmission(w.deps, w.p('O'), made.submission.id, { reason: '项目归档了' });
+  assert.equal(rejected.ok, true, rejected.ok ? '' : rejected.error.message);
 });

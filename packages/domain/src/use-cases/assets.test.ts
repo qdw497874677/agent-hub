@@ -269,7 +269,7 @@ test('MCP 资产：不进文件清单；会话启动时 stdio 展开密钥，htt
 
 test('项目级作用域：同名项目资产盖过全局，项目开关、别的项目看不见，会话清单 = 生效 ∩ 已落地', async () => {
   const { deps, projectList } = inMemoryAssets();
-  projectList.set('p2', { id: 'p2', name: 'other' });
+  projectList.set('p2', { id: 'p2', name: 'other', teamId: null, createdBy: null, members: [], deletedAt: null });
   const global = await uploadAsset(deps, { kind: 'skill', files: skill('global') });
   const local = await uploadAsset(deps, { kind: 'skill', files: skill('local'), projectId: 'p1' });
   const rules = await uploadAsset(deps, { kind: 'instruction', name: 'house-rules', files: [{ path: 'r.md', data: enc('x') }] });
@@ -402,4 +402,26 @@ test('会话资产解析：组合按槽位覆盖、无项目丢项目级、显�
   );
   assert.deepEqual(missing.setIds, []);
   assert.equal(logged.length, 1);
+});
+
+test('项目级资产：不能挂到别的团队的项目上（#227）', async () => {
+  const { deps } = inMemoryAssets();
+  const other = {
+    ...deps,
+    projects: { byId: async () => ({ id: 'prj-x', name: 'X', teamId: 'team-b', createdBy: null, members: [], deletedAt: null }) }
+  };
+  const made = await uploadAsset(other, { kind: 'skill', files: skill(), projectId: 'prj-x', scope: 'project', ownerId: 'u1', teamId: 'team-a' });
+  assert.equal(made.ok, false);
+  assert.equal(made.ok ? '' : made.error.code, 'forbidden');
+});
+
+test('项目级资产：回收站里的项目不收', async () => {
+  const { deps } = inMemoryAssets();
+  const trash = {
+    ...deps,
+    projects: { byId: async () => ({ id: 'prj-x', name: 'X', teamId: null, createdBy: null, members: [], deletedAt: 1 }) }
+  };
+  const made = await uploadAsset(trash, { kind: 'skill', files: skill(), projectId: 'prj-x', scope: 'project', ownerId: 'u1', teamId: null });
+  assert.equal(made.ok, false);
+  assert.equal(made.ok ? '' : made.error.code, 'not_found');
 });

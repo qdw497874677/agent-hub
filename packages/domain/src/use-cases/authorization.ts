@@ -55,8 +55,18 @@ export function createAccessPolicy(deps: AccessPolicyDeps): AccessPolicy {
   };
 }
 
+/** 项目当资源时真正用到的字段；审核 / 资产这些只拿到投影的地方不用整条 Project。 */
+export interface ProjectLike {
+  readonly id: string;
+  readonly teamId: string | null;
+  /** 老数据可能没有（投影里也允许缺省）。 */
+  readonly createdBy?: string | null;
+  readonly members?: readonly string[];
+  readonly deletedAt?: number | null;
+}
+
 /** 项目当资源：老数据 team_id 为 NULL 时算 hub 管理员团队的。项目下的任务、会话、工作空间都用它。 */
-export function projectAsResource(project: Project, ctx: AccessContext): Resource {
+export function projectAsResource(project: ProjectLike, ctx: AccessContext): Resource {
   return { kind: 'project', id: project.id, projectId: project.id, teamId: project.teamId ?? ctx.hubTeamId, createdBy: project.createdBy, sharedWith: project.members };
 }
 
@@ -101,10 +111,23 @@ export async function authorizeProject(
   project: Project | null,
   permission: Permission
 ): Promise<Result<Project, DomainError>> {
+  const allowed = await authorizeProjectResource(policy, actor, project, permission);
+  if (!allowed.ok) return allowed;
+  return ok(project as Project);
+}
+
+/** `authorizeProject` 的投影版本：只有 ProjectLike 字段的调用方（资产审核）也走同一套判定。 */
+export async function authorizeProjectResource<T extends ProjectLike>(
+  policy: AccessPolicy | undefined,
+  actor: Subject | null,
+  project: T | null,
+  permission: Permission
+): Promise<Result<T, DomainError>> {
   if (!project) return err(notFound('项目不存在'));
   const trashOnly = permission === 'project.restore' || permission === 'project.purge';
-  if (trashOnly && project.deletedAt === null) return err(notFound('回收站里没有这个项目'));
-  if (!trashOnly && project.deletedAt !== null) return err(notFound('项目不存在'));
+  const deletedAt = project.deletedAt ?? null;
+  if (trashOnly && deletedAt === null) return err(notFound('回收站里没有这个项目'));
+  if (!trashOnly && deletedAt !== null) return err(notFound('项目不存在'));
   if (!policy) return ok(project);
   const ctx = await policy.context();
   const resource = projectAsResource(project, ctx);

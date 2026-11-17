@@ -27,7 +27,7 @@ import {
 } from '../asset.ts';
 import { assetVisibleIn } from '../asset.ts';
 import { assetSourcePolicy, DEFAULT_ASSET_SOURCE_POLICY } from '../asset.ts';
-import { conflict, invalid, notFound, type DomainError } from '../errors.ts';
+import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { WorkerStatus } from '../worker.ts';
@@ -51,8 +51,20 @@ export interface AssetDeps {
   readonly workers: { list(): Promise<WorkerStatus[]> };
   /** MCP 资产引用的密钥（加密存放）。 */
   readonly secrets: SecretVault;
-  /** 项目级资产要认项目（只读）。 */
-  readonly projects: { byId(id: string): Promise<{ readonly id: string; readonly name: string } | null> };
+  /**
+   * 项目级资产要认项目（只读）。带 teamId / deletedAt 是为了挡住「把资产挂到别的团队的项目上」：
+   * 资产审核按上传者团队走，挂错项目等于跨团队投递。
+   */
+  readonly projects: {
+    byId(id: string): Promise<{
+      readonly id: string;
+      readonly name: string;
+      readonly teamId: string | null;
+      readonly createdBy?: string | null;
+      readonly members?: readonly string[];
+      readonly deletedAt?: number | null;
+    } | null>;
+  };
   readonly now: () => number;
   /** hub 管理员是谁（决定资产能不能取 hub 级密钥，见 secretLookupOrder）。不给 = 单机 / 单测：老资产照旧取 hub 级。 */
   readonly hubAdminId?: () => Promise<string | null>;
@@ -174,9 +186,15 @@ async function createAsset(
   const scope: AssetScope = ownership.scope ?? (projectId === null ? 'global' : 'project');
   if (scope === 'project' && projectId === null) return err(invalid('项目级资产要选项目'));
   if (scope !== 'project') projectId = null;
-  if (projectId !== null && !(await deps.projects?.byId(projectId))) return err(notFound('没有这个项目'));
   const ownerId = ownership.ownerId ?? '';
   const teamId = ownership.teamId ?? null;
+  const project = projectId === null ? null : (await deps.projects?.byId(projectId)) ?? null;
+  if (projectId !== null && project === null) return err(notFound('没有这个项目'));
+  if (project?.deletedAt != null) return err(notFound('项目不存在'));
+  // 项目级资产按上传者团队审核：挂到别的团队的项目上，等于让那个团队替上传者背书。
+  if (project !== null && teamId !== null && project.teamId !== null && project.teamId !== teamId) {
+    return err(forbidden('这个项目属于别的团队，不能往里放资产'));
+  }
   if (scope === 'team' && !teamId) return err(invalid('团队资产要有团队'));
   if (scope === 'personal' && !ownerId) return err(invalid('个人资产要有作者'));
   const described = await describePacked(deps, kind, files, givenName);

@@ -1049,7 +1049,10 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
   const projectSettings = new Map<string, Record<string, boolean>>();
   const sessionManifests = new Map<string, import('../asset.ts').SessionAssetManifest>();
   const sessionSnapshots = new Map<string, import('../asset.ts').SessionAssetSnapshot>();
-  const projectList = new Map<string, { id: string; name: string }>([['p1', { id: 'p1', name: 'demo' }]]);
+  type FakeProject = { id: string; name: string; teamId: string | null; createdBy: string | null; members: readonly string[]; deletedAt: number | null };
+  const projectList = new Map<string, FakeProject>([
+    ['p1', { id: 'p1', name: 'demo', teamId: null, createdBy: null, members: [], deletedAt: null }]
+  ]);
   const repo: import('../ports/asset-repository.ts').AssetRepository = {
     list: async () => [...assets.values()],
     get: async (id) => assets.get(id) ?? null,
@@ -1154,7 +1157,9 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     },
     board: { get: (id) => board.get(id) ?? null, set: (s) => void board.set(s.workerId, s), all: () => [...board.values()] },
     workers: { list: async () => workers },
-    projects: { byId: async (id) => projectList.get(id) ?? null },
+    projects: {
+      byId: async (id) => projectList.get(id) ?? null
+    },
     delivery: {
       push: async (workerId, manifest, retain, sessions) => {
         pushes.push({ workerId, manifest, ...(retain === undefined ? {} : { retain }), ...(sessions === undefined ? {} : { sessions }) });

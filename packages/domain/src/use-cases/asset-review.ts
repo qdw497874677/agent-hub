@@ -39,7 +39,7 @@ import type { AuditLog } from '../ports/audit-log.ts';
 import type { AssetReviewRepository, NotificationRepository } from '../ports/asset-review-repository.ts';
 import type { UserRepository } from '../ports/user-repository.ts';
 import type { TeamRepository } from '../ports/team-repository.ts';
-import type { AccessPolicy } from './authorization.ts';
+import { authorizeProjectResource, type AccessPolicy } from './authorization.ts';
 import {
   ASSET_KIND_LABEL,
   checkAllAssetUpdates,
@@ -325,9 +325,26 @@ export type SubmitAssetInput =
     };
 
 /**
- * 上架一个新资产：建资产（未发布）+ 第一个提交。项目级的「能不能改这个项目」由调用方（路由）先查过。
- * 全局只有集群管理员能直接上架；成员要全局走「提升」。
+ * 上架一个新资产：建资产（未发布）+ 第一个提交。项目级由 `authorizeAssetProject` 在下面统一鉴权
+ * （路由与令牌面共用同一判定，不再各自先查）。全局只有集群管理员能直接上架；成员要全局走「提升」。
  */
+
+/**
+ * 项目级资产入口的统一鉴权（issue #227）：上传 / git 导入 / 令牌建资产都走这里。
+ * 判定本身复用 `authorizeProject`（404/403 语义只有一套），这里只负责项目不存在时也给出 404。
+ */
+export async function authorizeAssetProject(
+  deps: Pick<AssetReviewDeps, 'policy' | 'projects'>,
+  actor: Principal,
+  projectId: string | null
+): Promise<Result<{ readonly id: string; readonly name: string } | null, DomainError>> {
+  if (projectId === null) return ok(null);
+  const project = await deps.projects.byId(projectId);
+  if (!project) return err(notFound('没有这个项目'));
+  const allowed = await authorizeProjectResource(deps.policy, actor, project, 'project.update');
+  return allowed.ok ? ok(project) : allowed;
+}
+
 export async function submitNewAsset(
   deps: AssetReviewDeps,
   actor: Principal,
@@ -336,6 +353,10 @@ export async function submitNewAsset(
   if (!can(actor, 'asset.submit')) return err(forbidden('你没有上架资产的权限'));
   if (input.scope === 'global' && !can(actor, 'asset.publish_global')) return err(forbidden('全局资产只有集群管理员能直接上架：先上架到团队，再申请提升到全局'));
   if (input.scope !== 'global' && !actor.user.teamId) return err(invalid('你还没有团队'));
+  if (input.scope === 'project') {
+    const allowed = await authorizeAssetProject(deps, actor, input.projectId ?? null);
+    if (!allowed.ok) return allowed;
+  }
   const ownership = { scope: input.scope, ownerId: actor.user.id, teamId: actor.user.teamId, publish: false } as const;
   const made =
     input.from === 'upload'
@@ -428,6 +449,21 @@ async function loadSubmission(deps: AssetReviewDeps, submissionId: string): Prom
 const reviewer = (actor: Principal) => ({ id: actor.user.id, hubAdmin: actor.user.clusterAdmin });
 
 /** 通过一票。高风险发现要显式确认（acknowledgeHigh）。票够了就发布。 */
+
+/**
+ * 发布前的最后一次项目复验（issue #227）：项目级资产不能钉在已删除 / 已换团队的项目上。
+ * 只在「这一票就会发布」时调用 —— 票还不够时先记票，别让复核把人挡在审核流程外面。
+ */
+async function ensureProjectPublishable(deps: Pick<AssetReviewDeps, 'projects'>, asset: Asset): Promise<Result<null, DomainError>> {
+  if (asset.scope !== 'project' || asset.projectId === null) return ok(null);
+  const project = await deps.projects.byId(asset.projectId);
+  if (!project || project.deletedAt != null) return err(notFound('资产挂的项目已经不存在了：先把它移到团队或个人再审核'));
+  if (asset.teamId !== null && project.teamId !== null && project.teamId !== asset.teamId) {
+    return err(forbidden('项目已经换了团队：资产要先移到对应团队再审核'));
+  }
+  return ok(null);
+}
+
 export async function approveSubmission(
   deps: AssetReviewDeps,
   actor: Principal,
@@ -452,6 +488,11 @@ export async function approveSubmission(
   const approvals = [...submission.approvals, { userId: actor.user.id, at: deps.now(), selfApproved }];
   const eligible = eligibleReviewers(asset, submission, ctx).ids.length;
   const needed = attainableApprovals(submission.required, eligible);
+  // 这一票就够发布了：先确认项目还在，再把票写进库（失败时不能留下半张通过的票）。
+  if (approvals.length >= needed) {
+    const publishable = await ensureProjectPublishable(deps, asset);
+    if (!publishable.ok) return publishable;
+  }
   const voted: AssetSubmission = { ...submission, approvals };
   await deps.review.updateSubmission(voted);
   await audit(

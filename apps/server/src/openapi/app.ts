@@ -35,6 +35,7 @@ import {
   uploadAsset,
   listWorkers,
   notFound,
+  authorizeAssetProject,
   projectReader,
   promptSessionUseCase,
   setProjectChecksUseCase,
@@ -189,6 +190,10 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     }>(c, 'json');
     // 直接发布是 assets:publish 的事：只有它映射了 asset.review，其余 scope 都发不了
     if (input.publish && !can(actor, 'asset.review')) return fail(c, forbidden('直接发布资产要 assets:publish 范围'));
+    if (input.scope === 'project') {
+      const allowed = await authorizeAssetProject(ctx.assetReview, actor, input.projectId ?? null);
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
     const files = input.files.map((file) => ({ path: file.path, data: new Uint8Array(Buffer.from(file.data, 'base64')) }));
     const made = await uploadAsset(ctx.assetReview, {
       kind: input.kind,
@@ -220,6 +225,10 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     // 空路径对 skill 会变成「整个仓库」：显式拒绝，别让人把整仓拖进来
     const path = (input.path ?? '').trim();
     if (path === '') return fail(c, invalid('要给出仓库里的路径：技能目录（如 skills/foo）、指令文件（如 AGENTS.md）或 mcp 文件'));
+    if (input.scope === 'project') {
+      const allowed = await authorizeAssetProject(ctx.assetReview, actor, input.projectId ?? null);
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
     const made = await importGitAsset(ctx.assetReview, {
       kind: input.kind,
       url: input.url,
