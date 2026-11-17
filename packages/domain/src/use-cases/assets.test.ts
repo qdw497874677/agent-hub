@@ -575,3 +575,18 @@ test('MCP 资产：一份 mcp.json 多台服务器，按服务器下发；跨资
   assert.deepEqual(secrets.missing, []);
   assert.ok(secrets.secrets.find((row) => row.name === 'FS_TOKEN')?.usedBy.includes('toolbox'));
 });
+
+test('MCP 跟着会话清单走：给了会话清单就不要求「装到机器」；没给才看机器分配', async () => {
+  const { deps } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const remote = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'remote', url: 'https://e/mcp' }) });
+  const other = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'other', url: 'https://o/mcp' }) });
+  assert.ok(remote.ok && other.ok);
+  // 一台机器都没装
+  assert.deepEqual((await sessionMcpLaunch(deps, 'w9')).launch, []);
+  const only = new Set([remote.value.id]);
+  assert.deepEqual((await sessionMcpLaunch(deps, 'w9', only)).launch.map((entry) => entry.name), ['remote']);
+  // 清单外的不给
+  assert.equal((await remoteMcpTarget(deps, 'w9', 'other', only)).ok, false);
+  assert.ok((await remoteMcpTarget(deps, 'w9', 'remote', only)).ok);
+});

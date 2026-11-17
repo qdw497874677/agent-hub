@@ -652,9 +652,13 @@ export async function workerMcpConfigs(
   workerId: string,
   only?: ReadonlySet<string>
 ): Promise<{ asset: Asset; digest: string; server: McpConfig }[]> {
-  const mine = (await deps.assets.installations()).filter((row) => row.workerId === workerId && (!only || only.has(row.assetId)));
+  // 给了会话清单（允许清单模式）：MCP 跟着会话走，不要求「装到机器」——MCP 本来就不下发文件。
+  // 没给（老会话 / 老路径）：才退回看这台机器的分配记录。
+  const ids = only
+    ? [...only]
+    : (await deps.assets.installations()).filter((row) => row.workerId === workerId).map((row) => row.assetId);
   const out: { asset: Asset; digest: string; server: McpConfig }[] = [];
-  for (const { assetId } of mine) {
+  for (const assetId of ids) {
     const asset = await deps.assets.get(assetId);
     if (!asset || asset.kind !== 'mcp') continue;
     const revision = await deps.assets.revision(assetId, asset.pinned);

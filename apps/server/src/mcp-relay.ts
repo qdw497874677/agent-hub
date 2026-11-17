@@ -34,7 +34,8 @@ export interface McpRelayDeps {
   /** 会话此刻托管在哪台 Worker（来自 worker 网关的路由表）。 */
   readonly hostOf: (sessionId: string) => string | null;
   /** 远端 MCP 资产（http）：装在这台 Worker 上才给；url / headers 里的密钥已在 hub 上展开。 */
-  readonly remote?: (workerId: string, server: string) => Promise<Result<RemoteMcpTarget, DomainError>>;
+  /** sessionId：按这条会话实际拿到的资产找（MCP 跟着会话走，不看机器分配）。 */
+  readonly remote?: (workerId: string, server: string, sessionId: string) => Promise<Result<RemoteMcpTarget, DomainError>>;
   /** 连远端的客户端缓存（测试可注入）。 */
   readonly remoteClients?: RemoteClients;
   /** OAuth token 缓存（测试可注入）；缺省每个 relay 自建一个。 */
@@ -221,7 +222,7 @@ export function serveMcpRelay(port: RpcPort, workerId: string, deps: McpRelayDep
     if (deps.hostOf(grant.sessionId) !== workerId) throw new RpcFailure('forbidden', '这条会话不在这台 Worker 上');
     if (server !== undefined) {
       if (!deps.remote || !deps.remoteClients) throw new RpcFailure('unavailable', '这个 hub 没开远端 MCP 代理');
-      const target = await deps.remote(workerId, server);
+      const target = await deps.remote(workerId, server, grant.sessionId);
       if (!target.ok) throw new RpcFailure('forbidden', target.error.message);
       const remote = deps.remoteClients;
       const reply = await exchangeWith(() => proxyServer(remote, target.value, oauth), message as JSONRPCMessage, signal);

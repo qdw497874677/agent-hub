@@ -1257,7 +1257,11 @@ serverGateway = createServerGateway({
     serveMcpRelay(channel, workerId, {
       gateway: toolGateway,
       hostOf: (sessionId) => serverGateway?.hostOf(sessionId) ?? null,
-      remote: (worker, server) => remoteMcpTarget(assetDeps, worker, server),
+      // 会话有资产清单就按清单找（MCP 不用装到机器）；老会话没清单才退回看机器分配
+      remote: async (worker, server, sessionId) => {
+        const manifest = await assetDeps.assets.sessionAssets(sessionId).catch(() => null);
+        return remoteMcpTarget(assetDeps, worker, server, manifest ? new Set(manifest.entries.map((entry) => entry.assetId)) : undefined);
+      },
       remoteClients: remoteMcpClients
     });
   },
