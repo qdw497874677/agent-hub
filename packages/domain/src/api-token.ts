@@ -94,13 +94,16 @@ export interface ApiToken {
   readonly tokenHash: string;
   readonly createdBy: string;
   readonly createdAt: number;
-  /** null = 永不过期（D6 默认）。 */
+  /** null = 永不过期（要显式选）；创建时不给 = DEFAULT_TOKEN_TTL_MS（bot 凭据除外）。 */
   readonly expiresAt: number | null;
   readonly lastUsedAt: number | null;
   readonly revokedAt: number | null;
 }
 
 /** 令牌明文前缀：便于泄露扫描、也让鉴权一眼分得清。 */
+/** 令牌默认有效期：30 天。永不过期要显式选（GitHub / Cursor 也是默认带期限）。 */
+export const DEFAULT_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 export const API_TOKEN_PREFIX = 'ahp_';
 /** bot 凭据的独立前缀：鉴权看一眼就知道这是项目内收窄的身份（C1）。 */
 export const BOT_TOKEN_PREFIX = 'ahb_';

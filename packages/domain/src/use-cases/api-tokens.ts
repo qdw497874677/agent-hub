@@ -2,7 +2,7 @@ import { can, type Resource } from '../access.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import { asLoginId, isEmailVerified, newUserId } from '../account.ts';
 import type { ApiScope, ApiToken, ApiTokenKind } from '../api-token.ts';
-import { API_SCOPES, API_TOKEN_PREFIX, BOT_TOKEN_PREFIX, SERVICE_EMAIL_DOMAIN, apiTokenUsable, effectivePermissions } from '../api-token.ts';
+import { API_SCOPES, API_TOKEN_PREFIX, DEFAULT_TOKEN_TTL_MS, BOT_TOKEN_PREFIX, SERVICE_EMAIL_DOMAIN, apiTokenUsable, effectivePermissions } from '../api-token.ts';
 import { forbidden, invalid, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
 import { asProjectId, newId } from '../ids.ts';
@@ -97,7 +97,9 @@ export async function createApiToken(
   const scopes = [...new Set(input.scopes)];
   if (scopes.length === 0 || scopes.some((scope) => !API_SCOPES.includes(scope))) return err(invalid('至少选一个有效的权限范围'));
   const now = deps.now();
-  const expiresAt = input.expiresAt ?? null;
+  // 不给 = 默认 30 天（个人 / 服务账号令牌）；要永不过期得显式传 null。
+  // bot 凭据是长期挂着的集成，仍保持不给 = 不过期（见 PR 里的开放问题）。
+  const expiresAt = input.expiresAt !== undefined ? input.expiresAt : input.kind === 'bot' ? null : now + DEFAULT_TOKEN_TTL_MS;
   if (expiresAt !== null && expiresAt <= now) return err(invalid('过期时间要在将来'));
 
   let userId: string = actor.user.id;

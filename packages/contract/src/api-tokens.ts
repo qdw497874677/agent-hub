@@ -26,7 +26,7 @@ export const createApiTokenRequest = z.object({
   projectId: z.string().trim().min(1).optional(),
   /** kind = 'bot' 可选：bot 的 @id；不给就用令牌名。 */
   botName: z.string().trim().min(1).max(60).optional(),
-  /** 毫秒时间戳；不给 / null = 永不过期。 */
+  /** 毫秒时间戳；不给 = 30 天（bot 凭据不给 = 不过期）；null = 永不过期。 */
   expiresAt: z.number().int().positive().nullable().optional()
 });
 

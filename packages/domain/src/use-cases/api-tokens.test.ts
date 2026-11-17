@@ -213,3 +213,16 @@ test('bot 令牌对项目 admin 可见、可由项目 admin 吊销；吊销不�
   assert.ok(w.auditRows.some((row) => row.detail.includes('bot「reviewer」')), '审计里要能看出以 bot 身份');
   assert.equal(await authenticateApiToken(w.deps, made.token), null);
 });
+
+test('默认有效期：个人令牌不给 = 30 天；显式 null = 永不过期；bot 凭据不给仍不过期', async () => {
+  const { deps, owner, issueBot } = world();
+  const plain = await createApiToken(deps, owner, { name: 'ci', kind: 'personal', scopes: ['projects:read'] });
+  assert.ok(plain.ok);
+  assert.ok(plain.value.info.expiresAt !== null);
+  const days = (plain.value.info.expiresAt! - plain.value.info.createdAt) / 86_400_000;
+  assert.ok(days > 29.99 && days <= 30, String(days));
+  const forever = await createApiToken(deps, owner, { name: 'forever', kind: 'personal', scopes: ['projects:read'], expiresAt: null });
+  assert.ok(forever.ok);
+  assert.equal(forever.value.info.expiresAt, null);
+  assert.equal((await issueBot()).info.expiresAt, null);
+});
