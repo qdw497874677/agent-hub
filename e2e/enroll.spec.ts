@@ -76,6 +76,8 @@ test('添加机器：一行命令、倒计时、凭码接入、吊销后断开',
 
     await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: /e2e 新机器/ }).click();
+    // 机器详情分页签：凭据和吊销在「设置」页
+    await page.getByTestId('worker-tab-settings').click();
     await page.getByRole('button', { name: '吊销这台机器' }).click();
     await page.getByRole('button', { name: '确认吊销' }).click();
     await expect(page.getByRole('button', { name: /e2e 新机器/ })).toHaveCount(0);
@@ -162,6 +164,7 @@ test('权限预设与凭据轮换：只读机器、轮换后新凭据写进 work
 
     await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: /e2e 只读机器/ }).click();
+    await page.getByTestId('worker-tab-settings').click();
     const rotation = page.getByTestId('credential-rotation');
     await expect(rotation).toContainText('从未轮换');
     const listed = (await (await page.request.get('/api/workers')).json()) as { workerId: string; capabilities?: string[] }[];
