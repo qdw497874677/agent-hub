@@ -521,6 +521,9 @@ export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' 
             >
               访问令牌
             </button>
+            <a className={`block ${MENU_ROW}`} data-testid="menu-access" href="#/access" onClick={() => setOpen(false)}>
+              外部接入（MCP）
+            </a>
           </div>
 
           <div className="mt-2 border-t border-hair pt-1.5">
