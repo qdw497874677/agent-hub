@@ -44,6 +44,8 @@ import {
   continueElsewhereRequest,
   pinSessionRequest,
   settleSessionRequest,
+  setSessionMcpRequest,
+  sessionMcpView,
   sessionSchema,
   projectFilesSchema,
   promptRequest,
@@ -59,7 +61,7 @@ import {
 } from '@agent-hub/contract';
 import type { SessionEnvironmentDto } from '@agent-hub/contract';
 import type { AuditAction, Deps, DomainError, LogAuthor, Principal, Project, Result, Subject, TaskStatus } from '@agent-hub/domain';
-import { systemSubject, isSystem, loadAttention, NEEDS_HUMAN } from '@agent-hub/domain';
+import { systemSubject, isSystem, loadAttention, NEEDS_HUMAN, workerMcpConfigs } from '@agent-hub/domain';
 import type { AttentionStore, PullRequestRepository } from '@agent-hub/domain';
 const NO_AUTH_SUBJECT = systemSubject('no-auth');
 import {
@@ -114,6 +116,7 @@ import {
   deleteSessionUseCase,
   pinSessionUseCase,
   settleSessionUseCase,
+  setSessionMcpDisabledUseCase,
   listProjectFiles,
   listProjects,
   listWorkers,
@@ -992,6 +995,57 @@ export function createApp(options: AppOptions): Hono {
     if (!changed.ok) return fail(c, changed.error);
     await options.waitOptions?.(sessionId);
     return c.json((await deps.sessions.byId(asSessionId(sessionId))) ?? changed.value);
+  });
+
+  /**
+   * 按会话关掉某些 MCP 服务器：只影响这条会话启动时下发的清单，
+   * 不改资产、不改机器安装。守门中间件按 session.prompt 判权限（与改选项同一档）。
+   */
+  app.patch('/api/sessions/:sessionId/mcp', async (c) => {
+    const input = await body(c, setSessionMcpRequest);
+    if (!input.ok) return input.response;
+    const sessionId = c.req.param('sessionId');
+    const changed = await setSessionMcpDisabledUseCase(deps, {
+      sessionId,
+      disabled: input.value.disabled,
+      actor: subjectOf(c)
+    });
+    if (!changed.ok) return fail(c, changed.error);
+    const disabled = changed.value.mcpDisabled;
+    const detail = disabled.length === 0 ? '全部开启' : `关掉：${disabled.join('、')}`;
+    await recordSessionAction(deps, options.activity, c, subjectOf(c), 'session.mcp', sessionId, detail);
+    return c.json(sessionSchema.parse(changed.value));
+  });
+
+  /**
+   * 这条会话能用的 MCP 服务器（会话资产快照 ∩ 机器上已安装的版本）+ 关掉了哪些。
+   * 只读，用来画会话里的开关；机器不在线时给 note，不报错。
+   */
+  app.get('/api/sessions/:sessionId/mcp', async (c) => {
+    const sessionId = c.req.param('sessionId');
+    const session = await deps.sessions.byId(asSessionId(sessionId));
+    if (!session) return fail(c, notFound('会话不存在'));
+    const disabled = session.mcpDisabled;
+    const manifest = await options.assets?.deps.assets.sessionAssets(sessionId);
+    const assetIds = (manifest?.entries ?? []).filter((entry) => entry.kind === 'mcp').map((entry) => entry.assetId);
+    if (session.workerId === null || assetIds.length === 0) {
+      const note = session.workerId === null ? '这条会话还没落到机器上' : '这条会话的资产里没有 MCP 服务器';
+      return c.json(sessionMcpView.parse({ servers: [], disabled, note }));
+    }
+    const assetDeps = options.assets?.deps;
+    const configs = assetDeps ? await workerMcpConfigs({ assets: assetDeps.assets }, session.workerId, new Set(assetIds)) : [];
+    return c.json(
+      sessionMcpView.parse({
+        servers: configs.map((entry) => ({
+          name: entry.server.name,
+          transport: entry.server.transport,
+          assetId: entry.asset.id,
+          assetName: entry.asset.name
+        })),
+        disabled,
+        note: configs.length === 0 && assetIds.length > 0 ? '机器上还没有这些 MCP 资产的版本' : null
+      })
+    );
   });
 
   /** 会话改名。守门中间件按 session.prompt 判权限（能在这条会话里说话的人才能改名）。 */

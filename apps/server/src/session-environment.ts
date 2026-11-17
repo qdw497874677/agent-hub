@@ -64,6 +64,8 @@ export interface SessionEnvironmentOptions {
    * 组合里的资产会并进项目生效集（同名后者覆盖前者），再按机器已安装过滤。
    */
   readonly selectedAssetSetIds?: (sessionId: string) => Promise<readonly string[] | null | undefined>;
+  /** 这条会话关掉的 MCP 服务器名（`Session.mcpDisabled`）。不给就全给。 */
+  readonly disabledMcp?: (sessionId: string) => Promise<readonly string[] | null>;
   /**
    * 允许清单 + 自动预热（#226）：把候选资产装到这台机器并同步，返回实际落地的 digest。
    * 返回 null = 装不上；此时会话启动会被拦住并说明原因，而不是静默少几个资产。
@@ -210,10 +212,12 @@ export function createSessionEnvironment(options: SessionEnvironmentOptions): En
         let launch: readonly McpLaunch[] = [];
         let skipped: Skipped = [];
         if (withMcp) {
+          const disabled = await options.disabledMcp?.(command.sessionId);
           const launched = await sessionMcpLaunch(
             assetDeps,
             command.workerId,
-            new Set(snapshot.entries.map((entry) => entry.assetId))
+            new Set(snapshot.entries.map((entry) => entry.assetId)),
+            disabled !== undefined && disabled !== null && disabled.length > 0 ? new Set(disabled) : undefined
           );
           launch = launched.launch;
           skipped = launched.skipped;

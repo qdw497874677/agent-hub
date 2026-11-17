@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { applyEvent, deriveSession, forkSession, isContainerSession, isNeverPrompted, markInterrupted, withOptions } from '../session.ts';
+import { applyEvent, deriveSession, forkSession, isContainerSession, isNeverPrompted, markInterrupted, normalizeMcpDisabled, withOptions } from '../session.ts';
 import type { Session } from '../session.ts';
 import { findOption, optionValues, type RuntimeOption } from '../option.ts';
 import type { Seq, SessionId, TaskId, WorkspaceGroupId } from '../ids.ts';
@@ -19,8 +19,8 @@ import { mergeAgentRef, type AgentRef } from '../agent-ref.ts';
 import { checkModelOn, placeSession } from '../worker.ts';
 import { markStarted } from '../task.ts';
 import { recordSystemLog } from './work-log.ts';
-import { defaultWorkspaceFor, locationOf, usableByProject } from './workspaces.ts';
-import { authorizeWorker } from './authorization.ts';
+import { defaultWorkspaceFor, locationOf, projectOfSession, usableByProject } from './workspaces.ts';
+import { authorizeSession, authorizeWorker } from './authorization.ts';
 import { agentProfileForUse } from './agent-profiles.ts';
 
 export interface DeriveCommand {
@@ -484,6 +484,40 @@ export async function switchSessionModel(
   const hosted = await ensureHosted(deps, next);
   if (!hosted.ok) return err(hosted.error);
   return ok((await deps.sessions.byId(session.id)) ?? next);
+}
+
+export interface SetSessionMcpDisabledCommand {
+  readonly sessionId: string;
+  /** 要关掉的 MCP 服务器名；空数组 = 全部开启。 */
+  readonly disabled: readonly string[];
+  readonly actor: Subject | null;
+}
+
+/**
+ * 生成一条会话启动时要关掉的 MCP 服务器清单。
+ *
+ * 只改 `session.mcpDisabled` 并广播一条状态帧：不重启进程、不动资产 / 机器安装，
+ * 下一条 `start_session` 才会按新清单下发。不做 running 限制——正在跑的会话也能先存下，
+ * 下次重新托管时生效。权限与说话同一档（session.prompt）。
+ */
+export async function setSessionMcpDisabledUseCase(
+  deps: Pick<Deps, 'sessions' | 'projects' | 'tasks' | 'access' | 'workspaceGroups' | 'bots' | 'workspaces' | 'stream' | 'now'>,
+  command: SetSessionMcpDisabledCommand
+): Promise<Result<Session, DomainError>> {
+  const session = await deps.sessions.byId(asSessionId(command.sessionId));
+  if (!session) return err(notFound('会话不存在'));
+  const project = await projectOfSession(deps, session);
+  const allowed = await authorizeSession(deps.access, command.actor, project, session, 'session.prompt');
+  if (!allowed.ok) return allowed;
+
+  const normalized = normalizeMcpDisabled(command.disabled);
+  if (!normalized.ok) return normalized;
+
+  const next: Session = { ...allowed.value, mcpDisabled: normalized.value, updatedAt: deps.now() };
+  await deps.sessions.save(next);
+  // 让别的窗口也立刻换掉清单：只发状态帧，不占 seq、不写 journal。
+  deps.stream.publish({ sessionId: next.id, seq: next.lastSeq, event: null, status: next.status });
+  return ok((await deps.sessions.byId(next.id)) ?? next);
 }
 
 /**

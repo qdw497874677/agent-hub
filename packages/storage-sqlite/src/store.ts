@@ -200,6 +200,10 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!columns.some((column) => column.name === 'asset_set_ids')) {
     db.exec('ALTER TABLE sessions ADD COLUMN asset_set_ids TEXT');
   }
+  // 按会话关掉的 MCP 服务器：JSON 字符串数组；NULL = 老数据 / 全开，读时统一成 []。
+  if (!columns.some((column) => column.name === 'mcp_disabled')) {
+    db.exec('ALTER TABLE sessions ADD COLUMN mcp_disabled TEXT');
+  }
   // #221 步骤 7：容器会话没有任务，task_id 要允许 NULL（老库只能重建表）。
   relaxSessionsTaskId(db);
   upgradeWorkspaceTable(db);
@@ -284,8 +288,8 @@ export function openSqliteStore(file: string): SqliteStore {
   const updateTaskBranch = db.prepare('UPDATE tasks SET branch = ? WHERE id = ? AND ? IS NOT NULL');
   const upsertSession = db.prepare(
     'INSERT INTO sessions(id, task_id, agent_id, model, origin_kind, origin_session, origin_seq, ' +
-      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+      'status, last_seq, turn, agent_session, options, option_spec, worker_id, workspace_id, environment_revision, created_by, title, settled_at, group_id, kind, parent_session_id, bot_id, asset_ids, asset_set_ids, mcp_disabled, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET model = excluded.model, ' +
       // 状态跟着 last_seq 单调走：并发写回一个更旧的会话对象（比如上一轮读到的 running）
       // 不能把已经 done 的状态又翻回去，也不能把游标倒退。
@@ -297,6 +301,7 @@ export function openSqliteStore(file: string): SqliteStore {
       // 资产清单只在显式给的时候写：旧快照回写不能把用户的选择冲掉。
       'asset_ids = COALESCE(excluded.asset_ids, sessions.asset_ids), ' +
       'asset_set_ids = COALESCE(excluded.asset_set_ids, sessions.asset_set_ids), ' +
+      'mcp_disabled = excluded.mcp_disabled, ' +
       'updated_at = excluded.updated_at'
   );
   const selectSession = db.prepare('SELECT * FROM sessions WHERE id = ?');
@@ -531,6 +536,7 @@ export function openSqliteStore(file: string): SqliteStore {
         session.botId ?? null,
         session.assetIds == null ? null : JSON.stringify(session.assetIds),
         session.assetSetIds == null ? null : JSON.stringify(session.assetSetIds),
+        JSON.stringify(session.mcpDisabled ?? []),
         session.createdAt,
         session.updatedAt
       );

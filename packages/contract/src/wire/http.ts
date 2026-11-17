@@ -272,6 +272,23 @@ export const settleSessionRequest = z.object({ settled: z.boolean() });
 /** 常驻 / 取消常驻：一个任务下留一条长期用的会话。 */
 export const pinSessionRequest = z.object({ pinned: z.boolean() });
 
+/** 按会话关掉的 MCP 服务器（元素格式由领域层校验）：空数组 = 全部开启。 */
+export const setSessionMcpRequest = z.object({ disabled: z.array(z.string()).max(50) });
+
+/** 这条会话能用的 MCP 服务器（来自会话资产快照 + 机器上已安装的版本），以及关掉了哪些。 */
+export const sessionMcpServer = z.object({
+  name: z.string(),
+  transport: z.enum(['stdio', 'http']),
+  assetId: z.string(),
+  assetName: z.string()
+});
+export const sessionMcpView = z.object({
+  servers: z.array(sessionMcpServer),
+  disabled: z.array(z.string()),
+  /** 机器不在线 / 还没托管时拿不到版本：servers 为空，这里说明原因。 */
+  note: z.string().nullable().default(null)
+});
+
 export const forkSessionRequest = z.object({
   sessionId: id,
   /** 已忽略：服务端一律从来源的最新处分叉。留着只为老客户端不报错。 */

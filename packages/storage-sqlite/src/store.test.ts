@@ -584,3 +584,19 @@ test('会话级资产：assetIds 落库往返；旧快照回写不会把选择�
   assert.deepEqual((await store.sessions.byId(session.id))?.assetIds, ['a1', 'a2']);
   store.close();
 });
+
+test('会话关掉的 MCP：mcpDisabled 落库往返；老库缺列 / 坏 JSON 读成 []', async () => {
+  const store = openSqliteStore(':memory:');
+  const { session } = await seeded(store);
+  assert.deepEqual((await store.sessions.byId(session.id))?.mcpDisabled, []);
+
+  await store.sessions.save({ ...session, mcpDisabled: ['fs', 'browser'], updatedAt: now + 1 });
+  assert.deepEqual((await store.sessions.byId(session.id))?.mcpDisabled, ['fs', 'browser']);
+
+  // 手改坏了 / 名字不合规：读出来当没关，不让会话页打不开。
+  store.db.prepare("UPDATE sessions SET mcp_disabled = ? WHERE id = ?").run('not json', session.id);
+  assert.deepEqual((await store.sessions.byId(session.id))?.mcpDisabled, []);
+  store.db.prepare("UPDATE sessions SET mcp_disabled = ? WHERE id = ?").run('["FS","ok-1"]', session.id);
+  assert.deepEqual((await store.sessions.byId(session.id))?.mcpDisabled, ['ok-1']);
+  store.close();
+});

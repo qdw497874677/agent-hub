@@ -20,7 +20,7 @@ import type {
   TaskRepository,
   WorkspaceRepository
 } from '@agent-hub/domain';
-import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId, CHECK_COMMANDS_MAX, normalizeRepos, normalizeWorktree, primaryRepo } from '@agent-hub/domain';
+import { asProjectId, asSessionId, asTaskId, asArtifactId, asAgentId, CHECK_COMMANDS_MAX, MCP_DISABLED_MAX, MCP_SERVER_NAME, normalizeRepos, normalizeWorktree, primaryRepo } from '@agent-hub/domain';
 
 /**
  * 行映射层。`as` 在这里是本职：数据库只给 `string | number | null`，
@@ -191,6 +191,29 @@ function parseAssetSetIds(raw: string | null): { assetSetIds?: readonly string[]
   }
 }
 
+/**
+ * 按会话关掉的 MCP 服务器（JSON 数组）。坏 JSON → []；手改过的行里
+ * 名字不合规 / 重复的条目逐条丢掉，不让一条脏数据把整条会话读不出来。
+ */
+function parseMcpDisabled(raw: string | null): readonly string[] {
+  if (raw === null || raw === '') return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const names: string[] = [];
+    const seen = new Set<string>();
+    for (const entry of parsed) {
+      if (typeof entry !== 'string' || !MCP_SERVER_NAME.test(entry) || seen.has(entry)) continue;
+      seen.add(entry);
+      names.push(entry);
+      if (names.length === MCP_DISABLED_MAX) break;
+    }
+    return names;
+  } catch {
+    return [];
+  }
+}
+
 export function toSession(row: Row): Session {
   const originSession = nullableStr(row, 'origin_session');
   // #221 步骤 7：容器会话没有任务。空串是当年某些写入路径的哨兵，一起读成 null。
@@ -235,6 +258,8 @@ export function toSession(row: Row): Session {
     ...parseAssetIds(nullableStr(row, 'asset_ids')),
     // 会话显式选的组合：NULL = 用项目默认；有值才输出，和派生对象往返一致。
     ...parseAssetSetIds(nullableStr(row, 'asset_set_ids')),
+    // 按会话关掉的 MCP 服务器：始终输出（缺省 []），和派生对象往返一致。
+    mcpDisabled: parseMcpDisabled(nullableStr(row, 'mcp_disabled')),
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };

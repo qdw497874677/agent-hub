@@ -1108,6 +1108,8 @@ sessionEnvironment = createSessionEnvironment({
   selectedAssetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetIds ?? null,
   // 会话显式资产组合优先；没有就用项目默认（planFor 内处理）。
   selectedAssetSetIds: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.assetSetIds ?? null,
+  // 会话级 MCP 开关：关掉的服务器这次不给（改完要重启会话进程才生效）。
+  disabledMcp: async (sessionId) => (await store.sessions.byId(sessionId as SessionId))?.mcpDisabled ?? null,
   // 允许清单 + 自动预热（#226）：候选资产先装到这台机器并同步，装不上就拦住启动。
   preheat: async (workerId, assetIds) => {
     try {

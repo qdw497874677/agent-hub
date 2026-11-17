@@ -313,6 +313,8 @@ export const sessionSchema = z.object({
   /** 这条会话显式选的资产；缺省 = 按项目生效集。 */
   assetIds: z.array(z.string()).nullable().optional(),
   assetSetIds: z.array(z.string()).nullable().optional(),
+  /** 这条会话启动时要关掉的 MCP 服务器名；缺省 / 空数组 = 全开。 */
+  mcpDisabled: z.array(z.string()).default([]),
   createdAt: epochMs,
   updatedAt: epochMs
 });

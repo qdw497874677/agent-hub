@@ -110,6 +110,11 @@ export interface Session {
   readonly assetIds?: readonly string[] | null;
   /** 这条会话显式选的资产组合（覆盖项目默认）；null / 缺省 = 用项目默认。 */
   readonly assetSetIds?: readonly string[] | null;
+  /**
+   * 这条会话启动时要关掉的 MCP 服务器名（小写字母 / 数字 / 短横线）。
+   * 只影响本会话下发的那份清单，不改资产、不改机器安装；空数组 = 全部开启。
+   */
+  readonly mcpDisabled: readonly string[];
   readonly createdAt: number;
   readonly updatedAt: number;
 }
@@ -120,6 +125,35 @@ export interface Session {
  */
 export function isContainerSession<T extends { readonly taskId: TaskId | null }>(session: T): session is T & { readonly taskId: null } {
   return session.taskId === null;
+}
+
+/** 一条会话最多关掉多少个 MCP 服务器（防止一份清单被写爆）。 */
+export const MCP_DISABLED_MAX = 50;
+/** MCP 服务器名（与 mcp.ts 的命名一致）：小写字母、数字、短横线。 */
+export const MCP_SERVER_NAME = /^[a-z0-9-]{1,64}$/;
+
+/**
+ * 归一一条会话要关掉的 MCP 服务器清单：去重（保留首次出现的顺序）、校验名字格式、
+ * 限制条数。信任边界在接口层，但领域也要能独立守住（调用方不只 HTTP 一个）。
+ */
+export function normalizeMcpDisabled(value: unknown): Result<readonly string[], DomainError> {
+  if (!Array.isArray(value)) return err(invalid('MCP 服务器清单必须是字符串数组'));
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== 'string') return err(invalid('MCP 服务器名必须是字符串'));
+    const name = entry.trim();
+    if (!MCP_SERVER_NAME.test(name)) {
+      return err(invalid(`MCP 服务器名不合法：${entry}（只能用小写字母、数字和短横线，最多 64 个字符）`));
+    }
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  if (names.length > MCP_DISABLED_MAX) {
+    return err(invalid(`一条会话最多关掉 ${MCP_DISABLED_MAX} 个 MCP 服务器`));
+  }
+  return ok(names);
 }
 
 export interface DeriveSessionInput {
@@ -179,6 +213,7 @@ export function deriveSession(input: DeriveSessionInput): Result<Session, Domain
     botId: input.botId ?? null,
     ...(input.assetIds == null ? {} : { assetIds: input.assetIds }),
     ...(input.assetSetIds == null ? {} : { assetSetIds: input.assetSetIds }),
+    mcpDisabled: [],
     createdAt: input.now,
     updatedAt: input.now
   });
@@ -229,6 +264,7 @@ export function forkSession(input: ForkSessionInput): Result<Session, DomainErro
     workspaceId: input.workspaceId === undefined ? input.source.workspaceId : input.workspaceId,
     createdBy: input.createdBy ?? null,
     botId: input.botId ?? null,
+    mcpDisabled: [],
     createdAt: input.now,
     updatedAt: input.now
   });

@@ -5200,6 +5200,13 @@
                               "type": "string"
                             }
                           },
+                          "mcpDisabled": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "default": []
+                          },
                           "createdAt": {
                             "type": "integer",
                             "minimum": 0
@@ -7027,6 +7034,13 @@
                         "type": "string"
                       }
                     },
+                    "mcpDisabled": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -7521,6 +7535,13 @@
                         "type": "string"
                       }
                     },
+                    "mcpDisabled": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -7992,6 +8013,13 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "mcpDisabled": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
                     },
                     "createdAt": {
                       "type": "integer",
@@ -8823,6 +8851,13 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "mcpDisabled": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "default": []
                     },
                     "createdAt": {
                       "type": "integer",
