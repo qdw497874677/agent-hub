@@ -75,6 +75,9 @@ test('外部接入页：限项目令牌、只显示一次、测试连接、调�
   await expect(row).toContainText(`限 ${mine.name}`);
   await expect(row.getByTestId('token-tools')).toBeVisible();
   await expect(row).not.toContainText(token);
+  // 到期是将来时间：写日期「… 到期」，不能是相对时间（以前会显示成「刚刚过期」）
+  await expect(row).toContainText('到期');
+  await expect(row).not.toContainText('过期');
 
   // —— 4. 后端强制：经 MCP 只看得到选中的项目；别的项目 404 ——
   const bot = await apiRequest.newContext({ baseURL, extraHTTPHeaders: { authorization: `Bearer ${token}` } });
@@ -92,6 +95,7 @@ test('外部接入页：限项目令牌、只显示一次、测试连接、调�
   await page.reload();
   await row.getByTestId('token-activity').click();
   await expect(row.getByTestId('token-activity-list')).toContainText(listTool!);
+  await row.getByTestId('token-activity-list').scrollIntoViewIfNeeded();
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'access-activity-1280.png'), fullPage: true });
 
   // —— 6. 轮换：新令牌只显示一次；旧的立刻 401；旧记录进「已吊销」 ——

@@ -9,6 +9,9 @@ import { EXPIRY, SCOPES } from './tokens-dialog.tsx';
 import { maskToken, mcpGuide } from '../atoms/mcp-guide.ts';
 import { TOKEN_PRESETS, activityLabel, presetOf, testMcpConnection, type TokenPresetId } from '../atoms/token-presets.ts';
 
+/** 到期是将来的时间，相对时间（「刚刚」）只适合过去，这里写绝对日期。 */
+const day = (ms: number) => new Date(ms).toLocaleDateString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric' });
+
 /**
  * 外部接入（MCP）页（#/access）：给 Claude Code / Cursor / Codex 这类外部 agent 接 hub。
  * 一页说清：端点、写工具开关、接入片段、令牌（预设权限、限定项目、默认 30 天、明文只给一次）、
@@ -252,7 +255,7 @@ function TokenRow({ token, projectName, onRotated }: { token: ApiTokenDto; proje
       </div>
       <p className="mt-0.5 text-meta text-tertiary">
         {scope} · {token.lastUsedAt ? `最近使用 ${at(token.lastUsedAt)}` : '从未使用'} ·{' '}
-        {revoked ? `吊销于 ${at(token.revokedAt)}` : token.expiresAt ? `${at(token.expiresAt)}过期` : '永不过期'}
+        {revoked ? `吊销于 ${at(token.revokedAt)}` : token.expiresAt ? `${day(token.expiresAt)} 到期` : '永不过期'}
         {tools.data ? (
           <span data-testid="token-tools">
             {' '}
