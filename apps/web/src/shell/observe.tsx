@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { api, observeApi, type ObserveBranchDto, type ObserveNodeDto } from './api.ts';
 import { formatRoute } from './route.ts';
-import { AccountMenu } from './auth.tsx';
+import { AppShell, PageBody, PageHeader } from './page-shell.tsx';
 
 /**
  * 可观测（ADR 0033）。只渲染接口契约：实线是父子，虚线是链接。
@@ -28,21 +28,15 @@ function sessionHref(node: ObserveNodeDto) {
 
 export function ObservePage({ source, id }: { source: string | null; id: string | null }) {
   return (
-    <div className="flex h-full flex-col md:flex-row">
-      <nav className="flex w-full shrink-0 flex-col border-b border-hair px-3 py-4 md:w-[220px] md:border-b-0 md:border-r">
-        <div className="mb-4 flex items-start justify-between gap-2">
-          <div>
-            <a className="text-head text-primary" href="#/home">agent-hub</a>
-          </div>
-          <AccountMenu />
-        </div>
-        <a className="rounded-sm bg-card px-2 py-1 text-body text-primary" href="#/observe" data-testid="nav-observe-here">运行记录</a>
-        <a className="mt-1 rounded-sm px-2 py-1 text-body text-secondary hover:bg-card" href="#/home">首页</a>
-      </nav>
-      <main className="min-w-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
+    <AppShell>
+      <PageHeader
+        title={source && id ? '链路' : '运行记录'}
+        parent={source && id ? { label: '运行记录', href: '#/observe' } : undefined}
+      />
+      <PageBody wide>
         {source && id ? <ObserveDetail source={source} id={id} /> : <ObserveList />}
-      </main>
-    </div>
+      </PageBody>
+    </AppShell>
   );
 }
 
@@ -60,9 +54,6 @@ function ObserveList() {
   });
   return (
     <div data-testid="observe-page">
-      <div className="mb-2 flex items-baseline gap-2">
-        <h1 className="text-head text-primary">运行记录</h1>
-      </div>
       <div className="mb-3 flex flex-wrap items-center gap-2 text-meta">
         <label className="text-tertiary">时间
           <select className="ml-1 bg-transparent text-primary" data-testid="observe-window" value={hours} onChange={(e) => setHours(Number(e.target.value))}>
@@ -90,7 +81,7 @@ function ObserveList() {
         <p data-testid="observe-anonymous" className="mb-2 text-meta text-rust">没有登录。开了账号权限时这里不列出记录，这不是「没有数据」。</p>
       ) : null}
       {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.items.length === 0 ? (
-        <p data-testid="observe-empty" className="text-meta text-tertiary">没有记录。<a className="text-accent" href="#/bots">查看 Bot</a></p>
+        <p data-testid="observe-empty" className="text-meta text-tertiary">没有记录。<a className="text-link" href="#/bots">查看 Bot</a></p>
       ) : null}
       {list.data?.enabled && list.data.items.length > 0 ? (
         <table className="w-full border-collapse overflow-hidden rounded-md border border-hair bg-card" data-testid="observe-list">
@@ -112,7 +103,7 @@ function ObserveList() {
                 <td className="px-3 py-2 text-body">{item.title}</td>
                 <td className="px-3 py-2 text-meta">{item.nativeStateLabel} <span className="text-tertiary">{item.nativeState}</span></td>
                 <td className="px-3 py-2 text-meta text-secondary">{item.gap ?? '—'}</td>
-                <td className="px-3 py-2 text-right"><a className="text-meta text-accent" href={formatRoute({ page: 'observe', source: item.source, id: item.id.slice(item.source.length + 1) })}>打开树</a></td>
+                <td className="px-3 py-2 text-right"><a className="text-meta text-link" href={formatRoute({ page: 'observe', source: item.source, id: item.id.slice(item.source.length + 1) })}>打开树</a></td>
               </tr>
             ))}
           </tbody>
@@ -120,7 +111,7 @@ function ObserveList() {
       ) : null}
       {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.truncated ? (
         <p
-          className="mt-2 text-meta text-accent"
+          className="mt-2 text-meta text-warning"
           data-testid="observe-scan"
           data-truncated="1"
           title={`时间窗里先取最近 ${list.data.scanLimit ?? 500} 条，再按「失败或缺环」筛选；更早的失败可能不在这里`}
@@ -147,8 +138,7 @@ function ObserveDetail({ source, id }: { source: string; id: string }) {
   const node = trace?.nodes.find((item) => item.id === picked) ?? null;
   return (
     <div data-testid="observe-detail">
-      <a className="text-meta text-accent" href="#/observe">← 列表</a>
-      <h1 className="mt-1 text-head text-primary">{trace?.title ?? '链路'}</h1>
+      <h2 className="text-head text-primary">{trace?.title ?? '链路'}</h2>
       {detail.isError ? <p className="mt-2 text-meta text-rust" data-testid="observe-error">刷新失败 <button className="underline" onClick={() => void detail.refetch()}>重试</button></p> : null}
       {detail.isPending ? <div data-testid="observe-loading" className="mt-3 h-24 rounded-md bg-card" /> : null}
       {detail.data && !detail.data.enabled ? <p data-testid="observe-disabled" className="mt-3 text-meta text-tertiary">运行记录未启用。</p> : null}
@@ -239,9 +229,9 @@ function NodeDetail({ node, externalUrl }: { node: ObserveNodeDto | null; extern
           <div key={item.key}><dt className="text-meta text-tertiary">{item.key}</dt><dd className="break-all text-body">{item.value}</dd></div>
         ))}
       </dl>
-      {href ? <a className="mt-3 inline-block text-meta text-accent" href={href}>打开会话</a> : null}
-      {projectId ? <a className="mt-3 ml-3 inline-block text-meta text-accent" href={formatRoute({ page: 'bots', projectId })}>Bot 页</a> : null}
-      {externalUrl ? <a className="mt-3 block text-meta text-accent" href={externalUrl}>在外部打开</a> : null}
+      {href ? <a className="mt-3 inline-block text-meta text-link" href={href}>打开会话</a> : null}
+      {projectId ? <a className="mt-3 ml-3 inline-block text-meta text-link" href={formatRoute({ page: 'bots', projectId })}>Bot 页</a> : null}
+      {externalUrl ? <a className="mt-3 block text-meta text-link" href={externalUrl}>在外部打开</a> : null}
       <p className="mt-3 text-meta text-tertiary">这里不能批准、取消或重试。</p>
     </aside>
   );

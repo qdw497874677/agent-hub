@@ -16,7 +16,7 @@ export const STATUS: Record<SessionDto['status'], { label: string; dot: string; 
   failed: { label: '失败', dot: 'bg-rust', shape: 'rounded-sm' }
 };
 
-const READY = { label: '就绪', dot: 'border border-accent', shape: 'rounded-full' };
+const READY = { label: '就绪', dot: 'border border-sage', shape: 'rounded-full' };
 
 /** 状态位要显示的样子：running + 从没发过话 = 就绪。 */
 export function statusStyle(status: SessionDto['status'], lastSeq?: number) {

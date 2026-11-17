@@ -2,42 +2,104 @@
 @import '@xyflow/react/dist/style.css';
 
 /*
- * 深色控制室。令牌名字与 docs/design/visual-direction.md §2 一一对应，
- * 改这里就是改设计；组件里不写十六进制。
+ * 深色控制室。令牌分两层（docs/design/visual-direction.md §2 / §9）：
+ * - 语义层 v2：bg / surface-1…3 / fg / fg-muted / fg-faint / border / action / ring / live / 状态三件套，
+ *   新组件只用这一层；浅色主题（[data-theme='light']）只换这一层的值。
+ * - 旧名（canvas / panel / card / hair / primary / accent / sage / rust …）是别名，指回语义层，组件逐步迁移。
+ * 组件里不写十六进制。
  */
-@theme {
-  --color-canvas: #14181a;
-  --color-panel: #1b2022;
-  --color-card: #1f2528;
-  --color-card-raised: #242b2e;
-  --color-hair: #2e3639;
-  --color-strong: #3c4649;
-  --color-primary: #e8e3d9;
-  --color-secondary: #9aa39e;
+@theme static {
+  /* 表面 */
+  --color-bg: #14181a;
+  --color-surface-1: #1b2022;
+  --color-surface-2: #1f2528;
+  --color-surface-3: #242b2e;
+  /* 浮层（菜单、对话框、输入框）：比卡片再亮半档，配 --shadow-overlay */
+  --color-overlay: #222a2d;
+  /* 文字 */
+  --color-fg: #e8e3d9;
+  --color-fg-muted: #9aa39e;
   /* 11px 的元信息也要过 WCAG AA：旧的 #6b7570 在 card 上只有 3.45:1。 */
-  --color-tertiary: #8b9690;
-  --color-accent: #d9a05b;
-  --color-accent-dim: #b6894f;
-  --color-sage: #82a394;
+  --color-fg-faint: #8b9690;
+  /* 边框改半透明：在哪层底色上都自然 */
+  --color-border: rgb(255 255 255 / 0.08);
+  --color-border-strong: rgb(255 255 255 / 0.15);
+  /* 交互：主操作是中性高对比（浅底深字），焦点框冷灰，琥珀只表示「在跑 / 流式」 */
+  --color-action: #e8e3d9;
+  --color-action-fg: #14181a;
+  --color-ring: #a9c4d6;
+  --color-link: #9cc0d8;
+  --color-live: #d9a05b;
+  --color-live-dim: #b6894f;
+  /* 状态三件套：前景 + 淡底（边框用前景加透明度） */
+  --color-success: #82a394;
+  --color-success-bg: rgb(130 163 148 / 0.12);
+  --color-warning: #d6b450;
+  --color-warning-bg: rgb(214 180 80 / 0.12);
   /* 失败 / 危险：明确的红，和「在跑」的琥珀拉开色相（旧值 #c08a6a 在小圆点上和琥珀几乎分不出）。 */
-  --color-rust: #eb6f63;
+  --color-danger: #eb6f63;
+  --color-danger-bg: rgb(235 111 99 / 0.12);
+  --color-info: #7fa3c2;
+  --color-info-bg: rgb(127 163 194 / 0.12);
+  --color-diff-add: #7fbf8a;
+  --color-diff-del: #e08a7c;
   /* 行级交互面：悬停 / 选中只抬一档底色，不再用琥珀描边（琥珀只表示「在跑」）。 */
-  --color-hover: #22292c;
-  --color-selected: #293134;
+  --color-hover: rgb(255 255 255 / 0.04);
+  --color-selected: rgb(255 255 255 / 0.075);
 
-  --font-sans: 'Noto Sans SC', 'Inter Tight', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  /* 旧名 → 语义层（别名，逐步迁移） */
+  --color-canvas: var(--color-bg);
+  --color-panel: var(--color-surface-1);
+  --color-card: var(--color-surface-2);
+  --color-card-raised: var(--color-surface-3);
+  --color-hair: var(--color-border);
+  --color-strong: var(--color-border-strong);
+  --color-rule: var(--color-border-strong);
+  --color-primary: var(--color-fg);
+  --color-secondary: var(--color-fg-muted);
+  --color-tertiary: var(--color-fg-faint);
+  --color-accent: var(--color-live);
+  --color-accent-dim: var(--color-live-dim);
+  --color-sage: var(--color-success);
+  --color-rust: var(--color-danger);
+  --color-ochre: var(--color-warning);
 
-  --text-meta: 11px;
-  --text-meta--line-height: 1.4;
+  /* 字体：明确的系统栈，中文落到苹方 / 雅黑 / 思源；不额外下载字体文件 */
+  --font-sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Noto Sans SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'JetBrains Mono', 'Liberation Mono', 'Noto Sans Mono CJK SC', monospace;
+
+  /* 字号：界面框架 13 / 对话正文 14 / 次要 12 / 等宽元信息 11 */
+  --text-meta: 12px;
+  --text-meta--line-height: 1.45;
+  --text-mono-meta: 11px;
   --text-body: 13px;
   --text-body--line-height: 1.55;
   --text-sub: 12px;
   --text-sub--line-height: 1.5;
+  --text-chat: 14px;
+  --text-chat--line-height: 1.65;
   --text-head: 15px;
   --text-head--line-height: 1.4;
   --text-title: 20px;
   --text-title--line-height: 1.3;
+
+  /* 浮层：卡片仍然不投影，只有浮起来的东西（菜单、对话框、输入框）有一档阴影 */
+  --shadow-overlay: 0 16px 36px -12px rgb(0 0 0 / 0.6), 0 0 0 0.5px rgb(255 255 255 / 0.06);
+  --shadow-composer: 0 14px 32px -18px rgb(0 0 0 / 0.75);
+  --radius-control: 6px;
+  --radius-overlay: 10px;
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* 动效时长（不进 @theme：不需要生成工具类） */
+:root {
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
+  --dur-slow: 280ms;
+}
+
+html {
+  color-scheme: dark;
 }
 
 html,
@@ -47,11 +109,12 @@ body {
   /* 页面本身不滚：唯一的滚动容器是消息列表 / 各页的内容区。
      键盘弹出时浏览器会试着滚动文档把输入框顶上来，那正是「要滑到最下面才看得见输入框」的来源。 */
   overflow: hidden;
-  color-scheme: dark;
-  background: var(--color-canvas);
-  color: var(--color-primary);
+  background: var(--color-bg);
+  color: var(--color-fg);
   font-family: var(--font-sans);
   font-size: var(--text-body);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'cv11', 'ss01';
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
 }
@@ -69,7 +132,7 @@ body {
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--color-accent) 35%, transparent);
+  background: color-mix(in srgb, var(--color-ring) 32%, transparent);
   color: var(--color-primary);
 }
 
@@ -78,13 +141,18 @@ body {
  * 底色比 ::selection 淡一档，当前那条用实心 accent 压在上面——输入时一眼能分出「所有命中」和「我正在看的那条」。
  */
 ::highlight(timeline-search-hit) {
-  background-color: color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background-color: color-mix(in srgb, var(--color-warning) 28%, transparent);
   color: var(--color-primary);
 }
 
 ::highlight(timeline-search-hit-active) {
-  background-color: var(--color-accent);
+  background-color: var(--color-warning);
   color: var(--color-canvas);
+}
+
+/* 等宽的元信息（路径、哈希、耗时）比同级正文小一号：12 / 11，等宽字形本来就显大。 */
+.font-mono.text-meta {
+  font-size: var(--text-mono-meta);
 }
 
 /* 触屏去掉 300ms 点击延迟；视觉尺寸不动，只让点击更快。 */
@@ -112,28 +180,75 @@ body {
   --contrast-rust: #ff9b92;
 }
 
+/*
+ * 浅色主题：只换语义层（旧名都是别名，自动跟上）。<html data-theme="light"> 由 shell/theme.ts 写，
+ * 「跟随系统」时按 prefers-color-scheme 算出来再写，所以这里不用 media query。
+ * 文字 / 状态色在各层表面上都过 4.5:1（theme-contrast.test.ts 里有一条专门测它）。
+ */
+[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #f6f5f2;
+  --color-surface-1: #efede9;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #e9e7e2;
+  --color-overlay: #ffffff;
+  --color-fg: #1c2023;
+  --color-fg-muted: #4f575c;
+  --color-fg-faint: #5d6569;
+  --color-border: rgb(0 0 0 / 0.09);
+  --color-border-strong: rgb(0 0 0 / 0.16);
+  --color-action: #1c2023;
+  --color-action-fg: #f6f5f2;
+  --color-ring: #3f6f8f;
+  --color-link: #2a5f88;
+  --color-live: #935610;
+  --color-live-dim: #7f4a0e;
+  --color-success: #336b54;
+  --color-success-bg: rgb(51 107 84 / 0.1);
+  --color-warning: #7a5c00;
+  --color-warning-bg: rgb(122 92 0 / 0.1);
+  --color-danger: #b4382a;
+  --color-danger-bg: rgb(180 56 42 / 0.09);
+  --color-info: #355f86;
+  --color-info-bg: rgb(53 95 134 / 0.1);
+  --color-diff-add: #2b6e3a;
+  --color-diff-del: #a83a2b;
+  --color-hover: rgb(0 0 0 / 0.04);
+  --color-selected: rgb(0 0 0 / 0.065);
+  --shadow-overlay: 0 16px 36px -14px rgb(0 0 0 / 0.22), 0 0 0 0.5px rgb(0 0 0 / 0.08);
+  --shadow-composer: 0 12px 28px -18px rgb(0 0 0 / 0.3);
+  /* 高对比度那一档在浅色下是「更深」 */
+  --contrast-secondary: #2f3539;
+  --contrast-tertiary: #3e464b;
+  --contrast-hair: #8d979c;
+  --contrast-strong: #5f6a70;
+  --contrast-accent-dim: #6e400a;
+  --contrast-sage: #24503e;
+  --contrast-rust: #93281c;
+}
+
 /* 系统要求更高对比度时，别只依赖用户去挑主题。 */
 @media (prefers-contrast: more) {
   :root {
-    --color-secondary: var(--contrast-secondary);
-    --color-tertiary: var(--contrast-tertiary);
-    --color-hair: var(--contrast-hair);
-    --color-strong: var(--contrast-strong);
-    --color-accent-dim: var(--contrast-accent-dim);
-    --color-sage: var(--contrast-sage);
-    --color-rust: var(--contrast-rust);
+    --color-fg-muted: var(--contrast-secondary);
+    --color-fg-faint: var(--contrast-tertiary);
+    --color-border: var(--contrast-hair);
+    --color-border-strong: var(--contrast-strong);
+    --color-live-dim: var(--contrast-accent-dim);
+    --color-success: var(--contrast-sage);
+    --color-danger: var(--contrast-rust);
   }
 }
 
 /* 手开关：设成 auto 时属性会被删掉，上面的 media query 照旧说话。 */
 [data-contrast='more'] {
-  --color-secondary: var(--contrast-secondary);
-  --color-tertiary: var(--contrast-tertiary);
-  --color-hair: var(--contrast-hair);
-  --color-strong: var(--contrast-strong);
-  --color-accent-dim: var(--contrast-accent-dim);
-  --color-sage: var(--contrast-sage);
-  --color-rust: var(--contrast-rust);
+  --color-fg-muted: var(--contrast-secondary);
+  --color-fg-faint: var(--contrast-tertiary);
+  --color-border: var(--contrast-hair);
+  --color-border-strong: var(--contrast-strong);
+  --color-live-dim: var(--contrast-accent-dim);
+  --color-success: var(--contrast-sage);
+  --color-danger: var(--contrast-rust);
 }
 
 /* iOS 上小于 16px 的输入框获得焦点会强制放大页面，触屏设备统一抬到 16px */
@@ -167,7 +282,7 @@ body {
 .react-flow {
   --xy-background-color: var(--color-canvas);
   --xy-edge-stroke: var(--color-strong);
-  --xy-edge-stroke-selected: var(--color-accent);
+  --xy-edge-stroke-selected: var(--color-ring);
   --xy-attribution-background-color: transparent;
 }
 
@@ -212,7 +327,7 @@ body {
   width: 9px;
   height: 9px;
   border-radius: 2px;
-  background: var(--color-accent);
+  background: var(--color-ring);
   border: 1px solid var(--color-canvas);
 }
 @media (pointer: coarse) {
@@ -225,18 +340,21 @@ body {
 
 /*
  * 键盘焦点：鼠标点击不出框（:focus-visible），Tab 过来一定看得见。
- * 一根 1px 琥珀线——它是「此刻在这里」，正好是强调色该说的话（visual-direction §1）。
+ * 用冷灰的 --color-ring：琥珀只表示「在跑」，焦点不能和它抢（令牌 v2）。
+ * 放在 base 层：组件用 outline-none 自己接管时（输入框把焦点画在外框上），工具类能盖过它，不再双框。
  */
-:where(button, a, select, summary, [tabindex]):focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
+@layer base {
+  :where(button, a, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
 
-/* 对话框/表单里的输入框也用同一根焦点线；原来只有 focus:border-accent，深色下不够醒目。 */
-:where(input, textarea):focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
+  /* 对话框/表单里的输入框也用同一根焦点线。 */
+  :where(input, textarea):focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 1px;
+  }
 }
 
 /* 画布交互分区：拖动区自己吃掉触摸手势，不让浏览器拿去滚页面/缩放（真机上否则一拖就被 pointercancel 打断） */
@@ -268,4 +386,36 @@ body {
 .terminal-host .xterm-viewport::-webkit-scrollbar-thumb {
   background: var(--color-strong);
   border-radius: 4px;
+}
+
+/* 流光字：只给「正在进行」的标题（正在思考 / 正在处理）。不动画的环境里就是普通的弱化字。 */
+.shimmer-text {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-fg-faint) 0%,
+    var(--color-fg-faint) 40%,
+    var(--color-fg) 50%,
+    var(--color-fg-faint) 60%,
+    var(--color-fg-faint) 100%
+  );
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: shimmer-text 2.2s linear infinite;
+}
+@keyframes shimmer-text {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    color: var(--color-fg-faint);
+    background: none;
+  }
 }

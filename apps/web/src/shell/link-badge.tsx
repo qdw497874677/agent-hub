@@ -19,7 +19,7 @@ const TONE: Record<LinkInfo['state'], string> = {
   connecting: 'text-tertiary',
   syncing: 'text-tertiary',
   live: 'text-sage',
-  degraded: 'text-accent',
+  degraded: 'text-warning',
   disconnected: 'text-tertiary',
   rejected: 'text-rust'
 };

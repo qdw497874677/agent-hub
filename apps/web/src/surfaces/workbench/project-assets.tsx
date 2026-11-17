@@ -42,7 +42,7 @@ export function ProjectAssets({ projectId }: { projectId: string }) {
               />
               <span className="rounded border border-strong px-1 text-meta text-secondary">{KIND_TEXT[asset?.kind ?? ''] ?? '资产'}</span>
               <span className="min-w-0 flex-1 truncate text-sub text-primary">{asset?.name ?? choice.assetId}</span>
-              <span className={`text-meta ${choice.scope === 'project' ? 'text-accent' : 'text-tertiary'}`}>
+              <span className={`text-meta ${choice.scope === 'project' ? 'text-secondary' : 'text-tertiary'}`}>
                 {choice.scope === 'project' ? '本项目' : '全局'}
               </span>
               {shadow && choice.enabled ? <span className="text-meta text-tertiary">被本项目的同名资产盖过</span> : null}

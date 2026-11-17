@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { mcpGuide, type McpClientKind } from '../atoms/mcp-guide.ts';
 
-const BTN = 'rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent';
+const BTN = 'rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-strong hover:text-primary';
 
 /**
  * 外部智能体接入 MCP 的一页说明：端点、各家客户端片段、给 agent 的提示词。
@@ -30,7 +30,7 @@ export function McpGuidePanel() {
             aria-selected={tab === item.id}
             data-testid="mcp-guide-tab"
             data-tab={item.id}
-            className={`rounded-sm border px-2 py-1 text-meta ${tab === item.id ? 'border-accent text-accent' : 'border-hair text-secondary hover:text-primary'}`}
+            className={`rounded-sm border px-2 py-1 text-meta ${tab === item.id ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary hover:text-primary'}`}
             onClick={() => {
               setTab(item.id);
               setCopied(false);

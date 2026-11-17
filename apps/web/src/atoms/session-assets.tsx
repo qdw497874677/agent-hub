@@ -41,7 +41,7 @@ export function SessionAssets({ sessionId, detailed = false }: { sessionId: stri
           <span className="font-mono text-tertiary" title={entry.digest}>
             {entry.digest.slice(0, 8)}
           </span>
-          <span className={entry.scope === 'project' ? 'text-accent' : 'text-tertiary'}>{entry.scope === 'project' ? '本项目' : '全局'}</span>
+          <span className={entry.scope === 'project' ? 'text-secondary' : 'text-tertiary'}>{entry.scope === 'project' ? '本项目' : '全局'}</span>
         </p>
       ))}
     </section>

@@ -1,4 +1,5 @@
-import { AccountMenu, useAccount } from '../auth.tsx';
+import { useAccount } from '../auth.tsx';
+import { AppShell, PageBody, PageHeader } from '../page-shell.tsx';
 import { formatRoute, type AdminTab } from '../route.ts';
 import { Overview } from './overview.tsx';
 import { Users } from './users.tsx';
@@ -21,59 +22,45 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
         <p className="text-head text-primary">只有 hub 管理员能进运营后台</p>
-        <a className="text-meta text-accent" href={formatRoute({ page: 'home' })}>
+        <a className="text-meta text-link" href={formatRoute({ page: 'home' })}>
           回首页
         </a>
       </div>
     );
   }
   return (
-    <div className="flex h-full flex-col md:flex-row">
-      <nav aria-label="后台分页" className="shrink-0 border-b border-hair md:w-[200px] md:border-b-0 md:border-r">
-        <div className="flex items-center justify-between gap-2 px-3 pt-3 md:pt-4">
-          <div className="min-w-0">
-            <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>
-              ← agent-hub
-            </a>
-            <p className="text-head text-primary">运营后台</p>
-          </div>
-          <AccountMenu />
-        </div>
-        <ul className="flex gap-1 overflow-x-auto px-2 py-2 md:flex-col md:gap-0.5 md:px-2 md:py-3">
-          {ADMIN_PAGE_TABS.map((item) => (
-            <li key={item.id} className="shrink-0">
-              <a
-                href={formatRoute({ page: 'admin', tab: item.id })}
-                aria-current={item.id === active ? 'page' : undefined}
-                className={`block rounded-sm px-3 py-1.5 text-body ${
-                  item.id === active ? 'bg-card text-primary' : 'text-secondary hover:bg-card'
-                }`}
-              >
-                {item.label}
-                {item.id === 'assets' && upgradable > 0 ? (
-                  <span
-                    data-testid="asset-update-badge"
-                    title={`${upgradable} 个资产有新版本`}
-                    className="ml-1.5 rounded-full bg-accent px-1.5 text-meta text-canvas"
-                  >
-                    {upgradable}
-                  </span>
-                ) : null}
-              </a>
-            </li>
-          ))}
-        </ul>
-      </nav>
-      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
-        <div className="mx-auto max-w-[880px] min-w-0">
+    <AppShell>
+      <PageHeader
+        title="运营后台"
+        tabsLabel="后台分页"
+        activeTab={active}
+        tabs={ADMIN_PAGE_TABS.map((item) => ({
+          id: item.id,
+          href: formatRoute({ page: 'admin', tab: item.id }),
+          label: (
+            <>
+              {item.label}
+              {item.id === 'assets' && upgradable > 0 ? (
+                <span
+                  data-testid="asset-update-badge"
+                  title={`${upgradable} 个资产有新版本`}
+                  className="ml-1.5 rounded-full bg-action px-1.5 text-meta text-action-fg"
+                >
+                  {upgradable}
+                </span>
+              ) : null}
+            </>
+          )
+        }))}
+      />
+      <PageBody wide>
           {active === 'overview' && <Overview />}
           {active === 'users' && <Users />}
           {active === 'workers' && <Workers />}
           {active === 'assets' && <Assets />}
           {active === 'components' && <Components />}
           {active === 'audit' && <Audit />}
-        </div>
-      </main>
-    </div>
+      </PageBody>
+    </AppShell>
   );
 }

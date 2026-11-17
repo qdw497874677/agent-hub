@@ -9,7 +9,7 @@ import { relativeTime } from '../../shell/workers.tsx';
  * 没有任何调度记录时不显示。
  */
 const STATE: Record<DispatchItemDto['state'], { label: string; cls: string }> = {
-  queued: { label: '排队', cls: 'bg-accent/15 text-accent' },
+  queued: { label: '排队', cls: 'bg-info-bg text-info' },
   running: { label: '运行中', cls: 'bg-sage/20 text-primary' },
   done: { label: '完成', cls: 'bg-sage/25 text-primary' },
   failed: { label: '失败', cls: 'bg-rust/15 text-rust' },

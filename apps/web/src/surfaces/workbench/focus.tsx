@@ -5,11 +5,13 @@ import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionsApi } from '../../shell/api.ts';
-import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
+import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
+import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { SessionDetails } from './inspector.tsx';
+import { useWide } from '../../shell/device.ts';
 import { localTime } from '../../shell/local-time.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { attachmentsCapability } from '../../atoms/attachments.ts';
@@ -120,6 +122,7 @@ export function FocusView({
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const wide = useWide();
   // 只有手机上会用到这个对话框：桌面的「Aa」是内嵌的 DisplayMenu。
   const [displayOpen, setDisplayOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -215,7 +218,8 @@ export function FocusView({
     open: (target) => {
       setReveal((prev) => ({ ...target, nonce: (prev?.nonce ?? 0) + 1 }));
       setTab('files');
-    }
+    },
+    openChanges: () => setTab('changes')
   }), [workspaceRoot]);
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
   // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
@@ -447,6 +451,11 @@ export function FocusView({
   // 跳三次，观感很碎，所以现在只打标不改变顺序。
   const held = heldPromptSeqs(deliveriesBySeq);
   const timelineBlocks = markQueued(blocks, held);
+  // 时间线 v2：每轮连续的工具调用 + 思考并成一组（摘要可收起）；工具设成「隐藏」时不分组
+  const timelineItems = useMemo(
+    () => (settings.tools === 'hidden' ? timelineBlocks.map((block, index) => ({ type: 'block' as const, block, index, recovered: false })) : groupTimeline(timelineBlocks, { running: turnRunning })),
+    [timelineBlocks, settings.tools, turnRunning]
+  );
   const promptSeqs = timelineBlocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
   /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
   const badgeBefore = (seq: number) => {
@@ -641,8 +650,22 @@ export function FocusView({
     }
   }
 
+  // 宽屏的详情停靠在对话右边，不压住对话；画布里的浮窗太窄，照旧用抽屉
+  const docked = wide && !windowChrome;
+  const detailsPanel = details ? (
+    <SessionDetails
+      canvas={canvas}
+      session={session}
+      artifacts={artifacts}
+      live={live}
+      docked={docked}
+      onClose={() => setDetails(false)}
+      onBrowseFiles={() => { setDetails(false); setTab('files'); }}
+    />
+  ) : null;
   return (
-    <div ref={viewRef} data-focus-view className="flex min-h-0 flex-1 flex-col bg-canvas">
+    <div ref={viewRef} data-focus-view className="flex min-h-0 flex-1 bg-canvas">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header
         className={`flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
         data-testid={windowChrome ? 'window-titlebar' : undefined}
@@ -661,7 +684,7 @@ export function FocusView({
               placeholder={task?.title ?? '会话名'}
               aria-label="会话名"
               data-testid="session-title-input"
-              className="h-7 w-full rounded-sm border border-hair bg-card px-1.5 text-body text-primary outline-none focus:border-accent"
+              className="h-7 w-full rounded-sm border border-hair bg-card px-1.5 text-body text-primary outline-none focus:border-ring"
               onChange={(e) => setTitleDraft(e.target.value)}
               onPointerDown={(e) => e.stopPropagation()}
               onBlur={saveRename}
@@ -687,7 +710,7 @@ export function FocusView({
               {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
             </span>
             {/* 常驻标记放在状态行里：窄屏标题被截断时这一枚也不会换行 */}
-            {pinned ? <PinnedMark testId="session-pinned" className="size-3 text-accent" /> : null}
+            {pinned ? <PinnedMark testId="session-pinned" className="size-3 text-secondary" /> : null}
           </p>
         </div>
         <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
@@ -702,7 +725,8 @@ export function FocusView({
           </button>
           <button
             className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary sm:flex md:h-9"
-            onClick={() => setDetails(true)}
+            aria-pressed={details}
+            onClick={() => setDetails((open) => !open)}
           >
             详情
           </button>
@@ -852,7 +876,7 @@ export function FocusView({
         >
           <span className="rounded bg-card px-1.5 py-0.5 text-meta text-tertiary">侧聊</span>
           <span className="min-w-0 flex-1 truncate">这条会话是侧聊：用主会话的工作目录单独问了一轮</span>
-          <span className="shrink-0 text-accent">返回主会话</span>
+          <span className="shrink-0 text-link">返回主会话</span>
         </button>
       ) : null}
       <ProvenanceRow sessionId={session.id} />
@@ -969,7 +993,7 @@ export function FocusView({
         />
       ) : null}
       {displayOpen ? <DisplaySettingsDialog settings={settings} onChange={changeSettings} onClose={() => setDisplayOpen(false)} /> : null}
-      {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} onBrowseFiles={() => { setDetails(false); setTab('files'); }} /> : null}
+      {docked ? null : detailsPanel}
       {continuing ? (
         <ContinueDialog
           canvas={canvas}
@@ -1016,7 +1040,7 @@ export function FocusView({
         ref={scroller}
         // 程序化聚焦的落点（「查看」跳转过来）：不是 Tab 停靠站，但焦点环要看得见。
         tabIndex={-1}
-        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${tab === 'chat' ? '' : 'hidden'}`}
+        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring ${tab === 'chat' ? '' : 'hidden'}`}
       >
         <div
           role="log"
@@ -1049,21 +1073,36 @@ export function FocusView({
           ) : (
             <FileLinksContext.Provider value={fileLinks}>
             <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
-            {timelineBlocks.map((block, index) => (
-              <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
-                onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
-              <ChatBlock
-                block={block}
-                agentLabel={agentLabel}
-                sessionId={session.id}
-                settings={settings}
-                last={index === timelineBlocks.length - 1}
-                running={turnRunning}
-                showAuthor={showAuthor}
-                queued={block.queued === true}
-              />
-              </TurnFrag>
-            ))}
+            {timelineItems.map((item) => {
+              const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
+                <ChatBlock
+                  key={index}
+                  block={block}
+                  agentLabel={agentLabel}
+                  sessionId={session.id}
+                  settings={settings}
+                  last={index === timelineBlocks.length - 1}
+                  running={turnRunning}
+                  showAuthor={showAuthor}
+                  queued={block.queued === true}
+                  recovered={recovered}
+                />
+              );
+              if (item.type === 'work') {
+                return (
+                  <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} forceOpen={settings.tools === 'expanded'}>
+                    {item.items.map(renderBlock)}
+                  </WorkGroup>
+                );
+              }
+              const { block, index } = item;
+              return (
+                <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
+                  onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
+                  {renderBlock(item)}
+                </TurnFrag>
+              );
+            })}
             {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
             {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
             <PendingPrompts
@@ -1084,22 +1123,8 @@ export function FocusView({
                 />
               )}
             />
-            {reason && timelineBlocks[timelineBlocks.length - 1]?.kind !== 'error' ? (
+            {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
               <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
-            ) : null}
-            {progress ? (
-              <div
-                className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-meta text-tertiary"
-                aria-live="polite"
-                aria-label={progress.detail}
-                title={progress.detail}
-                data-testid="turn-progress"
-              >
-                <span className="size-1.5 shrink-0 rounded-full bg-accent motion-safe:animate-pulse" aria-hidden />
-                <span className="min-w-0 truncate" data-testid="turn-progress-phase">{progress.label}</span>
-                {/* 秒数只给眼睛：读屏别每秒被打断一次，完整说明在 title / aria-label 里。 */}
-                <span className="shrink-0 tabular-nums text-tertiary" aria-hidden data-testid="turn-progress-elapsed">· {progress.seconds} 秒</span>
-              </div>
             ) : null}
             </DeliveryContext.Provider>
             </FileLinksContext.Provider>
@@ -1144,23 +1169,40 @@ export function FocusView({
               })}
             </div>
           ) : null}
-          {gitState?.isGit || live?.contextUsage ? (
-            <div className="mb-1 flex items-center justify-between gap-2 pr-1">
-              {gitState?.isGit ? (
-                <button
-                  type="button"
-                  className="flex min-w-0 items-center gap-1 text-meta text-tertiary hover:text-primary"
-                  title={`${gitState.branch ?? '分离 HEAD'}${gitState.ahead > 0 ? ` · 领先 ${gitState.ahead}` : ''}${gitState.files.length > 0 ? ` · ${gitState.files.length} 个未提交改动` : ''}`}
-                  data-testid="git-branch"
-                  onClick={() => setGitOpen(true)}
+          {/* 输入框上方的状态行：在跑时是「● 正在做什么 · 几秒」，不跑时是分支；右边是上下文占用 */}
+          {progress || gitState?.isGit || live?.contextUsage ? (
+            <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
+              {progress ? (
+                <div
+                  className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-meta text-tertiary"
+                  aria-live="polite"
+                  aria-label={progress.detail}
+                  title={progress.detail}
+                  data-testid="turn-progress"
                 >
-                  <span aria-hidden>⎇</span>
-                  <span className="truncate font-mono">{gitState.branch ?? 'HEAD'}</span>
-                  {gitState.files.length > 0 ? <span className="shrink-0 text-rust">{gitState.files.length} 改动</span> : null}
-                  {gitState.ahead > 0 ? <span className="shrink-0 text-tertiary">↑{gitState.ahead}</span> : null}
-                </button>
+                  <span className="size-1.5 shrink-0 rounded-full bg-live motion-safe:animate-pulse" aria-hidden />
+                  <span className="min-w-0 truncate text-secondary" data-testid="turn-progress-phase">{progress.label}</span>
+                  {/* 秒数只给眼睛：读屏别每秒被打断一次，完整说明在 title / aria-label 里。 */}
+                  <span className="shrink-0 tabular-nums" aria-hidden data-testid="turn-progress-elapsed">· {progress.seconds} 秒</span>
+                </div>
               ) : <span />}
-              {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
+              <div className="flex min-w-0 shrink-0 items-center gap-3">
+                {gitState?.isGit ? (
+                  <button
+                    type="button"
+                    className="flex min-w-0 items-center gap-1 text-meta text-tertiary hover:text-primary"
+                    title={`${gitState.branch ?? '分离 HEAD'}${gitState.ahead > 0 ? ` · 领先 ${gitState.ahead}` : ''}${gitState.files.length > 0 ? ` · ${gitState.files.length} 个未提交改动` : ''}`}
+                    data-testid="git-branch"
+                    onClick={() => setGitOpen(true)}
+                  >
+                    <span aria-hidden>⎇</span>
+                    <span className="max-w-[160px] truncate font-mono">{gitState.branch ?? 'HEAD'}</span>
+                    {gitState.files.length > 0 ? <span className="shrink-0 text-secondary">{gitState.files.length} 改动</span> : null}
+                    {gitState.ahead > 0 ? <span className="shrink-0 text-tertiary">↑{gitState.ahead}</span> : null}
+                  </button>
+                ) : null}
+                {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
+              </div>
             </div>
           ) : null}
           <SubagentTrack blocks={blocks} onSelect={(id) => setSubagentPath([id])} triggerRef={subagentTrackRef} />
@@ -1178,7 +1220,7 @@ export function FocusView({
                 type="button"
                 data-testid="background-activity-jump"
                 onClick={jumpToConversationEnd}
-                className="ml-auto shrink-0 rounded-sm px-1 text-meta text-tertiary hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                className="ml-auto shrink-0 rounded-sm px-1 text-meta text-tertiary hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
               >
                 查看
               </button>
@@ -1216,6 +1258,8 @@ export function FocusView({
           />
         </div>
       </div>
+    </div>
+    {docked ? detailsPanel : null}
     </div>
   );
 }
@@ -1262,7 +1306,7 @@ function MessageMenu({ onRewind }: { onRewind: () => void }) {
         ⋯
       </button>
       {open ? (
-        <div role="menu" className="absolute right-0 top-6 z-20 min-w-[132px] rounded-sm border border-strong bg-panel py-1 shadow-lg" onMouseLeave={() => setOpen(false)}>
+        <div role="menu" className="absolute right-0 top-6 z-20 min-w-[132px] rounded-lg border border-strong bg-overlay py-1 shadow-overlay" onMouseLeave={() => setOpen(false)}>
           <button type="button" role="menuitem" data-testid="msg-rewind" className="block w-full px-3 py-1.5 text-left text-sub text-primary hover:bg-hair/40"
             onClick={() => { setOpen(false); onRewind(); }}>
             从这里重来

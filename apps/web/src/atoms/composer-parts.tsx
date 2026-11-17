@@ -1,10 +1,9 @@
+import { Icon } from './icons.tsx';
 
 
 /**
- * 一个圆点，两种身份：能发时是 ↑，在跑时是 ■。
- *
- * 不并排放两个按钮——运行中同时摆着「↑ 发送」和「■ 中断」，人得先读字才知道按哪个；
- * 而这两件事本来就互斥（参考 opencode web 的做法）。
+ * 能发时是 ↑；在跑时是 ■ 中断。在跑时写了字，旁边多一个「排队发送」：
+ * 消息进队列，这一轮结束后自动发出（服务端本来就排队，这里只是把键盘之外的入口补上）。
  */
 export function ActionDot({
   running,
@@ -19,28 +18,42 @@ export function ActionDot({
   onInterrupt: () => void;
   size: 'sm' | 'md';
 }) {
-  const box = size === 'sm' ? 'size-9 text-meta md:size-6' : 'size-10 text-sub md:size-7';
+  const box = size === 'sm' ? 'size-9 md:size-6' : 'size-10 md:size-7';
+  const icon = size === 'sm' ? 13 : 15;
   if (running) {
     return (
-      <button
-        aria-label="中断"
-        className={`grid ${box} shrink-0 place-items-center rounded-full border border-rust text-rust hover:bg-rust/15`}
-        title="中断"
-        onClick={onInterrupt}
-      >
-        ■
-      </button>
+      <span className="flex shrink-0 items-center gap-1.5">
+        {/* 在跑时也能接着说：消息排进队列，这一轮结束后自动发出 */}
+        {canSend ? (
+          <button
+            aria-label="排队发送"
+            className={`grid ${box} shrink-0 place-items-center rounded-full border border-strong text-primary hover:bg-hover`}
+            title="排队发送：这一轮结束后自动发出（⌘↵）"
+            onClick={onSend}
+          >
+            <Icon name="queue" size={icon} />
+          </button>
+        ) : null}
+        <button
+          aria-label="中断"
+          className={`grid ${box} shrink-0 place-items-center rounded-full border border-danger/70 text-danger hover:bg-danger/15`}
+          title="中断"
+          onClick={onInterrupt}
+        >
+          <Icon name="stop" size={icon - 2} />
+        </button>
+      </span>
     );
   }
   return (
     <button
       aria-label="发送"
-      className={`grid ${box} shrink-0 place-items-center rounded-full bg-accent text-canvas hover:brightness-110 disabled:bg-hair disabled:text-tertiary`}
+      className={`grid ${box} shrink-0 place-items-center rounded-full bg-action text-action-fg hover:bg-action/90 disabled:bg-hair disabled:text-tertiary`}
       title="发送（⌘↵）"
       disabled={!canSend}
       onClick={onSend}
     >
-      ↑
+      <Icon name="arrow-up" size={icon} />
     </button>
   );
 }

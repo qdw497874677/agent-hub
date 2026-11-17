@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { currentTheme } from '../shell/theme.ts';
+import { Notice } from './notice.tsx';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
 import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
@@ -239,7 +241,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                 {changed?.files.map((f) => (
                   <button key={f.path} onClick={() => open({ path: f.path }, true)} data-testid="change-row"
                     className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened?.path === f.path ? 'bg-hair/60' : ''}`}>
-                    <span className="w-3 shrink-0 font-mono text-meta text-accent">{GIT_LABEL[f.status] ?? '?'}</span>
+                    <span className="w-3 shrink-0 font-mono text-meta text-warning">{GIT_LABEL[f.status] ?? '?'}</span>
                     <span className="min-w-0 flex-1 truncate font-mono text-sub text-secondary">{f.path}</span>
                     <span className="shrink-0 font-mono text-meta text-sage">+{f.additions}</span>
                     <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
@@ -282,8 +284,8 @@ function Directory(props: { sessionId: string; keys: FilesKeys; path: string; de
               style={{ paddingLeft: 12 + depth * 14 }}>
               <span className="w-3 shrink-0 text-meta text-tertiary">{isDir ? (isOpen ? '▾' : '▸') : ''}</span>
               <span className={`min-w-0 flex-1 truncate text-sub ${isDir ? 'text-primary' : 'text-secondary'}`}>{e.name}{e.type === 'symlink' ? ' ↗' : ''}</span>
-              {e.sensitive ? <span className="shrink-0 text-meta text-accent" title="敏感文件">🔒</span> : null}
-              {e.git ? <span className="shrink-0 font-mono text-meta text-accent">{GIT_LABEL[e.git] ?? ''}</span> : null}
+              {e.sensitive ? <span className="shrink-0 text-meta text-warning" title="敏感文件">🔒</span> : null}
+              {e.git ? <span className="shrink-0 font-mono text-meta text-warning">{GIT_LABEL[e.git] ?? ''}</span> : null}
             </button>
             {isOpen ? <Directory {...props} path={e.path} depth={depth + 1} /> : null}
           </div>
@@ -344,7 +346,7 @@ function PathBar({ path, root, wide, download, size, onCrumb, onBack }: {
         )}
         <span className="ml-auto flex shrink-0 items-center gap-3 text-meta text-tertiary">
           {size !== undefined ? <span className="font-mono">{humanSize(size)}</span> : null}
-          {download ? <a href={download} download className="text-accent" data-testid="file-download">下载</a> : null}
+          {download ? <a href={download} download className="text-link" data-testid="file-download">下载</a> : null}
         </span>
       </div>
       {root ? (
@@ -365,7 +367,7 @@ function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { se
     if (text === null || !lang || text.length > 300_000) return;
     let live = true;
     // Shiki 按需加载语言 / 主题：首次打开某种语言才下载它的语法
-    void import('shiki').then(({ codeToHtml }) => codeToHtml(text, { lang, theme: 'github-dark-dimmed' })).then((h) => live && setHtml(h), () => undefined);
+    void import('shiki').then(({ codeToHtml }) => codeToHtml(text, { lang, theme: currentTheme() === 'light' ? 'github-light' : 'github-dark-dimmed' })).then((h) => live && setHtml(h), () => undefined);
     return () => { live = false; };
   }, [text, opened.path]);
   const content = useRef<HTMLDivElement>(null);
@@ -385,9 +387,9 @@ function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { se
       {file.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {file.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(file.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件，不预览——可以下载</p> : null}
-      {data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">文件超过 1 MB，只显示前 1 MB</p> : null}
+      {data?.truncated ? <Notice tone="warning" className="px-3 pt-2">文件超过 1 MB，只显示前 1 MB</Notice> : null}
       {text !== null ? (
-        <div ref={content} className="[&_[data-target-line]]:bg-accent/20" data-line={line ?? undefined}>
+        <div ref={content} className="[&_[data-target-line]]:bg-warning/20" data-line={line ?? undefined}>
           {html ? <div className="files-code overflow-x-auto p-3 text-sub [&_pre]:!bg-transparent" data-testid="file-content" dangerouslySetInnerHTML={{ __html: html }} /> :
           <pre className="overflow-x-auto whitespace-pre p-3 font-mono text-sub text-secondary" data-testid="file-content">{line === null ? text : text.split('\n').map((l, i) => <span key={i} className="line">{l}{'\n'}</span>)}</pre>}
         </div>
@@ -451,7 +453,7 @@ function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: 
       {diff.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {diff.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(diff.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件有改动</p> : null}
-      {data?.truncated ? <p className="px-3 pt-2 text-meta text-accent">diff 超过 512 KB，只显示前一部分</p> : null}
+      {data?.truncated ? <Notice tone="warning" className="px-3 pt-2">diff 超过 512 KB，只显示前一部分</Notice> : null}
       {data && data.patch === '' && !data.binary ? <p className="p-4 text-sub text-tertiary">没有差异</p> : null}
       {rows.length > 0 ? (
         <>
@@ -459,13 +461,13 @@ function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: 
           <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-hair px-3 py-1.5" data-testid="diff-toolbar">
             {picked && range ? (
               <>
-                <span className="font-mono text-meta text-accent">
+                <span className="font-mono text-meta text-secondary">
                   {range.start === range.end ? `第 ${range.start} 行` : `第 ${range.start}–${range.end} 行`}
                   <span className="text-tertiary"> · {picked.side === 'old' ? '改前' : '改后'}</span>
                 </span>
                 {onQuote && ref ? (
                   <button type="button" onClick={quote} data-testid="diff-quote"
-                    className="min-h-6 cursor-pointer rounded bg-accent px-2 text-meta font-medium text-canvas transition-colors hover:bg-accent-dim [@media(pointer:coarse)]:min-h-8 [@media(pointer:coarse)]:px-3">
+                    className="min-h-6 cursor-pointer rounded bg-action px-2 text-meta font-medium text-action-fg transition-colors hover:bg-action/90 [@media(pointer:coarse)]:min-h-8 [@media(pointer:coarse)]:px-3">
                     引用到对话
                   </button>
                 ) : null}
@@ -573,7 +575,7 @@ function PatchLine({ row, picked, pick, plain }: { row: DiffRow; picked: LineSel
   const newOn = row.newLine !== undefined && inSelection(picked, 'new', row.newLine);
   const highlighted = oldOn || newOn;
   return (
-    <div className={`flex min-w-full w-max ${DIFF_ROW} ${highlighted ? 'bg-accent/15' : tone}`}>
+    <div className={`flex min-w-full w-max ${DIFF_ROW} ${highlighted ? 'bg-warning/15' : tone}`}>
       <Gutter side="old" line={row.oldLine} selected={oldOn} pick={pick} />
       <Gutter side="new" line={row.newLine} selected={newOn} pick={pick} />
       <span aria-hidden className={`w-4 shrink-0 select-none whitespace-pre text-center ${mark}`}>{sign}</span>
@@ -592,7 +594,7 @@ function Gutter({ side, line, selected, pick }: { side: DiffSide; line: number |
     <button type="button" data-testid="diff-line" data-side={side} data-line={line}
       aria-pressed={selected} aria-label={`选择第 ${line} 行`} title={`从第 ${line} 行开始选`}
       onClick={() => pick(side, line)}
-      className={`flex min-h-6 w-10 shrink-0 cursor-pointer items-center justify-end border-r border-hair/40 px-1 text-right text-[11px] tabular-nums transition-colors ${selected ? 'bg-accent/30 text-accent' : 'text-tertiary hover:bg-card-raised hover:text-primary'} [@media(pointer:coarse)]:min-h-8`}>
+      className={`flex min-h-6 w-10 shrink-0 cursor-pointer items-center justify-end border-r border-hair/40 px-1 text-right text-[11px] tabular-nums transition-colors ${selected ? 'bg-selected text-primary' : 'text-tertiary hover:bg-card-raised hover:text-primary'} [@media(pointer:coarse)]:min-h-8`}>
       {line}
     </button>
   );

@@ -148,7 +148,7 @@ function RoleEditor({ catalog, initial, onDone }: { catalog: AccessCatalogDto; i
                             data-perm={perm}
                             data-option={option ?? 'none'}
                             onClick={() => set(perm, option)}
-                            className={`min-h-[32px] min-w-[52px] px-2 text-[12px] ${on ? 'bg-accent text-canvas' : 'text-secondary hover:text-primary'}`}
+                            className={`min-h-[32px] min-w-[52px] px-2 text-[12px] ${on ? 'bg-action text-action-fg' : 'text-secondary hover:text-primary'}`}
                           >
                             {option === null ? '无' : option === 'own' ? '自己的' : '全团队'}
                           </button>
@@ -272,7 +272,7 @@ export function VisitPanel({ myTeamId }: { myTeamId: string | null }) {
       <p className="text-sub text-primary">临时进入团队</p>
       <p className="mt-1 text-meta text-tertiary">进入后为只读，并记入双方审计。</p>
       {(visits.data ?? []).map((visit) => (
-        <div key={visit.id} data-testid="active-visit" className="mt-2 flex items-center gap-2 rounded-sm border border-accent px-3 py-2">
+        <div key={visit.id} data-testid="active-visit" className="mt-2 flex items-center gap-2 rounded-sm border border-live/60 px-3 py-2">
           <p className="min-w-0 flex-1 truncate text-meta text-primary">
             正在只读访问 {nameOf.get(visit.resourceId) ?? visit.resourceId} · 至 {new Date(visit.expiresAt ?? 0).toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit', month: 'numeric', day: 'numeric' })}
           </p>

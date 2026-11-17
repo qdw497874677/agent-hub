@@ -37,29 +37,9 @@ for (const width of [390, 1280]) {
     await page.getByTestId('bot-name').fill(`writer${tag}`);
     await page.locator('[data-testid="bot-color"][data-color="sage"]').click();
     await page.locator('[data-testid="bot-runtime"][data-runtime="grok"]').click();
-    // 模型：机器上报了清单就是下拉，旁边「手动输入模型 id」随时能切回手填；没上报清单就直接是手填框。
-    // 清单可能比表单晚到：整段重试，等它真到位再点。
-    const manualToggle = page.getByTestId('bot-model-manual');
-    const modelInput = page.getByTestId('bot-model');
-    await expect(async () => {
-      if (await modelInput.isVisible()) return;
-      if ((await manualToggle.count()) === 0) throw new Error('模型清单还没到');
-      // 先走一遍下拉（原生 select 时挑第二个模型），再点手填
-      const modelSelect = page.getByTestId('bot-model-select');
-      if ((await modelSelect.count()) > 0 && (await modelSelect.evaluate((el) => el.tagName)) === 'SELECT') {
-        await modelSelect.selectOption({ index: 1 });
-      }
-      await manualToggle.click();
-      await expect(modelInput).toBeVisible();
-    }).toPass({ timeout: 20_000 });
-    await modelInput.fill('m-writer');
-    if ((await manualToggle.count()) > 0) {
-      // 手填入口常开：切回清单看得见，再切回手填时刚填的值不丢
-      await manualToggle.click();
-      await expect(page.getByTestId('bot-model-select')).toBeVisible();
-      await manualToggle.click();
-      await expect(modelInput).toHaveValue('m-writer');
-    }
+    // 模型：和输入框同一个选择器，没有手填框；不选就是「默认模型（留空）」
+    await expect(page.getByTestId('bot-model-select').getByRole('button', { name: /^模型：/ })).toBeVisible();
+    await expect(page.getByTestId('bot-model')).toHaveCount(0);
     await page.getByTestId('bot-description').fill('你负责写初稿。');
     await expect(page.getByTestId('bot-description-count')).toHaveText('7 / 4000');
     await shot('02-bot-new');
@@ -128,7 +108,7 @@ for (const width of [390, 1280]) {
 
 // 机器上不一定装了 grok：把 workers 接口补一份模型清单，专门验「有清单」这条路径——
 // 下拉旁边的手填入口常开（自建模型、清单没收的口径都靠它），切来切去值不丢。
-test('模型：清单在手时是下拉，手填入口常开——能切到手填、也能切回清单，值不丢', async ({ page, baseURL }) => {
+test('模型：统一选择器，按提供方分组可搜索，没有手填框；留空 = 运行时默认', async ({ page, baseURL }) => {
   await loginByApi(page);
   await page.route('**/api/workers', async (route) => {
     const response = await route.fetch();
@@ -149,19 +129,17 @@ test('模型：清单在手时是下拉，手填入口常开——能切到手�
   await expect(page.getByTestId('bot-form')).toBeVisible();
   await page.locator('[data-testid="bot-runtime"][data-runtime="grok"]').click();
 
-  const toggle = page.getByTestId('bot-model-manual');
-  await expect(toggle).toHaveText('手动输入模型 id');
-  await expect(page.getByTestId('bot-model-select')).toBeVisible();
+  const field = page.getByTestId('bot-model-select');
+  const button = field.getByRole('button', { name: /^模型：/ });
+  await expect(button).toContainText('默认模型（留空）');
+  await expect(page.getByTestId('bot-model-manual')).toHaveCount(0);
   await expect(page.getByTestId('bot-model')).toHaveCount(0);
 
-  await toggle.click();                        // 手填入口常开
-  await expect(toggle).toHaveText('从清单里选');
-  await page.getByTestId('bot-model').fill('m-writer');
-
-  await toggle.click();                        // 切回清单：值落在「清单外」那一条上
-  await expect(page.getByTestId('bot-model-select')).toBeVisible();
-  await expect(page.getByTestId('bot-model-select')).toContainText('m-writer');
-
-  await toggle.click();                        // 再切回手填：刚填的值不丢
-  await expect(page.getByTestId('bot-model')).toHaveValue('m-writer');
+  await button.click();
+  const sheet = page.getByRole('dialog', { name: '选择模型' });
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole('combobox').fill('grok-4.5');
+  await sheet.getByRole('option').filter({ hasText: 'grok-4.5' }).first().click();
+  await expect(sheet).toBeHidden();
+  await expect(button).toContainText('grok-4.5');
 });

@@ -325,11 +325,8 @@ test('会话卡片能改模型与思考强度，改完不回弹', async ({ page 
 test('会话页窄屏 header 只留标题、状态和更多', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await enterProject(page, PROJECT_NAME);
-  const sidebar = page.getByRole('complementary', { name: '项目导航' });
-  if (!(await sidebar.isVisible().catch(() => false))) {
-    await page.getByRole('button', { name: '打开侧栏' }).click();
-  }
-  await sidebar.getByRole('button', { name: '画布', exact: true }).click();
+  // 视图切换在页头（手机端是图标分段控件），不在侧栏
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
   await sessionNode(page).locator('header').click();
   await sessionNode(page).getByRole('button', { name: '打开', exact: true }).click();
@@ -362,11 +359,8 @@ test('窄屏画布窗口：输入框在视口内可见可点', async ({ page }) 
   const height = 844;
   await page.setViewportSize({ width: 390, height });
   await enterProject(page, PROJECT_NAME);
-  const sidebar = page.getByRole('complementary', { name: '项目导航' });
-  if (!(await sidebar.isVisible().catch(() => false))) {
-    await page.getByRole('button', { name: '打开侧栏' }).click();
-  }
-  await sidebar.getByRole('button', { name: '画布', exact: true }).click();
+  // 视图切换在页头（手机端是图标分段控件），不在侧栏
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '画布', exact: true }).click();
   await expect(sessionNode(page)).toHaveCount(1);
   await sessionNode(page).locator('header').click();
   await sessionNode(page).getByRole('button', { name: '在画布中展开' }).click();
@@ -397,7 +391,8 @@ test('侧栏：桌面常驻，手机上从菜单滑出', async ({ page }, testIn
   expect(await sidebar.getByRole('combobox', { name: '切换项目' }).locator('option:checked').textContent()).toBe(PROJECT_NAME);
   await page.screenshot({ path: testInfo.outputPath('sidebar-390.png'), fullPage: true });
 
-  await sidebar.getByRole('button', { name: '列表', exact: true }).click();
+  await page.getByRole('button', { name: '关闭侧栏' }).click();
   await expect(sidebar).toBeHidden();
+  await page.getByRole('group', { name: '视图' }).getByRole('button', { name: '列表', exact: true }).click();
   await expect(page.getByTestId('list-context')).toBeVisible();
 });

@@ -1,7 +1,7 @@
 import { useState } from 'react';
+import { AppShell, PageBody, PageHeader } from '../../shell/page-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, teamApi, type TeamWorkspaceViewDto } from '../../shell/api.ts';
-import { AccountMenu } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { DirectoryPicker } from './directory-picker.tsx';
@@ -31,24 +31,17 @@ export function TeamWorkspacesPage() {
   const groups = new Map<string, TeamWorkspaceViewDto[]>();
   for (const row of rows) groups.set(row.workspace.workerId ?? '', [...(groups.get(row.workspace.workerId ?? '') ?? []), row]);
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← 项目</a>
-          <h1 className="text-head text-primary">团队工作目录</h1>
-        </div>
-        <AccountMenu />
-      </header>
-      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
-        <div className="mx-auto flex max-w-[960px] flex-col gap-4">
-          <div className="flex flex-wrap items-start justify-end gap-2">
-            {canManage ? (
-              <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>＋ 新建工作目录</button>
-            ) : null}
-          </div>
-          <p className="text-meta text-tertiary">
-            独占：一个目录只属于一个项目。新建时可以先不分配；要给别人用，在项目设置的「代码与空间」里分配或转移。
-          </p>
+    <AppShell>
+      <PageHeader
+        title="团队工作目录"
+        actions={
+          canManage ? (
+            <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>新建工作目录</button>
+          ) : null
+        }
+      />
+      <PageBody className="flex flex-col gap-4">
+        <p className="text-meta text-tertiary">一个目录只属于一个项目；分配或转移在项目设置的「代码与空间」里。</p>
           {creating ? <CreateWorkspace onDone={() => setCreating(false)} /> : null}
           {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
           {list.error ? <p className="text-meta text-rust">{errorText(list.error)}</p> : null}
@@ -63,9 +56,8 @@ export function TeamWorkspacesPage() {
               </ul>
             </section>
           ))}
-        </div>
-      </main>
-    </div>
+      </PageBody>
+    </AppShell>
   );
 }
 
@@ -90,7 +82,7 @@ function TeamWorkspaceRow({ row, canManage }: { row: TeamWorkspaceViewDto; canMa
           {workspace.repoUrl ? <div className="truncate font-mono text-meta text-tertiary">{workspace.repoUrl}</div> : null}
           <div className="mt-1 flex flex-wrap gap-1 text-meta">
             {row.projects.map((project) => (
-              <a key={project.id} className="rounded-sm bg-card px-1.5 text-secondary hover:text-accent" href={formatRoute({ page: 'project', projectId: project.id, view: 'canvas', sessionId: null })}>
+              <a key={project.id} className="rounded-sm bg-card px-1.5 text-secondary hover:text-primary" href={formatRoute({ page: 'project', projectId: project.id, view: 'canvas', sessionId: null })}>
                 {project.name}
               </a>
             ))}
@@ -162,7 +154,7 @@ export function CreateWorkspace({ projectId, onDone }: { projectId?: string; onD
             type="button"
             role="radio"
             aria-checked={mode === value}
-            className={`min-h-[32px] rounded-sm border px-2 text-meta ${mode === value ? 'border-accent text-primary' : 'border-hair text-secondary hover:border-strong'}`}
+            className={`min-h-[32px] rounded-sm border px-2 text-meta ${mode === value ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary hover:border-strong'}`}
             onClick={() => { setMode(value); setPath(null); setPicking(true); }}
           >
             {text}
@@ -177,7 +169,7 @@ export function CreateWorkspace({ projectId, onDone }: { projectId?: string; onD
       ) : null}
       <p className="mb-1 text-meta text-tertiary">
         {path ? <>目录：<span className="font-mono">{shortPath(path)}</span></> : mode === 'link' ? '选一个机器上已有的目录' : '不选就放在托管目录下；也可以选一个空文件夹'}
-        <button type="button" className="ml-2 text-accent hover:underline" onClick={() => setPicking((open) => !open)}>{picking ? '收起' : path ? '换一个' : '浏览…'}</button>
+        <button type="button" className="ml-2 text-link hover:underline" onClick={() => setPicking((open) => !open)}>{picking ? '收起' : path ? '换一个' : '浏览…'}</button>
       </p>
       {picking && machine ? <DirectoryPicker workerId={machine} onCancel={() => setPicking(false)} onPick={(picked) => { setPath(picked); setPicking(false); }} /> : null}
       {create.error ? <p className="mt-2 text-meta text-rust">{errorText(create.error)}</p> : null}

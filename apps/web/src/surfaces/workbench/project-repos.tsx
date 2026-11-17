@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
@@ -280,7 +281,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
               添加仓库
             </button>
             <div className="flex flex-wrap items-center gap-2">
-              {save.isSuccess && !dirty ? <span className="text-meta text-tertiary">已保存</span> : null}
+              <SaveStatus dirty={dirty} saved={save.isSuccess} />
               {checkSummary !== null ? (
                 <button type="button" className={SECONDARY_BUTTON} data-testid="repo-check-force" onClick={forceSave}>
                   仍然保存

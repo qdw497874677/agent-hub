@@ -52,17 +52,17 @@ test('派生对话框：不重新选模型，模型框显示与「开始」是�
   await dialog.getByRole('radio', { name: /新建临时工作目录/ }).click();
   const model = dialog.locator('#derive-model');
   await expect(model).toBeVisible();
-  test.skip((await model.evaluate((el) => el.tagName)) !== 'SELECT', '桌面才是原生下拉');
+  // 模型框是统一的选择器按钮：aria-label 写「模型：<当前值或占位>」
   const start = dialog.getByRole('button', { name: '开始', exact: true });
   await page.waitForTimeout(1_000); // 机器 / 模型列表落定
-  const value = await model.inputValue();
-  const shown = await model.evaluate((el) => (el as HTMLSelectElement).selectedOptions[0]?.textContent ?? '');
+  const shown = ((await model.getAttribute('aria-label')) ?? '').replace(/^模型：/, '');
+  const value = shown === '默认' || shown === '选择模型…' || shown === '用 agent 自己的默认' ? '' : shown;
   if (await start.isDisabled()) {
-    // 不能开始时，下拉里不能显示一个真模型（审计 P0-1：显示 glm-5.3-flash，状态却是空）
-    expect(value, `「开始」不可用，下拉却显示「${shown}」`).toBe('');
+    // 不能开始时，模型框不能显示一个真模型（审计 P0-1：显示 glm-5.3-flash，状态却是空）
+    expect(value, `「开始」不可用，模型框却显示「${shown}」`).toBe('');
     await expect(dialog.getByTestId('derive-start-hint')).toBeVisible();
   } else {
-    expect(value === '' ? shown : value).not.toBe('');
+    expect(shown).not.toBe('');
   }
   if (value === '' && e2eHubModel()) {
     await expect(dialog.getByTestId('derive-start-hint')).toContainText('Hub 模型');
