@@ -838,6 +838,8 @@ toolGateway = createToolGateway({
       workspaceGroups: deps.workspaceGroups,
       bots: deps.bots,
       workspaces: deps.workspaces,
+      access: deps.access,
+      subjectOf,
       derive: (command) => deriveSessionUseCase(deps, command),
       interrupt: (sessionId) => interruptSessionUseCase(deps, sessionId),
       rename: (command) => renameSessionUseCase(deps, command)

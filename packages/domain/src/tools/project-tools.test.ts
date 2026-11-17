@@ -49,7 +49,7 @@ const grant: ToolGrant = {
   revokedAt: null
 };
 
-function world(current = project(), opts: { root?: string } = {}) {
+function world(current = project(), opts: { root?: string; actor?: string; policy?: boolean } = {}) {
   const ran: Array<{ command: string; path: string }> = [];
   const updates: Array<Record<string, unknown>> = [];
   const provider = createProjectToolProvider({
@@ -67,8 +67,16 @@ function world(current = project(), opts: { root?: string } = {}) {
         }
       })
     } as never,
-    access: undefined,
-    subjectOf: async () => null,
+    access: opts.policy
+      ? {
+          context: async () => ({ hubTeamId: 't', settings: { openRegistration: false, membersCanAddMachines: true, refuseWhenFull: [] } }),
+          worker: async () => ({ kind: 'worker', id: 'w1', teamId: 't', createdBy: null, local: true })
+        } as never
+      : undefined,
+    subjectOf: async () =>
+      opts.actor
+        ? ({ loginId: 'l1', user: { id: opts.actor, name: opts.actor, teamId: 't', role: 'member', createdAt: 1, disabledAt: null, deletedAt: null } } as never)
+        : null,
     update: async (input) => {
       updates.push(input as never);
       return ok(project({ checks: (input.checks as string[]) ?? [], description: (input.description as string) ?? null }));
@@ -124,4 +132,26 @@ test('project.update：什么都不传要明说', async () => {
   const result = await provider.call('project.update', {}, { grant } as never);
   assert.equal(result.ok, false);
   assert.deepEqual(updates, []);
+});
+
+test('run.checks：被共享的成员可以跑（#227）', async () => {
+  const { provider, ran } = world(project({ checks: ['true'], createdBy: 'u1', members: ['u2'] }), { actor: 'u2', policy: true });
+  const allowed = await provider.call('run.checks', {}, { grant } as never);
+  assert.equal(allowed.ok, true, allowed.ok ? '' : allowed.error.message);
+  assert.equal(ran.length, 1);
+});
+
+test('run.checks：不是创建者也没被共享时跑不了（#227）', async () => {
+  const { provider, ran } = world(project({ checks: ['true'], createdBy: 'u1' }), { actor: 'u2', policy: true });
+  const denied = await provider.call('run.checks', {}, { grant } as never);
+  assert.equal(denied.ok, false);
+  if (!denied.ok) assert.match(denied.error.message, /跑不了这个项目的检查命令/);
+  assert.deepEqual(ran, []);
+});
+
+test('run.checks：项目所有者可以跑（#227）', async () => {
+  const { provider, ran } = world(project({ checks: ['true'], createdBy: 'u1' }), { actor: 'u1', policy: true });
+  const allowed = await provider.call('run.checks', {}, { grant } as never);
+  assert.equal(allowed.ok, true, allowed.ok ? '' : allowed.error.message);
+  assert.equal(ran.length, 1);
 });

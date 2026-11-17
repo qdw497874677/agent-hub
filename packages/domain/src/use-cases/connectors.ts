@@ -218,7 +218,10 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     if (binding.consecutiveFailures > 0) await deps.store.saveBinding({ ...binding, consecutiveFailures: 0, updatedAt: deps.now() });
   };
 
-  const emit = async (bindingId: string, event: InboundEvent): Promise<void> => {
+  // 同一 binding 的入站串行：限流是「先数后插」，并发 webhook 会一起通过（#227）。
+  // 队列只按 binding 串行，不同 binding 互不影响；出错的链条自己消化，不阻塞后来的消息。
+  const emitChains = new Map<string, Promise<unknown>>();
+  const emitNow = async (bindingId: string, event: InboundEvent): Promise<void> => {
     const binding = await deps.store.binding(bindingId);
     if (!binding || !binding.enabled) return;
     const now = deps.now();
@@ -276,6 +279,18 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
     }
     if (!(await deps.store.insertRun(run))) return; // 去重
     await attempt(run);
+  };
+
+  const emit = (bindingId: string, event: InboundEvent): Promise<void> => {
+    const previous = emitChains.get(bindingId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => emitNow(bindingId, event));
+    const settled = next.catch(() => undefined);
+    emitChains.set(bindingId, settled);
+    // 链尾落地后回收：Map 只该记住「还在排队」的 binding，不能每个见过的 id 都永驻。
+    void settled.finally(() => {
+      if (emitChains.get(bindingId) === settled) emitChains.delete(bindingId);
+    });
+    return next;
   };
 
   const skip = async (bindingId: string, event: Pick<InboundEvent, 'externalId' | 'plannedAt'>, reason: string) => {

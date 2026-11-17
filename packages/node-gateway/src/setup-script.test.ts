@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runSetupScript, scrubCredentials, setupEnv, tailOutput, SETUP_OUTPUT_MAX } from './setup-script.ts';
@@ -82,11 +82,35 @@ test('准备命令：环境里没有 hub 的秘密，只有白名单 + 注入项
 
 test('setupEnv：白名单之外的一律不带', () => {
   const env = setupEnv({ AGENT_HUB_BRANCH: 'main', HUB_URL: 'ws://x' }, { PATH: '/bin', HOME: '/home/u', AWS_SECRET_ACCESS_KEY: 'leak', LANG: 'C.UTF-8' });
-  assert.deepEqual(env, { PATH: '/bin', HOME: '/home/u', LANG: 'C.UTF-8', AGENT_HUB_BRANCH: 'main' });
+  // HOME 不在白名单：真实 home 里有 .npmrc/.gitconfig/云凭据，执行时由 runSetupScript 换成一次性空目录。
+  assert.deepEqual(env, { PATH: '/bin', LANG: 'C.UTF-8', AGENT_HUB_BRANCH: 'main' });
 });
 
 test('tailOutput / scrubCredentials：截尾与凭据擦除', () => {
   assert.equal(tailOutput('abcdef', 4), 'cdef');
   assert.equal(scrubCredentials('git clone https://u:p4ssw0rd@host/x'), 'git clone https://u:***@host/x');
   assert.equal(scrubCredentials('12:30 没问题'), '12:30 没问题');
+  assert.equal(scrubCredentials('key sk-abcdefghijklmnop in log'), 'key sk-*** in log');
+  assert.equal(scrubCredentials('token ghp_abcdefghijklmnopqrst in log'), 'token gh*_*** in log');
+  assert.equal(scrubCredentials('AWS AKIAABCDEFGHIJKLMNOP used'), 'AWS AKIA*** used');
+  assert.equal(scrubCredentials('authorization: Bearer abcdefghijklmnopqrst'), 'authorization: Bearer ***');
+});
+
+test('runSetupScript：HOME 是一次性空目录，缓存也在里面，跑完删掉（#227）', async () => {
+  const { existsSync } = await import('node:fs');
+  const dir = await mkdtemp(join(tmpdir(), 'ah-setup-test-'));
+  const out = await runSetupScript({
+    path: dir,
+    command: 'echo "$HOME" "$npm_config_cache" "$CARGO_HOME" > home.txt; touch "$HOME/marker"',
+    timeoutMs: 10_000
+  });
+  assert.equal(out.exitCode, 0, out.output);
+  const seen = (await readFile(join(dir, 'home.txt'), 'utf8')).trim().split(' ');
+  const home = seen[0]!;
+  assert.match(home, /agent-hub-setup-home-/);
+  assert.equal(seen[1], join(home, '.npm'));
+  assert.equal(seen[2], join(home, '.cargo'));
+  for (let i = 0; i < 40 && existsSync(home); i += 1) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(existsSync(home), false, '跑完要删掉一次性 HOME');
+  await rm(dir, { recursive: true, force: true });
 });

@@ -1,4 +1,7 @@
 import { forbidden, invalid, notFound, type DomainError } from '../errors.ts';
+import type { Subject } from '../access.ts';
+import type { AccessPolicy } from '../use-cases/authorization.ts';
+import { authorizeSession } from '../use-cases/authorization.ts';
 import { asSessionId } from '../ids.ts';
 import type { ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -53,6 +56,10 @@ export interface SessionControlToolDeps extends ProjectLookupDeps {
   readonly derive: (command: DeriveCommand) => Promise<Result<Session, DomainError>>;
   /** 中断一条会话（server 装配时注入 interruptSessionUseCase）。 */
   readonly interrupt: (sessionId: string) => Promise<Result<void, DomainError>>;
+  /** 冻结的调用方身份（server 装配时注入 subjectOf：优先读授权快照里的 actor）。 */
+  readonly subjectOf?: (sessionId: import('../ids.ts').SessionId) => Promise<Subject | null>;
+  /** 访问策略；给了就按「冻结身份 + 会话权限」判定，而不是只比项目。 */
+  readonly access?: AccessPolicy;
   /** 会话改了标题之后同步（可选）：renameSessionUseCase。 */
   readonly rename?: (command: { readonly sessionId: string; readonly title: string }) => Promise<Result<Session, DomainError>>;
 }
@@ -73,6 +80,7 @@ export function createSessionControlToolProvider(deps: SessionControlToolDeps): 
       if (name === 'session.derive') {
         const title = str(args.title).replace(/\s+/g, ' ').slice(0, 80);
         const callerProject = await projectOf(caller);
+        const actor = deps.subjectOf ? await deps.subjectOf(caller.id) : null;
         const derived = await deps.derive({
           ...(caller.taskId === null ? {} : { taskId: caller.taskId }),
           ...(callerProject === null ? {} : { projectId: callerProject.id }),
@@ -83,7 +91,7 @@ export function createSessionControlToolProvider(deps: SessionControlToolDeps): 
           workerId: caller.workerId,
           botId: caller.botId ?? null,
           createdBy: caller.createdBy,
-          actor: null
+          actor
         });
         if (!derived.ok) return derived;
         if (title !== '' && deps.rename) await deps.rename({ sessionId: derived.value.id, title });
@@ -95,10 +103,22 @@ export function createSessionControlToolProvider(deps: SessionControlToolDeps): 
         const raw = str(args.session_id);
         const target = raw === '' ? caller : await deps.sessions.byId(asSessionId(raw));
         if (!target) return err(notFound('找不到这条会话'));
+        const targetProject = await projectOf(target);
         if (target.id !== caller.id) {
-          const [mine, theirs] = [await projectOf(caller), await projectOf(target)];
-          if (mine === null || theirs === null || mine.id !== theirs.id) {
+          const mine = await projectOf(caller);
+          if (mine === null || targetProject === null || mine.id !== targetProject.id) {
             return err(forbidden('只能停止同一个项目里的会话'));
+          }
+        }
+        // 冻结身份 + 会话权限：同项目只说明看得见，不代表能打断别人的会话。
+        if (deps.access) {
+          const actor = deps.subjectOf ? await deps.subjectOf(caller.id) : null;
+          const allowed = await authorizeSession(deps.access, actor, targetProject, target, 'session.interrupt');
+          if (!allowed.ok) {
+            // 不存在/看不见保持 not_found，不把「落不了项目」改写成 403 泄露存在性。
+            return allowed.error.code === 'not_found'
+              ? allowed
+              : err(forbidden('停不了这条会话：只有它的创建者、团队 owner / admin 或被授权的人能这么做'));
           }
         }
         if (target.status !== 'running') return ok({ session_id: target.id, stopped: false, reason: '这条会话不在运行' });

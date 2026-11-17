@@ -87,7 +87,7 @@ export function createProjectToolProvider(deps: ProjectToolDeps): ToolProvider {
       if (name === 'project.update') {
         const subject = await deps.subjectOf(ctx.grant.sessionId);
         const allowed = await authorizeProject(deps.access, subject, project, 'project.update');
-        if (!allowed.ok) return err(forbidden('改不了这个项目：需要项目所有者的权限'));
+        if (!allowed.ok) return err(forbidden('改不了这个项目：需要能改这个项目的权限（创建者、被共享的人或团队 owner / admin）'));
 
         const patch: { description?: string | null; checks?: readonly string[] } = {};
         if (args.description !== undefined) {
@@ -111,6 +111,9 @@ export function createProjectToolProvider(deps: ProjectToolDeps): ToolProvider {
       }
 
       if (name === 'run.checks') {
+        const subject = await deps.subjectOf(ctx.grant.sessionId);
+        const allowed = await authorizeProject(deps.access, subject, project, 'project.update');
+        if (!allowed.ok) return err(forbidden('跑不了这个项目的检查命令：需要能改这个项目的权限（创建者、被共享的人或团队 owner / admin）'));
         const checks = project.checks;
         if (checks.length === 0) {
           return ok({ ran: false, project_id: project.id, checks: [], reason: '这个项目还没有声明检查命令：请项目所有者先在项目设置里加上（最多 5 条）' });

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { constants } from 'node:os';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { constants, tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /**
  * 在工作空间里跑项目配置的准备命令（docs/design/worktree.md §4 / §8）。
@@ -24,8 +26,12 @@ export interface SetupScriptOutcome {
   readonly timedOut: boolean;
 }
 
-/** 允许命令看到的环境变量：够它找到工具链和 locale，别的（尤其 hub 的秘密）不给。 */
-export const SETUP_ENV_ALLOWLIST = ['PATH', 'HOME', 'SHELL', 'LANG', 'TERM'] as const;
+/**
+ * 允许命令看到的环境变量：够它找到工具链和 locale，别的（尤其 hub 的秘密）不给。
+ * `HOME` 不在这里——真实 home 里有 `~/.npmrc`、`~/.gitconfig`、云厂商凭据文件；
+ * 每次执行给一个一次性空目录当 HOME（见 `runSetupScript`）。
+ */
+export const SETUP_ENV_ALLOWLIST = ['PATH', 'SHELL', 'LANG', 'TERM'] as const;
 
 /** 无论如何都不能出现在准备命令环境里的变量。 */
 export const SETUP_ENV_DENIED = ['HUB_TOKEN', 'HUB_WORKER_CREDENTIAL', 'HUB_LOCAL_SECRET', 'HUB_URL', 'HUB_PARENT_PID'] as const;
@@ -49,9 +55,16 @@ export function setupEnv(
   return env;
 }
 
-/** 日志里抹掉 `user:token@`（远程 URL 里的凭据）。 */
+/** 日志里抹掉常见秘密：远程 URL 里的凭据、sk-…/ghp_…/github_pat_…/AKIA…、私钥块、bearer token。 */
 export function scrubCredentials(text: string): string {
-  return text.replace(/([A-Za-z][A-Za-z0-9_.\-]*):([^\s@/]{4,})@/g, '$1:***@');
+  return text
+    .replace(/([A-Za-z][A-Za-z0-9_.\-]*):([^\s@/]{4,})@/g, '$1:***@')
+    .replace(/\b(sk-[A-Za-z0-9_-]{8,})/g, 'sk-***')
+    .replace(/\b(gh[pousru]_[A-Za-z0-9]{20,})/g, 'gh*_***')
+    .replace(/\b(github_pat_[A-Za-z0-9_]{20,})/g, 'github_pat_***')
+    .replace(/(?<![A-Za-z0-9])(AKIA[0-9A-Z]{16})(?![A-Za-z0-9])/g, 'AKIA***')
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._\-]{20,}/gi, '$1***')
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '-----BEGIN PRIVATE KEY----- *** -----END PRIVATE KEY-----');
 }
 
 /** 只留最后 8KB（按字符切，避免把多字节字符切坏）。 */
@@ -65,6 +78,21 @@ export function tailOutput(text: string, max = SETUP_OUTPUT_MAX): string {
  */
 export async function runSetupScript(input: SetupScriptInput): Promise<SetupScriptOutcome> {
   const env = setupEnv(input.env);
+  let home: string | null = null;
+  if (process.platform !== 'win32') {
+    try {
+      home = await mkdtemp(join(tmpdir(), 'agent-hub-setup-home-'));
+    } catch (error) {
+      // HOME 缺失时 npm/git 会直接报 uv_os_homedir 之类；宁可明确失败，也不带真实 home 跑用户脚本。
+      return { exitCode: 127, output: `准备命令无法执行：创建临时 HOME 失败（${error instanceof Error ? error.message : String(error)}）`, timedOut: false };
+    }
+    // 缓存也落在这个一次性目录里：否则 npm 会把 ~/.npm 写进真实 home，cargo 同理。
+    env.HOME = home;
+    env['npm_config_cache'] = join(home, '.npm');
+    env['CARGO_HOME'] = join(home, '.cargo');
+    env['GIT_CONFIG_GLOBAL'] = '/dev/null';
+    env['GIT_CONFIG_NOSYSTEM'] = '1';
+  }
   return new Promise<SetupScriptOutcome>((resolve) => {
     let output = '';
     let settled = false;
@@ -104,6 +132,7 @@ export async function runSetupScript(input: SetupScriptInput): Promise<SetupScri
       settled = true;
       if (escalate) clearTimeout(escalate);
       if (timer) clearTimeout(timer);
+      if (home !== null) void rm(home, { recursive: true, force: true }).catch(() => undefined);
       resolve({ exitCode, output: tailOutput(scrubCredentials(output)), timedOut });
     };
 
