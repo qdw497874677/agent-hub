@@ -1143,7 +1143,11 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
     sessions?: readonly import('../asset.ts').SessionAssetDelivery[];
   }[] = [];
   const workers: WorkerStatus[] = [{ workerId: 'w1', label: 'local', origin: 'local', state: 'online' }];
-  const git = { commit: 'c1', files: [] as import('../asset.ts').IncomingFile[] };
+  const git = {
+    commit: 'c1',
+    files: [] as import('../asset.ts').IncomingFile[],
+    calls: [] as { url: string; ref: string | null; path: string; kind: import('../asset.ts').AssetKind; token: string | null }[]
+  };
   const decode = (data: Uint8Array): string => new TextDecoder().decode(data);
   const secretStore = new Map<string, { value: string; at: number }>();
   const deps: import('../use-cases/assets.ts').AssetDeps = {
@@ -1175,7 +1179,10 @@ export function inMemoryAssets(now: () => number = () => 1_000) {
         return { ok: true, value: { name: kind === 'skill' ? field('name') : null, description: field('description') ?? '' } };
       },
       scanGit: async () => ({ ok: true, value: { commit: git.commit, candidates: [] } }),
-      readGit: async () => ({ ok: true, value: { commit: git.commit, files: git.files } }),
+      readGit: async (url, ref, path, kind, token) => {
+        git.calls.push({ url, ref, path, kind, token: token ?? null });
+        return { ok: true, value: { commit: git.commit, files: git.files } };
+      },
       diffText: (path, before, after) => `--- ${path}\n-${before}\n+${after}`
     }
   };

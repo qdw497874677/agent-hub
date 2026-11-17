@@ -259,7 +259,12 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
     const input = await parse(c, gitScanRequest);
     if (!input.ok) return input.response;
     const parsed = parseGitSourceUrl(input.value.url);
-    const scanned = await scanGitSource(deps, parsed?.url ?? input.value.url.trim(), input.value.ref?.trim() || parsed?.ref || null);
+    const scanned = await scanGitSource(
+      deps,
+      parsed?.url ?? input.value.url.trim(),
+      input.value.ref?.trim() || parsed?.ref || null,
+      input.value.credential ?? null
+    );
     return scanned.ok ? c.json(gitScanSchema.parse(scanned.value)) : fail(c, scanned.error);
   });
 
@@ -273,6 +278,7 @@ export function installAssetRoutes(app: Hono, options: AssetRouteOptions, princi
       ref: input.value.ref?.trim() || parsed?.ref || null,
       path: input.value.path.trim() === '' ? parsed?.path ?? '' : input.value.path,
       policy: input.value.policy,
+      credential: input.value.credential ?? null,
       name: input.value.name ?? null,
       projectId: input.value.projectId ?? null,
       ...adminOwnership(c, input.value.projectId ?? null)

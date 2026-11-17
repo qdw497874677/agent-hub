@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { assetUploadFileSchema } from './admin.ts';
+import { assetSourcePolicySchema, assetUploadFileSchema } from './admin.ts';
 
 /** 资产市场 / 审核（ADR 0016）的请求体。响应是领域 DTO 原样 JSON（见 apps/web/src/api.ts 的类型）。 */
 export const assetScopeSchema = z.enum(['personal', 'project', 'team', 'global']);
@@ -19,7 +19,10 @@ export const marketGitRequest = z.object({
   name: z.string().max(64).nullable().optional(),
   url: z.string().min(1).max(2048),
   ref: z.string().max(256).nullable().optional(),
-  path: z.string().max(1024)
+  path: z.string().max(1024),
+  policy: assetSourcePolicySchema.optional(),
+  /** 私有仓库令牌：只用于这次拉取；track 时服务端存进密钥箱。 */
+  credential: z.string().min(1).max(512).optional()
 });
 export const marketRevisionRequest = z.object({ files: z.array(assetUploadFileSchema).min(1).max(200) });
 export const approveRequest = z.object({ acknowledgeHigh: z.boolean().optional(), note: z.string().max(500).optional() });

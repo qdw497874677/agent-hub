@@ -187,7 +187,9 @@ export const assetUploadRequest = z.object({
 export type AssetUploadRequest = z.infer<typeof assetUploadRequest>;
 export const assetRevisionUploadRequest = z.object({ files: z.array(assetUploadFileSchema).min(1).max(200) });
 
-export const gitScanRequest = z.object({ url: z.string().min(1).max(2048), ref: z.string().max(256).nullable().optional() });
+export const gitScanRequest = z.object({
+  /** 私有仓库令牌：只用于这次扫描，不落库、不回显。 */
+  credential: z.string().min(1).max(512).optional(), url: z.string().min(1).max(2048), ref: z.string().max(256).nullable().optional() });
 export const gitCandidateSchema = z.object({ kind: assetKindSchema, path: z.string(), name: z.string(), description: z.string() });
 export const gitScanSchema = z.object({ commit: z.string(), candidates: z.array(gitCandidateSchema) });
 export type GitScanDto = z.infer<typeof gitScanSchema>;
@@ -198,7 +200,9 @@ export const gitImportRequest = gitScanRequest.extend({
   name: z.string().max(64).nullable().optional(),
   projectId: z.string().nullable().optional(),
   /** 默认 locked：钉在导入时的提交上。 */
-  policy: assetSourcePolicySchema.optional()
+  policy: assetSourcePolicySchema.optional(),
+  /** 私有仓库的一次性令牌；只用于拉取，不落库、不回显（track 时服务端存进密钥箱）。 */
+  credential: z.string().min(1).max(512).optional()
 });
 
 /** #226 批量导入：一次最多 20 项，逐项复用单条导入；一项失败不影响其它项。 */
@@ -207,6 +211,7 @@ export const gitBatchItemSchema = z.object({
   ref: z.string().max(256).nullable().optional(),
   path: z.string().max(1024).optional(),
   policy: assetSourcePolicySchema.optional(),
+  credential: z.string().min(1).max(512).optional(),
   scope: z.enum(['personal', 'project', 'team', 'global']).optional(),
   name: z.string().max(64).nullable().optional(),
   /** scope=project 时指定项目；其它作用域忽略。 */

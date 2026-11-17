@@ -322,6 +322,8 @@ export type SubmitAssetInput =
       readonly path: string;
       /** 版本策略（默认 locked）：locked 钉在导入时的提交上；track 跟随 ref 检查更新。 */
       readonly policy?: AssetSourcePolicy;
+      /** 私有仓库的一次性令牌：只用于这次拉取；track 时存进密钥箱供以后检查更新。 */
+      readonly credential?: string | null;
     };
 
 /**
@@ -367,6 +369,7 @@ export async function submitNewAsset(
           ref: input.ref,
           path: input.path,
           policy: input.policy,
+          credential: input.credential ?? null,
           name: input.name ?? null,
           projectId: input.projectId ?? null,
           ...ownership

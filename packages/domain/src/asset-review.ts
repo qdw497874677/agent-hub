@@ -431,7 +431,8 @@ export function mcpRiskSummary(config: McpConfig, previous: McpConfig | null = n
  */
 export const secretKey = (layer: 'hub' | 'team' | 'personal', name: string, ref: string | null = null): string =>
   layer === 'hub' ? name : `@${layer === 'team' ? 'team' : 'user'}:${ref ?? ''}:${name}`;
-export const isHubSecretKey = (key: string): boolean => !key.startsWith('@');
+export const isHubSecretKey = (key: string): boolean =>
+  !key.startsWith('@') && !key.startsWith('asset-git:');
 export function parseSecretKey(key: string): { layer: 'hub' | 'team' | 'personal'; ref: string | null; name: string } {
   const match = /^@(team|user):([^:]*):(.+)$/.exec(key);
   if (!match) return { layer: 'hub', ref: null, name: key };

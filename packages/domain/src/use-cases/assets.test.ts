@@ -177,6 +177,42 @@ test('版本策略：默认 locked 钉住解析出的提交、跳过检查更新
   assert.notEqual(changed.value.asset.latest, changed.value.asset.pinned);
 });
 
+test('私有仓库：令牌只走这次拉取；track 存进密钥箱供以后巡检，locked 直接拒绝（#226）', async () => {
+  const { deps, git } = inMemoryAssets();
+  git.files = skill();
+  const locked = await importGitAsset(deps, {
+    kind: 'skill',
+    url: 'https://github.com/x/private.git',
+    ref: 'main',
+    path: 'skills/greeter',
+    credential: 'ghp_lockedtoken'
+  });
+  assert.equal(locked.ok, false);
+  assert.match(locked.ok ? '' : locked.error.message, /track/);
+  assert.deepEqual(await deps.secrets.list(), [], 'locked 不留令牌');
+
+  git.files = skill('v2', 'tracker');
+  const tracked = await importGitAsset(deps, {
+    kind: 'skill',
+    url: 'https://github.com/x/private2.git',
+    ref: 'main',
+    path: 'skills/tracker',
+    policy: 'track',
+    credential: 'ghp_trackedtoken'
+  });
+  assert.ok(tracked.ok);
+  if (tracked.value.source.type !== 'git') return;
+  const secret = tracked.value.source.tokenSecret ?? '';
+  assert.equal(secret, `asset-git:${tracked.value.id}`);
+  const stored = await deps.secrets.list();
+  assert.equal(stored.length, 1);
+  assert.equal(stored[0]?.name, secret);
+  git.files = skill('v3', 'tracker');
+  const changed = await checkAssetUpdate(deps, tracked.value.id);
+  assert.ok(changed.ok);
+  assert.equal(git.calls.at(-1)?.token, 'ghp_trackedtoken', '巡检复用密钥箱里的令牌');
+});
+
 test('同步：离线记待同步；blob 只给清单里有的；删除后重新同步', async () => {
   const { deps, workers, board, pushes } = inMemoryAssets();
   const a = await uploadAsset(deps, { kind: 'skill', files: skill() });

@@ -28,9 +28,16 @@ export interface GitCheckout {
 export interface AssetReader {
   describe(kind: AssetKind, files: readonly IncomingFile[]): Result<AssetMetadata, DomainError>;
   /** 浅克隆一次，列出仓库里能导入的技能（含 SKILL.md 的目录）和指令（AGENTS.md 等）。 */
-  scanGit(url: string, ref: string | null): Promise<Result<{ commit: string; candidates: GitCandidate[] }, DomainError>>;
+  scanGit(url: string, ref: string | null, token?: string | null): Promise<Result<{ commit: string; candidates: GitCandidate[] }, DomainError>>;
   /** 检出仓库里某个路径下的文件（技能目录，或单个指令文件）。 */
-  readGit(url: string, ref: string | null, path: string, kind: AssetKind): Promise<Result<GitCheckout, DomainError>>;
+  /** `token` 只用于私有仓库：走请求头，不进 URL、不落日志。 */
+  readGit(
+    url: string,
+    ref: string | null,
+    path: string,
+    kind: AssetKind,
+    token?: string | null
+  ): Promise<Result<GitCheckout, DomainError>>;
   /** 一个文本文件前后两版的统一 diff。 */
   diffText(path: string, before: string, after: string): string;
 }

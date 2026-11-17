@@ -437,6 +437,12 @@ test('资产自动化：assets:publish 能导入 → 发布 → 分配；没有�
   const published = await publish('asset_publish', { assetId: asset.id, clientRequestId: 'publish-1' });
   assert.equal(published.result.isError, false, JSON.stringify(published.result));
   assert.equal(published.result.structuredContent.pinned, asset.latest);
+  // 返回的是对外视图（列表同款），不是领域对象：有 workerIds/files/bytes，没有内部 tokenSecret。
+  const view = published.result.structuredContent as { workerIds: string[]; files: number; bytes: number; source: { tokenSecret?: string } };
+  assert.ok(Array.isArray(view.workerIds));
+  assert.equal(typeof view.files, 'number');
+  assert.equal(typeof view.bytes, 'number');
+  assert.equal(view.source.tokenSecret, undefined);
   // 再发一次：没有待发布的新版本 → 409
   const again = await publish('asset_publish', { assetId: asset.id, clientRequestId: 'publish-2' });
   assert.equal(again.result.isError, true);

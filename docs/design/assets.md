@@ -152,3 +152,13 @@
 - **拉取上限**：`--filter=blob:none` + cone 稀疏检出（给了 path 时只取它所在目录）；单文件 1 MB、累计 4 MB，超限中止。
 - **审核报告**：补 `allowedTools`、`license`、`licenseFile`、`scripts`、`source{url,commit,commitUrl,ref,path}`，仍是 JSON 原文，无迁移。
 - **每会话视图（P4）**：Worker 上 `sessions/<sessionId>/skills|instructions` 用相对链接指向 `assets/<digest12>/<slot>`，按 slot 命名，同名不同版本互不覆盖；`.view.json` 记引用，`prune` 保留「当前清单 ∪ retain ∪ 视图引用」。会话结束 `dropSession`；hub 只在该机器拿得到活跃会话列表时下发 `sessions`（拿不到传 `undefined`，Worker 不动已有视图）。协议 v7。
+
+## 13. 私有仓库令牌（#226 P1 续）
+
+- 导入时可选 `credential`（管理后台、资产市场、批量导入同一字段），只用于这一次 `git fetch`：适配器把它放进 `http.extraHeader`（Basic `x-access-token:<token>`），**不进 URL、不进 stderr、不进审计**。
+- 策略为 `track` 时，令牌存进现有 `SecretVault`，名字固定 `asset-git:<assetId>`；资产 `source.tokenSecret` 只记名字。之后 `checkAssetUpdate` / 定时巡检从密钥箱取出来复用，界面永远读不到值。
+- 策略为 `locked` 时**直接拒绝**带令牌的导入（不静默丢弃）：locked 不检查更新，要私有仓库的新提交就选 `track`。
+- 扫描（`/api/admin/assets/git/scan`）也接受同一个 `credential`，否则私有仓库走不到导入那一步。
+- 删除资产时一并删掉 `asset-git:<id>`；这类内部密钥不出现在「密钥」清单里，避免被当成普通密钥误删。
+- 令牌不随 `AssetSource` 的 DTO 输出（`assetSchema` 只暴露 `url/ref/path/policy`）；`tokenSecret` 是内部字段。
+- 失败路径：先拉取、再建资产、最后写密钥箱；写密钥箱失败只记日志，资产仍可用（只是以后巡检要重新导入并带令牌）。

@@ -149,10 +149,11 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
         const ref = item.ref?.trim() || parsed?.ref || null;
         const given = (item.path ?? '').trim();
         const path = given === '' ? parsed?.path ?? '' : given;
-        const key = `${url}\u0000${ref ?? ''}`;
+        // 私有仓库要带令牌扫描；同一个仓库用不同令牌可能看到不同内容，所以也在键里。
+        const key = `${url}\u0000${ref ?? ''}\u0000${item.credential ?? ''}`;
         let scanned = scans.get(key);
         if (!scanned) {
-          scanned = scanGitSource(deps, url, ref);
+          scanned = scanGitSource(deps, url, ref, item.credential ?? null);
           scans.set(key, scanned);
         }
         const scan = await scanned;
@@ -178,7 +179,8 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
           url,
           ref,
           path: candidate.path,
-          policy: item.policy
+          policy: item.policy,
+          credential: item.credential ?? null
         });
         results.push(made.ok ? { ok: true, id: made.value.asset.id, name: made.value.asset.name } : { ok: false, error: made.error.message });
       } catch (error) {

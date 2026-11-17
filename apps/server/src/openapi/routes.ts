@@ -204,7 +204,9 @@ export const routes = {
     method: 'post', path: `${V1}/assets/import`, tags: ['assets'], summary: '从 Git 仓库导入资产（可选直接发布）',
     description:
       '从一个 Git 仓库导入 skill / instruction / mcp 资产。默认只建版本、进审核队列；publish=true 时直接发布（要 assets:publish）。\n' +
-      '参数：kind、url（https 或 git 地址）、ref（可选，分支 / 标签）、path（技能目录如 skills/foo，或指令 / mcp 文件如 AGENTS.md）、name（可选，不给自己推）、scope（personal/team/project）、projectId（scope=project 时必填）、publish（默认 false）。\n' +
+      '参数：kind、url（https 或 git 地址，可直接粘 GitHub 文件 / 目录网址）、ref（可选，分支 / 标签）、path（技能目录如 skills/foo，或指令 / mcp 文件如 AGENTS.md）、name（可选，不给自己推）、scope（personal/team/project）、projectId（scope=project 时必填）、publish（默认 false）。\n' +
+      'policy：locked（默认，钉在导入时的提交上）或 track（跟随分支，可用 asset_check 看新提交）。\n' +
+      'credential：私有仓库令牌，只用于这次拉取；policy=track 时服务端存进密钥箱供以后检查更新，永不回显。\n' +
       '返回：资产对象（pinned 为空表示还没发布；latest 是刚导入版本的 digest）。\n' +
       '下一步：publish=true 时已可直接用，用 asset_assign 装到机器；否则用 asset_publish 发布（要 assets:publish）或等审核。\n' +
       '错误：400 仓库读不出来、路径不存在或文件超限；403 无 assets:write，或 publish=true 但没有 assets:publish；409 同范围同名已存在。\n' +
@@ -218,7 +220,9 @@ export const routes = {
         name: z.string().max(64).nullable().optional(),
         scope: z.enum(['personal', 'team', 'project']).default('personal'),
         projectId: z.string().nullable().optional(),
-        publish: z.boolean().default(false)
+        publish: z.boolean().default(false),
+        policy: z.enum(['track', 'locked']).optional(),
+        credential: z.string().min(1).max(512).optional()
       })
     ),
     responses: { 201: json(assetSchema, '已导入') }

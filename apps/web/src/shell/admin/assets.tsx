@@ -475,15 +475,25 @@ function GitForm({ onDone }: { onDone: () => void }) {
   const [scan, setScan] = useState<GitScanDto | null>(null);
   const [choice, setChoice] = useState<number>(0);
   const [scope, setScope] = useState('');
+  const [policy, setPolicy] = useState<'locked' | 'track'>('locked');
+  const [token, setToken] = useState('');
   const scanning = useAdminAction(async () => {
-    const result = await assetsApi.scanGit(url.trim(), ref.trim());
+    const result = await assetsApi.scanGit(url.trim(), ref.trim(), token.trim());
     setScan(result);
     setChoice(0);
     return result;
   });
   const importing = useAdminAction(() => {
     const candidate = scan!.candidates[choice]!;
-    return assetsApi.importGit({ url: url.trim(), ref: ref.trim(), kind: candidate.kind, path: candidate.path, projectId: scope || null });
+    return assetsApi.importGit({
+      url: url.trim(),
+      ref: ref.trim(),
+      kind: candidate.kind,
+      path: candidate.path,
+      policy,
+      ...(token.trim() === '' ? {} : { credential: token.trim() }),
+      projectId: scope || null
+    });
   });
   const error = scanning.error ?? importing.error;
   return (
@@ -518,7 +528,33 @@ function GitForm({ onDone }: { onDone: () => void }) {
           {scanning.isPending ? '扫描中…' : '扫描'}
         </button>
       </div>
-      <p className="text-meta text-tertiary">只读拉取公开仓库，不执行任何脚本；导入会钉在当前提交上。</p>
+      <label className="flex items-center gap-2 text-meta text-secondary">
+        <span className="shrink-0 text-tertiary">版本</span>
+        <select
+          data-testid="asset-git-policy"
+          className={INPUT}
+          value={policy}
+          onChange={(event) => setPolicy(event.target.value === 'track' ? 'track' : 'locked')}
+        >
+          <option value="locked">锁定在导入时的提交（锁住，不会漂移）</option>
+          <option value="track">跟随分支（可检查更新，发布会换版本）</option>
+        </select>
+      </label>
+      <input
+        data-testid="asset-git-token"
+        className={INPUT}
+        type="password"
+        autoComplete="off"
+        placeholder="私有仓库令牌（可空；不会回显，也不进日志）"
+        value={token}
+        onChange={(event) => setToken(event.target.value)}
+      />
+      <p className="text-meta text-tertiary">
+        {policy === 'locked'
+          ? '锁住：以后这个分支再变也不影响已有会话；想升级就重新导入或手动切版本。'
+          : '跟随：导入后能用「检查更新」看到新提交，发布会换掉使用中的版本（新会话生效）。'}
+        只读拉取，不执行任何脚本；私有仓库把令牌填在上面（扫描和导入都用它，用过不留）。
+      </p>
       {scan ? (
         scan.candidates.length ? (
           <ul className="max-h-[220px] overflow-auto rounded-sm border border-hair bg-card">

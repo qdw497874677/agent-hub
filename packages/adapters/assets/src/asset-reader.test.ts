@@ -208,6 +208,13 @@ test('git 错误：分类映射与 stderr 抹除', () => {
     redactGitStderr('fatal: https://bob:tok3n@github.com/x/y.git 认证失败'),
     'fatal: https://***@github.com/x/y.git 认证失败'
   );
+  // 私有仓库令牌走请求头：stderr 里可能原样出现，也要抹掉。
+  assert.equal(
+    redactGitStderr('http.extraheader=Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hwX3NlY3JldA=='),
+    'http.extraheader=*** Basic ***'
+  );
+  assert.equal(redactGitStderr('Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hwX3NlY3JldA=='), 'Authorization: Basic ***');
+  assert.equal(redactGitStderr('fatal: x-access-token:ghp_secret rejected'), 'fatal: x-access-token:*** rejected');
   assert.equal(isPathInside('/a/b', '/a/bc'), false);
   assert.equal(isPathInside('/a/b', '/a/b/c'), true);
   assert.equal(isPathInside('/a/b', '/a/b'), true);

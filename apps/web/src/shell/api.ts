@@ -690,8 +690,22 @@ export const assetsApi = {
   overview: () => call<AssetsOverviewDto>('/api/admin/assets'),
   upload: (input: { kind: 'skill' | 'instruction' | 'mcp'; name?: string; projectId?: string | null; files: AssetUploadFile[] }) =>
     post<{ id: string }>('/api/admin/assets/upload', input),
-  scanGit: (url: string, ref: string) => post<GitScanDto>('/api/admin/assets/git/scan', { url, ref: ref || null }),
-  importGit: (input: { url: string; ref: string; kind: 'skill' | 'instruction' | 'mcp'; path: string; projectId?: string | null }) =>
+  scanGit: (url: string, ref: string, credential?: string) =>
+    post<GitScanDto>('/api/admin/assets/git/scan', {
+      url,
+      ref: ref || null,
+      ...(credential && credential.trim() !== '' ? { credential: credential.trim() } : {})
+    }),
+  importGit: (input: {
+    url: string;
+    ref: string;
+    kind: 'skill' | 'instruction' | 'mcp';
+    path: string;
+    policy?: 'track' | 'locked';
+    /** 私有仓库令牌：只随这一次请求发，不会被读回来。 */
+    credential?: string;
+    projectId?: string | null;
+  }) =>
     post<{ id: string }>('/api/admin/assets/git/import', { ...input, ref: input.ref || null }),
   revisions: (id: string) => call<AssetRevisionDto[]>(`${assetPath(id)}/revisions`),
   file: (id: string, digest: string, path: string) =>

@@ -124,6 +124,23 @@ export async function assetsOverview(deps: Pick<AssetDeps, 'assets' | 'board' | 
   };
 }
 
+/** 单个资产的对外视图：`workerIds`/`files`/`bytes` 都按当前钉住版本算，与列表接口一致。 */
+export async function assetViewOf(
+  deps: Pick<AssetDeps, 'assets'>,
+  asset: Asset
+): Promise<AssetView> {
+  const [installations, pinned] = await Promise.all([
+    deps.assets.installations(),
+    deps.assets.revision(asset.id, asset.pinned)
+  ]);
+  return {
+    ...asset,
+    workerIds: installations.filter((row) => row.assetId === asset.id).map((row) => row.workerId),
+    files: pinned?.files.length ?? 0,
+    bytes: pinned?.files.reduce((sum, file) => sum + file.size, 0) ?? 0
+  };
+}
+
 async function describePacked(
   deps: Pick<AssetDeps, 'reader'>,
   kind: AssetKind,
@@ -160,7 +177,8 @@ const revisionOf = (
   at: number
 ): AssetRevision => ({ assetId, digest: packed.digest, name, description, files: packed.files, commit, createdAt: at });
 
-type CreateDeps = Pick<AssetDeps, 'assets' | 'reader' | 'now'> & Partial<Pick<AssetDeps, 'projects'>>;
+type CreateDeps = Pick<AssetDeps, 'assets' | 'reader' | 'now' | 'secrets'> &
+  Partial<Pick<AssetDeps, 'projects'>> & Partial<Pick<AssetDeps, 'hubAdminId'>>;
 
 /** 谁上架、上架到哪个作用域、是否直接发布（hub 管理员后台 = 直接发布并打自审标记；成员上架 = 待审）。 */
 export interface AssetOwnership {
@@ -235,11 +253,12 @@ export function uploadAsset(
 export async function scanGitSource(
   deps: Pick<AssetDeps, 'reader'>,
   url: string,
-  ref: string | null
+  ref: string | null,
+  token: string | null = null
 ): Promise<Result<{ commit: string; candidates: GitCandidate[] }, DomainError>> {
   const allowed = checkGitSourceUrl(url);
   if (!allowed.ok) return allowed;
-  return deps.reader.scanGit(url, ref);
+  return deps.reader.scanGit(url, ref, token);
 }
 
 export async function importGitAsset(
@@ -253,14 +272,27 @@ export async function importGitAsset(
     projectId?: string | null;
     /** 版本策略，默认 locked（钉在导入时的提交上）。 */
     policy?: AssetSourcePolicy;
+    /** 私有仓库的一次性令牌：只用于这次拉取；track 时存进密钥箱，供以后检查更新。 */
+    credential?: string | null;
   } & AssetOwnership
 ): Promise<Result<Asset, DomainError>> {
   const allowed = checkGitSourceUrl(input.url);
   if (!allowed.ok) return allowed;
   // 仓库根（path = ''）在 AssetSource 里用 '' 表示，但 readGit 的路径校验不接受空串：检出时用 '.'。
-  const checkout = await deps.reader.readGit(input.url, input.ref, input.path === '' ? '.' : input.path, input.kind);
+  const credential = typeof input.credential === 'string' && input.credential.trim() !== '' ? input.credential.trim() : null;
+  const checkout = await deps.reader.readGit(
+    input.url,
+    input.ref,
+    input.path === '' ? '.' : input.path,
+    input.kind,
+    credential
+  );
   if (!checkout.ok) return checkout;
   const policy = input.policy ?? DEFAULT_ASSET_SOURCE_POLICY;
+  // locked 不检查更新，留令牌只增加泄露面：要么选 track，要么别给。
+  if (credential !== null && policy === 'locked') {
+    return err(invalid('锁定版本（locked）不需要令牌：要跟随私有仓库的新提交，请选「跟随分支」（track）'));
+  }
   // locked：ref 直接记成解析出的完整提交 SHA —— 用现有字段表达「钉死的版本」，后续检查更新也跳过；
   // track：保留原来的分支 / 标签，定时检查时按内容 digest 判断有没有新版本。
   const source: AssetSource = {
@@ -270,7 +302,34 @@ export async function importGitAsset(
     path: input.path,
     policy
   };
-  return createAsset(deps, input.kind, source, checkout.value.files, input.name ?? null, checkout.value.commit, input.projectId ?? null, input);
+  const made = await createAsset(
+    deps,
+    input.kind,
+    source,
+    checkout.value.files,
+    input.name ?? null,
+    checkout.value.commit,
+    input.projectId ?? null,
+    input
+  );
+  // 令牌只在「跟随分支」时有意义（locked 不看更新），所以只有 track 才留；名字按资产 id 固定，界面不出现值。
+  if (made.ok && credential !== null && policy === 'track') {
+    const secret = `asset-git:${made.value.id}`;
+    try {
+      await deps.secrets.put(secret, credential, deps.now());
+      const withSecret: Asset = {
+        ...made.value,
+        source: { ...source, tokenSecret: secret },
+        updatedAt: deps.now()
+      };
+      await deps.assets.update(withSecret);
+      return ok(withSecret);
+    } catch (error) {
+      // 令牌没存住不影响这次导入：资产已经建好了，只是以后巡检要重新导入并带令牌。
+      console.warn(`[assets] 私有仓库令牌没存住（${made.value.name}）：${(error as Error).message}`);
+    }
+  }
+  return made;
 }
 
 /** 新版本只记成「最新」，不换钉：要看过 diff 再 `pinAssetRevision`。名字不能变（Worker 上的目录名）。 */
@@ -305,7 +364,7 @@ export async function uploadAssetRevision(
 
 /** git 来源：重新检出同一个 ref / 路径，内容变了就记一个待确认的新版本。 */
 export async function checkAssetUpdate(
-  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now'>,
+  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now' | 'secrets'>,
   assetId: string
 ): Promise<Result<{ asset: Asset; changed: boolean }, DomainError>> {
   const asset = await deps.assets.get(assetId);
@@ -318,7 +377,16 @@ export async function checkAssetUpdate(
   // 老资产可能存着策略收紧前的地址：巡检时同样按当前策略再拦一次。
   const allowed = checkGitSourceUrl(asset.source.url);
   if (!allowed.ok) return allowed;
-  const checkout = await deps.reader.readGit(asset.source.url, asset.source.ref, asset.source.path, asset.kind);
+  const secretName = asset.source.tokenSecret ?? null;
+  const token =
+    secretName === null ? null : ((await deps.secrets.reveal([secretName]))[secretName] ?? null);
+  const checkout = await deps.reader.readGit(
+    asset.source.url,
+    asset.source.ref,
+    asset.source.path,
+    asset.kind,
+    token
+  );
   if (!checkout.ok) return checkout;
   // 标签被强推到别的提交时，只要文件内容一样就不算新版本；内容变了 digest 自然变，走待审提交。
   return offerRevision(deps, asset, checkout.value.files, checkout.value.commit);
@@ -332,7 +400,7 @@ export interface AssetUpdateSweep {
 }
 
 export async function checkAllAssetUpdates(
-  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now'> & { readonly audit?: AuditLog }
+  deps: Pick<AssetDeps, 'assets' | 'reader' | 'now' | 'secrets'> & { readonly audit?: AuditLog }
 ): Promise<AssetUpdateSweep> {
   const changed: Asset[] = [];
   const failed: { asset: Asset; message: string }[] = [];
@@ -414,6 +482,10 @@ export async function deleteAsset(deps: AssetDeps, assetId: string): Promise<Res
   const asset = await deps.assets.get(assetId);
   if (!asset) return err(notFound('没有这个资产'));
   const holders = (await deps.assets.installations()).filter((row) => row.assetId === assetId).map((row) => row.workerId);
+  // 私有仓库的令牌跟着资产走：资产删了，密钥箱里的那一条也删，别留孤儿。
+  if (asset.source.type === 'git' && asset.source.tokenSecret) {
+    await deps.secrets.remove(asset.source.tokenSecret).catch(() => false);
+  }
   await deps.assets.remove(assetId);
   for (const workerId of holders) void syncWorkerAssets(deps, workerId);
   return ok(undefined);
@@ -688,6 +760,8 @@ export async function setSecret(deps: Pick<AssetDeps, 'secrets' | 'now'>, name: 
 }
 
 export async function deleteSecret(deps: Pick<AssetDeps, 'secrets'>, name: string): Promise<Result<void, DomainError>> {
+  // 内部密钥（私有仓库令牌）跟着资产走，不在界面上出现，也不允许从密钥接口删。
+  if (name.startsWith('asset-git:')) return err(forbidden('这是资产自带的令牌：在资产页删除资产即可，不能单独删'));
   if (!(await deps.secrets.remove(name))) return err(notFound('没有这个密钥'));
   return ok(undefined);
 }

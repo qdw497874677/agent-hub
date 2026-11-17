@@ -37,6 +37,8 @@ export type AssetSource =
       readonly path: string;
       /** 老数据没有这个字段：按 locked 处理（见 assetSourcePolicy）。 */
       readonly policy?: AssetSourcePolicy;
+      /** 私有仓库的令牌放在密钥保险箱里的名字（`asset-git:<assetId>`）；不存明文。 */
+      readonly tokenSecret?: string | null;
     };
 
 /** 来源的版本策略；缺省（老数据 / 未显式指定）一律 locked。 */

@@ -46,10 +46,12 @@ import {
   sweepTemporaryWorkspacesUseCase,
   workerReader,
   redactInventory,
-  workspaceChangesUseCase
+  workspaceChangesUseCase,
+  assetViewOf
 } from '@agent-hub/domain';
 import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
 import type { z } from 'zod';
+import { assetSchema } from '@agent-hub/contract';
 import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest } from '@agent-hub/contract';
 import { installAccess } from '../access.ts';
 import { fail } from '../http-error.ts';
@@ -220,6 +222,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       scope: 'personal' | 'team' | 'project';
       projectId?: string | null;
       publish: boolean;
+      policy?: 'track' | 'locked';
+      credential?: string;
     }>(c, 'json');
     if (input.publish && !can(actor, 'asset.review')) return fail(c, forbidden('直接发布资产要 assets:publish 范围'));
     // 空路径对 skill 会变成「整个仓库」：显式拒绝，别让人把整仓拖进来
@@ -233,6 +237,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       kind: input.kind,
       url: input.url,
       ref: input.ref ?? null,
+      policy: input.policy,
+      credential: input.credential ?? null,
       path,
       name: input.name ?? null,
       projectId: input.scope === 'project' ? input.projectId ?? null : null,
@@ -243,7 +249,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     });
     if (!made.ok) return fail(c, made.error);
     await recordAssetAudit(ctx.assetReview, actor, 'asset.create', made.value.name, `${made.value.kind} 从 ${input.url}@${path} 导入${made.value.pinned === '' ? '（待审核）' : '并发布'}${viaNote(actor)}`);
-    return c.json(made.value, 201);
+    // 对外用列表同款视图（`workerIds`/`files`/`bytes`）；`tokenSecret` 是内部指针，不在契约里，parse 时被 strip。
+    return c.json(assetSchema.parse(await assetViewOf(ctx.assetReview, made.value)), 201);
   });
   on(routes.publishAsset, async (c) => {
     const actor = principal(c);
@@ -259,7 +266,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!published.ok) return fail(c, published.error);
     const next = published.value;
     await recordAssetAudit(ctx.assetReview, actor, 'asset.publish', next.name, `${next.kind} ${next.scope} 发布 ${next.pinned.slice(0, 12)}${viaNote(actor)}`);
-    return c.json(next);
+    return c.json(assetSchema.parse(await assetViewOf(ctx.assetReview, next)));
   });
   on(routes.assignAsset, async (c) => {
     const actor = principal(c);

@@ -81,9 +81,13 @@ async function realInside(root: string, candidate: string): Promise<string | nul
   }
 }
 
-/** 日志里抹掉 `user:token@`；错误信息不回显原始 stderr（#224）。 */
+/** 日志里抹掉 `user:token@` 与 Authorization 头里的令牌；错误信息不回显原始 stderr（#224）。 */
 export function redactGitStderr(text: string): string {
-  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, '$1***@');
+  return text
+    .replace(/(Authorization:\s*Basic\s+)[A-Za-z0-9+/=]+/gi, '$1***')
+    .replace(/(x-access-token:)[^\s'"]+/gi, '$1***')
+    .replace(/(http\.extraheader[=:]\s*)\S+/gi, '$1***')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, '$1***@');
 }
 
 /** 把 git 的 stderr 归成给调用者看的分类，不回显原始内容。 */
@@ -139,7 +143,7 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
    * 不透传 SSH_AUTH_SOCK（不借用调用者的 ssh agent）、GIT_ASKPASS、代理（HTTP_PROXY / HTTPS_PROXY）；
    * HOME 指向一次导入内的临时空目录，结束就删，避免读到用户的 ~/.gitconfig / 凭据。
    */
-  const gitEnv = (home: string): NodeJS.ProcessEnv => ({
+  const gitEnv = (home: string, token?: string | null): NodeJS.ProcessEnv => ({
     PATH: process.env['PATH'] ?? '/usr/local/bin:/usr/bin:/bin',
     LANG: process.env['LANG'] ?? 'C',
     LC_ALL: process.env['LC_ALL'] ?? 'C',
@@ -148,9 +152,16 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: '/dev/null',
     // 不跟随 HTTP 重定向（防公网地址 302 到内网），见文件头的 DNS 边界说明。
-    GIT_CONFIG_COUNT: '1',
+    // 有令牌时走请求头（不进 URL、不落盘）：GitHub/GitLab 的 PAT 都认 basic auth 里的占位用户名。
+    GIT_CONFIG_COUNT: token ? '2' : '1',
     GIT_CONFIG_KEY_0: 'http.followRedirects',
     GIT_CONFIG_VALUE_0: 'false',
+    ...(token
+      ? {
+          GIT_CONFIG_KEY_1: 'http.extraHeader',
+          GIT_CONFIG_VALUE_1: `Authorization: Basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
+        }
+      : {}),
     GIT_SSH_COMMAND: 'ssh -o BatchMode=yes -o StrictHostKeyChecking=yes',
     GIT_LFS_SKIP_SMUDGE: '1'
   });
@@ -160,11 +171,16 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
    * 只关心仓库的一小部分时（`sparse` 给了目录）走稀疏检出：`--filter=blob:none` 先不拉文件内容，
    * 配合 `sparse-checkout` 只取需要的目录，导入大仓库时不必把整棵树拉下来。
    */
-  async function checkout(url: string, ref: string | null, sparse: string | null = null): Promise<Result<{ dir: string; commit: string }, DomainError>> {
+  async function checkout(
+    url: string,
+    ref: string | null,
+    sparse: string | null = null,
+    token: string | null = null
+  ): Promise<Result<{ dir: string; commit: string }, DomainError>> {
     if (ref !== null && (ref.startsWith('-') || /\s/.test(ref))) return err(invalid('ref 不合法'));
     // HOME 用一次性的空目录：不读用户配置，也不给 git 留凭据；导入结束随 checkout 一起删。
     const home = await mkdtemp(join(tmpdir(), 'hub-asset-home-'));
-    const env = gitEnv(home);
+    const env = gitEnv(home, token);
     let dir: string | null = null;
     try {
       dir = await mkdtemp(join(tmpdir(), 'hub-asset-git-'));
@@ -334,8 +350,8 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
       return ok({ name: null, description: instructionSummary(body) });
     },
 
-    async scanGit(url, ref) {
-      const got = await checkout(url, ref);
+    async scanGit(url, ref, token) {
+      const got = await checkout(url, ref, null, token ?? null);
       if (!got.ok) return got;
       try {
         const rootReal = await realpath(got.value.dir).catch(() => null);
@@ -346,14 +362,14 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
       }
     },
 
-    async readGit(url, ref, path, kind) {
+    async readGit(url, ref, path, kind, token) {
       const rel = cleanPath(path);
       if (!rel.ok) return rel;
       // 稀疏检出：skill 只要那个目录；instruction / mcp 只要所在目录（根上的文件不稀疏）。
       // 目标就在仓库根时不做稀疏，否则会连根上的入口文件都拿不到。
       const sparse =
         kind === 'skill' ? (rel.value === '' ? null : rel.value) : rel.value === '' ? null : posix.dirname(rel.value) === '.' ? null : posix.dirname(rel.value);
-      const got = await checkout(url, ref, sparse);
+      const got = await checkout(url, ref, sparse, token ?? null);
       if (!got.ok) return got;
       try {
         // 检出目录也取真实路径：mkdtemp 在 /tmp 是符号链接的系统上仍能正确做前缀判断。
