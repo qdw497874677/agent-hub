@@ -81,6 +81,53 @@ if [[ -n "$npm_registry" ]]; then
   echo "==> npm 源：$npm_registry"
 fi
 
+# node-pty 是原生模块：没有预编译包时要现场编译。缺工具链就尝试自动装（只读/无 sudo 时跳过）。
+ensure_build_tools() {
+  if [[ "${WORKER_SKIP_SYSTEM_DEPS:-}" == 1 ]]; then
+    echo "==> 跳过系统依赖安装（WORKER_SKIP_SYSTEM_DEPS=1）"
+    return 0
+  fi
+  local missing=()
+  command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || missing+=("compiler")
+  command -v make >/dev/null 2>&1 || missing+=("make")
+  command -v python3 >/dev/null 2>&1 || missing+=("python3")
+  [[ ${#missing[@]} -eq 0 ]] && return 0
+
+  local sudo=""
+  if [[ "$(id -u)" -ne 0 ]]; then
+    if sudo -n true >/dev/null 2>&1; then
+      sudo="sudo -n"
+    else
+      echo "!! 缺编译工具（${missing[*]}），但没有免密 sudo：跳过自动安装（终端会用不了，其余功能正常）"
+      echo "   手动装：apt-get install -y build-essential python3 或 dnf install -y gcc-c++ make python3"
+      return 0
+    fi
+  fi
+
+  echo "==> 缺编译工具（${missing[*]}）：尝试自动安装，供 node-pty 编译"
+  if command -v apt-get >/dev/null 2>&1; then
+    $sudo apt-get update -qq >/dev/null 2>&1 || true
+    $sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential python3 >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1; then
+    $sudo dnf install -y gcc-c++ make python3 >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null 2>&1; then
+    $sudo yum install -y gcc-c++ make python3 >/dev/null 2>&1 || true
+  elif command -v apk >/dev/null 2>&1; then
+    $sudo apk add --no-cache build-base python3 >/dev/null 2>&1 || true
+  elif command -v pacman >/dev/null 2>&1; then
+    $sudo pacman -S --noconfirm --needed base-devel python >/dev/null 2>&1 || true
+  else
+    echo "   认不出包管理器，跳过（终端会用不了）"
+    return 0
+  fi
+  if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; then
+    echo "==> 编译工具已就绪"
+  else
+    echo "!! 自动安装没成功（可能没有网络或源不可用）：终端会用不了，其余功能正常"
+  fi
+}
+ensure_build_tools
+
 echo "==> 安装依赖（npm install --omit=dev，首次可能需要几分钟）"
 cd "$here"
 npm install --no-fund --no-audit --omit=dev
