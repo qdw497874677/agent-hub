@@ -114,9 +114,19 @@ export interface ProjectWorktreePatch {
 /**
  * 项目仓库清单（PATCH /api/projects/:id 的 repos，docs/design/multi-repo.md §11.2）。
  * 有 id 就带上：后端按 id 保留老仓库的身份，组合工作目录的成员才不会指丢。
+ *
+ * `credential`：非空 = 设置/覆盖访问令牌，`''` = 清除，不带 = 保持原值。
+ * `hasToken` 只在响应里出现（服务端从不回明文），这里写出来是为了读回来时类型对得上。
  */
 export interface ProjectReposPatch {
-  repos: readonly { id?: string; name?: string; url: string; defaultBranch?: string | null }[];
+  repos: readonly {
+    id?: string;
+    name?: string;
+    url: string;
+    defaultBranch?: string | null;
+    credential?: string;
+    hasToken?: boolean;
+  }[];
 }
 
 /**

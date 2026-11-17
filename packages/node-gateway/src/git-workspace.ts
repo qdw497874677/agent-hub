@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { simpleGit, type SimpleGit } from 'simple-git';
 import { execFile } from 'node:child_process';
-import type { CommitPreview, DomainError, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
+import type { CommitPreview, DomainError, GitAuth, GitStatus, RemotePullRequest, Result, WorkspaceGit } from '@agent-hub/domain';
 import { conflict, folderNameProblem, invalid, nonGitReason, unavailable, unsavedReason } from '@agent-hub/domain';
 import { insideGroups } from './group-dir.ts';
 import { runSetupScript } from './setup-script.ts';
@@ -12,6 +12,7 @@ import { runSetupScript } from './setup-script.ts';
  * WorkspaceGit 的 git 实现（simple-git，跑这台机器上的 git 和它自己的凭据）。
  * `check` 是这台机器的目录边界：返回 null = 允许，否则是给人看的原因。
  * hub 本机传「全部允许」；Worker 传 WORKER_ROOTS 的 realpath 检查。
+ * 私有 HTTPS 仓库的令牌由 hub 解出、以 `auth` 逐次传来：只进进程环境变量，不进命令行 / 日志。
  */
 export interface GitWorkspaceOptions {
   /**
@@ -72,7 +73,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       return { ok: true, value: { exists: true, isGit: true, remoteUrl: remoteUrl.trim() || null, branch: await currentBranch(git) } };
     },
 
-    async clone({ repoUrl, parent, name, branch }) {
+    async clone({ repoUrl, parent, name, branch, auth }) {
       const problem = folderNameProblem(name);
       if (problem !== null) return { ok: false, error: invalid(problem) };
       const blocked = await guard(parent);
@@ -85,7 +86,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       try {
         await mkdir(parent, { recursive: true });
         // 不让 git 弹交互式密码提示把进程挂住：没凭据就直接失败，原因回给人看
-        await networkGit(parent).clone(repoUrl, name, branch ? ['--branch', branch] : []);
+        await networkGit(parent, undefined, auth).clone(repoUrl, name, branch ? ['--branch', branch] : []);
       } catch (error) {
         // 失败要还原：本来没有就删掉，本来是空目录就清回空目录
         await rm(target, { recursive: true, force: true }).catch(() => undefined);
@@ -95,12 +96,12 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       return { ok: true, value: { path: target, branch: await currentBranch(simpleGit(target)) } };
     },
 
-    async checkRepo(repoUrl, branch) {
+    async checkRepo(repoUrl, branch, auth) {
       const url = repoUrl.trim();
       if (url === '') return { ok: true, value: { reachable: false, defaultBranch: null, branchExists: false, message: '仓库地址不能为空' } };
       try {
         // 只读：ls-remote 不进本地目录、不 clone。20 秒够了，慢网络 / 私有仓库也别把保存请求挂住。
-        const git = networkGit(tmpdir(), 20_000);
+        const git = networkGit(tmpdir(), 20_000, auth);
         const head = await git.raw(['ls-remote', '--symref', url, 'HEAD']);
         // 第一行形如 `ref: refs/heads/master\tHEAD`；没有 symref（裸提交号 / 老服务端）时按未知处理。
         const defaultBranch = /^ref:\s+refs\/heads\/(.+?)\s+HEAD$/m.exec(head)?.[1]?.trim() ?? null;
@@ -119,14 +120,14 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
     },
 
-    async addWorktree({ repoPath, path: requested, branch, base, existing }) {
+    async addWorktree({ repoPath, path: requested, branch, base, existing, auth }) {
       const path = existing ? requested : relocateWorktree(requested, options.worktreesDir);
       for (const place of [repoPath, dirname(path)]) {
         const blocked = await guard(place);
         if (blocked) return { ok: false, error: blocked };
       }
       if (await lstat(path).catch(() => null)) return { ok: false, error: conflict(`「${path}」已经存在`) };
-      const git = networkGit(repoPath);
+      const git = networkGit(repoPath, undefined, auth);
       if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
       const remotes = await git.getRemotes().catch(() => []);
       const hasOrigin = remotes.some((remote) => remote.name === 'origin');
@@ -167,11 +168,11 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
     },
 
-    async saveWip(path, message) {
+    async saveWip(path, message, auth) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
       if (!(await exists(path))) return { ok: false, error: unavailable(`目录不存在：${path}`) };
-      const git = networkGit(path);
+      const git = networkGit(path, undefined, auth);
       if (!(await git.checkIsRepo().catch(() => false))) return { ok: true, value: { committed: false, pushed: false, branch: null, reason: '不是 git 仓库' } };
       try {
         // symbolic-ref 在还没有提交的新仓库上也能用；detached HEAD 时失败
@@ -185,7 +186,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
         try {
           await git.raw(['push', '-u', 'origin', branch]);
         } catch (error) {
-          return { ok: true, value: { committed: staged, pushed: false, branch, reason: `推送失败：${String((error as Error).message ?? error).split('\n')[0]}` } };
+          return { ok: true, value: { committed: staged, pushed: false, branch, reason: `推送失败：${gitMessage(error)}` } };
         }
         return { ok: true, value: { committed: staged, pushed: true, branch, reason: null } };
       } catch (error) {
@@ -224,10 +225,10 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
     },
 
-    async push(path) {
+    async push(path, auth) {
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
-      const git = networkGit(path);
+      const git = networkGit(path, undefined, auth);
       const branch = (await git.raw(['symbolic-ref', '--short', '-q', 'HEAD']).catch(() => '')).trim() || null;
       if (!branch) return { ok: true, value: { pushed: false, branch: null, reason: '当前不在任何分支上（detached HEAD）' } };
       const remotes = await git.getRemotes().catch(() => []);
@@ -318,6 +319,8 @@ export interface GroupWorktrees {
     readonly path: string;
     readonly branch: string;
     readonly base?: string | null;
+    /** 私有 HTTPS 仓库的令牌（开 worktree 前要 fetch origin）。 */
+    readonly auth?: GitAuth;
   }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
 }
 
@@ -329,7 +332,7 @@ export interface GroupWorktrees {
 export function createGroupWorktrees(check: (path: string) => Promise<string | null>, options: { readonly groupsDir: string }): GroupWorktrees {
   const groupsDir = resolve(options.groupsDir);
   return {
-    async newWorktree({ repoPath, path: requested, branch, base }) {
+    async newWorktree({ repoPath, path: requested, branch, base, auth }) {
       if (!requested.startsWith('/')) return { ok: false, error: invalid('成员目录必须是绝对路径') };
       const path = resolve(requested);
       const repo = resolve(repoPath);
@@ -340,7 +343,7 @@ export function createGroupWorktrees(check: (path: string) => Promise<string | n
       if (!insideGroups(groupsDir, path)) return { ok: false, error: invalid(`成员目录必须放在 ${groupsDir} 下面：${path}`) };
       if (branch.trim() === '') return { ok: false, error: invalid('分支名不能为空') };
       if (await lstat(path).catch(() => null)) return { ok: false, error: conflict(`「${path}」已经存在`) };
-      return addWorktreeOnNewBranch({ repoPath: repo, path, branch, base });
+      return addWorktreeOnNewBranch({ repoPath: repo, path, branch, base, auth });
     }
   };
 }
@@ -355,9 +358,10 @@ export async function addWorktreeOnNewBranch(input: {
   readonly path: string;
   readonly branch: string;
   readonly base?: string | null;
+  readonly auth?: GitAuth;
 }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>> {
-  const { repoPath, path, branch, base } = input;
-  const git = networkGit(repoPath);
+  const { repoPath, path, branch, base, auth } = input;
+  const git = networkGit(repoPath, undefined, auth);
   if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
   const remotes = await git.getRemotes().catch(() => []);
   const hasOrigin = remotes.some((remote) => remote.name === 'origin');
@@ -389,17 +393,37 @@ export async function addWorktreeOnNewBranch(input: {
 
 /** 机器自己的 git 凭据要用到的变量（ssh agent、自定义 ssh 命令、askpass、代理），其余 GIT_* 不放行。 */
 const CREDENTIAL_ENV = ['GIT_SSH', 'GIT_SSH_COMMAND', 'GIT_ASKPASS', 'GIT_TERMINAL_PROMPT'] as const;
+/** 逐次传入的 HTTPS 令牌落在这里（git 的 `-c http.extraHeader=…` 环境写法），优先级高于机器自己的凭据。 */
+const AUTH_ENV = ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0'] as const;
 const PASS_THROUGH = ['PATH', 'HOME', 'USER', 'LANG', 'SSH_AUTH_SOCK', 'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy'];
 
-/** 要走网络的 git（clone / fetch / ls-remote）：不许弹交互式密码提示把进程挂住，没凭据就直接失败。 */
-function networkGit(baseDir: string, timeoutMs?: number): SimpleGit {
+/**
+ * 网络 git 的环境（导出只为测试）：机器自己的凭据变量 + 逐次令牌。
+ * 有 `auth` 就多三条 `GIT_CONFIG_*`，等价 `git -c http.extraHeader=…`；没 `auth` 就一条都不设。
+ */
+export function networkEnv(auth?: GitAuth, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = { GIT_TERMINAL_PROMPT: '0' };
   for (const key of [...PASS_THROUGH, ...CREDENTIAL_ENV.slice(0, 3)]) {
-    const value = process.env[key];
+    const value = source[key];
     if (value !== undefined) env[key] = value;
   }
+  if (auth !== undefined && auth.header.trim() !== '') {
+    env.GIT_CONFIG_COUNT = '1';
+    env.GIT_CONFIG_KEY_0 = 'http.extraHeader';
+    env.GIT_CONFIG_VALUE_0 = auth.header;
+  }
+  return env;
+}
+
+/**
+ * 要走网络的 git（clone / fetch / ls-remote / push）：不许弹交互式密码提示把进程挂住，没凭据就直接失败。
+ * `auth` 存在时用 `GIT_CONFIG_*` 注入 `http.extraHeader`（等价 `git -c http.extraHeader=…`）：
+ * 令牌只出现在环境变量里，不进 argv（`ps` 看不见）、不进 stderr（git 不回显这个头）。
+ */
+function networkGit(baseDir: string, timeoutMs?: number, auth?: GitAuth): SimpleGit {
+  const env = networkEnv(auth);
   const timeout = timeoutMs === undefined ? {} : { timeout: { block: timeoutMs } };
-  return simpleGit({ baseDir, allowEnvironment: CREDENTIAL_ENV, ...timeout }).env(env);
+  return simpleGit({ baseDir, allowEnvironment: [...CREDENTIAL_ENV, ...AUTH_ENV], ...timeout }).env(env);
 }
 
 type GhRun = (args: string[]) => Promise<{ ok: true; out: string } | { ok: false; reason: string }>;
@@ -551,6 +575,13 @@ async function currentBranch(git: SimpleGit): Promise<string | null> {
 
 function gitMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
-  // git 的报错可能带上 URL 里的凭据：抹掉 user:token@
-  return text.replace(/\/\/[^/@\s]+@/g, '//***@').trim().split('\n').slice(0, 3).join(' ');
+  // git 的报错可能带上 URL 里的凭据：抹掉 user:token@；也可能回显 http.extraHeader / Authorization
+  return text
+    .replace(/\/\/[^/@\s]+@/g, '//***@')
+    .replace(/(authorization:\s*)(basic|bearer)?\s*\S+/gi, '$1***')
+    .replace(/x-access-token:[^\s@]+/gi, 'x-access-token:***')
+    .trim()
+    .split('\n')
+    .slice(0, 3)
+    .join(' ');
 }

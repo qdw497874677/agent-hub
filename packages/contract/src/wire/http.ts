@@ -61,7 +61,12 @@ export const setProjectWorktreeRequest = z.object({
         id: z.string().max(64).optional(),
         name: z.string().max(41).optional(),
         url: z.string().min(1).max(500),
-        defaultBranch: z.string().max(200).nullable().optional()
+        defaultBranch: z.string().max(200).nullable().optional(),
+        /**
+         * 私有 HTTPS 仓库的令牌（明文只在这一次请求里出现）：非空 = 存进密钥箱；
+         * 空串 = 清掉这个仓库的令牌；省略 = 不动已有的。响应里只有 `hasToken`。
+         */
+        credential: z.string().max(512).optional()
       })
     )
     .max(8)
@@ -89,7 +94,12 @@ export const checkProjectReposRequest = z.object({
         id: z.string().max(64).optional(),
         name: z.string().max(41).optional(),
         url: z.string().min(1).max(500),
-        defaultBranch: z.string().max(200).nullable().optional()
+        defaultBranch: z.string().max(200).nullable().optional(),
+        /**
+         * 私有 HTTPS 仓库的令牌（明文只在这一次请求里出现）：非空 = 存进密钥箱；
+         * 空串 = 清掉这个仓库的令牌；省略 = 不动已有的。响应里只有 `hasToken`。
+         */
+        credential: z.string().max(512).optional()
       })
     )
     .max(8),

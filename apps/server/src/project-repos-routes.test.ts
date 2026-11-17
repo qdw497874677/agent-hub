@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { addTeamMember, inMemoryAccounts, inMemoryDeps } from '@agent-hub/domain/testing';
-import { createAccessPolicy } from '@agent-hub/domain';
+import { createAccessPolicy, repoTokenKey } from '@agent-hub/domain';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
+import { authHeaderFor } from './repo-auth.ts';
 
 const PASSWORD = 'long enough pw';
 
@@ -209,4 +210,110 @@ test('PATCH /api/projects/:id：写检查命令（issue #216 P1），空数组�
 
   const tooMany = await david(`/api/projects/${project.id}`, patch({ checks: Array.from({ length: 6 }, (_, i) => `cmd-${i}`) }));
   assert.equal(tooMany.status, 400, JSON.stringify(tooMany.body));
+});
+
+/** 测试里直接看密钥箱（fakeSecrets 暴露了 rows）。 */
+const vaultRows = (deps: { secrets: unknown }): Map<string, string> => (deps.secrets as { rows: Map<string, string> }).rows;
+
+test('PATCH /api/projects/:id：credential 进密钥箱，响应只有 hasToken', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const res = await david(
+    `/api/projects/${project.id}`,
+    patch({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', defaultBranch: 'main', credential: '  glpat-abc  ' }] })
+  );
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  const repo = res.body.repos[0];
+  assert.equal(repo.hasToken, true);
+  assert.equal('tokenSecret' in repo, false);
+  assert.equal(JSON.stringify(res.body).includes('glpat-abc'), false);
+  assert.equal(JSON.stringify(res.body).includes('repo-git:'), false, '密钥名也不出去');
+
+  const key = repoTokenKey(repo.id);
+  assert.equal(vaultRows(world.deps).get(key), 'glpat-abc');
+
+  // 清单接口也走同一套投影
+  const listed = await david('/api/projects');
+  const seen = listed.body.find((row: { id: string }) => row.id === project.id);
+  assert.equal(seen.repos[0].hasToken, true);
+  assert.equal('tokenSecret' in seen.repos[0], false);
+});
+
+test('PATCH /api/projects/:id：不带 credential 不清除，空串清除', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const first = await david(
+    `/api/projects/${project.id}`,
+    patch({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', credential: 'glpat-abc' }] })
+  );
+  assert.equal(first.status, 200, JSON.stringify(first.body));
+  const key = repoTokenKey(first.body.repos[0].id);
+
+  // 只改别的字段：令牌不动
+  const again = await david(`/api/projects/${project.id}`, patch({ repos: [{ id: first.body.repos[0].id, name: 'api', url: 'https://gitlab.test/me/api.git', defaultBranch: 'main' }] }));
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.equal(again.body.repos[0].hasToken, true);
+  assert.equal(vaultRows(world.deps).get(key), 'glpat-abc');
+
+  // 只改 worktree：同样不动
+  const worktree = await david(`/api/projects/${project.id}`, patch({ worktree: { mode: 'isolated' } }));
+  assert.equal(worktree.body.repos[0].hasToken, true);
+
+  const cleared = await david(`/api/projects/${project.id}`, patch({ repos: [{ id: first.body.repos[0].id, name: 'api', url: 'https://gitlab.test/me/api.git', credential: '' }] }));
+  assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
+  assert.equal(cleared.body.repos[0].hasToken, false);
+  assert.equal(vaultRows(world.deps).has(key), false);
+});
+
+test('PATCH /api/projects/:id：从清单里移除的仓库，密钥一起删', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const both = await david(
+    `/api/projects/${project.id}`,
+    patch({
+      repos: [
+        { name: 'api', url: 'https://gitlab.test/me/api.git', credential: 'glpat-api' },
+        { name: 'web', url: 'https://gitlab.test/me/web.git', credential: 'glpat-web' }
+      ]
+    })
+  );
+  assert.equal(both.status, 200, JSON.stringify(both.body));
+  const [api, web] = both.body.repos;
+  assert.equal(vaultRows(world.deps).has(repoTokenKey(web.id)), true);
+
+  const removed = await david(`/api/projects/${project.id}`, patch({ repos: [{ id: api.id, name: 'api', url: 'https://gitlab.test/me/api.git' }] }));
+  assert.equal(removed.status, 200, JSON.stringify(removed.body));
+  assert.deepEqual(removed.body.repos.map((repo: { name: string }) => repo.name), ['api']);
+  assert.equal(vaultRows(world.deps).has(repoTokenKey(web.id)), false, '移除的仓库密钥要回收');
+  assert.equal(vaultRows(world.deps).get(repoTokenKey(api.id)), 'glpat-api');
+});
+
+test('POST /api/projects/:id/repos/check：credential 透传给 git，响应用已存的令牌时也一样', async () => {
+  const { david, world } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const target = 'https://gitlab.test/me/api.git';
+
+  // 1）请求里显式带的令牌（还没保存）
+  const fresh = await david(
+    `/api/projects/${project.id}/repos/check`,
+    post({ repos: [{ name: 'api', url: target, defaultBranch: 'main', credential: 'glpat-live' }] })
+  );
+  assert.equal(fresh.status, 200, JSON.stringify(fresh.body));
+  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-live').header}`]);
+
+  // 2）已保存的令牌（请求里没带 credential）
+  const saved = await david(`/api/projects/${project.id}`, patch({ repos: [{ name: 'api', url: target, credential: 'glpat-saved' }] }));
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  world.git.authCalls.length = 0;
+  const check = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'api', url: target, defaultBranch: 'main' }] }));
+  assert.equal(check.status, 200, JSON.stringify(check.body));
+  assert.deepEqual(world.git.authCalls, [`local:check_repo:${target}:${authHeaderFor('glpat-saved').header}`]);
+  // 审计与响应里都不该出现令牌
+  assert.equal(JSON.stringify(check.body).includes('glpat'), false);
+
+  // 3）SSH 地址不传令牌
+  world.git.authCalls.length = 0;
+  const ssh = await david(`/api/projects/${project.id}/repos/check`, post({ repos: [{ name: 'web', url: 'git@gitlab.test:me/web.git' }] }));
+  assert.equal(ssh.status, 200, JSON.stringify(ssh.body));
+  assert.deepEqual(world.git.authCalls, []);
 });

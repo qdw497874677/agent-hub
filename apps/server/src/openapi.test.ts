@@ -560,3 +560,21 @@ test('项目级资产发布：同团队非项目成员的令牌 403；项目成�
   assert.equal(published.status, 200, JSON.stringify(published.body));
   assert.equal(published.body.pinned, made.value.latest);
 });
+
+test('/openapi/v1/projects：仓库只给 hasToken，令牌名 / 明文都不出去', async () => {
+  const { david, mint, api } = await setup();
+  const project = (await david('/api/projects', post({ name: 'p' }))).body;
+  const saved = await david(`/api/projects/${project.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', credential: 'glpat-abc' }] })
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const read = api((await mint(david, ['projects:read'])).token);
+  const got = await read(`/projects/${project.id}`);
+  assert.equal(got.status, 200, JSON.stringify(got.body));
+  assert.equal(got.body.repos[0].hasToken, true);
+  assert.equal('tokenSecret' in got.body.repos[0], false);
+  assert.equal(JSON.stringify(got.body).includes('glpat-abc'), false);
+  const list = await read('/projects');
+  assert.equal(JSON.stringify(list.body).includes('repo-git:'), false);
+});

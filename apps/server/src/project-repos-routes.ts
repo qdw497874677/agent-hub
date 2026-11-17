@@ -6,12 +6,14 @@ import {
   normalizeRepos,
   type AuditAction,
   type Deps,
+  type GitAuth,
   type Subject,
   type WorkerStatus
 } from '@agent-hub/domain';
 import { checkProjectReposRequest, type ProjectReposCheckDto } from '@agent-hub/contract';
 import type { SubjectOf } from './auth.ts';
 import { fail } from './http-error.ts';
+import { repoAuthForUrl, repoAuthFromCredential } from './repo-auth.ts';
 
 /**
  * 保存项目仓库清单前先检查（docs/design/multi-repo.md §11.2 的补充）：
@@ -77,15 +79,30 @@ export function installProjectReposRoutes(app: Hono<any>, options: ProjectReposR
 
     const route = chosen.origin === 'local' ? null : chosen.workerId;
     const git = route === null ? deps.git : deps.gateway.git(route);
+    // 私有 HTTPS 仓库的令牌：请求里显式带了的优先（还没保存），否则用这个项目已存的。
+    // 只在 http(s) 地址上用；拿不到就不传，照旧靠机器自己的凭据（SSH key / agent）。
+    const explicit = new Map<string, GitAuth>();
+    for (const repo of parsed.data.repos) {
+      const auth = repoAuthFromCredential(repo.credential);
+      if (auth) explicit.set(repo.url, auth);
+    }
+    const saved = new Map<string, GitAuth>();
+    for (const repo of normalized.value) {
+      if (explicit.has(repo.url)) continue;
+      const auth = await repoAuthForUrl({ projects: deps.projects, secrets: deps.secrets }, route, repo.url, projectId);
+      if (auth) saved.set(repo.url, auth);
+    }
+    const targets = normalized.value.map((repo) => ({ name: repo.name, url: repo.url, branch: repo.defaultBranch }));
+    const authOf = new Map(targets.map((target) => [target, explicit.get(target.url) ?? saved.get(target.url)]));
     const results = await checkReposUseCase(
       {
         checkRepo: async (target) => {
-          const probe = await git.checkRepo(target.url, target.branch);
+          const probe = await git.checkRepo(target.url, target.branch, authOf.get(target));
           // 网关掉线 / 超时也翻成一条普通的「检查不通过」，别让整批 500。
           return probe.ok ? probe.value : { reachable: false, defaultBranch: null, branchExists: false, message: probe.error.message };
         }
       },
-      normalized.value.map((repo) => ({ name: repo.name, url: repo.url, branch: repo.defaultBranch }))
+      targets
     );
 
     const bad = results.filter((result) => !result.ok).length;

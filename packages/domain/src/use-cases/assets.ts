@@ -41,6 +41,7 @@ import type { AssetDelivery, AssetSyncBoard } from '../ports/asset-delivery.ts';
 import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
 import { isHubSecretKey, secretLookupOrder } from '../asset-review.ts';
 import { checkGitSourceUrl } from '../asset-git-host.ts';
+import { REPO_TOKEN_PREFIX } from '../project.ts';
 import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpConfig, type McpConfig, type McpLaunch } from '../mcp.ts';
 
 /** 资产中心是独立的限界上下文：不塞进 Deps。 */
@@ -773,6 +774,8 @@ export async function setSecret(deps: Pick<AssetDeps, 'secrets' | 'now'>, name: 
 export async function deleteSecret(deps: Pick<AssetDeps, 'secrets'>, name: string): Promise<Result<void, DomainError>> {
   // 内部密钥（私有仓库令牌）跟着资产走，不在界面上出现，也不允许从密钥接口删。
   if (name.startsWith('asset-git:')) return err(forbidden('这是资产自带的令牌：在资产页删除资产即可，不能单独删'));
+  // 项目仓库的令牌同理：跟着仓库走，去项目设置里清（PATCH repos[].credential = ''）。
+  if (name.startsWith(REPO_TOKEN_PREFIX)) return err(forbidden('这是项目仓库自带的令牌：在项目设置里清掉仓库令牌即可，不能单独删'));
   if (!(await deps.secrets.remove(name))) return err(notFound('没有这个密钥'));
   return ok(undefined);
 }

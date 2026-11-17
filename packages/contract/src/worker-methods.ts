@@ -18,6 +18,12 @@ const method = <P extends z.ZodType, R extends z.ZodType>(name: string, capabili
   result
 });
 
+/**
+ * 私有 HTTPS 仓库的鉴权头（`Authorization: Basic …`）：hub 从密钥箱解出来、只交给那台机器的 git。
+ * **不进日志、不进错误信息、不回给浏览器**。不传 = 用 Worker 本机的 git 凭据（SSH key / agent）。
+ */
+const gitAuth = z.object({ header: z.string().min(1).max(4096) }).optional();
+
 const entry = z.object({ name: z.string(), path: z.string(), isGit: z.boolean().optional(), modifiedAt: z.number().optional(), hidden: z.boolean().optional() });
 
 export const fsListDirectories = method(
@@ -66,10 +72,10 @@ export const wsInspect = method(
   z.object({ exists: z.boolean(), isGit: z.boolean(), remoteUrl: z.string().nullable(), branch: z.string().nullable() })
 );
 
-/** 用 Worker 本机的 git 凭据；hub 不存 token。 */
+/** 默认用 Worker 本机的 git 凭据（SSH key / agent）；私有 HTTPS 仓库由 hub 解出 `auth` 传下来。 */
 export const wsClone = method(
   'ws.clone', 'git',
-  z.object({ repoUrl: z.string().min(1), parent: z.string(), name: z.string(), branch: z.string().nullable().optional() }),
+  z.object({ repoUrl: z.string().min(1), parent: z.string(), name: z.string(), branch: z.string().nullable().optional(), auth: gitAuth }),
   z.object({ path: z.string(), branch: z.string().nullable() })
 );
 
@@ -79,7 +85,7 @@ export const wsClone = method(
  */
 export const wsCheckRepo = method(
   'ws.check_repo', 'git',
-  z.object({ repoUrl: z.string().min(1).max(2000), branch: z.string().max(200).nullable().optional() }),
+  z.object({ repoUrl: z.string().min(1).max(2000), branch: z.string().max(200).nullable().optional(), auth: gitAuth }),
   z.object({
     reachable: z.boolean(),
     defaultBranch: z.string().nullable(),
@@ -90,7 +96,7 @@ export const wsCheckRepo = method(
 
 export const wsAddWorktree = method(
   'ws.add_worktree', 'git',
-  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), existing: z.boolean().optional() }),
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), existing: z.boolean().optional(), auth: gitAuth }),
   z.object({ path: z.string(), branch: z.string() })
 );
 
@@ -123,7 +129,7 @@ export const wsGroupRemove = method(
  */
 export const wsNewWorktree = method(
   'ws.new_worktree', 'git',
-  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional() }),
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), auth: gitAuth }),
   z.object({ path: z.string(), branch: z.string() })
 );
 
@@ -151,7 +157,7 @@ export const wsStatus = method(
 
 export const wsSaveWip = method(
   'ws.save_wip', 'git.remote',
-  z.object({ path: z.string(), message: z.string().min(1) }),
+  z.object({ path: z.string(), message: z.string().min(1), auth: gitAuth }),
   z.object({ committed: z.boolean(), pushed: z.boolean(), branch: z.string().nullable(), reason: z.string().nullable() })
 );
 
@@ -166,7 +172,8 @@ const remotePr = z.object({
 
 export const wsPreview = method(
   'ws.preview', 'files.read',
-  z.object({ path: z.string(), maxPatchBytes: z.number().int().min(0).max(1 << 20) }),
+  /** auth 只为两端形状一致：预览只读本地，不需要令牌。 */
+  z.object({ path: z.string(), maxPatchBytes: z.number().int().min(0).max(1 << 20), auth: gitAuth }),
   z.object({
     isGit: z.boolean(),
     branch: z.string().nullable(),
@@ -189,7 +196,7 @@ export const wsCommit = method(
 
 export const wsPush = method(
   'ws.push', 'git.remote',
-  z.object({ path: z.string() }),
+  z.object({ path: z.string(), auth: gitAuth }),
   z.object({ pushed: z.boolean(), branch: z.string().nullable(), reason: z.string().nullable() })
 );
 

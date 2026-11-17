@@ -329,7 +329,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!can(actor, 'project.read')) return fail(c, forbidden('令牌没有 projects:read'));
     const result = await listProjects(deps);
     const readable = await projectReader(deps.access, actor);
-    return result.ok ? c.json(result.value.filter(readable)) : fail(c, result.error);
+    // 同一套投影：仓库只给 hasToken，令牌名 / 明文不出 server
+    return result.ok ? c.json(result.value.filter(readable).map(projectDto)) : fail(c, result.error);
   });
   on(routes.getProject, async (c) => {
     const actor = principal(c);
@@ -338,13 +339,13 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!project) return fail(c, notFound('项目不存在'));
     const readable = await projectReader(deps.access, actor);
     if (!readable(project)) return fail(c, notFound('项目不存在'));
-    return c.json(project);
+    return c.json(projectDto(project));
   });
   on(routes.createProject, async (c) => {
     const actor = principal(c);
     if (!can(actor, 'project.create')) return fail(c, forbidden('令牌不能新建项目（要 projects:write，且账号有建项目的权限）'));
     const result = await createProjectUseCase(deps, { ...valid<z.output<typeof createProjectRequest>>(c, 'json'), actor });
-    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+    return result.ok ? c.json(projectDto(result.value), 201) : fail(c, result.error);
   });
   on(routes.updateProject, async (c) => {
     const actor = principal(c);
@@ -365,15 +366,15 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       if (!result.ok) return fail(c, result.error);
       next = result.value;
     }
-    return c.json(next);
+    return c.json(projectDto(next));
   });
   on(routes.setProjectRepo, async (c) => {
     const result = await setProjectRepoUseCase(deps, { projectId: c.req.param('projectId') ?? '', ...valid<z.output<typeof setProjectRepoRequest>>(c, 'json') });
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    return result.ok ? c.json(projectDto(result.value)) : fail(c, result.error);
   });
   on(routes.setProjectDescription, async (c) => {
     const result = await setProjectDescriptionUseCase(deps, { projectId: c.req.param('projectId') ?? '', ...valid<z.output<typeof setProjectDescriptionRequest>>(c, 'json') });
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    return result.ok ? c.json(projectDto(result.value)) : fail(c, result.error);
   });
   on(routes.deleteProject, async (c) => {
     if (!ctx.projectDeletion) return fail(c, { code: 'not_implemented', message: '没装删除项目' });

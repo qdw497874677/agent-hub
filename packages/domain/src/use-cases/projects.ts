@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, deriveRepoId, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, withProjectRepos } from '../project.ts';
+import { createProject, deriveRepoId, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, withProjectRepos } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
 import type { DomainError } from '../errors.ts';
@@ -154,47 +154,90 @@ export async function browseDirectories(
 /**
  * 绑定 / 改 / 解除项目仓库（url 为空 = 解除）。只影响以后新建的工作空间，已有的不动。
  * 多仓库项目里这是「改 primary」：替换第一个成员，保留其后的仓库（旧客户端不该顺手清掉别的仓库）。
+ * 地址没变时保留 primary 的 HTTPS 令牌；换了地址（可能是另一台主机）就把它从密钥箱里回收。
  */
 export async function setProjectRepoUseCase(
-  deps: Pick<Deps, 'projects'>,
+  deps: Pick<Deps, 'projects' | 'secrets'>,
   command: { readonly projectId: string; readonly repoUrl: string | null; readonly defaultBranch?: string | null }
 ): Promise<Result<Project, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project) return err(notFound('项目不存在'));
   const parsed = parseRepo(command.repoUrl, command.defaultBranch);
   if (!parsed.ok) return parsed;
+  const previous = project.repos[0] ?? null;
   if (parsed.value === null) {
     const cleared = withProjectRepos(project, []);
     await deps.projects.save(cleared);
+    if (previous?.tokenSecret) await deps.secrets.remove(previous.tokenSecret);
     return ok(cleared);
   }
-  const existing = project.repos[0] ?? null;
+  const existing = previous;
   // name 是组合工作空间的子目录名，跟着旧 primary 走，不随 URL 变化；没有旧 primary 时从 URL 派生。
   const name = existing?.name ?? repoNameFromUrl(parsed.value.url);
+  const sameUrl = existing !== null && existing.url === parsed.value.url;
   const primary: ProjectRepo = {
     id: existing?.id ?? deriveRepoId(name, parsed.value.url),
     name,
     url: parsed.value.url,
-    defaultBranch: parsed.value.defaultBranch
+    defaultBranch: parsed.value.defaultBranch,
+    ...(sameUrl && existing?.tokenSecret ? { tokenSecret: existing.tokenSecret } : {})
   };
   const next = withProjectRepos(project, [primary, ...project.repos.slice(1)]);
   await deps.projects.save(next);
+  if (!sameUrl && existing?.tokenSecret) await deps.secrets.remove(existing.tokenSecret);
   return ok(next);
+}
+
+/**
+ * 一个仓库条目的输入：`credential` 是明文令牌，只在这一次请求里出现。
+ * 非空 = 存进密钥箱并写 `tokenSecret`；`''` = 清掉；省略 = 不动已有的。
+ */
+export interface ProjectRepoInput extends Partial<ProjectRepo> {
+  readonly credential?: string | null;
 }
 
 /**
  * 改项目的仓库清单（PATCH /api/projects/:id 的 repos 字段，docs/design/multi-repo.md §11.2）。
  * 空数组 = 不绑仓库；同时维护过渡期的 `repo`（= 第一个）。
+ *
+ * 令牌只以密钥名（`repo-git:<id>`）落在 domain 对象上：明文进密钥箱，从清单里移除的仓库、
+ * 换了地址（可能是另一台主机）的仓库、显式 `credential: ''` 的仓库，密钥条目一起回收。
  */
 export async function updateProjectReposUseCase(
-  deps: Pick<Deps, 'projects'>,
-  command: { readonly projectId: string; readonly repos: readonly Partial<ProjectRepo>[] }
+  deps: Pick<Deps, 'projects' | 'secrets' | 'now'>,
+  command: { readonly projectId: string; readonly repos: readonly ProjectRepoInput[] }
 ): Promise<Result<Project, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project) return err(notFound('项目不存在'));
-  const repos = normalizeRepos(command.repos);
-  if (!repos.ok) return repos;
-  const next = withProjectRepos(project, repos.value);
+  const normalized = normalizeRepos(command.repos);
+  if (!normalized.ok) return normalized;
+  const previous = new Map(project.repos.map((repo) => [repo.id, repo] as const));
+  const repos: ProjectRepo[] = [];
+  const revoked: string[] = [];
+  for (const [index, repo] of normalized.value.entries()) {
+    const raw = command.repos[index];
+    const credential = typeof raw?.credential === 'string' ? raw.credential : null;
+    const before = previous.get(repo.id) ?? null;
+    const sameUrl = before !== null && before.url === repo.url;
+    const secret = repoTokenKey(repo.id);
+    if (credential !== null && credential.trim() !== '') {
+      await deps.secrets.put(secret, credential.trim(), deps.now());
+      repos.push({ ...repo, tokenSecret: repoTokenKey(repo.id) });
+      if (before?.tokenSecret && before.tokenSecret !== secret) revoked.push(before.tokenSecret);
+      continue;
+    }
+    if (credential === '') revoked.push(secret);
+    // 没给新令牌：地址没变就沿用，换了地址（可能换了主机）就丢弃并回收
+    const carried = credential !== null ? null : sameUrl ? before?.tokenSecret ?? null : null;
+    if (credential === null && !sameUrl && before?.tokenSecret) revoked.push(before.tokenSecret);
+    repos.push(carried === null ? repo : { ...repo, tokenSecret: carried });
+  }
+  const kept = new Set(repos.map((repo) => repo.id));
+  for (const repo of project.repos) {
+    if (!kept.has(repo.id) && repo.tokenSecret) revoked.push(repo.tokenSecret);
+  }
+  for (const name of new Set(revoked)) await deps.secrets.remove(name);
+  const next = withProjectRepos(project, repos);
   await deps.projects.save(next);
   return ok(next);
 }

@@ -9,6 +9,7 @@ import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
+import type { RepoAuthPort } from '../ports/repo-auth.ts';
 import type { GitHostApi, GitHostTokenStore, GitText, GitTextWriter, PullRequestLink, PullRequestRepository } from '../ports/pull-requests.ts';
 import type { Project } from '../project.ts';
 import { isContainerSession, type Session } from '../session.ts';
@@ -43,6 +44,8 @@ export interface GitWorkflowDeps {
   readonly workLog: Pick<WorkLogRepository, 'list' | 'append'>;
   /** Server 本机的 git（远端走 gateway.git）。 */
   readonly git: WorkspaceGit;
+  /** 私有 HTTPS 仓库的令牌（push 时用）；不给 = 只用机器自己的凭据。 */
+  readonly repoAuth?: RepoAuthPort;
   readonly pullRequests: PullRequestRepository;
   readonly tokens: GitHostTokenStore;
   readonly host: GitHostApi;
@@ -94,6 +97,8 @@ export interface GitRunOutcome {
 
 interface Located {
   readonly git: WorkspaceGit;
+  /** 工作空间所在机器（null = hub 本机）；解析仓库令牌时用。 */
+  readonly workerId: string | null;
   readonly root: string;
   readonly session: Session;
   readonly project: Project;
@@ -119,7 +124,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       root = picked.root;
     }
     const workspace = seen.value.workspaceId ? await deps.workspaces.byId(seen.value.workspaceId) : null;
-    return ok({ git: await gitFor(deps, location.workerId), root, session: seen.value, project: files.value, workspace });
+    return ok({ git: await gitFor(deps, location.workerId), workerId: location.workerId, root, session: seen.value, project: files.value, workspace });
   }
 
   const canPush = async (subject: Subject | null, project: Project): Promise<boolean> => (await authorizeProject(deps.access, subject, project, 'git.push')).ok;
@@ -187,7 +192,7 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     if (message.length > GIT_LIMITS.messageChars) return err(invalid('提交说明太长'));
     const found = await locate(subject, sessionId, 'session.prompt', member);
     if (!found.ok) return found;
-    const { git, root, project, session, workspace } = found.value;
+    const { git, workerId, root, project, session, workspace } = found.value;
     if (input.action !== 'commit' && !(await canPush(subject, project))) return err(conflict('你没有这个项目的推送权限（git.push）'));
     const me = principalOfSubject(subject);
     const preview = await git.preview(root, 0);
@@ -226,7 +231,9 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     let pushed = false;
     const branch = preview.value.branch;
     if (input.action !== 'commit') {
-      const out = await git.push(root);
+      // 私有 HTTPS 仓库：按工作空间路径反查项目仓库的令牌；拿不到就照旧用机器自己的凭据
+      const auth = (await deps.repoAuth?.forPath(workerId, root)) ?? undefined;
+      const out = await git.push(root, auth);
       if (!out.ok) return out;
       if (!out.value.pushed) return ok({ sha, committed, pushed: false, branch, pullRequest: null, compareUrl: null, notes: [...notes, `推送失败：${out.value.reason ?? '未知原因'}`] });
       pushed = true;

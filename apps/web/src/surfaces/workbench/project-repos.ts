@@ -7,6 +7,8 @@ import type { ProjectDto } from '@agent-hub/contract';
  * 那边没有 DOM 类型。字段形状直接取契约（ProjectDto.repos），读取仍然防御：老项目没有 repos。
  */
 export const PROJECT_REPOS_MAX = 8;
+/** 访问令牌长度上限，跟后端一致（1..512）。 */
+export const REPO_TOKEN_MAX = 512;
 /** 仓库名 = 组合工作目录里的子目录名，所以形状和后端一致：小写字母开头，最多 41 个字符。 */
 export const REPO_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
 /**
@@ -22,6 +24,15 @@ export interface ProjectRepoRow {
   readonly name: string;
   readonly url: string;
   readonly defaultBranch: string;
+  /** 这次编辑里新填的令牌；'' = 没填（已有令牌时表示「不改」）。服务端不会回显明文。 */
+  readonly credential: string;
+  /** 服务端说这一行已经存了令牌 —— 只用来决定占位文案和「清除」按钮。 */
+  readonly hasToken: boolean;
+  /**
+   * 用户点了「清除」：保存时显式传 `credential: ''`。
+   * 单独一个字段是因为「没填」和「要清掉」都是空串，光看 credential 分不出来。
+   */
+  readonly clearToken: boolean;
 }
 
 /** PATCH `{ repos }` 里的一项（id 只在原本就有时回传，避免换掉已有仓库的身份）。 */
@@ -30,6 +41,8 @@ export interface ProjectRepoValue {
   readonly name: string;
   readonly url: string;
   readonly defaultBranch: string | null;
+  /** 只在本次编辑里填了令牌（或点了清除）时出现；不带 = 保持服务端原值。 */
+  readonly credential?: string;
 }
 
 /**
@@ -52,7 +65,11 @@ export function repoRowsFrom(project: unknown): readonly ProjectRepoRow[] {
       id: text(repo.id),
       name: text(repo.name),
       url: text(repo.url),
-      defaultBranch: text(repo.defaultBranch)
+      defaultBranch: text(repo.defaultBranch),
+      // 服务端只回「有没有令牌」，不回明文；草稿永远从空串开始
+      credential: '',
+      hasToken: repo.hasToken === true,
+      clearToken: false
     });
   }
   return rows;
@@ -60,7 +77,26 @@ export function repoRowsFrom(project: unknown): readonly ProjectRepoRow[] {
 
 /** 「加一个仓库」的那一行：空着，等用户填。 */
 export function emptyRepoRow(): ProjectRepoRow {
-  return { id: '', name: '', url: '', defaultBranch: '' };
+  return { id: '', name: '', url: '', defaultBranch: '', credential: '', hasToken: false, clearToken: false };
+}
+
+/**
+ * 一行的令牌补丁：只有「这次确实填了值」或「点了清除」才带 `credential`。
+ * 什么都不带 = 保持服务端原值 —— 否则每次保存都会把已有令牌抹掉。
+ */
+export function repoCredentialPatch(row: ProjectRepoRow): { credential?: string } {
+  const typed = row.credential.trim();
+  if (typed !== '') return { credential: typed };
+  if (row.clearToken) return { credential: '' };
+  return {};
+}
+
+/**
+ * 「清除」按钮的状态迁移：点一下进入清除态（草稿里的令牌也丢掉），再点撤销。
+ * 撤销只回到「不改」，服务端的令牌本身要保存后才变 —— 正好配「留空不改」。
+ */
+export function clearCredential(row: ProjectRepoRow): Partial<ProjectRepoRow> {
+  return row.clearToken ? { credential: '', clearToken: false } : { credential: '', clearToken: true };
 }
 
 /**
@@ -105,6 +141,7 @@ export function repoRowProblem(row: ProjectRepoRow, rows: readonly ProjectRepoRo
   const url = row.url.trim();
   if (url === '') return '写上仓库地址';
   if (!REPO_URL_PATTERN.test(url)) return '仓库地址要以 http(s):// 或 ssh:// 开头';
+  if (row.credential.trim().length > REPO_TOKEN_MAX) return `访问令牌最多 ${REPO_TOKEN_MAX} 个字符`;
   const branch = row.defaultBranch.trim();
   if (branch !== '' && !/^[\w./-]+$/.test(branch)) return '默认分支只能有字母、数字和 . _ / -';
   return null;
@@ -145,7 +182,8 @@ export function repoRowsValue(rows: readonly ProjectRepoRow[]): readonly Project
       ...(id === '' ? {} : { id }),
       name: row.name.trim(),
       url: row.url.trim(),
-      defaultBranch: branch === '' ? REPO_DEFAULT_BRANCH : branch
+      defaultBranch: branch === '' ? REPO_DEFAULT_BRANCH : branch,
+      ...repoCredentialPatch(row)
     };
   });
 }

@@ -35,7 +35,7 @@ import { actorId, prepareTeamWorkspace } from './workspaces.ts';
 
 export type WorkspaceGroupDeps = Pick<
   Deps,
-  'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workspaces' | 'access'
+  'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workspaces' | 'access' | 'repoAuth'
 > & {
   readonly workspaceGroups?: WorkspaceGroupRepository;
   /** 删组前要先丢 checkpoint（同 removeWorkspaceUseCase）。 */
@@ -217,11 +217,13 @@ export async function buildWorkspaceGroupUseCase(
     if (!repo) continue;
     const base = await baseForRepo(deps, project, repo, machine, { home: command.home, actor });
     if (!base.ok) return abort(members, repos.slice(index), base.error);
+    const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url)) ?? undefined;
     const made = await groupGit.newWorktree({
       repoPath: base.value.path,
       path: `${root}/${repo.name}`,
       branch: groupBranch(repo),
-      base: baseRef ?? repo.defaultBranch ?? undefined
+      base: baseRef ?? repo.defaultBranch ?? undefined,
+      ...(auth ? { auth } : {})
     });
     if (!made.ok) return abort(members, repos.slice(index), made.error);
     const created = newWorkspace({
@@ -304,11 +306,13 @@ export async function retryWorkspaceGroupUseCase(
     const branch = workspace.branch ?? groupBranch(repo);
     const preparing: Workspace = { ...workspace, state: 'preparing', keptReason: null, updatedAt: deps.now() };
     await deps.workspaces.save(preparing);
+    const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url)) ?? undefined;
     const made = await groupGit.newWorktree({
       repoPath: base.value.path,
       path,
       branch,
-      base: baseRef ?? repo.defaultBranch ?? undefined
+      base: baseRef ?? repo.defaultBranch ?? undefined,
+      ...(auth ? { auth } : {})
     });
     // 目录已经是同分支的 worktree 就算建成（§12.7），别因为「已经存在」整组失败
     if (!made.ok && !/已存在|exists/i.test(made.error.message)) {

@@ -43,7 +43,7 @@ export interface ContinueElsewhereCommand {
 export async function continueElsewhereUseCase(
   deps: Pick<
     Deps,
-    'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access'
+    'agents' | 'artifacts' | 'bots' | 'fs' | 'gateway' | 'git' | 'hosting' | 'now' | 'projects' | 'queue' | 'sessions' | 'stream' | 'tasks' | 'workspaceGroups' | 'workspaces' | 'workLog' | 'access' | 'repoAuth'
   >,
   command: ContinueElsewhereCommand
 ): Promise<Result<Session, DomainError>> {
@@ -82,7 +82,8 @@ export async function continueElsewhereUseCase(
 
   let wip: SaveWipOutcome | null = null;
   if (command.saveWip && from?.isGit) {
-    const saved = await (await gitFor(deps, from.workerId)).saveWip(from.path, `WIP: ${task.title}（换个地方继续）`);
+    const auth = (await deps.repoAuth?.forPath(from.workerId, from.path)) ?? undefined;
+    const saved = await (await gitFor(deps, from.workerId)).saveWip(from.path, `WIP: ${task.title}（换个地方继续）`, auth);
     if (!saved.ok) return saved;
     wip = saved.value;
   }

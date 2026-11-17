@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGitWorkspace, mainWorktreeDir } from './git-workspace.ts';
+import { createGitWorkspace, mainWorktreeDir, networkEnv } from './git-workspace.ts';
 
 test('git-common-dir 的相对路径按 worktree 解析，不按进程 cwd', () => {
   const worktree = '/tmp/ws/agent-hub/.worktrees/demo-fix';
@@ -321,4 +321,28 @@ test('checkRepo：ls-remote 读默认分支和分支存在性；坏地址不抛'
   assert.equal(broken.value.reachable, false);
   assert.equal(broken.value.defaultBranch, null);
   assert.ok((broken.value.message ?? '').length > 0);
+});
+
+test('networkEnv：有 auth 才注入 GIT_CONFIG_* 三条，没有就一条都不设', () => {
+  const header = 'Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2xwYXQtYWJj';
+  const withAuth = networkEnv({ header }, {});
+  assert.equal(withAuth.GIT_CONFIG_COUNT, '1');
+  assert.equal(withAuth.GIT_CONFIG_KEY_0, 'http.extraHeader');
+  assert.equal(withAuth.GIT_CONFIG_VALUE_0, header);
+  assert.equal(withAuth.GIT_TERMINAL_PROMPT, '0');
+
+  const without = networkEnv(undefined, {});
+  assert.equal(without.GIT_CONFIG_COUNT, undefined);
+  assert.equal(without.GIT_CONFIG_KEY_0, undefined);
+  assert.equal(without.GIT_CONFIG_VALUE_0, undefined);
+
+  // 空白头等于没给（不让 git 收到一个空 extraHeader）
+  const blank = networkEnv({ header: '   ' }, {});
+  assert.equal(blank.GIT_CONFIG_COUNT, undefined);
+
+  // 机器自己的凭据照旧透传，令牌不进 argv 也不挤掉它们
+  const env = networkEnv({ header }, { GIT_SSH_COMMAND: 'ssh -i k', HOME: '/home/me', PATH: '/bin' });
+  assert.equal(env.GIT_SSH_COMMAND, 'ssh -i k');
+  assert.equal(env.HOME, '/home/me');
+  assert.equal(env.PATH, '/bin');
 });

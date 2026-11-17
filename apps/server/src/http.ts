@@ -3,6 +3,7 @@ import { installObserveRoutes, type ObserveRouteOptions } from './observe-routes
 import { installGroupRoutes, type GroupRouteDeps } from './group-routes.ts';
 import { installWorkspaceGroupRoutes } from './workspace-group-routes.ts';
 import { installProjectReposRoutes } from './project-repos-routes.ts';
+import { projectDto } from './project-dto.ts';
 import { installPreviewRoutes, type PreviewApiOptions } from './preview-routes.ts';
 import { installServiceRoutes, type ServiceApiOptions } from './service-routes.ts';
 import { installContextRoutes } from './context-routes.ts';
@@ -464,7 +465,7 @@ export function createApp(options: AppOptions): Hono {
   app.get('/api/projects', async (c) => {
     const result = await listProjects(deps);
     const readable = await projectReader(deps.access, subjectOf(c));
-    return result.ok ? c.json(result.value.filter(readable)) : fail(c, result.error);
+    return result.ok ? c.json(result.value.filter(readable).map(projectDto)) : fail(c, result.error);
   });
 
   app.post('/api/projects', async (c) => {
@@ -473,7 +474,7 @@ export function createApp(options: AppOptions): Hono {
     const actor = subjectOf(c);
     if (!can(actor, 'project.create')) return fail(c, forbidden('你没有权限新建项目'));
     const result = await createProjectUseCase(deps, { ...input.value, actor });
-    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+    return result.ok ? c.json(projectDto(result.value), 201) : fail(c, result.error);
   });
 
   // 绑定 / 改 / 解除项目仓库：只影响以后新建的工作空间。
@@ -481,7 +482,8 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, setProjectRepoRequest);
     if (!input.ok) return input.response;
     const result = await setProjectRepoUseCase(deps, { projectId: c.req.param('projectId'), ...input.value });
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    // 出站一律 projectDto：仓库上的令牌名（tokenSecret）不出去，只给 hasToken。
+    return result.ok ? c.json(projectDto(result.value)) : fail(c, result.error);
   });
 
   // 改项目说明（项目设置）
@@ -489,7 +491,7 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, setProjectDescriptionRequest);
     if (!input.ok) return input.response;
     const result = await setProjectDescriptionUseCase(deps, { projectId: c.req.param('projectId'), ...input.value });
-    return result.ok ? c.json(result.value) : fail(c, result.error);
+    return result.ok ? c.json(projectDto(result.value)) : fail(c, result.error);
   });
 
   // 改项目的工作空间档位 / 准备命令（docs/design/worktree.md §3）：只影响以后新建的临时工作空间。
@@ -541,7 +543,7 @@ export function createApp(options: AppOptions): Hono {
         await auditResource(c, subject, 'project.asset_sets', projectId, ids.length === 0 ? '清空' : `资产组合：${ids.join(', ')}`);
       }
     }
-    return current.ok ? c.json(current.value) : fail(c, current.error);
+    return current.ok ? c.json(projectDto(current.value)) : fail(c, current.error);
   });
 
   // 重跑准备命令（docs/design/worktree.md §4）：只对准备失败的工作空间有效，要能改它所属的项目。

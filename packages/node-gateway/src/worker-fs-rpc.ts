@@ -84,18 +84,18 @@ function serveWorkspaceGit(port: RpcPort, files: WorkerFiles | undefined, gitOpt
     throw new RpcFailure(result.error.code === 'invalid' || result.error.code === 'conflict' ? result.error.code : 'failed', result.error.message);
   };
   port.handle(wsInspect, async ({ path }) => unwrap(await need().inspect(path)));
-  port.handle(wsCheckRepo, async ({ repoUrl, branch }) => unwrap(await need().checkRepo(repoUrl, branch ?? null)));
+  port.handle(wsCheckRepo, async ({ repoUrl, branch, auth }) => unwrap(await need().checkRepo(repoUrl, branch ?? null, auth)));
   port.handle(wsClone, async (input) => unwrap(await need().clone(input)));
   port.handle(wsAddWorktree, async (input) => unwrap(await need().addWorktree(input)));
   port.handle(wsRunSetup, async (input) => unwrap(await need().runSetup(input)));
   port.handle(wsStatus, async ({ path }) => unwrap(await need().status(path)));
-  port.handle(wsSaveWip, async ({ path, message }) => unwrap(await need().saveWip(path, message)));
+  port.handle(wsSaveWip, async ({ path, message, auth }) => unwrap(await need().saveWip(path, message, auth)));
   port.handle(wsPreview, async ({ path, maxPatchBytes }) => {
     const preview = unwrap(await need().preview(path, maxPatchBytes));
     return { ...preview, files: [...preview.files] };
   });
   port.handle(wsCommit, async ({ path, ...input }) => unwrap(await need().commit(path, input)));
-  port.handle(wsPush, async ({ path }) => unwrap(await need().push(path)));
+  port.handle(wsPush, async ({ path, auth }) => unwrap(await need().push(path, auth)));
   port.handle(wsGh, async ({ path, request }) => unwrap(await need().gh(path, request)));
   port.handle(wsRemove, async ({ path, kind, force, mergedHead }) => unwrap(await need().remove(path, kind, { force: force === true, ...(mergedHead ? { mergedHead } : {}) })));
 }

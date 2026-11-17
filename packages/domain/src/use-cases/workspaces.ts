@@ -225,7 +225,7 @@ export interface PrepareLongLivedCommand {
 }
 
 export async function prepareLongLivedWorkspaceUseCase(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access' | 'repoAuth'>,
   command: PrepareLongLivedCommand
 ): Promise<Result<Workspace, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
@@ -265,7 +265,7 @@ export interface PrepareTeamWorkspaceCommand {
  * 同团队同机器完全相同的目录已经登记过就返回那一条（幂等），嵌套的拒绝。
  */
 export async function prepareTeamWorkspace(
-  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access'>,
+  deps: Pick<Deps, 'fs' | 'git' | 'gateway' | 'now' | 'projects' | 'workspaces' | 'access' | 'repoAuth'>,
   command: PrepareTeamWorkspaceCommand
 ): Promise<Result<Workspace, DomainError>> {
   const resolved = await resolveMachine(deps, command.workerId);
@@ -303,8 +303,9 @@ export async function prepareTeamWorkspace(
       : await managedPlace(deps, command.slug, machine.route, command);
     if (!place.ok) return place;
     if (command.repo) {
-      // 有仓库：把它下载到选的目录 / 托管目录（用那台机器自己的 git 凭据；空目录也能直接 clone 进去）
-      const cloned = await git.clone({ repoUrl: command.repo.url, parent: place.value.parent, name: place.value.name, branch: command.repo.branch });
+      // 有仓库：把它下载到选的目录 / 托管目录（默认用那台机器自己的 git 凭据；空目录也能直接 clone 进去）
+      const auth = (await deps.repoAuth?.forUrl(machine.workerId, command.repo.url)) ?? undefined;
+      const cloned = await git.clone({ repoUrl: command.repo.url, parent: place.value.parent, name: place.value.name, branch: command.repo.branch, ...(auth ? { auth } : {}) });
       if (!cloned.ok) return cloned;
       path = cloned.value.path;
       branch = cloned.value.branch;

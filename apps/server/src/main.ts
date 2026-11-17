@@ -1,5 +1,6 @@
 import { backupArgs, runBackup } from './backup.ts';
 import { createInstallArtifacts } from './install-artifacts.ts';
+import { createRepoAuth } from './repo-auth.ts';
 import { PREVIEW_WS_PATH, STALL_NOTICE_MARKER } from '@agent-hub/contract';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createTimerSource } from '@agent-hub/connector-timer';
@@ -209,6 +210,10 @@ const missingServices: ServiceGateway = {
   logs: async () => err(unavailable('worker 通道尚未就绪'))
 };
 
+const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
+// 密钥箱：资产令牌、项目仓库令牌都存这里（私有 HTTPS 仓库的 PAT）。
+const secretsVault = createSecretVault(store.db, secretKey);
+
 const deps: Deps = {
   handoffTokenCap: handoffCapFromEnv(readEnv('HUB_HANDOFF_TOKEN_CAP') ?? undefined),
   projects: store.projects,
@@ -305,6 +310,9 @@ const deps: Deps = {
   agents: catalog,
   fs: createLocalFs(),
   git: createGitWorkspace(),
+  secrets: secretsVault,
+  // 私有 HTTPS 仓库的令牌解析：按仓库 URL / 工作空间路径反查项目仓库的 tokenSecret。
+  repoAuth: createRepoAuth({ projects: store.projects, workspaces: store.workspaces, secrets: secretsVault }),
   search: store.search,
   hosting: createMemoryHosting(),
   queue: createSessionQueue(),
@@ -428,7 +436,6 @@ const subjectOf = async (sessionId: SessionId): Promise<Subject | null> => {
   return userId ? loadActor(store.users, store.access, userId, bot ? 'agent-bot' : 'agent-git') : null;
 };
 // GitHub 连接器（ADR 0032 R4）：规则全在 @agent-hub/connector-github；这里只给它项目绑定的 token、PR 和会话的对应。
-const secretKey = await loadSecretKey({ env: readEnv('HUB_SECRET_KEY') ?? undefined, file: join(dataDir, 'secret.key') });
 const gitHostTokens = createSqliteGitHostTokens(store.db, secretKey);
 const githubClient = createGithubClient({ base: readEnv('HUB_GITHUB_API') ?? undefined });
 const teamTokenOf = async (projectId: string) => {
@@ -1075,7 +1082,7 @@ const assetDeps: AssetReviewDeps = {
   board: store.assetSync,
   workers: workerControl,
   projects: store.projects,
-  secrets: createSecretVault(store.db, secretKey),
+  secrets: secretsVault,
   now: () => Date.now()
 };
 // ADR 0016 迁移：老资产记到 hub 管理员名下（全局 / 项目级，已发布）；幂等，重启不重复。

@@ -8,7 +8,7 @@ import {
   recordEvent,
   type Deps
 } from '@agent-hub/domain';
-import { openSqliteStore } from '@agent-hub/storage-sqlite';
+import { createSecretVault, openSqliteStore } from '@agent-hub/storage-sqlite';
 import { createLiveCatalog } from './agent-catalog.ts';
 import { createGitWorkspace, createLocalFs } from '@agent-hub/node-gateway';
 import { createSessionQueue } from './session-queue.ts';
@@ -44,6 +44,7 @@ function harness() {
     tasks: store.tasks,
     workLog: store.workLog,
     sessions: store.sessions,
+    secrets: createSecretVault(store.db, Buffer.alloc(32, 7)),
     workspaces: store.workspaces,
     workspaceGroups: store.workspaceGroups,
     artifacts: store.artifacts,

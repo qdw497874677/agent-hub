@@ -7,6 +7,8 @@ import { canAdminister } from '../../shell/account-context.ts';
 import { INPUT, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import {
   PROJECT_REPOS_MAX,
+  REPO_TOKEN_MAX,
+  clearCredential,
   emptyRepoRow,
   repoCheckBlocksSave,
   repoCheckLine,
@@ -55,6 +57,8 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
     onSuccess: async () => {
       // 结论已经被用掉了：别让过期的检查结果继续挂在界面上
       setCheck(null);
+      // 令牌已经存进去了：草稿里那份明文马上丢掉，别留在输入框里
+      setRows((current) => current.map((row) => ({ ...row, credential: '', clearToken: false })));
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['projects'] }),
         queryClient.invalidateQueries({ queryKey: ['home'] }),
@@ -204,6 +208,42 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
                       />
                     </label>
                   </div>
+                  {/* 令牌单独占一行：地址框在窄屏（369px）已经够挤，别再来抢宽度 */}
+                  <div className="mt-2 flex flex-wrap items-end gap-2">
+                    <label className="block min-w-0 flex-1 text-meta text-secondary">
+                      <span className="flex flex-wrap items-baseline gap-x-2">
+                        访问令牌
+                        <span className="text-tertiary">可选</span>
+                      </span>
+                      <input
+                        className={`${INPUT} mt-0.5 w-full`}
+                        data-testid="repo-token"
+                        type="password"
+                        autoComplete="off"
+                        maxLength={REPO_TOKEN_MAX}
+                        aria-label="仓库访问令牌"
+                        placeholder={row.hasToken ? '已配置；留空不改' : '私有仓库的 access token'}
+                        value={row.credential}
+                        onChange={(event) => update(index, { credential: event.target.value, clearToken: false })}
+                      />
+                    </label>
+                    {row.hasToken || row.clearToken ? (
+                      <button
+                        type="button"
+                        className={`shrink-0 text-meta hover:text-rust ${row.clearToken ? 'text-secondary' : 'text-tertiary'}`}
+                        data-testid="repo-token-clear"
+                        title={row.clearToken ? '撤销清除，保留已有令牌' : '保存后清掉这行的令牌'}
+                        onClick={() => update(index, clearCredential(row))}
+                      >
+                        {row.clearToken ? '撤销清除' : '清除'}
+                      </button>
+                    ) : null}
+                  </div>
+                  {row.clearToken ? (
+                    <p className="mt-1 text-meta text-tertiary" data-testid="repo-token-cleared">
+                      保存后会清掉这行的令牌。
+                    </p>
+                  ) : null}
                   {rowProblem !== null ? <p className="mt-1 text-meta text-rust">{rowProblem}</p> : null}
                   {checkError !== null ? (
                     <p className="mt-1 text-meta text-rust" data-testid="repo-check-error">
@@ -214,6 +254,12 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
               );
             })}
           </div>
+
+          {rows.length > 0 ? (
+            <p className="mt-2 text-meta text-tertiary" data-testid="repo-token-hint">
+              令牌只用于 https:// 私有仓库（GitLab / Gitea 的 access token 即可）；SSH 地址不用填，用机器上的 key。
+            </p>
+          ) : null}
 
           <p
             className={`text-meta text-rust ${checkSummary === null ? '' : 'mt-2'}`}
@@ -280,6 +326,7 @@ function ReadonlyRepos({ rows }: { rows: readonly ProjectRepoRow[] }) {
           <span className="text-primary">{row.name}</span>
           <span className="break-all text-tertiary">{row.url}</span>
           <span className="text-tertiary">{row.defaultBranch === '' ? 'main' : row.defaultBranch}</span>
+          {row.hasToken ? <span className="text-tertiary">有令牌</span> : null}
         </li>
       ))}
       <li className="text-tertiary">只有项目主人 / 管理员能改这块。</li>

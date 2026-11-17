@@ -167,7 +167,12 @@ export const projectRepoSchema = z.object({
   /** `^[a-z][a-z0-9-]{0,40}$`，项目内唯一。 */
   name: z.string(),
   url: z.string(),
-  defaultBranch: z.string().nullable().default(null)
+  defaultBranch: z.string().nullable().default(null),
+  /**
+   * 这个仓库配了 HTTPS 令牌（存在 hub 的密钥箱里）。
+   * **令牌本身永远不出现在任何 HTTP 响应里**，只有这个布尔。
+   */
+  hasToken: z.boolean().optional()
 });
 
 export const projectSchema = z.object({

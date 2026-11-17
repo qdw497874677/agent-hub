@@ -27,11 +27,21 @@ export interface GitStatus {
   readonly files?: number | null;
 }
 
+/**
+ * 一次 git 网络操作要带的 HTTP 鉴权头（`Authorization: Basic …`）。
+ * hub 从密钥箱解出来只交给这台机器的 git；**不进日志、不进审计、不回给浏览器**。
+ */
+export interface GitAuth {
+  readonly header: string;
+}
+
 export interface CloneInput {
   readonly repoUrl: string;
   readonly parent: string;
   readonly name: string;
   readonly branch?: string | null;
+  /** 私有 HTTPS 仓库的令牌；SSH / 本地路径不传。 */
+  readonly auth?: GitAuth;
 }
 
 export interface WorktreeInput {
@@ -43,6 +53,8 @@ export interface WorktreeInput {
   readonly base?: string | null;
   /** true = 分支已经有了（换个地方继续沿用原分支）：直接检出它，不新开。 */
   readonly existing?: boolean;
+  /** 私有 HTTPS 仓库的令牌（只在要 fetch origin 时才用得上）。 */
+  readonly auth?: GitAuth;
 }
 
 /** 「先提交 WIP 并推送分支」的结果。没推上去不是错误：reason 说明为什么（没有 origin、推送被拒…）。 */
@@ -152,23 +164,24 @@ export interface RepoProbe {
 /**
  * 工作空间的 git / 目录操作（docs/design/workspaces.md §3）。
  * 在目录所在的那台机器上执行：本机直接跑，远端 Worker 走 ws.* RPC。
- * 适配器负责 roots 边界；git 凭据用那台机器自己的，hub 不存 token。
+ * 适配器负责 roots 边界；凭据默认用那台机器自己的（SSH / key / agent）；
+ * 私有 HTTPS 仓库可以选择带 `auth`（hub 从密钥箱解出来的头），不传就走机器本机凭据。
  */
 export interface WorkspaceGit {
   inspect(path: string): Promise<Result<GitInspection, DomainError>>;
   /** 只读地问远端：不 clone、不碰本地目录。连不上不是错误：reachable=false + message。 */
-  checkRepo(repoUrl: string, branch: string | null): Promise<Result<RepoProbe, DomainError>>;
+  checkRepo(repoUrl: string, branch: string | null, auth?: GitAuth): Promise<Result<RepoProbe, DomainError>>;
   clone(input: CloneInput): Promise<Result<{ readonly path: string; readonly branch: string | null }, DomainError>>;
   addWorktree(input: WorktreeInput): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
   status(path: string): Promise<Result<GitStatus, DomainError>>;
   /** 把所有改动（含未跟踪）提交成一个 WIP 提交，再 `push -u origin <当前分支>`。 */
-  saveWip(path: string, message: string): Promise<Result<SaveWipOutcome, DomainError>>;
-  /** ADR 0027 §2：提交前预览（patch 截断到 maxPatchBytes）。 */
+  saveWip(path: string, message: string, auth?: GitAuth): Promise<Result<SaveWipOutcome, DomainError>>;
+  /** ADR 0027 §2：提交前预览（patch 截断到 maxPatchBytes）。只读本地，不需要令牌。 */
   preview(path: string, maxPatchBytes: number): Promise<Result<CommitPreview, DomainError>>;
   /** `add -A` + `commit --author`；没改动 = committed:false。 */
   commit(path: string, input: CommitInput): Promise<Result<CommitOutcome, DomainError>>;
   /** `push -u origin <当前分支>`；没 origin / 被拒 = pushed:false + 原因。 */
-  push(path: string): Promise<Result<PushOutcome, DomainError>>;
+  push(path: string, auth?: GitAuth): Promise<Result<PushOutcome, DomainError>>;
   /** 用这台机器上已登录的 gh。 */
   gh(path: string, request: GhRequest): Promise<Result<GhOutcome, DomainError>>;
   /** worktree 用 `git worktree remove`（不 --force，分支保留）；directory 只删平台建的临时目录。删之前再查一次。 */

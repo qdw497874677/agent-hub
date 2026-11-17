@@ -2,7 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   PROJECT_REPOS_MAX,
+  REPO_TOKEN_PREFIX,
   createProject,
+  isHttpRepoUrl,
+  repoIdOfTokenName,
+  repoTokenKey,
   deriveRepoId,
   normalizeRepos,
   primaryRepo,
@@ -86,4 +90,29 @@ test('withProjectRepos：repo 始终等于 repos[0]', () => {
   const cleared = withProjectRepos(next, []);
   assert.equal(cleared.repo, null);
   assert.deepEqual(cleared.repos, []);
+});
+
+test('normalizeRepos：保留 tokenSecret（trim），空串 / 没给就不写字段', () => {
+  const kept = normalizeRepos([{ name: 'api', url: 'https://x.test/a.git', tokenSecret: '  repo-git:repo_deadbeef  ' }]);
+  assert.ok(kept.ok);
+  assert.equal(kept.value[0]!.tokenSecret, 'repo-git:repo_deadbeef');
+
+  const blank = normalizeRepos([{ name: 'api', url: 'https://x.test/a.git', tokenSecret: '   ' }]);
+  assert.ok(blank.ok);
+  assert.equal('tokenSecret' in blank.value[0]!, false);
+
+  const absent = normalizeRepos([{ name: 'api', url: 'https://x.test/a.git' }]);
+  assert.ok(absent.ok);
+  assert.equal('tokenSecret' in absent.value[0]!, false);
+});
+
+test('repoTokenKey / repoIdOfTokenName / isHttpRepoUrl：密钥名与地址判定', () => {
+  assert.equal(repoTokenKey('repo_deadbeef'), 'repo-git:repo_deadbeef');
+  assert.equal(REPO_TOKEN_PREFIX, 'repo-git:');
+  assert.equal(repoIdOfTokenName('repo-git:repo_deadbeef'), 'repo_deadbeef');
+  assert.equal(repoIdOfTokenName('asset-git:a1'), null);
+  assert.equal(isHttpRepoUrl('https://gitlab.test/me/api.git'), true);
+  assert.equal(isHttpRepoUrl(' http://gitlab.test/me/api.git '), true);
+  assert.equal(isHttpRepoUrl('git@gitlab.test:me/api.git'), false);
+  assert.equal(isHttpRepoUrl('/srv/repos/api.git'), false);
 });

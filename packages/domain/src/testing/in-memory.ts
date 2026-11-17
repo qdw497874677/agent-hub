@@ -59,6 +59,7 @@ import type {
   AssetSetRepository
 } from '../index.ts';import { DEFAULT_SETTINGS, err, ok, unavailable } from '../index.ts';
 import type { CommitPreview, GitStatus, RemotePullRequest, RepoProbe, WorkspaceGit } from '../index.ts';
+import type { SecretVault } from '../ports/secret-vault.ts';
 import type { RuntimeJob } from '../runtime-install.ts';
 import { canonicalLink, type SessionLink } from '../session-link.ts';
 import type { SessionLinkRepository } from '../ports/session-link-repository.ts';
@@ -87,6 +88,26 @@ export function fakeProjects(): ProjectRepository {
     },
     async remove(id) {
       rows.delete(id);
+    }
+  };
+}
+
+/** 密钥箱的替身：内存 Map（`put` 覆盖、`reveal` 只回存在的名字）。 */
+export function fakeSecrets(): SecretVault & { rows: Map<string, string> } {
+  const rows = new Map<string, string>();
+  return {
+    rows,
+    async list() {
+      return [...rows.entries()].map(([name, value]) => ({ name, updatedAt: value.length }));
+    },
+    async put(name, value) {
+      rows.set(name, value);
+    },
+    async remove(name) {
+      return rows.delete(name);
+    },
+    async reveal(names) {
+      return Object.fromEntries(names.flatMap((name) => (rows.has(name) ? [[name, rows.get(name)!]] : [])));
     }
   };
 }
@@ -539,6 +560,8 @@ export interface FakeGit {
   readonly setups: Map<string, { exitCode: number; output: string; timedOut: boolean }>;
   /** 仓库检查：键是 `url@branch`（branch 为空时是 `url@`）；没登记 = 可达、默认分支 main、分支必须叫 main。 */
   readonly repoChecks: Map<string, RepoProbe>;
+  /** 带 HTTPS 令牌的调用：`机器:动作:目标:header`，只在调用方传了 auth 时记（断言令牌透传）。 */
+  readonly authCalls: string[];
   on(machine: string): WorkspaceGit;
 }
 
@@ -549,8 +572,10 @@ export function fakeGit(): FakeGit {
   const previews = new Map<string, CommitPreview>();
   const setups = new Map<string, { exitCode: number; output: string; timedOut: boolean }>();
   const repoChecks = new Map<string, RepoProbe>();
+  const authCalls: string[] = [];
   const state: FakeGit = {
     calls,
+    authCalls,
     statuses,
     repos,
     failNext: null,
@@ -559,6 +584,9 @@ export function fakeGit(): FakeGit {
     setups,
     repoChecks,
     on(machine) {
+      const noteAuth = (op: string, target: string, auth?: { readonly header: string }) => {
+        if (auth) authCalls.push(`${machine}:${op}:${target}:${auth.header}`);
+      };
       const fail = () => {
         const reason = state.failNext;
         state.failNext = null;
@@ -572,14 +600,16 @@ export function fakeGit(): FakeGit {
           const isGit = repos.has(path);
           return ok({ exists: true, isGit, remoteUrl: isGit ? 'https://example.com/demo.git' : null, branch: isGit ? 'main' : null });
         },
-        checkRepo: async (repoUrl, branch) => {
+        checkRepo: async (repoUrl, branch, auth) => {
           calls.push(`${machine}:check_repo:${repoUrl}${branch ? `@${branch}` : ''}`);
+          noteAuth('check_repo', repoUrl, auth);
           const reason = fail();
           if (reason) return err(unavailable(reason));
           return ok(repoChecks.get(`${repoUrl}@${branch ?? ''}`) ?? { reachable: true, defaultBranch: 'main', branchExists: branch === null || branch === 'main', message: null });
         },
         clone: async (input) => {
           calls.push(`${machine}:clone:${input.repoUrl}->${input.parent}/${input.name}`);
+          noteAuth('clone', input.repoUrl, input.auth);
           const reason = fail();
           if (reason) return err(unavailable(reason));
           repos.add(`${input.parent}/${input.name}`);
@@ -587,6 +617,7 @@ export function fakeGit(): FakeGit {
         },
         addWorktree: async (input) => {
           calls.push(`${machine}:worktree:${input.repoPath}->${input.path}@${input.branch}${input.existing ? ':existing' : ''}${input.base ? `<${input.base}` : ''}`);
+          noteAuth('worktree', input.repoPath, input.auth);
           const reason = fail();
           if (reason) return err(unavailable(reason));
           return ok({ path: input.path, branch: input.branch });
@@ -597,8 +628,9 @@ export function fakeGit(): FakeGit {
           if (reason) return err(unavailable(reason));
           return ok(statusOf(path));
         },
-        saveWip: async (path, message) => {
+        saveWip: async (path, message, auth) => {
           calls.push(`${machine}:save_wip:${path}:${message}`);
+          noteAuth('save_wip', path, auth);
           const reason = fail();
           if (reason) return err(unavailable(reason));
           const status = statusOf(path);
@@ -618,8 +650,9 @@ export function fakeGit(): FakeGit {
           previews.set(path, { ...p, files: [], patch: '', head: sha, ahead: p.ahead + 1 });
           return ok({ committed: true, sha, reason: null });
         },
-        push: async (path) => {
+        push: async (path, auth) => {
           calls.push(`${machine}:push:${path}`);
+          noteAuth('push', path, auth);
           const p = previews.get(path);
           if (!p?.remoteUrl) return ok({ pushed: false, branch: p?.branch ?? null, reason: '没有 origin' });
           previews.set(path, { ...p, ahead: 0, upstream: `origin/${p.branch}` });
@@ -692,6 +725,7 @@ export function inMemoryDeps(overrides: Partial<Deps> = {}): InMemoryWorld {
     },
     fs: fakeFs(),
     git: git.on('local'),
+    secrets: fakeSecrets(),
     search: { search: async () => [] },
     hosting: fakeHosting(),
     queue: immediateQueue,

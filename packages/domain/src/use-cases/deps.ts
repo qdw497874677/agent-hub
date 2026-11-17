@@ -23,7 +23,9 @@ import type { AgentProfileRepository } from '../ports/agent-profile-repository.t
 import type { PersistentAgentRepository } from '../ports/bot-repository.ts';
 import type { SessionEventStream } from '../ports/event-stream.ts';
 import type { NodeGateway } from '../ports/node-gateway.ts';
+import type { RepoAuthPort } from '../ports/repo-auth.ts';
 import type { WorkspaceGit } from '../ports/workspace-git.ts';
+import type { SecretVault } from '../ports/secret-vault.ts';
 import type { WorkspaceFS } from '../ports/workspace-fs.ts';
 import type { SearchGateway } from '../ports/search-gateway.ts';
 import type { SessionHosting } from '../ports/session-hosting.ts';
@@ -84,6 +86,10 @@ export interface Deps {
   readonly fs: WorkspaceFS;
   /** Server 本机上的工作空间 git / 目录操作；远端的走 gateway.git(workerId)。 */
   readonly git: WorkspaceGit;
+  /** 项目仓库的 HTTPS 令牌（私有 GitLab / Gitea）。不给 = 一律用机器自己的凭据。 */
+  readonly repoAuth?: RepoAuthPort;
+  /** 密钥箱（资产令牌 / 项目仓库令牌）。项目仓库的 credential 就存这里。 */
+  readonly secrets: SecretVault;
   readonly search: SearchGateway;
   /** 哪些会话此刻有 worker 托管；不在就得先 resume 再说话。 */
   readonly hosting: SessionHosting;

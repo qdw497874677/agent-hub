@@ -117,6 +117,27 @@ export interface ProjectRepo {
   readonly name: string;
   readonly url: string;
   readonly defaultBranch: string | null;
+  /**
+   * HTTPS 令牌在密钥箱里的名字（`repo-git:<repoId>`），**只记名字，不存明文**。
+   * 省略 / null = 这个仓库不额外带令牌（SSH 走机器自己的 key/agent）。绝不进 HTTP DTO。
+   */
+  readonly tokenSecret?: string | null;
+}
+
+/** 项目仓库令牌在密钥箱里的前缀：内部密钥，跟着仓库清单走，不能从密钥接口单独删。 */
+export const REPO_TOKEN_PREFIX = 'repo-git:';
+
+/** 仓库令牌的密钥箱键：`repo-git:<repoId>`。 */
+export const repoTokenKey = (repoId: string): string => `${REPO_TOKEN_PREFIX}${repoId}`;
+
+/** 反过来认一个密钥名是不是仓库令牌；是就拿到 repoId。 */
+export function repoIdOfTokenName(name: string): string | null {
+  return name.startsWith(REPO_TOKEN_PREFIX) ? name.slice(REPO_TOKEN_PREFIX.length) : null;
+}
+
+/** 只有 http(s) 仓库才可能用令牌；SSH / git:// / 本地路径一律让 git 用机器上的凭据。 */
+export function isHttpRepoUrl(url: string): boolean {
+  return /^https?:\/\//i.test(url.trim());
 }
 
 /** 一个项目最多绑多少个仓库（组合工作空间的成员上限）。 */
@@ -181,7 +202,15 @@ export function normalizeRepos(input: readonly Partial<ProjectRepo>[]): Result<r
     if (seen.has(name)) return err(invalid(`仓库名重复：${name}`));
     seen.add(name);
     const id = typeof raw.id === 'string' ? raw.id.trim() : '';
-    repos.push({ id: id === '' ? deriveRepoId(name, url) : id, name, url, defaultBranch });
+    // 令牌只保留密钥箱里的名字（trim 后非空才算）；空串 / 省略 = 不写这个字段。
+    const tokenSecret = typeof raw.tokenSecret === 'string' ? raw.tokenSecret.trim() : '';
+    repos.push({
+      id: id === '' ? deriveRepoId(name, url) : id,
+      name,
+      url,
+      defaultBranch,
+      ...(tokenSecret === '' ? {} : { tokenSecret })
+    });
   }
   return ok(repos);
 }

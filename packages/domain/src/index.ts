@@ -42,6 +42,7 @@ export type { WorkLogRepository, WorkLogQuery } from './ports/work-log-repositor
 export type { WorkspaceRepository } from './ports/workspace-repository.ts';
 export type { WorkspaceGroupRepository } from './ports/workspace-groups.ts';
 export type { WorkspaceGroupGit } from './ports/workspace-group-git.ts';
+export type { RepoAuthPort } from './ports/repo-auth.ts';
 export type { McpReplayStore } from './ports/mcp-replay.ts';
 export type { PreviewLinkRepository } from './ports/preview-links.ts';
 export type { SessionServiceRepository } from './ports/session-service-repository.ts';
@@ -63,7 +64,7 @@ export type { NodeGateway, WorkerCommand, DispatchOutcome, ServiceGateway, Servi
 export type { NodeProvisioner } from './ports/node-provisioner.ts';
 export type { CapacityPolicy, AdmissionRequest } from './ports/capacity-policy.ts';
 export type { DirectoryEntry, WorkspaceFS } from './ports/workspace-fs.ts';
-export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
+export type { CommitInput, CommitOutcome, CommitPreview, GhOutcome, GhRequest, PushOutcome, RemotePullRequest, CloneInput, GitAuth, GitInspection, GitStatus, RemoveKind, RemoveOptions, RemoveOutcome, RepoProbe, WorkspaceGit, WorktreeInput } from './ports/workspace-git.ts';
 export type { SearchGateway, SearchHit, SearchQuery } from './ports/search-gateway.ts';
 
 export type { SessionHosting } from './ports/session-hosting.ts';

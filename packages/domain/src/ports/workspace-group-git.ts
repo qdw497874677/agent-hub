@@ -1,5 +1,6 @@
 import type { DomainError } from '../errors.ts';
 import type { Result } from '../result.ts';
+import type { GitAuth } from './workspace-git.ts';
 
 /**
  * 组合工作空间在机器上的目录操作（docs/design/multi-repo.md §11.3）：
@@ -20,5 +21,7 @@ export interface WorkspaceGroupGit {
     readonly path: string;
     readonly branch: string;
     readonly base?: string | null;
+    /** 私有 HTTPS 仓库的令牌（开 worktree 前要 fetch origin）。 */
+    readonly auth?: GitAuth;
   }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
 }

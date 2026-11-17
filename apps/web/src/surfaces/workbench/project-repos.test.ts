@@ -3,10 +3,13 @@ import assert from 'node:assert/strict';
 import {
   PROJECT_REPOS_MAX,
   REPO_DEFAULT_BRANCH,
+  REPO_TOKEN_MAX,
+  clearCredential,
   emptyRepoRow,
   repoCheckBlocksSave,
   repoCheckLine,
   repoCheckSummary,
+  repoCredentialPatch,
   repoRowProblem,
   repoRowsProblem,
   repoRowsFrom,
@@ -25,6 +28,9 @@ const row = (over: Partial<ProjectRepoRow> = {}): ProjectRepoRow => ({
   name: 'api',
   url: 'git@github.com:acme/api.git',
   defaultBranch: 'main',
+  credential: '',
+  hasToken: false,
+  clearToken: false,
   ...over
 });
 
@@ -34,8 +40,20 @@ test('repoRowsFrom：老项目没有 repos / 形状不对 → 空清单', () => 
   assert.deepEqual(repoRowsFrom({ repos: 'nope' }), []);
   // 库里老行的 defaultBranch 可能是 null，读成空串（保存时回 main）
   assert.deepEqual(repoRowsFrom({ repos: [{ id: 'repo_1', name: 'api', url: 'https://x/y.git', defaultBranch: null }] }), [
-    { id: 'repo_1', name: 'api', url: 'https://x/y.git', defaultBranch: '' }
+    { id: 'repo_1', name: 'api', url: 'https://x/y.git', defaultBranch: '', credential: '', hasToken: false, clearToken: false }
   ]);
+});
+
+test('repoRowsFrom：hasToken 只认 true，草稿里的令牌永远从空串开始（服务端不回明文）', () => {
+  const [withToken, without] = repoRowsFrom({
+    repos: [
+      { id: 'repo_1', name: 'api', url: 'https://x/y.git', hasToken: true },
+      { id: 'repo_2', name: 'web', url: 'https://x/web.git', hasToken: 'yes' }
+    ]
+  });
+  assert.equal(withToken?.hasToken, true);
+  assert.equal(withToken?.credential, '');
+  assert.equal(without?.hasToken, false);
 });
 
 test('repoRowProblem：空 name / url 各自说清', () => {
@@ -92,7 +110,15 @@ test('reposDirty：空默认分支和 main 等价，不算改动', () => {
 
 test('emptyRepoRow：新行没有 id，保存时才带上名字和地址', () => {
   const blank = emptyRepoRow();
-  assert.deepEqual(blank, { id: '', name: '', url: '', defaultBranch: '' });
+  assert.deepEqual(blank, {
+    id: '',
+    name: '',
+    url: '',
+    defaultBranch: '',
+    credential: '',
+    hasToken: false,
+    clearToken: false
+  });
   assert.equal(repoRowProblem(blank, [blank]), '写上仓库名（会用作组合工作目录里的子目录名）');
   // 0 个仓库是合法状态（不绑仓库）
   assert.equal(repoRowsProblem([]), null);
@@ -193,4 +219,51 @@ test('仓库检查 · 混合：通过的那条不打扰，失败的那条仍然�
   assert.equal(repoCheckBlocksSave(check), true);
   assert.equal(repoCheckLine(check.results[0]!), '可以访问，默认分支是 master');
   assert.equal(repoCheckLine(check.results[1]!), '远端没有 main 分支');
+});
+
+test('访问令牌 · 没填没点清除 → 补丁为空，保存不会抹掉已有令牌', () => {
+  assert.deepEqual(repoCredentialPatch(row()), {});
+  assert.deepEqual(repoCredentialPatch(row({ hasToken: true })), {});
+  // 已被清空但没点清除（比如用户手删了输入框里的字）也算「不改」
+  assert.deepEqual(repoCredentialPatch(row({ hasToken: true, credential: '   ' })), {});
+});
+
+test('访问令牌 · 这次填了值 → 带上（去两端空白）；显式清除 → 空串', () => {
+  assert.deepEqual(repoCredentialPatch(row({ credential: ' glpat-abc ' })), { credential: 'glpat-abc' });
+  assert.deepEqual(repoCredentialPatch(row({ hasToken: true, clearToken: true })), { credential: '' });
+  // 兜底：两件事同时成立时保留敲进去的值（界面上填值会把清除态重置掉）
+  assert.deepEqual(repoCredentialPatch(row({ credential: 'x', clearToken: true })), { credential: 'x' });
+});
+
+test('访问令牌 · clearCredential 是两态的：点一次进清除态，再点撤销回来', () => {
+  const withToken = row({ id: 'repo_1', hasToken: true, credential: 'old-typed' });
+  const cleared = { ...withToken, ...clearCredential(withToken) };
+  assert.equal(cleared.clearToken, true);
+  // 清除态不带旧的输入值，避免把用户敲的字当成要保存的新令牌
+  assert.equal(cleared.credential, '');
+  const undone = { ...cleared, ...clearCredential(cleared) };
+  assert.equal(undone.clearToken, false);
+  assert.equal(undone.credential, '');
+  assert.deepEqual(repoCredentialPatch(undone), {});
+});
+
+test('访问令牌 · repoRowsValue 只在需要时带 credential，reposDirty 能看出令牌改动', () => {
+  assert.deepEqual(repoRowsValue([row({ id: 'repo_1' })]), [
+    { id: 'repo_1', name: 'api', url: 'git@github.com:acme/api.git', defaultBranch: 'main' }
+  ]);
+  assert.deepEqual(repoRowsValue([row({ id: 'repo_1', credential: 'glpat-abc' })]), [
+    { id: 'repo_1', name: 'api', url: 'git@github.com:acme/api.git', defaultBranch: 'main', credential: 'glpat-abc' }
+  ]);
+  const saved = repoRowsFrom({ repos: [{ id: 'repo_1', name: 'api', url: 'https://x/y.git', defaultBranch: null, hasToken: true }] });
+  assert.equal(reposDirty(saved, saved), false);
+  // 只填令牌、别的都不动，也算改动（否则保存按钮一直是灰的）
+  assert.equal(reposDirty([{ ...saved[0]!, credential: 'glpat-abc' }], saved), true);
+  // 点清除也算改动
+  assert.equal(reposDirty([{ ...saved[0]!, clearToken: true }], saved), true);
+});
+
+test('访问令牌 · 超过 512 个字符先拦下来（后端 1..512）', () => {
+  const tooLong = 'x'.repeat(REPO_TOKEN_MAX + 1);
+  assert.equal(repoRowProblem(row({ credential: tooLong }), [row({ credential: tooLong })]), `访问令牌最多 ${REPO_TOKEN_MAX} 个字符`);
+  assert.equal(repoRowProblem(row({ credential: 'x'.repeat(REPO_TOKEN_MAX) }), [row({ credential: 'x'.repeat(REPO_TOKEN_MAX) })]), null);
 });

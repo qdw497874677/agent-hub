@@ -363,6 +363,8 @@ export interface WorkspaceGroupOps {
     readonly path: string;
     readonly branch: string;
     readonly base?: string | null;
+    /** 私有 HTTPS 仓库的令牌（只交给 Worker 的 git）。 */
+    readonly auth?: { readonly header: string };
   }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
 }
 
@@ -1163,14 +1165,14 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       const slow = { timeoutMs: 10 * 60_000 };
       return {
         inspect: (path) => call((c) => c.request(wsInspect, { path }), '目录探测'),
-        checkRepo: (repoUrl, branch) => call((c) => c.request(wsCheckRepo, { repoUrl, branch }, { timeoutMs: 30_000 }), '检查仓库'),
-        clone: (input) => call((c) => c.request(wsClone, { ...input, branch: input.branch ?? null }, slow), '下载仓库'),
-        addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null }, slow), '新开分支'),
+        checkRepo: (repoUrl, branch, auth) => call((c) => c.request(wsCheckRepo, { repoUrl, branch, ...(auth ? { auth } : {}) }, { timeoutMs: 30_000 }), '检查仓库'),
+        clone: (input) => call((c) => c.request(wsClone, { ...input, branch: input.branch ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '下载仓库'),
+        addWorktree: (input) => call((c) => c.request(wsAddWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, slow), '新开分支'),
         status: (path) => call((c) => c.request(wsStatus, { path }), '检查改动'),
-        saveWip: (path, message) => call((c) => c.request(wsSaveWip, { path, message }, slow), '提交并推送'),
+        saveWip: (path, message, auth) => call((c) => c.request(wsSaveWip, { path, message, ...(auth ? { auth } : {}) }, slow), '提交并推送'),
         preview: (path, maxPatchBytes) => call((c) => c.request(wsPreview, { path, maxPatchBytes }, { timeoutMs: 60_000 }), '读取改动'),
         commit: (path, input) => call((c) => c.request(wsCommit, { path, ...input }, { timeoutMs: 120_000 }), '提交'),
-        push: (path) => call((c) => c.request(wsPush, { path }, slow), '推送'),
+        push: (path, auth) => call((c) => c.request(wsPush, { path, ...(auth ? { auth } : {}) }, slow), '推送'),
         gh: (path, request) => call((c) => c.request(wsGh, { path, request }, { timeoutMs: 120_000 }), 'gh 开 PR'),
         remove: (path, kind, options) => call((c) => c.request(wsRemove, { path, kind, ...(options?.force ? { force: true } : {}), ...(options?.mergedHead ? { mergedHead: options.mergedHead } : {}) }, { timeoutMs: 120_000 }), '删除工作空间'),
         // 准备命令最多跑 30 分钟（项目配置上限），RPC 再多给 30 秒，别让管道先超时
@@ -1251,7 +1253,7 @@ export function createServerGateway(hooks: GatewayHooks, options: GatewayOptions
       return {
         init: (input) => call((c) => c.request(wsGroupInit, { slug: input.slug, name: input.name, id: input.id }, limit), '建组合工作空间目录'),
         remove: (input) => call((c) => c.request(wsGroupRemove, { root: input.root, id: input.id }, limit), '删组合工作空间目录'),
-        newWorktree: (input) => call((c) => c.request(wsNewWorktree, { ...input, base: input.base ?? null }, limit), '在组合工作空间里开分支')
+        newWorktree: (input) => call((c) => c.request(wsNewWorktree, { ...input, base: input.base ?? null, ...(input.auth ? { auth: input.auth } : {}) }, limit), '在组合工作空间里开分支')
       };
     },
     metrics(workerId: string): readonly ResourceSample[] {
