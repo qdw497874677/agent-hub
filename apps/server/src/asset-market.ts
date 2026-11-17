@@ -2,6 +2,7 @@ import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import {
   approveRequest,
+  builtinEnableRequest,
   commentRequest,
   gitBatchImportRequest,
   gitBatchImportResultSchema,
@@ -19,6 +20,9 @@ import type { AssetReviewDeps, DomainError, IncomingFile, Principal, Result } fr
 import {
   ASSET_LIMITS,
   approveSubmission,
+  builtinAssetsFor,
+  enableBuiltinAsset,
+  updateBuiltinAsset,
   assetCatalog,
   assetFileText,
   checkGitForReview,
@@ -112,6 +116,23 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
     if (layer !== 'personal' && layer !== 'team') return bad(c);
     const result = await setScopedSecret(deps, me(c), layer, c.req.param('name'), null);
     return result.ok ? c.json({ ok: true }) : fail(c, result.error);
+  });
+
+  // ---- 内置资产 ----
+  app.get('/api/assets/builtin', async (c) => {
+    const projectId = c.req.query('projectId');
+    if (!projectId) return bad(c);
+    return reply(c, await builtinAssetsFor(deps, me(c), projectId));
+  });
+  app.post('/api/assets/builtin/:builtinId/enable', async (c) => {
+    const input = await body(c, builtinEnableRequest);
+    if (!input) return bad(c);
+    const result = await enableBuiltinAsset(deps, me(c), { projectId: input.projectId, builtinId: c.req.param('builtinId'), ...(input.secrets ? { secrets: input.secrets } : {}) });
+    return result.ok ? c.json({ assetId: result.value.asset.id, created: result.value.created }, result.value.created ? 201 : 200) : fail(c, result.error);
+  });
+  app.post('/api/assets/:assetId/builtin-update', async (c) => {
+    const result = await updateBuiltinAsset(deps, me(c), c.req.param('assetId'));
+    return result.ok ? c.json({ assetId: result.value.id, version: result.value.source.type === 'builtin' ? result.value.source.version : '' }) : fail(c, result.error);
   });
 
   app.post('/api/assets/upload', uploadLimit, async (c) => {

@@ -42,3 +42,40 @@ export const reviewSettingsRequest = z.object({
 export const notificationsReadRequest = z.object({ ids: z.array(z.string()).max(200).nullable() });
 export const scopedSecretRequest = z.object({ value: z.string().min(1).max(16384) });
 
+
+/* ── 内置资产（Hub 随代码带的清单，一键启用到项目） ── */
+
+export const builtinEnableRequest = z.object({
+  projectId: z.string().min(1),
+  /** 这次顺手填的密钥（名字 → 值），存成团队密钥。 */
+  secrets: z.record(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/), z.string().max(16384)).optional()
+});
+
+export const builtinAssetViewSchema = z.object({
+  id: z.string(),
+  kind: z.enum(['skill', 'instruction', 'mcp']),
+  name: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  version: z.string(),
+  source: z.object({ label: z.string(), url: z.string(), license: z.string() }),
+  secrets: z.array(z.object({ name: z.string(), label: z.string(), hint: z.string(), url: z.string().optional(), set: z.boolean() })),
+  requiresBrowser: z.boolean(),
+  note: z.string().nullable(),
+  pairsWith: z.array(z.string()),
+  enabled: z.object({ assetId: z.string(), version: z.string(), on: z.boolean(), update: z.string().nullable() }).nullable(),
+  clash: z.string().nullable()
+});
+
+export const browserStatusSchema = z.object({
+  workerId: z.string(),
+  label: z.string(),
+  online: z.boolean(),
+  ready: z.boolean(),
+  installing: z.boolean(),
+  blocker: z.string().nullable()
+});
+
+export type BuiltinEnableRequest = z.input<typeof builtinEnableRequest>;
+export type BuiltinAssetView = z.infer<typeof builtinAssetViewSchema>;
+export type BrowserStatusDto = z.infer<typeof browserStatusSchema>;

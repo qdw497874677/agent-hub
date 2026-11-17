@@ -126,6 +126,7 @@ import {
   syncWorkerAssets,
   remoteMcpTarget,
   mcpAssetProblems,
+  workerNeedsBrowser,
   withAssetNeeds,
   unavailable,
   workerAttached,
@@ -1671,6 +1672,13 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
         log
       });
       const problems = await mcpAssetProblems(assetDeps, plan.entries.filter((entry) => entry.kind === 'mcp').map((entry) => entry.assetId));
+      // 内置 Playwright 要浏览器：这台机器没有 hub 装的 Chromium 就标「需安装浏览器」（默认不勾）
+      const worker = workerId ? (await workerControl.list()).find((candidate) => candidate.workerId === workerId) : undefined;
+      for (const entry of plan.entries) {
+        if (problems[entry.assetId]) continue;
+        const asset = entry.kind === 'mcp' ? await assetDeps.assets.get(entry.assetId) : null;
+        if (asset && workerNeedsBrowser(worker, asset)) problems[entry.assetId] = '需安装浏览器：到「资产」里给这台机器装 Chromium';
+      }
       return plan.entries.map((entry) => (problems[entry.assetId] ? { ...entry, problem: problems[entry.assetId] } : entry));
     }
   },
