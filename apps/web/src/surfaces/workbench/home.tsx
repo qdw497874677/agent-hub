@@ -108,7 +108,7 @@ export function HomePage({
           ) : null}
         </ul>
 
-        <div className="order-2 mb-3 border-y border-hair md:order-4">
+        <div className="order-2 mb-3 md:order-4">
           <GlobalNav />
         </div>
 
