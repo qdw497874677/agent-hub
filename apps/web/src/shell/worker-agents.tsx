@@ -91,17 +91,12 @@ export function AgentAliasesSection({ worker }: { worker: WorkerInfoDto }) {
 
   return (
     <>
-      <dt className="text-tertiary">运行时别名</dt>
+      <dt className="text-tertiary" title="别名是那台机器上的可执行命令，保存后对新会话生效。填了别名就只按别名里的清单提供 ACP agent（OpenCode 这类内置 ACP agent 会被替换，Pi / Grok / Codex 不受影响）；留空则回到机器自己的配置。">
+        别名
+      </dt>
       <dd className="min-w-0" data-testid="worker-agents">
-        <p className="text-meta text-tertiary">
-          这些是可执行命令，属于操作者信任边界；保存后对新会话生效，正在跑的会话不变。
-        </p>
-        <p className="mt-1 text-meta text-tertiary">
-          填了别名就<strong className="font-normal text-secondary">只按别名里的清单</strong>
-          提供 ACP agent（OpenCode 这类内置 ACP agent 会被替换，Pi / Grok / Codex 这类独立适配器不受影响）；留空则回到这台机器自己的配置。
-        </p>
 
-        {config.isPending ? <p className="mt-1.5 text-meta text-tertiary">加载中…</p> : null}
+        {config.isPending ? <p className="text-meta text-tertiary">加载中…</p> : null}
         {config.isError ? (
           <p role="alert" data-testid="worker-agent-error" className="mt-1.5 text-meta text-rust">
             {message(config.error) ?? '读不到这台机器的别名配置'}
@@ -111,7 +106,7 @@ export function AgentAliasesSection({ worker }: { worker: WorkerInfoDto }) {
         {!editable ? (
           // admin：只看，不给按钮（保存是 owner 的事，摆个灰掉的按钮只会让人猜为什么点不动）
           config.isPending || config.isError ? null : loaded.length === 0 ? (
-            <p className="mt-1.5 text-meta text-tertiary">这台机器还没配运行时别名。</p>
+            <p className="text-meta text-tertiary">未配置</p>
           ) : (
             <ul className="mt-1.5 flex min-w-0 flex-col gap-1.5">
               {loaded.map((alias) => (
@@ -134,7 +129,7 @@ export function AgentAliasesSection({ worker }: { worker: WorkerInfoDto }) {
         ) : config.isPending || config.isError ? null : (
           <>
             {rows.length === 0 ? (
-              <p className="mt-1.5 text-meta text-tertiary">还没配别名。点「添加别名」写一条，会话里就能选它。</p>
+              <p className="text-meta text-tertiary">未配置</p>
             ) : null}
 
             <div className="mt-1.5 flex min-w-0 flex-col gap-2">

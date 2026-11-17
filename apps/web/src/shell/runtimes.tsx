@@ -94,13 +94,8 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
   );
   // 安装 / 切换都只影响新会话：一句话说清楚，别让用户以为点完正在跑的会话就换了。
   const actionable = Boolean(view.install || view.hub || view.other);
-  const note =
-    view.notice ??
-    (view.other
-      ? '切换对下次新建的会话生效，正在跑的会话继续用旧版本'
-      : actionable
-        ? '对下次新建的会话生效，正在跑的会话继续用旧版本'
-        : view.blocker);
+  // 「只对新会话生效」只在要点确认时说一次，不再每行常驻。
+  const note = view.notice ?? (armed ? '只对新建的会话生效' : actionable ? null : view.blocker);
 
   return (
     <li className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1" data-testid={`runtime-${id}`}>
@@ -225,7 +220,7 @@ export function InventorySection({ worker }: { worker: WorkerInfoDto }) {
   const problems = drift.items.filter((item) => item.kind !== 'external');
   return (
     <>
-      <dt className="text-tertiary">组件</dt>
+      <dt className="text-tertiary">已装</dt>
       <dd className="min-w-0" data-testid="inventory-section">
         {inventory.components.length === 0 ? (
           <p className="text-tertiary">没有装组件</p>
@@ -238,7 +233,7 @@ export function InventorySection({ worker }: { worker: WorkerInfoDto }) {
                   <span className="font-mono">{component.id}</span> <span className="text-tertiary">{component.version}</span>{' '}
                   <span className="text-tertiary">（{nameOf(component.runtime)}）</span>{' '}
                   {component.managedBy === 'external' ? (
-                    <span className="text-tertiary" data-testid="inventory-external">外部安装（不由 hub 管理，不参与调度）</span>
+                    <span className="text-tertiary" data-testid="inventory-external" title="不由 hub 管理，不参与调度">外部安装</span>
                   ) : bad ? (
                     <span className="text-red-500">⚠ 不可信：{bad.kind === 'unexpected' ? '不是 hub 装的' : '版本或哈希不一致'}，需要重新安装</span>
                   ) : (

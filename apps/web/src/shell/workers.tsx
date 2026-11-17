@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Icon } from '../atoms/icons.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi, api, type WorkerInfoDto } from './api.ts';
 import { AddMachineDialog } from './add-machine.tsx';
-import { HarnessBadges, RecheckButton, harnessReason } from './harness.tsx';
+import { HarnessBadges, RecheckButton } from './harness.tsx';
 import { InventorySection, RuntimeSection } from './runtimes.tsx';
 import { AgentAliasesSection } from './worker-agents.tsx';
-import { ResourceDetails, ResourceSummary } from './resources.tsx';
+import { ResourceDetails, ResourceSummary, formatBytes } from './resources.tsx';
 import { LinkBadge } from './link-badge.tsx';
 
 /**
@@ -146,48 +147,131 @@ export function CapabilityLine({ capabilities }: { capabilities: readonly string
   );
 }
 
-function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
-  const [open, setOpen] = useState(false);
+/** 机器列表的一行：名字、在线状态一句话、资源摘要。点进去看详情。 */
+function WorkerRow({ worker, onOpen }: { worker: WorkerInfoDto; onOpen: () => void }) {
   const online = worker.state === 'online';
-  const host = [worker.hostname, worker.platform].filter(Boolean).join(' · ');
+  const down = (worker.agentModels ?? []).filter((harness) => harness.readiness?.state === 'unavailable').length;
+  const link = worker.link && worker.link.state !== 'live' ? worker.link : undefined;
   return (
     <li className="border-b border-hair last:border-b-0">
-      <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-card-raised"
-        aria-expanded={open}
-        onClick={() => setOpen((value) => !value)}
-      >
+      <button className="flex w-full items-center gap-2.5 px-3 py-2 text-left hover:bg-hover" onClick={onOpen}>
         <Dot online={online} />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5">
             <span className="truncate text-body text-primary">{worker.label}</span>
             {worker.origin === 'local' && worker.label !== '本机' ? <span className="text-meta text-tertiary">本机</span> : null}
-            {online ? <LinkBadge link={worker.link} /> : null}
+            {online ? <LinkBadge link={link} /> : null}
           </span>
           <span className="block truncate text-meta text-tertiary">
             {online
-              ? `${worker.sessionCount ?? 0} 条会话在跑 · ${
-                  (worker.agentIds ?? []).map((id) => (harnessReason(worker, id) ? `${id}（${harnessReason(worker, id)}）` : id)).join(' / ') ||
-                  '没有 agent'
-                }`
+              ? `${worker.sessionCount ?? 0} 个会话${down > 0 ? ` · ${down} 个 agent 不可用` : ''}`
               : `离线 · ${relativeTime(worker.lastSeenAt)}${worker.reason ? ` · ${worker.reason}` : ''}`}
           </span>
           <ResourceSummary worker={worker} />
         </span>
-        <span className="shrink-0 text-meta text-tertiary">{open ? '▾' : '▸'}</span>
+        <Icon name="chevron-right" size={14} className="text-tertiary" />
       </button>
-      {open ? (
-        <dl className="grid grid-cols-[4.5rem_1fr] gap-x-2 gap-y-1 px-3 pb-2.5 pl-[1.6rem] text-meta">
-          <dt className="text-tertiary">ID</dt>
-          <dd className="truncate font-mono text-secondary">{worker.workerId}</dd>
+    </li>
+  );
+}
+
+/** 详情里的一块：灰色小标题 + 两列表格（左边短标签，右边内容）。 */
+function DetailSection({ title, children, testId }: { title: string; children: ReactNode; testId?: string }) {
+  return (
+    <section className="border-t border-hair px-3 py-3 first:border-t-0" data-testid={testId}>
+      <h4 className="mb-2 text-meta text-tertiary">{title}</h4>
+      <dl className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2 text-meta">{children}</dl>
+    </section>
+  );
+}
+
+/** 概览：四个数字，压力偏高的那项变色。没上报资源的老 worker 不显示。 */
+function WorkerStats({ worker }: { worker: WorkerInfoDto }) {
+  const r = worker.resources;
+  if (worker.state !== 'online' || !r) return null;
+  const m = r.sample.machine;
+  const mem = m.memTotal > 0 ? Math.round(((m.memTotal - m.memAvailable) / m.memTotal) * 100) : 0;
+  const free = m.disks.length === 0 ? null : Math.min(...m.disks.map((disk) => disk.free));
+  const gpu = m.gpus?.length ? Math.round(Math.max(...m.gpus.map((item) => item.utilPercent ?? 0))) : null;
+  const hot = r.pressure.level === 'ok' ? 'text-primary' : r.pressure.level === 'warn' ? 'text-rust' : 'text-red-500';
+  const tiles: { label: string; value: string; tone?: string }[] = [
+    { label: 'CPU', value: m.cpuPercent === null ? '—' : `${Math.round(m.cpuPercent)}%` },
+    { label: '内存', value: `${mem}%`, tone: mem >= 85 ? hot : 'text-primary' },
+    { label: '磁盘剩余', value: free === null ? '—' : formatBytes(free) },
+    gpu === null ? { label: '会话', value: String(worker.sessionCount ?? 0) } : { label: 'GPU', value: `${gpu}%` }
+  ];
+  return (
+    <div className="grid grid-cols-4 gap-1.5 px-3 pb-3" data-testid="worker-stats">
+      {tiles.map((tile) => (
+        <div key={tile.label} className="rounded-md bg-card px-2 py-1.5">
+          <p className="text-meta text-tertiary">{tile.label}</p>
+          <p className={`text-head tabular-nums ${tile.tone ?? 'text-primary'}`}>{tile.value}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 一台机器的详情：头部是名字和状态，下面是四个数字，再往下分块——
+ * Agent（能用哪些、运行时、别名）→ 资源 → 组件 → 连接 → 安全（凭据、吊销放最后）。
+ */
+function WorkerDetail({ worker, onBack }: { worker: WorkerInfoDto; onBack: () => void }) {
+  const online = worker.state === 'online';
+  const host = [worker.hostname, worker.platform].filter(Boolean).join(' · ');
+  const harnesses = worker.agentModels ?? [];
+  return (
+    <div data-testid="worker-detail">
+      <header className="flex items-center gap-2 px-2 pb-2 pt-2">
+        <button
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary"
+          aria-label="返回机器列表"
+          title="返回机器列表"
+          onClick={onBack}
+        >
+          <Icon name="chevron-left" />
+        </button>
+        <Dot online={online} />
+        <h3 className="min-w-0 truncate text-head text-primary">{worker.label}</h3>
+        <span className="shrink-0 rounded-sm bg-card px-1.5 text-meta text-tertiary">{worker.origin === 'local' ? '本机' : '远程'}</span>
+        <span className="ml-auto shrink-0 pr-1 text-meta text-tertiary">
+          {online ? <LinkBadge link={worker.link} /> : `离线 · ${relativeTime(worker.lastSeenAt)}`}
+        </span>
+      </header>
+      <div className="max-h-[min(70vh,640px)] overflow-y-auto overscroll-contain pb-1">
+        <WorkerStats worker={worker} />
+        {online ? (
+          <DetailSection title="Agent">
+            {harnesses.length > 0 ? (
+              <>
+                <dt className="text-tertiary">可用</dt>
+                <dd className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <HarnessBadges harnesses={harnesses} hints={false} />
+                  <RecheckButton workerId={worker.workerId} />
+                </dd>
+              </>
+            ) : null}
+            <RuntimeSection worker={worker} />
+            <AgentAliasesSection worker={worker} />
+          </DetailSection>
+        ) : null}
+        {online && worker.resources ? (
+          <DetailSection title="资源">
+            <ResourceDetails worker={worker} />
+          </DetailSection>
+        ) : null}
+        {online && worker.inventory ? (
+          <DetailSection title="组件">
+            <InventorySection worker={worker} />
+          </DetailSection>
+        ) : null}
+        <DetailSection title="连接">
           {host ? (
             <>
               <dt className="text-tertiary">主机</dt>
               <dd className="truncate text-secondary">{host}</dd>
             </>
           ) : null}
-          <dt className="text-tertiary">最后在线</dt>
-          <dd className="text-secondary">{online ? '现在' : relativeTime(worker.lastSeenAt)}</dd>
           {worker.connection ? (
             <>
               <dt className="text-tertiary">连接</dt>
@@ -195,7 +279,12 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
                 <ConnectionLine connection={worker.connection} />
               </dd>
             </>
-          ) : null}
+          ) : (
+            <>
+              <dt className="text-tertiary">最后在线</dt>
+              <dd className="text-secondary">{online ? '现在' : relativeTime(worker.lastSeenAt)}</dd>
+            </>
+          )}
           {worker.update ? (
             <>
               <dt className="text-tertiary">更新</dt>
@@ -204,47 +293,40 @@ function WorkerRow({ worker }: { worker: WorkerInfoDto }) {
               </dd>
             </>
           ) : null}
-          {worker.capabilities ? (
-            <>
-              <dt className="text-tertiary">权限</dt>
-              <dd className="min-w-0 text-secondary">
-                <CapabilityLine capabilities={worker.capabilities} />
-              </dd>
-            </>
-          ) : null}
           {(worker.roots ?? []).length > 0 ? (
             <>
               <dt className="text-tertiary">可用目录</dt>
-              <dd className="min-w-0 font-mono text-secondary">
+              <dd
+                className="min-w-0 font-mono text-secondary"
+                title="hub 只能访问这些目录。要放开，在那台机器上改 WORKER_ROOTS（装成服务的在 ~/.config/agent-hub/worker.env）后重启 agent-hub-worker。"
+              >
                 {(worker.roots ?? []).map((root) => (
                   <span key={root} className="block truncate">
                     {root}
                   </span>
                 ))}
-                <span className="mt-1 block font-sans text-xs text-tertiary" title="在那台机器上改 WORKER_ROOTS（冒号分隔；装成服务的在 ~/.config/agent-hub/worker.env），然后重启 agent-hub-worker 服务（systemd：systemctl --user restart agent-hub-worker；脚本/前台启动：停掉重跑）">
-                  hub 只能访问这些目录；要放开改那台的 WORKER_ROOTS
-                </span>
               </dd>
             </>
           ) : null}
-          {online && (worker.agentModels ?? []).length > 0 ? (
-            <>
-              <dt className="text-tertiary">agent</dt>
-              <dd className="flex min-w-0 flex-wrap items-center gap-1.5">
-                <HarnessBadges harnesses={worker.agentModels ?? []} />
-                <RecheckButton workerId={worker.workerId} />
-              </dd>
-            </>
-          ) : null}
-          <ResourceDetails worker={worker} />
-          {online ? <RuntimeSection worker={worker} /> : null}
-          {online ? <InventorySection worker={worker} /> : null}
-          <AgentAliasesSection worker={worker} />
-          {worker.origin === 'remote' ? <RotateCredential worker={worker} online={online} /> : null}
-          {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
-        </dl>
-      ) : null}
-    </li>
+          <dt className="text-tertiary">ID</dt>
+          <dd className="truncate font-mono text-tertiary">{worker.workerId}</dd>
+        </DetailSection>
+        {worker.capabilities || worker.origin === 'remote' ? (
+          <DetailSection title="安全">
+            {worker.capabilities ? (
+              <>
+                <dt className="text-tertiary">权限</dt>
+                <dd className="min-w-0 text-secondary">
+                  <CapabilityLine capabilities={worker.capabilities} />
+                </dd>
+              </>
+            ) : null}
+            {worker.origin === 'remote' ? <RotateCredential worker={worker} online={online} /> : null}
+            {worker.origin === 'remote' ? <RevokeButton worker={worker} /> : null}
+          </DetailSection>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -336,7 +418,10 @@ function RevokeButton({ worker }: { worker: WorkerInfoDto }) {
 export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up' }) {
   const [open, setOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);
   const { list, online } = useWorkers();
+  // 选中的那台被吊销 / 消失了，就回到列表
+  const detail = picked ? list.find((worker) => worker.workerId === picked) : undefined;
   const box = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -344,7 +429,14 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
     const onDown = (event: PointerEvent) => {
       if (box.current && !box.current.contains(event.target as Node)) setOpen(false);
     };
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && setOpen(false);
+    // Esc：在详情里先退回列表，再按一次才收起
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setPicked((current) => {
+        if (current === null) setOpen(false);
+        return null;
+      });
+    };
     window.addEventListener('pointerdown', onDown);
     window.addEventListener('keydown', onKey);
     return () => {
@@ -358,7 +450,10 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
     <div className="relative" ref={box}>
       <button
         className="flex h-7 max-w-full items-center gap-1.5 rounded-md px-2 text-meta text-secondary hover:bg-hover hover:text-primary"
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          setOpen((current) => !current);
+          setPicked(null);
+        }}
         aria-expanded={open}
         aria-label={`机器：${online.length}/${list.length} 在线`}
         title="机器：跑 agent 的机器"
@@ -370,10 +465,14 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
       {open ? (
         <div className={`z-30 ${
             placement === 'up'
-              ? // 窄屏贴底成一张 sheet（拇指够得着）；宽屏浮在侧栏左下、徽标上方
-                'fixed inset-x-3 bottom-3 md:inset-x-auto md:bottom-14 md:left-3 md:w-[340px]'
-              : 'absolute right-0 top-9 w-[min(340px,calc(100vw-1.5rem))]'
+              ? // 窄屏贴底成一张 sheet（拇指够得着）；宽屏浮在侧栏左下、徽标上方。看详情时宽一点。
+                `fixed inset-x-3 bottom-3 md:inset-x-auto md:bottom-12 md:left-3 ${detail ? 'md:w-[420px]' : 'md:w-[340px]'}`
+              : `absolute right-0 top-9 ${detail ? 'w-[min(420px,calc(100vw-1.5rem))]' : 'w-[min(340px,calc(100vw-1.5rem))]'}`
           }`}><div className="overflow-hidden rounded-md border border-strong bg-panel shadow-lg">
+          {detail ? (
+            <WorkerDetail worker={detail} onBack={() => setPicked(null)} />
+          ) : (
+          <>
           <header className="flex items-baseline justify-between border-b border-hair px-3 py-2">
             <span className="text-sub text-primary">机器</span>
             <span className="text-meta text-tertiary">
@@ -385,11 +484,13 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
           ) : (
             <ul className="max-h-[60vh] overflow-y-auto">
               {list.map((worker) => (
-                <WorkerRow key={worker.workerId} worker={worker} />
+                <WorkerRow key={worker.workerId} worker={worker} onOpen={() => setPicked(worker.workerId)} />
               ))}
             </ul>
           )}
           <EnrollFooter onAdd={() => { setOpen(false); setAdding(true); }} />
+          </>
+          )}
         </div>
         </div>
       ) : null}
