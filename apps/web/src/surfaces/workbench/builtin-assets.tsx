@@ -5,7 +5,7 @@ import { builtinApi, type BuiltinAssetDto } from '../../shell/api.ts';
 import { BuiltinBadge } from '../../shell/builtin-badge.tsx';
 import { SMALL_BUTTON } from '../../shell/dialog-shell.tsx';
 
-const PRIMARY = 'shrink-0 rounded-sm bg-accent px-2.5 py-1 text-meta text-white hover:opacity-90 disabled:opacity-40';
+const PRIMARY = 'shrink-0 rounded-control bg-action px-2.5 py-1 text-meta font-medium text-action-fg hover:bg-action/90 disabled:opacity-40';
 const INPUT = 'min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1 text-meta text-primary';
 const errorText = (error: unknown) => (error instanceof Error ? error.message : '出错了');
 
