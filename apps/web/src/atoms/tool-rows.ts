@@ -237,3 +237,59 @@ export function toolDisplayName(name: string): string {
   if (/(^|_)agent_hub$/.test(server)) return HUB_TOOL_LABEL[tool] ?? tool.replace(/_/g, ' ');
   return `${tool} · ${server}`;
 }
+
+/** 一行的「人话标题」：动词 + 主参数；MCP 工具另带来源标签。 */
+export interface ToolHeadline {
+  /** 动词：读取 / 编辑 / 运行 / 搜索…；MCP 工具是它的名字。 */
+  readonly verb: string;
+  /** 主参数（路径、命令、查询）；空串 = 没有主参数，行内照旧露 key=value。 */
+  readonly target: string;
+  /** `mcp__<server>__` 前缀的来源：agent-hub 自己的写「Hub」，别的写服务名；内建工具为 null。 */
+  readonly source: string | null;
+}
+
+const firstLine = (text: string) => collapse(text.split('\n')[0] ?? '');
+
+export function toolHeadline(name: string, view: ToolView): ToolHeadline {
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+  if (mcp !== null) {
+    const server = mcp[1]!;
+    const hub = /(^|_)agent_hub$/.test(server);
+    return { verb: hub ? (HUB_TOOL_LABEL[mcp[2]!] ?? mcp[2]!.replace(/_/g, ' ')) : mcp[2]!.replace(/_/g, ' '), target: '', source: hub ? 'Hub' : server };
+  }
+  switch (view.kind) {
+    case 'shell':
+      return { verb: '运行', target: clip(firstLine(view.command), MAX_TEXT), source: null };
+    case 'edit':
+      return { verb: /write|create/i.test(name) ? '写入' : '编辑', target: view.path, source: null };
+    case 'read':
+      return { verb: '读取', target: view.path, source: null };
+    case 'search':
+      return /glob|list|ls\b|find/i.test(name)
+        ? { verb: '列出', target: view.query || view.path || '', source: null }
+        : { verb: '搜索', target: view.query, source: null };
+    case 'fetch':
+      return { verb: '抓取', target: view.url, source: null };
+    case 'subagent':
+      return { verb: '子代理', target: view.description ?? view.agent ?? '', source: null };
+    case 'plan':
+      return { verb: '更新计划', target: '', source: null };
+    case 'worktree':
+      return { verb: '工作树', target: view.path, source: null };
+    case 'file':
+      return { verb: '文件', target: view.path, source: null };
+    case 'raw':
+      return { verb: name, target: '', source: null };
+  }
+}
+
+/** 改动的 +N −M（不算上下文行和 @@）。 */
+export function diffStat(lines: readonly { readonly sign: string }[]): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of lines) {
+    if (line.sign === '+') added += 1;
+    else if (line.sign === '-') removed += 1;
+  }
+  return { added, removed };
+}

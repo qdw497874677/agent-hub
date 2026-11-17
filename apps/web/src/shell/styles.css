@@ -337,3 +337,35 @@ body {
   background: var(--color-strong);
   border-radius: 4px;
 }
+
+/* 流光字：只给「正在进行」的标题（正在思考 / 正在处理）。不动画的环境里就是普通的弱化字。 */
+.shimmer-text {
+  background-image: linear-gradient(
+    90deg,
+    var(--color-fg-faint) 0%,
+    var(--color-fg-faint) 40%,
+    var(--color-fg) 50%,
+    var(--color-fg-faint) 60%,
+    var(--color-fg-faint) 100%
+  );
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: shimmer-text 2.2s linear infinite;
+}
+@keyframes shimmer-text {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -150% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shimmer-text {
+    animation: none;
+    color: var(--color-fg-faint);
+    background: none;
+  }
+}

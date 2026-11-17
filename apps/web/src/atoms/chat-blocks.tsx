@@ -19,7 +19,10 @@ import type { HandoffDto } from './live-core.ts';
 import { formatRoute, parseRoute } from '../shell/route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
 import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine, type ToolView } from './tool-format.ts';
-import { runLength, startsRun, toolDisplayName, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
+import { diffStat, runLength, startsRun, toolHeadline, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
+import { durationText, summaryCounts, type WorkSummary } from './timeline-groups.ts';
+import { languageOf } from './files-core.ts';
+import { Icon } from './icons.tsx';
 import { subagentStepCount } from './live.ts';
 import { useFileLinks } from './file-links.tsx';
 
@@ -251,26 +254,88 @@ export function DisplayMenu({ settings, onChange }: { settings: DisplaySettings;
   );
 }
 
-function DiffView({ lines }: { lines: readonly DiffLine[] }) {
+/** 行内改动默认只露这么多行；更多的点开，或去「改动」页签看。 */
+const DIFF_PREVIEW = 12;
+
+interface Tok {
+  readonly content: string;
+  readonly color?: string | undefined;
+}
+
+/** 按需加载 shiki 给改动行上色；语言认不出、行太多就不上色（照旧是纯色 +/−）。 */
+function useDiffTokens(lines: readonly DiffLine[], path: string | null): (readonly Tok[])[] | null {
+  const [tokens, setTokens] = useState<(readonly Tok[])[] | null>(null);
+  const code = lines.filter((line) => line.sign !== '@').map((line) => line.text).join('\n');
+  useEffect(() => {
+    setTokens(null);
+    const lang = path ? languageOf(path) : null;
+    if (!lang || code.length > 40_000) return;
+    let live = true;
+    const theme = document.documentElement.dataset['theme'] === 'light' ? 'github-light' : 'github-dark-dimmed';
+    void import('shiki')
+      .then(({ codeToTokens }) => codeToTokens(code, { lang: lang as never, theme }))
+      .then((result) => live && setTokens(result.tokens.map((row) => row.map((t) => ({ content: t.content, color: t.color })))), () => undefined);
+    return () => {
+      live = false;
+    };
+  }, [code, path]);
+  return tokens;
+}
+
+function DiffView({ lines, path = null }: { lines: readonly DiffLine[]; path?: string | null }) {
   const [all, setAll] = useState(false);
-  const limit = 40;
-  const shown = all ? lines : lines.slice(0, limit);
+  const links = useFileLinks();
+  const tokens = useDiffTokens(lines, path);
+  const shown = all ? lines : lines.slice(0, DIFF_PREVIEW);
+  // tokens 只给非 @@ 行编号，这里把下标对上
+  let codeIndex = 0;
+  const codeIndexOf = lines.map((line) => (line.sign === '@' ? -1 : codeIndex++));
   return (
-    <div className="overflow-x-auto rounded-sm border border-hair bg-card font-mono text-meta" data-testid="tool-diff">
-      {shown.map((line, index) => (
-        <div
-          key={index}
-          className={`whitespace-pre px-2 ${
-            line.sign === '+' ? 'bg-sage/10 text-sage' : line.sign === '-' ? 'bg-rust/10 text-rust' : line.sign === '@' ? 'text-tertiary' : 'text-secondary'
-          }`}
-        >
-          {line.sign === '@' ? '⋯' : `${line.sign} ${line.text}`}
+    <div className="overflow-hidden rounded-control border border-hair bg-surface-1" data-testid="tool-diff">
+      <div className="overflow-x-auto py-1 font-mono text-meta leading-[1.6]">
+        {shown.map((line, index) => {
+          const row = tokens?.[codeIndexOf[index]!];
+          return (
+            <div
+              key={index}
+              className={`flex whitespace-pre pr-3 ${line.sign === '+' ? 'bg-diff-add/10' : line.sign === '-' ? 'bg-diff-del/10' : ''}`}
+            >
+              <span
+                aria-hidden
+                className={`w-6 shrink-0 select-none text-center ${line.sign === '+' ? 'text-diff-add' : line.sign === '-' ? 'text-diff-del' : 'text-fg-faint'}`}
+              >
+                {line.sign === '@' ? '⋯' : line.sign === ' ' ? '' : line.sign === '-' ? '−' : '+'}
+              </span>
+              <span className="sr-only">{line.sign === '@' ? '' : `${line.sign} `}</span>
+              {line.sign === '@' ? null : row ? (
+                <span>
+                  {row.map((tok, k) => (
+                    <span key={k} style={tok.color ? { color: tok.color } : undefined}>
+                      {tok.content}
+                    </span>
+                  ))}
+                </span>
+              ) : (
+                <span className={line.sign === '+' ? 'text-diff-add' : line.sign === '-' ? 'text-diff-del' : 'text-secondary'}>{line.text}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {(lines.length > DIFF_PREVIEW && !all) || links?.openChanges ? (
+        <div className="flex items-center gap-3 border-t border-hair px-2.5 py-1 text-meta">
+          {lines.length > DIFF_PREVIEW && !all ? (
+            <button className="text-tertiary hover:text-primary" onClick={() => setAll(true)}>
+              展开全部（还有 {lines.length - DIFF_PREVIEW} 行）
+            </button>
+          ) : null}
+          {links?.openChanges ? (
+            <button className="ml-auto flex items-center gap-1 text-tertiary hover:text-primary" data-testid="tool-diff-open" onClick={() => links.openChanges?.(path)}>
+              在改动中打开
+              <Icon name="external" size={12} />
+            </button>
+          ) : null}
         </div>
-      ))}
-      {lines.length > limit && !all ? (
-        <button className="w-full px-2 py-1 text-left text-tertiary hover:text-primary" onClick={() => setAll(true)}>
-          展开全部（还有 {lines.length - limit} 行）
-        </button>
       ) : null}
     </div>
   );
@@ -321,7 +386,7 @@ function ToolInput({ view, input }: { view: ToolView; input: string }) {
       <p className="min-w-0 font-mono text-meta text-tertiary">
         <PathText path={view.path} input={input} />
       </p>
-      <DiffView lines={view.diff} />
+      <DiffView lines={view.diff} path={view.path} />
     </>
   ) : view.kind === 'read' ? (
     <p className="min-w-0 font-mono text-meta text-tertiary" data-testid="tool-input">
@@ -411,7 +476,7 @@ function RunChip({ kind, count }: { kind: ToolRowKind; count: number }) {
  * 没用 `content-visibility: auto`：折叠的 `<details>` 本来就不渲染内容，真正的开销已经被挡住了；
  * 而自动跳过屏幕外的行会让里面的元素量出零尺寸，e2e 里「参数可见」的断言会随机挂。
  */
-function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings }) {
+function ToolRow({ block, settings, recovered = false }: { block: Extract<Block, { kind: 'tool' }>; settings: DisplaySettings; recovered?: boolean }) {
   const view = toolView(block.name, block.input);
   const family = toolFamily(block.name, view);
   const kind = toolRowKind(block.name, view);
@@ -455,7 +520,11 @@ function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>;
   }, [open]);
 
   const failed = ok === false;
+  // 失败分级：之后同类又成功了 = 可恢复（警告色）；否则是真失败（危险色）
+  const failTone = failed ? (recovered ? 'text-warning' : 'text-danger') : '';
   const mark = ok === null ? '⋯' : ok ? '✓' : '✗';
+  const head = toolHeadline(block.name, view);
+  const stat = view.kind === 'edit' ? diffStat(view.diff) : null;
   const spent = block.result === null ? '运行中' : block.result.durationMs > 0 ? `${block.result.durationMs}ms` : '';
   const output = block.result?.output;
   // 有东西可展开才画那个尖角：单行 bash 还在跑的时候就没什么可看的。
@@ -488,12 +557,22 @@ function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>;
         >
           ›
         </span>
-        <span aria-hidden className={`shrink-0 text-meta ${failed ? 'text-rust' : 'text-tertiary'}`}>
+        <span aria-hidden className={`shrink-0 text-meta ${failed ? failTone : ok === null ? 'text-live' : 'text-tertiary'}`}>
           {mark}
         </span>
-        {run.first ? <span className="shrink-0 font-medium text-sage" data-testid="tool-name" data-tool-name={block.name}>{toolDisplayName(block.name)}</span> : null}
+        {run.first || head.target !== '' ? (
+          <span
+            className={`shrink-0 font-medium ${failed ? failTone : 'text-secondary'}`}
+            data-testid="tool-name"
+            data-tool-name={block.name}
+          >
+            {head.verb}
+          </span>
+        ) : null}
         <span className="min-w-0 truncate font-mono text-sub text-tertiary" data-testid="tool-params">
-          {line.pairs.length === 0 ? (
+          {head.target !== '' ? (
+            <span className="text-primary/85">{head.target}</span>
+          ) : line.pairs.length === 0 ? (
             toolSummary(view)
           ) : (
             line.pairs.map((param, index) => (
@@ -504,8 +583,19 @@ function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>;
               </span>
             ))
           )}
-          {line.hidden > 0 ? <span className="text-tertiary"> +{line.hidden}</span> : null}
+          {head.target === '' && line.hidden > 0 ? <span className="text-tertiary"> +{line.hidden}</span> : null}
         </span>
+        {stat && (stat.added > 0 || stat.removed > 0) ? (
+          <span className="shrink-0 font-mono text-meta tabular-nums" data-testid="tool-diffstat">
+            <span className="text-diff-add">+{stat.added}</span> <span className="text-diff-del">−{stat.removed}</span>
+          </span>
+        ) : null}
+        {head.source ? (
+          <span className="shrink-0 rounded-[4px] border border-hair px-1 text-[11px] leading-4 text-tertiary" data-testid="tool-source">
+            {head.source}
+          </span>
+        ) : null}
+        {failed && recovered ? <span className="shrink-0 text-meta text-warning">已重试</span> : null}
         {chip === '' ? null : (
           // 组头从 0fr 撑到 1fr：同一类多出一行时它慢慢露出来，不跳。
           <RunChip kind={kind} count={run.count} />
@@ -551,11 +641,12 @@ function PathText({ path, input }: { path: string; input: string }) {
 function ThinkingBlock({ text, settings, live }: { text: string; settings: DisplaySettings; live: boolean }) {
   if (settings.thinking === 'hidden') return null;
   return (
-    <details className="group text-meta" open={settings.thinking === 'shown'} data-testid="thinking">
-      <summary className="cursor-pointer list-none text-tertiary hover:text-secondary">
-        <span className="inline-block transition-transform group-open:rotate-90">›</span> {live ? '正在思考…' : '思考过程'}
+    <details className="group/think text-meta" open={settings.thinking === 'shown'} data-testid="thinking">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-tertiary hover:text-secondary">
+        <span aria-hidden className="inline-block w-2.5 transition-transform group-open/think:rotate-90 motion-reduce:transition-none">›</span>
+        <span className={live ? 'shimmer-text' : ''}>{live ? '正在思考…' : '思考过程'}</span>
       </summary>
-      <p className="mt-1 whitespace-pre-wrap border-l border-hair pl-3 italic text-tertiary">{text}</p>
+      <p className="mt-1.5 ml-1 whitespace-pre-wrap border-l-2 border-hair pl-3 leading-relaxed text-fg-faint/80">{text}</p>
     </details>
   );
 }
@@ -570,12 +661,17 @@ export function HandoffBar({ handoff }: { handoff: HandoffDto }) {
     route && route.page === 'project' ? formatRoute({ ...route, view: 'focus', sessionId: handoff.sourceSessionId }) : null;
   const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
   return (
-    <details className="w-full max-w-[85%] self-end rounded-sm border border-hair bg-card px-2.5 py-1.5 text-meta text-secondary" data-testid="handoff-bar">
-      <summary className="cursor-pointer select-none">
-        交接：带了 {handoff.turns} 轮里的 {handoff.carriedTurns} 轮（{handoff.carried} 条）
-        {handoff.omitted > 0 ? `，省略 ${handoff.omitted} 条` : '，没有省略'} · 约 {k(handoff.tokens)} / {k(handoff.budget)} token
+    <details className="group/handoff w-full text-meta text-tertiary" data-testid="handoff-bar">
+      <summary className="flex cursor-pointer select-none list-none items-center gap-2 hover:text-secondary">
+        <span aria-hidden className="h-px flex-1 bg-hair" />
+        <Icon name="layers" size={12} />
+        <span className="min-w-0 truncate">
+          交接：带了 {handoff.turns} 轮里的 {handoff.carriedTurns} 轮（{handoff.carried} 条）
+          {handoff.omitted > 0 ? `，省略 ${handoff.omitted} 条` : '，没有省略'} · 约 {k(handoff.tokens)} / {k(handoff.budget)} token
+        </span>
+        <span aria-hidden className="h-px flex-1 bg-hair" />
       </summary>
-      <div className="mt-1.5 flex flex-col gap-1">
+      <div className="mx-auto mt-1.5 flex max-w-[560px] flex-col gap-1 text-secondary">
         <p>这是自动生成的交接说明，不是原会话全文。</p>
         {handoff.omittedTurns.length > 0 ? <p>整轮省略：{rangeText(handoff.omittedTurns)}。agent 需要时可以用 session.read 查原文。</p> : null}
         {handoff.omitted > 0 && handoff.omittedTurns.length === 0 ? <p>省略的是部分轮次里较旧的条目（多是工具调用）；agent 需要时可以用 session.read 查原文。</p> : null}
@@ -597,7 +693,8 @@ export function ChatBlock({
   last,
   running,
   showAuthor = false,
-  queued = false
+  queued = false,
+  recovered = false
 }: {
   block: Block;
   sessionId: string;
@@ -610,12 +707,14 @@ export function ChatBlock({
   showAuthor?: boolean;
   /** 这条用户消息还在等（排队 / 发送中 / 未送达）：气泡淡一点，位置不变。 */
   queued?: boolean;
+  /** 工具失败后同类又成功了（时间线分组算出来的）：画成警告色而不是红色。 */
+  recovered?: boolean;
 }) {
   if (block.kind === 'subagent') {
     const label = block.agent ?? '子代理';
     const status =
       block.status === 'running'
-        ? { text: '运行中', className: 'text-accent' }
+        ? { text: '运行中', className: 'text-live' }
         : block.status === 'failed'
           ? { text: '失败', className: 'text-rust' }
           : block.status === 'cancelled'
@@ -631,7 +730,7 @@ export function ChatBlock({
         data-status={block.status}
       >
         <summary className="flex cursor-pointer list-none items-baseline gap-2 py-1 text-meta text-secondary">
-          <span className={block.status === 'failed' ? 'text-rust' : (block.status === 'running' ? 'text-accent' : 'text-tertiary')}>◈</span>
+          <span className={block.status === 'failed' ? 'text-rust' : (block.status === 'running' ? 'text-live' : 'text-tertiary')}>◈</span>
           <span className="shrink-0 font-mono text-sage">{label}</span>
           {block.title ? <span className="min-w-0 truncate text-secondary">{block.title}</span> : null}
           <span className={`ml-auto shrink-0 ${status.className}`}>{status.text}</span>
@@ -702,15 +801,17 @@ export function ChatBlock({
   }
   if (block.kind === 'error') {
     return (
-      <p role="alert" className="whitespace-pre-wrap rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust" data-testid="msg-error">
-        {block.text}
-      </p>
+      <div role="alert" className="flex flex-col gap-1" data-testid="msg-error">
+        <SystemDivider tone="danger" icon="alert" text="这一轮失败了" />
+        <p className="whitespace-pre-wrap px-1 text-meta text-danger/90">{block.text}</p>
+      </div>
     );
   }
   if (block.kind === 'stopped') return <StoppedDivider text={block.text} />;
   if (block.kind === 'stall') {
     return (
-      <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
+      <p role="status" className="flex items-center gap-1.5 text-meta text-warning">
+        <Icon name="warning" size={13} />
         {block.text}
       </p>
     );
@@ -725,7 +826,7 @@ export function ChatBlock({
   }
   if (block.kind === 'tool') {
     if (settings.tools === 'hidden') return null;
-    return <ToolRow block={block} settings={settings} />;
+    return <ToolRow block={block} settings={settings} recovered={recovered} />;
   }
   return (
     <p className="flex items-baseline gap-2 text-meta">
@@ -860,13 +961,97 @@ function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block
   );
 }
 
-/** 时间线里的系统分隔线：这一轮在这里停下了（参照 t3code TimelineSystemDivider）。画布卡片也用它。 */
+/** 时间线里的系统分隔线（参照 t3code TimelineSystemDivider）：打断 / 失败 / 交接都用它。 */
+export function SystemDivider({
+  text,
+  tone = 'muted',
+  icon,
+  compact = false,
+  testId
+}: {
+  text: ReactNode;
+  tone?: 'muted' | 'warning' | 'danger';
+  icon?: 'stop' | 'alert' | 'warning' | 'layers';
+  compact?: boolean;
+  testId?: string;
+}) {
+  const color = tone === 'danger' ? 'text-danger' : tone === 'warning' ? 'text-warning' : 'text-tertiary';
+  return (
+    <div data-testid={testId} className={`flex items-center gap-2 text-meta ${color} ${compact ? '' : 'my-1'}`}>
+      <span aria-hidden className="h-px flex-1 bg-hair" />
+      <span className="flex shrink-0 items-center gap-1.5">
+        {icon ? <Icon name={icon} size={12} /> : null}
+        {text}
+      </span>
+      <span aria-hidden className="h-px flex-1 bg-hair" />
+    </div>
+  );
+}
+
+/** 这一轮在这里停下了。画布卡片也用它。 */
 export function StoppedDivider({ text, compact = false }: { text: string; compact?: boolean }) {
   return (
     <div role="status" data-testid="turn-stopped" className={`flex items-center gap-2 text-meta text-tertiary ${compact ? '' : 'my-1'}`}>
       <span aria-hidden className="h-px flex-1 bg-hair" />
-      <span className="shrink-0">■ {text}</span>
+      <span className="flex shrink-0 items-center gap-1.5">
+        <Icon name="stop" size={12} />
+        {text}
+      </span>
       <span aria-hidden className="h-px flex-1 bg-hair" />
     </div>
+  );
+}
+
+/**
+ * 一轮里连续的工具调用 + 思考并成一组（时间线 v2）。组头一行摘要，可整组收起；
+ * 里面每一行还是原来的 ToolRow，同类聚合（×N）照旧按同层兄弟算。
+ */
+export function WorkGroup({
+  summary,
+  defaultOpen,
+  live,
+  forceOpen,
+  children
+}: {
+  summary: WorkSummary;
+  defaultOpen: boolean;
+  live: boolean;
+  forceOpen: boolean;
+  children: ReactNode;
+}) {
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = forceOpen || (userOpen ?? defaultOpen);
+  const counts = summaryCounts(summary);
+  const spent = durationText(summary.durationMs);
+  return (
+    <details
+      className="group/work min-w-0"
+      open={open}
+      onToggle={(event) => {
+        const next = event.currentTarget.open;
+        if (next !== open) setUserOpen(next);
+      }}
+      data-testid="work-group"
+      data-live={live ? 'true' : undefined}
+    >
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 py-1 text-meta text-tertiary hover:text-secondary">
+        <span aria-hidden className="inline-block w-2.5 transition-transform group-open/work:rotate-90 motion-reduce:transition-none">›</span>
+        <Icon name="wrench" size={13} className={live ? 'text-live' : ''} />
+        <span className={`shrink-0 ${live ? 'shimmer-text' : 'text-secondary'}`}>{live ? '正在处理' : '已处理'}</span>
+        <span className="shrink-0 tabular-nums">{summary.steps} 步</span>
+        {counts ? <span className="min-w-0 truncate">· {counts}</span> : null}
+        {summary.failed > 0 ? (
+          <span className="flex shrink-0 items-center gap-1 text-danger">
+            · <Icon name="alert" size={12} /> {summary.failed} 处失败
+          </span>
+        ) : summary.recovered > 0 ? (
+          <span className="flex shrink-0 items-center gap-1 text-warning">
+            · <Icon name="warning" size={12} /> {summary.recovered} 处重试
+          </span>
+        ) : null}
+        {spent ? <span className="ml-auto shrink-0 tabular-nums">{spent}</span> : null}
+      </summary>
+      <div className="mt-1.5 flex min-w-0 flex-col gap-2 pl-1">{children}</div>
+    </details>
   );
 }

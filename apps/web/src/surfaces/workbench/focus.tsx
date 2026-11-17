@@ -5,7 +5,8 @@ import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
 import { api, sessionGroupId, sessionsApi } from '../../shell/api.ts';
-import { ChatBlock, DisplayMenu, Dropdown, MenuItem, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
+import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
+import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
@@ -215,7 +216,8 @@ export function FocusView({
     open: (target) => {
       setReveal((prev) => ({ ...target, nonce: (prev?.nonce ?? 0) + 1 }));
       setTab('files');
-    }
+    },
+    openChanges: () => setTab('changes')
   }), [workspaceRoot]);
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
   // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
@@ -447,6 +449,11 @@ export function FocusView({
   // 跳三次，观感很碎，所以现在只打标不改变顺序。
   const held = heldPromptSeqs(deliveriesBySeq);
   const timelineBlocks = markQueued(blocks, held);
+  // 时间线 v2：每轮连续的工具调用 + 思考并成一组（摘要可收起）；工具设成「隐藏」时不分组
+  const timelineItems = useMemo(
+    () => (settings.tools === 'hidden' ? timelineBlocks.map((block, index) => ({ type: 'block' as const, block, index, recovered: false })) : groupTimeline(timelineBlocks, { running: turnRunning })),
+    [timelineBlocks, settings.tools, turnRunning]
+  );
   const promptSeqs = timelineBlocks.filter((b) => b.kind === 'prompt').map((b) => b.seq);
   /** 问话 seq 之前那一轮（上一句问话开头的那轮）。 */
   const badgeBefore = (seq: number) => {
@@ -1049,21 +1056,36 @@ export function FocusView({
           ) : (
             <FileLinksContext.Provider value={fileLinks}>
             <DeliveryContext.Provider value={{ sessionId: session.id, bySeq: deliveriesBySeq }}>
-            {timelineBlocks.map((block, index) => (
-              <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
-                onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
-              <ChatBlock
-                block={block}
-                agentLabel={agentLabel}
-                sessionId={session.id}
-                settings={settings}
-                last={index === timelineBlocks.length - 1}
-                running={turnRunning}
-                showAuthor={showAuthor}
-                queued={block.queued === true}
-              />
-              </TurnFrag>
-            ))}
+            {timelineItems.map((item) => {
+              const renderBlock = ({ block, index, recovered }: { block: (typeof timelineBlocks)[number]; index: number; recovered: boolean }) => (
+                <ChatBlock
+                  key={index}
+                  block={block}
+                  agentLabel={agentLabel}
+                  sessionId={session.id}
+                  settings={settings}
+                  last={index === timelineBlocks.length - 1}
+                  running={turnRunning}
+                  showAuthor={showAuthor}
+                  queued={block.queued === true}
+                  recovered={recovered}
+                />
+              );
+              if (item.type === 'work') {
+                return (
+                  <WorkGroup key={item.key} summary={item.summary} defaultOpen={item.open} live={item.live} forceOpen={settings.tools === 'expanded'}>
+                    {item.items.map(renderBlock)}
+                  </WorkGroup>
+                );
+              }
+              const { block, index } = item;
+              return (
+                <TurnFrag key={index} badge={block.kind === 'prompt' ? badgeBefore(block.seq) : null} onOpen={openTurn}
+                  onRewind={block.kind === 'prompt' && block.seq > 0 ? () => setRewindAt(block.seq) : null}>
+                  {renderBlock(item)}
+                </TurnFrag>
+              );
+            })}
             {lastBadge ? <TurnBadge turn={lastBadge} onOpen={openTurn} /> : null}
             {/* 还没写进对话的消息：就是列表末尾的普通气泡，和 journal 用的是同一套外壳 */}
             <PendingPrompts
@@ -1084,22 +1106,8 @@ export function FocusView({
                 />
               )}
             />
-            {reason && timelineBlocks[timelineBlocks.length - 1]?.kind !== 'error' ? (
+            {reason && !['error', 'stopped'].includes(timelineBlocks[timelineBlocks.length - 1]?.kind ?? '') ? (
               <p role="alert" className="rounded-sm border-l-2 border-rust bg-rust/10 px-3 py-2 text-meta text-rust">{reason}</p>
-            ) : null}
-            {progress ? (
-              <div
-                className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-meta text-tertiary"
-                aria-live="polite"
-                aria-label={progress.detail}
-                title={progress.detail}
-                data-testid="turn-progress"
-              >
-                <span className="size-1.5 shrink-0 rounded-full bg-accent motion-safe:animate-pulse" aria-hidden />
-                <span className="min-w-0 truncate" data-testid="turn-progress-phase">{progress.label}</span>
-                {/* 秒数只给眼睛：读屏别每秒被打断一次，完整说明在 title / aria-label 里。 */}
-                <span className="shrink-0 tabular-nums text-tertiary" aria-hidden data-testid="turn-progress-elapsed">· {progress.seconds} 秒</span>
-              </div>
             ) : null}
             </DeliveryContext.Provider>
             </FileLinksContext.Provider>
@@ -1144,23 +1152,40 @@ export function FocusView({
               })}
             </div>
           ) : null}
-          {gitState?.isGit || live?.contextUsage ? (
-            <div className="mb-1 flex items-center justify-between gap-2 pr-1">
-              {gitState?.isGit ? (
-                <button
-                  type="button"
-                  className="flex min-w-0 items-center gap-1 text-meta text-tertiary hover:text-primary"
-                  title={`${gitState.branch ?? '分离 HEAD'}${gitState.ahead > 0 ? ` · 领先 ${gitState.ahead}` : ''}${gitState.files.length > 0 ? ` · ${gitState.files.length} 个未提交改动` : ''}`}
-                  data-testid="git-branch"
-                  onClick={() => setGitOpen(true)}
+          {/* 输入框上方的状态行：在跑时是「● 正在做什么 · 几秒」，不跑时是分支；右边是上下文占用 */}
+          {progress || gitState?.isGit || live?.contextUsage ? (
+            <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
+              {progress ? (
+                <div
+                  className="flex min-w-0 items-center gap-1.5 whitespace-nowrap text-meta text-tertiary"
+                  aria-live="polite"
+                  aria-label={progress.detail}
+                  title={progress.detail}
+                  data-testid="turn-progress"
                 >
-                  <span aria-hidden>⎇</span>
-                  <span className="truncate font-mono">{gitState.branch ?? 'HEAD'}</span>
-                  {gitState.files.length > 0 ? <span className="shrink-0 text-rust">{gitState.files.length} 改动</span> : null}
-                  {gitState.ahead > 0 ? <span className="shrink-0 text-tertiary">↑{gitState.ahead}</span> : null}
-                </button>
+                  <span className="size-1.5 shrink-0 rounded-full bg-live motion-safe:animate-pulse" aria-hidden />
+                  <span className="min-w-0 truncate text-secondary" data-testid="turn-progress-phase">{progress.label}</span>
+                  {/* 秒数只给眼睛：读屏别每秒被打断一次，完整说明在 title / aria-label 里。 */}
+                  <span className="shrink-0 tabular-nums" aria-hidden data-testid="turn-progress-elapsed">· {progress.seconds} 秒</span>
+                </div>
               ) : <span />}
-              {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
+              <div className="flex min-w-0 shrink-0 items-center gap-3">
+                {gitState?.isGit ? (
+                  <button
+                    type="button"
+                    className="flex min-w-0 items-center gap-1 text-meta text-tertiary hover:text-primary"
+                    title={`${gitState.branch ?? '分离 HEAD'}${gitState.ahead > 0 ? ` · 领先 ${gitState.ahead}` : ''}${gitState.files.length > 0 ? ` · ${gitState.files.length} 个未提交改动` : ''}`}
+                    data-testid="git-branch"
+                    onClick={() => setGitOpen(true)}
+                  >
+                    <span aria-hidden>⎇</span>
+                    <span className="max-w-[160px] truncate font-mono">{gitState.branch ?? 'HEAD'}</span>
+                    {gitState.files.length > 0 ? <span className="shrink-0 text-secondary">{gitState.files.length} 改动</span> : null}
+                    {gitState.ahead > 0 ? <span className="shrink-0 text-tertiary">↑{gitState.ahead}</span> : null}
+                  </button>
+                ) : null}
+                {live?.contextUsage ? <ContextMeter usage={live.contextUsage} /> : null}
+              </div>
             </div>
           ) : null}
           <SubagentTrack blocks={blocks} onSelect={(id) => setSubagentPath([id])} triggerRef={subagentTrackRef} />
