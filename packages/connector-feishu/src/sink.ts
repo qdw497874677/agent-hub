@@ -123,6 +123,9 @@ export function createFeishuTurnReplies(deps: FeishuTurnRepliesDeps) {
       if (!run) return null;
       const binding = await deps.runs.binding(run.bindingId);
       if (!binding || binding.connector !== 'feishu') return null;
+      // 群目标的回复由群帖镜像回写（每一条 agent 帖都会入出站队列）；
+      // 这里再补一份整轮回复会和镜像重复发送（#230）。
+      if (binding.targetKind === 'group') return null;
       const at = parseFeishuExternalId(run.externalId);
       if (!at) return null;
       const body = lastTurnText(await deps.tail(sessionId, 500));

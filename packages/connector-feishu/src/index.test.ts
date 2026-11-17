@@ -5,7 +5,7 @@ import { createFeishuSource, FEISHU_MAX_TEXT, feishuExternalId, feishuTargetId, 
 import type { FeishuClient } from './client.ts';
 import { createFeishuSink, createFeishuTurnReplies } from './sink.ts';
 
-const binding = (id: string, chatId?: string): ConnectorBinding => ({
+const binding = (id: string, chatId?: string, patch: Partial<ConnectorBinding> = {}): ConnectorBinding => ({
   id,
   connector: 'feishu',
   kind: 'message',
@@ -16,6 +16,7 @@ const binding = (id: string, chatId?: string): ConnectorBinding => ({
   target: 'main',
   groupId: null,
   params: chatId ? { chatId } : {},
+  ...patch,
   enabled: true,
   pausedReason: null,
   consecutiveFailures: 0,
@@ -211,4 +212,21 @@ test('turnReplies：飞书触发的会话把这一轮回复投进出站队列', 
   await replies.finish('s1');
   await replies.finish('s2');
   assert.deepEqual(enqueued, [{ chatId: 'oc_1', replyToExternalId: 'om_9', body: '我看了，没问题。', sessionId: 's1' }]);
+});
+
+test('turnReplies：群目标的回复由群帖镜像回写，这里不再补一份（#230 重复发送）', async () => {
+  const runs = {
+    deliveredRunFor: async (sessionId: string): Promise<TriggerRun | null> => (
+      sessionId === 's1' ? { bindingId: 'b1', externalId: 'oc_1:om_9' } as TriggerRun : null
+    ),
+    binding: async (id: string) => (id === 'b1' ? binding('b1', 'oc_1', { targetKind: 'group', groupId: 'g1' }) : null)
+  } as never;
+  const enqueued: unknown[] = [];
+  const replies = createFeishuTurnReplies({
+    runs,
+    tail: async () => [{ event: { kind: 'text', delta: '群里已经发过了' } }] as never,
+    enqueueReply: async (input) => { enqueued.push(input); return {} as never; }
+  });
+  assert.equal(await replies.finish('s1'), null);
+  assert.deepEqual(enqueued, []);
 });

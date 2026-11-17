@@ -162,13 +162,16 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
   /** 这条外部消息是不是我们自己刚发出去的（channel_outbox 里 sending/sent）→ 回声，直接丢。 */
   const echoed = async (binding: ConnectorBinding, externalId: string): Promise<boolean> => {
     const outbox = deps.outbox;
-    if (!outbox || !binding.groupId) return false;
+    if (!outbox) return false;
     const since = deps.now() - 10 * 60_000;
     // 群里 agent 的回复镜回外部渠道（#219 C3 出站）时，outbox 的目标是渠道地址（例如 `feishu:<chatId>`），
     // 不是群 id —— 群、主会话、外部渠道三个目标都要查，否则回声永远匹配不上。
     const parts = splitExternalId(externalId);
     const boundChat = typeof binding.params['chatId'] === 'string' ? binding.params['chatId'].trim() : '';
-    const targets: { kind: 'group' | 'session' | 'external'; id: string }[] = [{ kind: 'group', id: binding.groupId }];
+    // 群目标、会话目标都要查：私聊渠道的回复走 external 目标（`<connector>:<chatId>`），
+    // 入站时平台会把这句回复再推回来，不查 outbox 就会自己跟自己聊（#230）。
+    const targets: { kind: 'group' | 'session' | 'external'; id: string }[] = [];
+    if (binding.groupId) targets.push({ kind: 'group', id: binding.groupId });
     if (binding.mainSessionId) targets.push({ kind: 'session', id: binding.mainSessionId });
     // chatId 优先用 binding 参数；入站 externalId 里的那段是权威，参数缺了也能认出外部目标。
     const chats = new Set([boundChat, parts.messageId === '' ? '' : parts.chatId].filter((x) => x !== ''));
@@ -264,6 +267,12 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       const posting: TriggerRun = { ...run, state: 'posting', text: externalBody(event) };
       if (!(await deps.store.insertRun(posting))) return; // 去重：同一个 externalId 已经有一条运行
       await postIntoGroup(binding, posting, event.author);
+      return;
+    }
+    // 会话目标也要挡回声（#230）：私聊里 hub 的回复会被平台再推回来，
+    // 不查 outbox 就会自己跟自己聊。这里不走 skipGroupRun 的限流，只记一条 skipped。
+    if (await echoed(binding, event.externalId)) {
+      await deps.store.insertRun({ ...run, state: 'skipped', reason: '这条是本连接器自己发出去的消息（回声），不再投给会话' });
       return;
     }
     const push = (sources.get(binding.connector)?.delivery ?? 'poll') === 'push';

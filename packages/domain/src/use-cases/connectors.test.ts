@@ -227,3 +227,22 @@ test('基础设施中断记失败原因，但不计入连续失败（不会把�
   assert.match(run?.reason ?? '', /ECONNRESET/);
   assert.equal((await bindings.get('b1'))?.consecutiveFailures, 0);
 });
+
+test('C4：会话目标的回声也要看 outbox（私聊回自己不再触发新回合）', async () => {
+  // 私聊 binding：没有群；回复走 external 目标 `<connector>:<chatId>`。
+  const { hub, bindings, runs, delivered } = harness({
+    group: null,
+    echoTargets: { 'external:slack:oc_2': ['om_7'] }
+  });
+  await bindings.set('b1', groupBinding({
+    targetKind: 'session',
+    target: 'main',
+    groupId: null,
+    params: { chatId: 'oc_2' }
+  }));
+  await hub.emit('b1', { kind: 'message', externalId: 'oc_2:om_7', title: 'a', text: '我自己刚回的那句' });
+  assert.equal(delivered.length, 0, '回声不该再投给会话');
+  const [run] = runs.get('b1') ?? [];
+  assert.equal(run?.state, 'skipped');
+  assert.match(run?.reason ?? '', /回声/);
+});
