@@ -3,20 +3,13 @@ import type { CanvasDto, ProjectDto, SessionDto } from '../../shell/api.ts';
 import { AccountMenu } from '../../shell/auth.tsx';
 import { AttentionBadge } from '../../atoms/attention.tsx';
 import { GlobalNav } from '../../shell/global-nav.tsx';
-import { Icon, type IconName } from '../../atoms/icons.tsx';
+import { Icon } from '../../atoms/icons.tsx';
 import { MessagesEntry } from '../../atoms/messages-entry.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { WorkersBadge } from '../../shell/workers.tsx';
-import type { View } from '../../shell/route.ts';
 import { coarsePointer } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
-
-const VIEWS: readonly { view: View; label: string; icon: IconName }[] = [
-  { view: 'canvas', label: '画布', icon: 'grid' },
-  { view: 'list', label: '列表', icon: 'list' },
-  { view: 'focus', label: '会话', icon: 'message' }
-];
 
 /** 桌面侧栏收起成图标栏：记在本机，刷新后保持。 */
 const COLLAPSED_KEY = 'agent-hub.sidebar.collapsed';
@@ -56,13 +49,10 @@ const GHOST_ICON =
 interface Props {
   readonly project: ProjectDto;
   readonly projects: readonly ProjectDto[];
-  readonly view: View;
-  readonly canFocus: boolean;
   readonly selectedId: string | null;
   readonly canvas: CanvasDto | null;
   readonly onHome: () => void;
   readonly onSwitchProject: (project: ProjectDto) => void;
-  readonly onView: (view: View) => void;
   readonly onOpenSession: (sessionId: string) => void;
   readonly onSearch: () => void;
   readonly onNewTask: () => void;
@@ -72,19 +62,16 @@ interface Props {
 /**
  * 项目侧栏：桌面常驻（可收起成 56px 图标栏，⌘/Ctrl+B），手机从左侧滑出。
  *
- * 自上而下只有四块：项目切换 → 动作（新建 / 搜索 / 视图）→ 任务与会话 → 全站导航和账号。
+ * 自上而下只有四块：项目切换 → 动作（新建 / 搜索）→ 任务与会话 → 全站导航和账号。视图切换在页头。
  * 分块只靠留白和一条底线，不再每块都画边框；琥珀色只留给「在跑」的状态点。
  */
 export function ProjectSidebar({
   project,
   projects,
-  view,
-  canFocus,
   selectedId,
   canvas,
   onHome,
   onSwitchProject,
-  onView,
   onOpenSession,
   onSearch,
   onNewTask,
@@ -179,19 +166,6 @@ export function ProjectSidebar({
         <button className={GHOST_ICON} aria-label="搜索" title="搜索（⌘K）" onClick={onSearch}>
           <Icon name="search" />
         </button>
-        {VIEWS.map((item) => (
-          <button
-            key={item.view}
-            className={`${GHOST_ICON} ${view === item.view ? 'bg-selected text-primary' : ''}`}
-            aria-label={item.label}
-            title={item.label}
-            aria-pressed={view === item.view}
-            disabled={item.view === 'focus' && !canFocus}
-            onClick={() => onView(item.view)}
-          >
-            <Icon name={item.icon} />
-          </button>
-        ))}
         <div className="my-1 h-px w-6 bg-hair" />
         <GlobalNav layout="rail" />
         <div className="mt-auto flex flex-col items-center gap-1">
@@ -254,22 +228,6 @@ export function ProjectSidebar({
           <span className="flex-1">搜索</span>
           {coarsePointer() ? null : <kbd className="font-sans text-meta text-tertiary">⌘K</kbd>}
         </button>
-        <div className="mt-1.5 grid grid-cols-3 gap-0.5 rounded-md bg-canvas p-0.5" role="group" aria-label="视图">
-          {VIEWS.map((item) => (
-            <button
-              key={item.view}
-              className={`flex min-h-10 items-center justify-center gap-1.5 rounded text-meta disabled:opacity-40 lg:min-h-6 ${
-                view === item.view ? 'bg-selected text-primary' : 'text-tertiary hover:text-secondary'
-              }`}
-              aria-pressed={view === item.view}
-              disabled={item.view === 'focus' && !canFocus}
-              onClick={() => onView(item.view)}
-            >
-              <Icon name={item.icon} size={13} />
-              {item.label}
-            </button>
-          ))}
-        </div>
       </div>
 
       <nav ref={listRef} onKeyDown={onListKey} className="min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2" aria-label="任务与会话">

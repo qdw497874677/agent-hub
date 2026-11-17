@@ -12,6 +12,7 @@ import { FocusView } from '../surfaces/workbench/focus.tsx';
 import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
 import { ProjectHeader } from '../surfaces/workbench/header.tsx';
 import { ProjectSidebar } from '../surfaces/workbench/sidebar.tsx';
+import { ProjectBar } from '../surfaces/workbench/view-switch.tsx';
 import { useRoute } from './use-route.ts';
 import { MemoryPage } from './memory.tsx';
 import { TeamWorkspacesPage } from '../surfaces/workbench/team-workspaces.tsx';
@@ -303,8 +304,6 @@ function Workspace() {
     <ProjectSidebar
       project={project}
       projects={projects.data ?? []}
-      view={view}
-      canFocus={selectedSession !== null}
       selectedId={selected}
       canvas={canvas.data ?? null}
       onHome={() => {
@@ -316,10 +315,6 @@ function Workspace() {
         onClose?.();
         setDrafts({});
         goProject(picked, view === 'focus' ? homeView : view, null);
-      }}
-      onView={(next) => {
-        onClose?.();
-        setView(next);
       }}
       onOpenSession={(sessionId) => {
         onClose?.();
@@ -351,11 +346,15 @@ function Workspace() {
         </div>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <ProjectBar project={project} view={view} canFocus={selectedSession !== null} stream={stream} onView={setView} />
         <div className="lg:hidden">
           <ProjectHeader
             project={project}
             projects={projects.data ?? []}
             stream={stream}
+            view={view}
+            canFocus={selectedSession !== null}
+            onView={setView}
             onMenu={() => setSidebarOpen(true)}
             onSwitchProject={(picked) => {
               setDrafts({});
