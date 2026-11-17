@@ -43,11 +43,11 @@ export function SessionMessages({ sessionId }: { sessionId: string }) {
     <section data-testid="session-messages">
       <p className="mb-1 text-meta text-tertiary">协作消息</p>
       {pending.map((m) => (
-        <div key={m.messageId} data-testid="spawn-approval" className="mb-2 rounded border border-accent/50 bg-card-raised p-2 text-meta">
+        <div key={m.messageId} data-testid="spawn-approval" className="mb-2 rounded border border-warning/50 bg-card-raised p-2 text-meta">
           <p className="text-primary">要派生新会话 <span className="font-mono">{m.to}</span> 来{KIND_TEXT[m.kind]}：</p>
           <p className="my-1 line-clamp-3 break-words text-secondary">{m.body}</p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" data-testid="spawn-approve" className="min-h-9 rounded bg-accent px-3 text-primary" disabled={decide.isPending} onClick={() => decide.mutate({ id: m.messageId, approve: true })}>批准</button>
+            <button type="button" data-testid="spawn-approve" className="min-h-9 rounded bg-action px-3 text-action-fg" disabled={decide.isPending} onClick={() => decide.mutate({ id: m.messageId, approve: true })}>批准</button>
             <button type="button" data-testid="spawn-reject" className="min-h-9 rounded border border-strong px-3 text-secondary" disabled={decide.isPending} onClick={() => decide.mutate({ id: m.messageId, approve: false })}>拒绝</button>
           </div>
         </div>
@@ -84,7 +84,7 @@ export function SessionMessages({ sessionId }: { sessionId: string }) {
           <input data-testid="agent-message-to" className="min-h-9 min-w-0 flex-1 rounded border border-hair bg-card px-2 font-mono text-meta" placeholder="session:<id> 或 role:<名字>" value={to} onChange={(e) => setTo(e.target.value)} />
         </div>
         <textarea data-testid="agent-message-body" className="min-h-16 w-full rounded border border-hair bg-card px-2 py-1 text-meta" placeholder="替这条会话发给另一个 agent…" value={body} onChange={(e) => setBody(e.target.value)} />
-        <button type="submit" data-testid="agent-message-send" className="min-h-9 self-end rounded bg-accent px-3 text-meta text-primary" disabled={send.isPending}>发送</button>
+        <button type="submit" data-testid="agent-message-send" className="min-h-9 self-end rounded bg-action px-3 text-meta text-action-fg" disabled={send.isPending}>发送</button>
         {send.error ? <p className="text-meta text-rust" data-testid="agent-message-error">{send.error.message}</p> : null}
       </form>
     </section>

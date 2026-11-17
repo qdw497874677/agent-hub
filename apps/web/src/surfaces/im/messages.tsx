@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { AppShell, PageHeader } from '../../shell/page-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, groupApi, type GroupDto, type GroupInputDto, type GroupPostDto, type MessagingRoleDto } from '../../shell/api.ts';
-import { AccountMenu, useAccount } from '../../shell/auth.tsx';
+import { useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
-import { MessagesEntry, useGroupUnread, useMarkGroupRead } from '../../atoms/messages-entry.tsx';
+import { useGroupUnread, useMarkGroupRead } from '../../atoms/messages-entry.tsx';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
 import { NameDot } from '../../atoms/author.tsx';
 import { BUBBLE_MD, LogMarkdown } from '../../atoms/log-markdown.tsx';
@@ -15,7 +16,7 @@ import { DraftBubble } from '../../atoms/group-draft.tsx';
 import { TypingLine } from '../../atoms/group-typing.tsx';
 import { insertMention, mentionItems, mentionRange, stepMention, type MentionItem, type MentionMember } from '../../atoms/mention-suggest.ts';
 import { useCompact } from '../../shell/device.ts';
-import { BotAvatar, HubTabs, botLabel } from './bots.tsx';
+import { BotAvatar, PROJECT_SELECT, botLabel, hubTabs } from './bots.tsx';
 
 /**
  * 消息页（#/messages[/<项目>[/<群>]]，ADR 0018 · 群组，界面方案 C）：
@@ -42,7 +43,7 @@ function clock(at: number): string {
 const heldOf = (group: GroupDto, name: string): boolean => group.held.includes('*') || group.held.includes(name);
 
 /** 手机聊天头 ⋯ 菜单里的一项。 */
-const MENU_ROW = 'w-full rounded-sm px-2 py-1.5 text-left text-meta text-secondary hover:bg-card hover:text-accent';
+const MENU_ROW = 'w-full rounded-sm px-2 py-1.5 text-left text-meta text-secondary hover:bg-card hover:text-primary';
 
 function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { projectId: string; roles: MessagingRoleDto[]; group: GroupDto | null; onDone: (g: GroupDto) => void; openAdvanced?: boolean }) {
   const [name, setName] = useState(group?.name ?? '');
@@ -114,7 +115,7 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
             </li>
           ))}
         </ul>
-        {roles.length ? <a className="self-start text-tertiary hover:text-accent" href={`${formatRoute({ page: 'bots', projectId })}/new`}>＋ 新建 bot</a> : null}
+        {roles.length ? <a className="self-start text-tertiary hover:text-primary" href={`${formatRoute({ page: 'bots', projectId })}/new`}>＋ 新建 bot</a> : null}
       </fieldset>
       <button type="button" data-testid="group-advanced" aria-expanded={advanced} className="self-start text-meta text-tertiary hover:text-secondary" onClick={() => setAdvanced((v) => !v)}>
         {advanced ? '▾' : '▸'} 高级设置 · {speakingSummary(hostRole, strategy)} · {rounds} 轮 / {msgs} 条
@@ -136,8 +137,8 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
         </select>
       </label>
       <div className="flex gap-2 text-meta text-secondary">
-        <label className="flex items-center gap-1">轮数<input aria-label="轮数" data-testid="group-rounds" type="number" min={1} max={5} className={`${INPUT} w-16`} value={rounds} onChange={(e) => setRounds(Number(e.target.value))} /></label>
-        <label className="flex items-center gap-1">条数<input aria-label="条数" type="number" min={1} max={20} className={`${INPUT} w-16`} value={msgs} onChange={(e) => setMsgs(Number(e.target.value))} /></label>
+        <label className="flex items-center gap-1">轮数<input aria-label="轮数" data-testid="group-rounds" type="number" min={1} max={5} className={`${INPUT} w-16!`} value={rounds} onChange={(e) => setRounds(Number(e.target.value))} /></label>
+        <label className="flex items-center gap-1">条数<input aria-label="条数" type="number" min={1} max={20} className={`${INPUT} w-16!`} value={msgs} onChange={(e) => setMsgs(Number(e.target.value))} /></label>
       </div>
         </div>
       ) : null}
@@ -176,7 +177,7 @@ function MembersPanel({ groupId, projectId }: { groupId: string; projectId: stri
               {g.hostRole === m ? <span className="text-tertiary">主持人</span> : null}
               {held(m) ? <span data-testid="member-held" className="text-rust">已暂停</span> : null}
               {s ? (
-                <a className="ml-auto text-accent" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: s.sessionId })}>{s.status === 'busy' ? '在说…' : '会话'} →</a>
+                <a className="ml-auto text-link" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: s.sessionId })}>{s.status === 'busy' ? '在说…' : '会话'} →</a>
               ) : <span className="ml-auto text-tertiary">还没开口</span>}
               {canManage && g.hostRole !== m && g.members.length > 1 ? (
                 <button className="text-tertiary hover:text-rust" data-testid="member-remove" data-role={m} aria-label={`把 ${m} 移出群`} disabled={remove.isPending} onClick={() => { if (window.confirm(`把 @${m} 移出「${g.name}」？`)) remove.mutate(m); }}>移出</button>
@@ -201,7 +202,7 @@ function MembersPanel({ groupId, projectId }: { groupId: string; projectId: stri
             <div className="mt-1 flex gap-2">
               <button className={SMALL} data-testid="member-add-confirm" disabled={!adding.length || add.isPending} onClick={() => add.mutate(adding)}>加进群</button>
               <button className={SMALL} onClick={() => setAdding(null)}>取消</button>
-              <a className="ml-auto self-center text-tertiary hover:text-accent" href={`${formatRoute({ page: 'bots', projectId })}/new`}>新建 bot</a>
+              <a className="ml-auto self-center text-tertiary hover:text-primary" href={`${formatRoute({ page: 'bots', projectId })}/new`}>新建 bot</a>
             </div>
             {add.error ? <p className="text-rust">{errorText(add.error)}</p> : null}
           </div>
@@ -229,7 +230,7 @@ function ChainsPanel({ groupId, projectId }: { groupId: string; projectId: strin
                 <span className="text-secondary">R{d.round}</span>
                 <span className="text-primary">{d.role}</span>
                 <span className="text-tertiary">{PURPOSE[d.purpose] ?? d.purpose} · {d.status}{d.score !== null ? ` · ${d.score}` : ''}</span>
-                {d.sessionId ? <a className="ml-auto text-accent" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: d.sessionId })}>画布 →</a> : null}
+                {d.sessionId ? <a className="ml-auto text-link" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: d.sessionId })}>画布 →</a> : null}
               </li>
             ))}
           </ul>
@@ -343,7 +344,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
               <div className="relative" ref={menuRef}>
                 <button className={SMALL} data-testid="group-more" aria-label="更多" aria-expanded={menu} onClick={() => setMenu((v) => !v)}>⋯</button>
                 {menu ? (
-                  <div data-testid="group-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-32 flex-col gap-1 rounded-md border border-strong bg-panel p-1 shadow-lg">
+                  <div data-testid="group-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-32 flex-col gap-1 rounded-lg border border-strong bg-overlay p-1 shadow-overlay">
                     <button className={MENU_ROW} data-testid="open-chains" onClick={() => { setMenu(false); onDrawer('chains'); }}>调用链</button>
                     <button className={MENU_ROW} data-testid="open-settings" onClick={() => { setMenu(false); onDrawer('settings'); }}>设置</button>
                   </div>
@@ -380,7 +381,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
           if (p.author.kind === 'system') {
             return (
               <li key={p.id} data-testid="group-post" data-author="system" className="my-1.5">
-                <p data-testid="system-line" className="rounded-sm border-l-2 border-accent/40 bg-card/70 px-2 py-1 text-sub text-tertiary">{p.body}</p>
+                <p data-testid="system-line" className="rounded-sm border-l-2 border-hair bg-card/70 px-2 py-1 text-sub text-tertiary">{p.body}</p>
               </li>
             );
           }
@@ -395,7 +396,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
                     <time dateTime={new Date(p.createdAt).toISOString()} className="tabular-nums">{clock(p.createdAt)}</time>
                   </span>
                 )}
-                <LogMarkdown body={p.body} className={`${BUBBLE_MD} rounded-md px-3 py-1.5 ${mine ? 'bg-accent/15' : 'bg-card'}`} />
+                <LogMarkdown body={p.body} className={`${BUBBLE_MD} rounded-md px-3 py-1.5 ${mine ? 'bg-surface-3' : 'bg-card'}`} />
                 <ReactionBar
                   reactions={p.reactions}
                   me={meName}
@@ -439,7 +440,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
                 : '发言方式是成员竞价，主持人不分派'
               : '没人分派时，@ 成员也能直接叫人'
           }
-          className={`flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-meta ${group.hostRole ? 'border-hair bg-card text-tertiary hover:border-accent hover:text-accent' : 'border-accent/50 bg-accent/10 text-primary hover:border-accent'}`}
+          className={`flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-meta ${group.hostRole ? 'border-hair bg-card text-tertiary hover:border-strong hover:text-primary' : 'border-fg/30 bg-selected text-primary hover:border-strong'}`}
           onClick={() => onDrawer('settings', true)}
         >
           {group.hostRole ? (
@@ -460,7 +461,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
       >
         <div className="relative min-w-0 flex-1">
           {open ? (
-            <ul data-testid="mention-menu" className="absolute bottom-full left-0 z-30 mb-1 max-h-56 w-full overflow-y-auto rounded-md border border-strong bg-panel p-1 shadow-lg">
+            <ul data-testid="mention-menu" className="absolute bottom-full left-0 z-30 mb-1 max-h-56 w-full overflow-y-auto rounded-lg border border-strong bg-overlay p-1 shadow-overlay">
               {candidates.map((item, i) => (
                 <li key={`${item.kind}:${item.token}`}>
                   <button
@@ -532,17 +533,6 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
   const [drawerHost, setDrawerHost] = useState(false);
   const openDrawer = (d: Drawer, focusHost = false) => { setDrawerHost(focusHost); setDrawer(d); };
   const closeDrawer = () => { setDrawerHost(false); setDrawer(null); };
-  const compact = useCompact();
-  const [more, setMore] = useState(false);
-  const moreRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!more) return;
-    const onDown = (e: PointerEvent) => { if (!moreRef.current?.contains(e.target as Node)) setMore(false); };
-    const close = () => setMore(false);
-    document.addEventListener('pointerdown', onDown);
-    window.addEventListener('hashchange', close);
-    return () => { document.removeEventListener('pointerdown', onDown); window.removeEventListener('hashchange', close); };
-  }, [more]);
   const unread = useGroupUnread();
   const unreadOf = (id: string): number => unread.data?.groups.find((u) => u.groupId === id)?.count ?? 0;
   const [creating, setCreating] = useState(false);
@@ -552,39 +542,18 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
   const go = (g: string | null) => { window.location.hash = formatRoute({ page: 'messages', projectId: pid, groupId: g }); };
   const roleList = roles.data?.roles ?? [];
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b border-hair px-3 py-2">
-        <div className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
-          <a className="block max-w-full shrink-0 truncate whitespace-nowrap text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
-          <h1 className="min-w-0 truncate text-head text-primary">群</h1>
-        </div>
-        <select aria-label="项目" data-testid="messages-project" className={`${INPUT} min-w-0 shrink-0 ${compact ? 'max-w-[45%]' : 'max-w-[40%]'}`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>
-          {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        {compact ? (
-          <div className="relative shrink-0" ref={moreRef}>
-            <button className={SMALL} data-testid="messages-more" aria-label="更多" aria-expanded={more} onClick={() => setMore((v) => !v)}>⋯</button>
-            {more ? (
-              <div data-testid="messages-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-56 flex-col gap-2 rounded-md border border-strong bg-panel p-2 shadow-lg">
-                <div onClick={() => setMore(false)}><HubTabs active="messages" projectId={pid} /></div>
-                <div className="flex items-center gap-2" onClick={() => setMore(false)}>
-                  <MessagesEntry />
-                  <span className="text-meta text-tertiary">消息</span>
-                </div>
-                <div className="flex justify-end border-t border-hair pt-2"><AccountMenu /></div>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <>
-            <HubTabs active="messages" projectId={pid} />
-            <div className="flex shrink-0 items-center gap-2">
-              <MessagesEntry />
-              <AccountMenu />
-            </div>
-          </>
-        )}
-      </header>
+    <AppShell>
+      <PageHeader
+        title="群"
+        tabsLabel="消息区"
+        tabs={hubTabs(pid)}
+        activeTab="messages"
+        actions={
+          <select aria-label="项目" data-testid="messages-project" className={PROJECT_SELECT} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>
+            {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        }
+      />
       <div className="flex min-h-0 flex-1">
         <aside className={`${current ? 'hidden md:flex' : 'flex'} w-full min-w-0 flex-col border-r border-hair md:w-64 md:shrink-0`}>
           <ul data-testid="group-list" className="min-h-0 flex-1 overflow-y-auto">
@@ -654,7 +623,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
       </div>
       {drawer && current && pid ? (
         <div className="fixed inset-0 z-40 flex items-end bg-black/30 md:items-center md:justify-center" onClick={closeDrawer}>
-          <div data-testid="group-drawer" className="max-h-[75vh] w-full overflow-y-auto rounded-t-md border border-strong bg-panel md:w-[480px] md:rounded-md" onClick={(e) => e.stopPropagation()}>
+          <div data-testid="group-drawer" className="max-h-[75vh] w-full overflow-y-auto rounded-t-lg border border-strong bg-overlay shadow-overlay md:w-[480px] md:rounded-lg" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center border-b border-hair px-3 py-2">
               <span className="text-body text-primary">{drawer === 'members' ? '成员' : drawer === 'chains' ? '调用链' : '群设置'}</span>
               <button className={`${SMALL} ml-auto`} onClick={closeDrawer}>关闭</button>
@@ -667,7 +636,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
           </div>
         </div>
       ) : null}
-    </div>
+    </AppShell>
   );
 }
 

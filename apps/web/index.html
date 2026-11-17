@@ -12,6 +12,14 @@
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/icon.svg" />
     <title>agent-hub</title>
+    <!-- 首帧前写好主题，刷新时不闪（逻辑同 src/shell/theme.ts） -->
+    <script>
+      try {
+        var p = localStorage.getItem('agent-hub.theme');
+        var light = p === 'light' || (p !== 'dark' && matchMedia('(prefers-color-scheme: light)').matches);
+        document.documentElement.dataset.theme = light ? 'light' : 'dark';
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

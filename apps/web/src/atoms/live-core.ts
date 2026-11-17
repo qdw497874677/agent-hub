@@ -50,6 +50,8 @@ export type Block = Sequenced &
      * 时间线里留一条分隔线。否则那一轮只剩一个「思考过程」或一句用户的话，看着像「还没回」。
      */
     | { readonly kind: 'stopped'; readonly text: string }
+    /** 运行时压缩了上下文（compaction · end）：时间线里一条系统分隔线，说清楚前后多少 token。 */
+    | { readonly kind: 'compaction'; readonly text: string; readonly ok: boolean }
     /** 这一轮失败了（ended · failed）：原因写进对话里，不只是状态点变红——否则看着就是「发了没回」。 */
     | { readonly kind: 'error'; readonly text: string }
     /**
@@ -142,13 +144,27 @@ export type LiveMap = Readonly<Record<string, LiveSession>>;
 /** 运行时报「结果未知」时 reason 里带的标记（见 Hermes 运行时 UNKNOWN_OUTCOME_REASON）。 */
 export const UNKNOWN_OUTCOME_MARKER = 'outcome_unknown';
 
+const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}K` : String(n));
+
+/** 压缩分隔线上的字：「上下文已压缩 · 182K → 24K token」；失败写原因。 */
+export function compactionText(event: Extract<SessionEventDto, { kind: 'compaction' }>): string {
+  if (event.ok === false) return `上下文压缩没成${event.error ? `：${event.error}` : ''}`;
+  const before = event.tokensBefore;
+  const after = event.tokensAfter;
+  return before !== undefined && after !== undefined ? `上下文已压缩 · ${k(before)} → ${k(after)} token` : '上下文已压缩';
+}
+
 export function applyBlocks(blocks: readonly Block[], event: SessionEventDto, seq: number): readonly Block[] {
   if (event.kind === 'diagnostic') {
     return event.text.startsWith(STALL_NOTICE_MARKER)
       ? [...withoutStall(blocks), { kind: 'stall', text: event.text, seq }]
       : blocks;
   }
-  if (event.kind === 'context_usage' || event.kind === 'compaction' || event.kind === 'commands') return blocks;
+  if (event.kind === 'compaction') {
+    if (event.phase !== 'end') return blocks;
+    return [...blocks, { kind: 'compaction', text: compactionText(event), ok: event.ok !== false, seq }];
+  }
+  if (event.kind === 'context_usage' || event.kind === 'commands') return blocks;
   // 子代理是父会话里的一段嵌套时间线：start/end 建组，子事件按 subagentId 折进去。
   if (event.kind === 'subagent') return applySubagent(blocks, event, seq);
   if ('subagentId' in event && event.subagentId) return foldSubagentEvent(blocks, event.subagentId, event, seq);

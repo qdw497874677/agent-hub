@@ -8,6 +8,8 @@ import type { FileTarget } from './tool-format.ts';
 export interface FileLinks {
   readonly root: string | null;
   readonly open: (target: FileTarget) => void;
+  /** 跳到「改动」页签（行内改动底下的「在改动中打开」）；没有就不给这个按钮。 */
+  readonly openChanges?: ((path: string | null) => void) | undefined;
 }
 
 export const FileLinksContext = createContext<FileLinks | null>(null);

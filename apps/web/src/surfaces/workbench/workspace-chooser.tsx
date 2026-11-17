@@ -1,4 +1,5 @@
 import { shortPath, workspaceName } from '../../atoms/workspace-format.ts';
+import { Notice } from '../../atoms/notice.tsx';
 export { shortPath, workspaceName };
 import { LinkWorkspaces } from './link-workspaces.tsx';
 import { useEffect, useMemo, useState } from 'react';
@@ -51,7 +52,7 @@ export const KIND_HINT = {
 export const CONCURRENT_HINT = '另一个任务也在这里干活，改动可能互相影响';
 
 const ROW = 'flex min-h-[56px] w-full items-start gap-2 rounded-sm border px-3 py-2 text-left';
-const rowClass = (selected: boolean) => `${ROW} ${selected ? 'border-accent bg-card' : 'border-hair hover:border-strong'}`;
+const rowClass = (selected: boolean) => `${ROW} ${selected ? 'border-fg/40 bg-selected' : 'border-hair hover:border-strong'}`;
 
 /** 单选圆点：选中的除了描边还给一个实心点 + 一圈很淡的外环，深色屏上一眼能看出选了哪个。 */
 function Radio({ on }: { on: boolean }) {
@@ -59,10 +60,10 @@ function Radio({ on }: { on: boolean }) {
     <span
       aria-hidden
       className={`mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border ${
-        on ? 'border-accent ring-2 ring-accent/20' : 'border-strong'
+        on ? 'border-fg' : 'border-strong'
       }`}
     >
-      {on ? <span className="block h-2 w-2 rounded-full bg-accent" /> : null}
+      {on ? <span className="block h-2 w-2 rounded-full bg-fg" /> : null}
     </span>
   );
 }
@@ -330,7 +331,7 @@ function NewLongLived({
                 role="radio"
                 aria-checked={choice.mode === mode}
                 className={`min-h-[32px] rounded-sm border px-2 text-meta ${
-                  choice.mode === mode ? 'border-accent text-primary' : 'border-hair text-secondary hover:border-strong'
+                  choice.mode === mode ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary hover:border-strong'
                 }`}
                 onClick={() => {
                   if (choice.mode === mode) return;
@@ -367,7 +368,7 @@ function NewLongLived({
                 将在 {machineName} 的 <span className="font-mono">{shortPath(choice.path)}</span> 新建持久工作目录
               </>
             )}
-            <button type="button" className="ml-2 text-accent hover:underline" onClick={() => setPicking((open) => !open)}>
+            <button type="button" className="ml-2 text-link hover:underline" onClick={() => setPicking((open) => !open)}>
               {picking ? '收起' : choice.path ? '换一个' : '浏览…'}
             </button>
           </p>
@@ -495,13 +496,13 @@ function NewWorktree({
       </button>
       {/* 不可用不只是一行灰字：留着这一行（用户会来这儿找），说清缺什么，再给一个能点的动作。 */}
       {gitHere ? null : (
-        <div data-testid="ws-new-worktree-blocked" className="mt-1.5 w-full border-l border-rust pl-2 text-meta">
-          <p className="text-rust">这台机器上还没有可用的 git 目录</p>
+        <div data-testid="ws-new-worktree-blocked" className="mt-1.5 w-full text-meta">
+          <Notice tone="warning">这台机器上还没有可用的 git 目录</Notice>
           <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <button
               type="button"
               data-testid="ws-new-worktree-fix"
-              className="min-h-[32px] shrink-0 rounded-sm border border-hair px-2 text-meta text-secondary hover:border-accent hover:text-accent"
+              className="min-h-[32px] shrink-0 rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
               onClick={onFixGit}
             >
               关联 git 目录

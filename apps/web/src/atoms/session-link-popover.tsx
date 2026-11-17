@@ -180,7 +180,7 @@ export function SessionLinkChip({
                 // 首帧只用来量高度，量完立刻可见。
                 visibility: pos ? 'visible' : 'hidden'
               }}
-              className="fixed z-50 flex flex-col gap-1.5 overflow-y-auto overscroll-contain rounded-sm border border-strong bg-panel p-3 shadow"
+              className="fixed z-50 flex flex-col gap-1.5 overflow-y-auto overscroll-contain rounded-lg border border-strong bg-overlay p-3 shadow-overlay"
             >
               <div className="flex items-start gap-1">
                 <p className="min-w-0 flex-1 truncate pt-1 pr-1 text-body text-primary" title={info.name}>
@@ -215,7 +215,7 @@ export function SessionLinkChip({
                   type="button"
                   data-autofocus
                   data-testid="session-link-open"
-                  className="flex min-h-11 w-full items-center justify-center rounded-sm bg-accent px-3 text-sub text-canvas hover:brightness-110"
+                  className="flex min-h-11 w-full items-center justify-center rounded-sm bg-action px-3 text-sub text-action-fg hover:bg-action/90"
                   onClick={() => {
                     onOpenChange(false);
                     onOpenSession(info.id);

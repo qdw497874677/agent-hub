@@ -89,7 +89,7 @@ export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClos
             <label className="flex flex-col gap-1 text-meta text-secondary">
               <span className="flex items-center justify-between">
                 提交说明
-                <button type="button" className="text-accent disabled:opacity-40" disabled={drafting} onClick={() => void draft()} data-testid="git-redraft">
+                <button type="button" className="text-link disabled:opacity-40" disabled={drafting} onClick={() => void draft()} data-testid="git-redraft">
                   {drafting ? '起草中…' : source === 'model' ? '重新起草（模型）' : '重新起草'}
                 </button>
               </span>
@@ -124,8 +124,8 @@ export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClos
           <div className="rounded-sm border border-hair bg-card p-2 text-meta text-secondary" data-testid="git-result">
             {result.committed && result.sha ? <p>已提交 <code>{result.sha.slice(0, 7)}</code></p> : null}
             {result.pushed ? <p>已推送到 {result.branch}</p> : null}
-            {result.pullRequest ? <p>已开 PR：<a className="text-accent underline" href={result.pullRequest.url} target="_blank" rel="noreferrer" data-testid="git-result-pr">#{result.pullRequest.number}</a></p> : null}
-            {result.compareUrl ? <p>没法自动开 PR，<a className="text-accent underline" href={result.compareUrl} target="_blank" rel="noreferrer" data-testid="git-compare">去 GitHub 新建</a></p> : null}
+            {result.pullRequest ? <p>已开 PR：<a className="text-link underline" href={result.pullRequest.url} target="_blank" rel="noreferrer" data-testid="git-result-pr">#{result.pullRequest.number}</a></p> : null}
+            {result.compareUrl ? <p>没法自动开 PR，<a className="text-link underline" href={result.compareUrl} target="_blank" rel="noreferrer" data-testid="git-compare">去 GitHub 新建</a></p> : null}
             {result.notes.map((n) => <p key={n} className="text-tertiary">{n}</p>)}
           </div>
         ) : null}
@@ -141,7 +141,7 @@ export function PullRequestChips({ prs }: { prs: readonly PullRequestDto[] }) {
     <div className="flex flex-wrap gap-1.5" data-testid="pr-chips">
       {prs.map((pr) => (
         <a key={pr.id} href={pr.url} target="_blank" rel="noreferrer" data-testid="pr-chip" data-state={pr.state}
-          className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${pr.state === 'merged' ? 'border-accent/60 text-accent' : pr.state === 'closed' ? 'border-hair text-tertiary line-through' : 'border-sage/60 text-sage'}`}>
+          className={`rounded-full border px-2 py-0.5 font-mono text-[11px] ${pr.state === 'merged' ? 'border-info/60 text-info' : pr.state === 'closed' ? 'border-hair text-tertiary line-through' : 'border-sage/60 text-sage'}`}>
           PR #{pr.number} · {pr.state === 'merged' ? '已合并' : pr.state === 'closed' ? '已关闭' : '进行中'}
         </a>
       ))}

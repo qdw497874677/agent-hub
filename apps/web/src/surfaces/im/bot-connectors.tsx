@@ -38,7 +38,7 @@ function AgentProjects({ projectId, name }: { projectId: string; name: string })
           const on = isDefault || linked.has(p.id);
           return (
             <button key={p.id} type="button" disabled={isDefault || save.isPending} data-testid="agent-project" data-on={on ? '1' : '0'}
-              className={`rounded-full border px-2 py-0.5 text-meta ${on ? 'border-accent text-accent' : 'border-hair text-tertiary'}`} onClick={() => toggle(p.id)}>
+              className={`rounded-full border px-2 py-0.5 text-meta ${on ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-tertiary'}`} onClick={() => toggle(p.id)}>
               {on ? '✓ ' : ''}{p.name}{isDefault ? ' · 默认' : ''}
             </button>
           );
@@ -93,7 +93,7 @@ function TimerForm({ projectId, name, onDone }: { projectId: string; name: strin
       <div className="flex flex-col gap-2 sm:flex-row">
         <input className={INPUT} aria-label="名称" data-testid="timer-name" value={title} maxLength={60} onChange={(e) => setTitle(e.target.value)} />
         <label className="flex items-center gap-1 text-meta text-secondary whitespace-nowrap">每
-          <input className={`${INPUT} w-20`} type="number" min={5} max={10080} data-testid="timer-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
+          <input className={`${INPUT} w-20!`} type="number" min={5} max={10080} data-testid="timer-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
       </div>
       <textarea className={INPUT} rows={3} maxLength={4000} data-testid="timer-prompt" placeholder="到点时对它说什么，例如：看看有没有新任务要拆" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
       <div className="flex flex-wrap items-center gap-2 text-meta text-secondary">
@@ -130,7 +130,7 @@ function GithubForm({ projectId, name, onDone }: { projectId: string; name: stri
         <input className={INPUT} aria-label="仓库" data-testid="github-repo" placeholder="owner/name" value={repo} maxLength={140} onChange={(e) => setRepo(e.target.value)} />
         <input className={`${INPUT} sm:w-32`} aria-label="标签" data-testid="github-label" value={label} maxLength={50} onChange={(e) => setLabel(e.target.value)} />
         <label className="flex items-center gap-1 text-meta text-secondary whitespace-nowrap">每
-          <input className={`${INPUT} w-20`} type="number" min={5} max={1440} data-testid="github-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
+          <input className={`${INPUT} w-20!`} type="number" min={5} max={1440} data-testid="github-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
       </div>
       <p
         className="text-meta text-tertiary"
@@ -159,7 +159,7 @@ function TriggerRow({ b, listKey }: { b: BindingDto; listKey: unknown[] }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-body text-primary">{b.connector === 'github' ? '🐙' : '⏰'} {b.name}</span>
         <span className="text-meta text-tertiary">{b.summary} · {b.target === 'main' ? '主会话' : '新会话'}</span>
-        <span className={`text-meta ${b.pausedReason ? 'text-rust' : b.enabled ? 'text-accent' : 'text-tertiary'}`} data-testid="trigger-state">
+        <span className={`text-meta ${b.pausedReason ? 'text-rust' : b.enabled ? 'text-sage' : 'text-tertiary'}`} data-testid="trigger-state">
           {b.pausedReason ? '已暂停' : b.enabled ? `下次 ${time(b.nextRunAt)}` : '已停用'}
         </span>
         <div className="ml-auto flex gap-1">
@@ -177,7 +177,7 @@ function TriggerRow({ b, listKey }: { b: BindingDto; listKey: unknown[] }) {
             <li key={r.id} className="flex flex-wrap gap-2 text-meta text-secondary" data-testid="trigger-run" data-state={r.state}>
               <span>{time(r.plannedAt ?? r.createdAt)}</span><span>{STATE[r.state]}{r.catchup ? ' · 补跑' : ''}</span>
               {r.reason ? <span className="text-tertiary">{r.reason}</span> : null}
-              {r.sessionId ? <a className="text-accent" href={formatRoute({ page: 'project', projectId: b.agentProjectId, view: 'focus', sessionId: r.sessionId })}>会话</a> : null}
+              {r.sessionId ? <a className="text-link" href={formatRoute({ page: 'project', projectId: b.agentProjectId, view: 'focus', sessionId: r.sessionId })}>会话</a> : null}
             </li>
           ))}
           {runs.data && !runs.data.runs.length ? <li className="text-meta text-tertiary">还没有运行过</li> : null}

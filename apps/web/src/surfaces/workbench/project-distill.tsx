@@ -62,7 +62,7 @@ export function ProjectDistill({ projectId }: { projectId: string }) {
         </select>
       </label>
       {data.globalOff ? <p className="text-meta text-amber-500">全站已关闭会后提炼，这里的设置暂不生效。</p> : null}
-      {error ? <p className="text-meta text-accent" role="alert">{error}</p> : null}
+      {error ? <p className="text-meta text-rust" role="alert">{error}</p> : null}
     </section>
   );
 }

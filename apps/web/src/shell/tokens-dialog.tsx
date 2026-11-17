@@ -27,7 +27,7 @@ const EXPIRY = [
 ];
 const when = (ms: number) => new Date(ms).toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 const errorText = (error: unknown) => (error instanceof RequestFailed ? error.detail.message : error ? "网络出错了，再试一次" : null);
-const BTN = 'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+const BTN = 'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-strong hover:text-primary disabled:opacity-40';
 
 /** 访问令牌：给脚本、CI、外部 agent 调开放 API / MCP 用。新建、列表、吊销；明文只显示一次。 */
 export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => void }) {
@@ -60,14 +60,14 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
       <p className="text-sub text-primary">访问令牌</p>
       <p className="mt-1 text-meta text-tertiary" title="请求头 Authorization: Bearer ahp_…，可调开放 API 或 MCP；永远用不了本机机器">
         用于脚本和{' '}
-        <a className="text-accent underline-offset-2 hover:underline" href="/openapi/v1/docs" target="_blank" rel="noreferrer">
+        <a className="text-link underline-offset-2 hover:underline" href="/openapi/v1/docs" target="_blank" rel="noreferrer">
           API
         </a>
         ，权限不会超过你本人。
       </p>
 
       {fresh ? (
-        <div data-testid="token-fresh" className="mt-4 rounded-sm border border-accent/50 bg-accent/10 p-3">
+        <div data-testid="token-fresh" className="mt-4 rounded-sm border border-sage/50 bg-success-bg p-3">
           <p className="text-meta text-primary">新令牌只显示这一次，现在复制保存好：</p>
           <code data-testid="token-value" className="mt-2 block break-all rounded-sm bg-card px-2 py-1.5 font-mono text-[12px] text-primary select-all">
             {fresh}
@@ -98,7 +98,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
           <input
             aria-label="令牌名称"
             data-testid="token-name"
-            className="w-full rounded-sm border border-hair bg-panel px-3 py-2 text-sub text-primary placeholder:text-tertiary focus:border-accent focus:outline-none"
+            className="w-full rounded-sm border border-hair bg-panel px-3 py-2 text-sub text-primary placeholder:text-tertiary focus:border-ring focus:outline-none"
             placeholder="名称，例如 ci-bot"
             maxLength={60}
             value={name}
@@ -112,7 +112,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
                   key={value}
                   role="radio"
                   aria-checked={kind === value}
-                  className={`flex-1 rounded-sm border px-2 py-1.5 ${kind === value ? 'border-accent text-accent' : 'border-hair text-secondary'}`}
+                  className={`flex-1 rounded-sm border px-2 py-1.5 ${kind === value ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary'}`}
                   onClick={() => setKind(value)}
                 >
                   {value === 'personal' ? '个人令牌' : '团队服务账号'}
@@ -125,7 +125,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
             <legend className="mb-1 text-meta text-secondary">权限</legend>
             {SCOPES.map((scope) => (
               <label key={scope.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-1 py-1 hover:bg-panel" title={scope.detail}>
-                <input type="checkbox" className="mt-1 accent-[var(--color-accent)]" checked={scopes.includes(scope.id)} onChange={() => toggle(scope.id)} />
+                <input type="checkbox" className="mt-1 accent-[var(--color-fg)]" checked={scopes.includes(scope.id)} onChange={() => toggle(scope.id)} />
                 <span className="min-w-0">
                   <span className="text-meta text-primary">{scope.label}</span>
                   <span className="block text-[11px] text-tertiary">{scope.hint}</span>
@@ -152,7 +152,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
           <button
             type="submit"
             data-testid="token-create"
-            className="rounded-sm bg-accent px-3 py-2.5 text-sub text-white hover:opacity-90 disabled:opacity-40"
+            className="rounded-sm bg-action px-3 py-2.5 text-sub text-action-fg hover:bg-action/90 disabled:opacity-40"
             disabled={create.isPending || !name.trim() || scopes.length === 0}
           >
             {create.isPending ? '生成中…' : '生成令牌'}
@@ -172,7 +172,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
               <div className="min-w-0 flex-1">
                 <p className="flex items-center gap-2 truncate text-meta text-primary">
                   <span className="truncate">{token.name}</span>
-                  {token.kind === 'service' && <span className="shrink-0 rounded-sm bg-accent/15 px-1.5 py-0.5 text-[11px] text-accent">服务账号</span>}
+                  {token.kind === 'service' && <span className="shrink-0 rounded-sm bg-info-bg px-1.5 py-0.5 text-[11px] text-info">服务账号</span>}
                   {!token.usable && <span className="shrink-0 rounded-sm bg-rust/15 px-1.5 py-0.5 text-[11px] text-rust">已过期</span>}
                 </p>
                 <p className="truncate font-mono text-[11px] text-tertiary">{token.prefix}…</p>

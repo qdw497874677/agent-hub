@@ -76,14 +76,14 @@ export function Assets() {
         }
       >
         {assets.some((asset) => asset.latest !== asset.pinned) ? (
-          <div data-testid="asset-update-notice" role="status" className="mb-3 rounded-sm border border-accent px-3 py-2 text-sub text-primary">
+          <div data-testid="asset-update-notice" role="status" className="mb-3 rounded-sm border border-info/60 px-3 py-2 text-sub text-primary">
             有新版本：
             {assets
               .filter((asset) => asset.latest !== asset.pinned)
               .map((asset, index) => (
                 <span key={asset.id}>
                   {index > 0 ? '、' : ''}
-                  <button className="text-accent underline-offset-2 hover:underline" onClick={() => setDiffing(asset)}>
+                  <button className="text-link underline-offset-2 hover:underline" onClick={() => setDiffing(asset)}>
                     {asset.name}
                   </button>
                 </span>
@@ -95,7 +95,7 @@ export function Assets() {
           <div
             data-testid="asset-filter"
             data-name={focus}
-            className="mb-3 flex flex-wrap items-center gap-2 rounded-sm border border-accent/60 px-3 py-2 text-meta text-secondary"
+            className="mb-3 flex flex-wrap items-center gap-2 rounded-sm border border-warning/60 px-3 py-2 text-meta text-secondary"
           >
             只看「<span className="break-all text-primary">{focus}</span>」
             <button className={SMALL} onClick={() => setFocus(null)}>
@@ -192,7 +192,7 @@ function AssetItem({
         {upgradable ? (
           <button
             data-testid="asset-upgrade"
-            className="rounded border border-accent px-1.5 text-meta text-accent hover:bg-accent hover:text-canvas"
+            className="rounded border border-strong px-1.5 text-meta text-primary hover:bg-action hover:text-action-fg"
             onClick={onDiff}
           >
             有新版本 · 查看并升级
@@ -216,7 +216,7 @@ function AssetItem({
               disabled={install.isPending}
               title={on ? (synced ? '已同步到这台机器；点一下卸载' : '已分配，等待同步；点一下卸载') : '点一下装到这台机器'}
               className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-meta transition-colors ${
-                on ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-tertiary hover:border-strong hover:text-secondary'
+                on ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-tertiary hover:border-strong hover:text-secondary'
               } ${worker.state === 'online' ? '' : 'opacity-60'}`}
               onClick={() => install.mutate({ workerId: worker.workerId, installed: !on })}
             >
@@ -320,7 +320,7 @@ function ScopeBadge({ projectId }: { projectId: string | null }) {
   if (projectId === null) return <span data-testid="asset-scope" className="text-meta text-tertiary">全局</span>;
   const name = projects.data?.find((project) => project.id === projectId)?.name ?? '项目';
   return (
-    <span data-testid="asset-scope" className="rounded border border-accent/60 px-1.5 text-meta text-accent">
+    <span data-testid="asset-scope" className="rounded border border-hair px-1.5 text-meta text-secondary">
       仅项目 · {name}
     </span>
   );
@@ -671,7 +671,7 @@ function GitForm({ onDone, onShowAsset }: { onDone: () => void; onShowAsset?: (n
                   <input
                     type="radio"
                     name="git-candidate"
-                    className="mt-1 accent-[var(--color-accent)]"
+                    className="mt-1 accent-[var(--color-fg)]"
                     checked={choice === index}
                     onChange={() => setChoice(index)}
                   />
@@ -794,7 +794,7 @@ export function Patch({ patch }: { patch: string }) {
               : line.startsWith('-') && !line.startsWith('---')
                 ? 'bg-rust/20 text-secondary'
                 : line.startsWith('@@')
-                  ? 'text-accent-dim'
+                  ? 'text-warning'
                   : 'text-tertiary'
           }
         >
@@ -885,7 +885,7 @@ function VersionsDialog({ asset, onClose }: { asset: Asset; onClose: () => void 
           <button
             key={revision.digest}
             className={`shrink-0 whitespace-nowrap rounded-sm border px-2 py-1 text-left text-meta ${
-              revision.digest === digest ? 'border-accent text-primary' : 'border-hair text-tertiary hover:border-strong'
+              revision.digest === digest ? 'border-fg/40 text-primary' : 'border-hair text-tertiary hover:border-strong'
             }`}
             onClick={() => {
               setDigest(revision.digest);
@@ -1047,7 +1047,7 @@ function Secrets() {
         <div className="flex flex-wrap gap-2 border-t border-hair px-3 py-2.5">
           <input
             data-testid="secret-name"
-            className={`${INPUT} w-48 font-mono`}
+            className={`${INPUT} w-48! font-mono`}
             placeholder="名字，如 GITHUB_TOKEN"
             value={name}
             onChange={(event) => setName(event.target.value.trim().toUpperCase())}

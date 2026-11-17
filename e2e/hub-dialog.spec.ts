@@ -30,6 +30,7 @@ test('没有原生模型时要显式选 Hub 模型，「开始」才可用', asy
   await expect(run.locator('#derive-model')).toBeVisible();
   await expect(start).toBeDisabled();
   await chooseHubModel(run);
-  await expect(run.locator('#derive-model')).toHaveValue(e2eHubModel());
+  // 模型控件统一成选择器按钮（不再是原生 select）：选中的值写在它的无障碍名里
+  await expect(run.locator('#derive-model')).toHaveAttribute('aria-label', `模型：${e2eHubModel()}`);
   await expect(start).toBeEnabled();
 });

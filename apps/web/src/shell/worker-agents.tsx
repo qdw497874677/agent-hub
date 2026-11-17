@@ -22,7 +22,7 @@ import {
  * 保存后 hub 把新配置推给在线 worker，只影响之后新建的会话；正在跑的会话不变。
  */
 
-const INPUT = 'w-full min-w-0 rounded-sm border bg-card px-2 py-1 text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent';
+const INPUT = 'w-full min-w-0 rounded-sm border bg-card px-2 py-1 text-meta text-primary outline-none placeholder:text-tertiary focus:border-ring';
 
 type FieldKey = keyof AgentAliasRow;
 

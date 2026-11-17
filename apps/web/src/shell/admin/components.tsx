@@ -50,7 +50,7 @@ function Item({ item, all }: { item: CatalogComponentDto; all: readonly CatalogC
         <span className="text-meta text-secondary">v{item.version}</span>
         <span
           data-testid="component-status"
-          className={`rounded-sm border px-1 text-xs ${item.status === 'pending' ? 'border-accent text-accent' : item.status === 'rejected' ? 'border-rust text-rust' : 'border-hair text-tertiary'}`}
+          className={`rounded-sm border px-1 text-xs ${item.status === 'pending' ? 'border-warning text-warning' : item.status === 'rejected' ? 'border-rust text-rust' : 'border-hair text-tertiary'}`}
         >
           {STATUS[item.status]}
         </span>

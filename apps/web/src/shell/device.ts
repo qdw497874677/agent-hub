@@ -31,3 +31,8 @@ export function useNarrow(): boolean {
 export function useCompact(): boolean {
   return useMedia(COMPACT);
 }
+
+/** 宽屏（≥1024，Tailwind 的 lg）：会话详情能停靠在对话右边、不压住对话。 */
+export function useWide(): boolean {
+  return useMedia('(min-width: 1024px)');
+}

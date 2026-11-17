@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
@@ -85,7 +86,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
           <div role="radiogroup" aria-label="默认目录档位" className="mb-3 space-y-1.5">
             <label
               className={`flex items-start gap-2 rounded-sm border px-2 py-1.5 text-sub text-secondary ${
-                draft.mode === 'shared' ? 'border-accent/60 bg-card' : 'border-hair'
+                draft.mode === 'shared' ? 'border-fg/40 bg-selected' : 'border-hair'
               }`}
             >
               <input
@@ -100,7 +101,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
             </label>
             <label
               className={`flex items-start gap-2 rounded-sm border px-2 py-1.5 text-sub text-secondary ${
-                draft.mode === 'isolated' ? 'border-accent/60 bg-card' : 'border-hair'
+                draft.mode === 'isolated' ? 'border-fg/40 bg-selected' : 'border-hair'
               }`}
             >
               <input
@@ -122,7 +123,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
           <textarea
             id="worktree-command"
             data-testid="worktree-setup-command"
-            className="block min-h-[64px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-sub text-primary outline-none placeholder:text-tertiary focus:border-accent"
+            className="block min-h-[64px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-sub text-primary outline-none placeholder:text-tertiary focus:border-ring"
             placeholder="npm ci"
             value={draft.command}
             onChange={(event) => update({ command: event.target.value })}
@@ -148,7 +149,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
                 type="text"
                 inputMode="numeric"
                 data-testid="worktree-timeout"
-                className="w-16 rounded-sm border border-hair bg-card px-1.5 py-0.5 text-meta text-primary outline-none focus:border-accent"
+                className="w-16 rounded-sm border border-hair bg-card px-1.5 py-0.5 text-meta text-primary outline-none focus:border-ring"
                 value={draft.timeout}
                 onChange={(event) => update({ timeout: event.target.value })}
               />
@@ -165,7 +166,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
 
           {/* 保存按钮紧跟着它保存的那几项，别让它落在「预览端口」后面。 */}
           <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-            {save.isSuccess && !dirty ? <span className="text-meta text-tertiary">已保存</span> : null}
+            <SaveStatus dirty={dirty} saved={save.isSuccess} />
             <button
               type="button"
               className={SECONDARY_BUTTON}
@@ -185,7 +186,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
                 type="text"
                 inputMode="numeric"
                 placeholder="5173"
-                className="w-20 rounded-sm border border-hair bg-card px-2 py-1 text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent"
+                className="w-20 rounded-sm border border-hair bg-card px-2 py-1 text-meta text-primary outline-none placeholder:text-tertiary focus:border-ring"
                 data-testid="preview-port"
                 value={portText}
                 onChange={(event) => setPortText(event.target.value)}
@@ -201,9 +202,9 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
               </button>
               {portProblem !== null ? (
                 <span className="text-meta text-rust" data-testid="preview-port-error">{portProblem}</span>
-              ) : savePort.isSuccess && !portDirty ? (
-                <span className="text-meta text-tertiary">已保存</span>
-              ) : null}
+              ) : (
+                <SaveStatus dirty={portDirty} saved={savePort.isSuccess} />
+              )}
             </div>
           </div>
         </>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ThemeSwitch } from './theme-switch.tsx';
 import { ProvidersDialog } from './providers-dialog.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { accessApi, authApi, teamApi, RequestFailed, type RoleKey, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
@@ -68,8 +69,8 @@ function Splash({ text }: { text: string }) {
 }
 
 const INPUT =
-  'w-full rounded-sm border border-hair bg-card px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent';
-const PRIMARY = 'w-full rounded-sm bg-accent px-3 py-2.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40';
+  'w-full rounded-sm border border-hair bg-card px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary focus:border-ring';
+const PRIMARY = 'w-full rounded-sm bg-action px-3 py-2.5 text-sub text-action-fg hover:bg-action/90 disabled:opacity-40';
 
 type Mode = 'login' | 'register' | 'forgot';
 
@@ -130,7 +131,7 @@ function LoginPage({ state }: { state: AuthState }) {
               role="tab"
               aria-selected={mode === tab.id || (mode === 'forgot' && tab.id === 'login')}
               className={`-mb-px border-b-2 px-3 py-2 text-sub ${
-                mode === tab.id || (mode === 'forgot' && tab.id === 'login') ? 'border-accent text-primary' : 'border-transparent text-tertiary hover:text-secondary'
+                mode === tab.id || (mode === 'forgot' && tab.id === 'login') ? 'border-fg text-primary' : 'border-transparent text-tertiary hover:text-secondary'
               }`}
               onClick={() => switchTo(tab.id)}
             >
@@ -196,7 +197,7 @@ function LoginPage({ state }: { state: AuthState }) {
                   <div className="flex items-baseline justify-between">
                     <label className="text-meta text-secondary" htmlFor="auth-password">密码{mode === 'register' ? '（至少 10 位）' : ''}</label>
                     {mode === 'login' && (
-                      <button type="button" className="text-meta text-tertiary hover:text-accent" onClick={() => switchTo('forgot')}>
+                      <button type="button" className="text-meta text-tertiary hover:text-primary" onClick={() => switchTo('forgot')}>
                         忘记密码？
                       </button>
                     )}
@@ -222,7 +223,7 @@ function LoginPage({ state }: { state: AuthState }) {
             {submit.isPending ? '请稍候…' : mode === 'register' ? '注册' : mode === 'forgot' ? '发送重置邮件' : '登录'}
           </button>
           {mode === 'forgot' && (
-            <button type="button" className="text-meta text-tertiary hover:text-accent" onClick={() => switchTo('login')}>
+            <button type="button" className="text-meta text-tertiary hover:text-primary" onClick={() => switchTo('login')}>
               想起来了，回到登录
             </button>
           )}
@@ -248,7 +249,7 @@ function Card({ icon, title, children }: { icon: string; title: string; children
   );
 }
 
-const SECONDARY = 'w-full rounded-sm border border-hair px-3 py-2.5 text-sub text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+const SECONDARY = 'w-full rounded-sm border border-hair px-3 py-2.5 text-sub text-secondary hover:border-strong hover:text-primary disabled:opacity-40';
 
 function mailboxHint(email: string): string {
   const domain = email.split('@')[1] ?? '';
@@ -376,7 +377,7 @@ function ResetPasswordPage({ token, onDone }: { token: string; onDone: () => voi
         <button type="submit" className={`mt-2 ${PRIMARY}`} disabled={!password || again !== password || reset.isPending}>
           {reset.isPending ? '请稍候…' : '保存并登录'}
         </button>
-        <button type="button" className="text-meta text-tertiary hover:text-accent" onClick={onDone}>
+        <button type="button" className="text-meta text-tertiary hover:text-primary" onClick={onDone}>
           取消
         </button>
       </form>
@@ -420,7 +421,7 @@ function DevicesDialog({ onClose }: { onClose: () => void }) {
               <div className="min-w-0 flex-1">
                 <p className="truncate text-meta text-primary">
                   {describeDevice(device.userAgent)}
-                  {device.current && <span className="ml-2 rounded-sm bg-accent/15 px-1.5 py-0.5 text-[11px] text-accent">这台</span>}
+                  {device.current && <span className="ml-2 rounded-sm bg-selected px-1.5 py-0.5 text-[11px] text-primary">这台</span>}
                 </p>
                 <p className="truncate text-[11px] text-tertiary">
                   {device.ip ?? '未知 IP'} · 最近 {when(device.lastSeenAt)} · {device.method === 'password' ? '密码登录' : '令牌登录'}
@@ -480,10 +481,13 @@ export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' 
         {account.displayName.slice(0, 1).toUpperCase()}
       </button>
       {open && (
-        <div className={`absolute z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta shadow-lg ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`} data-testid="account-menu">
+        <div className={`absolute z-40 w-56 rounded-lg border border-strong bg-overlay p-3 text-meta shadow-overlay ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`} data-testid="account-menu">
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
           <p className="mt-1 text-tertiary">{account.clusterAdmin ? '集群管理员' : roleLabel(account.role)}</p>
+          <div className="mt-3">
+            <ThemeSwitch />
+          </div>
 
           <div className="mt-3 border-t border-hair pt-1.5">
             <p className="px-2 pb-0.5 text-meta text-tertiary">个人</p>

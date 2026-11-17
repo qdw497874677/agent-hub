@@ -252,7 +252,7 @@ export function Sheet({
       <div
         data-testid="dialog-scrim"
         aria-hidden
-        className={`absolute inset-0 bg-canvas/75 transition-opacity duration-[240ms] motion-reduce:transition-none ${
+        className={`absolute inset-0 bg-black/55 transition-opacity duration-[240ms] motion-reduce:transition-none ${
           motion.open ? 'opacity-100' : 'opacity-0'
         }`}
         onClick={motion.requestClose}
@@ -260,7 +260,7 @@ export function Sheet({
       <div
         data-testid="dialog-sheet"
         style={motion.style}
-        className={`absolute inset-x-0 bottom-0 flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-strong bg-panel ${maxHeightClassName} ${panelClassName}`}
+        className={`absolute inset-x-0 bottom-0 flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-strong bg-overlay shadow-overlay ${maxHeightClassName} ${panelClassName}`}
       >
         <div
           ref={motion.panelRef}
@@ -291,7 +291,7 @@ export function Sheet({
           {footer === undefined ? null : (
             <div
               data-testid={testId === undefined ? undefined : `${testId}-footer`}
-              className="shrink-0 border-t border-hair bg-panel px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+              className="shrink-0 border-t border-hair bg-overlay px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
             >
               {footer}
             </div>
@@ -340,7 +340,7 @@ export function InlineSheet({
           transform: offset === 0 ? undefined : `translateY(${offset}px)`,
           transition: offset === 0 ? `transform ${SHEET_OUT_MS}ms ${SHEET_EASE}` : 'none'
         }}
-        className={`flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-strong bg-panel ${
+        className={`flex w-full flex-col overflow-hidden rounded-t-[16px] border-t border-strong bg-overlay shadow-overlay ${
           collapsed ? '' : maxHeightClassName
         }`}
       >
@@ -505,7 +505,7 @@ function DesktopDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-canvas/75 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:pb-0"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/55 backdrop-blur-[2px] px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center sm:pb-0"
       onClick={onClose}
     >
       <div
@@ -515,7 +515,7 @@ function DesktopDialog({
         aria-label={title}
         tabIndex={-1}
         data-testid={testId}
-        className={`w-full rounded-md border border-strong bg-panel outline-none ${
+        className={`w-full rounded-overlay border border-strong bg-overlay shadow-overlay outline-none ${
           footer === undefined
             ? `p-4 ${wide ? 'relative flex max-h-[88dvh] max-w-[820px] flex-col' : 'max-h-[88dvh] max-w-[420px] overflow-y-auto overscroll-contain'}`
             : `relative flex max-h-[88dvh] flex-col overflow-hidden ${wide ? 'max-w-[820px]' : 'max-w-[420px]'}`
@@ -539,7 +539,7 @@ function DesktopDialog({
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">{children}</div>
             <div
               data-testid={testId === undefined ? undefined : `${testId}-footer`}
-              className="shrink-0 border-t border-hair bg-panel px-4 pb-3 pt-2"
+              className="shrink-0 border-t border-hair px-4 pb-3 pt-2"
             >
               {footer}
             </div>
@@ -551,10 +551,10 @@ function DesktopDialog({
 }
 
 export const INPUT =
-  'min-h-11 w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent disabled:text-tertiary md:min-h-0';
+  'min-h-11 w-full rounded-control border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-ring disabled:text-tertiary md:min-h-0';
 export const SECONDARY_BUTTON =
-  'min-h-11 rounded-sm border border-hair px-3 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary md:min-h-0';
-export const PRIMARY_BUTTON = 'min-h-11 rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
+  'min-h-11 rounded-control border border-strong px-3 py-1.5 text-sub text-primary hover:bg-hover md:min-h-0';
+export const PRIMARY_BUTTON = 'min-h-11 rounded-control bg-action px-3 py-1.5 text-sub font-medium text-action-fg hover:bg-action/90 disabled:opacity-40 md:min-h-0';
 /** 真会丢东西的操作：实心 rust 按钮 + 深色字，和普通确认拉开距离。 */
-export const DANGER_BUTTON = 'min-h-11 rounded-sm bg-rust px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
-export const SMALL_BUTTON = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+export const DANGER_BUTTON = 'min-h-11 rounded-control bg-rust px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
+export const SMALL_BUTTON = 'shrink-0 rounded-control border border-hair px-2 py-1 text-meta text-secondary hover:border-strong hover:text-primary disabled:opacity-40';
