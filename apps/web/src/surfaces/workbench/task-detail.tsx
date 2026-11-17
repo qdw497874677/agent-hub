@@ -21,7 +21,7 @@ function authorLabel(author: Author): string {
 
 const AUTHOR_TONE: Record<Author['kind'], string> = {
   user: 'text-primary',
-  agent: 'text-accent',
+  agent: 'text-info',
   system: 'text-tertiary'
 };
 
@@ -125,7 +125,7 @@ export function TaskDetail({
               <button
                 key={action.next}
                 disabled={status.isPending}
-                className="rounded-sm border border-hair px-1.5 py-px text-meta text-tertiary hover:border-accent hover:text-accent"
+                className="rounded-sm border border-hair px-1.5 py-px text-meta text-tertiary hover:border-strong hover:text-primary"
                 onClick={() => status.mutate(action.next)}
               >
                 {action.label}
@@ -139,7 +139,7 @@ export function TaskDetail({
               {task.summary ?? '还没有人写日志'}
               <button
                 type="button"
-                className="ml-1.5 text-meta text-tertiary hover:text-accent"
+                className="ml-1.5 text-meta text-tertiary hover:text-primary"
                 onClick={() => setEditingSummary(task.summary ?? '')}
               >
                 改
@@ -156,11 +156,11 @@ export function TaskDetail({
               <input
                 aria-label="当前进展"
                 autoFocus
-                className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1 text-sub text-primary outline-none focus:border-accent"
+                className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-2 py-1 text-sub text-primary outline-none focus:border-ring"
                 value={editingSummary}
                 onChange={(event) => setEditingSummary(event.target.value)}
               />
-              <button type="submit" disabled={summary.isPending} className="rounded-sm border border-accent px-2 text-meta text-accent">
+              <button type="submit" disabled={summary.isPending} className="rounded-sm border border-strong px-2 text-meta text-primary hover:bg-hover">
                 保存
               </button>
               <button type="button" className="text-meta text-tertiary" onClick={() => setEditingSummary(null)}>
@@ -173,7 +173,7 @@ export function TaskDetail({
               {sessions.map((session) => (
                 <button
                   key={session.id}
-                  className="rounded-sm border border-hair px-1.5 py-px font-mono text-meta text-tertiary hover:border-accent hover:text-accent"
+                  className="rounded-sm border border-hair px-1.5 py-px font-mono text-meta text-tertiary hover:border-strong hover:text-primary"
                   onClick={() => onOpenSession(session.id)}
                 >
                   {session.agentId} · {session.id.slice(0, 6)}
@@ -208,7 +208,7 @@ export function TaskDetail({
               key={entry.id}
               data-testid="log-entry"
               data-author={entry.author.kind}
-              className={`rounded-sm border px-2.5 py-2 ${entry.author.kind === 'system' ? 'border-hair bg-transparent' : entry.author.kind === 'agent' ? 'border-accent-dim bg-card-raised' : 'border-hair bg-card'}`}
+              className={`rounded-sm border px-2.5 py-2 ${entry.author.kind === 'system' ? 'border-hair bg-transparent' : entry.author.kind === 'agent' ? 'border-info/40 bg-card-raised' : 'border-hair bg-card'}`}
             >
               <div className="mb-1 flex items-center gap-1.5 text-meta text-tertiary">
                 <span className={`truncate ${AUTHOR_TONE[entry.author.kind]}`} data-testid="log-author">
@@ -217,7 +217,7 @@ export function TaskDetail({
                 {entry.author.kind === 'agent' ? (
                   <button
                     type="button"
-                    className="shrink-0 font-mono text-tertiary underline decoration-dotted hover:text-accent"
+                    className="shrink-0 font-mono text-tertiary underline decoration-dotted hover:text-primary"
                     onClick={() => onOpenSession((entry.author as Extract<Author, { kind: 'agent' }>).sessionId)}
                     title="打开写这条日志的会话"
                   >
@@ -231,7 +231,7 @@ export function TaskDetail({
           ))}
           {log.hasNextPage ? (
             <li>
-              <button className="text-meta text-tertiary hover:text-accent" onClick={() => void log.fetchNextPage()}>
+              <button className="text-meta text-tertiary hover:text-primary" onClick={() => void log.fetchNextPage()}>
                 更早的日志…
               </button>
             </li>
@@ -246,14 +246,14 @@ export function TaskDetail({
           }}
         >
           <div className="mb-1.5 flex justify-end">
-            <button type="button" className="text-meta text-tertiary hover:text-accent" onClick={insertTemplate}>
+            <button type="button" className="text-meta text-tertiary hover:text-primary" onClick={insertTemplate}>
               插入交接模板
             </button>
           </div>
           <textarea
             ref={composer}
             aria-label="写日志"
-            className="h-24 w-full resize-none rounded-sm border border-hair bg-card px-2.5 py-2 text-sub text-primary outline-none placeholder:text-tertiary focus:border-accent"
+            className="h-24 w-full resize-none rounded-sm border border-hair bg-card px-2.5 py-2 text-sub text-primary outline-none placeholder:text-tertiary focus:border-ring"
             placeholder="记一笔（markdown）：做了什么、决定了什么、卡在哪里、下一步"
             value={body}
             onChange={(event) => setBody(event.target.value)}
@@ -263,7 +263,7 @@ export function TaskDetail({
             <button
               type="submit"
               disabled={!body.trim() || append.isPending}
-              className="rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40"
+              className="rounded-sm bg-action px-3 py-1.5 text-sub text-action-fg hover:brightness-110 disabled:opacity-40"
             >
               记录
             </button>

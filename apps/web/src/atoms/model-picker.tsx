@@ -204,7 +204,7 @@ function ModelSheet({
                     onSelect={() => pick(item.value)}
                     className="flex min-h-[48px] cursor-pointer items-center gap-2 rounded-sm px-3 text-body text-secondary data-[disabled=true]:cursor-not-allowed data-[disabled=true]:opacity-45 data-[selected=true]:bg-card-raised data-[selected=true]:text-primary sm:min-h-0 sm:py-1.5"
                   >
-                    <span aria-hidden className="w-4 shrink-0 text-center text-accent">
+                    <span aria-hidden className="w-4 shrink-0 text-center text-primary">
                       {item.value === value ? '✓' : ''}
                     </span>
                     <span className="min-w-0 flex-1">

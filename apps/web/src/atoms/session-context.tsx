@@ -28,12 +28,12 @@ export function SessionContext({ sessionId, lastSeq }: { sessionId: string; last
         {view.strategy.title}
       </p>
       {view.fallback ? (
-        <p className="text-meta text-accent" data-testid="context-fallback">
+        <p className="text-meta text-warning" data-testid="context-fallback">
           选的「{view.fallback.wanted}」{view.fallback.reason}，已退回默认
         </p>
       ) : null}
       <div className="mt-1 h-1.5 w-full rounded bg-hair" title={`${view.usage.usedTokens} / ${view.usage.windowTokens}`}>
-        <div className={`h-1.5 rounded ${view.usage.level === 'ok' ? 'bg-tertiary' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
+        <div className={`h-1.5 rounded ${view.usage.level === 'ok' ? 'bg-tertiary' : 'bg-warning'}`} style={{ width: `${pct}%` }} />
       </div>
       <p className="mt-0.5 font-mono text-meta text-tertiary" data-testid="context-usage" title={view.usage.estimated ? '平台估算' : '运行时报告'}>
         {view.usage.estimated ? '约 ' : ''}

@@ -17,7 +17,7 @@ export function ProjectHeader(props: Props) {
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b border-hair bg-panel px-2">
       <button
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-secondary hover:border-accent hover:text-accent"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-secondary hover:border-strong hover:text-primary"
         title="项目导航"
         aria-label="打开侧栏"
         onClick={props.onMenu}
@@ -47,7 +47,7 @@ export function ProjectHeader(props: Props) {
         ) : null}
       </div>
       <button
-        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-tertiary hover:border-accent hover:text-accent"
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-tertiary hover:border-strong hover:text-primary"
         onClick={props.onSearch}
         title="搜索任务与会话"
         aria-label="搜索"
@@ -55,7 +55,7 @@ export function ProjectHeader(props: Props) {
         ⌕
       </button>
       <button
-        className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-sm border border-hair px-2 text-meta text-secondary hover:border-accent hover:text-accent"
+        className="flex h-11 min-w-11 shrink-0 items-center justify-center rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary"
         onClick={props.onNewTask}
         aria-label="新建任务"
       >

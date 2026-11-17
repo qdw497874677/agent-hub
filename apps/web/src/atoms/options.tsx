@@ -85,7 +85,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
               note={note}
               onChange={(value) => onChange(option.id, value)}
               short={compact}
-              className={`${compact ? 'min-w-[80px] flex-1' : ''} max-w-[128px] ${compact ? 'option-control' : 'py-0.5'} rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
+              className={`${compact ? 'min-w-[80px] flex-1' : ''} max-w-[128px] ${compact ? 'option-control' : 'py-0.5'} rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             />
           );
         }
@@ -97,7 +97,7 @@ export function OptionControls({ options, values, onChange, compact = false, dis
             aria-label={option.label}
             title={title}
             data-category={option.category}
-            className={`${compact ? (option.category === 'model' ? 'min-w-[80px] flex-1' : 'shrink-0') : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[56px] sm:max-w-[132px]'} ${compact ? 'option-control appearance-none' : 'py-0.5'} truncate rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-accent`}
+            className={`${compact ? (option.category === 'model' ? 'min-w-[80px] flex-1' : 'shrink-0') : ''} ${option.category === 'agent' ? 'max-w-[112px]' : 'max-w-[56px] sm:max-w-[132px]'} ${compact ? 'option-control appearance-none' : 'py-0.5'} truncate rounded-sm border border-hair bg-card px-1 text-meta text-secondary outline-none hover:border-strong focus:border-ring`}
             value={String(current)}
             disabled={disabled}
             // 下拉里选东西不该顺手把卡片拖走

@@ -30,10 +30,10 @@ import {
  */
 
 const INPUT =
-  'w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none placeholder:font-sans placeholder:text-tertiary focus:border-accent';
+  'w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none placeholder:font-sans placeholder:text-tertiary focus:border-ring';
 const ACTION = `${SMALL_BUTTON} inline-flex min-h-7 items-center justify-center`;
 const PRIMARY =
-  'inline-flex min-h-8 items-center justify-center rounded-sm bg-accent px-2.5 py-1 text-meta text-canvas hover:brightness-110 disabled:opacity-40';
+  'inline-flex min-h-8 items-center justify-center rounded-sm bg-action px-2.5 py-1 text-meta text-action-fg hover:brightness-110 disabled:opacity-40';
 const TONE: Record<string, string> = { sage: 'text-sage', accent: 'text-accent', rust: 'text-rust', tertiary: 'text-tertiary' };
 
 const message = (error: unknown): string =>
@@ -317,7 +317,7 @@ export function SessionServices({ taskId, scope, choices, defaultSessionId = nul
       type="button"
       data-testid="service-command"
       title={expandedId === service.id ? '收起命令' : service.command}
-      className="min-w-0 flex-1 truncate text-left font-mono text-meta text-primary hover:text-accent"
+      className="min-w-0 flex-1 truncate text-left font-mono text-meta text-primary hover:text-primary"
       onClick={() => setExpandedId(expandedId === service.id ? null : service.id)}
     >
       {service.command}
@@ -334,7 +334,7 @@ export function SessionServices({ taskId, scope, choices, defaultSessionId = nul
               <button
                 type="button"
                 data-testid="service-new"
-                className="ml-auto shrink-0 text-meta text-tertiary hover:text-accent"
+                className="ml-auto shrink-0 text-meta text-tertiary hover:text-primary"
                 onClick={openCreate}
               >
                 ＋ 起一个
@@ -419,7 +419,7 @@ export function SessionServices({ taskId, scope, choices, defaultSessionId = nul
                       <span className="text-meta text-tertiary">最后 8 KiB</span>
                       <button
                         type="button"
-                        className="text-meta text-tertiary hover:text-accent disabled:opacity-50"
+                        className="text-meta text-tertiary hover:text-primary disabled:opacity-50"
                         disabled={logs.isFetching}
                         onClick={() => void logs.refetch()}
                       >
@@ -481,7 +481,7 @@ export function SessionServices({ taskId, scope, choices, defaultSessionId = nul
       ) : null}
 
       {services.length === 0 && canCreate && !creating ? (
-        <button type="button" data-testid="service-new" className="text-meta text-tertiary hover:text-accent" onClick={openCreate}>
+        <button type="button" data-testid="service-new" className="text-meta text-tertiary hover:text-primary" onClick={openCreate}>
           ＋ 在这台机器上起个服务
         </button>
       ) : null}
@@ -537,7 +537,7 @@ export function SessionServices({ taskId, scope, choices, defaultSessionId = nul
             <label className="block min-w-0">
               <span className="text-meta text-tertiary">从哪条会话起</span>
               <select
-                className="mt-0.5 w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-meta text-primary outline-none focus:border-accent"
+                className="mt-0.5 w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-meta text-primary outline-none focus:border-ring"
                 value={sessionId ?? ''}
                 onChange={(event) => {
                   const next = event.target.value === '' ? null : event.target.value;

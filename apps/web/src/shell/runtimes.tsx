@@ -12,7 +12,7 @@ const AGENT_NAME: Record<string, string> = { pi: 'Pi', opencode: 'OpenCode', gro
 const nameOf = (id: string): string => AGENT_NAME[id] ?? id;
 
 /** 已经在等着确认的按钮亮起来；其余用 SMALL_BUTTON。 */
-const ARMED_BUTTON = 'shrink-0 rounded-sm border border-accent bg-accent px-2 py-1 text-meta text-canvas';
+const ARMED_BUTTON = 'shrink-0 rounded-sm border border-action bg-action px-2 py-1 text-meta text-action-fg';
 const ARMED_DANGER = 'shrink-0 rounded-sm border border-rust bg-rust px-2 py-1 text-meta text-canvas';
 
 /**
@@ -111,7 +111,7 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
             <input
               data-testid={`runtime-${id}-version`}
               aria-label="hub 安装的版本"
-              className={`w-24 min-w-0 rounded-sm border bg-card px-1.5 py-0.5 font-mono text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent ${
+              className={`w-24 min-w-0 rounded-sm border bg-card px-1.5 py-0.5 font-mono text-meta text-primary outline-none placeholder:text-tertiary focus:border-ring ${
                 problem ? 'border-rust' : 'border-hair'
               }`}
               placeholder={preset ?? '2.2.2'}
@@ -151,7 +151,7 @@ function RuntimeRow({ worker, harness, busy }: { worker: WorkerInfoDto; harness:
       {other ? chip('switch', other.button, '确认切换', () => start.mutate({ action: 'switch', source: other.side })) : null}
       {view.hub ? chip('uninstall', '卸载', '确认卸载', () => start.mutate({ action: 'uninstall' })) : null}
       {armed ? (
-        <span className="text-meta text-accent" data-testid={`runtime-${id}-confirm-hint`}>
+        <span className="text-meta text-warning" data-testid={`runtime-${id}-confirm-hint`}>
           再点一次确认 · 10 秒内有效
         </span>
       ) : null}

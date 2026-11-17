@@ -298,7 +298,7 @@ export function Composer({
               <button
                 type="button"
                 className={`flex min-h-11 w-full items-baseline gap-2 px-3 py-2.5 text-left text-sub md:min-h-0 md:py-1.5 ${
-                  index === active ? 'bg-accent/15 text-primary' : 'text-secondary hover:bg-card'
+                  index === active ? 'bg-selected text-primary' : 'text-secondary hover:bg-card'
                 }`}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={option.pick}
@@ -314,7 +314,7 @@ export function Composer({
       ) : null}
       <div
         className={`rounded-md border bg-card py-2 focus-within:border-strong ${large ? 'px-3' : 'px-2.5'} ${
-          dragging ? 'border-accent' : 'border-hair'
+          dragging ? 'border-ring' : 'border-hair'
         }`}
         onDragOver={(event) => {
           if (!event.dataTransfer.types.includes('Files')) return;

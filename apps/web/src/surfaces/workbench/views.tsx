@@ -122,7 +122,7 @@ export function ListView({
           {canvas.tasks.map((task) => (
             <span key={task.id} className="inline-flex items-stretch">
               <button
-                className="rounded-l-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-accent hover:text-accent"
+                className="rounded-l-sm border border-hair px-2.5 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary"
                 onClick={() => onDerive(task.id)}
                 title="从这个任务派生一条会话"
               >
@@ -130,7 +130,7 @@ export function ListView({
                 {task.status === 'abandoned' ? '（已放弃）' : ''}
               </button>
               <button
-                className="rounded-r-sm border border-l-0 border-hair px-2 text-meta text-tertiary hover:border-accent hover:text-accent"
+                className="rounded-r-sm border border-l-0 border-hair px-2 text-meta text-tertiary hover:border-strong hover:text-primary"
                 onClick={() => onTaskDetail(task.id)}
                 aria-label={`${task.title} 的日志`}
               >

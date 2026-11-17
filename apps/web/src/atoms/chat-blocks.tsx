@@ -197,7 +197,7 @@ function Toggle({ label, hint, checked, disabled, onChange }: { label: string; h
       <span className="text-meta text-secondary" title={hint}>
         {label}
       </span>
-      <input type="checkbox" role="switch" aria-label={label} checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 accent-[var(--color-accent)]" />
+      <input type="checkbox" role="switch" aria-label={label} checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 accent-[var(--color-fg)]" />
     </label>
   );
 }
@@ -330,7 +330,7 @@ function ToolInput({ view, input }: { view: ToolView; input: string }) {
     </p>
   ) : view.kind === 'search' ? (
     <p className="min-w-0 font-mono text-meta text-tertiary" data-testid="tool-input">
-      <span className="text-accent">⌕ </span>
+      <span className="text-tertiary">⌕ </span>
       {view.query}
       {view.path ? ` · ${view.path}` : ''}
     </p>
@@ -345,7 +345,7 @@ function ToolInput({ view, input }: { view: ToolView; input: string }) {
     </p>
   ) : view.kind === 'subagent' ? (
     <p className="min-w-0 text-meta text-secondary" data-testid="tool-input">
-      <span className="text-accent">◈ </span>
+      <span className="text-tertiary">◈ </span>
       {view.agent ?? '子代理'}
       {view.description ? ` · ${view.description}` : ''}
     </p>
@@ -540,7 +540,7 @@ function PathText({ path, input }: { path: string; input: string }) {
       data-path={target.path}
       data-line={target.line ?? undefined}
       title={target.line ? `在文件页打开 ${target.path}:${target.line}` : `在文件页打开 ${target.path}`}
-      className="min-h-6 break-all text-left text-accent underline decoration-dotted underline-offset-2 hover:text-primary"
+      className="min-h-6 break-all text-left text-link underline decoration-dotted underline-offset-2 hover:text-primary"
       onClick={() => links.open(target)}
     >
       {path}
@@ -580,7 +580,7 @@ export function HandoffBar({ handoff }: { handoff: HandoffDto }) {
         {handoff.omittedTurns.length > 0 ? <p>整轮省略：{rangeText(handoff.omittedTurns)}。agent 需要时可以用 session.read 查原文。</p> : null}
         {handoff.omitted > 0 && handoff.omittedTurns.length === 0 ? <p>省略的是部分轮次里较旧的条目（多是工具调用）；agent 需要时可以用 session.read 查原文。</p> : null}
         {sourceHref ? (
-          <a className="text-accent" href={sourceHref} data-testid="handoff-source">
+          <a className="text-link" href={sourceHref} data-testid="handoff-source">
             打开来源会话 →
           </a>
         ) : null}
@@ -624,14 +624,14 @@ export function ChatBlock({
     const steps = subagentStepCount(block);
     return (
       <details
-        className="group rounded-sm border-l-2 border-accent/40 bg-card/40 pl-3"
+        className="group rounded-sm border-l-2 border-hair bg-card/40 pl-3"
         open={block.status === 'failed'}
         data-testid="subagent-card"
         data-subagent-id={block.id}
         data-status={block.status}
       >
         <summary className="flex cursor-pointer list-none items-baseline gap-2 py-1 text-meta text-secondary">
-          <span className={block.status === 'failed' ? 'text-rust' : 'text-accent'}>◈</span>
+          <span className={block.status === 'failed' ? 'text-rust' : (block.status === 'running' ? 'text-accent' : 'text-tertiary')}>◈</span>
           <span className="shrink-0 font-mono text-sage">{label}</span>
           {block.title ? <span className="min-w-0 truncate text-secondary">{block.title}</span> : null}
           <span className={`ml-auto shrink-0 ${status.className}`}>{status.text}</span>
@@ -729,7 +729,7 @@ export function ChatBlock({
   }
   return (
     <p className="flex items-baseline gap-2 text-meta">
-      <span className="text-accent-dim">◆</span>
+      <span className="text-tertiary">◆</span>
       <span className="font-mono text-secondary">{block.path}</span>
       <span className="text-tertiary">{block.bytes > 0 ? `${block.bytes} 字节` : ''}</span>
       <span className="ml-auto text-tertiary">{agentLabel}</span>

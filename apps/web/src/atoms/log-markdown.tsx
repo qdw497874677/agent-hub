@@ -9,7 +9,7 @@ import remarkGfm from 'remark-gfm';
  */
 const components: Components = {
   a: ({ href, children }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="text-accent underline break-all">
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow" className="text-link underline break-all">
       {children}
     </a>
   ),

@@ -42,7 +42,7 @@ function clock(at: number): string {
 const heldOf = (group: GroupDto, name: string): boolean => group.held.includes('*') || group.held.includes(name);
 
 /** 手机聊天头 ⋯ 菜单里的一项。 */
-const MENU_ROW = 'w-full rounded-sm px-2 py-1.5 text-left text-meta text-secondary hover:bg-card hover:text-accent';
+const MENU_ROW = 'w-full rounded-sm px-2 py-1.5 text-left text-meta text-secondary hover:bg-card hover:text-primary';
 
 function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { projectId: string; roles: MessagingRoleDto[]; group: GroupDto | null; onDone: (g: GroupDto) => void; openAdvanced?: boolean }) {
   const [name, setName] = useState(group?.name ?? '');
@@ -114,7 +114,7 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
             </li>
           ))}
         </ul>
-        {roles.length ? <a className="self-start text-tertiary hover:text-accent" href={`${formatRoute({ page: 'bots', projectId })}/new`}>＋ 新建 bot</a> : null}
+        {roles.length ? <a className="self-start text-tertiary hover:text-primary" href={`${formatRoute({ page: 'bots', projectId })}/new`}>＋ 新建 bot</a> : null}
       </fieldset>
       <button type="button" data-testid="group-advanced" aria-expanded={advanced} className="self-start text-meta text-tertiary hover:text-secondary" onClick={() => setAdvanced((v) => !v)}>
         {advanced ? '▾' : '▸'} 高级设置 · {speakingSummary(hostRole, strategy)} · {rounds} 轮 / {msgs} 条
@@ -176,7 +176,7 @@ function MembersPanel({ groupId, projectId }: { groupId: string; projectId: stri
               {g.hostRole === m ? <span className="text-tertiary">主持人</span> : null}
               {held(m) ? <span data-testid="member-held" className="text-rust">已暂停</span> : null}
               {s ? (
-                <a className="ml-auto text-accent" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: s.sessionId })}>{s.status === 'busy' ? '在说…' : '会话'} →</a>
+                <a className="ml-auto text-link" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: s.sessionId })}>{s.status === 'busy' ? '在说…' : '会话'} →</a>
               ) : <span className="ml-auto text-tertiary">还没开口</span>}
               {canManage && g.hostRole !== m && g.members.length > 1 ? (
                 <button className="text-tertiary hover:text-rust" data-testid="member-remove" data-role={m} aria-label={`把 ${m} 移出群`} disabled={remove.isPending} onClick={() => { if (window.confirm(`把 @${m} 移出「${g.name}」？`)) remove.mutate(m); }}>移出</button>
@@ -201,7 +201,7 @@ function MembersPanel({ groupId, projectId }: { groupId: string; projectId: stri
             <div className="mt-1 flex gap-2">
               <button className={SMALL} data-testid="member-add-confirm" disabled={!adding.length || add.isPending} onClick={() => add.mutate(adding)}>加进群</button>
               <button className={SMALL} onClick={() => setAdding(null)}>取消</button>
-              <a className="ml-auto self-center text-tertiary hover:text-accent" href={`${formatRoute({ page: 'bots', projectId })}/new`}>新建 bot</a>
+              <a className="ml-auto self-center text-tertiary hover:text-primary" href={`${formatRoute({ page: 'bots', projectId })}/new`}>新建 bot</a>
             </div>
             {add.error ? <p className="text-rust">{errorText(add.error)}</p> : null}
           </div>
@@ -229,7 +229,7 @@ function ChainsPanel({ groupId, projectId }: { groupId: string; projectId: strin
                 <span className="text-secondary">R{d.round}</span>
                 <span className="text-primary">{d.role}</span>
                 <span className="text-tertiary">{PURPOSE[d.purpose] ?? d.purpose} · {d.status}{d.score !== null ? ` · ${d.score}` : ''}</span>
-                {d.sessionId ? <a className="ml-auto text-accent" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: d.sessionId })}>画布 →</a> : null}
+                {d.sessionId ? <a className="ml-auto text-link" href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: d.sessionId })}>画布 →</a> : null}
               </li>
             ))}
           </ul>
@@ -380,7 +380,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
           if (p.author.kind === 'system') {
             return (
               <li key={p.id} data-testid="group-post" data-author="system" className="my-1.5">
-                <p data-testid="system-line" className="rounded-sm border-l-2 border-accent/40 bg-card/70 px-2 py-1 text-sub text-tertiary">{p.body}</p>
+                <p data-testid="system-line" className="rounded-sm border-l-2 border-hair bg-card/70 px-2 py-1 text-sub text-tertiary">{p.body}</p>
               </li>
             );
           }
@@ -395,7 +395,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
                     <time dateTime={new Date(p.createdAt).toISOString()} className="tabular-nums">{clock(p.createdAt)}</time>
                   </span>
                 )}
-                <LogMarkdown body={p.body} className={`${BUBBLE_MD} rounded-md px-3 py-1.5 ${mine ? 'bg-accent/15' : 'bg-card'}`} />
+                <LogMarkdown body={p.body} className={`${BUBBLE_MD} rounded-md px-3 py-1.5 ${mine ? 'bg-surface-3' : 'bg-card'}`} />
                 <ReactionBar
                   reactions={p.reactions}
                   me={meName}
@@ -439,7 +439,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
                 : '发言方式是成员竞价，主持人不分派'
               : '没人分派时，@ 成员也能直接叫人'
           }
-          className={`flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-meta ${group.hostRole ? 'border-hair bg-card text-tertiary hover:border-accent hover:text-accent' : 'border-accent/50 bg-accent/10 text-primary hover:border-accent'}`}
+          className={`flex min-w-0 items-center gap-1.5 rounded-full border px-2 py-0.5 text-meta ${group.hostRole ? 'border-hair bg-card text-tertiary hover:border-strong hover:text-primary' : 'border-fg/30 bg-selected text-primary hover:border-strong'}`}
           onClick={() => onDrawer('settings', true)}
         >
           {group.hostRole ? (
@@ -555,7 +555,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
     <div className="flex h-full flex-col">
       <header className="flex items-center gap-2 border-b border-hair px-3 py-2">
         <div className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
-          <a className="block max-w-full shrink-0 truncate whitespace-nowrap text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
+          <a className="block max-w-full shrink-0 truncate whitespace-nowrap text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>← agent-hub</a>
           <h1 className="min-w-0 truncate text-head text-primary">群</h1>
         </div>
         <select aria-label="项目" data-testid="messages-project" className={`${INPUT} min-w-0 shrink-0 ${compact ? 'max-w-[45%]' : 'max-w-[40%]'}`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>

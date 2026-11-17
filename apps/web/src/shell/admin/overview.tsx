@@ -131,7 +131,7 @@ function Toggle({
       <input
         type="checkbox"
         role="switch"
-        className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+        className="mt-1 h-4 w-4 shrink-0 accent-[var(--color-fg)]"
         checked={checked}
         disabled={disabled}
         onChange={(event) => onChange(event.target.checked)}

@@ -90,7 +90,7 @@ function ObserveList() {
         <p data-testid="observe-anonymous" className="mb-2 text-meta text-rust">没有登录。开了账号权限时这里不列出记录，这不是「没有数据」。</p>
       ) : null}
       {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.items.length === 0 ? (
-        <p data-testid="observe-empty" className="text-meta text-tertiary">没有记录。<a className="text-accent" href="#/bots">查看 Bot</a></p>
+        <p data-testid="observe-empty" className="text-meta text-tertiary">没有记录。<a className="text-link" href="#/bots">查看 Bot</a></p>
       ) : null}
       {list.data?.enabled && list.data.items.length > 0 ? (
         <table className="w-full border-collapse overflow-hidden rounded-md border border-hair bg-card" data-testid="observe-list">
@@ -112,7 +112,7 @@ function ObserveList() {
                 <td className="px-3 py-2 text-body">{item.title}</td>
                 <td className="px-3 py-2 text-meta">{item.nativeStateLabel} <span className="text-tertiary">{item.nativeState}</span></td>
                 <td className="px-3 py-2 text-meta text-secondary">{item.gap ?? '—'}</td>
-                <td className="px-3 py-2 text-right"><a className="text-meta text-accent" href={formatRoute({ page: 'observe', source: item.source, id: item.id.slice(item.source.length + 1) })}>打开树</a></td>
+                <td className="px-3 py-2 text-right"><a className="text-meta text-link" href={formatRoute({ page: 'observe', source: item.source, id: item.id.slice(item.source.length + 1) })}>打开树</a></td>
               </tr>
             ))}
           </tbody>
@@ -120,7 +120,7 @@ function ObserveList() {
       ) : null}
       {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.truncated ? (
         <p
-          className="mt-2 text-meta text-accent"
+          className="mt-2 text-meta text-warning"
           data-testid="observe-scan"
           data-truncated="1"
           title={`时间窗里先取最近 ${list.data.scanLimit ?? 500} 条，再按「失败或缺环」筛选；更早的失败可能不在这里`}
@@ -147,7 +147,7 @@ function ObserveDetail({ source, id }: { source: string; id: string }) {
   const node = trace?.nodes.find((item) => item.id === picked) ?? null;
   return (
     <div data-testid="observe-detail">
-      <a className="text-meta text-accent" href="#/observe">← 列表</a>
+      <a className="text-meta text-link" href="#/observe">← 列表</a>
       <h1 className="mt-1 text-head text-primary">{trace?.title ?? '链路'}</h1>
       {detail.isError ? <p className="mt-2 text-meta text-rust" data-testid="observe-error">刷新失败 <button className="underline" onClick={() => void detail.refetch()}>重试</button></p> : null}
       {detail.isPending ? <div data-testid="observe-loading" className="mt-3 h-24 rounded-md bg-card" /> : null}
@@ -239,9 +239,9 @@ function NodeDetail({ node, externalUrl }: { node: ObserveNodeDto | null; extern
           <div key={item.key}><dt className="text-meta text-tertiary">{item.key}</dt><dd className="break-all text-body">{item.value}</dd></div>
         ))}
       </dl>
-      {href ? <a className="mt-3 inline-block text-meta text-accent" href={href}>打开会话</a> : null}
-      {projectId ? <a className="mt-3 ml-3 inline-block text-meta text-accent" href={formatRoute({ page: 'bots', projectId })}>Bot 页</a> : null}
-      {externalUrl ? <a className="mt-3 block text-meta text-accent" href={externalUrl}>在外部打开</a> : null}
+      {href ? <a className="mt-3 inline-block text-meta text-link" href={href}>打开会话</a> : null}
+      {projectId ? <a className="mt-3 ml-3 inline-block text-meta text-link" href={formatRoute({ page: 'bots', projectId })}>Bot 页</a> : null}
+      {externalUrl ? <a className="mt-3 block text-meta text-link" href={externalUrl}>在外部打开</a> : null}
       <p className="mt-3 text-meta text-tertiary">这里不能批准、取消或重试。</p>
     </aside>
   );

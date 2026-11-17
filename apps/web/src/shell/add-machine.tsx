@@ -132,7 +132,7 @@ function PresetPicker({ value, onChange, disabled }: { value: WorkerPreset; onCh
             disabled={disabled}
             onClick={() => onChange(p.id)}
             className={`rounded-sm border px-2 py-1 text-meta ${
-              p.id === value ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-secondary hover:border-accent'
+              p.id === value ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary hover:border-strong'
             }`}
           >
             {p.label}
@@ -184,7 +184,7 @@ function CommandBox({ pairing, expired }: { pairing: PairingDto | undefined; exp
         </details>
       ) : null}
       {pairing && pairing.hubUrl.startsWith('http://') ? (
-        <p className="border-t border-hair px-2.5 py-1.5 text-meta text-accent" data-testid="http-hint">
+        <p className="border-t border-hair px-2.5 py-1.5 text-meta text-warning" data-testid="http-hint">
           hub 走的是 HTTP：sha256 校验只能防传输损坏，防不了中间人篡改。建议在 hub 前面加 HTTPS 反代。
         </p>
       ) : null}

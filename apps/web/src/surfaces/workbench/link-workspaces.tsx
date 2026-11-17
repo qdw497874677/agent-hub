@@ -210,7 +210,7 @@ export function LinkWorkspaces({
             <p className="mt-1 text-meta text-secondary" data-testid="ws-transfer-done">已把「{moved}」转移到本项目。</p>
           ) : null}
           <div className="mt-2 flex flex-wrap gap-3">
-            <button type="button" className="text-meta text-accent hover:underline" onClick={() => setCreating((v) => !v)}>＋ 新建目录并分配</button>
+            <button type="button" className="text-meta text-link hover:underline" onClick={() => setCreating((v) => !v)}>＋ 新建目录并分配</button>
             <button type="button" className="text-meta text-tertiary hover:underline" onClick={() => { setOpen(false); setAsking(null); }}>收起</button>
           </div>
           {creating ? (
@@ -221,7 +221,7 @@ export function LinkWorkspaces({
         </div>
       ) : (
         // 一行次要文字按钮：它是单选组之外的补充入口，别做得跟「新建工作目录」一样重
-        <button type="button" data-testid="ws-link-open" className="text-meta text-secondary hover:text-accent hover:underline" onClick={() => setOpen(true)}>
+        <button type="button" data-testid="ws-link-open" className="text-meta text-secondary hover:text-link hover:underline" onClick={() => setOpen(true)}>
           🔗 把目录分配给本项目…
         </button>
       )}

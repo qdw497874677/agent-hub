@@ -72,7 +72,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
             aria-selected={tab === item.id}
             tabIndex={tab === item.id ? 0 : -1}
             className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sub ${
-              tab === item.id ? 'border-accent text-primary' : 'border-transparent text-tertiary hover:text-secondary'
+              tab === item.id ? 'border-fg text-primary' : 'border-transparent text-tertiary hover:text-secondary'
             }`}
             onClick={() => setTab(item.id)}
             onKeyDown={(event) => {
@@ -107,7 +107,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
           <p
             data-testid="workspace-summary"
             className={`mb-4 rounded-sm border-l-2 bg-card px-2.5 py-2 text-sub leading-relaxed text-secondary ${
-              summaryTone === 'warn' ? 'border-rust' : 'border-accent'
+              summaryTone === 'warn' ? 'border-rust' : 'border-sage'
             }`}
           >
             {summary}
@@ -254,14 +254,14 @@ function DescriptionEditor({ project }: { project: ProjectDto }) {
       <label className="mb-1 block text-sub text-primary" htmlFor="project-description" title="支持 markdown，agent 开工时会读到">项目说明</label>
       <textarea
         id="project-description"
-        className="block min-h-[120px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-accent"
+        className="block min-h-[120px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-ring"
         value={text}
         onChange={(event) => setText(event.target.value)}
       />
       {save.error ? <p className="mt-1 text-meta text-rust">{save.error.message}</p> : null}
       <div className="mt-2 flex items-center justify-end gap-2">
         {save.isSuccess && !changed ? <span className="text-meta text-tertiary">已保存</span> : null}
-        <button className="rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas disabled:opacity-40" disabled={!changed || save.isPending} onClick={() => save.mutate()}>
+        <button className="rounded-sm bg-action px-3 py-1.5 text-sub text-action-fg disabled:opacity-40" disabled={!changed || save.isPending} onClick={() => save.mutate()}>
           {save.isPending ? '保存中…' : '保存'}
         </button>
       </div>

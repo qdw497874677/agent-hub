@@ -88,7 +88,7 @@ export function ProjectAssetSets({ project }: { project: ProjectDto }) {
                 >
                   <input
                     type="checkbox"
-                    className="mt-1 shrink-0 accent-accent"
+                    className="mt-1 shrink-0 accent-[var(--color-fg)]"
                     checked={checked}
                     disabled={!editable}
                     onChange={(event) => update(toggleSetId(draft, id, event.target.checked))}
@@ -96,7 +96,7 @@ export function ProjectAssetSets({ project }: { project: ProjectDto }) {
                   <span
                     aria-hidden
                     className={`mt-0.5 w-4 shrink-0 text-center font-mono text-meta ${
-                      checked ? 'text-accent' : 'text-tertiary'
+                      checked ? 'text-primary' : 'text-tertiary'
                     }`}
                   >
                     {checked ? order : '·'}

@@ -67,7 +67,7 @@ export function ProjectChecksSettings({ project }: { project: ProjectDto }) {
         data-testid="project-checks"
         aria-label="检查命令，一行一条"
         rows={4}
-        className="block min-h-[88px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-sub text-primary outline-none placeholder:text-tertiary focus:border-accent disabled:opacity-50"
+        className="block min-h-[88px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-sub text-primary outline-none placeholder:text-tertiary focus:border-ring disabled:opacity-50"
         placeholder={'npm run typecheck\nnpm test'}
         value={text}
         disabled={!editable}

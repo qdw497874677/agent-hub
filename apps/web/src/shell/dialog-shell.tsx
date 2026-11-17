@@ -551,10 +551,10 @@ function DesktopDialog({
 }
 
 export const INPUT =
-  'min-h-11 w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent disabled:text-tertiary md:min-h-0';
+  'min-h-11 w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-ring disabled:text-tertiary md:min-h-0';
 export const SECONDARY_BUTTON =
   'min-h-11 rounded-sm border border-hair px-3 py-1.5 text-sub text-secondary hover:border-strong hover:text-primary md:min-h-0';
-export const PRIMARY_BUTTON = 'min-h-11 rounded-sm bg-accent px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
+export const PRIMARY_BUTTON = 'min-h-11 rounded-sm bg-action px-3 py-1.5 text-sub text-action-fg hover:brightness-110 disabled:opacity-40 md:min-h-0';
 /** 真会丢东西的操作：实心 rust 按钮 + 深色字，和普通确认拉开距离。 */
 export const DANGER_BUTTON = 'min-h-11 rounded-sm bg-rust px-3 py-1.5 text-sub text-canvas hover:brightness-110 disabled:opacity-40 md:min-h-0';
-export const SMALL_BUTTON = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+export const SMALL_BUTTON = 'shrink-0 rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-strong hover:text-primary disabled:opacity-40';

@@ -117,7 +117,7 @@ export function SessionLinksDialog({
               <label
                 key={row.session.id}
                 className={`flex items-start gap-2 rounded-sm border px-2 py-2 ${
-                  row.connected ? 'border-accent/50 bg-card-raised' : 'border-hair hover:border-strong'
+                  row.connected ? 'border-fg/30 bg-card-raised' : 'border-hair hover:border-strong'
                 } ${disabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
               >
                 <input
@@ -134,7 +134,7 @@ export function SessionLinksDialog({
                     {busy ? (
                       <span className="shrink-0 text-meta text-tertiary" aria-live="polite">处理中…</span>
                     ) : row.connected ? (
-                      <span className="shrink-0 text-meta text-accent">已连接</span>
+                      <span className="shrink-0 text-meta text-sage">已连接</span>
                     ) : null}
                   </span>
                   <span className="mt-0.5 block truncate text-meta text-secondary">

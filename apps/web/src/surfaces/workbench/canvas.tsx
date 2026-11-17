@@ -509,7 +509,7 @@ export function CanvasView({
         // 无向关系：没有箭头；选中后按 Delete 删除。
         data: { kind: 'link', aSessionId: edge.aSessionId, bSessionId: edge.bSessionId },
         deletable: true,
-        style: { stroke: 'var(--color-accent)', strokeWidth: 1.5 }
+        style: { stroke: 'var(--color-info)', strokeWidth: 1.5 }
       }));
     return [...derived, ...forked, ...linked];
   }, [canvas.edges]);

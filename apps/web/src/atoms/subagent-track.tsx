@@ -222,7 +222,7 @@ export function SubagentTrack({
         aria-expanded={open}
         aria-controls={open && !narrow ? panelId : undefined}
         title="查看子代理"
-        className="flex h-10 w-full items-center gap-2 rounded-full border border-hair bg-card/60 px-3 text-meta transition-colors hover:border-strong hover:bg-card-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+        className="flex h-10 w-full items-center gap-2 rounded-full border border-hair bg-card/60 px-3 text-meta transition-colors hover:border-strong hover:bg-card-raised focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
         onClick={() => (open ? close(true) : setOpen(true))}
       >
         <span aria-hidden className={`flex size-3.5 shrink-0 items-center justify-center rounded-full border ${RING[tone]}`}>
@@ -280,7 +280,7 @@ function TrackRow({ entry, onPick }: { readonly entry: SubagentEntry; readonly o
       data-status={entry.status}
       data-subagent-row
       style={{ paddingLeft: `${indent}px` }}
-      className="flex w-full items-start gap-2 rounded-sm py-2 pr-2 text-left transition-colors hover:bg-card-raised focus-visible:bg-card-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+      className="flex w-full items-start gap-2 rounded-sm py-2 pr-2 text-left transition-colors hover:bg-card-raised focus-visible:bg-card-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
       onClick={() => onPick(entry.id)}
     >
       <span aria-hidden className={`mt-1 flex size-3 shrink-0 items-center justify-center rounded-full border ${RING[entry.bucket]}`}>

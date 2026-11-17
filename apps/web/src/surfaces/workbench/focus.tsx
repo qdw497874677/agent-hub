@@ -661,7 +661,7 @@ export function FocusView({
               placeholder={task?.title ?? '会话名'}
               aria-label="会话名"
               data-testid="session-title-input"
-              className="h-7 w-full rounded-sm border border-hair bg-card px-1.5 text-body text-primary outline-none focus:border-accent"
+              className="h-7 w-full rounded-sm border border-hair bg-card px-1.5 text-body text-primary outline-none focus:border-ring"
               onChange={(e) => setTitleDraft(e.target.value)}
               onPointerDown={(e) => e.stopPropagation()}
               onBlur={saveRename}
@@ -687,7 +687,7 @@ export function FocusView({
               {origin.kind === 'fork' ? ` · 分叉自「${sourceName}」` : ''}
             </span>
             {/* 常驻标记放在状态行里：窄屏标题被截断时这一枚也不会换行 */}
-            {pinned ? <PinnedMark testId="session-pinned" className="size-3 text-accent" /> : null}
+            {pinned ? <PinnedMark testId="session-pinned" className="size-3 text-secondary" /> : null}
           </p>
         </div>
         <StatusPill status={status} reason={reason} lastSeq={live?.lastSeq ?? session.lastSeq} />
@@ -852,7 +852,7 @@ export function FocusView({
         >
           <span className="rounded bg-card px-1.5 py-0.5 text-meta text-tertiary">侧聊</span>
           <span className="min-w-0 flex-1 truncate">这条会话是侧聊：用主会话的工作目录单独问了一轮</span>
-          <span className="shrink-0 text-accent">返回主会话</span>
+          <span className="shrink-0 text-link">返回主会话</span>
         </button>
       ) : null}
       <ProvenanceRow sessionId={session.id} />
@@ -1016,7 +1016,7 @@ export function FocusView({
         ref={scroller}
         // 程序化聚焦的落点（「查看」跳转过来）：不是 Tab 停靠站，但焦点环要看得见。
         tabIndex={-1}
-        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent ${tab === 'chat' ? '' : 'hidden'}`}
+        className={`min-h-0 flex-1 overflow-y-auto outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring ${tab === 'chat' ? '' : 'hidden'}`}
       >
         <div
           role="log"
@@ -1178,7 +1178,7 @@ export function FocusView({
                 type="button"
                 data-testid="background-activity-jump"
                 onClick={jumpToConversationEnd}
-                className="ml-auto shrink-0 rounded-sm px-1 text-meta text-tertiary hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                className="ml-auto shrink-0 rounded-sm px-1 text-meta text-tertiary hover:text-primary focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
               >
                 查看
               </button>

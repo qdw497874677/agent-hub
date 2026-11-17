@@ -98,7 +98,7 @@ export function MemoryPage({ scope }: { scope: string | null }) {
     <div className="flex h-full flex-col">
       <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
         <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
+          <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>← agent-hub</a>
           <h1 className="text-head text-primary">记忆</h1>
         </div>
         <AccountMenu />

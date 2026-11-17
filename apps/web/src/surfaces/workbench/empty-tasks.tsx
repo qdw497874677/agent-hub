@@ -15,7 +15,7 @@ export function NoTasksHint({ onNewTask, floating = false }: { onNewTask: () => 
       <p className={`text-meta text-tertiary ${floating ? 'mb-3' : ''}`}>还没有任务。</p>
       <button
         type="button"
-        className="min-h-[44px] rounded-sm bg-accent px-4 text-meta text-canvas hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent md:min-h-0 md:py-1.5"
+        className="min-h-[44px] rounded-sm bg-action px-4 text-meta text-action-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring md:min-h-0 md:py-1.5"
         onClick={onNewTask}
       >
         新建任务

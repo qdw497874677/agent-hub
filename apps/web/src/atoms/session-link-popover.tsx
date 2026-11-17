@@ -215,7 +215,7 @@ export function SessionLinkChip({
                   type="button"
                   data-autofocus
                   data-testid="session-link-open"
-                  className="flex min-h-11 w-full items-center justify-center rounded-sm bg-accent px-3 text-sub text-canvas hover:brightness-110"
+                  className="flex min-h-11 w-full items-center justify-center rounded-sm bg-action px-3 text-sub text-action-fg hover:brightness-110"
                   onClick={() => {
                     onOpenChange(false);
                     onOpenSession(info.id);

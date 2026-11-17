@@ -40,7 +40,7 @@ export function MarketPage({ tab, reviewId }: { tab: MarketTab; reviewId: string
     <div className="flex h-full flex-col">
       <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
         <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>
+          <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>
             ← agent-hub
           </a>
           <h1 className="text-head text-primary">资产市场</h1>
@@ -61,7 +61,7 @@ export function MarketPage({ tab, reviewId }: { tab: MarketTab; reviewId: string
           >
             {item.label}
             {item.id === 'pending' && waiting > 0 ? (
-              <span data-testid="pending-count" className="ml-1.5 rounded-full bg-accent px-1.5 text-[11px] text-canvas">
+              <span data-testid="pending-count" className="ml-1.5 rounded-full bg-action px-1.5 text-[11px] text-action-fg">
                 {waiting}
               </span>
             ) : null}
@@ -110,7 +110,7 @@ function AssetCard({ item, showStatus }: { item: MarketAssetDto; showStatus: boo
       </p>
       {showStatus && sub ? (
         <p className="mt-1 text-meta">
-          <a className="text-accent" href={formatRoute({ page: 'assets', tab: 'pending', reviewId: sub.id })}>
+          <a className="text-link" href={formatRoute({ page: 'assets', tab: 'pending', reviewId: sub.id })}>
             最近提交：{STATUS_TEXT[sub.status]}
             {sub.targetScope ? `（申请提升为${SCOPE_TEXT[sub.targetScope]}）` : ''}
           </a>
@@ -483,7 +483,7 @@ function Choice<T extends string>({ value, onChange, options, label }: { value: 
           key={id}
           role="radio"
           aria-checked={id === value}
-          className={`rounded-sm border px-2.5 py-1 text-meta ${id === value ? 'border-accent text-accent' : 'border-hair text-secondary'}`}
+          className={`rounded-sm border px-2.5 py-1 text-meta ${id === value ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary'}`}
           onClick={() => onChange(id)}
         >
           {text}

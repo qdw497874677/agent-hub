@@ -38,7 +38,7 @@ function AgentProjects({ projectId, name }: { projectId: string; name: string })
           const on = isDefault || linked.has(p.id);
           return (
             <button key={p.id} type="button" disabled={isDefault || save.isPending} data-testid="agent-project" data-on={on ? '1' : '0'}
-              className={`rounded-full border px-2 py-0.5 text-meta ${on ? 'border-accent text-accent' : 'border-hair text-tertiary'}`} onClick={() => toggle(p.id)}>
+              className={`rounded-full border px-2 py-0.5 text-meta ${on ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-tertiary'}`} onClick={() => toggle(p.id)}>
               {on ? '✓ ' : ''}{p.name}{isDefault ? ' · 默认' : ''}
             </button>
           );
@@ -159,7 +159,7 @@ function TriggerRow({ b, listKey }: { b: BindingDto; listKey: unknown[] }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-body text-primary">{b.connector === 'github' ? '🐙' : '⏰'} {b.name}</span>
         <span className="text-meta text-tertiary">{b.summary} · {b.target === 'main' ? '主会话' : '新会话'}</span>
-        <span className={`text-meta ${b.pausedReason ? 'text-rust' : b.enabled ? 'text-accent' : 'text-tertiary'}`} data-testid="trigger-state">
+        <span className={`text-meta ${b.pausedReason ? 'text-rust' : b.enabled ? 'text-sage' : 'text-tertiary'}`} data-testid="trigger-state">
           {b.pausedReason ? '已暂停' : b.enabled ? `下次 ${time(b.nextRunAt)}` : '已停用'}
         </span>
         <div className="ml-auto flex gap-1">
@@ -177,7 +177,7 @@ function TriggerRow({ b, listKey }: { b: BindingDto; listKey: unknown[] }) {
             <li key={r.id} className="flex flex-wrap gap-2 text-meta text-secondary" data-testid="trigger-run" data-state={r.state}>
               <span>{time(r.plannedAt ?? r.createdAt)}</span><span>{STATE[r.state]}{r.catchup ? ' · 补跑' : ''}</span>
               {r.reason ? <span className="text-tertiary">{r.reason}</span> : null}
-              {r.sessionId ? <a className="text-accent" href={formatRoute({ page: 'project', projectId: b.agentProjectId, view: 'focus', sessionId: r.sessionId })}>会话</a> : null}
+              {r.sessionId ? <a className="text-link" href={formatRoute({ page: 'project', projectId: b.agentProjectId, view: 'focus', sessionId: r.sessionId })}>会话</a> : null}
             </li>
           ))}
           {runs.data && !runs.data.runs.length ? <li className="text-meta text-tertiary">还没有运行过</li> : null}

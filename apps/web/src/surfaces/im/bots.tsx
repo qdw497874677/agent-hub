@@ -145,7 +145,7 @@ export function HubTabs({ active, projectId }: { active: 'messages' | 'bots'; pr
 
 /** 弹窗按钮：跟 tokens-dialog 一个手感（细边，hover 才亮）。 */
 const CRED_BTN =
-  'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+  'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-strong hover:text-primary disabled:opacity-40';
 
 /** 明文只露一次的弹窗：遮罩 / Esc / 「我已保存」都算关，关掉就把 bot 重新拉一遍。 */
 function CredentialSecret({ secret, onClose }: { secret: string; onClose: () => void }) {
@@ -284,7 +284,7 @@ function BotTriggerRow({ trigger, projectId, now, sources }: {
   const next = nextRunView(trigger, now);
   const run = latestRun(trigger.runs);
   const tone = state.tone === 'on'
-    ? 'border-accent/60 text-accent'
+    ? 'border-sage/60 text-sage'
     : state.tone === 'paused' ? 'border-rust/60 text-rust' : 'border-hair text-tertiary';
   return (
     <li data-testid="bot-trigger" data-id={trigger.id} data-connector={trigger.connector}
@@ -306,7 +306,7 @@ function BotTriggerRow({ trigger, projectId, now, sources }: {
             <span className="min-w-0 break-words">最近 {runView(run, now)}</span>
             {run.reason ? <span className="min-w-0 break-words">{run.reason}</span> : null}
             {run.sessionId ? (
-              <a className="shrink-0 text-accent hover:underline"
+              <a className="shrink-0 text-link hover:underline"
                 href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: run.sessionId })}>打开会话</a>
             ) : null}
           </>
@@ -429,7 +429,7 @@ function GrantPicker({ teamId, projectId, grantedIds, onClose }: {
           {view.items.map((b) => (
             <li key={b.id} className="min-w-0">
               <button type="button" data-testid="bot-grant-option" data-id={b.id} data-name={b.name}
-                className="flex w-full min-w-0 items-start gap-2 rounded-sm border border-hair bg-card p-2 text-left hover:border-accent disabled:opacity-40"
+                className="flex w-full min-w-0 items-start gap-2 rounded-sm border border-hair bg-card p-2 text-left hover:border-strong disabled:opacity-40"
                 disabled={grant.isPending} onClick={() => grant.mutate(b.id)}>
                 <BotAvatar bot={b} size={28} />
                 <span className="min-w-0 flex-1">
@@ -505,9 +505,9 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecord
           {RUNTIMES.map((r) => (
             <button key={r.id} type="button" role="radio" aria-checked={agentId === r.id} data-testid="bot-runtime" data-runtime={r.id}
               onClick={() => setAgentId(r.id)}
-              className={`rounded-sm border px-2.5 py-1 ${agentId === r.id ? 'border-accent bg-accent/15 text-primary' : 'border-hair text-secondary'}`}>{r.label}</button>
+              className={`rounded-sm border px-2.5 py-1 ${agentId === r.id ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary'}`}>{r.label}</button>
           ))}
-          {!known ? <span className="rounded-sm border border-accent bg-accent/15 px-2.5 py-1 text-primary">{agentId}</span> : null}
+          {!known ? <span className="rounded-sm border border-fg/40 bg-selected px-2.5 py-1 text-primary">{agentId}</span> : null}
         </div>
       </fieldset>
       <BotModelField agentId={agentId} model={model} onChange={setModel} />
@@ -555,7 +555,7 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecord
                         <label className="flex min-w-0 flex-1 items-center gap-2 px-1 py-1.5 text-meta text-secondary">
                           <input
                             type="checkbox" role="switch" data-testid="bot-option-value" aria-label="选项值"
-                            className="h-4 w-4 shrink-0 accent-[var(--color-accent)]" checked={row.on}
+                            className="h-4 w-4 shrink-0 accent-[var(--color-fg)]" checked={row.on}
                             onChange={(e) => setOption(i, { on: e.target.checked })}
                           />
                           {row.on ? '打开' : '关闭'}
@@ -668,7 +668,7 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
     <div className="flex h-full flex-col">
       <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
         <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
+          <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>← agent-hub</a>
           <h1 className="text-head text-primary">Bot</h1>
         </div>
         <HubTabs active="bots" projectId={pid} />

@@ -224,7 +224,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, drafts, onDra
               data-session-id={w.sessionId}
               data-mode={w.mode}
               data-focused={isTop ? 'true' : undefined}
-              className={`flex h-full flex-col overflow-hidden rounded-md border bg-canvas shadow-lg ${isTop ? 'border-accent' : 'border-hair'}`}
+              className={`flex h-full flex-col overflow-hidden rounded-md border bg-canvas shadow-lg ${isTop ? 'border-fg/40' : 'border-hair'}`}
             >
               {pane(
                 w.sessionId,

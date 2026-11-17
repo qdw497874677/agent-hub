@@ -21,7 +21,7 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
         <p className="text-head text-primary">只有 hub 管理员能进运营后台</p>
-        <a className="text-meta text-accent" href={formatRoute({ page: 'home' })}>
+        <a className="text-meta text-link" href={formatRoute({ page: 'home' })}>
           回首页
         </a>
       </div>
@@ -32,7 +32,7 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
       <nav aria-label="后台分页" className="shrink-0 border-b border-hair md:w-[200px] md:border-b-0 md:border-r">
         <div className="flex items-center justify-between gap-2 px-3 pt-3 md:pt-4">
           <div className="min-w-0">
-            <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>
+            <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>
               ← agent-hub
             </a>
             <p className="text-head text-primary">运营后台</p>
@@ -54,7 +54,7 @@ export function AdminPage({ tab }: { tab: AdminTab }) {
                   <span
                     data-testid="asset-update-badge"
                     title={`${upgradable} 个资产有新版本`}
-                    className="ml-1.5 rounded-full bg-accent px-1.5 text-meta text-canvas"
+                    className="ml-1.5 rounded-full bg-action px-1.5 text-meta text-action-fg"
                   >
                     {upgradable}
                   </span>

@@ -354,7 +354,7 @@ export function DeriveDialog({
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
             还没有在线的机器。
             <button
-              className="ml-2 text-accent underline-offset-2 hover:underline"
+              className="ml-2 text-link underline-offset-2 hover:underline"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
             >
               重新检查
@@ -383,7 +383,7 @@ export function DeriveDialog({
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <label className="block text-meta text-secondary" htmlFor="derive-profile">启动预设（可选）</label>
-            <button type="button" className="text-meta text-accent underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
+            <button type="button" className="text-meta text-link underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
               管理
             </button>
           </div>
@@ -518,18 +518,18 @@ export function DeriveDialog({
                           data-testid="derive-asset-set"
                           data-set-id={set.id}
                           className={`flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-meta ${
-                            on ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-tertiary'
+                            on ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-tertiary'
                           }`}
                         >
                           <input
                             type="checkbox"
                             data-testid="derive-asset-set-toggle"
-                            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+                            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-fg)]"
                             checked={on}
                             onChange={(event) => setAssetSetChoice(toggleSetChoice(chosen, set.id, event.target.checked))}
                           />
                           {on ? (
-                            <span aria-hidden className="shrink-0 font-mono text-meta text-accent">
+                            <span aria-hidden className="shrink-0 font-mono text-meta text-secondary">
                               {order}
                             </span>
                           ) : null}
@@ -573,7 +573,7 @@ export function DeriveDialog({
                     <input
                       type="checkbox"
                       data-testid="derive-asset-toggle"
-                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-fg)]"
                       checked={isIncluded(selection, entry.assetId)}
                       onChange={(event) => setAssetSelection(toggleAsset(selection, entry.assetId, event.target.checked))}
                     />
@@ -613,7 +613,7 @@ export function DeriveDialog({
             {group.state === 'failed' ? (
               <button
                 type="button"
-                className="mt-1 min-h-[32px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40"
+                className="mt-1 min-h-[32px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary disabled:opacity-40"
                 data-testid="derive-group-retry"
                 disabled={retryGroup.isPending}
                 onClick={() => retryGroup.mutate(group.id)}

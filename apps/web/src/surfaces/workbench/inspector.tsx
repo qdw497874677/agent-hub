@@ -30,7 +30,7 @@ type CapabilityName = keyof AgentDto['capabilities'];
 function CapabilityRow({ name, capability }: { name: CapabilityName; capability: NonNullable<AgentDto['capabilities'][CapabilityName]> }) {
   const mark = capability.state === 'denied' ? '—' : '✓';
   const colour =
-    capability.state === 'available' ? 'text-sage' : capability.state === 'limited' ? 'text-accent' : 'text-tertiary';
+    capability.state === 'available' ? 'text-sage' : capability.state === 'limited' ? 'text-warning' : 'text-tertiary';
   return (
     <div className="flex items-start justify-between gap-2 py-0.5">
       <span className="text-meta text-secondary">{CAPABILITY_LABEL[name] ?? name}</span>
@@ -137,7 +137,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
         <div className="flex-1 space-y-3 overflow-y-auto px-3 py-2.5">
           {agent !== undefined && limited.length > 0 ? (
             <p className="text-meta text-tertiary">
-              <span className="text-accent">●</span> {limited.map((name) => CAPABILITY_LABEL[name] ?? name).join('、')} 受限
+              <span className="text-warning">●</span> {limited.map((name) => CAPABILITY_LABEL[name] ?? name).join('、')} 受限
             </p>
           ) : null}
           <section>
@@ -187,7 +187,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
           <SessionAssets sessionId={session.id} detailed />
           <SessionMessages sessionId={session.id} />
           <section>
-            <button className="text-meta text-accent hover:text-primary" onClick={onBrowseFiles} data-testid="open-files">浏览文件</button>
+            <button className="text-meta text-link hover:text-primary" onClick={onBrowseFiles} data-testid="open-files">浏览文件</button>
           </section>
           {artifacts.length > 0 ? (
             <section>

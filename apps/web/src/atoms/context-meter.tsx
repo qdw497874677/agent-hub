@@ -19,7 +19,7 @@ export function ContextMeter({ usage }: { usage: ContextUsage }) {
   const used = usage.usedTokens === null ? '—' : shortTokens(usage.usedTokens);
   const window = shortTokens(usage.windowTokens);
   const title = `上下文：${usage.usedTokens?.toLocaleString() ?? '—'} / ${usage.windowTokens.toLocaleString()} token${percent === null ? '' : `（${percent}%）`}`;
-  const tone = percent !== null && percent >= 95 ? 'text-rust' : percent !== null && percent >= 70 ? 'text-accent' : 'text-tertiary';
+  const tone = percent !== null && percent >= 95 ? 'text-rust' : percent !== null && percent >= 70 ? 'text-warning' : 'text-tertiary';
   return (
     <span
       data-testid="context-meter"

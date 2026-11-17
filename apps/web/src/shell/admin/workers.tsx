@@ -81,7 +81,7 @@ export function Workers() {
                 >
                   <div className="flex items-center gap-2">
                     <span
-                      className={`h-2 w-2 shrink-0 rounded-full ${online ? 'bg-accent' : 'bg-card-raised border border-strong'}`}
+                      className={`h-2 w-2 shrink-0 rounded-full ${online ? 'bg-sage' : 'bg-card-raised border border-strong'}`}
                     />
                     <span className="min-w-0 flex-1 truncate text-body text-primary">{worker.label}</span>
                     {worker.outdated ? (

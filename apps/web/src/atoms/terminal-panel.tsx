@@ -427,8 +427,8 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
                 aria-pressed={key.id === 'ctrl' ? ctrlArmed : undefined}
                 className={`flex h-9 min-w-9 shrink-0 select-none items-center justify-center rounded-sm border px-3 font-mono text-body leading-none ${
                   armed
-                    ? 'border-accent bg-accent text-canvas'
-                    : 'border-strong bg-card text-secondary active:border-accent active:text-accent'
+                    ? 'border-action bg-action text-action-fg'
+                    : 'border-strong bg-card text-secondary active:border-strong active:text-primary'
                 }`}
                 // 按下只做 preventDefault：一夺焦软键盘就收起来，终端也跟着失去光标。
                 // 发货放在 click 上——横着拖动按键条是滚动，不能一路把 Esc/Tab 敲出去。
@@ -472,7 +472,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
           <button
             type="button"
             data-testid="terminal-reconnect"
-            className="ml-auto h-6 shrink-0 rounded-sm border border-strong px-2 text-meta text-primary hover:border-accent hover:text-accent"
+            className="ml-auto h-6 shrink-0 rounded-sm border border-strong px-2 text-meta text-primary hover:border-strong hover:text-primary"
             onClick={() => restartRef.current(state.phase === 'exited')}
           >
             {retryLabel}
