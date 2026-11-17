@@ -120,3 +120,20 @@ test('工具名：agent-hub 自己的 MCP 工具写中文名，别的 MCP 写「
   assert.equal(toolDisplayName('read'), 'read');
   assert.equal(toolDisplayName('bash'), 'bash');
 });
+
+test('工具名：hub 自己定义的每个工具都有中文名（新加工具忘了补会在这里红）', async () => {
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const root = new URL('../../../../', import.meta.url).pathname;
+  const dirs = ['packages/domain/src/tools', 'packages/connector-github/src'];
+  const names = new Set<string>();
+  for (const dir of dirs) {
+    for (const file of readdirSync(join(root, dir))) {
+      if (!file.endsWith('.ts') || file.endsWith('.test.ts')) continue;
+      for (const match of readFileSync(join(root, dir, file), 'utf8').matchAll(/name: '([a-z_]+\.[a-z_.]+)'/g)) names.add(match[1]!.replace(/\./g, '_'));
+    }
+  }
+  assert.ok(names.size > 30, `只找到 ${names.size} 个工具，扫描路径可能变了`);
+  const missing = [...names].filter((name) => !/[\u4e00-\u9fff]/.test(toolDisplayName(`mcp__agent_hub__${name}`)));
+  assert.deepEqual(missing, []);
+});
