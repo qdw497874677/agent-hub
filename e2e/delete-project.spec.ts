@@ -25,7 +25,7 @@ for (const viewport of [{ width: 1280, height: 800, tag: 'desktop' }, { width: 3
     await page.goto('/');
     await page.getByRole('button', { name: `删除项目 ${name}` }).click();
     const dialog = page.getByRole('dialog', { name: '删除项目' });
-    await expect(dialog.getByText('磁盘上的文件不会动')).toBeVisible();
+    await expect(dialog.getByText('工作目录里的文件不会删除')).toBeVisible();
     const confirm = dialog.getByRole('button', { name: '移到回收站' });
     await expect(confirm).toBeDisabled();
     await dialog.getByLabel(/输入项目名/).fill(name);

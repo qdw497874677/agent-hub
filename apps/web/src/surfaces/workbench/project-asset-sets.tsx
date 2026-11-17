@@ -71,7 +71,7 @@ export function ProjectAssetSets({ project }: { project: ProjectDto }) {
         <p className="text-meta text-rust">{sets.error.message}</p>
       ) : list.length === 0 && missing.length === 0 ? (
         <p className="text-meta text-tertiary" data-testid="project-asset-sets-empty">
-          还没有资产组合。去资产中心 →「资产组合」建一组，比如把常用的技能和指令打包。
+          还没有资产组合。
         </p>
       ) : (
         <ul className="rounded-sm border border-hair bg-card">

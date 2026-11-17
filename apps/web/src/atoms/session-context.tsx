@@ -24,8 +24,8 @@ export function SessionContext({ sessionId, lastSeq }: { sessionId: string; last
   return (
     <section data-testid="session-context">
       <p className="mb-1 text-meta text-tertiary">上下文</p>
-      <p className="text-meta text-secondary" data-testid="context-strategy">
-        {view.strategy.title} · {MODE[view.mode]} · 来自{SOURCE[view.source]}
+      <p className="text-meta text-secondary" data-testid="context-strategy" title={`${MODE[view.mode]} · 来自${SOURCE[view.source]}`}>
+        {view.strategy.title}
       </p>
       {view.fallback ? (
         <p className="text-meta text-accent" data-testid="context-fallback">
@@ -35,9 +35,9 @@ export function SessionContext({ sessionId, lastSeq }: { sessionId: string; last
       <div className="mt-1 h-1.5 w-full rounded bg-hair" title={`${view.usage.usedTokens} / ${view.usage.windowTokens}`}>
         <div className={`h-1.5 rounded ${view.usage.level === 'ok' ? 'bg-tertiary' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
       </div>
-      <p className="mt-0.5 font-mono text-meta text-tertiary" data-testid="context-usage">
+      <p className="mt-0.5 font-mono text-meta text-tertiary" data-testid="context-usage" title={view.usage.estimated ? '平台估算' : '运行时报告'}>
         {view.usage.estimated ? '约 ' : ''}
-        {view.usage.usedTokens.toLocaleString()} / {view.usage.windowTokens.toLocaleString()} token（{pct}%）{view.usage.estimated ? ' · hub 估算' : ' · 运行时报告'}
+        {view.usage.usedTokens.toLocaleString()} / {view.usage.windowTokens.toLocaleString()}（{pct}%）
       </p>
       {view.usage.lastCompaction ? (
         <p className="text-meta text-tertiary" data-testid="context-last-compaction">

@@ -29,7 +29,7 @@ async function openPickerFor(page: Page, name: string) {
   await page.goto(`/#/p/${projectId}`);
   await page.reload();
   await page.locator(".react-flow__node-task").filter({ hasText: TASK }).getByRole("button", { name: "＋ 会话" }).click();
-  const panel = page.getByRole("dialog", { name: "在哪台机器、哪个工作目录干活？" });
+  const panel = page.getByRole("dialog", { name: "开始会话" });
   await panel.getByRole("radio", { name: /新建持久工作目录/ }).click();
   const picker = page.getByLabel("目录选择器");
   await expect(picker).toBeVisible();

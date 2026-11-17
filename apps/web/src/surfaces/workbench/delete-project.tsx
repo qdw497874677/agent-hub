@@ -24,12 +24,7 @@ export function DeleteProjectDialog({ project, onClose, onDeleted }: { project: 
   return (
     <DialogShell title="删除项目" onClose={onClose}>
       <h2 className="mb-2 text-body text-primary">删除项目「{project.name}」</h2>
-      <p className="mb-2 text-sub text-secondary">
-        项目会进回收站：从列表里消失，任务、会话记录都还在，随时能在首页「回收站」里还原；在回收站里「彻底删除」才会真的删掉。还在运行的会话要先停止。
-      </p>
-      <p className="mb-3 text-sub text-secondary">
-        磁盘上的文件不会动：工作目录的目录都原样保留（要清理临时工作目录，到项目设置里删）。
-      </p>
+      <p className="mb-3 text-sub text-secondary">项目会进入回收站，可在首页还原。工作目录里的文件不会删除。</p>
       <label className="mb-1 block text-meta text-tertiary" htmlFor="delete-project-name">
         输入项目名 <span className="font-mono text-secondary">{project.name}</span> 确认
       </label>
@@ -92,7 +87,7 @@ export function TrashList() {
                 className="text-meta text-tertiary hover:text-rust"
                 disabled={purge.isPending}
                 onClick={() => {
-                  const typed = window.prompt(`彻底删除「${item.name}」？任务和会话记录都会删掉，找不回来。输入项目名确认：`);
+                  const typed = window.prompt(`永久删除「${item.name}」。任务和会话记录无法恢复。输入项目名确认：`);
                   if (typed !== null) purge.mutate({ id: item.id, name: typed });
                 }}
               >

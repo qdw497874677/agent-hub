@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { composerKeyAction } from './composer-keys.ts';
+import { composerKeyAction, sendKeyHint } from './composer-keys.ts';
 
 const event = (key: string, modifiers: Partial<{ meta: boolean; ctrl: boolean; shift: boolean }> = {}) => ({
   key,
@@ -28,4 +28,12 @@ test('其他键一律不认，哪怕带着修饰键', () => {
   assert.equal(composerKeyAction(event('a', { meta: true })), null);
   assert.equal(composerKeyAction(event('Escape', { ctrl: true, shift: true })), null);
   assert.equal(composerKeyAction(event('Enter', {})), null);
+});
+
+test('发送提示按平台写：Mac 是 ⌘↵，其他是 Ctrl+↵', () => {
+  assert.equal(sendKeyHint('MacIntel'), '⌘↵ 发送');
+  assert.equal(sendKeyHint('macOS'), '⌘↵ 发送');
+  assert.equal(sendKeyHint('Linux x86_64'), 'Ctrl+↵ 发送');
+  assert.equal(sendKeyHint('Win32'), 'Ctrl+↵ 发送');
+  assert.equal(sendKeyHint(''), 'Ctrl+↵ 发送');
 });

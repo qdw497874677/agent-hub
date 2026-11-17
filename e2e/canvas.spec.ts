@@ -80,8 +80,8 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // M2：从任务派生会话（任务卡上的「＋ 会话」；双击在自动化的零间隔点击下会落到重渲染的空档里）
   await taskNode(page, TASK_TITLE).getByRole('button', { name: '＋ 会话' }).click();
   // 运行面板：先选工作目录（不预选，没选「开始」是灰的）。新项目还没有工作目录：把已有目录登记成持久工作目录。
-  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
-  await expect(run.getByRole('button', { name: '开始' })).toBeDisabled();
+  const run = page.getByRole('dialog', { name: '开始会话' });
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeDisabled();
   await run.getByRole('radio', { name: /新建持久工作目录/ }).click();
   await run.getByRole('radio', { name: '选已有目录' }).click();
   // 目录可以点选，不必手打路径：路径框里打路径，Enter 进入选中的文件夹
@@ -96,7 +96,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   await picker.getByRole('button', { name: '使用', exact: true }).click();
   await expect(run).toContainText(`agent-hub-e2e-project-${RUN}`);
   await chooseHubModel(run);
-  await run.getByRole('button', { name: '开始' }).click();
+  await run.getByRole('button', { name: '开始', exact: true }).click();
   // 派生完直接进这条会话的对话；回画布看卡片
   await expect(page.getByLabel('发送消息')).toBeVisible();
   await page.getByRole('button', { name: '画布', exact: true }).click();
@@ -110,7 +110,7 @@ test('从建项目到会话跑出第一段文字', async ({ page }) => {
   // 冷启动时卡片会在「填好」和「按回车」之间被画布重新挂载一次：回车落在已卸下的旧输入框上就丢了，
   // 新输入框又按草稿把原话填回来（这就是偶发的「一直没输出」）。发出去的标志是输入框清空，没清空就再按一次。
   await expect(async () => {
-    await cardInput.press('Enter');
+    await cardInput.press('Control+Enter');
     await expect(cardInput).toHaveValue('', { timeout: 2_000 });
   }).toPass({ timeout: 30_000 });
 
@@ -194,7 +194,7 @@ test('搜索能搜到会话里说过的话，列表能给画布降级', async ({
 
   // 搜索：用会话正文里的词命中，回车跳到那个节点
   await page.getByRole('button', { name: /搜索/ }).click();
-  const palette = page.getByPlaceholder('搜任务标题，或者你记得的那句话');
+  const palette = page.getByPlaceholder('搜索任务或会话');
   await palette.fill(ECHO);
   await expect(page.getByRole('button', { name: new RegExp(ECHO) }).first()).toBeVisible();
   await palette.press('Enter');

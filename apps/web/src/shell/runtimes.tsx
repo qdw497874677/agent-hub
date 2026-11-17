@@ -389,7 +389,7 @@ function BundleInstall({ worker, approved, busy }: { worker: WorkerInfoDto; appr
         })}
       </ul>
       <p className="mt-1 text-xs text-tertiary" data-testid="bundle-all-or-nothing">
-        全有或全无：先把选中的都装进暂存目录并核对哈希，全部通过才一起切换；任何一个失败就一个都不换。已经装好的会跳过。
+        会先校验再一起切换，失败则全部不改。
       </p>
       <div className="mt-1.5 flex gap-2">
         <button className={button} data-testid="bundle-install-confirm" disabled={busy || install.isPending || Object.keys(chosen).length === 0} onClick={() => install.mutate()}>

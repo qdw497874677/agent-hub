@@ -76,7 +76,7 @@ function WriteForm({ scope }: { scope: string }) {
         </select>
         <input aria-label="标题" data-testid="memory-title" className={`${INPUT} min-w-0 flex-1`} placeholder="标题" maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
       </div>
-      <textarea aria-label="内容" data-testid="memory-body" className={`${INPUT} min-h-20`} placeholder="内容（不超过 4000 字，别放密钥）" maxLength={4000} value={body} onChange={(e) => setBody(e.target.value)} />
+      <textarea aria-label="内容" data-testid="memory-body" className={`${INPUT} min-h-20`} placeholder="写下要记住的事" title="不超过 4000 字，别放密钥" maxLength={4000} value={body} onChange={(e) => setBody(e.target.value)} />
       <div className="flex items-center gap-2">
         <button type="submit" className={SMALL} data-testid="memory-save" disabled={write.isPending || !title.trim() || !body.trim()}>记下</button>
         {write.error ? <p className="text-meta text-rust">{errorText(write.error)}</p> : null}
@@ -136,7 +136,7 @@ export function MemoryPage({ scope }: { scope: string | null }) {
                     {entries.data.entries.map((e) => <EntryRow key={e.id} entry={e} canReview={reviewable.has(current.key)} />)}
                   </ul>
                 ) : (
-                  <Empty text={entries.isLoading ? '加载中…' : '这里还没有记忆。agent 会先搜再写。'} />
+                  <Empty text={entries.isLoading ? '加载中…' : '还没有记忆。'} />
                 )}
               </Panel>
             </Section>

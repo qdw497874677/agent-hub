@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { loginByApi } from './login.ts';
-import { piModel } from './hub-model.ts';
+import { chooseHubModel, piModel } from './hub-model.ts';
 
 /**
  * 隔离 worktree + 准备命令（docs/design/worktree.md §3 §4）。
@@ -212,18 +212,20 @@ test('UI：隔离 worktree 是工作目录里的一个选项，勾它机器照�
   await expect(node).toContainText('0 个会话');
   await node.getByRole('button', { name: '＋ 会话' }).click();
 
-  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const run = page.getByRole('dialog', { name: '开始会话' });
   const worktree = run.getByTestId('ws-new-worktree');
-  await expect(worktree).toContainText('新建隔离 worktree');
+  await expect(worktree).toContainText('新建隔离目录');
   // 项目默认 isolated：打开就替用户选上，不用再点一下
   await expect(worktree).toHaveAttribute('aria-checked', 'true');
-  await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
+  // 只有 Hub 模型的机器：模型框显式写「选择模型…」，不替人选（选好之后才轮到工作目录这一关）
+  await chooseHubModel(run);
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeEnabled();
   // 选了隔离档之后，机器和工作目录那块不该被禁用（机器始终可选）
   const region = run.getByTestId('derive-workspace-region');
   await expect(region).not.toHaveCSS('pointer-events', 'none');
-  await expect(run.getByRole('button', { name: '开始' })).toBeEnabled();
-  await expect(run.getByRole('button', { name: '开始' })).toBeInViewport();
-  await run.getByRole('button', { name: '开始' }).click();
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeEnabled();
+  await expect(run.getByRole('button', { name: '开始', exact: true })).toBeInViewport();
+  await run.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.getByLabel('发送消息')).toBeVisible();
   // 空间是按项目配置现建的隔离 worktree，准备命令跑过
   const spaces = await temporaryWorkspaces(page, headers, project.id);

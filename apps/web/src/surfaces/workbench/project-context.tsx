@@ -27,8 +27,7 @@ export function ProjectContext({ projectId, canEdit }: { projectId: string; canE
   const title = (id: string) => data.installed.find((s) => s.id === id)?.title ?? id;
   return (
     <section data-testid="project-context" className="mb-4">
-      <h3 className="mb-1 text-sub text-primary">上下文策略</h3>
-      <p className="mb-2 text-meta text-tertiary">会话上下文快满时怎么处理。优先级：会话 &gt; 角色 &gt; 项目 &gt; hub 默认；改了从下一代会话生效。</p>
+      <h3 className="mb-2 text-sub text-primary" title="会话优先，然后是角色、项目；改了从下一条新会话生效">上下文</h3>
       <label className="mb-1 flex items-center gap-2 text-meta text-secondary">
         项目默认
         <select
@@ -51,7 +50,7 @@ export function ProjectContext({ projectId, canEdit }: { projectId: string; canE
         {data.candidates.length > 0 ? ` · 候选（还不能选）：${data.candidates.map((c) => `${c.title}（${c.note}）`).join('、')}` : ''}
       </p>
       <p className="mb-1 text-meta text-secondary">角色</p>
-      {data.roles.length === 0 ? <p className="text-meta text-tertiary">没有角色单独设置，全跟随项目。</p> : null}
+      {data.roles.length === 0 ? <p className="text-meta text-tertiary">没有角色设置。</p> : null}
       <ul className="mb-1 space-y-0.5" data-testid="project-context-roles">
         {data.roles.map((r) => (
           <li key={r.role} className="flex items-center gap-2 text-meta text-secondary">

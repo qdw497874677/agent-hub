@@ -56,7 +56,6 @@ export function AddMachineDialog({ workers, onClose }: { workers: readonly Worke
       {joined ? (
         <div className="rounded-sm border border-sage/50 bg-card px-3 py-3" role="status">
           <p className="text-body text-primary">✓ {joined.label} 已连上</p>
-          <p className="mt-1 text-meta text-tertiary">之后新建项目和会话时可以选它。</p>
         </div>
       ) : (
         <>
@@ -141,7 +140,7 @@ function PresetPicker({ value, onChange, disabled }: { value: WorkerPreset; onCh
         ))}
       </div>
       <p className="mt-1 text-xs text-tertiary">
-        {current.hint}。{value !== 'readonly' ? '能跑 agent 就等于能在那台机器上执行任意代码，这里限制的是 hub 自己的工具，不是沙箱。' : ''}之后只能收窄，放宽要重新配对。
+        {current.hint}。{value !== 'readonly' ? '权限只限制平台操作，不能当作沙箱。' : ''}之后只能收窄。
       </p>
     </fieldset>
   );

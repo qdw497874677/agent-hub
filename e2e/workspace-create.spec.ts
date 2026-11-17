@@ -29,9 +29,9 @@ test('新建持久工作目录：先选目录（可就地新建文件夹），�
     expect(task.ok(), await task.text()).toBe(true);
     await page.goto(`/#/p/${project.id}`);
     await page.locator('.react-flow__node-task').filter({ hasText: title }).getByRole('button', { name: '＋ 会话' }).click();
-    const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+    const run = page.getByRole('dialog', { name: '开始会话' });
     await run.getByRole('radio', { name: /新建持久工作目录/ }).click();
-    const start = run.getByRole('button', { name: '开始' });
+    const start = run.getByRole('button', { name: '开始', exact: true });
     await expect(start, '没选目录不能开始').toBeDisabled();
 
     // 选择器自动打开，起点是托管目录那一层

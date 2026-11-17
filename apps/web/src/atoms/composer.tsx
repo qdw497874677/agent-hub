@@ -7,7 +7,7 @@ import { OptionControls } from './options.tsx';
 import { coarsePointer } from '../shell/device.ts';
 import { useOfflineNotice } from '../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from './composer-parts.tsx';
-import { composerKeyAction } from './composer-keys.ts';
+import { composerKeyAction, currentPlatform, sendKeyHint } from './composer-keys.ts';
 
 interface Props {
   readonly session: SessionDto;
@@ -360,7 +360,7 @@ export function Composer({
           className={`w-full resize-none bg-transparent text-body text-primary outline-none placeholder:text-tertiary ${
             large ? 'min-h-[52px] max-h-56' : 'min-h-[44px] max-h-40'
           }`}
-          placeholder={coarsePointer() ? '接着说…（@ 引用文件，/ 命令）' : '接着说…（@ 引用文件，/ 命令，⌘↵ 发送）'}
+          placeholder={coarsePointer() ? '接着说…（@ 引用文件，/ 命令）' : `接着说…（@ 引用文件，/ 命令，${sendKeyHint(currentPlatform())}）`}
           ref={area}
           defaultValue={draft}
           onChange={(event) => {

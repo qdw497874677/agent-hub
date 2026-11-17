@@ -80,11 +80,10 @@ export function AgentProfilesDialog({
   const unsupported = editing ? Object.keys(editing.options).filter((id) => !optionIds.has(id)) : [];
 
   return (
-    <DialogShell title="Agent 配置" onClose={onClose} wide>
+    <DialogShell title="启动预设" onClose={onClose} wide>
       <div className="mb-3 flex items-center justify-between gap-2">
         <div>
-          <p className="text-head text-primary">Agent 配置</p>
-          <p className="mt-1 text-meta text-secondary">保存的是 agent、模型和启动选项的组合；改这里不会影响已经在跑的会话。</p>
+          <p className="text-head text-primary">启动预设</p>
         </div>
         <button type="button" className={SECONDARY_BUTTON} onClick={onClose}>
           关闭
@@ -94,8 +93,8 @@ export function AgentProfilesDialog({
       {profiles.isLoading ? <p className="text-meta text-secondary">加载中…</p> : null}
       {profiles.error ? <p className="text-meta text-rust">{(profiles.error as Error).message}</p> : null}
       {!profiles.isLoading && (profiles.data ?? []).length === 0 ? (
-        <p className="rounded border border-hair p-3 text-meta text-secondary">
-          还没有保存的配置。在会话的“更多”里选“保存为 Agent 配置”，或在派生会话时保存。
+        <p className="rounded border border-hair p-3 text-meta text-secondary" title="在会话的「更多」里选「保存为启动预设」，或在开始会话时保存">
+          还没有预设。
         </p>
       ) : null}
 

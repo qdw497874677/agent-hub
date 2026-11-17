@@ -28,7 +28,13 @@ import { useDeliveries } from '../../atoms/delivery-note.tsx';
 import { NEXT_STATUS } from './task-status.ts';
 import { TaskBadge } from './task-detail.tsx';
 import { useStickToBottom } from '../../atoms/use-stick-to-bottom.ts';
+import { LogMarkdown } from '../../atoms/log-markdown.tsx';
+import { StoppedDivider } from '../../atoms/chat-blocks.tsx';
+import { toolDisplayName } from '../../atoms/tool-rows.ts';
 import { CARD_LIMITS, type CardKind, type Size } from './card-size.ts';
+
+/** 卡片里的 markdown：首尾段贴边；代码块收矮一点，长代码在卡片里自己横向滚。 */
+const CARD_MD = '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-h-40 [&_pre]:overflow-auto';
 
 /** 两种卡片共有：拖过的尺寸（没有 = 宽度默认、高度随内容），以及拖完后的回调。 */
 type Resizable = {
@@ -152,6 +158,7 @@ function BlockView({
       </p>
     );
   }
+  if (block.kind === 'stopped') return <StoppedDivider text={block.text} compact />;
   if (block.kind === 'stall') {
     return (
       <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
@@ -160,7 +167,9 @@ function BlockView({
     );
   }
   if (block.kind === 'text') {
-    return <p className="whitespace-pre-wrap text-body text-primary/90">{block.text}</p>;
+    // 和专注对话同一个渲染器（不渲染原始 HTML、不加载图片、链接新窗口）：同一段回复两处长得一样，
+    // 卡片上不再露出 `**`、反引号这些原始符号。首尾段贴边，卡片里不忽高忽低。
+    return <LogMarkdown body={block.text} className={`text-body text-primary/90 ${CARD_MD}`} />;
   }
   if (block.kind === 'tool') {
     const mark = block.result === null ? '⋯' : block.result.ok ? '✓' : '✗';
@@ -168,7 +177,7 @@ function BlockView({
     return (
       <div className="flex items-baseline gap-2 border-l border-hair pl-2 text-meta text-secondary">
         <span className="text-tertiary">{mark}</span>
-        <span className="font-mono text-sage">{block.name}</span>
+        <span className="shrink-0 text-sage" title={block.name}>{toolDisplayName(block.name)}</span>
         <span className="truncate opacity-60">{block.input.slice(0, 80)}</span>
         <span className="text-tertiary">{spent}</span>
       </div>
@@ -695,7 +704,9 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
       {task.goal ? <p className="mt-1 line-clamp-2 text-meta text-tertiary">{task.goal}</p> : null}
       {task.summary ? (
         <p className="mt-1 line-clamp-2 text-meta text-secondary" data-testid="task-card-summary">
-          <span className="text-accent">▸</span> {task.summary}
+          {/* 写明这是「当前进展」（来自最新一条日志），不是状态：状态只看右上角的徽标 */}
+          <span className="text-tertiary">进展：</span>
+          {task.summary}
         </p>
       ) : null}
       <p className="mt-1.5 font-mono text-meta text-tertiary">

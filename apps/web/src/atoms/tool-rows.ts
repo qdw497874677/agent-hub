@@ -176,3 +176,64 @@ export function runLength(self: ToolRowProbe, following: Iterable<ToolRowProbe |
   }
   return count;
 }
+
+/**
+ * agent-hub 自己的 MCP 工具（packages/domain/src/tools/*）给人看的名字。
+ * 运行时报上来的是 `mcp__agent_hub__task_log_append` 这种内部名：行内写人话，内部名留在 title 里。
+ * key 是工具名里的 `.` 换成 `_` 之后的样子（MCP 工具名不能带点）。
+ */
+const HUB_TOOL_LABEL: Readonly<Record<string, string>> = {
+  agent_activity: '查看 agent 动态',
+  agent_ask: '问另一个 agent',
+  agent_directory: '查 agent 名录',
+  agent_inbox: '看收件箱',
+  agent_inspect_runtime: '查看运行时',
+  agent_list_profiles: '列启动预设',
+  agent_peers: '列同伴 agent',
+  agent_reply: '回复消息',
+  agent_send: '发消息',
+  agent_set_option: '改 agent 选项',
+  agent_spawn: '开子 agent',
+  agent_status: '查 agent 状态',
+  context_transform: '整理上下文',
+  git_commit: '提交（git）',
+  git_pr: '开 PR',
+  git_pull_requests: '列 PR',
+  git_push: '推送（git）',
+  git_state: '查看 git 状态',
+  group_dispatch: '群里分派',
+  memory_forget: '删除记忆',
+  memory_get: '读记忆',
+  memory_list: '列记忆',
+  memory_search: '搜索记忆',
+  memory_write: '写记忆',
+  project_get: '读项目',
+  project_list: '列项目',
+  project_update: '改项目',
+  run_checks: '跑检查',
+  session_derive: '派生会话',
+  session_read: '读会话',
+  session_stop: '停止会话',
+  task_cancel: '取消任务',
+  task_create: '建任务',
+  task_get: '读任务',
+  task_list: '列任务',
+  task_log_append: '写任务日志',
+  task_log_list: '读任务日志',
+  task_update_status: '改任务状态'
+};
+
+/**
+ * 工具行上显示的名字。
+ * - `mcp__<server>__<tool>`：agent-hub 自己的工具写中文名；别的 MCP 写「tool · server」。
+ * - 其他（read / bash / edit…）原样：这些是运行时的内建工具，术语不翻译。
+ * 内部名总能在 title 里看到（toolRowTitle 用的是原名）。
+ */
+export function toolDisplayName(name: string): string {
+  const match = /^mcp__(.+?)__(.+)$/.exec(name);
+  if (match === null) return name;
+  const server = match[1]!;
+  const tool = match[2]!;
+  if (/(^|_)agent_hub$/.test(server)) return HUB_TOOL_LABEL[tool] ?? tool.replace(/_/g, ' ');
+  return `${tool} · ${server}`;
+}

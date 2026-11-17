@@ -10,7 +10,7 @@ test('团队主人邀请成员 → 点信里的链接设密码加入 → 主人�
   await page.goto('/');
   await page.getByRole('button', { name: '账号' }).click();
   await page.getByRole('button', { name: '我的团队' }).click();
-  await page.getByLabel('邀请新成员（对方会收到一封邀请信，7 天内有效）').fill(email);
+  await page.getByLabel('邀请成员').fill(email);
   await page.getByRole('button', { name: '发送邀请' }).click();
   await expect(page.getByText('邀请已发出。')).toBeVisible();
   await expect(page.getByTestId('team-invite').filter({ hasText: email })).toBeVisible();

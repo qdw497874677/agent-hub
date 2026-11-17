@@ -121,7 +121,7 @@ test('组件：提交 → 看脚本 → 批准 → 装到机器 → 卸载（390
     await page.getByRole('button', { name: new RegExp(`e2e 组件机器 ${run}`) }).click();
     await page.getByTestId('bundle-install-open').click();
     const dialog = page.getByTestId('bundle-install-dialog');
-    await expect(dialog.getByTestId('bundle-all-or-nothing')).toContainText('全有或全无');
+    await expect(dialog.getByTestId('bundle-all-or-nothing')).toContainText('失败则全部不改');
     await dialog.getByTestId(`bundle-pick-${id}`).check();
     await dialog.getByTestId(`bundle-pick-${id2}`).check();
     await dialog.getByTestId('bundle-install-confirm').click();

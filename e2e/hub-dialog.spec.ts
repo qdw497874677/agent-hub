@@ -16,7 +16,7 @@ test('没有原生模型时要显式选 Hub 模型，「开始」才可用', asy
   await page.request.post('/api/tasks', { data: { projectId: project.id, title: '选模型' }, headers });
   await page.goto(`/#/p/${project.id}`);
   await page.locator('.react-flow__node-task').filter({ hasText: '选模型' }).getByRole('button', { name: '＋ 会话' }).click();
-  const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+  const run = page.getByRole('dialog', { name: '开始会话' });
   await run.getByRole('radio', { name: /新建持久工作目录/ }).click();
   const picker = page.getByLabel('目录选择器');
   await expect(picker).toBeVisible();
@@ -26,7 +26,7 @@ test('没有原生模型时要显式选 Hub 模型，「开始」才可用', asy
   await picker.getByLabel('新文件夹名').press('Enter');
   await picker.getByRole('button', { name: '使用', exact: true }).click();
   await expect(run).toContainText(folder);
-  const start = run.getByRole('button', { name: '开始' });
+  const start = run.getByRole('button', { name: '开始', exact: true });
   await expect(run.locator('#derive-model')).toBeVisible();
   await expect(start).toBeDisabled();
   await chooseHubModel(run);

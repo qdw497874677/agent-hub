@@ -249,8 +249,7 @@ function DescriptionEditor({ project }: { project: ProjectDto }) {
   const changed = text.trim() !== (project.description ?? '');
   return (
     <section className="mb-4">
-      <label className="mb-1 block text-sub text-primary" htmlFor="project-description">项目说明</label>
-      <p className="mb-1 text-meta text-tertiary">支持 markdown。写这是什么、仓库在哪、有什么约定；agent 开工时会读到。</p>
+      <label className="mb-1 block text-sub text-primary" htmlFor="project-description" title="支持 markdown，agent 开工时会读到">项目说明</label>
       <textarea
         id="project-description"
         className="block min-h-[120px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-accent"

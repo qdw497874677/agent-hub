@@ -257,7 +257,7 @@ function Catalog() {
       <Panel>
         {catalog.error ? <p className="px-3 py-2 text-meta text-rust">{errorText(catalog.error)}</p> : null}
         <ul>{shown.map((item) => <AssetCard key={item.asset.id} item={item} showStatus={false} />)}</ul>
-        {catalog.data && !shown.length ? <Empty text="还没有上架的资产" /> : null}
+        {catalog.data && !shown.length ? <Empty text="还没有资产。" /> : null}
       </Panel>
     </Section>
   );
@@ -271,7 +271,7 @@ function Mine() {
       <Section title="我上架的" aside={<SubmitButton />}>
         <Panel>
           <ul>{(mine.data ?? []).map((item) => <AssetCard key={item.asset.id} item={item} showStatus />)}</ul>
-          {mine.data && !mine.data.length ? <Empty text="还没上架过资产。点「提交资产」开始。" /> : null}
+          {mine.data && !mine.data.length ? <Empty text="还没有资产。" /> : null}
         </Panel>
       </Section>
       {requests.data?.mine.length ? (
@@ -414,10 +414,10 @@ function SubmitDialog({ onClose }: { onClose: () => void }) {
           <Choice value={scope} onChange={setScope} options={scopes.map((s) => [s, SCOPE_TEXT[s]] as [AssetScopeDto, string])} label="作用域" />
           <p className="text-meta text-tertiary">
             {scope === 'personal'
-              ? '个人资产：只有你能用，只能装在你自己的机器上，不用审核。'
+              ? '只有你能用，不用审核。'
               : scope === 'team'
-                ? '团队资产：团队负责人或指定审核人批准后上架（不能自己批自己的）。'
-                : '全局资产：所有人可见。'}
+                ? '团队负责人或审核人批准后上架。'
+                : '所有人可见。'}
           </p>
           <Choice value={from} onChange={setFrom} options={[['upload', '上传'], ['git', '从 Git']]} label="来源" />
           {from === 'git' ? (
@@ -510,7 +510,7 @@ function MarketSettings() {
       ) : null}
       {settings.data?.hub ? (
         <ReviewSettingsForm
-          title="全局资产审核（hub）"
+          title="全局资产审核"
           target="hub"
           value={settings.data.hub}
           editable
@@ -576,7 +576,7 @@ function ReviewSettingsForm({
             <input type="checkbox" disabled={!editable} checked={two.mcpStdio} onChange={() => setTwo({ ...two, mcpStdio: !two.mcpStdio })} />
             stdio MCP 要两人通过
           </label>
-          <p className="text-meta text-tertiary">审核人不够两位时自动降到一位，并在审计里记一笔。</p>
+          <p className="text-meta text-tertiary" title="审核人不够两位时自动降到一位">审核人不够两位时降为一位。</p>
           {save.error ? <p className="text-meta text-rust">{errorText(save.error)}</p> : null}
           {save.isSuccess ? <p className="text-meta text-sage">已保存</p> : null}
           {editable ? (
@@ -609,7 +609,7 @@ function ScopedSecrets() {
     <Section title="MCP 密钥（个人 / 团队）">
       <Panel>
         <p className="px-3 pt-2 text-meta text-tertiary">
-          {'${secret:NAME}'} 运行时按 个人 → 团队 → hub 的顺序取。值写进去就读不回来。
+          按个人、团队、全站的顺序查找。保存后不可再查看。
         </p>
         <ul>
           {rows.map((s) => (

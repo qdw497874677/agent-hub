@@ -12,7 +12,7 @@ export function NoTasksHint({ onNewTask, floating = false }: { onNewTask: () => 
           : 'flex flex-wrap items-center gap-3'
       }
     >
-      <p className={`text-meta text-tertiary ${floating ? 'mb-3' : ''}`}>还没有任务。先写下想做的事，再从任务派生会话。</p>
+      <p className={`text-meta text-tertiary ${floating ? 'mb-3' : ''}`}>还没有任务。</p>
       <button
         type="button"
         className="min-h-[44px] rounded-sm bg-accent px-4 text-meta text-canvas hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent md:min-h-0 md:py-1.5"

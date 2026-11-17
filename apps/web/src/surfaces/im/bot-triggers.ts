@@ -6,8 +6,7 @@ import { stampText } from './bot-credential.ts';
  * 创建 / 暂停仍在连接器页，这里只负责把 `GET /api/bots/:id/triggers` 讲成人话。
  */
 
-export const BOT_TRIGGERS_EMPTY = '还没有触发器';
-export const BOT_TRIGGERS_EMPTY_HINT = '触发器在连接器页里挂到 bot 上。';
+export const BOT_TRIGGERS_EMPTY = '还没有触发。';
 
 /** run 状态的中文说法（和连接器页同一套）。 */
 export const TRIGGER_RUN_LABEL: Record<BotTriggerDto['runs'][number]['state'], string> = {

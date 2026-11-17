@@ -46,13 +46,14 @@ test('可观测：列表和树（测试数据，1280×800）', async ({ page, ba
   db.close();
 
   await page.goto('/#/observe');
-  await expect(page.getByTestId('observe-access')).toContainText('没有登录的请求会被拒绝');
-  await expect(page.getByTestId('observe-scan')).toContainText('先取最近 500 条');
+  // 权限 / 扫描范围不再常驻在页面上（COPY.md #116 #118）：只有真被截断时才出一句
+  await expect(page.getByTestId('observe-access')).toHaveCount(0);
+  await expect(page.locator('[data-testid="observe-scan"][data-truncated="0"]')).toHaveCount(0);
   await expect(page.getByTestId('observe-list')).toBeVisible();
   await expect(page.getByTestId('observe-row').filter({ hasText: `e2e acme/demo ${tag}` })).toBeVisible();
   await page.getByTestId('observe-needs-look').check();
   await expect(page.getByTestId('observe-row').filter({ hasText: `e2e acme/demo ${tag}` })).toBeVisible();
-  await expect(page.getByTestId('observe-scan')).toContainText('先取最近 500 条');
+  await expect(page.locator('[data-testid="observe-scan"]:not([data-truncated="1"])')).toHaveCount(0);
   await page.screenshot({ path: `${SHOTS}/observe-impl-list-1280.png` });
   await page.getByTestId('observe-row').filter({ hasText: `e2e acme/demo ${tag}` }).getByRole('link', { name: '打开树' }).click();
   await expect(page.getByTestId('observe-tree')).toBeVisible();

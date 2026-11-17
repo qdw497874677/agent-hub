@@ -45,8 +45,8 @@ export function useWorkspaceViews(projectId: string) {
 
 export const KIND_LABEL = { long_lived: '持久', temporary: '临时' } as const;
 export const KIND_HINT = {
-  long_lived: '持久：一直保留，下次还能接着用。',
-  temporary: '临时：任务结束后自动清理；有未保存的改动会保留并提醒你。'
+  long_lived: '持久：一直保留',
+  temporary: '临时：用完清理（有未保存的改动会保留）'
 } as const;
 export const CONCURRENT_HINT = '另一个任务也在这里干活，改动可能互相影响';
 
@@ -191,7 +191,7 @@ export function WorkspaceChooser({
           <div role="radiogroup" aria-label="选择工作目录" className="flex flex-col gap-1.5">
             {views.isLoading ? <p className="text-meta text-tertiary">正在读取工作目录…</p> : null}
             {!views.isLoading && here.length === 0 ? (
-              <p data-testid="ws-none-linked" className="text-meta text-tertiary">本项目在这台机器上还没有关联工作目录。关联一个团队里已有的，或者新建一个。</p>
+              <p data-testid="ws-none-linked" className="text-meta text-tertiary">还没有工作目录。</p>
             ) : null}
             {here.map(({ workspace, runningTaskIds, otherProjectSessions }) => {
               const selected = choice?.type === 'existing' && choice.workspaceId === workspace.id;
@@ -312,7 +312,6 @@ function NewLongLived({
         <Radio on={selected} />
         <span className="min-w-0 flex-1">
           <span className="block text-body text-primary">新建持久工作目录</span>
-          <span className="block text-meta text-tertiary">一直保留，下次还能接着用</span>
         </span>
       </button>
       {selected ? (
@@ -420,10 +419,6 @@ function NewTemporary({
       <Radio on={selected} />
       <span className="min-w-0 flex-1">
         <span className="block text-body text-primary">新建临时工作目录</span>
-        {/* 未选中只有一行：挑东西的时候不用读完每个选项的说明书 */}
-        <span className="block text-meta text-tertiary">
-          {gitHere ? '每个任务一个分支，用完自动清理' : '为这个任务单独开一份，用完自动清理'}
-        </span>
         {existing > 0 ? (
           <span className="mt-0.5 block text-meta text-rust">这个任务已经有 {existing} 个临时工作目录</span>
         ) : null}
@@ -488,10 +483,7 @@ function NewWorktree({
       >
         <Radio on={selected} />
         <span className={`min-w-0 flex-1 ${gitHere ? '' : 'opacity-60'}`}>
-          <span className="block text-body text-primary">新建隔离 worktree（新分支）</span>
-          <span className="block text-meta text-tertiary">
-            {gitHere ? '按项目配置现建，分支互不干扰' : '按项目配置在这台机器上现建一个隔离目录'}
-          </span>
+          <span className="block text-body text-primary">新建隔离目录（新分支）</span>
           {gitHere && selected ? (
             <span className="mt-1 block text-meta text-secondary">
               在 {machineName} 上新开分支 <span className="font-mono">{branchPreview(title)}</span>
@@ -550,8 +542,7 @@ function NewGroup({
       >
         <Radio on={selected} />
         <span className="min-w-0 flex-1">
-          <span className="block text-body text-primary">新建组合工作目录 · {repos.length} 个仓库</span>
-          <span className="block text-meta text-tertiary">每个仓库在新目录里各开一个 worktree，agent 在总目录里工作</span>
+          <span className="block text-body text-primary">新建组合工作目录（{repos.length} 个仓库）</span>
           {selected ? (
             <span className="mt-1 block text-meta text-secondary">
               在 {machineName} 上准备 {repos.length} 个子目录：

@@ -33,11 +33,10 @@ export function ObservePage({ source, id }: { source: string | null; id: string 
         <div className="mb-4 flex items-start justify-between gap-2">
           <div>
             <a className="text-head text-primary" href="#/home">agent-hub</a>
-            <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
           </div>
           <AccountMenu />
         </div>
-        <a className="rounded-sm bg-card px-2 py-1 text-body text-primary" href="#/observe" data-testid="nav-observe-here">可观测</a>
+        <a className="rounded-sm bg-card px-2 py-1 text-body text-primary" href="#/observe" data-testid="nav-observe-here">运行记录</a>
         <a className="mt-1 rounded-sm px-2 py-1 text-body text-secondary hover:bg-card" href="#/home">首页</a>
       </nav>
       <main className="min-w-0 flex-1 overflow-y-auto px-4 py-4 md:px-6">
@@ -62,10 +61,8 @@ function ObserveList() {
   return (
     <div data-testid="observe-page">
       <div className="mb-2 flex items-baseline gap-2">
-        <h1 className="text-head text-primary">可观测</h1>
-        <span className="text-meta text-tertiary">只读</span>
+        <h1 className="text-head text-primary">运行记录</h1>
       </div>
-      <p className="mb-3 text-meta text-secondary">点一行打开树。批准、取消、暂停仍在原来的页面。</p>
       <div className="mb-3 flex flex-wrap items-center gap-2 text-meta">
         <label className="text-tertiary">时间
           <select className="ml-1 bg-transparent text-primary" data-testid="observe-window" value={hours} onChange={(e) => setHours(Number(e.target.value))}>
@@ -88,15 +85,12 @@ function ObserveList() {
         <p className="mb-2 text-meta text-rust" data-testid="observe-error">刷新失败 <button className="underline" onClick={() => void list.refetch()}>重试</button></p>
       ) : null}
       {list.isPending ? <div data-testid="observe-loading" className="h-24 rounded-md bg-card" /> : null}
-      {list.data && !list.data.enabled ? <p data-testid="observe-disabled" className="text-meta text-tertiary">可观测未启用。触发和调度照常进行。</p> : null}
+      {list.data && !list.data.enabled ? <p data-testid="observe-disabled" className="text-meta text-tertiary">运行记录未启用。触发和调度照常进行。</p> : null}
       {list.data?.viewer === 'anonymous' ? (
         <p data-testid="observe-anonymous" className="mb-2 text-meta text-rust">没有登录。开了账号权限时这里不列出记录，这不是「没有数据」。</p>
       ) : null}
-      {list.data?.enabled && list.data.viewer !== 'anonymous' ? (
-        <p data-testid="observe-access" className="mb-2 text-meta text-secondary">只显示你能读的项目。没有登录的请求会被拒绝，不会显示成空列表。别的团队的触发不会出现。</p>
-      ) : null}
       {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.items.length === 0 ? (
-        <p data-testid="observe-empty" className="text-meta text-tertiary">没有你能看的记录。<a className="text-accent" href="#/bots">去 Bot 页</a></p>
+        <p data-testid="observe-empty" className="text-meta text-tertiary">没有记录。<a className="text-accent" href="#/bots">查看 Bot</a></p>
       ) : null}
       {list.data?.enabled && list.data.items.length > 0 ? (
         <table className="w-full border-collapse overflow-hidden rounded-md border border-hair bg-card" data-testid="observe-list">
@@ -124,10 +118,14 @@ function ObserveList() {
           </tbody>
         </table>
       ) : null}
-      {list.data?.enabled && list.data.viewer !== 'anonymous' ? (
-        <p className={`mt-2 text-meta ${list.data.truncated ? 'text-accent' : 'text-tertiary'}`} data-testid="observe-scan" data-truncated={list.data.truncated ? '1' : '0'}>
-          时间窗里先取最近 {list.data.scanLimit ?? 500} 条，再按「失败或缺环」筛选，这一页最多 50 条。
-          {list.data.truncated ? '这一次已经截断，更早的失败可能不在这里。' : '超过就会截断，更早的失败可能不在这里。'}
+      {list.data?.enabled && list.data.viewer !== 'anonymous' && list.data.truncated ? (
+        <p
+          className="mt-2 text-meta text-accent"
+          data-testid="observe-scan"
+          data-truncated="1"
+          title={`时间窗里先取最近 ${list.data.scanLimit ?? 500} 条，再按「失败或缺环」筛选；更早的失败可能不在这里`}
+        >
+          只显示最近 50 条
         </p>
       ) : null}
     </div>
@@ -153,7 +151,7 @@ function ObserveDetail({ source, id }: { source: string; id: string }) {
       <h1 className="mt-1 text-head text-primary">{trace?.title ?? '链路'}</h1>
       {detail.isError ? <p className="mt-2 text-meta text-rust" data-testid="observe-error">刷新失败 <button className="underline" onClick={() => void detail.refetch()}>重试</button></p> : null}
       {detail.isPending ? <div data-testid="observe-loading" className="mt-3 h-24 rounded-md bg-card" /> : null}
-      {detail.data && !detail.data.enabled ? <p data-testid="observe-disabled" className="mt-3 text-meta text-tertiary">可观测未启用。</p> : null}
+      {detail.data && !detail.data.enabled ? <p data-testid="observe-disabled" className="mt-3 text-meta text-tertiary">运行记录未启用。</p> : null}
       {tree && trace ? (
         <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
           <div className="rounded-md border border-hair bg-card p-2" data-testid="observe-tree">

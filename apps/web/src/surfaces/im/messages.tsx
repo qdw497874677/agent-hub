@@ -62,14 +62,15 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
   return (
     <form
       data-testid="group-form"
-      className="flex flex-col gap-2 p-3"
+      className="flex min-w-0 flex-col gap-2 p-3"
       onSubmit={(e) => {
         e.preventDefault();
         save.mutate({ name: name.trim(), members, hostRole: hostRole || null, speakingStrategy: strategy, limits: { maxRounds: rounds, maxMessages: msgs } });
       }}
     >
       <input aria-label="群名" data-testid="group-name" className={INPUT} placeholder="群名" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} />
-      <fieldset className="flex flex-col gap-1 text-meta text-secondary">
+      {/* fieldset 默认 min-width: min-content，不加 min-w-0 成员行再怎么截断也会把它撑出侧栏 */}
+      <fieldset className="flex min-w-0 flex-col gap-1 text-meta text-secondary">
         <legend className="mb-1 text-tertiary">选成员（项目里的 bot）</legend>
         {members.length ? (
           <div className="flex flex-wrap gap-1" data-testid="group-chips">
@@ -92,18 +93,23 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
         <ul className="flex max-h-56 flex-col overflow-y-auto rounded-sm border border-hair">
           {roles.map((r) => (
             <li key={r.name}>
-              <label className="flex items-center gap-2 border-b border-hair px-2 py-1.5 last:border-0">
+              {/* 侧栏很窄：名字一行，「@id · 运行时 · 模型」一行，都可截断，不把行撑出侧栏 */}
+              <label className="flex min-w-0 items-center gap-2 border-b border-hair px-2 py-1.5 last:border-0">
                 <input
                   type="checkbox"
                   data-testid="group-member"
+                  className="shrink-0"
                   value={r.name}
                   checked={members.includes(r.name)}
                   onChange={(e) => setMembers((m) => (e.target.checked ? [...m, r.name] : m.filter((x) => x !== r.name)))}
                 />
                 <BotAvatar bot={r} size={22} />
-                <span className="text-primary">{botLabel(r)}</span>
-                <span className="text-tertiary">@{r.name}</span>
-                <span className="ml-auto truncate text-tertiary">{r.agentId}{r.model ? ` · ${r.model}` : ''}</span>
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="truncate text-primary">{botLabel(r)}</span>
+                  <span className="truncate text-tertiary" title={`@${r.name} · ${r.agentId}${r.model ? ` · ${r.model}` : ''}`}>
+                    @{r.name} · {r.agentId}{r.model ? ` · ${r.model}` : ''}
+                  </span>
+                </span>
               </label>
             </li>
           ))}
@@ -111,7 +117,7 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
         {roles.length ? <a className="self-start text-tertiary hover:text-accent" href={`${formatRoute({ page: 'bots', projectId })}/new`}>＋ 新建 bot</a> : null}
       </fieldset>
       <button type="button" data-testid="group-advanced" aria-expanded={advanced} className="self-start text-meta text-tertiary hover:text-secondary" onClick={() => setAdvanced((v) => !v)}>
-        {advanced ? '▾' : '▸'} 高级设置 · {hostRole ? `主持人 @${hostRole}` : '无主持人'} · {strategy === 'host' ? '主持人分派' : '成员竞价'} · {rounds} 轮 / {msgs} 条
+        {advanced ? '▾' : '▸'} 高级设置 · {speakingSummary(hostRole, strategy)} · {rounds} 轮 / {msgs} 条
       </button>
       {advanced ? (
         <div data-testid="group-advanced-panel" className="flex flex-col gap-2">
@@ -550,7 +556,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
       <header className="flex items-center gap-2 border-b border-hair px-3 py-2">
         <div className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
           <a className="block max-w-full shrink-0 truncate whitespace-nowrap text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
-          <h1 className="min-w-0 truncate text-head text-primary">消息</h1>
+          <h1 className="min-w-0 truncate text-head text-primary">群</h1>
         </div>
         <select aria-label="项目" data-testid="messages-project" className={`${INPUT} min-w-0 shrink-0 ${compact ? 'max-w-[45%]' : 'max-w-[40%]'}`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>
           {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -580,7 +586,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
         )}
       </header>
       <div className="flex min-h-0 flex-1">
-        <aside className={`${current ? 'hidden md:flex' : 'flex'} w-full flex-col border-r border-hair md:w-64`}>
+        <aside className={`${current ? 'hidden md:flex' : 'flex'} w-full min-w-0 flex-col border-r border-hair md:w-64 md:shrink-0`}>
           <ul data-testid="group-list" className="min-h-0 flex-1 overflow-y-auto">
             {list.map((g) => (
               <li key={g.id}>
@@ -620,7 +626,8 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
             ) : null}
           </ul>
           {pid ? (
-            <div className="border-t border-hair">
+            // 建群表单展开后可能比侧栏剩下的高度还高：自己滚，不把群列表挤没，也不横向溢出
+            <div className={`min-w-0 border-t border-hair ${creating ? 'max-h-[75%] overflow-y-auto overscroll-contain' : ''}`}>
               {creating ? (
                 <GroupForm projectId={pid} roles={roleList} group={null} onDone={(g) => { setCreating(false); go(g.id); }} />
               ) : (
@@ -662,4 +669,13 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
       ) : null}
     </div>
   );
+}
+
+/**
+ * 高级设置折叠时的那一句：说的是「不 @ 人时谁接话」，和服务端调度一致（use-cases/groups.ts）。
+ * 没设主持人时「主持人分派」根本分派不了，只有被 @ 的成员接话——别写成「无主持人 · 主持人分派」。
+ */
+function speakingSummary(hostRole: string, strategy: 'host' | 'volunteer'): string {
+  if (strategy === 'volunteer') return '成员竞价接话';
+  return hostRole ? `主持人 @${hostRole} 分派` : '无主持人 · 只有被 @ 的成员接话';
 }

@@ -35,7 +35,7 @@ interface Props {
   readonly workerId: string | null;
   /** 页签是否在前台：决定要不要 fit / 抢焦点；切走时实例保留。 */
   readonly active: boolean;
-  /** 会话已结束时的一句话：终端只是 shell，不会把 agent 拉起来。 */
+  /** agent 没在跑时的一句话：终端只是 shell，不会把 agent 拉起来（会话本身还能接着聊）。 */
   readonly notice?: string | null;
 }
 

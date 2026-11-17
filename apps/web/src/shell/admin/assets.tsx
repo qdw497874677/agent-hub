@@ -71,9 +71,6 @@ export function Assets() {
           </button>
         }
       >
-        <p className="mb-3 text-meta text-tertiary">
-          技能、指令和 MCP 服务器按机器安装：技能和指令落进那台机器的 <code>~/.agent-hub/assets</code>，MCP 在会话启动时接上（远端的经 hub 代连，密钥不出 hub）。可以是全局的，也可以只属于某个项目（同名时项目的优先，在项目设置里开关）。只对之后新开的会话生效；版本不可变，升级前先看差异。
-        </p>
         {assets.some((asset) => asset.latest !== asset.pinned) ? (
           <div data-testid="asset-update-notice" role="status" className="mb-3 rounded-sm border border-accent px-3 py-2 text-sub text-primary">
             有新版本：
@@ -104,7 +101,7 @@ export function Assets() {
               ))}
             </ul>
           ) : (
-            <Empty text={overview.isLoading ? '载入中…' : '还没有资产。点「添加」上传技能文件夹 / zip，或从 Git 导入。'} />
+            <Empty text={overview.isLoading ? '载入中…' : '还没有资产。'} />
           )}
         </Panel>
       </Section>
@@ -411,7 +408,7 @@ function UploadForm({ onDone }: { onDone: () => void }) {
           ) : null}
         </>
       ) : (
-        <p className="text-meta text-tertiary">选整个技能文件夹，或它的 zip，或多选文件；根目录要有 SKILL.md（name / description 写在 frontmatter）。</p>
+        <p className="text-meta text-tertiary">选择含 SKILL.md 的文件夹或 zip。</p>
       )}
       <div className="flex flex-wrap gap-2">
         <button className={SECONDARY_BUTTON} onClick={() => filesInput.current?.click()}>
@@ -837,7 +834,7 @@ function Secrets() {
             ))}
           </ul>
         ) : (
-          <Empty text={secrets.isLoading ? '载入中…' : '还没有密钥。MCP 配置里引用 ${secret:NAME} 后，在这里设置它的值。'} />
+          <Empty text={secrets.isLoading ? '载入中…' : '还没有密钥。'} />
         )}
         <div className="flex flex-wrap gap-2 border-t border-hair px-3 py-2.5">
           <input
@@ -852,7 +849,7 @@ function Secrets() {
             type="password"
             autoComplete="new-password"
             className={`${INPUT} min-w-0 flex-1`}
-            placeholder="值（保存后不再显示）"
+            placeholder="值（保存后不可再查看）"
             value={value}
             onChange={(event) => setValue(event.target.value)}
           />

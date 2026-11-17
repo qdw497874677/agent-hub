@@ -124,10 +124,9 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
     <section data-testid="project-repos">
       <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
         仓库
-        <span className="text-meta text-tertiary">代码从哪来</span>
       </h3>
-      <p className="mb-2 text-meta text-tertiary">
-        项目绑定的代码仓库，最多 {PROJECT_REPOS_MAX} 个。第一条是主仓库；仓库名会用作组合工作目录里的子目录名。
+      <p className="mb-2 text-meta text-tertiary" title="仓库名会用作组合工作目录里的子目录名">
+        最多 {PROJECT_REPOS_MAX} 个，第一个是主仓库。
       </p>
 
       {editable ? (
@@ -135,7 +134,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
           <div className="space-y-2">
             {rows.length === 0 ? (
               <p className="text-meta text-tertiary" data-testid="repos-empty">
-                这个项目还没绑仓库。绑上之后，派生任务时就能在仓库上开 worktree 或组合工作目录。
+                还没有仓库。
               </p>
             ) : null}
             {rows.map((row, index) => {
@@ -271,7 +270,7 @@ export function ProjectRepos({ project }: { project: ProjectDto }) {
 /** 非管理员看到同一份清单，只是不能改：别让「为什么没有输入框」变成疑问。 */
 function ReadonlyRepos({ rows }: { rows: readonly ProjectRepoRow[] }) {
   if (rows.length === 0) {
-    return <p className="text-meta text-tertiary" data-testid="project-repos-readonly">这个项目还没绑仓库。</p>;
+    return <p className="text-meta text-tertiary" data-testid="project-repos-readonly">还没有仓库。</p>;
   }
   return (
     <ul className="space-y-1 text-meta text-secondary" data-testid="project-repos-readonly">

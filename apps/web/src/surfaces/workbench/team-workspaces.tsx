@@ -40,8 +40,7 @@ export function TeamWorkspacesPage() {
       </header>
       <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
         <div className="mx-auto flex max-w-[960px] flex-col gap-4">
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <p className="text-meta text-tertiary">机器上的目录。一个工作目录可以给多个项目用；项目设置里关联了才能在里面开任务。</p>
+          <div className="flex flex-wrap items-start justify-end gap-2">
             {canManage ? (
               <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>＋ 新建工作目录</button>
             ) : null}
@@ -50,7 +49,7 @@ export function TeamWorkspacesPage() {
           {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
           {list.error ? <p className="text-meta text-rust">{errorText(list.error)}</p> : null}
           {list.data && rows.length === 0 ? (
-            <p className="text-meta text-tertiary">{canManage ? '还没有工作目录。' : '你能看到的项目还没有关联工作目录。'}</p>
+            <p className="text-meta text-tertiary">还没有工作目录。</p>
           ) : null}
           {[...groups].map(([workerId, views]) => (
             <section key={workerId}>
@@ -97,18 +96,18 @@ function TeamWorkspaceRow({ row, canManage }: { row: TeamWorkspaceViewDto; canMa
           </div>
         </div>
         {canManage && row.runningSessions === 0 ? (
-          <button className="shrink-0 rounded-sm px-2 py-1 text-meta text-tertiary hover:text-rust" onClick={() => setConfirm(true)}>移除登记</button>
+          <button className="shrink-0 rounded-sm px-2 py-1 text-meta text-tertiary hover:text-rust" onClick={() => setConfirm(true)}>取消登记</button>
         ) : null}
       </div>
       {confirm ? (
         <div className="mt-2 rounded-sm border border-rust/60 p-2">
           <p className="mb-2 text-meta text-secondary">
-            从团队里移除这个工作目录{linked > 0 ? `，${linked} 个项目都不能再用它` : ''}。目录和文件原样保留。
+            取消登记{linked > 0 ? `。${linked} 个项目将不能再使用它` : ''}，磁盘上的文件不会删除。
           </p>
           {remove.error ? <p className="mb-2 text-meta text-rust">{errorText(remove.error)}</p> : null}
           <div className="flex justify-end gap-2">
             <button className={SECONDARY_BUTTON} onClick={() => setConfirm(false)}>取消</button>
-            <button className="rounded-sm bg-rust px-3 py-1.5 text-sub text-primary disabled:opacity-40" disabled={remove.isPending} onClick={() => remove.mutate()}>确认移除</button>
+            <button className="rounded-sm bg-rust px-3 py-1.5 text-sub text-primary disabled:opacity-40" disabled={remove.isPending} onClick={() => remove.mutate()}>确认取消登记</button>
           </div>
         </div>
       ) : null}

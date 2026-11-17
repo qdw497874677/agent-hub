@@ -116,6 +116,9 @@ test('开会话：todo → in_progress，并记一条系统日志；改状态也
 
 test('summaryFromBody 跳过模板小标题、截断长行', () => {
   assert.equal(summaryFromBody('## 已完成\n- A 好了'), 'A 好了');
+  // agent 常写的「## 完成」也是小标题：不该被当成「当前进展」挂在任务卡上（和右上角的状态徽标打架）
+  assert.equal(summaryFromBody('## 完成\n- 写好了 math.ts'), '写好了 math.ts');
+  assert.equal(summaryFromBody('## 总结\n两数之和已实现'), '两数之和已实现');
   assert.equal(summaryFromBody('x'.repeat(300)).length, 200);
 });
 

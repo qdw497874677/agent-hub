@@ -8,7 +8,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, RecentSessionDto } from '../../shell/api.ts';
 import { api } from '../../shell/api.ts';
 import { WorkersBadge } from '../../shell/workers.tsx';
-import { coarsePointer } from '../../shell/device.ts';
 import { DeleteProjectDialog, TrashList } from './delete-project.tsx';
 import { GlobalNav } from '../../shell/global-nav.tsx';
 
@@ -61,7 +60,6 @@ export function HomePage({
         <div className="order-1 mb-4 flex items-start justify-between gap-2">
           <div>
             <p className="text-head text-primary">agent-hub</p>
-            <p className="mt-1 text-meta text-tertiary">自带机器与 agent 的工作台</p>
           </div>
           <div className="flex items-center gap-2">
             <AttentionBadge compact onClick={() => document.querySelector('[data-testid="attention-inbox"]')?.scrollIntoView({ behavior: 'smooth' })} />
@@ -212,11 +210,6 @@ export function HomePage({
             </p>
           ) : null}
 
-          <p className="mt-8 text-meta text-tertiary">
-            {coarsePointer()
-              ? '点任务卡上的「＋ 会话」派生会话 · 关掉浏览器，会话历史还在'
-              : '任务卡上点「＋ 会话」派生会话 · ⌘K 搜会话里说过的话 · 关掉浏览器，会话历史还在'}
-          </p>
         </div>
       </main>
     </div>
@@ -258,10 +251,7 @@ function CreateProjectPanel({
 
   return (
     <section aria-label="新建项目" className="mb-6 rounded-md border border-hair bg-panel p-4">
-      <p className="mb-1 text-head text-primary">新建项目</p>
-      <p className="mb-3 text-meta text-secondary">
-        项目是你在做的东西，起个名字就能建。在哪台机器、哪个目录干活，开始任务时再选。
-      </p>
+      <p className="mb-3 text-head text-primary">新建项目</p>
 
       <form
         className="mb-2 flex gap-2"
@@ -291,9 +281,10 @@ function CreateProjectPanel({
 
       <textarea
         aria-label="项目说明"
+        title="agent 开工时会读到"
         className="mb-3 block min-h-[72px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-accent"
         value={description}
-        placeholder="项目说明（可选，支持 markdown）：这是什么、仓库在哪、有什么约定。agent 开工时会读到。"
+        placeholder="说明（可选）"
         onChange={(event) => setDescription(event.target.value)}
       />
 

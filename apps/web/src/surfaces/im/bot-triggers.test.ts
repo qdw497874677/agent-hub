@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BOT_TRIGGERS_EMPTY,
-  BOT_TRIGGERS_EMPTY_HINT,
   TRIGGER_RUN_LABEL,
   latestRun,
   nextRunView,
@@ -103,8 +102,7 @@ test('一条 run 说清状态和时间：有 plannedAt 用它，否则用 create
   assert.equal(TRIGGER_RUN_LABEL.timeout, '超时');
 });
 
-test('空态文案：说清去哪儿挂触发器，不再提「C4」', () => {
-  assert.equal(BOT_TRIGGERS_EMPTY, '还没有触发器');
-  assert.match(BOT_TRIGGERS_EMPTY_HINT, /连接器页/);
-  assert.doesNotMatch(`${BOT_TRIGGERS_EMPTY}${BOT_TRIGGERS_EMPTY_HINT}`, /C4/);
+test('空态文案：一句话，不指向不存在的「连接器页」，不提「C4」', () => {
+  assert.equal(BOT_TRIGGERS_EMPTY, '还没有触发。');
+  assert.doesNotMatch(BOT_TRIGGERS_EMPTY, /连接器页|C4/);
 });

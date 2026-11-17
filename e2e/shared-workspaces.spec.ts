@@ -73,7 +73,7 @@ test('团队工作目录：新建 → 项目关联 → 开始任务只列已关�
       await page.goto(`/#/p/${b.id}`);
       await page.reload();
       await page.locator('.react-flow__node-task').filter({ hasText: title }).getByRole('button', { name: '＋ 会话' }).click();
-      const run = page.getByRole('dialog', { name: '在哪台机器、哪个工作目录干活？' });
+      const run = page.getByRole('dialog', { name: '开始会话' });
       {
         await expect(run.getByTestId('ws-none-linked')).toBeVisible();
         await expect(run.getByRole('radio', { name: new RegExp(`shared-ws-${RUN}`) })).toHaveCount(0);

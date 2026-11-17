@@ -103,7 +103,7 @@ test('显示设置：每个选项都能切，刷新后还在', async ({ page, ba
   }
   await panel.getByRole('switch', { name: '命令输出默认展开' }).check();
   await panel.getByRole('switch', { name: '文件改动默认展开' }).uncheck();
-  await panel.getByRole('switch', { name: '紧凑模式' }).check();
+  await panel.getByRole('switch', { name: '紧凑', exact: true }).check();
   await expect(page.getByRole('log', { name: '会话记录' })).toHaveAttribute('data-compact', 'true');
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-display-settings.png` });
 
@@ -113,7 +113,7 @@ test('显示设置：每个选项都能切，刷新后还在', async ({ page, ba
   await expect(panel.getByRole('radiogroup', { name: '工具调用' }).getByRole('radio', { name: '折叠' })).toHaveAttribute('aria-checked', 'true');
   await expect(panel.getByRole('switch', { name: '命令输出默认展开' })).toBeChecked();
   await expect(panel.getByRole('switch', { name: '文件改动默认展开' })).not.toBeChecked();
-  await expect(panel.getByRole('switch', { name: '紧凑模式' })).toBeChecked();
+  await expect(panel.getByRole('switch', { name: '紧凑', exact: true })).toBeChecked();
   await expect(page.getByRole('log', { name: '会话记录' })).toHaveAttribute('data-compact', 'true');
   // 还原，别影响别的用例
   await page.evaluate(() => Object.keys(localStorage).filter((k) => k.startsWith('agent-hub.display.')).forEach((k) => localStorage.removeItem(k)));

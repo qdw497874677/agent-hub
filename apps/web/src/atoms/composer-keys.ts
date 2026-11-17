@@ -22,3 +22,18 @@ export function composerKeyAction(event: ComposerKeyEvent): ComposerKeyAction {
   if (!event.metaKey && !event.ctrlKey) return null;
   return event.shiftKey ? 'send-and-new' : 'send';
 }
+
+/**
+ * 输入框里写的发送提示。两个输入框（专注对话、画布卡片）同一套手势：⌘/Ctrl+Enter 发送，Enter 换行。
+ * Mac 写 ⌘↵，其他系统写 Ctrl+↵——在 Linux / Windows 上看到 ⌘ 不知道按哪个键。
+ */
+export function sendKeyHint(platform: string): string {
+  return /mac|iphone|ipad|ipod/i.test(platform) ? '⌘↵ 发送' : 'Ctrl+↵ 发送';
+}
+
+/** 浏览器里的平台名（没有 navigator 的环境当成非 Mac）。 */
+export function currentPlatform(): string {
+  if (typeof navigator === 'undefined') return '';
+  const data = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData;
+  return data?.platform || navigator.platform || '';
+}

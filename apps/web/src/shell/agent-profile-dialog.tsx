@@ -35,14 +35,14 @@ export function SaveAgentProfileDialog({
   });
 
   return (
-    <DialogShell title="保存为 Agent 配置" onClose={onClose}>
+    <DialogShell title="保存为启动预设" onClose={onClose}>
       <form
         onSubmit={(event) => {
           event.preventDefault();
           if (name.trim() !== '' && !save.isPending) save.mutate();
         }}
       >
-        <p className="mb-3 text-head text-primary">保存为 Agent 配置</p>
+        <p className="mb-3 text-head text-primary">保存为启动预设</p>
         <p className="mb-3 text-meta text-secondary">
           会保存 <span className="text-primary">{agentLabel}</span>
           {session.model ? <> · {session.model}</> : null}

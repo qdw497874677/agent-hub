@@ -22,7 +22,7 @@ import {
 import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
-import { canSelectMachine, startHint } from './harness-gate.ts';
+import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startHint } from './harness-gate.ts';
 import { ModelPicker, SEARCHABLE_AFTER } from '../atoms/model-picker.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
@@ -59,11 +59,11 @@ export function NewTaskDialog({ projectId, onDone }: { projectId: string; onDone
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
-        <label className="mb-1 block text-meta text-secondary" htmlFor="task-goal">目标（可留空）</label>
+        <label className="mb-1 block text-meta text-secondary" htmlFor="task-goal">目标</label>
         <textarea
           id="task-goal"
           className={`mb-4 h-20 resize-none ${INPUT}`}
-          placeholder="想要达成什么、怎样算做完"
+          placeholder="怎样算做完（可选）"
           value={goal}
           onChange={(event) => setGoal(event.target.value)}
         />
@@ -174,8 +174,11 @@ export function DeriveDialog({
     model,
     protocol: selectedHub?.protocol ?? null,
     workspaceReady: choiceReady(choice),
-    workspaceNeedsPath: choice?.type === 'new_long_lived' && !choice.path
+    workspaceNeedsPath: choice?.type === 'new_long_lived' && !choice.path,
+    hubAvailable: hubCovers(workers.byId(machine), agentId, hubProtocols)
   });
+  // 模型框的空值项：状态为空时显式画出来，别让浏览器把第一项画成「已选」（见 emptyModelOption）
+  const emptyModel = emptyModelOption(offered.models, model, hubCovers(workers.byId(machine), agentId, hubProtocols));
   // 项目默认隔离（docs/design/worktree.md §2 §3）：没选过任何东西时，替用户选上「新建隔离 worktree」。
   const projectIsolated = canvas.project.worktree?.mode === 'isolated';
   const [modeTouched, setModeTouched] = useState(false);
@@ -318,7 +321,7 @@ export function DeriveDialog({
 
   return (
     <DialogShell
-      title="在哪台机器、哪个工作目录干活？"
+      title="开始会话"
       onClose={onDone}
       footer={
         <div className="flex flex-col gap-1.5">
@@ -344,10 +347,10 @@ export function DeriveDialog({
         </div>
       }
     >
-        <p className="mb-3 text-head text-primary">在哪台机器、哪个工作目录干活？</p>
+        <p className="mb-3 text-head text-primary">开始会话</p>
         {canvas.agents.length === 0 ? (
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
-            还没有机器上线。它起来后，这里会出现它装了的 agent。
+            还没有在线的机器。
             <button
               className="ml-2 text-accent underline-offset-2 hover:underline"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
@@ -377,7 +380,7 @@ export function DeriveDialog({
         </div>
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between gap-2">
-            <label className="block text-meta text-secondary" htmlFor="derive-profile">Agent 配置（可留空）</label>
+            <label className="block text-meta text-secondary" htmlFor="derive-profile">启动预设（可选）</label>
             <button type="button" className="text-meta text-accent underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
               管理
             </button>
@@ -432,10 +435,12 @@ export function DeriveDialog({
             // 选了机器：那台上不能用的 agent 变灰并写明原因（没选机器时由下面的机器列表说明）
             const worker = machine === null ? undefined : workers.byId(machine);
             const why = worker ? harnessReason(worker, candidate.id) : null;
-            const disabled = why !== null && !(why === '未配置模型' && canSelectMachine(worker, candidate.id, hubProtocols));
+            const covered = why === '未配置模型' && canSelectMachine(worker, candidate.id, hubProtocols);
+            const disabled = why !== null && !covered;
+            const note = agentNote(why, covered);
             return (
               <option key={candidate.id} value={candidate.id} disabled={disabled}>
-                {why ? `${candidate.label}（${why}）` : candidate.label}
+                {note ? `${candidate.label}（${note}）` : candidate.label}
               </option>
             );
           })}
@@ -454,6 +459,7 @@ export function DeriveDialog({
               setModel(value);
             }}
             items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
+            {...(emptyModel === null ? {} : { placeholder: emptyModel })}
           />
         ) : (
           <select
@@ -466,15 +472,12 @@ export function DeriveDialog({
               setModel(event.target.value);
             }}
           >
-            {offered.models.length === 0 ? (
-              <option value="">用 agent 自己的默认</option>
-            ) : (
-              offered.models.map((candidate) => (
-                <option key={candidate} value={candidate}>
-                  {candidate}
-                </option>
-              ))
-            )}
+            {emptyModel === null ? null : <option value="">{emptyModel}</option>}
+            {offered.models.map((candidate) => (
+              <option key={candidate} value={candidate}>
+                {candidate}
+              </option>
+            ))}
           </select>
         )}
         </div>
@@ -548,7 +551,7 @@ export function DeriveDialog({
             <p className="text-meta text-rust">{(assetPlan.error as Error).message}</p>
           ) : assetEntries.length === 0 ? (
             <p className="text-meta text-tertiary" data-testid="derive-assets-empty">
-              这台机器上还没有可下发的资产
+              这台机器还没有资产
             </p>
           ) : (
             <ul className="flex flex-col">

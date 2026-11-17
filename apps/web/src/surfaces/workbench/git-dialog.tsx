@@ -170,7 +170,7 @@ export function GitHostTokenPanel() {
   return (
     <section className="mt-4 rounded-sm border border-hair bg-card p-3" data-testid="git-host-panel">
       <p className="text-sub text-primary">代码托管</p>
-      <p className="mt-1 text-meta text-tertiary">团队的 GitHub token：开 PR 时优先用它，没有就用机器上登录的 gh，再不行只推送并给链接。</p>
+      <p className="mt-1 text-meta text-tertiary">开 PR 时优先用这个 token，否则用机器上的 gh。</p>
       <p className="mt-2 text-meta text-secondary" data-testid="git-host-status">{s?.configured ? `已配置 · 末 4 位 ${s.last4}` : '未配置'}</p>
       <div className="mt-2 flex gap-2">
         <input type="password" autoComplete="off" className={INPUT} placeholder="ghp_… / github_pat_…" value={token} onChange={(e) => setToken(e.target.value)} data-testid="git-host-input" />

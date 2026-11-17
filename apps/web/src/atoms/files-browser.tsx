@@ -184,7 +184,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                   <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="找文件…" className="min-w-0 flex-1 rounded bg-card px-2 py-1 text-sub outline-none" data-testid="files-find" />
                   <label className="flex shrink-0 items-center gap-1 text-meta text-tertiary">
                     <input type="checkbox" checked={showSensitive} onChange={(e) => setShowSensitive(e.target.checked)} data-testid="files-show-sensitive" />
-                    敏感
+                    显示敏感文件
                   </label>
                 </div>
                 <RootPath root={root} wide={wide} />
@@ -226,7 +226,16 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                 </div>
                 <RootPath root={root} wide={wide} />
                 {changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
-                {changed?.files.length === 0 ? <p className="px-3 py-2 text-meta text-tertiary">没有改动</p> : null}
+                {changed?.files.length === 0 ? (
+                  // 「整个会话」要有会话开始时的 git 基准；没有基准时空列表不等于「没改」，照实说原因
+                  changed.base === 'session' && changed.commit === null ? (
+                    <p className="px-3 py-2 text-meta text-tertiary" data-testid="changes-no-git">
+                      没有 git 改动（当前目录不是仓库）
+                    </p>
+                  ) : (
+                    <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
+                  )
+                ) : null}
                 {changed?.files.map((f) => (
                   <button key={f.path} onClick={() => open({ path: f.path }, true)} data-testid="change-row"
                     className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened?.path === f.path ? 'bg-hair/60' : ''}`}>

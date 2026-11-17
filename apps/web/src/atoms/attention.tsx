@@ -76,7 +76,7 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
   if (items.length === 0) {
     return (
       <><ConnectorNotices /><p data-testid="attention-quiet" className="mb-4 text-meta text-tertiary">
-        没有等你处理的{working > 0 ? ` · ${working} 条在跑` : ''}
+        没有待办{working > 0 ? ` · ${working} 条在跑` : ''}
       </p></>
     );
   }

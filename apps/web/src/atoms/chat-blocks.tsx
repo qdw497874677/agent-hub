@@ -19,7 +19,7 @@ import type { HandoffDto } from './live-core.ts';
 import { formatRoute, parseRoute } from '../shell/route.ts';
 import { LogMarkdown } from './log-markdown.tsx';
 import { clipLines, parseUnifiedDiff, toolFamily, toolFileTarget, toolSummary, toolView, type DiffLine, type ToolView } from './tool-format.ts';
-import { runLength, startsRun, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
+import { runLength, startsRun, toolDisplayName, toolRowKind, toolRowLine, toolRowTitle, toolRunChip, type ToolRowKind, type ToolRowProbe } from './tool-rows.ts';
 import { subagentStepCount } from './live.ts';
 import { useFileLinks } from './file-links.tsx';
 
@@ -163,7 +163,7 @@ function Segmented<T extends string>({
   onChange
 }: {
   label: string;
-  /** 一句话说明这组开关管什么，跟 Toggle 的 hint 一样排在标签下面。 */
+  /** 一句话说明这组开关管什么，跟 Toggle 的 hint 一样放在标签的悬停提示里。 */
   hint?: string;
   value: T;
   options: readonly (readonly [T, string])[];
@@ -171,9 +171,8 @@ function Segmented<T extends string>({
 }) {
   return (
     <div role="radiogroup" aria-label={label} className="flex items-center justify-between gap-2 px-3 py-1.5">
-      <span className="text-meta text-secondary">
+      <span className="text-meta text-secondary" title={hint}>
         {label}
-        {hint ? <span className="block text-tertiary">{hint}</span> : null}
       </span>
       <span className="flex rounded-sm border border-hair">
         {options.map(([id, text]) => (
@@ -195,9 +194,8 @@ function Segmented<T extends string>({
 function Toggle({ label, hint, checked, disabled, onChange }: { label: string; hint?: string; checked: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
   return (
     <label className={`flex items-center justify-between gap-2 px-3 py-1.5 ${disabled ? 'opacity-40' : ''}`}>
-      <span className="text-meta text-secondary">
+      <span className="text-meta text-secondary" title={hint}>
         {label}
-        {hint ? <span className="block text-tertiary">{hint}</span> : null}
       </span>
       <input type="checkbox" role="switch" aria-label={label} checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} className="h-4 w-4 accent-[var(--color-accent)]" />
     </label>
@@ -230,9 +228,9 @@ export function DisplaySettingsPanel({ settings, onChange }: { settings: Display
         ]}
         onChange={(thinking) => onChange({ thinking })}
       />
-      <Toggle label="紧凑模式" hint="收紧行距，一屏多看几条" checked={settings.compact} onChange={(compact) => onChange({ compact })} />
+      <Toggle label="紧凑" hint="收紧行距，一屏多看几条" checked={settings.compact} onChange={(compact) => onChange({ compact })} />
       <Segmented<ContrastDisplay>
-        label="对比度"
+        label="增强对比"
         hint="提高次要文字与分隔线的对比度"
         value={settings.contrast}
         options={[
@@ -493,7 +491,7 @@ function ToolRow({ block, settings }: { block: Extract<Block, { kind: 'tool' }>;
         <span aria-hidden className={`shrink-0 text-meta ${failed ? 'text-rust' : 'text-tertiary'}`}>
           {mark}
         </span>
-        {run.first ? <span className="shrink-0 font-medium text-sage">{block.name}</span> : null}
+        {run.first ? <span className="shrink-0 font-medium text-sage" data-testid="tool-name" data-tool-name={block.name}>{toolDisplayName(block.name)}</span> : null}
         <span className="min-w-0 truncate font-mono text-sub text-tertiary" data-testid="tool-params">
           {line.pairs.length === 0 ? (
             toolSummary(view)
@@ -578,7 +576,7 @@ export function HandoffBar({ handoff }: { handoff: HandoffDto }) {
         {handoff.omitted > 0 ? `，省略 ${handoff.omitted} 条` : '，没有省略'} · 约 {k(handoff.tokens)} / {k(handoff.budget)} token
       </summary>
       <div className="mt-1.5 flex flex-col gap-1">
-        <p>这条是平台替你写给 agent 的交接简报：原来的 agent 会话状态带不过来，只带了平台记录的会话原文，按预算整条挑选（先保最近和第一句）。</p>
+        <p>这是自动生成的交接说明，不是原会话全文。</p>
         {handoff.omittedTurns.length > 0 ? <p>整轮省略：{rangeText(handoff.omittedTurns)}。agent 需要时可以用 session.read 查原文。</p> : null}
         {handoff.omitted > 0 && handoff.omittedTurns.length === 0 ? <p>省略的是部分轮次里较旧的条目（多是工具调用）；agent 需要时可以用 session.read 查原文。</p> : null}
         {sourceHref ? (
@@ -709,6 +707,7 @@ export function ChatBlock({
       </p>
     );
   }
+  if (block.kind === 'stopped') return <StoppedDivider text={block.text} />;
   if (block.kind === 'stall') {
     return (
       <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
@@ -839,7 +838,7 @@ function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block
     <div role="status" className="flex flex-col gap-2 rounded-sm border-l-2 border-ochre bg-ochre/10 px-3 py-2 text-meta text-primary" data-testid="msg-unknown">
       <p className="font-medium text-ochre">这一轮结果不确定</p>
       <p className="text-secondary">
-        运行时中途重启过，没法确认这一轮做完了没有（可能已经改了文件、跑了命令）。平台不会自动重试——请先看看工作区，再决定要不要重发。
+        这一轮结果不确定，可能已经改过文件。请先查看工作目录，再决定是否重发。
       </p>
       {actionable && !resolved ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -857,6 +856,17 @@ function UnknownOutcome({ block, sessionId, actionable }: { block: Extract<Block
         <p className="text-tertiary">已处理</p>
       ) : null}
       {error ? <p role="alert" className="text-rust">重发失败：{error}</p> : null}
+    </div>
+  );
+}
+
+/** 时间线里的系统分隔线：这一轮在这里停下了（参照 t3code TimelineSystemDivider）。画布卡片也用它。 */
+export function StoppedDivider({ text, compact = false }: { text: string; compact?: boolean }) {
+  return (
+    <div role="status" data-testid="turn-stopped" className={`flex items-center gap-2 text-meta text-tertiary ${compact ? '' : 'my-1'}`}>
+      <span aria-hidden className="h-px flex-1 bg-hair" />
+      <span className="shrink-0">■ {text}</span>
+      <span aria-hidden className="h-px flex-1 bg-hair" />
     </div>
   );
 }

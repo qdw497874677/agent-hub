@@ -77,12 +77,8 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
   return (
     <section className="mt-5 border-t border-hair pt-4" data-testid="worktree-config">
       <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-sub text-primary">
-        隔离与准备
-        <span className="text-meta text-tertiary">怎么开目录</span>
+        目录方式
       </h3>
-      <p className="mb-2 text-meta text-tertiary">
-        每个任务在哪种目录里干活。隔离档会在项目仓库旁边开一个独立的 worktree 和新分支，任务之间互不踩脚。
-      </p>
 
       {editable ? (
         <>
@@ -100,10 +96,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
                 checked={draft.mode === 'shared'}
                 onChange={() => update({ mode: 'shared' })}
               />
-              <span className="min-w-0">
-                <span className="block text-primary">共用长期工作目录（默认）</span>
-                <span className="mt-0.5 block text-meta leading-relaxed text-tertiary">单人顺序干活、要看到别人未提交的改动时选这个。</span>
-              </span>
+              <span className="min-w-0 text-primary" title="单人顺序干活、要看到别人未提交的改动时选这个">共用持久工作目录（默认）</span>
             </label>
             <label
               className={`flex items-start gap-2 rounded-sm border px-2 py-1.5 text-sub text-secondary ${
@@ -118,19 +111,13 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
                 checked={draft.mode === 'isolated'}
                 onChange={() => update({ mode: 'isolated' })}
               />
-              <span className="min-w-0">
-                <span className="block text-primary">每个任务开独立 worktree</span>
-                <span className="mt-0.5 block text-meta leading-relaxed text-tertiary">并行任务 / 会开 PR 时选这个。</span>
-              </span>
+              <span className="min-w-0 text-primary" title="并行任务、要开 PR 时选这个">每个任务一个隔离目录</span>
             </label>
           </div>
 
-          <label className="mb-1 block text-meta text-secondary" htmlFor="worktree-command">准备命令（可留空）</label>
-          <p className="mb-1 text-meta text-tertiary">
-            建好 worktree 后在这台机器上、以 worker 用户身份执行，比如装依赖、跑迁移。留空就什么都不跑。
-          </p>
+          <label className="mb-1 block text-meta text-secondary" htmlFor="worktree-command" title="建好隔离目录后在那台机器上执行，比如装依赖、跑迁移">准备命令</label>
           {draft.mode === 'shared' ? (
-            <p className="mb-1 text-meta text-tertiary">当前档位是共用长期工作目录，命令只在开了 worktree 的任务里跑。</p>
+            <p className="mb-1 text-meta text-tertiary">当前是共用目录，这条命令不会执行。</p>
           ) : null}
           <textarea
             id="worktree-command"
@@ -149,10 +136,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
               checked={draft.waitForSetup}
               onChange={(event) => update({ waitForSetup: event.target.checked })}
             />
-            <span>
-              等待准备完成再启动 agent
-              <span className="block text-tertiary">不勾的话命令在后台跑，会话可以先开，但工具调用可能因为依赖没装好而失败。</span>
-            </span>
+            <span title="不勾的话命令在后台跑，会话可以先开，但工具调用可能因为依赖没装好而失败">等准备完成再开始</span>
           </label>
 
           {/* 超时和单位分成几块，窄屏会折行而不是把「600 秒」挤成一团。 */}
@@ -194,8 +178,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
           </div>
 
           <div className="mt-4 border-t border-hair pt-4">
-            <label className="block text-meta text-secondary" htmlFor="preview-port">预览默认端口（可留空）</label>
-            <p className="mb-1 text-meta text-tertiary">只用来在会话「预览」页签里预填端口，不会自动开链接。比如 Vite 的 5173。</p>
+            <label className="mb-1 block text-meta text-secondary" htmlFor="preview-port" title="只在会话「预览」页签里预填端口，不会自动开链接">预览端口</label>
             <div className="flex flex-wrap items-center gap-2">
               <input
                 id="preview-port"
@@ -235,7 +218,7 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
 function ReadonlyWorktree({ config }: { config: ProjectWorktreeConfig | null }) {
   return (
     <div className="space-y-1 text-meta text-secondary" data-testid="worktree-readonly">
-      <p>默认：{(config?.mode ?? 'shared') === 'isolated' ? '每个任务开独立 worktree' : '共用长期工作目录（默认）'}</p>
+      <p>默认：{(config?.mode ?? 'shared') === 'isolated' ? '每个任务一个隔离目录' : '共用持久工作目录（默认）'}</p>
       <p>
         准备命令：
         {config?.setup ? (

@@ -33,9 +33,6 @@ export function AssetSets() {
           </button>
         }
       >
-        <p className="mb-3 text-meta text-tertiary">
-          把常用的技能 / 指令 / MCP 打包成一组，在项目设置里按顺序引用；新会话默认带上，派生时也可以整组取消。
-        </p>
         <Panel>
           {sets.isLoading ? (
             <Empty text="载入中…" />
@@ -65,7 +62,7 @@ export function AssetSets() {
               ))}
             </ul>
           ) : (
-            <Empty text="还没有资产组合。把常用的技能/指令打包，项目里一键引用" />
+            <Empty text="还没有资产组合。" />
           )}
         </Panel>
         {sets.error ? (

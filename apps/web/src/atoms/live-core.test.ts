@@ -137,11 +137,14 @@ test('卡顿提醒挂在末尾，来了新输出就撤掉', () => {
   assert.equal(other, resumed);
 });
 
-test('这一轮失败：原因作为一块进对话，完成/停止不进', () => {
+test('这一轮失败：原因作为一块进对话；完成不进；停下留一条分隔线', () => {
   const failed = applyBlocks([], { kind: 'ended', outcome: 'failed', reason: '模型调用失败：API key 已过期' }, 2);
   assert.deepEqual(failed, [{ kind: 'error', text: '模型调用失败：API key 已过期', seq: 2 }]);
   assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'done' }, 2), []);
-  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'stopped' }, 2), []);
+  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'stopped' }, 2), [{ kind: 'stopped', text: '已中断', seq: 2 }]);
+  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'stopped', reason: '还没开始就停止了' }, 2), [
+    { kind: 'stopped', text: '已中断 · 还没开始就停止了', seq: 2 }
+  ]);
 });
 
 type SessionDto = Parameters<typeof withFullHistory>[1];
@@ -256,8 +259,10 @@ test('结果未知：interrupted + outcome_unknown → 交给人的 unknown 块�
   blocks = applyBlocks(blocks, { kind: 'text', delta: '好的' }, 2);
   blocks = applyBlocks(blocks, { kind: 'ended', outcome: 'interrupted', reason: 'Hermes 这一轮的结果未知（outcome_unknown）' }, 3);
   assert.deepEqual(blocks[blocks.length - 1], { kind: 'unknown', text: 'Hermes 这一轮的结果未知（outcome_unknown）', prompt: '改一下 README', seq: 3 });
-  // 普通中断不出卡片
-  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'interrupted', reason: '用户中断' }, 2), []);
+  // 普通中断不出「重发 / 不用了」卡片，只留一条分隔线
+  assert.deepEqual(applyBlocks([], { kind: 'ended', outcome: 'interrupted', reason: '连不上 Hermes 的事件流' }, 2), [
+    { kind: 'stopped', text: '这一轮被打断了 · 连不上 Hermes 的事件流', seq: 2 }
+  ]);
 });
 
 test('批准卡：request 出卡，resolved 写回同一张卡；不改「正在回复」', () => {

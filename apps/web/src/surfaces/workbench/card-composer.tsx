@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import type { SessionDto } from '../../shell/api.ts';
 import { useOfflineNotice } from '../../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from '../../atoms/composer-parts.tsx';
-import { composerKeyAction } from '../../atoms/composer-keys.ts';
+import { composerKeyAction, currentPlatform, sendKeyHint } from '../../atoms/composer-keys.ts';
+import { coarsePointer } from '../../shell/device.ts';
 
 /**
  * 画布卡片里的输入行：不等你进专注对话，就地能说一句。
  *
- * 卡片只有 320px，所以它是一行（Enter 发送、Shift+Enter 换行），
- * 而不是一个会长高的盒子——画布上要的是「随手补一句」，不是「坐下来聊半小时」。
+ * 卡片只有 320px，所以它起步是一行，而不是一个会长高的盒子——画布上要的是「随手补一句」。
+ * 按键和专注对话完全一样：⌘/Ctrl+Enter 发送，Enter 换行。同一个会话换个地方说话，按键不该反过来。
  */
 export function CardComposer({
   session,
@@ -91,12 +92,12 @@ export function CardComposer({
           aria-label={`对 ${session.id.slice(0, 4)} 说一句`}
           aria-keyshortcuts={
             onSendAndNew === undefined
-              ? 'Enter Meta+Enter Control+Enter'
-              : 'Enter Meta+Enter Control+Enter Meta+Shift+Enter Control+Shift+Enter'
+              ? 'Meta+Enter Control+Enter'
+              : 'Meta+Enter Control+Enter Meta+Shift+Enter Control+Shift+Enter'
           }
           rows={1}
           className="max-h-24 min-h-[20px] w-full resize-none bg-transparent text-sub text-primary outline-none placeholder:text-tertiary"
-          placeholder={running ? '在跑…（■ 停下）' : '说一句…（Enter 发送）'}
+          placeholder={running ? '在跑…（■ 停下）' : coarsePointer() ? '说一句…' : `说一句…（${sendKeyHint(currentPlatform())}）`}
           ref={area}
           defaultValue={initial}
           onChange={(event) => {
@@ -112,7 +113,7 @@ export function CardComposer({
               void sendAndNew();
               return;
             }
-            if (action === 'send' || (event.key === 'Enter' && !event.shiftKey)) {
+            if (action === 'send') {
               event.preventDefault();
               send();
             }
