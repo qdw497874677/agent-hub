@@ -122,7 +122,8 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
               <span className="text-meta text-tertiary">现在有哪些</span>
             </h3>
             <p className="mb-2 text-meta text-tertiary">
-              工作目录 = 机器上的一个目录；worktree = 从仓库开出的隔离目录。取消关联不会删目录，也不影响其他项目。
+              工作目录 = 机器上的一个目录；worktree = 从仓库开出的隔离目录。一个目录同一时间只属于一个项目，
+              取消关联后它就空出来，别的项目可以再分配；目录和文件都不会被删。
             </p>
             {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
             {list.data && groups.size === 0 ? (
@@ -168,7 +169,8 @@ function WorkspaceRow({ view, onAct }: { view: WorkspaceViewDto; onAct: (mode: P
         <div className="break-all font-mono text-meta text-tertiary">{workspace.path}</div>
         <div className={`text-meta ${workspace.state === 'kept' ? 'text-rust' : 'text-secondary'}`}>{busy ? '有会话正在运行' : state}</div>
         {(view.otherProjectSessions ?? 0) > 0 ? (
-          <div data-testid="ws-other-projects" className="text-meta text-rust">⚠ 其他项目有 {view.otherProjectSessions} 个会话也在这里干活</div>
+          // 独占归属下恒为 0（一个目录只属于一个项目）；只有老数据 / 后端没升级时才会亮。
+          <div data-testid="ws-other-projects" className="text-meta text-tertiary">这个目录已归本项目独占</div>
         ) : null}
       </div>
       {actions.length > 0 && !busy ? (
@@ -216,7 +218,7 @@ function ConfirmRemove({ pending, projectId, onDone }: { pending: Pending; proje
       <h3 className="mb-1 text-sub text-primary">{title}？</h3>
       <p className="mb-2 text-meta text-secondary">
         {mode === 'unlink'
-          ? '本项目不再在这里开任务。目录、文件和其他项目的关联都不受影响。'
+          ? '本项目不再在这里开任务，目录会变成未分配，别的项目可以再分配；目录、文件原样保留。'
           : mode === 'unregister'
           ? '从团队里移除这个工作目录，所有关联它的项目都不能再用它；目录和里面的文件原样保留。'
           : <>会删掉 <span className="break-all font-mono">{workspace.path}</span>，删了找不回来。</>}

@@ -437,6 +437,8 @@ export const api = {
   /** setup 失败后重跑同一条命令（只对 failed 生效）。 */
   retryWorkspaceSetup: (workspaceId: string) =>
     post<WorkspaceDto>(`/api/workspaces/${encodeURIComponent(workspaceId)}/setup/retry`, {}),
+  // WorkspaceViewDto 的 ownerProjectId / ownerProjectName 来自契约（packages/contract/src/wire/entities.ts）：
+  // 独占归属下 null = 还没分配，等于本项目 = 已经在用。
   workspaces: (projectId: string) => call<WorkspaceViewDto[]>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`),
   createWorkspace: (projectId: string, input: CreateWorkspaceRequest) =>
     post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces`, input),
@@ -446,6 +448,12 @@ export const api = {
     call<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'PUT' }),
   unlinkWorkspace: (projectId: string, workspaceId: string) =>
     call<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}`, { method: 'DELETE' }),
+  /**
+   * 独占归属：把别的项目正认领的目录转到本项目（源项目不再能看到它）。
+   * 源项目还有会话在这个目录里跑时后端回 409，界面把 error.message 原样给人看。
+   */
+  transferWorkspace: (projectId: string, workspaceId: string) =>
+    post<WorkspaceDto>(`/api/projects/${encodeURIComponent(projectId)}/workspaces/${encodeURIComponent(workspaceId)}/transfer`, {}),
   cleanupPolicy: (projectId: string) => call<CleanupPolicyDto>(`/api/projects/${encodeURIComponent(projectId)}/cleanup`),
   saveCleanupPolicy: (projectId: string, input: Partial<CleanupPolicyDto>) =>
     call<CleanupPolicyDto>(`/api/projects/${encodeURIComponent(projectId)}/cleanup`, { method: 'PUT', body: JSON.stringify(input) }),

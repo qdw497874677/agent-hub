@@ -10,7 +10,8 @@ import { errorText } from '../../shell/admin/shared.tsx';
 import { shortPath, workspaceName } from '../../atoms/workspace-format.ts';
 
 /**
- * 团队工作目录页（#/workspaces，ADR 0026 Q1）：机器上的目录，一个可以给多个项目用。
+ * 团队工作目录页（#/workspaces，ADR 0026 Q1）：机器上的目录。
+ * 独占：一个目录同一时间只属于一个项目（没分配时谁都可以领，领了别人就只能「转移」）。
  * 有 workspace.manage 的人看全部、能新建/删除；其他人只看自己能读的项目关联的那些。
  * 390px 下单列，每行操作收进行内按钮。
  */
@@ -45,6 +46,9 @@ export function TeamWorkspacesPage() {
               <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>＋ 新建工作目录</button>
             ) : null}
           </div>
+          <p className="text-meta text-tertiary">
+            独占：一个目录只属于一个项目。新建时可以先不分配；要给别人用，在项目设置的「代码与空间」里分配或转移。
+          </p>
           {creating ? <CreateWorkspace onDone={() => setCreating(false)} /> : null}
           {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
           {list.error ? <p className="text-meta text-rust">{errorText(list.error)}</p> : null}

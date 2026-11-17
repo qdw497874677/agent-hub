@@ -225,8 +225,9 @@ export function WorkspaceChooser({
                       </span>
                     ) : null}
                     {(otherProjectSessions ?? 0) > 0 ? (
-                      <span data-testid="ws-other-projects" className="mt-0.5 block text-meta text-rust" title={CONCURRENT_HINT}>
-                        ⚠ 其他项目有 {otherProjectSessions} 个会话也在这里干活
+                      // 独占归属下恒为 0；留着只是因为老后端还会算这个数。
+                      <span data-testid="ws-other-projects" className="mt-0.5 block text-meta text-tertiary">
+                        这个目录已归本项目独占
                       </span>
                     ) : null}
                   </span>

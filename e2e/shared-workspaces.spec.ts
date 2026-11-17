@@ -7,8 +7,9 @@ import { loginByApi } from './login.ts';
 import { piModel } from './hub-model.ts';
 
 /**
- * 共享工作目录（ADR 0026）：团队页建一个不关联的工作目录 → 项目设置里关联 → 另一个项目开始任务时
- * 只列已关联的、没有就给「🔗 关联工作目录…」入口，关联完直接选中。桌面 1280 + 手机 390。
+ * 团队工作目录的独占归属：一个目录同一时间只能属于一个项目。
+ * 团队页建一个未分配目录 → 项目 A 分配 → 项目 B 看到「属于 A」并可转移 → 转移后 A 看不到、B 能直接开会话。
+ * 桌面 1280 + 手机 390。
  */
 const RUN = currentRun();
 const SHOTS = process.env.SHOTS_DIR;
@@ -18,7 +19,7 @@ async function csrfHeaders(page: Page, baseURL: string) {
   return { origin: baseURL, 'x-hub-csrf': csrf };
 }
 
-test('团队工作目录：新建 → 项目关联 → 开始任务只列已关联的，可就地关联', async ({ page, baseURL }) => {
+test('团队工作目录：新建 → A 分配 → B 转移 → 之后只有 B 能用', async ({ page, baseURL }) => {
   await loginByApi(page);
   const headers = await csrfHeaders(page, baseURL!);
   const dir = join(tmpdir(), `shared-ws-${RUN}`);
@@ -35,9 +36,11 @@ test('团队工作目录：新建 → 项目关联 → 开始任务只列已关�
   const ws = (await made.json()) as { id: string; projectId: string | null; teamId: string | null };
   expect(ws.projectId).toBeNull();
   expect(ws.teamId).not.toBeNull();
+  const viewsOf = async (projectId: string) =>
+    (await (await page.request.get(`/api/projects/${projectId}/workspaces`)).json()) as Array<{ workspace: { id: string }; ownerProjectId?: string | null }>;
 
   try {
-    // 首页「工作目录」入口 → 团队页，未关联
+    // 首页「工作目录」入口 → 团队页，未分配
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto('/');
     await page.getByTestId('nav-workspaces').click();
@@ -45,28 +48,53 @@ test('团队工作目录：新建 → 项目关联 → 开始任务只列已关�
     const row = page.getByTestId('team-ws-row').filter({ hasText: `shared-ws-${RUN}` });
     await expect(row).toContainText('未关联项目');
     await expect(page.getByTestId('team-ws-new')).toBeVisible();
-    if (SHOTS) await page.screenshot({ path: `${SHOTS}/1280-team-unlinked.png`, fullPage: true });
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/1280-team-unassigned.png`, fullPage: true });
 
-    // 项目 A 设置里关联
+    // 项目 A 里分配
     await page.goto(`/#/p/${a.id}`);
     await page.getByTitle('项目设置').first().click();
     const dialog = page.getByRole('dialog');
-    // 项目设置分页后，关联入口在「代码与工作目录」页里（结构见 workspaces-dialog.tsx）。
     await dialog.getByRole('tab', { name: '代码与工作目录' }).click();
     await dialog.getByTestId('ws-link-open').click();
-    const pick = dialog.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` });
-    await pick.getByTestId('ws-link-one').click();
+    await dialog.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` }).getByTestId('ws-link-one').click();
     await expect(dialog.getByText(dir.split('/').pop()!).first()).toBeVisible();
     await expect(dialog.getByRole('button', { name: '取消关联' }).first()).toBeVisible();
-    if (SHOTS) await page.screenshot({ path: `${SHOTS}/1280-project-linked.png`, fullPage: true });
-    const viewsA = (await (await page.request.get(`/api/projects/${a.id}/workspaces`)).json()) as Array<{ workspace: { id: string } }>;
-    expect(viewsA.map((v) => v.workspace.id)).toContain(ws.id);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/1280-project-assigned.png`, fullPage: true });
+    expect((await viewsOf(a.id)).map((v) => v.workspace.id)).toContain(ws.id);
+
+    // 直接调接口再挂给 B：非要独占，被拒
+    const conflict = await page.request.put(`/api/projects/${b.id}/workspaces/${ws.id}`, { headers });
+    expect(conflict.status(), await conflict.text()).toBe(409);
+    expect(await conflict.text()).toContain(a.name);
+
+    // 项目 B：入口里看到「属于 A」，走转移
+    await page.goto(`/#/p/${b.id}`);
+    await page.reload();
+    await page.getByTitle('项目设置').first().click();
+    const dialogB = page.getByRole('dialog');
+    await dialogB.getByRole('tab', { name: '代码与工作目录' }).click();
+    await dialogB.getByTestId('ws-link-open').click();
+    const other = dialogB.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` });
+    await expect(other).toContainText(a.name);
+    await other.getByTestId('ws-transfer').click();
+    await expect(dialogB.getByTestId('ws-transfer-ask')).toBeVisible();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/1280-transfer-ask.png`, fullPage: true });
+    await dialogB.getByTestId('ws-transfer-confirm').click();
+    await expect(dialogB.getByTestId('ws-transfer-done')).toContainText(`shared-ws-${RUN}`);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/1280-transferred.png`, fullPage: true });
+    expect((await viewsOf(b.id)).map((v) => v.workspace.id)).toContain(ws.id);
+    expect((await viewsOf(a.id)).map((v) => v.workspace.id)).not.toContain(ws.id);
+    await page.keyboard.press('Escape');
+
+    // 团队页：现在只属于 B
+    await page.goto('/#/workspaces');
+    await page.reload();
+    const owned = page.getByTestId('team-ws-row').filter({ hasText: `shared-ws-${RUN}` });
+    await expect(owned).toContainText(b.name);
+    await expect(owned).not.toContainText(a.name);
 
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: width < 768 ? 844 : 900 });
-      // 每种宽度都从「B 没关联」开始
-      await page.request.delete(`/api/projects/${b.id}/workspaces/${ws.id}`, { headers });
-      // 项目 B：开始任务时没有已关联的 → 空提示 + 关联入口
       const title = `共享-${width}`;
       const task = await page.request.post('/api/tasks', { data: { projectId: b.id, title }, headers });
       expect(task.ok(), await task.text()).toBe(true);
@@ -74,34 +102,19 @@ test('团队工作目录：新建 → 项目关联 → 开始任务只列已关�
       await page.reload();
       await page.locator('.react-flow__node-task').filter({ hasText: title }).getByRole('button', { name: '＋ 会话' }).click();
       const run = page.getByRole('dialog', { name: '开始会话' });
-      {
-        await expect(run.getByTestId('ws-none-linked')).toBeVisible();
-        await expect(run.getByRole('radio', { name: new RegExp(`shared-ws-${RUN}`) })).toHaveCount(0);
-        await run.getByTestId('ws-link-open').click();
-        if (SHOTS) await page.screenshot({ path: `${SHOTS}/${width}-picker-link.png`, fullPage: true });
-        await run.getByTestId('ws-link').locator('li').filter({ hasText: `shared-ws-${RUN}` }).getByTestId('ws-link-one').click();
-      }
       const radio = run.getByRole('radio', { name: new RegExp(`shared-ws-${RUN}`) });
+      await expect(radio).toBeVisible();
+      await radio.click();
       await expect(radio).toHaveAttribute('aria-checked', 'true');
-      if (SHOTS) await page.screenshot({ path: `${SHOTS}/${width}-picker-linked.png`, fullPage: true });
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/${width}-picker-owned.png`, fullPage: true });
       await page.keyboard.press('Escape');
-
-      // 团队页：两个项目都在
-      await page.goto('/#/workspaces');
-      await page.reload();
-      const shared = page.getByTestId('team-ws-row').filter({ hasText: `shared-ws-${RUN}` });
-      await expect(shared).toContainText(a.name);
-      await expect(shared).toContainText(b.name);
-      if (SHOTS) await page.screenshot({ path: `${SHOTS}/${width}-team-shared.png`, fullPage: true });
     }
 
-    // 取消关联只影响本项目
-    const unlinked = await page.request.delete(`/api/projects/${a.id}/workspaces/${ws.id}`, { headers });
+    // 取消关联之后回到「未分配」，A 依然拿不到
+    const unlinked = await page.request.delete(`/api/projects/${b.id}/workspaces/${ws.id}`, { headers });
     expect(unlinked.ok(), await unlinked.text()).toBe(true);
-    const afterA = (await (await page.request.get(`/api/projects/${a.id}/workspaces`)).json()) as Array<{ workspace: { id: string } }>;
-    const afterB = (await (await page.request.get(`/api/projects/${b.id}/workspaces`)).json()) as Array<{ workspace: { id: string } }>;
-    expect(afterA.map((v) => v.workspace.id)).not.toContain(ws.id);
-    expect(afterB.map((v) => v.workspace.id)).toContain(ws.id);
+    expect((await viewsOf(b.id)).map((v) => v.workspace.id)).not.toContain(ws.id);
+    expect((await viewsOf(a.id)).map((v) => v.workspace.id)).not.toContain(ws.id);
   } finally {
     await page.request.post(`/api/workspaces/${ws.id}/remove`, { data: { deleteDirectory: false, force: false }, headers });
     for (const p of [a, b]) await page.request.delete(`/api/projects/${p.id}`, { data: { confirmName: p.name }, headers });
