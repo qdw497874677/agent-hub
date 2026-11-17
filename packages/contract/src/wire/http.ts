@@ -540,7 +540,7 @@ export const runtimeJobRequest = z
     action: z.enum(['install', 'uninstall', 'switch']),
     version: z
       .string()
-      .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/)
+      .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/)
       .optional(),
     /** switch 时必填，其余动作忽略。 */
     source: z.enum(['machine', 'hub']).optional()
@@ -553,7 +553,7 @@ export const runtimeJobRequest = z
 export const componentSubmitRequest = z.object({
   id: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/),
   packageName: z.string().regex(/^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/),
-  version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/),
+  version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/),
   provides: z
     .array(z.object({ capability: z.string().regex(/^[a-z][a-z0-9-]*(:[a-z0-9][a-z0-9._-]*)+$/).max(128), mode: z.string().max(64).optional() }))
     .max(16)
@@ -568,7 +568,7 @@ export const componentSubmitRequest = z.object({
 /** 整套安装（P3）：一组目录组件，全有或全无。 */
 export const bundleInstallRequest = z.object({
   components: z
-    .array(z.object({ componentId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/), version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/) }))
+    .array(z.object({ componentId: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,63}$/), version: z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/) }))
     .min(1)
     .max(16)
 });
@@ -577,7 +577,7 @@ export const componentJobRequest = z.object({
   action: z.enum(['install', 'uninstall']),
   version: z
     .string()
-    .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/)
+    .regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/)
     .optional()
 });
 export const catalogComponentSchema = z.object({

@@ -39,7 +39,9 @@ export type AssetSource =
       readonly policy?: AssetSourcePolicy;
       /** 私有仓库的令牌放在密钥保险箱里的名字（`asset-git:<assetId>`）；不存明文。 */
       readonly tokenSecret?: string | null;
-    };
+    }
+  /** Hub 内置资产（builtin-assets.ts）：id = 清单里的那一项，version = 启用 / 上次更新时锁住的清单版本。 */
+  | { readonly type: 'builtin'; readonly id: string; readonly version: string };
 
 /** 来源的版本策略；缺省（老数据 / 未显式指定）一律 locked。 */
 export const assetSourcePolicy = (source: Pick<AssetSource, 'type'> & { readonly policy?: AssetSourcePolicy }): AssetSourcePolicy =>
