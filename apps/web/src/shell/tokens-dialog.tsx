@@ -223,7 +223,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
       {!fresh && (
         <details className="mt-5">
           <summary className="cursor-pointer text-meta text-secondary">外部智能体怎么接 MCP（Claude Code / Cursor / Codex / 提示词）</summary>
-          <a data-testid="tokens-open-access" className="mt-2 block text-meta text-accent hover:underline" href="#/access" onClick={onClose}>
+          <a data-testid="tokens-open-access" className="mt-2 block text-meta text-primary underline underline-offset-2 hover:text-secondary" href="#/access" onClick={onClose}>
             打开外部接入页：限定项目、测试连接、调用记录、轮换
           </a>
           <McpGuidePanel />

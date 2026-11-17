@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, mcpAccessApi, tokensApi, type ApiScopeDto, type ApiTokenDto } from './api.ts';
-import { AccountMenu, useAccount } from './auth.tsx';
-import { formatRoute } from './route.ts';
+import { useAccount } from './auth.tsx';
+import { AppShell, PageBody, PageHeader } from './page-shell.tsx';
+import { PRIMARY_BUTTON } from './dialog-shell.tsx';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty } from './admin/shared.tsx';
 import { McpGuidePanel } from './mcp-guide.tsx';
 import { EXPIRY, SCOPES } from './tokens-dialog.tsx';
@@ -46,7 +47,7 @@ function WritesSwitch() {
           aria-checked={data.writes}
           data-testid="access-writes-toggle"
           disabled={set.isPending}
-          className={`rounded-full border px-3 py-1 text-meta ${data.writes ? 'border-accent bg-accent/10 text-accent' : 'border-hair text-secondary'}`}
+          className={`rounded-full border px-3 py-1 text-meta ${data.writes ? 'border-strong bg-card text-primary' : 'border-hair text-secondary'}`}
           onClick={() => set.mutate(!data.writes)}
         >
           {data.writes ? '开' : '关'}
@@ -65,7 +66,7 @@ function FreshToken({ token, onDone }: { token: string; onDone: () => void }) {
   const [tested, setTested] = useState<{ ok: boolean; text: string } | null>(null);
   const url = mcpGuide({ origin: window.location.origin }).url;
   return (
-    <div data-testid="token-fresh" className="rounded-md border border-accent/50 bg-accent/10 p-3">
+    <div data-testid="token-fresh" className="rounded-md border border-sage/50 bg-success-bg p-3">
       <p className="text-meta text-primary">新令牌只显示这一次，现在复制保存好：</p>
       <code data-testid="token-value" className="mt-2 block break-all rounded-sm bg-card px-2 py-1.5 font-mono text-[12px] text-primary select-all">
         {shown ? token : maskToken(token)}
@@ -156,7 +157,7 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
             aria-checked={preset === p.id}
             data-testid="token-preset"
             data-preset={p.id}
-            className={`rounded-sm border px-2 py-1.5 text-left ${preset === p.id ? 'border-accent bg-accent/10' : 'border-hair hover:border-strong'}`}
+            className={`rounded-sm border px-2 py-1.5 text-left ${preset === p.id ? 'border-strong bg-card' : 'border-hair hover:border-strong'}`}
             onClick={() => choose(p.id)}
           >
             <span className="block text-meta text-primary">{p.label}</span>
@@ -169,7 +170,7 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
           <legend className="mb-1 text-meta text-secondary">权限</legend>
           {SCOPES.map((scope) => (
             <label key={scope.id} data-scope={scope.id} className="flex cursor-pointer items-start gap-2 rounded-sm px-1 py-1 hover:bg-card">
-              <input type="checkbox" className="mt-1 accent-[var(--color-accent)]" checked={scopes.includes(scope.id)} onChange={() => toggle(scope.id)} />
+              <input type="checkbox" className="mt-1 accent-[var(--color-fg)]" checked={scopes.includes(scope.id)} onChange={() => toggle(scope.id)} />
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5">
                   <span className="text-meta text-primary">{scope.label}</span>
@@ -186,7 +187,7 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
       ) : null}
       <div className="flex flex-col gap-1.5">
         <label className="flex items-center gap-2 text-meta text-secondary">
-          <input type="checkbox" data-testid="token-limit-projects" className="accent-[var(--color-accent)]" checked={limit} onChange={(e) => setLimit(e.target.checked)} />
+          <input type="checkbox" data-testid="token-limit-projects" className="accent-[var(--color-fg)]" checked={limit} onChange={(e) => setLimit(e.target.checked)} />
           只给指定项目
         </label>
         {limit ? (
@@ -199,7 +200,7 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
                   key={project.id}
                   aria-pressed={on}
                   data-testid="token-project"
-                  className={`rounded-full border px-2.5 py-1 text-meta ${on ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-tertiary'}`}
+                  className={`rounded-full border px-2.5 py-1 text-meta ${on ? 'border-strong bg-card text-primary' : 'border-hair text-tertiary'}`}
                   onClick={() => setPicked((old) => (on ? old.filter((id) => id !== project.id) : [...old, project.id]))}
                 >
                   {project.name}
@@ -222,7 +223,7 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
       </label>
       {days === 0 ? <p className="-mt-1 text-[11px] text-rust">永不过期的令牌泄露后会一直有效，建议设个期限，到期再续。</p> : null}
       {create.error ? <p role="alert" className="text-meta text-rust">{errorText(create.error)}</p> : null}
-      <button type="submit" data-testid="token-create" className="rounded-sm bg-accent px-3 py-2.5 text-sub text-white hover:opacity-90 disabled:opacity-40" disabled={!ready || create.isPending}>
+      <button type="submit" data-testid="token-create" className={PRIMARY_BUTTON} disabled={!ready || create.isPending}>
         {create.isPending ? '生成中…' : '生成令牌'}
       </button>
     </form>
@@ -249,7 +250,7 @@ function TokenRow({ token, projectName, onRotated }: { token: ApiTokenDto; proje
     <li data-testid="token-row" data-token-name={token.name} data-revoked={revoked ? 'true' : undefined} className="border-b border-hair px-3 py-2.5 last:border-0">
       <div className="flex flex-wrap items-center gap-2">
         <span className={`min-w-0 truncate text-body ${revoked ? 'text-tertiary line-through' : 'text-primary'}`}>{token.name}</span>
-        {token.kind === 'service' ? <span className="rounded-sm bg-accent/15 px-1.5 py-0.5 text-[11px] text-accent">服务账号</span> : null}
+        {token.kind === 'service' ? <span className="rounded-sm border border-hair px-1.5 py-0.5 text-[11px] text-secondary">服务账号</span> : null}
         {revoked ? <span className="rounded-sm bg-card px-1.5 py-0.5 text-[11px] text-tertiary">已吊销</span> : !token.usable ? <span className="rounded-sm bg-rust/15 px-1.5 py-0.5 text-[11px] text-rust">已过期</span> : null}
         <span className="ml-auto font-mono text-[11px] text-tertiary">{token.prefix}…</span>
       </div>
@@ -325,18 +326,10 @@ export function AccessPage() {
   const projectName = (id: string) => (projects.data ?? []).find((p) => p.id === id)?.name ?? '已删除的项目';
   const url = mcpGuide({ origin: window.location.origin }).url;
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>
-            ← agent-hub
-          </a>
-          <h1 className="text-head text-primary">外部接入（MCP）</h1>
-        </div>
-        <AccountMenu />
-      </header>
-      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
-        <div className="mx-auto flex max-w-[960px] flex-col">
+    <AppShell>
+      <PageHeader title="外部接入（MCP）" />
+      <PageBody>
+        <div className="flex flex-col">
           <Section title="端点">
             <Panel>
               <p className="px-3 pt-2.5 text-meta text-tertiary">外部 agent 用这个地址接 hub，令牌放在请求头里。</p>
@@ -386,7 +379,7 @@ export function AccessPage() {
             ) : null}
           </Section>
         </div>
-      </main>
-    </div>
+      </PageBody>
+    </AppShell>
   );
 }
