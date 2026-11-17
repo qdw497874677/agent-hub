@@ -43,7 +43,7 @@ export function MarketPage({ tab, reviewId }: { tab: MarketTab; reviewId: string
           <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>
             ← agent-hub
           </a>
-          <h1 className="text-head text-primary">资产市场</h1>
+          <h1 className="text-head text-primary">资产</h1>
         </div>
         <div className="flex items-center gap-2">
           <MessagesEntry />
@@ -118,7 +118,7 @@ function AssetCard({ item, showStatus }: { item: MarketAssetDto; showStatus: boo
         </p>
       ) : null}
       <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {item.published ? (
+        {item.published && item.asset.kind !== 'mcp' ? (
           <button className={SMALL} onClick={() => setWorkers(true)}>
             装到机器…
           </button>
