@@ -69,8 +69,9 @@
   --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'JetBrains Mono', 'Liberation Mono', 'Noto Sans Mono CJK SC', monospace;
 
   /* 字号：界面框架 13 / 对话正文 14 / 次要 12 / 等宽元信息 11 */
-  --text-meta: 11px;
+  --text-meta: 12px;
   --text-meta--line-height: 1.45;
+  --text-mono-meta: 11px;
   --text-body: 13px;
   --text-body--line-height: 1.55;
   --text-sub: 12px;
@@ -144,6 +145,11 @@ body {
 ::highlight(timeline-search-hit-active) {
   background-color: var(--color-warning);
   color: var(--color-canvas);
+}
+
+/* 等宽的元信息（路径、哈希、耗时）比同级正文小一号：12 / 11，等宽字形本来就显大。 */
+.font-mono.text-meta {
+  font-size: var(--text-mono-meta);
 }
 
 /* 触屏去掉 300ms 点击延迟；视觉尺寸不动，只让点击更快。 */

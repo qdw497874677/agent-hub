@@ -360,7 +360,7 @@ export function Composer({
               ? 'Meta+Enter Control+Enter'
               : 'Meta+Enter Control+Enter Meta+Shift+Enter Control+Shift+Enter'
           }
-          className={`w-full resize-none bg-transparent text-body text-primary outline-none placeholder:text-tertiary ${
+          className={`w-full resize-none bg-transparent text-primary outline-none placeholder:text-tertiary ${large ? 'text-chat' : 'text-body'} ${
             large ? 'min-h-[52px] max-h-56' : 'min-h-[44px] max-h-40'
           }`}
           placeholder={coarsePointer() ? '接着说…（@ 引用文件，/ 命令）' : `接着说…（@ 引用文件，/ 命令，${sendKeyHint(currentPlatform())}）`}

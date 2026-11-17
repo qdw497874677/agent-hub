@@ -13,11 +13,11 @@ const components: Components = {
       {children}
     </a>
   ),
-  h1: ({ children }) => <p className="mt-2 font-semibold">{children}</p>,
-  h2: ({ children }) => <p className="mt-2 font-semibold">{children}</p>,
+  h1: ({ children }) => <p className="mt-3 mb-1 font-semibold">{children}</p>,
+  h2: ({ children }) => <p className="mt-3 mb-1 font-semibold">{children}</p>,
   h3: ({ children }) => <p className="mt-2 font-semibold">{children}</p>,
   h4: ({ children }) => <p className="mt-2 font-semibold">{children}</p>,
-  p: ({ children }) => <p className="my-1">{children}</p>,
+  p: ({ children }) => <p className="my-1.5">{children}</p>,
   ul: ({ children }) => <ul className="my-1 list-disc pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-1 list-decimal pl-5">{children}</ol>,
   li: ({ children }) => <li className="my-0.5">{children}</li>,
@@ -26,9 +26,9 @@ const components: Components = {
     className ? (
       <code className={className}>{children}</code>
     ) : (
-      <code className="rounded bg-black/10 px-1 font-mono text-[0.9em]">{children}</code>
+      <code className="rounded-[4px] bg-fg/[0.07] px-1 py-px font-mono text-[0.86em]">{children}</code>
     ),
-  pre: ({ children }) => <pre className="my-1 overflow-x-auto rounded bg-black/10 p-2 font-mono text-[0.9em]">{children}</pre>,
+  pre: ({ children }) => <pre className="my-2 overflow-x-auto rounded-[var(--radius-control)] border border-hair bg-surface-1 px-3 py-2 font-mono text-[0.86em] leading-relaxed">{children}</pre>,
   table: ({ children }) => <div className="my-1 overflow-x-auto"><table className="border-collapse text-left">{children}</table></div>,
   th: ({ children }) => <th className="border border-current/20 px-2 py-0.5 font-semibold">{children}</th>,
   td: ({ children }) => <td className="border border-current/20 px-2 py-0.5">{children}</td>,
@@ -39,7 +39,7 @@ const components: Components = {
  * 聊天气泡里的 markdown：段落默认带 `my-1`，气泡里首尾两段要贴边，否则气泡上下忽高忽低。
  * 群里自己的气泡和成员的草稿气泡共用这一份，别各写一套。
  */
-export const BUBBLE_MD = 'text-body text-primary [&>*:first-child]:mt-0 [&>*:last-child]:mb-0';
+export const BUBBLE_MD = 'text-chat text-primary [&>*:first-child]:mt-0 [&>*:last-child]:mb-0';
 
 export function LogMarkdown({ body, className }: { body: string; className?: string }) {
   return (

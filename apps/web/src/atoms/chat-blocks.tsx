@@ -685,7 +685,7 @@ export function ChatBlock({
         ) : null}
         {block.text !== '' ? (
           <p
-            className={`max-w-[85%] whitespace-pre-wrap rounded-md rounded-br-sm bg-card-raised px-3 py-2 text-body text-primary transition-opacity duration-150 ${
+            className={`max-w-[85%] whitespace-pre-wrap rounded-[var(--radius-overlay)] rounded-br-sm bg-card-raised px-3 py-2 text-chat text-primary transition-opacity duration-150 ${
               queued ? 'opacity-80' : ''
             }`}
           >
@@ -719,7 +719,7 @@ export function ChatBlock({
   if (block.kind === 'text') {
     return (
       <div data-testid="msg-assistant">
-        <LogMarkdown body={block.text} className="text-body leading-relaxed text-primary/90" />
+        <LogMarkdown body={block.text} className="text-chat text-primary/90" />
       </div>
     );
   }
