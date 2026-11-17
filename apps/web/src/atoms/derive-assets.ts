@@ -41,9 +41,13 @@ export interface AssetSelection {
 
 export const assetSelectionKey = (projectId: string, workerId: string | null): string => `${projectId}\n${workerId ?? ''}`;
 
-/** 换项目 / 换机器就丢掉旧的排除项，恢复全选；同一个 key 原样返回同一份引用。 */
-export function selectionFor(previous: AssetSelection | null, key: string): AssetSelection {
-  return previous !== null && previous.key === key ? previous : { key, excluded: [] };
+/**
+ * 换项目 / 换机器就丢掉旧的排除项，恢复默认；同一个 key 原样返回同一份引用。
+ * 默认 = 全选，但「带上也起不来」的（entry.problem，比如 MCP 缺密钥）默认不勾。
+ */
+export function selectionFor(previous: AssetSelection | null, key: string, entries: readonly DeriveAssetEntry[] = []): AssetSelection {
+  if (previous !== null && previous.key === key) return previous;
+  return { key, excluded: entries.filter((entry) => entry.problem).map((entry) => entry.assetId) };
 }
 
 /** 勾上就把 id 从排除里拿掉，取消就加进去。 */

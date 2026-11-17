@@ -698,6 +698,45 @@ export async function revealAssetSecrets(
   return out;
 }
 
+/**
+ * MCP 资产「带上也起不来」的原因（派生前提示用）：配置坏了、没有启动命令、引用的密钥在它能用的层级里都没设。
+ * 只看密钥名字是否存在，不解密。返回 assetId → 一句人话；没问题的不出现。
+ * 机器上有没有那个命令 hub 看不到（要 Worker 回报），这里不判断。
+ */
+export async function mcpAssetProblems(
+  deps: Pick<AssetDeps, 'assets' | 'secrets'> & Partial<Pick<AssetDeps, 'hubAdminId'>>,
+  assetIds: readonly string[]
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  let stored: Set<string> | null = null;
+  let hubAdmin: string | null | undefined;
+  for (const assetId of assetIds) {
+    const asset = await deps.assets.get(assetId);
+    if (!asset || asset.kind !== 'mcp') continue;
+    const revision = await deps.assets.revision(asset.id, asset.pinned);
+    const file = revision?.files.find((candidate) => candidate.path === MCP_CONFIG_FILE);
+    const data = file ? await deps.assets.blob(file.sha256) : null;
+    const parsed = data ? parseMcpAsset(new TextDecoder().decode(data)) : null;
+    if (!parsed?.ok) {
+      out[asset.id] = '配置有误，带上也起不来';
+      continue;
+    }
+    if (parsed.value.servers.some((server) => server.transport === 'stdio' && server.command.trim() === '')) {
+      out[asset.id] = '没有填启动命令';
+      continue;
+    }
+    const refs = [...new Set(parsed.value.servers.flatMap((server) => mcpSecretRefs(server)))].sort();
+    if (refs.length === 0) continue;
+    stored ??= new Set((await deps.secrets.list()).map((secret) => secret.name));
+    if (hubAdmin === undefined) hubAdmin = deps.hubAdminId ? await deps.hubAdminId() : null;
+    const have = stored;
+    const admin = hubAdmin;
+    const missing = refs.filter((name) => !secretLookupOrder(asset, name, admin).some((step) => have.has(step.key)));
+    if (missing.length > 0) out[asset.id] = `缺密钥 ${missing.join('、')}，带上也起不来`;
+  }
+  return out;
+}
+
 export async function sessionMcpLaunch(
   deps: Pick<AssetDeps, 'assets' | 'secrets'> & Partial<Pick<AssetDeps, 'hubAdminId'>>,
   workerId: string,

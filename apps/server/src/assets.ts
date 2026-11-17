@@ -72,7 +72,7 @@ export interface AssetRouteOptions {
    * 派生前预览：这个项目在这台机器上实际会带哪些资产（#226 会话级资产选择）。
    * 返回 'forbidden' 表示调用方看不见该项目（路由转 404，不泄露存在）。
    */
-  readonly planOf?: (projectId: string, workerId: string, principal: Principal) => Promise<readonly SessionAssetEntry[] | 'forbidden'>;
+  readonly planOf?: (projectId: string, workerId: string, principal: Principal) => Promise<readonly (SessionAssetEntry & { readonly problem?: string })[] | 'forbidden'>;
 }
 
 interface Schema<T> {

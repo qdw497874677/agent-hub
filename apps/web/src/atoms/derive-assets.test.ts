@@ -59,3 +59,14 @@ test('一行说明：项目级不标作用域', () => {
   assert.equal(assetNote(entries[1]!), '指令 · 团队');
   assert.equal(assetNote(entries[2]!), 'MCP · 全局');
 });
+
+test('带上也起不来的 MCP（缺密钥）默认不勾；用户还能手动勾回来', () => {
+  const list = [...entries.slice(0, 2), entry({ assetId: 'a3', kind: 'mcp', name: 'playwright', scope: 'global', problem: '缺密钥 PW_TOKEN，带上也起不来' })];
+  const initial = selectionFor(null, assetSelectionKey('p1', 'w1'), list);
+  assert.deepEqual(includedAssetIds(list, initial), ['a1', 'a2']);
+  assert.deepEqual(submitAssetIds(list, initial), ['a1', 'a2']);
+  const back = toggleAsset(initial, 'a3', true);
+  assert.equal(submitAssetIds(list, back), undefined);
+  // 同一个 key：保留用户的选择
+  assert.equal(selectionFor(back, assetSelectionKey('p1', 'w1'), list), back);
+});

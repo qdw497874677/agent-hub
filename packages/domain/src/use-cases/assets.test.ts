@@ -17,6 +17,7 @@ import {
   uploadAssetRevision,
   workerAssetManifest,
   sessionMcpLaunch,
+  mcpAssetProblems,
   remoteMcpTarget,
   listSecrets,
   setSecret,
@@ -589,4 +590,20 @@ test('MCP 跟着会话清单走：给了会话清单就不要求「装到机器�
   // 清单外的不给
   assert.equal((await remoteMcpTarget(deps, 'w9', 'other', only)).ok, false);
   assert.ok((await remoteMcpTarget(deps, 'w9', 'remote', only)).ok);
+});
+
+test('MCP 带上也起不来的提示：缺密钥点名；设好密钥就不提示；文件类资产不管', async () => {
+  const { deps } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const local = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'local-fs', command: 'node', args: ['srv.js'], env: { FS_TOKEN: '${secret:FS_TOKEN}' } }) });
+  const plain = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'plain', url: 'https://e/mcp' }) });
+  const skillAsset = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(local.ok && plain.ok && skillAsset.ok);
+  const ids = [local.value.id, plain.value.id, skillAsset.value.id];
+  let problems = await mcpAssetProblems(deps, ids);
+  assert.deepEqual(Object.keys(problems), [local.value.id]);
+  assert.match(problems[local.value.id]!, /缺密钥 FS_TOKEN/);
+  assert.ok((await setSecret(deps, 'FS_TOKEN', 'v')).ok);
+  problems = await mcpAssetProblems(deps, ids);
+  assert.deepEqual(problems, {});
 });

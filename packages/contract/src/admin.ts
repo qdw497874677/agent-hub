@@ -277,7 +277,9 @@ export const projectAssetPlanSchema = z.object({
       kind: assetKindSchema,
       name: z.string(),
       digest: z.string(),
-      scope: z.enum(['personal', 'project', 'team', 'global'])
+      scope: z.enum(['personal', 'project', 'team', 'global']),
+      /** MCP 带上也起不来的原因（缺密钥 / 配置有误）；没问题不给。派生对话框据此标红、默认不勾。 */
+      problem: z.string().optional()
     })
   )
 });

@@ -125,6 +125,7 @@ import {
   reconcileInterrupted,
   syncWorkerAssets,
   remoteMcpTarget,
+  mcpAssetProblems,
   withAssetNeeds,
   unavailable,
   workerAttached,
@@ -1659,7 +1660,8 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
         setIds: project?.assetSetIds ?? [],
         log
       });
-      return plan.entries;
+      const problems = await mcpAssetProblems(assetDeps, plan.entries.filter((entry) => entry.kind === 'mcp').map((entry) => entry.assetId));
+      return plan.entries.map((entry) => (problems[entry.assetId] ? { ...entry, problem: problems[entry.assetId] } : entry));
     }
   },
   providers: providerWiring,
