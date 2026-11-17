@@ -1,7 +1,7 @@
 import { useState } from 'react';
+import { AppShell, PageBody, PageHeader } from '../../shell/page-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, teamApi, type TeamWorkspaceViewDto } from '../../shell/api.ts';
-import { AccountMenu } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { DirectoryPicker } from './directory-picker.tsx';
@@ -31,24 +31,17 @@ export function TeamWorkspacesPage() {
   const groups = new Map<string, TeamWorkspaceViewDto[]>();
   for (const row of rows) groups.set(row.workspace.workerId ?? '', [...(groups.get(row.workspace.workerId ?? '') ?? []), row]);
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>← 项目</a>
-          <h1 className="text-head text-primary">团队工作目录</h1>
-        </div>
-        <AccountMenu />
-      </header>
-      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
-        <div className="mx-auto flex max-w-[960px] flex-col gap-4">
-          <div className="flex flex-wrap items-start justify-end gap-2">
-            {canManage ? (
-              <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>＋ 新建工作目录</button>
-            ) : null}
-          </div>
-          <p className="text-meta text-tertiary">
-            独占：一个目录只属于一个项目。新建时可以先不分配；要给别人用，在项目设置的「代码与空间」里分配或转移。
-          </p>
+    <AppShell>
+      <PageHeader
+        title="团队工作目录"
+        actions={
+          canManage ? (
+            <button data-testid="team-ws-new" className={PRIMARY_BUTTON} onClick={() => setCreating((open) => !open)}>新建工作目录</button>
+          ) : null
+        }
+      />
+      <PageBody className="flex flex-col gap-4">
+        <p className="text-meta text-tertiary">一个目录只属于一个项目；分配或转移在项目设置的「代码与空间」里。</p>
           {creating ? <CreateWorkspace onDone={() => setCreating(false)} /> : null}
           {list.isLoading ? <p className="text-meta text-tertiary">加载中…</p> : null}
           {list.error ? <p className="text-meta text-rust">{errorText(list.error)}</p> : null}
@@ -63,9 +56,8 @@ export function TeamWorkspacesPage() {
               </ul>
             </section>
           ))}
-        </div>
-      </main>
-    </div>
+      </PageBody>
+    </AppShell>
   );
 }
 

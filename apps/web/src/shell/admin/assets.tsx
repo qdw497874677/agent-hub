@@ -1047,7 +1047,7 @@ function Secrets() {
         <div className="flex flex-wrap gap-2 border-t border-hair px-3 py-2.5">
           <input
             data-testid="secret-name"
-            className={`${INPUT} w-48 font-mono`}
+            className={`${INPUT} w-48! font-mono`}
             placeholder="名字，如 GITHUB_TOKEN"
             value={name}
             onChange={(event) => setName(event.target.value.trim().toUpperCase())}

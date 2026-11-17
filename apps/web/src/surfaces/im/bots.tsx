@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState } from 'react';
+import { AppShell, PageBody, PageHeader, type PageTab } from '../../shell/page-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, botsApi, groupApi, teamApi, tokensApi, type BotColorDto, type BotRecordDto, type BotTriggerDto, type BotTriggerSourceDto, type MessagingRoleDto, type WorkerInfoDto } from '../../shell/api.ts';
-import { AccountMenu, useAccount } from '../../shell/auth.tsx';
+import { useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
 import { DialogShell } from '../../shell/dialog-shell.tsx';
@@ -132,16 +133,18 @@ export function BotAvatar({ bot, size = 32 }: { bot: Pick<MessagingRoleDto, 'nam
   );
 }
 
-/** 消息区顶部的「群 | Bot」切换。 */
-export function HubTabs({ active, projectId }: { active: 'messages' | 'bots'; projectId: string | null }) {
-  const tab = (on: boolean) => `rounded-sm px-2.5 py-1 text-meta ${on ? 'bg-card text-primary' : 'text-tertiary hover:text-secondary'}`;
-  return (
-    <nav className="flex gap-1" aria-label="消息区">
-      <a data-testid="tab-messages" className={tab(active === 'messages')} aria-current={active === 'messages' ? 'page' : undefined} href={formatRoute({ page: 'messages', projectId, groupId: null })}>群</a>
-      <a data-testid="tab-bots" className={tab(active === 'bots')} aria-current={active === 'bots' ? 'page' : undefined} href={formatRoute({ page: 'bots', projectId })}>Bot</a>
-    </nav>
-  );
+/** 群 / Bot 两个页签（页头下方）。 */
+export function hubTabs(projectId: string | null): PageTab[] {
+  return [
+    { id: 'messages', label: '群', href: formatRoute({ page: 'messages', projectId, groupId: null }), testId: 'tab-messages' },
+    { id: 'bots', label: 'Bot', href: formatRoute({ page: 'bots', projectId }), testId: 'tab-bots' }
+  ];
 }
+
+/** 页头右侧的项目切换：短、无边框感，和页头一体。 */
+export const PROJECT_SELECT =
+  'h-8 max-w-[11rem] min-w-0 truncate rounded-control border border-hair bg-transparent px-2 text-sub text-secondary hover:border-strong hover:text-primary';
+
 
 /** 弹窗按钮：跟 tokens-dialog 一个手感（细边，hover 才亮）。 */
 const CRED_BTN =
@@ -665,19 +668,19 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
   const list = bots.data?.bots ?? [];
   const runtime = (id: string) => RUNTIMES.find((r) => r.id === id)?.label ?? id;
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>← agent-hub</a>
-          <h1 className="text-head text-primary">Bot</h1>
-        </div>
-        <HubTabs active="bots" projectId={pid} />
-        <select aria-label="项目" data-testid="bots-project" className={`${INPUT} max-w-[30%]`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'bots', projectId: e.target.value }); }}>
-          {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <AccountMenu />
-      </header>
-      <main className="mx-auto flex w-full max-w-3xl min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+    <AppShell>
+      <PageHeader
+        title="Bot"
+        tabsLabel="消息区"
+        tabs={hubTabs(pid)}
+        activeTab="bots"
+        actions={
+          <select aria-label="项目" data-testid="bots-project" className={PROJECT_SELECT} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'bots', projectId: e.target.value }); }}>
+            {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        }
+      />
+      <PageBody className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start gap-2">
           <p data-testid="bots-scope-note" className="min-w-0 text-meta text-tertiary">{BOT_SCOPE_NOTE}</p>
           <div className="ml-auto flex shrink-0 flex-wrap gap-1.5">
@@ -722,11 +725,11 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
             <Empty text={bots.isLoading ? '加载中…' : pid ? '还没有 Bot。' : '先建一个项目'} />
           </div>
         ) : null}
-      </main>
+      </PageBody>
       {deleting ? <DeleteConfirm bot={deleting} groups={groupsOf(deleting.name)} onDone={() => setDeleting(null)} /> : null}
       {picking && pid && teamId ? (
         <GrantPicker teamId={teamId} projectId={pid} grantedIds={list.map((b) => b.id)} onClose={() => setPicking(false)} />
       ) : null}
-    </div>
+    </AppShell>
   );
 }

@@ -93,7 +93,7 @@ function TimerForm({ projectId, name, onDone }: { projectId: string; name: strin
       <div className="flex flex-col gap-2 sm:flex-row">
         <input className={INPUT} aria-label="名称" data-testid="timer-name" value={title} maxLength={60} onChange={(e) => setTitle(e.target.value)} />
         <label className="flex items-center gap-1 text-meta text-secondary whitespace-nowrap">每
-          <input className={`${INPUT} w-20`} type="number" min={5} max={10080} data-testid="timer-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
+          <input className={`${INPUT} w-20!`} type="number" min={5} max={10080} data-testid="timer-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
       </div>
       <textarea className={INPUT} rows={3} maxLength={4000} data-testid="timer-prompt" placeholder="到点时对它说什么，例如：看看有没有新任务要拆" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
       <div className="flex flex-wrap items-center gap-2 text-meta text-secondary">
@@ -130,7 +130,7 @@ function GithubForm({ projectId, name, onDone }: { projectId: string; name: stri
         <input className={INPUT} aria-label="仓库" data-testid="github-repo" placeholder="owner/name" value={repo} maxLength={140} onChange={(e) => setRepo(e.target.value)} />
         <input className={`${INPUT} sm:w-32`} aria-label="标签" data-testid="github-label" value={label} maxLength={50} onChange={(e) => setLabel(e.target.value)} />
         <label className="flex items-center gap-1 text-meta text-secondary whitespace-nowrap">每
-          <input className={`${INPUT} w-20`} type="number" min={5} max={1440} data-testid="github-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
+          <input className={`${INPUT} w-20!`} type="number" min={5} max={1440} data-testid="github-every" value={every} onChange={(e) => setEvery(Number(e.target.value))} />分钟</label>
       </div>
       <p
         className="text-meta text-tertiary"

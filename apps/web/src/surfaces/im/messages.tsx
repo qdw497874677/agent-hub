@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
+import { AppShell, PageHeader } from '../../shell/page-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, groupApi, type GroupDto, type GroupInputDto, type GroupPostDto, type MessagingRoleDto } from '../../shell/api.ts';
-import { AccountMenu, useAccount } from '../../shell/auth.tsx';
+import { useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
-import { MessagesEntry, useGroupUnread, useMarkGroupRead } from '../../atoms/messages-entry.tsx';
+import { useGroupUnread, useMarkGroupRead } from '../../atoms/messages-entry.tsx';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
 import { NameDot } from '../../atoms/author.tsx';
 import { BUBBLE_MD, LogMarkdown } from '../../atoms/log-markdown.tsx';
@@ -15,7 +16,7 @@ import { DraftBubble } from '../../atoms/group-draft.tsx';
 import { TypingLine } from '../../atoms/group-typing.tsx';
 import { insertMention, mentionItems, mentionRange, stepMention, type MentionItem, type MentionMember } from '../../atoms/mention-suggest.ts';
 import { useCompact } from '../../shell/device.ts';
-import { BotAvatar, HubTabs, botLabel } from './bots.tsx';
+import { BotAvatar, PROJECT_SELECT, botLabel, hubTabs } from './bots.tsx';
 
 /**
  * 消息页（#/messages[/<项目>[/<群>]]，ADR 0018 · 群组，界面方案 C）：
@@ -136,8 +137,8 @@ function GroupForm({ projectId, roles, group, onDone, openAdvanced = false }: { 
         </select>
       </label>
       <div className="flex gap-2 text-meta text-secondary">
-        <label className="flex items-center gap-1">轮数<input aria-label="轮数" data-testid="group-rounds" type="number" min={1} max={5} className={`${INPUT} w-16`} value={rounds} onChange={(e) => setRounds(Number(e.target.value))} /></label>
-        <label className="flex items-center gap-1">条数<input aria-label="条数" type="number" min={1} max={20} className={`${INPUT} w-16`} value={msgs} onChange={(e) => setMsgs(Number(e.target.value))} /></label>
+        <label className="flex items-center gap-1">轮数<input aria-label="轮数" data-testid="group-rounds" type="number" min={1} max={5} className={`${INPUT} w-16!`} value={rounds} onChange={(e) => setRounds(Number(e.target.value))} /></label>
+        <label className="flex items-center gap-1">条数<input aria-label="条数" type="number" min={1} max={20} className={`${INPUT} w-16!`} value={msgs} onChange={(e) => setMsgs(Number(e.target.value))} /></label>
       </div>
         </div>
       ) : null}
@@ -532,17 +533,6 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
   const [drawerHost, setDrawerHost] = useState(false);
   const openDrawer = (d: Drawer, focusHost = false) => { setDrawerHost(focusHost); setDrawer(d); };
   const closeDrawer = () => { setDrawerHost(false); setDrawer(null); };
-  const compact = useCompact();
-  const [more, setMore] = useState(false);
-  const moreRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!more) return;
-    const onDown = (e: PointerEvent) => { if (!moreRef.current?.contains(e.target as Node)) setMore(false); };
-    const close = () => setMore(false);
-    document.addEventListener('pointerdown', onDown);
-    window.addEventListener('hashchange', close);
-    return () => { document.removeEventListener('pointerdown', onDown); window.removeEventListener('hashchange', close); };
-  }, [more]);
   const unread = useGroupUnread();
   const unreadOf = (id: string): number => unread.data?.groups.find((u) => u.groupId === id)?.count ?? 0;
   const [creating, setCreating] = useState(false);
@@ -552,39 +542,18 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
   const go = (g: string | null) => { window.location.hash = formatRoute({ page: 'messages', projectId: pid, groupId: g }); };
   const roleList = roles.data?.roles ?? [];
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b border-hair px-3 py-2">
-        <div className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
-          <a className="block max-w-full shrink-0 truncate whitespace-nowrap text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>← agent-hub</a>
-          <h1 className="min-w-0 truncate text-head text-primary">群</h1>
-        </div>
-        <select aria-label="项目" data-testid="messages-project" className={`${INPUT} min-w-0 shrink-0 ${compact ? 'max-w-[45%]' : 'max-w-[40%]'}`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>
-          {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        {compact ? (
-          <div className="relative shrink-0" ref={moreRef}>
-            <button className={SMALL} data-testid="messages-more" aria-label="更多" aria-expanded={more} onClick={() => setMore((v) => !v)}>⋯</button>
-            {more ? (
-              <div data-testid="messages-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-56 flex-col gap-2 rounded-lg border border-strong bg-overlay p-2 shadow-overlay">
-                <div onClick={() => setMore(false)}><HubTabs active="messages" projectId={pid} /></div>
-                <div className="flex items-center gap-2" onClick={() => setMore(false)}>
-                  <MessagesEntry />
-                  <span className="text-meta text-tertiary">消息</span>
-                </div>
-                <div className="flex justify-end border-t border-hair pt-2"><AccountMenu /></div>
-              </div>
-            ) : null}
-          </div>
-        ) : (
-          <>
-            <HubTabs active="messages" projectId={pid} />
-            <div className="flex shrink-0 items-center gap-2">
-              <MessagesEntry />
-              <AccountMenu />
-            </div>
-          </>
-        )}
-      </header>
+    <AppShell>
+      <PageHeader
+        title="群"
+        tabsLabel="消息区"
+        tabs={hubTabs(pid)}
+        activeTab="messages"
+        actions={
+          <select aria-label="项目" data-testid="messages-project" className={PROJECT_SELECT} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'messages', projectId: e.target.value, groupId: null }); }}>
+            {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        }
+      />
       <div className="flex min-h-0 flex-1">
         <aside className={`${current ? 'hidden md:flex' : 'flex'} w-full min-w-0 flex-col border-r border-hair md:w-64 md:shrink-0`}>
           <ul data-testid="group-list" className="min-h-0 flex-1 overflow-y-auto">
@@ -654,7 +623,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
       </div>
       {drawer && current && pid ? (
         <div className="fixed inset-0 z-40 flex items-end bg-black/30 md:items-center md:justify-center" onClick={closeDrawer}>
-          <div data-testid="group-drawer" className="max-h-[75vh] w-full overflow-y-auto rounded-t-md border border-strong bg-panel md:w-[480px] md:rounded-md" onClick={(e) => e.stopPropagation()}>
+          <div data-testid="group-drawer" className="max-h-[75vh] w-full overflow-y-auto rounded-t-lg border border-strong bg-overlay shadow-overlay md:w-[480px] md:rounded-lg" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center border-b border-hair px-3 py-2">
               <span className="text-body text-primary">{drawer === 'members' ? '成员' : drawer === 'chains' ? '调用链' : '群设置'}</span>
               <button className={`${SMALL} ml-auto`} onClick={closeDrawer}>关闭</button>
@@ -667,7 +636,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
           </div>
         </div>
       ) : null}
-    </div>
+    </AppShell>
   );
 }
 

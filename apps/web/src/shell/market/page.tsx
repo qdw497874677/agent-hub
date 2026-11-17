@@ -1,15 +1,14 @@
-import { MessagesEntry } from '../../atoms/messages-entry.tsx';
+import { AppShell, PageBody, PageHeader } from '../page-shell.tsx';
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { marketApi, teamApi, type AssetKindDto, type AssetScopeDto, type MarketAssetDto } from '../api.ts';
-import { AccountMenu, useAccount } from '../auth.tsx';
+import { useAccount } from '../auth.tsx';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../dialog-shell.tsx';
 import { formatRoute, type MarketTab } from '../route.ts';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty } from '../admin/shared.tsx';
 import { encodeFiles, readPicked, type PickedFile } from '../admin/asset-files.ts';
 import { ReviewPage } from './review.tsx';
 import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT } from './labels.ts';
-import { NotificationBell } from './notifications.tsx';
 
 /**
  * 资产市场（#/assets/<分页>）：人人可用。目录 = 已上架、我看得见的；我的 = 我上架的（含待审 / 被驳回）；
@@ -37,39 +36,27 @@ export function MarketPage({ tab, reviewId }: { tab: MarketTab; reviewId: string
   const waiting = (pending.data?.length ?? 0) + (installs.data?.toDecide.length ?? 0);
   if (!account) return null;
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'home' })}>
-            ← agent-hub
-          </a>
-          <h1 className="text-head text-primary">资产市场</h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <MessagesEntry />
-        <NotificationBell />
-          <AccountMenu />
-        </div>
-      </header>
-      <nav aria-label="资产分页" className="flex gap-1 overflow-x-auto border-b border-hair px-2 py-1.5">
-        {TABS.map((item) => (
-          <a
-            key={item.id}
-            href={formatRoute({ page: 'assets', tab: item.id, reviewId: null })}
-            aria-current={item.id === tab && !reviewId ? 'page' : undefined}
-            className={`shrink-0 rounded-sm px-3 py-1.5 text-body ${item.id === tab && !reviewId ? 'bg-card text-primary' : 'text-secondary hover:bg-card'}`}
-          >
-            {item.label}
-            {item.id === 'pending' && waiting > 0 ? (
-              <span data-testid="pending-count" className="ml-1.5 rounded-full bg-action px-1.5 text-[11px] text-action-fg">
-                {waiting}
-              </span>
-            ) : null}
-          </a>
-        ))}
-      </nav>
-      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
-        <div className="mx-auto max-w-[960px]">
+    <AppShell>
+      <PageHeader
+        title="资产"
+        tabsLabel="资产分页"
+        activeTab={reviewId ? null : tab}
+        tabs={TABS.map((item) => ({
+          id: item.id,
+          href: formatRoute({ page: 'assets', tab: item.id, reviewId: null }),
+          label: (
+            <>
+              {item.label}
+              {item.id === 'pending' && waiting > 0 ? (
+                <span data-testid="pending-count" className="ml-1.5 rounded-full bg-action px-1.5 text-[11px] text-action-fg">
+                  {waiting}
+                </span>
+              ) : null}
+            </>
+          )
+        }))}
+      />
+      <PageBody>
           {reviewId ? (
             <ReviewPage submissionId={reviewId} />
           ) : tab === 'catalog' ? (
@@ -81,9 +68,8 @@ export function MarketPage({ tab, reviewId }: { tab: MarketTab; reviewId: string
           ) : (
             <MarketSettings />
           )}
-        </div>
-      </main>
-    </div>
+      </PageBody>
+    </AppShell>
   );
 }
 
