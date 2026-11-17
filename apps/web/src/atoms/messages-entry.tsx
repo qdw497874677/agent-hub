@@ -24,7 +24,7 @@ export function MessagesEntry() {
       aria-label={total ? `消息（${total} 条未读）` : '消息'}
       title="消息"
       data-testid="messages-entry"
-      className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-hair text-meta text-secondary hover:border-accent hover:text-accent"
+      className="relative flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-meta text-tertiary hover:bg-hover hover:text-primary"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

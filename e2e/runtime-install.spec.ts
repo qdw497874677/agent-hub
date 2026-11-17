@@ -59,6 +59,8 @@ test('运行时安装：在远程机器上装 Pi、看进度、再卸载', async
     await page.goto('/');
     await page.getByRole('button', { name: /^机器：/ }).first().click();
     await page.getByRole('button', { name: /e2e 空机器/ }).click();
+    // 机器详情分页签：运行时在「Agent」页
+    await page.getByTestId('worker-tab-agent').click();
     const pi = page.getByTestId('runtime-pi');
     await expect(page.getByTestId('runtime-pi-source')).toHaveText('未安装', { timeout: 30_000 });
     await expect(page.getByTestId('runtime-opencode-source')).toHaveText('未安装');
@@ -140,6 +142,7 @@ test('窄屏：运行时一节不溢出', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /^机器：/ }).first().click();
   await page.getByRole('button', { name: /本机/ }).first().click();
+  await page.getByTestId('worker-tab-agent').click();
   const section = page.getByTestId('runtime-section');
   await expect(section).toBeVisible();
   const box = await section.boundingBox();

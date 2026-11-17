@@ -25,10 +25,13 @@ export function harnessHint(worker: WorkerInfoDto | undefined, agentId: string):
 /** 一排 harness 小标签：不可用的变灰并带上原因。窄屏自动折行。 */
 export function HarnessBadges({
   harnesses,
-  labelOf = (id) => id
+  labelOf = (id) => id,
+  hints = true
 }: {
   harnesses: readonly { readonly agentId: string; readonly readiness?: Readiness | undefined }[];
   labelOf?: (agentId: string) => string;
+  /** 不可用时的处理提示另起一行写出来；机器详情里只放进徽标的悬停提示，不铺满屏。 */
+  hints?: boolean;
 }) {
   if (harnesses.length === 0) return null;
   return (
@@ -55,13 +58,13 @@ export function HarnessBadges({
             }`}
           >
             <span className={down ? 'line-through' : ''}>{labelOf(agentId)}</span>
-            {down ? <span className="text-rust no-underline">{readiness.reason}</span> : null}
+            {down && hints ? <span className="text-rust no-underline">{readiness.reason}</span> : null}
             {broken ? <span className="text-rust">模型自检失败</span> : null}
           </span>
         );
       })}
       {harnesses.map(({ agentId, readiness }) =>
-        readiness?.state === 'unavailable' && readiness.hint ? (
+        hints && readiness?.state === 'unavailable' && readiness.hint ? (
           <span key={`${agentId}-hint`} data-testid="harness-hint" className="w-full text-meta text-tertiary">
             {labelOf(agentId)}：{readiness.hint}
           </span>

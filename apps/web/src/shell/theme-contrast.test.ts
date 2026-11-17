@@ -42,6 +42,25 @@ test('主题文字色在 canvas/panel/card 上都达到 WCAG AA', () => {
   }
 });
 
+test('危险色上的深色文字也达到 AA（失败徽标、确认删除按钮）', () => {
+  const ratio = contrast(token('canvas'), token('rust'));
+  assert.ok(ratio >= 4.5, `--color-canvas on --color-rust = ${ratio.toFixed(2)}:1`);
+});
+
+function hue(hex: string): number {
+  const [r, g, b] = [1, 3, 5].map((at) => Number.parseInt(hex.slice(at, at + 2), 16) / 255) as [number, number, number];
+  const max = Math.max(r, g, b);
+  const d = max - Math.min(r, g, b);
+  if (d === 0) return 0;
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return (h * 60 + 360) % 360;
+}
+
+test('失败（rust）和在跑（accent）色相拉开，小圆点上也分得清', () => {
+  const gap = Math.abs(hue(token('accent')) - hue(token('rust')));
+  assert.ok(gap >= 25, `accent 与 rust 色相只差 ${gap.toFixed(0)}°`);
+});
+
 test('强调色上的深色文字也达到 AA', () => {
   const ratio = contrast(token('canvas'), token('accent'));
   assert.ok(ratio >= 4.5, `--color-canvas on --color-accent = ${ratio.toFixed(2)}:1`);

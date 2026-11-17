@@ -1,21 +1,57 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import type { CanvasDto, ProjectDto, SessionDto } from '../../shell/api.ts';
 import { AccountMenu } from '../../shell/auth.tsx';
 import { AttentionBadge } from '../../atoms/attention.tsx';
 import { GlobalNav } from '../../shell/global-nav.tsx';
+import { Icon, type IconName } from '../../atoms/icons.tsx';
 import { MessagesEntry } from '../../atoms/messages-entry.tsx';
 import { NotificationBell } from '../../shell/market/notifications.tsx';
 import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { WorkersBadge } from '../../shell/workers.tsx';
 import type { View } from '../../shell/route.ts';
 import { coarsePointer } from '../../shell/device.ts';
-import { PHASE_DOT, activeSessions, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
+import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
 
-const VIEWS: readonly { view: View; label: string; icon: string }[] = [
-  { view: 'canvas', label: '画布', icon: '▦' },
-  { view: 'list', label: '列表', icon: '☷' },
-  { view: 'focus', label: '会话', icon: '◫' }
+const VIEWS: readonly { view: View; label: string; icon: IconName }[] = [
+  { view: 'canvas', label: '画布', icon: 'grid' },
+  { view: 'list', label: '列表', icon: 'list' },
+  { view: 'focus', label: '会话', icon: 'message' }
 ];
+
+/** 桌面侧栏收起成图标栏：记在本机，刷新后保持。 */
+const COLLAPSED_KEY = 'agent-hub.sidebar.collapsed';
+const COLLAPSED_TASKS_KEY = 'agent-hub.sidebar.collapsed-tasks';
+
+function readFlag(key: string): boolean {
+  try {
+    return globalThis.localStorage?.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function readSet(key: string): Set<string> {
+  try {
+    const raw = globalThis.localStorage?.getItem(key);
+    return new Set(raw ? (JSON.parse(raw) as string[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function save(key: string, value: string): void {
+  try {
+    globalThis.localStorage?.setItem(key, value);
+  } catch {
+    /* 隐私模式写不进去就算了 */
+  }
+}
+
+/** 行级按钮的统一外观：28px（触屏 44px）高、圆角、悬停抬一档底色。 */
+const ROW =
+  'flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sub text-secondary hover:bg-hover hover:text-primary lg:min-h-7';
+const GHOST_ICON =
+  'flex size-10 shrink-0 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary lg:size-7';
 
 interface Props {
   readonly project: ProjectDto;
@@ -34,8 +70,10 @@ interface Props {
 }
 
 /**
- * 项目侧栏：桌面常驻，手机从左侧滑出。
- * 导航和会话选择只在这里出现一次，顶栏因此只留当前页面需要的动作。
+ * 项目侧栏：桌面常驻（可收起成 56px 图标栏，⌘/Ctrl+B），手机从左侧滑出。
+ *
+ * 自上而下只有四块：项目切换 → 动作（新建 / 搜索 / 视图）→ 任务与会话 → 全站导航和账号。
+ * 分块只靠留白和一条底线，不再每块都画边框；琥珀色只留给「在跑」的状态点。
  */
 export function ProjectSidebar({
   project,
@@ -52,8 +90,11 @@ export function ProjectSidebar({
   onNewTask,
   onClose
 }: Props) {
+  const drawer = onClose !== undefined;
   const [settings, setSettings] = useState(false);
   const [showSettled, setShowSettled] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => !drawer && readFlag(COLLAPSED_KEY));
+  const [foldedTasks, setFoldedTasks] = useState<Set<string>>(() => readSet(COLLAPSED_TASKS_KEY));
   const tasks = canvas?.tasks ?? [];
   // 活跃列表默认不含收起过的：侧栏是「现在要管什么」，不是全量档案。
   const active = useMemo(() => activeSessions(canvas?.sessions ?? []), [canvas?.sessions]);
@@ -68,174 +109,239 @@ export function ProjectSidebar({
     }
     return grouped;
   }, [active]);
-  // 任务下一条都没有 / 只是都收起来了，说法不一样。
-  const tasksWithSessions = useMemo(() => new Set((canvas?.sessions ?? []).map((session) => session.taskId ?? 'container')), [canvas?.sessions]);
   const taskTitle = useMemo(() => new Map(tasks.map((task) => [task.id, task.title])), [tasks]);
+  const now = Date.now();
 
   const titleOf = (session: SessionDto): string =>
     session.title?.trim() || canvas?.openings[session.id]?.trim() || (session.taskId === null ? '' : taskTitle.get(session.taskId)) || session.id.slice(-8);
 
-  return (
-    <aside
-      className="flex h-full w-64 shrink-0 flex-col border-r border-hair bg-panel"
-      aria-label="项目导航"
-      data-testid="project-sidebar"
-    >
-      <div className="flex items-center gap-1.5 border-b border-hair px-2 py-2">
-        <button
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-secondary hover:border-accent hover:text-accent lg:h-8 lg:w-8"
-          title="回到首页"
-          aria-label="回到首页"
-          onClick={onHome}
-        >
-          ⌂
+  const toggleCollapsed = useCallback(() => {
+    setCollapsed((current) => {
+      save(COLLAPSED_KEY, current ? '0' : '1');
+      return !current;
+    });
+  }, []);
+
+  // ⌘/Ctrl+B 收起 / 展开（只有桌面那份侧栏挂这个快捷键；输入框里不拦截）。
+  useEffect(() => {
+    if (drawer) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || event.key.toLowerCase() !== 'b') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+      event.preventDefault();
+      toggleCollapsed();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [drawer, toggleCollapsed]);
+
+  const toggleTask = (taskId: string) =>
+    setFoldedTasks((current) => {
+      const next = new Set(current);
+      if (next.has(taskId)) next.delete(taskId);
+      else next.add(taskId);
+      save(COLLAPSED_TASKS_KEY, JSON.stringify([...next]));
+      return next;
+    });
+
+  // 列表里 ↑ / ↓ 在会话行之间移动焦点（Home / End 到头尾）。
+  const listRef = useRef<HTMLElement>(null);
+  const onListKey = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const rows = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-nav-row]') ?? [])];
+    if (rows.length === 0) return;
+    const at = rows.indexOf(document.activeElement as HTMLElement);
+    const next =
+      event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : event.key === 'ArrowDown' ? Math.min(rows.length - 1, at + 1) : Math.max(0, at - 1);
+    event.preventDefault();
+    rows[next]?.focus();
+  };
+
+  if (collapsed) {
+    return (
+      <aside className="flex h-full w-14 shrink-0 flex-col items-center gap-1 border-r border-hair bg-panel py-2" aria-label="项目导航" data-testid="project-sidebar" data-collapsed="true">
+        <button className={GHOST_ICON} aria-label="展开侧栏" title="展开侧栏（⌘B）" onClick={toggleCollapsed}>
+          <Icon name="panel" />
         </button>
-        <select
-          className="min-h-11 min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent text-body text-primary outline-none lg:min-h-0"
-          value={project.id}
-          aria-label="切换项目"
-          onChange={(event) => {
-            const picked = projects.find((candidate) => candidate.id === event.target.value);
-            if (picked) onSwitchProject(picked);
-          }}
+        <button
+          className="mt-1 flex size-8 items-center justify-center rounded-md bg-selected text-sub text-primary"
+          title={project.name}
+          aria-label={`当前项目：${project.name}`}
+          onClick={toggleCollapsed}
         >
-          {(projects.length > 0 ? projects : [project]).map((candidate) => (
-            <option key={candidate.id} value={candidate.id} className="bg-panel text-body">
-              {candidate.name}
-            </option>
-          ))}
-        </select>
-        {onClose ? (
-          <button
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm text-sub text-tertiary hover:text-primary lg:h-8 lg:w-8"
-            aria-label="关闭侧栏"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        ) : null}
-      </div>
-
-      <div className="border-b border-hair">
-        <GlobalNav />
-      </div>
-
-      <div className="grid grid-cols-3 gap-1 border-b border-hair p-2" role="group" aria-label="视图">
+          {project.name.slice(0, 1).toUpperCase()}
+        </button>
+        <div className="my-1 h-px w-6 bg-hair" />
+        <button className={GHOST_ICON} aria-label="新建任务" title="新建任务" onClick={onNewTask}>
+          <Icon name="plus" />
+        </button>
+        <button className={GHOST_ICON} aria-label="搜索" title="搜索（⌘K）" onClick={onSearch}>
+          <Icon name="search" />
+        </button>
         {VIEWS.map((item) => (
           <button
             key={item.view}
-            className={`flex h-11 items-center justify-center gap-1 rounded-sm border text-meta lg:h-8 ${
-              view === item.view
-                ? 'border-accent/50 bg-card-raised text-primary'
-                : 'border-transparent text-tertiary hover:border-hair hover:text-secondary'
-            }`}
+            className={`${GHOST_ICON} ${view === item.view ? 'bg-selected text-primary' : ''}`}
+            aria-label={item.label}
+            title={item.label}
             aria-pressed={view === item.view}
             disabled={item.view === 'focus' && !canFocus}
             onClick={() => onView(item.view)}
           >
-            <span aria-hidden>{item.icon}</span>
-            {item.label}
+            <Icon name={item.icon} />
           </button>
         ))}
+        <div className="my-1 h-px w-6 bg-hair" />
+        <GlobalNav layout="rail" />
+        <div className="mt-auto flex flex-col items-center gap-1">
+          <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={() => setSettings(true)}>
+            <Icon name="settings" />
+          </button>
+          <AccountMenu placement="up" />
+        </div>
+        {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-hair bg-panel" aria-label="项目导航" data-testid="project-sidebar">
+      {/* 项目切换：原生下拉保留（键盘 / 读屏 / 手机滚轮都现成），只是画成一行带首字母和箭头的按钮。 */}
+      <div className="flex items-center gap-1 px-2 pb-1 pt-2">
+        <label className="relative flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 hover:bg-hover">
+          <span aria-hidden className="flex size-6 shrink-0 items-center justify-center rounded-md bg-selected text-meta text-primary">
+            {project.name.slice(0, 1).toUpperCase()}
+          </span>
+          <select
+            className="min-h-9 min-w-0 flex-1 cursor-pointer appearance-none truncate bg-transparent pr-5 text-body font-medium text-primary outline-none lg:min-h-0"
+            value={project.id}
+            aria-label="切换项目"
+            onChange={(event) => {
+              const picked = projects.find((candidate) => candidate.id === event.target.value);
+              if (picked) onSwitchProject(picked);
+            }}
+          >
+            {(projects.length > 0 ? projects : [project]).map((candidate) => (
+              <option key={candidate.id} value={candidate.id} className="bg-panel text-body">
+                {candidate.name}
+              </option>
+            ))}
+          </select>
+          <Icon name="chevron-down" size={14} className="pointer-events-none absolute right-1.5 text-tertiary" />
+        </label>
+        <button className={GHOST_ICON} title="项目设置" aria-label="项目设置" onClick={() => setSettings(true)}>
+          <Icon name="settings" />
+        </button>
+        {drawer ? (
+          <button className={GHOST_ICON} aria-label="关闭侧栏" onClick={onClose}>
+            <Icon name="x" />
+          </button>
+        ) : (
+          <button className={GHOST_ICON} aria-label="收起侧栏" title="收起侧栏（⌘B）" onClick={toggleCollapsed}>
+            <Icon name="panel" />
+          </button>
+        )}
       </div>
 
-      <div className="grid grid-cols-2 gap-1 border-b border-hair p-2">
-        <button
-          className="min-h-11 rounded-sm border border-hair px-2 py-1.5 text-meta text-secondary hover:border-accent hover:text-accent lg:min-h-0"
-          onClick={onSearch}
-          title="搜索任务与会话（⌘K）"
-        >
-          {coarsePointer() ? '搜索' : '搜索 ⌘K'}
-        </button>
-        <button
-          className="min-h-11 rounded-sm border border-hair px-2 py-1.5 text-meta text-secondary hover:border-accent hover:text-accent lg:min-h-0"
-          onClick={onNewTask}
-        >
+      <div className="space-y-0.5 px-2 pb-2">
+        <button className={ROW} onClick={onNewTask}>
+          <Icon name="plus" className="text-tertiary" />
           新建任务
         </button>
+        <button className={ROW} onClick={onSearch} title="搜索任务与会话">
+          <Icon name="search" className="text-tertiary" />
+          <span className="flex-1">搜索</span>
+          {coarsePointer() ? null : <kbd className="font-sans text-meta text-tertiary">⌘K</kbd>}
+        </button>
+        <div className="mt-1.5 grid grid-cols-3 gap-0.5 rounded-md bg-canvas p-0.5" role="group" aria-label="视图">
+          {VIEWS.map((item) => (
+            <button
+              key={item.view}
+              className={`flex min-h-10 items-center justify-center gap-1.5 rounded text-meta disabled:opacity-40 lg:min-h-6 ${
+                view === item.view ? 'bg-selected text-primary' : 'text-tertiary hover:text-secondary'
+              }`}
+              aria-pressed={view === item.view}
+              disabled={item.view === 'focus' && !canFocus}
+              onClick={() => onView(item.view)}
+            >
+              <Icon name={item.icon} size={13} />
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-2" aria-label="任务与会话">
+      <nav ref={listRef} onKeyDown={onListKey} className="min-h-0 flex-1 overflow-y-auto border-t border-hair px-2 py-2" aria-label="任务与会话">
+        <p className="px-2 pb-1 text-meta text-tertiary">任务</p>
         {tasks.length === 0 ? (
-          <p className="px-2 py-3 text-meta text-tertiary">还没有任务</p>
+          <p className="px-2 py-1 text-meta text-tertiary">还没有任务</p>
         ) : (
           tasks.map((task) => {
             const rows = sessions.get(task.id) ?? [];
+            const folded = foldedTasks.has(task.id);
+            const busy = rows.some((session) => sessionPhase(session) === 'working');
             return (
-              <section key={task.id} className="mb-2">
-                <p className="truncate px-2 py-1 text-meta text-tertiary" title={task.title}>
-                  {task.title}
-                  {/* 任务下一条活跃会话都没有，但确实有过：让它别看起来像「丢了」。 */}
-                  {rows.length === 0 && tasksWithSessions.has(task.id) ? (
-                    <span className="text-tertiary/70"> · 都收起来了</span>
+              <section key={task.id} className="mb-1">
+                <button
+                  data-nav-row
+                  className="group flex min-h-10 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-sub text-tertiary hover:bg-hover hover:text-secondary lg:min-h-7"
+                  aria-expanded={rows.length > 0 ? !folded : undefined}
+                  title={task.title}
+                  onClick={() => rows.length > 0 && toggleTask(task.id)}
+                >
+                  <Icon name={folded ? 'chevron-right' : 'chevron-down'} size={13} className={rows.length > 0 ? '' : 'opacity-0'} />
+                  <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                  {folded && rows.length > 0 ? (
+                    <span className="flex shrink-0 items-center gap-1 text-meta">
+                      {busy ? <span aria-hidden className={`size-1.5 rounded-full ${PHASE_DOT.busy}`} /> : null}
+                      {rows.length}
+                    </span>
                   ) : null}
-                </p>
-                {rows.length === 0 ? (
-                  tasksWithSessions.has(task.id) ? null : (
-                    <p className="px-2 py-1 text-meta text-tertiary">还没有会话</p>
-                  )
-                ) : (
-                  rows.map((session) => (
-                    <SessionRow
-                      key={session.id}
-                      session={session}
-                      title={titleOf(session)}
-                      active={selectedId === session.id}
-                      onOpen={onOpenSession}
-                    />
-                  ))
-                )}
+                </button>
+                {folded
+                  ? null
+                  : rows.map((session) => (
+                      <SessionRow key={session.id} session={session} title={titleOf(session)} active={selectedId === session.id} now={now} onOpen={onOpenSession} />
+                    ))}
               </section>
             );
           })
         )}
-        <div className="mt-1 border-t border-hair pt-1" data-testid="sidebar-settled">
+        <div className="mt-2" data-testid="sidebar-settled">
           <button
             data-testid="sidebar-settled-toggle"
+            data-nav-row
             aria-expanded={settled.length > 0 ? showSettled : undefined}
             disabled={settled.length === 0}
-            className="flex min-h-11 w-full items-center gap-1 rounded-sm px-2 py-1 text-left text-meta text-tertiary hover:bg-card hover:text-secondary disabled:hover:bg-transparent lg:min-h-0"
-            title={settled.length === 0 ? '已完成的会话会收在这里' : undefined}
+            className="flex min-h-10 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-meta text-tertiary hover:bg-hover hover:text-secondary disabled:opacity-60 disabled:hover:bg-transparent lg:min-h-7"
             onClick={() => setShowSettled((open) => !open)}
           >
-            <span aria-hidden className="w-3 shrink-0 text-center">{settled.length > 0 ? (showSettled ? '▾' : '▸') : ''}</span>
+            <Icon name={showSettled ? 'chevron-down' : 'chevron-right'} size={13} className={settled.length > 0 ? '' : 'opacity-0'} />
             <span>已收起 {settled.length}</span>
           </button>
           {showSettled && settled.length > 0 ? (
-            <div className="mt-0.5" data-testid="sidebar-settled-list">
+            <div data-testid="sidebar-settled-list">
               {settled.map((session) => (
-                <SessionRow
-                  key={session.id}
-                  session={session}
-                  title={titleOf(session)}
-                  active={selectedId === session.id}
-                  muted
-                  onOpen={onOpenSession}
-                />
+                <SessionRow key={session.id} session={session} title={titleOf(session)} active={selectedId === session.id} muted now={now} onOpen={onOpenSession} />
               ))}
             </div>
           ) : null}
         </div>
       </nav>
 
-      <div className="space-y-2 border-t border-hair p-2">
-        <div className="flex items-center justify-between gap-1">
+      <div className="border-t border-hair px-2 py-2">
+        <GlobalNav />
+      </div>
+
+      <div className="flex items-center gap-0.5 border-t border-hair px-2 py-1.5">
+        <div className="min-w-0 flex-1">
           <WorkersBadge placement="up" />
-          <button
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-sm border border-hair text-meta text-tertiary hover:border-accent hover:text-accent lg:h-8 lg:w-8"
-            title="项目设置"
-            aria-label="项目设置"
-            onClick={() => setSettings(true)}
-          >
-            ⚙
-          </button>
         </div>
-        <div className="flex items-center gap-1">
-          <AttentionBadge onClick={onHome} compact />
-          <MessagesEntry />
-          <NotificationBell />
-          <AccountMenu />
-        </div>
+        <AttentionBadge onClick={onHome} compact />
+        <MessagesEntry />
+        <NotificationBell placement="up" />
+        <AccountMenu placement="up" />
       </div>
       {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
     </aside>
@@ -243,20 +349,22 @@ export function ProjectSidebar({
 }
 
 /**
- * 侧栏里的一行会话：名字在左，状态点在最右（同款小圆点，颜色只说「忙 / 出事 / 歇着」）。
- * 收起过的那份用更淡的字，展开后也能一眼看出它们已经退场。
+ * 侧栏里的一行会话：状态点在最左（同款小圆点，颜色只说「忙 / 出事 / 歇着」），右边是多久没动。
+ * 短号不再常驻（放进悬停提示），收起过的那份用更淡的字。
  */
 function SessionRow({
   session,
   title,
   active,
   muted = false,
+  now,
   onOpen
 }: {
   readonly session: SessionDto;
   readonly title: string;
   readonly active: boolean;
   readonly muted?: boolean;
+  readonly now: number;
   readonly onOpen: (sessionId: string) => void;
 }) {
   const phase = sessionPhase(session);
@@ -264,22 +372,23 @@ function SessionRow({
   return (
     <button
       data-testid="sidebar-session"
+      data-nav-row
       data-phase={phase}
       data-settled={muted ? 'true' : undefined}
-      className={`mb-0.5 flex min-h-11 w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-meta lg:min-h-0 ${
+      className={`group flex min-h-11 w-full items-center gap-2 rounded-md py-1 pl-6 pr-2 text-left text-sub lg:min-h-7 ${
         active
-          ? 'bg-card-raised text-primary'
+          ? 'bg-selected text-primary'
           : muted
-            ? 'text-tertiary hover:bg-card hover:text-secondary'
-            : 'text-secondary hover:bg-card hover:text-primary'
+            ? 'text-tertiary hover:bg-hover hover:text-secondary'
+            : 'text-secondary hover:bg-hover hover:text-primary'
       }`}
       aria-current={active ? 'page' : undefined}
-      title={`${title} · ${session.agentId} · ${phaseLabel(phase)}`}
+      title={`${title} · #${session.id.slice(-4)} · ${session.agentId} · ${phaseLabel(phase)}`}
       onClick={() => onOpen(session.id)}
     >
+      <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${PHASE_DOT[tone]} ${tone === 'busy' ? 'animate-pulse' : ''}`} />
       <span className="min-w-0 flex-1 truncate">{title}</span>
-      <span className="shrink-0 font-mono text-tertiary">#{session.id.slice(-4)}</span>
-      <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${PHASE_DOT[tone]}`} />
+      <span className="shrink-0 text-meta text-tertiary">{elapsedLabel(session.updatedAt, now)}</span>
     </button>
   );
 }
