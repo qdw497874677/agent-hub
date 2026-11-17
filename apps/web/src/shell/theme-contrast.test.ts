@@ -9,9 +9,14 @@ import test from 'node:test';
  */
 const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
-function token(name: string): string {
-  const match = css.match(new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})`));
+/** 读 @theme 里的令牌；旧名是 `var(--color-语义名)` 别名，顺着解到十六进制。 */
+function token(name: string, depth = 0): string {
+  const match = css.match(new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6}|var\\(--color-([a-z0-9-]+)\\))`));
   assert.ok(match, `styles.css 缺少 --color-${name}`);
+  if (match[2] !== undefined) {
+    assert.ok(depth < 4, `--color-${name} 别名绕圈了`);
+    return token(match[2], depth + 1);
+  }
   return match[1]!;
 }
 
@@ -64,4 +69,39 @@ test('失败（rust）和在跑（accent）色相拉开，小圆点上也分得�
 test('强调色上的深色文字也达到 AA', () => {
   const ratio = contrast(token('canvas'), token('accent'));
   assert.ok(ratio >= 4.5, `--color-canvas on --color-accent = ${ratio.toFixed(2)}:1`);
+});
+
+test('令牌 v2：语义层的文字和状态色在各层表面上都达到 AA', () => {
+  const surfaces = ['bg', 'surface-1', 'surface-2', 'surface-3', 'overlay'] as const;
+  const foregrounds = ['fg', 'fg-muted', 'fg-faint', 'live', 'success', 'warning', 'danger', 'info', 'link', 'diff-add', 'diff-del'] as const;
+  for (const surface of surfaces) {
+    for (const foreground of foregrounds) {
+      const ratio = contrast(token(foreground), token(surface));
+      assert.ok(ratio >= 4.5, `--color-${foreground} on --color-${surface} = ${ratio.toFixed(2)}:1`);
+    }
+  }
+});
+
+test('令牌 v2：主按钮是中性高对比，焦点框在底色上看得见', () => {
+  assert.ok(contrast(token('action-fg'), token('action')) >= 7, '主按钮文字对比度不足 7:1');
+  for (const surface of ['bg', 'surface-1', 'surface-2', 'surface-3'] as const) {
+    assert.ok(contrast(token('ring'), token(surface)) >= 3, `焦点框在 ${surface} 上不足 3:1`);
+  }
+});
+
+test('令牌 v2：警告和「在跑」的琥珀分开（不同色相，警告另配图标）', () => {
+  const gap = Math.abs(hue(token('live')) - hue(token('warning')));
+  assert.ok(gap >= 10, `live 与 warning 色相只差 ${gap.toFixed(0)}°`);
+  assert.notEqual(token('action'), token('live'), '主按钮不能再用琥珀');
+  assert.notEqual(token('ring'), token('live'), '焦点框不能再用琥珀');
+});
+
+test('旧名都还在，并且指回语义层', () => {
+  const aliases: Record<string, string> = {
+    canvas: 'bg', panel: 'surface-1', card: 'surface-2', 'card-raised': 'surface-3', hair: 'border', strong: 'border-strong',
+    primary: 'fg', secondary: 'fg-muted', tertiary: 'fg-faint', accent: 'live', sage: 'success', rust: 'danger', ochre: 'warning'
+  };
+  for (const [old, semantic] of Object.entries(aliases)) {
+    assert.match(css, new RegExp(`--color-${old}:\\s*var\\(--color-${semantic}\\)`), `--color-${old} 不是 ${semantic} 的别名`);
+  }
 });
