@@ -362,7 +362,7 @@ export function createApp(options: AppOptions): Hono {
     if (options.workerAgents) installWorkerAgentRoutes(app, options.workerAgents, principalOf);
     if (options.projectDeletion) installProjectDeletion(app, { ...deps, ...options.projectDeletion }, principalOf, options.projectDeletion.onSessionsPurged);
     if (options.openApi) {
-      installApiTokens(app, options.openApi.manage, principalOf);
+      installApiTokens(app, options.openApi.manage, principalOf, options.openApi.settings ? { settings: options.openApi.settings } : {});
       installOpenApi(app, options.openApi, {
         deps,
         hub,

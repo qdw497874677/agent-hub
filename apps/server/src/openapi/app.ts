@@ -75,6 +75,10 @@ export interface OpenApiOptions {
   readonly rate?: { readonly general?: number; readonly prompt?: number; readonly streams?: number };
   /** 对外 MCP 写工具的幂等回放（E4b）；不给就只有只读工具。 */
   readonly replays?: import('@agent-hub/domain').McpReplayStore;
+  /** hub 设置：外部接入页的写工具开关（mcpWrites）从这里读。 */
+  readonly settings?: { get(): Promise<import('@agent-hub/domain').HubSettings>; save(next: import('@agent-hub/domain').HubSettings): Promise<void> };
+  /** MCP 调用记录（mcp.call）写到这里。 */
+  readonly audit?: Pick<import('@agent-hub/domain').AuditLog, 'append'>;
 }
 
 interface V1Context {
@@ -607,9 +611,11 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   });
 
   // MCP（streamable HTTP，无状态）：工具 = 上面这些路由；同一个令牌、同一套权限。
-  v1.post(`${V1}/mcp`, (c) =>
+  v1.post(`${V1}/mcp`, async (c) =>
     handleMcp(c, v1 as unknown as Hono, {
       ...(options.replays === undefined ? {} : { replays: options.replays }),
+      ...(options.audit === undefined ? {} : { audit: options.audit }),
+      writes: (await options.settings?.get().catch(() => null))?.mcpWrites ?? null,
       now: options.tokens.now
     })
   );
