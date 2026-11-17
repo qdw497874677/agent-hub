@@ -696,7 +696,7 @@ function GitForm({ onDone, onShowAsset }: { onDone: () => void; onShowAsset?: (n
             ))}
           </ul>
         ) : (
-          <p className="text-meta text-tertiary">这个提交（{short(scan.commit)}）里没找到 SKILL.md。</p>
+          <p className="text-meta text-tertiary">这个提交（{short(scan.commit)}）里没找到可导入的技能、指令或 MCP 配置。</p>
         )
       ) : null}
       {mode === 'single' && error ? (

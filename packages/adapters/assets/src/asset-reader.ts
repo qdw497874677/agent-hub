@@ -94,7 +94,7 @@ export function redactGitStderr(text: string): string {
 export function classifyGitFailure(stderr: string): '认证失败' | '主机不可达' | '分支不存在' | '其它' {
   const text = stderr.toLowerCase();
   if (
-    /authentication failed|could not read (username|password)|invalid username or password|terminal prompts disabled|permission denied \(publickey\)|host key verification failed/.test(
+    /authentication failed|could not read (username|password)|invalid username or password|terminal prompts disabled|repository not found|permission denied \(publickey\)|host key verification failed/.test(
       text
     )
   ) {
@@ -105,6 +105,21 @@ export function classifyGitFailure(stderr: string): '认证失败' | '主机不�
   }
   if (/couldn't find remote ref|remote branch .* not found|not our ref|reference is not a tree/.test(text)) return '分支不存在';
   return '其它';
+}
+
+/**
+ * 给人看的失败说明：同一个「认证失败」，没带令牌时多半是网址写错或私有仓库，带了令牌才是令牌的问题。
+ * （GitHub 对不存在的仓库也回「要认证」，不会说 not found。）
+ */
+export function describeGitFailure(kind: ReturnType<typeof classifyGitFailure>, hasToken: boolean): DomainError {
+  if (kind === '认证失败') {
+    return hasToken
+      ? invalid('克隆失败：访问令牌无效，或没有这个仓库的权限')
+      : invalid('克隆失败：仓库不存在，或是私有仓库需要访问令牌');
+  }
+  if (kind === '分支不存在') return invalid('克隆失败：分支或标签不存在');
+  if (kind === '主机不可达') return unavailable('克隆失败：连不上代码托管主机，检查网址或稍后再试');
+  return unavailable('克隆失败（其它）');
 }
 
 export function createAssetReader(options: AssetReaderOptions = {}): AssetReader {
@@ -133,7 +148,7 @@ export function createAssetReader(options: AssetReaderOptions = {}): AssetReader
           // 原始 stderr 只进服务端日志，且先抹掉 user:token@；调用者只看到分类。
           console.warn(`[assets] git 失败：${redactGitStderr(raw.trim().split('\n').slice(-5).join(' | ') || error.message)}`);
           const kind = (error as { killed?: boolean }).killed ? '主机不可达' : classifyGitFailure(raw);
-          resolve(err(unavailable(`克隆失败（${kind}）`)));
+          resolve(err(describeGitFailure(kind, env['GIT_CONFIG_KEY_1'] === 'http.extraHeader')));
         }
       );
     });
