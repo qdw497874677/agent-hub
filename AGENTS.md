@@ -92,6 +92,17 @@ E2E_PORT=7896 E2E_DATA_DIR=/tmp/agent-hub-e2e-data \
 
 E2E 会真的起 server + worker，部分用例会调真实 agent；Grok 未登录时相关用例会失败或跳过。
 
+### 提交前必须跑（前端改动）
+
+**只要改了 `apps/web/**`，提交前必须跑 Playwright**——不是"有空就跑"：
+
+- 改到某条流程：至少跑相关 spec（`e2e/<area>.spec.ts`），并在提交信息或报告里写明命令与结果。
+- 新增交互、改布局、改手机端（<640px）：跑对应 spec，且补一条断言（新 testid 要进用例）。
+- 纯文案改动：仍要跑一次覆盖那句文案的 spec；没有 spec 覆盖就在同一提交里补断言。
+- 不要用「单测过了 / build 过了」代替 Playwright；web 单测和 `build` 只是前置门禁。
+
+每次用独立 `E2E_PORT` 与全新的 `E2E_DATA_DIR`（旧数据目录会因历史同名 bot 撞 `bots.team_id, name` 而整轮起不来）。
+
 ### 手动起一个可看的实例
 
 ```bash
