@@ -156,7 +156,7 @@ function ServerRow({
             </span>
             <span
               className={`shrink-0 rounded-sm border px-1 font-mono text-[10px] leading-[15px] ${
-                server.transport === 'http' ? 'border-accent/50 text-accent' : 'border-hair text-secondary'
+                server.transport === 'http' ? 'border-strong text-primary' : 'border-hair text-secondary'
               }`}
             >
               {server.transport}
@@ -193,7 +193,7 @@ function Switch({
       checked={checked}
       disabled={busy}
       onChange={(event) => onToggle(event.target.checked)}
-      className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--color-accent)] disabled:cursor-default disabled:opacity-40"
+      className="h-4 w-4 shrink-0 cursor-pointer accent-[var(--color-ring)] disabled:cursor-default disabled:opacity-40"
     />
   );
 }
