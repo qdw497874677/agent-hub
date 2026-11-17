@@ -167,6 +167,7 @@ import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
 import { noteProvenance, viaOfClient, recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity, ipOf, viaSuffix } from './session-activity.ts';
+import { workspaceForApiStart } from './session-workspace.ts';
 import type { SessionActivityOptions } from './session-activity.ts';
 import type { AuthOptions } from './auth.ts';
 import { installApiTokens } from './api-tokens.ts';
@@ -828,6 +829,13 @@ export function createApp(options: AppOptions): Hono {
       });
       if (!prepared.ok) return fail(c, prepared.error);
       workspaceId = prepared.value.id;
+    }
+    // 开放 API / 脚本建会话往往只给 taskId：项目没绑长期工作目录时按界面默认现建一个，
+    // 别让调用方先猜着去建工作空间（MCP 的 session_start 就是这条路）。
+    if (!workspaceId && workspaceMode === undefined) {
+      const placed = await workspaceForApiStart(deps, derive, actor);
+      if (!placed.ok) return fail(c, placed.error);
+      workspaceId = placed.value ?? workspaceId;
     }
     let modelForCheck = derive.model;
     if (derive.profileId) {

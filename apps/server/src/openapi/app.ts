@@ -66,6 +66,8 @@ import type { ProviderWiringApi } from '../providers.ts';
 import { V1, routes } from './routes.ts';
 import { createAssetVisibility } from '../asset-visibility.ts';
 import { handleMcp, INTERNAL } from './mcp.ts';
+import { workspaceForApiStart } from '../session-workspace.ts';
+import { projectDto } from '../project-dto.ts';
 
 export interface OpenApiOptions {
   readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'>;
@@ -463,7 +465,14 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!can(actor, 'session.create')) return fail(c, forbidden('令牌没有 sessions:write'));
     const allowed = await ctx.providers?.checkModel(actor, input.model, input.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
-    const result = await deriveSessionUseCase(deps, { ...input, actor, ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {}) });
+    const placed = await workspaceForApiStart(deps, input, actor);
+    if (!placed.ok) return fail(c, placed.error);
+    const result = await deriveSessionUseCase(deps, {
+      ...input,
+      ...(placed.value ? { workspaceId: placed.value } : {}),
+      actor,
+      ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {})
+    });
     if (result.ok) {
       await recordSessionAction(deps, ctx.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, ctx.activity, c, actor, result.value, 'api');
