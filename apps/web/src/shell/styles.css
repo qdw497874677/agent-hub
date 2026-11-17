@@ -20,6 +20,9 @@
   --color-accent-dim: #b6894f;
   --color-sage: #82a394;
   --color-rust: #c08a6a;
+  /* 行级交互面：悬停 / 选中只抬一档底色，不再用琥珀描边（琥珀只表示「在跑」）。 */
+  --color-hover: #22292c;
+  --color-selected: #293134;
 
   --font-sans: 'Noto Sans SC', 'Inter Tight', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
