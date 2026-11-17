@@ -808,6 +808,13 @@ export function ChatBlock({
     );
   }
   if (block.kind === 'stopped') return <StoppedDivider text={block.text} />;
+  if (block.kind === 'compaction') {
+    return (
+      <div role="status" data-testid="msg-compaction">
+        <SystemDivider text={block.text} icon={block.ok ? 'layers' : 'warning'} tone={block.ok ? 'muted' : 'warning'} />
+      </div>
+    );
+  }
   if (block.kind === 'stall') {
     return (
       <p role="status" className="flex items-center gap-1.5 text-meta text-warning">

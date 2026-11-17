@@ -162,6 +162,7 @@ function BlockView({
     );
   }
   if (block.kind === 'stopped') return <StoppedDivider text={block.text} compact />;
+  if (block.kind === 'compaction') return <p role="status" className="text-center text-meta text-tertiary">{block.text}</p>;
   if (block.kind === 'stall') {
     return (
       <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
@@ -190,7 +191,7 @@ function BlockView({
     const status = block.status === 'running' ? '运行中' : block.status === 'failed' ? '失败' : block.status === 'cancelled' ? '已取消' : '完成';
     return (
       <p className={`flex items-baseline gap-2 border-l pl-2 text-meta ${block.status === 'failed' ? 'border-rust text-rust' : 'border-hair text-secondary'}`} data-testid="card-subagent">
-        <span className={block.status === 'running' ? 'text-accent' : 'text-tertiary'}>◈</span>
+        <span className={block.status === 'running' ? 'text-live' : 'text-tertiary'}>◈</span>
         <span className="font-mono text-sage">{block.agent ?? '子代理'}</span>
         <span className="truncate opacity-70">{block.title ?? ''}</span>
         <span className="ml-auto shrink-0 text-tertiary">{status} · {subagentStepCount(block)} 步</span>
