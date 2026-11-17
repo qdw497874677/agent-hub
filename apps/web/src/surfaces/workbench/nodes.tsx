@@ -13,6 +13,7 @@ import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { PinnedMark } from '../../atoms/pinned-mark.tsx';
 import { CardComposer } from './card-composer.tsx';
 import { OptionControls } from '../../atoms/options.tsx';
+import { HubSwitchNote, useSessionOptions } from '../../atoms/session-options.tsx';
 import { PHASE_DOT, elapsedLabel, phaseLabel, phaseTone, sessionPhase, type SessionPhase } from './session-status.ts';
 import {
   cardBlocks,
@@ -59,6 +60,8 @@ export type SessionNode = Node<
     session: SessionDto;
     live: LiveSession | undefined;
     agentLabel: string;
+    /** 这条会话所属项目：会话内模型清单要按它查 hub 提供商。 */
+    projectId: string;
     /** 多台 Worker 时才有：会话跑在哪台。 */
     worker?: WorkerInfoDto | undefined;
     /** 会话所在机器是否在线；undefined = 机器列表还没到，先不拦。 */
@@ -256,8 +259,10 @@ function CardPromptBubble({
 }
 
 export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
-  const { session, live, agentLabel, worker, resources, place, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onSendAndNew, onInterrupt, onChangeOption, size, onResized } =
+  const { session, live, agentLabel, worker, resources, place, projectId, onOpen, onExpand, expanded, draft, onDraftChange, onSend, onSendAndNew, onInterrupt, onChangeOption, size, onResized } =
     data;
+  // 卡片上的模型清单同样要补上 hub 提供商的模型（见 atoms/session-options.tsx）。
+  const sessionOptions = useSessionOptions(session.optionSpec, projectId, session.workerId, session.agentId);
   // 每张卡自己的发送状态：一张卡在等响应，不该让整块画布跟着变灰。
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -535,11 +540,15 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       {session.optionSpec.length === 0 ? null : (
         <div className="nodrag mb-2">
           <OptionControls
-            options={session.optionSpec}
+            options={sessionOptions.options}
             values={session.options}
             onChange={(optionId, value) => void run(() => onChangeOption(optionId, value))}
             compact
           />
+          {/* 卡片宽 320px：提醒单独一行，宁可多一行也不压模型下拉。 */}
+          <div className="mt-1 empty:hidden">
+            <HubSwitchNote note={sessionOptions.note} testId="hub-switch-note-card" />
+          </div>
         </div>
       )}
 

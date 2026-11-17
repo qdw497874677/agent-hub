@@ -402,6 +402,7 @@ export function CanvasView({
         onResized: resized('session', session.id),
         live: resolveLive(session, canvas.previews[session.id] ?? [], live[session.id]) ?? undefined,
         agentLabel: agentLabel(session.agentId),
+        projectId: canvas.project.id,
         worker: workerOf(session.workerId),
         online: workers.list.length === 0 ? undefined : resolveWorker(workers.list, session.workerId)?.state === 'online',
         resources: resolveWorker(workers.list, session.workerId)?.resources,

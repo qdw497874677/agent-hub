@@ -4,6 +4,7 @@ import { api } from '../shell/api.ts';
 import { checkAdd, filterCommands, formatBytes, mentionDraft, toInput, triggerAt, type Draft, type SlashCommand } from './attachments.ts';
 import { readDraft } from './commands.ts';
 import { OptionControls } from './options.tsx';
+import { HubSwitchNote, useSessionOptions } from './session-options.tsx';
 import { coarsePointer } from '../shell/device.ts';
 import { useOfflineNotice } from '../shell/workers.tsx';
 import { ActionDot, OfflineNotice } from './composer-parts.tsx';
@@ -70,6 +71,8 @@ export function Composer({
   projectId,
   quote
 }: Props) {
+  // 模型清单要补上 hub 提供商的模型（`session.optionSpec` 里只有 agent 原生模型）。
+  const sessionOptions = useSessionOptions(session.optionSpec, projectId, session.workerId, session.agentId);
   // 输入框不受控，原因见 CardComposer 上的注释：React Flow 节点里受控 textarea 会丢字。
   const area = useRef<HTMLTextAreaElement>(null);
   const filePicker = useRef<HTMLInputElement>(null);
@@ -452,7 +455,7 @@ export function Composer({
             />
             <span className="hidden shrink-0 text-meta text-tertiary sm:inline">{agentLabel}</span>
             <OptionControls
-              options={session.optionSpec}
+              options={sessionOptions.options}
               values={session.options}
               onChange={onChangeOption}
               compact
@@ -465,6 +468,10 @@ export function Composer({
             onInterrupt={onInterrupt}
             size={large ? 'md' : 'sm'}
           />
+        </div>
+        {/* 「换提供商会重启进程」：独占一行、放在底栏下面，窄屏也不会把模型控件挤成一条线。 */}
+        <div className="mt-1 empty:hidden">
+          <HubSwitchNote note={sessionOptions.note} />
         </div>
       </div>
     </div>

@@ -853,13 +853,29 @@ export interface ProviderProbeDto {
   readonly models: readonly { readonly id: string; readonly name?: string; readonly contextWindow?: number; readonly maxTokens?: number }[];
 }
 const providerPath = (id: string) => `/api/providers/${encodeURIComponent(id)}`;
+
+/**
+ * 会话里能选哪些 hub 模型：按任务查（派生对话框）或按项目查（会话内，后端会顺着项目找到团队）。
+ * 兼容老写法 `models(taskId)`：传字符串等同于 `{ taskId }`。
+ */
+export interface HubModelsQuery {
+  readonly taskId?: string;
+  readonly projectId?: string;
+}
+function hubModelsPath(explain: boolean, input?: string | HubModelsQuery): string {
+  const query = typeof input === 'string' ? { taskId: input } : (input ?? {});
+  const params = new URLSearchParams();
+  if (explain) params.set('explain', '1');
+  if (query.taskId !== undefined && query.taskId !== '') params.set('taskId', query.taskId);
+  if (query.projectId !== undefined && query.projectId !== '') params.set('projectId', query.projectId);
+  const text = params.toString();
+  return `/api/providers/models${text === '' ? '' : `?${text}`}`;
+}
 export const providersApi = {
   list: () => call<{ providers: ProviderDto[]; workerRouting: Record<string, 'direct' | 'hub'> }>('/api/providers'),
-  models: (taskId?: string) => call<HubModelsDto[]>(`/api/providers/models${taskId ? `?taskId=${encodeURIComponent(taskId)}` : ''}`),
-  modelsExplained: (taskId?: string) =>
-    call<{ providers: HubModelsDto[]; hidden: HubModelsHiddenDto[] }>(
-      `/api/providers/models?explain=1${taskId ? `&taskId=${encodeURIComponent(taskId)}` : ''}`
-    ),
+  models: (input?: string | HubModelsQuery) => call<HubModelsDto[]>(hubModelsPath(false, input)),
+  modelsExplained: (input?: string | HubModelsQuery) =>
+    call<{ providers: HubModelsDto[]; hidden: HubModelsHiddenDto[] }>(hubModelsPath(true, input)),
   probe: (input: ProviderProbeInputDto) => post<ProviderProbeDto>('/api/providers/probe', input),
   create: (input: ProviderInputDto & { scope: 'personal' | 'team' | 'hub'; apiKey?: string }) => post<ProviderDto>('/api/providers', input),
   update: (id: string, input: ProviderInputDto) => call<ProviderDto>(providerPath(id), { method: 'PUT', body: JSON.stringify(input) }),
