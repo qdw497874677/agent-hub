@@ -87,6 +87,11 @@ export interface ApiToken {
   readonly userId: string;
   /** 只有 kind === 'bot' 才有：这个凭据属于哪个项目的哪个 bot（name 即 @id）。 */
   readonly bot?: { readonly projectId: string; readonly name: string };
+  /**
+   * 个人 / 服务账号令牌限定的项目（外部接入页的「只给这几个项目」）。
+   * 不给 / null = 不限项目（老令牌都是这样）；给了 = can() 只放行这些项目里的资源，也不能新建项目。
+   */
+  readonly projectIds?: readonly string[] | null;
   readonly name: string;
   readonly scopes: readonly ApiScope[];
   /** 明文开头几位，列表里认令牌用（不是秘密）。 */
@@ -135,4 +140,6 @@ export interface TokenVia {
   readonly permissions: readonly Permission[];
   /** bot 令牌的项目归属：can() 用它把权限收窄到这一个项目（C1）。 */
   readonly bot?: { readonly projectId: string; readonly name: string };
+  /** 限定项目的令牌：can() 只放行这些项目里的资源（见 ApiToken.projectIds）。 */
+  readonly projectIds?: readonly string[];
 }

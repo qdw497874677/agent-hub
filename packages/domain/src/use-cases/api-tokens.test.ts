@@ -5,7 +5,7 @@ import { asLoginId, asProjectId, asTeamId, asUserId, type Principal, type User }
 import type { Project } from '../project.ts';
 import { inMemoryApiTokens } from '../testing/in-memory.ts';
 import { BOT_TOKEN_PREFIX } from '../api-token.ts';
-import { authenticateApiToken, createApiToken, listApiTokens, revokeApiToken, type ApiTokenDeps } from './api-tokens.ts';
+import { apiTokenActivity, authenticateApiToken, createApiToken, listApiTokens, revokeApiToken, rotateApiToken, type ApiTokenDeps } from './api-tokens.ts';
 
 /** C1：bot 的独立凭据——签发要项目 admin；令牌只能在本项目里做事。 */
 function userOf(id: string, role: User['role'] = 'member', teamId = 'team-1'): User {
@@ -225,4 +225,59 @@ test('默认有效期：个人令牌不给 = 30 天；显式 null = 永不过期
   assert.ok(forever.ok);
   assert.equal(forever.value.info.expiresAt, null);
   assert.equal((await issueBot()).info.expiresAt, null);
+});
+
+test('限定项目的令牌：只碰选中的项目，不能新建项目；看不到的项目不能选', async () => {
+  const { deps, owner, member } = world();
+  const made = await createApiToken(deps, owner, { name: 'scoped', kind: 'personal', scopes: ['projects:read', 'projects:write'], projectIds: ['p1'] });
+  assert.ok(made.ok, JSON.stringify(made));
+  assert.deepEqual(made.value.info.projectIds, ['p1']);
+  const principal = await authenticateApiToken(deps, made.value.token);
+  assert.ok(principal);
+  assert.deepEqual(principal.via?.projectIds, ['p1']);
+  const resource = (id: string) => ({ kind: 'project' as const, id, projectId: id, teamId: 'team-1', createdBy: 'owner', sharedWith: ['owner'] });
+  assert.equal(decide(principal, 'project.read', resource('p1')).allow, true);
+  assert.deepEqual(decide(principal, 'project.read', resource('p2')), { allow: false, reason: 'token_project' });
+  assert.deepEqual(decide(principal, 'task.read', { kind: 'task', id: 't', projectId: 'p2', teamId: 'team-1', createdBy: 'owner' }), { allow: false, reason: 'token_project' });
+  assert.deepEqual(decide(principal, 'project.create'), { allow: false, reason: 'token_project' });
+  // 不限项目的老令牌照旧
+  const wide = await createApiToken(deps, owner, { name: 'wide', kind: 'personal', scopes: ['projects:read'] });
+  assert.ok(wide.ok);
+  const widePrincipal = await authenticateApiToken(deps, wide.value.token);
+  assert.equal(widePrincipal?.via?.projectIds, undefined);
+  assert.equal(decide(widePrincipal, 'project.read', resource('p2')).allow, true);
+  // 成员看不到 p1（owner 建的、没共享），不能限定到它
+  const denied = await createApiToken(deps, member, { name: 'x', kind: 'personal', scopes: ['projects:read'], projectIds: ['p1'] });
+  assert.equal(denied.ok, false);
+  // bot 不收 projectIds
+  assert.equal((await createApiToken(deps, owner, { name: 'b', kind: 'bot', projectId: 'p1', scopes: ['projects:read'], projectIds: ['p1'] })).ok, false);
+});
+
+test('轮换：新令牌同权限同范围、有效期长度不变；旧的吊销但记录还在；吊销过的不能再轮换', async () => {
+  const { deps, owner, member, auditRows } = world();
+  const made = await createApiToken(deps, owner, { name: 'ci', kind: 'personal', scopes: ['projects:read'], projectIds: ['p1'] });
+  assert.ok(made.ok);
+  const rotated = await rotateApiToken(deps, owner, made.value.info.id);
+  assert.ok(rotated.ok, JSON.stringify(rotated));
+  assert.notEqual(rotated.value.token, made.value.token);
+  assert.deepEqual(rotated.value.info.projectIds, ['p1']);
+  assert.deepEqual(rotated.value.info.scopes, ['projects:read']);
+  const length = (t: { createdAt: number; expiresAt: number | null }) => (t.expiresAt ?? 0) - t.createdAt;
+  assert.equal(length(rotated.value.info), length(made.value.info));
+  assert.equal(await authenticateApiToken(deps, made.value.token), null);
+  assert.ok(await authenticateApiToken(deps, rotated.value.token));
+  const listed = await listApiTokens(deps, owner);
+  assert.ok(listed.some((t) => t.id === made.value.info.id && t.revokedAt !== null), '旧记录保留');
+  assert.ok(auditRows.some((row) => row.detail.includes('ci')));
+  assert.equal((await rotateApiToken(deps, owner, made.value.info.id)).ok, false);
+  // 别人的令牌：当作不存在
+  assert.equal((await rotateApiToken(deps, member, rotated.value.info.id)).ok, false);
+});
+
+test('令牌活动：只给管得了它的人看', async () => {
+  const { deps, owner, member } = world();
+  const made = await createApiToken(deps, owner, { name: 'ci', kind: 'personal', scopes: ['projects:read'] });
+  assert.ok(made.ok);
+  assert.ok((await apiTokenActivity(deps, owner, made.value.info.id)).ok);
+  assert.equal((await apiTokenActivity(deps, member, made.value.info.id)).ok, false);
 });

@@ -1,9 +1,9 @@
-import { can, type Resource } from '../access.ts';
+import { can, type Permission, type Resource } from '../access.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import { asLoginId, isEmailVerified, newUserId } from '../account.ts';
 import type { ApiScope, ApiToken, ApiTokenKind } from '../api-token.ts';
 import { API_SCOPES, API_TOKEN_PREFIX, DEFAULT_TOKEN_TTL_MS, BOT_TOKEN_PREFIX, SERVICE_EMAIL_DOMAIN, apiTokenUsable, effectivePermissions } from '../api-token.ts';
-import { forbidden, invalid, notFound } from '../errors.ts';
+import { conflict, forbidden, invalid, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
 import { asProjectId, newId } from '../ids.ts';
 import type { Project } from '../project.ts';
@@ -36,9 +36,14 @@ export interface CreateApiTokenInput {
   readonly projectId?: string;
   /** kind = 'bot' 可选：bot 的 @id；不给就用令牌名。 */
   readonly botName?: string;
-  /** null / 不给 = 永不过期。 */
+  /** 不给 = 30 天（bot 不给 = 不过期）；null = 永不过期。 */
   readonly expiresAt?: number | null;
+  /** 个人 / 服务账号令牌：只给这几个项目（不给 / null = 不限）。bot 令牌不用它（bot 自带项目）。 */
+  readonly projectIds?: readonly string[] | null;
 }
+
+/** 一个令牌最多限定多少个项目（再多就不如不限）。 */
+export const MAX_TOKEN_PROJECTS = 50;
 
 /** 列表里给人看的形状：没有哈希。 */
 export type ApiTokenView = Omit<ApiToken, 'tokenHash'> & { readonly usable: boolean };
@@ -48,7 +53,7 @@ const view = (token: ApiToken, now: number): ApiTokenView => {
   return { ...rest, usable: apiTokenUsable(token, now) };
 };
 
-async function audit(deps: ApiTokenDeps, actor: Principal, action: 'token.create' | 'token.revoke', token: ApiToken): Promise<void> {
+async function audit(deps: ApiTokenDeps, actor: Principal, action: 'token.create' | 'token.revoke' | 'token.rotate', token: ApiToken): Promise<void> {
   const label = token.kind === 'bot' ? `bot「${token.bot?.name ?? token.name}」` : token.kind === 'service' ? '服务账号' : '个人令牌';
   await deps.audit
     ?.append({
@@ -57,7 +62,7 @@ async function audit(deps: ApiTokenDeps, actor: Principal, action: 'token.create
       actorEmail: actor.user.email,
       action,
       target: token.id,
-      detail: `${label}「${token.name}」 ${token.scopes.join(' ')}`,
+      detail: `${label}「${token.name}」 ${token.scopes.join(' ')}${token.projectIds ? ` 限项目 ${token.projectIds.join(',')}` : ''}`,
       at: deps.now(),
       ip: null,
       teamId: token.teamId
@@ -138,6 +143,22 @@ export async function createApiToken(
     }
   }
 
+  let projectIds: readonly string[] | null = null;
+  if (input.projectIds !== undefined && input.projectIds !== null) {
+    if (input.kind === 'bot') return err(invalid('bot 凭据自带项目，不用再限定'));
+    const wanted = [...new Set(input.projectIds.map((id) => id.trim()).filter(Boolean))];
+    if (wanted.length === 0) return err(invalid('限定项目时至少选一个'));
+    if (wanted.length > MAX_TOKEN_PROJECTS) return err(invalid(`最多限定 ${MAX_TOKEN_PROJECTS} 个项目`));
+    for (const id of wanted) {
+      const project = await deps.projects.byId(asProjectId(id));
+      // 只能限定到自己看得见的项目；看不见的一律说「没有」，不泄露存在性
+      if (!project || project.deletedAt !== null || project.teamId !== teamId || !can(actor, 'project.read', projectResource(project))) {
+        return err(invalid('选的项目里有你看不到的'));
+      }
+    }
+    projectIds = wanted;
+  }
+
   const issued = deps.tokens.issue();
   const prefix = input.kind === 'bot' ? BOT_TOKEN_PREFIX : API_TOKEN_PREFIX;
   const raw = `${prefix}${issued.token}`;
@@ -147,6 +168,7 @@ export async function createApiToken(
     kind: input.kind,
     userId,
     ...(bot ? { bot } : {}),
+    ...(projectIds ? { projectIds } : {}),
     name,
     scopes,
     prefix: raw.slice(0, prefix.length + 6),
@@ -235,7 +257,80 @@ export async function authenticateApiToken(deps: Pick<ApiTokenDeps, 'apiTokens' 
       kind: token.kind,
       // bot 令牌再与 BOT_PERMISSIONS 取交集：scope 可以更宽，越界权限不会生效。
       permissions: effectivePermissions(token),
-      ...(token.bot ? { bot: { projectId: token.bot.projectId, name: token.bot.name } } : {})
+      ...(token.bot ? { bot: { projectId: token.bot.projectId, name: token.bot.name } } : {}),
+      ...(token.projectIds && token.projectIds.length > 0 ? { projectIds: token.projectIds } : {})
     }
   };
+}
+
+/** 管得了这个令牌吗（看得见、能吊销 / 轮换）：个人 = 本人；服务账号 = 团队主人；bot = 项目 admin。 */
+async function manages(deps: ApiTokenDeps, actor: Principal, token: ApiToken): Promise<boolean> {
+  if (token.teamId !== actor.user.teamId) return false;
+  if (token.kind === 'personal') return token.userId === actor.user.id;
+  if (token.kind === 'bot') return botAdmin(deps, actor, token);
+  return can(actor, 'team.manage', { teamId: token.teamId });
+}
+
+/**
+ * 轮换：发一个同名、同权限、同项目范围的新令牌，旧的立刻吊销（记录保留，列表里看得到）。
+ * 有效期沿用原来的长度（原来永不过期就还是永不过期）。服务账号轮换不停用账号——新令牌还要用它。
+ * bot 凭据走「重新生成」（createApiToken 自带同名轮换），这里不收。
+ */
+export async function rotateApiToken(
+  deps: ApiTokenDeps,
+  actor: Principal,
+  id: string
+): Promise<Result<{ readonly token: string; readonly info: ApiTokenView; readonly replaced: ApiTokenView }, DomainError>> {
+  if (actor.via) return err(forbidden('令牌不能轮换令牌'));
+  const old = await deps.apiTokens.byId(id);
+  if (!old || !(await manages(deps, actor, old))) return err(notFound('令牌不存在'));
+  if (old.kind === 'bot') return err(invalid('bot 凭据请在 Bot 页重新生成'));
+  if (old.revokedAt !== null) return err(conflict('这个令牌已经吊销了，新建一个吧'));
+  const now = deps.now();
+  const length = old.expiresAt === null ? null : Math.max(old.expiresAt - old.createdAt, 60_000);
+  const issued = deps.tokens.issue();
+  const raw = `${API_TOKEN_PREFIX}${issued.token}`;
+  const next: ApiToken = {
+    ...old,
+    id: newId(),
+    prefix: raw.slice(0, API_TOKEN_PREFIX.length + 6),
+    tokenHash: deps.tokens.hashOf(raw),
+    createdBy: actor.user.id,
+    createdAt: now,
+    expiresAt: length === null ? null : now + length,
+    lastUsedAt: null,
+    revokedAt: null
+  };
+  await deps.apiTokens.save(next);
+  const revoked: ApiToken = { ...old, revokedAt: now };
+  await deps.apiTokens.save(revoked);
+  await audit(deps, actor, 'token.rotate', next);
+  return ok({ token: raw, info: view(next, now), replaced: view(revoked, now) });
+}
+
+/** 一个令牌的最近活动（创建 / 轮换 / 吊销 / MCP 调用），给外部接入页的「调用记录」用。 */
+export async function apiTokenActivity(
+  deps: ApiTokenDeps,
+  actor: Principal,
+  id: string,
+  limit = 50
+): Promise<Result<readonly { readonly action: string; readonly detail: string; readonly at: number }[], DomainError>> {
+  if (actor.via) return err(forbidden('令牌不能查令牌'));
+  const token = await deps.apiTokens.byId(id);
+  if (!token || !(await manages(deps, actor, token))) return err(notFound('令牌不存在'));
+  if (!deps.audit) return ok([]);
+  const rows = await deps.audit.query({ target: token.id, teamId: token.teamId, limit: Math.min(Math.max(limit, 1), 200) });
+  return ok(rows.map((row) => ({ action: row.action, detail: row.detail, at: row.at })));
+}
+
+/** 管理者查看某个令牌的有效权限（外部接入页算「接上能看到哪些工具」用）；不认证明文，只看记录。 */
+export async function authenticateApiTokenById(
+  deps: ApiTokenDeps,
+  actor: Principal,
+  id: string
+): Promise<Result<{ readonly permissions: readonly Permission[]; readonly usable: boolean }, DomainError>> {
+  if (actor.via) return err(forbidden('令牌不能查令牌'));
+  const token = await deps.apiTokens.byId(id);
+  if (!token || !(await manages(deps, actor, token))) return err(notFound('令牌不存在'));
+  return ok({ permissions: effectivePermissions(token), usable: apiTokenUsable(token, deps.now()) });
 }
