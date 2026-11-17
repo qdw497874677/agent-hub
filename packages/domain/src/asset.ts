@@ -68,7 +68,14 @@ export function parseGitSourceUrl(input: string, knownRefs: readonly string[] = 
   const firstRef = match[4];
   if (mode === undefined || firstRef === undefined) return { url, ref: null, path: '' };
   const rest = (match[5] ?? '').replace(/\/+$/, '');
-  const decoded = decodeURIComponent(firstRef);
+  // 网址里的 ref 可能带编码（`release%2F1.0`）：解不出来就当没拆，交给上层按「地址不对」报错，
+  // 不要让一个坏 URL 在解析函数里抛 URIError、最后变成 500。
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(firstRef);
+  } catch {
+    return null;
+  }
   const candidates = knownRefs
     .filter((ref) => ref === decoded || ref.startsWith(`${decoded}/`))
     .sort((a, b) => b.length - a.length);

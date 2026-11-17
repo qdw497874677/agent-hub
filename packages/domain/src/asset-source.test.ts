@@ -52,3 +52,8 @@ test('GitHub 网址：非 github 或空串返回 null，交给上层报错', () 
   assert.equal(parseGitSourceUrl('https://gitlab.com/acme/skills'), null);
   assert.equal(parseGitSourceUrl('not a url'), null);
 });
+
+test('GitHub 网址：坏掉的百分号编码不算地址，别抛异常', () => {
+  assert.equal(parseGitSourceUrl('https://github.com/acme/skills/tree/ma%ZZin/x'), null);
+  assert.equal(parseGitSourceUrl('https://github.com/acme/skills/tree/%E0%A4%A'), null);
+});

@@ -656,6 +656,12 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     });
 
     current.on('message', (raw: Buffer) => {
+      // 重连之后旧连接还会飘来几帧：它们代表的是 hub 对「上一条连接」的判断，
+      // 照着做会把新连接的状态带偏（例如旧连接上的 credential_rotate 会覆盖新凭据）。
+      if (socket !== current) {
+        options.onLog?.('旧连接上还收到了指令，忽略');
+        return;
+      }
       let json: unknown;
       try {
         json = JSON.parse(raw.toString());
@@ -697,6 +703,10 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   }
 
   async function rotateCredential(current: WebSocket, next: string): Promise<void> {
+    if (socket !== current) {
+      options.onLog?.('旧连接上要求轮换凭据，忽略');
+      return;
+    }
     if (!credential || !options.onCredentialRotate) {
       options.onLog?.('hub 要轮换凭据，但这台 Worker 不支持（没有专属凭据或不知道 worker.env 在哪），继续用旧凭据');
       return;
@@ -709,9 +719,14 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
       return;
     }
     if (!saved) return;
+    // 磁盘已经是新凭据了，内存必须跟着走：否则之后的 connect() 还拿旧值，宽限期一过就再也连不上。
     credential = next;
+    if (socket !== current) {
+      options.onLog?.('凭据已轮换；当前连接已经换过，下一次重连会用新凭据');
+      return;
+    }
     options.onLog?.('凭据已轮换，用新凭据重连');
-    if (socket === current) current.close(1000, 'credential rotated');
+    current.close(1000, 'credential rotated');
   }
 
   /** 越权的指令：不执行，按指令种类回一个「被拒」，hub 那边不会干等。 */
