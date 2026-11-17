@@ -5,21 +5,11 @@ import { useSyncExternalStore } from 'react';
  * 结果写到 <html data-theme="dark|light">，styles.css 只按这个属性换语义层的值。
  * index.html 里有一段同样逻辑的内联脚本，首帧之前就写好属性，刷新时不闪。
  */
-export type ThemePref = 'auto' | 'dark' | 'light';
-export type Theme = 'dark' | 'light';
+import { parseThemePref, resolveTheme, THEME_KEY, type Theme, type ThemePref } from './theme-core.ts';
 
-export const THEME_KEY = 'agent-hub.theme';
+export { parseThemePref, resolveTheme, THEME_KEY, type Theme, type ThemePref } from './theme-core.ts';
+
 const LIGHT_QUERY = '(prefers-color-scheme: light)';
-
-export function parseThemePref(raw: string | null | undefined): ThemePref {
-  return raw === 'dark' || raw === 'light' || raw === 'auto' ? raw : 'auto';
-}
-
-/** 偏好 + 系统是否浅色 → 实际主题。纯函数，单测在 theme.test.ts。 */
-export function resolveTheme(pref: ThemePref, systemLight: boolean): Theme {
-  if (pref === 'auto') return systemLight ? 'light' : 'dark';
-  return pref;
-}
 
 function readPref(): ThemePref {
   try {

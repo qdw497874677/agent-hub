@@ -1,4 +1,4 @@
-import type { IconName } from '../../atoms/icons.tsx';
+import type { IconName } from '../../atoms/icon-names.ts';
 
 /** ⌘K 面板里的一条操作：名字、可选的分组和快捷键提示，回车或点击就执行。 */
 export interface PaletteAction {

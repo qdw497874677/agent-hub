@@ -4,48 +4,9 @@
  */
 import type { ReactNode } from 'react';
 
-export type IconName =
-  | 'home'
-  | 'chat'
-  | 'bot'
-  | 'brain'
-  | 'folder'
-  | 'package'
-  | 'activity'
-  | 'shield'
-  | 'plus'
-  | 'search'
-  | 'settings'
-  | 'panel'
-  | 'chevron-down'
-  | 'chevron-right'
-  | 'chevron-left'
-  | 'x'
-  | 'grid'
-  | 'list'
-  | 'message'
-  | 'server'
-  | 'warning'
-  | 'alert'
-  | 'info'
-  | 'check'
-  | 'command'
-  | 'sun'
-  | 'moon'
-  | 'monitor'
-  | 'file'
-  | 'terminal'
-  | 'pencil'
-  | 'eye'
-  | 'sparkle'
-  | 'wrench'
-  | 'stop'
-  | 'clock'
-  | 'arrow-up'
-  | 'external'
-  | 'layers'
-  | 'stethoscope'
-  | 'queue';
+import type { IconName } from './icon-names.ts';
+
+export type { IconName } from './icon-names.ts';
 
 const PATHS: Record<IconName, ReactNode> = {
   home: (

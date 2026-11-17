@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseThemePref, resolveTheme } from './theme.ts';
+import { parseThemePref, resolveTheme } from './theme-core.ts';
 
 test('主题偏好：认不出的值当「跟随系统」', () => {
   assert.equal(parseThemePref(null), 'auto');
