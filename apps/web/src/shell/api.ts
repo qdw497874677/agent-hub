@@ -59,6 +59,8 @@ import type {
   AssetRevisionDto,
   AssetDiffDto,
   GitScanDto,
+  GitBatchItem,
+  GitBatchImportResult,
   SecretsOverviewDto,
   TeamDto,
   InviteDto,
@@ -707,6 +709,11 @@ export const assetsApi = {
     projectId?: string | null;
   }) =>
     post<{ id: string }>('/api/admin/assets/git/import', { ...input, ref: input.ref || null }),
+  /**
+   * 批量导入（1..20 条）。HTTP 200 只代表请求受理了：逐条成败在数组里，
+   * 顺序和提交的 items 一致。每项可以单独带令牌，一般同一个仓库用同一个。
+   */
+  importGitBatch: (items: readonly GitBatchItem[]) => post<GitBatchImportResult[]>('/api/assets/git/batch', { items }),
   revisions: (id: string) => call<AssetRevisionDto[]>(`${assetPath(id)}/revisions`),
   file: (id: string, digest: string, path: string) =>
     call<{ text: string }>(`${assetPath(id)}/file?digest=${digest}&path=${encodeURIComponent(path)}`),
@@ -766,6 +773,8 @@ export type {
   AssetRevisionDto,
   AssetDiffDto,
   GitScanDto,
+  GitBatchItem,
+  GitBatchImportResult,
   WorkLogEntryDto,
   AdminOverviewDto,
   AdminUserDto,

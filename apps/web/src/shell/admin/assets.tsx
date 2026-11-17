@@ -1,10 +1,11 @@
 import { useRef, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, assetsApi } from '../api.ts';
 import type { AssetsOverviewDto, GitScanDto } from '../api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../dialog-shell.tsx';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty, useAdminAction } from './shared.tsx';
 import { encodeFiles, formatBytes, readPicked, type PickedFile } from './asset-files.ts';
+import { MAX_BATCH_ITEMS, combineGitBatch, parseGitBatch, type BatchCombined, type BatchLine } from './asset-git-batch.ts';
 import { AssetSets } from './asset-sets.tsx';
 
 /**
@@ -59,8 +60,11 @@ export function Assets() {
   const [adding, setAdding] = useState(false);
   const [diffing, setDiffing] = useState<Asset | null>(null);
   const [browsing, setBrowsing] = useState<Asset | null>(null);
+  /** 批量导入点「在资产列表里看」时只留这一条；null 就是全部。 */
+  const [focus, setFocus] = useState<string | null>(null);
   const assets = overview.data?.assets ?? [];
   const workers = overview.data?.workers ?? [];
+  const shown = focus === null ? assets : assets.filter((asset) => asset.name === focus);
   return (
     <>
       <Section
@@ -87,10 +91,22 @@ export function Assets() {
             。看过差异、确认后才会升级；已装的机器随后自动同步。
           </div>
         ) : null}
+        {focus === null ? null : (
+          <div
+            data-testid="asset-filter"
+            data-name={focus}
+            className="mb-3 flex flex-wrap items-center gap-2 rounded-sm border border-accent/60 px-3 py-2 text-meta text-secondary"
+          >
+            只看「<span className="break-all text-primary">{focus}</span>」
+            <button className={SMALL} onClick={() => setFocus(null)}>
+              显示全部
+            </button>
+          </div>
+        )}
         <Panel>
-          {assets.length ? (
+          {shown.length ? (
             <ul>
-              {assets.map((asset) => (
+              {shown.map((asset) => (
                 <AssetItem
                   key={asset.id}
                   asset={asset}
@@ -101,7 +117,7 @@ export function Assets() {
               ))}
             </ul>
           ) : (
-            <Empty text={overview.isLoading ? '载入中…' : '还没有资产。'} />
+            <Empty text={overview.isLoading ? '载入中…' : focus === null ? '还没有资产。' : `没有叫「${focus}」的资产。`} />
           )}
         </Panel>
       </Section>
@@ -135,7 +151,7 @@ export function Assets() {
           )}
         </Panel>
       </Section>
-      {adding ? <AddDialog onClose={() => setAdding(false)} /> : null}
+      {adding ? <AddDialog onClose={() => setAdding(false)} onShowAsset={setFocus} /> : null}
       {diffing ? <DiffDialog asset={diffing} onClose={() => setDiffing(null)} /> : null}
       {browsing ? <VersionsDialog asset={browsing} onClose={() => setBrowsing(null)} /> : null}
     </>
@@ -268,13 +284,25 @@ function AssetItem({
 
 /* ── 添加：上传（文件 / 文件夹 / zip / 粘贴）或 Git ── */
 
-function Tabs<T extends string>({ value, options, onChange }: { value: T; options: [T, string][]; onChange: (v: T) => void }) {
+function Tabs<T extends string>({
+  value,
+  options,
+  onChange,
+  testId
+}: {
+  value: T;
+  options: [T, string][];
+  onChange: (v: T) => void;
+  /** 给分段控件一个 data-testid，e2e 不用去猜文案。 */
+  testId?: string;
+}) {
   return (
-    <div className="mb-3 flex rounded-sm border border-hair p-0.5" role="tablist">
+    <div className="mb-3 flex rounded-sm border border-hair p-0.5" role="tablist" data-testid={testId}>
       {options.map(([id, label]) => (
         <button
           key={id}
           role="tab"
+          data-option={id}
           aria-selected={value === id}
           className={`flex-1 whitespace-nowrap rounded-sm px-2 py-1 text-sub ${value === id ? 'bg-card-raised text-primary' : 'text-tertiary hover:text-secondary'}`}
           onClick={() => onChange(id)}
@@ -316,7 +344,7 @@ function ScopePicker({ value, onChange }: { value: string; onChange: (value: str
   );
 }
 
-function AddDialog({ onClose }: { onClose: () => void }) {
+function AddDialog({ onClose, onShowAsset }: { onClose: () => void; onShowAsset?: (name: string) => void }) {
   const [mode, setMode] = useState<'upload' | 'git'>('upload');
   return (
     <DialogShell title="添加资产" onClose={onClose}>
@@ -329,7 +357,7 @@ function AddDialog({ onClose }: { onClose: () => void }) {
           ['git', '从 Git 导入']
         ]}
       />
-      {mode === 'upload' ? <UploadForm onDone={onClose} /> : <GitForm onDone={onClose} />}
+      {mode === 'upload' ? <UploadForm onDone={onClose} /> : <GitForm onDone={onClose} onShowAsset={onShowAsset} />}
     </DialogShell>
   );
 }
@@ -469,7 +497,15 @@ function UploadForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-function GitForm({ onDone }: { onDone: () => void }) {
+const BATCH_PLACEHOLDER = `https://github.com/owner/repo.git
+https://github.com/owner/another.git skills/foo`;
+
+/**
+ * Git 导入：单条（扫描 → 选候选 → 导入）或批量（一行一条，后端逐条判成败）。
+ * 版本策略和令牌是两种模式共用的——同一批里令牌一般也是同一个。
+ */
+function GitForm({ onDone, onShowAsset }: { onDone: () => void; onShowAsset?: (name: string) => void }) {
+  const [mode, setMode] = useState<'single' | 'batch'>('single');
   const [url, setUrl] = useState('');
   const [ref, setRef] = useState('');
   const [scan, setScan] = useState<GitScanDto | null>(null);
@@ -477,6 +513,9 @@ function GitForm({ onDone }: { onDone: () => void }) {
   const [scope, setScope] = useState('');
   const [policy, setPolicy] = useState<'locked' | 'track'>('locked');
   const [token, setToken] = useState('');
+  const [batchText, setBatchText] = useState('');
+  const [batchErrors, setBatchErrors] = useState<readonly string[]>([]);
+  const [batch, setBatch] = useState<BatchCombined | null>(null);
   const scanning = useAdminAction(async () => {
     const result = await assetsApi.scanGit(url.trim(), ref.trim(), token.trim());
     setScan(result);
@@ -495,39 +534,105 @@ function GitForm({ onDone }: { onDone: () => void }) {
       projectId: scope || null
     });
   });
+  const queryClient = useQueryClient();
+  const importingBatch = useMutation({
+    mutationFn: (items: readonly BatchLine[]) =>
+      assetsApi.importGitBatch(
+        items.map((item) => ({
+          url: item.url,
+          path: item.path,
+          policy,
+          projectId: scope || null,
+          ...(token.trim() === '' ? {} : { credential: token.trim() })
+        }))
+      ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin'] })
+  });
   const error = scanning.error ?? importing.error;
+  const submitBatch = () => {
+    const parsed = parseGitBatch(batchText);
+    if (!parsed.ok) {
+      setBatchErrors(parsed.errors);
+      setBatch(null);
+      return;
+    }
+    setBatchErrors([]);
+    importingBatch.mutate(parsed.items, {
+      onSuccess: (results) => {
+        const combined = combineGitBatch(parsed.items, results);
+        setBatch(combined);
+        // 成功的从输入框里拿掉，失败的原样留着：改一行就能再导一次。
+        setBatchText(combined.retryText);
+      }
+    });
+  };
   return (
     <div className="space-y-3">
-      <ScopePicker value={scope} onChange={setScope} />
-      <input
-        data-testid="asset-git-url"
-        className={INPUT}
-        placeholder="https://github.com/owner/repo"
-        value={url}
-        onChange={(event) => {
-          setUrl(event.target.value);
-          setScan(null);
+      <Tabs
+        testId="asset-git-mode"
+        value={mode}
+        onChange={(next) => {
+          setMode(next);
+          setBatchErrors([]);
         }}
+        options={[
+          ['single', '单条'],
+          ['batch', '批量']
+        ]}
       />
-      <div className="flex gap-2">
-        <input
-          className={INPUT}
-          placeholder="分支 / tag（可空，默认分支）"
-          value={ref}
-          onChange={(event) => {
-            setRef(event.target.value);
-            setScan(null);
-          }}
-        />
-        <button
-          data-testid="asset-git-scan"
-          className={`${SECONDARY_BUTTON} shrink-0 whitespace-nowrap`}
-          disabled={!url.trim() || scanning.isPending}
-          onClick={() => scanning.mutate(undefined)}
-        >
-          {scanning.isPending ? '扫描中…' : '扫描'}
-        </button>
-      </div>
+      <ScopePicker value={scope} onChange={setScope} />
+      {mode === 'single' ? (
+        <>
+          <input
+            data-testid="asset-git-url"
+            className={INPUT}
+            placeholder="https://github.com/owner/repo"
+            value={url}
+            onChange={(event) => {
+              setUrl(event.target.value);
+              setScan(null);
+            }}
+          />
+          <div className="flex gap-2">
+            <input
+              className={INPUT}
+              placeholder="分支 / tag（可空，默认分支）"
+              value={ref}
+              onChange={(event) => {
+                setRef(event.target.value);
+                setScan(null);
+              }}
+            />
+            <button
+              data-testid="asset-git-scan"
+              className={`${SECONDARY_BUTTON} shrink-0 whitespace-nowrap`}
+              disabled={!url.trim() || scanning.isPending}
+              onClick={() => scanning.mutate(undefined)}
+            >
+              {scanning.isPending ? '扫描中…' : '扫描'}
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <textarea
+            data-testid="asset-git-batch-input"
+            aria-label="仓库地址，一行一个（可带路径）"
+            className={`${INPUT} min-h-[120px] font-mono text-meta`}
+            placeholder={BATCH_PLACEHOLDER}
+            spellCheck={false}
+            value={batchText}
+            onChange={(event) => {
+              setBatchText(event.target.value);
+              setBatchErrors([]);
+            }}
+          />
+          <p className="break-words text-meta text-tertiary">
+            每行一个仓库地址，要在仓库里挑目录就再写一段路径（空格分开）。空行跳过，一次最多 {MAX_BATCH_ITEMS} 行。比如{' '}
+            <code className="break-all">https://github.com/owner/repo.git skills/foo</code>
+          </p>
+        </>
+      )}
       <label className="flex items-center gap-2 text-meta text-secondary">
         <span className="shrink-0 text-tertiary">版本</span>
         <select
@@ -553,9 +658,11 @@ function GitForm({ onDone }: { onDone: () => void }) {
         {policy === 'locked'
           ? '锁住：以后这个分支再变也不影响已有会话；想升级就重新导入或手动切版本。'
           : '跟随：导入后能用「检查更新」看到新提交，发布会换掉使用中的版本（新会话生效）。'}
-        只读拉取，不执行任何脚本；私有仓库把令牌填在上面（扫描和导入都用它，用过不留）。
+        {mode === 'single'
+          ? '只读拉取，不执行任何脚本；私有仓库把令牌填在上面（扫描和导入都用它，用过不留）。'
+          : '只读拉取，不执行任何脚本；批量里每一项都用上面这个令牌。'}
       </p>
-      {scan ? (
+      {mode === 'single' && scan ? (
         scan.candidates.length ? (
           <ul className="max-h-[220px] overflow-auto rounded-sm border border-hair bg-card">
             {scan.candidates.map((candidate, index) => (
@@ -585,20 +692,85 @@ function GitForm({ onDone }: { onDone: () => void }) {
           <p className="text-meta text-tertiary">这个提交（{short(scan.commit)}）里没找到 SKILL.md。</p>
         )
       ) : null}
-      {error ? (
+      {mode === 'single' && error ? (
         <p role="alert" className="text-meta text-rust">
           {errorText(error)}
         </p>
       ) : null}
-      <div className="flex justify-end">
-        <button
-          data-testid="asset-git-import"
-          className={PRIMARY_BUTTON}
-          disabled={!scan?.candidates.length || importing.isPending}
-          onClick={() => importing.mutate(undefined, { onSuccess: onDone })}
+      {mode === 'batch' && (batchErrors.length > 0 || importingBatch.error) ? (
+        <div
+          data-testid="asset-git-batch-error"
+          role="alert"
+          className="space-y-1 rounded-sm border border-rust/60 px-2.5 py-2 text-meta text-rust"
         >
-          {importing.isPending ? '导入中…' : '导入'}
-        </button>
+          {importingBatch.error ? <p className="break-words">{errorText(importingBatch.error)}</p> : null}
+          {batchErrors.map((message) => (
+            <p key={message} className="break-words">
+              {message}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {mode === 'batch' && batch ? (
+        <div className="space-y-2">
+          <p role="status" data-testid="asset-git-batch-summary" className="break-words text-meta text-secondary">
+            成功 {batch.succeeded} 条、失败 {batch.failed} 条
+            {batch.failed ? '；失败的已经留在上面，改好可以直接再导一次。' : '。'}
+          </p>
+          <ul data-testid="asset-git-batch-result" className="max-h-[220px] overflow-auto rounded-sm border border-hair bg-card">
+            {batch.outcomes.map((outcome, index) => (
+              <li
+                key={`${outcome.url}:${outcome.path}:${index}`}
+                data-testid="asset-git-batch-row"
+                data-ok={String(outcome.ok)}
+                className="break-words border-b border-hair px-2.5 py-2 last:border-b-0"
+              >
+                <p className="text-sub text-primary">
+                  <span className={outcome.ok ? 'text-sage' : 'text-rust'}>{outcome.ok ? '成功' : '失败'}</span>
+                  <span className="text-tertiary"> · </span>
+                  {outcome.ok ? (outcome.name ?? '已导入') : (outcome.error ?? '导入失败')}
+                </p>
+                <p className="mt-0.5 break-all text-meta text-tertiary">
+                  {outcome.url}
+                  {outcome.path ? ` · ${outcome.path}` : ''}
+                </p>
+                {outcome.ok && outcome.name !== null && onShowAsset ? (
+                  <button
+                    data-testid="asset-git-batch-open"
+                    className={`${SMALL} mt-1`}
+                    onClick={() => {
+                      onShowAsset(outcome.name!);
+                      onDone();
+                    }}
+                  >
+                    在资产列表里看
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <div className="flex justify-end">
+        {mode === 'single' ? (
+          <button
+            data-testid="asset-git-import"
+            className={PRIMARY_BUTTON}
+            disabled={!scan?.candidates.length || importing.isPending}
+            onClick={() => importing.mutate(undefined, { onSuccess: onDone })}
+          >
+            {importing.isPending ? '导入中…' : '导入'}
+          </button>
+        ) : (
+          <button
+            data-testid="asset-git-batch-submit"
+            className={PRIMARY_BUTTON}
+            disabled={importingBatch.isPending}
+            onClick={submitBatch}
+          >
+            {importingBatch.isPending ? '导入中…' : '批量导入'}
+          </button>
+        )}
       </div>
     </div>
   );
