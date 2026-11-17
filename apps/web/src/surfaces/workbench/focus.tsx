@@ -11,6 +11,7 @@ import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
 import { Composer } from '../../atoms/composer.tsx';
 import { CONTINUE_DISABLED_HINT, ContinueDialog, canContinueElsewhere } from './continue-elsewhere.tsx';
 import { SessionDetails } from './inspector.tsx';
+import { useWide } from '../../shell/device.ts';
 import { localTime } from '../../shell/local-time.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import { attachmentsCapability } from '../../atoms/attachments.ts';
@@ -121,6 +122,7 @@ export function FocusView({
   const [continuing, setContinuing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const wide = useWide();
   // 只有手机上会用到这个对话框：桌面的「Aa」是内嵌的 DisplayMenu。
   const [displayOpen, setDisplayOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -648,8 +650,22 @@ export function FocusView({
     }
   }
 
+  // 宽屏的详情停靠在对话右边，不压住对话；画布里的浮窗太窄，照旧用抽屉
+  const docked = wide && !windowChrome;
+  const detailsPanel = details ? (
+    <SessionDetails
+      canvas={canvas}
+      session={session}
+      artifacts={artifacts}
+      live={live}
+      docked={docked}
+      onClose={() => setDetails(false)}
+      onBrowseFiles={() => { setDetails(false); setTab('files'); }}
+    />
+  ) : null;
   return (
-    <div ref={viewRef} data-focus-view className="flex min-h-0 flex-1 flex-col bg-canvas">
+    <div ref={viewRef} data-focus-view className="flex min-h-0 flex-1 bg-canvas">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <header
         className={`flex h-12 shrink-0 items-center gap-2 border-b border-hair px-2 md:px-3 ${windowChrome ? 'window-drag cursor-move select-none' : ''}`}
         data-testid={windowChrome ? 'window-titlebar' : undefined}
@@ -709,7 +725,8 @@ export function FocusView({
           </button>
           <button
             className="hidden h-11 items-center rounded-sm px-2 text-meta text-tertiary hover:text-primary sm:flex md:h-9"
-            onClick={() => setDetails(true)}
+            aria-pressed={details}
+            onClick={() => setDetails((open) => !open)}
           >
             详情
           </button>
@@ -976,7 +993,7 @@ export function FocusView({
         />
       ) : null}
       {displayOpen ? <DisplaySettingsDialog settings={settings} onChange={changeSettings} onClose={() => setDisplayOpen(false)} /> : null}
-      {details ? <SessionDetails canvas={canvas} session={session} artifacts={artifacts} live={live} onClose={() => setDetails(false)} onBrowseFiles={() => { setDetails(false); setTab('files'); }} /> : null}
+      {docked ? null : detailsPanel}
       {continuing ? (
         <ContinueDialog
           canvas={canvas}
@@ -1241,6 +1258,8 @@ export function FocusView({
           />
         </div>
       </div>
+    </div>
+    {docked ? detailsPanel : null}
     </div>
   );
 }

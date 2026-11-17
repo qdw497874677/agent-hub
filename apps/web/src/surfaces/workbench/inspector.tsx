@@ -54,6 +54,8 @@ interface Props {
   readonly onClose: () => void;
   /** 浏览文件：关掉详情，切到会话的「文件」标签页。 */
   readonly onBrowseFiles: () => void;
+  /** 宽屏停靠在对话右边（17.5–20rem），不加遮罩、不压住对话；窄屏照旧是底部抽屉。 */
+  readonly docked?: boolean;
 }
 
 /**
@@ -69,7 +71,7 @@ const ACTION_LABEL: Record<string, string> = {
   'session.continue': '换机继续'
 };
 
-export function SessionDetails({ canvas, session, artifacts, live, onClose, onBrowseFiles }: Props) {
+export function SessionDetails({ canvas, session, artifacts, live, onClose, onBrowseFiles, docked = false }: Props) {
   const [showJournal, setShowJournal] = useState(false);
   const [journal, setJournal] = useState<readonly JournalEntryDto[]>([]);
   const [activity, setActivity] = useState<readonly SessionActivityDto[]>([]);
@@ -87,22 +89,28 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
   }, [showJournal, session.id, session.lastSeq]);
 
   useEffect(() => {
+    // 停靠时不抢 Esc：它和对话并排，Esc 留给对话里的菜单和搜索
+    if (docked) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, docked]);
 
   const status = live?.status ?? session.status;
   const capabilityNames = agent ? (Object.keys(agent.capabilities) as CapabilityName[]).filter((name) => agent.capabilities[name]) : [];
   const limited = capabilityNames.filter((name) => agent!.capabilities[name]!.state !== 'available');
 
-  return (
-    <div className="fixed inset-0 z-40 flex items-end bg-black/40 md:items-stretch md:justify-end" onClick={onClose}>
+  const panel = (
       <aside
         aria-label="会话详情"
-        className="flex max-h-[85vh] w-full flex-col rounded-t-md border-t border-hair bg-panel pb-[env(safe-area-inset-bottom)] md:h-full md:max-h-none md:w-[360px] md:rounded-none md:border-l md:border-t-0 md:pb-0"
+        data-docked={docked ? 'true' : undefined}
+        className={
+          docked
+            ? 'flex h-full w-[17.5rem] shrink-0 flex-col border-l border-hair bg-surface-1 xl:w-80'
+            : 'flex max-h-[85vh] w-full flex-col rounded-t-[var(--radius-overlay)] border-t border-strong bg-overlay pb-[env(safe-area-inset-bottom)] shadow-overlay md:h-full md:max-h-none md:w-[360px] md:rounded-none md:border-l md:border-t-0 md:pb-0'
+        }
         onClick={(event) => event.stopPropagation()}
       >
         <header className="border-b border-hair px-3 pb-2.5 pt-2">
@@ -135,19 +143,43 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
         </header>
 
         <div className="flex-1 space-y-3 overflow-y-auto px-3 py-2.5">
-          {agent !== undefined && limited.length > 0 ? (
-            <p className="text-meta text-tertiary">
-              <span className="text-warning">●</span> {limited.map((name) => CAPABILITY_LABEL[name] ?? name).join('、')} 受限
-            </p>
-          ) : null}
-          <section>
-            <p className="mb-1 text-meta text-tertiary">能力</p>
-            {agent ? (
-              capabilityNames.map((name) => <CapabilityRow key={name} name={name} capability={agent.capabilities[name]!} />)
-            ) : (
-              <p className="text-meta text-tertiary">该 agent 当前没有在线机器</p>
-            )}
-          </section>
+          {/* 能力矩阵是排查用的：收进「诊断」，有受限项时摘要里直接点出来 */}
+          <details className="group/diag" data-testid="session-diagnostics">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 text-meta text-tertiary hover:text-secondary">
+              <span aria-hidden className="inline-block w-2.5 transition-transform group-open/diag:rotate-90">›</span>
+              诊断
+              {agent !== undefined && limited.length > 0 ? (
+                <span className="flex min-w-0 items-center gap-1 truncate text-warning">
+                  · {limited.map((name) => CAPABILITY_LABEL[name] ?? name).join('、')} 受限
+                </span>
+              ) : null}
+            </summary>
+            <div className="mt-1.5 space-y-2 pl-4">
+              <section>
+                <p className="mb-1 text-meta text-tertiary">能力</p>
+                {agent ? (
+                  capabilityNames.map((name) => <CapabilityRow key={name} name={name} capability={agent.capabilities[name]!} />)
+                ) : (
+                  <p className="text-meta text-tertiary">该 agent 当前没有在线机器</p>
+                )}
+              </section>
+              <section>
+                <button className="mb-1 text-meta text-tertiary hover:text-primary" onClick={() => setShowJournal(!showJournal)}>
+                  {showJournal ? '收起事件流' : '查看事件流'}
+                </button>
+                {showJournal ? (
+                  <div className="max-h-[260px] space-y-0.5 overflow-y-auto">
+                    {journal.map((entry) => (
+                      <p key={entry.seq} className="truncate text-meta text-secondary" title={eventLabel(entry.event)}>
+                        <span className="text-tertiary/70">#{entry.seq}</span> {eventLabel(entry.event)}
+                      </p>
+                    ))}
+                    {journal.length === 0 ? <p className="text-meta text-tertiary">没有记录</p> : null}
+                  </div>
+                ) : null}
+              </section>
+            </div>
+          </details>
           <SessionContext sessionId={session.id} lastSeq={live?.lastSeq ?? session.lastSeq} />
           {/* 本地服务：容器会话没有工作目录，起不了进程，只保留查看（列表本身就是空的）。 */}
           <SessionServices
@@ -199,23 +231,13 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
               ))}
             </section>
           ) : null}
-          <section>
-            <button className="mb-1 text-meta text-tertiary hover:text-primary" onClick={() => setShowJournal(!showJournal)}>
-              {showJournal ? '收起事件流' : '查看事件流'}
-            </button>
-            {showJournal ? (
-              <div className="max-h-[260px] space-y-0.5 overflow-y-auto">
-                {journal.map((entry) => (
-                  <p key={entry.seq} className="truncate text-meta text-secondary" title={eventLabel(entry.event)}>
-                    <span className="text-tertiary/70">#{entry.seq}</span> {eventLabel(entry.event)}
-                  </p>
-                ))}
-                {journal.length === 0 ? <p className="text-meta text-tertiary">没有记录</p> : null}
-              </div>
-            ) : null}
-          </section>
         </div>
       </aside>
+  );
+  if (docked) return panel;
+  return (
+    <div className="fixed inset-0 z-40 flex items-end bg-black/55 md:items-stretch md:justify-end" onClick={onClose}>
+      {panel}
     </div>
   );
 }
