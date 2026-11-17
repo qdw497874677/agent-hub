@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { ThemeSwitch } from './theme-switch.tsx';
 import { ProvidersDialog } from './providers-dialog.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { accessApi, authApi, teamApi, RequestFailed, type RoleKey, UNAUTHORIZED_EVENT, type AccountDto, type AuthState, type LoginDeviceDto } from './api.ts';
@@ -484,6 +485,9 @@ export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' 
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
           <p className="mt-1 text-tertiary">{account.clusterAdmin ? '集群管理员' : roleLabel(account.role)}</p>
+          <div className="mt-3">
+            <ThemeSwitch />
+          </div>
 
           <div className="mt-3 border-t border-hair pt-1.5">
             <p className="px-2 pb-0.5 text-meta text-tertiary">个人</p>

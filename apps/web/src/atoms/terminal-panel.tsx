@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef, useState, useSyncExternalStore } from 'react';
+import { currentTheme } from '../shell/theme.ts';
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
@@ -37,12 +38,6 @@ interface Props {
   readonly active: boolean;
   /** agent 没在跑时的一句话：终端只是 shell，不会把 agent 拉起来（会话本身还能接着聊）。 */
   readonly notice?: string | null;
-}
-
-function prefersLight(): boolean {
-  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-    ? window.matchMedia('(prefers-color-scheme: light)').matches
-    : false;
 }
 
 const COARSE_QUERY = '(pointer: coarse)';
@@ -104,7 +99,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
       allowProposedApi: false,
       macOptionIsMeta: true,
       drawBoldTextInBrightColors: true,
-      theme: terminalPalette(prefersLight() ? 'light' : 'dark')
+      theme: terminalPalette(currentTheme())
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
@@ -113,11 +108,11 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
     // 换了会话就是新 shell，上一局的粘滞修饰别带过来。
     setCtrlArmed(false);
 
-    const lightMedia = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: light)') : null;
-    const applyTheme = () => {
-      term.options.theme = terminalPalette(lightMedia?.matches ? 'light' : 'dark');
-    };
-    lightMedia?.addEventListener?.('change', applyTheme);
+    // 跟着界面主题走（<html data-theme>），不再单独看系统：界面手选了深色时终端别突然变白
+    const themeObserver = new MutationObserver(() => {
+      term.options.theme = terminalPalette(currentTheme());
+    });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
 
     // ------------------------------------------------------------ 连接 ------------------------------------------------------------
     let socket: WebSocket | null = null;
@@ -315,7 +310,7 @@ export function TerminalPanel({ sessionId, workerId, active, notice = null }: Pr
       if (retryTimer !== null) clearTimeout(retryTimer);
       stopPing();
       dataSub.dispose();
-      lightMedia?.removeEventListener?.('change', applyTheme);
+      themeObserver.disconnect();
       fitRef.current = () => {};
       restartRef.current = () => {};
       termRef.current = null;

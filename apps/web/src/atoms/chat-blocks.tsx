@@ -23,6 +23,8 @@ import { diffStat, runLength, startsRun, toolHeadline, toolRowKind, toolRowLine,
 import { durationText, summaryCounts, type WorkSummary } from './timeline-groups.ts';
 import { languageOf } from './files-core.ts';
 import { Icon } from './icons.tsx';
+import { currentTheme } from '../shell/theme.ts';
+import { ThemeSwitch } from '../shell/theme-switch.tsx';
 import { subagentStepCount } from './live.ts';
 import { useFileLinks } from './file-links.tsx';
 
@@ -209,6 +211,9 @@ function Toggle({ label, hint, checked, disabled, onChange }: { label: string; h
 export function DisplaySettingsPanel({ settings, onChange }: { settings: DisplaySettings; onChange: (patch: Partial<DisplaySettings>) => void }) {
   return (
     <div className="py-1" data-testid="display-settings">
+      <div className="px-3 py-1.5">
+        <ThemeSwitch />
+      </div>
       <Segmented<ToolDisplay>
         label="工具调用"
         value={settings.tools}
@@ -271,7 +276,7 @@ function useDiffTokens(lines: readonly DiffLine[], path: string | null): (readon
     const lang = path ? languageOf(path) : null;
     if (!lang || code.length > 40_000) return;
     let live = true;
-    const theme = document.documentElement.dataset['theme'] === 'light' ? 'github-light' : 'github-dark-dimmed';
+    const theme = currentTheme() === 'light' ? 'github-light' : 'github-dark-dimmed';
     void import('shiki')
       .then(({ codeToTokens }) => codeToTokens(code, { lang: lang as never, theme }))
       .then((result) => live && setTokens(result.tokens.map((row) => row.map((t) => ({ content: t.content, color: t.color })))), () => undefined);

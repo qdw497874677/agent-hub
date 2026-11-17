@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { currentTheme } from '../shell/theme.ts';
 import { Notice } from './notice.tsx';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
@@ -366,7 +367,7 @@ function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { se
     if (text === null || !lang || text.length > 300_000) return;
     let live = true;
     // Shiki 按需加载语言 / 主题：首次打开某种语言才下载它的语法
-    void import('shiki').then(({ codeToHtml }) => codeToHtml(text, { lang, theme: 'github-dark-dimmed' })).then((h) => live && setHtml(h), () => undefined);
+    void import('shiki').then(({ codeToHtml }) => codeToHtml(text, { lang, theme: currentTheme() === 'light' ? 'github-light' : 'github-dark-dimmed' })).then((h) => live && setHtml(h), () => undefined);
     return () => { live = false; };
   }, [text, opened.path]);
   const content = useRef<HTMLDivElement>(null);

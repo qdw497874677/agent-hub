@@ -98,6 +98,10 @@
   --dur-slow: 280ms;
 }
 
+html {
+  color-scheme: dark;
+}
+
 html,
 body {
   height: 100%;
@@ -105,7 +109,6 @@ body {
   /* 页面本身不滚：唯一的滚动容器是消息列表 / 各页的内容区。
      键盘弹出时浏览器会试着滚动文档把输入框顶上来，那正是「要滑到最下面才看得见输入框」的来源。 */
   overflow: hidden;
-  color-scheme: dark;
   background: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-sans);
@@ -175,6 +178,53 @@ body {
   --contrast-accent-dim: #d6a96b;
   --contrast-sage: #a6c8b9;
   --contrast-rust: #ff9b92;
+}
+
+/*
+ * 浅色主题：只换语义层（旧名都是别名，自动跟上）。<html data-theme="light"> 由 shell/theme.ts 写，
+ * 「跟随系统」时按 prefers-color-scheme 算出来再写，所以这里不用 media query。
+ * 文字 / 状态色在各层表面上都过 4.5:1（theme-contrast.test.ts 里有一条专门测它）。
+ */
+[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #f6f5f2;
+  --color-surface-1: #efede9;
+  --color-surface-2: #ffffff;
+  --color-surface-3: #e9e7e2;
+  --color-overlay: #ffffff;
+  --color-fg: #1c2023;
+  --color-fg-muted: #4f575c;
+  --color-fg-faint: #5d6569;
+  --color-border: rgb(0 0 0 / 0.09);
+  --color-border-strong: rgb(0 0 0 / 0.16);
+  --color-action: #1c2023;
+  --color-action-fg: #f6f5f2;
+  --color-ring: #3f6f8f;
+  --color-link: #2a5f88;
+  --color-live: #935610;
+  --color-live-dim: #7f4a0e;
+  --color-success: #336b54;
+  --color-success-bg: rgb(51 107 84 / 0.1);
+  --color-warning: #7a5c00;
+  --color-warning-bg: rgb(122 92 0 / 0.1);
+  --color-danger: #b4382a;
+  --color-danger-bg: rgb(180 56 42 / 0.09);
+  --color-info: #355f86;
+  --color-info-bg: rgb(53 95 134 / 0.1);
+  --color-diff-add: #2b6e3a;
+  --color-diff-del: #a83a2b;
+  --color-hover: rgb(0 0 0 / 0.04);
+  --color-selected: rgb(0 0 0 / 0.065);
+  --shadow-overlay: 0 16px 36px -14px rgb(0 0 0 / 0.22), 0 0 0 0.5px rgb(0 0 0 / 0.08);
+  --shadow-composer: 0 12px 28px -18px rgb(0 0 0 / 0.3);
+  /* 高对比度那一档在浅色下是「更深」 */
+  --contrast-secondary: #2f3539;
+  --contrast-tertiary: #3e464b;
+  --contrast-hair: #8d979c;
+  --contrast-strong: #5f6a70;
+  --contrast-accent-dim: #6e400a;
+  --contrast-sage: #24503e;
+  --contrast-rust: #93281c;
 }
 
 /* 系统要求更高对比度时，别只依赖用户去挑主题。 */

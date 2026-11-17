@@ -105,3 +105,26 @@ test('旧名都还在，并且指回语义层', () => {
     assert.match(css, new RegExp(`--color-${old}:\\s*var\\(--color-${semantic}\\)`), `--color-${old} 不是 ${semantic} 的别名`);
   }
 });
+
+/** 浅色主题：[data-theme='light'] 块里覆盖了语义层；没覆盖的照旧读 @theme。 */
+function lightToken(name: string): string {
+  const block = css.match(/\[data-theme='light'\]\s*\{([^}]*)\}/);
+  assert.ok(block, 'styles.css 缺少 [data-theme=\'light\'] 块');
+  const match = block[1]!.match(new RegExp(`--color-${name}:\\s*(#[0-9a-fA-F]{6})`));
+  return match ? match[1]! : token(name);
+}
+
+test('浅色主题：语义层文字和状态色在各层表面上都达到 AA', () => {
+  const surfaces = ['bg', 'surface-1', 'surface-2', 'surface-3', 'overlay'] as const;
+  const foregrounds = ['fg', 'fg-muted', 'fg-faint', 'live', 'success', 'warning', 'danger', 'info', 'link', 'diff-add', 'diff-del'] as const;
+  for (const surface of surfaces) {
+    for (const foreground of foregrounds) {
+      const ratio = contrast(lightToken(foreground), lightToken(surface));
+      assert.ok(ratio >= 4.5, `浅色：--color-${foreground} on --color-${surface} = ${ratio.toFixed(2)}:1`);
+    }
+  }
+  const action = contrast(lightToken('action-fg'), lightToken('action'));
+  assert.ok(action >= 4.5, `浅色主按钮 = ${action.toFixed(2)}:1`);
+  const gap = Math.abs(hue(lightToken('live')) - hue(lightToken('danger')));
+  assert.ok(gap >= 20, `浅色：live 与 danger 色相只差 ${gap.toFixed(0)}°`);
+});
