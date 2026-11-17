@@ -291,7 +291,7 @@ export function Composer({
         <ul
           role="listbox"
           aria-label={trigger?.kind === '/' ? '命令' : '项目文件'}
-          className="absolute bottom-full left-0 z-20 mb-1 max-h-60 w-full overflow-y-auto rounded-md border border-hair bg-card-raised py-1 shadow-lg"
+          className="absolute bottom-full left-0 z-20 mb-1 max-h-60 w-full overflow-y-auto rounded-lg border border-strong bg-overlay py-1 shadow-overlay"
         >
           {options.map((option, index) => (
             <li key={option.key} role="option" aria-selected={index === active}>
@@ -313,8 +313,8 @@ export function Composer({
         </ul>
       ) : null}
       <div
-        className={`rounded-md border bg-card py-2 focus-within:border-strong ${large ? 'px-3' : 'px-2.5'} ${
-          dragging ? 'border-ring' : 'border-hair'
+        className={`rounded-overlay border bg-surface-2 py-2 transition-[border-color] duration-[var(--dur-fast)] focus-within:border-fg/30 ${large ? 'px-3 shadow-composer' : 'px-2.5'} ${
+          dragging ? 'border-ring' : 'border-strong'
         }`}
         onDragOver={(event) => {
           if (!event.dataTransfer.types.includes('Files')) return;

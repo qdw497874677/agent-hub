@@ -263,7 +263,7 @@ export function TaskDetail({
             <button
               type="submit"
               disabled={!body.trim() || append.isPending}
-              className="rounded-sm bg-action px-3 py-1.5 text-sub text-action-fg hover:brightness-110 disabled:opacity-40"
+              className="rounded-sm bg-action px-3 py-1.5 text-sub text-action-fg hover:bg-action/90 disabled:opacity-40"
             >
               记录
             </button>

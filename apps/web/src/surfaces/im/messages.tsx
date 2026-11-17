@@ -343,7 +343,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
               <div className="relative" ref={menuRef}>
                 <button className={SMALL} data-testid="group-more" aria-label="更多" aria-expanded={menu} onClick={() => setMenu((v) => !v)}>⋯</button>
                 {menu ? (
-                  <div data-testid="group-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-32 flex-col gap-1 rounded-md border border-strong bg-panel p-1 shadow-lg">
+                  <div data-testid="group-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-32 flex-col gap-1 rounded-lg border border-strong bg-overlay p-1 shadow-overlay">
                     <button className={MENU_ROW} data-testid="open-chains" onClick={() => { setMenu(false); onDrawer('chains'); }}>调用链</button>
                     <button className={MENU_ROW} data-testid="open-settings" onClick={() => { setMenu(false); onDrawer('settings'); }}>设置</button>
                   </div>
@@ -460,7 +460,7 @@ function Chat({ group, onDrawer }: { group: GroupDto; onDrawer: (d: Drawer, focu
       >
         <div className="relative min-w-0 flex-1">
           {open ? (
-            <ul data-testid="mention-menu" className="absolute bottom-full left-0 z-30 mb-1 max-h-56 w-full overflow-y-auto rounded-md border border-strong bg-panel p-1 shadow-lg">
+            <ul data-testid="mention-menu" className="absolute bottom-full left-0 z-30 mb-1 max-h-56 w-full overflow-y-auto rounded-lg border border-strong bg-overlay p-1 shadow-overlay">
               {candidates.map((item, i) => (
                 <li key={`${item.kind}:${item.token}`}>
                   <button
@@ -565,7 +565,7 @@ export function MessagesPage({ projectId, groupId }: { projectId: string | null;
           <div className="relative shrink-0" ref={moreRef}>
             <button className={SMALL} data-testid="messages-more" aria-label="更多" aria-expanded={more} onClick={() => setMore((v) => !v)}>⋯</button>
             {more ? (
-              <div data-testid="messages-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-56 flex-col gap-2 rounded-md border border-strong bg-panel p-2 shadow-lg">
+              <div data-testid="messages-more-menu" className="absolute right-0 top-full z-30 mt-1 flex w-56 flex-col gap-2 rounded-lg border border-strong bg-overlay p-2 shadow-overlay">
                 <div onClick={() => setMore(false)}><HubTabs active="messages" projectId={pid} /></div>
                 <div className="flex items-center gap-2" onClick={() => setMore(false)}>
                   <MessagesEntry />

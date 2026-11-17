@@ -177,7 +177,7 @@ export function SearchPalette({
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-canvas/80 px-3 pt-16 md:pt-24" onClick={onClose}>
       <div
-        className="w-full max-w-[560px] rounded-md border border-strong bg-panel shadow-lg"
+        className="w-full max-w-[560px] rounded-lg border border-strong bg-overlay shadow-overlay"
         onClick={(event) => event.stopPropagation()}
       >
         <input

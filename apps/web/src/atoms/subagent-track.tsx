@@ -252,7 +252,7 @@ export function SubagentTrack({
                 ...(pos?.bottom === undefined ? {} : { bottom: pos.bottom }),
                 visibility: pos === null ? 'hidden' : 'visible'
               }}
-              className="fixed z-50 flex flex-col overflow-y-auto overscroll-contain rounded-md border border-strong bg-panel p-1.5 shadow"
+              className="fixed z-50 flex flex-col overflow-y-auto overscroll-contain rounded-lg border border-strong bg-overlay p-1.5 shadow-overlay"
             >
               <p className="px-2 pb-1 pt-1.5 text-meta text-tertiary">子代理</p>
               {rows}

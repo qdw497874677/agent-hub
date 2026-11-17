@@ -641,7 +641,7 @@ export function CanvasView({
         </Controls>
       </ReactFlow>
       {linkError ? (
-        <div role="alert" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-sm border border-rust bg-panel px-3 py-1.5 text-meta text-rust shadow-md">
+        <div role="alert" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-rust bg-overlay px-3 py-1.5 text-meta text-rust shadow-overlay">
           <span>{linkError}</span>
           <button aria-label="关闭提示" className="text-tertiary hover:text-primary" onClick={() => setLinkError(null)}>
             ×

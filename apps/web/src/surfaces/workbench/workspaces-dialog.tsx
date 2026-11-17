@@ -185,7 +185,7 @@ function WorkspaceRow({ view, onAct }: { view: WorkspaceViewDto; onAct: (mode: P
           <div className="relative shrink-0 md:hidden">
             <button className="rounded-sm px-2 py-1 text-meta text-tertiary" aria-label="更多操作" onClick={() => setMenu(!menu)}>⋯</button>
             {menu ? (
-              <div className="absolute right-0 z-10 mt-1 w-32 rounded-sm border border-hair bg-panel py-1 shadow">
+              <div className="absolute right-0 z-10 mt-1 w-32 rounded-lg border border-strong bg-overlay py-1 shadow-overlay">
                 {actions.map((action) => (
                   <button key={action.mode} className="block w-full px-3 py-2 text-left text-sub text-secondary" onClick={() => { setMenu(false); onAct(action.mode); }}>
                     {action.label}

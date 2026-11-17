@@ -466,7 +466,7 @@ function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: 
                 </span>
                 {onQuote && ref ? (
                   <button type="button" onClick={quote} data-testid="diff-quote"
-                    className="min-h-6 cursor-pointer rounded bg-action px-2 text-meta font-medium text-action-fg transition-colors hover:brightness-110 [@media(pointer:coarse)]:min-h-8 [@media(pointer:coarse)]:px-3">
+                    className="min-h-6 cursor-pointer rounded bg-action px-2 text-meta font-medium text-action-fg transition-colors hover:bg-action/90 [@media(pointer:coarse)]:min-h-8 [@media(pointer:coarse)]:px-3">
                     引用到对话
                   </button>
                 ) : null}

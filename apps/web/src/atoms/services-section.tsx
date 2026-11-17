@@ -33,7 +33,7 @@ const INPUT =
   'w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none placeholder:font-sans placeholder:text-tertiary focus:border-ring';
 const ACTION = `${SMALL_BUTTON} inline-flex min-h-7 items-center justify-center`;
 const PRIMARY =
-  'inline-flex min-h-8 items-center justify-center rounded-sm bg-action px-2.5 py-1 text-meta text-action-fg hover:brightness-110 disabled:opacity-40';
+  'inline-flex min-h-8 items-center justify-center rounded-sm bg-action px-2.5 py-1 text-meta text-action-fg hover:bg-action/90 disabled:opacity-40';
 const TONE: Record<string, string> = { sage: 'text-sage', accent: 'text-accent', rust: 'text-rust', tertiary: 'text-tertiary' };
 
 const message = (error: unknown): string =>

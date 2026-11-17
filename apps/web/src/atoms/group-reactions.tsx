@@ -89,7 +89,7 @@ export function ReactionBar({
         {open ? (
           <div
             data-testid="group-emoji-panel"
-            className={`absolute top-full z-30 mt-1 flex gap-0.5 rounded-md border border-strong bg-panel p-1 shadow-lg ${align === 'end' ? 'right-0' : 'left-0'}`}
+            className={`absolute top-full z-30 mt-1 flex gap-0.5 rounded-lg border border-strong bg-overlay p-1 shadow-overlay ${align === 'end' ? 'right-0' : 'left-0'}`}
           >
             {GROUP_EMOJI.map((emoji) => (
               <button

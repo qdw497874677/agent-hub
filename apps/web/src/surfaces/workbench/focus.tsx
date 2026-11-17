@@ -1262,7 +1262,7 @@ function MessageMenu({ onRewind }: { onRewind: () => void }) {
         ⋯
       </button>
       {open ? (
-        <div role="menu" className="absolute right-0 top-6 z-20 min-w-[132px] rounded-sm border border-strong bg-panel py-1 shadow-lg" onMouseLeave={() => setOpen(false)}>
+        <div role="menu" className="absolute right-0 top-6 z-20 min-w-[132px] rounded-lg border border-strong bg-overlay py-1 shadow-overlay" onMouseLeave={() => setOpen(false)}>
           <button type="button" role="menuitem" data-testid="msg-rewind" className="block w-full px-3 py-1.5 text-left text-sub text-primary hover:bg-hair/40"
             onClick={() => { setOpen(false); onRewind(); }}>
             从这里重来

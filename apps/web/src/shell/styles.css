@@ -291,17 +291,20 @@ body {
 /*
  * 键盘焦点：鼠标点击不出框（:focus-visible），Tab 过来一定看得见。
  * 用冷灰的 --color-ring：琥珀只表示「在跑」，焦点不能和它抢（令牌 v2）。
+ * 放在 base 层：组件用 outline-none 自己接管时（输入框把焦点画在外框上），工具类能盖过它，不再双框。
  */
-:where(button, a, select, summary, [tabindex]):focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 2px;
-  border-radius: 2px;
-}
+@layer base {
+  :where(button, a, select, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
 
-/* 对话框/表单里的输入框也用同一根焦点线；原来只有 focus:border-accent，深色下不够醒目。 */
-:where(input, textarea):focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 1px;
+  /* 对话框/表单里的输入框也用同一根焦点线。 */
+  :where(input, textarea):focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 1px;
+  }
 }
 
 /* 画布交互分区：拖动区自己吃掉触摸手势，不让浏览器拿去滚页面/缩放（真机上否则一拖就被 pointercancel 打断） */

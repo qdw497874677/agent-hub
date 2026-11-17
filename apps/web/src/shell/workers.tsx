@@ -510,7 +510,7 @@ export function WorkersBadge({ placement = 'down' }: { placement?: 'down' | 'up'
               ? // 窄屏贴底成一张 sheet（拇指够得着）；宽屏浮在侧栏左下、徽标上方。看详情时宽一点。
                 `fixed inset-x-3 bottom-3 md:inset-x-auto md:bottom-12 md:left-3 ${detail ? 'md:w-[420px]' : 'md:w-[340px]'}`
               : `absolute right-0 top-9 ${detail ? 'w-[min(420px,calc(100vw-1.5rem))]' : 'w-[min(340px,calc(100vw-1.5rem))]'}`
-          }`}><div className="overflow-hidden rounded-md border border-strong bg-panel shadow-lg">
+          }`}><div className="overflow-hidden rounded-lg border border-strong bg-overlay shadow-overlay">
           {detail ? (
             <WorkerDetail key={detail.workerId} worker={detail} onBack={() => setPicked(null)} />
           ) : (

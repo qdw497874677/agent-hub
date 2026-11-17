@@ -69,7 +69,7 @@ function Splash({ text }: { text: string }) {
 
 const INPUT =
   'w-full rounded-sm border border-hair bg-card px-3 py-2.5 text-body text-primary outline-none placeholder:text-tertiary focus:border-ring';
-const PRIMARY = 'w-full rounded-sm bg-action px-3 py-2.5 text-sub text-action-fg hover:brightness-110 disabled:opacity-40';
+const PRIMARY = 'w-full rounded-sm bg-action px-3 py-2.5 text-sub text-action-fg hover:bg-action/90 disabled:opacity-40';
 
 type Mode = 'login' | 'register' | 'forgot';
 
@@ -480,7 +480,7 @@ export function AccountMenu({ placement = 'down' }: { placement?: 'down' | 'up' 
         {account.displayName.slice(0, 1).toUpperCase()}
       </button>
       {open && (
-        <div className={`absolute z-40 w-56 rounded-md border border-strong bg-panel p-3 text-meta shadow-lg ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`} data-testid="account-menu">
+        <div className={`absolute z-40 w-56 rounded-lg border border-strong bg-overlay p-3 text-meta shadow-overlay ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`} data-testid="account-menu">
           <p className="truncate text-primary">{account.displayName}</p>
           <p className="truncate text-tertiary">{account.email}</p>
           <p className="mt-1 text-tertiary">{account.clusterAdmin ? '集群管理员' : roleLabel(account.role)}</p>

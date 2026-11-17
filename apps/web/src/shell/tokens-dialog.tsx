@@ -152,7 +152,7 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
           <button
             type="submit"
             data-testid="token-create"
-            className="rounded-sm bg-action px-3 py-2.5 text-sub text-action-fg hover:opacity-90 disabled:opacity-40"
+            className="rounded-sm bg-action px-3 py-2.5 text-sub text-action-fg hover:bg-action/90 disabled:opacity-40"
             disabled={create.isPending || !name.trim() || scopes.length === 0}
           >
             {create.isPending ? '生成中…' : '生成令牌'}

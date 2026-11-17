@@ -115,7 +115,7 @@ export function Dropdown({
         {icon}
       </button>
       {open ? (
-        <div role="menu" className={`absolute right-0 z-30 mt-1 ${width} rounded-sm border border-hair bg-panel py-1 shadow`}>
+        <div role="menu" className={`absolute right-0 z-30 mt-1 ${width} rounded-lg border border-strong bg-overlay py-1 shadow-overlay`}>
           {children(() => setOpen(false))}
         </div>
       ) : null}

@@ -407,7 +407,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       {menu ? createPortal(
         <>
           <div className="nodrag fixed inset-0 z-[60]" onPointerDown={() => setMenu(null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); }} />
-          <div role="menu" className="nodrag fixed z-[61] flex min-w-40 flex-col rounded-sm border border-hair bg-card py-1 shadow-md" style={{ left: menu.x, top: menu.y }}>
+          <div role="menu" className="nodrag fixed z-[61] flex min-w-40 flex-col rounded-lg border border-strong bg-overlay py-1 shadow-overlay" style={{ left: menu.x, top: menu.y }}>
             <button role="menuitem" className="px-3 py-1.5 text-left text-meta text-primary hover:bg-hair/40" onClick={(event) => { event.stopPropagation(); setMenu(null); onExpand(); }}>
               在画布中展开
             </button>
@@ -426,7 +426,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             data-testid="card-preview-menu"
             role="menu"
             aria-label="选择要打开的预览"
-            className="nodrag fixed z-[61] flex min-w-40 max-w-52 flex-col rounded-sm border border-hair bg-card py-1 shadow-md"
+            className="nodrag fixed z-[61] flex min-w-40 max-w-52 flex-col rounded-lg border border-strong bg-overlay py-1 shadow-overlay"
             style={{ left: previewMenu.x, top: previewMenu.y }}
           >
             {readyPreviews.map((link) => (
