@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Notice } from '../../atoms/notice.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { marketApi, type FindingLineDto, type McpRiskSummaryDto, type SubmissionDetailDto } from '../api.ts';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../dialog-shell.tsx';
@@ -139,7 +140,7 @@ function McpRisk({ risk }: { risk: McpRiskSummaryDto }) {
         </p>
       ) : null}
       {risk.secrets.length ? <p className="text-secondary">用到密钥：{risk.secrets.join('、')}</p> : null}
-      {risk.changed.length ? <p className="text-warning">相比上一版变了：{risk.changed.join('、')}</p> : null}
+      {risk.changed.length ? <Notice tone="warning">相比上一版变了：{risk.changed.join('、')}</Notice> : null}
       {risk.notes.map((n, i) => (
         <p key={i} className="text-tertiary">
           {n}

@@ -1,4 +1,5 @@
 import { shortPath, workspaceName } from '../../atoms/workspace-format.ts';
+import { Notice } from '../../atoms/notice.tsx';
 export { shortPath, workspaceName };
 import { LinkWorkspaces } from './link-workspaces.tsx';
 import { useEffect, useMemo, useState } from 'react';
@@ -495,8 +496,8 @@ function NewWorktree({
       </button>
       {/* 不可用不只是一行灰字：留着这一行（用户会来这儿找），说清缺什么，再给一个能点的动作。 */}
       {gitHere ? null : (
-        <div data-testid="ws-new-worktree-blocked" className="mt-1.5 w-full border-l border-rust pl-2 text-meta">
-          <p className="text-rust">这台机器上还没有可用的 git 目录</p>
+        <div data-testid="ws-new-worktree-blocked" className="mt-1.5 w-full text-meta">
+          <Notice tone="warning">这台机器上还没有可用的 git 目录</Notice>
           <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
             <button
               type="button"

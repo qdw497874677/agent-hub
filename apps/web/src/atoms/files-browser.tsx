@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { Notice } from './notice.tsx';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
 import { crumbs, FILES_QUERY, filesErrorText, filesRefetch, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
@@ -385,7 +386,7 @@ function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { se
       {file.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {file.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(file.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件，不预览——可以下载</p> : null}
-      {data?.truncated ? <p className="px-3 pt-2 text-meta text-warning">文件超过 1 MB，只显示前 1 MB</p> : null}
+      {data?.truncated ? <Notice tone="warning" className="px-3 pt-2">文件超过 1 MB，只显示前 1 MB</Notice> : null}
       {text !== null ? (
         <div ref={content} className="[&_[data-target-line]]:bg-warning/20" data-line={line ?? undefined}>
           {html ? <div className="files-code overflow-x-auto p-3 text-sub [&_pre]:!bg-transparent" data-testid="file-content" dangerouslySetInnerHTML={{ __html: html }} /> :
@@ -451,7 +452,7 @@ function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: 
       {diff.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {diff.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(diff.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件有改动</p> : null}
-      {data?.truncated ? <p className="px-3 pt-2 text-meta text-warning">diff 超过 512 KB，只显示前一部分</p> : null}
+      {data?.truncated ? <Notice tone="warning" className="px-3 pt-2">diff 超过 512 KB，只显示前一部分</Notice> : null}
       {data && data.patch === '' && !data.binary ? <p className="p-4 text-sub text-tertiary">没有差异</p> : null}
       {rows.length > 0 ? (
         <>

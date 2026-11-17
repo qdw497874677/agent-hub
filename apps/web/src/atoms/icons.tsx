@@ -24,7 +24,28 @@ export type IconName =
   | 'grid'
   | 'list'
   | 'message'
-  | 'server';
+  | 'server'
+  | 'warning'
+  | 'alert'
+  | 'info'
+  | 'check'
+  | 'command'
+  | 'sun'
+  | 'moon'
+  | 'monitor'
+  | 'file'
+  | 'terminal'
+  | 'pencil'
+  | 'eye'
+  | 'sparkle'
+  | 'wrench'
+  | 'stop'
+  | 'clock'
+  | 'arrow-up'
+  | 'external'
+  | 'layers'
+  | 'stethoscope'
+  | 'queue';
 
 const PATHS: Record<IconName, ReactNode> = {
   home: (
@@ -94,7 +115,73 @@ const PATHS: Record<IconName, ReactNode> = {
       <rect x="3" y="13" width="18" height="7" rx="1.5" />
       <path d="M7 7.5h.01M7 16.5h.01" />
     </>
-  )
+  ),
+  warning: (
+    <>
+      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+      <path d="M12 9v4M12 17h.01" />
+    </>
+  ),
+  alert: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 8v4M12 16h.01" />
+    </>
+  ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 16v-4M12 8h.01" />
+    </>
+  ),
+  check: <path d="m5 12 5 5L20 7" />,
+  command: <path d="M15 6v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3" />,
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+    </>
+  ),
+  moon: <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" />,
+  monitor: (
+    <>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8 20h8M12 16v4" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M14 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V8z" />
+      <path d="M14 3v5h5" />
+    </>
+  ),
+  terminal: <path d="m5 7 5 5-5 5M12 19h7" />,
+  pencil: <path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 3 21l.5-4.5z" />,
+  eye: (
+    <>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </>
+  ),
+  sparkle: <path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z" />,
+  wrench: <path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8-3-3 8-8-1.3-1.3a4 4 0 0 0-5-5L14 5z" />,
+  stop: <rect x="6" y="6" width="12" height="12" rx="1.5" />,
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </>
+  ),
+  'arrow-up': <path d="M12 19V5M5 12l7-7 7 7" />,
+  external: <path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />,
+  layers: (
+    <>
+      <path d="m12 3 9 5-9 5-9-5z" />
+      <path d="m3 13 9 5 9-5" />
+    </>
+  ),
+  stethoscope: <path d="M5 3v6a5 5 0 0 0 10 0V3M10 14v2a5 5 0 0 0 10 0v-2M20 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />,
+  queue: <path d="M4 6h16M4 12h10M4 18h6M17 15l3 3-3 3" />
 };
 
 export function Icon({ name, size = 16, className = '' }: { name: IconName; size?: number; className?: string }) {
