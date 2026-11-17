@@ -36,6 +36,7 @@ import {
   listWorkers,
   notFound,
   authorizeAssetProject,
+  authorizeAssetPublish,
   projectReader,
   promptSessionUseCase,
   setProjectChecksUseCase,
@@ -258,6 +259,13 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!ctx.assetReview) return fail(c, { code: 'not_implemented', message: '没装资产中心' });
     const asset = await ctx.assetReview.assets.get(c.req.param('assetId') ?? '');
     if (!asset) return fail(c, notFound('资产不存在'));
+    // 项目级资产（#230）：同团队但不是项目成员的令牌不能借 assets:publish 发布别人的项目资产。
+    // 这一步放在可见性之前：项目成员才有 project.read，非成员在可见性那层只会得到 404；
+    // 跨团队的仍按 404，别泄露资产存在。成员走下面的正常可见性 / 版本校验。
+    if (asset.scope === 'project') {
+      const allowed = await authorizeAssetPublish(ctx.assetReview, actor, asset);
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
     const readable = createAssetVisibility({ access: deps.access, projects: deps.projects }, actor);
     if (!(await readable(asset))) return fail(c, notFound('资产不存在'));
     if (asset.scope === 'global' && !actor.user.clusterAdmin) return fail(c, forbidden('只有集群管理员能发布全局资产'));
@@ -277,7 +285,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const readable = createAssetVisibility({ access: deps.access, projects: deps.projects }, actor);
     if (!(await readable(asset))) return fail(c, notFound('资产不存在'));
     const input = valid<{ workerId: string; installed: boolean }>(c, 'json');
-    const done = await setAssetInstalled(ctx.assetReview, { workerId: input.workerId, assetId: asset.id, installed: input.installed });
+    const done = await setAssetInstalled(ctx.assetReview, { workerId: input.workerId, assetId: asset.id, installed: input.installed }, { actor, policy: ctx.assetReview.policy });
     if (!done.ok) return fail(c, done.error);
     await recordAssetAudit(
       ctx.assetReview,
@@ -513,10 +521,10 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!(await deps.sessions.byId(sessionId))) return fail(c, notFound('会话不存在'));
     const query = valid<{ after?: number; sinceTurn?: number }>(c, 'query');
     const entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
-    // 老事件没有 turn：保守地保留，宁可多给也不要让调用方漏掉内容。
+    // sinceTurn 是按轮次补读：没有 turn 的老事件不属于任何轮次，不返回（只有在不带 sinceTurn 时给全量）。
     const kept = query.sinceTurn === undefined
       ? entries
-      : entries.filter((entry) => entry.turn === undefined || entry.turn >= query.sinceTurn!);
+      : entries.filter((entry) => entry.turn !== undefined && entry.turn >= query.sinceTurn!);
     return c.json(await refreshAuthors(ctx.activity, kept));
   });
   on(routes.activity, async (c) => c.json(ctx.activity ? await sessionActivity(ctx.activity, c.req.param('sessionId') ?? '') : []));

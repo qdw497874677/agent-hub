@@ -127,6 +127,19 @@ test('C3：群不属于这个 bot 的项目时拒绝创建', async () => {
   assert.equal(bindings.size, 0);
 });
 
+test('C3：群帖作者写外部发送者，而不是连接器名；没有发送者才回落连接器名', async () => {
+  const { hub, bindings, posts } = harness();
+  await bindings.set('b1', groupBinding());
+  await hub.emit('b1', { kind: 'message', externalId: 'x1', title: 'a', text: 'hi', author: { name: '张三', externalId: 'ou_1' } });
+  assert.equal(posts.get('x1')?.author, '张三');
+
+  await hub.emit('b1', { kind: 'message', externalId: 'x2', title: 'b', text: 'hi' });
+  assert.equal(posts.get('x2')?.author, 'slack');
+
+  await hub.emit('b1', { kind: 'message', externalId: 'x3', title: 'c', text: 'hi', author: { name: '  长'.repeat(80) } });
+  assert.equal(posts.get('x3')?.author.length, 60);
+});
+
 test('C3：同一个 externalId 只落一帖，run 记 posted + postId', async () => {
   const { hub, bindings, runs, posts, postCalls } = harness();
   await bindings.set('b1', groupBinding());

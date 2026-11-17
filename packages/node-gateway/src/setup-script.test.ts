@@ -94,6 +94,8 @@ test('tailOutput / scrubCredentials：截尾与凭据擦除', () => {
   assert.equal(scrubCredentials('token ghp_abcdefghijklmnopqrst in log'), 'token gh*_*** in log');
   assert.equal(scrubCredentials('AWS AKIAABCDEFGHIJKLMNOP used'), 'AWS AKIA*** used');
   assert.equal(scrubCredentials('authorization: Bearer abcdefghijklmnopqrst'), 'authorization: Bearer ***');
+  assert.equal(scrubCredentials('OPENAI_API_KEY=sk-abcdefghijklmnop'), 'OPENAI_API_KEY=***');
+  assert.equal(scrubCredentials('DB_PASSWORD=hunter2 rest'), 'DB_PASSWORD=*** rest');
 });
 
 test('runSetupScript：HOME 是一次性空目录，缓存也在里面，跑完删掉（#227）', async () => {

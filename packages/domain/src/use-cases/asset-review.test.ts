@@ -282,6 +282,27 @@ test('项目级资产：同团队、有 project.update 的成员可以挂；回�
   assert.equal(trash.ok ? '' : trash.error.code, 'not_found');
 });
 
+test('发布复核：同团队但不是项目成员的审核人不能发布项目级资产；项目成员可以（#230）', async () => {
+  const w = await world();
+  w.assets.projectList.set('prj-t1', { id: 'prj-t1', name: '本团队项目', teamId: 't1', createdBy: 'u-O', members: ['u-M1'], deletedAt: null });
+  // M2 是本团队审核人，但不在项目成员里
+  assert.ok((await setReviewSettings(w.deps, w.p('O'), 'team', { reviewers: ['u-M2'], twoReviewers: { global: false, mcpStdio: false } })).ok);
+  const pending = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('deny-me') }));
+  const denied = await approveSubmission(w.deps, w.p('M2'), pending.submission.id);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.ok ? '' : denied.error.code, 'forbidden');
+  assert.equal((await w.deps.review.submission(pending.submission.id))?.status, 'pending', '被拒的那票不落库');
+  assert.equal((await w.deps.assets.get(pending.asset.id))?.pinned, '', '没有发布');
+
+  // 把 M2 加进项目成员后，换 M1（项目成员）审批 M2 的提交就能发布
+  w.assets.projectList.set('prj-t1', { id: 'prj-t1', name: '本团队项目', teamId: 't1', createdBy: 'u-O', members: ['u-M1', 'u-M2'], deletedAt: null });
+  assert.ok((await setReviewSettings(w.deps, w.p('O'), 'team', { reviewers: ['u-M1'], twoReviewers: { global: false, mcpStdio: false } })).ok);
+  const made = ok(await submitNewAsset(w.deps, w.p('M2'), { from: 'upload', kind: 'skill', scope: 'project', projectId: 'prj-t1', files: skill('ok-mine') }));
+  const approved = await approveSubmission(w.deps, w.p('M1'), made.submission.id);
+  assert.equal(approved.ok, true, approved.ok ? '' : approved.error.message);
+  assert.equal(approved.ok && approved.value.published, true);
+});
+
 test('项目级资产鉴权：owner 与共享成员可以，同团队非成员 403，projects:write 令牌可以（#227）', async () => {
   const w = await world();
   w.assets.projectList.set('prj-t1', { id: 'prj-t1', name: '本团队项目', teamId: 't1', createdBy: 'u-O', members: ['u-M1'], deletedAt: null });

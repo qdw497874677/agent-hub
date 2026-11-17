@@ -30,6 +30,7 @@ import { assetSourcePolicy, DEFAULT_ASSET_SOURCE_POLICY } from '../asset.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
+import { authorizeWorker, type AccessPolicy } from './authorization.ts';
 import type { WorkerStatus } from '../worker.ts';
 import type { AuditAction, Principal, UserId } from '../account.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
@@ -491,12 +492,22 @@ export async function deleteAsset(deps: AssetDeps, assetId: string): Promise<Res
   return ok(undefined);
 }
 
+/**
+ * 装 / 卸资产（issue #230：令牌面分配）。`guard` 由有登录主体 / 令牌主体的入口传入：
+ * 光看机器在列表里不够，还要调用者对这台机器有 worker.use（同团队；本机只给集群管理员）。
+ * 不带 guard 的调用方（内部同步、管理后台）保持原来的行为。
+ */
 export async function setAssetInstalled(
   deps: AssetDeps,
-  input: { workerId: string; assetId: string; installed: boolean }
+  input: { workerId: string; assetId: string; installed: boolean },
+  guard?: { readonly actor: Principal; readonly policy: Pick<AccessPolicy, 'context' | 'worker'> }
 ): Promise<Result<void, DomainError>> {
   const asset = await deps.assets.get(input.assetId);
   if (!asset) return err(notFound('没有这个资产'));
+  if (guard) {
+    const allowed = await authorizeWorker(guard.policy, guard.actor, input.workerId, 'worker.use');
+    if (!allowed.ok) return allowed;
+  }
   if (input.installed) {
     const known = (await deps.workers.list()).some((worker) => worker.workerId === input.workerId);
     if (!known) return err(notFound('没有这台机器'));

@@ -22,11 +22,16 @@ const fake: AgentDescriptor = {
   options: []
 };
 
-function harness(rate?: { general?: number; prompt?: number; streams?: number }) {
+function harness(rate?: { general?: number; prompt?: number; streams?: number }, enrolledBy: Map<string, string> = new Map()) {
   const accounts = inMemoryAccounts(() => Date.now());
   const world = inMemoryDeps();
   world.agents.push(fake);
-  const access = createAccessPolicy({ users: accounts.users, settings: accounts.settings, enrollment: { credentialFor: async () => null }, gateway: world.deps.gateway });
+  const access = createAccessPolicy({
+    users: accounts.users,
+    settings: accounts.settings,
+    enrollment: { credentialFor: async (workerId) => (enrolledBy.has(workerId) ? ({ enrolledBy: enrolledBy.get(workerId)! } as never) : null) },
+    gateway: world.deps.gateway
+  });
   const deps = { ...world.deps, access };
   const apiTokens = inMemoryApiTokens();
   const tokenDeps = { apiTokens, users: accounts.users, projects: world.deps.projects, tokens: accounts.tokens, audit: accounts.audit, now: () => Date.now() };
@@ -73,12 +78,12 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number })
     );
     return { status: response.status, headers: response.headers, body: (await response.json().catch(() => null)) as any };
   };
-  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api };
+  return { accounts, world, app, hub, apiTokens, assetsStore, browser, api, enrolledBy };
 }
 const post = (body: unknown) => ({ method: 'POST', body: JSON.stringify(body) });
 
-async function setup(rate?: Parameters<typeof harness>[0]) {
-  const h = harness(rate);
+async function setup(rate?: Parameters<typeof harness>[0], enrolledBy?: Map<string, string>) {
+  const h = harness(rate, enrolledBy);
   const david = h.browser();
   assert.equal((await david('/api/auth/register', post({ email: 'david@b.co', password: PASSWORD }))).status, 200);
   const mint = async (who: ReturnType<typeof h.browser>, scopes: string[], extra: Record<string, unknown> = {}) => {
@@ -175,6 +180,13 @@ test('对话：开会话 → prompt（作者带 via）→ events / stream；审�
   const secondOnly = (await call(`/sessions/${session.body.id}/events?sinceTurn=2`)).body.map((e: unknown) => journalEntrySchema.parse(e));
   assert.ok(secondOnly.length > 0);
   assert.ok(secondOnly.every((entry: { turn?: number }) => entry.turn === 2));
+  // 老事件没有 turn（不属于任何轮次）：sinceTurn 不返回，不带时照常给全量（#230）
+  world.deps.sessions.journal.get(session.body.id)!.push({ seq: 999, at: 3, event: { kind: 'diagnostic', level: 'info', text: '老事件没有轮次' } });
+  const all = (await call(`/sessions/${session.body.id}/events`)).body.map((e: unknown) => journalEntrySchema.parse(e));
+  assert.ok(all.some((entry: { event: { kind: string } }) => entry.event.kind === 'diagnostic'), '不带 sinceTurn 时老事件仍然返回');
+  const turnsOnly = (await call(`/sessions/${session.body.id}/events?sinceTurn=2`)).body.map((e: unknown) => journalEntrySchema.parse(e));
+  assert.ok(turnsOnly.every((entry: { turn?: number }) => entry.turn === 2));
+  assert.ok(!turnsOnly.some((entry: { event: { kind: string } }) => entry.event.kind === 'diagnostic'), '没有 turn 的旧事件被过滤');
   assert.ok(accounts.auditRows.some((row) => row.action === 'session.start' && row.detail.includes('via 令牌「bot」')));
 
   // SSE：补发已有事件
@@ -390,7 +402,7 @@ const b64 = (text: string) => Buffer.from(text).toString('base64');
 const skillFiles = (body: string) => [{ path: 'SKILL.md', data: b64(`---\nname: greeter\ndescription: Greets people\n---\n${body}\n`) }];
 
 test('资产自动化：assets:publish 能导入 → 发布 → 分配；没有该 scope 时 403；非集群管理员发布全局 403', async () => {
-  const { david, mint, app, accounts, assetsStore, browser } = await setup();
+  const { david, mint, app, accounts, assetsStore, browser, world, enrolledBy } = await setup();
   const replays = new Map<string, string>();
   const store = {
     async get(key: string) {
@@ -453,6 +465,28 @@ test('资产自动化：assets:publish 能导入 → 发布 → 分配；没有�
   assert.deepEqual(assigned.result.structuredContent, { assetId: asset.id, workerId: 'w1', installed: true });
   assert.ok(assetsStore.installs.some((row) => row.assetId === asset.id && row.workerId === 'w1'));
 
+  // 2b) 跨团队机器（#230）：凭据归属另一个团队 → 403，不能把资产装到别人的机器上
+  await accounts.users.save({
+    id: 'u-outsider',
+    email: 'outsider@x.co',
+    displayName: 'outsider',
+    role: 'member',
+    passwordHash: null,
+    emailVerifiedAt: 1,
+    disabledAt: null,
+    createdAt: 1,
+    teamId: 't-other',
+    clusterAdmin: false,
+    deletedAt: null
+  } as never);
+  enrolledBy.set('w-other', 'u-outsider');
+  world.workers.push({ workerId: 'w-other', label: 'other', origin: 'remote', state: 'online' } as never);
+  assetsStore.workers.push({ workerId: 'w-other', label: 'other', origin: 'remote', state: 'online' } as never);
+  const crossTeam = await publish('asset_assign', { assetId: asset.id, workerId: 'w-other', clientRequestId: 'assign-other' });
+  assert.equal(crossTeam.result.isError, true, JSON.stringify(crossTeam.result));
+  assert.match(crossTeam.result.content[0].text, /403/);
+  assert.ok(!assetsStore.installs.some((row) => row.assetId === asset.id && row.workerId === 'w-other'));
+
   // 3) 没有 assets:publish：发布 / 分配都 403
   const publishDenied = await plain('asset_publish', { assetId: asset.id, clientRequestId: 'publish-3' });
   assert.equal(publishDenied.result.isError, true);
@@ -494,4 +528,35 @@ test('资产自动化：assets:publish 能导入 → 发布 → 分配；没有�
   assert.ok(actions.includes('asset.publish'));
   assert.ok(actions.includes('asset.install'));
   assert.ok(accounts.auditRows.some((row) => row.action === 'asset.publish' && row.detail.includes('经令牌')));
+});
+
+test('项目级资产发布：同团队非项目成员的令牌 403；项目成员 / 负责人可以（#230）', async () => {
+  const { david, mint, api, accounts, browser, assetsStore } = await setup();
+  const boss = (await accounts.users.firstClusterAdmin())!;
+  const project = (await david('/api/projects', post({ name: '项目' }))).body as { id: string; name: string; teamId: string; createdBy: string; members?: string[] };
+  assetsStore.projectList.set(project.id, { id: project.id, name: project.name, teamId: project.teamId, createdBy: project.createdBy, members: project.members ?? [boss.id], deletedAt: null } as never);
+  const made = await uploadAsset(assetsStore.deps, {
+    kind: 'skill',
+    projectId: project.id,
+    files: skillFiles('p1').map((file) => ({ path: file.path, data: Buffer.from(file.data, 'base64') })),
+    scope: 'project',
+    ownerId: boss.id,
+    teamId: boss.teamId,
+    publish: false
+  });
+  assert.ok(made.ok, JSON.stringify(made));
+
+  // 同团队成员、但不是项目成员：assets:publish 也不能发布项目级资产
+  await addTeamMember(accounts, 'm@b.co', PASSWORD, 'member');
+  const member = browser();
+  assert.equal((await member('/api/auth/login', post({ email: 'm@b.co', password: PASSWORD }))).status, 200);
+  const memberToken = (await mint(member, ['assets:read', 'assets:write', 'assets:publish'])).token;
+  const denied = await api(memberToken)(`/assets/${made.value.id}/publish`, post({}));
+  assert.equal(denied.status, 403, JSON.stringify(denied.body));
+  assert.equal((await assetsStore.deps.assets.get(made.value.id))?.pinned, '');
+
+  const ownerToken = (await mint(david, ['assets:read', 'assets:write', 'assets:publish'])).token;
+  const published = await api(ownerToken)(`/assets/${made.value.id}/publish`, post({}));
+  assert.equal(published.status, 200, JSON.stringify(published.body));
+  assert.equal(published.body.pinned, made.value.latest);
 });

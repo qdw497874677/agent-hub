@@ -22,6 +22,8 @@ export interface InboundEvent {
   readonly url?: string;
   /** 来源自己写的说明（可信，比如「建任务时带上 source」），放在不可信块之前。 */
   readonly note?: string;
+  /** 外部消息的发送者（只在外部渠道有）：入群时作者写他，而不是连接器名。只作展示，不可信。 */
+  readonly author?: { readonly name: string; readonly externalId?: string };
   /** 指定投到哪条会话（如 PR 跟进回到当初开 PR 的会话）；不填按 Binding 的 target。 */
   readonly targetSessionId?: string;
 }

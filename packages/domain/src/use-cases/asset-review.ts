@@ -29,7 +29,7 @@ import {
   type SecretRefStatus,
   type SubmissionOrigin
 } from '../asset-review.ts';
-import { can, type AccessContext, type Resource } from '../access.ts';
+import { can, type AccessContext, type Resource, type Subject } from '../access.ts';
 import type { AuditAction, Principal, User, UserId, TeamId } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
@@ -39,7 +39,7 @@ import type { AuditLog } from '../ports/audit-log.ts';
 import type { AssetReviewRepository, NotificationRepository } from '../ports/asset-review-repository.ts';
 import type { UserRepository } from '../ports/user-repository.ts';
 import type { TeamRepository } from '../ports/team-repository.ts';
-import { authorizeProjectResource, type AccessPolicy } from './authorization.ts';
+import { authorizeProjectResource, projectAsResource, type AccessPolicy } from './authorization.ts';
 import {
   ASSET_KIND_LABEL,
   checkAllAssetUpdates,
@@ -454,17 +454,43 @@ const reviewer = (actor: Principal) => ({ id: actor.user.id, hubAdmin: actor.use
 /** 通过一票。高风险发现要显式确认（acknowledgeHigh）。票够了就发布。 */
 
 /**
- * 发布前的最后一次项目复验（issue #227）：项目级资产不能钉在已删除 / 已换团队的项目上。
+ * 发布项目级资产前的归属复核（issue #227 / #230）：同团队但不是项目成员的审核人 / 令牌不能借
+ * assets:publish 直接发布别人的项目资产 → 403。归属按账号本身判定（令牌 scope 已在 assets:publish 收敛）；
+ * 项目不存在仍按 404。
+ */
+export async function authorizeAssetPublish(
+  deps: Pick<AssetReviewDeps, 'policy' | 'projects'>,
+  actor: Principal,
+  asset: Pick<Asset, 'scope' | 'projectId'>
+): Promise<Result<null, DomainError>> {
+  if (asset.scope !== 'project') return ok(null);
+  if (asset.projectId === null) return err(forbidden('项目级资产没有归属项目'));
+  const project = await deps.projects.byId(asset.projectId);
+  if (!project || project.deletedAt != null) return err(notFound('资产挂的项目已经不存在了：先把它移到团队或个人再审核'));
+  if (project.teamId !== null && project.teamId !== actor.user.teamId) return err(notFound('项目不存在'));
+  const ctx = await deps.policy.context();
+  const subject: Subject = actor.via ? { ...actor, via: undefined } : actor;
+  if (!can(subject, 'project.update', projectAsResource(project, ctx), ctx)) return err(forbidden('只有项目成员能发布项目级资产'));
+  return ok(null);
+}
+
+/**
+ * 发布前的最后一次项目复验（issue #227 / #230）：项目级资产不能钉在已删除 / 已换团队的项目上，
+ * 发布者还必须对项目有 project.update —— 同团队但不是项目成员的令牌不能借 assets:publish 发布。
  * 只在「这一票就会发布」时调用 —— 票还不够时先记票，别让复核把人挡在审核流程外面。
  */
-async function ensureProjectPublishable(deps: Pick<AssetReviewDeps, 'projects'>, asset: Asset): Promise<Result<null, DomainError>> {
+async function ensureProjectPublishable(
+  deps: Pick<AssetReviewDeps, 'policy' | 'projects'>,
+  actor: Principal,
+  asset: Asset
+): Promise<Result<null, DomainError>> {
   if (asset.scope !== 'project' || asset.projectId === null) return ok(null);
   const project = await deps.projects.byId(asset.projectId);
   if (!project || project.deletedAt != null) return err(notFound('资产挂的项目已经不存在了：先把它移到团队或个人再审核'));
   if (asset.teamId !== null && project.teamId !== null && project.teamId !== asset.teamId) {
     return err(forbidden('项目已经换了团队：资产要先移到对应团队再审核'));
   }
-  return ok(null);
+  return authorizeAssetPublish(deps, actor, asset);
 }
 
 export async function approveSubmission(
@@ -493,7 +519,7 @@ export async function approveSubmission(
   const needed = attainableApprovals(submission.required, eligible);
   // 这一票就够发布了：先确认项目还在，再把票写进库（失败时不能留下半张通过的票）。
   if (approvals.length >= needed) {
-    const publishable = await ensureProjectPublishable(deps, asset);
+    const publishable = await ensureProjectPublishable(deps, actor, asset);
     if (!publishable.ok) return publishable;
   }
   const voted: AssetSubmission = { ...submission, approvals };

@@ -150,6 +150,11 @@ export interface WorkerLinkOptions {
    */
   readonly keepAliveMax?: number;
   /**
+   * 每台机器同时 pinned（常驻）的会话上限，默认 16。超过时新的 pinned 启动
+   * 直接回 `status:'ended'` + 一条 diagnostic，不进入保活。
+   */
+  readonly pinMax?: number;
+  /**
    * 回合结束后仍有后台子代理在跑时，多久 `session/load` 重放一次把新输出拉回来
    * （opencode 的 ACP 适配器在那之后不再推 session/update）。默认 5000。
    */
@@ -229,6 +234,7 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
   /** 常驻会话：不按空闲回收、不占保活上限（任务里长期用的那条）。 */
   const pinnedSessions = new Set<string>();
   const KEEPALIVE_MAX = options.keepAliveMax ?? 8;
+  const PIN_MAX = options.pinMax ?? 16;
   /**
    * 每条会话一条串行队列。server 会连着发 start_session + prompt，
    * 而 start 是异步的（要拉起 agent 进程）——不排队的话 prompt 会先到，
@@ -879,6 +885,16 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     }
   }
 
+  /**
+   * pinned 会话单独限流：保活上限只按 `sessions` 算，pinned 又不参与 trim，
+   * 不设上限的话常驻会话可以无限堆。超过 `PIN_MAX` 的新 pinned 启动直接拒掉。
+   */
+  function pinnedAtCapacity(sessionId: string): boolean {
+    if (!(PIN_MAX > 0)) return false;
+    if (pinnedSessions.has(sessionId)) return false;
+    return pinnedSessions.size >= PIN_MAX;
+  }
+
   /** 产出物大小只有这台机器量得到：相对路径按会话的工作目录解析。 */
   async function withBytes(sessionId: string, event: SessionEvent): Promise<SessionEvent> {
     if (event.kind !== 'artifact' || !options.files) return event;
@@ -1180,6 +1196,14 @@ export function connectWorkerLink(options: WorkerLinkOptions): WorkerLink {
     const outside = options.files ? await options.files.check(command.workspaceRoot) : null;
     if (outside !== null) {
       send({ type: 'event', sessionId: command.sessionId, event: { kind: 'ended', outcome: 'failed', reason: outside } });
+      return;
+    }
+
+    // 常驻会话每台机器有上限；到顶了新 pinned 启动直接拒，不 spawn、不进保活。
+    if (command.pinned === true && pinnedAtCapacity(command.sessionId)) {
+      const reason = `这台机器的常驻会话已达上限（${PIN_MAX}）`;
+      send({ type: 'status', sessionId: command.sessionId, status: 'ended', reason });
+      send({ type: 'event', sessionId: command.sessionId, event: { kind: 'diagnostic', level: 'warn', text: reason } });
       return;
     }
 

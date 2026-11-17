@@ -69,6 +69,16 @@ function repo(): SessionServiceRepository & { readonly rows: Map<ServiceId, Sess
       saved.push(service);
       rows.set(service.id, service);
     },
+    async updateState(service) {
+      const current = rows.get(service.id);
+      if (!current || current.updatedAt > service.updatedAt) return false;
+      rows.set(service.id, service);
+      return true;
+    },
+    async appendLogTail(id, logTail, updatedAt) {
+      const current = rows.get(id);
+      if (current) rows.set(id, { ...current, logTail, updatedAt });
+    },
     async remove(id) {
       rows.delete(id);
     },
@@ -135,6 +145,30 @@ test('建服务 201，列表能看到；body 按 serviceSchema 出，命令进�
   const list = (await listed.json()) as { services?: unknown[] };
   assert.equal(list.services?.length, 1);
   assert.equal(serviceSchema.parse(list.services?.[0]).id, service.id);
+});
+
+test('env 只回键名：创建 / 列表 / env-keys 都不含值', async () => {
+  const { app, sessionServices } = appWith();
+  const created = await app.request('/api/tasks/t-1/services', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ command: 'npm run dev', workerId: 'local', root: '/tmp/demo', env: { NODE_ENV: 'development', API_BASE: 'https://example.test' } }),
+  });
+  assert.equal(created.status, 201);
+  const text = await created.text();
+  assert.doesNotMatch(text, /development|example\.test/);
+  const body = JSON.parse(text) as { service?: unknown };
+  const service = serviceSchema.parse(body.service);
+  assert.deepEqual(service.envKeys, ['API_BASE', 'NODE_ENV']);
+  assert.equal('env' in service, false);
+
+  const listed = await app.request('/api/tasks/t-1/services');
+  assert.doesNotMatch(await listed.text(), /development|example\.test/);
+
+  const keys = await app.request(`/api/services/${service.id}/env-keys`);
+  assert.equal(keys.status, 200);
+  assert.deepEqual((await keys.json()) as { keys?: string[] }, { keys: ['API_BASE', 'NODE_ENV'] });
+  assert.equal(sessionServices.rows.get(service.id as ServiceId)?.env.NODE_ENV, 'development');
 });
 
 test('进程清单：按 worker 返回全部，按会话只留 workspace 根之下的，root 前缀相同但不在其内的排除', async () => {

@@ -1,13 +1,14 @@
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { scrubCredentials } from './setup-script.ts';
+import { redactSecrets } from './redact.ts';
 
 /**
  * 只读的进程 / 端口清单（不做进程管理，不落库）。
  *
  * 和 preview-scan 一样从 `/proc` 读，读不到就当作没有，不抛错：
  * - 进程只收 cwd 落在 `roots` 之内的，避免把整机系统进程倒给 hub；
- * - 命令行是不可信内容：先抹 `user:token@` 凭据，再截到 200 字；
+ * - 命令行是不可信内容：先按 `redact.ts` 统一打码（`--token` / `KEY=value` / URL 凭据 /
+ *   Bearer / sk-… 等），再截到 200 字；
  * - 端口从 `/proc/net/tcp{,6}` 的 LISTEN（state `0A`）拿 inode，再扫 `/proc/<pid>/fd/*`
  *   里指向 `socket:[inode]` 的符号链接反查。
  */
@@ -96,7 +97,7 @@ function cmdOf(pidDir: string): string {
   } catch {
     return '';
   }
-  return scrubCredentials(raw.split('\0').filter((part) => part !== '').join(' ').trim()).slice(0, PROCESS_CMD_MAX);
+  return redactSecrets(raw.split('\0').filter((part) => part !== '').join(' ').trim()).slice(0, PROCESS_CMD_MAX);
 }
 
 /** `/proc/<pid>/stat`：`pid (comm) state ppid ...`，comm 里可能有空格 / 括号，所以从最后一个 `)` 后面数。 */

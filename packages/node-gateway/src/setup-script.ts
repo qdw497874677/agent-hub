@@ -2,6 +2,13 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { constants, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { scrubCredentials } from '@agent-hub/domain';
+
+/**
+ * 凭据擦除与领域层共用同一套规则（服务日志落库前也会再擦一遍）。
+ * 这里保留同名导出，老的 import 不用改。
+ */
+export { scrubCredentials };
 
 /**
  * 在工作空间里跑项目配置的准备命令（docs/design/worktree.md §4 / §8）。
@@ -55,17 +62,7 @@ export function setupEnv(
   return env;
 }
 
-/** 日志里抹掉常见秘密：远程 URL 里的凭据、sk-…/ghp_…/github_pat_…/AKIA…、私钥块、bearer token。 */
-export function scrubCredentials(text: string): string {
-  return text
-    .replace(/([A-Za-z][A-Za-z0-9_.\-]*):([^\s@/]{4,})@/g, '$1:***@')
-    .replace(/\b(sk-[A-Za-z0-9_-]{8,})/g, 'sk-***')
-    .replace(/\b(gh[pousru]_[A-Za-z0-9]{20,})/g, 'gh*_***')
-    .replace(/\b(github_pat_[A-Za-z0-9_]{20,})/g, 'github_pat_***')
-    .replace(/(?<![A-Za-z0-9])(AKIA[0-9A-Z]{16})(?![A-Za-z0-9])/g, 'AKIA***')
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._\-]{20,}/gi, '$1***')
-    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '-----BEGIN PRIVATE KEY----- *** -----END PRIVATE KEY-----');
-}
+/** 日志里抹掉常见秘密：远程 URL 里的凭据、sk-…/ghp_…/github_pat_…/AKIA…、私钥块、bearer token、KEY=value。 */
 
 /** 只留最后 8KB（按字符切，避免把多字节字符切坏）。 */
 export function tailOutput(text: string, max = SETUP_OUTPUT_MAX): string {

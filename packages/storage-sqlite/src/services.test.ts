@@ -71,3 +71,29 @@ test('会话服务存储：读写往返、按任务 / 会话 / 机器查、upser
   await store.sessionServices.remove(a.id);
   assert.equal(await store.sessionServices.byId(a.id), null);
 });
+
+test('状态 / 日志按列更新：旧状态帧不覆盖新状态，日志不碰 env / command', async () => {
+  const store = openSqliteStore(':memory:');
+  const a = serviceOf();
+  await store.sessionServices.save(a);
+
+  // 正常推进
+  const running = { ...a, state: 'running' as const, updatedAt: 30 };
+  assert.equal(await store.sessionServices.updateState(running), true);
+  assert.equal((await store.sessionServices.byId(a.id))?.state, 'running');
+
+  // 晚到的旧帧：updatedAt 更小，写不进去
+  const stale = { ...a, state: 'failed' as const, detail: '旧帧', updatedAt: 25 };
+  assert.equal(await store.sessionServices.updateState(stale), false);
+  assert.equal((await store.sessionServices.byId(a.id))?.state, 'running');
+  assert.equal((await store.sessionServices.byId(a.id))?.detail, null);
+
+  // 日志只改 log_tail / updated_at
+  await store.sessionServices.appendLogTail(a.id, 'hello\n', 40);
+  const after = await store.sessionServices.byId(a.id);
+  assert.equal(after?.logTail, 'hello\n');
+  assert.equal(after?.updatedAt, 40);
+  assert.deepEqual(after?.env, a.env);
+  assert.equal(after?.command, a.command);
+  assert.equal(after?.state, 'running');
+});

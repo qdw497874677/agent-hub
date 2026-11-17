@@ -21,6 +21,7 @@ const owner = (sessionId: string, path: string, workerId = 'w1'): WorkspaceOwner
 test('自动发现：端口在听且 cwd 落在会话工作目录里，才出候选', () => {
   const owners = [owner('s1', '/work/app')];
   const got = autoLinkCandidates(
+    'w1',
     [
       { pid: 1, cwd: '/work/app/packages/web', ports: [8130] },
       { pid: 2, cwd: '/work/app-other', ports: [8131] },
@@ -33,6 +34,7 @@ test('自动发现：端口在听且 cwd 落在会话工作目录里，才出候
 
 test('自动发现：已有链接（同机器同端口）不再重复，人工建的也算', () => {
   const got = autoLinkCandidates(
+    'w1',
     [{ pid: 1, cwd: '/work/app', ports: [8130, 8131] }],
     [owner('s1', '/work/app')],
     { links: [link('s1', 'w1', 8130, 'pv_00000001')] }
@@ -43,6 +45,7 @@ test('自动发现：已有链接（同机器同端口）不再重复，人工�
 test('自动发现：同一会话最多 8 条（已占用的会先计入）', () => {
   const links = Array.from({ length: 7 }, (_, index) => link('s1', 'w1', 9000 + index, `pv_0000000${index}`));
   const got = autoLinkCandidates(
+    'w1',
     [{ pid: 1, cwd: '/work/app', ports: [9100, 9101, 9102] }],
     [owner('s1', '/work/app')],
     { links }
@@ -50,9 +53,10 @@ test('自动发现：同一会话最多 8 条（已占用的会先计入）', ()
   assert.deepEqual(got, [{ sessionId: 's1', workerId: 'w1', port: 9100 }]);
 });
 
-test('自动发现：最深的工作目录赢，不同机器不串', () => {
-  const owners = [owner('root', '/work'), owner('deep', '/work/app', 'w2')];
+test('自动发现：最深的工作目录赢', () => {
+  const owners = [owner('root', '/work'), owner('deep', '/work/app')];
   const got = autoLinkCandidates(
+    'w1',
     [
       { pid: 1, cwd: '/work/app/x', ports: [7000] },
       { pid: 2, cwd: '/work/other', ports: [7001] }
@@ -60,13 +64,41 @@ test('自动发现：最深的工作目录赢，不同机器不串', () => {
     owners
   );
   assert.deepEqual(got, [
-    { sessionId: 'deep', workerId: 'w2', port: 7000 },
+    { sessionId: 'deep', workerId: 'w1', port: 7000 },
     { sessionId: 'root', workerId: 'w1', port: 7001 }
   ]);
 });
 
+test('自动发现：A 机器的进程不能给 B 机器的会话建预览（路径相同也不行）', () => {
+  const owners = [owner('on-a', '/work/app', 'w1'), owner('on-b', '/work/app', 'w2')];
+  const got = autoLinkCandidates(
+    'w1',
+    [{ pid: 1, cwd: '/work/app/x', ports: [7000] }],
+    owners
+  );
+  // 只挂 A 的会话；B 的会话即使路径前缀一致也不参与。
+  assert.deepEqual(got, [{ sessionId: 'on-a', workerId: 'w1', port: 7000 }]);
+
+  // 反过来：B 的进程只挂 B 的会话。
+  const onB = autoLinkCandidates(
+    'w2',
+    [{ pid: 1, cwd: '/work/app/x', ports: [7000] }],
+    owners
+  );
+  assert.deepEqual(onB, [{ sessionId: 'on-b', workerId: 'w2', port: 7000 }]);
+
+  // 进程对象带了别的机器 id：防御性跳过。
+  const tagged = autoLinkCandidates(
+    'w1',
+    [{ pid: 1, cwd: '/work/app', ports: [7000], workerId: 'w2' }],
+    owners
+  );
+  assert.deepEqual(tagged, []);
+});
+
 test('自动发现：allowedSessions 之外的会话不挂', () => {
   const got = autoLinkCandidates(
+    'w1',
     [{ pid: 1, cwd: '/work/app', ports: [7000] }],
     [owner('s1', '/work/app')],
     { allowedSessions: new Set(['s2']) }

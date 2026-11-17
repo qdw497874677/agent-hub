@@ -910,6 +910,25 @@ test('保活上限：超过 HUB_KEEPALIVE_MAX 时先收最久没活动的进程'
   await stop(link);
 });
 
+test('常驻上限：超过 pinMax 的新 pinned 启动直接 ended + diagnostic，不 spawn', async () => {
+  const { rec, gateway, url, stop } = await harness(null);
+  const seen: StartSpec[] = [];
+  const link = connectWorkerLink({ url, token: '', workerId: 'w1', label: 'x', runtimes: [echoRuntime(seen)], pinMax: 1 });
+  await rec.until(() => rec.hellos.length === 1);
+
+  assert.ok((await gateway.gateway.dispatch({ ...start('s1', 'w1'), pinned: true })).ok);
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's1' && frame.status === 'running'));
+
+  assert.ok((await gateway.gateway.dispatch({ ...start('s2', 'w1'), pinned: true })).ok);
+  await rec.until(() => rec.statusFrames.some((frame) => frame.sessionId === 's2' && frame.status === 'ended'));
+  assert.ok(
+    rec.events.some((event) => event.kind === 'diagnostic' && /常驻会话已达上限（1）/.test(event.text)),
+    '要给出上限提示'
+  );
+  assert.equal(seen.length, 1, '被拒的 pinned 会话不 spawn');
+  await stop(link);
+});
+
 test('专属凭据：hello 带上凭据交给 authenticate 判；吊销后收到 4401、不重连、从列表里消失', async () => {
   const rec = recorder('shared');
   const seen: { workerId: string; credential?: string | undefined; sharedTokenOk: boolean }[] = [];

@@ -9,6 +9,7 @@ import { available, capabilityMatrix } from '../capability.ts';
 import type { ServiceGateway, ServiceRuntime, ServiceStartInput } from '../ports/node-gateway.ts';
 import type { SessionServiceRepository } from '../ports/session-service-repository.ts';
 import type { SessionService } from '../service.ts';
+import { servicePublic } from '../service.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createAccessPolicy as createAccessPolicyForTests } from './authorization.ts';
 import { createProjectUseCase } from './projects.ts';
@@ -17,8 +18,11 @@ import { deriveSessionUseCase } from './sessions.ts';
 import {
   createServiceUseCase,
   listServicesUseCase,
+  readServiceEnvKeysUseCase,
+  recordServiceLogUseCase,
   recordServiceStateUseCase,
   stopServiceUseCase,
+  type CreateServiceInput,
   type ServiceDeps,
 } from './services.ts';
 
@@ -78,6 +82,16 @@ function fakeServices(): SessionServiceRepository & { readonly rows: Map<Service
     },
     async save(service) {
       rows.set(service.id, service);
+    },
+    async updateState(service) {
+      const current = rows.get(service.id);
+      if (!current || current.updatedAt > service.updatedAt) return false;
+      rows.set(service.id, service);
+      return true;
+    },
+    async appendLogTail(id, logTail, updatedAt) {
+      const current = rows.get(id);
+      if (current) rows.set(id, { ...current, logTail, updatedAt });
     },
     async remove(id) {
       rows.delete(id);
@@ -166,13 +180,13 @@ test('建服务：按会话定位机器与目录，先落 starting，状态等 W
   assert.equal(w.starts[0]?.command, 'npm run dev');
   assert.deepEqual(w.starts[0]?.env, { NODE_ENV: 'development' });
 
-  const running = await recordServiceStateUseCase({ sessionServices: w.sessionServices, now: () => 99 }, service.id, {
+  const running = await recordServiceStateUseCase({ sessionServices: w.sessionServices, now: () => service.updatedAt + 1 }, service.id, service.workerId, {
     state: 'running',
     pid: 4321,
   });
   assert.equal(running?.state, 'running');
   assert.equal(running?.pid, 4321);
-  assert.equal(running?.startedAt, 99);
+  assert.equal(running?.startedAt, service.updatedAt + 1);
 
   const listed = await listServicesUseCase(w.serviceDeps, w.owner, { kind: 'session', sessionId: w.session.id });
   assert.ok(listed.ok);
@@ -186,7 +200,7 @@ test('停服务：过 session.prompt，调 Worker 停进程树，状态仍等回
   const w = await world();
   const created = await createServiceUseCase(w.serviceDeps, w.owner, { taskId: w.task.id, sessionId: w.session.id, command: 'npm run dev' });
   assert.ok(created.ok, JSON.stringify(created));
-  await recordServiceStateUseCase({ sessionServices: w.sessionServices, now: () => 99 }, created.value.id, { state: 'running', pid: 4321 });
+  await recordServiceStateUseCase({ sessionServices: w.sessionServices, now: () => created.value.updatedAt + 1 }, created.value.id, created.value.workerId, { state: 'running', pid: 4321 });
 
   const stopped = await stopServiceUseCase(w.serviceDeps, w.owner, created.value.id);
   assert.ok(stopped.ok, JSON.stringify(stopped));
@@ -194,7 +208,7 @@ test('停服务：过 session.prompt，调 Worker 停进程树，状态仍等回
   // 没收到 Worker 的 stopped 之前，库里还是 running。
   assert.equal((await w.sessionServices.byId(created.value.id))?.state, 'running');
 
-  const after = await recordServiceStateUseCase({ sessionServices: w.sessionServices, now: () => 120 }, created.value.id, {
+  const after = await recordServiceStateUseCase({ sessionServices: w.sessionServices, now: () => created.value.updatedAt + 2 }, created.value.id, created.value.workerId, {
     state: 'stopped',
     detail: '退出码 0',
   });
@@ -223,10 +237,14 @@ test('权限：外人建 / 停 / 看都不行，命令不会下发到 Worker', a
 
 test('校验：命令为空 / 超长、环境变量被拒、端口越界都 400，不落库不启动', async () => {
   const w = await world();
-  const bad = [
+  const bad: Omit<CreateServiceInput, 'taskId'>[] = [
     { command: '   ' },
     { command: 'x'.repeat(2001) },
     { command: 'npm run dev', env: { HUB_TOKEN: 'secret' } },
+    { command: 'npm run dev', env: { OPENAI_API_KEY: 'sk-x' } },
+    { command: 'npm run dev', env: { AWS_ACCESS_KEY_ID: 'AKIAX' } },
+    { command: 'npm run dev', env: { STRIPE_SECRET: 'x' } },
+    { command: 'npm run dev', env: { GITHUB_TOKEN: 'x' } },
     { command: 'npm run dev', port: 80 },
     { command: 'npm run dev', root: 'relative/dir' },
   ];
@@ -238,3 +256,58 @@ test('校验：命令为空 / 超长、环境变量被拒、端口越界都 400�
   assert.equal(w.sessionServices.rows.size, 0);
   assert.equal(w.starts.length, 0);
 });
+
+test('正常变量（PATH / HOME / TERM / NODE_ENV）不被当成凭据拦掉', async () => {
+  const w = await world();
+  const created = await createServiceUseCase(w.serviceDeps, w.owner, {
+    taskId: w.task.id,
+    sessionId: w.session.id,
+    command: 'npm run dev',
+    env: { PATH: '/usr/bin', HOME: '/tmp', TERM: 'xterm', NODE_ENV: 'development' },
+  });
+  assert.ok(created.ok, JSON.stringify(created));
+  assert.deepEqual(w.starts[0]?.env, { PATH: '/usr/bin', HOME: '/tmp', TERM: 'xterm', NODE_ENV: 'development' });
+});
+
+test('公开形状只回 envKeys，不回值；env-keys 接口权限与读日志一致', async () => {
+  const w = await world();
+  const created = await createServiceUseCase(w.serviceDeps, w.owner, {
+    taskId: w.task.id,
+    sessionId: w.session.id,
+    command: 'npm run dev',
+    env: { NODE_ENV: 'development', API_BASE: 'https://example.test' },
+  });
+  assert.ok(created.ok, JSON.stringify(created));
+  const dto = servicePublic(created.value);
+  assert.deepEqual(dto.envKeys, ['API_BASE', 'NODE_ENV']);
+  assert.equal('env' in dto, false);
+  assert.doesNotMatch(JSON.stringify(dto), /development|example\.test/);
+
+  const keys = await readServiceEnvKeysUseCase(w.serviceDeps, w.owner, created.value.id);
+  assert.ok(keys.ok);
+  assert.deepEqual(keys.value, ['API_BASE', 'NODE_ENV']);
+
+  const denied = await readServiceEnvKeysUseCase(w.serviceDeps, w.stranger, created.value.id);
+  assert.equal(denied.ok, false);
+});
+
+test('状态 / 日志帧必须来自服务所属的 Worker；日志落库前擦凭据', async () => {
+  const w = await world();
+  const created = await createServiceUseCase(w.serviceDeps, w.owner, { taskId: w.task.id, sessionId: w.session.id, command: 'npm run dev' });
+  assert.ok(created.ok, JSON.stringify(created));
+  const service = created.value;
+
+  const foreign = await recordServiceStateUseCase({ sessionServices: w.sessionServices, now: () => service.updatedAt + 1 }, service.id, 'someone-else', {
+    state: 'stopped',
+    detail: '冒充',
+  });
+  assert.equal(foreign, null);
+  assert.equal((await w.sessionServices.byId(service.id))?.state, 'starting');
+
+  await recordServiceLogUseCase({ sessionServices: w.sessionServices, now: () => service.updatedAt + 1 }, service.id, service.workerId, 'KEY=abcdef token sk-abcdefghijklmnop\n');
+  const logged = (await w.sessionServices.byId(service.id))?.logTail ?? '';
+  assert.match(logged, /KEY=\*\*\*/);
+  assert.match(logged, /sk-\*\*\*/);
+  assert.doesNotMatch(logged, /abcdefghijklmnop/);
+});
+

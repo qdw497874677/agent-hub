@@ -13,6 +13,8 @@ export interface ProcessEntry {
   readonly pid: number;
   readonly cwd: string;
   readonly ports: readonly number[];
+  /** 进程所在机器（可选；网关按机器取清单时由调用方带上，用于防御性过滤）。 */
+  readonly workerId?: string;
 }
 
 export interface WorkspaceOwner {
@@ -47,6 +49,7 @@ function covers(root: string, candidate: string): boolean {
 }
 
 export function autoLinkCandidates(
+  workerId: string,
   processes: readonly ProcessEntry[],
   owners: readonly WorkspaceOwner[],
   options: AutoLinkOptions = {}
@@ -57,27 +60,30 @@ export function autoLinkCandidates(
   const perSession = new Map<string, number>();
   for (const link of links) perSession.set(link.sessionId, (perSession.get(link.sessionId) ?? 0) + 1);
 
+  // 进程清单属于某台机器：只有这台机器上的会话工作空间能参与匹配。
+  // 否则 A 机器上的端口会被挂到同名前缀路径的 B 机器会话上（路径字符串跨机器没有意义）。
+  const localOwners = owners.filter((entry) => entry.workerId === workerId && entry.workerId !== '');
   // 同一个 session 可能挂着多个工作空间（组合工作空间）：只留最长的那个前缀。
-  const sorted = [...owners].sort((a, b) => b.path.length - a.path.length);
+  const sorted = [...localOwners].sort((a, b) => b.path.length - a.path.length);
   const seen = new Set<string>();
   const out: AutoLinkCandidate[] = [];
 
   for (const process of [...processes].sort((a, b) => a.pid - b.pid)) {
+    // 调用方按机器取清单；带上 workerId 的进程再兜一层，不跨机器。
+    if (process.workerId !== undefined && process.workerId !== workerId) continue;
     for (const port of process.ports) {
       if (!Number.isInteger(port) || port < MIN_PORT || port > 65_535) continue;
-      const owner = sorted.find(
-        (entry) => entry.workerId !== '' && covers(entry.path, process.cwd)
-      );
+      const owner = sorted.find((entry) => covers(entry.path, process.cwd));
       if (owner === undefined) continue;
       if (options.allowedSessions !== undefined && !options.allowedSessions.has(owner.sessionId)) continue;
-      const key = `${owner.workerId}|${port}`;
+      const key = `${workerId}|${port}`;
       if (seen.has(key)) continue;
       const count = perSession.get(owner.sessionId) ?? 0;
       if (count >= perSessionMax) continue;
       seen.add(key);
       if (taken.has(key)) continue;
       perSession.set(owner.sessionId, count + 1);
-      out.push({ sessionId: owner.sessionId, workerId: owner.workerId, port });
+      out.push({ sessionId: owner.sessionId, workerId, port });
     }
   }
 

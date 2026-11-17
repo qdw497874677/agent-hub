@@ -188,7 +188,7 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
   };
 
   /** posting → posted：调群聊落帖。群/权限变了就记在 run 上，不重建会话。 */
-  const postIntoGroup = async (binding: ConnectorBinding, run: TriggerRun): Promise<void> => {
+  const postIntoGroup = async (binding: ConnectorBinding, run: TriggerRun, author?: InboundEvent['author']): Promise<void> => {
     const groupId = binding.groupId;
     if (!groupId) {
       await deps.store.saveRun({ ...run, state: 'failed', reason: '群目标没有绑群', updatedAt: deps.now() });
@@ -209,7 +209,9 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       await deps.store.saveBinding({ ...binding, enabled: false, pausedReason: '创建者账号已不可用，外部消息不再入群', updatedAt: deps.now() });
       return;
     }
-    const posted = await deps.postExternal({ groupId, author: binding.connector, text: run.text, externalId: run.externalId, actor });
+    // 作者用外部消息的发送者（入群后看得出是谁说的）；拿不到就回落连接器名，长度按群帖上限截断。
+    const authorName = String(author?.name ?? '').trim().slice(0, 60) || binding.connector;
+    const posted = await deps.postExternal({ groupId, author: authorName, text: run.text, externalId: run.externalId, actor });
     if (!posted.ok) {
       if (posted.error.code === 'forbidden') return fail(binding, run, `创建者已无权在群里发言：${posted.error.message}`);
       return fail(binding, run, posted.error.message, 'failed', false);
@@ -261,7 +263,7 @@ export function createConnectorHub(deps: ConnectorHubDeps) {
       }
       const posting: TriggerRun = { ...run, state: 'posting', text: externalBody(event) };
       if (!(await deps.store.insertRun(posting))) return; // 去重：同一个 externalId 已经有一条运行
-      await postIntoGroup(binding, posting);
+      await postIntoGroup(binding, posting, event.author);
       return;
     }
     const push = (sources.get(binding.connector)?.delivery ?? 'poll') === 'push';

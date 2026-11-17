@@ -3,6 +3,7 @@ import type { DomainError } from '../errors.ts';
 import { invalid, notFound, unavailable } from '../errors.ts';
 import { asServiceId, asWorkspaceId, newId, type ServiceId, type TaskId, type WorkspaceId } from '../ids.ts';
 import { err, ok, type Result } from '../result.ts';
+import { scrubCredentials } from '../scrub.ts';
 import {
   SERVICE_ENV_MAX,
   SERVICE_LOG_MAX,
@@ -253,28 +254,49 @@ export async function readServiceLogsUseCase(
   return ok(service.logTail.slice(-limit));
 }
 
-/** Worker 的 `service_state` 帧 → 落库。hub 唯一推进状态的地方。 */
+/** 读一条服务的环境变量键名（值永远不出 domain）。权限与读日志 / 停服务一致。 */
+export async function readServiceEnvKeysUseCase(
+  deps: ServiceDeps,
+  subject: Subject | null,
+  serviceId: string
+): Promise<Result<readonly string[], DomainError>> {
+  const service = await deps.sessionServices.byId(asServiceId(serviceId));
+  if (!service) return err(notFound('服务不存在'));
+  const allowed = await authorizeService(deps, subject, service);
+  if (!allowed.ok) return allowed;
+  return ok(Object.keys(service.env).sort());
+}
+
+/**
+ * Worker 的 `service_state` 帧 → 落库。hub 唯一推进状态的地方。
+ *
+ * `workerId` 是这一帧的来源：和记录上的 `workerId` 对不上就丢弃（别的机器不能改这条服务的状态）。
+ * 更新只碰状态列，且旧帧（updatedAt 更小）不会覆盖新状态。
+ */
 export async function recordServiceStateUseCase(
   deps: Pick<ServiceDeps, 'sessionServices' | 'now'>,
   serviceId: string,
+  workerId: string,
   report: Omit<ServiceStateReport, 'at'>
 ): Promise<SessionService | null> {
   const service = await deps.sessionServices.byId(asServiceId(serviceId));
-  if (!service) return null;
+  if (!service || service.workerId !== workerId) return null;
   const next = serviceStateOf(service, { ...report, at: deps.now() });
-  await deps.sessionServices.save(next);
-  return next;
+  const changed = await deps.sessionServices.updateState(next);
+  return changed ? next : null;
 }
 
-/** Worker 的 `service_log` 帧 → 追加到 log_tail（只留尾部 8 KiB）。 */
+/** Worker 的 `service_log` 帧 → 追加到 log_tail（先擦凭据，只留尾部 8 KiB）。 */
 export async function recordServiceLogUseCase(
-  deps: Pick<ServiceDeps, 'sessionServices'>,
+  deps: Pick<ServiceDeps, 'sessionServices' | 'now'>,
   serviceId: string,
+  workerId: string,
   chunk: string
 ): Promise<void> {
   const service = await deps.sessionServices.byId(asServiceId(serviceId));
-  if (!service) return;
-  await deps.sessionServices.save({ ...service, logTail: appendServiceLog(service.logTail, chunk) });
+  if (!service || service.workerId !== workerId) return;
+  const nextTail = appendServiceLog(service.logTail, scrubCredentials(chunk));
+  await deps.sessionServices.appendLogTail(service.id, nextTail, deps.now());
 }
 
 /** 有会话就按会话（session.prompt），否则按服务所属任务（project.update）。 */

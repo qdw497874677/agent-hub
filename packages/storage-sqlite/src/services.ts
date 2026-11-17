@@ -121,6 +121,16 @@ export function createSqliteSessionServices(db: DatabaseSync): SessionServiceRep
   const bySession = db.prepare('SELECT * FROM session_services WHERE session_id = ? ORDER BY updated_at DESC');
   const byWorker = db.prepare('SELECT * FROM session_services WHERE worker_id = ? ORDER BY updated_at DESC');
   const upsert = db.prepare(upsertSql('session_services', COLUMNS));
+  /**
+   * 状态 / 日志帧只按列更新：整行 upsert 会把 env、command 一起写回去，两个 Worker 帧并发时
+   * 互相覆盖别人刚写的列。`updated_at <= ?` 让晚到的旧帧写不进去。
+   */
+  const updateStateStmt = db.prepare(
+    `UPDATE session_services
+        SET state = ?, pid = ?, detail = ?, port = ?, started_at = ?, updated_at = ?
+      WHERE id = ? AND updated_at <= ?`
+  );
+  const appendLogStmt = db.prepare('UPDATE session_services SET log_tail = ?, updated_at = ? WHERE id = ?');
   const remove = db.prepare('DELETE FROM session_services WHERE id = ?');
 
   const one = (row: unknown): SessionService | null => (row ? toService(row as ServiceRow) : null);
@@ -159,6 +169,22 @@ export function createSqliteSessionServices(db: DatabaseSync): SessionServiceRep
         service.startedAt,
         service.updatedAt
       );
+    },
+    async updateState(service) {
+      const result = updateStateStmt.run(
+        service.state,
+        service.pid,
+        service.detail,
+        service.port,
+        service.startedAt,
+        service.updatedAt,
+        service.id,
+        service.updatedAt
+      );
+      return Number(result.changes) > 0;
+    },
+    async appendLogTail(id, logTail, updatedAt) {
+      appendLogStmt.run(logTail, updatedAt, id);
     },
     async remove(id) {
       remove.run(id);

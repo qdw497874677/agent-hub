@@ -30,6 +30,7 @@ export * from './worker-update.ts';
 export * from './agent-alias.ts';
 export * from './preview.ts';
 export * from './service.ts';
+export * from './scrub.ts';
 export * from './backup-plan.ts';
 export * from './directories.ts';
 export * from './workspace.ts';

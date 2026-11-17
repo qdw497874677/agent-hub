@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { chmodSync, readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, sep } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -22,6 +22,9 @@ const RETRY_DELAYS = [1_000, 5_000, 30_000, 30_000, 30_000];
 const RETRY_MAX = RETRY_DELAYS.length;
 const PORT_POLL_MS = 200;
 const STOP_GRACE_MS = 3_000;
+/** services.json 里 env 只存键名 + 这个占位：真值只在内存里，重启后拿不到。 */
+const ENV_PLACEHOLDER = '***';
+const REVIVE_NO_SECRET = '机器重启后没有拉起来（服务密钥不落盘，需要重新启动）';
 
 export interface ServiceSpec {
   readonly serviceId: string;
@@ -103,8 +106,9 @@ interface PersistedEntry {
   readonly state: ServiceState;
 }
 
-/** 在 `/proc/net/tcp{,6}` 里找有没有端口在 LISTEN（0A）。 */
-function listening(port: number, procRoot: string): boolean {
+/** 在 `/proc/net/tcp{,6}` 里找监听端口对应的 socket inode（0A = LISTEN）。 */
+function listeningInodes(port: number, procRoot: string): Set<string> {
+  const found = new Set<string>();
   for (const file of ['tcp', 'tcp6']) {
     let text: string;
     try {
@@ -114,11 +118,60 @@ function listening(port: number, procRoot: string): boolean {
     }
     for (const line of text.split('\n').slice(1)) {
       const fields = line.trim().split(/\s+/);
-      if (fields.length < 4 || fields[3] !== '0A') continue;
+      if (fields.length < 10 || fields[3] !== '0A') continue;
       const local = fields[1] ?? '';
       const colon = local.lastIndexOf(':');
       if (colon < 0) continue;
-      if (Number.parseInt(local.slice(colon + 1), 16) === port) return true;
+      if (Number.parseInt(local.slice(colon + 1), 16) !== port) continue;
+      const inode = fields[9] ?? '';
+      if (inode !== '' && inode !== '0') found.add(inode);
+    }
+  }
+  return found;
+}
+
+/** 这台机器上正在监听该端口的进程（pid → 是否属于给定进程树）。 */
+function ownedBy(port: number, pid: number, procRoot: string): boolean {
+  const inodes = listeningInodes(port, procRoot);
+  if (inodes.size === 0) return false;
+  // 收集 pid 及其后代：服务是 `sh -lc` 起的，真正的监听者通常在子进程里。
+  const parents = new Map<number, number>();
+  for (const name of readdirSync(procRoot)) {
+    if (!/^\d+$/.test(name)) continue;
+    try {
+      const stat = readFileSync(resolve(procRoot, name, 'stat'), 'utf8');
+      const rest = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      parents.set(Number(name), Number(rest[1] ?? '0'));
+    } catch {
+      continue;
+    }
+  }
+  const tree = new Set<number>([pid]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [child, parent] of parents) {
+      if (!tree.has(child) && tree.has(parent)) {
+        tree.add(child);
+        grew = true;
+      }
+    }
+  }
+  for (const candidate of tree) {
+    let fds: string[];
+    try {
+      fds = readdirSync(resolve(procRoot, String(candidate), 'fd'));
+    } catch {
+      continue;
+    }
+    for (const fd of fds) {
+      try {
+        const link = readlinkSync(resolve(procRoot, String(candidate), 'fd', fd));
+        const match = /^socket:\[(\d+)\]$/.exec(link);
+        if (match && inodes.has(match[1] ?? '')) return true;
+      } catch {
+        continue;
+      }
     }
   }
   return false;
@@ -157,13 +210,16 @@ export function createServiceHost(options: ServiceHostOptions): ServiceHost {
       root: entry.spec.root,
       command: entry.spec.command,
       port: entry.spec.port,
-      env: entry.spec.env,
+      // 只存键名 + 占位：Worker 重启后进程必须由 hub 重新下发带 env 的启动请求。
+      env: Object.fromEntries(Object.keys(entry.spec.env).map((key) => [key, ENV_PLACEHOLDER])),
       restart: entry.spec.restart,
       state: entry.state
     }));
     try {
       mkdirSync(dirname(statePath), { recursive: true });
-      writeFileSync(statePath, JSON.stringify({ services: rows }, null, 2));
+      writeFileSync(statePath, JSON.stringify({ services: rows }, null, 2), { mode: 0o600 });
+      // 老文件（0744 之类）已存在时 mode 参数不生效，补一次 chmod。
+      chmodSync(statePath, 0o600);
     } catch (error) {
       options.log?.(`服务清单落盘失败（${statePath}）：${error instanceof Error ? error.message : String(error)}`);
     }
@@ -285,7 +341,8 @@ export function createServiceHost(options: ServiceHostOptions): ServiceHost {
       const deadline = Date.now() + SERVICE_PORT_TIMEOUT_MS;
       entry.portTimer = setInterval(() => {
         if (entry.portTimer === null) return;
-        if (listening(port, procRoot)) {
+        // 只认「自己这棵树」的监听：同机别的进程占了同一端口不算服务就绪。
+        if (entry.pid !== null && ownedBy(port, entry.pid, procRoot)) {
           clearInterval(entry.portTimer);
           entry.portTimer = null;
           entry.port = port;
@@ -416,14 +473,34 @@ export function createServiceHost(options: ServiceHostOptions): ServiceHost {
     if (!Array.isArray(rows)) return;
     for (const row of rows as PersistedEntry[]) {
       if (typeof row?.serviceId !== 'string' || entries.has(row.serviceId)) continue;
+      const storedEnv: Readonly<Record<string, string>> = row.env ?? {};
       const spec: ServiceSpec = {
         serviceId: row.serviceId,
         root: row.root,
         command: row.command,
         port: row.port ?? null,
-        env: row.env ?? {},
+        env: storedEnv,
         restart: row.restart ?? 'never'
       };
+      // services.json 里 env 只有占位（或者压根没有值）：密钥不落盘，重启后不能替 hub 重拉。
+      if (Object.values(storedEnv).some((value) => value === ENV_PLACEHOLDER)) {
+        entries.set(spec.serviceId, {
+          spec,
+          proc: null,
+          state: 'failed',
+          pid: null,
+          port: null,
+          detail: REVIVE_NO_SECRET,
+          log: '',
+          attempts: 0,
+          retry: null,
+          portTimer: null,
+          stopping: false
+        });
+        options.onState({ serviceId: spec.serviceId, state: 'failed', pid: null, detail: REVIVE_NO_SECRET, port: null });
+        persist();
+        continue;
+      }
       if (spec.restart === 'always') {
         try {
           await start(spec);

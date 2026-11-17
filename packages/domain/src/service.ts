@@ -18,6 +18,21 @@ export const SERVICE_LOG_MAX = 8 * 1024;
 /** 这些变量是 hub / worker 自己的凭据，服务命令与环境变量都不许碰（验收 4）。 */
 export const SERVICE_ENV_DENIED: readonly string[] = ['HUB_TOKEN', 'HUB_WORKER_CREDENTIAL', 'HUB_LOCAL_SECRET'];
 
+/**
+ * 除了上面三个精确名字，服务也不该能碰云厂商 / 模型厂商的密钥：
+ * `*_SECRET` / `*_TOKEN` / `*_KEY` 后缀、`AWS_*` 前缀。用后缀而不是「名字里含」，
+ * 免得把 `PATH` / `HOME` / `TERM` 这类正常变量误拦。
+ */
+const SERVICE_ENV_DENIED_SUFFIXES: readonly string[] = ['_SECRET', '_TOKEN', '_KEY'];
+const SERVICE_ENV_DENIED_PREFIXES: readonly string[] = ['AWS_'];
+
+/** 这个环境变量名是否属于凭据（精确名单 / 后缀 / 前缀三选一）。 */
+export function serviceEnvDenied(key: string): boolean {
+  if (SERVICE_ENV_DENIED.includes(key)) return true;
+  if (SERVICE_ENV_DENIED_PREFIXES.some((prefix) => key.startsWith(prefix))) return true;
+  return SERVICE_ENV_DENIED_SUFFIXES.some((suffix) => key.endsWith(suffix));
+}
+
 export type ServiceRestart = 'always' | 'on-demand' | 'never';
 export type ServiceState = 'starting' | 'running' | 'failed' | 'stopped';
 
@@ -50,7 +65,9 @@ export interface SessionService {
 /** 服务 id 的生成形：`svc_<8hex>`。 */
 export const serviceIdFrom = (hex: string): ServiceId => `svc_${hex}` as ServiceId;
 
-const DENIED_PATTERN = new RegExp(`\\b(?:${SERVICE_ENV_DENIED.join('|')})\\b`);
+const DENIED_PATTERN = new RegExp(
+  `\\b(?:${[...SERVICE_ENV_DENIED, 'AWS_[A-Za-z0-9_]+', '[A-Za-z0-9_]+_(?:SECRET|TOKEN|KEY)'].join('|')})\\b`
+);
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** 命令为空 / 太长 / 带 hub 凭据名都不行。返回 null = 可以。 */
@@ -69,7 +86,7 @@ export function serviceEnvProblem(env: Readonly<Record<string, string>>): string
   if (entries.length > SERVICE_ENV_MAX) return `环境变量最多 ${SERVICE_ENV_MAX} 个`;
   for (const [key, value] of entries) {
     if (!ENV_KEY.test(key)) return `环境变量名不合法：${key}`;
-    if (SERVICE_ENV_DENIED.includes(key)) return `环境变量 ${key} 不能由服务设置`;
+    if (serviceEnvDenied(key)) return `环境变量 ${key} 不能由服务设置`;
     if (value.length > SERVICE_ENV_VALUE_MAX) return `环境变量 ${key} 的值太长（最多 ${SERVICE_ENV_VALUE_MAX} 个字符）`;
   }
   return null;
@@ -118,7 +135,13 @@ export function appendServiceLog(tail: string, chunk: string): string {
   return next.length <= SERVICE_LOG_MAX ? next : next.slice(-SERVICE_LOG_MAX);
 }
 
-/** HTTP 契约用的公开形状（`serviceSchema` 解析的就是它）。 */export function servicePublic(service: SessionService) {
+/**
+ * HTTP 契约用的公开形状（`serviceSchema` 解析的就是它）。
+ *
+ * `env` 的值是 Worker 起进程要用的密钥，绝不能回给浏览器：只回键名，值走单独的
+ * `/api/services/:id/env-keys` 同样只给键名（见 service-routes）。
+ */
+export function servicePublic(service: SessionService) {
   return {
     id: service.id,
     projectId: service.projectId,
@@ -129,7 +152,7 @@ export function appendServiceLog(tail: string, chunk: string): string {
     root: service.root,
     command: service.command,
     port: service.port,
-    env: { ...service.env },
+    envKeys: Object.keys(service.env).sort(),
     restart: service.restart,
     state: service.state,
     pid: service.pid,

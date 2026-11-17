@@ -313,7 +313,16 @@ export const serviceSchema = z.object({
   root: z.string().min(1).max(4096),
   command: z.string().min(1).max(2000),
   port: z.number().int().min(1024).max(65535).nullable(),
-  env: z.record(z.string(), z.string()),
+  /**
+   * 只回键名：env 的值是 Worker 起进程用的密钥，绝不进 HTTP DTO。
+   * 暂时可选：apps/web 的旧字面量还没补这个字段（另一个 lane 在改）；服务端始终会回。
+   */
+  envKeys: z.array(z.string()).optional(),
+  /**
+   * 历史字段：服务端已不再返回 env（只回 envKeys）。保留可选声明只为不让旧客户端
+   * 的类型立刻炸；新的调用方不要读它。
+   */
+  env: z.record(z.string(), z.string()).optional(),
   restart: z.enum(['always', 'on-demand', 'never']),
   state: z.enum(['starting', 'running', 'failed', 'stopped']),
   pid: z.number().int().positive().nullable(),

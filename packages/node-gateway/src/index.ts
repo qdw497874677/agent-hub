@@ -35,6 +35,7 @@ export {
   type GroupDirOptions
 } from './group-dir.ts';
 export { runSetupScript, setupEnv, scrubCredentials, tailOutput, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENIED, SETUP_OUTPUT_MAX, type SetupScriptInput, type SetupScriptOutcome } from './setup-script.ts';
+export { redactSecrets } from './redact.ts';
 export { createRuntimeStore, defaultRuntimesRoot, readInstalledEntry, type RuntimeStore } from './runtime-store.ts';
 export { createRuntimeManager, installEnv, type RuntimeManager, type RuntimeJobCommand, type RuntimeJobReport } from './runtime-jobs.ts';
 export { createProviderRelay, type ProviderRelay, type RelaySession } from './provider-relay.ts';

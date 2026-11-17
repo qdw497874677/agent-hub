@@ -4,16 +4,17 @@ import {
   asSessionId,
   asWorkspaceId,
   authorizeSession,
+  authorizeWorker,
   createServiceUseCase,
   listServicesUseCase,
   notFound,
   projectOfRef,
+  readServiceEnvKeysUseCase,
   readServiceLogsUseCase,
   removeServiceUseCase,
   servicePublic,
   stopServiceUseCase,
   unavailable,
-  workerReader,
   type ServiceDeps,
   type Subject,
 } from '@agent-hub/domain';
@@ -56,6 +57,7 @@ function commandDigest(command: string): string {
  * - `POST   /api/services/:serviceId/stop`      → `{ service }`
  * - `DELETE /api/services/:serviceId`           → `{ ok: true }`
  * - `GET    /api/services/:serviceId/logs`      → `{ tail }`
+ * - `GET    /api/services/:serviceId/env-keys`  → `{ keys: string[] }`（只键名，不含值）
  *
  * 权限在用例里：建 / 停有会话走 `session.prompt`，否则走 `project.update`；
  * 列表走 `session.read` / `project.read`。不在权限范围内一律 404 / 403。
@@ -105,11 +107,17 @@ export function installServiceRoutes(app: Hono<any>, options: ServiceRouteOption
     return result.ok ? c.json({ services: dtosOf(result.value) }) : fail(c, result.error);
   });
 
-  /** 一台 Worker 上消过毒的进程清单（只读）：和机器列表一样用 worker.read 过滤，看不见就 404。 */
+  /**
+   * 一台 Worker 上消过毒的进程清单（只读）。
+   *
+   * 进程清单会带出同机其他会话的命令行和工作目录，比「机器列表」本身敏感得多，
+   * 所以要求 `worker.use`（能往这台机器派活）而不是 `worker.read`（只是看得见机器）。
+   * 本机 Worker 仍然只给集群管理员（can() 第 4 步，和目录浏览 / 重新检测同一条闸）。
+   */
   app.get('/api/workers/:workerId/processes', async (c) => {
     const workerId = c.req.param('workerId');
-    const readable = await workerReader(deps.access, subjectOf(c));
-    if (!(await readable(workerId))) return fail(c, notFound('没有这台机器'));
+    const allowed = await authorizeWorker(deps.access, subjectOf(c), workerId, 'worker.use');
+    if (!allowed.ok) return fail(c, allowed.error);
     if (!deps.gateway.processes) return fail(c, unavailable('这台 Worker 不支持进程清单'));
     const result = await deps.gateway.processes(workerId);
     return result.ok ? c.json({ processes: result.value }, 200, { 'cache-control': 'no-store' }) : fail(c, result.error);
@@ -167,5 +175,14 @@ export function installServiceRoutes(app: Hono<any>, options: ServiceRouteOption
       Number.isInteger(maxBytes) && (maxBytes as number) > 0 ? (maxBytes as number) : undefined,
     );
     return result.ok ? c.json({ tail: result.value }) : fail(c, result.error);
+  });
+
+  /**
+   * 环境变量的键名（不含值）：值只给 Worker 起进程用，任何 HTTP 响应都不回。
+   * 权限与读日志 / 停服务一致（带会话按 session.prompt，否则 project.update）。
+   */
+  app.get('/api/services/:serviceId/env-keys', async (c) => {
+    const result = await readServiceEnvKeysUseCase(deps, subjectOf(c), c.req.param('serviceId'));
+    return result.ok ? c.json({ keys: result.value }, 200, { 'cache-control': 'no-store' }) : fail(c, result.error);
   });
 }

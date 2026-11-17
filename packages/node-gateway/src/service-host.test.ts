@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -131,6 +131,44 @@ test('restart: always 退出后按退避重拉；第一次是 1 秒，detail 带
     }
     assert.ok(box.events.length > before, '没有按退避重拉');
     await box.host.stop('svc_0000aaad');
+  } finally {
+    box.cleanup();
+  }
+});
+
+test('services.json 只落 env 键名占位、权限 0600；重启后拿不到密钥就标 failed 不重拉', async () => {
+  const box = sandbox();
+  const statePath = join(box.root, '.agent-hub', 'services.json');
+  try {
+    await box.host.start({
+      serviceId: 'svc_0000aaae',
+      root: box.root,
+      command: 'sleep 5',
+      port: null,
+      env: { OPENAI_API_KEY: 'sk-real-secret-value', NODE_ENV: 'development' },
+      restart: 'always',
+    });
+    const raw = readFileSync(statePath, 'utf8');
+    assert.match(raw, /"OPENAI_API_KEY": "\*\*\*"/);
+    assert.match(raw, /"NODE_ENV": "\*\*\*"/);
+    assert.doesNotMatch(raw, /sk-real-secret-value/);
+    assert.equal(statSync(statePath).mode & 0o777, 0o600);
+
+    // 模拟 Worker 重启：新实例只读得到占位，不能替 hub 重拉
+    box.host.dispose();
+    const events: ServiceStateEvent[] = [];
+    const revived = createServiceHost({
+      roots: [box.root],
+      onState: (event) => events.push(event),
+      onLog: () => {},
+      statePath,
+    });
+    await revived.revive();
+    const last = events.filter((event) => event.serviceId === 'svc_0000aaae').at(-1);
+    assert.equal(last?.state, 'failed');
+    assert.match(last?.detail ?? '', /服务密钥不落盘/);
+    assert.equal(revived.list().length, 1);
+    revived.dispose();
   } finally {
     box.cleanup();
   }

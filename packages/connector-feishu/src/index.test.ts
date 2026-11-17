@@ -114,6 +114,7 @@ test('source：按 binding 的 chatId 过滤后 emit，externalId 稳定', async
   assert.equal(emitted[0]!.event.externalId, emitted[1]!.event.externalId);
   assert.equal(typeof emitted[0]!.event.text, 'object', '外部正文必须包成 untrusted');
   assert.match(String((emitted[0]!.event.text as { value: string }).value), /帮我看看/);
+  assert.deepEqual(emitted[0]!.event.author, { name: '张三', externalId: 'ou_1' }, '群帖作者要带到发送者');
   handle.stop();
 });
 

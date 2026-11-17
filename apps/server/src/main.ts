@@ -98,6 +98,7 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   terminalAccess,
   terminalTarget,
   asSessionId,
+  asServiceId,
   asProjectId,
   authorizeProject,
   resolveSessionAssets,
@@ -1268,19 +1269,32 @@ serverGateway = createServerGateway({
         .map((service) => service.id)
     ),
   onServiceState(workerId, event) {
-    void recordServiceStateUseCase({ sessionServices: store.sessionServices, now: deps.now }, event.serviceId, {
-      state: event.state,
-      pid: event.pid ?? null,
-      detail: event.detail ?? null
-    }).catch((error: unknown) => log(`记录服务状态失败（${workerId}/${event.serviceId}）：${String(error)}`));
+    void (async () => {
+      // 每台 Worker 只能改自己那条服务：先按 id 取出来比对来源，域名层还会再挡一次。
+      const service = await store.sessionServices.byId(asServiceId(event.serviceId));
+      if (!service || service.workerId !== workerId) {
+        log(`丢弃服务状态帧：${event.serviceId} 不属于 ${workerId}`);
+        return;
+      }
+      await recordServiceStateUseCase({ sessionServices: store.sessionServices, now: deps.now }, event.serviceId, workerId, {
+        state: event.state,
+        pid: event.pid ?? null,
+        detail: event.detail ?? null
+      });
+    })().catch((error: unknown) => log(`记录服务状态失败（${workerId}/${event.serviceId}）：${String(error)}`));
   },
   onServiceLog(workerId, serviceId, chunk) {
-    void recordServiceLogUseCase({ sessionServices: store.sessionServices }, serviceId, chunk).catch((error: unknown) =>
-      log(`记录服务日志失败（${workerId}/${serviceId}）：${String(error)}`)
-    );
+    void (async () => {
+      const service = await store.sessionServices.byId(asServiceId(serviceId));
+      if (!service || service.workerId !== workerId) {
+        log(`丢弃服务日志帧：${serviceId} 不属于 ${workerId}`);
+        return;
+      }
+      await recordServiceLogUseCase({ sessionServices: store.sessionServices, now: deps.now }, serviceId, workerId, chunk);
+    })().catch((error: unknown) => log(`记录服务日志失败（${workerId}/${serviceId}）：${String(error)}`));
   },
   onServiceMissing(workerId, serviceId) {
-    void recordServiceStateUseCase({ sessionServices: store.sessionServices, now: deps.now }, serviceId, {
+    void recordServiceStateUseCase({ sessionServices: store.sessionServices, now: deps.now }, serviceId, workerId, {
       state: 'failed',
       pid: null,
       detail: '机器重启后没有拉起来'
@@ -1459,10 +1473,13 @@ const autoDiscoverPreviews = async (): Promise<void> => {
       if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} 的进程清单拿不到：${listed.error.message}`);
       continue;
     }
-    if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} ${listed.value.length} 个进程，会话 ${owners.length} 条`);
+    // 只拿这台机器上的会话工作空间去匹配：路径前缀跨机器没有意义。
+    const workerOwners = owners.filter((entry) => entry.workerId === workerId);
+    if (readEnv('HUB_PREVIEW_DEBUG') === '1') log(`预览自动发现：${workerId} ${listed.value.length} 个进程，会话 ${workerOwners.length} 条`);
     const candidates = autoLinkCandidates(
+      workerId,
       listed.value.map((process) => ({ pid: process.pid, cwd: process.cwd, ports: process.ports })),
-      owners,
+      workerOwners,
       { links, allowedSessions: allowed }
     );
     for (const candidate of candidates) {

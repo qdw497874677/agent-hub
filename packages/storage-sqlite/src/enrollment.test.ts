@@ -73,12 +73,15 @@ test('老凭据的能力清单补上「本地服务」；收窄过的不动', as
     old.exec(`CREATE TABLE worker_credentials (worker_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, enrolled_by TEXT NOT NULL,
       label TEXT NOT NULL, created_at INTEGER NOT NULL, revoked_at INTEGER, capabilities TEXT);
       INSERT INTO worker_credentials VALUES ('full', 'h1', 'u1', '整台', 1, NULL, '["sessions","files.read","files.write","git","git.remote","runtimes","update"]');
+      INSERT INTO worker_credentials VALUES ('runtimes', 'h3', 'u1', '只要运行时', 1, NULL, '["runtimes"]');
       INSERT INTO worker_credentials VALUES ('ro', 'h2', 'u1', '只读', 1, NULL, '["files.read"]');`);
     old.close();
     const store = openSqliteStore(path);
     const full = await store.enrollment.credentialFor('full');
+    const narrowed = await store.enrollment.credentialFor('runtimes');
     const ro = await store.enrollment.credentialFor('ro');
     assert.ok(full?.capabilities?.includes('service'));
+    assert.deepEqual(narrowed?.capabilities, ['runtimes'], '只有 runtimes 的收窄凭据不补 service');
     assert.deepEqual(ro?.capabilities, ['files.read']);
     store.close?.();
   } finally {

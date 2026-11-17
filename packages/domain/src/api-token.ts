@@ -65,7 +65,9 @@ export const SCOPE_PERMISSIONS: Readonly<Record<ApiScope, readonly Permission[]>
   'assets:write': ['asset.read', 'asset.submit'],
   // 自动化发布与分配（ADR 0016 的显式例外）：仅个人令牌 / 团队服务账号可用，审计留痕。
   // 这是唯一映射审核 / 分配这几个点的 scope —— 其余 scope 都不映射它们。
-  'assets:publish': ['asset.read', 'asset.submit', 'asset.review', 'asset.assign']
+  // 分配要落到具体机器（#230）：带上团队内的 worker.read / worker.use，跨团队的机器仍然会被拒。
+  // 发布项目级资产要先看得见那个项目（#230）；能不能发仍然按账号的项目成员身份复核。
+  'assets:publish': ['asset.read', 'asset.submit', 'asset.review', 'asset.assign', 'worker.read', 'worker.use', 'project.read']
 };
 
 

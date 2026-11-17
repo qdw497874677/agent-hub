@@ -103,7 +103,9 @@ export async function handleFeishuMessage(ctx: InboundContext, message: FeishuIn
       externalId,
       title,
       text: untrusted(feishuPrompt(message.text, message.senderName)),
-      note: '（来自飞书）'
+      note: '（来自飞书）',
+      // 群目标落帖时作者写发送者，而不是「feishu」；事件里没有真名时 senderName 是 open_id。
+      author: { name: message.senderName, externalId: message.senderId }
     });
     log?.(`[feishu] 入站 ${externalId} → binding ${binding.id}`);
   }
