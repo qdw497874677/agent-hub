@@ -813,10 +813,11 @@ toolGateway = createToolGateway({
   providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
     createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
     // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
-    createGitToolProvider({ workflow: gitService, subjectOf }),
+    createGitToolProvider({ workflow: gitService, subjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address) }),
     // issue #216 P2：产物列表 / 引用登记与工作空间文件只读。
     createArtifactToolProvider({ sessions: deps.sessions, artifacts: deps.artifacts, tasks: deps.tasks, workLog: deps.workLog, now: deps.now }),
-    createWorkspaceToolProvider({ files: filesService, subjectOf }),
+    // 会话通信 P1c：session 参数只读看已连线同伴；workspace.changes 复用 git 工作流的 state。
+    createWorkspaceToolProvider({ files: filesService, subjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address), gitState: (subject, sessionId, member) => gitService.state(subject, sessionId, member) }),
     // issue #216 P1：agent 可以改项目约定、在机器上跑项目声明的检查命令。
     createProjectToolProvider({
       sessions: deps.sessions,

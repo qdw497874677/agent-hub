@@ -64,7 +64,7 @@ interface Seen {
   readonly workspace?: string;
 }
 
-function world(overrides: Partial<GitWorkflow> = {}, subjectResult: Subject | null = subject) {
+function world(overrides: Partial<GitWorkflow> = {}, subjectResult: Subject | null = subject, peers = false) {
   const seen: Seen[] = [];
   const subjectCalls: string[] = [];
   const workflow: GitWorkflow = {
@@ -86,7 +86,8 @@ function world(overrides: Partial<GitWorkflow> = {}, subjectResult: Subject | nu
     subjectOf: async (sessionId) => {
       subjectCalls.push(sessionId);
       return subjectResult;
-    }
+    },
+    ...(peers ? { resolvePeer: async (_from: string, address: string) => (address === 'peer:verify' ? ok('s2' as never) : err(forbidden('denied: 没连线'))) } : {})
   });
   const ctx = (taskId = 't1') => ({ grant: { sessionId: 's1', taskId, scopes: ['git'] } as unknown as ToolGrant, now: 0 });
   return { provider, seen, subjectCalls, ctx };
@@ -179,4 +180,15 @@ test('subjectOf 返回 null 时工具照常工作，把 null 交给工作流', a
   const res = await provider.call('git.state', {}, ctx());
   assert.ok(res.ok);
   assert.equal(seen[0]?.subject, null);
+});
+
+test('会话通信 P1c：git.state 的 session 参数看已连线同伴，没连线拒，没装配时 invalid', async () => {
+  const { provider, seen, ctx } = world({}, subject, true);
+  const res = await provider.call('git.state', { session: 'peer:verify' }, ctx());
+  assert.ok(res.ok);
+  assert.equal(seen.at(-1)?.sessionId, 's2');
+  const denied = await provider.call('git.state', { session: 'peer:x' }, ctx());
+  assert.equal(denied.ok, false);
+  const bare = world();
+  assert.equal((await bare.provider.call('git.state', { session: 'peer:verify' }, bare.ctx())).ok, false);
 });

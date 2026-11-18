@@ -227,7 +227,8 @@ const HUB_TOOL_LABEL: Readonly<Record<string, string>> = {
   task_log_list: '读任务日志',
   task_update_status: '改任务状态',
   workspace_list: '列工作目录文件',
-  workspace_read: '读工作目录文件'
+  workspace_read: '读工作目录文件',
+  workspace_changes: '看工作目录改动'
 };
 
 /**

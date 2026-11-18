@@ -5,7 +5,8 @@ import type { AuditEntry } from '../account.ts';
 import { asAgentId, type SessionId } from '../ids.ts';
 import { capabilityMatrix, available } from '../capability.ts';
 import { inMemoryDeps } from '../testing/in-memory.ts';
-import { ok } from '../result.ts';
+import { ok, err } from '../result.ts';
+import { forbidden } from '../errors.ts';
 import type { CheckpointStore, TurnCheckpoint, WorkspaceBrowser } from '../ports/workspace-browser.ts';
 import type { ToolContext } from '../ports/tool-provider.ts';
 import type { ToolScope } from '../tool.ts';
@@ -84,7 +85,7 @@ function memoryCheckpoints(): CheckpointStore {
   };
 }
 
-async function world(entries = 3, files: Record<string, FakeFile> = {}) {
+async function world(entries = 3, files: Record<string, FakeFile> = {}, peers = false) {
   const w = inMemoryDeps({ now: () => 1000 });
   w.agents.push(agent);
   const project = await createProjectUseCase(w.deps, { name: 'demo', rootPath: '/tmp/demo/' });
@@ -105,8 +106,24 @@ async function world(entries = 3, files: Record<string, FakeFile> = {}) {
     checkpoints: memoryCheckpoints(),
     now: () => 1000
   });
-  const provider = createWorkspaceToolProvider({ files: filesService, subjectOf: async () => null });
-  return { ...w, provider, state, audits, task: task.value, session: session.value, project: project.value };
+  const peer = await deriveSessionUseCase(w.deps, { taskId: task.value.id, agentId: 'fake', model: 'm1' });
+  assert.ok(peer.ok);
+  const gitCalls: string[] = [];
+  const provider = createWorkspaceToolProvider({
+    files: filesService,
+    subjectOf: async () => null,
+    ...(peers
+      ? {
+          resolvePeer: async (from: SessionId, address: string) =>
+            address === 'peer:verify' || address === `session:${peer.value.id}` ? ok(peer.value.id) : err(forbidden(`denied: ${from} 没有连到 ${address}`)),
+          gitState: async (_subject: unknown, sessionId: SessionId) => {
+            gitCalls.push(sessionId);
+            return ok({ isGit: true, branch: 'feat/x', defaultBranch: 'main', hasOrigin: true, repo: 'o/r', files: [{ path: 'src/a.ts', status: 'M' }] as never, ahead: 2, upstream: 'origin/feat/x', canPush: true, prBlocked: null, prVia: 'gh' as const, pullRequests: [] });
+          }
+        }
+      : {})
+  });
+  return { ...w, provider, state, audits, task: task.value, session: session.value, project: project.value, peer: peer.value, gitCalls };
 }
 
 const ctx = (sessionId: SessionId, taskId: string | null, scopes: ToolScope[]): ToolContext => ({
@@ -118,7 +135,7 @@ const scopes: ToolScope[] = ['files'];
 const text = (value: string): Uint8Array => new TextEncoder().encode(value);
 
 test('工具清单：workspace.list / workspace.read，scope files，限流 30', () => {
-  assert.deepEqual(WORKSPACE_TOOLS.map((tool) => tool.name), ['workspace.list', 'workspace.read']);
+  assert.deepEqual(WORKSPACE_TOOLS.map((tool) => tool.name), ['workspace.list', 'workspace.read', 'workspace.changes']);
   for (const tool of WORKSPACE_TOOLS) {
     assert.equal(tool.scope, 'files');
     assert.equal(tool.perMinute, 30);
@@ -207,4 +224,45 @@ test('workspace.read：二进制只给标记，敏感文件不由 agent 确认�
     assert.equal(got.ok, false, JSON.stringify(input));
     assert.equal((got as { error: { code: string } }).error.code, 'invalid', JSON.stringify(input));
   }
+});
+
+test('会话通信 P1c：没给 gitState 时不列 workspace.changes；session 参数要 resolvePeer', async () => {
+  const w = await world(1);
+  assert.deepEqual(w.provider.tools().map((tool) => tool.name), ['workspace.list', 'workspace.read']);
+  const got = await w.provider.call('workspace.list', { session: 'peer:verify' }, ctx(w.session.id, w.task.id, scopes));
+  assert.equal(got.ok, false);
+});
+
+test('会话通信 P1c：session 参数只读看同伴；没连线拒；敏感文件与 .. 对同伴同样拒', async () => {
+  const w = await world(2, { 'a.txt': { bytes: text('peer file') }, '.env': { bytes: text('TOKEN=1') } }, true);
+  const c = ctx(w.session.id, w.task.id, scopes);
+  const list = await w.provider.call('workspace.list', { session: 'peer:verify' }, c);
+  assert.ok(list.ok);
+  assert.equal((list.value as { session: string }).session, `session:${w.peer.id}`);
+  const read = await w.provider.call('workspace.read', { path: 'a.txt', session: 'peer:verify' }, c);
+  assert.ok(read.ok);
+  assert.equal((read.value as { content: string }).content, 'peer file');
+  assert.equal((read.value as { session: string }).session, `session:${w.peer.id}`);
+  const secret = await w.provider.call('workspace.read', { path: '.env', session: 'peer:verify' }, c);
+  assert.equal(secret.ok, false);
+  const escape = await w.provider.call('workspace.read', { path: '../x', session: 'peer:verify' }, c);
+  assert.equal(escape.ok, false);
+  const stranger = await w.provider.call('workspace.list', { session: 'peer:nobody' }, c);
+  assert.equal(stranger.ok, false);
+  if (!stranger.ok) assert.equal(stranger.error.code, 'forbidden');
+  const own = await w.provider.call('workspace.read', { path: 'a.txt' }, c);
+  assert.ok(own.ok);
+  assert.equal('session' in (own.value as object), false, '自己的不带 session 字段');
+});
+
+test('会话通信 P1c：workspace.changes 给分支 / 改动文件 / 领先；默认看自己，session 看同伴', async () => {
+  const w = await world(1, {}, true);
+  const c = ctx(w.session.id, w.task.id, scopes);
+  const mine = await w.provider.call('workspace.changes', {}, c);
+  assert.ok(mine.ok);
+  assert.deepEqual(mine.value, { session: `session:${w.session.id}`, isGit: true, branch: 'feat/x', upstream: 'origin/feat/x', ahead: 2, dirty: true, files: [{ path: 'src/a.ts', status: 'M' }], truncated: false });
+  const theirs = await w.provider.call('workspace.changes', { session: 'peer:verify' }, c);
+  assert.ok(theirs.ok);
+  assert.deepEqual(w.gitCalls, [w.session.id, w.peer.id]);
+  assert.equal(((await w.provider.call('workspace.changes', { path: 'x' }, c)) as { ok: boolean }).ok, false);
 });
