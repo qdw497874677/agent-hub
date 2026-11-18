@@ -1,6 +1,6 @@
 # 会话通信：一仓一会话的协作（感知 · 只读看对方 · 互发消息）
 
-- 状态：proposed（设计 + 三轮评审已完成，待 David 确认 §13 的 3 个问题）。只有设计，没有代码
+- 状态：accepted（2026-11-18 David 确认 §13 三项按推荐默认）。P1a 实现中：`feat/session-comm-p1a`；实现与设计的差异见 §17
 - 日期：2026-11-18
 - 基线：origin/master `303c668`；参考 PR #241（组合工作空间，未合并）
 - 相关：ADR 0018（agent 间通信，P1 已实现）、ADR 0031（送达队列）、ADR 0036（投递内核）、ADR 0015 / `external-surface.md`（对外 MCP）、`multi-repo.md`；本设计对应 **ADR 0038**
@@ -81,7 +81,7 @@
 |---|---|---|
 | `MessageBus.accept / reply / turnEnded / pump`：同项目、连线或父子才可达；派生的任务会话默认隔离；深度 4、并发 8、扇出 10；ask 默认超时 30 分钟；正文 ≤32KB；空闲就投、忙就排队，每轮只投一条 ask；轮末文本兜底作为回复 | `packages/domain/src/use-cases/messaging.ts`、`messaging.ts` | 扩展，不重写 |
 | 工具 `agent.directory / peers / send / ask / reply / status / inbox`、`agent.activity`、`agent.spawn`（同任务、同 worker、同工作空间） | `tools/message-tools.ts`、`tools/agent-orchestration-tools.ts` | 加参数；spawn 增加选仓 / 选机器（依赖一仓一会话） |
-| `peerBriefingFor`：每次发话都列出最多 20 个连线同伴（id、agent、标题、首句、状态） | `use-cases/conversation.ts` | 加仓库 / 分支 / 脏 / 机器 / 未读；只在变化时注入 |
+| `peerBriefingFor`：每次发话都列出最多 20 个连线同伴（id、agent、标题、首句、状态） | `use-cases/conversation.ts` | 加仓库 / 分支 / 机器 / 未读（P1a），脏（P1c）；只在变化时注入 |
 | `SessionLink`（无向，画布拖线或会话页选择） | `session-link.ts` | 唯一的可达关系；加 `createdBy / via` |
 | `workspace.list / read`：只能看**自己**；人用的 `/api/sessions/:id/files` 已能看任意可见会话，跨 worker 走 RPC | `tools/files-tools.ts`、`use-cases/workspace-files.ts` | 加 `session` 参数 |
 | 会话收件箱 / 占用判断（ADR 0036 `SessionInbox`） | `deps.occupied` | 投递仍走它，不另判 |
@@ -100,7 +100,7 @@
 | `external:<inboxId>` | 外部 agent 的收件箱，只作为回复目标（§5.4） | **新增**，内部只能 reply |
 | `group:<id>` | 群 | 已有（群聊） |
 
-- **handle**：`session_start`、`agent.spawn` 和会话页可以设置。规则 `^[a-z][a-z0-9-]{1,31}$`，在任务内唯一；不设时用 `<agentId>-<id 前 4 位>`。改名不影响已发的消息（消息存 `targetSessionId`）。
+- **handle**：`session_start`、`agent.spawn` 和会话页可以设置。规则 `^[a-z][a-z0-9-]{1,31}$`，在任务内唯一；不设时用 `<agentId>-<id 后 4 位>`（P1a 实现：短名存在 `agent_session_handles` 表，不改 Session 模型）。改名不影响已发的消息（消息存 `targetSessionId`）。
 - **解析**：`peer:` 只在调用方能到达的会话里找，找不到时报 `unresolvable`，并在错误里列出可用的 handle。
 - **不做 worker 地址和 project 广播**：机器是落点；项目广播风暴风险高，用途也不清楚。
 
@@ -163,7 +163,7 @@ type Part =
 |---|---|---|
 | 空闲 | 立刻作为新一轮提问投递（已有） | 进收件箱；对方下一轮的 briefing 显示「未读 N」 |
 | 忙 | 排队，这一轮结束后按 FIFO 投（已有）；每轮最多投一条 ask | 同上 |
-| 已收起（settled）/ worktree 已清理 | **不唤醒**，失败码 `target_settled`（§13 Q2） | 同左 |
+| 已收起（settled）/ worktree 已清理 | **不唤醒**，失败码 `archived`（§13 Q2） | 同左 |
 | 机器离线 | 留在队列；`target_offline` 自动重试一次，用同一个 id（ADR 0018 §5.6） | 同左 |
 | 等审批中 | 排队 | 同左 |
 
@@ -247,7 +247,7 @@ type Part =
 | **重复内容** | 同一个 A→B，正文和附件的哈希在 10 分钟内相同 → 拒绝 `duplicate` | 新 |
 | **来回打转** | 同一条链里 A↔B 往返超过 8 次、中间没有人说话 → 整条链暂停（`held: pingpong`），「等我处理」显示「需要你」，人回复或点「继续」后恢复 | 新 |
 | **每会话收件队列** | 20 条（排队 + 拦下），超了拒绝 `busy` | 设计里有，落实 |
-| **每链唤醒轮数** | 消息触发的轮次每链最多 30 轮，到上限后新消息只进收件箱、不再唤醒 | 新 |
+| **每链唤醒轮数** | 消息触发的轮次每链最多 30 轮，到上限后新消息直接拒绝（`rate_limited`，提示请人接手）。P1a 实现为拒绝而不是「只进收件箱」：更简单，也不会悄悄堆消息 | 新 |
 | `send` 不会触发隐式回复 | 只有 ask 有轮末兜底 | 已有 |
 | 不能 reply 一个 reply | | 已有 |
 | token / 费用预算 | 按链累计 usage | P2 |
@@ -269,7 +269,7 @@ type Part =
 
 | 工具 | 变化 |
 |---|---|
-| `agent.peers` | 返回富同伴信息（§4）：handle、worker、仓库、分支、dirty、状态、未读 |
+| `agent.peers` | 返回富同伴信息（§4）：handle、worker、仓库、分支、标题、状态（P1a）；dirty 随 P1c 的 `workspace.changes` 一起补 |
 | `agent.send` / `agent.ask` | `to` 支持 `peer:`；新增 `parts`；send 加 `wake`，ask 加 `timeoutSec`；结果带 `next` |
 | `agent.reply` | 新增 `status`、`data`（可带 `schema`） |
 | `agent.inbox` | 新增 `unreadOnly`，读过标记已读 |
@@ -317,9 +317,9 @@ type Part =
 - **开发用一仓一会话，验证用组合。** 验证会话在机器 B 上用 #241 的组合工作空间（`workspace_group_create { workerId: B, fromGroupId?, branches }`，或者一仓一会话时按 `ref` 自己 `git fetch` / `checkout`），一次拉起几个仓。开发会话通过 `ref` 告诉它测哪几个提交。
 - **组合会话本身就是一个同伴**，看它的文件要带 `member`。
 - **生命周期**：
-  - 会话收起（settled）后不再被消息唤醒，发给它的消息失败 `target_settled`。
+  - 会话收起（settled）后不再被消息唤醒，发给它的消息失败 `archived`。
   - 它发出、还没答复的 ask 标为 `canceled`，提问方收到一条失败回复。
-  - 它还没处理的入站消息标为 `failed: target_settled`。
+  - 它还没处理的入站消息标为 `failed: archived`。
 - **清理**：
   - 验证会话没有 PR，靠 `taskEndedClean`（任务结束后收起）或外部显式调 `session_settle`。
   - 开发会话靠 `prMerged`。
@@ -327,17 +327,17 @@ type Part =
   - 消息和审计**不随 worktree 删除**。
 - **重开**：人或外部 agent 用 `reopen` 恢复 worktree 之后，会话才可以再被消息唤醒。
 
-## 13. 待 David 确认（都有推荐默认）
+## 13. 已确认（2026-11-18，按推荐默认）
 
 1. **同一任务里的会话要不要默认互通（不用连线）？** 推荐：**不默认**，保持「连线才通」一条规则。`session_start.linkWith` 和派生父子已经够用，也不会意外把几十条会话连成一团。
-2. **已收起的会话收到消息时要不要自动唤醒（顺带恢复 worktree）？** 推荐：**不唤醒**，返回 `target_settled`，由人或外部 agent 显式重开。否则消息可能把清理过的 worktree 反复拉回来。
+2. **已收起的会话收到消息时要不要自动唤醒（顺带恢复 worktree）？** 推荐：**不唤醒**，返回 `archived`，由人或外部 agent 显式重开。否则消息可能把清理过的 worktree 反复拉回来。
 3. **权限档位升级（guarded → auto）要不要默认拦下等人放行？** 推荐：**默认拦**，项目可以关（`trustPeers`）。
 
 ## 14. 实施计划
 
 | 期 | 内容 | 验收 |
 |---|---|---|
-| **P1a 消息与同伴** | 信封迁移（`from` / `via` / `parts` / `wake` / `timeoutSec` / `replyStatus` / `readAt` / `holdReason`，老数据 `from.kind = session`）；handle 与 `peer:`；富 `agent.peers` 和按变化注入的 briefing；`agent.reply` 的 status / data；`next` 提示；`target_settled` 规则；§8 新规则（按对限速、重复、打转、收件队列、每链唤醒）；审计补全 | 领域单测：可达矩阵、交集、拦下、限速 / 重复 / 打转、幂等、settled |
+| **P1a 消息与同伴** | 信封迁移（`from` / `via` / `parts` / `wake` / `timeoutSec` / `replyStatus` / `readAt` / `holdReason`，老数据 `from.kind = session`）；handle 与 `peer:`；富 `agent.peers` 和按变化注入的 briefing；`agent.reply` 的 status / data；`next` 提示；`archived` 规则；§8 新规则（按对限速、重复、打转、收件队列、每链唤醒）；审计补全 | 领域单测：可达矩阵、交集、拦下、限速 / 重复 / 打转、幂等、settled |
 | **P1b 一仓一会话派生** | `session_start` / `agent.spawn` 支持 `repoId`、`workerId`、`handle`、`linkWith`（为那个仓新建 worktree；复用 #241 的单仓 worktree 改进） | 派生到另一个仓 + 另一台机器，自动可达 |
 | **P1c 只读看同伴** | `workspace.list / read / changes`、`git.state` 加 `session`；跨 worker RPC；敏感文件拒绝；`peer_read` 审计 | 跨机器读、越权拒绝、敏感文件拒绝、路径逃逸拒绝 |
 | **P1d 对外** | 6 个新工具 + `events` / `get_session` 的 `waitSec`；外部收件箱（绑令牌族）；吊销即关；skill 配方和 `verify-result/v1`；`tools.md` 重新生成 | MCP parity 快照；长轮询 ≤50s；吊销后 401 |
@@ -393,7 +393,7 @@ type Part =
 | A4 | 对外长轮询和无状态 MCP 冲突？ | 不冲突：一次 HTTP 请求内等待（≤50s，低于常见代理 60s），用进程内事件唤醒加存储兜底；不引入 MCP 会话 |
 | A5 | 会话没有任务（容器会话 #221）时 handle 的作用域 | 只用 `session:<id>`，不支持 `peer:` |
 | A6 | steer 要 RuntimeAdapter 新契约，大多数运行时没有 | 移到 P2，按能力位开放（借 t3code 的 capability） |
-| A7 | 消息唤醒已清理的会话会触发 worktree 恢复，和清理策略打架 | `target_settled`，不唤醒（§13 Q2） |
+| A7 | 消息唤醒已清理的会话会触发 worktree 恢复，和清理策略打架 | `archived`，不唤醒（§13 Q2） |
 | A8 | briefing 每一轮都注入同伴列表，长对话里浪费 | 只在同伴的指纹变了时注入 |
 
 ### A.2 第二轮：安全 / 权限
@@ -419,7 +419,7 @@ type Part =
 | U4 | 验证结果格式各写各的，提问方不好判断 | skill 给出 `verify-result/v1`；`data.schema` 写的是已知结构时做校验，不合格就提示重答 |
 | U5 | 外部 agent 不知道怎么等 | `message_get(waitSec=50)` 返回 `{status, reply?, retryAfterSec}`；skill 配方写明循环和退出条件 |
 | U6 | `session_reply` 和 `session_message` 容易混用 | 工具描述写明「下指令用 session_reply；要关联回复才用 session_message」；skill 也加一段 |
-| U7 | 新失败码要让外部 agent 能按码分支 | `errors.md` 补 `target_settled`、`duplicate`、`held`、`workspace_gone`，每个写「下一步怎么做」 |
+| U7 | 新失败码要让外部 agent 能按码分支 | `errors.md` 补 `archived`、`duplicate`、`held`、`workspace_gone`，每个写「下一步怎么做」 |
 | U8 | 命名统一 | 新工具都用 `<资源>_<动作>`；老名字不动（#241 §14.2 第 2 条） |
 
 ## 附录 B：来源
@@ -429,3 +429,16 @@ type Part =
 - A2A：[v1.0.1 release](https://github.com/a2aproject/A2A/releases/tag/v1.0.1)、[spec](https://a2a-protocol.org/latest/specification/)
 - 业界多仓 / 多 agent 调研：#241 工作区的 `INDUSTRY.md` §4、§6（2026-11-18）
 - 本仓库：ADR 0018、0031、0036、`agent-messaging.md`、`external-surface.md`、`multi-repo.md`（#241）
+
+## 17. 实现记录与差异
+
+### P1a（`feat/session-comm-p1a`）
+
+- 失败码：已收起统一叫 `archived`（原稿 `target_settled`）；另加 `duplicate`、`busy`（收件队列满）。
+- 每链唤醒 30 轮到顶后**拒绝**（`rate_limited`），不是「只进收件箱」。
+- 拦下：新增消息状态 `held` + `holdReason`（`pingpong`，P1f 再加 `privilege`）；人用 `POST /api/messages/:id/decision` 放行 / 拒绝（和派生审批同一个口子，按消息状态分流）。拒绝 ask 时提问方收到 `denied` 失败回复。放行后来回计数从放行那条重新算。
+- 来回打转按「同一条 trace 里这一对会话的非回复消息 ≥ 8 条」判（P1a 没有「中间有人说话」的信号，人说话会开新 trace，效果等价）。
+- `wake=false` 只允许 `send`；落库状态直接是 `done`、`readAt` 为空 = 未读；简报显示未读数，`agent.inbox unreadOnly` 读后标已读。
+- 短名单独存表 `agent_session_handles`（任务内唯一索引），默认 `<agentId>-<id 后 4 位>`；`PUT /api/sessions/:id/handle` 设置。
+- `agent.peers` / 简报的 dirty 推迟到 P1c；`GET /api/sessions/:id/peers` 给界面（P1e）用。
+- 同伴简报改由消息总线生成，按会话做内容指纹，**不变就不垫**（进程内记忆，重启后第一轮会再垫一次）。

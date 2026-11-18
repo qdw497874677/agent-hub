@@ -1,6 +1,6 @@
 # ADR 0038：会话通信——一仓一会话的协作（感知 · 只读看对方 · 互发消息）
 
-- 状态：proposed（2026-11-18；三轮评审已完成，待 David 确认设计稿 §13 的 3 个问题）
+- 状态：accepted（2026-11-18 David 确认设计稿 §13 三项按推荐默认；实现差异记在设计稿 §17）
 - 关联：ADR 0018（agent 间通信，P1 已实现）、0031（送达队列）、0036（投递内核）、0015（对外 MCP）；设计稿 `docs/design/session-communication.md`；多仓 `docs/design/multi-repo.md`（#241）
 
 ## 背景
@@ -29,11 +29,11 @@ ADR 0018 的 P1（`MessageBus`、`agent.send / ask / reply`、连线可达、限
    - `parts`（`data` / `ref` / `file` / `link`，≤8 个，≤16KB）；
    - send 加 `wake`；ask 加 `timeoutSec`（≤4 小时）；reply 加 `status` 和 `data`。
    - 附件全部包在不可信边界里；`ref.repo` 必须是项目登记的仓库，`link` 只允许 http(s)。
-5. **投递**：空闲唤醒、忙就排队（不变）；已收起的会话不唤醒，返回 `target_settled`；离线重试一次；回复唤醒提问方，工具结果带 `next` 提示。steer 放到 P2，按能力位开放。
+5. **投递**：空闲唤醒、忙就排队（不变）；已收起的会话不唤醒，返回 `archived`；离线重试一次；回复唤醒提问方，工具结果带 `next` 提示。steer 放到 P2，按能力位开放。
 6. **只读看同伴**：`workspace.list / read`、`git.state` 加 `session`，新增 `workspace.changes`；跨 worker 走现有 RPC。按 `onBehalfOf` 判断 `session.read` 和 `workspace.files.read`；敏感文件对 agent 一律不给；每次读都审计 `workspace.peer_read`。
 7. **外部 agent**：对外 MCP 新增 `session_link`、`session_unlink`、`session_peers`、`session_message`、`message_get(waitSec≤50)`、`message_inbox`；`events` / `get_session` 加 `waitSec`。外部收件箱绑令牌族：轮换沿用，吊销关闭。本机 Worker 和跨团队一律拒绝。
 8. **防风暴**：
-   - 新增：同一对会话每分钟 6 条；10 分钟内重复内容拒绝；同一条链里往返 8 次、中间没有人说话就暂停等人；收件队列 20 条；每链消息唤醒最多 30 轮。
+   - 新增：同一对会话每分钟 6 条；10 分钟内重复内容拒绝；同一条链里往返 8 次、中间没有人说话就暂停等人；收件队列 20 条；每链消息唤醒最多 30 轮（到顶拒绝 `rate_limited`）。
    - 保留：深度 4、并发 8、扇出 10。
 9. **权限档位**：从需要审批的会话（guarded）发给自动批准的会话（auto）时先拦下，等人放行；项目可以用 `trustPeers` 关掉。
 10. **与组合的分工**：开发用一仓一会话，验证可以用组合会话一次拉起几个仓；两者用 `ref` 消息衔接。消息和审计不随 worktree 清理删除。
