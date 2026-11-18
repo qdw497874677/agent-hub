@@ -12,7 +12,7 @@ import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { Deps } from './deps.ts';
 import { createProjectUseCase, updateProjectReposUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
-import { buildWorkspaceGroupUseCase, removeWorkspaceGroupUseCase, retryWorkspaceGroupUseCase } from './workspace-groups.ts';
+import { addWorkspaceGroupMemberUseCase, buildWorkspaceGroupUseCase, memberWorktreePath, prepareRepoWorktreeUseCase, removeWorkspaceGroupUseCase, retryWorkspaceGroupUseCase } from './workspace-groups.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 
 function fakeGroups(): WorkspaceGroupRepository & { rows: Map<string, WorkspaceGroup> } {
@@ -88,6 +88,14 @@ async function world() {
     ]
   });
   assert.ok(withRepos.ok);
+  const primary = withRepos.value.repos.find((repo) => repo.name === 'web');
+  assert.ok(primary);
+  const designated = await updateProjectReposUseCase(deps, {
+    projectId: project.value.id,
+    repos: withRepos.value.repos,
+    primaryRepoId: primary.id
+  });
+  assert.ok(designated.ok);
   const task = await createTaskUseCase(deps, { projectId: project.value.id, title: 'Ship multi repo' });
   assert.ok(task.ok);
   // 每个仓库在这台机器上已经有一个长期工作空间（组合的 base）
@@ -113,7 +121,7 @@ async function world() {
       workerId: 'remote-1',
       home: '/home/me'
     });
-  return { deps, groups, groupGit, memory, project: withRepos.value, task: task.value, build };
+  return { deps, groups, groupGit, memory, project: designated.value, task: task.value, build };
 }
 
 test('建组：每个仓库一个成员，路径 <root>/<name>，全部就绪', async () => {
@@ -124,12 +132,16 @@ test('建组：每个仓库一个成员，路径 <root>/<name>，全部就绪', 
   assert.equal(group.state, 'ready');
   assert.equal(groupReady(group), true);
   assert.match(group.root, /^\/srv\/work\/groups\/group_[0-9a-f]{8}$/);
+  assert.equal(group.layout, 'amp');
+  assert.equal(group.primaryRepoId, w.project.primaryRepoId);
   assert.deepEqual(group.members.map((member) => [member.name, member.state]), [
     ['web', 'ready'],
     ['api', 'ready']
   ]);
   for (const member of group.members) {
-    assert.equal(groupMemberRoot(group, member.workspaceId), `${group.root}/${member.name}`);
+    const repo = w.project.repos.find((item) => item.id === member.repoId);
+    assert.ok(repo);
+    assert.equal(groupMemberRoot(group, member.workspaceId), memberWorktreePath(group.root, repo, group.primaryRepoId!));
     const workspace = await w.deps.workspaces.byId(member.workspaceId);
     assert.ok(workspace);
     assert.equal(workspace.groupId, group.id);
@@ -137,7 +149,8 @@ test('建组：每个仓库一个成员，路径 <root>/<name>，全部就绪', 
     assert.equal(workspace.source, 'worktree');
     assert.equal(workspace.ownerTaskId, w.task.id);
     assert.equal(workspace.workerId, 'remote-1');
-    assert.match(workspace.branch ?? '', new RegExp(`^agent-hub/${member.name}-[0-9a-f]{4}$`));
+    assert.ok(group.sessionId);
+    assert.equal(workspace.branch, `agent-hub/${member.name}-${group.sessionId.replace(/-/g, '').slice(0, 12)}`);
     assert.ok(workspace.baseWorkspaceId, '成员要记着是从哪个长期空间开出来的');
     assert.equal(workspace.state, 'ready');
   }
@@ -169,7 +182,9 @@ test('某个仓库建 worktree 失败：整组 failed，容器保留，成员登
     const workspace = await w.deps.workspaces.byId(member.workspaceId);
     assert.ok(workspace, '失败的成员也要有工作空间登记，重试才有地方下手');
     assert.equal(workspace.state, 'failed');
-    assert.equal(groupMemberRoot(group, member.workspaceId), `${group.root}/${member.name}`);
+    const repo = w.project.repos.find((item) => item.id === member.repoId);
+    assert.ok(repo);
+    assert.equal(groupMemberRoot(group, member.workspaceId), memberWorktreePath(group.root, repo, group.primaryRepoId!));
   }
 });
 
@@ -253,4 +268,150 @@ test('派生会话：给 groupId 就跟着整组走，workspaceId 取 primary �
   assert.ok(derived.ok);
   assert.equal(derived.value.groupId, built.value.id);
   assert.equal(derived.value.workspaceId, primary.workspaceId);
+  assert.equal(derived.value.id, built.value.sessionId);
+});
+
+test('没指定主仓库不能建组', async () => {
+  const w = await world();
+  await updateProjectReposUseCase(w.deps, { projectId: w.project.id, repos: w.project.repos, primaryRepoId: null });
+  const built = await w.build();
+  assert.equal(built.ok, false);
+  if (!built.ok) assert.match(built.error.message, /主仓库/);
+});
+
+test('建组可以只选一部分仓库，主仓库一定在内', async () => {
+  const w = await world();
+  const primary = w.project.repos.find((repo) => repo.name === 'web');
+  assert.ok(primary);
+  const built = await buildWorkspaceGroupUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-1',
+    home: '/home/me',
+    repoIds: [primary.id]
+  });
+  assert.ok(built.ok, built.ok ? '' : built.error.message);
+  assert.deepEqual(built.value.members.map((member) => member.name), ['web']);
+  assert.equal(groupMemberRoot(built.value, built.value.members[0]!.workspaceId), `${built.value.root}/web`);
+});
+
+test('给已有组合追加仓库：worktree 建在 repos/ 下，并标记下一轮要再说明成员', async () => {
+  const w = await world();
+  const built = await buildWorkspaceGroupUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-1',
+    home: '/home/me',
+    repoIds: [w.project.repos.find((repo) => repo.name === 'web')!.id]
+  });
+  assert.ok(built.ok, built.ok ? '' : built.error.message);
+  const addedRepos = await updateProjectReposUseCase(w.deps, {
+    projectId: w.project.id,
+    repos: [...w.project.repos, { name: 'docs', url: 'https://example.com/docs.git' }],
+    primaryRepoId: w.project.primaryRepoId
+  });
+  assert.ok(addedRepos.ok);
+  const docs = addedRepos.value.repos.find((repo) => repo.name === 'docs');
+  assert.ok(docs);
+  const base = newWorkspace({
+    projectId: w.project.id,
+    repoUrl: docs.url,
+    workerId: 'remote-1',
+    path: '/srv/work/docs',
+    kind: 'long_lived',
+    source: 'cloned',
+    isGit: true,
+    now: 1
+  });
+  assert.ok(base.ok);
+  await w.deps.workspaces.save(base.value);
+  await w.deps.workspaces.link({ projectId: w.project.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
+  const added = await addWorkspaceGroupMemberUseCase(w.deps, {
+    groupId: built.value.id,
+    repoId: docs.id,
+    home: '/home/me'
+  });
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.equal(added.value.pendingBriefing, true);
+  const docsMember = added.value.members.find((member) => member.name === 'docs');
+  assert.ok(docsMember);
+  assert.equal(groupMemberRoot(added.value, docsMember.workspaceId), `${added.value.root}/repos/docs`);
+  assert.ok(w.groupGit.calls.some((call) => call.includes('/repos/docs@')));
+});
+
+test('删组：成员有未保存改动就整组留下', async () => {
+  const w = await world();
+  const built = await w.build();
+  assert.ok(built.ok);
+  const member = built.value.members[0]!;
+  const workspace = await w.deps.workspaces.byId(member.workspaceId);
+  assert.ok(workspace);
+  w.memory.git.statuses.set(workspace.path, { dirty: true, untracked: 0, unpushed: 0, branch: workspace.branch, upstream: null });
+  const removed = await removeWorkspaceGroupUseCase(w.deps, { groupId: built.value.id });
+  assert.equal(removed.ok, false);
+  if (!removed.ok) assert.match(removed.error.message, /没有删/);
+  assert.ok(await w.deps.workspaceGroups.byId(built.value.id));
+});
+
+
+test('建组可只选子集；branches / fromGroupId 按已有分支在另一台机器上再建一组', async () => {
+  const w = await world();
+  const api = w.project.repos.find((repo) => repo.name === 'api');
+  assert.ok(api);
+  const subset = await buildWorkspaceGroupUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-1',
+    home: '/home/me',
+    repoIds: [w.project.primaryRepoId!],
+    sessionId: '11111111-1111-4111-8111-111111111111'
+  });
+  assert.ok(subset.ok, subset.ok ? '' : subset.error.message);
+  assert.deepEqual(subset.value.members.map((member) => member.name), ['web']);
+  const added = await addWorkspaceGroupMemberUseCase(w.deps, { groupId: subset.value.id, repoId: api.id, home: '/home/me' });
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.deepEqual(added.value.members.map((member) => member.name), ['web', 'api']);
+
+  w.memory.workers.push({ workerId: 'remote-2', label: '验证机', origin: 'remote', state: 'online', roots: ['/srv/work'] });
+  const web = added.value.members.find((member) => member.name === 'web');
+  assert.ok(web);
+  const handed = await buildWorkspaceGroupUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-2',
+    home: '/home/me',
+    fromGroupId: added.value.id,
+    branches: [{ repoId: api.id, branch: 'agent-hub/api-custom' }]
+  });
+  assert.ok(handed.ok, handed.ok ? '' : handed.error.message);
+  assert.equal(handed.value.workerId, 'remote-2');
+  const webWs = await w.deps.workspaces.byId(web.workspaceId);
+  const handedWeb = handed.value.members.find((member) => member.name === 'web');
+  const handedApi = handed.value.members.find((member) => member.name === 'api');
+  assert.ok(handedWeb && handedApi && webWs?.branch);
+  const handedWebWs = await w.deps.workspaces.byId(handedWeb.workspaceId);
+  const handedApiWs = await w.deps.workspaces.byId(handedApi.workspaceId);
+  assert.equal(handedWebWs?.branch, webWs.branch);
+  assert.equal(handedApiWs?.branch, 'agent-hub/api-custom');
+  assert.ok(w.groupGit.calls.some((call) => call.includes(`@${webWs.branch}`)));
+  assert.ok(w.groupGit.calls.some((call) => call.includes('@agent-hub/api-custom')));
+});
+
+test('会话通信 P1b · 一仓一会话：只给指定仓库开隔离 worktree（按 id 或名字），不建组；不在项目里的仓库 400', async () => {
+  const w = await world();
+  const api = w.project.repos.find((repo) => repo.name === 'api')!;
+  const prepared = await prepareRepoWorktreeUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, repoId: api.id, workerId: 'remote-1', home: '/home/me', sessionId: 'sess-abcd1234' });
+  assert.ok(prepared.ok, prepared.ok ? '' : prepared.error.message);
+  assert.equal(prepared.value.kind, 'temporary');
+  assert.equal(prepared.value.repoUrl, api.url);
+  assert.equal(prepared.value.groupId ?? null, null);
+  assert.match(prepared.value.branch ?? '', /^agent-hub\/api-/);
+  assert.match(prepared.value.path, /^\/srv\/work\/\.worktrees\/api\//);
+  assert.ok(w.memory.git.calls.some((call) => call.includes('worktree:/srv/work/api->')), w.memory.git.calls.join('\n'));
+  assert.equal(w.groups.rows.size, 0);
+  const byName = await prepareRepoWorktreeUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, repoId: 'web', workerId: 'remote-1', home: '/home/me' });
+  assert.ok(byName.ok);
+  assert.equal(byName.value.repoUrl, 'https://example.com/web.git');
+  const missing = await prepareRepoWorktreeUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, repoId: 'nope', workerId: 'remote-1', home: '/home/me' });
+  assert.equal(missing.ok ? null : missing.error.code, 'invalid');
 });

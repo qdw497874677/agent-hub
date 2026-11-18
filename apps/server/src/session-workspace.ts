@@ -2,7 +2,10 @@ import { homedir } from 'node:os';
 import {
   asTaskId,
   defaultWorkspaceFor,
+  err,
+  invalid,
   ok,
+  prepareRepoWorktreeUseCase,
   prepareTemporaryWorkspaceUseCase,
   type Deps,
   type DomainError,
@@ -20,8 +23,10 @@ import {
  * 返回 null = 不用改（已指定 workspaceId/组合，或容器会话），调用方照原样传给 derive。
  */
 export async function workspaceForApiStart(
-  deps: Pick<Deps, 'projects' | 'tasks' | 'workspaces' | 'fs' | 'git' | 'gateway' | 'now' | 'access'>,
+  deps: Pick<Deps, 'projects' | 'tasks' | 'workspaces' | 'fs' | 'git' | 'gateway' | 'now' | 'access' | 'sessions' | 'repoAuth' | 'workspaceGroups'>,
   input: {
+    /** 会话通信 P1b · 一仓一会话：只给这个仓库开隔离 worktree（和 workspaceId / groupId 互斥）。 */
+    readonly repoId?: string | null;
     readonly taskId?: string | null;
     readonly workspaceId?: string | null;
     readonly groupId?: string | null;
@@ -31,6 +36,21 @@ export async function workspaceForApiStart(
   },
   actor: Subject | null
 ): Promise<Result<string | null, DomainError>> {
+  if (input.repoId) {
+    if (input.groupId || input.workspaceId) return err(invalid('repoId 不能和 workspaceId / groupId 一起给'));
+    if (!input.taskId) return err(invalid('repoId 要配 taskId'));
+    const task = await deps.tasks.byId(asTaskId(input.taskId));
+    if (!task) return ok(null);
+    const prepared = await prepareRepoWorktreeUseCase(deps, {
+      projectId: task.projectId,
+      taskId: task.id,
+      repoId: input.repoId,
+      workerId: input.workerId ?? null,
+      home: homedir(),
+      actor
+    });
+    return prepared.ok ? ok(prepared.value.id) : prepared;
+  }
   if (input.groupId || input.workspaceId || !input.taskId) return ok(null);
   const task = await deps.tasks.byId(asTaskId(input.taskId));
   if (!task) return ok(null); // 让 derive 自己回「任务不存在」，不在这一层抢错误文案

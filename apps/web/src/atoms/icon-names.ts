@@ -40,4 +40,5 @@ export type IconName =
   | 'external'
   | 'layers'
   | 'stethoscope'
-  | 'queue';
+  | 'queue'
+  | 'more';

@@ -77,6 +77,8 @@ export interface Deps {
   readonly layout: LayoutStore;
   /** 会话连线（无向、项目级）。不给 = 没启用画布关系，消息仍按旧的全项目可见。 */
   readonly links?: SessionLinkRepository;
+  /** 同伴简报（会话通信 P1a）：给了就用它代替 links 生成的老简报；返回 null 表示这一轮不用垫。 */
+  readonly peerBriefing?: (session: Session) => Promise<string | null>;
   /** Agent 配置（可复用的启动组合）。不给 = 不启用。 */
   readonly agentProfiles?: AgentProfileRepository;
   /** 项目里的一等 bot（C3a）。 */

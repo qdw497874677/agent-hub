@@ -105,6 +105,15 @@ test('编排工具：列 profile、运行时和同项目活动', async () => {
   assert.ok(isolated.ok, JSON.stringify(isolated));
   assert.equal((spawned as SpawnAgentAction | null)?.workspaceMode, 'isolated');
 
+  // 会话通信 P1b：一仓一会话、挑机器、短名透传；repo_id 和 shared 档冲突
+  const perRepo = await tools.call('agent.spawn', { agent_id: 'fake', repo_id: 'api', worker_id: 'remote-1', handle: 'verify' }, grant(session.id, session.taskId));
+  assert.ok(perRepo.ok, JSON.stringify(perRepo));
+  const last = spawned as SpawnAgentAction | null;
+  assert.deepEqual([last?.repoId, last?.workerId, last?.handle, last?.callerSessionId], ['api', 'remote-1', 'verify', session.id]);
+  if (session.agentId === 'fake') assert.equal(last?.model, session.model, '同运行时、没给模型：沿用发起方的模型');
+  const clash = await tools.call('agent.spawn', { agent_id: 'fake', repo_id: 'api', workspace_mode: 'shared' }, grant(session.id, session.taskId));
+  assert.equal(clash.ok ? null : clash.error.code, 'invalid');
+
   const bogus = await tools.call('agent.spawn', { workspace_mode: 'worktree' }, grant(session.id, session.taskId));
   assert.equal(bogus.ok, false);
   if (!bogus.ok) assert.equal(bogus.error.code, 'invalid');

@@ -56,6 +56,9 @@ function Workspace() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   // 跳到某个节点：nonce 让「同一条命中点第二次」也能重新居中。
   const [focus, setFocus] = useState<{ id: string; nonce: number } | null>(null);
+  // 侧栏菜单「在画布中展开」：切到画布后由画布自己开窗口（窗口状态在画布里）。
+  const [expandRequest, setExpandRequest] = useState<{ id: string; nonce: number } | null>(null);
+  const clearExpandRequest = useCallback(() => setExpandRequest(null), []);
   const queryClient = useQueryClient();
 
   const projects = useQuery({ queryKey: ['projects'], queryFn: api.projects });
@@ -341,6 +344,13 @@ function Workspace() {
       projects={projects.data ?? []}
       selectedId={selected}
       canvas={canvas.data ?? null}
+      live={live}
+      onInterrupt={interruptSession}
+      onExpandSession={(sessionId) => {
+        onClose?.();
+        setExpandRequest({ id: sessionId, nonce: Date.now() });
+        setView('canvas');
+      }}
       onHome={() => {
         onClose?.();
         setDrafts({});
@@ -440,6 +450,8 @@ function Workspace() {
               onTaskStatus={setTaskStatus}
               onTaskDetail={setTaskDetail}
               focus={focus}
+              expandRequest={expandRequest}
+              onExpandHandled={clearExpandRequest}
               drafts={drafts}
               onDraftChange={(sessionId, text) =>
                 setDrafts((current) => ({ ...current, [sessionId]: text }))

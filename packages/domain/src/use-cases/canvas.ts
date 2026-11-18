@@ -7,6 +7,7 @@ import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound, notImplemented } from '../errors.ts';
 import type { JournalEntry } from '../event.ts';
 import type { CanvasProjection, Deps } from './deps.ts';
+import { promptOpening } from '../messaging.ts';
 
 export interface LoadCanvasOptions {
   /** 侧聊默认不进画布；显式要看才带出来。 */
@@ -36,7 +37,7 @@ export async function loadCanvas(
       previews[session.id] = await deps.sessions.tail(session.id, PREVIEW_EVENTS);
       const first = await deps.sessions.firstPrompt(session.id);
       if (!first || first.event.kind !== 'prompt') return;
-      const text = first.event.text.replace(/\s+/g, ' ').trim();
+      const text = promptOpening(first.event.text);
       if (text) openings[session.id] = text;
     })
   );

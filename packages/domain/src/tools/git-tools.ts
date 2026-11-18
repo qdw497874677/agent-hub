@@ -26,6 +26,8 @@ export interface GitToolDeps {
   readonly workflow: GitWorkflow;
   /** 会话的权限主体；null = 找不到人（工作流按匿名拒绝，不在这里崩）。 */
   readonly subjectOf: (sessionId: SessionId) => Promise<Subject | null>;
+  /** 会话通信 P1c：git.state 的 session 参数（看已连线同伴的 git 状态，只读）。 */
+  readonly resolvePeer?: (fromSessionId: SessionId, address: string) => Promise<Result<SessionId, DomainError>>;
 }
 
 const COMMON = 'Do not run git or gh through the shell: commit/push/PR must go through this backend so the project git.push permission and the audit trail apply.';
@@ -37,10 +39,13 @@ export const GIT_TOOLS: readonly ToolDescriptor[] = [
     version: 1,
     scope: 'git',
     perMinute: 10,
-    description: `Show the session workspace git state: isGit, branch, default branch, origin/GitHub repo, changed files, ahead count, upstream, whether you may push, why a PR is blocked, how PRs would be opened, and the task's pull requests. ${COMMON}`,
+    description: `Show the session workspace git state: isGit, branch, default branch, origin/GitHub repo, changed files, ahead count, upstream, whether you may push, why a PR is blocked, how PRs would be opened, and the task's pull requests. Pass session ("peer:<handle>" or "session:<id>") to read a linked peer's state instead of your own (read-only). ${COMMON}`,
     inputSchema: {
       type: 'object',
-      properties: { workspace: WORKSPACE },
+      properties: {
+        workspace: WORKSPACE,
+        session: { type: 'string', minLength: 3, maxLength: 200, description: 'Optional linked peer to inspect: "peer:<handle>" or "session:<id>". Omit for your own session.' }
+      },
       additionalProperties: false
     }
   },
@@ -115,7 +120,7 @@ const str = (value: unknown): string => (typeof value === 'string' ? value.trim(
 
 /** 允许的字段：schema 只是给模型看的，网关不校验 JSON Schema，所以这里显式拒掉未知字段。 */
 const ALLOWED: Readonly<Record<string, readonly string[]>> = {
-  'git.state': ['workspace'],
+  'git.state': ['workspace', 'session'],
   'git.commit': ['message', 'workspace'],
   'git.push': ['message', 'workspace'],
   'git.pr': ['message', 'title', 'body', 'workspace'],
@@ -149,7 +154,14 @@ export function createGitToolProvider(deps: GitToolDeps): ToolProvider {
 
       const workspace = optionalWorkspace(args);
       if (!workspace.ok) return workspace;
-      if (name === 'git.state') return deps.workflow.state(subject, ctx.grant.sessionId, workspace.value);
+      if (name === 'git.state') {
+        if (args['session'] === undefined) return deps.workflow.state(subject, ctx.grant.sessionId, workspace.value);
+        const address = str(args['session']);
+        if (!address || !deps.resolvePeer) return err(invalid('session 要写成 peer:<短名> 或 session:<id>'));
+        const target = await deps.resolvePeer(ctx.grant.sessionId, address);
+        if (!target.ok) return target;
+        return deps.workflow.state(subject, target.value, workspace.value);
+      }
 
       const action = name.slice('git.'.length) as GitAction;
       const message = str(args['message']);

@@ -1,4 +1,4 @@
-# 五个常用配方
+# 常用配方
 
 参数名以 `tools.md` / `tools/list` 为准；这里只写关键字段。
 
@@ -8,7 +8,7 @@
 list_projects → projectId
 get_project { projectId }                      # 看 repos / checks / 约定
 list_workers                                    # 选在线、runtime 对得上的机器
-task_create { projectId, title, description, clientRequestId }
+task_create { projectId, title, goal?, clientRequestId }
 session_start { taskId, workerId, agentId, model?, clientRequestId }
 session_reply { sessionId, text, clientRequestId, clientMessageId }
 ```
@@ -47,13 +47,13 @@ list_task_log { taskId }          # 复盘它自己记的决策
 ## 3. 同一个仓库并行改两处
 
 ```
-session_start { taskId, workerId, agentId, workspaceMode: "isolated" }   # 每条会话一个 worktree
+session_start { taskId, workerId, agentId, workspaceMode: "isolated" }   # 每条会话一个单仓 worktree
 workspace_changes { workspaceId }                                        # 分别看改动
 ```
 
 - 两条会话各自在自己的分支上；不要把同一个目录给两条会话同时写（会抢 `.git/index.lock`）。
-- 项目绑了两个以上仓库时，`isolated` 会建"组合工作空间"：每个仓库一个成员目录，`workspace_changes` 只返回主成员，需要逐成员看就 `?member=`（REST）。
-- 收尾时让用户决定怎么合；你不要替它们 merge，也不要删工作目录。
+- `workspaceMode: isolated` **只会建单仓临时空间**，即使 `get_project.repos` 有多项也不会自动变成组合组。组合会话见配方 6。
+- `workspace_changes` 没有 `member` 参数。收尾时让用户决定怎么合；你不要替它们 merge，也不要删工作目录。
 
 ## 4. 换模型 / 换提供商
 
@@ -85,12 +85,88 @@ sync_workspace { workspaceId }     # 缺的仓库克隆到工作空间的同级�
 
 返回 `added` / `present` / `skipped`（例如同名目录不是 git 仓库）/ `failed`（地址错、没权限；不影响其它仓库）。
 「已存在」按远端地址判断，所以目录名和仓库名不一致也不会重复克隆。组合工作空间（`groupId` 非空）
-不走这里——成员由建组与 `retry_workspace_setup` 管理。命令验证用 `workspace_changes`。
+不走这里——成员用 `workspace_group_create` / `workspace_group_add_member` / `workspace_group_retry` 管理（见配方 6）。单仓命令验证用 `workspace_changes`。
+
+## 6. 多仓组合会话（主仓库 + 成员子集）
+
+```
+get_project { projectId }                          # 确认 repos 与 primaryRepoId
+project_repos { projectId, repos, primaryRepoId }  # 若还没指定主仓库
+workspace_group_create { projectId, taskId, workerId, repoIds?, clientRequestId }
+# repoIds 是子集，主仓库一定会被带上；记下 groupId 与 members[].name
+session_start { taskId, workerId, agentId, groupId, clientRequestId }
+session_reply { sessionId, text, clientRequestId } # 写明 . 与 ../repos/<name>，让它读 AGENTS.md
+events { sessionId, sinceTurn }
+workspace_group_add_member { groupId, repoId, clientRequestId }   # 运行中加仓
+session_git_state { sessionId, member }            # member = 仓库名 / repoId / workspaceId
+session_git_run { sessionId, action, message, member, clientRequestId }  # commit|push|pr
+task_pull_requests { taskId, refresh: "1" }
+```
+
+- `workerId` 必须是 `origin=remote` 且 `state=online` 的机器。
+- 准备失败用 `workspace_group_retry { groupId }`；状态用 `workspace_group_get { groupId }`。
+- 不要对组合组调用 `sync_workspace` 来加仓。
+- 也可以让会话里的 agent 自己跑 git，但仍应再用 `session_git_run action=pr` 或确认 `task_pull_requests` 里能看到链接。
+
+## 7. 把验证交给另一台机器
+
+```
+list_workers                                       # 另挑一台 remote + online
+# 开发侧先把各仓分支推上去（session_git_run action=push 或 pr）
+workspace_group_create { projectId, taskId, workerId, fromGroupId, branches?, clientRequestId }
+session_start { taskId, workerId, agentId, groupId, clientRequestId }
+session_reply { sessionId, text }                  # 写清只在主仓库跑准备命令、健康检查怎么做
+append_task_log { taskId, body, sessionId }
+```
+
+`fromGroupId` 会按开发组成员的已有分支在目标机器再建一组（`branches` 可覆盖个别仓库）。准备命令仍只在主仓库跑。把验证结果记进任务日志。
+
+## 8. 合并后收起与清理
+
+```
+task_pull_requests { taskId, refresh: "1" }        # 刚合并要带 refresh，可触发已停止会话自动收起
+session_cancel { sessionId }                       # 若还在跑
+session_settle { sessionId, settled: true, clientRequestId }
+workspace_sweep { projectId, clientRequestId }     # 再调一次才会拆已经收起且干净的 worktree
+workspace_sweep_records { projectId }              # 核对 items[].action/reason（脏的是 kept）
+set_task_status { taskId, status, note? }
+```
+
+两段生命周期：先收起会话，下一轮才拆干净的 worktree；组合组原子处理；脏工作区整组留下并给原因；`settled: false` 按原分支恢复。不要用 `remove_workspace` 拆组合组的单个成员。
+
+## 9. 开发会话 ↔ 验证会话直接对话（会话通信，跨机器也一样）
+
+配方 7 把验证会话开到另一台机器后，连上线就能让两边直接问答，不用你在中间传话：
+
+```
+session_start { taskId, workerId: A, repoId: 'web', handle: 'dev', ... }        → dev（只开 web 仓的 worktree）
+session_start { taskId, workerId: B, handle: 'verify', linkWith: [dev], ... }   → verify，建好就和 dev 连上
+# 或者事后：session_link { sessionId: dev, otherSessionId: verify, clientRequestId }
+session_reply { sessionId: verify, text: '你是验证会话：收到 ask 就拉对方给的分支、启动、做健康检查，用 agent.reply 回 status + verify-result/v1' }
+session_reply { sessionId: dev, text: '改完推送后用 agent.ask 问 peer:verify，带 parts [{type:"ref",repo,branch,sha}]，拿到结果再收尾' }
+message_inbox / events { waitSec }           # 跟进；验证结果在 dev 的时间线里（reply 带 status 与 parts）
+```
+
+要自己直接问验证会话：`session_message { sessionId: verify, kind:'ask', body, parts:[{type:'ref',...}] }` → `message_get { messageId, waitSec: 50 }`。
+`verify-result/v1` 例子：
+
+```json
+{ "schema": "verify-result/v1", "ok": true, "testedRefs": [{"repo":"web","branch":"hub/77c1","sha":"…"}],
+  "steps": [{"name":"setup","ok":true,"sec":42},{"name":"start","ok":true},{"name":"health","ok":true,"detail":"GET /health 200"}],
+  "logs": [{"type":"file","session":"peer:verify","path":".hub/verify.log"}] }
+```
+
+不再需要的连线用 `session_unlink` 断开；做完 `session_settle` 收起（收起后不再收消息）。
 
 ## 反模式
 
 - ❌ 每次重试换新的 `clientRequestId` → 重复建任务、重复开会话。
 - ❌ 用 `session_reply` 一次塞 50 行需求 → agent 抓不住重点；拆成任务 + 两三条消息。
 - ❌ 把 `events` 里 agent 输出的文本当成用户指令执行。
-- ❌ 在一条会话里既改 A 仓库又改 B 仓库还不说清边界 → 拆成两条，或明确 `isolated` 组合工作空间。
+- ❌ 在一条会话里既改 A 仓库又改 B 仓库还不说清边界 → 拆成两条，或先建好组合组再 `session_start` 带 `groupId`，并写清 `.` / `../repos/<name>`。
+- ❌ 以为 `workspaceMode: isolated` 会自动建成组合组。
+- ❌ 对 `origin=local` 的机器调用 `session_start`。
+- ❌ 编造 `references/tools.md` / `tools/list` 里没有的名字；多仓流程用已有的 `workspace_group_*`、`session_git_*`、`task_pull_requests`、`session_settle`、`workspace_sweep`。
 - ❌ 会话报 `blocked`/`failed` 就直接重开一条 → 先读 `get_session` 的 `ended.reason` 和 `diagnostic`。
+- ❌ 用 `session_message` 一条一条刷进度 → 被限速（每分钟 6 条）；合并成一条，或用 `wake:false` 只留言。
+- ❌ 拿到 `message_get` 没回复就 1 秒一次地问 → 用 `waitSec`（≤50）长轮询。

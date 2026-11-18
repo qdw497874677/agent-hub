@@ -292,7 +292,7 @@ test('开会话：workspaceMode=isolated 一定新开临时空间，不静默复
   assert.equal(made?.kind, 'temporary');
 });
 
-test('同步仓库：project_repos 加的仓库能在已有工作空间里补克隆（#236）', async () => {
+test('同步仓库：项目绑定多个仓库时拒绝补克隆同级目录，引导使用组合工作空间', async () => {
   const { david, mint, api, world } = await setup();
   const call = api((await mint(david, ['projects:read', 'projects:write'])).token);
   const project = (await call('/projects', post({ name: 'p', repoUrl: 'https://example.com/core.git' }))).body;
@@ -303,6 +303,7 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   world.git.repos.add(workspace.value.path);
   world.git.remotes.set(workspace.value.path, 'https://example.com/core.git');
   world.git.absent.add('/srv/work/agent-hub-workspaces/docs');
+  const clonesBefore = world.git.calls.filter((line: string) => line.includes(':clone:')).length;
 
   const updated = await call(`/projects/${project.id}/repos`, {
     method: 'PUT',
@@ -317,16 +318,31 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
 
   const synced = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
+  assert.equal(synced.status, 400, JSON.stringify(synced.body));
+  assert.match(String(synced.body.error?.message ?? synced.body.message ?? ''), /组合工作空间/);
+  assert.equal(world.git.calls.filter((line: string) => line.includes(':clone:')).length, clonesBefore, '不得克隆未登记的同级目录');
+});
+
+test('同步仓库：单仓项目只报告已在场的仓库，不克隆；清单里的凭据名不会回给出站', async () => {
+  const { david, mint, api, world } = await setup();
+  const call = api((await mint(david, ['projects:read', 'projects:write'])).token);
+  const project = (await call('/projects', post({ name: 'p', repoUrl: 'https://example.com/core.git' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online', roots: ['/srv/work'] } as never);
+  const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/work/agent-hub-workspaces/demo', kind: 'long_lived', source: 'cloned', repoUrl: 'https://example.com/core.git', isGit: true, now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  world.git.repos.add(workspace.value.path);
+  world.git.remotes.set(workspace.value.path, 'https://example.com/core.git');
+
+  const synced = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
   assert.equal(synced.status, 200, JSON.stringify(synced.body));
-  assert.deepEqual(synced.body.added, [{ name: 'docs', path: '/srv/work/agent-hub-workspaces/docs' }]);
+  assert.deepEqual(synced.body.added, []);
   assert.deepEqual(synced.body.present, [{ name: 'core', path: workspace.value.path }]);
 
-  // 再同步一次：什么都不做（幂等工具因此可以放心重试）
   const again = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
   assert.equal(again.status, 200, JSON.stringify(again.body));
   assert.deepEqual(again.body.added, []);
 
-  // 私有仓库：清单里的 credential 要在克隆时真正变成 Authorization 头（只在密钥箱里，不回给调用方）
   const privateRepo = await call(`/projects/${project.id}/repos`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -334,14 +350,6 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   });
   assert.equal(privateRepo.status, 200, JSON.stringify(privateRepo.body));
   assert.ok(!JSON.stringify(privateRepo.body).includes('tok-123'));
-  world.git.absent.add('/srv/work/agent-hub-workspaces/secret-repo');
-  const withToken = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
-  assert.equal(withToken.status, 200, JSON.stringify(withToken.body));
-  const header = Buffer.from('x-access-token:tok-123').toString('base64');
-  assert.ok(
-    world.git.authCalls.some((line) => line.includes(':clone:https://code.example.com/team/secret.git') && line.includes(header)),
-    `克隆该私有仓库时要带令牌头：${world.git.authCalls.join('\n')}`
-  );
 });
 
 test('限流：超了 429 + Retry-After', async () => {
@@ -379,7 +387,7 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
   // 只列这个令牌用得了的：projects:read 只有项目 / 任务，看不到会话、资产（#E4）
-  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'workspace_changes']);
+  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'task_pull_requests', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
   // 写工具不进清单；注解标成只读。
   assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
   const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
@@ -400,6 +408,52 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   assert.equal(anonymous.status, 401);
 });
 
+test('MCP：resources 可列出并读取 agent-hub-workbench skill；公开 GET 同样能下载', async () => {
+  const { mint, david, app } = await setup();
+  const token = (await mint(david, ['projects:read'])).token;
+  const rpc = async (body: unknown) => {
+    const response = await app.fetch(new Request('http://hub/openapi/v1/mcp', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify(body) }));
+    return { status: response.status, body: (await response.json().catch(() => null)) as any };
+  };
+  const init = await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+  assert.equal(init.status, 200, JSON.stringify(init.body));
+  assert.ok(init.body.result.capabilities.resources, 'initialize 应声明 resources 能力');
+  const listed = await rpc({ jsonrpc: '2.0', id: 2, method: 'resources/list', params: {} });
+  const uris = (listed.body.result.resources as { uri: string }[]).map((item) => item.uri);
+  assert.ok(uris.includes('skill://agent-hub-workbench/SKILL.md'), JSON.stringify(uris));
+  const toolsListed = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+  assert.ok((toolsListed.body.result.tools as { name: string }[]).some((tool) => tool.name === 'list_projects'));
+  const read = await rpc({ jsonrpc: '2.0', id: 4, method: 'resources/read', params: { uri: 'skill://agent-hub-workbench/SKILL.md' } });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  const text = read.body.result.contents[0].text as string;
+  assert.match(text, /session_start/);
+  assert.match(text, /project_repos/);
+  assert.match(text, /primaryRepoId/);
+  assert.match(text, /events/);
+  // skill 点到的工具名必须出现在完整 MCP 清单里（以路由元数据为准，不看当前令牌的子集）
+  const catalog = new Set(mcpToolsFor(undefined, { writes: true }).map((tool) => tool.name));
+  for (const name of ['list_projects', 'get_project', 'list_workers', 'task_create', 'session_start', 'session_reply', 'events', 'get_session', 'workspace_changes', 'project_repos', 'sync_workspace']) {
+    assert.ok(text.includes(name), `skill 应提到 ${name}`);
+    assert.ok(catalog.has(name), `skill 写了不存在的工具：${name}`);
+  }
+  assert.match(text, /workspace_group_create|没有.*建组合组|不能建组合组/);
+  const missing = await rpc({ jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'skill://agent-hub-workbench/nope.md' } });
+  assert.ok(missing.body.error || missing.body.result?.isError, JSON.stringify(missing.body));
+
+  const json = await app.fetch(new Request('http://hub/openapi/v1/skills/agent-hub-workbench?format=json'));
+  assert.equal(json.status, 200, await json.clone().text());
+  const manifest = (await json.json()) as { name: string; files: { path: string }[] };
+  assert.equal(manifest.name, 'agent-hub-workbench');
+  assert.ok(manifest.files.some((file) => file.path === 'SKILL.md'));
+  const zip = await app.fetch(new Request('http://hub/openapi/v1/skills/agent-hub-workbench'));
+  assert.equal(zip.status, 200);
+  assert.equal(zip.headers.get('content-type'), 'application/zip');
+  assert.match(zip.headers.get('content-disposition') ?? '', /agent-hub-workbench\.zip/);
+  const bytes = Buffer.from(await zip.arrayBuffer());
+  assert.equal(bytes[0], 0x50);
+  assert.equal(bytes[1], 0x4b);
+});
+
 test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口要更新快照）', async () => {
   const { app } = await setup();
   const live = await (await app.fetch(new Request('http://hub/openapi/v1/openapi.json'))).json();
@@ -410,7 +464,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 30);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 40);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -429,9 +483,22 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
 
 test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
-  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create']);
+  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 12);
+  assert.equal(mcpTools({ readOnly: true }).length, 19);
+  const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
+  const workspaceNames = workspaceTools.map((t) => t.name).sort();
+  for (const name of [
+    'workspace_group_add_member',
+    'workspace_group_create',
+    'workspace_group_get',
+    'workspace_group_retry',
+    'workspace_sweep',
+    'workspace_sweep_records',
+    'create_workspace',
+    'sync_workspace'
+  ]) assert.ok(workspaceNames.includes(name), name);
+  assert.ok(workspaceTools.filter((t) => !t.readOnly && (t.name.startsWith('workspace_group_') || t.name.startsWith('workspace_sweep'))).every((t) => t.idempotent));
   // 资产自动化：三个新写工具只在开了写开关时出现，且都可重放
   const assetWrites = mcpTools({ modules: new Set(['assets']), writes: true });
   assert.deepEqual(assetWrites.map((t) => t.name).sort(), ['asset_assign', 'asset_create', 'asset_import', 'asset_publish', 'get_asset', 'list_assets']);
@@ -696,6 +763,7 @@ test('MCP 工具清单按令牌权限筛：只列令牌用得了的（#E4）', (
   // 只有 sessions:write 看不到项目写工具
   const sessions = names(['sessions:write']);
   assert.ok(sessions.includes('session_start') && !sessions.includes('project_create') && !sessions.includes('list_projects'));
+  assert.ok(sessions.includes('session_settle') && sessions.includes('session_git_run') && sessions.includes('session_git_state'));
   // 没有令牌信息（单测直接调）时不筛
   assert.equal(mcpToolsFor(undefined, policy).length, mcpTools(policy).length);
 });
@@ -733,7 +801,7 @@ test('外部接入：限定项目的令牌经 MCP 只看得到选中的项目；
   assert.ok(calls.some((row) => row.detail.startsWith('get_project · 失败')));
   // 能用的工具数：projects:read → 项目 + 任务的只读工具
   const tools = await david(`/api/tokens/${info.id}/tools`);
-  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'workspace_changes']);
+  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'task_pull_requests', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
 });
 
 test('外部接入：轮换后旧令牌 401、新令牌可用，旧记录留在列表里', async () => {
@@ -951,4 +1019,55 @@ test('MCP session_model：写工具要 clientRequestId，换模型不重启进�
   const frame = world.dispatched.filter((c: { kind: string }) => c.kind === 'set_option').at(-1) as { optionId?: string; value?: unknown } | undefined;
   assert.equal(frame?.optionId, 'model');
   assert.equal(frame?.value, 'm2');
+});
+
+test('MCP 多仓工具：写要 clientRequestId；缺 git 时 503；缺主仓库建组失败', async () => {
+  const { david, mint, app } = await setup();
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'files:read', 'workers:read'])).token;
+  const rpc = async (body: unknown) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify(body)
+      }),
+      { mcpPolicy: { readOnly: false, writes: true } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+  const list = await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  const names = (list.result.tools as { name: string }[]).map((t) => t.name);
+  for (const name of [
+    'workspace_group_create',
+    'workspace_group_get',
+    'workspace_group_add_member',
+    'workspace_group_retry',
+    'session_git_state',
+    'session_git_run',
+    'task_pull_requests',
+    'session_settle',
+    'workspace_sweep',
+    'workspace_sweep_records'
+  ]) assert.ok(names.includes(name), name);
+
+  const noKey = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'workspace_group_create', arguments: { projectId: 'p', taskId: 't' } } });
+  assert.equal(noKey.result.isError, true);
+  assert.match(noKey.result.content[0].text, /clientRequestId/);
+
+  const noPrimary = await rpc({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'workspace_group_create', arguments: { projectId: 'missing', taskId: 't', workerId: 'w1', clientRequestId: 'g1' } }
+  });
+  assert.equal(noPrimary.result.isError, true);
+
+  const noGit = await rpc({
+    jsonrpc: '2.0',
+    id: 4,
+    method: 'tools/call',
+    params: { name: 'session_git_state', arguments: { sessionId: 's1', member: 'api' } }
+  });
+  assert.equal(noGit.result.isError, true);
+  assert.match(JSON.stringify(noGit.result), /Git 工作流未就绪|没有这个|不存在|404|503/);
 });

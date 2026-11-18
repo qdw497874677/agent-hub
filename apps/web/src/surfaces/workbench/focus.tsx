@@ -4,7 +4,7 @@ import { ProvenanceRow } from '../../atoms/provenance-row.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
-import { api, sessionGroupId, sessionsApi } from '../../shell/api.ts';
+import { api, sessionGroupId } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
@@ -20,13 +20,14 @@ import { backgroundActivityText } from '../../atoms/background-activity.ts';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
 import { sessionCommands } from '../../atoms/commands.ts';
-import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsFetching, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
 import { filesInvalidationKeys, filesKeys, gitKeys, sessionKeys, taskKeys } from '../../shell/query-keys.ts';
 import { filesApi } from '../../shell/api.ts';
 import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
 import { appendRef } from '../../atoms/diff-selection.ts';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
+import { RepoSwitcher, useSessionRepo } from './repo-switcher.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
 import { SESSION_TABS, readStoredTab, sessionTabLabel, stepTab, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
@@ -51,7 +52,9 @@ import { sessionLinkInfo } from '../../atoms/session-link-info.ts';
 import { SaveAgentProfileDialog } from '../../shell/agent-profile-dialog.tsx';
 import { AgentProfilesDialog } from '../../shell/agent-profiles-dialog.tsx';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
-import { deleteSessionBlockedHint, edgeSurvivesSession } from '../../atoms/delete-session.ts';
+import { deleteSessionBlockedHint } from '../../atoms/delete-session.ts';
+import { DELETE_HINT, FORK_HINT, normalizeSessionTitle, pinHint, settleGate } from '../../atoms/session-actions.ts';
+import { useSessionActions } from '../../atoms/use-session-actions.ts';
 import { environmentNotice } from '../../atoms/environment-notice.ts';
 import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
 import { heldPromptSeqs, markQueued } from '../../atoms/prompt-delivery.ts';
@@ -222,16 +225,47 @@ export function FocusView({
     openChanges: () => setTab('changes')
   }), [workspaceRoot]);
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
+  // 组合会话按当前选中的成员仓库取 git / 文件；单仓 member 为 null，行为与原来一样。
+  const repo = useSessionRepo(session.id, session.workspaceId);
+  const repoWorkspaceId = repo.selected ?? session.workspaceId;
+  const [addingRepo, setAddingRepo] = useState<string | null>(null);
+  const addableRepos = (canvas.project.repos ?? []).filter(
+    (item) => !repo.members.some((member) => member.repoId === item.id || member.name === item.name)
+  );
+  const addRepo = async (repoId: string) => {
+    if (groupId === null) return;
+    setAddingRepo(repoId);
+    try {
+      await api.addWorkspaceGroupMember(groupId, { repoId });
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: ['files', session.id, 'combo-context'] }),
+        queries.invalidateQueries({ queryKey: ['workspace-group', groupId] })
+      ]);
+    } finally {
+      setAddingRepo(null);
+    }
+  };
+  const switcher = repo.isCombo || addableRepos.length > 0 ? (
+    <RepoSwitcher
+      members={repo.members}
+      selected={repo.selected}
+      onSelect={repo.setSelected}
+      statuses={repo.statuses}
+      addable={addableRepos}
+      onAdd={(id) => void addRepo(id)}
+      adding={addingRepo}
+    />
+  ) : null;
   // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
-  const fileKeys = filesKeys(session.workspaceId, session.id);
+  const fileKeys = filesKeys(repoWorkspaceId, session.id);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
   useEffect(() => {
     if (tab !== 'files' && tab !== 'changes') return;
-    const keys = filesKeys(session.workspaceId, session.id);
+    const keys = filesKeys(repoWorkspaceId, session.id);
     for (const prefix of filesInvalidationKeys(keys)) {
       void queries.invalidateQueries({ queryKey: prefix });
     }
-  }, [tab, session.id, session.workspaceId, queries]);
+  }, [tab, session.id, repoWorkspaceId, queries]);
   const refreshing = useIsFetching({
     predicate: (q) => q.queryKey[0] === 'files' && (q.queryKey[1] === fileKeys.dir[1] || q.queryKey[1] === session.id)
   }) > 0;
@@ -254,11 +288,9 @@ export function FocusView({
   const settled = session.settledAt != null;
   // 常驻：Worker 不按空闲回收这条会话，也不占保活上限。
   const pinned = session.pinned === true;
-  const settleHint = settled
-    ? '回到侧栏的活跃列表，随时可以再收起'
-    : status === 'running'
-      ? '会话还在跑，停下来才能收起'
-      : '做完的会话移出活跃列表；画布上仍然看得到';
+  const settle = settleGate({ settled, status });
+  // 改名、分叉、收起、常驻、删除后的缓存改写：和侧栏行菜单是同一份（atoms/use-session-actions.ts）。
+  const actions = useSessionActions(canvas.project.id);
   // 终端页签：会话跑着、机器在线、且没被探测成「不支持」才出现（docs/design/terminal.md §7）。
   const workers = useWorkers();
   const worker = resolveWorker(workers.list, session.workerId);
@@ -414,28 +446,37 @@ export function FocusView({
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
   useEffect(() => {
-    const keys = filesKeys(session.workspaceId, session.id);
+    const keys = filesKeys(repoWorkspaceId, session.id);
     for (const prefix of filesInvalidationKeys(keys)) {
       void queries.invalidateQueries({ queryKey: [...prefix, 'changes'] }, { cancelRefetch: false });
     }
-    void queries.invalidateQueries({ queryKey: gitKeys.state(session.workspaceId, session.id) }, { cancelRefetch: false });
+    void queries.invalidateQueries({ queryKey: gitKeys.state(repoWorkspaceId, session.id) }, { cancelRefetch: false });
     // 下一轮开始后才生效，所以回合结束时重问一次环境版本：提示该消失时就消失。
     void queries.invalidateQueries({ queryKey: sessionKeys.environment(session.id) }, { cancelRefetch: false });
-  }, [status, session.id, session.workspaceId, queries]);
+  }, [status, session.id, repoWorkspaceId, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
-  const sessionChanges = shown(useQuery({
-    ...FILES_QUERY,
-    queryKey: fileKeys.changes('session'),
-    queryFn: () => filesApi.changes(session.id, 'session')
-  }));
+  const changeQueries = useQueries({
+    queries: (repo.isCombo && repo.members.length > 0 ? repo.members : [{ workspaceId: repo.selected ?? repoWorkspaceId, state: 'ready' as const }]).map((item) => ({
+      ...FILES_QUERY,
+      queryKey: [...fileKeys.changes('session'), item.workspaceId],
+      queryFn: () => filesApi.changes(session.id, 'session', repo.isCombo ? item.workspaceId : repo.selected),
+      enabled: !('state' in item) || item.state === 'ready'
+    }))
+  });
   // 没有 git 基准（非 git 目录）时算不出改动：标签上不写「改动 0」，免得读成「agent 什么都没改」
-  const changeCount = sessionChanges === undefined || sessionChanges.commit === null ? undefined : sessionChanges.files.length;
-  const workspace = canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
+  const changeCount = (() => {
+    const rows = changeQueries.map((item) => shown(item));
+    if (rows.some((row) => row === undefined)) return undefined;
+    if (rows.every((row) => row?.commit === null)) return undefined;
+    return rows.reduce((sum, row) => sum + (row?.files.length ?? 0), 0);
+  })();
+  const workspace = canvas.workspaces.find((candidate) => candidate.id === repoWorkspaceId)
+    ?? canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
   // 和 OpenCode 一样把当前分支放在输入框旁边；分支可能被 agent 切换，所以回合结束后刷新。
   const gitState = shown(useQuery({
-    queryKey: gitKeys.state(session.workspaceId, session.id),
-    queryFn: () => gitApi.state(session.id),
-    enabled: workspace !== undefined && workspace.isGit !== false,
+    queryKey: gitKeys.state(repoWorkspaceId, session.id),
+    queryFn: () => gitApi.state(session.id, repo.selected),
+    enabled: repo.isCombo || (workspace !== undefined && workspace.isGit !== false),
     staleTime: 15_000,
     retry: false
   }));
@@ -444,7 +485,7 @@ export function FocusView({
   const [rewindAt, setRewindAt] = useState<number | null>(null);
   useEffect(() => setRewindAt(null), [session.id]);
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
-  const turns = shown(useQuery({ ...FILES_QUERY, queryKey: fileKeys.turns(), queryFn: () => filesApi.turns(session.id) })) ?? [];
+  const turns = shown(useQuery({ ...FILES_QUERY, queryKey: fileKeys.turns(), queryFn: () => filesApi.turns(session.id, repo.selected) })) ?? [];
   const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
   // 排队 / 发送中 / 未送达的用户消息：只在原地淡一点、多一行小字，不搬家。
   // 以前它们会被抽到输入框上方的独立区块，一条消息在「列表末尾 → 底部区块 → 列表中间」
@@ -510,15 +551,14 @@ export function FocusView({
   }
 
   function saveRename() {
-    const next = titleDraft.replace(/\s+/g, ' ').trim();
     setRenaming(false);
-    if (next === (session.title ?? '')) return;
-    void run(() => api.renameSession(session.id, next));
+    if (normalizeSessionTitle(titleDraft) === (session.title ?? '')) return;
+    void run(() => actions.rename(session, titleDraft));
   }
 
   function fork() {
     void run(async () => {
-      const created = await api.fork({ sessionId: session.id, agentId: session.agentId, model: session.model });
+      const created = await actions.fork(session);
       onOpenSession(created.id);
     });
   }
@@ -528,61 +568,15 @@ export function FocusView({
    * 再让画布与首页去问服务端要真数据。失败落在 Composer 上方的就地错误里（和改名、分叉一样）。
    */
   async function setSettled(next: boolean): Promise<void> {
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await api.settleSession(session.id, next);
-      const settledAt = next ? (updated.settledAt ?? Date.now()) : null;
-      queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
-        current
-          ? {
-              ...current,
-              sessions: current.sessions.map((item) => (item.id === session.id ? { ...item, settledAt } : item))
-            }
-          : current
-      );
-      onChanged();
-      void queries.invalidateQueries({ queryKey: ['home'] });
-      void queries.invalidateQueries({ queryKey: ['session', session.id] });
-    } catch (failure) {
-      setError((failure as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    await run(() => actions.setSettled(session, next));
   }
 
   /**
    * 常驻开关：先把画布缓存和单条会话缓存里的 `pinned` 改成目标值，卡片上的小图钉和头部标记
-   * 立刻反应；成功后写回服务端版本，失败就翻回原值，错误落在 Composer 上方的就地提示里。
+   * 立刻反应；失败翻回原值，错误落在 Composer 上方的就地提示里。
    */
   async function setPinned(next: boolean): Promise<void> {
-    setBusy(true);
-    setError(null);
-    const write = (value: boolean): void => {
-      queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
-        current
-          ? {
-              ...current,
-              sessions: current.sessions.map((item) => (item.id === session.id ? { ...item, pinned: value } : item))
-            }
-          : current
-      );
-      // 侧聊这类不进画布的会话：单条查询是它唯一的缓存。
-      queries.setQueryData<SessionDto>(['session', session.id], (current) =>
-        current === undefined ? current : { ...current, pinned: value }
-      );
-    };
-    write(next);
-    try {
-      const updated = await sessionsApi.pin(session.id, next);
-      write(updated.pinned === true);
-      onChanged();
-    } catch (failure) {
-      write(pinned);
-      setError((failure as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    await run(() => actions.setPinned(session, next));
   }
 
   async function run(action: () => Promise<unknown>): Promise<boolean> {
@@ -767,7 +761,7 @@ export function FocusView({
                 <MenuGroup label="这次会话" className="border-t border-hair sm:border-t-0">
                   <MenuItem
                     title="分叉"
-                    hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
+                    hint={forkHint ?? FORK_HINT}
                     disabled={!forkable}
                     onClick={() => {
                       close();
@@ -804,8 +798,8 @@ export function FocusView({
                   />
                   <MenuItem
                     title={settled ? '移回活跃列表' : '收起：移出活跃列表'}
-                    hint={settleHint}
-                    disabled={!settled && status === 'running'}
+                    hint={settle.hint}
+                    disabled={settle.disabled}
                     testId="session-settle"
                     onClick={() => {
                       close();
@@ -814,7 +808,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title={pinned ? '取消常驻' : '设为常驻'}
-                    hint={pinned ? '恢复按空闲回收' : '不按空闲回收，适合长期跑本地服务'}
+                    hint={pinHint(pinned)}
                     testId="session-pin"
                     onClick={() => {
                       close();
@@ -823,7 +817,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title="删除会话…"
-                    hint={deleteHint ?? '永久删除这条会话的会话记录、产物引用和连线；工作目录里的文件保留'}
+                    hint={deleteHint ?? DELETE_HINT}
                     disabled={deleteHint !== null}
                     danger
                     testId="session-delete"
@@ -884,7 +878,7 @@ export function FocusView({
       {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
       <AttentionAutoAck sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
-      {gitOpen ? <GitDialog sessionId={session.id} workspaceId={session.workspaceId} taskId={session.taskId} onClose={() => setGitOpen(false)} /> : null}
+      {gitOpen ? <GitDialog sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} taskId={session.taskId} onClose={() => setGitOpen(false)} switcher={switcher} /> : null}
       {subagentPath.length > 0 ? (
         <SubagentPanel
           blocks={blocks}
@@ -944,7 +938,7 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} workspaceId={session.workspaceId} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} />
+            <FilesBrowser tab={t} sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} switcher={switcher} members={repo.members} />
           </div>
         ) : null
       )}
@@ -1018,15 +1012,7 @@ export function FocusView({
           }}
           onDeleted={() => {
             // 先就地摘掉，画布窗口、打开的会话都立刻跟着消失；再让外层重拉服务端的真数据。
-            queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
-              current
-                ? {
-                    ...current,
-                    sessions: current.sessions.filter((item) => item.id !== session.id),
-                    edges: current.edges.filter((edge) => edgeSurvivesSession(edge, session.id))
-                  }
-                : current
-            );
+            actions.forget(session.id);
             setDeleting(false);
             onChanged();
           }}
@@ -1170,7 +1156,7 @@ export function FocusView({
             </div>
           ) : null}
           {/* 输入框上方的状态行：在跑时是「● 正在做什么 · 几秒」，不跑时是分支；右边是上下文占用 */}
-          {progress || gitState?.isGit || live?.contextUsage ? (
+          {progress || gitState?.isGit || live?.contextUsage || repo.isCombo ? (
             <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
               {progress ? (
                 <div
@@ -1187,6 +1173,7 @@ export function FocusView({
                 </div>
               ) : <span />}
               <div className="flex min-w-0 shrink-0 items-center gap-3">
+                {switcher}
                 {gitState?.isGit ? (
                   <button
                     type="button"

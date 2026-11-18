@@ -6,6 +6,7 @@ import { api } from '../../shell/api.ts';
 import { StatusPill } from '../../atoms/status.tsx';
 import type { LiveSession } from '../../atoms/live.ts';
 import { SessionAssets } from '../../atoms/session-assets.tsx';
+import { SessionPeers } from '../../atoms/session-peers.tsx';
 import { SessionMessages } from '../../atoms/session-messages.tsx';
 import { SessionContext } from '../../atoms/session-context.tsx';
 import { SessionServices } from '../../atoms/services-section.tsx';
@@ -217,6 +218,7 @@ export function SessionDetails({ canvas, session, artifacts, live, onClose, onBr
             )}
           </section>
           <SessionAssets sessionId={session.id} detailed />
+          <SessionPeers sessionId={session.id} />
           <SessionMessages sessionId={session.id} />
           <section>
             <button className="text-meta text-link hover:text-primary" onClick={onBrowseFiles} data-testid="open-files">浏览文件</button>

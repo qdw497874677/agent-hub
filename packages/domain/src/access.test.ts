@@ -271,6 +271,8 @@ test('令牌：hub 级、team.roles、本机 Worker 永远授不出去，哪怕�
   for (const permission of TOKEN_NEVER_GRANTABLE) assert.ok(!all.includes(permission), permission);
   assert.equal(permissionsOf(['sessions:write']).includes('provider.use'), false);
   assert.equal(permissionsOf(['sessions:write']).includes('session.delete'), false, '会话写令牌也不能删会话');
+  assert.ok(permissionsOf(['sessions:write']).includes('session.settle'), '会话写令牌可以收起');
+  assert.ok(permissionsOf(['sessions:write']).includes('git.push'), '会话写令牌可以推送/开 PR');
   assert.ok(permissionsOf(['providers:use']).includes('provider.use'));
   assert.ok(permissionsOf(['providers:use']).includes('provider.read'));
   assert.equal(permissionsOf(['providers:use']).includes('provider.manage'), false);

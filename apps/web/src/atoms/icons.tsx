@@ -142,7 +142,14 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   stethoscope: <path d="M5 3v6a5 5 0 0 0 10 0V3M10 14v2a5 5 0 0 0 10 0v-2M20 12a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />,
-  queue: <path d="M4 6h16M4 12h10M4 18h6M17 15l3 3-3 3" />
+  queue: <path d="M4 6h16M4 12h10M4 18h6M17 15l3 3-3 3" />,
+  more: (
+    <>
+      <circle cx="5" cy="12" r="1" />
+      <circle cx="12" cy="12" r="1" />
+      <circle cx="19" cy="12" r="1" />
+    </>
+  )
 };
 
 export function Icon({ name, size = 16, className = '' }: { name: IconName; size?: number; className?: string }) {

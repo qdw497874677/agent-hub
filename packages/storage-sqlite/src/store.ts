@@ -183,6 +183,13 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!taskColumns.some((column) => column.name === 'default_agent')) {
     db.exec('ALTER TABLE tasks ADD COLUMN default_agent TEXT');
   }
+  // 子模块策略：NULL / 'off' = 不拉（老数据）；'recursive' = 之后新建的 clone / worktree 递归初始化。
+  if (!projectColumns.some((column) => column.name === 'submodules')) {
+    db.exec("ALTER TABLE projects ADD COLUMN submodules TEXT");
+  }
+  if (!projectColumns.some((column) => column.name === 'primary_repo_id')) {
+    db.exec('ALTER TABLE projects ADD COLUMN primary_repo_id TEXT');
+  }
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
@@ -257,13 +264,13 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, checks, asset_set_ids, default_agent, created_at, team_id, created_by, members, deleted_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, primary_repo_id, description, worktree_config, preview_port, checks, asset_set_ids, default_agent, submodules, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
-      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, description = excluded.description, ' +
+      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, primary_repo_id = excluded.primary_repo_id, description = excluded.description, ' +
       'worktree_config = excluded.worktree_config, preview_port = excluded.preview_port, checks = excluded.checks, ' +
       // 组合引用只在显式给的时候写：旧快照回写不能把用户的绑定冲掉。
-      'asset_set_ids = COALESCE(excluded.asset_set_ids, projects.asset_set_ids), ' +
+      'asset_set_ids = COALESCE(excluded.asset_set_ids, projects.asset_set_ids), submodules = excluded.submodules, ' +
       // 实体始终带 default_agent（null = 没配），这里不能用 COALESCE：否则清空默认 Agent 写不进去。
       'default_agent = excluded.default_agent, ' +
       'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
@@ -415,6 +422,7 @@ export function openSqliteStore(file: string): SqliteStore {
     { sql: 'DELETE FROM agent_group_sessions WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM agent_messages WHERE from_session_id = ? OR target_session_id = ?', bindings: 2 },
     { sql: 'DELETE FROM agent_spawns WHERE session_id = ? OR spawner_session_id = ?', bindings: 2 },
+    { sql: 'DELETE FROM agent_session_handles WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM agent_task_request WHERE session_id = ?', bindings: 1 },
     { sql: 'DELETE FROM session_provenance WHERE session_id = ?', bindings: 1 },
     // 显式授权按资源键关联（审核人共用这张表），也要跟着会话清掉
@@ -461,12 +469,14 @@ export function openSqliteStore(file: string): SqliteStore {
         primary?.url ?? null,
         primary?.defaultBranch ?? null,
         JSON.stringify(project.repos),
+        project.primaryRepoId ?? null,
         project.description,
         project.worktree ? JSON.stringify(project.worktree) : null,
         project.previewPort ?? null,
         JSON.stringify(project.checks),
         project.assetSetIds == null ? null : JSON.stringify(project.assetSetIds),
         project.defaultAgent == null ? null : JSON.stringify(project.defaultAgent),
+        project.submodules === 'recursive' ? 'recursive' : 'off',
         project.createdAt,
         project.teamId,
         project.createdBy,

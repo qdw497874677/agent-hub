@@ -62,6 +62,15 @@ export function WorkspaceCleanup({ projectId }: { projectId: string }) {
             />
             天删除
           </label>
+          <label className="flex flex-wrap items-center gap-2">
+            <input
+              type="checkbox"
+              checked={p.deleteWorktreeOnSessionDelete === true}
+              onChange={(e) => save.mutate({ deleteWorktreeOnSessionDelete: e.target.checked })}
+              data-testid="cleanup-delete-worktree"
+            />
+            删会话时同时删除工作目录
+          </label>
         </div>
       ) : null}
       <button type="button" className={SECONDARY_BUTTON} disabled={sweep.isPending} onClick={() => sweep.mutate()}>

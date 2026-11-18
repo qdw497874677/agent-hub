@@ -1,14 +1,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryDeps } from '../testing/in-memory.ts';
-import { createProjectUseCase } from './projects.ts';
+import { createProjectUseCase, updateProjectReposUseCase } from './projects.ts';
 import { createTaskUseCase, setTaskStatusUseCase } from './tasks.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
 import { prepareTemporaryWorkspaceUseCase } from './temporary-workspaces.ts';
 import { removeWorkspaceUseCase, sweepTemporaryWorkspacesUseCase, unsavedReason } from './workspace-cleanup.ts';
+import { restoreSessionWorktrees } from './session-worktrees.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import { systemSubject } from '../access.ts';
 import { asAgentId } from '../ids.ts';
+import { newWorkspace } from '../workspace.ts';
+import { buildWorkspaceGroupUseCase } from './workspace-groups.ts';
+import { ok } from '../result.ts';
+import type { WorkspaceGroup } from '../workspace-group.ts';
+import type { WorkspaceGroupGit } from '../ports/workspace-group-git.ts';
+import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
+import type { Deps } from './deps.ts';
 
 async function world(repoUrl?: string) {
   const w = inMemoryDeps();
@@ -249,4 +257,193 @@ test('删工作空间时删检查点；记录可查；任务再开始时从分�
   assert.equal(again.value.path, w.temp.path);
   assert.equal(again.value.branch, w.temp.branch);
   assert.equal(again.value.state, 'ready');
+});
+
+test('PR 合并后先收起会话，下一轮才拆干净的 worktree；有脏改动则留下', async () => {
+  const w = await withCleanup();
+  w.agents.push({
+    id: asAgentId('fake'),
+    label: 'Fake',
+    capabilities: { prompt: { state: 'available' }, interrupt: { state: 'available' }, fork: { state: 'available' }, resume: { state: 'available' }, tool_calls: { state: 'available' }, artifacts: { state: 'available' }, structured_events: { state: 'available' }, attachments: { state: 'available' } },
+    models: ['m1'],
+    defaultModel: 'm1',
+    options: []
+  });
+  const session = await deriveSessionUseCase(w.deps, {
+    taskId: w.task.id,
+    agentId: 'fake',
+    model: 'm1',
+    actor: systemSubject('test'),
+    workspaceId: w.temp.id
+  });
+  assert.ok(session.ok, session.ok ? '' : session.error.message);
+  await w.deps.sessions.save({ ...session.value, status: 'stopped' });
+  const link = { taskId: w.task.id, workspaceId: w.temp.id, sessionId: session.value.id, state: 'merged' as const, headSha: 'abc', branch: w.temp.branch };
+  (w.deps as { cleanup: { pullRequests: unknown } }).cleanup.pullRequests = {
+    byWorkspace: async () => [link],
+    byTask: async () => [link]
+  };
+  w.git.statuses.set(w.temp.path, { dirty: false, untracked: 0, unpushed: 0, branch: w.temp.branch, upstream: null, head: 'abc' });
+
+  const first = await sweepTemporaryWorkspacesUseCase(w.deps, { projectId: w.project.id });
+  assert.deepEqual(first.removed, []);
+  const archived = await w.deps.sessions.byId(session.value.id);
+  assert.ok(archived?.settledAt != null);
+  assert.equal((await w.deps.workspaces.byId(w.temp.id))?.state !== 'removed', true);
+
+  const second = await sweepTemporaryWorkspacesUseCase(w.deps, { projectId: w.project.id });
+  assert.deepEqual(second.removed, [w.temp.id]);
+
+  const dirty = await withCleanup();
+  dirty.agents.push({
+    id: asAgentId('fake'),
+    label: 'Fake',
+    capabilities: { prompt: { state: 'available' }, interrupt: { state: 'available' }, fork: { state: 'available' }, resume: { state: 'available' }, tool_calls: { state: 'available' }, artifacts: { state: 'available' }, structured_events: { state: 'available' }, attachments: { state: 'available' } },
+    models: ['m1'],
+    defaultModel: 'm1',
+    options: []
+  });
+  const dirtySession = await deriveSessionUseCase(dirty.deps, {
+    taskId: dirty.task.id,
+    agentId: 'fake',
+    model: 'm1',
+    actor: systemSubject('test'),
+    workspaceId: dirty.temp.id
+  });
+  assert.ok(dirtySession.ok);
+  await dirty.deps.sessions.save({ ...dirtySession.value, status: 'stopped', settledAt: 10 });
+  dirty.git.statuses.set(dirty.temp.path, { dirty: true, untracked: 0, unpushed: 0, branch: dirty.temp.branch, upstream: null, head: 'abc' });
+  const kept = await sweepTemporaryWorkspacesUseCase(dirty.deps, { projectId: dirty.project.id });
+  assert.deepEqual(kept.removed, []);
+  assert.ok(kept.kept.includes(dirty.temp.id) || (await dirty.deps.workspaces.byId(dirty.temp.id))?.state === 'kept' || (await dirty.deps.workspaces.byId(dirty.temp.id))?.keptReason);
+});
+
+
+const cap = { state: 'available' as const };
+const fakeAgent = {
+  id: asAgentId('fake'),
+  label: 'Fake',
+  capabilities: { prompt: cap, interrupt: cap, fork: cap, resume: cap, tool_calls: cap, artifacts: cap, structured_events: cap, attachments: cap },
+  models: ['m1'],
+  defaultModel: 'm1',
+  options: []
+};
+
+async function comboWorld() {
+  const groups = (() => {
+    const rows = new Map<string, WorkspaceGroup>();
+    const store: WorkspaceGroupRepository & { rows: Map<string, WorkspaceGroup> } = {
+      rows,
+      async byId(id) { return rows.get(id) ?? null; },
+      async listByProject(projectId) { return [...rows.values()].filter((group) => group.projectId === projectId); },
+      async save(group) { rows.set(group.id, group); },
+      async remove(id) { rows.delete(id); }
+    };
+    return store;
+  })();
+  const removedGroups: { root: string; id: string }[] = [];
+  const groupGit: WorkspaceGroupGit = {
+    async init(input) { return ok({ root: `/srv/work/groups/${input.id}` }); },
+    async remove(input) { removedGroups.push(input); return ok({ removed: true }); },
+    async newWorktree(input) { return ok({ path: input.path, branch: input.branch }); }
+  };
+  const memory = inMemoryDeps();
+  memory.workers.push({ workerId: 'remote-1', label: '远程', origin: 'remote', state: 'online', roots: ['/srv/work'] });
+  memory.agents.push(fakeAgent);
+  const deps: Deps = { ...memory.deps, workspaceGroups: groups, gateway: { ...memory.deps.gateway, groups: () => groupGit } };
+  const project = await createProjectUseCase(deps, { name: 'Combo Demo' });
+  assert.ok(project.ok);
+  const withRepos = await updateProjectReposUseCase(deps, {
+    projectId: project.value.id,
+    repos: [
+      { name: 'web', url: 'https://example.com/web.git' },
+      { name: 'api', url: 'https://example.com/api.git' }
+    ]
+  });
+  assert.ok(withRepos.ok);
+  const primary = withRepos.value.repos.find((repo) => repo.name === 'web');
+  assert.ok(primary);
+  const designated = await updateProjectReposUseCase(deps, { projectId: project.value.id, repos: withRepos.value.repos, primaryRepoId: primary.id });
+  assert.ok(designated.ok);
+  const task = await createTaskUseCase(deps, { projectId: designated.value.id, title: 'Ship' });
+  assert.ok(task.ok);
+  for (const repo of designated.value.repos) {
+    const base = newWorkspace({ projectId: designated.value.id, repoUrl: repo.url, workerId: 'remote-1', path: `/srv/work/${repo.name}`, kind: 'long_lived', source: 'cloned', isGit: true, now: 1 });
+    assert.ok(base.ok);
+    await deps.workspaces.save(base.value);
+    await deps.workspaces.link({ projectId: designated.value.id, workspaceId: base.value.id, linkedBy: null, linkedAt: 1 });
+  }
+  const built = await buildWorkspaceGroupUseCase(deps, { projectId: designated.value.id, taskId: task.value.id, workerId: 'remote-1', home: '/home/me' });
+  assert.ok(built.ok, built.ok ? '' : built.error.message);
+  const session = await deriveSessionUseCase(deps, { taskId: task.value.id, agentId: 'fake', model: 'm1', actor: systemSubject('test'), groupId: built.value.id });
+  assert.ok(session.ok, session.ok ? '' : session.error.message);
+  await deps.sessions.save({ ...session.value, status: 'stopped' });
+  const sweeps = sweepStore();
+  const withClean = {
+    ...deps,
+    cleanup: {
+      sweeps: sweeps.store,
+      pullRequests: { byWorkspace: async () => [], byTask: async () => [] },
+      dropCheckpoints: async () => undefined
+    }
+  };
+  return { memory, deps: withClean, groups, removedGroups, project: designated.value, task: task.value, group: built.value, session: session.value, sweeps };
+}
+
+test('组合组：每个成员的 PR 都合并才整组收起并拆掉；只合并一部分则整组留下', async () => {
+  const all = await comboWorld();
+  const links = all.group.members.map((member, i) => ({
+    taskId: all.task.id,
+    workspaceId: member.workspaceId,
+    sessionId: all.session.id,
+    state: 'merged' as const,
+    headSha: `h${i}`,
+    branch: `agent-hub/${member.name}-xxxxxxxxxxxx`
+  }));
+  (all.deps as { cleanup: { pullRequests: unknown } }).cleanup.pullRequests = {
+    byWorkspace: async (id: string) => links.filter((link) => link.workspaceId === id),
+    byTask: async () => links
+  };
+  const first = await sweepTemporaryWorkspacesUseCase(all.deps, { projectId: all.project.id });
+  assert.deepEqual(first.removed, []);
+  assert.ok((await all.deps.sessions.byId(all.session.id))?.settledAt != null);
+  assert.equal((await all.groups.byId(all.group.id)) != null, true);
+
+  const second = await sweepTemporaryWorkspacesUseCase(all.deps, { projectId: all.project.id });
+  assert.equal(second.removed.length, all.group.members.length);
+  // 组行留下，重新打开时按原分支把 worktree 加回来。
+  const keptGroup = await all.groups.byId(all.group.id);
+  assert.ok(keptGroup);
+  assert.equal(all.removedGroups.length, 0);
+  for (const member of keptGroup.members) {
+    assert.equal((await all.deps.workspaces.byId(member.workspaceId))?.state, 'removed');
+  }
+  const archivedSession = await all.deps.sessions.byId(all.session.id);
+  assert.ok(archivedSession?.settledAt != null);
+  const reopened = { ...archivedSession, settledAt: null };
+  await all.deps.sessions.save(reopened);
+  await restoreSessionWorktrees(all.deps, reopened);
+  for (const member of keptGroup.members) {
+    assert.equal((await all.deps.workspaces.byId(member.workspaceId))?.state, 'ready');
+  }
+
+  const partial = await comboWorld();
+  const one = partial.group.members[0]!;
+  const other = partial.group.members[1]!;
+  const onlyOne = [{ taskId: partial.task.id, workspaceId: one.workspaceId, sessionId: partial.session.id, state: 'merged' as const, headSha: 'h0', branch: 'b' }];
+  (partial.deps as { cleanup: { pullRequests: unknown } }).cleanup.pullRequests = {
+    byWorkspace: async (id: string) => onlyOne.filter((link) => link.workspaceId === id),
+    byTask: async () => onlyOne
+  };
+  // 另一个成员还有未推送提交、没有合并的 PR：整组不能收起
+  partial.memory.git.statuses.set((await partial.deps.workspaces.byId(other.workspaceId))!.path, {
+    dirty: false, untracked: 0, unpushed: 2, branch: 'b', upstream: null, head: 'h1'
+  });
+  const skipped = await sweepTemporaryWorkspacesUseCase(partial.deps, { projectId: partial.project.id });
+  assert.deepEqual(skipped.removed, []);
+  assert.equal((await partial.deps.sessions.byId(partial.session.id))?.settledAt, undefined);
+  assert.ok(await partial.groups.byId(partial.group.id));
+  const again = await sweepTemporaryWorkspacesUseCase(partial.deps, { projectId: partial.project.id });
+  assert.deepEqual(again.removed, []);
+  assert.ok(await partial.groups.byId(partial.group.id));
 });

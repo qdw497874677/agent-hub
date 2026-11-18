@@ -26,6 +26,16 @@ export interface MessageStore {
   spawnOf(sessionId: SessionId): Promise<SpawnRecord | null>;
   spawnsForRole(projectId: ProjectId, role: string): Promise<SpawnRecord[]>;
 
+  /** 还有排队 / 拦下消息的目标会话（sweep 用来清掉已收起会话的队列）。 */
+  pendingTargets(): Promise<SessionId[]>;
+
+  /** 任务内短名（peer:<handle>，会话通信 P1a）。同一任务内唯一，由实现保证（冲突返回 false）。 */
+  setHandle(record: { sessionId: SessionId; taskId: string; handle: string; updatedAt: number }): Promise<boolean>;
+  handleOf(sessionId: SessionId): Promise<string | null>;
+  /** 外部收件箱（P1d）：发到某个地址（external:<inboxId>）的消息，createdAt > after，按时间正序。 */
+  toAddress(address: string, after: number, limit: number): Promise<AgentMessage[]>;
+  sessionByHandle(taskId: string, handle: string): Promise<SessionId | null>;
+
   audit(entry: MessageAuditEntry): Promise<void>;
   auditByTrace(traceId: string): Promise<MessageAuditEntry[]>;
 }
