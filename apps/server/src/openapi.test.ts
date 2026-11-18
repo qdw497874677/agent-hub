@@ -264,6 +264,62 @@ test('工作区改动与活动：都按项目/会话权限判定，不是拿到 
   assert.equal(missing.status, 404, JSON.stringify(missing.body));
 });
 
+test('开会话：workspaceMode=isolated 一定新开临时空间，不静默复用长期目录（#236）', async () => {
+  const { david, mint, api, world } = await setup();
+  const call = api((await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token);
+  const project = (await call('/projects', post({ name: 'p' }))).body;
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online', roots: ['/srv/work'] } as never);
+  const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/work/demo', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+
+  const derived = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: workspace.value.id }));
+  assert.equal(derived.status, 201, JSON.stringify(derived.body));
+
+  const isolated = await call(
+    '/sessions',
+    post({ taskId: task.id, agentId: 'fake', model: 'm1', workerId: 'w1', workspaceMode: 'isolated' })
+  );
+  assert.equal(isolated.status, 201, JSON.stringify(isolated.body));
+  assert.notEqual(isolated.body.workspaceId, workspace.value.id, '显式 isolated 不该复用长期目录');
+  const made = await world.deps.workspaces.byId(isolated.body.workspaceId);
+  assert.equal(made?.kind, 'temporary');
+});
+
+test('同步仓库：project_repos 加的仓库能在已有工作空间里补克隆（#236）', async () => {
+  const { david, mint, api, world } = await setup();
+  const call = api((await mint(david, ['projects:read', 'projects:write'])).token);
+  const project = (await call('/projects', post({ name: 'p', repoUrl: 'https://example.com/core.git' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online', roots: ['/srv/work'] } as never);
+  const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/work/agent-hub-workspaces/demo', kind: 'long_lived', source: 'cloned', repoUrl: 'https://example.com/core.git', isGit: true, now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  world.git.absent.add('/srv/work/agent-hub-workspaces/docs');
+
+  const updated = await call(`/projects/${project.id}/repos`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      repos: [
+        { name: 'core', url: 'https://example.com/core.git' },
+        { name: 'docs', url: 'https://example.com/docs.git', defaultBranch: 'main' }
+      ]
+    })
+  });
+  assert.equal(updated.status, 200, JSON.stringify(updated.body));
+
+  const synced = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
+  assert.equal(synced.status, 200, JSON.stringify(synced.body));
+  assert.deepEqual(synced.body.added, [{ name: 'docs', path: '/srv/work/agent-hub-workspaces/docs' }]);
+  assert.deepEqual(synced.body.present, [{ name: 'core', path: workspace.value.path }]);
+
+  // 再同步一次：什么都不做（幂等工具因此可以放心重试）
+  const again = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual(again.body.added, []);
+});
+
 test('限流：超了 429 + Retry-After', async () => {
   const { david, mint, api } = await setup({ general: 3 });
   const call = api((await mint(david, ['projects:read'])).token);

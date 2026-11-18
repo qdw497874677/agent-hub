@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 31 个：只读 12，写 19。
+当前 35 个：只读 12，写 23。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -38,6 +38,10 @@
 | `change_option` | 写 | `session.prompt` | `/sessions/{sessionId}/options` | sessionId, optionId, value | 改可调项（模型、思考强度…）（写工具，要 `clientRequestId`） |
 | `events` | 读 | `session.read` | `/sessions/{sessionId}/events` | sessionId, after?, sinceTurn? | 会话事件（after 之后的） |
 | `activity` | 读 | `session.read` | `/sessions/{sessionId}/activity` | sessionId | 谁对这条会话做了什么 |
+| `sync_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/sync` | workspaceId | 把项目仓库同步到这个工作空间（写工具，要 `clientRequestId`） |
+| `create_workspace` | 写 | `project.update` | `/projects/{projectId}/workspaces` | projectId | 新建临时或长期工作空间 |
+| `remove_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/remove` | workspaceId, deleteDirectory?, force? | 移除工作空间（可连目录一起删）（写工具，要 `clientRequestId`） |
+| `retry_workspace_setup` | 写 | `project.update` | `/workspaces/{workspaceId}/setup/retry` | workspaceId | 重跑准备命令（写工具，要 `clientRequestId`） |
 
 ## 写工具的重试约定
 

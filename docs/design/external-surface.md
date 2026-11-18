@@ -125,7 +125,7 @@ route('projects:write', { ... }, { skip: '会改项目描述，留给界面' })
 
 - **默认 `'auto'`**：`GET` 路由按 `tags[0]` 推 module 与权限，自动只读暴露；写路由必须显式声明，避免「加个路由就悄悄对外」。
 - `{ skip: '<原因>' }` 必须写原因；`apps/server/src/openapi-mcp-parity.test.ts` 会校验每条路由都有归属、工具名唯一、数量与 skip 清单符合预期。
-- 口径：37 条路由 → 31 个工具（只读 12 / 写 19），6 条不暴露：`health`、`me`、`stream`、`setProjectRepo`、`setProjectDescription`、`submitAssetRevision`。
+- 口径：41 条路由 → 35 个工具（只读 12 / 写 23），6 条不暴露：`health`、`me`、`stream`、`setProjectRepo`、`setProjectDescription`、`submitAssetRevision`。
 
 | 分组 | 工具 |
 | --- | --- |
@@ -134,8 +134,14 @@ route('projects:write', { ... }, { skip: '会改项目描述，留给界面' })
 | `sessions` | `get_session`、`events`、`activity`、`session_start`、`session_reply`、`session_cancel`、`session_model`、`fork_session`、`change_option` |
 | `assets` | `list_assets`、`get_asset`、`asset_create`、`asset_import`、`asset_publish`、`asset_assign` |
 | `workers` | `list_workers` |
+| `workspaces` | `sync_workspace`、`create_workspace`、`remove_workspace`、`retry_workspace_setup` |
 
 `MCP_MODULES` 用这些分组名做灰度；`MCP_READ_ONLY=1` 在 `tools/list` 与 `tools/call` 两边同时生效。
+
+`workspaces` 这组是给「外部 agent 自己管目录」用的（#236）：`create_workspace` / `remove_workspace` / `retry_workspace_setup`
+对应界面里的新建、移除与重试；`sync_workspace` 把 `project_repos` 后来加的仓库补克隆到已有工作空间的**同级目录**，
+组合工作空间（`groupId` 非空）不在这里处理。`session_start` 的 `workspaceMode` 现在会真正生效：
+`isolated` 一定新开 worktree，不再被长期目录静默顶替。
 
 `workspace_changes` 与 `activity` 以前没暴露、现在由 `'auto'` 带出来，它们的 handler 都补了项目/会话权限判定
 （`authorizeWorkspace(...,'project.read')` / `authorizeSession(...,'session.read')`），权限不够按策略返回 404。

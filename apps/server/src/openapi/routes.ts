@@ -7,6 +7,7 @@ import {
   assetSchema,
   changeOptionRequest,
   createProjectRequest,
+  createWorkspaceRequest,
   createTaskRequest,
   deleteProjectRequest,
   deriveSessionRequest,
@@ -19,6 +20,9 @@ import {
   sessionSchema,
   setProjectDescriptionRequest,
   updateProjectRequest,
+  removeWorkspaceRequest,
+  syncWorkspaceResultSchema,
+  workspaceSchema,
   setProjectRepoRequest,
   setSessionModelRequest,
   setProjectReposRequest,
@@ -55,6 +59,7 @@ const okSchema = z.object({ ok: z.literal(true) });
 const projectId = z.object({ projectId: z.string().openapi({ param: { name: 'projectId', in: 'path' } }) });
 const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', in: 'path' } }) });
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
+const workspaceId = z.object({ workspaceId: z.string().openapi({ param: { name: 'workspaceId', in: 'path' } }) });
 
 /** 每条路由要的权限范围（文档里写清楚；真正的判断在 can()）。 */
 export type ScopeNote =
@@ -69,7 +74,7 @@ export type ScopeNote =
   | 'assets:publish'
   | null;
 
-export type McpModule = 'tasks' | 'projects' | 'sessions' | 'assets' | 'workers';
+export type McpModule = 'tasks' | 'projects' | 'sessions' | 'assets' | 'workers' | 'workspaces';
 
 /**
  * 路由上的 MCP 元数据 —— 对外工具清单的**唯一来源**（mcp.ts 只读这里，不再另有一张平行表）。
@@ -98,7 +103,8 @@ const MODULE_OF_TAG: Readonly<Record<string, McpModule>> = {
   tasks: 'tasks',
   sessions: 'sessions',
   assets: 'assets',
-  workers: 'workers'
+  workers: 'workers',
+  workspaces: 'workspaces'
 };
 
 /** 模块的默认读权限点：`auto` 的只读路由用它（写操作必须显式写 need）。 */
@@ -107,7 +113,8 @@ const NEED_OF_TAG: Readonly<Record<McpModule, Permission>> = {
   projects: 'project.read',
   sessions: 'session.read',
   assets: 'asset.read',
-  workers: 'worker.read'
+  workers: 'worker.read',
+  workspaces: 'project.read'
 };
 
 /** 解析后的元数据：mcp.ts 用这个建工具，routes.ts 用它写「MCP 工具：`x`」。 */
@@ -535,7 +542,66 @@ export const routes = {
     method: 'get', path: `${V1}/sessions/{sessionId}/activity`, tags: ['sessions'], summary: '谁对这条会话做了什么',
     request: { params: sessionId },
     responses: { 200: json(z.array(z.object({ action: z.string(), actor: z.object({ id: z.string(), name: z.string() }), detail: z.string(), at: z.number() }))) }
-  })
+  }),
+  syncWorkspace: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/workspaces/{workspaceId}/sync`, tags: ['workspaces'], summary: '把项目仓库同步到这个工作空间',
+      description:
+        '项目后来又加了仓库时，已有工作空间不会自动多出目录：调这里把缺的仓库补克隆到工作空间的**同级目录**（<上级目录>/<仓库名>），已经在的不重复克隆。\n' +
+        '参数：workspaceId。\n' +
+        '返回：workspace（更新后的登记）、added（这次克隆的）、present（本来就在的）、skipped（同名目录不是 git 等，带原因）。\n' +
+        '限制：只处理单目录工作空间；组合工作空间（groupId 非空）成员由建组 / workspace_retry_setup 管理。\n' +
+        '下一步：派生或开会话前调一次即可；之后用 workspace_changes 看状态。\n' +
+        '错误：404 / 403 项目没有 project.update / 400 不是 git 空间或组合空间。',
+      request: { params: workspaceId },
+      responses: { 200: json(syncWorkspaceResultSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, idempotent: true }
+  ),
+  createWorkspace: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/projects/{projectId}/workspaces`, tags: ['workspaces'], summary: '新建临时或长期工作空间',
+      description:
+        '为项目建一个工作空间：temporary 要 taskId（可选 mode=isolated 新开 worktree，默认 isolated）；long_lived 要 mode=create|link（link 时给 path）。\n' +
+        '参数：projectId；body 见 createWorkspaceRequest。\n' +
+        '返回：workspace。\n' +
+        '下一步：开会话时把 workspaceId 传回去；非 git 项目只能建普通目录。\n' +
+        '错误：400 参数不对 / 403 权限不够 / 404 项目或任务不存在 / 409 机器上已有同名目录。',
+      request: { params: projectId, ...body(createWorkspaceRequest) },
+      responses: { 201: json(workspaceSchema, '已创建') }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false }
+  ),
+  removeWorkspace: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/workspaces/{workspaceId}/remove`, tags: ['workspaces'], summary: '移除工作空间（可连目录一起删）',
+      description:
+        '移除登记；deleteDirectory=true 时连目录一起删（平台建的才行），force=true 跳过未提交改动保护。\n' +
+        '参数：workspaceId；body `{deleteDirectory?: boolean, force?: boolean}`。\n' +
+        '返回：workspace（state=removed）。\n' +
+        '错误：400 目录有未提交改动又不 force / 403 / 404。',
+      request: { params: workspaceId, ...body(removeWorkspaceRequest) },
+      responses: { 200: json(workspaceSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, idempotent: true }
+  ),
+  retryWorkspaceSetup: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/workspaces/{workspaceId}/setup/retry`, tags: ['workspaces'], summary: '重跑准备命令',
+      description:
+        '只对 setup.state=failed 的工作空间有效；项目没配准备命令则 409。\n' +
+        '参数：workspaceId。\n' +
+        '返回：workspace（setup 里是新的状态与输出）。\n' +
+        '错误：403 / 404 / 409 不需要重试或没配命令。',
+      request: { params: workspaceId },
+      responses: { 200: json(workspaceSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, idempotent: true }
+  )
 } as const;
 
 /**

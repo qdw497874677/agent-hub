@@ -1,6 +1,7 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { homedir } from 'node:os';
 import { streamSSE } from 'hono/streaming';
 import { Scalar } from '@scalar/hono-api-reference';
 import type { ApiTokenDeps, Deps, JournalEntry, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
@@ -51,6 +52,11 @@ import {
   setTaskStatusUseCase,
   setTaskSummaryUseCase,
   sweepTemporaryWorkspacesUseCase,
+  syncWorkspaceReposUseCase,
+  deleteWorkspaceUseCase,
+  retryWorkspaceSetupUseCase,
+  prepareTemporaryWorkspaceUseCase,
+  prepareLongLivedWorkspaceUseCase,
   workerReader,
   redactInventory,
   workspaceChangesUseCase,
@@ -59,7 +65,7 @@ import {
 } from '@agent-hub/domain';
 import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
 import type { z } from 'zod';
-import { assetSchema } from '@agent-hub/contract';
+import { assetSchema, workspaceSchema } from '@agent-hub/contract';
 import { createIdempotency } from './idempotency.ts';
 import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest, setProjectReposRequest } from '@agent-hub/contract';
 import { installAccess } from '../access.ts';
@@ -501,7 +507,11 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!can(actor, 'session.create')) return fail(c, forbidden('令牌没有 sessions:write'));
     const allowed = await ctx.providers?.checkModel(actor, input.model, input.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
-    const placed = await workspaceForApiStart(deps, input, actor);
+    const placed = await workspaceForApiStart(
+      deps,
+      { ...input, ...(input.workspaceMode === undefined ? {} : { mode: input.workspaceMode }) },
+      actor
+    );
     if (!placed.ok) return fail(c, placed.error);
     const result = await deriveSessionUseCase(deps, {
       ...input,
@@ -514,6 +524,69 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       await noteProvenance(deps, ctx.activity, c, actor, result.value, 'api');
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+  on(routes.syncWorkspace, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const result = await syncWorkspaceReposUseCase(deps, { workspaceId: c.req.param('workspaceId') ?? '', actor });
+    if (!result.ok) return fail(c, result.error);
+    return c.json({
+      workspace: workspaceSchema.parse(result.value.workspace),
+      added: result.value.added,
+      present: result.value.present,
+      skipped: result.value.skipped
+    });
+  });
+  on(routes.createWorkspace, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const projectId = c.req.param('projectId') ?? '';
+    const project = await deps.projects.byId(asProjectId(projectId));
+    if (!project) return fail(c, notFound('项目不存在'));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const input = valid<{ kind: 'long_lived' | 'temporary'; mode?: string; taskId?: string; workerId?: string | null; path?: string }>(c, 'json');
+    const result =
+      input.kind === 'temporary'
+        ? await prepareTemporaryWorkspaceUseCase(deps, {
+            projectId,
+            taskId: input.taskId ?? '',
+            workerId: input.workerId ?? null,
+            home: homedir(),
+            mode: input.mode === 'shared' ? 'shared' : 'isolated',
+            actor
+          })
+        : await prepareLongLivedWorkspaceUseCase(deps, {
+            projectId,
+            workerId: input.workerId ?? null,
+            plan: input.mode === 'link' ? { mode: 'link', path: input.path ?? '' } : { mode: 'create' },
+            home: homedir(),
+            actor
+          });
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workspaceSchema.parse(result.value), 201);
+  });
+  on(routes.removeWorkspace, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const input = valid<{ deleteDirectory?: boolean; force?: boolean }>(c, 'json');
+    const workspaceId = c.req.param('workspaceId') ?? '';
+    const result = await deleteWorkspaceUseCase(deps, {
+      workspaceId,
+      deleteDirectory: input.deleteDirectory === true,
+      force: input.force === true,
+      actor
+    });
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workspaceSchema.parse(result.value));
+  });
+  on(routes.retryWorkspaceSetup, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const workspaceId = c.req.param('workspaceId') ?? '';
+    const result = await retryWorkspaceSetupUseCase(deps, { workspaceId, actor });
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workspaceSchema.parse(result.value));
   });
   on(routes.forkSession, async (c) => {
     const actor = principal(c);

@@ -75,6 +75,17 @@ list_projects → get_project → list_tasks → get_task → get_session → ev
 适合回答"现在有哪些项目/任务在跑""那条会话改了什么""上次为什么失败"。
 只读令牌就够；如果工具列表里只有 `list_*`/`get_*`，说明这是只读令牌，别去试写工具。
 
+## 项目后来加了仓库：sync_workspace
+
+已有工作空间不会自己多出目录。确认项目 `repos` 之后：
+
+```
+sync_workspace { workspaceId }     # 缺的仓库克隆到工作空间的同级目录；already-in 的不重复
+```
+
+返回 `added` / `present` / `skipped`（例如同名目录不是 git 仓库）。组合工作空间（`groupId` 非空）
+不走这里——成员由建组与 `retry_workspace_setup` 管理。命令验证用 `workspace_changes`。
+
 ## 反模式
 
 - ❌ 每次重试换新的 `clientRequestId` → 重复建任务、重复开会话。

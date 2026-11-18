@@ -10752,6 +10752,1265 @@
           }
         }
       }
+    },
+    "/openapi/v1/workspaces/{workspaceId}/sync": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "把项目仓库同步到这个工作空间",
+        "description": "项目后来又加了仓库时，已有工作空间不会自动多出目录：调这里把缺的仓库补克隆到工作空间的**同级目录**（<上级目录>/<仓库名>），已经在的不重复克隆。\n参数：workspaceId。\n返回：workspace（更新后的登记）、added（这次克隆的）、present（本来就在的）、skipped（同名目录不是 git 等，带原因）。\n限制：只处理单目录工作空间；组合工作空间（groupId 非空）成员由建组 / workspace_retry_setup 管理。\n下一步：派生或开会话前调一次即可；之后用 workspace_changes 看状态。\n错误：404 / 403 项目没有 project.update / 400 不是 git 空间或组合空间。\n\n权限范围：`projects:write`\n\nMCP 工具：`sync_workspace`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspace": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "projectId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "teamId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null
+                        },
+                        "repoUrl": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "default": null
+                        },
+                        "workerId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "long_lived",
+                            "temporary"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "linked",
+                            "created",
+                            "cloned",
+                            "worktree"
+                          ]
+                        },
+                        "baseWorkspaceId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "branch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "ownerTaskId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "groupId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "label": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "isGit": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "preparing",
+                            "ready",
+                            "failed",
+                            "kept",
+                            "removed"
+                          ]
+                        },
+                        "keptReason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "setup": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "state": {
+                              "type": "string",
+                              "enum": [
+                                "none",
+                                "running",
+                                "ready",
+                                "failed"
+                              ]
+                            },
+                            "exitCode": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ]
+                            },
+                            "message": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "output": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "startedAt": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 0
+                            },
+                            "finishedAt": {
+                              "type": [
+                                "integer",
+                                "null"
+                              ],
+                              "minimum": 0
+                            }
+                          },
+                          "default": null,
+                          "required": [
+                            "state",
+                            "exitCode",
+                            "message",
+                            "output",
+                            "startedAt",
+                            "finishedAt"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "updatedAt": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "projectId",
+                        "workerId",
+                        "path",
+                        "kind",
+                        "source",
+                        "baseWorkspaceId",
+                        "branch",
+                        "ownerTaskId",
+                        "label",
+                        "isGit",
+                        "state",
+                        "keptReason",
+                        "createdAt",
+                        "updatedAt"
+                      ]
+                    },
+                    "added": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "path"
+                        ]
+                      }
+                    },
+                    "present": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "path": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "path"
+                        ]
+                      }
+                    },
+                    "skipped": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "reason"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "workspace",
+                    "added",
+                    "present",
+                    "skipped"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/projects/{projectId}/workspaces": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "新建临时或长期工作空间",
+        "description": "为项目建一个工作空间：temporary 要 taskId（可选 mode=isolated 新开 worktree，默认 isolated）；long_lived 要 mode=create|link（link 时给 path）。\n参数：projectId；body 见 createWorkspaceRequest。\n返回：workspace。\n下一步：开会话时把 workspaceId 传回去；非 git 项目只能建普通目录。\n错误：400 参数不对 / 403 权限不够 / 404 项目或任务不存在 / 409 机器上已有同名目录。\n\n权限范围：`projects:write`\n\nMCP 工具：`create_workspace`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "workerId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "default": null
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "long_lived"
+                        ]
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "create",
+                          "link"
+                        ]
+                      },
+                      "path": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "mode"
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "workerId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "minLength": 1,
+                        "default": null
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "temporary"
+                        ]
+                      },
+                      "taskId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "mode": {
+                        "type": "string",
+                        "enum": [
+                          "shared",
+                          "isolated"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "taskId"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已创建",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "projectId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "teamId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "repoUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "long_lived",
+                        "temporary"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "linked",
+                        "created",
+                        "cloned",
+                        "worktree"
+                      ]
+                    },
+                    "baseWorkspaceId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "branch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ownerTaskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "label": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "isGit": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "preparing",
+                        "ready",
+                        "failed",
+                        "kept",
+                        "removed"
+                      ]
+                    },
+                    "keptReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "setup": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "running",
+                            "ready",
+                            "failed"
+                          ]
+                        },
+                        "exitCode": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "message": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "output": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "startedAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        },
+                        "finishedAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "state",
+                        "exitCode",
+                        "message",
+                        "output",
+                        "startedAt",
+                        "finishedAt"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "updatedAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "workerId",
+                    "path",
+                    "kind",
+                    "source",
+                    "baseWorkspaceId",
+                    "branch",
+                    "ownerTaskId",
+                    "label",
+                    "isGit",
+                    "state",
+                    "keptReason",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/workspaces/{workspaceId}/remove": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "移除工作空间（可连目录一起删）",
+        "description": "移除登记；deleteDirectory=true 时连目录一起删（平台建的才行），force=true 跳过未提交改动保护。\n参数：workspaceId；body `{deleteDirectory?: boolean, force?: boolean}`。\n返回：workspace（state=removed）。\n错误：400 目录有未提交改动又不 force / 403 / 404。\n\n权限范围：`projects:write`\n\nMCP 工具：`remove_workspace`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "deleteDirectory": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "force": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "projectId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "teamId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "repoUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "long_lived",
+                        "temporary"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "linked",
+                        "created",
+                        "cloned",
+                        "worktree"
+                      ]
+                    },
+                    "baseWorkspaceId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "branch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ownerTaskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "label": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "isGit": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "preparing",
+                        "ready",
+                        "failed",
+                        "kept",
+                        "removed"
+                      ]
+                    },
+                    "keptReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "setup": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "running",
+                            "ready",
+                            "failed"
+                          ]
+                        },
+                        "exitCode": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "message": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "output": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "startedAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        },
+                        "finishedAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "state",
+                        "exitCode",
+                        "message",
+                        "output",
+                        "startedAt",
+                        "finishedAt"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "updatedAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "workerId",
+                    "path",
+                    "kind",
+                    "source",
+                    "baseWorkspaceId",
+                    "branch",
+                    "ownerTaskId",
+                    "label",
+                    "isGit",
+                    "state",
+                    "keptReason",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/workspaces/{workspaceId}/setup/retry": {
+      "post": {
+        "tags": [
+          "workspaces"
+        ],
+        "summary": "重跑准备命令",
+        "description": "只对 setup.state=failed 的工作空间有效；项目没配准备命令则 409。\n参数：workspaceId。\n返回：workspace（setup 里是新的状态与输出）。\n错误：403 / 404 / 409 不需要重试或没配命令。\n\n权限范围：`projects:write`\n\nMCP 工具：`retry_workspace_setup`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "projectId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "teamId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "repoUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "workerId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "path": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "long_lived",
+                        "temporary"
+                      ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "linked",
+                        "created",
+                        "cloned",
+                        "worktree"
+                      ]
+                    },
+                    "baseWorkspaceId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "branch": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "ownerTaskId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "groupId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "label": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "isGit": {
+                      "type": [
+                        "boolean",
+                        "null"
+                      ]
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "preparing",
+                        "ready",
+                        "failed",
+                        "kept",
+                        "removed"
+                      ]
+                    },
+                    "keptReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "setup": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "running",
+                            "ready",
+                            "failed"
+                          ]
+                        },
+                        "exitCode": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "message": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "output": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "startedAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        },
+                        "finishedAt": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "state",
+                        "exitCode",
+                        "message",
+                        "output",
+                        "startedAt",
+                        "finishedAt"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    },
+                    "updatedAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "projectId",
+                    "workerId",
+                    "path",
+                    "kind",
+                    "source",
+                    "baseWorkspaceId",
+                    "branch",
+                    "ownerTaskId",
+                    "label",
+                    "isGit",
+                    "state",
+                    "keptReason",
+                    "createdAt",
+                    "updatedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "webhooks": {}
