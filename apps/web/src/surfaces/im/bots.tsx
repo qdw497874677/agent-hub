@@ -1,12 +1,13 @@
 import { useMemo, useRef, useState } from 'react';
+import { AppShell, PageBody, PageHeader, type PageTab } from '../../shell/page-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, botsApi, groupApi, teamApi, tokensApi, type BotColorDto, type BotRecordDto, type BotTriggerDto, type BotTriggerSourceDto, type MessagingRoleDto, type WorkerInfoDto } from '../../shell/api.ts';
-import { AccountMenu, useAccount } from '../../shell/auth.tsx';
+import { useAccount } from '../../shell/auth.tsx';
 import { formatRoute } from '../../shell/route.ts';
 import { INPUT, SMALL, DANGER, errorText, Empty } from '../../shell/admin/shared.tsx';
 import { DialogShell } from '../../shell/dialog-shell.tsx';
 import { BotConnectors } from './bot-connectors.tsx';
-import { ModelPicker, SEARCHABLE_AFTER } from '../../atoms/model-picker.tsx';
+import { ModelPicker } from '../../atoms/model-picker.tsx';
 import { modelsFor } from '../../shell/dialogs.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { BOT_MODEL_DEFAULT_ITEM, BOT_MODEL_DEFAULT_LABEL, botModelChoices, offListModel } from './bot-models.ts';
@@ -55,63 +56,31 @@ function runtimeModels(workers: readonly WorkerInfoDto[], agentId: string): stri
 }
 
 /**
- * 模型一栏：显式的「默认模型（留空）」+ 运行时上报的清单（≤ 8 原生下拉，> 8 可搜索选择器）。
- * 手填入口常开：清单只覆盖运行时自报的那几个，自建模型、没上报的机器都得能直接写。
- * 值始终写回同一个字段，空串继续合法（= 运行时默认）。
+ * 模型一栏：和输入框、派生对话框同一个选择器（按提供方分组、可搜索），不再给手填框。
+ * 第一项是显式的「默认模型（留空）」；编辑老 bot 时清单外的旧值补一条「（清单外）」，看得见、也能换掉。
+ * 值始终写回同一个字段，空串继续合法（= 运行时默认），也不替人自动选一个模型。
  */
 function BotModelField({ agentId, model, onChange }: { agentId: string; model: string; onChange: (value: string) => void }) {
   const workers = useWorkers();
   const models = useMemo(() => runtimeModels(workers.list, agentId), [workers.list, agentId]);
   const choices = useMemo(() => botModelChoices(models, model), [models, model]);
   const offList = offListModel(models, model);
-  // 手填 / 列表是「在这台运行时上的一次点击」：跟着 agentId 记，换运行时重新判断，别把上一台的口径带过来。
-  // 没点过时看值：清单外的老值直接进手填，能看见也能改（别只剩下拉里一条「清单外」）。
-  const [manualPref, setManualPref] = useState<{ agentId: string; manual: boolean } | null>(null);
-  const pref = manualPref?.agentId === agentId ? manualPref.manual : null;
-  // 清单空（机器没上报、或这个运行时没配模型）：没有可点的东西，直接给手填，也不给没用的切换链接。
-  const showManual = models.length === 0 || (pref ?? offList !== null);
+  const items = [
+    BOT_MODEL_DEFAULT_ITEM,
+    ...choices.items,
+    ...(offList ? [{ value: offList, label: `${offList}（清单外）`, group: '清单外' }] : [])
+  ];
   return (
     <div data-testid="bot-model-field" className="flex min-w-0 flex-col gap-1 text-meta text-secondary">
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
-        <span className="min-w-0">模型 <span className="text-tertiary">（留空用运行时默认）</span></span>
-        {models.length > 0 ? (
-          <button
-            type="button" data-testid="bot-model-manual" aria-pressed={showManual}
-            className="ml-auto shrink-0 text-meta text-tertiary hover:text-secondary hover:underline"
-            onClick={() => setManualPref({ agentId, manual: !showManual })}
-          >{showManual ? '从清单里选' : '手动输入模型 id'}</button>
-        ) : null}
-      </div>
-      {showManual ? (
-        <input
-          data-testid="bot-model" aria-label="模型" className={INPUT} maxLength={200}
-          placeholder="比如：deepseek-v3" value={model}
-          // 开始手填就钉在手填模式：清单可能还在路上（worker 没回），别把人正打字时的框换成下拉。
-          onChange={(event) => { setManualPref({ agentId, manual: true }); onChange(event.target.value); }}
+      <span className="min-w-0">模型</span>
+      <div data-testid="bot-model-select" className="min-w-0">
+        <ModelPicker
+          id="bot-model-picker" className={INPUT} scope={agentId} label="模型"
+          value={model} items={items} note={choices.note} placeholder={BOT_MODEL_DEFAULT_LABEL}
+          onChange={onChange}
         />
-      ) : choices.items.length > SEARCHABLE_AFTER ? (
-        <div data-testid="bot-model-select" className="min-w-0">
-          <ModelPicker
-            id="bot-model-picker" className={INPUT} scope={agentId} label="模型"
-            value={model} items={[BOT_MODEL_DEFAULT_ITEM, ...choices.items]} note={choices.note}
-            onChange={onChange}
-          />
-        </div>
-      ) : (
-        <>
-          <select
-            data-testid="bot-model-select" aria-label="模型" className={INPUT} value={model}
-            onChange={(event) => onChange(event.target.value)}
-          >
-            <option data-testid="bot-model-default" value="">{BOT_MODEL_DEFAULT_LABEL}</option>
-            {choices.items.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-            {/* 清单外的旧值补一条：受控 select 找不到匹配项会显示成第一项，看着像被改成了默认 */}
-            {offList ? <option value={offList}>{offList}（清单外）</option> : null}
-          </select>
-          {choices.note ? <p className="text-tertiary">{choices.note}</p> : null}
-        </>
-      )}
-      {models.length === 0 ? <p data-testid="bot-model-empty" className="text-tertiary">这台机器还没有可用模型</p> : null}
+      </div>
+      {models.length === 0 ? <p data-testid="bot-model-empty" className="text-tertiary">这台机器还没有可用模型，先用运行时默认</p> : null}
     </div>
   );
 }
@@ -132,20 +101,22 @@ export function BotAvatar({ bot, size = 32 }: { bot: Pick<MessagingRoleDto, 'nam
   );
 }
 
-/** 消息区顶部的「群 | Bot」切换。 */
-export function HubTabs({ active, projectId }: { active: 'messages' | 'bots'; projectId: string | null }) {
-  const tab = (on: boolean) => `rounded-sm px-2.5 py-1 text-meta ${on ? 'bg-card text-primary' : 'text-tertiary hover:text-secondary'}`;
-  return (
-    <nav className="flex gap-1" aria-label="消息区">
-      <a data-testid="tab-messages" className={tab(active === 'messages')} aria-current={active === 'messages' ? 'page' : undefined} href={formatRoute({ page: 'messages', projectId, groupId: null })}>群</a>
-      <a data-testid="tab-bots" className={tab(active === 'bots')} aria-current={active === 'bots' ? 'page' : undefined} href={formatRoute({ page: 'bots', projectId })}>Bot</a>
-    </nav>
-  );
+/** 群 / Bot 两个页签（页头下方）。 */
+export function hubTabs(projectId: string | null): PageTab[] {
+  return [
+    { id: 'messages', label: '群', href: formatRoute({ page: 'messages', projectId, groupId: null }), testId: 'tab-messages' },
+    { id: 'bots', label: 'Bot', href: formatRoute({ page: 'bots', projectId }), testId: 'tab-bots' }
+  ];
 }
+
+/** 页头右侧的项目切换：短、无边框感，和页头一体。 */
+export const PROJECT_SELECT =
+  'h-8 max-w-[11rem] min-w-0 truncate rounded-control border border-hair bg-transparent px-2 text-sub text-secondary hover:border-strong hover:text-primary';
+
 
 /** 弹窗按钮：跟 tokens-dialog 一个手感（细边，hover 才亮）。 */
 const CRED_BTN =
-  'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+  'rounded-sm border border-hair px-3 py-2 text-sub text-secondary hover:border-strong hover:text-primary disabled:opacity-40';
 
 /** 明文只露一次的弹窗：遮罩 / Esc / 「我已保存」都算关，关掉就把 bot 重新拉一遍。 */
 function CredentialSecret({ secret, onClose }: { secret: string; onClose: () => void }) {
@@ -284,7 +255,7 @@ function BotTriggerRow({ trigger, projectId, now, sources }: {
   const next = nextRunView(trigger, now);
   const run = latestRun(trigger.runs);
   const tone = state.tone === 'on'
-    ? 'border-accent/60 text-accent'
+    ? 'border-sage/60 text-sage'
     : state.tone === 'paused' ? 'border-rust/60 text-rust' : 'border-hair text-tertiary';
   return (
     <li data-testid="bot-trigger" data-id={trigger.id} data-connector={trigger.connector}
@@ -306,7 +277,7 @@ function BotTriggerRow({ trigger, projectId, now, sources }: {
             <span className="min-w-0 break-words">最近 {runView(run, now)}</span>
             {run.reason ? <span className="min-w-0 break-words">{run.reason}</span> : null}
             {run.sessionId ? (
-              <a className="shrink-0 text-accent hover:underline"
+              <a className="shrink-0 text-link hover:underline"
                 href={formatRoute({ page: 'project', projectId, view: 'focus', sessionId: run.sessionId })}>打开会话</a>
             ) : null}
           </>
@@ -429,7 +400,7 @@ function GrantPicker({ teamId, projectId, grantedIds, onClose }: {
           {view.items.map((b) => (
             <li key={b.id} className="min-w-0">
               <button type="button" data-testid="bot-grant-option" data-id={b.id} data-name={b.name}
-                className="flex w-full min-w-0 items-start gap-2 rounded-sm border border-hair bg-card p-2 text-left hover:border-accent disabled:opacity-40"
+                className="flex w-full min-w-0 items-start gap-2 rounded-sm border border-hair bg-card p-2 text-left hover:border-strong disabled:opacity-40"
                 disabled={grant.isPending} onClick={() => grant.mutate(b.id)}>
                 <BotAvatar bot={b} size={28} />
                 <span className="min-w-0 flex-1">
@@ -505,9 +476,9 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecord
           {RUNTIMES.map((r) => (
             <button key={r.id} type="button" role="radio" aria-checked={agentId === r.id} data-testid="bot-runtime" data-runtime={r.id}
               onClick={() => setAgentId(r.id)}
-              className={`rounded-sm border px-2.5 py-1 ${agentId === r.id ? 'border-accent bg-accent/15 text-primary' : 'border-hair text-secondary'}`}>{r.label}</button>
+              className={`rounded-sm border px-2.5 py-1 ${agentId === r.id ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary'}`}>{r.label}</button>
           ))}
-          {!known ? <span className="rounded-sm border border-accent bg-accent/15 px-2.5 py-1 text-primary">{agentId}</span> : null}
+          {!known ? <span className="rounded-sm border border-fg/40 bg-selected px-2.5 py-1 text-primary">{agentId}</span> : null}
         </div>
       </fieldset>
       <BotModelField agentId={agentId} model={model} onChange={setModel} />
@@ -555,7 +526,7 @@ function BotForm({ projectId, bot, onDone }: { projectId: string; bot: BotRecord
                         <label className="flex min-w-0 flex-1 items-center gap-2 px-1 py-1.5 text-meta text-secondary">
                           <input
                             type="checkbox" role="switch" data-testid="bot-option-value" aria-label="选项值"
-                            className="h-4 w-4 shrink-0 accent-[var(--color-accent)]" checked={row.on}
+                            className="h-4 w-4 shrink-0 accent-[var(--color-fg)]" checked={row.on}
                             onChange={(e) => setOption(i, { on: e.target.checked })}
                           />
                           {row.on ? '打开' : '关闭'}
@@ -665,19 +636,19 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
   const list = bots.data?.bots ?? [];
   const runtime = (id: string) => RUNTIMES.find((r) => r.id === id)?.label ?? id;
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
-          <h1 className="text-head text-primary">Bot</h1>
-        </div>
-        <HubTabs active="bots" projectId={pid} />
-        <select aria-label="项目" data-testid="bots-project" className={`${INPUT} max-w-[30%]`} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'bots', projectId: e.target.value }); }}>
-          {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <AccountMenu />
-      </header>
-      <main className="mx-auto flex w-full max-w-3xl min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
+    <AppShell>
+      <PageHeader
+        title="Bot"
+        tabsLabel="消息区"
+        tabs={hubTabs(pid)}
+        activeTab="bots"
+        actions={
+          <select aria-label="项目" data-testid="bots-project" className={PROJECT_SELECT} value={pid ?? ''} onChange={(e) => { window.location.hash = formatRoute({ page: 'bots', projectId: e.target.value }); }}>
+            {(projects.data ?? []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        }
+      />
+      <PageBody className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start gap-2">
           <p data-testid="bots-scope-note" className="min-w-0 text-meta text-tertiary">{BOT_SCOPE_NOTE}</p>
           <div className="ml-auto flex shrink-0 flex-wrap gap-1.5">
@@ -722,11 +693,11 @@ export function BotsPage({ projectId }: { projectId: string | null }) {
             <Empty text={bots.isLoading ? '加载中…' : pid ? '还没有 Bot。' : '先建一个项目'} />
           </div>
         ) : null}
-      </main>
+      </PageBody>
       {deleting ? <DeleteConfirm bot={deleting} groups={groupsOf(deleting.name)} onDone={() => setDeleting(null)} /> : null}
       {picking && pid && teamId ? (
         <GrantPicker teamId={teamId} projectId={pid} grantedIds={list.map((b) => b.id)} onClose={() => setPicking(false)} />
       ) : null}
-    </div>
+    </AppShell>
   );
 }

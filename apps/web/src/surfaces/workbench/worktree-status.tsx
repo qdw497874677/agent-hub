@@ -55,7 +55,7 @@ export function WorktreeStatusLine({ workspace, projectId }: { workspace: Worksp
       {failed ? (
         <button
           type="button"
-          className="shrink-0 text-accent underline-offset-2 hover:underline disabled:text-tertiary"
+          className="shrink-0 text-link underline-offset-2 hover:underline disabled:text-tertiary"
           data-testid="worktree-retry"
           disabled={retry.isPending || workspace === undefined}
           onClick={() => {
@@ -68,7 +68,7 @@ export function WorktreeStatusLine({ workspace, projectId }: { workspace: Worksp
       {hasOutput ? (
         <button
           type="button"
-          className="shrink-0 text-accent underline-offset-2 hover:underline"
+          className="shrink-0 text-link underline-offset-2 hover:underline"
           data-testid="worktree-output-toggle"
           aria-expanded={open}
           onClick={() => setOpen(!open)}

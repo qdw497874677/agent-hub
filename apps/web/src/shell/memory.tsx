@@ -1,7 +1,8 @@
 import { useState } from 'react';
+import { AppShell, PageBody, PageHeader } from './page-shell.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { memoryApi, type MemoryEntryDto } from './api.ts';
-import { AccountMenu, useAccount } from './auth.tsx';
+import { useAccount } from './auth.tsx';
 import { formatRoute } from './route.ts';
 import { INPUT, SMALL, DANGER, at, errorText, Section, Panel, Empty } from './admin/shared.tsx';
 
@@ -71,7 +72,7 @@ function WriteForm({ scope }: { scope: string }) {
       }}
     >
       <div className="flex gap-2">
-        <select aria-label="类型" className={`${INPUT} w-24 shrink-0`} value={kind} onChange={(e) => setKind(e.target.value as MemoryEntryDto['kind'])}>
+        <select aria-label="类型" className={`${INPUT} w-24! shrink-0`} value={kind} onChange={(e) => setKind(e.target.value as MemoryEntryDto['kind'])}>
           {Object.entries(KIND_TEXT).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
         <input aria-label="标题" data-testid="memory-title" className={`${INPUT} min-w-0 flex-1`} placeholder="标题" maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -95,29 +96,14 @@ export function MemoryPage({ scope }: { scope: string | null }) {
   if (!account) return null;
   const reviewable = new Set(all.filter((s) => s.canReview).map((s) => s.key));
   return (
-    <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between gap-2 border-b border-hair px-3 py-2">
-        <div className="min-w-0">
-          <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'home' })}>← agent-hub</a>
-          <h1 className="text-head text-primary">记忆</h1>
-        </div>
-        <AccountMenu />
-      </header>
-      <nav aria-label="记忆作用域" className="flex gap-1 overflow-x-auto border-b border-hair px-2 py-1.5">
-        {all.map((s) => (
-          <a
-            key={s.key}
-            href={formatRoute({ page: 'memory', scope: s.key })}
-            data-testid="memory-scope"
-            aria-current={s.key === current?.key ? 'page' : undefined}
-            className={`shrink-0 rounded-sm px-3 py-1.5 text-body ${s.key === current?.key ? 'bg-card text-primary' : 'text-secondary hover:bg-card'}`}
-          >
-            {s.label}
-          </a>
-        ))}
-      </nav>
-      <main className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6">
-        <div className="mx-auto flex max-w-[960px] flex-col gap-6">
+    <AppShell>
+      <PageHeader
+        title="记忆"
+        tabsLabel="记忆作用域"
+        tabs={all.map((s) => ({ id: s.key, label: s.label, href: formatRoute({ page: 'memory', scope: s.key }), testId: 'memory-scope' }))}
+        activeTab={current?.key ?? null}
+      />
+      <PageBody className="flex flex-col gap-6">
           {pending.data?.entries.length ? (
             <Section title={`待审（${pending.data.entries.length}）`}>
               <Panel>
@@ -143,8 +129,7 @@ export function MemoryPage({ scope }: { scope: string | null }) {
           ) : (
             <Empty text={scopes.isLoading ? '加载中…' : '没有可看的记忆作用域'} />
           )}
-        </div>
-      </main>
-    </div>
+      </PageBody>
+    </AppShell>
   );
 }

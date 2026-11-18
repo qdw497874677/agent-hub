@@ -25,7 +25,7 @@ import {
  */
 
 const INPUT =
-  'w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-meta text-primary outline-none placeholder:text-tertiary focus:border-accent';
+  'w-full min-w-0 rounded-sm border border-hair bg-card px-2 py-1.5 text-meta text-primary outline-none placeholder:text-tertiary focus:border-ring';
 /** 手机上按钮至少要 32px 高，手指才点得准。 */
 const BUTTON = `${SMALL_BUTTON} inline-flex min-h-8 items-center justify-center`;
 /** 行上的小标签（「自动发现」/「公开」）：高度和按钮对齐，不抢视线。 */
@@ -321,7 +321,7 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
                     <span
                       data-testid="preview-shared"
                       title={shareState ?? '已生成公开链接'}
-                      className={`${TAG} ${activeShare ? 'border-accent/60 text-accent' : 'border-hair text-tertiary'}`}
+                      className={`${TAG} ${activeShare ? 'border-info/60 text-info' : 'border-hair text-tertiary'}`}
                     >
                       {activeShare ? '公开' : '公开 · 已过期'}
                     </span>
@@ -446,7 +446,7 @@ export function PreviewPanel({ sessionId, active, defaultPort = null }: Props) {
                               <label
                                 key={hours}
                                 className={`inline-flex min-h-8 cursor-pointer items-center gap-1 rounded-sm border px-2 text-meta ${
-                                  shareHours === hours ? 'border-accent text-accent' : 'border-hair text-secondary'
+                                  shareHours === hours ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary'
                                 }`}
                               >
                                 <input

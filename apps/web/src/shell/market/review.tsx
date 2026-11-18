@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Notice } from '../../atoms/notice.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { marketApi, type FindingLineDto, type McpRiskSummaryDto, type SubmissionDetailDto } from '../api.ts';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../dialog-shell.tsx';
@@ -12,7 +13,7 @@ import { SCOPE_TEXT, STATUS_TEXT, KIND_TEXT } from './labels.ts';
  * 作者不能批自己的；hub 管理员自批只在规则允许时出现，界面和审计都会标出来。
  */
 const LEVEL_TEXT = { info: '提示', warn: '注意', high: '高风险' } as const;
-const LEVEL_CLASS = { info: 'text-tertiary', warn: 'text-accent', high: 'text-rust' } as const;
+const LEVEL_CLASS = { info: 'text-tertiary', warn: 'text-warning', high: 'text-rust' } as const;
 const RISK_TEXT = { low: '低', medium: '中', high: '高' } as const;
 const ORIGIN_TEXT = { user: '手动提交', git: 'Git 更新', token: '开放 API 令牌', migration: '迁移' } as const;
 const SECRET_FROM = { personal: '个人', team: '团队', hub: 'hub', null: '缺失' } as const;
@@ -27,7 +28,7 @@ export function ReviewPage({ submissionId }: { submissionId: string }) {
   const s = d.submission;
   return (
     <div data-testid="review-page">
-      <a className="text-meta text-tertiary hover:text-accent" href={formatRoute({ page: 'assets', tab: 'pending', reviewId: null })}>
+      <a className="text-meta text-tertiary hover:text-primary" href={formatRoute({ page: 'assets', tab: 'pending', reviewId: null })}>
         ← 待审
       </a>
       <div className="mb-3 mt-1 flex flex-wrap items-baseline gap-2">
@@ -118,7 +119,7 @@ function McpRisk({ risk }: { risk: McpRiskSummaryDto }) {
   return (
     <div data-testid="mcp-risk" className={`rounded-sm border px-2.5 py-2 ${risk.level === 'high' ? 'border-rust' : 'border-hair'}`}>
       <p className="text-primary">
-        MCP 风险：<span className={risk.level === 'high' ? 'text-rust' : risk.level === 'medium' ? 'text-accent' : 'text-tertiary'}>{RISK_TEXT[risk.level]}</span> ·{' '}
+        MCP 风险：<span className={risk.level === 'high' ? 'text-rust' : risk.level === 'medium' ? 'text-warning' : 'text-tertiary'}>{RISK_TEXT[risk.level]}</span> ·{' '}
         {risk.transport === 'stdio' ? '在机器上执行命令（stdio）' : '连远端 HTTP'}
       </p>
       {risk.command ? (
@@ -131,7 +132,7 @@ function McpRisk({ risk }: { risk: McpRiskSummaryDto }) {
         <p className="text-secondary">
           包：
           {risk.packages.map((p) => (
-            <span key={p.name} className={`mr-2 font-mono ${p.pinned ? '' : 'text-accent'}`}>
+            <span key={p.name} className={`mr-2 font-mono ${p.pinned ? '' : 'text-warning'}`}>
               {p.name}
               {p.pinned ? '' : '（未锁版本）'}
             </span>
@@ -139,7 +140,7 @@ function McpRisk({ risk }: { risk: McpRiskSummaryDto }) {
         </p>
       ) : null}
       {risk.secrets.length ? <p className="text-secondary">用到密钥：{risk.secrets.join('、')}</p> : null}
-      {risk.changed.length ? <p className="text-accent">相比上一版变了：{risk.changed.join('、')}</p> : null}
+      {risk.changed.length ? <Notice tone="warning">相比上一版变了：{risk.changed.join('、')}</Notice> : null}
       {risk.notes.map((n, i) => (
         <p key={i} className="text-tertiary">
           {n}
@@ -314,7 +315,7 @@ function Lines({ detail, path, lines }: { detail: SubmissionDetailDto; path: str
           <div key={i}>
             <div
               className={`group flex ${
-                l.kind === 'add' ? 'bg-sage/15 text-primary' : l.kind === 'del' ? 'bg-rust/20 text-secondary' : l.kind === 'hunk' ? 'text-accent-dim' : 'text-tertiary'
+                l.kind === 'add' ? 'bg-sage/15 text-primary' : l.kind === 'del' ? 'bg-rust/20 text-secondary' : l.kind === 'hunk' ? 'text-info' : 'text-tertiary'
               }`}
             >
               <span className="w-9 shrink-0 select-none pr-1 text-right text-tertiary">{l.n ?? ''}</span>
@@ -322,7 +323,7 @@ function Lines({ detail, path, lines }: { detail: SubmissionDetailDto; path: str
                 <button
                   data-testid={`line-${path}-${l.n}`}
                   aria-label={`评论第 ${l.n} 行`}
-                  className="w-5 shrink-0 text-tertiary opacity-40 hover:text-accent group-hover:opacity-100"
+                  className="w-5 shrink-0 text-tertiary opacity-40 hover:text-primary group-hover:opacity-100"
                   onClick={() => setOpen(open === l.n ? null : l.n)}
                 >
                   +

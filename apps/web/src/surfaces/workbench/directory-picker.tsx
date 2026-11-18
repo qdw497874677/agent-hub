@@ -233,7 +233,7 @@ export function DirectoryPicker({
           {listing.isFetching ? <span className="shrink-0 text-meta text-tertiary">…</span> : null}
           <button
             type="button"
-            className="-mr-1 flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-sm px-2.5 text-meta text-accent hover:bg-card-raised disabled:opacity-40 md:min-h-0 md:py-1.5"
+            className="-mr-1 flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-sm px-2.5 text-meta text-link hover:bg-card-raised disabled:opacity-40 md:min-h-0 md:py-1.5"
             disabled={current === undefined}
             aria-expanded={naming !== null}
             onClick={() => (naming === null ? setNaming('') : closeNaming())}
@@ -272,11 +272,11 @@ export function DirectoryPicker({
                 autoCorrect="off"
                 aria-invalid={nameError !== null}
                 aria-describedby={nameError ? 'new-folder-error' : undefined}
-                className="min-h-[44px] min-w-0 flex-1 rounded-sm border border-hair bg-canvas px-2 font-mono text-body text-primary outline-none focus:border-accent md:min-h-0 md:py-1.5"
+                className="min-h-[44px] min-w-0 flex-1 rounded-sm border border-hair bg-canvas px-2 font-mono text-body text-primary outline-none focus:border-ring md:min-h-0 md:py-1.5"
               />
               <button
                 type="button"
-                className="min-h-[44px] shrink-0 rounded-sm bg-accent px-4 text-meta text-canvas disabled:opacity-40 md:min-h-0 md:py-1.5"
+                className="min-h-[44px] shrink-0 rounded-sm bg-action px-4 text-meta text-action-fg disabled:opacity-40 md:min-h-0 md:py-1.5"
                 disabled={makeNamed.isPending}
                 onClick={submitName}
               >
@@ -305,7 +305,7 @@ export function DirectoryPicker({
             <p className="px-3 py-2 text-meta text-rust">
               {(listing.error as Error).message}
               {dir !== '' ? (
-                <button type="button" data-testid="picker-reset" className="ml-2 text-accent hover:underline" onClick={() => setText('')}>
+                <button type="button" data-testid="picker-reset" className="ml-2 text-link hover:underline" onClick={() => setText('')}>
                   回到起点
                 </button>
               ) : null}
@@ -317,7 +317,7 @@ export function DirectoryPicker({
             <>
               {filter === '' ? (
                 <Command.Item value={USE} onSelect={choose} className={row}>
-                  <span className="w-4 text-center text-accent">✓</span>
+                  <span className="w-4 text-center text-primary">✓</span>
                   <span className="min-w-0 flex-1 truncate">
                     使用 <span className="font-mono text-meta text-tertiary">{current.path}</span>
                   </span>
@@ -332,7 +332,7 @@ export function DirectoryPicker({
                 </Command.Item>
               ) : null}
               {offerManaged ? (
-                <Command.Item value={MANAGED} onSelect={choose} className={`${row} text-accent`}>
+                <Command.Item value={MANAGED} onSelect={choose} className={`${row} text-link`}>
                   <span className="w-4 text-center">＋</span>
                   <span className="min-w-0 flex-1 truncate">
                     创建项目目录 agent-hub-workspaces/
@@ -361,7 +361,7 @@ export function DirectoryPicker({
               ) : null}
 
               {offerCreate ? (
-                <Command.Item value={CREATE} onSelect={choose} className={`${row} text-accent`}>
+                <Command.Item value={CREATE} onSelect={choose} className={`${row} text-link`}>
                   <span className="w-4 text-center">＋</span>
                   <span className="min-w-0 flex-1 truncate">新建文件夹 “{filter.trim()}”</span>
                 </Command.Item>
@@ -388,7 +388,7 @@ export function DirectoryPicker({
             <button
               type="button"
               aria-pressed={showHidden}
-              className="flex min-h-[44px] shrink-0 items-center rounded-sm px-2 text-meta text-secondary hover:bg-card-raised aria-pressed:text-accent md:min-h-0 md:py-1.5"
+              className="flex min-h-[44px] shrink-0 items-center rounded-sm px-2 text-meta text-secondary hover:bg-card-raised aria-pressed:text-primary md:min-h-0 md:py-1.5"
               onClick={() => {
                 setShowHidden((value) => !value);
                 inputRef.current?.focus();
@@ -399,7 +399,7 @@ export function DirectoryPicker({
           ) : null}
           <button
             type="button"
-            className="shrink-0 rounded-sm bg-accent px-5 py-2 text-meta text-canvas disabled:opacity-40 md:py-1.5"
+            className="shrink-0 rounded-sm bg-action px-5 py-2 text-meta text-action-fg disabled:opacity-40 md:py-1.5"
             disabled={current === undefined}
             onClick={() => current && onPick(current.path)}
           >

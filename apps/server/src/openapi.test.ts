@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
-import { asAgentId, createAccessPolicy, newWorkspace, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
+import { asAgentId, createAccessPolicy, newWorkspace, permissionsOf, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
 import { journalEntrySchema, projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { buildSpecApp, openApiInfo } from './openapi/app.ts';
-import { mcpTools, projectEvents } from './openapi/mcp.ts';
+import { mcpTools, mcpToolsFor, projectEvents } from './openapi/mcp.ts';
 
 const PASSWORD = 'long enough pw';
 const fake: AgentDescriptor = {
@@ -55,7 +55,7 @@ function harness(rate?: { general?: number; prompt?: number; streams?: number },
     auth: { accounts },
     activity: { audit: accounts.audit!, users: accounts.users },
     assets: { deps: assetReview, audit: accounts.audit!, assetSets: fakeAssetSets() },
-    openApi: { tokens: tokenDeps, manage: tokenDeps, rate }
+    openApi: { tokens: tokenDeps, manage: tokenDeps, rate, settings: accounts.settings, audit: accounts.audit! }
   });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -277,7 +277,8 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   assert.equal(init.status, 200, JSON.stringify(init.body));
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
-  assert.deepEqual(names.sort(), ['events', 'get_asset', 'get_project', 'get_session', 'get_task', 'list_assets', 'list_projects', 'list_task_log', 'list_tasks']);
+  // 只列这个令牌用得了的：projects:read 只有项目 / 任务，看不到会话、资产（#E4）
+  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks']);
   // 写工具不进清单；注解标成只读。
   assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
   const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
@@ -289,6 +290,10 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   const denied = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'create_task', arguments: { projectId: 'p', title: 'x' } } });
   assert.equal(denied.body.result.isError, true);
   assert.match(denied.body.result.content[0].text, /没有这个工具/);
+  // 开着、但令牌没权限：调用时说清缺哪个 scope
+  const locked = await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'get_session', arguments: { sessionId: 's' } } });
+  assert.equal(locked.body.result.isError, true);
+  assert.match(locked.body.result.content[0].text, /403.*sessions:read/);
   // 没令牌：401
   const anonymous = await app.fetch(new Request('http://hub/openapi/v1/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
   assert.equal(anonymous.status, 401);
@@ -352,7 +357,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
 test('MCP 委派：写工具默认不出现，MCP_WRITE 打开后可建任务，clientRequestId 重放同一结果', async () => {
   const { david, mint, app } = await setup();
   const project = (await david('/api/projects', post({ name: '委派' }))).body as { id: string };
-  const token = (await mint(david, ['projects:read', 'projects:write'])).token;
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:write'])).token;
   const replays = new Map<string, string>();
   const store = {
     async get(key: string) {
@@ -577,4 +582,164 @@ test('/openapi/v1/projects：仓库只给 hasToken，令牌名 / 明文都不出
   assert.equal(JSON.stringify(got.body).includes('glpat-abc'), false);
   const list = await read('/projects');
   assert.equal(JSON.stringify(list.body).includes('repo-git:'), false);
+});
+
+test('MCP 工具清单按令牌权限筛：只列令牌用得了的（#E4）', () => {
+  const policy = { modules: new Set(['tasks', 'projects', 'sessions', 'assets'] as const), writes: true };
+  const names = (scopes: Parameters<typeof permissionsOf>[0]) => mcpToolsFor(permissionsOf(scopes), policy).map((t) => t.name).sort();
+  assert.deepEqual(names(['assets:read']), ['get_asset', 'list_assets']);
+  // 交资产（进审核）不等于发布 / 分配
+  assert.deepEqual(names(['assets:write']), ['asset_create', 'asset_import', 'get_asset', 'list_assets']);
+  assert.ok(names(['assets:publish']).includes('asset_publish') && names(['assets:publish']).includes('asset_assign'));
+  // 只有 sessions:write 看不到项目写工具
+  const sessions = names(['sessions:write']);
+  assert.ok(sessions.includes('session_start') && !sessions.includes('project_create') && !sessions.includes('list_projects'));
+  // 没有令牌信息（单测直接调）时不筛
+  assert.equal(mcpToolsFor(undefined, policy).length, mcpTools(policy).length);
+});
+
+test('外部接入：限定项目的令牌经 MCP 只看得到选中的项目；调用写进令牌的调用记录', async () => {
+  const { david, app } = await setup();
+  const mine = (await david('/api/projects', post({ name: '甲' }))).body as { id: string };
+  const other = (await david('/api/projects', post({ name: '乙' }))).body as { id: string };
+  const created = await david('/api/tokens', post({ name: 'scoped', scopes: ['projects:read'], projectIds: [mine.id] }));
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const { token, info } = created.body as { token: string; info: { id: string; projectIds: string[] } };
+  assert.deepEqual(info.projectIds, [mine.id]);
+  const rpc = async (name: string, args: Record<string, unknown>) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } })
+      })
+    );
+    return (await response.json()) as any;
+  };
+  const listed = await rpc('list_projects', {});
+  assert.equal(listed.result.isError, false, JSON.stringify(listed));
+  const names = JSON.stringify(listed.result.structuredContent);
+  assert.ok(names.includes('甲') && !names.includes('乙'), names);
+  const denied = await rpc('get_project', { projectId: other.id });
+  assert.equal(denied.result.isError, true);
+  // 调用记录：每次 tools/call 一条，只有工具名和结果
+  const activity = await david(`/api/tokens/${info.id}/activity`);
+  assert.equal(activity.status, 200);
+  const calls = (activity.body as { action: string; detail: string }[]).filter((row) => row.action === 'mcp.call');
+  assert.equal(calls.length, 2);
+  assert.ok(calls.some((row) => row.detail.startsWith('list_projects · 成功')));
+  assert.ok(calls.some((row) => row.detail.startsWith('get_project · 失败')));
+  // 能用的工具数：projects:read → 项目 + 任务的只读工具
+  const tools = await david(`/api/tokens/${info.id}/tools`);
+  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks']);
+});
+
+test('外部接入：轮换后旧令牌 401、新令牌可用，旧记录留在列表里', async () => {
+  const { david, api, mint } = await setup();
+  const first = await mint(david, ['projects:read']);
+  const rotated = await david(`/api/tokens/${first.info.id}/rotate`, post({}));
+  assert.equal(rotated.status, 201, JSON.stringify(rotated.body));
+  const next = rotated.body as { token: string; info: { id: string } };
+  assert.equal((await api(first.token)('/projects')).status, 401);
+  assert.equal((await api(next.token)('/projects')).status, 200);
+  const list = (await david('/api/tokens')).body as { id: string; revokedAt: number | null }[];
+  assert.ok(list.some((t) => t.id === first.info.id && t.revokedAt !== null));
+  // 吊销同样保留记录
+  assert.equal((await david(`/api/tokens/${next.info.id}`, { method: 'DELETE' })).status, 200);
+  assert.ok(((await david('/api/tokens')).body as { id: string; revokedAt: number | null }[]).some((t) => t.id === next.info.id && t.revokedAt !== null));
+});
+
+test('外部接入：写工具开关——集群管理员在页面上开关，覆盖环境变量；null 恢复默认；成员不能改', async () => {
+  const { david, mint, app, browser, accounts } = await setup();
+  const token = (await mint(david, ['projects:read', 'projects:write'])).token;
+  const toolNames = async () => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
+      })
+    );
+    return ((await response.json()) as any).result.tools.map((t: { name: string }) => t.name) as string[];
+  };
+  const before = (await david('/api/mcp/access')).body as { writes: boolean; source: string; canManage: boolean };
+  assert.equal(before.source, 'env');
+  assert.equal(before.canManage, true, '第一个注册的人是集群管理员');
+  assert.ok(!(await toolNames()).includes('task_create'));
+  const on = await david('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes: true }) });
+  assert.equal(on.status, 200, JSON.stringify(on.body));
+  assert.deepEqual({ writes: on.body.writes, source: on.body.source }, { writes: true, source: 'setting' });
+  assert.ok((await toolNames()).includes('task_create'));
+  const reset = await david('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes: null }) });
+  assert.equal(reset.body.source, 'env');
+  assert.ok(!(await toolNames()).includes('task_create'));
+  // 团队里的普通成员：能看不能改
+  await addTeamMember(accounts, 'eve@b.co', PASSWORD);
+  const eve = browser();
+  assert.equal((await eve('/api/auth/login', post({ email: 'eve@b.co', password: PASSWORD }))).status, 200);
+  const eveView = await eve('/api/mcp/access');
+  assert.equal(eveView.status, 200);
+  assert.equal(eveView.body.canManage, false);
+  assert.equal((await eve('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes: true }) })).status, 403);
+});
+
+test('外部接入：限定项目的令牌能用项目所在团队的团队资产（读 + 按权限写）；别的团队 404；个人资产看不到；项目不在团队里就没有团队资产', async () => {
+  const { david, mint, api, assetsStore, world, accounts } = await setup();
+  const mine = (await david('/api/projects', post({ name: '甲' }))).body as { id: string; teamId: string };
+  const elsewhere = (await david('/api/projects', post({ name: '乙' }))).body as { id: string; teamId: string };
+  const namedSkill = (name: string) => [{ path: 'SKILL.md', data: b64(`---\nname: ${name}\ndescription: ${name}\n---\nhi\n`) }];
+  const myId = (await accounts.users.firstClusterAdmin())!.id;
+  for (const p of [mine, elsewhere]) assetsStore.projectList.set(p.id, { id: p.id, name: p.id, teamId: p.teamId, createdBy: myId, members: [myId], deletedAt: null } as never);
+  const make = async (name: string, scope: 'team' | 'global' | 'personal' | 'project', teamId: string | null, projectId: string | null = null) => {
+    const made = await uploadAsset(assetsStore.deps, {
+      kind: 'skill',
+      name,
+      projectId,
+      files: skillFiles(name).map((file) => ({ path: file.path, data: Buffer.from(file.data, 'base64') })),
+      scope,
+      ownerId: myId,
+      teamId,
+      publish: true
+    });
+    assert.ok(made.ok, JSON.stringify(made));
+    return made.value.id;
+  };
+  const teamAsset = await make('team-own', 'team', mine.teamId);
+  const otherTeam = await make('team-other', 'team', 'team-somebody-else');
+  const global = await make('global-one', 'global', null);
+  const personal = await make('personal-one', 'personal', mine.teamId);
+  const inProject = await make('project-mine', 'project', mine.teamId, mine.id);
+  const outProject = await make('project-other', 'project', mine.teamId, elsewhere.id);
+
+  const writer = (await mint(david, ['assets:read', 'assets:write', 'projects:read'], { projectIds: [mine.id] })).token;
+  const call = api(writer);
+  // 读：同团队团队资产、全局、范围内项目资产可见；别的团队、个人、范围外项目都看不到
+  const listed = await call('/assets');
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  const ids = (listed.body as { id: string }[]).map((a) => a.id);
+  for (const id of [teamAsset, global, inProject]) assert.ok(ids.includes(id), `应可见 ${id}`);
+  for (const id of [otherTeam, personal, outProject]) assert.ok(!ids.includes(id), `不应可见 ${id}`);
+  assert.equal((await call(`/assets/${teamAsset}`)).status, 200);
+  assert.equal((await call(`/assets/${otherTeam}`)).status, 404);
+  assert.equal((await call(`/assets/${personal}`)).status, 404);
+  // 写：有 assets:write 就能给同团队的团队资产交新版本、建团队资产；个人资产不行；别的团队的照样 404
+  const revised = await call(`/assets/${teamAsset}/revisions`, post({ files: skillFiles('team-own v2') }));
+  assert.equal(revised.status, 200, JSON.stringify(revised.body));
+  assert.equal((await call(`/assets/${otherTeam}/revisions`, post({ files: skillFiles('x') }))).status, 404);
+  const createdTeam = await call('/assets', post({ kind: 'skill', scope: 'team', files: namedSkill('team-new') }));
+  assert.equal(createdTeam.status, 201, JSON.stringify(createdTeam.body));
+  assert.equal((await call('/assets', post({ kind: 'skill', scope: 'personal', files: namedSkill('mine-new') }))).status, 403);
+  // 只读令牌：看得到团队资产，但交不了新版本
+  const reader = (await mint(david, ['assets:read'], { projectIds: [mine.id] })).token;
+  assert.equal((await api(reader)(`/assets/${teamAsset}`)).status, 200);
+  assert.equal((await api(reader)(`/assets/${teamAsset}/revisions`, post({ files: skillFiles('nope') }))).status, 403);
+
+  // 项目不在任何团队里（hub 项目）：限定到它的令牌没有团队资产可用；全局照样可读
+  const loose = (await mint(david, ['assets:read', 'assets:write'], { projectIds: [elsewhere.id] })).token;
+  const project = (await world.deps.projects.byId(elsewhere.id as never))!;
+  await world.deps.projects.save({ ...project, teamId: null } as never);
+  assert.equal((await api(loose)(`/assets/${teamAsset}`)).status, 404);
+  assert.equal((await api(loose)(`/assets/${global}`)).status, 200);
+  assert.equal((await api(loose)(`/assets/${teamAsset}/revisions`, post({ files: skillFiles('nope') }))).status, 404);
+  assert.equal((await api(loose)('/assets', post({ kind: 'skill', scope: 'team', files: namedSkill('team-x') }))).status, 403);
 });

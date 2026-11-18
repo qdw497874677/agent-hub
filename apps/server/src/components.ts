@@ -1,7 +1,7 @@
 import type { Hono } from 'hono';
 import { bundleInstallRequest, componentJobRequest, componentReviewRequest, componentSubmitRequest } from '@agent-hub/contract';
 import type { ComponentDeps, NpmArtifactInfo } from '@agent-hub/domain';
-import { installScriptsOf, listComponentCatalog, reviewComponent, startBundleJob, startComponentJob, submitComponent } from '@agent-hub/domain';
+import { browserStatus, can, installBuiltinBrowser, installScriptsOf, listComponentCatalog, reviewComponent, startBundleJob, startComponentJob, submitComponent } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -79,6 +79,19 @@ export function installComponents(app: Hono, deps: ComponentDeps, principalOf: P
       action: parsed.data.action === 'install' ? 'install_component' : 'uninstall_component',
       ...(parsed.data.version ? { version: parsed.data.version } : {})
     });
+    return result.ok ? c.json({ job: result.value }, 202) : fail(c, result.error);
+  });
+  // 内置浏览器（Playwright 要的 Chromium）：每台机器有没有、能不能一键装。只给集群管理员看机器清单。
+  app.get('/api/builtin/browser', async (c) => {
+    const principal = principalOf(c);
+    if (!principal) return c.json(unauthorized, 401);
+    const admin = can(principal, 'asset.publish_global') && !principal.via;
+    return c.json({ canInstall: admin, workers: admin ? browserStatus(await deps.workers.list()) : [] });
+  });
+  app.post('/api/workers/:id/builtin-browser', async (c) => {
+    const principal = principalOf(c);
+    if (!principal) return c.json(unauthorized, 401);
+    const result = await installBuiltinBrowser(deps, principal, c.req.param('id'));
     return result.ok ? c.json({ job: result.value }, 202) : fail(c, result.error);
   });
 }

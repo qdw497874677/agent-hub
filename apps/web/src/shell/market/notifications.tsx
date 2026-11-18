@@ -32,7 +32,7 @@ export function NotificationBell({ placement = 'down' }: { placement?: 'down' | 
         ) : null}
       </button>
       {open ? (
-        <div className={`absolute z-40 max-h-[60vh] w-[min(320px,calc(100vw-24px))] overflow-y-auto rounded-md border border-strong bg-panel p-1 text-meta shadow-lg ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`}>
+        <div className={`absolute z-40 max-h-[60vh] w-[min(320px,calc(100vw-24px))] overflow-y-auto rounded-lg border border-strong bg-overlay p-1 text-meta shadow-overlay ${placement === 'up' ? 'bottom-9 right-0 lg:left-0 lg:right-auto' : 'right-0 top-9'}`}>
           {(notes.data?.items ?? []).map((n) => (
             <a key={n.id} href={n.link} data-testid="notification" className="block rounded-sm px-2 py-1.5 hover:bg-card" onClick={() => setOpen(false)}>
               <p className={n.readAt ? 'text-secondary' : 'text-primary'}>{n.title}</p>

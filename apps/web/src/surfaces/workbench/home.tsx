@@ -72,7 +72,7 @@ export function HomePage({
         <div className="order-3 mb-1 flex items-baseline justify-between md:order-2">
           <p className="text-meta text-tertiary">项目</p>
           <button
-            className="text-meta text-secondary hover:text-accent"
+            className="text-meta text-secondary hover:text-primary"
             onClick={() => setCreating((open) => !open)}
             title="新建项目"
           >
@@ -167,7 +167,7 @@ export function HomePage({
           {home.error ? (
             <p className="mb-4 border-l border-rust pl-2 text-meta text-secondary">
               读不到会话：{(home.error as Error).message}
-              <button className="ml-2 text-accent hover:underline" onClick={() => void home.refetch()}>
+              <button className="ml-2 text-link hover:underline" onClick={() => void home.refetch()}>
                 重试
               </button>
             </p>
@@ -265,14 +265,14 @@ function CreateProjectPanel({
         <input
           aria-label="项目名"
           autoFocus
-          className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-3 py-2 text-head text-primary outline-none focus:border-accent"
+          className="min-w-0 flex-1 rounded-sm border border-hair bg-card px-3 py-2 text-head text-primary outline-none focus:border-ring"
           value={name}
           placeholder="项目名"
           onChange={(event) => setName(event.target.value)}
         />
         <button
           type="submit"
-          className="min-h-[40px] shrink-0 rounded-sm bg-accent px-4 py-2 text-body text-canvas disabled:opacity-40"
+          className="min-h-[40px] shrink-0 rounded-sm bg-action px-4 py-2 text-body text-action-fg disabled:opacity-40"
           disabled={name.trim() === '' || create.isPending}
         >
           创建
@@ -282,7 +282,7 @@ function CreateProjectPanel({
       <textarea
         aria-label="项目说明"
         title="agent 开工时会读到"
-        className="mb-3 block min-h-[72px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-accent"
+        className="mb-3 block min-h-[72px] w-full resize-y rounded-sm border border-hair bg-card px-2 py-1.5 text-sub text-primary outline-none focus:border-ring"
         value={description}
         placeholder="说明（可选）"
         onChange={(event) => setDescription(event.target.value)}
@@ -306,7 +306,7 @@ function CreateProjectPanel({
           <div className="flex flex-wrap gap-2">
             <input
               aria-label="git 仓库"
-              className="min-w-0 flex-[3_1_220px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent"
+              className="min-w-0 flex-[3_1_220px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-ring"
               value={repoUrl}
               placeholder="https://… 或 git@…"
               spellCheck={false}
@@ -315,7 +315,7 @@ function CreateProjectPanel({
             />
             <input
               aria-label="默认分支"
-              className="min-w-0 flex-[1_1_120px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-accent disabled:opacity-40"
+              className="min-w-0 flex-[1_1_120px] rounded-sm border border-hair bg-card px-2 py-1.5 font-mono text-meta text-primary outline-none focus:border-ring disabled:opacity-40"
               value={defaultBranch}
               placeholder="默认分支（可选）"
               spellCheck={false}

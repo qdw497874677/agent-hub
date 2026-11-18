@@ -42,7 +42,7 @@ export interface BundleManifest {
 const ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const AGENT_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** 确切版本：不收范围、tag、latest（§9「锁版本」）。 */
-const EXACT_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/;
+const EXACT_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/;
 const NPM_PACKAGE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/;
 const SHA512 = /^sha512-[A-Za-z0-9+/]{86}==$/;
 /** 资产引用：asset:<名字>@<版本号>。 */

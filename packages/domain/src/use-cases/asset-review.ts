@@ -34,6 +34,7 @@ import { can, type AccessContext, type Resource, type Subject } from '../access.
 import type { AuditAction, Principal, User, UserId, TeamId } from '../account.ts';
 import { conflict, forbidden, invalid, notFound, type DomainError } from '../errors.ts';
 import { newId } from '../ids.ts';
+import { scopedTokenSeesAsset } from '../api-token.ts';
 import { MCP_CONFIG_FILE, checkSecretName, mcpSecretRefs, parseMcpAsset, type McpAsset } from '../mcp.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
@@ -242,7 +243,21 @@ export async function buildReviewReport(
 // ---------- 可见性与管理权 ----------
 
 /** 这个人能不能看到这个资产（目录 / 详情）。全局人人可见；团队 / 项目同团队；个人只有作者。 */
+/**
+ * 限定项目的令牌建资产：个人资产不行；团队资产只能建在限定项目所在的团队（就是账号自己的团队）。
+ * 项目资产另由 authorizeAssetProject 判项目。返回拒绝原因，null = 不拦。
+ */
+export function scopedTokenCreateDenied(actor: Principal, scope: AssetScope): string | null {
+  if (scope === 'project') return null;
+  const reach = scopedTokenSeesAsset(actor.via, { scope, teamId: actor.user.teamId ?? null, projectId: null });
+  if (reach !== false) return null;
+  return scope === 'personal' ? '这个令牌限定了项目，不能建个人资产' : '这个令牌限定的项目不在你的团队里，不能建团队资产';
+}
+
 export function canSeeAsset(actor: Principal, asset: Asset): boolean {
+  // 限定项目的令牌：先按项目 / 所在团队收窄（作者本人也一样），再走下面的常规规则
+  const reach = scopedTokenSeesAsset(actor.via, asset);
+  if (reach === false) return false;
   if (asset.ownerId === actor.user.id) return true;
   if (!can(actor, 'asset.read')) return false;
   if (asset.scope === 'global') return isPublished(asset) || actor.user.clusterAdmin;
@@ -253,7 +268,8 @@ export function canSeeAsset(actor: Principal, asset: Asset): boolean {
 /** 能不能给这个资产传新版本 / 撤回 / 提升：作者、同团队负责人（team 范围 asset.submit），全局资产还有 hub 管理员。 */
 function canMaintain(actor: Principal, asset: Asset, permission: 'asset.submit' | 'asset.retire'): boolean {
   if (asset.scope === 'global' && actor.user.clusterAdmin && !actor.via) return true;
-  const resource: Resource = { teamId: asset.teamId, createdBy: asset.ownerId };
+  // kind / projectId 让限定项目的令牌按项目（项目资产）或所在团队（团队资产）判断
+  const resource: Resource = { kind: 'asset', teamId: asset.teamId, createdBy: asset.ownerId, ...(asset.projectId !== null ? { projectId: asset.projectId } : {}) };
   if (asset.scope === 'personal') return asset.ownerId === actor.user.id && can(actor, permission);
   if (asset.scope === 'global') return asset.ownerId === actor.user.id && can(actor, permission);
   return can(actor, permission, resource);
@@ -393,6 +409,8 @@ export async function submitNewAsset(
   if (!can(actor, 'asset.submit')) return err(forbidden('你没有上架资产的权限'));
   if (input.scope === 'global' && !can(actor, 'asset.publish_global')) return err(forbidden('全局资产只有集群管理员能直接上架：先上架到团队，再申请提升到全局'));
   if (input.scope !== 'global' && !actor.user.teamId) return err(invalid('你还没有团队'));
+  const denied = scopedTokenCreateDenied(actor, input.scope);
+  if (denied) return err(forbidden(denied));
   if (input.scope === 'project') {
     const allowed = await authorizeAssetProject(deps, actor, input.projectId ?? null);
     if (!allowed.ok) return allowed;

@@ -1,10 +1,10 @@
 /** 用户气泡旁的头像 + 名字（多人在同一条会话里说话时才显示）。 */
-const PALETTE = ['bg-sage/30', 'bg-accent/30', 'bg-rust/25', 'bg-card-raised'];
+const PALETTE = ['bg-sage/30', 'bg-info/30', 'bg-rust/25', 'bg-card-raised'];
 
 /** 名字 → 色板（同名同色，跨页面稳定）。群聊的小圆点也用它。 */
 export function authorHue(id: string, external = false): string {
   // 外部渠道的人（#219 C3）用固定色，一眼能看出不是项目里的人。
-  if (external) return 'bg-accent/30';
+  if (external) return 'bg-info/30';
   let h = 0;
   for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return PALETTE[h % PALETTE.length] ?? PALETTE[0]!;

@@ -229,3 +229,17 @@ test('frontmatter：name / description 类型不对、SKILL.md 不是 UTF-8，�
   const latin = reader.describe('skill', [{ path: 'SKILL.md', data: new Uint8Array([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0xfe]) }]);
   assert.equal(!latin.ok && latin.error.message, 'SKILL.md 不是 UTF-8 文本');
 });
+
+test('克隆失败的说明：没带令牌 = 仓库不存在或要令牌；带了令牌 = 令牌无效或没权限', async () => {
+  const { describeGitFailure } = await import('./asset-reader.ts');
+  // GitHub 对不存在的仓库回「要认证」
+  assert.equal(classifyGitFailure("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), '认证失败');
+  assert.equal(classifyGitFailure('remote: Repository not found.'), '认证失败');
+  const anonymous = describeGitFailure('认证失败', false);
+  assert.equal(anonymous.code, 'invalid');
+  assert.match(anonymous.message, /仓库不存在，或是私有仓库需要访问令牌/);
+  assert.match(describeGitFailure('认证失败', true).message, /访问令牌无效，或没有这个仓库的权限/);
+  assert.match(describeGitFailure('分支不存在', false).message, /分支或标签不存在/);
+  assert.equal(describeGitFailure('主机不可达', false).code, 'unavailable');
+  assert.equal(describeGitFailure('其它', false).message, '克隆失败（其它）');
+});

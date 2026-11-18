@@ -17,6 +17,7 @@ import {
   uploadAssetRevision,
   workerAssetManifest,
   sessionMcpLaunch,
+  mcpAssetProblems,
   remoteMcpTarget,
   listSecrets,
   setSecret,
@@ -495,7 +496,51 @@ test('允许清单：候选资产没装在这台机器时，靠 ensure 预热后
     ensure: async () => null
   });
   assert.deepEqual(failed.assetIds, []);
-  assert.match(failed.blocked ?? '', /预热失败/);
+  assert.match(failed.blocked ?? '', /没能装到这台机器/);
+
+  // 能说清是哪一项时：错误点名资产，并给下一步。
+  const named = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async (_workerId, assetIds) => ({ failed: assetIds, reason: '同步失败：磁盘已满' })
+  });
+  assert.deepEqual(named.assetIds, []);
+  assert.match(named.blocked ?? '', new RegExp(`「${made.value.name}」没能装到这台机器（同步失败：磁盘已满）`));
+  assert.match(named.blocked ?? '', /去「资产」/);
+});
+
+test('允许清单：MCP 资产不需要预热（不下发到机器），不会因为「没落地」拦住启动', async () => {
+  const { deps } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const tool = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'echo', command: 'node', args: ['echo.js'] }) });
+  const sk = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(tool.ok && sk.ok);
+  const asked: string[][] = [];
+  const plan = await resolveSessionAssets(deps, {
+    sessionId: 's1',
+    workerId: 'w1',
+    projectId: null,
+    ensure: async (_workerId, assetIds) => {
+      asked.push([...assetIds]);
+      // 机器只会回报文件类资产：MCP 永远不在这里
+      return Object.fromEntries(assetIds.map((assetId) => [assetId, sk.value.pinned]));
+    }
+  });
+  assert.deepEqual(asked, [[sk.value.id]], 'ensure 只收到文件类资产');
+  assert.equal(plan.blocked, undefined);
+  assert.deepEqual(new Set(plan.assetIds), new Set([tool.value.id, sk.value.id]));
+  assert.equal(plan.entries.find((entry) => entry.kind === 'mcp')?.digest, tool.value.pinned);
+
+  // 只有 MCP：根本不调 ensure
+  const { deps: onlyMcp } = inMemoryAssets();
+  const lone = await uploadAsset(onlyMcp, { kind: 'mcp', files: json({ name: 'remote', url: 'https://e/mcp' }) });
+  assert.ok(lone.ok);
+  let called = false;
+  const solo = await resolveSessionAssets(onlyMcp, { sessionId: 's2', workerId: 'w1', projectId: null, ensure: async () => ((called = true), null) });
+  assert.equal(called, false);
+  assert.equal(solo.blocked, undefined);
+  assert.deepEqual(solo.assetIds, [lone.value.id]);
 });
 
 test('MCP 资产：一份 mcp.json 多台服务器，按服务器下发；跨资产撞名只留先到的', async () => {
@@ -530,4 +575,35 @@ test('MCP 资产：一份 mcp.json 多台服务器，按服务器下发；跨资
   const secrets = await listSecrets(deps);
   assert.deepEqual(secrets.missing, []);
   assert.ok(secrets.secrets.find((row) => row.name === 'FS_TOKEN')?.usedBy.includes('toolbox'));
+});
+
+test('MCP 跟着会话清单走：给了会话清单就不要求「装到机器」；没给才看机器分配', async () => {
+  const { deps } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const remote = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'remote', url: 'https://e/mcp' }) });
+  const other = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'other', url: 'https://o/mcp' }) });
+  assert.ok(remote.ok && other.ok);
+  // 一台机器都没装
+  assert.deepEqual((await sessionMcpLaunch(deps, 'w9')).launch, []);
+  const only = new Set([remote.value.id]);
+  assert.deepEqual((await sessionMcpLaunch(deps, 'w9', only)).launch.map((entry) => entry.name), ['remote']);
+  // 清单外的不给
+  assert.equal((await remoteMcpTarget(deps, 'w9', 'other', only)).ok, false);
+  assert.ok((await remoteMcpTarget(deps, 'w9', 'remote', only)).ok);
+});
+
+test('MCP 带上也起不来的提示：缺密钥点名；设好密钥就不提示；文件类资产不管', async () => {
+  const { deps } = inMemoryAssets();
+  const json = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+  const local = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'local-fs', command: 'node', args: ['srv.js'], env: { FS_TOKEN: '${secret:FS_TOKEN}' } }) });
+  const plain = await uploadAsset(deps, { kind: 'mcp', files: json({ name: 'plain', url: 'https://e/mcp' }) });
+  const skillAsset = await uploadAsset(deps, { kind: 'skill', files: skill() });
+  assert.ok(local.ok && plain.ok && skillAsset.ok);
+  const ids = [local.value.id, plain.value.id, skillAsset.value.id];
+  let problems = await mcpAssetProblems(deps, ids);
+  assert.deepEqual(Object.keys(problems), [local.value.id]);
+  assert.match(problems[local.value.id]!, /缺密钥 FS_TOKEN/);
+  assert.ok((await setSecret(deps, 'FS_TOKEN', 'v')).ok);
+  problems = await mcpAssetProblems(deps, ids);
+  assert.deepEqual(problems, {});
 });

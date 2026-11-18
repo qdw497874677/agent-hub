@@ -80,7 +80,7 @@ export function TrashList() {
           {items.map((item) => (
             <li key={item.id} className="flex items-center gap-1 px-2 py-0.5">
               <span className="min-w-0 flex-1 truncate text-sub text-tertiary line-through">{item.name}</span>
-              <button className="text-meta text-secondary hover:text-accent" disabled={restore.isPending} onClick={() => restore.mutate(item.id)}>
+              <button className="text-meta text-secondary hover:text-primary" disabled={restore.isPending} onClick={() => restore.mutate(item.id)}>
                 还原
               </button>
               <button

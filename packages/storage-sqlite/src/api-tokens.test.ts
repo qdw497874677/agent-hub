@@ -84,3 +84,25 @@ test('表已允许 bot 但缺两列时用 ALTER TABLE 补齐', async () => {
   await repo.save(tokenOf({ id: 'bot-2', bot: { projectId: 'p1', name: 'helper' } }));
   assert.deepEqual((await repo.byId('bot-2'))?.bot, { projectId: 'p1', name: 'helper' });
 });
+
+test('迁移：缺 project_ids 列的库补上；老令牌读出来不限项目，新令牌能存能读项目范围', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE api_tokens (
+      id TEXT PRIMARY KEY, team_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('personal','service','bot')),
+      user_id TEXT NOT NULL, bot_project_id TEXT, bot_name TEXT, name TEXT NOT NULL, scopes TEXT NOT NULL, prefix TEXT NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL, created_at INTEGER NOT NULL,
+      expires_at INTEGER, last_used_at INTEGER, revoked_at INTEGER
+    );`);
+  db.exec(`INSERT INTO api_tokens (id, team_id, kind, user_id, name, scopes, prefix, token_hash, created_by, created_at)
+    VALUES ('old', 'team-1', 'personal', 'owner', '旧令牌', '["projects:read"]', 'ahp_old', 'hash-old', 'owner', 1)`);
+  const repo = createSqliteApiTokens(db);
+  assert.equal((await repo.byId('old'))?.projectIds, undefined);
+  const { bot: _bot, ...personal } = tokenOf({ id: 'scoped', kind: 'personal' });
+  await repo.save({ ...personal, projectIds: ['p1', 'p2'] });
+  assert.deepEqual((await repo.byId('scoped'))?.projectIds, ['p1', 'p2']);
+  // 再打开一次（迁移幂等）
+  const again = createSqliteApiTokens(db);
+  assert.deepEqual((await again.byId('scoped'))?.projectIds, ['p1', 'p2']);
+});

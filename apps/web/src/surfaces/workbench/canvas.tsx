@@ -509,7 +509,7 @@ export function CanvasView({
         // 无向关系：没有箭头；选中后按 Delete 删除。
         data: { kind: 'link', aSessionId: edge.aSessionId, bSessionId: edge.bSessionId },
         deletable: true,
-        style: { stroke: 'var(--color-accent)', strokeWidth: 1.5 }
+        style: { stroke: 'var(--color-info)', strokeWidth: 1.5 }
       }));
     return [...derived, ...forked, ...linked];
   }, [canvas.edges]);
@@ -641,7 +641,7 @@ export function CanvasView({
         </Controls>
       </ReactFlow>
       {linkError ? (
-        <div role="alert" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-sm border border-rust bg-panel px-3 py-1.5 text-meta text-rust shadow-md">
+        <div role="alert" className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-rust bg-overlay px-3 py-1.5 text-meta text-rust shadow-overlay">
           <span>{linkError}</span>
           <button aria-label="关闭提示" className="text-tertiary hover:text-primary" onClick={() => setLinkError(null)}>
             ×

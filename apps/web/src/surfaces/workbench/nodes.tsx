@@ -108,7 +108,7 @@ function CardResizer({ kind, selected, onResized }: { kind: CardKind; selected: 
         minHeight={limits.minHeight}
         maxWidth={limits.maxWidth}
         maxHeight={limits.maxHeight}
-        color="var(--color-accent)"
+        color="var(--color-ring)"
         className="card-resize-handle"
         onResizeEnd={(_, box) => onResized(box)}
       />
@@ -162,6 +162,7 @@ function BlockView({
     );
   }
   if (block.kind === 'stopped') return <StoppedDivider text={block.text} compact />;
+  if (block.kind === 'compaction') return <p role="status" className="text-center text-meta text-tertiary">{block.text}</p>;
   if (block.kind === 'stall') {
     return (
       <p role="status" className="border-l border-rust pl-2 text-meta text-rust">
@@ -189,8 +190,8 @@ function BlockView({
   if (block.kind === 'subagent') {
     const status = block.status === 'running' ? '运行中' : block.status === 'failed' ? '失败' : block.status === 'cancelled' ? '已取消' : '完成';
     return (
-      <p className={`flex items-baseline gap-2 border-l pl-2 text-meta ${block.status === 'failed' ? 'border-rust text-rust' : 'border-accent/40 text-secondary'}`} data-testid="card-subagent">
-        <span className="text-accent">◈</span>
+      <p className={`flex items-baseline gap-2 border-l pl-2 text-meta ${block.status === 'failed' ? 'border-rust text-rust' : 'border-hair text-secondary'}`} data-testid="card-subagent">
+        <span className={block.status === 'running' ? 'text-live' : 'text-tertiary'}>◈</span>
         <span className="font-mono text-sage">{block.agent ?? '子代理'}</span>
         <span className="truncate opacity-70">{block.title ?? ''}</span>
         <span className="ml-auto shrink-0 text-tertiary">{status} · {subagentStepCount(block)} 步</span>
@@ -208,7 +209,7 @@ function BlockView({
   }
   return (
     <div className="flex items-baseline gap-2 text-meta">
-      <span className="text-accent-dim">◆</span>
+      <span className="text-tertiary">◆</span>
       <span className="truncate font-mono text-secondary">{block.path.split('/').pop()}</span>
       <span className="text-tertiary">{block.bytes > 0 ? `${Math.round(block.bytes / 1024)}K` : ''}</span>
     </div>
@@ -400,14 +401,14 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
       // 收起过的卡还在画布上（位置和连线都别断），但整张退到背景，视线先落到活跃的。
       data-settled={settled ? 'true' : undefined}
       className={`group flex h-full w-full flex-col rounded-md border bg-card px-3 py-3 transition-colors ${
-        selected ? 'border-accent' : 'border-hair'
+        selected ? 'border-fg/40' : 'border-hair'
       } ${dimmed || settled ? 'opacity-60' : ''}`}
     >
       <CardResizer kind="session" selected={selected} onResized={onResized} />
       {menu ? createPortal(
         <>
           <div className="nodrag fixed inset-0 z-[60]" onPointerDown={() => setMenu(null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); }} />
-          <div role="menu" className="nodrag fixed z-[61] flex min-w-40 flex-col rounded-sm border border-hair bg-card py-1 shadow-md" style={{ left: menu.x, top: menu.y }}>
+          <div role="menu" className="nodrag fixed z-[61] flex min-w-40 flex-col rounded-lg border border-strong bg-overlay py-1 shadow-overlay" style={{ left: menu.x, top: menu.y }}>
             <button role="menuitem" className="px-3 py-1.5 text-left text-meta text-primary hover:bg-hair/40" onClick={(event) => { event.stopPropagation(); setMenu(null); onExpand(); }}>
               在画布中展开
             </button>
@@ -426,7 +427,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             data-testid="card-preview-menu"
             role="menu"
             aria-label="选择要打开的预览"
-            className="nodrag fixed z-[61] flex min-w-40 max-w-52 flex-col rounded-sm border border-hair bg-card py-1 shadow-md"
+            className="nodrag fixed z-[61] flex min-w-40 max-w-52 flex-col rounded-lg border border-strong bg-overlay py-1 shadow-overlay"
             style={{ left: previewMenu.x, top: previewMenu.y }}
           >
             {readyPreviews.map((link) => (
@@ -456,7 +457,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         position={Position.Top}
         title="连到这里"
         isConnectable={data.online !== false}
-        className="!size-2 !border-0 !bg-accent"
+        className="!size-2 !border-0 !bg-ring"
       />
       <header className="card-drag-zone mb-2 flex min-h-11 cursor-grab touch-none select-none items-center justify-between gap-2">
         <div className="flex min-w-0 items-baseline gap-2 overflow-hidden">
@@ -486,10 +487,10 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             </span>
           ) : null}
           <CardStatus phase={phase} startedAt={session.createdAt} now={now} reason={failureReason} />
-          {expanded ? <span className="text-meta text-accent" title="已在画布中展开" data-testid="card-expanded">◫</span> : null}
+          {expanded ? <span className="text-meta text-secondary" title="已在画布中展开" data-testid="card-expanded">◫</span> : null}
           <button
-            className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-accent hover:text-accent focus:opacity-100 ${
-              selected ? 'border-accent text-accent' : 'border-hair text-tertiary pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'
+            className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-strong hover:text-primary focus:opacity-100 ${
+              selected ? 'border-fg/40 text-primary' : 'border-hair text-tertiary pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'
             }`}
             title="在画布中展开（也可以双击卡片）"
             aria-label="在画布中展开"
@@ -501,8 +502,8 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             ⤢
           </button>
           <button
-            className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-accent hover:text-accent focus:opacity-100 ${
-              selected ? 'border-accent text-accent' : 'border-hair text-tertiary pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'
+            className={`nodrag rounded-sm border px-1.5 py-0.5 text-meta transition-opacity hover:border-strong hover:text-primary focus:opacity-100 ${
+              selected ? 'border-fg/40 text-primary' : 'border-hair text-tertiary pointer-fine:opacity-0 pointer-fine:group-hover:opacity-100'
             }`}
             title="打开会话页"
             onClick={(event) => {
@@ -613,7 +614,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
             <button
               ref={previewButtonRef}
               data-testid="card-preview"
-              className="nodrag inline-flex min-h-6 shrink-0 items-center rounded-sm border border-hair px-1.5 text-meta text-secondary hover:border-accent hover:text-accent [@media(pointer:coarse)]:min-h-8"
+              className="nodrag inline-flex min-h-6 shrink-0 items-center rounded-sm border border-hair px-1.5 text-meta text-secondary hover:border-strong hover:text-primary [@media(pointer:coarse)]:min-h-8"
               aria-label={
                 readyPreviews.length > 1 ? `预览（${readyPreviews.length} 个链接）` : '在新标签打开预览'
               }
@@ -646,7 +647,7 @@ export function SessionCard({ data, selected }: NodeProps<SessionNode>) {
         </span>
       </footer>
 
-      <Handle id="link-source" type="source" position={Position.Bottom} title="拖到另一条会话，建立连接" isConnectable={data.online !== false} className="!size-2 !border-0 !bg-accent" />
+      <Handle id="link-source" type="source" position={Position.Bottom} title="拖到另一条会话，建立连接" isConnectable={data.online !== false} className="!size-2 !border-0 !bg-ring" />
       <Handle id="lineage-source" type="source" position={Position.Right} className="!size-1.5 !border-0 !bg-strong" />
     </div>
   );
@@ -686,7 +687,7 @@ function CardStatus({
 }
 
 const TASK_ACTION =
-  'rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary transition-opacity hover:border-accent hover:text-accent focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent';
+  'rounded-sm border border-hair px-1.5 py-0.5 text-meta text-tertiary transition-opacity hover:border-strong hover:text-primary focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring';
 
 export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
   const { task, sessionCount, onStatus, onDetail, onDerive, onResized } = data;
@@ -700,8 +701,8 @@ export function TaskCard({ data, selected }: NodeProps<TaskNode>) {
   return (
     <div
       // 派生会话只走「＋ 会话」按钮，不再有双击快捷方式（双击留给以后「放大到这个任务」）。
-      className={`group h-full w-full overflow-hidden rounded-md border bg-panel px-3 py-2 hover:border-accent ${
-        selected ? 'border-accent' : 'border-hair'
+      className={`group h-full w-full overflow-hidden rounded-md border bg-panel px-3 py-2 hover:border-strong ${
+        selected ? 'border-fg/40' : 'border-hair'
       } ${muted ? 'opacity-60' : ''}`}
     >
       <CardResizer kind="task" selected={selected} onResized={onResized} />

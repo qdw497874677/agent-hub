@@ -29,6 +29,7 @@ export const SURFACES: readonly Surface[] = [workbenchSurface, imSurface];
 export type Route =
   | { readonly page: 'home' }
   | { readonly page: 'workspaces' }
+  | { readonly page: 'access' }
   | { readonly page: 'assets'; readonly tab: MarketTab; readonly reviewId: string | null }
   | { readonly page: 'admin'; readonly tab: AdminTab }
   | { readonly page: 'memory'; readonly scope: string | null }
@@ -41,6 +42,7 @@ export type Route =
 function parseShellRoute(parts: readonly string[]): Route | null {
   if (parts[0] === 'admin') return { page: 'admin', tab: ADMIN_TABS.find((tab) => tab === parts[1]) ?? 'overview' };
   if (parts[0] === 'workspaces') return { page: 'workspaces' };
+  if (parts[0] === 'access') return { page: 'access' };
   if (parts[0] === 'memory') return { page: 'memory', scope: parts[1] ?? null };
   if (parts[0] === 'observe') return { page: 'observe', source: parts[1] ?? null, id: parts[2] ?? null };
   if (parts[0] === 'assets') {
@@ -66,6 +68,7 @@ export function formatRoute(route: Route): string {
     if (href) return href;
   }
   if (route.page === 'workspaces') return '#/workspaces';
+  if (route.page === 'access') return '#/access';
   if (route.page === 'admin') return `#/admin/${route.tab}`;
   if (route.page === 'memory') return route.scope ? `#/memory/${encodeURIComponent(route.scope)}` : '#/memory';
   if (route.page === 'observe') {

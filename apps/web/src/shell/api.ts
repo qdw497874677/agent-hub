@@ -947,9 +947,21 @@ export const tokensApi = {
     /** kind = 'bot' 可选：bot 的 @id（不给就用令牌名）。 */
     botName?: string;
     expiresAt?: number | null;
+    /** 只给这几个项目（不给 = 不限）。 */
+    projectIds?: readonly string[] | null;
   }) =>
     post<{ token: string; info: ApiTokenDto }>('/api/tokens', input),
-  revoke: (id: string) => call<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  revoke: (id: string) => call<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  rotate: (id: string) => post<{ token: string; info: ApiTokenDto; replaced: ApiTokenDto }>(`/api/tokens/${encodeURIComponent(id)}/rotate`, {}),
+  activity: (id: string) => call<import('@agent-hub/contract').ApiTokenActivity>(`/api/tokens/${encodeURIComponent(id)}/activity`),
+  tools: (id: string) => call<import('@agent-hub/contract').ApiTokenTools>(`/api/tokens/${encodeURIComponent(id)}/tools`)
+};
+
+/** 外部接入（MCP）：写工具开关。 */
+export const mcpAccessApi = {
+  get: () => call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access'),
+  set: (writes: boolean | null) =>
+    call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes }) })
 };
 
 // ---------- 资产市场 / 审核 / 通知（ADR 0016） ----------
@@ -1287,4 +1299,16 @@ export const observeApi = {
     return call<{ enabled: boolean; truncated: boolean; viewer?: 'anonymous' | 'user' | 'system'; scanLimit?: number | null; items: ObserveListItemDto[] }>(`/api/observe?${q}`);
   },
   get: (source: string, id: string) => call<{ enabled: boolean; trace: ObserveTraceDto | null; tree: ObserveTreeDto | null }>(`/api/observe/${encodeURIComponent(source)}/${encodeURIComponent(id)}`)
+};
+
+/* ── 内置资产（Hub 随代码带的清单，一键启用到项目） ── */
+export type BuiltinAssetDto = import('@agent-hub/contract').BuiltinAssetView;
+export type BrowserStatusDto = import('@agent-hub/contract').BrowserStatusDto;
+export const builtinApi = {
+  list: (projectId: string) => call<BuiltinAssetDto[]>(`/api/assets/builtin?projectId=${encodeURIComponent(projectId)}`),
+  enable: (builtinId: string, projectId: string, secrets?: Record<string, string>) =>
+    post<{ assetId: string; created: boolean }>(`/api/assets/builtin/${encodeURIComponent(builtinId)}/enable`, { projectId, ...(secrets ? { secrets } : {}) }),
+  update: (assetId: string) => post<{ assetId: string; version: string }>(`/api/assets/${encodeURIComponent(assetId)}/builtin-update`, {}),
+  browser: () => call<{ canInstall: boolean; workers: BrowserStatusDto[] }>('/api/builtin/browser'),
+  installBrowser: (workerId: string) => post<{ job: unknown }>(`/api/workers/${encodeURIComponent(workerId)}/builtin-browser`, {})
 };

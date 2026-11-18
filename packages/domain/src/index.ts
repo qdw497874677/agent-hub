@@ -169,6 +169,7 @@ export * from './memory-adapters/builtin.ts';
 export * from './memory-adapters/registry.ts';
 
 export * from './asset.ts';
+export * from './builtin-assets.ts';
 export * from './asset-set.ts';
 export * from './asset-git-host.ts';
 export * from './mcp.ts';
@@ -178,6 +179,7 @@ export type { AssetSetRepository } from './ports/asset-set-repository.ts';
 export type { AssetReviewRepository, NotificationRepository } from './ports/asset-review-repository.ts';
 export * from './asset-review.ts';
 export * from './use-cases/asset-review.ts';
+export * from './use-cases/builtin-assets.ts';
 export type { AssetReader, AssetMetadata, GitCandidate, GitCheckout } from './ports/asset-reader.ts';
 export type { AssetDelivery, AssetSyncBoard, DeliveryReport } from './ports/asset-delivery.ts';
 export * from './use-cases/assets.ts';

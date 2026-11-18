@@ -7,13 +7,16 @@ import { AdminPage } from './admin/page.tsx';
 import { resolveLive, useLiveStream } from '../atoms/live.ts';
 import { CanvasView, type LayoutPatch } from '../surfaces/workbench/canvas.tsx';
 import { NoTasksHint } from '../surfaces/workbench/empty-tasks.tsx';
-import { ListView, SearchPalette } from '../surfaces/workbench/views.tsx';
+import { ListView, SearchPalette, type PaletteAction } from '../surfaces/workbench/views.tsx';
+import { setThemePref } from './theme.ts';
 import { FocusView } from '../surfaces/workbench/focus.tsx';
 import { DeriveDialog, NewTaskDialog } from './dialogs.tsx';
 import { ProjectHeader } from '../surfaces/workbench/header.tsx';
-import { ProjectSidebar } from '../surfaces/workbench/sidebar.tsx';
+import { ProjectSidebar, TOGGLE_SIDEBAR_EVENT } from '../surfaces/workbench/sidebar.tsx';
+import { ProjectBar } from '../surfaces/workbench/view-switch.tsx';
 import { useRoute } from './use-route.ts';
 import { MemoryPage } from './memory.tsx';
+import { AccessPage } from './access-page.tsx';
 import { TeamWorkspacesPage } from '../surfaces/workbench/team-workspaces.tsx';
 import { MessagesPage } from '../surfaces/im/messages.tsx';
 import { BotsPage } from '../surfaces/im/bots.tsx';
@@ -30,6 +33,7 @@ export function App() {
   const [route] = useRoute();
   if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
+  if (route?.page === 'access') return <AccessPage />;
   if (route?.page === 'bots') return <BotsPage projectId={route.projectId} />;
   if (route?.page === 'observe') return <ObservePage source={route.source} id={route.id} />;
   if (route?.page === 'messages') return <MessagesPage projectId={route.projectId} groupId={route.groupId} />;
@@ -299,12 +303,42 @@ function Workspace() {
     );
   }
 
+  const paletteActions: PaletteAction[] = [
+    { id: 'new-task', group: '操作', label: '新建任务', icon: 'plus', keywords: 'new task xjrw', run: () => setNewTask(true) },
+    { id: 'view-canvas', group: '操作', label: '切到画布', icon: 'grid', keywords: 'canvas', run: () => setView('canvas') },
+    { id: 'view-list', group: '操作', label: '切到列表', icon: 'list', keywords: 'list', run: () => setView('list') },
+    ...(selectedSession
+      ? [{ id: 'view-focus', group: '操作', label: '切到会话', icon: 'message' as const, keywords: 'focus chat', run: () => setView('focus') }]
+      : []),
+    ...(narrow
+      ? []
+      : [
+          {
+            id: 'toggle-sidebar',
+            group: '操作',
+            label: '收起 / 展开侧栏',
+            icon: 'panel' as const,
+            keys: '⌘B',
+            keywords: 'sidebar',
+            run: () => window.dispatchEvent(new Event(TOGGLE_SIDEBAR_EVENT))
+          }
+        ]),
+    { id: 'theme-auto', group: '主题', label: '主题：跟随系统', icon: 'monitor', keywords: 'theme auto', run: () => setThemePref('auto') },
+    { id: 'theme-dark', group: '主题', label: '主题：深色', icon: 'moon', keywords: 'theme dark', run: () => setThemePref('dark') },
+    { id: 'theme-light', group: '主题', label: '主题：浅色', icon: 'sun', keywords: 'theme light', run: () => setThemePref('light') },
+    { id: 'go-home', group: '前往', label: '首页', icon: 'home', keywords: 'home', run: () => navigate({ page: 'home' }) },
+    { id: 'go-memory', group: '前往', label: '记忆', icon: 'brain', keywords: 'memory', run: () => navigate({ page: 'memory', scope: null }) },
+    { id: 'go-assets', group: '前往', label: '资产', icon: 'package', keywords: 'assets market', run: () => navigate({ page: 'assets', tab: 'catalog', reviewId: null }) },
+    { id: 'go-workspaces', group: '前往', label: '团队工作目录', icon: 'folder', keywords: 'workspaces', run: () => navigate({ page: 'workspaces' }) },
+    { id: 'go-bots', group: '前往', label: 'Bot', icon: 'bot', keywords: 'bots', run: () => navigate({ page: 'bots', projectId: project.id }) },
+    { id: 'go-messages', group: '前往', label: '消息', icon: 'chat', keywords: 'messages im', run: () => navigate({ page: 'messages', projectId: project.id, groupId: null }) },
+    { id: 'go-observe', group: '前往', label: '运行记录', icon: 'activity', keywords: 'observe runs', run: () => navigate({ page: 'observe', source: null, id: null }) }
+  ];
+
   const sidebar = (onClose?: () => void) => (
     <ProjectSidebar
       project={project}
       projects={projects.data ?? []}
-      view={view}
-      canFocus={selectedSession !== null}
       selectedId={selected}
       canvas={canvas.data ?? null}
       onHome={() => {
@@ -316,10 +350,6 @@ function Workspace() {
         onClose?.();
         setDrafts({});
         goProject(picked, view === 'focus' ? homeView : view, null);
-      }}
-      onView={(next) => {
-        onClose?.();
-        setView(next);
       }}
       onOpenSession={(sessionId) => {
         onClose?.();
@@ -351,11 +381,15 @@ function Workspace() {
         </div>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <ProjectBar project={project} view={view} canFocus={selectedSession !== null} stream={stream} onView={setView} />
         <div className="lg:hidden">
           <ProjectHeader
             project={project}
             projects={projects.data ?? []}
             stream={stream}
+            view={view}
+            canFocus={selectedSession !== null}
+            onView={setView}
             onMenu={() => setSidebarOpen(true)}
             onSwitchProject={(picked) => {
               setDrafts({});
@@ -446,6 +480,7 @@ function Workspace() {
           projectId={project.id}
           onJump={(hit) => jump(hit.taskId, hit.sessionId)}
           onClose={() => setSearch(false)}
+          actions={paletteActions}
         />
       ) : null}
       {newTask ? <NewTaskDialog projectId={project.id} onDone={() => setNewTask(false)} /> : null}

@@ -85,7 +85,7 @@ export function ProjectContext({ projectId, canEdit }: { projectId: string; canE
           </button>
         </form>
       ) : null}
-      {error ? <p className="mt-1 text-meta text-accent">{error}</p> : null}
+      {error ? <p className="mt-1 text-meta text-rust">{error}</p> : null}
     </section>
   );
 }

@@ -224,7 +224,7 @@ export function CanvasWindowLayer({ windows, narrow, canvas, live, drafts, onDra
               data-session-id={w.sessionId}
               data-mode={w.mode}
               data-focused={isTop ? 'true' : undefined}
-              className={`flex h-full flex-col overflow-hidden rounded-md border bg-canvas shadow-lg ${isTop ? 'border-accent' : 'border-hair'}`}
+              className={`flex h-full flex-col overflow-hidden rounded-md border bg-canvas shadow-lg ${isTop ? 'border-fg/40' : 'border-hair'}`}
             >
               {pane(
                 w.sessionId,
@@ -271,7 +271,7 @@ function WindowBar({
     <nav
       aria-label="最小化的会话窗口"
       data-testid="window-bar"
-      className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-w-[calc(100%-8rem)] -translate-x-1/2 gap-1.5 overflow-x-auto rounded-md border border-hair bg-card p-1 shadow-sm"
+      className="pointer-events-auto absolute bottom-3 left-1/2 z-30 flex max-w-[calc(100%-8rem)] -translate-x-1/2 gap-1.5 overflow-x-auto rounded-lg border border-strong bg-overlay p-1 shadow-overlay"
     >
       {items.map(({ session, title, waiting, blocks, agentLabel }) => {
         const style = statusStyle(session.status, session.lastSeq);

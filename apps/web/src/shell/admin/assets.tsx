@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
+import { BuiltinBadge } from '../builtin-badge.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, assetsApi } from '../api.ts';
 import type { AssetsOverviewDto, GitScanDto } from '../api.ts';
@@ -21,7 +22,9 @@ const KIND_TEXT: Record<Kind, string> = { skill: '技能', instruction: '指令'
 const MCP_PLACEHOLDER = `{\n  "name": "example",\n  "description": "做什么用的",\n  "transport": "http",\n  "url": "https://example.com/mcp",\n  "headers": { "Authorization": "Bearer \${secret:EXAMPLE_TOKEN}" }\n}`;
 const short = (digest: string) => digest.slice(0, 8);
 const sourceText = (asset: Asset) =>
-  asset.source.type === 'git'
+  asset.source.type === 'builtin'
+    ? `Hub 内置 · ${asset.source.id} ${asset.source.version}`
+    : asset.source.type === 'git'
     ? `${asset.source.url.replace(/^https?:\/\//, '')}${asset.source.ref ? `@${asset.source.ref}` : ''}${asset.source.path ? ` · ${asset.source.path}` : ''}`
     : '上传';
 
@@ -76,14 +79,14 @@ export function Assets() {
         }
       >
         {assets.some((asset) => asset.latest !== asset.pinned) ? (
-          <div data-testid="asset-update-notice" role="status" className="mb-3 rounded-sm border border-accent px-3 py-2 text-sub text-primary">
+          <div data-testid="asset-update-notice" role="status" className="mb-3 rounded-sm border border-info/60 px-3 py-2 text-sub text-primary">
             有新版本：
             {assets
               .filter((asset) => asset.latest !== asset.pinned)
               .map((asset, index) => (
                 <span key={asset.id}>
                   {index > 0 ? '、' : ''}
-                  <button className="text-accent underline-offset-2 hover:underline" onClick={() => setDiffing(asset)}>
+                  <button className="text-link underline-offset-2 hover:underline" onClick={() => setDiffing(asset)}>
                     {asset.name}
                   </button>
                 </span>
@@ -95,7 +98,7 @@ export function Assets() {
           <div
             data-testid="asset-filter"
             data-name={focus}
-            className="mb-3 flex flex-wrap items-center gap-2 rounded-sm border border-accent/60 px-3 py-2 text-meta text-secondary"
+            className="mb-3 flex flex-wrap items-center gap-2 rounded-sm border border-warning/60 px-3 py-2 text-meta text-secondary"
           >
             只看「<span className="break-all text-primary">{focus}</span>」
             <button className={SMALL} onClick={() => setFocus(null)}>
@@ -189,10 +192,11 @@ function AssetItem({
         <span className="rounded border border-strong px-1.5 text-meta text-secondary">{KIND_TEXT[asset.kind]}</span>
         <span className="min-w-0 truncate text-body font-medium text-primary">{asset.name}</span>
         <ScopeBadge projectId={asset.projectId} />
+        {asset.source.type === 'builtin' ? <BuiltinBadge version={asset.source.version} /> : null}
         {upgradable ? (
           <button
             data-testid="asset-upgrade"
-            className="rounded border border-accent px-1.5 text-meta text-accent hover:bg-accent hover:text-canvas"
+            className="rounded border border-strong px-1.5 text-meta text-primary hover:bg-action hover:text-action-fg"
             onClick={onDiff}
           >
             有新版本 · 查看并升级
@@ -204,6 +208,12 @@ function AssetItem({
         {sourceText(asset)} · 版本 <code>{short(asset.pinned)}</code> · {asset.files} 个文件 · {formatBytes(asset.bytes)} ·{' '}
         {at(asset.updatedAt)}
       </p>
+      {asset.kind === 'mcp' ? (
+        // MCP 不落文件到机器：会话启动时按配置连接，没有「装到机器」这回事
+        <p data-testid="asset-mcp-note" className="mt-2 text-meta text-tertiary">
+          MCP 不用装到机器，会话开始时按配置启动。
+        </p>
+      ) : (
       <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label={`${asset.name} 装到哪些机器`}>
         {workers.map((worker) => {
           const on = asset.workerIds.includes(worker.workerId);
@@ -216,7 +226,7 @@ function AssetItem({
               disabled={install.isPending}
               title={on ? (synced ? '已同步到这台机器；点一下卸载' : '已分配，等待同步；点一下卸载') : '点一下装到这台机器'}
               className={`flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-meta transition-colors ${
-                on ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-tertiary hover:border-strong hover:text-secondary'
+                on ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-tertiary hover:border-strong hover:text-secondary'
               } ${worker.state === 'online' ? '' : 'opacity-60'}`}
               onClick={() => install.mutate({ workerId: worker.workerId, installed: !on })}
             >
@@ -228,6 +238,7 @@ function AssetItem({
           );
         })}
       </div>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className={SMALL} onClick={onBrowse}>
           版本与文件
@@ -320,7 +331,7 @@ function ScopeBadge({ projectId }: { projectId: string | null }) {
   if (projectId === null) return <span data-testid="asset-scope" className="text-meta text-tertiary">全局</span>;
   const name = projects.data?.find((project) => project.id === projectId)?.name ?? '项目';
   return (
-    <span data-testid="asset-scope" className="rounded border border-accent/60 px-1.5 text-meta text-accent">
+    <span data-testid="asset-scope" className="rounded border border-hair px-1.5 text-meta text-secondary">
       仅项目 · {name}
     </span>
   );
@@ -671,7 +682,7 @@ function GitForm({ onDone, onShowAsset }: { onDone: () => void; onShowAsset?: (n
                   <input
                     type="radio"
                     name="git-candidate"
-                    className="mt-1 accent-[var(--color-accent)]"
+                    className="mt-1 accent-[var(--color-fg)]"
                     checked={choice === index}
                     onChange={() => setChoice(index)}
                   />
@@ -689,7 +700,7 @@ function GitForm({ onDone, onShowAsset }: { onDone: () => void; onShowAsset?: (n
             ))}
           </ul>
         ) : (
-          <p className="text-meta text-tertiary">这个提交（{short(scan.commit)}）里没找到 SKILL.md。</p>
+          <p className="text-meta text-tertiary">这个提交（{short(scan.commit)}）里没找到可导入的技能、指令或 MCP 配置。</p>
         )
       ) : null}
       {mode === 'single' && error ? (
@@ -794,7 +805,7 @@ export function Patch({ patch }: { patch: string }) {
               : line.startsWith('-') && !line.startsWith('---')
                 ? 'bg-rust/20 text-secondary'
                 : line.startsWith('@@')
-                  ? 'text-accent-dim'
+                  ? 'text-warning'
                   : 'text-tertiary'
           }
         >
@@ -885,7 +896,7 @@ function VersionsDialog({ asset, onClose }: { asset: Asset; onClose: () => void 
           <button
             key={revision.digest}
             className={`shrink-0 whitespace-nowrap rounded-sm border px-2 py-1 text-left text-meta ${
-              revision.digest === digest ? 'border-accent text-primary' : 'border-hair text-tertiary hover:border-strong'
+              revision.digest === digest ? 'border-fg/40 text-primary' : 'border-hair text-tertiary hover:border-strong'
             }`}
             onClick={() => {
               setDigest(revision.digest);
@@ -1047,7 +1058,7 @@ function Secrets() {
         <div className="flex flex-wrap gap-2 border-t border-hair px-3 py-2.5">
           <input
             data-testid="secret-name"
-            className={`${INPUT} w-48 font-mono`}
+            className={`${INPUT} w-48! font-mono`}
             placeholder="名字，如 GITHUB_TOKEN"
             value={name}
             onChange={(event) => setName(event.target.value.trim().toUpperCase())}

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type {
+  AssetEnsureFailure,
   AssetDeps,
   AssetSetRepository,
   EnvironmentPlanner,
@@ -70,7 +71,7 @@ export interface SessionEnvironmentOptions {
    * 允许清单 + 自动预热（#226）：把候选资产装到这台机器并同步，返回实际落地的 digest。
    * 返回 null = 装不上；此时会话启动会被拦住并说明原因，而不是静默少几个资产。
    */
-  readonly preheat?: (workerId: string, assetIds: readonly string[]) => Promise<Readonly<Record<string, string>> | null>;
+  readonly preheat?: (workerId: string, assetIds: readonly string[]) => Promise<Readonly<Record<string, string>> | AssetEnsureFailure | null>;
   readonly log?: (message: string) => void;
 }
 

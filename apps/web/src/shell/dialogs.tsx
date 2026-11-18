@@ -23,7 +23,7 @@ import { useWorkers } from './workers.tsx';
 import { WorkspaceChooser, choiceReady, longLivedRequest, type WorkspaceChoice } from '../surfaces/workbench/workspace-chooser.tsx';
 import { harnessReason } from './harness.tsx';
 import { agentNote, canSelectMachine, emptyModelOption, hubCovers, startHint } from './harness-gate.ts';
-import { ModelPicker, SEARCHABLE_AFTER } from '../atoms/model-picker.tsx';
+import { ModelPicker } from '../atoms/model-picker.tsx';
 import { AgentProfilesDialog } from './agent-profiles-dialog.tsx';
 import { cloneErrorHint } from '../surfaces/workbench/project-repos.ts';
 import { groupStateNote, memberStateLabel, failedGroupIdFromWorkspaces, type WorkspaceGroupView } from '../surfaces/workbench/workspace-group.ts';
@@ -132,7 +132,6 @@ export function DeriveDialog({
   // 资产（asset-hub.md）：选中机器后看这一趟会带哪些技能 / 指令 / MCP；默认全选，取消即排除。
   // 换机器 / 换项目就重新全选——不同机器下发的是不同的资产集。
   const [assetSelection, setAssetSelection] = useState<AssetSelection | null>(null);
-  const selection = selectionFor(assetSelection, assetSelectionKey(canvas.project.id, machine));
   const assetPlan = useQuery({
     queryKey: ['project-assets', canvas.project.id, machine],
     queryFn: () => assetsApi.projectPlan(canvas.project.id, machine ?? ''),
@@ -140,6 +139,8 @@ export function DeriveDialog({
     retry: false
   });
   const assetEntries = assetPlan.data?.entries ?? [];
+  // 带上也起不来的（MCP 缺密钥等）默认不勾，行内标红说原因
+  const selection = selectionFor(assetSelection, assetSelectionKey(canvas.project.id, machine), assetEntries);
   // 资产组合（asset-hub.md「资产组合」）：项目默认带哪几组，这里可以整组取消，也可以换成别的组合。
   // 用户没动过 → 不传 assetSetIds（后端按项目默认展开）；动过 → 传当前这组 id（可能为空）。
   const setList = useQuery({ queryKey: ['asset-sets'], queryFn: () => assetSetsApi.list(), retry: false });
@@ -354,7 +355,7 @@ export function DeriveDialog({
           <p className="mb-3 border-l border-rust pl-2 text-meta text-secondary">
             还没有在线的机器。
             <button
-              className="ml-2 text-accent underline-offset-2 hover:underline"
+              className="ml-2 text-link underline-offset-2 hover:underline"
               onClick={() => void queryClient.invalidateQueries({ queryKey: ['canvas', canvas.project.id] })}
             >
               重新检查
@@ -383,7 +384,7 @@ export function DeriveDialog({
         <div className="mb-3">
           <div className="mb-1 flex items-center justify-between gap-2">
             <label className="block text-meta text-secondary" htmlFor="derive-profile">启动预设（可选）</label>
-            <button type="button" className="text-meta text-accent underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
+            <button type="button" className="text-meta text-link underline-offset-2 hover:underline" onClick={() => setProfilesOpen(true)}>
               管理
             </button>
           </div>
@@ -450,38 +451,20 @@ export function DeriveDialog({
         </div>
         <div>
         <label className="mb-1 block text-meta text-secondary" htmlFor="derive-model">模型</label>
-        {offered.models.length > SEARCHABLE_AFTER ? (
-          <ModelPicker
-            id="derive-model"
-            className={`mb-3 ${INPUT}`}
-            scope={agentId}
-            value={model}
-            onChange={(value) => {
-              setProfileId('');
-              setModel(value);
-            }}
-            items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
-            {...(emptyModel === null ? {} : { placeholder: emptyModel })}
-          />
-        ) : (
-          <select
-            id="derive-model"
-            className={`mb-3 ${INPUT}`}
-            value={model}
-            disabled={offered.models.length === 0}
-            onChange={(event) => {
-              setProfileId('');
-              setModel(event.target.value);
-            }}
-          >
-            {emptyModel === null ? null : <option value="">{emptyModel}</option>}
-            {offered.models.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {candidate}
-              </option>
-            ))}
-          </select>
-        )}
+        {/* 和输入框、Bot 设置同一个选择器：按提供方分组、可搜索；不替人选，空着就写「选择模型…」 */}
+        <ModelPicker
+          id="derive-model"
+          className={`mb-3 ${INPUT}`}
+          scope={agentId}
+          value={model}
+          disabled={offered.models.length === 0}
+          onChange={(value) => {
+            setProfileId('');
+            setModel(value);
+          }}
+          items={offered.models.map((candidate) => ({ value: candidate, label: candidate }))}
+          {...(emptyModel === null ? {} : { placeholder: emptyModel })}
+        />
         </div>
         {/* 为什么某个 hub 提供商没出现在上面：把它被剔掉的原因直接写出来，不要让人去猜。 */}
         {hubHidden.length === 0 ? null : (
@@ -518,18 +501,18 @@ export function DeriveDialog({
                           data-testid="derive-asset-set"
                           data-set-id={set.id}
                           className={`flex max-w-full cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-meta ${
-                            on ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-tertiary'
+                            on ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-tertiary'
                           }`}
                         >
                           <input
                             type="checkbox"
                             data-testid="derive-asset-set-toggle"
-                            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-accent)]"
+                            className="h-3.5 w-3.5 shrink-0 accent-[var(--color-fg)]"
                             checked={on}
                             onChange={(event) => setAssetSetChoice(toggleSetChoice(chosen, set.id, event.target.checked))}
                           />
                           {on ? (
-                            <span aria-hidden className="shrink-0 font-mono text-meta text-accent">
+                            <span aria-hidden className="shrink-0 font-mono text-meta text-secondary">
                               {order}
                             </span>
                           ) : null}
@@ -568,18 +551,24 @@ export function DeriveDialog({
                   <label
                     data-testid="derive-asset"
                     data-asset-id={entry.assetId}
+                    data-problem={entry.problem ? 'true' : undefined}
                     className="flex cursor-pointer items-start gap-2 py-1"
                   >
                     <input
                       type="checkbox"
                       data-testid="derive-asset-toggle"
-                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-accent)]"
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-fg)]"
                       checked={isIncluded(selection, entry.assetId)}
                       onChange={(event) => setAssetSelection(toggleAsset(selection, entry.assetId, event.target.checked))}
                     />
                     <span className="min-w-0 flex-1">
                       <span className="block break-words text-meta text-primary">{entry.name}</span>
                       <span className="block break-words text-meta text-tertiary">{assetNote(entry)}</span>
+                      {entry.problem ? (
+                        <span data-testid="derive-asset-problem" className="block break-words text-meta text-rust">
+                          {entry.problem}
+                        </span>
+                      ) : null}
                     </span>
                   </label>
                 </li>
@@ -613,7 +602,7 @@ export function DeriveDialog({
             {group.state === 'failed' ? (
               <button
                 type="button"
-                className="mt-1 min-h-[32px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40"
+                className="mt-1 min-h-[32px] rounded-sm border border-hair px-2 text-meta text-secondary hover:border-strong hover:text-primary disabled:opacity-40"
                 data-testid="derive-group-retry"
                 disabled={retryGroup.isPending}
                 onClick={() => retryGroup.mutate(group.id)}

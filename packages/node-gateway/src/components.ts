@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
-import type { ComponentJobResult, ComponentJobSpec } from '@agent-hub/domain';
+import { BUILTIN_CHROMIUM, type ComponentJobResult, type ComponentJobSpec } from '@agent-hub/domain';
 
 /**
  * hub 管理的组件安装（ADR 0021 P2）。目录布局（inventory.ts 读同一份）：
@@ -145,6 +145,12 @@ async function stageComponent(options: ComponentInstallOptions, spec: ComponentJ
     // 没执行的安装脚本：只是列出来（hub 记审计、提示可能用不了）
     scripts = scriptsInTree(staging, lock);
     if (scripts.length) options.log(`提示：${scripts.map((s) => `${s.package} ${s.script}`).join('、')} 声明了安装脚本，没有执行；依赖它的组件可能用不了`);
+    // 内置浏览器（builtin-assets.ts）：只认 playwright-core + browser:chromium 这一种，用它自带的命令把 Chromium 下到默认位置。
+    // 不是包的安装脚本（那些一律不跑），是这里写死的一条命令；HOME 用 Worker 用户自己的，npx 起的 Playwright MCP 才找得到。
+    if (installsBrowser(spec)) {
+      options.log('$ playwright-core install chromium（下载到 ~/.cache/ms-playwright）');
+      await options.run(options.node, [join(pkgDir, 'cli.js'), 'install', 'chromium'], { cwd: staging, env: { ...options.env } });
+    }
     rmSync(join(staging, '.npm-cache'), { recursive: true, force: true });
     writeFileSync(
       join(staging, '.component.json'),
@@ -229,6 +235,8 @@ export function hubComponentDirs(root: string, runtime: string): string[] {
     if (!version) continue;
     const meta = readJson(join(dir, id, version, '.component.json'));
     if (!meta || meta['enabled'] === false || typeof meta['packageName'] !== 'string') continue;
+    // 机器工具（例如内置浏览器）不是 agent 插件：不交给运行时加载
+    if (machineToolOnly(meta['provides'])) continue;
     try {
       const real = realpathSync(join(dir, id, 'current', 'node_modules', meta['packageName']));
       if (inside(root, real)) out.push(real);
@@ -237,4 +245,14 @@ export function hubComponentDirs(root: string, runtime: string): string[] {
     }
   }
   return out;
+}
+
+/** 内置浏览器组件：装完要再下载 Chromium。 */
+export function installsBrowser(spec: Pick<ComponentJobSpec, 'packageName' | 'provides'>): boolean {
+  return spec.packageName === BUILTIN_CHROMIUM.packageName && spec.provides.some((p) => p.capability === BUILTIN_CHROMIUM.capability);
+}
+
+/** 只提供机器工具（mode = machine-tool）的组件不是运行时插件。 */
+export function machineToolOnly(provides: unknown): boolean {
+  return Array.isArray(provides) && provides.length > 0 && provides.every((p) => (p as { mode?: unknown } | null)?.mode === BUILTIN_CHROMIUM.mode);
 }

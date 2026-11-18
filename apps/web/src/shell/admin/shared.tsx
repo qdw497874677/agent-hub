@@ -4,9 +4,9 @@ import { RequestFailed } from '../api.ts';
 import { relativeTime } from '../workers.tsx';
 
 export const INPUT =
-  'w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-accent';
+  'w-full rounded-sm border border-hair bg-card px-2.5 py-2 text-body text-primary outline-none placeholder:text-tertiary focus:border-ring';
 export const SMALL =
-  'rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-accent hover:text-accent disabled:opacity-40';
+  'rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-strong hover:text-primary disabled:opacity-40';
 export const DANGER =
   'rounded-sm border border-hair px-2 py-1 text-meta text-secondary hover:border-rust hover:text-rust disabled:opacity-40';
 

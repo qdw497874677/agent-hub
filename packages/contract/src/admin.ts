@@ -119,7 +119,8 @@ export const assetKindSchema = z.enum(['skill', 'instruction', 'mcp']);
 export const assetSourcePolicySchema = z.enum(['track', 'locked']);
 export const assetSourceSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('upload') }),
-  z.object({ type: z.literal('git'), url: z.string(), ref: z.string().nullable(), path: z.string(), policy: assetSourcePolicySchema.optional() })
+  z.object({ type: z.literal('git'), url: z.string(), ref: z.string().nullable(), path: z.string(), policy: assetSourcePolicySchema.optional() }),
+  z.object({ type: z.literal('builtin'), id: z.string(), version: z.string() })
 ]);
 export const assetFileSchema = z.object({ path: z.string(), sha256: z.string(), size: z.number() });
 
@@ -277,7 +278,9 @@ export const projectAssetPlanSchema = z.object({
       kind: assetKindSchema,
       name: z.string(),
       digest: z.string(),
-      scope: z.enum(['personal', 'project', 'team', 'global'])
+      scope: z.enum(['personal', 'project', 'team', 'global']),
+      /** MCP 带上也起不来的原因（缺密钥 / 配置有误）；没问题不给。派生对话框据此标红、默认不勾。 */
+      problem: z.string().optional()
     })
   )
 });

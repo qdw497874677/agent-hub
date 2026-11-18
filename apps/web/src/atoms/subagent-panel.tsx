@@ -90,7 +90,7 @@ export function SubagentPanel({
         data-testid="subagent-panel-timeline"
         role="log"
         aria-label={`${entry?.title ?? '子代理'} 的记录`}
-        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
       >
         {current.children.length === 0 ? (
           <p className="py-6 text-center text-meta text-tertiary">子代理还没有输出。</p>
@@ -130,10 +130,10 @@ function NestedSubagentRow({ block, onEnter }: { readonly block: SubagentBlock; 
       data-testid="subagent-panel-enter"
       data-subagent-id={block.id}
       data-status={block.status}
-      className="flex w-full items-center gap-2 rounded-sm border-l-2 border-accent/40 bg-card/40 py-1.5 pl-3 pr-2 text-left transition-colors hover:bg-card-raised"
+      className="flex w-full items-center gap-2 rounded-sm border-l-2 border-hair bg-card/40 py-1.5 pl-3 pr-2 text-left transition-colors hover:bg-card-raised"
       onClick={onEnter}
     >
-      <span aria-hidden className={block.status === 'failed' ? 'text-rust' : 'text-accent'}>
+      <span aria-hidden className={block.status === 'failed' ? 'text-rust' : block.status === 'running' ? 'text-accent' : 'text-tertiary'}>
         ◈
       </span>
       <span className="min-w-0 flex-1">

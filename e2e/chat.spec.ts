@@ -67,6 +67,9 @@ for (const width of [360, 430]) {
     await page.getByRole('menuitem', { name: /^详情/ }).click();
     const sheet = page.getByRole('complementary', { name: '会话详情' });
     await expect(sheet).toBeVisible();
+    // 能力矩阵和事件流收在「诊断」里，点开才看得到
+    await expect(sheet.getByText('能力', { exact: true })).toBeHidden();
+    await sheet.getByTestId('session-diagnostics').locator('summary').click();
     await expect(sheet.getByText('能力', { exact: true })).toBeVisible();
     await sheet.getByRole('button', { name: '查看事件流' }).click();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/chat-details-${width}.png` });

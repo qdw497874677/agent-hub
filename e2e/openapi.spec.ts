@@ -47,8 +47,14 @@ test('开放 API：令牌、对话 + 事件流、MCP、权限拒绝、本机永�
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'tokens-create-390.png') });
   await dialog.getByTestId('token-create').click();
   const value = dialog.getByTestId('token-value');
+  // 明文默认打码，点「显示」才露出来
   await expect(value).toContainText('ahp_');
+  await expect(value).toContainText('••••');
+  await dialog.getByTestId('token-reveal').click();
+  await expect(value).not.toContainText('••••');
   const token = ((await value.textContent()) ?? '').trim();
+  // 接入片段只引用环境变量，不带明文
+  await expect(dialog.getByTestId('mcp-guide-snippet')).not.toContainText(token);
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'tokens-fresh-390.png') });
   await dialog.getByRole('button', { name: '我已保存' }).click();
   await expect(dialog.getByTestId('token-value')).toHaveCount(0);

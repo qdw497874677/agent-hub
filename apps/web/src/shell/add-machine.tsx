@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Notice } from '../atoms/notice.tsx';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi, type PairingDto, type WorkerInfoDto, type WorkerPreset } from './api.ts';
 import { DialogShell, PRIMARY_BUTTON, SECONDARY_BUTTON } from './dialog-shell.tsx';
@@ -132,7 +133,7 @@ function PresetPicker({ value, onChange, disabled }: { value: WorkerPreset; onCh
             disabled={disabled}
             onClick={() => onChange(p.id)}
             className={`rounded-sm border px-2 py-1 text-meta ${
-              p.id === value ? 'border-accent bg-accent/10 text-primary' : 'border-hair text-secondary hover:border-accent'
+              p.id === value ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-secondary hover:border-strong'
             }`}
           >
             {p.label}
@@ -184,9 +185,9 @@ function CommandBox({ pairing, expired }: { pairing: PairingDto | undefined; exp
         </details>
       ) : null}
       {pairing && pairing.hubUrl.startsWith('http://') ? (
-        <p className="border-t border-hair px-2.5 py-1.5 text-meta text-accent" data-testid="http-hint">
-          hub 走的是 HTTP：sha256 校验只能防传输损坏，防不了中间人篡改。建议在 hub 前面加 HTTPS 反代。
-        </p>
+        <Notice tone="warning" testId="http-hint" className="border-t border-hair px-2.5 py-1.5">
+          Hub 走的是 HTTP，安装包可能被中间人篡改，建议加 HTTPS。
+        </Notice>
       ) : null}
     </div>
   );

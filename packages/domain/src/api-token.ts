@@ -87,6 +87,11 @@ export interface ApiToken {
   readonly userId: string;
   /** 只有 kind === 'bot' 才有：这个凭据属于哪个项目的哪个 bot（name 即 @id）。 */
   readonly bot?: { readonly projectId: string; readonly name: string };
+  /**
+   * 个人 / 服务账号令牌限定的项目（外部接入页的「只给这几个项目」）。
+   * 不给 / null = 不限项目（老令牌都是这样）；给了 = can() 只放行这些项目里的资源，也不能新建项目。
+   */
+  readonly projectIds?: readonly string[] | null;
   readonly name: string;
   readonly scopes: readonly ApiScope[];
   /** 明文开头几位，列表里认令牌用（不是秘密）。 */
@@ -94,13 +99,16 @@ export interface ApiToken {
   readonly tokenHash: string;
   readonly createdBy: string;
   readonly createdAt: number;
-  /** null = 永不过期（D6 默认）。 */
+  /** null = 永不过期（要显式选）；创建时不给 = DEFAULT_TOKEN_TTL_MS。bot 凭据恒为 null，不能设。 */
   readonly expiresAt: number | null;
   readonly lastUsedAt: number | null;
   readonly revokedAt: number | null;
 }
 
 /** 令牌明文前缀：便于泄露扫描、也让鉴权一眼分得清。 */
+/** 用户自建令牌（个人 / 服务账号）的默认有效期：30 天。永不过期要显式选（GitHub / Cursor 也是默认带期限）。bot 凭据不适用。 */
+export const DEFAULT_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 export const API_TOKEN_PREFIX = 'ahp_';
 /** bot 凭据的独立前缀：鉴权看一眼就知道这是项目内收窄的身份（C1）。 */
 export const BOT_TOKEN_PREFIX = 'ahb_';
@@ -120,8 +128,10 @@ export const SERVICE_EMAIL_DOMAIN = '@service.agent-hub.invalid';
 
 export const isServiceAccount = (user: Pick<User, 'email'>): boolean => user.email.endsWith(SERVICE_EMAIL_DOMAIN);
 
+/** bot 凭据（项目里 IM / 群聊 bot 内置的那份）永不过期：只看吊销。老库里就算存了到期时间也不算数。 */
 export function apiTokenUsable(token: ApiToken, now: number): boolean {
-  return token.revokedAt === null && (token.expiresAt === null || token.expiresAt > now);
+  if (token.revokedAt !== null) return false;
+  return token.kind === 'bot' || token.expiresAt === null || token.expiresAt > now;
 }
 
 /** 请求是经令牌来的：挂在 Principal 上，can() 据此取交集，审计据此写「via 令牌」。 */
@@ -132,4 +142,30 @@ export interface TokenVia {
   readonly permissions: readonly Permission[];
   /** bot 令牌的项目归属：can() 用它把权限收窄到这一个项目（C1）。 */
   readonly bot?: { readonly projectId: string; readonly name: string };
+  /** 限定项目的令牌：can() 只放行这些项目里的资源（见 ApiToken.projectIds）。 */
+  readonly projectIds?: readonly string[];
+  /**
+   * 限定项目所在的团队（每次认证时按项目现查）：和项目成员一样能用这些团队的团队级资产。
+   * 项目不在团队里（hub 项目）就没有这一项；别的团队的资产一律看不见。
+   */
+  readonly teamIds?: readonly string[];
+}
+
+/**
+ * 限定项目的令牌能看到哪些资产（null = 令牌没限定项目，按账号本身的规则）：
+ * - 全局资产：能读（和成员一样，只看已发布的，由调用方再判）；
+ * - 团队资产：只有限定项目所在团队的；
+ * - 项目资产：只有限定的项目里的；
+ * - 个人资产：看不到（个人资产不属于任何项目，限定项目就是为了不外泄这类东西）。
+ */
+export function scopedTokenSeesAsset(
+  via: TokenVia | undefined,
+  asset: { readonly scope: 'global' | 'team' | 'project' | 'personal'; readonly teamId: string | null; readonly projectId: string | null }
+): boolean | null {
+  const scoped = via?.projectIds;
+  if (!scoped) return null;
+  if (asset.scope === 'global') return true;
+  if (asset.scope === 'personal') return false;
+  if (asset.scope === 'team') return asset.teamId !== null && (via?.teamIds ?? []).includes(asset.teamId);
+  return asset.projectId !== null && scoped.includes(asset.projectId);
 }

@@ -175,7 +175,7 @@ function AssetSetDialog({ set, onClose }: { set: AssetSetDto | null; onClose: ()
                 key={assetId}
                 data-testid="asset-set-chip"
                 data-asset-id={assetId}
-                className="flex max-w-full items-center gap-1.5 rounded-full border border-accent bg-accent/10 px-2.5 py-1 text-meta text-primary"
+                className="flex max-w-full items-center gap-1.5 rounded-full border border-fg/40 bg-selected px-2.5 py-1 text-meta text-primary"
               >
                 <span className="min-w-0 break-words">{asset?.name ?? assetId}</span>
                 <button
@@ -227,7 +227,7 @@ function AssetSetDialog({ set, onClose }: { set: AssetSetDto | null; onClose: ()
                     {KIND_TEXT[asset.kind] ?? '资产'}
                   </span>
                   <span className="min-w-0 flex-1 break-words text-sub text-primary">{asset.name}</span>
-                  <span className="shrink-0 text-meta text-accent">加入</span>
+                  <span className="shrink-0 text-meta text-link">加入</span>
                 </button>
               </li>
             ))}

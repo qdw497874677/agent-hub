@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto } from '../../shell/api.ts';
 import { api, assetSetsApi } from '../../shell/api.ts';
@@ -88,7 +89,7 @@ export function ProjectAssetSets({ project }: { project: ProjectDto }) {
                 >
                   <input
                     type="checkbox"
-                    className="mt-1 shrink-0 accent-accent"
+                    className="mt-1 shrink-0 accent-[var(--color-fg)]"
                     checked={checked}
                     disabled={!editable}
                     onChange={(event) => update(toggleSetId(draft, id, event.target.checked))}
@@ -96,7 +97,7 @@ export function ProjectAssetSets({ project }: { project: ProjectDto }) {
                   <span
                     aria-hidden
                     className={`mt-0.5 w-4 shrink-0 text-center font-mono text-meta ${
-                      checked ? 'text-accent' : 'text-tertiary'
+                      checked ? 'text-primary' : 'text-tertiary'
                     }`}
                   >
                     {checked ? order : '·'}
@@ -147,14 +148,8 @@ export function ProjectAssetSets({ project }: { project: ProjectDto }) {
         </p>
       ) : null}
       {!editable ? <p className="mt-1 text-meta text-tertiary">需要项目所有者权限。</p> : null}
-      <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1">
-        {save.isSuccess && !dirty ? (
-          <span className="mr-auto text-meta text-tertiary" data-testid="project-asset-sets-saved">
-            已保存
-          </span>
-        ) : (
-          <span className="mr-auto text-meta text-tertiary" />
-        )}
+      <div className="mt-2 flex flex-wrap items-center justify-end gap-x-2 gap-y-1">
+        <SaveStatus dirty={dirty} saved={save.isSuccess} testId="project-asset-sets-saved" />
         <button
           type="button"
           className={SECONDARY_BUTTON}

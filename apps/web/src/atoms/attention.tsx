@@ -100,7 +100,7 @@ export function AttentionInbox({ onOpen }: { onOpen(item: AttentionItemDto): voi
                 {item.projectName} · {item.agentId} · {item.reason} · {relativeTime(item.since)}
               </span>
             </button>
-            <button data-testid="attention-later" className="shrink-0 text-meta text-secondary hover:text-accent" onClick={() => ack.mutate(item)}>
+            <button data-testid="attention-later" className="shrink-0 text-meta text-secondary hover:text-primary" onClick={() => ack.mutate(item)}>
               稍后
             </button>
           </li>
@@ -132,11 +132,11 @@ function ConnectorNotices() {
             </span>
             {n.kind === 'task_pending' ? (
               <span className="flex gap-1">
-                <button data-testid="agent-task-approve" className="text-meta text-accent" disabled={decide.isPending} onClick={() => decide.mutate({ id: n.id, approve: true })}>批准</button>
+                <button data-testid="agent-task-approve" className="text-meta text-link" disabled={decide.isPending} onClick={() => decide.mutate({ id: n.id, approve: true })}>批准</button>
                 <button data-testid="agent-task-reject" className="text-meta text-secondary" disabled={decide.isPending} onClick={() => decide.mutate({ id: n.id, approve: false })}>拒绝</button>
               </span>
             ) : (
-              <a className="text-meta text-accent" href={formatRoute({ page: 'bots', projectId: n.projectId })}>去 Bot 页</a>
+              <a className="text-meta text-link" href={formatRoute({ page: 'bots', projectId: n.projectId })}>去 Bot 页</a>
             )}
           </li>
         ))}

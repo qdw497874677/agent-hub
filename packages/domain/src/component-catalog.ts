@@ -63,7 +63,7 @@ export interface WorkerComponentPin extends ComponentPin {
 
 export const COMPONENT_ID = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 export const NPM_PACKAGE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/;
-export const EXACT_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/;
+export const EXACT_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/;
 export const SHA512 = /^sha512-[A-Za-z0-9+/]{86}==$/;
 export const GIT_COMMIT = /^[0-9a-f]{40}$/;
 /** 只收 https 的公开仓库地址（不带账号密码、不带 #/?）。 */

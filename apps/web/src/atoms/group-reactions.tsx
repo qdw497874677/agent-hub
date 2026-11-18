@@ -63,8 +63,8 @@ export function ReactionBar({
             aria-label={`${reaction.emoji} ${count} 人${mine ? '，含你' : ''}`}
             className={`flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-meta transition-colors ${
               mine
-                ? 'border-accent/60 bg-accent/15 text-primary'
-                : 'border-hair bg-card text-tertiary hover:border-accent/50 hover:text-primary'
+                ? 'border-fg/40 bg-selected text-primary'
+                : 'border-hair bg-card text-tertiary hover:border-strong hover:text-primary'
             }`}
             onClick={() => pick(reaction.emoji)}
           >
@@ -80,7 +80,7 @@ export function ReactionBar({
           aria-label="加表情"
           aria-expanded={open}
           className={`flex h-6 w-6 items-center justify-center rounded-full border text-meta leading-none transition-colors ${
-            open ? 'border-accent text-accent' : 'border-hair text-tertiary hover:border-accent hover:text-accent'
+            open ? 'border-fg/40 bg-selected text-primary' : 'border-hair text-tertiary hover:border-strong hover:text-primary'
           }`}
           onClick={() => setOpen((v) => !v)}
         >
@@ -89,7 +89,7 @@ export function ReactionBar({
         {open ? (
           <div
             data-testid="group-emoji-panel"
-            className={`absolute top-full z-30 mt-1 flex gap-0.5 rounded-md border border-strong bg-panel p-1 shadow-lg ${align === 'end' ? 'right-0' : 'left-0'}`}
+            className={`absolute top-full z-30 mt-1 flex gap-0.5 rounded-lg border border-strong bg-overlay p-1 shadow-overlay ${align === 'end' ? 'right-0' : 'left-0'}`}
           >
             {GROUP_EMOJI.map((emoji) => (
               <button
