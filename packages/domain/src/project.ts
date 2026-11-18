@@ -13,8 +13,13 @@ export interface Project {
    * 多仓库清单见 `repos`；不变量 `repo === repos[0] ?? null` 由 `normalizeRepos` / 项目用例维护。
    */
   readonly repo: ProjectRepoLink | null;
-  /** 项目绑定的仓库清单（docs/design/multi-repo.md §11.2）：0..8，空 = 不绑仓库。第一个是 primary。 */
+  /** 项目绑定的仓库清单（docs/design/multi-repo.md §11.2）：0..8，空 = 不绑仓库。 */
   readonly repos: readonly ProjectRepo[];
+  /**
+   * 组合会话的主仓库（必须是 repos 里的一个）。null / 省略 = 没指定，不出现组合会话。
+   * 单仓行为仍看 repos / 过渡期的 repo，不依赖这一项。
+   */
+  readonly primaryRepoId?: string | null;
   /** 自由格式的项目说明（markdown）：给人看，也原样交给 agent（task.get / 任务背景）。没写是 null。 */
   readonly description: string | null;
   readonly createdAt: number;
@@ -38,6 +43,12 @@ export interface Project {
   readonly checks: readonly string[];
   /** 项目默认带上的资产组合（团队级），按顺序展开；空数组 = 不带。 */
   readonly assetSetIds: readonly string[];
+  /**
+   * 克隆 / 建 worktree 时要不要递归初始化子模块（默认 off）。
+   * 省略或 'off' = 不拉子模块；'recursive' = `git submodule update --init --recursive`。
+   * 只影响之后新建的 checkout，已有工作空间不改。
+   */
+  readonly submodules?: 'off' | 'recursive';
   /** 进了回收站的时间；null = 正常。 */
   readonly deletedAt: number | null;
 }
@@ -146,6 +157,26 @@ export const PROJECT_REPOS_MAX = 8;
 /** 仓库名（= 子目录名）的合法形状。 */
 export const PROJECT_REPO_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
 
+/** 克隆 / worktree 时的子模块策略：默认关闭，打开则递归 init/update。 */
+export type ProjectSubmodules = 'off' | 'recursive';
+
+/** 缺省或非法值都当成 off（老数据没有这一列）。 */
+export function projectSubmodules(project: Pick<Project, 'submodules'> | { readonly submodules?: unknown }): ProjectSubmodules {
+  return project.submodules === 'recursive' ? 'recursive' : 'off';
+}
+
+/** 传给 git clone / worktree 的开关。 */
+export function recurseSubmodules(project: Pick<Project, 'submodules'> | { readonly submodules?: unknown }): boolean {
+  return projectSubmodules(project) === 'recursive';
+}
+
+export function normalizeSubmodules(value: unknown): Result<ProjectSubmodules, DomainError> {
+  if (value === null || value === undefined || value === '') return ok('off');
+  if (value === 'off' || value === 'recursive') return ok(value);
+  return err(invalid('子模块只能是 off 或 recursive'));
+}
+
+
 /** FNV-1a 32 位：领域层不依赖 node:crypto，同一输入在 server / worker / 测试里都得到同一个 id。 */
 function repoHash(input: string): string {
   let hash = 0x811c9dc5;
@@ -196,6 +227,7 @@ export function normalizeRepos(input: readonly Partial<ProjectRepo>[]): Result<r
     }
     const hinted = typeof raw.name === 'string' ? raw.name.trim() : '';
     const name = hinted === '' ? repoNameFromUrl(url) : hinted;
+    if (name === 'repos') return err(invalid('仓库名不能是 repos（组合会话里留给附加仓库目录）'));
     if (!PROJECT_REPO_NAME_PATTERN.test(name)) {
       return err(invalid(`仓库名不合规：${name}（小写字母开头，只能有小写字母、数字和 -，最多 41 个字符）`));
     }
@@ -215,7 +247,7 @@ export function normalizeRepos(input: readonly Partial<ProjectRepo>[]): Result<r
   return ok(repos);
 }
 
-/** 项目的主仓库：清单第一个；老数据（只有 `repo`）按单成员派生。 */
+/** 清单第一个（过渡期 `repo` 的来源）；老数据（只有 `repo`）按单成员派生。不是组合会话的主仓库。 */
 export function primaryRepo(project: Pick<Project, 'repo' | 'repos'>): ProjectRepo | null {
   const first = project.repos[0];
   if (first !== undefined) return first;
@@ -225,10 +257,31 @@ export function primaryRepo(project: Pick<Project, 'repo' | 'repos'>): ProjectRe
   return { id: deriveRepoId(name, legacy.url), name, url: legacy.url, defaultBranch: legacy.defaultBranch };
 }
 
-/** 同时写 `repos` 与过渡期的 `repo`，保证 `repo === repos[0] ?? null`。 */
-export function withProjectRepos(project: Project, repos: readonly ProjectRepo[]): Project {
-  const primary = repos[0] ?? null;
-  return { ...project, repos, repo: primary === null ? null : { url: primary.url, defaultBranch: primary.defaultBranch } };
+/** 组合会话指定的主仓库；没指定或已从清单里消失则返回 null。 */
+export function designatedPrimaryRepo(project: Pick<Project, 'repos' | 'primaryRepoId'>): ProjectRepo | null {
+  const id = project.primaryRepoId ?? null;
+  if (id === null || id === '') return null;
+  return project.repos.find((repo) => repo.id === id) ?? null;
+}
+
+/** 主仓库 id：空 = 不指定；必须落在当前清单里。 */
+export function normalizePrimaryRepoId(repos: readonly ProjectRepo[], value: string | null | undefined): Result<string | null, DomainError> {
+  if (value === null || value === undefined || value.trim() === '') return ok(null);
+  const id = value.trim();
+  if (!repos.some((repo) => repo.id === id)) return err(invalid('主仓库必须是项目里的一个仓库'));
+  return ok(id);
+}
+
+/** 同时写 `repos` 与过渡期的 `repo`，保证 `repo === repos[0] ?? null`。主仓库不在清单里就清掉。 */
+export function withProjectRepos(project: Project, repos: readonly ProjectRepo[], primaryRepoId: string | null | undefined = project.primaryRepoId): Project {
+  const first = repos[0] ?? null;
+  const designated = normalizePrimaryRepoId(repos, primaryRepoId);
+  return {
+    ...project,
+    repos,
+    repo: first === null ? null : { url: first.url, defaultBranch: first.defaultBranch },
+    primaryRepoId: designated.ok ? designated.value : null
+  };
 }
 
 /** 建好 worktree 后自动跑的准备命令（docs/design/worktree.md §3）。 */
@@ -318,6 +371,10 @@ export interface CreateProjectInput {
   readonly createdBy?: string | null;
   /** 项目默认资产组合；不传 = 空。 */
   readonly assetSetIds?: readonly string[] | null;
+  /** 子模块策略；不传 = off。 */
+  readonly submodules?: ProjectSubmodules | null;
+  /** 组合会话的主仓库；不传 = 不指定。 */
+  readonly primaryRepoId?: string | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
@@ -326,16 +383,20 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
   const assetSetIds = normalizeAssetSetIds(input.assetSetIds);
   if (!assetSetIds.ok) return assetSetIds;
   const repos = input.repos ?? (input.repo ? [primaryRepo({ repo: input.repo, repos: [] })!] : []);
-  const primary = repos[0] ?? null;
+  const first = repos[0] ?? null;
+  const primaryRepoId = normalizePrimaryRepoId(repos, input.primaryRepoId);
+  if (!primaryRepoId.ok) return primaryRepoId;
   return ok({
     id: input.id ?? newProjectId(),
     name,
-    repo: primary === null ? null : { url: primary.url, defaultBranch: primary.defaultBranch },
+    repo: first === null ? null : { url: first.url, defaultBranch: first.defaultBranch },
     repos,
+    primaryRepoId: primaryRepoId.value,
     description: input.description ?? null,
     worktree: input.worktree ?? null,
     checks: input.checks ?? [],
     assetSetIds: assetSetIds.value,
+    ...(input.submodules === 'recursive' ? { submodules: 'recursive' as const } : {}),
     createdAt: input.now,
     teamId: input.teamId ?? null,
     createdBy: input.createdBy ?? null,

@@ -11,6 +11,7 @@ import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
 import type { RepoAuthPort } from '../ports/repo-auth.ts';
 import type { GitHostApi, GitHostTokenStore, GitText, GitTextWriter, PullRequestLink, PullRequestRepository } from '../ports/pull-requests.ts';
+import { archiveAfterPullRequestMerged } from './session-archive.ts';
 import type { Project } from '../project.ts';
 import { isContainerSession, type Session } from '../session.ts';
 import type { Workspace } from '../workspace.ts';
@@ -32,7 +33,7 @@ import { locationsOf, projectOfSession } from './workspaces.ts';
 export interface GitWorkflowDeps {
   readonly projects: Pick<ProjectRepository, 'byId'>;
   readonly tasks: Pick<TaskRepository, 'byId'>;
-  readonly sessions: Pick<SessionRepository, 'byId'>;
+  readonly sessions: Pick<SessionRepository, 'byId' | 'save' | 'listByWorkspace' | 'listByProject'>;
   readonly workspaces: WorkspaceRepository;
   /** 组合工作空间（多仓库）；容器会话按它 / 工作空间反推项目（#221 步骤 7）。 */
   readonly workspaceGroups: WorkspaceGroupRepository;
@@ -74,6 +75,8 @@ export interface GitState {
   /** 有 token 走 token，否则试 gh（真不行再退成链接）。 */
   readonly prVia: 'token' | 'gh';
   readonly pullRequests: readonly PullRequestLink[];
+  /** 该成员工作目录占用；拿不到就省略。 */
+  readonly sizeBytes?: number | null;
 }
 
 export interface GitRunInput {
@@ -118,9 +121,11 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     let root = location.root;
     // 组合工作空间（§12.5）：git 只在成员仓库里跑，容器根不是仓库。
     if (location.group !== null) {
-      if (!member) return err(invalid('请选择要提交的仓库'));
-      const picked = location.members.find((item) => item.workspaceId === member);
-      if (!picked) return err(invalid('这颗仓库不属于这条会话的组合工作空间'));
+      const options = location.members.map((item) => item.name).filter(Boolean);
+      const hint = options.length ? `，可选：${options.join('、')}` : '';
+      if (!member) return err(invalid(`请选择要提交的仓库（member 传仓库名或 workspaceId${hint}）`));
+      const picked = location.members.find((item) => item.workspaceId === member || item.name === member || item.repoId === member);
+      if (!picked) return err(invalid(`这颗仓库不属于这条会话的组合工作空间（member 传仓库名或 workspaceId${hint}）`));
       root = picked.root;
     }
     const workspace = seen.value.workspaceId ? await deps.workspaces.byId(seen.value.workspaceId) : null;
@@ -160,7 +165,8 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       canPush: await canPush(subject, found.value.project),
       prBlocked: prBlocked(p, found.value.workspace),
       prVia: token.configured ? 'token' : 'gh',
-      pullRequests: isContainerSession(found.value.session) ? [] : await deps.pullRequests.byTask(found.value.session.taskId as TaskId)
+      pullRequests: isContainerSession(found.value.session) ? [] : await deps.pullRequests.byTask(found.value.session.taskId as TaskId),
+      ...(p.sizeBytes == null ? {} : { sizeBytes: p.sizeBytes })
     });
   }
 
@@ -337,6 +343,9 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       ? { ...link, state: remote.state, headSha: remote.headSha ?? link.headSha, mergedAt: remote.mergedAt, url: remote.url || link.url, lastSyncedAt: deps.now() }
       : { ...link, lastSyncedAt: deps.now() };
     await deps.pullRequests.save(next);
+    if (next.state === 'merged' && link.state !== 'merged') {
+      await archiveAfterPullRequestMerged({ ...deps, cleanup: { pullRequests: deps.pullRequests } as never }, next).catch(() => 0);
+    }
     return next;
   }
 
@@ -347,12 +356,22 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     return due.length;
   }
 
-  /** 打开任务时：看得见就同步一遍这个任务开着的 PR（最多 1 分钟一次）。 */
-  async function syncTask(subject: Subject | null, taskId: string): Promise<Result<readonly PullRequestLink[], DomainError>> {
+  /**
+   * 打开任务时：看得见就同步一遍这个任务开着的 PR（默认最多 1 分钟一次，避免连点刷新打爆 GitHub）。
+   * `refresh: true` 时立刻再拉一次（人刚在外面合并、要马上收起会话）。
+   */
+  async function syncTask(
+    subject: Subject | null,
+    taskId: string,
+    options?: { readonly refresh?: boolean }
+  ): Promise<Result<readonly PullRequestLink[], DomainError>> {
     const listed = await listForTask(subject, taskId);
     if (!listed.ok) return listed;
+    const minAgeMs = options?.refresh ? 0 : 60_000;
     const out: PullRequestLink[] = [];
-    for (const link of listed.value) out.push(link.state === 'open' && deps.now() - link.lastSyncedAt > 60_000 ? await syncOne(link).catch(() => link) : link);
+    for (const link of listed.value) {
+      out.push(link.state === 'open' && deps.now() - link.lastSyncedAt >= minAgeMs ? await syncOne(link).catch(() => link) : link);
+    }
     return ok(out);
   }
 

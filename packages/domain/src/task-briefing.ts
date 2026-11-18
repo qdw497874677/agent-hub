@@ -13,20 +13,55 @@ function clip(text: string, maxBytes: number): string {
   return `${out}\n…`;
 }
 
+/** 组合工作空间里的一个成员仓库，告诉 agent 子目录、远端和分支。 */
+export interface BriefingRepo {
+  readonly name: string;
+  readonly path: string;
+  /** 相对会话 cwd 的路径：主仓库 `.`，附加仓 `../repos/<name>`。 */
+  readonly relativePath?: string;
+  readonly url: string | null;
+  readonly branch: string | null;
+  readonly primary?: boolean;
+}
+
 /** 背景里要带的项目信息（说明原样给；提到 git 仓库的话 agent 自己会用 git）。 */
 export interface ProjectContext {
   readonly name: string;
   readonly repoUrl: string | null;
   readonly description: string | null;
+  /** 会话 cwd（amp 布局是主仓库目录，老组是容器根）；单仓会话不传。 */
+  readonly workspaceRoot?: string | null;
+  /** 组合工作目录的成员清单；单仓或没有组时省略。 */
+  readonly repos?: readonly BriefingRepo[];
+  /** amp = 主仓库为 cwd；flat / 省略 = 老的容器根布局。 */
+  readonly groupLayout?: 'amp' | 'flat';
 }
 
 /** 项目说明在背景里最多占这么多，全文用 task_get 读。 */
 const PROJECT_MAX_BYTES = 1500;
 
 function projectPart(project: ProjectContext | null | undefined): string | null {
-  if (!project || (!project.description && !project.repoUrl)) return null;
+  const repos = project?.repos ?? [];
+  if (!project || (!project.description && !project.repoUrl && repos.length === 0)) return null;
   const lines = [`项目：${project.name}`];
-  if (project.repoUrl) lines.push(`仓库：${project.repoUrl}`);
+  if (repos.length > 0) {
+    if (project.workspaceRoot) lines.push(`组合工作目录：${project.workspaceRoot}`);
+    lines.push('仓库：');
+    for (const repo of repos) {
+      const bits = [repo.name, repo.relativePath ?? repo.path];
+      if (repo.primary) bits.push('主仓库');
+      if (repo.branch) bits.push(`分支 ${repo.branch}`);
+      if (repo.url) bits.push(repo.url);
+      lines.push(`- ${bits.join('  ')}`);
+    }
+    lines.push(
+      project.groupLayout === 'amp'
+        ? '工作目录是主仓库（.），其他仓库在 ../repos/<name>；每个子目录是独立的 git 仓库；提交和推送请按仓库分别进行。'
+        : '工作目录是容器根，每个子目录是独立的 git 仓库；提交和推送请按仓库分别进行。'
+    );
+  } else if (project.repoUrl) {
+    lines.push(`仓库：${project.repoUrl}`);
+  }
   if (project.description) lines.push(`项目说明：\n${clip(project.description, PROJECT_MAX_BYTES)}`);
   return lines.join('\n');
 }

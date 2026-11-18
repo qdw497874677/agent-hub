@@ -1,4 +1,4 @@
-import { isHttpRepoUrl, type GitAuth, type ProjectRepository, type SecretVault, type WorkspaceRepository } from '@agent-hub/domain';
+import { isHttpRepoUrl, sameRepoUrl, type GitAuth, type ProjectRepository, type SecretVault, type WorkspaceRepository } from '@agent-hub/domain';
 
 /**
  * 项目仓库的 HTTPS 令牌解析（私有 GitLab / Gitea / 自建 HTTPS 仓库）。
@@ -27,8 +27,9 @@ async function reveal(deps: RepoAuthDeps, name: string | null | undefined): Prom
 }
 
 /**
- * 按仓库地址找：项目清单里 url 相等的那个仓库，配了令牌就解出来。
- * `projectId` 给了就先只看这个项目（保存 / 检查时就是它），找不到再全量找。
+ * 按仓库地址找：只看当前项目的仓库清单（#233：禁止按 URL 跨项目解出别的项目的令牌）。
+ * URL 比较用 `sameRepoUrl`（忽略 .git、userinfo、大小写）。
+ * 没有 projectId 就不猜：避免「任意 URL 扫全部项目」。
  * `workerId` 只作语义说明（令牌是项目级的，同一 URL 在哪台机器上都能用）。
  */
 export async function repoAuthForUrl(
@@ -38,17 +39,10 @@ export async function repoAuthForUrl(
   projectId?: string | null
 ): Promise<GitAuth | null> {
   if (!isHttpRepoUrl(url)) return null;
-  const target = url.trim();
-  if (projectId) {
-    const project = await deps.projects.byId(projectId as never);
-    const hit = project?.repos.find((repo) => repo.url === target && repo.tokenSecret);
-    if (hit) return reveal(deps, hit.tokenSecret);
-  }
-  for (const project of await deps.projects.list()) {
-    const hit = project.repos.find((repo) => repo.url === target && repo.tokenSecret);
-    if (hit) return reveal(deps, hit.tokenSecret);
-  }
-  return null;
+  if (!projectId) return null;
+  const project = await deps.projects.byId(projectId as never);
+  const hit = project?.repos.find((repo) => sameRepoUrl(repo.url, url) && repo.tokenSecret);
+  return hit ? reveal(deps, hit.tokenSecret) : null;
 }
 
 /**
@@ -70,11 +64,11 @@ export async function repoAuthForPath(deps: RepoAuthDeps, workerId: string | nul
 
 /** 把上面两个函数打成 domain 的 `RepoAuthPort`，挂到 `Deps.repoAuth` 上给用例用。 */
 export function createRepoAuth(deps: RepoAuthDeps): {
-  forUrl(workerId: string | null, url: string): Promise<GitAuth | null>;
+  forUrl(workerId: string | null, url: string, projectId?: string | null): Promise<GitAuth | null>;
   forPath(workerId: string | null, path: string): Promise<GitAuth | null>;
 } {
   return {
-    forUrl: (workerId, url) => repoAuthForUrl(deps, workerId, url),
+    forUrl: (workerId, url, projectId) => repoAuthForUrl(deps, workerId, url, projectId),
     forPath: (workerId, path) => repoAuthForPath(deps, workerId, path)
   };
 }

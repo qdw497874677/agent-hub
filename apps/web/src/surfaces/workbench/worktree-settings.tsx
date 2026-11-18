@@ -57,6 +57,15 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
   });
   const problem = editable ? worktreeDraftProblem(draft) : null;
   const dirty = editable && JSON.stringify(worktreeDraft(project)) !== JSON.stringify(draft);
+  const saveSubmodules = useMutation({
+    mutationFn: (submodules: 'off' | 'recursive') => api.saveProjectSubmodules(project.id, submodules),
+    onSuccess: (next) => {
+      queryClient.setQueryData(['canvas', next.id], (old: unknown) =>
+        old !== null && typeof old === 'object' && 'project' in old ? { ...(old as object), project: next } : old
+      );
+      void queryClient.invalidateQueries({ queryKey: ['projects'] });
+    }
+  });
   const save = useMutation({
     mutationFn: () => api.saveProjectWorktree(project.id, worktreePayload(draft)),
     onSuccess: async () => {
@@ -207,16 +216,35 @@ export function WorktreeSettings({ project }: { project: ProjectDto }) {
               )}
             </div>
           </div>
+
+          <div className="mt-4 border-t border-hair pt-4">
+            <label className="flex items-start gap-2 text-meta text-secondary">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                data-testid="project-submodules"
+                checked={project.submodules === 'recursive'}
+                disabled={saveSubmodules.isPending}
+                onChange={(event) => saveSubmodules.mutate(event.target.checked ? 'recursive' : 'off')}
+              />
+              <span title="默认不拉子模块。打开后，之后新建的 clone / worktree 会递归初始化。已有目录不动。">
+                克隆时递归初始化子模块
+              </span>
+            </label>
+            {saveSubmodules.isError ? (
+              <p className="mt-1 text-meta text-rust">{saveSubmodules.error?.message ?? '保存失败'}</p>
+            ) : null}
+          </div>
         </>
       ) : (
-        <ReadonlyWorktree config={projectWorktree(project)} />
+        <ReadonlyWorktree config={projectWorktree(project)} submodules={project.submodules} />
       )}
     </section>
   );
 }
 
 /** 非管理员看到的是同一份事实，只是不能改：别让「为什么没有开关」变成疑问。 */
-function ReadonlyWorktree({ config }: { config: ProjectWorktreeConfig | null }) {
+function ReadonlyWorktree({ config, submodules }: { config: ProjectWorktreeConfig | null; submodules?: 'off' | 'recursive' }) {
   return (
     <div className="space-y-1 text-meta text-secondary" data-testid="worktree-readonly">
       <p>默认：{(config?.mode ?? 'shared') === 'isolated' ? '每个任务一个隔离目录' : '共用持久工作目录（默认）'}</p>
@@ -233,6 +261,7 @@ function ReadonlyWorktree({ config }: { config: ProjectWorktreeConfig | null }) 
           {config.setup.waitForSetup ? '等准备完成再启动 agent' : '准备命令在后台跑'} · 超时 {config.setup.timeoutSeconds} 秒
         </p>
       ) : null}
+      <p>子模块：{submodules === 'recursive' ? '克隆时递归初始化' : '不拉取（默认）'}</p>
       <p className="text-tertiary">只有项目主人 / 管理员能改这块。</p>
     </div>
   );

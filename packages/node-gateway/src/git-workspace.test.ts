@@ -5,7 +5,7 @@ import { mkdtemp, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createGitWorkspace, mainWorktreeDir, networkEnv } from './git-workspace.ts';
+import { createGitWorkspace, mainWorktreeDir, networkEnv, resolveRemoteBase } from './git-workspace.ts';
 
 test('git-common-dir 的相对路径按 worktree 解析，不按进程 cwd', () => {
   const worktree = '/tmp/ws/agent-hub/.worktrees/demo-fix';
@@ -77,6 +77,7 @@ test('clone → inspect → worktree → status → remove：有改动拒删，�
   const removed = await git.remove(tree, 'worktree');
   assert.ok(removed.ok && removed.value.removed, JSON.stringify(removed));
   assert.equal(existsSync(tree), false);
+  assert.equal(sh(cloned.value.path, 'worktree', 'list').includes(tree), false, 'remove 之后要 prune，登记里不再留这份路径');
   assert.match(sh(cloned.value.path, 'branch', '--list', 'agent-hub/fix-1a2b'), /fix-1a2b/);
 
   // 远端已有这个分支：再开 worktree 就基于 origin/<branch>（换个地方继续）
@@ -345,4 +346,130 @@ test('networkEnv：有 auth 才注入 GIT_CONFIG_* 三条，没有就一条都�
   assert.equal(env.GIT_SSH_COMMAND, 'ssh -i k');
   assert.equal(env.HOME, '/home/me');
   assert.equal(env.PATH, '/bin');
+});
+
+/** 一个带 submodule 的本地 bare 远端（子模块也是本地 bare，不走网络）。 */
+async function originWithSubmodule() {
+  const root = realpathSync(await mkdtemp(join(tmpdir(), 'ws-sub-')));
+  const childSeed = join(root, 'child-seed');
+  await mkdir(childSeed);
+  sh(childSeed, 'init', '-q', '-b', 'main');
+  await writeFile(join(childSeed, 'lib.txt'), 'lib\n');
+  sh(childSeed, 'add', '.');
+  sh(childSeed, 'commit', '-qm', 'child');
+  sh(root, 'clone', '-q', '--bare', childSeed, 'child.git');
+  const childUrl = join(root, 'child.git');
+
+  const seed = join(root, 'seed');
+  await mkdir(seed);
+  sh(seed, 'init', '-q', '-b', 'main');
+  await writeFile(join(seed, 'README.md'), 'hi\n');
+  sh(seed, 'add', '.');
+  sh(seed, 'commit', '-qm', 'init');
+  sh(seed, '-c', 'protocol.file.allow=always', 'submodule', 'add', childUrl, 'vendor');
+  sh(seed, 'commit', '-qm', 'add submodule');
+  sh(root, 'clone', '-q', '--bare', seed, 'origin.git');
+  return { root, url: join(root, 'origin.git') };
+}
+
+test('clone / worktree：recurseSubmodules 关闭时不初始化子模块', async () => {
+  const { root, url } = await originWithSubmodule();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'out'), name: 'demo' });
+  assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
+  assert.equal(existsSync(join(cloned.value.path, 'vendor', 'lib.txt')), false);
+  const tree = join(root, 'out', 'wt');
+  const added = await git.addWorktree({ repoPath: cloned.value.path, path: tree, branch: 'agent-hub/sub-off' });
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.equal(existsSync(join(tree, 'vendor', 'lib.txt')), false);
+});
+
+test('clone / worktree：recurseSubmodules 打开时递归初始化子模块', async () => {
+  const { root, url } = await originWithSubmodule();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'out'), name: 'demo', recurseSubmodules: true });
+  assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
+  assert.equal(existsSync(join(cloned.value.path, 'vendor', 'lib.txt')), true);
+  const tree = join(root, 'out', 'wt');
+  const added = await git.addWorktree({
+    repoPath: cloned.value.path,
+    path: tree,
+    branch: 'agent-hub/sub-on',
+    recurseSubmodules: true
+  });
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.equal(existsSync(join(tree, 'vendor', 'lib.txt')), true);
+});
+
+
+test('worktree add：fetch 后从远端默认分支起步，不用本地过期的 master', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'agent-hub'), name: 'demo' });
+  assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
+  // 本地留一条停在初始提交上的 master，模拟过期的默认分支
+  sh(cloned.value.path, 'branch', 'master');
+  const updater = join(root, 'updater');
+  sh(root, 'clone', '-q', url, 'updater');
+  await writeFile(join(updater, 'NEW.md'), 'fresh\n');
+  sh(updater, 'add', '.');
+  sh(updater, 'commit', '-qm', 'advance main');
+  sh(updater, 'push', '-q', 'origin', 'main');
+
+  const raw = async (args: string[]) => execFileSync('git', args, { cwd: cloned.value.path, encoding: 'utf8' });
+  // fetch 之前本地还看不到新提交；resolve 在 fetch 之后应由 origin/HEAD（main）赢过 origin/master（没有）和本地 master
+  sh(cloned.value.path, 'fetch', '-q', 'origin');
+  assert.equal(await resolveRemoteBase({ raw }, true, 'master'), 'origin/main');
+
+  const tree = join(root, 'agent-hub', '.worktrees', 'from-remote');
+  const added = await git.addWorktree({
+    repoPath: cloned.value.path,
+    path: tree,
+    branch: 'agent-hub/sess-aaaaaaaaaaaa',
+    base: 'master'
+  });
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.equal(existsSync(join(tree, 'NEW.md')), true, '新 worktree 应包含远端 main 的新提交，而不是本地过期 master');
+  assert.equal(existsSync(join(cloned.value.path, 'NEW.md')), false);
+});
+
+test('同一源仓库上并发加 worktree 都能成功（按仓库串行，不抢 .git 锁）', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'agent-hub'), name: 'demo' });
+  assert.ok(cloned.ok);
+  const first = join(root, 'agent-hub', '.worktrees', 'one');
+  const second = join(root, 'agent-hub', '.worktrees', 'two');
+  const [a, b] = await Promise.all([
+    git.addWorktree({ repoPath: cloned.value.path, path: first, branch: 'agent-hub/sess-111111111111' }),
+    git.addWorktree({ repoPath: cloned.value.path, path: second, branch: 'agent-hub/sess-222222222222' })
+  ]);
+  assert.ok(a.ok, a.ok ? '' : a.error.message);
+  assert.ok(b.ok, b.ok ? '' : b.error.message);
+  assert.equal(existsSync(first) && existsSync(second), true);
+});
+
+
+test('worktree add：origin 不可达时退回本地默认分支，不把无效的 origin/main 交给 git', async () => {
+  const { root, url } = await origin();
+  const git = createGitWorkspace();
+  const cloned = await git.clone({ repoUrl: url, parent: join(root, 'agent-hub'), name: 'demo' });
+  assert.ok(cloned.ok, cloned.ok ? '' : cloned.error.message);
+  sh(cloned.value.path, 'remote', 'set-url', 'origin', 'https://example.invalid/acme/demo.git');
+  // 模拟从未 fetch 成功：只挂了 origin 地址，没有 origin/* 跟踪分支（组合 e2e 的本地仓库就是这样）。
+  for (const ref of sh(cloned.value.path, 'for-each-ref', '--format=%(refname)', 'refs/remotes/origin').split('\n').map((line) => line.trim()).filter(Boolean)) {
+    sh(cloned.value.path, 'update-ref', '-d', ref);
+  }
+  const raw = async (args: string[]) => execFileSync('git', args, { cwd: cloned.value.path, encoding: 'utf8' });
+  assert.equal(await resolveRemoteBase({ raw }, true, 'origin/main'), 'main');
+
+  const tree = join(root, 'agent-hub', '.worktrees', 'offline-origin');
+  const added = await git.addWorktree({
+    repoPath: cloned.value.path,
+    path: tree,
+    branch: 'agent-hub/sess-ffffffffffff',
+    base: 'origin/main'
+  });
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.equal(existsSync(join(tree, 'README.md')), true);
 });

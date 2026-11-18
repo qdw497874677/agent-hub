@@ -176,6 +176,26 @@ test('开 PR：团队 token 优先；记工作日志、审计；同步拿到合�
   assert.equal(await w.svc.syncDue(), 0);
 });
 
+test('刚开完的 PR：默认同步进 1 分钟节流；?refresh 立刻拉到已合并并收起', async () => {
+  const w = await world({ token: true });
+  w.git.previews.set(w.root, dirty('feat/x', 'https://github.com/o/r.git'));
+  const opened = await w.svc.run(null, w.session.id, { action: 'pr', message: 'feat: x', title: 'X' });
+  assert.ok(opened.ok);
+  assert.equal(opened.value.pullRequest?.state, 'open');
+  const live = await w.deps.sessions.byId(w.session.id);
+  assert.ok(live);
+  await w.deps.sessions.save({ ...live, status: 'stopped' });
+  const throttled = await w.svc.syncTask(null, w.task.id);
+  assert.ok(throttled.ok);
+  assert.equal(throttled.value[0]?.state, 'open');
+  assert.ok(!w.hostCalls.includes('get:7'));
+  const refreshed = await w.svc.syncTask(null, w.task.id, { refresh: true });
+  assert.ok(refreshed.ok);
+  assert.equal(refreshed.value[0]?.state, 'merged');
+  assert.ok(w.hostCalls.includes('get:7'));
+  assert.ok((await w.deps.sessions.byId(w.session.id))?.settledAt != null);
+});
+
 test('开 PR：token 失败 → gh；gh 也没有 → 只推送 + 链接', async () => {
   const w = await world({ token: true, host: { createPullRequest: async () => ({ ok: false, reason: '401' }) } });
   w.git.gh = { next: 3, state: 'open' };

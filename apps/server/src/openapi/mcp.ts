@@ -1,11 +1,12 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListResourceTemplatesRequestSchema, ListResourcesRequestSchema, ListToolsRequestSchema, ReadResourceRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type { AuditLog, McpReplayStore, Permission, Principal } from '@agent-hub/domain';
 import { resolveMcp, routes, type McpModule, type ResolvedMcp } from './routes.ts';
+import { workbenchSkillFileByUri, workbenchSkillFiles, workbenchSkillUri } from '../workbench-skill.ts';
 
 /** 内部转调的标记：只有这个模块拿得到，外面的请求伪造不了（放在 env 里，不是请求头）。 */
 export const INTERNAL: unique symbol = Symbol('openapi-internal');
@@ -196,7 +197,7 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   /** 开着、但这个令牌没权限的工具：调用时明确说缺哪个权限（列表里不出现）。 */
   const withheld = new Map(mcpTools(policy).filter((tool) => !byName.has(tool.name)).map((tool) => [tool.name, tool]));
-  const server = new Server({ name: 'agent-hub-openapi', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'agent-hub-openapi', version: '1.0.0' }, { capabilities: { tools: {}, resources: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((tool) => ({
       name: tool.name,
@@ -210,6 +211,23 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
       }
     }))
   }));
+  server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+    resources: workbenchSkillFiles().map((file) => ({
+      uri: workbenchSkillUri(file.path),
+      name: file.path,
+      mimeType: 'text/markdown',
+      description: file.path === 'SKILL.md' ? '通过 MCP 使用 Agent Hub 工作台的技能说明' : `参考：${file.path}`
+    }))
+  }));
+  server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => ({ resourceTemplates: [] }));
+  server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+    const uri = request.params.uri;
+    const file = workbenchSkillFileByUri(uri);
+    if (!file) {
+      throw new Error(`没有这个资源：${uri}`);
+    }
+    return { contents: [{ uri, mimeType: 'text/markdown', text: file.text }] };
+  });
   const callTool = async (request: { params: { name: string; arguments?: Record<string, unknown> | undefined } }) => {
     const tool = byName.get(request.params.name);
     if (!tool) {

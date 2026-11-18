@@ -23,5 +23,7 @@ export interface WorkspaceGroupGit {
     readonly base?: string | null;
     /** 私有 HTTPS 仓库的令牌（开 worktree 前要 fetch origin）。 */
     readonly auth?: GitAuth;
+    /** true = 建好后递归初始化子模块。 */
+    readonly recurseSubmodules?: boolean;
   }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
 }
