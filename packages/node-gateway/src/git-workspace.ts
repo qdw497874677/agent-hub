@@ -73,7 +73,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       return { ok: true, value: { exists: true, isGit: true, remoteUrl: remoteUrl.trim() || null, branch: await currentBranch(git) } };
     },
 
-    async clone({ repoUrl, parent, name, branch, auth }) {
+    async clone({ repoUrl, parent, name, branch, auth, recurseSubmodules }) {
       const problem = folderNameProblem(name);
       if (problem !== null) return { ok: false, error: invalid(problem) };
       const blocked = await guard(parent);
@@ -83,15 +83,25 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       const before = await lstat(target).catch(() => null);
       const emptyDir = before?.isDirectory() === true && (await readdir(target).catch(() => ['?'])).length === 0;
       if (before && !emptyDir) return { ok: false, error: conflict(`「${target}」已经存在且不是空目录`) };
+      // 本地路径远端的子模块在 clone 后再 init（simple-git 不允许改 protocol.file.allow）。
+      const flags = [...(branch ? ['--branch', branch] : []), ...(recurseSubmodules && !isLocalGitUrl(repoUrl) ? ['--recurse-submodules'] : [])];
       try {
         await mkdir(parent, { recursive: true });
         // 不让 git 弹交互式密码提示把进程挂住：没凭据就直接失败，原因回给人看
-        await networkGit(parent, undefined, auth).clone(repoUrl, name, branch ? ['--branch', branch] : []);
+        await networkGit(parent, undefined, auth).clone(repoUrl, name, flags);
       } catch (error) {
         // 失败要还原：本来没有就删掉，本来是空目录就清回空目录
         await rm(target, { recursive: true, force: true }).catch(() => undefined);
         if (emptyDir) await mkdir(target, { recursive: true }).catch(() => undefined);
         return failed('下载仓库', error);
+      }
+      if (recurseSubmodules) {
+        const sub = await initSubmodules(target, auth);
+        if (!sub.ok) {
+          await rm(target, { recursive: true, force: true }).catch(() => undefined);
+          if (emptyDir) await mkdir(target, { recursive: true }).catch(() => undefined);
+          return sub;
+        }
       }
       return { ok: true, value: { path: target, branch: await currentBranch(simpleGit(target)) } };
     },
@@ -120,41 +130,44 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
     },
 
-    async addWorktree({ repoPath, path: requested, branch, base, existing, auth }) {
+    async addWorktree({ repoPath, path: requested, branch, base, existing, auth, recurseSubmodules }) {
       const path = existing ? requested : relocateWorktree(requested, options.worktreesDir);
       for (const place of [repoPath, dirname(path)]) {
         const blocked = await guard(place);
         if (blocked) return { ok: false, error: blocked };
       }
       if (await lstat(path).catch(() => null)) return { ok: false, error: conflict(`「${path}」已经存在`) };
-      const git = networkGit(repoPath, undefined, auth);
-      if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
-      const remotes = await git.getRemotes().catch(() => []);
-      const hasOrigin = remotes.some((remote) => remote.name === 'origin');
-      if (hasOrigin) await git.fetch('origin').catch(() => undefined); // 离线也能开分支，只是基于本地的
-      const local = await git.raw(['branch', '--list', branch]).catch(() => '');
-      if (existing) {
-        // 沿用原分支：本地有就直接检出（它不能正被别的 worktree 占着，git 会拒）；只有远端有就建跟踪分支
-        const remoteOnly = local.trim() === '' && hasOrigin;
+      return withRepoLock(repoPath, async () => {
+        const git = networkGit(repoPath, undefined, auth);
+        if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
+        const remotes = await git.getRemotes().catch(() => []);
+        const hasOrigin = remotes.some((remote) => remote.name === 'origin');
+        // 先 fetch，再按远端默认分支开，避免用本地过期的 master/main。
+        if (hasOrigin) await git.fetch('origin').catch(() => undefined);
+        const local = await git.raw(['branch', '--list', branch]).catch(() => '');
+        if (existing) {
+          // 沿用原分支：本地有就直接检出（它不能正被别的 worktree 占着，git 会拒）；只有远端有就建跟踪分支
+          const remoteOnly = local.trim() === '' && hasOrigin;
+          try {
+            await mkdir(dirname(path), { recursive: true });
+            if (remoteOnly) await git.raw(['worktree', 'add', '--track', '-b', branch, path, `origin/${branch}`]);
+            else await git.raw(['worktree', 'add', path, branch]);
+          } catch (error) {
+            return failed('检出分支', error);
+          }
+          return finishWorktree(path, branch, recurseSubmodules, auth);
+        }
+        if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
+        const remoteHas = hasOrigin && (await git.raw(['branch', '-r', '--list', `origin/${branch}`]).catch(() => '')).trim() !== '';
+        const from = remoteHas ? `origin/${branch}` : await resolveRemoteBase(git, hasOrigin, base);
         try {
           await mkdir(dirname(path), { recursive: true });
-          if (remoteOnly) await git.raw(['worktree', 'add', '--track', '-b', branch, path, `origin/${branch}`]);
-          else await git.raw(['worktree', 'add', path, branch]);
+          await git.raw(['worktree', 'add', '--no-track', '-b', branch, path, from]);
         } catch (error) {
-          return failed('检出分支', error);
+          return failed('新开分支', error);
         }
-        return { ok: true, value: { path, branch } };
-      }
-      if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
-      const remoteHas = hasOrigin && (await git.raw(['branch', '-r', '--list', `origin/${branch}`]).catch(() => '')).trim() !== '';
-      const from = remoteHas ? `origin/${branch}` : base || 'HEAD';
-      try {
-        await mkdir(dirname(path), { recursive: true });
-        await git.raw(['worktree', 'add', '--no-track', '-b', branch, path, from]);
-      } catch (error) {
-        return failed('新开分支', error);
-      }
-      return { ok: true, value: { path, branch } };
+        return finishWorktree(path, branch, recurseSubmodules, auth);
+      });
     },
 
     async status(path) {
@@ -260,6 +273,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       const blocked = await guard(path);
       if (blocked) return { ok: false, error: blocked };
       if (!(await exists(path))) return { ok: true, value: { removed: true } }; // 已经没了：登记可以收掉
+      return withRepoLock(path, async () => {
       if (options?.force) {
         // 人二次确认过「这些改动不要了」：worktree 用 --force 摘掉（分支和已提交的仍在主仓库里），目录整个删
         try {
@@ -299,6 +313,7 @@ export function createGitWorkspace(check: (path: string) => Promise<string | nul
       }
       await rm(path, { recursive: true, force: true });
       return { ok: true, value: { removed: true } };
+      });
     },
 
     async runSetup({ path, command, timeoutMs, env }) {
@@ -321,6 +336,7 @@ export interface GroupWorktrees {
     readonly base?: string | null;
     /** 私有 HTTPS 仓库的令牌（开 worktree 前要 fetch origin）。 */
     readonly auth?: GitAuth;
+    readonly recurseSubmodules?: boolean;
   }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>>;
 }
 
@@ -332,7 +348,7 @@ export interface GroupWorktrees {
 export function createGroupWorktrees(check: (path: string) => Promise<string | null>, options: { readonly groupsDir: string }): GroupWorktrees {
   const groupsDir = resolve(options.groupsDir);
   return {
-    async newWorktree({ repoPath, path: requested, branch, base, auth }) {
+    async newWorktree({ repoPath, path: requested, branch, base, auth, recurseSubmodules }) {
       if (!requested.startsWith('/')) return { ok: false, error: invalid('成员目录必须是绝对路径') };
       const path = resolve(requested);
       const repo = resolve(repoPath);
@@ -343,7 +359,7 @@ export function createGroupWorktrees(check: (path: string) => Promise<string | n
       if (!insideGroups(groupsDir, path)) return { ok: false, error: invalid(`成员目录必须放在 ${groupsDir} 下面：${path}`) };
       if (branch.trim() === '') return { ok: false, error: invalid('分支名不能为空') };
       if (await lstat(path).catch(() => null)) return { ok: false, error: conflict(`「${path}」已经存在`) };
-      return addWorktreeOnNewBranch({ repoPath: repo, path, branch, base, auth });
+      return addWorktreeOnNewBranch({ repoPath: repo, path, branch, base, auth, recurseSubmodules });
     }
   };
 }
@@ -359,36 +375,43 @@ export async function addWorktreeOnNewBranch(input: {
   readonly branch: string;
   readonly base?: string | null;
   readonly auth?: GitAuth;
+  readonly recurseSubmodules?: boolean;
 }): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>> {
-  const { repoPath, path, branch, base, auth } = input;
-  const git = networkGit(repoPath, undefined, auth);
-  if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
-  const remotes = await git.getRemotes().catch(() => []);
-  const hasOrigin = remotes.some((remote) => remote.name === 'origin');
-  if (hasOrigin) await git.fetch('origin').catch(() => undefined); // 离线也能开分支，只是基于本地的
-  const local = await git.raw(['branch', '--list', branch]).catch(() => '');
-  if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
-  const remoteHas = hasOrigin && (await git.raw(['branch', '-r', '--list', `origin/${branch}`]).catch(() => '')).trim() !== '';
-  try {
-    await mkdir(dirname(path), { recursive: true });
-    if (remoteHas) await git.raw(['worktree', 'add', '--track', '-b', branch, path, `origin/${branch}`]);
-    else await git.raw(['worktree', 'add', '--no-track', '-b', branch, path, base || 'HEAD']);
-  } catch (error) {
-    return { ok: false, error: unavailable(`新开分支失败：${gitMessage(error)}`) };
-  }
-  return { ok: true, value: { path, branch } };
+  const { repoPath, path, branch, base, auth, recurseSubmodules } = input;
+  return withRepoLock(repoPath, async () => {
+    const git = networkGit(repoPath, undefined, auth);
+    if (!(await git.checkIsRepo().catch(() => false))) return { ok: false, error: invalid(`「${repoPath}」不是 git 仓库`) };
+    const remotes = await git.getRemotes().catch(() => []);
+    const hasOrigin = remotes.some((remote) => remote.name === 'origin');
+    if (hasOrigin) await git.fetch('origin').catch(() => undefined);
+    const local = await git.raw(['branch', '--list', branch]).catch(() => '');
+    if (local.trim() !== '') return { ok: false, error: conflict(`分支 ${branch} 已经存在：改用已有的那个工作空间`) };
+    const remoteHas = hasOrigin && (await git.raw(['branch', '-r', '--list', `origin/${branch}`]).catch(() => '')).trim() !== '';
+    const from = remoteHas ? `origin/${branch}` : await resolveRemoteBase(git, hasOrigin, base);
+    try {
+      await mkdir(dirname(path), { recursive: true });
+      if (remoteHas) await git.raw(['worktree', 'add', '--track', '-b', branch, path, from]);
+      else await git.raw(['worktree', 'add', '--no-track', '-b', branch, path, from]);
+    } catch (error) {
+      return { ok: false, error: unavailable(`新开分支失败：${gitMessage(error)}`) };
+    }
+    return finishWorktree(path, branch, recurseSubmodules, auth);
+  });
 }
 
-/** 从主工作区摘掉 worktree。common dir 解析不到目录时，就在这个 worktree 里摘掉自己（git 允许）。 */async function detachWorktree(path: string, force: boolean): Promise<void> {
+/** 从主工作区摘掉 worktree。common dir 解析不到目录时，就在这个 worktree 里摘掉自己（git 允许）。 */
+async function detachWorktree(path: string, force: boolean): Promise<void> {
   const raw = (await simpleGit(path).raw(['rev-parse', '--git-common-dir'])).trim();
   const main = mainWorktreeDir(path, raw);
   const args = ['worktree', 'remove', ...(force ? ['--force'] : []), path];
   const mainIsDir = await lstat(main).then((stat) => stat.isDirectory()).catch(() => false);
   if (mainIsDir) {
     await simpleGit(main).raw(args);
+    await simpleGit(main).raw(['worktree', 'prune']).catch(() => undefined);
     return;
   }
   await simpleGit(path).raw(args);
+  await simpleGit(path).raw(['worktree', 'prune']).catch(() => undefined);
 }
 
 /** 机器自己的 git 凭据要用到的变量（ssh agent、自定义 ssh 命令、askpass、代理），其余 GIT_* 不放行。 */
@@ -420,6 +443,96 @@ export function networkEnv(auth?: GitAuth, source: NodeJS.ProcessEnv = process.e
  * `auth` 存在时用 `GIT_CONFIG_*` 注入 `http.extraHeader`（等价 `git -c http.extraHeader=…`）：
  * 令牌只出现在环境变量里，不进 argv（`ps` 看不见）、不进 stderr（git 不回显这个头）。
  */
+
+/** 建好 checkout 后按项目开关递归初始化子模块；失败时由调用方决定是否清掉目录。 */
+function isLocalGitUrl(url: string | null | undefined): boolean {
+  const value = (url ?? '').trim();
+  return value.startsWith('/') || value.startsWith('file:') || value.startsWith('~');
+}
+
+async function initSubmodules(path: string, auth?: GitAuth): Promise<Result<void, DomainError>> {
+  try {
+    const origin = ((await simpleGit(path).remote(['get-url', 'origin']).catch(() => '')) || '').trim();
+    if (isLocalGitUrl(origin)) {
+      // simple-git 默认禁止改 protocol.file.allow；本地 bare 测试仓库走 execFile。
+      await new Promise<void>((done, fail) => {
+        execFile(
+          'git',
+          ['-c', 'protocol.file.allow=always', 'submodule', 'update', '--init', '--recursive'],
+          { cwd: path, env: networkEnv(auth), timeout: 120_000, maxBuffer: 1 << 20 },
+          (error) => (error ? fail(error) : done())
+        );
+      });
+    } else {
+      await networkGit(path, undefined, auth).raw(['submodule', 'update', '--init', '--recursive']);
+    }
+    return { ok: true, value: undefined };
+  } catch (error) {
+    return { ok: false, error: unavailable(`初始化子模块失败：${gitMessage(error)}`) };
+  }
+}
+
+async function finishWorktree(
+  path: string,
+  branch: string,
+  recurse: boolean | undefined,
+  auth?: GitAuth
+): Promise<Result<{ readonly path: string; readonly branch: string }, DomainError>> {
+  if (!recurse) return { ok: true, value: { path, branch } };
+  const sub = await initSubmodules(path, auth);
+  if (sub.ok) return { ok: true, value: { path, branch } };
+  await detachWorktree(path, true).catch(() => rm(path, { recursive: true, force: true }).catch(() => undefined));
+  return sub;
+}
+
+
+/** 同一源仓库上的 git 操作排队，避免并发 session 抢 .git 锁。 */
+const repoLocks = new Map<string, Promise<void>>();
+
+async function withRepoLock<T>(repoPath: string, run: () => Promise<T>): Promise<T> {
+  const key = resolve(repoPath);
+  const previous = repoLocks.get(key) ?? Promise.resolve();
+  let release: () => void = () => undefined;
+  const current = new Promise<void>((resolveLock) => {
+    release = resolveLock;
+  });
+  repoLocks.set(key, previous.then(() => current));
+  try {
+    await previous;
+    return await run();
+  } finally {
+    release();
+    if (repoLocks.get(key) === current) repoLocks.delete(key);
+  }
+}
+
+/**
+ * 开新分支时从「fetch 之后的远端默认分支」起步，不用本地可能过期的 master/main。
+ * 请求的 base 若能在 origin/ 下找到，优先用它；否则用 origin/HEAD，再不行才退回本地。
+ */
+export async function resolveRemoteBase(
+  git: { raw(args: string[]): Promise<string> },
+  hasOrigin: boolean,
+  requested?: string | null
+): Promise<string> {
+  const exists = async (ref: string): Promise<boolean> =>
+    (await git.raw(['rev-parse', '-q', '--verify', `${ref}^{commit}`]).catch(() => '')).trim() !== '';
+  if (hasOrigin) {
+    const wanted = requested?.trim() ?? '';
+    const remote = wanted === '' ? '' : wanted.startsWith('origin/') ? wanted : `origin/${wanted}`;
+    if (remote !== '' && (await exists(remote))) return remote;
+    const head = (await git.raw(['symbolic-ref', '--short', '-q', 'refs/remotes/origin/HEAD']).catch(() => '')).trim();
+    if (head !== '' && (await exists(head))) return head;
+    for (const name of ['origin/main', 'origin/master']) {
+      if (await exists(name)) return name;
+    }
+  }
+  // fetch 失败或 origin 只是挂着的地址时，不要把不存在的 origin/main 交给 worktree add。
+  const local = (requested?.trim() ?? '').replace(/^origin\//, '');
+  if (local !== '' && (await exists(local))) return local;
+  return 'HEAD';
+}
+
 function networkGit(baseDir: string, timeoutMs?: number, auth?: GitAuth): SimpleGit {
   const env = networkEnv(auth);
   const timeout = timeoutMs === undefined ? {} : { timeout: { block: timeoutMs } };
@@ -503,7 +616,7 @@ async function previewOf(path: string, maxPatchBytes: number): Promise<CommitPre
     truncated = bytes.length > maxPatchBytes;
     patch = truncated ? bytes.subarray(0, maxPatchBytes).toString('utf8') : all;
   }
-  return { isGit: true, branch, defaultBranch, remoteUrl, upstream, ahead, head, files, patch, truncated };
+  return { isGit: true, branch, defaultBranch, remoteUrl, upstream, ahead, head, files, patch, truncated, sizeBytes: await sizeOf(path) };
 }
 
 /** 有什么会丢就说什么；都没有返回 null（规则在领域里，和自动清理同一套）。 */

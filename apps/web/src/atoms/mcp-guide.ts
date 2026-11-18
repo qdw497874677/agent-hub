@@ -21,6 +21,8 @@ export interface McpGuide {
   readonly envVar: string;
   /** 设环境变量那一行（占位符，不是真令牌）。 */
   readonly exportLine: string;
+  /** 下载 agent-hub-workbench skill 的地址（zip，无需令牌）。 */
+  readonly skillUrl: string;
   readonly snippets: Readonly<Record<McpClientKind, string>>;
   readonly tabs: readonly { readonly id: McpClientKind; readonly label: string }[];
 }
@@ -39,6 +41,7 @@ export function maskToken(token: string): string {
 export function mcpGuide(input: McpGuideInput): McpGuide {
   const base = trimOrigin(input.origin);
   const url = `${base}/openapi/v1/mcp`;
+  const skillUrl = `${base}/openapi/v1/skills/agent-hub-workbench`;
   const envVar = MCP_TOKEN_ENV;
   const header = `Authorization: Bearer $${envVar}`;
   const exportLine = `export ${envVar}=${MCP_PLACEHOLDER}`;
@@ -70,7 +73,7 @@ export function mcpGuide(input: McpGuideInput): McpGuide {
     '4. 写工具必须带 clientRequestId（同一请求重试用同一个值），服务端 24 小时内返回同一份结果；不要每次重试都换 id。',
     '5. 资产默认按会话冻结：session_start 不传 assetIds 表示「项目生效集」；要排除某个技能，就传完整清单减掉它。',
     '6. 出错先看错误码：not_found 表示看不到（跨项目一律 404，不泄露存在性），forbidden 表示权限不够，conflict 表示状态不允许（会话还在跑、没有待发布版本等）。',
-    '7. 客户端支持 Skill 的话，装上 agent-hub-workbench（skills/agent-hub-workbench）：里面有 31 个工具的清单、五个常用流程和错误恢复，比每次读这段提示省 token。',
+    `7. 先下载并遵循 agent-hub-workbench skill：GET ${skillUrl}（zip，也可 ?format=json），或在 MCP 里 resources/list、resources/read（uri 形如 skill://agent-hub-workbench/SKILL.md）。里面有当前工具清单、多仓流程和错误恢复。`,
     ''
   ].join('\n');
 
@@ -79,6 +82,7 @@ export function mcpGuide(input: McpGuideInput): McpGuide {
     header,
     envVar,
     exportLine,
+    skillUrl,
     tabs: [
       { id: 'claude', label: 'Claude Code' },
       { id: 'cursor', label: 'Cursor' },

@@ -10,10 +10,12 @@ import type { Session } from '../session.ts';
 import type { Deps } from './deps.ts';
 import { authorizeSession } from './authorization.ts';
 import { projectOfSession } from './workspaces.ts';
+import { releaseSessionWorktrees, restoreSessionWorktrees, type SessionWorktreeDeps } from './session-worktrees.ts';
 
 export interface SettleSessionDeps extends Pick<Deps, 'sessions' | 'tasks' | 'projects' | 'access'>,
   // 容器会话没有任务：按组合工作空间 / bot 找回项目（#221 步骤 7）。
-  Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'> {
+  Pick<Deps, 'workspaceGroups' | 'bots' | 'workspaces'>,
+  Partial<Pick<SessionWorktreeDeps, 'gateway' | 'git' | 'now'>> {
   /** 没登录态（或测试里没接审计）就不记。 */
   readonly audit?: AuditLog;
 }
@@ -30,8 +32,8 @@ const signedIn = (actor: Principal | null): Result<Principal, DomainError> =>
   !actor || actor.user.disabledAt !== null || actor.user.deletedAt !== null ? err(forbidden('需要登录')) : ok(actor);
 
 /**
- * 收起 / 恢复会话：只改 `settledAt`，不改状态、不停进程、不动 journal。
- * 还在跑的会话不允许收起（先停，不做隐式停止）；恢复无条件允许。
+ * 收起 / 恢复会话：改 `settledAt`，并在收起时拆掉独占的临时 worktree（有未提交改动则留下）。
+ * 还在跑的会话不允许收起（先停，不做隐式停止）；恢复时尽量按原分支加回 worktree。
  * 权限与打断同一档（session.settle）：会话创建者、团队 owner / admin 或被授权的人。
  */
 export async function settleSessionUseCase(
@@ -48,6 +50,10 @@ export async function settleSessionUseCase(
   const current = allowed.value;
   if (command.settled && current.status === 'running') return err(conflict('会话还在跑，先停止再收起'));
   const next: Session = { ...current, settledAt: command.settled ? command.now : null };
+  if (deps.gateway || deps.git) {
+    if (command.settled) await releaseSessionWorktrees(deps as SessionWorktreeDeps, current, { force: false });
+    else await restoreSessionWorktrees(deps as SessionWorktreeDeps, next);
+  }
   await deps.sessions.save(next);
   if (deps.audit) {
     await deps.audit.append({

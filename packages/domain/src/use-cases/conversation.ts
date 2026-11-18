@@ -17,7 +17,8 @@ import { ensureHosted } from './hosting.ts';
 import { projectOfSession } from './workspaces.ts';
 import { recordEvent, recordSessionOptions } from './sessions.ts';
 import { otherEnd } from '../session-link.ts';
-import { taskBriefing } from '../task-briefing.ts';
+import { taskBriefing, type BriefingRepo, type ProjectContext } from '../task-briefing.ts';
+import { groupLayout, groupSessionRoot, isPrimaryMember, memberBriefingPath, type WorkspaceGroup } from '../workspace-group.ts';
 
 /*
  * 「会话在跑」这一侧的用例：用户发话，以及 worker 回报的一切。
@@ -174,6 +175,7 @@ export async function promptSessionUseCase(
   const instructions = session.lastSeq === 0 && deps.sessionInstructions ? await deps.sessionInstructions(sessionId).catch(() => null) : null;
   // 每次发话都告诉它“现在连着谁”，连接变化下一轮就生效；没有连线时完全不加。
   const peers = await peerBriefingFor(deps, session);
+  const membersNote = await comboMembersNoteFor(deps, session, briefing !== null);
 
   // 反过来的话，agent 起不来时用户那句问话就凭空消失了——
   // 专注对话里会是一条没有提问的回答。
@@ -193,7 +195,7 @@ export async function promptSessionUseCase(
     const deliveries = deps.deliveries;
     // ADR 0031：先进送达队列再送。前面还有没送达的，就只排队，不越过它。
     const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
-    const text = [instructions, guidance?.text, briefing, peers, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+    const text = [instructions, guidance?.text, briefing, peers, membersNote, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
     if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
     const now = deps.now();
     // 人的话已经在上面落进 journal。认领必须是送达队列里的一次写入：
@@ -221,7 +223,7 @@ export async function promptSessionUseCase(
   if (!hosted.ok) return failTurn(deps, sessionId, hosted.error);
   // 记忆（ADR 0019）：第一轮只垫一行静态引导，内容靠 agent 自己 memory_search；垫了就记审计
   const guidance = session.lastSeq === 0 && deps.memoryGuidance ? deps.memoryGuidance : null;
-  const text = [instructions, guidance?.text, briefing, peers, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
+  const text = [instructions, guidance?.text, briefing, peers, membersNote, command.text].filter((part): part is string => Boolean(part)).join('\n\n');
   if (guidance) await guidance.injected(sessionId, guidance.version).catch(() => undefined);
   const sent = await deps.gateway.dispatch({ kind: 'prompt', sessionId, text, parts });
   return sent.ok ? ok({ seq: logged.value.lastSeq, deliveryId: null, state: 'sending', turn: logged.value.turn }) : failTurn(deps, sessionId, sent.error);
@@ -242,16 +244,89 @@ async function failTurn(
   return err(error);
 }
 
-async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects'>>, session: Session): Promise<string | null> {
+async function briefingFor(
+  deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects' | 'workspaces' | 'workspaceGroups'>>,
+  session: Session
+): Promise<string | null> {
   if (!session.taskId || !deps.workLog) return null;
   const task = await deps.tasks.byId(session.taskId);
   if (!task) return null;
   const project = deps.projects ? await deps.projects.byId(task.projectId) : null;
-  return taskBriefing(
-    task,
-    await deps.workLog.list(task.id, { limit: 6 }),
-    project ? { name: project.name, repoUrl: project.repo?.url ?? null, description: project.description } : null
+  const context = project
+    ? {
+        name: project.name,
+        repoUrl: project.repo?.url ?? null,
+        description: project.description,
+        ...(await comboBriefing(deps, session))
+      }
+    : null;
+  return taskBriefing(task, await deps.workLog.list(task.id, { limit: 6 }), context);
+}
+
+/** 组合会话才带成员清单；单仓或组不在了就省略，保持原来只写一个仓库地址。 */
+async function comboBriefing(
+  deps: Partial<Pick<Deps, 'workspaces' | 'workspaceGroups'>>,
+  session: Session
+): Promise<Pick<ProjectContext, 'workspaceRoot' | 'repos' | 'groupLayout'> | Record<string, never>> {
+  const packed = await comboMemberContext(deps, session);
+  if (!packed) return {};
+  return { workspaceRoot: packed.workspaceRoot, repos: packed.repos, groupLayout: packed.groupLayout };
+}
+
+async function comboMemberContext(
+  deps: Partial<Pick<Deps, 'workspaces' | 'workspaceGroups'>>,
+  session: Session
+): Promise<{ workspaceRoot: string; repos: BriefingRepo[]; groupLayout: 'amp' | 'flat'; group: WorkspaceGroup } | null> {
+  if (!session.groupId || !deps.workspaceGroups) return null;
+  const group = await deps.workspaceGroups.byId(session.groupId);
+  if (!group || group.root === '') return null;
+  const repos: BriefingRepo[] = [];
+  for (const member of group.members) {
+    const workspace = deps.workspaces ? await deps.workspaces.byId(member.workspaceId) : null;
+    repos.push({
+      name: member.name,
+      path: workspace?.path ?? `${group.root}/${member.name}`,
+      relativePath: memberBriefingPath(group, member),
+      url: workspace?.repoUrl ?? null,
+      branch: workspace?.branch ?? null,
+      primary: isPrimaryMember(group, member)
+    });
+  }
+  return { workspaceRoot: groupSessionRoot(group), repos, groupLayout: groupLayout(group), group };
+}
+
+/** 第一轮已经写进任务背景；之后只在成员清单刚变过时再垫一段。 */
+async function comboMembersNoteFor(
+  deps: Partial<Pick<Deps, 'workspaces' | 'workspaceGroups'>>,
+  session: Session,
+  alreadyInBriefing: boolean
+): Promise<string | null> {
+  const packed = await comboMemberContext(deps, session);
+  if (!packed) return null;
+  const pending = packed.group.pendingBriefing === true;
+  if (pending && deps.workspaceGroups) {
+    await deps.workspaceGroups.save({ ...packed.group, pendingBriefing: false });
+  }
+  const should = session.lastSeq === 0 || pending;
+  if (!should || alreadyInBriefing) return null;
+  return formatComboMembersNote(packed);
+}
+
+export function formatComboMembersNote(input: { workspaceRoot: string; repos: readonly BriefingRepo[]; groupLayout?: 'amp' | 'flat' }): string {
+  const lines = [`[agent-hub] 当前组合工作目录：${input.workspaceRoot}`, '仓库：'];
+  for (const repo of input.repos) {
+    const bits = [repo.name, repo.relativePath ?? repo.path];
+    if (repo.primary) bits.push('主仓库');
+    if (repo.branch) bits.push(`分支 ${repo.branch}`);
+    lines.push(`- ${bits.join('  ')}`);
+  }
+  lines.push(
+    input.groupLayout === 'amp'
+      ? '工作目录是主仓库（.），其他仓库在 ../repos/<name>。'
+      : '工作目录是容器根，每个子目录是独立的 git 仓库。'
   );
+  lines.push('[/组合工作目录]');
+  return lines.join('\n');
 }
 
 /**

@@ -54,8 +54,10 @@ export function deleteSessionLabel(input: {
 }
 
 /** 确认框正文：说清删掉什么、留下什么，以及不能撤销。 */
-export function deleteSessionBody(name: string): string {
-  return `会话「${name}」的会话记录、产物引用和连线会被永久删除，工作目录里的文件保留。不能撤销。`;
+export function deleteSessionBody(name: string, removeWorktree = false): string {
+  return removeWorktree
+    ? `会话「${name}」的会话记录、产物引用、连线和独占的临时工作目录会被永久删除。不能撤销。`
+    : `会话「${name}」的会话记录、产物引用和连线会被永久删除，工作目录默认保留。不能撤销。`;
 }
 
 /** 删除失败时弹窗里那行字：状态码能说清的就别把服务端原文丢给人。 */
