@@ -286,7 +286,7 @@ export const visiting = (principal: Principal, teamId: string): boolean =>
   (principal.grants ?? []).some((g) => g.permission === 'hub.visit' && g.resourceKind === 'team' && g.resourceId === teamId && g.revokedAt === null);
 
 /** 拒绝原因：错误文案和测试用。 */
-export type DenyReason = 'anonymous' | 'disabled' | 'token' | 'bot_scope' | 'hub_only' | 'local_worker' | 'team' | 'role' | 'relation' | 'setting';
+export type DenyReason = 'anonymous' | 'disabled' | 'token' | 'bot_scope' | 'token_project' | 'hub_only' | 'local_worker' | 'team' | 'role' | 'relation' | 'setting';
 export type Decision = { readonly allow: true } | { readonly allow: false; readonly reason: DenyReason };
 const ALLOW: Decision = { allow: true };
 const deny = (reason: DenyReason): Decision => ({ allow: false, reason });
@@ -318,6 +318,19 @@ export function decide(subject: Subject | null | undefined, permission: Permissi
         const owner = resource.kind === 'project' ? resource.id : resource.projectId;
         if (owner !== bot.projectId) return deny('bot_scope');
       }
+    }
+  }
+  // 2c. 限定项目的令牌：只碰这些项目里的资源；不能新建项目（新项目必然在范围外）。
+  //     worker 是团队共享的机器，同 bot 令牌一样不按项目收窄（会话那一关已经判过项目）。
+  const scoped = subject.via?.projectIds;
+  if (scoped) {
+    if (permission === 'project.create') return deny('token_project');
+    // 模型提供商（全站 / 个人）也不属于项目：限定项目不影响「用哪个模型」。
+    if (resource !== undefined && resource.kind !== 'worker' && resource.kind !== 'provider') {
+      const owner = resource.kind === 'project' ? resource.id : resource.projectId;
+      // 团队级资产不属于某个项目：限定项目所在团队的照样能用（和项目成员拿团队资产同一口径）
+      const teamAsset = resource.kind === 'asset' && owner === undefined && resource.teamId !== null && (subject.via?.teamIds ?? []).includes(resource.teamId);
+      if (!teamAsset && (typeof owner !== 'string' || !scoped.includes(owner))) return deny('token_project');
     }
   }
   // 3. hub 级
@@ -368,6 +381,7 @@ export const DENY_MESSAGES: Readonly<Record<DenyReason, string>> = {
   disabled: '账号已停用',
   token: '这个令牌没有这项权限',
   bot_scope: '这个 bot 令牌只能碰它自己的项目',
+  token_project: '这个令牌只能用在指定的项目里',
   hub_only: '只有集群管理员能这么做',
   local_worker: '本机 Worker（hub 主机）只对集群管理员开放',
   team: '不在你的团队里',

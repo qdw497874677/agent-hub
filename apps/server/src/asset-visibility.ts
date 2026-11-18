@@ -1,4 +1,4 @@
-import { asProjectId, can, projectReader } from '@agent-hub/domain';
+import { asProjectId, can, projectReader, scopedTokenSeesAsset } from '@agent-hub/domain';
 import type { AccessPolicy, Asset, Principal, ProjectRepository } from '@agent-hub/domain';
 
 /**
@@ -7,6 +7,7 @@ import type { AccessPolicy, Asset, Principal, ProjectRepository } from '@agent-h
  * - team：同团队
  * - personal：只给作者本人
  * - project：项目可读（走同一套 projectReader，含共享与集群管理员临时进入）
+ * 限定项目的令牌先收窄：全局可读；团队资产只限项目所在团队；个人资产看不到（scopedTokenSeesAsset）。
  */
 export function createAssetVisibility(
   deps: { readonly access?: AccessPolicy; readonly projects: Pick<ProjectRepository, 'byId'> },
@@ -15,6 +16,7 @@ export function createAssetVisibility(
   const readerPromise = projectReader(deps.access, actor);
   return async (asset) => {
     if (!can(actor, 'asset.read')) return false;
+    if (scopedTokenSeesAsset(actor.via, asset) === false) return false;
     if (asset.scope === 'global') return true;
     if (asset.scope === 'personal') return asset.ownerId === actor.user.id;
     if (asset.scope === 'team') return asset.teamId !== null && asset.teamId === actor.user.teamId;

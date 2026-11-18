@@ -16,6 +16,7 @@ import { ProjectSidebar, TOGGLE_SIDEBAR_EVENT } from '../surfaces/workbench/side
 import { ProjectBar } from '../surfaces/workbench/view-switch.tsx';
 import { useRoute } from './use-route.ts';
 import { MemoryPage } from './memory.tsx';
+import { AccessPage } from './access-page.tsx';
 import { TeamWorkspacesPage } from '../surfaces/workbench/team-workspaces.tsx';
 import { MessagesPage } from '../surfaces/im/messages.tsx';
 import { BotsPage } from '../surfaces/im/bots.tsx';
@@ -32,6 +33,7 @@ export function App() {
   const [route] = useRoute();
   if (route?.page === 'workspaces') return <TeamWorkspacesPage />;
   if (route?.page === 'memory') return <MemoryPage scope={route.scope} />;
+  if (route?.page === 'access') return <AccessPage />;
   if (route?.page === 'bots') return <BotsPage projectId={route.projectId} />;
   if (route?.page === 'observe') return <ObservePage source={route.source} id={route.id} />;
   if (route?.page === 'messages') return <MessagesPage projectId={route.projectId} groupId={route.groupId} />;

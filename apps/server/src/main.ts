@@ -1746,6 +1746,8 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
     tokens: apiTokenDeps,
     manage: apiTokenDeps,
     replays: store.mcpReplays,
+    settings: store.settings,
+    audit: store.audit,
     rate: { general: envNumber('HUB_API_RATE_MAX'), prompt: envNumber('HUB_API_PROMPT_RATE_MAX'), streams: envNumber('HUB_API_STREAM_MAX') }
   },
   enrollment: {

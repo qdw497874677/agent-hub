@@ -3,8 +3,8 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
-import type { McpReplayStore, Permission, Principal } from '@agent-hub/domain';
+import { createHash, randomUUID } from 'node:crypto';
+import type { AuditLog, McpReplayStore, Permission, Principal } from '@agent-hub/domain';
 import { routes } from './routes.ts';
 
 /** 内部转调的标记：只有这个模块拿得到，外面的请求伪造不了（放在 env 里，不是请求头）。 */
@@ -203,7 +203,15 @@ export interface McpOptions {
   readonly now?: () => number;
   /** 覆盖环境变量推导的策略（测试用）。 */
   readonly policy?: McpPolicy;
+  /** 外部接入页的写工具开关；null / 不给 = 沿用 MCP_WRITE。 */
+  readonly writes?: boolean | null;
+  /** 每次 tools/call 记一条 mcp.call（target = 令牌 id），外部接入页的调用记录从这里读。 */
+  readonly audit?: Pick<AuditLog, 'append'>;
 }
+
+/** 生效的写工具开关：页面设置优先，没设过就看环境变量 MCP_WRITE（向后兼容）。 */
+export const effectiveWrites = (setting: boolean | null | undefined): { writes: boolean; source: 'setting' | 'env' } =>
+  typeof setting === 'boolean' ? { writes: setting, source: 'setting' } : { writes: envFlag('MCP_WRITE'), source: 'env' };
 
 /** v1 的错误体是 {error:{code,message}}：给人读的只要 message。 */
 const errorMessage = (value: unknown): string | null => {
@@ -217,8 +225,9 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
   const authorization = c.req.header('authorization') ?? '';
   const env = c.env as { mcpPolicy?: McpPolicy; mcpReplays?: McpReplayStore } | undefined;
   const replays = options.replays ?? env?.mcpReplays;
-  const policy = options.policy ?? env?.mcpPolicy ?? policyFromEnv();
-  const permissions = (c.get('principal') as Principal | undefined)?.via?.permissions;
+  const policy = options.policy ?? env?.mcpPolicy ?? { ...policyFromEnv(), writes: effectiveWrites(options.writes).writes };
+  const principal = c.get('principal') as Principal | undefined;
+  const permissions = principal?.via?.permissions;
   const tools = mcpToolsFor(permissions, policy);
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   /** 开着、但这个令牌没权限的工具：调用时明确说缺哪个权限（列表里不出现）。 */
@@ -237,7 +246,7 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
       }
     }))
   }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const callTool = async (request: { params: { name: string; arguments?: Record<string, unknown> | undefined } }) => {
     const tool = byName.get(request.params.name);
     if (!tool) {
       const locked = withheld.get(request.params.name);
@@ -301,6 +310,28 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
       await replays.put(replayKey, JSON.stringify(result), (options.now ?? Date.now)()).catch(() => undefined);
     }
     return result;
+  };
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const result = (await callTool(request)) as { isError?: boolean; content?: { text?: string }[] };
+    const via = principal?.via;
+    if (options.audit && via && principal) {
+      // 只记工具名和结果，不记参数（参数里可能有提示词、代码）
+      const outcome = result.isError ? `失败：${String(result.content?.[0]?.text ?? '').split('\n')[0]!.slice(0, 120)}` : '成功';
+      await options.audit
+        .append({
+          id: randomUUID(),
+          actorId: principal.user.id,
+          actorEmail: principal.user.email,
+          action: 'mcp.call',
+          target: via.tokenId,
+          detail: `${request.params.name} · ${outcome}`,
+          at: (options.now ?? Date.now)(),
+          ip: null,
+          teamId: principal.user.teamId ?? null
+        })
+        .catch(() => undefined);
+    }
+    return result as never;
   });
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);

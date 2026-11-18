@@ -947,9 +947,21 @@ export const tokensApi = {
     /** kind = 'bot' 可选：bot 的 @id（不给就用令牌名）。 */
     botName?: string;
     expiresAt?: number | null;
+    /** 只给这几个项目（不给 = 不限）。 */
+    projectIds?: readonly string[] | null;
   }) =>
     post<{ token: string; info: ApiTokenDto }>('/api/tokens', input),
-  revoke: (id: string) => call<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  revoke: (id: string) => call<{ ok: true }>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  rotate: (id: string) => post<{ token: string; info: ApiTokenDto; replaced: ApiTokenDto }>(`/api/tokens/${encodeURIComponent(id)}/rotate`, {}),
+  activity: (id: string) => call<import('@agent-hub/contract').ApiTokenActivity>(`/api/tokens/${encodeURIComponent(id)}/activity`),
+  tools: (id: string) => call<import('@agent-hub/contract').ApiTokenTools>(`/api/tokens/${encodeURIComponent(id)}/tools`)
+};
+
+/** 外部接入（MCP）：写工具开关。 */
+export const mcpAccessApi = {
+  get: () => call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access'),
+  set: (writes: boolean | null) =>
+    call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes }) })
 };
 
 // ---------- 资产市场 / 审核 / 通知（ADR 0016） ----------
