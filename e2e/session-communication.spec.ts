@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
@@ -42,7 +42,7 @@ async function world(page: Page, baseURL: string) {
   const messages = async (id: string, unread = false): Promise<Msg[]> => ((await (await page.request.get(`/api/sessions/${id}/messages${unread ? '?unread=1' : ''}`)).json()) as { messages: Msg[] }).messages;
   const peers = async (id: string): Promise<Peer[]> => ((await (await page.request.get(`/api/sessions/${id}/peers`)).json()) as { peers: Peer[] }).peers;
   const setHandle = (id: string, handle: string) => page.request.put(`/api/sessions/${id}/handle`, { data: { handle }, headers });
-  return { agentId: agentId!, project: project.id, headers, session, send, link, messages, peers, setHandle };
+  return { dir, agentId: agentId!, project: project.id, headers, session, send, link, messages, peers, setHandle };
 }
 
 test('同伴与短名：peers 列出短名 / 机器 / 状态；peer:<短名> 能投；重名 409；没连线的找不到并列出可用短名', async ({ page, baseURL }) => {
@@ -151,4 +151,30 @@ test('真模型：A 用 agent.ask 问 peer:verify，B 答复带 replyStatus；�
   expect(final.status).toMatch(/answered|failed/);
   // B 收到的那一轮带不可信包装
   expect((await (await page.request.get(`/api/sessions/${b}/events`)).text()).includes('<agent-message')).toBe(true);
+});
+
+test('真模型（P1c）：A 用 workspace.read + session:peer:verify 只读看同伴的文件；没连线的 C 被拒', async ({ page, baseURL }) => {
+  test.skip(!REAL, '只在 E2E_REAL=1 时跑');
+  test.setTimeout(420_000);
+  const w = await world(page, baseURL!);
+  const [a, b, c] = [await w.session(), await w.session(), await w.session()];
+  expect((await w.link(a, b)).status()).toBe(201);
+  expect((await w.setHandle(b, 'verify')).status()).toBe(200);
+  const token = `SC-P1C-${Date.now().toString(36)}`;
+  // 非 git 目录的项目：会话直接在项目目录里跑（三条会话同一个目录，这里验的是工具路径与可达性规则，不是隔离）
+  writeFileSync(join(w.dir, 'peer-note.txt'), token);
+  const ask = (session: string) => page.request.post(`/api/sessions/${session}/prompt`, {
+    headers: w.headers,
+    data: { text: '请只调用一次 workspace.read 工具（不要用 shell 或别的读文件方式），参数 {"path":"peer-note.txt","session":"peer:verify"}。然后原样回复工具返回的 content；如果工具报错，回复错误信息原文。', attachments: [] }
+  });
+  expect((await ask(a)).ok()).toBe(true);
+  await expect.poll(async () => (await (await page.request.get(`/api/sessions/${a}/events`)).text()).includes(token), { timeout: 240_000, intervals: [3000] }).toBe(true);
+  const events = await (await page.request.get(`/api/sessions/${a}/events`)).text();
+  expect(events).toMatch(/workspace[._]read/);
+
+  expect((await ask(c)).ok()).toBe(true);
+  await expect.poll(async () => /"kind":"ended"/.test(await (await page.request.get(`/api/sessions/${c}/events`)).text()), { timeout: 240_000, intervals: [3000] }).toBe(true);
+  const denied = await (await page.request.get(`/api/sessions/${c}/events`)).text();
+  test.info().annotations.push({ type: 'unlinked-denied', description: String(/只有明确连接|unresolvable|denied/.test(denied)) });
+  expect(/只有明确连接|unresolvable|找不到这个同伴/.test(denied), '没连线的会话拿到的是拒绝').toBe(true);
 });

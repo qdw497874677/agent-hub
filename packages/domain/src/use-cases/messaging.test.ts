@@ -605,3 +605,22 @@ test('拦下的 ask 被拒绝：提问方收到 denied 失败回复', async () =
   const notice = [...w.messages.all.values()].find((x) => x.kind === 'reply' && x.replyTo === m.id);
   assert.equal(notice?.failure, 'denied');
 });
+
+test('会话通信 P1c：resolvePeer 只解析能到达的同伴；自己可以；没连线 / 已收起 / 乱写都拒', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  const stranger = await w.newSession('alice');
+  assert.ok((await w.bus.setHandle(b.id, 'verify', 'user:alice')).ok);
+  const byHandle = await w.bus.resolvePeer(a.id, 'peer:verify');
+  assert.ok(byHandle.ok);
+  assert.equal(byHandle.value, b.id);
+  const self = await w.bus.resolvePeer(a.id, `session:${a.id}`);
+  assert.ok(self.ok);
+  const notLinked = await w.bus.resolvePeer(a.id, `session:${stranger.id}`);
+  assert.equal(!notLinked.ok && notLinked.error.code, 'forbidden');
+  assert.equal((await w.bus.resolvePeer(a.id, 'bot:qa')).ok, false);
+  assert.equal((await w.bus.resolvePeer(a.id, 'peer:nobody')).ok, false);
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(b.id))!, settledAt: 5 });
+  const archived = await w.bus.resolvePeer(a.id, 'peer:verify');
+  assert.equal(!archived.ok && archived.error.message.startsWith('archived'), true);
+});

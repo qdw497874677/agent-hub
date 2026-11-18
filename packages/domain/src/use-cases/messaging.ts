@@ -131,6 +131,11 @@ export interface MessageBus {
   handleOf(session: Session): Promise<string>;
   /** 同伴简报：同伴集合或状态变了才返回文字，否则 null（省 token）。 */
   briefing(sessionId: SessionId): Promise<string | null>;
+  /**
+   * 只读看同伴（P1c）：把 `session:<id>` / `peer:<短名>` 解析成能到达的会话 id（同项目、连线或派生父子；自己也行）。
+   * 用在 workspace.list / read / changes 与 git.state 的 session 参数上。
+   */
+  resolvePeer(fromSessionId: SessionId, address: string): Promise<Result<SessionId, DomainError>>;
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   config(projectId: ProjectId): Promise<MessagingConfig>;
@@ -727,6 +732,25 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     },
 
     handleOf,
+
+    async resolvePeer(fromSessionId, raw) {
+      const here = await sessionAndProject(fromSessionId);
+      if (!here) return err(notFound('会话不存在'));
+      const address = parseAddress(typeof raw === 'string' ? raw.trim() : '');
+      if (!address || (address.kind !== 'session' && address.kind !== 'peer')) return err(invalid('session 要写成 session:<id> 或 peer:<短名>'));
+      if (address.kind === 'session' && address.sessionId === here.session.id) return ok(here.session.id);
+      const target = address.kind === 'peer' ? await resolveHandle(here.session, address.handle) : (await sessionAndProject(address.sessionId))?.session ?? null;
+      if (!target) {
+        const known = await Promise.all((await peerSessions(here.session)).map(async (peer) => `peer:${await handleOf(peer)}`));
+        return err(notFound(`unresolvable: 找不到这个同伴${known.length > 0 ? `；可用：${known.join('、')}` : ''}`));
+      }
+      if (target.id === here.session.id) return ok(target.id);
+      const there = await sessionAndProject(target.id);
+      if (there?.project.id !== here.project.id) return err(notFound('unresolvable: 同一个项目里没有这条会话'));
+      if (!(await canReach(here.session, target))) return err(forbidden('denied: 只有明确连接的会话（或派生父子）才能看对方的工作空间'));
+      if (target.settledAt) return err(conflict('archived: 对方会话已收起，工作空间可能已清理'));
+      return ok(target.id);
+    },
 
     async setHandle(sessionId, handle, actor) {
       const value = handle.trim();
