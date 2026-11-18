@@ -14,6 +14,7 @@ import {
   promoteAsset,
   promoteAssetToTeam,
   rejectSubmission,
+  reviewSettingsFor,
   reviewQueue,
   setAssetOnWorker,
   setReviewSettings,
@@ -374,7 +375,7 @@ test('个人资产上架到团队：走团队审核，通过后变团队资产�
 
 test('个人资产上架到团队：团队审核设置决定票数（MCP stdio 双人）；负责人自己的转 hub 管理员；单人团队同理', async () => {
   const w = await world();
-  // 现有团队审核设置里没有「免审」项：团队范围至少 1 票，免审直通（required = 0）在当前设置下不会出现
+  // 团队免审默认关：团队范围至少 1 票
   const own = ok(await submitNewAsset(w.deps, w.p('O'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('own') }));
   const sub = ok(await promoteAssetToTeam(w.deps, w.p('O'), own.asset.id));
   assert.equal(sub.required, 1);
@@ -429,4 +430,66 @@ test('promoteAsset：个人资产的提示指向「上架到团队」', async ()
   const mine = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('p2') }));
   const r = await promoteAsset(w.deps, w.p('M1'), mine.asset.id);
   assert.match(!r.ok ? r.error.message : '', /上架到团队/);
+});
+
+const mcpFiles = (value: unknown) => [{ path: 'mcp.json', data: enc(JSON.stringify(value)) }];
+
+test('团队资产免审：默认关要 1 票；开了以后新团队资产 / 新版本 / 上架到团队都直接发布，审计记免审；提升到全局照常审', async () => {
+  const w = await world();
+  const off = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'team', files: skill('off') }));
+  assert.equal(off.submission.status, 'pending', '默认关：要审');
+  assert.equal(off.submission.required, 1);
+
+  ok(await setReviewSettings(w.deps, w.p('O'), 'team', { reviewers: [], twoReviewers: { global: false, mcpStdio: false }, teamNoReview: true }));
+  const on = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'skill', scope: 'team', files: skill('on') }));
+  assert.equal(on.submission.required, 0);
+  assert.equal(on.submission.status, 'approved');
+  assert.equal((await w.deps.assets.get(on.asset.id))!.pinned, on.asset.latest, '直接发布');
+  const v2 = ok(await submitAssetRevision(w.deps, w.p('M1'), on.asset.id, skill('on', 'v2')));
+  assert.equal(v2.submission?.status, 'approved', '新版本也直接发布');
+  const mine = ok(await submitNewAsset(w.deps, w.p('M2'), { from: 'upload', kind: 'skill', scope: 'personal', files: skill('moved') }));
+  const moved = ok(await promoteAssetToTeam(w.deps, w.p('M2'), mine.asset.id));
+  assert.equal(moved.status, 'approved');
+  assert.equal((await w.deps.assets.get(mine.asset.id))!.scope, 'team', '上架到团队直接生效');
+  assert.ok(w.admin.entries.filter((e) => e.action === 'asset.publish' && e.detail.includes('团队免审')).length >= 3);
+
+  const promo = ok(await promoteAsset(w.deps, w.p('M1'), on.asset.id));
+  assert.equal(promo.status, 'pending', '提升到全局不受团队免审影响');
+  assert.ok(promo.required >= 1);
+});
+
+test('团队资产免审：stdio MCP 不免，照样要审；远程 MCP 免', async () => {
+  const w = await world();
+  ok(await setReviewSettings(w.deps, w.p('O'), 'team', { reviewers: [], twoReviewers: { global: false, mcpStdio: false }, teamNoReview: true }));
+  const stdio = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'mcp', scope: 'team', files: mcpFiles({ name: 'local-fs', command: 'node', args: ['srv.js'] }) }));
+  assert.equal(stdio.submission.status, 'pending');
+  assert.equal(stdio.submission.required, 1);
+  const remote = ok(await submitNewAsset(w.deps, w.p('M1'), { from: 'upload', kind: 'mcp', scope: 'team', files: mcpFiles({ name: 'remote', url: 'https://e.example/mcp' }) }));
+  assert.equal(remote.submission.status, 'approved');
+});
+
+test('团队资产免审开关：负责人能改；hub 管理员能改任意团队的这一项（不动审核人）；成员 / 令牌不行；改动进审计', async () => {
+  const w = await world();
+  ok(await setReviewSettings(w.deps, w.p('O'), 'team', { reviewers: ['u-M2'], twoReviewers: { global: false, mcpStdio: true } }));
+  const byMember = await setReviewSettings(w.deps, w.p('M1'), 'team', { reviewers: [], twoReviewers: { global: false, mcpStdio: false }, teamNoReview: true });
+  assert.equal(!byMember.ok && byMember.error.code, 'forbidden');
+  const byToken = await setReviewSettings(w.deps, w.token('O'), 'team', { reviewers: [], twoReviewers: { global: false, mcpStdio: false }, teamNoReview: true });
+  assert.equal(byToken.ok, false);
+  const otherTeam = await setReviewSettings(w.deps, w.p('S'), 'team', { reviewers: [], twoReviewers: { global: false, mcpStdio: false }, teamNoReview: true }, 't1');
+  assert.equal(!otherTeam.ok && otherTeam.error.code, 'forbidden', '别的团队负责人不行');
+
+  const byAdmin = ok(await setReviewSettings(w.deps, w.p('A'), 'team', { reviewers: [], twoReviewers: { global: false, mcpStdio: false }, teamNoReview: true }, 't1'));
+  assert.equal(byAdmin.teamNoReview, true);
+  assert.deepEqual(byAdmin.reviewers, ['u-M2'], 'hub 管理员只动免审开关');
+  assert.equal(byAdmin.twoReviewers.mcpStdio, true);
+  assert.ok(w.admin.entries.some((e) => e.action === 'asset.review_settings' && e.actorId === 'u-A' && e.detail.includes('团队资产免审 开')));
+
+  // 负责人不传这个字段：保持原样；显式关：审计写已变更
+  assert.equal(ok(await setReviewSettings(w.deps, w.p('O'), 'team', { reviewers: ['u-M2'], twoReviewers: { global: false, mcpStdio: true } })).teamNoReview, true);
+  ok(await setReviewSettings(w.deps, w.p('O'), 'team', { reviewers: ['u-M2'], twoReviewers: { global: false, mcpStdio: true }, teamNoReview: false }));
+  assert.ok(w.admin.entries.some((e) => e.action === 'asset.review_settings' && e.actorId === 'u-O' && e.detail.includes('团队资产免审 关（已变更）')));
+  const view = await reviewSettingsFor(w.deps, w.p('M1'));
+  assert.equal(view.team?.teamNoReview, false);
+  assert.equal(view.team?.noReviewEditable, false);
+  assert.equal((await reviewSettingsFor(w.deps, w.p('O'))).team?.noReviewEditable, true);
 });

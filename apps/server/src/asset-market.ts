@@ -101,7 +101,10 @@ export function installAssetMarket(app: Hono, deps: AssetReviewDeps, principalOf
   app.put('/api/assets/settings', async (c) => {
     const input = await body(c, reviewSettingsRequest);
     if (!input) return bad(c);
-    return reply(c, await setReviewSettings(deps, me(c), input.target, { reviewers: input.reviewers, twoReviewers: input.twoReviewers }));
+    return reply(
+      c,
+      await setReviewSettings(deps, me(c), input.target, { reviewers: input.reviewers, twoReviewers: input.twoReviewers, teamNoReview: input.teamNoReview }, input.teamId ?? null)
+    );
   });
   app.get('/api/assets/secrets', async (c) => c.json(await scopedSecrets(deps, me(c))));
   app.put('/api/assets/secrets/:layer/:name', async (c) => {

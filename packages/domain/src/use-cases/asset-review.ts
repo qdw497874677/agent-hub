@@ -321,7 +321,7 @@ async function openSubmission(
   await audit(deps, actor, 'asset.submit', asset.name, `${label(asset)} 提交审核：${what}（${origin}）`, asset.teamId);
   // 1A：个人资产免审，提交即发布
   if (submission.required === 0) {
-    const published = await publish(deps, actor, asset, submission, targetScope === 'team' ? '团队免审' : '个人资产免审（1A）');
+    const published = await publish(deps, actor, asset, submission, scope === 'team' ? '团队免审' : '个人资产免审（1A）');
     return ok({ asset: published, submission: (await deps.review.submission(submission.id)) ?? submission });
   }
   const ctx = await reviewerContext(deps, asset);
@@ -1044,13 +1044,25 @@ export async function marketWorkers(
 export async function reviewSettingsFor(
   deps: AssetReviewDeps,
   actor: Principal
-): Promise<{ team: (AssetReviewSettings & { teamId: string; editable: boolean }) | null; hub: (AssetReviewSettings & { editable: boolean }) | null }> {
+): Promise<{
+  team: (AssetReviewSettings & { teamId: string; editable: boolean; noReviewEditable: boolean }) | null;
+  hub: (AssetReviewSettings & { editable: boolean }) | null;
+}> {
   const teamId = actor.user.teamId;
   const team = teamId ? await deps.teams.byId(teamId) : null;
   const teamSettings = teamId ? ((await deps.review.settings(teamId)) ?? DEFAULT_REVIEW_SETTINGS) : null;
   const hub = actor.user.clusterAdmin ? ((await deps.review.settings(HUB_REVIEW_KEY)) ?? DEFAULT_REVIEW_SETTINGS) : null;
   return {
-    team: teamId && teamSettings ? { ...teamSettings, teamId, editable: team?.ownerId === actor.user.id } : null,
+    team:
+      teamId && teamSettings
+        ? {
+            ...teamSettings,
+            teamNoReview: teamSettings.teamNoReview === true,
+            teamId,
+            editable: team?.ownerId === actor.user.id && !actor.via,
+            noReviewEditable: (team?.ownerId === actor.user.id || actor.user.clusterAdmin) && !actor.via
+          }
+        : null,
     hub: hub ? { ...hub, editable: true } : null
   };
 }
@@ -1060,7 +1072,8 @@ export async function setReviewSettings(
   deps: AssetReviewDeps,
   actor: Principal,
   target: 'team' | 'hub',
-  input: AssetReviewSettings
+  input: AssetReviewSettings,
+  teamIdInput: string | null = null
 ): Promise<Result<AssetReviewSettings, DomainError>> {
   if (actor.via) return err(forbidden('令牌不能改审核设置'));
   if (target === 'hub') {
@@ -1077,18 +1090,36 @@ export async function setReviewSettings(
     await audit(deps, actor, 'asset.review_settings', 'hub', `全局审核人 ${hubReviewers.length} 位；全局双人审核 ${next.twoReviewers.global ? '开' : '关'}，MCP stdio 双人审核 ${next.twoReviewers.mcpStdio ? '开' : '关'}`, null);
     return ok(next);
   }
-  const teamId = actor.user.teamId;
+  const teamId = (teamIdInput as TeamId | null) ?? actor.user.teamId;
   const team = teamId ? await deps.teams.byId(teamId) : null;
-  if (!team || team.ownerId !== actor.user.id) return err(forbidden('只有团队负责人能改审核设置'));
+  if (!team) return err(teamIdInput && actor.user.clusterAdmin ? notFound('没有这个团队') : forbidden('只有团队负责人能改审核设置'));
+  const current = (await deps.review.settings(team.id)) ?? DEFAULT_REVIEW_SETTINGS;
+  const wasNoReview = current.teamNoReview === true;
+  const noReview = input.teamNoReview ?? wasNoReview;
+  if (team.ownerId !== actor.user.id) {
+    // hub 管理员（不是负责人）只能动免审开关，审核人 / 双人审核照旧
+    if (!actor.user.clusterAdmin) return err(forbidden('只有团队负责人能改审核设置'));
+    const next = { ...current, teamNoReview: noReview };
+    await deps.review.setSettings(team.id, next);
+    if (noReview !== wasNoReview) await audit(deps, actor, 'asset.review_settings', team.name, `团队资产免审 ${noReview ? '开' : '关'}（hub 管理员）`, team.id);
+    return ok(next);
+  }
   const reviewers: string[] = [];
   for (const id of new Set(input.reviewers)) {
     const user: User | null = await deps.users.byId(id as UserId);
     if (!user || user.teamId !== team.id || user.deletedAt !== null) return err(invalid('审核人必须是本团队成员'));
     if (user.id !== team.ownerId) reviewers.push(user.id);
   }
-  const next = { reviewers, twoReviewers: input.twoReviewers };
+  const next = { reviewers, twoReviewers: input.twoReviewers, teamNoReview: noReview };
   await deps.review.setSettings(team.id, next);
-  await audit(deps, actor, 'asset.review_settings', team.name, `审核人 ${reviewers.length} 位；MCP stdio 双人审核 ${next.twoReviewers.mcpStdio ? '开' : '关'}`, team.id);
+  await audit(
+    deps,
+    actor,
+    'asset.review_settings',
+    team.name,
+    `审核人 ${reviewers.length} 位；MCP stdio 双人审核 ${next.twoReviewers.mcpStdio ? '开' : '关'}；团队资产免审 ${noReview ? '开' : '关'}${noReview !== wasNoReview ? '（已变更）' : ''}`,
+    team.id
+  );
   return ok(next);
 }
 

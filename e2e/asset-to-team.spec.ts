@@ -4,7 +4,7 @@ import { currentRun } from './run-id.ts';
 
 /**
  * 个人资产「上架到团队」：作者点按钮 → 待审 → 团队负责人通过 → 变成团队资产（同一个资产，版本不变）；
- * 团队里已有同名 → 409，文案说清楚。
+ * 团队里已有同名 → 409，文案说清楚；负责人打开「团队资产免审」后再上架直接生效。
  */
 const SHOTS = '/tmp/opencode/shots/asset-to-team';
 const PASSWORD = 'to team pw 12345';
@@ -13,7 +13,7 @@ const skill = (name: string, body: string) => Buffer.from(`---\nname: ${name}\nd
 const b64 = (s: Buffer) => s.toString('base64');
 const csrfOf = async (context: BrowserContext) => (await context.cookies()).find((c) => c.name === 'hub_csrf')?.value ?? '';
 
-test('个人资产上架到团队：待审 → 负责人通过 → 团队资产；团队重名 409', async ({ page, browser }) => {
+test('个人资产上架到团队：待审 → 负责人通过 → 团队资产；团队重名 409；团队免审时直接生效', async ({ page, browser }) => {
   const name = slug(`tt-${currentRun()}`);
   await loginByApi(page);
   const email = `tt-${currentRun()}@example.com`;
@@ -67,7 +67,33 @@ test('个人资产上架到团队：待审 → 负责人通过 → 团队资产�
     const foreign = await context.request.post(`/api/assets/items/${dupId}/to-team`, { headers, data: {} });
     expect(foreign.status()).toBe(404);
 
+    // 团队负责人在设置里打开「团队资产免审」→ 再上架到团队直接生效，审计记免审；最后关回去
+    await page.goto('/#/assets/settings');
+    await expect(page.getByText('stdio MCP 和提升到全局仍要审核。')).toBeVisible();
+    const toggle = page.getByTestId('team-no-review');
+    await toggle.check();
+    const teamForm = page.locator('section, div').filter({ has: toggle }).last();
+    await teamForm.getByRole('button', { name: '保存' }).click();
+    await expect.poll(async () => ((await (await page.request.get('/api/assets/settings')).json()) as { team: { teamNoReview: boolean } }).team.teamNoReview).toBe(true);
+    await page.screenshot({ path: `${SHOTS}/settings.png`, fullPage: true });
+    const fast = slug(`tf-${currentRun()}`);
+    const fastMade = await context.request.post('/api/assets/upload', { headers, data: { kind: 'skill', scope: 'personal', files: [{ path: 'SKILL.md', data: b64(skill(fast, 'v1')) }] } });
+    const fastId = ((await fastMade.json()) as { assetId: string }).assetId;
+    await member.goto('/#/assets/mine');
+    await member.reload();
+    const fastCard = member.getByTestId('market-asset').filter({ hasText: fast });
+    await fastCard.getByRole('button', { name: '上架到团队' }).click();
+    await expect(fastCard).toContainText('已上架到团队');
+    expect(((await (await context.request.get(`/api/assets/items/${fastId}`)).json()) as { item: { asset: { scope: string } } }).item.asset.scope).toBe('team');
+    await member.screenshot({ path: `${SHOTS}/direct.png`, fullPage: true });
+    await page.reload();
+    await page.getByTestId('team-no-review').uncheck();
+    await page.locator('section, div').filter({ has: page.getByTestId('team-no-review') }).last().getByRole('button', { name: '保存' }).click();
+    await expect.poll(async () => ((await (await page.request.get('/api/assets/settings')).json()) as { team: { teamNoReview: boolean } }).team.teamNoReview).toBe(false);
+
     const audit = (await (await page.request.get('/api/admin/audit')).json()) as { action: string; detail: string }[];
+    expect(audit.some((e) => e.action === 'asset.publish' && e.detail.includes('团队免审'))).toBe(true);
+    expect(audit.some((e) => e.action === 'asset.review_settings' && e.detail.includes('团队资产免审 开（已变更）'))).toBe(true);
     expect(audit.some((e) => e.action === 'asset.submit' && e.detail.includes('申请上架到团队'))).toBe(true);
     expect(audit.some((e) => e.action === 'asset.publish' && e.detail.includes('个人资产已上架到团队'))).toBe(true);
   } finally {

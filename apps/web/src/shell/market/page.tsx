@@ -504,6 +504,7 @@ function MarketSettings() {
           target="team"
           value={settings.data.team}
           editable={settings.data.team.editable}
+          noReviewEditable={settings.data.team.noReviewEditable}
           candidates={(team.data?.members ?? []).filter((m) => !m.teamOwner && !m.disabled)}
           showGlobal={false}
         />
@@ -528,20 +529,23 @@ function ReviewSettingsForm({
   target,
   value,
   editable,
+  noReviewEditable = false,
   candidates,
   showGlobal
 }: {
   title: string;
   target: 'team' | 'hub';
-  value: { reviewers: readonly string[]; twoReviewers: { global: boolean; mcpStdio: boolean } };
+  value: { reviewers: readonly string[]; twoReviewers: { global: boolean; mcpStdio: boolean }; teamNoReview?: boolean };
   editable: boolean;
+  noReviewEditable?: boolean;
   candidates: { id: string; displayName: string; email: string }[];
   showGlobal: boolean;
 }) {
   const account = useAccount();
   const [reviewers, setReviewers] = useState<string[]>([...value.reviewers]);
   const [two, setTwo] = useState(value.twoReviewers);
-  const save = useMarketAction(() => marketApi.saveSettings(target, reviewers, two));
+  const [noReview, setNoReview] = useState(value.teamNoReview === true);
+  const save = useMarketAction(() => marketApi.saveSettings(target, reviewers, two, target === 'team' ? noReview : undefined));
   const shown = candidates.filter((c) => c.id !== account?.id);
   return (
     <Section title={title}>
@@ -577,8 +581,17 @@ function ReviewSettingsForm({
             stdio MCP 要两人通过
           </label>
           <p className="text-meta text-tertiary" title="审核人不够两位时自动降到一位">审核人不够两位时降为一位。</p>
+          {target === 'team' ? (
+            <>
+              <label className="flex items-center gap-2 text-meta text-secondary">
+                <input type="checkbox" data-testid="team-no-review" disabled={!noReviewEditable} checked={noReview} onChange={() => setNoReview(!noReview)} />
+                团队资产免审（直接发布）
+              </label>
+              <p className="text-meta text-tertiary">stdio MCP 和提升到全局仍要审核。</p>
+            </>
+          ) : null}
           {save.error ? <p className="text-meta text-rust">{errorText(save.error)}</p> : null}
-          {editable ? (
+          {editable || noReviewEditable ? (
             <div className="flex items-center justify-end gap-2">
               <SaveStatus dirty={false} saved={save.isSuccess} />
               <button className={SMALL} disabled={save.isPending} onClick={() => save.mutate(undefined)}>

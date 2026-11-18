@@ -1004,9 +1004,9 @@ export const marketApi = {
   installRequests: () =>
     call<{ toDecide: (InstallRequestDto & { asset: string; requester: string })[]; mine: (InstallRequestDto & { asset: string })[] }>('/api/assets/install-requests'),
   decideInstall: (id: string, approve: boolean, reason?: string) => post<unknown>(`/api/assets/install-requests/${enc(id)}`, { approve, reason }),
-  settings: () => call<{ team: (ReviewSettingsView & { teamId: string }) | null; hub: ReviewSettingsView | null }>('/api/assets/settings'),
-  saveSettings: (target: 'team' | 'hub', reviewers: string[], twoReviewers: { global: boolean; mcpStdio: boolean }) =>
-    call<AssetReviewSettingsDto>('/api/assets/settings', { method: 'PUT', body: JSON.stringify({ target, reviewers, twoReviewers }) }),
+  settings: () => call<{ team: (ReviewSettingsView & { teamId: string; noReviewEditable: boolean }) | null; hub: ReviewSettingsView | null }>('/api/assets/settings'),
+  saveSettings: (target: 'team' | 'hub', reviewers: string[], twoReviewers: { global: boolean; mcpStdio: boolean }, teamNoReview?: boolean) =>
+    call<AssetReviewSettingsDto>('/api/assets/settings', { method: 'PUT', body: JSON.stringify({ target, reviewers, twoReviewers, teamNoReview }) }),
   secrets: () => call<{ personal: { name: string; updatedAt: number }[]; team: { name: string; updatedAt: number }[]; teamEditable: boolean }>('/api/assets/secrets'),
   setSecret: (layer: 'personal' | 'team', name: string, value: string) =>
     call<{ ok: true }>(`/api/assets/secrets/${layer}/${enc(name)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
