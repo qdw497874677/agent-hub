@@ -16,6 +16,7 @@ import {
   authorizeProject,
   authorizeSession,
   authorizeWorkspace,
+  authorizeWorker,
   can,
   changeSessionOption,
   switchSessionModel,
@@ -63,7 +64,8 @@ import {
   assetViewOf,
   scopedTokenCreateDenied
 } from '@agent-hub/domain';
-import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
+import type { AssetReviewDeps, DeleteProjectDeps, MessageBus } from '@agent-hub/domain';
+import { linkSessionsUseCase, unlinkSessionsUseCase, messageView } from '@agent-hub/domain';
 import type { z } from 'zod';
 import { assetSchema, workspaceSchema } from '@agent-hub/contract';
 import { createIdempotency } from './idempotency.ts';
@@ -102,6 +104,8 @@ interface V1Context {
   readonly waitOptions?: (sessionId: string) => Promise<void>;
   // 资产审核（ADR 0016）：令牌默认只能交新版本（assets:submit）；显式给 assets:publish 才能发布 / 分配。
   readonly assetReview?: AssetReviewDeps;
+  /** 会话通信 P1d：外部 agent 经消息总线发 send / ask、收回复。不给 = 这几条路由 501。 */
+  readonly messaging?: { readonly bus: MessageBus };
 }
 
 type Env = { Variables: { principal: Principal }; Bindings: Record<string | symbol, unknown> };
@@ -601,9 +605,19 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
+  /** 长轮询（P1d）：每 500ms 看一次，满足条件或到点就返回；不取消任何东西。 */
+  const waitUntil = async (seconds: number | undefined, done: () => Promise<boolean>): Promise<void> => {
+    if (!seconds) return;
+    const until = Date.now() + Math.min(seconds, 50) * 1000;
+    while (Date.now() < until && !(await done())) await new Promise((resolve) => setTimeout(resolve, 500));
+  };
   on(routes.getSession, async (c) => {
-    const session = await deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
-    return session ? c.json(session) : fail(c, notFound('会话不存在'));
+    const id = asSessionId(c.req.param('sessionId') ?? '');
+    const session = await deps.sessions.byId(id);
+    if (!session) return fail(c, notFound('会话不存在'));
+    const query = valid<{ waitSec?: number }>(c, 'query');
+    if (session.status === 'running') await waitUntil(query.waitSec, async () => (await deps.sessions.byId(id))?.status !== 'running');
+    return c.json((await deps.sessions.byId(id)) ?? session);
   });
   on(routes.prompt, async (c) => {
     const actor = principal(c);
@@ -678,14 +692,110 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   on(routes.events, async (c) => {
     const sessionId = asSessionId(c.req.param('sessionId') ?? '');
     if (!(await deps.sessions.byId(sessionId))) return fail(c, notFound('会话不存在'));
-    const query = valid<{ after?: number; sinceTurn?: number }>(c, 'query');
-    const entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
+    const query = valid<{ after?: number; sinceTurn?: number; waitSec?: number }>(c, 'query');
+    let entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
+    if (entries.length === 0 && query.waitSec) {
+      await waitUntil(query.waitSec, async () => (await deps.sessions.eventsAfter(sessionId, query.after ?? 0)).length > 0);
+      entries = await deps.sessions.eventsAfter(sessionId, query.after ?? 0);
+    }
     // sinceTurn 是按轮次补读：没有 turn 的老事件不属于任何轮次，不返回（只有在不带 sinceTurn 时给全量）。
     const kept = query.sinceTurn === undefined
       ? entries
       : entries.filter((entry) => entry.turn !== undefined && entry.turn >= query.sinceTurn!);
     return c.json(await refreshAuthors(ctx.activity, kept));
   });
+  // ── 会话通信 P1d：连线、同伴、外部消息、收件箱 ──
+  const noMessaging = (c: Context) => fail(c, { code: 'not_implemented', message: '这台 hub 没装消息总线' });
+  /** 另一条会话也要能 session.prompt（路径上那条由 installAccess 查过）。 */
+  const otherSession = async (actor: Principal, otherId: string, projectId: string): Promise<{ ok: true; id: string } | { ok: false; error: import('@agent-hub/domain').DomainError }> => {
+    const other = await deps.sessions.byId(asSessionId(otherId));
+    const project = other ? await projectOfSession(deps, other) : null;
+    if (!other || !project || project.id !== projectId) return { ok: false, error: notFound('两条会话不在同一个项目里') };
+    if (deps.access) {
+      const allowed = await authorizeSession(deps.access, actor, project, other, 'session.prompt');
+      if (!allowed.ok) return { ok: false, error: allowed.error };
+    }
+    return { ok: true, id: other.id };
+  };
+  const pathSession = async (c: Context) => {
+    const session = await deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
+    const project = session ? await projectOfSession(deps, session) : null;
+    return session && project ? { session, project } : null;
+  };
+  on(routes.linkSession, async (c) => {
+    const actor = principal(c);
+    const here = await pathSession(c);
+    if (!here) return fail(c, notFound('会话不存在'));
+    const input = valid<{ otherSessionId: string }>(c, 'json');
+    const checked = await otherSession(actor, input.otherSessionId, here.project.id);
+    if (!checked.ok) return fail(c, checked.error);
+    const linked = await linkSessionsUseCase(deps, here.project.id, here.session.id, checked.id, actor.user.id);
+    return linked.ok ? c.json(linked.value, 201) : fail(c, linked.error);
+  });
+  on(routes.unlinkSession, async (c) => {
+    const actor = principal(c);
+    const here = await pathSession(c);
+    if (!here) return fail(c, notFound('会话不存在'));
+    const input = valid<{ otherSessionId: string }>(c, 'json');
+    const checked = await otherSession(actor, input.otherSessionId, here.project.id);
+    if (!checked.ok) return fail(c, checked.error);
+    const removed = await unlinkSessionsUseCase(deps, here.project.id, here.session.id, checked.id);
+    return removed.ok ? c.json({ ok: true }) : fail(c, removed.error);
+  });
+  on(routes.sessionPeers, async (c) => {
+    if (!ctx.messaging) return noMessaging(c);
+    const peers = await ctx.messaging.bus.peers(asSessionId(c.req.param('sessionId') ?? ''));
+    return peers.ok ? c.json({ peers: peers.value }) : fail(c, peers.error);
+  });
+  on(routes.sessionMessage, async (c) => {
+    if (!ctx.messaging) return noMessaging(c);
+    const actor = principal(c);
+    const target = await deps.sessions.byId(asSessionId(c.req.param('sessionId') ?? ''));
+    if (!target) return fail(c, notFound('会话不存在'));
+    // 消息会让目标会话开新一轮：和 session_reply 一样，所在机器要过 authorizeWorker（本机 Worker 永远不对令牌开放）。
+    const worker = await authorizeWorker(deps.access, actor, target.workerId);
+    if (!worker.ok) return fail(c, worker.error);
+    const input = valid<{ kind: 'send' | 'ask'; body: string; parts?: unknown[]; wake?: boolean; timeoutSec?: number }>(c, 'json');
+    const accepted = await ctx.messaging.bus.acceptExternal({
+      inboxId: actor.via!.tokenId,
+      label: `外部 · ${actor.via!.name}`,
+      onBehalfOf: actor.user.id,
+      targetSessionId: asSessionId(c.req.param('sessionId') ?? ''),
+      kind: input.kind,
+      body: input.body,
+      ...(input.parts !== undefined ? { parts: input.parts } : {}),
+      ...(input.wake !== undefined ? { wake: input.wake } : {}),
+      ...(input.timeoutSec !== undefined ? { timeoutSec: input.timeoutSec } : {})
+    });
+    return accepted.ok ? c.json(accepted.value, 201) : fail(c, accepted.error);
+  });
+  on(routes.getMessage, async (c) => {
+    if (!ctx.messaging) return noMessaging(c);
+    const bus = ctx.messaging.bus;
+    const inboxId = principal(c).via!.tokenId;
+    const messageId = c.req.param('messageId') ?? '';
+    const first = await bus.externalMessage(inboxId, messageId);
+    if (!first.ok) return fail(c, first.error);
+    const settled = (got: { message: { kind: string; status: string }; reply: unknown }) =>
+      got.reply !== null || got.message.kind === 'reply' || (got.message.kind === 'send' && got.message.status !== 'queued' && got.message.status !== 'held');
+    if (!settled(first.value)) {
+      await waitUntil(valid<{ waitSec?: number }>(c, 'query').waitSec, async () => {
+        const again = await bus.externalMessage(inboxId, messageId);
+        return again.ok && settled(again.value);
+      });
+    }
+    const got = await bus.externalMessage(inboxId, messageId);
+    if (!got.ok) return fail(c, got.error);
+    return c.json({ message: messageView(got.value.message), reply: got.value.reply ? messageView(got.value.reply) : null });
+  });
+  on(routes.messageInbox, async (c) => {
+    if (!ctx.messaging) return noMessaging(c);
+    const query = valid<{ after?: number; limit?: number }>(c, 'query');
+    const after = query.after ?? 0;
+    const list = await ctx.messaging.bus.externalInbox(principal(c).via!.tokenId, after, query.limit ?? 50);
+    return c.json({ messages: list.map(messageView), next: list.at(-1)?.createdAt ?? after });
+  });
+
   on(routes.activity, async (c) => {
     const actor = principal(c);
     const sessionId = asSessionId(c.req.param('sessionId') ?? '');

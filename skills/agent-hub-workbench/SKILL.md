@@ -33,6 +33,24 @@ get_session              → status / ended 原因 / 用量
 - `session_start` 不传 `workspaceId` 时，如果项目里没有能用的长期目录，平台会自动开一个临时工作目录（MCP 也一样），不用你先建。
 - `events` 是投影后的：`text`、`tool`、`tool_result`、`ended`、`diagnostic`。**提示词原文和工具输入输出不会给你**，要看代码改动用 `workspace_changes`。
 - 会话跑完不等于进程立刻消失（保活约 15 分钟，方便追问）。要继续聊直接 `session_reply`。
+- 等一轮结束别狂刷：`get_session { sessionId, waitSec: 30 }` / `events { sessionId, after, waitSec: 30 }` 长轮询（≤50 秒，到点照常返回，不取消这一轮）。
+
+## 多会话协作（开发 ↔ 验证）
+
+两条会话要互相说话时，先 `session_link` 连起来；连上后它们各自用 `agent.ask peer:<短名>` 互问，用 `workspace.read`（带 `session`）只读看对方文件。
+你自己要和某条会话「按消息往来」（能关联回复、受防风暴约束）用 `session_message`，回复进你的外部收件箱：
+
+```
+session_link     { sessionId: dev, otherSessionId: verify }
+session_peers    { sessionId: dev }                         → 短名（peer:<handle>）、机器、仓库、分支、状态
+session_message  { sessionId: verify, kind: 'ask', body, parts?, timeoutSec?, clientRequestId }  → messageId
+message_get      { messageId, waitSec: 50 }                 → reply.replyStatus = ok / failed / refused
+message_inbox    { after }                                   → 所有回复（含超时 / archived 失败通知）
+```
+
+- `session_reply` = 以令牌主人身份对会话**下指令**；`session_message` = **agent 消息**（包在不可信边界里、能关联回复）。下指令优先用 `session_reply`。
+- 验证结果约定放在 reply 的 parts 里：`{ type:'data', schema:'verify-result/v1', data:{ ok, testedRefs:[{repo,branch,sha}], steps:[{name,ok,sec?,detail?}], logs:[{type:'file',session:'peer:verify',path}] } }`。
+- 已收起的会话不收消息（`archived`）；同一会话每分钟最多 6 条、10 分钟内重复内容会被拒——合并后再发。详见 `references/workflows.md` 配方 6。
 
 ## 必须遵守的四条
 

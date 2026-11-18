@@ -15,6 +15,11 @@
 | 409 | 目录已经被别的项目占用 | 工作目录独占 | 换目录/换机器，或让用户在项目设置里转移 |
 | 400 | 字段不合法（超长、含换行） | 参数问题 | 按 message 修；不要原样重试 |
 | 429 | too many requests | 限流 | 指数退避 ≥1s；写工具尤其要退避 |
+| 409 | `archived: 对方会话已收起` | `session_message` 发给已收起的会话 | 要它继续就先让用户重开；否则换一条会话 |
+| 409 | `rate_limited: 1 分钟内已给这个会话发了 6 条` | 消息按对限速 | 合并成一条再发，或等一分钟 |
+| 403 | `duplicate: 10 分钟内已经发过完全一样的内容` | 重复消息 | 别重发；要确认送达用 `message_get` |
+| 403 | `busy: 对方收件队列已满` | 对方积压 20 条没处理 | 等它处理完，或 `session_cancel` 后重新安排 |
+| 403 | 会话所在机器是本机 | 本机 Worker 永远不对令牌开放（`session_message` 同 `session_reply`） | 换远程机器上的会话 |
 
 JSON-RPC 包装：`tools/call` 的业务错误在 `result.isError = true` 的 content 里，或 `error.code`（-32602 参数、-32603 内部）。读 message，不要只读 code。
 
@@ -35,6 +40,8 @@ JSON-RPC 包装：`tools/call` 的业务错误在 `result.isError = true` 的 co
 | `session.status = interrupted` | 被打断（用户、超时、机器掉线） | `get_session` 看 `ended.reason`；需要就重新 reply |
 | `ended { outcome: "failed" }` | agent 失败 | 看 `diagnostic` 与最后几条 `tool_result`；修前置条件再开新会话，不要原地重问十次 |
 | `diagnostic` 里有 `blocked` | 环境没准备好（资产预热失败、目录不可用） | 用 `workspace_changes` / `get_project` 核对，或换机器；别反复重启会话 |
+| reply `failure = timeout` | `session_message` 的 ask 到 `timeoutSec` 没人回 | 看对方 `events`；需要就加长 `timeoutSec` 重问 |
+| reply `replyStatus = refused / failed` | 对方明确拒绝 / 做了但失败 | 读 reply 的 body 和 parts（`verify-result/v1`），别当成功 |
 | 长时间没有新 turn | 可能在做长命令 | 看 `events` 最后一条 `tool`；超过用户给的时间预算就报告，别打断除非用户要求 |
 
 ## 报告失败的格式

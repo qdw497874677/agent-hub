@@ -89,7 +89,8 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   reply_status TEXT,
   reply_parts TEXT,
   read_at INTEGER,
-  hold_reason TEXT
+  hold_reason TEXT,
+  from_label TEXT
 );
 CREATE INDEX IF NOT EXISTS agent_messages_target ON agent_messages(target_session_id, status, created_at);
 CREATE INDEX IF NOT EXISTS agent_messages_from ON agent_messages(from_session_id, created_at);
@@ -139,7 +140,8 @@ const MESSAGE_COLUMNS: readonly [string, string][] = [
   ['reply_status', 'TEXT'],
   ['reply_parts', 'TEXT'],
   ['read_at', 'INTEGER'],
-  ['hold_reason', 'TEXT']
+  ['hold_reason', 'TEXT'],
+  ['from_label', 'TEXT']
 ];
 
 const parseParts = (raw: unknown): AgentMessage['parts'] => {
@@ -180,7 +182,8 @@ const toMessage = (row: Row): AgentMessage => ({
   replyStatus: (row.reply_status as AgentMessage['replyStatus']) ?? null,
   replyParts: parseParts(row.reply_parts),
   readAt: (row.read_at as number | null) ?? null,
-  holdReason: (row.hold_reason as AgentMessage['holdReason']) ?? null
+  holdReason: (row.hold_reason as AgentMessage['holdReason']) ?? null,
+  fromLabel: (row.from_label as string | null) ?? null
 });
 
 const toSpawn = (row: Row): SpawnRecord => ({
@@ -214,13 +217,14 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   const upsert = db.prepare(
     `INSERT INTO agent_messages (id, trace_id, depth, project_id, kind, from_session_id, on_behalf_of, to_address, target_session_id, role, reply_to, body,
        status, failure, failure_detail, reply_body, reply_source, idempotency_key, created_at, updated_at, delivered_at, deadline_at,
-       parts, wake, reply_status, reply_parts, read_at, hold_reason)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       parts, wake, reply_status, reply_parts, read_at, hold_reason, from_label)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET target_session_id = excluded.target_session_id, status = excluded.status, failure = excluded.failure,
        failure_detail = excluded.failure_detail, reply_body = excluded.reply_body, reply_source = excluded.reply_source,
        updated_at = excluded.updated_at, delivered_at = excluded.delivered_at, deadline_at = excluded.deadline_at,
        reply_status = excluded.reply_status, reply_parts = excluded.reply_parts, read_at = excluded.read_at, hold_reason = excluded.hold_reason`
   );
+  const toAddress = db.prepare('SELECT * FROM agent_messages WHERE to_address = ? AND created_at > ? ORDER BY created_at, rowid LIMIT ?');
   const pendingTargets = db.prepare("SELECT DISTINCT target_session_id FROM agent_messages WHERE status IN ('queued', 'held') AND target_session_id IS NOT NULL");
   const putHandle = db.prepare(
     `INSERT INTO agent_session_handles (session_id, task_id, handle, updated_at) VALUES (?, ?, ?, ?)
@@ -255,7 +259,8 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
         m.id, m.traceId, m.depth, m.projectId, m.kind, m.fromSessionId, m.onBehalfOf, m.to, m.targetSessionId, m.role, m.replyTo, m.body,
         m.status, m.failure, m.failureDetail, m.replyBody, m.replySource, m.idempotencyKey, m.createdAt, m.updatedAt, m.deliveredAt, m.deadlineAt,
         m.parts && m.parts.length > 0 ? JSON.stringify(m.parts) : null, m.wake === false ? 0 : 1, m.replyStatus ?? null,
-        m.replyParts && m.replyParts.length > 0 ? JSON.stringify(m.replyParts) : null, m.readAt ?? null, m.holdReason ?? null
+        m.replyParts && m.replyParts.length > 0 ? JSON.stringify(m.replyParts) : null, m.readAt ?? null, m.holdReason ?? null,
+        m.fromLabel ?? null
       );
     },
     async byId(id) {
@@ -308,6 +313,7 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
       putHandle.run(record.sessionId, record.taskId, record.handle, record.updatedAt);
       return true;
     },
+    toAddress: async (address, after, limit) => (toAddress.all(address, after, limit) as Row[]).map(toMessage),
     async handleOf(sessionId) {
       const row = handleOf.get(sessionId) as Row | undefined;
       return row ? (row.handle as string) : null;

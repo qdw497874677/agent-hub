@@ -1,7 +1,7 @@
 # 工具清单（自动生成）
 
 由 `npm run skill:tools` 从 `apps/server/src/openapi/routes.ts` 的 MCP 元数据生成，等于 `tools/list` 的结果。
-当前 35 个：只读 12，写 23。
+当前 41 个：只读 15，写 26。
 
 「参数」只列名字，`?` 表示可选；具体类型和必填组合见 `SKILL.md` 与 `<hub>/openapi/v1/openapi.json`。
 
@@ -31,12 +31,18 @@
 | `edit_task_log` | 写 | `task.create` | `/tasks/{taskId}/log/{entryId}` | taskId, entryId, body | 改自己写的日志（写工具，要 `clientRequestId`） |
 | `session_start` | 写 | `session.create` | `/sessions` | taskId, agentId, model, workerId?, workspaceId?, workspaceMode?, groupId?, requires?, profileId?, options?, kind?, parentSessionId?, assetIds?, assetSetIds? | 在任务下开一条会话（写工具，要 `clientRequestId`） |
 | `fork_session` | 写 | `session.create` | `/sessions/fork` | sessionId, atSeq?, agentId, model | 从某条消息分叉（写工具，要 `clientRequestId`） |
-| `get_session` | 读 | `session.read` | `/sessions/{sessionId}` | sessionId | 会话详情 |
+| `get_session` | 读 | `session.read` | `/sessions/{sessionId}` | sessionId, waitSec? | 会话详情 |
 | `session_model` | 写 | `session.prompt` | `/sessions/{sessionId}/model` | sessionId, model | 换这条会话的模型（可换提供商）（写工具，要 `clientRequestId`） |
 | `session_reply` | 写 | `session.prompt` | `/sessions/{sessionId}/prompt` | sessionId, text, attachments?, clientMessageId? | 对会话说话（写工具，要 `clientRequestId`） |
 | `session_cancel` | 写 | `session.interrupt` | `/sessions/{sessionId}/interrupt` | sessionId | 打断正在跑的会话 |
 | `change_option` | 写 | `session.prompt` | `/sessions/{sessionId}/options` | sessionId, optionId, value | 改可调项（模型、思考强度…）（写工具，要 `clientRequestId`） |
-| `events` | 读 | `session.read` | `/sessions/{sessionId}/events` | sessionId, after?, sinceTurn? | 会话事件（after 之后的） |
+| `events` | 读 | `session.read` | `/sessions/{sessionId}/events` | sessionId, after?, sinceTurn?, waitSec? | 会话事件（after 之后的） |
+| `session_link` | 写 | `session.prompt` | `/sessions/{sessionId}/links` | sessionId, otherSessionId | 把两条会话连起来（能互发消息、只读看对方工作空间）（写工具，要 `clientRequestId`） |
+| `session_unlink` | 写 | `session.prompt` | `/sessions/{sessionId}/unlink` | sessionId, otherSessionId | 断开两条会话 |
+| `session_peers` | 读 | `session.read` | `/sessions/{sessionId}/peers` | sessionId | 会话的同伴 |
+| `session_message` | 写 | `session.prompt` | `/sessions/{sessionId}/messages` | sessionId, kind, body, parts?, wake?, timeoutSec? | 以外部 agent 身份给会话发消息（send / ask）（写工具，要 `clientRequestId`） |
+| `message_get` | 读 | `session.read` | `/messages/{messageId}` | messageId, waitSec? | 外部发的一条消息与它的回复 |
+| `message_inbox` | 读 | `session.read` | `/inbox` | after?, limit? | 外部收件箱（回复） |
 | `activity` | 读 | `session.read` | `/sessions/{sessionId}/activity` | sessionId | 谁对这条会话做了什么 |
 | `sync_workspace` | 写 | `project.update` | `/workspaces/{workspaceId}/sync` | workspaceId | 把项目仓库同步到这个工作空间（写工具，要 `clientRequestId`） |
 | `create_workspace` | 写 | `project.update` | `/projects/{projectId}/workspaces` | projectId | 新建临时或长期工作空间 |

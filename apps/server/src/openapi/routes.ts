@@ -56,6 +56,45 @@ const errors = {
 } as const;
 const okSchema = z.object({ ok: z.literal(true) });
 
+// ── 会话通信 P1d（docs/design/session-communication.md §5.4 / §10.2）──
+const messagePartSchema = z.record(z.string(), z.unknown()).openapi('MessagePart');
+const agentMessageSchema = z
+  .object({
+    messageId: z.string(),
+    traceId: z.string(),
+    kind: z.enum(['send', 'ask', 'reply']),
+    from: z.string(),
+    fromLabel: z.string().nullable(),
+    to: z.string(),
+    targetSessionId: z.string().nullable(),
+    status: z.string(),
+    body: z.string(),
+    replyTo: z.string().nullable(),
+    failure: z.string().nullable(),
+    failureDetail: z.string().nullable(),
+    parts: z.array(messagePartSchema),
+    replyStatus: z.string().nullable(),
+    createdAt: z.number()
+  })
+  .passthrough()
+  .openapi('AgentMessage');
+const peerSchema = z
+  .object({ address: z.string(), handle: z.string().optional(), label: z.string(), status: z.string(), workerId: z.string().nullable().optional(), repo: z.string().nullable().optional(), branch: z.string().nullable().optional(), title: z.string().nullable().optional(), connected: z.boolean().optional() })
+  .passthrough()
+  .openapi('SessionPeer');
+const sessionLinkSchema = z.object({ projectId: z.string(), aSessionId: z.string(), bSessionId: z.string() }).passthrough().openapi('SessionLink');
+const sendMessageRequest = z
+  .object({
+    kind: z.enum(['send', 'ask']),
+    body: z.string().min(1).max(32768),
+    parts: z.array(messagePartSchema).max(8).optional(),
+    wake: z.boolean().optional(),
+    timeoutSec: z.number().int().min(30).max(14400).optional()
+  })
+  .openapi('SendMessageRequest');
+const acceptedSchema = z.object({ messageId: z.string(), traceId: z.string(), status: z.string(), targetSessionId: z.string().nullable() }).openapi('MessageAccepted');
+const waitSec = z.coerce.number().int().min(0).max(50).optional();
+
 const projectId = z.object({ projectId: z.string().openapi({ param: { name: 'projectId', in: 'path' } }) });
 const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', in: 'path' } }) });
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
@@ -467,8 +506,9 @@ export const routes = {
       '返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n' +
       '轮询用法：记下 turn；调 events(sessionId, sinceTurn=turn) 或 events(sessionId, after=lastSeq)；未到终态就 3–5 秒后再看；看到本 turn 的 ended 事件即这一轮结束。\n' +
       '下一步：用 events 读它的时间线；要发下一句用 session_reply。\n' +
+      '长轮询：waitSec（0–50）= 这一轮还在跑时最多等这么久再返回（不取消这一轮；到点仍在跑就原样返回 running）。\n' +
       '错误：404 会话不存在或属于看不见的项目。',
-    request: { params: sessionId },
+    request: { params: sessionId, query: z.object({ waitSec }) },
     responses: { 200: json(sessionSchema) }
   }),
   setSessionModel: route('sessions:write', {
@@ -514,7 +554,7 @@ export const routes = {
     method: 'get', path: `${V1}/sessions/{sessionId}/events`, tags: ['sessions'], summary: '会话事件（after 之后的）',
     description:
       '读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n' +
-      '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）。\n' +
+      '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有新事件时最多等这么久，有新事件立刻返回）。\n' +
       '返回：[{ seq, at, turn, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n' +
       '轮询用法：第一次 sinceTurn=turn；之后用 after=最后一条 seq 增量拉；本 turn 出现 ended 即结束；没结束时 3–5 秒后再拉（running 时密一点，卡住时退到 10 秒）。\n' +
       '下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n' +
@@ -523,11 +563,77 @@ export const routes = {
       params: sessionId,
       query: z.object({
         after: z.coerce.number().int().min(0).optional(),
-        sinceTurn: z.coerce.number().int().min(0).optional()
+        sinceTurn: z.coerce.number().int().min(0).optional(),
+        waitSec
       })
     },
     responses: { 200: json(z.array(journalEntrySchema)) }
   }, { module: 'sessions', need: 'session.read', expose: 'events', project: projectEvents }),
+  linkSession: route('sessions:write', {
+    method: 'post', path: `${V1}/sessions/{sessionId}/links`, tags: ['sessions'], summary: '把两条会话连起来（能互发消息、只读看对方工作空间）',
+    description:
+      '连两条同项目的会话（无向、幂等）。连上后两边的 agent 能用 agent.ask / agent.send 互发消息（to 写 peer:<短名>），能用 workspace.read 的 session 参数只读看对方文件。\n' +
+      '参数：sessionId；body `{ otherSessionId }`。两条会话你都要能 session.prompt。\n' +
+      '返回：连线对象。\n' +
+      '下一步：session_peers 看短名；session_message 给其中一条派活。\n' +
+      '错误：400 连自己；404 不在同一个项目；409 两边机器都不在线。',
+    request: { params: sessionId, ...body(z.object({ otherSessionId: z.string().min(1) })) },
+    responses: { 201: json(sessionLinkSchema, '已连上') }
+  }, { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_link', idempotent: true }),
+  unlinkSession: route('sessions:write', {
+    method: 'post', path: `${V1}/sessions/{sessionId}/unlink`, tags: ['sessions'], summary: '断开两条会话',
+    description:
+      '断开连线（重复断开也成功）。断开后双方不能再互发消息（派生父子关系不受影响），已发的消息和审计保留。\n' +
+      '参数：sessionId；body `{ otherSessionId }`。\n' +
+      '返回：{ ok: true }。\n' +
+      '错误：400 断自己；403 / 404。',
+    request: { params: sessionId, ...body(z.object({ otherSessionId: z.string().min(1) })) },
+    responses: { 200: json(okSchema) }
+  }, { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_unlink' }),
+  sessionPeers: route('sessions:read', {
+    method: 'get', path: `${V1}/sessions/{sessionId}/peers`, tags: ['sessions'], summary: '会话的同伴',
+    description:
+      '这条会话能直接说话的同伴（显式连线 + 派生父会话）：短名 handle（用 peer:<handle> 寻址）、session id、机器 workerId、仓库、分支、标题、状态（idle / busy / archived）。\n' +
+      '参数：sessionId。\n' +
+      '返回：{ peers: [...] }。\n' +
+      '下一步：session_link 增加同伴；session_message 给某条会话发消息。',
+    request: { params: sessionId },
+    responses: { 200: json(z.object({ peers: z.array(peerSchema) })) }
+  }, { module: 'sessions', need: 'session.read', expose: 'session_peers' }),
+  sessionMessage: route('sessions:write', {
+    method: 'post', path: `${V1}/sessions/{sessionId}/messages`, tags: ['sessions'], summary: '以外部 agent 身份给会话发消息（send / ask）',
+    description:
+      '经消息总线给会话发一条 agent 消息，署名「外部 · <令牌名>」，包在不可信边界里；ask 的回复进你的外部收件箱（不唤醒任何会话）。\n' +
+      '和 session_reply 的区别：session_reply 是以令牌主人身份对会话下指令（普通一轮）；session_message 是 agent 消息，受限额和防风暴约束，回复能按 messageId 关联。\n' +
+      '参数：sessionId；body `{ kind: send|ask, body, parts?, wake?, timeoutSec? }`。parts 是结构化附件（data / ref / file / link，≤8 个，≤16KB）；wake=false 只进对方收件箱（只有 send）；timeoutSec 30–14400（只有 ask，默认 1800）。\n' +
+      '返回：{ messageId, traceId, status, targetSessionId }；status = delivered（对方空闲，已开新一轮）/ queued（对方忙，排队）/ done（wake=false）。\n' +
+      '下一步：ask 用 message_get(messageId, waitSec≤50) 等回复，或 message_inbox 增量取；回复的 replyStatus 是 ok / failed / refused。\n' +
+      '错误：400 参数不合法；403 没有 session.prompt 或 duplicate（10 分钟内重复）；409 archived（会话已收起）/ rate_limited（同一会话每分钟最多 6 条）；404 会话不存在。\n' +
+      '重试：给 clientRequestId，同一值重试不会发第二条。',
+    request: { params: sessionId, ...body(sendMessageRequest) },
+    responses: { 201: json(acceptedSchema, '已接收') }
+  }, { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_message', idempotent: true }),
+  getMessage: route('sessions:read', {
+    method: 'get', path: `${V1}/messages/{messageId}`, tags: ['sessions'], summary: '外部发的一条消息与它的回复',
+    description:
+      '查你（这个令牌）发出的一条消息的状态和回复。waitSec（0–50）：还没有回复时最多等这么久（长轮询，到点没回复就照常返回）。\n' +
+      '参数：messageId；waitSec。\n' +
+      '返回：{ message, reply }；reply 为 null 表示还没回；reply.replyStatus = ok / failed / refused，reply.failure 有值表示超时（timeout）/ 对方已收起（archived）等。\n' +
+      '下一步：没回复就再调一次（带 waitSec）；多条在等时用 message_inbox。\n' +
+      '错误：404 不是这个令牌发的或不存在。',
+    request: { params: z.object({ messageId: z.string().openapi({ param: { name: 'messageId', in: 'path' } }) }), query: z.object({ waitSec }) },
+    responses: { 200: json(z.object({ message: agentMessageSchema, reply: agentMessageSchema.nullable() })) }
+  }, { module: 'sessions', need: 'session.read', expose: 'message_get' }),
+  messageInbox: route('sessions:read', {
+    method: 'get', path: `${V1}/inbox`, tags: ['sessions'], summary: '外部收件箱（回复）',
+    description:
+      '这个令牌收到的回复（含失败通知），按时间正序。收件箱绑令牌：吊销令牌后就打不开了。\n' +
+      '参数：after（上一页最后一条的 createdAt，默认 0）；limit（1–100，默认 50）。\n' +
+      '返回：{ messages: [...], next }；next = 最后一条的 createdAt，下一次作为 after 传回。\n' +
+      '下一步：按 replyTo 关联到你发的 ask。',
+    request: { query: z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(100).optional() }) },
+    responses: { 200: json(z.object({ messages: z.array(agentMessageSchema), next: z.number() })) }
+  }, { module: 'sessions', need: 'session.read', expose: 'message_inbox' }),
   stream: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}/stream`, tags: ['sessions'], summary: '会话事件流（SSE）',
     description:

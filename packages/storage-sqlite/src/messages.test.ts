@@ -82,6 +82,13 @@ test('会话通信 P1a：parts / wake / reply status / 已读 / 拦下原因往�
     assert.equal(await reopened.messages.sessionByHandle('t', 'maker'), 'a');
     assert.equal(await reopened.messages.sessionByHandle('t', 'builder'), null);
 
+    // P1d：外部署名与外部收件箱
+    await reopened.messages.save(base({ id: 'x1', idempotencyKey: null, kind: 'send', fromSessionId: asSessionId('external:tok_1'), fromLabel: '外部 · ci', createdAt: 20 }));
+    await reopened.messages.save(base({ id: 'x2', idempotencyKey: null, kind: 'reply', to: 'external:tok_1', targetSessionId: null, status: 'done', createdAt: 21 }));
+    assert.equal((await reopened.messages.byId('x1'))?.fromLabel, '外部 · ci');
+    assert.deepEqual((await reopened.messages.toAddress('external:tok_1', 0, 10)).map((m) => m.id), ['x2']);
+    assert.deepEqual(await reopened.messages.toAddress('external:tok_1', 21, 10), []);
+
     // P1f：trustPeers 落库；老配置行默认 false
     await reopened.messages.saveConfig({ projectId: asProjectId('p'), roles: [], limits: {}, updatedAt: 1 });
     assert.equal((await reopened.messages.config(asProjectId('p')))?.trustPeers, false);

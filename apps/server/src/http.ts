@@ -370,7 +370,8 @@ export function createApp(options: AppOptions): Hono {
         providers: options.providers,
         projectDeletion: options.projectDeletion,
         waitOptions: options.waitOptions,
-        assetReview: options.assets?.deps
+        assetReview: options.assets?.deps,
+        ...(options.messaging ? { messaging: { bus: options.messaging.bus } } : {})
       });
     }
   } else if (options.observe) {
