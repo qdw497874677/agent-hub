@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>文件入口三方案</title>
+<style>
+:root{--canvas:#14181a;--panel:#1b2022;--card:#1f2528;--raised:#242b2e;--hair:#2e3639;--p:#e8e3d9;--s:#9aa39e;--t:#6b7570;--a:#d9a05b;--sage:#6e8c80;--rust:#c07a5a}
+*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--p);font:13px/1.55 'Noto Sans SC',system-ui,sans-serif;height:100vh;display:flex;flex-direction:column;overflow:hidden}
+.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}.t{color:var(--t)}.s{color:var(--s)}.a{color:var(--a)}
+header{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--hair);background:var(--panel)}
+.tag{position:fixed;right:8px;bottom:8px;background:var(--a);color:#14181a;padding:2px 8px;border-radius:4px;font-weight:600;z-index:9}
+.tabs{display:flex;gap:2px;background:var(--card);border-radius:6px;padding:2px}.tabs b{font-weight:400;padding:3px 12px;border-radius:5px;color:var(--t)}.tabs b.on{background:var(--raised);color:var(--p)}
+.n{color:var(--a);margin-left:3px}
+.main{flex:1;display:flex;min-height:0}.chat{flex:1;overflow:hidden;padding:14px 18px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.msg{background:var(--card);border-radius:8px;padding:8px 12px;max-width:640px}.me{align-self:flex-end;background:var(--raised)}
+.tool{border-left:2px solid var(--hair);padding:4px 10px;color:var(--s);font-size:12px}
+.chip{display:inline-flex;gap:4px;align-items:center;background:var(--raised);border:1px solid var(--hair);border-radius:4px;padding:0 6px;font-family:monospace;font-size:12px;color:var(--a);text-decoration:underline dotted}
+.composer{border-top:1px solid var(--hair);padding:10px 14px;background:var(--panel)}.box{background:var(--card);border-radius:8px;padding:10px;color:var(--t)}
+.bar{display:flex;gap:8px;align-items:center;margin-bottom:8px;background:var(--card);border:1px solid var(--hair);border-radius:8px;padding:6px 10px;font-size:12px;overflow:hidden;white-space:nowrap}
+.side{width:380px;border-left:1px solid var(--hair);background:var(--panel);display:flex;flex-direction:column}
+.row{display:flex;gap:6px;padding:4px 12px;font-size:12px}.row .g{margin-left:auto;color:var(--a)}.dim{opacity:.5}
+pre{margin:0;padding:10px 12px;font:12px/1.6 monospace;color:var(--s);white-space:pre;overflow:hidden}
+.add{background:#1f3a2c;color:#cfe8d6}.del{background:#3d2420;color:#efc9bd}
+.bottom{display:none}
+@media (max-width:600px){.side.desk{display:none}.bottom{display:flex;border-top:1px solid var(--hair);background:var(--panel)}.bottom b{flex:1;text-align:center;padding:8px 0 10px;font-weight:400;color:var(--t);font-size:12px}.bottom b.on{color:var(--a)}
+ .chat{padding:10px}.hide-m{display:none}.msg{max-width:100%}}
+</style></head><body>
+<script>
+const q=new URLSearchParams(location.search),opt=q.get('opt')||'A',view=q.get('view')||'chat';
+const mobile=innerWidth<=600;
+const tree=`<div class="row s">▾ src</div><div class="row s" style="padding-left:26px">▾ files</div><div class="row" style="padding-left:40px;background:var(--card)">files-browser.tsx<span class="g">M</span></div><div class="row s" style="padding-left:40px">files-core.ts<span class="g">A</span></div><div class="row s" style="padding-left:26px">inspector.tsx<span class="g">M</span></div><div class="row s dim">▸ node_modules</div><div class="row s">package.json</div><div class="row s">README.md</div>`;
+const changes=`<div class="row"><span class="a">M</span> src/inspector.tsx<span class="g" style="color:var(--sage)">+6 <span style="color:var(--rust)">−0</span></span></div><div class="row"><span class="a">A</span> src/files-core.ts<span class="g" style="color:var(--sage)">+58</span></div><div class="row"><span class="a">M</span> src/files-browser.tsx<span class="g" style="color:var(--sage)">+240 <span style="color:var(--rust)">−3</span></span></div>`;
+const diff=`<div class="row t mono">src/inspector.tsx · 对比 会话开始时 ▾</div><pre>@@ -152,6 +152,10 @@
+   &lt;SessionMessages sessionId={id} /&gt;
+<span class="add">+  &lt;section&gt;
++    &lt;button onClick={open}&gt;浏览文件&lt;/button&gt;
++  &lt;/section&gt;</span>
+<span class="del">-  {old}</span>
+   {artifacts.length &gt; 0 ? (</pre>`;
+const chat=(chips)=>`<div class="msg me">把文件浏览入口做得显眼一点</div>
+<div class="tool">✎ 编辑 ${chips?'<span class="chip">src/inspector.tsx:152</span>':'<span class="mono">src/inspector.tsx</span>'} <span style="color:var(--sage)">+6</span></div>
+<div class="tool">✎ 新建 ${chips?'<span class="chip">src/files-core.ts</span>':'<span class="mono">src/files-core.ts</span>'} <span style="color:var(--sage)">+58</span></div>
+<div class="tool">$ npm test <span class="t">· 706 通过</span></div>
+<div class="msg">改好了：入口放进了会话标题栏${chips?'，改动见 <span class="chip">src/files-browser.tsx</span>':''}。测试全过。</div>`;
+const head=(extra)=>`<header><span class="t hide-m">项目 agent-hub ›</span><b style="font-weight:500">文件浏览入口</b><span class="t mono hide-m">pi · aliyun</span>${extra}<span style="margin-left:auto" class="t">详情</span></header>`;
+const composer=(bar)=>`<div class="composer">${bar||''}<div class="box">回复…</div></div>`;
+let html='';
+if(opt==='A'){
+  const tabs=`<div class="tabs" style="margin-left:${mobile?'auto':'16px'}"><b class="${view==='chat'?'on':''}">对话</b><b class="${view==='files'?'on':''}">文件</b><b class="${view==='changes'?'on':''}">改动<span class="n">3</span></b></div>`;
+  let body;
+  if(view==='chat') body=`<div class="chat">${chat(false)}</div>`;
+  else if(view==='files') body=`<div style="width:${mobile?'100%':'300px'};border-right:1px solid var(--hair);padding-top:6px">${tree}</div>${mobile?'':`<div style="flex:1"><div class="row t">src/files/files-browser.tsx · 9.8 KB · 下载</div><pre>export function FilesBrowser({ sessionId }) {\n  const [tab, setTab] = useState('files');\n  …</pre></div>`}`;
+  else body=`<div style="width:${mobile?'100%':'340px'};border-right:1px solid var(--hair);padding-top:6px">${changes}</div>${mobile?'':`<div style="flex:1">${diff}</div>`}`;
+  html=head(mobile?'':tabs)+(mobile?`<div style="padding:6px 10px;border-bottom:1px solid var(--hair)">${tabs.replace('margin-left:auto','')}</div>`:'')+`<div class="main">${body}</div>`+(view==='chat'?composer():'');
+}
+if(opt==='B'){
+  const panel=`<aside class="side desk"><div style="display:flex;gap:2px;padding:8px"><div class="tabs"><b>文件</b><b class="on">改动<span class="n">3</span></b></div><span class="t" style="margin-left:auto">⇤</span></div>${changes}<div style="border-top:1px solid var(--hair);margin-top:6px">${diff}</div></aside>`;
+  if(mobile&&view!=='chat'){
+    html=head('')+`<div class="main" style="flex-direction:column"><div style="padding:8px"><div class="tabs"><b class="${view==='files'?'on':''}">全部文件</b><b class="${view==='changes'?'on':''}">改动<span class="n">3</span></b></div></div>${view==='files'?tree:changes}</div>`;
+  } else html=head('')+`<div class="main"><div style="flex:1;display:flex;flex-direction:column;min-width:0"><div class="chat">${chat(false)}</div>${composer()}</div>${panel}</div>`;
+  html+=`<nav class="bottom"><b class="${view==='chat'?'on':''}">💬 对话</b><b class="${view==='files'?'on':''}">📁 文件</b><b class="${view==='changes'?'on':''}">± 改动 3</b></nav>`;
+}
+if(opt==='C'){
+  const bar=`<div class="bar"><span class="a">± 3 个文件改动</span><span class="mono s">inspector.tsx</span><span class="mono s">files-core.ts</span><span class="mono s hide-m">files-browser.tsx</span><span style="margin-left:auto;color:var(--sage)">+304 <span style="color:var(--rust)">−3</span></span><span class="t">›</span></div>`;
+  if(view==='sheet'){
+    html=head('')+`<div class="main"><div class="chat" style="opacity:.35">${chat(true)}</div></div><div style="position:fixed;left:0;right:0;bottom:0;${mobile?'top:120px':'top:80px;left:auto;width:560px'};background:var(--panel);border-top:1px solid var(--hair);border-left:1px solid var(--hair);border-radius:12px 12px 0 0"><div style="width:36px;height:4px;background:var(--hair);border-radius:2px;margin:8px auto"></div><div class="row"><b style="font-weight:500">src/inspector.tsx</b><span class="t">:152</span><span class="g">查看全文 · 浏览目录</span></div>${diff}</div>`;
+  } else html=head('<span class="t hide-m" style="margin-left:12px">📁</span>')+`<div class="main"><div class="chat">${chat(true)}</div></div>`+composer(bar);
+}
+document.write(html+`<div class="tag">方案 ${opt}${view!=='chat'?' · '+view:''}</div>`);
+</script></body></html>
