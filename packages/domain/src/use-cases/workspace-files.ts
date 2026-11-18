@@ -12,6 +12,7 @@ import type { Project } from '../project.ts';
 import type { Session } from '../session.ts';
 import { asSessionId, newId } from '../ids.ts';
 import { invalid, notFound, unavailable, type DomainError } from '../errors.ts';
+import { groupLayout } from '../workspace-group.ts';
 import { err, ok, type Result } from '../result.ts';
 import { FILES_LIMITS, isBrowsablePath, isSensitivePath } from '../workspace-files.ts';
 import { authorizeProject, authorizeSession, type AccessPolicy } from './authorization.ts';
@@ -52,6 +53,7 @@ export interface FilesContextMember {
   readonly workspaceId: string;
   /** 成员在容器里的目录名（= 仓库名）。 */
   readonly name: string;
+  readonly repoId?: string;
   readonly state: 'ready' | 'preparing' | 'failed';
 }
 
@@ -145,7 +147,8 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
       workerId: location.workerId,
       location,
       member,
-      container: location.group !== null && member === null
+      // 老组（flat）的默认落点是容器根，不是 git 仓库；amp 布局的默认落点是主仓库。
+      container: location.group !== null && member === null && groupLayout(location.group) !== 'amp'
     });
   }
 
@@ -238,8 +241,8 @@ export function createWorkspaceFilesService(deps: WorkspaceFilesDeps) {
           ? {}
           : {
               group: {
-                root: found.value.location.root,
-                members: found.value.location.members.map((item) => ({ workspaceId: item.workspaceId, name: item.name, state: item.state }))
+                root: group.root,
+                members: found.value.location.members.map((item) => ({ workspaceId: item.workspaceId, name: item.name, repoId: item.repoId, state: item.state }))
               },
               member: found.value.member?.workspaceId ?? null
             })

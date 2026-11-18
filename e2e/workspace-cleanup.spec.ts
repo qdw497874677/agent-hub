@@ -95,7 +95,7 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
     const sweep = async () => (await (await page.request.post(`/api/projects/${project.id}/cleanup/sweep`, { headers })).json()) as { removed: string[]; kept: string[]; skipped: string[] };
 
     // 默认规则：PR 合并 开、任务结束 开、闲置 关
-    expect(await (await page.request.get(`/api/projects/${project.id}/cleanup`)).json()).toEqual({ prMerged: true, taskEndedClean: true, idleDays: null });
+    expect(await (await page.request.get(`/api/projects/${project.id}/cleanup`)).json()).toEqual({ prMerged: true, taskEndedClean: true, idleDays: null, deleteWorktreeOnSessionDelete: false });
 
     // ── 1. 任务结束：有未跟踪文件 → 保留；清掉 → 删目录，分支和检查点 ref 处理对 ──
     const t1 = await newTask('任务一');
@@ -139,7 +139,13 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
     git(dir, 'push', '-q', 'origin', '--delete', w2.branch);
     git(dir, 'fetch', '-q', '--prune', 'origin');
     const third = await sweep();
-    expect(third.removed, JSON.stringify(third)).toEqual([w2.id]);
+    // 两段生命周期：这一轮先收起会话，下一轮才拆干净的 worktree。
+    expect(third.removed, JSON.stringify(third)).toEqual([]);
+    expect(existsSync(w2.path)).toBe(true);
+    const settled = await page.request.get(`/api/sessions/${sid2}`, { headers });
+    expect(((await settled.json()) as { settledAt: number | null }).settledAt).not.toBeNull();
+    const fourth = await sweep();
+    expect(fourth.removed, JSON.stringify(fourth)).toEqual([w2.id]);
     expect(existsSync(w2.path)).toBe(false);
 
     // ── 4. 孤儿目录只列出；记录（含大小）；界面 ──
@@ -180,7 +186,7 @@ test('清理：保留有未跟踪文件的、删干净的、squash 合并也删�
     }
     // 截图耗时长，keep-alive 连接可能已被服务端关闭（ECONNRESET），失败重试一次
     const policy = await page.request.get(`/api/projects/${project.id}/cleanup`).catch(() => page.request.get(`/api/projects/${project.id}/cleanup`));
-    expect(await policy.json()).toEqual({ prMerged: true, taskEndedClean: true, idleDays: 14 });
+    expect(await policy.json()).toEqual({ prMerged: true, taskEndedClean: true, idleDays: 14, deleteWorktreeOnSessionDelete: false });
     expect(existsSync(stray)).toBe(true);
   } finally {
     worker?.kill();

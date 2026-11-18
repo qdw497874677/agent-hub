@@ -182,13 +182,18 @@ export function DeriveDialog({
   });
   // 模型框的空值项：状态为空时显式画出来，别让浏览器把第一项画成「已选」（见 emptyModelOption）
   const emptyModel = emptyModelOption(offered.models, model, hubCovers(workers.byId(machine), agentId, hubProtocols));
-  // 项目默认隔离（docs/design/worktree.md §2 §3）：没选过任何东西时，替用户选上「新建隔离 worktree」。
+  // 多仓项目默认新建组合工作目录；否则若项目默认隔离，替用户选上「新建隔离 worktree」。
   const projectIsolated = canvas.project.worktree?.mode === 'isolated';
+  const multiRepo = Boolean(canvas.project.primaryRepoId) && (canvas.project.repos?.length ?? 0) > 1;
   const [modeTouched, setModeTouched] = useState(false);
   useEffect(() => {
-    if (modeTouched || !projectIsolated || choice !== null) return;
-    setChoice({ type: 'new_worktree' });
-  }, [projectIsolated, modeTouched, choice]);
+    if (modeTouched || choice !== null) return;
+    if (multiRepo) {
+      setChoice({ type: 'new_group', repoIds: canvas.project.repos.map((repo) => repo.id) });
+      return;
+    }
+    if (projectIsolated) setChoice({ type: 'new_worktree' });
+  }, [projectIsolated, multiRepo, modeTouched, choice]);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
   /** 组合工作目录准备失败时，主按钮不重复建组：让下面的「重试准备」处理这一组。 */
   const groupFailed = choice?.type === 'new_group' && group !== null && group.state === 'failed';
@@ -251,7 +256,11 @@ export function DeriveDialog({
           const since = Date.now();
           let made: WorkspaceGroupView;
           try {
-            made = await api.createWorkspaceGroup(projectId, { taskId, workerId: machine });
+            made = await api.createWorkspaceGroup(projectId, {
+              taskId,
+              workerId: machine,
+              ...(choice.type === 'new_group' && choice.repoIds.length > 0 ? { repoIds: choice.repoIds } : {})
+            });
           } catch (failure) {
             // 后端建组失败时只回错误：成员的工作目录已经登记，带着 groupId。
             // 把那一组找回来，对话框里才能显示原因、并给出「重试准备」。

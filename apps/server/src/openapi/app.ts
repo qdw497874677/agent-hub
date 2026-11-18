@@ -4,7 +4,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { homedir } from 'node:os';
 import { streamSSE } from 'hono/streaming';
 import { Scalar } from '@scalar/hono-api-reference';
-import type { ApiTokenDeps, Deps, JournalEntry, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
+import type { ApiTokenDeps, Deps, GitWorkflowService, JournalEntry, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
 import {
   ATTACHMENT_LIMITS,
   appendWorkLogUseCase,
@@ -56,6 +56,14 @@ import {
   syncWorkspaceReposUseCase,
   deleteWorkspaceUseCase,
   retryWorkspaceSetupUseCase,
+  addWorkspaceGroupMemberUseCase,
+  buildWorkspaceGroupUseCase,
+  retryWorkspaceGroupUseCase,
+  settleSessionUseCase,
+  sweepProjectUseCase,
+  cleanupRecordsUseCase,
+  asWorkspaceGroupId,
+  unavailable,
   prepareTemporaryWorkspaceUseCase,
   prepareLongLivedWorkspaceUseCase,
   workerReader,
@@ -67,7 +75,7 @@ import {
 import type { AssetReviewDeps, DeleteProjectDeps, MessageBus } from '@agent-hub/domain';
 import { linkSessionsUseCase, unlinkSessionsUseCase, messageView } from '@agent-hub/domain';
 import type { z } from 'zod';
-import { assetSchema, workspaceSchema } from '@agent-hub/contract';
+import { assetSchema, sessionSchema, workspaceSchema } from '@agent-hub/contract';
 import { createIdempotency } from './idempotency.ts';
 import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest, setProjectReposRequest } from '@agent-hub/contract';
 import { installAccess } from '../access.ts';
@@ -78,6 +86,7 @@ import type { SessionActivityOptions } from '../session-activity.ts';
 import type { StreamHub } from '../stream-hub.ts';
 import type { ProviderWiringApi } from '../providers.ts';
 import { V1, routes } from './routes.ts';
+import { workbenchSkillManifest, workbenchSkillZip } from '../workbench-skill.ts';
 import { createAssetVisibility } from '../asset-visibility.ts';
 import { effectiveWrites, handleMcp, INTERNAL } from './mcp.ts';
 import { workspaceForApiStart } from '../session-workspace.ts';
@@ -104,6 +113,7 @@ interface V1Context {
   readonly waitOptions?: (sessionId: string) => Promise<void>;
   // 资产审核（ADR 0016）：令牌默认只能交新版本（assets:submit）；显式给 assets:publish 才能发布 / 分配。
   readonly assetReview?: AssetReviewDeps;
+  readonly git?: GitWorkflowService;
   /** 会话通信 P1d：外部 agent 经消息总线发 send / ask、收回复。不给 = 这几条路由 501。 */
   readonly messaging?: { readonly bus: MessageBus };
 }
@@ -140,7 +150,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return c.json({ error: { code: 'rate_limited', message } }, 429);
   };
 
-  const PUBLIC = new Set([`${V1}/openapi.json`, `${V1}/docs`, `${V1}/health`]);
+  const PUBLIC = new Set([`${V1}/openapi.json`, `${V1}/docs`, `${V1}/health`, `${V1}/skills/agent-hub-workbench`]);
   v1.use(`${V1}/*`, async (c, next) => {
     if (PUBLIC.has(c.req.path) && c.req.method === 'GET') return next();
     const header = c.req.header('authorization') ?? '';
@@ -179,6 +189,16 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   const valid = <T>(c: Context, target: 'json' | 'query'): T => (c.req as unknown as { valid(t: string): T }).valid(target);
 
   on(routes.health, (c) => c.json({ ok: true }));
+  on(routes.workbenchSkill, (c) => {
+    if (c.req.query('format') === 'json') return c.json(workbenchSkillManifest());
+    const zip = workbenchSkillZip();
+    return new Response(Buffer.from(zip), {
+      headers: {
+        'content-type': 'application/zip',
+        'content-disposition': 'attachment; filename="agent-hub-workbench.zip"'
+      }
+    });
+  });
   on(routes.listAssets, async (c) => {
     const actor = principal(c);
     if (!can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:read'));
@@ -403,8 +423,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const project = await deps.projects.byId(asProjectId(projectId));
     const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
     if (!allowed.ok) return fail(c, allowed.error);
-    const input = valid<{ repos: z.output<typeof setProjectReposRequest>['repos'] }>(c, 'json');
-    const result = await updateProjectReposUseCase(deps, { projectId, repos: input.repos });
+    const input = valid<z.output<typeof setProjectReposRequest>>(c, 'json');
+    const result = await updateProjectReposUseCase(deps, { projectId, repos: input.repos, primaryRepoId: input.primaryRepoId });
     if (!result.ok) return fail(c, result.error);
     // 令牌名不出去：projectDto 只给 hasToken。
     return c.json(projectDto(result.value));
@@ -593,6 +613,134 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!result.ok) return fail(c, result.error);
     return c.json(workspaceSchema.parse(result.value));
   });
+
+  const needGit = () => ctx.git ?? null;
+  on(routes.workspaceGroupCreate, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const projectId = c.req.param('projectId') ?? '';
+    const project = await deps.projects.byId(asProjectId(projectId));
+    if (!project) return fail(c, notFound('项目不存在'));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const input = valid<{
+      taskId: string;
+      workerId?: string;
+      repoIds?: string[];
+      fromGroupId?: string;
+      branches?: { repoId: string; branch: string }[];
+      sessionId?: string;
+    }>(c, 'json');
+    const result = await buildWorkspaceGroupUseCase(deps, {
+      projectId,
+      taskId: input.taskId,
+      workerId: input.workerId ?? null,
+      home: homedir(),
+      actor,
+      repoIds: input.repoIds,
+      fromGroupId: input.fromGroupId,
+      branches: input.branches,
+      sessionId: input.sessionId
+    });
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+  on(routes.workspaceGroupGet, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.read')) return fail(c, forbidden('令牌没有 projects:read'));
+    const group = await deps.workspaceGroups?.byId(asWorkspaceGroupId(c.req.param('groupId') ?? ''));
+    if (!group) return fail(c, notFound('组合工作空间不存在'));
+    const project = await deps.projects.byId(asProjectId(group.projectId));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.read');
+    if (!allowed.ok) return fail(c, allowed.error);
+    return c.json(group);
+  });
+  on(routes.workspaceGroupAddMember, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const groupId = c.req.param('groupId') ?? '';
+    const group = await deps.workspaceGroups?.byId(asWorkspaceGroupId(groupId));
+    if (!group) return fail(c, notFound('组合工作空间不存在'));
+    const project = await deps.projects.byId(asProjectId(group.projectId));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const input = valid<{ repoId: string }>(c, 'json');
+    const result = await addWorkspaceGroupMemberUseCase(deps, { groupId, repoId: input.repoId, home: homedir(), actor });
+    return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+  on(routes.workspaceGroupRetry, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const groupId = c.req.param('groupId') ?? '';
+    const group = await deps.workspaceGroups?.byId(asWorkspaceGroupId(groupId));
+    if (!group) return fail(c, notFound('组合工作空间不存在'));
+    const project = await deps.projects.byId(asProjectId(group.projectId));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const result = await retryWorkspaceGroupUseCase(deps, { groupId, home: homedir(), actor });
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.sessionGitState, async (c) => {
+    const git = needGit();
+    if (!git) return fail(c, unavailable('Git 工作流未就绪'));
+    const actor = principal(c);
+    if (!can(actor, 'session.read')) return fail(c, forbidden('令牌没有 sessions:read'));
+    const member = c.req.query('member') || undefined;
+    const result = await git.state(actor, c.req.param('sessionId') ?? '', member);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.sessionGitRun, async (c) => {
+    const git = needGit();
+    if (!git) return fail(c, unavailable('Git 工作流未就绪'));
+    const actor = principal(c);
+    if (!can(actor, 'session.prompt')) return fail(c, forbidden('令牌没有 sessions:write'));
+    const input = valid<{ action: 'commit' | 'push' | 'pr'; message?: string; title?: string; body?: string; member?: string }>(c, 'json');
+    const member = input.member || c.req.query('member') || undefined;
+    const result = await git.run(
+      actor,
+      c.req.param('sessionId') ?? '',
+      { action: input.action, message: input.message ?? '', ...(input.title !== undefined ? { title: input.title } : {}), ...(input.body !== undefined ? { body: input.body } : {}) },
+      member
+    );
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+  on(routes.taskPullRequests, async (c) => {
+    const git = needGit();
+    if (!git) return fail(c, unavailable('Git 工作流未就绪'));
+    const actor = principal(c);
+    if (!can(actor, 'task.read')) return fail(c, forbidden('令牌没有 sessions:read 或 projects:read'));
+    const refresh = c.req.query('refresh') === '1' || c.req.query('refresh') === 'true';
+    const result = await git.syncTask(actor, c.req.param('taskId') ?? '', refresh ? { refresh: true } : undefined);
+    return result.ok ? c.json({ pullRequests: result.value }) : fail(c, result.error);
+  });
+  on(routes.sessionSettle, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'session.settle')) return fail(c, forbidden('令牌没有收起会话的权限（sessions:write 已包含 session.settle）'));
+    const input = valid<{ settled: boolean }>(c, 'json');
+    const result = await settleSessionUseCase(deps, {
+      sessionId: asSessionId(c.req.param('sessionId') ?? ''),
+      settled: input.settled,
+      actor,
+      now: deps.now()
+    });
+    return result.ok ? c.json(sessionSchema.parse(result.value)) : fail(c, result.error);
+  });
+  on(routes.workspaceSweep, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const projectId = c.req.param('projectId') ?? '';
+    const result = await sweepProjectUseCase(deps, actor, projectId);
+    if (!result.ok) return fail(c, result.error);
+    const records = await cleanupRecordsUseCase(deps, actor, projectId);
+    const items = records.ok ? records.value.items.filter((item) => !result.value.runId || item.runId === result.value.runId) : [];
+    return c.json({ ...result.value, items });
+  });
+  on(routes.workspaceSweepRecords, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.read')) return fail(c, forbidden('令牌没有 projects:read'));
+    const result = await cleanupRecordsUseCase(deps, actor, c.req.param('projectId') ?? '');
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
   on(routes.forkSession, async (c) => {
     const actor = principal(c);
     if (!can(actor, 'session.create')) return fail(c, forbidden('令牌没有 sessions:write'));

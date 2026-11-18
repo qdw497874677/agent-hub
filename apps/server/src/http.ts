@@ -34,6 +34,7 @@ import {
   createWorkspaceRequest,
   removeWorkspaceRequest,
   cleanupPolicyRequest,
+  deleteSessionRequest,
   workspaceChangesSchema,
   workspaceSchema,
   workspaceViewSchema,
@@ -137,6 +138,7 @@ import {
   setTaskSummaryUseCase,
   setProjectPreviewPortUseCase,
   setProjectWorktreeUseCase,
+  setProjectSubmodulesUseCase,
   setProjectChecksUseCase,
   setProjectAssetSetsUseCase,
   unavailable,
@@ -371,6 +373,7 @@ export function createApp(options: AppOptions): Hono {
         projectDeletion: options.projectDeletion,
         waitOptions: options.waitOptions,
         assetReview: options.assets?.deps,
+        git: options.git,
         ...(options.messaging ? { messaging: { bus: options.messaging.bus } } : {})
       });
     }
@@ -523,8 +526,12 @@ export function createApp(options: AppOptions): Hono {
       current = await setProjectPreviewPortUseCase(deps, { projectId, previewPort: input.value.previewPort });
       if (current.ok) await auditResource(c, subject, 'project.preview_port', projectId, current.value.previewPort === null || current.value.previewPort === undefined ? '清空' : String(current.value.previewPort));
     }
-    if (current.ok && input.value.repos !== undefined) {
-      current = await updateProjectReposUseCase(deps, { projectId, repos: input.value.repos });
+    if (current.ok && (input.value.repos !== undefined || input.value.primaryRepoId !== undefined)) {
+      current = await updateProjectReposUseCase(deps, {
+        projectId,
+        repos: input.value.repos ?? current.value.repos,
+        ...(input.value.primaryRepoId !== undefined ? { primaryRepoId: input.value.primaryRepoId } : {})
+      });
       if (current.ok) {
         const detail = current.value.repos.length === 0 ? '清空' : current.value.repos.map((repo) => repo.name).join(', ');
         await auditResource(c, subject, 'project.repos', projectId, detail);
@@ -537,6 +544,13 @@ export function createApp(options: AppOptions): Hono {
       if (current.ok) {
         const detail = current.value.checks.length === 0 ? '清空检查命令' : `检查命令：${current.value.checks.join(' · ').slice(0, 200)}`;
         await auditResource(c, subject, 'project.worktree', projectId, detail);
+      }
+    }
+    if (current.ok && input.value.submodules !== undefined) {
+      current = await setProjectSubmodulesUseCase(deps, { projectId, submodules: input.value.submodules });
+      if (current.ok) {
+        const mode = current.value.submodules === 'recursive' ? 'recursive' : 'off';
+        await auditResource(c, subject, 'project.worktree', projectId, `子模块：${mode}`);
       }
     }
     if (current.ok && input.value.assetSetIds !== undefined) {
@@ -1111,10 +1125,14 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(sessionSchema.parse(result.value)) : fail(c, result.error);
   });
 
-  /** 彻底删除会话：库里的数据一起清掉（不可恢复）；磁盘工作空间目录和 Task 不动。跑着的拒绝。 */
+  /** 彻底删除会话：库里的数据一起清掉（不可恢复）。是否拆 worktree 看请求体 / 项目规则。跑着的拒绝。 */
   app.delete('/api/sessions/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const result = await deleteSessionUseCase(deps, principalOf(c), asSessionId(sessionId));
+    const raw = await c.req.json().catch(() => ({}));
+    const parsed = deleteSessionRequest.safeParse(raw ?? {});
+    const result = await deleteSessionUseCase(deps, principalOf(c), asSessionId(sessionId), {
+      removeWorktree: parsed.success ? parsed.data.removeWorktree : undefined
+    });
     if (result.ok) {
       const detail = result.value.title ? `彻底删除「${result.value.title}」` : '彻底删除';
       await recordSessionAction(deps, options.activity, c, subjectOf(c), 'session.delete', sessionId, detail);
