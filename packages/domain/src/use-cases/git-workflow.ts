@@ -354,12 +354,22 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     return due.length;
   }
 
-  /** 打开任务时：看得见就同步一遍这个任务开着的 PR（最多 1 分钟一次）。 */
-  async function syncTask(subject: Subject | null, taskId: string): Promise<Result<readonly PullRequestLink[], DomainError>> {
+  /**
+   * 打开任务时：看得见就同步一遍这个任务开着的 PR（默认最多 1 分钟一次，避免连点刷新打爆 GitHub）。
+   * `refresh: true` 时立刻再拉一次（人刚在外面合并、要马上收起会话）。
+   */
+  async function syncTask(
+    subject: Subject | null,
+    taskId: string,
+    options?: { readonly refresh?: boolean }
+  ): Promise<Result<readonly PullRequestLink[], DomainError>> {
     const listed = await listForTask(subject, taskId);
     if (!listed.ok) return listed;
+    const minAgeMs = options?.refresh ? 0 : 60_000;
     const out: PullRequestLink[] = [];
-    for (const link of listed.value) out.push(link.state === 'open' && deps.now() - link.lastSyncedAt > 60_000 ? await syncOne(link).catch(() => link) : link);
+    for (const link of listed.value) {
+      out.push(link.state === 'open' && deps.now() - link.lastSyncedAt >= minAgeMs ? await syncOne(link).catch(() => link) : link);
+    }
     return ok(out);
   }
 

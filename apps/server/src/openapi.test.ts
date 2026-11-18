@@ -408,6 +408,52 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   assert.equal(anonymous.status, 401);
 });
 
+test('MCP：resources 可列出并读取 agent-hub-workbench skill；公开 GET 同样能下载', async () => {
+  const { mint, david, app } = await setup();
+  const token = (await mint(david, ['projects:read'])).token;
+  const rpc = async (body: unknown) => {
+    const response = await app.fetch(new Request('http://hub/openapi/v1/mcp', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' }, body: JSON.stringify(body) }));
+    return { status: response.status, body: (await response.json().catch(() => null)) as any };
+  };
+  const init = await rpc({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+  assert.equal(init.status, 200, JSON.stringify(init.body));
+  assert.ok(init.body.result.capabilities.resources, 'initialize 应声明 resources 能力');
+  const listed = await rpc({ jsonrpc: '2.0', id: 2, method: 'resources/list', params: {} });
+  const uris = (listed.body.result.resources as { uri: string }[]).map((item) => item.uri);
+  assert.ok(uris.includes('skill://agent-hub-workbench/SKILL.md'), JSON.stringify(uris));
+  const toolsListed = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+  assert.ok((toolsListed.body.result.tools as { name: string }[]).some((tool) => tool.name === 'list_projects'));
+  const read = await rpc({ jsonrpc: '2.0', id: 4, method: 'resources/read', params: { uri: 'skill://agent-hub-workbench/SKILL.md' } });
+  assert.equal(read.status, 200, JSON.stringify(read.body));
+  const text = read.body.result.contents[0].text as string;
+  assert.match(text, /session_start/);
+  assert.match(text, /project_repos/);
+  assert.match(text, /primaryRepoId/);
+  assert.match(text, /events/);
+  // skill 点到的工具名必须出现在完整 MCP 清单里（以路由元数据为准，不看当前令牌的子集）
+  const catalog = new Set(mcpToolsFor(undefined, { writes: true }).map((tool) => tool.name));
+  for (const name of ['list_projects', 'get_project', 'list_workers', 'task_create', 'session_start', 'session_reply', 'events', 'get_session', 'workspace_changes', 'project_repos', 'sync_workspace']) {
+    assert.ok(text.includes(name), `skill 应提到 ${name}`);
+    assert.ok(catalog.has(name), `skill 写了不存在的工具：${name}`);
+  }
+  assert.match(text, /workspace_group_create|没有.*建组合组|不能建组合组/);
+  const missing = await rpc({ jsonrpc: '2.0', id: 5, method: 'resources/read', params: { uri: 'skill://agent-hub-workbench/nope.md' } });
+  assert.ok(missing.body.error || missing.body.result?.isError, JSON.stringify(missing.body));
+
+  const json = await app.fetch(new Request('http://hub/openapi/v1/skills/agent-hub-workbench?format=json'));
+  assert.equal(json.status, 200, await json.clone().text());
+  const manifest = (await json.json()) as { name: string; files: { path: string }[] };
+  assert.equal(manifest.name, 'agent-hub-workbench');
+  assert.ok(manifest.files.some((file) => file.path === 'SKILL.md'));
+  const zip = await app.fetch(new Request('http://hub/openapi/v1/skills/agent-hub-workbench'));
+  assert.equal(zip.status, 200);
+  assert.equal(zip.headers.get('content-type'), 'application/zip');
+  assert.match(zip.headers.get('content-disposition') ?? '', /agent-hub-workbench\.zip/);
+  const bytes = Buffer.from(await zip.arrayBuffer());
+  assert.equal(bytes[0], 0x50);
+  assert.equal(bytes[1], 0x4b);
+});
+
 test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口要更新快照）', async () => {
   const { app } = await setup();
   const live = await (await app.fetch(new Request('http://hub/openapi/v1/openapi.json'))).json();

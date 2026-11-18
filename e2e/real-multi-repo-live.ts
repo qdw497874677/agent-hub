@@ -313,7 +313,7 @@ async function main() {
 
     await page.request.post(`/api/sessions/${session.id}/interrupt`, { headers });
     github.setMerged();
-    const synced = await page.request.get(`/api/tasks/${task.id}/pull-requests`, { headers });
+    const synced = await page.request.get(`/api/tasks/${task.id}/pull-requests?refresh=1`, { headers });
     const prs = (await synced.json()) as { pullRequests?: Array<{ number: number; state: string; repo?: string }> };
     const mergedOk = (prs.pullRequests ?? []).filter((pr) => pr.state === 'merged').length >= 2;
     record('7b. 将 PR 标成已合并并同步', mergedOk, JSON.stringify(prs.pullRequests ?? prs));

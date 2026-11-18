@@ -76,6 +76,7 @@ import type { SessionActivityOptions } from '../session-activity.ts';
 import type { StreamHub } from '../stream-hub.ts';
 import type { ProviderWiringApi } from '../providers.ts';
 import { V1, routes } from './routes.ts';
+import { workbenchSkillManifest, workbenchSkillZip } from '../workbench-skill.ts';
 import { createAssetVisibility } from '../asset-visibility.ts';
 import { effectiveWrites, handleMcp, INTERNAL } from './mcp.ts';
 import { workspaceForApiStart } from '../session-workspace.ts';
@@ -136,7 +137,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return c.json({ error: { code: 'rate_limited', message } }, 429);
   };
 
-  const PUBLIC = new Set([`${V1}/openapi.json`, `${V1}/docs`, `${V1}/health`]);
+  const PUBLIC = new Set([`${V1}/openapi.json`, `${V1}/docs`, `${V1}/health`, `${V1}/skills/agent-hub-workbench`]);
   v1.use(`${V1}/*`, async (c, next) => {
     if (PUBLIC.has(c.req.path) && c.req.method === 'GET') return next();
     const header = c.req.header('authorization') ?? '';
@@ -175,6 +176,16 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   const valid = <T>(c: Context, target: 'json' | 'query'): T => (c.req as unknown as { valid(t: string): T }).valid(target);
 
   on(routes.health, (c) => c.json({ ok: true }));
+  on(routes.workbenchSkill, (c) => {
+    if (c.req.query('format') === 'json') return c.json(workbenchSkillManifest());
+    const zip = workbenchSkillZip();
+    return new Response(Buffer.from(zip), {
+      headers: {
+        'content-type': 'application/zip',
+        'content-disposition': 'attachment; filename="agent-hub-workbench.zip"'
+      }
+    });
+  });
   on(routes.listAssets, async (c) => {
     const actor = principal(c);
     if (!can(actor, 'asset.read')) return fail(c, forbidden('令牌没有 assets:read'));

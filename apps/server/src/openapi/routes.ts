@@ -177,6 +177,27 @@ export const routes = {
     method: 'get', path: `${V1}/health`, tags: ['meta'], summary: '健康检查',
     responses: { 200: json(z.object({ ok: z.boolean() })) }
   }, { skip: '健康检查没有可执行的动作；探活直接打 REST /openapi/v1/health' }),
+  workbenchSkill: route(null, {
+    method: 'get', path: `${V1}/skills/agent-hub-workbench`, tags: ['meta'], summary: '下载 agent-hub-workbench skill',
+    description:
+      '给外部 agent 用的工作台操作说明（Agent Skills 格式：一份 SKILL.md 加 references/）。\n' +
+      '参数：format=zip（默认，附件 agent-hub-workbench.zip）或 format=json（{ name, description, files[] }）。\n' +
+      '本路径无需令牌。已连接 MCP 的客户端也可以 resources/list、resources/read（uri 形如 skill://agent-hub-workbench/SKILL.md）。',
+    request: { query: z.object({ format: z.enum(['zip', 'json']).optional() }) },
+    responses: {
+      200: {
+        description: 'zip 附件或 JSON 清单',
+        content: {
+          'application/zip': { schema: z.string() },
+          'application/json': { schema: z.object({
+            name: z.string(),
+            description: z.string(),
+            files: z.array(z.object({ path: z.string(), content: z.string() }))
+          }) }
+        }
+      }
+    }
+  }, { skip: '给外部 agent 下载的文件，不是可执行工具；用 MCP resources/read 或本 GET' }),
   me: route(null, {
     method: 'get', path: `${V1}/me`, tags: ['meta'], summary: '当前令牌是谁',
     description: '返回令牌所属的账号与令牌的权限范围。任何有效令牌都能调。',
@@ -233,8 +254,8 @@ export const routes = {
   setProjectRepos: route('projects:write', {
     method: 'put', path: `${V1}/projects/{projectId}/repos`, tags: ['projects'], summary: '设置项目仓库清单（可带私有仓库令牌）',
     description:
-      '整体替换项目的仓库清单（最多 8 个，第 0 个是主仓库）：空数组 = 解除全部绑定。\n' +
-      '参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）。\n' +
+      '整体替换项目的仓库清单（最多 8 个）：空数组 = 解除全部绑定。\n' +
+      '参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）；primaryRepoId（可选，指定组合会话的主仓库；不指定则不能开组合会话）。\n' +
       'credential：私有 HTTPS 仓库的令牌，只写不读——非空存进密钥箱、空串清掉、省略不动；响应里只有 hasToken，永远不回显。\n' +
       '返回：更新后的项目对象（repos[].hasToken 表明有没有令牌）。\n' +
       '下一步：用 get_project 复核；之后新建的会话/工作空间克隆与推送都会自动用这个令牌。\n' +
@@ -444,8 +465,8 @@ export const routes = {
   startSession: route('sessions:write', {
     method: 'post', path: `${V1}/sessions`, tags: ['sessions'], summary: '在任务下开一条会话',
     description:
-      '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了。\n' +
-      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、assetIds（可选：只带这些资产）。\n' +
+      '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了，必须给一台已登记的远程 Worker。\n' +
+      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n' +
       '资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n' +
       '返回：会话对象（id、status、model、workspaceId）。\n' +
       '下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n' +

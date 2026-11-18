@@ -12,7 +12,7 @@
 | `project_create` | 写 | `project.create` | `/projects` | name, rootPath?, workerId?, repoUrl?, defaultBranch?, description? | 新建项目（写工具，要 `clientRequestId`） |
 | `get_project` | 读 | `project.read` | `/projects/{projectId}` | projectId | 看一个项目 |
 | `project_update` | 写 | `project.update` | `/projects/{projectId}` | projectId, description?, checks? | 改项目说明或检查命令（写工具，要 `clientRequestId`） |
-| `project_repos` | 写 | `project.update` | `/projects/{projectId}/repos` | projectId, repos | 设置项目仓库清单（可带私有仓库令牌）（写工具，要 `clientRequestId`） |
+| `project_repos` | 写 | `project.update` | `/projects/{projectId}/repos` | projectId, repos, primaryRepoId? | 设置项目仓库清单（可带私有仓库令牌）（写工具，要 `clientRequestId`） |
 | `project_archive` | 写 | `project.delete` | `/projects/{projectId}` | projectId, confirmName | 把项目放进回收站 |
 | `workspace_changes` | 读 | `project.read` | `/workspaces/{workspaceId}/changes` | workspaceId | 工作空间里未提交的改动 |
 | `list_assets` | 读 | `asset.read` | `/assets` | kind? | 我能用的资产 |
