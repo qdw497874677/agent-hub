@@ -17,6 +17,10 @@ export interface SpawnAgentAction {
   readonly options: Readonly<Record<string, string | boolean>>;
   /** 现建临时空间的档位：`isolated` = 新开 worktree（按项目配置跑准备命令），`shared` = 每次现建一个落在长期目录旁的临时空间。不传 = 用项目默认工作空间。 */
   readonly workspaceMode?: 'shared' | 'isolated';
+  /** 会话通信 P1b：一仓一会话（项目里某个仓库的隔离 worktree）、落到哪台机器、任务内短名。 */
+  readonly repoId?: string;
+  readonly workerId?: string;
+  readonly handle?: string;
   readonly prompt?: string;
   /** 父会话的主人：新会话继承它，profile 和权限都按它算。 */
   readonly createdBy: string | null;
@@ -30,6 +34,8 @@ export interface SpawnedAgent {
   readonly agentId: string;
   readonly model: string;
   readonly status: string;
+  readonly handle?: string;
+  readonly workspaceId?: string | null;
 }
 
 export interface OrchestrationActions {
@@ -136,7 +142,7 @@ export const AGENT_ORCHESTRATION_TOOLS: readonly ToolDescriptor[] = [
     scope: 'agent:message',
     perMinute: 6,
     description:
-      'Start a sibling session in the same task (optionally from an Agent Profile) and optionally send it an initial prompt. This is a thin wrapper around the normal session/derive + prompt flow: the same worker, workspace and permission rules apply. Pass workspace_mode=isolated to run it in a fresh git worktree (the project setup command runs first) instead of the shared workspace. Returns the new session id.',
+      'Start a sibling session in the same task (optionally from an Agent Profile) and optionally send it an initial prompt. This is a thin wrapper around the normal session/derive + prompt flow: the same worker, workspace and permission rules apply. Pass workspace_mode=isolated to run it in a fresh git worktree (the project setup command runs first) instead of the shared workspace. Pass repo_id to give it its own worktree of just that project repo (one repo per session), worker_id to place it on a specific machine, and handle to name it (peers reach it as "peer:<handle>"). The new session is linked to you automatically, so you can agent.ask it right away. Returns the new session id and handle.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -145,6 +151,9 @@ export const AGENT_ORCHESTRATION_TOOLS: readonly ToolDescriptor[] = [
         model: { type: 'string', maxLength: 2000 },
         options: { type: 'object', additionalProperties: { type: ['string', 'boolean'] } },
         workspace_mode: { type: 'string', enum: ['shared', 'isolated'] },
+        repo_id: { type: 'string', minLength: 1, maxLength: 80, description: 'Project repo id or name: open a dedicated worktree of just this repo.' },
+        worker_id: { type: 'string', minLength: 1, maxLength: 120, description: 'Machine to run on (must be usable by the session owner).' },
+        handle: { type: 'string', minLength: 2, maxLength: 32, description: 'Short name in this task; others address it as peer:<handle>.' },
         prompt: { type: 'string', minLength: 1, maxLength: 32768 }
       },
       additionalProperties: false
@@ -233,6 +242,8 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
           model = profile.value.ref.model;
           options = ok({ ...profile.value.ref.options, ...options.value });
         }
+        // 没指定模型、也没用 profile、还是同一个运行时：沿用发起方的模型（不然落到运行时默认，可能根本没配）
+        if (!model && !profileId && agentId === me.agentId && me.model) model = me.model;
         if (!deps.agents.descriptor(asAgentId(agentId))) return err(notFound(`没有在线节点提供 ${agentId}`));
 
         const rawMode = args['workspace_mode'];
@@ -240,7 +251,14 @@ export function createAgentOrchestrationToolProvider(deps: OrchestrationDeps): T
           return err(invalid('workspace_mode 只能是 shared 或 isolated'));
         }
         const prompt = str(args['prompt'], 32768);
+        const repoId = str(args['repo_id'], 80);
+        const workerId = str(args['worker_id'], 120);
+        const handle = str(args['handle'], 32);
+        if (repoId && rawMode === 'shared') return err(invalid('repo_id 会新开 worktree，不能和 workspace_mode=shared 一起用'));
         const started = await deps.spawn({
+          ...(repoId ? { repoId } : {}),
+          ...(workerId ? { workerId } : {}),
+          ...(handle ? { handle } : {}),
           taskId,
           agentId,
           model,

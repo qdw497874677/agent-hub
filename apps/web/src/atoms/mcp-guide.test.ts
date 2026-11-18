@@ -5,6 +5,7 @@ import { MCP_PLACEHOLDER, MCP_TOKEN_ENV, maskToken, mcpGuide } from './mcp-guide
 test('接入说明：端点拼在 origin 后面，末尾斜杠不影响', () => {
   const guide = mcpGuide({ origin: 'https://hub.example.com/' });
   assert.equal(guide.url, 'https://hub.example.com/openapi/v1/mcp');
+  assert.equal(guide.skillUrl, 'https://hub.example.com/openapi/v1/skills/agent-hub-workbench');
   assert.equal(guide.header, `Authorization: Bearer $${MCP_TOKEN_ENV}`);
   assert.equal(guide.exportLine, `export ${MCP_TOKEN_ENV}=${MCP_PLACEHOLDER}`);
 });
@@ -40,4 +41,6 @@ test('给 agent 的提示词：说明轮询、幂等与不允许编 id', () => {
   assert.match(guide.snippets.prompt, /clientRequestId/);
   assert.match(guide.snippets.prompt, /不要凭空编 id/);
   assert.match(guide.snippets.prompt, /task_create → session_start/);
+  assert.match(guide.snippets.prompt, /skills\/agent-hub-workbench/);
+  assert.match(guide.snippets.prompt, /skill:\/\/agent-hub-workbench\/SKILL\.md/);
 });

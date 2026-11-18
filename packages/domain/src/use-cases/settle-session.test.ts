@@ -5,6 +5,7 @@ import { createProject } from '../project.ts';
 import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
 import { asAgentId } from '../ids.ts';
+import { newWorkspace } from '../workspace.ts';
 import type { AuditEntry, Principal } from '../account.ts';
 import type { AuditLog } from '../ports/audit-log.ts';
 import type { AccessPolicy } from './authorization.ts';
@@ -151,4 +152,130 @@ test('未登录、会话不存在都拒绝', async () => {
     now: 1
   });
   assert.equal(!missing.ok && missing.error.code, 'not_found');
+});
+
+test('收起会话：干净的独占 worktree 会摘掉；恢复时按原分支加回', async () => {
+  const w = inMemoryDeps({ access: policy });
+  const project = createProject({ name: 'demo', now: 1, teamId: 't1', createdBy: 'u1' });
+  assert.ok(project.ok);
+  const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
+  assert.ok(task.ok);
+  const base = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'w1',
+    path: '/srv/work/demo',
+    kind: 'long_lived',
+    source: 'cloned',
+    isGit: true,
+    now: 1
+  });
+  assert.ok(base.ok);
+  const tree = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'w1',
+    path: '/srv/work/.worktrees/demo/sess',
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: task.value.id,
+    baseWorkspaceId: base.value.id,
+    branch: 'agent-hub/t-aaaaaaaaaaaa',
+    isGit: true,
+    now: 2
+  });
+  assert.ok(tree.ok);
+  const session = deriveSession({
+    task: task.value,
+    agentId: asAgentId('pi'),
+    model: 'm',
+    now: 3,
+    createdBy: 'u1',
+    workspaceId: tree.value.id,
+    workerId: 'w1'
+  });
+  assert.ok(session.ok);
+  await w.deps.projects.save(project.value);
+  await w.deps.tasks.save(task.value);
+  await w.deps.workspaces.save(base.value);
+  await w.deps.workspaces.save(tree.value);
+  await w.deps.sessions.save({ ...session.value, status: 'stopped', workspaceId: tree.value.id, workerId: 'w1' });
+
+  const settled = await settleSessionUseCase(w.deps, {
+    sessionId: session.value.id,
+    settled: true,
+    actor,
+    now: 1000
+  });
+  assert.ok(settled.ok, settled.ok ? '' : settled.error.message);
+  assert.ok(w.git.calls.some((call) => call === 'w1:remove:worktree:/srv/work/.worktrees/demo/sess'));
+  assert.equal((await w.deps.workspaces.byId(tree.value.id))?.state, 'removed');
+
+  const restored = await settleSessionUseCase(w.deps, {
+    sessionId: session.value.id,
+    settled: false,
+    actor,
+    now: 2000
+  });
+  assert.ok(restored.ok);
+  assert.ok(w.git.calls.some((call) => call.includes('w1:worktree:/srv/work/demo->/srv/work/.worktrees/demo/sess@agent-hub/t-aaaaaaaaaaaa:existing')));
+  assert.equal((await w.deps.workspaces.byId(tree.value.id))?.state, 'ready');
+});
+
+test('收起会话：有未提交改动的 worktree 不 force 删除，目录留下标成 kept', async () => {
+  const w = inMemoryDeps({ access: policy });
+  const project = createProject({ name: 'demo', now: 1, teamId: 't1', createdBy: 'u1' });
+  assert.ok(project.ok);
+  const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
+  assert.ok(task.ok);
+  const base = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'w1',
+    path: '/srv/work/demo',
+    kind: 'long_lived',
+    source: 'cloned',
+    isGit: true,
+    now: 1
+  });
+  assert.ok(base.ok);
+  const tree = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'w1',
+    path: '/srv/work/.worktrees/demo/dirty',
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: task.value.id,
+    baseWorkspaceId: base.value.id,
+    branch: 'agent-hub/t-bbbbbbbbbbbb',
+    isGit: true,
+    now: 2
+  });
+  assert.ok(tree.ok);
+  const session = deriveSession({
+    task: task.value,
+    agentId: asAgentId('pi'),
+    model: 'm',
+    now: 3,
+    createdBy: 'u1',
+    workspaceId: tree.value.id,
+    workerId: 'w1'
+  });
+  assert.ok(session.ok);
+  await w.deps.projects.save(project.value);
+  await w.deps.tasks.save(task.value);
+  await w.deps.workspaces.save(base.value);
+  await w.deps.workspaces.save(tree.value);
+  await w.deps.sessions.save({ ...session.value, status: 'stopped', workspaceId: tree.value.id, workerId: 'w1' });
+  w.git.statuses.set(tree.value.path, { dirty: true, untracked: 1, unpushed: 0, branch: tree.value.branch, upstream: null });
+
+  const settled = await settleSessionUseCase(w.deps, {
+    sessionId: session.value.id,
+    settled: true,
+    actor,
+    now: 1000
+  });
+  assert.ok(settled.ok, settled.ok ? '' : settled.error.message);
+  assert.ok(w.git.calls.some((call) => call === 'w1:remove:worktree:/srv/work/.worktrees/demo/dirty'));
+  assert.ok(!w.git.calls.some((call) => call.endsWith(':force')));
+  const leftover = await w.deps.workspaces.byId(tree.value.id);
+  assert.equal(leftover?.state, 'kept');
+  assert.match(leftover?.keptReason ?? '', /未保存/);
 });

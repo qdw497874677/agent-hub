@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { currentTheme } from '../shell/theme.ts';
 import { Notice } from './notice.tsx';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { filesApi, RequestFailed, type FileEntryDto, type FilesContextMemberDto } from '../shell/api.ts';
 import { clampListWidth, crumbs, FILES_LIST_WIDTH_KEY, FILES_QUERY, filesErrorText, filesRefetch, readListWidth, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
 import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
 import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
@@ -15,7 +15,7 @@ import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, sel
  * - 不缓存（决定 8）：机器不在线就如实显示「机器离线」。
  */
 type Base = string; // 'session' | 'head' | 'branch' | 'turn' | 'turn:<n>'
-type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null };
+type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null; member?: string | null };
 /** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
 export type Reveal = { path: string; line: number | null; nonce: number };
 
@@ -43,16 +43,22 @@ export type FilesTab = 'files' | 'changes';
 type Props = {
   sessionId: string;
   workspaceId: string | null;
+  /** 组合会话当前选中的成员工作空间；单仓不传。 */
+  member?: string | null;
   status: string;
   tab: FilesTab;
   reveal?: Reveal | null;
   base?: { base: string; nonce: number } | null;
   /** diff 里选了行之后「引用到对话」：给回一句 `@path:start-end`。没接这个回调就不显示那个按钮。 */
   onQuote?: (ref: string) => void;
+  /** 组合会话的仓库切换条，画在文件 / 改动页顶部。 */
+  switcher?: ReactNode;
+  /** 组合会话全部成员：改动页按仓库汇总。 */
+  members?: readonly FilesContextMemberDto[];
 };
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = null, base: wanted = null, onQuote }: Props) {
+export function FilesBrowser({ sessionId, workspaceId, member = null, status, tab, reveal = null, base: wanted = null, onQuote, switcher = null, members = [] }: Props) {
   const client = useQueryClient();
   const keys = filesKeys(workspaceId, sessionId);
   const wide = useWide();
@@ -67,6 +73,12 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
   const [query, setQuery] = useState('');
 
   useEffect(() => {
+    setOpened(null);
+    setExpanded(new Set(['']));
+    setQuery('');
+  }, [member]);
+
+  useEffect(() => {
     if (!reveal) return;
     const sensitive = /(^|\/)(\.env|id_rsa|id_ed25519)|\.(pem|key|p12)$/.test(reveal.path);
     if (sensitive && !window.confirm(`「${reveal.path}」可能含密钥或凭据。确定要打开吗？（会记入审计）`)) return;
@@ -76,11 +88,20 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
 
-  const changes = useQuery({ ...fresh, queryKey: keys.changes(base), queryFn: () => filesApi.changes(sessionId, base) });
-  const turns = useQuery({ ...fresh, queryKey: keys.turns(), queryFn: () => filesApi.turns(sessionId) });
-  const context = useQuery({ queryKey: keys.context(), queryFn: () => filesApi.context(sessionId), staleTime: 15_000 });
+  const changes = useQuery({ ...fresh, queryKey: keys.changes(base), queryFn: () => filesApi.changes(sessionId, base, member) });
+  const aggregate = members.length > 1 && tab === 'changes';
+  const groupedChanges = useQueries({
+    queries: members.map((item) => ({
+      ...fresh,
+      enabled: aggregate,
+      queryKey: ['files', sessionId, 'changes', base, item.workspaceId],
+      queryFn: () => filesApi.changes(sessionId, base, item.workspaceId)
+    }))
+  });
+  const turns = useQuery({ ...fresh, queryKey: keys.turns(), queryFn: () => filesApi.turns(sessionId, member) });
+  const context = useQuery({ queryKey: keys.context(), queryFn: () => filesApi.context(sessionId, member), staleTime: 15_000 });
   const others = context.data?.otherProjectSessions ?? 0;
-  const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: keys.find(query.trim()), queryFn: () => filesApi.find(sessionId, query.trim()) });
+  const found = useQuery({ ...fresh, enabled: query.trim() !== '', queryKey: keys.find(query.trim()), queryFn: () => filesApi.find(sessionId, query.trim(), member) });
 
   // 回合结束（状态变了）就刷新一遍：agent 刚改过文件
   const lastStatus = useRef(status);
@@ -115,7 +136,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
     let disposed = false;
     const connect = () => {
       if (disposed) return;
-      source = new EventSource(filesApi.eventsUrl(sessionId, paths));
+      source = new EventSource(filesApi.eventsUrl(sessionId, paths, member));
       source.addEventListener('ready', () => {
         if (!first) invalidateAll({ cancelRefetch: false });
         // 换订阅（展开/返回）时旧连接已断、新连接未就绪，中间的改动会漏：补拉一次被盯的目录。
@@ -153,12 +174,14 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
       source?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, workspaceId, pathsKey, client]);
+  }, [sessionId, workspaceId, member, pathsKey, client]);
 
-  const open = (entry: { path: string; sensitive?: boolean }, diff = false) => {
+  const open = (entry: { path: string; sensitive?: boolean; member?: string | null }, diff = false) => {
     if (entry.sensitive && !window.confirm(`「${entry.path}」可能含密钥或凭据。确定要打开吗？（会记入审计）`)) return;
-    setOpened({ path: entry.path, confirmed: Boolean(entry.sensitive), diff });
+    setOpened({ path: entry.path, confirmed: Boolean(entry.sensitive), diff, member: entry.member ?? null });
   };
+  const activeMember = opened?.member ?? member;
+  const activeKeys = filesKeys(activeMember ?? workspaceId, sessionId);
   const toggle = (path: string) =>
     setExpanded((current) => {
       const next = new Set(current);
@@ -197,6 +220,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-canvas" role="tabpanel" aria-label="工作目录文件" data-testid={`files-panel-${tab}`}>
+      {switcher ? <div className="shrink-0 border-b border-hair px-3 py-1.5">{switcher}</div> : null}
       {others > 0 ? (
         <p data-testid="files-other-projects" className="shrink-0 border-b border-hair px-3 py-1 text-meta text-rust">
           ⚠ 其他项目有 {others} 个会话也在这个工作目录里干活，这里的改动可能不全是本会话的
@@ -224,7 +248,7 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                       </button>
                     ))
                   ) : (
-                    <Directory sessionId={sessionId} keys={keys} path="" depth={0} expanded={expanded} toggle={toggle} open={open} showSensitive={showSensitive} selected={opened?.path ?? null} />
+                    <Directory sessionId={sessionId} member={member} keys={keys} path="" depth={0} expanded={expanded} toggle={toggle} open={open} showSensitive={showSensitive} selected={opened?.path ?? null} />
                   )}
                 </div>
               </>
@@ -252,7 +276,37 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                   {changed?.commit ? <span className="font-mono">{changed.commit.slice(0, 8)}</span> : null}
                 </div>
                 <RootPath root={root} wide={wide} />
-                {changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
+                {aggregate ? (
+                  groupedChanges.some((item) => item.error) ? (
+                    <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(groupedChanges.find((item) => item.error)?.error)}</p>
+                  ) : null
+                ) : changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
+                {aggregate ? (
+                  members.every((_, index) => (shown(groupedChanges[index]!)?.files.length ?? 0) === 0) ? (
+                    <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
+                  ) : (
+                    members.map((item, index) => {
+                      const group = shown(groupedChanges[index]!);
+                      const files = group?.files ?? [];
+                      if (files.length === 0) return null;
+                      return (
+                        <div key={item.workspaceId} className="mb-1" data-testid={`changes-group-${item.name}`}>
+                          <p className="px-3 py-1 font-mono text-meta text-secondary">{item.name}（{files.length}）</p>
+                          {files.map((f) => (
+                            <button key={`${item.workspaceId}:${f.path}`} onClick={() => open({ path: f.path, member: item.workspaceId }, true)} data-testid="change-row"
+                              className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened && opened.path === f.path && (opened.member ?? member) === item.workspaceId ? 'bg-hair/60' : ''}`}>
+                              <span className="w-3 shrink-0 font-mono text-meta text-warning">{GIT_LABEL[f.status] ?? '?'}</span>
+                              <span className="min-w-0 flex-1 truncate font-mono text-sub text-secondary">{f.path}</span>
+                              <span className="shrink-0 font-mono text-meta text-sage">+{f.additions}</span>
+                              <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })
+                  )
+                ) : (
+                  <>
                 {changed?.files.length === 0 ? (
                   // 「整个会话」要有会话开始时的 git 基准；没有基准时空列表不等于「没改」，照实说原因
                   changed.base === 'session' && changed.commit === null ? (
@@ -272,6 +326,8 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
                     <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
                   </button>
                 ))}
+                  </>
+                )}
               </div>
             )}
           </aside>
@@ -299,8 +355,8 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
         {wide || opened ? (
           <main className="min-w-0 flex-1 overflow-auto">
             {opened ? (
-              opened.diff ? <DiffView sessionId={sessionId} keys={keys} path={opened.path} base={base} wide={wide} root={root} onQuote={onQuote} onBack={() => setOpened(null)} /> :
-              <FileView sessionId={sessionId} keys={keys} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
+              opened.diff ? <DiffView sessionId={sessionId} member={activeMember} keys={activeKeys} path={opened.path} base={base} wide={wide} root={root} onQuote={onQuote} onBack={() => setOpened(null)} /> :
+              <FileView sessionId={sessionId} member={activeMember} keys={activeKeys} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
             ) : (
               <p className="p-6 text-sub text-tertiary">选一个文件查看</p>
             )}
@@ -311,9 +367,9 @@ export function FilesBrowser({ sessionId, workspaceId, status, tab, reveal = nul
   );
 }
 
-function Directory(props: { sessionId: string; keys: FilesKeys; path: string; depth: number; expanded: Set<string>; toggle: (p: string) => void; open: (e: FileEntryDto) => void; showSensitive: boolean; selected: string | null }) {
-  const { sessionId, keys, path, depth } = props;
-  const page = useQuery({ ...fresh, queryKey: keys.list(path), queryFn: () => filesApi.list(sessionId, path) });
+function Directory(props: { sessionId: string; member: string | null; keys: FilesKeys; path: string; depth: number; expanded: Set<string>; toggle: (p: string) => void; open: (e: FileEntryDto) => void; showSensitive: boolean; selected: string | null }) {
+  const { sessionId, member, keys, path, depth } = props;
+  const page = useQuery({ ...fresh, queryKey: keys.list(path), queryFn: () => filesApi.list(sessionId, path, member) });
   if (page.isPending) return <p className="py-1 text-meta text-tertiary" style={{ paddingLeft: 12 + depth * 14 }}>…</p>;
   if (page.error) return <p className="py-1 text-meta text-rust" style={{ paddingLeft: 12 + depth * 14 }} data-testid="files-error">{problem(page.error)}</p>;
   const entries = page.data.entries.filter((e) => props.showSensitive || !e.sensitive);
@@ -401,8 +457,8 @@ function PathBar({ path, root, wide, download, size, onCrumb, onBack }: {
   );
 }
 
-function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { sessionId: string; keys: FilesKeys; opened: Opened; wide: boolean; root: string | undefined; onBack: () => void; onCrumb: (p: string) => void }) {
-  const file = useQuery({ ...fresh, queryKey: keys.read(opened.path, opened.confirmed), queryFn: () => filesApi.read(sessionId, opened.path, opened.confirmed) });
+function FileView({ sessionId, member, keys, opened, wide, root, onBack, onCrumb }: { sessionId: string; member: string | null; keys: FilesKeys; opened: Opened; wide: boolean; root: string | undefined; onBack: () => void; onCrumb: (p: string) => void }) {
+  const file = useQuery({ ...fresh, queryKey: keys.read(opened.path, opened.confirmed), queryFn: () => filesApi.read(sessionId, opened.path, opened.confirmed, member) });
   const data = shown(file);
   const text = useMemo(() => (data && !data.binary ? decodeText(data.data) : null), [data]);
   const [html, setHtml] = useState<string | null>(null);
@@ -428,7 +484,7 @@ function FileView({ sessionId, keys, opened, wide, root, onBack, onCrumb }: { se
   }, [line, text, html]);
   return (
     <div className="flex min-h-full flex-col">
-      <PathBar path={opened.path} root={root} wide={wide} size={data?.size} download={filesApi.downloadUrl(sessionId, opened.path, opened.confirmed)} onCrumb={onCrumb} onBack={onBack} />
+      <PathBar path={opened.path} root={root} wide={wide} size={data?.size} download={filesApi.downloadUrl(sessionId, opened.path, opened.confirmed, member)} onCrumb={onCrumb} onBack={onBack} />
       {file.isPending ? <p className="p-4 text-meta text-tertiary">读取中…</p> : null}
       {file.error ? <p className="p-4 text-sub text-rust" data-testid="files-error">{problem(file.error)}</p> : null}
       {data?.binary ? <p className="p-4 text-sub text-tertiary">二进制文件，不预览——可以下载</p> : null}
@@ -465,8 +521,9 @@ const DIFF_WINDOW_OVERSCAN = 20;
  * 而外来 HTML 只能靠命令式打补丁，所以改成自己画行——代价是不再区分并排 / 单列两种版式，
  * 一律单列，宽度交给横向滚动。
  */
-function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: {
+function DiffView({ sessionId, member, keys, path, base, wide, root, onBack, onQuote }: {
   sessionId: string;
+  member: string | null;
   keys: FilesKeys;
   path: string;
   base: Base;
@@ -475,7 +532,7 @@ function DiffView({ sessionId, keys, path, base, wide, root, onBack, onQuote }: 
   onBack: () => void;
   onQuote?: (ref: string) => void;
 }) {
-  const diff = useQuery({ ...fresh, queryKey: keys.diff(path, base), queryFn: () => filesApi.diff(sessionId, path, base) });
+  const diff = useQuery({ ...fresh, queryKey: keys.diff(path, base), queryFn: () => filesApi.diff(sessionId, path, base, member) });
   const data = shown(diff);
   const rows = useMemo(() => (data && !data.binary ? parsePatchLines(data.patch) : []), [data]);
   // 整文件新增：不铺绿底，读起来像普通代码

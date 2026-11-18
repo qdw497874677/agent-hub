@@ -46,6 +46,16 @@ test('外部接入页：限项目令牌、只显示一次、测试连接、调�
   await page.getByTestId('menu-access').click();
   await expect(page.getByRole('heading', { name: '外部接入（MCP）' })).toBeVisible();
   await expect(page.getByTestId('access-endpoint')).toContainText('/openapi/v1/mcp');
+  const skillLink = page.getByTestId('skill-download');
+  await expect(skillLink).toBeVisible();
+  await expect(skillLink).toHaveAttribute('href', /\/openapi\/v1\/skills\/agent-hub-workbench$/);
+  const skill = await page.request.get('/openapi/v1/skills/agent-hub-workbench?format=json');
+  expect(skill.ok()).toBeTruthy();
+  const manifest = (await skill.json()) as { name: string; files: { path: string; content: string }[] };
+  expect(manifest.name).toBe('agent-hub-workbench');
+  const skillMd = manifest.files.find((file) => file.path === 'SKILL.md')?.content ?? '';
+  expect(skillMd).toContain('session_start');
+  expect(skillMd).toContain('primaryRepoId');
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'access-1280.png'), fullPage: true });
 
   // —— 2. 预设「只读」+ 只给指定项目 ——

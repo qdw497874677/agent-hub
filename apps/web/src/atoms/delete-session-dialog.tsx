@@ -27,6 +27,7 @@ export function DeleteSessionDialog({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [removeWorktree, setRemoveWorktree] = useState(false);
   const name = deleteSessionLabel({ title: session.title, opening });
 
   async function remove(): Promise<void> {
@@ -34,7 +35,7 @@ export function DeleteSessionDialog({
     setBusy(true);
     setError(null);
     try {
-      await api.deleteSession(session.id);
+      await api.deleteSession(session.id, { removeWorktree });
       onDeleted();
     } catch (failure) {
       setError(deleteSessionErrorText(failure));
@@ -51,7 +52,17 @@ export function DeleteSessionDialog({
       onClose={busy ? () => undefined : onClose}
     >
       <h2 className="mb-2 text-body text-primary">删除会话？</h2>
-      <p className="mb-3 text-sub text-secondary">{deleteSessionBody(name)}</p>
+      <p className="mb-3 text-sub text-secondary">{deleteSessionBody(name, removeWorktree)}</p>
+      <label className="mb-3 flex items-center gap-2 text-meta text-secondary">
+        <input
+          type="checkbox"
+          checked={removeWorktree}
+          onChange={(event) => setRemoveWorktree(event.target.checked)}
+          data-testid="session-delete-worktree"
+          disabled={busy}
+        />
+        同时删除工作目录
+      </label>
       {error ? (
         <p role="alert" data-testid="session-delete-error" className="mb-2 text-meta text-rust">
           {error}

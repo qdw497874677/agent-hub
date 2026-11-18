@@ -21,6 +21,7 @@ import {
   setProjectDescriptionRequest,
   updateProjectRequest,
   removeWorkspaceRequest,
+  settleSessionRequest,
   syncWorkspaceResultSchema,
   workspaceSchema,
   setProjectRepoRequest,
@@ -56,10 +57,50 @@ const errors = {
 } as const;
 const okSchema = z.object({ ok: z.literal(true) });
 
+// ── 会话通信 P1d（docs/design/session-communication.md §5.4 / §10.2）──
+const messagePartSchema = z.record(z.string(), z.unknown()).openapi('MessagePart');
+const agentMessageSchema = z
+  .object({
+    messageId: z.string(),
+    traceId: z.string(),
+    kind: z.enum(['send', 'ask', 'reply']),
+    from: z.string(),
+    fromLabel: z.string().nullable(),
+    to: z.string(),
+    targetSessionId: z.string().nullable(),
+    status: z.string(),
+    body: z.string(),
+    replyTo: z.string().nullable(),
+    failure: z.string().nullable(),
+    failureDetail: z.string().nullable(),
+    parts: z.array(messagePartSchema),
+    replyStatus: z.string().nullable(),
+    createdAt: z.number()
+  })
+  .passthrough()
+  .openapi('AgentMessage');
+const peerSchema = z
+  .object({ address: z.string(), handle: z.string().optional(), label: z.string(), status: z.string(), workerId: z.string().nullable().optional(), repo: z.string().nullable().optional(), branch: z.string().nullable().optional(), title: z.string().nullable().optional(), connected: z.boolean().optional() })
+  .passthrough()
+  .openapi('SessionPeer');
+const sessionLinkSchema = z.object({ projectId: z.string(), aSessionId: z.string(), bSessionId: z.string() }).passthrough().openapi('SessionLink');
+const sendMessageRequest = z
+  .object({
+    kind: z.enum(['send', 'ask']),
+    body: z.string().min(1).max(32768),
+    parts: z.array(messagePartSchema).max(8).optional(),
+    wake: z.boolean().optional(),
+    timeoutSec: z.number().int().min(30).max(14400).optional()
+  })
+  .openapi('SendMessageRequest');
+const acceptedSchema = z.object({ messageId: z.string(), traceId: z.string(), status: z.string(), targetSessionId: z.string().nullable() }).openapi('MessageAccepted');
+const waitSec = z.coerce.number().int().min(0).max(50).optional();
+
 const projectId = z.object({ projectId: z.string().openapi({ param: { name: 'projectId', in: 'path' } }) });
 const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', in: 'path' } }) });
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
 const workspaceId = z.object({ workspaceId: z.string().openapi({ param: { name: 'workspaceId', in: 'path' } }) });
+const groupId = z.object({ groupId: z.string().openapi({ param: { name: 'groupId', in: 'path' } }) });
 
 /** 每条路由要的权限范围（文档里写清楚；真正的判断在 can()）。 */
 export type ScopeNote =
@@ -172,11 +213,127 @@ const route = <R extends Parameters<typeof createRoute>[0]>(scope: ScopeNote, co
   };
 };
 
+
+const memberBranch = z.object({ repoId: z.string().min(1).max(80), branch: z.string().min(1).max(200) });
+const createWorkspaceGroupRequest = z.object({
+  taskId: z.string().min(1).max(80),
+  workerId: z.string().min(1).max(120).optional(),
+  repoIds: z.array(z.string().min(1).max(80)).max(8).optional(),
+  fromGroupId: z.string().min(1).max(80).optional(),
+  branches: z.array(memberBranch).max(8).optional(),
+  sessionId: z.string().min(1).max(80).optional()
+});
+const addWorkspaceGroupMemberRequest = z.object({ repoId: z.string().min(1).max(80) });
+const workspaceGroupMemberSchema = z.object({
+  workspaceId: z.string(),
+  repoId: z.string(),
+  name: z.string(),
+  state: z.enum(['ready', 'preparing', 'failed']),
+  error: z.string().nullable()
+});
+const workspaceGroupSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  workerId: z.string().nullable(),
+  root: z.string(),
+  members: z.array(workspaceGroupMemberSchema),
+  state: z.string(),
+  layout: z.string().optional(),
+  primaryRepoId: z.string().nullable().optional(),
+  ownerTaskId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  createdAt: z.number(),
+  error: z.string().nullable()
+});
+const sessionGitRunRequest = z.object({
+  action: z.enum(['commit', 'push', 'pr']),
+  message: z.string().max(8000).optional(),
+  title: z.string().max(300).optional(),
+  body: z.string().max(65_536).optional(),
+  member: z.string().min(1).max(120).optional()
+});
+const pullRequestLinkSchema = z.object({
+  id: z.string(),
+  url: z.string(),
+  number: z.number().optional(),
+  title: z.string().optional(),
+  state: z.string(),
+  workspaceId: z.string().optional(),
+  repo: z.string().nullable().optional()
+}).passthrough();
+const sessionGitStateSchema = z.object({
+  isGit: z.boolean(),
+  branch: z.string().nullable(),
+  defaultBranch: z.string().nullable(),
+  hasOrigin: z.boolean(),
+  repo: z.string().nullable(),
+  files: z.array(z.unknown()),
+  ahead: z.number(),
+  upstream: z.string().nullable(),
+  canPush: z.boolean(),
+  prBlocked: z.string().nullable(),
+  prVia: z.string(),
+  pullRequests: z.array(pullRequestLinkSchema)
+}).passthrough();
+const sessionGitRunResultSchema = z.object({
+  sha: z.string().nullable(),
+  committed: z.boolean(),
+  pushed: z.boolean(),
+  branch: z.string().nullable(),
+  pullRequest: pullRequestLinkSchema.nullable(),
+  compareUrl: z.string().nullable(),
+  notes: z.array(z.string())
+});
+const sweepItemSchema = z.object({
+  runId: z.string(),
+  projectId: z.string().nullable(),
+  workspaceId: z.string(),
+  path: z.string(),
+  branch: z.string().nullable(),
+  action: z.enum(['removed', 'kept', 'failed']),
+  reason: z.string(),
+  sizeBytes: z.number().nullable(),
+  at: z.number()
+});
+const sweepReportSchema = z.object({
+  removed: z.array(z.string()),
+  kept: z.array(z.string()),
+  skipped: z.array(z.string()),
+  failed: z.array(z.string()).optional(),
+  runId: z.string().nullable().optional(),
+  items: z.array(sweepItemSchema).optional()
+});
+const cleanupRecordsSchema = z.object({
+  items: z.array(sweepItemSchema),
+  orphans: z.array(z.object({ path: z.string(), workerId: z.string().nullable() }))
+});
+
 export const routes = {
   health: route(null, {
     method: 'get', path: `${V1}/health`, tags: ['meta'], summary: '健康检查',
     responses: { 200: json(z.object({ ok: z.boolean() })) }
   }, { skip: '健康检查没有可执行的动作；探活直接打 REST /openapi/v1/health' }),
+  workbenchSkill: route(null, {
+    method: 'get', path: `${V1}/skills/agent-hub-workbench`, tags: ['meta'], summary: '下载 agent-hub-workbench skill',
+    description:
+      '给外部 agent 用的工作台操作说明（Agent Skills 格式：一份 SKILL.md 加 references/）。\n' +
+      '参数：format=zip（默认，附件 agent-hub-workbench.zip）或 format=json（{ name, description, files[] }）。\n' +
+      '本路径无需令牌。已连接 MCP 的客户端也可以 resources/list、resources/read（uri 形如 skill://agent-hub-workbench/SKILL.md）。',
+    request: { query: z.object({ format: z.enum(['zip', 'json']).optional() }) },
+    responses: {
+      200: {
+        description: 'zip 附件或 JSON 清单',
+        content: {
+          'application/zip': { schema: z.string() },
+          'application/json': { schema: z.object({
+            name: z.string(),
+            description: z.string(),
+            files: z.array(z.object({ path: z.string(), content: z.string() }))
+          }) }
+        }
+      }
+    }
+  }, { skip: '给外部 agent 下载的文件，不是可执行工具；用 MCP resources/read 或本 GET' }),
   me: route(null, {
     method: 'get', path: `${V1}/me`, tags: ['meta'], summary: '当前令牌是谁',
     description: '返回令牌所属的账号与令牌的权限范围。任何有效令牌都能调。',
@@ -233,8 +390,8 @@ export const routes = {
   setProjectRepos: route('projects:write', {
     method: 'put', path: `${V1}/projects/{projectId}/repos`, tags: ['projects'], summary: '设置项目仓库清单（可带私有仓库令牌）',
     description:
-      '整体替换项目的仓库清单（最多 8 个，第 0 个是主仓库）：空数组 = 解除全部绑定。\n' +
-      '参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）。\n' +
+      '整体替换项目的仓库清单（最多 8 个）：空数组 = 解除全部绑定。\n' +
+      '参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）；primaryRepoId（可选，指定组合会话的主仓库；不指定则不能开组合会话）。\n' +
       'credential：私有 HTTPS 仓库的令牌，只写不读——非空存进密钥箱、空串清掉、省略不动；响应里只有 hasToken，永远不回显。\n' +
       '返回：更新后的项目对象（repos[].hasToken 表明有没有令牌）。\n' +
       '下一步：用 get_project 复核；之后新建的会话/工作空间克隆与推送都会自动用这个令牌。\n' +
@@ -444,12 +601,13 @@ export const routes = {
   startSession: route('sessions:write', {
     method: 'post', path: `${V1}/sessions`, tags: ['sessions'], summary: '在任务下开一条会话',
     description:
-      '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了。\n' +
-      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、assetIds（可选：只带这些资产）。\n' +
+      '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了，必须给一台已登记的远程 Worker。\n' +
+      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n' +
+      '会话通信：repoId（可选：一仓一会话——只为项目里这个仓库新开隔离 worktree，和 workspaceId / groupId 互斥）、handle（可选：任务内短名，别的会话用 peer:<handle> 找它）、linkWith（可选：建好后和这些同项目会话连线，连上才能互发消息）。\n' +
       '资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n' +
       '返回：会话对象（id、status、model、workspaceId）。\n' +
       '下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n' +
-      '错误：400 参数不合法；403 无 sessions:write；409 机器不可用或没装该 runtime。\n' +
+      '错误：400 参数不合法（含 handle 格式、repoId 不在项目里）；403 无 sessions:write 或不能和 linkWith 里的会话说话；404 linkWith 的会话不在同一项目；409 机器不可用、没装该 runtime、短名已被占用或 linkWith 的会话已收起（archived）。\n' +
       '重试：MCP 调用要给 clientRequestId，同一值重试不会开第二条会话。',
     request: body(deriveSessionRequest),
     responses: { 201: json(sessionSchema, '已开始') }
@@ -467,8 +625,9 @@ export const routes = {
       '返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n' +
       '轮询用法：记下 turn；调 events(sessionId, sinceTurn=turn) 或 events(sessionId, after=lastSeq)；未到终态就 3–5 秒后再看；看到本 turn 的 ended 事件即这一轮结束。\n' +
       '下一步：用 events 读它的时间线；要发下一句用 session_reply。\n' +
+      '长轮询：waitSec（0–50）= 这一轮还在跑时最多等这么久再返回（不取消这一轮；到点仍在跑就原样返回 running）。\n' +
       '错误：404 会话不存在或属于看不见的项目。',
-    request: { params: sessionId },
+    request: { params: sessionId, query: z.object({ waitSec }) },
     responses: { 200: json(sessionSchema) }
   }),
   setSessionModel: route('sessions:write', {
@@ -514,7 +673,7 @@ export const routes = {
     method: 'get', path: `${V1}/sessions/{sessionId}/events`, tags: ['sessions'], summary: '会话事件（after 之后的）',
     description:
       '读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n' +
-      '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）。\n' +
+      '参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有新事件时最多等这么久，有新事件立刻返回）。\n' +
       '返回：[{ seq, at, turn, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n' +
       '轮询用法：第一次 sinceTurn=turn；之后用 after=最后一条 seq 增量拉；本 turn 出现 ended 即结束；没结束时 3–5 秒后再拉（running 时密一点，卡住时退到 10 秒）。\n' +
       '下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n' +
@@ -523,11 +682,77 @@ export const routes = {
       params: sessionId,
       query: z.object({
         after: z.coerce.number().int().min(0).optional(),
-        sinceTurn: z.coerce.number().int().min(0).optional()
+        sinceTurn: z.coerce.number().int().min(0).optional(),
+        waitSec
       })
     },
     responses: { 200: json(z.array(journalEntrySchema)) }
   }, { module: 'sessions', need: 'session.read', expose: 'events', project: projectEvents }),
+  linkSession: route('sessions:write', {
+    method: 'post', path: `${V1}/sessions/{sessionId}/links`, tags: ['sessions'], summary: '把两条会话连起来（能互发消息、只读看对方工作空间）',
+    description:
+      '连两条同项目的会话（无向、幂等）。连上后两边的 agent 能用 agent.ask / agent.send 互发消息（to 写 peer:<短名>），能用 workspace.read 的 session 参数只读看对方文件。\n' +
+      '参数：sessionId；body `{ otherSessionId }`。两条会话你都要能 session.prompt。\n' +
+      '返回：连线对象。\n' +
+      '下一步：session_peers 看短名；session_message 给其中一条派活。\n' +
+      '错误：400 连自己；404 不在同一个项目；409 两边机器都不在线。',
+    request: { params: sessionId, ...body(z.object({ otherSessionId: z.string().min(1) })) },
+    responses: { 201: json(sessionLinkSchema, '已连上') }
+  }, { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_link', idempotent: true }),
+  unlinkSession: route('sessions:write', {
+    method: 'post', path: `${V1}/sessions/{sessionId}/unlink`, tags: ['sessions'], summary: '断开两条会话',
+    description:
+      '断开连线（重复断开也成功）。断开后双方不能再互发消息（派生父子关系不受影响），已发的消息和审计保留。\n' +
+      '参数：sessionId；body `{ otherSessionId }`。\n' +
+      '返回：{ ok: true }。\n' +
+      '错误：400 断自己；403 / 404。',
+    request: { params: sessionId, ...body(z.object({ otherSessionId: z.string().min(1) })) },
+    responses: { 200: json(okSchema) }
+  }, { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_unlink' }),
+  sessionPeers: route('sessions:read', {
+    method: 'get', path: `${V1}/sessions/{sessionId}/peers`, tags: ['sessions'], summary: '会话的同伴',
+    description:
+      '这条会话能直接说话的同伴（显式连线 + 派生父会话）：短名 handle（用 peer:<handle> 寻址）、session id、机器 workerId、仓库、分支、标题、状态（idle / busy / archived）。\n' +
+      '参数：sessionId。\n' +
+      '返回：{ peers: [...] }。\n' +
+      '下一步：session_link 增加同伴；session_message 给某条会话发消息。',
+    request: { params: sessionId },
+    responses: { 200: json(z.object({ peers: z.array(peerSchema) })) }
+  }, { module: 'sessions', need: 'session.read', expose: 'session_peers' }),
+  sessionMessage: route('sessions:write', {
+    method: 'post', path: `${V1}/sessions/{sessionId}/messages`, tags: ['sessions'], summary: '以外部 agent 身份给会话发消息（send / ask）',
+    description:
+      '经消息总线给会话发一条 agent 消息，署名「外部 · <令牌名>」，包在不可信边界里；ask 的回复进你的外部收件箱（不唤醒任何会话）。\n' +
+      '和 session_reply 的区别：session_reply 是以令牌主人身份对会话下指令（普通一轮）；session_message 是 agent 消息，受限额和防风暴约束，回复能按 messageId 关联。\n' +
+      '参数：sessionId；body `{ kind: send|ask, body, parts?, wake?, timeoutSec? }`。parts 是结构化附件（data / ref / file / link，≤8 个，≤16KB）；wake=false 只进对方收件箱（只有 send）；timeoutSec 30–14400（只有 ask，默认 1800）。\n' +
+      '返回：{ messageId, traceId, status, targetSessionId }；status = delivered（对方空闲，已开新一轮）/ queued（对方忙，排队）/ done（wake=false）。\n' +
+      '下一步：ask 用 message_get(messageId, waitSec≤50) 等回复，或 message_inbox 增量取；回复的 replyStatus 是 ok / failed / refused。\n' +
+      '错误：400 参数不合法；403 没有 session.prompt 或 duplicate（10 分钟内重复）；409 archived（会话已收起）/ rate_limited（同一会话每分钟最多 6 条）；404 会话不存在。\n' +
+      '重试：给 clientRequestId，同一值重试不会发第二条。',
+    request: { params: sessionId, ...body(sendMessageRequest) },
+    responses: { 201: json(acceptedSchema, '已接收') }
+  }, { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_message', idempotent: true }),
+  getMessage: route('sessions:read', {
+    method: 'get', path: `${V1}/messages/{messageId}`, tags: ['sessions'], summary: '外部发的一条消息与它的回复',
+    description:
+      '查你（这个令牌）发出的一条消息的状态和回复。waitSec（0–50）：还没有回复时最多等这么久（长轮询，到点没回复就照常返回）。\n' +
+      '参数：messageId；waitSec。\n' +
+      '返回：{ message, reply }；reply 为 null 表示还没回；reply.replyStatus = ok / failed / refused，reply.failure 有值表示超时（timeout）/ 对方已收起（archived）等。\n' +
+      '下一步：没回复就再调一次（带 waitSec）；多条在等时用 message_inbox。\n' +
+      '错误：404 不是这个令牌发的或不存在。',
+    request: { params: z.object({ messageId: z.string().openapi({ param: { name: 'messageId', in: 'path' } }) }), query: z.object({ waitSec }) },
+    responses: { 200: json(z.object({ message: agentMessageSchema, reply: agentMessageSchema.nullable() })) }
+  }, { module: 'sessions', need: 'session.read', expose: 'message_get' }),
+  messageInbox: route('sessions:read', {
+    method: 'get', path: `${V1}/inbox`, tags: ['sessions'], summary: '外部收件箱（回复）',
+    description:
+      '这个令牌收到的回复（含失败通知），按时间正序。收件箱绑令牌：吊销令牌后就打不开了。\n' +
+      '参数：after（上一页最后一条的 createdAt，默认 0）；limit（1–100，默认 50）。\n' +
+      '返回：{ messages: [...], next }；next = 最后一条的 createdAt，下一次作为 after 传回。\n' +
+      '下一步：按 replyTo 关联到你发的 ask。',
+    request: { query: z.object({ after: z.coerce.number().int().min(0).optional(), limit: z.coerce.number().int().min(1).max(100).optional() }) },
+    responses: { 200: json(z.object({ messages: z.array(agentMessageSchema), next: z.number() })) }
+  }, { module: 'sessions', need: 'session.read', expose: 'message_inbox' }),
   stream: route('sessions:read', {
     method: 'get', path: `${V1}/sessions/{sessionId}/stream`, tags: ['sessions'], summary: '会话事件流（SSE）',
     description:
@@ -601,7 +826,118 @@ export const routes = {
       responses: { 200: json(workspaceSchema) }
     },
     { module: 'workspaces', need: 'project.update', readOnly: false, idempotent: true }
-  )
+  ),
+  workspaceGroupCreate: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/projects/{projectId}/workspace-groups`, tags: ['workspaces'], summary: '新建组合工作空间',
+      description:
+        '为多仓项目建一个组合组：必须先指定主仓库。cwd 是主仓库 `<groupRoot>/<primary>/`，附加仓在 `../repos/<name>/`。可只选子集（主仓库一定在内）。\n' +
+        '参数：projectId；body.taskId、workerId（MCP 必须给已登记的远程机器，本机不可用）、repoIds?（子集）、fromGroupId? / branches?（在目标机器上按已有分支再建一组，用于验证交接）、sessionId?。\n' +
+        '返回：组（id、root、members[].workspaceId/name/state、primaryRepoId）。准备命令只在主仓库跑。\n' +
+        '下一步：session_start 时把 groupId 传回去；用 workspace_group_add_member 追加仓库。\n' +
+        '错误：400 没指定主仓库或参数不合法 / 403 无 projects:write 或本机不可用 / 404 / 409 机器不支持组合工作空间。',
+      request: { params: projectId, ...body(createWorkspaceGroupRequest) },
+      responses: { 201: json(workspaceGroupSchema, '已创建') }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_group_create', idempotent: true }
+  ),
+  workspaceGroupGet: route('projects:read', {
+    method: 'get', path: `${V1}/workspace-groups/{groupId}`, tags: ['workspaces'], summary: '看一个组合工作空间',
+    description: '返回组的成员、路径、状态和错误。参数：groupId。错误：404 / 403。',
+    request: { params: groupId },
+    responses: { 200: json(workspaceGroupSchema) }
+  }),
+  workspaceGroupAddMember: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/workspace-groups/{groupId}/members`, tags: ['workspaces'], summary: '往组合组追加一个仓库',
+      description:
+        '在已有组合组里添加一个项目仓库（附加仓路径 `../repos/<name>`）。下一轮 session_reply 会注入更新后的成员清单，不必重启会话。\n' +
+        '参数：groupId；body.repoId。\n' +
+        '错误：400 仓库已在组里或不属于该项目 / 403 / 404 / 409。',
+      request: { params: groupId, ...body(addWorkspaceGroupMemberRequest) },
+      responses: { 201: json(workspaceGroupSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_group_add_member', idempotent: true }
+  ),
+  workspaceGroupRetry: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/workspace-groups/{groupId}/retry`, tags: ['workspaces'], summary: '重试失败的组合组成员',
+      description: '只重试 state=failed 的成员，已就绪的不动。参数：groupId。返回更新后的组。错误：403 / 404 / 409 组已经准备好了。',
+      request: { params: groupId },
+      responses: { 200: json(workspaceGroupSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_group_retry', idempotent: true }
+  ),
+  sessionGitState: route('sessions:read', {
+    method: 'get', path: `${V1}/sessions/{sessionId}/git/state`, tags: ['sessions'], summary: '按仓看 git 状态和未提交改动',
+    description:
+      '返回当前分支、未提交文件、ahead、能不能推送/开 PR，以及任务上已关联的 PR。\n' +
+      '参数：sessionId；组合会话必须给 member（仓库名、repoId 或 workspaceId）。\n' +
+      '错误：400 没选仓库（会列出可选成员）/ 403 无 sessions:read 或 files:read / 404。',
+    request: { params: sessionId, query: z.object({ member: z.string().min(1).max(120).optional() }) },
+    responses: { 200: json(sessionGitStateSchema) }
+  }, { module: 'sessions', need: 'session.read', expose: 'session_git_state' }),
+  sessionGitRun: route(
+    'sessions:write',
+    {
+      method: 'post', path: `${V1}/sessions/{sessionId}/git/run`, tags: ['sessions'], summary: '按仓提交、推送或开 PR',
+      description:
+        '在指定成员仓库上执行 git：commit 只提交，push 有改动时先提交再推送，pr 再开 PR 并关联到任务。\n' +
+        '参数：sessionId；body.action、message（commit/push 有改动时必填）、title?、body?、member?（组合会话必填，仓库名或 workspaceId）。\n' +
+        '返回：sha、committed、pushed、branch、pullRequest（已关联任务）、compareUrl、notes。\n' +
+        '权限：提交要 session.prompt；推送/PR 要 git.push（已包含在 sessions:write）。本机 Worker 不可用。\n' +
+        '错误：400 没选仓库或默认分支上不能开 PR / 403 / 404 / 409。',
+      request: { params: sessionId, ...body(sessionGitRunRequest) },
+      responses: { 200: json(sessionGitRunResultSchema) }
+    },
+    { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_git_run', idempotent: true }
+  ),
+  taskPullRequests: route('sessions:read', {
+    method: 'get', path: `${V1}/tasks/{taskId}/pull-requests`, tags: ['tasks'], summary: '同步并列出任务上的 PR',
+    description:
+      '列出该任务关联的各仓 PR。默认对开着的 PR 有 1 分钟节流；refresh=1 立刻再拉（合并后可据此收起会话）。\n' +
+      '参数：taskId；query.refresh。\n' +
+      '返回：{ pullRequests }。错误：403 / 404。',
+    request: { params: taskId, query: z.object({ refresh: z.enum(['1', 'true']).optional() }) },
+    responses: { 200: json(z.object({ pullRequests: z.array(pullRequestLinkSchema) })) }
+  }, { module: 'tasks', need: 'task.read', expose: 'task_pull_requests' }),
+  sessionSettle: route(
+    'sessions:write',
+    {
+      method: 'post', path: `${V1}/sessions/{sessionId}/settle`, tags: ['sessions'], summary: '收起或恢复会话',
+      description:
+        'settled=true 把会话移出活跃列表（对话保留）；工作区干净时拆 worktree，有未提交/未跟踪/未推送改动则留下并记原因。settled=false 按原分支恢复 worktree。\n' +
+        '还在跑的会话要先 session_cancel。PR 合并后也可先调 task_pull_requests?refresh=1，平台会尝试自动收起。\n' +
+        '参数：sessionId；body.{ settled: boolean }。返回：会话对象。错误：403 无 session.settle（sessions:write 已包含）/ 409 还在跑 / 404。',
+      request: { params: sessionId, ...body(settleSessionRequest) },
+      responses: { 200: json(sessionSchema) }
+    },
+    { module: 'sessions', need: 'session.settle', readOnly: false, expose: 'session_settle', idempotent: true }
+  ),
+  workspaceSweep: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/projects/{projectId}/cleanup/sweep`, tags: ['workspaces'], summary: '按项目规则清理临时工作空间',
+      description:
+        '跑一轮两段清理：先收起已满足条件的会话，下一轮才拆干净的 worktree。组合组原子处理。脏工作区整组留下，items[].reason / action=kept 写明原因。\n' +
+        '参数：projectId。返回：removed/kept/skipped/failed、runId、items（含 reason）。\n' +
+        '下一步：用 workspace_sweep_records 核对记录和孤儿目录。错误：403 无 projects:write / 404。',
+      request: { params: projectId },
+      responses: { 200: json(sweepReportSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_sweep', idempotent: true }
+  ),
+  workspaceSweepRecords: route('projects:read', {
+    method: 'get', path: `${V1}/projects/{projectId}/cleanup/records`, tags: ['workspaces'], summary: '查看项目的清理记录',
+    description:
+      '返回最近的清理记录（含 kept 原因）以及登记对不上的孤儿目录。参数：projectId。错误：403 / 404。',
+    request: { params: projectId },
+    responses: { 200: json(cleanupRecordsSchema) }
+  }, { module: 'workspaces', need: 'project.read', expose: 'workspace_sweep_records' })
+
 } as const;
 
 /**

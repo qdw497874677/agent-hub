@@ -34,6 +34,7 @@ import {
   createWorkspaceRequest,
   removeWorkspaceRequest,
   cleanupPolicyRequest,
+  deleteSessionRequest,
   workspaceChangesSchema,
   workspaceSchema,
   workspaceViewSchema,
@@ -137,6 +138,7 @@ import {
   setTaskSummaryUseCase,
   setProjectPreviewPortUseCase,
   setProjectWorktreeUseCase,
+  setProjectSubmodulesUseCase,
   setProjectChecksUseCase,
   setProjectAssetSetsUseCase,
   unavailable,
@@ -171,6 +173,7 @@ import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
 import { noteProvenance, viaOfClient, recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity, ipOf, viaSuffix } from './session-activity.ts';
+import { applyStartExtras, checkStartExtras } from './session-start-extras.ts';
 import { workspaceForApiStart } from './session-workspace.ts';
 import type { SessionActivityOptions } from './session-activity.ts';
 import type { AuthOptions } from './auth.ts';
@@ -370,7 +373,9 @@ export function createApp(options: AppOptions): Hono {
         providers: options.providers,
         projectDeletion: options.projectDeletion,
         waitOptions: options.waitOptions,
-        assetReview: options.assets?.deps
+        assetReview: options.assets?.deps,
+        git: options.git,
+        ...(options.messaging ? { messaging: { bus: options.messaging.bus, messages: options.messaging.messages } } : {})
       });
     }
   } else if (options.observe) {
@@ -522,8 +527,12 @@ export function createApp(options: AppOptions): Hono {
       current = await setProjectPreviewPortUseCase(deps, { projectId, previewPort: input.value.previewPort });
       if (current.ok) await auditResource(c, subject, 'project.preview_port', projectId, current.value.previewPort === null || current.value.previewPort === undefined ? '清空' : String(current.value.previewPort));
     }
-    if (current.ok && input.value.repos !== undefined) {
-      current = await updateProjectReposUseCase(deps, { projectId, repos: input.value.repos });
+    if (current.ok && (input.value.repos !== undefined || input.value.primaryRepoId !== undefined)) {
+      current = await updateProjectReposUseCase(deps, {
+        projectId,
+        repos: input.value.repos ?? current.value.repos,
+        ...(input.value.primaryRepoId !== undefined ? { primaryRepoId: input.value.primaryRepoId } : {})
+      });
       if (current.ok) {
         const detail = current.value.repos.length === 0 ? '清空' : current.value.repos.map((repo) => repo.name).join(', ');
         await auditResource(c, subject, 'project.repos', projectId, detail);
@@ -536,6 +545,13 @@ export function createApp(options: AppOptions): Hono {
       if (current.ok) {
         const detail = current.value.checks.length === 0 ? '清空检查命令' : `检查命令：${current.value.checks.join(' · ').slice(0, 200)}`;
         await auditResource(c, subject, 'project.worktree', projectId, detail);
+      }
+    }
+    if (current.ok && input.value.submodules !== undefined) {
+      current = await setProjectSubmodulesUseCase(deps, { projectId, submodules: input.value.submodules });
+      if (current.ok) {
+        const mode = current.value.submodules === 'recursive' ? 'recursive' : 'off';
+        await auditResource(c, subject, 'project.worktree', projectId, `子模块：${mode}`);
       }
     }
     if (current.ok && input.value.assetSetIds !== undefined) {
@@ -825,8 +841,16 @@ export function createApp(options: AppOptions): Hono {
     if (!input.ok) return input.response;
     const actor = subjectOf(c);
     // workspaceMode 是「现建一个临时工作空间」的档位；指定了 workspaceId 就用指定那个。
-    const { workspaceMode, ...derive } = input.value;
+    const { workspaceMode, handle, linkWith, repoId, ...derive } = input.value;
+    const extras = { handle, linkWith };
+    const linkIds = await checkStartExtras(deps, options.messaging?.messages, derive.taskId, extras, actor);
+    if (!linkIds.ok) return fail(c, linkIds.error);
     let workspaceId = derive.workspaceId ?? null;
+    if (repoId) {
+      const placed = await workspaceForApiStart(deps, { ...derive, repoId }, actor);
+      if (!placed.ok) return fail(c, placed.error);
+      workspaceId = placed.value;
+    }
     if (!workspaceId && workspaceMode) {
       const task = await deps.tasks.byId(asTaskId(derive.taskId));
       if (!task) return fail(c, notFound('任务不存在'));
@@ -843,7 +867,7 @@ export function createApp(options: AppOptions): Hono {
     }
     // 开放 API / 脚本建会话往往只给 taskId：项目没绑长期工作目录时按界面默认现建一个，
     // 别让调用方先猜着去建工作空间（MCP 的 session_start 就是这条路）。
-    if (!workspaceId && workspaceMode === undefined) {
+    if (!workspaceId && workspaceMode === undefined && !repoId) {
       const placed = await workspaceForApiStart(deps, derive, actor);
       if (!placed.ok) return fail(c, placed.error);
       workspaceId = placed.value ?? workspaceId;
@@ -865,6 +889,7 @@ export function createApp(options: AppOptions): Hono {
     } else {
       await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, options.activity, c, actor, result.value, viaOfClient(c));
+      await applyStartExtras(deps, options.messaging?.bus, result.value, extras, linkIds.value, principalOf(c)?.user.id ?? null);
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });
@@ -1110,10 +1135,14 @@ export function createApp(options: AppOptions): Hono {
     return result.ok ? c.json(sessionSchema.parse(result.value)) : fail(c, result.error);
   });
 
-  /** 彻底删除会话：库里的数据一起清掉（不可恢复）；磁盘工作空间目录和 Task 不动。跑着的拒绝。 */
+  /** 彻底删除会话：库里的数据一起清掉（不可恢复）。是否拆 worktree 看请求体 / 项目规则。跑着的拒绝。 */
   app.delete('/api/sessions/:sessionId', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const result = await deleteSessionUseCase(deps, principalOf(c), asSessionId(sessionId));
+    const raw = await c.req.json().catch(() => ({}));
+    const parsed = deleteSessionRequest.safeParse(raw ?? {});
+    const result = await deleteSessionUseCase(deps, principalOf(c), asSessionId(sessionId), {
+      removeWorktree: parsed.success ? parsed.data.removeWorktree : undefined
+    });
     if (result.ok) {
       const detail = result.value.title ? `彻底删除「${result.value.title}」` : '彻底删除';
       await recordSessionAction(deps, options.activity, c, subjectOf(c), 'session.delete', sessionId, detail);

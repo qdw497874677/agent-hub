@@ -1,3 +1,4 @@
+import { applyStartExtras, checkStartExtras } from './session-start-extras.ts';
 import { backupArgs, runBackup } from './backup.ts';
 import { createInstallArtifacts } from './install-artifacts.ts';
 import { createRepoAuth } from './repo-auth.ts';
@@ -91,6 +92,8 @@ import { authenticateWorker, createTaskToolProvider, createToolGateway, withTool
   releaseAfterTurn,
   sweepTemporaryWorkspacesUseCase,
   prepareTemporaryWorkspaceUseCase,
+  prepareRepoWorktreeUseCase,
+  authorizeWorker,
   asTaskId,
   adoptLocalWorkspacesUseCase,
   migrateAssetOwnership,
@@ -228,6 +231,8 @@ const deps: Deps = {
   artifacts: store.artifacts,
   layout: store.layout,
   links: store.links,
+  // 会话通信 P1a：同伴简报由消息总线生成（短名、机器、仓库、分支、未读；变了才垫）。
+  peerBriefing: (session) => messageBus.briefing(session.id),
   sessionServices: store.sessionServices,
   agentProfiles: store.agentProfiles,
   bots: store.bots,
@@ -811,10 +816,11 @@ toolGateway = createToolGateway({
   providers: [createTaskToolProvider(deps), createMessageToolProvider(messageBus, groupChat), createMemoryToolProvider(memoryService), createContextToolProvider(contextService),
     createSessionToolProvider({ ...deps, extraProjects: async (sid) => { const bot = await botOfSession(sid as SessionId); return bot ? store.connectors.agentProjects(bot.projectId, bot.name) : []; } }),
     // issue #216：agent 不 shell git/gh 也能 commit / push / 开 PR；权限与审计走工作流。
-    createGitToolProvider({ workflow: gitService, subjectOf }),
+    createGitToolProvider({ workflow: gitService, subjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address) }),
     // issue #216 P2：产物列表 / 引用登记与工作空间文件只读。
     createArtifactToolProvider({ sessions: deps.sessions, artifacts: deps.artifacts, tasks: deps.tasks, workLog: deps.workLog, now: deps.now }),
-    createWorkspaceToolProvider({ files: filesService, subjectOf }),
+    // 会话通信 P1c：session 参数只读看已连线同伴；workspace.changes 复用 git 工作流的 state。
+    createWorkspaceToolProvider({ files: filesService, subjectOf, resolvePeer: (from, address) => messageBus.resolvePeer(from, address), gitState: (subject, sessionId, member) => gitService.state(subject, sessionId, member) }),
     // issue #216 P1：agent 可以改项目约定、在机器上跑项目声明的检查命令。
     createProjectToolProvider({
       sessions: deps.sessions,
@@ -864,18 +870,43 @@ toolGateway = createToolGateway({
       agents: deps.agents,
       now: deps.now,
       spawn: async (input) => {
+        // 会话通信 P1b：派生出来的会话自动和发起方连线；起短名、挑机器、一仓一会话都按会话主人的权限算。
+        const owner = await subjectOf(asSessionId(input.callerSessionId));
+        const extras = { ...(input.handle ? { handle: input.handle } : {}), linkWith: [input.callerSessionId] };
+        const linkIds = await checkStartExtras(deps, store.messages, input.taskId, extras, owner);
+        if (!linkIds.ok) return linkIds;
+        // hub 托管模型（hub-xxx/模型）要先过提供商检查拿到协议，和 /api/sessions/derive 一样；按会话主人算权限
+        const modelCheck = await providerWiring.checkModel(owner, input.model, input.taskId);
+        if (!modelCheck.ok) return modelCheck;
+        if (input.workerId) {
+          const usable = await authorizeWorker(deps.access, owner, input.workerId);
+          if (!usable.ok) return usable;
+        }
         // 档位：agent 要求隔离时现建 worktree（按项目配置跑准备命令），与 /api/sessions/derive 同一条路径。
         let workspaceId: string | undefined;
-        if (input.workspaceMode) {
+        if (input.repoId) {
+          const task = await deps.tasks.byId(asTaskId(input.taskId));
+          if (!task) return err(notFound('任务不存在'));
+          const prepared = await prepareRepoWorktreeUseCase(deps, {
+            projectId: task.projectId,
+            taskId: task.id,
+            repoId: input.repoId,
+            workerId: input.workerId ?? null,
+            home: homedir(),
+            actor: owner
+          });
+          if (!prepared.ok) return prepared;
+          workspaceId = prepared.value.id;
+        } else if (input.workspaceMode) {
           const task = await deps.tasks.byId(asTaskId(input.taskId));
           if (!task) return err(notFound('任务不存在'));
           const prepared = await prepareTemporaryWorkspaceUseCase(deps, {
             projectId: task.projectId,
             taskId: task.id,
-            workerId: null,
+            workerId: input.workerId ?? null,
             home: homedir(),
             mode: input.workspaceMode,
-            actor: systemSubject('agent.spawn')
+            actor: input.workerId ? owner : systemSubject('agent.spawn')
           });
           if (!prepared.ok) return prepared;
           workspaceId = prepared.value.id;
@@ -885,12 +916,15 @@ toolGateway = createToolGateway({
           agentId: input.agentId,
           model: input.model,
           options: input.options,
+          ...(modelCheck.value ? { hubProtocol: modelCheck.value } : {}),
           ...(workspaceId === undefined ? {} : { workspaceId }),
+          ...(input.workerId && workspaceId === undefined ? { workerId: input.workerId } : {}),
           actor: systemSubject('agent.spawn'),
           createdBy: input.createdBy
         });
         if (!created.ok) return created;
         const session = created.value;
+        await applyStartExtras(deps, messageBus, session, extras, linkIds.value, input.createdBy);
         if (input.prompt) {
           const sent = await promptSessionUseCase(deps, {
             sessionId: session.id,
@@ -899,7 +933,7 @@ toolGateway = createToolGateway({
           });
           if (!sent.ok) return sent;
         }
-        return ok({ sessionId: session.id, taskId: session.taskId, agentId: session.agentId, model: session.model, status: session.status });
+        return ok({ sessionId: session.id, taskId: session.taskId, agentId: session.agentId, model: session.model, status: session.status, handle: await messageBus.handleOf(session), workspaceId: session.workspaceId ?? null });
       },
       setOption: (sessionId, optionId, value) => changeSessionOption(deps, { sessionId, id: optionId, value })
     }),
