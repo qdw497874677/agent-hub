@@ -213,3 +213,42 @@ test('bot 令牌对项目 admin 可见、可由项目 admin 吊销；吊销不�
   assert.ok(w.auditRows.some((row) => row.detail.includes('bot「reviewer」')), '审计里要能看出以 bot 身份');
   assert.equal(await authenticateApiToken(w.deps, made.token), null);
 });
+
+test('默认有效期：个人令牌不给 = 30 天；显式 null = 永不过期；bot 凭据不给仍不过期', async () => {
+  const { deps, owner, issueBot } = world();
+  const plain = await createApiToken(deps, owner, { name: 'ci', kind: 'personal', scopes: ['projects:read'] });
+  assert.ok(plain.ok);
+  assert.ok(plain.value.info.expiresAt !== null);
+  const days = (plain.value.info.expiresAt! - plain.value.info.createdAt) / 86_400_000;
+  assert.ok(days > 29.99 && days <= 30, String(days));
+  const forever = await createApiToken(deps, owner, { name: 'forever', kind: 'personal', scopes: ['projects:read'], expiresAt: null });
+  assert.ok(forever.ok);
+  assert.equal(forever.value.info.expiresAt, null);
+  assert.equal((await issueBot()).info.expiresAt, null);
+});
+
+test('bot 凭据永不过期：不吃 30 天默认、不能设有效期、重新生成仍不过期、老库里带到期时间的照样能用', async () => {
+  const { deps, apiTokens, owner } = world();
+  // 新建：不给有效期 → null；显式给有效期 → 拒绝
+  const made = await createApiToken(deps, owner, { name: 'reviewer', kind: 'bot', projectId: 'p1', scopes: ['projects:read'] });
+  assert.ok(made.ok, JSON.stringify(made));
+  assert.equal(made.value.info.expiresAt, null);
+  const dated = await createApiToken(deps, owner, { name: 'reviewer', kind: 'bot', projectId: 'p1', scopes: ['projects:read'], expiresAt: deps.now() + 86_400_000 });
+  assert.ok(!dated.ok);
+  assert.equal(dated.error.code, 'invalid');
+  // 重新生成（同名 bot 再建一次 = 轮换）：新的一份也不过期
+  const again = await createApiToken(deps, owner, { name: 'reviewer', kind: 'bot', projectId: 'p1', scopes: ['projects:read'] });
+  assert.ok(again.ok);
+  assert.equal(again.value.info.expiresAt, null);
+  assert.ok(await authenticateApiToken(deps, again.value.token));
+  // 老库里的 bot 凭据存了一个早就过去的到期时间：照样能用，列表里也不显示到期
+  const legacy = { ...(await apiTokens.byId(again.value.info.id))!, id: 'legacy-bot', tokenHash: 'hash:ahb_legacy', bot: { projectId: 'p1', name: 'old' }, name: 'old', expiresAt: 1, revokedAt: null };
+  await apiTokens.save(legacy);
+  assert.ok(await authenticateApiToken(deps, 'ahb_legacy'), '老 bot 凭据不能因为到期时间失效');
+  const row = (await listApiTokens(deps, owner)).find((t) => t.id === 'legacy-bot');
+  assert.equal(row?.expiresAt, null);
+  assert.equal(row?.usable, true);
+  // 个人令牌照旧：过期就不能用
+  await apiTokens.save({ ...legacy, id: 'old-personal', kind: 'personal', bot: undefined, tokenHash: 'hash:ahp_old', expiresAt: 1 });
+  assert.equal(await authenticateApiToken(deps, 'ahp_old'), null);
+});

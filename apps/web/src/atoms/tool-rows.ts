@@ -195,12 +195,17 @@ const HUB_TOOL_LABEL: Readonly<Record<string, string>> = {
   agent_set_option: '改 agent 选项',
   agent_spawn: '开子 agent',
   agent_status: '查 agent 状态',
+  artifact_add: '登记产物',
+  artifact_get: '读产物',
+  artifact_list: '列产物',
   context_transform: '整理上下文',
   git_commit: '提交（git）',
   git_pr: '开 PR',
   git_pull_requests: '列 PR',
   git_push: '推送（git）',
   git_state: '查看 git 状态',
+  github_comment: '在 GitHub 评论',
+  github_react: '在 GitHub 点表情',
   group_dispatch: '群里分派',
   memory_forget: '删除记忆',
   memory_get: '读记忆',
@@ -220,7 +225,9 @@ const HUB_TOOL_LABEL: Readonly<Record<string, string>> = {
   task_list: '列任务',
   task_log_append: '写任务日志',
   task_log_list: '读任务日志',
-  task_update_status: '改任务状态'
+  task_update_status: '改任务状态',
+  workspace_list: '列工作目录文件',
+  workspace_read: '读工作目录文件'
 };
 
 /**

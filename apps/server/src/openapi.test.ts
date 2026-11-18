@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { addTeamMember, fakeAssetSets, inMemoryAccounts, inMemoryApiTokens, inMemoryAssetReview, inMemoryAssets, inMemoryDeps } from '@agent-hub/domain/testing';
-import { asAgentId, createAccessPolicy, newWorkspace, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
+import { asAgentId, createAccessPolicy, newWorkspace, permissionsOf, uploadAsset, type AgentDescriptor, type AssetReviewDeps } from '@agent-hub/domain';
 import { journalEntrySchema, projectSchema, sessionSchema, taskSchema } from '@agent-hub/contract';
 import { createApp } from './http.ts';
 import { createStreamHub } from './stream-hub.ts';
 import { buildSpecApp, openApiInfo } from './openapi/app.ts';
-import { mcpTools, projectEvents } from './openapi/mcp.ts';
+import { mcpTools, mcpToolsFor, projectEvents } from './openapi/mcp.ts';
 
 const PASSWORD = 'long enough pw';
 const fake: AgentDescriptor = {
@@ -277,7 +277,8 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   assert.equal(init.status, 200, JSON.stringify(init.body));
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
-  assert.deepEqual(names.sort(), ['events', 'get_asset', 'get_project', 'get_session', 'get_task', 'list_assets', 'list_projects', 'list_task_log', 'list_tasks']);
+  // 只列这个令牌用得了的：projects:read 只有项目 / 任务，看不到会话、资产（#E4）
+  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks']);
   // 写工具不进清单；注解标成只读。
   assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
   const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
@@ -289,6 +290,10 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   const denied = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'create_task', arguments: { projectId: 'p', title: 'x' } } });
   assert.equal(denied.body.result.isError, true);
   assert.match(denied.body.result.content[0].text, /没有这个工具/);
+  // 开着、但令牌没权限：调用时说清缺哪个 scope
+  const locked = await rpc({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'get_session', arguments: { sessionId: 's' } } });
+  assert.equal(locked.body.result.isError, true);
+  assert.match(locked.body.result.content[0].text, /403.*sessions:read/);
   // 没令牌：401
   const anonymous = await app.fetch(new Request('http://hub/openapi/v1/mcp', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }));
   assert.equal(anonymous.status, 401);
@@ -352,7 +357,7 @@ test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输�
 test('MCP 委派：写工具默认不出现，MCP_WRITE 打开后可建任务，clientRequestId 重放同一结果', async () => {
   const { david, mint, app } = await setup();
   const project = (await david('/api/projects', post({ name: '委派' }))).body as { id: string };
-  const token = (await mint(david, ['projects:read', 'projects:write'])).token;
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:write'])).token;
   const replays = new Map<string, string>();
   const store = {
     async get(key: string) {
@@ -577,4 +582,18 @@ test('/openapi/v1/projects：仓库只给 hasToken，令牌名 / 明文都不出
   assert.equal(JSON.stringify(got.body).includes('glpat-abc'), false);
   const list = await read('/projects');
   assert.equal(JSON.stringify(list.body).includes('repo-git:'), false);
+});
+
+test('MCP 工具清单按令牌权限筛：只列令牌用得了的（#E4）', () => {
+  const policy = { modules: new Set(['tasks', 'projects', 'sessions', 'assets'] as const), writes: true };
+  const names = (scopes: Parameters<typeof permissionsOf>[0]) => mcpToolsFor(permissionsOf(scopes), policy).map((t) => t.name).sort();
+  assert.deepEqual(names(['assets:read']), ['get_asset', 'list_assets']);
+  // 交资产（进审核）不等于发布 / 分配
+  assert.deepEqual(names(['assets:write']), ['asset_create', 'asset_import', 'get_asset', 'list_assets']);
+  assert.ok(names(['assets:publish']).includes('asset_publish') && names(['assets:publish']).includes('asset_assign'));
+  // 只有 sessions:write 看不到项目写工具
+  const sessions = names(['sessions:write']);
+  assert.ok(sessions.includes('session_start') && !sessions.includes('project_create') && !sessions.includes('list_projects'));
+  // 没有令牌信息（单测直接调）时不筛
+  assert.equal(mcpToolsFor(undefined, policy).length, mcpTools(policy).length);
 });

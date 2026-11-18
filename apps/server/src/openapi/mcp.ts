@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import type { McpReplayStore } from '@agent-hub/domain';
+import type { McpReplayStore, Permission, Principal } from '@agent-hub/domain';
 import { routes } from './routes.ts';
 
 /** 内部转调的标记：只有这个模块拿得到，外面的请求伪造不了（放在 env 里，不是请求头）。 */
@@ -20,31 +20,31 @@ export type McpModuleName = 'tasks' | 'projects' | 'sessions' | 'assets';
  * 描述写在 routes.ts 的路由上（何时用 / 参数 / 返回 / 下一步），这里只管放行与投影。
  */
 const ALLOWED = {
-  listProjects: { module: 'projects', readOnly: true },
-  getProject: { module: 'projects', readOnly: true },
-  listAssets: { module: 'assets', readOnly: true },
-  getAsset: { module: 'assets', readOnly: true },
-  createProject: { module: 'projects', readOnly: false, expose: 'project_create', idempotent: true },
-  updateProject: { module: 'projects', readOnly: false, expose: 'project_update', idempotent: true },
-  deleteProject: { module: 'projects', readOnly: false, expose: 'project_archive' },
-  createAsset: { module: 'assets', readOnly: false, expose: 'asset_create', idempotent: true },
+  listProjects: { module: 'projects', need: 'project.read', readOnly: true },
+  getProject: { module: 'projects', need: 'project.read', readOnly: true },
+  listAssets: { module: 'assets', need: 'asset.read', readOnly: true },
+  getAsset: { module: 'assets', need: 'asset.read', readOnly: true },
+  createProject: { module: 'projects', need: 'project.create', readOnly: false, expose: 'project_create', idempotent: true },
+  updateProject: { module: 'projects', need: 'project.update', readOnly: false, expose: 'project_update', idempotent: true },
+  deleteProject: { module: 'projects', need: 'project.delete', readOnly: false, expose: 'project_archive' },
+  createAsset: { module: 'assets', need: 'asset.submit', readOnly: false, expose: 'asset_create', idempotent: true },
   // 资产自动化（导入 → 发布 → 分配）：发布与分配要 assets:publish 范围
-  importAsset: { module: 'assets', readOnly: false, expose: 'asset_import', idempotent: true },
-  publishAsset: { module: 'assets', readOnly: false, expose: 'asset_publish', idempotent: true },
-  assignAsset: { module: 'assets', readOnly: false, expose: 'asset_assign', idempotent: true },
-  getSession: { module: 'sessions', readOnly: true },
-  listTasks: { module: 'tasks', readOnly: true },
-  getTask: { module: 'tasks', readOnly: true },
-  listTaskLog: { module: 'tasks', readOnly: true },
-  events: { module: 'sessions', readOnly: true, project: projectEvents },
+  importAsset: { module: 'assets', need: 'asset.submit', readOnly: false, expose: 'asset_import', idempotent: true },
+  publishAsset: { module: 'assets', need: 'asset.review', readOnly: false, expose: 'asset_publish', idempotent: true },
+  assignAsset: { module: 'assets', need: 'asset.assign', readOnly: false, expose: 'asset_assign', idempotent: true },
+  getSession: { module: 'sessions', need: 'session.read', readOnly: true },
+  listTasks: { module: 'tasks', need: 'task.read', readOnly: true },
+  getTask: { module: 'tasks', need: 'task.read', readOnly: true },
+  listTaskLog: { module: 'tasks', need: 'task.read', readOnly: true },
+  events: { module: 'sessions', need: 'session.read', readOnly: true, project: projectEvents },
   // 委派开发（E4b）：写工具默认关闭，要 MCP_WRITE=1 才出现，且必须带 clientRequestId。
-  createTask: { module: 'tasks', readOnly: false, expose: 'task_create', idempotent: true },
-  startSession: { module: 'sessions', readOnly: false, expose: 'session_start', idempotent: true },
-  prompt: { module: 'sessions', readOnly: false, expose: 'session_reply', idempotent: true },
-  interrupt: { module: 'sessions', readOnly: false, expose: 'session_cancel' }
+  createTask: { module: 'tasks', need: 'task.create', readOnly: false, expose: 'task_create', idempotent: true },
+  startSession: { module: 'sessions', need: 'session.create', readOnly: false, expose: 'session_start', idempotent: true },
+  prompt: { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_reply', idempotent: true },
+  interrupt: { module: 'sessions', need: 'session.interrupt', readOnly: false, expose: 'session_cancel' }
 } as const satisfies Record<
   string,
-  { module: McpModuleName; readOnly: boolean; expose?: string; project?: (value: unknown) => unknown; idempotent?: boolean }
+  { module: McpModuleName; need: Permission; readOnly: boolean; expose?: string; project?: (value: unknown) => unknown; idempotent?: boolean }
 >;
 
 export interface McpPolicy {
@@ -68,6 +68,10 @@ interface ToolDef {
   /** 'flat' = 请求体字段直接摊在参数里；'nested' = 放在 body 里；null = 没有请求体。 */
   readonly body: 'flat' | 'nested' | null;
   readonly module: McpModuleName;
+  /** 令牌要有这个权限点，工具才会出现在 tools/list 里（#E4：不列令牌用不了的工具）。 */
+  readonly need: Permission;
+  /** 文档里的权限范围（报错时告诉调用方缺哪个）。 */
+  readonly scope: string | null;
   readonly readOnly: boolean;
   readonly idempotent: boolean;
   readonly project?: (value: unknown) => unknown;
@@ -130,6 +134,8 @@ function toolOf(key: string, route: RouteDef, allow: (typeof ALLOWED)[keyof type
     queryKeys: Object.keys(query),
     body,
     module: allow.module,
+    need: allow.need,
+    scope: ((route as { security?: { bearer?: string[] }[] }).security?.[0]?.bearer?.[0]) ?? null,
     readOnly: allow.readOnly,
     idempotent: 'idempotent' in allow && allow.idempotent === true,
     ...('project' in allow && typeof allow.project === 'function' ? { project: allow.project } : {})
@@ -145,6 +151,17 @@ export function mcpTools(policy: McpPolicy = {}): ToolDef[] {
   const readOnly = policy.readOnly ?? envFlag('MCP_READ_ONLY');
   const writes = policy.writes ?? envFlag('MCP_WRITE');
   return cached.filter((tool) => modules.has(tool.module) && (!readOnly || tool.readOnly) && (writes || tool.readOnly));
+}
+
+/**
+ * 按令牌的有效权限再筛一遍：令牌用不了的工具不进 tools/list，免得 agent 规划出调不通的步骤。
+ * permissions 为 undefined（没有令牌信息，比如单测直接调）时不筛。真正的授权仍在 v1 路由里的 can()。
+ */
+export function mcpToolsFor(permissions: readonly Permission[] | undefined, policy: McpPolicy = {}): ToolDef[] {
+  const tools = mcpTools(policy);
+  if (permissions === undefined) return tools;
+  const have = new Set(permissions);
+  return tools.filter((tool) => have.has(tool.need));
 }
 
 /** 会话事件投影：工具输入/输出、思考、提示词原文都不出去（只留工具名与成败）。 */
@@ -188,14 +205,24 @@ export interface McpOptions {
   readonly policy?: McpPolicy;
 }
 
+/** v1 的错误体是 {error:{code,message}}：给人读的只要 message。 */
+const errorMessage = (value: unknown): string | null => {
+  const message = (value as { error?: { message?: unknown } } | null)?.error?.message;
+  return typeof message === 'string' && message !== '' ? message : null;
+};
+
 const digestOf = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}): Promise<Response> {
   const authorization = c.req.header('authorization') ?? '';
   const env = c.env as { mcpPolicy?: McpPolicy; mcpReplays?: McpReplayStore } | undefined;
   const replays = options.replays ?? env?.mcpReplays;
-  const tools = mcpTools(options.policy ?? env?.mcpPolicy ?? policyFromEnv());
+  const policy = options.policy ?? env?.mcpPolicy ?? policyFromEnv();
+  const permissions = (c.get('principal') as Principal | undefined)?.via?.permissions;
+  const tools = mcpToolsFor(permissions, policy);
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
+  /** 开着、但这个令牌没权限的工具：调用时明确说缺哪个权限（列表里不出现）。 */
+  const withheld = new Map(mcpTools(policy).filter((tool) => !byName.has(tool.name)).map((tool) => [tool.name, tool]));
   const server = new Server({ name: 'agent-hub-openapi', version: '1.0.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools.map((tool) => ({
@@ -212,7 +239,13 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
   }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const tool = byName.get(request.params.name);
-    if (!tool) return { isError: true, content: [{ type: 'text' as const, text: `没有这个工具：${request.params.name}` }] };
+    if (!tool) {
+      const locked = withheld.get(request.params.name);
+      const text = locked
+        ? `HTTP 403：令牌没有权限用 ${locked.name}${locked.scope ? `（需要 ${locked.scope}）` : ''}`
+        : `没有这个工具：${request.params.name}`;
+      return { isError: true, content: [{ type: 'text' as const, text }] };
+    }
     const args = { ...((request.params.arguments ?? {}) as Record<string, unknown>) };
     // 写工具：clientRequestId 是调用方给的重试键，先取出、不转发给内部 HTTP。
     let replayKey: string | null = null;
@@ -261,7 +294,7 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
     const structured = value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : { result: value };
     const result = {
       isError: !response.ok,
-      content: [{ type: 'text' as const, text: response.ok ? JSON.stringify(value, null, 2) : `HTTP ${response.status}：${text}` }],
+      content: [{ type: 'text' as const, text: response.ok ? JSON.stringify(value, null, 2) : `HTTP ${response.status}：${errorMessage(value) ?? text}` }],
       ...(response.ok ? { structuredContent: structured } : {})
     };
     if (response.ok && replayKey && replays) {

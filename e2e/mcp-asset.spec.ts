@@ -227,3 +227,100 @@ test('MCP 资产：上传、装到本机，会话模型真的调到注入的工�
     }
   }
 });
+
+/**
+ * 回归 #P0（预热 503）：项目里有 MCP 资产时，派生会话不再因为「MCP 没装到机器」被 503 拦住。
+ * MCP 不装到任何机器；会话照样能起来，而且 MCP 跟着会话清单真的启动、模型调得到。
+ * 同时：引用了没设的密钥的 MCP，在派生前的资产预览里带 problem（界面据此标红、默认不勾）。
+ */
+test('MCP 资产不用装到机器：派生不再 503，工具照样可用；缺密钥的被点名', async ({ page, baseURL }) => {
+  test.setTimeout(180_000);
+  await loginByApi(page);
+  const csrf = (await page.context().cookies()).find((cookie) => cookie.name === 'hub_csrf')?.value ?? '';
+  const headers = { origin: baseURL!, 'x-hub-csrf': csrf };
+
+  let workerId = '';
+  for (let i = 0; i < 60 && !workerId; i++) {
+    const overview = (await (await page.request.get('/api/admin/assets')).json()) as {
+      workers: Array<{ workerId: string; label: string; state: string }>;
+    };
+    workerId = (overview.workers.find((worker) => worker.state === 'online' && worker.label === '本机') ?? overview.workers.find((worker) => worker.state === 'online'))?.workerId ?? '';
+    if (!workerId) await page.waitForTimeout(500);
+  }
+  expect(workerId, '本机 Worker 必须在线').toBeTruthy();
+
+  const name = `e2e-echo2-${RUN}`;
+  const broken = `e2e-nosecret-${RUN}`;
+  const missingSecret = `E2E_MISSING_${RUN.toUpperCase()}`;
+  const ids: string[] = [];
+  const upload = async (config: Record<string, unknown>) => {
+    const response = await page.request.post('/api/admin/assets/upload', {
+      headers,
+      data: { kind: 'mcp', files: [{ path: 'mcp.json', data: Buffer.from(JSON.stringify(config)).toString('base64') }] }
+    });
+    expect(response.status(), await response.text()).toBe(201);
+    const id = ((await response.json()) as { id: string }).id;
+    ids.push(id);
+    return id;
+  };
+  try {
+    const echoId = await upload({ name, description: 'e2e 的 echo MCP（不装到机器）', transport: 'stdio', command: process.execPath, args: [ECHO_SCRIPT] });
+    const brokenId = await upload({
+      name: broken,
+      description: 'e2e：引用了没设的密钥',
+      transport: 'stdio',
+      command: process.execPath,
+      args: [ECHO_SCRIPT],
+      env: { API_TOKEN: `\${secret:${missingSecret}}` }
+    });
+    // 故意不调 PUT /workers/:id —— 一台机器都没装
+
+    const slug = `mcpw${RUN}`;
+    const provider = await page.request.post('/api/providers', {
+      headers,
+      data: { slug, name: '假网关（MCP 不装机器）', protocol: 'openai-chat', baseUrl: `http://127.0.0.1:${gatewayPort}/v1`, apiKey: 'fake-key', models: ['m-1'], routing: 'direct', scope: 'personal' }
+    });
+    expect(provider.ok(), await provider.text()).toBe(true);
+
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-mcp-warm-'));
+    const project = (await (await page.request.post('/api/projects', { headers, data: { name: `e2e mcp warm ${RUN}`, rootPath: dir } })).json()) as { id: string };
+    const task = (await (await page.request.post('/api/tasks', { headers, data: { projectId: project.id, title: `MCP 不装机器 ${RUN}` } })).json()) as { id: string };
+
+    // 派生前预览：两个 MCP 都在；缺密钥的那个带 problem 并点名密钥
+    const plan = (await (await page.request.get(`/api/projects/${project.id}/assets?workerId=${encodeURIComponent(workerId)}`)).json()) as {
+      entries: Array<{ assetId: string; kind: string; problem?: string }>;
+    };
+    const echoEntry = plan.entries.find((entry) => entry.assetId === echoId);
+    const brokenEntry = plan.entries.find((entry) => entry.assetId === brokenId);
+    expect(echoEntry?.problem).toBeUndefined();
+    expect(brokenEntry?.problem ?? '').toContain(missingSecret);
+
+    const models = (await (await page.request.get(`/api/providers/models?taskId=${task.id}`)).json()) as Array<{ slug: string; models: Array<{ id: string }> }>;
+    const model = models.find((entry) => entry.slug === slug)?.models[0]?.id;
+    expect(model, '假网关模型要出现在可选模型里').toBeTruthy();
+
+    // 跟界面默认一致：有 problem 的不带
+    const assetIds = plan.entries.filter((entry) => !entry.problem).map((entry) => entry.assetId);
+    const derived = await page.request.post('/api/sessions/derive', { headers, data: { taskId: task.id, agentId: 'pi', model, workerId, assetIds } });
+    expect(derived.status(), await derived.text()).toBe(201);
+    const session = (await derived.json()) as { id: string };
+
+    await expect
+      .poll(
+        async () => {
+          const manifest = (await (await page.request.get(`/api/sessions/${session.id}/assets`)).json()) as { entries: Array<{ name: string; kind: string }> };
+          return manifest.entries.filter((entry) => entry.kind === 'mcp').map((entry) => entry.name);
+        },
+        { timeout: 30_000 }
+      )
+      .toContain(name);
+
+    const prompted = await page.request.post(`/api/sessions/${session.id}/prompt`, { headers, data: { text: `调用 ${name}__echo，参数 text 填 ${MARKER}；只调用一次。` } });
+    expect(prompted.ok(), await prompted.text()).toBe(true);
+    await expect
+      .poll(async () => await (await page.request.get(`/api/sessions/${session.id}/events?after=0`)).text(), { timeout: 120_000, intervals: [1000, 2000] })
+      .toContain('MCP_ASSET_OK marker-matched');
+  } finally {
+    for (const id of ids) await page.request.delete(`/api/admin/assets/${id}`, { headers }).catch(() => undefined);
+  }
+});

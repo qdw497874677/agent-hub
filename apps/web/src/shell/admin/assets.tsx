@@ -204,6 +204,12 @@ function AssetItem({
         {sourceText(asset)} · 版本 <code>{short(asset.pinned)}</code> · {asset.files} 个文件 · {formatBytes(asset.bytes)} ·{' '}
         {at(asset.updatedAt)}
       </p>
+      {asset.kind === 'mcp' ? (
+        // MCP 不落文件到机器：会话启动时按配置连接，没有「装到机器」这回事
+        <p data-testid="asset-mcp-note" className="mt-2 text-meta text-tertiary">
+          MCP 不用装到机器，会话开始时按配置启动。
+        </p>
+      ) : (
       <div className="mt-2 flex flex-wrap gap-1.5" role="group" aria-label={`${asset.name} 装到哪些机器`}>
         {workers.map((worker) => {
           const on = asset.workerIds.includes(worker.workerId);
@@ -228,6 +234,7 @@ function AssetItem({
           );
         })}
       </div>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <button className={SMALL} onClick={onBrowse}>
           版本与文件
@@ -689,7 +696,7 @@ function GitForm({ onDone, onShowAsset }: { onDone: () => void; onShowAsset?: (n
             ))}
           </ul>
         ) : (
-          <p className="text-meta text-tertiary">这个提交（{short(scan.commit)}）里没找到 SKILL.md。</p>
+          <p className="text-meta text-tertiary">这个提交（{short(scan.commit)}）里没找到可导入的技能、指令或 MCP 配置。</p>
         )
       ) : null}
       {mode === 'single' && error ? (

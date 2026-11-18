@@ -1,61 +1,64 @@
 /**
  * 外部智能体接入 hub MCP 的「一次性说明」：端点、鉴权、各家客户端的粘贴片段、给 agent 看的提示词。
  *
- * 这里只做字符串拼装（DOM-free），方便测试与复制；真实端点与令牌由调用方给。
- * 约定：MCP 走 Streamable HTTP，鉴权用访问令牌（Authorization: Bearer ahp_…），
- * 写工具需要服务端开 MCP_WRITE=1，且令牌要带 projects:write / sessions:write。
+ * 这里只做字符串拼装（DOM-free），方便测试与复制。
+ * 约定：MCP 走 Streamable HTTP，鉴权用访问令牌（Authorization: Bearer ahp_…）。
+ * 片段里**永远不放明文令牌**，一律引用环境变量 AGENT_HUB_TOKEN——
+ * 配置文件常被提交进仓库、贴进聊天，明文一旦进去就等于泄露。
  */
 
-export type McpClientKind = 'claude' | 'cursor' | 'codex' | 'json' | 'prompt';
+export type McpClientKind = 'claude' | 'cursor' | 'codex' | 'prompt';
 
 export interface McpGuideInput {
   /** 站点 origin，例如 https://hub.example.com（末尾斜杠会被去掉）。 */
   readonly origin: string;
-  /** 明文令牌；没有时用占位符，避免把「ahp_…」当成真令牌复制出去。 */
-  readonly token?: string | null;
 }
 
 export interface McpGuide {
   readonly url: string;
   readonly header: string;
-  readonly token: string;
+  /** 放令牌的环境变量名。 */
+  readonly envVar: string;
+  /** 设环境变量那一行（占位符，不是真令牌）。 */
+  readonly exportLine: string;
   readonly snippets: Readonly<Record<McpClientKind, string>>;
   readonly tabs: readonly { readonly id: McpClientKind; readonly label: string }[];
 }
 
+export const MCP_TOKEN_ENV = 'AGENT_HUB_TOKEN';
 export const MCP_PLACEHOLDER = 'ahp_粘贴你的令牌';
 
 const trimOrigin = (origin: string): string => origin.replace(/\/+$/, '');
 
+/** 列表 / 新令牌里给人看的样子：只露前缀，其余打码。 */
+export function maskToken(token: string): string {
+  const head = token.slice(0, Math.min(8, Math.max(0, token.length - 4)));
+  return `${head}${'•'.repeat(12)}`;
+}
+
 export function mcpGuide(input: McpGuideInput): McpGuide {
   const base = trimOrigin(input.origin);
   const url = `${base}/openapi/v1/mcp`;
-  const token = input.token?.trim() || MCP_PLACEHOLDER;
-  const header = `Authorization: Bearer ${token}`;
+  const envVar = MCP_TOKEN_ENV;
+  const header = `Authorization: Bearer $${envVar}`;
+  const exportLine = `export ${envVar}=${MCP_PLACEHOLDER}`;
 
-  const claude = [
-    `claude mcp add --transport http agent-hub '${url}' \\`,
-    `  --header 'Authorization: Bearer ${token}'`
-  ].join('\n');
-
-  const cursor = JSON.stringify(
-    {
-      mcpServers: {
-        'agent-hub': {
-          url,
-          headers: { Authorization: `Bearer ${token}` }
-        }
-      }
-    },
+  // Claude Code：.mcp.json 里的 ${VAR} 在启动时展开，配置文件里只有变量名
+  const claude = JSON.stringify(
+    { mcpServers: { 'agent-hub': { type: 'http', url, headers: { Authorization: `Bearer \${${envVar}}` } } } },
     null,
     2
   );
 
-  const codex = [
-    '[mcp_servers.agent-hub]',
-    `url = "${url}"`,
-    `http_headers = { Authorization = "Bearer ${token}" }`
-  ].join('\n');
+  // Cursor：~/.cursor/mcp.json 支持 ${env:VAR}
+  const cursor = JSON.stringify(
+    { mcpServers: { 'agent-hub': { url, headers: { Authorization: `Bearer \${env:${envVar}}` } } } },
+    null,
+    2
+  );
+
+  // Codex：~/.codex/config.toml 直接写环境变量名
+  const codex = ['[mcp_servers.agent-hub]', `url = "${url}"`, `bearer_token_env_var = "${envVar}"`].join('\n');
 
   const prompt = [
     `你可以通过 Agent Hub 的 MCP 端点（${url}）查看项目、任务、会话与资产，并（在开放写工具时）把开发任务委派给它。`,
@@ -73,14 +76,14 @@ export function mcpGuide(input: McpGuideInput): McpGuide {
   return {
     url,
     header,
-    token,
+    envVar,
+    exportLine,
     tabs: [
       { id: 'claude', label: 'Claude Code' },
       { id: 'cursor', label: 'Cursor' },
       { id: 'codex', label: 'Codex' },
-      { id: 'json', label: '通用 JSON' },
       { id: 'prompt', label: '给 agent 的提示词' }
     ],
-    snippets: { claude, cursor, codex, json: cursor, prompt }
+    snippets: { claude, cursor, codex, prompt }
   };
 }

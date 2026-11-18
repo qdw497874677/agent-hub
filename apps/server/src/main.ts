@@ -125,6 +125,7 @@ import {
   reconcileInterrupted,
   syncWorkerAssets,
   remoteMcpTarget,
+  mcpAssetProblems,
   withAssetNeeds,
   unavailable,
   workerAttached,
@@ -1121,25 +1122,31 @@ sessionEnvironment = createSessionEnvironment({
       const status = await syncWorkerAssets(assetDeps, workerId);
       if (status.state === 'failed') {
         log(`资产预热失败（${workerId}）：${status.error ?? '同步失败'}`);
-        return null;
+        return { failed: assetIds, reason: status.error ? `同步失败：${status.error}` : '同步失败' };
+      }
+      if (status.state !== 'synced') {
+        log(`资产预热没完成（${workerId}）：${status.state}`);
+        return { failed: assetIds, reason: '机器不在线，资产没同步过去' };
       }
       const landed: Record<string, string> = {};
+      const notLanded: string[] = [];
       for (const assetId of assetIds) {
         // MCP 资产没有文件清单（它由会话启动时的 mcp 项下发），只要求安装记录；
         // 把它当文件资产检查 landed 会让所有带 MCP 的会话都「预热失败」。
         const asset = await store.assets.get(assetId);
         if (asset !== null && !isFileAssetKind(asset.kind)) continue;
         const digest = status.installed[assetId];
-        if (digest === undefined) {
-          log(`资产预热没落地（${workerId}）：${assetId}`);
-          return null;
-        }
-        landed[assetId] = digest;
+        if (digest === undefined) notLanded.push(assetId);
+        else landed[assetId] = digest;
+      }
+      if (notLanded.length) {
+        log(`资产预热没落地（${workerId}）：${notLanded.join(', ')}`);
+        return { failed: notLanded, reason: '机器没有回报装好' };
       }
       return landed;
     } catch (failure) {
       log(`资产预热失败（${workerId}）：${(failure as Error).message}`);
-      return null;
+      return { failed: assetIds, reason: (failure as Error).message };
     }
   },
   log
@@ -1251,7 +1258,11 @@ serverGateway = createServerGateway({
     serveMcpRelay(channel, workerId, {
       gateway: toolGateway,
       hostOf: (sessionId) => serverGateway?.hostOf(sessionId) ?? null,
-      remote: (worker, server) => remoteMcpTarget(assetDeps, worker, server),
+      // 会话有资产清单就按清单找（MCP 不用装到机器）；老会话没清单才退回看机器分配
+      remote: async (worker, server, sessionId) => {
+        const manifest = await assetDeps.assets.sessionAssets(sessionId).catch(() => null);
+        return remoteMcpTarget(assetDeps, worker, server, manifest ? new Set(manifest.entries.map((entry) => entry.assetId)) : undefined);
+      },
       remoteClients: remoteMcpClients
     });
   },
@@ -1647,9 +1658,20 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
         projectId,
         viewer: { userId: principal.user.id, teamId: visible.value.teamId ?? null },
         setIds: project?.assetSetIds ?? [],
+        // 和真正派生同一口径（允许清单）：文件类资产派生时会自动预热，预览按钉住的版本算；MCP 本来就不用装。
+        // 不给 ensure 会退回「必须已经装到这台机器」的老语义，预览里就看不到还没装的资产。
+        ensure: async (_worker, ids) => {
+          const out: Record<string, string> = {};
+          for (const id of ids) {
+            const asset = await assetDeps.assets.get(id);
+            if (asset) out[id] = asset.pinned;
+          }
+          return out;
+        },
         log
       });
-      return plan.entries;
+      const problems = await mcpAssetProblems(assetDeps, plan.entries.filter((entry) => entry.kind === 'mcp').map((entry) => entry.assetId));
+      return plan.entries.map((entry) => (problems[entry.assetId] ? { ...entry, problem: problems[entry.assetId] } : entry));
     }
   },
   providers: providerWiring,

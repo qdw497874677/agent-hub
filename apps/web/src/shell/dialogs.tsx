@@ -132,7 +132,6 @@ export function DeriveDialog({
   // 资产（asset-hub.md）：选中机器后看这一趟会带哪些技能 / 指令 / MCP；默认全选，取消即排除。
   // 换机器 / 换项目就重新全选——不同机器下发的是不同的资产集。
   const [assetSelection, setAssetSelection] = useState<AssetSelection | null>(null);
-  const selection = selectionFor(assetSelection, assetSelectionKey(canvas.project.id, machine));
   const assetPlan = useQuery({
     queryKey: ['project-assets', canvas.project.id, machine],
     queryFn: () => assetsApi.projectPlan(canvas.project.id, machine ?? ''),
@@ -140,6 +139,8 @@ export function DeriveDialog({
     retry: false
   });
   const assetEntries = assetPlan.data?.entries ?? [];
+  // 带上也起不来的（MCP 缺密钥等）默认不勾，行内标红说原因
+  const selection = selectionFor(assetSelection, assetSelectionKey(canvas.project.id, machine), assetEntries);
   // 资产组合（asset-hub.md「资产组合」）：项目默认带哪几组，这里可以整组取消，也可以换成别的组合。
   // 用户没动过 → 不传 assetSetIds（后端按项目默认展开）；动过 → 传当前这组 id（可能为空）。
   const setList = useQuery({ queryKey: ['asset-sets'], queryFn: () => assetSetsApi.list(), retry: false });
@@ -550,6 +551,7 @@ export function DeriveDialog({
                   <label
                     data-testid="derive-asset"
                     data-asset-id={entry.assetId}
+                    data-problem={entry.problem ? 'true' : undefined}
                     className="flex cursor-pointer items-start gap-2 py-1"
                   >
                     <input
@@ -562,6 +564,11 @@ export function DeriveDialog({
                     <span className="min-w-0 flex-1">
                       <span className="block break-words text-meta text-primary">{entry.name}</span>
                       <span className="block break-words text-meta text-tertiary">{assetNote(entry)}</span>
+                      {entry.problem ? (
+                        <span data-testid="derive-asset-problem" className="block break-words text-meta text-rust">
+                          {entry.problem}
+                        </span>
+                      ) : null}
                     </span>
                   </label>
                 </li>

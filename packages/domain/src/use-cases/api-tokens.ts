@@ -2,7 +2,7 @@ import { can, type Resource } from '../access.ts';
 import type { Principal, Role, User, UserId } from '../account.ts';
 import { asLoginId, isEmailVerified, newUserId } from '../account.ts';
 import type { ApiScope, ApiToken, ApiTokenKind } from '../api-token.ts';
-import { API_SCOPES, API_TOKEN_PREFIX, BOT_TOKEN_PREFIX, SERVICE_EMAIL_DOMAIN, apiTokenUsable, effectivePermissions } from '../api-token.ts';
+import { API_SCOPES, API_TOKEN_PREFIX, DEFAULT_TOKEN_TTL_MS, BOT_TOKEN_PREFIX, SERVICE_EMAIL_DOMAIN, apiTokenUsable, effectivePermissions } from '../api-token.ts';
 import { forbidden, invalid, notFound } from '../errors.ts';
 import type { DomainError } from '../errors.ts';
 import { asProjectId, newId } from '../ids.ts';
@@ -45,7 +45,8 @@ export type ApiTokenView = Omit<ApiToken, 'tokenHash'> & { readonly usable: bool
 
 const view = (token: ApiToken, now: number): ApiTokenView => {
   const { tokenHash: _hash, ...rest } = token;
-  return { ...rest, usable: apiTokenUsable(token, now) };
+  // bot 凭据永不过期：老库里存过的到期时间不展示，免得界面写「已过期」而实际照常能用
+  return { ...rest, ...(token.kind === 'bot' ? { expiresAt: null } : {}), usable: apiTokenUsable(token, now) };
 };
 
 async function audit(deps: ApiTokenDeps, actor: Principal, action: 'token.create' | 'token.revoke', token: ApiToken): Promise<void> {
@@ -97,7 +98,10 @@ export async function createApiToken(
   const scopes = [...new Set(input.scopes)];
   if (scopes.length === 0 || scopes.some((scope) => !API_SCOPES.includes(scope))) return err(invalid('至少选一个有效的权限范围'));
   const now = deps.now();
-  const expiresAt = input.expiresAt ?? null;
+  // 个人 / 服务账号令牌：不给 = 默认 30 天；要永不过期得显式传 null。
+  // bot 凭据是项目里长期挂着的集成，永不过期，也不接受有效期（免得 bot 到期突然失联）。
+  if (input.kind === 'bot' && input.expiresAt != null) return err(invalid('bot 凭据不会过期，不用设有效期'));
+  const expiresAt = input.kind === 'bot' ? null : input.expiresAt !== undefined ? input.expiresAt : now + DEFAULT_TOKEN_TTL_MS;
   if (expiresAt !== null && expiresAt <= now) return err(invalid('过期时间要在将来'));
 
   let userId: string = actor.user.id;

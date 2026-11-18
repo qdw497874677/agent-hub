@@ -105,7 +105,7 @@ function AssetCard({ item, showStatus }: { item: MarketAssetDto; showStatus: boo
         </p>
       ) : null}
       <div className="mt-1.5 flex flex-wrap gap-1.5">
-        {item.published ? (
+        {item.published && item.asset.kind !== 'mcp' ? (
           <button className={SMALL} onClick={() => setWorkers(true)}>
             装到机器…
           </button>
