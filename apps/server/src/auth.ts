@@ -13,7 +13,7 @@ import {
   tokenRequest
 } from '@agent-hub/contract';
 import type { AccountDto, AuthState, LoginDeviceDto } from '@agent-hub/contract';
-import type { AccessAdminDeps, AccessRepos, AccountDeps, DomainError, IssuedLogin, Principal, Result, Subject, TeamDeps, User, UserId } from '@agent-hub/domain';
+import type { AccessAdminDeps, AccessRepos, AccountDeps, DomainError, IssuedLogin, Principal, Result, Subject, User, UserId } from '@agent-hub/domain';
 import { withAccess } from '@agent-hub/domain';
 import {
   ok,
@@ -51,7 +51,7 @@ import { createLoginBackoff } from './login-backoff.ts';
 export interface AuthOptions {
   readonly accounts: AccountDeps;
   /** 邀请要用（接受邀请建账号）；没给就没有邀请接口。 */
-  readonly team?: TeamDeps;
+  readonly team?: import('./team.ts').TeamRouteDeps;
   /** ADR 0017：自定义角色、显式授权、临时进入、集群管理员。 */
   readonly accessAdmin?: AccessAdminDeps;
   /** 限流：15 分钟内每个 IP 最多登录几次（不分邮箱），默认 30；e2e 用 HUB_LOGIN_RATE_MAX 放宽。另有按邮箱的退避（login-backoff.ts）。 */

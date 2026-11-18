@@ -1,10 +1,10 @@
 import type { Context, Hono } from 'hono';
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { auditQuerySchema, inviteRequest, memberRoleRequest } from '@agent-hub/contract';
+import { auditQuerySchema, inviteRequest, memberRoleRequest, setAgentDefaultsRequest } from '@agent-hub/contract';
 import { auditDto, auditFilterOf } from './admin.ts';
 import type { InviteDto, TeamDto } from '@agent-hub/contract';
-import type { Invite, TeamDeps } from '@agent-hub/domain';
-import { asInviteId, asUserId, deleteMember, inviteMember, revokeInvite, setMemberRole, teamAudit, viewTeam } from '@agent-hub/domain';
+import type { AgentDefaultsStore, Invite, TeamDeps } from '@agent-hub/domain';
+import { asInviteId, asUserId, deleteMember, inviteMember, revokeInvite, setAgentDefaults, setMemberRole, teamAudit, viewAgentDefaults, viewTeam } from '@agent-hub/domain';
 import type { PrincipalOf } from './auth.ts';
 import { fail } from './http-error.ts';
 
@@ -29,7 +29,12 @@ function ipOf(c: Context): string | null {
   }
 }
 
-export function installTeam(app: Hono, deps: TeamDeps, principalOf: PrincipalOf): void {
+export type TeamRouteDeps = TeamDeps & {
+  /** 团队级运行时默认模型；没装就返回 503（不该发生，main.ts 总装配）。 */
+  readonly agentDefaults?: AgentDefaultsStore;
+};
+
+export function installTeam(app: Hono, deps: TeamRouteDeps, principalOf: PrincipalOf): void {
   const who = (c: Context) => principalOf(c);
   const unauthorized = (c: Context) => c.json({ error: { code: 'unauthorized', message: '请先登录' } }, 401);
   const invalidBody = (c: Context) => c.json({ error: { code: 'invalid', message: '请求体不合法' } }, 400);
@@ -42,6 +47,26 @@ export function installTeam(app: Hono, deps: TeamDeps, principalOf: PrincipalOf)
     const result = await teamAudit(deps, principal, auditFilterOf(parsed.data));
     if (!result.ok) return fail(c, result.error);
     return c.json(result.value.map(auditDto));
+  });
+
+  app.get('/api/team/agent-defaults', async (c) => {
+    const principal = who(c);
+    if (!principal) return unauthorized(c);
+    if (!deps.agentDefaults) return c.json({ error: { code: 'unavailable', message: '这个 hub 还没装配默认模型' } }, 503);
+    const result = await viewAgentDefaults({ teams: deps.teams, agentDefaults: deps.agentDefaults }, principal);
+    if (!result.ok) return fail(c, result.error);
+    return c.json({ defaults: result.value });
+  });
+
+  app.put('/api/team/agent-defaults', async (c) => {
+    const principal = who(c);
+    if (!principal) return unauthorized(c);
+    if (!deps.agentDefaults) return c.json({ error: { code: 'unavailable', message: '这个 hub 还没装配默认模型' } }, 503);
+    const parsed = setAgentDefaultsRequest.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return invalidBody(c);
+    const result = await setAgentDefaults({ teams: deps.teams, agentDefaults: deps.agentDefaults }, principal, { defaults: parsed.data.defaults });
+    if (!result.ok) return fail(c, result.error);
+    return c.json({ defaults: result.value });
   });
 
   app.get('/api/team', async (c) => {

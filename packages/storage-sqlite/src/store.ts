@@ -42,6 +42,7 @@ import { createSqliteMemoryIndex, createSqliteMemorySettings, createSqliteMemory
 import { createEnrollmentRepository } from './enrollment.ts';
 import { createAssetRepository, createAssetSyncBoard } from './assets.ts';
 import { createAssetReviewRepository, createNotificationRepository } from './asset-review.ts';
+import { createAgentDefaultsStore } from './agent-defaults.ts';
 import { createSqliteAssetSets } from './asset-sets.ts';
 import { WORKSPACE_SCHEMA, createWorkspaceRepository, ensureSingleWorkspaceOwner, migrateSharedWorkspaces, migrateWorkspaces, upgradeWorkspaceTable } from './workspaces.ts';
 import { createSqliteWorkspaceGroups } from './workspace-groups.ts';
@@ -92,6 +93,8 @@ export interface SqliteStore extends RepositorySet {
   readonly assetSync: AssetSyncBoard;
   /** 资产审核：提交、评论、安装申请、审核设置（ADR 0016）。 */
   readonly assetReview: AssetReviewRepository;
+  /** 团队级的运行时默认模型（新会话没点名模型时按运行时取）。 */
+  readonly agentDefaults: import('@agent-hub/domain').AgentDefaultsStore;
   /** 团队级资产组合（项目默认 / 会话显式选择）。 */
   readonly assetSets: import('@agent-hub/domain').AssetSetRepository;
   readonly notifications: NotificationRepository;
@@ -694,6 +697,7 @@ export function openSqliteStore(file: string): SqliteStore {
     assets: createAssetRepository(db),
     assetSync: createAssetSyncBoard(db),
     assetReview: createAssetReviewRepository(db),
+    agentDefaults: createAgentDefaultsStore(db),
     assetSets: createSqliteAssetSets(db),
     notifications: createNotificationRepository(db),
     sessions,

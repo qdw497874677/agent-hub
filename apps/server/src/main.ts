@@ -315,6 +315,8 @@ const deps: Deps = {
   secrets: secretsVault,
   // 私有 HTTPS 仓库的令牌解析：按仓库 URL / 工作空间路径反查项目仓库的 tokenSecret。
   repoAuth: createRepoAuth({ projects: store.projects, workspaces: store.workspaces, secrets: secretsVault }),
+  // 团队级的运行时默认模型：新会话没点名模型时按运行时补。
+  agentDefaults: store.agentDefaults,
   search: store.search,
   hosting: createMemoryHosting(),
   queue: createSessionQueue(),
@@ -1627,7 +1629,7 @@ const app = createApp({ deps, hub, token, connectors: { hub: connectorHub, agent
       deliveries: store.deliveries, store: store.connectors, requests: store.agentTasks, dispatches: store.dispatches, policy: deps.access
     })] : []
   }, 
-  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
+  auth: { accounts, access: store.access, team: { ...accounts, invites: store.invites, projects: store.projects, roles: store.access.roles, agentDefaults: store.agentDefaults }, accessAdmin: { ...store.access, users: store.users, teams: store.teams, audit: store.audit, now: () => Date.now() }, loginRateMax: Number(readEnv('HUB_LOGIN_RATE_MAX') ?? 30), mailRateMax: Number(readEnv('HUB_MAIL_RATE_MAX') ?? 5), mailDelivery: mailSetup.transport !== 'log' },
   admin: {
     deps: {
       users: store.users,

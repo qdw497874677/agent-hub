@@ -36,6 +36,7 @@ import type { WorkLogRepository } from '../ports/work-log-repository.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { SessionServiceRepository } from '../ports/session-service-repository.ts';
+import type { AgentDefaultsStore } from '../ports/agent-defaults.ts';
 
 /**
  * 已装配的 agent。UI 只从这里拿能力矩阵，不认 agent 名字。
@@ -111,6 +112,8 @@ export interface Deps {
    * 不给 = 没开记忆工具，不垫。
    */
   readonly memoryGuidance?: MemoryGuidance;
+  /** 团队级的运行时默认模型（新会话没点名模型时按运行时取）。不给 = 用 agent 自己的默认。 */
+  readonly agentDefaults?: AgentDefaultsStore;
   /**
    * 会话以某个 bot 身份跑时，它的职责说明（系统提示块）。由上下文服务按角色层解析（ADR 0020）；
    * 只在新会话第一句垫一次，续聊 / resume 不再垫。不给 = 不垫。

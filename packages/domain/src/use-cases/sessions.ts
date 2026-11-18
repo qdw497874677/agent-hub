@@ -68,7 +68,7 @@ export interface DeriveCommand {
  * 常规会话必须落到一个真实任务上；容器会话（群角色 / bot P2P）没有任务，靠 `projectId` 落项目。
  */
 export async function deriveSessionUseCase(
-  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups'>,
+  deps: Pick<Deps, 'agents' | 'gateway' | 'hosting' | 'now' | 'projects' | 'sessions' | 'tasks' | 'workLog' | 'workspaces' | 'access' | 'agentProfiles' | 'workspaceGroups' | 'agentDefaults'>,
   command: DeriveCommand
 ): Promise<Result<Session, DomainError>> {
   const task = command.taskId ? await deps.tasks.byId(asTaskId(command.taskId)) : null;
@@ -125,6 +125,12 @@ export async function deriveSessionUseCase(
   }
 
   const agentId = asAgentId(ref.runtime);
+  // 团队级默认模型：只在调用方没点名模型时补（显式选择永远优先；空串才是「没说」）。
+  if (ref.model === '' && deps.agentDefaults && project.teamId) {
+    const defaults = await deps.agentDefaults.forTeam(project.teamId);
+    const fallback = defaults[ref.runtime];
+    if (fallback !== undefined) ref = { ...ref, model: fallback };
+  }
   const descriptor = deps.agents.descriptor(agentId);
   if (!descriptor) return err(conflict(`没有在线节点提供 ${ref.runtime}`));
   if (descriptor.capabilities.prompt.state === 'denied') {

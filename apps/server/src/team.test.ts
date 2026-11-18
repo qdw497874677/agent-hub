@@ -22,7 +22,16 @@ function harness(maxUsers?: number) {
     gateway: world.deps.gateway
   });
   const deps = { ...world.deps, access };
-  const team = { ...accounts, projects: world.deps.projects };
+  const defaults = new Map<string, Record<string, string>>();
+  const agentDefaults = {
+    async forTeam(teamId: string) {
+      return defaults.get(teamId) ?? {};
+    },
+    async save(teamId: string, value: Record<string, string>) {
+      defaults.set(teamId, { ...value });
+    }
+  };
+  const team = { ...accounts, projects: world.deps.projects, agentDefaults };
   const app = createApp({ deps, hub: createStreamHub(), token: null, auth: { accounts, team, loginRateMax: 1000 } });
   const browser = () => {
     const jar = new Map<string, string>();
@@ -220,4 +229,29 @@ test('审计：团队主人只看自己团队的；成员看不了；hub 管理�
   const davidTeam = (await h.david('/api/team')).body.id;
   assert.ok(!((await other(`/api/team/audit?teamId=${davidTeam}`)).body as any[]).some((e) => e.target === 'mia@b.co'));
   assert.equal((await guest('/api/team/audit')).status, 403);
+});
+
+test('团队默认模型：成员能看，只有 owner / admin 能改；坏值不落库', async () => {
+  const h = await withDavid();
+  const { david } = h;
+  const { guest } = await invited(h, 'm@b.co');
+  const empty = await david('/api/team/agent-defaults');
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body, { defaults: {} });
+
+  const saved = await david('/api/team/agent-defaults', put({ defaults: { opencode: 'go-deepseek-v4.1-flash', codex: '  gpt-5.5  ', empty: '' } }));
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.deepEqual(saved.body.defaults, { opencode: 'go-deepseek-v4.1-flash', codex: 'gpt-5.5' });
+  assert.deepEqual((await david('/api/team/agent-defaults')).body.defaults, saved.body.defaults);
+
+  // 坏值：运行时名字不合法 / 模型带换行
+  assert.equal((await david('/api/team/agent-defaults', put({ defaults: { 'Bad Name': 'm' } }))).status, 400);
+  assert.equal((await david('/api/team/agent-defaults', put({ defaults: { opencode: 'a\nb' } }))).status, 400);
+
+  // 清空
+  assert.deepEqual((await david('/api/team/agent-defaults', put({ defaults: {} }))).body.defaults, {});
+
+  // 普通成员只能看
+  assert.equal((await guest('/api/team/agent-defaults')).status, 200);
+  assert.equal((await guest('/api/team/agent-defaults', put({ defaults: { opencode: 'm' } }))).status, 403);
 });
