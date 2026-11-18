@@ -18,6 +18,7 @@ import {
   setProjectDescriptionRequest,
   updateProjectRequest,
   setProjectRepoRequest,
+  setProjectReposRequest,
   setTaskStatusRequest,
   setTaskSummaryRequest,
   taskSchema,
@@ -130,6 +131,18 @@ export const routes = {
       '错误：400 参数不合法（含换行、超长）；403 无 projects:write 或不是项目管理员；404 项目不存在。',
     request: { params: projectId, ...body(updateProjectRequest) },
     responses: { 200: json(projectSchema) }
+  }),
+  setProjectRepos: route('projects:write', {
+    method: 'put', path: `${V1}/projects/{projectId}/repos`, tags: ['projects'], summary: '设置项目仓库清单（可带私有仓库令牌）',
+    description:
+      '整体替换项目的仓库清单（最多 8 个，第 0 个是主仓库）：空数组 = 解除全部绑定。\n' +
+      '参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）。\n' +
+      'credential：私有 HTTPS 仓库的令牌，只写不读——非空存进密钥箱、空串清掉、省略不动；响应里只有 hasToken，永远不回显。\n' +
+      '返回：更新后的项目对象（repos[].hasToken 表明有没有令牌）。\n' +
+      '下一步：用 get_project 复核；之后新建的会话/工作空间克隆与推送都会自动用这个令牌。\n' +
+      '错误：400 仓库超过 8 个或字段不合法；403 无 projects:write 或不是项目管理员；404 项目不存在。',
+    request: { params: projectId, ...body(setProjectReposRequest) },
+    responses: { 200: json(projectSchema), ...errors }
   }),
   setProjectRepo: route('projects:write', {
     method: 'put', path: `${V1}/projects/{projectId}/repo`, tags: ['projects'], summary: '绑定 / 解除项目仓库',

@@ -2234,6 +2234,291 @@
         }
       }
     },
+    "/openapi/v1/projects/{projectId}/repos": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "设置项目仓库清单（可带私有仓库令牌）",
+        "description": "整体替换项目的仓库清单（最多 8 个，第 0 个是主仓库）：空数组 = 解除全部绑定。\n参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）。\ncredential：私有 HTTPS 仓库的令牌，只写不读——非空存进密钥箱、空串清掉、省略不动；响应里只有 hasToken，永远不回显。\n返回：更新后的项目对象（repos[].hasToken 表明有没有令牌）。\n下一步：用 get_project 复核；之后新建的会话/工作空间克隆与推送都会自动用这个令牌。\n错误：400 仓库超过 8 个或字段不合法；403 无 projects:write 或不是项目管理员；404 项目不存在。\n\n权限范围：`projects:write`",
+        "security": [
+          {
+            "bearer": [
+              "projects:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "projectId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "repos": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "name": {
+                          "type": "string",
+                          "maxLength": 41
+                        },
+                        "url": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 500
+                        },
+                        "defaultBranch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 200
+                        },
+                        "credential": {
+                          "type": "string",
+                          "maxLength": 512
+                        }
+                      },
+                      "required": [
+                        "url"
+                      ]
+                    },
+                    "maxItems": 8
+                  }
+                },
+                "required": [
+                  "repos"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "repo": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "url": {
+                          "type": "string"
+                        },
+                        "defaultBranch": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "url",
+                        "defaultBranch"
+                      ]
+                    },
+                    "repos": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "defaultBranch": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "default": null
+                          },
+                          "hasToken": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "url"
+                        ]
+                      },
+                      "default": []
+                    },
+                    "description": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "default": null
+                    },
+                    "worktree": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "shared",
+                            "isolated"
+                          ]
+                        },
+                        "setup": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "properties": {
+                            "command": {
+                              "type": "string"
+                            },
+                            "waitForSetup": {
+                              "type": "boolean"
+                            },
+                            "timeoutSeconds": {
+                              "type": "integer"
+                            }
+                          },
+                          "default": null,
+                          "required": [
+                            "command",
+                            "waitForSetup",
+                            "timeoutSeconds"
+                          ]
+                        }
+                      },
+                      "default": null,
+                      "required": [
+                        "mode"
+                      ]
+                    },
+                    "previewPort": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "minimum": 1024,
+                      "maximum": 65535
+                    },
+                    "checks": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 5,
+                      "default": []
+                    },
+                    "assetSetIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "maxItems": 8,
+                      "default": []
+                    },
+                    "createdAt": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "name",
+                    "createdAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/openapi/v1/projects/{projectId}/repo": {
       "put": {
         "tags": [

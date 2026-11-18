@@ -43,6 +43,7 @@ import {
   promptSessionUseCase,
   setProjectChecksUseCase,
   setProjectDescriptionUseCase,
+  updateProjectReposUseCase,
   setProjectRepoUseCase,
   setTaskStatusUseCase,
   setTaskSummaryUseCase,
@@ -56,7 +57,7 @@ import {
 import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
 import type { z } from 'zod';
 import { assetSchema } from '@agent-hub/contract';
-import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest } from '@agent-hub/contract';
+import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest, setProjectReposRequest } from '@agent-hub/contract';
 import { installAccess } from '../access.ts';
 import { fail } from '../http-error.ts';
 import { createRateLimiter } from '../rate-limit.ts';
@@ -378,6 +379,19 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       next = result.value;
     }
     return c.json(projectDto(next));
+  });
+  on(routes.setProjectRepos, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const projectId = c.req.param('projectId') ?? '';
+    const project = await deps.projects.byId(asProjectId(projectId));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const input = valid<{ repos: z.output<typeof setProjectReposRequest>['repos'] }>(c, 'json');
+    const result = await updateProjectReposUseCase(deps, { projectId, repos: input.repos });
+    if (!result.ok) return fail(c, result.error);
+    // 令牌名不出去：projectDto 只给 hasToken。
+    return c.json(projectDto(result.value));
   });
   on(routes.setProjectRepo, async (c) => {
     const result = await setProjectRepoUseCase(deps, { projectId: c.req.param('projectId') ?? '', ...valid<z.output<typeof setProjectRepoRequest>>(c, 'json') });

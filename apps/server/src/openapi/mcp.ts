@@ -26,6 +26,8 @@ const ALLOWED = {
   getAsset: { module: 'assets', need: 'asset.read', readOnly: true },
   createProject: { module: 'projects', need: 'project.create', readOnly: false, expose: 'project_create', idempotent: true },
   updateProject: { module: 'projects', need: 'project.update', readOnly: false, expose: 'project_update', idempotent: true },
+  // 仓库清单（含私有仓库令牌）：令牌只写不读，响应只有 hasToken。
+  setProjectRepos: { module: 'projects', need: 'project.update', readOnly: false, expose: 'project_repos', idempotent: true },
   deleteProject: { module: 'projects', need: 'project.delete', readOnly: false, expose: 'project_archive' },
   createAsset: { module: 'assets', need: 'asset.submit', readOnly: false, expose: 'asset_create', idempotent: true },
   // 资产自动化（导入 → 发布 → 分配）：发布与分配要 assets:publish 范围

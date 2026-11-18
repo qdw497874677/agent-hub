@@ -743,3 +743,52 @@ test('外部接入：限定项目的令牌能用项目所在团队的团队资�
   assert.equal((await api(loose)(`/assets/${teamAsset}/revisions`, post({ files: skillFiles('nope') }))).status, 404);
   assert.equal((await api(loose)('/assets', post({ kind: 'skill', scope: 'team', files: namedSkill('team-x') }))).status, 403);
 });
+
+test('开放 API project_repos：令牌只写不读，响应只有 hasToken；MCP 工具按写开关出现', async () => {
+  const { david, mint, app, api } = await setup();
+  const project = (await david('/api/projects', post({ name: '私有仓库' }))).body as { id: string };
+  const token = (await mint(david, ['projects:read', 'projects:write'])).token;
+  const call = api(token);
+
+  const saved = await call(`/projects/${project.id}/repos`, {
+    method: 'PUT',
+    body: JSON.stringify({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', credential: 'glpat-secret' }] })
+  });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.repos[0].hasToken, true);
+  assert.equal(JSON.stringify(saved.body).includes('glpat'), false);
+  assert.equal('tokenSecret' in saved.body.repos[0], false);
+
+  // 省略 credential = 不动已有的令牌
+  const kept = await call(`/projects/${project.id}/repos`, {
+    method: 'PUT',
+    body: JSON.stringify({ repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git' }] })
+  });
+  assert.equal(kept.status, 200, JSON.stringify(kept.body));
+  assert.equal(kept.body.repos[0].hasToken, true);
+
+  // MCP：写开关关着就列不出来，打开后能调
+  const rpc = async (body: unknown, policy?: { writes?: boolean; readOnly?: boolean }) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify(body)
+      }),
+      { mcpPolicy: { modules: new Set(['projects']), readOnly: false, writes: false, ...policy } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+  const closed = await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  assert.ok(!closed.result.tools.some((t: { name: string }) => t.name === 'project_repos'));
+  const open = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, { writes: true });
+  const tool = open.result.tools.find((t: { name: string }) => t.name === 'project_repos');
+  assert.ok(tool);
+  assert.equal(tool.annotations.readOnlyHint, false);
+  const cleared = await rpc(
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'project_repos', arguments: { projectId: project.id, repos: [{ name: 'api', url: 'https://gitlab.test/me/api.git', credential: '' }], clientRequestId: 'req-repos' } } },
+    { writes: true }
+  );
+  assert.equal(cleared.result.isError, false, JSON.stringify(cleared.result));
+  assert.equal(cleared.result.structuredContent.hasToken === undefined ? cleared.result.structuredContent.repos[0].hasToken : cleared.result.structuredContent.hasToken, false);
+});

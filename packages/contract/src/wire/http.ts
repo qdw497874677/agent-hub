@@ -32,6 +32,25 @@ export const updateProjectRequest = z
   .refine((v) => v.description !== undefined || v.checks !== undefined, { message: '至少给 description 或 checks' });
 
 
+/**
+ * 项目仓库清单里的一项（docs/design/multi-repo.md §11.2）：绑定、检查、独立设置共用同一形状。
+ * `credential` 明文只在这一次请求里出现：非空 = 存进密钥箱；空串 = 清掉；省略 = 不动已有的。
+ */
+export const projectRepoInput = z.object({
+  id: z.string().max(64).optional(),
+  name: z.string().max(41).optional(),
+  url: z.string().min(1).max(500),
+  defaultBranch: z.string().max(200).nullable().optional(),
+  /**
+   * 私有 HTTPS 仓库的令牌（明文只在这一次请求里出现）：非空 = 存进密钥箱；
+   * 空串 = 清掉这个仓库的令牌；省略 = 不动已有的。响应里只有 `hasToken`。
+   */
+  credential: z.string().max(512).optional()
+});
+
+/** 只改仓库清单（不动 worktree / 预览端口 / 检查命令）：空数组 = 解除全部绑定。 */
+export const setProjectReposRequest = z.object({ repos: z.array(projectRepoInput).max(8) });
+
 /** 改项目级 worktree 配置（docs/design/worktree.md §3）：null = 没配，按 shared 处理。 */
 export const setProjectWorktreeRequest = z.object({
   /** 预览表单的默认端口；`null` 清空。 */
@@ -55,22 +74,7 @@ export const setProjectWorktreeRequest = z.object({
    * 仓库清单（docs/design/multi-repo.md §11.2）：空数组 = 不绑仓库。
    * 与 worktree 至少给一个；name / id 可省略（服务端派生）。
    */
-  repos: z
-    .array(
-      z.object({
-        id: z.string().max(64).optional(),
-        name: z.string().max(41).optional(),
-        url: z.string().min(1).max(500),
-        defaultBranch: z.string().max(200).nullable().optional(),
-        /**
-         * 私有 HTTPS 仓库的令牌（明文只在这一次请求里出现）：非空 = 存进密钥箱；
-         * 空串 = 清掉这个仓库的令牌；省略 = 不动已有的。响应里只有 `hasToken`。
-         */
-        credential: z.string().max(512).optional()
-      })
-    )
-    .max(8)
-    .optional(),
+  repos: z.array(projectRepoInput).max(8).optional(),
   /** 项目声明的检查命令（issue #216 P1）：空数组 = 清掉，最多 5 条，一条一行（不能有换行）。 */
   checks: z.array(z.string()).max(5).optional(),
   /** 项目默认引用的资产组合（按顺序叠加）：空数组 = 清掉。 */
@@ -88,21 +92,7 @@ export const setProjectRepoRequest = z.object({
  * 形状与 PATCH 的 repos 一致；workerId 省略 = 自动挑一台在线的、有 git 能力的机器。
  */
 export const checkProjectReposRequest = z.object({
-  repos: z
-    .array(
-      z.object({
-        id: z.string().max(64).optional(),
-        name: z.string().max(41).optional(),
-        url: z.string().min(1).max(500),
-        defaultBranch: z.string().max(200).nullable().optional(),
-        /**
-         * 私有 HTTPS 仓库的令牌（明文只在这一次请求里出现）：非空 = 存进密钥箱；
-         * 空串 = 清掉这个仓库的令牌；省略 = 不动已有的。响应里只有 `hasToken`。
-         */
-        credential: z.string().max(512).optional()
-      })
-    )
-    .max(8),
+  repos: z.array(projectRepoInput).max(8),
   workerId: z.string().min(1).max(120).nullable().optional()
 });
 

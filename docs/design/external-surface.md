@@ -218,6 +218,18 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 - 已知欠缺：资产还没有协议级 digest 冻结（E4c），所以委派出去的会话在别人同步资产新版后
   可能换内容；这一步完成前，「对外委派」适合内部可信调用方。
 
+#### 私有仓库凭据：`project_repos`
+
+外部 agent 配「项目从哪几个仓库拉代码」用 `project_repos`（`PUT /openapi/v1/projects/{id}/repos`，
+权限 `projects:write`，写工具开关同上一节）：
+
+- `repos[]`：`url`、`name`（可选）、`defaultBranch`（可选，`null` = 远端默认），最多 8 个，第 0 个是主仓库。
+- `credential` **只写不读**：非空存进密钥箱（`repo-git:<repoId>`）、空串清掉、省略不动。
+  响应只给 `hasToken: true|false`，明文永不回显、不进审计 detail、不进日志。
+- 存下之后，这条仓库的 clone / worktree / push 都由 hub 按 URL 或目录前缀自动取令牌下发，
+  worker 端只拿到一次性的 `http.extraHeader`。
+- 要确认机器能不能拉到：先 `POST /api/projects/{id}/repos/check`（界面入口；开放 API 暂未开）。
+
 ### 5.7 交付与幂等
 
 - 交付意图仍可用现有字段表达：任务 `branch`、`pullRequests`（`task.get` 聚合 PR URL）。
