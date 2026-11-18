@@ -64,6 +64,9 @@ interface Props {
   readonly onTaskDetail: (taskId: string) => void;
   /** 搜索命中后跳到这里：nonce 变化就重新居中（同一条命中点两次也要动）。 */
   readonly focus: { readonly id: string; readonly nonce: number } | null;
+  /** 侧栏菜单「在画布中展开」：nonce 变化就把这条会话开成窗口。 */
+  readonly expandRequest?: { readonly id: string; readonly nonce: number } | null;
+  readonly onExpandHandled?: () => void;
 }
 
 /** 没量到、没拖过的卡按上限估高度：宁可留白，也不压到邻居（会话卡未拖时输出区最高 320px）。 */
@@ -131,6 +134,8 @@ export function CanvasView({
   onTaskStatus,
   onTaskDetail,
   focus,
+  expandRequest = null,
+  onExpandHandled,
   drafts,
   onDraftChange,
   onSend,
@@ -247,6 +252,13 @@ export function CanvasView({
   const narrow = useNarrow();
   const windows = useCanvasWindows(canvas, container, narrow);
   const { expand, expanded } = windows;
+  const handledExpand = useRef<number | null>(null);
+  useEffect(() => {
+    if (!expandRequest || handledExpand.current === expandRequest.nonce) return;
+    handledExpand.current = expandRequest.nonce;
+    if (canvas.sessions.some((session) => session.id === expandRequest.id)) expand(expandRequest.id);
+    onExpandHandled?.();
+  }, [expandRequest, expand, canvas.sessions, onExpandHandled]);
   // 刚点选的卡：右栏展开会把画布挤窄，挤完之后再把它整个挪进视口。
   const revealing = useRef<{ id: string; until: number } | null>(null);
 
