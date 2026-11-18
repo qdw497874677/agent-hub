@@ -467,3 +467,10 @@ type Part =
 - 时间线：hub 投进来的 agent 消息画成卡片（类型、来源、代谁、回复状态、正文），不再显示原始标签；侧栏 / 画布的「开头一句」也去掉标签（`promptOpening`）。
 - 项目设置 · 项目页：「信任同伴」开关；`PUT /messaging` 不给 `roles` 时保持角色表不变。
 - 画布连线上的消息计数没做（留待后续）。
+
+### P1b（`feat/session-comm-p1b`，#241 合并后基于 master 798b718）
+
+- `session_start` / `/api/sessions/derive` 加 `repoId`（项目仓库 id 或仓库名）：只为这个仓开**单仓**隔离 worktree（`prepareRepoWorktreeUseCase`，复用组合组的仓库基座查找 / clone），分支 `agent-hub/<仓>-<会话后缀>`，不建组合组；和 `workspaceId` / `groupId` 互斥。准备命令只在主仓库（或单仓项目）跑。
+- `handle` / `linkWith`：建会话**之前**检查（短名格式与任务内唯一 → 409；linkWith 同项目、能对它 `session.prompt`、没收起），建好后起短名、连线；个别失败只记日志、不回滚会话。
+- `agent.spawn` 加 `repo_id` / `worker_id` / `handle`：派出来的会话**自动和发起方连线**；机器、模型检查都按会话主人算。没给模型且同运行时：沿用发起方模型（否则落到运行时默认，可能没配，E2E 里就是这样暴露的）；hub 托管模型先过提供商检查，和 derive 一致。
+- 设计里 `agent.spawn` 的 `linkWith` 没做：派生只自动连发起方，要连更多用 `session_link`。
