@@ -39,11 +39,13 @@ async function world() {
   return { deps: { projects, workspaces, secrets }, project };
 }
 
-test('repoAuthForUrl：按地址命中项目仓库，解出密钥箱里的令牌', async () => {
-  const { deps } = await world();
-  assert.deepEqual(await repoAuthForUrl(deps, null, API), { header: HEADER });
-  assert.equal(await repoAuthForUrl(deps, null, WEB), null, '没配令牌的仓库不返回 auth');
-  assert.equal(await repoAuthForUrl(deps, null, 'https://gitlab.test/me/other.git'), null);
+test('repoAuthForUrl：必须带当前项目 id，按规范化地址命中该项目仓库', async () => {
+  const { deps, project } = await world();
+  assert.equal(await repoAuthForUrl(deps, null, API), null, '没有 projectId 不扫全部项目（#233）');
+  assert.deepEqual(await repoAuthForUrl(deps, null, API, project.id), { header: HEADER });
+  assert.deepEqual(await repoAuthForUrl(deps, null, 'https://gitlab.test/me/api', project.id), { header: HEADER }, '去掉 .git 仍命中');
+  assert.equal(await repoAuthForUrl(deps, null, WEB, project.id), null, '没配令牌的仓库不返回 auth');
+  assert.equal(await repoAuthForUrl(deps, null, 'https://gitlab.test/me/other.git', project.id), null);
 });
 
 test('repoAuthForUrl：SSH / 本地路径一律不传令牌', async () => {
@@ -52,17 +54,16 @@ test('repoAuthForUrl：SSH / 本地路径一律不传令牌', async () => {
   assert.equal(await repoAuthForUrl(deps, null, '/srv/repos/api.git'), null);
 });
 
-test('repoAuthForUrl：projectId 只是「先看这个项目」的提示，找不到再按 URL 全量找', async () => {
+test('repoAuthForUrl：只查当前项目，不把令牌漏到别的项目（#233）', async () => {
   const { deps, project } = await world();
   assert.deepEqual(await repoAuthForUrl(deps, null, API, project.id), { header: HEADER });
-  // 同一个 URL 就是同一个仓库：提示没命中时全量找仍然能解出令牌
-  assert.deepEqual(await repoAuthForUrl(deps, null, API, 'project_other'), { header: HEADER });
+  assert.equal(await repoAuthForUrl(deps, null, API, 'project_other'), null);
 });
 
 test('repoAuthForUrl：密钥箱里没有这条 = 不传（被清掉的情况）', async () => {
-  const { deps } = await world();
+  const { deps, project } = await world();
   await deps.secrets.remove(repoTokenKey('repo_aaaaaaaa'));
-  assert.equal(await repoAuthForUrl(deps, null, API), null);
+  assert.equal(await repoAuthForUrl(deps, null, API, project.id), null);
 });
 
 test('repoAuthForPath：工作空间路径（含 worktree 子目录）反查仓库令牌', async () => {

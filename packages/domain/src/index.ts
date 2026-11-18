@@ -9,6 +9,7 @@ export * from './event.ts';
 export * from './approval.ts';
 export * from './attachment.ts';
 export * from './project.ts';
+export * from './repo-url.ts';
 export * from './task.ts';
 export * from './work-log.ts';
 export * from './task-briefing.ts';

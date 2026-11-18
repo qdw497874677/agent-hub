@@ -1,5 +1,5 @@
 import { principalOfSubject, type Subject } from '../access.ts';
-import { createProject, deriveRepoId, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, withProjectRepos } from '../project.ts';
+import { createProject, deriveRepoId, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeSubmodules, normalizePrimaryRepoId, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, withProjectRepos } from '../project.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
 import type { DomainError } from '../errors.ts';
@@ -205,7 +205,7 @@ export interface ProjectRepoInput extends Partial<ProjectRepo> {
  */
 export async function updateProjectReposUseCase(
   deps: Pick<Deps, 'projects' | 'secrets' | 'now'>,
-  command: { readonly projectId: string; readonly repos: readonly ProjectRepoInput[] }
+  command: { readonly projectId: string; readonly repos: readonly ProjectRepoInput[]; readonly primaryRepoId?: string | null }
 ): Promise<Result<Project, DomainError>> {
   const project = await deps.projects.byId(asProjectId(command.projectId));
   if (!project) return err(notFound('项目不存在'));
@@ -237,7 +237,11 @@ export async function updateProjectReposUseCase(
     if (!kept.has(repo.id) && repo.tokenSecret) revoked.push(repo.tokenSecret);
   }
   for (const name of new Set(revoked)) await deps.secrets.remove(name);
-  const next = withProjectRepos(project, repos);
+  const primaryRepoId = command.primaryRepoId !== undefined
+    ? normalizePrimaryRepoId(repos, command.primaryRepoId)
+    : normalizePrimaryRepoId(repos, project.primaryRepoId);
+  if (!primaryRepoId.ok) return primaryRepoId;
+  const next = withProjectRepos(project, repos, primaryRepoId.value);
   await deps.projects.save(next);
   return ok(next);
 }
@@ -266,6 +270,19 @@ export async function setProjectChecksUseCase(
   const checks = normalizeChecks(command.checks);
   if (!checks.ok) return checks;
   const next: Project = { ...project, checks: checks.value };
+  await deps.projects.save(next);
+  return ok(next);
+}
+
+export async function setProjectSubmodulesUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly submodules: unknown }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const submodules = normalizeSubmodules(command.submodules);
+  if (!submodules.ok) return submodules;
+  const next: Project = { ...project, submodules: submodules.value === 'off' ? undefined : submodules.value };
   await deps.projects.save(next);
   return ok(next);
 }

@@ -9,7 +9,7 @@ import { fail } from './http-error.ts';
  * - GET  /api/sessions/:id/git/state       分支、远端、改动、能不能推送 / 开 PR、任务上的 PR
  * - POST /api/sessions/:id/git/draft       提炼模型（或模板）写的提交说明、PR 标题 / 描述、分支名建议
  * - POST /api/sessions/:id/git/run         {action: commit|push|pr, message, title?, body?}
- * - GET  /api/tasks/:id/pull-requests      任务上的 PR（打开时顺手同步开着的）
+ * - GET  /api/tasks/:id/pull-requests      任务上的 PR（打开时顺手同步开着的；?refresh=1 立刻再拉，不受 1 分钟节流）
  * - GET / PUT / DELETE /api/git-host/token 团队 GitHub token：只回 configured + 末 4 位
  */
 const RunBody = z.object({
@@ -41,7 +41,8 @@ export function installGitRoutes(app: Hono<any>, git: GitWorkflowService, subjec
     return r.ok ? c.json(r.value, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/tasks/:id/pull-requests', async (c) => {
-    const r = await git.syncTask(subjectOf(c), c.req.param('id'));
+    const refresh = c.req.query('refresh') === '1' || c.req.query('refresh') === 'true';
+    const r = await git.syncTask(subjectOf(c), c.req.param('id'), refresh ? { refresh: true } : undefined);
     return r.ok ? c.json({ pullRequests: r.value }, 200, noStore) : fail(c, r.error);
   });
   app.get('/api/git-host/token', async (c) => {

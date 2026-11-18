@@ -21,6 +21,7 @@ import {
   setProjectDescriptionRequest,
   updateProjectRequest,
   removeWorkspaceRequest,
+  settleSessionRequest,
   syncWorkspaceResultSchema,
   workspaceSchema,
   setProjectRepoRequest,
@@ -99,6 +100,7 @@ const projectId = z.object({ projectId: z.string().openapi({ param: { name: 'pro
 const taskId = z.object({ taskId: z.string().openapi({ param: { name: 'taskId', in: 'path' } }) });
 const sessionId = z.object({ sessionId: z.string().openapi({ param: { name: 'sessionId', in: 'path' } }) });
 const workspaceId = z.object({ workspaceId: z.string().openapi({ param: { name: 'workspaceId', in: 'path' } }) });
+const groupId = z.object({ groupId: z.string().openapi({ param: { name: 'groupId', in: 'path' } }) });
 
 /** 每条路由要的权限范围（文档里写清楚；真正的判断在 can()）。 */
 export type ScopeNote =
@@ -211,11 +213,127 @@ const route = <R extends Parameters<typeof createRoute>[0]>(scope: ScopeNote, co
   };
 };
 
+
+const memberBranch = z.object({ repoId: z.string().min(1).max(80), branch: z.string().min(1).max(200) });
+const createWorkspaceGroupRequest = z.object({
+  taskId: z.string().min(1).max(80),
+  workerId: z.string().min(1).max(120).optional(),
+  repoIds: z.array(z.string().min(1).max(80)).max(8).optional(),
+  fromGroupId: z.string().min(1).max(80).optional(),
+  branches: z.array(memberBranch).max(8).optional(),
+  sessionId: z.string().min(1).max(80).optional()
+});
+const addWorkspaceGroupMemberRequest = z.object({ repoId: z.string().min(1).max(80) });
+const workspaceGroupMemberSchema = z.object({
+  workspaceId: z.string(),
+  repoId: z.string(),
+  name: z.string(),
+  state: z.enum(['ready', 'preparing', 'failed']),
+  error: z.string().nullable()
+});
+const workspaceGroupSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  workerId: z.string().nullable(),
+  root: z.string(),
+  members: z.array(workspaceGroupMemberSchema),
+  state: z.string(),
+  layout: z.string().optional(),
+  primaryRepoId: z.string().nullable().optional(),
+  ownerTaskId: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  createdAt: z.number(),
+  error: z.string().nullable()
+});
+const sessionGitRunRequest = z.object({
+  action: z.enum(['commit', 'push', 'pr']),
+  message: z.string().max(8000).optional(),
+  title: z.string().max(300).optional(),
+  body: z.string().max(65_536).optional(),
+  member: z.string().min(1).max(120).optional()
+});
+const pullRequestLinkSchema = z.object({
+  id: z.string(),
+  url: z.string(),
+  number: z.number().optional(),
+  title: z.string().optional(),
+  state: z.string(),
+  workspaceId: z.string().optional(),
+  repo: z.string().nullable().optional()
+}).passthrough();
+const sessionGitStateSchema = z.object({
+  isGit: z.boolean(),
+  branch: z.string().nullable(),
+  defaultBranch: z.string().nullable(),
+  hasOrigin: z.boolean(),
+  repo: z.string().nullable(),
+  files: z.array(z.unknown()),
+  ahead: z.number(),
+  upstream: z.string().nullable(),
+  canPush: z.boolean(),
+  prBlocked: z.string().nullable(),
+  prVia: z.string(),
+  pullRequests: z.array(pullRequestLinkSchema)
+}).passthrough();
+const sessionGitRunResultSchema = z.object({
+  sha: z.string().nullable(),
+  committed: z.boolean(),
+  pushed: z.boolean(),
+  branch: z.string().nullable(),
+  pullRequest: pullRequestLinkSchema.nullable(),
+  compareUrl: z.string().nullable(),
+  notes: z.array(z.string())
+});
+const sweepItemSchema = z.object({
+  runId: z.string(),
+  projectId: z.string().nullable(),
+  workspaceId: z.string(),
+  path: z.string(),
+  branch: z.string().nullable(),
+  action: z.enum(['removed', 'kept', 'failed']),
+  reason: z.string(),
+  sizeBytes: z.number().nullable(),
+  at: z.number()
+});
+const sweepReportSchema = z.object({
+  removed: z.array(z.string()),
+  kept: z.array(z.string()),
+  skipped: z.array(z.string()),
+  failed: z.array(z.string()).optional(),
+  runId: z.string().nullable().optional(),
+  items: z.array(sweepItemSchema).optional()
+});
+const cleanupRecordsSchema = z.object({
+  items: z.array(sweepItemSchema),
+  orphans: z.array(z.object({ path: z.string(), workerId: z.string().nullable() }))
+});
+
 export const routes = {
   health: route(null, {
     method: 'get', path: `${V1}/health`, tags: ['meta'], summary: '健康检查',
     responses: { 200: json(z.object({ ok: z.boolean() })) }
   }, { skip: '健康检查没有可执行的动作；探活直接打 REST /openapi/v1/health' }),
+  workbenchSkill: route(null, {
+    method: 'get', path: `${V1}/skills/agent-hub-workbench`, tags: ['meta'], summary: '下载 agent-hub-workbench skill',
+    description:
+      '给外部 agent 用的工作台操作说明（Agent Skills 格式：一份 SKILL.md 加 references/）。\n' +
+      '参数：format=zip（默认，附件 agent-hub-workbench.zip）或 format=json（{ name, description, files[] }）。\n' +
+      '本路径无需令牌。已连接 MCP 的客户端也可以 resources/list、resources/read（uri 形如 skill://agent-hub-workbench/SKILL.md）。',
+    request: { query: z.object({ format: z.enum(['zip', 'json']).optional() }) },
+    responses: {
+      200: {
+        description: 'zip 附件或 JSON 清单',
+        content: {
+          'application/zip': { schema: z.string() },
+          'application/json': { schema: z.object({
+            name: z.string(),
+            description: z.string(),
+            files: z.array(z.object({ path: z.string(), content: z.string() }))
+          }) }
+        }
+      }
+    }
+  }, { skip: '给外部 agent 下载的文件，不是可执行工具；用 MCP resources/read 或本 GET' }),
   me: route(null, {
     method: 'get', path: `${V1}/me`, tags: ['meta'], summary: '当前令牌是谁',
     description: '返回令牌所属的账号与令牌的权限范围。任何有效令牌都能调。',
@@ -272,8 +390,8 @@ export const routes = {
   setProjectRepos: route('projects:write', {
     method: 'put', path: `${V1}/projects/{projectId}/repos`, tags: ['projects'], summary: '设置项目仓库清单（可带私有仓库令牌）',
     description:
-      '整体替换项目的仓库清单（最多 8 个，第 0 个是主仓库）：空数组 = 解除全部绑定。\n' +
-      '参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）。\n' +
+      '整体替换项目的仓库清单（最多 8 个）：空数组 = 解除全部绑定。\n' +
+      '参数：projectId（路径）；repos[].url、name（可选，小写字母数字与连字符）、defaultBranch（可选，null=远端默认）；primaryRepoId（可选，指定组合会话的主仓库；不指定则不能开组合会话）。\n' +
       'credential：私有 HTTPS 仓库的令牌，只写不读——非空存进密钥箱、空串清掉、省略不动；响应里只有 hasToken，永远不回显。\n' +
       '返回：更新后的项目对象（repos[].hasToken 表明有没有令牌）。\n' +
       '下一步：用 get_project 复核；之后新建的会话/工作空间克隆与推送都会自动用这个令牌。\n' +
@@ -483,8 +601,8 @@ export const routes = {
   startSession: route('sessions:write', {
     method: 'post', path: `${V1}/sessions`, tags: ['sessions'], summary: '在任务下开一条会话',
     description:
-      '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了。\n' +
-      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、assetIds（可选：只带这些资产）。\n' +
+      '在任务下开一条会话，派到指定机器（workerId）上跑。本机（hub 同机）的机器开放 API 永远用不了，必须给一台已登记的远程 Worker。\n' +
+      '参数：taskId、agentId、model（空串=运行时默认）、workerId（建议显式给在线机器）、workspaceId（可选）、groupId（可选：已有的组合工作空间；多仓项目要先在 Hub 建组，本工具不会自动建组合组）、assetIds（可选：只带这些资产）。\n' +
       '资产：不传 assetIds = 用项目生效的全部资产；要排除某个技能/指令时，传完整清单减掉它（清单里的 id 必须对该项目可见，看不见的会被丢掉）。\n' +
       '返回：会话对象（id、status、model、workspaceId）。\n' +
       '下一步：用 session_reply 发第一句；用 events 或 list_task_log 跟进展。\n' +
@@ -707,7 +825,118 @@ export const routes = {
       responses: { 200: json(workspaceSchema) }
     },
     { module: 'workspaces', need: 'project.update', readOnly: false, idempotent: true }
-  )
+  ),
+  workspaceGroupCreate: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/projects/{projectId}/workspace-groups`, tags: ['workspaces'], summary: '新建组合工作空间',
+      description:
+        '为多仓项目建一个组合组：必须先指定主仓库。cwd 是主仓库 `<groupRoot>/<primary>/`，附加仓在 `../repos/<name>/`。可只选子集（主仓库一定在内）。\n' +
+        '参数：projectId；body.taskId、workerId（MCP 必须给已登记的远程机器，本机不可用）、repoIds?（子集）、fromGroupId? / branches?（在目标机器上按已有分支再建一组，用于验证交接）、sessionId?。\n' +
+        '返回：组（id、root、members[].workspaceId/name/state、primaryRepoId）。准备命令只在主仓库跑。\n' +
+        '下一步：session_start 时把 groupId 传回去；用 workspace_group_add_member 追加仓库。\n' +
+        '错误：400 没指定主仓库或参数不合法 / 403 无 projects:write 或本机不可用 / 404 / 409 机器不支持组合工作空间。',
+      request: { params: projectId, ...body(createWorkspaceGroupRequest) },
+      responses: { 201: json(workspaceGroupSchema, '已创建') }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_group_create', idempotent: true }
+  ),
+  workspaceGroupGet: route('projects:read', {
+    method: 'get', path: `${V1}/workspace-groups/{groupId}`, tags: ['workspaces'], summary: '看一个组合工作空间',
+    description: '返回组的成员、路径、状态和错误。参数：groupId。错误：404 / 403。',
+    request: { params: groupId },
+    responses: { 200: json(workspaceGroupSchema) }
+  }),
+  workspaceGroupAddMember: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/workspace-groups/{groupId}/members`, tags: ['workspaces'], summary: '往组合组追加一个仓库',
+      description:
+        '在已有组合组里添加一个项目仓库（附加仓路径 `../repos/<name>`）。下一轮 session_reply 会注入更新后的成员清单，不必重启会话。\n' +
+        '参数：groupId；body.repoId。\n' +
+        '错误：400 仓库已在组里或不属于该项目 / 403 / 404 / 409。',
+      request: { params: groupId, ...body(addWorkspaceGroupMemberRequest) },
+      responses: { 201: json(workspaceGroupSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_group_add_member', idempotent: true }
+  ),
+  workspaceGroupRetry: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/workspace-groups/{groupId}/retry`, tags: ['workspaces'], summary: '重试失败的组合组成员',
+      description: '只重试 state=failed 的成员，已就绪的不动。参数：groupId。返回更新后的组。错误：403 / 404 / 409 组已经准备好了。',
+      request: { params: groupId },
+      responses: { 200: json(workspaceGroupSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_group_retry', idempotent: true }
+  ),
+  sessionGitState: route('sessions:read', {
+    method: 'get', path: `${V1}/sessions/{sessionId}/git/state`, tags: ['sessions'], summary: '按仓看 git 状态和未提交改动',
+    description:
+      '返回当前分支、未提交文件、ahead、能不能推送/开 PR，以及任务上已关联的 PR。\n' +
+      '参数：sessionId；组合会话必须给 member（仓库名、repoId 或 workspaceId）。\n' +
+      '错误：400 没选仓库（会列出可选成员）/ 403 无 sessions:read 或 files:read / 404。',
+    request: { params: sessionId, query: z.object({ member: z.string().min(1).max(120).optional() }) },
+    responses: { 200: json(sessionGitStateSchema) }
+  }, { module: 'sessions', need: 'session.read', expose: 'session_git_state' }),
+  sessionGitRun: route(
+    'sessions:write',
+    {
+      method: 'post', path: `${V1}/sessions/{sessionId}/git/run`, tags: ['sessions'], summary: '按仓提交、推送或开 PR',
+      description:
+        '在指定成员仓库上执行 git：commit 只提交，push 有改动时先提交再推送，pr 再开 PR 并关联到任务。\n' +
+        '参数：sessionId；body.action、message（commit/push 有改动时必填）、title?、body?、member?（组合会话必填，仓库名或 workspaceId）。\n' +
+        '返回：sha、committed、pushed、branch、pullRequest（已关联任务）、compareUrl、notes。\n' +
+        '权限：提交要 session.prompt；推送/PR 要 git.push（已包含在 sessions:write）。本机 Worker 不可用。\n' +
+        '错误：400 没选仓库或默认分支上不能开 PR / 403 / 404 / 409。',
+      request: { params: sessionId, ...body(sessionGitRunRequest) },
+      responses: { 200: json(sessionGitRunResultSchema) }
+    },
+    { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_git_run', idempotent: true }
+  ),
+  taskPullRequests: route('sessions:read', {
+    method: 'get', path: `${V1}/tasks/{taskId}/pull-requests`, tags: ['tasks'], summary: '同步并列出任务上的 PR',
+    description:
+      '列出该任务关联的各仓 PR。默认对开着的 PR 有 1 分钟节流；refresh=1 立刻再拉（合并后可据此收起会话）。\n' +
+      '参数：taskId；query.refresh。\n' +
+      '返回：{ pullRequests }。错误：403 / 404。',
+    request: { params: taskId, query: z.object({ refresh: z.enum(['1', 'true']).optional() }) },
+    responses: { 200: json(z.object({ pullRequests: z.array(pullRequestLinkSchema) })) }
+  }, { module: 'tasks', need: 'task.read', expose: 'task_pull_requests' }),
+  sessionSettle: route(
+    'sessions:write',
+    {
+      method: 'post', path: `${V1}/sessions/{sessionId}/settle`, tags: ['sessions'], summary: '收起或恢复会话',
+      description:
+        'settled=true 把会话移出活跃列表（对话保留）；工作区干净时拆 worktree，有未提交/未跟踪/未推送改动则留下并记原因。settled=false 按原分支恢复 worktree。\n' +
+        '还在跑的会话要先 session_cancel。PR 合并后也可先调 task_pull_requests?refresh=1，平台会尝试自动收起。\n' +
+        '参数：sessionId；body.{ settled: boolean }。返回：会话对象。错误：403 无 session.settle（sessions:write 已包含）/ 409 还在跑 / 404。',
+      request: { params: sessionId, ...body(settleSessionRequest) },
+      responses: { 200: json(sessionSchema) }
+    },
+    { module: 'sessions', need: 'session.settle', readOnly: false, expose: 'session_settle', idempotent: true }
+  ),
+  workspaceSweep: route(
+    'projects:write',
+    {
+      method: 'post', path: `${V1}/projects/{projectId}/cleanup/sweep`, tags: ['workspaces'], summary: '按项目规则清理临时工作空间',
+      description:
+        '跑一轮两段清理：先收起已满足条件的会话，下一轮才拆干净的 worktree。组合组原子处理。脏工作区整组留下，items[].reason / action=kept 写明原因。\n' +
+        '参数：projectId。返回：removed/kept/skipped/failed、runId、items（含 reason）。\n' +
+        '下一步：用 workspace_sweep_records 核对记录和孤儿目录。错误：403 无 projects:write / 404。',
+      request: { params: projectId },
+      responses: { 200: json(sweepReportSchema) }
+    },
+    { module: 'workspaces', need: 'project.update', readOnly: false, expose: 'workspace_sweep', idempotent: true }
+  ),
+  workspaceSweepRecords: route('projects:read', {
+    method: 'get', path: `${V1}/projects/{projectId}/cleanup/records`, tags: ['workspaces'], summary: '查看项目的清理记录',
+    description:
+      '返回最近的清理记录（含 kept 原因）以及登记对不上的孤儿目录。参数：projectId。错误：403 / 404。',
+    request: { params: projectId },
+    responses: { 200: json(cleanupRecordsSchema) }
+  }, { module: 'workspaces', need: 'project.read', expose: 'workspace_sweep_records' })
+
 } as const;
 
 /**

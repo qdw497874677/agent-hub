@@ -127,6 +127,7 @@ export interface ProjectReposPatch {
     credential?: string;
     hasToken?: boolean;
   }[];
+  primaryRepoId?: string | null;
 }
 
 /**
@@ -334,18 +335,33 @@ export interface TurnCheckpointDto { turn: number; promptSeq: number; before: st
 /** 'session' | 'head' | 'branch'（相对分支起点）| 'turn'（最近一轮）| 'turn:3'（第 3 轮）。 */
 export type DiffBaseSpec = string;
 const baseQuery = (base: DiffBaseSpec) => { const [b, n] = base.split(':'); return `base=${b}${n ? `&turn=${n}` : ''}`; };
+/** 组合会话把选中的成员工作空间 id 接到 git / 文件接口上；单仓不传。 */
+function withMember(url: string, member?: string | null): string {
+  if (!member) return url;
+  return `${url}${url.includes('?') ? '&' : '?'}member=${encodeURIComponent(member)}`;
+}
 export interface FileDiffDto { path: string; patch: string; truncated: boolean; binary: boolean }
-export interface FilesContextDto { sessionId: string; root: string; workerId: string | null; sessionBase: string | null; otherProjectSessions?: number }
+export interface FilesContextMemberDto { workspaceId: string; name: string; repoId?: string; state: 'ready' | 'preparing' | 'failed' }
+export interface FilesContextGroupDto { root: string; members: readonly FilesContextMemberDto[] }
+export interface FilesContextDto {
+  sessionId: string;
+  root: string;
+  workerId: string | null;
+  sessionBase: string | null;
+  otherProjectSessions?: number;
+  group?: FilesContextGroupDto;
+  member?: string | null;
+}
 export const filesApi = {
-  context: (id: string) => call<FilesContextDto>(`${sq(id)}/files/context`),
-  list: (id: string, path: string) => call<DirectoryPageDto>(`${sq(id)}/files?path=${encodeURIComponent(path)}`),
-  read: (id: string, path: string, confirm: boolean) => call<FileContentDto>(`${sq(id)}/files/content?path=${encodeURIComponent(path)}${confirm ? '&confirm=1' : ''}`),
-  downloadUrl: (id: string, path: string, confirm: boolean) => `${sq(id)}/files/download?path=${encodeURIComponent(path)}${confirm ? '&confirm=1' : ''}`,
-  find: (id: string, q: string) => call<{ files: string[] }>(`${sq(id)}/files/find?q=${encodeURIComponent(q)}`).then((r) => r.files),
-  changes: (id: string, base: DiffBaseSpec) => call<FileChangesDto>(`${sq(id)}/git/changes?${baseQuery(base)}`),
-  diff: (id: string, path: string, base: DiffBaseSpec) => call<FileDiffDto>(`${sq(id)}/git/diff?path=${encodeURIComponent(path)}&${baseQuery(base)}`),
-  turns: (id: string) => call<{ turns: TurnCheckpointDto[] }>(`${sq(id)}/git/turns`).then((r) => r.turns),
-  eventsUrl: (id: string, paths: readonly string[]) => `${sq(id)}/files/events?paths=${paths.map(encodeURIComponent).join(',')}`
+  context: (id: string, member?: string | null) => call<FilesContextDto>(withMember(`${sq(id)}/files/context`, member)),
+  list: (id: string, path: string, member?: string | null) => call<DirectoryPageDto>(withMember(`${sq(id)}/files?path=${encodeURIComponent(path)}`, member)),
+  read: (id: string, path: string, confirm: boolean, member?: string | null) => call<FileContentDto>(withMember(`${sq(id)}/files/content?path=${encodeURIComponent(path)}${confirm ? '&confirm=1' : ''}`, member)),
+  downloadUrl: (id: string, path: string, confirm: boolean, member?: string | null) => withMember(`${sq(id)}/files/download?path=${encodeURIComponent(path)}${confirm ? '&confirm=1' : ''}`, member),
+  find: (id: string, q: string, member?: string | null) => call<{ files: string[] }>(withMember(`${sq(id)}/files/find?q=${encodeURIComponent(q)}`, member)).then((r) => r.files),
+  changes: (id: string, base: DiffBaseSpec, member?: string | null) => call<FileChangesDto>(withMember(`${sq(id)}/git/changes?${baseQuery(base)}`, member)),
+  diff: (id: string, path: string, base: DiffBaseSpec, member?: string | null) => call<FileDiffDto>(withMember(`${sq(id)}/git/diff?path=${encodeURIComponent(path)}&${baseQuery(base)}`, member)),
+  turns: (id: string, member?: string | null) => call<{ turns: TurnCheckpointDto[] }>(withMember(`${sq(id)}/git/turns`, member)).then((r) => r.turns),
+  eventsUrl: (id: string, paths: readonly string[], member?: string | null) => withMember(`${sq(id)}/files/events?paths=${paths.map(encodeURIComponent).join(',')}`, member)
 };
 
 /**
@@ -479,8 +495,11 @@ export const api = {
   saveProjectAssetSets: (projectId: string, assetSetIds: readonly string[]) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ assetSetIds }) }),
   /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
-  saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
-    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),
+  saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos'], primaryRepoId?: string | null) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos, primaryRepoId: primaryRepoId ?? null }) }),
+  /** 克隆 / 建 worktree 时是否递归初始化子模块；只影响之后新建的 checkout。 */
+  saveProjectSubmodules: (projectId: string, submodules: 'off' | 'recursive') =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ submodules }) }),
   /** 保存前检查仓库能不能访问：返回每条的结论，`unavailable` 说明这次没查成。 */
   checkProjectRepos: (projectId: string, repos: ProjectReposPatch['repos'], workerId: string | null = null) =>
     post<ProjectReposCheckDto>(`/api/projects/${encodeURIComponent(projectId)}/repos/check`, {
@@ -492,8 +511,10 @@ export const api = {
    * agent 在总目录里干活。建组本身就 clone / 开分支，可能要几十秒；前端按「准备中」显示。
    */
   workspaceGroup: (groupId: string) => call<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}`),
-  createWorkspaceGroup: (projectId: string, body: { taskId: string; workerId?: string | null }) =>
+  createWorkspaceGroup: (projectId: string, body: { taskId: string; workerId?: string | null; repoIds?: readonly string[] }) =>
     post<WorkspaceGroupView>(`/api/projects/${encodeURIComponent(projectId)}/workspace-groups`, body),
+  addWorkspaceGroupMember: (groupId: string, body: { repoId: string }) =>
+    post<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}/members`, body),
   /** 只对 failed 的组生效：重跑没准备好的成员。 */
   retryWorkspaceGroup: (groupId: string) =>
     post<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}/retry`, {}),
@@ -575,8 +596,8 @@ export const api = {
    * 删除一条会话：对话记录、产物引用、连线一起没；工作目录里的文件保留。
    * 会话还在跑服务端回 409，没权限 403，已经没了 404。
    */
-  deleteSession: (sessionId: string) =>
-    call<{ ok: true }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  deleteSession: (sessionId: string, body?: { removeWorktree?: boolean }) =>
+    call<{ ok: true }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined }),
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
@@ -1232,14 +1253,15 @@ export interface GitStateDto {
   isGit: boolean; branch: string | null; defaultBranch: string | null; hasOrigin: boolean; repo: string | null;
   files: { path: string; status: string }[]; ahead: number; upstream: string | null;
   canPush: boolean; prBlocked: string | null; prVia: 'token' | 'gh'; pullRequests: PullRequestDto[];
+  sizeBytes?: number | null;
 }
 export interface GitTextDto { message: string; title: string; body: string; branch: string | null; source: 'model' | 'template' }
 export interface GitRunDto { sha: string | null; committed: boolean; pushed: boolean; branch: string | null; pullRequest: PullRequestDto | null; compareUrl: string | null; notes: string[] }
 export interface GitHostTokenDto { configured: boolean; last4: string | null; updatedAt: number | null }
 export const gitApi = {
-  state: (id: string) => call<GitStateDto>(`${sq(id)}/git/state`),
-  draft: (id: string) => post<GitTextDto>(`${sq(id)}/git/draft`, {}),
-  run: (id: string, body: { action: 'commit' | 'push' | 'pr'; message: string; title?: string; body?: string }) => post<GitRunDto>(`${sq(id)}/git/run`, body),
+  state: (id: string, member?: string | null) => call<GitStateDto>(withMember(`${sq(id)}/git/state`, member)),
+  draft: (id: string, member?: string | null) => post<GitTextDto>(withMember(`${sq(id)}/git/draft`, member), {}),
+  run: (id: string, body: { action: 'commit' | 'push' | 'pr'; message: string; title?: string; body?: string }, member?: string | null) => post<GitRunDto>(withMember(`${sq(id)}/git/run`, member), body),
   taskPullRequests: (taskId: string) => call<{ pullRequests: PullRequestDto[] }>(`/api/tasks/${encodeURIComponent(taskId)}/pull-requests`).then((r) => r.pullRequests),
   token: () => call<GitHostTokenDto>('/api/git-host/token'),
   setToken: (token: string) => call<GitHostTokenDto>('/api/git-host/token', { method: 'PUT', body: JSON.stringify({ token }) }),
@@ -1258,6 +1280,7 @@ export interface CleanupPolicyDto {
   prMerged: boolean;
   taskEndedClean: boolean;
   idleDays: number | null;
+  deleteWorktreeOnSessionDelete?: boolean;
 }
 export interface CleanupRecordsDto {
   items: { runId: string; workspaceId: string; path: string; branch: string | null; action: 'removed' | 'kept' | 'failed'; reason: string; sizeBytes: number | null; at: number }[];

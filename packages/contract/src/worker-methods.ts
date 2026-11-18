@@ -75,7 +75,7 @@ export const wsInspect = method(
 /** 默认用 Worker 本机的 git 凭据（SSH key / agent）；私有 HTTPS 仓库由 hub 解出 `auth` 传下来。 */
 export const wsClone = method(
   'ws.clone', 'git',
-  z.object({ repoUrl: z.string().min(1), parent: z.string(), name: z.string(), branch: z.string().nullable().optional(), auth: gitAuth }),
+  z.object({ repoUrl: z.string().min(1), parent: z.string(), name: z.string(), branch: z.string().nullable().optional(), auth: gitAuth, recurseSubmodules: z.boolean().optional() }),
   z.object({ path: z.string(), branch: z.string().nullable() })
 );
 
@@ -96,7 +96,7 @@ export const wsCheckRepo = method(
 
 export const wsAddWorktree = method(
   'ws.add_worktree', 'git',
-  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), existing: z.boolean().optional(), auth: gitAuth }),
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), existing: z.boolean().optional(), auth: gitAuth, recurseSubmodules: z.boolean().optional() }),
   z.object({ path: z.string(), branch: z.string() })
 );
 
@@ -129,7 +129,7 @@ export const wsGroupRemove = method(
  */
 export const wsNewWorktree = method(
   'ws.new_worktree', 'git',
-  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), auth: gitAuth }),
+  z.object({ repoPath: z.string(), path: z.string(), branch: z.string().min(1), base: z.string().nullable().optional(), auth: gitAuth, recurseSubmodules: z.boolean().optional() }),
   z.object({ path: z.string(), branch: z.string() })
 );
 

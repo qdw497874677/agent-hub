@@ -172,7 +172,7 @@ test('工作流失败原样透传，不包装成 invalid', async () => {
   assert.equal(!push.ok && push.error.code, 'forbidden');
   const state = await provider.call('git.state', {}, ctx());
   assert.equal(!state.ok && state.error.code, 'conflict');
-  assert.equal(!state.ok && state.error.message, '请选择要提交的仓库');
+  assert.match(!state.ok ? state.error.message : '', /请选择要提交的仓库/);
 });
 
 test('subjectOf 返回 null 时工具照常工作，把 null 交给工作流', async () => {

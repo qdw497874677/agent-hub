@@ -42,6 +42,8 @@ export interface CloneInput {
   readonly branch?: string | null;
   /** 私有 HTTPS 仓库的令牌；SSH / 本地路径不传。 */
   readonly auth?: GitAuth;
+  /** true = 递归初始化子模块（项目开关打开时）。省略 / false = 不拉。 */
+  readonly recurseSubmodules?: boolean;
 }
 
 export interface WorktreeInput {
@@ -55,6 +57,8 @@ export interface WorktreeInput {
   readonly existing?: boolean;
   /** 私有 HTTPS 仓库的令牌（只在要 fetch origin 时才用得上）。 */
   readonly auth?: GitAuth;
+  /** true = 建好后 `submodule update --init --recursive`。 */
+  readonly recurseSubmodules?: boolean;
 }
 
 /** 「先提交 WIP 并推送分支」的结果。没推上去不是错误：reason 说明为什么（没有 origin、推送被拒…）。 */
@@ -80,6 +84,8 @@ export interface CommitPreview {
   readonly files: readonly { readonly path: string; readonly status: string }[];
   readonly patch: string;
   readonly truncated: boolean;
+  /** 工作目录占用（du）；拿不到就省略。 */
+  readonly sizeBytes?: number | null;
 }
 
 export interface CommitInput {
