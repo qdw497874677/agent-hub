@@ -12,6 +12,7 @@ import {
   STORM_LIMITS,
   defaultHandle,
   isHandle,
+  privilegeTier,
   validateParts,
   type MessagePart,
   type ReplyStatus,
@@ -139,7 +140,7 @@ export interface MessageBus {
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   config(projectId: ProjectId): Promise<MessagingConfig>;
-  saveConfig(projectId: ProjectId, input: { roles: readonly PersistentAgentDefinition[]; limits: Partial<MessageLimits> }): Promise<Result<MessagingConfig, DomainError>>;
+  saveConfig(projectId: ProjectId, input: { roles: readonly PersistentAgentDefinition[]; limits: Partial<MessageLimits>; trustPeers?: boolean }, actor?: string): Promise<Result<MessagingConfig, DomainError>>;
 }
 
 const summary = (text: string): string => (text.length > 80 ? `${text.slice(0, 80)}…` : text).replaceAll('\n', ' ');
@@ -522,6 +523,9 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         if (storm === 'hold') holdReason = 'pingpong';
         else if (storm) return deny(storm.code, storm.message);
       }
+      // P1f 权限档位：guarded → auto 先拦下（不能借自动批准的会话做自己要审批的事）；项目 trustPeers 可关。
+      const tiers = target ? { from: privilegeTier(from.options), to: privilegeTier(target.options) } : null;
+      if (target && tiers && !holdReason && tiers.from === 'guarded' && tiers.to === 'auto' && config.trustPeers !== true) holdReason = 'privilege';
       const wake = command.wake !== false;
       const now = deps.now();
       const message: AgentMessage = {
@@ -555,8 +559,11 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
         holdReason
       };
       await deps.messages.save(message);
-      await audit(message, message, 'accepted', from.id, `${command.kind} ${message.to} depth=${depth}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'} ${summary(body)}`);
-      if (holdReason) {
+      const tierNote = tiers && (tiers.from === 'unknown' || tiers.to === 'unknown') ? ` tier=${tiers.from}→${tiers.to}` : '';
+      await audit(message, message, 'accepted', from.id, `${command.kind} ${message.to} depth=${depth}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'}${tierNote} ${summary(body)}`);
+      if (holdReason === 'privilege') {
+        await audit(message, message, 'held', 'hub', '权限档位升级：要审批的会话（guarded）发给自动批准的会话（auto），等发起人或项目管理员放行');
+      } else if (holdReason) {
         await audit(message, message, 'held', 'hub', `同一条链里和对方来回已到 ${STORM_LIMITS.pingpongMax} 次，等人放行`);
       } else if (target) {
         if (wake) await pump(target.id);
@@ -769,7 +776,10 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (!message || message.status !== 'held') return err(notFound('没有被拦下的这条消息'));
       const project = await deps.projects.byId(message.projectId);
       if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
-      if (!(await allowed(actor.user.id, message.kind === 'ask' ? 'agent.ask' : 'agent.message.send', project))) return err(forbidden('你没有放行这条消息的权限'));
+      if (message.holdReason === 'privilege') {
+        // 权限档位升级：只有发起人（链头那个人）或能改项目的人（owner / admin）能批。
+        if (actor.user.id !== message.onBehalfOf && !(await allowed(actor.user.id, 'project.update', project))) return err(forbidden('只有发起人或项目管理员能放行权限升级的消息'));
+      } else if (!(await allowed(actor.user.id, message.kind === 'ask' ? 'agent.ask' : 'agent.message.send', project))) return err(forbidden('你没有放行这条消息的权限'));
       const now = deps.now();
       const who = `user:${actor.user.id}`;
       if (!approve) {
@@ -822,7 +832,7 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
 
     config: loadConfig,
 
-    async saveConfig(projectId, input) {
+    async saveConfig(projectId, input, actor) {
       // 整表保存也走单条保存的净化：ref 先补成合法形状交给 configProblem 报好懂的错，
       // 再用 validateAgentRef 返回的规范值落库（trim 过的 runtime/model + 过滤后的 options）。
       // 不这么做，`{name:'x'}` 这种没有 ref 的空壳会直接 TypeError，ref 里的空白 / 脏值也会原样进库。
@@ -890,8 +900,13 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       for (const bot of existing) if (!keep.has(bot.name)) await deps.bots.remove(bot.id);
       // limits 仍写旧的配置行；roles 列保持不动（遗留列，C3b 迁移后再也不读）。
       const legacy = await deps.messages.config(projectId);
-      const config: MessagingConfig = { projectId, roles, limits: input.limits, updatedAt: now };
+      const trustPeers = input.trustPeers ?? legacy?.trustPeers === true;
+      const config: MessagingConfig = { projectId, roles, limits: input.limits, trustPeers, updatedAt: now };
       await deps.messages.saveConfig({ ...config, roles: legacy?.roles ?? [] });
+      if (trustPeers !== (legacy?.trustPeers === true)) {
+        const who = actor ?? 'hub';
+        await audit(null, { traceId: `config:${projectId}`, projectId, onBehalfOf: who }, 'config', who, trustPeers ? 'trustPeers 打开：guarded → auto 的消息不再拦下' : 'trustPeers 关闭：guarded → auto 的消息先拦下');
+      }
       return ok(config);
     }
   };

@@ -208,6 +208,9 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   db.exec(MESSAGE_SCHEMA);
   const existing = new Set((db.prepare('PRAGMA table_info(agent_messages)').all() as Row[]).map((column) => column.name as string));
   for (const [name, type] of MESSAGE_COLUMNS) if (!existing.has(name)) db.exec(`ALTER TABLE agent_messages ADD COLUMN ${name} ${type}`);
+  const configColumns = new Set((db.prepare('PRAGMA table_info(agent_messaging_config)').all() as Row[]).map((column) => column.name as string));
+  // 会话通信 P1f：项目是否信任同伴（guarded → auto 不拦）
+  if (!configColumns.has('trust_peers')) db.exec('ALTER TABLE agent_messaging_config ADD COLUMN trust_peers INTEGER NOT NULL DEFAULT 0');
   const upsert = db.prepare(
     `INSERT INTO agent_messages (id, trace_id, depth, project_id, kind, from_session_id, on_behalf_of, to_address, target_session_id, role, reply_to, body,
        status, failure, failure_detail, reply_body, reply_source, idempotency_key, created_at, updated_at, delivered_at, deadline_at,
@@ -235,8 +238,8 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   const overdue = db.prepare("SELECT * FROM agent_messages WHERE kind = 'ask' AND status IN ('queued', 'delivered') AND deadline_at IS NOT NULL AND deadline_at <= ?");
   const getConfig = db.prepare('SELECT * FROM agent_messaging_config WHERE project_id = ?');
   const putConfig = db.prepare(
-    `INSERT INTO agent_messaging_config (project_id, roles, limits, updated_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT(project_id) DO UPDATE SET roles = excluded.roles, limits = excluded.limits, updated_at = excluded.updated_at`
+    `INSERT INTO agent_messaging_config (project_id, roles, limits, trust_peers, updated_at) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(project_id) DO UPDATE SET roles = excluded.roles, limits = excluded.limits, trust_peers = excluded.trust_peers, updated_at = excluded.updated_at`
   );
   const spawnFields = ['session_id', 'project_id', 'role', 'spawner_session_id', 'trace_id', 'created_at'] as const;
   const putSpawn = db.prepare(upsertSql('agent_spawns', spawnFields, 'session_id'));
@@ -277,6 +280,7 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
         projectId,
         roles: Array.isArray(roles) ? roles.map((role) => toRole(role, projectId, row.updated_at as number)) : [],
         limits: JSON.parse(row.limits as string),
+        trustPeers: row.trust_peers === 1,
         updatedAt: row.updated_at as number
       } as MessagingConfig;
     },
@@ -285,6 +289,7 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
         config.projectId,
         JSON.stringify(config.roles.map(fromRole)),
         JSON.stringify(config.limits),
+        config.trustPeers === true ? 1 : 0,
         config.updatedAt
       );
     },

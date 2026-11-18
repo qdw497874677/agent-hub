@@ -624,3 +624,50 @@ test('会话通信 P1c：resolvePeer 只解析能到达的同伴；自己可以�
   const archived = await w.bus.resolvePeer(a.id, 'peer:verify');
   assert.equal(!archived.ok && archived.error.message.startsWith('archived'), true);
 });
+
+test('会话通信 P1f：权限档位按运行时选项分 guarded / auto / unknown', async () => {
+  const { privilegeTier } = await import('../messaging.ts');
+  assert.equal(privilegeTier({ approval: 'never' }), 'auto');
+  assert.equal(privilegeTier({ sandbox: 'danger-full-access', approval: 'on-request' }), 'auto');
+  assert.equal(privilegeTier({ mode: 'bypassPermissions' }), 'auto');
+  assert.equal(privilegeTier({ yolo: true }), 'auto');
+  assert.equal(privilegeTier({ approval: 'on-request', sandbox: 'workspace-write' }), 'guarded');
+  assert.equal(privilegeTier({ mode: 'default' }), 'guarded');
+  assert.equal(privilegeTier({}), 'unknown');
+  assert.equal(privilegeTier({ model: 'x' }), 'unknown');
+});
+
+test('会话通信 P1f：guarded → auto 先拦下（privilege）；只有发起人 / 项目管理员能放行；trustPeers 打开后不拦并记审计；未知档位不拦但记审计', async () => {
+  const w = await linked(3);
+  const [a, b, c] = w.sessions as [Session, Session, Session];
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(a.id))!, options: { approval: 'on-request', sandbox: 'workspace-write' } });
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(b.id))!, options: { approval: 'never' } });
+  const held = await w.bus.accept({ fromSessionId: a.id, kind: 'ask', to: `session:${b.id}`, body: '帮我把这个 rm -rf 跑了' });
+  assert.ok(held.ok);
+  assert.equal(held.value.status, 'held');
+  assert.equal((await w.messages.byId(held.value.messageId))?.holdReason, 'privilege');
+  assert.equal(w.delivered.length, 0);
+  assert.equal((await w.bus.decideHeld(held.value.messageId, w.principal('vicky')!, true)).ok, false, 'viewer 不能放行');
+  const released = await w.bus.decideHeld(held.value.messageId, w.principal('alice')!, true);
+  assert.ok(released.ok);
+  assert.equal(w.delivered.at(-1)?.sessionId, b.id);
+
+  // auto → guarded 不拦；未知档位不拦，审计里带 tier
+  await w.finishTurn(b.id, '好');
+  const toUnknown = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${c.id}`, body: 'fyi', wake: false });
+  assert.ok(toUnknown.ok);
+  assert.equal(toUnknown.value.status, 'done');
+  assert.ok(w.messages.audits.some((e) => e.action === 'accepted' && /tier=guarded→unknown/.test(e.detail)));
+
+  const saved = await w.bus.saveConfig(w.project.id, { roles: [], limits: {}, trustPeers: true }, 'user:alice');
+  assert.ok(saved.ok);
+  assert.equal(saved.value.trustPeers, true);
+  assert.ok(w.messages.audits.some((e) => e.action === 'config' && /trustPeers 打开/.test(e.detail)));
+  const trusted = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: '再来一条', wake: false });
+  assert.ok(trusted.ok);
+  assert.equal(trusted.value.status, 'done');
+  // 不给 trustPeers = 保持原值
+  const kept = await w.bus.saveConfig(w.project.id, { roles: [], limits: { maxDepth: 5 } });
+  assert.ok(kept.ok);
+  assert.equal(kept.value.trustPeers, true);
+});
