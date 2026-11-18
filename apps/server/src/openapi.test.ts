@@ -387,7 +387,7 @@ test('MCP：列工具、调工具（同一个令牌、同一套权限）', async
   const list = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = list.body.result.tools.map((t: { name: string }) => t.name);
   // 只列这个令牌用得了的：projects:read 只有项目 / 任务，看不到会话、资产（#E4）
-  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'workspace_changes']);
+  assert.deepEqual(names.sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'task_pull_requests', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
   // 写工具不进清单；注解标成只读。
   assert.ok(!names.includes('prompt') && !names.includes('create_task') && !names.includes('delete_project'));
   const project = list.body.result.tools.find((t: { name: string }) => t.name === 'list_projects');
@@ -464,7 +464,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 30);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 34);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -483,9 +483,22 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
 
 test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
   // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
-  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create']);
+  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create', 'task_pull_requests']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project', 'workspace_changes']);
-  assert.equal(mcpTools({ readOnly: true }).length, 12);
+  assert.equal(mcpTools({ readOnly: true }).length, 16);
+  const workspaceTools = mcpTools({ modules: new Set(['workspaces']), writes: true });
+  const workspaceNames = workspaceTools.map((t) => t.name).sort();
+  for (const name of [
+    'workspace_group_add_member',
+    'workspace_group_create',
+    'workspace_group_get',
+    'workspace_group_retry',
+    'workspace_sweep',
+    'workspace_sweep_records',
+    'create_workspace',
+    'sync_workspace'
+  ]) assert.ok(workspaceNames.includes(name), name);
+  assert.ok(workspaceTools.filter((t) => !t.readOnly && (t.name.startsWith('workspace_group_') || t.name.startsWith('workspace_sweep'))).every((t) => t.idempotent));
   // 资产自动化：三个新写工具只在开了写开关时出现，且都可重放
   const assetWrites = mcpTools({ modules: new Set(['assets']), writes: true });
   assert.deepEqual(assetWrites.map((t) => t.name).sort(), ['asset_assign', 'asset_create', 'asset_import', 'asset_publish', 'get_asset', 'list_assets']);
@@ -750,6 +763,7 @@ test('MCP 工具清单按令牌权限筛：只列令牌用得了的（#E4）', (
   // 只有 sessions:write 看不到项目写工具
   const sessions = names(['sessions:write']);
   assert.ok(sessions.includes('session_start') && !sessions.includes('project_create') && !sessions.includes('list_projects'));
+  assert.ok(sessions.includes('session_settle') && sessions.includes('session_git_run') && sessions.includes('session_git_state'));
   // 没有令牌信息（单测直接调）时不筛
   assert.equal(mcpToolsFor(undefined, policy).length, mcpTools(policy).length);
 });
@@ -787,7 +801,7 @@ test('外部接入：限定项目的令牌经 MCP 只看得到选中的项目；
   assert.ok(calls.some((row) => row.detail.startsWith('get_project · 失败')));
   // 能用的工具数：projects:read → 项目 + 任务的只读工具
   const tools = await david(`/api/tokens/${info.id}/tools`);
-  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'workspace_changes']);
+  assert.deepEqual((tools.body as { tools: { name: string }[] }).tools.map((t) => t.name).sort(), ['get_project', 'get_task', 'list_projects', 'list_task_log', 'list_tasks', 'task_pull_requests', 'workspace_changes', 'workspace_group_get', 'workspace_sweep_records']);
 });
 
 test('外部接入：轮换后旧令牌 401、新令牌可用，旧记录留在列表里', async () => {
@@ -1005,4 +1019,55 @@ test('MCP session_model：写工具要 clientRequestId，换模型不重启进�
   const frame = world.dispatched.filter((c: { kind: string }) => c.kind === 'set_option').at(-1) as { optionId?: string; value?: unknown } | undefined;
   assert.equal(frame?.optionId, 'model');
   assert.equal(frame?.value, 'm2');
+});
+
+test('MCP 多仓工具：写要 clientRequestId；缺 git 时 503；缺主仓库建组失败', async () => {
+  const { david, mint, app } = await setup();
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'files:read', 'workers:read'])).token;
+  const rpc = async (body: unknown) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify(body)
+      }),
+      { mcpPolicy: { readOnly: false, writes: true } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+  const list = await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  const names = (list.result.tools as { name: string }[]).map((t) => t.name);
+  for (const name of [
+    'workspace_group_create',
+    'workspace_group_get',
+    'workspace_group_add_member',
+    'workspace_group_retry',
+    'session_git_state',
+    'session_git_run',
+    'task_pull_requests',
+    'session_settle',
+    'workspace_sweep',
+    'workspace_sweep_records'
+  ]) assert.ok(names.includes(name), name);
+
+  const noKey = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'workspace_group_create', arguments: { projectId: 'p', taskId: 't' } } });
+  assert.equal(noKey.result.isError, true);
+  assert.match(noKey.result.content[0].text, /clientRequestId/);
+
+  const noPrimary = await rpc({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'workspace_group_create', arguments: { projectId: 'missing', taskId: 't', workerId: 'w1', clientRequestId: 'g1' } }
+  });
+  assert.equal(noPrimary.result.isError, true);
+
+  const noGit = await rpc({
+    jsonrpc: '2.0',
+    id: 4,
+    method: 'tools/call',
+    params: { name: 'session_git_state', arguments: { sessionId: 's1', member: 'api' } }
+  });
+  assert.equal(noGit.result.isError, true);
+  assert.match(JSON.stringify(noGit.result), /Git 工作流未就绪|没有这个|不存在|404|503/);
 });

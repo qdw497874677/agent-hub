@@ -352,3 +352,47 @@ test('删组：成员有未保存改动就整组留下', async () => {
   if (!removed.ok) assert.match(removed.error.message, /没有删/);
   assert.ok(await w.deps.workspaceGroups.byId(built.value.id));
 });
+
+
+test('建组可只选子集；branches / fromGroupId 按已有分支在另一台机器上再建一组', async () => {
+  const w = await world();
+  const api = w.project.repos.find((repo) => repo.name === 'api');
+  assert.ok(api);
+  const subset = await buildWorkspaceGroupUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-1',
+    home: '/home/me',
+    repoIds: [w.project.primaryRepoId!],
+    sessionId: '11111111-1111-4111-8111-111111111111'
+  });
+  assert.ok(subset.ok, subset.ok ? '' : subset.error.message);
+  assert.deepEqual(subset.value.members.map((member) => member.name), ['web']);
+  const added = await addWorkspaceGroupMemberUseCase(w.deps, { groupId: subset.value.id, repoId: api.id, home: '/home/me' });
+  assert.ok(added.ok, added.ok ? '' : added.error.message);
+  assert.deepEqual(added.value.members.map((member) => member.name), ['web', 'api']);
+
+  w.memory.workers.push({ workerId: 'remote-2', label: '验证机', origin: 'remote', state: 'online', roots: ['/srv/work'] });
+  const web = added.value.members.find((member) => member.name === 'web');
+  assert.ok(web);
+  const handed = await buildWorkspaceGroupUseCase(w.deps, {
+    projectId: w.project.id,
+    taskId: w.task.id,
+    workerId: 'remote-2',
+    home: '/home/me',
+    fromGroupId: added.value.id,
+    branches: [{ repoId: api.id, branch: 'agent-hub/api-custom' }]
+  });
+  assert.ok(handed.ok, handed.ok ? '' : handed.error.message);
+  assert.equal(handed.value.workerId, 'remote-2');
+  const webWs = await w.deps.workspaces.byId(web.workspaceId);
+  const handedWeb = handed.value.members.find((member) => member.name === 'web');
+  const handedApi = handed.value.members.find((member) => member.name === 'api');
+  assert.ok(handedWeb && handedApi && webWs?.branch);
+  const handedWebWs = await w.deps.workspaces.byId(handedWeb.workspaceId);
+  const handedApiWs = await w.deps.workspaces.byId(handedApi.workspaceId);
+  assert.equal(handedWebWs?.branch, webWs.branch);
+  assert.equal(handedApiWs?.branch, 'agent-hub/api-custom');
+  assert.ok(w.groupGit.calls.some((call) => call.includes(`@${webWs.branch}`)));
+  assert.ok(w.groupGit.calls.some((call) => call.includes('@agent-hub/api-custom')));
+});

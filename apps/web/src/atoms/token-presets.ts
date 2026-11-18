@@ -20,8 +20,8 @@ export const TOKEN_PRESETS: readonly TokenPreset[] = [
   {
     id: 'delegate',
     label: '委派开发',
-    hint: '建任务、发起会话、补话、打断；可以用模型',
-    scopes: ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'providers:use']
+    hint: '建任务、发起会话、补话、打断、按仓提交/推送/开 PR、收起会话；可以用模型',
+    scopes: ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'providers:use', 'files:read']
   },
   { id: 'assets', label: '资产自动化', hint: '读资产、新建和更新资产（进审核）', scopes: ['assets:read', 'assets:write'] },
   { id: 'custom', label: '自定义', hint: '自己勾权限', scopes: [] }

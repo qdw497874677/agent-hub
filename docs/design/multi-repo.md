@@ -433,68 +433,74 @@ checkpoint 是单 root 打一个 ref（`workspace-files.ts:237`、`workspace-bro
 
 工具表由 `npm run skill:tools` 从路由元数据生成。
 
-### 14.1 今天能做到的
+### 14.1 今天能做到的（全程 MCP）
 
 | 步骤 | MCP 工具 / 行为 | 说明 |
 | --- | --- | --- |
 | 建项目、登记仓库、指定主仓库 | `project_create`、`project_repos`（`primaryRepoId`） | 令牌要 `projects:write` |
 | 建任务 | `task_create` | |
 | 列出机器并指定 worker | `list_workers`；`session_start.workerId` | **本机 Worker 被拒绝**（令牌路径硬限制） |
-| 给已有组合组开会话、说话、跟进展 | `session_start`（`groupId`）、`session_reply`、`events` / `get_session` | 组必须已经存在 |
+| 建组合组（主仓库 + 子集）、运行中加仓、准备失败重试 | `workspace_group_create`（`repoIds?`）、`workspace_group_add_member`、`workspace_group_retry`、`workspace_group_get` | 复用已有领域用例；写工具要 `clientRequestId` |
+| 在第二台机器上按已有分支再建一组（验证交接） | `workspace_group_create { workerId, fromGroupId, branches? }` | `addWorktreeOnNewBranch` 若远端已有该分支则跟踪它；准备命令仍只跑主仓库 |
+| 给组合组开会话、说话、跟进展 | `session_start`（`groupId`）、`session_reply`、`events` / `get_session` | worker 必须是远程在线机器 |
+| 按仓看状态、提交、推送、开 PR、同步合并 | `session_git_state`、`session_git_run`（`action=commit\|push\|pr`，`member` = 仓库名 / repoId / workspaceId）、`task_pull_requests`（`refresh=1` 绕过 1 分钟节流，可自动收起已停止会话） | PR 会挂到当前任务；缺 member 时 400 并列出可选仓库 |
+| 收起 / 恢复、两段清理、看记录 | `session_settle`、`workspace_sweep`、`workspace_sweep_records` | sweep 返回本轮 `items`（含 `kept` 原因）；组合组原子处理 |
 | 读团队/项目资产 | `list_assets`、`get_asset` | 项目限定令牌仍能看到该项目所属团队的团队资产 |
 | 轮换 / 吊销 | 接入页或 `POST/DELETE /api/tokens/:id` | 旧令牌立刻 401；`mcp.call` 进调用记录 |
 
-开发改动本身可以靠 `session_reply` 让会话里的 agent 在主仓库和 `../repos/<name>` 里改文件、自行 `git` 提交推送（没有结构化的 git 工具）。
+`sync_workspace` 仍只用于单目录工作空间；组合组加仓走 `workspace_group_add_member`。
 
-### 14.2 缺口（全程 MCP 做不到的步骤）
+### 14.2 从外部 agent 角度看还剩下的问题
 
-下面每条都算「需要人点界面或走内部 API」的缺口。建议都做成 OpenAPI v1 路由并 `expose` 成 MCP 工具（与现有「路由即工具」一致），而不是另写一套。
+下面每条都写「改哪里 / 怎么改 / 怎么测」。缺口 1–4（建组、交接、按仓 git/PR、收起清理）已经做成工具，不再列为缺口。
 
-1. **建组合工作空间 / 追加仓库**  
-   现状：只有内部 `POST /api/projects/:id/workspace-groups`、`POST /api/workspace-groups/:id/members`。`session_start` 不会给多仓项目自动建组（`workspaceForApiStart` 只建单仓临时空间）。  
-   建议：新增 `workspace_group_create`（`projectId, taskId, workerId, repoIds?`）和 `workspace_group_add_member`（`groupId, repoId`），返回组 id、成员路径、cwd。描述里写明主仓库路径与 `../repos/<name>`。  
-   测试：MCP 令牌建组 → `get_session` / 文件上下文 cwd 是主仓库；再加仓后下一轮 briefing 含新成员。
+1. **按仓看 diff 仍要多次调用，没有汇总**  
+   改哪里：`apps/server/src/openapi/routes.ts`（新路由或给 `workspace_changes` 加 `member` / 会话级入口）、`apps/server/src/openapi/app.ts` 的 handler；复用已有 `GitWorkflowService` / changes 用例，不要另写一套。  
+   怎么改：新增 `session_changes { sessionId, member? }`。不传 `member` 时返回按仓库分组的汇总；传了就只返回该成员。组合会话的 `member` 语义与 `session_git_state` 一致。  
+   怎么测：主仓库与一个附加仓各改一个文件，一次 MCP 调用返回两段；非法 `member` 400 并列出可选项。
 
-2. **在第二台机器上按已有分支再建一组（验证交接）**  
-   现状：`session_start.workerId` 能指定机器，但建组总是从远端**默认分支**开出 `agent-hub/<repo>-<sessionId>`，不能说「在 worker B 上按这组已有分支（或 PR head）再建一个 combo group」。  
-   建议：`workspace_group_create` 增加可选 `branches: { repoId, branch }[]` 或 `fromGroupId`，在目标 worker 上 fetch 后按这些分支 `worktree add --existing` 或同等操作；准备命令仍只跑主仓库。  
-   测试：worker A 推送 `agent-hub/web-…` / `agent-hub/api-…` 后，worker B 建出的组成员 HEAD 与这些分支相同，setup 产出在主仓库。
+2. **工具命名不统一**  
+   改哪里：现有只读工具名（`list_projects` / `get_project` / `events`）是历史包袱，不要无迁移地改名；新工具已用 `<资源>_<动作>`（如 `workspace_group_create`、`session_git_run`）。若要统一，在 `routes.ts` 的 `mcp.name` 加别名并在 skill / parity 快照里双写一个周期。  
+   怎么改：给 `events` 加别名 `session_events`，保留旧名至少一个发布周期；文档与 `tools.md` 同时列出。  
+   怎么测：`openapi-mcp-parity.test.ts` 工具名快照；`tools/list` 同时出现新旧名且打到同一 handler。
 
-3. **结构化的按仓提交 / 推送 / 开 PR / 同步合并状态**  
-   现状：只有内部 `POST /api/sessions/:id/git/run?member=`、`GET /api/tasks/:id/pull-requests?refresh=1`。外部 agent 只能口头让会话里的模型跑 git。  
-   建议：暴露 `session_git_run`（`sessionId, action=commit|push|pr, member?, message, title?`）和 `task_pull_requests`（`taskId, refresh?`）。刚开完的 PR 必须能 `refresh=1` 立刻拉到 merged（见 git-workflow 的 1 分钟节流）。  
-   测试：MCP 对两个 member 开 PR → 假 GitHub 标 merged → `refresh=1` 后状态为 merged，会话被收起。
+3. **长任务（setup、sweep、agent 回合）状态分散**  
+   改哪里：`workspace_group_create` / `workspace_sweep` 的响应 schema（`routes.ts` + handler），以及 skill 配方 6/8。setup 失败已有 `workspace_group_retry`。  
+   怎么改：建组与 sweep 的返回里固定带 `state` + `id`；外部 agent 用 `workspace_group_get` / `workspace_sweep_records` / `events` 轮询，而不是睡固定秒数。skill 里写明「准备中不要立刻 `session_start`」。  
+   怎么测：建组时故意让一个成员失败 → `workspace_group_get` 显示该成员 failed → MCP `workspace_group_retry` 只重试失败成员；sweep 后用 `workspace_sweep_records` 对上本次 `items`。
 
-4. **收起 / 恢复会话、触发两段清理、看清理记录**  
-   现状：只有内部 `POST /api/sessions/:id/settle`、`POST /api/projects/:id/cleanup/sweep`、`GET .../cleanup/records`。合并后不能只靠 MCP 收起并拆干净 worktree。  
-   建议：`session_settle`（`settled: true|false`，false 时恢复 worktree）、`workspace_sweep`（`projectId`）、`workspace_sweep_records`。返回每成员的 removed/kept/reason，以及组行是否还在。  
-   测试：全员合并且干净 → 第一轮只收起、目录还在；第二轮目录消失、`git worktree list` 无残条、组行仍在以便 reopen；有脏改动的成员整组 kept 并带原因。验证组（第二台机器）同样走两轮清理。
+4. **`workspace_sweep` 的领域报告原本只有 id，原因要二次查询**  
+   改哪里：已在 `openapi/app.ts` 的 sweep handler 里用 `cleanupRecordsUseCase` 把本轮 `items`（含 `kept` 原因）拼进响应。若内部 HTTP 也要对齐，改 `apps/server/src` 里项目 cleanup 路由，不要让 MCP 与界面各说各话。  
+   怎么改：内部 sweep 响应同样带 `items`；`keptReason` 用可读中文（未提交 / 未跟踪 / 未推送）。  
+   怎么测：脏工作区 MCP sweep 一次，响应里该组 `action=kept` 且 reason 非空；`workspace_sweep_records` 能对上同一条。
 
-5. **按仓看 diff**  
-   现状：`workspace_changes` 针对单个 workspaceId，且未说明组合会话要用 member。改动页聚合只在网页。  
-   建议：`session_changes`（`sessionId, member?`），不传 member 时返回按仓库分组的汇总。  
-   测试：主仓库与一个附加仓各有文件改动时，一次调用返回两段。
+5. **token 轮换 / 吊销走内部 `/api/tokens`，不在 MCP 工具表里**  
+   改哪里：若外部 agent 也要自己轮换，在 `openapi/routes.ts` 暴露受限的 `token_rotate` / `token_revoke`（权限要严于普通项目令牌，或只允许操作当前令牌）。否则保持「在接入页由用户操作」，并在 skill 里写清。  
+   怎么改：至少保证吊销/轮换后旧 Bearer 立刻 401，且历史 `mcp.call` 审计记录保留。当前即是此行为，不必为了「工具齐全」而把令牌管理放进项目令牌可调用的工具里。  
+   怎么测：用旧令牌 `tools/list` → 401；审计里仍能看到吊销前的 `mcp.call`；新令牌可继续调用。不要在测试输出里打印令牌。
 
-### 14.3 从外部 agent 角度看现有 MCP 设计
+6. **本机 Worker 对令牌永久 403**  
+   改哪里：不要放宽这条安全边界。文档已在 `session_start` / `list_workers` / skill 错误表里写清。E2E 必须起两个 `origin=remote` 的 worker 进程，而不是拿本机 worker 充数。  
+   怎么测：MCP `session_start` 打本机 → 403；打远程在线机器 → 201。
 
-合理的地方：
+7. **幂等键在「先建组再加仓 / 再开会话」这种多步流程里容易被误复用**  
+   改哪里：skill（配方 6–8）和工具 description（`routes.ts`）。实现已按 `clientRequestId` → Idempotency-Key 回放 24h。  
+   怎么改：skill 写明每一步用不同且稳定的 id（如 `<taskId>-group` / `<taskId>-add-<repo>` / `<taskId>-start`）；重试同一步才复用。  
+   怎么测：同一 `clientRequestId` 连调两次 `workspace_group_create` 只建一组；换 id 才会再建成另一组。
 
-- **工具来源单一**：v1 路由上的 `mcp` 元数据就是工具清单，HTTP 与 MCP 权限、审计、校验一致。
+8. **验证组与开发组的清理是两套 worktree，容易漏扫第二台机器**  
+   改哪里：skill 配方 8 与本文件 §14.4；sweep 已按 `projectId` 扫该项目在各 worker 上的组。确认 `sweepProjectUseCase` 不会只扫发起请求的那一台。  
+   怎么改：若发现只扫到单 worker，在领域用例里按组成员的 `workerId` 逐台拆；MCP 响应按 worker 分组 `items`。  
+   怎么测：开发组与验证组都干净收起后，两台机器磁盘上的 `<groupRoot>` 都消失，各自源仓库 `git worktree list` 无残条。
+
+### 14.3 设计上已经合理、应保持的部分
+
+- **工具来源单一**：v1 路由上的 `mcp` 元数据就是工具清单，HTTP 与 MCP 权限、审计、校验一致。不要为多仓再写一套 MCP handler。
 - **异步回合**：`session_reply` 立即 202，用 `events(sinceTurn=)` / `get_session` 轮询到 `ended`；SSE 故意不进 MCP（`stream` 已 skip）。
-- **幂等**：写工具用 `clientRequestId`（内部变 `Idempotency-Key`），避免重试开出第二条会话。
-- **权限**：工具按令牌 scope 过滤；项目限定令牌在 `tools/list` 和调用时都只看见该项目；团队资产对项目成员可见（接入页有说明）。
+- **幂等**：写工具用 `clientRequestId`（内部变 `Idempotency-Key`），避免重试开出第二条会话或第二组。
+- **权限**：工具按令牌 scope 过滤；`sessions:write` 已覆盖 `session.settle` 与 `git.push`；项目限定令牌在 `tools/list` 和调用时都只看见该项目。
 - **审计**：每次 `tools/call` 记 `mcp.call`；轮换后旧调用记录保留。
-
-问题与改法：
-
-| 问题 | 建议 | 如何测 |
-| --- | --- | --- |
-| 命名不统一：`project_create` 但只读是 `list_projects` / `get_project`；`events` 不像 `session_*` | 新工具一律 `<资源>_<动作>`；`events` 可加别名 `session_events`（保留旧名一个周期） | parity 测试：工具名快照 |
-| `session_start` / `project_repos` 文档曾把「第一项=主仓库」写死，也没提 `groupId`、不能自动建组 | 已改为强调 `primaryRepoId`、`groupId`、本机不可用（本文件与 OpenAPI 描述） | 读规范 / MCP 工具 description |
-| 长任务（setup、sweep、agent 回合）状态分散 | 建组 / sweep 工具返回 `state` + `id`，并用已有 `events` 或记录列表轮询；setup 失败给 `retry` 工具（已有 `retry_workspace_setup`，组合组还要组级 retry） | 建组失败后 MCP retry 只重试 failed 成员 |
-| 错误信息总体可读，但组合场景缺 member 时文案要指明「请传 member」 | `session_git_run` / `session_changes` 缺 member 时 400 并列出可选仓库 | 单测 + MCP 调用断言 message |
-| 多仓概念（主仓库、`../repos/`、加仓、按仓 PR、两段生命周期）几乎只在网页 | 见 §14.2，把这些做成工具并在 description 写相对路径与原子清理语义 | 本节目的 E2E：MCP 全程不点 UI |
-| 本机 Worker 对令牌永久 403 | 设计如此（安全边界）。外部 agent 必须先登记远程 Worker；文档在 `session_start` 和 `list_workers` 里写清；测试双 worker 都用 `WORKER_ORIGIN=remote` | MCP `session_start` 打本机 → 403，打远程 → 201 |
+- **本机 Worker 403**：安全边界，不是漏做。
 
 ### 14.4 清理验收（t439u）应检查的证据
 
@@ -506,4 +512,4 @@ checkpoint 是单 root 打一个 ref（`workspace-files.ts:237`、`workspace-bro
 - 组行在仍有会话引用时是否保留、没有锁死的 group 行；
 - 有未提交 / 未跟踪 / 未推送改动时整组 kept，并有可读的 `keptReason`。
 
-在缺口 4 落地前，这些检查只能走内部 `/api/projects/:id/cleanup/sweep`，不能只靠 MCP。
+这些检查现在应只通过 MCP 的 `workspace_sweep` / `workspace_sweep_records` 触发，再在两台 worker 的磁盘上核对。

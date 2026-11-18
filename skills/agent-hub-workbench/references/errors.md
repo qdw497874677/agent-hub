@@ -15,6 +15,8 @@
 | 409 | 这个项目属于别的团队 | 归属冲突 | 停止；请用户处理团队归属 |
 | 409 | 目录已经被别的项目占用 | 工作目录独占 | 换目录/换机器，或让用户在项目设置里转移 |
 | 400 | 字段不合法（超长、含换行） | 参数问题 | 按 message 修；不要原样重试 |
+| 400 | 请选择要提交的仓库（member …） | 组合会话的 git 工具缺 member 或不合法 | 按 message 里列出的仓库名 / workspaceId 重试 |
+| 409 | 工作区有未提交改动 / kept | 清理时整组留下 | 看 `workspace_sweep_records` 的 reason；不要强拆 |
 | 429 | too many requests | 限流 | 指数退避 ≥1s；写工具尤其要退避 |
 
 JSON-RPC 包装：`tools/call` 的业务错误在 `result.isError = true` 的 content 里，或 `error.code`（-32602 参数、-32603 内部）。读 message，不要只读 code。
@@ -26,7 +28,7 @@ JSON-RPC 包装：`tools/call` 的业务错误在 `result.isError = true` 的 co
 | `tools/list` 里没有写工具 | 令牌只有读 scope，或服务器开了只读模式 | 告诉用户；换令牌或关「只读模式」 |
 | 缺 `clientRequestId` 报错 | 幂等写工具必须带 | 生成一个稳定值（如 `<任务>-<序号>`），本次调用与其重试都用它 |
 | 同一个 `clientRequestId` 返回旧结果 | 24h 幂等回放（就是这样） | 想真的再来一次，换个新 id，并确认这确实是新需求 |
-| 工具名不存在 | 工具清单随版本变，或该能力还没做成 MCP 工具 | 重新 `tools/list`，对照 `references/tools.md`；建组合组、按仓开 PR、收起/sweep 今天不在清单里，不要编名字硬调 |
+| 工具名不存在 | 工具清单随版本变，或拼错了名字 | 重新 `tools/list`，对照 `references/tools.md`；不要编清单里没有的名字 |
 
 ## 会话侧的状态（不是你的调用错误）
 

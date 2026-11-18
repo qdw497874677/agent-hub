@@ -32,7 +32,7 @@ get_session              → status / ended 原因 / 用量
 ```
 
 - 一个任务下可以有多条会话（并行分支、不同机器）。**独立的事就开新会话**，别在一条会话里来回变需求。
-- `session_start` 不传 `workspaceId` / `groupId` 时，如果项目里没有能用的长期目录，平台会自动开一个**单仓**临时工作目录（MCP 也一样），不用你先建。多仓组合组不会自动创建（见「多仓组合会话」）。
+- `session_start` 不传 `workspaceId` / `groupId` 时，如果项目里没有能用的长期目录，平台会自动开一个**单仓**临时工作目录。多仓要先用 `workspace_group_create` 建组，再把 `groupId` 传给 `session_start`（见「多仓组合会话」）。
 - `events` 是投影后的：`text`、`tool`、`tool_result`、`ended`、`diagnostic`。**提示词原文和工具输入输出不会给你**，要看代码改动用 `workspace_changes`。
 - 会话跑完不等于进程立刻消失（保活约 15 分钟，方便追问）。要继续聊直接 `session_reply`。
 
@@ -59,7 +59,7 @@ get_session              → status / ended 原因 / 用量
 - `session_start` 的 `workspaceMode`：
   - 省略/`shared`：用项目已有的目录（推荐，默认）。
   - `isolated`：给这条会话新开单仓 worktree/分支，适合并行改同一个仓库。**即使项目有多个仓库，MCP 的 isolated 也不会自动建成组合工作空间。**
-- 项目后来又加了仓库：已有的**单目录**工作空间不会自己多出目录，用 `sync_workspace { workspaceId }` 把缺的仓补克隆到同级目录（详见 `references/workflows.md`）。组合组（`groupId` 非空）不走这条路径。
+- 项目后来又加了仓库：已有的**单目录**工作空间用 `sync_workspace { workspaceId }` 补克隆到同级目录。组合组用 `workspace_group_add_member { groupId, repoId }`，不要对组合组调 `sync_workspace`。
 - 私有仓库：`project_repos` 传 `credential`（非空存、空串清、省略不动）；之后 clone/push 自动带。
 - 想看会话改了什么：`workspace_changes { workspaceId }`（会话对象里有 workspaceId）。MCP 工具没有 `member` 参数，也没有按仓汇总工具。
 
@@ -67,35 +67,43 @@ get_session              → status / ended 原因 / 用量
 
 布局（Amp 风格）：cwd 是主仓库 `<groupRoot>/<primary>/`（相对路径 `.`）；附加仓在 `<groupRoot>/repos/<name>/`（从 cwd 看是 `../repos/<name>`）。项目级说明来自主仓库自己的 `AGENTS.md`，Hub 不代写。准备命令只在主仓库跑。
 
-**今天 MCP 不能建组合组，也不能往组里加仓**（没有 `workspace_group_create` / `workspace_group_add_member`）。`session_start.groupId` 只接受已经存在的组。
+用 MCP 建组、开会话、中途加仓：
 
-你能做的：
-
-1. `project_repos` 写好 `repos` 和 `primaryRepoId`（子集在建组时选，主仓库必在）。
-2. 请用户在工作台界面建组（或等平台补上建组工具），记下 `groupId`。
-3. `session_start { taskId, workerId, agentId, groupId, model?, clientRequestId }`（worker 必须是远程在线机器）。
+1. `project_repos` 写好 `repos` 和 `primaryRepoId`。
+2. `workspace_group_create { projectId, taskId, workerId, repoIds?, clientRequestId }`（`repoIds` 是子集，主仓库一定会被带上；`workerId` 必须是远程在线机器）。记下返回的 `groupId` 和 `members[].name` / `workspaceId`。
+3. `session_start { taskId, workerId, agentId, groupId, model?, clientRequestId }`。
 4. 第一轮 `session_reply` 说明路径是 `.` 与 `../repos/<name>`，让会话里的 agent 自己读 `AGENTS.md`。
+5. 运行中加仓：`workspace_group_add_member { groupId, repoId, clientRequestId }`。下一轮 briefing 会注入更新后的清单，不必重启会话。
 
-运行中加仓目前只有网页「添加仓库」。加完后下一轮 briefing 会注入更新后的成员清单，不必重启会话；你这边继续 `session_reply` 即可。不要对组合组调用 `sync_workspace` 来加仓。
+准备失败时用 `workspace_group_retry { groupId }`。用 `workspace_group_get { groupId }` 看成员状态。
 
 ## 按仓看改动、推送、开 PR
 
-- 看未提交改动：`workspace_changes { workspaceId }`。组合会话若要看附加仓，目前只能让会话里的 agent 在回复里报告，或等平台补 `session_changes` / `member` 参数。
-- MCP **没有** `session_git_run`、`task_pull_requests`。不要编这些工具名。
-- 可行办法：在 `session_reply` 里明确要求会话中的 agent 在主仓库和指定附加仓里分别提交、推送、开 PR（分支名一般为 `agent-hub/<repo>-<sessionId>`），并把每个仓的分支、PR 链接和状态写回。你再用 `events` / `list_task_log` 收集结果。
-- 合并状态立即刷新（HTTP 的 `?refresh=1`）和自动收起，目前不在 MCP 里。agent 口头说「已合并」时要向用户确认。
+优先用结构化工具（会把 PR 关联到任务），不要只靠会话里的 agent 自己跑 git：
+
+- `session_git_state { sessionId, member }`：分支、未提交文件、ahead、已关联 PR。组合会话的 `member` 是仓库名、repoId 或 workspaceId。
+- `session_git_run { sessionId, action: "commit"|"push"|"pr", message, title?, member, clientRequestId }`：按仓提交 / 推送 / 开 PR。PR 会挂到当前任务上。
+- `task_pull_requests { taskId, refresh: "1" }`：同步各仓 PR 状态。刚合并的要带 `refresh=1`，否则有 1 分钟节流；合并后平台可能自动收起已停止的会话。
+
+也可以让会话里的 agent 自己跑 git，但仍应再用 `session_git_run action=pr` 或确认 `task_pull_requests` 里能看到链接，以免任务上没有 PR 记录。
 
 ## 交给指定 Worker 做验证
 
-- `session_start.workerId` 可以把会话派到指定远程机器。
-- **缺口**：没有「在 worker B 上按已有分支再建一组」的工具。验证机不会自动 checkout 开发机推送的 `agent-hub/…` 分支。
-- 目前只能：请用户在目标机器上建好组合组（或接受单仓 isolated 工作空间），再 `session_start { workerId: <验证机>, … }`，并在 `session_reply` 里写清要 fetch 的分支、主仓库的准备命令（只应跑一次）、以及如何做健康检查。把验证结果记到 `append_task_log`。
+1. 开发侧先把各仓分支推上去（`session_git_run action=push` 或 `pr`）。
+2. `workspace_group_create { projectId, taskId, workerId: <验证机>, fromGroupId: <开发组>, branches?, clientRequestId }`：在目标远程机器上按已有分支再建一组（`branches` 可覆盖个别仓库）。准备命令仍只在主仓库跑。
+3. `session_start { taskId, workerId: <验证机>, agentId, groupId, model?, clientRequestId }`。
+4. `session_reply` 里写清要做的健康检查（例如在主仓库起一个临时服务并 curl）。把结果记到 `append_task_log`。
 
 ## 收起与清理
 
-两段生命周期（先收起会话，下一轮才拆干净的 worktree；组合组原子处理；脏工作区整组留下并给原因；reopen 按原分支恢复）目前只在工作台内部 API / 界面里。MCP **没有** `session_settle`、`workspace_sweep`、`workspace_sweep_records`。
+两段生命周期：先收起会话，下一轮才拆干净的 worktree；组合组原子处理；脏工作区整组留下并给原因；reopen 按原分支恢复。
 
-你能做的：`set_task_status` 标记任务、`session_cancel` 打断还在跑的会话、`append_task_log` 记下「可以收起/清理」的判断，并告诉用户去工作台确认合并、收起和清理。不要自己删组合组的单个成员（`remove_workspace` 有，但不要逐个拆）。
+1. 各仓 PR 合并后：`task_pull_requests { taskId, refresh: "1" }`（可触发已停止会话的自动收起）。
+2. 或显式 `session_settle { sessionId, settled: true, clientRequestId }`（还在跑的要先 `session_cancel`）。`settled: false` 会按原分支恢复 worktree。
+3. `workspace_sweep { projectId, clientRequestId }` 跑一轮清理；再调一次才会拆已经收起且干净的 worktree。
+4. `workspace_sweep_records { projectId }` 核对 `items[].action/reason`（脏的是 `kept` 并带原因）和孤儿目录。
+
+不要用 `remove_workspace` 拆组合组的单个成员。
 
 ## 资产（技能/指令/MCP 配置）
 

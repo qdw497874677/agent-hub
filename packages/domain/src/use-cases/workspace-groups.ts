@@ -56,6 +56,13 @@ export interface BuildWorkspaceGroupCommand {
   readonly sessionId?: string | null;
   /** 要进组的仓库 id。省略 = 项目里全部；主仓库总会被带上。 */
   readonly repoIds?: readonly string[];
+  /**
+   * 按已有分支建组（验证交接）：成员检出这些分支（远端有同名分支时跟踪 origin/<branch>）。
+   * 未点名的仓库仍用默认的 `agent-hub/<repo>-<sessionId>`。
+   */
+  readonly branches?: readonly { readonly repoId: string; readonly branch: string }[];
+  /** 从已有组合组拷贝各成员当前分支（再被 branches 覆盖）。目标 worker 用 workerId 指定。 */
+  readonly fromGroupId?: string | null;
 }
 
 export interface AddWorkspaceGroupMemberCommand {
@@ -182,6 +189,35 @@ async function baseForRepo(
   return prepared;
 }
 
+
+async function resolveMemberBranches(
+  deps: WorkspaceGroupDeps,
+  command: BuildWorkspaceGroupCommand,
+  repos: readonly ProjectRepo[],
+  sessionId: string
+): Promise<Result<ReadonlyMap<string, string>, DomainError>> {
+  const map = new Map<string, string>();
+  if (command.fromGroupId) {
+    const source = await deps.workspaceGroups?.byId(asWorkspaceGroupId(command.fromGroupId));
+    if (!source) return err(notFound('源组合工作空间不存在'));
+    for (const member of source.members) {
+      const workspace = await deps.workspaces.byId(member.workspaceId);
+      const branch = workspace?.branch?.trim();
+      if (branch) map.set(member.repoId, branch);
+    }
+  }
+  for (const item of command.branches ?? []) {
+    if (!repos.some((repo) => repo.id === item.repoId)) return err(invalid('branches 里有仓库不在这次建组的清单里'));
+    const branch = item.branch.trim();
+    if (branch === '') return err(invalid('分支名不能为空'));
+    map.set(item.repoId, branch);
+  }
+  for (const repo of repos) {
+    if (!map.has(repo.id)) map.set(repo.id, groupBranch(repo, sessionId));
+  }
+  return ok(map);
+}
+
 export async function buildWorkspaceGroupUseCase(
   deps: WorkspaceGroupDeps,
   command: BuildWorkspaceGroupCommand
@@ -209,6 +245,8 @@ export async function buildWorkspaceGroupUseCase(
 
   const groupId = asWorkspaceGroupId(`group_${newId().slice(0, 8)}`);
   const sessionId = command.sessionId?.trim() || newSessionId();
+  const branches = await resolveMemberBranches(deps, command, repos, sessionId);
+  if (!branches.ok) return branches;
   const incoming = await groupGit.init({ slug: branchSlug(project.name), name: groupName(task.title), id: groupId });
   if (!incoming.ok) return incoming;
   const root = incoming.value.root;
@@ -275,11 +313,13 @@ export async function buildWorkspaceGroupUseCase(
     const base = await baseForRepo(deps, project, repo, machine, { home: command.home, actor });
     if (!base.ok) return abort(members, repos.slice(index), base.error);
     const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
+    const branch = branches.value.get(repo.id) ?? groupBranch(repo, sessionId);
+    const follow = (command.fromGroupId || command.branches?.length) && branch !== groupBranch(repo, sessionId);
     const made = await groupGit.newWorktree({
       repoPath: base.value.path,
       path: memberWorktreePath(root, repo, primaryRepoId),
-      branch: groupBranch(repo, sessionId),
-      base: baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined,
+      branch,
+      base: follow ? branch : (baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined),
       ...(auth ? { auth } : {}),
       ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
     });

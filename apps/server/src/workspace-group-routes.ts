@@ -29,7 +29,9 @@ const createBody = z.object({
   taskId: z.string().min(1).max(80),
   workerId: z.string().min(1).max(120).nullable().optional(),
   home: z.string().min(1).max(2000).optional(),
-  repoIds: z.array(z.string().min(1).max(80)).max(8).optional()
+  repoIds: z.array(z.string().min(1).max(80)).max(8).optional(),
+  fromGroupId: z.string().min(1).max(80).optional(),
+  branches: z.array(z.object({ repoId: z.string().min(1).max(80), branch: z.string().min(1).max(200) })).max(8).optional()
 });
 const retryBody = z.object({ home: z.string().min(1).max(2000).optional() });
 const addMemberBody = z.object({
@@ -63,7 +65,9 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
       workerId: parsed.data.workerId ?? null,
       home: parsed.data.home ?? homedir(),
       actor: subject,
-      repoIds: parsed.data.repoIds
+      repoIds: parsed.data.repoIds,
+      fromGroupId: parsed.data.fromGroupId,
+      branches: parsed.data.branches
     });
     if (!built.ok) return fail(c, built.error);
     await audit?.(c, subject, 'workspace.group.create', built.value.id, `项目 ${projectId} · ${built.value.members.length} 个仓库`);

@@ -121,9 +121,11 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
     let root = location.root;
     // 组合工作空间（§12.5）：git 只在成员仓库里跑，容器根不是仓库。
     if (location.group !== null) {
-      if (!member) return err(invalid('请选择要提交的仓库'));
-      const picked = location.members.find((item) => item.workspaceId === member);
-      if (!picked) return err(invalid('这颗仓库不属于这条会话的组合工作空间'));
+      const options = location.members.map((item) => item.name).filter(Boolean);
+      const hint = options.length ? `，可选：${options.join('、')}` : '';
+      if (!member) return err(invalid(`请选择要提交的仓库（member 传仓库名或 workspaceId${hint}）`));
+      const picked = location.members.find((item) => item.workspaceId === member || item.name === member || item.repoId === member);
+      if (!picked) return err(invalid(`这颗仓库不属于这条会话的组合工作空间（member 传仓库名或 workspaceId${hint}）`));
       root = picked.root;
     }
     const workspace = seen.value.workspaceId ? await deps.workspaces.byId(seen.value.workspaceId) : null;
