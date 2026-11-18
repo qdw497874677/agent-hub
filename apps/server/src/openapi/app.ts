@@ -50,7 +50,8 @@ import {
   workerReader,
   redactInventory,
   workspaceChangesUseCase,
-  assetViewOf
+  assetViewOf,
+  scopedTokenCreateDenied
 } from '@agent-hub/domain';
 import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
 import type { z } from 'zod';
@@ -70,11 +71,15 @@ import { workspaceForApiStart } from '../session-workspace.ts';
 import { projectDto } from '../project-dto.ts';
 
 export interface OpenApiOptions {
-  readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'>;
+  readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'> & Partial<Pick<ApiTokenDeps, 'projects'>>;
   /** 每个令牌每分钟最多多少次请求 / 多少次 prompt；e2e 调小来验 429。 */
   readonly rate?: { readonly general?: number; readonly prompt?: number; readonly streams?: number };
   /** 对外 MCP 写工具的幂等回放（E4b）；不给就只有只读工具。 */
   readonly replays?: import('@agent-hub/domain').McpReplayStore;
+  /** hub 设置：外部接入页的写工具开关（mcpWrites）从这里读。 */
+  readonly settings?: { get(): Promise<import('@agent-hub/domain').HubSettings>; save(next: import('@agent-hub/domain').HubSettings): Promise<void> };
+  /** MCP 调用记录（mcp.call）写到这里。 */
+  readonly audit?: Pick<import('@agent-hub/domain').AuditLog, 'append'>;
 }
 
 interface V1Context {
@@ -197,6 +202,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     }>(c, 'json');
     // 直接发布是 assets:publish 的事：只有它映射了 asset.review，其余 scope 都发不了
     if (input.publish && !can(actor, 'asset.review')) return fail(c, forbidden('直接发布资产要 assets:publish 范围'));
+    const scopedDenied = scopedTokenCreateDenied(actor, input.scope);
+    if (scopedDenied) return fail(c, forbidden(scopedDenied));
     if (input.scope === 'project') {
       const allowed = await authorizeAssetProject(ctx.assetReview, actor, input.projectId ?? null);
       if (!allowed.ok) return fail(c, allowed.error);
@@ -234,6 +241,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     // 空路径对 skill 会变成「整个仓库」：显式拒绝，别让人把整仓拖进来
     const path = (input.path ?? '').trim();
     if (path === '') return fail(c, invalid('要给出仓库里的路径：技能目录（如 skills/foo）、指令文件（如 AGENTS.md）或 mcp 文件'));
+    const scopedDenied = scopedTokenCreateDenied(actor, input.scope);
+    if (scopedDenied) return fail(c, forbidden(scopedDenied));
     if (input.scope === 'project') {
       const allowed = await authorizeAssetProject(ctx.assetReview, actor, input.projectId ?? null);
       if (!allowed.ok) return fail(c, allowed.error);
@@ -607,9 +616,11 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
   });
 
   // MCP（streamable HTTP，无状态）：工具 = 上面这些路由；同一个令牌、同一套权限。
-  v1.post(`${V1}/mcp`, (c) =>
+  v1.post(`${V1}/mcp`, async (c) =>
     handleMcp(c, v1 as unknown as Hono, {
       ...(options.replays === undefined ? {} : { replays: options.replays }),
+      ...(options.audit === undefined ? {} : { audit: options.audit }),
+      writes: (await options.settings?.get().catch(() => null))?.mcpWrites ?? null,
       now: options.tokens.now
     })
   );

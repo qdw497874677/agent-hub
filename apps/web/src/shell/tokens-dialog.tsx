@@ -10,7 +10,7 @@ import { maskToken } from '../atoms/mcp-guide.ts';
  * 本机 Worker 和 hub 管理权限永远不在这里（ADR 0014）。
  * assets:submit 是 assets:write 的旧名（权限完全一样），不再单列，老令牌照常可用。
  */
-const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; detail?: string; risky?: boolean }[] = [
+export const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; detail?: string; risky?: boolean }[] = [
   { id: 'projects:read', label: '读项目和任务', hint: '项目、任务、日志、改动' },
   { id: 'projects:write', label: '改项目和任务', hint: '建项目和任务，改状态，写日志', detail: '含删除项目' },
   { id: 'sessions:read', label: '读会话', hint: '会话详情、事件、实时流' },
@@ -26,7 +26,7 @@ const SCOPES: readonly { id: ApiScopeDto; label: string; hint: string; detail?: 
   { id: 'memory:write', label: '写记忆', hint: '追加与修改记忆（含读）' }
 ];
 /** 默认 30 天；永不过期放最后，选了会提示风险。 */
-const EXPIRY = [
+export const EXPIRY = [
   { label: '7 天', days: 7 },
   { label: '30 天', days: 30 },
   { label: '90 天', days: 90 },
@@ -223,6 +223,9 @@ export function TokensDialog({ me, onClose }: { me: AccountDto; onClose: () => v
       {!fresh && (
         <details className="mt-5">
           <summary className="cursor-pointer text-meta text-secondary">外部智能体怎么接 MCP（Claude Code / Cursor / Codex / 提示词）</summary>
+          <a data-testid="tokens-open-access" className="mt-2 block text-meta text-primary underline underline-offset-2 hover:text-secondary" href="#/access" onClick={onClose}>
+            打开外部接入页：限定项目（含所在团队的资产）、测试连接、调用记录、轮换
+          </a>
           <McpGuidePanel />
         </details>
       )}

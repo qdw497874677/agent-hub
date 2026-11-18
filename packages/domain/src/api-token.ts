@@ -87,6 +87,11 @@ export interface ApiToken {
   readonly userId: string;
   /** 只有 kind === 'bot' 才有：这个凭据属于哪个项目的哪个 bot（name 即 @id）。 */
   readonly bot?: { readonly projectId: string; readonly name: string };
+  /**
+   * 个人 / 服务账号令牌限定的项目（外部接入页的「只给这几个项目」）。
+   * 不给 / null = 不限项目（老令牌都是这样）；给了 = can() 只放行这些项目里的资源，也不能新建项目。
+   */
+  readonly projectIds?: readonly string[] | null;
   readonly name: string;
   readonly scopes: readonly ApiScope[];
   /** 明文开头几位，列表里认令牌用（不是秘密）。 */
@@ -137,4 +142,30 @@ export interface TokenVia {
   readonly permissions: readonly Permission[];
   /** bot 令牌的项目归属：can() 用它把权限收窄到这一个项目（C1）。 */
   readonly bot?: { readonly projectId: string; readonly name: string };
+  /** 限定项目的令牌：can() 只放行这些项目里的资源（见 ApiToken.projectIds）。 */
+  readonly projectIds?: readonly string[];
+  /**
+   * 限定项目所在的团队（每次认证时按项目现查）：和项目成员一样能用这些团队的团队级资产。
+   * 项目不在团队里（hub 项目）就没有这一项；别的团队的资产一律看不见。
+   */
+  readonly teamIds?: readonly string[];
+}
+
+/**
+ * 限定项目的令牌能看到哪些资产（null = 令牌没限定项目，按账号本身的规则）：
+ * - 全局资产：能读（和成员一样，只看已发布的，由调用方再判）；
+ * - 团队资产：只有限定项目所在团队的；
+ * - 项目资产：只有限定的项目里的；
+ * - 个人资产：看不到（个人资产不属于任何项目，限定项目就是为了不外泄这类东西）。
+ */
+export function scopedTokenSeesAsset(
+  via: TokenVia | undefined,
+  asset: { readonly scope: 'global' | 'team' | 'project' | 'personal'; readonly teamId: string | null; readonly projectId: string | null }
+): boolean | null {
+  const scoped = via?.projectIds;
+  if (!scoped) return null;
+  if (asset.scope === 'global') return true;
+  if (asset.scope === 'personal') return false;
+  if (asset.scope === 'team') return asset.teamId !== null && (via?.teamIds ?? []).includes(asset.teamId);
+  return asset.projectId !== null && scoped.includes(asset.projectId);
 }

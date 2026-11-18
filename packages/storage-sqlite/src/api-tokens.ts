@@ -9,6 +9,7 @@ const TABLE_BODY = `
   user_id        TEXT NOT NULL,
   bot_project_id TEXT,
   bot_name       TEXT,
+  project_ids    TEXT,
   name           TEXT NOT NULL,
   scopes         TEXT NOT NULL,
   prefix         TEXT NOT NULL,
@@ -62,18 +63,26 @@ function migrate(db: DatabaseSync): void {
   const columns = columnsOf(db, 'api_tokens');
   if (!columns.has('bot_project_id')) db.exec('ALTER TABLE api_tokens ADD COLUMN bot_project_id TEXT');
   if (!columns.has('bot_name')) db.exec('ALTER TABLE api_tokens ADD COLUMN bot_name TEXT');
+  addProjectIds(db);
+}
+
+/** 迁移（外部接入页）：令牌可以限定项目。NULL = 不限，老令牌都是 NULL，行为不变。 */
+function addProjectIds(db: DatabaseSync): void {
+  if (!columnsOf(db, 'api_tokens').has('project_ids')) db.exec('ALTER TABLE api_tokens ADD COLUMN project_ids TEXT');
 }
 
 export function createSqliteApiTokens(db: DatabaseSync): ApiTokenRepository {
   migrate(db);
   const toToken = (row: Row): ApiToken => {
     const botProjectId = row.bot_project_id;
+    const projectIds = typeof row.project_ids === 'string' ? (JSON.parse(row.project_ids) as string[]) : null;
     return {
       id: row.id as string,
       teamId: row.team_id as string,
       kind: row.kind as ApiToken['kind'],
       userId: row.user_id as string,
       ...(typeof botProjectId === 'string' ? { bot: { projectId: botProjectId, name: (row.bot_name as string | null) ?? '' } } : {}),
+      ...(projectIds && projectIds.length > 0 ? { projectIds } : {}),
       name: row.name as string,
       scopes: JSON.parse(row.scopes as string) as ApiScope[],
       prefix: row.prefix as string,
@@ -85,10 +94,10 @@ export function createSqliteApiTokens(db: DatabaseSync): ApiTokenRepository {
       revokedAt: num(row.revoked_at)
     };
   };
-  const upsert = db.prepare(`INSERT INTO api_tokens (id, team_id, kind, user_id, bot_project_id, bot_name, name, scopes, prefix, token_hash, created_by, created_at, expires_at, last_used_at, revoked_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  const upsert = db.prepare(`INSERT INTO api_tokens (id, team_id, kind, user_id, bot_project_id, bot_name, project_ids, name, scopes, prefix, token_hash, created_by, created_at, expires_at, last_used_at, revoked_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET name = excluded.name, scopes = excluded.scopes, expires_at = excluded.expires_at,
-      bot_project_id = excluded.bot_project_id, bot_name = excluded.bot_name,
+      bot_project_id = excluded.bot_project_id, bot_name = excluded.bot_name, project_ids = excluded.project_ids,
       last_used_at = excluded.last_used_at, revoked_at = excluded.revoked_at`);
   const one = db.prepare('SELECT * FROM api_tokens WHERE id = ?');
   const hash = db.prepare('SELECT * FROM api_tokens WHERE token_hash = ?');
@@ -104,6 +113,7 @@ export function createSqliteApiTokens(db: DatabaseSync): ApiTokenRepository {
         t.userId,
         t.bot?.projectId ?? null,
         t.bot?.name ?? null,
+        t.projectIds && t.projectIds.length > 0 ? JSON.stringify(t.projectIds) : null,
         t.name,
         JSON.stringify(t.scopes),
         t.prefix,

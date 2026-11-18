@@ -145,6 +145,8 @@ export interface HubSettings {
   readonly localWorkerGrants?: readonly string[];
   /** 开了「资源满了就拒绝新会话」的机器（ADR 0014，默认谁都不开）。 */
   readonly refuseWhenFull: readonly string[];
+  /** 外部 MCP 的写工具开关（外部接入页）；不设 / null = 沿用环境变量 MCP_WRITE。 */
+  readonly mcpWrites?: boolean | null;
 }
 export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, refuseWhenFull: [] };
 
@@ -263,6 +265,8 @@ export type AuditAction =
   | 'auth.profile'
   | 'token.create'
   | 'token.revoke'
+  | 'token.rotate'
+  | 'mcp.call'
   // 资产上架与审核（ADR 0016）
   | 'asset.submit'
   | 'asset.approve'
