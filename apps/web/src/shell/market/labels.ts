@@ -11,3 +11,6 @@ export const STATUS_TEXT: Record<string, string> = {
   withdrawn: '已撤回',
   superseded: '被新版本取代'
 };
+
+/** 提交的目标范围：个人 → 团队叫「上架到团队」，团队 → 全局叫「申请提升为全局」。 */
+export const targetText = (scope: AssetScopeDto): string => (scope === 'team' ? '申请上架到团队' : `申请提升为${SCOPE_TEXT[scope]}`);
