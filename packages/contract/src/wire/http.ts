@@ -207,7 +207,13 @@ export const deriveSessionRequest = z.object({
    */
   assetIds: z.array(z.string().min(1)).max(200).optional(),
   /** 显式选的资产组合（覆盖项目默认组合）；空数组 = 不带组合，只按项目生效集。 */
-  assetSetIds: z.array(z.string().min(1)).max(8).optional()
+  assetSetIds: z.array(z.string().min(1)).max(8).optional(),
+  /** 会话通信 P1b · 一仓一会话：只为项目里这个仓库（id 或仓库名）新开隔离 worktree；和 workspaceId / groupId 互斥。 */
+  repoId: z.string().min(1).max(80).optional(),
+  /** 任务内短名（peer:<handle>）；小写字母开头，a-z 0-9 -，2–32 个字符。 */
+  handle: z.string().min(2).max(32).optional(),
+  /** 建好后和这些会话（同项目）连线，连上就能互发消息。 */
+  linkWith: z.array(z.string().min(1)).max(8).optional()
 });
 
 /** 新建工作空间：持久的（新建托管目录 / 关联已有目录）或临时的（为某个任务开 worktree / 临时目录）。 */

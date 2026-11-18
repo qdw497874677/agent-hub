@@ -39,7 +39,7 @@ get_session              → status / ended 原因 / 用量
 
 ## 多会话协作（开发 ↔ 验证）
 
-两条会话要互相说话时，先 `session_link` 连起来；连上后它们各自用 `agent.ask peer:<短名>` 互问，用 `workspace.read`（带 `session`）只读看对方文件。
+两条会话要互相说话时，开第二条时直接 `session_start { …, handle, linkWith: [第一条] }`（或事后 `session_link`）；要「一仓一会话」给 `repoId`（只为那个仓开隔离 worktree，和 `groupId` 互斥）。连上后它们各自用 `agent.ask peer:<短名>` 互问，用 `workspace.read`（带 `session`）只读看对方文件。
 你自己要和某条会话「按消息往来」（能关联回复、受防风暴约束）用 `session_message`，回复进你的外部收件箱：
 
 ```

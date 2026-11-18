@@ -139,11 +139,11 @@ set_task_status { taskId, status, note? }
 配方 7 把验证会话开到另一台机器后，连上线就能让两边直接问答，不用你在中间传话：
 
 ```
-session_start { taskId, workerId: A, ... }   → dev
-session_start { taskId, workerId: B, ... }   → verify
-session_link  { sessionId: dev, otherSessionId: verify, clientRequestId }
+session_start { taskId, workerId: A, repoId: 'web', handle: 'dev', ... }        → dev（只开 web 仓的 worktree）
+session_start { taskId, workerId: B, handle: 'verify', linkWith: [dev], ... }   → verify，建好就和 dev 连上
+# 或者事后：session_link { sessionId: dev, otherSessionId: verify, clientRequestId }
 session_reply { sessionId: verify, text: '你是验证会话：收到 ask 就拉对方给的分支、启动、做健康检查，用 agent.reply 回 status + verify-result/v1' }
-session_reply { sessionId: dev, text: '改完推送后用 agent.ask 问 peer:<verify 的短名>，带 parts [{type:"ref",repo,branch,sha}]，拿到结果再收尾' }
+session_reply { sessionId: dev, text: '改完推送后用 agent.ask 问 peer:verify，带 parts [{type:"ref",repo,branch,sha}]，拿到结果再收尾' }
 message_inbox / events { waitSec }           # 跟进；验证结果在 dev 的时间线里（reply 带 status 与 parts）
 ```
 

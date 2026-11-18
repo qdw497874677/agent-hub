@@ -12,7 +12,7 @@ import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import type { Deps } from './deps.ts';
 import { createProjectUseCase, updateProjectReposUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
-import { addWorkspaceGroupMemberUseCase, buildWorkspaceGroupUseCase, memberWorktreePath, removeWorkspaceGroupUseCase, retryWorkspaceGroupUseCase } from './workspace-groups.ts';
+import { addWorkspaceGroupMemberUseCase, buildWorkspaceGroupUseCase, memberWorktreePath, prepareRepoWorktreeUseCase, removeWorkspaceGroupUseCase, retryWorkspaceGroupUseCase } from './workspace-groups.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 
 function fakeGroups(): WorkspaceGroupRepository & { rows: Map<string, WorkspaceGroup> } {
@@ -395,4 +395,23 @@ test('建组可只选子集；branches / fromGroupId 按已有分支在另一台
   assert.equal(handedApiWs?.branch, 'agent-hub/api-custom');
   assert.ok(w.groupGit.calls.some((call) => call.includes(`@${webWs.branch}`)));
   assert.ok(w.groupGit.calls.some((call) => call.includes('@agent-hub/api-custom')));
+});
+
+test('会话通信 P1b · 一仓一会话：只给指定仓库开隔离 worktree（按 id 或名字），不建组；不在项目里的仓库 400', async () => {
+  const w = await world();
+  const api = w.project.repos.find((repo) => repo.name === 'api')!;
+  const prepared = await prepareRepoWorktreeUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, repoId: api.id, workerId: 'remote-1', home: '/home/me', sessionId: 'sess-abcd1234' });
+  assert.ok(prepared.ok, prepared.ok ? '' : prepared.error.message);
+  assert.equal(prepared.value.kind, 'temporary');
+  assert.equal(prepared.value.repoUrl, api.url);
+  assert.equal(prepared.value.groupId ?? null, null);
+  assert.match(prepared.value.branch ?? '', /^agent-hub\/api-/);
+  assert.match(prepared.value.path, /^\/srv\/work\/\.worktrees\/api\//);
+  assert.ok(w.memory.git.calls.some((call) => call.includes('worktree:/srv/work/api->')), w.memory.git.calls.join('\n'));
+  assert.equal(w.groups.rows.size, 0);
+  const byName = await prepareRepoWorktreeUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, repoId: 'web', workerId: 'remote-1', home: '/home/me' });
+  assert.ok(byName.ok);
+  assert.equal(byName.value.repoUrl, 'https://example.com/web.git');
+  const missing = await prepareRepoWorktreeUseCase(w.deps, { projectId: w.project.id, taskId: w.task.id, repoId: 'nope', workerId: 'remote-1', home: '/home/me' });
+  assert.equal(missing.ok ? null : missing.error.code, 'invalid');
 });
