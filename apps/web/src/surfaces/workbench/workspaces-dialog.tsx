@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ProjectMessagingTrust } from './project-messaging-trust.tsx';
 import { SaveStatus } from '../../atoms/save-status.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ProjectDto, WorkspaceDto, WorkspaceViewDto } from '../../shell/api.ts';
@@ -94,6 +95,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
         <div className={panel('project')}>
           <DescriptionEditor project={project} />
           <WorkspaceCleanup projectId={project.id} />
+          <ProjectMessagingTrust projectId={project.id} />
         </div>
         <div className={panel('context')}>
           <ProjectContext projectId={project.id} canEdit />
