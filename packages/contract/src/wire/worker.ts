@@ -152,7 +152,7 @@ export const workerAgentsSchema = z.object({
 });
 
 /** 版本号与 agent id 都会进命令参数和路径：只收固定形状（与 domain RUNTIME_VERSION / RUNTIME_AGENT_ID 同）。 */
-export const runtimeVersionSchema = z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/);
+export const runtimeVersionSchema = z.string().regex(/^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/);
 export const runtimeAgentIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,31}$/);
 export const runtimeActionSchema = z.enum(['install', 'uninstall', 'switch']);
 /** 组件任务（ADR 0021 P2）：复用 runtime_job，多两个 action。只发给清单里报了 componentInstall 的 Worker。 */

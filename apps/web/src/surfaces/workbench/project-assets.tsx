@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { assetsApi } from '../../shell/api.ts';
+import { BuiltinBadge } from '../../shell/builtin-badge.tsx';
 
 const KIND_TEXT: Record<string, string> = { skill: '技能', instruction: '指令', mcp: 'MCP' };
 
@@ -42,6 +43,7 @@ export function ProjectAssets({ projectId }: { projectId: string }) {
               />
               <span className="rounded border border-strong px-1 text-meta text-secondary">{KIND_TEXT[asset?.kind ?? ''] ?? '资产'}</span>
               <span className="min-w-0 flex-1 truncate text-sub text-primary">{asset?.name ?? choice.assetId}</span>
+              {asset?.source.type === 'builtin' ? <BuiltinBadge version={asset.source.version} /> : null}
               <span className={`text-meta ${choice.scope === 'project' ? 'text-secondary' : 'text-tertiary'}`}>
                 {choice.scope === 'project' ? '本项目' : '全局'}
               </span>

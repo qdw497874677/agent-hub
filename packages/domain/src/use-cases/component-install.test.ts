@@ -248,3 +248,38 @@ test('整套安装（P3）：每项按单装规则检查，一项不行整体拒
   const dup = await startBundleJob(deps, member, 'w1', { components: [{ componentId: 'a', version: '1.0.0' }, { componentId: 'a', version: '1.0.0' }] });
   assert.equal(!dup.ok && dup.error.code, 'invalid');
 });
+
+test('内置浏览器：一键装 = 按清单提交（哈希必须对得上）→ 管理员批准 → 发安装任务；成员不能装', async () => {
+  const { BUILTIN_CHROMIUM } = await import('../builtin-assets.ts');
+  const { browserStatus, installBuiltinBrowser, workerNeedsBrowser } = await import('./builtin-assets.ts');
+  const good = setup({ integrity: BUILTIN_CHROMIUM.integrity, scripts: {} });
+  good.workers.push(machine('w1'));
+  assert.equal((await installBuiltinBrowser(good.deps, member, 'w1')).ok, false, '成员不能装');
+  const job = await installBuiltinBrowser(good.deps, david, 'w1');
+  assert.ok(job.ok, job.ok ? '' : job.error.message);
+  assert.equal(job.value.component?.componentId, BUILTIN_CHROMIUM.componentId);
+  assert.equal(job.value.component?.packageName, 'playwright-core');
+  const item = good.catalog.get(`${BUILTIN_CHROMIUM.componentId}@${BUILTIN_CHROMIUM.version}`);
+  assert.equal(item?.status, 'approved');
+  assert.deepEqual(item?.provides, [{ capability: 'browser:chromium', mode: 'machine-tool' }]);
+  assert.deepEqual(good.entries.map((e) => e.action).reverse(), ['bundle.submit', 'bundle.review', 'runtime.component.install']);
+
+  // registry 给的哈希和清单不一致：停下，不装
+  const bad = setup();
+  bad.workers.push(machine('w1'));
+  const refused = await installBuiltinBrowser(bad.deps, david, 'w1');
+  assert.equal(refused.ok, false);
+  assert.match(refused.ok ? '' : refused.error.message, /哈希/);
+  assert.equal(bad.jobs.length, 0);
+
+  // 机器有没有浏览器：只认可信的 browser:chromium
+  const without = machine('w2');
+  const withBrowser = machine('w3', { drift: { items: [], trusted: [{ capability: 'browser:chromium', via: 'chromium' }], untrusted: [] } });
+  const playwright = { source: { type: 'builtin' as const, id: 'playwright', version: '0.0.85' } };
+  assert.equal(workerNeedsBrowser(without, playwright), true);
+  assert.equal(workerNeedsBrowser(withBrowser, playwright), false);
+  assert.equal(workerNeedsBrowser(without, { source: { type: 'builtin', id: 'context7', version: '4.6.0' } }), false, '不要浏览器的不提示');
+  assert.equal(workerNeedsBrowser(without, { source: { type: 'upload' } }), false);
+  const rows = browserStatus([without, withBrowser, machine('w4', { inventory: { runtimes: [], components: [], capabilities: [], collectedAt: 1, componentInstall: true } })]);
+  assert.deepEqual(rows.map((r) => [r.workerId, r.ready, r.blocker !== null]), [['w2', false, false], ['w3', true, false], ['w4', false, true]]);
+});

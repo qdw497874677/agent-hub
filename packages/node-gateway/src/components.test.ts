@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, readlinkSync, realpathSync } fro
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ComponentJobSpec } from '@agent-hub/domain';
-import { hubComponentDirs, installBundle, installComponent, uninstallComponent, type ComponentInstallOptions } from './components.ts';
+import { hubComponentDirs, installBundle, installComponent, installsBrowser, machineToolOnly, uninstallComponent, type ComponentInstallOptions } from './components.ts';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { runCommand } from './runtime-jobs.ts';
 import { npmCli, startMockRegistry, type MockRegistry } from './testing/mock-npm-registry.ts';
@@ -178,4 +178,27 @@ test('git 来源（P4）：锁文件钉住的必须是审核时的提交；openc
   assert.ok(ok.ok, ok.message);
   assert.equal(hubComponentDirs(root, 'opencode').length, 1);
   assert.equal(hubComponentDirs(root, 'pi').length, 0);
+});
+
+test('内置浏览器组件：只认 playwright-core + browser:chromium 才下载浏览器；机器工具不交给运行时当插件加载', async () => {
+  const provides = [{ capability: 'browser:chromium', mode: 'machine-tool' }];
+  assert.equal(installsBrowser({ packageName: 'playwright-core', provides }), true);
+  assert.equal(installsBrowser({ packageName: 'evil-pkg', provides }), false, '换个包名不行');
+  assert.equal(installsBrowser({ packageName: 'playwright-core', provides: [{ capability: 'tool:x' }] }), false);
+  assert.equal(machineToolOnly(provides), true);
+  assert.equal(machineToolOnly([...provides, { capability: 'tool:x' }]), false);
+  assert.equal(machineToolOnly([]), false);
+  const root = mkdtempSync(join(tmpdir(), 'comp-tool-'));
+  const V = 'v-00000000-0000-4000-8000-000000000001';
+  for (const [id, pkg, prov] of [
+    ['chromium', 'playwright-core', provides],
+    ['demo', 'demo-pi-ext', [{ capability: 'tool:demo' }]]
+  ] as const) {
+    const dir = join(root, 'pi', id, V);
+    mkdirSync(join(dir, 'node_modules', pkg), { recursive: true });
+    writeFileSync(join(dir, '.component.json'), JSON.stringify({ id, version: '1.0.0', packageName: pkg, enabled: true, provides: prov }));
+    const { symlinkSync } = await import('node:fs');
+    symlinkSync(V, join(root, 'pi', id, 'current'));
+  }
+  assert.deepEqual(hubComponentDirs(root, 'pi').map((dir) => dir.split('/').pop()), ['demo-pi-ext']);
 });

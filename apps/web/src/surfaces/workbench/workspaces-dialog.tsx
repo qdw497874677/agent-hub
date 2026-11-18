@@ -7,6 +7,7 @@ import { DialogShell, SECONDARY_BUTTON } from '../../shell/dialog-shell.tsx';
 import { useWorkers } from '../../shell/workers.tsx';
 import { useAccount } from '../../shell/auth.tsx';
 import { ProjectAssets } from './project-assets.tsx';
+import { BuiltinAssets } from './builtin-assets.tsx';
 import { ProjectContext } from './project-context.tsx';
 import { ProjectDistill } from './project-distill.tsx';
 import { LinkWorkspaces } from './link-workspaces.tsx';
@@ -101,6 +102,7 @@ export function WorkspacesDialog({ project, onClose }: { project: ProjectDto; on
         {isAdmin ? (
           <div className={panel('assets')}>
             <ProjectAssets projectId={project.id} />
+            <BuiltinAssets projectId={project.id} />
           </div>
         ) : null}
         <div className={panel('workspaces')} data-testid="project-code-spaces">

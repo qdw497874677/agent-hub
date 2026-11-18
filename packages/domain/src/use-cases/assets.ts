@@ -41,6 +41,7 @@ import type { AssetDelivery, AssetSyncBoard } from '../ports/asset-delivery.ts';
 import type { SecretInfo, SecretVault } from '../ports/secret-vault.ts';
 import { isHubSecretKey, secretLookupOrder } from '../asset-review.ts';
 import { checkGitSourceUrl } from '../asset-git-host.ts';
+import type { BuiltinAsset } from '../builtin-assets.ts';
 import { REPO_TOKEN_PREFIX } from '../project.ts';
 import { MCP_CONFIG_FILE, checkSecretName, expandRecord, expandSecrets, mcpSecretRefs, parseMcpAsset, type McpConfig, type McpLaunch, type McpOAuth } from '../mcp.ts';
 
@@ -340,6 +341,31 @@ export async function importGitAsset(
     }
   }
   return made;
+}
+
+/** 内置资产的文件（清单里是文本）。 */
+export const builtinFiles = (item: Pick<BuiltinAsset, 'files'>): IncomingFile[] =>
+  item.files.map((file) => ({ path: file.path, data: new TextEncoder().encode(file.text) }));
+
+/** 按内置清单建一份资产（来源记成 builtin + 当时的清单版本）。 */
+export function createBuiltinAsset(
+  deps: CreateDeps,
+  input: { item: BuiltinAsset; projectId: string | null } & AssetOwnership
+): Promise<Result<Asset, DomainError>> {
+  const { item } = input;
+  return createAsset(deps, item.kind, { type: 'builtin', id: item.id, version: item.version }, builtinFiles(item), item.name, null, input.projectId, input);
+}
+
+/** 已启用的内置资产换成清单里的新版本：记新提交、换钉、来源版本跟着改。 */
+export async function updateBuiltinAssetRecord(deps: AssetDeps, asset: Asset, item: BuiltinAsset): Promise<Result<Asset, DomainError>> {
+  if (asset.source.type !== 'builtin' || asset.source.id !== item.id) return err(invalid('这不是这一项内置资产'));
+  const offered = await offerRevision(deps, asset, builtinFiles(item), null);
+  if (!offered.ok) return offered;
+  const pinned = await pinAssetRevision(deps, asset.id, offered.value.asset.latest);
+  if (!pinned.ok) return pinned;
+  const next: Asset = { ...pinned.value, source: { type: 'builtin', id: item.id, version: item.version }, updatedAt: deps.now() };
+  await deps.assets.update(next);
+  return ok(next);
 }
 
 /** 新版本只记成「最新」，不换钉：要看过 diff 再 `pinAssetRevision`。名字不能变（Worker 上的目录名）。 */

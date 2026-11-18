@@ -62,7 +62,7 @@ export interface RuntimeJob {
 }
 
 /** 版本号只接受 X.Y.Z(-suffix)：它会作为参数传给 npm / 安装脚本，不能夹带别的东西。 */
-export const RUNTIME_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z.]{1,32})?$/;
+export const RUNTIME_VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,6}(-[0-9A-Za-z][0-9A-Za-z.-]{0,39})?$/;
 
 /** 能在线安装的 agent id 的形状：同样会进路径，收紧。 */
 export const RUNTIME_AGENT_ID = /^[a-z][a-z0-9-]{0,31}$/;

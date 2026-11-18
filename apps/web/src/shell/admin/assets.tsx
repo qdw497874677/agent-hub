@@ -1,4 +1,5 @@
 import { useRef, useState, type ReactNode } from 'react';
+import { BuiltinBadge } from '../builtin-badge.tsx';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, assetsApi } from '../api.ts';
 import type { AssetsOverviewDto, GitScanDto } from '../api.ts';
@@ -21,7 +22,9 @@ const KIND_TEXT: Record<Kind, string> = { skill: '技能', instruction: '指令'
 const MCP_PLACEHOLDER = `{\n  "name": "example",\n  "description": "做什么用的",\n  "transport": "http",\n  "url": "https://example.com/mcp",\n  "headers": { "Authorization": "Bearer \${secret:EXAMPLE_TOKEN}" }\n}`;
 const short = (digest: string) => digest.slice(0, 8);
 const sourceText = (asset: Asset) =>
-  asset.source.type === 'git'
+  asset.source.type === 'builtin'
+    ? `Hub 内置 · ${asset.source.id} ${asset.source.version}`
+    : asset.source.type === 'git'
     ? `${asset.source.url.replace(/^https?:\/\//, '')}${asset.source.ref ? `@${asset.source.ref}` : ''}${asset.source.path ? ` · ${asset.source.path}` : ''}`
     : '上传';
 
@@ -189,6 +192,7 @@ function AssetItem({
         <span className="rounded border border-strong px-1.5 text-meta text-secondary">{KIND_TEXT[asset.kind]}</span>
         <span className="min-w-0 truncate text-body font-medium text-primary">{asset.name}</span>
         <ScopeBadge projectId={asset.projectId} />
+        {asset.source.type === 'builtin' ? <BuiltinBadge version={asset.source.version} /> : null}
         {upgradable ? (
           <button
             data-testid="asset-upgrade"
