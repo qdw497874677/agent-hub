@@ -1,6 +1,6 @@
 # ADR 0038：会话通信——一仓一会话的协作（感知 · 只读看对方 · 互发消息）
 
-- 状态：accepted（2026-11-18 David 确认设计稿 §13 三项按推荐默认；实现差异记在设计稿 §17）
+- 状态：accepted，已实现（2026-11-18 David 确认设计稿 §13 三项按推荐默认；P1a–P1f 合入 master `5b77631`，#245–#250；实现差异记在设计稿 §17）
 - 关联：ADR 0018（agent 间通信，P1 已实现）、0031（送达队列）、0036（投递内核）、0015（对外 MCP）；设计稿 `docs/design/session-communication.md`；多仓 `docs/design/multi-repo.md`（#241）
 
 ## 背景

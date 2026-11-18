@@ -1,6 +1,6 @@
 # 会话通信：一仓一会话的协作（感知 · 只读看对方 · 互发消息）
 
-- 状态：accepted（2026-11-18 David 确认 §13 三项按推荐默认）。P1a 实现中：`feat/session-comm-p1a`；实现与设计的差异见 §17
+- 状态：accepted（2026-11-18 David 确认 §13 三项按推荐默认）。P1a–P1f 已实现并合入 master（#245 #246 #247 #248 #249 #250，2026-11-18，master `5b77631`）；实现与设计的差异见 §17
 - 日期：2026-11-18
 - 基线：origin/master `303c668`；参考 PR #241（组合工作空间，未合并）
 - 相关：ADR 0018（agent 间通信，P1 已实现）、ADR 0031（送达队列）、ADR 0036（投递内核）、ADR 0015 / `external-surface.md`（对外 MCP）、`multi-repo.md`；本设计对应 **ADR 0038**
@@ -346,7 +346,7 @@ type Part =
 | P2 | steer（按能力）、`cancel` 传播、`wake:false` 合并投递、token 预算、调用链视图、外部 webhook 推送、`notify_when_idle` 式订阅 | |
 | P3 | A2A 网关（ADR 0018 P3） | |
 
-**顺序**：P1a → P1b → P1c → P1d → P1f → P1e，每期一个 PR，CI 全绿再进下一期。P1b 依赖 #241 合并。
+**顺序**：P1a → P1b → P1c → P1d → P1f → P1e，每期一个 PR，CI 全绿再进下一期。P1b 依赖 #241 合并。实际合并顺序：P1a → P1c → P1f → P1d → P1e → P1b（栈式 PR，P1b 等 #241 合并后最后合）。
 
 ## 15. 测试计划
 
@@ -432,7 +432,7 @@ type Part =
 
 ## 17. 实现记录与差异
 
-### P1a（`feat/session-comm-p1a`）
+### P1a（#245，合并 `831b29c`）
 
 - 失败码：已收起统一叫 `archived`（原稿 `target_settled`）；另加 `duplicate`、`busy`（收件队列满）。
 - 每链唤醒 30 轮到顶后**拒绝**（`rate_limited`），不是「只进收件箱」。
@@ -443,32 +443,32 @@ type Part =
 - `agent.peers` / 简报的 dirty 推迟到 P1c；`GET /api/sessions/:id/peers` 给界面（P1e）用。
 - 同伴简报改由消息总线生成，按会话做内容指纹，**不变就不垫**（进程内记忆，重启后第一轮会再垫一次）。
 
-### P1c（`feat/session-comm-p1c`）
+### P1c（#246，合并 `3492bf3`）
 
 - `workspace.list` / `workspace.read` / `git.state` 加 `session` 参数（`peer:<短名>` 或 `session:<id>`，自己也行）；只读，跨会话一律走 `resolvePeer`：同项目 + 连了线或派生关系，已收起返回 `archived`。
 - 新工具 `workspace.changes`（只在 Hub 有 git 状态服务时列出）：分支、上游、ahead、dirty、改动文件（≤ 200，超出 `truncated`）。dirty **没有**塞进 `agent.peers`（每次列同伴都去问 git 太重），要看就调 `workspace.changes`。
 
-### P1f（`feat/session-comm-p1f`）
+### P1f（#247，合并 `06dbd06`）
 
 - 档位由会话运行时选项推：`yolo` / `sandbox=danger-full-access` / `approval=never` / 免审批类 mode → auto；审批类 mode 或给了 `approval` / `sandbox` → guarded；其余 unknown。
 - 只拦 guarded → auto；任一端 unknown 不拦，但 accepted 审计记 `tier=X→Y`（pi 目前就是 unknown）。
 - 项目开关 `trustPeers`（默认关）存在 `agent_messaging_config.trust_peers`；`PUT /api/projects/:id/messaging` 不给就保持原值、改动入审计（`config`）。privilege 拦下只有发起人或有 `project.update` 的人能放行。
 
-### P1d（`feat/session-comm-p1d`）
+### P1d（#248，合并 `526e957`）
 
 - 外部收件箱 = 令牌 id（现在没有令牌家族 / 轮换的概念）；外部发送者记作 `external:<令牌 id>`，署名「外部 · 令牌名」，吊销后收件箱 401。
 - 断开连线是 `POST /sessions/{id}/unlink`（DELETE 会落到 `session.delete` 权限）。
 - `session_message` 要 `session.prompt`，并且和 `session_reply` 一样过 Worker 检查：本机 Worker 的会话永远不对令牌开放。
 - 外部 ask 的回复（含超时、archived）进外部收件箱，不唤醒任何会话；`message_get` / `get_session` / `events` 支持 `waitSec ≤ 50` 长轮询；收件箱游标 = createdAt。
 
-### P1e（`feat/session-comm-p1e`）
+### P1e（#249，合并 `0b9ddbf`）
 
 - 检查器：「同伴」区（短名、状态、仓库@分支、机器、未读数、连线 / 派生；可改自己的短名）；协作消息行显示附件、「不唤醒·未读 / 已读」、回复状态；被拦下的消息有放行 / 拒绝卡。
 - 时间线：hub 投进来的 agent 消息画成卡片（类型、来源、代谁、回复状态、正文），不再显示原始标签；侧栏 / 画布的「开头一句」也去掉标签（`promptOpening`）。
 - 项目设置 · 项目页：「信任同伴」开关；`PUT /messaging` 不给 `roles` 时保持角色表不变。
 - 画布连线上的消息计数没做（留待后续）。
 
-### P1b（`feat/session-comm-p1b`，#241 合并后基于 master 798b718）
+### P1b（#250，合并 `5b77631`；#241 合并后基于 master 798b718）
 
 - `session_start` / `/api/sessions/derive` 加 `repoId`（项目仓库 id 或仓库名）：只为这个仓开**单仓**隔离 worktree（`prepareRepoWorktreeUseCase`，复用组合组的仓库基座查找 / clone），分支 `agent-hub/<仓>-<会话后缀>`，不建组合组；和 `workspaceId` / `groupId` 互斥。准备命令只在主仓库（或单仓项目）跑。
 - `handle` / `linkWith`：建会话**之前**检查（短名格式与任务内唯一 → 409；linkWith 同项目、能对它 `session.prompt`、没收起），建好后起短名、连线；个别失败只记日志、不回滚会话。
