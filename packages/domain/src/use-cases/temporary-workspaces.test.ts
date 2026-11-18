@@ -4,7 +4,7 @@ import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProjectUseCase, setProjectWorktreeUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { prepareLongLivedWorkspaceUseCase } from './workspaces.ts';
-import { branchSlug, originBranchRef, prepareTemporaryWorkspaceUseCase, retryWorkspaceSetupUseCase, taskBranch } from './temporary-workspaces.ts';
+import { branchSlug, originBranchRef, prepareTemporaryWorkspaceUseCase, retryWorkspaceSetupUseCase, sessionBranchSuffix, taskBranch } from './temporary-workspaces.ts';
 
 async function world(repoUrl?: string) {
   const w = inMemoryDeps();
@@ -18,10 +18,12 @@ async function world(repoUrl?: string) {
   return { ...w, project: project.value, task: task.value, temp };
 }
 
-test('分支名：agent-hub/<ascii slug>-<短 id>；纯中文标题退回 task', () => {
+test('分支名：agent-hub/<ascii slug>-<会话 id 后缀>；纯中文标题退回 task', () => {
   assert.equal(branchSlug('Fix login 登录'), 'fix-login');
   assert.equal(branchSlug('修登录'), 'task');
   assert.equal(taskBranch('修登录', 'ab12'), 'agent-hub/task-ab12');
+  assert.equal(sessionBranchSuffix('a1b2c3d4-e5f6-7890-abcd-ef1234567890'), 'a1b2c3d4e5f6');
+  assert.equal(taskBranch('修登录', 'a1b2c3d4-e5f6-7890-abcd-ef1234567890'), 'agent-hub/task-a1b2c3d4e5f6');
 });
 
 test('git 项目：从这台机器上的持久工作空间开 worktree，放在仓库旁的 .worktrees/，新分支', async () => {
@@ -34,8 +36,8 @@ test('git 项目：从这台机器上的持久工作空间开 worktree，放在�
   assert.equal(made.value.source, 'worktree');
   assert.equal(made.value.ownerTaskId, w.task.id);
   assert.equal(made.value.baseWorkspaceId, long.value.id);
-  assert.match(made.value.branch ?? '', /^agent-hub\/fix-login-[0-9a-f]{4}$/);
-  assert.match(made.value.path, /^\/srv\/work\/agent-hub-workspaces\/\.worktrees\/demo-app\/fix-login-[0-9a-f]{4}$/);
+  assert.match(made.value.branch ?? '', /^agent-hub\/fix-login-[0-9a-f]{8,12}$/);
+  assert.match(made.value.path, /^\/srv\/work\/agent-hub-workspaces\/\.worktrees\/demo-app\/fix-login-[0-9a-f]{8,12}$/);
   assert.ok(w.git.calls.some((call) => call.startsWith('remote-1:worktree:/srv/work/agent-hub-workspaces/demo-app->')));
   // 不限数量：再开一个，分支不同
   const again = await w.temp('isolated');
@@ -143,7 +145,7 @@ test('非 git 项目：新建空目录 <root>/agent-hub-workspaces/.tmp/<slug>-<
   assert.equal(made.value.source, 'created');
   assert.equal(made.value.isGit, false);
   assert.equal(made.value.branch, null);
-  assert.match(made.value.path, /^\/srv\/work\/agent-hub-workspaces\/\.tmp\/fix-login-[0-9a-f]{4}$/);
+  assert.match(made.value.path, /^\/srv\/work\/agent-hub-workspaces\/\.tmp\/fix-login-[0-9a-f]{8,12}$/);
 });
 
 test('worktree 失败（同名分支已在别处检出等）：不登记，原因带回去', async () => {

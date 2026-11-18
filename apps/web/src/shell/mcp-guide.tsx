@@ -47,7 +47,7 @@ export function McpGuidePanel() {
       >
         {snippet}
       </pre>
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2 flex flex-wrap items-center gap-2">
         <button
           data-testid="mcp-guide-copy"
           className={BTN}
@@ -57,7 +57,18 @@ export function McpGuidePanel() {
         >
           {copied ? '已复制' : '复制这段'}
         </button>
-        {tab === 'prompt' && <span className="text-[11px] text-tertiary">贴到外部 agent 的系统提示或 AGENTS.md 里。</span>}
+        <a
+          data-testid="skill-download"
+          className={BTN}
+          href={guide.skillUrl}
+          download="agent-hub-workbench.zip"
+        >
+          下载 agent-hub-workbench skill
+        </a>
+        <span className="text-[11px] text-tertiary">
+          zip 里是 SKILL.md 和 references/，也可 GET {guide.skillUrl}?format=json，或在 MCP 里 resources/read。
+        </span>
+        {tab === 'prompt' && <span className="text-[11px] text-tertiary">把提示词贴到外部 agent 的系统提示或 AGENTS.md 里。</span>}
       </div>
     </section>
   );

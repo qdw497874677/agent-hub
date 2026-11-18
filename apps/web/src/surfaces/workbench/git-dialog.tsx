@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { gitApi, type GitRunDto, type PullRequestDto } from '../../shell/api.ts';
 import { filesInvalidationKeys, filesKeys, gitKeys, taskKeys, workspaceKeys } from '../../shell/query-keys.ts';
@@ -10,16 +10,19 @@ import { DialogShell, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../shel
  */
 const STATUS: Record<string, string> = { untracked: '新', added: '新', modified: '改', deleted: '删', renamed: '名' };
 
-export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClose }: {
+export function GitDialog({ sessionId, workspaceId = null, member = null, taskId = null, onClose, switcher = null }: {
   sessionId: string;
   /** 目录维度：git 状态按工作目录缓存，同目录的会话共享（见 query-keys.ts）。 */
   workspaceId?: string | null;
+  /** 组合会话当前选中的成员；单仓不传。 */
+  member?: string | null;
   /** 提交 / 推送后刷新这个任务的 PR 列表；不知道就退化为旧的全前缀。 */
   taskId?: string | null;
   onClose: () => void;
+  switcher?: ReactNode;
 }) {
   const queries = useQueryClient();
-  const state = useQuery({ queryKey: gitKeys.state(workspaceId, sessionId), queryFn: () => gitApi.state(sessionId) });
+  const state = useQuery({ queryKey: gitKeys.state(workspaceId, sessionId), queryFn: () => gitApi.state(sessionId, member) });
   const [message, setMessage] = useState('');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -33,7 +36,7 @@ export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClos
     setDrafting(true);
     setError(null);
     try {
-      const text = await gitApi.draft(sessionId);
+      const text = await gitApi.draft(sessionId, member);
       setMessage(text.message);
       setTitle(text.title);
       setBody(text.body);
@@ -44,13 +47,13 @@ export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClos
       setDrafting(false);
     }
   }
-  useEffect(() => void draft(), [sessionId]);
+  useEffect(() => void draft(), [sessionId, member]);
 
   async function run(action: 'commit' | 'push' | 'pr') {
     setBusy(true);
     setError(null);
     try {
-      const out = await gitApi.run(sessionId, { action, message, ...(action === 'pr' ? { title, body } : {}) });
+      const out = await gitApi.run(sessionId, { action, message, ...(action === 'pr' ? { title, body } : {}) }, member);
       setResult(out);
       // git 真相按目录归一：状态、文件页、工作目录改动都失效，三处显示同一份结果。
       void queries.invalidateQueries({ queryKey: gitKeys.all(workspaceId, sessionId) });
@@ -74,6 +77,7 @@ export function GitDialog({ sessionId, workspaceId = null, taskId = null, onClos
     <DialogShell title="提交与推送" onClose={onClose}>
       <div data-testid="git-dialog" className="flex flex-col gap-3">
         <p className="text-sub text-primary">提交与推送</p>
+        {switcher}
         {state.isLoading ? <p className="text-meta text-tertiary">读取中…</p> : null}
         {s && !s.isGit ? <p className="text-meta text-tertiary">这个工作目录不是 git 仓库。</p> : null}
         {s?.isGit ? (

@@ -180,8 +180,10 @@ export const projectSchema = z.object({
   name: z.string(),
   /** 项目的 git 仓库；没有是 null。过渡期字段，= repos[0] 的 url/branch。 */
   repo: z.object({ url: z.string(), defaultBranch: z.string().nullable() }).nullable().default(null),
-  /** 项目绑定的仓库清单（0..8，第一个是 primary）。 */
+  /** 项目绑定的仓库清单（0..8）。 */
   repos: z.array(projectRepoSchema).default([]),
+  /** 组合会话指定的主仓库；null / 省略 = 未指定，不开组合会话。 */
+  primaryRepoId: z.string().nullable().optional(),
   /** 项目说明（markdown）。 */
   description: z.string().nullable().default(null),
   /** 新任务默认档位 + 准备命令；null = 没配。 */
@@ -192,6 +194,8 @@ export const projectSchema = z.object({
   checks: z.array(z.string()).max(5).default([]),
   /** 项目默认引用的资产组合（按顺序叠加，最多 8 个）。 */
   assetSetIds: z.array(z.string()).max(8).default([]),
+  /** 克隆 / 建 worktree 时是否递归初始化子模块；省略或 off = 不拉。只影响之后新建的 checkout。 */
+  submodules: z.enum(['off', 'recursive']).optional(),
   createdAt: epochMs
 });
 
