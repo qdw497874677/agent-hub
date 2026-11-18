@@ -264,7 +264,8 @@ export function openSqliteStore(file: string): SqliteStore {
       'worktree_config = excluded.worktree_config, preview_port = excluded.preview_port, checks = excluded.checks, ' +
       // 组合引用只在显式给的时候写：旧快照回写不能把用户的绑定冲掉。
       'asset_set_ids = COALESCE(excluded.asset_set_ids, projects.asset_set_ids), ' +
-      'default_agent = COALESCE(excluded.default_agent, projects.default_agent), ' +
+      // 实体始终带 default_agent（null = 没配），这里不能用 COALESCE：否则清空默认 Agent 写不进去。
+      'default_agent = excluded.default_agent, ' +
       'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
@@ -278,7 +279,7 @@ export function openSqliteStore(file: string): SqliteStore {
       // branch 只有写方知道时才覆盖：派生/更新任务时常拿到一份 branch 为 null 的旧对象，
       // 直接覆盖会把 worktree 已经回写的分支清掉。
       'status = excluded.status, owner_id = excluded.owner_id, branch = COALESCE(excluded.branch, tasks.branch), base_branch = excluded.base_branch, summary = excluded.summary, ' +
-      'default_agent = COALESCE(excluded.default_agent, tasks.default_agent), ' +
+      'default_agent = excluded.default_agent, ' +
       'log_seq = MAX(tasks.log_seq, excluded.log_seq), updated_at = excluded.updated_at'
   );
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?');

@@ -234,6 +234,8 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
   `<令牌哈希>|<工具名>|<clientRequestId>`，存第一次成功的结果（`mcp_replays` 表，保留 24h）。
 - `session_start` 必须点名的机器不能是 hub 本机（开放 API 的既有约束）；调用方用
   `list_workers` 挑机器。机器离线/没装 runtime 返回 409。
+- `session_start` 不传 `model` 时会走项目 / 任务的默认 Agent（含运行时与启动选项，回落顺序见
+  `docs/design/agent-atoms.md` §2.5），所以「这个项目固定用某个 Agent」由项目设置统一配一次即可。
 - `session_model` 与界面「模型」下拉走同一条路：同提供商只改选项（下一轮生效）；换到 hub 提供商
   或反向回原生模型会停掉会话进程、按新模型重新托管，靠 `resume{agentSessionRef, cursor}` 接回历史，
   正在跑的回合会中断。权限是 `session.prompt`，模型本身还要过调用方可见的提供商/运行时名单。

@@ -43,12 +43,21 @@
 
 `AgentRef.model` 是显式选择；**没选**（空串）时按顺序回落到：
 
-1. Bot / 保存的 Agent 配置里的 `ref.model`（团队里已经定好的职责）；
-2. 团队级「运行时默认模型」（团队页配置，`agent_defaults` 表；键是运行时 id）；
-3. 空串——交给运行时自己读它的本地配置。
+1. 会话显式选择（界面下拉 / `session_model` / 创建时点名）；
+2. Bot / 保存的 Agent 配置里的 `ref.model`（团队里已经定好的职责）；
+3. **任务默认 Agent**（`Task.defaultAgent`，任务详情里配，`PATCH /api/tasks/:id/default-agent`）；
+4. **项目默认 Agent**（`Project.defaultAgent`，项目设置里配，`PATCH /api/projects/:id`）；
+5. 团队级「运行时默认模型」（团队页配置，`agent_defaults` 表；键是运行时 id）；
+6. 空串——交给运行时自己读它的本地配置。
 
-团队默认只在**新会话**创建时应用；已有会话要通过换模型（`session_model` / 界面下拉）显式改。
-这样「团队统一用某个模型」不需要每个项目、每个 Bot 各配一遍，同时不会悄悄改掉跑着的会话。
+任务 / 项目默认不止模型，还包括**运行时与启动选项**（`AgentRef` 整份），所以思考强度（`effort` / `thinking` / `thought_level`，随运行时不同）也能跟着默认值走。合并规则写在 `deriveSessionUseCase`（`packages/domain/src/use-cases/sessions.ts`）：
+
+- runtime：只有完全没说（空串）时才由任务 → 项目补；
+- model：按层从高到低取第一个非空；
+- options：从低到高逐层铺开，显式选择 / Bot 配置最后覆盖。
+
+这些默认只在**新会话**创建时应用；已有会话要通过换模型（`session_model` / 界面下拉）显式改。
+这样「团队统一用某个模型」「这个项目固定用某个 Agent」都不需要每次开会话各配一遍，同时不会悄悄改掉跑着的会话。
 
 ## 3. P1 · 引入 `AgentRef`（收益最大，风险最低）
 
