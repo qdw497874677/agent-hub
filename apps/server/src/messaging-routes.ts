@@ -65,8 +65,9 @@ const toRole = (role: z.infer<typeof roleBody>): BotDefinition => ({
   ref: { runtime: role.agentId, model: role.model, options: role.options ?? {} }
 });
 const configBody = z.object({
-  roles: z.array(roleBody).max(50),
-  limits: z.object({ maxDepth: z.number().int(), maxConcurrent: z.number().int(), maxFanOut: z.number().int() }).partial().default({}),
+  /** 不给 = 只改别的开关（如 trustPeers），角色表和限额保持原样。 */
+  roles: z.array(roleBody).max(50).optional(),
+  limits: z.object({ maxDepth: z.number().int(), maxConcurrent: z.number().int(), maxFanOut: z.number().int() }).partial().optional(),
   /** 会话通信 P1f：信任同伴（guarded → auto 不拦）。不给 = 保持原值。 */
   trustPeers: z.boolean().optional()
 });
@@ -106,7 +107,10 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
   app.get('/api/sessions/:id/peers', async (c) => {
     // 可见性由 installAccess（session.read）把关
     const peers = await bus.peers(asSessionId(c.req.param('id')));
-    return peers.ok ? c.json({ peers: peers.value }) : fail(c, peers.error);
+    if (!peers.ok) return fail(c, peers.error);
+    // 顺带回这条会话自己的有效短名（检查器里「我的短名」用）。
+    const self = await deps.sessions.byId(asSessionId(c.req.param('id')));
+    return c.json({ peers: peers.value, handle: self ? await bus.handleOf(self) : null });
   });
 
   app.put('/api/sessions/:id/handle', async (c) => {
@@ -136,9 +140,14 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     if (!allowed.ok) return fail(c, allowed.error);
     if (!parsed.success) return fail(c, { code: 'invalid', message: parsed.error.issues[0]?.message ?? '配置格式不对' });
     const actor = principalOfSubject(subjectOf(c));
+    const current = parsed.data.roles === undefined ? await bus.config(allowed.value.id) : null;
     const saved = await bus.saveConfig(
       allowed.value.id,
-      { roles: parsed.data.roles.map(toRole), limits: parsed.data.limits, ...(parsed.data.trustPeers !== undefined ? { trustPeers: parsed.data.trustPeers } : {}) },
+      {
+        roles: parsed.data.roles?.map(toRole) ?? current?.roles ?? [],
+        limits: parsed.data.limits ?? current?.limits ?? {},
+        ...(parsed.data.trustPeers !== undefined ? { trustPeers: parsed.data.trustPeers } : {})
+      },
       actor ? `user:${actor.user.id}` : 'hub'
     );
     return saved.ok ? c.json(messagingConfigDto(saved.value)) : fail(c, saved.error);

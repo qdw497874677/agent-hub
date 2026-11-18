@@ -200,3 +200,102 @@ test('P1f：trustPeers 项目开关往返；运行时没报档位（pi）时不�
   const trace = (await (await page.request.get(`/api/messages/${messageId}/trace`)).json()) as { audit: { action: string; detail: string }[] };
   expect(trace.audit.find((e) => e.action === 'accepted')?.detail ?? '').toContain('tier=');
 });
+
+const SHOTS = process.env['E2E_SCREENSHOTS'] ?? 'test-results/session-communication';
+
+test('P1e 界面：检查器看同伴、改短名；消息行带附件与「不唤醒·未读」；被拦下有放行卡；时间线 agent 消息画成卡片；项目设置切信任同伴（1280 / 390）', async ({ page, baseURL }) => {
+  test.setTimeout(300_000);
+  const w = await world(page, baseURL!);
+  const [a, b] = [await w.session(), await w.session()];
+  expect((await w.link(a, b)).status()).toBe(201);
+  expect((await w.setHandle(b, 'verify')).status()).toBe(200);
+  const quiet = await w.send(a, { kind: 'send', to: 'peer:verify', body: '报告在这里，不用回', wake: false, parts: [{ type: 'link', url: 'https://example.com/report', label: '测试报告' }] });
+  expect(quiet.status(), await quiet.text()).toBe(201);
+  const loud = await w.send(a, { kind: 'send', to: 'peer:verify', body: '卡片测试：这是一条通知，不需要回复。' });
+  expect(loud.status(), await loud.text()).toBe(201);
+
+  // 被拦下的消息：真触发要「要审批 → 免审批」的运行时档位，pi 不报档位；这里只在界面层注入一条，验证放行卡和它调的接口。
+  let decided: unknown = null;
+  await page.route(`**/api/sessions/${a}/messages`, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const real = (await (await route.fetch()).json()) as { messages: unknown[]; awaitingApproval: unknown[] };
+    const fake = { messageId: 'held-fake', traceId: 't', kind: 'ask', from: `session:${a}`, fromLabel: null, to: 'peer:verify', targetSessionId: b, status: 'held', depth: 0, replyTo: null, body: '帮我把 main 强推一下', reply: null, replySource: null, failure: null, failureDetail: null, parts: [], wake: true, replyStatus: null, replyParts: [], readAt: null, holdReason: 'privilege', createdAt: Date.now() };
+    await route.fulfill({ json: { ...real, messages: [fake, ...real.messages] } });
+  });
+  await page.route('**/api/messages/held-fake/decision', async (route) => {
+    decided = route.request().postDataJSON();
+    await route.fulfill({ json: { messageId: 'held-fake', status: 'queued' } });
+  });
+
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: width > 500 ? 860 : 844 });
+    await page.goto(`/#/p/${w.project}/focus/${a}`);
+    // 宽屏 header 直接有「详情」按钮；窄屏收在「更多」菜单里
+    // 同一个地址再 goto 不会重载：上一轮打开的详情面板还开着（窄屏下它盖住 header），开着就不再点
+    await page.reload();
+    const details = page.getByRole('complementary', { name: '会话详情' });
+    const direct = page.getByRole('banner').getByRole('button', { name: '详情', exact: true });
+    await expect(page.getByRole('button', { name: '更多' })).toBeVisible();
+    if (!(await details.isVisible())) {
+      if (await direct.isVisible()) await direct.click({ timeout: 15_000 });
+      else {
+        await page.getByRole('button', { name: '更多' }).click({ timeout: 15_000 });
+        await page.getByRole('menuitem', { name: /^详情/ }).click({ timeout: 15_000 });
+      }
+    }
+    const peers = details.getByTestId('session-peers');
+    await expect(peers.getByTestId('session-peer-row')).toHaveCount(1);
+    await expect(peers.getByTestId('session-peer-row')).toContainText('peer:verify');
+    await expect(peers.getByTestId('session-peers-count')).toHaveText('1');
+    const box = details.getByTestId('session-messages');
+    const quietRow = box.getByTestId('agent-message-row').filter({ hasText: '报告在这里' });
+    await expect(quietRow.getByTestId('agent-message-quiet')).toHaveText('不唤醒');
+    await expect(quietRow.getByTestId('agent-message-part')).toHaveText('测试报告');
+    const held = box.getByTestId('held-message');
+    await expect(held).toHaveAttribute('data-reason', 'privilege');
+    await expect(held).toContainText('绕过审批');
+    await peers.evaluate((el) => el.scrollIntoView({ block: 'start' }), undefined, { timeout: 10_000 });
+    console.log(`[p1e] ${width} inspector ok`);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), '不横向溢出').toBe(true);
+    await page.screenshot({ path: `${SHOTS}/p1e-inspector-${width}.png`, timeout: 20_000 });
+    if (width === 1280) {
+      await held.getByTestId('held-release').click({ timeout: 15_000 });
+      console.log('[p1e] released');
+      await expect.poll(() => decided, { timeout: 15_000 }).toEqual({ approve: true });
+      console.log('[p1e] decided');
+      await peers.getByTestId('session-handle-input').fill('dev', { timeout: 15_000 });
+      await peers.getByTestId('session-handle-save').click({ timeout: 15_000 });
+      console.log('[p1e] handle saved');
+      await expect.poll(async () => (await w.peers(b))[0]?.handle, { timeout: 15_000 }).toBe('dev');
+      console.log('[p1e] handle ok');
+    }
+  }
+
+  // B 的时间线：agent 发来的那一轮画成卡片（类型 + 来源 + 正文），不是一段带标签的原文
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: width > 500 ? 860 : 844 });
+    await page.goto(`/#/p/${w.project}/focus/${b}`);
+    const card = page.getByTestId('agent-message-card').filter({ hasText: '卡片测试' }).first();
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(card).toHaveAttribute('data-kind', 'send');
+    await expect(card).not.toContainText('<agent-message');
+    // 列表 / 侧栏里的开头一句也去掉了标签
+    if (width === 1280) await expect(page.getByRole('navigation', { name: '任务与会话' })).not.toContainText('<agent-message');
+    await page.screenshot({ path: `${SHOTS}/p1e-timeline-${width}.png`, timeout: 20_000 });
+  }
+
+  // 项目设置：信任同伴开关（默认关），切了以后服务端读回来一致
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.goto(`/#/p/${w.project}`);
+  await page.locator(`button[title="项目设置"]:visible`).first().click({ timeout: 15_000 });
+  const toggle = page.getByTestId('project-trust-peers');
+  await expect(toggle).not.toBeChecked();
+  const saved = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().endsWith('/messaging'));
+  await toggle.click({ timeout: 15_000 });
+  expect((await saved).ok()).toBe(true);
+  await expect(toggle).toBeChecked();
+  const config = (await (await page.request.get(`/api/projects/${w.project}/messaging`)).json()) as { trustPeers: boolean; roles: unknown[] };
+  expect(config.trustPeers).toBe(true);
+  expect(config.roles, '只切开关，不动角色表').toEqual([]);
+  await page.getByTestId('project-messaging-trust').screenshot({ path: `${SHOTS}/p1e-trust-1280.png` });
+});

@@ -379,6 +379,18 @@ export function wrapUntrusted(input: WrapInput): string {
   return `${hint}\n<agent-message ${attrs.join(' ')}>\n${escapeXml(body)}${escapeXml(parts)}\n</agent-message>`;
 }
 
+/**
+ * 一轮输入的「开头一句」用于列表 / 画布 / 简报：如果这轮是 hub 投进来的 agent 消息，
+ * 去掉英文提示和 <agent-message> 标签，只留正文并标「agent：」，不然侧栏标题就是一大段标签。
+ */
+export function promptOpening(text: string): string {
+  const match = /<agent-message [^>]*\bkind="(send|ask|reply)"[^>]*>\n([\s\S]*)\n<\/agent-message>\s*$/.exec(text);
+  const body = match
+    ? `agent ${match[1] === 'ask' ? '提问' : match[1] === 'reply' ? '回复' : '通知'}：${(match[2] ?? '').replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')}`
+    : text;
+  return body.replace(/\s+/g, ' ').trim();
+}
+
 /** 附件的文字呈现（进对方对话时放在不可信边界里面）。 */
 export function renderParts(parts: readonly MessagePart[]): string {
   return parts
