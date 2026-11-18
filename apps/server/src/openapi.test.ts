@@ -792,3 +792,47 @@ test('开放 API project_repos：令牌只写不读，响应只有 hasToken；MC
   assert.equal(cleared.result.isError, false, JSON.stringify(cleared.result));
   assert.equal(cleared.result.structuredContent.hasToken === undefined ? cleared.result.structuredContent.repos[0].hasToken : cleared.result.structuredContent.hasToken, false);
 });
+
+test('MCP session_model：写工具要 clientRequestId，换模型不重启进程（同提供商）', async () => {
+  const { david, mint, app, world, api } = await setup();
+  const token = (await mint(david, ['projects:read', 'projects:write', 'sessions:read', 'sessions:write', 'workers:read'])).token;
+  const call = api(token);
+  const project = (await call('/projects', post({ name: '换模型' }))).body;
+  const task = (await call('/tasks', post({ projectId: project.id, title: 't', goal: '' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online' } as never);
+  const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/y', kind: 'long_lived', source: 'linked', now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  const session = await call('/sessions', post({ taskId: task.id, agentId: 'fake', model: 'm1', workspaceId: workspace.value.id }));
+  assert.equal(session.status, 201, JSON.stringify(session.body));
+
+  const rpc = async (body: unknown, policy?: { writes?: boolean }) => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify(body)
+      }),
+      { mcpPolicy: { modules: new Set(['sessions']), readOnly: false, writes: true, ...policy } }
+    );
+    return (await response.json().catch(() => null)) as any;
+  };
+
+  const list = await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+  const tool = list.result.tools.find((t: { name: string }) => t.name === 'session_model');
+  assert.ok(tool, 'MCP_WRITE 打开时会话工具里有 session_model');
+  assert.equal(tool.annotations.readOnlyHint, false);
+  const hidden = await rpc({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, { writes: false });
+  assert.ok(!hidden.result.tools.some((t: { name: string }) => t.name === 'session_model'));
+
+  const noKey = await rpc({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'session_model', arguments: { sessionId: session.body.id, model: 'm2' } } });
+  assert.equal(noKey.result.isError, true);
+  assert.match(noKey.result.content[0].text, /clientRequestId/);
+
+  const changed = await rpc({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'session_model', arguments: { sessionId: session.body.id, model: 'm2', clientRequestId: 'req-model' } } });
+  assert.equal(changed.result.isError, false, JSON.stringify(changed.result));
+  // 同一提供商：只下发 set_option，不重启进程（换提供商才走 switchSessionModel）。
+  const frame = world.dispatched.filter((c: { kind: string }) => c.kind === 'set_option').at(-1) as { optionId?: string; value?: unknown } | undefined;
+  assert.equal(frame?.optionId, 'model');
+  assert.equal(frame?.value, 'm2');
+});

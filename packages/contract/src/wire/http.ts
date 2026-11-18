@@ -593,6 +593,9 @@ export const catalogComponentSchema = z.object({
   reviewNote: z.string().nullable()
 });
 
+/** 只换模型（含换提供商：服务端会重启这条会话的进程并用 resume 接回）。 */
+export const setSessionModelRequest = z.object({ model: z.string().min(1).max(200) });
+
 /** 改一项可调项：值可以是模型串、也可以是思考强度的档位名。 */
 export const changeOptionRequest = z.object({
   optionId: z.string().min(1),

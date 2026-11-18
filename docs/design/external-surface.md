@@ -209,12 +209,16 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 | `session_start` | `POST /sessions` | 需要 `clientRequestId`，不会重复开会话 |
 | `session_reply` | `POST /sessions/:id/prompt` | 需要 `clientRequestId`，另有 `clientMessageId` 做送达去重 |
 | `session_cancel` | `POST /sessions/:id/interrupt` | 天然幂等（重复打断无副作用） |
+| `session_model` | `POST /sessions/:id/model` | 需要 `clientRequestId`；同提供商标改选项、换提供商重启进程并接回历史 |
 
 - 写工具默认**不出现**；`MCP_WRITE=1` 才暴露，`MCP_READ_ONLY=1` 仍可把整套压回只读。
 - `clientRequestId` 由 MCP 层取走、不转发给内部 HTTP；回放键是
   `<令牌哈希>|<工具名>|<clientRequestId>`，存第一次成功的结果（`mcp_replays` 表，保留 24h）。
 - `session_start` 必须点名的机器不能是 hub 本机（开放 API 的既有约束）；调用方应先
   `list_workers`（暂未开放）或由项目页告诉它用哪台。机器离线/没装 runtime 返回 409。
+- `session_model` 与界面「模型」下拉走同一条路：同提供商只改选项（下一轮生效）；换到 hub 提供商
+  或反向回原生模型会停掉会话进程、按新模型重新托管，靠 `resume{agentSessionRef, cursor}` 接回历史，
+  正在跑的回合会中断。权限是 `session.prompt`，模型本身还要过调用方可见的提供商/运行时名单。
 - 已知欠缺：资产还没有协议级 digest 冻结（E4c），所以委派出去的会话在别人同步资产新版后
   可能换内容；这一步完成前，「对外委派」适合内部可信调用方。
 

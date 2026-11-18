@@ -43,6 +43,7 @@ const ALLOWED = {
   createTask: { module: 'tasks', need: 'task.create', readOnly: false, expose: 'task_create', idempotent: true },
   startSession: { module: 'sessions', need: 'session.create', readOnly: false, expose: 'session_start', idempotent: true },
   prompt: { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_reply', idempotent: true },
+  setSessionModel: { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_model', idempotent: true },
   interrupt: { module: 'sessions', need: 'session.interrupt', readOnly: false, expose: 'session_cancel' }
 } as const satisfies Record<
   string,

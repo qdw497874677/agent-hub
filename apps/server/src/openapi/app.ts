@@ -532,6 +532,30 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       ? c.json({ ok: true, ...result.value }, 202)
       : fail(c, result.error);
   });
+  on(routes.setSessionModel, async (c) => {
+    const sessionId = c.req.param('sessionId') ?? '';
+    const input = valid<{ model: string }>(c, 'json');
+    const current = await deps.sessions.byId(asSessionId(sessionId));
+    if (!current) return fail(c, notFound('会话不存在'));
+    // 与界面同一条路：跨提供商要停进程重起（switchSessionModel），同提供商只改选项。
+    if (ctx.providers?.crossesProviders(current.model, input.model) === true) {
+      const teamId = (await projectOfSession(deps, current))?.teamId ?? null;
+      const allowed = await ctx.providers.modelSwitchable(principal(c), input.model, teamId);
+      if (!allowed.ok) return fail(c, allowed.error);
+      const switched = await switchSessionModel(deps, { sessionId, model: input.model });
+      if (!switched.ok) return fail(c, switched.error);
+      await ctx.waitOptions?.(sessionId);
+      return c.json(switched.value);
+    }
+    if (ctx.providers) {
+      const allowed = ctx.providers.optionAllowed(current.model, 'model', input.model);
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
+    const changed = await changeSessionOption(deps, { sessionId, id: 'model', value: input.model });
+    if (!changed.ok) return fail(c, changed.error);
+    await ctx.waitOptions?.(sessionId);
+    return c.json((await deps.sessions.byId(asSessionId(sessionId))) ?? changed.value);
+  });
   on(routes.interrupt, async (c) => {
     const sessionId = c.req.param('sessionId') ?? '';
     const result = await interruptSessionUseCase(deps, sessionId);

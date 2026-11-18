@@ -18,6 +18,7 @@ import {
   setProjectDescriptionRequest,
   updateProjectRequest,
   setProjectRepoRequest,
+  setSessionModelRequest,
   setProjectReposRequest,
   setTaskStatusRequest,
   setTaskSummaryRequest,
@@ -372,6 +373,17 @@ export const routes = {
       '错误：404 会话不存在或属于看不见的项目。',
     request: { params: sessionId },
     responses: { 200: json(sessionSchema) }
+  }),
+  setSessionModel: route('sessions:write', {
+    method: 'post', path: `${V1}/sessions/{sessionId}/model`, tags: ['sessions'], summary: '换这条会话的模型（可换提供商）',
+    description:
+      '把会话切到另一个模型；目标模型在另一个提供商下时，服务端会停掉旧进程、按新配置重启，并用 resume 接回历史。\n' +
+      '参数：sessionId（路径）、model（模型 id；hub 提供商的模型写成 hub-<标识>/<模型>，用 list_models 看有哪些）。\n' +
+      '返回：更新后的会话对象。\n' +
+      '副作用：正在跑的回合会中断；历史保留。\n' +
+      '错误：400 模型不在可选清单里；403 没有 session.prompt 权限或那个提供商用不了；404 会话不存在；409 会话已结束或无法重启。',
+    request: { params: sessionId, ...body(setSessionModelRequest) },
+    responses: { 200: json(sessionSchema), ...errors }
   }),
   prompt: route('sessions:write', {
     method: 'post', path: `${V1}/sessions/{sessionId}/prompt`, tags: ['sessions'], summary: '对会话说话',
