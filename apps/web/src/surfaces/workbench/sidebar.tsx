@@ -10,6 +10,11 @@ import { WorkspacesDialog } from './workspaces-dialog.tsx';
 import { WorkersBadge } from '../../shell/workers.tsx';
 import { coarsePointer } from '../../shell/device.ts';
 import { PHASE_DOT, activeSessions, elapsedLabel, phaseLabel, phaseTone, sessionPhase, settledSessions } from './session-status.ts';
+import { waitingForReply, type LiveMap } from '../../atoms/live.ts';
+import { sessionActionItems, type SessionActionId, type SessionActionItem } from '../../atoms/session-actions.ts';
+import { useSessionActions } from '../../atoms/use-session-actions.ts';
+import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
+import { SessionRowMenu } from './session-row-menu.tsx';
 
 /** 桌面侧栏的收起开关事件：⌘K 面板派发，侧栏监听。 */
 export const TOGGLE_SIDEBAR_EVENT = 'agent-hub:toggle-sidebar';
@@ -54,6 +59,12 @@ interface Props {
   readonly projects: readonly ProjectDto[];
   readonly selectedId: string | null;
   readonly canvas: CanvasDto | null;
+  /** 会话流：行菜单要知道这一轮是不是还在跑（能不能停、能不能分叉）。 */
+  readonly live?: LiveMap;
+  /** 和画布卡片同一个停止处理。 */
+  readonly onInterrupt?: (sessionId: string) => Promise<void>;
+  /** 切到画布并把这条会话展开成窗口。 */
+  readonly onExpandSession?: (sessionId: string) => void;
   readonly onHome: () => void;
   readonly onSwitchProject: (project: ProjectDto) => void;
   readonly onOpenSession: (sessionId: string) => void;
@@ -73,6 +84,9 @@ export function ProjectSidebar({
   projects,
   selectedId,
   canvas,
+  live = {},
+  onInterrupt,
+  onExpandSession,
   onHome,
   onSwitchProject,
   onOpenSession,
@@ -104,6 +118,109 @@ export function ProjectSidebar({
 
   const titleOf = (session: SessionDto): string =>
     session.title?.trim() || canvas?.openings[session.id]?.trim() || (session.taskId === null ? '' : taskTitle.get(session.taskId)) || session.id.slice(-8);
+
+  // 会话行的「⋯」/ 右键菜单：动作、缓存改写和会话页「⋯」同一份（atoms/use-session-actions.ts）。
+  const actions = useSessionActions(project.id);
+  const [menu, setMenu] = useState<{ readonly sessionId: string; readonly x: number; readonly y: number; readonly trigger: HTMLElement | null } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<SessionDto | null>(null);
+  const [rowError, setRowError] = useState<{ readonly sessionId: string; readonly text: string } | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+  const allSessions = canvas?.sessions ?? [];
+
+  const itemsFor = (session: SessionDto): readonly SessionActionItem[] => {
+    const frame = live[session.id];
+    const status = frame?.status ?? session.status;
+    const agent = canvas?.agents.find((candidate) => candidate.id === session.agentId);
+    return sessionActionItems({
+      status,
+      settled: session.settledAt != null,
+      pinned: session.pinned === true,
+      lastSeq: frame?.lastSeq ?? session.lastSeq,
+      turnRunning: waitingForReply(frame, status),
+      forkDenied: agent?.capabilities.fork.state === 'denied',
+      canExpand: onExpandSession !== undefined
+    }).map((item) => (busyId === session.id && item.id !== 'expand' ? { ...item, disabled: true } : item));
+  };
+
+  const openMenu = (sessionId: string, x: number, y: number, trigger: HTMLElement | null) => {
+    returnFocus.current = trigger;
+    setRowError(null);
+    setMenu({ sessionId, x, y, trigger });
+  };
+
+  const closeMenu = (refocus: boolean) => {
+    setMenu(null);
+    if (refocus) returnFocus.current?.focus();
+  };
+
+  const runAction = async (session: SessionDto, action: () => Promise<unknown>) => {
+    setBusyId(session.id);
+    setRowError(null);
+    try {
+      await action();
+    } catch (failure) {
+      setRowError({ sessionId: session.id, text: (failure as Error).message || '操作失败，请再试一次' });
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const pick = (session: SessionDto, id: SessionActionId) => {
+    setMenu(null);
+    switch (id) {
+      case 'expand':
+        onExpandSession?.(session.id);
+        return;
+      case 'interrupt':
+        if (onInterrupt) void runAction(session, () => onInterrupt(session.id));
+        return;
+      case 'rename':
+        setRenamingId(session.id);
+        return;
+      case 'fork':
+        void runAction(session, async () => {
+          const created = await actions.fork(session);
+          onOpenSession(created.id);
+        });
+        return;
+      case 'settle':
+        void runAction(session, () => actions.setSettled(session, session.settledAt == null));
+        return;
+      case 'pin':
+        void runAction(session, () => actions.setPinned(session, session.pinned !== true));
+        return;
+      case 'delete':
+        setDeleting(session);
+        return;
+    }
+  };
+
+  const finishRename = (session: SessionDto, value: string | null) => {
+    setRenamingId(null);
+    // 焦点回到这一行，键盘用户接着往下走
+    requestAnimationFrame(() =>
+      listRef.current?.querySelector<HTMLElement>(`[data-testid="sidebar-session-row"][data-session-id="${CSS.escape(session.id)}"] [data-nav-row]`)?.focus()
+    );
+    if (value === null) return;
+    void runAction(session, () => actions.rename(session, value));
+  };
+
+  const rowProps = (session: SessionDto) => ({
+    session,
+    title: titleOf(session),
+    active: selectedId === session.id,
+    now,
+    onOpen: onOpenSession,
+    menuOpen: menu?.sessionId === session.id,
+    renaming: renamingId === session.id,
+    busy: busyId === session.id,
+    error: rowError?.sessionId === session.id ? rowError.text : null,
+    onMenu: (x: number, y: number, trigger: HTMLElement | null) => openMenu(session.id, x, y, trigger),
+    onRenamed: (value: string | null) => finishRename(session, value)
+  });
+  const menuSession = menu ? allSessions.find((session) => session.id === menu.sessionId) : undefined;
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((current) => {
@@ -269,7 +386,7 @@ export function ProjectSidebar({
                 {folded
                   ? null
                   : rows.map((session) => (
-                      <SessionRow key={session.id} session={session} title={titleOf(session)} active={selectedId === session.id} now={now} onOpen={onOpenSession} />
+                      <SessionRow key={session.id} {...rowProps(session)} />
                     ))}
               </section>
             );
@@ -290,7 +407,7 @@ export function ProjectSidebar({
           {showSettled && settled.length > 0 ? (
             <div data-testid="sidebar-settled-list">
               {settled.map((session) => (
-                <SessionRow key={session.id} session={session} title={titleOf(session)} active={selectedId === session.id} muted now={now} onOpen={onOpenSession} />
+                <SessionRow key={session.id} {...rowProps(session)} muted />
               ))}
             </div>
           ) : null}
@@ -311,6 +428,31 @@ export function ProjectSidebar({
         <AccountMenu placement="up" />
       </div>
       {settings ? <WorkspacesDialog project={project} onClose={() => setSettings(false)} /> : null}
+      {menu && menuSession ? (
+        <SessionRowMenu
+          items={itemsFor(menuSession)}
+          anchor={{ x: menu.x, y: menu.y }}
+          onPick={(id) => pick(menuSession, id)}
+          onClose={closeMenu}
+        />
+      ) : null}
+      {deleting ? (
+        <DeleteSessionDialog
+          session={deleting}
+          opening={canvas?.openings[deleting.id]}
+          onClose={() => {
+            setDeleting(null);
+            returnFocus.current?.focus();
+          }}
+          onDeleted={() => {
+            const id = deleting.id;
+            setDeleting(null);
+            actions.forget(id);
+            // 正看着的那条被删了：回到项目首页视图，别停在一条不存在的会话上
+            if (selectedId === id) onHome();
+          }}
+        />
+      ) : null}
     </aside>
   );
 }
@@ -318,6 +460,8 @@ export function ProjectSidebar({
 /**
  * 侧栏里的一行会话：状态点在最左（同款小圆点，颜色只说「忙 / 出事 / 歇着」），右边是多久没动。
  * 短号不再常驻（放进悬停提示），收起过的那份用更淡的字。
+ *
+ * 行尾的「⋯」：桌面上悬停 / 键盘聚焦时才出现（顶替时间），触屏常驻；右键（含菜单键）也打开同一份菜单。
  */
 function SessionRow({
   session,
@@ -325,7 +469,13 @@ function SessionRow({
   active,
   muted = false,
   now,
-  onOpen
+  onOpen,
+  menuOpen,
+  renaming,
+  busy,
+  error,
+  onMenu,
+  onRenamed
 }: {
   readonly session: SessionDto;
   readonly title: string;
@@ -333,29 +483,128 @@ function SessionRow({
   readonly muted?: boolean;
   readonly now: number;
   readonly onOpen: (sessionId: string) => void;
+  readonly menuOpen: boolean;
+  readonly renaming: boolean;
+  readonly busy: boolean;
+  readonly error: string | null;
+  readonly onMenu: (x: number, y: number, trigger: HTMLElement | null) => void;
+  /** null = 取消改名。 */
+  readonly onRenamed: (value: string | null) => void;
 }) {
   const phase = sessionPhase(session);
   const tone = phaseTone(phase);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const [draft, setDraft] = useState(session.title ?? '');
+  const done = useRef(false);
+  useEffect(() => {
+    if (!renaming) return;
+    setDraft(session.title ?? '');
+    done.current = false;
+  }, [renaming, session.title]);
+  const dot = <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${PHASE_DOT[tone]} ${tone === 'busy' ? 'animate-pulse' : ''}`} />;
+
+  if (renaming) {
+    const finish = (value: string | null) => {
+      if (done.current) return;
+      done.current = true;
+      onRenamed(value);
+    };
+    return (
+      <div data-testid="sidebar-session-row" data-session-id={session.id} className="flex min-h-11 items-center gap-2 rounded-md bg-selected py-1 pl-6 pr-1 lg:min-h-7">
+        {dot}
+        <input
+          autoFocus
+          value={draft}
+          maxLength={80}
+          placeholder={title}
+          aria-label="会话名"
+          data-testid="sidebar-rename-input"
+          className="h-8 min-w-0 flex-1 rounded-sm border border-hair bg-card px-1.5 text-sub text-primary outline-none focus:border-ring lg:h-6"
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => finish(draft)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              finish(draft);
+            } else if (event.key === 'Escape') {
+              event.preventDefault();
+              event.stopPropagation();
+              finish(null);
+            }
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <button
-      data-testid="sidebar-session"
-      data-nav-row
-      data-phase={phase}
-      data-settled={muted ? 'true' : undefined}
-      className={`group flex min-h-11 w-full items-center gap-2 rounded-md py-1 pl-6 pr-2 text-left text-sub lg:min-h-7 ${
-        active
-          ? 'bg-selected text-primary'
-          : muted
-            ? 'text-tertiary hover:bg-hover hover:text-secondary'
-            : 'text-secondary hover:bg-hover hover:text-primary'
-      }`}
-      aria-current={active ? 'page' : undefined}
-      title={`${title} · #${session.id.slice(-4)} · ${session.agentId} · ${phaseLabel(phase)}`}
-      onClick={() => onOpen(session.id)}
-    >
-      <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${PHASE_DOT[tone]} ${tone === 'busy' ? 'animate-pulse' : ''}`} />
-      <span className="min-w-0 flex-1 truncate">{title}</span>
-      <span className="shrink-0 text-meta text-tertiary">{elapsedLabel(session.updatedAt, now)}</span>
-    </button>
+    <div data-testid="sidebar-session-row" data-session-id={session.id} className="group">
+      <div className="relative">
+        <button
+          data-testid="sidebar-session"
+          data-nav-row
+          data-phase={phase}
+          data-settled={muted ? 'true' : undefined}
+          aria-busy={busy || undefined}
+          className={`flex min-h-11 w-full items-center gap-2 rounded-md py-1 pl-6 pr-12 text-left text-sub pointer-fine:pr-2 lg:min-h-7 ${
+            active
+              ? 'bg-selected text-primary'
+              : muted
+                ? 'text-tertiary hover:bg-hover hover:text-secondary'
+                : 'text-secondary hover:bg-hover hover:text-primary'
+          } ${menuOpen ? 'bg-hover' : ''}`}
+          aria-current={active ? 'page' : undefined}
+          title={`${title} · #${session.id.slice(-4)} · ${session.agentId} · ${phaseLabel(phase)}`}
+          onClick={() => onOpen(session.id)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            // 菜单键 / Shift+F10 没有坐标：贴着这一行的左下角出
+            const box = event.currentTarget.getBoundingClientRect();
+            const keyboard = !(event.clientX > 0 || event.clientY > 0);
+            onMenu(keyboard ? box.left + 24 : event.clientX, keyboard ? box.bottom : event.clientY, event.currentTarget);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'F10' && event.shiftKey) {
+              event.preventDefault();
+              const box = event.currentTarget.getBoundingClientRect();
+              onMenu(box.left + 24, box.bottom, event.currentTarget);
+            }
+          }}
+        >
+          {dot}
+          <span className="min-w-0 flex-1 truncate">{title}</span>
+          <span
+            className={`shrink-0 text-meta text-tertiary ${
+              menuOpen ? 'pointer-fine:invisible' : 'pointer-fine:group-focus-within:invisible pointer-fine:group-hover:invisible'
+            }`}
+          >
+            {elapsedLabel(session.updatedAt, now)}
+          </span>
+        </button>
+        <button
+          ref={moreRef}
+          data-testid="sidebar-session-more"
+          aria-label="会话操作"
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          title="会话操作"
+          className={`absolute right-0.5 top-1/2 flex size-10 -translate-y-1/2 items-center justify-center rounded-md text-tertiary hover:bg-hover hover:text-primary focus-visible:opacity-100 pointer-fine:size-6 ${
+            menuOpen ? 'opacity-100' : 'pointer-fine:opacity-0 pointer-fine:group-focus-within:opacity-100 pointer-fine:group-hover:opacity-100'
+          }`}
+          onClick={(event) => {
+            const box = event.currentTarget.getBoundingClientRect();
+            onMenu(box.left, box.bottom + 2, event.currentTarget);
+          }}
+        >
+          <Icon name="more" size={14} />
+        </button>
+      </div>
+      {error ? (
+        <p role="alert" data-testid="sidebar-session-error" className="pb-1 pl-6 pr-2 text-meta text-rust">
+          {error}
+        </p>
+      ) : null}
+    </div>
   );
 }

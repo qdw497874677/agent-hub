@@ -4,7 +4,7 @@ import { ProvenanceRow } from '../../atoms/provenance-row.tsx';
 import { AttentionAutoAck } from '../../atoms/attention.tsx';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ArtifactDto, AttachmentInputDto, CanvasDto, SessionDto } from '../../shell/api.ts';
-import { api, sessionGroupId, sessionsApi } from '../../shell/api.ts';
+import { api, sessionGroupId } from '../../shell/api.ts';
 import { ChatBlock, DisplayMenu, Dropdown, MenuItem, WorkGroup, useDisplaySettings } from '../../atoms/chat-blocks.tsx';
 import { groupTimeline } from '../../atoms/timeline-groups.ts';
 import { DisplaySettingsDialog } from '../../atoms/display-settings-dialog.tsx';
@@ -51,7 +51,9 @@ import { sessionLinkInfo } from '../../atoms/session-link-info.ts';
 import { SaveAgentProfileDialog } from '../../shell/agent-profile-dialog.tsx';
 import { AgentProfilesDialog } from '../../shell/agent-profiles-dialog.tsx';
 import { DeleteSessionDialog } from '../../atoms/delete-session-dialog.tsx';
-import { deleteSessionBlockedHint, edgeSurvivesSession } from '../../atoms/delete-session.ts';
+import { deleteSessionBlockedHint } from '../../atoms/delete-session.ts';
+import { DELETE_HINT, FORK_HINT, normalizeSessionTitle, pinHint, settleGate } from '../../atoms/session-actions.ts';
+import { useSessionActions } from '../../atoms/use-session-actions.ts';
 import { environmentNotice } from '../../atoms/environment-notice.ts';
 import type { PendingPrompt } from '../../atoms/pending-prompt.ts';
 import { heldPromptSeqs, markQueued } from '../../atoms/prompt-delivery.ts';
@@ -254,11 +256,9 @@ export function FocusView({
   const settled = session.settledAt != null;
   // 常驻：Worker 不按空闲回收这条会话，也不占保活上限。
   const pinned = session.pinned === true;
-  const settleHint = settled
-    ? '回到侧栏的活跃列表，随时可以再收起'
-    : status === 'running'
-      ? '会话还在跑，停下来才能收起'
-      : '做完的会话移出活跃列表；画布上仍然看得到';
+  const settle = settleGate({ settled, status });
+  // 改名、分叉、收起、常驻、删除后的缓存改写：和侧栏行菜单是同一份（atoms/use-session-actions.ts）。
+  const actions = useSessionActions(canvas.project.id);
   // 终端页签：会话跑着、机器在线、且没被探测成「不支持」才出现（docs/design/terminal.md §7）。
   const workers = useWorkers();
   const worker = resolveWorker(workers.list, session.workerId);
@@ -510,15 +510,14 @@ export function FocusView({
   }
 
   function saveRename() {
-    const next = titleDraft.replace(/\s+/g, ' ').trim();
     setRenaming(false);
-    if (next === (session.title ?? '')) return;
-    void run(() => api.renameSession(session.id, next));
+    if (normalizeSessionTitle(titleDraft) === (session.title ?? '')) return;
+    void run(() => actions.rename(session, titleDraft));
   }
 
   function fork() {
     void run(async () => {
-      const created = await api.fork({ sessionId: session.id, agentId: session.agentId, model: session.model });
+      const created = await actions.fork(session);
       onOpenSession(created.id);
     });
   }
@@ -528,61 +527,15 @@ export function FocusView({
    * 再让画布与首页去问服务端要真数据。失败落在 Composer 上方的就地错误里（和改名、分叉一样）。
    */
   async function setSettled(next: boolean): Promise<void> {
-    setBusy(true);
-    setError(null);
-    try {
-      const updated = await api.settleSession(session.id, next);
-      const settledAt = next ? (updated.settledAt ?? Date.now()) : null;
-      queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
-        current
-          ? {
-              ...current,
-              sessions: current.sessions.map((item) => (item.id === session.id ? { ...item, settledAt } : item))
-            }
-          : current
-      );
-      onChanged();
-      void queries.invalidateQueries({ queryKey: ['home'] });
-      void queries.invalidateQueries({ queryKey: ['session', session.id] });
-    } catch (failure) {
-      setError((failure as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    await run(() => actions.setSettled(session, next));
   }
 
   /**
    * 常驻开关：先把画布缓存和单条会话缓存里的 `pinned` 改成目标值，卡片上的小图钉和头部标记
-   * 立刻反应；成功后写回服务端版本，失败就翻回原值，错误落在 Composer 上方的就地提示里。
+   * 立刻反应；失败翻回原值，错误落在 Composer 上方的就地提示里。
    */
   async function setPinned(next: boolean): Promise<void> {
-    setBusy(true);
-    setError(null);
-    const write = (value: boolean): void => {
-      queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
-        current
-          ? {
-              ...current,
-              sessions: current.sessions.map((item) => (item.id === session.id ? { ...item, pinned: value } : item))
-            }
-          : current
-      );
-      // 侧聊这类不进画布的会话：单条查询是它唯一的缓存。
-      queries.setQueryData<SessionDto>(['session', session.id], (current) =>
-        current === undefined ? current : { ...current, pinned: value }
-      );
-    };
-    write(next);
-    try {
-      const updated = await sessionsApi.pin(session.id, next);
-      write(updated.pinned === true);
-      onChanged();
-    } catch (failure) {
-      write(pinned);
-      setError((failure as Error).message);
-    } finally {
-      setBusy(false);
-    }
+    await run(() => actions.setPinned(session, next));
   }
 
   async function run(action: () => Promise<unknown>): Promise<boolean> {
@@ -767,7 +720,7 @@ export function FocusView({
                 <MenuGroup label="这次会话" className="border-t border-hair sm:border-t-0">
                   <MenuItem
                     title="分叉"
-                    hint={forkHint ?? '从最新处开一条新会话，带着到此刻的上下文；原会话不动'}
+                    hint={forkHint ?? FORK_HINT}
                     disabled={!forkable}
                     onClick={() => {
                       close();
@@ -804,8 +757,8 @@ export function FocusView({
                   />
                   <MenuItem
                     title={settled ? '移回活跃列表' : '收起：移出活跃列表'}
-                    hint={settleHint}
-                    disabled={!settled && status === 'running'}
+                    hint={settle.hint}
+                    disabled={settle.disabled}
                     testId="session-settle"
                     onClick={() => {
                       close();
@@ -814,7 +767,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title={pinned ? '取消常驻' : '设为常驻'}
-                    hint={pinned ? '恢复按空闲回收' : '不按空闲回收，适合长期跑本地服务'}
+                    hint={pinHint(pinned)}
                     testId="session-pin"
                     onClick={() => {
                       close();
@@ -823,7 +776,7 @@ export function FocusView({
                   />
                   <MenuItem
                     title="删除会话…"
-                    hint={deleteHint ?? '永久删除这条会话的会话记录、产物引用和连线；工作目录里的文件保留'}
+                    hint={deleteHint ?? DELETE_HINT}
                     disabled={deleteHint !== null}
                     danger
                     testId="session-delete"
@@ -1018,15 +971,7 @@ export function FocusView({
           }}
           onDeleted={() => {
             // 先就地摘掉，画布窗口、打开的会话都立刻跟着消失；再让外层重拉服务端的真数据。
-            queries.setQueryData<CanvasDto>(['canvas', canvas.project.id], (current) =>
-              current
-                ? {
-                    ...current,
-                    sessions: current.sessions.filter((item) => item.id !== session.id),
-                    edges: current.edges.filter((edge) => edgeSurvivesSession(edge, session.id))
-                  }
-                : current
-            );
+            actions.forget(session.id);
             setDeleting(false);
             onChanged();
           }}
