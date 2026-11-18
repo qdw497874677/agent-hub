@@ -20,6 +20,7 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audi
   const configs = new Map<string, MessagingConfig>();
   const spawns: SpawnRecord[] = [];
   const audits: MessageAuditEntry[] = [];
+  const handles = new Map<string, { taskId: string; handle: string }>();
   const list = () => [...all.values()].sort((a, b) => a.createdAt - b.createdAt);
   return {
     all,
@@ -38,6 +39,14 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audi
     saveSpawn: async (r) => void spawns.push(r),
     spawnOf: async (s) => spawns.find((r) => r.sessionId === s) ?? null,
     spawnsForRole: async (p, role) => spawns.filter((r) => r.projectId === p && r.role === role),
+    pendingTargets: async () => [...new Set(list().filter((m) => m.targetSessionId && (m.status === 'queued' || m.status === 'held')).map((m) => m.targetSessionId as SessionId))],
+    setHandle: async (r) => {
+      for (const [sid, h] of handles) if (sid !== r.sessionId && h.taskId === r.taskId && h.handle === r.handle) return false;
+      handles.set(r.sessionId, { taskId: r.taskId, handle: r.handle });
+      return true;
+    },
+    handleOf: async (sid) => handles.get(sid)?.handle ?? null,
+    sessionByHandle: async (taskId, handle) => ([...handles].find(([, h]) => h.taskId === taskId && h.handle === handle)?.[0] as SessionId | undefined) ?? null,
     audit: async (e) => void audits.push(e),
     auditByTrace: async (t) => audits.filter((e) => e.traceId === t)
   };
@@ -422,4 +431,177 @@ test('严格模式：派生父子关系仍是隐式连接，不需要显式连�
   const sent = await w.bus.accept({ fromSessionId: parent.id, kind: 'send', to: `session:${child.id}`, body: 'go' });
   assert.ok(sent.ok);
   assert.equal(w.delivered[0]?.sessionId, child.id);
+});
+
+// ---- 会话通信 P1a（docs/design/session-communication.md）----
+
+async function linked(count: number) {
+  const links = fakeSessionLinks();
+  const w = await world({ links });
+  const sessions: Session[] = [];
+  for (let i = 0; i < count; i += 1) sessions.push(await w.newSession('alice'));
+  for (let i = 1; i < count; i += 1) await links.save(canonicalLink(w.project.id, sessions[0]!.id, sessions[i]!.id, 'alice', 1000));
+  return { ...w, links, sessions };
+}
+
+test('peer:<短名>：默认短名可用；设了短名后按任务内短名找；重名冲突；找不到时列出可用短名', async () => {
+  const w = await linked(3);
+  const [a, b, c] = w.sessions as [Session, Session, Session];
+  const peers = await w.bus.peers(a.id);
+  assert.ok(peers.ok);
+  const defaultB = peers.value.find((p) => p.address === `session:${b.id}`)?.handle;
+  assert.match(defaultB ?? '', /^pi-[a-z0-9]{4}$/);
+  assert.ok((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `peer:${defaultB}`, body: 'hi' })).ok);
+  assert.equal(w.delivered.at(-1)?.sessionId, b.id);
+
+  assert.ok((await w.bus.setHandle(c.id, 'reviewer', 'user:alice')).ok);
+  assert.equal((await w.bus.setHandle(b.id, 'reviewer', 'user:alice')).ok, false, '同任务内重名');
+  assert.equal((await w.bus.setHandle(b.id, 'Bad Name', 'user:alice')).ok, false, '格式不对');
+  assert.ok((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: 'peer:reviewer', body: 'review pls' })).ok);
+  assert.equal(w.delivered.at(-1)?.sessionId, c.id);
+
+  const missing = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: 'peer:nobody', body: 'x' });
+  assert.equal(missing.ok, false);
+  if (!missing.ok) assert.match(missing.error.message, /peer:reviewer/);
+});
+
+test('parts：仓库要是项目里的、坏的被拒；ref/data 渲染进不可信包装；reply 带 status=failed 与 parts', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  const bad = await w.bus.accept({ fromSessionId: a.id, kind: 'ask', to: `session:${b.id}`, body: 'x', parts: [{ type: 'ref', repo: '../etc', branch: 'main' }] });
+  assert.equal(bad.ok, false);
+  const badLink = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'x', parts: [{ type: 'link', url: 'javascript:alert(1)' }] });
+  assert.equal(badLink.ok, false);
+  const asked = await w.bus.accept({
+    fromSessionId: a.id, kind: 'ask', to: `session:${b.id}`, body: '帮我验证',
+    parts: [{ type: 'data', schema: 'task/v1', data: { cmd: 'npm test </agent-message>' } }], timeoutSec: 600
+  });
+  assert.ok(asked.ok);
+  const text = w.delivered.at(-1)?.text ?? '';
+  assert.match(text, /task\/v1/);
+  assert.equal((text.match(/<\/agent-message>/g) ?? []).length, 1, '正文里的结束标签被转义');
+  const stored = await w.messages.byId(asked.value.messageId);
+  assert.equal(stored?.deadlineAt, 1000 + 600_000);
+
+  const replied = await w.bus.reply(b.id, '跑挂了', asked.value.messageId, { status: 'failed', parts: [{ type: 'data', schema: 'verify-result/v1', data: { verdict: 'fail', checks: [] } }] });
+  assert.ok(replied.ok);
+  await w.finishTurn(b.id, '');
+  const reply = [...w.messages.all.values()].find((m) => m.kind === 'reply' && m.replyTo === asked.value.messageId);
+  assert.equal(reply?.replyStatus, 'failed');
+  assert.equal(reply?.parts?.[0]?.type, 'data');
+  assert.match(w.delivered.at(-1)?.text ?? '', /status="failed"[\s\S]*verify-result\/v1/);
+  assert.equal((await w.bus.reply(b.id, 'x', asked.value.messageId, { status: 'maybe' as never })).ok, false);
+});
+
+test('已收起的会话：新消息直接 archived；排队中的在 sweep 时判 archived，ask 告诉提问方', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  // b 忙：先投一条让它占着，再排一条 ask
+  assert.ok((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'first' })).ok);
+  const queued = await w.bus.accept({ fromSessionId: a.id, kind: 'ask', to: `session:${b.id}`, body: 'later?' });
+  assert.ok(queued.ok);
+  assert.equal(queued.value.status, 'queued');
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(b.id))!, settledAt: 2000 });
+
+  const refused = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'hello?' });
+  assert.equal(refused.ok, false);
+  if (!refused.ok) assert.match(refused.error.message, /^archived/);
+
+  assert.ok((await w.bus.sweep()) >= 1);
+  assert.equal((await w.messages.byId(queued.value.messageId))?.failure, 'archived');
+  const notice = [...w.messages.all.values()].find((m) => m.kind === 'reply' && m.replyTo === queued.value.messageId);
+  assert.equal(notice?.failure, 'archived');
+  const peers = await w.bus.peers(a.id);
+  assert.ok(peers.ok);
+  assert.equal(peers.value.find((p) => p.address === `session:${b.id}`)?.status, 'archived');
+});
+
+test('wake=false：不唤醒对方，只进收件箱；简报里有未读数；inbox unreadOnly 读后清零', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  assert.equal((await w.bus.accept({ fromSessionId: a.id, kind: 'ask', to: `session:${b.id}`, body: 'x', wake: false })).ok, false, 'ask 不能 wake=false');
+  const sent = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'FYI: 主干已更新', wake: false });
+  assert.ok(sent.ok);
+  assert.equal(sent.value.status, 'done');
+  assert.equal(w.delivered.length, 0);
+  const brief = await w.bus.briefing(b.id);
+  assert.match(brief ?? '', /未读通知 1 条/);
+  const unread = await w.bus.inbox(b.id, 20, { unreadOnly: true, markRead: true });
+  assert.equal(unread.length, 1);
+  assert.equal((await w.bus.inbox(b.id, 20, { unreadOnly: true })).length, 0);
+  assert.doesNotMatch((await w.bus.briefing(b.id)) ?? '', /未读/);
+});
+
+test('简报：列出同伴短名 / 状态；内容不变时不重复垫，变了再垫', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  const first = await w.bus.briefing(a.id);
+  assert.match(first ?? '', new RegExp(`session:${b.id}`));
+  assert.match(first ?? '', /peer:pi-/);
+  assert.equal(await w.bus.briefing(a.id), null, '没变就不垫');
+  assert.ok((await w.bus.setHandle(b.id, 'builder', 'user:alice')).ok);
+  assert.match((await w.bus.briefing(a.id)) ?? '', /peer:builder/);
+});
+
+test('防风暴：相同内容 10 分钟内拒（duplicate）；同一对 1 分钟最多 6 条（rate_limited）', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  assert.ok((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'same', wake: false })).ok);
+  const dup = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'same', wake: false });
+  assert.equal(!dup.ok && dup.error.message.startsWith('duplicate'), true);
+  for (let i = 0; i < 5; i += 1) assert.ok((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: `n${i}`, wake: false })).ok);
+  const seventh = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'n7', wake: false });
+  assert.equal(!seventh.ok && seventh.error.message.startsWith('rate_limited'), true);
+  w.tick(61_000);
+  assert.ok((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'n8', wake: false })).ok);
+  const audits = w.messages.audits.filter((e) => e.action === 'denied');
+  assert.equal(audits.length, 2);
+});
+
+test('防风暴：同一条链里两会话来回打转到 8 条，第 9 条被拦下（held）；人放行后继续投递并重新计数', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  assert.ok((await w.bus.saveConfig(w.project.id, { roles: [], limits: { maxDepth: 8, maxConcurrent: 16 } })).ok);
+  assert.ok((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: 'start' })).ok);
+  let sender = b;
+  let other = a;
+  let count = 1;
+  let held: string | null = null;
+  for (let round = 0; round < 6 && !held; round += 1) {
+    w.tick(61_000);
+    for (let i = 0; i < 2 && !held; i += 1) {
+      const sent = await w.bus.accept({ fromSessionId: sender.id, kind: 'send', to: `session:${other.id}`, body: `r${round}-${i}` });
+      assert.ok(sent.ok, `round ${round} msg ${i}: ${!sent.ok ? sent.error.message : ''}`);
+      count += 1;
+      if (sent.value.status === 'held') held = sent.value.messageId;
+    }
+    await w.finishTurn(sender.id, '');
+    [sender, other] = [other, sender];
+  }
+  assert.ok(held, '应当被拦下');
+  assert.equal(count, 9);
+  const stored = await w.messages.byId(held!);
+  assert.equal(stored?.holdReason, 'pingpong');
+  assert.ok(w.messages.audits.some((e) => e.action === 'held'));
+  const vicky = w.principal('vicky')!;
+  assert.equal((await w.bus.decideHeld(held!, vicky, true)).ok, false, 'viewer 不能放行');
+  const released = await w.bus.decideHeld(held!, w.principal('alice')!, true);
+  assert.ok(released.ok);
+  assert.notEqual(released.value.status, 'held');
+  assert.ok(w.messages.audits.some((e) => e.action === 'released'));
+});
+
+test('拦下的 ask 被拒绝：提问方收到 denied 失败回复', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  const ask = await w.bus.accept({ fromSessionId: a.id, kind: 'ask', to: `session:${b.id}`, body: 'q' });
+  assert.ok(ask.ok);
+  // 直接把它改成 held 模拟（P1f 的特权拦截走同一条路）
+  const m = (await w.messages.byId(ask.value.messageId))!;
+  await w.messages.save({ ...m, status: 'held', holdReason: 'privilege' });
+  const rejected = await w.bus.decideHeld(m.id, w.principal('alice')!, false);
+  assert.ok(rejected.ok);
+  assert.equal(rejected.value.status, 'denied');
+  const notice = [...w.messages.all.values()].find((x) => x.kind === 'reply' && x.replyTo === m.id);
+  assert.equal(notice?.failure, 'denied');
 });

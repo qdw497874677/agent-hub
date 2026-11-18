@@ -228,6 +228,8 @@ const deps: Deps = {
   artifacts: store.artifacts,
   layout: store.layout,
   links: store.links,
+  // 会话通信 P1a：同伴简报由消息总线生成（短名、机器、仓库、分支、未读；变了才垫）。
+  peerBriefing: (session) => messageBus.briefing(session.id),
   sessionServices: store.sessionServices,
   agentProfiles: store.agentProfiles,
   bots: store.bots,

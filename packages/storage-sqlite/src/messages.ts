@@ -83,7 +83,13 @@ CREATE TABLE IF NOT EXISTS agent_messages (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   delivered_at INTEGER,
-  deadline_at INTEGER
+  deadline_at INTEGER,
+  parts TEXT,
+  wake INTEGER NOT NULL DEFAULT 1,
+  reply_status TEXT,
+  reply_parts TEXT,
+  read_at INTEGER,
+  hold_reason TEXT
 );
 CREATE INDEX IF NOT EXISTS agent_messages_target ON agent_messages(target_session_id, status, created_at);
 CREATE INDEX IF NOT EXISTS agent_messages_from ON agent_messages(from_session_id, created_at);
@@ -117,7 +123,34 @@ CREATE TABLE IF NOT EXISTS agent_message_audit (
   at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS agent_message_audit_trace ON agent_message_audit(trace_id, at);
+CREATE TABLE IF NOT EXISTS agent_session_handles (
+  session_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  handle TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS agent_session_handles_task ON agent_session_handles(task_id, handle);
 `;
+
+/** 会话通信 P1a 给老库补的列（新库 CREATE TABLE 里已经有）。 */
+const MESSAGE_COLUMNS: readonly [string, string][] = [
+  ['parts', 'TEXT'],
+  ['wake', 'INTEGER NOT NULL DEFAULT 1'],
+  ['reply_status', 'TEXT'],
+  ['reply_parts', 'TEXT'],
+  ['read_at', 'INTEGER'],
+  ['hold_reason', 'TEXT']
+];
+
+const parseParts = (raw: unknown): AgentMessage['parts'] => {
+  if (typeof raw !== 'string' || raw === '') return [];
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return Array.isArray(value) ? (value as AgentMessage['parts']) : [];
+  } catch {
+    return [];
+  }
+};
 
 const toMessage = (row: Row): AgentMessage => ({
   id: row.id as string,
@@ -141,7 +174,13 @@ const toMessage = (row: Row): AgentMessage => ({
   createdAt: row.created_at as number,
   updatedAt: row.updated_at as number,
   deliveredAt: (row.delivered_at as number | null) ?? null,
-  deadlineAt: (row.deadline_at as number | null) ?? null
+  deadlineAt: (row.deadline_at as number | null) ?? null,
+  parts: parseParts(row.parts),
+  wake: row.wake === undefined || row.wake === null ? true : Number(row.wake) !== 0,
+  replyStatus: (row.reply_status as AgentMessage['replyStatus']) ?? null,
+  replyParts: parseParts(row.reply_parts),
+  readAt: (row.read_at as number | null) ?? null,
+  holdReason: (row.hold_reason as AgentMessage['holdReason']) ?? null
 });
 
 const toSpawn = (row: Row): SpawnRecord => ({
@@ -167,14 +206,25 @@ const toAudit = (row: Row): MessageAuditEntry => ({
 
 export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
   db.exec(MESSAGE_SCHEMA);
+  const existing = new Set((db.prepare('PRAGMA table_info(agent_messages)').all() as Row[]).map((column) => column.name as string));
+  for (const [name, type] of MESSAGE_COLUMNS) if (!existing.has(name)) db.exec(`ALTER TABLE agent_messages ADD COLUMN ${name} ${type}`);
   const upsert = db.prepare(
     `INSERT INTO agent_messages (id, trace_id, depth, project_id, kind, from_session_id, on_behalf_of, to_address, target_session_id, role, reply_to, body,
-       status, failure, failure_detail, reply_body, reply_source, idempotency_key, created_at, updated_at, delivered_at, deadline_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       status, failure, failure_detail, reply_body, reply_source, idempotency_key, created_at, updated_at, delivered_at, deadline_at,
+       parts, wake, reply_status, reply_parts, read_at, hold_reason)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET target_session_id = excluded.target_session_id, status = excluded.status, failure = excluded.failure,
        failure_detail = excluded.failure_detail, reply_body = excluded.reply_body, reply_source = excluded.reply_source,
-       updated_at = excluded.updated_at, delivered_at = excluded.delivered_at, deadline_at = excluded.deadline_at`
+       updated_at = excluded.updated_at, delivered_at = excluded.delivered_at, deadline_at = excluded.deadline_at,
+       reply_status = excluded.reply_status, reply_parts = excluded.reply_parts, read_at = excluded.read_at, hold_reason = excluded.hold_reason`
   );
+  const pendingTargets = db.prepare("SELECT DISTINCT target_session_id FROM agent_messages WHERE status IN ('queued', 'held') AND target_session_id IS NOT NULL");
+  const putHandle = db.prepare(
+    `INSERT INTO agent_session_handles (session_id, task_id, handle, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(session_id) DO UPDATE SET task_id = excluded.task_id, handle = excluded.handle, updated_at = excluded.updated_at`
+  );
+  const handleOf = db.prepare('SELECT handle FROM agent_session_handles WHERE session_id = ?');
+  const byHandle = db.prepare('SELECT session_id FROM agent_session_handles WHERE task_id = ? AND handle = ?');
   const byId = db.prepare('SELECT * FROM agent_messages WHERE id = ?');
   const byIdem = db.prepare('SELECT * FROM agent_messages WHERE from_session_id = ? AND idempotency_key = ?');
   const queued = db.prepare("SELECT * FROM agent_messages WHERE target_session_id = ? AND status = 'queued' ORDER BY created_at, rowid");
@@ -200,7 +250,9 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
     async save(m) {
       upsert.run(
         m.id, m.traceId, m.depth, m.projectId, m.kind, m.fromSessionId, m.onBehalfOf, m.to, m.targetSessionId, m.role, m.replyTo, m.body,
-        m.status, m.failure, m.failureDetail, m.replyBody, m.replySource, m.idempotencyKey, m.createdAt, m.updatedAt, m.deliveredAt, m.deadlineAt
+        m.status, m.failure, m.failureDetail, m.replyBody, m.replySource, m.idempotencyKey, m.createdAt, m.updatedAt, m.deliveredAt, m.deadlineAt,
+        m.parts && m.parts.length > 0 ? JSON.stringify(m.parts) : null, m.wake === false ? 0 : 1, m.replyStatus ?? null,
+        m.replyParts && m.replyParts.length > 0 ? JSON.stringify(m.replyParts) : null, m.readAt ?? null, m.holdReason ?? null
       );
     },
     async byId(id) {
@@ -244,6 +296,21 @@ export function createSqliteMessageStore(db: DatabaseSync): MessageStore {
       return row ? toSpawn(row) : null;
     },
     spawnsForRole: async (projectId, role) => (spawnsForRole.all(projectId, role) as Row[]).map(toSpawn),
+    pendingTargets: async () => (pendingTargets.all() as Row[]).map((row) => asSessionId(row.target_session_id as string)),
+    async setHandle(record) {
+      const taken = byHandle.get(record.taskId, record.handle) as Row | undefined;
+      if (taken && taken.session_id !== record.sessionId) return false;
+      putHandle.run(record.sessionId, record.taskId, record.handle, record.updatedAt);
+      return true;
+    },
+    async handleOf(sessionId) {
+      const row = handleOf.get(sessionId) as Row | undefined;
+      return row ? (row.handle as string) : null;
+    },
+    async sessionByHandle(taskId, handle) {
+      const row = byHandle.get(taskId, handle) as Row | undefined;
+      return row ? asSessionId(row.session_id as string) : null;
+    },
     async audit(e) {
       putAudit.run(e.id, e.traceId, e.messageId, e.projectId, e.action, e.actor, e.onBehalfOf, e.detail, e.at);
     },
