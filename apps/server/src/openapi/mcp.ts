@@ -64,10 +64,15 @@ const envModules = (): ReadonlySet<McpModuleName> => {
   return new Set(known.length > 0 ? known : ALL_MODULES);
 };
 
+/** 环境变量里的强制只读：MCP_READ_ONLY=1，或旧变量 MCP_WRITE=0。 */
+export const envForcedReadOnly = (): boolean =>
+  envFlag('MCP_READ_ONLY') ||
+  (typeof process === 'undefined' ? undefined : process.env['MCP_WRITE']) === '0';
+
 export const policyFromEnv = (): McpPolicy => ({
   modules: envModules(),
-  readOnly: envFlag('MCP_READ_ONLY'),
-  writes: envFlag('MCP_WRITE')
+  readOnly: envForcedReadOnly(),
+  writes: !envForcedReadOnly()
 });
 
 type Shape = Record<string, z.ZodType>;
@@ -124,8 +129,8 @@ export function mcpTools(policy: McpPolicy = {}): ToolDef[] {
     return meta === null ? [] : [toolOf(key, route, meta)];
   });
   const modules = policy.modules ?? envModules();
-  const readOnly = policy.readOnly ?? envFlag('MCP_READ_ONLY');
-  const writes = policy.writes ?? envFlag('MCP_WRITE');
+  const readOnly = policy.readOnly ?? envForcedReadOnly();
+  const writes = policy.writes ?? !readOnly;
   return cached.filter((tool) => modules.has(tool.module) && (!readOnly || tool.readOnly) && (writes || tool.readOnly));
 }
 
@@ -161,9 +166,17 @@ export interface McpOptions {
   readonly audit?: Pick<AuditLog, 'append'>;
 }
 
-/** 生效的写工具开关：页面设置优先，没设过就看环境变量 MCP_WRITE（向后兼容）。 */
-export const effectiveWrites = (setting: boolean | null | undefined): { writes: boolean; source: 'setting' | 'env' } =>
-  typeof setting === 'boolean' ? { writes: setting, source: 'setting' } : { writes: envFlag('MCP_WRITE'), source: 'env' };
+/**
+ * 写工具是否可用：默认跟随令牌权限（scope 里没有写权限就调不通），只读是显式选择。
+ * 页面「只读模式」优先；老库的 mcpWrites=false 仍算只读；都没设就看环境变量。
+ */
+export const effectiveWrites = (
+  setting: { readonly mcpReadOnly?: boolean | null; readonly mcpWrites?: boolean | null } | null | undefined
+): { writes: boolean; source: 'setting' | 'env' } => {
+  if (typeof setting?.mcpReadOnly === 'boolean') return { writes: !setting.mcpReadOnly, source: 'setting' };
+  if (typeof setting?.mcpWrites === 'boolean') return { writes: setting.mcpWrites, source: 'setting' };
+  return { writes: !envForcedReadOnly(), source: 'env' };
+};
 
 /** v1 的错误体是 {error:{code,message}}：给人读的只要 message。 */
 const errorMessage = (value: unknown): string | null => {
@@ -176,7 +189,7 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
   const authorization = c.req.header('authorization') ?? '';
   const env = c.env as { mcpPolicy?: McpPolicy; mcpReplays?: McpReplayStore } | undefined;
   const replays = options.replays ?? env?.mcpReplays;
-  const policy = options.policy ?? env?.mcpPolicy ?? { ...policyFromEnv(), writes: effectiveWrites(options.writes).writes };
+  const policy = options.policy ?? env?.mcpPolicy ?? { ...policyFromEnv(), writes: options.writes ?? !envForcedReadOnly() };
   const principal = c.get('principal') as Principal | undefined;
   const permissions = principal?.via?.permissions;
   const tools = mcpToolsFor(permissions, policy);

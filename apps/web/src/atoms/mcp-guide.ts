@@ -61,7 +61,7 @@ export function mcpGuide(input: McpGuideInput): McpGuide {
   const codex = ['[mcp_servers.agent-hub]', `url = "${url}"`, `bearer_token_env_var = "${envVar}"`].join('\n');
 
   const prompt = [
-    `你可以通过 Agent Hub 的 MCP 端点（${url}）查看项目、任务、会话与资产，并（在开放写工具时）把开发任务委派给它。`,
+    `你可以通过 Agent Hub 的 MCP 端点（${url}）查看项目、任务、会话与资产，并在令牌有写权限时把开发任务委派给它。`,
     '',
     '规则：',
     '1. 先调 list_projects / list_tasks 找到目标，再用 get_task / list_task_log 看进度；不要凭空编 id。',

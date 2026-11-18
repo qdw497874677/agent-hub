@@ -5,7 +5,7 @@ import { loginByApi } from './login.ts';
 /**
  * 外部接入（MCP）页：预设建令牌 + 只给指定项目 → 只显示一次（打码/显示）→ 测试连接数工具
  * → 令牌经 MCP 只看得到选中的项目 → 调用记录里看得到这次调用 → 轮换（旧的 401、新的能用、旧记录留着）
- * → 写工具开关（管理员）。桌面 + 手机宽度截图。
+ * → 只读模式（管理员）。桌面 + 手机宽度截图。
  */
 const SHOTS = process.env['E2E_SCREENSHOTS'];
 
@@ -25,7 +25,7 @@ async function mcpJson(response: Awaited<ReturnType<APIRequestContext['post']>>)
   return JSON.parse(line) as { result?: { tools?: { name: string }[]; content?: { text: string }[]; isError?: boolean } };
 }
 
-test('外部接入页：限项目令牌、只显示一次、测试连接、调用记录、轮换、写工具开关', async ({ page, baseURL }) => {
+test('外部接入页：限项目令牌、只显示一次、测试连接、调用记录、轮换、只读模式', async ({ page, baseURL }) => {
   test.setTimeout(180_000);
   await loginByApi(page);
   const headers = await csrfHeaders(page.request, baseURL!);
@@ -114,19 +114,19 @@ test('外部接入页：限项目令牌、只显示一次、测试连接、调�
   await page.getByTestId('access-show-revoked').click();
   await expect(page.getByTestId('access-revoked').locator(`[data-token-name="${name}"]`)).toBeVisible();
 
-  // —— 7. 写工具开关（测试账号是集群管理员）：开了以后写工具出现在清单里；最后恢复服务器默认 ——
+  // —— 7. 只读模式（测试账号是集群管理员）：默认按令牌权限放行，打开后写工具消失；最后恢复服务器默认 ——
   try {
     const toggle = page.getByTestId('access-writes-toggle');
     const before = (await toggle.getAttribute('aria-checked')) === 'true';
     await toggle.click();
     await expect(toggle).toHaveAttribute('aria-checked', String(!before));
     const names = (await mcpJson(await fresh.post('/openapi/v1/mcp', rpc('tools/list')))).result?.tools?.map((t) => t.name) ?? [];
-    // 只读令牌就算开了写开关也拿不到写工具（权限和开关两道都要过）
+    // 只读模式下，不管令牌有什么权限都拿不到写工具
     expect(names.some((n) => n.endsWith('_create'))).toBe(false);
     await expect(page.getByTestId('access-writes')).not.toContainText('沿用服务器默认');
     if (SHOTS) await page.screenshot({ path: join(SHOTS, 'access-writes-1280.png'), fullPage: true });
   } finally {
-    await page.request.put('/api/mcp/access', { data: { writes: null }, headers });
+    await page.request.put('/api/mcp/access', { data: { readOnly: null }, headers });
   }
 
   // —— 8. 手机宽度 ——

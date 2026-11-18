@@ -972,11 +972,11 @@ export const tokensApi = {
   tools: (id: string) => call<import('@agent-hub/contract').ApiTokenTools>(`/api/tokens/${encodeURIComponent(id)}/tools`)
 };
 
-/** 外部接入（MCP）：写工具开关。 */
+/** 外部接入（MCP）：只读模式。 */
 export const mcpAccessApi = {
   get: () => call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access'),
-  set: (writes: boolean | null) =>
-    call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes }) })
+  set: (readOnly: boolean | null) =>
+    call<import('@agent-hub/contract').McpAccessSettings>('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ readOnly }) })
 };
 
 // ---------- 资产市场 / 审核 / 通知（ADR 0016） ----------

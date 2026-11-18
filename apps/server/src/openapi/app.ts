@@ -71,7 +71,7 @@ import type { StreamHub } from '../stream-hub.ts';
 import type { ProviderWiringApi } from '../providers.ts';
 import { V1, routes } from './routes.ts';
 import { createAssetVisibility } from '../asset-visibility.ts';
-import { handleMcp, INTERNAL } from './mcp.ts';
+import { effectiveWrites, handleMcp, INTERNAL } from './mcp.ts';
 import { workspaceForApiStart } from '../session-workspace.ts';
 import { projectDto } from '../project-dto.ts';
 
@@ -79,7 +79,7 @@ export interface OpenApiOptions {
   readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'> & Partial<Pick<ApiTokenDeps, 'projects'>>;
   /** 每个令牌每分钟最多多少次请求 / 多少次 prompt；e2e 调小来验 429。 */
   readonly rate?: { readonly general?: number; readonly prompt?: number; readonly streams?: number };
-  /** 对外 MCP 写工具的幂等回放（E4b）；不给就只有只读工具。 */
+  /** 对外 MCP 写工具的幂等回放（E4b）；不给就只有只读工具（写工具默认仍按令牌权限暴露）。 */
   readonly replays?: import('@agent-hub/domain').McpReplayStore;
   /** hub 设置：外部接入页的写工具开关（mcpWrites）从这里读。 */
   readonly settings?: { get(): Promise<import('@agent-hub/domain').HubSettings>; save(next: import('@agent-hub/domain').HubSettings): Promise<void> };
@@ -681,7 +681,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     handleMcp(c, v1 as unknown as Hono, {
       ...(options.replays === undefined ? {} : { replays: options.replays }),
       ...(options.audit === undefined ? {} : { audit: options.audit }),
-      writes: (await options.settings?.get().catch(() => null))?.mcpWrites ?? null,
+      writes: effectiveWrites(await options.settings?.get().catch(() => null)).writes,
       now: options.tokens.now
     })
   );

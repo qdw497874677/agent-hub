@@ -204,7 +204,7 @@ annotations: {
 **不自动打断**：20 分钟杀进程会误伤 `npm ci` / 长测试；打断只由 `task.cancel`（v1 走
 `promptSessionUseCase` 的 stop 语义）或人触发。文档里原先的 `HUB_STALL_INTERRUPT_MS` 撤销。
 
-### 5.6 委派开发（E4b，需 `MCP_WRITE=1`）
+### 5.6 委派开发（E4b：令牌要有对应写 scope；只读模式可一键关掉）
 
 外部 agent 委派工作台的最小闭环：
 
@@ -220,7 +220,9 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 | `session_cancel` | `POST /sessions/:id/interrupt` | 天然幂等（重复打断无副作用） |
 | `session_model` | `POST /sessions/:id/model` | 需要 `clientRequestId`；同提供商标改选项、换提供商重启进程并接回历史 |
 
-- 写工具默认**不出现**；`MCP_WRITE=1` 才暴露，`MCP_READ_ONLY=1` 仍可把整套压回只读。
+- 写工具**默认暴露**，能不能调由令牌 scope 决定（工具清单也按令牌权限筛，不列用不了的）。
+  外部接入页的「只读模式」是一键压回只读（写 `mcpReadOnly`）；`MCP_READ_ONLY=1`（或旧变量 `MCP_WRITE=0`）
+  是同一层的硬闸门。趋势从「能力灰度默认关」改成「权限控、只读可选」，避免为了一个人开全局开关。
 - `clientRequestId` 由 MCP 层取走、不转发给内部 HTTP；回放键是
   `<令牌哈希>|<工具名>|<clientRequestId>`，存第一次成功的结果（`mcp_replays` 表，保留 24h）。
 - `session_start` 必须点名的机器不能是 hub 本机（开放 API 的既有约束）；调用方用
@@ -267,7 +269,7 @@ task_create  → session_start → session_reply → 轮询 list_task_log / even
 
 两个视图的差别只在「暴露多少」与「怎么读」：
 
-- 写工具默认不出现（`MCP_WRITE=1` 或页面开关），只读工具还要过令牌权限过滤；
+- 写工具默认出现，但都要过令牌 scope 过滤；「只读模式」打开后写工具整体消失；
 - `events` 在 MCP 侧过投影（见 §5.4），REST 给原文；
 - 幂等：写请求带 `Idempotency-Key: <自己生成的值>`（MCP 用 `clientRequestId`，内部转成同一个头），
   同一令牌 + 方法 + 路径 + key 在 24h 内返回第一次的结果（`openapi/idempotency.ts`，表是 `mcp_replays`）。

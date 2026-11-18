@@ -330,7 +330,7 @@ test('规范快照：openapi.json 与 docs/openapi/v1.json 一致（改了接口
   assert.deepEqual(live, snapshot, '规范变了：跑 npm run openapi:snapshot 并在 PR 里说明');
   assert.ok(Object.values(live.paths).flatMap((p: any) => Object.keys(p)).length >= 26);
   assert.equal((await app.fetch(new Request('http://hub/openapi/v1/docs'))).status, 200);
-  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 11);
+  assert.equal(mcpTools({ modules: new Set(['tasks', 'projects', 'sessions', 'assets']) }).length, 30);
 });
 
 test('过期的令牌、被停用的人的令牌：401', async () => {
@@ -348,7 +348,8 @@ test('过期的令牌、被停用的人的令牌：401', async () => {
 
 
 test('MCP 策略：按模块收窄、只读闸门；投影丢掉工具输入输出', () => {
-  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['get_task', 'list_task_log', 'list_tasks']);
+  // 默认不强制只读：有写工具就一起列出来（能不能调由令牌权限和只读模式决定）
+  assert.deepEqual(mcpTools({ modules: new Set(['tasks']) }).map((t) => t.name).sort(), ['append_task_log', 'edit_task_log', 'get_task', 'list_task_log', 'list_tasks', 'set_task_status', 'set_task_summary', 'task_create']);
   assert.deepEqual(mcpTools({ modules: new Set(['projects']), readOnly: true }).map((t) => t.name), ['list_projects', 'get_project', 'workspace_changes']);
   assert.equal(mcpTools({ readOnly: true }).length, 12);
   // 资产自动化：三个新写工具只在开了写开关时出现，且都可重放
@@ -670,7 +671,7 @@ test('外部接入：轮换后旧令牌 401、新令牌可用，旧记录留在�
   assert.ok(((await david('/api/tokens')).body as { id: string; revokedAt: number | null }[]).some((t) => t.id === next.info.id && t.revokedAt !== null));
 });
 
-test('外部接入：写工具开关——集群管理员在页面上开关，覆盖环境变量；null 恢复默认；成员不能改', async () => {
+test('外部接入：只读模式——默认按令牌权限放行，集群管理员可强制只读；null 恢复默认；成员不能改', async () => {
   const { david, mint, app, browser, accounts } = await setup();
   const token = (await mint(david, ['projects:read', 'projects:write'])).token;
   const toolNames = async () => {
@@ -683,17 +684,31 @@ test('外部接入：写工具开关——集群管理员在页面上开关，�
     );
     return ((await response.json()) as any).result.tools.map((t: { name: string }) => t.name) as string[];
   };
-  const before = (await david('/api/mcp/access')).body as { writes: boolean; source: string; canManage: boolean };
+  const before = (await david('/api/mcp/access')).body as { readOnly: boolean; source: string; canManage: boolean };
   assert.equal(before.source, 'env');
+  assert.equal(before.readOnly, false, '默认不强制只读，写不写由令牌 scope 决定');
   assert.equal(before.canManage, true, '第一个注册的人是集群管理员');
-  assert.ok(!(await toolNames()).includes('task_create'));
-  const on = await david('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes: true }) });
+  assert.ok((await toolNames()).includes('task_create'), '有 task.create 权限的令牌默认就能看到写工具');
+  const on = await david('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ readOnly: true }) });
   assert.equal(on.status, 200, JSON.stringify(on.body));
-  assert.deepEqual({ writes: on.body.writes, source: on.body.source }, { writes: true, source: 'setting' });
-  assert.ok((await toolNames()).includes('task_create'));
-  const reset = await david('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes: null }) });
+  assert.deepEqual({ readOnly: on.body.readOnly, source: on.body.source }, { readOnly: true, source: 'setting' });
+  assert.ok(!(await toolNames()).includes('task_create'), '强制只读时写工具不出现');
+  const reset = await david('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ readOnly: null }) });
   assert.equal(reset.body.source, 'env');
-  assert.ok(!(await toolNames()).includes('task_create'));
+  assert.ok((await toolNames()).includes('task_create'));
+  // 同一份清单，只读令牌仍然只拿到只读工具
+  const reader = (await mint(david, ['projects:read'])).token;
+  const readTools = await (async () => {
+    const response = await app.fetch(
+      new Request('http://hub/openapi/v1/mcp', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${reader}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
+      })
+    );
+    return ((await response.json()) as any).result.tools.map((t: { name: string }) => t.name) as string[];
+  })();
+  assert.ok(!readTools.includes('task_create'));
   // 团队里的普通成员：能看不能改
   await addTeamMember(accounts, 'eve@b.co', PASSWORD);
   const eve = browser();
@@ -701,7 +716,7 @@ test('外部接入：写工具开关——集群管理员在页面上开关，�
   const eveView = await eve('/api/mcp/access');
   assert.equal(eveView.status, 200);
   assert.equal(eveView.body.canManage, false);
-  assert.equal((await eve('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes: true }) })).status, 403);
+  assert.equal((await eve('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ readOnly: true }) })).status, 403);
 });
 
 test('外部接入：限定项目的令牌能用项目所在团队的团队资产（读 + 按权限写）；别的团队 404；个人资产看不到；项目不在团队里就没有团队资产', async () => {
