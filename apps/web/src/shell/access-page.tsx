@@ -210,6 +210,9 @@ function CreateForm({ onCreated }: { onCreated: (token: string) => void }) {
             {picked.length === 0 ? <span className="text-[11px] text-tertiary">至少选一个；选了之后，这个令牌碰不到别的项目，也不能新建项目。</span> : null}
           </div>
         ) : null}
+        {limit ? (
+          <p data-testid="token-limit-note" className="text-[11px] text-tertiary">项目所在团队的团队资产和全局资产照常能用；个人资产不开放。</p>
+        ) : null}
       </div>
       <label className="flex items-center gap-2 text-meta text-secondary">
         有效期

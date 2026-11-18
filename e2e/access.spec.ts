@@ -53,6 +53,7 @@ test('外部接入页：限项目令牌、只显示一次、测试连接、调�
   await page.getByTestId('token-name').fill(name);
   await page.locator('[data-testid="token-preset"][data-preset="readonly"]').click();
   await page.getByTestId('token-limit-projects').check();
+  await expect(page.getByTestId('token-limit-note')).toContainText('团队资产');
   await page.getByTestId('token-project').filter({ hasText: mine.name }).first().click();
   await expect(page.getByLabel('有效期')).toHaveValue('30');
   if (SHOTS) await page.screenshot({ path: join(SHOTS, 'access-create-1280.png'), fullPage: true });

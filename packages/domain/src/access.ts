@@ -328,7 +328,9 @@ export function decide(subject: Subject | null | undefined, permission: Permissi
     // 模型提供商（全站 / 个人）也不属于项目：限定项目不影响「用哪个模型」。
     if (resource !== undefined && resource.kind !== 'worker' && resource.kind !== 'provider') {
       const owner = resource.kind === 'project' ? resource.id : resource.projectId;
-      if (typeof owner !== 'string' || !scoped.includes(owner)) return deny('token_project');
+      // 团队级资产不属于某个项目：限定项目所在团队的照样能用（和项目成员拿团队资产同一口径）
+      const teamAsset = resource.kind === 'asset' && owner === undefined && resource.teamId !== null && (subject.via?.teamIds ?? []).includes(resource.teamId);
+      if (!teamAsset && (typeof owner !== 'string' || !scoped.includes(owner))) return deny('token_project');
     }
   }
   // 3. hub 级

@@ -682,3 +682,64 @@ test('外部接入：写工具开关——集群管理员在页面上开关，�
   assert.equal(eveView.body.canManage, false);
   assert.equal((await eve('/api/mcp/access', { method: 'PUT', body: JSON.stringify({ writes: true }) })).status, 403);
 });
+
+test('外部接入：限定项目的令牌能用项目所在团队的团队资产（读 + 按权限写）；别的团队 404；个人资产看不到；项目不在团队里就没有团队资产', async () => {
+  const { david, mint, api, assetsStore, world, accounts } = await setup();
+  const mine = (await david('/api/projects', post({ name: '甲' }))).body as { id: string; teamId: string };
+  const elsewhere = (await david('/api/projects', post({ name: '乙' }))).body as { id: string; teamId: string };
+  const namedSkill = (name: string) => [{ path: 'SKILL.md', data: b64(`---\nname: ${name}\ndescription: ${name}\n---\nhi\n`) }];
+  const myId = (await accounts.users.firstClusterAdmin())!.id;
+  for (const p of [mine, elsewhere]) assetsStore.projectList.set(p.id, { id: p.id, name: p.id, teamId: p.teamId, createdBy: myId, members: [myId], deletedAt: null } as never);
+  const make = async (name: string, scope: 'team' | 'global' | 'personal' | 'project', teamId: string | null, projectId: string | null = null) => {
+    const made = await uploadAsset(assetsStore.deps, {
+      kind: 'skill',
+      name,
+      projectId,
+      files: skillFiles(name).map((file) => ({ path: file.path, data: Buffer.from(file.data, 'base64') })),
+      scope,
+      ownerId: myId,
+      teamId,
+      publish: true
+    });
+    assert.ok(made.ok, JSON.stringify(made));
+    return made.value.id;
+  };
+  const teamAsset = await make('team-own', 'team', mine.teamId);
+  const otherTeam = await make('team-other', 'team', 'team-somebody-else');
+  const global = await make('global-one', 'global', null);
+  const personal = await make('personal-one', 'personal', mine.teamId);
+  const inProject = await make('project-mine', 'project', mine.teamId, mine.id);
+  const outProject = await make('project-other', 'project', mine.teamId, elsewhere.id);
+
+  const writer = (await mint(david, ['assets:read', 'assets:write', 'projects:read'], { projectIds: [mine.id] })).token;
+  const call = api(writer);
+  // 读：同团队团队资产、全局、范围内项目资产可见；别的团队、个人、范围外项目都看不到
+  const listed = await call('/assets');
+  assert.equal(listed.status, 200, JSON.stringify(listed.body));
+  const ids = (listed.body as { id: string }[]).map((a) => a.id);
+  for (const id of [teamAsset, global, inProject]) assert.ok(ids.includes(id), `应可见 ${id}`);
+  for (const id of [otherTeam, personal, outProject]) assert.ok(!ids.includes(id), `不应可见 ${id}`);
+  assert.equal((await call(`/assets/${teamAsset}`)).status, 200);
+  assert.equal((await call(`/assets/${otherTeam}`)).status, 404);
+  assert.equal((await call(`/assets/${personal}`)).status, 404);
+  // 写：有 assets:write 就能给同团队的团队资产交新版本、建团队资产；个人资产不行；别的团队的照样 404
+  const revised = await call(`/assets/${teamAsset}/revisions`, post({ files: skillFiles('team-own v2') }));
+  assert.equal(revised.status, 200, JSON.stringify(revised.body));
+  assert.equal((await call(`/assets/${otherTeam}/revisions`, post({ files: skillFiles('x') }))).status, 404);
+  const createdTeam = await call('/assets', post({ kind: 'skill', scope: 'team', files: namedSkill('team-new') }));
+  assert.equal(createdTeam.status, 201, JSON.stringify(createdTeam.body));
+  assert.equal((await call('/assets', post({ kind: 'skill', scope: 'personal', files: namedSkill('mine-new') }))).status, 403);
+  // 只读令牌：看得到团队资产，但交不了新版本
+  const reader = (await mint(david, ['assets:read'], { projectIds: [mine.id] })).token;
+  assert.equal((await api(reader)(`/assets/${teamAsset}`)).status, 200);
+  assert.equal((await api(reader)(`/assets/${teamAsset}/revisions`, post({ files: skillFiles('nope') }))).status, 403);
+
+  // 项目不在任何团队里（hub 项目）：限定到它的令牌没有团队资产可用；全局照样可读
+  const loose = (await mint(david, ['assets:read', 'assets:write'], { projectIds: [elsewhere.id] })).token;
+  const project = (await world.deps.projects.byId(elsewhere.id as never))!;
+  await world.deps.projects.save({ ...project, teamId: null } as never);
+  assert.equal((await api(loose)(`/assets/${teamAsset}`)).status, 404);
+  assert.equal((await api(loose)(`/assets/${global}`)).status, 200);
+  assert.equal((await api(loose)(`/assets/${teamAsset}/revisions`, post({ files: skillFiles('nope') }))).status, 404);
+  assert.equal((await api(loose)('/assets', post({ kind: 'skill', scope: 'team', files: namedSkill('team-x') }))).status, 403);
+});

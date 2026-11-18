@@ -241,7 +241,10 @@ export async function revokeApiToken(deps: ApiTokenDeps, actor: Principal, id: s
 const TOUCH_MS = 60_000;
 
 /** 从 Bearer 明文认出身份；不认识、吊销、过期、账号停用 / 删除 / 没验证邮箱一律 null。 */
-export async function authenticateApiToken(deps: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'>, raw: string): Promise<Principal | null> {
+export async function authenticateApiToken(
+  deps: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'> & Partial<Pick<ApiTokenDeps, 'projects'>>,
+  raw: string
+): Promise<Principal | null> {
   if (!raw.startsWith(API_TOKEN_PREFIX) && !raw.startsWith(BOT_TOKEN_PREFIX)) return null;
   const token = await deps.apiTokens.byHash(deps.tokens.hashOf(raw));
   const now = deps.now();
@@ -250,6 +253,15 @@ export async function authenticateApiToken(deps: Pick<ApiTokenDeps, 'apiTokens' 
   if (!user || user.disabledAt !== null || user.deletedAt !== null || !isEmailVerified(user)) return null;
   if (user.teamId !== token.teamId) return null;
   if (token.lastUsedAt === null || now - token.lastUsedAt >= TOUCH_MS) await deps.apiTokens.touch(token.id, now);
+  // 限定项目的令牌：现查这些项目所在的团队，can() 据此放行这些团队的团队级资产
+  const teamIds: string[] = [];
+  if (token.projectIds && token.projectIds.length > 0 && deps.projects) {
+    for (const id of token.projectIds) {
+      const project = await deps.projects.byId(asProjectId(id));
+      const teamId = project && project.deletedAt === null ? project.teamId ?? null : null;
+      if (teamId !== null && !teamIds.includes(teamId)) teamIds.push(teamId);
+    }
+  }
   return {
     user,
     loginId: asLoginId(`tok_${token.id}`),
@@ -260,7 +272,7 @@ export async function authenticateApiToken(deps: Pick<ApiTokenDeps, 'apiTokens' 
       // bot 令牌再与 BOT_PERMISSIONS 取交集：scope 可以更宽，越界权限不会生效。
       permissions: effectivePermissions(token),
       ...(token.bot ? { bot: { projectId: token.bot.projectId, name: token.bot.name } } : {}),
-      ...(token.projectIds && token.projectIds.length > 0 ? { projectIds: token.projectIds } : {})
+      ...(token.projectIds && token.projectIds.length > 0 ? { projectIds: token.projectIds, ...(teamIds.length ? { teamIds } : {}) } : {})
     }
   };
 }

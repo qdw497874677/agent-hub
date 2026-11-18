@@ -316,3 +316,21 @@ test('bot 凭据不走令牌轮换（只能在 Bot 页重新生成，仍不过�
   assert.ok(await authenticateApiToken(deps, bot.token), '拒绝轮换不影响原凭据');
   assert.equal((await listApiTokens(deps, owner)).find((t) => t.id === bot.info.id)?.expiresAt, null);
 });
+
+test('限定项目的令牌：认证时带上项目所在团队；同团队的团队资产放行，别的团队 / 没团队的项目不放行', async () => {
+  const { deps, owner } = world();
+  const made = await createApiToken(deps, owner, { name: 'scoped', kind: 'personal', scopes: ['assets:read', 'assets:write'], projectIds: ['p1'] });
+  assert.ok(made.ok, JSON.stringify(made));
+  const principal = await authenticateApiToken(deps, made.value.token);
+  assert.deepEqual(principal?.via?.teamIds, ['team-1']);
+  const teamAsset = (teamId: string | null) => ({ kind: 'asset' as const, teamId, createdBy: 'owner' });
+  assert.equal(decide(principal, 'asset.submit', teamAsset('team-1')).allow, true);
+  assert.equal(decide(principal, 'asset.submit', teamAsset('team-2')).allow, false);
+  assert.equal(decide(principal, 'asset.read', teamAsset(null)).allow, false);
+  // 项目资产仍按项目判
+  assert.equal(decide(principal, 'asset.submit', { ...teamAsset('team-1'), projectId: 'p1' }).allow, true);
+  assert.deepEqual(decide(principal, 'asset.submit', { ...teamAsset('team-1'), projectId: 'p2' }), { allow: false, reason: 'token_project' });
+  // 项目不在团队里：没有 teamIds，团队资产不放行
+  const loose = { ...principal!, via: { ...principal!.via!, teamIds: undefined } };
+  assert.deepEqual(decide(loose, 'asset.submit', teamAsset('team-1')), { allow: false, reason: 'token_project' });
+});
