@@ -372,6 +372,7 @@ export async function loadBotConfig(
     // 表为空 = 还没迁移：回落到旧 roles JSON（只读，不写回）。
     roles: stored.length > 0 ? stored : botsFromLegacy(legacy, projectId, teamId),
     limits: legacy?.limits ?? {},
+    trustPeers: legacy?.trustPeers === true,
     updatedAt: legacy?.updatedAt ?? 0
   };
 }

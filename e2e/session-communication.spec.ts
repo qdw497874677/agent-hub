@@ -178,3 +178,25 @@ test('真模型（P1c）：A 用 workspace.read + session:peer:verify 只读看�
   test.info().annotations.push({ type: 'unlinked-denied', description: String(/只有明确连接|unresolvable|denied/.test(denied)) });
   expect(/只有明确连接|unresolvable|找不到这个同伴/.test(denied), '没连线的会话拿到的是拒绝').toBe(true);
 });
+
+test('P1f：trustPeers 项目开关往返；运行时没报档位（pi）时不拦，审计里记 tier', async ({ page, baseURL }) => {
+  const w = await world(page, baseURL!);
+  const [a, b] = [await w.session(), await w.session()];
+  expect((await w.link(a, b)).status()).toBe(201);
+  const before = (await (await page.request.get(`/api/projects/${w.project}/messaging`)).json()) as { trustPeers?: boolean };
+  expect(before.trustPeers ?? false).toBe(false);
+  const on = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [], trustPeers: true } });
+  expect(on.status(), await on.text()).toBe(200);
+  expect(((await on.json()) as { trustPeers: boolean }).trustPeers).toBe(true);
+  const kept = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [], limits: { maxDepth: 5 } } });
+  expect(((await kept.json()) as { trustPeers: boolean }).trustPeers, '不给 trustPeers 保持原值').toBe(true);
+  const off = await page.request.put(`/api/projects/${w.project}/messaging`, { headers: w.headers, data: { roles: [], trustPeers: false } });
+  expect(((await off.json()) as { trustPeers: boolean }).trustPeers).toBe(false);
+
+  const sent = await w.send(a, { kind: 'send', to: `session:${b}`, body: '档位未知：不拦', wake: false });
+  expect(sent.status(), await sent.text()).toBe(201);
+  const { messageId, status } = (await sent.json()) as { messageId: string; status: string };
+  expect(status).toBe('done');
+  const trace = (await (await page.request.get(`/api/messages/${messageId}/trace`)).json()) as { audit: { action: string; detail: string }[] };
+  expect(trace.audit.find((e) => e.action === 'accepted')?.detail ?? '').toContain('tier=');
+});

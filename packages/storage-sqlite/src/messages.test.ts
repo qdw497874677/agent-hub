@@ -81,6 +81,12 @@ test('会话通信 P1a：parts / wake / reply status / 已读 / 拦下原因往�
     assert.equal(await reopened.messages.handleOf(asSessionId('a')), 'maker');
     assert.equal(await reopened.messages.sessionByHandle('t', 'maker'), 'a');
     assert.equal(await reopened.messages.sessionByHandle('t', 'builder'), null);
+
+    // P1f：trustPeers 落库；老配置行默认 false
+    await reopened.messages.saveConfig({ projectId: asProjectId('p'), roles: [], limits: {}, updatedAt: 1 });
+    assert.equal((await reopened.messages.config(asProjectId('p')))?.trustPeers, false);
+    await reopened.messages.saveConfig({ projectId: asProjectId('p'), roles: [], limits: {}, trustPeers: true, updatedAt: 2 });
+    assert.equal((await openSqliteStore(path).messages.config(asProjectId('p')))?.trustPeers, true);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

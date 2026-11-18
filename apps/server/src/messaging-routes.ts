@@ -66,7 +66,9 @@ const toRole = (role: z.infer<typeof roleBody>): BotDefinition => ({
 });
 const configBody = z.object({
   roles: z.array(roleBody).max(50),
-  limits: z.object({ maxDepth: z.number().int(), maxConcurrent: z.number().int(), maxFanOut: z.number().int() }).partial().default({})
+  limits: z.object({ maxDepth: z.number().int(), maxConcurrent: z.number().int(), maxFanOut: z.number().int() }).partial().default({}),
+  /** 会话通信 P1f：信任同伴（guarded → auto 不拦）。不给 = 保持原值。 */
+  trustPeers: z.boolean().optional()
 });
 const decisionBody = z.object({ approve: z.boolean() });
 
@@ -133,7 +135,12 @@ export function installMessagingRoutes(app: Hono<any>, options: MessagingRouteDe
     const allowed = await projectFor(c, 'project.update');
     if (!allowed.ok) return fail(c, allowed.error);
     if (!parsed.success) return fail(c, { code: 'invalid', message: parsed.error.issues[0]?.message ?? '配置格式不对' });
-    const saved = await bus.saveConfig(allowed.value.id, { roles: parsed.data.roles.map(toRole), limits: parsed.data.limits });
+    const actor = principalOfSubject(subjectOf(c));
+    const saved = await bus.saveConfig(
+      allowed.value.id,
+      { roles: parsed.data.roles.map(toRole), limits: parsed.data.limits, ...(parsed.data.trustPeers !== undefined ? { trustPeers: parsed.data.trustPeers } : {}) },
+      actor ? `user:${actor.user.id}` : 'hub'
+    );
     return saved.ok ? c.json(messagingConfigDto(saved.value)) : fail(c, saved.error);
   });
 

@@ -258,10 +258,38 @@ export interface MessagingConfig {
   readonly roles: readonly PersistentAgent[];
   /** 只存项目改过的那几项。 */
   readonly limits: Partial<MessageLimits>;
+  /**
+   * 会话通信 P1f：true = 信任同伴，guarded → auto 的消息不拦（默认 false，关掉记审计）。
+   * 老配置行没有这一列 = false。
+   */
+  readonly trustPeers?: boolean;
   readonly updatedAt: number;
 }
 
-export const emptyConfig = (projectId: ProjectId): MessagingConfig => ({ projectId, roles: [], limits: {}, updatedAt: 0 });
+/**
+ * 权限档位（docs/design/session-communication.md §7.3）：按运行时报告的审批设置分两档。
+ * - auto：跳过审批或自动批准（codex approval=never / sandbox=danger-full-access、yolo、bypassPermissions 一类模式）；
+ * - guarded：工具要审批（codex on-request / untrusted、default / plan / acceptEdits 一类模式）；
+ * - unknown：运行时没报（pi 等）——不拦，只记审计。
+ */
+export type PrivilegeTier = 'guarded' | 'auto' | 'unknown';
+const AUTO_MODES = new Set(['bypasspermissions', 'bypass', 'yolo', 'full-access', 'full_access', 'dangerously-skip-permissions', 'dontask', 'auto', 'never']);
+const GUARDED_MODES = new Set(['default', 'plan', 'acceptedits', 'ask', 'on-request', 'untrusted', 'read-only', 'readonly', 'on-failure']);
+export function privilegeTier(options: Readonly<Record<string, string | boolean>> | undefined): PrivilegeTier {
+  if (!options) return 'unknown';
+  const value = (key: string): string | null => {
+    const raw = options[key];
+    return typeof raw === 'string' ? raw.trim().toLowerCase() : null;
+  };
+  if (options['yolo'] === true || value('sandbox') === 'danger-full-access' || value('approval') === 'never') return 'auto';
+  const mode = value('mode') ?? value('permissionMode') ?? value('approval');
+  if (mode && AUTO_MODES.has(mode)) return 'auto';
+  if (mode && GUARDED_MODES.has(mode)) return 'guarded';
+  if (value('approval') || value('sandbox')) return 'guarded';
+  return 'unknown';
+}
+
+export const emptyConfig = (projectId: ProjectId): MessagingConfig => ({ projectId, roles: [], limits: {}, trustPeers: false, updatedAt: 0 });
 
 /** 有效限额：项目覆盖值夹在 [1, 默认 × 2]。 */
 export function effectiveLimits(override: Partial<MessageLimits> | undefined): MessageLimits {
@@ -361,7 +389,7 @@ export const newMessageId = (): string => newId();
 export type MessageAuditAction =
   | 'accepted' | 'denied' | 'queued' | 'delivered' | 'replied' | 'failed'
   | 'spawn_requested' | 'spawn_approved' | 'spawn_rejected' | 'spawned'
-  | 'held' | 'released' | 'rejected' | 'handle_set';
+  | 'held' | 'released' | 'rejected' | 'handle_set' | 'config';
 
 export interface MessageAuditEntry {
   readonly id: string;
