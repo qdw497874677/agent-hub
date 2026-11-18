@@ -102,3 +102,21 @@ test('taskBriefing：组合工作目录写出容器根和每个成员仓库', ()
   assert.match(text, /- api  \/srv\/groups\/demo\/x1\/api  分支 main  https:\/\/example.com\/api.git/);
   assert.match(text, /按仓库分别进行/);
 });
+
+test('taskBriefing：amp 布局用相对路径，标明主仓库', () => {
+  const text = taskBriefing(task(), [], {
+    name: 'Demo',
+    repoUrl: null,
+    description: null,
+    workspaceRoot: '/srv/groups/demo/x1/web',
+    groupLayout: 'amp',
+    repos: [
+      { name: 'web', path: '/srv/groups/demo/x1/web', relativePath: '.', url: 'https://example.com/web.git', branch: 'feat/a', primary: true },
+      { name: 'api', path: '/srv/groups/demo/x1/repos/api', relativePath: '../repos/api', url: 'https://example.com/api.git', branch: 'main' }
+    ]
+  }) ?? '';
+  assert.match(text, /组合工作目录：\/srv\/groups\/demo\/x1\/web/);
+  assert.match(text, /- web  \.  主仓库  分支 feat\/a/);
+  assert.match(text, /- api  \.\.\/repos\/api  分支 main/);
+  assert.match(text, /工作目录是主仓库/);
+});

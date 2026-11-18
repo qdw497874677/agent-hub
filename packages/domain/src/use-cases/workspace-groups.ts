@@ -3,7 +3,7 @@ import type { DomainError } from '../errors.ts';
 import { conflict, forbidden, invalid, notFound } from '../errors.ts';
 import { asProjectId, asTaskId, asWorkspaceGroupId, newId, newSessionId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
-import { recurseSubmodules } from '../project.ts';
+import { designatedPrimaryRepo, recurseSubmodules } from '../project.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isUsable, markRemoved, newWorkspace, type Workspace } from '../workspace.ts';
@@ -20,15 +20,18 @@ import { authorizeWorker, canManageTeamWorkspaces } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { gitOn, resolveMachine, type Machine } from './machine-dirs.ts';
 import { branchSlug, originBranchRef, runWorkspaceSetup, sessionBranchSuffix, shortId } from './temporary-workspaces.ts';
+import { unsavedReason } from './workspace-cleanup.ts';
 import { actorId, prepareTeamWorkspace } from './workspaces.ts';
 
 /**
  * 组合工作空间（docs/design/multi-repo.md §4–§6）：
  * 一个组 = 同一台机器上一个容器目录 + 每个仓库一个 worktree 成员。
  *
- * - 建组：容器 `<root>`，成员 `<root>/<repo-name>`，任一成员失败整组 failed，容器保留等重试；
+ * - 建组：必须先指定主仓库。amp 布局下主仓库在 `<root>/<name>`（也是 cwd），附加仓在 `<root>/repos/<name>`；
+ * - 可只选一部分仓库（主仓库始终在内），之后还能往已有组里加仓；
+ * - 准备命令只在主仓库跑；
  * - 重试：只重试 failed 成员（已建成的成员不动）；
- * - 删组：容器整体删掉，成员登记逐条 remove，最后删组行。
+ * - 删组：先确认成员都干净，再整组删掉。
  *
  * TODO(groupId): `Workspace.groupId` 的持久化列由另一条线补；成员表（workspace_group_members）
  * 已经记着归属，所以即便 sqlite 读回来少了 groupId，组的语义仍然完整。
@@ -51,6 +54,15 @@ export interface BuildWorkspaceGroupCommand {
   readonly actor?: Subject | null;
   /** 预分配的会话 id，写入成员分支名。不给就在建组时生成。 */
   readonly sessionId?: string | null;
+  /** 要进组的仓库 id。省略 = 项目里全部；主仓库总会被带上。 */
+  readonly repoIds?: readonly string[];
+}
+
+export interface AddWorkspaceGroupMemberCommand {
+  readonly groupId: string;
+  readonly repoId: string;
+  readonly home: string;
+  readonly actor?: Subject | null;
 }
 
 export interface RetryWorkspaceGroupCommand {
@@ -59,6 +71,15 @@ export interface RetryWorkspaceGroupCommand {
   readonly actor?: Subject | null;
   /** 预分配的会话 id，写入成员分支名。不给就在建组时生成。 */
   readonly sessionId?: string | null;
+  /** 要进组的仓库 id。省略 = 项目里全部；主仓库总会被带上。 */
+  readonly repoIds?: readonly string[];
+}
+
+export interface AddWorkspaceGroupMemberCommand {
+  readonly groupId: string;
+  readonly repoId: string;
+  readonly home: string;
+  readonly actor?: Subject | null;
 }
 
 export interface RemoveWorkspaceGroupCommand {
@@ -68,6 +89,32 @@ export interface RemoveWorkspaceGroupCommand {
 }
 
 const MAX = WORKSPACE_GROUP_MEMBERS_MAX;
+
+/** amp 布局的成员目录：主仓库在容器根下，附加仓在 repos/ 下。 */
+export function memberWorktreePath(root: string, repo: Pick<ProjectRepo, 'id' | 'name'>, primaryRepoId: string): string {
+  return repo.id === primaryRepoId ? `${root}/${repo.name}` : `${root}/repos/${repo.name}`;
+}
+
+/** 选进组的仓库：主仓库永远在第一位；省略 repoIds 就是项目全部。 */
+export function selectedGroupRepos(project: Project, repoIds?: readonly string[]): Result<ProjectRepo[], DomainError> {
+  const primary = designatedPrimaryRepo(project);
+  if (!primary) return err(invalid('要开组合会话，先在项目里指定主仓库'));
+  if (project.repos.length === 0) return err(invalid('项目还没有配置仓库'));
+  const wanted = repoIds === undefined ? project.repos.map((repo) => repo.id) : [...new Set(repoIds)];
+  if (!wanted.includes(primary.id)) wanted.unshift(primary.id);
+  const repos: ProjectRepo[] = [];
+  const seen = new Set<string>();
+  for (const id of [primary.id, ...wanted.filter((id) => id !== primary.id)]) {
+    if (seen.has(id)) continue;
+    const repo = project.repos.find((candidate) => candidate.id === id);
+    if (!repo) return err(invalid('有仓库不在这个项目里'));
+    seen.add(id);
+    repos.push(repo);
+  }
+  if (repos.length === 0) return err(invalid('至少选一个仓库'));
+  if (repos.length > MAX) return err(invalid(`一个组最多 ${MAX} 个仓库`));
+  return ok(repos);
+}
 
 /** 组名 = 任务 slug + 4 位短号，撞名概率低且能直接当目录用。 */
 function groupName(title: string): string {
@@ -143,9 +190,10 @@ export async function buildWorkspaceGroupUseCase(
   if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
   const task = await deps.tasks.byId(asTaskId(command.taskId));
   if (!task || task.projectId !== project.id) return err(notFound('任务不存在'));
-  const repos = project.repos;
-  if (repos.length === 0) return err(invalid('项目还没有配置仓库'));
-  if (repos.length > MAX) return err(invalid(`一个组最多 ${MAX} 个仓库`));
+  const picked = selectedGroupRepos(project, command.repoIds);
+  if (!picked.ok) return picked;
+  const repos = picked.value;
+  const primaryRepoId = repos[0]!.id;
   const store = deps.workspaceGroups;
   if (!store) return err(invalid('组合工作空间还没有启用'));
   const actor = command.actor ?? null;
@@ -174,6 +222,8 @@ export async function buildWorkspaceGroupUseCase(
     root,
     members,
     state,
+    layout: 'amp',
+    primaryRepoId,
     ownerTaskId: task.id,
     sessionId,
     createdAt,
@@ -198,7 +248,7 @@ export async function buildWorkspaceGroupUseCase(
         teamId: project.teamId,
         repoUrl: repo.url,
         workerId: machine.workerId,
-        path: `${root}/${repo.name}`,
+        path: memberWorktreePath(root, repo, primaryRepoId),
         kind: 'temporary',
         source: 'worktree',
         ownerTaskId: task.id,
@@ -227,7 +277,7 @@ export async function buildWorkspaceGroupUseCase(
     const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
     const made = await groupGit.newWorktree({
       repoPath: base.value.path,
-      path: `${root}/${repo.name}`,
+      path: memberWorktreePath(root, repo, primaryRepoId),
       branch: groupBranch(repo, sessionId),
       base: baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined,
       ...(auth ? { auth } : {}),
@@ -246,13 +296,13 @@ export async function buildWorkspaceGroupUseCase(
       baseWorkspaceId: base.value.id,
       branch: made.value.branch,
       isGit: true,
-      state: setup ? 'preparing' : 'ready',
+      state: setup && repo.id === primaryRepoId ? 'preparing' : 'ready',
       groupId,
       now: deps.now()
     });
     if (!created.ok) return abort(members, repos.slice(index), created.error);
     await deps.workspaces.save(created.value);
-    members.push({ workspaceId: created.value.id, repoId: repo.id, name: repo.name, state: setup ? 'preparing' : 'ready', error: null });
+    members.push({ workspaceId: created.value.id, repoId: repo.id, name: repo.name, state: setup && repo.id === primaryRepoId ? 'preparing' : 'ready', error: null });
   }
 
   // 成员先落组行：准备命令跑到一半崩了也能在组列表里看到
@@ -260,7 +310,7 @@ export async function buildWorkspaceGroupUseCase(
   if (setup) {
     for (let index = 0; index < members.length; index++) {
       const member = members[index];
-      if (!member) continue;
+      if (!member || member.repoId !== primaryRepoId) continue;
       const workspace = await deps.workspaces.byId(member.workspaceId);
       if (!workspace) continue;
       const prepared = await runWorkspaceSetup(deps, machine, workspace, setup);
@@ -341,7 +391,8 @@ export async function retryWorkspaceGroupUseCase(
       updatedAt: deps.now()
     };
     await deps.workspaces.save(ready);
-    const prepared = setup ? await runWorkspaceSetup(deps, machine, ready, setup) : ready;
+    const runSetup = Boolean(setup) && (existing.layout !== 'amp' || repo.id === existing.primaryRepoId);
+    const prepared = runSetup ? await runWorkspaceSetup(deps, machine, ready, setup!) : { ...ready, state: 'ready' as const };
     const readyNow = prepared.state === 'ready';
     return {
       ...member,
@@ -382,6 +433,16 @@ export async function removeWorkspaceGroupUseCase(
     return err(conflict('这组还有正在跑的会话'));
   }
 
+  const git = gitOn(deps, group.workerId);
+  for (const member of group.members) {
+    const workspace = await deps.workspaces.byId(member.workspaceId);
+    if (!workspace || workspace.state === 'removed') continue;
+    const status = await git.status(workspace.path);
+    if (!status.ok) return err(conflict(`没有删：无法检查 ${member.name} 的改动`));
+    const reason = unsavedReason(status.value);
+    if (reason) return err(conflict(`没有删：${member.name} ${reason}`));
+  }
+
   const groupGit = group.workerId ? deps.gateway.groups?.(group.workerId) : undefined;
   if (!groupGit) return err(invalid('这台机器不支持组合工作空间'));
   const dropped = await groupGit.remove({ root: group.root, id: group.id });
@@ -401,4 +462,86 @@ export async function removeWorkspaceGroupUseCase(
   }
   await store.remove(group.id);
   return ok({ id: group.id, removed: true });
+}
+
+export async function addWorkspaceGroupMemberUseCase(
+  deps: WorkspaceGroupDeps,
+  command: AddWorkspaceGroupMemberCommand
+): Promise<Result<WorkspaceGroup, DomainError>> {
+  const store = deps.workspaceGroups;
+  if (!store) return err(invalid('组合工作空间还没有启用'));
+  const groupId = asWorkspaceGroupId(command.groupId);
+  const group = await store.byId(groupId);
+  if (!group) return err(notFound('组合工作空间不存在'));
+  if (group.members.some((member) => member.repoId === command.repoId)) return err(conflict('这个仓库已经在组里了'));
+  if (group.members.length >= MAX) return err(invalid(`一个组最多 ${MAX} 个仓库`));
+  const project = await deps.projects.byId(group.projectId);
+  if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
+  const repo = project.repos.find((candidate) => candidate.id === command.repoId);
+  if (!repo) return err(invalid('仓库不在这个项目里'));
+  const actor = command.actor ?? null;
+  const resolved = await resolveMachine(deps, group.workerId);
+  if (!resolved.ok) return resolved;
+  const machine = resolved.value;
+  const allowed = await authorizeWorker(deps.access, actor, machine.workerId);
+  if (!allowed.ok) return allowed;
+  const groupGit = machine.workerId ? deps.gateway.groups?.(machine.workerId) : undefined;
+  if (!groupGit) return err(invalid('这台机器不支持组合工作空间'));
+  if (!WORKSPACE_GROUP_NAME.test(repo.name)) return err(invalid(`仓库名只能是小写字母、数字和短横线：${repo.name}`));
+  if (group.members.some((member) => member.name === repo.name)) return err(conflict('组里已经有同名仓库'));
+
+  const primaryRepoId = group.primaryRepoId ?? designatedPrimaryRepo(project)?.id ?? null;
+  const path = group.layout === 'amp' && primaryRepoId
+    ? memberWorktreePath(group.root, repo, primaryRepoId)
+    : `${group.root}/${repo.name}`;
+  const sessionId = group.sessionId ?? group.id;
+  const ownerTask = group.ownerTaskId ? await deps.tasks.byId(group.ownerTaskId) : null;
+  const baseRef = originBranchRef(ownerTask?.baseBranch ?? null);
+  const base = await baseForRepo(deps, project, repo, machine, { home: command.home, actor });
+  if (!base.ok) return base;
+  const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
+  const made = await groupGit.newWorktree({
+    repoPath: base.value.path,
+    path,
+    branch: groupBranch(repo, sessionId),
+    base: baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined,
+    ...(auth ? { auth } : {}),
+    ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
+  });
+  if (!made.ok) return made;
+  const created = newWorkspace({
+    projectId: project.id,
+    teamId: project.teamId,
+    repoUrl: repo.url,
+    workerId: machine.workerId,
+    path: made.value.path,
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: group.ownerTaskId,
+    baseWorkspaceId: base.value.id,
+    branch: made.value.branch,
+    isGit: true,
+    state: 'ready',
+    groupId,
+    now: deps.now()
+  });
+  if (!created.ok) return created;
+  await deps.workspaces.save(created.value);
+  const member: WorkspaceGroupMember = {
+    workspaceId: created.value.id,
+    repoId: repo.id,
+    name: repo.name,
+    state: 'ready',
+    error: null
+  };
+  const members = [...group.members, member];
+  const next: WorkspaceGroup = {
+    ...group,
+    members,
+    state: groupState(members),
+    pendingBriefing: true,
+    error: null
+  };
+  await store.save(next);
+  return ok(next);
 }

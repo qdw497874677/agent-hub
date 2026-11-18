@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   asProjectId,
   asWorkspaceGroupId,
+  addWorkspaceGroupMemberUseCase,
   buildWorkspaceGroupUseCase,
   removeWorkspaceGroupUseCase,
   retryWorkspaceGroupUseCase,
@@ -19,6 +20,7 @@ import { fail } from './http-error.ts';
  * - GET    /api/workspace-groups/:groupId                   读组（前端展示成员/状态）
  * - POST   /api/projects/:projectId/workspace-groups        建组（沿用「建临时空间」权限）
  * - POST   /api/workspace-groups/:groupId/retry             重试 failed 成员
+ * - POST   /api/workspace-groups/:groupId/members           往已有组加一个仓库
  * - DELETE /api/workspace-groups/:groupId                   删组（workspace.manage）
  *
  * 路径刻意避开 `/api/projects/:id/groups` 与 `/api/groups/:id`：那两条是聊天群（ADR 0018）。
@@ -26,9 +28,14 @@ import { fail } from './http-error.ts';
 const createBody = z.object({
   taskId: z.string().min(1).max(80),
   workerId: z.string().min(1).max(120).nullable().optional(),
-  home: z.string().min(1).max(2000).optional()
+  home: z.string().min(1).max(2000).optional(),
+  repoIds: z.array(z.string().min(1).max(80)).max(8).optional()
 });
 const retryBody = z.object({ home: z.string().min(1).max(2000).optional() });
+const addMemberBody = z.object({
+  repoId: z.string().min(1).max(80),
+  home: z.string().min(1).max(2000).optional()
+});
 
 export interface WorkspaceGroupRouteDeps {
   readonly deps: WorkspaceGroupDeps;
@@ -55,7 +62,8 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
       taskId: parsed.data.taskId,
       workerId: parsed.data.workerId ?? null,
       home: parsed.data.home ?? homedir(),
-      actor: subject
+      actor: subject,
+      repoIds: parsed.data.repoIds
     });
     if (!built.ok) return fail(c, built.error);
     await audit?.(c, subject, 'workspace.group.create', built.value.id, `项目 ${projectId} · ${built.value.members.length} 个仓库`);
@@ -85,6 +93,25 @@ export function installWorkspaceGroupRoutes(app: Hono<any>, options: WorkspaceGr
     if (!retried.ok) return fail(c, retried.error);
     await audit?.(c, subject, 'workspace.group.retry', groupId, `重试后 ${retried.value.state}`);
     return c.json(retried.value);
+  });
+
+  app.post('/api/workspace-groups/:groupId/members', async (c) => {
+    const subject = subjectOf(c);
+    if (!subject) return fail(c, needUser);
+    const groupId = asWorkspaceGroupId(c.req.param('groupId'));
+    const group = await deps.workspaceGroups?.byId(groupId);
+    if (!group) return fail(c, { code: 'not_found', message: '组合工作空间不存在' });
+    const parsed = addMemberBody.safeParse((await c.req.json().catch(() => ({}))) ?? {});
+    if (!parsed.success) return fail(c, { code: 'invalid', message: '添加仓库的参数不对' });
+    const added = await addWorkspaceGroupMemberUseCase(deps, {
+      groupId,
+      repoId: parsed.data.repoId,
+      home: parsed.data.home ?? homedir(),
+      actor: subject
+    });
+    if (!added.ok) return fail(c, added.error);
+    await audit?.(c, subject, 'workspace.group.create', groupId, `添加仓库 ${parsed.data.repoId}`);
+    return c.json(added.value, 201);
   });
 
   app.delete('/api/workspace-groups/:groupId', async (c) => {

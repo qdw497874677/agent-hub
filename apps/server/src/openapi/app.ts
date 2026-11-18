@@ -399,8 +399,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     const project = await deps.projects.byId(asProjectId(projectId));
     const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
     if (!allowed.ok) return fail(c, allowed.error);
-    const input = valid<{ repos: z.output<typeof setProjectReposRequest>['repos'] }>(c, 'json');
-    const result = await updateProjectReposUseCase(deps, { projectId, repos: input.repos });
+    const input = valid<z.output<typeof setProjectReposRequest>>(c, 'json');
+    const result = await updateProjectReposUseCase(deps, { projectId, repos: input.repos, primaryRepoId: input.primaryRepoId });
     if (!result.ok) return fail(c, result.error);
     // 令牌名不出去：projectDto 只给 hasToken。
     return c.json(projectDto(result.value));

@@ -1,12 +1,12 @@
 # 多仓库项目（polyrepo）：组合工作空间
 
-> 目标：一个项目可以绑定多个 git 仓库；一条会话在一个**组合工作空间**里干活，里面每个子目录是一个单仓库工作空间。单仓库项目仍是「只有一员的特例」，不出现第二条代码路径。
+> 目标：一个项目可以绑定多个 git 仓库，并**可选地指定一个主仓库**。指定之后才能开组合会话：cwd 在主仓库 worktree，附加仓作为兄弟目录放在 `../repos/<name>/`（Amp 风格）。没指定主仓库时，行为与单仓项目相同。
 
 ## 0. 结论
 
-- 采用**组合工作空间**（composite workspace）：会话只认一个落点，agent 只有一个 cwd，多个仓库是它下面的子目录 —— 对 agent 来说就是 `cd api/`、`cd web/`。
+- 采用**组合工作空间**（composite workspace，Amp 风格）：项目可指定一个主仓库；会话 cwd 是主仓库的 worktree（`<groupRoot>/<primary>/`），附加仓在 `<groupRoot>/repos/<name>/`（从 cwd 看是 `../repos/<name>`），不必改主仓库的 `.gitignore`。项目级说明来自主仓库自己的 `AGENTS.md`（agent 本地读），Hub 不代写文件。
 - 组合工作空间是**独立聚合**，不是被改坏的 `Workspace`：`WorkspaceGroup{root, members[]}`，每个成员仍是现存语义的 `Workspace`（一台机器、一个 checkout、一条分支），建 worktree / 清理 / diff / checkpoint 全部复用。
-- 组合里的成员**只能是新建 worktree，并且都建在容器目录内**（`<root>/<repo-name>`）。不复用已有长期空间、不做符号链接 —— 这样「子目录 = 单仓库 checkout」是硬保证，而不是约定。
+- 组合里的成员**只能是新建 worktree，并且都建在容器目录内**。主仓库在 `<root>/<name>`，附加仓在 `<root>/repos/<name>`。不复用已有长期空间、不做符号链接。老组（未标 layout=amp）仍是平铺在容器根下、cwd=容器根，打开时不强行搬家。
 - 提交与 PR 仍按仓库独立；组合工作空间不做跨仓原子提交。
 - 老数据零迁移：`Session.groupId` 新增，null 就是今天的单工作空间路径。
 
@@ -83,12 +83,19 @@ interface Session {
 
 ## 3. 目录布局
 
+新组（`layout: 'amp'`）：
+
 ```
-<worker root>/agent-hub-groups/<project-slug>/<group-name>/     ← 容器 root（= agent cwd）
-├── api/          ← git worktree，分支 agent-hub/<slug>-<4位id>
-├── web/          ← git worktree，同一条分支名
-└── .agent-hub/group.json   ← 容器标记（不是 git 仓库；文件 API 不列出、git 操作拒绝）
+<worker root>/agent-hub-groups/<project-slug>/<group-name>/     ← 容器（不是 git 仓库，也不是 cwd）
+├── web/                  ← 主仓库 worktree，= 会话 cwd
+│   └── AGENTS.md         ← 项目说明，agent 自己读，Hub 不生成
+├── repos/
+│   ├── api/              ← 附加仓 worktree（从 cwd 看是 ../repos/api）
+│   └── proto/
+└── .agent-hub/group.json ← 容器标记（文件 API 不列出、git 操作拒绝）
 ```
+
+仓库名不能叫 `repos`，以免和附加仓目录冲突。老组（`layout` 缺省或 `flat`）仍是「成员都在 `<root>/<name>`，cwd = 容器根」，不清空、不自动迁移脏目录。
 
 - 容器路径由 domain 算（和 worktree 路径一样属于「平台拥有的目录」），落在一个新的 `WORKER_GROUPS_DIR` 下，默认 `<roots[0]>/agent-hub-groups`，必须落在 `WORKER_ROOTS` 内。
 - 每个成员用 `git worktree add <container>/<repo-name> -b agent-hub/<slug>-<id>` 建；`ownRepo` 校验不变（它检查的是成员自己的 toplevel）。
@@ -97,20 +104,13 @@ interface Session {
 
 ## 4. 会话怎么工作
 
-- `start_session` 的 `workspaceRoot` = 容器 root；任务背景注入成员清单：
-
-  ```
-  这个项目有三个仓库，都在 /…/groups/acme/issue-42/ 下：
-  api（主仓库）  web  proto
-  每个子目录是一个独立 git worktree，分支都是 agent-hub/issue-42-7f3a。
-  ```
-
-- 终端：cwd = 容器 root，一个会话一个终端不变；`cd api` 即可。
-- 文件页：根是容器，树里就是成员目录；`directoryScope` 仍按 groupId 分键。
-- 改动页：按成员分组（`api（3）`、`web（1）`），详情走单成员的 files/diff 接口。
+- `start_session` 的 `workspaceRoot` = 主仓库目录（老组仍是容器根）。第一轮任务背景注入成员清单（路径相对 cwd，例如 `.` 和 `../repos/api`）；之后只在组里新加了仓库时再垫一段，不必重启 agent。
+- 终端：cwd = 主仓库，一个会话一个终端不变；附加仓用 `cd ../repos/api`。
+- 文件页：根是主仓库；仓库切换条可看附加仓，也可「添加仓库」。
+- 改动页：汇总所有成员的 diff，按仓库分组（`web（3）`、`api（1）`）；仓库切换条仍在。
 - 提交 / 推送 / PR：一次一个成员，入口带成员切换。
 - checkpoint / rewind：每个成员各存一份 checkpoint ref；rewind 逐个恢复，部分失败明确报「api 已恢复、web 失败：…」。
-- 准备命令：每个成员各跑一次（cwd = 成员目录，`AGENT_HUB_REPO=<name>`），并行；primary 失败拦派发，附成员失败只警告并写进任务背景。
+- 准备命令：只在主仓库跑项目配置的 `project.worktree.setup`（沿用现有权限：管理员在项目设置里写，不自动执行仓库里的任意脚本）。若希望采用 Amp 的 `.agents/setup` 约定，把该命令写进项目准备命令即可，例如 `test -x .agents/setup && .agents/setup`。
 - `agent.spawn`：继承同一个 group（或 `workspace_mode: 'isolated'` 时新建一组），不允许兄弟会话只挂半组。
 
 ## 5. 生命周期与清理
@@ -149,15 +149,15 @@ interface Session {
 - 不做符号链接 / 虚拟文件系统聚合。
 - 不做「组合里复用已有长期工作空间」（子目录必须是本组新建的 worktree）。
 - 不做跨仓原子提交、跨仓单 PR。
-- 不做运行中给已有组合追加仓库（要改就新开一组）。
+- 可以从已有组合追加仓库（下一轮提问会注入更新后的成员清单）；去掉成员不是必须能力（若做，只允许干净的成员）。
 - 不做组合嵌套（组合里不能再放组合）。
 - 单仓库项目不创建组合，保持现状。
 
 ## 10. 已拍板
 
 1. **容器位置（已定）**：统一容器目录 `<roots[0]>/agent-hub-groups/<project-slug>/<group-name>/`，成员都在里面；孤儿扫描只认这个前缀。
-2. **默认勾选（已定）**：多仓项目派生时默认全选；逐仓可以取消（取消的仓库这次不建）。
-3. **分支名（按推荐执行）**：所有成员用同一 slug `agent-hub/<slug>-<4位id>`，PR 之间能对上。
+2. **默认勾选（已定）**：指定了主仓库的项目派生组合时默认全选；主仓库不能取消，其它仓可以取消（至少保留主仓库）。之后还能往已有组里加仓。
+3. **分支名**：每个成员 `agent-hub/<repo-name>-<sessionId 前 12 位>`，从远端默认分支（fetch 之后）开出，同一源仓库的 git 操作串行。
 
 ## 11. 实现规格
 
@@ -257,9 +257,9 @@ removeWorkspaceGroupUseCase(deps, { groupId, actor })
 workspaceGroupsUseCase(deps, projectId)
 ```
 
-- 准备流程：取项目 repos（`repoIds` 缺省 = 全部，顺序按项目清单，第一个为 primary）→ 每仓找一个 `gitBase`（同 worker 的 isGit 长期空间；没有则 clone，与 `temporary-workspaces.ts:143` 同逻辑）→ `ws.group_init` → 逐个 `ws.add_worktree { repoPath: base.path, path: `${root}/${name}`, branch, existing: true }` → 并行 `ws.run_setup`。
+- 准备流程：项目必须已指定 `primaryRepoId`，否则拒绝建组。取成员列表（`repoIds` 缺省 = 全部已登记仓库；主仓库即使没列也会被补上，并排在最前）→ 每仓找一个 `gitBase`（同 worker 的 isGit 长期空间；没有则 clone）→ `ws.group_init` → 逐个 `ws.add_worktree`（主仓库路径 `<root>/<name>`，附加仓 `<root>/repos/<name>`，分支 `agent-hub/<repo-name>-<sessionId 前 12 位>`，从远端默认分支开出）→ **只在主仓库**跑一次 `project.worktree.setup`。另有 `addWorkspaceGroupMemberUseCase` 给已有组追加仓库。
 - 失败语义：任一成员建不出来 → 整组 `failed`，已建成的保留；`retry` 只重试 `failed` 成员（建 + 准备）。
-- 分支：`agent-hub/<slug>-<4位id>`，slug 由任务标题或会话名生成（复用现有 slug 规则）；若某仓已存在同名分支 → 该成员用 `<branch>-<2位随机>` 并把新名字记进成员背景（极端情况）。
+- 分支：`agent-hub/<repo-name>-<sessionId 前 12 位>`；同一源仓库的 git 操作串行。子模块按项目开关（默认关）。
 - `remove`：先对所有成员跑现有 `unsavedReason`；任一脏 → 整组 `kept` 返回 `conflict('api 还有未提交的改动')`；全干净 → 逐个 `removeWorkspaceUseCase`，最后 `ws.group_remove`，删组行。
 - `workspaceId` 与组的双向：准备完成后写 `Session.workspaceId` 只在 derive 时做（`workspaceId = primary.workspaceId`）。
 
@@ -402,3 +402,20 @@ checkpoint 是单 root 打一个 ref（`workspace-files.ts:237`、`workspace-bro
 7. **项目仓库设置入口**：`project-repos.tsx` 新增，挂在 `worktree-settings.tsx` 同一页（workspaces 对话框「工作空间」tab）的上面，复用 `settings` 的输入样式；非 owner/admin 只读。
 8. **`group.json` 只存 `{ id }`**：删前核对用，不做成员清单（DB 是唯一真相）。
 9. **checkpoint（再次确认）**：ref 是 `refs/agent-hub/checkpoints/<sessionId>/<n>`（`workspace-browser.ts:144-146`），物理落在各自仓库；`turn_checkpoints` 单 before/after sha。v1 组合禁用（§12.3），表结构不改。
+
+
+## 13. Amp 风格修订（t434u / t435u）
+
+参考 [Amp Projects](https://ampcode.com/docs/projects) 与 [Projects with Multiple Repositories](https://ampcode.com/news/multi-repo-projects)（仍支持：附加仓 checkout 到主仓库旁的 `../repos/`，改动页汇总所有仓库，只自动跑主仓库的 setup）。
+
+已拍板并落地：
+
+1. **主仓库是可选指定的**，不是清单第一项的隐式身份。不指定就不能开组合会话，项目按单仓用。
+2. **新组布局**见 §3。会话 cwd = 主仓库；附加仓是兄弟目录，不进主仓库工作树。
+3. **`AGENTS.md` 由主仓库自己提供**，Hub 不生成。
+4. **准备命令**只跑项目设置里的那条，且只在主仓库执行；不自动跑仓库里的 `.agents/setup`，除非把它写进项目准备命令。
+5. **改动页汇总**全部成员；仓库切换条保留，并可「添加仓库」。
+6. **建组可选子集**（主仓库必在）；可在运行中追加成员，下一轮注入更新后的清单，不必重启。
+7. **两段生命周期（T3）**：PR 都合并（或该仓无改动）后先收起会话（对话保留，从不自动删会话）；下一轮清理才拆干净的 worktree。组合组原子处理：不能只拆一个成员。有未提交 / 未跟踪 / 未推送改动则整组留下并记原因。重新打开会话时按原分支恢复 worktree。手动删会话时，是否同时拆 worktree 要确认；项目规则 `deleteWorktreeOnSessionDelete` 默认关。
+8. 以后也会支持「一仓一会话 + 跨会话感知」，但本阶段不做。
+

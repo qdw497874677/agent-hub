@@ -106,3 +106,32 @@ test('locationOf：组合会话落在容器根，而不是主成员目录', asyn
   assert.equal(located.workerId, 'remote-1');
   assert.equal(located.root, group.root);
 });
+
+test('amp 布局：cwd 是主仓库，附加仓在 repos/ 下', async () => {
+  const w = inMemoryDeps();
+  const amp: WorkspaceGroup = {
+    ...group,
+    layout: 'amp',
+    primaryRepoId: 'repo_a'
+  };
+  const deps = { ...w.deps, workspaceGroups: groupRepo(amp) };
+  const located = await locationsOf(deps, project, {
+    workerId: 'remote-1',
+    workspaceId: asWorkspaceId('ws_a'),
+    groupId: amp.id
+  });
+  assert.equal(located.root, `${amp.root}/web`);
+  assert.deepEqual(
+    located.members.map((member) => [member.name, member.root]),
+    [
+      ['web', `${amp.root}/web`],
+      ['api', `${amp.root}/repos/api`]
+    ]
+  );
+  const cwd = await locationOf(deps, project, {
+    workerId: 'remote-1',
+    workspaceId: asWorkspaceId('ws_a'),
+    groupId: amp.id
+  });
+  assert.equal(cwd.root, `${amp.root}/web`);
+});

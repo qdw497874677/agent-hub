@@ -178,6 +178,9 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'submodules')) {
     db.exec("ALTER TABLE projects ADD COLUMN submodules TEXT");
   }
+  if (!projectColumns.some((column) => column.name === 'primary_repo_id')) {
+    db.exec('ALTER TABLE projects ADD COLUMN primary_repo_id TEXT');
+  }
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
@@ -252,10 +255,10 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, checks, asset_set_ids, submodules, created_at, team_id, created_by, members, deleted_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, primary_repo_id, description, worktree_config, preview_port, checks, asset_set_ids, submodules, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
-      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, description = excluded.description, ' +
+      'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, primary_repo_id = excluded.primary_repo_id, description = excluded.description, ' +
       'worktree_config = excluded.worktree_config, preview_port = excluded.preview_port, checks = excluded.checks, ' +
       // 组合引用只在显式给的时候写：旧快照回写不能把用户的绑定冲掉。
       'asset_set_ids = COALESCE(excluded.asset_set_ids, projects.asset_set_ids), submodules = excluded.submodules, ' +
@@ -453,6 +456,7 @@ export function openSqliteStore(file: string): SqliteStore {
         primary?.url ?? null,
         primary?.defaultBranch ?? null,
         JSON.stringify(project.repos),
+        project.primaryRepoId ?? null,
         project.description,
         project.worktree ? JSON.stringify(project.worktree) : null,
         project.previewPort ?? null,

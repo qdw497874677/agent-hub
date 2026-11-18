@@ -127,6 +127,7 @@ export interface ProjectReposPatch {
     credential?: string;
     hasToken?: boolean;
   }[];
+  primaryRepoId?: string | null;
 }
 
 /**
@@ -312,7 +313,7 @@ function withMember(url: string, member?: string | null): string {
   return `${url}${url.includes('?') ? '&' : '?'}member=${encodeURIComponent(member)}`;
 }
 export interface FileDiffDto { path: string; patch: string; truncated: boolean; binary: boolean }
-export interface FilesContextMemberDto { workspaceId: string; name: string; state: 'ready' | 'preparing' | 'failed' }
+export interface FilesContextMemberDto { workspaceId: string; name: string; repoId?: string; state: 'ready' | 'preparing' | 'failed' }
 export interface FilesContextGroupDto { root: string; members: readonly FilesContextMemberDto[] }
 export interface FilesContextDto {
   sessionId: string;
@@ -459,8 +460,8 @@ export const api = {
   saveProjectAssetSets: (projectId: string, assetSetIds: readonly string[]) =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ assetSetIds }) }),
   /** 项目仓库清单（docs/design/multi-repo.md §7）：同一个 PATCH，只带 repos。 */
-  saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos']) =>
-    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos }) }),
+  saveProjectRepos: (projectId: string, repos: ProjectReposPatch['repos'], primaryRepoId?: string | null) =>
+    call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ repos, primaryRepoId: primaryRepoId ?? null }) }),
   /** 克隆 / 建 worktree 时是否递归初始化子模块；只影响之后新建的 checkout。 */
   saveProjectSubmodules: (projectId: string, submodules: 'off' | 'recursive') =>
     call<ProjectDto>(`/api/projects/${encodeURIComponent(projectId)}`, { method: 'PATCH', body: JSON.stringify({ submodules }) }),
@@ -475,8 +476,10 @@ export const api = {
    * agent 在总目录里干活。建组本身就 clone / 开分支，可能要几十秒；前端按「准备中」显示。
    */
   workspaceGroup: (groupId: string) => call<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}`),
-  createWorkspaceGroup: (projectId: string, body: { taskId: string; workerId?: string | null }) =>
+  createWorkspaceGroup: (projectId: string, body: { taskId: string; workerId?: string | null; repoIds?: readonly string[] }) =>
     post<WorkspaceGroupView>(`/api/projects/${encodeURIComponent(projectId)}/workspace-groups`, body),
+  addWorkspaceGroupMember: (groupId: string, body: { repoId: string }) =>
+    post<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}/members`, body),
   /** 只对 failed 的组生效：重跑没准备好的成员。 */
   retryWorkspaceGroup: (groupId: string) =>
     post<WorkspaceGroupView>(`/api/workspace-groups/${encodeURIComponent(groupId)}/retry`, {}),
@@ -558,8 +561,8 @@ export const api = {
    * 删除一条会话：对话记录、产物引用、连线一起没；工作目录里的文件保留。
    * 会话还在跑服务端回 409，没权限 403，已经没了 404。
    */
-  deleteSession: (sessionId: string) =>
-    call<{ ok: true }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' }),
+  deleteSession: (sessionId: string, body?: { removeWorktree?: boolean }) =>
+    call<{ ok: true }>(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE', body: body ? JSON.stringify(body) : undefined }),
   interrupt: (sessionId: string) => post<{ ok: true }>(`/api/sessions/${sessionId}/interrupt`, {}),
   changeOption: (sessionId: string, optionId: string, value: string | boolean) =>
     post<SessionDto>(`/api/sessions/${sessionId}/options`, { optionId, value }),
@@ -1242,6 +1245,7 @@ export interface CleanupPolicyDto {
   prMerged: boolean;
   taskEndedClean: boolean;
   idleDays: number | null;
+  deleteWorktreeOnSessionDelete?: boolean;
 }
 export interface CleanupRecordsDto {
   items: { runId: string; workspaceId: string; path: string; branch: string | null; action: 'removed' | 'kept' | 'failed'; reason: string; sizeBytes: number | null; at: number }[];

@@ -1206,6 +1206,12 @@
                         },
                         "default": []
                       },
+                      "primaryRepoId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "description": {
                         "type": [
                           "string",
@@ -1487,6 +1493,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -1727,6 +1739,12 @@
                         ]
                       },
                       "default": []
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "description": {
                       "type": [
@@ -1993,6 +2011,12 @@
                         ]
                       },
                       "default": []
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "description": {
                       "type": [
@@ -2328,6 +2352,12 @@
                       ]
                     },
                     "maxItems": 8
+                  },
+                  "primaryRepoId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -2406,6 +2436,12 @@
                         ]
                       },
                       "default": []
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "description": {
                       "type": [
@@ -2677,6 +2713,12 @@
                       },
                       "default": []
                     },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "description": {
                       "type": [
                         "string",
@@ -2939,6 +2981,12 @@
                         ]
                       },
                       "default": []
+                    },
+                    "primaryRepoId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "description": {
                       "type": [

@@ -11,6 +11,7 @@ import type { WorkspaceRepository } from '../ports/workspace-repository.ts';
 import type { CommitPreview, RemotePullRequest, WorkspaceGit } from '../ports/workspace-git.ts';
 import type { RepoAuthPort } from '../ports/repo-auth.ts';
 import type { GitHostApi, GitHostTokenStore, GitText, GitTextWriter, PullRequestLink, PullRequestRepository } from '../ports/pull-requests.ts';
+import { archiveAfterPullRequestMerged } from './session-archive.ts';
 import type { Project } from '../project.ts';
 import { isContainerSession, type Session } from '../session.ts';
 import type { Workspace } from '../workspace.ts';
@@ -32,7 +33,7 @@ import { locationsOf, projectOfSession } from './workspaces.ts';
 export interface GitWorkflowDeps {
   readonly projects: Pick<ProjectRepository, 'byId'>;
   readonly tasks: Pick<TaskRepository, 'byId'>;
-  readonly sessions: Pick<SessionRepository, 'byId'>;
+  readonly sessions: Pick<SessionRepository, 'byId' | 'save' | 'listByWorkspace' | 'listByProject'>;
   readonly workspaces: WorkspaceRepository;
   /** 组合工作空间（多仓库）；容器会话按它 / 工作空间反推项目（#221 步骤 7）。 */
   readonly workspaceGroups: WorkspaceGroupRepository;
@@ -340,6 +341,9 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       ? { ...link, state: remote.state, headSha: remote.headSha ?? link.headSha, mergedAt: remote.mergedAt, url: remote.url || link.url, lastSyncedAt: deps.now() }
       : { ...link, lastSyncedAt: deps.now() };
     await deps.pullRequests.save(next);
+    if (next.state === 'merged' && link.state !== 'merged') {
+      await archiveAfterPullRequestMerged({ ...deps, cleanup: { pullRequests: deps.pullRequests } as never }, next).catch(() => 0);
+    }
     return next;
   }
 

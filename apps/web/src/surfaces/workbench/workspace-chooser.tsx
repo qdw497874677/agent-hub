@@ -23,11 +23,12 @@ export type WorkspaceChoice =
   /** 按项目配置在这台机器上现建一个隔离 worktree（新分支），准备命令跑完才起 agent。 */
   | { readonly type: 'new_worktree' }
   /** 多仓库项目：每个仓库各开一个 worktree，agent 在总目录里工作（docs/design/multi-repo.md §11.5）。 */
-  | { readonly type: 'new_group' };
+  | { readonly type: 'new_group'; readonly repoIds: readonly string[] };
 
 /** 选完了没有：「选已有目录」还没点目录不算。 */
 export function choiceReady(choice: WorkspaceChoice | null): boolean {
   if (choice === null) return false;
+  if (choice.type === 'new_group') return choice.repoIds.length >= 1;
   // 新建持久工作目录两种方式都得先选好目录（新建 = 选一个空文件夹 / 放仓库的地方；关联 = 已有目录）
   return !(choice.type === 'new_long_lived' && !choice.path);
 }
@@ -253,12 +254,12 @@ export function WorkspaceChooser({
               onSelect={() => onChoice({ type: 'new_worktree' })}
               onFixGit={() => setLinkSignal((value) => value + 1)}
             />
-            {groups && canvas.project.repos.length > 1 ? (
+            {groups && Boolean(canvas.project.primaryRepoId) && canvas.project.repos.length > 1 ? (
               <NewGroup
                 canvas={canvas}
                 machineName={machineName}
-                selected={choice?.type === 'new_group'}
-                onSelect={() => onChoice({ type: 'new_group' })}
+                choice={choice}
+                onChoice={onChoice}
               />
             ) : null}
             <NewLongLived
@@ -518,20 +519,30 @@ function NewWorktree({
 /**
  * 组合工作目录：项目有多个仓库时才会出现。每个仓库在新目录里各开一个 worktree，
  * 子目录名就是仓库名；agent 在总目录里工作，跨仓库的改动一次提交。
- * 只在 repos.length > 1 时挂载：单仓库项目用上面的隔离 worktree 就够了。
+ * 只在指定了主仓库且 repos.length > 1 时挂载。
  */
 function NewGroup({
   canvas,
   machineName,
-  selected,
-  onSelect
+  choice,
+  onChoice
 }: {
   canvas: CanvasDto;
   machineName: string;
-  selected: boolean;
-  onSelect: () => void;
+  choice: WorkspaceChoice | null;
+  onChoice: (choice: WorkspaceChoice) => void;
 }) {
   const repos = canvas.project.repos;
+  const primaryId = canvas.project.primaryRepoId ?? null;
+  const selected = choice?.type === 'new_group';
+  const repoIds = selected && choice.type === 'new_group' ? choice.repoIds : repos.map((repo) => repo.id);
+  const toggle = (id: string, on: boolean) => {
+    if (id === primaryId) return;
+    const next = on ? [...new Set([...repoIds, id])] : repoIds.filter((item) => item !== id);
+    if (primaryId && !next.includes(primaryId)) next.unshift(primaryId);
+    if (next.length === 0) return;
+    onChoice({ type: 'new_group', repoIds: next });
+  };
   return (
     <div className={`${rowClass(selected)} flex-col`}>
       <button
@@ -540,26 +551,37 @@ function NewGroup({
         aria-checked={selected}
         data-testid="ws-new-group"
         className="flex w-full items-start gap-2 text-left"
-        onClick={onSelect}
+        onClick={() => onChoice({ type: 'new_group', repoIds: repos.map((repo) => repo.id) })}
       >
         <Radio on={selected} />
         <span className="min-w-0 flex-1">
-          <span className="block text-body text-primary">新建组合工作目录（{repos.length} 个仓库）</span>
-          {selected ? (
-            <span className="mt-1 block text-meta text-secondary">
-              在 {machineName} 上准备 {repos.length} 个子目录：
-              <span className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-tertiary">
-                {repos.map((repo) => (
-                  <span key={repo.id} className="font-mono">
-                    {repo.name}
-                    {repo.defaultBranch ? `@${repo.defaultBranch}` : ''}
-                  </span>
-                ))}
-              </span>
-            </span>
-          ) : null}
+          <span className="block text-body text-primary">新建组合工作目录（{repoIds.length}/{repos.length}）</span>
         </span>
       </button>
+      {selected ? (
+        <div className="mt-1 ml-6 space-y-1 text-meta text-secondary">
+          <p>在 {machineName} 上，主仓库是工作目录，其他在 ../repos/ 下。</p>
+          {repos.map((repo) => {
+            const checked = repoIds.includes(repo.id);
+            const locked = repo.id === primaryId;
+            return (
+              <label key={repo.id} className="flex items-center gap-2" data-testid={`ws-group-repo-${repo.name}`}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={locked}
+                  onChange={(event) => toggle(repo.id, event.target.checked)}
+                />
+                <span className="font-mono">
+                  {repo.name}
+                  {locked ? '（主仓库）' : ''}
+                  {repo.defaultBranch ? `@${repo.defaultBranch}` : ''}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

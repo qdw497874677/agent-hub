@@ -114,6 +114,7 @@ export function toProject(row: Row): Project {
     name: str(row, 'name'),
     repo: primary === null ? null : { url: primary.url, defaultBranch: primary.defaultBranch },
     repos,
+    primaryRepoId: nullableStr(row, 'primary_repo_id'),
     description: nullableStr(row, 'description'),
     worktree: parseWorktree(nullableStr(row, 'worktree_config')),
     ...(row['preview_port'] == null ? {} : { previewPort: Number(row['preview_port']) }),

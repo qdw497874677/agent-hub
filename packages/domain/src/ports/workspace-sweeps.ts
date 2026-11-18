@@ -9,9 +9,29 @@ export interface CleanupPolicy {
   readonly taskEndedClean: boolean;
   /** 闲置 N 天（最近一次会话活动超过 N 天、没在跑）就清理；null = 关。默认关。 */
   readonly idleDays: number | null;
+  /**
+   * 人在界面上删会话时，是否默认同时拆掉独占的临时 worktree。
+   * 默认关：要再确认一次；开了就按确认框里预勾选的走。从不自动删会话。
+   */
+  readonly deleteWorktreeOnSessionDelete: boolean;
 }
 
-export const DEFAULT_CLEANUP_POLICY: CleanupPolicy = { prMerged: true, taskEndedClean: true, idleDays: null };
+export const DEFAULT_CLEANUP_POLICY: CleanupPolicy = {
+  prMerged: true,
+  taskEndedClean: true,
+  idleDays: null,
+  deleteWorktreeOnSessionDelete: false
+};
+
+/** 把缺字段的旧规则补上默认值（迁移 / 部分更新）。 */
+export function withPolicyDefaults(input: Partial<CleanupPolicy> | null | undefined): CleanupPolicy {
+  return {
+    prMerged: input?.prMerged ?? DEFAULT_CLEANUP_POLICY.prMerged,
+    taskEndedClean: input?.taskEndedClean ?? DEFAULT_CLEANUP_POLICY.taskEndedClean,
+    idleDays: input?.idleDays === undefined ? DEFAULT_CLEANUP_POLICY.idleDays : input.idleDays,
+    deleteWorktreeOnSessionDelete: input?.deleteWorktreeOnSessionDelete ?? DEFAULT_CLEANUP_POLICY.deleteWorktreeOnSessionDelete
+  };
+}
 export const IDLE_DAYS_MAX = 365;
 
 export type SweepAction = 'removed' | 'kept' | 'failed';

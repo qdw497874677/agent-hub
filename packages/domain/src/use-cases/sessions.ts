@@ -38,7 +38,7 @@ export interface DeriveCommand {
   readonly workerId?: string | null;
   /** 运行面板里选定的工作空间：会话就落在它所在的机器、在它的目录里干活。 */
   readonly workspaceId?: string | null;
-  /** 组合工作空间（多仓库）：给了就整组跟随；workspaceId 记 primary 成员（兼容），cwd 是容器根。 */
+  /** 组合工作空间（多仓库）：给了就整组跟随；workspaceId 记 primary 成员（兼容），cwd 是主仓库目录（老组仍是容器根）。 */
   readonly groupId?: string | null;
   /** 预分配的会话 id（组合建组时写进分支名的那个）；已存在则忽略。 */
   readonly sessionId?: string | null;
@@ -207,7 +207,7 @@ export async function deriveSessionUseCase(
 
   const session = { ...created.value, workerId: placed.value };
   await deps.sessions.save(session);
-  // 组合会话的 cwd 是容器根（locationOf）；单仓仍是 workspace.path。
+  // 组合会话的 cwd 是主仓库目录（locationOf；老组是容器根）；单仓仍是 workspace.path。
   const { root } = await locationOf(deps, project, session);
   const started = await startSessionUseCase(deps, { session, workspaceRoot: root, resume: null });
   if (!started.ok) return started;

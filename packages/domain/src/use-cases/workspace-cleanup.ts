@@ -1,7 +1,10 @@
 import { markKept, markRemoved, platformOwnsDirectory, type Workspace } from '../workspace.ts';
 import type { GitStatus } from '../ports/workspace-git.ts';
 import { asProjectId, asWorkspaceId, newId } from '../ids.ts';
-import { DEFAULT_CLEANUP_POLICY, IDLE_DAYS_MAX, type CleanupPolicy, type SweepItem } from '../ports/workspace-sweeps.ts';
+import { DEFAULT_CLEANUP_POLICY, IDLE_DAYS_MAX, withPolicyDefaults, type CleanupPolicy, type SweepItem } from '../ports/workspace-sweeps.ts';
+import { archiveSessionsQuietly, comboReadyToArchive } from './session-archive.ts';
+import type { WorkspaceGroup } from '../workspace-group.ts';
+import type { Session } from '../session.ts';
 import type { PullRequestLink } from '../ports/pull-requests.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
@@ -10,7 +13,7 @@ import type { Deps } from './deps.ts';
 import { gitFor } from './machine-dirs.ts';
 import { groupMemberRoot } from '../workspace-group.ts';
 
-type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'> & Partial<Pick<Deps, 'projects' | 'cleanup'>>;
+type CleanupDeps = Pick<Deps, 'git' | 'gateway' | 'now' | 'sessions' | 'tasks' | 'workspaces'> & Partial<Pick<Deps, 'projects' | 'cleanup' | 'workspaceGroups'>>;
 
 /** 删了会丢什么，说人话；都没有返回 null（§5 第 3 条）。 */
 export function unsavedReason(status: GitStatus): string | null {
@@ -58,16 +61,21 @@ export async function cleanupPolicyFor(deps: Partial<Pick<Deps, 'projects' | 'cl
   const store = deps.cleanup?.sweeps;
   if (!store || !projectId) return DEFAULT_CLEANUP_POLICY;
   const own = await store.policy('project', projectId);
-  if (own) return own;
+  if (own) return withPolicyDefaults(own);
   const project = deps.projects ? await deps.projects.byId(asProjectId(projectId)) : null;
   const team = project?.teamId ? await store.policy('team', project.teamId) : null;
-  return team ?? DEFAULT_CLEANUP_POLICY;
+  return withPolicyDefaults(team ?? DEFAULT_CLEANUP_POLICY);
 }
 
 export function normalizePolicy(input: Partial<CleanupPolicy>, base: CleanupPolicy = DEFAULT_CLEANUP_POLICY): Result<CleanupPolicy, DomainError> {
   const idle = input.idleDays === undefined ? base.idleDays : input.idleDays;
   if (idle !== null && (!Number.isInteger(idle) || idle < 1 || idle > IDLE_DAYS_MAX)) return err(invalid(`闲置天数要在 1–${IDLE_DAYS_MAX} 之间`));
-  return ok({ prMerged: input.prMerged ?? base.prMerged, taskEndedClean: input.taskEndedClean ?? base.taskEndedClean, idleDays: idle });
+  return ok({
+    prMerged: input.prMerged ?? base.prMerged,
+    taskEndedClean: input.taskEndedClean ?? base.taskEndedClean,
+    idleDays: idle,
+    deleteWorktreeOnSessionDelete: input.deleteWorktreeOnSessionDelete ?? base.deleteWorktreeOnSessionDelete
+  });
 }
 
 /** 合并了的 PR（同一工作空间，或同任务同分支）。 */
@@ -134,61 +142,27 @@ async function sweepOnce(
       (!scope.projectId || workspace.projectId === scope.projectId)
   );
   const policies = new Map<string, CleanupPolicy>();
-  for (const workspace of candidates) {
+  const policyOf = async (workspace: Workspace): Promise<CleanupPolicy> => {
     const key = workspace.projectId ?? '';
     if (!policies.has(key)) policies.set(key, await cleanupPolicyFor(deps, workspace.projectId));
-    const policy = policies.get(key) ?? DEFAULT_CLEANUP_POLICY;
-    const task = workspace.ownerTaskId ? await deps.tasks.byId(workspace.ownerTaskId) : null;
-    const ended = !task || FINISHED.has(task.status);
-    const merged = policy.prMerged ? await mergedPullRequest(deps, workspace) : null;
-    const triggers: string[] = [];
-    if (policy.taskEndedClean && ended) triggers.push(task ? `任务已${task.status === 'done' ? '完成' : '放弃'}` : '任务已不存在');
-    if (merged) triggers.push(`PR #${merged.number} 已合并`);
-    if (policy.idleDays !== null && deps.now() - (await lastActivity(deps, workspace)) > policy.idleDays * DAY_MS) triggers.push(`闲置超过 ${policy.idleDays} 天`);
-    if (triggers.length === 0) continue; // 任务还在做（或被重新打开）：继续用
-    if (await busy(deps, workspace)) {
-      skipped.push(workspace.id);
-      continue;
-    }
-    const git = await gitFor(deps, workspace.workerId);
-    const status = await git.status(workspace.path);
-    if (!status.ok) {
-      skipped.push(workspace.id); // 多半是机器离线：上线后再查
-      continue;
-    }
-    const mergedHead = merged?.headSha ?? null;
-    const reason = protectedReason(status.value, mergedHead);
-    if (reason) {
-      if (workspace.state !== 'kept' || workspace.keptReason !== reason) {
-        await deps.workspaces.save(markKept(workspace, reason, deps.now()));
-        record(workspace, 'kept', reason, status.value.sizeBytes);
-      }
-      kept.push(workspace.id);
-      continue;
-    }
-    // Worker 那边删之前还会再查一次（hub 以为干净但其实不干净时以它为准）
-    const squashed = mergedHead !== null && status.value.head === mergedHead && status.value.unpushed > 0;
-    // 检查点 ref 在仓库公共目录里，目录删了就够不着了：先删（D1，删工作空间时一起删）
-    if (deps.cleanup?.dropCheckpoints) {
-      for (const session of await deps.sessions.listByWorkspace(workspace.id)) await deps.cleanup.dropCheckpoints(session.id).catch(() => undefined);
-    }
-    const outcome = await git.remove(workspace.path, removeKind(workspace), squashed && mergedHead ? { mergedHead } : {});
-    if (!outcome.ok) {
-      failed.push(workspace.id);
-      record(workspace, 'failed', outcome.error.message, status.value.sizeBytes);
-      continue;
-    }
-    if (outcome.value.removed) {
-      const gone = markRemoved(workspace, deps.now());
-      if (gone.ok) await deps.workspaces.save(gone.value);
-      removed.push(workspace.id);
-      record(workspace, 'removed', triggers.join('；'), status.value.sizeBytes);
+    return policies.get(key) ?? DEFAULT_CLEANUP_POLICY;
+  };
+
+  const seenGroups = new Set<string>();
+  const solos: Workspace[] = [];
+  for (const workspace of candidates) {
+    if (workspace.groupId) {
+      if (seenGroups.has(workspace.groupId)) continue;
+      seenGroups.add(workspace.groupId);
+      await sweepGroup(deps, workspace.groupId, { record, removed, kept, skipped, failed, policyOf });
     } else {
-      await deps.workspaces.save(markKept(workspace, outcome.value.reason, deps.now()));
-      kept.push(workspace.id);
-      record(workspace, 'kept', outcome.value.reason, status.value.sizeBytes);
+      solos.push(workspace);
     }
   }
+  for (const workspace of solos) {
+    await sweepSolo(deps, workspace, { record, removed, kept, skipped, failed, policyOf });
+  }
+
   const store = deps.cleanup?.sweeps;
   const manual = scope.trigger === 'manual';
   if (store && (items.length > 0 || manual)) {
@@ -198,6 +172,211 @@ async function sweepOnce(
     );
   }
   return { removed, kept, skipped, failed, runId: store && (items.length > 0 || manual) ? runId : null };
+}
+
+type SweepSink = {
+  readonly record: (workspace: Workspace, action: SweepItem['action'], reason: string, sizeBytes: number | null | undefined) => void;
+  readonly removed: string[];
+  readonly kept: string[];
+  readonly skipped: string[];
+  readonly failed: string[];
+  readonly policyOf: (workspace: Workspace) => Promise<CleanupPolicy>;
+};
+
+async function groupSessions(deps: CleanupDeps, group: WorkspaceGroup): Promise<Session[]> {
+  return (await deps.sessions.listByProject(group.projectId)).filter((session) => session.groupId === group.id);
+}
+
+async function workspaceSessions(deps: CleanupDeps, workspace: Workspace): Promise<Session[]> {
+  return deps.sessions.listByWorkspace(workspace.id);
+}
+
+/** 收起本轮刚发生时，这一轮只收起、不拆目录：下一轮清理再删干净的 worktree。 */
+async function archiveIfNeeded(deps: CleanupDeps, sessions: readonly Session[], should: boolean): Promise<boolean> {
+  if (!should) return false;
+  return (await archiveSessionsQuietly(deps, sessions)) > 0;
+}
+
+async function triggersOf(
+  deps: CleanupDeps,
+  policy: CleanupPolicy,
+  workspace: Workspace,
+  merged: { number: number } | null,
+  sessions: readonly Session[]
+): Promise<string[]> {
+  const task = workspace.ownerTaskId ? await deps.tasks.byId(workspace.ownerTaskId) : null;
+  const ended = !task || FINISHED.has(task.status);
+  const triggers: string[] = [];
+  if (policy.taskEndedClean && ended) triggers.push(task ? `任务已${task.status === 'done' ? '完成' : '放弃'}` : '任务已不存在');
+  if (merged) triggers.push(`PR #${merged.number} 已合并`);
+  if (policy.idleDays !== null && deps.now() - (await lastActivity(deps, workspace)) > policy.idleDays * DAY_MS) {
+    triggers.push(`闲置超过 ${policy.idleDays} 天`);
+  }
+  if (sessions.length > 0 && sessions.every((session) => session.settledAt != null)) triggers.push('会话已收起');
+  return triggers;
+}
+
+async function sweepSolo(deps: CleanupDeps, workspace: Workspace, sink: SweepSink): Promise<void> {
+  const policy = await sink.policyOf(workspace);
+  const sessions = await workspaceSessions(deps, workspace);
+  const merged = policy.prMerged ? await mergedPullRequest(deps, workspace) : null;
+  // 有仍在活跃列表的会话、且因 PR 合并刚命中：先收起，这一轮不拆目录。
+  if (merged && (await archiveIfNeeded(deps, sessions, true))) return;
+  const triggers = await triggersOf(deps, policy, workspace, merged, sessions);
+  if (triggers.length === 0) return;
+  if (await busy(deps, workspace)) {
+    sink.skipped.push(workspace.id);
+    return;
+  }
+  const git = await gitFor(deps, workspace.workerId);
+  const status = await git.status(workspace.path);
+  if (!status.ok) {
+    sink.skipped.push(workspace.id);
+    return;
+  }
+  const mergedHead = merged?.headSha ?? null;
+  const reason = protectedReason(status.value, mergedHead);
+  if (reason) {
+    if (workspace.state !== 'kept' || workspace.keptReason !== reason) {
+      await deps.workspaces.save(markKept(workspace, reason, deps.now()));
+      sink.record(workspace, 'kept', reason, status.value.sizeBytes);
+    }
+    sink.kept.push(workspace.id);
+    return;
+  }
+  const squashed = mergedHead !== null && status.value.head === mergedHead && status.value.unpushed > 0;
+  if (deps.cleanup?.dropCheckpoints) {
+    for (const session of await deps.sessions.listByWorkspace(workspace.id)) await deps.cleanup.dropCheckpoints(session.id).catch(() => undefined);
+  }
+  const outcome = await git.remove(workspace.path, removeKind(workspace), squashed && mergedHead ? { mergedHead } : {});
+  if (!outcome.ok) {
+    sink.failed.push(workspace.id);
+    sink.record(workspace, 'failed', outcome.error.message, status.value.sizeBytes);
+    return;
+  }
+  if (outcome.value.removed) {
+    const gone = markRemoved(workspace, deps.now());
+    if (gone.ok) await deps.workspaces.save(gone.value);
+    sink.removed.push(workspace.id);
+    sink.record(workspace, 'removed', triggers.join('；'), status.value.sizeBytes);
+  } else {
+    await deps.workspaces.save(markKept(workspace, outcome.value.reason, deps.now()));
+    sink.kept.push(workspace.id);
+    sink.record(workspace, 'kept', outcome.value.reason, status.value.sizeBytes);
+  }
+}
+
+/**
+ * 组合组整组处理：从不单独拆掉一个成员。
+ * 只有每个成员的 PR 已合并（或这个仓库没有改动）、全部干净、且没有会话在跑，才拆整组。
+ */
+async function sweepGroup(deps: CleanupDeps, groupId: string, sink: SweepSink): Promise<void> {
+  const group = deps.workspaceGroups ? await deps.workspaceGroups.byId(groupId as never) : null;
+  if (!group) return;
+  const members: Workspace[] = [];
+  for (const member of group.members) {
+    const workspace = await deps.workspaces.byId(member.workspaceId);
+    if (workspace && (workspace.state === 'ready' || workspace.state === 'kept')) members.push(workspace);
+  }
+  if (members.length === 0) return;
+
+  const policy = await sink.policyOf(members[0]!);
+  const sessions = await groupSessions(deps, group);
+  if (sessions.some((session) => session.status === 'running') || (await Promise.all(members.map((workspace) => busy(deps, workspace)))).some(Boolean)) {
+    for (const workspace of members) sink.skipped.push(workspace.id);
+    return;
+  }
+
+  const rows: { workspace: Workspace; name: string; merged: Awaited<ReturnType<typeof mergedPullRequest>>; status: GitStatus; reason: string | null }[] = [];
+  for (const workspace of members) {
+    const member = group.members.find((item) => item.workspaceId === workspace.id);
+    const git = await gitFor(deps, workspace.workerId);
+    const status = await git.status(workspace.path);
+    if (!status.ok) {
+      for (const item of members) sink.skipped.push(item.id);
+      return;
+    }
+    const merged = policy.prMerged ? await mergedPullRequest(deps, workspace) : null;
+    rows.push({
+      workspace,
+      name: member?.name ?? workspace.path,
+      merged,
+      status: status.value,
+      reason: protectedReason(status.value, merged?.headSha ?? null)
+    });
+  }
+
+  const allClean = rows.every((row) => row.reason === null);
+  const allResolved = await comboReadyToArchive(deps, group);
+  if (allResolved && (await archiveIfNeeded(deps, sessions, true))) return;
+
+  const mergedTrigger = allResolved ? '各仓库 PR 已合并或无改动' : null;
+  const sample = members[0]!;
+  const triggers = await triggersOf(deps, policy, sample, null, sessions);
+  if (mergedTrigger) triggers.push(mergedTrigger);
+  if (triggers.length === 0) return;
+
+  if (!allClean || !allResolved) {
+    const reason =
+      rows
+        .filter((row) => row.reason)
+        .map((row) => `${row.name}：${row.reason}`)
+        .join('；') || '还有仓库的改动未合并';
+    for (const row of rows) {
+      if (row.workspace.state !== 'kept' || row.workspace.keptReason !== reason) {
+        await deps.workspaces.save(markKept(row.workspace, reason, deps.now()));
+        sink.record(row.workspace, 'kept', reason, row.status.sizeBytes);
+      }
+      sink.kept.push(row.workspace.id);
+    }
+    return;
+  }
+
+  // 整组拆除：先每个成员 worktree remove，再删容器和组行。
+  for (const row of rows) {
+    const mergedHead = row.merged?.headSha ?? null;
+    const squashed = mergedHead !== null && row.status.head === mergedHead && row.status.unpushed > 0;
+    if (deps.cleanup?.dropCheckpoints) {
+      for (const session of await deps.sessions.listByWorkspace(row.workspace.id)) {
+        await deps.cleanup.dropCheckpoints(session.id).catch(() => undefined);
+      }
+    }
+    const git = await gitFor(deps, row.workspace.workerId);
+    const outcome = await git.remove(row.workspace.path, 'worktree', squashed && mergedHead ? { mergedHead } : {});
+    if (!outcome.ok) {
+      sink.failed.push(row.workspace.id);
+      sink.record(row.workspace, 'failed', outcome.error.message, row.status.sizeBytes);
+      return;
+    }
+    if (!outcome.value.removed) {
+      const reason = outcome.value.reason;
+      await deps.workspaces.save(markKept(row.workspace, reason, deps.now()));
+      // 原子性：有一个拆不掉，余下也整组留下
+      for (const other of rows) {
+        if (other.workspace.id === row.workspace.id) continue;
+        if (other.workspace.state !== 'kept' || other.workspace.keptReason !== reason) {
+          await deps.workspaces.save(markKept(other.workspace, reason, deps.now()));
+          sink.record(other.workspace, 'kept', reason, other.status.sizeBytes);
+        }
+        sink.kept.push(other.workspace.id);
+      }
+      sink.kept.push(row.workspace.id);
+      sink.record(row.workspace, 'kept', reason, row.status.sizeBytes);
+      return;
+    }
+    const gone = markRemoved(row.workspace, deps.now());
+    if (gone.ok) await deps.workspaces.save(gone.value);
+    sink.removed.push(row.workspace.id);
+    sink.record(row.workspace, 'removed', triggers.join('；'), row.status.sizeBytes);
+  }
+
+  // 有会话还挂着这个组时保留组行和容器：拆掉的是 worktree，重新打开时按原分支加回来。
+  const leftover = await groupSessions(deps, group);
+  const groupGit = group.workerId ? deps.gateway.groups?.(group.workerId) : undefined;
+  if (groupGit && deps.workspaceGroups && leftover.length === 0) {
+    await groupGit.remove({ root: group.root, id: group.id }).catch(() => undefined);
+    await deps.workspaceGroups.remove(group.id);
+  }
 }
 
 /** 删之前给人看的：会丢什么（「强制删除」的二次确认里列出来）。 */

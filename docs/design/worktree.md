@@ -111,6 +111,7 @@ prepareTemporaryWorkspace
 - 执行身份是 worker 用户；目录必须落在 `WORKER_ROOTS`；超时后杀进程组（`pidtree`，和终端一致）。
 - 日志返回前过一遍现有脱敏（`gitMessage` 同类：抹 `user:token@`、截行数）。
 - 这条能力等价于「项目管理员可以在机器上跑一条命令」——与今天「能在终端里跑」同一信任级别，但不引入「任何成员随时跑任意命令」的新面。
+- 组合工作空间（见 `docs/design/multi-repo.md`）：准备命令只在主仓库 worktree 上跑一次，附加仓不跑。不自动执行仓库里的 `.agents/setup`；若要用这个约定，把例如 `test -x .agents/setup && .agents/setup` 写进项目准备命令。老的平铺组（layout=flat）仍对每个成员各跑一次。
 
 ## 9. 验证
 

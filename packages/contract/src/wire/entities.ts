@@ -180,8 +180,10 @@ export const projectSchema = z.object({
   name: z.string(),
   /** 项目的 git 仓库；没有是 null。过渡期字段，= repos[0] 的 url/branch。 */
   repo: z.object({ url: z.string(), defaultBranch: z.string().nullable() }).nullable().default(null),
-  /** 项目绑定的仓库清单（0..8，第一个是 primary）。 */
+  /** 项目绑定的仓库清单（0..8）。 */
   repos: z.array(projectRepoSchema).default([]),
+  /** 组合会话指定的主仓库；null / 省略 = 未指定，不开组合会话。 */
+  primaryRepoId: z.string().nullable().optional(),
   /** 项目说明（markdown）。 */
   description: z.string().nullable().default(null),
   /** 新任务默认档位 + 准备命令；null = 没配。 */

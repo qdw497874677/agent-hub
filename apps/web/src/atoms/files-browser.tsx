@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { currentTheme } from '../shell/theme.ts';
 import { Notice } from './notice.tsx';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { filesApi, RequestFailed, type FileEntryDto } from '../shell/api.ts';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { filesApi, RequestFailed, type FileEntryDto, type FilesContextMemberDto } from '../shell/api.ts';
 import { clampListWidth, crumbs, FILES_LIST_WIDTH_KEY, FILES_QUERY, filesErrorText, filesRefetch, readListWidth, shown, decodeText, GIT_LABEL, humanSize, languageOf, shortPath, touches, watchPaths } from './files-core.ts';
 import { filesInvalidationKeys, filesKeys, type FilesKeys } from '../shell/query-keys.ts';
 import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, selectionRange, selectionRef, toggleLine, type DiffRow, type DiffSide, type LineSelection } from './diff-selection.ts';
@@ -15,7 +15,7 @@ import { inSelection, isWholeFileAddition, diffWindowRange, parsePatchLines, sel
  * - 不缓存（决定 8）：机器不在线就如实显示「机器离线」。
  */
 type Base = string; // 'session' | 'head' | 'branch' | 'turn' | 'turn:<n>'
-type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null };
+type Opened = { path: string; confirmed: boolean; diff: boolean; line?: number | null; member?: string | null };
 /** 从对话里的工具路径跳过来：打开这个文件，知道行号就滚到那一行。nonce 变了就再跳一次。 */
 export type Reveal = { path: string; line: number | null; nonce: number };
 
@@ -53,10 +53,12 @@ type Props = {
   onQuote?: (ref: string) => void;
   /** 组合会话的仓库切换条，画在文件 / 改动页顶部。 */
   switcher?: ReactNode;
+  /** 组合会话全部成员：改动页按仓库汇总。 */
+  members?: readonly FilesContextMemberDto[];
 };
 
 /** 会话「文件 / 改动」标签页的内容（详情 → 浏览文件 也是切到这里，旧的全屏浮层已去掉）。 */
-export function FilesBrowser({ sessionId, workspaceId, member = null, status, tab, reveal = null, base: wanted = null, onQuote, switcher = null }: Props) {
+export function FilesBrowser({ sessionId, workspaceId, member = null, status, tab, reveal = null, base: wanted = null, onQuote, switcher = null, members = [] }: Props) {
   const client = useQueryClient();
   const keys = filesKeys(workspaceId, sessionId);
   const wide = useWide();
@@ -87,6 +89,15 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
   }, [reveal?.nonce]);
 
   const changes = useQuery({ ...fresh, queryKey: keys.changes(base), queryFn: () => filesApi.changes(sessionId, base, member) });
+  const aggregate = members.length > 1 && tab === 'changes';
+  const groupedChanges = useQueries({
+    queries: members.map((item) => ({
+      ...fresh,
+      enabled: aggregate,
+      queryKey: ['files', sessionId, 'changes', base, item.workspaceId],
+      queryFn: () => filesApi.changes(sessionId, base, item.workspaceId)
+    }))
+  });
   const turns = useQuery({ ...fresh, queryKey: keys.turns(), queryFn: () => filesApi.turns(sessionId, member) });
   const context = useQuery({ queryKey: keys.context(), queryFn: () => filesApi.context(sessionId, member), staleTime: 15_000 });
   const others = context.data?.otherProjectSessions ?? 0;
@@ -165,10 +176,12 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, workspaceId, member, pathsKey, client]);
 
-  const open = (entry: { path: string; sensitive?: boolean }, diff = false) => {
+  const open = (entry: { path: string; sensitive?: boolean; member?: string | null }, diff = false) => {
     if (entry.sensitive && !window.confirm(`「${entry.path}」可能含密钥或凭据。确定要打开吗？（会记入审计）`)) return;
-    setOpened({ path: entry.path, confirmed: Boolean(entry.sensitive), diff });
+    setOpened({ path: entry.path, confirmed: Boolean(entry.sensitive), diff, member: entry.member ?? null });
   };
+  const activeMember = opened?.member ?? member;
+  const activeKeys = filesKeys(activeMember ?? workspaceId, sessionId);
   const toggle = (path: string) =>
     setExpanded((current) => {
       const next = new Set(current);
@@ -263,7 +276,37 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
                   {changed?.commit ? <span className="font-mono">{changed.commit.slice(0, 8)}</span> : null}
                 </div>
                 <RootPath root={root} wide={wide} />
-                {changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
+                {aggregate ? (
+                  groupedChanges.some((item) => item.error) ? (
+                    <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(groupedChanges.find((item) => item.error)?.error)}</p>
+                  ) : null
+                ) : changes.error ? <p className="px-3 py-2 text-meta text-rust" data-testid="files-error">{problem(changes.error)}</p> : null}
+                {aggregate ? (
+                  members.every((_, index) => (shown(groupedChanges[index]!)?.files.length ?? 0) === 0) ? (
+                    <p className="px-3 py-2 text-meta text-tertiary">没有改动</p>
+                  ) : (
+                    members.map((item, index) => {
+                      const group = shown(groupedChanges[index]!);
+                      const files = group?.files ?? [];
+                      if (files.length === 0) return null;
+                      return (
+                        <div key={item.workspaceId} className="mb-1" data-testid={`changes-group-${item.name}`}>
+                          <p className="px-3 py-1 font-mono text-meta text-secondary">{item.name}（{files.length}）</p>
+                          {files.map((f) => (
+                            <button key={`${item.workspaceId}:${f.path}`} onClick={() => open({ path: f.path, member: item.workspaceId }, true)} data-testid="change-row"
+                              className={`flex h-7 w-full items-center gap-2 rounded-md px-2 text-left transition-colors [scroll-margin-block:8px] hover:bg-hair/40 ${opened && opened.path === f.path && (opened.member ?? member) === item.workspaceId ? 'bg-hair/60' : ''}`}>
+                              <span className="w-3 shrink-0 font-mono text-meta text-warning">{GIT_LABEL[f.status] ?? '?'}</span>
+                              <span className="min-w-0 flex-1 truncate font-mono text-sub text-secondary">{f.path}</span>
+                              <span className="shrink-0 font-mono text-meta text-sage">+{f.additions}</span>
+                              <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })
+                  )
+                ) : (
+                  <>
                 {changed?.files.length === 0 ? (
                   // 「整个会话」要有会话开始时的 git 基准；没有基准时空列表不等于「没改」，照实说原因
                   changed.base === 'session' && changed.commit === null ? (
@@ -283,6 +326,8 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
                     <span className="shrink-0 font-mono text-meta text-rust">−{f.deletions}</span>
                   </button>
                 ))}
+                  </>
+                )}
               </div>
             )}
           </aside>
@@ -310,8 +355,8 @@ export function FilesBrowser({ sessionId, workspaceId, member = null, status, ta
         {wide || opened ? (
           <main className="min-w-0 flex-1 overflow-auto">
             {opened ? (
-              opened.diff ? <DiffView sessionId={sessionId} member={member} keys={keys} path={opened.path} base={base} wide={wide} root={root} onQuote={onQuote} onBack={() => setOpened(null)} /> :
-              <FileView sessionId={sessionId} member={member} keys={keys} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
+              opened.diff ? <DiffView sessionId={sessionId} member={activeMember} keys={activeKeys} path={opened.path} base={base} wide={wide} root={root} onQuote={onQuote} onBack={() => setOpened(null)} /> :
+              <FileView sessionId={sessionId} member={activeMember} keys={activeKeys} opened={opened} wide={wide} root={root} onBack={() => setOpened(null)} onCrumb={(p) => { setExpanded((s) => new Set([...s, ...crumbs(p).map((c) => c.path)])); setOpened(null); }} />
             ) : (
               <p className="p-6 text-sub text-tertiary">选一个文件查看</p>
             )}

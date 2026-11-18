@@ -20,7 +20,7 @@ import { backgroundActivityText } from '../../atoms/background-activity.ts';
 import { useBackgroundActivity } from '../../atoms/use-background-activity.ts';
 import { useTurnProgress } from '../../atoms/use-turn-progress.ts';
 import { sessionCommands } from '../../atoms/commands.ts';
-import { useIsFetching, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useIsFetching, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FILES_QUERY, shown } from '../../atoms/files-core.ts';
 import { filesInvalidationKeys, filesKeys, gitKeys, sessionKeys, taskKeys } from '../../shell/query-keys.ts';
 import { filesApi } from '../../shell/api.ts';
@@ -228,6 +228,34 @@ export function FocusView({
   // 组合会话按当前选中的成员仓库取 git / 文件；单仓 member 为 null，行为与原来一样。
   const repo = useSessionRepo(session.id, session.workspaceId);
   const repoWorkspaceId = repo.selected ?? session.workspaceId;
+  const [addingRepo, setAddingRepo] = useState<string | null>(null);
+  const addableRepos = (canvas.project.repos ?? []).filter(
+    (item) => !repo.members.some((member) => member.repoId === item.id || member.name === item.name)
+  );
+  const addRepo = async (repoId: string) => {
+    if (groupId === null) return;
+    setAddingRepo(repoId);
+    try {
+      await api.addWorkspaceGroupMember(groupId, { repoId });
+      await Promise.all([
+        queries.invalidateQueries({ queryKey: ['files', session.id, 'combo-context'] }),
+        queries.invalidateQueries({ queryKey: ['workspace-group', groupId] })
+      ]);
+    } finally {
+      setAddingRepo(null);
+    }
+  };
+  const switcher = repo.isCombo || addableRepos.length > 0 ? (
+    <RepoSwitcher
+      members={repo.members}
+      selected={repo.selected}
+      onSelect={repo.setSelected}
+      statuses={repo.statuses}
+      addable={addableRepos}
+      onAdd={(id) => void addRepo(id)}
+      adding={addingRepo}
+    />
+  ) : null;
   // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
   const fileKeys = filesKeys(repoWorkspaceId, session.id);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
@@ -427,13 +455,21 @@ export function FocusView({
     void queries.invalidateQueries({ queryKey: sessionKeys.environment(session.id) }, { cancelRefetch: false });
   }, [status, session.id, repoWorkspaceId, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
-  const sessionChanges = shown(useQuery({
-    ...FILES_QUERY,
-    queryKey: fileKeys.changes('session'),
-    queryFn: () => filesApi.changes(session.id, 'session', repo.selected)
-  }));
+  const changeQueries = useQueries({
+    queries: (repo.isCombo && repo.members.length > 0 ? repo.members : [{ workspaceId: repo.selected ?? repoWorkspaceId, state: 'ready' as const }]).map((item) => ({
+      ...FILES_QUERY,
+      queryKey: [...fileKeys.changes('session'), item.workspaceId],
+      queryFn: () => filesApi.changes(session.id, 'session', repo.isCombo ? item.workspaceId : repo.selected),
+      enabled: !('state' in item) || item.state === 'ready'
+    }))
+  });
   // 没有 git 基准（非 git 目录）时算不出改动：标签上不写「改动 0」，免得读成「agent 什么都没改」
-  const changeCount = sessionChanges === undefined || sessionChanges.commit === null ? undefined : sessionChanges.files.length;
+  const changeCount = (() => {
+    const rows = changeQueries.map((item) => shown(item));
+    if (rows.some((row) => row === undefined)) return undefined;
+    if (rows.every((row) => row?.commit === null)) return undefined;
+    return rows.reduce((sum, row) => sum + (row?.files.length ?? 0), 0);
+  })();
   const workspace = canvas.workspaces.find((candidate) => candidate.id === repoWorkspaceId)
     ?? canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
   // 和 OpenCode 一样把当前分支放在输入框旁边；分支可能被 agent 切换，所以回合结束后刷新。
@@ -842,7 +878,7 @@ export function FocusView({
       {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
       <AttentionAutoAck sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
-      {gitOpen ? <GitDialog sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} taskId={session.taskId} onClose={() => setGitOpen(false)} switcher={repo.isCombo ? <RepoSwitcher members={repo.members} selected={repo.selected} onSelect={repo.setSelected} statuses={repo.statuses} /> : null} /> : null}
+      {gitOpen ? <GitDialog sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} taskId={session.taskId} onClose={() => setGitOpen(false)} switcher={switcher} /> : null}
       {subagentPath.length > 0 ? (
         <SubagentPanel
           blocks={blocks}
@@ -902,7 +938,7 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} switcher={repo.isCombo ? <RepoSwitcher members={repo.members} selected={repo.selected} onSelect={repo.setSelected} statuses={repo.statuses} /> : null} />
+            <FilesBrowser tab={t} sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} switcher={switcher} members={repo.members} />
           </div>
         ) : null
       )}
@@ -1137,9 +1173,7 @@ export function FocusView({
                 </div>
               ) : <span />}
               <div className="flex min-w-0 shrink-0 items-center gap-3">
-                {repo.isCombo ? (
-                  <RepoSwitcher members={repo.members} selected={repo.selected} onSelect={repo.setSelected} statuses={repo.statuses} />
-                ) : null}
+                {switcher}
                 {gitState?.isGit ? (
                   <button
                     type="button"

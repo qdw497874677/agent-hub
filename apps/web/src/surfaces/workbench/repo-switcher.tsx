@@ -72,19 +72,31 @@ function statusText(status: RepoStatus | undefined): string {
   return bits.join(' · ');
 }
 
-/** 组合会话的仓库切换：只在 git 相关表面出现；单仓不渲染。 */
+export interface AddableRepo {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** 组合会话的仓库切换：只在 git 相关表面出现；单仓不渲染。一员组合在还能加仓时也显示。 */
 export function RepoSwitcher({
   members,
   selected,
   onSelect,
-  statuses
+  statuses,
+  addable = [],
+  onAdd,
+  adding = null
 }: {
   members: readonly FilesContextMemberDto[];
   selected: string | null;
   onSelect: (workspaceId: string) => void;
   statuses: Record<string, RepoStatus>;
+  addable?: readonly AddableRepo[];
+  onAdd?: (repoId: string) => void;
+  adding?: string | null;
 }) {
-  if (members.length < 2) return null;
+  const [open, setOpen] = useState(false);
+  if (members.length < 2 && addable.length === 0) return null;
   return (
     <div data-testid="repo-switcher" className="flex flex-wrap items-center gap-1" role="tablist" aria-label="仓库">
       {members.map((member) => {
@@ -109,6 +121,38 @@ export function RepoSwitcher({
           </button>
         );
       })}
+      {addable.length > 0 && onAdd ? (
+        <div className="relative">
+          <button
+            type="button"
+            className="rounded-sm border border-hair px-1.5 py-0.5 text-meta text-secondary hover:border-strong"
+            data-testid="repo-add"
+            disabled={adding !== null}
+            onClick={() => setOpen((value) => !value)}
+          >
+            {adding ? '添加中…' : '添加仓库'}
+          </button>
+          {open ? (
+            <div className="absolute z-20 mt-1 min-w-[8rem] rounded-sm border border-hair bg-card py-1 shadow-sm" data-testid="repo-add-menu">
+              {addable.map((repo) => (
+                <button
+                  type="button"
+                  key={repo.id}
+                  className="block w-full px-2 py-1 text-left font-mono text-meta text-secondary hover:bg-hair/40 disabled:opacity-40"
+                  data-testid={`repo-add-${repo.name}`}
+                  disabled={adding !== null}
+                  onClick={() => {
+                    setOpen(false);
+                    onAdd(repo.id);
+                  }}
+                >
+                  {repo.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
