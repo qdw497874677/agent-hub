@@ -182,13 +182,18 @@ export function DeriveDialog({
   });
   // 模型框的空值项：状态为空时显式画出来，别让浏览器把第一项画成「已选」（见 emptyModelOption）
   const emptyModel = emptyModelOption(offered.models, model, hubCovers(workers.byId(machine), agentId, hubProtocols));
-  // 项目默认隔离（docs/design/worktree.md §2 §3）：没选过任何东西时，替用户选上「新建隔离 worktree」。
+  // 多仓项目默认新建组合工作目录；否则若项目默认隔离，替用户选上「新建隔离 worktree」。
   const projectIsolated = canvas.project.worktree?.mode === 'isolated';
+  const multiRepo = (canvas.project.repos?.length ?? 0) > 1;
   const [modeTouched, setModeTouched] = useState(false);
   useEffect(() => {
-    if (modeTouched || !projectIsolated || choice !== null) return;
-    setChoice({ type: 'new_worktree' });
-  }, [projectIsolated, modeTouched, choice]);
+    if (modeTouched || choice !== null) return;
+    if (multiRepo) {
+      setChoice({ type: 'new_group' });
+      return;
+    }
+    if (projectIsolated) setChoice({ type: 'new_worktree' });
+  }, [projectIsolated, multiRepo, modeTouched, choice]);
   const [phase, setPhase] = useState<'idle' | 'preparing' | 'starting'>('idle');
   /** 组合工作目录准备失败时，主按钮不重复建组：让下面的「重试准备」处理这一组。 */
   const groupFailed = choice?.type === 'new_group' && group !== null && group.state === 'failed';

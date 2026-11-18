@@ -1,7 +1,8 @@
 import { principalOfSubject, type Subject } from '../access.ts';
 import type { Location, Project } from '../project.ts';
+import { recurseSubmodules } from '../project.ts';
 import type { WorkspaceGroup } from '../workspace-group.ts';
-import { groupMemberRoot, primaryMember } from '../workspace-group.ts';
+import { groupMemberRoot } from '../workspace-group.ts';
 import { isContainerSession, type Session } from '../session.ts';
 import { concurrencyOf, isUsable, newWorkspace, normalizePath, type Workspace } from '../workspace.ts';
 import { folderNameProblem, insideRoots, MANAGED_DIR, projectSlug } from '../directories.ts';
@@ -68,11 +69,10 @@ export async function locationOf(
   session: Pick<Session, 'workerId' | 'workspaceId'> & { readonly groupId?: WorkspaceGroupId | null } | null
 ): Promise<Location> {
   if (session?.groupId && deps.workspaceGroups) {
-    // 组合工作空间：容器不是仓库，指到 primary 成员的目录，git / 文件 / 终端都还在真实仓库里干活。
+    // 组合工作空间：agent / 终端的 cwd 是容器根，各个仓库是它下面的子目录。
+    // git / 提交仍按成员仓库走（locationsOf + member），不能在容器根上跑。
     const group = await deps.workspaceGroups.byId(session.groupId);
-    const primary = group === null ? null : primaryMember(group);
-    const primaryRoot = group === null || primary === null ? null : groupMemberRoot(group, primary.workspaceId);
-    if (group !== null && primaryRoot !== null) return { workerId: group.workerId, root: primaryRoot };
+    if (group !== null && group.root !== '') return { workerId: group.workerId, root: group.root };
   }
   if (session?.workspaceId) {
     const workspace = await deps.workspaces.byId(session.workspaceId);
@@ -314,8 +314,16 @@ export async function prepareTeamWorkspace(
     if (!place.ok) return place;
     if (command.repo) {
       // 有仓库：把它下载到选的目录 / 托管目录（默认用那台机器自己的 git 凭据；空目录也能直接 clone 进去）
-      const auth = (await deps.repoAuth?.forUrl(machine.workerId, command.repo.url)) ?? undefined;
-      const cloned = await git.clone({ repoUrl: command.repo.url, parent: place.value.parent, name: place.value.name, branch: command.repo.branch, ...(auth ? { auth } : {}) });
+      const origin = command.originProjectId ? await deps.projects.byId(command.originProjectId) : null;
+      const auth = (await deps.repoAuth?.forUrl(machine.workerId, command.repo.url, command.originProjectId)) ?? undefined;
+      const cloned = await git.clone({
+        repoUrl: command.repo.url,
+        parent: place.value.parent,
+        name: place.value.name,
+        branch: command.repo.branch,
+        ...(auth ? { auth } : {}),
+        ...(origin && recurseSubmodules(origin) ? { recurseSubmodules: true } : {})
+      });
       if (!cloned.ok) return cloned;
       path = cloned.value.path;
       branch = cloned.value.branch;

@@ -192,6 +192,8 @@ export const projectSchema = z.object({
   checks: z.array(z.string()).max(5).default([]),
   /** 项目默认引用的资产组合（按顺序叠加，最多 8 个）。 */
   assetSetIds: z.array(z.string()).max(8).default([]),
+  /** 克隆 / 建 worktree 时是否递归初始化子模块；省略或 off = 不拉。只影响之后新建的 checkout。 */
+  submodules: z.enum(['off', 'recursive']).optional(),
   createdAt: epochMs
 });
 

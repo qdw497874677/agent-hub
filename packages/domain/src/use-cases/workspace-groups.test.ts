@@ -137,7 +137,8 @@ test('建组：每个仓库一个成员，路径 <root>/<name>，全部就绪', 
     assert.equal(workspace.source, 'worktree');
     assert.equal(workspace.ownerTaskId, w.task.id);
     assert.equal(workspace.workerId, 'remote-1');
-    assert.match(workspace.branch ?? '', new RegExp(`^agent-hub/${member.name}-[0-9a-f]{4}$`));
+    assert.ok(group.sessionId);
+    assert.equal(workspace.branch, `agent-hub/${member.name}-${group.sessionId.replace(/-/g, '').slice(0, 12)}`);
     assert.ok(workspace.baseWorkspaceId, '成员要记着是从哪个长期空间开出来的');
     assert.equal(workspace.state, 'ready');
   }
@@ -253,4 +254,5 @@ test('派生会话：给 groupId 就跟着整组走，workspaceId 取 primary �
   assert.ok(derived.ok);
   assert.equal(derived.value.groupId, built.value.id);
   assert.equal(derived.value.workspaceId, primary.workspaceId);
+  assert.equal(derived.value.id, built.value.sessionId);
 });

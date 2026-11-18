@@ -1,8 +1,9 @@
 import type { Subject } from '../access.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, forbidden, invalid, notFound } from '../errors.ts';
-import { asProjectId, asTaskId, asWorkspaceGroupId, newId } from '../ids.ts';
+import { asProjectId, asTaskId, asWorkspaceGroupId, newId, newSessionId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
+import { recurseSubmodules } from '../project.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
 import { err, ok, type Result } from '../result.ts';
 import { isUsable, markRemoved, newWorkspace, type Workspace } from '../workspace.ts';
@@ -18,7 +19,7 @@ import {
 import { authorizeWorker, canManageTeamWorkspaces } from './authorization.ts';
 import type { Deps } from './deps.ts';
 import { gitOn, resolveMachine, type Machine } from './machine-dirs.ts';
-import { branchSlug, originBranchRef, runWorkspaceSetup, shortId } from './temporary-workspaces.ts';
+import { branchSlug, originBranchRef, runWorkspaceSetup, sessionBranchSuffix, shortId } from './temporary-workspaces.ts';
 import { actorId, prepareTeamWorkspace } from './workspaces.ts';
 
 /**
@@ -48,12 +49,16 @@ export interface BuildWorkspaceGroupCommand {
   readonly workerId?: string | null;
   readonly home: string;
   readonly actor?: Subject | null;
+  /** 预分配的会话 id，写入成员分支名。不给就在建组时生成。 */
+  readonly sessionId?: string | null;
 }
 
 export interface RetryWorkspaceGroupCommand {
   readonly groupId: string;
   readonly home: string;
   readonly actor?: Subject | null;
+  /** 预分配的会话 id，写入成员分支名。不给就在建组时生成。 */
+  readonly sessionId?: string | null;
 }
 
 export interface RemoveWorkspaceGroupCommand {
@@ -70,9 +75,9 @@ function groupName(title: string): string {
   return WORKSPACE_GROUP_NAME.test(name) ? name : `g-${name}`.slice(0, 41);
 }
 
-/** 每个仓库单独一条分支（§4）：同一个组里不同仓库的分支不能一样。 */
-function groupBranch(repo: ProjectRepo): string {
-  return `agent-hub/${repo.name}-${shortId()}`;
+/** 每个仓库单独一条分支：仓库名 + 会话 id 后缀，避免两个会话检出同一分支。 */
+function groupBranch(repo: ProjectRepo, sessionId: string): string {
+  return `agent-hub/${repo.name}-${sessionBranchSuffix(sessionId)}`;
 }
 
 /**
@@ -155,6 +160,7 @@ export async function buildWorkspaceGroupUseCase(
   if (!workerId || !groupGit) return err(invalid('这台机器不支持组合工作空间'));
 
   const groupId = asWorkspaceGroupId(`group_${newId().slice(0, 8)}`);
+  const sessionId = command.sessionId?.trim() || newSessionId();
   const incoming = await groupGit.init({ slug: branchSlug(project.name), name: groupName(task.title), id: groupId });
   if (!incoming.ok) return incoming;
   const root = incoming.value.root;
@@ -169,6 +175,7 @@ export async function buildWorkspaceGroupUseCase(
     members,
     state,
     ownerTaskId: task.id,
+    sessionId,
     createdAt,
     error
   });
@@ -195,7 +202,7 @@ export async function buildWorkspaceGroupUseCase(
         kind: 'temporary',
         source: 'worktree',
         ownerTaskId: task.id,
-        branch: groupBranch(repo),
+        branch: groupBranch(repo, sessionId),
         isGit: true,
         state: 'failed',
         groupId,
@@ -217,13 +224,14 @@ export async function buildWorkspaceGroupUseCase(
     if (!repo) continue;
     const base = await baseForRepo(deps, project, repo, machine, { home: command.home, actor });
     if (!base.ok) return abort(members, repos.slice(index), base.error);
-    const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url)) ?? undefined;
+    const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
     const made = await groupGit.newWorktree({
       repoPath: base.value.path,
       path: `${root}/${repo.name}`,
-      branch: groupBranch(repo),
-      base: baseRef ?? repo.defaultBranch ?? undefined,
-      ...(auth ? { auth } : {})
+      branch: groupBranch(repo, sessionId),
+      base: baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined,
+      ...(auth ? { auth } : {}),
+      ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
     });
     if (!made.ok) return abort(members, repos.slice(index), made.error);
     const created = newWorkspace({
@@ -303,16 +311,17 @@ export async function retryWorkspaceGroupUseCase(
     const base = await baseForRepo(deps, project, repo, machine, { home: command.home, actor });
     if (!base.ok) return { ...member, state: 'failed', error: base.error.message };
     const path = groupMemberRoot(existing, member.workspaceId) ?? workspace.path;
-    const branch = workspace.branch ?? groupBranch(repo);
+    const branch = workspace.branch ?? groupBranch(repo, existing.sessionId ?? workspace.id);
     const preparing: Workspace = { ...workspace, state: 'preparing', keptReason: null, updatedAt: deps.now() };
     await deps.workspaces.save(preparing);
-    const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url)) ?? undefined;
+    const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
     const made = await groupGit.newWorktree({
       repoPath: base.value.path,
       path,
       branch,
-      base: baseRef ?? repo.defaultBranch ?? undefined,
-      ...(auth ? { auth } : {})
+      base: baseRef ?? originBranchRef(repo.defaultBranch) ?? undefined,
+      ...(auth ? { auth } : {}),
+      ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
     });
     // 目录已经是同分支的 worktree 就算建成（§12.7），别因为「已经存在」整组失败
     if (!made.ok && !/已存在|exists/i.test(made.error.message)) {

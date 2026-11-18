@@ -1279,6 +1279,13 @@
                         "maxItems": 8,
                         "default": []
                       },
+                      "submodules": {
+                        "type": "string",
+                        "enum": [
+                          "off",
+                          "recursive"
+                        ]
+                      },
                       "createdAt": {
                         "type": "integer",
                         "minimum": 0
@@ -1553,6 +1560,13 @@
                       "maxItems": 8,
                       "default": []
                     },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1786,6 +1800,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -2045,6 +2066,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -2452,6 +2480,13 @@
                       "maxItems": 8,
                       "default": []
                     },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -2715,6 +2750,13 @@
                       "maxItems": 8,
                       "default": []
                     },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -2970,6 +3012,13 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "submodules": {
+                      "type": "string",
+                      "enum": [
+                        "off",
+                        "recursive"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",

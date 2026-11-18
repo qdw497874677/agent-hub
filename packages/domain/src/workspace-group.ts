@@ -33,6 +33,8 @@ export interface WorkspaceGroup {
   readonly state: 'preparing' | 'ready' | 'failed';
   /** 临时组合归任务；长期组合为 null（v1 没有创建入口）。 */
   readonly ownerTaskId: TaskId | null;
+  /** 建组时预分配的会话 id（写入成员分支名）；老组没有。 */
+  readonly sessionId?: string | null;
   readonly createdAt: number;
   /** 整组级别的失败原因（某成员建不出来时也写一份，方便一眼看到）。 */
   readonly error: string | null;

@@ -292,7 +292,7 @@ test('开会话：workspaceMode=isolated 一定新开临时空间，不静默复
   assert.equal(made?.kind, 'temporary');
 });
 
-test('同步仓库：project_repos 加的仓库能在已有工作空间里补克隆（#236）', async () => {
+test('同步仓库：项目绑定多个仓库时拒绝补克隆同级目录，引导使用组合工作空间', async () => {
   const { david, mint, api, world } = await setup();
   const call = api((await mint(david, ['projects:read', 'projects:write'])).token);
   const project = (await call('/projects', post({ name: 'p', repoUrl: 'https://example.com/core.git' }))).body;
@@ -303,6 +303,7 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   world.git.repos.add(workspace.value.path);
   world.git.remotes.set(workspace.value.path, 'https://example.com/core.git');
   world.git.absent.add('/srv/work/agent-hub-workspaces/docs');
+  const clonesBefore = world.git.calls.filter((line: string) => line.includes(':clone:')).length;
 
   const updated = await call(`/projects/${project.id}/repos`, {
     method: 'PUT',
@@ -317,16 +318,31 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
 
   const synced = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
+  assert.equal(synced.status, 400, JSON.stringify(synced.body));
+  assert.match(String(synced.body.error?.message ?? synced.body.message ?? ''), /组合工作空间/);
+  assert.equal(world.git.calls.filter((line: string) => line.includes(':clone:')).length, clonesBefore, '不得克隆未登记的同级目录');
+});
+
+test('同步仓库：单仓项目只报告已在场的仓库，不克隆；清单里的凭据名不会回给出站', async () => {
+  const { david, mint, api, world } = await setup();
+  const call = api((await mint(david, ['projects:read', 'projects:write'])).token);
+  const project = (await call('/projects', post({ name: 'p', repoUrl: 'https://example.com/core.git' }))).body;
+  world.workers.push({ workerId: 'w1', label: 'w1', origin: 'remote', state: 'online', roots: ['/srv/work'] } as never);
+  const workspace = newWorkspace({ projectId: project.id, workerId: 'w1', path: '/srv/work/agent-hub-workspaces/demo', kind: 'long_lived', source: 'cloned', repoUrl: 'https://example.com/core.git', isGit: true, now: 1 });
+  assert.ok(workspace.ok);
+  await world.deps.workspaces.save(workspace.value);
+  world.git.repos.add(workspace.value.path);
+  world.git.remotes.set(workspace.value.path, 'https://example.com/core.git');
+
+  const synced = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
   assert.equal(synced.status, 200, JSON.stringify(synced.body));
-  assert.deepEqual(synced.body.added, [{ name: 'docs', path: '/srv/work/agent-hub-workspaces/docs' }]);
+  assert.deepEqual(synced.body.added, []);
   assert.deepEqual(synced.body.present, [{ name: 'core', path: workspace.value.path }]);
 
-  // 再同步一次：什么都不做（幂等工具因此可以放心重试）
   const again = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
   assert.equal(again.status, 200, JSON.stringify(again.body));
   assert.deepEqual(again.body.added, []);
 
-  // 私有仓库：清单里的 credential 要在克隆时真正变成 Authorization 头（只在密钥箱里，不回给调用方）
   const privateRepo = await call(`/projects/${project.id}/repos`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
@@ -334,14 +350,6 @@ test('同步仓库：project_repos 加的仓库能在已有工作空间里补克
   });
   assert.equal(privateRepo.status, 200, JSON.stringify(privateRepo.body));
   assert.ok(!JSON.stringify(privateRepo.body).includes('tok-123'));
-  world.git.absent.add('/srv/work/agent-hub-workspaces/secret-repo');
-  const withToken = await call(`/workspaces/${workspace.value.id}/sync`, { method: 'POST' });
-  assert.equal(withToken.status, 200, JSON.stringify(withToken.body));
-  const header = Buffer.from('x-access-token:tok-123').toString('base64');
-  assert.ok(
-    world.git.authCalls.some((line) => line.includes(':clone:https://code.example.com/team/secret.git') && line.includes(header)),
-    `克隆该私有仓库时要带令牌头：${world.git.authCalls.join('\n')}`
-  );
 });
 
 test('限流：超了 429 + Retry-After', async () => {

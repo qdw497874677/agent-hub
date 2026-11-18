@@ -137,6 +137,7 @@ import {
   setTaskSummaryUseCase,
   setProjectPreviewPortUseCase,
   setProjectWorktreeUseCase,
+  setProjectSubmodulesUseCase,
   setProjectChecksUseCase,
   setProjectAssetSetsUseCase,
   unavailable,
@@ -536,6 +537,13 @@ export function createApp(options: AppOptions): Hono {
       if (current.ok) {
         const detail = current.value.checks.length === 0 ? '清空检查命令' : `检查命令：${current.value.checks.join(' · ').slice(0, 200)}`;
         await auditResource(c, subject, 'project.worktree', projectId, detail);
+      }
+    }
+    if (current.ok && input.value.submodules !== undefined) {
+      current = await setProjectSubmodulesUseCase(deps, { projectId, submodules: input.value.submodules });
+      if (current.ok) {
+        const mode = current.value.submodules === 'recursive' ? 'recursive' : 'off';
+        await auditResource(c, subject, 'project.worktree', projectId, `子模块：${mode}`);
       }
     }
     if (current.ok && input.value.assetSetIds !== undefined) {

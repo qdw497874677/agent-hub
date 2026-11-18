@@ -74,6 +74,8 @@ export interface GitState {
   /** 有 token 走 token，否则试 gh（真不行再退成链接）。 */
   readonly prVia: 'token' | 'gh';
   readonly pullRequests: readonly PullRequestLink[];
+  /** 该成员工作目录占用；拿不到就省略。 */
+  readonly sizeBytes?: number | null;
 }
 
 export interface GitRunInput {
@@ -160,7 +162,8 @@ export function createGitWorkflowService(deps: GitWorkflowDeps) {
       canPush: await canPush(subject, found.value.project),
       prBlocked: prBlocked(p, found.value.workspace),
       prVia: token.configured ? 'token' : 'gh',
-      pullRequests: isContainerSession(found.value.session) ? [] : await deps.pullRequests.byTask(found.value.session.taskId as TaskId)
+      pullRequests: isContainerSession(found.value.session) ? [] : await deps.pullRequests.byTask(found.value.session.taskId as TaskId),
+      ...(p.sizeBytes == null ? {} : { sizeBytes: p.sizeBytes })
     });
   }
 

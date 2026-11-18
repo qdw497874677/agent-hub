@@ -27,6 +27,7 @@ import { filesApi } from '../../shell/api.ts';
 import { FilesBrowser, type Reveal } from '../../atoms/files-browser.tsx';
 import { appendRef } from '../../atoms/diff-selection.ts';
 import { GitDialog, PullRequestChips } from './git-dialog.tsx';
+import { RepoSwitcher, useSessionRepo } from './repo-switcher.tsx';
 import { gitApi } from '../../shell/api.ts';
 import { FileLinksContext, type FileLinks } from '../../atoms/file-links.tsx';
 import { SESSION_TABS, readStoredTab, sessionTabLabel, stepTab, storeTab, type SessionTab } from '../../atoms/session-tabs.ts';
@@ -224,16 +225,19 @@ export function FocusView({
     openChanges: () => setTab('changes')
   }), [workspaceRoot]);
   useEffect(() => setVisited((v) => (v.has(tab) ? v : new Set([...v, tab]))), [tab]);
+  // 组合会话按当前选中的成员仓库取 git / 文件；单仓 member 为 null，行为与原来一样。
+  const repo = useSessionRepo(session.id, session.workspaceId);
+  const repoWorkspaceId = repo.selected ?? session.workspaceId;
   // 目录派生的文件 / git 状态按工作目录归一：同目录的多条会话共享缓存（见 query-keys.ts）。
-  const fileKeys = filesKeys(session.workspaceId, session.id);
+  const fileKeys = filesKeys(repoWorkspaceId, session.id);
   // 切到文件 / 改动：先显示缓存（挂载着的面板原样在），同时后台重读一遍
   useEffect(() => {
     if (tab !== 'files' && tab !== 'changes') return;
-    const keys = filesKeys(session.workspaceId, session.id);
+    const keys = filesKeys(repoWorkspaceId, session.id);
     for (const prefix of filesInvalidationKeys(keys)) {
       void queries.invalidateQueries({ queryKey: prefix });
     }
-  }, [tab, session.id, session.workspaceId, queries]);
+  }, [tab, session.id, repoWorkspaceId, queries]);
   const refreshing = useIsFetching({
     predicate: (q) => q.queryKey[0] === 'files' && (q.queryKey[1] === fileKeys.dir[1] || q.queryKey[1] === session.id)
   }) > 0;
@@ -414,28 +418,29 @@ export function FocusView({
   const forkHint = forkBlockedHint({ lastSeq, turnRunning, denied: agent?.capabilities.fork.state === 'denied' });
   // 回合结束（状态变了）刷新改动数：agent 可能刚改过文件
   useEffect(() => {
-    const keys = filesKeys(session.workspaceId, session.id);
+    const keys = filesKeys(repoWorkspaceId, session.id);
     for (const prefix of filesInvalidationKeys(keys)) {
       void queries.invalidateQueries({ queryKey: [...prefix, 'changes'] }, { cancelRefetch: false });
     }
-    void queries.invalidateQueries({ queryKey: gitKeys.state(session.workspaceId, session.id) }, { cancelRefetch: false });
+    void queries.invalidateQueries({ queryKey: gitKeys.state(repoWorkspaceId, session.id) }, { cancelRefetch: false });
     // 下一轮开始后才生效，所以回合结束时重问一次环境版本：提示该消失时就消失。
     void queries.invalidateQueries({ queryKey: sessionKeys.environment(session.id) }, { cancelRefetch: false });
-  }, [status, session.id, session.workspaceId, queries]);
+  }, [status, session.id, repoWorkspaceId, queries]);
   // 和 FilesBrowser 共用同一个查询 key（基准 = 会话开始），标签上的数字与改动页一致
   const sessionChanges = shown(useQuery({
     ...FILES_QUERY,
     queryKey: fileKeys.changes('session'),
-    queryFn: () => filesApi.changes(session.id, 'session')
+    queryFn: () => filesApi.changes(session.id, 'session', repo.selected)
   }));
   // 没有 git 基准（非 git 目录）时算不出改动：标签上不写「改动 0」，免得读成「agent 什么都没改」
   const changeCount = sessionChanges === undefined || sessionChanges.commit === null ? undefined : sessionChanges.files.length;
-  const workspace = canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
+  const workspace = canvas.workspaces.find((candidate) => candidate.id === repoWorkspaceId)
+    ?? canvas.workspaces.find((candidate) => candidate.id === session.workspaceId);
   // 和 OpenCode 一样把当前分支放在输入框旁边；分支可能被 agent 切换，所以回合结束后刷新。
   const gitState = shown(useQuery({
-    queryKey: gitKeys.state(session.workspaceId, session.id),
-    queryFn: () => gitApi.state(session.id),
-    enabled: workspace !== undefined && workspace.isGit !== false,
+    queryKey: gitKeys.state(repoWorkspaceId, session.id),
+    queryFn: () => gitApi.state(session.id, repo.selected),
+    enabled: repo.isCombo || (workspace !== undefined && workspace.isGit !== false),
     staleTime: 15_000,
     retry: false
   }));
@@ -444,7 +449,7 @@ export function FocusView({
   const [rewindAt, setRewindAt] = useState<number | null>(null);
   useEffect(() => setRewindAt(null), [session.id]);
   // 每轮「改了 N 个文件」（ADR 0027 阶段 1 的检查点）：挂在这一轮最后、下一句问话之前
-  const turns = shown(useQuery({ ...FILES_QUERY, queryKey: fileKeys.turns(), queryFn: () => filesApi.turns(session.id) })) ?? [];
+  const turns = shown(useQuery({ ...FILES_QUERY, queryKey: fileKeys.turns(), queryFn: () => filesApi.turns(session.id, repo.selected) })) ?? [];
   const doneTurns = turns.filter((t) => t.after !== null && (t.files ?? 0) > 0);
   // 排队 / 发送中 / 未送达的用户消息：只在原地淡一点、多一行小字，不搬家。
   // 以前它们会被抽到输入框上方的独立区块，一条消息在「列表末尾 → 底部区块 → 列表中间」
@@ -837,7 +842,7 @@ export function FocusView({
       {groupId !== null ? <SessionGroupLine groupId={groupId} /> : null}
       <AttentionAutoAck sessionId={session.id} />
       {taskPrs.length > 0 ? <div className="shrink-0 border-b border-hair px-2 py-1 md:px-3"><PullRequestChips prs={taskPrs} /></div> : null}
-      {gitOpen ? <GitDialog sessionId={session.id} workspaceId={session.workspaceId} taskId={session.taskId} onClose={() => setGitOpen(false)} /> : null}
+      {gitOpen ? <GitDialog sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} taskId={session.taskId} onClose={() => setGitOpen(false)} switcher={repo.isCombo ? <RepoSwitcher members={repo.members} selected={repo.selected} onSelect={repo.setSelected} statuses={repo.statuses} /> : null} /> : null}
       {subagentPath.length > 0 ? (
         <SubagentPanel
           blocks={blocks}
@@ -897,7 +902,7 @@ export function FocusView({
       {(['files', 'changes'] as const).map((t) =>
         visited.has(t) ? (
           <div key={`${session.id}-${t}`} className={tab === t ? 'flex min-h-0 flex-1 flex-col' : 'hidden'}>
-            <FilesBrowser tab={t} sessionId={session.id} workspaceId={session.workspaceId} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} />
+            <FilesBrowser tab={t} sessionId={session.id} workspaceId={repoWorkspaceId} member={repo.selected} status={status} reveal={t === 'files' ? reveal : null} base={t === 'changes' ? turnBase : null} onQuote={quoteToChat} switcher={repo.isCombo ? <RepoSwitcher members={repo.members} selected={repo.selected} onSelect={repo.setSelected} statuses={repo.statuses} /> : null} />
           </div>
         ) : null
       )}
@@ -1115,7 +1120,7 @@ export function FocusView({
             </div>
           ) : null}
           {/* 输入框上方的状态行：在跑时是「● 正在做什么 · 几秒」，不跑时是分支；右边是上下文占用 */}
-          {progress || gitState?.isGit || live?.contextUsage ? (
+          {progress || gitState?.isGit || live?.contextUsage || repo.isCombo ? (
             <div className="mb-1.5 flex min-h-5 items-center justify-between gap-3 px-1" data-testid="composer-status">
               {progress ? (
                 <div
@@ -1132,6 +1137,9 @@ export function FocusView({
                 </div>
               ) : <span />}
               <div className="flex min-w-0 shrink-0 items-center gap-3">
+                {repo.isCombo ? (
+                  <RepoSwitcher members={repo.members} selected={repo.selected} onSelect={repo.setSelected} statuses={repo.statuses} />
+                ) : null}
                 {gitState?.isGit ? (
                   <button
                     type="button"

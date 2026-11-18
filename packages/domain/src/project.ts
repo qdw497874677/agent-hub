@@ -38,6 +38,12 @@ export interface Project {
   readonly checks: readonly string[];
   /** 项目默认带上的资产组合（团队级），按顺序展开；空数组 = 不带。 */
   readonly assetSetIds: readonly string[];
+  /**
+   * 克隆 / 建 worktree 时要不要递归初始化子模块（默认 off）。
+   * 省略或 'off' = 不拉子模块；'recursive' = `git submodule update --init --recursive`。
+   * 只影响之后新建的 checkout，已有工作空间不改。
+   */
+  readonly submodules?: 'off' | 'recursive';
   /** 进了回收站的时间；null = 正常。 */
   readonly deletedAt: number | null;
 }
@@ -145,6 +151,26 @@ export const PROJECT_REPOS_MAX = 8;
 
 /** 仓库名（= 子目录名）的合法形状。 */
 export const PROJECT_REPO_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}$/;
+
+/** 克隆 / worktree 时的子模块策略：默认关闭，打开则递归 init/update。 */
+export type ProjectSubmodules = 'off' | 'recursive';
+
+/** 缺省或非法值都当成 off（老数据没有这一列）。 */
+export function projectSubmodules(project: Pick<Project, 'submodules'> | { readonly submodules?: unknown }): ProjectSubmodules {
+  return project.submodules === 'recursive' ? 'recursive' : 'off';
+}
+
+/** 传给 git clone / worktree 的开关。 */
+export function recurseSubmodules(project: Pick<Project, 'submodules'> | { readonly submodules?: unknown }): boolean {
+  return projectSubmodules(project) === 'recursive';
+}
+
+export function normalizeSubmodules(value: unknown): Result<ProjectSubmodules, DomainError> {
+  if (value === null || value === undefined || value === '') return ok('off');
+  if (value === 'off' || value === 'recursive') return ok(value);
+  return err(invalid('子模块只能是 off 或 recursive'));
+}
+
 
 /** FNV-1a 32 位：领域层不依赖 node:crypto，同一输入在 server / worker / 测试里都得到同一个 id。 */
 function repoHash(input: string): string {
@@ -318,6 +344,8 @@ export interface CreateProjectInput {
   readonly createdBy?: string | null;
   /** 项目默认资产组合；不传 = 空。 */
   readonly assetSetIds?: readonly string[] | null;
+  /** 子模块策略；不传 = off。 */
+  readonly submodules?: ProjectSubmodules | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
@@ -336,6 +364,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     worktree: input.worktree ?? null,
     checks: input.checks ?? [],
     assetSetIds: assetSetIds.value,
+    ...(input.submodules === 'recursive' ? { submodules: 'recursive' as const } : {}),
     createdAt: input.now,
     teamId: input.teamId ?? null,
     createdBy: input.createdBy ?? null,

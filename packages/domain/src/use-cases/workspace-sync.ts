@@ -8,6 +8,9 @@ import type { WorkspaceGit } from '../ports/workspace-git.ts';
 import type { Deps } from './deps.ts';
 import { authorizeProject } from './authorization.ts';
 import { parentOf } from './machine-dirs.ts';
+import { sameRepoUrl } from '../repo-url.ts';
+
+export { sameRepoUrl } from '../repo-url.ts';
 
 export interface WorkspaceRepoPlacement {
   readonly name: string;
@@ -32,30 +35,11 @@ export interface SyncWorkspaceResult {
 }
 
 /**
- * 比较两个仓库地址是不是同一个（远端 / 项目清单里可能一个带令牌、一个不带，或者 .git 有无差别）。
- * 去掉 userinfo、末尾 `.git` 与斜杠，主机与路径都按小写比。
- */
-export function sameRepoUrl(a: string, b: string): boolean {
-  const normalize = (raw: string): string | null => {
-    try {
-      const url = new URL(raw.trim());
-      const path = url.pathname.replace(/\/+$/, '').replace(/\.git$/i, '');
-      return `${url.hostname.toLowerCase()}${path.toLowerCase()}`;
-    } catch {
-      return null;
-    }
-  };
-  const left = normalize(a);
-  const right = normalize(b);
-  return left !== null && right !== null && left === right;
-}
-
-/**
- * 把项目的仓库清单同步到已有工作空间（#236 多仓库补克隆）。
+ * 查看已有（单仓）工作空间里，项目清单中的仓库是否已经在场。
  *
- * 只处理「一个目录」的工作空间：缺的仓库克隆到工作空间的**同级目录** `<parent>/<name>`；
- * 「在不在」按**远端地址**认（工作空间自己的目录名、仓库名都可能和清单里的 name 不一样），
- * 其次才按 `<parent>/<name>` 这个位置认。单个仓库失败不打断其它仓库，最后一起报。
+ * 多仓项目不再把缺的仓库克隆到工作空间的同级目录：那些目录不会登记进 Workspace 表，
+ * 也不走组合工作空间（agent-hub-groups）的路径约定，容易写成「未登记的兄弟目录」。
+ * 多个仓库请新建组合工作空间。已有的同级目录不动，单仓工作空间保持原样。
  * 组合工作空间（groupId）不走这里——它的成员由建组 / retry-setup 管理，避免两套登记打架。
  */
 export async function syncWorkspaceReposUseCase(
@@ -77,13 +61,16 @@ export async function syncWorkspaceReposUseCase(
   if (repos.length === 0) {
     return ok({ workspace, added: [], present: [], skipped: [], failed: [] });
   }
+  // 多仓：拒绝在长期单仓工作空间旁边克隆未登记的兄弟目录。请用组合工作空间。
+  if (repos.length > 1) {
+    return err(invalid('这个项目绑定了多个仓库：请新建组合工作空间来一起用，不要把仓库克隆到工作空间的同级目录'));
+  }
   const workerId = workspace.workerId;
   if (workerId === null) return err(invalid('这个工作空间和 hub 同机（没有 workerId），暂不支持同步'));
   const baseDir = parentOf(workspace.path);
   if (baseDir === null) return err(invalid('工作空间路径没有上级目录，无法确定仓库放哪'));
   const git = deps.gateway.git(workerId);
 
-  // 先看一遍同级目录 + 工作空间自己：按远端地址认领，避免「仓库目录名 != 清单里的 name」被重复克隆。
   const known = new Map<string, string | null>([[workspace.path, await remoteOf(git, workspace.path)]]);
   const listed = await deps.gateway.listDirectories(workerId, baseDir);
   if (listed.ok) {
@@ -92,10 +79,8 @@ export async function syncWorkspaceReposUseCase(
     }
   }
 
-  const added: WorkspaceRepoPlacement[] = [];
   const present: WorkspaceRepoPlacement[] = [];
   const skipped: { name: string; reason: string }[] = [];
-  const failed: WorkspaceRepoFailure[] = [];
   const claimed = new Set<string>();
   for (const repo of repos) {
     const match = [...known.entries()].find(([path, remote]) => !claimed.has(path) && remote !== null && sameRepoUrl(remote, repo.url));
@@ -115,23 +100,9 @@ export async function syncWorkspaceReposUseCase(
       present.push({ name: repo.name, path });
       continue;
     }
-    const authOrNull = (await deps.repoAuth?.forUrl(workerId, repo.url)) ?? null;
-    const auth = authOrNull === null ? undefined : authOrNull;
-    const cloned = await git.clone({
-      repoUrl: repo.url,
-      parent: baseDir,
-      name: repo.name,
-      branch: repo.defaultBranch,
-      ...(auth ? { auth } : {})
-    });
-    if (!cloned.ok) {
-      failed.push({ name: repo.name, message: cloned.error.message });
-      continue;
-    }
-    added.push({ name: repo.name, path: cloned.value.path });
-    claimed.add(cloned.value.path);
+    skipped.push({ name: repo.name, reason: '仓库不在这个工作空间里；多仓请新建组合工作空间，这里不会自动克隆' });
   }
-  return ok({ workspace, added, present, skipped, failed });
+  return ok({ workspace, added: [], present, skipped, failed: [] });
 }
 
 async function remoteOf(git: Pick<WorkspaceGit, 'inspect'>, path: string): Promise<string | null> {

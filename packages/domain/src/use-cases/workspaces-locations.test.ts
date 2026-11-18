@@ -5,7 +5,7 @@ import { asProjectId, asWorkspaceGroupId, asWorkspaceId } from '../ids.ts';
 import { newWorkspace } from '../workspace.ts';
 import type { WorkspaceGroup } from '../workspace-group.ts';
 import type { WorkspaceGroupRepository } from '../ports/workspace-groups.ts';
-import { locationsOf } from './workspaces.ts';
+import { locationOf, locationsOf } from './workspaces.ts';
 
 const project = {
   id: asProjectId('prj_1'),
@@ -93,4 +93,16 @@ test('没有工作空间也没有默认空间：root 空串（调用方必须拒
   const located = await locationsOf(w.deps, project, { workerId: null, workspaceId: null });
   assert.equal(located.root, '');
   assert.deepEqual(located.members, []);
+});
+
+test('locationOf：组合会话落在容器根，而不是主成员目录', async () => {
+  const w = inMemoryDeps();
+  const deps = { ...w.deps, workspaceGroups: groupRepo(group) };
+  const located = await locationOf(deps, project, {
+    workerId: 'remote-1',
+    workspaceId: group.members[0]!.workspaceId,
+    groupId: group.id
+  });
+  assert.equal(located.workerId, 'remote-1');
+  assert.equal(located.root, group.root);
 });

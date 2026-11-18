@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
@@ -167,4 +167,209 @@ test('组合工作目录：两个仓库各开 worktree，派生跟着整组，�
   await page.request.post(`/api/sessions/${session.id}/interrupt`, { headers });
   const removed = await page.request.delete(`/api/workspace-groups/${group.id}`, { headers });
   expect(removed.status(), await removed.text()).toBe(200);
+});
+
+function sh(cwd: string, ...args: string[]) {
+  execFileSync('git', args, {
+    cwd,
+    stdio: 'ignore',
+    env: { ...process.env, GIT_AUTHOR_NAME: 'e2e', GIT_AUTHOR_EMAIL: 'e2e@example.invalid', GIT_COMMITTER_NAME: 'e2e', GIT_COMMITTER_EMAIL: 'e2e@example.invalid' }
+  });
+}
+
+/** 本地 bare 仓库，带子模块（子模块也是本地 bare，不走网络）。 */
+function makeBareWithSubmodule(root: string, name: string) {
+  const childSeed = join(root, `${name}-child-seed`);
+  mkdirSync(childSeed, { recursive: true });
+  sh(childSeed, 'init', '-q', '-b', 'main');
+  writeFileSync(join(childSeed, 'lib.txt'), 'lib\n');
+  sh(childSeed, 'add', '.');
+  sh(childSeed, 'commit', '-qm', 'child');
+  sh(root, 'clone', '-q', '--bare', childSeed, `${name}-child.git`);
+  const childUrl = join(root, `${name}-child.git`);
+
+  const seed = join(root, `${name}-seed`);
+  mkdirSync(seed, { recursive: true });
+  sh(seed, 'init', '-q', '-b', 'main');
+  writeFileSync(join(seed, 'README.md'), 'hi\n');
+  sh(seed, 'add', '.');
+  sh(seed, 'commit', '-qm', 'init');
+  sh(seed, '-c', 'protocol.file.allow=always', 'submodule', 'add', childUrl, 'vendor');
+  sh(seed, 'commit', '-qm', 'add submodule');
+  sh(root, 'clone', '-q', '--bare', seed, `${name}.git`);
+  return join(root, `${name}.git`);
+}
+
+function cloneFromBare(parent: string, name: string, url: string, recurse: boolean): string {
+  const dir = join(parent, name);
+  const args = ['clone', '-q', ...(recurse ? ['--recurse-submodules'] : []), url, dir];
+  execFileSync('git', ['-c', 'protocol.file.allow=always', ...args], { stdio: 'ignore' });
+  sh(dir, 'remote', 'set-url', 'origin', url);
+  return dir;
+}
+
+test('组合会话界面：仓库切换、按仓提交、cwd 是容器根', async ({ page, baseURL }, testInfo) => {
+  test.setTimeout(180_000);
+  const headers = await login(page, baseURL ?? '');
+  const agentId = await onlineAgent(page);
+  test.skip(!agentId, '这台机器上没有可用的 agent');
+
+  const root = mkdtempSync(join(tmpdir(), 'e2e-combo-ui-'));
+  const projectRoot = join(root, 'project');
+  mkdirSync(projectRoot, { recursive: true });
+  const repos = [
+    { name: 'web', url: 'https://example.invalid/acme/web.git' },
+    { name: 'api', url: 'https://example.invalid/acme/api.git' },
+    { name: 'one', url: 'https://example.invalid/acme/one.git' }
+  ];
+  const dirs = repos.map((repo) => makeRepo(join(root, 'repos'), repo.name, repo.url));
+
+  const project = (await (
+    await page.request.post('/api/projects', {
+      data: { name: `e2e combo ui ${Date.now().toString(36)}`, rootPath: projectRoot },
+      headers
+    })
+  ).json()) as { id: string };
+  const patched = await page.request.patch(`/api/projects/${project.id}`, {
+    data: { repos: repos.map((repo) => ({ ...repo, defaultBranch: 'main' })) },
+    headers
+  });
+  expect(patched.status(), await patched.text()).toBe(200);
+
+  for (const [index, repo] of repos.entries()) {
+    const linked = await page.request.post('/api/workspaces', {
+      data: { workerId: null, mode: 'link', path: dirs[index], repoUrl: repo.url, branch: 'main', name: repo.name, projectId: project.id },
+      headers
+    });
+    expect(linked.status(), await linked.text()).toBe(201);
+  }
+
+  const task = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: '组合界面' }, headers })).json()) as { id: string };
+  const built = await page.request.post(`/api/projects/${project.id}/workspace-groups`, { data: { taskId: task.id, workerId: null }, headers });
+  expect(built.status(), await built.text()).toBe(201);
+  const group = (await built.json()) as Group;
+  expect(group.state, group.error ?? '').toBe('ready');
+
+  const derived = await page.request.post('/api/sessions/derive', {
+    data: { taskId: task.id, agentId, model: '', groupId: group.id },
+    headers
+  });
+  expect(derived.status(), await derived.text()).toBe(201);
+  const session = (await derived.json()) as { id: string; groupId: string | null; workspaceId: string | null };
+  expect(session.groupId).toBe(group.id);
+
+  // cwd / 文件上下文：不选成员时落在容器根。
+  const context = await page.request.get(`/api/sessions/${session.id}/files/context`, { headers });
+  expect(context.status(), await context.text()).toBe(200);
+  const contextBody = (await context.json()) as { root: string; group?: { root: string; members: unknown[] } };
+  expect(contextBody.root).toBe(group.root);
+  expect(contextBody.group?.root).toBe(group.root);
+
+  const web = group.members.find((member) => member.name === 'web')!;
+  const api = group.members.find((member) => member.name === 'api')!;
+  writeFileSync(join(group.root, 'web', 'note-web.txt'), 'web change\n');
+  writeFileSync(join(group.root, 'api', 'note-api.txt'), 'api change\n');
+
+  await page.setViewportSize({ width: 1280, height: 860 });
+  await page.goto(`/#/p/${project.id}/focus/${session.id}`);
+  const switcher = page.getByTestId('composer-status').getByTestId('repo-switcher');
+  await expect(switcher).toBeVisible({ timeout: 30_000 });
+  await expect(switcher.getByTestId('repo-switcher-web')).toBeVisible();
+  await expect(switcher.getByTestId('repo-switcher-api')).toBeVisible();
+  await expect(switcher.getByTestId('repo-switcher-one')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('combo-switcher.png') });
+
+  await switcher.getByTestId('repo-switcher-api').click();
+  await page.getByTestId('session-tab-files').click();
+  await expect(page.getByTestId('files-panel-files').getByTestId('repo-switcher')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath('combo-files-api.png') });
+
+  // 分支药丸在会话页的输入框状态行里，文件页会把输入框藏起来。
+  await page.getByTestId('session-tab-chat').click();
+  await expect(page.getByTestId('composer-status').getByTestId('git-branch')).toBeVisible();
+  await page.getByTestId('composer-status').getByTestId('git-branch').click();
+  const dialog = page.getByTestId('git-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId('repo-switcher')).toBeVisible();
+  await dialog.getByTestId('repo-switcher-web').click();
+  await expect(dialog.getByTestId('git-files')).toContainText('note-web.txt');
+  await expect(dialog.getByTestId('git-files')).not.toContainText('note-api.txt');
+  await expect(dialog.getByTestId('git-message')).toBeVisible();
+  await dialog.getByTestId('git-message').fill('chore: web note');
+  await dialog.getByTestId('git-commit').click();
+  await expect(dialog.getByTestId('git-result')).toBeVisible({ timeout: 20_000 });
+  await page.screenshot({ path: testInfo.outputPath('combo-commit-web.png') });
+
+  // API：只提交了 web，api 仍有未提交改动。
+  const webState = await page.request.get(`/api/sessions/${session.id}/git/state?member=${web.workspaceId}`, { headers });
+  expect(webState.status()).toBe(200);
+  const webBody = (await webState.json()) as { files: Array<{ path: string }> };
+  expect(webBody.files.some((file) => file.path.includes('note-web.txt'))).toBe(false);
+  const apiState = await page.request.get(`/api/sessions/${session.id}/git/state?member=${api.workspaceId}`, { headers });
+  const apiBody = (await apiState.json()) as { files: Array<{ path: string }> };
+  expect(apiBody.files.some((file) => file.path.includes('note-api.txt'))).toBe(true);
+
+  // 再按仓提交 api
+  const committed = await page.request.post(`/api/sessions/${session.id}/git/run?member=${api.workspaceId}`, {
+    data: { action: 'commit', message: 'chore: api note' },
+    headers
+  });
+  expect(committed.status(), await committed.text()).toBe(200);
+
+  await page.request.post(`/api/sessions/${session.id}/interrupt`, { headers });
+  const removed = await page.request.delete(`/api/workspace-groups/${group.id}`, { headers });
+  expect(removed.status(), await removed.text()).toBe(200);
+});
+
+test('项目子模块开关：默认关闭不拉；打开后新建 worktree 会递归初始化', async ({ page, baseURL }) => {
+  test.setTimeout(180_000);
+  const headers = await login(page, baseURL ?? '');
+
+  const root = mkdtempSync(join(tmpdir(), 'e2e-submodules-'));
+  const projectRoot = join(root, 'project');
+  mkdirSync(projectRoot, { recursive: true });
+  const bare = makeBareWithSubmodule(root, 'core');
+  const url = bare;
+  // 作为建组基座：先按「关」克隆一份（不拉子模块），origin 保持本地 bare，子模块才能走 file 协议。
+  const baseOff = cloneFromBare(join(root, 'bases'), 'core-off', bare, false);
+
+  const project = (await (
+    await page.request.post('/api/projects', {
+      data: { name: `e2e sub ${Date.now().toString(36)}`, rootPath: projectRoot, repoUrl: url, defaultBranch: 'main' },
+      headers
+    })
+  ).json()) as { id: string; submodules?: string };
+
+  // 默认关
+  expect(project.submodules === 'recursive').toBe(false);
+  const offPatch = await page.request.patch(`/api/projects/${project.id}`, { data: { submodules: 'off' }, headers });
+  expect(offPatch.status(), await offPatch.text()).toBe(200);
+
+  const linkedOff = await page.request.post('/api/workspaces', {
+    data: { workerId: null, mode: 'link', path: baseOff, repoUrl: url, branch: 'main', name: 'core', projectId: project.id },
+    headers
+  });
+  expect(linkedOff.status(), await linkedOff.text()).toBe(201);
+
+  const taskOff = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: 'sub off' }, headers })).json()) as { id: string };
+  const builtOff = await page.request.post(`/api/projects/${project.id}/workspace-groups`, { data: { taskId: taskOff.id, workerId: null }, headers });
+  expect(builtOff.status(), await builtOff.text()).toBe(201);
+  const groupOff = (await builtOff.json()) as Group;
+  expect(groupOff.state, groupOff.error ?? '').toBe('ready');
+  expect(existsSync(join(groupOff.root, 'core', 'vendor', 'lib.txt'))).toBe(false);
+  await page.request.delete(`/api/workspace-groups/${groupOff.id}`, { headers });
+
+  // 打开开关后再建一组：新 worktree 应拉到子模块。
+  const onPatch = await page.request.patch(`/api/projects/${project.id}`, { data: { submodules: 'recursive' }, headers });
+  expect(onPatch.status(), await onPatch.text()).toBe(200);
+  const saved = (await onPatch.json()) as { submodules?: string };
+  expect(saved.submodules).toBe('recursive');
+
+  const taskOn = (await (await page.request.post('/api/tasks', { data: { projectId: project.id, title: 'sub on' }, headers })).json()) as { id: string };
+  const builtOn = await page.request.post(`/api/projects/${project.id}/workspace-groups`, { data: { taskId: taskOn.id, workerId: null }, headers });
+  expect(builtOn.status(), await builtOn.text()).toBe(201);
+  const groupOn = (await builtOn.json()) as Group;
+  expect(groupOn.state, groupOn.error ?? '').toBe('ready');
+  expect(existsSync(join(groupOn.root, 'core', 'vendor', 'lib.txt'))).toBe(true);
+  await page.request.delete(`/api/workspace-groups/${groupOn.id}`, { headers });
 });

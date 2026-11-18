@@ -78,7 +78,9 @@ export const setProjectWorktreeRequest = z.object({
   /** 项目声明的检查命令（issue #216 P1）：空数组 = 清掉，最多 5 条，一条一行（不能有换行）。 */
   checks: z.array(z.string()).max(5).optional(),
   /** 项目默认引用的资产组合（按顺序叠加）：空数组 = 清掉。 */
-  assetSetIds: z.array(z.string().min(1)).max(8).optional()
+  assetSetIds: z.array(z.string().min(1)).max(8).optional(),
+  /** 克隆 / 建 worktree 时的子模块策略；off = 不拉（默认），recursive = 递归初始化。 */
+  submodules: z.enum(['off', 'recursive']).optional()
 });
 
 /** 绑定 / 改 / 解除项目仓库：repoUrl 为 null 或空串 = 解除。 */

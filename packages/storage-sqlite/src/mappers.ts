@@ -119,6 +119,7 @@ export function toProject(row: Row): Project {
     ...(row['preview_port'] == null ? {} : { previewPort: Number(row['preview_port']) }),
     checks: parseChecks(nullableStr(row, 'checks')),
     assetSetIds: parseAssetSetIds(nullableStr(row, 'asset_set_ids')).assetSetIds ?? [],
+    ...(nullableStr(row, 'submodules') === 'recursive' ? { submodules: 'recursive' as const } : {}),
     teamId: nullableStr(row, 'team_id'),
     createdBy: nullableStr(row, 'created_by'),
     members: parseMembers(nullableStr(row, 'members')),

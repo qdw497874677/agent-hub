@@ -2,7 +2,8 @@ import type { Subject } from '../access.ts';
 import type { Project, ProjectSetup } from '../project.ts';
 import type { Task } from '../task.ts';
 import { isUsable, newWorkspace, type Workspace } from '../workspace.ts';
-import { asProjectId, asTaskId, asWorkspaceId, newId, type TaskId } from '../ids.ts';
+import { asProjectId, asTaskId, asWorkspaceId, newId, newSessionId, type TaskId } from '../ids.ts';
+import { recurseSubmodules } from '../project.ts';
 import type { DomainError } from '../errors.ts';
 import { conflict, invalid, notFound } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
@@ -23,9 +24,18 @@ export function branchSlug(title: string): string {
   return slug === '' ? 'task' : slug;
 }
 
-/** 任务分支名 `agent-hub/<slug>-<短 id>`（§10 已定）。 */
-export function taskBranch(title: string, shortId: string): string {
-  return `agent-hub/${branchSlug(title)}-${shortId}`;
+/**
+ * 从会话 id（UUID）抽出分支后缀：去掉连字符后取前 12 位。
+ * 避免两个会话检出同一分支（git 会报 already checked out）。
+ */
+export function sessionBranchSuffix(sessionId: string): string {
+  const token = sessionId.replace(/[^a-z0-9]/gi, '').slice(0, 12).toLowerCase();
+  return token === '' ? shortId() : token;
+}
+
+/** 任务分支名 `agent-hub/<slug>-<session-id 后缀>`。 */
+export function taskBranch(title: string, sessionId: string): string {
+  return `agent-hub/${branchSlug(title)}-${sessionBranchSuffix(sessionId)}`;
 }
 
 export const shortId = (): string => newId().replace(/-/g, '').slice(0, 4);
@@ -39,11 +49,13 @@ export function originBranchRef(branch: string | null | undefined): string | nul
 
 /** 多仓库项目：base 工作空间是哪个仓库的，就用那个仓库的默认分支；认不出来退回主仓库。 */
 function defaultBranchFor(project: Project, base: Workspace | null): string | null {
+  let name: string | null = null;
   if (base?.repoUrl) {
     const repo = project.repos.find((candidate) => candidate.url === base.repoUrl);
-    if (repo) return repo.defaultBranch;
+    if (repo) name = repo.defaultBranch;
   }
-  return project.repo?.defaultBranch ?? null;
+  if (name === null) name = project.repo?.defaultBranch ?? null;
+  return originBranchRef(name);
 }
 
 export interface PrepareTemporaryCommand {
@@ -58,6 +70,8 @@ export interface PrepareTemporaryCommand {
   /** 档位：shared = 复用项目的长期空间（不建 worktree）；isolated = 新开 worktree。缺省按 project.worktree?.mode ?? 'shared'。 */
   readonly mode?: 'shared' | 'isolated';
   readonly actor?: Subject | null;
+  /** 预分配的会话 id，写入分支名以免和别的会话撞 checkout。 */
+  readonly sessionId?: string | null;
 }
 
 /**
@@ -101,8 +115,8 @@ export async function prepareTemporaryWorkspaceUseCase(
     // 没有长期空间、也没有仓库可 clone（非 git 项目）：退回下面的临时目录
   }
 
-  const id = shortId();
-  const name = `${branchSlug(task.title)}-${id}`;
+  const sessionId = command.sessionId ?? newSessionId();
+  const name = `${branchSlug(task.title)}-${sessionBranchSuffix(sessionId)}`;
   const base = mode === 'isolated' ? await gitBase(deps, project, machine, command) : ok(null);
   if (!base.ok) return base;
 
@@ -115,10 +129,11 @@ export async function prepareTemporaryWorkspaceUseCase(
     const made = await gitOn(deps, machine.route).addWorktree({
       repoPath: base.value.path,
       path: `${repoParent === '/' ? '' : repoParent}/.worktrees/${repoName}/${name}`,
-      branch: command.branch ?? taskBranch(task.title, id),
+      branch: command.branch ?? taskBranch(task.title, sessionId),
       base: command.base ?? originBranchRef(task.baseBranch) ?? defaultBranchFor(project, base.value) ?? base.value.branch,
       ...(command.branch ? { existing: true } : {}),
-      ...(auth ? { auth } : {})
+      ...(auth ? { auth } : {}),
+      ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
     });
     if (!made.ok) return made;
     path = made.value.path;
@@ -284,7 +299,7 @@ export async function retryWorkspaceSetupUseCase(
 
 /** 这个任务在这台机器上被清理掉的 worktree（最近的那个）：按原分支检出回原路径。失败（分支被删了…）= null，调用方照常新开。 */
 async function reviveRemovedWorktree(
-  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces' | 'repoAuth'>,
+  deps: Pick<Deps, 'git' | 'gateway' | 'now' | 'workspaces' | 'repoAuth' | 'projects'>,
   taskId: TaskId,
   machine: Machine
 ): Promise<Workspace | null> {
@@ -294,8 +309,9 @@ async function reviveRemovedWorktree(
   if (!gone?.branch || !gone.baseWorkspaceId) return null;
   const base = await deps.workspaces.byId(gone.baseWorkspaceId);
   if (!base || !isUsable(base)) return null;
+  const project = gone.projectId ? await deps.projects.byId(gone.projectId) : null;
   const auth = (await deps.repoAuth?.forPath(machine.workerId, base.path)) ?? undefined;
-  const made = await gitOn(deps, machine.route).addWorktree({ repoPath: base.path, path: gone.path, branch: gone.branch, existing: true, ...(auth ? { auth } : {}) });
+  const made = await gitOn(deps, machine.route).addWorktree({ repoPath: base.path, path: gone.path, branch: gone.branch, existing: true, ...(auth ? { auth } : {}), ...(project && recurseSubmodules(project) ? { recurseSubmodules: true } : {}) });
   if (!made.ok) return null;
   const revived: Workspace = { ...gone, path: made.value.path, branch: made.value.branch, state: 'ready', keptReason: null, updatedAt: deps.now() };
   await deps.workspaces.save(revived);

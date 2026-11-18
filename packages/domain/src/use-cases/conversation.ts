@@ -242,16 +242,44 @@ async function failTurn(
   return err(error);
 }
 
-async function briefingFor(deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects'>>, session: Session): Promise<string | null> {
+async function briefingFor(
+  deps: Pick<Deps, 'tasks'> & Partial<Pick<Deps, 'workLog' | 'projects' | 'workspaces' | 'workspaceGroups'>>,
+  session: Session
+): Promise<string | null> {
   if (!session.taskId || !deps.workLog) return null;
   const task = await deps.tasks.byId(session.taskId);
   if (!task) return null;
   const project = deps.projects ? await deps.projects.byId(task.projectId) : null;
-  return taskBriefing(
-    task,
-    await deps.workLog.list(task.id, { limit: 6 }),
-    project ? { name: project.name, repoUrl: project.repo?.url ?? null, description: project.description } : null
-  );
+  const context = project
+    ? {
+        name: project.name,
+        repoUrl: project.repo?.url ?? null,
+        description: project.description,
+        ...(await comboBriefing(deps, session))
+      }
+    : null;
+  return taskBriefing(task, await deps.workLog.list(task.id, { limit: 6 }), context);
+}
+
+/** 组合会话才带成员清单；单仓或组不在了就省略，保持原来只写一个仓库地址。 */
+async function comboBriefing(
+  deps: Partial<Pick<Deps, 'workspaces' | 'workspaceGroups'>>,
+  session: Session
+): Promise<{ workspaceRoot: string; repos: { name: string; path: string; url: string | null; branch: string | null }[] } | Record<string, never>> {
+  if (!session.groupId || !deps.workspaceGroups) return {};
+  const group = await deps.workspaceGroups.byId(session.groupId);
+  if (!group || group.root === '') return {};
+  const repos = [];
+  for (const member of group.members) {
+    const workspace = deps.workspaces ? await deps.workspaces.byId(member.workspaceId) : null;
+    repos.push({
+      name: member.name,
+      path: `${group.root}/${member.name}`,
+      url: workspace?.repoUrl ?? null,
+      branch: workspace?.branch ?? null
+    });
+  }
+  return { workspaceRoot: group.root, repos };
 }
 
 /**

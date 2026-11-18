@@ -4,8 +4,9 @@ import { inMemoryDeps } from '../testing/in-memory.ts';
 import { createProject } from '../project.ts';
 import { createTask } from '../task.ts';
 import { deriveSession } from '../session.ts';
-import { asAgentId } from '../ids.ts';
+import { asAgentId, asWorkspaceGroupId } from '../ids.ts';
 import type { Principal } from '../account.ts';
+import { newWorkspace } from '../workspace.ts';
 import type { AccessPolicy } from './authorization.ts';
 import { deleteSessionUseCase } from './delete-session.ts';
 
@@ -94,4 +95,143 @@ test('未登录、会话不存在都拒绝', async () => {
   const missing = await deleteSessionUseCase(w.deps, actor, 'nope' as typeof w.session.id);
   assert.equal(!missing.ok && missing.error.code, 'not_found');
   assert.ok(await w.deps.sessions.byId(w.session.id));
+});
+
+test('删除会话：独占的临时 worktree 会 remove + 登记摘掉；长期目录不动', async () => {
+  const w = inMemoryDeps({ access: policy });
+  const { deps } = w;
+  const project = createProject({ name: 'demo', now: 1, teamId: 't1', createdBy: 'u1' });
+  assert.ok(project.ok);
+  const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
+  assert.ok(task.ok);
+  const base = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'remote-1',
+    path: '/srv/work/demo',
+    kind: 'long_lived',
+    source: 'cloned',
+    isGit: true,
+    now: 1
+  });
+  assert.ok(base.ok);
+  const tree = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'remote-1',
+    path: '/srv/work/.worktrees/demo/sess',
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: task.value.id,
+    baseWorkspaceId: base.value.id,
+    branch: 'agent-hub/t-aaaaaaaaaaaa',
+    isGit: true,
+    now: 2
+  });
+  assert.ok(tree.ok);
+  const session = deriveSession({
+    task: task.value,
+    agentId: asAgentId('pi'),
+    model: 'm',
+    now: 3,
+    createdBy: 'u1',
+    workspaceId: tree.value.id,
+    workerId: 'remote-1'
+  });
+  assert.ok(session.ok);
+  await deps.projects.save(project.value);
+  await deps.tasks.save(task.value);
+  await deps.workspaces.save(base.value);
+  await deps.workspaces.save(tree.value);
+  await deps.sessions.save({ ...session.value, status: 'stopped', workspaceId: tree.value.id, workerId: 'remote-1' });
+
+  const result = await deleteSessionUseCase(deps, actor, session.value.id);
+  assert.ok(result.ok, result.ok ? '' : result.error.message);
+  assert.ok(w.git.calls.some((call) => call === 'remote-1:remove:worktree:/srv/work/.worktrees/demo/sess:force'));
+  assert.equal((await deps.workspaces.byId(tree.value.id))?.state, 'removed');
+  assert.equal((await deps.workspaces.byId(base.value.id))?.state, 'ready');
+});
+
+test('删除组合会话：组里每个成员 worktree 都 force remove，组行还在', async () => {
+  const w = inMemoryDeps({ access: policy });
+  const { deps } = w;
+  const project = createProject({ name: 'demo', now: 1, teamId: 't1', createdBy: 'u1' });
+  assert.ok(project.ok);
+  const task = createTask({ projectId: project.value.id, title: 't', goal: '', now: 1 });
+  assert.ok(task.ok);
+  const base = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'remote-1',
+    path: '/srv/work/web',
+    kind: 'long_lived',
+    source: 'cloned',
+    isGit: true,
+    now: 1
+  });
+  assert.ok(base.ok);
+  const web = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'remote-1',
+    path: '/srv/groups/g1/web',
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: task.value.id,
+    baseWorkspaceId: base.value.id,
+    branch: 'agent-hub/web-aaaaaaaaaaaa',
+    isGit: true,
+    now: 2
+  });
+  const api = newWorkspace({
+    projectId: project.value.id,
+    workerId: 'remote-1',
+    path: '/srv/groups/g1/api',
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: task.value.id,
+    baseWorkspaceId: base.value.id,
+    branch: 'agent-hub/api-aaaaaaaaaaaa',
+    isGit: true,
+    now: 2
+  });
+  assert.ok(web.ok && api.ok);
+  const groupId = asWorkspaceGroupId('group_deadbeef');
+  await deps.projects.save(project.value);
+  await deps.tasks.save(task.value);
+  await deps.workspaces.save(base.value);
+  await deps.workspaces.save({ ...web.value, groupId });
+  await deps.workspaces.save({ ...api.value, groupId });
+  await deps.workspaceGroups.save({
+    id: groupId,
+    projectId: project.value.id,
+    workerId: 'remote-1',
+    root: '/srv/groups/g1',
+    members: [
+      { workspaceId: web.value.id, repoId: 'r1', name: 'web', state: 'ready', error: null },
+      { workspaceId: api.value.id, repoId: 'r2', name: 'api', state: 'ready', error: null }
+    ],
+    state: 'ready',
+    ownerTaskId: task.value.id,
+    sessionId: null,
+    createdAt: 2,
+    error: null
+  });
+  const session = deriveSession({
+    task: task.value,
+    agentId: asAgentId('pi'),
+    model: 'm',
+    now: 3,
+    createdBy: 'u1',
+    workspaceId: web.value.id,
+    workerId: 'remote-1',
+    groupId
+  });
+  assert.ok(session.ok);
+  await deps.sessions.save({ ...session.value, status: 'stopped', workspaceId: web.value.id, workerId: 'remote-1', groupId });
+
+  const result = await deleteSessionUseCase(deps, actor, session.value.id);
+  assert.ok(result.ok, result.ok ? '' : result.error.message);
+  assert.ok(w.git.calls.some((call) => call === 'remote-1:remove:worktree:/srv/groups/g1/web:force'));
+  assert.ok(w.git.calls.some((call) => call === 'remote-1:remove:worktree:/srv/groups/g1/api:force'));
+  assert.equal((await deps.workspaces.byId(web.value.id))?.state, 'removed');
+  assert.equal((await deps.workspaces.byId(api.value.id))?.state, 'removed');
+  assert.equal((await deps.workspaces.byId(base.value.id))?.state, 'ready');
+  assert.ok(await deps.workspaceGroups.byId(groupId));
 });
