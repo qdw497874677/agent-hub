@@ -174,14 +174,11 @@ function MaintainButtons({ item }: { item: MarketAssetDto }) {
           申请提升为全局
         </button>
       ) : null}
-      {item.published && item.asset.scope === 'personal' ? (
-        teamPending ? (
-          <span className="self-center text-meta text-tertiary">上架到团队：待审核</span>
-        ) : (
-          <button className={SMALL} disabled={toTeam.isPending} onClick={() => toTeam.mutate(undefined)}>
-            上架到团队
-          </button>
-        )
+      {/* 待审期间按钮收起，状态看上面那行「最近提交：待审核（申请上架到团队）」 */}
+      {item.published && item.asset.scope === 'personal' && !teamPending ? (
+        <button className={SMALL} disabled={toTeam.isPending} onClick={() => toTeam.mutate(undefined)}>
+          上架到团队
+        </button>
       ) : null}
       {message || error ? (
         <span role="status" className={`basis-full text-meta ${error ? 'text-rust' : 'text-sage'}`}>

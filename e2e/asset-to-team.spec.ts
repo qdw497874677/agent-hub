@@ -36,7 +36,7 @@ test('个人资产上架到团队：待审 → 负责人通过 → 团队资产�
     await card.getByRole('button', { name: '上架到团队' }).click();
     await expect(card).toContainText('已提交团队审核');
     await member.reload();
-    await expect(card).toContainText('上架到团队：待审核');
+    await expect(card).toContainText('待审核');
     await expect(card).toContainText('申请上架到团队');
     await expect(card.getByRole('button', { name: '上架到团队' })).toHaveCount(0);
     await member.screenshot({ path: `${SHOTS}/pending.png`, fullPage: true });
