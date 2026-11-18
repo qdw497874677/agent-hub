@@ -134,6 +134,30 @@ set_task_status { taskId, status, note? }
 
 两段生命周期：先收起会话，下一轮才拆干净的 worktree；组合组原子处理；脏工作区整组留下并给原因；`settled: false` 按原分支恢复。不要用 `remove_workspace` 拆组合组的单个成员。
 
+## 9. 开发会话 ↔ 验证会话直接对话（会话通信，跨机器也一样）
+
+配方 7 把验证会话开到另一台机器后，连上线就能让两边直接问答，不用你在中间传话：
+
+```
+session_start { taskId, workerId: A, ... }   → dev
+session_start { taskId, workerId: B, ... }   → verify
+session_link  { sessionId: dev, otherSessionId: verify, clientRequestId }
+session_reply { sessionId: verify, text: '你是验证会话：收到 ask 就拉对方给的分支、启动、做健康检查，用 agent.reply 回 status + verify-result/v1' }
+session_reply { sessionId: dev, text: '改完推送后用 agent.ask 问 peer:<verify 的短名>，带 parts [{type:"ref",repo,branch,sha}]，拿到结果再收尾' }
+message_inbox / events { waitSec }           # 跟进；验证结果在 dev 的时间线里（reply 带 status 与 parts）
+```
+
+要自己直接问验证会话：`session_message { sessionId: verify, kind:'ask', body, parts:[{type:'ref',...}] }` → `message_get { messageId, waitSec: 50 }`。
+`verify-result/v1` 例子：
+
+```json
+{ "schema": "verify-result/v1", "ok": true, "testedRefs": [{"repo":"web","branch":"hub/77c1","sha":"…"}],
+  "steps": [{"name":"setup","ok":true,"sec":42},{"name":"start","ok":true},{"name":"health","ok":true,"detail":"GET /health 200"}],
+  "logs": [{"type":"file","session":"peer:verify","path":".hub/verify.log"}] }
+```
+
+不再需要的连线用 `session_unlink` 断开；做完 `session_settle` 收起（收起后不再收消息）。
+
 ## 反模式
 
 - ❌ 每次重试换新的 `clientRequestId` → 重复建任务、重复开会话。
@@ -144,3 +168,5 @@ set_task_status { taskId, status, note? }
 - ❌ 对 `origin=local` 的机器调用 `session_start`。
 - ❌ 编造 `references/tools.md` / `tools/list` 里没有的名字；多仓流程用已有的 `workspace_group_*`、`session_git_*`、`task_pull_requests`、`session_settle`、`workspace_sweep`。
 - ❌ 会话报 `blocked`/`failed` 就直接重开一条 → 先读 `get_session` 的 `ended.reason` 和 `diagnostic`。
+- ❌ 用 `session_message` 一条一条刷进度 → 被限速（每分钟 6 条）；合并成一条，或用 `wake:false` 只留言。
+- ❌ 拿到 `message_get` 没回复就 1 秒一次地问 → 用 `waitSec`（≤50）长轮询。

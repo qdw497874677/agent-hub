@@ -46,6 +46,7 @@ function memoryMessages(): MessageStore & { all: Map<string, AgentMessage>; audi
       return true;
     },
     handleOf: async (sid) => handles.get(sid)?.handle ?? null,
+    toAddress: async (address, after, limit) => list().filter((m) => m.to === address && m.createdAt > after).slice(0, limit),
     sessionByHandle: async (taskId, handle) => ([...handles].find(([, h]) => h.taskId === taskId && h.handle === handle)?.[0] as SessionId | undefined) ?? null,
     audit: async (e) => void audits.push(e),
     auditByTrace: async (t) => audits.filter((e) => e.traceId === t)
@@ -670,4 +671,64 @@ test('会话通信 P1f：guarded → auto 先拦下（privilege）；只有发�
   const kept = await w.bus.saveConfig(w.project.id, { roles: [], limits: { maxDepth: 5 } });
   assert.ok(kept.ok);
   assert.equal(kept.value.trustPeers, true);
+});
+
+test('会话通信 P1d：外部 ask → 会话被唤醒（署名外部）→ 回复进外部收件箱、不唤醒任何会话；限速 / 重复 / 已收起', async () => {
+  const w = await linked(2);
+  const [a, b] = w.sessions as [Session, Session];
+  const asked = await w.bus.acceptExternal({ inboxId: 'tok_1', label: '外部 · ci', onBehalfOf: 'alice', targetSessionId: a.id, kind: 'ask', body: '跑一下测试', parts: [{ type: 'data', schema: 'task/v1', data: { x: 1 } }], timeoutSec: 120 });
+  assert.ok(asked.ok);
+  assert.equal(asked.value.status, 'delivered');
+  const text = w.delivered.at(-1)?.text ?? '';
+  assert.match(text, /from="外部 · ci"/);
+  assert.match(text, /from-session="external:tok_1"/);
+  const waiting = await w.bus.externalMessage('tok_1', asked.value.messageId);
+  assert.ok(waiting.ok);
+  assert.equal(waiting.value.reply, null);
+  assert.equal((await w.bus.externalMessage('tok_2', asked.value.messageId)).ok, false, '别的令牌看不到');
+
+  const deliveredBefore = w.delivered.length;
+  assert.ok((await w.bus.reply(a.id, '全部通过', asked.value.messageId, { status: 'ok', parts: [{ type: 'data', schema: 'verify-result/v1', data: { ok: true } }] })).ok);
+  await w.finishTurn(a.id, '');
+  assert.equal(w.delivered.length, deliveredBefore, '回复不唤醒任何会话');
+  const got = await w.bus.externalMessage('tok_1', asked.value.messageId);
+  assert.ok(got.ok);
+  assert.equal(got.value.message.status, 'answered');
+  assert.equal(got.value.reply?.replyStatus, 'ok');
+  assert.equal(got.value.reply?.to, 'external:tok_1');
+  const inbox = await w.bus.externalInbox('tok_1', 0, 50);
+  assert.deepEqual(inbox.map((m) => m.replyTo), [asked.value.messageId]);
+  assert.equal((await w.bus.externalInbox('tok_1', inbox[0]!.createdAt, 50)).length, 0, 'after 游标');
+  assert.equal((await w.bus.externalInbox('tok_2', 0, 50)).length, 0);
+
+  // 被唤醒的会话往下转发时继承链头（令牌主人）
+  const again = await w.bus.acceptExternal({ inboxId: 'tok_1', label: '外部 · ci', onBehalfOf: 'alice', targetSessionId: a.id, kind: 'send', body: '转给 b' });
+  assert.ok(again.ok);
+  const forwarded = await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: `session:${b.id}`, body: '外部让我转告' });
+  assert.ok(forwarded.ok);
+  assert.equal((await w.messages.byId(forwarded.value.messageId))?.traceId, again.value.traceId);
+
+  const dup = await w.bus.acceptExternal({ inboxId: 'tok_1', label: '外部 · ci', onBehalfOf: 'alice', targetSessionId: a.id, kind: 'send', body: '转给 b' });
+  assert.equal(!dup.ok && dup.error.message.startsWith('duplicate'), true);
+  assert.equal((await w.bus.acceptExternal({ inboxId: 'tok_1', label: 'x', onBehalfOf: 'alice', targetSessionId: a.id, kind: 'ask', body: 'x', wake: false })).ok, false);
+  await w.deps.sessions.save({ ...(await w.deps.sessions.byId(b.id))!, settledAt: 9 });
+  const archived = await w.bus.acceptExternal({ inboxId: 'tok_1', label: 'x', onBehalfOf: 'alice', targetSessionId: b.id, kind: 'send', body: 'hi' });
+  assert.equal(!archived.ok && archived.error.message.startsWith('archived'), true);
+  // 会话不能主动给外部发
+  assert.equal((await w.bus.accept({ fromSessionId: a.id, kind: 'send', to: 'external:tok_1', body: 'hi' })).ok, false);
+});
+
+test('会话通信 P1d：外部 ask 超时 → 失败通知进外部收件箱', async () => {
+  const w = await linked(1);
+  const [a] = w.sessions as [Session];
+  await recordEvent(w.deps, { sessionId: a.id, event: { kind: 'prompt', text: '忙着' } });
+  const asked = await w.bus.acceptExternal({ inboxId: 'tok_9', label: '外部 · ci', onBehalfOf: 'alice', targetSessionId: a.id, kind: 'ask', body: '在吗', timeoutSec: 30 });
+  assert.ok(asked.ok);
+  assert.equal(asked.value.status, 'queued');
+  w.tick(31_000);
+  await w.bus.sweep();
+  const got = await w.bus.externalMessage('tok_9', asked.value.messageId);
+  assert.ok(got.ok);
+  assert.equal(got.value.reply?.failure, 'timeout');
+  assert.equal(got.value.reply?.replyStatus, 'failed');
 });

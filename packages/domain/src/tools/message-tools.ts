@@ -1,3 +1,4 @@
+import { isExternalSender } from '../messaging.ts';
 import { invalid, type DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { ToolContext, ToolDescriptor, ToolProvider } from '../ports/tool-provider.ts';
@@ -145,7 +146,8 @@ export const messageView = (m: AgentMessage) => ({
   messageId: m.id,
   traceId: m.traceId,
   kind: m.kind,
-  from: `session:${m.fromSessionId}`,
+  from: isExternalSender(m.fromSessionId) ? m.fromSessionId : `session:${m.fromSessionId}`,
+  fromLabel: m.fromLabel ?? null,
   to: m.to,
   targetSessionId: m.targetSessionId,
   status: m.status,

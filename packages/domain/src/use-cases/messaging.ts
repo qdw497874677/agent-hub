@@ -12,6 +12,8 @@ import {
   STORM_LIMITS,
   defaultHandle,
   isHandle,
+  externalAddress,
+  isExternalSender,
   privilegeTier,
   validateParts,
   type MessagePart,
@@ -81,6 +83,22 @@ export interface SendCommand {
   readonly timeoutSec?: number;
 }
 
+/** 外部 agent 经开放 API 发消息（P1d）：令牌即身份，收件箱 = 令牌 id。 */
+export interface ExternalSendCommand {
+  readonly inboxId: string;
+  /** 署名，例如「外部 · ci-bot」。 */
+  readonly label: string;
+  /** 令牌背后的账号（链头那个人）。 */
+  readonly onBehalfOf: string;
+  readonly targetSessionId: SessionId;
+  readonly kind: Exclude<MessageKind, 'reply'>;
+  readonly body: string;
+  readonly parts?: unknown;
+  readonly wake?: boolean;
+  readonly timeoutSec?: number;
+  readonly idempotencyKey?: string;
+}
+
 export interface ReplyExtra {
   readonly status?: ReplyStatus;
   readonly parts?: unknown;
@@ -137,6 +155,12 @@ export interface MessageBus {
    * 用在 workspace.list / read / changes 与 git.state 的 session 参数上。
    */
   resolvePeer(fromSessionId: SessionId, address: string): Promise<Result<SessionId, DomainError>>;
+  /** 外部发送（P1d）：权限（对目标会话 session.prompt）由开放 API 的守门先查过。 */
+  acceptExternal(command: ExternalSendCommand): Promise<Result<Accepted, DomainError>>;
+  /** 外部查一条自己发的消息（或发给自己的回复）与它的回复。 */
+  externalMessage(inboxId: string, messageId: string): Promise<Result<{ message: AgentMessage; reply: AgentMessage | null }, DomainError>>;
+  /** 外部收件箱：回复（含失败通知），createdAt > after，正序。 */
+  externalInbox(inboxId: string, after: number, limit: number): Promise<AgentMessage[]>;
   /** 超时扫一遍（组合根定时调）。 */
   sweep(): Promise<number>;
   config(projectId: ProjectId): Promise<MessagingConfig>;
@@ -224,16 +248,17 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       if (await deps.occupied?.(targetId)) return;
       const next = (await deps.messages.queuedFor(targetId))[0];
       if (!next) return;
-      const from = await deps.sessions.byId(next.fromSessionId);
+      const from = isExternalSender(next.fromSessionId) ? null : await deps.sessions.byId(next.fromSessionId);
+      const fromLabel = next.fromLabel ?? (from ? labelOf(from, (await deps.messages.spawnOf(from.id))?.role ?? null) : next.fromSessionId);
       const text = wrapUntrusted({
         message: next,
-        fromLabel: from ? labelOf(from, (await deps.messages.spawnOf(from.id))?.role ?? null) : next.fromSessionId,
+        fromLabel,
         fromSessionId: next.fromSessionId,
         onBehalfOfName: await nameOf(next.onBehalfOf)
       });
       const author = {
         id: `agent:${next.fromSessionId}`,
-        name: `${from ? labelOf(from, (await deps.messages.spawnOf(from.id))?.role ?? null) : next.fromSessionId} 代 ${await nameOf(next.onBehalfOf)}`,
+        name: `${fromLabel} 代 ${await nameOf(next.onBehalfOf)}`,
         via: 'agent'
       };
       const now = deps.now();
@@ -296,6 +321,13 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
       readAt: null,
       holdReason: null
     };
+    if (isExternalSender(ask.fromSessionId)) {
+      // 外部提问方：回复不唤醒任何会话，直接进外部收件箱（message_inbox / message_get 取）。
+      const boxed: AgentMessage = { ...reply, to: ask.fromSessionId, targetSessionId: null, status: 'done', deliveredAt: now };
+      await deps.messages.save(boxed);
+      await audit(boxed, boxed, 'delivered', boxed.fromSessionId, `reply → ${ask.fromSessionId}（外部收件箱）`);
+      return boxed;
+    }
     await deps.messages.save(reply);
     await audit(reply, reply, 'queued', reply.fromSessionId, `reply → ${ask.fromSessionId}`);
     await pump(ask.fromSessionId);
@@ -739,6 +771,99 @@ export function createMessageBus(deps: MessageBusDeps): MessageBus {
     },
 
     handleOf,
+
+    async acceptExternal(command) {
+      const body = command.body;
+      if (typeof body !== 'string' || body.trim() === '') return err(invalid('消息不能为空'));
+      if (body.length > MAX_BODY_CHARS) return err(invalid(`消息太长（最多 ${MAX_BODY_CHARS} 字符）`));
+      if (command.kind !== 'send' && command.kind !== 'ask') return err(invalid('kind 只能是 send / ask'));
+      if (command.wake === false && command.kind !== 'send') return err(invalid('只有 send 可以 wake=false'));
+      if (command.timeoutSec !== undefined && (command.kind !== 'ask' || !Number.isInteger(command.timeoutSec) || command.timeoutSec < 30 || command.timeoutSec > MAX_ASK_TIMEOUT_SEC)) {
+        return err(invalid(`timeoutSec 只用于 ask，范围 30–${MAX_ASK_TIMEOUT_SEC} 秒`));
+      }
+      const there = await sessionAndProject(command.targetSessionId);
+      if (!there) return err(notFound('会话不存在'));
+      const { session: target, project } = there;
+      const checkedParts = validateParts(command.parts, project.repos.map((r) => r.name));
+      if (!checkedParts.ok) return err(invalid(checkedParts.problem));
+      const parts = checkedParts.parts;
+      const fromId = externalAddress(command.inboxId) as SessionId;
+      if (command.idempotencyKey) {
+        const seen = await deps.messages.byIdempotencyKey(fromId, command.idempotencyKey);
+        if (seen) return ok({ messageId: seen.id, traceId: seen.traceId, status: seen.status, targetSessionId: seen.targetSessionId });
+      }
+      const traceId = newTraceId();
+      const base = { traceId, projectId: project.id, onBehalfOf: command.onBehalfOf };
+      const deny = async (code: FailureCode, message: string): Promise<Result<Accepted, DomainError>> => {
+        await audit(null, base, 'denied', fromId, `${code}: ${command.kind} session:${target.id} — ${message}`);
+        return err(code === 'rate_limited' ? conflict(`${code}: ${message}`) : code === 'archived' ? conflict(`${code}: ${message}`) : forbidden(`${code}: ${message}`));
+      };
+      if (target.settledAt) return deny('archived', '对方会话已收起；要先重开才能收消息');
+      // 防风暴（外部这一侧）：同一对每分钟 6 条、10 分钟重复、对方收件队列 20
+      const now = deps.now();
+      const inbound = await deps.messages.forSession(target.id, 200);
+      const sent = inbound.filter((m) => m.fromSessionId === fromId && m.targetSessionId === target.id);
+      if (sent.filter((m) => m.createdAt > now - 60_000).length >= STORM_LIMITS.pairPerMinute) return deny('rate_limited', `1 分钟内已给这个会话发了 ${STORM_LIMITS.pairPerMinute} 条：合并成一条，或稍后再发`);
+      const sameParts = JSON.stringify(parts);
+      if (sent.some((m) => m.createdAt > now - STORM_LIMITS.duplicateWindowMs && m.status !== 'failed' && m.status !== 'denied' && m.body === body && JSON.stringify(m.parts ?? []) === sameParts)) {
+        return deny('duplicate', '10 分钟内已经发过完全一样的内容');
+      }
+      if (inbound.filter((m) => m.targetSessionId === target.id && (m.status === 'queued' || m.status === 'held')).length >= STORM_LIMITS.inboxMax) {
+        return deny('busy', `对方收件队列已满（${STORM_LIMITS.inboxMax} 条）`);
+      }
+      const wake = command.wake !== false;
+      const message: AgentMessage = {
+        id: newMessageId(),
+        traceId,
+        depth: 1,
+        projectId: project.id,
+        kind: command.kind,
+        fromSessionId: fromId,
+        onBehalfOf: command.onBehalfOf,
+        to: `session:${target.id}`,
+        targetSessionId: target.id,
+        role: null,
+        replyTo: null,
+        body,
+        status: wake ? 'queued' : 'done',
+        failure: null,
+        failureDetail: null,
+        replyBody: null,
+        replySource: null,
+        idempotencyKey: command.idempotencyKey ?? null,
+        createdAt: now,
+        updatedAt: now,
+        deliveredAt: null,
+        deadlineAt: command.kind === 'ask' ? now + (command.timeoutSec !== undefined ? command.timeoutSec * 1000 : askTimeout) : null,
+        parts,
+        wake,
+        replyStatus: null,
+        replyParts: [],
+        readAt: null,
+        holdReason: null,
+        fromLabel: command.label.slice(0, 80)
+      };
+      await deps.messages.save(message);
+      await audit(message, message, 'accepted', fromId, `外部 ${command.kind} session:${target.id}${parts.length > 0 ? ` parts=${parts.length}` : ''}${wake ? '' : ' wake=false'} ${summary(body)}`);
+      if (wake) {
+        await audit(message, message, 'queued', 'hub', `→ ${target.id}`);
+        await pump(target.id);
+      }
+      const current = (await deps.messages.byId(message.id)) ?? message;
+      return ok({ messageId: current.id, traceId: current.traceId, status: current.status, targetSessionId: current.targetSessionId });
+    },
+
+    async externalMessage(inboxId, messageId) {
+      const address = externalAddress(inboxId);
+      const message = await deps.messages.byId(messageId);
+      if (!message || (message.fromSessionId !== address && message.to !== address)) return err(notFound('没有这条消息'));
+      const reply = message.kind === 'reply' ? null : ((await deps.messages.byTrace(message.traceId)).find((m) => m.kind === 'reply' && m.replyTo === message.id) ?? null);
+      return ok({ message, reply });
+    },
+
+    async externalInbox(inboxId, after, limit) {
+      return deps.messages.toAddress(externalAddress(inboxId), after, Math.max(1, Math.min(limit, 100)));
+    },
 
     async resolvePeer(fromSessionId, raw) {
       const here = await sessionAndProject(fromSessionId);

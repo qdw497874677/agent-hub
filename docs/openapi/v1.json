@@ -41,6 +41,236 @@
         "required": [
           "error"
         ]
+      },
+      "SessionLink": {
+        "type": "object",
+        "properties": {
+          "projectId": {
+            "type": "string"
+          },
+          "aSessionId": {
+            "type": "string"
+          },
+          "bSessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "projectId",
+          "aSessionId",
+          "bSessionId"
+        ],
+        "additionalProperties": {}
+      },
+      "SessionPeer": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "handle": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "workerId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "connected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "address",
+          "label",
+          "status"
+        ],
+        "additionalProperties": {}
+      },
+      "MessageAccepted": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "targetSessionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "messageId",
+          "traceId",
+          "status",
+          "targetSessionId"
+        ]
+      },
+      "SendMessageRequest": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "send",
+              "ask"
+            ]
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32768
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagePart"
+            },
+            "maxItems": 8
+          },
+          "wake": {
+            "type": "boolean"
+          },
+          "timeoutSec": {
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 14400
+          }
+        },
+        "required": [
+          "kind",
+          "body"
+        ]
+      },
+      "MessagePart": {
+        "type": "object",
+        "additionalProperties": {}
+      },
+      "AgentMessage": {
+        "type": "object",
+        "properties": {
+          "messageId": {
+            "type": "string"
+          },
+          "traceId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "send",
+              "ask",
+              "reply"
+            ]
+          },
+          "from": {
+            "type": "string"
+          },
+          "fromLabel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "type": "string"
+          },
+          "targetSessionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "replyTo": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failureDetail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessagePart"
+            }
+          },
+          "replyStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "messageId",
+          "traceId",
+          "kind",
+          "from",
+          "fromLabel",
+          "to",
+          "targetSessionId",
+          "status",
+          "body",
+          "replyTo",
+          "failure",
+          "failureDetail",
+          "parts",
+          "replyStatus",
+          "createdAt"
+        ],
+        "additionalProperties": {}
       }
     },
     "parameters": {}
@@ -8242,7 +8472,7 @@
           "sessions"
         ],
         "summary": "会话详情",
-        "description": "取一条会话的状态与配置。**status 只描述最近一轮**：running = 这一轮在跑；done/stopped/interrupted/failed = 这一轮的结果。\n参数：sessionId。\n返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n轮询用法：记下 turn；调 events(sessionId, sinceTurn=turn) 或 events(sessionId, after=lastSeq)；未到终态就 3–5 秒后再看；看到本 turn 的 ended 事件即这一轮结束。\n下一步：用 events 读它的时间线；要发下一句用 session_reply。\n错误：404 会话不存在或属于看不见的项目。\n\n权限范围：`sessions:read`\n\nMCP 工具：`get_session`",
+        "description": "取一条会话的状态与配置。**status 只描述最近一轮**：running = 这一轮在跑；done/stopped/interrupted/failed = 这一轮的结果。\n参数：sessionId。\n返回：会话对象（status、turn、lastSeq、model、workspaceId、taskId…；taskId 可能为 null，表示常驻容器会话）。\n轮询用法：记下 turn；调 events(sessionId, sinceTurn=turn) 或 events(sessionId, after=lastSeq)；未到终态就 3–5 秒后再看；看到本 turn 的 ended 事件即这一轮结束。\n下一步：用 events 读它的时间线；要发下一句用 session_reply。\n长轮询：waitSec（0–50）= 这一轮还在跑时最多等这么久再返回（不取消这一轮；到点仍在跑就原样返回 running）。\n错误：404 会话不存在或属于看不见的项目。\n\n权限范围：`sessions:read`\n\nMCP 工具：`get_session`",
         "security": [
           {
             "bearer": [
@@ -8258,6 +8488,19 @@
             "required": true,
             "name": "sessionId",
             "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 50
+            },
+            "required": false,
+            "name": "waitSec",
+            "in": "query"
           }
         ],
         "responses": {
@@ -10058,7 +10301,7 @@
           "sessions"
         ],
         "summary": "会话事件（after 之后的）",
-        "description": "读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）。\n返回：[{ seq, at, turn, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n轮询用法：第一次 sinceTurn=turn；之后用 after=最后一条 seq 增量拉；本 turn 出现 ended 即结束；没结束时 3–5 秒后再拉（running 时密一点，卡住时退到 10 秒）。\n下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n错误：404 会话不存在或看不见。\n\n权限范围：`sessions:read`\n\nMCP 工具：`events`",
+        "description": "读会话时间线（对外已投影）：只有文本、工具名与成败、结束原因、诊断占位。\n参数：sessionId；after（只取 seq > after 的事件）；sinceTurn（只取第几轮及之后的事件，配合 session_reply 返回的 turn 用）；waitSec（0–50，没有新事件时最多等这么久，有新事件立刻返回）。\n返回：[{ seq, at, turn, event }]，event.kind ∈ text | tool | tool_result | ended | diagnostic。\n轮询用法：第一次 sinceTurn=turn；之后用 after=最后一条 seq 增量拉；本 turn 出现 ended 即结束；没结束时 3–5 秒后再拉（running 时密一点，卡住时退到 10 秒）。\n下一步：把 after 设为最后一条 seq 继续轮；工具细节与思考过程不对开放 API 暴露。\n错误：404 会话不存在或看不见。\n\n权限范围：`sessions:read`\n\nMCP 工具：`events`",
         "security": [
           {
             "bearer": [
@@ -10097,6 +10340,19 @@
             },
             "required": false,
             "name": "sinceTurn",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 50
+            },
+            "required": false,
+            "name": "waitSec",
             "in": "query"
           }
         ],
@@ -10692,6 +10948,668 @@
                       "at"
                     ]
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/links": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "把两条会话连起来（能互发消息、只读看对方工作空间）",
+        "description": "连两条同项目的会话（无向、幂等）。连上后两边的 agent 能用 agent.ask / agent.send 互发消息（to 写 peer:<短名>），能用 workspace.read 的 session 参数只读看对方文件。\n参数：sessionId；body `{ otherSessionId }`。两条会话你都要能 session.prompt。\n返回：连线对象。\n下一步：session_peers 看短名；session_message 给其中一条派活。\n错误：400 连自己；404 不在同一个项目；409 两边机器都不在线。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_link`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "otherSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "otherSessionId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已连上",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionLink"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/unlink": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "断开两条会话",
+        "description": "断开连线（重复断开也成功）。断开后双方不能再互发消息（派生父子关系不受影响），已发的消息和审计保留。\n参数：sessionId；body `{ otherSessionId }`。\n返回：{ ok: true }。\n错误：400 断自己；403 / 404。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_unlink`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "otherSessionId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "otherSessionId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/peers": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "会话的同伴",
+        "description": "这条会话能直接说话的同伴（显式连线 + 派生父会话）：短名 handle（用 peer:<handle> 寻址）、session id、机器 workerId、仓库、分支、标题、状态（idle / busy / archived）。\n参数：sessionId。\n返回：{ peers: [...] }。\n下一步：session_link 增加同伴；session_message 给某条会话发消息。\n\n权限范围：`sessions:read`\n\nMCP 工具：`session_peers`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "peers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SessionPeer"
+                      }
+                    }
+                  },
+                  "required": [
+                    "peers"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/sessions/{sessionId}/messages": {
+      "post": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "以外部 agent 身份给会话发消息（send / ask）",
+        "description": "经消息总线给会话发一条 agent 消息，署名「外部 · <令牌名>」，包在不可信边界里；ask 的回复进你的外部收件箱（不唤醒任何会话）。\n和 session_reply 的区别：session_reply 是以令牌主人身份对会话下指令（普通一轮）；session_message 是 agent 消息，受限额和防风暴约束，回复能按 messageId 关联。\n参数：sessionId；body `{ kind: send|ask, body, parts?, wake?, timeoutSec? }`。parts 是结构化附件（data / ref / file / link，≤8 个，≤16KB）；wake=false 只进对方收件箱（只有 send）；timeoutSec 30–14400（只有 ask，默认 1800）。\n返回：{ messageId, traceId, status, targetSessionId }；status = delivered（对方空闲，已开新一轮）/ queued（对方忙，排队）/ done（wake=false）。\n下一步：ask 用 message_get(messageId, waitSec≤50) 等回复，或 message_inbox 增量取；回复的 replyStatus 是 ok / failed / refused。\n错误：400 参数不合法；403 没有 session.prompt 或 duplicate（10 分钟内重复）；409 archived（会话已收起）/ rate_limited（同一会话每分钟最多 6 条）；404 会话不存在。\n重试：给 clientRequestId，同一值重试不会发第二条。\n\n权限范围：`sessions:write`\n\nMCP 工具：`session_message`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:write"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已接收",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageAccepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/messages/{messageId}": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "外部发的一条消息与它的回复",
+        "description": "查你（这个令牌）发出的一条消息的状态和回复。waitSec（0–50）：还没有回复时最多等这么久（长轮询，到点没回复就照常返回）。\n参数：messageId；waitSec。\n返回：{ message, reply }；reply 为 null 表示还没回；reply.replyStatus = ok / failed / refused，reply.failure 有值表示超时（timeout）/ 对方已收起（archived）等。\n下一步：没回复就再调一次（带 waitSec）；多条在等时用 message_inbox。\n错误：404 不是这个令牌发的或不存在。\n\n权限范围：`sessions:read`\n\nMCP 工具：`message_get`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "messageId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 50
+            },
+            "required": false,
+            "name": "waitSec",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/AgentMessage"
+                    },
+                    "reply": {
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/AgentMessage"
+                        },
+                        {
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "reply"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求不合法",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "缺少或无效的令牌",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "令牌的权限范围或账号权限不够",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "不存在或看不见",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "太频繁（看 Retry-After）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi/v1/inbox": {
+      "get": {
+        "tags": [
+          "sessions"
+        ],
+        "summary": "外部收件箱（回复）",
+        "description": "这个令牌收到的回复（含失败通知），按时间正序。收件箱绑令牌：吊销令牌后就打不开了。\n参数：after（上一页最后一条的 createdAt，默认 0）；limit（1–100，默认 50）。\n返回：{ messages: [...], next }；next = 最后一条的 createdAt，下一次作为 after 传回。\n下一步：按 replyTo 关联到你发的 ask。\n\n权限范围：`sessions:read`\n\nMCP 工具：`message_inbox`",
+        "security": [
+          {
+            "bearer": [
+              "sessions:read"
+            ]
+          }
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "required": false,
+            "name": "after",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AgentMessage"
+                      }
+                    },
+                    "next": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "messages",
+                    "next"
+                  ]
                 }
               }
             }

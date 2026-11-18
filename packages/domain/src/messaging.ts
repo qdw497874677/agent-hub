@@ -82,7 +82,17 @@ export interface AgentMessage {
   /** 对方读到的时间：投递进对话或 agent.inbox 读到时记。 */
   readonly readAt?: number | null;
   readonly holdReason?: HoldReason | null;
+  /** 外部发送方（P1d）的署名，例如「外部 · ci-bot」；会话发的为空，按会话现算。 */
+  readonly fromLabel?: string | null;
 }
+
+/**
+ * 外部发送方（会话通信 P1d，§5.4）：from 写成 `external:<inboxId>`（存在 fromSessionId 里，不是会话）。
+ * inboxId = API 令牌 id；令牌吊销后连不上，收件箱随之关闭。外部只能发、收回复，会话不能主动给外部发。
+ */
+export const EXTERNAL_PREFIX = 'external:';
+export const isExternalSender = (from: string): boolean => from.startsWith(EXTERNAL_PREFIX);
+export const externalAddress = (inboxId: string): string => `${EXTERNAL_PREFIX}${inboxId}`;
 
 // ───────────── 附件（会话通信 P1a，docs/design/session-communication.md §5.2） ─────────────
 

@@ -373,7 +373,8 @@ export function createApp(options: AppOptions): Hono {
         projectDeletion: options.projectDeletion,
         waitOptions: options.waitOptions,
         assetReview: options.assets?.deps,
-        git: options.git
+        git: options.git,
+        ...(options.messaging ? { messaging: { bus: options.messaging.bus } } : {})
       });
     }
   } else if (options.observe) {
