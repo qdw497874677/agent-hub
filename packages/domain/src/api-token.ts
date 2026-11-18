@@ -94,14 +94,14 @@ export interface ApiToken {
   readonly tokenHash: string;
   readonly createdBy: string;
   readonly createdAt: number;
-  /** null = 永不过期（要显式选）；创建时不给 = DEFAULT_TOKEN_TTL_MS（bot 凭据除外）。 */
+  /** null = 永不过期（要显式选）；创建时不给 = DEFAULT_TOKEN_TTL_MS。bot 凭据恒为 null，不能设。 */
   readonly expiresAt: number | null;
   readonly lastUsedAt: number | null;
   readonly revokedAt: number | null;
 }
 
 /** 令牌明文前缀：便于泄露扫描、也让鉴权一眼分得清。 */
-/** 令牌默认有效期：30 天。永不过期要显式选（GitHub / Cursor 也是默认带期限）。 */
+/** 用户自建令牌（个人 / 服务账号）的默认有效期：30 天。永不过期要显式选（GitHub / Cursor 也是默认带期限）。bot 凭据不适用。 */
 export const DEFAULT_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export const API_TOKEN_PREFIX = 'ahp_';
@@ -123,8 +123,10 @@ export const SERVICE_EMAIL_DOMAIN = '@service.agent-hub.invalid';
 
 export const isServiceAccount = (user: Pick<User, 'email'>): boolean => user.email.endsWith(SERVICE_EMAIL_DOMAIN);
 
+/** bot 凭据（项目里 IM / 群聊 bot 内置的那份）永不过期：只看吊销。老库里就算存了到期时间也不算数。 */
 export function apiTokenUsable(token: ApiToken, now: number): boolean {
-  return token.revokedAt === null && (token.expiresAt === null || token.expiresAt > now);
+  if (token.revokedAt !== null) return false;
+  return token.kind === 'bot' || token.expiresAt === null || token.expiresAt > now;
 }
 
 /** 请求是经令牌来的：挂在 Principal 上，can() 据此取交集，审计据此写「via 令牌」。 */
