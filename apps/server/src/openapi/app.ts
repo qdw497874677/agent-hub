@@ -1,4 +1,5 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { applyStartExtras, checkStartExtras } from '../session-start-extras.ts';
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { homedir } from 'node:os';
@@ -72,7 +73,7 @@ import {
   assetViewOf,
   scopedTokenCreateDenied
 } from '@agent-hub/domain';
-import type { AssetReviewDeps, DeleteProjectDeps, MessageBus } from '@agent-hub/domain';
+import type { AssetReviewDeps, DeleteProjectDeps, MessageBus, MessageStore } from '@agent-hub/domain';
 import { linkSessionsUseCase, unlinkSessionsUseCase, messageView } from '@agent-hub/domain';
 import type { z } from 'zod';
 import { assetSchema, sessionSchema, workspaceSchema } from '@agent-hub/contract';
@@ -115,7 +116,7 @@ interface V1Context {
   readonly assetReview?: AssetReviewDeps;
   readonly git?: GitWorkflowService;
   /** 会话通信 P1d：外部 agent 经消息总线发 send / ask、收回复。不给 = 这几条路由 501。 */
-  readonly messaging?: { readonly bus: MessageBus };
+  readonly messaging?: { readonly bus: MessageBus; readonly messages?: MessageStore };
 }
 
 type Env = { Variables: { principal: Principal }; Bindings: Record<string | symbol, unknown> };
@@ -525,10 +526,18 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
+  /** repoId 只用来挑工作目录，不往 derive 里传。 */
+  const withoutRepo = <T extends { repoId?: string }>(value: T): Omit<T, 'repoId'> => {
+    const { repoId: _repoId, ...rest } = value;
+    return rest;
+  };
   on(routes.startSession, async (c) => {
     const actor = principal(c);
-    const input = valid<z.output<typeof deriveSessionRequest>>(c, 'json');
+    const { handle, linkWith, ...input } = valid<z.output<typeof deriveSessionRequest>>(c, 'json');
     if (!can(actor, 'session.create')) return fail(c, forbidden('令牌没有 sessions:write'));
+    const extras = { handle, linkWith };
+    const linkIds = await checkStartExtras(deps, ctx.messaging?.messages, input.taskId, extras, actor);
+    if (!linkIds.ok) return fail(c, linkIds.error);
     const allowed = await ctx.providers?.checkModel(actor, input.model, input.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
     const placed = await workspaceForApiStart(
@@ -538,7 +547,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     );
     if (!placed.ok) return fail(c, placed.error);
     const result = await deriveSessionUseCase(deps, {
-      ...input,
+      ...withoutRepo(input),
       ...(placed.value ? { workspaceId: placed.value } : {}),
       actor,
       ...(allowed?.ok && allowed.value ? { hubProtocol: allowed.value } : {})
@@ -546,6 +555,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (result.ok) {
       await recordSessionAction(deps, ctx.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, ctx.activity, c, actor, result.value, 'api');
+      await applyStartExtras(deps, ctx.messaging?.bus, result.value, extras, linkIds.value, actor.user.id);
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });

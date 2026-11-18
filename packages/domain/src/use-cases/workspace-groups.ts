@@ -585,3 +585,75 @@ export async function addWorkspaceGroupMemberUseCase(
   await store.save(next);
   return ok(next);
 }
+
+export interface PrepareRepoWorktreeCommand {
+  readonly projectId: string;
+  readonly taskId: string;
+  /** 项目里的哪个仓库（ProjectRepo.id 或仓库名）。 */
+  readonly repoId: string;
+  readonly workerId?: string | null;
+  readonly home: string;
+  readonly actor?: Subject | null;
+  readonly sessionId?: string | null;
+}
+
+/**
+ * 会话通信 P1b · 一仓一会话：给项目里的**某一个**仓库在指定机器上新开一个隔离 worktree（单仓临时工作空间），
+ * 不建组合组。基座复用组合组同一套（这台机器上该仓库的长期 clone，没有就先 clone）；
+ * 分支 `agent-hub/<仓库名>-<会话后缀>`，从任务 baseBranch 或仓库默认分支长出来。
+ * 准备命令只属于主仓库：开的是主仓库才跑。
+ */
+export async function prepareRepoWorktreeUseCase(
+  deps: Omit<WorkspaceGroupDeps, 'sessions'> & Pick<Deps, 'sessions'>,
+  command: PrepareRepoWorktreeCommand
+): Promise<Result<Workspace, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project || project.deletedAt !== null) return err(notFound('项目不存在'));
+  const task = await deps.tasks.byId(asTaskId(command.taskId));
+  if (!task || task.projectId !== project.id) return err(notFound('任务不存在'));
+  const wanted = command.repoId.trim();
+  const repo = project.repos.find((candidate) => candidate.id === wanted) ?? project.repos.find((candidate) => candidate.name === wanted);
+  if (!repo) return err(invalid(`仓库 ${wanted} 不在这个项目里（可选：${project.repos.map((r) => r.id).join('、') || '项目还没有配置仓库'}）`));
+  const actor = command.actor ?? null;
+  const resolved = await resolveMachine(deps, command.workerId ?? null);
+  if (!resolved.ok) return resolved;
+  const machine = resolved.value;
+  const allowed = await authorizeWorker(deps.access, actor, machine.workerId);
+  if (!allowed.ok) return allowed;
+  const base = await baseForRepo(deps, project, repo, machine, { home: command.home, actor });
+  if (!base.ok) return base;
+  const sessionId = command.sessionId?.trim() || newSessionId();
+  const branch = groupBranch(repo, sessionId);
+  const repoParent = base.value.path.split('/').slice(0, -1).join('/');
+  const repoDir = base.value.path.split('/').filter(Boolean).at(-1) ?? repo.name;
+  const auth = (await deps.repoAuth?.forUrl(machine.workerId, repo.url, project.id)) ?? undefined;
+  const made = await gitOn(deps, machine.route).addWorktree({
+    repoPath: base.value.path,
+    path: `${repoParent}/.worktrees/${repoDir}/${branchSlug(task.title)}-${sessionBranchSuffix(sessionId)}`,
+    branch,
+    base: originBranchRef(task.baseBranch) ?? originBranchRef(repo.defaultBranch) ?? base.value.branch ?? undefined,
+    ...(auth ? { auth } : {}),
+    ...(recurseSubmodules(project) ? { recurseSubmodules: true } : {})
+  });
+  if (!made.ok) return made;
+  const setup = designatedPrimaryRepo(project)?.id === repo.id || project.repos.length === 1 ? (project.worktree?.setup ?? null) : null;
+  const created = newWorkspace({
+    projectId: project.id,
+    teamId: project.teamId,
+    repoUrl: repo.url,
+    workerId: machine.workerId,
+    path: made.value.path,
+    kind: 'temporary',
+    source: 'worktree',
+    ownerTaskId: task.id,
+    baseWorkspaceId: base.value.id,
+    branch: made.value.branch,
+    isGit: true,
+    state: setup ? 'preparing' : 'ready',
+    now: deps.now()
+  });
+  if (!created.ok) return created;
+  await deps.workspaces.save(created.value);
+  if (!setup) return ok(created.value);
+  return ok(await runWorkspaceSetup(deps, machine, created.value, setup));
+}

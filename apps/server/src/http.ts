@@ -173,6 +173,7 @@ import type { EnrollmentOptions } from './enrollment.ts';
 import type { AdminOptions } from './admin.ts';
 import { fail } from './http-error.ts';
 import { noteProvenance, viaOfClient, recordSessionAction, refreshAuthors, refreshPreviewAuthors, sessionActivity, ipOf, viaSuffix } from './session-activity.ts';
+import { applyStartExtras, checkStartExtras } from './session-start-extras.ts';
 import { workspaceForApiStart } from './session-workspace.ts';
 import type { SessionActivityOptions } from './session-activity.ts';
 import type { AuthOptions } from './auth.ts';
@@ -374,7 +375,7 @@ export function createApp(options: AppOptions): Hono {
         waitOptions: options.waitOptions,
         assetReview: options.assets?.deps,
         git: options.git,
-        ...(options.messaging ? { messaging: { bus: options.messaging.bus } } : {})
+        ...(options.messaging ? { messaging: { bus: options.messaging.bus, messages: options.messaging.messages } } : {})
       });
     }
   } else if (options.observe) {
@@ -840,8 +841,16 @@ export function createApp(options: AppOptions): Hono {
     if (!input.ok) return input.response;
     const actor = subjectOf(c);
     // workspaceMode 是「现建一个临时工作空间」的档位；指定了 workspaceId 就用指定那个。
-    const { workspaceMode, ...derive } = input.value;
+    const { workspaceMode, handle, linkWith, repoId, ...derive } = input.value;
+    const extras = { handle, linkWith };
+    const linkIds = await checkStartExtras(deps, options.messaging?.messages, derive.taskId, extras, actor);
+    if (!linkIds.ok) return fail(c, linkIds.error);
     let workspaceId = derive.workspaceId ?? null;
+    if (repoId) {
+      const placed = await workspaceForApiStart(deps, { ...derive, repoId }, actor);
+      if (!placed.ok) return fail(c, placed.error);
+      workspaceId = placed.value;
+    }
     if (!workspaceId && workspaceMode) {
       const task = await deps.tasks.byId(asTaskId(derive.taskId));
       if (!task) return fail(c, notFound('任务不存在'));
@@ -858,7 +867,7 @@ export function createApp(options: AppOptions): Hono {
     }
     // 开放 API / 脚本建会话往往只给 taskId：项目没绑长期工作目录时按界面默认现建一个，
     // 别让调用方先猜着去建工作空间（MCP 的 session_start 就是这条路）。
-    if (!workspaceId && workspaceMode === undefined) {
+    if (!workspaceId && workspaceMode === undefined && !repoId) {
       const placed = await workspaceForApiStart(deps, derive, actor);
       if (!placed.ok) return fail(c, placed.error);
       workspaceId = placed.value ?? workspaceId;
@@ -880,6 +889,7 @@ export function createApp(options: AppOptions): Hono {
     } else {
       await recordSessionAction(deps, options.activity, c, actor, 'session.start', result.value.id, '');
       await noteProvenance(deps, options.activity, c, actor, result.value, viaOfClient(c));
+      await applyStartExtras(deps, options.messaging?.bus, result.value, extras, linkIds.value, principalOf(c)?.user.id ?? null);
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
   });

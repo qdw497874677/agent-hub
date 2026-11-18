@@ -29,7 +29,7 @@
 | `list_task_log` | 读 | `task.read` | `/tasks/{taskId}/log` | taskId, limit?, beforeSeq? | 工作日志（倒序分页） |
 | `append_task_log` | 写 | `task.create` | `/tasks/{taskId}/log` | taskId, body, links?, sessionId? | 写一条工作日志（写工具，要 `clientRequestId`） |
 | `edit_task_log` | 写 | `task.create` | `/tasks/{taskId}/log/{entryId}` | taskId, entryId, body | 改自己写的日志（写工具，要 `clientRequestId`） |
-| `session_start` | 写 | `session.create` | `/sessions` | taskId, agentId, model, workerId?, workspaceId?, workspaceMode?, groupId?, requires?, profileId?, options?, kind?, parentSessionId?, assetIds?, assetSetIds? | 在任务下开一条会话（写工具，要 `clientRequestId`） |
+| `session_start` | 写 | `session.create` | `/sessions` | taskId, agentId, model, workerId?, workspaceId?, workspaceMode?, groupId?, requires?, profileId?, options?, kind?, parentSessionId?, assetIds?, assetSetIds?, repoId?, handle?, linkWith? | 在任务下开一条会话（写工具，要 `clientRequestId`） |
 | `fork_session` | 写 | `session.create` | `/sessions/fork` | sessionId, atSeq?, agentId, model | 从某条消息分叉（写工具，要 `clientRequestId`） |
 | `get_session` | 读 | `session.read` | `/sessions/{sessionId}` | sessionId, waitSec? | 会话详情 |
 | `session_model` | 写 | `session.prompt` | `/sessions/{sessionId}/model` | sessionId, model | 换这条会话的模型（可换提供商）（写工具，要 `clientRequestId`） |
