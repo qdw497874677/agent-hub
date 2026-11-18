@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { inMemoryDeps } from '../testing/in-memory.ts';
-import { createProjectUseCase } from './projects.ts';
+import { createProjectUseCase, setProjectDefaultAgentUseCase } from './projects.ts';
 import { createTaskUseCase } from './tasks.ts';
 import { deriveSessionUseCase } from './sessions.ts';
 import type { Project } from '../project.ts';
@@ -71,4 +71,44 @@ test('团队没配这个运行时、或项目不属于团队时保持空串（�
   const made = await deriveSessionUseCase(loose.deps, { taskId: loose.task.id, agentId: 'fake', model: '' });
   assert.ok(made.ok);
   assert.equal(made.value.model, '');
+});
+
+test('项目默认 Agent：补 runtime / 模型 / 选项；任务上的默认覆盖项目；显式选择最高', async () => {
+  const w = await world('t1', {});
+  const withProject: Project = {
+    ...w.project,
+    defaultAgent: { runtime: 'fake', model: 'project-model', options: { effort: 'medium', thinking: true } }
+  };
+  await w.deps.projects.save(withProject);
+  const fromProject = await deriveSessionUseCase(w.deps, { taskId: w.task.id });
+  assert.ok(fromProject.ok, JSON.stringify(fromProject));
+  assert.equal(fromProject.value.model, 'project-model');
+  assert.equal(fromProject.value.options['effort'], 'medium');
+
+  const task = await w.deps.tasks.byId(w.task.id);
+  assert.ok(task !== null);
+  await w.deps.tasks.save({ ...task, defaultAgent: { runtime: 'fake', model: 'task-model', options: { effort: 'high' } } });
+  const fromTask = await deriveSessionUseCase(w.deps, { taskId: w.task.id });
+  assert.ok(fromTask.ok);
+  assert.equal(fromTask.value.model, 'task-model');
+  assert.equal(fromTask.value.options['effort'], 'high');
+  // 任务没写的选项仍然由项目铺进来
+  assert.equal(fromTask.value.options['thinking'], true);
+
+  const explicit = await deriveSessionUseCase(w.deps, { taskId: w.task.id, agentId: 'fake', model: 'mine', options: { effort: 'low' } });
+  assert.ok(explicit.ok);
+  assert.equal(explicit.value.model, 'mine');
+  assert.equal(explicit.value.options['effort'], 'low');
+});
+
+test('项目 / 任务默认里的坏值在保存时就被拦住', async () => {
+  const w = await world('t1', {});
+  const bad = await setProjectDefaultAgentUseCase(w.deps, { projectId: w.project.id, defaultAgent: { runtime: '', model: 'x', options: {} } });
+  assert.ok(!bad.ok);
+  const okAgent = await setProjectDefaultAgentUseCase(w.deps, {
+    projectId: w.project.id,
+    defaultAgent: { runtime: 'fake', model: '', options: { effort: 'medium' } }
+  });
+  assert.ok(okAgent.ok);
+  assert.deepEqual(okAgent.value.defaultAgent, { runtime: 'fake', model: '', options: { effort: 'medium' } });
 });

@@ -1279,6 +1279,41 @@
                         "maxItems": 8,
                         "default": []
                       },
+                      "defaultAgent": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "properties": {
+                          "runtime": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "model": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "default": ""
+                          },
+                          "options": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            },
+                            "default": {}
+                          }
+                        },
+                        "required": [
+                          "runtime"
+                        ]
+                      },
                       "createdAt": {
                         "type": "integer",
                         "minimum": 0
@@ -1553,6 +1588,41 @@
                       "maxItems": 8,
                       "default": []
                     },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -1786,6 +1856,41 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -2045,6 +2150,41 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -2452,6 +2592,41 @@
                       "maxItems": 8,
                       "default": []
                     },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -2715,6 +2890,41 @@
                       "maxItems": 8,
                       "default": []
                     },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -2970,6 +3180,41 @@
                       },
                       "maxItems": 8,
                       "default": []
+                    },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -4882,6 +5127,41 @@
                         "type": "integer",
                         "minimum": 0
                       },
+                      "defaultAgent": {
+                        "type": [
+                          "object",
+                          "null"
+                        ],
+                        "properties": {
+                          "runtime": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 64
+                          },
+                          "model": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "default": ""
+                          },
+                          "options": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "boolean"
+                                }
+                              ]
+                            },
+                            "default": {}
+                          }
+                        },
+                        "required": [
+                          "runtime"
+                        ]
+                      },
                       "createdAt": {
                         "type": "integer",
                         "minimum": 0
@@ -5061,6 +5341,41 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -5221,6 +5536,41 @@
                     "logSeq": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",
@@ -5811,6 +6161,41 @@
                       "type": "integer",
                       "minimum": 0
                     },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
+                    },
                     "createdAt": {
                       "type": "integer",
                       "minimum": 0
@@ -5990,6 +6375,41 @@
                     "logSeq": {
                       "type": "integer",
                       "minimum": 0
+                    },
+                    "defaultAgent": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "runtime": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 64
+                        },
+                        "model": {
+                          "type": "string",
+                          "maxLength": 200,
+                          "default": ""
+                        },
+                        "options": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "boolean"
+                              }
+                            ]
+                          },
+                          "default": {}
+                        }
+                      },
+                      "required": [
+                        "runtime"
+                      ]
                     },
                     "createdAt": {
                       "type": "integer",

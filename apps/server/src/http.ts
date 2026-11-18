@@ -27,6 +27,7 @@ import {
   setProjectRepoRequest,
   setProjectDescriptionRequest,
   setProjectWorktreeRequest,
+  setDefaultAgentRequest,
   homeSchema,
   searchResponseSchema,
   createTaskRequest,
@@ -134,10 +135,12 @@ import {
   saveLayoutUseCase,
   searchUseCase,
   setTaskStatusUseCase,
+  setTaskDefaultAgentUseCase,
   setTaskSummaryUseCase,
   setProjectPreviewPortUseCase,
   setProjectWorktreeUseCase,
   setProjectChecksUseCase,
+  setProjectDefaultAgentUseCase,
   setProjectAssetSetsUseCase,
   unavailable,
   updateProjectReposUseCase,
@@ -538,6 +541,13 @@ export function createApp(options: AppOptions): Hono {
         await auditResource(c, subject, 'project.worktree', projectId, detail);
       }
     }
+    if (current.ok && input.value.defaultAgent !== undefined) {
+      current = await setProjectDefaultAgentUseCase(deps, { projectId, defaultAgent: input.value.defaultAgent });
+      if (current.ok) {
+        const agent = current.value.defaultAgent ?? null;
+        await auditResource(c, subject, 'project.worktree', projectId, agent === null ? '清空默认 Agent' : `默认 Agent：${agent.runtime} · ${agent.model === '' ? '运行时默认模型' : agent.model}`);
+      }
+    }
     if (current.ok && input.value.assetSetIds !== undefined) {
       if (!subject) return fail(c, forbidden('请先登录'));
       const assetSets = options.assets?.assetSets;
@@ -775,6 +785,25 @@ export function createApp(options: AppOptions): Hono {
     const input = await body(c, setTaskSummaryRequest);
     if (!input.ok) return input.response;
     const result = await setTaskSummaryUseCase(deps, asTaskId(c.req.param('taskId')), input.value.summary);
+    return result.ok ? c.json(result.value) : fail(c, result.error);
+  });
+
+  // 任务默认 Agent：覆盖项目默认；会话里显式选的仍然优先。
+  app.patch('/api/tasks/:taskId/default-agent', async (c) => {
+    const input = await body(c, setDefaultAgentRequest);
+    if (!input.ok) return input.response;
+    const taskId = asTaskId(c.req.param('taskId'));
+    const task = await deps.tasks.byId(taskId);
+    if (task === null) return fail(c, notFound('任务不存在'));
+    const subject = subjectOf(c);
+    const project = await deps.projects.byId(task.projectId);
+    const allowed = await authorizeProject(deps.access, subject, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const result = await setTaskDefaultAgentUseCase(deps, taskId, input.value.defaultAgent);
+    if (result.ok) {
+      const agent = result.value.defaultAgent ?? null;
+      await auditResource(c, subject, 'project.worktree', taskId, agent === null ? '清空默认 Agent' : `默认 Agent：${agent.runtime} · ${agent.model === '' ? '运行时默认模型' : agent.model}`);
+    }
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 

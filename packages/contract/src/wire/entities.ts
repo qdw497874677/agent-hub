@@ -80,6 +80,16 @@ export const runtimeOptionSchema = z.object({
 
 export const optionValuesSchema = z.record(z.string(), z.union([z.string(), z.boolean()]));
 
+/**
+ * 默认 Agent（项目 / 任务上各存一份）：runtime + 模型 + 启动选项（含思考强度）。
+ * 模型留空 = 用该运行时自己的默认；`null` = 这一层没配，往下回落。
+ */
+export const defaultAgentSchema = z.object({
+  runtime: z.string().min(1).max(64),
+  model: z.string().max(200).default(''),
+  options: optionValuesSchema.default({})
+});
+
 /** Agent 配置：一组可复用的启动组合，按 owner 隔离。 */
 export const agentProfileSchema = z.object({
   id: z.string(),
@@ -192,6 +202,8 @@ export const projectSchema = z.object({
   checks: z.array(z.string()).max(5).default([]),
   /** 项目默认引用的资产组合（按顺序叠加，最多 8 个）。 */
   assetSetIds: z.array(z.string()).max(8).default([]),
+  /** 项目的默认 Agent（runtime + 模型 + 启动选项）；null = 没配，新会话按团队默认 / 运行时默认。 */
+  defaultAgent: defaultAgentSchema.nullable().optional(),
   createdAt: epochMs
 });
 
@@ -263,6 +275,8 @@ export const taskSchema = z.object({
   branch: z.string().nullable(),
   summary: z.string().nullable(),
   logSeq: z.number().int().nonnegative(),
+  /** 任务上的默认 Agent：覆盖项目默认，会话里显式选的仍然优先。null = 没配。 */
+  defaultAgent: defaultAgentSchema.nullable().optional(),
   createdAt: epochMs,
   updatedAt: epochMs
 });

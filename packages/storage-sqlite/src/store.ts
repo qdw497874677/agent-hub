@@ -174,6 +174,15 @@ export function openSqliteStore(file: string): SqliteStore {
   if (!projectColumns.some((column) => column.name === 'asset_set_ids')) {
     db.exec('ALTER TABLE projects ADD COLUMN asset_set_ids TEXT');
   }
+  // 项目默认 Agent（runtime + 模型 + 启动选项）：JSON；NULL = 没配。
+  if (!projectColumns.some((column) => column.name === 'default_agent')) {
+    db.exec('ALTER TABLE projects ADD COLUMN default_agent TEXT');
+  }
+  // 任务默认 Agent：JSON；NULL = 没配（沿用项目默认）。
+  const taskColumns = db.prepare('PRAGMA table_info(tasks)').all() as { name: string }[];
+  if (!taskColumns.some((column) => column.name === 'default_agent')) {
+    db.exec('ALTER TABLE tasks ADD COLUMN default_agent TEXT');
+  }
   if (!columns.some((column) => column.name === 'workspace_id')) {
     db.exec('ALTER TABLE sessions ADD COLUMN workspace_id TEXT');
   }
@@ -248,13 +257,14 @@ export function openSqliteStore(file: string): SqliteStore {
   }
 
   const insertProject = db.prepare(
-    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, checks, asset_set_ids, created_at, team_id, created_by, members, deleted_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO projects(id, name, root_path, worker_id, directories, repo_url, repo_default_branch, repos, description, worktree_config, preview_port, checks, asset_set_ids, default_agent, created_at, team_id, created_by, members, deleted_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       // root_path / worker_id / directories 是 W1 之前的旧列：只留给迁移读，不再写
       'ON CONFLICT(id) DO UPDATE SET name = excluded.name, repo_url = excluded.repo_url, repo_default_branch = excluded.repo_default_branch, repos = excluded.repos, description = excluded.description, ' +
       'worktree_config = excluded.worktree_config, preview_port = excluded.preview_port, checks = excluded.checks, ' +
       // 组合引用只在显式给的时候写：旧快照回写不能把用户的绑定冲掉。
       'asset_set_ids = COALESCE(excluded.asset_set_ids, projects.asset_set_ids), ' +
+      'default_agent = COALESCE(excluded.default_agent, projects.default_agent), ' +
       'team_id = excluded.team_id, created_by = excluded.created_by, members = excluded.members, deleted_at = excluded.deleted_at'
   );
   const selectProject = db.prepare('SELECT * FROM projects WHERE id = ?');
@@ -262,12 +272,13 @@ export function openSqliteStore(file: string): SqliteStore {
   const selectDeletedProjects = db.prepare('SELECT * FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC');
 
   const upsertTask = db.prepare(
-    'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, base_branch, summary, log_seq, created_at, updated_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
+    'INSERT INTO tasks(id, project_id, title, goal, status, owner_id, branch, base_branch, summary, default_agent, log_seq, created_at, updated_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ' +
       'ON CONFLICT(id) DO UPDATE SET title = excluded.title, goal = excluded.goal, ' +
       // branch 只有写方知道时才覆盖：派生/更新任务时常拿到一份 branch 为 null 的旧对象，
       // 直接覆盖会把 worktree 已经回写的分支清掉。
       'status = excluded.status, owner_id = excluded.owner_id, branch = COALESCE(excluded.branch, tasks.branch), base_branch = excluded.base_branch, summary = excluded.summary, ' +
+      'default_agent = COALESCE(excluded.default_agent, tasks.default_agent), ' +
       'log_seq = MAX(tasks.log_seq, excluded.log_seq), updated_at = excluded.updated_at'
   );
   const selectTask = db.prepare('SELECT * FROM tasks WHERE id = ?');
@@ -454,6 +465,7 @@ export function openSqliteStore(file: string): SqliteStore {
         project.previewPort ?? null,
         JSON.stringify(project.checks),
         project.assetSetIds == null ? null : JSON.stringify(project.assetSetIds),
+        project.defaultAgent == null ? null : JSON.stringify(project.defaultAgent),
         project.createdAt,
         project.teamId,
         project.createdBy,
@@ -491,6 +503,7 @@ export function openSqliteStore(file: string): SqliteStore {
         task.branch,
         task.baseBranch,
         task.summary,
+        task.defaultAgent == null ? null : JSON.stringify(task.defaultAgent),
         task.logSeq,
         task.createdAt,
         task.updatedAt

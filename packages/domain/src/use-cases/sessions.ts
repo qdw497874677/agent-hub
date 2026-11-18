@@ -124,6 +124,26 @@ export async function deriveSessionUseCase(
     ref = mergeAgentRef(profile.value.ref, { options: commandRef.options });
   }
 
+  // 默认 Agent 的层级（从低到高）：团队按运行时的默认模型 < 项目默认 < 任务默认 < 显式选择。
+  // runtime 只有完全没说时才由任务 / 项目补；模型按层从高到低取第一个非空；选项逐层铺开、上层覆盖下层。
+  const layers = [project.defaultAgent ?? null, task?.defaultAgent ?? null].filter(
+    (layer): layer is AgentRef => layer !== null
+  );
+  if (ref.runtime === '') {
+    ref = { ...ref, runtime: layers.reduce<string>((found, layer) => (found === '' ? layer.runtime : found), '') };
+  }
+  const sameRuntime = layers.filter((layer) => layer.runtime === ref.runtime);
+  if (ref.model === '') {
+    for (const layer of [...sameRuntime].reverse()) {
+      if (layer.model !== '') {
+        ref = { ...ref, model: layer.model };
+        break;
+      }
+    }
+  }
+  if (sameRuntime.length > 0) {
+    ref = { ...ref, options: { ...sameRuntime.reduce((merged, layer) => ({ ...merged, ...layer.options }), {}), ...ref.options } };
+  }
   const agentId = asAgentId(ref.runtime);
   // 团队级默认模型：只在调用方没点名模型时补（显式选择永远优先；空串才是「没说」）。
   if (ref.model === '' && deps.agentDefaults && project.teamId) {

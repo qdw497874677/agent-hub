@@ -119,6 +119,7 @@ export function toProject(row: Row): Project {
     ...(row['preview_port'] == null ? {} : { previewPort: Number(row['preview_port']) }),
     checks: parseChecks(nullableStr(row, 'checks')),
     assetSetIds: parseAssetSetIds(nullableStr(row, 'asset_set_ids')).assetSetIds ?? [],
+    defaultAgent: parseDefaultAgent(nullableStr(row, 'default_agent')),
     teamId: nullableStr(row, 'team_id'),
     createdBy: nullableStr(row, 'created_by'),
     members: parseMembers(nullableStr(row, 'members')),
@@ -139,10 +140,35 @@ export function toTask(row: Row): Task {
     branch: nullableStr(row, 'branch'),
     baseBranch: nullableStr(row, 'base_branch'),
     summary: nullableStr(row, 'summary'),
+    defaultAgent: parseDefaultAgent(nullableStr(row, 'default_agent')),
     logSeq: nullableNum(row, 'log_seq') ?? 0,
     createdAt: num(row, 'created_at'),
     updatedAt: num(row, 'updated_at')
   };
+}
+
+/**
+ * 默认 Agent 的宽容解析：字段缺失 / 坏 JSON / 形状不对一律当「没配」——
+ * 一条老数据或手改过的库不该让项目列表整个打不开。
+ */
+function parseDefaultAgent(raw: string | null): import('@agent-hub/domain').AgentRef | null {
+  if (raw === null || raw === '') return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
+    const value = parsed as Record<string, unknown>;
+    if (typeof value['runtime'] !== 'string' || value['runtime'] === '') return null;
+    const model = typeof value['model'] === 'string' ? value['model'] : '';
+    const options: Record<string, string | boolean> = {};
+    if (typeof value['options'] === 'object' && value['options'] !== null && !Array.isArray(value['options'])) {
+      for (const [key, option] of Object.entries(value['options'] as Record<string, unknown>)) {
+        if (typeof option === 'string' || typeof option === 'boolean') options[key] = option;
+      }
+    }
+    return { runtime: value['runtime'], model, options };
+  } catch {
+    return null;
+  }
 }
 
 /** 坏 JSON 不该让整个画布打不开：读不出来就当「还不知道」。 */

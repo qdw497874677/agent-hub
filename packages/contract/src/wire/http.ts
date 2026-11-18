@@ -2,7 +2,7 @@ import { workerInventorySchema } from './worker.ts';
 import { workerResourcesSchema } from './resources.ts';
 import { z } from 'zod';
 import { id, epochMs } from './common.ts';
-import { agentReadinessSchema, runtimeProvisionSchema, attachmentInputSchema, optionValuesSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema, workspaceSchema } from './entities.ts';
+import { agentReadinessSchema, defaultAgentSchema, runtimeProvisionSchema, attachmentInputSchema, optionValuesSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema, workspaceSchema } from './entities.ts';
 
 /** HTTP API 的请求与响应。 */
 
@@ -77,6 +77,8 @@ export const setProjectWorktreeRequest = z.object({
   repos: z.array(projectRepoInput).max(8).optional(),
   /** 项目声明的检查命令（issue #216 P1）：空数组 = 清掉，最多 5 条，一条一行（不能有换行）。 */
   checks: z.array(z.string()).max(5).optional(),
+  /** 项目默认 Agent（runtime + 模型 + 启动选项）：`null` 清掉。 */
+  defaultAgent: defaultAgentSchema.nullable().optional(),
   /** 项目默认引用的资产组合（按顺序叠加）：空数组 = 清掉。 */
   assetSetIds: z.array(z.string().min(1)).max(8).optional()
 });
@@ -112,6 +114,9 @@ export const projectReposCheckDto = z.object({
     })
   )
 });
+
+/** 设置项目 / 任务的默认 Agent（`null` = 清掉，往下回落）。 */
+export const setDefaultAgentRequest = z.object({ defaultAgent: defaultAgentSchema.nullable() });
 
 export const createTaskRequest = z.object({
   projectId: id,

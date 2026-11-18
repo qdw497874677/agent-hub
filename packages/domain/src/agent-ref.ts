@@ -108,3 +108,18 @@ export function mergeAgentRef(base: AgentRef, override: Partial<AgentRef>): Agen
 export function sessionRef(session: Pick<Session, 'agentId' | 'model' | 'options'>): AgentRef {
   return { runtime: session.agentId, model: session.model, options: session.options };
 }
+
+/**
+ * 项目 / 任务上的默认 Agent：`null`（清掉或没配）与一份 ref 都接受。
+ * 模型可以为空（用运行时自己的默认）；选项键会经过同一套形状校验。
+ */
+export function normalizeDefaultAgent(input: unknown): Result<AgentRef | null, DomainError> {
+  if (input === null || input === undefined) return ok(null);
+  if (typeof input !== 'object' || Array.isArray(input)) return err(invalid('默认 Agent 要写成对象'));
+  const raw = input as Record<string, unknown>;
+  return validateAgentRef({
+    runtime: typeof raw['runtime'] === 'string' ? raw['runtime'] : '',
+    model: typeof raw['model'] === 'string' ? raw['model'] : '',
+    options: (raw['options'] ?? {}) as Readonly<Record<string, string | boolean>>
+  });
+}

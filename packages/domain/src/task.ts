@@ -1,3 +1,4 @@
+import type { AgentRef } from './agent-ref.ts';
 import type { ProjectId, TaskId } from './ids.ts';
 import { newTaskId } from './ids.ts';
 import { conflict, invalid, type DomainError } from './errors.ts';
@@ -25,6 +26,8 @@ export interface Task {
   readonly baseBranch: string | null;
   /** 「当前进展」一句话：最近一条人或 agent 写的日志自动刷新，也可手改。 */
   readonly summary: string | null;
+  /** 任务默认 Agent：覆盖项目默认；会话里显式选的仍然优先。null = 没配。 */
+  readonly defaultAgent?: AgentRef | null;
   /** 工作日志当前最大序号；追加日志时 +1。 */
   readonly logSeq: number;
   readonly createdAt: number;
@@ -69,6 +72,7 @@ export function createTask(input: CreateTaskInput): Result<Task, DomainError> {
     branch: null,
     baseBranch: baseBranch.value,
     summary: null,
+    defaultAgent: null,
     logSeq: 0,
     createdAt: input.now,
     updatedAt: input.now

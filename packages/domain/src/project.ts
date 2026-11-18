@@ -1,3 +1,4 @@
+import { normalizeDefaultAgent, type AgentRef } from './agent-ref.ts';
 import type { ProjectId } from './ids.ts';
 import { newProjectId } from './ids.ts';
 import { normalizeAssetSetIds } from './asset-set.ts';
@@ -38,6 +39,11 @@ export interface Project {
   readonly checks: readonly string[];
   /** 项目默认带上的资产组合（团队级），按顺序展开；空数组 = 不带。 */
   readonly assetSetIds: readonly string[];
+  /**
+   * 项目的默认 Agent（runtime + 模型 + 启动选项，含思考强度）。建会话没点名 Agent 时用它，
+   * 任务上的默认再覆盖它；会话里显式选的永远优先。null = 没配。
+   */
+  readonly defaultAgent?: AgentRef | null;
   /** 进了回收站的时间；null = 正常。 */
   readonly deletedAt: number | null;
 }
@@ -318,12 +324,16 @@ export interface CreateProjectInput {
   readonly createdBy?: string | null;
   /** 项目默认资产组合；不传 = 空。 */
   readonly assetSetIds?: readonly string[] | null;
+  /** 项目默认 Agent；不传 = 没配。 */
+  readonly defaultAgent?: AgentRef | null;
 }
 
 export function createProject(input: CreateProjectInput): Result<Project, DomainError> {
   const name = input.name.trim();
   if (!name) return err(invalid('项目名称不能为空'));
   const assetSetIds = normalizeAssetSetIds(input.assetSetIds);
+  const defaultAgent = normalizeDefaultAgent(input.defaultAgent ?? null);
+  if (!defaultAgent.ok) return defaultAgent;
   if (!assetSetIds.ok) return assetSetIds;
   const repos = input.repos ?? (input.repo ? [primaryRepo({ repo: input.repo, repos: [] })!] : []);
   const primary = repos[0] ?? null;
@@ -336,6 +346,7 @@ export function createProject(input: CreateProjectInput): Result<Project, Domain
     worktree: input.worktree ?? null,
     checks: input.checks ?? [],
     assetSetIds: assetSetIds.value,
+    defaultAgent: defaultAgent.value,
     createdAt: input.now,
     teamId: input.teamId ?? null,
     createdBy: input.createdBy ?? null,

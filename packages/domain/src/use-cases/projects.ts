@@ -1,5 +1,6 @@
 import { principalOfSubject, type Subject } from '../access.ts';
 import { createProject, deriveRepoId, normalizeChecks, normalizeDescription, normalizePreviewPort, normalizeWorktree, normalizeRepos, parseRepo, repoNameFromUrl, repoTokenKey, withProjectRepos } from '../project.ts';
+import { normalizeDefaultAgent } from '../agent-ref.ts';
 import { asProjectId } from '../ids.ts';
 import type { Project, ProjectRepo } from '../project.ts';
 import type { DomainError } from '../errors.ts';
@@ -266,6 +267,20 @@ export async function setProjectChecksUseCase(
   const checks = normalizeChecks(command.checks);
   if (!checks.ok) return checks;
   const next: Project = { ...project, checks: checks.value };
+  await deps.projects.save(next);
+  return ok(next);
+}
+
+/** 改项目的默认 Agent（runtime + 模型 + 启动选项）；null = 清掉。 */
+export async function setProjectDefaultAgentUseCase(
+  deps: Pick<Deps, 'projects'>,
+  command: { readonly projectId: string; readonly defaultAgent: unknown }
+): Promise<Result<Project, DomainError>> {
+  const project = await deps.projects.byId(asProjectId(command.projectId));
+  if (!project) return err(notFound('项目不存在'));
+  const agent = normalizeDefaultAgent(command.defaultAgent);
+  if (!agent.ok) return agent;
+  const next: Project = { ...project, defaultAgent: agent.value };
   await deps.projects.save(next);
   return ok(next);
 }

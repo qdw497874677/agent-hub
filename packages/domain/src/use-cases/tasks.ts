@@ -4,6 +4,7 @@ import type { Task, TaskStatus } from '../task.ts';
 import type { SessionId, TaskId } from '../ids.ts';
 import { asProjectId } from '../ids.ts';
 import { notFound } from '../errors.ts';
+import { normalizeDefaultAgent } from '../agent-ref.ts';
 import type { DomainError } from '../errors.ts';
 import { err, ok, type Result } from '../result.ts';
 import type { Deps } from './deps.ts';
@@ -63,6 +64,21 @@ export async function setTaskStatusUseCase(
 }
 
 /** 手动改「当前进展」那一行（之后再有人/agent 写日志仍会自动刷新它）。空串 = 清空。 */
+/** 改任务的默认 Agent（覆盖项目默认）；null = 清掉。会话里显式选的仍然优先。 */
+export async function setTaskDefaultAgentUseCase(
+  deps: Pick<Deps, 'now' | 'tasks'>,
+  taskId: TaskId,
+  defaultAgent: unknown
+): Promise<Result<Task, DomainError>> {
+  const task = await deps.tasks.byId(taskId);
+  if (!task) return err(notFound('任务不存在'));
+  const agent = normalizeDefaultAgent(defaultAgent);
+  if (!agent.ok) return agent;
+  const next: Task = { ...task, defaultAgent: agent.value, updatedAt: deps.now() };
+  await deps.tasks.save(next);
+  return ok(next);
+}
+
 export async function setTaskSummaryUseCase(
   deps: Pick<Deps, 'now' | 'tasks'>,
   taskId: TaskId,
