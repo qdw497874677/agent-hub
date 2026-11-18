@@ -145,7 +145,12 @@ export interface HubSettings {
   readonly localWorkerGrants?: readonly string[];
   /** 开了「资源满了就拒绝新会话」的机器（ADR 0014，默认谁都不开）。 */
   readonly refuseWhenFull: readonly string[];
-  /** 外部 MCP 的写工具开关（外部接入页）；不设 / null = 沿用环境变量 MCP_WRITE。 */
+  /**
+   * 外部 MCP 的只读模式（外部接入页）。true = 强制只读；false = 按令牌权限放行；
+   * 不设 / null = 沿用环境变量（MCP_READ_ONLY=1 或 MCP_WRITE=0 才算只读）。
+   */
+  readonly mcpReadOnly?: boolean | null;
+  /** @deprecated 旧字段（写工具开关），只在老库里读一次，写入一律用 mcpReadOnly。 */
   readonly mcpWrites?: boolean | null;
 }
 export const DEFAULT_SETTINGS: HubSettings = { openRegistration: false, membersCanAddMachines: true, refuseWhenFull: [] };

@@ -1,6 +1,7 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context, Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
+import { homedir } from 'node:os';
 import { streamSSE } from 'hono/streaming';
 import { Scalar } from '@scalar/hono-api-reference';
 import type { ApiTokenDeps, Deps, JournalEntry, LogAuthor, Principal, TaskStatus } from '@agent-hub/domain';
@@ -10,8 +11,11 @@ import {
   asProjectId,
   asSessionId,
   asTaskId,
+  asWorkspaceId,
   authenticateApiToken,
   authorizeProject,
+  authorizeSession,
+  authorizeWorkspace,
   can,
   changeSessionOption,
   switchSessionModel,
@@ -48,6 +52,11 @@ import {
   setTaskStatusUseCase,
   setTaskSummaryUseCase,
   sweepTemporaryWorkspacesUseCase,
+  syncWorkspaceReposUseCase,
+  deleteWorkspaceUseCase,
+  retryWorkspaceSetupUseCase,
+  prepareTemporaryWorkspaceUseCase,
+  prepareLongLivedWorkspaceUseCase,
   workerReader,
   redactInventory,
   workspaceChangesUseCase,
@@ -56,7 +65,8 @@ import {
 } from '@agent-hub/domain';
 import type { AssetReviewDeps, DeleteProjectDeps } from '@agent-hub/domain';
 import type { z } from 'zod';
-import { assetSchema } from '@agent-hub/contract';
+import { assetSchema, workspaceSchema } from '@agent-hub/contract';
+import { createIdempotency } from './idempotency.ts';
 import type { createProjectRequest, createTaskRequest, deriveSessionRequest, forkSessionRequest, setProjectDescriptionRequest, setProjectRepoRequest, setProjectReposRequest } from '@agent-hub/contract';
 import { installAccess } from '../access.ts';
 import { fail } from '../http-error.ts';
@@ -67,7 +77,7 @@ import type { StreamHub } from '../stream-hub.ts';
 import type { ProviderWiringApi } from '../providers.ts';
 import { V1, routes } from './routes.ts';
 import { createAssetVisibility } from '../asset-visibility.ts';
-import { handleMcp, INTERNAL } from './mcp.ts';
+import { effectiveWrites, handleMcp, INTERNAL } from './mcp.ts';
 import { workspaceForApiStart } from '../session-workspace.ts';
 import { projectDto } from '../project-dto.ts';
 
@@ -75,7 +85,7 @@ export interface OpenApiOptions {
   readonly tokens: Pick<ApiTokenDeps, 'apiTokens' | 'users' | 'tokens' | 'now'> & Partial<Pick<ApiTokenDeps, 'projects'>>;
   /** 每个令牌每分钟最多多少次请求 / 多少次 prompt；e2e 调小来验 429。 */
   readonly rate?: { readonly general?: number; readonly prompt?: number; readonly streams?: number };
-  /** 对外 MCP 写工具的幂等回放（E4b）；不给就只有只读工具。 */
+  /** 对外 MCP 写工具的幂等回放（E4b）；不给就只有只读工具（写工具默认仍按令牌权限暴露）。 */
   readonly replays?: import('@agent-hub/domain').McpReplayStore;
   /** hub 设置：外部接入页的写工具开关（mcpWrites）从这里读。 */
   readonly settings?: { get(): Promise<import('@agent-hub/domain').HubSettings>; save(next: import('@agent-hub/domain').HubSettings): Promise<void> };
@@ -146,6 +156,8 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return next();
   });
   installAccess(v1 as unknown as Hono, deps, (c) => (c.get('principal') as Principal | undefined) ?? null, V1);
+  // 写请求的幂等重试：MCP 的 clientRequestId 与 REST 的 Idempotency-Key 走同一张表（24h）。
+  v1.use(`${V1}/*`, createIdempotency({ store: options.replays }).handle);
   v1.use(
     `${V1}/sessions/:sessionId/prompt`,
     bodyLimit({ maxSize: Math.ceil((ATTACHMENT_LIMITS.totalBytes * 4) / 3) + 256 * 1024, onError: (c) => fail(c, invalid('附件合计太大')) as never })
@@ -412,7 +424,14 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     return result.ok ? c.json({ id: result.value.id, deleted: true }) : fail(c, result.error);
   });
   on(routes.workspaceChanges, async (c) => {
-    const result = await workspaceChangesUseCase(deps, c.req.param('workspaceId') ?? '');
+    const actor = principal(c);
+    const workspaceId = c.req.param('workspaceId') ?? '';
+    if (deps.access) {
+      const workspace = await deps.workspaces.byId(asWorkspaceId(workspaceId));
+      const allowed = await authorizeWorkspace(deps, actor, workspace, 'project.read');
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
+    const result = await workspaceChangesUseCase(deps, workspaceId);
     return result.ok ? c.json(result.value) : fail(c, result.error);
   });
 
@@ -488,7 +507,11 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     if (!can(actor, 'session.create')) return fail(c, forbidden('令牌没有 sessions:write'));
     const allowed = await ctx.providers?.checkModel(actor, input.model, input.taskId);
     if (allowed && !allowed.ok) return fail(c, allowed.error);
-    const placed = await workspaceForApiStart(deps, input, actor);
+    const placed = await workspaceForApiStart(
+      deps,
+      { ...input, ...(input.workspaceMode === undefined ? {} : { mode: input.workspaceMode }) },
+      actor
+    );
     if (!placed.ok) return fail(c, placed.error);
     const result = await deriveSessionUseCase(deps, {
       ...input,
@@ -501,6 +524,70 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       await noteProvenance(deps, ctx.activity, c, actor, result.value, 'api');
     }
     return result.ok ? c.json(result.value, 201) : fail(c, result.error);
+  });
+  on(routes.syncWorkspace, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const result = await syncWorkspaceReposUseCase(deps, { workspaceId: c.req.param('workspaceId') ?? '', actor });
+    if (!result.ok) return fail(c, result.error);
+    return c.json({
+      workspace: workspaceSchema.parse(result.value.workspace),
+      added: result.value.added,
+      present: result.value.present,
+      skipped: result.value.skipped,
+      failed: result.value.failed
+    });
+  });
+  on(routes.createWorkspace, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const projectId = c.req.param('projectId') ?? '';
+    const project = await deps.projects.byId(asProjectId(projectId));
+    if (!project) return fail(c, notFound('项目不存在'));
+    const allowed = await authorizeProject(deps.access, actor, project, 'project.update');
+    if (!allowed.ok) return fail(c, allowed.error);
+    const input = valid<{ kind: 'long_lived' | 'temporary'; mode?: string; taskId?: string; workerId?: string | null; path?: string }>(c, 'json');
+    const result =
+      input.kind === 'temporary'
+        ? await prepareTemporaryWorkspaceUseCase(deps, {
+            projectId,
+            taskId: input.taskId ?? '',
+            workerId: input.workerId ?? null,
+            home: homedir(),
+            mode: input.mode === 'shared' ? 'shared' : 'isolated',
+            actor
+          })
+        : await prepareLongLivedWorkspaceUseCase(deps, {
+            projectId,
+            workerId: input.workerId ?? null,
+            plan: input.mode === 'link' ? { mode: 'link', path: input.path ?? '' } : { mode: 'create' },
+            home: homedir(),
+            actor
+          });
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workspaceSchema.parse(result.value), 201);
+  });
+  on(routes.removeWorkspace, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const input = valid<{ deleteDirectory?: boolean; force?: boolean }>(c, 'json');
+    const workspaceId = c.req.param('workspaceId') ?? '';
+    const result = await deleteWorkspaceUseCase(deps, {
+      workspaceId,
+      deleteDirectory: input.deleteDirectory === true,
+      force: input.force === true,
+      actor
+    });
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workspaceSchema.parse(result.value));
+  });
+  on(routes.retryWorkspaceSetup, async (c) => {
+    const actor = principal(c);
+    if (!can(actor, 'project.update')) return fail(c, forbidden('令牌没有 projects:write'));
+    const workspaceId = c.req.param('workspaceId') ?? '';
+    const result = await retryWorkspaceSetupUseCase(deps, { workspaceId, actor });
+    if (!result.ok) return fail(c, result.error);
+    return c.json(workspaceSchema.parse(result.value));
   });
   on(routes.forkSession, async (c) => {
     const actor = principal(c);
@@ -599,7 +686,17 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
       : entries.filter((entry) => entry.turn !== undefined && entry.turn >= query.sinceTurn!);
     return c.json(await refreshAuthors(ctx.activity, kept));
   });
-  on(routes.activity, async (c) => c.json(ctx.activity ? await sessionActivity(ctx.activity, c.req.param('sessionId') ?? '') : []));
+  on(routes.activity, async (c) => {
+    const actor = principal(c);
+    const sessionId = asSessionId(c.req.param('sessionId') ?? '');
+    const session = await deps.sessions.byId(sessionId);
+    if (!session) return fail(c, notFound('会话不存在'));
+    if (deps.access) {
+      const allowed = await authorizeSession(deps.access, actor, await projectOfSession(deps, session), session, 'session.read');
+      if (!allowed.ok) return fail(c, allowed.error);
+    }
+    return c.json(ctx.activity ? await sessionActivity(ctx.activity, sessionId) : []);
+  });
 
   on(routes.stream, async (c) => {
     const actor = principal(c);
@@ -658,7 +755,7 @@ export function installOpenApi(app: Hono, options: OpenApiOptions, ctx: V1Contex
     handleMcp(c, v1 as unknown as Hono, {
       ...(options.replays === undefined ? {} : { replays: options.replays }),
       ...(options.audit === undefined ? {} : { audit: options.audit }),
-      writes: (await options.settings?.get().catch(() => null))?.mcpWrites ?? null,
+      writes: effectiveWrites(await options.settings?.get().catch(() => null)).writes,
       now: options.tokens.now
     })
   );

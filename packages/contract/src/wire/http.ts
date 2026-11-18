@@ -2,7 +2,7 @@ import { workerInventorySchema } from './worker.ts';
 import { workerResourcesSchema } from './resources.ts';
 import { z } from 'zod';
 import { id, epochMs } from './common.ts';
-import { agentReadinessSchema, runtimeProvisionSchema, attachmentInputSchema, optionValuesSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema } from './entities.ts';
+import { agentReadinessSchema, runtimeProvisionSchema, attachmentInputSchema, optionValuesSchema, pointSchema, projectSchema, sessionEventSchema, sessionStatusSchema, sizeSchema, taskStatusSchema, workspaceSchema } from './entities.ts';
 
 /** HTTP API 的请求与响应。 */
 
@@ -241,6 +241,15 @@ export const cleanupPolicyRequest = z.object({
 export const removeWorkspaceRequest = z.object({
   deleteDirectory: z.boolean().default(false),
   force: z.boolean().default(false)
+});
+
+/** 同步项目仓库到已有工作空间的结果：新克隆 / 本来就在 / 有意跳过（带原因）。 */
+export const syncWorkspaceResultSchema = z.object({
+  workspace: workspaceSchema,
+  added: z.array(z.object({ name: z.string(), path: z.string() })),
+  present: z.array(z.object({ name: z.string(), path: z.string() })),
+  skipped: z.array(z.object({ name: z.string(), reason: z.string() })),
+  failed: z.array(z.object({ name: z.string(), message: z.string() }))
 });
 
 export const workspaceChangesSchema = z.object({

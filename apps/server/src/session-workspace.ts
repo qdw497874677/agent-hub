@@ -37,7 +37,8 @@ export async function workspaceForApiStart(
   const project = await deps.projects.byId(task.projectId);
   if (!project) return ok(null);
   // 有长期工作空间时 derive 的 defaultWorkspaceFor 会选中它：不替调用方建新的，避免每个任务多一个目录。
-  const longLived = await defaultWorkspaceFor(deps, project.id, input.workerId ?? undefined);
+  // 例外：调用方明确要 isolated（新开 worktree）时必须现建，否则会被静默复用成共享目录（#236）。
+  const longLived = input.mode === 'isolated' ? null : await defaultWorkspaceFor(deps, project.id, input.workerId ?? undefined);
   if (longLived) return ok(null);
   const prepared = await prepareTemporaryWorkspaceUseCase(deps, {
     projectId: project.id,

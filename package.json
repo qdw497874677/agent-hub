@@ -30,6 +30,7 @@
     "ci": "npm run check && npm run typecheck && npm run typecheck:web && npm test",
     "build": "npm run build --workspace @agent-hub/web",
     "e2e": "playwright test",
+    "skill:tools": "node --experimental-strip-types scripts/skill-tools.ts",
     "openapi:snapshot": "node scripts/openapi-snapshot.ts"
   },
   "devDependencies": {

@@ -3,52 +3,22 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type { AuditLog, McpReplayStore, Permission, Principal } from '@agent-hub/domain';
-import { routes } from './routes.ts';
+import { resolveMcp, routes, type McpModule, type ResolvedMcp } from './routes.ts';
 
 /** 内部转调的标记：只有这个模块拿得到，外面的请求伪造不了（放在 env 里，不是请求头）。 */
 export const INTERNAL: unique symbol = Symbol('openapi-internal');
 
 type RouteDef = (typeof routes)[keyof typeof routes];
 
-export type McpModuleName = 'tasks' | 'projects' | 'sessions' | 'assets';
+export type McpModuleName = McpModule;
 
 /**
- * 对外 MCP 的白名单：先白名单、再分组、再只读闸门。
- * 新增 v1 路由默认**不**进 MCP——要在这里显式加一行，避免「加个路由就悄悄对外」。
- * 描述写在 routes.ts 的路由上（何时用 / 参数 / 返回 / 下一步），这里只管放行与投影。
+ * 对外 MCP 的工具清单**不在这里登记**——唯一来源是 routes.ts 每条路由上的第三参（`McpRouteExposure`）。
+ * 新增 v1 路由必须在路由上回答「是不是工具 / 叫什么 / 要什么权限」（GET 可用 `'auto'`，写操作与不暴露必须显式写），
+ * 这样「加个路由就悄悄对外」和「表漂移」都不会再发生。这里只负责分组、只读闸门与调用转调。
  */
-const ALLOWED = {
-  listProjects: { module: 'projects', need: 'project.read', readOnly: true },
-  getProject: { module: 'projects', need: 'project.read', readOnly: true },
-  listAssets: { module: 'assets', need: 'asset.read', readOnly: true },
-  getAsset: { module: 'assets', need: 'asset.read', readOnly: true },
-  createProject: { module: 'projects', need: 'project.create', readOnly: false, expose: 'project_create', idempotent: true },
-  updateProject: { module: 'projects', need: 'project.update', readOnly: false, expose: 'project_update', idempotent: true },
-  // 仓库清单（含私有仓库令牌）：令牌只写不读，响应只有 hasToken。
-  setProjectRepos: { module: 'projects', need: 'project.update', readOnly: false, expose: 'project_repos', idempotent: true },
-  deleteProject: { module: 'projects', need: 'project.delete', readOnly: false, expose: 'project_archive' },
-  createAsset: { module: 'assets', need: 'asset.submit', readOnly: false, expose: 'asset_create', idempotent: true },
-  // 资产自动化（导入 → 发布 → 分配）：发布与分配要 assets:publish 范围
-  importAsset: { module: 'assets', need: 'asset.submit', readOnly: false, expose: 'asset_import', idempotent: true },
-  publishAsset: { module: 'assets', need: 'asset.review', readOnly: false, expose: 'asset_publish', idempotent: true },
-  assignAsset: { module: 'assets', need: 'asset.assign', readOnly: false, expose: 'asset_assign', idempotent: true },
-  getSession: { module: 'sessions', need: 'session.read', readOnly: true },
-  listTasks: { module: 'tasks', need: 'task.read', readOnly: true },
-  getTask: { module: 'tasks', need: 'task.read', readOnly: true },
-  listTaskLog: { module: 'tasks', need: 'task.read', readOnly: true },
-  events: { module: 'sessions', need: 'session.read', readOnly: true, project: projectEvents },
-  // 委派开发（E4b）：写工具默认关闭，要 MCP_WRITE=1 才出现，且必须带 clientRequestId。
-  createTask: { module: 'tasks', need: 'task.create', readOnly: false, expose: 'task_create', idempotent: true },
-  startSession: { module: 'sessions', need: 'session.create', readOnly: false, expose: 'session_start', idempotent: true },
-  prompt: { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_reply', idempotent: true },
-  setSessionModel: { module: 'sessions', need: 'session.prompt', readOnly: false, expose: 'session_model', idempotent: true },
-  interrupt: { module: 'sessions', need: 'session.interrupt', readOnly: false, expose: 'session_cancel' }
-} as const satisfies Record<
-  string,
-  { module: McpModuleName; need: Permission; readOnly: boolean; expose?: string; project?: (value: unknown) => unknown; idempotent?: boolean }
->;
 
 export interface McpPolicy {
   /** 允许的分组；缺省 = 全部允许的分组。 */
@@ -59,7 +29,7 @@ export interface McpPolicy {
   readonly writes?: boolean;
 }
 
-const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions', 'assets'];
+const ALL_MODULES: readonly McpModuleName[] = ['tasks', 'projects', 'sessions', 'assets', 'workers', 'workspaces'];
 
 interface ToolDef {
   readonly name: string;
@@ -80,8 +50,7 @@ interface ToolDef {
   readonly project?: (value: unknown) => unknown;
 }
 
-/** SSE 不适合做工具（MCP 客户端用 session_events 轮询）。 */
-const SKIP = new Set(['health', 'stream']);
+/** SSE 不适合做工具（MCP 客户端用 session_events 轮询）——这条在 routes.ts 的 stream 上已标 skip。 */
 
 const envFlag = (name: string): boolean => {
   const raw = typeof process === 'undefined' ? undefined : process.env[name];
@@ -95,12 +64,16 @@ const envModules = (): ReadonlySet<McpModuleName> => {
   return new Set(known.length > 0 ? known : ALL_MODULES);
 };
 
+/** 环境变量里的强制只读：MCP_READ_ONLY=1，或旧变量 MCP_WRITE=0。 */
+export const envForcedReadOnly = (): boolean =>
+  envFlag('MCP_READ_ONLY') ||
+  (typeof process === 'undefined' ? undefined : process.env['MCP_WRITE']) === '0';
+
 export const policyFromEnv = (): McpPolicy => ({
   modules: envModules(),
-  readOnly: envFlag('MCP_READ_ONLY'),
-  writes: envFlag('MCP_WRITE')
+  readOnly: envForcedReadOnly(),
+  writes: !envForcedReadOnly()
 });
-const snake = (key: string) => key.replace(/[A-Z]/g, (ch) => `_${ch.toLowerCase()}`);
 
 type Shape = Record<string, z.ZodType>;
 const shapeOf = (schema: unknown): Shape | null => {
@@ -109,7 +82,7 @@ const shapeOf = (schema: unknown): Shape | null => {
 };
 const jsonSchema = (schema: z.ZodType) => z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) as Record<string, unknown>;
 
-function toolOf(key: string, route: RouteDef, allow: (typeof ALLOWED)[keyof typeof ALLOWED]): ToolDef {
+function toolOf(key: string, route: RouteDef, meta: ResolvedMcp): ToolDef {
   const request = (route as { request?: { params?: unknown; query?: unknown; body?: { content: Record<string, { schema: z.ZodType }> } } }).request ?? {};
   const params = shapeOf(request.params) ?? {};
   const query = shapeOf(request.query) ?? {};
@@ -127,32 +100,37 @@ function toolOf(key: string, route: RouteDef, allow: (typeof ALLOWED)[keyof type
     body = 'nested';
   }
   const r = route as { summary?: string; description?: string; method: string; path: string };
-  const allowWithName = allow as { expose?: string };
+  // 路由 description 末尾那句「MCP 工具：`x`」是写给 REST 文档的；放进工具说明里是自指，去掉。
+  const described = (r.description ?? '').replace(/\n*MCP 工具：`[^`]*`\s*$/, '');
+  const rest = `${r.method.toUpperCase()} ${r.path}`;
+  const head = `${r.summary ?? key}（${rest}）${described ? `\n\n${described}` : ''}`;
   return {
-    name: (allowWithName.expose ?? snake(key)),
-    description: `${r.summary ?? key}（${r.method.toUpperCase()} ${r.path}）${r.description ? `\n\n${r.description}` : ''}`,
+    name: meta.name,
+    // 工具说明里点名对应的 REST 路径：模型照着报错 / 让人查文档时能直接对上。
+    description: head.includes('对应 REST：') ? head : `${head}\n\n对应 REST：${rest}`,
     inputSchema: jsonSchema(z.object(shape)),
     route,
     pathKeys: Object.keys(params),
     queryKeys: Object.keys(query),
     body,
-    module: allow.module,
-    need: allow.need,
+    module: meta.module,
+    need: meta.need,
     scope: ((route as { security?: { bearer?: string[] }[] }).security?.[0]?.bearer?.[0]) ?? null,
-    readOnly: allow.readOnly,
-    idempotent: 'idempotent' in allow && allow.idempotent === true,
-    ...('project' in allow && typeof allow.project === 'function' ? { project: allow.project } : {})
+    readOnly: meta.readOnly,
+    idempotent: meta.idempotent,
+    ...(meta.project === undefined ? {} : { project: meta.project })
   };
 }
 
 let cached: readonly ToolDef[] | null = null;
 export function mcpTools(policy: McpPolicy = {}): ToolDef[] {
-  cached ??= Object.entries(routes)
-    .filter(([key]) => !SKIP.has(key) && key in ALLOWED)
-    .map(([key, route]) => toolOf(key, route, ALLOWED[key as keyof typeof ALLOWED]));
+  cached ??= Object.entries(routes).flatMap(([key, route]) => {
+    const meta = resolveMcp(key, route);
+    return meta === null ? [] : [toolOf(key, route, meta)];
+  });
   const modules = policy.modules ?? envModules();
-  const readOnly = policy.readOnly ?? envFlag('MCP_READ_ONLY');
-  const writes = policy.writes ?? envFlag('MCP_WRITE');
+  const readOnly = policy.readOnly ?? envForcedReadOnly();
+  const writes = policy.writes ?? !readOnly;
   return cached.filter((tool) => modules.has(tool.module) && (!readOnly || tool.readOnly) && (writes || tool.readOnly));
 }
 
@@ -167,33 +145,8 @@ export function mcpToolsFor(permissions: readonly Permission[] | undefined, poli
   return tools.filter((tool) => have.has(tool.need));
 }
 
-/** 会话事件投影：工具输入/输出、思考、提示词原文都不出去（只留工具名与成败）。 */
-export function projectEvents(value: unknown): unknown {
-  if (!Array.isArray(value)) return value;
-  const out: Record<string, unknown>[] = [];
-  for (const raw of value) {
-    const entry = raw as { seq?: number; at?: number; turn?: number; event?: Record<string, unknown> };
-    const event = entry.event ?? {};
-    const kind = typeof event['kind'] === 'string' ? event['kind'] : '';
-    // turn 要带上：调用方靠它把「这一句」和「这一轮的事件」对上（events?sinceTurn=）。
-    const base = { seq: entry.seq ?? 0, at: entry.at ?? 0, ...(typeof entry.turn === 'number' ? { turn: entry.turn } : {}) };
-    if (kind === 'text') {
-      // 领域里正文是 `delta`（增量）；老数据 / 其它 codec 可能给 `text`，两个都认。
-      const text = typeof event['delta'] === 'string' ? event['delta'] : typeof event['text'] === 'string' ? event['text'] : '';
-      out.push({ ...base, event: { kind: 'text', text } });
-    } else if (kind === 'tool_call') {
-      out.push({ ...base, event: { kind: 'tool', name: String(event['name'] ?? 'tool') } });
-    } else if (kind === 'tool_result') {
-      out.push({ ...base, event: { kind: 'tool_result', ok: event['ok'] === true } });
-    } else if (kind === 'ended') {
-      out.push({ ...base, event: { kind: 'ended', outcome: String(event['outcome'] ?? 'done'), ...(typeof event['reason'] === 'string' ? { reason: event['reason'] } : {}) } });
-    } else if (kind === 'diagnostic') {
-      out.push({ ...base, event: { kind: 'diagnostic', level: String(event['level'] ?? 'info'), text: '诊断细节已省略' } });
-    }
-    // 其余（thinking / prompt / commands / approval / artifact…）一律不出。
-  }
-  return out;
-}
+/** 会话事件投影（实现在 projection.ts，routes.ts 的 events 路由也用它）。 */
+export { projectEvents } from './projection.ts';
 
 /**
  * 开放 API 的 MCP 端点：无状态 streamable HTTP，每个请求一个 SDK Server。
@@ -202,6 +155,7 @@ export function projectEvents(value: unknown): unknown {
 const routeTitle = (route: RouteDef): string => (route as { summary?: string }).summary ?? '工具';
 
 export interface McpOptions {
+  /** 只是转交给内部请求：幂等在 v1 中间件里做，这里要让内部请求也拿得到同一张表。 */
   readonly replays?: McpReplayStore;
   readonly now?: () => number;
   /** 覆盖环境变量推导的策略（测试用）。 */
@@ -212,9 +166,17 @@ export interface McpOptions {
   readonly audit?: Pick<AuditLog, 'append'>;
 }
 
-/** 生效的写工具开关：页面设置优先，没设过就看环境变量 MCP_WRITE（向后兼容）。 */
-export const effectiveWrites = (setting: boolean | null | undefined): { writes: boolean; source: 'setting' | 'env' } =>
-  typeof setting === 'boolean' ? { writes: setting, source: 'setting' } : { writes: envFlag('MCP_WRITE'), source: 'env' };
+/**
+ * 写工具是否可用：默认跟随令牌权限（scope 里没有写权限就调不通），只读是显式选择。
+ * 页面「只读模式」优先；老库的 mcpWrites=false 仍算只读；都没设就看环境变量。
+ */
+export const effectiveWrites = (
+  setting: { readonly mcpReadOnly?: boolean | null; readonly mcpWrites?: boolean | null } | null | undefined
+): { writes: boolean; source: 'setting' | 'env' } => {
+  if (typeof setting?.mcpReadOnly === 'boolean') return { writes: !setting.mcpReadOnly, source: 'setting' };
+  if (typeof setting?.mcpWrites === 'boolean') return { writes: setting.mcpWrites, source: 'setting' };
+  return { writes: !envForcedReadOnly(), source: 'env' };
+};
 
 /** v1 的错误体是 {error:{code,message}}：给人读的只要 message。 */
 const errorMessage = (value: unknown): string | null => {
@@ -222,13 +184,12 @@ const errorMessage = (value: unknown): string | null => {
   return typeof message === 'string' && message !== '' ? message : null;
 };
 
-const digestOf = (text: string): string => createHash('sha256').update(text).digest('hex');
 
 export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}): Promise<Response> {
   const authorization = c.req.header('authorization') ?? '';
   const env = c.env as { mcpPolicy?: McpPolicy; mcpReplays?: McpReplayStore } | undefined;
   const replays = options.replays ?? env?.mcpReplays;
-  const policy = options.policy ?? env?.mcpPolicy ?? { ...policyFromEnv(), writes: effectiveWrites(options.writes).writes };
+  const policy = options.policy ?? env?.mcpPolicy ?? { ...policyFromEnv(), writes: options.writes ?? !envForcedReadOnly() };
   const principal = c.get('principal') as Principal | undefined;
   const permissions = principal?.via?.permissions;
   const tools = mcpToolsFor(permissions, policy);
@@ -259,21 +220,17 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
       return { isError: true, content: [{ type: 'text' as const, text }] };
     }
     const args = { ...((request.params.arguments ?? {}) as Record<string, unknown>) };
-    // 写工具：clientRequestId 是调用方给的重试键，先取出、不转发给内部 HTTP。
-    let replayKey: string | null = null;
+    // 写工具：clientRequestId 是调用方给的重试键。它不再在工具层重放，而是转成
+    // Idempotency-Key 交给 v1 的共享幂等中间件——REST 调用方拿到的是同一份保证。
+    let clientRequestId = '';
     if (!tool.readOnly) {
-      const clientRequestId = String(args['clientRequestId'] ?? '').trim();
+      clientRequestId = String(args['clientRequestId'] ?? '').trim();
       delete args['clientRequestId'];
       if (clientRequestId === '') {
         return {
           isError: true,
           content: [{ type: 'text' as const, text: '写工具要带 clientRequestId（同一请求重试用同一个值，服务端 24 小时内返回同一份结果）' }]
         };
-      }
-      if (tool.idempotent) {
-        replayKey = `${digestOf(authorization)}\u0000${tool.name}\u0000${clientRequestId}`;
-        const hit = await replays?.get(replayKey).catch(() => null);
-        if (hit) return JSON.parse(hit) as ReturnType<typeof Object>;
       }
     }
     const r = tool.route as { method: string; path: string };
@@ -290,10 +247,14 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
       `${path}${search.size ? `?${search}` : ''}`,
       {
         method: r.method.toUpperCase(),
-        headers: { authorization, ...(payload !== undefined ? { 'content-type': 'application/json' } : {}) },
+        headers: {
+          authorization,
+          ...(payload !== undefined ? { 'content-type': 'application/json' } : {}),
+          ...(clientRequestId === '' ? {} : { 'idempotency-key': clientRequestId })
+        },
         body: payload !== undefined ? JSON.stringify(payload) : undefined
       },
-      { [INTERNAL]: true }
+      { [INTERNAL]: true, ...(replays === undefined ? {} : { mcpReplays: replays }) }
     );
     const text = await response.text();
     let value: unknown = text;
@@ -309,9 +270,6 @@ export async function handleMcp(c: Context, v1: Hono, options: McpOptions = {}):
       content: [{ type: 'text' as const, text: response.ok ? JSON.stringify(value, null, 2) : `HTTP ${response.status}：${errorMessage(value) ?? text}` }],
       ...(response.ok ? { structuredContent: structured } : {})
     };
-    if (response.ok && replayKey && replays) {
-      await replays.put(replayKey, JSON.stringify(result), (options.now ?? Date.now)()).catch(() => undefined);
-    }
     return result;
   };
   server.setRequestHandler(CallToolRequestSchema, async (request) => {

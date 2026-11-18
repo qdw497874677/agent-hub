@@ -61,7 +61,7 @@ export function mcpGuide(input: McpGuideInput): McpGuide {
   const codex = ['[mcp_servers.agent-hub]', `url = "${url}"`, `bearer_token_env_var = "${envVar}"`].join('\n');
 
   const prompt = [
-    `你可以通过 Agent Hub 的 MCP 端点（${url}）查看项目、任务、会话与资产，并（在开放写工具时）把开发任务委派给它。`,
+    `你可以通过 Agent Hub 的 MCP 端点（${url}）查看项目、任务、会话与资产，并在令牌有写权限时把开发任务委派给它。`,
     '',
     '规则：',
     '1. 先调 list_projects / list_tasks 找到目标，再用 get_task / list_task_log 看进度；不要凭空编 id。',
@@ -70,6 +70,7 @@ export function mcpGuide(input: McpGuideInput): McpGuide {
     '4. 写工具必须带 clientRequestId（同一请求重试用同一个值），服务端 24 小时内返回同一份结果；不要每次重试都换 id。',
     '5. 资产默认按会话冻结：session_start 不传 assetIds 表示「项目生效集」；要排除某个技能，就传完整清单减掉它。',
     '6. 出错先看错误码：not_found 表示看不到（跨项目一律 404，不泄露存在性），forbidden 表示权限不够，conflict 表示状态不允许（会话还在跑、没有待发布版本等）。',
+    '7. 客户端支持 Skill 的话，装上 agent-hub-workbench（skills/agent-hub-workbench）：里面有 31 个工具的清单、五个常用流程和错误恢复，比每次读这段提示省 token。',
     ''
   ].join('\n');
 

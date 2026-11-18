@@ -104,6 +104,7 @@ export * from './use-cases/workspace-cleanup.ts';
 export * from './use-cases/workspace-cleanup-admin.ts';
 export * from './use-cases/workspace-groups.ts';
 export * from './use-cases/team-workspaces.ts';
+export * from './use-cases/workspace-sync.ts';
 
 export * from './account.ts';
 export * from './access.ts';
