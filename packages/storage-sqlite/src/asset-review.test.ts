@@ -37,7 +37,7 @@ test('审核仓库：提交 / 评论 / 安装申请 / 通知往返；审核人�
     assert.deepEqual((await store.assetReview.submissions({ status: ['pending'] })).map((s) => s.id), ['s1']);
     assert.equal((await store.assetReview.comments('s1'))[0]?.line, 3);
     assert.equal((await store.assetReview.installRequests({ status: 'pending' })).length, 1);
-    assert.deepEqual(await store.assetReview.settings('t1'), { reviewers: ['u3'], twoReviewers: { global: false, mcpStdio: true } });
+    assert.deepEqual(await store.assetReview.settings('t1'), { reviewers: ['u3'], twoReviewers: { global: false, mcpStdio: true }, teamNoReview: false });
     assert.equal(await store.assetReview.settings('nope'), null);
     assert.equal(await store.notifications.unread('u1'), 1);
     await store.notifications.markRead('u1', null, 10);
@@ -48,6 +48,25 @@ test('审核仓库：提交 / 评论 / 安装申请 / 通知往返；审核人�
       { subject_id: 'u3', permission: 'asset.review', resource_type: 'team', resource_id: 't1' }
     ]);
     db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('团队免审开关：老库补列（默认关），存取往返', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hub-review-'));
+  try {
+    const path = join(dir, 'hub.db');
+    const old = new DatabaseSync(path);
+    old.exec("CREATE TABLE asset_review_settings (key TEXT PRIMARY KEY, two_global INTEGER NOT NULL DEFAULT 0, two_mcp_stdio INTEGER NOT NULL DEFAULT 0); INSERT INTO asset_review_settings VALUES ('t1', 0, 1)");
+    old.close();
+    let store = openSqliteStore(path);
+    assert.deepEqual(await store.assetReview.settings('t1'), { reviewers: [], twoReviewers: { global: false, mcpStdio: true }, teamNoReview: false });
+    await store.assetReview.setSettings('t1', { reviewers: [], twoReviewers: { global: false, mcpStdio: true }, teamNoReview: true });
+    store.close();
+    store = openSqliteStore(path);
+    assert.equal((await store.assetReview.settings('t1'))?.teamNoReview, true);
+    store.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

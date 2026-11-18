@@ -122,4 +122,5 @@ export interface NotificationDto {
 export interface AssetReviewSettingsDto {
   readonly reviewers: readonly string[];
   readonly twoReviewers: { readonly global: boolean; readonly mcpStdio: boolean };
+  readonly teamNoReview?: boolean;
 }

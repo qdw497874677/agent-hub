@@ -127,6 +127,8 @@ export interface InstallRequest {
 export interface AssetReviewSettings {
   readonly reviewers: readonly string[];
   readonly twoReviewers: { readonly global: boolean; readonly mcpStdio: boolean };
+  /** 团队资产免审（只对团队有意义，默认关）：团队范围的提交 0 票直接发布；stdio MCP 不免，提升到全局不受影响。 */
+  readonly teamNoReview?: boolean;
 }
 export const DEFAULT_REVIEW_SETTINGS: AssetReviewSettings = { reviewers: [], twoReviewers: { global: false, mcpStdio: false } };
 export const HUB_REVIEW_KEY = 'hub';
@@ -235,6 +237,8 @@ export function checkDecider(
 /** 需要几票（4A：默认 1；设置打开时全局 / MCP stdio 要 2）。个人资产 0（1A 免审）。 */
 export function requiredApprovals(scope: AssetScope, mcpStdio: boolean, settings: AssetReviewSettings): number {
   if (scope === 'personal') return 0;
+  // 团队免审：stdio MCP 能在机器上跑任意命令，不免
+  if (scope === 'team' && settings.teamNoReview === true && !mcpStdio) return 0;
   if (scope === 'global' && settings.twoReviewers.global) return 2;
   if (mcpStdio && settings.twoReviewers.mcpStdio) return 2;
   return 1;

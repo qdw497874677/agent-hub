@@ -37,7 +37,11 @@ export const installDecisionRequest = z.object({ approve: z.boolean(), reason: z
 export const reviewSettingsRequest = z.object({
   target: z.enum(['team', 'hub']),
   reviewers: z.array(z.string()).max(50),
-  twoReviewers: z.object({ global: z.boolean(), mcpStdio: z.boolean() })
+  twoReviewers: z.object({ global: z.boolean(), mcpStdio: z.boolean() }),
+  /** 团队资产免审（target = team）；不传 = 不改。 */
+  teamNoReview: z.boolean().optional(),
+  /** hub 管理员改别的团队的免审开关时指定；默认自己的团队。 */
+  teamId: z.string().max(64).optional()
 });
 export const notificationsReadRequest = z.object({ ids: z.array(z.string()).max(200).nullable() });
 export const scopedSecretRequest = z.object({ value: z.string().min(1).max(16384) });
