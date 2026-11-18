@@ -223,8 +223,44 @@ const DETAIL_TABS: readonly { id: DetailTab; label: string }[] = [
   { id: 'settings', label: '设置' }
 ];
 
+/** 详情是弹层里的一个视图，没有独立路由：把页签记在 sessionStorage，刷新后仍停在同一页。 */
+const tabKeyOf = (workerId: string) => `agent-hub:worker-tab:${workerId}`;
+const readTab = (workerId: string): DetailTab => {
+  try {
+    const saved = globalThis.sessionStorage?.getItem(tabKeyOf(workerId));
+    return DETAIL_TABS.some((item) => item.id === saved) ? (saved as DetailTab) : 'overview';
+  } catch {
+    return 'overview';
+  }
+};
+
 function WorkerDetail({ worker, onBack }: { worker: WorkerInfoDto; onBack: () => void }) {
-  const [tab, setTab] = useState<DetailTab>('overview');
+  const [tab, setTabState] = useState<DetailTab>(() => readTab(worker.workerId));
+  const setTab = (next: DetailTab) => {
+    setTabState(next);
+    try {
+      globalThis.sessionStorage?.setItem(tabKeyOf(worker.workerId), next);
+    } catch {
+      // 隐私模式写不进去：这次能切换就行。
+    }
+  };
+  // WAI-ARIA 页签：←/→ 在页签间移动并激活，Home/End 到两端。
+  const onTabKey = (event: React.KeyboardEvent<HTMLElement>) => {
+    const keys = ['ArrowRight', 'ArrowLeft', 'Home', 'End'];
+    if (!keys.includes(event.key)) return;
+    event.preventDefault();
+    const at = DETAIL_TABS.findIndex((item) => item.id === tab);
+    const next =
+      event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? DETAIL_TABS.length - 1
+          : (at + (event.key === 'ArrowRight' ? 1 : -1) + DETAIL_TABS.length) % DETAIL_TABS.length;
+    const picked = DETAIL_TABS[next];
+    if (!picked) return;
+    setTab(picked.id);
+    event.currentTarget.querySelector<HTMLElement>(`#worker-tab-${picked.id}`)?.focus();
+  };
   const online = worker.state === 'online';
   const host = [worker.hostname, worker.platform].filter(Boolean).join(' · ');
   const harnesses = worker.agentModels ?? [];
@@ -246,7 +282,7 @@ function WorkerDetail({ worker, onBack }: { worker: WorkerInfoDto; onBack: () =>
           {online ? <LinkBadge link={worker.link} /> : `离线 · ${relativeTime(worker.lastSeenAt)}`}
         </span>
       </header>
-      <div role="tablist" aria-label="机器详情" className="flex gap-1 border-b border-hair px-3">
+      <div role="tablist" aria-label="机器详情" className="flex gap-1 border-b border-hair px-3" onKeyDown={onTabKey}>
         {DETAIL_TABS.map((item) => (
           <button
             key={item.id}
@@ -254,6 +290,7 @@ function WorkerDetail({ worker, onBack }: { worker: WorkerInfoDto; onBack: () =>
             id={`worker-tab-${item.id}`}
             aria-selected={tab === item.id}
             aria-controls={`worker-panel-${item.id}`}
+            tabIndex={tab === item.id ? 0 : -1}
             data-testid={`worker-tab-${item.id}`}
             className={`-mb-px border-b-2 px-2 py-1.5 text-sub ${tab === item.id ? 'border-primary text-primary' : 'border-transparent text-tertiary hover:text-secondary'}`}
             onClick={() => setTab(item.id)}
